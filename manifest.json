@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "PokerChase HUD",
+  "version": "1.0",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://game.poker-chase.com/*"
+      ],
+      "js": [
+        "dist/content_script.js"
+      ]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "matches": [
+        "https://game.poker-chase.com/*"
+      ],
+      "resources": [
+        "dist/inject.js"
+      ]
+    }
+  ]
+}
