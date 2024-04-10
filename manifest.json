@@ -4,8 +4,18 @@
   "version": "1.0",
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "storage",
+    "unlimitedStorage"
   ],
+  "action": {
+    "default_popup": "dist/index.html"
+  },
+  "options_page": "dist/index.html",
+  "background": {
+    "service_worker": "dist/background.js",
+    "type": "module"
+  },
   "content_scripts": [
     {
       "matches": [
@@ -18,11 +28,11 @@
   ],
   "web_accessible_resources": [
     {
+      "resources": [
+        "dist/web_accessible_resource.js"
+      ],
       "matches": [
         "https://game.poker-chase.com/*"
-      ],
-      "resources": [
-        "dist/inject.js"
       ]
     }
   ]
