@@ -1,21 +1,29 @@
-import { ApiType, ApiResponse } from '../app'
+import { ApiType, ApiResponse, PokerChaseService } from '../app'
 import { createRoot } from 'react-dom/client'
 import { useEffect, useState } from 'react'
 import Hud from './Hud'
 
 const App = () => {
-  const [playerIds, setPlayerIds] = useState<number[]>([])
+  const [seatUserIds, setSeatUserIds] = useState<number[]>([])
+  /** プレイヤーごとのHUD表示制御 */
   useEffect(() => {
-    const handleMessage = ({ data }: MessageEvent<ApiResponse>) => {
-      if (data.ApiTypeId === ApiType.EVT_DEAL)
-        setPlayerIds(data.SeatUserIds)
+    const handleMessage = ({ detail }: CustomEvent<ApiResponse>) => {
+      switch (detail.ApiTypeId) {
+        case ApiType.EVT_PLAYER_SEATED:
+        case ApiType.EVT_DEAL:
+          setSeatUserIds(detail.SeatUserIds)
+          break
+        case ApiType.EVT_RESULT:
+          setSeatUserIds([])
+          break
+      }
     }
-    navigator.serviceWorker.addEventListener('message', handleMessage)
-    return () => navigator.serviceWorker.removeEventListener('message', handleMessage)
+    window.addEventListener(PokerChaseService.POKER_CHASE_SERVICE_EVENT, handleMessage)
+    return () => window.removeEventListener(PokerChaseService.POKER_CHASE_SERVICE_EVENT, handleMessage)
   }, [])
-  return ((playerIds.length > 0
-    ? playerIds.map((playerId, seatIndex) => <Hud key={playerId} playerId={playerId} seatIndex={seatIndex} />)
-    : <div>Waiting Hands...</div>))
+  return seatUserIds.map((userId, index) => userId !== -1
+    ? <Hud key={index} userId={userId} actualSeatIndex={index} />
+    : <div key={index} />)
 }
 export default App
 

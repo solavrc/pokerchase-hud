@@ -22,7 +22,7 @@ const Popup = () => {
   return <div style={{ width: 300 }}>
     <h1>PokerChase Analyzer</h1>
     <FormGroup>
-      <FormControlLabel key={'sendUserData'} label={'ハンドデータ収集に同意する'} name={'sendUserData'} control={<Checkbox checked={options.sendUserData} onChange={handleOptions} />} />
+      <FormControlLabel key={'sendUserData'} label={'統計データ収集に協力する'} name={'sendUserData'} control={<Checkbox checked={options.sendUserData} onChange={handleOptions} />} />
     </FormGroup>
     <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
       <Button onClick={openLink}>ポーカーチェイス</Button>

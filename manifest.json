@@ -6,7 +6,8 @@
     "activeTab",
     "scripting",
     "storage",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "background"
   ],
   "action": {
     "default_popup": "dist/index.html"
