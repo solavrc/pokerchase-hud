@@ -26,13 +26,6 @@ const seatStyles: CSSProperties[] = [
 ]
 
 const Hud = (props: { userId: number, actualSeatIndex: number }) => {
-  useEffect(() => {
-    const handleMessage = ({ detail }: CustomEvent<ApiResponse>) => {
-      /** @todo 各プレイヤーごとの情報 */
-    }
-    window.addEventListener(PokerChaseService.POKER_CHASE_SERVICE_EVENT, handleMessage)
-    return () => window.removeEventListener(PokerChaseService.POKER_CHASE_SERVICE_EVENT, handleMessage)
-  }, [])
   return props.userId ?
     <div style={{ ...style, ...seatStyles.at(props.actualSeatIndex) }}>
       <div>SeatIndex: {props.actualSeatIndex}</div>

@@ -1,5 +1,4 @@
 import { Button, Checkbox, FormGroup, FormControlLabel } from '@mui/material'
-import { createRoot } from 'react-dom/client'
 import { getBucket } from '@extend-chrome/storage'
 import { useEffect, useState, ChangeEvent } from 'react'
 
@@ -30,6 +29,3 @@ const Popup = () => {
   </div>
 }
 export default Popup
-
-export const renderOptions = (container: HTMLElement) =>
-  createRoot(container).render(<Popup />)

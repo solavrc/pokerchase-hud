@@ -1,5 +1,4 @@
 import { ApiType, ApiResponse, PokerChaseService } from '../app'
-import { createRoot } from 'react-dom/client'
 import { useEffect, useState } from 'react'
 import Hud from './Hud'
 
@@ -26,6 +25,3 @@ const App = () => {
     : <div key={index} />)
 }
 export default App
-
-export const renderApp = (container: HTMLElement) =>
-  createRoot(container).render(<App />)

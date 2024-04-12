@@ -4,10 +4,12 @@
  * @see https://developer.mozilla.org/ja/docs/Mozilla/Add-ons/WebExtensions/manifest.json/content_scripts
  */
 import { ApiResponse, PokerChaseService } from './app'
+import { createElement } from 'react'
+import { createRoot } from 'react-dom/client'
 import { origin } from './background'
-import { renderApp } from './components/App'
-import { renderOptions } from './components/Popup'
 import { web_accessible_resources } from '../manifest.json'
+import App from './components/App'
+import Popup from './components/Popup'
 
 const service = new PokerChaseService(window)
 /** WebSocket 由来のハンドデータを Service Worker に渡す */
@@ -33,13 +35,13 @@ injectScript(chrome.runtime.getURL(web_accessible_resources.at(0)?.resources.at(
  * React DOM のエントリーポイントを作成する
  * @see ./index.html
  */
-const [popupRootId, overlayRootId] = ['popup-root', 'overlay-root']
-if (document.getElementById(popupRootId)) {
-  renderOptions(document.getElementById(popupRootId)!)
+const unityContainer = document.querySelector('#unity-container')
+if (unityContainer) {
+  const appRoot = document.createElement('div')
+  unityContainer.appendChild(appRoot)
+  createRoot(appRoot).render(createElement(App))
 }
-if (!document.getElementById(overlayRootId)) {
-  const overlayRoot = document.createElement('div')
-  overlayRoot.setAttribute('id', overlayRootId)
-  document.getElementById('unity-container')?.appendChild(overlayRoot)
-  renderApp(overlayRoot)
+const popupRoot = document.querySelector('#popup-root')
+if (popupRoot) {
+  createRoot(popupRoot).render(createElement(Popup))
 }
