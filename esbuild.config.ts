@@ -1,7 +1,10 @@
-import { context, BuildOptions } from 'esbuild'
+import { context, BuildOptions, Plugin } from 'esbuild'
 import { copyFileSync } from 'fs'
+import { fileURLToPath } from 'url'
 import { parse } from 'path'
+import { resolve, dirname } from 'path'
 import manifest from './manifest.json'
+import process from 'process'
 
 const {
   background: { service_worker },
@@ -19,7 +22,27 @@ const options: BuildOptions = {
   format: 'esm',
   outdir: 'dist',
   platform: 'browser',
-  target: ['chrome123']
+  target: ['chrome123'],
+  plugins: [{
+    name: 'nodePolyfills',
+    setup(build) {
+      const __filename = fileURLToPath(import.meta.url)
+      const __dirname = dirname(__filename)
+      build.onResolve({ filter: /^process$/ }, () => {
+        /** `browser.js` OR `index.js` */
+        return { path: resolve(__dirname, 'node_modules/process/browser.js') }
+      })
+      build.onResolve({ filter: /^events$/ }, () => {
+        return { path: resolve(__dirname, 'node_modules/events/events.js') }
+      })
+      build.onResolve({ filter: /^buffer$/ }, () => {
+        return { path: resolve(__dirname, 'node_modules/buffer/index.js') }
+      })
+      build.onResolve({ filter: /^stream$/ }, () => {
+        return { path: resolve(__dirname, 'node_modules/stream-browserify/index.js') }
+      })
+    }
+  }]
 }
 
 try {
