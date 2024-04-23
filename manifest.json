@@ -4,10 +4,10 @@
   "version": "1.0",
   "permissions": [
     "activeTab",
+    "background",
     "scripting",
     "storage",
-    "unlimitedStorage",
-    "background"
+    "tabs"
   ],
   "action": {
     "default_popup": "dist/index.html"

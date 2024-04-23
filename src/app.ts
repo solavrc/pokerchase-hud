@@ -345,15 +345,17 @@ class PokerChaseEventStream extends Transform {
   }
   _transform(event: ApiResponse, _encoding: string, callback: Function) {
     switch (event.ApiTypeId) {
+      case ApiType.EVT_RESULT:
+        this.events = []
+        this.push([event])
+        break
       case ApiType.EVT_DEAL:
         this.events = []
         this.events.push(event)
         break
       case ApiType.EVT_HAND_RESULT:
         this.events.push(event)
-        if (this.events.at(0)?.ApiTypeId === ApiType.EVT_DEAL) {
-          this.push(this.events)
-        }
+        this.push(this.events)
         break
       case ApiType.EVT_ACTION:
       case ApiType.EVT_DEAL_ROUND:
@@ -380,6 +382,9 @@ class PokerChaseHandStream extends Transform {
       await this.db.apiResponses.bulkAdd(events)
       for await (const event of events) {
         switch (event.ApiTypeId) {
+          case ApiType.EVT_RESULT:
+            callback(null, []) /** HUD非表示 */
+            return
           case ApiType.EVT_DEAL:
             this.seatUserIds = []
             this.actions = []
@@ -462,23 +467,14 @@ export interface HUDStat {
 /** @see https://www.pokertracker.com/guides/PT3/general/statistical-reference-guide */
 export class PokerChaseService {
   static readonly POKER_CHASE_SERVICE_EVENT = 'PokerChaseServiceEvent'
-  private window: Window
-  private debug: boolean
-  private eventStream: PokerChaseEventStream
+  private eventStream = new PokerChaseEventStream()
   readonly handStream: PokerChaseHandStream
-  constructor({ window, db, debug = false }: { window: Window, db: PokerChaseDB, debug?: boolean }) {
-    this.window = window
-    this.debug = debug
-    this.eventStream = new PokerChaseEventStream()
+  constructor({ db }: { db: PokerChaseDB }) {
     this.handStream = new PokerChaseHandStream(db)
-    this.eventStream.pipe(this.handStream).on('data', this.dispatch)
-  }
-  private dispatch = (detail: HUDStat[]) => {
-    this.window.dispatchEvent(new CustomEvent(PokerChaseService.POKER_CHASE_SERVICE_EVENT, { detail }))
+    this.eventStream.pipe(this.handStream)
   }
   readonly eventHandler = (event: ApiResponse) => {
-    if (this.debug)
-      this.logger(event)
+    this.logger(event)
     this.eventStream.write(event)
   }
   private logger = (event: ApiResponse) => {

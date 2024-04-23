@@ -157,9 +157,8 @@ const expected = [
 ]
 
 test('Stats can be calculated from event logs.', () => {
-  const windowMock: Partial<Window> = { dispatchEvent: (event: Event) => true }
   const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-  const service = new PokerChaseService({ window: windowMock as Window, db: dbMock })
+  const service = new PokerChaseService({ db: dbMock })
   event_timeline.forEach(event => service.eventHandler(event))
 
   const actual: HUDStat[][] = []
