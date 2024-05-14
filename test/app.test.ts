@@ -136,27 +136,26 @@ const event_timeline: ApiResponse[] = [
   { "timestamp": 47, "ApiTypeId": 311, "NotifyCode": 1 },
   { "timestamp": 48, "ApiTypeId": 310, "SeatIndex": 5, "StampId": "stamp0107" },
 ]
-
 const expected: PlayerStats[][] = [
   [
-    { playerId: 561384657, hands: 1, vpip: 1, pfr: 1, threeBet: NaN, threeBetFold: NaN, wmsd: 1, wtsd: Infinity, af: Infinity, afq: 1 },
-    { playerId: 575402650, hands: 1, vpip: 0, pfr: 0, threeBet: 0, threeBetFold: NaN, wmsd: NaN, wtsd: NaN, af: NaN, afq: 0 },
-    { playerId: 750532695, hands: 1, vpip: 0, pfr: 0, threeBet: 0, threeBetFold: NaN, wmsd: NaN, wtsd: NaN, af: NaN, afq: 0 },
-    { playerId: 172432670, hands: 1, vpip: 1, pfr: 1, threeBet: 1, threeBetFold: NaN, wmsd: NaN, wtsd: NaN, af: Infinity, afq: 0.5 },
-    { playerId: 583654032, hands: 1, vpip: 0, pfr: 0, threeBet: NaN, threeBetFold: 1, wmsd: NaN, wtsd: NaN, af: NaN, afq: 0 },
-    { playerId: 619317634, hands: 1, vpip: 1, pfr: 1, threeBet: NaN, threeBetFold: 0, wmsd: 0, wtsd: Infinity, af: Infinity, afq: 1 },
+    { playerId: 561384657, hands: 1, vpip: [1, 1], pfr: [1, 1], threeBet: [0, 0], threeBetFold: [0, 0], wmsd: [1, 1], wtsd: [1, 0], af: [2, 0], afq: [2, 2], },
+    { playerId: 575402650, hands: 1, vpip: [0, 1], pfr: [0, 1], threeBet: [0, 1], threeBetFold: [0, 0], wmsd: [0, 0], wtsd: [0, 0], af: [0, 0], afq: [0, 1], },
+    { playerId: 750532695, hands: 1, vpip: [0, 1], pfr: [0, 1], threeBet: [0, 1], threeBetFold: [0, 0], wmsd: [0, 0], wtsd: [0, 0], af: [0, 0], afq: [0, 1], },
+    { playerId: 172432670, hands: 1, vpip: [1, 1], pfr: [1, 1], threeBet: [1, 1], threeBetFold: [0, 0], wmsd: [0, 0], wtsd: [0, 0], af: [1, 0], afq: [1, 2], },
+    { playerId: 583654032, hands: 1, vpip: [0, 1], pfr: [0, 1], threeBet: [0, 0], threeBetFold: [1, 1], wmsd: [0, 0], wtsd: [0, 0], af: [0, 0], afq: [0, 1], },
+    { playerId: 619317634, hands: 1, vpip: [1, 1], pfr: [1, 1], threeBet: [0, 0], threeBetFold: [0, 1], wmsd: [0, 1], wtsd: [1, 0], af: [1, 0], afq: [1, 1], },
   ],
   [
-    { playerId: 561384657, hands: 2, vpip: 0.5, pfr: 0.5, threeBet: 0, threeBetFold: NaN, wmsd: 1, wtsd: Infinity, af: Infinity, afq: 0.6666666666666666 },
-    { playerId: 575402650, hands: 2, vpip: 0.5, pfr: 0, threeBet: 0, threeBetFold: NaN, wmsd: 1, wtsd: 1, af: 0, afq: 0 },
-    { playerId: 750532695, hands: 2, vpip: 0, pfr: 0, threeBet: 0, threeBetFold: NaN, wmsd: NaN, wtsd: NaN, af: NaN, afq: 0 },
-    { playerId: 172432670, hands: 2, vpip: 1, pfr: 1, threeBet: 1, threeBetFold: NaN, wmsd: 0, wtsd: 1, af: Infinity, afq: 0.6666666666666666 },
-    { playerId: 583654032, hands: 2, vpip: 0, pfr: 0, threeBet: 0, threeBetFold: 1, wmsd: NaN, wtsd: NaN, af: NaN, afq: 0 },
-    { playerId: -1, hands: 0, vpip: NaN, pfr: NaN, threeBet: NaN, threeBetFold: NaN, wmsd: NaN, wtsd: NaN, af: NaN, afq: NaN },
-  ]
+    { playerId: 561384657, hands: 2, vpip: [1, 2], pfr: [1, 2], threeBet: [0, 1], threeBetFold: [0, 0], wmsd: [1, 1], wtsd: [1, 0], af: [2, 0], afq: [2, 3], },
+    { playerId: 575402650, hands: 2, vpip: [1, 2], pfr: [0, 2], threeBet: [0, 2], threeBetFold: [0, 0], wmsd: [1, 1], wtsd: [1, 1], af: [0, 1], afq: [0, 2], },
+    { playerId: 750532695, hands: 2, vpip: [0, 2], pfr: [0, 2], threeBet: [0, 1], threeBetFold: [0, 0], wmsd: [0, 0], wtsd: [0, 0], af: [0, 0], afq: [0, 2], },
+    { playerId: 172432670, hands: 2, vpip: [2, 2], pfr: [2, 2], threeBet: [1, 1], threeBetFold: [0, 0], wmsd: [0, 1], wtsd: [1, 1], af: [2, 0], afq: [2, 3], },
+    { playerId: 583654032, hands: 2, vpip: [0, 2], pfr: [0, 2], threeBet: [0, 1], threeBetFold: [1, 1], wmsd: [0, 0], wtsd: [0, 0], af: [0, 0], afq: [0, 2], },
+    { playerId: -1, },
+  ],
 ]
 
-test('Stats can be calculated from event logs.', (done) => {
+test('ログから各プレイヤーのスタッツを計算できる', (done) => {
   const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
   const service = new PokerChaseService({ db: dbMock })
   const actual: PlayerStats[][] = []
@@ -171,8 +170,13 @@ test('Stats can be calculated from event logs.', (done) => {
   service.stream.end()
 })
 
-test('Players can be sorted in order of display.', () => {
+test('プレイヤーを起点にユーザーを並び替えられる', () => {
   const seatUserIds = [583654032, 619317634, 561384657, 575402650, 750532695, 172432670]
   const playerSeatIndex = seatUserIds.findIndex(id => id === 561384657)
   expect(PokerChaseService.rotateElementFromIndex(seatUserIds, playerSeatIndex)).toStrictEqual([561384657, 575402650, 750532695, 172432670, 583654032, 619317634])
+})
+
+test('カードを文字列に変換できる', () => {
+  expect(PokerChaseService.toCardStr([37, 51])).toStrictEqual(['Jh', 'Ac'])
+  expect(PokerChaseService.toCardStr([29, 22, 7, 32, 39])).toStrictEqual(['9h', '7d', '3c', 'Ts', 'Jc'])
 })

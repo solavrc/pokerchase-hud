@@ -171,11 +171,26 @@ export interface Reward {
   Num: number
 }
 
+enum RankType {
+  ROYAL_FLUSH = 0,
+  STRAIGHT_FLUSH = 1,
+  FOUR_OF_A_KIND = 2,
+  FULL_HOUSE = 3,
+  FLUSH = 4,
+  STRAIGHT = 5,
+  THREE_OF_A_KIND = 6,
+  TWO_PAIR = 7,
+  ONE_PAIR = 8,
+  HIGH_CARD = 9,
+  NO_CALL = 10,
+  MUCK = 11
+}
+
 export interface Result {
   UserId: number
-  HoleCards: number[]
-  RankType: number
-  Hands: number[]
+  HoleCards: [number, number] | []
+  RankType: RankType
+  Hands: [number, number, number, number, number] | []
   HandRanking: number
   Ranking: number
   RewardChip: number
@@ -292,12 +307,14 @@ interface EvtDealRoundResponse extends ApiResponseBase<ApiType.EVT_DEAL_ROUND> {
 }
 /** 306 */
 interface EvtHandResultResponse extends ApiResponseBase<ApiType.EVT_HAND_RESULT> {
+  /** `ALL_IN`時のみ */
   CommunityCards: number[]
   DefeatStatus: number
   HandId: number
   OtherPlayers: OtherPlayer[]
   Player: Player
   Pot: number
+  /** SHOWDOWN: `Results.length > 1` */
   Results: Result[]
   ResultType: number
   SidePot: number[]
@@ -545,7 +562,7 @@ export class AggregateEventsStream extends Transform {
           })
           break
         case ApiType.EVT_HAND_RESULT:
-          if (event.Results.find(({ HandRanking }) => HandRanking === 1)?.Hands.length) {
+          if (event.Results.length > 1) {
             this.handState.phases.push({
               phase: PhaseType.SHOWDOWN,
               communityCards: [...this.handState.phases.at(-1)?.communityCards ?? [], ...event.CommunityCards],
@@ -557,7 +574,7 @@ export class AggregateEventsStream extends Transform {
               id: event.HandId,
               approxTimestamp: event.timestamp,
               seatUserIds: this.handState.seatUserIds,
-              winningPlayerIds: event.Results.filter(({ RewardChip }) => RewardChip > 0).map(({ UserId }) => UserId),
+              winningPlayerIds: event.Results.filter(({ HandRanking }) => HandRanking === 1).map(({ UserId }) => UserId),
               smallBlind: this.handState.smallBlind,
               bigBlind: this.handState.bigBlind,
               session: {
@@ -583,15 +600,15 @@ export class AggregateEventsStream extends Transform {
 
 export interface PlayerStats {
   playerId: number
-  hands: number
-  vpip: number
-  pfr: number
-  threeBet: number
-  threeBetFold: number
-  wtsd: number
-  wmsd: number
-  af: number
-  afq: number
+  hands?: number
+  vpip?: [top: number, bottom: number]
+  pfr?: [top: number, bottom: number]
+  threeBet?: [top: number, bottom: number]
+  threeBetFold?: [top: number, bottom: number]
+  wtsd?: [top: number, bottom: number]
+  wmsd?: [top: number, bottom: number]
+  af?: [top: number, bottom: number]
+  afq?: [top: number, bottom: number]
 }
 
 /** 非同期的: ハンドを保存し、各プレイヤーのStatsを計算する */
@@ -622,7 +639,7 @@ class ProcessHandAsyncStream extends Transform {
   private calcStats = async (seatUserIds: number[]): Promise<PlayerStats[]> => {
     return await Promise.all(seatUserIds.map(async playerId => {
       if (playerId === -1)
-        return { playerId: -1, hands: 0, vpip: NaN, pfr: NaN, threeBet: NaN, threeBetFold: NaN, wmsd: NaN, wtsd: NaN, af: NaN, afq: NaN }
+        return { playerId: -1 }
       const [
         hands,
         voluntarilyHands,
@@ -655,14 +672,14 @@ class ProcessHandAsyncStream extends Transform {
       return {
         playerId,
         hands,
-        vpip: voluntarilyHands / hands,
-        pfr: pfrHands / hands,
-        threeBet: threeBetHands / threeBetChanceHands,
-        threeBetFold: threeBetFoldHands / threeBetFoldChanceHands,
-        wmsd: wonMoneyAtShowdownHands / wentToShowdownHands,
-        wtsd: wentToShowdownHands / sawFlopHands,
-        af: betRaiseActions / callActions,
-        afq: betRaiseActions / exceptCheckActions
+        vpip: [voluntarilyHands, hands],
+        pfr: [pfrHands, hands],
+        threeBet: [threeBetHands, threeBetChanceHands],
+        threeBetFold: [threeBetFoldHands, threeBetFoldChanceHands],
+        wmsd: [wonMoneyAtShowdownHands, wentToShowdownHands],
+        wtsd: [wentToShowdownHands, sawFlopHands],
+        af: [betRaiseActions, callActions],
+        afq: [betRaiseActions, exceptCheckActions]
       }
     }))
   }
@@ -741,5 +758,10 @@ export class PokerChaseService {
       ...elements.slice(index, Infinity),
       ...elements.slice(0, index)
     ]
+  }
+  static readonly toCardStr = (cards: number[]) => {
+    const suits = ['s', 'h', 'd', 'c']
+    const numbers = ['2', '3', '4', '5', '6', '7', '8', '9', 'T', 'J', 'Q', 'K', 'A']
+    return cards.map(card => `${numbers.at(Math.floor(card / 4))}${suits.at(card % 4)}`)
   }
 }

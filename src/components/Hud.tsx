@@ -19,6 +19,7 @@ const style: CSSProperties = {
   transform: 'translateX(-50%)',
   width: 300,
   zIndex: 100, /* Ensure it's above other elements */
+  userSelect: 'none',
 }
 
 const seatStyles: CSSProperties[] = [
@@ -34,12 +35,12 @@ const Hud = (props: { actualSeatIndex: number, stat: PlayerStats }) => {
   const colSize = 2
   const chunks = Array.from({ length: Math.ceil(Object.entries(props.stat).length / colSize) }, (_, i) =>
     Object.entries(props.stat).slice(i * colSize, i * colSize + colSize))
-  const valueHandler = (value: number) => {
-    if (isNaN(value))
-      return 0
-    if (value % 1 !== 0)
-      return Math.round(value * 100 * 100) / 100 + '%'
-    return value
+  const valueHandler = (value: number | [number, number]) => {
+    if (Array.isArray(value)) {
+      const [top, bottom] = value
+      return `${(Math.round(top / bottom * 1000) / 10).toFixed(1)}% (${top}/${bottom})`
+    }
+    return String(value)
   }
   return props.stat.playerId ? (
     <ThemeProvider theme={darkTheme}>
@@ -47,9 +48,9 @@ const Hud = (props: { actualSeatIndex: number, stat: PlayerStats }) => {
         <TableBody>
           {chunks.map((row, rowIndex) => (
             <TableRow key={rowIndex}>
-              {row.map(([key, value], colIndex) => (
+              {row.map(([key, value]: [string, number | [number, number]], colIndex) => (
                 <Fragment key={colIndex}>
-                  <TableCell component='th' scope='row'>{key}</TableCell>
+                  <TableCell component='th' scope='row'>{key.toUpperCase()}</TableCell>
                   <TableCell align='right'>{valueHandler(value)}</TableCell>
                 </Fragment>
               ))}
