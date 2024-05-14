@@ -592,8 +592,8 @@ export class AggregateEventsStream extends Transform {
           break
       }
       callback()
-    } catch (error: unknown) {
-      callback(error as Error)
+    } catch (error: any) {
+      callback(error)
     }
   }
 }
@@ -619,21 +619,21 @@ class ProcessHandAsyncStream extends Transform {
     this.service = service
   }
   async _transform({ hand, actions, phases }: { hand: Hand, actions: Action[], phases: Phase[] }, _: string, callback: TransformCallback) {
-    try {
-      await this.service.db.transaction('rw', this.service.db.hands, this.service.db.phases, this.service.db.actions, async () => {
+    await this.service.db.transaction('rw', this.service.db.hands, this.service.db.phases, this.service.db.actions, async () => {
+      try {
         await Promise.all([
-          this.service.db.hands.add(hand),
-          this.service.db.actions.bulkAdd(actions),
-          this.service.db.phases.bulkAdd(phases)
+          this.service.db.hands.put(hand),
+          this.service.db.actions.bulkPut(actions),
+          this.service.db.phases.bulkPut(phases)
         ])
         const stats = this.service.playerId
           ? await this.calcStats(PokerChaseService.rotateElementFromIndex(hand.seatUserIds, hand.seatUserIds.indexOf(this.service.playerId)))
           : await this.calcStats(hand.seatUserIds)
         callback(null, stats)
-      })
-    } catch (error: unknown) {
-      callback(error as Error)
-    }
+      } catch (error: any) {
+        callback(error)
+      }
+    })
   }
   /** @see https://www.pokertracker.com/guides/PT3/general/statistical-reference-guide */
   private calcStats = async (seatUserIds: number[]): Promise<PlayerStats[]> => {
@@ -718,7 +718,7 @@ export class PokerChaseService {
   }
   readonly queueEvent = (event: ApiResponse) => {
     this.eventLogger(event)
-    this.db.apiResponses.add(event)
+    this.db.apiResponses.add(event) /** 同期的に利用しないため投げっぱなし */
     switch (event.ApiTypeId) {
       case ApiType.REQ_ENTRY:
         this.session.reset()

@@ -24,6 +24,13 @@ const service = new PokerChaseService({ db })
 self.db = db
 self.service = service
 
+/** 拡張更新時: データ再構築 */
+chrome.runtime?.onInstalled.addListener(async details => {
+  if (details.reason === 'update') {
+    const apiResponses = await db.apiResponses.toArray()
+    apiResponses.forEach(message => service.queueEvent(message))
+  }
+})
 /** from `content_script.ts` */
 chrome.runtime?.onMessage.addListener((message: ApiResponse | PlayerStats[], sender, _sendResponse) => {
   if (sender.origin === origin && !Array.isArray(message) && message.ApiTypeId) {
