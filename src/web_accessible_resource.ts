@@ -14,7 +14,7 @@ function createWebSocket(...args: ConstructorParameters<typeof WebSocket>): WebS
   instance.addEventListener('message', ({ data }) => {
     if (data instanceof ArrayBuffer) {
       const event = decode(data) as ApiResponse
-      window.postMessage({ _ts: Date.now(), ...event }, origin) /** to `content_script` */
+      window.postMessage({ ...event, timestamp: Date.now() }, origin) /** to `content_script` */
     }
   })
   return instance

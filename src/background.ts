@@ -4,27 +4,36 @@
  * @see https://developer.chrome.com/docs/extensions/reference/api/storage
  * @see https://zenn.dev/dotdotdot/articles/b123e67552fe3c
  */
-import { ApiResponse, PokerChaseDB, PokerChaseService, HUDStat } from './app'
+import { ApiResponse, PokerChaseDB, PokerChaseService, PlayerStats } from './app'
 import { content_scripts } from '../manifest.json'
 import process from 'process'
+
+declare global {
+  interface Window {
+    db: PokerChaseDB
+    service: PokerChaseService
+  }
+}
 
 self.process = process
 export const { origin } = new URL(content_scripts.at(0)!.matches.at(0)!)
 
 const db = new PokerChaseDB(self.indexedDB, self.IDBKeyRange)
 const service = new PokerChaseService({ db })
+/** for debug */
+self.db = db
+self.service = service
 
 /** from `content_script.ts` */
-chrome.runtime?.onMessage.addListener((message: ApiResponse | HUDStat[], sender, _sendResponse) => {
+chrome.runtime?.onMessage.addListener((message: ApiResponse | PlayerStats[], sender, _sendResponse) => {
   if (sender.origin === origin && !Array.isArray(message) && message.ApiTypeId) {
+    service.queueEvent(message)
     /** @todo send report */
-    service.eventHandler(message)
   }
 })
 /** to `content_script.ts` */
-service.handStream.on('data', (hand: HUDStat[]) => {
-  chrome.tabs.query({ url: `${origin}/play/index.html`, currentWindow: true, active: true }, tabs => {
-    console.debug(`[${new Date().toISOString().slice(11, 19)}] HUDStat[]:`, hand)
-    tabs.forEach(({ id }) => id && chrome.tabs.sendMessage<HUDStat[]>(id, hand))
-  })
-})
+const sendMessageToGameTab = (hand: PlayerStats[]) =>
+  chrome.tabs.query({ url: `${origin}/play/index.html`, currentWindow: true, active: true }, tabs =>
+    tabs.forEach(({ id }) => id && chrome.tabs.sendMessage<PlayerStats[]>(id, hand)))
+service.stream.on('data', (hand: PlayerStats[]) => sendMessageToGameTab(hand))
+service.stream.on('pause', () => sendMessageToGameTab([])) /** HUD非表示 */

@@ -1,11 +1,9 @@
-import { CSSProperties } from 'react'
-import { HUDStat } from '../app'
+import { CSSProperties, Fragment } from 'react'
+import { PlayerStats } from '../app'
 import { ThemeProvider, createTheme } from '@mui/material/styles'
-import Paper from '@mui/material/Paper'
 import Table from '@mui/material/Table'
 import TableBody from '@mui/material/TableBody'
 import TableCell from '@mui/material/TableCell'
-import TableContainer from '@mui/material/TableContainer'
 import TableRow from '@mui/material/TableRow'
 
 const darkTheme = createTheme({
@@ -16,7 +14,6 @@ const darkTheme = createTheme({
 
 const style: CSSProperties = {
   backgroundColor: 'rgba(0, 0, 0, 0.3)',
-  height: 100,
   pointerEvents: 'none', /** クリック透過 */
   position: 'absolute',
   transform: 'translateX(-50%)',
@@ -33,34 +30,34 @@ const seatStyles: CSSProperties[] = [
   { top: '68%', left: '85%' },
 ]
 
-const Hud = (props: { actualSeatIndex: number, stat: HUDStat }) => {
-  return props.stat.playerId
-    ? <ThemeProvider theme={darkTheme}>
-      <TableContainer component={Paper} style={{ ...style, ...seatStyles.at(props.actualSeatIndex) }}>
-        <Table size='small'>
-          <TableBody>
-            <TableRow>
-              <TableCell scope='row'>ID</TableCell>
-              <TableCell align='right'>{props.stat.playerId}</TableCell>
-              <TableCell scope='row'>HANDS</TableCell>
-              <TableCell align='right'>{props.stat.hands}</TableCell>
+const Hud = (props: { actualSeatIndex: number, stat: PlayerStats }) => {
+  const colSize = 2
+  const chunks = Array.from({ length: Math.ceil(Object.entries(props.stat).length / colSize) }, (_, i) =>
+    Object.entries(props.stat).slice(i * colSize, i * colSize + colSize))
+  const valueHandler = (value: number) => {
+    if (isNaN(value))
+      return 0
+    if (value % 1 !== 0)
+      return Math.round(value * 100 * 100) / 100 + '%'
+    return value
+  }
+  return props.stat.playerId ? (
+    <ThemeProvider theme={darkTheme}>
+      <Table size='small' sx={{ ...style, ...seatStyles.at(props.actualSeatIndex) }}>
+        <TableBody>
+          {chunks.map((row, rowIndex) => (
+            <TableRow key={rowIndex}>
+              {row.map(([key, value], colIndex) => (
+                <Fragment key={colIndex}>
+                  <TableCell component='th' scope='row'>{key}</TableCell>
+                  <TableCell align='right'>{valueHandler(value)}</TableCell>
+                </Fragment>
+              ))}
             </TableRow>
-            <TableRow>
-              <TableCell scope='row'>VPIP</TableCell>
-              <TableCell align='right'>{(Math.round((props.stat.vpip || 0) * 100))}%</TableCell>
-              <TableCell scope='row'>PFR</TableCell>
-              <TableCell align='right'>{(Math.round((props.stat.pfr || 0) * 100))}%</TableCell>
-            </TableRow>
-            <TableRow>
-              <TableCell scope='row'>3B</TableCell>
-              <TableCell align='right'>{(Math.round((props.stat.threeBet || 0) * 100))}%</TableCell>
-              <TableCell scope='row'>3BF</TableCell>
-              <TableCell align='right'>{(Math.round((props.stat.threeBetFold || 0) * 100))}%</TableCell>
-            </TableRow>
-          </TableBody>
-        </Table>
-      </TableContainer>
-    </ThemeProvider>
-    : <></>
+          ))}
+        </TableBody>
+      </Table>
+    </ThemeProvider >
+  ) : <></>
 }
 export default Hud

@@ -3,7 +3,7 @@
  * @see https://developer.chrome.com/docs/extensions/reference/manifest/content-scripts?hl=ja
  * @see https://developer.mozilla.org/ja/docs/Mozilla/Add-ons/WebExtensions/manifest.json/content_scripts
  */
-import { ApiResponse, PokerChaseService, HUDStat } from './app'
+import { ApiResponse, PokerChaseService, PlayerStats } from './app'
 import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { origin } from './background'
@@ -13,7 +13,7 @@ import Popup from './components/Popup'
 
 declare global {
   interface WindowEventMap {
-    [PokerChaseService.POKER_CHASE_SERVICE_EVENT]: CustomEvent<HUDStat[]>
+    [PokerChaseService.POKER_CHASE_SERVICE_EVENT]: CustomEvent<PlayerStats[]>
   }
 }
 
@@ -25,7 +25,7 @@ window.addEventListener('message', (event: MessageEvent<ApiResponse>) => {
   }
 })
 /** from `background.ts` to `App.ts` */
-chrome.runtime?.onMessage.addListener((message: ApiResponse | HUDStat[], sender, _sendResponse) => {
+chrome.runtime?.onMessage.addListener((message: ApiResponse | PlayerStats[], sender, _sendResponse) => {
   /** 拡張機能ID */
   if (sender.id === chrome.runtime.id && Array.isArray(message)) {
     window.dispatchEvent(new CustomEvent(PokerChaseService.POKER_CHASE_SERVICE_EVENT, { detail: message }))
