@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "scripts": {
     "build": "tsx esbuild.config.ts",
+    "postbuild": "zip -r extension.zip dist/ icons/ manifest.json",
     "watch": "tsx esbuild.config.ts --watch",
     "test": "jest"
   },
