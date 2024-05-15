@@ -9,7 +9,7 @@ import { createRoot } from 'react-dom/client'
 import { origin } from './background'
 import { web_accessible_resources } from '../manifest.json'
 import App from './components/App'
-import Popup from './components/Popup'
+// import Popup from './components/Popup'
 
 declare global {
   interface WindowEventMap {
@@ -58,7 +58,8 @@ if (unityContainer) {
   unityContainer.appendChild(appRoot)
   createRoot(appRoot).render(createElement(App))
 }
-const popupRoot = document.querySelector('#popup-root')
-if (popupRoot) {
-  createRoot(popupRoot).render(createElement(Popup))
-}
+/** @todo requires `storage` permission */
+// const popupRoot = document.querySelector('#popup-root')
+// if (popupRoot) {
+//   createRoot(popupRoot).render(createElement(Popup))
+// }
