@@ -21,15 +21,21 @@ declare global {
 window.addEventListener('message', (event: MessageEvent<ApiResponse>) => {
   /** @see https://developer.mozilla.org/ja/docs/Web/API/Window/postMessage#%E3%82%BB%E3%82%AD%E3%83%A5%E3%83%AA%E3%83%86%E3%82%A3%E3%81%AE%E8%80%83%E6%85%AE%E4%BA%8B%E9%A0%85 */
   if (event.source === window && event.origin === origin && event.data.ApiTypeId) {
-    chrome.runtime.sendMessage<ApiResponse>(event.data)
+    try {
+      chrome.runtime.sendMessage<ApiResponse>(event.data)
+    } catch (error: unknown) {
+      console.error(error)
+      /** not work in `web_accessible_resource` */
+      if (error instanceof Error && error.message === 'Extension context invalidated.')
+        window.location.reload()
+    }
   }
 })
 /** from `background.ts` to `App.ts` */
-chrome.runtime?.onMessage.addListener((message: ApiResponse | PlayerStats[], sender, _sendResponse) => {
+chrome.runtime?.onMessage?.addListener((message: ApiResponse | PlayerStats[], sender) => {
   /** 拡張機能ID */
-  if (sender.id === chrome.runtime.id && Array.isArray(message)) {
+  if (sender.id === chrome.runtime.id && Array.isArray(message))
     window.dispatchEvent(new CustomEvent(PokerChaseService.POKER_CHASE_SERVICE_EVENT, { detail: message }))
-  }
 })
 
 /** WebSocket Hook 用 <script/> を DOM に注入する */

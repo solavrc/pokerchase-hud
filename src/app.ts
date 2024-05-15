@@ -1,26 +1,26 @@
 import Dexie, { type Table } from 'dexie'
-import { Transform, TransformCallback } from 'stream'
+import { Transform } from 'stream'
 
 /**
  * Event Lifecycle:
  *
- * PREFLOP
+ * - PREFLOP
  * 303 EVT_DEAL
  * 304 EVT_ACTION[]
  *
- * FLOP
+ * - FLOP
  * 305 EVT_DEAL_ROUND (Progress.Phase === 1)
  * 304 EVT_ACTION[]
  *
- * TURN
+ * - TURN
  * 305 EVT_DEAL_ROUND (Progress.Phase === 2)
  * 304 EVT_ACTION[]
  *
- * RIVER
+ * - RIVER
  * 305 EVT_DEAL_ROUND (Progress.Phase === 3)
  * 304 EVT_ACTION[]
  *
- * SHOWDOWN (OR ALL OTHER PLAYERS FOLDED)
+ * - SHOWDOWN (OR ALL OTHER PLAYERS FOLDED)
  * 306 EVT_HAND_RESULT
  */
 export enum ApiType {
@@ -473,122 +473,59 @@ export class PokerChaseDB extends Dexie {
   }
 }
 
-/** 同期的: ログをハンド単位に集約する */
-export class AggregateEventsStream extends Transform {
-  private handState: {
-    /** 不定の起点に対し時計回り順 */
-    seatUserIds: number[]
-    /** [SB, BB, UTG, ... BTN] */
-    positionUserIds: number[]
-    actions: Action[]
-    phases: Phase[]
-    bigBlind: number
-    smallBlind: number
-    isValid: () => boolean
-    reset: () => void
-  } = {
-      seatUserIds: [],
-      positionUserIds: [],
-      actions: [],
-      phases: [],
-      bigBlind: NaN,
-      smallBlind: NaN,
-      isValid: function () {
-        return this.seatUserIds.length > 0
-          && this.positionUserIds.length > 0
-          && this.actions.length > 0
-          && this.phases.at(0)?.phase === PhaseType.PREFLOP
-          && this.bigBlind >= 0
-          && this.smallBlind >= 0
-      },
-      reset: function () {
-        this.seatUserIds = []
-        this.positionUserIds = []
-        this.actions = []
-        this.phases = []
-        this.bigBlind = NaN
-        this.smallBlind = NaN
-      }
-    }
+type TransformCallback<T> = (error?: Error | null, data?: T) => void
+type HandEvent = EvtDealResponse | EvtDealRoundResponse | EvtActionResponse | EvtHandResultResponse
+
+/**
+ * - 通信ログを Hand 単位に集約
+ * - 同期的実行(ログ順序を保証)
+ */
+export class AggregateEventsForHandStream extends Transform {
   private service: PokerChaseService
+  private events: HandEvent[] = []
   constructor(service: PokerChaseService) {
     super({ objectMode: true })
     this.service = service
   }
-  _transform(event: EvtDealResponse | EvtDealRoundResponse | EvtActionResponse | EvtHandResultResponse, _: string, callback: TransformCallback) {
+  push(events: HandEvent[]) {
+    return events.at(0)?.ApiTypeId === ApiType.EVT_DEAL && events.at(-1)?.ApiTypeId === ApiType.EVT_HAND_RESULT
+      ? super.push(events)
+      : false
+  }
+  _transform(event: ApiResponse, _: string, callback: TransformCallback<HandEvent[]>) {
     try {
+      /** レコード再構築用生ログ: 同期的に利用しないため Promise 投げっぱなし */
+      this.service.db.apiResponses.add(event)
       switch (event.ApiTypeId) {
+        /** セッションイベント */
+        case ApiType.REQ_ENTRY:
+          this.service.session.reset()
+          this.service.session.id = event.Id
+          this.service.session.battleType = event.BattleType
+          break
+        case ApiType.EVT_DETAILS:
+          this.service.session.name = event.Name
+          break
+        case ApiType.EVT_RESULT:
+        case ApiType.EVT_LEAVE_COMPLETED:
+          this.events = []
+          this.pause() /** HUD表示/非表示制御 */
+          break
+        /** ハンドイベント */
         case ApiType.EVT_DEAL:
-          this.handState.reset()
-          this.handState.seatUserIds = event.SeatUserIds
-          /** [SB, BB, UTG, HJ, CO, BTN] */
-          this.handState.positionUserIds = PokerChaseService.rotateElementFromIndex(event.SeatUserIds, event.Game.BigBlindSeat + 1).reverse()
-          this.handState.phases.push({
-            phase: event.Progress.Phase,
-            seatUserIds: event.SeatUserIds,
-            communityCards: [],
-          })
-          this.handState.bigBlind = event.Game.BigBlind
-          this.handState.smallBlind = event.Game.SmallBlind
+          this.events = []
+          this.resume()
+          this.events.push(event)
+          if (event.Player?.SeatIndex)
+            this.service.playerId = event.SeatUserIds.at(event.Player.SeatIndex)
           break
         case ApiType.EVT_DEAL_ROUND:
-          this.handState.phases.push({
-            phase: event.Progress.Phase,
-            seatUserIds: [event.Player, ...event.OtherPlayers]
-              .filter(({ BetStatus }) => BetStatus === BetStatusType.BATABLE)
-              .sort((a, b) => a.SeatIndex - b.SeatIndex)
-              .map(({ SeatIndex }) => this.handState.seatUserIds.at(SeatIndex)!),
-            communityCards: [...this.handState.phases.at(-1)?.communityCards ?? [], ...event.CommunityCards],
-          })
-          break
         case ApiType.EVT_ACTION:
-          /** `event.Progress.Phase`: 正しくない */
-          const phase = this.handState.phases.at(-1)?.phase!
-          const phaseActions = this.handState.actions.filter(action => action.phase === phase)
-          const playerId = this.handState.seatUserIds[event.SeatIndex]
-          this.handState.actions.push({
-            playerId,
-            phase: phase,
-            index: this.handState.actions.length,
-            actionType: event.ActionType,
-            bet: event.BetChip,
-            pot: event.Progress.Pot,
-            sidePot: event.Progress.SidePot,
-            /** @see Position */
-            position: this.handState.positionUserIds.indexOf(playerId) - 2,
-            phaseActionIndex: phaseActions.length,
-            phasePlayerActionIndex: phaseActions.filter(action => action.playerId === playerId).length,
-            phasePrevBetCount: phaseActions.filter(action => [ActionType.BET, ActionType.RAISE, ActionType.ALL_IN].includes(action.actionType)).length + Number(event.Progress.Phase === PhaseType.PREFLOP),
-          })
+          this.events.push(event)
           break
         case ApiType.EVT_HAND_RESULT:
-          if (event.Results.length > 1) {
-            this.handState.phases.push({
-              phase: PhaseType.SHOWDOWN,
-              communityCards: [...this.handState.phases.at(-1)?.communityCards ?? [], ...event.CommunityCards],
-              seatUserIds: event.Results.map(({ UserId }) => UserId),
-            })
-          }
-          if (this.handState.isValid()) {
-            const hand: Hand = {
-              id: event.HandId,
-              approxTimestamp: event.timestamp,
-              seatUserIds: this.handState.seatUserIds,
-              winningPlayerIds: event.Results.filter(({ HandRanking }) => HandRanking === 1).map(({ UserId }) => UserId),
-              smallBlind: this.handState.smallBlind,
-              bigBlind: this.handState.bigBlind,
-              session: {
-                id: this.service.session.id,
-                battleType: this.service.session.battleType,
-                name: this.service.session.name,
-              }
-            }
-            this.push({
-              hand,
-              actions: this.handState.actions.map(action => ({ ...action, handId: event.HandId })),
-              phases: this.handState.phases.map(phase => ({ ...phase, handId: event.HandId })),
-            })
-          }
+          this.events.push(event)
+          this.push(this.events)
           break
       }
       callback()
@@ -596,6 +533,12 @@ export class AggregateEventsStream extends Transform {
       callback(error)
     }
   }
+}
+
+interface HandState {
+  hand: Hand
+  actions: Action[]
+  phases: Phase[]
 }
 
 export interface PlayerStats {
@@ -606,34 +549,129 @@ export interface PlayerStats {
   threeBet?: [top: number, bottom: number]
   threeBetFold?: [top: number, bottom: number]
   wtsd?: [top: number, bottom: number]
-  wmsd?: [top: number, bottom: number]
   af?: [top: number, bottom: number]
   afq?: [top: number, bottom: number]
 }
 
-/** 非同期的: ハンドを保存し、各プレイヤーのStatsを計算する */
-class ProcessHandAsyncStream extends Transform {
+/**
+ * - Hand単位に集約した通信ログを各Entity(`Hand`,`Action[]`,`Phase[]`)に変換し、IndexedDBに保存
+ * - クエリから`PlayerStats[]`を生成
+ */
+export class EventToStatsStream extends Transform {
   private service: PokerChaseService
   constructor(service: PokerChaseService) {
     super({ objectMode: true })
     this.service = service
   }
-  async _transform({ hand, actions, phases }: { hand: Hand, actions: Action[], phases: Phase[] }, _: string, callback: TransformCallback) {
-    await this.service.db.transaction('rw', this.service.db.hands, this.service.db.phases, this.service.db.actions, async () => {
-      try {
+  push(stats: PlayerStats[]) {
+    return super.push(stats)
+  }
+  /** @todo Read/Write 処理を分割 */
+  _transform(events: HandEvent[], _: string, callback: TransformCallback<PlayerStats[]>) {
+    try {
+      const { hand, actions, phases } = this.toHandState(events)
+      let stats: PlayerStats[] = []
+      /**
+       * `rw!`, `rw?` は Service Worker で機能しない??
+       * @see https://dexie.org/docs/Dexie/Dexie.transaction()
+       */
+      this.service.db.transaction('rw', this.service.db.hands, this.service.db.phases, this.service.db.actions, async () => {
         await Promise.all([
           this.service.db.hands.put(hand),
           this.service.db.actions.bulkPut(actions),
           this.service.db.phases.bulkPut(phases)
         ])
-        const stats = this.service.playerId
+        stats = this.service.playerId
+          /** 表示位置のため、自身を起点にSort */
           ? await this.calcStats(PokerChaseService.rotateElementFromIndex(hand.seatUserIds, hand.seatUserIds.indexOf(this.service.playerId)))
           : await this.calcStats(hand.seatUserIds)
-        callback(null, stats)
-      } catch (error: any) {
-        callback(error)
+        // callback(null, stats) /** Anti-Pattern: callback が複数回呼ばれる場合がある?? */
+      })
+        .then(() => callback(null, stats))
+    } catch (error: any) {
+      callback(error)
+    }
+  }
+  private toHandState = (events: HandEvent[]): HandState => {
+    const positionUserIds = []
+    const handState: HandState = {
+      hand: {
+        session: {
+          id: this.service.session.id,
+          battleType: this.service.session.battleType,
+          name: this.service.session.name
+        },
+        id: NaN,
+        approxTimestamp: NaN,
+        seatUserIds: [],
+        winningPlayerIds: [],
+        bigBlind: NaN,
+        smallBlind: NaN,
+      },
+      actions: [],
+      phases: [],
+    }
+    for (const event of events) {
+      switch (event.ApiTypeId) {
+        case ApiType.EVT_DEAL:
+          handState.hand.seatUserIds = event.SeatUserIds
+          /** [SB, BB, UTG, HJ, CO, BTN] */
+          positionUserIds.push(...PokerChaseService.rotateElementFromIndex(event.SeatUserIds, event.Game.BigBlindSeat + 1).reverse())
+          handState.phases.push({
+            phase: event.Progress.Phase,
+            seatUserIds: event.SeatUserIds,
+            communityCards: [],
+          })
+          handState.hand.bigBlind = event.Game.BigBlind
+          handState.hand.smallBlind = event.Game.SmallBlind
+          break
+        case ApiType.EVT_DEAL_ROUND:
+          handState.phases.push({
+            phase: event.Progress.Phase,
+            seatUserIds: [event.Player, ...event.OtherPlayers]
+              .filter(({ BetStatus }) => BetStatus === BetStatusType.BATABLE)
+              .sort((a, b) => a.SeatIndex - b.SeatIndex)
+              .map(({ SeatIndex }) => handState.hand.seatUserIds.at(SeatIndex)!),
+            communityCards: [...handState.phases.at(-1)?.communityCards ?? [], ...event.CommunityCards],
+          })
+          break
+        case ApiType.EVT_ACTION:
+          /** `event.Progress.Phase`: 不正確 */
+          const phase = handState.phases.at(-1)?.phase!
+          const phaseActions = handState.actions.filter(action => action.phase === phase)
+          const playerId = handState.hand.seatUserIds[event.SeatIndex]
+          handState.actions.push({
+            playerId,
+            phase: phase,
+            index: handState.actions.length,
+            actionType: event.ActionType,
+            bet: event.BetChip,
+            pot: event.Progress.Pot,
+            sidePot: event.Progress.SidePot,
+            /** @see Position */
+            position: positionUserIds.indexOf(playerId) - 2,
+            phaseActionIndex: phaseActions.length,
+            phasePlayerActionIndex: phaseActions.filter(action => action.playerId === playerId).length,
+            phasePrevBetCount: phaseActions.filter(action => [ActionType.BET, ActionType.RAISE, ActionType.ALL_IN].includes(action.actionType)).length + Number(event.Progress.Phase === PhaseType.PREFLOP),
+          })
+          break
+        case ApiType.EVT_HAND_RESULT:
+          if (event.Results.length > 1) {
+            handState.phases.push({
+              phase: PhaseType.SHOWDOWN,
+              communityCards: [...handState.phases.at(-1)?.communityCards ?? [], ...event.CommunityCards],
+              seatUserIds: event.Results.map(({ UserId }) => UserId),
+            })
+          }
+          handState.hand.id = event.HandId
+          handState.hand.winningPlayerIds = event.Results.filter(({ HandRanking }) => HandRanking === 1).map(({ UserId }) => UserId)
+          handState.hand.approxTimestamp = event.timestamp
+          handState.actions = handState.actions.map(action => ({ ...action, handId: event.HandId }))
+          handState.phases = handState.phases.map(phase => ({ ...phase, handId: event.HandId }))
+          break
       }
-    })
+    }
+    return handState
   }
   /** @see https://www.pokertracker.com/guides/PT3/general/statistical-reference-guide */
   private calcStats = async (seatUserIds: number[]): Promise<PlayerStats[]> => {
@@ -650,7 +688,6 @@ class ProcessHandAsyncStream extends Transform {
         threeBetFoldHands,
         sawFlopHands,
         wentToShowdownHands,
-        wonMoneyAtShowdownHands,
         betRaiseActions,
         callActions,
         exceptCheckActions
@@ -664,22 +701,20 @@ class ProcessHandAsyncStream extends Transform {
         this.service.db.actions.where({ playerId, phase: PhaseType.PREFLOP, phasePrevBetCount: 3, actionType: ActionType.FOLD }).count(),
         this.service.db.phases.where({ seatUserIds: playerId, phase: PhaseType.FLOP }).count(),
         this.service.db.phases.where({ seatUserIds: playerId, phase: PhaseType.SHOWDOWN }).count(),
-        this.service.db.hands.where({ winningPlayerIds: playerId }).count(),
         this.service.db.actions.where({ playerId }).and(({ actionType }) => [ActionType.BET, ActionType.RAISE, ActionType.ALL_IN].includes(actionType)).count(),
         this.service.db.actions.where({ playerId }).and(({ actionType }) => actionType === ActionType.CALL).count(),
         this.service.db.actions.where({ playerId }).and(({ actionType }) => actionType !== ActionType.CHECK).count()
       ])
       return {
-        playerId,
         hands,
         vpip: [voluntarilyHands, hands],
         pfr: [pfrHands, hands],
         threeBet: [threeBetHands, threeBetChanceHands],
         threeBetFold: [threeBetFoldHands, threeBetFoldChanceHands],
-        wmsd: [wonMoneyAtShowdownHands, wentToShowdownHands],
         wtsd: [wentToShowdownHands, sawFlopHands],
         af: [betRaiseActions, callActions],
-        afq: [betRaiseActions, exceptCheckActions]
+        afq: [betRaiseActions, exceptCheckActions],
+        playerId,
       }
     }))
   }
@@ -693,8 +728,8 @@ interface Session {
 }
 
 export class PokerChaseService {
-  private readonly aggregateEventsStream: AggregateEventsStream
-  private readonly processHandAsyncStream: ProcessHandAsyncStream
+  private readonly aggregateEventsForHandStream: AggregateEventsForHandStream
+  private readonly eventToStatsStream: EventToStatsStream
   static readonly POKER_CHASE_SERVICE_EVENT = 'PokerChaseServiceEvent'
   readonly db
   readonly stream
@@ -712,41 +747,18 @@ export class PokerChaseService {
   constructor({ db, playerId }: { db: PokerChaseDB, playerId?: number }) {
     this.db = db
     this.playerId = playerId
-    this.aggregateEventsStream = new AggregateEventsStream(this)
-    this.processHandAsyncStream = new ProcessHandAsyncStream(this)
-    this.stream = this.aggregateEventsStream.pipe<ProcessHandAsyncStream>(this.processHandAsyncStream)
+    this.aggregateEventsForHandStream = new AggregateEventsForHandStream(this)
+    this.eventToStatsStream = new EventToStatsStream(this)
+    this.stream = this.aggregateEventsForHandStream
+      .pipe<EventToStatsStream>(this.eventToStatsStream)
   }
   readonly queueEvent = (event: ApiResponse) => {
     this.eventLogger(event)
-    this.db.apiResponses.add(event) /** 同期的に利用しないため投げっぱなし */
-    switch (event.ApiTypeId) {
-      case ApiType.REQ_ENTRY:
-        this.session.reset()
-        this.session.id = event.Id
-        this.session.battleType = event.BattleType
-        /** HUD表示/非表示制御 */
-        this.stream.pause()
-        break
-      case ApiType.EVT_DETAILS:
-        this.session.name = event.Name
-        this.stream.pause()
-        break
-      case ApiType.EVT_PLAYER_SEATED:
-      case ApiType.EVT_RESULT:
-      case ApiType.EVT_LEAVE_COMPLETED:
-        this.stream.pause()
-        break
-      case ApiType.EVT_DEAL:
-        if (event.Player?.SeatIndex)
-          this.playerId = event.SeatUserIds.at(event.Player.SeatIndex)
-      case ApiType.EVT_DEAL_ROUND:
-      case ApiType.EVT_ACTION:
-      case ApiType.EVT_HAND_RESULT:
-        this.stream.resume()
-        this.aggregateEventsStream.write(event)
-        break
-    }
+    this.aggregateEventsForHandStream.write(event)
   }
+  readonly refreshDatabase = () =>
+    // this.db.apiResponses.each(this.queueEvent) /** Anti-Pattern: 内部的に Read Transaction が張られていて保存処理と競合する */
+    this.db.apiResponses.toArray().then(events => events.forEach(this.queueEvent))
   private eventLogger = (event: ApiResponse) => {
     const timestamp = new Date().toISOString().slice(11, 19)
     ApiType[event.ApiTypeId]

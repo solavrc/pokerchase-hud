@@ -25,22 +25,26 @@ self.db = db
 self.service = service
 
 /** 拡張更新時: データ再構築 */
-chrome.runtime?.onInstalled.addListener(async details => {
-  if (details.reason === 'update') {
-    const apiResponses = await db.apiResponses.toArray()
-    apiResponses.forEach(message => service.queueEvent(message))
-  }
+chrome.runtime?.onInstalled?.addListener(details => {
+  if (details.reason === 'update')
+    service.refreshDatabase()
 })
+
+let tabId: number | undefined
 /** from `content_script.ts` */
-chrome.runtime?.onMessage.addListener((message: ApiResponse | PlayerStats[], sender, _sendResponse) => {
+chrome.runtime?.onMessage?.addListener((message: ApiResponse | PlayerStats[], sender, _sendResponse) => {
   if (sender.origin === origin && !Array.isArray(message) && message.ApiTypeId) {
+    tabId = sender.tab?.id
     service.queueEvent(message)
     /** @todo send report */
   }
 })
 /** to `content_script.ts` */
 const sendMessageToGameTab = (hand: PlayerStats[]) =>
-  chrome.tabs.query({ url: `${origin}/play/index.html`, currentWindow: true, active: true }, tabs =>
-    tabs.forEach(({ id }) => id && chrome.tabs.sendMessage<PlayerStats[]>(id, hand)))
+  tabId && chrome.tabs.sendMessage<PlayerStats[]>(tabId, hand)
+/**
+ * Uncaught (in promise) Error: Could not establish connection. Receiving end does not exist.
+ * @see https://stackoverflow.com/questions/53939205/how-to-avoid-extension-context-invalidated-errors-when-messaging-after-an-exte
+ */
 service.stream.on('data', (hand: PlayerStats[]) => sendMessageToGameTab(hand))
 service.stream.on('pause', () => sendMessageToGameTab([])) /** HUD非表示 */

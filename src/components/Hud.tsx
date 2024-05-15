@@ -32,7 +32,7 @@ const seatStyles: CSSProperties[] = [
 ]
 
 const Hud = (props: { actualSeatIndex: number, stat: PlayerStats }) => {
-  const colSize = 2
+  const colSize = 3
   const chunks = Array.from({ length: Math.ceil(Object.entries(props.stat).length / colSize) }, (_, i) =>
     Object.entries(props.stat).slice(i * colSize, i * colSize + colSize))
   const valueHandler = (value: number | [number, number]) => {

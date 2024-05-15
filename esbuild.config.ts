@@ -20,6 +20,7 @@ const options: BuildOptions = {
     'src/' + parse(web_accessible_resource).name + '.ts'
   ],
   format: 'esm',
+  logLevel: 'info',
   outdir: 'dist',
   platform: 'browser',
   target: ['chrome123'],
