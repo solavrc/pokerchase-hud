@@ -85,15 +85,6 @@ export enum ActionType {
   ALL_IN = 5,
 }
 
-export enum PhaseType {
-  PREFLOP = 0,
-  FLOP = 1,
-  TURN = 2,
-  RIVER = 3,
-  /** 独自追加 */
-  SHOWDOWN = 4,
-}
-
 export enum BattleType {
   SIT_AND_GO = 0,
   TOURNAMENT = 1,
@@ -109,6 +100,39 @@ export enum BetStatusType {
   ALL_IN = 3
 }
 
+export enum PhaseType {
+  PREFLOP = 0,
+  FLOP = 1,
+  TURN = 2,
+  RIVER = 3,
+  /** 独自追加 */
+  SHOWDOWN = 4,
+}
+
+/** `FOLD`したプレイヤーは`FOLD_OPEN`しない限り含まれない */
+export enum RankType {
+  ROYAL_FLUSH = 0,
+  STRAIGHT_FLUSH = 1,
+  FOUR_OF_A_KIND = 2,
+  FULL_HOUSE = 3,
+  FLUSH = 4,
+  STRAIGHT = 5,
+  THREE_OF_A_KIND = 6,
+  TWO_PAIR = 7,
+  ONE_PAIR = 8,
+  HIGH_CARD = 9,
+  NO_CALL = 10,
+  SHOWDOWN_MUCK = 11,
+  FOLD_OPEN = 12
+}
+
+export interface BlindStructure {
+  Lv: number
+  ActiveMinutes: number
+  BigBlind: number
+  Ante: number
+}
+
 export interface Chara {
   CharaId: string
   CostumeId: string
@@ -117,6 +141,11 @@ export interface Chara {
   TodayUpNum: number
   Evolution: boolean
   Stamps: Stamp[]
+}
+
+export interface EventDetail {
+  ItemId: string
+  Num: number
 }
 
 export interface Game {
@@ -130,16 +159,21 @@ export interface Game {
   BigBlindSeat: number
 }
 
-export interface OtherPlayer extends Player {
+export interface Item {
+  ItemId: string
+  Num: number
+}
+
+export interface OtherPlayer extends Omit<Player, 'HoleCards'> {
   Status: number
 }
 
 export interface Player {
   SeatIndex: number
   BetStatus: BetStatusType
-  HoleCards?: number[]
   Chip: number
   BetChip: number
+  HoleCards: [number, number]
 }
 
 export interface Progress {
@@ -165,35 +199,40 @@ export interface RankReward {
   SeasonalRanking: number
 }
 
+interface ResultBase {
+  UserId: number
+  HandRanking: number
+  Ranking: number
+  RewardChip: number
+}
+
+interface ShowDownResult extends ResultBase {
+  RankType: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
+  Hands: [number, number, number, number, number]
+  HoleCards: [number, number]
+}
+
+interface NoCallOrShowDownMuckResult extends ResultBase {
+  RankType: 10 | 11
+  Hands: never[]
+  HoleCards: never[]
+}
+
+interface FoldOpenResult extends ResultBase {
+  RankType: 12
+  Hands: never[]
+  HoleCards: [number, number]
+}
+
+export type Result =
+  | ShowDownResult
+  | NoCallOrShowDownMuckResult
+  | FoldOpenResult
+
 export interface Reward {
   Category: number
   TargetId: string
   Num: number
-}
-
-enum RankType {
-  ROYAL_FLUSH = 0,
-  STRAIGHT_FLUSH = 1,
-  FOUR_OF_A_KIND = 2,
-  FULL_HOUSE = 3,
-  FLUSH = 4,
-  STRAIGHT = 5,
-  THREE_OF_A_KIND = 6,
-  TWO_PAIR = 7,
-  ONE_PAIR = 8,
-  HIGH_CARD = 9,
-  NO_CALL = 10,
-  MUCK = 11
-}
-
-export interface Result {
-  UserId: number
-  HoleCards: [number, number] | []
-  RankType: RankType
-  Hands: [number, number, number, number, number] | []
-  HandRanking: number
-  Ranking: number
-  RewardChip: number
 }
 
 export interface Stamp {
@@ -218,206 +257,40 @@ export interface TableUser {
   SettingDecoIds: string[]
 }
 
-export interface EventDetail {
-  ItemId: string
-  Num: number
+interface ApiEventBase<T extends ApiType> {
+  ApiTypeId: T
+  timestamp?: number
 }
 
-export interface BlindStructure {
-  Lv: number
-  ActiveMinutes: number
-  BigBlind: number
-  Ante: number
-}
+export type ApiEvent<T extends ApiType = ApiType> =
+  T extends ApiType.REQ_ENTRY ? ApiEventBase<ApiType.REQ_ENTRY> & { Code: 0, BattleType: BattleType, Id: string } :
+  T extends ApiType.RES_ACTION_COMPLETED ? ApiEventBase<ApiType.RES_ACTION_COMPLETED> & { Code: 0 } :
+  T extends ApiType.REQ_CANCEL_ENTRY ? ApiEventBase<ApiType.REQ_CANCEL_ENTRY> & { Code: 0 } :
+  T extends ApiType.EVT_HAND_STARTED ? ApiEventBase<ApiType.EVT_HAND_STARTED> & { Code: 0 } :
+  T extends ApiType.EVT_TIME_REMAIN ? ApiEventBase<ApiType.EVT_TIME_REMAIN> & { Code: 0, RestExtraLimitSeconds: number, RestLimitSeconds: number } :
+  T extends ApiType.RES_STAMP_ACCEPTED ? ApiEventBase<ApiType.RES_STAMP_ACCEPTED> & { Code: 0 } :
+  T extends ApiType.REQ_FOLD_OPEN ? ApiEventBase<ApiType.REQ_FOLD_OPEN> & { Code: 0, HoleCardIndex: number, IsFoldOpen: boolean } :
+  T extends ApiType.EVT_LEAVE_COMPLETED ? ApiEventBase<ApiType.EVT_LEAVE_COMPLETED> & { Code: 0 } :
+  T extends ApiType.RES_ENTRY_CANCEL ? ApiEventBase<ApiType.RES_ENTRY_CANCEL> & { Code: 0, IsCancel: boolean } :
+  T extends ApiType.EVT_PLAYER_JOIN ? ApiEventBase<ApiType.EVT_PLAYER_JOIN> & { JoinUser: TableUser, JoinPlayer: Player } :
+  T extends ApiType.EVT_DEAL ? ApiEventBase<ApiType.EVT_DEAL> & { Game: Game, OtherPlayers: OtherPlayer[], Player?: Player, Progress: Progress, SeatUserIds: number[] } :
+  T extends ApiType.EVT_ACTION ? ApiEventBase<ApiType.EVT_ACTION> & { ActionType: ActionType, BetChip: number, Chip: number, Progress: Progress, SeatIndex: number } :
+  T extends ApiType.EVT_DEAL_ROUND ? ApiEventBase<ApiType.EVT_DEAL_ROUND> & { CommunityCards: number[], OtherPlayers: OtherPlayer[], Player: Player, Progress: Progress } :
+  T extends ApiType.EVT_HAND_RESULT ? ApiEventBase<ApiType.EVT_HAND_RESULT> & { CommunityCards: number[], DefeatStatus: number, HandId: number, OtherPlayers: OtherPlayer[], Player: Omit<Player, 'HoleCards'>, Pot: number, Results: Result[], ResultType: number, SidePot: number[] } :
+  T extends ApiType.EVT_MATCH_STARTED ? ApiEventBase<ApiType.EVT_MATCH_STARTED> :
+  T extends ApiType.EVT_DETAILS ? ApiEventBase<ApiType.EVT_DETAILS> & { BlindStructures: BlindStructure[], CoinNum: number, DefaultChip: number, IsReplay: boolean, Items: EventDetail[], LimitSeconds: number, Name: string, Name2: string } :
+  T extends ApiType.EVT_RESULT ? ApiEventBase<ApiType.EVT_RESULT> & { Charas: Chara[], Costumes: unknown[], Decos: unknown[], Emblems: unknown[], EventRewards: unknown[], IsLeave: boolean, IsRebuy: boolean, Items: Item[], Money: { FreeMoney: number, PaidMoney: number }, Ranking: number, RankReward: RankReward, Rewards: Reward[], TotalMatch: number } :
+  T extends ApiType.EVT_STAMP ? ApiEventBase<ApiType.EVT_STAMP> & { SeatIndex: number, StampId: string } :
+  T extends ApiType.EVT_HAND_COMPLETED ? ApiEventBase<ApiType.EVT_HAND_COMPLETED> & { EVTCode?: number, NotifyCode: number } :
+  T extends ApiType.EVT_PLAYER_SEATED ? ApiEventBase<ApiType.EVT_PLAYER_SEATED> & { ProcessType: number, TableUsers: TableUser[], SeatUserIds: number[], CommunityCards?: number[], Player?: Player, OtherPlayers?: OtherPlayer[], Game?: Game, Progress?: Progress } :
+  T extends ApiType.EVT_BLIND_RAISED ? ApiEventBase<ApiType.EVT_BLIND_RAISED> & { Ante: number, BigBlind: number, CurrentBlindLv: number, NextBlindUnixSeconds: number, SmallBlind: number } :
+  T extends ApiType.RES_ENTRY_COMPLETED ? ApiEventBase<ApiType.RES_ENTRY_COMPLETED> & { MatchUserNum: number } :
+  never
 
-interface ApiResponseBase<ApiTypeId extends ApiType> {
-  ApiTypeId: ApiTypeId
-  timestamp: number
-}
-/** 201 */
-interface ReqEntryResponse extends ApiResponseBase<ApiType.REQ_ENTRY> {
-  BattleType: BattleType
-  Id: string
-  Code: 0
-}
-/** 202 */
-interface ResActionCompletedResponse extends ApiResponseBase<ApiType.RES_ACTION_COMPLETED> {
-  Code: 0
-}
-/** 203 */
-interface ReqCancelEntryResponse extends ApiResponseBase<ApiType.REQ_CANCEL_ENTRY> {
-  Code: 0
-}
-/** 204 */
-interface EvtHandStartedResponse extends ApiResponseBase<ApiType.EVT_HAND_STARTED> {
-  Code: 0
-}
-/** 205 */
-interface EvtTimeRemainResponse extends ApiResponseBase<ApiType.EVT_TIME_REMAIN> {
-  Code: 0
-  RestExtraLimitSeconds: number
-  RestLimitSeconds: number
-}
-/** 206 */
-interface ResStampAcceptedResponse extends ApiResponseBase<ApiType.RES_STAMP_ACCEPTED> {
-  Code: 0
-}
-/** 210 */
-interface ReqFoldOpenResponse extends ApiResponseBase<ApiType.REQ_FOLD_OPEN> {
-  HoleCardIndex: number
-  IsFoldOpen: boolean
-}
-/** 212 */
-interface EvtLeaveCompletedResponse extends ApiResponseBase<ApiType.EVT_LEAVE_COMPLETED> {
-  Code: 0
-}
-/** 213 */
-interface ResEntryCancelResponse extends ApiResponseBase<ApiType.RES_ENTRY_CANCEL> {
-  Code: 0
-  IsCancel: boolean
-}
-/** 301 */
-interface EvtPlayerJoinResponse extends ApiResponseBase<ApiType.EVT_PLAYER_JOIN> {
-  JoinUser: TableUser
-  JoinPlayer: Player
-}
-/** 303 */
-interface EvtDealResponse extends ApiResponseBase<ApiType.EVT_DEAL> {
-  Game: Game
-  OtherPlayers: OtherPlayer[]
-  /** 観戦時は存在しない */
-  Player?: Player
-  Progress: Progress
-  SeatUserIds: number[]
-}
-/** 304 */
-interface EvtActionResponse extends ApiResponseBase<ApiType.EVT_ACTION> {
-  ActionType: ActionType
-  BetChip: number
-  Chip: number
-  Progress: Progress
-  SeatIndex: number
-}
-/** 305 */
-interface EvtDealRoundResponse extends ApiResponseBase<ApiType.EVT_DEAL_ROUND> {
-  CommunityCards: number[]
-  OtherPlayers: OtherPlayer[]
-  Player: Player
-  Progress: Progress
-}
-/** 306 */
-interface EvtHandResultResponse extends ApiResponseBase<ApiType.EVT_HAND_RESULT> {
-  /** `ALL_IN`時のみ */
-  CommunityCards: number[]
-  DefeatStatus: number
-  HandId: number
-  OtherPlayers: OtherPlayer[]
-  Player: Player
-  Pot: number
-  /** SHOWDOWN: `Results.length > 1` */
-  Results: Result[]
-  ResultType: number
-  SidePot: number[]
-}
-/** 307 */
-interface EvtMatchStartedResponse extends ApiResponseBase<ApiType.EVT_MATCH_STARTED> { }
-/** 308 */
-interface EvtDetailsResponse extends ApiResponseBase<ApiType.EVT_DETAILS> {
-  BlindStructures: BlindStructure[]
-  CoinNum: number
-  DefaultChip: number
-  IsReplay: boolean
-  Items: EventDetail[]
-  LimitSeconds: number
-  Name: string
-  Name2: string
-}
-/** 309 */
-interface EvtResultResponse extends ApiResponseBase<ApiType.EVT_RESULT> {
-  Charas: Chara[]
-  Costumes: any[]
-  Decos: any[]
-  Emblems: any[]
-  EventRewards: any[]
-  IsLeave: boolean
-  IsRebuy: boolean
-  Items: any[]
-  Money: {
-    FreeMoney: number
-    PaidMoney: number
-  }
-  Ranking: number
-  RankReward: RankReward
-  Rewards: Reward[]
-  TotalMatch: number
-}
-/** 310 */
-interface EvtStampResponse extends ApiResponseBase<ApiType.EVT_STAMP> {
-  SeatIndex: number
-  StampId: string
-}
-/** 311 */
-interface EvtHandCompletedResponse extends ApiResponseBase<ApiType.EVT_HAND_COMPLETED> {
-  EVTCode?: number
-  NotifyCode: number
-}
-/** 313 */
-interface EvtPlayerSeatedResponse extends ApiResponseBase<ApiType.EVT_PLAYER_SEATED> {
-  /** トーナメント時存在しない */
-  CommunityCards?: number[]
-  /** トーナメント時存在しない */
-  Game?: Game
-  /** トーナメント時存在しない */
-  OtherPlayers?: OtherPlayer[]
-  /** トーナメント時存在しない */
-  Player?: Player
-  ProcessType: number
-  /** トーナメント時存在しない */
-  Progress?: Progress
-  SeatUserIds: number[]
-  TableUsers: TableUser[]
-}
-/** 317 */
-interface EvtBlindRaisedResponse extends ApiResponseBase<ApiType.EVT_BLIND_RAISED> {
-  Ante: number
-  BigBlind: number
-  CurrentBlindLv: number
-  NextBlindUnixSeconds: number
-  SmallBlind: number
-}
-/** 319 */
-interface ResEntryCompletedResponse extends ApiResponseBase<ApiType.RES_ENTRY_COMPLETED> {
-  MatchUserNum: number
-}
-
-export type ApiResponse =
-  ReqEntryResponse |
-  ResActionCompletedResponse |
-  ReqCancelEntryResponse |
-  EvtHandStartedResponse |
-  EvtTimeRemainResponse |
-  ResStampAcceptedResponse |
-  ReqFoldOpenResponse |
-  EvtLeaveCompletedResponse |
-  ResEntryCancelResponse |
-  EvtPlayerJoinResponse |
-  EvtDealResponse |
-  EvtActionResponse |
-  EvtDealRoundResponse |
-  EvtHandResultResponse |
-  EvtMatchStartedResponse |
-  EvtDetailsResponse |
-  EvtResultResponse |
-  EvtStampResponse |
-  EvtHandCompletedResponse |
-  EvtPlayerSeatedResponse |
-  EvtBlindRaisedResponse |
-  ResEntryCompletedResponse
-
-interface Hand {
+export interface Hand {
   /** `EVT_HAND_RESULT`まで未確定 */
   id: number
-  approxTimestamp: number
+  approxTimestamp?: number
   seatUserIds: number[]
   winningPlayerIds: number[]
   smallBlind: number
@@ -425,14 +298,14 @@ interface Hand {
   session: Omit<Session, 'reset'>
 }
 
-interface Phase {
+export interface Phase {
   handId?: number
   phase: PhaseType
   seatUserIds: number[]
   communityCards: number[]
 }
 
-enum Position {
+export enum Position {
   BB = -2,
   SB = -1,
   BTN = 0,
@@ -441,7 +314,7 @@ enum Position {
   UTG = 3,
 }
 
-interface Action {
+export interface Action {
   handId?: number
   index: number
   playerId: number
@@ -457,15 +330,15 @@ interface Action {
 }
 
 export class PokerChaseDB extends Dexie {
-  apiResponses!: Table<ApiResponse, number>
+  apiEvents!: Table<ApiEvent, number>
   hands!: Table<Hand, number>
   phases!: Table<Phase, number>
   actions!: Table<Action, number>
-  constructor(indexedDB?: IDBFactory, iDBKeyRange?: typeof IDBKeyRange) {
+  constructor(indexedDB: IDBFactory, iDBKeyRange: typeof IDBKeyRange) {
     super('PokerChaseDB', { indexedDB, IDBKeyRange: iDBKeyRange })
     this.version(1).stores({
       /** @see https://dexie.org/docs/Version/Version.stores() */
-      apiResponses: 'timestamp,ApiTypeId',
+      apiEvents: 'timestamp,ApiTypeId',
       hands: 'id,*seatUserIds,*winningPlayerIds',
       phases: '[handId+phase],handId,*seatUserIds,phase',
       actions: '[handId+index],handId,playerId,phase,actionType,phasePlayerActionIndex,phasePrevBetCount',
@@ -473,29 +346,32 @@ export class PokerChaseDB extends Dexie {
   }
 }
 
+type ApiHandEvent = ApiEvent<ApiType.EVT_DEAL | ApiType.EVT_ACTION | ApiType.EVT_DEAL_ROUND | ApiType.EVT_HAND_RESULT>
 type TransformCallback<T> = (error?: Error | null, data?: T) => void
-type HandEvent = EvtDealResponse | EvtDealRoundResponse | EvtActionResponse | EvtHandResultResponse
 
 /**
- * - 通信ログを Hand 単位に集約
- * - 同期的実行(ログ順序を保証)
+ * `ApiEvent`をHand単位で集約
+ * - Hand: `ApiType.EVT_DEAL` ~ `ApiType.EVT_HAND_RESULT`
+ * - ログ順序を保証するため同期的実行
+ * @input `ApiEvent[]` (n times)
+ * @output `ApiHandEvent[]` (1 time)
  */
 export class AggregateEventsForHandStream extends Transform {
   private service: PokerChaseService
-  private events: HandEvent[] = []
+  private events: ApiHandEvent[] = []
   constructor(service: PokerChaseService) {
     super({ objectMode: true })
     this.service = service
   }
-  push(events: HandEvent[]) {
-    return events.at(0)?.ApiTypeId === ApiType.EVT_DEAL && events.at(-1)?.ApiTypeId === ApiType.EVT_HAND_RESULT
+  push(events: ApiHandEvent[]) {
+    return events[0].ApiTypeId === ApiType.EVT_DEAL && events[events.length - 1].ApiTypeId === ApiType.EVT_HAND_RESULT
       ? super.push(events)
       : false
   }
-  _transform(event: ApiResponse, _: string, callback: TransformCallback<HandEvent[]>) {
+  _transform(event: ApiEvent, _: string, callback: TransformCallback<ApiHandEvent[]>) {
     try {
       /** レコード再構築用生ログ: 同期的に利用しないため Promise 投げっぱなし */
-      this.service.db.apiResponses.add(event)
+      this.service.db.apiEvents.add(event)
       switch (event.ApiTypeId) {
         /** セッションイベント */
         case ApiType.REQ_ENTRY:
@@ -513,11 +389,12 @@ export class AggregateEventsForHandStream extends Transform {
           break
         /** ハンドイベント */
         case ApiType.EVT_DEAL:
+          this.service.playerId = event.Player?.SeatIndex
+            ? event.SeatUserIds.at(event.Player.SeatIndex)
+            : undefined
           this.events = []
           this.resume()
           this.events.push(event)
-          if (event.Player?.SeatIndex)
-            this.service.playerId = event.SeatUserIds.at(event.Player.SeatIndex)
           break
         case ApiType.EVT_DEAL_ROUND:
         case ApiType.EVT_ACTION:
@@ -554,10 +431,13 @@ export interface PlayerStats {
 }
 
 /**
- * - Hand単位に集約した通信ログを各Entity(`Hand`,`Action[]`,`Phase[]`)に変換し、IndexedDBに保存
- * - クエリから`PlayerStats[]`を生成
+ * - Hand単位に集約された`ApiEvent`を各Entity(`Hand`,`Action[]`,`Phase[]`)に変換
+ * - 各EntityをIndexedDBに保存
+ * - IndexedDBをクエリして`PlayerStats`を生成
+ * @input `ApiHandEvent[]`
+ * @output `PlayerStats[]`
  */
-export class EventToStatsStream extends Transform {
+export class HandEventToPlayerStatsStream extends Transform {
   private service: PokerChaseService
   constructor(service: PokerChaseService) {
     super({ objectMode: true })
@@ -567,7 +447,7 @@ export class EventToStatsStream extends Transform {
     return super.push(stats)
   }
   /** @todo Read/Write 処理を分割 */
-  _transform(events: HandEvent[], _: string, callback: TransformCallback<PlayerStats[]>) {
+  _transform(events: ApiHandEvent[], _: string, callback: TransformCallback<PlayerStats[]>) {
     try {
       const { hand, actions, phases } = this.toHandState(events)
       let stats: PlayerStats[] = []
@@ -592,7 +472,7 @@ export class EventToStatsStream extends Transform {
       callback(error)
     }
   }
-  private toHandState = (events: HandEvent[]): HandState => {
+  private toHandState = (events: ApiHandEvent[]): HandState => {
     const positionUserIds = []
     const handState: HandState = {
       hand: {
@@ -632,12 +512,12 @@ export class EventToStatsStream extends Transform {
               .filter(({ BetStatus }) => BetStatus === BetStatusType.BATABLE)
               .sort((a, b) => a.SeatIndex - b.SeatIndex)
               .map(({ SeatIndex }) => handState.hand.seatUserIds.at(SeatIndex)!),
-            communityCards: [...handState.phases.at(-1)?.communityCards ?? [], ...event.CommunityCards],
+            communityCards: [...handState.phases.at(-1)!.communityCards, ...event.CommunityCards],
           })
           break
         case ApiType.EVT_ACTION:
           /** `event.Progress.Phase`: 不正確 */
-          const phase = handState.phases.at(-1)?.phase!
+          const phase = handState.phases.at(-1)!.phase
           const phaseActions = handState.actions.filter(action => action.phase === phase)
           const playerId = handState.hand.seatUserIds[event.SeatIndex]
           handState.actions.push({
@@ -659,7 +539,7 @@ export class EventToStatsStream extends Transform {
           if (event.Results.length > 1) {
             handState.phases.push({
               phase: PhaseType.SHOWDOWN,
-              communityCards: [...handState.phases.at(-1)?.communityCards ?? [], ...event.CommunityCards],
+              communityCards: [...handState.phases.at(-1)!.communityCards, ...event.CommunityCards],
               seatUserIds: event.Results.map(({ UserId }) => UserId),
             })
           }
@@ -729,7 +609,7 @@ interface Session {
 
 export class PokerChaseService {
   private readonly aggregateEventsForHandStream: AggregateEventsForHandStream
-  private readonly eventToStatsStream: EventToStatsStream
+  private readonly handEventToPlayerStatsStream: HandEventToPlayerStatsStream
   static readonly POKER_CHASE_SERVICE_EVENT = 'PokerChaseServiceEvent'
   readonly db
   readonly stream
@@ -748,18 +628,18 @@ export class PokerChaseService {
     this.db = db
     this.playerId = playerId
     this.aggregateEventsForHandStream = new AggregateEventsForHandStream(this)
-    this.eventToStatsStream = new EventToStatsStream(this)
+    this.handEventToPlayerStatsStream = new HandEventToPlayerStatsStream(this)
     this.stream = this.aggregateEventsForHandStream
-      .pipe<EventToStatsStream>(this.eventToStatsStream)
+      .pipe<HandEventToPlayerStatsStream>(this.handEventToPlayerStatsStream)
   }
-  readonly queueEvent = (event: ApiResponse) => {
+  readonly queueEvent = (event: ApiEvent) => {
     this.eventLogger(event)
     this.aggregateEventsForHandStream.write(event)
   }
   readonly refreshDatabase = () =>
-    // this.db.apiResponses.each(this.queueEvent) /** Anti-Pattern: 内部的に Read Transaction が張られていて保存処理と競合する */
-    this.db.apiResponses.toArray().then(events => events.forEach(this.queueEvent))
-  private eventLogger = (event: ApiResponse) => {
+    // this.db.apiEvents.each(this.queueEvent) /** Anti-Pattern: 内部的に Read Transaction が張られていて保存処理と競合する */
+    this.db.apiEvents.toArray().then(events => events.forEach(this.queueEvent))
+  private eventLogger = (event: ApiEvent) => {
     const timestamp = new Date().toISOString().slice(11, 19)
     ApiType[event.ApiTypeId]
       ? console.debug(`[${timestamp}]`, event.ApiTypeId, ApiType[event.ApiTypeId], event)

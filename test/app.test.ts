@@ -1,7 +1,7 @@
-import { ApiResponse, PlayerStats, PokerChaseDB, PokerChaseService } from '../src/app'
+import { ApiEvent, PlayerStats, PokerChaseDB, PokerChaseService } from '../src/app'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 
-const event_timeline: ApiResponse[] = [
+const event_timeline: ApiEvent[] = [
   { "timestamp": 0, "ApiTypeId": 201, "Code": 0, "BattleType": 0, "Id": "new_stage007_010" },
   { "timestamp": 1, "ApiTypeId": 319, "MatchUserNum": 6 },
   { "timestamp": 2, "ApiTypeId": 307 },

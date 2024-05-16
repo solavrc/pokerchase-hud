@@ -3,7 +3,7 @@
  * @see https://developer.chrome.com/docs/extensions/reference/manifest/content-scripts?hl=ja
  * @see https://developer.mozilla.org/ja/docs/Mozilla/Add-ons/WebExtensions/manifest.json/content_scripts
  */
-import { ApiResponse, PokerChaseService, PlayerStats } from './app'
+import { ApiEvent, PokerChaseService, PlayerStats } from './app'
 import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { origin } from './background'
@@ -18,11 +18,11 @@ declare global {
 }
 
 /** to `background.ts` */
-window.addEventListener('message', (event: MessageEvent<ApiResponse>) => {
+window.addEventListener('message', (event: MessageEvent<ApiEvent>) => {
   /** @see https://developer.mozilla.org/ja/docs/Web/API/Window/postMessage#%E3%82%BB%E3%82%AD%E3%83%A5%E3%83%AA%E3%83%86%E3%82%A3%E3%81%AE%E8%80%83%E6%85%AE%E4%BA%8B%E9%A0%85 */
   if (event.source === window && event.origin === origin && event.data.ApiTypeId) {
     try {
-      chrome.runtime.sendMessage<ApiResponse>(event.data)
+      chrome.runtime.sendMessage<ApiEvent>(event.data)
     } catch (error: unknown) {
       console.error(error)
       /** not work in `web_accessible_resource` */
@@ -32,7 +32,7 @@ window.addEventListener('message', (event: MessageEvent<ApiResponse>) => {
   }
 })
 /** from `background.ts` to `App.ts` */
-chrome.runtime?.onMessage?.addListener((message: ApiResponse | PlayerStats[], sender) => {
+chrome.runtime?.onMessage?.addListener((message: ApiEvent | PlayerStats[], sender) => {
   /** 拡張機能ID */
   if (sender.id === chrome.runtime.id && Array.isArray(message))
     window.dispatchEvent(new CustomEvent(PokerChaseService.POKER_CHASE_SERVICE_EVENT, { detail: message }))

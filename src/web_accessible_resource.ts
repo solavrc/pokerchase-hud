@@ -5,7 +5,7 @@
  */
 import { decode } from '@msgpack/msgpack'
 import { origin } from './background'
-import { ApiResponse } from './app'
+import { ApiEvent } from './app'
 
 const OriginalWebSocket = window.WebSocket
 
@@ -13,7 +13,7 @@ function createWebSocket(...args: ConstructorParameters<typeof WebSocket>): WebS
   const instance: WebSocket = new OriginalWebSocket(...args)
   instance.addEventListener('message', ({ data }) => {
     if (data instanceof ArrayBuffer) {
-      const event = decode(data) as ApiResponse
+      const event = decode(data) as ApiEvent
       window.postMessage({ ...event, timestamp: Date.now() }, origin) /** to `content_script` */
     }
   })

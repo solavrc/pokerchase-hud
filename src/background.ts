@@ -4,7 +4,7 @@
  * @see https://developer.chrome.com/docs/extensions/reference/api/storage
  * @see https://zenn.dev/dotdotdot/articles/b123e67552fe3c
  */
-import { ApiResponse, PokerChaseDB, PokerChaseService, PlayerStats } from './app'
+import { ApiEvent, PokerChaseDB, PokerChaseService, PlayerStats } from './app'
 import { content_scripts } from '../manifest.json'
 import process from 'process'
 
@@ -32,7 +32,7 @@ chrome.runtime?.onInstalled?.addListener(details => {
 
 let tabId: number | undefined
 /** from `content_script.ts` */
-chrome.runtime?.onMessage?.addListener((message: ApiResponse | PlayerStats[], sender, _sendResponse) => {
+chrome.runtime?.onMessage?.addListener((message: ApiEvent | PlayerStats[], sender, _sendResponse) => {
   if (sender.origin === origin && !Array.isArray(message) && message.ApiTypeId) {
     tabId = sender.tab?.id
     service.queueEvent(message)
