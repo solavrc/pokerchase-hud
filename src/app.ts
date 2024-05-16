@@ -71,6 +71,8 @@ export enum ApiType {
   EVT_HAND_COMPLETED = 311,
   /** プレイヤー着席: { "ApiTypeId": 313, "ProcessType": 0, "TableUsers": [{ "UserId": 583654032, "UserName": "シュレディンガー", "FavoriteCharaId": "nj_chara0002", "CostumeId": "nj_costume00022", "EmblemId": "emblem0003", "Rank": { "RankId": "legend", "RankName": "レジェンド", "RankLvId": "legend", "RankLvName": "レジェンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0001", "fn_ta_deco0007", "fn_t_deco0005", "b_deco0001", "f_deco0001", "eal_deco0002", "esw_deco0007"] }, { "UserId": 561384657, "UserName": "sola", "FavoriteCharaId": "chara0010", "CostumeId": "costume00101", "EmblemId": "emblem0001", "Rank": { "RankId": "diamond", "RankName": "ダイヤモンド", "RankLvId": "diamond", "RankLvName": "ダイヤモンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0001", "ta_deco0001", "t_deco0009", "b_deco0001", "f_deco0001", "eal_deco0001", "esw_deco0001"] }, { "UserId": 750532695, "UserName": "ちいまう", "FavoriteCharaId": "chara0022", "CostumeId": "costume00221", "EmblemId": "emblem0001", "Rank": { "RankId": "legend", "RankName": "レジェンド", "RankLvId": "legend", "RankLvName": "レジェンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0014", "ta_deco0001", "t_deco0012", "b_deco0001", "f_deco0001", "eal_deco0001", "esw_deco0006"] }, { "UserId": 172432670, "UserName": "ラロムジ", "FavoriteCharaId": "chara0001", "CostumeId": "costume00012", "EmblemId": "emblem0001", "Rank": { "RankId": "legend", "RankName": "レジェンド", "RankLvId": "legend", "RankLvName": "レジェンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0001", "ta_deco0001", "t_deco0001", "b_deco0001", "f_deco0001", "eal_deco0001", "esw_deco0001"] }, { "UserId": 575402650, "UserName": "夜菊0721", "FavoriteCharaId": "chara0021", "CostumeId": "costume00212", "EmblemId": "emblem0001", "Rank": { "RankId": "legend", "RankName": "レジェンド", "RankLvId": "legend", "RankLvName": "レジェンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0069", "ta_deco0055", "t_deco0069", "bg_deco0006", "f_deco0001", "eal_deco0007", "esw_deco0001"] }, { "UserId": 619317634, "UserName": "ぽちこん", "FavoriteCharaId": "chara0009", "CostumeId": "costume00092", "EmblemId": "emblem0001", "Rank": { "RankId": "legend", "RankName": "レジェンド", "RankLvId": "legend", "RankLvName": "レジェンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0062", "ta_deco0018", "t_deco0058", "b_deco0001", "f_deco0001", "eal_deco0002", "esw_deco0001"] }], "SeatUserIds": [583654032, 619317634, 561384657, 575402650, 750532695, 172432670] } */
   EVT_PLAYER_SEATED = 313,
+  /** プライズ変動: */
+  EVT_REWARD_CHANGED = 314,
   /** ブラインドレベル上昇: { "ApiTypeId": 317, "CurrentBlindLv": 2, "NextBlindUnixSeconds": 1712648882, "Ante": 70, "SmallBlind": 140, "BigBlind": 280 } */
   EVT_BLIND_RAISED = 317,
   /** 参加申込結果: { "ApiTypeId": 319, "MatchUserNum": 6 } */
@@ -95,8 +97,9 @@ export enum BattleType {
 }
 
 export enum BetStatusType {
+  NOT_IN_PLAY = 0,
   HAND_ENDED = -1,
-  BATABLE = 1,
+  BET_ABLE = 1,
   FOLDED = 2,
   ALL_IN = 3
 }
@@ -155,9 +158,9 @@ export interface Game {
   Ante: number
   SmallBlind: number
   BigBlind: number
-  ButtonSeat: number
-  SmallBlindSeat: number
-  BigBlindSeat: number
+  ButtonSeat: 0 | 1 | 2 | 3 | 4 | 5
+  SmallBlindSeat: 0 | 1 | 2 | 3 | 4 | 5
+  BigBlindSeat: 0 | 1 | 2 | 3 | 4 | 5
 }
 
 export interface Item {
@@ -166,20 +169,24 @@ export interface Item {
 }
 
 export interface OtherPlayer extends Omit<Player, 'HoleCards'> {
-  Status: number
+  Status: 0 | 5 /** @todo 位置情報?? */
 }
 
 export interface Player {
-  SeatIndex: number
+  SeatIndex: 0 | 1 | 2 | 3 | 4 | 5
   BetStatus: BetStatusType
   Chip: number
   BetChip: number
-  HoleCards: [number, number]
+  HoleCards: [number, number] | []
+}
+
+interface JoinPlayer extends Omit<Player, 'HoleCards'> {
+  Status: 0
 }
 
 export interface Progress {
   Phase: PhaseType
-  NextActionSeat: number
+  NextActionSeat: -2 | -1 | 0 | 1 | 2 | 3 | 4 | 5
   NextActionTypes: ActionType[]
   NextExtraLimitSeconds: number
   MinRaise: number
@@ -200,10 +207,16 @@ export interface RankReward {
   SeasonalRanking: number
 }
 
+export interface RankingReward {
+  HighRanking: number
+  LowRanking: number
+  Rewards: Reward[]
+}
+
 interface ResultBase {
   UserId: number
-  HandRanking: number
-  Ranking: number
+  HandRanking: -1 | 1 | 2 | 3 | 4 | 5 | 6
+  Ranking: -2 | -1 | 1 | 2 | 3 | 4 | 5 | 6
   RewardChip: number
 }
 
@@ -236,6 +249,12 @@ export interface Reward {
   Num: number
 }
 
+export interface RingReward {
+  ResultNum: number
+  Ranking: number
+  Score: number
+}
+
 export interface Stamp {
   StampId: string
   IsRelease: boolean
@@ -248,10 +267,10 @@ export interface TableUser {
   CostumeId: string
   EmblemId: string
   Rank: {
-    RankId: string
-    RankName: string
-    RankLvId: string
-    RankLvName: string
+    RankId: 'bronze' | 'silver' | 'gold' | 'platinum' | 'diamond' | 'legend'
+    RankName: 'ブロンズ' | 'シルバー' | 'ゴールド' | 'プラチナ' | 'ダイヤモンド' | 'レジェンド'
+    RankLvId: 'bronze' | 'silver' | 'gold' | 'platinum' | 'diamond' | 'legend'
+    RankLvName: 'ブロンズ' | 'シルバー' | 'ゴールド' | 'プラチナ' | 'ダイヤモンド' | 'レジェンド'
   }
   IsOfficial: boolean
   IsCpu: boolean
@@ -273,17 +292,18 @@ export type ApiEvent<T extends ApiType = ApiType> =
   T extends ApiType.REQ_FOLD_OPEN ? ApiEventBase<ApiType.REQ_FOLD_OPEN> & { Code: 0, HoleCardIndex: number, IsFoldOpen: boolean } :
   T extends ApiType.EVT_LEAVE_COMPLETED ? ApiEventBase<ApiType.EVT_LEAVE_COMPLETED> & { Code: 0 } :
   T extends ApiType.RES_ENTRY_CANCEL ? ApiEventBase<ApiType.RES_ENTRY_CANCEL> & { Code: 0, IsCancel: boolean } :
-  T extends ApiType.EVT_PLAYER_JOIN ? ApiEventBase<ApiType.EVT_PLAYER_JOIN> & { JoinUser: TableUser, JoinPlayer: Player } :
-  T extends ApiType.EVT_DEAL ? ApiEventBase<ApiType.EVT_DEAL> & { Game: Game, OtherPlayers: OtherPlayer[], Player?: Player, Progress: Progress, SeatUserIds: number[] } :
+  T extends ApiType.EVT_PLAYER_JOIN ? ApiEventBase<ApiType.EVT_PLAYER_JOIN> & { JoinUser: TableUser, JoinPlayer: JoinPlayer } :
+  T extends ApiType.EVT_DEAL ? ApiEventBase<ApiType.EVT_DEAL> & { Game: Game, OtherPlayers: OtherPlayer[], Player?: Player, Progress: Progress, SeatUserIds: number[], MyRanking?: { Ranking: number, JoinNum: number, AverageChip: number, ActiveNum: number } } :
   T extends ApiType.EVT_ACTION ? ApiEventBase<ApiType.EVT_ACTION> & { ActionType: ActionType, BetChip: number, Chip: number, Progress: Progress, SeatIndex: number } :
-  T extends ApiType.EVT_DEAL_ROUND ? ApiEventBase<ApiType.EVT_DEAL_ROUND> & { CommunityCards: number[], OtherPlayers: OtherPlayer[], Player: Player, Progress: Progress } :
-  T extends ApiType.EVT_HAND_RESULT ? ApiEventBase<ApiType.EVT_HAND_RESULT> & { CommunityCards: number[], DefeatStatus: number, HandId: number, OtherPlayers: OtherPlayer[], Player: Omit<Player, 'HoleCards'>, Pot: number, Results: Result[], ResultType: number, SidePot: number[] } :
+  T extends ApiType.EVT_DEAL_ROUND ? ApiEventBase<ApiType.EVT_DEAL_ROUND> & { CommunityCards: number[], OtherPlayers: OtherPlayer[], Player?: Player, Progress: Progress } :
+  T extends ApiType.EVT_HAND_RESULT ? ApiEventBase<ApiType.EVT_HAND_RESULT> & { CommunityCards: number[], DefeatStatus: number, HandId: number, OtherPlayers: OtherPlayer[], Player?: Omit<Player, 'HoleCards'>, Pot: number, Results: Result[], ResultType: number, SidePot: number[] } :
   T extends ApiType.EVT_MATCH_STARTED ? ApiEventBase<ApiType.EVT_MATCH_STARTED> :
-  T extends ApiType.EVT_DETAILS ? ApiEventBase<ApiType.EVT_DETAILS> & { BlindStructures: BlindStructure[], CoinNum: number, DefaultChip: number, IsReplay: boolean, Items: EventDetail[], LimitSeconds: number, Name: string, Name2: string } :
-  T extends ApiType.EVT_RESULT ? ApiEventBase<ApiType.EVT_RESULT> & { Charas: Chara[], Costumes: unknown[], Decos: unknown[], Emblems: unknown[], EventRewards: unknown[], IsLeave: boolean, IsRebuy: boolean, Items: Item[], Money: { FreeMoney: number, PaidMoney: number }, Ranking: number, RankReward: RankReward, Rewards: Reward[], TotalMatch: number } :
+  T extends ApiType.EVT_DETAILS ? ApiEventBase<ApiType.EVT_DETAILS> & { BlindStructures: BlindStructure[], CoinNum: number, DefaultChip: number, IsReplay: boolean, Items: EventDetail[], LimitSeconds: number, Name: string, Name2: string, MoneyList?: unknown[], RingRule?: { MinBuyin: number, MaxBuyin: number }, TournamentRule?: { RebuyLimit: number, RebuyCostCoinNum: number, RebuyCostTicket: { ItemId: string, Num: number }, RebuyChip: number, RebuyFinishUnixSeconds: number, NextBreakUnixSeconds: number }, RankingRewards?: RankingReward[] } :
+  T extends ApiType.EVT_RESULT ? ApiEventBase<ApiType.EVT_RESULT> & { Charas: Chara[], Costumes: unknown[], Decos: unknown[], Emblems: unknown[], EventRewards: unknown[], IsLeave: boolean, IsRebuy: boolean, Items: Item[], Money: { FreeMoney: number, PaidMoney: number }, Ranking: number, RankReward?: RankReward, Rewards: Reward[], RingReward?: RingReward, TotalMatch: number } :
   T extends ApiType.EVT_STAMP ? ApiEventBase<ApiType.EVT_STAMP> & { SeatIndex: number, StampId: string } :
   T extends ApiType.EVT_HAND_COMPLETED ? ApiEventBase<ApiType.EVT_HAND_COMPLETED> & { EVTCode?: number, NotifyCode: number } :
   T extends ApiType.EVT_PLAYER_SEATED ? ApiEventBase<ApiType.EVT_PLAYER_SEATED> & { ProcessType: number, TableUsers: TableUser[], SeatUserIds: number[], CommunityCards?: number[], Player?: Player, OtherPlayers?: OtherPlayer[], Game?: Game, Progress?: Progress } :
+  T extends ApiType.EVT_REWARD_CHANGED ? ApiEventBase<ApiType.EVT_REWARD_CHANGED> & { RankingRewards: RankingReward[] } :
   T extends ApiType.EVT_BLIND_RAISED ? ApiEventBase<ApiType.EVT_BLIND_RAISED> & { Ante: number, BigBlind: number, CurrentBlindLv: number, NextBlindUnixSeconds: number, SmallBlind: number } :
   T extends ApiType.RES_ENTRY_COMPLETED ? ApiEventBase<ApiType.RES_ENTRY_COMPLETED> & { MatchUserNum: number } :
   never
@@ -509,8 +529,8 @@ export class HandEventToPlayerStatsStream extends Transform {
         case ApiType.EVT_DEAL_ROUND:
           handState.phases.push({
             phase: event.Progress.Phase,
-            seatUserIds: [event.Player, ...event.OtherPlayers]
-              .filter(({ BetStatus }) => BetStatus === BetStatusType.BATABLE)
+            seatUserIds: (event.Player ? [event.Player, ...event.OtherPlayers] : event.OtherPlayers)
+              .filter(({ BetStatus }) => BetStatus === BetStatusType.BET_ABLE)
               .sort((a, b) => a.SeatIndex - b.SeatIndex)
               .map(({ SeatIndex }) => handState.hand.seatUserIds.at(SeatIndex)!),
             communityCards: [...handState.phases.at(-1)!.communityCards, ...event.CommunityCards],
