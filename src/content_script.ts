@@ -25,16 +25,21 @@ window.addEventListener('message', (event: MessageEvent<ApiEvent>) => {
     try {
       port.postMessage(event.data)
     } catch (error: unknown) {
-      console.error(error)
-      /** not work in `web_accessible_resource` */
-      if (error instanceof Error && error.message === 'Extension context invalidated.')
-        window.location.reload()
+      if (error instanceof Error) {
+        /** not work in `web_accessible_resource` */
+        if (error.message === 'Extension context invalidated.')
+          window.location.reload()
+        else
+          console.error(error)
+      }
     }
   }
 })
 /** from `background.ts` to `App.ts` */
-port.onMessage.addListener((message: PlayerStats[]) => {
-  window.dispatchEvent(new CustomEvent(PokerChaseService.POKER_CHASE_SERVICE_EVENT, { detail: message }))
+port.onMessage.addListener((message: PlayerStats[] | string) => {
+  console.debug(message)
+  if (Array.isArray(message))
+    window.dispatchEvent(new CustomEvent(PokerChaseService.POKER_CHASE_SERVICE_EVENT, { detail: message }))
 })
 
 /** WebSocket Hook 用 <script/> を DOM に注入する */
