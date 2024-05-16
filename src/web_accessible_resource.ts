@@ -4,7 +4,7 @@
  * @see https://developer.mozilla.org/ja/docs/Mozilla/Add-ons/WebExtensions/manifest.json/web_accessible_resources
  */
 import { decode } from '@msgpack/msgpack'
-import { ApiEvent, PokerChaseService } from './app'
+import PokerChaseService, { ApiEvent } from './app'
 /** !!! DO NOT IMPORT FROM BACKGROUND, CONTENT_SCRIPTS !!! */
 
 const OriginalWebSocket = window.WebSocket

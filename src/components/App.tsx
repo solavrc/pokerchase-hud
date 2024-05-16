@@ -1,4 +1,4 @@
-import { PokerChaseService, PlayerStats } from '../app'
+import PokerChaseService, { PlayerStats } from '../app'
 import { useEffect, useState } from 'react'
 import Hud from './Hud'
 

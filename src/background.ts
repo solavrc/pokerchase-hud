@@ -4,7 +4,7 @@
  * @see https://developer.chrome.com/docs/extensions/reference/api/storage
  * @see https://zenn.dev/dotdotdot/articles/b123e67552fe3c
  */
-import { ApiEvent, PokerChaseDB, PokerChaseService, PlayerStats } from './app'
+import PokerChaseService, { ApiEvent, PokerChaseDB, PlayerStats } from './app'
 import process from 'process'
 /** !!! DO NOT IMPORT FROM CONTENT_SCRIPTS, WEB_ACCESSIBLE_RESOURCES !!! */
 

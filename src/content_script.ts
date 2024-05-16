@@ -3,7 +3,7 @@
  * @see https://developer.chrome.com/docs/extensions/reference/manifest/content-scripts?hl=ja
  * @see https://developer.mozilla.org/ja/docs/Mozilla/Add-ons/WebExtensions/manifest.json/content_scripts
  */
-import { ApiEvent, PokerChaseService, PlayerStats } from './app'
+import PokerChaseService, { ApiEvent, PlayerStats } from './app'
 import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { web_accessible_resources } from '../manifest.json'

@@ -1,4 +1,4 @@
-import { ApiEvent, PlayerStats, PokerChaseDB, PokerChaseService } from '../src/app'
+import PokerChaseService, { ApiEvent, PlayerStats, PokerChaseDB } from '../src/app'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 
 const event_timeline: ApiEvent[] = [
@@ -138,19 +138,19 @@ const event_timeline: ApiEvent[] = [
 ]
 const expected: PlayerStats[][] = [
   [
-    { playerId: 561384657, hands: 1, vpip: [1, 1], pfr: [1, 1], threeBet: [0, 0], threeBetFold: [0, 0], wtsd: [1, 0], af: [2, 0], afq: [2, 2], },
-    { playerId: 575402650, hands: 1, vpip: [0, 1], pfr: [0, 1], threeBet: [0, 1], threeBetFold: [0, 0], wtsd: [0, 0], af: [0, 0], afq: [0, 1], },
-    { playerId: 750532695, hands: 1, vpip: [0, 1], pfr: [0, 1], threeBet: [0, 1], threeBetFold: [0, 0], wtsd: [0, 0], af: [0, 0], afq: [0, 1], },
-    { playerId: 172432670, hands: 1, vpip: [1, 1], pfr: [1, 1], threeBet: [1, 1], threeBetFold: [0, 0], wtsd: [0, 0], af: [1, 0], afq: [1, 2], },
-    { playerId: 583654032, hands: 1, vpip: [0, 1], pfr: [0, 1], threeBet: [0, 0], threeBetFold: [1, 1], wtsd: [0, 0], af: [0, 0], afq: [0, 1], },
-    { playerId: 619317634, hands: 1, vpip: [1, 1], pfr: [1, 1], threeBet: [0, 0], threeBetFold: [0, 1], wtsd: [1, 0], af: [1, 0], afq: [1, 1], },
+    { playerId: 561384657, hands: 1, vpip: [1, 1], pfr: [1, 1], $3Bet: [0, 0], $3BetFold: [0, 0], wtsd: [1, 0], af: [2, 0], afq: [2, 2], },
+    { playerId: 575402650, hands: 1, vpip: [0, 1], pfr: [0, 1], $3Bet: [0, 1], $3BetFold: [0, 0], wtsd: [0, 0], af: [0, 0], afq: [0, 1], },
+    { playerId: 750532695, hands: 1, vpip: [0, 1], pfr: [0, 1], $3Bet: [0, 1], $3BetFold: [0, 0], wtsd: [0, 0], af: [0, 0], afq: [0, 1], },
+    { playerId: 172432670, hands: 1, vpip: [1, 1], pfr: [1, 1], $3Bet: [1, 1], $3BetFold: [0, 0], wtsd: [0, 0], af: [1, 0], afq: [1, 2], },
+    { playerId: 583654032, hands: 1, vpip: [0, 1], pfr: [0, 1], $3Bet: [0, 0], $3BetFold: [1, 1], wtsd: [0, 0], af: [0, 0], afq: [0, 1], },
+    { playerId: 619317634, hands: 1, vpip: [1, 1], pfr: [1, 1], $3Bet: [0, 0], $3BetFold: [0, 1], wtsd: [1, 0], af: [1, 0], afq: [1, 1], },
   ],
   [
-    { playerId: 561384657, hands: 2, vpip: [1, 2], pfr: [1, 2], threeBet: [0, 1], threeBetFold: [0, 0], wtsd: [1, 0], af: [2, 0], afq: [2, 3], },
-    { playerId: 575402650, hands: 2, vpip: [1, 2], pfr: [0, 2], threeBet: [0, 2], threeBetFold: [0, 0], wtsd: [1, 1], af: [0, 1], afq: [0, 2], },
-    { playerId: 750532695, hands: 2, vpip: [0, 2], pfr: [0, 2], threeBet: [0, 1], threeBetFold: [0, 0], wtsd: [0, 0], af: [0, 0], afq: [0, 2], },
-    { playerId: 172432670, hands: 2, vpip: [2, 2], pfr: [2, 2], threeBet: [1, 1], threeBetFold: [0, 0], wtsd: [1, 1], af: [2, 0], afq: [2, 3], },
-    { playerId: 583654032, hands: 2, vpip: [0, 2], pfr: [0, 2], threeBet: [0, 1], threeBetFold: [1, 1], wtsd: [0, 0], af: [0, 0], afq: [0, 2], },
+    { playerId: 561384657, hands: 2, vpip: [1, 2], pfr: [1, 2], $3Bet: [0, 1], $3BetFold: [0, 0], wtsd: [1, 0], af: [2, 0], afq: [2, 3], },
+    { playerId: 575402650, hands: 2, vpip: [1, 2], pfr: [0, 2], $3Bet: [0, 2], $3BetFold: [0, 0], wtsd: [1, 1], af: [0, 1], afq: [0, 2], },
+    { playerId: 750532695, hands: 2, vpip: [0, 2], pfr: [0, 2], $3Bet: [0, 1], $3BetFold: [0, 0], wtsd: [0, 0], af: [0, 0], afq: [0, 2], },
+    { playerId: 172432670, hands: 2, vpip: [2, 2], pfr: [2, 2], $3Bet: [1, 1], $3BetFold: [0, 0], wtsd: [1, 1], af: [2, 0], afq: [2, 3], },
+    { playerId: 583654032, hands: 2, vpip: [0, 2], pfr: [0, 2], $3Bet: [0, 1], $3BetFold: [1, 1], wtsd: [0, 0], af: [0, 0], afq: [0, 2], },
     { playerId: -1, },
   ],
 ]
