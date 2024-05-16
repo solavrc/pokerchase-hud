@@ -6,10 +6,10 @@
 import { ApiEvent, PokerChaseService, PlayerStats } from './app'
 import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
-import { origin } from './background'
 import { web_accessible_resources } from '../manifest.json'
 import App from './components/App'
 // import Popup from './components/Popup'
+/** !!! DO NOT IMPORT FROM BACKGROUND, WEB_ACCESSIBLE_RESOURCES !!! */
 
 declare global {
   interface WindowEventMap {
@@ -20,7 +20,7 @@ declare global {
 /** to `background.ts` */
 window.addEventListener('message', (event: MessageEvent<ApiEvent>) => {
   /** @see https://developer.mozilla.org/ja/docs/Web/API/Window/postMessage#%E3%82%BB%E3%82%AD%E3%83%A5%E3%83%AA%E3%83%86%E3%82%A3%E3%81%AE%E8%80%83%E6%85%AE%E4%BA%8B%E9%A0%85 */
-  if (event.source === window && event.origin === origin && event.data.ApiTypeId) {
+  if (event.source === window && event.origin === PokerChaseService.POKER_CHASE_ORIGIN && event.data.ApiTypeId) {
     try {
       chrome.runtime.sendMessage<ApiEvent>(event.data)
     } catch (error: unknown) {
@@ -32,7 +32,7 @@ window.addEventListener('message', (event: MessageEvent<ApiEvent>) => {
   }
 })
 /** from `background.ts` to `App.ts` */
-chrome.runtime?.onMessage?.addListener((message: ApiEvent | PlayerStats[], sender) => {
+chrome.runtime.onMessage.addListener((message: ApiEvent | PlayerStats[], sender) => {
   /** 拡張機能ID */
   if (sender.id === chrome.runtime.id && Array.isArray(message))
     window.dispatchEvent(new CustomEvent(PokerChaseService.POKER_CHASE_SERVICE_EVENT, { detail: message }))
@@ -46,7 +46,7 @@ const injectScript = (file: string, node: string) => {
   s.setAttribute('src', file)
   th.appendChild(s)
 }
-injectScript(chrome.runtime.getURL(web_accessible_resources.at(0)?.resources.at(0)!), 'body')
+injectScript(chrome.runtime.getURL(web_accessible_resources[0].resources[0]), 'body')
 
 /**
  * React DOM のエントリーポイントを作成する

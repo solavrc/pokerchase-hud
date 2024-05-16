@@ -4,8 +4,8 @@
  * @see https://developer.mozilla.org/ja/docs/Mozilla/Add-ons/WebExtensions/manifest.json/web_accessible_resources
  */
 import { decode } from '@msgpack/msgpack'
-import { origin } from './background'
-import { ApiEvent } from './app'
+import { ApiEvent, PokerChaseService } from './app'
+/** !!! DO NOT IMPORT FROM BACKGROUND, CONTENT_SCRIPTS !!! */
 
 const OriginalWebSocket = window.WebSocket
 
@@ -14,7 +14,7 @@ function createWebSocket(...args: ConstructorParameters<typeof WebSocket>): WebS
   instance.addEventListener('message', ({ data }) => {
     if (data instanceof ArrayBuffer) {
       const event = decode(data) as ApiEvent
-      window.postMessage({ ...event, timestamp: Date.now() }, origin) /** to `content_script` */
+      window.postMessage({ ...event, timestamp: Date.now() }, PokerChaseService.POKER_CHASE_ORIGIN) /** to `content_script` */
     }
   })
   return instance

@@ -5,8 +5,8 @@
  * @see https://zenn.dev/dotdotdot/articles/b123e67552fe3c
  */
 import { ApiEvent, PokerChaseDB, PokerChaseService, PlayerStats } from './app'
-import { content_scripts } from '../manifest.json'
 import process from 'process'
+/** !!! DO NOT IMPORT FROM CONTENT_SCRIPTS, WEB_ACCESSIBLE_RESOURCES !!! */
 
 declare global {
   interface Window {
@@ -16,7 +16,6 @@ declare global {
 }
 
 self.process = process
-export const { origin } = new URL(content_scripts.at(0)!.matches.at(0)!)
 
 const db = new PokerChaseDB(self.indexedDB, self.IDBKeyRange)
 const service = new PokerChaseService({ db })
@@ -25,15 +24,15 @@ self.db = db
 self.service = service
 
 /** 拡張更新時: データ再構築 */
-chrome.runtime?.onInstalled?.addListener(details => {
-  if (details.reason === 'update')
+chrome.runtime.onInstalled.addListener(details => {
+  if (details.reason === chrome.runtime.OnInstalledReason.UPDATE)
     service.refreshDatabase()
 })
 
 let tabId: number | undefined
 /** from `content_script.ts` */
-chrome.runtime?.onMessage?.addListener((message: ApiEvent | PlayerStats[], sender, _sendResponse) => {
-  if (sender.origin === origin && !Array.isArray(message) && message.ApiTypeId) {
+chrome.runtime.onMessage.addListener((message: ApiEvent | PlayerStats[], sender, _sendResponse) => {
+  if (sender.origin === PokerChaseService.POKER_CHASE_ORIGIN && !Array.isArray(message) && message.ApiTypeId) {
     tabId = sender.tab?.id
     service.queueEvent(message)
     /** @todo send report */

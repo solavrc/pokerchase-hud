@@ -1,5 +1,6 @@
 import Dexie, { type Table } from 'dexie'
 import { Transform } from 'stream'
+import { content_scripts } from '../manifest.json'
 
 /**
  * Event Lifecycle:
@@ -611,6 +612,7 @@ export class PokerChaseService {
   private readonly aggregateEventsForHandStream: AggregateEventsForHandStream
   private readonly handEventToPlayerStatsStream: HandEventToPlayerStatsStream
   static readonly POKER_CHASE_SERVICE_EVENT = 'PokerChaseServiceEvent'
+  static readonly POKER_CHASE_ORIGIN = new URL(content_scripts[0].matches[0]).origin
   readonly db
   readonly stream
   readonly session: Session = {
