@@ -28,22 +28,15 @@ chrome.runtime.onInstalled.addListener(details => {
   if (details.reason === chrome.runtime.OnInstalledReason.UPDATE)
     service.refreshDatabase()
 })
-
-let tabId: number | undefined
 /** from `content_script.ts` */
-chrome.runtime.onMessage.addListener((message: ApiEvent | PlayerStats[], sender, _sendResponse) => {
-  if (sender.origin === PokerChaseService.POKER_CHASE_ORIGIN && !Array.isArray(message) && message.ApiTypeId) {
-    tabId = sender.tab?.id
-    service.queueEvent(message)
-    /** @todo send report */
+chrome.runtime.onConnect.addListener(port => {
+  if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
+    port.onMessage.addListener((message: ApiEvent) => {
+      service.queueEvent(message)
+      /** @todo send report */
+    })
+    /** Anti-Pattern: `=> port.postMessage(hand)` Unchecked runtime.lastError: A listener indicated an asynchronous response by returning true. */
+    service.stream.on('data', (hand: PlayerStats[]) => { port.postMessage(hand) })
+    service.stream.on('pause', () => { port.postMessage([]) }) /** HUD非表示 */
   }
 })
-/** to `content_script.ts` */
-const sendMessageToGameTab = (hand: PlayerStats[]) =>
-  tabId && chrome.tabs.sendMessage<PlayerStats[]>(tabId, hand)
-/**
- * Uncaught (in promise) Error: Could not establish connection. Receiving end does not exist.
- * @see https://stackoverflow.com/questions/53939205/how-to-avoid-extension-context-invalidated-errors-when-messaging-after-an-exte
- */
-service.stream.on('data', (hand: PlayerStats[]) => sendMessageToGameTab(hand))
-service.stream.on('pause', () => sendMessageToGameTab([])) /** HUD非表示 */

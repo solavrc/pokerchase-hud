@@ -17,12 +17,13 @@ declare global {
   }
 }
 
-/** to `background.ts` */
+const port = chrome.runtime.connect({ name: PokerChaseService.POKER_CHASE_SERVICE_EVENT })
+/** from `web_accessible_resource.ts` to `background.ts` */
 window.addEventListener('message', (event: MessageEvent<ApiEvent>) => {
   /** @see https://developer.mozilla.org/ja/docs/Web/API/Window/postMessage#%E3%82%BB%E3%82%AD%E3%83%A5%E3%83%AA%E3%83%86%E3%82%A3%E3%81%AE%E8%80%83%E6%85%AE%E4%BA%8B%E9%A0%85 */
   if (event.source === window && event.origin === PokerChaseService.POKER_CHASE_ORIGIN && event.data.ApiTypeId) {
     try {
-      chrome.runtime.sendMessage<ApiEvent>(event.data)
+      port.postMessage(event.data)
     } catch (error: unknown) {
       console.error(error)
       /** not work in `web_accessible_resource` */
@@ -32,10 +33,8 @@ window.addEventListener('message', (event: MessageEvent<ApiEvent>) => {
   }
 })
 /** from `background.ts` to `App.ts` */
-chrome.runtime.onMessage.addListener((message: ApiEvent | PlayerStats[], sender) => {
-  /** 拡張機能ID */
-  if (sender.id === chrome.runtime.id && Array.isArray(message))
-    window.dispatchEvent(new CustomEvent(PokerChaseService.POKER_CHASE_SERVICE_EVENT, { detail: message }))
+port.onMessage.addListener((message: PlayerStats[]) => {
+  window.dispatchEvent(new CustomEvent(PokerChaseService.POKER_CHASE_SERVICE_EVENT, { detail: message }))
 })
 
 /** WebSocket Hook 用 <script/> を DOM に注入する */

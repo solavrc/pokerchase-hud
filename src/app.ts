@@ -386,7 +386,7 @@ export class AggregateEventsForHandStream extends Transform {
         case ApiType.EVT_RESULT:
         case ApiType.EVT_LEAVE_COMPLETED:
           this.events = []
-          this.pause() /** HUD表示/非表示制御 */
+          this.service.stream.pause() /** HUD表示/非表示制御 */
           break
         /** ハンドイベント */
         case ApiType.EVT_DEAL:
@@ -394,7 +394,7 @@ export class AggregateEventsForHandStream extends Transform {
             ? event.SeatUserIds.at(event.Player.SeatIndex)
             : undefined
           this.events = []
-          this.resume()
+          this.service.stream.resume()
           this.events.push(event)
           break
         case ApiType.EVT_DEAL_ROUND:
