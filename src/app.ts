@@ -173,7 +173,7 @@ interface Item {
 }
 
 interface OtherPlayer extends Omit<Player, 'HoleCards'> {
-  Status: 0 | 5 /** @todo 位置情報?? */
+  Status: 0 | 5
 }
 
 interface Player {
@@ -380,27 +380,17 @@ type TransformCallback<T> = (error?: Error | null, data?: T) => void
  * `ApiEvent`をHand単位で集約
  * - Hand: `ApiType.EVT_DEAL` ~ `ApiType.EVT_HAND_RESULTS`
  * - ログ順序を保証するため同期的実行
- * @input `ApiEvent[]` (n times)
- * @output `ApiHandEvent[]` (1 time)
  */
-class AggregateEventsForHandStream extends Transform {
+class AggregateEventsStream extends Transform {
   private service: PokerChaseService
   private events: ApiHandEvent[] = []
   constructor(service: PokerChaseService) {
     super({ objectMode: true })
     this.service = service
   }
-  push(events: ApiHandEvent[]) {
-    return events[0].ApiTypeId === ApiType.EVT_DEAL && events[events.length - 1].ApiTypeId === ApiType.EVT_HAND_RESULTS
-      ? super.push(events)
-      : false
-  }
-  _transform(event: ApiEvent, _: string, callback: TransformCallback<ApiHandEvent[]>) {
+  _transform(event: ApiEvent, _: string, callback: TransformCallback<ApiEvent[]>) {
     try {
-      /** レコード再構築用生ログ: 同期的に利用しないため Promise 投げっぱなし */
-      this.service.db.apiEvents.add(event)
       switch (event.ApiTypeId) {
-        /** セッションイベント */
         case ApiType.RES_ENTRY_QUEUED:
           this.service.session.reset()
           this.service.session.id = event.Id
@@ -409,19 +399,12 @@ class AggregateEventsForHandStream extends Transform {
         case ApiType.EVT_SESSION_DETAILS:
           this.service.session.name = event.Name
           break
-        case ApiType.EVT_SESSION_RESULTS:
-        case ApiType.RES_LEAVE_COMPLETED:
-          this.events = []
-          this.service.stream.pause() /** HUD表示/非表示制御 */
-          break
-        /** ハンドイベント */
         case ApiType.EVT_DEAL:
+          this.events = []
+          this.events.push(event)
           this.service.playerId = event.Player?.SeatIndex
             ? event.SeatUserIds.at(event.Player.SeatIndex)
             : undefined
-          this.events = []
-          this.service.stream.resume()
-          this.events.push(event)
           break
         case ApiType.EVT_DEAL_ROUND:
         case ApiType.EVT_ACTION:
@@ -429,7 +412,8 @@ class AggregateEventsForHandStream extends Transform {
           break
         case ApiType.EVT_HAND_RESULTS:
           this.events.push(event)
-          this.push(this.events)
+          if (this.events.at(0)!.ApiTypeId === ApiType.EVT_DEAL && this.events.at(-1)!.ApiTypeId === ApiType.EVT_HAND_RESULTS)
+            this.push(this.events)
           break
       }
       callback()
@@ -457,44 +441,23 @@ export interface PlayerStats {
   afq?: [top: number, bottom: number]
 }
 
-/**
- * - Hand単位に集約された`ApiEvent`を各Entity(`Hand`,`Action[]`,`Phase[]`)に変換
- * - 各EntityをIndexedDBに保存
- * - IndexedDBをクエリして`PlayerStats`を生成
- * @input `ApiHandEvent[]`
- * @output `PlayerStats[]`
- */
-class HandEventToPlayerStatsStream extends Transform {
+class WriteEntityStream extends Transform {
   private service: PokerChaseService
   constructor(service: PokerChaseService) {
     super({ objectMode: true })
     this.service = service
   }
-  push(stats: PlayerStats[]) {
-    return super.push(stats)
-  }
-  /** @todo Read/Write 処理を分割 */
-  _transform(events: ApiHandEvent[], _: string, callback: TransformCallback<PlayerStats[]>) {
+  async _transform(events: ApiHandEvent[], _: string, callback: TransformCallback<number[]>) {
     try {
       const { hand, actions, phases } = this.toHandState(events)
-      let stats: PlayerStats[] = []
-      /**
-       * `rw!`, `rw?` は Service Worker で機能しない??
-       * @see https://dexie.org/docs/Dexie/Dexie.transaction()
-       */
-      this.service.db.transaction('rw', this.service.db.hands, this.service.db.phases, this.service.db.actions, async () => {
+      await this.service.db.transaction('rw', this.service.db.hands, this.service.db.phases, this.service.db.actions, async () => {
         await Promise.all([
           this.service.db.hands.put(hand),
           this.service.db.actions.bulkPut(actions),
           this.service.db.phases.bulkPut(phases)
         ])
-        stats = this.service.playerId
-          /** 表示位置のため、自身を起点にSort */
-          ? await this.calcStats(PokerChaseService.rotateElementFromIndex(hand.seatUserIds, hand.seatUserIds.indexOf(this.service.playerId)))
-          : await this.calcStats(hand.seatUserIds)
-        // callback(null, stats) /** Anti-Pattern: callback が複数回呼ばれる場合がある?? */
       })
-        .then(() => callback(null, stats))
+      callback(null, hand.seatUserIds)
     } catch (error: any) {
       callback(error)
     }
@@ -580,6 +543,31 @@ class HandEventToPlayerStatsStream extends Transform {
     }
     return handState
   }
+}
+
+class ReadEntityStream extends Transform {
+  private service: PokerChaseService
+  constructor(service: PokerChaseService) {
+    super({ objectMode: true })
+    this.service = service
+  }
+  async _transform(seatUserIds: number[], _: string, callback: TransformCallback<PlayerStats[]>) {
+    try {
+      /**
+       * `rw!`, `rw?` は Service Worker で機能しない??
+       * @see https://dexie.org/docs/Dexie/Dexie.transaction()
+       */
+      const stats = await this.service.db.transaction('r', this.service.db.hands, this.service.db.phases, this.service.db.actions, async tx => {
+        return this.service.playerId
+          /** 表示位置のため、自身を起点にSort */
+          ? await this.calcStats(PokerChaseService.rotateElementFromIndex(seatUserIds, seatUserIds.indexOf(this.service.playerId)))
+          : await this.calcStats(seatUserIds)
+      })
+      callback(null, stats)
+    } catch (error: any) {
+      callback(error)
+    }
+  }
   /** @see https://www.pokertracker.com/guides/PT3/general/statistical-reference-guide */
   private calcStats = async (seatUserIds: number[]): Promise<PlayerStats[]> => {
     return await Promise.all(seatUserIds.map(async playerId => {
@@ -635,12 +623,9 @@ interface Session {
 }
 
 class PokerChaseService {
-  private readonly aggregateEventsForHandStream: AggregateEventsForHandStream
-  private readonly handEventToPlayerStatsStream: HandEventToPlayerStatsStream
+  playerId?: number
   static readonly POKER_CHASE_SERVICE_EVENT = 'PokerChaseServiceEvent'
   static readonly POKER_CHASE_ORIGIN = new URL(content_scripts[0].matches[0]).origin
-  readonly db
-  readonly stream
   readonly session: Session = {
     id: undefined,
     battleType: undefined,
@@ -651,24 +636,43 @@ class PokerChaseService {
       this.name = undefined
     }
   }
-  playerId?: number
+  readonly db
+  readonly inputStream = new AggregateEventsStream(this)
+  readonly stream = new ReadEntityStream(this)
   constructor({ db, playerId }: { db: PokerChaseDB, playerId?: number }) {
-    this.db = db
     this.playerId = playerId
-    this.aggregateEventsForHandStream = new AggregateEventsForHandStream(this)
-    this.handEventToPlayerStatsStream = new HandEventToPlayerStatsStream(this)
-    this.stream = this.aggregateEventsForHandStream
-      .pipe<HandEventToPlayerStatsStream>(this.handEventToPlayerStatsStream)
+    this.db = db
+    this.inputStream
+      .pipe<WriteEntityStream>(new WriteEntityStream(this))
+      .pipe<ReadEntityStream>(this.stream)
   }
   readonly queueEvent = (event: ApiEvent) => {
+    switch (event.ApiTypeId) {
+      case ApiType.EVT_SESSION_RESULTS:
+      case ApiType.RES_LEAVE_COMPLETED:
+        this.stream.pause() /** HUD非表示 */
+        break
+      case ApiType.EVT_PLAYER_SEAT_ASSIGNED:
+      case ApiType.EVT_DEAL:
+        this.playerId = event.Player?.SeatIndex ? event.SeatUserIds[event.Player.SeatIndex] : undefined
+        this.stream.resume() /** HUD表示 */
+        this.stream.write(event.SeatUserIds)
+        break
+    }
     this.eventLogger(event)
-    this.aggregateEventsForHandStream.write(event)
+    this.inputStream.write(event)
+    this.db.apiEvents.add(event) /** レコード再構築用生ログ: 同期的に利用しないため Promise 投げっぱなし */
   }
-  readonly refreshDatabase = () =>
-    // this.db.apiEvents.each(this.queueEvent) /** Anti-Pattern: 内部的に Read Transaction が張られていて保存処理と競合する */
-    this.db.apiEvents.toArray().then(events => events.forEach(this.queueEvent))
+  readonly refreshDatabase = () => {
+    // this.db.apiEvents.each(event => ...) /** Anti-Pattern: Cannot enter a sub-transaction with READWRITE mode when parent transaction is READONLY */
+    const input = new AggregateEventsStream(this)
+    input.pipe(new WriteEntityStream(this)).on('data', () => { }) /** /dev/null consumer */
+    this.db.apiEvents.toArray().then(events => events.forEach(event => input.write(event)))
+  }
   private eventLogger = (event: ApiEvent) => {
-    const timestamp = event.timestamp ?? new Date().toISOString().slice(11, 19)
+    const timestamp = event.timestamp
+      ? new Date(event.timestamp).toISOString().slice(11, 22)
+      : new Date().toISOString().slice(11, 22)
     ApiType[event.ApiTypeId]
       ? console.debug(`[${timestamp}]`, event.ApiTypeId, ApiType[event.ApiTypeId], event)
       : console.warn(`[${timestamp}]`, event.ApiTypeId, ApiType[event.ApiTypeId], event)

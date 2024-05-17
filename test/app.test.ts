@@ -1,5 +1,6 @@
 import PokerChaseService, { ApiEvent, PlayerStats, PokerChaseDB } from '../src/app'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
+import { Readable } from 'stream'
 
 const event_timeline: ApiEvent[] = [
   { "timestamp": 0, "ApiTypeId": 201, "Code": 0, "BattleType": 0, "Id": "new_stage007_010" },
@@ -162,12 +163,11 @@ test('ログから各プレイヤーのスタッツを計算できる', (done) =
   service.stream.on('data', (hand: PlayerStats[]) => {
     actual.push(hand)
   })
-  service.stream.on('end', async () => {
+  service.stream.on('end', () => {
     expect(actual).toStrictEqual(expected)
     done()
   })
-  event_timeline.forEach(action => service.queueEvent(action))
-  service.stream.end()
+  Readable.from(event_timeline).pipe(service.inputStream)
 })
 
 test('プレイヤーを起点にユーザーを並び替えられる', () => {
