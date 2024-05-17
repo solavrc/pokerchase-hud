@@ -38,7 +38,9 @@ const Hud = (props: { actualSeatIndex: number, stat: PlayerStats }) => {
   const valueHandler = (value: number | [number, number]) => {
     if (Array.isArray(value)) {
       const [top, bottom] = value
-      return `${(Math.round(top / bottom * 1000) / 10).toFixed(1)}% (${top}/${bottom})`
+      const stat = top / bottom
+      if (Number.isNaN(stat) || !Number.isFinite(stat)) return '-'
+      return `${(Math.round(stat * 1000) / 10).toFixed(1)}% (${top}/${bottom})`
     }
     return String(value)
   }
