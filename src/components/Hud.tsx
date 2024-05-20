@@ -14,21 +14,21 @@ const darkTheme = createTheme({
 
 const style: CSSProperties = {
   backgroundColor: 'rgba(0, 0, 0, 0.3)',
-  pointerEvents: 'none', /** クリック透過 */
+  boxSizing: 'border-box',
+  width: 640,
+  pointerEvents: 'none',
   position: 'absolute',
-  transform: 'translateX(-50%)',
-  width: 300,
-  zIndex: 100, /* Ensure it's above other elements */
+  tableLayout: 'fixed',
   userSelect: 'none',
 }
 
 const seatStyles: CSSProperties[] = [
-  { top: '85%', left: '50%' }, /** 中央下（プレイヤー） */
-  { top: '70%', left: '15%' },
-  { top: '33%', left: '15%' },
-  { top: '10%', left: '70%' }, /** 中央上 */
-  { top: '33%', left: '85%' },
-  { top: '68%', left: '85%' },
+  { bottom: '0%', left: '50%', transform: 'translate(-50%)' }, /** 中央下（プレイヤー） */
+  { bottom: '20%', left: '0%' },
+  { top: '33%', left: '0%' },
+  { top: '0%', left: '50%', transform: 'translate(-50%)' }, /** 中央上 */
+  { top: '33%', right: '0%' },
+  { bottom: '20%', right: '0%' },
 ]
 
 const Hud = (props: { actualSeatIndex: number, stat: PlayerStats }) => {
@@ -40,7 +40,7 @@ const Hud = (props: { actualSeatIndex: number, stat: PlayerStats }) => {
       const [top, bottom] = value
       const stat = top / bottom
       if (Number.isNaN(stat) || !Number.isFinite(stat)) return '-'
-      return `${(Math.round(stat * 1000) / 10).toFixed(1)}% (${top}/${bottom})`
+      return `${(Math.round(stat * 1000) / 10).toFixed(1)}%(${top}/${bottom})`
     }
     return String(value)
   }
@@ -52,15 +52,15 @@ const Hud = (props: { actualSeatIndex: number, stat: PlayerStats }) => {
             <TableRow key={rowIndex}>
               {row.map(([key, value]: [string, number | [number, number]], colIndex) => (
                 <Fragment key={colIndex}>
-                  <TableCell component='th' scope='row'>{key.toUpperCase()}</TableCell>
-                  <TableCell align='right'>{valueHandler(value)}</TableCell>
+                  <TableCell component='th' scope='row' sx={{ paddingX: '5px', paddingY: 'none', fontSize: 'smaller' }}>{key.toUpperCase()}</TableCell>
+                  <TableCell align='right' sx={{ paddingX: '5px', paddingY: 'none', fontSize: 'smaller' }}>{valueHandler(value)}</TableCell>
                 </Fragment>
               ))}
             </TableRow>
           ))}
         </TableBody>
       </Table>
-    </ThemeProvider >
+    </ThemeProvider>
   ) : <></>
 }
 export default Hud

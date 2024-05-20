@@ -139,19 +139,19 @@ const event_timeline: ApiEvent[] = [
 ]
 const expected: PlayerStats[][] = [
   [
-    { playerId: 561384657, hands: 1, vpip: [1, 1], pfr: [1, 1], $3Bet: [0, 0], $3BetFold: [0, 0], wtsd: [1, 0], af: [2, 0], afq: [2, 2], },
-    { playerId: 575402650, hands: 1, vpip: [0, 1], pfr: [0, 1], $3Bet: [0, 1], $3BetFold: [0, 0], wtsd: [0, 0], af: [0, 0], afq: [0, 1], },
-    { playerId: 750532695, hands: 1, vpip: [0, 1], pfr: [0, 1], $3Bet: [0, 1], $3BetFold: [0, 0], wtsd: [0, 0], af: [0, 0], afq: [0, 1], },
-    { playerId: 172432670, hands: 1, vpip: [1, 1], pfr: [1, 1], $3Bet: [1, 1], $3BetFold: [0, 0], wtsd: [0, 0], af: [1, 0], afq: [1, 2], },
-    { playerId: 583654032, hands: 1, vpip: [0, 1], pfr: [0, 1], $3Bet: [0, 0], $3BetFold: [1, 1], wtsd: [0, 0], af: [0, 0], afq: [0, 1], },
-    { playerId: 619317634, hands: 1, vpip: [1, 1], pfr: [1, 1], $3Bet: [0, 0], $3BetFold: [0, 1], wtsd: [1, 0], af: [1, 0], afq: [1, 1], },
+    { playerId: 561384657, hands: 1, vpip: [1, 1], pfr: [1, 1], flopCB: [0, 0], $3Bet: [0, 0], $3BetFold: [0, 0], af: [1, 1], afq: [1, 2], w$sd: [1, 1], wtsd: [1, 1], wwsf: [0, 0], },
+    { playerId: 575402650, hands: 1, vpip: [0, 1], pfr: [0, 1], flopCB: [0, 0], $3Bet: [0, 1], $3BetFold: [0, 0], af: [0, 0], afq: [0, 1], w$sd: [0, 0], wtsd: [0, 0], wwsf: [0, 0], },
+    { playerId: 750532695, hands: 1, vpip: [0, 1], pfr: [0, 1], flopCB: [0, 0], $3Bet: [0, 1], $3BetFold: [0, 0], af: [0, 0], afq: [0, 1], w$sd: [0, 0], wtsd: [0, 0], wwsf: [0, 0], },
+    { playerId: 172432670, hands: 1, vpip: [1, 1], pfr: [1, 1], flopCB: [0, 0], $3Bet: [1, 1], $3BetFold: [0, 0], af: [1, 0], afq: [1, 2], w$sd: [0, 0], wtsd: [0, 0], wwsf: [0, 0], },
+    { playerId: 583654032, hands: 1, vpip: [0, 1], pfr: [0, 1], flopCB: [0, 0], $3Bet: [0, 0], $3BetFold: [1, 1], af: [0, 0], afq: [0, 1], w$sd: [0, 0], wtsd: [0, 0], wwsf: [0, 0], },
+    { playerId: 619317634, hands: 1, vpip: [1, 1], pfr: [1, 1], flopCB: [0, 0], $3Bet: [0, 0], $3BetFold: [0, 1], af: [1, 0], afq: [1, 1], w$sd: [0, 1], wtsd: [1, 1], wwsf: [0, 0], },
   ],
   [
-    { playerId: 561384657, hands: 2, vpip: [1, 2], pfr: [1, 2], $3Bet: [0, 1], $3BetFold: [0, 0], wtsd: [1, 0], af: [2, 0], afq: [2, 3], },
-    { playerId: 575402650, hands: 2, vpip: [1, 2], pfr: [0, 2], $3Bet: [0, 2], $3BetFold: [0, 0], wtsd: [1, 1], af: [0, 1], afq: [0, 2], },
-    { playerId: 750532695, hands: 2, vpip: [0, 2], pfr: [0, 2], $3Bet: [0, 1], $3BetFold: [0, 0], wtsd: [0, 0], af: [0, 0], afq: [0, 2], },
-    { playerId: 172432670, hands: 2, vpip: [2, 2], pfr: [2, 2], $3Bet: [1, 1], $3BetFold: [0, 0], wtsd: [1, 1], af: [2, 0], afq: [2, 3], },
-    { playerId: 583654032, hands: 2, vpip: [0, 2], pfr: [0, 2], $3Bet: [0, 1], $3BetFold: [1, 1], wtsd: [0, 0], af: [0, 0], afq: [0, 2], },
+    { playerId: 561384657, hands: 2, vpip: [1, 2], pfr: [1, 2], flopCB: [0, 0], $3Bet: [0, 1], $3BetFold: [0, 0], af: [1, 1], afq: [1, 3], w$sd: [1, 1], wtsd: [1, 1], wwsf: [0, 0], },
+    { playerId: 575402650, hands: 2, vpip: [1, 2], pfr: [0, 2], flopCB: [0, 0], $3Bet: [0, 2], $3BetFold: [0, 0], af: [0, 1], afq: [0, 2], w$sd: [1, 1], wtsd: [1, 1], wwsf: [1, 1], },
+    { playerId: 750532695, hands: 2, vpip: [0, 2], pfr: [0, 2], flopCB: [0, 0], $3Bet: [0, 1], $3BetFold: [0, 0], af: [0, 0], afq: [0, 2], w$sd: [0, 0], wtsd: [0, 0], wwsf: [0, 0], },
+    { playerId: 172432670, hands: 2, vpip: [2, 2], pfr: [2, 2], flopCB: [0, 1], $3Bet: [1, 1], $3BetFold: [0, 0], af: [2, 0], afq: [2, 3], w$sd: [0, 1], wtsd: [1, 1], wwsf: [0, 1], },
+    { playerId: 583654032, hands: 2, vpip: [0, 2], pfr: [0, 2], flopCB: [0, 0], $3Bet: [0, 1], $3BetFold: [1, 1], af: [0, 0], afq: [0, 2], w$sd: [0, 0], wtsd: [0, 0], wwsf: [0, 0], },
     { playerId: -1, },
   ],
 ]

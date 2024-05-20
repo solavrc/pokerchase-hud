@@ -101,8 +101,8 @@ enum BattleType {
 }
 
 enum BetStatusType {
-  NOT_IN_PLAY = 0,
   HAND_ENDED = -1,
+  NOT_IN_PLAY = 0,
   BET_ABLE = 1,
   FOLDED = 2,
   ALL_IN = 3
@@ -323,6 +323,7 @@ export interface Hand {
   smallBlind: number
   bigBlind: number
   session: Omit<Session, 'reset'>
+  results: Result[]
 }
 
 export interface Phase {
@@ -341,19 +342,30 @@ enum Position {
   UTG = 3,
 }
 
+enum ActionDetail {
+  ALL_IN = 'ALL_IN',
+  VPIP = 'VPIP',
+  CBET = 'CBET',
+  CBET_CHANCE = 'CBET_CHANCE',
+  CBET_FOLD = 'CBET_FOLD',
+  CBET_FOLD_CHANCE = 'CBET_FOLD_CHANCE',
+  $3BET = '3BET',
+  $3BET_CHANCE = '3BET_CHANCE',
+  $3BET_FOLD = '3BET_FOLD',
+  $3BET_FOLD_CHANCE = '3BET_FOLD_CHANCE',
+}
+
 export interface Action {
   handId?: number
   index: number
   playerId: number
   phase: PhaseType
-  actionType: ActionType
+  actionType: Exclude<ActionType, ActionType.ALL_IN>
   bet: number
   pot: number
   sidePot: number[]
   position: Position
-  phaseActionIndex: number,
-  phasePlayerActionIndex: number,
-  phasePrevBetCount: number,
+  actionDetails: ActionDetail[]
 }
 
 export class PokerChaseDB extends Dexie {
@@ -365,10 +377,10 @@ export class PokerChaseDB extends Dexie {
     super('PokerChaseDB', { indexedDB, IDBKeyRange: iDBKeyRange })
     this.version(1).stores({
       /** @see https://dexie.org/docs/Version/Version.stores() */
-      apiEvents: 'timestamp,ApiTypeId',
+      apiEvents: '[timestamp+ApiTypeId],timestamp,ApiTypeId',
       hands: 'id,*seatUserIds,*winningPlayerIds',
       phases: '[handId+phase],handId,*seatUserIds,phase',
-      actions: '[handId+index],handId,playerId,phase,actionType,phasePlayerActionIndex,phasePrevBetCount',
+      actions: '[handId+index],handId,playerId,phase,actionType,*actionDetails',
     })
   }
 }
@@ -384,12 +396,17 @@ type TransformCallback<T> = (error?: Error | null, data?: T) => void
 class AggregateEventsStream extends Transform {
   private service: PokerChaseService
   private events: ApiHandEvent[] = []
+  private progress?: Progress
+  private lastTimestamp = 0
   constructor(service: PokerChaseService) {
     super({ objectMode: true })
     this.service = service
   }
   _transform(event: ApiEvent, _: string, callback: TransformCallback<ApiEvent[]>) {
     try {
+      /** 順序整合性チェック */
+      if (this.lastTimestamp > event.timestamp!)
+        this.events = []
       switch (event.ApiTypeId) {
         case ApiType.RES_ENTRY_QUEUED:
           this.service.session.reset()
@@ -400,6 +417,7 @@ class AggregateEventsStream extends Transform {
           this.service.session.name = event.Name
           break
         case ApiType.EVT_DEAL:
+          this.progress = event.Progress
           this.events = []
           this.events.push(event)
           this.service.playerId = event.Player?.SeatIndex
@@ -407,18 +425,29 @@ class AggregateEventsStream extends Transform {
             : undefined
           break
         case ApiType.EVT_DEAL_ROUND:
+          this.progress = event.Progress
+          this.events.push(event)
+          break
         case ApiType.EVT_ACTION:
+          /** 順序整合性チェック */
+          if (this.progress && this.progress.NextActionSeat !== event.SeatIndex)
+            this.events = []
+          this.progress = event.Progress
           this.events.push(event)
           break
         case ApiType.EVT_HAND_RESULTS:
           this.events.push(event)
-          if (this.events.at(0)!.ApiTypeId === ApiType.EVT_DEAL && this.events.at(-1)!.ApiTypeId === ApiType.EVT_HAND_RESULTS)
+          if (this.events[0].ApiTypeId === ApiType.EVT_DEAL)
             this.push(this.events)
           break
       }
       callback()
-    } catch (error: any) {
-      callback(error)
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        callback(error)
+      } else {
+        callback({ name: 'UNKNOWN_ERROR', message: JSON.stringify(error) })
+      }
     }
   }
 }
@@ -429,17 +458,25 @@ interface HandState {
   phases: Phase[]
 }
 
-export interface PlayerStats {
+interface ExistPlayerStats {
   playerId: number
-  hands?: number
-  vpip?: [top: number, bottom: number]
-  pfr?: [top: number, bottom: number]
-  $3Bet?: [top: number, bottom: number]
-  $3BetFold?: [top: number, bottom: number]
-  wtsd?: [top: number, bottom: number]
-  af?: [top: number, bottom: number]
-  afq?: [top: number, bottom: number]
+  hands: number
+  vpip: [top: number, bottom: number]
+  pfr: [top: number, bottom: number]
+  flopCB: [top: number, bottom: number]
+  $3Bet: [top: number, bottom: number]
+  $3BetFold: [top: number, bottom: number]
+  af: [top: number, bottom: number]
+  afq: [top: number, bottom: number]
+  /** Went to Showdown: (Total Times Went to Showdown / Total Times Saw The Flop) includes PREFLOP ALL_IN  */
+  wtsd: [top: number, bottom: number]
+  /** Won When Saw Flop: (Total times Won Money after seeing the Flop / Total Times Saw The Flop) excludes PREFLOP ALL_IN */
+  wwsf: [top: number, bottom: number]
+  /** Won Money At Showdown: (Total Times Won Money at Showdown / Total Times Went to Showdown) includes PREFLOP ALL_IN */
+  w$sd: [top: number, bottom: number]
 }
+
+export type PlayerStats = ExistPlayerStats | { playerId: -1 }
 
 class WriteEntityStream extends Transform {
   private service: PokerChaseService
@@ -450,16 +487,23 @@ class WriteEntityStream extends Transform {
   async _transform(events: ApiHandEvent[], _: string, callback: TransformCallback<number[]>) {
     try {
       const { hand, actions, phases } = this.toHandState(events)
-      await this.service.db.transaction('rw', this.service.db.hands, this.service.db.phases, this.service.db.actions, async () => {
-        await Promise.all([
+      await this.service.db.transaction('rw', this.service.db.hands, this.service.db.phases, this.service.db.actions, () => {
+        return Promise.all([
           this.service.db.hands.put(hand),
           this.service.db.actions.bulkPut(actions),
           this.service.db.phases.bulkPut(phases)
         ])
       })
+      /** @todo reporting */
       callback(null, hand.seatUserIds)
-    } catch (error: any) {
-      callback(error)
+    } catch (error: unknown) {
+      if (error instanceof Dexie.DexieError) {
+        callback({ name: error.name, message: error.message })
+      } else if (error instanceof Error) {
+        callback(error)
+      } else {
+        callback({ name: 'UNKNOWN_ERROR', message: JSON.stringify(error) })
+      }
     }
   }
   private toHandState = (events: ApiHandEvent[]): HandState => {
@@ -477,10 +521,13 @@ class WriteEntityStream extends Transform {
         winningPlayerIds: [],
         bigBlind: NaN,
         smallBlind: NaN,
+        results: []
       },
       actions: [],
       phases: [],
     }
+    let cBetter: number | undefined
+    let progress: Progress | undefined
     for (const event of events) {
       switch (event.ApiTypeId) {
         case ApiType.EVT_DEAL:
@@ -494,6 +541,7 @@ class WriteEntityStream extends Transform {
           })
           handState.hand.bigBlind = event.Game.BigBlind
           handState.hand.smallBlind = event.Game.SmallBlind
+          progress = event.Progress
           break
         case ApiType.EVT_DEAL_ROUND:
           handState.phases.push({
@@ -504,26 +552,95 @@ class WriteEntityStream extends Transform {
               .map(({ SeatIndex }) => handState.hand.seatUserIds.at(SeatIndex)!),
             communityCards: [...handState.phases.at(-1)!.communityCards, ...event.CommunityCards],
           })
+          progress = event.Progress
           break
         case ApiType.EVT_ACTION:
-          /** `event.Progress.Phase`: 不正確 */
-          const phase = handState.phases.at(-1)!.phase
-          const phaseActions = handState.actions.filter(action => action.phase === phase)
+          const actionDetails: ActionDetail[] = []
+          /** `ALL_IN` to `BET`,`RAISE`,`CALL`変換 */
+          const actionType: Exclude<ActionType, ActionType.ALL_IN> = (({ ActionType: actionType }: typeof event) => {
+            if (actionType === ActionType.ALL_IN) {
+              actionDetails.push(ActionDetail.ALL_IN)
+              if (progress?.NextActionTypes.includes(ActionType.BET)) {
+                return ActionType.BET
+              } else if (progress?.NextActionTypes.includes(ActionType.CALL)) {
+                return ActionType.RAISE
+              } else {
+                return ActionType.CALL
+              }
+            } else {
+              return actionType
+            }
+          })(event)
           const playerId = handState.hand.seatUserIds[event.SeatIndex]
+          const phase = handState.phases.at(-1)!.phase /** `event.Progress.Phase`: 不正確 */
+          const phaseActions = handState.actions.filter(action => action.phase === phase)
+          const phasePlayerActionIndex = phaseActions.filter(action => action.playerId === playerId).length
+          const phasePrevBetCount = phaseActions.filter(action => [ActionType.BET, ActionType.RAISE].includes(action.actionType)).length + Number(phase === PhaseType.PREFLOP)
+          /** VPIP 判定 */
+          if (phase === PhaseType.PREFLOP && phasePlayerActionIndex === 0 && [ActionType.RAISE, ActionType.CALL].includes(actionType))
+            actionDetails.push(ActionDetail.VPIP)
+          /** 3BET 判定 */
+          if (phasePrevBetCount === 2) {
+            actionDetails.push(ActionDetail.$3BET_CHANCE)
+            if (ActionType.RAISE === actionType) {
+              actionDetails.push(ActionDetail.$3BET)
+            }
+          }
+          /** 3BETFOLD 判定 */
+          if (phasePrevBetCount === 3) {
+            actionDetails.push(ActionDetail.$3BET_FOLD_CHANCE)
+            if (ActionType.FOLD === actionType) {
+              actionDetails.push(ActionDetail.$3BET_FOLD)
+            }
+          }
+          /**
+           * CBet, CBetFOLD 判定
+           *
+           * CBet: A continuation bet is opening the betting on a street when you made the last bet or raise on the previous street.
+           * Normally this means being the preflop raiser and opening the betting on the flop, but is extended to the turn and river while you retain the initiative.
+           * You can only make a continuation bet on the turn if you made one on the flop; and on the river if you made one on the turn.
+           *
+           * You can only make a continuation bet if you made a continuation bet on all previous streets.
+           * (FLOP CBetしない限り、TURN CBetの機会はない)
+           * (TURN CBetしない限り、RIVER CBetの機会はない)
+           */
+          if (PhaseType.PREFLOP === phase) {
+            if (ActionType.RAISE === actionType) {
+              cBetter = playerId /** PREFLOPで最後にRAISEしたプレイヤー */
+            }
+          } else if (cBetter) {
+            if (phasePrevBetCount === 0) {
+              if (cBetter === playerId) {
+                actionDetails.push(ActionDetail.CBET_CHANCE)
+                if (ActionType.BET === actionType) {
+                  actionDetails.push(ActionDetail.CBET)
+                } else {
+                  cBetter = undefined
+                }
+              } else {
+                if (ActionType.BET === actionType) {
+                  cBetter = undefined
+                }
+              }
+            } else if (phasePrevBetCount === 1) {
+              actionDetails.push(ActionDetail.CBET_FOLD_CHANCE)
+              if (ActionType.FOLD === actionType) {
+                actionDetails.push(ActionDetail.CBET_FOLD)
+              }
+            }
+          }
           handState.actions.push({
             playerId,
-            phase: phase,
+            phase,
             index: handState.actions.length,
-            actionType: event.ActionType,
+            actionType,
             bet: event.BetChip,
             pot: event.Progress.Pot,
             sidePot: event.Progress.SidePot,
-            /** @see Position */
-            position: positionUserIds.indexOf(playerId) - 2,
-            phaseActionIndex: phaseActions.length,
-            phasePlayerActionIndex: phaseActions.filter(action => action.playerId === playerId).length,
-            phasePrevBetCount: phaseActions.filter(action => [ActionType.BET, ActionType.RAISE, ActionType.ALL_IN].includes(action.actionType)).length + Number(event.Progress.Phase === PhaseType.PREFLOP),
+            position: positionUserIds.indexOf(playerId) - 2, /** @see Position */
+            actionDetails,
           })
+          progress = event.Progress
           break
         case ApiType.EVT_HAND_RESULTS:
           if (event.Results.length > 1) {
@@ -536,6 +653,7 @@ class WriteEntityStream extends Transform {
           handState.hand.id = event.HandId
           handState.hand.winningPlayerIds = event.Results.filter(({ HandRanking }) => HandRanking === 1).map(({ UserId }) => UserId)
           handState.hand.approxTimestamp = event.timestamp
+          handState.hand.results = event.Results
           handState.actions = handState.actions.map(action => ({ ...action, handId: event.HandId }))
           handState.phases = handState.phases.map(phase => ({ ...phase, handId: event.HandId }))
           break
@@ -564,8 +682,14 @@ class ReadEntityStream extends Transform {
           : await this.calcStats(seatUserIds)
       })
       callback(null, stats)
-    } catch (error: any) {
-      callback(error)
+    } catch (error: unknown) {
+      if (error instanceof Dexie.DexieError) {
+        callback({ name: error.name, message: error.message })
+      } else if (error instanceof Error) {
+        callback(error)
+      } else {
+        callback({ name: 'UNKNOWN_ERROR', message: JSON.stringify(error) })
+      }
     }
   }
   /** @see https://www.pokertracker.com/guides/PT3/general/statistical-reference-guide */
@@ -574,41 +698,55 @@ class ReadEntityStream extends Transform {
       if (playerId === -1)
         return { playerId: -1 }
       const [
-        hands,
-        voluntarilyHands,
-        pfrHands,
-        $3BetChanceHands,
-        $3BetHands,
-        $3BetFoldChanceHands,
-        $3BetFoldHands,
-        sawFlopHands,
-        wentToShowdownHands,
-        betRaiseActions,
-        callActions,
-        exceptCheckActions
+        handsCount,
+        voluntarilyHandsCount,
+        pfrHandsCount,
+        flopCBChanceHandsCount,
+        flopCBHandsCount,
+        $3BetChanceHandsCount,
+        $3BetHandsCount,
+        $3BetFoldChanceHandsCount,
+        $3BetFoldHandsCount,
+        betRaiseActionsCount,
+        callActionsCount,
+        exceptCheckActionsCount,
+        flopPhases,
+        showdownPhases,
       ] = await Promise.all([
         this.service.db.hands.where({ seatUserIds: playerId }).count(),
-        this.service.db.actions.where({ playerId, phase: PhaseType.PREFLOP, phasePlayerActionIndex: 0 }).and(action => [ActionType.ALL_IN, ActionType.RAISE, ActionType.CALL].includes(action.actionType)).count(),
-        this.service.db.actions.where({ playerId, phase: PhaseType.PREFLOP }).and(action => [ActionType.ALL_IN, ActionType.RAISE].includes(action.actionType)).toArray().then(actions => [...new Set(actions.map(({ handId }) => handId))].length),
-        this.service.db.actions.where({ playerId, phase: PhaseType.PREFLOP, phasePrevBetCount: 2 }).count(),
-        this.service.db.actions.where({ playerId, phase: PhaseType.PREFLOP, phasePrevBetCount: 2 }).and(action => [ActionType.ALL_IN, ActionType.RAISE].includes(action.actionType)).count(),
-        this.service.db.actions.where({ playerId, phase: PhaseType.PREFLOP, phasePrevBetCount: 3 }).count(),
-        this.service.db.actions.where({ playerId, phase: PhaseType.PREFLOP, phasePrevBetCount: 3, actionType: ActionType.FOLD }).count(),
-        this.service.db.phases.where({ seatUserIds: playerId, phase: PhaseType.FLOP }).count(),
-        this.service.db.phases.where({ seatUserIds: playerId, phase: PhaseType.SHOWDOWN }).count(),
-        this.service.db.actions.where({ playerId }).and(({ actionType }) => [ActionType.BET, ActionType.RAISE, ActionType.ALL_IN].includes(actionType)).count(),
+        this.service.db.actions.where({ playerId, phase: PhaseType.PREFLOP, actionDetails: ActionDetail.VPIP }).count(),
+        this.service.db.actions.where({ playerId, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE }).toArray().then(actions => [...new Set(actions.map(({ handId }) => handId))].length),
+        this.service.db.actions.where({ playerId, phase: PhaseType.FLOP, actionDetails: ActionDetail.CBET_CHANCE }).count(),
+        this.service.db.actions.where({ playerId, phase: PhaseType.FLOP, actionDetails: ActionDetail.CBET }).count(),
+        this.service.db.actions.where({ playerId, actionDetails: ActionDetail.$3BET_CHANCE }).count(),
+        this.service.db.actions.where({ playerId, actionDetails: ActionDetail.$3BET }).count(),
+        this.service.db.actions.where({ playerId, actionDetails: ActionDetail.$3BET_FOLD_CHANCE }).count(),
+        this.service.db.actions.where({ playerId, actionDetails: ActionDetail.$3BET_FOLD }).count(),
+        this.service.db.actions.where({ playerId }).and(({ actionType }) => [ActionType.BET, ActionType.RAISE].includes(actionType)).count(),
         this.service.db.actions.where({ playerId }).and(({ actionType }) => actionType === ActionType.CALL).count(),
-        this.service.db.actions.where({ playerId }).and(({ actionType }) => actionType !== ActionType.CHECK).count()
+        this.service.db.actions.where({ playerId }).and(({ actionType }) => actionType !== ActionType.CHECK).count(),
+        this.service.db.phases.where({ seatUserIds: playerId, phase: PhaseType.FLOP }).toArray(),
+        this.service.db.phases.where({ seatUserIds: playerId, phase: PhaseType.SHOWDOWN }).toArray(),
+      ])
+      const [
+        wonMoneyAfterSeeingFlopHandsCount,
+        wonMoneyAtShowdownHandsCount
+      ] = await Promise.all([
+        this.service.db.hands.where('id').anyOf(flopPhases.map(({ handId }) => handId!)).and(hand => hand.winningPlayerIds.includes(playerId)).count(),
+        this.service.db.hands.where('id').anyOf(showdownPhases.map(({ handId }) => handId!)).and(hand => hand.winningPlayerIds.includes(playerId)).count()
       ])
       return {
-        hands,
-        vpip: [voluntarilyHands, hands],
-        pfr: [pfrHands, hands],
-        $3Bet: [$3BetHands, $3BetChanceHands],
-        $3BetFold: [$3BetFoldHands, $3BetFoldChanceHands],
-        wtsd: [wentToShowdownHands, sawFlopHands],
-        af: [betRaiseActions, callActions],
-        afq: [betRaiseActions, exceptCheckActions],
+        hands: handsCount,
+        vpip: [voluntarilyHandsCount, handsCount],
+        pfr: [pfrHandsCount, handsCount],
+        flopCB: [flopCBHandsCount, flopCBChanceHandsCount],
+        $3Bet: [$3BetHandsCount, $3BetChanceHandsCount],
+        $3BetFold: [$3BetFoldHandsCount, $3BetFoldChanceHandsCount],
+        af: [betRaiseActionsCount, callActionsCount],
+        afq: [betRaiseActionsCount, exceptCheckActionsCount],
+        wtsd: [showdownPhases.length, [...new Set([...flopPhases, ...showdownPhases].map(({ handId }) => handId!))].length],
+        wwsf: [wonMoneyAfterSeeingFlopHandsCount, flopPhases.length],
+        w$sd: [wonMoneyAtShowdownHandsCount, showdownPhases.length],
         playerId,
       }
     }))
@@ -659,15 +797,26 @@ class PokerChaseService {
         this.stream.write(event.SeatUserIds)
         break
     }
-    this.eventLogger(event)
     this.inputStream.write(event)
-    this.db.apiEvents.add(event) /** レコード再構築用生ログ: 同期的に利用しないため Promise 投げっぱなし */
+    /** レコード再構築用生ログ: 同期的に利用しないため Promise 投げっぱなし */
+    this.db.apiEvents.add(event)
+      .catch(console.error)
+      .finally(() => this.eventLogger(event))
   }
   readonly refreshDatabase = () => {
     // this.db.apiEvents.each(event => ...) /** Anti-Pattern: Cannot enter a sub-transaction with READWRITE mode when parent transaction is READONLY */
     const input = new AggregateEventsStream(this)
     input.pipe(new WriteEntityStream(this)).on('data', () => { }) /** /dev/null consumer */
-    this.db.apiEvents.toArray().then(events => events.forEach(event => input.write(event)))
+    this.db.apiEvents.count()
+      .then(async count => {
+        let offset = 0
+        while (offset < count) {
+          const apiEvents = await this.db.apiEvents.offset(offset).limit(1000).toArray()
+          apiEvents.forEach(event => input.write(event))
+          offset += apiEvents.length
+        }
+      })
+      .catch(console.error)
   }
   private eventLogger = (event: ApiEvent) => {
     const timestamp = event.timestamp
