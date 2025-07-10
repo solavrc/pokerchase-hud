@@ -17,6 +17,7 @@ interface HandLogProps {
   config?: Partial<HandLogConfig>
   onClearLog?: () => void
   scale?: number
+  scrollToLatest?: boolean
 }
 
 const getPositionStyles = (position: string): CSSProperties => {
@@ -139,7 +140,7 @@ const EntryRow = memo(({ index, style, data }: EntryRowProps) => {
 
 EntryRow.displayName = 'EntryRow'
 
-const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, scale = 1 }) => {
+const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, scale = 1, scrollToLatest }) => {
   const config = useMemo(() => ({ ...DEFAULT_HAND_LOG_CONFIG, ...userConfig }), [userConfig])
   const listRef = useRef<List>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -206,6 +207,13 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       listRef.current.scrollToItem(processedItems.length - 1, 'end')
     }
   }, [processedItems.length])
+  
+  // 外部クリックでスクロールをトリガー
+  useEffect(() => {
+    if (scrollToLatest && listRef.current && processedItems.length > 0) {
+      listRef.current.scrollToItem(processedItems.length - 1, 'end')
+    }
+  }, [scrollToLatest, processedItems.length])
 
   // ハンドをクリップボードにコピー
   const copyHandToClipboard = useCallback(async (handId: number | undefined) => {

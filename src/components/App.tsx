@@ -27,6 +27,7 @@ const App = memo(() => {
   const [uiConfig, setUIConfig] = useState<UIConfig>(DEFAULT_UI_CONFIG)
   const [statDisplayConfigs, setStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
   const [configLoaded, setConfigLoaded] = useState(false)
+  const [shouldScrollToLatest, setShouldScrollToLatest] = useState(false)
 
   const handleStatsMessage = useCallback(
     ({ detail }: CustomEvent<StatsData>) => {
@@ -145,6 +146,26 @@ const App = memo(() => {
   const handleClearLog = useCallback(() => {
     setHandLogEntries([])
   }, [])
+  
+  // グローバルクリックイベントを処理
+  useEffect(() => {
+    const handleGlobalClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement
+      
+      // クリックがログウィンドウ内かチェック
+      const isClickInsideLog = target.closest('[style*="position: fixed"][style*="backdrop-filter"]')
+      
+      if (!isClickInsideLog && handLogEntries.length > 0) {
+        // ログウィンドウ外をクリックした場合、最新ログまでスクロール
+        setShouldScrollToLatest(true)
+        // フラグをリセット
+        setTimeout(() => setShouldScrollToLatest(false), 100)
+      }
+    }
+    
+    document.addEventListener('click', handleGlobalClick)
+    return () => document.removeEventListener('click', handleGlobalClick)
+  }, [handLogEntries.length])
 
   // ストレージから設定を読み込み
   useEffect(() => {
@@ -227,6 +248,7 @@ const App = memo(() => {
         config={handLogConfig}
         onClearLog={handleClearLog}
         scale={uiConfig.scale}
+        scrollToLatest={shouldScrollToLatest}
       />
     </>
   )
