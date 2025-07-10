@@ -1,10 +1,9 @@
-import { context, BuildOptions, Plugin } from 'esbuild'
+import { build, BuildOptions } from 'esbuild'
 import { copyFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { parse } from 'path'
 import { resolve, dirname } from 'path'
 import manifest from './manifest.json'
-import process from 'process'
 
 const {
   background: { service_worker },
@@ -17,7 +16,8 @@ const options: BuildOptions = {
   entryPoints: [
     'src/' + parse(content_script).name + '.ts',
     'src/' + parse(service_worker).name + '.ts',
-    'src/' + parse(web_accessible_resource).name + '.ts'
+    'src/' + parse(web_accessible_resource).name + '.ts',
+    'src/popup.ts'
   ],
   format: 'esm',
   logLevel: 'info',
@@ -47,19 +47,10 @@ const options: BuildOptions = {
 }
 
 try {
-  try {
-    copyFileSync('src/index.html', 'dist/index.html')
-    const buildContext = await context(options)
-    if (process.argv.includes('--watch')) {
-      await buildContext.watch()
-      console.log('watch build succeeded')
-    } else {
-      await buildContext.rebuild()
-      buildContext.dispose()
-    }
-  } catch (error) {
-    console.error('esbuild build failed:', error)
-  }
+  copyFileSync('src/index.html', 'dist/index.html')
+  await build(options)
+  console.log('Build succeeded')
 } catch (error) {
+  console.error('Build failed:', error)
   process.exit(1)
 }

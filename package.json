@@ -4,8 +4,8 @@
   "scripts": {
     "build": "tsx esbuild.config.ts",
     "postbuild": "zip -r extension.zip dist/ icons/ manifest.json",
-    "watch": "tsx esbuild.config.ts --watch",
-    "test": "jest"
+    "test": "jest",
+    "typecheck": "tsc --noEmit"
   },
   "type": "module",
   "devDependencies": {
@@ -14,6 +14,7 @@
     "@types/jest": "^29.5.12",
     "@types/react": "^18.2.75",
     "@types/react-dom": "^18.2.24",
+    "@types/react-window": "^1.8.8",
     "buffer": "^6.0.3",
     "esbuild": "^0.20.2",
     "esbuild-plugin-tsc": "^0.4.0",
@@ -34,6 +35,7 @@
     "@mui/material": "^5.15.15",
     "dexie": "^4.0.4",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "react-window": "^1.8.11"
   }
 }
