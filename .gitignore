@@ -4,3 +4,4 @@ dist/
 *.log
 *.zip
 .DS_Store
+.mcp.json

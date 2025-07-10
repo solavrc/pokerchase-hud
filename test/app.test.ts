@@ -1,8 +1,9 @@
-import PokerChaseService, { ApiEvent, PlayerStats, PokerChaseDB } from '../src/app'
+import PokerChaseService, { PokerChaseDB } from '../src/app'
+import type { ApiEvent, PlayerStats } from '../src/app'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { Readable } from 'stream'
 
-const event_timeline: ApiEvent[] = [
+export const event_timeline: ApiEvent[] = [
   { "timestamp": 0, "ApiTypeId": 201, "Code": 0, "BattleType": 0, "Id": "new_stage007_010" },
   { "timestamp": 1, "ApiTypeId": 319, "MatchUserNum": 6 },
   { "timestamp": 2, "ApiTypeId": 307 },
@@ -138,21 +139,210 @@ const event_timeline: ApiEvent[] = [
   { "timestamp": 48, "ApiTypeId": 310, "SeatIndex": 5, "StampId": "stamp0107" },
 ]
 const expected: PlayerStats[][] = [
+  // After first hand (stats update 0 from EVT_HAND_RESULTS)
   [
-    { playerId: 561384657, hands: 1, vpip: [1, 1], pfr: [1, 1], flopCB: [0, 0], $3Bet: [0, 0], $3BetFold: [0, 0], af: [1, 1], afq: [1, 2], w$sd: [1, 1], wtsd: [1, 1], wwsf: [0, 0], },
-    { playerId: 575402650, hands: 1, vpip: [0, 1], pfr: [0, 1], flopCB: [0, 0], $3Bet: [0, 1], $3BetFold: [0, 0], af: [0, 0], afq: [0, 1], w$sd: [0, 0], wtsd: [0, 0], wwsf: [0, 0], },
-    { playerId: 750532695, hands: 1, vpip: [0, 1], pfr: [0, 1], flopCB: [0, 0], $3Bet: [0, 1], $3BetFold: [0, 0], af: [0, 0], afq: [0, 1], w$sd: [0, 0], wtsd: [0, 0], wwsf: [0, 0], },
-    { playerId: 172432670, hands: 1, vpip: [1, 1], pfr: [1, 1], flopCB: [0, 0], $3Bet: [1, 1], $3BetFold: [0, 0], af: [1, 0], afq: [1, 2], w$sd: [0, 0], wtsd: [0, 0], wwsf: [0, 0], },
-    { playerId: 583654032, hands: 1, vpip: [0, 1], pfr: [0, 1], flopCB: [0, 0], $3Bet: [0, 0], $3BetFold: [1, 1], af: [0, 0], afq: [0, 1], w$sd: [0, 0], wtsd: [0, 0], wwsf: [0, 0], },
-    { playerId: 619317634, hands: 1, vpip: [1, 1], pfr: [1, 1], flopCB: [0, 0], $3Bet: [0, 0], $3BetFold: [0, 1], af: [1, 0], afq: [1, 1], w$sd: [0, 1], wtsd: [1, 1], wwsf: [0, 0], },
+    {
+      playerId: 583654032,
+      statResults: [
+        { id: 'hands', name: 'HAND', value: 1, formatted: '1' },
+        { id: 'playerName', name: 'Name', value: 'シュレディンガー', formatted: 'シュレディンガー' },
+        { id: 'vpip', name: 'VPIP', value: [0, 1], formatted: '0.0% (0/1)' },
+        { id: 'pfr', name: 'PFR', value: [0, 1], formatted: '0.0% (0/1)' },
+        { id: 'cbet', name: 'CB', value: [0, 0], formatted: '-' },
+        { id: 'cbetFold', name: 'CBF', value: [0, 0], formatted: '-' },
+        { id: '3bet', name: '3B', value: [0, 0], formatted: '-' },
+        { id: '3betfold', name: '3BF', value: [1, 1], formatted: '100.0% (1/1)' },
+        { id: 'af', name: 'AF', value: [0, 0], formatted: '-' },
+        { id: 'afq', name: 'AFq', value: [0, 1], formatted: '0.0% (0/1)' },
+        { id: 'wtsd', name: 'WTSD', value: [0, 0], formatted: '-' },
+        { id: 'wwsf', name: 'WWSF', value: [0, 0], formatted: '-' },
+        { id: 'wsd', name: 'W$SD', value: [0, 0], formatted: '-' }
+      ]
+    },
+    {
+      playerId: 619317634,
+      statResults: [
+        { id: 'hands', name: 'HAND', value: 1, formatted: '1' },
+        { id: 'playerName', name: 'Name', value: 'ぽちこん', formatted: 'ぽちこん' },
+        { id: 'vpip', name: 'VPIP', value: [1, 1], formatted: '100.0% (1/1)' },
+        { id: 'pfr', name: 'PFR', value: [1, 1], formatted: '100.0% (1/1)' },
+        { id: 'cbet', name: 'CB', value: [0, 0], formatted: '-' },
+        { id: 'cbetFold', name: 'CBF', value: [0, 0], formatted: '-' },
+        { id: '3bet', name: '3B', value: [0, 0], formatted: '-' },
+        { id: '3betfold', name: '3BF', value: [0, 1], formatted: '0.0% (0/1)' },
+        { id: 'af', name: 'AF', value: [1, 0], formatted: '-' },
+        { id: 'afq', name: 'AFq', value: [1, 1], formatted: '100.0% (1/1)' },
+        { id: 'wtsd', name: 'WTSD', value: [1, 0], formatted: '-' },
+        { id: 'wwsf', name: 'WWSF', value: [0, 0], formatted: '-' },
+        { id: 'wsd', name: 'W$SD', value: [0, 1], formatted: '0.0% (0/1)' }
+      ]
+    },
+    {
+      playerId: 561384657,
+      statResults: [
+        { id: 'hands', name: 'HAND', value: 1, formatted: '1' },
+        { id: 'playerName', name: 'Name', value: 'sola', formatted: 'sola' },
+        { id: 'vpip', name: 'VPIP', value: [1, 1], formatted: '100.0% (1/1)' },
+        { id: 'pfr', name: 'PFR', value: [1, 1], formatted: '100.0% (1/1)' },
+        { id: 'cbet', name: 'CB', value: [0, 0], formatted: '-' },
+        { id: 'cbetFold', name: 'CBF', value: [0, 0], formatted: '-' },
+        { id: '3bet', name: '3B', value: [0, 0], formatted: '-' },
+        { id: '3betfold', name: '3BF', value: [0, 0], formatted: '-' },
+        { id: 'af', name: 'AF', value: [1, 1], formatted: '1.00 (1/1)' },
+        { id: 'afq', name: 'AFq', value: [1, 2], formatted: '50.0% (1/2)' },
+        { id: 'wtsd', name: 'WTSD', value: [1, 0], formatted: '-' },
+        { id: 'wwsf', name: 'WWSF', value: [0, 0], formatted: '-' },
+        { id: 'wsd', name: 'W$SD', value: [1, 1], formatted: '100.0% (1/1)' }
+      ]
+    },
+    {
+      playerId: 575402650,
+      statResults: [
+        { id: 'hands', name: 'HAND', value: 1, formatted: '1' },
+        { id: 'playerName', name: 'Name', value: '夜菊0721', formatted: '夜菊0721' },
+        { id: 'vpip', name: 'VPIP', value: [0, 1], formatted: '0.0% (0/1)' },
+        { id: 'pfr', name: 'PFR', value: [0, 1], formatted: '0.0% (0/1)' },
+        { id: 'cbet', name: 'CB', value: [0, 0], formatted: '-' },
+        { id: 'cbetFold', name: 'CBF', value: [0, 0], formatted: '-' },
+        { id: '3bet', name: '3B', value: [0, 1], formatted: '0.0% (0/1)' },
+        { id: '3betfold', name: '3BF', value: [0, 0], formatted: '-' },
+        { id: 'af', name: 'AF', value: [0, 0], formatted: '-' },
+        { id: 'afq', name: 'AFq', value: [0, 1], formatted: '0.0% (0/1)' },
+        { id: 'wtsd', name: 'WTSD', value: [0, 0], formatted: '-' },
+        { id: 'wwsf', name: 'WWSF', value: [0, 0], formatted: '-' },
+        { id: 'wsd', name: 'W$SD', value: [0, 0], formatted: '-' }
+      ]
+    },
+    {
+      playerId: 750532695,
+      statResults: [
+        { id: 'hands', name: 'HAND', value: 1, formatted: '1' },
+        { id: 'playerName', name: 'Name', value: 'ちいまう', formatted: 'ちいまう' },
+        { id: 'vpip', name: 'VPIP', value: [0, 1], formatted: '0.0% (0/1)' },
+        { id: 'pfr', name: 'PFR', value: [0, 1], formatted: '0.0% (0/1)' },
+        { id: 'cbet', name: 'CB', value: [0, 0], formatted: '-' },
+        { id: 'cbetFold', name: 'CBF', value: [0, 0], formatted: '-' },
+        { id: '3bet', name: '3B', value: [0, 1], formatted: '0.0% (0/1)' },
+        { id: '3betfold', name: '3BF', value: [0, 0], formatted: '-' },
+        { id: 'af', name: 'AF', value: [0, 0], formatted: '-' },
+        { id: 'afq', name: 'AFq', value: [0, 1], formatted: '0.0% (0/1)' },
+        { id: 'wtsd', name: 'WTSD', value: [0, 0], formatted: '-' },
+        { id: 'wwsf', name: 'WWSF', value: [0, 0], formatted: '-' },
+        { id: 'wsd', name: 'W$SD', value: [0, 0], formatted: '-' }
+      ]
+    },
+    {
+      playerId: 172432670,
+      statResults: [
+        { id: 'hands', name: 'HAND', value: 1, formatted: '1' },
+        { id: 'playerName', name: 'Name', value: 'ラロムジ', formatted: 'ラロムジ' },
+        { id: 'vpip', name: 'VPIP', value: [1, 1], formatted: '100.0% (1/1)' },
+        { id: 'pfr', name: 'PFR', value: [1, 1], formatted: '100.0% (1/1)' },
+        { id: 'cbet', name: 'CB', value: [0, 0], formatted: '-' },
+        { id: 'cbetFold', name: 'CBF', value: [0, 0], formatted: '-' },
+        { id: '3bet', name: '3B', value: [1, 1], formatted: '100.0% (1/1)' },
+        { id: '3betfold', name: '3BF', value: [0, 0], formatted: '-' },
+        { id: 'af', name: 'AF', value: [1, 0], formatted: '-' },
+        { id: 'afq', name: 'AFq', value: [1, 2], formatted: '50.0% (1/2)' },
+        { id: 'wtsd', name: 'WTSD', value: [0, 0], formatted: '-' },
+        { id: 'wwsf', name: 'WWSF', value: [0, 0], formatted: '-' },
+        { id: 'wsd', name: 'W$SD', value: [0, 0], formatted: '-' }
+      ]
+    },
   ],
+  // After second hand (stats update 1 from EVT_HAND_RESULTS)
   [
-    { playerId: 561384657, hands: 2, vpip: [1, 2], pfr: [1, 2], flopCB: [0, 0], $3Bet: [0, 1], $3BetFold: [0, 0], af: [1, 1], afq: [1, 3], w$sd: [1, 1], wtsd: [1, 1], wwsf: [0, 0], },
-    { playerId: 575402650, hands: 2, vpip: [1, 2], pfr: [0, 2], flopCB: [0, 0], $3Bet: [0, 2], $3BetFold: [0, 0], af: [0, 1], afq: [0, 2], w$sd: [1, 1], wtsd: [1, 1], wwsf: [1, 1], },
-    { playerId: 750532695, hands: 2, vpip: [0, 2], pfr: [0, 2], flopCB: [0, 0], $3Bet: [0, 1], $3BetFold: [0, 0], af: [0, 0], afq: [0, 2], w$sd: [0, 0], wtsd: [0, 0], wwsf: [0, 0], },
-    { playerId: 172432670, hands: 2, vpip: [2, 2], pfr: [2, 2], flopCB: [0, 1], $3Bet: [1, 1], $3BetFold: [0, 0], af: [2, 0], afq: [2, 3], w$sd: [0, 1], wtsd: [1, 1], wwsf: [0, 1], },
-    { playerId: 583654032, hands: 2, vpip: [0, 2], pfr: [0, 2], flopCB: [0, 0], $3Bet: [0, 1], $3BetFold: [1, 1], af: [0, 0], afq: [0, 2], w$sd: [0, 0], wtsd: [0, 0], wwsf: [0, 0], },
+    {
+      playerId: 583654032,
+      statResults: [
+        { id: 'hands', name: 'HAND', value: 2, formatted: '2' },
+        { id: 'playerName', name: 'Name', value: 'シュレディンガー', formatted: 'シュレディンガー' },
+        { id: 'vpip', name: 'VPIP', value: [0, 2], formatted: '0.0% (0/2)' },
+        { id: 'pfr', name: 'PFR', value: [0, 2], formatted: '0.0% (0/2)' },
+        { id: 'cbet', name: 'CB', value: [0, 0], formatted: '-' },
+        { id: 'cbetFold', name: 'CBF', value: [0, 0], formatted: '-' },
+        { id: '3bet', name: '3B', value: [0, 1], formatted: '0.0% (0/1)' },
+        { id: '3betfold', name: '3BF', value: [1, 1], formatted: '100.0% (1/1)' },
+        { id: 'af', name: 'AF', value: [0, 0], formatted: '-' },
+        { id: 'afq', name: 'AFq', value: [0, 2], formatted: '0.0% (0/2)' },
+        { id: 'wtsd', name: 'WTSD', value: [0, 0], formatted: '-' },
+        { id: 'wwsf', name: 'WWSF', value: [0, 0], formatted: '-' },
+        { id: 'wsd', name: 'W$SD', value: [0, 0], formatted: '-' }
+      ]
+    },
     { playerId: -1, },
+    {
+      playerId: 561384657,
+      statResults: [
+        { id: 'hands', name: 'HAND', value: 2, formatted: '2' },
+        { id: 'playerName', name: 'Name', value: 'sola', formatted: 'sola' },
+        { id: 'vpip', name: 'VPIP', value: [1, 2], formatted: '50.0% (1/2)' },
+        { id: 'pfr', name: 'PFR', value: [1, 2], formatted: '50.0% (1/2)' },
+        { id: 'cbet', name: 'CB', value: [0, 0], formatted: '-' },
+        { id: 'cbetFold', name: 'CBF', value: [0, 0], formatted: '-' },
+        { id: '3bet', name: '3B', value: [0, 1], formatted: '0.0% (0/1)' },
+        { id: '3betfold', name: '3BF', value: [0, 0], formatted: '-' },
+        { id: 'af', name: 'AF', value: [1, 1], formatted: '1.00 (1/1)' },
+        { id: 'afq', name: 'AFq', value: [1, 3], formatted: '33.3% (1/3)' },
+        { id: 'wtsd', name: 'WTSD', value: [1, 0], formatted: '-' },
+        { id: 'wwsf', name: 'WWSF', value: [0, 0], formatted: '-' },
+        { id: 'wsd', name: 'W$SD', value: [1, 1], formatted: '100.0% (1/1)' }
+      ]
+    },
+    {
+      playerId: 575402650,
+      statResults: [
+        { id: 'hands', name: 'HAND', value: 2, formatted: '2' },
+        { id: 'playerName', name: 'Name', value: '夜菊0721', formatted: '夜菊0721' },
+        { id: 'vpip', name: 'VPIP', value: [1, 2], formatted: '50.0% (1/2)' },
+        { id: 'pfr', name: 'PFR', value: [0, 2], formatted: '0.0% (0/2)' },
+        { id: 'cbet', name: 'CB', value: [0, 0], formatted: '-' },
+        { id: 'cbetFold', name: 'CBF', value: [0, 0], formatted: '-' },
+        { id: '3bet', name: '3B', value: [0, 2], formatted: '0.0% (0/2)' },
+        { id: '3betfold', name: '3BF', value: [0, 0], formatted: '-' },
+        { id: 'af', name: 'AF', value: [0, 1], formatted: '0.00 (0/1)' },
+        { id: 'afq', name: 'AFq', value: [0, 2], formatted: '0.0% (0/2)' },
+        { id: 'wtsd', name: 'WTSD', value: [1, 1], formatted: '100.0% (1/1)' },
+        { id: 'wwsf', name: 'WWSF', value: [1, 1], formatted: '100.0% (1/1)' },
+        { id: 'wsd', name: 'W$SD', value: [1, 1], formatted: '100.0% (1/1)' }
+      ]
+    },
+    {
+      playerId: 750532695,
+      statResults: [
+        { id: 'hands', name: 'HAND', value: 2, formatted: '2' },
+        { id: 'playerName', name: 'Name', value: 'ちいまう', formatted: 'ちいまう' },
+        { id: 'vpip', name: 'VPIP', value: [0, 2], formatted: '0.0% (0/2)' },
+        { id: 'pfr', name: 'PFR', value: [0, 2], formatted: '0.0% (0/2)' },
+        { id: 'cbet', name: 'CB', value: [0, 0], formatted: '-' },
+        { id: 'cbetFold', name: 'CBF', value: [0, 0], formatted: '-' },
+        { id: '3bet', name: '3B', value: [0, 1], formatted: '0.0% (0/1)' },
+        { id: '3betfold', name: '3BF', value: [0, 0], formatted: '-' },
+        { id: 'af', name: 'AF', value: [0, 0], formatted: '-' },
+        { id: 'afq', name: 'AFq', value: [0, 2], formatted: '0.0% (0/2)' },
+        { id: 'wtsd', name: 'WTSD', value: [0, 0], formatted: '-' },
+        { id: 'wwsf', name: 'WWSF', value: [0, 0], formatted: '-' },
+        { id: 'wsd', name: 'W$SD', value: [0, 0], formatted: '-' }
+      ]
+    },
+    {
+      playerId: 172432670,
+      statResults: [
+        { id: 'hands', name: 'HAND', value: 2, formatted: '2' },
+        { id: 'playerName', name: 'Name', value: 'ラロムジ', formatted: 'ラロムジ' },
+        { id: 'vpip', name: 'VPIP', value: [2, 2], formatted: '100.0% (2/2)' },
+        { id: 'pfr', name: 'PFR', value: [2, 2], formatted: '100.0% (2/2)' },
+        { id: 'cbet', name: 'CB', value: [0, 1], formatted: '0.0% (0/1)' },
+        { id: 'cbetFold', name: 'CBF', value: [0, 0], formatted: '-' },
+        { id: '3bet', name: '3B', value: [1, 1], formatted: '100.0% (1/1)' },
+        { id: '3betfold', name: '3BF', value: [0, 0], formatted: '-' },
+        { id: 'af', name: 'AF', value: [2, 0], formatted: '-' },
+        { id: 'afq', name: 'AFq', value: [2, 3], formatted: '66.7% (2/3)' },
+        { id: 'wtsd', name: 'WTSD', value: [1, 1], formatted: '100.0% (1/1)' },
+        { id: 'wwsf', name: 'WWSF', value: [0, 1], formatted: '0.0% (0/1)' },
+        { id: 'wsd', name: 'W$SD', value: [0, 1], formatted: '0.0% (0/1)' }
+      ]
+    },
   ],
 ]
 
@@ -160,14 +350,13 @@ test('ログから各プレイヤーのスタッツを計算できる', (done) =
   const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
   const service = new PokerChaseService({ db: dbMock })
   const actual: PlayerStats[][] = []
-  service.stream.on('data', (hand: PlayerStats[]) => {
-    actual.push(hand)
-  })
-  service.stream.on('end', () => {
+
+  service.statsOutputStream.on('data', (hand: PlayerStats[]) => actual.push(hand))
+  service.statsOutputStream.on('end', () => {
     expect(actual).toStrictEqual(expected)
     done()
   })
-  Readable.from(event_timeline).pipe(service.inputStream)
+  Readable.from(event_timeline).pipe(service.handAggregateStream)
 })
 
 test('プレイヤーを起点にユーザーを並び替えられる', () => {
