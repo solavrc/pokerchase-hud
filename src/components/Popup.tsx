@@ -15,6 +15,7 @@ import type {
   ImportDataProcessMessage,
   UpdateBattleTypeFilterMessage,
 } from '../types/messages'
+import { content_scripts } from '../../manifest.json'
 
 // Constants
 const FILE_CHUNK_SIZE = 5 * 1024 * 1024 // 5MB chunks for file import
@@ -84,6 +85,20 @@ const Popup = () => {
 
   useEffect(() => {
     (async () => {
+      // Check current tab URL
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
+
+      // Extract base URL from manifest
+      const gameBaseUrl = content_scripts[0]!.matches[0]!.replace(/\/\*$/, '')
+
+      // Check if current tab is on game domain
+      if (activeTab?.url && !activeTab.url.startsWith(gameBaseUrl)) {
+        // Not on game page - open game in new tab and close popup
+        await chrome.tabs.create({ url: `${gameBaseUrl}/play/index.html` })
+        window.close()
+        return
+      }
+
       const savedOptions = await bucket.get()
       setOptions(savedOptions)
       if (savedOptions.gameTypeFilter) {
@@ -155,13 +170,13 @@ const Popup = () => {
 
   const handleGameTypeFilterChange = (type: keyof GameTypeFilter) => (event: React.ChangeEvent<HTMLInputElement>) => {
     const newFilter = { ...gameTypeFilter, [type]: event.target.checked }
-    
+
     // すべてのチェックが外されそうな場合は変更を阻止
     const checkedCount = Object.values(newFilter).filter(Boolean).length
     if (checkedCount === 0) {
       return // 最後の1つは外せない
     }
-    
+
     // Game type filter changed
     setGameTypeFilter(newFilter)
 
@@ -373,11 +388,11 @@ const Popup = () => {
       })
 
       // Chrome storageのUI設定とHandLog設定もリセット
-      await chrome.storage.sync.set({ 
+      await chrome.storage.sync.set({
         uiConfig: defaultUI,
         handLogConfig: DEFAULT_HAND_LOG_CONFIG
       })
-      
+
       // HUDの位置情報もクリア
       const keysToRemove = []
       for (let i = 0; i < 6; i++) {
@@ -472,7 +487,7 @@ const Popup = () => {
           +
         </IconButton>
       </Box>
-      
+
       <ToggleButtonGroup
         value={uiConfig.displayEnabled ? 'on' : 'off'}
         exclusive

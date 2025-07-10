@@ -627,7 +627,7 @@ class PokerChaseService {
   statDisplayConfigs?: StatDisplayConfig[] = undefined // Custom stat display configuration
   handLogConfig?: HandLogConfig = undefined // Hand log display configuration
   static readonly POKER_CHASE_SERVICE_EVENT = 'PokerChaseServiceEvent'
-  static readonly POKER_CHASE_ORIGIN = content_scripts[0]?.matches?.[0] ? new URL(content_scripts[0].matches[0]).origin : ''
+  static readonly POKER_CHASE_ORIGIN = new URL(content_scripts[0]!.matches[0]!).origin
   readonly session: Session = {
     id: undefined,
     battleType: undefined,

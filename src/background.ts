@@ -22,10 +22,14 @@ import type {
   LatestStatsMessage,
   MessageResponse
 } from './types/messages'
+import { content_scripts } from '../manifest.json'
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
 
 const PING_INTERVAL_MS = 10 * 1000
 const IMPORT_CHUNK_SIZE = 1000
+
+// Get game URL pattern from manifest
+const gameUrlPattern = content_scripts[0]!.matches[0]!
 
 declare global {
   interface Window {
@@ -210,7 +214,7 @@ chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.run
     // サービス内のフィルターを更新
     service.setBattleTypeFilter(request.filterOptions)
       .then(() => {
-            sendResponse({ success: true })
+        sendResponse({ success: true })
       })
       .catch(error => {
         console.error('[background.ts] Filter update error:', error)
@@ -224,7 +228,7 @@ chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.run
     chrome.storage.sync.set({ options: storageUpdate })
 
     // コンテンツスクリプトにメッセージを転送
-    chrome.tabs.query({ url: '*://game.poker-chase.com/*' }, tabs => {
+    chrome.tabs.query({ url: gameUrlPattern }, tabs => {
       tabs.forEach(tab => tab.id && chrome.tabs.sendMessage(tab.id, request))
     })
 
@@ -507,7 +511,7 @@ chrome.runtime.onConnect.addListener(port => {
     // Handle hand log events
     service.handLogStream.on('data', (event: HandLogEvent) => {
       // Send to all tabs with the game
-      chrome.tabs.query({ url: '*://game.poker-chase.com/*' }, tabs => {
+      chrome.tabs.query({ url: gameUrlPattern }, tabs => {
         tabs.forEach(tab => {
           if (tab.id) {
             chrome.tabs.sendMessage<HandLogEventMessage>(tab.id, {
@@ -551,3 +555,4 @@ const getLatestSessionStats = async (): Promise<PlayerStats[]> => {
   // This avoids showing stale data and ensures EVT_DEAL is available for seat mapping
   return []
 }
+
