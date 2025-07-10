@@ -19,12 +19,28 @@ const options: BuildOptions = {
     'src/' + parse(web_accessible_resource).name + '.ts',
     'src/popup.ts'
   ],
-  format: 'esm',
+  format: 'iife',
   logLevel: 'info',
   outdir: 'dist',
   platform: 'browser',
   target: ['chrome123'],
+  minify: true,
+  treeShaking: true,
+  legalComments: 'none',
+  define: {
+    'process.env.NODE_ENV': '"production"'
+  },
+  external: [],
   plugins: [{
+    name: 'alias',
+    setup(build) {
+      // Material-UI optimizations
+      build.onResolve({ filter: /^@mui\/material$/ }, () => ({
+        path: '@mui/material/index.js',
+        external: false
+      }))
+    }
+  }, {
     name: 'nodePolyfills',
     setup(build) {
       const __filename = fileURLToPath(import.meta.url)
