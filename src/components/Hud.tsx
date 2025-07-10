@@ -315,8 +315,8 @@ const Hud = memo((props: { actualSeatIndex: number, stat: PlayerStats, scale?: n
               Waiting for Hand...
             </span>
             <div style={playerTypeIconsStyle}>
-              <span>🦈</span>
               <span>🐟</span>
+              <span>🦈</span>
             </div>
           </div>
           
@@ -366,8 +366,8 @@ const Hud = memo((props: { actualSeatIndex: number, stat: PlayerStats, scale?: n
               {playerName || `Player ${props.stat.playerId}`}
             </span>
             <div style={playerTypeIconsStyle}>
-              <span>🦈</span>
               <span>🐟</span>
+              <span>🦈</span>
             </div>
           </div>
           

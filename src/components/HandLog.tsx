@@ -21,13 +21,14 @@ interface HandLogProps {
 
 const getPositionStyles = (position: string): CSSProperties => {
   const offset = 10
-  const defaultPosition: CSSProperties = { bottom: offset, right: offset }
-  
+  const bottomOffset = 135  // 125px持ち上げるため、10 + 125 = 135
+  const defaultPosition: CSSProperties = { bottom: bottomOffset, right: offset }
+
   switch (position) {
     case 'bottom-right':
-      return { bottom: offset, right: offset }
+      return { bottom: bottomOffset, right: offset }
     case 'bottom-left':
-      return { bottom: offset, left: offset }
+      return { bottom: bottomOffset, left: offset }
     case 'top-right':
       return { top: offset, right: offset }
     case 'top-left':
@@ -294,7 +295,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
   if (!config.enabled) return null
 
   const isRightSide = config.position.includes('right')
-  const expandedHeight = isHovered ? window.innerWidth / 16 * 9 - 30 : config.height
+  const expandedHeight = isHovered ? window.innerHeight / 2 : config.height
 
   // コンテナスタイル
   const containerStyle: CSSProperties = {
@@ -306,8 +307,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     backdropFilter: 'blur(4px)',
     border: '1px solid rgba(255, 255, 255, 0.2)',
     borderRadius: '4px',
-    padding: '6px',
-    [isRightSide ? 'paddingLeft' : 'paddingRight']: '10px',
+    padding: '0',
     transform: `scale(${scale})`,
     transformOrigin: config.position.replace('-', ' '),
     overflowY: 'hidden',
@@ -356,10 +356,10 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       {processedItems.length > 0 ? (
         <List
           ref={listRef}
-          height={expandedHeight - 12}
+          height={expandedHeight}
           itemCount={processedItems.length}
           itemSize={getItemSize}
-          width={width - 16}
+          width={width}
           itemData={itemData}
         >
           {EntryRow}

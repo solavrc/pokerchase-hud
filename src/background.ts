@@ -89,8 +89,8 @@ chrome.storage.sync.get('options', (result) => {
     opacity: 0.8,
     fontSize: 8,
     position: 'bottom-right',
-    width: 250,
-    height: 200,
+    width: 400,
+    height: 100,
     autoScroll: true,
     showTimestamps: false
   }

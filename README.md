@@ -22,7 +22,7 @@ An unofficial Chrome extension providing real-time poker statistics and hand his
 ### Installation
 
 ```bash
-git clone https://github.com/yourusername/pokerchase-hud-v2.git
+git clone https://github.com/solavrc/pokerchase-hud.git
 cd pokerchase-hud-v2
 npm install
 npm run build
