@@ -2,6 +2,8 @@
 
 An unofficial Chrome extension providing real-time poker statistics and hand history tracking.
 
+![PokerChase HUD](./icons/hud-config.png)
+
 > **Note**: This codebase was primarily written by [Claude Code](https://claude.ai/code), demonstrating AI-assisted software development capabilities.
 
 ## Features
