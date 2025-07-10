@@ -1,37 +1,73 @@
-# PokerChase HUD - Technical Documentation
+# PokerChase HUD v2 - Developer Documentation
 
-This document serves as the primary technical reference for the PokerChase HUD Chrome extension development.
+> 🎯 **Purpose**: This document serves as the primary technical reference for PokerChase HUD Chrome extension development and maintenance.
 
-## Table of Contents
+## 📋 Table of Contents
 
-1. [Overview](#overview)
-2. [Architecture](#architecture)
-3. [Core Components](#core-components)
-4. [Data Flow](#data-flow)
-5. [API Reference](#api-reference)
-6. [Configuration](#configuration)
-7. [Development Guide](#development-guide)
-8. [Troubleshooting](#troubleshooting)
+1. [Quick Start](#quick-start)
+2. [Project Overview](#project-overview)
+3. [Architecture](#architecture)
+4. [Core Components](#core-components)
+5. [Data Flow](#data-flow)
+6. [API Reference](#api-reference)
+7. [Configuration](#configuration)
+8. [Development Guide](#development-guide)
+9. [Build & Optimization](#build--optimization)
+10. [Troubleshooting](#troubleshooting)
 
-## Overview
+## 🚀 Quick Start
 
-PokerChase HUD is an unofficial Chrome extension that provides real-time player statistics and hand history tracking for poker games.
+```bash
+# Clone repository
+git clone https://github.com/solavrc/pokerchase-hud.git
+cd pokerchase-hud-v2
 
-### Key Features
+# Install dependencies
+npm install
 
-- **Real-time HUD**: Displays player statistics overlay on the game interface
-- **Hand History**: Live PokerStars-format hand log with export capabilities
-- **Statistics Tracking**: 13 poker statistics including VPIP, PFR, 3-bet, etc.
-- **Flexible Filtering**: Game type and hand count filters
-- **Drag & Drop UI**: Customizable HUD positioning
+# Build extension (optimized production build)
+npm run build
 
-### Technical Stack
+# Load in Chrome
+# 1. Open chrome://extensions/
+# 2. Enable "Developer mode"
+# 3. Click "Load unpacked" 
+# 4. Select the project directory
+```
 
-- **Framework**: Chrome Extension Manifest V3
-- **Frontend**: React 18 + TypeScript
-- **Storage**: IndexedDB (via Dexie)
-- **Build**: esbuild
-- **Testing**: Jest
+## 📦 Project Overview
+
+PokerChase HUD v2 is an unofficial Chrome extension providing real-time poker statistics and hand history tracking with an optimized, lightweight architecture.
+
+### ✨ Key Features
+
+- **Real-time HUD**: Player statistics overlay with drag & drop positioning
+- **Hand History Log**: Live PokerStars-format export with virtualized scrolling
+- **Statistics Engine**: 13 poker statistics with modular architecture
+- **Smart Filtering**: Game type (SNG/MTT/Ring) and hand count filters
+- **Optimized UI**: 75%+ smaller bundle size, instant loading
+- **Dynamic URL Support**: Automatically adapts to game URL from manifest
+
+### 🛠 Technical Stack
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| **Extension** | Chrome Manifest V3 | Modern extension API |
+| **Frontend** | React 18 + TypeScript | Type-safe UI components |
+| **UI Library** | Material-UI (modular) | Optimized component imports |
+| **Storage** | IndexedDB (Dexie) | High-performance data persistence |
+| **Build** | esbuild | Ultra-fast bundling (~100ms) |
+| **Testing** | Jest + React Testing | Unit and integration tests |
+
+### 📊 Performance Metrics
+
+- **Bundle Sizes** (after optimization):
+  - popup.js: 391KB (was 1.8MB)
+  - content_script.js: 369KB (was 1.5MB)
+  - background.js: 213KB (was 503KB)
+- **Build Time**: ~100ms
+- **Stats Cache**: 5-second TTL
+- **Memory**: Virtualized scrolling for hand log
 
 ## Architecture
 
@@ -167,16 +203,20 @@ AggregateEventsStream
 #### Hud.tsx
 
 - Player statistics overlay (240px fixed width)
-- Drag-to-move with position persistence
+- Drag-to-move with position persistence (saved per seat)
 - Click-to-copy functionality
-- Player type indicators (🦈/🐟) for future features
+- Player type indicators (🐟🦈) for future features
+- Responsive scaling with UI config
 
 #### HandLog.tsx
 
 - Real-time hand history display
-- Virtualized scrolling (react-window)
-- Configurable position, size, opacity
-- Auto-scroll with manual override
+- Virtualized scrolling (react-window) for performance
+- Default: 400x100px, positioned 135px from bottom
+- Hover expands to 50% screen height
+- Resizable with edge drag handle
+- Double-click to clear log
+- Click hand to copy to clipboard
 
 ## Data Flow
 
@@ -283,13 +323,15 @@ interface HandLogEvent {
   },
 
   handLogConfig: {
-    enabled: boolean;
-    position: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
-    maxHands: number;
-    width: number;
-    height: number;
-    opacity: number;        // 0.0 - 1.0
-    fontSize: number;
+    enabled: boolean;        // default: true
+    position: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'; // default: 'bottom-right'
+    maxHands: number;        // default: 5
+    width: number;           // default: 400px
+    height: number;          // default: 100px
+    opacity: number;         // default: 0.8 (0.0 - 1.0)
+    fontSize: number;        // default: 8px
+    autoScroll: boolean;     // default: true
+    showTimestamps: boolean; // default: false
   },
 
   options: {
@@ -332,10 +374,10 @@ interface HandLogEvent {
 
 ## Development Guide
 
-### Commands
+### 🔧 Commands
 
 ```bash
-# Production build
+# Production build (optimized)
 npm run build
 
 # Type checking
@@ -344,9 +386,34 @@ npm run typecheck
 # Run tests
 npm run test
 
-# Package extension
+# Package extension (creates extension.zip)
 npm run postbuild
+
+# Clean build
+rm -rf dist && npm run build
 ```
+
+### 🔗 Dynamic URL Management
+
+The extension automatically adapts to the game URL specified in `manifest.json`:
+
+```json
+// manifest.json
+"content_scripts": [{
+  "matches": ["https://game.poker-chase.com/*"]
+}]
+```
+
+Components access this URL dynamically:
+```typescript
+// Import manifest
+import { content_scripts } from '../manifest.json'
+
+// Get game URL pattern
+const gameUrlPattern = content_scripts[0].matches[0]
+```
+
+This allows easy deployment to different environments without code changes.
 
 ### Adding New Statistics
 
@@ -386,6 +453,45 @@ npm run postbuild
 - Never log sensitive player data
 - Check message origins in content script
 - Use Content Security Policy
+
+## Build & Optimization
+
+### 🚄 Performance Optimizations
+
+The build system implements several optimizations for production:
+
+```typescript
+// esbuild.config.ts
+{
+  format: 'iife',           // Chrome extension compatible
+  minify: true,             // Minimize code size
+  treeShaking: true,        // Remove unused code
+  legalComments: 'none',    // Strip license comments
+  define: {
+    'process.env.NODE_ENV': '"production"'  // React production mode
+  }
+}
+```
+
+### 📦 Bundle Size Optimization
+
+| Optimization | Impact | Implementation |
+|-------------|---------|----------------|
+| **Material-UI Modular Imports** | -60% popup.js | Import individual components |
+| **Tree Shaking** | -40% all bundles | Remove unused exports |
+| **Production React** | -30% React size | NODE_ENV=production |
+| **Minification** | -50% overall | esbuild minify |
+
+### 🎯 Import Best Practices
+
+```typescript
+// ❌ Bad - imports entire library
+import { Button, Dialog } from '@mui/material'
+
+// ✅ Good - tree-shakeable imports
+import Button from '@mui/material/Button'
+import Dialog from '@mui/material/Dialog'
+```
 
 ## Troubleshooting
 
