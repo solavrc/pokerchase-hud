@@ -6,6 +6,10 @@ An unofficial Chrome extension providing real-time poker statistics and hand his
 
 > **Note**: This codebase was primarily written by [Claude Code](https://claude.ai/code), demonstrating AI-assisted software development capabilities.
 
+## Disclaimer
+
+This is an **unofficial** Chrome extension not affiliated with PokerChase. Use at your own risk. The developers assume no responsibility or liability for any consequences arising from the use of this tool.
+
 ## Features
 
 - **Real-time HUD**: Player statistics overlay with 13+ poker metrics
