@@ -786,15 +786,18 @@ class PokerChaseService {
       let processedCount = 0
       let lastProcessedTimestamp = lastTimestamp
       
-      // 新規イベントのみを処理
-      await this.db.apiEvents
+      // 新規イベントのみを取得（READONLYトランザクションを完了させる）
+      const newEvents = await this.db.apiEvents
         .where('timestamp')
         .above(lastTimestamp)
-        .each((event: ApiEvent) => {
-          eventProcessor.write(event)
-          processedCount++
-          lastProcessedTimestamp = Math.max(lastProcessedTimestamp, event.timestamp || 0)
-        })
+        .toArray()
+      
+      // トランザクション外でイベントを処理
+      for (const event of newEvents) {
+        eventProcessor.write(event)
+        processedCount++
+        lastProcessedTimestamp = Math.max(lastProcessedTimestamp, event.timestamp || 0)
+      }
       
       // メタデータを更新
       await this.db.meta.put({
