@@ -85,6 +85,38 @@ export enum ApiType {
   EVT_BLIND_RAISED = 317,
   /** 参加申込結果: { "ApiTypeId": 319, "MatchUserNum": 6 } */
   EVT_ENTRY_COMPLETED = 319,
+
+  // 仮置き名称
+  /** 不明な応答220: { "ApiTypeId": 220, "Code": 0 } */
+  RES_UNKNOWN_220 = 220,
+  /** 不明な応答221: { "ApiTypeId": 221, "Code": 0 } */
+  RES_UNKNOWN_221 = 221,
+  /** 不明な応答224: { "ApiTypeId": 224, "Code": 0, "Status": 0 } */
+  RES_UNKNOWN_224 = 224,
+  /** 不明なイベント312: { "ApiTypeId": 312, "Code": 8103, "Error": { "Status": 1, "Message": "再読み込みのためにタイトルに戻ります", "AddParam": "" } } */
+  EVT_UNKNOWN_312 = 312,
+  /** 不明なイベント315: { "ApiTypeId": 315, "FinishUnixSeconds": 1732543515, "MyRanking": { "Ranking": 2, "JoinNum": 105, "AverageChip": 63000, "ActiveNum": 5 } } */
+  EVT_UNKNOWN_315 = 315,
+  /** 不明なイベント316: { "ApiTypeId": 316, "ProcessType": 0, "NextBreakUnixSeconds": 1727186400 } */
+  EVT_UNKNOWN_316 = 316,
+  /** 不明なイベント318: { "ApiTypeId": 318, "UserId": 411380776 } */
+  EVT_UNKNOWN_318 = 318,
+  /** 不明な応答1201: { "ApiTypeId": 1201, "Code": 0, "chatType": 3, "PrevMessage": [...], "OnlineUserIds": [], "OnlineStatus": [] } */
+  RES_UNKNOWN_1201 = 1201,
+  /** 不明な応答1202: { "ApiTypeId": 1202, "Code": 8301, "Error": { "Status": 1, "Message": "すでに退席しています", "AddParam": "" } } */
+  RES_UNKNOWN_1202 = 1202,
+  /** 不明な応答1203: { "ApiTypeId": 1203, "Code": 0 } */
+  RES_UNKNOWN_1203 = 1203,
+  /** 不明な応答1204: { "ApiTypeId": 1204, "Code": 0, "Messages": [] } */
+  RES_UNKNOWN_1204 = 1204,
+  /** 不明なイベント1301: { "ApiTypeId": 1301, "Message": { "Id": 218, "Us": {...}, "Ti": 1727793545, "Ms": "..." } } */
+  EVT_UNKNOWN_1301 = 1301,
+  /** 不明なイベント1302: { "ApiTypeId": 1302, "LatestMessageId": 4 } */
+  EVT_UNKNOWN_1302 = 1302,
+  /** 不明なイベント1303: { "ApiTypeId": 1303, "Message": {...}, "BattleType": 2, "RoomId": 556177 } */
+  EVT_UNKNOWN_1303 = 1303,
+  /** 不明なイベント1304: { "ApiTypeId": 1304, "UserId": 981512134, "Status": 1 } */
+  EVT_UNKNOWN_1304 = 1304,
 }
 
 export interface ApiEventBase<T extends ApiType> {
@@ -118,6 +150,22 @@ export type ApiEvent<T extends ApiType = ApiType> =
   T extends ApiType.EVT_REWARD_CHANGED ? ApiEventBase<ApiType.EVT_REWARD_CHANGED> & { RankingRewards: RankingReward[] } :
   T extends ApiType.EVT_BLIND_RAISED ? ApiEventBase<ApiType.EVT_BLIND_RAISED> & { Ante: number, BigBlind: number, CurrentBlindLv: number, NextBlindUnixSeconds: number, SmallBlind: number } :
   T extends ApiType.EVT_ENTRY_COMPLETED ? ApiEventBase<ApiType.EVT_ENTRY_COMPLETED> & { MatchUserNum: number } :
+  // 仮置き型定義
+  T extends ApiType.RES_UNKNOWN_220 ? ApiEventBase<ApiType.RES_UNKNOWN_220> & { Code: number } :
+  T extends ApiType.RES_UNKNOWN_221 ? ApiEventBase<ApiType.RES_UNKNOWN_221> & { Code: number } :
+  T extends ApiType.RES_UNKNOWN_224 ? ApiEventBase<ApiType.RES_UNKNOWN_224> & { Code: number, Status: number } :
+  T extends ApiType.EVT_UNKNOWN_312 ? ApiEventBase<ApiType.EVT_UNKNOWN_312> & { Code: number, Error: { Status: number, Message: string, AddParam: string } } :
+  T extends ApiType.EVT_UNKNOWN_315 ? ApiEventBase<ApiType.EVT_UNKNOWN_315> & { FinishUnixSeconds: number, MyRanking: { Ranking: number, JoinNum: number, AverageChip: number, ActiveNum: number } } :
+  T extends ApiType.EVT_UNKNOWN_316 ? ApiEventBase<ApiType.EVT_UNKNOWN_316> & { ProcessType: number, NextBreakUnixSeconds: number } :
+  T extends ApiType.EVT_UNKNOWN_318 ? ApiEventBase<ApiType.EVT_UNKNOWN_318> & { UserId: number } :
+  T extends ApiType.RES_UNKNOWN_1201 ? ApiEventBase<ApiType.RES_UNKNOWN_1201> & { Code: number, chatType: number, PrevMessage: { Id: number, Us: { Id: number, Na: string, Ic: { Co: string, Fr: string } }, Ti: number, Ms: string }[], OnlineUserIds: number[], OnlineStatus: unknown[] } :
+  T extends ApiType.RES_UNKNOWN_1202 ? ApiEventBase<ApiType.RES_UNKNOWN_1202> & { Code: number, Error: { Status: number, Message: string, AddParam: string } } :
+  T extends ApiType.RES_UNKNOWN_1203 ? ApiEventBase<ApiType.RES_UNKNOWN_1203> & { Code: number } :
+  T extends ApiType.RES_UNKNOWN_1204 ? ApiEventBase<ApiType.RES_UNKNOWN_1204> & { Code: number, Messages: unknown[] } :
+  T extends ApiType.EVT_UNKNOWN_1301 ? ApiEventBase<ApiType.EVT_UNKNOWN_1301> & { Message: { Id: number, Us: { Id: number, Na: string, Ic: { Co: string, Fr: string } }, Ti: number, Ms: string } } :
+  T extends ApiType.EVT_UNKNOWN_1302 ? ApiEventBase<ApiType.EVT_UNKNOWN_1302> & { LatestMessageId: number } :
+  T extends ApiType.EVT_UNKNOWN_1303 ? ApiEventBase<ApiType.EVT_UNKNOWN_1303> & { Message: { Id: number, Us: { Id: number, Na: string, Ic: { Co: string, Fr: string } }, Ti: number, Ms: string }, BattleType: number, RoomId: number } :
+  T extends ApiType.EVT_UNKNOWN_1304 ? ApiEventBase<ApiType.EVT_UNKNOWN_1304> & { UserId: number, Status: number } :
   never
 
 export type ApiHandEvent = ApiEvent<ApiType.EVT_DEAL | ApiType.EVT_ACTION | ApiType.EVT_DEAL_ROUND | ApiType.EVT_HAND_RESULTS>
