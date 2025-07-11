@@ -29,7 +29,7 @@ This is an **unofficial** Chrome extension not affiliated with PokerChase. Use a
 
 ```bash
 git clone https://github.com/solavrc/pokerchase-hud.git
-cd pokerchase-hud-v2
+cd pokerchase-hud
 npm install
 npm run build
 ```
