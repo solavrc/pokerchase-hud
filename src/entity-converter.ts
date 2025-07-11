@@ -20,8 +20,11 @@ import type {
   Hand,
   Phase,
   HandState,
-  Session
+  Session,
+  ActionDetailContext
 } from './types'
+
+import { defaultRegistry } from './stats'
 
 /**
  * エンティティバンドル（一括保存用）
@@ -53,13 +56,50 @@ export class EntityConverter {
     }
 
     let currentHandEvents: ApiHandEvent[] = []
+    // セッション情報をローカルに保持（インポートデータから抽出）
+    let currentSession = { 
+      ...this.session,
+      players: new Map(this.session.players) // Mapを正しくコピー
+    }
 
     for (const event of events) {
+      // セッション開始イベントの処理
+      if (event.ApiTypeId === ApiType.RES_ENTRY_QUEUED) {
+        const entryEvent = event as ApiEvent<ApiType.RES_ENTRY_QUEUED>
+        currentSession.id = entryEvent.Id
+        currentSession.battleType = entryEvent.BattleType
+        // 新しいセッション開始時はプレイヤー情報をクリア
+        currentSession.players = new Map()
+      } else if (event.ApiTypeId === ApiType.EVT_SESSION_DETAILS) {
+        const detailsEvent = event as ApiEvent<ApiType.EVT_SESSION_DETAILS>
+        currentSession.name = detailsEvent.Name
+      } else if (event.ApiTypeId === ApiType.EVT_PLAYER_SEAT_ASSIGNED) {
+        // プレイヤー名とランクをセッションに保存
+        const seatEvent = event as ApiEvent<ApiType.EVT_PLAYER_SEAT_ASSIGNED>
+        if (seatEvent.TableUsers) {
+          seatEvent.TableUsers.forEach(tableUser => {
+            currentSession.players.set(tableUser.UserId, {
+              name: tableUser.UserName,
+              rank: tableUser.Rank.RankId
+            })
+          })
+        }
+      } else if (event.ApiTypeId === ApiType.EVT_PLAYER_JOIN) {
+        // 途中参加者のプレイヤー名とランクをセッションに保存
+        const joinEvent = event as ApiEvent<ApiType.EVT_PLAYER_JOIN>
+        if (joinEvent.JoinUser) {
+          currentSession.players.set(joinEvent.JoinUser.UserId, {
+            name: joinEvent.JoinUser.UserName,
+            rank: joinEvent.JoinUser.Rank.RankId
+          })
+        }
+      }
+      
       // EVT_DEALでハンド開始
       if (event.ApiTypeId === ApiType.EVT_DEAL) {
         // 前のハンドが完了していない場合も処理
         if (currentHandEvents.length > 0) {
-          const handEntities = this.convertHandEvents(currentHandEvents)
+          const handEntities = this.convertHandEvents(currentHandEvents, currentSession)
           if (handEntities) {
             entities.hands.push(handEntities.hand)
             entities.phases.push(...handEntities.phases)
@@ -72,7 +112,7 @@ export class EntityConverter {
         
         // EVT_HAND_RESULTSでハンド終了
         if (event.ApiTypeId === ApiType.EVT_HAND_RESULTS) {
-          const handEntities = this.convertHandEvents(currentHandEvents)
+          const handEntities = this.convertHandEvents(currentHandEvents, currentSession)
           if (handEntities) {
             entities.hands.push(handEntities.hand)
             entities.phases.push(...handEntities.phases)
@@ -85,7 +125,7 @@ export class EntityConverter {
 
     // 残りのハンドデータを処理
     if (currentHandEvents.length > 0) {
-      const handEntities = this.convertHandEvents(currentHandEvents)
+      const handEntities = this.convertHandEvents(currentHandEvents, currentSession)
       if (handEntities) {
         entities.hands.push(handEntities.hand)
         entities.phases.push(...handEntities.phases)
@@ -99,13 +139,14 @@ export class EntityConverter {
   /**
    * 1ハンド分のイベントをエンティティに変換
    */
-  private convertHandEvents(events: ApiHandEvent[]): { hand: Hand, phases: Phase[], actions: Action[] } | null {
+  private convertHandEvents(events: ApiHandEvent[], session: Session): { hand: Hand, phases: Phase[], actions: Action[] } | null {
     if (events.length === 0) return null
 
     const handState: HandState = {
       hand: {} as Hand,
       phases: [],
-      actions: []
+      actions: [],
+      cBetter: undefined // CB統計のために追加
     }
 
     let progress: any = undefined
@@ -122,9 +163,9 @@ export class EntityConverter {
             smallBlind: event.Game.SmallBlind,
             bigBlind: event.Game.BigBlind,
             session: {
-              id: this.session.id,
-              battleType: this.session.battleType,
-              name: this.session.name
+              id: session.id,
+              battleType: session.battleType,
+              name: session.name
             },
             results: []
           }
@@ -156,25 +197,31 @@ export class EntityConverter {
             [ActionType.BET, ActionType.RAISE].includes(action.actionType)
           ).length + Number(phase === PhaseType.PREFLOP)
 
-          // EntityConverterでは統計モジュールを使用しない（循環参照回避）
-          // 基本的なActionDetailのみを手動で設定
-          
-          // VPIPの判定（VPIP統計に必要）
-          if (phase === PhaseType.PREFLOP && actionType !== ActionType.FOLD) {
-            actionDetails.push(ActionDetail.VPIP)
+          // phasePlayerActionIndexを計算
+          const phasePlayerActionIndex = phaseActions.filter(action => 
+            action.playerId === playerId
+          ).length
+
+          // 統計モジュールを使用してActionDetailを検出
+          const detectionContext: ActionDetailContext = {
+            playerId: playerId ?? 0,
+            actionType,
+            phase,
+            phasePlayerActionIndex,
+            phasePrevBetCount,
+            handState
           }
-          
-          // 3Betの判定
-          if (phase === PhaseType.PREFLOP && actionType === ActionType.RAISE && phasePrevBetCount >= 2) {
-            actionDetails.push(ActionDetail.$3BET_CHANCE)
-            actionDetails.push(ActionDetail.$3BET)
-          }
-          
-          // Fold to 3Betの判定
-          if (phase === PhaseType.PREFLOP && phasePrevBetCount >= 2 && actionType === ActionType.FOLD) {
-            // 3-betに直面している場合
-            actionDetails.push(ActionDetail.$3BET_FOLD_CHANCE)
-            actionDetails.push(ActionDetail.$3BET_FOLD)
+
+          // 統計モジュールからActionDetailsを収集
+          for (const stat of defaultRegistry.getAll()) {
+            if (stat.detectActionDetails) {
+              const detectedDetails = stat.detectActionDetails(detectionContext)
+              actionDetails.push(...detectedDetails)
+            }
+            // 必要に応じてhandStateを更新
+            if (stat.updateHandState) {
+              stat.updateHandState(detectionContext)
+            }
           }
 
           // ポジション計算のためのユーザーID配列を作成
@@ -245,6 +292,17 @@ export class EntityConverter {
           handState.actions.forEach(action => {
             action.handId = event.HandId
           })
+
+          // ショーダウンフェーズの生成（複数のプレイヤーが結果に含まれる場合）
+          if (event.Results && event.Results.length > 1) {
+            const lastPhase = handState.phases.at(-1)
+            handState.phases.push({
+              handId: event.HandId,
+              phase: PhaseType.SHOWDOWN,
+              communityCards: [...(lastPhase?.communityCards || []), ...(event.CommunityCards || [])],
+              seatUserIds: event.Results.map(result => result.UserId)
+            })
+          }
 
           // ハンド結果の更新
           handState.hand.winningPlayerIds = event.Results

@@ -119,6 +119,8 @@ const restoreLatestSession = async () => {
 
     if (recentDealEvent && recentDealEvent.Player?.SeatIndex !== undefined) {
       service.playerId = recentDealEvent.SeatUserIds[recentDealEvent.Player.SeatIndex]
+      // latestEvtDealも復元して統計計算を可能にする
+      service.latestEvtDeal = recentDealEvent
     } else {
       // 起動時にPlayerを含むEVT_DEALが見つからない（おそらく観戦ゲームのみ）
     }
@@ -502,6 +504,43 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
 
     // バッチモードを無効化
     service.setBatchMode(false)
+    
+    // インポート後に統計を強制的に更新
+    // 最新のEVT_DEALを取得して統計計算をトリガー
+    const latestDealEvent = await db.apiEvents
+      .where('ApiTypeId').equals(ApiType.EVT_DEAL)
+      .reverse()
+      .filter(event => (event as ApiEvent<ApiType.EVT_DEAL>).Player?.SeatIndex !== undefined)
+      .first() as ApiEvent<ApiType.EVT_DEAL> | undefined
+    
+    if (latestDealEvent && latestDealEvent.SeatUserIds) {
+      // latestEvtDealを更新
+      service.latestEvtDeal = latestDealEvent
+      
+      // プレイヤーIDも更新（インポートデータからヒーローを特定）
+      if (latestDealEvent.Player?.SeatIndex !== undefined) {
+        service.playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex]
+        console.log(`[importData] Updated playerId: ${service.playerId}`)
+      }
+      
+      // 統計の再計算をトリガー
+      const playerIds = latestDealEvent.SeatUserIds.filter(id => id !== -1)
+      if (playerIds.length > 0) {
+        console.log('[importData] Triggering stats recalculation for imported data')
+        service.statsOutputStream.write(playerIds)
+        
+        // 現在開いているゲームタブに対しても統計更新を通知
+        chrome.tabs.query({ url: gameUrlPattern }, tabs => {
+          tabs.forEach(tab => {
+            if (tab.id) {
+              chrome.tabs.sendMessage(tab.id, {
+                action: 'refreshStats'
+              })
+            }
+          })
+        })
+      }
+    }
 
     return { successCount, totalLines: lines.length, duplicateCount }
 

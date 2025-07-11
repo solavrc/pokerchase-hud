@@ -79,7 +79,10 @@ export const cbetStat: StatDefinition = {
     } else if (handState.cBetter) {
       if (phasePrevBetCount === 0) {
         if (handState.cBetter === playerId) {
-          if (actionType !== ActionType.BET) {
+          if (actionType === ActionType.BET) {
+            // CBが実行された後にcBetterをクリア
+            handState.cBetter = undefined
+          } else {
             handState.cBetter = undefined // CB機会を逃した
           }
         } else {

@@ -84,6 +84,11 @@ const messageHandlers: Record<string, (message: ChromeMessage) => void> = {
         detail: message.config
       }))
     }
+  },
+  refreshStats: () => {
+    // インポート後の統計更新をリクエスト
+    // 最新の統計をバックグラウンドサービスから取得
+    chrome.runtime.sendMessage({ action: 'requestLatestStats' })
   }
 }
 

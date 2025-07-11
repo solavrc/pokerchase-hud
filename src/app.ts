@@ -534,7 +534,7 @@ class ReadEntityStream extends Transform {
 
       // まず、プレイヤーのすべてのハンドを取得
       let allPlayerHands = await this.service.db.hands
-        .where({ seatUserIds: playerId })
+        .where('seatUserIds').equals(playerId)
         .toArray()
 
       // 指定されている場合、まずbattleTypeフィルターを適用
@@ -579,7 +579,7 @@ class ReadEntityStream extends Transform {
 
       // プレイヤーのすべてのフェーズを1回のクエリで取得
       const allPlayerPhases = await this.service.db.phases
-        .where({ seatUserIds: playerId })
+        .where('seatUserIds').equals(playerId)
         .toArray()
 
       // 必要に応じてhandIdでフェーズをフィルタリング
@@ -730,6 +730,27 @@ class PokerChaseService {
       const playerIds = this.latestEvtDeal.SeatUserIds.filter(id => id !== -1)
       if (playerIds.length > 0) {
         this.statsOutputStream.write(playerIds)
+      }
+    } else {
+      // latestEvtDealが無い場合は、最新のEVT_DEALをDBから取得
+      const latestDealEvent = await this.db.apiEvents
+        .where('ApiTypeId').equals(ApiType.EVT_DEAL)
+        .reverse()
+        .filter(event => (event as ApiEvent<ApiType.EVT_DEAL>).Player?.SeatIndex !== undefined)
+        .first() as ApiEvent<ApiType.EVT_DEAL> | undefined
+      
+      if (latestDealEvent && latestDealEvent.SeatUserIds) {
+        this.latestEvtDeal = latestDealEvent
+        
+        // プレイヤーIDも更新
+        if (latestDealEvent.Player?.SeatIndex !== undefined) {
+          this.playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex]
+        }
+        
+        const playerIds = latestDealEvent.SeatUserIds.filter(id => id !== -1)
+        if (playerIds.length > 0) {
+          this.statsOutputStream.write(playerIds)
+        }
       }
     }
   }
