@@ -1,0 +1,38 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 'lts/*'
+        cache: 'npm'
+
+    - run: npm ci
+    - run: npm run build
+    - name: Update Latest Release
+      uses: ncipollo/release-action@v1
+      with:
+        allowUpdates: true
+        artifactErrorsFailBuild: true
+        artifacts: "extension.zip"
+        body: |
+          ## 🎯 PokerChase HUD Latest
+
+          Latest build from main branch.
+        name: "Latest Build"
+        tag: "latest"
+        prerelease: true
+        removeArtifacts: true
+        replacesArtifacts: true
+
