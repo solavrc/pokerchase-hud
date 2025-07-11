@@ -23,6 +23,7 @@ export const MESSAGE_ACTIONS = {
   LATEST_STATS: 'latestStats',
   // Data management
   DELETE_ALL_DATA: 'deleteAllData',
+  REBUILD_DATA: 'rebuildData',
   // Hand log
   HAND_LOG_EVENT: 'handLogEvent',
   UPDATE_HAND_LOG_CONFIG: 'updateHandLogConfig',
@@ -41,6 +42,8 @@ export interface ImportProgressMessage {
   progress: number
   processed: number
   total: number
+  duplicates?: number
+  imported?: number
 }
 
 export interface ExportDataMessage {
@@ -90,6 +93,10 @@ export interface DeleteAllDataMessage {
   action: 'deleteAllData'
 }
 
+export interface RebuildDataMessage {
+  action: 'rebuildData'
+}
+
 // Hand log messages
 export interface HandLogEventMessage {
   action: 'handLogEvent'
@@ -132,6 +139,7 @@ export type ChromeMessage =
   | RequestLatestStatsMessage
   | LatestStatsMessage
   | DeleteAllDataMessage
+  | RebuildDataMessage
   | HandLogEventMessage
   | UpdateHandLogConfigMessage
   | UpdateUIConfigMessage
@@ -173,6 +181,9 @@ export const isLatestStatsMessage = (msg: unknown): msg is LatestStatsMessage =>
 
 export const isDeleteAllDataMessage = (msg: unknown): msg is DeleteAllDataMessage =>
   isMessageWithAction(msg, 'deleteAllData')
+
+export const isRebuildDataMessage = (msg: unknown): msg is RebuildDataMessage =>
+  isMessageWithAction(msg, 'rebuildData')
 
 export const isHandLogEventMessage = (msg: unknown): msg is HandLogEventMessage =>
   isMessageWithAction(msg, 'handLogEvent')

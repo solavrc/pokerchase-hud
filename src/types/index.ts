@@ -48,6 +48,7 @@ export type {
   Hand,
   Phase,
   Action,
+  ImportMeta,
   User,
   ExistPlayerStats,
   PlayerStats,
@@ -66,7 +67,8 @@ export type {
   StatDefinition,
   StatCalculationContext,
   StatValue,
-  StatResult
+  StatResult,
+  ActionDetailContext
 } from './stats'
 
 // Error handling types

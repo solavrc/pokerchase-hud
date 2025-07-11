@@ -95,6 +95,9 @@ const Popup = () => {
   const [importProgress, setImportProgress] = useState<number>(0)
   const [importProcessed, setImportProcessed] = useState<number>(0)
   const [importTotal, setImportTotal] = useState<number>(0)
+  const [importDuplicates, setImportDuplicates] = useState<number>(0)
+  const [importSuccess, setImportSuccess] = useState<number>(0)
+  const [importStartTime, setImportStartTime] = useState<number>(0)
   const [gameTypeFilter, setGameTypeFilter] = useState<GameTypeFilter>({ sng: true, mtt: true, ring: true })
   const [handLimit, setHandLimit] = useState<number | undefined>(500)
   const [statDisplayConfigs, setStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
@@ -173,6 +176,8 @@ const Popup = () => {
         setImportProgress(0)
         setImportProcessed(0)
         setImportTotal(0)
+        setImportDuplicates(0)
+        setImportSuccess(0)
 
         setTimeout(() => {
           setImportStatus('')
@@ -181,6 +186,12 @@ const Popup = () => {
         setImportProgress(message.progress)
         setImportProcessed(message.processed)
         setImportTotal(message.total)
+        if (message.duplicates !== undefined) {
+          setImportDuplicates(message.duplicates)
+        }
+        if (message.imported !== undefined) {
+          setImportSuccess(message.imported)
+        }
       }
     }
 
@@ -292,6 +303,9 @@ const Popup = () => {
       setImportProgress(0)
       setImportProcessed(0)
       setImportTotal(0)
+      setImportDuplicates(0)
+      setImportSuccess(0)
+      setImportStartTime(Date.now())
 
       // For large files, we need to chunk the data before sending
       const totalChunks = Math.ceil(file.size / FILE_CHUNK_SIZE)
@@ -380,6 +394,24 @@ const Popup = () => {
       setImportStatus('データの削除に失敗しました')
     }
     setDeleteDialogOpen(false)
+  }
+
+  const handleRebuildData = async () => {
+    try {
+      setImportStatus('データ再構築中...')
+      const response = await chrome.runtime.sendMessage({ action: 'rebuildData' })
+      if (response.success) {
+        setImportStatus('データ再構築が完了しました')
+        setTimeout(() => {
+          setImportStatus('')
+        }, 3000)
+      } else {
+        setImportStatus('データ再構築に失敗しました')
+      }
+    } catch (error) {
+      console.error('Error rebuilding data:', error)
+      setImportStatus('エラーが発生しました')
+    }
   }
 
   const handleResetSettings = async () => {
@@ -764,6 +796,16 @@ const Popup = () => {
         >
           インポート中... {importProcessed.toLocaleString()}/{importTotal.toLocaleString()} ({importProgress}%)
         </Typography>
+        {importSuccess > 0 && (
+          <Typography
+            variant="caption"
+            color="textSecondary"
+            style={{ textAlign: 'center', display: 'block' }}
+          >
+            新規: {importSuccess.toLocaleString()} / 重複: {importDuplicates.toLocaleString()}
+            {importStartTime > 0 && ` / 経過: ${Math.round((Date.now() - importStartTime) / 1000)}秒`}
+          </Typography>
+        )}
       </Box>
     )}
 
@@ -796,6 +838,25 @@ const Popup = () => {
     >
       全データを削除
     </Button>
+
+    <Button
+      variant="outlined"
+      color="primary"
+      fullWidth
+      onClick={handleRebuildData}
+      style={{ marginTop: '10px' }}
+      disabled={importStatus === 'データ再構築中...'}
+    >
+      データ再構築
+    </Button>
+    
+    <Typography
+      variant="caption"
+      color="textSecondary"
+      style={{ marginTop: '5px', display: 'block', textAlign: 'center' }}
+    >
+      ※統計データを生ログから再計算します
+    </Typography>
 
     <Dialog
       open={deleteDialogOpen}

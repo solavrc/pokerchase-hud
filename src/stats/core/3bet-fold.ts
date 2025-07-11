@@ -3,7 +3,7 @@
  */
 
 import type { StatDefinition, ActionDetailContext } from '../../types/stats'
-import { ActionDetail, ActionType } from '../../types/game'
+import { ActionDetail, ActionType, PhaseType } from '../../types/game'
 import { formatPercentage } from '../utils'
 
 export const threeBetFoldStat: StatDefinition = {
@@ -25,13 +25,15 @@ export const threeBetFoldStat: StatDefinition = {
   
   /**
    * 3BET FOLD判定ロジック
-   * 3ベット後のFOLDアクション時に3BET_FOLDフラグを付与
+   * 3ベットに直面しているプレイヤーがFOLDする時の判定
+   * phasePrevBetCount === 3 の時に3ベットに直面している
    */
   detectActionDetails: (context: ActionDetailContext): ActionDetail[] => {
-    const { phasePrevBetCount, actionType } = context
+    const { phasePrevBetCount, actionType, phase } = context
     const details: ActionDetail[] = []
     
-    if (phasePrevBetCount === 3) {
+    // プリフロップでphasePrevBetCount === 3の時は3ベットに直面している
+    if (phase === PhaseType.PREFLOP && phasePrevBetCount === 3) {
       details.push(ActionDetail.$3BET_FOLD_CHANCE)
       if (actionType === ActionType.FOLD) {
         details.push(ActionDetail.$3BET_FOLD)

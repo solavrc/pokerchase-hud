@@ -3,7 +3,7 @@
  */
 
 import type { StatDefinition, ActionDetailContext } from '../../types/stats'
-import { ActionDetail, ActionType } from '../../types/game'
+import { ActionDetail, ActionType, PhaseType } from '../../types/game'
 import { formatPercentage } from '../utils'
 
 export const threeBetStat: StatDefinition = {
@@ -25,13 +25,16 @@ export const threeBetStat: StatDefinition = {
   
   /**
    * 3BET判定ロジック
-   * 2ベット後のRAISEアクション時に3BETフラグを付与
+   * プリフロップでのレイズ判定
+   * phasePrevBetCount === 2 の時に3BETの機会となる
+   * （1: BB, 2: 最初のレイズ（2ベット）後, 3: 2回目のレイズ（3ベット）後）
    */
   detectActionDetails: (context: ActionDetailContext): ActionDetail[] => {
-    const { phasePrevBetCount, actionType } = context
+    const { phasePrevBetCount, actionType, phase } = context
     const details: ActionDetail[] = []
     
-    if (phasePrevBetCount === 2) {
+    // プリフロップのみで判定、phasePrevBetCount === 2は2ベット後のアクション
+    if (phase === PhaseType.PREFLOP && phasePrevBetCount === 2) {
       details.push(ActionDetail.$3BET_CHANCE)
       if (actionType === ActionType.RAISE) {
         details.push(ActionDetail.$3BET)

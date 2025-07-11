@@ -223,3 +223,11 @@ export interface HandState {
   lastAggressor?: number  // Player who made the last bet/raise in previous street
   currentStreetAggressor?: number  // Player who made the first bet in current street
 }
+
+// Import metadata for incremental processing
+export interface ImportMeta {
+  id: string                      // Unique identifier (e.g., 'lastProcessed')
+  lastProcessedTimestamp: number  // Timestamp of last processed event
+  lastProcessedEventCount: number // Number of events processed in last import
+  lastImportDate: Date           // Date of last import
+}

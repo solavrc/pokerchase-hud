@@ -48,6 +48,11 @@ export class HandLogStream extends Transform {
   }
 
   _transform(event: ApiEvent, _: string, callback: TransformCallback<HandLogEvent>) {
+    // バッチモード中はハンドログ処理をスキップ
+    if (this.service.batchMode) {
+      callback()
+      return
+    }
     try {
       const newEntries = this.processor.processSingleEvent(event)
       if (SESSION_END_EVENTS.includes(event.ApiTypeId as any)) {
