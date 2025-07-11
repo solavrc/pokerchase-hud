@@ -29,6 +29,7 @@ import type {
   GameTypeFilter,
   Hand,
   HandState,
+  ImportMeta,
   Phase,
   PlayerStats,
   Progress,
@@ -57,6 +58,7 @@ export class PokerChaseDB extends Dexie {
   hands!: Table<Hand, number>
   phases!: Table<Phase, number>
   actions!: Table<Action, number>
+  meta!: Table<ImportMeta, string>
   constructor(indexedDB: IDBFactory, iDBKeyRange: typeof IDBKeyRange) {
     super('PokerChaseDB', { indexedDB, IDBKeyRange: iDBKeyRange })
     this.version(1).stores({
@@ -64,6 +66,14 @@ export class PokerChaseDB extends Dexie {
       hands: 'id,*seatUserIds,*winningPlayerIds',
       phases: '[handId+phase],handId,*seatUserIds,phase',
       actions: '[handId+index],handId,playerId,phase,actionType,*actionDetails',
+    })
+    // メタデータテーブルを追加（増分処理用）
+    this.version(2).stores({
+      apiEvents: '[timestamp+ApiTypeId],timestamp,ApiTypeId',
+      hands: 'id,*seatUserIds,*winningPlayerIds',
+      phases: '[handId+phase],handId,*seatUserIds,phase',
+      actions: '[handId+index],handId,playerId,phase,actionType,*actionDetails',
+      meta: 'id'
     })
   }
 }
@@ -88,21 +98,28 @@ class AggregateEventsStream extends Transform {
   private events: ApiHandEvent[] = []
   private progress?: Progress
   private lastTimestamp = 0
-  constructor(service: PokerChaseService) {
+  private replayMode: boolean = false  // refreshDatabase用のフラグ
+  
+  constructor(service: PokerChaseService, replayMode: boolean = false) {
     super({ objectMode: true })
     this.service = service
+    this.replayMode = replayMode
   }
   _transform(event: ApiEvent, _: string, callback: TransformCallback<ApiEvent[]>) {
     try {
-      this.service.db.apiEvents.add(event).catch(this.handleDbError)
-      this.service.eventLogger(event)
+      // リプレイモードではDBへの書き込みをスキップ
+      if (!this.replayMode) {
+        this.service.db.apiEvents.add(event).catch(this.handleDbError)
+        this.service.eventLogger(event)
+      }
+      
       /** 順序整合性チェック */
       if (this.lastTimestamp > event.timestamp!)
         this.events = []
       this.lastTimestamp = event.timestamp!
 
-      // HandLogStreamにイベントを送信
-      if (this.service.handLogStream) {
+      // HandLogStreamにイベントを送信（リプレイモードでもスキップ）
+      if (this.service.handLogStream && !this.replayMode) {
         this.service.handLogStream.write(event)
       }
 
@@ -448,6 +465,12 @@ class ReadEntityStream extends Transform {
 
   async _transform(seatUserIds: number[], _: string, callback: TransformCallback<PlayerStats[]>) {
     try {
+      // バッチモード中は統計計算をスキップ
+      if (this.service.batchMode) {
+        callback()
+        return
+      }
+
       // seatUserIdsとフィルター設定に基づいてキャッシュキーを作成
       const cacheKey = `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}`
       const now = Date.now()
@@ -626,6 +649,7 @@ class PokerChaseService {
   handLimitFilter?: number = undefined // undefined = all hands, number = limit to recent N hands
   statDisplayConfigs?: StatDisplayConfig[] = undefined // Custom stat display configuration
   handLogConfig?: HandLogConfig = undefined // Hand log display configuration
+  batchMode: boolean = false // Batch mode flag for bulk operations
   static readonly POKER_CHASE_SERVICE_EVENT = 'PokerChaseServiceEvent'
   static readonly POKER_CHASE_ORIGIN = new URL(content_scripts[0]!.matches[0]!).origin
   readonly session: Session = {
@@ -684,28 +708,96 @@ class PokerChaseService {
     await this.statsOutputStream.recalculateStats()
   }
 
-  readonly refreshDatabase = () => {
-    // this.db.apiEvents.each(event => ...) /** Anti-Pattern: Cannot enter a sub-transaction with READWRITE mode when parent transaction is READONLY */
-    const eventProcessor = new AggregateEventsStream(this)
-    eventProcessor
-      .pipe(new WriteEntityStream(this))
-      .on('data', () => { }) /** /dev/null consumer */
-    this.db.apiEvents.count()
-      .then(async (count: number) => {
-        let offset = 0
-        while (offset < count) {
-          const apiEvents = await this.db.apiEvents.offset(offset).limit(1000).toArray()
-          apiEvents.forEach((event: ApiEvent) => eventProcessor.write(event))
-          offset += apiEvents.length
-        }
-      })
-      .catch((error: unknown) => {
-        const appError = ErrorHandler.handleDbError(error, {
-          streamName: 'PokerChaseService',
-          operation: 'refreshDatabase'
+  /**
+   * バッチモードの設定
+   * インポート時などの大量処理でリアルタイム更新を無効化
+   */
+  readonly setBatchMode = (enabled: boolean) => {
+    this.batchMode = enabled
+    
+    if (!enabled) {
+      // バッチモード終了時に統計を一度だけ再計算
+      this.recalculateAllStats()
+    }
+  }
+
+  /**
+   * 全統計の再計算（バッチモード終了時に使用）
+   */
+  private readonly recalculateAllStats = async () => {
+    // 最新のplayerIdsを取得して再計算をトリガー
+    if (this.latestEvtDeal && this.latestEvtDeal.SeatUserIds) {
+      const playerIds = this.latestEvtDeal.SeatUserIds.filter(id => id !== -1)
+      if (playerIds.length > 0) {
+        this.statsOutputStream.write(playerIds)
+      }
+    }
+  }
+
+  readonly refreshDatabase = async () => {
+    try {
+      // メタデータを取得
+      const meta = await this.db.meta.get('lastProcessed')
+      const lastTimestamp = meta?.lastProcessedTimestamp || 0
+      
+      // 新規イベントのみを取得
+      const newEventsCount = await this.db.apiEvents
+        .where('timestamp')
+        .above(lastTimestamp)
+        .count()
+      
+      if (newEventsCount === 0) {
+        console.log('[refreshDatabase] No new events to process')
+        return
+      }
+      
+      console.log(`[refreshDatabase] Processing ${newEventsCount} new events`)
+      
+      // バッチモードを有効化
+      this.setBatchMode(true)
+      
+      // リプレイモードでAggregateEventsStreamを作成（DB書き込みをスキップ）
+      const eventProcessor = new AggregateEventsStream(this, true)
+      eventProcessor
+        .pipe(new WriteEntityStream(this))
+        .on('data', () => { }) /** /dev/null consumer */
+      
+      let processedCount = 0
+      let lastProcessedTimestamp = lastTimestamp
+      
+      // 新規イベントのみを処理
+      await this.db.apiEvents
+        .where('timestamp')
+        .above(lastTimestamp)
+        .each((event: ApiEvent) => {
+          eventProcessor.write(event)
+          processedCount++
+          lastProcessedTimestamp = Math.max(lastProcessedTimestamp, event.timestamp || 0)
         })
-        ErrorHandler.logError(appError, 'PokerChaseService')
+      
+      // メタデータを更新
+      await this.db.meta.put({
+        id: 'lastProcessed',
+        lastProcessedTimestamp,
+        lastProcessedEventCount: processedCount,
+        lastImportDate: new Date()
       })
+      
+      console.log(`[refreshDatabase] Processed ${processedCount} events`)
+      
+      // バッチモードを無効化（統計を再計算）
+      this.setBatchMode(false)
+      
+    } catch (error) {
+      const appError = ErrorHandler.handleDbError(error, {
+        streamName: 'PokerChaseService',
+        operation: 'refreshDatabase'
+      })
+      ErrorHandler.logError(appError, 'PokerChaseService')
+      
+      // エラー時もバッチモードを無効化
+      this.setBatchMode(false)
+    }
   }
 
   readonly exportHandHistory = async (handIds?: number[]): Promise<string> => {

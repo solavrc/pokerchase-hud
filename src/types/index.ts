@@ -48,6 +48,7 @@ export type {
   Hand,
   Phase,
   Action,
+  ImportMeta,
   User,
   ExistPlayerStats,
   PlayerStats,

@@ -12,6 +12,7 @@ import PokerChaseService, {
   PlayerStats,
   PokerChaseDB
 } from './app'
+import { EntityConverter } from './entity-converter'
 import type { Options } from './components/Popup'
 import type { HandLogEvent } from './types/hand-log'
 import type {
@@ -54,10 +55,11 @@ let currentImportSession: ImportSession | null = null
 
 let lastKnownStats: PlayerStats[] = []
 
-/** 拡張更新時: データ再構築 */
+/** 拡張更新時の処理 */
 chrome.runtime.onInstalled.addListener(details => {
-  if (details.reason === chrome.runtime.OnInstalledReason.UPDATE)
-    service.refreshDatabase()
+  // v1からv2への移行など、将来的な処理が必要な場合はここに追加
+  // 通常の更新では自動的なデータ再構築は行わない
+  console.log(`[onInstalled] Extension ${details.reason}: previousVersion=${details.previousVersion}`)
 })
 
 /** 拡張起動時: フィルター設定を復元（統計の再計算はしない） */
@@ -268,6 +270,25 @@ chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.run
         sendResponse({ success: false, error: error.message })
       })
     return true
+  } else if (request.action === 'rebuildData') {
+    // 手動でのデータ再構築
+    console.log('[rebuildData] Starting manual data rebuild...')
+    
+    // メタデータをクリアして全データを再処理
+    db.meta.delete('lastProcessed')
+      .then(() => {
+        // refreshDatabaseは増分処理なので、メタデータ削除後は全データを処理する
+        return service.refreshDatabase()
+      })
+      .then(() => {
+        console.log('[rebuildData] Data rebuild completed')
+        sendResponse({ success: true })
+      })
+      .catch(error => {
+        console.error('[rebuildData] Error rebuilding data:', error)
+        sendResponse({ success: false, error: error.message })
+      })
+    return true
   }
   return false
 })
@@ -287,8 +308,32 @@ const exportData = async (format: string) => {
  */
 const importData = async (jsonlData: string): Promise<{ successCount: number, totalLines: number, duplicateCount: number }> => {
   try {
+    console.log('[importData] Starting optimized import process with direct entity generation')
+    const startTime = performance.now()
+    
+    // 既存キーを一括取得（最適化ポイント1）
+    console.log('[importData] Loading existing keys...')
+    const existingKeys = new Set<string>()
+    await db.apiEvents
+      .orderBy('[timestamp+ApiTypeId]')
+      .keys(keys => {
+        keys.forEach(key => {
+          if (Array.isArray(key) && key.length === 2) {
+            existingKeys.add(`${key[0]}-${key[1]}`)
+          }
+        })
+      })
+    console.log(`[importData] Loaded ${existingKeys.size} existing keys`)
+
     // 行で分割し、空行をフィルタリング
     const lines = jsonlData.split('\n').filter(line => line.trim())
+    console.log(`[importData] Processing ${lines.length} lines`)
+
+    // バッチモードを有効化
+    service.setBatchMode(true)
+
+    // 直接エンティティ生成用のイベントを収集
+    const allNewEvents: ApiEvent[] = []
 
     // メモリ問題を避けるためチャンク単位で処理
     let processed = 0
@@ -298,7 +343,7 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
 
     for (let i = 0; i < lines.length; i += IMPORT_CHUNK_SIZE) {
       const chunkLines = lines.slice(i, i + IMPORT_CHUNK_SIZE)
-      const events: ApiEvent[] = []
+      const newEvents: ApiEvent[] = []
 
       // チャンク内の各行をパース
       for (let j = 0; j < chunkLines.length; j++) {
@@ -309,7 +354,15 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
         try {
           const event = JSON.parse(line)
           if (event.ApiTypeId && event.timestamp) {
-            events.push(event)
+            const key = `${event.timestamp}-${event.ApiTypeId}`
+            
+            // メモリ内で重複チェック（最適化ポイント2）
+            if (!existingKeys.has(key)) {
+              newEvents.push(event)
+              existingKeys.add(key) // 次の重複チェック用
+            } else {
+              duplicateCount++
+            }
           } else {
             errors.push(`Line ${lineNumber}: Missing required fields`)
           }
@@ -321,25 +374,33 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
         }
       }
 
-      // イベントをデータベースに保存
-      if (events.length > 0) {
+      // 新規イベントをbulkAddで一括保存（最適化ポイント3）
+      if (newEvents.length > 0) {
         try {
-          await db.transaction('rw', [db.apiEvents], async () => {
-            for (const event of events) {
-              // Check for existing event with same timestamp and ApiTypeId
-              const existing = await db.apiEvents.get([event.timestamp, event.ApiTypeId])
-              if (!existing) {
-                await db.apiEvents.add(event)
-                successCount++
+          await db.apiEvents.bulkAdd(newEvents)
+          successCount += newEvents.length
+          // 直接エンティティ生成用に収集
+          allNewEvents.push(...newEvents)
+        } catch (dbError: any) {
+          // 部分的な失敗の場合、個別に保存を試みる
+          console.warn(`Bulk add failed for chunk ${Math.floor(i / IMPORT_CHUNK_SIZE) + 1}, falling back to individual adds:`, dbError)
+          
+          for (const event of newEvents) {
+            try {
+              await db.apiEvents.add(event)
+              successCount++
+              // 直接エンティティ生成用に収集
+              allNewEvents.push(event)
+            } catch (individualError: any) {
+              // 個別エラーは重複以外の場合のみログ
+              if (!individualError.message?.includes('Key already exists')) {
+                errors.push(`Event at timestamp ${event.timestamp}: ${individualError.message}`)
               } else {
-                // Event already exists, skip
                 duplicateCount++
+                successCount-- // 重複の場合は成功数から除外
               }
             }
-          })
-        } catch (dbError) {
-          console.error(`Error storing chunk ${Math.floor(i / IMPORT_CHUNK_SIZE) + 1}:`, dbError)
-          errors.push(`Chunk ${Math.floor(i / IMPORT_CHUNK_SIZE) + 1}: ${dbError}`)
+          }
         }
       }
 
@@ -351,24 +412,96 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
         action: 'importProgress',
         progress: progress,
         processed: processed,
-        total: lines.length
+        total: lines.length,
+        duplicates: duplicateCount,
+        imported: successCount
       })
 
-      // Log progress every 10% or every 10000 lines
-      if (progress % 10 === 0 || processed % 10000 === 0) {
+      // Log progress every 10%
+      if (progress % 10 === 0) {
+        console.log(`[importData] Progress: ${progress}% (${processed}/${lines.length} lines)`)
       }
 
       // Allow browser to breathe between chunks
-      await new Promise(resolve => setTimeout(resolve, 10))
+      await new Promise(resolve => setTimeout(resolve, 5))
     }
 
     if (errors.length > 0) {
-      console.warn(`Failed to import ${errors.length} lines (${((errors.length / lines.length) * 100).toFixed(2)}%)`)
-      console.warn('First 10 errors:', errors.slice(0, 10))
+      console.warn(`[importData] Failed to import ${errors.length} lines (${((errors.length / lines.length) * 100).toFixed(2)}%)`)
+      if (errors.length <= 10) {
+        console.warn('Errors:', errors)
+      } else {
+        console.warn('First 10 errors:', errors.slice(0, 10))
+      }
     }
 
-    // Refresh database after import
-    service.refreshDatabase()
+    const importTime = ((performance.now() - startTime) / 1000).toFixed(2)
+    console.log(`[importData] Import completed in ${importTime}s - Success: ${successCount}, Duplicates: ${duplicateCount}`)
+
+    // 直接エンティティ生成（Phase 2最適化）
+    if (allNewEvents.length > 0) {
+      console.log(`[importData] Generating entities from ${allNewEvents.length} new events...`)
+      const entityStartTime = performance.now()
+      
+      try {
+        // EntityConverterを使用してエンティティを生成
+        const converter = new EntityConverter(service.session)
+        const entities = converter.convertEventsToEntities(allNewEvents)
+        
+        console.log(`[importData] Generated entities - Hands: ${entities.hands.length}, Phases: ${entities.phases.length}, Actions: ${entities.actions.length}`)
+        
+        // トランザクション内で一括保存（metaテーブルも含める）
+        await db.transaction('rw', [db.hands, db.phases, db.actions, db.meta], async () => {
+          // 一括保存（bulkPutを使用して既存データを上書き）
+          // 重複チェックは不要 - bulkPutが自動的に処理
+          if (entities.hands.length > 0) {
+            await db.hands.bulkPut(entities.hands)
+            console.log(`[importData] Saved/updated ${entities.hands.length} hands`)
+          }
+          
+          if (entities.phases.length > 0) {
+            await db.phases.bulkPut(entities.phases)
+            console.log(`[importData] Saved/updated ${entities.phases.length} phases`)
+          }
+          
+          if (entities.actions.length > 0) {
+            await db.actions.bulkPut(entities.actions)
+            console.log(`[importData] Saved/updated ${entities.actions.length} actions`)
+          }
+          
+          // メタデータもトランザクション内で更新
+          // Math.maxでスプレッド演算子を使うとスタックオーバーフローになるため、reduceを使用
+          const lastTimestamp = allNewEvents.reduce((max, event) => {
+            const timestamp = event.timestamp || 0
+            return timestamp > max ? timestamp : max
+          }, 0)
+          
+          await db.meta.put({
+            id: 'lastProcessed',
+            lastProcessedTimestamp: lastTimestamp,
+            lastProcessedEventCount: allNewEvents.length,
+            lastImportDate: new Date()
+          })
+          console.log(`[importData] Updated metadata - lastTimestamp: ${lastTimestamp}`)
+        })
+        
+        const entityTime = ((performance.now() - entityStartTime) / 1000).toFixed(2)
+        console.log(`[importData] Entity generation completed in ${entityTime}s`)
+        
+      } catch (entityError) {
+        console.error('[importData] Entity generation error:', entityError)
+        // エラーの詳細をログに記録するが、処理は継続
+        // refreshDatabaseへのフォールバックは削除（トランザクション競合を避けるため）
+        const errorMessage = entityError instanceof Error ? entityError.message : String(entityError)
+        throw new Error(`Entity generation failed: ${errorMessage}`)
+      }
+    } else {
+      // 新規イベントがない場合は増分処理も不要
+      console.log('[importData] No new events to process')
+    }
+
+    // バッチモードを無効化
+    service.setBatchMode(false)
 
     return { successCount, totalLines: lines.length, duplicateCount }
 
