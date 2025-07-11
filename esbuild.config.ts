@@ -1,5 +1,5 @@
 import { build, BuildOptions } from 'esbuild'
-import { copyFileSync } from 'fs'
+import { copyFileSync, mkdirSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { parse } from 'path'
 import { resolve, dirname } from 'path'
@@ -63,6 +63,7 @@ const options: BuildOptions = {
 }
 
 try {
+  mkdirSync('dist', { recursive: true })
   copyFileSync('src/index.html', 'dist/index.html')
   await build(options)
   console.log('Build succeeded')
