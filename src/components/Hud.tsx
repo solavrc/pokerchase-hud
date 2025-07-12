@@ -386,7 +386,7 @@ const RealTimeStatsDisplay = memo(({ stats, seatIndex }: { stats: RealTimeStats;
               const isCurrentHand = improvement.isCurrent
               const isComplete = improvement.isComplete
               const probability = improvement.probability
-              const hasGoodOdds = potOddsPercentage !== undefined && probability > potOddsPercentage && probability < 100
+              const hasGoodOdds = potOddsData && potOddsData.call !== undefined && potOddsData.call > 0 && potOddsPercentage !== undefined && probability > potOddsPercentage && probability < 100
               const isBetterThanCurrent = improvement.rank > handImprovement.currentHand.rank
               
               let rowStyle: React.CSSProperties = {
