@@ -13,6 +13,7 @@ import PokerChaseService, {
   PokerChaseDB
 } from './app'
 import { EntityConverter } from './entity-converter'
+import type { RealTimeStats } from './realtime-stats/realtime-stats-service'
 import type { Options } from './components/Popup'
 import type { HandLogEvent } from './types/hand-log'
 import type {
@@ -275,7 +276,7 @@ chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.run
   } else if (request.action === 'rebuildData') {
     // 手動でのデータ再構築
     console.log('[rebuildData] Starting manual data rebuild...')
-    
+
     // メタデータをクリアして全データを再処理
     db.meta.delete('lastProcessed')
       .then(() => {
@@ -312,7 +313,7 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
   try {
     console.log('[importData] Starting optimized import process with direct entity generation')
     const startTime = performance.now()
-    
+
     // 既存キーを一括取得（最適化ポイント1）
     console.log('[importData] Loading existing keys...')
     const existingKeys = new Set<string>()
@@ -357,7 +358,7 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
           const event = JSON.parse(line)
           if (event.ApiTypeId && event.timestamp) {
             const key = `${event.timestamp}-${event.ApiTypeId}`
-            
+
             // メモリ内で重複チェック（最適化ポイント2）
             if (!existingKeys.has(key)) {
               newEvents.push(event)
@@ -386,7 +387,7 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
         } catch (dbError: any) {
           // 部分的な失敗の場合、個別に保存を試みる
           console.warn(`Bulk add failed for chunk ${Math.floor(i / IMPORT_CHUNK_SIZE) + 1}, falling back to individual adds:`, dbError)
-          
+
           for (const event of newEvents) {
             try {
               await db.apiEvents.add(event)
@@ -444,14 +445,14 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
     if (allNewEvents.length > 0) {
       console.log(`[importData] Generating entities from ${allNewEvents.length} new events...`)
       const entityStartTime = performance.now()
-      
+
       try {
         // EntityConverterを使用してエンティティを生成
         const converter = new EntityConverter(service.session)
         const entities = converter.convertEventsToEntities(allNewEvents)
-        
+
         console.log(`[importData] Generated entities - Hands: ${entities.hands.length}, Phases: ${entities.phases.length}, Actions: ${entities.actions.length}`)
-        
+
         // トランザクション内で一括保存（metaテーブルも含める）
         await db.transaction('rw', [db.hands, db.phases, db.actions, db.meta], async () => {
           // 一括保存（bulkPutを使用して既存データを上書き）
@@ -460,24 +461,24 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
             await db.hands.bulkPut(entities.hands)
             console.log(`[importData] Saved/updated ${entities.hands.length} hands`)
           }
-          
+
           if (entities.phases.length > 0) {
             await db.phases.bulkPut(entities.phases)
             console.log(`[importData] Saved/updated ${entities.phases.length} phases`)
           }
-          
+
           if (entities.actions.length > 0) {
             await db.actions.bulkPut(entities.actions)
             console.log(`[importData] Saved/updated ${entities.actions.length} actions`)
           }
-          
+
           // メタデータもトランザクション内で更新
           // Math.maxでスプレッド演算子を使うとスタックオーバーフローになるため、reduceを使用
           const lastTimestamp = allNewEvents.reduce((max, event) => {
             const timestamp = event.timestamp || 0
             return timestamp > max ? timestamp : max
           }, 0)
-          
+
           await db.meta.put({
             id: 'lastProcessed',
             lastProcessedTimestamp: lastTimestamp,
@@ -486,10 +487,10 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
           })
           console.log(`[importData] Updated metadata - lastTimestamp: ${lastTimestamp}`)
         })
-        
+
         const entityTime = ((performance.now() - entityStartTime) / 1000).toFixed(2)
         console.log(`[importData] Entity generation completed in ${entityTime}s`)
-        
+
       } catch (entityError) {
         console.error('[importData] Entity generation error:', entityError)
         // エラーの詳細をログに記録するが、処理は継続
@@ -504,7 +505,7 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
 
     // バッチモードを無効化
     service.setBatchMode(false)
-    
+
     // インポート後に統計を強制的に更新
     // 最新のEVT_DEALを取得して統計計算をトリガー
     const latestDealEvent = await db.apiEvents
@@ -512,23 +513,23 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
       .reverse()
       .filter(event => (event as ApiEvent<ApiType.EVT_DEAL>).Player?.SeatIndex !== undefined)
       .first() as ApiEvent<ApiType.EVT_DEAL> | undefined
-    
+
     if (latestDealEvent && latestDealEvent.SeatUserIds) {
       // latestEvtDealを更新
       service.latestEvtDeal = latestDealEvent
-      
+
       // プレイヤーIDも更新（インポートデータからヒーローを特定）
       if (latestDealEvent.Player?.SeatIndex !== undefined) {
         service.playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex]
         console.log(`[importData] Updated playerId: ${service.playerId}`)
       }
-      
+
       // 統計の再計算をトリガー
       const playerIds = latestDealEvent.SeatUserIds.filter(id => id !== -1)
       if (playerIds.length > 0) {
         console.log('[importData] Triggering stats recalculation for imported data')
         service.statsOutputStream.write(playerIds)
-        
+
         // 現在開いているゲームタブに対しても統計更新を通知
         chrome.tabs.query({ url: gameUrlPattern }, tabs => {
           tabs.forEach(tab => {
@@ -656,9 +657,13 @@ const downloadFile = (content: string, filename: string, contentType: string) =>
 chrome.runtime.onConnect.addListener(port => {
   if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
     port.onMessage.addListener((message: ApiEvent) => {
+      service.eventLogger(message)
+      service.db.apiEvents.add(message)
+      service.handLogStream.write(message)
       service.handAggregateStream.write(message)
+      service.realTimeStatsStream.write([message])
     })
-    const postMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL> } | string) => {
+    const postMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: RealTimeStats } | string) => {
       try {
         port.postMessage(data)
       } catch (error: unknown) {
@@ -672,11 +677,31 @@ chrome.runtime.onConnect.addListener(port => {
       }
     }
     const intervalId = setInterval(() => { postMessage(`[PING] ${new Date().toISOString()}`) }, PING_INTERVAL_MS)
-    service.statsOutputStream.on('data', (hand: PlayerStats[]) => {
+
+    // Store latest real-time stats
+    let latestRealTimeStats: RealTimeStats | undefined
+
+    // Listen for real-time stats from dedicated stream
+    service.realTimeStatsStream.on('data', (data: { handId?: number, stats: RealTimeStats, timestamp: number }) => {
+      latestRealTimeStats = data.stats
+
+      // Send update with real-time stats only
+      if (lastKnownStats && lastKnownStats.length > 0) {
+        postMessage({
+          stats: lastKnownStats,
+          evtDeal: service.latestEvtDeal,
+          realTimeStats: latestRealTimeStats
+        })
+      }
+    })
+    service.statsOutputStream.on('data', async (hand: PlayerStats[]) => {
       lastKnownStats = hand // Store for later use
+
+      // Real-time stats are now handled by RealTimeStatsStream
       postMessage({
         stats: hand,
-        evtDeal: service.latestEvtDeal  // Include EVT_DEAL for seat mapping
+        evtDeal: service.latestEvtDeal,  // Include EVT_DEAL for seat mapping
+        realTimeStats: latestRealTimeStats  // Include latest real-time stats from stream
       })
     })
 

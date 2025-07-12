@@ -17,6 +17,7 @@ export interface StatCalculationContext {
   allPlayerPhases: Phase[]    // All phases (for optimization)
   winningHandIds: Set<number>  // Hand IDs where this player won
   session: Session  // Session information including player data
+  activeOpponents?: number  // Number of active opponents (for real-time equity calculation)
 }
 
 /**
@@ -26,6 +27,7 @@ export type StatValue =
   | number                                      // Simple count (e.g., hands)
   | [numerator: number, denominator: number]    // Fraction format (e.g., VPIP)
   | string                                      // Custom format
+  | Record<string, any>                         // Complex object (e.g., hand improvement)
 
 /**
  * Context for ActionDetail detection during action processing

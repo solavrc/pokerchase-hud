@@ -3,11 +3,13 @@ import { Transform } from 'stream'
 import { content_scripts } from '../manifest.json'
 import { defaultRegistry } from './stats'
 import { HandLogStream } from './streams/hand-log-stream'
-import { ErrorType, type ErrorContext } from './types/errors'
+import { RealTimeStatsStream } from './streams/realtime-stats-stream'
+import type { ErrorContext } from './types/errors'
 import type { HandLogConfig } from './types/hand-log'
 import type { StatCalculationContext } from './types/stats'
 import { ErrorHandler } from './utils/error-handler'
 import { formatCardsArray } from './utils/card-utils'
+import { setHandImprovementHeroHoleCards, setHandImprovementBatchMode } from './realtime-stats'
 
 import {
   ActionDetail,
@@ -98,30 +100,17 @@ class AggregateEventsStream extends Transform {
   private events: ApiHandEvent[] = []
   private progress?: Progress
   private lastTimestamp = 0
-  private replayMode: boolean = false  // refreshDatabase用のフラグ
   
-  constructor(service: PokerChaseService, replayMode: boolean = false) {
+  constructor(service: PokerChaseService) {
     super({ objectMode: true })
     this.service = service
-    this.replayMode = replayMode
   }
   _transform(event: ApiEvent, _: string, callback: TransformCallback<ApiEvent[]>) {
     try {
-      // リプレイモードではDBへの書き込みをスキップ
-      if (!this.replayMode) {
-        this.service.db.apiEvents.add(event).catch(this.handleDbError)
-        this.service.eventLogger(event)
-      }
-      
       /** 順序整合性チェック */
       if (this.lastTimestamp > event.timestamp!)
         this.events = []
       this.lastTimestamp = event.timestamp!
-
-      // HandLogStreamにイベントを送信（リプレイモードでもスキップ）
-      if (this.service.handLogStream && !this.replayMode) {
-        this.service.handLogStream.write(event)
-      }
 
       switch (event.ApiTypeId) {
         case ApiType.RES_ENTRY_QUEUED:
@@ -157,6 +146,29 @@ class AggregateEventsStream extends Transform {
           this.service.playerId = event.Player?.SeatIndex !== undefined ? event.SeatUserIds[event.Player.SeatIndex] : undefined
           // 席マッピング用に最新のEVT_DEALを保存
           this.service.latestEvtDeal = event
+          
+          // Capture hero's hole cards for hand improvement calculations (only in real-time play)
+          if (!this.service.batchMode && event.Player?.HoleCards && event.Player.HoleCards.length === 2 && this.service.playerId) {
+            // Use timestamp as temporary hand ID until we get the real one from EVT_HAND_RESULTS
+            // This is fine since we only need it for the current hand
+            const tempHandId = `temp_${Date.now()}`
+            setHandImprovementHeroHoleCards(tempHandId, this.service.playerId.toString(), event.Player.HoleCards)
+          }
+          
+          // 新しいハンド開始時に統計を計算（既存データがあるプレイヤーの統計を表示）
+          // ただし、すでにDBにハンドが存在する場合のみ（リングゲーム途中参加など）
+          if (!this.service.batchMode && this.service.session.id && event.SeatUserIds) {
+            // 非同期でDBチェックを行うが、結果を待たずに処理を続行
+            this.service.db.hands.count().then(count => {
+              if (count > 0) {
+                // 全てのSeatUserIds（-1を含む）を渡して席の順序を保持
+                this.service.statsOutputStream.write(event.SeatUserIds)
+              }
+            }).catch(err => {
+              console.error('[AggregateEventsStream] Error checking hand count:', err)
+            })
+          }
+          
           // ハンドの集約
           this.progress = event.Progress
           this.events = []
@@ -184,18 +196,6 @@ class AggregateEventsStream extends Transform {
       callback()
     } catch (error: unknown) {
       this.handleError(error, callback)
-    }
-  }
-
-  private handleDbError = (dbError: unknown) => {
-    const context: ErrorContext = {
-      streamName: 'AggregateEventsStream',
-      operation: 'apiEvents.add'
-    }
-    const appError = ErrorHandler.handleDbError(dbError, context)
-    // 制約エラー（重複）は予想されるのでログを出さない
-    if (appError.type !== ErrorType.DB_CONSTRAINT) {
-      ErrorHandler.logError(appError, 'AggregateEventsStream')
     }
   }
 
@@ -673,12 +673,20 @@ class PokerChaseService {
   readonly handAggregateStream = new AggregateEventsStream(this)     // Entry point for all events and groups events by hand
   readonly statsOutputStream = new ReadEntityStream(this)            // Calculates and outputs stats
   readonly handLogStream = new HandLogStream(this)                   // Real-time hand log display
+  readonly realTimeStatsStream = new RealTimeStatsStream()          // Real-time stats for hero only
   constructor({ db, playerId }: { db: PokerChaseDB, playerId?: number }) {
     this.playerId = playerId
     this.db = db
+    
+    // Main pipeline for stats calculation
+    const writeStream = new WriteEntityStream(this)
     this.handAggregateStream
-      .pipe<WriteEntityStream>(new WriteEntityStream(this))
+      .pipe<WriteEntityStream>(writeStream)
       .pipe<ReadEntityStream>(this.statsOutputStream)
+    
+    // Branch off for real-time stats (hero only)
+    this.handAggregateStream
+      .pipe(this.realTimeStatsStream)
   }
   readonly setBattleTypeFilter = async (filterOptions: FilterOptions) => {
     const selectedTypes: number[] = []
@@ -714,6 +722,9 @@ class PokerChaseService {
    */
   readonly setBatchMode = (enabled: boolean) => {
     this.batchMode = enabled
+    
+    // Set batch mode for hand improvement calculations
+    setHandImprovementBatchMode(enabled)
     
     if (!enabled) {
       // バッチモード終了時に統計を一度だけ再計算
@@ -777,8 +788,8 @@ class PokerChaseService {
       // バッチモードを有効化
       this.setBatchMode(true)
       
-      // リプレイモードでAggregateEventsStreamを作成（DB書き込みをスキップ）
-      const eventProcessor = new AggregateEventsStream(this, true)
+      // AggregateEventsStreamを作成（DB書き込みは既に完了しているのでスキップされる）
+      const eventProcessor = new AggregateEventsStream(this)
       eventProcessor
         .pipe(new WriteEntityStream(this))
         .on('data', () => { }) /** /dev/null consumer */
