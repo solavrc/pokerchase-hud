@@ -403,7 +403,10 @@ const RealTimeStatsDisplay = memo(({ stats, seatIndex }: { stats: RealTimeStats;
                 rowStyle.fontWeight = 'bold'
               }
               
+              const isWaitingForAction = !potOddsData?.isHeroTurn && potOddsData?.call === 0
+              
               const probabilityColor = isComplete ? '#00ff00' : 
+                                     isWaitingForAction ? '#cccccc' :  // Neutral color when waiting
                                      hasGoodOdds ? '#00ff00' : 
                                      probability > 0 ? '#ff6666' : '#666'
               
