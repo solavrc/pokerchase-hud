@@ -2,7 +2,7 @@
 
 > 🎯 **Purpose**: Primary technical reference for PokerChase HUD Chrome extension development and maintenance.
 > 
-> 📅 **Last Updated**: 2025-07-12 - Unified ActionDetail detection, import optimizations, bug fixes
+> 📅 **Last Updated**: 2025-07-12 - Real-time statistics HUD, unified ActionDetail detection, import optimizations
 
 ## 📋 Table of Contents
 
@@ -45,8 +45,10 @@ Unofficial Chrome extension providing real-time poker statistics overlay and han
 
 ### Key Features
 - **Real-time HUD**: Player statistics with drag & drop positioning
+- **Hero Real-time Stats**: Dynamic pot odds and hand improvement probabilities
 - **Hand History Log**: PokerStars-format export with virtualized scrolling
 - **Statistics Engine**: 13+ poker statistics with modular architecture
+- **Starting Hand Rankings**: 169 preflop hand strength display
 - **Smart Filtering**: Game type (SNG/MTT/Ring) and hand count filters
 - **Import/Export**: High-performance bulk data processing
 - **Data Rebuild**: Reconstruct statistics from raw events
@@ -69,6 +71,8 @@ Unofficial Chrome extension providing real-time poker statistics overlay and han
 | **Import Speed** | 20s/250k events | 83% faster than v1 |
 | **Memory Usage** | 175MB peak | 65% reduction |
 | **Stats Cache** | 5s TTL | Prevents redundant calculations |
+| **Real-time Calc** | <10ms | Per action/street update |
+| **Hand Eval Speed** | ~1ms | Bit manipulation optimization |
 
 ## 🏗️ Architecture
 
@@ -112,7 +116,8 @@ WebSocket Events
     ↓
 AggregateEventsStream
     ├─► WriteEntityStream ─► ReadEntityStream ─► Stats Output
-    └─► HandLogStream ─► Hand Log Output (parallel)
+    ├─► HandLogStream ─► Hand Log Output (parallel)
+    └─► RealTimeStatsStream ─► Real-time Stats Output (parallel)
 ```
 
 #### Import Processing
@@ -171,6 +176,13 @@ Bulk Database Insert
 - Extracts session/player information
 - Uses statistics modules for consistency
 - Generates SHOWDOWN phases
+
+#### `RealTimeStatsStream` (Hero Analytics)
+- Processes events in parallel with main pipeline
+- Tracks hero hole cards and community cards
+- Calculates pot odds and call amounts
+- Computes hand improvement probabilities
+- Updates on each action and street
 
 ## 📊 Statistics System
 
@@ -231,6 +243,36 @@ Markers for specific actions used in statistics:
 - `CBET_CHANCE` / `CBET`: Continuation bet tracking
 - `ALL_IN`: All-in marker (action normalization)
 
+## 🎯 Real-time Statistics
+
+### Overview
+Hero-only dynamic statistics displayed above regular HUD, updating per action/street.
+
+### Components
+
+#### Pot Odds Calculator (`pot-odds.ts`)
+- **Pot Size**: Total pot including all bets
+- **Call Amount**: Required chips to continue
+- **Pot Odds %**: Call amount as percentage of total pot
+- **Ratio**: Traditional odds format (e.g., "3:1")
+
+#### Hand Improvement (`hand-improvement.ts`)
+- **Preflop**: Uses probability tables for pocket pairs, suited, offsuit
+- **Postflop**: Dynamic calculation based on community cards
+- **Caching**: Last 10 hero hands cached for performance
+- **Display**: Probability table showing all possible hands
+
+#### Poker Evaluator (`poker-evaluator.ts`)
+- **Algorithm**: Bit manipulation for fast hand evaluation
+- **Support**: 5-7 card evaluation
+- **Features**: Handles wheel straights (A-2-3-4-5)
+- **Performance**: Optimized for real-time calculations
+
+#### Starting Hand Rankings (`starting-hand-rankings.ts`)
+- **Coverage**: All 169 unique starting hands
+- **Format**: "AA (1/169)", "72o (169/169)"
+- **Categories**: Pocket pairs, suited, offsuit
+
 ## 🔄 Data Processing
 
 ### Event Types
@@ -290,12 +332,18 @@ const rotatedStats = [
 - Configuration loading and validation
 - Master visibility control
 - Seat rotation logic
+- Real-time stats state management
 
 ### `Hud.tsx`
-- 240px fixed-width overlay
+- **Regular HUD**: 240px fixed-width overlay
+- **Real-time Stats**: 200px width (hero only)
 - Drag & drop with position persistence
 - Per-player statistics display
 - Click-to-copy functionality
+- Real-time display components:
+  - Starting hand ranking
+  - Pot odds with call amount
+  - Hand improvement probability table
 - Future: Fish/shark indicators
 
 ### `HandLog.tsx`
@@ -352,6 +400,9 @@ const rotatedStats = [
   hudPosition_0: { top: string, left: string },
   hudPosition_1: { top: string, left: string },
   // ... up to hudPosition_5
+  
+  // Real-time stats HUD position (hero only)
+  hudPosition_100: { top: string, left: string }
 }
 ```
 
@@ -361,7 +412,7 @@ const rotatedStats = [
 ```bash
 npm run build        # Production build
 npm run typecheck    # TypeScript validation
-npm run test         # Run test suite
+npm run test         # Run test suite (includes 1,600+ lines for real-time stats)
 npm run postbuild    # Create extension.zip
 ```
 
@@ -472,6 +523,23 @@ const DEBUG = true  // Enable verbose logging
 - **Transaction Safety**: Complete READONLY before READWRITE operations
 - **Memory Management**: Process large datasets in chunks
 - **Cache Invalidation**: 5-second TTL prevents stale data
+- **Real-time Stats**: Hero-only feature, updates per action/street
+- **HUD Widths**: Regular HUD 240px, Real-time stats 200px
+- **Parallel Streams**: Real-time stats process independently from main pipeline
+
+# Known Issues & TODOs
+
+## Technical Debt
+- **poker-evaluator.ts**: `cards: []` TODO - Extract actual cards for hand display
+- **Input Validation**: Missing duplicate card checks and range validation
+- **Magic Numbers**: Color codes (#00ff00, #ff6666) should be constants
+
+## Future Enhancements
+- **Error Boundaries**: Add around real-time stats to prevent crashes
+- **WebWorker**: Move probability calculations off main thread
+- **Implied Odds**: Extend pot odds calculator
+- **Multi-way Pots**: Enhance win rate calculations
+- **Toggle Feature**: Show/hide real-time stats option
 
 # Claude Code Instructions
 - Focus on architectural principles
