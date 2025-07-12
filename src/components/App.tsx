@@ -15,6 +15,7 @@ import type {
 } from "../types/messages"
 import HandLog from "./HandLog"
 import Hud from "./Hud"
+import type { RealTimeStats } from "../realtime-stats/realtime-stats-service"
 
 const EMPTY_SEATS: PlayerStats[] = Array.from({ length: 6 }, () => ({ playerId: -1 }))
 
@@ -28,10 +29,16 @@ const App = memo(() => {
   const [statDisplayConfigs, setStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
   const [configLoaded, setConfigLoaded] = useState(false)
   const [shouldScrollToLatest, setShouldScrollToLatest] = useState(false)
+  const [realTimeStats, setRealTimeStats] = useState<RealTimeStats>({})
 
   const handleStatsMessage = useCallback(
     ({ detail }: CustomEvent<StatsData>) => {
       let mappedStats = detail.stats
+      
+      // Update real-time stats if available
+      if (detail.realTimeStats) {
+        setRealTimeStats(detail.realTimeStats)
+      }
 
       // Player（ヒーロー）情報を含むEVT_DEALがある場合、ヒーローをポジション0に配置するよう席を回転
       if (detail.evtDeal && (detail.evtDeal as ApiEvent<ApiType.EVT_DEAL>).Player?.SeatIndex !== undefined) {
@@ -42,6 +49,7 @@ const App = memo(() => {
           ...detail.stats.slice(heroSeatIndex),
           ...detail.stats.slice(0, heroSeatIndex)
         ]
+      } else {
       }
 
       setStats(mappedStats)
@@ -238,6 +246,7 @@ const App = memo(() => {
               stat={position.stat}
               scale={uiConfig.scale}
               statDisplayConfigs={statDisplayConfigs}
+              realTimeStats={position.actualSeatIndex === 0 ? realTimeStats : undefined}
             />
           )
       )}

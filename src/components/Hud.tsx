@@ -2,6 +2,8 @@ import { CSSProperties, useState, useCallback, useMemo, memo, useEffect, useRef 
 import { PlayerStats } from '../app'
 import type { StatDisplayConfig } from '../types'
 import type { StatResult } from '../types/stats'
+import type { RealTimeStats } from '../realtime-stats/realtime-stats-service'
+import { getStartingHandRanking } from '../utils/starting-hand-rankings'
 
 // Types
 interface HudPosition {
@@ -14,6 +16,7 @@ interface HudProps {
   stat: PlayerStats
   scale?: number
   statDisplayConfigs: StatDisplayConfig[]
+  realTimeStats?: RealTimeStats
 }
 
 interface DragState {
@@ -34,8 +37,8 @@ const SEAT_POSITIONS: CSSProperties[] = [
 ]
 
 const EMPTY_SEAT_ID = -1
-const HUD_MIN_WIDTH = 240
-const HUD_MAX_WIDTH = 240
+const HUD_WIDTH = 240
+const REALTIME_HUD_WIDTH = 200  // リアルタイム統計専用の幅
 const DRAG_OPACITY = 0.3
 const HOVER_BG_COLOR = 'rgba(0, 0, 0, 0.7)'
 const NORMAL_BG_COLOR = 'rgba(0, 0, 0, 0.5)'
@@ -60,8 +63,7 @@ const styles = {
     borderRadius: '6px',
     padding: '0',
     lineHeight: '1.1',
-    minWidth: `${HUD_MIN_WIDTH}px`,
-    maxWidth: `${HUD_MAX_WIDTH}px`,
+    width: `${HUD_WIDTH}px`,
     overflow: 'hidden',
   } as CSSProperties,
   
@@ -274,6 +276,8 @@ const getPlayerName = (stat: PlayerStats): string | null => {
   return null
 }
 
+
+
 // Sub-components
 const PlayerTypeIcons = memo(() => (
   <div style={styles.playerTypeIcons}>
@@ -281,6 +285,150 @@ const PlayerTypeIcons = memo(() => (
     <span>🦈</span>
   </div>
 ))
+
+// Real-time stats display component
+const RealTimeStatsDisplay = memo(({ stats, seatIndex }: { stats: RealTimeStats; seatIndex: number }) => {
+  const [isHovering, setIsHovering] = useState(false)
+  const defaultPosition: CSSProperties = { top: '70%', left: '25%' }
+  
+  const {
+    containerRef,
+    isDragging,
+    position,
+    handleMouseDown
+  } = useDraggable(seatIndex + 100, defaultPosition) // Use seatIndex + 100 to avoid collision with regular HUD positions
+  
+  const hasStats = Object.keys(stats).length > 0
+  
+  
+  if (!hasStats || !stats.handImprovement) return null
+  
+  const potOddsData = stats.potOdds?.value as { pot: number; call: number; percentage: number; ratio: string; isHeroTurn: boolean } | undefined
+  const potOddsPercentage = potOddsData?.percentage
+  const handImprovement = stats.handImprovement?.value as any
+  
+  if (!handImprovement || !handImprovement.improvements) return null
+  
+  const containerStyle: CSSProperties = {
+    position: 'fixed',
+    ...(position || defaultPosition),
+    transform: 'translate(-50%, -50%)',
+    zIndex: 9999,
+    pointerEvents: isDragging ? 'auto' : 'none',
+  }
+  
+  return (
+    <div ref={containerRef} style={containerStyle}>
+      <div 
+        style={{
+          backgroundColor: 'rgba(0, 0, 0, 0.6)',  // More transparent
+          backdropFilter: 'blur(4px)',
+          border: '1px solid rgba(255, 255, 255, 0.2)',
+          borderRadius: '8px',
+          fontSize: '10px',
+          color: '#ffffff',
+          pointerEvents: 'auto',
+          userSelect: 'none',
+          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3)',
+          margin: '4px',
+          position: 'relative',
+          cursor: isDragging ? 'move' : 'default',
+          width: `${REALTIME_HUD_WIDTH}px`,
+        }}
+        onMouseEnter={() => setIsHovering(true)}
+        onMouseLeave={() => setIsHovering(false)}
+      >
+        <DragHandle isHovering={isHovering} onMouseDown={handleMouseDown} />
+      {/* Header with hand ranking and pot odds */}
+      <div style={{ padding: '6px 10px' }}>
+        {/* First line: Hand ranking */}
+        {stats.holeCards && (
+          <div style={{ marginBottom: '2px' }}>
+            <span style={{ 
+              fontSize: '10px', 
+              color: '#fff',
+              fontWeight: '600',
+              letterSpacing: '0.5px',
+              textShadow: '0 1px 2px rgba(0, 0, 0, 0.5)'
+            }}>
+              {(() => {
+                const handInfo = getStartingHandRanking(stats.holeCards)
+                return handInfo ? `${handInfo.notation} (${handInfo.ranking}/169)` : ''
+              })()}
+            </span>
+          </div>
+        )}
+        
+        {/* Second line: Pot odds information */}
+        {potOddsData && (
+          <div style={{ height: '16px', display: 'flex', alignItems: 'center' }}>
+            <span style={{ fontSize: '9px' }}>
+              Pot {potOddsData.pot.toLocaleString()}
+              {potOddsData.call > 0 && (
+                <span style={{ color: potOddsData.isHeroTurn ? '#80c0ff' : '#888' }}>
+                  {' / Call '}{potOddsData.call.toLocaleString()} ({potOddsData.percentage.toFixed(1)}%)
+                </span>
+              )}
+            </span>
+          </div>
+        )}
+      </div>
+      
+      {/* Hand improvement table */}
+      <div style={{ padding: '4px' }}>
+        <table style={{ 
+          width: '100%', 
+          borderCollapse: 'collapse',
+          fontSize: '9px'
+        }}>
+          <tbody>
+            {handImprovement.improvements.map((improvement: any) => {
+              const isCurrentHand = improvement.isCurrent
+              const isComplete = improvement.isComplete
+              const probability = improvement.probability
+              const hasGoodOdds = potOddsPercentage !== undefined && probability > potOddsPercentage && probability < 100
+              const isBetterThanCurrent = improvement.rank > handImprovement.currentHand.rank
+              
+              let rowStyle: React.CSSProperties = {
+                opacity: isCurrentHand ? 1 : (isBetterThanCurrent ? 0.9 : 0.5)
+              }
+              
+              let cellStyle: React.CSSProperties = {
+                padding: '2px 6px',
+                borderBottom: '1px solid rgba(255, 255, 255, 0.05)'
+              }
+              
+              if (isCurrentHand) {
+                rowStyle.backgroundColor = 'rgba(255, 255, 255, 0.1)'
+                rowStyle.fontWeight = 'bold'
+              }
+              
+              const probabilityColor = isComplete ? '#00ff00' : 
+                                     hasGoodOdds ? '#00ff00' : 
+                                     probability > 0 ? '#ff6666' : '#666'
+              
+              return (
+                <tr key={improvement.rank} style={rowStyle}>
+                  <td style={{ ...cellStyle, textAlign: 'left' }}>
+                    {improvement.name}
+                  </td>
+                  <td style={{ 
+                    ...cellStyle, 
+                    textAlign: 'right',
+                    color: probabilityColor
+                  }}>
+                    {probability.toFixed(1)}%
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+      </div>
+    </div>
+  )
+})
 
 const DragHandle = memo(({ isHovering, onMouseDown }: { isHovering: boolean, onMouseDown: (e: React.MouseEvent) => void }) => (
   <div
@@ -425,27 +573,40 @@ const Hud = memo((props: HudProps) => {
   
   // Normal HUD with stats
   return (
-    <div ref={containerRef} style={containerStyle}>
-      <div
-        style={{
-          ...backgroundStyle,
-          ...styles.clickable,
-        }}
-        onClick={copyStatsToClipboard}
-        onMouseEnter={() => setIsHovering(true)}
-        onMouseLeave={() => setIsHovering(false)}
-        title="Click to copy stats to clipboard"
-      >
-        <DragHandle isHovering={isHovering} onMouseDown={handleMouseDown} />
-        <HudHeader playerName={playerName} playerId={props.stat.playerId} />
-        <StatDisplay displayStats={displayStats} formatValue={formatStatValue} />
+    <>
+      {/* Real-time stats for hero (independent positioning) */}
+      {props.actualSeatIndex === 0 && props.realTimeStats && (
+        <RealTimeStatsDisplay stats={props.realTimeStats} seatIndex={props.actualSeatIndex} />
+      )}
+      
+      {/* Regular HUD */}
+      <div ref={containerRef} style={containerStyle}>
+        <div
+          style={{
+            ...backgroundStyle,
+            ...styles.clickable,
+          }}
+          onClick={copyStatsToClipboard}
+          onMouseEnter={() => setIsHovering(true)}
+          onMouseLeave={() => setIsHovering(false)}
+          title="Click to copy stats to clipboard"
+        >
+          <DragHandle isHovering={isHovering} onMouseDown={handleMouseDown} />
+          <HudHeader playerName={playerName} playerId={props.stat.playerId} />
+          <StatDisplay displayStats={displayStats} formatValue={formatStatValue} />
+        </div>
       </div>
-    </div>
+    </>
   )
 }, (prevProps, nextProps) => {
   if (prevProps.actualSeatIndex !== nextProps.actualSeatIndex) return false
   if (prevProps.stat.playerId !== nextProps.stat.playerId) return false
   if (prevProps.scale !== nextProps.scale) return false
+  
+  // Check real-time stats changes for hero
+  if (prevProps.actualSeatIndex === 0) {
+    if (prevProps.realTimeStats !== nextProps.realTimeStats) return false
+  }
   
   if (prevProps.stat.playerId === EMPTY_SEAT_ID && nextProps.stat.playerId === EMPTY_SEAT_ID) return true
   

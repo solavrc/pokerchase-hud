@@ -10,6 +10,7 @@ import PokerChaseService, { ApiEvent, ApiType, PlayerStats } from './app'
 import App from './components/App'
 import type { ChromeMessage } from './types/messages'
 import { MESSAGE_ACTIONS as EVENTS } from './types/messages'
+import type { RealTimeStats } from './realtime-stats/realtime-stats-service'
 /** !!! BACKGROUND、WEB_ACCESSIBLE_RESOURCES からインポートしないこと !!! */
 
 const RECONNECT_DELAY_MS = 500
@@ -17,6 +18,7 @@ const RECONNECT_DELAY_MS = 500
 export interface StatsData {
   stats: PlayerStats[]
   evtDeal?: ApiEvent<ApiType.EVT_DEAL>  // 席のマッピング用のEVT_DEALイベント
+  realTimeStats?: RealTimeStats  // リアルタイム統計（ヒーロー用）
 }
 
 declare global {
@@ -27,9 +29,14 @@ declare global {
 
 const connectToBackgroundService = () => {
   const port = chrome.runtime.connect({ name: PokerChaseService.POKER_CHASE_SERVICE_EVENT })
-  port.onMessage.addListener((message: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL> } | string) => {
+  port.onMessage.addListener((message: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: RealTimeStats } | string) => {
     if (typeof message === 'object' && message !== null && 'stats' in message) {
+      console.time('[content_script] Dispatching stats event')
       window.dispatchEvent(new CustomEvent(PokerChaseService.POKER_CHASE_SERVICE_EVENT, { detail: message }))
+      console.timeEnd('[content_script] Dispatching stats event')
+      if (message.realTimeStats) {
+        console.log('[content_script] Real-time stats received:', Object.keys(message.realTimeStats))
+      }
     }
   })
   port.onDisconnect.addListener(() => {
