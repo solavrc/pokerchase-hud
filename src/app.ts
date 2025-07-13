@@ -9,6 +9,7 @@ import type { HandLogConfig } from './types/hand-log'
 import type { StatCalculationContext } from './types/stats'
 import { ErrorHandler } from './utils/error-handler'
 import { formatCardsArray } from './utils/card-utils'
+import { rotateArrayFromIndex } from './utils/array-utils'
 import { setHandImprovementHeroHoleCards, setHandImprovementBatchMode } from './realtime-stats'
 
 import {
@@ -683,10 +684,6 @@ class PokerChaseService {
     this.handAggregateStream
       .pipe<WriteEntityStream>(writeStream)
       .pipe<ReadEntityStream>(this.statsOutputStream)
-    
-    // Branch off for real-time stats (hero only)
-    this.handAggregateStream
-      .pipe(this.realTimeStatsStream)
   }
   readonly setBattleTypeFilter = async (filterOptions: FilterOptions) => {
     const selectedTypes: number[] = []
@@ -860,10 +857,7 @@ class PokerChaseService {
       : console.warn(`[${timestamp}]`, event.ApiTypeId, ApiType[event.ApiTypeId], JSON.stringify(event))
   }
   static readonly rotateElementFromIndex = <T>(elements: T[], index: number): T[] => {
-    return [
-      ...elements.slice(index, Infinity),
-      ...elements.slice(0, index)
-    ]
+    return rotateArrayFromIndex(elements, index)
   }
   static readonly toCardStr = (cards: number[]) => formatCardsArray(cards)
 }
