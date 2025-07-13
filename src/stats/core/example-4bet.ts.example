@@ -1,0 +1,73 @@
+/**
+ * Example: 4-Bet Statistic
+ * 
+ * This is an example implementation showing how to create a new statistic.
+ * To use this:
+ * 1. Remove the .example extension from the filename
+ * 2. Add the export to src/stats/core/index.ts
+ * 3. The statistic will automatically appear in the HUD
+ */
+
+import type { StatDefinition, ActionDetailContext } from '../../types/stats'
+import { ActionType } from '../../types/game'
+import { formatPercentage } from '../utils'
+import { isFacing3Bet } from '../helpers'
+
+// Custom action detail flags for this statistic
+// In a real implementation, these would be added to the ActionDetail enum
+const FOUR_BET_OPPORTUNITY = '4BET_OPPORTUNITY'
+const FOUR_BET = '4BET'
+
+export const fourBetStat: StatDefinition = {
+  id: '4bet',
+  name: '4B',
+  description: '4-bet percentage',
+  
+  // Detect when a player has the opportunity to 4-bet and whether they do
+  detectActionDetails: (context: ActionDetailContext): string[] => {
+    const details: string[] = []
+    
+    // Player is facing a 3-bet (phasePrevBetCount === 3)
+    if (isFacing3Bet(context)) {
+      details.push(FOUR_BET_OPPORTUNITY)
+      
+      // Check if player responds with a raise (4-bet)
+      if (context.actionType === ActionType.RAISE) {
+        details.push(FOUR_BET)
+      }
+    }
+    
+    return details
+  },
+  
+  // Calculate the statistic from accumulated data
+  calculate: ({ actions }) => {
+    // Count opportunities (when facing 3-bet)
+    const opportunities = actions.filter(a => 
+      a.actionDetails.includes(FOUR_BET_OPPORTUNITY)
+    ).length
+    
+    // Count actual 4-bets
+    const fourBets = actions.filter(a => 
+      a.actionDetails.includes(FOUR_BET)
+    ).length
+    
+    // Return as [numerator, denominator] for percentage calculation
+    return [fourBets, opportunities]
+  },
+  
+  // Use the standard percentage formatter
+  format: formatPercentage  // Will display as "25.0% (1/4)"
+}
+
+/**
+ * Alternative implementation using ActionPatterns helper:
+ * 
+ * import { ActionPatterns } from '../helpers'
+ * 
+ * detectActionDetails: ActionPatterns.createOpportunityPattern(
+ *   '4BET',
+ *   (context) => isFacing3Bet(context),
+ *   (context) => context.actionType === ActionType.RAISE
+ * )
+ */

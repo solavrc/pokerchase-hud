@@ -3,8 +3,9 @@
  */
 
 import type { StatDefinition, ActionDetailContext } from '../../types/stats'
-import { ActionDetail, ActionType, PhaseType } from '../../types/game'
+import { ActionDetail, ActionType } from '../../types/game'
 import { formatPercentage } from '../utils'
+import { isFacing2Bet } from '../helpers'
 
 export const threeBetStat: StatDefinition = {
   id: '3bet',
@@ -30,13 +31,12 @@ export const threeBetStat: StatDefinition = {
    * （1: BB, 2: 最初のレイズ（2ベット）後, 3: 2回目のレイズ（3ベット）後）
    */
   detectActionDetails: (context: ActionDetailContext): ActionDetail[] => {
-    const { phasePrevBetCount, actionType, phase } = context
     const details: ActionDetail[] = []
     
-    // プリフロップのみで判定、phasePrevBetCount === 2は2ベット後のアクション
-    if (phase === PhaseType.PREFLOP && phasePrevBetCount === 2) {
+    // Use helper function for better readability
+    if (isFacing2Bet(context)) {
       details.push(ActionDetail.$3BET_CHANCE)
-      if (actionType === ActionType.RAISE) {
+      if (context.actionType === ActionType.RAISE) {
         details.push(ActionDetail.$3BET)
       }
     }
