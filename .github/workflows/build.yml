@@ -13,6 +13,8 @@ on:
           - patch
           - minor
           - major
+  push:
+    branches: [ main ]
 
 permissions:
   contents: write
