@@ -1,0 +1,12 @@
+# Global ownership
+* @solavrc
+
+# Critical security files - Require owner review
+/.github/workflows/ @solavrc
+/.github/CODEOWNERS @solavrc
+/release-please-config.json @solavrc
+/.release-please-manifest.json @solavrc
+
+# Package management
+/package.json @solavrc
+/manifest.json @solavrc

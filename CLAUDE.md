@@ -612,6 +612,82 @@ npm run test         # Run test suite
 npm run postbuild    # Create extension.zip
 ```
 
+### Release Management
+
+#### Conventional Commits (Required)
+This project uses **Release-Please** for automated versioning and releases. All commit messages **MUST** follow [Conventional Commits](https://www.conventionalcommits.org/) specification.
+
+**Required Format:**
+```
+<type>[optional scope]: <description>
+
+[optional body]
+
+[optional footer]
+```
+
+**Supported Types:**
+| Type | Description | Version Impact | Example |
+|------|-------------|----------------|---------|
+| `feat` | New feature | **minor** (2.0.0 → 2.1.0) | `feat(hud): add drag & drop positioning` |
+| `fix` | Bug fix | **patch** (2.0.0 → 2.0.1) | `fix(stats): resolve VPIP calculation bug` |
+| `feat!` | Breaking change | **major** (2.0.0 → 3.0.0) | `feat!: migrate to Chrome Manifest V3` |
+| `perf` | Performance improvement | **patch** | `perf(stats): optimize cache lookup` |
+| `docs` | Documentation | **none** | `docs: update README installation steps` |
+| `style` | Code style changes | **none** | `style: fix eslint warnings` |
+| `refactor` | Code refactoring | **none** | `refactor(ui): extract common components` |
+| `test` | Tests | **none** | `test(stats): add unit tests for VPIP` |
+| `chore` | Build/maintenance | **none** | `chore: update dependencies` |
+| `ci` | CI configuration | **none** | `ci: add automated testing workflow` |
+
+**Scope Examples:**
+- `hud`: HUD-related changes
+- `stats`: Statistics system changes  
+- `ui`: User interface changes
+- `api`: API/WebSocket changes
+- `build`: Build system changes
+
+**Breaking Changes:**
+Use `!` after type or add `BREAKING CHANGE:` in footer:
+```bash
+feat!: remove deprecated statistics API
+# or
+feat(api): add new endpoint
+
+BREAKING CHANGE: Old endpoint /stats is removed
+```
+
+#### Release Process
+**Manual Release via Release-Please:**
+1. **Development** with conventional commits on feature branches
+2. **Create PR** → Get review → Merge to main
+3. **Manual Release Trigger**:
+   - Go to Actions → "Release Please" → "Run workflow"
+   - Choose release type (auto/patch/minor/major)
+4. **Release-Please** creates:
+   - Release PR with version bump
+   - Updates `package.json`, `manifest.json`, `CHANGELOG.md`
+5. **Manual Review & Merge** of Release PR
+6. **Automatic Build** → Creates GitHub Release with `extension.zip`
+
+**Release Types:**
+- `auto`: Based on conventional commits (recommended)
+- `patch`: Force patch version (2.0.0 → 2.0.1)
+- `minor`: Force minor version (2.0.0 → 2.1.0)  
+- `major`: Force major version (2.0.0 → 3.0.0)
+
+**Security Benefits:**
+- No automatic releases from commits
+- All releases require manual trigger + review
+- Critical files protected by CODEOWNERS
+
+#### Branch Protection
+- **main branch** is protected with:
+  - Pull Request required (1 approval minimum)
+  - CODEOWNERS review required for critical files (`.github/workflows/`, `package.json`, etc.)
+  - No direct push allowed
+  - Force push prohibited
+
 ### Code Standards
 - **TypeScript**: Strict mode enabled
 - **Comments**: Japanese (日本語) for team
