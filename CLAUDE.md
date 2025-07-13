@@ -658,7 +658,7 @@ BREAKING CHANGE: Old endpoint /stats is removed
 ```
 
 #### Release Process
-**Manual Release via Release-Please:**
+**Semi-Automated Release via Release-Please:**
 1. **Development** with conventional commits on feature branches
 2. **Create PR** → Get review → Merge to main
 3. **Manual Release Trigger**:
@@ -668,7 +668,7 @@ BREAKING CHANGE: Old endpoint /stats is removed
    - Release PR with version bump
    - Updates `package.json`, `manifest.json`, `CHANGELOG.md`
 5. **Manual Review & Merge** of Release PR
-6. **Automatic Build** → Creates GitHub Release with `extension.zip`
+6. **Automatic Release** → GitHub Release with `extension.zip` created automatically
 
 **Release Types:**
 - `auto`: Based on conventional commits (recommended)
