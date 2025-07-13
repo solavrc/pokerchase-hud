@@ -25,6 +25,7 @@ import type {
 } from './types'
 
 import { defaultRegistry } from './stats'
+import { rotateArrayFromIndex } from './utils/array-utils'
 
 /**
  * エンティティバンドル（一括保存用）
@@ -383,10 +384,7 @@ export class EntityConverter {
       if (sbIndex === -1) return seatUserIds // フォールバック
       
       // SBから順に並べ替え
-      return [
-        ...seatUserIds.slice(sbIndex),
-        ...seatUserIds.slice(0, sbIndex)
-      ]
+      return rotateArrayFromIndex(seatUserIds, sbIndex)
     }
     
     // ポストフロップの場合はボタンの次から始まる順序
@@ -403,9 +401,6 @@ export class EntityConverter {
     
     // ボタンの次から順に並べ替え
     const nextIndex = (buttonIndex + 1) % seatUserIds.length
-    return [
-      ...seatUserIds.slice(nextIndex),
-      ...seatUserIds.slice(0, nextIndex)
-    ]
+    return rotateArrayFromIndex(seatUserIds, nextIndex)
   }
 }

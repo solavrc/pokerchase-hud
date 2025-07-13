@@ -76,7 +76,8 @@ export class HandLogStream extends Transform {
                 this.completedHands = this.completedHands.slice(-maxHands)
               }
               this.emitHandLogEvent('update', allEntries, handResultEvent.HandId)
-              this.processor = new HandLogProcessor(this.createContext())
+              // Reset only hand-specific state, preserving session state
+              this.processor.resetHandState()
             }
             break
           }

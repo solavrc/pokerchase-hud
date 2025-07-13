@@ -13,6 +13,7 @@ import { DEFAULT_HAND_LOG_CONFIG, DEFAULT_UI_CONFIG } from "../types/hand-log"
 import type {
   ChromeMessage,
 } from "../types/messages"
+import { rotateArrayFromIndex } from "../utils/array-utils"
 import HandLog from "./HandLog"
 import Hud from "./Hud"
 import type { RealTimeStats } from "../realtime-stats/realtime-stats-service"
@@ -45,10 +46,7 @@ const App = memo(() => {
         const evtDeal = detail.evtDeal as ApiEvent<ApiType.EVT_DEAL>
         const heroSeatIndex = evtDeal.Player!.SeatIndex
 
-        mappedStats = [
-          ...detail.stats.slice(heroSeatIndex),
-          ...detail.stats.slice(0, heroSeatIndex)
-        ]
+        mappedStats = rotateArrayFromIndex(detail.stats, heroSeatIndex)
       } else {
       }
 

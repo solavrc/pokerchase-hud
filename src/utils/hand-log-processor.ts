@@ -10,6 +10,9 @@ import { ActionType, RankType, PhaseType } from '../types/game'
 import { HandLogConfig, HandLogEntry, HandLogEntryType, HandLogState } from '../types/hand-log'
 import { formatCards } from './card-utils'
 
+// 定数定義
+const MAX_SEATS = 6 // PokerChaseの6人テーブル
+
 export interface HandLogContext {
   session: Session
   handLogConfig?: HandLogConfig
@@ -21,6 +24,7 @@ export class HandLogProcessor {
   private currentHand: HandLogState | null = null
   private communityCards: number[] = []
   private context: HandLogContext
+  private firstHandId: number | null = null
 
   constructor(context: HandLogContext) {
     this.context = context
@@ -78,6 +82,15 @@ export class HandLogProcessor {
     return this.currentHand?.isComplete || false
   }
 
+  /**
+   * ハンド固有の状態をリセット（セッションレベルの状態は保持）
+   */
+  resetHandState(): void {
+    this.currentHand = null
+    this.communityCards = []
+    // firstHandId は保持（トーナメントID用）
+  }
+
   private handleDealEvent(event: ApiEvent<ApiType.EVT_DEAL>): HandLogEntry[] {
     if (this.currentHand && !this.currentHand.isComplete) {
       console.warn('[HandLogProcessor] Clearing incomplete hand due to new EVT_DEAL')
@@ -112,16 +125,17 @@ export class HandLogProcessor {
 
     let headerText: string
     if (isCashGame) {
-      headerText = `PokerChase Hand #pending:  Hold'em No Limit (${event.Game.SmallBlind}/${event.Game.BigBlind}) - ${jstTimestamp}`
+      headerText = `PokerChase Game #pending: Hold'em No Limit ($${event.Game.SmallBlind}/$${event.Game.BigBlind} USD) - ${jstTimestamp}`
     } else {
-      headerText = `Tournament #pending, Hold'em No Limit - Level I (${event.Game.SmallBlind}/${event.Game.BigBlind}) - ${jstTimestamp}`
+      const sessionName = this.context.session.name || 'Unknown'
+      headerText = `PokerChase Game #pending: Tournament #pending, ${sessionName} Hold'em No Limit - Level I (${event.Game.SmallBlind}/${event.Game.BigBlind}) - ${jstTimestamp}`
     }
 
     const headerEntry = this.createEntry(headerText, HandLogEntryType.HEADER)
     entries.push(headerEntry)
 
     const tableEntry = this.createEntry(
-      `Table '${this.context.session.name || 'Unknown'}' 6-max Seat #${event.Game.ButtonSeat + 1} is the button`,
+      `Table '${this.context.session.name || 'Unknown'}' ${MAX_SEATS}-max Seat #${event.Game.ButtonSeat + 1} is the button`,
       HandLogEntryType.HEADER
     )
     entries.push(tableEntry)
@@ -260,26 +274,53 @@ export class HandLogProcessor {
       entry.handId = event.HandId
       // ヘッダーテキストを特別に更新
       if (entry.type === HandLogEntryType.HEADER && entry.text.includes('#pending')) {
-        entry.text = entry.text.replace('#pending', `#${event.HandId}`)
+        // For HandLogStream, we need to update the tournament ID as well
+        if (this.context.session.battleType !== undefined && ![4, 5].includes(this.context.session.battleType)) {
+          // Store first hand ID for tournament ID
+          if (!this.firstHandId) {
+            this.firstHandId = event.HandId
+          }
+          // Tournament format: update Game # with current hand, Tournament # with first hand
+          entry.text = entry.text.replace(/Game #pending/, `Game #${event.HandId}`)
+            .replace(/Tournament #pending/, `Tournament #${this.firstHandId}`)
+        } else {
+          // Cash game: just update Game #
+          entry.text = entry.text.replace('#pending', `#${event.HandId}`)
+        }
       }
     })
 
     // 不足しているコミュニティカードセクションを追加（オールインの場合）
-    entries.push(...this.addMissingStreets(event.CommunityCards))
+    // Use accumulated cards if event has empty cards
+    const cardsForMissingStreets = event.CommunityCards.length > 0 ? event.CommunityCards : this.communityCards
+    entries.push(...this.addMissingStreets(cardsForMissingStreets))
+    
+    // Update community cards if event has them
+    // Don't overwrite with empty array - some events have empty CommunityCards
+    if (event.CommunityCards.length > 0) {
+      this.communityCards = event.CommunityCards
+    }
 
-    // カードをショウしているプレイヤーがいる場合はショウダウンを追加
-    const playersWithCards = event.Results.filter(r =>
-      r.HoleCards && r.HoleCards.length > 0 && r.HoleCards[0] !== -1
-    )
+    // ショウダウンに参加したプレイヤー（カードを見せた/マックした両方）
+    const showdownParticipants = event.Results.filter(r => {
+      // Include players who show cards OR who reached showdown (SHOWDOWN_MUCK)
+      const hasValidCards = r.HoleCards && r.HoleCards.length > 0 && r.HoleCards[0] !== -1
+      const reachedShowdown = r.RankType === RankType.SHOWDOWN_MUCK
+      // Also check if they have a reward chip (winner) but empty cards (rare case)
+      const wonWithoutShowingCards = r.RewardChip > 0 && (!r.HoleCards || r.HoleCards.length === 0)
+      return hasValidCards || reachedShowdown || wonWithoutShowingCards
+    })
 
-    if (playersWithCards.length > 0) {
+    if (showdownParticipants.length > 0) {
       const showdownEntry = this.createEntry('*** SHOW DOWN ***', HandLogEntryType.SHOWDOWN)
       entries.push(showdownEntry)
 
       // ショウダウンのプレイヤーのカードを表示
-      event.Results
-        .sort((a, b) => a.HandRanking - b.HandRanking) // 勝者を先に
-        .forEach(result => {
+      // アクティブプレイヤー順（最後にアクションしたプレイヤーから）
+      const showdownOrder = this.getShowdownOrder(event.Results, showdownParticipants)
+      
+      
+      showdownOrder.forEach(result => {
           const playerName = this.getPlayerName(result.UserId)
 
           // プレイヤーが表示する有効なホールカードを持っているかチェック
@@ -289,7 +330,7 @@ export class HandLogProcessor {
 
           if (hasValidCards) {
             const cards = formatCards(result.HoleCards)
-            const handDesc = this.getHandDescription(result.RankType)
+            const handDesc = this.getHandDescription(result.RankType, result.Hands)
             const showEntry = this.createEntry(
               `${playerName}: shows [${cards}] (${handDesc})`,
               HandLogEntryType.SHOWDOWN
@@ -334,6 +375,17 @@ export class HandLogProcessor {
             entries.push(noShowEntry)
           }
         }
+      }
+      
+      // Check if player finished the tournament
+      if (result.Ranking > 0 && result.RewardChip === 0) {
+        const playerName = this.getPlayerName(result.UserId)
+        const rankText = this.getRankingText(result.Ranking)
+        const finishEntry = this.createEntry(
+          `${playerName} finished the tournament in ${rankText} place`,
+          HandLogEntryType.SHOWDOWN
+        )
+        entries.push(finishEntry)
       }
     })
 
@@ -465,6 +517,104 @@ export class HandLogProcessor {
     return Math.abs(hash).toString(36)
   }
 
+
+  private getShowdownOrder(_results: any[], playersWithCards: any[]): any[] {
+    // Get last aggressive action from current hand entries
+    let lastAggressorUserId: number | null = null
+    
+    // Find the last street marker (RIVER, TURN, FLOP, or start of hand)
+    let lastStreetIndex = -1
+    for (let i = this.currentHand!.entries.length - 1; i >= 0; i--) {
+      const entry = this.currentHand!.entries[i]
+      if (entry?.type === HandLogEntryType.STREET || entry?.type === HandLogEntryType.CARDS) {
+        lastStreetIndex = i
+        break
+      }
+    }
+    
+    // Find last bet/raise action on the final street only
+    for (let i = this.currentHand!.entries.length - 1; i > lastStreetIndex; i--) {
+      const entry = this.currentHand!.entries[i]
+      if (entry?.type === HandLogEntryType.ACTION && 
+          entry.text && (entry.text.includes(': bets ') || entry.text.includes(': raises '))) {
+        // Extract player name from action
+        const playerName = entry.text.split(':')[0]
+        // Find userId from playerName
+        for (const [userId, info] of this.context.session.players) {
+          if (info.name === playerName) {
+            lastAggressorUserId = userId
+            break
+          }
+        }
+        break
+      }
+    }
+    
+    
+    // If there was a last aggressor, they show first
+    if (lastAggressorUserId !== null) {
+      // Sort by putting last aggressor first, then by position
+      const lastAggressorIndex = this.currentHand!.seatUserIds.indexOf(lastAggressorUserId)
+      return playersWithCards.sort((a, b) => {
+        const aIndex = this.currentHand!.seatUserIds.indexOf(a.UserId)
+        const bIndex = this.currentHand!.seatUserIds.indexOf(b.UserId)
+        
+        // Last aggressor goes first
+        if (a.UserId === lastAggressorUserId) return -1
+        if (b.UserId === lastAggressorUserId) return 1
+        
+        // Then by position order starting after the aggressor
+        const aPos = (aIndex - lastAggressorIndex + MAX_SEATS) % MAX_SEATS
+        const bPos = (bIndex - lastAggressorIndex + MAX_SEATS) % MAX_SEATS
+        return aPos - bPos
+      })
+    } else {
+      // If no aggressor (all checks), use position order starting from BB
+      // Find the BB position (they act first postflop)
+      let bbSeatIndex = 1 // Default BB position in ${MAX_SEATS}-max
+      
+      // Find actual BB from preflop actions
+      for (const entry of this.currentHand!.entries) {
+        if (entry.type === HandLogEntryType.ACTION && entry.text && entry.text.includes(': posts big blind')) {
+          const colonIndex = entry.text.indexOf(':')
+          if (colonIndex > 0) {
+            const playerName = entry.text.substring(0, colonIndex).trim()
+            for (let i = 0; i < this.currentHand!.seatUserIds.length; i++) {
+              const userId = this.currentHand!.seatUserIds[i]
+              if (userId && userId !== -1) {
+                const currentPlayerName = this.getPlayerName(userId).trim()
+                if (currentPlayerName === playerName) {
+                  bbSeatIndex = i
+                  break
+                }
+              }
+            }
+          }
+          break
+        }
+      }
+      
+      return playersWithCards.sort((a, b) => {
+        const aIndex = this.currentHand!.seatUserIds.indexOf(a.UserId)
+        const bIndex = this.currentHand!.seatUserIds.indexOf(b.UserId)
+        
+        // Calculate position relative to BB (BB shows first)
+        const aPos = (aIndex - bbSeatIndex + MAX_SEATS) % MAX_SEATS
+        const bPos = (bIndex - bbSeatIndex + MAX_SEATS) % MAX_SEATS
+        
+        return aPos - bPos
+      })
+    }
+  }
+
+  private getRankingText(ranking: number): string {
+    // Convert numeric ranking to ordinal text
+    if (ranking === 1) return '1st'
+    if (ranking === 2) return '2nd'
+    if (ranking === 3) return '3rd'
+    return ranking + 'th'
+  }
+
   private getPlayerName(userId: number): string {
     if (userId === -1) return 'Empty Seat'
 
@@ -489,30 +639,85 @@ export class HandLogProcessor {
   }
 
   private getPlayerChips(event: ApiEvent<ApiType.EVT_DEAL>, seatIndex: number): number {
+    const ante = event.Game.Ante || 0
+    
     if (event.Player?.SeatIndex === seatIndex) {
-      return event.Player.Chip + event.Player.BetChip
+      // Add ante back to show chip count before ante was posted
+      return event.Player.Chip + event.Player.BetChip + ante
     }
 
     const otherPlayer = event.OtherPlayers.find(p => p.SeatIndex === seatIndex)
-    return otherPlayer ? otherPlayer.Chip + otherPlayer.BetChip : 0
+    if (otherPlayer) {
+      // For SB/BB players, need to add back their blinds as well
+      let chips = otherPlayer.Chip + otherPlayer.BetChip + ante
+      return chips
+    }
+    return 0
   }
 
   private formatAction(event: ApiEvent<ApiType.EVT_ACTION>, playerName: string): string {
     const { ActionType: actionType, BetChip } = event
 
-    const getPreviousBet = (): number => {
+    // プレイヤーが現在のストリートで既にベットした金額を取得
+    const getPlayerPreviousBet = (player: string): number => {
       if (!this.currentHand) return 0
-
+      
+      // 現在のストリートでこのプレイヤーの最後のベット/レイズ/コールを探す
       for (let i = this.currentHand.entries.length - 1; i >= 0; i--) {
         const entry = this.currentHand.entries[i]
-        if (entry && entry.type === HandLogEntryType.ACTION) {
-          const match = entry.text.match(/(?:bets|raises to|calls) (\d+)/)
+        if (!entry) continue
+        
+        // ストリートマーカーに到達したら終了
+        if (entry.type === HandLogEntryType.STREET) {
+          break
+        }
+        
+        if (entry.type === HandLogEntryType.ACTION && entry.text.includes(player)) {
+          // このプレイヤーのベット/レイズ/コールの金額を取得
+          const match = entry.text.match(/(?:bets|raises \d+ to|calls) (\d+)/)
           if (match?.[1]) {
             return parseInt(match[1])
           }
         }
       }
+      
+      // プリフロップでBB/SBをポストした場合
+      const blindEntry = this.currentHand.entries.find(e =>
+        e?.text.includes(player) && 
+        (e.text.includes('posts small blind') || e.text.includes('posts big blind'))
+      )
+      if (blindEntry?.text) {
+        const blindMatch = blindEntry.text.match(/posts (?:small|big) blind (\d+)/)
+        if (blindMatch?.[1]) return parseInt(blindMatch[1])
+      }
+      
+      return 0
+    }
 
+    const getPreviousBet = (): number => {
+      if (!this.currentHand) return 0
+
+      // 現在のストリートで最後のベット/レイズ額を探す
+      // ストリートマーカーを見つけたら検索を停止
+      for (let i = this.currentHand.entries.length - 1; i >= 0; i--) {
+        const entry = this.currentHand.entries[i]
+        if (!entry) continue
+        
+        // ストリートマーカーに到達したら、このストリートではベットがない
+        if (entry.type === HandLogEntryType.STREET) {
+          break
+        }
+        
+        if (entry.type === HandLogEntryType.ACTION) {
+          // betsまたはraises ... to XXXのパターンを探す
+          const betMatch = entry.text.match(/(?:bets|raises \d+ to) (\d+)/)
+          if (betMatch?.[1]) {
+            return parseInt(betMatch[1])
+          }
+        }
+      }
+
+      // プリフロップの場合、BBを返す
       const bbEntry = this.currentHand.entries.find(e =>
         e?.text.includes('posts big blind')
       )
@@ -543,6 +748,11 @@ export class HandLogProcessor {
         if (prevBet > 0 && BetChip > prevBet) {
           const raiseAmt = BetChip - prevBet
           return `${playerName}: raises ${raiseAmt} to ${BetChip} and is all-in`
+        } else if (prevBet > 0 && BetChip === prevBet) {
+          // 前のベットと同額の場合、差額を表示
+          const playerPrevBet = getPlayerPreviousBet(playerName)
+          const callAmount = BetChip - playerPrevBet
+          return `${playerName}: calls ${callAmount} and is all-in`
         } else if (prevBet > 0) {
           return `${playerName}: calls ${BetChip} and is all-in`
         } else {
@@ -609,23 +819,58 @@ export class HandLogProcessor {
     return entries
   }
 
-  private getHandDescription(rankType: number): string {
-    const rankDescriptions: { [key: number]: string } = {
-      [RankType.ROYAL_FLUSH]: 'a royal flush',
-      [RankType.STRAIGHT_FLUSH]: 'a straight flush',
-      [RankType.FOUR_OF_A_KIND]: 'four of a kind',
-      [RankType.FULL_HOUSE]: 'a full house',
-      [RankType.FLUSH]: 'a flush',
-      [RankType.STRAIGHT]: 'a straight',
-      [RankType.THREE_OF_A_KIND]: 'three of a kind',
-      [RankType.TWO_PAIR]: 'two pair',
-      [RankType.ONE_PAIR]: 'a pair',
-      [RankType.HIGH_CARD]: 'high card',
-      [RankType.NO_CALL]: 'no call',
-      [RankType.SHOWDOWN_MUCK]: 'muck',
-      [RankType.FOLD_OPEN]: 'fold'
+  private getHandDescription(rankType: number, hands: number[] | undefined): string {
+    // カードインデックスからランクを取得するヘルパー関数
+    const getCardRankPlural = (cardIndex: number): string => {
+      const rank = Math.floor(cardIndex / 4)
+      const ranks = ['Deuces', 'Threes', 'Fours', 'Fives', 'Sixes', 'Sevens', 'Eights', 'Nines', 'Tens', 'Jacks', 'Queens', 'Kings', 'Aces']
+      return ranks[rank] || 'Unknown'
     }
-    return rankDescriptions[rankType] || 'unknown'
+
+    switch (rankType) {
+      case RankType.ROYAL_FLUSH:
+        return 'a royal flush'
+      case RankType.STRAIGHT_FLUSH:
+        return 'a straight flush'
+      case RankType.FOUR_OF_A_KIND:
+        if (hands && hands.length > 0 && hands[0] !== undefined) {
+          return `four of a kind, ${getCardRankPlural(hands[0])}`
+        }
+        return 'four of a kind'
+      case RankType.FULL_HOUSE:
+        return 'a full house'
+      case RankType.FLUSH:
+        return 'a flush'
+      case RankType.STRAIGHT:
+        return 'a straight'
+      case RankType.THREE_OF_A_KIND:
+        if (hands && hands.length > 0 && hands[0] !== undefined) {
+          return `three of a kind, ${getCardRankPlural(hands[0])}`
+        }
+        return 'three of a kind'
+      case RankType.TWO_PAIR:
+        if (hands && hands.length >= 3 && hands[0] !== undefined && hands[2] !== undefined) {
+          const rank1 = getCardRankPlural(hands[0])
+          const rank2 = getCardRankPlural(hands[2])
+          return `two pair, ${rank1} and ${rank2}`
+        }
+        return 'two pair'
+      case RankType.ONE_PAIR:
+        if (hands && hands.length > 0 && hands[0] !== undefined) {
+          return `a pair of ${getCardRankPlural(hands[0])}`
+        }
+        return 'a pair'
+      case RankType.HIGH_CARD:
+        return 'high card'
+      case RankType.NO_CALL:
+        return 'no call'
+      case RankType.SHOWDOWN_MUCK:
+        return 'muck'
+      case RankType.FOLD_OPEN:
+        return 'fold'
+      default:
+        return 'unknown'
+    }
   }
 
   private addSummarySection(event: ApiEvent<ApiType.EVT_HAND_RESULTS>, handResultEntries: HandLogEntry[]): HandLogEntry[] {
@@ -642,8 +887,10 @@ export class HandLogProcessor {
     entries.push(potEntry)
 
     // ボード
-    if (event.CommunityCards.length > 0) {
-      const boardCards = formatCards(event.CommunityCards)
+    // Use accumulated community cards if event doesn't have them (e.g., when all-in occurred early)
+    const finalCommunityCards = event.CommunityCards.length > 0 ? event.CommunityCards : this.communityCards
+    if (finalCommunityCards.length > 0) {
+      const boardCards = formatCards(finalCommunityCards)
       const boardEntry = this.createEntry(`Board [${boardCards}]`, HandLogEntryType.SUMMARY)
       entries.push(boardEntry)
     }
@@ -693,13 +940,21 @@ export class HandLogProcessor {
         )
 
         if (beforeFlop) {
-          // プレイヤーがチップを入れたかチェック
+          // プレイヤーがSBかBBをポストしたかチェック
+          const postedBlind = sbEntry || bbEntry
+          
+          // プレイヤーがチップを入れたかチェック（ブラインドポストを除く）
           const hasAction = this.currentHand!.entries.slice(0, foldIndex).some(e =>
             e.type === HandLogEntryType.ACTION &&
             e.text.includes(playerName) &&
-            !e.text.includes('folds')
+            !e.text.includes('folds') &&
+            !e.text.includes('posts the ante') &&
+            !e.text.includes('posts small blind') &&
+            !e.text.includes('posts big blind')
           )
-          summary += hasAction ? ' folded before Flop' : " folded before Flop (didn't bet)"
+          
+          // SB/BBをポストした、または他のアクションがある場合は"didn't bet"を付けない
+          summary += (hasAction || postedBlind) ? ' folded before Flop' : " folded before Flop (didn't bet)"
         } else {
           summary += ' folded'
         }
@@ -712,13 +967,19 @@ export class HandLogProcessor {
           if (wentToShowdown) {
             // ショウダウンの勝者 - カードとハンドを表示
             const cards = formatCards(result.HoleCards)
-            const handDesc = this.getHandDescription(result.RankType)
+            const handDesc = this.getHandDescription(result.RankType, result.Hands)
             summary += ` showed [${cards}] and won (${result.RewardChip}) with ${handDesc}`
           }
           // ショウダウン以外の勝利では追加テキスト不要（ポット回収はメインログに表示済み）
         } else {
           // ショウダウンの敗者
-          if (wentToShowdown) {
+          if (wentToShowdown && result.HoleCards && result.HoleCards.length > 0 && result.HoleCards[0] !== -1) {
+            // カードを見せていた場合
+            const cards = formatCards(result.HoleCards)
+            const handDesc = this.getHandDescription(result.RankType, result.Hands)
+            summary += ` showed [${cards}] and lost with ${handDesc}`
+          } else if (wentToShowdown) {
+            // ショウダウンに参加したがカードを見せなかった
             summary += ' mucked'
           }
         }

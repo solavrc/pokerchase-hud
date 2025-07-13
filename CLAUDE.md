@@ -2,7 +2,7 @@
 
 > 🎯 **Purpose**: Primary technical reference for PokerChase HUD Chrome extension development and maintenance.
 > 
-> 📅 **Last Updated**: 2025-07-13 - Fixed VPIP logic, added comprehensive test examples, enforced testing requirements, unified test file locations, reorganized all tests to be co-located with source files
+> 📅 **Last Updated**: 2025-07-14 - Added array utilities module, improved type safety and error handling, introduced constants for magic numbers, enhanced hand log processor accuracy
 
 ## 📋 Table of Contents
 
@@ -12,11 +12,12 @@
 4. [Core Components](#core-components)
 5. [Statistics System](#statistics-system)
 6. [Data Processing](#data-processing)
-7. [UI Components](#ui-components)
-8. [Configuration & Storage](#configuration--storage)
-9. [Development Guide](#development-guide)
-10. [Performance & Optimization](#performance--optimization)
-11. [Troubleshooting](#troubleshooting)
+7. [Utility Modules](#utility-modules)
+8. [UI Components](#ui-components)
+9. [Configuration & Storage](#configuration--storage)
+10. [Development Guide](#development-guide)
+11. [Performance & Optimization](#performance--optimization)
+12. [Troubleshooting](#troubleshooting)
 
 ## 🚀 Quick Start
 
@@ -104,9 +105,11 @@ Unofficial Chrome extension providing real-time poker statistics overlay and han
 
 ### Design Principles
 1. **Separation of Concerns**: Data processing isolated from UI
-2. **Consistent UI**: Always 6 seats, null for empty positions
+2. **Consistent UI**: Always MAX_SEATS (6) seats, null for empty positions
 3. **Performance First**: Caching, virtualization, batch processing
 4. **Unified Logic**: Single source of truth for statistics
+5. **Type Safety**: Explicit types, error handling for invalid inputs
+6. **No Magic Numbers**: Use named constants (e.g., MAX_SEATS)
 
 ### Data Flow Pipelines
 
@@ -183,6 +186,20 @@ Bulk Database Insert
 - Calculates pot odds and call amounts
 - Computes hand improvement probabilities
 - Updates on each action and street
+
+#### `HandLogStream`
+- Generates hand history entries in real-time
+- Uses HandLogProcessor for consistent formatting
+- Emits events for UI updates
+- Resets hand state while preserving session data
+
+#### `HandLogProcessor`
+- Core logic for PokerStars-format generation
+- Accurate showdown order (last aggressor shows first)
+- Enhanced hand descriptions (e.g., "two pair, Sevens and Deuces")
+- Tournament finish position tracking
+- Proper community card tracking for all-in situations
+- Uses MAX_SEATS constant for table size
 
 ## 📊 Statistics System
 
@@ -473,12 +490,36 @@ Hero-only dynamic statistics displayed above regular HUD, updating per action/st
 ### Seat Mapping
 Hero always appears at position 0:
 ```typescript
+import { rotateArrayFromIndex } from './utils/array-utils'
+
 const heroIndex = evtDeal.Player.SeatIndex
-const rotatedStats = [
-  ...stats.slice(heroIndex),
-  ...stats.slice(0, heroIndex)
-]
+const rotatedStats = rotateArrayFromIndex(stats, heroIndex)
 ```
+
+## 🛠️ Utility Modules
+
+### Array Utilities (`array-utils.ts`)
+- **rotateArrayFromIndex**: Safely rotates arrays from specified index
+- **Error Handling**: Throws exceptions for null/undefined arrays and non-integer indices
+- **Type Safe**: Generic function with proper TypeScript types
+- **Usage**: Seat rotation, player ordering
+
+### Card Utilities (`card-utils.ts`)
+- **formatCards**: Converts card indices to string format (e.g., [37, 51] → ['Jh', 'Ac'])
+- **formatCardsArray**: Array version of card formatting
+- **Consistent Format**: Used throughout for card display
+
+### Hand Log Processor (`hand-log-processor.ts`)
+- **Core Logic**: Generates PokerStars-format hand histories
+- **Accurate Showdown**: Last aggressor shows first
+- **Enhanced Descriptions**: Detailed hand rankings (e.g., "two pair, Sevens and Deuces")
+- **Tournament Tracking**: Player finish positions
+- **Constants**: Uses MAX_SEATS for table size
+
+### Error Handler (`error-handler.ts`)
+- **Centralized**: Consistent error handling across extension
+- **User-Friendly**: Translates technical errors for users
+- **Logging**: Controlled error logging for debugging
 
 ## 🎨 UI Components
 
@@ -577,6 +618,14 @@ npm run postbuild    # Create extension.zip
 - **Errors**: Centralized ErrorHandler
 - **Logging**: No console.log in production
 - **Keys**: `seat-${index}` pattern
+- **Error Handling**: Throw exceptions for invalid inputs
+- **Type Safety**: Explicit parameter types (avoid optional when possible)
+
+### Constants
+```typescript
+// src/utils/hand-log-processor.ts
+const MAX_SEATS = 6  // PokerChaseの6人テーブル
+```
 
 ### Test Organization
 - **Co-location**: Test files are placed next to source files (e.g., `foo.ts` → `foo.test.ts`)
@@ -693,7 +742,14 @@ const DEBUG = true  // Enable verbose logging
 ## Technical Debt
 - **poker-evaluator.ts**: `cards: []` TODO - Extract actual cards for hand display
 - **Input Validation**: Missing duplicate card checks and range validation
-- **Magic Numbers**: Color codes (#00ff00, #ff6666) should be constants
+- **Color Constants**: Color codes (#00ff00, #ff6666) should be named constants
+
+## Recent Improvements (2025-07-14)
+- **Type Safety**: Enhanced parameter types in HandLogProcessor
+- **Error Handling**: Added validation in array utilities
+- **Code Organization**: Extracted common logic to utility modules
+- **Constants**: Replaced magic numbers with named constants
+- **Test Coverage**: Added comprehensive tests for utilities
 
 ## Future Enhancements
 - **Error Boundaries**: Add around real-time stats to prevent crashes
