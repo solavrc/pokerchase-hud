@@ -3,8 +3,9 @@
  */
 
 import type { StatDefinition, ActionDetailContext } from '../../types/stats'
-import { ActionDetail, ActionType, PhaseType } from '../../types/game'
+import { ActionDetail, ActionType } from '../../types/game'
 import { formatPercentage } from '../utils'
+import { isFacing3Bet } from '../helpers'
 
 export const threeBetFoldStat: StatDefinition = {
   id: '3betfold',
@@ -29,13 +30,12 @@ export const threeBetFoldStat: StatDefinition = {
    * phasePrevBetCount === 3 の時に3ベットに直面している
    */
   detectActionDetails: (context: ActionDetailContext): ActionDetail[] => {
-    const { phasePrevBetCount, actionType, phase } = context
     const details: ActionDetail[] = []
     
-    // プリフロップでphasePrevBetCount === 3の時は3ベットに直面している
-    if (phase === PhaseType.PREFLOP && phasePrevBetCount === 3) {
+    // Use helper function for clarity
+    if (isFacing3Bet(context)) {
       details.push(ActionDetail.$3BET_FOLD_CHANCE)
-      if (actionType === ActionType.FOLD) {
+      if (context.actionType === ActionType.FOLD) {
         details.push(ActionDetail.$3BET_FOLD)
       }
     }

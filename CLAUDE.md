@@ -2,7 +2,7 @@
 
 > 🎯 **Purpose**: Primary technical reference for PokerChase HUD Chrome extension development and maintenance.
 > 
-> 📅 **Last Updated**: 2025-07-12 - Real-time statistics HUD, unified ActionDetail detection, import optimizations
+> 📅 **Last Updated**: 2025-07-13 - Fixed VPIP logic, added comprehensive test examples, enforced testing requirements, unified test file locations, reorganized all tests to be co-located with source files
 
 ## 📋 Table of Contents
 
@@ -188,45 +188,200 @@ Bulk Database Insert
 
 ### Available Statistics
 
-| ID | Name | Description | Category |
-|----|------|-------------|----------|
-| `hands` | HAND | Total hands played | general |
-| `playerName` | Name | Player name with rank | general |
-| `vpip` | VPIP | Voluntarily put $ in pot % | preflop |
-| `pfr` | PFR | Pre-flop raise % | preflop |
-| `3bet` | 3B | 3-bet % | preflop |
-| `3betfold` | 3BF | Fold to 3-bet % | preflop |
-| `cbet` | CB | Continuation bet % | postflop |
-| `cbetFold` | CBF | Fold to c-bet % | postflop |
-| `af` | AF | Aggression factor | general |
-| `afq` | AFq | Aggression frequency % | general |
-| `wtsd` | WTSD | Went to showdown % | postflop |
-| `wwsf` | WWSF | Won when saw flop % | postflop |
-| `wsd` | W$SD | Won $ at showdown % | postflop |
+| ID | Name | Description |
+|----|------|-------------|
+| `hands` | HAND | Total hands played |
+| `playerName` | Name | Player name with rank |
+| `vpip` | VPIP | Voluntarily put $ in pot % |
+| `pfr` | PFR | Pre-flop raise % |
+| `3bet` | 3B | 3-bet % |
+| `3betfold` | 3BF | Fold to 3-bet % |
+| `cbet` | CB | Continuation bet % |
+| `cbetFold` | CBF | Fold to c-bet % |
+| `af` | AF | Aggression factor |
+| `afq` | AFq | Aggression frequency % |
+| `wtsd` | WTSD | Went to showdown % |
+| `wwsf` | WWSF | Won when saw flop % |
+| `wsd` | W$SD | Won $ at showdown % |
 
 ### Adding New Statistics
 
-1. Create `src/stats/core/[stat-name].ts`
-2. Implement `StatDefinition`:
+#### Step 1: Create Statistics File
+Create `src/stats/core/[stat-name].ts` using **kebab-case** naming:
 ```typescript
-export interface StatDefinition {
-  id: string
-  name: string
-  description: string
-  category: "preflop" | "postflop" | "general"
-  precision?: number
+import type { StatDefinition } from '../../types/stats'
+
+export const myNewStat: StatDefinition = {
+  id: 'myNew',              // Required: Unique identifier
+  name: 'MN',               // Required: Display name (2-4 chars)
+  description: 'My stat',   // Optional: Description
+  
+  // Optional: Enable/disable by default
+  enabled?: boolean,
+  
+  // Optional: Detect action patterns during event processing
+  detectActionDetails?: (context: ActionDetailContext) => ActionDetail[],
+  
+  // Optional: Update hand state during processing
+  updateHandState?: (context: ActionDetailContext) => void,
+  
+  // Required: Calculate statistic value from data
+  calculate: (context: StatCalculationContext) => StatValue,
+  
+  // Optional: Custom value formatting
   format?: (value: StatValue) => string
-  
-  // Unified detection logic (used by both streams and EntityConverter)
-  detectActionDetails?: (context: ActionDetailContext) => ActionDetail[]
-  updateHandState?: (context: ActionDetailContext) => void
-  
-  // Calculation from accumulated data
-  calculate: (context: StatCalculationContext) => StatValue
 }
 ```
-3. Export from `src/stats/core/index.ts`
-4. Automatically registered via `defaultRegistry`
+
+#### Step 2: Export from Index
+Add to `src/stats/core/index.ts`:
+```typescript
+export { myNewStat } from './my-new'  // Must end with "Stat"
+```
+
+#### Naming Conventions
+- **File name**: kebab-case (e.g., `3bet.ts`, `cbet-fold.ts`)
+- **Export name**: camelCase + "Stat" suffix (e.g., `threeBetStat`, `cbetFoldStat`)
+- **Stat ID**: camelCase without "Stat" (e.g., `3bet`, `cbetFold`)
+
+#### Notes
+- Statistics are automatically registered if export name ends with "Stat"
+- 5-second cache is automatically applied to all statistics
+- ActionDetail detection ensures consistency across real-time and import processing
+- **Unit tests are REQUIRED** - test files should be placed next to the source file (e.g., `3bet.ts` → `3bet.test.ts`)
+
+### Contributor Guide
+
+#### Understanding Context Variables
+
+##### `phasePrevBetCount`
+The count of bets/raises in the current betting round:
+- **Preflop**: Starts at 1 (BB is counted as first bet)
+  - `1` → Only blinds posted
+  - `2` → After first raise (2-bet)
+  - `3` → After re-raise (3-bet)
+  - `4` → After re-re-raise (4-bet)
+- **Postflop**: Starts at 0
+  - `0` → No bets yet
+  - `1` → After first bet
+  - `2` → After raise
+
+##### `phasePlayerActionIndex`
+- Zero-based index of player's action order in current phase
+- Resets each street
+- Example: In preflop, BB acts first (index 0), UTG acts second (index 1)
+
+##### `handState`
+Tracks aggression throughout the hand:
+- `lastAggressor`: Player who made the last bet/raise
+- `currentStreetAggressor`: Player who bet/raised on current street
+- `cBetter`: Player who made continuation bet (used for multi-street tracking)
+
+#### Using Helper Functions
+
+```typescript
+import { isVoluntaryAction, isFacing3Bet, isAggressiveAction } from '../helpers'
+
+export const myStatDefinition: StatDefinition = {
+  detectActionDetails: (context) => {
+    // Use helpers for common patterns
+    if (isVoluntaryAction(context) && isAggressiveAction(context.actionType)) {
+      return ['MY_AGGRESSIVE_ACTION']
+    }
+    
+    if (isFacing3Bet(context) && context.actionType === ActionType.FOLD) {
+      return ['FOLD_TO_3BET']
+    }
+    
+    return []
+  }
+}
+```
+
+#### Testing Your Statistics
+
+1. **Unit Tests** (Required):
+```typescript
+// src/stats/core/my-stat.test.ts
+import { myNewStat } from './my-stat'
+import { ActionType, PhaseType } from '../../types/game'
+
+describe('myNewStat', () => {
+  it('detects opportunity correctly', () => {
+    const context = {
+      phase: PhaseType.PREFLOP,
+      phasePrevBetCount: 2,
+      actionType: ActionType.CALL,
+      // ... other required fields
+    }
+    
+    const details = myNewStat.detectActionDetails!(context)
+    expect(details).toContain('MY_OPPORTUNITY')
+  })
+})
+```
+
+2. **Manual Testing**:
+- Load extension in Chrome
+- Play hands on PokerChase
+- Check Chrome DevTools console (background page):
+```javascript
+// View recent actions with your flags
+await db.actions
+  .where('actionDetails')
+  .anyOf(['MY_FLAG'])
+  .reverse()
+  .limit(10)
+  .toArray()
+```
+
+#### Common Patterns
+
+##### Simple Percentage Stat
+```typescript
+export const exampleStat: StatDefinition = {
+  id: 'example',
+  name: 'EX',
+  
+  detectActionDetails: (context) => {
+    if (/* opportunity condition */) {
+      const details = ['EXAMPLE_OPPORTUNITY']
+      if (/* success condition */) {
+        details.push('EXAMPLE_SUCCESS')
+      }
+      return details
+    }
+    return []
+  },
+  
+  calculate: ({ actions }) => {
+    const opportunities = actions.filter(a => 
+      a.actionDetails.includes('EXAMPLE_OPPORTUNITY')
+    ).length
+    
+    const successes = actions.filter(a => 
+      a.actionDetails.includes('EXAMPLE_SUCCESS')
+    ).length
+    
+    return [successes, opportunities]
+  },
+  
+  format: formatPercentage // "75.0% (3/4)"
+}
+```
+
+##### Multi-Street Tracking
+```typescript
+detectActionDetails: (context) => {
+  // Track across multiple streets using handState
+  if (context.phase === PhaseType.FLOP && 
+      context.handState?.lastAggressor === context.playerId) {
+    // Player was preflop aggressor, now on flop
+    return ['FLOP_AS_PFR']
+  }
+  return []
+}
+```
 
 ### Key Concepts
 
@@ -412,7 +567,7 @@ const rotatedStats = [
 ```bash
 npm run build        # Production build
 npm run typecheck    # TypeScript validation
-npm run test         # Run test suite (includes 1,600+ lines for real-time stats)
+npm run test         # Run test suite
 npm run postbuild    # Create extension.zip
 ```
 
@@ -422,6 +577,12 @@ npm run postbuild    # Create extension.zip
 - **Errors**: Centralized ErrorHandler
 - **Logging**: No console.log in production
 - **Keys**: `seat-${index}` pattern
+
+### Test Organization
+- **Co-location**: Test files are placed next to source files (e.g., `foo.ts` → `foo.test.ts`)
+- **Naming**: Test files use `.test.ts` extension
+- **Structure**: No separate test directories; improves visibility and reduces cognitive load
+- **Coverage**: All new statistics require unit tests
 
 ### Security
 - Validate all WebSocket messages

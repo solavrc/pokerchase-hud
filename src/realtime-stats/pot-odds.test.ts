@@ -2,9 +2,9 @@
  * Pot Odds Calculation Tests
  */
 
-import { RealTimeStatsStream } from '../src/streams/realtime-stats-stream'
-import { ApiType, PhaseType } from '../src/types'
-import type { ApiHandEvent } from '../src/types'
+import { RealTimeStatsStream } from '../streams/realtime-stats-stream'
+import { ApiType, PhaseType } from '../types'
+import type { ApiHandEvent } from '../types'
 import { Readable } from 'stream'
 
 describe('Pot Odds Calculation', () => {

@@ -69,32 +69,40 @@ After building, reload the extension in Chrome's extension management page.
 
 Contributions are welcome! The codebase uses a modular architecture for easy extension.
 
-### Adding New Statistics
+📖 **[Contributing Guide](CONTRIBUTING.md)** - Complete guide for adding new statistics
 
-PokerChase HUD uses a modular statistics system. Quick overview:
-
-1. **Create module** in `src/stats/core/[stat-name].ts`
-2. **Implement `StatDefinition`** interface
-3. **Export** from `src/stats/core/index.ts`
-4. **Add tests** and verify functionality
-
-**Example:**
+### Quick Example
 
 ```typescript
-export const myStatistic: StatDefinition = {
-  id: "myStat",
-  name: "MS",
-  description: "My Statistic %",
-  category: "postflop",
-  precision: 1,
-  calculate: (actions, playerId) => {
-    // Implementation here
-    return [count, opportunities];
+// src/stats/core/my-stat.ts
+export const myNewStat: StatDefinition = {
+  id: 'myNew',
+  name: 'MN',
+  description: 'My new statistic',
+  
+  // Optional: Detect specific actions
+  detectActionDetails: (context) => {
+    if (/* your condition */) {
+      return ['MY_FLAG']
+    }
+    return []
   },
-};
+  
+  // Required: Calculate the statistic
+  calculate: ({ actions, hands }) => {
+    const count = actions.filter(a => 
+      a.actionDetails.includes('MY_FLAG')
+    ).length
+    return [count, hands.length]
+  },
+  
+  format: formatPercentage  // Optional formatter
+}
 ```
 
-📖 **[Complete Contributing Guide](CLAUDE.md#development-guide)** - See technical documentation for:
+**Important**: Unit tests are required for all new statistics!
+
+📖 **[Technical Documentation](CLAUDE.md)** - Architecture and implementation details
 
 - Detailed implementation examples
 - Code standards and security guidelines

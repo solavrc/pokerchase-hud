@@ -6,13 +6,13 @@
  * カウント対象:
  * - CALL: 相手のベット/レイズにコール
  * - RAISE: レイズ（リレイズ含む）
- * - ALL_IN: オールイン（app.tsでCALL/RAISEに変換されたもの）
+ * - ALL_IN: オールイン（ALL_INはWriteEntityStreamでCALL/RAISEに正規化されます）
  * 
- * 注意: ActionDetail.VPIPフラグはapp.tsで自動的に付与されます
+ * 注意: 強制ベット（BB/SB）は含まれません
  */
 
 import type { StatDefinition, ActionDetailContext } from '../../types/stats'
-import { PhaseType, ActionDetail, ActionType } from '../../types/game'
+import { ActionDetail, ActionType, PhaseType } from '../../types/game'
 import { formatPercentage } from '../utils'
 
 export const vpipStat: StatDefinition = {
@@ -21,9 +21,8 @@ export const vpipStat: StatDefinition = {
   description: 'プリフロップで自発的にポットに参加した割合',
   calculate: ({ actions, hands }) => {
     // ActionDetail.VPIPが付与されたアクションをカウント
-    // このフラグは、プリフロップで最初のCALL/RAISEアクション時に付与される
+    // このフラグは、プリフロップで自発的なCALL/RAISEアクション時に付与される
     const voluntaryHandsCount = actions.filter(a => 
-      a.phase === PhaseType.PREFLOP && 
       a.actionDetails.includes(ActionDetail.VPIP)
     ).length
     
@@ -34,10 +33,15 @@ export const vpipStat: StatDefinition = {
   /**
    * VPIP判定ロジック
    * プリフロップで最初のCALL/RAISEアクション時にVPIPフラグを付与
+   * phasePlayerActionIndex === 0 はそのプレイヤーのフェーズ内最初のアクション
+   * 
+   * 注: 現在のコンテキストではBB/SBの区別ができないため、
+   * すべてのプレイヤーの最初のCALL/RAISEをVPIPとしてカウントします
    */
   detectActionDetails: (context: ActionDetailContext): ActionDetail[] => {
     const { phase, phasePlayerActionIndex, actionType } = context
     
+    // プリフロップで、そのプレイヤーの最初のアクションで、CALL/RAISEの場合
     if (phase === PhaseType.PREFLOP && 
         phasePlayerActionIndex === 0 && 
         [ActionType.RAISE, ActionType.CALL].includes(actionType)) {

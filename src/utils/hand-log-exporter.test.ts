@@ -1,9 +1,9 @@
-import { HandLogExporter } from '../src/utils/hand-log-exporter'
-import { HandLogProcessor, HandLogContext } from '../src/utils/hand-log-processor'
-import { event_timeline } from './app.test'
-import type { ApiEvent, Session } from '../src/types'
-import { ApiType } from '../src/types'
-import { DEFAULT_HAND_LOG_CONFIG } from '../src/types/hand-log'
+import { HandLogExporter } from './hand-log-exporter'
+import { HandLogProcessor, HandLogContext } from './hand-log-processor'
+import { event_timeline } from '../app.test'
+import type { ApiEvent, Session } from '../types'
+import { ApiType } from '../types'
+import { DEFAULT_HAND_LOG_CONFIG } from '../types/hand-log'
 
 describe('HandLogExporter', () => {
   beforeEach(async () => {

@@ -1,5 +1,5 @@
-import { ErrorHandler } from '../src/utils/error-handler'
-import { ErrorType, ErrorSeverity } from '../src/types/errors'
+import { ErrorHandler } from './error-handler'
+import { ErrorType, ErrorSeverity } from '../types/errors'
 import Dexie from 'dexie'
 
 describe('ErrorHandler', () => {
