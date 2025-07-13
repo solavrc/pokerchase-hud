@@ -1,6 +1,6 @@
-import { vpipStat } from '../vpip'
-import { ActionType, PhaseType, ActionDetail } from '../../../types/game'
-import type { ActionDetailContext } from '../../../types/stats'
+import { vpipStat } from './vpip'
+import { ActionType, PhaseType, ActionDetail } from '../../types/game'
+import type { ActionDetailContext } from '../../types/stats'
 
 describe('vpipStat', () => {
   describe('detectActionDetails', () => {

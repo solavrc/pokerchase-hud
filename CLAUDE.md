@@ -2,7 +2,7 @@
 
 > 🎯 **Purpose**: Primary technical reference for PokerChase HUD Chrome extension development and maintenance.
 > 
-> 📅 **Last Updated**: 2025-07-13 - Fixed VPIP logic, added comprehensive test examples, enforced testing requirements
+> 📅 **Last Updated**: 2025-07-13 - Fixed VPIP logic, added comprehensive test examples, enforced testing requirements, unified test file locations, reorganized all tests to be co-located with source files
 
 ## 📋 Table of Contents
 
@@ -248,7 +248,7 @@ export { myNewStat } from './my-new'  // Must end with "Stat"
 - Statistics are automatically registered if export name ends with "Stat"
 - 5-second cache is automatically applied to all statistics
 - ActionDetail detection ensures consistency across real-time and import processing
-- **Unit tests are REQUIRED** - see existing tests in `src/stats/core/__tests__/` for examples
+- **Unit tests are REQUIRED** - test files should be placed next to the source file (e.g., `3bet.ts` → `3bet.test.ts`)
 
 ### Contributor Guide
 
@@ -300,11 +300,11 @@ export const myStatDefinition: StatDefinition = {
 
 #### Testing Your Statistics
 
-1. **Unit Tests** (Recommended):
+1. **Unit Tests** (Required):
 ```typescript
-// src/stats/core/__tests__/my-stat.test.ts
-import { myNewStat } from '../my-stat'
-import { ActionType, PhaseType } from '../../../types/game'
+// src/stats/core/my-stat.test.ts
+import { myNewStat } from './my-stat'
+import { ActionType, PhaseType } from '../../types/game'
 
 describe('myNewStat', () => {
   it('detects opportunity correctly', () => {
@@ -567,7 +567,7 @@ const rotatedStats = [
 ```bash
 npm run build        # Production build
 npm run typecheck    # TypeScript validation
-npm run test         # Run test suite (includes 1,600+ lines for real-time stats)
+npm run test         # Run test suite
 npm run postbuild    # Create extension.zip
 ```
 
@@ -577,6 +577,12 @@ npm run postbuild    # Create extension.zip
 - **Errors**: Centralized ErrorHandler
 - **Logging**: No console.log in production
 - **Keys**: `seat-${index}` pattern
+
+### Test Organization
+- **Co-location**: Test files are placed next to source files (e.g., `foo.ts` → `foo.test.ts`)
+- **Naming**: Test files use `.test.ts` extension
+- **Structure**: No separate test directories; improves visibility and reduces cognitive load
+- **Coverage**: All new statistics require unit tests
 
 ### Security
 - Validate all WebSocket messages

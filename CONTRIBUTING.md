@@ -135,18 +135,19 @@ detectActionDetails: (context) => {
 
 #### Unit Tests (Required)
 
-All new statistics MUST include unit tests. Create a test file in `src/stats/core/__tests__/`:
+All new statistics MUST include unit tests. Create a test file in the same directory as your statistic:
 
 For examples, see existing test files:
-- `src/stats/core/__tests__/3bet.test.ts` - Testing statistics with detectActionDetails
-- `src/stats/core/__tests__/vpip.test.ts` - Testing VPIP detection logic
-- `src/stats/core/__tests__/pfr.test.ts` - Testing simple calculation statistics
+- `src/stats/core/3bet.test.ts` - Testing statistics with detectActionDetails
+- `src/stats/core/vpip.test.ts` - Testing VPIP detection logic
+- `src/stats/core/pfr.test.ts` - Testing simple calculation statistics
+- `src/stats/helpers.test.ts` - Testing helper functions
 
 ```typescript
-// src/stats/core/__tests__/my-stat.test.ts
+// src/stats/core/my-stat.test.ts
 import { myNewStat } from '../my-stat'
-import { ActionType, PhaseType } from '../../../types/game'
-import type { ActionDetailContext } from '../../../types/stats'
+import { ActionType, PhaseType } from '../../types/game'
+import type { ActionDetailContext } from '../../types/stats'
 
 describe('myNewStat', () => {
   // Helper to create test context
@@ -296,7 +297,7 @@ This allows you to create statistics without modifying core types.
 1. Fork the repository
 2. Create a feature branch: `feature/stat-[name]`
 3. Add your statistic following the guide above
-4. **Write unit tests** in `src/stats/core/__tests__/[stat-name].test.ts`
+4. **Write unit tests** in `src/stats/core/[stat-name].test.ts`
 5. Ensure all tests pass: `npm test`
 6. Test manually with real gameplay
 7. Submit a pull request with:
@@ -308,7 +309,7 @@ This allows you to create statistics without modifying core types.
 ### PR Checklist
 - [ ] Statistic implementation in `src/stats/core/[stat-name].ts`
 - [ ] Export added to `src/stats/core/index.ts`
-- [ ] Unit tests in `src/stats/core/__tests__/[stat-name].test.ts`
+- [ ] Unit tests in `src/stats/core/[stat-name].test.ts`
 - [ ] All tests passing (`npm test`)
 - [ ] Manual testing completed
 - [ ] Documentation/comments in Japanese where appropriate

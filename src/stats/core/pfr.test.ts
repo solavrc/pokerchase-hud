@@ -1,5 +1,5 @@
-import { pfrStat } from '../pfr'
-import { ActionType, PhaseType } from '../../../types/game'
+import { pfrStat } from './pfr'
+import { ActionType, PhaseType } from '../../types/game'
 
 describe('pfrStat', () => {
   describe('calculate', () => {

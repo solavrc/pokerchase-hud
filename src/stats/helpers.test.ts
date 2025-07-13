@@ -9,9 +9,9 @@ import {
   getStreetName,
   getBetLevel,
   ActionPatterns
-} from '../helpers'
-import { ActionType, PhaseType } from '../../types/game'
-import type { ActionDetailContext } from '../../types/stats'
+} from './helpers'
+import { ActionType, PhaseType } from '../types/game'
+import type { ActionDetailContext } from '../types/stats'
 
 describe('Statistics Helpers', () => {
   const createContext = (overrides: Partial<ActionDetailContext>): ActionDetailContext => ({

@@ -1,6 +1,6 @@
-import { threeBetStat } from '../3bet'
-import { ActionType, PhaseType, ActionDetail } from '../../../types/game'
-import type { ActionDetailContext } from '../../../types/stats'
+import { threeBetStat } from './3bet'
+import { ActionType, PhaseType, ActionDetail } from '../../types/game'
+import type { ActionDetailContext } from '../../types/stats'
 
 describe('threeBetStat', () => {
   describe('detectActionDetails', () => {
