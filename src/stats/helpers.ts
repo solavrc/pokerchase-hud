@@ -8,14 +8,26 @@ import { ActionType, PhaseType } from '../types/game'
 
 /**
  * Check if this is NOT the first preflop action
- * プリフロップでの2回目以降のアクションかどうかをチェック
+ * プリフロップでの最初のアクションではないかをチェック
  * 
- * 注: この関数名は誤解を招く可能性があります。
- * 実際には「最初のアクションではない」ことをチェックしています。
- * BB/SBの区別はActionDetailContextでは不可能なため、
- * より正確な判定にはポジション情報が必要です。
+ * プレイヤーのプリフロップでの最初のアクション（index = 0）は
+ * 強制ベット（BB/SB）の可能性があるため、この関数は
+ * 2回目以降のアクション（index > 0）をチェックします。
+ * 
+ * @deprecated Use isNotFirstPreflopAction() for clarity
  */
 export function isVoluntaryAction(context: ActionDetailContext): boolean {
+  return isNotFirstPreflopAction(context)
+}
+
+/**
+ * Check if this is NOT the first preflop action for the player
+ * プレイヤーのプリフロップでの最初のアクションではないかをチェック
+ * 
+ * - index = 0: First action (might be forced bet like BB/SB)
+ * - index > 0: Subsequent actions (definitely voluntary)
+ */
+export function isNotFirstPreflopAction(context: ActionDetailContext): boolean {
   return context.phase === PhaseType.PREFLOP && context.phasePlayerActionIndex > 0
 }
 

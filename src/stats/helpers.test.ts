@@ -1,5 +1,6 @@
 import {
   isVoluntaryAction,
+  isNotFirstPreflopAction,
   isFacing2Bet,
   isFacing3Bet,
   isAggressiveAction,
@@ -40,6 +41,34 @@ describe('Statistics Helpers', () => {
         phasePlayerActionIndex: 1 
       })
       expect(isVoluntaryAction(context)).toBe(false)
+    })
+
+    it('should delegate to isNotFirstPreflopAction', () => {
+      const context = createContext({ phasePlayerActionIndex: 1 })
+      expect(isVoluntaryAction(context)).toBe(isNotFirstPreflopAction(context))
+    })
+  })
+
+  describe('isNotFirstPreflopAction', () => {
+    it('should return true when action index > 0 in preflop', () => {
+      const context = createContext({ phasePlayerActionIndex: 1 })
+      expect(isNotFirstPreflopAction(context)).toBe(true)
+      
+      const context2 = createContext({ phasePlayerActionIndex: 2 })
+      expect(isNotFirstPreflopAction(context2)).toBe(true)
+    })
+
+    it('should return false for first action (index 0)', () => {
+      const context = createContext({ phasePlayerActionIndex: 0 })
+      expect(isNotFirstPreflopAction(context)).toBe(false)
+    })
+
+    it('should return false for any postflop action', () => {
+      const context = createContext({ 
+        phase: PhaseType.FLOP,
+        phasePlayerActionIndex: 1 
+      })
+      expect(isNotFirstPreflopAction(context)).toBe(false)
     })
   })
 
