@@ -36,4 +36,10 @@ describe('rotateArrayFromIndex', () => {
     expect(() => rotateArrayFromIndex([1, 2, 3], NaN)).toThrow('rotateArrayFromIndex: index must be an integer')
     expect(() => rotateArrayFromIndex([1, 2, 3], 'abc' as any)).toThrow('rotateArrayFromIndex: index must be an integer')
   })
+
+  it('Heroを起点にユーザーを並び替えられる', () => {
+    const seatUserIds = [2, 3, 4, 5, 6, 1]
+    const playerSeatIndex = seatUserIds.findIndex(id => id === 4)
+    expect(rotateArrayFromIndex(seatUserIds, playerSeatIndex)).toStrictEqual([4, 5, 6, 1, 2, 3])
+  })
 })

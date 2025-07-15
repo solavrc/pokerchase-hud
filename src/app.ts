@@ -8,7 +8,6 @@ import type { ErrorContext } from './types/errors'
 import type { HandLogConfig } from './types/hand-log'
 import type { StatCalculationContext } from './types/stats'
 import { ErrorHandler } from './utils/error-handler'
-import { formatCardsArray } from './utils/card-utils'
 import { rotateArrayFromIndex } from './utils/array-utils'
 import { setHandImprovementHeroHoleCards, setHandImprovementBatchMode } from './realtime-stats'
 
@@ -101,7 +100,7 @@ class AggregateEventsStream extends Transform {
   private events: ApiHandEvent[] = []
   private progress?: Progress
   private lastTimestamp = 0
-  
+
   constructor(service: PokerChaseService) {
     super({ objectMode: true })
     this.service = service
@@ -147,7 +146,7 @@ class AggregateEventsStream extends Transform {
           this.service.playerId = event.Player?.SeatIndex !== undefined ? event.SeatUserIds[event.Player.SeatIndex] : undefined
           // 席マッピング用に最新のEVT_DEALを保存
           this.service.latestEvtDeal = event
-          
+
           // Capture hero's hole cards for hand improvement calculations (only in real-time play)
           if (!this.service.batchMode && event.Player?.HoleCards && event.Player.HoleCards.length === 2 && this.service.playerId) {
             // Use timestamp as temporary hand ID until we get the real one from EVT_HAND_RESULTS
@@ -155,7 +154,7 @@ class AggregateEventsStream extends Transform {
             const tempHandId = `temp_${Date.now()}`
             setHandImprovementHeroHoleCards(tempHandId, this.service.playerId.toString(), event.Player.HoleCards)
           }
-          
+
           // 新しいハンド開始時に統計を計算（既存データがあるプレイヤーの統計を表示）
           // ただし、すでにDBにハンドが存在する場合のみ（リングゲーム途中参加など）
           if (!this.service.batchMode && this.service.session.id && event.SeatUserIds) {
@@ -169,7 +168,7 @@ class AggregateEventsStream extends Transform {
               console.error('[AggregateEventsStream] Error checking hand count:', err)
             })
           }
-          
+
           // ハンドの集約
           this.progress = event.Progress
           this.events = []
@@ -233,6 +232,7 @@ class WriteEntityStream extends Transform {
   async _transform(events: ApiHandEvent[], _: string, callback: TransformCallback<number[]>) {
     try {
       const { hand, actions, phases } = this.toHandState(events)
+
       await this.service.db.transaction('rw', [this.service.db.hands, this.service.db.phases, this.service.db.actions], async () => {
         return Promise.all([
           this.service.db.hands.put(hand),
@@ -280,7 +280,7 @@ class WriteEntityStream extends Transform {
       switch (event.ApiTypeId) {
         case ApiType.EVT_DEAL:
           handState.hand.seatUserIds = event.SeatUserIds
-          positionUserIds.push(...PokerChaseService.rotateElementFromIndex(event.SeatUserIds, event.Game.BigBlindSeat + 1).reverse())
+          positionUserIds.push(...rotateArrayFromIndex(event.SeatUserIds, event.Game.BigBlindSeat + 1).reverse())
           handState.phases.push({
             phase: event.Progress.Phase,
             seatUserIds: event.SeatUserIds,
@@ -476,11 +476,16 @@ class ReadEntityStream extends Transform {
       const cacheKey = `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}`
       const now = Date.now()
 
-      // まずキャッシュをチェック
-      const cached = this.statsCache.get(cacheKey)
-      if (cached && (now - cached.timestamp) < this.CACHE_DURATION_MS) {
-        callback(null, cached.stats)
-        return
+      // テスト環境（NODE_ENV=test）またはデバッグモードではキャッシュを無効化
+      const useCache = process.env.NODE_ENV !== 'test' && !process.env.DEBUG_NO_CACHE
+
+      // まずキャッシュをチェック（キャッシュが有効な場合のみ）
+      if (useCache) {
+        const cached = this.statsCache.get(cacheKey)
+        if (cached && (now - cached.timestamp) < this.CACHE_DURATION_MS) {
+          callback(null, cached.stats)
+          return
+        }
       }
 
       /**
@@ -678,7 +683,7 @@ class PokerChaseService {
   constructor({ db, playerId }: { db: PokerChaseDB, playerId?: number }) {
     this.playerId = playerId
     this.db = db
-    
+
     // Main pipeline for stats calculation
     const writeStream = new WriteEntityStream(this)
     this.handAggregateStream
@@ -719,10 +724,10 @@ class PokerChaseService {
    */
   readonly setBatchMode = (enabled: boolean) => {
     this.batchMode = enabled
-    
+
     // Set batch mode for hand improvement calculations
     setHandImprovementBatchMode(enabled)
-    
+
     if (!enabled) {
       // バッチモード終了時に統計を一度だけ再計算
       this.recalculateAllStats()
@@ -746,15 +751,15 @@ class PokerChaseService {
         .reverse()
         .filter(event => (event as ApiEvent<ApiType.EVT_DEAL>).Player?.SeatIndex !== undefined)
         .first() as ApiEvent<ApiType.EVT_DEAL> | undefined
-      
+
       if (latestDealEvent && latestDealEvent.SeatUserIds) {
         this.latestEvtDeal = latestDealEvent
-        
+
         // プレイヤーIDも更新
         if (latestDealEvent.Player?.SeatIndex !== undefined) {
           this.playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex]
         }
-        
+
         const playerIds = latestDealEvent.SeatUserIds.filter(id => id !== -1)
         if (playerIds.length > 0) {
           this.statsOutputStream.write(playerIds)
@@ -768,45 +773,45 @@ class PokerChaseService {
       // メタデータを取得
       const meta = await this.db.meta.get('lastProcessed')
       const lastTimestamp = meta?.lastProcessedTimestamp || 0
-      
+
       // 新規イベントのみを取得
       const newEventsCount = await this.db.apiEvents
         .where('timestamp')
         .above(lastTimestamp)
         .count()
-      
+
       if (newEventsCount === 0) {
         console.log('[refreshDatabase] No new events to process')
         return
       }
-      
+
       console.log(`[refreshDatabase] Processing ${newEventsCount} new events`)
-      
+
       // バッチモードを有効化
       this.setBatchMode(true)
-      
+
       // AggregateEventsStreamを作成（DB書き込みは既に完了しているのでスキップされる）
       const eventProcessor = new AggregateEventsStream(this)
       eventProcessor
         .pipe(new WriteEntityStream(this))
         .on('data', () => { }) /** /dev/null consumer */
-      
+
       let processedCount = 0
       let lastProcessedTimestamp = lastTimestamp
-      
+
       // 新規イベントのみを取得（READONLYトランザクションを完了させる）
       const newEvents = await this.db.apiEvents
         .where('timestamp')
         .above(lastTimestamp)
         .toArray()
-      
+
       // トランザクション外でイベントを処理
       for (const event of newEvents) {
         eventProcessor.write(event)
         processedCount++
         lastProcessedTimestamp = Math.max(lastProcessedTimestamp, event.timestamp || 0)
       }
-      
+
       // メタデータを更新
       await this.db.meta.put({
         id: 'lastProcessed',
@@ -814,19 +819,19 @@ class PokerChaseService {
         lastProcessedEventCount: processedCount,
         lastImportDate: new Date()
       })
-      
+
       console.log(`[refreshDatabase] Processed ${processedCount} events`)
-      
+
       // バッチモードを無効化（統計を再計算）
       this.setBatchMode(false)
-      
+
     } catch (error) {
       const appError = ErrorHandler.handleDbError(error, {
         streamName: 'PokerChaseService',
         operation: 'refreshDatabase'
       })
       ErrorHandler.logError(appError, 'PokerChaseService')
-      
+
       // エラー時もバッチモードを無効化
       this.setBatchMode(false)
     }
@@ -856,10 +861,6 @@ class PokerChaseService {
       ? console.debug(`[${timestamp}]`, event.ApiTypeId, ApiType[event.ApiTypeId], JSON.stringify(event))
       : console.warn(`[${timestamp}]`, event.ApiTypeId, ApiType[event.ApiTypeId], JSON.stringify(event))
   }
-  static readonly rotateElementFromIndex = <T>(elements: T[], index: number): T[] => {
-    return rotateArrayFromIndex(elements, index)
-  }
-  static readonly toCardStr = (cards: number[]) => formatCardsArray(cards)
 }
 
 export default PokerChaseService

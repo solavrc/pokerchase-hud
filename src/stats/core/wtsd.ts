@@ -1,5 +1,8 @@
 /**
  * WTSD - Went to Showdown
+ * 
+ * フロップを見たハンドのうち、ショーダウンまで到達した割合を計測します。
+ * プリフロップオールインは除外されます（フロップ以降の意思決定がないため）。
  */
 
 import type { StatDefinition } from '../../types/stats'
@@ -11,16 +14,24 @@ export const wtsdStat: StatDefinition = {
   name: 'WTSD',
   description: 'ショーダウン率（フロップ以降）',
   calculate: ({ phases }) => {
-    const showdownCount = phases.filter(p => 
-      p.phase === PhaseType.SHOWDOWN
-    ).length
-    
-    // Unique hands that saw flop
-    const sawFlopHandIds = new Set(
-      phases.filter(p => p.phase === PhaseType.FLOP).map(p => p.handId)
+    // アクティブにフロップを見たハンドID（プリフロップオールイン除外）
+    const activeFlopHandIds = new Set(
+      phases
+        .filter(p => p.phase === PhaseType.FLOP)
+        .map(p => p.handId)
     )
     
-    return [showdownCount, sawFlopHandIds.size]
+    // アクティブにショーダウンまで到達した回数
+    // （フロップを見たハンドのうち、ショーダウンに到達したもののみカウント）
+    const activeShowdownCount = phases
+      .filter(p => 
+        p.phase === PhaseType.SHOWDOWN && 
+        p.handId && 
+        activeFlopHandIds.has(p.handId)
+      )
+      .length
+    
+    return [activeShowdownCount, activeFlopHandIds.size]
   },
   format: formatPercentage
 }
