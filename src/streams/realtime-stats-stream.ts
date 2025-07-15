@@ -9,7 +9,7 @@ import { Transform } from 'stream'
 import type { ApiHandEvent } from '../types'
 import { ApiType, PhaseType } from '../types'
 import { RealTimeStatsService } from '../realtime-stats/realtime-stats-service'
-import type { RealTimeStats } from '../realtime-stats/realtime-stats-service'
+import type { RealTimeStats, AllPlayersRealTimeStats } from '../realtime-stats/realtime-stats-service'
 import { setHandImprovementHeroHoleCards } from '../realtime-stats'
 
 
@@ -32,6 +32,8 @@ export class RealTimeStatsStream extends Transform {
   private currentProgress?: any  // Store latest Progress data for pot odds
   private heroSeatIndex?: number  // Store hero's seat index
   private seatBetAmounts: number[] = []  // Track bet amounts for each seat
+  private seatChips: number[] = []  // Track chip stacks for each seat
+  private seatUserIds: number[] = []  // Track user IDs for each seat
 
   constructor() {
     super({ objectMode: true })
@@ -63,11 +65,16 @@ export class RealTimeStatsStream extends Transform {
             this.currentProgress = undefined
             this.heroSeatIndex = undefined
             this.seatBetAmounts = [0, 0, 0, 0, 0, 0]  // Reset bet amounts
+            this.seatChips = [0, 0, 0, 0, 0, 0]  // Reset chip stacks
+            this.seatUserIds = [-1, -1, -1, -1, -1, -1]  // Reset user IDs
             
             // Emit empty stats to clear previous hand's display
-            const clearStats: { handId?: number; stats: RealTimeStats; timestamp: number } = {
+            const clearStats: { handId?: number; stats: AllPlayersRealTimeStats; timestamp: number } = {
               handId: undefined,
-              stats: {} as RealTimeStats,  // Empty stats object
+              stats: {
+                heroStats: {} as RealTimeStats,
+                playerStats: {}
+              },
               timestamp: Date.now()
             }
             this.push(clearStats)
@@ -89,6 +96,8 @@ export class RealTimeStatsStream extends Transform {
               // Count initial active players (all players are active at the start)
               this.activePlayerCount = event.SeatUserIds.filter(id => id !== -1).length
               
+              // Store seat user IDs
+              this.seatUserIds = [...event.SeatUserIds]
             }
             // Store Progress data for pot odds
             if (event.Progress) {
@@ -99,13 +108,15 @@ export class RealTimeStatsStream extends Transform {
               }
             }
             
-            // Initialize bet amounts from blinds
+            // Initialize bet amounts and chip stacks from blinds
             if (event.Player && event.OtherPlayers) {
-              // Hero's bet
+              // Hero's bet and chips
               this.seatBetAmounts[event.Player.SeatIndex] = event.Player.BetChip || 0
-              // Other players' bets
+              this.seatChips[event.Player.SeatIndex] = event.Player.Chip || 0
+              // Other players' bets and chips
               for (const player of event.OtherPlayers) {
                 this.seatBetAmounts[player.SeatIndex] = player.BetChip || 0
+                this.seatChips[player.SeatIndex] = player.Chip || 0
               }
             }
             
@@ -281,15 +292,24 @@ export class RealTimeStatsStream extends Transform {
       this.getPhaseDisplayName(),
       this.currentProgress,
       this.heroSeatIndex,
-      this.seatBetAmounts
+      this.seatBetAmounts,
+      this.seatChips
     )
     
     
-    // Emit the stats if we have any
-    if (Object.keys(stats).length > 0) {
-      const output: { handId?: number; stats: RealTimeStats; timestamp: number } = {
+    // Calculate all players stats if we have necessary data
+    if (Object.keys(stats).length > 0 && this.seatUserIds.length > 0) {
+      const allPlayersStats = RealTimeStatsService.calculateAllPlayersStats(
+        this.seatUserIds,
+        this.currentProgress,
+        this.seatBetAmounts,
+        this.seatChips,
+        stats  // Hero stats
+      )
+      
+      const output: { handId?: number; stats: AllPlayersRealTimeStats; timestamp: number } = {
         handId: this.currentHandId,
-        stats,
+        stats: allPlayersStats,
         timestamp: Date.now()
       }
       this.push(output)
@@ -349,5 +369,7 @@ export class RealTimeStatsStream extends Transform {
     this.currentProgress = undefined
     this.heroSeatIndex = undefined
     this.seatBetAmounts = []
+    this.seatChips = []
+    this.seatUserIds = []
   }
 }

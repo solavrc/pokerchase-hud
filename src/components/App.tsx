@@ -16,7 +16,7 @@ import type {
 import { rotateArrayFromIndex } from "../utils/array-utils"
 import HandLog from "./HandLog"
 import Hud from "./Hud"
-import type { RealTimeStats } from "../realtime-stats/realtime-stats-service"
+import type { AllPlayersRealTimeStats } from "../realtime-stats/realtime-stats-service"
 
 const EMPTY_SEATS: PlayerStats[] = Array.from({ length: 6 }, () => ({ playerId: -1 }))
 
@@ -30,7 +30,8 @@ const App = memo(() => {
   const [statDisplayConfigs, setStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
   const [configLoaded, setConfigLoaded] = useState(false)
   const [shouldScrollToLatest, setShouldScrollToLatest] = useState(false)
-  const [realTimeStats, setRealTimeStats] = useState<RealTimeStats>({})
+  const [allPlayersRealTimeStats, setAllPlayersRealTimeStats] = useState<AllPlayersRealTimeStats | undefined>()
+  const [heroOriginalSeatIndex, setHeroOriginalSeatIndex] = useState<number | undefined>()
 
   const handleStatsMessage = useCallback(
     ({ detail }: CustomEvent<StatsData>) => {
@@ -38,13 +39,16 @@ const App = memo(() => {
       
       // Update real-time stats if available
       if (detail.realTimeStats) {
-        setRealTimeStats(detail.realTimeStats)
+        setAllPlayersRealTimeStats(detail.realTimeStats)
       }
 
       // Player（ヒーロー）情報を含むEVT_DEALがある場合、ヒーローをポジション0に配置するよう席を回転
       if (detail.evtDeal && (detail.evtDeal as ApiEvent<ApiType.EVT_DEAL>).Player?.SeatIndex !== undefined) {
         const evtDeal = detail.evtDeal as ApiEvent<ApiType.EVT_DEAL>
         const heroSeatIndex = evtDeal.Player!.SeatIndex
+        
+        // Store hero's original seat index for mapping
+        setHeroOriginalSeatIndex(heroSeatIndex)
 
         mappedStats = rotateArrayFromIndex(detail.stats, heroSeatIndex)
       } else {
@@ -218,12 +222,20 @@ const App = memo(() => {
   // 席のポジションはhandleStatsMessageで既に正しくマッピングされている
   const seatPositions = useMemo(() => {
     // Stats配列は既に回転されてヒーローがポジション0にいる
-    return stats.map((stat, index) => ({
-      playerId: stat.playerId,
-      actualSeatIndex: index,  // 席は既にマッピングされているのでindexを直接使用
-      stat,
-    }))
-  }, [stats])
+    return stats.map((stat, index) => {
+      // Calculate original seat index from display position
+      const originalSeatIndex = heroOriginalSeatIndex !== undefined 
+        ? (index + heroOriginalSeatIndex) % 6
+        : index
+      
+      return {
+        playerId: stat.playerId,
+        actualSeatIndex: index,  // 席は既にマッピングされているのでindexを直接使用
+        originalSeatIndex,       // 元の席番号（playerPotOdds取得用）
+        stat,
+      }
+    })
+  }, [stats, heroOriginalSeatIndex])
 
   if (!configLoaded) {
     return null
@@ -244,7 +256,8 @@ const App = memo(() => {
               stat={position.stat}
               scale={uiConfig.scale}
               statDisplayConfigs={statDisplayConfigs}
-              realTimeStats={position.actualSeatIndex === 0 ? realTimeStats : undefined}
+              realTimeStats={position.actualSeatIndex === 0 ? allPlayersRealTimeStats?.heroStats : undefined}
+              playerPotOdds={allPlayersRealTimeStats?.playerStats[position.originalSeatIndex]}
             />
           )
       )}

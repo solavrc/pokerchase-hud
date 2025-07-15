@@ -160,13 +160,13 @@ describe('Pot Odds Calculation', () => {
     })
 
     stream.on('end', () => {
-      // Find the last stats event
-      const lastStats = results.filter(r => r.stats && r.stats.potOdds).pop()
+      // Find the last stats event with heroStats
+      const lastStats = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds).pop()
       
       expect(lastStats).toBeDefined()
-      expect(lastStats.stats.potOdds).toBeDefined()
+      expect(lastStats.stats.heroStats.potOdds).toBeDefined()
       
-      const potOddsValue = lastStats.stats.potOdds.value
+      const potOddsValue = lastStats.stats.heroStats.potOdds.value
       expect(potOddsValue).toHaveProperty('percentage')
       expect(potOddsValue).toHaveProperty('ratio')
       
@@ -242,10 +242,10 @@ describe('Pot Odds Calculation', () => {
       expect(statsEvents.length).toBeGreaterThan(0)
       
       // Pot odds should exist but with isHeroTurn = false
-      const withPotOdds = statsEvents.filter(r => r.stats.potOdds)
+      const withPotOdds = statsEvents.filter(r => r.stats.heroStats && r.stats.heroStats.potOdds)
       expect(withPotOdds.length).toBeGreaterThan(0)
       
-      const potOddsData = withPotOdds[0].stats.potOdds.value
+      const potOddsData = withPotOdds[0].stats.heroStats.potOdds.value
       expect(potOddsData.isHeroTurn).toBe(false)
       expect(potOddsData.pot).toBe(500)  // 300 + 200 (BB needs to call 200)
       expect(potOddsData.call).toBe(200) // BB needs to call 200 to match SB+BB
@@ -315,13 +315,242 @@ describe('Pot Odds Calculation', () => {
 
     stream.on('end', () => {
       // Find stats with pot odds
-      const withPotOdds = results.filter(r => r.stats && r.stats.potOdds)
+      const withPotOdds = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds)
       expect(withPotOdds.length).toBeGreaterThan(0)
       
-      const potOddsData = withPotOdds[0].stats.potOdds.value
+      const potOddsData = withPotOdds[0].stats.heroStats.potOdds.value
       expect(potOddsData.pot).toBe(2500)  // 2100 + 400 (playable pot)
       expect(potOddsData.call).toBe(400)  // 600 - 200
       expect(potOddsData.percentage).toBeCloseTo(16.0, 0)  // 400 / (2100 + 400)
+      
+      done()
+    })
+
+    const readable = Readable.from([events])
+    readable.pipe(stream)
+  })
+
+  test('SPR（Stack to Pot Ratio）を計算する', (done) => {
+    /**
+     * シナリオ: プリフロップでポットに対するスタックの比率を計算
+     * 検証内容:
+     * - ヒーローのスタック: 9800
+     * - 現在のポット: 900
+     * - SPR: 9800 / 900 = 10.9
+     */
+    const events: ApiHandEvent[] = [
+      {
+        ApiTypeId: ApiType.EVT_DEAL,
+        timestamp: 100,
+        SeatUserIds: [101, 102, 103, 104, 105, 106],
+        Player: {
+          SeatIndex: 1,  // BB position
+          BetStatus: 1,
+          HoleCards: [48, 49], // A♠ A♥
+          Chip: 9800,
+          BetChip: 200  // BB already posted
+        },
+        OtherPlayers: [
+          { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 9900, BetChip: 100 }, // SB
+          { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },  // UTG
+          { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },
+          { SeatIndex: 4, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },
+          { SeatIndex: 5, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 }
+        ],
+        Game: {
+          CurrentBlindLv: 1,
+          NextBlindUnixSeconds: 0,
+          Ante: 0,
+          SmallBlind: 100,
+          BigBlind: 200,
+          ButtonSeat: 5,
+          SmallBlindSeat: 0,
+          BigBlindSeat: 1
+        },
+        Progress: {
+          Phase: PhaseType.PREFLOP,
+          NextActionSeat: 2,
+          NextActionTypes: [2, 3, 4, 5],
+          NextExtraLimitSeconds: 30,
+          MinRaise: 400,
+          Pot: 300,
+          SidePot: []
+        }
+      },
+      // UTG raises to 600
+      {
+        ApiTypeId: ApiType.EVT_ACTION,
+        timestamp: 200,
+        SeatIndex: 2,
+        ActionType: 4, // RAISE
+        Chip: 9400,
+        BetChip: 600,
+        Progress: {
+          Phase: PhaseType.PREFLOP,
+          NextActionSeat: 3,
+          NextActionTypes: [2, 3, 4, 5],
+          NextExtraLimitSeconds: 30,
+          MinRaise: 1000,
+          Pot: 900,  // SB 100 + BB 200 + UTG 600
+          SidePot: []
+        }
+      }
+    ]
+
+    const results: any[] = []
+    stream.on('data', (data) => {
+      results.push(data)
+    })
+
+    stream.on('end', () => {
+      // Find the last stats event with pot odds
+      const lastStats = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds).pop()
+      
+      expect(lastStats).toBeDefined()
+      expect(lastStats.stats.heroStats.potOdds).toBeDefined()
+      
+      const potOddsValue = lastStats.stats.heroStats.potOdds.value
+      expect(potOddsValue).toHaveProperty('spr')
+      
+      // SPR should be 9800 / 900 = 10.9 (rounded to 1 decimal)
+      expect(potOddsValue.spr).toBe(10.9)
+      
+      done()
+    })
+
+    const readable = Readable.from([events])
+    readable.pipe(stream)
+  })
+
+  test('低SPR状況（コミットポット）を検出する', (done) => {
+    /**
+     * シナリオ: フロップで大きなポット、小さなスタック
+     * 検証内容:
+     * - ヒーローのスタック: 1200
+     * - 現在のポット: 2400
+     * - SPR: 1200 / 2400 = 0.5 (コミットポット)
+     */
+    const events: ApiHandEvent[] = [
+      {
+        ApiTypeId: ApiType.EVT_DEAL,
+        timestamp: 100,
+        SeatUserIds: [101, 102, 103, 104, 105, 106],
+        Player: {
+          SeatIndex: 0,
+          BetStatus: 1,
+          HoleCards: [48, 49],
+          Chip: 1200,  // Small stack
+          BetChip: 0
+        },
+        OtherPlayers: [
+          { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 0 },
+          { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 0 },
+          { SeatIndex: 3, Status: 0, BetStatus: 2, Chip: 5000, BetChip: 0 },
+          { SeatIndex: 4, Status: 0, BetStatus: 2, Chip: 5000, BetChip: 0 },
+          { SeatIndex: 5, Status: 0, BetStatus: 2, Chip: 5000, BetChip: 0 }
+        ],
+        Game: {
+          CurrentBlindLv: 1,
+          NextBlindUnixSeconds: 0,
+          Ante: 0,
+          SmallBlind: 100,
+          BigBlind: 200,
+          ButtonSeat: 5,
+          SmallBlindSeat: 0,
+          BigBlindSeat: 1
+        },
+        Progress: {
+          Phase: PhaseType.FLOP,
+          NextActionSeat: 0,
+          NextActionTypes: [0, 1, 5],
+          NextExtraLimitSeconds: 30,
+          MinRaise: 0,
+          Pot: 2400,  // Large pot
+          SidePot: []
+        }
+      }
+    ]
+
+    const results: any[] = []
+    stream.on('data', (data) => {
+      results.push(data)
+    })
+
+    stream.on('end', () => {
+      const lastStats = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds).pop()
+      
+      expect(lastStats).toBeDefined()
+      const potOddsValue = lastStats.stats.heroStats.potOdds.value
+      
+      // SPR should be 1200 / 2400 = 0.5
+      expect(potOddsValue.spr).toBe(0.5)
+      
+      done()
+    })
+
+    const readable = Readable.from([events])
+    readable.pipe(stream)
+  })
+
+  test('ポットが0の時はSPRを計算しない', (done) => {
+    /**
+     * シナリオ: ゲーム開始前でポットが0
+     * 検証内容:
+     * - SPRは undefined になるべき
+     */
+    const events: ApiHandEvent[] = [
+      {
+        ApiTypeId: ApiType.EVT_DEAL,
+        timestamp: 100,
+        SeatUserIds: [101, 102, 103, 104, 105, 106],
+        Player: {
+          SeatIndex: 0,
+          BetStatus: 1,
+          HoleCards: [48, 49],
+          Chip: 10000,
+          BetChip: 0
+        },
+        OtherPlayers: [
+          { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },
+          { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },
+          { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },
+          { SeatIndex: 4, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },
+          { SeatIndex: 5, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 }
+        ],
+        Game: {
+          CurrentBlindLv: 1,
+          NextBlindUnixSeconds: 0,
+          Ante: 0,
+          SmallBlind: 100,
+          BigBlind: 200,
+          ButtonSeat: 5,
+          SmallBlindSeat: 0,
+          BigBlindSeat: 1
+        },
+        Progress: {
+          Phase: PhaseType.PREFLOP,
+          NextActionSeat: 2,
+          NextActionTypes: [2, 3, 4, 5],
+          NextExtraLimitSeconds: 30,
+          MinRaise: 400,
+          Pot: 0,  // No pot yet
+          SidePot: []
+        }
+      }
+    ]
+
+    const results: any[] = []
+    stream.on('data', (data) => {
+      results.push(data)
+    })
+
+    stream.on('end', () => {
+      const withPotOdds = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds)
+      
+      if (withPotOdds.length > 0) {
+        const potOddsValue = withPotOdds[0].stats.heroStats.potOdds.value
+        expect(potOddsValue.spr).toBeUndefined()
+      }
       
       done()
     })

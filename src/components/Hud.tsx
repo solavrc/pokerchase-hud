@@ -11,12 +11,24 @@ interface HudPosition {
   left: string
 }
 
+interface PlayerPotOdds {
+  spr?: number
+  potOdds?: {
+    pot: number
+    call: number
+    percentage: number
+    ratio: string
+    isPlayerTurn: boolean
+  }
+}
+
 interface HudProps {
   actualSeatIndex: number
   stat: PlayerStats
   scale?: number
   statDisplayConfigs: StatDisplayConfig[]
   realTimeStats?: RealTimeStats
+  playerPotOdds?: PlayerPotOdds
 }
 
 interface DragState {
@@ -79,14 +91,15 @@ const styles = {
   } as CSSProperties,
   
   playerName: {
-    fontSize: '9px',
-    fontWeight: 'normal',
-    color: '#cccccc',
+    fontSize: '10px',
+    fontWeight: 'bold',
+    color: '#ffffff',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap' as const,
     textAlign: 'center' as const,
     letterSpacing: '0.3px',
+    textShadow: '0 1px 2px rgba(0, 0, 0, 0.5)',
   } as CSSProperties,
   
   statsContainer: {
@@ -303,7 +316,7 @@ const RealTimeStatsDisplay = memo(({ stats, seatIndex }: { stats: RealTimeStats;
   
   if (!hasStats || !stats.handImprovement) return null
   
-  const potOddsData = stats.potOdds?.value as { pot: number; call: number; percentage: number; ratio: string; isHeroTurn: boolean } | undefined
+  const potOddsData = stats.potOdds?.value as { pot: number; call: number; percentage: number; ratio: string; isHeroTurn: boolean; spr?: number } | undefined
   const potOddsPercentage = potOddsData?.percentage
   const handImprovement = stats.handImprovement?.value as any
   
@@ -344,34 +357,40 @@ const RealTimeStatsDisplay = memo(({ stats, seatIndex }: { stats: RealTimeStats;
         {/* First line: Hand ranking */}
         {stats.holeCards && (
           <div style={{ marginBottom: '2px' }}>
-            <span style={{ 
-              fontSize: '10px', 
-              color: '#fff',
-              fontWeight: '600',
-              letterSpacing: '0.5px',
-              textShadow: '0 1px 2px rgba(0, 0, 0, 0.5)'
-            }}>
-              {(() => {
-                const handInfo = getStartingHandRanking(stats.holeCards)
-                return handInfo ? `${handInfo.notation} (${handInfo.ranking}/169)` : ''
-              })()}
-            </span>
+            {(() => {
+              const handInfo = getStartingHandRanking(stats.holeCards)
+              if (!handInfo) return null
+              
+              // Get color based on ranking strength
+              let rankingColor = '#ffffff'
+              if (handInfo.ranking <= 10) {
+                rankingColor = '#ff6b6b'  // Red for premium hands
+              } else if (handInfo.ranking <= 30) {
+                rankingColor = '#ffd93d'  // Yellow for strong hands
+              } else if (handInfo.ranking <= 60) {
+                rankingColor = '#6bcf7f'  // Green for good hands
+              } else if (handInfo.ranking <= 100) {
+                rankingColor = '#95e1d3'  // Light blue for playable hands
+              } else {
+                rankingColor = '#95a5a6'  // Gray for weak hands
+              }
+              
+              return (
+                <span style={{ 
+                  fontSize: '10px', 
+                  color: rankingColor,
+                  fontWeight: '600',
+                  letterSpacing: '0.5px',
+                  textShadow: '0 1px 2px rgba(0, 0, 0, 0.5)'
+                }}
+                title={`${handInfo.ranking}位/169位`}>
+                  {handInfo.notation} ({handInfo.ranking}/169)
+                </span>
+              )
+            })()}
           </div>
         )}
         
-        {/* Second line: Pot odds information */}
-        {potOddsData && (
-          <div style={{ height: '16px', display: 'flex', alignItems: 'center' }}>
-            <span style={{ fontSize: '9px' }}>
-              Pot {potOddsData.pot.toLocaleString()}
-              {potOddsData.call > 0 && (
-                <span style={{ color: potOddsData.isHeroTurn ? '#80c0ff' : '#888' }}>
-                  {' / Call '}{potOddsData.call.toLocaleString()} ({potOddsData.percentage.toFixed(1)}%)
-                </span>
-              )}
-            </span>
-          </div>
-        )}
       </div>
       
       {/* Hand improvement table */}
@@ -443,14 +462,41 @@ const DragHandle = memo(({ isHovering, onMouseDown }: { isHovering: boolean, onM
   />
 ))
 
-const HudHeader = memo(({ playerName, playerId }: { playerName: string | null, playerId: number }) => (
-  <div style={styles.header}>
-    <span style={styles.playerName} title={playerName || 'Unknown'}>
-      {playerName || `Player ${playerId}`}
-    </span>
-    <PlayerTypeIcons />
-  </div>
-))
+const HudHeader = memo(({ playerName, playerId, playerPotOdds }: { 
+  playerName: string | null, 
+  playerId: number,
+  playerPotOdds?: PlayerPotOdds 
+}) => {
+  const hasPotOdds = playerPotOdds?.potOdds && playerPotOdds.potOdds.call > 0
+  const hasSpr = playerPotOdds?.spr !== undefined
+  
+  return (
+    <div style={styles.header}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '4px' }}>
+        <span style={{ ...styles.playerName, flex: '0 1 auto', minWidth: 0 }} title={playerName || 'Unknown'}>
+          {playerName || `Player ${playerId}`}
+        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '9px', flex: '0 0 auto' }}>
+          {hasSpr && (
+            <span style={{ color: '#ffcc00', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
+              SPR:{playerPotOdds.spr}
+            </span>
+          )}
+          {hasPotOdds && (
+            <span style={{ 
+              color: playerPotOdds.potOdds!.isPlayerTurn ? '#00ff00' : '#888',
+              fontWeight: playerPotOdds.potOdds!.isPlayerTurn ? 'bold' : 'normal',
+              whiteSpace: 'nowrap'
+            }}>
+              {playerPotOdds.potOdds!.pot}/{playerPotOdds.potOdds!.call} ({playerPotOdds.potOdds!.percentage.toFixed(0)}%)
+            </span>
+          )}
+        </div>
+      </div>
+      <PlayerTypeIcons />
+    </div>
+  )
+})
 
 const StatDisplay = memo(({ displayStats, formatValue }: { 
   displayStats: Array<[string, any, StatResult?]>, 
@@ -595,7 +641,7 @@ const Hud = memo((props: HudProps) => {
           title="Click to copy stats to clipboard"
         >
           <DragHandle isHovering={isHovering} onMouseDown={handleMouseDown} />
-          <HudHeader playerName={playerName} playerId={props.stat.playerId} />
+          <HudHeader playerName={playerName} playerId={props.stat.playerId} playerPotOdds={props.playerPotOdds} />
           <StatDisplay displayStats={displayStats} formatValue={formatStatValue} />
         </div>
       </div>

@@ -8,6 +8,7 @@
 import type { StatResult } from '../types/stats'
 import type { Action, Phase, Hand } from '../types/entities'
 import { potOddsStat, handImprovementStat } from './index'
+import { calculatePlayerPotOdds } from './pot-odds'
 
 export interface RealTimeStats {
   holeCards?: number[]  // Hero's hole cards for display
@@ -16,6 +17,23 @@ export interface RealTimeStats {
   potOdds?: StatResult
   handImprovement?: StatResult
   seatBetAmounts?: number[]  // Bet amounts for each seat
+}
+
+// New interface for all players' real-time stats
+export interface AllPlayersRealTimeStats {
+  heroStats: RealTimeStats  // Hero's full stats (including hand improvement)
+  playerStats: {
+    [seatIndex: number]: {
+      spr?: number
+      potOdds?: {
+        pot: number
+        call: number
+        percentage: number
+        ratio: string
+        isPlayerTurn: boolean
+      }
+    }
+  }
 }
 
 export class RealTimeStatsService {
@@ -35,7 +53,8 @@ export class RealTimeStatsService {
     currentPhase?: string,
     progress?: any,
     heroSeatIndex?: number,
-    seatBetAmounts?: number[]
+    seatBetAmounts?: number[],
+    seatChips?: number[]
   ): RealTimeStats {
     const context = {
       playerId,
@@ -55,7 +74,8 @@ export class RealTimeStatsService {
       activeOpponents,  // Pass through for equity calculation
       progress,  // Progress data from WebSocket events
       heroSeatIndex,  // Hero's seat index
-      seatBetAmounts  // Bet amounts for each seat
+      seatBetAmounts,  // Bet amounts for each seat
+      seatChips  // Chip stacks for each seat
     }
 
     const stats: RealTimeStats = {}
@@ -103,5 +123,52 @@ export class RealTimeStatsService {
     }
 
     return stats
+  }
+  
+  /**
+   * Calculate real-time statistics for all players
+   * Returns stats for each seat including pot odds and SPR
+   */
+  static calculateAllPlayersStats(
+    seatUserIds: number[],
+    progress: any,
+    seatBetAmounts: number[],
+    seatChips: number[],
+    heroStats: RealTimeStats
+  ): AllPlayersRealTimeStats {
+    const result: AllPlayersRealTimeStats = {
+      heroStats,
+      playerStats: {}
+    }
+    
+    // Calculate stats for each seat
+    for (let seatIndex = 0; seatIndex < seatUserIds.length; seatIndex++) {
+      const userId = seatUserIds[seatIndex]
+      if (userId === undefined || userId === -1) {
+        continue // Skip empty seats
+      }
+      
+      const playerPotOdds = calculatePlayerPotOdds(
+        seatIndex,
+        progress,
+        seatBetAmounts,
+        seatChips
+      )
+      
+      if (playerPotOdds) {
+        result.playerStats[seatIndex] = {
+          spr: playerPotOdds.spr,
+          potOdds: {
+            pot: playerPotOdds.pot,
+            call: playerPotOdds.call,
+            percentage: playerPotOdds.percentage,
+            ratio: playerPotOdds.ratio,
+            isPlayerTurn: playerPotOdds.isPlayerTurn
+          }
+        }
+      }
+    }
+    
+    return result
   }
 }
