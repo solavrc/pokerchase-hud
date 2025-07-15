@@ -371,24 +371,6 @@ const RealTimeStatsDisplay = memo(({ stats, seatIndex }: { stats: RealTimeStats;
           </div>
         )}
         
-        {/* Second line: Pot odds and SPR information */}
-        {potOddsData && (
-          <div style={{ height: '16px', display: 'flex', alignItems: 'center' }}>
-            <span style={{ fontSize: '9px' }}>
-              Pot {potOddsData.pot.toLocaleString()}
-              {potOddsData.call > 0 && (
-                <span style={{ color: potOddsData.isHeroTurn ? '#80c0ff' : '#888' }}>
-                  {' / Call '}{potOddsData.call.toLocaleString()} ({potOddsData.percentage.toFixed(1)}%)
-                </span>
-              )}
-              {potOddsData.spr !== undefined && (
-                <span style={{ color: '#ddd', marginLeft: '8px' }}>
-                  SPR: {potOddsData.spr}
-                </span>
-              )}
-            </span>
-          </div>
-        )}
       </div>
       
       {/* Hand improvement table */}
@@ -474,7 +456,7 @@ const HudHeader = memo(({ playerName, playerId, playerPotOdds }: {
         <span style={{ ...styles.playerName, flex: '0 1 auto', minWidth: 0 }} title={playerName || 'Unknown'}>
           {playerName || `Player ${playerId}`}
         </span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '7px', flex: '0 0 auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '9px', flex: '0 0 auto' }}>
           {hasSpr && (
             <span style={{ color: '#ffcc00', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
               SPR:{playerPotOdds.spr}
