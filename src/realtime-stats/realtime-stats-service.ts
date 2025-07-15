@@ -35,7 +35,8 @@ export class RealTimeStatsService {
     currentPhase?: string,
     progress?: any,
     heroSeatIndex?: number,
-    seatBetAmounts?: number[]
+    seatBetAmounts?: number[],
+    seatChips?: number[]
   ): RealTimeStats {
     const context = {
       playerId,
@@ -55,7 +56,8 @@ export class RealTimeStatsService {
       activeOpponents,  // Pass through for equity calculation
       progress,  // Progress data from WebSocket events
       heroSeatIndex,  // Hero's seat index
-      seatBetAmounts  // Bet amounts for each seat
+      seatBetAmounts,  // Bet amounts for each seat
+      seatChips  // Chip stacks for each seat
     }
 
     const stats: RealTimeStats = {}

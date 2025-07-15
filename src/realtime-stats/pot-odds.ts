@@ -41,9 +41,9 @@ export const potOddsStat: StatDefinition = {
   name: 'POT ODDS',
   description: 'Pot odds when facing a bet',
   
-  calculate(context: StatCalculationContext & { progress?: any; heroSeatIndex?: number; seatBetAmounts?: number[] }): StatValue {
+  calculate(context: StatCalculationContext & { progress?: any; heroSeatIndex?: number; seatBetAmounts?: number[]; seatChips?: number[] }): StatValue {
     // Use real-time Progress data from WebSocket events
-    const { progress, heroSeatIndex, seatBetAmounts } = context
+    const { progress, heroSeatIndex, seatBetAmounts, seatChips } = context
     
     if (!progress || heroSeatIndex === undefined || !seatBetAmounts) {
       return '-'
@@ -81,7 +81,16 @@ export const potOddsStat: StatDefinition = {
       call: callAmount,
       percentage: 0,
       ratio: '',
-      isHeroTurn: progress.NextActionSeat === heroSeatIndex
+      isHeroTurn: progress.NextActionSeat === heroSeatIndex,
+      spr: undefined  // Stack to Pot Ratio
+    }
+    
+    // Calculate SPR if we have chip data
+    if (seatChips && seatChips[heroSeatIndex] !== undefined) {
+      const heroStack = seatChips[heroSeatIndex]
+      if (totalPot > 0) {
+        result.spr = Math.round((heroStack / totalPot) * 10) / 10  // Round to 1 decimal
+      }
     }
     
     // Calculate pot odds if there's a call amount

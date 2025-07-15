@@ -32,6 +32,7 @@ export class RealTimeStatsStream extends Transform {
   private currentProgress?: any  // Store latest Progress data for pot odds
   private heroSeatIndex?: number  // Store hero's seat index
   private seatBetAmounts: number[] = []  // Track bet amounts for each seat
+  private seatChips: number[] = []  // Track chip stacks for each seat
 
   constructor() {
     super({ objectMode: true })
@@ -63,6 +64,7 @@ export class RealTimeStatsStream extends Transform {
             this.currentProgress = undefined
             this.heroSeatIndex = undefined
             this.seatBetAmounts = [0, 0, 0, 0, 0, 0]  // Reset bet amounts
+            this.seatChips = [0, 0, 0, 0, 0, 0]  // Reset chip stacks
             
             // Emit empty stats to clear previous hand's display
             const clearStats: { handId?: number; stats: RealTimeStats; timestamp: number } = {
@@ -99,13 +101,15 @@ export class RealTimeStatsStream extends Transform {
               }
             }
             
-            // Initialize bet amounts from blinds
+            // Initialize bet amounts and chip stacks from blinds
             if (event.Player && event.OtherPlayers) {
-              // Hero's bet
+              // Hero's bet and chips
               this.seatBetAmounts[event.Player.SeatIndex] = event.Player.BetChip || 0
-              // Other players' bets
+              this.seatChips[event.Player.SeatIndex] = event.Player.Chip || 0
+              // Other players' bets and chips
               for (const player of event.OtherPlayers) {
                 this.seatBetAmounts[player.SeatIndex] = player.BetChip || 0
+                this.seatChips[player.SeatIndex] = player.Chip || 0
               }
             }
             
@@ -281,7 +285,8 @@ export class RealTimeStatsStream extends Transform {
       this.getPhaseDisplayName(),
       this.currentProgress,
       this.heroSeatIndex,
-      this.seatBetAmounts
+      this.seatBetAmounts,
+      this.seatChips
     )
     
     
@@ -349,5 +354,6 @@ export class RealTimeStatsStream extends Transform {
     this.currentProgress = undefined
     this.heroSeatIndex = undefined
     this.seatBetAmounts = []
+    this.seatChips = []
   }
 }

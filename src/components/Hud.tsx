@@ -303,7 +303,7 @@ const RealTimeStatsDisplay = memo(({ stats, seatIndex }: { stats: RealTimeStats;
   
   if (!hasStats || !stats.handImprovement) return null
   
-  const potOddsData = stats.potOdds?.value as { pot: number; call: number; percentage: number; ratio: string; isHeroTurn: boolean } | undefined
+  const potOddsData = stats.potOdds?.value as { pot: number; call: number; percentage: number; ratio: string; isHeroTurn: boolean; spr?: number } | undefined
   const potOddsPercentage = potOddsData?.percentage
   const handImprovement = stats.handImprovement?.value as any
   
@@ -359,7 +359,7 @@ const RealTimeStatsDisplay = memo(({ stats, seatIndex }: { stats: RealTimeStats;
           </div>
         )}
         
-        {/* Second line: Pot odds information */}
+        {/* Second line: Pot odds and SPR information */}
         {potOddsData && (
           <div style={{ height: '16px', display: 'flex', alignItems: 'center' }}>
             <span style={{ fontSize: '9px' }}>
@@ -367,6 +367,11 @@ const RealTimeStatsDisplay = memo(({ stats, seatIndex }: { stats: RealTimeStats;
               {potOddsData.call > 0 && (
                 <span style={{ color: potOddsData.isHeroTurn ? '#80c0ff' : '#888' }}>
                   {' / Call '}{potOddsData.call.toLocaleString()} ({potOddsData.percentage.toFixed(1)}%)
+                </span>
+              )}
+              {potOddsData.spr !== undefined && (
+                <span style={{ color: '#ddd', marginLeft: '8px' }}>
+                  SPR: {potOddsData.spr}
                 </span>
               )}
             </span>
