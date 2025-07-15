@@ -2,7 +2,7 @@
 
 > 🎯 **Purpose**: Primary technical reference for PokerChase HUD Chrome extension development and maintenance.
 > 
-> 📅 **Last Updated**: 2025-07-14 - Added array utilities module, improved type safety and error handling, introduced constants for magic numbers, enhanced hand log processor accuracy
+> 📅 **Last Updated**: 2025-07-15 - Updated API types for new PokerChase fields, improved hand log processor with uncalled bet handling, fixed WTSD calculation to exclude preflop all-ins, removed static method wrappers
 
 ## 📋 Table of Contents
 
@@ -199,6 +199,8 @@ Bulk Database Insert
 - Enhanced hand descriptions (e.g., "two pair, Sevens and Deuces")
 - Tournament finish position tracking
 - Proper community card tracking for all-in situations
+- Uncalled bet handling for heads-up situations
+- Accurate pot calculations excluding uncalled bets
 - Uses MAX_SEATS constant for table size
 
 ## 📊 Statistics System
@@ -217,8 +219,8 @@ Bulk Database Insert
 | `cbetFold` | CBF | Fold to c-bet % |
 | `af` | AF | Aggression factor |
 | `afq` | AFq | Aggression frequency % |
-| `wtsd` | WTSD | Went to showdown % |
-| `wwsf` | WWSF | Won when saw flop % |
+| `wtsd` | WTSD | Went to showdown % (excludes preflop all-ins) |
+| `wwsf` | WWSF | Won when saw flop % (excludes preflop all-ins) |
 | `wsd` | W$SD | Won $ at showdown % |
 
 ### Adding New Statistics
@@ -400,6 +402,10 @@ detectActionDetails: (context) => {
 }
 ```
 
+### Statistics Philosophy
+
+**Player Decision Focus**: Statistics like WTSD and WWSF measure player decision-making rather than automatic game outcomes. Preflop all-ins are excluded because they involve no post-flop decisions, ensuring statistics reflect actual player tendencies and "stickiness" rather than forced showdowns.
+
 ### Key Concepts
 
 #### `phasePrevBetCount` (Preflop)
@@ -514,6 +520,8 @@ const rotatedStats = rotateArrayFromIndex(stats, heroIndex)
 - **Accurate Showdown**: Last aggressor shows first
 - **Enhanced Descriptions**: Detailed hand rankings (e.g., "two pair, Sevens and Deuces")
 - **Tournament Tracking**: Player finish positions
+- **Uncalled Bets**: Proper handling of returned chips in heads-up situations
+- **Pot Calculations**: Excludes uncalled bets from total pot
 - **Constants**: Uses MAX_SEATS for table size
 
 ### Error Handler (`error-handler.ts`)
@@ -819,8 +827,17 @@ const DEBUG = true  // Enable verbose logging
 - **poker-evaluator.ts**: `cards: []` TODO - Extract actual cards for hand display
 - **Input Validation**: Missing duplicate card checks and range validation
 - **Color Constants**: Color codes (#00ff00, #ff6666) should be named constants
+- **API Type Union Types**: Mixed language strings and i18n keys need separation
+- **Empty String Types**: `ClassLvId?: ""` should use proper type definition
 
-## Recent Improvements (2025-07-14)
+## Recent Improvements (2025-07-15)
+- **API Types**: Updated for new PokerChase fields (IsSafeLeave, Bond, HandLog, etc.)
+- **Hand Log Accuracy**: Added uncalled bet handling and pot calculation improvements
+- **Statistics Fix**: WTSD/WWSF now correctly exclude preflop all-ins
+- **Code Cleanup**: Removed static method wrappers from PokerChaseService
+- **Test Organization**: Moved array utility test to appropriate location
+
+### Previous Improvements (2025-07-14)
 - **Type Safety**: Enhanced parameter types in HandLogProcessor
 - **Error Handling**: Added validation in array utilities
 - **Code Organization**: Extracted common logic to utility modules
