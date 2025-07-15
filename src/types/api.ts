@@ -93,7 +93,7 @@ export interface ApiEventBase<T extends ApiType> {
 }
 
 export type ApiEvent<T extends ApiType = ApiType> =
-  T extends ApiType.RES_ENTRY_QUEUED ? ApiEventBase<ApiType.RES_ENTRY_QUEUED> & { Code: 0, BattleType: BattleType, Id: string } :
+  T extends ApiType.RES_ENTRY_QUEUED ? ApiEventBase<ApiType.RES_ENTRY_QUEUED> & { Code: 0, BattleType: BattleType, Id: string, IsRetire?: boolean } :
   T extends ApiType.RES_ACTION_COMPLETED ? ApiEventBase<ApiType.RES_ACTION_COMPLETED> & { Code: 0 } :
   T extends ApiType.RES_ENTRY_CANCEL_QUEUED ? ApiEventBase<ApiType.RES_ENTRY_CANCEL_QUEUED> & { Code: 0 } :
   T extends ApiType.RES_HAND_STARTED ? ApiEventBase<ApiType.RES_HAND_STARTED> & { Code: 0 } :
@@ -108,15 +108,15 @@ export type ApiEvent<T extends ApiType = ApiType> =
   T extends ApiType.EVT_DEAL ? ApiEventBase<ApiType.EVT_DEAL> & { Game: Game, OtherPlayers: OtherPlayer[], Player?: Player, Progress: Progress, SeatUserIds: number[], MyRanking?: { Ranking: number, JoinNum: number, AverageChip: number, ActiveNum: number } } :
   T extends ApiType.EVT_ACTION ? ApiEventBase<ApiType.EVT_ACTION> & { ActionType: ActionType, BetChip: number, Chip: number, Progress: Progress, SeatIndex: number } :
   T extends ApiType.EVT_DEAL_ROUND ? ApiEventBase<ApiType.EVT_DEAL_ROUND> & { CommunityCards: number[], OtherPlayers: OtherPlayer[], Player?: Player, Progress: Progress } :
-  T extends ApiType.EVT_HAND_RESULTS ? ApiEventBase<ApiType.EVT_HAND_RESULTS> & { CommunityCards: number[], DefeatStatus: number, HandId: number, OtherPlayers: OtherPlayer[], Player?: Omit<Player, 'HoleCards'>, Pot: number, Results: Result[], ResultType: number, SidePot: number[] } :
+  T extends ApiType.EVT_HAND_RESULTS ? ApiEventBase<ApiType.EVT_HAND_RESULTS> & { CommunityCards: number[], DefeatStatus: number, HandId: number, HandLog?: string, OtherPlayers: OtherPlayer[], Player?: Omit<Player, 'HoleCards'>, Pot: number, Results: Result[], ResultType: number, SidePot: number[] } :
   T extends ApiType.EVT_SESSION_STARTED ? ApiEventBase<ApiType.EVT_SESSION_STARTED> :
   T extends ApiType.EVT_SESSION_DETAILS ? ApiEventBase<ApiType.EVT_SESSION_DETAILS> & { BlindStructures: BlindStructure[], CoinNum: number, DefaultChip: number, IsReplay: boolean, Items: EventDetail[], LimitSeconds: number, Name: string, Name2: string, MoneyList?: unknown[], RingRule?: { MinBuyin: number, MaxBuyin: number }, TournamentRule?: { RebuyLimit: number, RebuyCostCoinNum: number, RebuyCostTicket: { ItemId: string, Num: number }, RebuyChip: number, RebuyFinishUnixSeconds: number, NextBreakUnixSeconds: number }, RankingRewards?: RankingReward[] } :
-  T extends ApiType.EVT_SESSION_RESULTS ? ApiEventBase<ApiType.EVT_SESSION_RESULTS> & { Charas: Chara[], Costumes: unknown[], Decos: unknown[], Emblems: unknown[], EventRewards: unknown[], IsLeave: boolean, IsRebuy: boolean, Items: Item[], Money: { FreeMoney: number, PaidMoney: number }, Ranking: number, RankReward?: RankReward, Rewards: Reward[], RingReward?: RingReward, TotalMatch: number } :
+  T extends ApiType.EVT_SESSION_RESULTS ? ApiEventBase<ApiType.EVT_SESSION_RESULTS> & { Charas: Chara[], Costumes: unknown[], Decos: unknown[], Emblems: unknown[], EventRewards: unknown[], IsLeave: boolean, IsRebuy: boolean, Items: Item[], Money: { FreeMoney: number, PaidMoney: number }, Ranking: number, RankReward?: RankReward, Rewards: Reward[], RingReward?: RingReward, TotalMatch: number, IsSeasonOver: boolean, BattleFinishTime: number, IsCountOverRingMedal: boolean, TargetBlindLv?: number, ResultChip?: number, PopupTitleTextKey?: string, PopupMessageTextKey?: string } :
   T extends ApiType.EVT_STAMP_RECEIVED ? ApiEventBase<ApiType.EVT_STAMP_RECEIVED> & { SeatIndex: number, StampId: string } :
   T extends ApiType.EVT_HAND_COMPLETED ? ApiEventBase<ApiType.EVT_HAND_COMPLETED> & { NotifyCode: number } :
-  T extends ApiType.EVT_PLAYER_SEAT_ASSIGNED ? ApiEventBase<ApiType.EVT_PLAYER_SEAT_ASSIGNED> & { ProcessType: number, TableUsers: TableUser[], SeatUserIds: number[], CommunityCards?: number[], Player?: Player, OtherPlayers?: OtherPlayer[], Game?: Game, Progress?: Progress } :
+  T extends ApiType.EVT_PLAYER_SEAT_ASSIGNED ? ApiEventBase<ApiType.EVT_PLAYER_SEAT_ASSIGNED> & { ProcessType: number, TableUsers: TableUser[], SeatUserIds: number[], CommunityCards?: number[], Player?: Player, OtherPlayers?: OtherPlayer[], Game?: Game, Progress?: Progress, IsLeave?: boolean, IsSafeLeave?: boolean, IsRetire?: boolean, BreakFinishUnixSeconds?: number } :
   T extends ApiType.EVT_REWARD_CHANGED ? ApiEventBase<ApiType.EVT_REWARD_CHANGED> & { RankingRewards: RankingReward[] } :
-  T extends ApiType.EVT_BLIND_RAISED ? ApiEventBase<ApiType.EVT_BLIND_RAISED> & { Ante: number, BigBlind: number, CurrentBlindLv: number, NextBlindUnixSeconds: number, SmallBlind: number } :
+  T extends ApiType.EVT_BLIND_RAISED ? ApiEventBase<ApiType.EVT_BLIND_RAISED> & { Ante: number, BigBlind: number, CurrentBlindLv: number, NextBlindUnixSeconds: number, SmallBlind: number, TargetBlindLv?: number } :
   T extends ApiType.EVT_ENTRY_COMPLETED ? ApiEventBase<ApiType.EVT_ENTRY_COMPLETED> & { MatchUserNum: number } :
   never
 

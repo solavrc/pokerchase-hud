@@ -16,6 +16,7 @@ export interface Chara {
   CharaId: string
   CostumeId: string
   Favorite: number
+  Bond: number
   Rank: number
   TodayUpNum: number
   Evolution: boolean
@@ -53,6 +54,7 @@ export interface Player {
   Chip: number
   BetChip: number
   HoleCards: [number, number] | []
+  IsSafeLeave?: boolean
 }
 
 export interface JoinPlayer extends Omit<Player, 'HoleCards'> {
@@ -122,6 +124,7 @@ export interface Reward {
   Category: number
   TargetId: string
   Num: number
+  BuffNum: number
 }
 
 export interface RingReward {
@@ -143,10 +146,11 @@ export interface TableUser {
   EmblemId: string
   Rank: {
     RankId: 'bronze' | 'silver' | 'gold' | 'platinum' | 'diamond' | 'legend'
-    RankName: 'ブロンズ' | 'シルバー' | 'ゴールド' | 'プラチナ' | 'ダイヤモンド' | 'レジェンド'
+    RankName: 'ブロンズ' | 'シルバー' | 'ゴールド' | 'プラチナ' | 'ダイヤモンド' | 'レジェンド' | 'text_rank_name_bronze' | 'text_rank_name_silver' | 'text_rank_name_gold' | 'text_rank_name_platinum' | 'text_rank_name_diamond' | 'text_rank_name_legend'
     RankLvId: 'bronze' | 'silver' | 'gold' | 'platinum' | 'diamond' | 'legend'
-    RankLvName: 'ブロンズ' | 'シルバー' | 'ゴールド' | 'プラチナ' | 'ダイヤモンド' | 'レジェンド'
+    RankLvName: 'ブロンズ' | 'シルバー' | 'ゴールド' | 'プラチナ' | 'ダイヤモンド' | 'レジェンド' | 'text_rank_lv_name_bronze' | 'text_rank_lv_name_silver' | 'text_rank_lv_name_gold' | 'text_rank_lv_name_platinum' | 'text_rank_lv_name_diamond' | 'text_rank_lv_name_legend'
   }
+  ClassLvId?: ""
   IsOfficial: boolean
   IsCpu: boolean
   SettingDecoIds: string[]
@@ -211,7 +215,7 @@ export interface ExistPlayerStats {
   statResults: import('./stats').StatResult[]
 }
 
-export type PlayerStats = ExistPlayerStats | { playerId: -1 }
+export type PlayerStats = ExistPlayerStats | { playerId: -1, statResults?: [] }
 
 // Stream state
 export interface HandState {

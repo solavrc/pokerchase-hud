@@ -91,6 +91,15 @@ export class HandLogProcessor {
     // firstHandId は保持（トーナメントID用）
   }
 
+  /**
+   * ブラインドレベルをローマ数字に変換
+   */
+  private getBlindLevelRoman(level: number): string {
+    const romans = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 
+                   'XI', 'XII', 'XIII', 'XIV', 'XV', 'XVI', 'XVII', 'XVIII', 'XIX', 'XX']
+    return romans[level] || `${level + 1}`
+  }
+
   private handleDealEvent(event: ApiEvent<ApiType.EVT_DEAL>): HandLogEntry[] {
     if (this.currentHand && !this.currentHand.isComplete) {
       console.warn('[HandLogProcessor] Clearing incomplete hand due to new EVT_DEAL')
@@ -109,26 +118,19 @@ export class HandLogProcessor {
     const entries: HandLogEntry[] = []
 
     const timestamp = this.context.handTimestamp || event.timestamp || Date.now()
-    const jstTimestamp = new Date(timestamp).toLocaleString('en-CA', {
-      timeZone: 'Asia/Tokyo',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false
-    }).replace(',', '').replace(/(\d{4})-(\d{2})-(\d{2}) (\d{2}:\d{2}:\d{2})/, '$1/$2/$3 $4 JST')
+    const utcTimestamp = new Date(timestamp).toISOString().replace('T', ' ').substring(0, 19)
 
     // キャッシュゲームかトーナメントかを判定
     const isCashGame = this.context.session.battleType !== undefined && [4, 5].includes(this.context.session.battleType)
 
     let headerText: string
     if (isCashGame) {
-      headerText = `PokerChase Game #pending: Hold'em No Limit ($${event.Game.SmallBlind}/$${event.Game.BigBlind} USD) - ${jstTimestamp}`
+      headerText = `Poker Hand #pending: Hold'em No Limit ($${event.Game.SmallBlind}/$${event.Game.BigBlind} USD) - ${utcTimestamp}`
     } else {
       const sessionName = this.context.session.name || 'Unknown'
-      headerText = `PokerChase Game #pending: Tournament #pending, ${sessionName} Hold'em No Limit - Level I (${event.Game.SmallBlind}/${event.Game.BigBlind}) - ${jstTimestamp}`
+      // ブラインドレベルをローマ数字に変換
+      const blindLevel = this.getBlindLevelRoman(event.Game.CurrentBlindLv)
+      headerText = `Poker Game #pending: Tournament #pending, ${sessionName} Hold'em No Limit - Level ${blindLevel} (${event.Game.SmallBlind}/${event.Game.BigBlind}) - ${utcTimestamp}`
     }
 
     const headerEntry = this.createEntry(headerText, HandLogEntryType.HEADER)
@@ -196,21 +198,31 @@ export class HandLogProcessor {
     }
 
     // ホールカード
-    if (event.Player?.HoleCards) {
-      const cardsEntry = this.createEntry('*** HOLE CARDS ***', HandLogEntryType.STREET)
-      entries.push(cardsEntry)
+    const cardsEntry = this.createEntry('*** HOLE CARDS ***', HandLogEntryType.STREET)
+    entries.push(cardsEntry)
 
-      const playerSeat = event.Player.SeatIndex
-      const playerId = playerSeat !== undefined ? event.SeatUserIds[playerSeat] : undefined
-      if (playerId === undefined) {
-        return entries
+    // 全プレイヤーに "Dealt to" を表示
+    event.SeatUserIds.forEach((userId, seatIndex) => {
+      if (userId !== -1) {
+        const playerName = this.getPlayerName(userId)
+        let dealtEntry: HandLogEntry
+        
+        // Heroのカードを表示
+        if (event.Player?.SeatIndex === seatIndex && event.Player?.HoleCards) {
+          dealtEntry = this.createEntry(
+            `Dealt to ${playerName} [${formatCards(event.Player.HoleCards)}]`,
+            HandLogEntryType.CARDS
+          )
+        } else {
+          // 他のプレイヤーは "Dealt to" のみ
+          dealtEntry = this.createEntry(
+            `Dealt to ${playerName}`,
+            HandLogEntryType.CARDS
+          )
+        }
+        entries.push(dealtEntry)
       }
-      const holeCardsEntry = this.createEntry(
-        `Dealt to ${this.getPlayerName(playerId)} [${formatCards(event.Player.HoleCards)}]`,
-        HandLogEntryType.CARDS
-      )
-      entries.push(holeCardsEntry)
-    }
+    })
 
     this.currentHand.entries.push(...entries)
     return entries
@@ -306,10 +318,26 @@ export class HandLogProcessor {
       // Include players who show cards OR who reached showdown (SHOWDOWN_MUCK)
       const hasValidCards = r.HoleCards && r.HoleCards.length > 0 && r.HoleCards[0] !== -1
       const reachedShowdown = r.RankType === RankType.SHOWDOWN_MUCK
+      // Exclude NO_CALL wins (e.g., BB wins when everyone folds)
+      const isNoCallWin = r.RankType === RankType.NO_CALL
       // Also check if they have a reward chip (winner) but empty cards (rare case)
-      const wonWithoutShowingCards = r.RewardChip > 0 && (!r.HoleCards || r.HoleCards.length === 0)
+      const wonWithoutShowingCards = r.RewardChip > 0 && (!r.HoleCards || r.HoleCards.length === 0) && !isNoCallWin
       return hasValidCards || reachedShowdown || wonWithoutShowingCards
     })
+
+    // Handle uncalled bets BEFORE showdown
+    const wentToShowdown = showdownParticipants.length > 0
+    
+    if (!wentToShowdown) {
+      // For non-showdown wins, handle uncalled bets first
+      event.Results.forEach(result => {
+        if (result.RewardChip > 0) {
+          const playerName = this.getPlayerName(result.UserId)
+          const uncalledEntries = this.handleUncalledBet(result, playerName)
+          entries.push(...uncalledEntries)
+        }
+      })
+    }
 
     if (showdownParticipants.length > 0) {
       const showdownEntry = this.createEntry('*** SHOW DOWN ***', HandLogEntryType.SHOWDOWN)
@@ -347,34 +375,15 @@ export class HandLogProcessor {
         })
     }
 
-    // チップを獲得した人を追加し、コールされなかったベットを処理
-    const wentToShowdown = [...this.currentHand.entries, ...entries].some(e => e.text.includes('*** SHOW DOWN ***'))
-
+    // Handle pot collection for showdown winners and tournament finish positions
     event.Results.forEach(result => {
-      if (result.RewardChip > 0) {
+      if (result.RewardChip > 0 && wentToShowdown) {
         const playerName = this.getPlayerName(result.UserId)
-
-        // ショウダウンがない場合、コールされなかったベットをチェック
-        if (!wentToShowdown) {
-          const uncalledEntries = this.handleUncalledBet(result, playerName)
-          entries.push(...uncalledEntries)
-        } else {
-          // 通常の回収エントリ
-          const collectEntry = this.createEntry(
-            `${playerName} collected ${result.RewardChip} from pot`,
-            HandLogEntryType.SHOWDOWN
-          )
-          entries.push(collectEntry)
-
-          // ショウダウンがない場合、"doesn't show hand"を追加
-          if (!wentToShowdown) {
-            const noShowEntry = this.createEntry(
-              `${playerName}: doesn't show hand`,
-              HandLogEntryType.SHOWDOWN
-            )
-            entries.push(noShowEntry)
-          }
-        }
+        const collectEntry = this.createEntry(
+          `${playerName} collected ${result.RewardChip} from pot`,
+          HandLogEntryType.SHOWDOWN
+        )
+        entries.push(collectEntry)
       }
       
       // Check if player finished the tournament
@@ -398,6 +407,79 @@ export class HandLogProcessor {
 
   private handleUncalledBet(result: unknown, playerName: string): HandLogEntry[] {
     const entries: HandLogEntry[] = []
+    
+    // Special case: BB wins without anyone calling (everyone folded to BB)
+    // Check if winner posted BB and no one called
+    const bbEntry = this.currentHand!.entries.find(e => 
+      e.type === HandLogEntryType.ACTION && 
+      e.text.includes(playerName) && 
+      e.text.includes('posts big blind')
+    )
+    
+    if (bbEntry) {
+      // Extract BB amount
+      const bbMatch = bbEntry.text.match(/posts big blind (\d+)/)
+      const bbAmount = bbMatch?.[1] ? parseInt(bbMatch[1]) : 0
+      
+      // Check if anyone called or raised the BB
+      let maxOpponentBet = 0
+      let foundRaiseOrCall = false
+      
+      // Look for any calls or raises after the BB was posted
+      const bbIndex = this.currentHand!.entries.indexOf(bbEntry)
+      for (let i = bbIndex + 1; i < this.currentHand!.entries.length; i++) {
+        const entry = this.currentHand!.entries[i]
+        if (entry && entry.type === HandLogEntryType.ACTION) {
+          if (entry.text.includes(': calls ') || entry.text.includes(': raises ')) {
+            foundRaiseOrCall = true
+            const match = entry.text.match(/calls (\d+)|raises \d+ to (\d+)/)
+            if (match) {
+              const amount = parseInt(match[1] || match[2] || '0')
+              maxOpponentBet = Math.max(maxOpponentBet, amount)
+            }
+          }
+        }
+      }
+      
+      // If no one called or raised, only SB amount was contested
+      if (!foundRaiseOrCall) {
+        // Find SB amount
+        const sbEntry = this.currentHand!.entries.find(e => 
+          e.type === HandLogEntryType.ACTION && 
+          e.text.includes('posts small blind')
+        )
+        const sbMatch = sbEntry?.text.match(/posts small blind (\d+)/)
+        const sbAmount = sbMatch?.[1] ? parseInt(sbMatch[1]) : 0
+        
+        if (sbAmount > 0 && bbAmount > sbAmount) {
+          const uncalledAmount = bbAmount - sbAmount
+          const resultWithReward = result as { RewardChip?: number }
+          const potContribution = (resultWithReward.RewardChip ?? 0) - uncalledAmount
+          
+          const uncalledEntry = this.createEntry(
+            `Uncalled bet (${uncalledAmount}) returned to ${playerName}`,
+            HandLogEntryType.SHOWDOWN
+          )
+          entries.push(uncalledEntry)
+          
+          if (potContribution > 0) {
+            const collectEntry = this.createEntry(
+              `${playerName} collected ${potContribution} from pot`,
+              HandLogEntryType.SHOWDOWN
+            )
+            entries.push(collectEntry)
+          }
+          
+          const noShowEntry = this.createEntry(
+            `${playerName}: doesn't show hand `,
+            HandLogEntryType.SHOWDOWN
+          )
+          entries.push(noShowEntry)
+          
+          return entries
+        }
+      }
+    }
 
     // ハンドの最後のアグレッシブアクション（ベット/レイズ）を検索
     const lastAggressiveAction = this.currentHand!.entries
@@ -463,7 +545,7 @@ export class HandLogProcessor {
 
           // 必要に応じて"doesn't show hand"を追加
           const noShowEntry = this.createEntry(
-            `${playerName}: doesn't show hand`,
+            `${playerName}: doesn't show hand `,
             HandLogEntryType.SHOWDOWN
           )
           entries.push(noShowEntry)
@@ -881,9 +963,24 @@ export class HandLogProcessor {
     const summaryEntry = this.createEntry('*** SUMMARY ***', HandLogEntryType.SUMMARY)
     entries.push(summaryEntry)
 
-    const totalPot = event.Pot + event.SidePot.reduce((sum, pot) => sum + pot, 0)
-    const rakeDisplay = ' | Rake 0'
-    const potEntry = this.createEntry(`Total pot ${totalPot}${rakeDisplay}`, HandLogEntryType.SUMMARY)
+    // Calculate total pot, accounting for uncalled bets
+    let totalPot = event.Pot + event.SidePot.reduce((sum, pot) => sum + pot, 0)
+    
+    // Check if there was an uncalled bet in the hand result entries
+    const uncalledBetEntry = handResultEntries.find(e => 
+      e.text.includes('Uncalled bet (') && e.text.includes(') returned to')
+    )
+    
+    if (uncalledBetEntry) {
+      // Extract uncalled amount and subtract from total pot
+      const uncalledMatch = uncalledBetEntry.text.match(/Uncalled bet \((\d+)\)/)
+      if (uncalledMatch?.[1]) {
+        const uncalledAmount = parseInt(uncalledMatch[1])
+        totalPot -= uncalledAmount
+      }
+    }
+    
+    const potEntry = this.createEntry(`Total pot ${totalPot}`, HandLogEntryType.SUMMARY)
     entries.push(potEntry)
 
     // ボード
@@ -969,8 +1066,26 @@ export class HandLogProcessor {
             const cards = formatCards(result.HoleCards)
             const handDesc = this.getHandDescription(result.RankType, result.Hands)
             summary += ` showed [${cards}] and won (${result.RewardChip}) with ${handDesc}`
+          } else {
+            // ショウダウン以外の勝利 - "collected" を表示
+            // Check if there was an uncalled bet for this player
+            const uncalledBetEntry = [...this.currentHand!.entries, ...handResultEntries].find(e => 
+              e.text.includes('Uncalled bet (') && 
+              e.text.includes(`) returned to ${playerName}`)
+            )
+            
+            let collectedAmount = result.RewardChip
+            if (uncalledBetEntry) {
+              // Extract uncalled amount to show the actual contested pot
+              const uncalledMatch = uncalledBetEntry.text.match(/Uncalled bet \((\d+)\)/)
+              if (uncalledMatch?.[1]) {
+                const uncalledAmount = parseInt(uncalledMatch[1])
+                collectedAmount = result.RewardChip - uncalledAmount
+              }
+            }
+            
+            summary += ` collected (${collectedAmount})`
           }
-          // ショウダウン以外の勝利では追加テキスト不要（ポット回収はメインログに表示済み）
         } else {
           // ショウダウンの敗者
           if (wentToShowdown && result.HoleCards && result.HoleCards.length > 0 && result.HoleCards[0] !== -1) {
