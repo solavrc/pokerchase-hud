@@ -91,14 +91,15 @@ const styles = {
   } as CSSProperties,
   
   playerName: {
-    fontSize: '9px',
-    fontWeight: 'normal',
-    color: '#cccccc',
+    fontSize: '10px',
+    fontWeight: 'bold',
+    color: '#ffffff',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap' as const,
     textAlign: 'center' as const,
     letterSpacing: '0.3px',
+    textShadow: '0 1px 2px rgba(0, 0, 0, 0.5)',
   } as CSSProperties,
   
   statsContainer: {
@@ -356,18 +357,53 @@ const RealTimeStatsDisplay = memo(({ stats, seatIndex }: { stats: RealTimeStats;
         {/* First line: Hand ranking */}
         {stats.holeCards && (
           <div style={{ marginBottom: '2px' }}>
-            <span style={{ 
-              fontSize: '10px', 
-              color: '#fff',
-              fontWeight: '600',
-              letterSpacing: '0.5px',
-              textShadow: '0 1px 2px rgba(0, 0, 0, 0.5)'
-            }}>
-              {(() => {
-                const handInfo = getStartingHandRanking(stats.holeCards)
-                return handInfo ? `${handInfo.notation} (${handInfo.ranking}/169)` : ''
-              })()}
-            </span>
+            {(() => {
+              const handInfo = getStartingHandRanking(stats.holeCards)
+              if (!handInfo) return null
+              
+              // Convert ranking to strength indicator
+              let strengthIndicator = ''
+              let strengthColor = '#fff'
+              if (handInfo.ranking <= 10) {
+                strengthIndicator = '★★★ 最強'
+                strengthColor = '#ff6b6b'
+              } else if (handInfo.ranking <= 30) {
+                strengthIndicator = '★★☆ 強い'
+                strengthColor = '#ffd93d'
+              } else if (handInfo.ranking <= 60) {
+                strengthIndicator = '★☆☆ 良い'
+                strengthColor = '#6bcf7f'
+              } else if (handInfo.ranking <= 100) {
+                strengthIndicator = '☆☆☆ 普通'
+                strengthColor = '#95e1d3'
+              } else {
+                strengthIndicator = '--- 弱い'
+                strengthColor = '#95a5a6'
+              }
+              
+              return (
+                <>
+                  <span style={{ 
+                    fontSize: '10px', 
+                    color: '#fff',
+                    fontWeight: '600',
+                    letterSpacing: '0.5px',
+                    textShadow: '0 1px 2px rgba(0, 0, 0, 0.5)',
+                    marginRight: '8px'
+                  }}>
+                    {handInfo.notation}
+                  </span>
+                  <span style={{ 
+                    color: strengthColor, 
+                    fontSize: '9px',
+                    fontWeight: 'normal'
+                  }}
+                  title={`スターティングハンド強さランキング: ${handInfo.ranking}位/169位`}>
+                    {strengthIndicator}
+                  </span>
+                </>
+              )
+            })()}
           </div>
         )}
         
