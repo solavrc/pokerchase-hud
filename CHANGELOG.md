@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.3.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v2.2.0...pokerchase-hud-v2.3.0) (2025-07-15)
+
+
+### Features
+
+* **hud:** display SPR and pot odds for all players ([37d5636](https://github.com/solavrc/pokerchase-hud/commit/37d563659dbedf27d9f5cd924efefc49638ca739))
+* **realtime-stats:** add SPR (Stack to Pot Ratio) display ([2a7dc9e](https://github.com/solavrc/pokerchase-hud/commit/2a7dc9eb60c7ccfbd39b60b0741f2ac0a3c17cd1))
+* **ui:** improve player name visibility and hand ranking display ([3d12f9a](https://github.com/solavrc/pokerchase-hud/commit/3d12f9a492a2120a4a4370a276d56f6fa95d82a1))
+
+
+### Bug Fixes
+
+* **hud:** fix player position misalignment and pot odds display format ([0959a8a](https://github.com/solavrc/pokerchase-hud/commit/0959a8a7e0b4dd11c77313352c3de7646a56542c))
+
 ## [2.2.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v2.1.0...pokerchase-hud-v2.2.0) (2025-07-15)
 
 
