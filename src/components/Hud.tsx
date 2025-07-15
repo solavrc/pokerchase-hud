@@ -361,47 +361,31 @@ const RealTimeStatsDisplay = memo(({ stats, seatIndex }: { stats: RealTimeStats;
               const handInfo = getStartingHandRanking(stats.holeCards)
               if (!handInfo) return null
               
-              // Convert ranking to strength indicator
-              let strengthIndicator = ''
-              let strengthColor = '#fff'
+              // Get color based on ranking strength
+              let rankingColor = '#ffffff'
               if (handInfo.ranking <= 10) {
-                strengthIndicator = '★★★ 最強'
-                strengthColor = '#ff6b6b'
+                rankingColor = '#ff6b6b'  // Red for premium hands
               } else if (handInfo.ranking <= 30) {
-                strengthIndicator = '★★☆ 強い'
-                strengthColor = '#ffd93d'
+                rankingColor = '#ffd93d'  // Yellow for strong hands
               } else if (handInfo.ranking <= 60) {
-                strengthIndicator = '★☆☆ 良い'
-                strengthColor = '#6bcf7f'
+                rankingColor = '#6bcf7f'  // Green for good hands
               } else if (handInfo.ranking <= 100) {
-                strengthIndicator = '☆☆☆ 普通'
-                strengthColor = '#95e1d3'
+                rankingColor = '#95e1d3'  // Light blue for playable hands
               } else {
-                strengthIndicator = '--- 弱い'
-                strengthColor = '#95a5a6'
+                rankingColor = '#95a5a6'  // Gray for weak hands
               }
               
               return (
-                <>
-                  <span style={{ 
-                    fontSize: '10px', 
-                    color: '#fff',
-                    fontWeight: '600',
-                    letterSpacing: '0.5px',
-                    textShadow: '0 1px 2px rgba(0, 0, 0, 0.5)',
-                    marginRight: '8px'
-                  }}>
-                    {handInfo.notation}
-                  </span>
-                  <span style={{ 
-                    color: strengthColor, 
-                    fontSize: '9px',
-                    fontWeight: 'normal'
-                  }}
-                  title={`スターティングハンド強さランキング: ${handInfo.ranking}位/169位`}>
-                    {strengthIndicator}
-                  </span>
-                </>
+                <span style={{ 
+                  fontSize: '10px', 
+                  color: rankingColor,
+                  fontWeight: '600',
+                  letterSpacing: '0.5px',
+                  textShadow: '0 1px 2px rgba(0, 0, 0, 0.5)'
+                }}
+                title={`${handInfo.ranking}位/169位`}>
+                  {handInfo.notation} ({handInfo.ranking}/169)
+                </span>
               )
             })()}
           </div>
