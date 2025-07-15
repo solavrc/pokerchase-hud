@@ -41,6 +41,8 @@ const expected: string = [
   "Seat 2: 凛 (big blind) collected (400)",
   "Seat 3: クロエ folded before Flop (didn't bet)",
   "Seat 4: イリヤスフィール (button) folded before Flop (didn't bet)",
+  null,
+  null,
   // hand 2
   "Poker Game #384370118: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level II (100/200) - 2025-07-13 17:22:02",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #1 is the button",
@@ -83,6 +85,8 @@ const expected: string = [
   "Seat 2: 凛 (small blind) folded before Flop",
   "Seat 3: クロエ (big blind) folded before Flop",
   "Seat 4: イリヤスフィール showed [As 5h] and lost with three of a kind, Deuces",
+  null,
+  null,
   // hand 3
   "Poker Game #384370223: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level II (100/200) - 2025-07-13 17:22:35",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #2 is the button",
@@ -125,6 +129,8 @@ const expected: string = [
   "Seat 2: 凛 (button) folded before Flop (didn't bet)",
   "Seat 3: クロエ (small blind) showed [7d 9s] and lost with high card",
   "Seat 4: イリヤスフィール (big blind) showed [Kc 3s] and won (1600) with a pair of Threes",
+  null,
+  null,
   // hand 4
   "Poker Game #384370351: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level II (100/200) - 2025-07-13 17:23:08",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #3 is the button",
@@ -161,6 +167,8 @@ const expected: string = [
   "Seat 2: 凛 folded before Flop (didn't bet)",
   "Seat 3: クロエ (button) collected (1600)",
   "Seat 4: イリヤスフィール (small blind) folded",
+  null,
+  null,
   // hand 5
   "Poker Game #384370450: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level II (100/200) - 2025-07-13 17:23:26",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #4 is the button",
@@ -191,6 +199,8 @@ const expected: string = [
   "Seat 2: 凛 (big blind) collected (400)",
   "Seat 3: クロエ folded before Flop (didn't bet)",
   "Seat 4: イリヤスフィール (button) folded before Flop (didn't bet)",
+  null,
+  null,
   // hand 6
   "Poker Game #384370483: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level II (100/200) - 2025-07-13 17:23:35",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #1 is the button",
@@ -233,6 +243,8 @@ const expected: string = [
   "Seat 2: 凛 (small blind) folded before Flop",
   "Seat 3: クロエ (big blind) folded before Flop",
   "Seat 4: イリヤスフィール showed [Ad 5s] and lost with a pair of Aces",
+  null,
+  null,
   // hand 7
   "Poker Game #384370589: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level III (140/280) - 2025-07-13 17:24:15",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #2 is the button",
@@ -279,6 +291,8 @@ const expected: string = [
   "Seat 2: 凛 (button) showed [2h Ad] and won (1960) with two pair, Aces and Deuces",
   "Seat 3: クロエ (small blind) showed [8h Jc] and lost with high card",
   "Seat 4: イリヤスフィール (big blind) showed [3h Ac] and lost with a pair of Aces",
+  null,
+  null,
   // hand 8
   "Poker Game #384370731: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level III (140/280) - 2025-07-13 17:24:52",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #3 is the button",
@@ -332,6 +346,8 @@ const expected: string = [
   "Seat 2: 凛 showed [Td Qs] and lost with a pair of Queens",
   "Seat 3: クロエ (button) folded",
   "Seat 4: イリヤスフィール (small blind) showed [Qh As] and won (4480) with two pair, Aces and Queens",
+  null,
+  null,
   // hand 9
   "Poker Game #384370919: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level III (140/280) - 2025-07-13 17:25:40",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #4 is the button",
@@ -378,6 +394,8 @@ const expected: string = [
   "Seat 2: 凛 (big blind) folded before Flop",
   "Seat 3: クロエ showed [7h 4h] and lost with two pair, Aces and Sevens",
   "Seat 4: イリヤスフィール (button) showed [Qs Js] and won (3080) with two pair, Aces and Queens",
+  null,
+  null,
   // hand 10
   "Poker Game #384371065: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level IV (200/400) - 2025-07-13 17:26:19",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #1 is the button",
@@ -419,6 +437,8 @@ const expected: string = [
   "Seat 2: 凛 (small blind) folded before Flop",
   "Seat 3: クロエ (big blind) showed [Qd 2c] and lost with two pair, Queens and Fives",
   "Seat 4: イリヤスフィール showed [5c Ad] and lost with three of a kind, Fives",
+  null,
+  null,
   // hand 11
   "Poker Game #384371168: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level IV (200/400) - 2025-07-13 17:26:49",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #2 is the button",
@@ -457,6 +477,8 @@ const expected: string = [
   "Seat 1: 美遊 (big blind) showed [6d 5c] and won (1550) with a straight",
   "Seat 2: 凛 (button) folded before Flop (didn't bet)",
   "Seat 4: イリヤスフィール (small blind) showed [8h Kh] and won (1550) with a straight",
+  null,
+  null,
   // hand 12
   "Poker Game #384371305: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level IV (200/400) - 2025-07-13 17:27:13",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #4 is the button",
@@ -497,6 +519,8 @@ const expected: string = [
   "Seat 1: 美遊 (small blind) folded",
   "Seat 2: 凛 (big blind) collected (3900)",
   "Seat 4: イリヤスフィール (button) folded",
+  null,
+  null,
   // hand 13
   "Poker Game #384371459: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level V (280/560) - 2025-07-13 17:27:56",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #1 is the button",
@@ -530,6 +554,8 @@ const expected: string = [
   "Seat 1: 美遊 (button) showed [Th Tc] and won (6520) with two pair, Tens and Sevens",
   "Seat 2: 凛 (small blind) folded before Flop",
   "Seat 4: イリヤスフィール (big blind) showed [Qc Jd] and lost with a pair of Sevens",
+  null,
+  null,
   // hand 14
   "Poker Game #384371520: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level V (280/560) - 2025-07-13 17:28:20",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #2 is the button",
@@ -551,6 +577,8 @@ const expected: string = [
   "Total pot 840",
   "Seat 1: 美遊 (big blind) folded before Flop",
   "Seat 2: 凛 (button) collected (840)",
+  null,
+  null,
   // hand 15
   "Poker Game #384371599: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level V (280/560) - 2025-07-13 17:28:28",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #1 is the button",
@@ -571,6 +599,8 @@ const expected: string = [
   "Total pot 840",
   "Seat 1: 美遊 (button) folded before Flop",
   "Seat 2: 凛 (big blind) collected (840)",
+  null,
+  null,
   // hand 16
   "Poker Game #384371620: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level V (280/560) - 2025-07-13 17:28:34",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #2 is the button",
@@ -591,6 +621,8 @@ const expected: string = [
   "Total pot 840",
   "Seat 1: 美遊 (big blind) collected (840)",
   "Seat 2: 凛 (button) folded before Flop",
+  null,
+  null,
   // hand 17
   "Poker Game #384371640: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level V (280/560) - 2025-07-13 17:28:41",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #1 is the button",
@@ -612,6 +644,8 @@ const expected: string = [
   "Total pot 840",
   "Seat 1: 美遊 (button) collected (840)",
   "Seat 2: 凛 (big blind) folded before Flop",
+  null,
+  null,
   // hand 18
   "Poker Game #384371675: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level V (280/560) - 2025-07-13 17:28:48",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #2 is the button",
@@ -645,6 +679,8 @@ const expected: string = [
   "Board [Jc Qd Ac 9s 9c]",
   "Seat 1: 美遊 (big blind) showed [Qc 7s] and won (4182) with two pair, Queens and Nines",
   "Seat 2: 凛 (button) mucked",
+  null,
+  null,
   // hand 19
   "Poker Game #384371773: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level V (280/560) - 2025-07-13 17:29:21",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #1 is the button",
@@ -666,6 +702,8 @@ const expected: string = [
   "Total pot 840",
   "Seat 1: 美遊 (button) collected (840)",
   "Seat 2: 凛 (big blind) folded before Flop",
+  null,
+  null,
   // hand 20
   "Poker Game #384371859: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level V (280/560) - 2025-07-13 17:29:31",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #2 is the button",
@@ -686,6 +724,8 @@ const expected: string = [
   "Total pot 840",
   "Seat 1: 美遊 (big blind) collected (840)",
   "Seat 2: 凛 (button) folded before Flop",
+  null,
+  null,
   // hand 21
   "Poker Game #384371882: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level V (280/560) - 2025-07-13 17:29:38",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #1 is the button",
@@ -707,6 +747,8 @@ const expected: string = [
   "Total pot 840",
   "Seat 1: 美遊 (button) collected (840)",
   "Seat 2: 凛 (big blind) folded before Flop",
+  null,
+  null,
   // hand 22
   "Poker Game #384371912: Tournament #384370064, text_rank_stage_name_stage000 Hold'em No Limit - Level V (280/560) - 2025-07-13 17:29:46",
   "Table 'text_rank_stage_name_stage000' 6-max Seat #2 is the button",
@@ -734,6 +776,8 @@ const expected: string = [
   "Board [2d 9h 8d Th 2s]",
   "Seat 1: 美遊 (big blind) showed [As Kd] and won (7518) with a pair of Deuces",
   "Seat 2: 凛 (button) showed [4s 3s] and lost with a pair of Deuces",
+  null,
+  null
 ].join('\n')
 
 test('ApiEventsからPokerStars形式のログを生成できる', async () => {

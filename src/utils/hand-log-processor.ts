@@ -95,8 +95,8 @@ export class HandLogProcessor {
    * ブラインドレベルをローマ数字に変換
    */
   private getBlindLevelRoman(level: number): string {
-    const romans = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 
-                   'XI', 'XII', 'XIII', 'XIV', 'XV', 'XVI', 'XVII', 'XVIII', 'XIX', 'XX']
+    const romans = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X',
+      'XI', 'XII', 'XIII', 'XIV', 'XV', 'XVI', 'XVII', 'XVIII', 'XIX', 'XX']
     return romans[level] || `${level + 1}`
   }
 
@@ -206,7 +206,7 @@ export class HandLogProcessor {
       if (userId !== -1) {
         const playerName = this.getPlayerName(userId)
         let dealtEntry: HandLogEntry
-        
+
         // Heroのカードを表示
         if (event.Player?.SeatIndex === seatIndex && event.Player?.HoleCards) {
           dealtEntry = this.createEntry(
@@ -306,7 +306,7 @@ export class HandLogProcessor {
     // Use accumulated cards if event has empty cards
     const cardsForMissingStreets = event.CommunityCards.length > 0 ? event.CommunityCards : this.communityCards
     entries.push(...this.addMissingStreets(cardsForMissingStreets))
-    
+
     // Update community cards if event has them
     // Don't overwrite with empty array - some events have empty CommunityCards
     if (event.CommunityCards.length > 0) {
@@ -327,7 +327,7 @@ export class HandLogProcessor {
 
     // Handle uncalled bets BEFORE showdown
     const wentToShowdown = showdownParticipants.length > 0
-    
+
     if (!wentToShowdown) {
       // For non-showdown wins, handle uncalled bets first
       event.Results.forEach(result => {
@@ -346,33 +346,33 @@ export class HandLogProcessor {
       // ショウダウンのプレイヤーのカードを表示
       // アクティブプレイヤー順（最後にアクションしたプレイヤーから）
       const showdownOrder = this.getShowdownOrder(event.Results, showdownParticipants)
-      
-      
+
+
       showdownOrder.forEach(result => {
-          const playerName = this.getPlayerName(result.UserId)
+        const playerName = this.getPlayerName(result.UserId)
 
-          // プレイヤーが表示する有効なホールカードを持っているかチェック
-          const hasValidCards = result.HoleCards &&
-            result.HoleCards.length > 0 &&
-            result.HoleCards[0] !== -1
+        // プレイヤーが表示する有効なホールカードを持っているかチェック
+        const hasValidCards = result.HoleCards &&
+          result.HoleCards.length > 0 &&
+          result.HoleCards[0] !== -1
 
-          if (hasValidCards) {
-            const cards = formatCards(result.HoleCards)
-            const handDesc = this.getHandDescription(result.RankType, result.Hands)
-            const showEntry = this.createEntry(
-              `${playerName}: shows [${cards}] (${handDesc})`,
-              HandLogEntryType.SHOWDOWN
-            )
-            entries.push(showEntry)
-          } else {
-            // プレイヤーがハンドをマック（カードを表示しない）
-            const muckEntry = this.createEntry(
-              `${playerName}: mucks hand`,
-              HandLogEntryType.SHOWDOWN
-            )
-            entries.push(muckEntry)
-          }
-        })
+        if (hasValidCards) {
+          const cards = formatCards(result.HoleCards)
+          const handDesc = this.getHandDescription(result.RankType, result.Hands)
+          const showEntry = this.createEntry(
+            `${playerName}: shows [${cards}] (${handDesc})`,
+            HandLogEntryType.SHOWDOWN
+          )
+          entries.push(showEntry)
+        } else {
+          // プレイヤーがハンドをマック（カードを表示しない）
+          const muckEntry = this.createEntry(
+            `${playerName}: mucks hand`,
+            HandLogEntryType.SHOWDOWN
+          )
+          entries.push(muckEntry)
+        }
+      })
     }
 
     // Handle pot collection for showdown winners and tournament finish positions
@@ -385,7 +385,7 @@ export class HandLogProcessor {
         )
         entries.push(collectEntry)
       }
-      
+
       // Check if player finished the tournament
       if (result.Ranking > 0 && result.RewardChip === 0) {
         const playerName = this.getPlayerName(result.UserId)
@@ -401,30 +401,33 @@ export class HandLogProcessor {
     // SUMMARYセクションを追加
     entries.push(...this.addSummarySection(event, entries))
 
+    // ハンド終了後に2行の空白行を追加
+    entries.push(this.createEntry('', HandLogEntryType.SUMMARY), this.createEntry('', HandLogEntryType.SUMMARY))
+
     this.currentHand.entries.push(...entries)
     return entries
   }
 
   private handleUncalledBet(result: unknown, playerName: string): HandLogEntry[] {
     const entries: HandLogEntry[] = []
-    
+
     // Special case: BB wins without anyone calling (everyone folded to BB)
     // Check if winner posted BB and no one called
-    const bbEntry = this.currentHand!.entries.find(e => 
-      e.type === HandLogEntryType.ACTION && 
-      e.text.includes(playerName) && 
+    const bbEntry = this.currentHand!.entries.find(e =>
+      e.type === HandLogEntryType.ACTION &&
+      e.text.includes(playerName) &&
       e.text.includes('posts big blind')
     )
-    
+
     if (bbEntry) {
       // Extract BB amount
       const bbMatch = bbEntry.text.match(/posts big blind (\d+)/)
       const bbAmount = bbMatch?.[1] ? parseInt(bbMatch[1]) : 0
-      
+
       // Check if anyone called or raised the BB
       let maxOpponentBet = 0
       let foundRaiseOrCall = false
-      
+
       // Look for any calls or raises after the BB was posted
       const bbIndex = this.currentHand!.entries.indexOf(bbEntry)
       for (let i = bbIndex + 1; i < this.currentHand!.entries.length; i++) {
@@ -440,28 +443,28 @@ export class HandLogProcessor {
           }
         }
       }
-      
+
       // If no one called or raised, only SB amount was contested
       if (!foundRaiseOrCall) {
         // Find SB amount
-        const sbEntry = this.currentHand!.entries.find(e => 
-          e.type === HandLogEntryType.ACTION && 
+        const sbEntry = this.currentHand!.entries.find(e =>
+          e.type === HandLogEntryType.ACTION &&
           e.text.includes('posts small blind')
         )
         const sbMatch = sbEntry?.text.match(/posts small blind (\d+)/)
         const sbAmount = sbMatch?.[1] ? parseInt(sbMatch[1]) : 0
-        
+
         if (sbAmount > 0 && bbAmount > sbAmount) {
           const uncalledAmount = bbAmount - sbAmount
           const resultWithReward = result as { RewardChip?: number }
           const potContribution = (resultWithReward.RewardChip ?? 0) - uncalledAmount
-          
+
           const uncalledEntry = this.createEntry(
             `Uncalled bet (${uncalledAmount}) returned to ${playerName}`,
             HandLogEntryType.SHOWDOWN
           )
           entries.push(uncalledEntry)
-          
+
           if (potContribution > 0) {
             const collectEntry = this.createEntry(
               `${playerName} collected ${potContribution} from pot`,
@@ -469,13 +472,13 @@ export class HandLogProcessor {
             )
             entries.push(collectEntry)
           }
-          
+
           const noShowEntry = this.createEntry(
             `${playerName}: doesn't show hand `,
             HandLogEntryType.SHOWDOWN
           )
           entries.push(noShowEntry)
-          
+
           return entries
         }
       }
@@ -603,7 +606,7 @@ export class HandLogProcessor {
   private getShowdownOrder(_results: any[], playersWithCards: any[]): any[] {
     // Get last aggressive action from current hand entries
     let lastAggressorUserId: number | null = null
-    
+
     // Find the last street marker (RIVER, TURN, FLOP, or start of hand)
     let lastStreetIndex = -1
     for (let i = this.currentHand!.entries.length - 1; i >= 0; i--) {
@@ -613,12 +616,12 @@ export class HandLogProcessor {
         break
       }
     }
-    
+
     // Find last bet/raise action on the final street only
     for (let i = this.currentHand!.entries.length - 1; i > lastStreetIndex; i--) {
       const entry = this.currentHand!.entries[i]
-      if (entry?.type === HandLogEntryType.ACTION && 
-          entry.text && (entry.text.includes(': bets ') || entry.text.includes(': raises '))) {
+      if (entry?.type === HandLogEntryType.ACTION &&
+        entry.text && (entry.text.includes(': bets ') || entry.text.includes(': raises '))) {
         // Extract player name from action
         const playerName = entry.text.split(':')[0]
         // Find userId from playerName
@@ -631,8 +634,8 @@ export class HandLogProcessor {
         break
       }
     }
-    
-    
+
+
     // If there was a last aggressor, they show first
     if (lastAggressorUserId !== null) {
       // Sort by putting last aggressor first, then by position
@@ -640,11 +643,11 @@ export class HandLogProcessor {
       return playersWithCards.sort((a, b) => {
         const aIndex = this.currentHand!.seatUserIds.indexOf(a.UserId)
         const bIndex = this.currentHand!.seatUserIds.indexOf(b.UserId)
-        
+
         // Last aggressor goes first
         if (a.UserId === lastAggressorUserId) return -1
         if (b.UserId === lastAggressorUserId) return 1
-        
+
         // Then by position order starting after the aggressor
         const aPos = (aIndex - lastAggressorIndex + MAX_SEATS) % MAX_SEATS
         const bPos = (bIndex - lastAggressorIndex + MAX_SEATS) % MAX_SEATS
@@ -654,7 +657,7 @@ export class HandLogProcessor {
       // If no aggressor (all checks), use position order starting from BB
       // Find the BB position (they act first postflop)
       let bbSeatIndex = 1 // Default BB position in ${MAX_SEATS}-max
-      
+
       // Find actual BB from preflop actions
       for (const entry of this.currentHand!.entries) {
         if (entry.type === HandLogEntryType.ACTION && entry.text && entry.text.includes(': posts big blind')) {
@@ -675,15 +678,15 @@ export class HandLogProcessor {
           break
         }
       }
-      
+
       return playersWithCards.sort((a, b) => {
         const aIndex = this.currentHand!.seatUserIds.indexOf(a.UserId)
         const bIndex = this.currentHand!.seatUserIds.indexOf(b.UserId)
-        
+
         // Calculate position relative to BB (BB shows first)
         const aPos = (aIndex - bbSeatIndex + MAX_SEATS) % MAX_SEATS
         const bPos = (bIndex - bbSeatIndex + MAX_SEATS) % MAX_SEATS
-        
+
         return aPos - bPos
       })
     }
@@ -722,7 +725,7 @@ export class HandLogProcessor {
 
   private getPlayerChips(event: ApiEvent<ApiType.EVT_DEAL>, seatIndex: number): number {
     const ante = event.Game.Ante || 0
-    
+
     if (event.Player?.SeatIndex === seatIndex) {
       // Add ante back to show chip count before ante was posted
       return event.Player.Chip + event.Player.BetChip + ante
@@ -743,17 +746,17 @@ export class HandLogProcessor {
     // プレイヤーが現在のストリートで既にベットした金額を取得
     const getPlayerPreviousBet = (player: string): number => {
       if (!this.currentHand) return 0
-      
+
       // 現在のストリートでこのプレイヤーの最後のベット/レイズ/コールを探す
       for (let i = this.currentHand.entries.length - 1; i >= 0; i--) {
         const entry = this.currentHand.entries[i]
         if (!entry) continue
-        
+
         // ストリートマーカーに到達したら終了
         if (entry.type === HandLogEntryType.STREET) {
           break
         }
-        
+
         if (entry.type === HandLogEntryType.ACTION && entry.text.includes(player)) {
           // このプレイヤーのベット/レイズ/コールの金額を取得
           const match = entry.text.match(/(?:bets|raises \d+ to|calls) (\d+)/)
@@ -762,17 +765,17 @@ export class HandLogProcessor {
           }
         }
       }
-      
+
       // プリフロップでBB/SBをポストした場合
       const blindEntry = this.currentHand.entries.find(e =>
-        e?.text.includes(player) && 
+        e?.text.includes(player) &&
         (e.text.includes('posts small blind') || e.text.includes('posts big blind'))
       )
       if (blindEntry?.text) {
         const blindMatch = blindEntry.text.match(/posts (?:small|big) blind (\d+)/)
         if (blindMatch?.[1]) return parseInt(blindMatch[1])
       }
-      
+
       return 0
     }
 
@@ -784,12 +787,12 @@ export class HandLogProcessor {
       for (let i = this.currentHand.entries.length - 1; i >= 0; i--) {
         const entry = this.currentHand.entries[i]
         if (!entry) continue
-        
+
         // ストリートマーカーに到達したら、このストリートではベットがない
         if (entry.type === HandLogEntryType.STREET) {
           break
         }
-        
+
         if (entry.type === HandLogEntryType.ACTION) {
           // betsまたはraises ... to XXXのパターンを探す
           const betMatch = entry.text.match(/(?:bets|raises \d+ to) (\d+)/)
@@ -965,12 +968,12 @@ export class HandLogProcessor {
 
     // Calculate total pot, accounting for uncalled bets
     let totalPot = event.Pot + event.SidePot.reduce((sum, pot) => sum + pot, 0)
-    
+
     // Check if there was an uncalled bet in the hand result entries
-    const uncalledBetEntry = handResultEntries.find(e => 
+    const uncalledBetEntry = handResultEntries.find(e =>
       e.text.includes('Uncalled bet (') && e.text.includes(') returned to')
     )
-    
+
     if (uncalledBetEntry) {
       // Extract uncalled amount and subtract from total pot
       const uncalledMatch = uncalledBetEntry.text.match(/Uncalled bet \((\d+)\)/)
@@ -979,7 +982,7 @@ export class HandLogProcessor {
         totalPot -= uncalledAmount
       }
     }
-    
+
     const potEntry = this.createEntry(`Total pot ${totalPot}`, HandLogEntryType.SUMMARY)
     entries.push(potEntry)
 
@@ -1039,7 +1042,7 @@ export class HandLogProcessor {
         if (beforeFlop) {
           // プレイヤーがSBかBBをポストしたかチェック
           const postedBlind = sbEntry || bbEntry
-          
+
           // プレイヤーがチップを入れたかチェック（ブラインドポストを除く）
           const hasAction = this.currentHand!.entries.slice(0, foldIndex).some(e =>
             e.type === HandLogEntryType.ACTION &&
@@ -1049,7 +1052,7 @@ export class HandLogProcessor {
             !e.text.includes('posts small blind') &&
             !e.text.includes('posts big blind')
           )
-          
+
           // SB/BBをポストした、または他のアクションがある場合は"didn't bet"を付けない
           summary += (hasAction || postedBlind) ? ' folded before Flop' : " folded before Flop (didn't bet)"
         } else {
@@ -1069,11 +1072,11 @@ export class HandLogProcessor {
           } else {
             // ショウダウン以外の勝利 - "collected" を表示
             // Check if there was an uncalled bet for this player
-            const uncalledBetEntry = [...this.currentHand!.entries, ...handResultEntries].find(e => 
-              e.text.includes('Uncalled bet (') && 
+            const uncalledBetEntry = [...this.currentHand!.entries, ...handResultEntries].find(e =>
+              e.text.includes('Uncalled bet (') &&
               e.text.includes(`) returned to ${playerName}`)
             )
-            
+
             let collectedAmount = result.RewardChip
             if (uncalledBetEntry) {
               // Extract uncalled amount to show the actual contested pot
@@ -1083,7 +1086,7 @@ export class HandLogProcessor {
                 collectedAmount = result.RewardChip - uncalledAmount
               }
             }
-            
+
             summary += ` collected (${collectedAmount})`
           }
         } else {
