@@ -36,6 +36,84 @@ function calculatePotOdds(callAmount: number, potSize: number): {
   }
 }
 
+/**
+ * Calculate pot odds and SPR for any player
+ * @param playerSeatIndex The seat index of the player to calculate for
+ * @param progress Current game progress
+ * @param seatBetAmounts Bet amounts for each seat
+ * @param seatChips Chip stacks for each seat
+ * @returns Pot odds and SPR data for the specified player
+ */
+export function calculatePlayerPotOdds(
+  playerSeatIndex: number,
+  progress: any,
+  seatBetAmounts: number[],
+  seatChips: number[]
+): {
+  pot: number
+  call: number
+  percentage: number
+  ratio: string
+  isPlayerTurn: boolean
+  spr?: number
+} | null {
+  if (!progress || !seatBetAmounts) {
+    return null
+  }
+  
+  // Calculate total pot including all side pots
+  let totalPot = progress.Pot || 0
+  if (progress.SidePot && Array.isArray(progress.SidePot)) {
+    for (const sidePot of progress.SidePot) {
+      totalPot += sidePot || 0
+    }
+  }
+  
+  // Calculate call amount
+  let maxBet = 0
+  for (let i = 0; i < seatBetAmounts.length; i++) {
+    const betAmount = seatBetAmounts[i]
+    if (betAmount !== undefined && betAmount > maxBet) {
+      maxBet = betAmount
+    }
+  }
+  
+  // Player's current bet
+  const playerBet = seatBetAmounts[playerSeatIndex] || 0
+  
+  // Call amount is the difference
+  const callAmount = maxBet - playerBet
+  
+  // Calculate the total pot that player would be playing for
+  const playablePot = totalPot + callAmount
+  
+  const result: any = {
+    pot: playablePot,
+    call: callAmount,
+    percentage: 0,
+    ratio: '',
+    isPlayerTurn: progress.NextActionSeat === playerSeatIndex,
+    spr: undefined
+  }
+  
+  // Calculate SPR if we have chip data
+  if (seatChips && seatChips[playerSeatIndex] !== undefined) {
+    const playerStack = seatChips[playerSeatIndex]
+    if (totalPot > 0) {
+      result.spr = Math.round((playerStack / totalPot) * 10) / 10
+    }
+  }
+  
+  // Calculate pot odds if there's a call amount
+  if (callAmount > 0) {
+    const odds = calculatePotOdds(callAmount, totalPot)
+    result.percentage = odds.percentage
+    result.ratio = odds.ratio
+  }
+  
+  return result
+}
+
 export const potOddsStat: StatDefinition = {
   id: 'potOdds',
   name: 'POT ODDS',

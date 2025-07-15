@@ -11,12 +11,24 @@ interface HudPosition {
   left: string
 }
 
+interface PlayerPotOdds {
+  spr?: number
+  potOdds?: {
+    pot: number
+    call: number
+    percentage: number
+    ratio: string
+    isPlayerTurn: boolean
+  }
+}
+
 interface HudProps {
   actualSeatIndex: number
   stat: PlayerStats
   scale?: number
   statDisplayConfigs: StatDisplayConfig[]
   realTimeStats?: RealTimeStats
+  playerPotOdds?: PlayerPotOdds
 }
 
 interface DragState {
@@ -448,14 +460,40 @@ const DragHandle = memo(({ isHovering, onMouseDown }: { isHovering: boolean, onM
   />
 ))
 
-const HudHeader = memo(({ playerName, playerId }: { playerName: string | null, playerId: number }) => (
-  <div style={styles.header}>
-    <span style={styles.playerName} title={playerName || 'Unknown'}>
-      {playerName || `Player ${playerId}`}
-    </span>
-    <PlayerTypeIcons />
-  </div>
-))
+const HudHeader = memo(({ playerName, playerId, playerPotOdds }: { 
+  playerName: string | null, 
+  playerId: number,
+  playerPotOdds?: PlayerPotOdds 
+}) => {
+  const hasPotOdds = playerPotOdds?.potOdds && playerPotOdds.potOdds.call > 0
+  const hasSpr = playerPotOdds?.spr !== undefined
+  
+  return (
+    <div style={styles.header}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '4px' }}>
+        <span style={styles.playerName} title={playerName || 'Unknown'}>
+          {playerName || `Player ${playerId}`}
+        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '8px' }}>
+          {hasSpr && (
+            <span style={{ color: '#ffcc00', fontWeight: 'bold' }}>
+              SPR:{playerPotOdds.spr}
+            </span>
+          )}
+          {hasPotOdds && (
+            <span style={{ 
+              color: playerPotOdds.potOdds!.isPlayerTurn ? '#00ff00' : '#888',
+              fontWeight: playerPotOdds.potOdds!.isPlayerTurn ? 'bold' : 'normal'
+            }}>
+              {playerPotOdds.potOdds!.ratio}
+            </span>
+          )}
+        </div>
+      </div>
+      <PlayerTypeIcons />
+    </div>
+  )
+})
 
 const StatDisplay = memo(({ displayStats, formatValue }: { 
   displayStats: Array<[string, any, StatResult?]>, 
@@ -600,7 +638,7 @@ const Hud = memo((props: HudProps) => {
           title="Click to copy stats to clipboard"
         >
           <DragHandle isHovering={isHovering} onMouseDown={handleMouseDown} />
-          <HudHeader playerName={playerName} playerId={props.stat.playerId} />
+          <HudHeader playerName={playerName} playerId={props.stat.playerId} playerPotOdds={props.playerPotOdds} />
           <StatDisplay displayStats={displayStats} formatValue={formatStatValue} />
         </div>
       </div>

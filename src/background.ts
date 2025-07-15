@@ -13,7 +13,7 @@ import PokerChaseService, {
   PokerChaseDB
 } from './app'
 import { EntityConverter } from './entity-converter'
-import type { RealTimeStats } from './realtime-stats/realtime-stats-service'
+import type { AllPlayersRealTimeStats } from './realtime-stats/realtime-stats-service'
 import type { Options } from './components/Popup'
 import type { HandLogEvent } from './types/hand-log'
 import type {
@@ -663,7 +663,7 @@ chrome.runtime.onConnect.addListener(port => {
       service.handAggregateStream.write(message)
       service.realTimeStatsStream.write([message])
     })
-    const postMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: RealTimeStats } | string) => {
+    const postMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
       try {
         port.postMessage(data)
       } catch (error: unknown) {
@@ -679,10 +679,10 @@ chrome.runtime.onConnect.addListener(port => {
     const intervalId = setInterval(() => { postMessage(`[PING] ${new Date().toISOString()}`) }, PING_INTERVAL_MS)
 
     // Store latest real-time stats
-    let latestRealTimeStats: RealTimeStats | undefined
+    let latestRealTimeStats: AllPlayersRealTimeStats | undefined
 
     // Listen for real-time stats from dedicated stream
-    service.realTimeStatsStream.on('data', (data: { handId?: number, stats: RealTimeStats, timestamp: number }) => {
+    service.realTimeStatsStream.on('data', (data: { handId?: number, stats: AllPlayersRealTimeStats, timestamp: number }) => {
       latestRealTimeStats = data.stats
 
       // Send update with real-time stats only
