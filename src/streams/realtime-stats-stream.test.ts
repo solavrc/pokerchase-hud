@@ -78,12 +78,12 @@ describe('RealTimeStatsStream', () => {
 
         const statsData = results[1]
         expect(statsData.stats).toBeDefined()
-        expect(statsData.stats.holeCards).toEqual([48, 49])
-        expect(statsData.stats.communityCards).toEqual([])
-        expect(statsData.stats.handImprovement).toBeDefined()
+        expect(statsData.stats.heroStats.holeCards).toEqual([48, 49])
+        expect(statsData.stats.heroStats.communityCards).toEqual([])
+        expect(statsData.stats.heroStats.handImprovement).toBeDefined()
 
         // ポケットペアなので ONE_PAIR が現在の手
-        const improvements = statsData.stats.handImprovement.value.improvements
+        const improvements = statsData.stats.heroStats.handImprovement.value.improvements
         const onePair = improvements.find((h: any) => h.rank === RankType.ONE_PAIR)
         expect(onePair.probability).toBeCloseTo(62.81, 2)  // プリフロップでの最終的なワンペア確率
         expect(onePair.isCurrent).toBe(true)
@@ -149,9 +149,9 @@ describe('RealTimeStatsStream', () => {
 
       stream.on('end', () => {
         const statsData = results[1]
-        expect(statsData.stats.handImprovement).toBeDefined()
+        expect(statsData.stats.heroStats.handImprovement).toBeDefined()
 
-        const improvements = statsData.stats.handImprovement.value.improvements
+        const improvements = statsData.stats.heroStats.handImprovement.value.improvements
 
         // オフスートなのでフラッシュ確率は低い
         const flush = improvements.find((h: any) => h.rank === RankType.FLUSH)
@@ -255,8 +255,8 @@ describe('RealTimeStatsStream', () => {
       stream.on('end', () => {
         // フロップ時の統計
         const flopStats = results[results.length - 1]
-        expect(flopStats.stats.communityCards).toEqual([49, 33, 21])
-        expect(flopStats.stats.holeCards).toEqual([16, 19])
+        expect(flopStats.stats.heroStats.communityCards).toEqual([49, 33, 21])
+        expect(flopStats.stats.heroStats.holeCards).toEqual([16, 19])
 
         done()
       })
@@ -358,13 +358,13 @@ describe('RealTimeStatsStream', () => {
         const flopStats = results[results.length - 1]
 
         // handImprovementが存在することを確認
-        expect(flopStats.stats.handImprovement).toBeDefined()
-        expect(flopStats.stats.handImprovement.value).toBeDefined()
+        expect(flopStats.stats.heroStats.handImprovement).toBeDefined()
+        expect(flopStats.stats.heroStats.handImprovement.value).toBeDefined()
 
-        const improvements = flopStats.stats.handImprovement.value.improvements
+        const improvements = flopStats.stats.heroStats.handImprovement.value.improvements
 
         // 現在はハイカード
-        expect(flopStats.stats.handImprovement.value.currentHand.rank).toBe(RankType.HIGH_CARD)
+        expect(flopStats.stats.heroStats.handImprovement.value.currentHand.rank).toBe(RankType.HIGH_CARD)
 
         // ワンペアの確率（5かKがヒット）
         const onePair = improvements.find((h: any) => h.rank === RankType.ONE_PAIR)
@@ -536,11 +536,14 @@ describe('RealTimeStatsStream', () => {
         // 新しいハンド開始時のクリア統計
         const clearStats = results[2]
         expect(clearStats.handId).toBeUndefined()
-        expect(clearStats.stats).toEqual({})
+        expect(clearStats.stats).toEqual({
+          heroStats: {},
+          playerStats: {}
+        })
 
         // 新しいハンドの統計
         const newHandStats = results[3]
-        expect(newHandStats.stats.holeCards).toEqual([44, 45])
+        expect(newHandStats.stats.heroStats.holeCards).toEqual([44, 45])
 
         done()
       })
@@ -640,7 +643,7 @@ describe('RealTimeStatsStream', () => {
       let activeCountHistory: number[] = []
       stream.on('data', (data) => {
         // activeOpponentsが渡されているか確認
-        if (data.stats && data.stats.handImprovement) {
+        if (data.stats && data.stats.heroStats && data.stats.heroStats.handImprovement) {
           // RealTimeStatsService.calculateStatsの呼び出しをモック的に追跡
           activeCountHistory.push(data.timestamp)
         }
@@ -806,18 +809,18 @@ describe('RealTimeStatsStream', () => {
 
       // フロップ時の統計
       const flopStats = results[2]
-      expect(flopStats.stats.communityCards).toEqual([49, 33, 21])
-      expect(flopStats.stats.currentPhase).toBe('Flop')
+      expect(flopStats.stats.heroStats.communityCards).toEqual([49, 33, 21])
+      expect(flopStats.stats.heroStats.currentPhase).toBe('Flop')
 
       // ターン時の統計（コミュニティカードが累積される）
       const turnStats = results[3]
-      expect(turnStats.stats.communityCards).toEqual([49, 33, 21, 15])
-      expect(turnStats.stats.currentPhase).toBe('Turn')
+      expect(turnStats.stats.heroStats.communityCards).toEqual([49, 33, 21, 15])
+      expect(turnStats.stats.heroStats.currentPhase).toBe('Turn')
 
       // リバー時の統計（コミュニティカードが累積される）
       const riverStats = results[4]
-      expect(riverStats.stats.communityCards).toEqual([49, 33, 21, 15, 7])
-      expect(riverStats.stats.currentPhase).toBe('River')
+      expect(riverStats.stats.heroStats.communityCards).toEqual([49, 33, 21, 15, 7])
+      expect(riverStats.stats.heroStats.currentPhase).toBe('River')
 
       done()
     })
@@ -894,10 +897,10 @@ describe('SPR (Stack to Pot Ratio) Tracking', () => {
 
     stream.on('end', () => {
       // Check that SPR is calculated correctly
-      const withPotOdds = results.filter(r => r.stats && r.stats.potOdds)
+      const withPotOdds = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds)
       expect(withPotOdds.length).toBeGreaterThan(0)
       
-      const potOddsData = withPotOdds[0].stats.potOdds.value
+      const potOddsData = withPotOdds[0].stats.heroStats.potOdds.value
       expect(potOddsData).toHaveProperty('spr')
       // Hero's chips (10000) / pot (300) = 33.3
       expect(potOddsData.spr).toBe(33.3)
@@ -1017,10 +1020,10 @@ describe('SPR (Stack to Pot Ratio) Tracking', () => {
 
     stream.on('end', () => {
       // Get the last stats calculation
-      const lastStats = results.filter(r => r.stats && r.stats.potOdds).pop()
+      const lastStats = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds).pop()
       
       expect(lastStats).toBeDefined()
-      const potOddsData = lastStats.stats.potOdds.value
+      const potOddsData = lastStats.stats.heroStats.potOdds.value
       
       // Hero has 5000 chips, pot is 900
       // SPR should be 5000 / 900 = 5.6
@@ -1118,10 +1121,10 @@ describe('SPR (Stack to Pot Ratio) Tracking', () => {
     })
 
     stream.on('end', () => {
-      const lastStats = results.filter(r => r.stats && r.stats.potOdds).pop()
+      const lastStats = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds).pop()
       
       expect(lastStats).toBeDefined()
-      const potOddsData = lastStats.stats.potOdds.value
+      const potOddsData = lastStats.stats.heroStats.potOdds.value
       
       // SPR should be 1200 / 2400 = 0.5
       expect(potOddsData.spr).toBe(0.5)
@@ -1243,12 +1246,12 @@ describe('SPR (Stack to Pot Ratio) Tracking', () => {
       results.push(data)
       
       // Count how many times we see stats with hole cards (new hands)
-      if (data.stats && data.stats.holeCards) {
+      if (data.stats && data.stats.heroStats && data.stats.heroStats.holeCards) {
         handCount++
         
-        if (handCount === 2 && data.stats.potOdds) {
+        if (handCount === 2 && data.stats.heroStats && data.stats.heroStats.potOdds) {
           // Second hand should have new chip amounts
-          const potOddsData = data.stats.potOdds.value
+          const potOddsData = data.stats.heroStats.potOdds.value
           // Hero has 12000 chips in second hand, pot is 300
           // SPR should be 12000 / 300 = 40.0
           expect(potOddsData.spr).toBe(40.0)

@@ -160,13 +160,13 @@ describe('Pot Odds Calculation', () => {
     })
 
     stream.on('end', () => {
-      // Find the last stats event
-      const lastStats = results.filter(r => r.stats && r.stats.potOdds).pop()
+      // Find the last stats event with heroStats
+      const lastStats = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds).pop()
       
       expect(lastStats).toBeDefined()
-      expect(lastStats.stats.potOdds).toBeDefined()
+      expect(lastStats.stats.heroStats.potOdds).toBeDefined()
       
-      const potOddsValue = lastStats.stats.potOdds.value
+      const potOddsValue = lastStats.stats.heroStats.potOdds.value
       expect(potOddsValue).toHaveProperty('percentage')
       expect(potOddsValue).toHaveProperty('ratio')
       
@@ -242,10 +242,10 @@ describe('Pot Odds Calculation', () => {
       expect(statsEvents.length).toBeGreaterThan(0)
       
       // Pot odds should exist but with isHeroTurn = false
-      const withPotOdds = statsEvents.filter(r => r.stats.potOdds)
+      const withPotOdds = statsEvents.filter(r => r.stats.heroStats && r.stats.heroStats.potOdds)
       expect(withPotOdds.length).toBeGreaterThan(0)
       
-      const potOddsData = withPotOdds[0].stats.potOdds.value
+      const potOddsData = withPotOdds[0].stats.heroStats.potOdds.value
       expect(potOddsData.isHeroTurn).toBe(false)
       expect(potOddsData.pot).toBe(500)  // 300 + 200 (BB needs to call 200)
       expect(potOddsData.call).toBe(200) // BB needs to call 200 to match SB+BB
@@ -315,10 +315,10 @@ describe('Pot Odds Calculation', () => {
 
     stream.on('end', () => {
       // Find stats with pot odds
-      const withPotOdds = results.filter(r => r.stats && r.stats.potOdds)
+      const withPotOdds = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds)
       expect(withPotOdds.length).toBeGreaterThan(0)
       
-      const potOddsData = withPotOdds[0].stats.potOdds.value
+      const potOddsData = withPotOdds[0].stats.heroStats.potOdds.value
       expect(potOddsData.pot).toBe(2500)  // 2100 + 400 (playable pot)
       expect(potOddsData.call).toBe(400)  // 600 - 200
       expect(potOddsData.percentage).toBeCloseTo(16.0, 0)  // 400 / (2100 + 400)
@@ -404,12 +404,12 @@ describe('Pot Odds Calculation', () => {
 
     stream.on('end', () => {
       // Find the last stats event with pot odds
-      const lastStats = results.filter(r => r.stats && r.stats.potOdds).pop()
+      const lastStats = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds).pop()
       
       expect(lastStats).toBeDefined()
-      expect(lastStats.stats.potOdds).toBeDefined()
+      expect(lastStats.stats.heroStats.potOdds).toBeDefined()
       
-      const potOddsValue = lastStats.stats.potOdds.value
+      const potOddsValue = lastStats.stats.heroStats.potOdds.value
       expect(potOddsValue).toHaveProperty('spr')
       
       // SPR should be 9800 / 900 = 10.9 (rounded to 1 decimal)
@@ -477,10 +477,10 @@ describe('Pot Odds Calculation', () => {
     })
 
     stream.on('end', () => {
-      const lastStats = results.filter(r => r.stats && r.stats.potOdds).pop()
+      const lastStats = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds).pop()
       
       expect(lastStats).toBeDefined()
-      const potOddsValue = lastStats.stats.potOdds.value
+      const potOddsValue = lastStats.stats.heroStats.potOdds.value
       
       // SPR should be 1200 / 2400 = 0.5
       expect(potOddsValue.spr).toBe(0.5)
@@ -545,10 +545,10 @@ describe('Pot Odds Calculation', () => {
     })
 
     stream.on('end', () => {
-      const withPotOdds = results.filter(r => r.stats && r.stats.potOdds)
+      const withPotOdds = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds)
       
       if (withPotOdds.length > 0) {
-        const potOddsValue = withPotOdds[0].stats.potOdds.value
+        const potOddsValue = withPotOdds[0].stats.heroStats.potOdds.value
         expect(potOddsValue.spr).toBeUndefined()
       }
       
