@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.2.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v2.1.0...pokerchase-hud-v2.2.0) (2025-07-15)
+
+
+### Features
+
+* **ci:** auto-trigger release workflow after Release PR merge ([#13](https://github.com/solavrc/pokerchase-hud/issues/13)) ([0cbe6af](https://github.com/solavrc/pokerchase-hud/commit/0cbe6af36937c2314cd5c292258a48d40efb12ec))
+
+
+### Bug Fixes
+
+* API types update, hand log improvements, and statistics fixes ([#15](https://github.com/solavrc/pokerchase-hud/issues/15)) ([d73d8fc](https://github.com/solavrc/pokerchase-hud/commit/d73d8fc30da4efec8aa39e03cfe2bd11199bb0d6))
+
 ## [2.1.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v2.0.0...pokerchase-hud-v2.1.0) (2025-07-13)
 
 
