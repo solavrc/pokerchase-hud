@@ -31,6 +31,7 @@ const App = memo(() => {
   const [configLoaded, setConfigLoaded] = useState(false)
   const [shouldScrollToLatest, setShouldScrollToLatest] = useState(false)
   const [allPlayersRealTimeStats, setAllPlayersRealTimeStats] = useState<AllPlayersRealTimeStats | undefined>()
+  const [heroOriginalSeatIndex, setHeroOriginalSeatIndex] = useState<number | undefined>()
 
   const handleStatsMessage = useCallback(
     ({ detail }: CustomEvent<StatsData>) => {
@@ -45,6 +46,9 @@ const App = memo(() => {
       if (detail.evtDeal && (detail.evtDeal as ApiEvent<ApiType.EVT_DEAL>).Player?.SeatIndex !== undefined) {
         const evtDeal = detail.evtDeal as ApiEvent<ApiType.EVT_DEAL>
         const heroSeatIndex = evtDeal.Player!.SeatIndex
+        
+        // Store hero's original seat index for mapping
+        setHeroOriginalSeatIndex(heroSeatIndex)
 
         mappedStats = rotateArrayFromIndex(detail.stats, heroSeatIndex)
       } else {
@@ -218,12 +222,20 @@ const App = memo(() => {
   // 席のポジションはhandleStatsMessageで既に正しくマッピングされている
   const seatPositions = useMemo(() => {
     // Stats配列は既に回転されてヒーローがポジション0にいる
-    return stats.map((stat, index) => ({
-      playerId: stat.playerId,
-      actualSeatIndex: index,  // 席は既にマッピングされているのでindexを直接使用
-      stat,
-    }))
-  }, [stats])
+    return stats.map((stat, index) => {
+      // Calculate original seat index from display position
+      const originalSeatIndex = heroOriginalSeatIndex !== undefined 
+        ? (index + heroOriginalSeatIndex) % 6
+        : index
+      
+      return {
+        playerId: stat.playerId,
+        actualSeatIndex: index,  // 席は既にマッピングされているのでindexを直接使用
+        originalSeatIndex,       // 元の席番号（playerPotOdds取得用）
+        stat,
+      }
+    })
+  }, [stats, heroOriginalSeatIndex])
 
   if (!configLoaded) {
     return null
@@ -245,7 +257,7 @@ const App = memo(() => {
               scale={uiConfig.scale}
               statDisplayConfigs={statDisplayConfigs}
               realTimeStats={position.actualSeatIndex === 0 ? allPlayersRealTimeStats?.heroStats : undefined}
-              playerPotOdds={allPlayersRealTimeStats?.playerStats[position.actualSeatIndex]}
+              playerPotOdds={allPlayersRealTimeStats?.playerStats[position.originalSeatIndex]}
             />
           )
       )}

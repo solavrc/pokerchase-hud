@@ -471,21 +471,22 @@ const HudHeader = memo(({ playerName, playerId, playerPotOdds }: {
   return (
     <div style={styles.header}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '4px' }}>
-        <span style={styles.playerName} title={playerName || 'Unknown'}>
+        <span style={{ ...styles.playerName, flex: '0 1 auto', minWidth: 0 }} title={playerName || 'Unknown'}>
           {playerName || `Player ${playerId}`}
         </span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '7px', flex: '0 0 auto' }}>
           {hasSpr && (
-            <span style={{ color: '#ffcc00', fontWeight: 'bold' }}>
+            <span style={{ color: '#ffcc00', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
               SPR:{playerPotOdds.spr}
             </span>
           )}
           {hasPotOdds && (
             <span style={{ 
               color: playerPotOdds.potOdds!.isPlayerTurn ? '#00ff00' : '#888',
-              fontWeight: playerPotOdds.potOdds!.isPlayerTurn ? 'bold' : 'normal'
+              fontWeight: playerPotOdds.potOdds!.isPlayerTurn ? 'bold' : 'normal',
+              whiteSpace: 'nowrap'
             }}>
-              {playerPotOdds.potOdds!.ratio}
+              {playerPotOdds.potOdds!.pot}/{playerPotOdds.potOdds!.call} ({playerPotOdds.potOdds!.percentage.toFixed(0)}%)
             </span>
           )}
         </div>
