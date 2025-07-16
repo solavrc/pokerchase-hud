@@ -143,16 +143,26 @@ Bulk Database Insert
 ```
 src/
 ├── app.ts                  # Re-export layer for backward compatibility
+├── components/             # React UI components
+│   ├── App.tsx            # Root component with state management
+│   ├── Hud.tsx            # HUD overlay component
+│   ├── HandLog.tsx        # Hand history log component
+│   └── Popup.tsx          # Extension popup interface
 ├── db/
 │   └── poker-chase-db.ts   # Database definition (PokerChaseDB)
 ├── services/
 │   └── poker-chase-service.ts  # Main service class
+├── stats/
+│   ├── core/              # Statistic definitions
+│   └── helpers/           # Common helper functions
 ├── streams/
 │   ├── aggregate-events-stream.ts  # Event aggregation
 │   ├── write-entity-stream.ts      # Entity persistence
 │   ├── read-entity-stream.ts       # Statistics calculation
 │   ├── hand-log-stream.ts          # Hand history generation
 │   └── realtime-stats-stream.ts    # Real-time statistics
+├── types/                  # TypeScript type definitions
+├── utils/                  # Utility modules
 └── ...
 ```
 
