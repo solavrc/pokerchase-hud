@@ -2,7 +2,7 @@
 
 > 🎯 **Purpose**: Primary technical reference for PokerChase HUD Chrome extension development and maintenance.
 > 
-> 📅 **Last Updated**: 2025-07-16 - Added all-player SPR/pot odds display, improved player name visibility, added hand ranking color coding
+> 📅 **Last Updated**: 2025-07-16 - Added all-player SPR/pot odds display, improved player name visibility, added hand ranking color coding, refactored app.ts into modular components
 
 ## 📋 Table of Contents
 
@@ -136,6 +136,25 @@ Bulk Database Insert
 ```
 
 ## 🔧 Core Components
+
+### File Organization
+
+#### Directory Structure
+```
+src/
+├── app.ts                  # Re-export layer for backward compatibility
+├── db/
+│   └── poker-chase-db.ts   # Database definition (PokerChaseDB)
+├── services/
+│   └── poker-chase-service.ts  # Main service class
+├── streams/
+│   ├── aggregate-events-stream.ts  # Event aggregation
+│   ├── write-entity-stream.ts      # Entity persistence
+│   ├── read-entity-stream.ts       # Statistics calculation
+│   ├── hand-log-stream.ts          # Hand history generation
+│   └── realtime-stats-stream.ts    # Real-time statistics
+└── ...
+```
 
 ### Extension Layer
 
@@ -848,6 +867,11 @@ const DEBUG = true  // Enable verbose logging
 - **Hand Ranking Colors**: Added intuitive color coding for starting hand strength
 - **Seat Mapping Fix**: Resolved player position misalignment with originalSeatIndex tracking
 - **Test Coverage**: Added comprehensive tests for multi-player calculations
+- **Code Organization**: Refactored app.ts into modular components:
+  - Database logic → `src/db/poker-chase-db.ts`
+  - Service layer → `src/services/poker-chase-service.ts`
+  - Stream processing → `src/streams/` directory
+  - Improved maintainability without changing functionality
 
 ### Previous Improvements (2025-07-15)
 - **API Types**: Updated for new PokerChase fields (IsSafeLeave, Bond, HandLog, etc.)
