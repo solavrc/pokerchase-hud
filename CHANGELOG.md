@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v2.3.0...pokerchase-hud-v2.4.0) (2025-07-16)
+
+
+### Features
+
+* **api:** implement Zod schema validation for API events ([ae91013](https://github.com/solavrc/pokerchase-hud/commit/ae9101376cd415882a824a6f204c054d4540c30b))
+
 ## [2.3.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v2.2.0...pokerchase-hud-v2.3.0) (2025-07-15)
 
 

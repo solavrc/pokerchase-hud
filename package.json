@@ -1,6 +1,6 @@
 {
   "name": "pokerchase-hud",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "scripts": {
     "build": "tsx esbuild.config.ts",
     "postbuild": "zip -r extension.zip dist/ icons/ manifest.json",
