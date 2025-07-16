@@ -6,7 +6,8 @@
     "postbuild": "zip -r extension.zip dist/ icons/ manifest.json",
     "test": "jest",
     "typecheck": "tsc --noEmit",
-    "validate-schema": "tsx src/tools/validate-schemas.ts"
+    "validate-schema": "tsx src/tools/validate-schemas.ts",
+    "ccusage": "npx ccusage@latest"
   },
   "type": "module",
   "devDependencies": {
