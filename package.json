@@ -5,7 +5,8 @@
     "build": "tsx esbuild.config.ts",
     "postbuild": "zip -r extension.zip dist/ icons/ manifest.json",
     "test": "jest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "validate-schema": "tsx src/tools/validate-schemas.ts"
   },
   "type": "module",
   "devDependencies": {
@@ -36,6 +37,7 @@
     "dexie": "^4.0.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-window": "^1.8.11"
+    "react-window": "^1.8.11",
+    "zod": "^4.0.5"
   }
 }

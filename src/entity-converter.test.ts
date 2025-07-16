@@ -606,15 +606,15 @@ describe('EntityConverter', () => {
       expect(result.actions).toHaveLength(0)
     })
 
-    it('should extract session information from RES_ENTRY_QUEUED and EVT_SESSION_DETAILS', () => {
+    it('should extract session information from EVT_ENTRY_QUEUED and EVT_SESSION_DETAILS', () => {
       const events: ApiEvent[] = [
         // セッション開始
         {
-          ApiTypeId: ApiType.RES_ENTRY_QUEUED,
+          ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
           timestamp: 8000,
           Id: 'imported-session-123',
           BattleType: BattleType.TOURNAMENT
-        } as ApiEvent<ApiType.RES_ENTRY_QUEUED>,
+        } as ApiEvent<ApiType.EVT_ENTRY_QUEUED>,
         // セッション詳細
         {
           ApiTypeId: ApiType.EVT_SESSION_DETAILS,
@@ -672,11 +672,11 @@ describe('EntityConverter', () => {
       const events: ApiEvent[] = [
         // セッション開始
         {
-          ApiTypeId: ApiType.RES_ENTRY_QUEUED,
+          ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
           timestamp: 9000,
           Id: 'session-with-players',
           BattleType: BattleType.SIT_AND_GO
-        } as ApiEvent<ApiType.RES_ENTRY_QUEUED>,
+        } as ApiEvent<ApiType.EVT_ENTRY_QUEUED>,
         // プレイヤー着席
         {
           ApiTypeId: ApiType.EVT_PLAYER_SEAT_ASSIGNED,
@@ -782,7 +782,7 @@ describe('EntityConverter', () => {
 
       // セッション情報が正しく更新されているか確認
       expect(result.hands).toHaveLength(1)
-      
+
       // プレイヤー情報が保持されることを確認するためには、
       // EntityConverterがプレイヤー情報を返すか、
       // またはSessionオブジェクトへの参照を保持する必要があります。
@@ -1037,11 +1037,11 @@ describe('EntityConverter', () => {
 
       // アクションの検証（CBet関連のActionDetailが設定されているか）
       const actions = result.actions
-      
+
       // cBetterのCBet機会とCBet
-      const cbetAction = actions.find(a => 
-        a.playerId === 1002 && 
-        a.phase === PhaseType.FLOP && 
+      const cbetAction = actions.find(a =>
+        a.playerId === 1002 &&
+        a.phase === PhaseType.FLOP &&
         a.actionType === ActionType.BET
       )
       expect(cbetAction?.actionDetails).toContain(ActionDetail.CBET_CHANCE)
@@ -1083,7 +1083,7 @@ describe('EntityConverter', () => {
         {
           ApiTypeId: ApiType.EVT_ACTION,
           timestamp: 7001,
-          SeatIndex: 10, // 無効なシートインデックス
+          SeatIndex: 10 as any, // 無効なシートインデックス
           ActionType: ActionType.CALL,
           BetChip: 50,
           Chip: 1950,

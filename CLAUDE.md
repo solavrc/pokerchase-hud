@@ -61,6 +61,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 - **Storage**: IndexedDB (Dexie)
 - **Build**: esbuild
 - **Testing**: Jest + React Testing Library
+- **Validation**: Zod (runtime schema validation)
 - **Release Management**: Release-Please with GitHub Actions
   - Manual trigger via GitHub Actions → "Release Please"
   - Protected main branch with CODEOWNERS
@@ -106,6 +107,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   - `npm run typecheck` - TypeScript validation
   - `npm run test` - Run test suite
   - `npm run postbuild` - Create extension.zip
+  - `npm run validate-schema` - Validate API events in NDJSON files
 
 #### Version Control
 
@@ -352,6 +354,8 @@ Statistics Refresh (batch mode)
     │   ├── pot-odds.ts                 # Pot odds calculator
     │   ├── realtime-stats-service.ts   # Real-time stats service
     │   └── index.ts                    # Module exports
+    ├── tools/             # Development tools
+    │   └── validate-schemas.ts  # NDJSON event validator
     ├── types/             # TypeScript type definitions
     │   ├── api.ts, entities.ts, errors.ts
     │   ├── filters.ts, game.ts, hand-log.ts
@@ -437,6 +441,17 @@ Statistics Refresh (batch mode)
 - Resets hand state while preserving session data
 
 ### Utility Modules
+
+#### Schema Validator (`tools/validate-schemas.ts`)
+
+- **Purpose**: Validates NDJSON export files against API event schemas
+- **Usage**: `npm run validate-schema -- <file.ndjson>`
+- **Features**:
+  - Parses NDJSON files line by line
+  - Validates each event against its Zod schema
+  - Reports schema violations with detailed error messages
+  - Handles large files efficiently
+- **Default File**: Searches for default NDJSON file if no argument provided
 
 #### Array Utilities (`array-utils.ts`)
 
@@ -568,6 +583,10 @@ Dynamic statistics for all players, with hero having additional hand improvement
 - **Schema Volatility**: May change partially without notice, requiring defensive coding
 - **Event Ordering**: Events arrive in guaranteed logical sequence
 - **Connectivity Issues**: Events may be lost due to player-side network problems
+- **Runtime Validation**: Zod schemas provide runtime type checking and validation
+  - All API events now have corresponding Zod schemas in `src/types/api.ts`
+  - Use `ApiEventSchema` for discriminated union validation
+  - `validate-schemas` tool can verify NDJSON exports against schemas
 
 #### Data Dependencies & Timing
 
@@ -597,7 +616,7 @@ Dynamic statistics for all players, with hero having additional hand improvement
 
 ### Event Types
 
-For complete type definitions, see `src/types/api.ts`.
+For complete type definitions and Zod schemas, see `src/types/api.ts`. All event types now have corresponding runtime validation schemas.
 
 #### Session Events
 

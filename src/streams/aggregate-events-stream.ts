@@ -38,7 +38,7 @@ export class AggregateEventsStream extends Transform {
       this.lastTimestamp = event.timestamp!
 
       switch (event.ApiTypeId) {
-        case ApiType.RES_ENTRY_QUEUED:
+        case ApiType.EVT_ENTRY_QUEUED:
           this.service.resetSession()
           this.service.session.id = event.Id
           this.service.session.battleType = event.BattleType
