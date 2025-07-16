@@ -503,7 +503,7 @@ test('ログから各プレイヤーのスタッツを計算できる', async ()
     service.statsOutputStream
       .on('data', (hand: PlayerStats[]) => results.push(hand))
       .on('end', () => resolve(results))
-      .on('error', (error) => reject(error))
+      .on('error', (error: Error) => reject(error))
     Readable.from(event_timeline).pipe(service.handAggregateStream)
   })
   expect(actual).toStrictEqual(expected)
