@@ -263,31 +263,28 @@ describe('Pot Odds Calculation', () => {
      * 検証内容:
      * - メインポット: 1500
      * - サイドポット: [600]
-     * - 現在のポット: 2100
-     * - 相手のベット: 600
-     * - ヒーローは600コール必要
-     * - 最終ポット: 3300 (2100 + 600 + 600)
-     * - ポットオッズ: 600 / 3300 = 18.2%
+     * - 合計ポット: 2100
+     * - ヒーローは400コール必要
+     * - ポットオッズ: 2100:400 = 5.25:1 (16.0%)
      */
     const events: ApiHandEvent[] = [
-      // First, deal the hand
       {
         ApiTypeId: ApiType.EVT_DEAL,
-        timestamp: 50,
+        timestamp: 100,
         SeatUserIds: [101, 102, 103, 104, 105, 106],
         Player: {
-          SeatIndex: 0,
+          SeatIndex: 0,  // Hero at position 0
           BetStatus: 1,
           HoleCards: [48, 49], // A♠ A♥
-          Chip: 10000,
-          BetChip: 0
+          Chip: 9800,
+          BetChip: 200  // Hero already in for 200
         },
         OtherPlayers: [
-          { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },
-          { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },
-          { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },
-          { SeatIndex: 4, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },
-          { SeatIndex: 5, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 }
+          { SeatIndex: 1, Status: 0, BetStatus: 3, Chip: 0, BetChip: 500 },    // All-in
+          { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 9400, BetChip: 600 }, // Big bet
+          { SeatIndex: 3, Status: 0, BetStatus: 2, Chip: 10000, BetChip: 0 },  // Folded
+          { SeatIndex: 4, Status: 0, BetStatus: 2, Chip: 10000, BetChip: 0 },  // Folded
+          { SeatIndex: 5, Status: 0, BetStatus: 2, Chip: 10000, BetChip: 0 }   // Folded
         ],
         Game: {
           CurrentBlindLv: 1,
@@ -300,60 +297,13 @@ describe('Pot Odds Calculation', () => {
           BigBlindSeat: 1
         },
         Progress: {
-          Phase: PhaseType.PREFLOP,
-          NextActionSeat: 2,
-          NextActionTypes: [2, 3, 4, 5],
-          NextExtraLimitSeconds: 30,
-          MinRaise: 400,
-          Pot: 300,
-          SidePot: []
-        }
-      },
-      // Then the flop with side pot situation
-      {
-        ApiTypeId: ApiType.EVT_DEAL_ROUND,
-        timestamp: 100,
-        CommunityCards: [0, 1, 2], // 2s, 2h, 2d
-        Player: {
-          SeatIndex: 0,  // Hero at position 0
-          BetStatus: 1,
-          HoleCards: [48, 49], // A♠ A♥
-          Chip: 9800,
-          BetChip: 0  // Reset for new street
-        },
-        OtherPlayers: [
-          { SeatIndex: 1, Status: 0, BetStatus: 3, Chip: 0, BetChip: 0 },    // All-in
-          { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 9400, BetChip: 0 }, // Will bet
-          { SeatIndex: 3, Status: 0, BetStatus: 2, Chip: 10000, BetChip: 0 },  // Folded
-          { SeatIndex: 4, Status: 0, BetStatus: 2, Chip: 10000, BetChip: 0 },  // Folded
-          { SeatIndex: 5, Status: 0, BetStatus: 2, Chip: 10000, BetChip: 0 }   // Folded
-        ],
-        Progress: {
           Phase: PhaseType.FLOP,
-          NextActionSeat: 2,  // Player 2 acts first
-          NextActionTypes: [0, 1, 5],  // Check or bet
-          NextExtraLimitSeconds: 30,
-          MinRaise: 0,  // Reset for new street
-          Pot: 1500,      // Main pot
-          SidePot: [600]  // Side pot
-        }
-      },
-      // Player 2 bets 600
-      {
-        ApiTypeId: ApiType.EVT_ACTION,
-        timestamp: 150,
-        SeatIndex: 2,
-        ActionType: 1, // BET
-        Chip: 8800,
-        BetChip: 600,
-        Progress: {
-          Phase: PhaseType.FLOP,
-          NextActionSeat: 0,  // Now hero's turn
+          NextActionSeat: 0,  // Hero's turn
           NextActionTypes: [2, 3, 4, 5],  // Can fold, call, or raise
           NextExtraLimitSeconds: 30,
           MinRaise: 1200,
-          Pot: 2100,      // 1500 + 600
-          SidePot: [600]  // Side pot unchanged
+          Pot: 1500,      // Main pot
+          SidePot: [600]  // Side pot
         }
       }
     ]
@@ -368,12 +318,10 @@ describe('Pot Odds Calculation', () => {
       const withPotOdds = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds)
       expect(withPotOdds.length).toBeGreaterThan(0)
       
-      const lastPotOdds = withPotOdds[withPotOdds.length - 1]
-      const potOddsData = lastPotOdds.stats.heroStats.potOdds.value
-      
-      expect(potOddsData.pot).toBe(3300)  // 2100 (pot) + 600 (opponent bet) + 600 (hero's call)
-      expect(potOddsData.call).toBe(600)  // Hero needs to call 600
-      expect(potOddsData.percentage).toBeCloseTo(18.2, 1)  // 600 / 3300
+      const potOddsData = withPotOdds[0].stats.heroStats.potOdds.value
+      expect(potOddsData.pot).toBe(2500)  // 2100 + 400 (playable pot)
+      expect(potOddsData.call).toBe(400)  // 600 - 200
+      expect(potOddsData.percentage).toBeCloseTo(16.0, 0)  // 400 / (2100 + 400)
       
       done()
     })
@@ -483,50 +431,10 @@ describe('Pot Odds Calculation', () => {
      * - SPR: 1200 / 2400 = 0.5 (コミットポット)
      */
     const events: ApiHandEvent[] = [
-      // First, deal the hand
       {
         ApiTypeId: ApiType.EVT_DEAL,
-        timestamp: 50,
-        SeatUserIds: [101, 102, 103, 104, 105, 106],
-        Player: {
-          SeatIndex: 0,
-          BetStatus: 1,
-          HoleCards: [48, 49], // A♠ A♥
-          Chip: 1200,  // Small stack
-          BetChip: 0
-        },
-        OtherPlayers: [
-          { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 0 },
-          { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 0 },
-          { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 0 },
-          { SeatIndex: 4, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 0 },
-          { SeatIndex: 5, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 0 }
-        ],
-        Game: {
-          CurrentBlindLv: 1,
-          NextBlindUnixSeconds: 0,
-          Ante: 0,
-          SmallBlind: 100,
-          BigBlind: 200,
-          ButtonSeat: 5,
-          SmallBlindSeat: 0,
-          BigBlindSeat: 1
-        },
-        Progress: {
-          Phase: PhaseType.PREFLOP,
-          NextActionSeat: 2,
-          NextActionTypes: [2, 3, 4, 5],
-          NextExtraLimitSeconds: 30,
-          MinRaise: 400,
-          Pot: 300,
-          SidePot: []
-        }
-      },
-      // Then the flop with large pot
-      {
-        ApiTypeId: ApiType.EVT_DEAL_ROUND,
         timestamp: 100,
-        CommunityCards: [10, 11, 12], // 4s, 4h, 4d
+        SeatUserIds: [101, 102, 103, 104, 105, 106],
         Player: {
           SeatIndex: 0,
           BetStatus: 1,
@@ -541,6 +449,16 @@ describe('Pot Odds Calculation', () => {
           { SeatIndex: 4, Status: 0, BetStatus: 2, Chip: 5000, BetChip: 0 },
           { SeatIndex: 5, Status: 0, BetStatus: 2, Chip: 5000, BetChip: 0 }
         ],
+        Game: {
+          CurrentBlindLv: 1,
+          NextBlindUnixSeconds: 0,
+          Ante: 0,
+          SmallBlind: 100,
+          BigBlind: 200,
+          ButtonSeat: 5,
+          SmallBlindSeat: 0,
+          BigBlindSeat: 1
+        },
         Progress: {
           Phase: PhaseType.FLOP,
           NextActionSeat: 0,

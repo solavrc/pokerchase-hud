@@ -5,6 +5,7 @@
 // API types
 export {
   ApiType,
+  type ApiEventBase,
   type ApiEvent,
   type ApiHandEvent
 } from './api'

@@ -1,6 +1,6 @@
 /**
  * エンティティ変換ユーティリティ
- *
+ * 
  * APIイベントから直接エンティティ（Hand, Phase, Action）を生成する
  * Stream処理から独立して使用可能
  */
@@ -58,15 +58,15 @@ export class EntityConverter {
 
     let currentHandEvents: ApiHandEvent[] = []
     // セッション情報をローカルに保持（インポートデータから抽出）
-    let currentSession = {
+    let currentSession = { 
       ...this.session,
       players: new Map(this.session.players) // Mapを正しくコピー
     }
 
     for (const event of events) {
       // セッション開始イベントの処理
-      if (event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED) {
-        const entryEvent = event as ApiEvent<ApiType.EVT_ENTRY_QUEUED>
+      if (event.ApiTypeId === ApiType.RES_ENTRY_QUEUED) {
+        const entryEvent = event as ApiEvent<ApiType.RES_ENTRY_QUEUED>
         currentSession.id = entryEvent.Id
         currentSession.battleType = entryEvent.BattleType
         // 新しいセッション開始時はプレイヤー情報をクリア
@@ -95,7 +95,7 @@ export class EntityConverter {
           })
         }
       }
-
+      
       // EVT_DEALでハンド開始
       if (event.ApiTypeId === ApiType.EVT_DEAL) {
         // 前のハンドが完了していない場合も処理
@@ -110,7 +110,7 @@ export class EntityConverter {
         currentHandEvents = [event as ApiHandEvent]
       } else if (currentHandEvents.length > 0) {
         currentHandEvents.push(event as ApiHandEvent)
-
+        
         // EVT_HAND_RESULTSでハンド終了
         if (event.ApiTypeId === ApiType.EVT_HAND_RESULTS) {
           const handEntities = this.convertHandEvents(currentHandEvents, currentSession)
@@ -194,12 +194,12 @@ export class EntityConverter {
           const playerId = handState.hand.seatUserIds[event.SeatIndex]
           const phase = handState.phases.at(-1)!.phase
           const phaseActions = handState.actions.filter(action => action.phase === phase)
-          const phasePrevBetCount = phaseActions.filter(action =>
+          const phasePrevBetCount = phaseActions.filter(action => 
             [ActionType.BET, ActionType.RAISE].includes(action.actionType)
           ).length + Number(phase === PhaseType.PREFLOP)
 
           // phasePlayerActionIndexを計算
-          const phasePlayerActionIndex = phaseActions.filter(action =>
+          const phasePlayerActionIndex = phaseActions.filter(action => 
             action.playerId === playerId
           ).length
 
@@ -227,7 +227,7 @@ export class EntityConverter {
 
           // ポジション計算のためのユーザーID配列を作成
           const positionUserIds = this.getPositionUserIds(handState.hand.seatUserIds, phase)
-
+          
           // ポジション計算
           let position: Position
           const playerIndex = positionUserIds.indexOf(playerId ?? 0)
@@ -244,7 +244,7 @@ export class EntityConverter {
           } else {
             position = Position.BTN // 0
           }
-
+          
           // アクションの作成（handIdは後でEVT_HAND_RESULTSで更新される）
           handState.actions.push({
             handId: 0, // EVT_HAND_RESULTSで更新される
@@ -285,7 +285,7 @@ export class EntityConverter {
         case ApiType.EVT_HAND_RESULTS: {
           // HandIdを設定
           handState.hand.id = event.HandId
-
+          
           // すべてのフェーズとアクションのhandIdを更新
           handState.phases.forEach(phase => {
             phase.handId = event.HandId
@@ -338,7 +338,7 @@ export class EntityConverter {
   ): Exclude<ActionType, ActionType.ALL_IN> {
     if (event.ActionType === ActionType.ALL_IN) {
       actionDetails.push(ActionDetail.ALL_IN)
-
+      
       if (progress?.NextActionTypes.includes(ActionType.BET)) {
         return ActionType.BET
       } else if (progress?.NextActionTypes.includes(ActionType.CALL)) {
@@ -347,7 +347,7 @@ export class EntityConverter {
         return ActionType.CALL
       }
     }
-
+    
     return event.ActionType
   }
 
@@ -380,13 +380,13 @@ export class EntityConverter {
           break
         }
       }
-
+      
       if (sbIndex === -1) return seatUserIds // フォールバック
-
+      
       // SBから順に並べ替え
       return rotateArrayFromIndex(seatUserIds, sbIndex)
     }
-
+    
     // ポストフロップの場合はボタンの次から始まる順序
     // 簡単のため、最後の有効なプレイヤーをボタンとする
     let buttonIndex = -1
@@ -396,9 +396,9 @@ export class EntityConverter {
         break
       }
     }
-
+    
     if (buttonIndex === -1) return seatUserIds // フォールバック
-
+    
     // ボタンの次から順に並べ替え
     const nextIndex = (buttonIndex + 1) % seatUserIds.length
     return rotateArrayFromIndex(seatUserIds, nextIndex)

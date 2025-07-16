@@ -20,7 +20,7 @@ import { HandLogContext, HandLogProcessor } from '../utils/hand-log-processor'
 type TransformCallback<T> = (error?: Error | null, data?: T) => void
 
 // セッション終了をトリガーするイベントタイプ
-const SESSION_END_EVENTS = [ApiType.EVT_SESSION_RESULTS] as const
+const SESSION_END_EVENTS = [ApiType.EVT_SESSION_RESULTS, ApiType.RES_LEAVE_COMPLETED] as const
 
 /**
  * HandLogStream - リアルタイムハンドログ用の並列ストリーム
