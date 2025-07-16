@@ -221,7 +221,7 @@ chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.run
       .then(() => {
         sendResponse({ success: true })
       })
-      .catch(error => {
+      .catch((error: Error) => {
         console.error('[background.ts] Filter update error:', error)
         sendResponse({ success: false, error: error.message })
       })

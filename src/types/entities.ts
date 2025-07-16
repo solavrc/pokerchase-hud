@@ -99,20 +99,20 @@ export interface ResultBase {
 
 export interface ShowDownResult extends ResultBase {
   RankType: RankType.ROYAL_FLUSH | RankType.STRAIGHT_FLUSH | RankType.FOUR_OF_A_KIND | RankType.FULL_HOUSE | RankType.FLUSH | RankType.STRAIGHT | RankType.THREE_OF_A_KIND | RankType.TWO_PAIR | RankType.ONE_PAIR | RankType.HIGH_CARD
-  Hands: [number, number, number, number, number]
-  HoleCards: [number, number]
+  Hands: number[] // 5枚のカード（実行時は5要素）
+  HoleCards: number[] // 2枚のカード（実行時は2要素または[-1, -1]）
 }
 
 export interface NoCallOrShowDownMuckResult extends ResultBase {
   RankType: RankType.NO_CALL | RankType.SHOWDOWN_MUCK
-  Hands: never[]
-  HoleCards: never[]
+  Hands: number[] // 空配列
+  HoleCards: number[] // 空配列または[-1, -1]
 }
 
 export interface FoldOpenResult extends ResultBase {
   RankType: RankType.FOLD_OPEN
-  Hands: never[]
-  HoleCards: [number, number]
+  Hands: number[] // 空配列
+  HoleCards: number[] // 2枚のカード（実行時は2要素）
 }
 
 export type Result =
@@ -175,7 +175,15 @@ export interface Hand {
   smallBlind: number
   bigBlind: number
   session: Omit<Session, 'reset' | 'players'>
-  results: Result[]
+  results: Array<{
+    UserId: number
+    HandRanking: number  // -1 | 1 | 2 | 3 | 4 | 5 | 6
+    Ranking: number      // -2 | -1 | 正の数
+    RewardChip: number
+    RankType: RankType
+    Hands: number[]      // 5枚または空配列
+    HoleCards: number[]  // 2枚、[-1,-1]、または空配列
+  }>
 }
 
 export interface Phase {

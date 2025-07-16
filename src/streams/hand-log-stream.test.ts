@@ -759,7 +759,7 @@ test('ApiEventsからPokerStars形式のログを生成できる', async () => {
         actualHandLogs.push(event.entries.map(({ text }) => text).join('\n'))
     })
       .on('end', () => resolve(actualHandLogs))
-      .on('error', (error) => reject(error))
+      .on('error', (error: Error) => reject(error))
     Readable.from(event_timeline).pipe(service.handLogStream)
   })
   expect(actual.join('\n')).toEqual(expected)
