@@ -1,84 +1,132 @@
-# PokerChase HUD v2 - Developer Documentation
+# PokerChase HUD v2 - AI Agent Documentation
 
-> 🎯 **Purpose**: Primary technical reference for PokerChase HUD Chrome extension development and maintenance.
-> 
-> 📅 **Last Updated**: 2025-07-16 - Added all-player SPR/pot odds display, improved player name visibility, added hand ranking color coding, refactored app.ts into modular components
+> 🎯 **Purpose**: Technical reference for AI coding agents working on the PokerChase HUD Chrome extension.
+>
+> 📅 **Last Updated**: 2025-07-16
 
 ## 📋 Table of Contents
 
-1. [Quick Start](#quick-start)
-2. [Project Overview](#project-overview)
+1. [Project Overview](#project-overview)
+   - [Key Features](#key-features)
+   - [Technical Stack](#technical-stack)
+2. [Development Guidelines](#development-guidelines)
+   - [Claude Code Instructions](#claude-code-instructions)
+   - [Core Principles](#core-principles)
 3. [Architecture](#architecture)
-4. [Core Components](#core-components)
-5. [Statistics System](#statistics-system)
-6. [Data Processing](#data-processing)
-7. [Utility Modules](#utility-modules)
-8. [UI Components](#ui-components)
-9. [Configuration & Storage](#configuration--storage)
-10. [Development Guide](#development-guide)
-11. [Performance & Optimization](#performance--optimization)
-12. [Troubleshooting](#troubleshooting)
-
-## 🚀 Quick Start
-
-```bash
-# Clone and setup
-git clone https://github.com/solavrc/pokerchase-hud.git
-cd pokerchase-hud-v2
-npm install
-
-# Build and run
-npm run build          # Production build
-npm run typecheck      # Type checking
-npm run test          # Run tests
-
-# Install in Chrome
-1. Open chrome://extensions/
-2. Enable "Developer mode"
-3. Click "Load unpacked"
-4. Select project directory
-```
+   - [System Overview](#system-overview)
+   - [Design Principles](#design-principles)
+   - [Data Flow](#data-flow)
+4. [Implementation Details](#implementation-details)
+   - [Table & Seat Handling](#table--seat-handling)
+   - [Data Processing](#data-processing)
+   - [UI & Display](#ui--display)
+   - [Real-time Processing](#real-time-processing)
+   - [Event Handling](#event-handling)
+5. [Components & Modules](#components--modules)
+   - [File Organization](#file-organization)
+   - [Extension Layer](#extension-layer)
+   - [Data Processing Streams](#data-processing-streams)
+   - [Utility Modules](#utility-modules)
+   - [UI Components](#ui-components)
+6. [Statistics System](#statistics-system)
+   - [Available Statistics](#available-statistics)
+   - [Statistics Philosophy](#statistics-philosophy)
+   - [Key Concepts](#key-concepts)
+   - [Real-time Statistics](#real-time-statistics)
+7. [Data Model & Events](#data-model--events)
+   - [ApiEvent Architecture](#apievent-architecture)
+   - [Event Types](#event-types)
+   - [Event Processing](#event-processing)
+   - [Database Schema](#database-schema)
+   - [Configuration & Storage](#configuration--storage)
 
 ## 📦 Project Overview
 
-### Description
-Unofficial Chrome extension providing real-time poker statistics overlay and hand history tracking for PokerChase.
+Chrome extension providing real-time poker statistics overlay and hand history tracking for PokerChase.
 
 ### Key Features
-- **Real-time HUD**: Player statistics with drag & drop positioning
-- **All-Player SPR/Pot Odds**: Stack-to-pot ratio and pot odds for all players
-- **Hero Real-time Stats**: Dynamic pot odds and hand improvement probabilities
-- **Hand History Log**: PokerStars-format export with virtualized scrolling
-- **Statistics Engine**: 13+ poker statistics with modular architecture
-- **Starting Hand Rankings**: 169 preflop hand strength display with color coding
-- **Smart Filtering**: Game type (SNG/MTT/Ring) and hand count filters
-- **Import/Export**: High-performance bulk data processing
-- **Data Rebuild**: Reconstruct statistics from raw events
+
+- Real-time HUD with 13+ statistics
+- All-player SPR/pot odds display
+- Hero hand improvement probabilities
+- Hand history log with PokerStars export
+- Import/export functionality
+- Game type filtering (SNG/MTT/Ring)
 
 ### Technical Stack
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| **Extension** | Chrome Manifest V3 | Modern extension API |
-| **Frontend** | React 18 + TypeScript | Type-safe UI components |
-| **UI Library** | Material-UI (modular) | Optimized imports |
-| **Storage** | IndexedDB (Dexie) | High-performance persistence |
-| **Build** | esbuild | Ultra-fast bundling |
-| **Testing** | Jest + React Testing | Unit/integration tests |
 
-### Performance Metrics
-| Metric | Value | Details |
-|--------|-------|---------|
-| **Bundle Sizes** | 213-392KB | 75%+ reduction from v1 |
-| **Build Time** | ~100ms | esbuild optimization |
-| **Import Speed** | 20s/250k events | 83% faster than v1 |
-| **Memory Usage** | 175MB peak | 65% reduction |
-| **Stats Cache** | 5s TTL | Prevents redundant calculations |
-| **Real-time Calc** | <10ms | Per action/street update |
-| **Hand Eval Speed** | ~1ms | Bit manipulation optimization |
+- **Extension**: Chrome Manifest V3
+- **Frontend**: React 18 + TypeScript
+- **UI Library**: Material-UI (modular imports)
+- **Storage**: IndexedDB (Dexie)
+- **Build**: esbuild
+- **Testing**: Jest + React Testing Library
+- **Validation**: Zod (runtime schema validation)
+- **Release Management**: Release-Please with GitHub Actions
+  - Manual trigger via GitHub Actions → "Release Please"
+  - Protected main branch with CODEOWNERS
+  - Workflow details: `.github/workflows/release-please.yml`
 
-## 🏗️ Architecture
+## Development Guidelines
+
+### Claude Code Instructions
+
+#### Documentation Management
+
+- **Keep CLAUDE.md up-to-date**: This is your primary reference for architectural decisions
+- **Documentation Philosophy**:
+  - Prefer updating existing documentation
+  - Create new documentation when necessary for clarity
+  - Use references to code/types instead of duplicating information
+  - Avoid redundancy to prevent maintenance conflicts
+
+#### Development Practices
+
+- **Development Approach**:
+  - Focus on architectural principles
+  - Maintain existing patterns
+  - Prefer editing over creating files
+  - Use code comments for implementation details
+- **Language**:
+  - Respond in Japanese (日本語) when communicating with users
+  - Write CLAUDE.md documentation in English
+
+#### Testing & Build
+
+- **Test Organization**:
+  - Test files are co-located with source files (e.g., `foo.ts` → `foo.test.ts`)
+  - Test files use `.test.ts` extension
+  - No separate test directories; improves visibility and reduces cognitive load
+  - All new statistics require unit tests
+- **Testing Requirements**:
+  - Always run tests and type checking after code changes
+  - Use `npm run test` and `npm run typecheck` commands
+  - Ensure all tests pass before completing tasks
+- **Build Commands**:
+  - `npm run build` - Production build
+  - `npm run typecheck` - TypeScript validation
+  - `npm run test` - Run test suite
+  - `npm run postbuild` - Create extension.zip
+  - `npm run validate-schema` - Validate API events in NDJSON files
+
+#### Version Control
+
+- **Conventional Commits**: Use standard format for all commits
+- **Common scopes**: `hud`, `stats`, `ui`, `api`, `build`
+- **Breaking changes**: Use `feat!` or `BREAKING CHANGE:` footer
+
+### Core Principles
+
+- **Important Instruction Reminders**:
+  - Do what has been asked; nothing more, nothing less
+  - NEVER create files unless they're absolutely necessary
+  - ALWAYS prefer editing an existing file to creating a new one
+  - NEVER proactively create documentation files unless explicitly requested
+
+## Architecture
 
 ### System Overview
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                  Game Website (poker-chase.com)             │
@@ -105,80 +153,241 @@ Unofficial Chrome extension providing real-time poker statistics overlay and han
 ```
 
 ### Design Principles
-1. **Separation of Concerns**: Data processing isolated from UI
-2. **Consistent UI**: Always MAX_SEATS (6) seats, null for empty positions
-3. **Performance First**: Caching, virtualization, batch processing
-4. **Unified Logic**: Single source of truth for statistics
-5. **Type Safety**: Explicit types, error handling for invalid inputs
-6. **No Magic Numbers**: Use named constants (e.g., MAX_SEATS)
 
-### Data Flow Pipelines
+1. **Separation of Concerns**: Data processing isolated from UI
+2. **Variable Table Model**: 4 or 6 seats based on table type, null for empty positions
+3. **Hero-Centric Display**: All UI rotates around hero at position 0
+4. **Performance First**: Caching, virtualization, batch processing for real-time updates
+5. **Dual Indexing**: Original seat indices for data, rotated indices for display
+6. **Type Safety**: Explicit types, error handling for invalid inputs
+7. **Stream Independence**: Real-time stats process parallel to main statistics pipeline
+8. **No Magic Numbers**: Use named constants (e.g., HUD_WIDTH)
+
+### Data Flow
 
 #### Real-time Processing
+
 ```
-WebSocket Events
-    ↓
-AggregateEventsStream
-    ├─► WriteEntityStream ─► ReadEntityStream ─► Stats Output
-    ├─► HandLogStream ─► Hand Log Output (parallel)
-    └─► RealTimeStatsStream ─► Real-time Stats Output (parallel)
+WebSocket Events (from content_script)
+    │
+    ├─► Database (apiEvents.add) ─── Persistent storage
+    │
+    ├─► HandLogStream ─────────────► Hand Log Output
+    │   (Independent stream)          (via 'data' event)
+    │
+    ├─► RealTimeStatsStream ───────► Real-time Stats Output
+    │   (Independent stream)          (via 'data' event)
+    │
+    └─► AggregateEventsStream
+        (Groups events by hand)
+             │
+             ▼ (.pipe)
+        WriteEntityStream
+        (Persists entities to DB)
+             │
+             ▼ (.pipe)
+        ReadEntityStream ──────────► Stats Output
+        (Calculates statistics)       (via 'data' event)
 ```
+
+**Key Points:**
+
+- Three independent streams receive the same events simultaneously
+- Only the main statistics pipeline uses `.pipe()` for sequential processing
+- HandLogStream and RealTimeStatsStream operate in parallel, not as branches
+- Each stream emits results via 'data' events to update different UI components
+
+**Event Order Handling:**
+
+- **AggregateEventsStream**: Buffers events until hand boundaries (EVT_HAND_RESULTS)
+- **Incomplete Data**: Streams handle missing player info gracefully
+- **Late Arrivals**: Session info updates retroactively when received
+- **Duplicate Prevention**: Events keyed by timestamp+ApiTypeId
 
 #### Import Processing
+
 ```
-NDJSON File
+NDJSON File (.ndjson)
     ↓
-Chunk Processing (5MB)
+Parse & Validate
     ↓
+Chunk Processing
+    ├─► Duplicate Detection (Set-based, O(1))
+    └─► New Events Collection
+         ↓
 EntityConverter (Direct generation)
-    ↓
-Bulk Database Insert
+    ├─► Extracts session/player info
+    ├─► Generates entities without streams
+    └─► Uses statistics modules for ActionDetails
+         ↓
+Bulk Database Insert (bulkPut)
+    ├─► hands
+    ├─► phases
+    └─► actions
+         ↓
+Statistics Refresh (batch mode)
 ```
 
-## 🔧 Core Components
+**Import Optimizations:**
+
+- Designed for processing tens of thousands of records
+- Batch mode disables real-time updates during import
+- Direct entity conversion bypasses stream overhead
+- Falls back to individual inserts on bulk operation failure
+
+## Implementation Details
+
+### Table & Seat Handling
+
+- **Variable Table Size**: Maximum 4 or 6 seats
+  - Check `SeatUserIds.length` to determine actual table size
+  - Empty seats represented as null in arrays
+  - PokerStars format compliance required for exports
+- **Hero Positioning**: Always place hero at position 0 (UI bottom center)
+  - No dealer position in PokerChase; no absolute seat numbering
+  - `SeatUserIds` index = logical seat number (randomly assigned)
+  - Hero `UserId` = `SeatUserIds[Player.SeatIndex]` from EVT_DEAL
+  - Dual coordinate system: originalSeatIndex (DB/export) vs rotated position (UI)
+  - Use `rotateArrayFromIndex` utility for seat array transformations
+
+### Data Processing
+
+- **Scale Assumptions**: System designed to handle tens of thousands of records efficiently
+- **ActionDetail Detection**: Always implement in statistics modules for consistency
+- **Batch Operations**: Import data in chunks to prevent browser freezing
+- **Transaction Safety**: Complete READONLY before READWRITE operations
+- **Memory Management**: Process large datasets incrementally
+- **Cache Invalidation**: Implement caching to prevent stale data in statistics
+- **Export Format**: Maintain exact PokerStars format with original seat indices
+
+### UI & Display
+
+- **HUD Dimensions**: Regular HUD 240px width, Real-time stats 200px width
+- **HUD Positioning**: Overlay on Unity WebGL canvas (not DOM elements)
+  - Positions relate to game components (e.g., above nameplates)
+  - Cannot query DOM for position information
+- **Empty Seats**: Show "Waiting for Hand..." in UI
+- **Chrome Extension**: Work within Manifest V3 constraints
+
+### Real-time Processing
+
+- **Parallel Streams**: Three independent streams process same events
+  - HandLogStream → Hand history generation
+  - RealTimeStatsStream → Pot odds, SPR, hand improvement
+  - AggregateEventsStream → Statistics pipeline
+- **Update Timing**:
+  - Real-time stats: Update immediately on each action
+  - Aggregated stats: Wait for hand completion (VPIP, PFR, etc.)
+  - Hand log: Buffer events until hand boundary detected
+- **AllPlayersRealTimeStats**: Contains heroStats and playerStats properties
+
+### Event Handling
+
+- **Event Schema**: PokerChase API controls schema; may change without notice
+- **Event Ordering**: Guaranteed logical sequence, but may have connectivity losses
+- **Data Dependencies**:
+  - Hero identification requires EVT_DEAL.Player field
+  - HandId only available at hand completion (EVT_HAND_RESULTS)
+  - Player names from EVT_PLAYER_SEAT_ASSIGNED or EVT_PLAYER_JOIN
+- **Graceful Degradation**: Show "No Data" or cached values when data incomplete
+- **Session Continuity**: Preserve session state across WebSocket reconnections
+- **Batch vs Live**: Use `service.setBatchMode()` to differentiate import from live events
+
+## Components & Modules
 
 ### File Organization
 
 #### Directory Structure
+
 ```
-src/
-├── app.ts                  # Re-export layer for backward compatibility
-├── components/             # React UI components
-│   ├── App.tsx            # Root component with state management
-│   ├── Hud.tsx            # HUD overlay component
-│   ├── HandLog.tsx        # Hand history log component
-│   └── Popup.tsx          # Extension popup interface
-├── db/
-│   └── poker-chase-db.ts   # Database definition (PokerChaseDB)
-├── services/
-│   └── poker-chase-service.ts  # Main service class
-├── stats/
-│   ├── core/              # Statistic definitions
-│   └── helpers/           # Common helper functions
-├── streams/
-│   ├── aggregate-events-stream.ts  # Event aggregation
-│   ├── write-entity-stream.ts      # Entity persistence
-│   ├── read-entity-stream.ts       # Statistics calculation
-│   ├── hand-log-stream.ts          # Hand history generation
-│   └── realtime-stats-stream.ts    # Real-time statistics
-├── types/                  # TypeScript type definitions
-├── utils/                  # Utility modules
-└── ...
+/                          # Project root
+├── manifest.json          # Chrome extension manifest
+├── package.json           # Node.js dependencies and scripts
+├── tsconfig.json          # TypeScript configuration
+├── esbuild.config.ts      # Build configuration
+├── jest.config.cjs        # Test configuration
+├── release-please-config.json  # Release automation config
+├── CLAUDE.md              # This AI agent documentation
+├── README.md              # Project overview
+├── CONTRIBUTING.md        # Contribution guidelines
+├── CHANGELOG.md           # Version history
+├── icons/                 # Extension icons
+│   ├── icon_16px.png, icon_48px.png, icon_128px.png
+│   ├── hud.png           # HUD screenshot
+│   └── hud-config.png    # Config screenshot
+└── src/                   # Source code
+    ├── app.ts             # Re-export layer for backward compatibility
+    ├── background.ts      # Service worker for persistence
+    ├── content_script.ts  # Bridge between page and extension
+    ├── web_accessible_resource.ts  # WebSocket interception
+    ├── entity-converter.ts     # Direct event-to-entity conversion
+    ├── popup.ts           # Extension popup entry point
+    ├── index.html         # Extension HTML
+    ├── components/        # React UI components
+    │   ├── App.tsx       # Root component with state management
+    │   ├── Hud.tsx       # HUD overlay component
+    │   ├── HandLog.tsx   # Hand history log component
+    │   └── Popup.tsx     # Extension popup interface
+    ├── db/
+    │   └── poker-chase-db.ts  # Database definition (PokerChaseDB)
+    ├── services/
+    │   └── poker-chase-service.ts  # Main service class
+    ├── stats/
+    │   ├── core/         # Statistic definitions
+    │   │   ├── 3bet.ts, 3bet-fold.ts
+    │   │   ├── af.ts, afq.ts
+    │   │   ├── cbet.ts, cbet-fold.ts
+    │   │   ├── hands.ts, pfr.ts, vpip.ts
+    │   │   ├── player-name.ts
+    │   │   └── wsd.ts, wtsd.ts, wwsf.ts
+    │   ├── helpers.ts    # Common helper functions
+    │   ├── registry.ts   # Statistics registry
+    │   └── utils.ts      # Utility functions
+    ├── streams/
+    │   ├── aggregate-events-stream.ts  # Event aggregation
+    │   ├── write-entity-stream.ts      # Entity persistence
+    │   ├── read-entity-stream.ts       # Statistics calculation
+    │   ├── hand-log-stream.ts          # Hand history generation
+    │   └── realtime-stats-stream.ts    # Real-time statistics
+    ├── realtime-stats/    # Real-time statistics components
+    │   ├── hand-improvement.ts         # Hand improvement calculator
+    │   ├── pot-odds.ts                 # Pot odds calculator
+    │   ├── realtime-stats-service.ts   # Real-time stats service
+    │   └── index.ts                    # Module exports
+    ├── tools/             # Development tools
+    │   └── validate-schemas.ts  # NDJSON event validator
+    ├── types/             # TypeScript type definitions
+    │   ├── api.ts, entities.ts, errors.ts
+    │   ├── filters.ts, game.ts, hand-log.ts
+    │   ├── messages.ts, stats.ts
+    │   └── index.ts      # Central export point
+    └── utils/             # Utility modules
+        ├── array-utils.ts    # Array manipulation
+        ├── card-utils.ts     # Card formatting
+        ├── error-handler.ts  # Error handling
+        ├── hand-log-exporter.ts      # Export functionality
+        ├── hand-log-processor.ts     # PokerStars format
+        ├── poker-evaluator.ts        # Hand evaluation
+        ├── river-probabilities.ts    # River probability tables
+        └── starting-hand-rankings.ts # Starting hand rankings
 ```
 
 ### Extension Layer
 
 #### `web_accessible_resource.ts`
+
 - WebSocket constructor override
 - API traffic interception
 - Event forwarding via postMessage
 
 #### `content_script.ts`
+
 - Bridge between page and extension
 - React app injection
 - Message validation and routing
 
 #### `background.ts`
+
 - Service worker for persistence
 - Import/export operations
 - Connection lifecycle management
@@ -186,31 +395,37 @@ src/
 
 ### Data Processing Streams
 
-#### `AggregateEventsStream`
+#### `AggregateEventsStream` (`src/streams/aggregate-events-stream.ts`)
+
 - Groups events by hand boundaries
 - Manages session state
 - Controls DB write modes (real-time vs replay)
 
-#### `WriteEntityStream`
+#### `WriteEntityStream` (`src/streams/write-entity-stream.ts`)
+
 - Decomposes events into entities
 - Normalizes ALL_IN actions
 - Delegates ActionDetail detection to statistics modules
 - Supports batch mode
 
-#### `ReadEntityStream`
+#### `ReadEntityStream` (`src/streams/read-entity-stream.ts`)
+
 - Applies filters (game type, hand limit)
 - Calculates statistics via registry
-- Implements 5-second caching
+- Implements caching to improve performance
 - Always returns 6-element array
 
 #### `EntityConverter` (Import Optimization)
+
 - Direct event-to-entity conversion
 - Bypasses stream overhead
 - Extracts session/player information
 - Uses statistics modules for consistency
 - Generates SHOWDOWN phases
+- **Location**: `src/entity-converter.ts`
 
-#### `RealTimeStatsStream` (Real-time Analytics)
+#### `RealTimeStatsStream` (`src/streams/realtime-stats-stream.ts`)
+
 - Processes events in parallel with main pipeline
 - Tracks all players' chip stacks and bet amounts
 - Calculates pot odds and SPR for all players
@@ -218,220 +433,90 @@ src/
 - Updates on each action and street
 - Returns `AllPlayersRealTimeStats` with hero and player data
 
-#### `HandLogStream`
+#### `HandLogStream` (`src/streams/hand-log-stream.ts`)
+
 - Generates hand history entries in real-time
 - Uses HandLogProcessor for consistent formatting
 - Emits events for UI updates
 - Resets hand state while preserving session data
 
-#### `HandLogProcessor`
-- Core logic for PokerStars-format generation
-- Accurate showdown order (last aggressor shows first)
-- Enhanced hand descriptions (e.g., "two pair, Sevens and Deuces")
-- Tournament finish position tracking
-- Proper community card tracking for all-in situations
-- Uncalled bet handling for heads-up situations
-- Accurate pot calculations excluding uncalled bets
-- Uses MAX_SEATS constant for table size
+### Utility Modules
 
-## 📊 Statistics System
+#### Schema Validator (`tools/validate-schemas.ts`)
+
+- **Purpose**: Validates NDJSON export files against API event schemas
+- **Usage**: `npm run validate-schema -- <file.ndjson>`
+- **Features**:
+  - Parses NDJSON files line by line
+  - Validates each event against its Zod schema
+  - Reports schema violations with detailed error messages
+  - Handles large files efficiently
+- **Default File**: Searches for default NDJSON file if no argument provided
+
+#### Array Utilities (`array-utils.ts`)
+
+- **rotateArrayFromIndex**: Safely rotates arrays from specified index
+- **Error Handling**: Throws exceptions for null/undefined arrays and non-integer indices
+- **Type Safe**: Generic function with proper TypeScript types
+- **Usage**: Seat rotation, player ordering
+
+#### Card Utilities (`card-utils.ts`)
+
+- **formatCards**: Converts card indices to string format (e.g., [37, 51] → ['Jh', 'Ac'])
+- **formatCardsArray**: Array version of card formatting
+- **Consistent Format**: Used throughout for card display
+
+#### Hand Log Processor (`hand-log-processor.ts`)
+
+- **Core Logic**: Generates PokerStars-format hand histories
+- **Accurate Showdown**: Last aggressor shows first
+- **Enhanced Descriptions**: Detailed hand rankings (e.g., "two pair, Sevens and Deuces")
+- **Tournament Tracking**: Player finish positions
+- **Uncalled Bets**: Proper handling of returned chips in heads-up situations
+- **Pot Calculations**: Excludes uncalled bets from total pot
+- **Table Size**: Dynamically determined from `SeatUserIds.length`
+- **Location**: `src/utils/hand-log-processor.ts`
+
+#### Error Handler (`error-handler.ts`)
+
+- **Centralized**: Consistent error handling across extension
+- **User-Friendly**: Translates technical errors for users
+- **Logging**: Controlled error logging for debugging
+
+### UI Components
+
+React components for the HUD interface. See individual component files for detailed implementation:
+
+- **`App.tsx`**: Root component managing state and seat rotation logic
+- **`Hud.tsx`**: HUD overlay with drag & drop (240px regular, 200px real-time stats)
+- **`HandLog.tsx`**: Virtualized hand history log with PokerStars export
+- **`Popup.tsx`**: Extension settings and import/export interface
+
+For implementation details, see comments in `src/components/`.
+
+## Statistics System
 
 ### Available Statistics
 
-| ID | Name | Description |
-|----|------|-------------|
-| `hands` | HAND | Total hands played |
-| `playerName` | Name | Player name with rank |
-| `vpip` | VPIP | Voluntarily put $ in pot % |
-| `pfr` | PFR | Pre-flop raise % |
-| `3bet` | 3B | 3-bet % |
-| `3betfold` | 3BF | Fold to 3-bet % |
-| `cbet` | CB | Continuation bet % |
-| `cbetFold` | CBF | Fold to c-bet % |
-| `af` | AF | Aggression factor |
-| `afq` | AFq | Aggression frequency % |
-| `wtsd` | WTSD | Went to showdown % (excludes preflop all-ins) |
-| `wwsf` | WWSF | Won when saw flop % (excludes preflop all-ins) |
-| `wsd` | W$SD | Won $ at showdown % |
+| ID           | Name | Description                                    |
+| ------------ | ---- | ---------------------------------------------- |
+| `hands`      | HAND | Total hands played                             |
+| `playerName` | Name | Player name with rank                          |
+| `vpip`       | VPIP | Voluntarily put $ in pot %                     |
+| `pfr`        | PFR  | Pre-flop raise %                               |
+| `3bet`       | 3B   | 3-bet %                                        |
+| `3betfold`   | 3BF  | Fold to 3-bet %                                |
+| `cbet`       | CB   | Continuation bet %                             |
+| `cbetFold`   | CBF  | Fold to c-bet %                                |
+| `af`         | AF   | Aggression factor                              |
+| `afq`        | AFq  | Aggression frequency %                         |
+| `wtsd`       | WTSD | Went to showdown % (excludes preflop all-ins)  |
+| `wwsf`       | WWSF | Won when saw flop % (excludes preflop all-ins) |
+| `wsd`        | W$SD | Won $ at showdown %                            |
 
 ### Adding New Statistics
 
-#### Step 1: Create Statistics File
-Create `src/stats/core/[stat-name].ts` using **kebab-case** naming:
-```typescript
-import type { StatDefinition } from '../../types/stats'
-
-export const myNewStat: StatDefinition = {
-  id: 'myNew',              // Required: Unique identifier
-  name: 'MN',               // Required: Display name (2-4 chars)
-  description: 'My stat',   // Optional: Description
-  
-  // Optional: Enable/disable by default
-  enabled?: boolean,
-  
-  // Optional: Detect action patterns during event processing
-  detectActionDetails?: (context: ActionDetailContext) => ActionDetail[],
-  
-  // Optional: Update hand state during processing
-  updateHandState?: (context: ActionDetailContext) => void,
-  
-  // Required: Calculate statistic value from data
-  calculate: (context: StatCalculationContext) => StatValue,
-  
-  // Optional: Custom value formatting
-  format?: (value: StatValue) => string
-}
-```
-
-#### Step 2: Export from Index
-Add to `src/stats/core/index.ts`:
-```typescript
-export { myNewStat } from './my-new'  // Must end with "Stat"
-```
-
-#### Naming Conventions
-- **File name**: kebab-case (e.g., `3bet.ts`, `cbet-fold.ts`)
-- **Export name**: camelCase + "Stat" suffix (e.g., `threeBetStat`, `cbetFoldStat`)
-- **Stat ID**: camelCase without "Stat" (e.g., `3bet`, `cbetFold`)
-
-#### Notes
-- Statistics are automatically registered if export name ends with "Stat"
-- 5-second cache is automatically applied to all statistics
-- ActionDetail detection ensures consistency across real-time and import processing
-- **Unit tests are REQUIRED** - test files should be placed next to the source file (e.g., `3bet.ts` → `3bet.test.ts`)
-
-### Contributor Guide
-
-#### Understanding Context Variables
-
-##### `phasePrevBetCount`
-The count of bets/raises in the current betting round:
-- **Preflop**: Starts at 1 (BB is counted as first bet)
-  - `1` → Only blinds posted
-  - `2` → After first raise (2-bet)
-  - `3` → After re-raise (3-bet)
-  - `4` → After re-re-raise (4-bet)
-- **Postflop**: Starts at 0
-  - `0` → No bets yet
-  - `1` → After first bet
-  - `2` → After raise
-
-##### `phasePlayerActionIndex`
-- Zero-based index of player's action order in current phase
-- Resets each street
-- Example: In preflop, BB acts first (index 0), UTG acts second (index 1)
-
-##### `handState`
-Tracks aggression throughout the hand:
-- `lastAggressor`: Player who made the last bet/raise
-- `currentStreetAggressor`: Player who bet/raised on current street
-- `cBetter`: Player who made continuation bet (used for multi-street tracking)
-
-#### Using Helper Functions
-
-```typescript
-import { isVoluntaryAction, isFacing3Bet, isAggressiveAction } from '../helpers'
-
-export const myStatDefinition: StatDefinition = {
-  detectActionDetails: (context) => {
-    // Use helpers for common patterns
-    if (isVoluntaryAction(context) && isAggressiveAction(context.actionType)) {
-      return ['MY_AGGRESSIVE_ACTION']
-    }
-    
-    if (isFacing3Bet(context) && context.actionType === ActionType.FOLD) {
-      return ['FOLD_TO_3BET']
-    }
-    
-    return []
-  }
-}
-```
-
-#### Testing Your Statistics
-
-1. **Unit Tests** (Required):
-```typescript
-// src/stats/core/my-stat.test.ts
-import { myNewStat } from './my-stat'
-import { ActionType, PhaseType } from '../../types/game'
-
-describe('myNewStat', () => {
-  it('detects opportunity correctly', () => {
-    const context = {
-      phase: PhaseType.PREFLOP,
-      phasePrevBetCount: 2,
-      actionType: ActionType.CALL,
-      // ... other required fields
-    }
-    
-    const details = myNewStat.detectActionDetails!(context)
-    expect(details).toContain('MY_OPPORTUNITY')
-  })
-})
-```
-
-2. **Manual Testing**:
-- Load extension in Chrome
-- Play hands on PokerChase
-- Check Chrome DevTools console (background page):
-```javascript
-// View recent actions with your flags
-await db.actions
-  .where('actionDetails')
-  .anyOf(['MY_FLAG'])
-  .reverse()
-  .limit(10)
-  .toArray()
-```
-
-#### Common Patterns
-
-##### Simple Percentage Stat
-```typescript
-export const exampleStat: StatDefinition = {
-  id: 'example',
-  name: 'EX',
-  
-  detectActionDetails: (context) => {
-    if (/* opportunity condition */) {
-      const details = ['EXAMPLE_OPPORTUNITY']
-      if (/* success condition */) {
-        details.push('EXAMPLE_SUCCESS')
-      }
-      return details
-    }
-    return []
-  },
-  
-  calculate: ({ actions }) => {
-    const opportunities = actions.filter(a => 
-      a.actionDetails.includes('EXAMPLE_OPPORTUNITY')
-    ).length
-    
-    const successes = actions.filter(a => 
-      a.actionDetails.includes('EXAMPLE_SUCCESS')
-    ).length
-    
-    return [successes, opportunities]
-  },
-  
-  format: formatPercentage // "75.0% (3/4)"
-}
-```
-
-##### Multi-Street Tracking
-```typescript
-detectActionDetails: (context) => {
-  // Track across multiple streets using handState
-  if (context.phase === PhaseType.FLOP && 
-      context.handState?.lastAggressor === context.playerId) {
-    // Player was preflop aggressor, now on flop
-    return ['FLOP_AS_PFR']
-  }
-  return []
-}
-```
+For detailed instructions on how to add new statistics to the HUD, please see [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ### Statistics Philosophy
 
@@ -440,26 +525,27 @@ detectActionDetails: (context) => {
 ### Key Concepts
 
 #### `phasePrevBetCount` (Preflop)
+
 - **1**: Only BB posted (no raises)
 - **2**: After first raise (2-bet)
 - **3**: After 3-bet
 - Used for 3-bet opportunity detection
 
 #### `ActionDetail` Flags
+
 Markers for specific actions used in statistics:
+
 - `VPIP`: Voluntary pot entry
 - `$3BET_CHANCE` / `$3BET`: 3-bet opportunities and executions
 - `CBET_CHANCE` / `CBET`: Continuation bet tracking
 - `ALL_IN`: All-in marker (action normalization)
 
-## 🎯 Real-time Statistics
+### Real-time Statistics
 
-### Overview
 Dynamic statistics for all players, with hero having additional hand improvement display. Updates per action/street.
 
-### Components
-
 #### Pot Odds Calculator (`pot-odds.ts`)
+
 - **Pot Size**: Total pot including all bets
 - **Call Amount**: Required chips to continue
 - **Pot Odds %**: Call amount as percentage of total pot
@@ -468,444 +554,248 @@ Dynamic statistics for all players, with hero having additional hand improvement
 - **All-Player Support**: `calculatePlayerPotOdds` works for any seat position
 
 #### Hand Improvement (`hand-improvement.ts`)
+
 - **Preflop**: Uses probability tables for pocket pairs, suited, offsuit
 - **Postflop**: Dynamic calculation based on community cards
 - **Caching**: Last 10 hero hands cached for performance
 - **Display**: Probability table showing all possible hands
 
 #### Poker Evaluator (`poker-evaluator.ts`)
+
 - **Algorithm**: Bit manipulation for fast hand evaluation
 - **Support**: 5-7 card evaluation
 - **Features**: Handles wheel straights (A-2-3-4-5)
 - **Performance**: Optimized for real-time calculations
 
 #### Starting Hand Rankings (`starting-hand-rankings.ts`)
+
 - **Coverage**: All 169 unique starting hands
 - **Format**: "AA (1/169)", "72o (169/169)"
 - **Categories**: Pocket pairs, suited, offsuit
 
-## 🔄 Data Processing
+## Data Model & Events
+
+### ApiEvent Architecture
+
+#### Event Schema Constraints
+
+- **External Control**: `ApiEvent` schema is provided by PokerChase API and outside developer control
+- **Schema Volatility**: May change partially without notice, requiring defensive coding
+- **Event Ordering**: Events arrive in guaranteed logical sequence
+- **Connectivity Issues**: Events may be lost due to player-side network problems
+- **Runtime Validation**: Zod schemas provide runtime type checking and validation
+  - All API events now have corresponding Zod schemas in `src/types/api.ts`
+  - Use `ApiEventSchema` for discriminated union validation
+  - `validate-schemas` tool can verify NDJSON exports against schemas
+
+#### Data Dependencies & Timing
+
+**Critical Dependencies**:
+
+- **Hero Identification**: Requires `EVT_DEAL` with `Player` field (missing in spectator mode)
+- **Player Names**: Available via `EVT_PLAYER_SEAT_ASSIGNED` (initial) or `EVT_PLAYER_JOIN` (mid-game)
+- **Session Info**: From `RES_ENTRY_QUEUED` (ID, battle type) and `EVT_SESSION_DETAILS` (name)
+  - A "Session" represents a complete game instance (tournament, ring game, etc.)
+  - Contains metadata like game type, stakes, and tournament structure
+  - Persists across multiple hands until game completion
+- **HandId**: Only available at hand completion (`EVT_HAND_RESULTS`)
+- **UserId**: Obtained via `SeatUserIds[Player.SeatIndex]` from `EVT_DEAL`
+
+**Aggregation Challenges**:
+
+- Hand-level aggregation requires `HandId` which only arrives at hand end
+- Must verify all required events are received before processing
+- Player information arrives incrementally across multiple events
+- Cannot aggregate hands in real-time; must buffer until boundary detected
+
+**State Management**:
+
+- Must handle missing events gracefully
+- Session continuity must be maintained across reconnections
+- Import vs live events must be differentiated via `service.setBatchMode()`
 
 ### Event Types
 
+For complete type definitions and Zod schemas, see `src/types/api.ts`. All event types now have corresponding runtime validation schemas.
+
 #### Session Events
-| Event | ID | Purpose |
-|-------|-----|---------|
-| `RES_ENTRY_QUEUED` | 201 | Session start, extracts ID and battle type |
-| `EVT_SESSION_DETAILS` | 308 | Game configuration and name |
-| `EVT_SESSION_RESULTS` | 309 | Session end, triggers cleanup |
+
+| Event                 | ID  | Purpose                                    | Key Fields                |
+| --------------------- | --- | ------------------------------------------ | ------------------------- |
+| `RES_ENTRY_QUEUED`    | 201 | Session start, extracts ID and battle type | `SessionId`, `BattleType` |
+| `EVT_SESSION_DETAILS` | 308 | Game configuration and name                | `SessionName`, `Config`   |
+| `EVT_SESSION_RESULTS` | 309 | Session end, triggers cleanup              | `Results`, `Rankings`     |
 
 #### Player Events
-| Event | ID | Purpose |
-|-------|-----|---------|
-| `EVT_PLAYER_SEAT_ASSIGNED` | 313 | Initial seating with names/ranks |
-| `EVT_PLAYER_JOIN` | 301 | Mid-game joins |
-| `EVT_DEAL` | 303 | Hand start, hero identification |
+
+| Event                      | ID  | Purpose                          | Key Fields                                     |
+| -------------------------- | --- | -------------------------------- | ---------------------------------------------- |
+| `EVT_PLAYER_SEAT_ASSIGNED` | 313 | Initial seating with names/ranks | `SeatUserIds[]`, `PlayerNames[]`               |
+| `EVT_PLAYER_JOIN`          | 301 | Mid-game joins                   | `JoinPlayer`, `SeatIndex`                      |
+| `EVT_DEAL`                 | 303 | Hand start, hero identification  | `Player.SeatIndex`, `SeatUserIds[]`, `Cards[]` |
 
 #### Game Events
-| Event | ID | Purpose |
-|-------|-----|---------|
-| `EVT_ACTION` | 304 | Player actions (bet/fold/raise) |
-| `EVT_DEAL_ROUND` | 305 | New street (flop/turn/river) |
-| `EVT_HAND_RESULTS` | 306 | Hand completion, winners |
+
+| Event              | ID  | Purpose                         | Key Fields                           |
+| ------------------ | --- | ------------------------------- | ------------------------------------ |
+| `EVT_ACTION`       | 304 | Player actions (bet/fold/raise) | `UserId`, `ActionType`, `BetSize`    |
+| `EVT_DEAL_ROUND`   | 305 | New street (flop/turn/river)    | `DealType`, `Cards[]`                |
+| `EVT_HAND_RESULTS` | 306 | Hand completion, winners        | `HandId`, `Results[]`, `WinnerIds[]` |
+
+### Event Processing
+
+#### Typical Hand Event Sequence
+
+For concrete examples with actual event data, see `src/app.test.ts`.
+
+```
+1. EVT_DEAL (303)
+   - Provides: Hero identification, initial SeatUserIds
+   - Extract: Hero UserId = SeatUserIds[Player.SeatIndex]
+
+2. EVT_ACTION (304) [multiple]
+   - Preflop actions: posts, raises, calls, folds
+   - Track: Who entered pot (VPIP), who raised (PFR)
+
+3. EVT_DEAL_ROUND (305) - Flop
+   - Community cards revealed
+   - Reset street-specific counters
+
+4. EVT_ACTION (304) [multiple]
+   - Flop actions: checks, bets, raises
+   - Track: Continuation bets, aggression
+
+5. EVT_DEAL_ROUND (305) - Turn
+6. EVT_ACTION (304) [multiple]
+7. EVT_DEAL_ROUND (305) - River
+8. EVT_ACTION (304) [multiple]
+
+9. EVT_HAND_RESULTS (306)
+   - Provides: HandId, winners, final pot
+   - Triggers: Statistics calculation, hand log generation
+```
+
+#### Event Data Relationships
+
+**SeatUserIds Array**:
+
+- Length determines table size (4 or 6)
+- Index = logical seat position
+- Value = UserId (or -1 for empty)
+- Order randomly assigned at seating
+
+**Player Identification Flow**:
+
+```
+EVT_PLAYER_SEAT_ASSIGNED → Initial player names/ranks
+         ↓
+EVT_DEAL.Player.SeatIndex → Hero seat identification
+         ↓
+SeatUserIds[Player.SeatIndex] → Hero UserId
+         ↓
+EVT_ACTION.UserId → Track hero's actions
+```
 
 ### Database Schema
 
-```typescript
-{
-  // Raw WebSocket events
-  apiEvents: '[timestamp+ApiTypeId],timestamp,ApiTypeId',
-  
-  // Processed entities
-  hands: 'id,*seatUserIds,*winningPlayerIds',
-  phases: '[handId+phase],handId,*seatUserIds,phase',
-  actions: '[handId+index],handId,playerId,phase,actionType,*actionDetails',
-  
-  // Import tracking
-  meta: 'id'  // Stores lastProcessedTimestamp
-}
-```
+Database schema is defined in `src/db/poker-chase-db.ts` using Dexie (IndexedDB wrapper).
 
-### Seat Mapping
-Hero always appears at position 0:
-```typescript
-import { rotateArrayFromIndex } from './utils/array-utils'
+#### Tables & Indexes
 
-const heroIndex = evtDeal.Player.SeatIndex
-const rotatedStats = rotateArrayFromIndex(stats, heroIndex)
-```
+**`apiEvents`** - Raw WebSocket events storage
 
-## 🛠️ Utility Modules
+- Primary: `[timestamp+ApiTypeId]` (compound key for uniqueness)
+- Indexes: `timestamp`, `ApiTypeId`
+- Purpose: Store all events for replay, import/export, debugging
 
-### Array Utilities (`array-utils.ts`)
-- **rotateArrayFromIndex**: Safely rotates arrays from specified index
-- **Error Handling**: Throws exceptions for null/undefined arrays and non-integer indices
-- **Type Safe**: Generic function with proper TypeScript types
-- **Usage**: Seat rotation, player ordering
+**`hands`** - Processed hand data
 
-### Card Utilities (`card-utils.ts`)
-- **formatCards**: Converts card indices to string format (e.g., [37, 51] → ['Jh', 'Ac'])
-- **formatCardsArray**: Array version of card formatting
-- **Consistent Format**: Used throughout for card display
+- Primary: `id` (auto-increment)
+- Indexes: `*seatUserIds`, `*winningPlayerIds` (multi-entry)
+- Contains: Session info, player mapping, winners
 
-### Hand Log Processor (`hand-log-processor.ts`)
-- **Core Logic**: Generates PokerStars-format hand histories
-- **Accurate Showdown**: Last aggressor shows first
-- **Enhanced Descriptions**: Detailed hand rankings (e.g., "two pair, Sevens and Deuces")
-- **Tournament Tracking**: Player finish positions
-- **Uncalled Bets**: Proper handling of returned chips in heads-up situations
-- **Pot Calculations**: Excludes uncalled bets from total pot
-- **Constants**: Uses MAX_SEATS for table size
+**`phases`** - Hand phases (preflop/flop/turn/river)
 
-### Error Handler (`error-handler.ts`)
-- **Centralized**: Consistent error handling across extension
-- **User-Friendly**: Translates technical errors for users
-- **Logging**: Controlled error logging for debugging
+- Primary: `[handId+phase]` (compound key)
+- Indexes: `handId`, `*seatUserIds`, `phase`
+- Contains: Player states, bet counts, pot size per phase
 
-## 🎨 UI Components
+**`actions`** - Player actions with statistics markers
 
-### `App.tsx`
-- Root component with central state
-- Configuration loading and validation
-- Master visibility control
-- Seat rotation logic with originalSeatIndex tracking
-- Real-time stats state management for all players
-- Maps rotated display positions back to actual seats for data lookup
+- Primary: `[handId+index]` (compound key)
+- Indexes: `handId`, `playerId`, `phase`, `actionType`, `*actionDetails`
+- Contains: Action type, bet amount, `ActionDetail` flags
 
-### `Hud.tsx`
-- **Regular HUD**: 240px fixed-width overlay
-- **Real-time Stats**: 200px width (hero only)
-- **Player Header**: Shows SPR and pot odds next to player name
-- Drag & drop with position persistence
-- Per-player statistics display
-- Click-to-copy functionality
-- Real-time display components:
-  - Starting hand ranking with color coding
-  - Pot odds with call amount
-  - Hand improvement probability table (hero only)
-- Visual enhancements:
-  - Color-coded hand strength (red=premium, yellow=strong, etc.)
-  - Active turn indicator (green for current player)
-  - Enhanced player name visibility
-- Future: Fish/shark indicators
+**`meta`** - Import tracking and incremental processing
 
-### `HandLog.tsx`
-- Virtualized scrolling (react-window)
-- Hover-to-expand behavior
-- Resizable with drag handle
-- Double-click to clear
-- PokerStars format export
+- Primary: `id`
+- Purpose: Track last processed timestamp for incremental updates
 
-### `Popup.tsx`
-- Extension settings interface
-- Import/export functionality
-- Filter configuration
-- Statistics customization
+See `PokerChaseDB` class for detailed schema and version migrations.
 
-## ⚙️ Configuration & Storage
+### Configuration & Storage
 
-### Chrome Storage Structure
-```typescript
-{
-  // UI settings
-  uiConfig: {
-    displayEnabled: boolean,  // Master toggle
-    scale: number            // 0.5 - 2.0
-  },
-  
-  // Hand log settings
-  handLogConfig: {
-    enabled: boolean,
-    position: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right',
-    maxHands: number,
-    width: number,
-    height: number,
-    opacity: number,         // 0.0 - 1.0
-    fontSize: number,
-    autoScroll: boolean,
-    showTimestamps: boolean
-  },
-  
-  // Game filters
-  options: {
-    filterOptions: {
-      gameTypes: {
-        sng: boolean,        // [0,2,6]
-        mtt: boolean,        // [1]
-        ring: boolean        // [4,5]
-      },
-      handLimit?: number,    // Recent N hands
-      statDisplayConfigs: StatDisplayConfig[]
-    }
-  },
-  
-  // HUD positions (per seat)
-  hudPosition_0: { top: string, left: string },
-  hudPosition_1: { top: string, left: string },
-  // ... up to hudPosition_5
-  
-  // Real-time stats HUD position (hero only)
-  hudPosition_100: { top: string, left: string }
-}
-```
+#### Chrome Storage Architecture
 
-## 👨‍💻 Development Guide
+Configuration uses Chrome's `storage.sync` API for cross-device synchronization:
 
-### Commands
-```bash
-npm run build        # Production build
-npm run typecheck    # TypeScript validation
-npm run test         # Run test suite
-npm run postbuild    # Create extension.zip
-```
+**Storage Areas**:
 
-### Release Management
+- `sync`: User preferences, HUD positions (synced across devices)
+- `local`: Not currently used (available for large data if needed)
 
-#### Conventional Commits (Required)
-This project uses **Release-Please** for automated versioning and releases. All commit messages **MUST** follow [Conventional Commits](https://www.conventionalcommits.org/) specification.
+#### Configuration Interfaces
 
-**Required Format:**
-```
-<type>[optional scope]: <description>
+**`UIConfig`** (`src/types/hand-log.ts`)
 
-[optional body]
+- `displayEnabled`: Master toggle for all HUD elements
+- `scale`: Global scale factor (0.5 - 2.0)
 
-[optional footer]
-```
+**`HandLogConfig`** (`src/types/hand-log.ts`)
 
-**Supported Types:**
-| Type | Description | Version Impact | Example |
-|------|-------------|----------------|---------|
-| `feat` | New feature | **minor** (2.0.0 → 2.1.0) | `feat(hud): add drag & drop positioning` |
-| `fix` | Bug fix | **patch** (2.0.0 → 2.0.1) | `fix(stats): resolve VPIP calculation bug` |
-| `feat!` | Breaking change | **major** (2.0.0 → 3.0.0) | `feat!: migrate to Chrome Manifest V3` |
-| `perf` | Performance improvement | **patch** | `perf(stats): optimize cache lookup` |
-| `docs` | Documentation | **none** | `docs: update README installation steps` |
-| `style` | Code style changes | **none** | `style: fix eslint warnings` |
-| `refactor` | Code refactoring | **none** | `refactor(ui): extract common components` |
-| `test` | Tests | **none** | `test(stats): add unit tests for VPIP` |
-| `chore` | Build/maintenance | **none** | `chore: update dependencies` |
-| `ci` | CI configuration | **none** | `ci: add automated testing workflow` |
+- `enabled`: Show/hide hand log
+- `maxHands`: Number of hands to display (1-50)
+- `position`: Screen position ('top-left', 'bottom-right', etc.)
+- `width`, `height`: Dimensions in pixels
+- `fontSize`: Text size (8-16px)
+- `opacity`: Background transparency (0-1)
 
-**Scope Examples:**
-- `hud`: HUD-related changes
-- `stats`: Statistics system changes  
-- `ui`: User interface changes
-- `api`: API/WebSocket changes
-- `build`: Build system changes
+**`FilterOptions`** (`src/types/filters.ts`)
 
-**Breaking Changes:**
-Use `!` after type or add `BREAKING CHANGE:` in footer:
-```bash
-feat!: remove deprecated statistics API
-# or
-feat(api): add new endpoint
+- `gameTypes`: Object with `sng`, `mtt`, `ring` boolean flags
+- `handLimit`: Number of recent hands for stats (20, 50, 100, 200, 500, or undefined for all)
+- `statDisplayConfigs`: Array of enabled statistics with display order
 
-BREAKING CHANGE: Old endpoint /stats is removed
-```
+**`HudPosition`** (`src/components/Hud.tsx`)
 
-#### Release Process
-**Semi-Automated Release via Release-Please:**
-1. **Development** with conventional commits on feature branches
-2. **Create PR** → Get review → Merge to main
-3. **Manual Release Trigger**:
-   - Go to Actions → "Release Please" → "Run workflow"
-   - Choose release type (auto/patch/minor/major)
-4. **Release-Please** creates:
-   - Release PR with version bump
-   - Updates `package.json`, `manifest.json`, `CHANGELOG.md`
-5. **Manual Review & Merge** of Release PR
-6. **Automatic Release** → GitHub Release with `extension.zip` created automatically
+- `top`, `left`: Percentage-based positioning
+- Stored per seat for individual HUD placement
 
-**Release Types:**
-- `auto`: Based on conventional commits (recommended)
-- `patch`: Force patch version (2.0.0 → 2.0.1)
-- `minor`: Force minor version (2.0.0 → 2.1.0)  
-- `major`: Force major version (2.0.0 → 3.0.0)
+#### Storage Keys
 
-**Security Benefits:**
-- No automatic releases from commits
-- All releases require manual trigger + review
-- Critical files protected by CODEOWNERS
+**User Preferences**:
 
-#### Branch Protection
-- **main branch** is protected with:
-  - Pull Request required (1 approval minimum)
-  - CODEOWNERS review required for critical files (`.github/workflows/`, `package.json`, etc.)
-  - No direct push allowed
-  - Force push prohibited
+- `options`: Main configuration object (includes `FilterOptions`)
+- `uiConfig`: UI scale and display toggle
+- `handLogConfig`: Hand log display settings
 
-### Code Standards
-- **TypeScript**: Strict mode enabled
-- **Comments**: Japanese (日本語) for team
-- **Errors**: Centralized ErrorHandler
-- **Logging**: No console.log in production
-- **Keys**: `seat-${index}` pattern
-- **Error Handling**: Throw exceptions for invalid inputs
-- **Type Safety**: Explicit parameter types (avoid optional when possible)
+**HUD Positions**:
 
-### Constants
-```typescript
-// src/utils/hand-log-processor.ts
-const MAX_SEATS = 6  // PokerChaseの6人テーブル
-```
+- `hudPosition_0` to `hudPosition_5`: Regular HUD positions per seat
+- `hudPosition_100`: Hero's real-time stats HUD position
 
-### Test Organization
-- **Co-location**: Test files are placed next to source files (e.g., `foo.ts` → `foo.test.ts`)
-- **Naming**: Test files use `.test.ts` extension
-- **Structure**: No separate test directories; improves visibility and reduces cognitive load
-- **Coverage**: All new statistics require unit tests
+#### Data Flow
 
-### Security
-- Validate all WebSocket messages
-- Check postMessage origins
-- No sensitive data in logs
-- Content Security Policy
-
-### Dynamic URL Support
-Extension adapts to manifest URL:
-```typescript
-import { content_scripts } from '../manifest.json'
-const gameUrl = content_scripts[0].matches[0]
-```
-
-## 🚀 Performance & Optimization
-
-### Build Optimization
-| Technique | Impact | Implementation |
-|-----------|---------|----------------|
-| Modular imports | -60% bundle | Individual MUI components |
-| Tree shaking | -40% size | esbuild configuration |
-| Production mode | -30% React | NODE_ENV setting |
-| Minification | -50% overall | esbuild minify |
-
-### Import Performance
-
-#### Optimizations
-1. **Chunked Processing**: 5MB chunks prevent memory issues
-2. **Duplicate Detection**: In-memory Set for O(1) lookups
-3. **Bulk Operations**: `bulkPut` for batch inserts
-4. **Direct Generation**: EntityConverter bypasses streams
-
-#### Best Practices
-```typescript
-// ❌ Avoid spread with large arrays
-const max = Math.max(...largeArray)  // Stack overflow
-
-// ✅ Use reduce
-const max = array.reduce((m, v) => v > m ? v : m, 0)
-
-// ❌ Individual operations
-for (const item of items) {
-  await db.table.add(item)
-}
-
-// ✅ Bulk operations
-await db.table.bulkPut(items)
-
-// Transaction management
-const data = await db.table.toArray()  // Complete READONLY
-// Process outside transaction to avoid conflicts
-```
-
-#### Batch Mode
-```typescript
-service.setBatchMode(true)   // Pause real-time updates
-// ... bulk operations ...
-service.setBatchMode(false)  // Resume and recalculate
-```
-
-## 🔧 Troubleshooting
-
-### Common Issues
-
-#### HUD Not Displaying
-1. Check master toggle in popup
-2. Verify game type filters
-3. Ensure `configLoaded` state
-4. Check console for errors
-
-#### Statistics Issues
-1. Verify WebSocket connection
-2. Check `playerId` is set
-3. Clear cache if stale
-4. Validate filters
-
-#### Import Problems
-
-| Issue | Cause | Solution |
-|-------|-------|----------|
-| Stack overflow | Large array spread | Use reduce() instead |
-| Duplicate keys | Existing data | Use bulkPut (idempotent) |
-| Missing session info | Import data lacks context | Fixed: EntityConverter extracts |
-| Transaction conflicts | READONLY/READWRITE mix | Use toArray() then process |
-| Stats not calculating | Missing ActionDetails | Fixed: Unified detection |
-
-### Debug Mode
-```javascript
-// In background.ts
-const DEBUG = true  // Enable verbose logging
-```
+1. **Popup → Background**: Settings changes via `chrome.runtime.sendMessage`
+2. **Background → Content**: Updates forwarded to all game tabs
+3. **Content → UI**: React components re-render with new settings
+4. **Persistence**: Automatic via Chrome sync storage
 
 ---
 
-# Important Development Notes
+## Important Reminders
 
-- **ActionDetail Detection**: Always implement in statistics modules for consistency
-- **Batch Operations**: Use for imports to improve performance
-- **Transaction Safety**: Complete READONLY before READWRITE operations
-- **Memory Management**: Process large datasets in chunks
-- **Cache Invalidation**: 5-second TTL prevents stale data
-- **Real-time Stats**: All players get SPR/pot odds; hero gets additional hand improvement display
-- **HUD Widths**: Regular HUD 240px, Real-time stats 200px
-- **Parallel Streams**: Real-time stats process independently from main pipeline
-- **Seat Rotation**: Hero always at position 0, use originalSeatIndex for correct player mapping
-- **AllPlayersRealTimeStats**: Contains heroStats and playerStats properties
-
-# Known Issues & TODOs
-
-## Technical Debt
-- **poker-evaluator.ts**: `cards: []` TODO - Extract actual cards for hand display
-- **Input Validation**: Missing duplicate card checks and range validation
-- **Color Constants**: Color codes (#00ff00, #ff6666) should be named constants
-- **API Type Union Types**: Mixed language strings and i18n keys need separation
-- **Empty String Types**: `ClassLvId?: ""` should use proper type definition
-
-## Recent Improvements (2025-07-16)
-- **All-Player SPR/Pot Odds**: Extended real-time stats to show SPR and pot odds for all players
-- **UI Enhancements**: Improved player name visibility with bold font and text shadow
-- **Hand Ranking Colors**: Added intuitive color coding for starting hand strength
-- **Seat Mapping Fix**: Resolved player position misalignment with originalSeatIndex tracking
-- **Test Coverage**: Added comprehensive tests for multi-player calculations
-- **Code Organization**: Refactored app.ts into modular components:
-  - Database logic → `src/db/poker-chase-db.ts`
-  - Service layer → `src/services/poker-chase-service.ts`
-  - Stream processing → `src/streams/` directory
-  - Improved maintainability without changing functionality
-
-### Previous Improvements (2025-07-15)
-- **API Types**: Updated for new PokerChase fields (IsSafeLeave, Bond, HandLog, etc.)
-- **Hand Log Accuracy**: Added uncalled bet handling and pot calculation improvements
-- **Statistics Fix**: WTSD/WWSF now correctly exclude preflop all-ins
-- **Code Cleanup**: Removed static method wrappers from PokerChaseService
-- **Test Organization**: Moved array utility test to appropriate location
-
-### Previous Improvements (2025-07-14)
-- **Type Safety**: Enhanced parameter types in HandLogProcessor
-- **Error Handling**: Added validation in array utilities
-- **Code Organization**: Extracted common logic to utility modules
-- **Constants**: Replaced magic numbers with named constants
-- **Test Coverage**: Added comprehensive tests for utilities
-
-## Future Enhancements
-- **Error Boundaries**: Add around real-time stats to prevent crashes
-- **WebWorker**: Move probability calculations off main thread
-- **Implied Odds**: Extend pot odds calculator
-- **Multi-way Pots**: Enhance win rate calculations
-- **Toggle Feature**: Show/hide real-time stats option
-
-# Claude Code Instructions
-- Focus on architectural principles
-- Maintain existing patterns
-- Prefer editing over creating files
-- Never create docs unless requested
+- **Do what has been asked; nothing more, nothing less.**
+- **NEVER create files unless they're absolutely necessary for achieving your goal.**
+- **ALWAYS prefer editing an existing file to creating a new one.**
+- **NEVER proactively create documentation files (\*.md) or README files. Only create documentation files if explicitly requested by the User.**

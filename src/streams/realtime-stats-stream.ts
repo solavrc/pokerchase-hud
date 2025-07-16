@@ -45,7 +45,8 @@ export class RealTimeStatsStream extends Transform {
       for (const event of events) {
         // Handle session events separately due to TypeScript limitations
         const eventType = (event as any).ApiTypeId
-        if (eventType === ApiType.EVT_SESSION_STARTED) {
+        
+        if (eventType === ApiType.EVT_SESSION_DETAILS) {
           this.isSessionActive = true
         }
         

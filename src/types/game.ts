@@ -25,7 +25,8 @@ export enum BetStatusType {
   NOT_IN_PLAY = 0,
   BET_ABLE = 1,
   FOLDED = 2,
-  ALL_IN = 3
+  ALL_IN = 3,
+  ELIMINATED = 4
 }
 
 export enum PhaseType {
