@@ -2,7 +2,7 @@
 
 > 🎯 **Purpose**: Primary technical reference for PokerChase HUD Chrome extension development and maintenance.
 > 
-> 📅 **Last Updated**: 2025-07-15 - Updated API types for new PokerChase fields, improved hand log processor with uncalled bet handling, fixed WTSD calculation to exclude preflop all-ins, removed static method wrappers
+> 📅 **Last Updated**: 2025-07-16 - Added all-player SPR/pot odds display, improved player name visibility, added hand ranking color coding
 
 ## 📋 Table of Contents
 
@@ -46,10 +46,11 @@ Unofficial Chrome extension providing real-time poker statistics overlay and han
 
 ### Key Features
 - **Real-time HUD**: Player statistics with drag & drop positioning
+- **All-Player SPR/Pot Odds**: Stack-to-pot ratio and pot odds for all players
 - **Hero Real-time Stats**: Dynamic pot odds and hand improvement probabilities
 - **Hand History Log**: PokerStars-format export with virtualized scrolling
 - **Statistics Engine**: 13+ poker statistics with modular architecture
-- **Starting Hand Rankings**: 169 preflop hand strength display
+- **Starting Hand Rankings**: 169 preflop hand strength display with color coding
 - **Smart Filtering**: Game type (SNG/MTT/Ring) and hand count filters
 - **Import/Export**: High-performance bulk data processing
 - **Data Rebuild**: Reconstruct statistics from raw events
@@ -180,12 +181,13 @@ Bulk Database Insert
 - Uses statistics modules for consistency
 - Generates SHOWDOWN phases
 
-#### `RealTimeStatsStream` (Hero Analytics)
+#### `RealTimeStatsStream` (Real-time Analytics)
 - Processes events in parallel with main pipeline
-- Tracks hero hole cards and community cards
-- Calculates pot odds and call amounts
-- Computes hand improvement probabilities
+- Tracks all players' chip stacks and bet amounts
+- Calculates pot odds and SPR for all players
+- Computes hand improvement probabilities for hero
 - Updates on each action and street
+- Returns `AllPlayersRealTimeStats` with hero and player data
 
 #### `HandLogStream`
 - Generates hand history entries in real-time
@@ -424,7 +426,7 @@ Markers for specific actions used in statistics:
 ## 🎯 Real-time Statistics
 
 ### Overview
-Hero-only dynamic statistics displayed above regular HUD, updating per action/street.
+Dynamic statistics for all players, with hero having additional hand improvement display. Updates per action/street.
 
 ### Components
 
@@ -433,6 +435,8 @@ Hero-only dynamic statistics displayed above regular HUD, updating per action/st
 - **Call Amount**: Required chips to continue
 - **Pot Odds %**: Call amount as percentage of total pot
 - **Ratio**: Traditional odds format (e.g., "3:1")
+- **SPR**: Stack-to-Pot Ratio for commitment decisions
+- **All-Player Support**: `calculatePlayerPotOdds` works for any seat position
 
 #### Hand Improvement (`hand-improvement.ts`)
 - **Preflop**: Uses probability tables for pocket pairs, suited, offsuit
@@ -535,19 +539,25 @@ const rotatedStats = rotateArrayFromIndex(stats, heroIndex)
 - Root component with central state
 - Configuration loading and validation
 - Master visibility control
-- Seat rotation logic
-- Real-time stats state management
+- Seat rotation logic with originalSeatIndex tracking
+- Real-time stats state management for all players
+- Maps rotated display positions back to actual seats for data lookup
 
 ### `Hud.tsx`
 - **Regular HUD**: 240px fixed-width overlay
 - **Real-time Stats**: 200px width (hero only)
+- **Player Header**: Shows SPR and pot odds next to player name
 - Drag & drop with position persistence
 - Per-player statistics display
 - Click-to-copy functionality
 - Real-time display components:
-  - Starting hand ranking
+  - Starting hand ranking with color coding
   - Pot odds with call amount
-  - Hand improvement probability table
+  - Hand improvement probability table (hero only)
+- Visual enhancements:
+  - Color-coded hand strength (red=premium, yellow=strong, etc.)
+  - Active turn indicator (green for current player)
+  - Enhanced player name visibility
 - Future: Fish/shark indicators
 
 ### `HandLog.tsx`
@@ -817,9 +827,11 @@ const DEBUG = true  // Enable verbose logging
 - **Transaction Safety**: Complete READONLY before READWRITE operations
 - **Memory Management**: Process large datasets in chunks
 - **Cache Invalidation**: 5-second TTL prevents stale data
-- **Real-time Stats**: Hero-only feature, updates per action/street
+- **Real-time Stats**: All players get SPR/pot odds; hero gets additional hand improvement display
 - **HUD Widths**: Regular HUD 240px, Real-time stats 200px
 - **Parallel Streams**: Real-time stats process independently from main pipeline
+- **Seat Rotation**: Hero always at position 0, use originalSeatIndex for correct player mapping
+- **AllPlayersRealTimeStats**: Contains heroStats and playerStats properties
 
 # Known Issues & TODOs
 
@@ -830,7 +842,14 @@ const DEBUG = true  // Enable verbose logging
 - **API Type Union Types**: Mixed language strings and i18n keys need separation
 - **Empty String Types**: `ClassLvId?: ""` should use proper type definition
 
-## Recent Improvements (2025-07-15)
+## Recent Improvements (2025-07-16)
+- **All-Player SPR/Pot Odds**: Extended real-time stats to show SPR and pot odds for all players
+- **UI Enhancements**: Improved player name visibility with bold font and text shadow
+- **Hand Ranking Colors**: Added intuitive color coding for starting hand strength
+- **Seat Mapping Fix**: Resolved player position misalignment with originalSeatIndex tracking
+- **Test Coverage**: Added comprehensive tests for multi-player calculations
+
+### Previous Improvements (2025-07-15)
 - **API Types**: Updated for new PokerChase fields (IsSafeLeave, Bond, HandLog, etc.)
 - **Hand Log Accuracy**: Added uncalled bet handling and pot calculation improvements
 - **Statistics Fix**: WTSD/WWSF now correctly exclude preflop all-ins
