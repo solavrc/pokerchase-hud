@@ -170,8 +170,22 @@ const Popup = () => {
 
       // Check if current tab is on game domain
       if (activeTab?.url && !activeTab.url.startsWith(gameBaseUrl)) {
-        // Not on game page - open game in new tab and close popup
-        await chrome.tabs.create({ url: `${gameBaseUrl}/play/index.html` })
+        // Not on game page - check if game tab already exists
+        const gameTabs = await chrome.tabs.query({ url: `${gameBaseUrl}/*` })
+        
+        if (gameTabs.length > 0 && gameTabs[0]?.id) {
+          // Game tab exists - switch to it
+          await chrome.tabs.update(gameTabs[0].id, { active: true })
+          
+          // Also focus the window if it's different
+          if (gameTabs[0].windowId && gameTabs[0].windowId !== activeTab.windowId) {
+            await chrome.windows.update(gameTabs[0].windowId, { focused: true })
+          }
+        } else {
+          // No game tab exists - open new tab
+          await chrome.tabs.create({ url: `${gameBaseUrl}/play/index.html` })
+        }
+        
         window.close()
         return
       }
