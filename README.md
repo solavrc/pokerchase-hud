@@ -2,7 +2,7 @@
 
 An unofficial Chrome extension providing real-time poker statistics and hand history tracking.
 
-![PokerChase HUD](./icons/hud-config.png)
+![PokerChase HUD](./icons/README.png)
 
 > **Note**: This codebase was primarily written by [Claude Code](https://claude.ai/code), demonstrating AI-assisted software development capabilities.
 
@@ -79,7 +79,7 @@ export const myNewStat: StatDefinition = {
   id: 'myNew',
   name: 'MN',
   description: 'My new statistic',
-  
+
   // Optional: Detect specific actions
   detectActionDetails: (context) => {
     if (/* your condition */) {
@@ -87,15 +87,15 @@ export const myNewStat: StatDefinition = {
     }
     return []
   },
-  
+
   // Required: Calculate the statistic
   calculate: ({ actions, hands }) => {
-    const count = actions.filter(a => 
+    const count = actions.filter(a =>
       a.actionDetails.includes('MY_FLAG')
     ).length
     return [count, hands.length]
   },
-  
+
   format: formatPercentage  // Optional formatter
 }
 ```
