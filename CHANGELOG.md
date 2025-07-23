@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.5.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v2.4.0...pokerchase-hud-v2.5.0) (2025-07-23)
+
+
+### Features
+
+* **hud:** implement Chrome Storage persistence and Service Worker keepalive ([07f9cdb](https://github.com/solavrc/pokerchase-hud/commit/07f9cdb8880941adcb5ff700922360108e5e988e))
+
+
+### Bug Fixes
+
+* **hud:** PRレビュー指摘事項の修正 ([0605424](https://github.com/solavrc/pokerchase-hud/commit/0605424630da9a8438b1597612ab43f9341ca2ad))
+
 ## [2.4.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v2.3.0...pokerchase-hud-v2.4.0) (2025-07-16)
 
 
