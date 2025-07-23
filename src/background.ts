@@ -29,8 +29,14 @@ import type {
   LatestStatsMessage,
   MessageResponse
 } from './types/messages'
+import { firebaseAuthService } from './services/firebase-auth-service'
+import { autoSyncService } from './services/auto-sync-service'
 import { content_scripts } from '../manifest.json'
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
+
+// Service Worker環境での注意：
+// Firebase SDKはXMLHttpRequestを使用するためService Workerでは動作しません
+// 代わりにGoogle Drive APIを直接使用しています
 
 const PING_INTERVAL_MS = 10 * 1000
 const IMPORT_CHUNK_SIZE = 1000
@@ -53,8 +59,18 @@ self.db = db
 self.service = service
 
 // Wait for service initialization
-service.ready.then(() => {
+service.ready.then(async () => {
   console.log('[background] PokerChaseService is ready')
+  
+  // Initialize auto sync if user is authenticated
+  try {
+    const user = firebaseAuthService.getCurrentUser()
+    if (user) {
+      await autoSyncService.initialize()
+    }
+  } catch (error) {
+    console.error('[background] Auto sync initialization failed:', error)
+  }
 }).catch(err => {
   console.error('[background] PokerChaseService initialization failed:', err)
 })
@@ -69,10 +85,34 @@ let currentImportSession: ImportSession | null = null
 let lastKnownStats: PlayerStats[] = []
 
 /** 拡張更新時の処理 */
-chrome.runtime.onInstalled.addListener(details => {
-  // v1からv2への移行など、将来的な処理が必要な場合はここに追加
-  // 通常の更新では自動的なデータ再構築は行わない
+chrome.runtime.onInstalled.addListener(async details => {
   console.log(`[onInstalled] Extension ${details.reason}: previousVersion=${details.previousVersion}`)
+  
+  // バージョンアップ時にデータ再構築を実行
+  if (details.reason === 'update') {
+    console.log('[onInstalled] Version update detected, starting data rebuild...')
+    
+    try {
+      // Service の初期化を待つ
+      await service.ready
+      
+      // データ再構築を実行
+      await rebuildAllData()
+      
+      console.log('[onInstalled] Data rebuild completed after version update')
+      
+      // ユーザーに通知
+      chrome.notifications.create({
+        type: 'basic',
+        iconUrl: chrome.runtime.getURL('icons/icon_48px.png'),
+        title: 'PokerChase HUD 更新完了',
+        message: 'データの再構築が完了しました。最新の機能をお楽しみください。'
+      })
+    } catch (error) {
+      console.error('[onInstalled] Error during data rebuild:', error)
+      // エラーが発生してもユーザーの操作を妨げないように続行
+    }
+  }
 })
 
 /** 拡張起動時: フィルター設定を復元（統計の再計算はしない） */
@@ -252,16 +292,62 @@ chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.run
         sendResponse({ success: false, error: error.message })
       })
     return true
+  } else if (request.action === 'firebaseAuthStatus') {
+    // Check current auth status
+    const isSignedIn = firebaseAuthService.isSignedIn()
+    const userInfo = firebaseAuthService.getUserInfo()
+    
+    sendResponse({ success: true, isSignedIn, userInfo })
+    return true
+  } else if (request.action === 'firebaseSignIn') {
+    // Firebase sign in
+    handleFirebaseSignIn()
+      .then(() => sendResponse({ success: true }))
+      .catch(error => {
+        console.error('Firebase sign in error:', error)
+        sendResponse({ success: false, error: error.message })
+      })
+    return true
+  } else if (request.action === 'firebaseSignOut') {
+    // Firebase sign out
+    handleFirebaseSignOut()
+      .then(() => sendResponse({ success: true }))
+      .catch(error => {
+        console.error('Firebase sign out error:', error)
+        sendResponse({ success: false, error: error.message })
+      })
+    return true
+  } else if (request.action === 'firebaseSyncToCloud' || request.action === 'firebaseSyncFromCloud') {
+    // Manual sync now uses auto sync service
+    autoSyncService.performSync()
+      .then(() => sendResponse({ success: true }))
+      .catch(error => {
+        console.error('Manual sync error:', error)
+        sendResponse({ success: false, error: error.message })
+      })
+    return true
+  } else if (request.action === 'getSyncState') {
+    // Get current sync state
+    const state = autoSyncService.getSyncState()
+    sendResponse({ success: true, data: state })
+    return false
+  } else if (request.action === 'getUnsyncedCount') {
+    // Get unsynced event count
+    autoSyncService.getUnsyncedEventCount()
+      .then(count => {
+        sendResponse({ success: true, count })
+      })
+      .catch(error => {
+        console.error('Error getting unsynced count:', error)
+        sendResponse({ success: false, error: error.message })
+      })
+    return true
   } else if (request.action === 'rebuildData') {
     // 手動でのデータ再構築
     console.log('[rebuildData] Starting manual data rebuild...')
 
-    // メタデータをクリアして全データを再処理
-    db.meta.delete('lastProcessed')
-      .then(() => {
-        // refreshDatabaseは増分処理なので、メタデータ削除後は全データを処理する
-        return service.refreshDatabase()
-      })
+    // バッチモードで全データを再構築（ダウンロード同期と同じ処理）
+    rebuildAllData()
       .then(() => {
         console.log('[rebuildData] Data rebuild completed')
         sendResponse({ success: true })
@@ -695,6 +781,13 @@ chrome.runtime.onConnect.addListener(port => {
       service.handLogStream.write(data)
       service.handAggregateStream.write(data)
       service.realTimeStatsStream.write(data)
+      
+      // Handle game session end for auto sync
+      if (data.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+        autoSyncService.onGameSessionEnd().catch(err => 
+          console.error('[background] Auto sync on game end failed:', err)
+        )
+      }
     })
     const postMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEventType<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
       try {
@@ -785,4 +878,132 @@ const getLatestSessionStats = async (): Promise<PlayerStats[]> => {
   // This avoids showing stale data and ensures EVT_DEAL is available for seat mapping
   return []
 }
+
+/**
+ * Rebuild all data from apiEvents using batch processing
+ * Similar to download sync processing to avoid multiple HUD updates
+ */
+const rebuildAllData = async (): Promise<void> => {
+  try {
+    console.log('[rebuildAllData] Starting batch rebuild of all data...')
+    const startTime = performance.now()
+
+    // Clear all entity tables first
+    await db.transaction('rw', [db.hands, db.phases, db.actions, db.meta], async () => {
+      await db.hands.clear()
+      await db.phases.clear()
+      await db.actions.clear()
+      await db.meta.delete('lastProcessed')
+    })
+
+    // Get all API events
+    const allEvents = await db.apiEvents.toArray()
+    console.log(`[rebuildAllData] Processing ${allEvents.length} events...`)
+
+    if (allEvents.length === 0) {
+      console.log('[rebuildAllData] No events to process')
+      return
+    }
+
+    // Enable batch mode to prevent real-time updates
+    service.setBatchMode(true)
+
+    try {
+      // Use EntityConverter for batch conversion (same as import/sync)
+      const defaultSession = { 
+        id: undefined, 
+        battleType: undefined, 
+        name: undefined, 
+        players: new Map(), 
+        reset: () => {} 
+      }
+      const converter = new EntityConverter(defaultSession)
+      const entities = converter.convertEventsToEntities(allEvents)
+      
+      console.log(`[rebuildAllData] Generated entities - Hands: ${entities.hands.length}, Phases: ${entities.phases.length}, Actions: ${entities.actions.length}`)
+      
+      // Save all entities in a single transaction
+      await db.transaction('rw', [db.hands, db.phases, db.actions, db.meta], async () => {
+        if (entities.hands.length > 0) {
+          await db.hands.bulkPut(entities.hands)
+        }
+        if (entities.phases.length > 0) {
+          await db.phases.bulkPut(entities.phases)
+        }
+        if (entities.actions.length > 0) {
+          await db.actions.bulkPut(entities.actions)
+        }
+        
+        // Update metadata
+        const lastTimestamp = allEvents.reduce((max, event) => {
+          const timestamp = event.timestamp || 0
+          return timestamp > max ? timestamp : max
+        }, 0)
+        
+        await db.meta.put({
+          id: 'lastProcessed',
+          lastProcessedTimestamp: lastTimestamp,
+          lastProcessedEventCount: allEvents.length,
+          lastImportDate: new Date()
+        })
+      })
+      
+      const rebuildTime = ((performance.now() - startTime) / 1000).toFixed(2)
+      console.log(`[rebuildAllData] Rebuild completed in ${rebuildTime}s`)
+      
+      // Trigger stats recalculation once at the end
+      if (service.latestEvtDeal && service.latestEvtDeal.SeatUserIds) {
+        const playerIds = service.latestEvtDeal.SeatUserIds.filter(id => id !== -1)
+        if (playerIds.length > 0) {
+          console.log('[rebuildAllData] Triggering stats recalculation...')
+          service.statsOutputStream.write(service.latestEvtDeal.SeatUserIds)
+        }
+      }
+      
+    } finally {
+      // Disable batch mode
+      service.setBatchMode(false)
+    }
+    
+  } catch (error) {
+    console.error('[rebuildAllData] Error:', error)
+    throw error
+  }
+}
+
+/**
+ * Firebase Auth Handlers
+ */
+const handleFirebaseSignIn = async (): Promise<void> => {
+  try {
+    const user = await firebaseAuthService.signInWithGoogle()
+    console.log('[Firebase] User signed in:', user.email)
+    
+    // Initialize auto sync after sign in
+    await autoSyncService.onAuthStateChanged(user)
+  } catch (error) {
+    console.error('[Firebase] Sign in error:', error)
+    throw error
+  }
+}
+
+const handleFirebaseSignOut = async (): Promise<void> => {
+  try {
+    await firebaseAuthService.signOut()
+    console.log('[Firebase] User signed out')
+    
+    // Update sync state
+    await autoSyncService.onAuthStateChanged(null)
+  } catch (error) {
+    console.error('[Firebase] Sign out error:', error)
+    throw error
+  }
+}
+
+
+
+// Listen for auth state changes on startup
+firebaseAuthService.onAuthStateChange((user) => {
+  console.log('[Firebase] Auth state changed:', user ? user.email : 'signed out')
+})
 

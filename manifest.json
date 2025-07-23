@@ -6,7 +6,11 @@
     "storage",
     "downloads",
     "tabs",
-    "notifications"
+    "notifications",
+    "identity"
+  ],
+  "host_permissions": [
+    "https://*.googleapis.com/*"
   ],
   "minimum_chrome_version": "120",
   "icons": {
@@ -41,5 +45,12 @@
         "https://game.poker-chase.com/*"
       ]
     }
-  ]
+  ],
+  "oauth2": {
+    "client_id": "412594878670-db7afaco7drchoan1786bsghvqeomhev.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile"
+    ]
+  }
 }

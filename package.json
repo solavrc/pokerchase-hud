@@ -7,7 +7,11 @@
     "test": "jest",
     "typecheck": "tsc --noEmit",
     "validate-schema": "tsx src/tools/validate-schemas.ts",
-    "ccusage": "npx ccusage@latest"
+    "ccusage": "npx ccusage@latest",
+    "firebase:deploy": "firebase deploy --only firestore:rules,firestore:indexes",
+    "firebase:deploy:rules": "firebase deploy --only firestore:rules",
+    "firebase:deploy:indexes": "firebase deploy --only firestore:indexes",
+    "firebase:emulators": "firebase emulators:start --only firestore"
   },
   "type": "module",
   "devDependencies": {
@@ -34,8 +38,10 @@
     "@emotion/styled": "^11.11.5",
     "@extend-chrome/storage": "^1.5.0",
     "@msgpack/msgpack": "^3.0.0-beta2",
+    "@mui/icons-material": "^5.18.0",
     "@mui/material": "^5.15.15",
     "dexie": "^4.0.4",
+    "firebase": "^12.0.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-window": "^1.8.11",

@@ -22,6 +22,7 @@ import Switch from '@mui/material/Switch'
 import ToggleButton from '@mui/material/ToggleButton'
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
 import Typography from '@mui/material/Typography'
+import { Cloud as CloudIcon, CloudOff as CloudOffIcon, ArrowUpward, ArrowDownward } from '@mui/icons-material'
 import { ChangeEvent, useEffect, useRef, useState } from 'react'
 import { FilterOptions, GameTypeFilter } from '../app'
 import { defaultRegistry, defaultStatDisplayConfigs } from '../stats'
@@ -36,7 +37,10 @@ import type {
   ImportDataInitMessage,
   ImportDataProcessMessage,
   UpdateBattleTypeFilterMessage,
+  FirebaseSignInMessage,
+  FirebaseSignOutMessage
 } from '../types/messages'
+import type { SyncState } from '../services/auto-sync-service'
 import { content_scripts } from '../../manifest.json'
 
 // Constants
@@ -107,6 +111,54 @@ const Popup = () => {
   const [resetDialogOpen, setResetDialogOpen] = useState<boolean>(false)
   const [uiConfig, setUIConfig] = useState<UIConfig>(DEFAULT_UI_CONFIG)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  
+  // Firebase states
+  const [isFirebaseSignedIn, setIsFirebaseSignedIn] = useState<boolean>(false)
+  const [firebaseUserInfo, setFirebaseUserInfo] = useState<{ email: string | null, displayName: string | null, photoURL: string | null, uid?: string } | null>(null)
+  const [syncState, setSyncState] = useState<SyncState | null>(null)
+  const [unsyncedCount, setUnsyncedCount] = useState<number>(0)
+
+  // Fetch sync state
+  useEffect(() => {
+    const fetchSyncState = async () => {
+      try {
+        const response = await chrome.runtime.sendMessage({ action: 'getSyncState' })
+        if (response.success && response.data) {
+          setSyncState(response.data)
+        }
+      } catch (error) {
+        console.error('Failed to get sync state:', error)
+      }
+    }
+
+    // Initial fetch
+    fetchSyncState()
+
+    // Set up interval to refresh sync state
+    const interval = setInterval(fetchSyncState, 5000) // Update every 5 seconds
+
+    // Listen for sync state updates
+    const handleMessage = (message: any) => {
+      if (message.type === 'SYNC_STATE_UPDATE' && message.state) {
+        setSyncState(message.state)
+      }
+    }
+    chrome.runtime.onMessage.addListener(handleMessage)
+
+    return () => {
+      clearInterval(interval)
+      chrome.runtime.onMessage.removeListener(handleMessage)
+    }
+  }, [])
+
+  // Fetch unsynced count when signed in
+  useEffect(() => {
+    if (isFirebaseSignedIn && syncState) {
+      // This would require a new message handler in background.ts
+      // For now, we can estimate based on sync state
+      setUnsyncedCount(0) // Will be updated later
+    }
+  }, [isFirebaseSignedIn, syncState])
 
   useEffect(() => {
     (async () => {
@@ -166,6 +218,22 @@ const Popup = () => {
           setUIConfig({ ...DEFAULT_UI_CONFIG, ...result.uiConfig })
         }
       })
+      
+      // Check Firebase auth status on load
+      chrome.runtime.sendMessage({ action: 'firebaseAuthStatus' }, (response: any) => {
+        console.log('[Popup] Initial auth status check:', response)
+        if (response && response.isSignedIn && response.userInfo) {
+          setIsFirebaseSignedIn(true)
+          setFirebaseUserInfo(response.userInfo)
+          
+          // Also get sync state if signed in
+          chrome.runtime.sendMessage({ action: 'getSyncState' }, (syncResponse: any) => {
+            if (syncResponse?.success && syncResponse.data) {
+              setSyncState(syncResponse.data)
+            }
+          })
+        }
+      })
     })()
   }, [])
 
@@ -192,12 +260,32 @@ const Popup = () => {
         if (message.imported !== undefined) {
           setImportSuccess(message.imported)
         }
+      } else if (message.action === 'firebaseAuthStatus') {
+        setIsFirebaseSignedIn(message.isSignedIn)
+        setFirebaseUserInfo(message.userInfo || null)
+      } else if (message.action === 'firebaseBackupProgress') {
+        // Progress is now handled by sync state UI
+      } else if (message.action === 'SYNC_STATE_UPDATE') {
+        // Update sync state from background service
+        setSyncState(message.state)
       }
     }
 
     chrome.runtime.onMessage.addListener(handleMessage)
     return () => chrome.runtime.onMessage.removeListener(handleMessage)
   }, [])
+  
+  // Update unsynced count when sync state changes
+  useEffect(() => {
+    if (syncState?.lastSyncTime) {
+      // Get unsynced event count
+      chrome.runtime.sendMessage({ action: 'getUnsyncedCount' }, (response: any) => {
+        if (response?.success && typeof response.count === 'number') {
+          setUnsyncedCount(response.count)
+        }
+      })
+    }
+  }, [syncState?.lastSyncTime])
 
 
 
@@ -378,6 +466,50 @@ const Popup = () => {
     setHasUnsavedStatChanges(false)
   }
 
+  // Firebase handlers
+  const handleFirebaseSignIn = async () => {
+    try {
+      const response = await chrome.runtime.sendMessage<FirebaseSignInMessage>({ action: 'firebaseSignIn' })
+      if (response.success) {
+        // ログイン成功後、認証状態を再取得してUIを更新
+        chrome.runtime.sendMessage({ action: 'firebaseAuthStatus' }, (authResponse: any) => {
+          if (authResponse && authResponse.isSignedIn && authResponse.userInfo) {
+            setIsFirebaseSignedIn(true)
+            setFirebaseUserInfo(authResponse.userInfo)
+            
+            // 同期状態も取得
+            chrome.runtime.sendMessage({ action: 'getSyncState' }, (syncResponse: any) => {
+              if (syncResponse?.success && syncResponse.data) {
+                setSyncState(syncResponse.data)
+              }
+            })
+          }
+        })
+      }
+    } catch (error) {
+      console.error('Firebase sign in error:', error)
+    }
+  }
+
+  const handleFirebaseSignOut = async () => {
+    try {
+      const response = await chrome.runtime.sendMessage<FirebaseSignOutMessage>({ action: 'firebaseSignOut' })
+      if (response.success) {
+        // ログアウト成功後、UIを即座に更新
+        setIsFirebaseSignedIn(false)
+        setFirebaseUserInfo(null)
+        setSyncState(null)
+        setUnsyncedCount(0)
+      } else {
+        console.error('Firebase sign out failed')
+      }
+    } catch (error) {
+      console.error('Firebase sign out error:', error)
+    }
+  }
+
+
+
   const handleDeleteData = async () => {
     try {
       const response = await chrome.runtime.sendMessage<DeleteAllDataMessage>({ action: 'deleteAllData' })
@@ -422,16 +554,12 @@ const Popup = () => {
       const defaultStats = [...defaultStatDisplayConfigs]
       const defaultUI = { ...DEFAULT_UI_CONFIG }
 
-      // UIをデフォルト値にリセット
-      setGameTypeFilter(defaultGameTypeFilter)
-      setHandLimit(defaultHandLimit)
-      setStatDisplayConfigs(defaultStats)
-      setPendingStatDisplayConfigs(defaultStats)
-      setHasUnsavedStatChanges(false)
-      setUIConfig(defaultUI)
-
-      // ストレージをクリアしてデフォルト値を設定
+      // すべてのストレージを完全にクリア
+      await chrome.storage.sync.clear()
+      await chrome.storage.local.clear()
       await bucket.clear()
+
+      // 必要なデフォルト値のみを設定
       await bucket.set({
         sendUserData: true,
         filterOptions: {
@@ -441,18 +569,32 @@ const Popup = () => {
         }
       })
 
-      // Chrome storageのUI設定とHandLog設定もリセット
       await chrome.storage.sync.set({
         uiConfig: defaultUI,
         handLogConfig: DEFAULT_HAND_LOG_CONFIG
       })
+      
+      // Firebase認証状態もリセット（ログアウトはしない）
+      setIsFirebaseSignedIn(false)
+      setFirebaseUserInfo(null)
+      setSyncState(null)
+      setUnsyncedCount(0)
+      
+      // 認証状態を再確認
+      chrome.runtime.sendMessage({ action: 'firebaseAuthStatus' }, (response: any) => {
+        if (response && response.isSignedIn && response.userInfo) {
+          setIsFirebaseSignedIn(true)
+          setFirebaseUserInfo(response.userInfo)
+        }
+      })
 
-      // HUDの位置情報もクリア
-      const keysToRemove = []
-      for (let i = 0; i < 6; i++) {
-        keysToRemove.push(`hudPosition_${i}`)
-      }
-      await chrome.storage.sync.remove(keysToRemove)
+      // UIをデフォルト値にリセット
+      setGameTypeFilter(defaultGameTypeFilter)
+      setHandLimit(defaultHandLimit)
+      setStatDisplayConfigs(defaultStats)
+      setPendingStatDisplayConfigs(defaultStats)
+      setHasUnsavedStatChanges(false)
+      setUIConfig(defaultUI)
 
       // バックグラウンドサービスに新しいフィルター設定を送信
       chrome.runtime.sendMessage<UpdateBattleTypeFilterMessage>({
@@ -489,7 +631,7 @@ const Popup = () => {
 
   return <div style={{ width: 300, padding: '10px' }}>
 
-    {/* UI Display Controls - 最上段 */}
+    {/* UI Display Controls */}
     <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
         <Typography variant="body2">サイズ:</Typography>
@@ -595,6 +737,123 @@ const Popup = () => {
         </ToggleButton>
       </ToggleButtonGroup>
     </Box>
+
+    <Divider style={{ margin: '10px 0' }} />
+
+    {/* Cloud Backup - サイズとゲームタイプの間 */}
+    {!isFirebaseSignedIn ? (
+      <Button
+        variant="contained"
+        color="primary"
+        fullWidth
+        onClick={handleFirebaseSignIn}
+        style={{ marginBottom: '15px' }}
+        size="large"
+        startIcon={<CloudIcon />}
+      >
+        自動バックアップを有効にする
+      </Button>
+    ) : (
+      <Box sx={{ 
+        bgcolor: 'background.paper', 
+        border: 1, 
+        borderColor: 'primary.main',
+        borderRadius: 1,
+        p: 1.5,
+        mb: 2
+      }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+          <CloudIcon sx={{ color: 'primary.main' }} />
+          <Box sx={{ flex: 1, overflow: 'hidden' }}>
+            <Typography variant="body2" sx={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {firebaseUserInfo?.email}
+            </Typography>
+            {firebaseUserInfo?.uid && (
+              <Typography 
+                variant="caption" 
+                color="text.secondary" 
+                sx={{ 
+                  fontSize: '10px',
+                  cursor: 'pointer',
+                  '&:hover': { textDecoration: 'underline' }
+                }}
+                onClick={() => {
+                  if (firebaseUserInfo.uid) {
+                    navigator.clipboard.writeText(firebaseUserInfo.uid)
+                    setImportStatus('ユーザーIDをコピーしました')
+                    setTimeout(() => setImportStatus(''), 2000)
+                  }
+                }}
+                title="クリックしてコピー"
+              >
+                ID: {firebaseUserInfo.uid}
+              </Typography>
+            )}
+          </Box>
+        </Box>
+        <Button
+          variant="outlined"
+          size="small"
+          fullWidth
+          onClick={handleFirebaseSignOut}
+          startIcon={<CloudOffIcon />}
+          sx={{ mt: 1 }}
+        >
+          ログアウト
+        </Button>
+        
+        {/* Sync Status */}
+        {syncState && (
+          <Box sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: 'divider' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Box
+                sx={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: '50%',
+                  bgcolor: syncState.status === 'syncing' ? 'warning.main' : 
+                           syncState.status === 'error' ? 'error.main' : 
+                           syncState.status === 'success' ? 'success.main' : 'grey.500'
+                }}
+              />
+              <Typography variant="body2">
+                {syncState.status === 'syncing' ? '同期中...' :
+                 syncState.status === 'error' ? 'エラー' :
+                 syncState.status === 'success' ? '同期完了' : '待機中'}
+              </Typography>
+              {syncState.status === 'syncing' && syncState.progress && (
+                <>
+                  {syncState.progress.direction === 'upload' ? (
+                    <ArrowUpward sx={{ fontSize: 14, color: 'success.main', ml: 'auto' }} />
+                  ) : (
+                    <ArrowDownward sx={{ fontSize: 14, color: 'error.main', ml: 'auto' }} />
+                  )}
+                  <Typography variant="caption" color="text.secondary">
+                    {syncState.progress.current.toLocaleString()}/{syncState.progress.total.toLocaleString()}
+                    ({Math.round((syncState.progress.current / syncState.progress.total) * 100)}%)
+                  </Typography>
+                </>
+              )}
+            </Box>
+            {syncState.lastSyncTime && (
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                最終同期: {new Date(syncState.lastSyncTime).toLocaleString('ja-JP')}
+              </Typography>
+            )}
+            {unsyncedCount > 0 && (
+              <Typography variant="caption" color="warning.main" display="block" sx={{ mt: 0.5 }}>
+                未同期: {unsyncedCount.toLocaleString()}件
+              </Typography>
+            )}
+            {syncState.error && (
+              <Typography variant="caption" color="error" display="block" sx={{ mt: 0.5 }}>
+                {syncState.error}
+              </Typography>
+            )}
+          </Box>
+        )}
+      </Box>
+    )}
 
     <Divider style={{ margin: '10px 0' }} />
 
@@ -736,17 +995,6 @@ const Popup = () => {
       </Box>
     )}
 
-    <Divider style={{ margin: '10px 0' }} />
-
-    <Button
-      variant="contained"
-      color="primary"
-      fullWidth
-      disabled={true}
-      style={{ marginBottom: '10px' }}
-    >
-      バックアップ
-    </Button>
 
     <Button
       variant="contained"
@@ -889,6 +1137,7 @@ const Popup = () => {
       <DialogContent>
         <DialogContentText>
           すべての設定を初期値に戻します。
+          同期履歴も含めてリセットされるため、次回ログイン時に初回同期が実行されます。
           データ（ハンド履歴や統計）は削除されません。
           続行しますか？
         </DialogContentText>
