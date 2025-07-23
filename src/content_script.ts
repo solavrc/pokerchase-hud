@@ -73,7 +73,6 @@ const startKeepalive = (port: chrome.runtime.Port) => {
     keepaliveTimer = setInterval(() => {
       try {
         port.postMessage({ type: 'keepalive' } as any)
-        console.debug('[content_script] Keepalive sent')
       } catch (e) {
         // ポートが切断されている場合は停止
         stopKeepalive()
@@ -110,7 +109,6 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
     case ApiType.EVT_SESSION_DETAILS:
       // セッション開始
       if (!isGameActive) {
-        console.log('[content_script] Game session started, enabling keepalive')
         isGameActive = true
         startKeepalive(port)
       }
@@ -119,7 +117,6 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
     case ApiType.EVT_SESSION_RESULTS:
       // セッション終了
       if (isGameActive) {
-        console.log('[content_script] Game session ended, disabling keepalive')
         isGameActive = false
         stopKeepalive()
       }

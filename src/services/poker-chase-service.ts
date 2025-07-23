@@ -447,7 +447,7 @@ class PokerChaseService {
     const timestamp = event.timestamp
       ? new Date(event.timestamp).toISOString().slice(11, 22)
       : new Date().toISOString().slice(11, 22)
-    const eventName = ApiType[event.ApiTypeId as number]
+    const eventName = ApiType[event.ApiTypeId as number] ?? null
     const logMessage = `[${timestamp}] ${event.ApiTypeId} ${eventName} ${JSON.stringify(event)}`
 
     switch (level) {

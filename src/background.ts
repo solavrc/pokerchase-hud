@@ -661,7 +661,6 @@ chrome.runtime.onConnect.addListener(port => {
     port.onMessage.addListener(async (message: ApiMessage | { type: string }) => {
       // キープアライブメッセージの処理
       if (typeof message === 'object' && 'type' in message && message.type === 'keepalive') {
-        console.debug('[background] Keepalive received, Service Worker will stay active')
         return // キープアライブは処理のみで、それ以上何もしない
       }
 
