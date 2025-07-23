@@ -4,7 +4,7 @@
  * @see https://developer.mozilla.org/ja/docs/Mozilla/Add-ons/WebExtensions/manifest.json/web_accessible_resources
  */
 import { decode } from '@msgpack/msgpack'
-import PokerChaseService, { ApiEvent } from './app'
+import PokerChaseService from './services/poker-chase-service'
 /** !!! BACKGROUND、CONTENT_SCRIPTSからインポートしないこと !!! */
 
 const OriginalWebSocket = window.WebSocket
@@ -23,8 +23,24 @@ function createWebSocket(...args: ConstructorParameters<typeof WebSocket>): WebS
 
   instance.addEventListener('message', ({ data }) => {
     if (data instanceof ArrayBuffer) {
-      const event = decode(data) as ApiEvent
-      window.postMessage({ ...event, timestamp: Date.now() }, PokerChaseService.POKER_CHASE_ORIGIN)
+      try {
+        const decoded = decode(data)
+
+        // ApiTypeIdの存在と数値型であることを確認
+        if (decoded &&
+          typeof decoded === 'object' &&
+          'ApiTypeId' in decoded &&
+          typeof (decoded as { ApiTypeId: unknown }).ApiTypeId === 'number') {
+          // timestampを付与してメッセージ送信
+          window.postMessage({
+            ...decoded,
+            timestamp: Date.now()
+          }, PokerChaseService.POKER_CHASE_ORIGIN)
+        }
+      } catch (error) {
+        // デコードエラーは静かに無視（ログも最小限に）
+        console.warn('[WebSocket] Failed to decode message')
+      }
     }
   })
 

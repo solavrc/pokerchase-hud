@@ -6,7 +6,19 @@
 export {
   ApiType,
   type ApiEvent,
-  type ApiHandEvent
+  type ApiEventType,
+  type ApiEventUnion,
+  type ApiEventSubset,
+  type ApiHandEvent,
+  type ApiSessionEvent,
+  type ApiPlayerEvent,
+  type ApiMessage,
+  // Validation functions
+  isApplicationApiEvent,
+  validateApiEvent,
+  validateMessage,
+  isApiEventType,
+  ApiTypeValues
 } from './api'
 
 // Game mechanics types
@@ -34,10 +46,6 @@ export type {
   Progress,
   RankReward,
   RankingReward,
-  ResultBase,
-  ShowDownResult,
-  NoCallOrShowDownMuckResult,
-  FoldOpenResult,
   Result,
   Reward,
   RingReward,

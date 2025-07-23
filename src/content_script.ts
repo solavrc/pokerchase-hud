@@ -6,7 +6,7 @@
 import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { web_accessible_resources } from '../manifest.json'
-import PokerChaseService, { ApiEvent, ApiType, PlayerStats } from './app'
+import PokerChaseService, { ApiEventType, ApiType, PlayerStats } from './app'
 import App from './components/App'
 import type { ChromeMessage } from './types/messages'
 import { MESSAGE_ACTIONS as EVENTS } from './types/messages'
@@ -14,10 +14,15 @@ import type { AllPlayersRealTimeStats } from './realtime-stats/realtime-stats-se
 /** !!! BACKGROUND、WEB_ACCESSIBLE_RESOURCES からインポートしないこと !!! */
 
 const RECONNECT_DELAY_MS = 500
+const KEEPALIVE_INTERVAL_MS = 25000 // 25秒（30秒タイムアウトより少し短く）
+
+// ゲーム状態の管理
+let isGameActive = false
+let keepaliveTimer: number | null = null
 
 export interface StatsData {
   stats: PlayerStats[]
-  evtDeal?: ApiEvent<ApiType.EVT_DEAL>  // 席のマッピング用のEVT_DEALイベント
+  evtDeal?: ApiEventType<ApiType.EVT_DEAL>  // 席のマッピング用のEVT_DEALイベント
   realTimeStats?: AllPlayersRealTimeStats  // リアルタイム統計（全プレイヤー）
 }
 
@@ -29,7 +34,13 @@ declare global {
 
 const connectToBackgroundService = () => {
   const port = chrome.runtime.connect({ name: PokerChaseService.POKER_CHASE_SERVICE_EVENT })
-  port.onMessage.addListener((message: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
+
+  // 接続成功時、ゲーム中ならキープアライブを開始
+  if (isGameActive) {
+    startKeepalive(port)
+  }
+
+  port.onMessage.addListener((message: { stats: PlayerStats[], evtDeal?: ApiEventType<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
     if (typeof message === 'object' && message !== null && 'stats' in message) {
       console.time('[content_script] Dispatching stats event')
       window.dispatchEvent(new CustomEvent(PokerChaseService.POKER_CHASE_SERVICE_EVENT, { detail: message }))
@@ -40,6 +51,9 @@ const connectToBackgroundService = () => {
     }
   })
   port.onDisconnect.addListener(() => {
+    // 切断時にキープアライブを停止
+    stopKeepalive()
+    // 再接続を試みる
     setTimeout(connectToBackgroundService, RECONNECT_DELAY_MS)
   })
   return port
@@ -47,13 +61,71 @@ const connectToBackgroundService = () => {
 
 const port = connectToBackgroundService()
 
-window.addEventListener('message', (event: MessageEvent<ApiEvent>) => {
-  // セキュリティチェック: ゲームのオリジンからのメッセージのみ受け付ける
-  if (event.source !== window ||
+// キープアライブ管理
+const startKeepalive = (port: chrome.runtime.Port) => {
+  // 既存のタイマーをクリア
+  if (keepaliveTimer) {
+    clearInterval(keepaliveTimer)
+  }
+
+  // ゲーム中のみキープアライブを送信
+  if (isGameActive) {
+    keepaliveTimer = window.setInterval(() => {
+      try {
+        port.postMessage({ type: 'keepalive' } as any)
+        console.debug('[content_script] Keepalive sent')
+      } catch (e) {
+        // ポートが切断されている場合は停止
+        stopKeepalive()
+      }
+    }, KEEPALIVE_INTERVAL_MS)
+  }
+}
+
+const stopKeepalive = () => {
+  if (keepaliveTimer) {
+    clearInterval(keepaliveTimer)
+    keepaliveTimer = null
+  }
+}
+
+// window.postMessageはさまざまなソースからのメッセージを受信する可能性がある
+window.addEventListener('message', (event: MessageEvent<unknown>) => {
+  // 全ての条件を統合してチェック
+  if (
+    // セキュリティチェック: ゲームのオリジンからのメッセージのみ受け付ける
+    event.source !== window ||
     event.origin !== PokerChaseService.POKER_CHASE_ORIGIN ||
-    !event.data.ApiTypeId) {
+    // PokerChase APIメッセージの型ガード: ApiTypeIdを持つことを確認
+    !event.data ||
+    typeof event.data !== 'object' ||
+    !('ApiTypeId' in event.data) ||
+    typeof event.data.ApiTypeId !== 'number'
+  ) {
     return
   }
+
+  // ゲーム状態の追跡
+  switch (event.data.ApiTypeId) {
+    case ApiType.EVT_SESSION_DETAILS:
+      // セッション開始
+      if (!isGameActive) {
+        console.log('[content_script] Game session started, enabling keepalive')
+        isGameActive = true
+        startKeepalive(port)
+      }
+      break
+
+    case ApiType.EVT_SESSION_RESULTS:
+      // セッション終了
+      if (isGameActive) {
+        console.log('[content_script] Game session ended, disabling keepalive')
+        isGameActive = false
+        stopKeepalive()
+      }
+      break
+  }
+
   try {
     port.postMessage(event.data)
   } catch (error: unknown) {

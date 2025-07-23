@@ -2,159 +2,52 @@
  * Data Model Types and Entities
  */
 
-import type { BattleType, PhaseType, ActionType, Position, ActionDetail, RankType, BetStatusType } from './game'
+import type { BattleType, PhaseType, ActionType, Position, ActionDetail, RankType } from './game'
+import type { ApiEventType, ApiType } from './api'
 
-// Base entities
-export interface BlindStructure {
-  Lv: number
-  ActiveMinutes: number
-  BigBlind: number
-  Ante: number
-}
+// ===============================
+// Entity Types from API Schemas
+// ===============================
 
-export interface Chara {
-  CharaId: string
-  CostumeId: string
-  Favorite: number
-  Bond: number
-  Rank: number
-  TodayUpNum: number
-  Evolution: boolean
-  Stamps: Stamp[]
-}
+// 各イベント型から必要な部分型を抽出
+type SessionDetailsEvent = ApiEventType<ApiType.EVT_SESSION_DETAILS>
+type DealEvent = ApiEventType<ApiType.EVT_DEAL>
+type ActionEvent = ApiEventType<ApiType.EVT_ACTION>
+type DealRoundEvent = ApiEventType<ApiType.EVT_DEAL_ROUND>
+type HandResultsEvent = ApiEventType<ApiType.EVT_HAND_RESULTS>
+type SessionResultsEvent = ApiEventType<ApiType.EVT_SESSION_RESULTS>
+type PlayerSeatAssignedEvent = ApiEventType<ApiType.EVT_PLAYER_SEAT_ASSIGNED>
+type PlayerJoinEvent = ApiEventType<ApiType.EVT_PLAYER_JOIN>
 
-export interface EventDetail {
-  ItemId: string
-  Num: number
-}
+// EVT_SESSION_DETAILS関連
+export type BlindStructure = NonNullable<SessionDetailsEvent['BlindStructures']>[0]
+export type RankingReward = NonNullable<SessionDetailsEvent['RankingRewards']>[0]
+export type EventDetail = NonNullable<SessionDetailsEvent['Items']>[0]
+export type Reward = RankingReward['Rewards'][0]
 
-export interface Game {
-  CurrentBlindLv: number
-  NextBlindUnixSeconds: number
-  Ante: number
-  SmallBlind: number
-  BigBlind: number
-  ButtonSeat: 0 | 1 | 2 | 3 | 4 | 5
-  SmallBlindSeat: 0 | 1 | 2 | 3 | 4 | 5
-  BigBlindSeat: 0 | 1 | 2 | 3 | 4 | 5
-}
+// EVT_DEAL関連
+export type Game = DealEvent['Game']
+export type Player = NonNullable<DealEvent['Player']>
+export type OtherPlayer = DealEvent['OtherPlayers'][0]
 
-export interface Item {
-  ItemId: string
-  Num: number
-}
+// Progress関連 - 各イベントのProgress型をユニオンで統合
+export type Progress = DealEvent['Progress'] | ActionEvent['Progress'] | DealRoundEvent['Progress']
 
-export interface OtherPlayer extends Omit<Player, 'HoleCards'> {
-  Status: 0 | 5
-}
+// EVT_PLAYER_SEAT_ASSIGNED関連
+export type TableUser = PlayerSeatAssignedEvent['TableUsers'][0]
 
-export interface Player {
-  SeatIndex: 0 | 1 | 2 | 3 | 4 | 5
-  BetStatus: BetStatusType
-  Chip: number
-  BetChip: number
-  HoleCards: [number, number] | []
-  IsSafeLeave?: boolean
-}
+// EVT_PLAYER_JOIN関連
+export type JoinPlayer = PlayerJoinEvent['JoinPlayer']
 
-export interface JoinPlayer extends Omit<Player, 'HoleCards'> {
-  Status: 0
-}
+// EVT_HAND_RESULTS関連
+export type Result = HandResultsEvent['Results'][0]
 
-export interface Progress {
-  Phase: PhaseType
-  NextActionSeat: -2 | -1 | 0 | 1 | 2 | 3 | 4 | 5
-  NextActionTypes: ActionType[]
-  NextExtraLimitSeconds: number
-  MinRaise: number
-  Pot: number
-  SidePot: number[]
-}
-
-export interface RankReward {
-  IsSeasonal: boolean
-  RankPoint: number
-  RankPointDiff: number
-  Rank: {
-    RankId: string
-    RankName: string
-    RankLvId: string
-    RankLvName: string
-  }
-  SeasonalRanking: number
-}
-
-export interface RankingReward {
-  HighRanking: number
-  LowRanking: number
-  Rewards: Reward[]
-}
-
-export interface ResultBase {
-  UserId: number
-  HandRanking: -1 | 1 | 2 | 3 | 4 | 5 | 6
-  Ranking: -2 | -1 | 1 | 2 | 3 | 4 | 5 | 6
-  RewardChip: number
-}
-
-export interface ShowDownResult extends ResultBase {
-  RankType: RankType.ROYAL_FLUSH | RankType.STRAIGHT_FLUSH | RankType.FOUR_OF_A_KIND | RankType.FULL_HOUSE | RankType.FLUSH | RankType.STRAIGHT | RankType.THREE_OF_A_KIND | RankType.TWO_PAIR | RankType.ONE_PAIR | RankType.HIGH_CARD
-  Hands: number[] // 5枚のカード（実行時は5要素）
-  HoleCards: number[] // 2枚のカード（実行時は2要素または[-1, -1]）
-}
-
-export interface NoCallOrShowDownMuckResult extends ResultBase {
-  RankType: RankType.NO_CALL | RankType.SHOWDOWN_MUCK
-  Hands: number[] // 空配列
-  HoleCards: number[] // 空配列または[-1, -1]
-}
-
-export interface FoldOpenResult extends ResultBase {
-  RankType: RankType.FOLD_OPEN
-  Hands: number[] // 空配列
-  HoleCards: number[] // 2枚のカード（実行時は2要素）
-}
-
-export type Result =
-  | ShowDownResult
-  | NoCallOrShowDownMuckResult
-  | FoldOpenResult
-
-export interface Reward {
-  Category: number
-  TargetId: string
-  Num: number
-  BuffNum: number
-}
-
-export interface RingReward {
-  ResultNum: number
-  Ranking: number
-  Score: number
-}
-
-export interface Stamp {
-  StampId: string
-  IsRelease: boolean
-}
-
-export interface TableUser {
-  UserId: number
-  UserName: string
-  FavoriteCharaId: string
-  CostumeId: string
-  EmblemId: string
-  Rank: {
-    RankId: 'bronze' | 'silver' | 'gold' | 'platinum' | 'diamond' | 'legend'
-    RankName: 'ブロンズ' | 'シルバー' | 'ゴールド' | 'プラチナ' | 'ダイヤモンド' | 'レジェンド' | 'text_rank_name_bronze' | 'text_rank_name_silver' | 'text_rank_name_gold' | 'text_rank_name_platinum' | 'text_rank_name_diamond' | 'text_rank_name_legend'
-    RankLvId: 'bronze' | 'silver' | 'gold' | 'platinum' | 'diamond' | 'legend'
-    RankLvName: 'ブロンズ' | 'シルバー' | 'ゴールド' | 'プラチナ' | 'ダイヤモンド' | 'レジェンド' | 'text_rank_lv_name_bronze' | 'text_rank_lv_name_silver' | 'text_rank_lv_name_gold' | 'text_rank_lv_name_platinum' | 'text_rank_lv_name_diamond' | 'text_rank_lv_name_legend'
-  }
-  ClassLvId?: ""
-  IsOfficial: boolean
-  IsCpu: boolean
-  SettingDecoIds: string[]
-}
+// EVT_SESSION_RESULTS関連
+export type RankReward = NonNullable<SessionResultsEvent['RankReward']>
+export type RingReward = NonNullable<SessionResultsEvent['RingReward']>
+export type Chara = SessionResultsEvent['Charas'][0]
+export type Stamp = SessionResultsEvent['Charas'][0]['Stamps'][0]
+export type Item = SessionResultsEvent['Items'][0]
 
 // Session types
 export interface Session {

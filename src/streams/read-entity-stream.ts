@@ -1,11 +1,9 @@
 import { Transform } from 'stream'
 import type PokerChaseService from '../services/poker-chase-service'
 import {
-  ApiType,
   PhaseType
 } from '../types'
 import type {
-  ApiEvent,
   ExistPlayerStats,
   Hand,
   PlayerStats,
@@ -46,29 +44,16 @@ export class ReadEntityStream extends Transform {
     // 新しい計算を保証するためキャッシュをクリア
     this.statsCache.clear()
 
-    // seatUserIdsを取得するため最新のハンドを取得
+    // 必要なデータの存在チェック
+    if (!this.service.playerId || !this.service.latestEvtDeal) {
+      console.warn('[ReadEntityStream] playerId or latestEvtDeal not available, skipping stats calculation')
+      return
+    }
+
+    // latestEvtDealから直接seatUserIdsを取得（DBアクセス不要）
+    const seatUserIds = this.service.latestEvtDeal.SeatUserIds
+
     try {
-      const recentHand = await this.service.db.hands.orderBy('id').reverse().limit(1).first()
-      if (!recentHand) {
-        return
-      }
-
-      const seatUserIds = recentHand.seatUserIds
-
-      // playerIdがない場合、EVT_DEALから取得を試みる
-      if (!this.service.playerId) {
-        const recentDealEvent = await this.service.db.apiEvents
-          .where('ApiTypeId').equals(ApiType.EVT_DEAL)
-          .reverse()
-          .filter((event: ApiEvent) => (event as ApiEvent<ApiType.EVT_DEAL>).Player?.SeatIndex !== undefined)
-          .first() as ApiEvent<ApiType.EVT_DEAL> | undefined
-
-        if (recentDealEvent && recentDealEvent.Player?.SeatIndex !== undefined) {
-          this.service.playerId = recentDealEvent.SeatUserIds[recentDealEvent.Player.SeatIndex]
-          this.service.latestEvtDeal = recentDealEvent  // 席マッピング用にEVT_DEALを保存
-        }
-      }
-
       // すべてのプレイヤーの統計を計算
       const stats = await this.calcStats(seatUserIds)
       this.push(stats)

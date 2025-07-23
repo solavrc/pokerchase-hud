@@ -29,20 +29,24 @@ export enum ApiType {
   EVT_PLAYER_SEAT_ASSIGNED = 313,
 }
 
-/**
- * APIイベントスキーマの制約事項:
- * - 外部制御: スキーマはPokerChase APIにより提供され、開発者の制御外
- * - スキーマ変更: 予告なく部分的に変更される可能性があり、防御的コーディングが必要
- * - イベント順序: 論理的な順序が保証されている
- * - 接続問題: プレイヤー側のネットワーク問題によりイベントが失われる可能性がある
- */
+// ===============================
+// Base Schemas
+// ===============================
+
+/** WebSocket受信時にweb_accessible_resourceで付与される共通フィールド */
+const messageSchema = z.object({
+  ApiTypeId: z.number().int(),
+  timestamp: z.number().int()
+})
+
+/** 各APIイベントの基底スキーマ */
 const baseSchema = z.object({
-  timestamp: z.int().optional().describe('イベント発生時刻 (Unix Milliseconds) WebSocketイベント受信時にローカルで付与')
-}).strict().describe('基底スキーマ。strict: 未定義プロパティを検知')
+  timestamp: z.number().int().optional().describe('Unix Milliseconds - WebSocket受信時に付与')
+}).strict().describe('基底スキーマ: 未定義プロパティを検知')
 
 const schema = {
   [ApiType.EVT_ENTRY_QUEUED]: baseSchema.extend({
-    ApiTypeId: z.literal(201),
+    ApiTypeId: z.literal(ApiType.EVT_ENTRY_QUEUED),
     BattleType: z.enum(BattleType),
     Code: z.literal(0),
     Id: z.string().describe('例: new_stage007_010 (一意にセッションを特定するものではない) → SessionIdとBattleTypeの抽出に使用'),
@@ -291,7 +295,12 @@ const schema = {
       RankType: z.enum(RankType).describe('成立役 または 10:NO_CALL, 11:SHOWDOWN_MUCK, 12:FOLD_OPEN'),
       RewardChip: z.int().nonnegative(),
       UserId: z.int().nonnegative(),
-    })).min(1).max(5),
+    })).min(1).max(5).describe(`
+      RankTypeによる結果パターン:
+      - ShowDown: RankType 0-9 (役), Hands 5枚, HoleCards 2枚または[-1, -1]
+      - NoCall/ShowDownMuck: RankType 10-11, Hands 空配列, HoleCards 空配列または[-1, -1]
+      - FoldOpen: RankType 12, Hands 空配列, HoleCards 2枚
+    `),
     ResultType: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).describe('ハンド終了後 2: テーブル移動, 3: 休憩開始, 4: テーブル離脱 または 対戦相手不在'),
     SidePot: z.array(z.int().nonnegative()).max(4),
   }).describe('ハンド結果'),
@@ -359,7 +368,10 @@ const schema = {
       Evolution: z.boolean(),
       Favorite: z.int(),
       Rank: z.int().nonnegative(),
-      Stamps: z.array(z.record(z.string(), z.unknown())).length(12),
+      Stamps: z.array(z.object({
+        StampId: z.string(),
+        IsRelease: z.boolean(),
+      })).length(12),
       TodayUpNum: z.int().nonnegative(),
     })).max(1),
     Costumes: z.array(z.unknown()),
@@ -697,17 +709,100 @@ export const ApiEventSchema = z.discriminatedUnion("ApiTypeId", [
   schema[1304],
 ])
 
-/** ApiEvent互換: 必要な型定義のみ含める */
-export type ApiEvent<T extends ApiType = ApiType> =
-  T extends ApiType.EVT_ENTRY_QUEUED ? z.infer<typeof schema[ApiType.EVT_ENTRY_QUEUED]> :
-  T extends ApiType.EVT_PLAYER_JOIN ? z.infer<typeof schema[ApiType.EVT_PLAYER_JOIN]> :
-  T extends ApiType.EVT_DEAL ? z.infer<typeof schema[ApiType.EVT_DEAL]> :
-  T extends ApiType.EVT_ACTION ? z.infer<typeof schema[ApiType.EVT_ACTION]> :
-  T extends ApiType.EVT_DEAL_ROUND ? z.infer<typeof schema[ApiType.EVT_DEAL_ROUND]> :
-  T extends ApiType.EVT_HAND_RESULTS ? z.infer<typeof schema[ApiType.EVT_HAND_RESULTS]> :
-  T extends ApiType.EVT_SESSION_DETAILS ? z.infer<typeof schema[ApiType.EVT_SESSION_DETAILS]> :
-  T extends ApiType.EVT_SESSION_RESULTS ? z.infer<typeof schema[ApiType.EVT_SESSION_RESULTS]> :
-  T extends ApiType.EVT_PLAYER_SEAT_ASSIGNED ? z.infer<typeof schema[ApiType.EVT_PLAYER_SEAT_ASSIGNED]> :
-  never
+// ===============================
+// Type Derivation from Schemas
+// ===============================
 
-export type ApiHandEvent = ApiEvent<ApiType.EVT_DEAL | ApiType.EVT_ACTION | ApiType.EVT_DEAL_ROUND | ApiType.EVT_HAND_RESULTS>
+/** WebSocketメッセージの型（web_accessible_resourceで付与される） */
+export type ApiMessage = z.infer<typeof messageSchema>
+
+/** 全てのAPIイベントスキーマのマップ */
+export type ApiEventMap = {
+  [K in keyof typeof schema]: z.infer<typeof schema[K]>
+}
+
+/** 既知の全てのイベント型（discriminated union） - 内部使用 */
+type ApiEventDiscriminatedUnion = z.infer<typeof ApiEventSchema>
+
+/** 特定のApiTypeのイベント型 */
+export type ApiEventType<T extends ApiType> = T extends keyof ApiEventMap ? ApiEventMap[T] : never
+
+/**
+ * APIイベント型
+ * - ジェネリック指定時: 特定のイベント型を返す
+ * - ジェネリックなし: 全イベントのdiscriminated unionを返す
+ */
+export type ApiEvent<T extends ApiType = ApiType> = T extends ApiType
+  ? T extends keyof ApiEventMap
+  ? ApiEventMap[T]
+  : ApiEventDiscriminatedUnion
+  : never
+
+/** 特定のイベントタイプのサブセットを抽出するユーティリティ型 */
+export type ApiEventSubset<T extends ApiType> = Extract<ApiEventDiscriminatedUnion, { ApiTypeId: T }>
+
+/** @deprecated Use ApiEvent instead */
+export type ApiEventUnion = ApiEventDiscriminatedUnion
+
+/** ApiTypeの値の配列（アプリケーションで使用） */
+export const ApiTypeValues = Object.values(ApiType).filter(v => typeof v === 'number') as ApiType[]
+
+// ===============================
+// Validation Functions
+// ===============================
+
+/** メッセージスキーマの検証（web_accessible_resource用） */
+export const validateMessage = messageSchema.safeParse.bind(messageSchema)
+
+/** APIイベントスキーマの検証 */
+export const validateApiEvent = ApiEventSchema.safeParse.bind(ApiEventSchema)
+
+/** 特定のApiTypeのイベントか検証 */
+export const isApiEventType = <T extends ApiType>(
+  event: unknown,
+  apiType: T
+): event is ApiEventType<T> => {
+  const result = validateApiEvent(event)
+  return result.success && result.data.ApiTypeId === apiType
+}
+
+/** アプリケーションで使用するイベントかチェック */
+export const isApplicationApiEvent = (event: unknown): event is ApiEvent => {
+  const result = validateApiEvent(event)
+  return result.success && ApiTypeValues.includes(result.data.ApiTypeId as ApiType)
+}
+
+/** 検証エラーの詳細を取得 */
+export const getValidationError = (error: z.ZodError) => {
+  return error.issues.map(issue => ({
+    path: issue.path.join('.') || 'root',
+    message: issue.message,
+    code: issue.code
+  }))
+}
+
+
+// ===============================
+// Domain-Specific Event Types
+// ===============================
+
+/** ハンド処理に必要なイベントのみを含む型 */
+export type ApiHandEvent = ApiEventSubset<
+  | ApiType.EVT_DEAL
+  | ApiType.EVT_ACTION
+  | ApiType.EVT_DEAL_ROUND
+  | ApiType.EVT_HAND_RESULTS
+>
+
+/** セッション管理に必要なイベントのみを含む型 */
+export type ApiSessionEvent = ApiEventSubset<
+  | ApiType.EVT_ENTRY_QUEUED
+  | ApiType.EVT_SESSION_DETAILS
+  | ApiType.EVT_SESSION_RESULTS
+>
+
+/** プレイヤー情報に関するイベントのみを含む型 */
+export type ApiPlayerEvent = ApiEventSubset<
+  | ApiType.EVT_PLAYER_SEAT_ASSIGNED
+  | ApiType.EVT_PLAYER_JOIN
+>
