@@ -18,7 +18,7 @@ const KEEPALIVE_INTERVAL_MS = 25000 // 25秒（30秒タイムアウトより少�
 
 // ゲーム状態の管理
 let isGameActive = false
-let keepaliveTimer: number | null = null
+let keepaliveTimer: ReturnType<typeof setInterval> | null = null
 
 export interface StatsData {
   stats: PlayerStats[]
@@ -70,7 +70,7 @@ const startKeepalive = (port: chrome.runtime.Port) => {
 
   // ゲーム中のみキープアライブを送信
   if (isGameActive) {
-    keepaliveTimer = window.setInterval(() => {
+    keepaliveTimer = setInterval(() => {
       try {
         port.postMessage({ type: 'keepalive' } as any)
         console.debug('[content_script] Keepalive sent')
@@ -132,6 +132,28 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
     if (error instanceof Error && error.message === 'Extension context invalidated.') {
       window.location.reload()
     }
+  }
+})
+
+// Cleanup on window unload
+window.addEventListener('beforeunload', () => {
+  stopKeepalive()
+  // Disconnect port gracefully
+  try {
+    port.disconnect()
+  } catch (e) {
+    // Port might already be disconnected
+  }
+})
+
+// Handle tab visibility changes
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    // Tab is hidden, stop keepalive to save resources
+    stopKeepalive()
+  } else if (isGameActive && port) {
+    // Tab is visible again and game is active, restart keepalive
+    startKeepalive(port)
   }
 })
 

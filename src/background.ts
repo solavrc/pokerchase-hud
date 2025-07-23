@@ -52,6 +52,13 @@ const service = new PokerChaseService({ db })
 self.db = db
 self.service = service
 
+// Wait for service initialization
+service.ready.then(() => {
+  console.log('[background] PokerChaseService is ready')
+}).catch(err => {
+  console.error('[background] PokerChaseService initialization failed:', err)
+})
+
 interface ImportSession {
   chunks: string[]
   totalChunks: number
@@ -651,11 +658,19 @@ const downloadFile = (content: string, filename: string, contentType: string) =>
  */
 chrome.runtime.onConnect.addListener(port => {
   if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
-    port.onMessage.addListener((message: ApiMessage | { type: string }) => {
+    port.onMessage.addListener(async (message: ApiMessage | { type: string }) => {
       // キープアライブメッセージの処理
       if (typeof message === 'object' && 'type' in message && message.type === 'keepalive') {
         console.debug('[background] Keepalive received, Service Worker will stay active')
         return // キープアライブは処理のみで、それ以上何もしない
+      }
+
+      // Ensure service is ready before processing messages
+      try {
+        await service.ready
+      } catch (err) {
+        console.error('[background] Service not ready:', err)
+        return
       }
 
       // 通常のAPIメッセージ処理
