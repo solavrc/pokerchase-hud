@@ -2,7 +2,7 @@
 
 > 🎯 **Purpose**: Technical reference for AI coding agents working on the PokerChase HUD Chrome extension.
 >
-> 📅 **Last Updated**: 2025-07-16
+> 📅 **Last Updated**: 2025-07-23
 
 ## 📋 Table of Contents
 
@@ -90,6 +90,10 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 - **Language**:
   - Respond in Japanese (日本語) when communicating with users
   - Write CLAUDE.md documentation in English
+- **Service Worker Compatibility**:
+  - Avoid `window` object in background scripts
+  - Use global timer functions (`setTimeout`, not `window.setTimeout`)
+  - Consider Service Worker lifecycle in all background operations
 
 #### Testing & Build
 
@@ -162,6 +166,8 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 6. **Type Safety**: Explicit types, error handling for invalid inputs
 7. **Stream Independence**: Real-time stats process parallel to main statistics pipeline
 8. **No Magic Numbers**: Use named constants (e.g., HUD_WIDTH)
+9. **Service Worker Resilience**: Handle 30-second timeout gracefully
+10. **State Persistence**: Maintain critical state across Service Worker lifecycle
 
 ### Data Flow
 
@@ -292,6 +298,11 @@ Statistics Refresh (batch mode)
 - **Graceful Degradation**: Show "No Data" or cached values when data incomplete
 - **Session Continuity**: Preserve session state across WebSocket reconnections
 - **Batch vs Live**: Use `service.setBatchMode()` to differentiate import from live events
+- **Service Worker Keepalive**: 
+  - Sends keepalive messages every 25 seconds during active games
+  - Automatically starts on EVT_SESSION_DETAILS (game start)
+  - Stops on EVT_SESSION_RESULTS (game end) or tab visibility change
+  - Prevents Service Worker from timing out after 30 seconds
 
 ## Components & Modules
 
@@ -385,6 +396,9 @@ Statistics Refresh (batch mode)
 - Bridge between page and extension
 - React app injection
 - Message validation and routing
+- **Keepalive mechanism**: Sends periodic messages to prevent Service Worker timeout
+- **Game state tracking**: Monitors EVT_SESSION_DETAILS/RESULTS for active games
+- **Resource cleanup**: Handles beforeunload and visibilitychange events
 
 #### `background.ts`
 
@@ -392,6 +406,9 @@ Statistics Refresh (batch mode)
 - Import/export operations
 - Connection lifecycle management
 - Batch processing coordination
+- **State initialization**: Waits for `service.ready` promise before processing
+- **Keepalive handling**: Processes keepalive messages to stay active
+- **Schema validation**: Validates all incoming API events with Zod
 
 ### Data Processing Streams
 
@@ -439,6 +456,25 @@ Statistics Refresh (batch mode)
 - Uses HandLogProcessor for consistent formatting
 - Emits events for UI updates
 - Resets hand state while preserving session data
+
+### Services
+
+#### `PokerChaseService` (`src/services/poker-chase-service.ts`)
+
+- **Core service**: Central state management and stream coordination
+- **Chrome Storage persistence**: Automatic state saving to survive Service Worker restarts
+  - Uses getter/setter pattern for transparent persistence
+  - Persists `playerId`, `latestEvtDeal`, and session data
+  - Implements 500ms debouncing to optimize write frequency
+- **Initialization promise**: `ready` property ensures complete initialization
+  - Prevents race conditions during startup
+  - Background script waits for this before processing events
+- **Error handling**: Tracks initialization errors separately
+  - `isReady` getter checks both initialization and error state
+  - Storage quota exceeded handling with automatic cleanup
+- **Session management**: Maintains game session continuity
+  - Players Map with custom setter for persistence
+  - Direct property access during restoration to avoid circular persistence
 
 ### Utility Modules
 
@@ -742,7 +778,7 @@ Configuration uses Chrome's `storage.sync` API for cross-device synchronization:
 **Storage Areas**:
 
 - `sync`: User preferences, HUD positions (synced across devices)
-- `local`: Not currently used (available for large data if needed)
+- `local`: Service state persistence (PokerChaseService state)
 
 #### Configuration Interfaces
 
@@ -790,6 +826,22 @@ Configuration uses Chrome's `storage.sync` API for cross-device synchronization:
 2. **Background → Content**: Updates forwarded to all game tabs
 3. **Content → UI**: React components re-render with new settings
 4. **Persistence**: Automatic via Chrome sync storage
+
+#### Service State Persistence
+
+**Storage Key**: `pokerChaseServiceState`
+
+**Persisted Data**:
+- `playerId`: Current hero player ID
+- `latestEvtDeal`: Most recent EVT_DEAL event for seat mapping
+- `session`: Game session information (id, battleType, name, players)
+- `lastUpdated`: Timestamp of last persistence
+
+**Persistence Features**:
+- **Automatic saving**: Triggered by setter methods with 500ms debounce
+- **Restoration on startup**: Service worker loads state before processing events
+- **Quota handling**: Automatic cleanup of old temporary data on quota exceeded
+- **Error resilience**: Continues operation even if storage fails
 
 ---
 
