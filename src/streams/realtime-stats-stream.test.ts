@@ -6,7 +6,6 @@ import { RealTimeStatsStream } from './realtime-stats-stream'
 import { setHandImprovementHeroHoleCards } from '../realtime-stats/hand-improvement'
 import { ApiType, PhaseType, RankType } from '../types'
 import type { ApiHandEvent } from '../types'
-import { Readable } from 'stream'
 
 describe('RealTimeStatsStream', () => {
   let stream: RealTimeStatsStream
@@ -91,8 +90,8 @@ describe('RealTimeStatsStream', () => {
         done()
       })
 
-      const readable = Readable.from([events])
-      readable.pipe(stream)
+      events.forEach(event => stream.write(event))
+      stream.end()
     })
 
     test('ポケットペア以外のプリフロップ確率計算', (done) => {
@@ -164,8 +163,8 @@ describe('RealTimeStatsStream', () => {
         done()
       })
 
-      const readable = Readable.from([events])
-      readable.pipe(stream)
+      events.forEach(event => stream.write(event))
+      stream.end()
     })
   })
 
@@ -261,8 +260,8 @@ describe('RealTimeStatsStream', () => {
         done()
       })
 
-      const readable = Readable.from([events])
-      readable.pipe(stream)
+      events.forEach(event => stream.write(event))
+      stream.end()
     })
   })
 
@@ -382,8 +381,8 @@ describe('RealTimeStatsStream', () => {
         done()
       })
 
-      const readable = Readable.from([events])
-      readable.pipe(stream)
+      events.forEach(event => stream.write(event))
+      stream.end()
     })
 
     test('evaluateHandが5枚のカードで正しく動作する', () => {
@@ -548,8 +547,8 @@ describe('RealTimeStatsStream', () => {
         done()
       })
 
-      const readable = Readable.from([events])
-      readable.pipe(stream)
+      events.forEach(event => stream.write(event))
+      stream.end()
     })
   })
 
@@ -655,8 +654,8 @@ describe('RealTimeStatsStream', () => {
         done()
       })
 
-      const readable = Readable.from([events])
-      readable.pipe(stream)
+      events.forEach(event => stream.write(event))
+      stream.end()
     })
   })
 
@@ -825,8 +824,8 @@ describe('RealTimeStatsStream', () => {
       done()
     })
 
-    const readable = Readable.from([events])
-    readable.pipe(stream)
+    events.forEach(event => stream.write(event))
+    stream.end()
   })
 })
 
@@ -899,17 +898,17 @@ describe('SPR (Stack to Pot Ratio) Tracking', () => {
       // Check that SPR is calculated correctly
       const withPotOdds = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds)
       expect(withPotOdds.length).toBeGreaterThan(0)
-      
+
       const potOddsData = withPotOdds[0].stats.heroStats.potOdds.value
       expect(potOddsData).toHaveProperty('spr')
       // Hero's chips (10000) / pot (300) = 33.3
       expect(potOddsData.spr).toBe(33.3)
-      
+
       done()
     })
 
-    const readable = Readable.from([events])
-    readable.pipe(stream)
+    events.forEach(event => stream.write(event))
+    stream.end()
   })
 
   test('アクション後のチップ変動を反映してSPRを再計算する', (done) => {
@@ -1021,19 +1020,19 @@ describe('SPR (Stack to Pot Ratio) Tracking', () => {
     stream.on('end', () => {
       // Get the last stats calculation
       const lastStats = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds).pop()
-      
+
       expect(lastStats).toBeDefined()
       const potOddsData = lastStats.stats.heroStats.potOdds.value
-      
+
       // Hero has 5000 chips, pot is 900
       // SPR should be 5000 / 900 = 5.6
       expect(potOddsData.spr).toBe(5.6)
-      
+
       done()
     })
 
-    const readable = Readable.from([events])
-    readable.pipe(stream)
+    events.forEach(event => stream.write(event))
+    stream.end()
   })
 
   test('低SPR状況（コミットポット）を検出する', (done) => {
@@ -1122,18 +1121,18 @@ describe('SPR (Stack to Pot Ratio) Tracking', () => {
 
     stream.on('end', () => {
       const lastStats = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds).pop()
-      
+
       expect(lastStats).toBeDefined()
       const potOddsData = lastStats.stats.heroStats.potOdds.value
-      
+
       // SPR should be 1200 / 2400 = 0.5
       expect(potOddsData.spr).toBe(0.5)
-      
+
       done()
     })
 
-    const readable = Readable.from([[dealEvent, ...events]])
-    readable.pipe(stream)
+      ;[dealEvent, ...events].forEach(event => stream.write(event))
+    stream.end()
   })
 
   test('新しいハンドでチップスタックをリセットする', (done) => {
@@ -1241,14 +1240,14 @@ describe('SPR (Stack to Pot Ratio) Tracking', () => {
 
     const results: any[] = []
     let handCount = 0
-    
+
     stream.on('data', (data) => {
       results.push(data)
-      
+
       // Count how many times we see stats with hole cards (new hands)
       if (data.stats && data.stats.heroStats && data.stats.heroStats.holeCards) {
         handCount++
-        
+
         if (handCount === 2 && data.stats.heroStats && data.stats.heroStats.potOdds) {
           // Second hand should have new chip amounts
           const potOddsData = data.stats.heroStats.potOdds.value
@@ -1264,7 +1263,7 @@ describe('SPR (Stack to Pot Ratio) Tracking', () => {
       done()
     })
 
-    const readable = Readable.from([events])
-    readable.pipe(stream)
+    events.forEach(event => stream.write(event))
+    stream.end()
   })
 })

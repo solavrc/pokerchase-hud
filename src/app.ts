@@ -18,10 +18,19 @@ export {
   Position,
   type Action,
   type ApiEvent,
+  type ApiEventType,
+  type ApiEventUnion,
+  type ApiMessage,
   type FilterOptions,
   type GameTypeFilter,
   type Hand,
   type Phase,
-  type PlayerStats
+  type PlayerStats,
+  // Validation functions
+  isApplicationApiEvent,
+  validateApiEvent,
+  validateMessage,
+  isApiEventType,
+  ApiTypeValues
 } from './types'
 

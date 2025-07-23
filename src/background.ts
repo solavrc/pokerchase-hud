@@ -10,7 +10,12 @@ import PokerChaseService, {
   ApiType,
   BATTLE_TYPE_FILTERS,
   PlayerStats,
-  PokerChaseDB
+  PokerChaseDB,
+  ApiMessage,
+  ApiEventType,
+  validateApiEvent,
+  isApplicationApiEvent,
+  isApiEventType
 } from './app'
 import { EntityConverter } from './entity-converter'
 import type { AllPlayersRealTimeStats } from './realtime-stats/realtime-stats-service'
@@ -46,6 +51,13 @@ const db = new PokerChaseDB(self.indexedDB, self.IDBKeyRange)
 const service = new PokerChaseService({ db })
 self.db = db
 self.service = service
+
+// Wait for service initialization
+service.ready.then(() => {
+  console.log('[background] PokerChaseService is ready')
+}).catch(err => {
+  console.error('[background] PokerChaseService initialization failed:', err)
+})
 
 interface ImportSession {
   chunks: string[]
@@ -99,39 +111,6 @@ chrome.storage.sync.get('options', (result) => {
   }
 })
 
-/** 拡張起動時: 最新のセッション情報を復元 */
-const restoreLatestSession = async () => {
-  try {
-    const latestHand = await db.hands.orderBy('id').reverse().limit(1).first()
-    if (latestHand) {
-      if (latestHand.session) {
-        service.session.id = latestHand.session.id
-        service.session.battleType = latestHand.session.battleType
-        service.session.name = latestHand.session.name
-      }
-    }
-
-    // 最新のEVT_DEALイベントからプレイヤーIDを復元
-    const recentDealEvent = await db.apiEvents
-      .where('ApiTypeId').equals(ApiType.EVT_DEAL)
-      .reverse()
-      .filter(event => (event as ApiEvent<ApiType.EVT_DEAL>).Player?.SeatIndex !== undefined)
-      .first() as ApiEvent<ApiType.EVT_DEAL> | undefined
-
-    if (recentDealEvent && recentDealEvent.Player?.SeatIndex !== undefined) {
-      service.playerId = recentDealEvent.SeatUserIds[recentDealEvent.Player.SeatIndex]
-      // latestEvtDealも復元して統計計算を可能にする
-      service.latestEvtDeal = recentDealEvent
-    } else {
-      // 起動時にPlayerを含むEVT_DEALが見つからない（おそらく観戦ゲームのみ）
-    }
-
-    // プレイヤー名は現在データベースのplayersテーブルに直接保存されている
-  } catch (error) {
-    console.error('Error restoring session:', error)
-  }
-}
-restoreLatestSession()
 
 /**
  * データエクスポート機能
@@ -355,19 +334,35 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
         if (!line) continue
 
         try {
-          const event = JSON.parse(line)
-          if (event.ApiTypeId && event.timestamp) {
-            const key = `${event.timestamp}-${event.ApiTypeId}`
+          const parsed = JSON.parse(line)
 
-            // メモリ内で重複チェック（最適化ポイント2）
-            if (!existingKeys.has(key)) {
-              newEvents.push(event)
-              existingKeys.add(key) // 次の重複チェック用
-            } else {
-              duplicateCount++
-            }
+          // タイムスタンプチェック（インポートでは必須）
+          if (!('timestamp' in parsed && parsed.timestamp)) {
+            errors.push(`Line ${lineNumber}: Missing timestamp`)
+            continue
+          }
+
+          // Zodスキーマ検証
+          const result = validateApiEvent(parsed)
+          if (!result.success) {
+            errors.push(`Line ${lineNumber}: ${result.error.issues[0]?.message || 'Validation failed'}`)
+            continue
+          }
+
+          const event = result.data as ApiEvent
+
+          // アプリケーションで使用するイベントかチェック
+          if (!isApplicationApiEvent(event)) {
+            continue
+          }
+          const key = `${event.timestamp}-${event.ApiTypeId}`
+
+          // メモリ内で重複チェック（最適化ポイント2）
+          if (!existingKeys.has(key)) {
+            newEvents.push(event)
+            existingKeys.add(key) // 次の重複チェック用
           } else {
-            errors.push(`Line ${lineNumber}: Missing required fields`)
+            duplicateCount++
           }
         } catch (parseError) {
           // 無効なJSON行をスキップ
@@ -382,9 +377,8 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
         try {
           await db.apiEvents.bulkAdd(newEvents)
           successCount += newEvents.length
-          // 直接エンティティ生成用に収集
           allNewEvents.push(...newEvents)
-        } catch (dbError: any) {
+        } catch (dbError) {
           // 部分的な失敗の場合、個別に保存を試みる
           console.warn(`Bulk add failed for chunk ${Math.floor(i / IMPORT_CHUNK_SIZE) + 1}, falling back to individual adds:`, dbError)
 
@@ -392,12 +386,12 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
             try {
               await db.apiEvents.add(event)
               successCount++
-              // 直接エンティティ生成用に収集
               allNewEvents.push(event)
-            } catch (individualError: any) {
+            } catch (individualError) {
               // 個別エラーは重複以外の場合のみログ
-              if (!individualError.message?.includes('Key already exists')) {
-                errors.push(`Event at timestamp ${event.timestamp}: ${individualError.message}`)
+              const errorMessage = individualError instanceof Error ? individualError.message : String(individualError)
+              if (!errorMessage.includes('Key already exists')) {
+                errors.push(`Event at timestamp ${event.timestamp}: ${errorMessage}`)
               } else {
                 duplicateCount++
                 successCount-- // 重複の場合は成功数から除外
@@ -508,13 +502,16 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
 
     // インポート後に統計を強制的に更新
     // 最新のEVT_DEALを取得して統計計算をトリガー
-    const latestDealEvent = await db.apiEvents
+    const latestDealEvents = await db.apiEvents
       .where('ApiTypeId').equals(ApiType.EVT_DEAL)
       .reverse()
-      .filter(event => (event as ApiEvent<ApiType.EVT_DEAL>).Player?.SeatIndex !== undefined)
-      .first() as ApiEvent<ApiType.EVT_DEAL> | undefined
+      .toArray()
 
-    if (latestDealEvent && latestDealEvent.SeatUserIds) {
+    const latestDealEvent = latestDealEvents.find(event =>
+      isApiEventType(event, ApiType.EVT_DEAL) && event.Player?.SeatIndex !== undefined
+    )
+
+    if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
       // latestEvtDealを更新
       service.latestEvtDeal = latestDealEvent
 
@@ -653,17 +650,53 @@ const downloadFile = (content: string, filename: string, contentType: string) =>
  * from `content_script.ts`
  * @see https://developer.chrome.com/docs/extensions/develop/concepts/messaging?hl=ja#port-lifetime
  * @see https://medium.com/@bhuvan.gandhi/chrome-extension-v3-mitigate-service-worker-timeout-issue-in-the-easiest-way-fccc01877abd
+ *
+ * メッセージの型保証:
+ * 1. web_accessible_resource.ts: ApiTypeIdを持つメッセージのみ送信
+ * 2. content_script.ts: ApiMessage型として受信・転送
+ * 3. background.ts: ApiMessage型として受信し、完全な検証を実施
  */
 chrome.runtime.onConnect.addListener(port => {
   if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
-    port.onMessage.addListener((message: ApiEvent) => {
-      service.eventLogger(message)
-      service.db.apiEvents.add(message)
-      service.handLogStream.write(message)
-      service.handAggregateStream.write(message)
-      service.realTimeStatsStream.write([message])
+    port.onMessage.addListener(async (message: ApiMessage | { type: string }) => {
+      // キープアライブメッセージの処理
+      if (typeof message === 'object' && 'type' in message && message.type === 'keepalive') {
+        return // キープアライブは処理のみで、それ以上何もしない
+      }
+
+      // Ensure service is ready before processing messages
+      try {
+        await service.ready
+      } catch (err) {
+        console.error('[background] Service not ready:', err)
+        return
+      }
+
+      // 通常のAPIメッセージ処理
+      // Zodスキーマで完全検証
+      const { success, data, error } = validateApiEvent(message as ApiMessage)
+
+      if (!success) {
+        console.warn('[background] Schema validation failed:', error.issues, data ?? message)
+      }
+
+      // アプリケーションで使用するイベントかチェック
+      if (!isApplicationApiEvent(data)) {
+        service.eventLogger(data, 'debug')
+        return
+      }
+
+      // ここでapiEventはApiEvent型（型ガードで保証済み）
+      service.eventLogger(data, 'info')
+
+      // DB保存とストリーム処理
+      service.db.apiEvents.add(data)
+        .catch(err => console.error('[background] Failed to save event:', err))
+      service.handLogStream.write(data)
+      service.handAggregateStream.write(data)
+      service.realTimeStatsStream.write(data)
     })
-    const postMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
+    const postMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEventType<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
       try {
         port.postMessage(data)
       } catch (error: unknown) {

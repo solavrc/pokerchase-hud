@@ -33,31 +33,227 @@ import type {
  * background.js、content_script.js、Popup.tsxから利用される。
  */
 class PokerChaseService {
-  playerId?: number
-  latestEvtDeal?: ApiEvent<ApiType.EVT_DEAL> // Latest EVT_DEAL event for seat mapping
+  private _playerId?: number
+  private _latestEvtDeal?: ApiEvent<ApiType.EVT_DEAL>
+  private _sessionData: Session
+  private _isInitialized: boolean = false
+  private _initializationError?: Error
+  private _persistStateTimer?: ReturnType<typeof setTimeout>
+
+  // Initialization promise
+  public readonly ready: Promise<void>
+
+  // 永続化不要なプロパティ
   battleTypeFilter?: number[] = undefined // undefined = all, array = specific battleTypes
   handLimitFilter?: number = undefined // undefined = all hands, number = limit to recent N hands
   statDisplayConfigs?: StatDisplayConfig[] = undefined // Custom stat display configuration
   handLogConfig?: HandLogConfig = undefined // Hand log display configuration
   batchMode: boolean = false // Batch mode flag for bulk operations
+
   static readonly POKER_CHASE_SERVICE_EVENT = 'PokerChaseServiceEvent'
   static readonly POKER_CHASE_ORIGIN = new URL(content_scripts[0]!.matches[0]!).origin
-  readonly session: Session = {
-    id: undefined,
-    battleType: undefined,
-    name: undefined,
-    players: new Map<number, { name: string, rank: string }>(),
-    reset: function () {
-      this.id = undefined
-      this.battleType = undefined
-      this.name = undefined
-      this.players.clear()
+  static readonly STORAGE_KEY = 'pokerChaseServiceState'
+
+  // Getter/Setter for automatic persistence
+  get playerId(): number | undefined {
+    return this._playerId
+  }
+
+  set playerId(value: number | undefined) {
+    this._playerId = value
+    this.persistState()
+  }
+
+  get latestEvtDeal(): ApiEvent<ApiType.EVT_DEAL> | undefined {
+    return this._latestEvtDeal
+  }
+
+  set latestEvtDeal(value: ApiEvent<ApiType.EVT_DEAL> | undefined) {
+    this._latestEvtDeal = value
+    this.persistState()
+  }
+  get session(): Session {
+    return this._sessionData
+  }
+
+  // Check if service is ready
+  get isReady(): boolean {
+    return this._isInitialized && !this._initializationError
+  }
+
+  private initializeSession(): Session {
+    const self = this
+    const session = {
+      _id: undefined as number | undefined,
+      _battleType: undefined as number | undefined,
+      _name: undefined as string | undefined,
+      players: new Map<number, { name: string, rank: string }>(),
+
+      get id() { return this._id },
+      set id(value: number | undefined) {
+        this._id = value
+        self.persistState()
+      },
+
+      get battleType() { return this._battleType },
+      set battleType(value: number | undefined) {
+        this._battleType = value
+        self.persistState()
+      },
+
+      get name() { return this._name },
+      set name(value: string | undefined) {
+        this._name = value
+        self.persistState()
+      },
+
+      reset: function () {
+        this.id = undefined
+        this.battleType = undefined
+        this.name = undefined
+        this.players.clear()
+        self.persistState()
+      }
     }
+
+    // プレイヤー追加時も永続化
+    const originalSet = session.players.set.bind(session.players)
+    session.players.set = function (key: number, value: { name: string, rank: string }) {
+      const result = originalSet(key, value)
+      self.persistState()
+      return result
+    }
+
+    return session as Session
   }
 
   /** Reset session and clear player data */
   readonly resetSession = () => {
     this.session.reset()
+  }
+
+  /** Persist current state to Chrome Storage with debouncing */
+  private persistState = () => {
+    if (!this._isInitialized || typeof chrome === 'undefined' || !chrome.storage) {
+      return
+    }
+
+    // Clear existing timer
+    if (this._persistStateTimer) {
+      clearTimeout(this._persistStateTimer)
+    }
+
+    // Debounce persistence to avoid frequent writes
+    this._persistStateTimer = setTimeout(() => {
+      this.actualPersistState()
+    }, 500) // 500ms debounce
+  }
+
+  /** Actual persistence logic */
+  private actualPersistState = () => {
+    // Convert Map to array for serialization
+    const playersArray = Array.from(this._sessionData.players.entries())
+
+    const state = {
+      playerId: this._playerId,
+      latestEvtDeal: this._latestEvtDeal,
+      session: {
+        id: this._sessionData.id,
+        battleType: this._sessionData.battleType,
+        name: this._sessionData.name,
+        players: playersArray
+      },
+      lastUpdated: Date.now()
+    }
+
+    chrome.storage.local.set({ [PokerChaseService.STORAGE_KEY]: state })
+      .catch(err => {
+        if (err.message?.includes('QUOTA_BYTES')) {
+          console.error('[PokerChaseService] Storage quota exceeded, attempting cleanup')
+          // Try to clear some old data
+          this.cleanupOldStorageData()
+        } else {
+          console.error('[PokerChaseService] Failed to persist state:', err)
+        }
+      })
+  }
+
+  /** Clean up old storage data when quota is exceeded */
+  private cleanupOldStorageData = async () => {
+    try {
+      // Clear old extension-specific data
+      const allItems = await chrome.storage.local.get(null)
+      const keysToRemove: string[] = []
+
+      // Remove old version keys or temporary data
+      for (const key in allItems) {
+        if (key.startsWith('temp_') || key.startsWith('old_')) {
+          keysToRemove.push(key)
+        }
+      }
+
+      if (keysToRemove.length > 0) {
+        await chrome.storage.local.remove(keysToRemove)
+        console.log(`[PokerChaseService] Cleaned up ${keysToRemove.length} old storage keys`)
+        // Retry persistence
+        this.actualPersistState()
+      }
+    } catch (error) {
+      console.error('[PokerChaseService] Failed to cleanup storage:', error)
+    }
+  }
+
+  /** Restore state from Chrome Storage */
+  public async restoreState(): Promise<void> {
+    if (typeof chrome === 'undefined' || !chrome.storage) {
+      this._isInitialized = true // No Chrome storage available, but service is ready
+      return
+    }
+
+    try {
+      const result = await chrome.storage.local.get(PokerChaseService.STORAGE_KEY)
+      const state = result[PokerChaseService.STORAGE_KEY]
+
+      if (state) {
+        // Don't use setters during restoration to avoid triggering persistence
+        this._playerId = state.playerId
+        this._latestEvtDeal = state.latestEvtDeal
+
+        if (state.session) {
+          // Direct assignment to avoid setter side effects during restoration
+          const sessionData = this._sessionData as any // Type assertion for private properties
+          sessionData._id = state.session.id
+          sessionData._battleType = state.session.battleType
+          sessionData._name = state.session.name
+
+          // Restore players Map from array
+          if (state.session.players && Array.isArray(state.session.players)) {
+            this._sessionData.players.clear()
+            state.session.players.forEach(([key, value]: [number, { name: string, rank: string }]) => {
+              // Use original Map.set to avoid persistence trigger
+              Map.prototype.set.call(this._sessionData.players, key, value)
+            })
+          }
+        }
+
+        console.log('[PokerChaseService] State restored successfully:', {
+          playerId: this._playerId,
+          sessionId: this._sessionData.id,
+          playerCount: this._sessionData.players.size,
+          lastUpdated: state.lastUpdated ? new Date(state.lastUpdated).toISOString() : 'unknown'
+        })
+      }
+
+      // Mark as successfully initialized
+      this._isInitialized = true
+      this._initializationError = undefined
+    } catch (error) {
+      console.error('[PokerChaseService] Failed to restore state:', error)
+      // Store the initialization error
+      this._initializationError = error instanceof Error ? error : new Error(String(error))
+      // Still mark as initialized to prevent hanging
+      this._isInitialized = true
+    }
   }
   readonly db
   readonly handAggregateStream: AggregateEventsStream      // Entry point for all events and groups events by hand
@@ -65,8 +261,12 @@ class PokerChaseService {
   readonly handLogStream: HandLogStream                    // Real-time hand log display
   readonly realTimeStatsStream: RealTimeStatsStream        // Real-time stats for hero only
   constructor({ db, playerId }: { db: PokerChaseDB, playerId?: number }) {
-    this.playerId = playerId
+    this._playerId = playerId
+    this._sessionData = this.initializeSession()
     this.db = db
+
+    // Initialize the ready promise
+    this.ready = this.restoreState()
 
     // Create streams
     this.handAggregateStream = new AggregateEventsStream(this)
@@ -243,13 +443,27 @@ class PokerChaseService {
 
     return HandLogExporter.exportMultipleHands(this.db, handIds)
   }
-  eventLogger = (event: ApiEvent) => {
+  eventLogger = (event: any, level: 'debug' | 'info' | 'warn' | 'error' = 'info') => {
     const timestamp = event.timestamp
       ? new Date(event.timestamp).toISOString().slice(11, 22)
       : new Date().toISOString().slice(11, 22)
-    ApiType[event.ApiTypeId]
-      ? console.debug(`[${timestamp}]`, event.ApiTypeId, ApiType[event.ApiTypeId], JSON.stringify(event))
-      : console.warn(`[${timestamp}]`, event.ApiTypeId, ApiType[event.ApiTypeId], JSON.stringify(event))
+    const eventName = ApiType[event.ApiTypeId as number] ?? null
+    const logMessage = `[${timestamp}] ${event.ApiTypeId} ${eventName} ${JSON.stringify(event)}`
+
+    switch (level) {
+      case 'debug':
+        console.debug(logMessage)
+        break
+      case 'info':
+        console.info(logMessage)
+        break
+      case 'warn':
+        console.warn(logMessage)
+        break
+      case 'error':
+        console.error(logMessage)
+        break
+    }
   }
 }
 

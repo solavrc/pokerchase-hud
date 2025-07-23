@@ -5,7 +5,6 @@
 import { RealTimeStatsStream } from '../streams/realtime-stats-stream'
 import { ApiType, PhaseType } from '../types'
 import type { ApiHandEvent } from '../types'
-import { Readable } from 'stream'
 
 describe('Pot Odds Calculation', () => {
   let stream: RealTimeStatsStream
@@ -162,25 +161,25 @@ describe('Pot Odds Calculation', () => {
     stream.on('end', () => {
       // Find the last stats event with heroStats
       const lastStats = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds).pop()
-      
+
       expect(lastStats).toBeDefined()
       expect(lastStats.stats.heroStats.potOdds).toBeDefined()
-      
+
       const potOddsValue = lastStats.stats.heroStats.potOdds.value
       expect(potOddsValue).toHaveProperty('percentage')
       expect(potOddsValue).toHaveProperty('ratio')
-      
+
       // Should be around 30.8% (400 / (900 + 400))
       expect(potOddsValue.percentage).toBeCloseTo(30.8, 0)
       expect(potOddsValue.ratio).toMatch(/^\d+:\d+$/)  // Format check
       expect(potOddsValue.pot).toBe(1300)  // 900 + 400 (playable pot)
       expect(potOddsValue.call).toBe(400)
-      
+
       done()
     })
 
-    const readable = Readable.from([events])
-    readable.pipe(stream)
+    events.forEach(event => stream.write(event))
+    stream.end()
   })
 
   test('ヒーローのターンでない時もコール可能額を表示', (done) => {
@@ -240,21 +239,21 @@ describe('Pot Odds Calculation', () => {
       // Should have stats with pot odds showing pot size only
       const statsEvents = results.filter(r => r.stats)
       expect(statsEvents.length).toBeGreaterThan(0)
-      
+
       // Pot odds should exist but with isHeroTurn = false
       const withPotOdds = statsEvents.filter(r => r.stats.heroStats && r.stats.heroStats.potOdds)
       expect(withPotOdds.length).toBeGreaterThan(0)
-      
+
       const potOddsData = withPotOdds[0].stats.heroStats.potOdds.value
       expect(potOddsData.isHeroTurn).toBe(false)
       expect(potOddsData.pot).toBe(500)  // 300 + 200 (BB needs to call 200)
       expect(potOddsData.call).toBe(200) // BB needs to call 200 to match SB+BB
-      
+
       done()
     })
 
-    const readable = Readable.from([events])
-    readable.pipe(stream)
+    events.forEach(event => stream.write(event))
+    stream.end()
   })
 
   test('サイドポットを含めた合計ポットで計算する', (done) => {
@@ -367,19 +366,19 @@ describe('Pot Odds Calculation', () => {
       // Find stats with pot odds
       const withPotOdds = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds)
       expect(withPotOdds.length).toBeGreaterThan(0)
-      
+
       const lastPotOdds = withPotOdds[withPotOdds.length - 1]
       const potOddsData = lastPotOdds.stats.heroStats.potOdds.value
-      
+
       expect(potOddsData.pot).toBe(3300)  // 2100 (pot) + 600 (opponent bet) + 600 (hero's call)
       expect(potOddsData.call).toBe(600)  // Hero needs to call 600
       expect(potOddsData.percentage).toBeCloseTo(18.2, 1)  // 600 / 3300
-      
+
       done()
     })
 
-    const readable = Readable.from([events])
-    readable.pipe(stream)
+    events.forEach(event => stream.write(event))
+    stream.end()
   })
 
   test('SPR（Stack to Pot Ratio）を計算する', (done) => {
@@ -457,21 +456,21 @@ describe('Pot Odds Calculation', () => {
     stream.on('end', () => {
       // Find the last stats event with pot odds
       const lastStats = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds).pop()
-      
+
       expect(lastStats).toBeDefined()
       expect(lastStats.stats.heroStats.potOdds).toBeDefined()
-      
+
       const potOddsValue = lastStats.stats.heroStats.potOdds.value
       expect(potOddsValue).toHaveProperty('spr')
-      
+
       // SPR should be 9800 / 900 = 10.9 (rounded to 1 decimal)
       expect(potOddsValue.spr).toBe(10.9)
-      
+
       done()
     })
 
-    const readable = Readable.from([events])
-    readable.pipe(stream)
+    events.forEach(event => stream.write(event))
+    stream.end()
   })
 
   test('低SPR状況（コミットポット）を検出する', (done) => {
@@ -560,18 +559,18 @@ describe('Pot Odds Calculation', () => {
 
     stream.on('end', () => {
       const lastStats = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds).pop()
-      
+
       expect(lastStats).toBeDefined()
       const potOddsValue = lastStats.stats.heroStats.potOdds.value
-      
+
       // SPR should be 1200 / 2400 = 0.5
       expect(potOddsValue.spr).toBe(0.5)
-      
+
       done()
     })
 
-    const readable = Readable.from([events])
-    readable.pipe(stream)
+    events.forEach(event => stream.write(event))
+    stream.end()
   })
 
   test('ポットが0の時はSPRを計算しない', (done) => {
@@ -628,16 +627,16 @@ describe('Pot Odds Calculation', () => {
 
     stream.on('end', () => {
       const withPotOdds = results.filter(r => r.stats && r.stats.heroStats && r.stats.heroStats.potOdds)
-      
+
       if (withPotOdds.length > 0) {
         const potOddsValue = withPotOdds[0].stats.heroStats.potOdds.value
         expect(potOddsValue.spr).toBeUndefined()
       }
-      
+
       done()
     })
 
-    const readable = Readable.from([events])
-    readable.pipe(stream)
+    events.forEach(event => stream.write(event))
+    stream.end()
   })
 })
