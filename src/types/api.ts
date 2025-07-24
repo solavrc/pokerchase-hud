@@ -721,28 +721,41 @@ export type ApiEventMap = {
   [K in keyof typeof schema]: z.infer<typeof schema[K]>
 }
 
-/** 既知の全てのイベント型（discriminated union） - 内部使用 */
-type ApiEventDiscriminatedUnion = z.infer<typeof ApiEventSchema>
-
-/** 特定のApiTypeのイベント型 */
-export type ApiEventType<T extends ApiType> = T extends keyof ApiEventMap ? ApiEventMap[T] : never
+/**
+ * Zodスキーマから生成される全ての既知イベントのdiscriminated union
+ * Single Source of Truth
+ */
+type ApiEventAll = z.infer<typeof ApiEventSchema>
 
 /**
- * APIイベント型
+ * 特定のApiTypeIdを持つイベント型を抽出するユーティリティ型
+ * @template T - ApiTypeIdの値（数値）
+ */
+export type ApiEventWithType<T extends number> = Extract<ApiEventAll, { ApiTypeId: T }>
+
+/**
+ * APIイベント型（後方互換性のための型）
  * - ジェネリック指定時: 特定のイベント型を返す
  * - ジェネリックなし: 全イベントのdiscriminated unionを返す
+ * 
+ * 注: 内部的にはZodスキーマから生成される型を使用
  */
 export type ApiEvent<T extends ApiType = ApiType> = T extends ApiType
   ? T extends keyof ApiEventMap
   ? ApiEventMap[T]
-  : ApiEventDiscriminatedUnion
+  : ApiEventAll
   : never
 
+/**
+ * 特定のApiTypeのイベント型
+ */
+export type ApiEventType<T extends ApiType> = T extends keyof ApiEventMap ? ApiEventMap[T] : never
+
 /** 特定のイベントタイプのサブセットを抽出するユーティリティ型 */
-export type ApiEventSubset<T extends ApiType> = Extract<ApiEventDiscriminatedUnion, { ApiTypeId: T }>
+export type ApiEventSubset<T extends ApiType> = ApiEventWithType<T>
 
 /** @deprecated Use ApiEvent instead */
-export type ApiEventUnion = ApiEventDiscriminatedUnion
+export type ApiEventUnion = ApiEventAll
 
 /** ApiTypeの値の配列（アプリケーションで使用） */
 export const ApiTypeValues = Object.values(ApiType).filter(v => typeof v === 'number') as ApiType[]
@@ -761,13 +774,13 @@ export const validateApiEvent = ApiEventSchema.safeParse.bind(ApiEventSchema)
 export const isApiEventType = <T extends ApiType>(
   event: unknown,
   apiType: T
-): event is ApiEventType<T> => {
+): event is ApiEventWithType<T> => {
   const result = validateApiEvent(event)
   return result.success && result.data.ApiTypeId === apiType
 }
 
 /** アプリケーションで使用するイベントかチェック */
-export const isApplicationApiEvent = (event: unknown): event is ApiEvent => {
+export const isApplicationApiEvent = (event: unknown): event is ApiEventWithType<ApiType> => {
   const result = validateApiEvent(event)
   return result.success && ApiTypeValues.includes(result.data.ApiTypeId as ApiType)
 }
@@ -781,28 +794,52 @@ export const getValidationError = (error: z.ZodError) => {
   }))
 }
 
+/**
+ * 検証と型ガードを同時に行うヘルパー関数
+ * @param event - 検証するイベント
+ * @returns 検証が成功した場合は型付きイベント、失敗した場合はnull
+ */
+export function parseApiEvent(event: unknown): ApiEventAll | null {
+  const result = validateApiEvent(event)
+  return result.success ? result.data : null
+}
+
+/**
+ * 検証と特定型のチェックを同時に行うヘルパー関数
+ * @param event - 検証するイベント
+ * @param apiType - 期待するApiType
+ * @returns 検証が成功した場合は型付きイベント、失敗した場合はnull
+ */
+export function parseApiEventType<T extends ApiType>(
+  event: unknown,
+  apiType: T
+): ApiEventWithType<T> | null {
+  const result = validateApiEvent(event)
+  if (!result.success || result.data.ApiTypeId !== apiType) {
+    return null
+  }
+  return result.data as ApiEventWithType<T>
+}
+
 
 // ===============================
 // Domain-Specific Event Types
 // ===============================
 
 /** ハンド処理に必要なイベントのみを含む型 */
-export type ApiHandEvent = ApiEventSubset<
-  | ApiType.EVT_DEAL
-  | ApiType.EVT_ACTION
-  | ApiType.EVT_DEAL_ROUND
-  | ApiType.EVT_HAND_RESULTS
->
+export type ApiHandEvent = 
+  | ApiEventWithType<ApiType.EVT_DEAL>
+  | ApiEventWithType<ApiType.EVT_ACTION>
+  | ApiEventWithType<ApiType.EVT_DEAL_ROUND>
+  | ApiEventWithType<ApiType.EVT_HAND_RESULTS>
 
 /** セッション管理に必要なイベントのみを含む型 */
-export type ApiSessionEvent = ApiEventSubset<
-  | ApiType.EVT_ENTRY_QUEUED
-  | ApiType.EVT_SESSION_DETAILS
-  | ApiType.EVT_SESSION_RESULTS
->
+export type ApiSessionEvent = 
+  | ApiEventWithType<ApiType.EVT_ENTRY_QUEUED>
+  | ApiEventWithType<ApiType.EVT_SESSION_DETAILS>
+  | ApiEventWithType<ApiType.EVT_SESSION_RESULTS>
 
 /** プレイヤー情報に関するイベントのみを含む型 */
-export type ApiPlayerEvent = ApiEventSubset<
-  | ApiType.EVT_PLAYER_SEAT_ASSIGNED
-  | ApiType.EVT_PLAYER_JOIN
->
+export type ApiPlayerEvent = 
+  | ApiEventWithType<ApiType.EVT_PLAYER_SEAT_ASSIGNED>
+  | ApiEventWithType<ApiType.EVT_PLAYER_JOIN>

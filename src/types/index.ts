@@ -6,6 +6,7 @@
 export {
   ApiType,
   type ApiEvent,
+  type ApiEventWithType,
   type ApiEventType,
   type ApiEventUnion,
   type ApiEventSubset,
@@ -18,6 +19,9 @@ export {
   validateApiEvent,
   validateMessage,
   isApiEventType,
+  parseApiEvent,
+  parseApiEventType,
+  getValidationError,
   ApiTypeValues
 } from './api'
 
