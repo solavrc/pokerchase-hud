@@ -31,6 +31,9 @@ export {
   validateApiEvent,
   validateMessage,
   isApiEventType,
+  parseApiEvent,
+  parseApiEventType,
+  getValidationError,
   ApiTypeValues
 } from './types'
 

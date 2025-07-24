@@ -7,7 +7,7 @@ import { firestoreBackupService } from './firestore-backup-service'
 import { firebaseAuthService } from './firebase-auth-service'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
-import { ApiType } from '../types'
+import { ApiType, isApiEventType } from '../types'
 import type { ApiEvent } from '../types'
 
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'success'
@@ -231,29 +231,25 @@ class AutoSyncService {
             if (event.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
               // セッション終了イベント: 次のセッションのためにリセット
               service.session.reset()
-            } else if (event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED) {
-              const entryEvent = event as ApiEvent<ApiType.EVT_ENTRY_QUEUED>
-              service.session.id = entryEvent.Id
-              service.session.battleType = entryEvent.BattleType
-            } else if (event.ApiTypeId === ApiType.EVT_SESSION_DETAILS) {
-              const detailsEvent = event as ApiEvent<ApiType.EVT_SESSION_DETAILS>
-              service.session.name = detailsEvent.Name
-            } else if (event.ApiTypeId === ApiType.EVT_PLAYER_SEAT_ASSIGNED) {
-              const seatEvent = event as ApiEvent<ApiType.EVT_PLAYER_SEAT_ASSIGNED>
-              if (seatEvent.TableUsers) {
-                seatEvent.TableUsers.forEach(tableUser => {
+            } else if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
+              service.session.id = event.Id
+              service.session.battleType = event.BattleType
+            } else if (isApiEventType(event, ApiType.EVT_SESSION_DETAILS)) {
+              service.session.name = event.Name
+            } else if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED)) {
+              if (event.TableUsers) {
+                event.TableUsers.forEach(tableUser => {
                   service.session.players.set(tableUser.UserId, {
                     name: tableUser.UserName,
                     rank: tableUser.Rank.RankId
                   })
                 })
               }
-            } else if (event.ApiTypeId === ApiType.EVT_PLAYER_JOIN) {
-              const joinEvent = event as ApiEvent<ApiType.EVT_PLAYER_JOIN>
-              if (joinEvent.JoinUser) {
-                service.session.players.set(joinEvent.JoinUser.UserId, {
-                  name: joinEvent.JoinUser.UserName,
-                  rank: joinEvent.JoinUser.Rank.RankId
+            } else if (isApiEventType(event, ApiType.EVT_PLAYER_JOIN)) {
+              if (event.JoinUser) {
+                service.session.players.set(event.JoinUser.UserId, {
+                  name: event.JoinUser.UserName,
+                  rank: event.JoinUser.Rank.RankId
                 })
               }
             }
@@ -265,17 +261,16 @@ class AutoSyncService {
           
           // 最新のEVT_DEALイベントを検索してhero情報を復元
           const latestDealEvent = cloudEvents
-            .filter((e: ApiEvent) => e.ApiTypeId === ApiType.EVT_DEAL)
+            .filter((e: ApiEvent) => isApiEventType(e, ApiType.EVT_DEAL))
             .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))[0]
           
-          if (latestDealEvent) {
+          if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
             console.log('[AutoSync] Restoring service state from latest EVT_DEAL event')
-            service.latestEvtDeal = latestDealEvent as ApiEvent<ApiType.EVT_DEAL>
+            service.latestEvtDeal = latestDealEvent
             
             // playerIdを設定
-            const dealEvent = latestDealEvent as ApiEvent<ApiType.EVT_DEAL>
-            if (dealEvent.Player && dealEvent.Player.SeatIndex >= 0 && dealEvent.SeatUserIds) {
-              const playerId = dealEvent.SeatUserIds[dealEvent.Player.SeatIndex]
+            if (latestDealEvent.Player && latestDealEvent.Player.SeatIndex >= 0 && latestDealEvent.SeatUserIds) {
+              const playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex]
               if (playerId && playerId !== -1) {
                 service.playerId = playerId
                 console.log(`[AutoSync] Restored playerId: ${playerId}`)

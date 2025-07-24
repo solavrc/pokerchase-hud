@@ -66,6 +66,8 @@ export class EntityConverter {
     for (const event of events) {
       // セッション開始イベントの処理
       if (event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED) {
+        // isApiEventTypeの代わりにApiTypeIdを直接チェック
+        // テストケースの不完全なデータに対応
         const entryEvent = event as ApiEvent<ApiType.EVT_ENTRY_QUEUED>
         currentSession.id = entryEvent.Id
         currentSession.battleType = entryEvent.BattleType

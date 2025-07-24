@@ -14,7 +14,10 @@ import PokerChaseService, {
   ApiMessage,
   ApiEventType,
   validateApiEvent,
-  isApiEventType
+  isApiEventType,
+  parseApiEvent,
+  getValidationError,
+  isApplicationApiEvent
 } from './app'
 import { EntityConverter } from './entity-converter'
 import type { AllPlayersRealTimeStats } from './realtime-stats/realtime-stats-service'
@@ -416,13 +419,20 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
           }
 
           // Zodスキーマ検証
-          const result = validateApiEvent(parsed)
-          if (!result.success) {
-            errors.push(`Line ${lineNumber}: ${result.error.issues[0]?.message || 'Validation failed'}`)
+          const event = parseApiEvent(parsed)
+          if (!event) {
+            const result = validateApiEvent(parsed)
+            const errorDetails = result.error ? getValidationError(result.error)[0] : null
+            errors.push(`Line ${lineNumber}: ${errorDetails?.message || 'Validation failed'}`)
             continue
           }
 
-          const event = result.data as ApiEvent
+          // アプリケーション用のイベントかチェック
+          if (!isApplicationApiEvent(event)) {
+            // アプリケーションで使用しないApiTypeIdのイベントをスキップ
+            continue
+          }
+
           const key = `${event.timestamp}-${event.ApiTypeId}`
 
           // メモリ内で重複チェック（最適化ポイント2）
@@ -745,23 +755,31 @@ chrome.runtime.onConnect.addListener(port => {
 
       // 通常のAPIメッセージ処理
       // Zodスキーマで完全検証
-      const { success, data, error } = validateApiEvent(message as ApiMessage)
+      const data = parseApiEvent(message as ApiMessage)
 
-      if (!success || !data) {
-        console.warn('[background] Schema validation failed:', error?.issues, data ?? message)
+      if (!data) {
+        const validationResult = validateApiEvent(message as ApiMessage)
+        const errorDetails = validationResult.error ? getValidationError(validationResult.error) : null
+        console.warn('[background] Schema validation failed:', errorDetails, message)
         return
       }
 
-      // ここでapiEventはApiEvent型（型ガードで保証済み）
+      // アプリケーション用のイベントかチェック
+      if (!isApplicationApiEvent(data)) {
+        // アプリケーションで使用しないApiTypeIdのイベントをスキップ
+        console.debug('[background] Non-application event received:', data.ApiTypeId)
+        return
+      }
+
+      // ここでdataはApiEvent型（isApplicationApiEventで保証済み）
       service.eventLogger(data, 'info')
 
       // DB保存とストリーム処理
-      // Dexieのhookでフィルタリングされるが、TypeScriptは認識できないためアサーション
-      service.db.apiEvents.add(data as ApiEvent)
+      service.db.apiEvents.add(data)
         .catch(err => console.error('[background] Failed to save event:', err))
-      service.handLogStream.write(data as ApiEvent)
-      service.handAggregateStream.write(data as ApiEvent)
-      service.realTimeStatsStream.write(data as ApiEvent)
+      service.handLogStream.write(data)
+      service.handAggregateStream.write(data)
+      service.realTimeStatsStream.write(data)
 
       // Handle game session end for auto sync
       if (data.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
