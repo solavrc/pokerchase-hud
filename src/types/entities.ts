@@ -3,21 +3,21 @@
  */
 
 import type { BattleType, PhaseType, ActionType, Position, ActionDetail, RankType } from './game'
-import type { ApiEventType, ApiType } from './api'
+import type { ApiEvent, ApiType } from './api'
 
 // ===============================
 // Entity Types from API Schemas
 // ===============================
 
 // 各イベント型から必要な部分型を抽出
-type SessionDetailsEvent = ApiEventType<ApiType.EVT_SESSION_DETAILS>
-type DealEvent = ApiEventType<ApiType.EVT_DEAL>
-type ActionEvent = ApiEventType<ApiType.EVT_ACTION>
-type DealRoundEvent = ApiEventType<ApiType.EVT_DEAL_ROUND>
-type HandResultsEvent = ApiEventType<ApiType.EVT_HAND_RESULTS>
-type SessionResultsEvent = ApiEventType<ApiType.EVT_SESSION_RESULTS>
-type PlayerSeatAssignedEvent = ApiEventType<ApiType.EVT_PLAYER_SEAT_ASSIGNED>
-type PlayerJoinEvent = ApiEventType<ApiType.EVT_PLAYER_JOIN>
+type SessionDetailsEvent = ApiEvent<ApiType.EVT_SESSION_DETAILS>
+type DealEvent = ApiEvent<ApiType.EVT_DEAL>
+type ActionEvent = ApiEvent<ApiType.EVT_ACTION>
+type DealRoundEvent = ApiEvent<ApiType.EVT_DEAL_ROUND>
+type HandResultsEvent = ApiEvent<ApiType.EVT_HAND_RESULTS>
+type SessionResultsEvent = ApiEvent<ApiType.EVT_SESSION_RESULTS>
+type PlayerSeatAssignedEvent = ApiEvent<ApiType.EVT_PLAYER_SEAT_ASSIGNED>
+type PlayerJoinEvent = ApiEvent<ApiType.EVT_PLAYER_JOIN>
 
 // EVT_SESSION_DETAILS関連
 export type BlindStructure = NonNullable<SessionDetailsEvent['BlindStructures']>[0]

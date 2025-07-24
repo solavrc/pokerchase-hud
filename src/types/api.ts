@@ -44,7 +44,63 @@ const baseSchema = z.object({
   timestamp: z.number().int().optional().describe('Unix Milliseconds - WebSocket受信時に付与')
 }).strict().describe('基底スキーマ: 未定義プロパティを検知')
 
-const schema = {
+// ===============================
+// Common Sub-Schemas (再利用可能な共通スキーマ)
+// ===============================
+
+/** 座席インデックスのスキーマ */
+export const seatIndexSchema = z.union([
+  z.literal(0), z.literal(1), z.literal(2),
+  z.literal(3), z.literal(4), z.literal(5)
+])
+
+/** プレイヤー基本情報スキーマ */
+export const playerBaseSchema = z.object({
+  SeatIndex: seatIndexSchema,
+  BetStatus: z.enum(BetStatusType),
+  Chip: z.int().nonnegative(),
+  BetChip: z.int().nonnegative()
+})
+
+/** ゲーム進行状況スキーマ */
+export const progressBaseSchema = z.object({
+  Phase: z.enum(PhaseType),
+  Pot: z.int().nonnegative(),
+  SidePot: z.array(z.int().nonnegative()).max(4),
+  MinRaise: z.int().nonnegative(),
+  NextActionTypes: z.array(z.enum(ActionType)).max(4),
+  NextExtraLimitSeconds: z.int().nonnegative()
+})
+
+/** ユーザー情報スキーマ */
+export const userInfoSchema = z.object({
+  UserId: z.int().nonnegative(),
+  UserName: z.string(),
+  FavoriteCharaId: z.string(),
+  CostumeId: z.string(),
+  EmblemId: z.string(),
+  IsCpu: z.boolean(),
+  IsOfficial: z.boolean(),
+  Rank: z.object({
+    RankId: z.string(),
+    RankLvId: z.string(),
+    RankLvName: z.string(),
+    RankName: z.string(),
+  }),
+  SettingDecoIds: z.array(z.string()).length(7)
+})
+
+/** ホールカードスキーマ */
+export const holeCardsSchema = z.array(z.int().min(0).max(51)).max(2)
+
+/** コミュニティカードスキーマ */
+export const communityCardsSchema = z.array(z.int().min(0).max(51)).max(5)
+
+/**
+ * APIイベントの個別Zodスキーマ
+ * @description 各イベントタイプのスキーマ定義。再利用・拡張・テスト用途に公開
+ */
+export const apiEventSchemas = {
   [ApiType.EVT_ENTRY_QUEUED]: baseSchema.extend({
     ApiTypeId: z.literal(ApiType.EVT_ENTRY_QUEUED),
     BattleType: z.enum(BattleType),
@@ -667,47 +723,121 @@ const schema = {
 
 /** ApiEvent検証用schema: 全ApiTypeを含める */
 export const ApiEventSchema = z.discriminatedUnion("ApiTypeId", [
-  schema[ApiType.EVT_ENTRY_QUEUED],
-  schema[202],
-  schema[203],
-  schema[204],
-  schema[205],
-  schema[206],
-  schema[210],
-  schema[212],
-  schema[213],
-  schema[214],
-  schema[215],
-  schema[220],
-  schema[221],
-  schema[224],
-  schema[ApiType.EVT_PLAYER_JOIN],
-  schema[ApiType.EVT_DEAL],
-  schema[ApiType.EVT_ACTION],
-  schema[ApiType.EVT_DEAL_ROUND],
-  schema[ApiType.EVT_HAND_RESULTS],
-  schema[307],
-  schema[ApiType.EVT_SESSION_DETAILS],
-  schema[ApiType.EVT_SESSION_RESULTS],
-  schema[310],
-  schema[311],
-  schema[312],
-  schema[ApiType.EVT_PLAYER_SEAT_ASSIGNED],
-  schema[314],
-  schema[315],
-  schema[316],
-  schema[317],
-  schema[318],
-  schema[319],
-  schema[1201],
-  schema[1202],
-  schema[1203],
-  schema[1204],
-  schema[1301],
-  schema[1302],
-  schema[1303],
-  schema[1304],
+  apiEventSchemas[ApiType.EVT_ENTRY_QUEUED],
+  apiEventSchemas[202],
+  apiEventSchemas[203],
+  apiEventSchemas[204],
+  apiEventSchemas[205],
+  apiEventSchemas[206],
+  apiEventSchemas[210],
+  apiEventSchemas[212],
+  apiEventSchemas[213],
+  apiEventSchemas[214],
+  apiEventSchemas[215],
+  apiEventSchemas[220],
+  apiEventSchemas[221],
+  apiEventSchemas[224],
+  apiEventSchemas[ApiType.EVT_PLAYER_JOIN],
+  apiEventSchemas[ApiType.EVT_DEAL],
+  apiEventSchemas[ApiType.EVT_ACTION],
+  apiEventSchemas[ApiType.EVT_DEAL_ROUND],
+  apiEventSchemas[ApiType.EVT_HAND_RESULTS],
+  apiEventSchemas[307],
+  apiEventSchemas[ApiType.EVT_SESSION_DETAILS],
+  apiEventSchemas[ApiType.EVT_SESSION_RESULTS],
+  apiEventSchemas[310],
+  apiEventSchemas[311],
+  apiEventSchemas[312],
+  apiEventSchemas[ApiType.EVT_PLAYER_SEAT_ASSIGNED],
+  apiEventSchemas[314],
+  apiEventSchemas[315],
+  apiEventSchemas[316],
+  apiEventSchemas[317],
+  apiEventSchemas[318],
+  apiEventSchemas[319],
+  apiEventSchemas[1201],
+  apiEventSchemas[1202],
+  apiEventSchemas[1203],
+  apiEventSchemas[1204],
+  apiEventSchemas[1301],
+  apiEventSchemas[1302],
+  apiEventSchemas[1303],
+  apiEventSchemas[1304],
 ])
+
+// ===============================
+// Schema Access Functions
+// ===============================
+
+/**
+ * 特定のApiTypeに対応するZodスキーマを取得
+ * @param apiType - 取得したいイベントタイプ
+ * @returns 対応するZodスキーマ、存在しない場合はundefined
+ */
+export function getEventSchema<T extends number>(
+  apiType: T
+): T extends keyof typeof apiEventSchemas 
+  ? typeof apiEventSchemas[T]
+  : z.ZodSchema | undefined {
+  return apiEventSchemas[apiType as keyof typeof apiEventSchemas] as any
+}
+
+/**
+ * 利用可能なイベントタイプの一覧を取得
+ * @returns ApiTypeの配列
+ */
+export function getAvailableEventTypes(): number[] {
+  return Object.keys(apiEventSchemas)
+    .map(Number)
+    .filter(k => !isNaN(k))
+}
+
+/**
+ * イベントスキーマのフィールド名を取得（イントロスペクション）
+ * @param apiType - イベントタイプ
+ * @returns フィールド名の配列
+ * @deprecated Zodの内部実装に依存するため、将来的に動作しない可能性があります
+ */
+export function getEventFields(apiType: number): string[] {
+  const schema = apiEventSchemas[apiType as keyof typeof apiEventSchemas]
+  if (!schema) return []
+  
+  // Zodスキーマのshapeプロパティへのアクセス（型アサーションが必要）
+  if ('shape' in schema) {
+    const shape = (schema as any).shape
+    if (shape && typeof shape === 'object') {
+      return Object.keys(shape)
+    }
+  }
+  
+  return []
+}
+
+/**
+ * スキーマベースでイベントをパースして型付き結果を返す
+ * @param apiType - イベントタイプ
+ * @param data - パースするデータ
+ * @returns パース結果（成功時は型付きデータ、失敗時はエラー）
+ */
+export function parseEventWithSchema<T extends ApiType>(
+  apiType: T,
+  data: unknown
+): { success: true; data: ApiEvent<T> } | { success: false; error: z.ZodError | Error } {
+  const schema = getEventSchema(apiType)
+  if (!schema) {
+    // スキーマが見つからない場合は通常のエラーを返す
+    return { 
+      success: false, 
+      error: new Error(`No schema found for ApiType: ${apiType}`)
+    }
+  }
+  
+  const result = schema.safeParse(data)
+  if (result.success) {
+    return { success: true, data: result.data as ApiEvent<T> }
+  }
+  return { success: false, error: result.error }
+}
 
 // ===============================
 // Type Derivation from Schemas
@@ -716,11 +846,6 @@ export const ApiEventSchema = z.discriminatedUnion("ApiTypeId", [
 /** WebSocketメッセージの型（web_accessible_resourceで付与される） */
 export type ApiMessage = z.infer<typeof messageSchema>
 
-/** 全てのAPIイベントスキーマのマップ */
-export type ApiEventMap = {
-  [K in keyof typeof schema]: z.infer<typeof schema[K]>
-}
-
 /**
  * Zodスキーマから生成される全ての既知イベントのdiscriminated union
  * Single Source of Truth
@@ -728,34 +853,15 @@ export type ApiEventMap = {
 type ApiEventAll = z.infer<typeof ApiEventSchema>
 
 /**
- * 特定のApiTypeIdを持つイベント型を抽出するユーティリティ型
- * @template T - ApiTypeIdの値（数値）
- */
-export type ApiEventWithType<T extends number> = Extract<ApiEventAll, { ApiTypeId: T }>
-
-/**
- * APIイベント型（後方互換性のための型）
+ * APIイベント型
  * - ジェネリック指定時: 特定のイベント型を返す
  * - ジェネリックなし: 全イベントのdiscriminated unionを返す
  * 
  * 注: 内部的にはZodスキーマから生成される型を使用
  */
 export type ApiEvent<T extends ApiType = ApiType> = T extends ApiType
-  ? T extends keyof ApiEventMap
-  ? ApiEventMap[T]
+  ? Extract<ApiEventAll, { ApiTypeId: T }>
   : ApiEventAll
-  : never
-
-/**
- * 特定のApiTypeのイベント型
- */
-export type ApiEventType<T extends ApiType> = T extends keyof ApiEventMap ? ApiEventMap[T] : never
-
-/** 特定のイベントタイプのサブセットを抽出するユーティリティ型 */
-export type ApiEventSubset<T extends ApiType> = ApiEventWithType<T>
-
-/** @deprecated Use ApiEvent instead */
-export type ApiEventUnion = ApiEventAll
 
 /** ApiTypeの値の配列（アプリケーションで使用） */
 export const ApiTypeValues = Object.values(ApiType).filter(v => typeof v === 'number') as ApiType[]
@@ -774,13 +880,13 @@ export const validateApiEvent = ApiEventSchema.safeParse.bind(ApiEventSchema)
 export const isApiEventType = <T extends ApiType>(
   event: unknown,
   apiType: T
-): event is ApiEventWithType<T> => {
+): event is ApiEvent<T> => {
   const result = validateApiEvent(event)
   return result.success && result.data.ApiTypeId === apiType
 }
 
 /** アプリケーションで使用するイベントかチェック */
-export const isApplicationApiEvent = (event: unknown): event is ApiEventWithType<ApiType> => {
+export const isApplicationApiEvent = (event: unknown): event is ApiEvent<ApiType> => {
   const result = validateApiEvent(event)
   return result.success && ApiTypeValues.includes(result.data.ApiTypeId as ApiType)
 }
@@ -813,12 +919,12 @@ export function parseApiEvent(event: unknown): ApiEventAll | null {
 export function parseApiEventType<T extends ApiType>(
   event: unknown,
   apiType: T
-): ApiEventWithType<T> | null {
+): ApiEvent<T> | null {
   const result = validateApiEvent(event)
   if (!result.success || result.data.ApiTypeId !== apiType) {
     return null
   }
-  return result.data as ApiEventWithType<T>
+  return result.data as ApiEvent<T>
 }
 
 
@@ -828,18 +934,18 @@ export function parseApiEventType<T extends ApiType>(
 
 /** ハンド処理に必要なイベントのみを含む型 */
 export type ApiHandEvent = 
-  | ApiEventWithType<ApiType.EVT_DEAL>
-  | ApiEventWithType<ApiType.EVT_ACTION>
-  | ApiEventWithType<ApiType.EVT_DEAL_ROUND>
-  | ApiEventWithType<ApiType.EVT_HAND_RESULTS>
+  | ApiEvent<ApiType.EVT_DEAL>
+  | ApiEvent<ApiType.EVT_ACTION>
+  | ApiEvent<ApiType.EVT_DEAL_ROUND>
+  | ApiEvent<ApiType.EVT_HAND_RESULTS>
 
 /** セッション管理に必要なイベントのみを含む型 */
 export type ApiSessionEvent = 
-  | ApiEventWithType<ApiType.EVT_ENTRY_QUEUED>
-  | ApiEventWithType<ApiType.EVT_SESSION_DETAILS>
-  | ApiEventWithType<ApiType.EVT_SESSION_RESULTS>
+  | ApiEvent<ApiType.EVT_ENTRY_QUEUED>
+  | ApiEvent<ApiType.EVT_SESSION_DETAILS>
+  | ApiEvent<ApiType.EVT_SESSION_RESULTS>
 
 /** プレイヤー情報に関するイベントのみを含む型 */
 export type ApiPlayerEvent = 
-  | ApiEventWithType<ApiType.EVT_PLAYER_SEAT_ASSIGNED>
-  | ApiEventWithType<ApiType.EVT_PLAYER_JOIN>
+  | ApiEvent<ApiType.EVT_PLAYER_SEAT_ASSIGNED>
+  | ApiEvent<ApiType.EVT_PLAYER_JOIN>

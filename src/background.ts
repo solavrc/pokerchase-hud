@@ -12,7 +12,6 @@ import PokerChaseService, {
   PlayerStats,
   PokerChaseDB,
   ApiMessage,
-  ApiEventType,
   validateApiEvent,
   isApiEventType,
   parseApiEvent,
@@ -798,7 +797,7 @@ chrome.runtime.onConnect.addListener(port => {
         )
       }
     })
-    const postMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEventType<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
+    const postMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
       try {
         port.postMessage(data)
       } catch (error: unknown) {

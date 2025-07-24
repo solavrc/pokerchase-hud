@@ -6,10 +6,6 @@
 export {
   ApiType,
   type ApiEvent,
-  type ApiEventWithType,
-  type ApiEventType,
-  type ApiEventUnion,
-  type ApiEventSubset,
   type ApiHandEvent,
   type ApiSessionEvent,
   type ApiPlayerEvent,
@@ -22,7 +18,20 @@ export {
   parseApiEvent,
   parseApiEventType,
   getValidationError,
-  ApiTypeValues
+  ApiTypeValues,
+  // Zod schemas
+  apiEventSchemas,
+  seatIndexSchema,
+  playerBaseSchema,
+  progressBaseSchema,
+  userInfoSchema,
+  holeCardsSchema,
+  communityCardsSchema,
+  // Schema access functions
+  getEventSchema,
+  getAvailableEventTypes,
+  getEventFields,
+  parseEventWithSchema
 } from './api'
 
 // Game mechanics types
