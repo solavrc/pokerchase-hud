@@ -8,7 +8,8 @@ import { RealTimeStatsStream } from '../streams/realtime-stats-stream'
 import { setHandImprovementBatchMode } from '../realtime-stats'
 import {
   ApiType,
-  BATTLE_TYPE_FILTERS
+  BATTLE_TYPE_FILTERS,
+  isApiEventType
 } from '../types'
 import type {
   ApiEvent,
@@ -335,13 +336,16 @@ class PokerChaseService {
       }
     } else {
       // latestEvtDealが無い場合は、最新のEVT_DEALをDBから取得
-      const latestDealEvent = await this.db.apiEvents
+      const events = await this.db.apiEvents
         .where('ApiTypeId').equals(ApiType.EVT_DEAL)
         .reverse()
-        .filter(event => (event as ApiEvent<ApiType.EVT_DEAL>).Player?.SeatIndex !== undefined)
-        .first() as ApiEvent<ApiType.EVT_DEAL> | undefined
+        .toArray()
+      
+      const latestDealEvent = events.find(event => 
+        isApiEventType(event, ApiType.EVT_DEAL) && event.Player?.SeatIndex !== undefined
+      )
 
-      if (latestDealEvent && latestDealEvent.SeatUserIds) {
+      if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL) && latestDealEvent.SeatUserIds) {
         this.latestEvtDeal = latestDealEvent
 
         // プレイヤーIDも更新

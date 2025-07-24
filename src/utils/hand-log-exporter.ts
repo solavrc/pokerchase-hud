@@ -5,7 +5,7 @@
 
 import type { PokerChaseDB } from '../app'
 import type { ApiEvent, Hand, Session } from '../types'
-import { ApiType } from '../types/api'
+import { ApiType, isApiEventType } from '../types/api'
 import { HandLogProcessor, HandLogContext } from './hand-log-processor'
 import { DEFAULT_HAND_LOG_CONFIG } from '../types/hand-log'
 
@@ -33,13 +33,13 @@ export class HandLogExporter {
       // Get ALL EVT_PLAYER_SEAT_ASSIGNED events
       const seatAssignedEvents = await db.apiEvents
         .where('ApiTypeId').equals(ApiType.EVT_PLAYER_SEAT_ASSIGNED)
-        .toArray() as ApiEvent<ApiType.EVT_PLAYER_SEAT_ASSIGNED>[]
+        .toArray()
 
       // Found EVT_PLAYER_SEAT_ASSIGNED events in database
 
       // Process seat assigned events (newer events will overwrite older ones)
       for (const event of seatAssignedEvents) {
-        if (event.TableUsers) {
+        if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED) && event.TableUsers) {
           event.TableUsers.forEach(tableUser => {
             playerMap.set(tableUser.UserId, {
               name: tableUser.UserName,
@@ -52,13 +52,13 @@ export class HandLogExporter {
       // Get ALL EVT_PLAYER_JOIN events
       const playerJoinEvents = await db.apiEvents
         .where('ApiTypeId').equals(ApiType.EVT_PLAYER_JOIN)
-        .toArray() as ApiEvent<ApiType.EVT_PLAYER_JOIN>[]
+        .toArray()
 
       // Found EVT_PLAYER_JOIN events in database
 
       // Process join events (newer events will overwrite older ones)
       for (const event of playerJoinEvents) {
-        if (event.JoinUser) {
+        if (isApiEventType(event, ApiType.EVT_PLAYER_JOIN) && event.JoinUser) {
           playerMap.set(event.JoinUser.UserId, {
             name: event.JoinUser.UserName,
             rank: event.JoinUser.Rank.RankId
@@ -213,9 +213,8 @@ export class HandLogExporter {
 
     // Find the specific hand events by looking for EVT_HAND_RESULTS with matching HandId
     const resultEvent = allEvents.find((e: ApiEvent) =>
-      e.ApiTypeId === ApiType.EVT_HAND_RESULTS &&
-      (e as ApiEvent<ApiType.EVT_HAND_RESULTS>).HandId === hand.id
-    ) as ApiEvent<ApiType.EVT_HAND_RESULTS> | undefined
+      isApiEventType(e, ApiType.EVT_HAND_RESULTS) && e.HandId === hand.id
+    )
 
     if (!resultEvent) {
       throw new Error(`Could not find EVT_HAND_RESULTS for hand ${hand.id}`)
@@ -230,10 +229,9 @@ export class HandLogExporter {
 
     for (const event of allEvents) {
       // Start collecting from EVT_DEAL that matches our seat configuration
-      if (event.ApiTypeId === ApiType.EVT_DEAL) {
-        const dealEvent = event as ApiEvent<ApiType.EVT_DEAL>
+      if (isApiEventType(event, ApiType.EVT_DEAL)) {
         // Check if this deal event matches our hand's seat configuration
-        if (this.arrayEquals(dealEvent.SeatUserIds, hand.seatUserIds)) {
+        if (this.arrayEquals(event.SeatUserIds, hand.seatUserIds)) {
           foundDeal = true
           handEvents.length = 0 // Clear any previous events
           handEvents.push(event)
@@ -242,9 +240,8 @@ export class HandLogExporter {
         handEvents.push(event)
 
         // Stop when we reach the hand results for our specific hand
-        if (event.ApiTypeId === ApiType.EVT_HAND_RESULTS) {
-          const handResultEvent = event as ApiEvent<ApiType.EVT_HAND_RESULTS>
-          if (handResultEvent.HandId === hand.id) {
+        if (isApiEventType(event, ApiType.EVT_HAND_RESULTS)) {
+          if (event.HandId === hand.id) {
             break
           }
         }

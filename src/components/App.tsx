@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react"
-import PokerChaseService, { ApiEvent, ApiType, PlayerStats } from "../app"
+import PokerChaseService, { ApiType, PlayerStats, isApiEventType } from "../app"
 import type { StatsData } from "../content_script"
 import { defaultStatDisplayConfigs } from "../stats"
 import type { StatDisplayConfig } from "../types"
@@ -43,9 +43,8 @@ const App = memo(() => {
       }
 
       // Player（ヒーロー）情報を含むEVT_DEALがある場合、ヒーローをポジション0に配置するよう席を回転
-      if (detail.evtDeal && (detail.evtDeal as ApiEvent<ApiType.EVT_DEAL>).Player?.SeatIndex !== undefined) {
-        const evtDeal = detail.evtDeal as ApiEvent<ApiType.EVT_DEAL>
-        const heroSeatIndex = evtDeal.Player!.SeatIndex
+      if (detail.evtDeal && isApiEventType(detail.evtDeal, ApiType.EVT_DEAL) && detail.evtDeal.Player?.SeatIndex !== undefined) {
+        const heroSeatIndex = detail.evtDeal.Player.SeatIndex
         
         // Store hero's original seat index for mapping
         setHeroOriginalSeatIndex(heroSeatIndex)
