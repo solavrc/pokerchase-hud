@@ -33,36 +33,43 @@ declare global {
 }
 
 const connectToBackgroundService = () => {
-  const port = chrome.runtime.connect({ name: PokerChaseService.POKER_CHASE_SERVICE_EVENT })
+  try {
+    const port = chrome.runtime.connect({ name: PokerChaseService.POKER_CHASE_SERVICE_EVENT })
 
-  // 接続成功時、ゲーム中ならキープアライブを開始
-  if (isGameActive) {
-    startKeepalive(port)
-  }
-
-  port.onMessage.addListener((message: { stats: PlayerStats[], evtDeal?: ApiEventType<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
-    if (typeof message === 'object' && message !== null && 'stats' in message) {
-      console.time('[content_script] Dispatching stats event')
-      window.dispatchEvent(new CustomEvent(PokerChaseService.POKER_CHASE_SERVICE_EVENT, { detail: message }))
-      console.timeEnd('[content_script] Dispatching stats event')
-      if (message.realTimeStats) {
-        console.log('[content_script] Real-time stats received:', Object.keys(message.realTimeStats))
-      }
+    // 接続成功時、ゲーム中ならキープアライブを開始
+    if (isGameActive) {
+      startKeepalive(port)
     }
-  })
-  port.onDisconnect.addListener(() => {
-    // 切断時にキープアライブを停止
-    stopKeepalive()
-    // 再接続を試みる
+
+    port.onMessage.addListener((message: { stats: PlayerStats[], evtDeal?: ApiEventType<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
+      if (typeof message === 'object' && message !== null && 'stats' in message) {
+        console.time('[content_script] Dispatching stats event')
+        window.dispatchEvent(new CustomEvent(PokerChaseService.POKER_CHASE_SERVICE_EVENT, { detail: message }))
+        console.timeEnd('[content_script] Dispatching stats event')
+        if (message.realTimeStats) {
+          console.log('[content_script] Real-time stats received:', Object.keys(message.realTimeStats))
+        }
+      }
+    })
+    port.onDisconnect.addListener(() => {
+      // 切断時にキープアライブを停止
+      stopKeepalive()
+      // 再接続を試みる
+      setTimeout(connectToBackgroundService, RECONNECT_DELAY_MS)
+    })
+    return port
+  } catch (e) {
+    // 拡張機能のコンテキストが無効な場合は、少し待ってから再試行
     setTimeout(connectToBackgroundService, RECONNECT_DELAY_MS)
-  })
-  return port
+    return null as any
+  }
 }
 
-const port = connectToBackgroundService()
+let port = connectToBackgroundService()
 
 // キープアライブ管理
-const startKeepalive = (port: chrome.runtime.Port) => {
+const startKeepalive = (port: chrome.runtime.Port | null) => {
+  if (!port) return
   // 既存のタイマーをクリア
   if (keepaliveTimer) {
     clearInterval(keepaliveTimer)
@@ -74,7 +81,7 @@ const startKeepalive = (port: chrome.runtime.Port) => {
       try {
         port.postMessage({ type: 'keepalive' } as any)
       } catch (e) {
-        // ポートが切断されている場合は停止
+        // ポートが切断されている場合は静かに停止（エラー出力なし）
         stopKeepalive()
       }
     }, KEEPALIVE_INTERVAL_MS)
@@ -123,12 +130,20 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       break
   }
 
+  if (!port) {
+    // ポートが無効な場合は再接続を試みる
+    port = connectToBackgroundService()
+    return
+  }
+
   try {
     port.postMessage(event.data)
   } catch (error: unknown) {
     if (error instanceof Error && error.message === 'Extension context invalidated.') {
+      // 拡張機能が更新または無効化された場合は静かにリロード
       window.location.reload()
     }
+    // その他のエラーも静かに処理（コンソールに出力しない）
   }
 })
 
@@ -136,10 +151,12 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
 window.addEventListener('beforeunload', () => {
   stopKeepalive()
   // Disconnect port gracefully
-  try {
-    port.disconnect()
-  } catch (e) {
-    // Port might already be disconnected
+  if (port) {
+    try {
+      port.disconnect()
+    } catch (e) {
+      // ポートが既に切断されている可能性があるため、エラーは静かに無視
+    }
   }
 })
 
@@ -186,7 +203,11 @@ const messageHandlers: Record<string, (message: ChromeMessage) => void> = {
   refreshStats: () => {
     // インポート後の統計更新をリクエスト
     // 最新の統計をバックグラウンドサービスから取得
-    chrome.runtime.sendMessage({ action: 'requestLatestStats' })
+    try {
+      chrome.runtime.sendMessage({ action: 'requestLatestStats' })
+    } catch (e) {
+      // 拡張機能のコンテキストが無効な場合は静かに無視
+    }
   }
 }
 
