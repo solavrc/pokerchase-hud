@@ -16,6 +16,7 @@ Thank you for your interest in contributing to PokerChase HUD! This guide will h
 ```typescript
 // src/stats/core/my-stat.ts
 import type { StatDefinition } from '../../types/stats'
+import { ActionDetail } from '../../types/game'
 import { formatPercentage } from '../utils'
 
 export const myNewStat: StatDefinition = {
@@ -25,15 +26,15 @@ export const myNewStat: StatDefinition = {
   
   // Detect when to flag actions
   detectActionDetails: (context) => {
-    const details = []
+    const details: ActionDetail[] = []
     
     // Your detection logic here
     if (/* condition for opportunity */) {
-      details.push('MY_OPPORTUNITY')
+      details.push(ActionDetail.MY_OPPORTUNITY)  // Add to enum first
     }
     
     if (/* condition for occurrence */) {
-      details.push('MY_OCCURRENCE')
+      details.push(ActionDetail.MY_OCCURRENCE)  // Add to enum first
     }
     
     return details
@@ -42,11 +43,11 @@ export const myNewStat: StatDefinition = {
   // Calculate the statistic value
   calculate: ({ actions }) => {
     const opportunities = actions.filter(a => 
-      a.actionDetails.includes('MY_OPPORTUNITY')
+      a.actionDetails.includes(ActionDetail.MY_OPPORTUNITY)
     ).length
     
     const occurrences = actions.filter(a => 
-      a.actionDetails.includes('MY_OCCURRENCE')
+      a.actionDetails.includes(ActionDetail.MY_OCCURRENCE)
     ).length
     
     return [occurrences, opportunities]
@@ -105,7 +106,7 @@ detectActionDetails: (context) => {
   if (context.phase === PhaseType.PREFLOP && 
       context.phasePlayerActionIndex === 0 &&
       [ActionType.CALL, ActionType.RAISE].includes(context.actionType)) {
-    return ['VPIP']
+    return [ActionDetail.VPIP]
   }
   return []
 }
@@ -119,10 +120,10 @@ detectActionDetails: (context) => {
   if (context.phase === PhaseType.PREFLOP && 
       context.phasePrevBetCount === 2) {
     
-    const details = ['3BET_OPPORTUNITY']
+    const details: ActionDetail[] = [ActionDetail.$3BET_CHANCE]
     
     if (context.actionType === ActionType.RAISE) {
-      details.push('3BET')
+      details.push(ActionDetail.$3BET)
     }
     
     return details
@@ -145,8 +146,8 @@ For examples, see existing test files:
 
 ```typescript
 // src/stats/core/my-stat.test.ts
-import { myNewStat } from '../my-stat'
-import { ActionType, PhaseType } from '../../types/game'
+import { myNewStat } from './my-stat'
+import { ActionType, PhaseType, ActionDetail } from '../../types/game'
 import type { ActionDetailContext } from '../../types/stats'
 
 describe('myNewStat', () => {
@@ -168,7 +169,7 @@ describe('myNewStat', () => {
       })
       
       const details = myNewStat.detectActionDetails!(context)
-      expect(details).toContain('MY_OPPORTUNITY')
+      expect(details).toContain(ActionDetail.MY_OPPORTUNITY)
     })
 
     it('should detect occurrence correctly', () => {
@@ -178,17 +179,17 @@ describe('myNewStat', () => {
       })
       
       const details = myNewStat.detectActionDetails!(context)
-      expect(details).toContain('MY_OPPORTUNITY')
-      expect(details).toContain('MY_OCCURRENCE')
+      expect(details).toContain(ActionDetail.MY_OPPORTUNITY)
+      expect(details).toContain(ActionDetail.MY_OCCURRENCE)
     })
   })
 
   describe('calculate', () => {
     it('should calculate percentage correctly', () => {
       const mockActions = [
-        { actionDetails: ['MY_OPPORTUNITY', 'MY_OCCURRENCE'] },
-        { actionDetails: ['MY_OPPORTUNITY'] },
-        { actionDetails: ['MY_OPPORTUNITY', 'MY_OCCURRENCE'] },
+        { actionDetails: [ActionDetail.MY_OPPORTUNITY, ActionDetail.MY_OCCURRENCE] },
+        { actionDetails: [ActionDetail.MY_OPPORTUNITY] },
+        { actionDetails: [ActionDetail.MY_OPPORTUNITY, ActionDetail.MY_OCCURRENCE] },
       ]
       
       const result = myNewStat.calculate({ 
@@ -248,36 +249,39 @@ await db.actions.where('actionDetails').anyOf(['MY_OPPORTUNITY', 'MY_OCCURRENCE'
 ### ActionDetail Flags
 
 #### Existing Flags
-These are commonly used flags defined in the ActionDetail enum:
+These are the flags defined in the ActionDetail enum (`src/types/game.ts`):
 
-- `VPIP` - Voluntary pot investment
-- `PFR` - Preflop raise
-- `3BET` / `3BET_CHANCE` - 3-betting
-- `CBET` / `CBET_CHANCE` - Continuation betting
 - `ALL_IN` - All-in action
+- `VPIP` - Voluntary pot investment
+- `CBET` / `CBET_CHANCE` - Continuation betting
+- `CBET_FOLD` / `CBET_FOLD_CHANCE` - Folding to continuation bet
+- `$3BET` / `$3BET_CHANCE` - 3-betting (note the $ prefix)
+- `$3BET_FOLD` / `$3BET_FOLD_CHANCE` - Folding to 3-bet
+- `DONK_BET` / `DONK_BET_CHANCE` - Donk betting
 
-#### Custom Flags
-You can use custom string flags without modifying the ActionDetail enum:
+#### Adding New Flags
+To add new ActionDetail flags for your statistic:
 
+1. Add your flags to the `ActionDetail` enum in `src/types/game.ts`:
 ```typescript
-// In your statistic
-detectActionDetails: (context) => {
-  if (/* your condition */) {
-    return ['MY_CUSTOM_FLAG']  // Custom string flag
-  }
-  return []
-}
-
-// In calculate
-calculate: ({ actions }) => {
-  const flagged = actions.filter(a => 
-    a.actionDetails.includes('MY_CUSTOM_FLAG')
-  ).length
-  // ...
+export enum ActionDetail {
+  // ... existing flags
+  MY_OPPORTUNITY = 'MY_OPPORTUNITY',
+  MY_OCCURRENCE = 'MY_OCCURRENCE',
 }
 ```
 
-This allows you to create statistics without modifying core types.
+2. Use the enum values in your statistic:
+```typescript
+detectActionDetails: (context) => {
+  if (/* your condition */) {
+    return [ActionDetail.MY_OPPORTUNITY]
+  }
+  return []
+}
+```
+
+Note: The system uses TypeScript enums for type safety, so new flags must be added to the enum before use.
 
 ### Need Help?
 
