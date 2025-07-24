@@ -548,10 +548,13 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
           }, 0)
 
           await db.meta.put({
-            id: 'lastProcessed',
-            lastProcessedTimestamp: lastTimestamp,
-            lastProcessedEventCount: allNewEvents.length,
-            lastImportDate: new Date()
+            id: 'importStatus',
+            value: {
+              lastProcessedTimestamp: lastTimestamp,
+              lastProcessedEventCount: allNewEvents.length,
+              lastImportDate: new Date().toISOString()
+            },
+            updatedAt: Date.now()
           })
           console.log(`[importData] Updated metadata - lastTimestamp: ${lastTimestamp}`)
         })
@@ -929,10 +932,13 @@ const rebuildAllData = async (): Promise<void> => {
         }, 0)
 
         await db.meta.put({
-          id: 'lastProcessed',
-          lastProcessedTimestamp: lastTimestamp,
-          lastProcessedEventCount: allEvents.length,
-          lastImportDate: new Date()
+          id: 'importStatus',
+          value: {
+            lastProcessedTimestamp: lastTimestamp,
+            lastProcessedEventCount: allEvents.length,
+            lastImportDate: new Date().toISOString()
+          },
+          updatedAt: Date.now()
         })
       })
 

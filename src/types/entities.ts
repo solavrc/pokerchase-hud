@@ -136,3 +136,44 @@ export interface ImportMeta {
   lastProcessedEventCount: number // Number of events processed in last import
   lastImportDate: Date           // Date of last import
 }
+
+// Generic metadata record for various application data
+export interface MetaRecord {
+  id: string                      // Unique identifier (e.g., 'lastProcessed', 'statisticsCache', 'syncStatus')
+  value: any                      // Flexible value storage (can be object, array, string, number, etc.)
+  updatedAt?: number             // Timestamp of last update (milliseconds since epoch)
+  expiresAt?: number             // Optional expiration timestamp for cache entries
+}
+
+// Specific meta record types for type safety
+export interface ImportMetaRecord extends MetaRecord {
+  id: 'importStatus'
+  value: {
+    lastProcessedTimestamp: number
+    lastProcessedEventCount: number
+    lastImportDate: string       // ISO date string
+  }
+}
+
+export interface StatisticsCacheRecord extends MetaRecord {
+  id: `statisticsCache:${number}` // e.g., 'statisticsCache:12345' for player 12345
+  value: {
+    playerId: number
+    stats: import('./stats').StatResult[]
+    handCount: number
+  }
+  expiresAt: number              // Cache expiration timestamp
+}
+
+export interface SyncStatusRecord extends MetaRecord {
+  id: 'syncStatus'
+  value: {
+    lastSyncTimestamp: number
+    lastSyncDirection: 'upload' | 'download' | 'bidirectional'
+    syncedEventCount: number
+    nextSyncScheduled?: number
+  }
+}
+
+// Union type for all specific meta records
+export type SpecificMetaRecord = ImportMetaRecord | StatisticsCacheRecord | SyncStatusRecord

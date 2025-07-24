@@ -195,10 +195,13 @@ class AutoSyncService {
           }, 0)
           
           await this.db.meta.put({
-            id: 'lastProcessed',
-            lastProcessedTimestamp: lastTimestamp,
-            lastProcessedEventCount: cloudEvents.length,
-            lastImportDate: new Date()
+            id: 'importStatus',
+            value: {
+              lastProcessedTimestamp: lastTimestamp,
+              lastProcessedEventCount: cloudEvents.length,
+              lastImportDate: new Date().toISOString()
+            },
+            updatedAt: Date.now()
           })
         })
         

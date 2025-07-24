@@ -4,7 +4,7 @@ import type {
   Hand,
   Phase,
   Action,
-  ImportMeta
+  MetaRecord
 } from '../types'
 
 /**
@@ -20,7 +20,7 @@ export class PokerChaseDB extends Dexie {
   hands!: Table<Hand, number>
   phases!: Table<Phase, number>
   actions!: Table<Action, number>
-  meta!: Table<ImportMeta, string>
+  meta!: Table<MetaRecord, string>
   constructor(indexedDB: IDBFactory, iDBKeyRange: typeof IDBKeyRange) {
     super('PokerChaseDB', { indexedDB, IDBKeyRange: iDBKeyRange })
     this.version(1).stores({
@@ -36,6 +36,19 @@ export class PokerChaseDB extends Dexie {
       phases: '[handId+phase],handId,*seatUserIds,phase',
       actions: '[handId+index],handId,playerId,phase,actionType,*actionDetails',
       meta: 'id'
+    })
+    // パフォーマンス最適化のための追加インデックス
+    this.version(3).stores({
+      // ApiTypeIdとtimestampの複合インデックスを追加（特定イベントタイプの最新取得用）
+      apiEvents: '[timestamp+ApiTypeId],timestamp,ApiTypeId,[ApiTypeId+timestamp]',
+      // timestampインデックスを追加（最近のハンドのクエリ用）
+      hands: 'id,*seatUserIds,*winningPlayerIds,approxTimestamp',
+      // 既存のインデックスを維持
+      phases: '[handId+phase],handId,*seatUserIds,phase',
+      // プレイヤーごとのフェーズ別アクションとアクションタイプ別クエリ用の複合インデックスを追加
+      actions: '[handId+index],handId,playerId,phase,actionType,*actionDetails,[playerId+phase],[playerId+actionType]',
+      // メタテーブル（アプリケーション設定、キャッシュ、統計サマリー等の汎用ストレージ）
+      meta: 'id,updatedAt'
     })
   }
 }
