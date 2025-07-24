@@ -80,6 +80,28 @@ export type {
   HandState
 } from './entities'
 
+// Entity Zod schemas
+export {
+  // Schemas
+  handSchema,
+  phaseSchema,
+  actionSchema,
+  userSchema,
+  existPlayerStatsSchema,
+  playerStatsSchema,
+  handStateSchema,
+  metaRecordBaseSchema,
+  importMetaRecordSchema,
+  statisticsCacheRecordSchema,
+  syncStatusRecordSchema,
+  specificMetaRecordSchema,
+  // Parsing functions
+  parseHand,
+  parsePhase,
+  parseAction,
+  parseMetaRecord
+} from './entities'
+
 // Filter types
 export type {
   GameTypeFilter,
