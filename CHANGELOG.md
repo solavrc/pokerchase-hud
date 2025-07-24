@@ -1,5 +1,38 @@
 # Changelog
 
+## [4.0.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v3.0.0...pokerchase-hud-v4.0.0) (2025-07-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **popup:** Removed unsyncedCount from FirebaseAuthSection props
+* **types:** Removed ApiEventType, ApiEventUnion exports. Use ApiEvent instead.
+* **types:** Non-application API events (numeric ApiTypeIds) are now filtered out in background.ts
+* **db:** Database migration v3 required. Existing databases will be automatically migrated on first run.
+
+### Features
+
+* **db:** optimize database indexes and introduce generic MetaRecord type ([b57c312](https://github.com/solavrc/pokerchase-hud/commit/b57c31220c559328d1664c24b71df568fe800d5d))
+* **popup:** improve cloud sync UX and fix tab navigation ([6b02c14](https://github.com/solavrc/pokerchase-hud/commit/6b02c14e69dcacdf92c4cca6ccf8afa3113b0eea))
+* **ui:** improve export/import button UX ([63f0dbe](https://github.com/solavrc/pokerchase-hud/commit/63f0dbe45cc4bfa6c17da9c411f19b336217f28b))
+
+
+### Bug Fixes
+
+* **components:** convert import paths to lowercase for case-sensitive filesystems ([6ff07b7](https://github.com/solavrc/pokerchase-hud/commit/6ff07b7994dc7242afa7c5ff8f9467bbf735f4ba))
+* **types:** replace deprecated z.nativeEnum with z.enum ([22ed364](https://github.com/solavrc/pokerchase-hud/commit/22ed364069cd02ff0c0e047cfc427555bc8f82ec))
+
+
+### Performance Improvements
+
+* optimize toArray() usage with chunk processing and add common utilities ([f4f33b4](https://github.com/solavrc/pokerchase-hud/commit/f4f33b4ee4c202e319f5d09678d9b46e6be85678))
+
+
+### Code Refactoring
+
+* **types:** consolidate API types and embrace Zod Schema Way pattern ([b90f125](https://github.com/solavrc/pokerchase-hud/commit/b90f125c634572fa3ffc85ec10fc1c8ba230f54d))
+* **types:** reduce type assertions using type guards ([141ec96](https://github.com/solavrc/pokerchase-hud/commit/141ec9642e5912c41efa5c85142d0c04d6cb3410))
+
 ## [3.0.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v2.5.0...pokerchase-hud-v3.0.0) (2025-07-24)
 
 
