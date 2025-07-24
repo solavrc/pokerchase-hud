@@ -50,7 +50,6 @@ const App = memo(() => {
         setHeroOriginalSeatIndex(heroSeatIndex)
 
         mappedStats = rotateArrayFromIndex(detail.stats, heroSeatIndex)
-      } else {
       }
 
       setStats(mappedStats)
