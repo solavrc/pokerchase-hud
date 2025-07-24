@@ -18,6 +18,8 @@ export type SyncDirection = 'upload' | 'download' | 'both'
 export interface SyncState {
   status: SyncStatus
   lastSyncTime?: Date
+  localLastTimestamp?: number
+  cloudLastTimestamp?: number
   error?: string
   progress?: {
     current: number
@@ -49,6 +51,9 @@ class AutoSyncService {
       if (stored[this.SYNC_STORAGE_KEY]) {
         this.syncState.lastSyncTime = new Date(stored[this.SYNC_STORAGE_KEY])
       }
+
+      // Update timestamps
+      await this.updateTimestamps()
 
       // Check if user is authenticated
       const user = firebaseAuthService.getCurrentUser()
@@ -105,6 +110,9 @@ class AutoSyncService {
       // Update success state
       this.syncState.lastSyncTime = new Date()
       await chrome.storage.local.set({ [this.SYNC_STORAGE_KEY]: this.syncState.lastSyncTime.toISOString() })
+      
+      // Update timestamps after sync
+      await this.updateTimestamps()
       
       this.updateSyncState({ 
         status: 'success',
@@ -415,6 +423,68 @@ class AutoSyncService {
     } catch (error) {
       console.error('[AutoSync] Error getting unsynced count:', error)
       return 0
+    }
+  }
+
+  /**
+   * Update local and cloud last timestamps
+   */
+  async updateTimestamps(): Promise<void> {
+    try {
+      // Get local last timestamp
+      const localLastEvent = await this.db.apiEvents
+        .orderBy('timestamp')
+        .reverse()
+        .limit(1)
+        .first()
+      
+      if (localLastEvent) {
+        this.syncState.localLastTimestamp = localLastEvent.timestamp
+      }
+
+      // Get cloud last timestamp if authenticated
+      const user = firebaseAuthService.getCurrentUser()
+      if (user) {
+        const cloudMaxTimestamp = await firestoreBackupService.getCloudMaxTimestamp()
+        this.syncState.cloudLastTimestamp = cloudMaxTimestamp || undefined
+      }
+
+      // Notify UI of updated state
+      this.updateSyncState({
+        localLastTimestamp: this.syncState.localLastTimestamp,
+        cloudLastTimestamp: this.syncState.cloudLastTimestamp
+      })
+    } catch (error) {
+      console.error('[AutoSync] Error updating timestamps:', error)
+    }
+  }
+
+  /**
+   * Get sync info for display
+   */
+  async getSyncInfo(): Promise<{
+    localLastTimestamp?: number
+    cloudLastTimestamp?: number
+    uploadPendingCount: number
+  }> {
+    await this.updateTimestamps()
+    
+    // Calculate upload pending count based on cloud timestamp
+    let uploadPendingCount = 0
+    if (this.syncState.cloudLastTimestamp !== undefined) {
+      uploadPendingCount = await this.db.apiEvents
+        .where('timestamp')
+        .above(this.syncState.cloudLastTimestamp)
+        .count()
+    } else {
+      // If no cloud timestamp, all events are pending
+      uploadPendingCount = await this.db.apiEvents.count()
+    }
+    
+    return {
+      localLastTimestamp: this.syncState.localLastTimestamp,
+      cloudLastTimestamp: this.syncState.cloudLastTimestamp,
+      uploadPendingCount
     }
   }
 

@@ -5,6 +5,7 @@
 
 import { FilterOptions, PlayerStats } from '../app'
 import { HandLogConfig, HandLogEvent, UIConfig } from './hand-log'
+import type { SyncState } from '../services/auto-sync-service'
 
 // Message action constants
 export const MESSAGE_ACTIONS = {
@@ -182,9 +183,13 @@ export interface GetUnsyncedCountMessage {
   action: 'getUnsyncedCount'
 }
 
+export interface GetSyncInfoMessage {
+  action: 'getSyncInfo'
+}
+
 export interface SyncStateUpdateMessage {
   action: 'SYNC_STATE_UPDATE'
-  state: any // SyncState from auto-sync-service
+  state: SyncState
 }
 
 export interface ManualSyncUploadMessage {
@@ -236,14 +241,22 @@ export interface AuthStatusResponse extends SuccessResponse {
 }
 
 export interface SyncStateResponse extends SuccessResponse {
-  data: any // SyncState from auto-sync-service
+  syncState: SyncState
 }
 
 export interface UnsyncedCountResponse extends SuccessResponse {
   count: number
 }
 
-export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse
+export interface SyncInfoResponse extends SuccessResponse {
+  syncInfo: {
+    localLastTimestamp?: number
+    cloudLastTimestamp?: number
+    uploadPendingCount: number
+  }
+}
+
+export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse
 
 // Union type of all possible messages
 export type ChromeMessage =
@@ -274,6 +287,7 @@ export type ChromeMessage =
   | FirebaseSyncFromCloudMessage
   | GetSyncStateMessage
   | GetUnsyncedCountMessage
+  | GetSyncInfoMessage
   | SyncStateUpdateMessage
   | ManualSyncUploadMessage
   | ManualSyncDownloadMessage
