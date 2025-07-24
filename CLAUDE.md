@@ -2,7 +2,7 @@
 
 > 🎯 **Purpose**: Technical reference for AI coding agents working on the PokerChase HUD Chrome extension.
 >
-> 📅 **Last Updated**: 2025-07-24
+> 📅 **Last Updated**: 2025-07-25
 
 ## 📋 Table of Contents
 
@@ -116,6 +116,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   - Always run tests and type checking after code changes
   - Use `npm run test` and `npm run typecheck` commands
   - Ensure all tests pass before completing tasks
+  - Current status: All 171 tests passing ✅
 - **Build Commands**:
   - `npm run build` - Production build
   - `npm run typecheck` - TypeScript validation
@@ -140,6 +141,13 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   - NEVER create files unless they're absolutely necessary
   - ALWAYS prefer editing an existing file to creating a new one
   - NEVER proactively create documentation files unless explicitly requested
+
+## Architecture Decision Records
+
+Important technical decisions are documented in `docs/adr/`:
+
+- **ADR-001: Data Storage Architecture** - Rationale for Dexie.js, normalized entities, and Firestore strategy
+- **ADR-002: Database Index Optimization** - v3 migration with composite indexes for performance
 
 ## Architecture
 
@@ -351,6 +359,7 @@ Statistics Refresh (batch mode)
 │   └── README.png         # README screenshot
 └── src/                   # Source code
     ├── app.ts             # Re-export layer for backward compatibility
+    │                      # Exports type guards: isApiEventType, parseApiEvent, getValidationError
     ├── background.ts      # Service worker for persistence
     ├── content_script.ts  # Bridge between page and extension
     ├── web_accessible_resource.ts  # WebSocket interception
@@ -362,8 +371,14 @@ Statistics Refresh (batch mode)
     │   ├── Hud.tsx       # HUD overlay component
     │   ├── HandLog.tsx   # Hand history log component
     │   └── Popup.tsx     # Extension popup interface
+    ├── constants/         # Centralized configuration
+    │   └── database.ts   # Database-related constants
     ├── db/
     │   └── poker-chase-db.ts  # Database definition (PokerChaseDB)
+    ├── docs/              # Architecture documentation
+    │   └── adr/          # Architecture Decision Records
+    │       ├── 001-data-storage-architecture.md
+    │       └── 002-database-index-optimization.md
     ├── services/
     │   ├── poker-chase-service.ts      # Main service class
     │   ├── firebase-auth-service.ts    # Firebase authentication
@@ -402,9 +417,11 @@ Statistics Refresh (batch mode)
     └── utils/             # Utility modules
         ├── array-utils.ts    # Array manipulation
         ├── card-utils.ts     # Card formatting
+        ├── database-utils.ts # Database operation utilities
         ├── error-handler.ts  # Error handling
         ├── hand-log-exporter.ts      # Export functionality
         ├── hand-log-processor.ts     # PokerStars format
+        ├── logger.ts         # Structured logging
         ├── poker-evaluator.ts        # Hand evaluation
         ├── river-probabilities.ts    # River probability tables
         └── starting-hand-rankings.ts # Starting hand rankings
@@ -440,6 +457,11 @@ Statistics Refresh (batch mode)
 - **Auto data rebuild**: Rebuilds data from apiEvents on version update
 - **Firebase auth**: Handles Google sign-in/out requests
 - **Auto sync coordination**: Manages cloud sync after game sessions
+- **Utility Usage**:
+  - Uses `processInChunks()` for export and rebuild operations
+  - Uses `saveEntities()` for consistent entity saving
+  - Uses `findLatestPlayerDealEvent()` for EVT_DEAL searches
+  - Constants from `DATABASE_CONSTANTS` for all magic numbers
 
 ### Data Processing Streams
 
@@ -544,6 +566,53 @@ Statistics Refresh (batch mode)
   - Triggers statistics recalculation with restored state
 
 ### Utility Modules
+
+#### Database Utilities (`utils/database-utils.ts`)
+
+- **Purpose**: Common database operations to reduce code duplication
+- **Key Functions**:
+  - `saveEntities()`: Transactional bulk save for hands/phases/actions
+  - `processInChunks()`: Async generator for memory-efficient data processing
+  - `findLatestPlayerDealEvent()`: Standardized EVT_DEAL search logic
+  - `withTransaction()`: Error-handled transaction wrapper
+- **Usage Pattern**:
+  ```typescript
+  // Save entities with progress tracking
+  await saveEntities(db, entities, {
+    onProgress: (counts) => console.log(`Saved ${counts.hands} hands`)
+  })
+  
+  // Process large datasets in chunks
+  for await (const chunk of processInChunks(query, 10000)) {
+    // Process chunk
+  }
+  ```
+
+#### Constants (`constants/database.ts`)
+
+- **Purpose**: Centralized configuration values
+- **Categories**:
+  - Chunk sizes for data processing (import, sync, export)
+  - Search and batch limits
+  - Firestore sync parameters
+  - Cache durations
+  - Service Worker settings
+- **Benefits**:
+  - No magic numbers in code
+  - Easy tuning of performance parameters
+  - Type-safe constant access
+
+#### Logger (`utils/logger.ts`)
+
+- **Purpose**: Structured logging system (foundation for future migration)
+- **Features**:
+  - Context-based logging with timestamps
+  - Log levels: debug, info, warn, error
+  - Performance measurement utilities
+  - Child logger support for nested contexts
+- **Pre-configured Loggers**:
+  - `Loggers.Database`, `Loggers.Sync`, `Loggers.Import`, etc.
+- **Note**: Currently console.log is still used throughout codebase (59 locations)
 
 #### Schema Validator (`tools/validate-schemas.ts`)
 
@@ -692,6 +761,11 @@ Dynamic statistics for all players, with hero having additional hand improvement
   - All API events now have corresponding Zod schemas in `src/types/api.ts`
   - Use `ApiEventSchema` for discriminated union validation
   - `validate-schemas` tool can verify NDJSON exports against schemas
+- **Type Guard Functions**: Safe type narrowing without assertions
+  - `isApiEventType(event, type)`: Type-safe event type checking
+  - `parseApiEvent(data)`: Parse and validate with proper typing
+  - `getValidationError(error)`: Extract readable error messages
+  - `isApplicationApiEvent(event)`: Filter non-game events
 
 #### Data Dependencies & Timing
 
@@ -805,18 +879,19 @@ EVT_ACTION.UserId → Track hero's actions
 
 Database schema is defined in `src/db/poker-chase-db.ts` using Dexie (IndexedDB wrapper).
 
-#### Tables & Indexes
+#### Tables & Indexes (v3)
 
 **`apiEvents`** - Raw WebSocket events storage
 
 - Primary: `[timestamp+ApiTypeId]` (compound key for uniqueness)
-- Indexes: `timestamp`, `ApiTypeId`
+- Indexes: `timestamp`, `ApiTypeId`, `[ApiTypeId+timestamp]` (v3: for efficient type-specific queries)
 - Purpose: Store all events for replay, import/export, debugging
+- **Hooks**: Automatic filtering of non-application events on read/write
 
 **`hands`** - Processed hand data
 
 - Primary: `id` (auto-increment)
-- Indexes: `*seatUserIds`, `*winningPlayerIds` (multi-entry)
+- Indexes: `*seatUserIds`, `*winningPlayerIds` (multi-entry), `approxTimestamp` (v3: for recent hands queries)
 - Contains: Session info, player mapping, winners
 
 **`phases`** - Hand phases (preflop/flop/turn/river)
@@ -828,15 +903,27 @@ Database schema is defined in `src/db/poker-chase-db.ts` using Dexie (IndexedDB 
 **`actions`** - Player actions with statistics markers
 
 - Primary: `[handId+index]` (compound key)
-- Indexes: `handId`, `playerId`, `phase`, `actionType`, `*actionDetails`
+- Indexes: `handId`, `playerId`, `phase`, `actionType`, `*actionDetails`, `[playerId+phase]`, `[playerId+actionType]` (v3: for player-specific queries)
 - Contains: Action type, bet amount, `ActionDetail` flags
 
-**`meta`** - Import tracking and incremental processing
+**`meta`** - Generic metadata storage (v3: expanded from ImportMeta)
 
 - Primary: `id`
-- Purpose: Track last processed timestamp for incremental updates
+- Indexes: `updatedAt` (v3: for cache expiration)
+- Purpose: Store various metadata including:
+  - Import tracking (`importStatus`)
+  - Statistics cache (`statisticsCache:*`)
+  - Rebuild status (`rebuildStatus`)
+  - Sync state and other app metadata
+- **Schema**: `MetaRecord` with flexible `value` field
 
-See `PokerChaseDB` class for detailed schema and version migrations.
+#### Version Migrations
+
+- **v1**: Initial schema
+- **v2**: Added indexes for common queries
+- **v3**: Performance optimization with composite indexes and expanded meta table
+
+See `PokerChaseDB` class for detailed schema and hook implementations.
 
 ### Configuration & Storage
 
@@ -1047,6 +1134,30 @@ firebaseAuthService.isSignedIn()
 // Test Chrome identity
 chrome.identity.getAuthToken({ interactive: true }, console.log)
 ```
+
+---
+
+## Recent Updates (2025-07-25)
+
+### Type System Improvements
+- Eliminated all type assertions (`as`) in favor of type guards
+- Added `isApiEventType()`, `parseApiEvent()`, `getValidationError()` functions
+- Non-application events automatically filtered at database level
+
+### Database Optimizations  
+- Version 3 migration with composite indexes for performance
+- `MetaRecord` replaces `ImportMeta` for flexible metadata storage
+- New indexes: `[ApiTypeId+timestamp]`, `[playerId+phase]`, `[playerId+actionType]`
+
+### Code Refactoring
+- Created `database-utils.ts` with common DB operations
+- Added `DATABASE_CONSTANTS` to eliminate magic numbers
+- Introduced `Logger` class (foundation for future logging migration)
+- All duplicate code patterns consolidated into utility functions
+
+### Documentation
+- Added ADR-001 and ADR-002 for architecture decisions
+- Updated PR #29 with comprehensive changes
 
 ---
 
