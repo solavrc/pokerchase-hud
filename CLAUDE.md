@@ -121,7 +121,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   - Always run tests and type checking after code changes
   - Use `npm run test` and `npm run typecheck` commands
   - Ensure all tests pass before completing tasks
-  - Current status: All 171 tests passing ✅
+  - Current status: All 194 tests passing ✅
 - **Build Commands**:
   - `npm run build` - Production build
   - `npm run typecheck` - TypeScript validation
@@ -428,10 +428,12 @@ Recent toArray() optimizations achieved:
     ├── tools/             # Development tools
     │   └── validate-schemas.ts  # NDJSON event validator
     ├── types/             # TypeScript type definitions
-    │   ├── api.ts, entities.ts, errors.ts
+    │   ├── api.ts        # API event types, Zod schemas, type guards
+    │   ├── entities.ts   # Entity types with Zod schemas
+    │   ├── errors.ts     # Error types and handling
     │   ├── filters.ts, game.ts, hand-log.ts
     │   ├── messages.ts, stats.ts
-    │   └── index.ts      # Central export point
+    │   └── index.ts      # Central export point (types, schemas, functions)
     └── utils/             # Utility modules
         ├── array-utils.ts    # Array manipulation
         ├── card-utils.ts     # Card formatting
@@ -587,11 +589,11 @@ Recent toArray() optimizations achieved:
 
 #### Database Utilities (`utils/database-utils.ts`)
 
-- **Purpose**: Common database operations to reduce code duplication
+- **Purpose**: Common database operations to reduce code duplication and consolidate patterns
 - **Key Functions**:
-  - `saveEntities()`: Transactional bulk save for hands/phases/actions
+  - `saveEntities()`: Transactional bulk save for hands/phases/actions with unified transaction handling
   - `processInChunks()`: Async generator for memory-efficient data processing
-  - `findLatestPlayerDealEvent()`: Standardized EVT_DEAL search logic
+  - `findLatestPlayerDealEvent()`: Standardized EVT_DEAL search logic (optimized from O(n) to O(log n))
   - `withTransaction()`: Error-handled transaction wrapper
 - **Usage Pattern**:
   ```typescript
@@ -605,10 +607,11 @@ Recent toArray() optimizations achieved:
     // Process chunk
   }
   ```
+- **Impact**: All duplicate code patterns consolidated into utility functions
 
 #### Constants (`constants/database.ts`)
 
-- **Purpose**: Centralized configuration values
+- **Purpose**: Centralized configuration values to eliminate magic numbers
 - **Categories**:
   - Chunk sizes for data processing (import, sync, export)
   - Search and batch limits
@@ -618,7 +621,8 @@ Recent toArray() optimizations achieved:
 - **Benefits**:
   - No magic numbers in code
   - Easy tuning of performance parameters
-  - Type-safe constant access
+  - Type-safe constant access throughout codebase
+- **Usage**: `DATABASE_CONSTANTS` object provides all configuration values
 
 #### Logger (`utils/logger.ts`)
 
@@ -630,7 +634,9 @@ Recent toArray() optimizations achieved:
   - Child logger support for nested contexts
 - **Pre-configured Loggers**:
   - `Loggers.Database`, `Loggers.Sync`, `Loggers.Import`, etc.
-- **Note**: Currently console.log is still used throughout codebase (59 locations)
+- **Migration Status**: 
+  - Currently console.log is still used throughout codebase (59 locations identified)
+  - Logger class introduced as foundation for future migration
 
 #### Schema Validator (`tools/validate-schemas.ts`)
 
@@ -776,14 +782,31 @@ Dynamic statistics for all players, with hero having additional hand improvement
 - **Event Ordering**: Events arrive in guaranteed logical sequence
 - **Connectivity Issues**: Events may be lost due to player-side network problems
 - **Runtime Validation**: Zod schemas provide runtime type checking and validation
-  - All API events now have corresponding Zod schemas in `src/types/api.ts`
+  - **Complete Zod Schema Way Pattern**: Types are now derived from schemas (Single Source of Truth)
+  - All API events have corresponding Zod schemas in `src/types/api.ts`
   - Use `ApiEventSchema` for discriminated union validation
   - `validate-schemas` tool can verify NDJSON exports against schemas
+  - **Schema organization**:
+    - Consolidated 5 redundant type definitions into single `ApiEvent<T>` type
+    - Individual event schemas exported via `apiEventSchemas` object
+    - Common sub-schemas for reusability: `seatIndexSchema`, `playerBaseSchema`, `progressBaseSchema`, etc.
+    - Direct schema access: `apiEventSchemas[ApiType.EVT_DEAL]`
+    - Schema access functions: `getEventSchema()`, `parseEventWithSchema()`, `getAvailableEventTypes()`
+  - **Entity types migration** (`src/types/entities.ts`):
+    - Converted `Hand`, `Phase`, `Action`, `User` to Zod schemas
+    - Added MetaRecord schemas with union types for type-safe variants
+    - Export parse functions: `parseHand()`, `parsePhase()`, `parseAction()`, `parseMetaRecord()`
+    - Session kept as interface due to function properties
 - **Type Guard Functions**: Safe type narrowing without assertions
   - `isApiEventType(event, type)`: Type-safe event type checking
   - `parseApiEvent(data)`: Parse and validate with proper typing
   - `getValidationError(error)`: Extract readable error messages
   - `isApplicationApiEvent(event)`: Filter non-game events
+  - Eliminated all type assertions (`as`) in favor of type guards
+  - Non-application events automatically filtered at database level
+- **Breaking Changes**:
+  - **Removed exports**: `ApiEventType`, `ApiEventUnion`, `ApiEventSubset`, `ApiEventMap`
+  - Use `ApiEvent` instead of removed types
 
 #### Data Dependencies & Timing
 
@@ -940,6 +963,9 @@ Database schema is defined in `src/db/poker-chase-db.ts` using Dexie (IndexedDB 
 - **v1**: Initial schema
 - **v2**: Added indexes for common queries
 - **v3**: Performance optimization with composite indexes and expanded meta table
+  - Added composite indexes: `[ApiTypeId+timestamp]`, `[playerId+phase]`, `[playerId+actionType]`
+  - `MetaRecord` replaces `ImportMeta` for flexible metadata storage
+  - New indexes enable efficient type-specific and player-specific queries
 
 See `PokerChaseDB` class for detailed schema and hook implementations.
 
@@ -1152,37 +1178,6 @@ firebaseAuthService.isSignedIn()
 // Test Chrome identity
 chrome.identity.getAuthToken({ interactive: true }, console.log)
 ```
-
----
-
-## Recent Updates (2025-07-25)
-
-### Type System Improvements
-- Eliminated all type assertions (`as`) in favor of type guards
-- Added `isApiEventType()`, `parseApiEvent()`, `getValidationError()` functions
-- Non-application events automatically filtered at database level
-
-### Database Optimizations  
-- Version 3 migration with composite indexes for performance
-- `MetaRecord` replaces `ImportMeta` for flexible metadata storage
-- New indexes: `[ApiTypeId+timestamp]`, `[playerId+phase]`, `[playerId+actionType]`
-
-### Code Refactoring
-- Created `database-utils.ts` with common DB operations
-  - `saveEntities()`: Unified entity saving with transaction handling
-  - `processInChunks()`: Memory-efficient data processing
-  - `findLatestPlayerDealEvent()`: Optimized EVT_DEAL search
-- Added `DATABASE_CONSTANTS` to eliminate magic numbers
-  - Centralized chunk sizes, timeouts, and limits
-  - Type-safe constant access throughout codebase
-- Introduced `Logger` class (foundation for future logging migration)
-  - Structured logging with context and timestamps
-  - 59 console.log locations identified for future migration
-- All duplicate code patterns consolidated into utility functions
-
-### Documentation
-- Added ADR-001 and ADR-002 for architecture decisions
-- Updated PR #29 with comprehensive changes
 
 ---
 
