@@ -69,7 +69,7 @@ const handResultSchema = z.object({
   HandRanking: z.union([z.literal(-1), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6)]),
   Ranking: z.union([z.literal(-2), z.literal(-1), z.number().nonnegative()]),
   RewardChip: z.number(),
-  RankType: z.nativeEnum(RankType),
+  RankType: z.enum(RankType),
   Hands: z.array(z.number()).max(5),      // 5枚または空配列
   HoleCards: z.array(z.number()).max(2)   // 2枚、[-1,-1]、または空配列
 })
@@ -85,7 +85,7 @@ export const handSchema = z.object({
   bigBlind: z.number(),
   session: z.object({
     id: z.string().optional(),
-    battleType: z.nativeEnum(BattleType).optional(),
+    battleType: z.enum(BattleType).optional(),
     name: z.string().optional()
   }),
   results: z.array(handResultSchema)
@@ -96,7 +96,7 @@ export type Hand = z.infer<typeof handSchema>
 // Phase schema
 export const phaseSchema = z.object({
   handId: z.number().optional(),
-  phase: z.nativeEnum(PhaseType),
+  phase: z.enum(PhaseType),
   seatUserIds: z.array(z.number()),
   communityCards: z.array(z.number())
 })
@@ -108,16 +108,16 @@ export const actionSchema = z.object({
   handId: z.number().optional(),
   index: z.number(),
   playerId: z.number(),
-  phase: z.nativeEnum(PhaseType),
-  actionType: z.nativeEnum(ActionType).refine(
+  phase: z.enum(PhaseType),
+  actionType: z.enum(ActionType).refine(
     (val): val is Exclude<ActionType, ActionType.ALL_IN> => val !== ActionType.ALL_IN,
     { message: 'ALL_IN action type is not allowed' }
   ),
   bet: z.number(),
   pot: z.number(),
   sidePot: z.array(z.number()),
-  position: z.nativeEnum(Position),
-  actionDetails: z.array(z.nativeEnum(ActionDetail))
+  position: z.enum(Position),
+  actionDetails: z.array(z.enum(ActionDetail))
 })
 
 export type Action = z.infer<typeof actionSchema>
