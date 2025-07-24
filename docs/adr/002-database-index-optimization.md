@@ -125,12 +125,43 @@ if (cache && cache.expiresAt > Date.now()) {
 1. **段階的マイグレーション**: Service Workerの初回起動時に実行
 2. **エラーハンドリング**: マイグレーション失敗時の自動リトライ
 
+## 実装済み最適化
+
+### toArray()の削減
+
+大規模データセットでのメモリ効率改善のため、以下の最適化を実装：
+
+1. **チャンク処理への移行**
+```javascript
+// Before: 全データをメモリに読み込み
+const allEvents = await db.apiEvents.toArray()
+
+// After: チャンク処理でメモリ効率化
+for await (const chunk of processInChunks(db.apiEvents, 10000)) {
+  // Process chunk
+}
+```
+
+2. **単一レコード取得の最適化**
+```javascript
+// Before: 全件取得後にfind()
+const events = await db.apiEvents
+  .where('ApiTypeId').equals(ApiType.EVT_DEAL)
+  .reverse()
+  .toArray()
+const latest = events.find(e => e.Player?.SeatIndex !== undefined)
+
+// After: データベースレベルでフィルタ
+const latest = await findLatestPlayerDealEvent(db)
+```
+
 ## 測定基準
 
 以下のメトリクスで改善を測定：
 - 統計計算の平均実行時間
 - データベースクエリの実行回数
 - メモリ使用量の削減
+- 大規模データセット（10万イベント以上）での安定性
 
 ## 参考文献
 - [Dexie.js Indexing Best Practices](https://dexie.org/docs/Indexing)

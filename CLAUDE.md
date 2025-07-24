@@ -97,6 +97,11 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   - Maintain existing patterns
   - Prefer editing over creating files
   - Use code comments for implementation details
+- **Refactoring Strategy** (when improving existing code):
+  - Phase 1: Apply new utilities to new code first
+  - Phase 2: Gradually refactor existing code
+  - Phase 3: Add tests and documentation
+  - Always maintain backward compatibility
 - **Language**:
   - Respond in Japanese (日本語) when communicating with users
   - Write CLAUDE.md documentation in English
@@ -293,6 +298,19 @@ Statistics Refresh (batch mode)
 - **Memory Management**: Process large datasets incrementally
 - **Cache Invalidation**: Implement caching to prevent stale data in statistics
 - **Export Format**: Maintain exact PokerStars format with original seat indices
+
+#### Performance Optimization Results
+
+Recent toArray() optimizations achieved:
+- **Memory Usage**: Significant reduction for large datasets (10k+ events)
+- **Query Performance**: 
+  - EVT_DEAL search: From O(n) full scan to O(log n) with limit
+  - Player name mapping: Incremental cache vs full rebuild
+  - Export/rebuild: Chunk processing prevents memory spikes
+- **Chunk Sizes**:
+  - Import: 10,000 events per chunk
+  - Sync: 5,000 events per chunk
+  - EVT_DEAL search: 10 events per batch
 
 ### UI & Display
 
@@ -1151,8 +1169,15 @@ chrome.identity.getAuthToken({ interactive: true }, console.log)
 
 ### Code Refactoring
 - Created `database-utils.ts` with common DB operations
+  - `saveEntities()`: Unified entity saving with transaction handling
+  - `processInChunks()`: Memory-efficient data processing
+  - `findLatestPlayerDealEvent()`: Optimized EVT_DEAL search
 - Added `DATABASE_CONSTANTS` to eliminate magic numbers
+  - Centralized chunk sizes, timeouts, and limits
+  - Type-safe constant access throughout codebase
 - Introduced `Logger` class (foundation for future logging migration)
+  - Structured logging with context and timestamps
+  - 59 console.log locations identified for future migration
 - All duplicate code patterns consolidated into utility functions
 
 ### Documentation
