@@ -894,8 +894,8 @@ Configuration uses Chrome's `storage.sync` API for cross-device synchronization:
 ### Architecture
 
 **Service Worker Compatible Design**:
-- Firebase SDK's XMLHttpRequest dependency prevents direct usage in Service Workers
-- Solution: Use Firestore REST API for cloud operations
+- Firebase SDK v12+ is fully compatible with Service Workers
+- Direct Firestore SDK usage without XMLHttpRequest issues
 - Authentication via `chrome.identity` API with Firebase credential exchange
 
 **Data Structure**:
@@ -914,6 +914,7 @@ Firestore:
    - Authentication with Google provider
    - Firestore database (asia-northeast1 recommended)
    - Security rules deployment via `npm run firebase:deploy:rules`
+   - **Important**: Update `src/services/firebase-config.ts` with your own Firebase project configuration
 
 2. **OAuth Configuration**:
    - Chrome Extension OAuth client in Google Cloud Console
@@ -924,6 +925,14 @@ Firestore:
    - Development and production IDs differ
    - Cannot share IDs between local dev and Chrome Web Store
    - Requires separate OAuth clients for each environment
+
+### Implementation Details
+
+**Firebase SDK Integration**:
+- Uses Firebase SDK v12.0.0 (Service Worker compatible)
+- Direct Firestore SDK methods (collection, doc, writeBatch, etc.)
+- No REST API wrapper needed - modern Firebase SDK works in Service Workers
+- Authentication handled via Chrome identity API token exchange
 
 ### Cloud Data Flow
 
@@ -985,9 +994,10 @@ GROUP BY user_id;
 
 **Common Issues**:
 
-1. **"XMLHttpRequest is not defined"**:
-   - Service Workers don't support XMLHttpRequest
-   - Solution: Use Firestore REST API implementation
+1. **Authentication Errors**:
+   - Ensure OAuth client ID matches the extension ID
+   - Verify Firebase project configuration
+   - Check chrome.identity permissions in manifest.json
 
 2. **"Write stream exhausted"**:
    - Firestore rate limiting
