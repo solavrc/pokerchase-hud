@@ -2,7 +2,7 @@
 
 > 🎯 **Purpose**: Technical reference for AI coding agents working on the PokerChase HUD Chrome extension.
 >
-> 📅 **Last Updated**: 2025-07-25
+> 📅 **Last Updated**: 2025-07-24
 
 ## 📋 Table of Contents
 
@@ -70,7 +70,10 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 - **Storage**: IndexedDB (Dexie) + Cloud (Firestore)
 - **Cloud Services**: Firebase (Auth, Firestore)
 - **Build**: esbuild
-- **Testing**: Jest + React Testing Library
+- **Testing**: 
+  - Jest with jsdom environment for browser API simulation
+  - React Testing Library for component testing
+  - Co-located test files with source code
 - **Validation**: Zod (runtime schema validation)
 - **Release Management**: Release-Please with GitHub Actions
   - Manual trigger via GitHub Actions → "Release Please"
@@ -113,15 +116,16 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 #### Testing & Build
 
 - **Test Organization**:
-  - Test files are co-located with source files (e.g., `foo.ts` → `foo.test.ts`)
-  - Test files use `.test.ts` extension
+  - Test files are co-located with source files (e.g., `foo.ts` → `foo.test.ts`, `foo.tsx` → `foo.test.tsx`)
+  - Test files use `.test.ts` or `.test.tsx` extension
   - No separate test directories; improves visibility and reduces cognitive load
   - All new statistics require unit tests
+  - Component tests use React Testing Library
 - **Testing Requirements**:
   - Always run tests and type checking after code changes
   - Use `npm run test` and `npm run typecheck` commands
   - Ensure all tests pass before completing tasks
-  - Current status: All 194 tests passing ✅
+  - Current status: All 270 tests passing ✅
 - **Build Commands**:
   - `npm run build` - Production build
   - `npm run typecheck` - TypeScript validation
@@ -362,7 +366,7 @@ Recent toArray() optimizations achieved:
 ├── package.json           # Node.js dependencies and scripts
 ├── tsconfig.json          # TypeScript configuration
 ├── esbuild.config.ts      # Build configuration
-├── jest.config.cjs        # Test configuration
+├── jest.config.cjs        # Test configuration (jsdom environment)
 ├── release-please-config.json  # Release automation config
 ├── CLAUDE.md              # This AI agent documentation
 ├── README.md              # Project overview
@@ -388,7 +392,22 @@ Recent toArray() optimizations achieved:
     │   ├── App.tsx       # Root component with state management
     │   ├── Hud.tsx       # HUD overlay component
     │   ├── HandLog.tsx   # Hand history log component
-    │   └── Popup.tsx     # Extension popup interface
+    │   ├── Popup.tsx     # Extension popup interface
+    │   ├── hud/          # HUD-specific components
+    │   │   ├── DragHandle.tsx           # Draggable UI handle
+    │   │   ├── PlayerNameDisplay.tsx    # Player name and rank display
+    │   │   ├── RealTimeStatsDisplay.tsx # Real-time statistics HUD
+    │   │   ├── StatDisplay.tsx          # Statistics display grid
+    │   │   └── hooks/
+    │   │       └── useDraggable.ts      # Drag functionality hook
+    │   └── popup/        # Popup-specific components
+    │       ├── FirebaseAuthSection.tsx    # Firebase authentication UI
+    │       ├── GameTypeFilterSection.tsx  # Game type filtering
+    │       ├── HandLimitSection.tsx       # Hand count controls
+    │       ├── ImportExportSection.tsx    # Import/export functionality
+    │       ├── StatsConfigSection.tsx     # Statistics configuration
+    │       ├── SyncStatusSection.tsx      # Cloud sync status display
+    │       └── UIScaleSection.tsx         # UI scale adjustment
     ├── constants/         # Centralized configuration
     │   └── database.ts   # Database-related constants
     ├── db/
@@ -425,6 +444,7 @@ Recent toArray() optimizations achieved:
     │   ├── pot-odds.ts                 # Pot odds calculator
     │   ├── realtime-stats-service.ts   # Real-time stats service
     │   └── index.ts                    # Module exports
+    ├── test-setup.ts     # Jest setup for React Testing Library
     ├── tools/             # Development tools
     │   └── validate-schemas.ts  # NDJSON event validator
     ├── types/             # TypeScript type definitions
@@ -477,6 +497,7 @@ Recent toArray() optimizations achieved:
 - **Auto data rebuild**: Rebuilds data from apiEvents on version update
 - **Firebase auth**: Handles Google sign-in/out requests
 - **Auto sync coordination**: Manages cloud sync after game sessions
+- **Sync state response**: Fixed response format to use `syncState` property instead of `data`
 - **Utility Usage**:
   - Uses `processInChunks()` for export and rebuild operations
   - Uses `saveEntities()` for consistent entity saving
@@ -681,16 +702,45 @@ Recent toArray() optimizations achieved:
 
 ### UI Components
 
-React components for the HUD interface. See individual component files for detailed implementation:
+React components for the HUD interface. The components have been refactored for better modularity and testability.
+
+#### Main Components
 
 - **`App.tsx`**: Root component managing state and seat rotation logic
 - **`Hud.tsx`**: HUD overlay with drag & drop (240px regular, 200px real-time stats)
+  - Refactored to use modular sub-components
+  - Import paths updated for case-sensitivity
 - **`HandLog.tsx`**: Virtualized hand history log with PokerStars export
-- **`Popup.tsx`**: Extension settings, import/export interface, and manual cloud sync controls
-  - **Recent UI Changes**: Removed "Delete All Data" and "Reset to Default Settings" features
-  - **Layout**: Cloud sync controls positioned between "Hand Count" and "HUD Display Settings"
+- **`Popup.tsx`**: Extension settings and manual cloud sync controls
+  - Refactored into 7 focused sub-components for better maintainability
+  - Automatic tab navigation to game tab on popup open
+  - Sync state display simplified to show only cloud timestamp
 
-For implementation details, see comments in `src/components/`.
+#### HUD Sub-components (`src/components/hud/`)
+
+- **`StatDisplay.tsx`**: Reusable statistics display grid
+- **`PlayerNameDisplay.tsx`**: Player name and rank formatter
+- **`RealTimeStatsDisplay.tsx`**: Hero's real-time statistics HUD
+- **`DragHandle.tsx`**: Visual indicator for draggable areas
+- **`hooks/useDraggable.ts`**: Custom hook for drag functionality
+
+#### Popup Sub-components (`src/components/popup/`)
+
+- **`FirebaseAuthSection.tsx`**: Firebase authentication and user info display
+- **`SyncStatusSection.tsx`**: Cloud sync status display
+  - Shows only cloud last sync timestamp (YY/MM/DD format)
+  - Manual upload/download buttons
+  - Progress display during sync operations
+- **`ImportExportSection.tsx`**: Data import/export functionality
+  - PokerStars export button with brand color (#d70022)
+  - Export Hand History, Export Raw Data, Import Raw Data buttons
+  - Icons and English labels for better UX
+- **`GameTypeFilterSection.tsx`**: SNG/MTT/Ring game filters
+- **`HandLimitSection.tsx`**: Hand count limit slider
+- **`StatsConfigSection.tsx`**: Statistics display configuration
+- **`UIScaleSection.tsx`**: Global UI scale controls
+
+For implementation details, see individual component files in `src/components/`.
 
 ## Statistics System
 
