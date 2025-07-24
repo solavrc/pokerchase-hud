@@ -36,15 +36,11 @@
 7. [Data Model & Events](#data-model--events)
    - [ApiEvent Architecture](#apievent-architecture)
    - [Event Types](#event-types)
-   - [Event Processing](#event-processing)
    - [Database Schema](#database-schema)
    - [Configuration & Storage](#configuration--storage)
 8. [Cloud Sync & Firebase Integration](#cloud-sync--firebase-integration)
-   - [Architecture](#cloud-architecture)
-   - [Setup Requirements](#setup-requirements)
-   - [Data Flow](#cloud-data-flow)
-   - [BigQuery Integration](#bigquery-integration)
-   - [Cost Optimization](#cost-optimization)
+   - [Architecture](#architecture-1)
+   - [Key Features](#key-features-1)
 
 ## 📦 Project Overview
 
@@ -358,389 +354,63 @@ Recent toArray() optimizations achieved:
 
 ### File Organization
 
-#### Directory Structure
+**Main directories**:
+- `/src/components/` - React UI components (HUD, popup, hand log)
+- `/src/services/` - Business logic and service layers
+- `/src/streams/` - Data processing pipelines
+- `/src/stats/` - Statistics calculation modules
+- `/src/types/` - TypeScript definitions with Zod schemas
+- `/src/utils/` - Utility functions and helpers
 
-```
-/                          # Project root
-├── manifest.json          # Chrome extension manifest
-├── package.json           # Node.js dependencies and scripts
-├── tsconfig.json          # TypeScript configuration
-├── esbuild.config.ts      # Build configuration
-├── jest.config.cjs        # Test configuration (jsdom environment)
-├── release-please-config.json  # Release automation config
-├── CLAUDE.md              # This AI agent documentation
-├── README.md              # Project overview
-├── CONTRIBUTING.md        # Contribution guidelines
-├── CHANGELOG.md           # Version history
-├── firebase.json          # Firebase project configuration
-├── .firebaserc            # Firebase project settings
-├── firestore.rules        # Firestore security rules
-├── firestore.indexes.json # Firestore index definitions
-├── icons/                 # Extension icons
-│   ├── icon_16px.png, icon_48px.png, icon_128px.png
-│   └── README.png         # README screenshot
-└── src/                   # Source code
-    ├── app.ts             # Re-export layer for backward compatibility
-    │                      # Exports type guards: isApiEventType, parseApiEvent, getValidationError
-    ├── background.ts      # Service worker for persistence
-    ├── content_script.ts  # Bridge between page and extension
-    ├── web_accessible_resource.ts  # WebSocket interception
-    ├── entity-converter.ts     # Direct event-to-entity conversion
-    ├── popup.ts           # Extension popup entry point
-    ├── index.html         # Extension HTML
-    ├── components/        # React UI components
-    │   ├── App.tsx       # Root component with state management
-    │   ├── Hud.tsx       # HUD overlay component
-    │   ├── HandLog.tsx   # Hand history log component
-    │   ├── Popup.tsx     # Extension popup interface
-    │   ├── hud/          # HUD-specific components
-    │   │   ├── DragHandle.tsx           # Draggable UI handle
-    │   │   ├── PlayerNameDisplay.tsx    # Player name and rank display
-    │   │   ├── RealTimeStatsDisplay.tsx # Real-time statistics HUD
-    │   │   ├── StatDisplay.tsx          # Statistics display grid
-    │   │   └── hooks/
-    │   │       └── useDraggable.ts      # Drag functionality hook
-    │   └── popup/        # Popup-specific components
-    │       ├── FirebaseAuthSection.tsx    # Firebase authentication UI
-    │       ├── GameTypeFilterSection.tsx  # Game type filtering
-    │       ├── HandLimitSection.tsx       # Hand count controls
-    │       ├── ImportExportSection.tsx    # Import/export functionality
-    │       ├── StatsConfigSection.tsx     # Statistics configuration
-    │       ├── SyncStatusSection.tsx      # Cloud sync status display
-    │       └── UIScaleSection.tsx         # UI scale adjustment
-    ├── constants/         # Centralized configuration
-    │   └── database.ts   # Database-related constants
-    ├── db/
-    │   └── poker-chase-db.ts  # Database definition (PokerChaseDB)
-    ├── docs/              # Architecture documentation
-    │   └── adr/          # Architecture Decision Records
-    │       ├── 001-data-storage-architecture.md
-    │       └── 002-database-index-optimization.md
-    ├── services/
-    │   ├── poker-chase-service.ts      # Main service class
-    │   ├── firebase-auth-service.ts    # Firebase authentication
-    │   ├── firebase-config.ts          # Firebase configuration
-    │   ├── firestore-backup-service.ts # Cloud sync logic (incremental upload, full download)
-    │   └── auto-sync-service.ts        # Automatic sync management
-    ├── stats/
-    │   ├── core/         # Statistic definitions
-    │   │   ├── 3bet.ts, 3bet-fold.ts
-    │   │   ├── af.ts, afq.ts
-    │   │   ├── cbet.ts, cbet-fold.ts
-    │   │   ├── hands.ts, pfr.ts, vpip.ts
-    │   │   ├── player-name.ts
-    │   │   └── wsd.ts, wtsd.ts, wwsf.ts
-    │   ├── helpers.ts    # Common helper functions
-    │   ├── registry.ts   # Statistics registry
-    │   └── utils.ts      # Utility functions
-    ├── streams/
-    │   ├── aggregate-events-stream.ts  # Event aggregation
-    │   ├── write-entity-stream.ts      # Entity persistence
-    │   ├── read-entity-stream.ts       # Statistics calculation
-    │   ├── hand-log-stream.ts          # Hand history generation
-    │   └── realtime-stats-stream.ts    # Real-time statistics
-    ├── realtime-stats/    # Real-time statistics components
-    │   ├── hand-improvement.ts         # Hand improvement calculator
-    │   ├── pot-odds.ts                 # Pot odds calculator
-    │   ├── realtime-stats-service.ts   # Real-time stats service
-    │   └── index.ts                    # Module exports
-    ├── test-setup.ts     # Jest setup for React Testing Library
-    ├── tools/             # Development tools
-    │   └── validate-schemas.ts  # NDJSON event validator
-    ├── types/             # TypeScript type definitions
-    │   ├── api.ts        # API event types, Zod schemas, type guards
-    │   ├── entities.ts   # Entity types with Zod schemas
-    │   ├── errors.ts     # Error types and handling
-    │   ├── filters.ts, game.ts, hand-log.ts
-    │   ├── messages.ts, stats.ts
-    │   └── index.ts      # Central export point (types, schemas, functions)
-    └── utils/             # Utility modules
-        ├── array-utils.ts    # Array manipulation
-        ├── card-utils.ts     # Card formatting
-        ├── database-utils.ts # Database operation utilities
-        ├── error-handler.ts  # Error handling
-        ├── hand-log-exporter.ts      # Export functionality
-        ├── hand-log-processor.ts     # PokerStars format
-        ├── logger.ts         # Structured logging
-        ├── poker-evaluator.ts        # Hand evaluation
-        ├── river-probabilities.ts    # River probability tables
-        └── starting-hand-rankings.ts # Starting hand rankings
-```
+For complete directory structure and file descriptions, see [docs/implementation/file-organization.md](docs/implementation/file-organization.md).
 
 ### Extension Layer
 
-#### `web_accessible_resource.ts`
-
-- WebSocket constructor override
-- API traffic interception
-- Event forwarding via postMessage
-
-#### `content_script.ts`
-
-- Bridge between page and extension
-- React app injection
-- Message validation and routing
-- **Keepalive mechanism**: Sends periodic messages to prevent Service Worker timeout
-- **Game state tracking**: Monitors EVT_SESSION_DETAILS/RESULTS for active games
-- **Resource cleanup**: Handles beforeunload and visibilitychange events
-- **Error resilience**: Suppresses "Extension context invalidated" errors with automatic reconnection
-
-#### `background.ts`
-
-- Service worker for persistence
-- Import/export operations
-- Connection lifecycle management
-- Batch processing coordination
-- **State initialization**: Waits for `service.ready` promise before processing
-- **Keepalive handling**: Processes keepalive messages to stay active
-- **Schema validation**: Validates all incoming API events with Zod
-- **Auto data rebuild**: Rebuilds data from apiEvents on version update
-- **Firebase auth**: Handles Google sign-in/out requests
-- **Auto sync coordination**: Manages cloud sync after game sessions
-- **Sync state response**: Fixed response format to use `syncState` property instead of `data`
-- **Utility Usage**:
-  - Uses `processInChunks()` for export and rebuild operations
-  - Uses `saveEntities()` for consistent entity saving
-  - Uses `findLatestPlayerDealEvent()` for EVT_DEAL searches
-  - Constants from `DATABASE_CONSTANTS` for all magic numbers
+**Key components**:
+- `web_accessible_resource.ts` - WebSocket interception and event forwarding
+- `content_script.ts` - Bridge with keepalive mechanism and game state tracking
+- `background.ts` - Service worker with state persistence and batch processing
 
 ### Data Processing Streams
 
-#### `AggregateEventsStream` (`src/streams/aggregate-events-stream.ts`)
+Three independent streams process events in parallel:
+- **AggregateEventsStream** → **WriteEntityStream** → **ReadEntityStream** (main statistics pipeline)
+- **RealTimeStatsStream** - Real-time pot odds, SPR, hand improvement
+- **HandLogStream** - Hand history generation
 
-- Groups events by hand boundaries
-- Manages session state
-- Controls DB write modes (real-time vs replay)
-
-#### `WriteEntityStream` (`src/streams/write-entity-stream.ts`)
-
-- Decomposes events into entities
-- Normalizes ALL_IN actions
-- Delegates ActionDetail detection to statistics modules
-- Supports batch mode
-
-#### `ReadEntityStream` (`src/streams/read-entity-stream.ts`)
-
-- Applies filters (game type, hand limit)
-- Calculates statistics via registry
-- Implements caching to improve performance
-- Always returns 6-element array
-
-#### `EntityConverter` (Import Optimization)
-
-- Direct event-to-entity conversion
-- Bypasses stream overhead
-- Extracts session/player information
-- Uses statistics modules for consistency
-- Generates SHOWDOWN phases
-- **Location**: `src/entity-converter.ts`
-
-#### `RealTimeStatsStream` (`src/streams/realtime-stats-stream.ts`)
-
-- Processes events in parallel with main pipeline
-- Tracks all players' chip stacks and bet amounts
-- Calculates pot odds and SPR for all players
-- Computes hand improvement probabilities for hero
-- Updates on each action and street
-- Returns `AllPlayersRealTimeStats` with hero and player data
-
-#### `HandLogStream` (`src/streams/hand-log-stream.ts`)
-
-- Generates hand history entries in real-time
-- Uses HandLogProcessor for consistent formatting
-- Emits events for UI updates
-- Resets hand state while preserving session data
+**Key optimization**: `EntityConverter` for direct event-to-entity conversion during imports.
 
 ### Services
 
-#### `FirestoreBackupService` (`src/services/firestore-backup-service.ts`)
+**Core services**:
+- **PokerChaseService** - Central state management with Chrome Storage persistence
+- **FirestoreBackupService** - Cloud sync with incremental upload and full download
+- **AutoSyncService** - Cost-optimized automatic synchronization
+- **FirebaseAuthService** - Chrome identity API integration
 
-- **Cloud backup service**: Handles Firestore read/write operations
-- **Upload strategy**:
-  - Queries cloud for latest timestamp (orderBy + limit(1))
-  - Filters local events newer than cloud's max timestamp
-  - Batches writes in chunks of 300 with retry logic
-  - Updates lastSyncTimestamp in user metadata
-- **Download strategy**:
-  - Retrieves all events from cloud (no filtering)
-  - Returns raw events for processing by AutoSyncService
-  - Cloud treated as complete source of truth
-- **Optimizations**:
-  - Parallel batch processing (3 batches at once)
-  - Rate limit handling with exponential backoff
-  - Efficient deletion with chunked batch deletes
-
-#### `PokerChaseService` (`src/services/poker-chase-service.ts`)
-
-- **Core service**: Central state management and stream coordination
-- **Chrome Storage persistence**: Automatic state saving to survive Service Worker restarts
-  - Uses getter/setter pattern for transparent persistence
-  - Persists `playerId`, `latestEvtDeal`, and session data
-  - Implements 500ms debouncing to optimize write frequency
-- **Initialization promise**: `ready` property ensures complete initialization
-  - Prevents race conditions during startup
-  - Background script waits for this before processing events
-- **Error handling**: Tracks initialization errors separately
-  - `isReady` getter checks both initialization and error state
-  - Storage quota exceeded handling with automatic cleanup
-- **Session management**: Maintains game session continuity
-  - Players Map with custom setter for persistence
-  - Direct property access during restoration to avoid circular persistence
-
-#### `AutoSyncService` (`src/services/auto-sync-service.ts`)
-
-- **Automatic cloud synchronization**: Handles bidirectional sync with Firestore
-- **Cost-optimized scheduling**:
-  - Initial sync only on first authentication (bidirectional)
-  - No periodic sync (manual or event-driven only)
-  - Event-driven sync after game sessions (100+ events threshold - upload only)
-  - No minimum interval between sync attempts
-- **Smart sync strategy**:
-  - **Upload**: Syncs events newer than cloud's latest timestamp (not local metadata)
-  - **Download**: Treats cloud as complete source of truth, uses bulkPut for merge
-  - Tracks last sync timestamp locally for UI display
-- **Progress tracking**: Real-time progress updates for UI
-- **State management**: Maintains sync state with status, progress, and errors
-- **Data rebuild after download**: 
-  - Uses EntityConverter to rebuild hands/phases/actions from downloaded events
-  - Restores service state: playerId, latestEvtDeal, session info
-  - Triggers statistics recalculation with restored state
+Key features: Service Worker resilience, 100+ event threshold for auto-sync, state restoration.
 
 ### Utility Modules
 
-#### Database Utilities (`utils/database-utils.ts`)
+**Key utilities**:
+- **Database Utils** - `saveEntities()`, `processInChunks()`, optimized searches
+- **Constants** - Centralized configuration in `DATABASE_CONSTANTS`
+- **Hand Log Processor** - PokerStars-format hand history generation
+- **Card Utils** - Card formatting (e.g., [37, 51] → ['Jh', 'Ac'])
+- **Logger** - Structured logging foundation (migration in progress)
+- **Schema Validator** - NDJSON validation tool
 
-- **Purpose**: Common database operations to reduce code duplication and consolidate patterns
-- **Key Functions**:
-  - `saveEntities()`: Transactional bulk save for hands/phases/actions with unified transaction handling
-  - `processInChunks()`: Async generator for memory-efficient data processing
-  - `findLatestPlayerDealEvent()`: Standardized EVT_DEAL search logic (optimized from O(n) to O(log n))
-  - `withTransaction()`: Error-handled transaction wrapper
-- **Usage Pattern**:
-  ```typescript
-  // Save entities with progress tracking
-  await saveEntities(db, entities, {
-    onProgress: (counts) => console.log(`Saved ${counts.hands} hands`)
-  })
-  
-  // Process large datasets in chunks
-  for await (const chunk of processInChunks(query, 10000)) {
-    // Process chunk
-  }
-  ```
-- **Impact**: All duplicate code patterns consolidated into utility functions
-
-#### Constants (`constants/database.ts`)
-
-- **Purpose**: Centralized configuration values to eliminate magic numbers
-- **Categories**:
-  - Chunk sizes for data processing (import, sync, export)
-  - Search and batch limits
-  - Firestore sync parameters
-  - Cache durations
-  - Service Worker settings
-- **Benefits**:
-  - No magic numbers in code
-  - Easy tuning of performance parameters
-  - Type-safe constant access throughout codebase
-- **Usage**: `DATABASE_CONSTANTS` object provides all configuration values
-
-#### Logger (`utils/logger.ts`)
-
-- **Purpose**: Structured logging system (foundation for future migration)
-- **Features**:
-  - Context-based logging with timestamps
-  - Log levels: debug, info, warn, error
-  - Performance measurement utilities
-  - Child logger support for nested contexts
-- **Pre-configured Loggers**:
-  - `Loggers.Database`, `Loggers.Sync`, `Loggers.Import`, etc.
-- **Migration Status**: 
-  - Currently console.log is still used throughout codebase (59 locations identified)
-  - Logger class introduced as foundation for future migration
-
-#### Schema Validator (`tools/validate-schemas.ts`)
-
-- **Purpose**: Validates NDJSON export files against API event schemas
-- **Usage**: `npm run validate-schema -- <file.ndjson>`
-- **Features**:
-  - Parses NDJSON files line by line
-  - Validates each event against its Zod schema
-  - Reports schema violations with detailed error messages
-  - Handles large files efficiently
-- **Default File**: Searches for default NDJSON file if no argument provided
-
-#### Array Utilities (`array-utils.ts`)
-
-- **rotateArrayFromIndex**: Safely rotates arrays from specified index
-- **Error Handling**: Throws exceptions for null/undefined arrays and non-integer indices
-- **Type Safe**: Generic function with proper TypeScript types
-- **Usage**: Seat rotation, player ordering
-
-#### Card Utilities (`card-utils.ts`)
-
-- **formatCards**: Converts card indices to string format (e.g., [37, 51] → ['Jh', 'Ac'])
-- **formatCardsArray**: Array version of card formatting
-- **Consistent Format**: Used throughout for card display
-
-#### Hand Log Processor (`hand-log-processor.ts`)
-
-- **Core Logic**: Generates PokerStars-format hand histories
-- **Accurate Showdown**: Last aggressor shows first
-- **Enhanced Descriptions**: Detailed hand rankings (e.g., "two pair, Sevens and Deuces")
-- **Tournament Tracking**: Player finish positions
-- **Uncalled Bets**: Proper handling of returned chips in heads-up situations
-- **Pot Calculations**: Excludes uncalled bets from total pot
-- **Table Size**: Dynamically determined from `SeatUserIds.length`
-- **Location**: `src/utils/hand-log-processor.ts`
-
-#### Error Handler (`error-handler.ts`)
-
-- **Centralized**: Consistent error handling across extension
-- **User-Friendly**: Translates technical errors for users
-- **Logging**: Controlled error logging for debugging
+See individual files in `src/utils/` for implementation details.
 
 ### UI Components
 
-React components for the HUD interface. The components have been refactored for better modularity and testability.
+**Main components**:
+- **App.tsx** - Root component with state management and seat rotation
+- **Hud.tsx** - Draggable HUD overlay (240px regular, 200px real-time)
+- **HandLog.tsx** - Virtualized hand history with PokerStars export
+- **Popup.tsx** - Extension settings interface
 
-#### Main Components
-
-- **`App.tsx`**: Root component managing state and seat rotation logic
-- **`Hud.tsx`**: HUD overlay with drag & drop (240px regular, 200px real-time stats)
-  - Refactored to use modular sub-components
-  - Import paths updated for case-sensitivity
-- **`HandLog.tsx`**: Virtualized hand history log with PokerStars export
-- **`Popup.tsx`**: Extension settings and manual cloud sync controls
-  - Refactored into 7 focused sub-components for better maintainability
-  - Automatic tab navigation to game tab on popup open
-  - Sync state display simplified to show only cloud timestamp
-
-#### HUD Sub-components (`src/components/hud/`)
-
-- **`StatDisplay.tsx`**: Reusable statistics display grid
-- **`PlayerNameDisplay.tsx`**: Player name and rank formatter
-- **`RealTimeStatsDisplay.tsx`**: Hero's real-time statistics HUD
-- **`DragHandle.tsx`**: Visual indicator for draggable areas
-- **`hooks/useDraggable.ts`**: Custom hook for drag functionality
-
-#### Popup Sub-components (`src/components/popup/`)
-
-- **`FirebaseAuthSection.tsx`**: Firebase authentication and user info display
-- **`SyncStatusSection.tsx`**: Cloud sync status display
-  - Shows only cloud last sync timestamp (YY/MM/DD format)
-  - Manual upload/download buttons
-  - Progress display during sync operations
-- **`ImportExportSection.tsx`**: Data import/export functionality
-  - PokerStars export button with brand color (#d70022)
-  - Export Hand History, Export Raw Data, Import Raw Data buttons
-  - Icons and English labels for better UX
-- **`GameTypeFilterSection.tsx`**: SNG/MTT/Ring game filters
-- **`HandLimitSection.tsx`**: Hand count limit slider
-- **`StatsConfigSection.tsx`**: Statistics display configuration
-- **`UIScaleSection.tsx`**: Global UI scale controls
-
-For implementation details, see individual component files in `src/components/`.
+Components are modularized with feature-specific sub-components in `hud/` and `popup/` directories.
 
 ## Statistics System
 
@@ -886,85 +556,17 @@ Dynamic statistics for all players, with hero having additional hand improvement
 
 ### Event Types
 
-For complete type definitions and Zod schemas, see `src/types/api.ts`. All event types now have corresponding runtime validation schemas.
+**Event categories**:
+- **Session Events** - Game lifecycle (RES_ENTRY_QUEUED, EVT_SESSION_DETAILS/RESULTS)
+- **Player Events** - Seating and identification (EVT_PLAYER_SEAT_ASSIGNED, EVT_DEAL)
+- **Game Events** - Actions and results (EVT_ACTION, EVT_DEAL_ROUND, EVT_HAND_RESULTS)
 
-#### Session Events
+**Key relationships**:
+- Hero ID: `SeatUserIds[EVT_DEAL.Player.SeatIndex]`
+- Table size: `SeatUserIds.length` (4 or 6)
+- HandId: Only available at EVT_HAND_RESULTS
 
-| Event                 | ID  | Purpose                                    | Key Fields                |
-| --------------------- | --- | ------------------------------------------ | ------------------------- |
-| `RES_ENTRY_QUEUED`    | 201 | Session start, extracts ID and battle type | `SessionId`, `BattleType` |
-| `EVT_SESSION_DETAILS` | 308 | Game configuration and name                | `SessionName`, `Config`   |
-| `EVT_SESSION_RESULTS` | 309 | Session end, triggers cleanup              | `Results`, `Rankings`     |
-
-#### Player Events
-
-| Event                      | ID  | Purpose                          | Key Fields                                     |
-| -------------------------- | --- | -------------------------------- | ---------------------------------------------- |
-| `EVT_PLAYER_SEAT_ASSIGNED` | 313 | Initial seating with names/ranks | `SeatUserIds[]`, `PlayerNames[]`               |
-| `EVT_PLAYER_JOIN`          | 301 | Mid-game joins                   | `JoinPlayer`, `SeatIndex`                      |
-| `EVT_DEAL`                 | 303 | Hand start, hero identification  | `Player.SeatIndex`, `SeatUserIds[]`, `Cards[]` |
-
-#### Game Events
-
-| Event              | ID  | Purpose                         | Key Fields                           |
-| ------------------ | --- | ------------------------------- | ------------------------------------ |
-| `EVT_ACTION`       | 304 | Player actions (bet/fold/raise) | `UserId`, `ActionType`, `BetSize`    |
-| `EVT_DEAL_ROUND`   | 305 | New street (flop/turn/river)    | `DealType`, `Cards[]`                |
-| `EVT_HAND_RESULTS` | 306 | Hand completion, winners        | `HandId`, `Results[]`, `WinnerIds[]` |
-
-### Event Processing
-
-#### Typical Hand Event Sequence
-
-For concrete examples with actual event data, see `src/app.test.ts`.
-
-```
-1. EVT_DEAL (303)
-   - Provides: Hero identification, initial SeatUserIds
-   - Extract: Hero UserId = SeatUserIds[Player.SeatIndex]
-
-2. EVT_ACTION (304) [multiple]
-   - Preflop actions: posts, raises, calls, folds
-   - Track: Who entered pot (VPIP), who raised (PFR)
-
-3. EVT_DEAL_ROUND (305) - Flop
-   - Community cards revealed
-   - Reset street-specific counters
-
-4. EVT_ACTION (304) [multiple]
-   - Flop actions: checks, bets, raises
-   - Track: Continuation bets, aggression
-
-5. EVT_DEAL_ROUND (305) - Turn
-6. EVT_ACTION (304) [multiple]
-7. EVT_DEAL_ROUND (305) - River
-8. EVT_ACTION (304) [multiple]
-
-9. EVT_HAND_RESULTS (306)
-   - Provides: HandId, winners, final pot
-   - Triggers: Statistics calculation, hand log generation
-```
-
-#### Event Data Relationships
-
-**SeatUserIds Array**:
-
-- Length determines table size (4 or 6)
-- Index = logical seat position
-- Value = UserId (or -1 for empty)
-- Order randomly assigned at seating
-
-**Player Identification Flow**:
-
-```
-EVT_PLAYER_SEAT_ASSIGNED → Initial player names/ranks
-         ↓
-EVT_DEAL.Player.SeatIndex → Hero seat identification
-         ↓
-SeatUserIds[Player.SeatIndex] → Hero UserId
-         ↓
-EVT_ACTION.UserId → Track hero's actions
-```
+For complete event reference, see [docs/reference/api-events.md](docs/reference/api-events.md).
 
 ### Database Schema
 
@@ -1099,135 +701,21 @@ Configuration uses Chrome's `storage.sync` API for cross-device synchronization:
 
 ### Architecture
 
-**Service Worker Compatible Design**:
-- Firebase SDK v12+ is fully compatible with Service Workers
-- Direct Firestore SDK usage without XMLHttpRequest issues
-- Authentication via `chrome.identity` API with Firebase credential exchange
+- **Service Worker Compatible**: Firebase SDK v12+ with chrome.identity authentication
+- **Data Structure**: `/users/{userId}/apiEvents/{timestamp_ApiTypeId}`
+- **Sync Strategy**: Incremental upload, full download (cloud as source of truth)
+- **Cost Optimized**: 100+ event threshold, no periodic sync
 
-**Data Structure**:
-```
-Firestore:
-/users/{userId}/
-  /apiEvents/{eventId}  // eventId = timestamp_ApiTypeId
-    - timestamp: number
-    - ApiTypeId: number
-    - [event data...]
-```
+### Key Features
 
-### Setup Requirements
+- **Auto Sync**: Triggers on game end with 100+ new events
+- **Manual Sync**: Upload/download controls in popup
+- **BigQuery Export**: Automatic daily snapshots for analysis
+- **Free Tier Friendly**: Typical usage stays within limits
 
-1. **Firebase Project**:
-   - Authentication with Google provider
-   - Firestore database (asia-northeast1 recommended)
-   - Security rules deployment via `npm run firebase:deploy:rules`
-   - **Important**: Update `src/services/firebase-config.ts` with your own Firebase project configuration
+**Important**: Update `src/services/firebase-config.ts` with your Firebase configuration.
 
-2. **OAuth Configuration**:
-   - Chrome Extension OAuth client in Google Cloud Console
-   - Manifest.json `oauth2` section with client ID
-   - Scopes: userinfo.email, userinfo.profile
-
-3. **Extension ID Management**:
-   - Development and production IDs differ
-   - Cannot share IDs between local dev and Chrome Web Store
-   - Requires separate OAuth clients for each environment
-
-### Implementation Details
-
-**Firebase SDK Integration**:
-- Uses Firebase SDK v12.0.0 (Service Worker compatible)
-- Direct Firestore SDK methods (collection, doc, writeBatch, etc.)
-- No REST API wrapper needed - modern Firebase SDK works in Service Workers
-- Authentication handled via Chrome identity API token exchange
-
-### Cloud Data Flow
-
-**Upload Sync**:
-1. Query cloud for latest timestamp (single document)
-2. Filter local events newer than cloud's latest timestamp
-3. Batch process in chunks of 300 events
-4. Use composite key `timestamp_ApiTypeId` for deduplication
-5. Update user metadata with sync timestamp
-
-**Download Sync**:
-1. Get all events from cloud (cloud is source of truth)
-2. Bulk insert to IndexedDB using bulkPut (updates existing records)
-3. Restore service state from downloaded events:
-   - Latest EVT_DEAL → playerId, latestEvtDeal
-   - Session events → session.id, battleType, name, players
-4. Rebuild entities using EntityConverter
-5. Trigger statistics recalculation
-
-**Auto Sync Triggers**:
-- Initial login (first sync only - bidirectional)
-- Game session end (100+ new events threshold - upload only)
-- Manual sync via popup UI (direction selectable)
-
-### BigQuery Integration
-
-**Export Configuration**:
-- Enable BigQuery export in Firebase Console
-- Automatic daily snapshots to `users_raw_latest`
-- Change history in `users_raw_changelog`
-
-**Analysis Views**:
-```sql
--- User event statistics
-CREATE VIEW user_event_stats AS
-SELECT 
-  user_id,
-  COUNT(*) as total_events,
-  MIN(TIMESTAMP_MILLIS(timestamp)) as first_event
-FROM (...)
-GROUP BY user_id;
-```
-
-### Cost Optimization
-
-1. **Firestore Optimization**:
-   - Smart incremental sync (cloud timestamp for uploads, full for downloads)
-   - No periodic sync (event-driven only)
-   - Batch operations to reduce API calls
-   - 100-event threshold for game-end sync
-   - Single query for cloud max timestamp during upload
-
-2. **Free Tier Limits**:
-   - Authentication: 10,000/month
-   - Firestore: 50k reads/day, 20k writes/day, 1GB storage
-   - BigQuery: 1TB queries/month, 10GB storage
-
-3. **Data Size Estimates**:
-   - 1 event ≈ 200 bytes
-   - 1000 hands ≈ 10,000 events ≈ 2MB
-   - Typical user stays within free tier
-
-### Troubleshooting
-
-**Common Issues**:
-
-1. **Authentication Errors**:
-   - Ensure OAuth client ID matches the extension ID
-   - Verify Firebase project configuration
-   - Check chrome.identity permissions in manifest.json
-
-2. **"Write stream exhausted"**:
-   - Firestore rate limiting
-   - Solution: Reduce batch size, add delays between batches
-
-3. **Login UI not updating**:
-   - Check Service Worker console for auth errors
-   - Verify OAuth client configuration
-   - Ensure Firebase Auth domains are authorized
-
-**Debug Commands**:
-```javascript
-// Check auth state (in Service Worker console)
-firebaseAuthService.getCurrentUser()
-firebaseAuthService.isSignedIn()
-
-// Test Chrome identity
-chrome.identity.getAuthToken({ interactive: true }, console.log)
-```
+For detailed setup instructions, see [docs/implementation/firebase-setup.md](docs/implementation/firebase-setup.md).
 
 ---
 

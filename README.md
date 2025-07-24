@@ -17,7 +17,7 @@ This is an **unofficial** Chrome extension not affiliated with PokerChase. Use a
 - **Flexible Filtering**: Game type and hand count filters
 - **Drag & Drop UI**: Customizable HUD positioning
 - **Data Export**: JSON and PokerStars formats
-- **Cloud Backup**: Google Drive integration for automatic backups (Firebase)
+- **Cloud Backup**: Automatic backups with cloud sync
 
 ## Quick Start
 
@@ -28,29 +28,28 @@ This is an **unofficial** Chrome extension not affiliated with PokerChase. Use a
 
 ### Installation
 
-```bash
+#### Option 1: From Release (Recommended)
+
+1. Download the latest `extension.zip` from [Releases](https://github.com/solavrc/pokerchase-hud/releases)
+2. Extract the ZIP file
+3. Open `chrome://extensions/`
+4. Enable "Developer mode"
+5. Click "Load unpacked" and select the extracted folder
+
+#### Option 2: From Source
+
+1. Build from source
+
+```sh
 git clone https://github.com/solavrc/pokerchase-hud.git
 cd pokerchase-hud
 npm install
 npm run build
 ```
 
-### Load Extension
-
-1. Open `chrome://extensions/`
-2. Enable "Developer mode"
-3. Click "Load unpacked" and select the project folder
-4. Visit supported poker sites to see the HUD
-
-### Development Workflow
-
-```bash
-npm run build         # Rebuild after changes
-npm run typecheck     # Type checking
-npm run test          # Run tests
-```
-
-After building, reload the extension in Chrome's extension management page.
+2. Open `chrome://extensions/`
+3. Enable "Developer mode"
+4. Click "Load unpacked" and select the project folder
 
 ## Architecture
 
@@ -64,74 +63,12 @@ After building, reload the extension in Chrome's extension management page.
 - Stream processing pipeline details
 - Database schema and API reference
 - Development guidelines and best practices
-- Troubleshooting guide
-
-🔥 **[Firebase Setup Guide](FIREBASE_SETUP.md)** - Cloud backup configuration:
-
-- Step-by-step Firebase project setup
-- Google authentication configuration
-- Security rules and troubleshooting
+- Cloud sync setup and troubleshooting
 
 ## Contributing
 
 Contributions are welcome! The codebase uses a modular architecture for easy extension.
 
-📖 **[Contributing Guide](CONTRIBUTING.md)** - Complete guide for adding new statistics
+📖 **[Contributing Guide](CONTRIBUTING.md)** - Complete guide for adding new statistics with examples and testing requirements
 
-### Quick Example
-
-```typescript
-// src/stats/core/my-stat.ts
-export const myNewStat: StatDefinition = {
-  id: 'myNew',
-  name: 'MN',
-  description: 'My new statistic',
-
-  // Optional: Detect specific actions
-  detectActionDetails: (context) => {
-    if (/* your condition */) {
-      return ['MY_FLAG']
-    }
-    return []
-  },
-
-  // Required: Calculate the statistic
-  calculate: ({ actions, hands }) => {
-    const count = actions.filter(a =>
-      a.actionDetails.includes('MY_FLAG')
-    ).length
-    return [count, hands.length]
-  },
-
-  format: formatPercentage  // Optional formatter
-}
-```
-
-**Important**: Unit tests are required for all new statistics!
-
-📖 **[Technical Documentation](CLAUDE.md)** - Architecture and implementation details
-
-- Detailed implementation examples
-- Code standards and security guidelines
-- Testing procedures
-- Pull request requirements
-
-### Development Commands
-
-```bash
-npm run build         # Production build
-npm run typecheck     # Type checking
-npm run test          # Run Jest tests
-npm run postbuild     # Package extension
-```
-
-### Project Structure
-
-```
-src/
-├── components/       # React UI components
-├── stats/           # Modular statistics system
-├── types/           # TypeScript definitions
-├── utils/           # Helper utilities
-└── streams/         # Data processing pipeline
-```
+📁 **[Project Structure](docs/implementation/file-organization.md)** - Detailed directory layout and file organization
