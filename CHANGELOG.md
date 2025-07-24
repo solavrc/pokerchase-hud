@@ -1,5 +1,25 @@
 # Changelog
 
+## [3.0.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v2.5.0...pokerchase-hud-v3.0.0) (2025-07-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **hud:** Requires Firebase project setup and OAuth configuration
+
+### Features
+
+* **hud:** implement Firebase cloud sync with automatic backup ([c9062db](https://github.com/solavrc/pokerchase-hud/commit/c9062db99c5be388d46653b04ca2ab798f1404d2))
+* **manifest:** add extension key for consistent ID across environments ([1a25ad9](https://github.com/solavrc/pokerchase-hud/commit/1a25ad9724d913a9f2045a7c60ef0ed9003f9d79))
+* **popup:** switch to existing game tab when extension icon clicked outside game ([03a58e5](https://github.com/solavrc/pokerchase-hud/commit/03a58e5d6ec703b4c657914fa458d7e19ecdafbd))
+* **ui:** improve popup layout and add manual sync controls ([d855e63](https://github.com/solavrc/pokerchase-hud/commit/d855e634708fe394b4a303ea142ee6efed9b4d36))
+
+
+### Bug Fixes
+
+* **background:** remove automatic data rebuild on extension update ([4b04831](https://github.com/solavrc/pokerchase-hud/commit/4b04831da9ab23f30cd4bb4ca383ce9dc3d25c70))
+* **content:** suppress "Extension context invalidated" errors ([027ca3d](https://github.com/solavrc/pokerchase-hud/commit/027ca3d8d9f53117244f7a78c1ca063abab3326d))
+
 ## [2.5.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v2.4.0...pokerchase-hud-v2.5.0) (2025-07-23)
 
 

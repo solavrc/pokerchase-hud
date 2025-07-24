@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PokerChase HUD",
-  "version": "2.5.0",
+  "version": "3.0.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAiHjGBgceHTEGoM/G2SKZNjiHQEPjOqZFGVyoEccpcFzWFM8w/qaVOcW2OZNDMW+97H9OzF/il1Rh4Og2E2R2Uq9eylAfO3XQyOpeY3d/wRqPXOHJroilEu4An8VDcjXcR0Mv31i/iYVz7/nx6F+qO4uDf/qGQtAzK7O8n8rh+ZHO8wzEOwcbPMJ6nwId4eQHVyfGsgKx6Z0+c7KPNnPJxvDNwE6B8YxQ0Yp89nDgAo2Ss4mRl81FR6pGv9xilvTmorge6Ks0H7yVQd3Gd5UyYy2wSdqR+b/B8Q2jVrGp0C2rWrTKggl+lWDijeCQUiImRJASmxVVL9Dz1Q01eqTkyQIDAQAB",
   "permissions": [
     "storage",
