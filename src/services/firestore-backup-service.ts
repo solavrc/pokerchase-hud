@@ -220,7 +220,7 @@ export class FirestoreBackupService {
   /**
    * Get the latest timestamp from cloud events
    */
-  private async getCloudMaxTimestamp(): Promise<number | null> {
+  async getCloudMaxTimestamp(): Promise<number | null> {
     try {
       const userRef = this.getUserRef()
       const eventsCollection = collection(userRef, this.EVENTS_COLLECTION)
@@ -261,6 +261,80 @@ export class FirestoreBackupService {
       }, { merge: true })
     } catch (error) {
       console.error('Failed to update last sync timestamp:', error)
+    }
+  }
+
+  /**
+   * Sync a batch of events to cloud with pre-fetched cloud max timestamp
+   */
+  async syncToCloudBatch(
+    apiEvents: ApiEvent[],
+    cloudMaxTimestamp: number | null,
+    onProgress?: (progress: { current: number, total: number }) => void
+  ): Promise<BackupSummary> {
+    const user = firebaseAuthService.getCurrentUser()
+    if (!user) {
+      throw new Error('User not authenticated')
+    }
+
+    const userRef = this.getUserRef()
+    const eventsCollection = collection(userRef, this.EVENTS_COLLECTION)
+    
+    try {
+      let processed = 0
+      let synced = 0
+
+      console.log(`[Firestore] Processing batch of ${apiEvents.length} events...`)
+
+      // Filter events newer than cloud's latest timestamp
+      const newEvents = cloudMaxTimestamp 
+        ? apiEvents.filter(event => (event.timestamp || 0) > cloudMaxTimestamp)
+        : apiEvents
+
+      console.log(`[Firestore] ${newEvents.length} new events in this batch`)
+
+      // Process new events in batches
+      const PARALLEL_BATCHES = 3
+      for (let i = 0; i < newEvents.length; i += this.BATCH_SIZE * PARALLEL_BATCHES) {
+        const batchPromises = []
+        
+        for (let j = 0; j < PARALLEL_BATCHES && i + j * this.BATCH_SIZE < newEvents.length; j++) {
+          const startIndex = i + j * this.BATCH_SIZE
+          const chunk = newEvents.slice(startIndex, startIndex + this.BATCH_SIZE)
+          if (chunk.length === 0) break
+
+          const batchPromise = this.writeBatch(eventsCollection, chunk)
+          batchPromises.push(batchPromise)
+          synced += chunk.length
+        }
+
+        await Promise.all(batchPromises)
+        
+        processed = Math.min(i + this.BATCH_SIZE * PARALLEL_BATCHES, newEvents.length)
+
+        if (onProgress) {
+          onProgress({ current: processed, total: newEvents.length })
+        }
+
+        if (processed < newEvents.length) {
+          await new Promise(resolve => setTimeout(resolve, this.BATCH_DELAY_MS))
+        }
+      }
+
+      // Update last sync timestamp if we synced any events
+      if (synced > 0) {
+        const maxTimestamp = Math.max(...newEvents.map(e => e.timestamp || 0))
+        await this.updateLastSyncTimestamp(maxTimestamp)
+      }
+
+      return {
+        totalEvents: apiEvents.length,
+        syncedEvents: synced,
+        lastSyncTime: new Date()
+      }
+    } catch (error) {
+      console.error('Failed to sync batch to cloud:', error)
+      throw new Error(`Cloud sync failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
   }
 

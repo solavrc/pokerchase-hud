@@ -128,16 +128,67 @@ class AutoSyncService {
   private async syncToCloud(): Promise<void> {
     console.log('[AutoSync] Starting upload to cloud...')
     
-    const apiEvents = await this.db.apiEvents.toArray()
-    if (apiEvents.length === 0) return
+    // Get the latest timestamp from cloud first
+    const cloudMaxTimestamp = await firestoreBackupService.getCloudMaxTimestamp()
+    console.log(`[AutoSync] Cloud max timestamp: ${cloudMaxTimestamp || 'none'}`)
+    
+    // Count events newer than cloud's latest
+    const totalCount = cloudMaxTimestamp
+      ? await this.db.apiEvents.where('timestamp').above(cloudMaxTimestamp).count()
+      : await this.db.apiEvents.count()
+    
+    if (totalCount === 0) {
+      console.log('[AutoSync] No new events to sync')
+      return
+    }
+    
+    console.log(`[AutoSync] Found ${totalCount} new events to sync`)
+    
+    // Process in chunks to avoid memory issues
+    const CHUNK_SIZE = 5000
+    let processed = 0
+    let synced = 0
+    let lastProcessedTimestamp = cloudMaxTimestamp || 0
+    
+    while (processed < totalCount) {
+      // Get chunk of events newer than lastProcessedTimestamp
+      const chunk = await this.db.apiEvents
+        .where('timestamp')
+        .above(lastProcessedTimestamp)
+        .limit(CHUNK_SIZE)
+        .toArray()
+      
+      if (chunk.length === 0) break
+      
+      // Sort chunk by timestamp to ensure order
+      chunk.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+      
+      // Sync this chunk
+      const summary = await firestoreBackupService.syncToCloudBatch(
+        chunk, 
+        cloudMaxTimestamp,
+        (progress) => {
+          this.updateSyncState({
+            progress: { 
+              current: processed + progress.current, 
+              total: totalCount, 
+              direction: 'upload' 
+            }
+          })
+        }
+      )
+      
+      synced += summary.syncedEvents
+      processed += chunk.length
+      
+      // Update timestamp for next chunk
+      const lastEvent = chunk[chunk.length - 1]
+      if (lastEvent && lastEvent.timestamp) {
+        lastProcessedTimestamp = lastEvent.timestamp
+      }
+    }
 
-    const summary = await firestoreBackupService.syncToCloud(apiEvents, (progress) => {
-      this.updateSyncState({
-        progress: { ...progress, direction: 'upload' }
-      })
-    })
-
-    console.log(`[AutoSync] Uploaded ${summary.syncedEvents} new events to cloud`)
+    console.log(`[AutoSync] Uploaded ${synced} new events to cloud`)
   }
 
   /**

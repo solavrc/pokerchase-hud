@@ -336,16 +336,31 @@ class PokerChaseService {
       }
     } else {
       // latestEvtDealが無い場合は、最新のEVT_DEALをDBから取得
-      const events = await this.db.apiEvents
-        .where('ApiTypeId').equals(ApiType.EVT_DEAL)
-        .reverse()
-        .toArray()
+      // Note: Dexie doesn't support filter() with first(), so we need a workaround
+      const SEARCH_LIMIT = 10 // Check last 10 EVT_DEAL events
+      let latestDealEvent: ApiEvent<ApiType.EVT_DEAL> | undefined
       
-      const latestDealEvent = events.find(event => 
-        isApiEventType(event, ApiType.EVT_DEAL) && event.Player?.SeatIndex !== undefined
-      )
+      // Get recent EVT_DEAL events in small batches
+      let offset = 0
+      while (!latestDealEvent && offset < 100) { // Safety limit
+        const events = await this.db.apiEvents
+          .where('ApiTypeId').equals(ApiType.EVT_DEAL)
+          .reverse()
+          .offset(offset)
+          .limit(SEARCH_LIMIT)
+          .toArray()
+        
+        if (events.length === 0) break
+        
+        // Find first event with Player.SeatIndex
+        latestDealEvent = events.find(event => 
+          isApiEventType(event, ApiType.EVT_DEAL) && event.Player?.SeatIndex !== undefined
+        ) as ApiEvent<ApiType.EVT_DEAL> | undefined
+        
+        offset += SEARCH_LIMIT
+      }
 
-      if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL) && latestDealEvent.SeatUserIds) {
+      if (latestDealEvent && latestDealEvent.SeatUserIds) {
         this.latestEvtDeal = latestDealEvent
 
         // プレイヤーIDも更新

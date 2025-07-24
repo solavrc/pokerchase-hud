@@ -12,6 +12,7 @@ import { DEFAULT_HAND_LOG_CONFIG } from '../types/hand-log'
 export class HandLogExporter {
   // Cache for player names across all exports
   private static playerNamesCache: Map<number, { name: string, rank: string }> | null = null
+  private static lastProcessedTimestamp: number = 0
   
   // Time constants for event retrieval
   private static readonly TIME_BUFFER_MS = 300000 // 5 minutes buffer to catch player seat assignments
@@ -21,57 +22,75 @@ export class HandLogExporter {
    * Build a global player names map from all available events in the database
    */
   private static async buildPlayerNamesMap(db: PokerChaseDB): Promise<Map<number, { name: string, rank: string }>> {
-    if (this.playerNamesCache) {
-      // Using cached player names map
-      return this.playerNamesCache
+    // Initialize cache if needed
+    if (!this.playerNamesCache) {
+      this.playerNamesCache = new Map()
+      console.log('[HandLogExporter] Initializing player names cache')
     }
 
-    // Building global player names map from database...
-    const playerMap = new Map<number, { name: string, rank: string }>()
+    const playerMap = this.playerNamesCache
 
     try {
-      // Get ALL EVT_PLAYER_SEAT_ASSIGNED events
-      const seatAssignedEvents = await db.apiEvents
-        .where('ApiTypeId').equals(ApiType.EVT_PLAYER_SEAT_ASSIGNED)
-        .toArray()
-
-      // Found EVT_PLAYER_SEAT_ASSIGNED events in database
-
-      // Process seat assigned events (newer events will overwrite older ones)
-      for (const event of seatAssignedEvents) {
-        if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED) && event.TableUsers) {
-          event.TableUsers.forEach(tableUser => {
-            playerMap.set(tableUser.UserId, {
-              name: tableUser.UserName,
-              rank: tableUser.Rank.RankId
+      // Process events newer than last processed timestamp
+      const newEventsQuery = db.apiEvents
+        .where('timestamp')
+        .above(this.lastProcessedTimestamp)
+      
+      const totalNew = await newEventsQuery.count()
+      if (totalNew === 0) {
+        console.log('[HandLogExporter] No new events since last cache update')
+        return playerMap
+      }
+      
+      console.log(`[HandLogExporter] Processing ${totalNew} new events for player names`)
+      
+      // Process in chunks to avoid memory issues
+      const CHUNK_SIZE = 5000
+      let offset = 0
+      let updatedPlayers = 0
+      
+      while (offset < totalNew) {
+        const chunk = await newEventsQuery
+          .offset(offset)
+          .limit(CHUNK_SIZE)
+          .toArray()
+        
+        if (chunk.length === 0) break
+        
+        // Process chunk for player information
+        for (const event of chunk) {
+          // Update timestamp tracker
+          if (event.timestamp && event.timestamp > this.lastProcessedTimestamp) {
+            this.lastProcessedTimestamp = event.timestamp
+          }
+          
+          // Process EVT_PLAYER_SEAT_ASSIGNED
+          if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED) && event.TableUsers) {
+            event.TableUsers.forEach(tableUser => {
+              playerMap.set(tableUser.UserId, {
+                name: tableUser.UserName,
+                rank: tableUser.Rank.RankId
+              })
+              updatedPlayers++
             })
-          })
+          }
+          
+          // Process EVT_PLAYER_JOIN
+          else if (isApiEventType(event, ApiType.EVT_PLAYER_JOIN) && event.JoinUser) {
+            playerMap.set(event.JoinUser.UserId, {
+              name: event.JoinUser.UserName,
+              rank: event.JoinUser.Rank.RankId
+            })
+            updatedPlayers++
+          }
         }
+        
+        offset += chunk.length
       }
 
-      // Get ALL EVT_PLAYER_JOIN events
-      const playerJoinEvents = await db.apiEvents
-        .where('ApiTypeId').equals(ApiType.EVT_PLAYER_JOIN)
-        .toArray()
-
-      // Found EVT_PLAYER_JOIN events in database
-
-      // Process join events (newer events will overwrite older ones)
-      for (const event of playerJoinEvents) {
-        if (isApiEventType(event, ApiType.EVT_PLAYER_JOIN) && event.JoinUser) {
-          playerMap.set(event.JoinUser.UserId, {
-            name: event.JoinUser.UserName,
-            rank: event.JoinUser.Rank.RankId
-          })
-        }
-      }
-
-      // Built player names map with unique players
-
-      // Cache the result
-      this.playerNamesCache = playerMap
-
+      console.log(`[HandLogExporter] Updated ${updatedPlayers} player entries, cache now has ${playerMap.size} players`)
       return playerMap
+      
     } catch (error) {
       console.error(`[HandLogExporter] Failed to build player names map:`, error)
       return playerMap
@@ -83,6 +102,8 @@ export class HandLogExporter {
    */
   static clearCache() {
     this.playerNamesCache = null
+    this.lastProcessedTimestamp = 0
+    console.log('[HandLogExporter] Player names cache cleared')
   }
 
   /**
@@ -166,8 +187,9 @@ export class HandLogExporter {
     const results: string[] = []
 
     // Exporting hands
+    console.log(`[HandLogExporter] Exporting ${handIds.length} hands`)
 
-    // Build player map once for all hands
+    // Build/update player map once for all hands
     await this.buildPlayerNamesMap(db)
 
     for (const handId of handIds) {

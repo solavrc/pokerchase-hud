@@ -583,14 +583,26 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
 
     // インポート後に統計を強制的に更新
     // 最新のEVT_DEALを取得して統計計算をトリガー
-    const latestDealEvents = await db.apiEvents
-      .where('ApiTypeId').equals(ApiType.EVT_DEAL)
-      .reverse()
-      .toArray()
-
-    const latestDealEvent = latestDealEvents.find(event =>
-      isApiEventType(event, ApiType.EVT_DEAL) && event.Player?.SeatIndex !== undefined
-    )
+    const SEARCH_LIMIT = 10
+    let latestDealEvent: ApiEvent<ApiType.EVT_DEAL> | undefined
+    let searchOffset = 0
+    
+    while (!latestDealEvent && searchOffset < 100) { // Safety limit
+      const events = await db.apiEvents
+        .where('ApiTypeId').equals(ApiType.EVT_DEAL)
+        .reverse()
+        .offset(searchOffset)
+        .limit(SEARCH_LIMIT)
+        .toArray()
+      
+      if (events.length === 0) break
+      
+      latestDealEvent = events.find(event =>
+        isApiEventType(event, ApiType.EVT_DEAL) && event.Player?.SeatIndex !== undefined
+      ) as ApiEvent<ApiType.EVT_DEAL> | undefined
+      
+      searchOffset += SEARCH_LIMIT
+    }
 
     if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
       // latestEvtDealを更新
@@ -630,18 +642,52 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
 }
 
 const exportJsonData = async (db: PokerChaseDB) => {
-  const apiEvents = await db.apiEvents.toArray()
-
-  // Convert to JSONL format (one JSON object per line)
-  const jsonlContent = apiEvents
-    .map(event => JSON.stringify(event))
-    .join('\n')
-
-  downloadFile(
-    jsonlContent,
-    'pokerchase_raw_data.ndjson',
-    'application/x-ndjson'
-  )
+  try {
+    const totalCount = await db.apiEvents.count()
+    console.log(`[Export] Exporting ${totalCount} events...`)
+    
+    // Process in chunks to avoid memory issues
+    const CHUNK_SIZE = 10000
+    let offset = 0
+    const chunks: string[] = []
+    
+    while (offset < totalCount) {
+      const chunk = await db.apiEvents
+        .orderBy('timestamp')
+        .offset(offset)
+        .limit(CHUNK_SIZE)
+        .toArray()
+      
+      if (chunk.length === 0) break
+      
+      // Convert chunk to JSONL format
+      const chunkContent = chunk
+        .map(event => JSON.stringify(event))
+        .join('\n')
+      
+      chunks.push(chunkContent)
+      offset += chunk.length
+      
+      // Log progress
+      if (offset % 50000 === 0 || offset >= totalCount) {
+        console.log(`[Export] Processed ${offset}/${totalCount} events`)
+      }
+    }
+    
+    // Combine all chunks
+    const jsonlContent = chunks.join('\n')
+    
+    downloadFile(
+      jsonlContent,
+      'pokerchase_raw_data.ndjson',
+      'application/x-ndjson'
+    )
+    
+    console.log(`[Export] Export completed: ${totalCount} events`)
+  } catch (error) {
+    console.error('[Export] Export failed:', error)
+    throw error
+  }
 }
 
 const exportPokerStarsData = async () => {
@@ -895,11 +941,11 @@ const rebuildAllData = async (): Promise<void> => {
       await db.meta.delete('lastProcessed')
     })
 
-    // Get all API events
-    const allEvents = await db.apiEvents.toArray()
-    console.log(`[rebuildAllData] Processing ${allEvents.length} events...`)
+    // Get total event count
+    const totalCount = await db.apiEvents.count()
+    console.log(`[rebuildAllData] Processing ${totalCount} events...`)
 
-    if (allEvents.length === 0) {
+    if (totalCount === 0) {
       console.log('[rebuildAllData] No events to process')
       return
     }
@@ -908,7 +954,14 @@ const rebuildAllData = async (): Promise<void> => {
     service.setBatchMode(true)
 
     try {
-      // Use EntityConverter for batch conversion (same as import/sync)
+      // Process in chunks to avoid memory issues
+      const CHUNK_SIZE = 10000
+      let offset = 0
+      let totalHands = 0
+      let totalPhases = 0
+      let totalActions = 0
+      
+      // Initialize EntityConverter
       const defaultSession = {
         id: undefined,
         battleType: undefined,
@@ -917,37 +970,86 @@ const rebuildAllData = async (): Promise<void> => {
         reset: () => { }
       }
       const converter = new EntityConverter(defaultSession)
-      const entities = converter.convertEventsToEntities(allEvents)
-
-      console.log(`[rebuildAllData] Generated entities - Hands: ${entities.hands.length}, Phases: ${entities.phases.length}, Actions: ${entities.actions.length}`)
-
-      // Save all entities in a single transaction
-      await db.transaction('rw', [db.hands, db.phases, db.actions, db.meta], async () => {
-        if (entities.hands.length > 0) {
-          await db.hands.bulkPut(entities.hands)
-        }
-        if (entities.phases.length > 0) {
-          await db.phases.bulkPut(entities.phases)
-        }
-        if (entities.actions.length > 0) {
-          await db.actions.bulkPut(entities.actions)
-        }
-
-        // Update metadata
-        const lastTimestamp = allEvents.reduce((max, event) => {
-          const timestamp = event.timestamp || 0
-          return timestamp > max ? timestamp : max
-        }, 0)
-
-        await db.meta.put({
-          id: 'importStatus',
-          value: {
-            lastProcessedTimestamp: lastTimestamp,
-            lastProcessedEventCount: allEvents.length,
-            lastImportDate: new Date().toISOString()
-          },
-          updatedAt: Date.now()
+      
+      while (offset < totalCount) {
+        const chunk = await db.apiEvents
+          .orderBy('timestamp')
+          .offset(offset)
+          .limit(CHUNK_SIZE)
+          .toArray()
+        
+        if (chunk.length === 0) break
+        
+        // Convert chunk to entities
+        const entities = converter.convertEventsToEntities(chunk)
+        
+        // Save entities in a transaction
+        await db.transaction('rw', [db.hands, db.phases, db.actions], async () => {
+          if (entities.hands.length > 0) {
+            await db.hands.bulkPut(entities.hands)
+            totalHands += entities.hands.length
+          }
+          if (entities.phases.length > 0) {
+            await db.phases.bulkPut(entities.phases)
+            totalPhases += entities.phases.length
+          }
+          if (entities.actions.length > 0) {
+            await db.actions.bulkPut(entities.actions)
+            totalActions += entities.actions.length
+          }
         })
+        
+        offset += chunk.length
+        
+        // Log progress
+        if (offset % 50000 === 0 || offset >= totalCount) {
+          console.log(`[rebuildAllData] Processed ${offset}/${totalCount} events`)
+        }
+      }
+      
+      console.log(`[rebuildAllData] Generated entities - Hands: ${totalHands}, Phases: ${totalPhases}, Actions: ${totalActions}`)
+
+      // Restore service state from latest events  
+      // Find the most recent EVT_DEAL with Player.SeatIndex
+      const SEARCH_LIMIT = 10
+      let latestDealEvent: ApiEvent<ApiType.EVT_DEAL> | undefined
+      let searchOffset = 0
+      
+      while (!latestDealEvent && searchOffset < 100) { // Safety limit
+        const events = await db.apiEvents
+          .where('ApiTypeId').equals(ApiType.EVT_DEAL)
+          .reverse()
+          .offset(searchOffset)
+          .limit(SEARCH_LIMIT)
+          .toArray()
+        
+        if (events.length === 0) break
+        
+        latestDealEvent = events.find(event =>
+          isApiEventType(event, ApiType.EVT_DEAL) && event.Player?.SeatIndex !== undefined
+        ) as ApiEvent<ApiType.EVT_DEAL> | undefined
+        
+        searchOffset += SEARCH_LIMIT
+      }
+
+      if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
+        service.latestEvtDeal = latestDealEvent
+        if (latestDealEvent.Player?.SeatIndex !== undefined) {
+          service.playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex]
+        }
+      }
+
+      // Update metadata with rebuild info
+      await db.meta.put({
+        id: 'rebuildStatus',
+        value: {
+          lastRebuildDate: new Date().toISOString(),
+          totalEvents: totalCount,
+          totalHands: totalHands,
+          totalPhases: totalPhases,
+          totalActions: totalActions
+        },
+        updatedAt: Date.now()
       })
 
       const rebuildTime = ((performance.now() - startTime) / 1000).toFixed(2)
