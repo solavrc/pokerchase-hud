@@ -14,7 +14,6 @@ import PokerChaseService, {
   ApiMessage,
   ApiEventType,
   validateApiEvent,
-  isApplicationApiEvent,
   isApiEventType
 } from './app'
 import { EntityConverter } from './entity-converter'
@@ -424,11 +423,6 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
           }
 
           const event = result.data as ApiEvent
-
-          // アプリケーションで使用するイベントかチェック
-          if (!isApplicationApiEvent(event)) {
-            continue
-          }
           const key = `${event.timestamp}-${event.ApiTypeId}`
 
           // メモリ内で重複チェック（最適化ポイント2）
@@ -753,13 +747,8 @@ chrome.runtime.onConnect.addListener(port => {
       // Zodスキーマで完全検証
       const { success, data, error } = validateApiEvent(message as ApiMessage)
 
-      if (!success) {
-        console.warn('[background] Schema validation failed:', error.issues, data ?? message)
-      }
-
-      // アプリケーションで使用するイベントかチェック
-      if (!isApplicationApiEvent(data)) {
-        service.eventLogger(data, 'debug')
+      if (!success || !data) {
+        console.warn('[background] Schema validation failed:', error?.issues, data ?? message)
         return
       }
 
@@ -767,11 +756,12 @@ chrome.runtime.onConnect.addListener(port => {
       service.eventLogger(data, 'info')
 
       // DB保存とストリーム処理
-      service.db.apiEvents.add(data)
+      // Dexieのhookでフィルタリングされるが、TypeScriptは認識できないためアサーション
+      service.db.apiEvents.add(data as ApiEvent)
         .catch(err => console.error('[background] Failed to save event:', err))
-      service.handLogStream.write(data)
-      service.handAggregateStream.write(data)
-      service.realTimeStatsStream.write(data)
+      service.handLogStream.write(data as ApiEvent)
+      service.handAggregateStream.write(data as ApiEvent)
+      service.realTimeStatsStream.write(data as ApiEvent)
 
       // Handle game session end for auto sync
       if (data.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {

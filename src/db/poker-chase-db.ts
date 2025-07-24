@@ -6,6 +6,7 @@ import type {
   Action,
   MetaRecord
 } from '../types'
+import { isApplicationApiEvent } from '../types'
 
 /**
  * PokerChase HUD用IndexedDBクラス
@@ -49,6 +50,35 @@ export class PokerChaseDB extends Dexie {
       actions: '[handId+index],handId,playerId,phase,actionType,*actionDetails,[playerId+phase],[playerId+actionType]',
       // メタテーブル（アプリケーション設定、キャッシュ、統計サマリー等の汎用ストレージ）
       meta: 'id,updatedAt'
+    })
+
+    // apiEventsテーブルのフックを設定
+    // 非ゲームイベントを自動的にフィルタリング
+    this.setupApiEventHooks()
+  }
+
+  /**
+   * apiEventsテーブルのフックを設定
+   * 非アプリケーションイベントを自動的にフィルタリング
+   */
+  private setupApiEventHooks(): void {
+    // 作成時のフィルタリング - 非ゲームイベントの保存を防ぐ
+    this.apiEvents.hook('creating', function(_primKey, obj, _trans) {
+      if (!isApplicationApiEvent(obj)) {
+        // 非アプリケーションイベントは保存しない
+        // @ts-ignore - Dexie内部APIを使用
+        this.onsuccess = null
+        return
+      }
+    })
+
+    // 読み取り時のフィルタリング - 既存の非ゲームイベントを除外
+    this.apiEvents.hook('reading', function(obj) {
+      if (obj && !isApplicationApiEvent(obj)) {
+        // 非アプリケーションイベントはnullとして扱う（結果から除外）
+        return null
+      }
+      return obj
     })
   }
 }
