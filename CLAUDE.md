@@ -2,7 +2,7 @@
 
 > 🎯 **Purpose**: Technical reference for AI coding agents working on the PokerChase HUD Chrome extension.
 >
-> 📅 **Last Updated**: 2025-07-23
+> 📅 **Last Updated**: 2025-07-24
 
 ## 📋 Table of Contents
 
@@ -59,6 +59,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 - Import/export functionality
 - Game type filtering (SNG/MTT/Ring)
 - Cloud backup with automatic sync to Firebase
+- Manual sync controls (upload/download) for cloud storage
 - BigQuery integration for data analysis
 
 ### Technical Stack
@@ -181,11 +182,12 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 8. **No Magic Numbers**: Use named constants (e.g., HUD_WIDTH)
 9. **Service Worker Resilience**: Handle 30-second timeout gracefully
 10. **State Persistence**: Maintain critical state across Service Worker lifecycle
-11. **Cloud Sync**: Automatic timestamp-based incremental sync with Firestore
+11. **Cloud Sync**: Smart incremental sync with Firestore
     - No periodic sync (cost optimization)
-    - Sync after 100+ new events at game end
-    - No minimum interval between sync attempts
-    - Timestamp-based queries for efficiency
+    - Auto sync after 100+ new events at game end (upload only)
+    - Upload: Only events newer than cloud's latest timestamp
+    - Download: Cloud as complete source of truth
+    - Manual sync controls for user-initiated operations
 
 ### Data Flow
 
@@ -366,7 +368,7 @@ Statistics Refresh (batch mode)
     │   ├── poker-chase-service.ts      # Main service class
     │   ├── firebase-auth-service.ts    # Firebase authentication
     │   ├── firebase-config.ts          # Firebase configuration
-    │   ├── firestore-backup-service.ts # Cloud sync logic
+    │   ├── firestore-backup-service.ts # Cloud sync logic (incremental upload, full download)
     │   └── auto-sync-service.ts        # Automatic sync management
     ├── stats/
     │   ├── core/         # Statistic definitions
@@ -424,6 +426,7 @@ Statistics Refresh (batch mode)
 - **Keepalive mechanism**: Sends periodic messages to prevent Service Worker timeout
 - **Game state tracking**: Monitors EVT_SESSION_DETAILS/RESULTS for active games
 - **Resource cleanup**: Handles beforeunload and visibilitychange events
+- **Error resilience**: Suppresses "Extension context invalidated" errors with automatic reconnection
 
 #### `background.ts`
 
@@ -487,6 +490,23 @@ Statistics Refresh (batch mode)
 
 ### Services
 
+#### `FirestoreBackupService` (`src/services/firestore-backup-service.ts`)
+
+- **Cloud backup service**: Handles Firestore read/write operations
+- **Upload strategy**:
+  - Queries cloud for latest timestamp (orderBy + limit(1))
+  - Filters local events newer than cloud's max timestamp
+  - Batches writes in chunks of 300 with retry logic
+  - Updates lastSyncTimestamp in user metadata
+- **Download strategy**:
+  - Retrieves all events from cloud (no filtering)
+  - Returns raw events for processing by AutoSyncService
+  - Cloud treated as complete source of truth
+- **Optimizations**:
+  - Parallel batch processing (3 batches at once)
+  - Rate limit handling with exponential backoff
+  - Efficient deletion with chunked batch deletes
+
 #### `PokerChaseService` (`src/services/poker-chase-service.ts`)
 
 - **Core service**: Central state management and stream coordination
@@ -508,17 +528,20 @@ Statistics Refresh (batch mode)
 
 - **Automatic cloud synchronization**: Handles bidirectional sync with Firestore
 - **Cost-optimized scheduling**:
-  - Initial sync only on first authentication
+  - Initial sync only on first authentication (bidirectional)
   - No periodic sync (manual or event-driven only)
-  - Event-driven sync after game sessions (100+ events threshold)
+  - Event-driven sync after game sessions (100+ events threshold - upload only)
   - No minimum interval between sync attempts
-- **Timestamp-based incremental sync**:
-  - Tracks last sync timestamp in Firestore user metadata
-  - Only syncs events newer than last timestamp
-  - Reduces Firestore read/write operations significantly
+- **Smart sync strategy**:
+  - **Upload**: Syncs events newer than cloud's latest timestamp (not local metadata)
+  - **Download**: Treats cloud as complete source of truth, uses bulkPut for merge
+  - Tracks last sync timestamp locally for UI display
 - **Progress tracking**: Real-time progress updates for UI
 - **State management**: Maintains sync state with status, progress, and errors
-- **Data rebuild after sync**: Uses EntityConverter to rebuild hands/phases/actions from downloaded events
+- **Data rebuild after download**: 
+  - Uses EntityConverter to rebuild hands/phases/actions from downloaded events
+  - Restores service state: playerId, latestEvtDeal, session info
+  - Triggers statistics recalculation with restored state
 
 ### Utility Modules
 
@@ -570,7 +593,9 @@ React components for the HUD interface. See individual component files for detai
 - **`App.tsx`**: Root component managing state and seat rotation logic
 - **`Hud.tsx`**: HUD overlay with drag & drop (240px regular, 200px real-time stats)
 - **`HandLog.tsx`**: Virtualized hand history log with PokerStars export
-- **`Popup.tsx`**: Extension settings and import/export interface
+- **`Popup.tsx`**: Extension settings, import/export interface, and manual cloud sync controls
+  - **Recent UI Changes**: Removed "Delete All Data" and "Reset to Default Settings" features
+  - **Layout**: Cloud sync controls positioned between "Hand Count" and "HUD Display Settings"
 
 For implementation details, see comments in `src/components/`.
 
@@ -937,21 +962,25 @@ Firestore:
 ### Cloud Data Flow
 
 **Upload Sync**:
-1. Filter events newer than last sync timestamp
-2. Batch process in chunks of 300 events
-3. Use composite key `timestamp_ApiTypeId` for deduplication
-4. Update user metadata with sync timestamp
+1. Query cloud for latest timestamp (single document)
+2. Filter local events newer than cloud's latest timestamp
+3. Batch process in chunks of 300 events
+4. Use composite key `timestamp_ApiTypeId` for deduplication
+5. Update user metadata with sync timestamp
 
 **Download Sync**:
-1. Query events newer than local max timestamp
-2. Bulk insert to IndexedDB
-3. Rebuild entities using EntityConverter
-4. Trigger statistics recalculation
+1. Get all events from cloud (cloud is source of truth)
+2. Bulk insert to IndexedDB using bulkPut (updates existing records)
+3. Restore service state from downloaded events:
+   - Latest EVT_DEAL → playerId, latestEvtDeal
+   - Session events → session.id, battleType, name, players
+4. Rebuild entities using EntityConverter
+5. Trigger statistics recalculation
 
 **Auto Sync Triggers**:
-- Initial login (first sync only)
-- Game session end (100+ new events threshold)
-- Manual sync via popup UI
+- Initial login (first sync only - bidirectional)
+- Game session end (100+ new events threshold - upload only)
+- Manual sync via popup UI (direction selectable)
 
 ### BigQuery Integration
 
@@ -975,10 +1004,11 @@ GROUP BY user_id;
 ### Cost Optimization
 
 1. **Firestore Optimization**:
-   - Timestamp-based incremental sync
+   - Smart incremental sync (cloud timestamp for uploads, full for downloads)
    - No periodic sync (event-driven only)
    - Batch operations to reduce API calls
    - 100-event threshold for game-end sync
+   - Single query for cloud max timestamp during upload
 
 2. **Free Tier Limits**:
    - Authentication: 10,000/month

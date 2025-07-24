@@ -296,6 +296,24 @@ chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.run
         sendResponse({ success: false, error: error.message })
       })
     return true
+  } else if (request.action === 'manualSyncUpload') {
+    // Manual upload to cloud
+    autoSyncService.performSync('upload')
+      .then(() => sendResponse({ success: true }))
+      .catch(error => {
+        console.error('Manual upload error:', error)
+        sendResponse({ success: false, error: error.message })
+      })
+    return true
+  } else if (request.action === 'manualSyncDownload') {
+    // Manual download from cloud
+    autoSyncService.performSync('download')
+      .then(() => sendResponse({ success: true }))
+      .catch(error => {
+        console.error('Manual download error:', error)
+        sendResponse({ success: false, error: error.message })
+      })
+    return true
   } else if (request.action === 'getSyncState') {
     // Get current sync state
     const state = autoSyncService.getSyncState()

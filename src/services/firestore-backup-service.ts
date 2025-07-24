@@ -7,11 +7,9 @@
 import { 
   collection,
   doc,
-  getDoc,
   getDocs,
   writeBatch,
   query,
-  where,
   orderBy,
   setDoc,
   limit
@@ -45,7 +43,7 @@ export class FirestoreBackupService {
   }
 
   /**
-   * Sync local events to cloud (incremental timestamp-based)
+   * Sync local events to cloud (upload events newer than cloud's latest timestamp)
    */
   async syncToCloud(
     apiEvents: ApiEvent[], 
@@ -65,16 +63,16 @@ export class FirestoreBackupService {
 
       console.log(`[Firestore] Starting sync of ${apiEvents.length} events...`)
 
-      // Get the last synced timestamp from user metadata
-      const lastSyncTimestamp = await this.getLastSyncTimestamp()
-      console.log(`[Firestore] Last sync timestamp: ${lastSyncTimestamp || 'none'}`)
+      // Get the latest timestamp from cloud
+      const cloudMaxTimestamp = await this.getCloudMaxTimestamp()
+      console.log(`[Firestore] Cloud max timestamp: ${cloudMaxTimestamp || 'none'}`)
 
-      // Filter events newer than last sync
-      const newEvents = lastSyncTimestamp 
-        ? apiEvents.filter(event => (event.timestamp || 0) > lastSyncTimestamp)
+      // Filter events newer than cloud's latest timestamp
+      const newEvents = cloudMaxTimestamp 
+        ? apiEvents.filter(event => (event.timestamp || 0) > cloudMaxTimestamp)
         : apiEvents
 
-      console.log(`[Firestore] ${newEvents.length} new events to sync (after timestamp ${lastSyncTimestamp || 0})`)
+      console.log(`[Firestore] ${newEvents.length} new events to sync (after timestamp ${cloudMaxTimestamp || 0})`)
 
       // Process only new events in batches
       const PARALLEL_BATCHES = 3 // Process multiple batches in parallel
@@ -175,25 +173,23 @@ export class FirestoreBackupService {
   }
 
   /**
-   * Sync cloud events to local (timestamp-based incremental)
+   * Sync cloud events to local (cloud as source of truth)
    */
   async syncFromCloud(
-    localMaxTimestamp: number,
     onProgress?: (progress: { current: number, total: number }) => void
   ): Promise<ApiEvent[]> {
     try {
       const userRef = this.getUserRef()
       const eventsCollection = collection(userRef, this.EVENTS_COLLECTION)
       
-      // Query only events newer than local max timestamp
+      // Get all events from cloud (cloud is the source of truth)
       const q = query(
         eventsCollection,
-        where('timestamp', '>', localMaxTimestamp),
         orderBy('timestamp', 'asc')
       )
       
       const snapshot = await getDocs(q)
-      console.log(`[Firestore] Found ${snapshot.size} new events in cloud (after timestamp ${localMaxTimestamp})`)
+      console.log(`[Firestore] Found ${snapshot.size} events in cloud`)
       
       const newEvents: ApiEvent[] = []
       let processed = 0
@@ -220,16 +216,36 @@ export class FirestoreBackupService {
     }
   }
 
+
   /**
-   * Get last sync timestamp from user metadata
+   * Get the latest timestamp from cloud events
    */
-  private async getLastSyncTimestamp(): Promise<number | null> {
+  private async getCloudMaxTimestamp(): Promise<number | null> {
     try {
-      const userDoc = await getDoc(this.getUserRef())
-      const data = userDoc.data()
-      return data?.lastSyncTimestamp || null
+      const userRef = this.getUserRef()
+      const eventsCollection = collection(userRef, this.EVENTS_COLLECTION)
+      
+      // Query for the latest event by timestamp
+      const q = query(
+        eventsCollection,
+        orderBy('timestamp', 'desc'),
+        limit(1)
+      )
+      
+      const snapshot = await getDocs(q)
+      if (!snapshot.empty && snapshot.docs.length > 0) {
+        const firstDoc = snapshot.docs[0]
+        if (firstDoc) {
+          const latestEvent = firstDoc.data() as ApiEvent
+          if (latestEvent && typeof latestEvent.timestamp === 'number') {
+            return latestEvent.timestamp
+          }
+        }
+      }
+      
+      return null
     } catch (error) {
-      console.error('Failed to get last sync timestamp:', error)
+      console.error('Failed to get cloud max timestamp:', error)
       return null
     }
   }

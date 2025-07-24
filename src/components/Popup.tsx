@@ -2,11 +2,6 @@ import { getBucket } from '@extend-chrome/storage'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Checkbox from '@mui/material/Checkbox'
-import Dialog from '@mui/material/Dialog'
-import DialogActions from '@mui/material/DialogActions'
-import DialogContent from '@mui/material/DialogContent'
-import DialogContentText from '@mui/material/DialogContentText'
-import DialogTitle from '@mui/material/DialogTitle'
 import Divider from '@mui/material/Divider'
 import FormControl from '@mui/material/FormControl'
 import FormControlLabel from '@mui/material/FormControlLabel'
@@ -28,17 +23,18 @@ import { FilterOptions, GameTypeFilter } from '../app'
 import { defaultRegistry, defaultStatDisplayConfigs } from '../stats'
 import type { StatDisplayConfig } from '../types/filters'
 import type { UIConfig } from '../types/hand-log'
-import { DEFAULT_UI_CONFIG, DEFAULT_HAND_LOG_CONFIG } from '../types/hand-log'
+import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import type {
   ChromeMessage,
-  DeleteAllDataMessage,
   ExportDataMessage,
   ImportDataChunkMessage,
   ImportDataInitMessage,
   ImportDataProcessMessage,
   UpdateBattleTypeFilterMessage,
   FirebaseSignInMessage,
-  FirebaseSignOutMessage
+  FirebaseSignOutMessage,
+  ManualSyncUploadMessage,
+  ManualSyncDownloadMessage
 } from '../types/messages'
 import type { SyncState } from '../services/auto-sync-service'
 import { content_scripts } from '../../manifest.json'
@@ -107,11 +103,9 @@ const Popup = () => {
   const [statDisplayConfigs, setStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
   const [pendingStatDisplayConfigs, setPendingStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
   const [hasUnsavedStatChanges, setHasUnsavedStatChanges] = useState<boolean>(false)
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState<boolean>(false)
-  const [resetDialogOpen, setResetDialogOpen] = useState<boolean>(false)
   const [uiConfig, setUIConfig] = useState<UIConfig>(DEFAULT_UI_CONFIG)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  
+
   // Firebase states
   const [isFirebaseSignedIn, setIsFirebaseSignedIn] = useState<boolean>(false)
   const [firebaseUserInfo, setFirebaseUserInfo] = useState<{ email: string | null, displayName: string | null, photoURL: string | null, uid?: string } | null>(null)
@@ -172,11 +166,11 @@ const Popup = () => {
       if (activeTab?.url && !activeTab.url.startsWith(gameBaseUrl)) {
         // Not on game page - check if game tab already exists
         const gameTabs = await chrome.tabs.query({ url: `${gameBaseUrl}/*` })
-        
+
         if (gameTabs.length > 0 && gameTabs[0]?.id) {
           // Game tab exists - switch to it
           await chrome.tabs.update(gameTabs[0].id, { active: true })
-          
+
           // Also focus the window if it's different
           if (gameTabs[0].windowId && gameTabs[0].windowId !== activeTab.windowId) {
             await chrome.windows.update(gameTabs[0].windowId, { focused: true })
@@ -185,7 +179,7 @@ const Popup = () => {
           // No game tab exists - open new tab
           await chrome.tabs.create({ url: `${gameBaseUrl}/play/index.html` })
         }
-        
+
         window.close()
         return
       }
@@ -232,14 +226,14 @@ const Popup = () => {
           setUIConfig({ ...DEFAULT_UI_CONFIG, ...result.uiConfig })
         }
       })
-      
+
       // Check Firebase auth status on load
       chrome.runtime.sendMessage({ action: 'firebaseAuthStatus' }, (response: any) => {
         console.log('[Popup] Initial auth status check:', response)
         if (response && response.isSignedIn && response.userInfo) {
           setIsFirebaseSignedIn(true)
           setFirebaseUserInfo(response.userInfo)
-          
+
           // Also get sync state if signed in
           chrome.runtime.sendMessage({ action: 'getSyncState' }, (syncResponse: any) => {
             if (syncResponse?.success && syncResponse.data) {
@@ -288,7 +282,7 @@ const Popup = () => {
     chrome.runtime.onMessage.addListener(handleMessage)
     return () => chrome.runtime.onMessage.removeListener(handleMessage)
   }, [])
-  
+
   // Update unsynced count when sync state changes
   useEffect(() => {
     if (syncState?.lastSyncTime) {
@@ -490,7 +484,7 @@ const Popup = () => {
           if (authResponse && authResponse.isSignedIn && authResponse.userInfo) {
             setIsFirebaseSignedIn(true)
             setFirebaseUserInfo(authResponse.userInfo)
-            
+
             // 同期状態も取得
             chrome.runtime.sendMessage({ action: 'getSyncState' }, (syncResponse: any) => {
               if (syncResponse?.success && syncResponse.data) {
@@ -522,25 +516,42 @@ const Popup = () => {
     }
   }
 
-
-
-  const handleDeleteData = async () => {
+  const handleManualSyncUpload = async () => {
     try {
-      const response = await chrome.runtime.sendMessage<DeleteAllDataMessage>({ action: 'deleteAllData' })
+      const response = await chrome.runtime.sendMessage<ManualSyncUploadMessage>({ action: 'manualSyncUpload' })
       if (response.success) {
-        setImportStatus('全データが削除されました')
+        setImportStatus('アップロードが完了しました')
         setTimeout(() => {
           setImportStatus('')
         }, 3000)
       } else {
-        setImportStatus('データの削除に失敗しました')
+        setImportStatus('アップロードに失敗しました')
       }
     } catch (error) {
-      console.error('Error deleting data:', error)
-      setImportStatus('データの削除に失敗しました')
+      console.error('Manual sync upload error:', error)
+      setImportStatus('アップロードエラーが発生しました')
     }
-    setDeleteDialogOpen(false)
   }
+
+  const handleManualSyncDownload = async () => {
+    try {
+      const response = await chrome.runtime.sendMessage<ManualSyncDownloadMessage>({ action: 'manualSyncDownload' })
+      if (response.success) {
+        setImportStatus('ダウンロードが完了しました')
+        setTimeout(() => {
+          setImportStatus('')
+        }, 3000)
+      } else {
+        setImportStatus('ダウンロードに失敗しました')
+      }
+    } catch (error) {
+      console.error('Manual sync download error:', error)
+      setImportStatus('ダウンロードエラーが発生しました')
+    }
+  }
+
+
+
 
   const handleRebuildData = async () => {
     try {
@@ -560,88 +571,6 @@ const Popup = () => {
     }
   }
 
-  const handleResetSettings = async () => {
-    try {
-      // デフォルト設定を定義
-      const defaultGameTypeFilter = { sng: true, mtt: true, ring: true }
-      const defaultHandLimit = 500
-      const defaultStats = [...defaultStatDisplayConfigs]
-      const defaultUI = { ...DEFAULT_UI_CONFIG }
-
-      // すべてのストレージを完全にクリア
-      await chrome.storage.sync.clear()
-      await chrome.storage.local.clear()
-      await bucket.clear()
-
-      // 必要なデフォルト値のみを設定
-      await bucket.set({
-        sendUserData: true,
-        filterOptions: {
-          gameTypes: defaultGameTypeFilter,
-          handLimit: defaultHandLimit,
-          statDisplayConfigs: defaultStats
-        }
-      })
-
-      await chrome.storage.sync.set({
-        uiConfig: defaultUI,
-        handLogConfig: DEFAULT_HAND_LOG_CONFIG
-      })
-      
-      // Firebase認証状態もリセット（ログアウトはしない）
-      setIsFirebaseSignedIn(false)
-      setFirebaseUserInfo(null)
-      setSyncState(null)
-      setUnsyncedCount(0)
-      
-      // 認証状態を再確認
-      chrome.runtime.sendMessage({ action: 'firebaseAuthStatus' }, (response: any) => {
-        if (response && response.isSignedIn && response.userInfo) {
-          setIsFirebaseSignedIn(true)
-          setFirebaseUserInfo(response.userInfo)
-        }
-      })
-
-      // UIをデフォルト値にリセット
-      setGameTypeFilter(defaultGameTypeFilter)
-      setHandLimit(defaultHandLimit)
-      setStatDisplayConfigs(defaultStats)
-      setPendingStatDisplayConfigs(defaultStats)
-      setHasUnsavedStatChanges(false)
-      setUIConfig(defaultUI)
-
-      // バックグラウンドサービスに新しいフィルター設定を送信
-      chrome.runtime.sendMessage<UpdateBattleTypeFilterMessage>({
-        action: 'updateBattleTypeFilter',
-        filterOptions: {
-          gameTypes: defaultGameTypeFilter,
-          handLimit: defaultHandLimit,
-          statDisplayConfigs: defaultStats
-        }
-      })
-
-      // すべてのタブにUI設定を送信
-      chrome.tabs.query({}, (tabs) => {
-        tabs.forEach(tab => {
-          if (tab.id) {
-            chrome.tabs.sendMessage(tab.id, {
-              action: 'updateUIConfig',
-              config: defaultUI
-            })
-          }
-        })
-      })
-
-      setImportStatus('設定を初期化しました')
-      setTimeout(() => {
-        setImportStatus('')
-      }, 3000)
-    } catch (error) {
-      console.error('Error resetting settings:', error)
-      setImportStatus('設定の初期化に失敗しました')
-    }
-    setResetDialogOpen(false)
-  }
 
   return <div style={{ width: 300, padding: '10px' }}>
 
@@ -754,123 +683,6 @@ const Popup = () => {
 
     <Divider style={{ margin: '10px 0' }} />
 
-    {/* Cloud Backup - サイズとゲームタイプの間 */}
-    {!isFirebaseSignedIn ? (
-      <Button
-        variant="contained"
-        color="primary"
-        fullWidth
-        onClick={handleFirebaseSignIn}
-        style={{ marginBottom: '15px' }}
-        size="large"
-        startIcon={<CloudIcon />}
-      >
-        自動バックアップを有効にする
-      </Button>
-    ) : (
-      <Box sx={{ 
-        bgcolor: 'background.paper', 
-        border: 1, 
-        borderColor: 'primary.main',
-        borderRadius: 1,
-        p: 1.5,
-        mb: 2
-      }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-          <CloudIcon sx={{ color: 'primary.main' }} />
-          <Box sx={{ flex: 1, overflow: 'hidden' }}>
-            <Typography variant="body2" sx={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {firebaseUserInfo?.email}
-            </Typography>
-            {firebaseUserInfo?.uid && (
-              <Typography 
-                variant="caption" 
-                color="text.secondary" 
-                sx={{ 
-                  fontSize: '10px',
-                  cursor: 'pointer',
-                  '&:hover': { textDecoration: 'underline' }
-                }}
-                onClick={() => {
-                  if (firebaseUserInfo.uid) {
-                    navigator.clipboard.writeText(firebaseUserInfo.uid)
-                    setImportStatus('ユーザーIDをコピーしました')
-                    setTimeout(() => setImportStatus(''), 2000)
-                  }
-                }}
-                title="クリックしてコピー"
-              >
-                ID: {firebaseUserInfo.uid}
-              </Typography>
-            )}
-          </Box>
-        </Box>
-        <Button
-          variant="outlined"
-          size="small"
-          fullWidth
-          onClick={handleFirebaseSignOut}
-          startIcon={<CloudOffIcon />}
-          sx={{ mt: 1 }}
-        >
-          ログアウト
-        </Button>
-        
-        {/* Sync Status */}
-        {syncState && (
-          <Box sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: 'divider' }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Box
-                sx={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: '50%',
-                  bgcolor: syncState.status === 'syncing' ? 'warning.main' : 
-                           syncState.status === 'error' ? 'error.main' : 
-                           syncState.status === 'success' ? 'success.main' : 'grey.500'
-                }}
-              />
-              <Typography variant="body2">
-                {syncState.status === 'syncing' ? '同期中...' :
-                 syncState.status === 'error' ? 'エラー' :
-                 syncState.status === 'success' ? '同期完了' : '待機中'}
-              </Typography>
-              {syncState.status === 'syncing' && syncState.progress && (
-                <>
-                  {syncState.progress.direction === 'upload' ? (
-                    <ArrowUpward sx={{ fontSize: 14, color: 'success.main', ml: 'auto' }} />
-                  ) : (
-                    <ArrowDownward sx={{ fontSize: 14, color: 'error.main', ml: 'auto' }} />
-                  )}
-                  <Typography variant="caption" color="text.secondary">
-                    {syncState.progress.current.toLocaleString()}/{syncState.progress.total.toLocaleString()}
-                    ({Math.round((syncState.progress.current / syncState.progress.total) * 100)}%)
-                  </Typography>
-                </>
-              )}
-            </Box>
-            {syncState.lastSyncTime && (
-              <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-                最終同期: {new Date(syncState.lastSyncTime).toLocaleString('ja-JP')}
-              </Typography>
-            )}
-            {unsyncedCount > 0 && (
-              <Typography variant="caption" color="warning.main" display="block" sx={{ mt: 0.5 }}>
-                未同期: {unsyncedCount.toLocaleString()}件
-              </Typography>
-            )}
-            {syncState.error && (
-              <Typography variant="caption" color="error" display="block" sx={{ mt: 0.5 }}>
-                {syncState.error}
-              </Typography>
-            )}
-          </Box>
-        )}
-      </Box>
-    )}
-
-    <Divider style={{ margin: '10px 0' }} />
-
     <Typography variant="h6">ゲームタイプ</Typography>
     <FormControl component="fieldset" style={{ marginTop: '10px', width: '100%' }}>
       <FormGroup>
@@ -936,6 +748,147 @@ const Popup = () => {
         max={6}
       />
     </Box>
+
+    <Divider style={{ margin: '10px 0' }} />
+
+    {/* Cloud Backup - ハンド数とHUD表示設定の間 */}
+    {!isFirebaseSignedIn ? (
+      <Button
+        variant="contained"
+        color="primary"
+        fullWidth
+        onClick={handleFirebaseSignIn}
+        style={{ marginBottom: '15px' }}
+        size="large"
+        startIcon={<CloudIcon />}
+      >
+        自動バックアップを有効にする
+      </Button>
+    ) : (
+      <Box sx={{
+        bgcolor: 'background.paper',
+        border: 1,
+        borderColor: 'primary.main',
+        borderRadius: 1,
+        p: 1.5,
+        mb: 2
+      }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+          <CloudIcon sx={{ color: 'primary.main' }} />
+          <Box sx={{ flex: 1, overflow: 'hidden' }}>
+            <Typography variant="body2" sx={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {firebaseUserInfo?.email}
+            </Typography>
+            {firebaseUserInfo?.uid && (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{
+                  fontSize: '10px',
+                  cursor: 'pointer',
+                  '&:hover': { textDecoration: 'underline' }
+                }}
+                onClick={() => {
+                  if (firebaseUserInfo.uid) {
+                    navigator.clipboard.writeText(firebaseUserInfo.uid)
+                    setImportStatus('ユーザーIDをコピーしました')
+                    setTimeout(() => setImportStatus(''), 2000)
+                  }
+                }}
+                title="クリックしてコピー"
+              >
+                ID: {firebaseUserInfo.uid}
+              </Typography>
+            )}
+          </Box>
+        </Box>
+        <Button
+          variant="outlined"
+          size="small"
+          fullWidth
+          onClick={handleFirebaseSignOut}
+          startIcon={<CloudOffIcon />}
+          sx={{ mt: 1 }}
+        >
+          ログアウト
+        </Button>
+
+        {/* Sync Status */}
+        {syncState && (
+          <Box sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: 'divider' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Box
+                sx={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: '50%',
+                  bgcolor: syncState.status === 'syncing' ? 'warning.main' :
+                    syncState.status === 'error' ? 'error.main' :
+                      syncState.status === 'success' ? 'success.main' : 'grey.500'
+                }}
+              />
+              <Typography variant="body2">
+                {syncState.status === 'syncing' ? '同期中...' :
+                  syncState.status === 'error' ? 'エラー' :
+                    syncState.status === 'success' ? '同期完了' : '待機中'}
+              </Typography>
+              {syncState.status === 'syncing' && syncState.progress && (
+                <>
+                  {syncState.progress.direction === 'upload' ? (
+                    <ArrowUpward sx={{ fontSize: 14, color: 'success.main', ml: 'auto' }} />
+                  ) : (
+                    <ArrowDownward sx={{ fontSize: 14, color: 'error.main', ml: 'auto' }} />
+                  )}
+                  <Typography variant="caption" color="text.secondary">
+                    {syncState.progress.current.toLocaleString()}/{syncState.progress.total.toLocaleString()}
+                    ({Math.round((syncState.progress.current / syncState.progress.total) * 100)}%)
+                  </Typography>
+                </>
+              )}
+            </Box>
+            {syncState.lastSyncTime && (
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                最終同期: {new Date(syncState.lastSyncTime).toLocaleString('ja-JP')}
+              </Typography>
+            )}
+            {unsyncedCount > 0 && (
+              <Typography variant="caption" color="warning.main" display="block" sx={{ mt: 0.5 }}>
+                未同期: {unsyncedCount.toLocaleString()}件
+              </Typography>
+            )}
+            {syncState.error && (
+              <Typography variant="caption" color="error" display="block" sx={{ mt: 0.5 }}>
+                {syncState.error}
+              </Typography>
+            )}
+
+            {/* Manual Sync Buttons */}
+            <Box sx={{ display: 'flex', gap: 1, mt: 1.5 }}>
+              <Button
+                variant="outlined"
+                size="small"
+                fullWidth
+                onClick={handleManualSyncUpload}
+                disabled={syncState.status === 'syncing'}
+                startIcon={<ArrowUpward />}
+              >
+                アップロード
+              </Button>
+              <Button
+                variant="outlined"
+                size="small"
+                fullWidth
+                onClick={handleManualSyncDownload}
+                disabled={syncState.status === 'syncing'}
+                startIcon={<ArrowDownward />}
+              >
+                ダウンロード
+              </Button>
+            </Box>
+          </Box>
+        )}
+      </Box>
+    )}
 
     <Divider style={{ margin: '10px 0' }} />
 
@@ -1009,6 +962,7 @@ const Popup = () => {
       </Box>
     )}
 
+    <Divider style={{ margin: '10px 0' }} />
 
     <Button
       variant="contained"
@@ -1081,25 +1035,7 @@ const Popup = () => {
       </Typography>
     )}
 
-    <Button
-      variant="outlined"
-      color="warning"
-      fullWidth
-      onClick={() => setResetDialogOpen(true)}
-      style={{ marginTop: '10px' }}
-    >
-      初期設定に戻す
-    </Button>
 
-    <Button
-      variant="outlined"
-      color="error"
-      fullWidth
-      onClick={() => setDeleteDialogOpen(true)}
-      style={{ marginTop: '10px' }}
-    >
-      全データを削除
-    </Button>
 
     <Button
       variant="outlined"
@@ -1111,7 +1047,7 @@ const Popup = () => {
     >
       データ再構築
     </Button>
-    
+
     <Typography
       variant="caption"
       color="textSecondary"
@@ -1120,51 +1056,7 @@ const Popup = () => {
       ※統計データを生ログから再計算します
     </Typography>
 
-    <Dialog
-      open={deleteDialogOpen}
-      onClose={() => setDeleteDialogOpen(false)}
-    >
-      <DialogTitle>全データ削除の確認</DialogTitle>
-      <DialogContent>
-        <DialogContentText>
-          保存されているすべてのハンド履歴と統計データが削除されます。
-          設定は削除されません。
-          この操作は元に戻せません。
-          本当に削除しますか？
-        </DialogContentText>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={() => setDeleteDialogOpen(false)} color="primary">
-          キャンセル
-        </Button>
-        <Button onClick={handleDeleteData} color="error" autoFocus>
-          削除
-        </Button>
-      </DialogActions>
-    </Dialog>
 
-    <Dialog
-      open={resetDialogOpen}
-      onClose={() => setResetDialogOpen(false)}
-    >
-      <DialogTitle>初期設定に戻す</DialogTitle>
-      <DialogContent>
-        <DialogContentText>
-          すべての設定を初期値に戻します。
-          同期履歴も含めてリセットされるため、次回ログイン時に初回同期が実行されます。
-          データ（ハンド履歴や統計）は削除されません。
-          続行しますか？
-        </DialogContentText>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={() => setResetDialogOpen(false)} color="primary">
-          キャンセル
-        </Button>
-        <Button onClick={handleResetSettings} color="warning" autoFocus>
-          リセット
-        </Button>
-      </DialogActions>
-    </Dialog>
   </div>
 }
 

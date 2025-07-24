@@ -25,6 +25,11 @@ export const MESSAGE_ACTIONS = {
   FIREBASE_BACKUP_DOWNLOAD: 'firebaseBackupDownload',
   FIREBASE_BACKUP_DELETE: 'firebaseBackupDelete',
   FIREBASE_BACKUP_PROGRESS: 'firebaseBackupProgress',
+  // Manual Sync
+  MANUAL_SYNC_UPLOAD: 'manualSyncUpload',
+  MANUAL_SYNC_DOWNLOAD: 'manualSyncDownload',
+  GET_SYNC_STATE: 'getSyncState',
+  GET_UNSYNCED_COUNT: 'getUnsyncedCount',
   // Filter
   UPDATE_BATTLE_TYPE_FILTER: 'updateBattleTypeFilter',
   // Stats
@@ -182,6 +187,14 @@ export interface SyncStateUpdateMessage {
   state: any // SyncState from auto-sync-service
 }
 
+export interface ManualSyncUploadMessage {
+  action: 'manualSyncUpload'
+}
+
+export interface ManualSyncDownloadMessage {
+  action: 'manualSyncDownload'
+}
+
 export interface FirebaseBackupProgressMessage {
   action: 'firebaseBackupProgress'
   progress: number
@@ -262,6 +275,8 @@ export type ChromeMessage =
   | GetSyncStateMessage
   | GetUnsyncedCountMessage
   | SyncStateUpdateMessage
+  | ManualSyncUploadMessage
+  | ManualSyncDownloadMessage
 
 // Helper function for type guard implementation
 const isMessageWithAction = (msg: unknown, action: string): msg is { action: string } =>

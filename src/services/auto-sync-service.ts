@@ -7,6 +7,8 @@ import { firestoreBackupService } from './firestore-backup-service'
 import { firebaseAuthService } from './firebase-auth-service'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
+import { ApiType } from '../types'
+import type { ApiEvent } from '../types'
 
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'success'
 export type SyncDirection = 'upload' | 'download' | 'both'
@@ -67,9 +69,10 @@ class AutoSyncService {
 
 
   /**
-   * Perform bidirectional sync
+   * Perform sync with optional direction
+   * @param direction - Optional sync direction: 'upload', 'download', or 'both' (default)
    */
-  async performSync(): Promise<void> {
+  async performSync(direction: SyncDirection = 'both'): Promise<void> {
     // Check minimum interval (currently disabled)
     const now = Date.now()
     if (this.MIN_SYNC_INTERVAL_MS > 0 && now - this.lastSyncAttempt < this.MIN_SYNC_INTERVAL_MS) {
@@ -88,11 +91,14 @@ class AutoSyncService {
     this.updateSyncState({ status: 'syncing' })
 
     try {
-      // First, sync local changes to cloud
-      await this.syncToCloud()
+      // Perform sync based on direction
+      if (direction === 'upload' || direction === 'both') {
+        await this.syncToCloud()
+      }
 
-      // Then, sync cloud changes to local
-      await this.syncFromCloud()
+      if (direction === 'download' || direction === 'both') {
+        await this.syncFromCloud()
+      }
 
       // Update success state
       this.syncState.lastSyncTime = new Date()
@@ -104,7 +110,7 @@ class AutoSyncService {
         error: undefined 
       })
 
-      console.log('[AutoSync] Sync completed successfully')
+      console.log(`[AutoSync] Sync completed successfully (direction: ${direction})`)
     } catch (error) {
       console.error('[AutoSync] Sync error:', error)
       this.updateSyncState({ 
@@ -135,25 +141,22 @@ class AutoSyncService {
   }
 
   /**
-   * Sync cloud events to local
+   * Sync cloud events to local (cloud as source of truth)
    */
   private async syncFromCloud(): Promise<void> {
-    console.log('[AutoSync] Starting download from cloud...')
-    
-    // Get local max timestamp
-    const localMaxTimestamp = await this.getLocalMaxTimestamp()
-    console.log(`[AutoSync] Local max timestamp: ${localMaxTimestamp}`)
+    console.log('[AutoSync] Starting download from cloud (cloud as source of truth)...')
 
-    // Get new events from cloud
-    const newEvents = await firestoreBackupService.syncFromCloud(localMaxTimestamp, (progress) => {
+    // Get all events from cloud
+    const cloudEvents = await firestoreBackupService.syncFromCloud((progress) => {
       this.updateSyncState({
         progress: { ...progress, direction: 'download' }
       })
     })
 
-    if (newEvents.length > 0) {
-      await this.db.apiEvents.bulkAdd(newEvents)
-      console.log(`[AutoSync] Downloaded ${newEvents.length} new events from cloud`)
+    if (cloudEvents.length > 0) {
+      // Use bulkPut to update existing events and add new ones
+      await this.db.apiEvents.bulkPut(cloudEvents)
+      console.log(`[AutoSync] Downloaded and updated ${cloudEvents.length} events from cloud`)
       
       // データ再構築をトリガー
       try {
@@ -169,7 +172,7 @@ class AutoSyncService {
           reset: () => {} 
         }
         const converter = new EntityConverter(defaultSession)
-        const entities = converter.convertEventsToEntities(newEvents)
+        const entities = converter.convertEventsToEntities(cloudEvents)
         
         console.log(`[AutoSync] Generated entities - Hands: ${entities.hands.length}, Phases: ${entities.phases.length}, Actions: ${entities.actions.length}`)
         
@@ -186,7 +189,7 @@ class AutoSyncService {
           }
           
           // メタデータを更新
-          const lastTimestamp = newEvents.reduce((max, event) => {
+          const lastTimestamp = cloudEvents.reduce((max, event) => {
             const timestamp = event.timestamp || 0
             return timestamp > max ? timestamp : max
           }, 0)
@@ -194,20 +197,96 @@ class AutoSyncService {
           await this.db.meta.put({
             id: 'lastProcessed',
             lastProcessedTimestamp: lastTimestamp,
-            lastProcessedEventCount: newEvents.length,
+            lastProcessedEventCount: cloudEvents.length,
             lastImportDate: new Date()
           })
         })
         
         console.log('[AutoSync] Data rebuild completed')
         
-        // 統計の再計算をトリガー（現在のゲームがある場合）
+        // serviceの状態を復元
         const service = (self as any).service
-        if (service && service.latestEvtDeal && service.latestEvtDeal.SeatUserIds) {
-          const playerIds = service.latestEvtDeal.SeatUserIds.filter((id: number) => id !== -1)
-          if (playerIds.length > 0) {
-            console.log('[AutoSync] Triggering stats recalculation...')
-            service.statsOutputStream.write(playerIds)
+        if (service) {
+          // セッション情報を復元（最新のセッションを特定するためEVT_SESSION_RESULTSも含める）
+          const sessionEvents = cloudEvents
+            .filter((e: ApiEvent) => 
+              e.ApiTypeId === ApiType.EVT_ENTRY_QUEUED || 
+              e.ApiTypeId === ApiType.EVT_SESSION_DETAILS ||
+              e.ApiTypeId === ApiType.EVT_PLAYER_SEAT_ASSIGNED ||
+              e.ApiTypeId === ApiType.EVT_PLAYER_JOIN ||
+              e.ApiTypeId === ApiType.EVT_SESSION_RESULTS
+            )
+            .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+          
+          // セッション情報をリセット
+          if (service.session) {
+            service.session.reset()
+          }
+          
+          // セッションイベントを順番に処理
+          for (const event of sessionEvents) {
+            if (event.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+              // セッション終了イベント: 次のセッションのためにリセット
+              service.session.reset()
+            } else if (event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED) {
+              const entryEvent = event as ApiEvent<ApiType.EVT_ENTRY_QUEUED>
+              service.session.id = entryEvent.Id
+              service.session.battleType = entryEvent.BattleType
+            } else if (event.ApiTypeId === ApiType.EVT_SESSION_DETAILS) {
+              const detailsEvent = event as ApiEvent<ApiType.EVT_SESSION_DETAILS>
+              service.session.name = detailsEvent.Name
+            } else if (event.ApiTypeId === ApiType.EVT_PLAYER_SEAT_ASSIGNED) {
+              const seatEvent = event as ApiEvent<ApiType.EVT_PLAYER_SEAT_ASSIGNED>
+              if (seatEvent.TableUsers) {
+                seatEvent.TableUsers.forEach(tableUser => {
+                  service.session.players.set(tableUser.UserId, {
+                    name: tableUser.UserName,
+                    rank: tableUser.Rank.RankId
+                  })
+                })
+              }
+            } else if (event.ApiTypeId === ApiType.EVT_PLAYER_JOIN) {
+              const joinEvent = event as ApiEvent<ApiType.EVT_PLAYER_JOIN>
+              if (joinEvent.JoinUser) {
+                service.session.players.set(joinEvent.JoinUser.UserId, {
+                  name: joinEvent.JoinUser.UserName,
+                  rank: joinEvent.JoinUser.Rank.RankId
+                })
+              }
+            }
+          }
+          
+          if (service.session.id) {
+            console.log(`[AutoSync] Restored session: ${service.session.id} - ${service.session.name || 'Unknown'}`)
+          }
+          
+          // 最新のEVT_DEALイベントを検索してhero情報を復元
+          const latestDealEvent = cloudEvents
+            .filter((e: ApiEvent) => e.ApiTypeId === ApiType.EVT_DEAL)
+            .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))[0]
+          
+          if (latestDealEvent) {
+            console.log('[AutoSync] Restoring service state from latest EVT_DEAL event')
+            service.latestEvtDeal = latestDealEvent as ApiEvent<ApiType.EVT_DEAL>
+            
+            // playerIdを設定
+            const dealEvent = latestDealEvent as ApiEvent<ApiType.EVT_DEAL>
+            if (dealEvent.Player && dealEvent.Player.SeatIndex >= 0 && dealEvent.SeatUserIds) {
+              const playerId = dealEvent.SeatUserIds[dealEvent.Player.SeatIndex]
+              if (playerId && playerId !== -1) {
+                service.playerId = playerId
+                console.log(`[AutoSync] Restored playerId: ${playerId}`)
+              }
+            }
+          }
+          
+          // 統計の再計算をトリガー（latestEvtDealがある場合）
+          if (service.latestEvtDeal && service.latestEvtDeal.SeatUserIds) {
+            const playerIds = service.latestEvtDeal.SeatUserIds.filter((id: number) => id !== -1)
+            if (playerIds.length > 0) {
+              console.log('[AutoSync] Triggering stats recalculation...')
+              service.statsOutputStream.write(playerIds)
+            }
           }
         }
       } catch (error) {
@@ -217,21 +296,6 @@ class AutoSyncService {
     }
   }
 
-  /**
-   * Get maximum timestamp from local database
-   */
-  private async getLocalMaxTimestamp(): Promise<number> {
-    try {
-      const latestEvent = await this.db.apiEvents
-        .orderBy('timestamp')
-        .reverse()
-        .first()
-      return latestEvent?.timestamp || 0
-    } catch (error) {
-      console.error('[AutoSync] Error getting local max timestamp:', error)
-      return 0
-    }
-  }
 
   /**
    * Update sync state and notify
@@ -285,8 +349,8 @@ class AutoSyncService {
         .count()
 
       if (newEventsCount >= this.EVENTS_THRESHOLD) {
-        console.log(`[AutoSync] Game ended with ${newEventsCount} new events, performing sync...`)
-        await this.performSync()
+        console.log(`[AutoSync] Game ended with ${newEventsCount} new events, performing upload sync...`)
+        await this.performSync('upload')
       } else {
         console.log(`[AutoSync] Game ended with only ${newEventsCount} new events, skipping sync (threshold: ${this.EVENTS_THRESHOLD})`)
       }
