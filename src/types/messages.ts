@@ -16,6 +16,20 @@ export const MESSAGE_ACTIONS = {
   IMPORT_DATA_INIT: 'importDataInit',
   IMPORT_DATA_CHUNK: 'importDataChunk',
   IMPORT_DATA_PROCESS: 'importDataProcess',
+  // Firebase Backup
+  FIREBASE_AUTH_STATUS: 'firebaseAuthStatus',
+  FIREBASE_SIGN_IN: 'firebaseSignIn',
+  FIREBASE_SIGN_OUT: 'firebaseSignOut',
+  FIREBASE_BACKUP_UPLOAD: 'firebaseBackupUpload',
+  FIREBASE_BACKUP_LIST: 'firebaseBackupList',
+  FIREBASE_BACKUP_DOWNLOAD: 'firebaseBackupDownload',
+  FIREBASE_BACKUP_DELETE: 'firebaseBackupDelete',
+  FIREBASE_BACKUP_PROGRESS: 'firebaseBackupProgress',
+  // Manual Sync
+  MANUAL_SYNC_UPLOAD: 'manualSyncUpload',
+  MANUAL_SYNC_DOWNLOAD: 'manualSyncDownload',
+  GET_SYNC_STATE: 'getSyncState',
+  GET_UNSYNCED_COUNT: 'getUnsyncedCount',
   // Filter
   UPDATE_BATTLE_TYPE_FILTER: 'updateBattleTypeFilter',
   // Stats
@@ -114,6 +128,79 @@ export interface UpdateUIConfigMessage {
   config: UIConfig
 }
 
+// Firebase backup messages
+export interface FirebaseAuthStatusMessage {
+  action: 'firebaseAuthStatus'
+  isSignedIn: boolean
+  userInfo?: {
+    email: string | null
+    displayName: string | null
+    photoURL: string | null
+    uid?: string
+  } | null
+}
+
+export interface FirebaseSignInMessage {
+  action: 'firebaseSignIn'
+}
+
+export interface FirebaseSignOutMessage {
+  action: 'firebaseSignOut'
+}
+
+export interface FirebaseBackupUploadMessage {
+  action: 'firebaseBackupUpload'
+}
+
+export interface FirebaseBackupListMessage {
+  action: 'firebaseBackupList'
+}
+
+export interface FirebaseBackupDownloadMessage {
+  action: 'firebaseBackupDownload'
+  backupId: string
+}
+
+export interface FirebaseBackupDeleteMessage {
+  action: 'firebaseBackupDelete'
+  backupId: string
+}
+
+export interface FirebaseSyncToCloudMessage {
+  action: 'firebaseSyncToCloud'
+}
+
+export interface FirebaseSyncFromCloudMessage {
+  action: 'firebaseSyncFromCloud'
+}
+
+export interface GetSyncStateMessage {
+  action: 'getSyncState'
+}
+
+export interface GetUnsyncedCountMessage {
+  action: 'getUnsyncedCount'
+}
+
+export interface SyncStateUpdateMessage {
+  action: 'SYNC_STATE_UPDATE'
+  state: any // SyncState from auto-sync-service
+}
+
+export interface ManualSyncUploadMessage {
+  action: 'manualSyncUpload'
+}
+
+export interface ManualSyncDownloadMessage {
+  action: 'manualSyncDownload'
+}
+
+export interface FirebaseBackupProgressMessage {
+  action: 'firebaseBackupProgress'
+  progress: number
+  state: 'running' | 'paused' | 'success' | 'canceled' | 'error'
+}
+
 // Response types for messages that expect a response
 export interface SuccessResponse {
   success: true
@@ -124,7 +211,39 @@ export interface ErrorResponse {
   error: string
 }
 
-export type MessageResponse = SuccessResponse | ErrorResponse
+// Extended response types for Firebase backup
+export interface BackupListResponse extends SuccessResponse {
+  backups: Array<{
+    id: string
+    fileName: string
+    timestamp: string
+    size: number
+  }>
+}
+
+export interface BackupDownloadResponse extends SuccessResponse {
+  data: string
+}
+
+export interface AuthStatusResponse extends SuccessResponse {
+  isSignedIn: boolean
+  userInfo: {
+    email: string | null
+    displayName: string | null
+    photoURL: string | null
+    uid?: string
+  } | null
+}
+
+export interface SyncStateResponse extends SuccessResponse {
+  data: any // SyncState from auto-sync-service
+}
+
+export interface UnsyncedCountResponse extends SuccessResponse {
+  count: number
+}
+
+export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse
 
 // Union type of all possible messages
 export type ChromeMessage =
@@ -143,6 +262,21 @@ export type ChromeMessage =
   | HandLogEventMessage
   | UpdateHandLogConfigMessage
   | UpdateUIConfigMessage
+  | FirebaseAuthStatusMessage
+  | FirebaseSignInMessage
+  | FirebaseSignOutMessage
+  | FirebaseBackupUploadMessage
+  | FirebaseBackupListMessage
+  | FirebaseBackupDownloadMessage
+  | FirebaseBackupDeleteMessage
+  | FirebaseBackupProgressMessage
+  | FirebaseSyncToCloudMessage
+  | FirebaseSyncFromCloudMessage
+  | GetSyncStateMessage
+  | GetUnsyncedCountMessage
+  | SyncStateUpdateMessage
+  | ManualSyncUploadMessage
+  | ManualSyncDownloadMessage
 
 // Helper function for type guard implementation
 const isMessageWithAction = (msg: unknown, action: string): msg is { action: string } =>
@@ -193,3 +327,27 @@ export const isUpdateHandLogConfigMessage = (msg: unknown): msg is UpdateHandLog
 
 export const isUpdateUIConfigMessage = (msg: unknown): msg is UpdateUIConfigMessage =>
   isMessageWithAction(msg, 'updateUIConfig')
+
+export const isFirebaseAuthStatusMessage = (msg: unknown): msg is FirebaseAuthStatusMessage =>
+  isMessageWithAction(msg, 'firebaseAuthStatus')
+
+export const isFirebaseSignInMessage = (msg: unknown): msg is FirebaseSignInMessage =>
+  isMessageWithAction(msg, 'firebaseSignIn')
+
+export const isFirebaseSignOutMessage = (msg: unknown): msg is FirebaseSignOutMessage =>
+  isMessageWithAction(msg, 'firebaseSignOut')
+
+export const isFirebaseBackupUploadMessage = (msg: unknown): msg is FirebaseBackupUploadMessage =>
+  isMessageWithAction(msg, 'firebaseBackupUpload')
+
+export const isFirebaseBackupListMessage = (msg: unknown): msg is FirebaseBackupListMessage =>
+  isMessageWithAction(msg, 'firebaseBackupList')
+
+export const isFirebaseBackupDownloadMessage = (msg: unknown): msg is FirebaseBackupDownloadMessage =>
+  isMessageWithAction(msg, 'firebaseBackupDownload')
+
+export const isFirebaseBackupDeleteMessage = (msg: unknown): msg is FirebaseBackupDeleteMessage =>
+  isMessageWithAction(msg, 'firebaseBackupDelete')
+
+export const isFirebaseBackupProgressMessage = (msg: unknown): msg is FirebaseBackupProgressMessage =>
+  isMessageWithAction(msg, 'firebaseBackupProgress')

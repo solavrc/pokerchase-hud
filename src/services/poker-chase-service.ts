@@ -6,7 +6,6 @@ import { ReadEntityStream } from '../streams/read-entity-stream'
 import { HandLogStream } from '../streams/hand-log-stream'
 import { RealTimeStatsStream } from '../streams/realtime-stats-stream'
 import { setHandImprovementBatchMode } from '../realtime-stats'
-import { ErrorHandler } from '../utils/error-handler'
 import {
   ApiType,
   BATTLE_TYPE_FILTERS
@@ -355,75 +354,6 @@ class PokerChaseService {
           this.statsOutputStream.write(playerIds)
         }
       }
-    }
-  }
-
-  readonly refreshDatabase = async () => {
-    try {
-      // メタデータを取得
-      const meta = await this.db.meta.get('lastProcessed')
-      const lastTimestamp = meta?.lastProcessedTimestamp || 0
-
-      // 新規イベントのみを取得
-      const newEventsCount = await this.db.apiEvents
-        .where('timestamp')
-        .above(lastTimestamp)
-        .count()
-
-      if (newEventsCount === 0) {
-        console.log('[refreshDatabase] No new events to process')
-        return
-      }
-
-      console.log(`[refreshDatabase] Processing ${newEventsCount} new events`)
-
-      // バッチモードを有効化
-      this.setBatchMode(true)
-
-      // AggregateEventsStreamを作成（DB書き込みは既に完了しているのでスキップされる）
-      const eventProcessor = new AggregateEventsStream(this)
-      eventProcessor
-        .pipe(new WriteEntityStream(this))
-        .on('data', () => { }) /** /dev/null consumer */
-
-      let processedCount = 0
-      let lastProcessedTimestamp = lastTimestamp
-
-      // 新規イベントのみを取得（READONLYトランザクションを完了させる）
-      const newEvents = await this.db.apiEvents
-        .where('timestamp')
-        .above(lastTimestamp)
-        .toArray()
-
-      // トランザクション外でイベントを処理
-      for (const event of newEvents) {
-        eventProcessor.write(event)
-        processedCount++
-        lastProcessedTimestamp = Math.max(lastProcessedTimestamp, event.timestamp || 0)
-      }
-
-      // メタデータを更新
-      await this.db.meta.put({
-        id: 'lastProcessed',
-        lastProcessedTimestamp,
-        lastProcessedEventCount: processedCount,
-        lastImportDate: new Date()
-      })
-
-      console.log(`[refreshDatabase] Processed ${processedCount} events`)
-
-      // バッチモードを無効化（統計を再計算）
-      this.setBatchMode(false)
-
-    } catch (error) {
-      const appError = ErrorHandler.handleDbError(error, {
-        streamName: 'PokerChaseService',
-        operation: 'refreshDatabase'
-      })
-      ErrorHandler.logError(appError, 'PokerChaseService')
-
-      // エラー時もバッチモードを無効化
-      this.setBatchMode(false)
     }
   }
 

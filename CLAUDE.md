@@ -2,7 +2,7 @@
 
 > 🎯 **Purpose**: Technical reference for AI coding agents working on the PokerChase HUD Chrome extension.
 >
-> 📅 **Last Updated**: 2025-07-23
+> 📅 **Last Updated**: 2025-07-24
 
 ## 📋 Table of Contents
 
@@ -39,6 +39,12 @@
    - [Event Processing](#event-processing)
    - [Database Schema](#database-schema)
    - [Configuration & Storage](#configuration--storage)
+8. [Cloud Sync & Firebase Integration](#cloud-sync--firebase-integration)
+   - [Architecture](#cloud-architecture)
+   - [Setup Requirements](#setup-requirements)
+   - [Data Flow](#cloud-data-flow)
+   - [BigQuery Integration](#bigquery-integration)
+   - [Cost Optimization](#cost-optimization)
 
 ## 📦 Project Overview
 
@@ -52,13 +58,17 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 - Hand history log with PokerStars export
 - Import/export functionality
 - Game type filtering (SNG/MTT/Ring)
+- Cloud backup with automatic sync to Firebase
+- Manual sync controls (upload/download) for cloud storage
+- BigQuery integration for data analysis
 
 ### Technical Stack
 
 - **Extension**: Chrome Manifest V3
 - **Frontend**: React 18 + TypeScript
 - **UI Library**: Material-UI (modular imports)
-- **Storage**: IndexedDB (Dexie)
+- **Storage**: IndexedDB (Dexie) + Cloud (Firestore)
+- **Cloud Services**: Firebase (Auth, Firestore)
 - **Build**: esbuild
 - **Testing**: Jest + React Testing Library
 - **Validation**: Zod (runtime schema validation)
@@ -112,6 +122,10 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   - `npm run test` - Run test suite
   - `npm run postbuild` - Create extension.zip
   - `npm run validate-schema` - Validate API events in NDJSON files
+  - `npm run firebase:deploy` - Deploy Firestore rules and indexes
+  - `npm run firebase:deploy:rules` - Deploy Firestore rules only
+  - `npm run firebase:deploy:indexes` - Deploy Firestore indexes only
+  - `npm run firebase:emulators` - Start local Firestore emulator
 
 #### Version Control
 
@@ -168,6 +182,12 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 8. **No Magic Numbers**: Use named constants (e.g., HUD_WIDTH)
 9. **Service Worker Resilience**: Handle 30-second timeout gracefully
 10. **State Persistence**: Maintain critical state across Service Worker lifecycle
+11. **Cloud Sync**: Smart incremental sync with Firestore
+    - No periodic sync (cost optimization)
+    - Auto sync after 100+ new events at game end (upload only)
+    - Upload: Only events newer than cloud's latest timestamp
+    - Download: Cloud as complete source of truth
+    - Manual sync controls for user-initiated operations
 
 ### Data Flow
 
@@ -322,10 +342,13 @@ Statistics Refresh (batch mode)
 ├── README.md              # Project overview
 ├── CONTRIBUTING.md        # Contribution guidelines
 ├── CHANGELOG.md           # Version history
+├── firebase.json          # Firebase project configuration
+├── .firebaserc            # Firebase project settings
+├── firestore.rules        # Firestore security rules
+├── firestore.indexes.json # Firestore index definitions
 ├── icons/                 # Extension icons
 │   ├── icon_16px.png, icon_48px.png, icon_128px.png
-│   ├── hud.png           # HUD screenshot
-│   └── hud-config.png    # Config screenshot
+│   └── README.png         # README screenshot
 └── src/                   # Source code
     ├── app.ts             # Re-export layer for backward compatibility
     ├── background.ts      # Service worker for persistence
@@ -342,7 +365,11 @@ Statistics Refresh (batch mode)
     ├── db/
     │   └── poker-chase-db.ts  # Database definition (PokerChaseDB)
     ├── services/
-    │   └── poker-chase-service.ts  # Main service class
+    │   ├── poker-chase-service.ts      # Main service class
+    │   ├── firebase-auth-service.ts    # Firebase authentication
+    │   ├── firebase-config.ts          # Firebase configuration
+    │   ├── firestore-backup-service.ts # Cloud sync logic (incremental upload, full download)
+    │   └── auto-sync-service.ts        # Automatic sync management
     ├── stats/
     │   ├── core/         # Statistic definitions
     │   │   ├── 3bet.ts, 3bet-fold.ts
@@ -399,6 +426,7 @@ Statistics Refresh (batch mode)
 - **Keepalive mechanism**: Sends periodic messages to prevent Service Worker timeout
 - **Game state tracking**: Monitors EVT_SESSION_DETAILS/RESULTS for active games
 - **Resource cleanup**: Handles beforeunload and visibilitychange events
+- **Error resilience**: Suppresses "Extension context invalidated" errors with automatic reconnection
 
 #### `background.ts`
 
@@ -409,6 +437,9 @@ Statistics Refresh (batch mode)
 - **State initialization**: Waits for `service.ready` promise before processing
 - **Keepalive handling**: Processes keepalive messages to stay active
 - **Schema validation**: Validates all incoming API events with Zod
+- **Auto data rebuild**: Rebuilds data from apiEvents on version update
+- **Firebase auth**: Handles Google sign-in/out requests
+- **Auto sync coordination**: Manages cloud sync after game sessions
 
 ### Data Processing Streams
 
@@ -459,6 +490,23 @@ Statistics Refresh (batch mode)
 
 ### Services
 
+#### `FirestoreBackupService` (`src/services/firestore-backup-service.ts`)
+
+- **Cloud backup service**: Handles Firestore read/write operations
+- **Upload strategy**:
+  - Queries cloud for latest timestamp (orderBy + limit(1))
+  - Filters local events newer than cloud's max timestamp
+  - Batches writes in chunks of 300 with retry logic
+  - Updates lastSyncTimestamp in user metadata
+- **Download strategy**:
+  - Retrieves all events from cloud (no filtering)
+  - Returns raw events for processing by AutoSyncService
+  - Cloud treated as complete source of truth
+- **Optimizations**:
+  - Parallel batch processing (3 batches at once)
+  - Rate limit handling with exponential backoff
+  - Efficient deletion with chunked batch deletes
+
 #### `PokerChaseService` (`src/services/poker-chase-service.ts`)
 
 - **Core service**: Central state management and stream coordination
@@ -475,6 +523,25 @@ Statistics Refresh (batch mode)
 - **Session management**: Maintains game session continuity
   - Players Map with custom setter for persistence
   - Direct property access during restoration to avoid circular persistence
+
+#### `AutoSyncService` (`src/services/auto-sync-service.ts`)
+
+- **Automatic cloud synchronization**: Handles bidirectional sync with Firestore
+- **Cost-optimized scheduling**:
+  - Initial sync only on first authentication (bidirectional)
+  - No periodic sync (manual or event-driven only)
+  - Event-driven sync after game sessions (100+ events threshold - upload only)
+  - No minimum interval between sync attempts
+- **Smart sync strategy**:
+  - **Upload**: Syncs events newer than cloud's latest timestamp (not local metadata)
+  - **Download**: Treats cloud as complete source of truth, uses bulkPut for merge
+  - Tracks last sync timestamp locally for UI display
+- **Progress tracking**: Real-time progress updates for UI
+- **State management**: Maintains sync state with status, progress, and errors
+- **Data rebuild after download**: 
+  - Uses EntityConverter to rebuild hands/phases/actions from downloaded events
+  - Restores service state: playerId, latestEvtDeal, session info
+  - Triggers statistics recalculation with restored state
 
 ### Utility Modules
 
@@ -526,7 +593,9 @@ React components for the HUD interface. See individual component files for detai
 - **`App.tsx`**: Root component managing state and seat rotation logic
 - **`Hud.tsx`**: HUD overlay with drag & drop (240px regular, 200px real-time stats)
 - **`HandLog.tsx`**: Virtualized hand history log with PokerStars export
-- **`Popup.tsx`**: Extension settings and import/export interface
+- **`Popup.tsx`**: Extension settings, import/export interface, and manual cloud sync controls
+  - **Recent UI Changes**: Removed "Delete All Data" and "Reset to Default Settings" features
+  - **Layout**: Cloud sync controls positioned between "Hand Count" and "HUD Display Settings"
 
 For implementation details, see comments in `src/components/`.
 
@@ -842,6 +911,142 @@ Configuration uses Chrome's `storage.sync` API for cross-device synchronization:
 - **Restoration on startup**: Service worker loads state before processing events
 - **Quota handling**: Automatic cleanup of old temporary data on quota exceeded
 - **Error resilience**: Continues operation even if storage fails
+
+---
+
+## Cloud Sync & Firebase Integration
+
+### Architecture
+
+**Service Worker Compatible Design**:
+- Firebase SDK v12+ is fully compatible with Service Workers
+- Direct Firestore SDK usage without XMLHttpRequest issues
+- Authentication via `chrome.identity` API with Firebase credential exchange
+
+**Data Structure**:
+```
+Firestore:
+/users/{userId}/
+  /apiEvents/{eventId}  // eventId = timestamp_ApiTypeId
+    - timestamp: number
+    - ApiTypeId: number
+    - [event data...]
+```
+
+### Setup Requirements
+
+1. **Firebase Project**:
+   - Authentication with Google provider
+   - Firestore database (asia-northeast1 recommended)
+   - Security rules deployment via `npm run firebase:deploy:rules`
+   - **Important**: Update `src/services/firebase-config.ts` with your own Firebase project configuration
+
+2. **OAuth Configuration**:
+   - Chrome Extension OAuth client in Google Cloud Console
+   - Manifest.json `oauth2` section with client ID
+   - Scopes: userinfo.email, userinfo.profile
+
+3. **Extension ID Management**:
+   - Development and production IDs differ
+   - Cannot share IDs between local dev and Chrome Web Store
+   - Requires separate OAuth clients for each environment
+
+### Implementation Details
+
+**Firebase SDK Integration**:
+- Uses Firebase SDK v12.0.0 (Service Worker compatible)
+- Direct Firestore SDK methods (collection, doc, writeBatch, etc.)
+- No REST API wrapper needed - modern Firebase SDK works in Service Workers
+- Authentication handled via Chrome identity API token exchange
+
+### Cloud Data Flow
+
+**Upload Sync**:
+1. Query cloud for latest timestamp (single document)
+2. Filter local events newer than cloud's latest timestamp
+3. Batch process in chunks of 300 events
+4. Use composite key `timestamp_ApiTypeId` for deduplication
+5. Update user metadata with sync timestamp
+
+**Download Sync**:
+1. Get all events from cloud (cloud is source of truth)
+2. Bulk insert to IndexedDB using bulkPut (updates existing records)
+3. Restore service state from downloaded events:
+   - Latest EVT_DEAL → playerId, latestEvtDeal
+   - Session events → session.id, battleType, name, players
+4. Rebuild entities using EntityConverter
+5. Trigger statistics recalculation
+
+**Auto Sync Triggers**:
+- Initial login (first sync only - bidirectional)
+- Game session end (100+ new events threshold - upload only)
+- Manual sync via popup UI (direction selectable)
+
+### BigQuery Integration
+
+**Export Configuration**:
+- Enable BigQuery export in Firebase Console
+- Automatic daily snapshots to `users_raw_latest`
+- Change history in `users_raw_changelog`
+
+**Analysis Views**:
+```sql
+-- User event statistics
+CREATE VIEW user_event_stats AS
+SELECT 
+  user_id,
+  COUNT(*) as total_events,
+  MIN(TIMESTAMP_MILLIS(timestamp)) as first_event
+FROM (...)
+GROUP BY user_id;
+```
+
+### Cost Optimization
+
+1. **Firestore Optimization**:
+   - Smart incremental sync (cloud timestamp for uploads, full for downloads)
+   - No periodic sync (event-driven only)
+   - Batch operations to reduce API calls
+   - 100-event threshold for game-end sync
+   - Single query for cloud max timestamp during upload
+
+2. **Free Tier Limits**:
+   - Authentication: 10,000/month
+   - Firestore: 50k reads/day, 20k writes/day, 1GB storage
+   - BigQuery: 1TB queries/month, 10GB storage
+
+3. **Data Size Estimates**:
+   - 1 event ≈ 200 bytes
+   - 1000 hands ≈ 10,000 events ≈ 2MB
+   - Typical user stays within free tier
+
+### Troubleshooting
+
+**Common Issues**:
+
+1. **Authentication Errors**:
+   - Ensure OAuth client ID matches the extension ID
+   - Verify Firebase project configuration
+   - Check chrome.identity permissions in manifest.json
+
+2. **"Write stream exhausted"**:
+   - Firestore rate limiting
+   - Solution: Reduce batch size, add delays between batches
+
+3. **Login UI not updating**:
+   - Check Service Worker console for auth errors
+   - Verify OAuth client configuration
+   - Ensure Firebase Auth domains are authorized
+
+**Debug Commands**:
+```javascript
+// Check auth state (in Service Worker console)
+firebaseAuthService.getCurrentUser()
+firebaseAuthService.isSignedIn()
+
+// Test Chrome identity
+chrome.identity.getAuthToken({ interactive: true }, console.log)
+```
 
 ---
 

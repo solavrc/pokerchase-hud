@@ -17,6 +17,7 @@ This is an **unofficial** Chrome extension not affiliated with PokerChase. Use a
 - **Flexible Filtering**: Game type and hand count filters
 - **Drag & Drop UI**: Customizable HUD positioning
 - **Data Export**: JSON and PokerStars formats
+- **Cloud Backup**: Google Drive integration for automatic backups (Firebase)
 
 ## Quick Start
 
@@ -64,6 +65,12 @@ After building, reload the extension in Chrome's extension management page.
 - Database schema and API reference
 - Development guidelines and best practices
 - Troubleshooting guide
+
+🔥 **[Firebase Setup Guide](FIREBASE_SETUP.md)** - Cloud backup configuration:
+
+- Step-by-step Firebase project setup
+- Google authentication configuration
+- Security rules and troubleshooting
 
 ## Contributing
 
