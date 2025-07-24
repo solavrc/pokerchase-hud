@@ -1,5 +1,6 @@
 import { content_scripts } from '../../manifest.json'
 import { PokerChaseDB } from '../db/poker-chase-db'
+import { findLatestPlayerDealEvent } from '../utils/database-utils'
 import { AggregateEventsStream } from '../streams/aggregate-events-stream'
 import { WriteEntityStream } from '../streams/write-entity-stream'
 import { ReadEntityStream } from '../streams/read-entity-stream'
@@ -8,8 +9,7 @@ import { RealTimeStatsStream } from '../streams/realtime-stats-stream'
 import { setHandImprovementBatchMode } from '../realtime-stats'
 import {
   ApiType,
-  BATTLE_TYPE_FILTERS,
-  isApiEventType
+  BATTLE_TYPE_FILTERS
 } from '../types'
 import type {
   ApiEvent,
@@ -336,29 +336,7 @@ class PokerChaseService {
       }
     } else {
       // latestEvtDealが無い場合は、最新のEVT_DEALをDBから取得
-      // Note: Dexie doesn't support filter() with first(), so we need a workaround
-      const SEARCH_LIMIT = 10 // Check last 10 EVT_DEAL events
-      let latestDealEvent: ApiEvent<ApiType.EVT_DEAL> | undefined
-      
-      // Get recent EVT_DEAL events in small batches
-      let offset = 0
-      while (!latestDealEvent && offset < 100) { // Safety limit
-        const events = await this.db.apiEvents
-          .where('ApiTypeId').equals(ApiType.EVT_DEAL)
-          .reverse()
-          .offset(offset)
-          .limit(SEARCH_LIMIT)
-          .toArray()
-        
-        if (events.length === 0) break
-        
-        // Find first event with Player.SeatIndex
-        latestDealEvent = events.find(event => 
-          isApiEventType(event, ApiType.EVT_DEAL) && event.Player?.SeatIndex !== undefined
-        ) as ApiEvent<ApiType.EVT_DEAL> | undefined
-        
-        offset += SEARCH_LIMIT
-      }
+      const latestDealEvent = await findLatestPlayerDealEvent(this.db)
 
       if (latestDealEvent && latestDealEvent.SeatUserIds) {
         this.latestEvtDeal = latestDealEvent
@@ -368,7 +346,7 @@ class PokerChaseService {
           this.playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex]
         }
 
-        const playerIds = latestDealEvent.SeatUserIds.filter(id => id !== -1)
+        const playerIds = latestDealEvent.SeatUserIds.filter((id: number) => id !== -1)
         if (playerIds.length > 0) {
           this.statsOutputStream.write(playerIds)
         }

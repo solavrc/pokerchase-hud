@@ -17,6 +17,7 @@ import {
 import { firestore } from './firebase-config'
 import { firebaseAuthService } from './firebase-auth-service'
 import type { ApiEvent } from '../types'
+import { DATABASE_CONSTANTS } from '../constants/database'
 
 export interface BackupSummary {
   totalEvents: number
@@ -27,9 +28,9 @@ export interface BackupSummary {
 export class FirestoreBackupService {
   private readonly USERS_COLLECTION = 'users'
   private readonly EVENTS_COLLECTION = 'apiEvents'
-  private readonly BATCH_SIZE = 300 // Optimized batch size (Firestore limit is 500)
-  private readonly BATCH_DELAY_MS = 500 // Reduced delay between parallel batch groups
-  private readonly DELETE_BATCH_SIZE = 500 // Maximum batch size for deletion
+  private readonly BATCH_SIZE = DATABASE_CONSTANTS.FIRESTORE_BATCH_SIZE
+  private readonly BATCH_DELAY_MS = DATABASE_CONSTANTS.FIRESTORE_BATCH_DELAY_MS
+  private readonly DELETE_BATCH_SIZE = DATABASE_CONSTANTS.FIRESTORE_DELETE_BATCH
 
   /**
    * Get current user document reference
@@ -75,7 +76,7 @@ export class FirestoreBackupService {
       console.log(`[Firestore] ${newEvents.length} new events to sync (after timestamp ${cloudMaxTimestamp || 0})`)
 
       // Process only new events in batches
-      const PARALLEL_BATCHES = 3 // Process multiple batches in parallel
+      const PARALLEL_BATCHES = DATABASE_CONSTANTS.FIRESTORE_PARALLEL_BATCHES
       for (let i = 0; i < newEvents.length; i += this.BATCH_SIZE * PARALLEL_BATCHES) {
         const batchPromises = []
         
@@ -294,7 +295,7 @@ export class FirestoreBackupService {
       console.log(`[Firestore] ${newEvents.length} new events in this batch`)
 
       // Process new events in batches
-      const PARALLEL_BATCHES = 3
+      const PARALLEL_BATCHES = DATABASE_CONSTANTS.FIRESTORE_PARALLEL_BATCHES
       for (let i = 0; i < newEvents.length; i += this.BATCH_SIZE * PARALLEL_BATCHES) {
         const batchPromises = []
         

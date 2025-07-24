@@ -9,6 +9,8 @@ import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
 import { ApiType, isApiEventType } from '../types'
 import type { ApiEvent } from '../types'
+import { saveEntities } from '../utils/database-utils'
+import { DATABASE_CONSTANTS } from '../constants/database'
 
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'success'
 export type SyncDirection = 'upload' | 'download' | 'both'
@@ -145,7 +147,7 @@ class AutoSyncService {
     console.log(`[AutoSync] Found ${totalCount} new events to sync`)
     
     // Process in chunks to avoid memory issues
-    const CHUNK_SIZE = 5000
+    const CHUNK_SIZE = DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
     let processed = 0
     let synced = 0
     let lastProcessedTimestamp = cloudMaxTimestamp || 0
@@ -225,35 +227,27 @@ class AutoSyncService {
         const converter = new EntityConverter(defaultSession)
         const entities = converter.convertEventsToEntities(cloudEvents)
         
-        console.log(`[AutoSync] Generated entities - Hands: ${entities.hands.length}, Phases: ${entities.phases.length}, Actions: ${entities.actions.length}`)
+        // Save entities using common utility
+        await saveEntities(this.db, entities, {
+          onProgress: (counts) => {
+            console.log(`[AutoSync] Generated entities - Hands: ${counts.hands}, Phases: ${counts.phases}, Actions: ${counts.actions}`)
+          }
+        })
         
-        // トランザクション内で一括保存
-        await this.db.transaction('rw', [this.db.hands, this.db.phases, this.db.actions, this.db.meta], async () => {
-          if (entities.hands.length > 0) {
-            await this.db.hands.bulkPut(entities.hands)
-          }
-          if (entities.phases.length > 0) {
-            await this.db.phases.bulkPut(entities.phases)
-          }
-          if (entities.actions.length > 0) {
-            await this.db.actions.bulkPut(entities.actions)
-          }
-          
-          // メタデータを更新
-          const lastTimestamp = cloudEvents.reduce((max, event) => {
-            const timestamp = event.timestamp || 0
-            return timestamp > max ? timestamp : max
-          }, 0)
-          
-          await this.db.meta.put({
-            id: 'importStatus',
-            value: {
-              lastProcessedTimestamp: lastTimestamp,
-              lastProcessedEventCount: cloudEvents.length,
-              lastImportDate: new Date().toISOString()
-            },
-            updatedAt: Date.now()
-          })
+        // Update metadata separately
+        const lastTimestamp = cloudEvents.reduce((max, event) => {
+          const timestamp = event.timestamp || 0
+          return timestamp > max ? timestamp : max
+        }, 0)
+        
+        await this.db.meta.put({
+          id: 'importStatus',
+          value: {
+            lastProcessedTimestamp: lastTimestamp,
+            lastProcessedEventCount: cloudEvents.length,
+            lastImportDate: new Date().toISOString()
+          },
+          updatedAt: Date.now()
         })
         
         console.log('[AutoSync] Data rebuild completed')

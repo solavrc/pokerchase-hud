@@ -8,6 +8,8 @@ import type { ApiEvent, Hand, Session } from '../types'
 import { ApiType, isApiEventType } from '../types/api'
 import { HandLogProcessor, HandLogContext } from './hand-log-processor'
 import { DEFAULT_HAND_LOG_CONFIG } from '../types/hand-log'
+import { DATABASE_CONSTANTS } from '../constants/database'
+import { processInChunks } from '../utils/database-utils'
 
 export class HandLogExporter {
   // Cache for player names across all exports
@@ -45,18 +47,9 @@ export class HandLogExporter {
       console.log(`[HandLogExporter] Processing ${totalNew} new events for player names`)
       
       // Process in chunks to avoid memory issues
-      const CHUNK_SIZE = 5000
-      let offset = 0
       let updatedPlayers = 0
       
-      while (offset < totalNew) {
-        const chunk = await newEventsQuery
-          .offset(offset)
-          .limit(CHUNK_SIZE)
-          .toArray()
-        
-        if (chunk.length === 0) break
-        
+      for await (const chunk of processInChunks(newEventsQuery, DATABASE_CONSTANTS.SYNC_CHUNK_SIZE)) {
         // Process chunk for player information
         for (const event of chunk) {
           // Update timestamp tracker
@@ -84,8 +77,6 @@ export class HandLogExporter {
             updatedPlayers++
           }
         }
-        
-        offset += chunk.length
       }
 
       console.log(`[HandLogExporter] Updated ${updatedPlayers} player entries, cache now has ${playerMap.size} players`)
