@@ -148,10 +148,16 @@ export const ImportExportSection = ({
     <>
       <Button
         variant="contained"
-        color="secondary"
         fullWidth
         onClick={() => handleExportClick('pokerstars')}
-        style={{ marginBottom: '10px' }}
+        sx={{ 
+          marginBottom: '10px',
+          backgroundColor: '#d70022',
+          color: 'white',
+          '&:hover': {
+            backgroundColor: '#b8001c'
+          }
+        }}
       >
         エクスポート (PokerStars)
       </Button>

@@ -93,7 +93,6 @@ const Popup = () => {
   const [isFirebaseSignedIn, setIsFirebaseSignedIn] = useState<boolean>(false)
   const [firebaseUserInfo, setFirebaseUserInfo] = useState<{ email: string; uid: string } | null>(null)
   const [syncState, setSyncState] = useState<SyncState | null>(null)
-  const [unsyncedCount, setUnsyncedCount] = useState<number>(0)
 
   // Fetch sync state
   useEffect(() => {
@@ -126,14 +125,6 @@ const Popup = () => {
     }
   }, [])
 
-  // Fetch unsynced count when signed in
-  useEffect(() => {
-    if (isFirebaseSignedIn) {
-      // This would require a new message handler in background.ts
-      // For now, we can estimate based on sync state
-      setUnsyncedCount(0) // Will be updated later
-    }
-  }, [isFirebaseSignedIn, syncState])
 
   const openGameTab = async () => {
     try {
@@ -168,6 +159,9 @@ const Popup = () => {
   }
 
   useEffect(() => {
+    // Check and switch to game tab on popup open
+    openGameTab()
+    
     bucket.get().then((savedOptions) => {
       if (savedOptions) {
         setOptions(savedOptions)
@@ -263,17 +257,6 @@ const Popup = () => {
     return () => chrome.runtime.onMessage.removeListener(handleMessage)
   }, [])
 
-  // Update unsynced count when sync state changes
-  useEffect(() => {
-    if (isFirebaseSignedIn && syncState) {
-      // Get unsynced event count
-      chrome.runtime.sendMessage({ action: 'getUnsyncedCount' }, (response: any) => {
-        if (response && typeof response.count === 'number') {
-          setUnsyncedCount(response.count)
-        }
-      })
-    }
-  }, [isFirebaseSignedIn, syncState])
 
   const handleGameTypeFilterChange = (type: keyof GameTypeFilter) => (event: ChangeEvent<HTMLInputElement>) => {
     const newFilter = {
@@ -421,7 +404,6 @@ const Popup = () => {
       isFirebaseSignedIn={isFirebaseSignedIn}
       firebaseUserInfo={firebaseUserInfo}
       syncState={syncState}
-      unsyncedCount={unsyncedCount}
       setImportStatus={setImportStatus}
       handleFirebaseSignIn={handleFirebaseSignIn}
       handleFirebaseSignOut={handleFirebaseSignOut}

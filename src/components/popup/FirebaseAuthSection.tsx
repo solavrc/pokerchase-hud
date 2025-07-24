@@ -9,7 +9,6 @@ interface FirebaseAuthSectionProps {
   isFirebaseSignedIn: boolean
   firebaseUserInfo: { email: string; uid: string } | null
   syncState: SyncState | null
-  unsyncedCount: number
   setImportStatus: (status: string) => void
   handleFirebaseSignIn: () => void
   handleFirebaseSignOut: () => void
@@ -21,7 +20,6 @@ export const FirebaseAuthSection = ({
   isFirebaseSignedIn,
   firebaseUserInfo,
   syncState,
-  unsyncedCount,
   setImportStatus,
   handleFirebaseSignIn,
   handleFirebaseSignOut,
@@ -97,7 +95,6 @@ export const FirebaseAuthSection = ({
       {syncState && (
         <SyncStatusSection
           syncState={syncState}
-          unsyncedCount={unsyncedCount}
           handleManualSyncUpload={handleManualSyncUpload}
           handleManualSyncDownload={handleManualSyncDownload}
         />

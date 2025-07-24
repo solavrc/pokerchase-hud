@@ -1,4 +1,4 @@
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import Popup from './Popup'
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
@@ -52,7 +52,7 @@ global.chrome = {
 jest.mock('../../manifest.json', () => ({
   content_scripts: [
     {
-      matches: ['https://poker-chase.com/*'],
+      matches: ['https://game.poker-chase.com/*'],
     },
   ],
 }))
@@ -107,6 +107,9 @@ describe('Popup', () => {
         callback({ syncState: null })
       }
     })
+    
+    // Default mock for chrome.tabs.query to prevent errors
+    mockChromeTabsQuery.mockResolvedValue([])
   })
 
   it('初期設定を読み込む', async () => {
@@ -236,6 +239,7 @@ describe('Popup', () => {
         })
       } else if (message.action === 'getSyncState') {
         callback({
+          success: true,
           syncState: {
             status: 'idle',
             lastSyncTimestamp: Date.now() - 60000,
@@ -271,5 +275,171 @@ describe('Popup', () => {
 
     // Ensure the component mounts and message listener is registered
     expect(chrome.runtime.onMessage.addListener).toHaveBeenCalled()
+  })
+
+  describe('タブ移動機能', () => {
+    it('ポップアップ開いた時にゲームタブでなければ既存のゲームタブに移動', async () => {
+      // 現在のタブがゲームタブではない
+      mockChromeTabsQuery.mockImplementation((query) => {
+        if (query.active && query.currentWindow) {
+          return Promise.resolve([{ id: 1, url: 'https://example.com' }])
+        }
+        if (query.url === 'https://game.poker-chase.com/*') {
+          return Promise.resolve([{ id: 2, url: 'https://game.poker-chase.com/play/index.html' }])
+        }
+        return Promise.resolve([])
+      })
+
+      render(<Popup />)
+
+      await waitFor(() => {
+        expect(mockChromeTabsQuery).toHaveBeenCalledWith({ active: true, currentWindow: true })
+      })
+
+      await waitFor(() => {
+        expect(mockChromeTabsQuery).toHaveBeenCalledWith({ url: 'https://game.poker-chase.com/*' })
+      })
+
+      expect(mockChromeTabsUpdate).toHaveBeenCalledWith(2, { active: true })
+      expect(mockChromeTabsCreate).not.toHaveBeenCalled()
+    })
+
+    it('ゲームタブが存在しない場合は新規タブを開く', async () => {
+      // 現在のタブがゲームタブではなく、ゲームタブも存在しない
+      mockChromeTabsQuery.mockImplementation((query) => {
+        if (query.active && query.currentWindow) {
+          return Promise.resolve([{ id: 1, url: 'https://example.com' }])
+        }
+        return Promise.resolve([])
+      })
+
+      render(<Popup />)
+
+      await waitFor(() => {
+        expect(mockChromeTabsQuery).toHaveBeenCalledWith({ active: true, currentWindow: true })
+      })
+
+      await waitFor(() => {
+        expect(mockChromeTabsCreate).toHaveBeenCalledWith({ url: 'https://game.poker-chase.com/play/index.html' })
+      })
+
+      expect(mockChromeTabsUpdate).not.toHaveBeenCalled()
+    })
+
+    it('既にゲームタブにいる場合は何もしない', async () => {
+      // 現在のタブがゲームタブ
+      mockChromeTabsQuery.mockImplementation((query) => {
+        if (query.active && query.currentWindow) {
+          return Promise.resolve([{ id: 1, url: 'https://game.poker-chase.com/play/index.html' }])
+        }
+        return Promise.resolve([])
+      })
+
+      render(<Popup />)
+
+      await waitFor(() => {
+        expect(mockChromeTabsQuery).toHaveBeenCalledWith({ active: true, currentWindow: true })
+      })
+
+      // ゲームタブを検索しない
+      expect(mockChromeTabsQuery).not.toHaveBeenCalledWith({ url: 'https://game.poker-chase.com/*' })
+      expect(mockChromeTabsUpdate).not.toHaveBeenCalled()
+      expect(mockChromeTabsCreate).not.toHaveBeenCalled()
+    })
+
+    it('異なるウィンドウのゲームタブにも移動してフォーカス', async () => {
+      // 現在のタブがウィンドウ1、ゲームタブがウィンドウ2
+      mockChromeTabsQuery.mockImplementation((query) => {
+        if (query.active && query.currentWindow) {
+          return Promise.resolve([{ id: 1, url: 'https://example.com', windowId: 1 }])
+        }
+        if (query.url === 'https://game.poker-chase.com/*') {
+          return Promise.resolve([{ id: 2, url: 'https://game.poker-chase.com/play/index.html', windowId: 2 }])
+        }
+        return Promise.resolve([])
+      })
+
+      render(<Popup />)
+
+      await waitFor(() => {
+        expect(mockChromeTabsUpdate).toHaveBeenCalledWith(2, { active: true })
+      })
+
+      expect(mockChromeWindowsUpdate).toHaveBeenCalledWith(2, { focused: true })
+    })
+  })
+
+  describe('syncState取得', () => {
+    it('getSyncStateレスポンスが正しい形式で処理される', async () => {
+      // syncStateのレスポンス形式をテスト
+      mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+        if (message.action === 'firebaseAuthStatus') {
+          callback({ isSignedIn: false })
+        } else if (message.action === 'getSyncState') {
+          // 修正後の正しい形式
+          callback({
+            success: true,
+            syncState: {
+              status: 'idle',
+              lastSyncTimestamp: Date.now(),
+              totalEvents: 500,
+            },
+          })
+        }
+      })
+
+      render(<Popup />)
+
+      await waitForAsyncOperations()
+
+      // getSyncStateが呼ばれることを確認
+      expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+        { action: 'getSyncState' },
+        expect.any(Function)
+      )
+    })
+
+    it('定期的にsyncStateを取得する', async () => {
+      jest.useFakeTimers()
+
+      // getSyncStateのモックを設定
+      mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+        if (message.action === 'firebaseAuthStatus') {
+          callback({ isSignedIn: false })
+        } else if (message.action === 'getSyncState') {
+          callback({
+            success: true,
+            syncState: {
+              status: 'idle',
+              lastSyncTimestamp: Date.now(),
+              totalEvents: 500,
+            },
+          })
+        }
+      })
+
+      render(<Popup />)
+
+      // 初回のレンダリングを待つ
+      await waitFor(() => {
+        expect(mockChromeRuntimeSendMessage).toHaveBeenCalled()
+      })
+
+      // 初回呼び出しをクリア
+      mockChromeRuntimeSendMessage.mockClear()
+
+      // 5秒経過をシミュレート
+      act(() => {
+        jest.advanceTimersByTime(5000)
+      })
+
+      // setIntervalによる再取得を確認
+      expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+        { action: 'getSyncState' },
+        expect.any(Function)
+      )
+
+      jest.useRealTimers()
+    }, 10000)
   })
 })

@@ -14,7 +14,6 @@ describe('FirebaseAuthSection', () => {
     isFirebaseSignedIn: false,
     firebaseUserInfo: null,
     syncState: null,
-    unsyncedCount: 0,
     setImportStatus: mockSetImportStatus,
     handleFirebaseSignIn: mockHandleFirebaseSignIn,
     handleFirebaseSignOut: mockHandleFirebaseSignOut,
@@ -24,6 +23,19 @@ describe('FirebaseAuthSection', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
+    
+    // Mock chrome.runtime.sendMessage for getSyncInfo
+    ;(chrome.runtime.sendMessage as jest.Mock).mockImplementation((message, callback) => {
+      if (message.action === 'getSyncInfo') {
+        callback({
+          syncInfo: {
+            localLastTimestamp: Date.now(),
+            cloudLastTimestamp: Date.now() - 60000, // 1分前
+            uploadPendingCount: 50
+          }
+        })
+      }
+    })
   })
 
   it('サインアウト時はサインインボタンを表示', () => {
@@ -45,14 +57,12 @@ describe('FirebaseAuthSection', () => {
         isFirebaseSignedIn={true}
         firebaseUserInfo={{ email: 'test@example.com', uid: 'test-uid' }}
         syncState={syncState}
-        unsyncedCount={50}
       />
     )
 
     expect(screen.getByText('test@example.com')).toBeInTheDocument()
     // 最終同期時刻が表示されることを確認（日時形式）
     expect(screen.getByText(/最終同期:/)).toBeInTheDocument()
-    expect(screen.getByText('未同期: 50件')).toBeInTheDocument()
     expect(screen.getByText('アップロード')).toBeInTheDocument()
     expect(screen.getByText('ダウンロード')).toBeInTheDocument()
     expect(screen.getByText('ログアウト')).toBeInTheDocument()

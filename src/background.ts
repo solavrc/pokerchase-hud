@@ -320,7 +320,7 @@ chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.run
   } else if (request.action === 'getSyncState') {
     // Get current sync state
     const state = autoSyncService.getSyncState()
-    sendResponse({ success: true, data: state })
+    sendResponse({ success: true, syncState: state })
     return false
   } else if (request.action === 'getUnsyncedCount') {
     // Get unsynced event count
@@ -330,6 +330,17 @@ chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.run
       })
       .catch(error => {
         console.error('Error getting unsynced count:', error)
+        sendResponse({ success: false, error: error.message })
+      })
+    return true
+  } else if (request.action === 'getSyncInfo') {
+    // Get detailed sync information
+    autoSyncService.getSyncInfo()
+      .then(info => {
+        sendResponse({ success: true, syncInfo: info })
+      })
+      .catch(error => {
+        console.error('Error getting sync info:', error)
         sendResponse({ success: false, error: error.message })
       })
     return true
