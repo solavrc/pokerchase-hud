@@ -3,12 +3,12 @@ import type { PlayerStats } from '../app'
 import type { StatDisplayConfig } from '../types'
 import type { StatResult } from '../types/stats'
 import type { RealTimeStats } from '../realtime-stats/realtime-stats-service'
-import { useDraggable } from './Hud/hooks/useDraggable'
-import { DragHandle } from './Hud/DragHandle'
-import { HudHeader } from './Hud/HudHeader'
-import { StatDisplay } from './Hud/StatDisplay'
-import { PlayerTypeIcons } from './Hud/PlayerTypeIcons'
-import { RealTimeStatsDisplay } from './Hud/RealTimeStatsDisplay'
+import { useDraggable } from './hud/hooks/useDraggable'
+import { DragHandle } from './hud/DragHandle'
+import { HudHeader } from './hud/HudHeader'
+import { StatDisplay } from './hud/StatDisplay'
+import { PlayerTypeIcons } from './hud/PlayerTypeIcons'
+import { RealTimeStatsDisplay } from './hud/RealTimeStatsDisplay'
 
 // Types
 interface PlayerPotOdds {

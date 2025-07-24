@@ -18,12 +18,12 @@ import type { SyncState } from '../services/auto-sync-service'
 import { content_scripts } from '../../manifest.json'
 
 // Import sub-components
-import { UIScaleSection } from './Popup/UIScaleSection'
-import { ImportExportSection } from './Popup/ImportExportSection'
-import { FirebaseAuthSection } from './Popup/FirebaseAuthSection'
-import { GameTypeFilterSection } from './Popup/GameTypeFilterSection'
-import { HandLimitSection } from './Popup/HandLimitSection'
-import { StatisticsConfigSection } from './Popup/StatisticsConfigSection'
+import { UIScaleSection } from './popup/UIScaleSection'
+import { ImportExportSection } from './popup/ImportExportSection'
+import { FirebaseAuthSection } from './popup/FirebaseAuthSection'
+import { GameTypeFilterSection } from './popup/GameTypeFilterSection'
+import { HandLimitSection } from './popup/HandLimitSection'
+import { StatisticsConfigSection } from './popup/StatisticsConfigSection'
 
 export interface Options {
   sendUserData: boolean;
