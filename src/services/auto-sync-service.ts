@@ -7,8 +7,10 @@ import { firestoreBackupService } from './firestore-backup-service'
 import { firebaseAuthService } from './firebase-auth-service'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
-import { ApiType } from '../types'
+import { ApiType, isApiEventType } from '../types'
 import type { ApiEvent } from '../types'
+import { saveEntities } from '../utils/database-utils'
+import { DATABASE_CONSTANTS } from '../constants/database'
 
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'success'
 export type SyncDirection = 'upload' | 'download' | 'both'
@@ -128,16 +130,67 @@ class AutoSyncService {
   private async syncToCloud(): Promise<void> {
     console.log('[AutoSync] Starting upload to cloud...')
     
-    const apiEvents = await this.db.apiEvents.toArray()
-    if (apiEvents.length === 0) return
+    // Get the latest timestamp from cloud first
+    const cloudMaxTimestamp = await firestoreBackupService.getCloudMaxTimestamp()
+    console.log(`[AutoSync] Cloud max timestamp: ${cloudMaxTimestamp || 'none'}`)
+    
+    // Count events newer than cloud's latest
+    const totalCount = cloudMaxTimestamp
+      ? await this.db.apiEvents.where('timestamp').above(cloudMaxTimestamp).count()
+      : await this.db.apiEvents.count()
+    
+    if (totalCount === 0) {
+      console.log('[AutoSync] No new events to sync')
+      return
+    }
+    
+    console.log(`[AutoSync] Found ${totalCount} new events to sync`)
+    
+    // Process in chunks to avoid memory issues
+    const CHUNK_SIZE = DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
+    let processed = 0
+    let synced = 0
+    let lastProcessedTimestamp = cloudMaxTimestamp || 0
+    
+    while (processed < totalCount) {
+      // Get chunk of events newer than lastProcessedTimestamp
+      const chunk = await this.db.apiEvents
+        .where('timestamp')
+        .above(lastProcessedTimestamp)
+        .limit(CHUNK_SIZE)
+        .toArray()
+      
+      if (chunk.length === 0) break
+      
+      // Sort chunk by timestamp to ensure order
+      chunk.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+      
+      // Sync this chunk
+      const summary = await firestoreBackupService.syncToCloudBatch(
+        chunk, 
+        cloudMaxTimestamp,
+        (progress) => {
+          this.updateSyncState({
+            progress: { 
+              current: processed + progress.current, 
+              total: totalCount, 
+              direction: 'upload' 
+            }
+          })
+        }
+      )
+      
+      synced += summary.syncedEvents
+      processed += chunk.length
+      
+      // Update timestamp for next chunk
+      const lastEvent = chunk[chunk.length - 1]
+      if (lastEvent && lastEvent.timestamp) {
+        lastProcessedTimestamp = lastEvent.timestamp
+      }
+    }
 
-    const summary = await firestoreBackupService.syncToCloud(apiEvents, (progress) => {
-      this.updateSyncState({
-        progress: { ...progress, direction: 'upload' }
-      })
-    })
-
-    console.log(`[AutoSync] Uploaded ${summary.syncedEvents} new events to cloud`)
+    console.log(`[AutoSync] Uploaded ${synced} new events to cloud`)
   }
 
   /**
@@ -174,32 +227,27 @@ class AutoSyncService {
         const converter = new EntityConverter(defaultSession)
         const entities = converter.convertEventsToEntities(cloudEvents)
         
-        console.log(`[AutoSync] Generated entities - Hands: ${entities.hands.length}, Phases: ${entities.phases.length}, Actions: ${entities.actions.length}`)
+        // Save entities using common utility
+        await saveEntities(this.db, entities, {
+          onProgress: (counts) => {
+            console.log(`[AutoSync] Generated entities - Hands: ${counts.hands}, Phases: ${counts.phases}, Actions: ${counts.actions}`)
+          }
+        })
         
-        // トランザクション内で一括保存
-        await this.db.transaction('rw', [this.db.hands, this.db.phases, this.db.actions, this.db.meta], async () => {
-          if (entities.hands.length > 0) {
-            await this.db.hands.bulkPut(entities.hands)
-          }
-          if (entities.phases.length > 0) {
-            await this.db.phases.bulkPut(entities.phases)
-          }
-          if (entities.actions.length > 0) {
-            await this.db.actions.bulkPut(entities.actions)
-          }
-          
-          // メタデータを更新
-          const lastTimestamp = cloudEvents.reduce((max, event) => {
-            const timestamp = event.timestamp || 0
-            return timestamp > max ? timestamp : max
-          }, 0)
-          
-          await this.db.meta.put({
-            id: 'lastProcessed',
+        // Update metadata separately
+        const lastTimestamp = cloudEvents.reduce((max, event) => {
+          const timestamp = event.timestamp || 0
+          return timestamp > max ? timestamp : max
+        }, 0)
+        
+        await this.db.meta.put({
+          id: 'importStatus',
+          value: {
             lastProcessedTimestamp: lastTimestamp,
             lastProcessedEventCount: cloudEvents.length,
-            lastImportDate: new Date()
-          })
+            lastImportDate: new Date().toISOString()
+          },
+          updatedAt: Date.now()
         })
         
         console.log('[AutoSync] Data rebuild completed')
@@ -228,29 +276,25 @@ class AutoSyncService {
             if (event.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
               // セッション終了イベント: 次のセッションのためにリセット
               service.session.reset()
-            } else if (event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED) {
-              const entryEvent = event as ApiEvent<ApiType.EVT_ENTRY_QUEUED>
-              service.session.id = entryEvent.Id
-              service.session.battleType = entryEvent.BattleType
-            } else if (event.ApiTypeId === ApiType.EVT_SESSION_DETAILS) {
-              const detailsEvent = event as ApiEvent<ApiType.EVT_SESSION_DETAILS>
-              service.session.name = detailsEvent.Name
-            } else if (event.ApiTypeId === ApiType.EVT_PLAYER_SEAT_ASSIGNED) {
-              const seatEvent = event as ApiEvent<ApiType.EVT_PLAYER_SEAT_ASSIGNED>
-              if (seatEvent.TableUsers) {
-                seatEvent.TableUsers.forEach(tableUser => {
+            } else if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
+              service.session.id = event.Id
+              service.session.battleType = event.BattleType
+            } else if (isApiEventType(event, ApiType.EVT_SESSION_DETAILS)) {
+              service.session.name = event.Name
+            } else if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED)) {
+              if (event.TableUsers) {
+                event.TableUsers.forEach(tableUser => {
                   service.session.players.set(tableUser.UserId, {
                     name: tableUser.UserName,
                     rank: tableUser.Rank.RankId
                   })
                 })
               }
-            } else if (event.ApiTypeId === ApiType.EVT_PLAYER_JOIN) {
-              const joinEvent = event as ApiEvent<ApiType.EVT_PLAYER_JOIN>
-              if (joinEvent.JoinUser) {
-                service.session.players.set(joinEvent.JoinUser.UserId, {
-                  name: joinEvent.JoinUser.UserName,
-                  rank: joinEvent.JoinUser.Rank.RankId
+            } else if (isApiEventType(event, ApiType.EVT_PLAYER_JOIN)) {
+              if (event.JoinUser) {
+                service.session.players.set(event.JoinUser.UserId, {
+                  name: event.JoinUser.UserName,
+                  rank: event.JoinUser.Rank.RankId
                 })
               }
             }
@@ -262,17 +306,16 @@ class AutoSyncService {
           
           // 最新のEVT_DEALイベントを検索してhero情報を復元
           const latestDealEvent = cloudEvents
-            .filter((e: ApiEvent) => e.ApiTypeId === ApiType.EVT_DEAL)
+            .filter((e: ApiEvent) => isApiEventType(e, ApiType.EVT_DEAL))
             .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))[0]
           
-          if (latestDealEvent) {
+          if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
             console.log('[AutoSync] Restoring service state from latest EVT_DEAL event')
-            service.latestEvtDeal = latestDealEvent as ApiEvent<ApiType.EVT_DEAL>
+            service.latestEvtDeal = latestDealEvent
             
             // playerIdを設定
-            const dealEvent = latestDealEvent as ApiEvent<ApiType.EVT_DEAL>
-            if (dealEvent.Player && dealEvent.Player.SeatIndex >= 0 && dealEvent.SeatUserIds) {
-              const playerId = dealEvent.SeatUserIds[dealEvent.Player.SeatIndex]
+            if (latestDealEvent.Player && latestDealEvent.Player.SeatIndex >= 0 && latestDealEvent.SeatUserIds) {
+              const playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex]
               if (playerId && playerId !== -1) {
                 service.playerId = playerId
                 console.log(`[AutoSync] Restored playerId: ${playerId}`)

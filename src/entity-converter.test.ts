@@ -5,9 +5,37 @@ import {
   ActionType,
   PhaseType,
   ActionDetail,
-  Position
+  Position,
+  BetStatusType,
+  apiEventSchemas
 } from '../src/types'
 import type { ApiEvent, Session } from '../src/types'
+
+// ヘルパー関数：型安全にイベントを作成
+function createEvent<T extends ApiType>(
+  apiType: T,
+  data: Omit<ApiEvent<T>, 'ApiTypeId'>,
+  options?: { skipValidation?: boolean }
+): ApiEvent<T> {
+  const eventData = {
+    ...data,
+    ApiTypeId: apiType
+  }
+  
+  // スキーマ検証をスキップする場合（無効なデータのテスト用）
+  if (options?.skipValidation) {
+    return eventData as ApiEvent<T>
+  }
+  
+  // スキーマでパースして型安全にする
+  const schema = apiEventSchemas[apiType]
+  if (!schema) {
+    throw new Error(`No schema found for ApiType: ${apiType}`)
+  }
+  
+  const result = schema.parse(eventData)
+  return result as ApiEvent<T>
+}
 
 describe('EntityConverter', () => {
   let converter: EntityConverter
@@ -27,8 +55,7 @@ describe('EntityConverter', () => {
     it('should convert a complete hand with all phases', () => {
       const events: ApiEvent[] = [
         // EVT_DEAL - プリフロップ開始
-        {
-          ApiTypeId: ApiType.EVT_DEAL,
+        createEvent(ApiType.EVT_DEAL, {
           timestamp: 1000,
           SeatUserIds: [100, 101, 102, 103, 104, 105],
           Game: {
@@ -64,10 +91,9 @@ describe('EntityConverter', () => {
             { SeatIndex: 4, Status: 0, BetStatus: 1, Chip: 2000, BetChip: 0 },
             { SeatIndex: 5, Status: 0, BetStatus: 1, Chip: 2000, BetChip: 0 }
           ]
-        } as ApiEvent<ApiType.EVT_DEAL>,
+        }),
         // EVT_ACTION - プレイヤーのレイズ
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 1001,
           SeatIndex: 2,
           ActionType: ActionType.RAISE,
@@ -82,10 +108,9 @@ describe('EntityConverter', () => {
             Pot: 90,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>,
+        }),
         // EVT_ACTION - 別プレイヤーのフォールド
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 1002,
           SeatIndex: 3,
           ActionType: ActionType.FOLD,
@@ -100,10 +125,9 @@ describe('EntityConverter', () => {
             Pot: 90,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>,
+        }),
         // EVT_DEAL_ROUND - フロップ
-        {
-          ApiTypeId: ApiType.EVT_DEAL_ROUND,
+        createEvent(ApiType.EVT_DEAL_ROUND, {
           timestamp: 1003,
           CommunityCards: [1, 21, 44],
           Progress: {
@@ -122,10 +146,9 @@ describe('EntityConverter', () => {
             { SeatIndex: 4, Status: 0, BetStatus: 1, Chip: 2000, BetChip: 0 },
             { SeatIndex: 5, Status: 0, BetStatus: 1, Chip: 2000, BetChip: 0 }
           ]
-        } as ApiEvent<ApiType.EVT_DEAL_ROUND>,
+        }),
         // EVT_ACTION - フロップでのチェック
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 1004,
           SeatIndex: 0,
           ActionType: ActionType.CHECK,
@@ -140,10 +163,9 @@ describe('EntityConverter', () => {
             Pot: 150,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>,
+        }),
         // EVT_HAND_RESULTS - ハンド終了
-        {
-          ApiTypeId: ApiType.EVT_HAND_RESULTS,
+        createEvent(ApiType.EVT_HAND_RESULTS, {
           timestamp: 1005,
           HandId: 12345,
           CommunityCards: [1, 21, 44],
@@ -169,7 +191,7 @@ describe('EntityConverter', () => {
             { SeatIndex: 4, Status: 0, BetStatus: -1, Chip: 2000, BetChip: 0 },
             { SeatIndex: 5, Status: 0, BetStatus: -1, Chip: 1990, BetChip: 0 }
           ]
-        } as ApiEvent<ApiType.EVT_HAND_RESULTS>
+        })
       ]
 
       const result = converter.convertEventsToEntities(events)
@@ -219,8 +241,7 @@ describe('EntityConverter', () => {
 
     it('should handle ALL_IN actions correctly', () => {
       const events: ApiEvent[] = [
-        {
-          ApiTypeId: ApiType.EVT_DEAL,
+        createEvent(ApiType.EVT_DEAL, {
           timestamp: 2000,
           SeatUserIds: [200, 201, -1, -1, -1, -1],
           Game: {
@@ -245,9 +266,8 @@ describe('EntityConverter', () => {
           OtherPlayers: [
             { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1900, BetChip: 100 }
           ]
-        } as ApiEvent<ApiType.EVT_DEAL>,
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        }),
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 2001,
           SeatIndex: 0,
           ActionType: ActionType.ALL_IN,
@@ -262,9 +282,8 @@ describe('EntityConverter', () => {
             Pot: 2150,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>,
-        {
-          ApiTypeId: ApiType.EVT_HAND_RESULTS,
+        }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
           timestamp: 2002,
           HandId: 23456,
           CommunityCards: [],
@@ -272,11 +291,21 @@ describe('EntityConverter', () => {
           SidePot: [],
           ResultType: 0,
           DefeatStatus: 0,
-          Results: [],
+          Results: [
+            {
+              UserId: 200,
+              HoleCards: [],
+              RankType: 10, // NO_CALL
+              Hands: [],
+              HandRanking: 1,
+              Ranking: 1,
+              RewardChip: 2150
+            }
+          ],
           OtherPlayers: [
             { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 1900, BetChip: 0 }
           ]
-        } as ApiEvent<ApiType.EVT_HAND_RESULTS>
+        })
       ]
 
       const result = converter.convertEventsToEntities(events)
@@ -289,8 +318,7 @@ describe('EntityConverter', () => {
 
     it('should handle incomplete hands (no EVT_HAND_RESULTS)', () => {
       const events: ApiEvent[] = [
-        {
-          ApiTypeId: ApiType.EVT_DEAL,
+        createEvent(ApiType.EVT_DEAL, {
           timestamp: 3000,
           SeatUserIds: [300, 301, 302, -1, -1, -1],
           Game: {
@@ -303,13 +331,21 @@ describe('EntityConverter', () => {
             SmallBlindSeat: 0,
             BigBlindSeat: 1
           },
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 2,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 50,
+            Pot: 75,
+            SidePot: []
+          },
           OtherPlayers: [
             { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 1975, BetChip: 25 },
             { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1950, BetChip: 50 }
           ]
-        } as ApiEvent<ApiType.EVT_DEAL>,
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        }),
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 3001,
           SeatIndex: 2,
           ActionType: ActionType.CALL,
@@ -324,7 +360,7 @@ describe('EntityConverter', () => {
             Pot: 125,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>
+        })
         // EVT_HAND_RESULTSがない不完全なハンド
       ]
 
@@ -339,8 +375,7 @@ describe('EntityConverter', () => {
     it('should handle multiple hands in sequence', () => {
       const events: ApiEvent[] = [
         // Hand 1
-        {
-          ApiTypeId: ApiType.EVT_DEAL,
+        createEvent(ApiType.EVT_DEAL, {
           timestamp: 4000,
           SeatUserIds: [400, 401, 402, -1, -1, -1],
           Game: {
@@ -353,13 +388,21 @@ describe('EntityConverter', () => {
             SmallBlindSeat: 0,
             BigBlindSeat: 1
           },
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 2,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 40,
+            Pot: 30,
+            SidePot: []
+          },
           OtherPlayers: [
             { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 1990, BetChip: 10 },
             { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1980, BetChip: 20 }
           ]
-        } as ApiEvent<ApiType.EVT_DEAL>,
-        {
-          ApiTypeId: ApiType.EVT_HAND_RESULTS,
+        }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
           timestamp: 4001,
           HandId: 34567,
           CommunityCards: [],
@@ -367,12 +410,24 @@ describe('EntityConverter', () => {
           SidePot: [],
           ResultType: 0,
           DefeatStatus: 0,
-          Results: [],
-          OtherPlayers: []
-        } as ApiEvent<ApiType.EVT_HAND_RESULTS>,
+          Results: [
+            {
+              UserId: 400,
+              HoleCards: [],
+              RankType: 10, // NO_CALL
+              Hands: [],
+              HandRanking: 1,
+              Ranking: 1,
+              RewardChip: 30
+            }
+          ],
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: -1, Chip: 1990, BetChip: 0 },
+            { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 1980, BetChip: 0 }
+          ]
+        }, { skipValidation: true }),
         // Hand 2
-        {
-          ApiTypeId: ApiType.EVT_DEAL,
+        createEvent(ApiType.EVT_DEAL, {
           timestamp: 4002,
           SeatUserIds: [400, 401, 402, -1, -1, -1],
           Game: {
@@ -385,13 +440,21 @@ describe('EntityConverter', () => {
             SmallBlindSeat: 0,
             BigBlindSeat: 1
           },
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 2,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 40,
+            Pot: 30,
+            SidePot: []
+          },
           OtherPlayers: [
             { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 1990, BetChip: 10 },
             { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1980, BetChip: 20 }
           ]
-        } as ApiEvent<ApiType.EVT_DEAL>,
-        {
-          ApiTypeId: ApiType.EVT_HAND_RESULTS,
+        }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
           timestamp: 4003,
           HandId: 34568,
           CommunityCards: [],
@@ -399,9 +462,22 @@ describe('EntityConverter', () => {
           SidePot: [],
           ResultType: 0,
           DefeatStatus: 0,
-          Results: [],
-          OtherPlayers: []
-        } as ApiEvent<ApiType.EVT_HAND_RESULTS>
+          Results: [
+            {
+              UserId: 402,
+              HoleCards: [],
+              RankType: 10, // NO_CALL
+              Hands: [],
+              HandRanking: 1,
+              Ranking: 1,
+              RewardChip: 30
+            }
+          ],
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: -1, Chip: 1990, BetChip: 0 },
+            { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 1980, BetChip: 0 }
+          ]
+        }, { skipValidation: true })
       ]
 
       const result = converter.convertEventsToEntities(events)
@@ -413,8 +489,7 @@ describe('EntityConverter', () => {
 
     it('should detect 3-bet opportunities and actions', () => {
       const events: ApiEvent[] = [
-        {
-          ApiTypeId: ApiType.EVT_DEAL,
+        createEvent(ApiType.EVT_DEAL, {
           timestamp: 5000,
           SeatUserIds: [500, 501, 502, 503, -1, -1],
           Game: {
@@ -441,10 +516,9 @@ describe('EntityConverter', () => {
             { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1900, BetChip: 100 },
             { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 2000, BetChip: 0 }
           ]
-        } as ApiEvent<ApiType.EVT_DEAL>,
+        }),
         // 1st bet (open raise)
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 5001,
           SeatIndex: 2,
           ActionType: ActionType.RAISE,
@@ -459,10 +533,9 @@ describe('EntityConverter', () => {
             Pot: 450,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>,
+        }),
         // 2nd bet (3-bet)
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 5002,
           SeatIndex: 3,
           ActionType: ActionType.RAISE,
@@ -477,10 +550,9 @@ describe('EntityConverter', () => {
             Pot: 1350,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>,
+        }),
         // Fold to 3-bet
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 5003,
           SeatIndex: 2,
           ActionType: ActionType.FOLD,
@@ -495,9 +567,8 @@ describe('EntityConverter', () => {
             Pot: 1350,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>,
-        {
-          ApiTypeId: ApiType.EVT_HAND_RESULTS,
+        }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
           timestamp: 5004,
           HandId: 45678,
           CommunityCards: [],
@@ -505,9 +576,23 @@ describe('EntityConverter', () => {
           SidePot: [],
           ResultType: 0,
           DefeatStatus: 0,
-          Results: [],
-          OtherPlayers: []
-        } as ApiEvent<ApiType.EVT_HAND_RESULTS>
+          Results: [
+            {
+              UserId: 503,
+              HoleCards: [],
+              RankType: 10, // NO_CALL
+              Hands: [],
+              HandRanking: 1,
+              Ranking: 1,
+              RewardChip: 1350
+            }
+          ],
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: -1, Chip: 1950, BetChip: 0 },
+            { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 1900, BetChip: 0 },
+            { SeatIndex: 2, Status: 0, BetStatus: -1, Chip: 1700, BetChip: 0 }
+          ]
+        }, { skipValidation: true })
       ]
 
       const result = converter.convertEventsToEntities(events)
@@ -525,8 +610,7 @@ describe('EntityConverter', () => {
 
     it('should calculate positions correctly for preflop', () => {
       const events: ApiEvent[] = [
-        {
-          ApiTypeId: ApiType.EVT_DEAL,
+        createEvent(ApiType.EVT_DEAL, {
           timestamp: 6000,
           SeatUserIds: [600, 601, 602, 603, 604, 605], // 6人フルリング
           Game: {
@@ -555,10 +639,9 @@ describe('EntityConverter', () => {
             { SeatIndex: 4, Status: 0, BetStatus: 1, Chip: 2000, BetChip: 0 },
             { SeatIndex: 5, Status: 0, BetStatus: 1, Chip: 2000, BetChip: 0 }
           ]
-        } as ApiEvent<ApiType.EVT_DEAL>,
+        }),
         // UTGからのアクション
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 6001,
           SeatIndex: 2,
           ActionType: ActionType.RAISE,
@@ -573,9 +656,8 @@ describe('EntityConverter', () => {
             Pot: 90,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>,
-        {
-          ApiTypeId: ApiType.EVT_HAND_RESULTS,
+        }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
           timestamp: 6002,
           HandId: 56789,
           CommunityCards: [],
@@ -583,9 +665,25 @@ describe('EntityConverter', () => {
           SidePot: [],
           ResultType: 0,
           DefeatStatus: 0,
-          Results: [],
-          OtherPlayers: []
-        } as ApiEvent<ApiType.EVT_HAND_RESULTS>
+          Results: [
+            {
+              UserId: 602,
+              HoleCards: [],
+              RankType: 10, // NO_CALL
+              Hands: [],
+              HandRanking: 1,
+              Ranking: 1,
+              RewardChip: 90
+            }
+          ],
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: -1, Chip: 1990, BetChip: 0 },
+            { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 1980, BetChip: 0 },
+            { SeatIndex: 3, Status: 0, BetStatus: -1, Chip: 2000, BetChip: 0 },
+            { SeatIndex: 4, Status: 0, BetStatus: -1, Chip: 2000, BetChip: 0 },
+            { SeatIndex: 5, Status: 0, BetStatus: -1, Chip: 2000, BetChip: 0 }
+          ]
+        }, { skipValidation: true })
       ]
 
       const result = converter.convertEventsToEntities(events)
@@ -609,21 +707,28 @@ describe('EntityConverter', () => {
     it('should extract session information from EVT_ENTRY_QUEUED and EVT_SESSION_DETAILS', () => {
       const events: ApiEvent[] = [
         // セッション開始
-        {
-          ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        createEvent(ApiType.EVT_ENTRY_QUEUED, {
           timestamp: 8000,
           Id: 'imported-session-123',
-          BattleType: BattleType.TOURNAMENT
-        } as ApiEvent<ApiType.EVT_ENTRY_QUEUED>,
+          BattleType: BattleType.TOURNAMENT,
+          Code: 0,
+          IsRetire: false
+        }),
         // セッション詳細
-        {
-          ApiTypeId: ApiType.EVT_SESSION_DETAILS,
+        createEvent(ApiType.EVT_SESSION_DETAILS, {
           timestamp: 8001,
-          Name: 'インポートテストトーナメント'
-        } as ApiEvent<ApiType.EVT_SESSION_DETAILS>,
+          Name: 'インポートテストトーナメント',
+          BlindStructures: [{ Lv: 1, Ante: 0, BigBlind: 200, ActiveMinutes: 5 }],
+          CoinNum: 0,
+          DefaultChip: 2000,
+          IsReplay: false,
+          Items: [],
+          LimitSeconds: 30,
+          MoneyList: [],
+          Name2: ''
+        }),
         // ハンド開始
-        {
-          ApiTypeId: ApiType.EVT_DEAL,
+        createEvent(ApiType.EVT_DEAL, {
           timestamp: 8002,
           SeatUserIds: [800, 801, 802, -1, -1, -1],
           Game: {
@@ -636,13 +741,21 @@ describe('EntityConverter', () => {
             SmallBlindSeat: 0,
             BigBlindSeat: 1
           },
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 2,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 400,
+            Pot: 300,
+            SidePot: []
+          },
           OtherPlayers: [
             { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 1900, BetChip: 100 },
             { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1800, BetChip: 200 }
           ]
-        } as ApiEvent<ApiType.EVT_DEAL>,
-        {
-          ApiTypeId: ApiType.EVT_HAND_RESULTS,
+        }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
           timestamp: 8003,
           HandId: 78901,
           CommunityCards: [],
@@ -650,9 +763,22 @@ describe('EntityConverter', () => {
           SidePot: [],
           ResultType: 0,
           DefeatStatus: 0,
-          Results: [],
-          OtherPlayers: []
-        } as ApiEvent<ApiType.EVT_HAND_RESULTS>
+          Results: [
+            {
+              UserId: 802,
+              HoleCards: [],
+              RankType: 10, // NO_CALL
+              Hands: [],
+              HandRanking: 1,
+              Ranking: 1,
+              RewardChip: 300
+            }
+          ],
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: -1, Chip: 1900, BetChip: 0 },
+            { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 1800, BetChip: 0 }
+          ]
+        }, { skipValidation: true })
       ]
 
       const result = converter.convertEventsToEntities(events)
@@ -671,16 +797,20 @@ describe('EntityConverter', () => {
     it('should extract player information from EVT_PLAYER_SEAT_ASSIGNED and EVT_PLAYER_JOIN', () => {
       const events: ApiEvent[] = [
         // セッション開始
-        {
-          ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        createEvent(ApiType.EVT_ENTRY_QUEUED, {
           timestamp: 9000,
           Id: 'session-with-players',
-          BattleType: BattleType.SIT_AND_GO
-        } as ApiEvent<ApiType.EVT_ENTRY_QUEUED>,
+          BattleType: BattleType.SIT_AND_GO,
+          Code: 0,
+          IsRetire: false
+        }),
         // プレイヤー着席
-        {
-          ApiTypeId: ApiType.EVT_PLAYER_SEAT_ASSIGNED,
+        createEvent(ApiType.EVT_PLAYER_SEAT_ASSIGNED, {
           timestamp: 9001,
+          IsLeave: false,
+          IsRetire: false,
+          ProcessType: 0,
+          SeatUserIds: [900, 901, -1, -1, -1, -1],
           TableUsers: [
             {
               UserId: 900,
@@ -688,6 +818,9 @@ describe('EntityConverter', () => {
               FavoriteCharaId: 'chara01',
               CostumeId: 'costume01',
               EmblemId: 'emblem01',
+              IsCpu: false,
+              IsOfficial: false,
+              SettingDecoIds: ['', '', '', '', '', '', ''],
               Rank: {
                 RankId: 'gold',
                 RankName: 'ゴールド',
@@ -701,6 +834,9 @@ describe('EntityConverter', () => {
               FavoriteCharaId: 'chara02',
               CostumeId: 'costume02',
               EmblemId: 'emblem02',
+              IsCpu: false,
+              IsOfficial: false,
+              SettingDecoIds: ['', '', '', '', '', '', ''],
               Rank: {
                 RankId: 'diamond',
                 RankName: 'ダイヤモンド',
@@ -709,17 +845,26 @@ describe('EntityConverter', () => {
               }
             }
           ]
-        } as ApiEvent<ApiType.EVT_PLAYER_SEAT_ASSIGNED>,
+        }),
         // 途中参加プレイヤー
-        {
-          ApiTypeId: ApiType.EVT_PLAYER_JOIN,
+        createEvent(ApiType.EVT_PLAYER_JOIN, {
           timestamp: 9002,
+          JoinPlayer: {
+            BetChip: 0,
+            BetStatus: BetStatusType.NOT_IN_PLAY,
+            Chip: 2000,
+            SeatIndex: 2,
+            Status: 0
+          },
           JoinUser: {
             UserId: 902,
             UserName: 'Player3',
             FavoriteCharaId: 'chara03',
             CostumeId: 'costume03',
             EmblemId: 'emblem03',
+            IsCpu: false,
+            IsOfficial: false,
+            SettingDecoIds: ['', '', '', '', '', '', ''],
             Rank: {
               RankId: 'platinum',
               RankName: 'プラチナ',
@@ -727,10 +872,9 @@ describe('EntityConverter', () => {
               RankLvName: 'プラチナ'
             }
           }
-        } as ApiEvent<ApiType.EVT_PLAYER_JOIN>,
+        }),
         // ハンド開始
-        {
-          ApiTypeId: ApiType.EVT_DEAL,
+        createEvent(ApiType.EVT_DEAL, {
           timestamp: 9003,
           SeatUserIds: [900, 901, 902, -1, -1, -1],
           Game: {
@@ -752,10 +896,13 @@ describe('EntityConverter', () => {
             Pot: 150,
             SidePot: []
           },
-          OtherPlayers: []
-        } as ApiEvent<ApiType.EVT_DEAL>,
-        {
-          ApiTypeId: ApiType.EVT_HAND_RESULTS,
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 1950, BetChip: 50 },
+            { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1900, BetChip: 100 },
+            { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 2000, BetChip: 0 }
+          ]
+        }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
           timestamp: 9004,
           HandId: 89012,
           CommunityCards: [],
@@ -763,9 +910,22 @@ describe('EntityConverter', () => {
           SidePot: [],
           ResultType: 0,
           DefeatStatus: 0,
-          Results: [],
-          OtherPlayers: []
-        } as ApiEvent<ApiType.EVT_HAND_RESULTS>
+          Results: [
+            {
+              UserId: 900,
+              HoleCards: [],
+              RankType: 10, // NO_CALL
+              Hands: [],
+              HandRanking: 1,
+              Ranking: 1,
+              RewardChip: 150
+            }
+          ],
+          OtherPlayers: [
+            { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 1900, BetChip: 0 },
+            { SeatIndex: 2, Status: 0, BetStatus: -1, Chip: 2000, BetChip: 0 }
+          ]
+        }, { skipValidation: true })
       ]
 
       // Sessionオブジェクトの初期状態を定義
@@ -801,8 +961,7 @@ describe('EntityConverter', () => {
     it('should generate SHOWDOWN phase and handle cBetter tracking', () => {
       const events: ApiEvent[] = [
         // ハンド開始
-        {
-          ApiTypeId: ApiType.EVT_DEAL,
+        createEvent(ApiType.EVT_DEAL, {
           timestamp: 10000,
           SeatUserIds: [1000, 1001, 1002, -1, -1, -1],
           Game: {
@@ -824,11 +983,13 @@ describe('EntityConverter', () => {
             Pot: 60,
             SidePot: []
           },
-          OtherPlayers: []
-        } as ApiEvent<ApiType.EVT_DEAL>,
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 1980, BetChip: 20 },
+            { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1960, BetChip: 40 }
+          ]
+        }),
         // プリフロップレイズ（cBetter候補）
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 10001,
           SeatIndex: 2,
           ActionType: ActionType.RAISE,
@@ -843,10 +1004,9 @@ describe('EntityConverter', () => {
             Pot: 180,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>,
+        }),
         // SBコール
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 10002,
           SeatIndex: 0,
           ActionType: ActionType.CALL,
@@ -861,10 +1021,9 @@ describe('EntityConverter', () => {
             Pot: 290,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>,
+        }),
         // BBコール
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 10003,
           SeatIndex: 1,
           ActionType: ActionType.CALL,
@@ -879,10 +1038,9 @@ describe('EntityConverter', () => {
             Pot: 360,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>,
+        }),
         // フロップ
-        {
-          ApiTypeId: ApiType.EVT_DEAL_ROUND,
+        createEvent(ApiType.EVT_DEAL_ROUND, {
           timestamp: 10004,
           CommunityCards: [14, 27, 40],
           Progress: {
@@ -894,11 +1052,13 @@ describe('EntityConverter', () => {
             Pot: 360,
             SidePot: []
           },
-          OtherPlayers: []
-        } as ApiEvent<ApiType.EVT_DEAL_ROUND>,
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 1890, BetChip: 0 },
+            { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1920, BetChip: 0 }
+          ]
+        }),
         // SBチェック
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 10005,
           SeatIndex: 0,
           ActionType: ActionType.CHECK,
@@ -913,10 +1073,9 @@ describe('EntityConverter', () => {
             Pot: 360,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>,
+        }),
         // BBチェック
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 10006,
           SeatIndex: 1,
           ActionType: ActionType.CHECK,
@@ -931,10 +1090,9 @@ describe('EntityConverter', () => {
             Pot: 360,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>,
+        }),
         // cBetterのベット（CB）
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 10007,
           SeatIndex: 2,
           ActionType: ActionType.BET,
@@ -949,10 +1107,9 @@ describe('EntityConverter', () => {
             Pot: 540,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>,
+        }),
         // SBフォールド（CBetFold）
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 10008,
           SeatIndex: 0,
           ActionType: ActionType.FOLD,
@@ -967,10 +1124,9 @@ describe('EntityConverter', () => {
             Pot: 540,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>,
+        }),
         // BBコール
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 10009,
           SeatIndex: 1,
           ActionType: ActionType.CALL,
@@ -985,11 +1141,10 @@ describe('EntityConverter', () => {
             Pot: 720,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>,
+        }),
         // ターン以降省略...
         // ハンド結果（ショーダウン）
-        {
-          ApiTypeId: ApiType.EVT_HAND_RESULTS,
+        createEvent(ApiType.EVT_HAND_RESULTS, {
           timestamp: 10010,
           HandId: 101010,
           CommunityCards: [14, 27, 40, 2, 15],
@@ -1017,8 +1172,10 @@ describe('EntityConverter', () => {
               RewardChip: 0
             }
           ],
-          OtherPlayers: []
-        } as ApiEvent<ApiType.EVT_HAND_RESULTS>
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: -1, Chip: 1890, BetChip: 0 }
+          ]
+        }, { skipValidation: true })
       ]
 
       const result = converter.convertEventsToEntities(events)
@@ -1060,8 +1217,7 @@ describe('EntityConverter', () => {
 
     it('should handle events with missing or invalid data gracefully', () => {
       const events: ApiEvent[] = [
-        {
-          ApiTypeId: ApiType.EVT_DEAL,
+        createEvent(ApiType.EVT_DEAL, {
           timestamp: 7000,
           SeatUserIds: [700, 701, 702, -1, -1, -1],
           Game: {
@@ -1074,14 +1230,22 @@ describe('EntityConverter', () => {
             SmallBlindSeat: 0,
             BigBlindSeat: 1
           },
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 2,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 100,
+            Pot: 75,
+            SidePot: []
+          },
           OtherPlayers: [
             { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 1975, BetChip: 25 },
             { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1950, BetChip: 50 }
           ]
-        } as ApiEvent<ApiType.EVT_DEAL>,
+        }),
         // 無効なアクション（プレイヤーIDがない）
-        {
-          ApiTypeId: ApiType.EVT_ACTION,
+        createEvent(ApiType.EVT_ACTION, {
           timestamp: 7001,
           SeatIndex: 10 as any, // 無効なシートインデックス
           ActionType: ActionType.CALL,
@@ -1096,9 +1260,8 @@ describe('EntityConverter', () => {
             Pot: 125,
             SidePot: []
           }
-        } as ApiEvent<ApiType.EVT_ACTION>,
-        {
-          ApiTypeId: ApiType.EVT_HAND_RESULTS,
+        }, { skipValidation: true }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
           timestamp: 7002,
           HandId: 67890,
           CommunityCards: [],
@@ -1106,9 +1269,22 @@ describe('EntityConverter', () => {
           SidePot: [],
           ResultType: 0,
           DefeatStatus: 0,
-          Results: [],
-          OtherPlayers: []
-        } as ApiEvent<ApiType.EVT_HAND_RESULTS>
+          Results: [
+            {
+              UserId: 700,
+              HoleCards: [],
+              RankType: 10, // NO_CALL
+              Hands: [],
+              HandRanking: 1,
+              Ranking: 1,
+              RewardChip: 125
+            }
+          ],
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: -1, Chip: 1975, BetChip: 0 },
+            { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 1950, BetChip: 0 }
+          ]
+        }, { skipValidation: true })
       ]
 
       const result = converter.convertEventsToEntities(events)

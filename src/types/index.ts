@@ -6,9 +6,6 @@
 export {
   ApiType,
   type ApiEvent,
-  type ApiEventType,
-  type ApiEventUnion,
-  type ApiEventSubset,
   type ApiHandEvent,
   type ApiSessionEvent,
   type ApiPlayerEvent,
@@ -18,7 +15,23 @@ export {
   validateApiEvent,
   validateMessage,
   isApiEventType,
-  ApiTypeValues
+  parseApiEvent,
+  parseApiEventType,
+  getValidationError,
+  ApiTypeValues,
+  // Zod schemas
+  apiEventSchemas,
+  seatIndexSchema,
+  playerBaseSchema,
+  progressBaseSchema,
+  userInfoSchema,
+  holeCardsSchema,
+  communityCardsSchema,
+  // Schema access functions
+  getEventSchema,
+  getAvailableEventTypes,
+  getEventFields,
+  parseEventWithSchema
 } from './api'
 
 // Game mechanics types
@@ -56,10 +69,37 @@ export type {
   Phase,
   Action,
   ImportMeta,
+  MetaRecord,
+  ImportMetaRecord,
+  StatisticsCacheRecord,
+  SyncStatusRecord,
+  SpecificMetaRecord,
   User,
   ExistPlayerStats,
   PlayerStats,
   HandState
+} from './entities'
+
+// Entity Zod schemas
+export {
+  // Schemas
+  handSchema,
+  phaseSchema,
+  actionSchema,
+  userSchema,
+  existPlayerStatsSchema,
+  playerStatsSchema,
+  handStateSchema,
+  metaRecordBaseSchema,
+  importMetaRecordSchema,
+  statisticsCacheRecordSchema,
+  syncStatusRecordSchema,
+  specificMetaRecordSchema,
+  // Parsing functions
+  parseHand,
+  parsePhase,
+  parseAction,
+  parseMetaRecord
 } from './entities'
 
 // Filter types

@@ -18,8 +18,6 @@ export {
   Position,
   type Action,
   type ApiEvent,
-  type ApiEventType,
-  type ApiEventUnion,
   type ApiMessage,
   type FilterOptions,
   type GameTypeFilter,
@@ -31,6 +29,9 @@ export {
   validateApiEvent,
   validateMessage,
   isApiEventType,
+  parseApiEvent,
+  parseApiEventType,
+  getValidationError,
   ApiTypeValues
 } from './types'
 

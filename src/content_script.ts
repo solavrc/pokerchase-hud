@@ -6,7 +6,7 @@
 import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { web_accessible_resources } from '../manifest.json'
-import PokerChaseService, { ApiEventType, ApiType, PlayerStats } from './app'
+import PokerChaseService, { ApiEvent, ApiType, PlayerStats } from './app'
 import App from './components/App'
 import type { ChromeMessage } from './types/messages'
 import { MESSAGE_ACTIONS as EVENTS } from './types/messages'
@@ -22,7 +22,7 @@ let keepaliveTimer: ReturnType<typeof setInterval> | null = null
 
 export interface StatsData {
   stats: PlayerStats[]
-  evtDeal?: ApiEventType<ApiType.EVT_DEAL>  // 席のマッピング用のEVT_DEALイベント
+  evtDeal?: ApiEvent<ApiType.EVT_DEAL>  // 席のマッピング用のEVT_DEALイベント
   realTimeStats?: AllPlayersRealTimeStats  // リアルタイム統計（全プレイヤー）
 }
 
@@ -41,7 +41,7 @@ const connectToBackgroundService = () => {
       startKeepalive(port)
     }
 
-    port.onMessage.addListener((message: { stats: PlayerStats[], evtDeal?: ApiEventType<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
+    port.onMessage.addListener((message: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
       if (typeof message === 'object' && message !== null && 'stats' in message) {
         console.time('[content_script] Dispatching stats event')
         window.dispatchEvent(new CustomEvent(PokerChaseService.POKER_CHASE_SERVICE_EVENT, { detail: message }))

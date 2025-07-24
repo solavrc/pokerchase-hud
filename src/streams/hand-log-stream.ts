@@ -7,7 +7,7 @@
 import { Transform } from 'stream'
 import type PokerChaseService from '../app'
 import type { ApiEvent } from '../types/api'
-import { ApiType } from '../types/api'
+import { ApiType, isApiEventType } from '../types/api'
 import type { ErrorContext } from '../types/errors'
 import {
   HandLogEntry,
@@ -67,15 +67,14 @@ export class HandLogStream extends Transform {
             }
             break
           case ApiType.EVT_HAND_RESULTS: {
-            if (this.processor.isHandComplete()) {
+            if (this.processor.isHandComplete() && isApiEventType(event, ApiType.EVT_HAND_RESULTS)) {
               const allEntries = this.processor.getCurrentHandEntries()
-              const handResultEvent = event as ApiEvent<ApiType.EVT_HAND_RESULTS>
               this.completedHands.push(allEntries)
               const maxHands = this.service.handLogConfig?.maxHands || DEFAULT_HAND_LOG_CONFIG.maxHands
               if (this.completedHands.length > maxHands) {
                 this.completedHands = this.completedHands.slice(-maxHands)
               }
-              this.emitHandLogEvent('update', allEntries, handResultEvent.HandId)
+              this.emitHandLogEvent('update', allEntries, event.HandId)
               // Reset only hand-specific state, preserving session state
               this.processor.resetHandState()
             }

@@ -1,5 +1,6 @@
 import { content_scripts } from '../../manifest.json'
 import { PokerChaseDB } from '../db/poker-chase-db'
+import { findLatestPlayerDealEvent } from '../utils/database-utils'
 import { AggregateEventsStream } from '../streams/aggregate-events-stream'
 import { WriteEntityStream } from '../streams/write-entity-stream'
 import { ReadEntityStream } from '../streams/read-entity-stream'
@@ -335,11 +336,7 @@ class PokerChaseService {
       }
     } else {
       // latestEvtDealが無い場合は、最新のEVT_DEALをDBから取得
-      const latestDealEvent = await this.db.apiEvents
-        .where('ApiTypeId').equals(ApiType.EVT_DEAL)
-        .reverse()
-        .filter(event => (event as ApiEvent<ApiType.EVT_DEAL>).Player?.SeatIndex !== undefined)
-        .first() as ApiEvent<ApiType.EVT_DEAL> | undefined
+      const latestDealEvent = await findLatestPlayerDealEvent(this.db)
 
       if (latestDealEvent && latestDealEvent.SeatUserIds) {
         this.latestEvtDeal = latestDealEvent
@@ -349,7 +346,7 @@ class PokerChaseService {
           this.playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex]
         }
 
-        const playerIds = latestDealEvent.SeatUserIds.filter(id => id !== -1)
+        const playerIds = latestDealEvent.SeatUserIds.filter((id: number) => id !== -1)
         if (playerIds.length > 0) {
           this.statsOutputStream.write(playerIds)
         }

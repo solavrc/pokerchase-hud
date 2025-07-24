@@ -12,12 +12,14 @@ import PokerChaseService, {
   PlayerStats,
   PokerChaseDB,
   ApiMessage,
-  ApiEventType,
   validateApiEvent,
-  isApplicationApiEvent,
-  isApiEventType
+  isApiEventType,
+  parseApiEvent,
+  getValidationError,
+  isApplicationApiEvent
 } from './app'
 import { EntityConverter } from './entity-converter'
+import { saveEntities, findLatestPlayerDealEvent, processInChunks } from './utils/database-utils'
 import type { AllPlayersRealTimeStats } from './realtime-stats/realtime-stats-service'
 import type { Options } from './components/Popup'
 import type { HandLogEvent } from './types/hand-log'
@@ -32,10 +34,11 @@ import type {
 import { firebaseAuthService } from './services/firebase-auth-service'
 import { autoSyncService } from './services/auto-sync-service'
 import { content_scripts } from '../manifest.json'
+import { DATABASE_CONSTANTS } from './constants/database'
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
 
 const PING_INTERVAL_MS = 10 * 1000
-const IMPORT_CHUNK_SIZE = 1000
+const IMPORT_CHUNK_SIZE = DATABASE_CONSTANTS.IMPORT_CHUNK_SIZE
 
 // Get game URL pattern from manifest
 const gameUrlPattern = content_scripts[0]!.matches[0]!
@@ -417,18 +420,20 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
           }
 
           // Zodスキーマ検証
-          const result = validateApiEvent(parsed)
-          if (!result.success) {
-            errors.push(`Line ${lineNumber}: ${result.error.issues[0]?.message || 'Validation failed'}`)
+          const event = parseApiEvent(parsed)
+          if (!event) {
+            const result = validateApiEvent(parsed)
+            const errorDetails = result.error ? getValidationError(result.error)[0] : null
+            errors.push(`Line ${lineNumber}: ${errorDetails?.message || 'Validation failed'}`)
             continue
           }
 
-          const event = result.data as ApiEvent
-
-          // アプリケーションで使用するイベントかチェック
+          // アプリケーション用のイベントかチェック
           if (!isApplicationApiEvent(event)) {
+            // アプリケーションで使用しないApiTypeIdのイベントをスキップ
             continue
           }
+
           const key = `${event.timestamp}-${event.ApiTypeId}`
 
           // メモリ内で重複チェック（最適化ポイント2）
@@ -521,40 +526,30 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
 
         console.log(`[importData] Generated entities - Hands: ${entities.hands.length}, Phases: ${entities.phases.length}, Actions: ${entities.actions.length}`)
 
-        // トランザクション内で一括保存（metaテーブルも含める）
-        await db.transaction('rw', [db.hands, db.phases, db.actions, db.meta], async () => {
-          // 一括保存（bulkPutを使用して既存データを上書き）
-          // 重複チェックは不要 - bulkPutが自動的に処理
-          if (entities.hands.length > 0) {
-            await db.hands.bulkPut(entities.hands)
-            console.log(`[importData] Saved/updated ${entities.hands.length} hands`)
+        // Save entities using common utility
+        await saveEntities(db, entities, {
+          onProgress: (counts) => {
+            console.log(`[importData] Saved/updated ${counts.hands} hands, ${counts.phases} phases, ${counts.actions} actions`)
           }
+        })
 
-          if (entities.phases.length > 0) {
-            await db.phases.bulkPut(entities.phases)
-            console.log(`[importData] Saved/updated ${entities.phases.length} phases`)
-          }
+        // Update metadata separately
+        // Math.maxでスプレッド演算子を使うとスタックオーバーフローになるため、reduceを使用
+        const lastTimestamp = allNewEvents.reduce((max, event) => {
+          const timestamp = event.timestamp || 0
+          return timestamp > max ? timestamp : max
+        }, 0)
 
-          if (entities.actions.length > 0) {
-            await db.actions.bulkPut(entities.actions)
-            console.log(`[importData] Saved/updated ${entities.actions.length} actions`)
-          }
-
-          // メタデータもトランザクション内で更新
-          // Math.maxでスプレッド演算子を使うとスタックオーバーフローになるため、reduceを使用
-          const lastTimestamp = allNewEvents.reduce((max, event) => {
-            const timestamp = event.timestamp || 0
-            return timestamp > max ? timestamp : max
-          }, 0)
-
-          await db.meta.put({
-            id: 'lastProcessed',
+        await db.meta.put({
+          id: 'importStatus',
+          value: {
             lastProcessedTimestamp: lastTimestamp,
             lastProcessedEventCount: allNewEvents.length,
-            lastImportDate: new Date()
-          })
-          console.log(`[importData] Updated metadata - lastTimestamp: ${lastTimestamp}`)
+            lastImportDate: new Date().toISOString()
+          },
+          updatedAt: Date.now()
         })
+        console.log(`[importData] Updated metadata - lastTimestamp: ${lastTimestamp}`)
 
         const entityTime = ((performance.now() - entityStartTime) / 1000).toFixed(2)
         console.log(`[importData] Entity generation completed in ${entityTime}s`)
@@ -576,14 +571,7 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
 
     // インポート後に統計を強制的に更新
     // 最新のEVT_DEALを取得して統計計算をトリガー
-    const latestDealEvents = await db.apiEvents
-      .where('ApiTypeId').equals(ApiType.EVT_DEAL)
-      .reverse()
-      .toArray()
-
-    const latestDealEvent = latestDealEvents.find(event =>
-      isApiEventType(event, ApiType.EVT_DEAL) && event.Player?.SeatIndex !== undefined
-    )
+    const latestDealEvent = await findLatestPlayerDealEvent(db)
 
     if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
       // latestEvtDealを更新
@@ -623,18 +611,46 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
 }
 
 const exportJsonData = async (db: PokerChaseDB) => {
-  const apiEvents = await db.apiEvents.toArray()
-
-  // Convert to JSONL format (one JSON object per line)
-  const jsonlContent = apiEvents
-    .map(event => JSON.stringify(event))
-    .join('\n')
-
-  downloadFile(
-    jsonlContent,
-    'pokerchase_raw_data.ndjson',
-    'application/x-ndjson'
-  )
+  try {
+    const query = db.apiEvents.orderBy('timestamp')
+    const totalCount = await query.count()
+    console.log(`[Export] Exporting ${totalCount} events...`)
+    
+    // Process in chunks to avoid memory issues
+    const chunks: string[] = []
+    let processedCount = 0
+    
+    for await (const chunk of processInChunks(query, DATABASE_CONSTANTS.EXPORT_CHUNK_SIZE, {
+      onProgress: (current, total) => {
+        // Log progress every 50000 events
+        if (current % 50000 === 0 || current >= total) {
+          console.log(`[Export] Processed ${current}/${total} events`)
+        }
+      }
+    })) {
+      // Convert chunk to JSONL format
+      const chunkContent = chunk
+        .map(event => JSON.stringify(event))
+        .join('\n')
+      
+      chunks.push(chunkContent)
+      processedCount += chunk.length
+    }
+    
+    // Combine all chunks
+    const jsonlContent = chunks.join('\n')
+    
+    downloadFile(
+      jsonlContent,
+      'pokerchase_raw_data.ndjson',
+      'application/x-ndjson'
+    )
+    
+    console.log(`[Export] Export completed: ${processedCount} events`)
+  } catch (error) {
+    console.error('[Export] Export failed:', error)
+    throw error
+  }
 }
 
 const exportPokerStarsData = async () => {
@@ -748,19 +764,23 @@ chrome.runtime.onConnect.addListener(port => {
 
       // 通常のAPIメッセージ処理
       // Zodスキーマで完全検証
-      const { success, data, error } = validateApiEvent(message as ApiMessage)
+      const data = parseApiEvent(message as ApiMessage)
 
-      if (!success) {
-        console.warn('[background] Schema validation failed:', error.issues, data ?? message)
-      }
-
-      // アプリケーションで使用するイベントかチェック
-      if (!isApplicationApiEvent(data)) {
-        service.eventLogger(data, 'debug')
+      if (!data) {
+        const validationResult = validateApiEvent(message as ApiMessage)
+        const errorDetails = validationResult.error ? getValidationError(validationResult.error) : null
+        console.warn('[background] Schema validation failed:', errorDetails, message)
         return
       }
 
-      // ここでapiEventはApiEvent型（型ガードで保証済み）
+      // アプリケーション用のイベントかチェック
+      if (!isApplicationApiEvent(data)) {
+        // アプリケーションで使用しないApiTypeIdのイベントをスキップ
+        console.debug('[background] Non-application event received:', data.ApiTypeId)
+        return
+      }
+
+      // ここでdataはApiEvent型（isApplicationApiEventで保証済み）
       service.eventLogger(data, 'info')
 
       // DB保存とストリーム処理
@@ -777,7 +797,7 @@ chrome.runtime.onConnect.addListener(port => {
         )
       }
     })
-    const postMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEventType<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
+    const postMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
       try {
         port.postMessage(data)
       } catch (error: unknown) {
@@ -884,11 +904,11 @@ const rebuildAllData = async (): Promise<void> => {
       await db.meta.delete('lastProcessed')
     })
 
-    // Get all API events
-    const allEvents = await db.apiEvents.toArray()
-    console.log(`[rebuildAllData] Processing ${allEvents.length} events...`)
+    // Get total event count
+    const totalCount = await db.apiEvents.count()
+    console.log(`[rebuildAllData] Processing ${totalCount} events...`)
 
-    if (allEvents.length === 0) {
+    if (totalCount === 0) {
       console.log('[rebuildAllData] No events to process')
       return
     }
@@ -897,7 +917,12 @@ const rebuildAllData = async (): Promise<void> => {
     service.setBatchMode(true)
 
     try {
-      // Use EntityConverter for batch conversion (same as import/sync)
+      // Process in chunks to avoid memory issues
+      let totalHands = 0
+      let totalPhases = 0
+      let totalActions = 0
+      
+      // Initialize EntityConverter
       const defaultSession = {
         id: undefined,
         battleType: undefined,
@@ -906,34 +931,50 @@ const rebuildAllData = async (): Promise<void> => {
         reset: () => { }
       }
       const converter = new EntityConverter(defaultSession)
-      const entities = converter.convertEventsToEntities(allEvents)
-
-      console.log(`[rebuildAllData] Generated entities - Hands: ${entities.hands.length}, Phases: ${entities.phases.length}, Actions: ${entities.actions.length}`)
-
-      // Save all entities in a single transaction
-      await db.transaction('rw', [db.hands, db.phases, db.actions, db.meta], async () => {
-        if (entities.hands.length > 0) {
-          await db.hands.bulkPut(entities.hands)
+      
+      const query = db.apiEvents.orderBy('timestamp')
+      
+      for await (const chunk of processInChunks(query, DATABASE_CONSTANTS.IMPORT_CHUNK_SIZE, {
+        onProgress: (current, total) => {
+          // Log progress every 50000 events
+          if (current % 50000 === 0 || current >= total) {
+            console.log(`[rebuildAllData] Processed ${current}/${total} events`)
+          }
         }
-        if (entities.phases.length > 0) {
-          await db.phases.bulkPut(entities.phases)
-        }
-        if (entities.actions.length > 0) {
-          await db.actions.bulkPut(entities.actions)
-        }
+      })) {
+        // Convert chunk to entities
+        const entities = converter.convertEventsToEntities(chunk)
+        
+        // Save entities using common utility
+        const counts = await saveEntities(db, entities)
+        totalHands += counts.hands
+        totalPhases += counts.phases
+        totalActions += counts.actions
+      }
+      
+      console.log(`[rebuildAllData] Generated entities - Hands: ${totalHands}, Phases: ${totalPhases}, Actions: ${totalActions}`)
 
-        // Update metadata
-        const lastTimestamp = allEvents.reduce((max, event) => {
-          const timestamp = event.timestamp || 0
-          return timestamp > max ? timestamp : max
-        }, 0)
+      // Restore service state from latest events  
+      const latestDealEvent = await findLatestPlayerDealEvent(db)
 
-        await db.meta.put({
-          id: 'lastProcessed',
-          lastProcessedTimestamp: lastTimestamp,
-          lastProcessedEventCount: allEvents.length,
-          lastImportDate: new Date()
-        })
+      if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
+        service.latestEvtDeal = latestDealEvent
+        if (latestDealEvent.Player?.SeatIndex !== undefined) {
+          service.playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex]
+        }
+      }
+
+      // Update metadata with rebuild info
+      await db.meta.put({
+        id: 'rebuildStatus',
+        value: {
+          lastRebuildDate: new Date().toISOString(),
+          totalEvents: totalCount,
+          totalHands: totalHands,
+          totalPhases: totalPhases,
+          totalActions: totalActions
+        },
+        updatedAt: Date.now()
       })
 
       const rebuildTime = ((performance.now() - startTime) / 1000).toFixed(2)

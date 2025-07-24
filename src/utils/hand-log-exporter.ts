@@ -5,13 +5,16 @@
 
 import type { PokerChaseDB } from '../app'
 import type { ApiEvent, Hand, Session } from '../types'
-import { ApiType } from '../types/api'
+import { ApiType, isApiEventType } from '../types/api'
 import { HandLogProcessor, HandLogContext } from './hand-log-processor'
 import { DEFAULT_HAND_LOG_CONFIG } from '../types/hand-log'
+import { DATABASE_CONSTANTS } from '../constants/database'
+import { processInChunks } from '../utils/database-utils'
 
 export class HandLogExporter {
   // Cache for player names across all exports
   private static playerNamesCache: Map<number, { name: string, rank: string }> | null = null
+  private static lastProcessedTimestamp: number = 0
   
   // Time constants for event retrieval
   private static readonly TIME_BUFFER_MS = 300000 // 5 minutes buffer to catch player seat assignments
@@ -21,57 +24,64 @@ export class HandLogExporter {
    * Build a global player names map from all available events in the database
    */
   private static async buildPlayerNamesMap(db: PokerChaseDB): Promise<Map<number, { name: string, rank: string }>> {
-    if (this.playerNamesCache) {
-      // Using cached player names map
-      return this.playerNamesCache
+    // Initialize cache if needed
+    if (!this.playerNamesCache) {
+      this.playerNamesCache = new Map()
+      console.log('[HandLogExporter] Initializing player names cache')
     }
 
-    // Building global player names map from database...
-    const playerMap = new Map<number, { name: string, rank: string }>()
+    const playerMap = this.playerNamesCache
 
     try {
-      // Get ALL EVT_PLAYER_SEAT_ASSIGNED events
-      const seatAssignedEvents = await db.apiEvents
-        .where('ApiTypeId').equals(ApiType.EVT_PLAYER_SEAT_ASSIGNED)
-        .toArray() as ApiEvent<ApiType.EVT_PLAYER_SEAT_ASSIGNED>[]
-
-      // Found EVT_PLAYER_SEAT_ASSIGNED events in database
-
-      // Process seat assigned events (newer events will overwrite older ones)
-      for (const event of seatAssignedEvents) {
-        if (event.TableUsers) {
-          event.TableUsers.forEach(tableUser => {
-            playerMap.set(tableUser.UserId, {
-              name: tableUser.UserName,
-              rank: tableUser.Rank.RankId
+      // Process events newer than last processed timestamp
+      const newEventsQuery = db.apiEvents
+        .where('timestamp')
+        .above(this.lastProcessedTimestamp)
+      
+      const totalNew = await newEventsQuery.count()
+      if (totalNew === 0) {
+        console.log('[HandLogExporter] No new events since last cache update')
+        return playerMap
+      }
+      
+      console.log(`[HandLogExporter] Processing ${totalNew} new events for player names`)
+      
+      // Process in chunks to avoid memory issues
+      let updatedPlayers = 0
+      
+      for await (const chunk of processInChunks(newEventsQuery, DATABASE_CONSTANTS.SYNC_CHUNK_SIZE)) {
+        // Process chunk for player information
+        for (const event of chunk) {
+          // Update timestamp tracker
+          if (event.timestamp && event.timestamp > this.lastProcessedTimestamp) {
+            this.lastProcessedTimestamp = event.timestamp
+          }
+          
+          // Process EVT_PLAYER_SEAT_ASSIGNED
+          if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED) && event.TableUsers) {
+            event.TableUsers.forEach(tableUser => {
+              playerMap.set(tableUser.UserId, {
+                name: tableUser.UserName,
+                rank: tableUser.Rank.RankId
+              })
+              updatedPlayers++
             })
-          })
+          }
+          
+          // Process EVT_PLAYER_JOIN
+          else if (isApiEventType(event, ApiType.EVT_PLAYER_JOIN) && event.JoinUser) {
+            playerMap.set(event.JoinUser.UserId, {
+              name: event.JoinUser.UserName,
+              rank: event.JoinUser.Rank.RankId
+            })
+            updatedPlayers++
+          }
         }
       }
 
-      // Get ALL EVT_PLAYER_JOIN events
-      const playerJoinEvents = await db.apiEvents
-        .where('ApiTypeId').equals(ApiType.EVT_PLAYER_JOIN)
-        .toArray() as ApiEvent<ApiType.EVT_PLAYER_JOIN>[]
-
-      // Found EVT_PLAYER_JOIN events in database
-
-      // Process join events (newer events will overwrite older ones)
-      for (const event of playerJoinEvents) {
-        if (event.JoinUser) {
-          playerMap.set(event.JoinUser.UserId, {
-            name: event.JoinUser.UserName,
-            rank: event.JoinUser.Rank.RankId
-          })
-        }
-      }
-
-      // Built player names map with unique players
-
-      // Cache the result
-      this.playerNamesCache = playerMap
-
+      console.log(`[HandLogExporter] Updated ${updatedPlayers} player entries, cache now has ${playerMap.size} players`)
       return playerMap
+      
     } catch (error) {
       console.error(`[HandLogExporter] Failed to build player names map:`, error)
       return playerMap
@@ -83,6 +93,8 @@ export class HandLogExporter {
    */
   static clearCache() {
     this.playerNamesCache = null
+    this.lastProcessedTimestamp = 0
+    console.log('[HandLogExporter] Player names cache cleared')
   }
 
   /**
@@ -166,8 +178,9 @@ export class HandLogExporter {
     const results: string[] = []
 
     // Exporting hands
+    console.log(`[HandLogExporter] Exporting ${handIds.length} hands`)
 
-    // Build player map once for all hands
+    // Build/update player map once for all hands
     await this.buildPlayerNamesMap(db)
 
     for (const handId of handIds) {
@@ -213,9 +226,8 @@ export class HandLogExporter {
 
     // Find the specific hand events by looking for EVT_HAND_RESULTS with matching HandId
     const resultEvent = allEvents.find((e: ApiEvent) =>
-      e.ApiTypeId === ApiType.EVT_HAND_RESULTS &&
-      (e as ApiEvent<ApiType.EVT_HAND_RESULTS>).HandId === hand.id
-    ) as ApiEvent<ApiType.EVT_HAND_RESULTS> | undefined
+      isApiEventType(e, ApiType.EVT_HAND_RESULTS) && e.HandId === hand.id
+    )
 
     if (!resultEvent) {
       throw new Error(`Could not find EVT_HAND_RESULTS for hand ${hand.id}`)
@@ -230,10 +242,9 @@ export class HandLogExporter {
 
     for (const event of allEvents) {
       // Start collecting from EVT_DEAL that matches our seat configuration
-      if (event.ApiTypeId === ApiType.EVT_DEAL) {
-        const dealEvent = event as ApiEvent<ApiType.EVT_DEAL>
+      if (isApiEventType(event, ApiType.EVT_DEAL)) {
         // Check if this deal event matches our hand's seat configuration
-        if (this.arrayEquals(dealEvent.SeatUserIds, hand.seatUserIds)) {
+        if (this.arrayEquals(event.SeatUserIds, hand.seatUserIds)) {
           foundDeal = true
           handEvents.length = 0 // Clear any previous events
           handEvents.push(event)
@@ -242,9 +253,8 @@ export class HandLogExporter {
         handEvents.push(event)
 
         // Stop when we reach the hand results for our specific hand
-        if (event.ApiTypeId === ApiType.EVT_HAND_RESULTS) {
-          const handResultEvent = event as ApiEvent<ApiType.EVT_HAND_RESULTS>
-          if (handResultEvent.HandId === hand.id) {
+        if (isApiEventType(event, ApiType.EVT_HAND_RESULTS)) {
+          if (event.HandId === hand.id) {
             break
           }
         }
