@@ -5,7 +5,8 @@ import {
   ActionType,
   PhaseType,
   ActionDetail,
-  Position
+  Position,
+  BetStatusType
 } from '../src/types'
 import type { ApiEvent, Session } from '../src/types'
 
@@ -613,13 +614,23 @@ describe('EntityConverter', () => {
           ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
           timestamp: 8000,
           Id: 'imported-session-123',
-          BattleType: BattleType.TOURNAMENT
+          BattleType: BattleType.TOURNAMENT,
+          Code: 0,
+          IsRetire: false
         } as ApiEvent<ApiType.EVT_ENTRY_QUEUED>,
         // セッション詳細
         {
           ApiTypeId: ApiType.EVT_SESSION_DETAILS,
           timestamp: 8001,
-          Name: 'インポートテストトーナメント'
+          Name: 'インポートテストトーナメント',
+          BlindStructures: [{ Lv: 1, Ante: 0, BigBlind: 200, ActiveMinutes: 5 }],
+          CoinNum: 0,
+          DefaultChip: 2000,
+          IsReplay: false,
+          Items: [],
+          LimitSeconds: 30,
+          MoneyList: [],
+          Name2: ''
         } as ApiEvent<ApiType.EVT_SESSION_DETAILS>,
         // ハンド開始
         {
@@ -675,12 +686,18 @@ describe('EntityConverter', () => {
           ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
           timestamp: 9000,
           Id: 'session-with-players',
-          BattleType: BattleType.SIT_AND_GO
+          BattleType: BattleType.SIT_AND_GO,
+          Code: 0,
+          IsRetire: false
         } as ApiEvent<ApiType.EVT_ENTRY_QUEUED>,
         // プレイヤー着席
         {
           ApiTypeId: ApiType.EVT_PLAYER_SEAT_ASSIGNED,
           timestamp: 9001,
+          IsLeave: false,
+          IsRetire: false,
+          ProcessType: 0,
+          SeatUserIds: [900, 901, -1, -1, -1, -1],
           TableUsers: [
             {
               UserId: 900,
@@ -688,6 +705,9 @@ describe('EntityConverter', () => {
               FavoriteCharaId: 'chara01',
               CostumeId: 'costume01',
               EmblemId: 'emblem01',
+              IsCpu: false,
+              IsOfficial: false,
+              SettingDecoIds: ['', '', '', '', '', '', ''],
               Rank: {
                 RankId: 'gold',
                 RankName: 'ゴールド',
@@ -701,6 +721,9 @@ describe('EntityConverter', () => {
               FavoriteCharaId: 'chara02',
               CostumeId: 'costume02',
               EmblemId: 'emblem02',
+              IsCpu: false,
+              IsOfficial: false,
+              SettingDecoIds: ['', '', '', '', '', '', ''],
               Rank: {
                 RankId: 'diamond',
                 RankName: 'ダイヤモンド',
@@ -714,12 +737,22 @@ describe('EntityConverter', () => {
         {
           ApiTypeId: ApiType.EVT_PLAYER_JOIN,
           timestamp: 9002,
+          JoinPlayer: {
+            BetChip: 0,
+            BetStatus: BetStatusType.NOT_IN_PLAY,
+            Chip: 2000,
+            SeatIndex: 2,
+            Status: 0
+          },
           JoinUser: {
             UserId: 902,
             UserName: 'Player3',
             FavoriteCharaId: 'chara03',
             CostumeId: 'costume03',
             EmblemId: 'emblem03',
+            IsCpu: false,
+            IsOfficial: false,
+            SettingDecoIds: ['', '', '', '', '', '', ''],
             Rank: {
               RankId: 'platinum',
               RankName: 'プラチナ',

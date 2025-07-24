@@ -10,7 +10,8 @@ import {
   ActionType,
   ApiType,
   PhaseType,
-  Position
+  Position,
+  isApiEventType
 } from './types'
 
 import type {
@@ -65,35 +66,29 @@ export class EntityConverter {
 
     for (const event of events) {
       // セッション開始イベントの処理
-      if (event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED) {
-        // isApiEventTypeの代わりにApiTypeIdを直接チェック
-        // テストケースの不完全なデータに対応
-        const entryEvent = event as ApiEvent<ApiType.EVT_ENTRY_QUEUED>
-        currentSession.id = entryEvent.Id
-        currentSession.battleType = entryEvent.BattleType
+      if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
+        currentSession.id = event.Id
+        currentSession.battleType = event.BattleType
         // 新しいセッション開始時はプレイヤー情報をクリア
         currentSession.players = new Map()
-      } else if (event.ApiTypeId === ApiType.EVT_SESSION_DETAILS) {
-        const detailsEvent = event as ApiEvent<ApiType.EVT_SESSION_DETAILS>
-        currentSession.name = detailsEvent.Name
-      } else if (event.ApiTypeId === ApiType.EVT_PLAYER_SEAT_ASSIGNED) {
+      } else if (isApiEventType(event, ApiType.EVT_SESSION_DETAILS)) {
+        currentSession.name = event.Name
+      } else if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED)) {
         // プレイヤー名とランクをセッションに保存
-        const seatEvent = event as ApiEvent<ApiType.EVT_PLAYER_SEAT_ASSIGNED>
-        if (seatEvent.TableUsers) {
-          seatEvent.TableUsers.forEach(tableUser => {
+        if (event.TableUsers) {
+          event.TableUsers.forEach(tableUser => {
             currentSession.players.set(tableUser.UserId, {
               name: tableUser.UserName,
               rank: tableUser.Rank.RankId
             })
           })
         }
-      } else if (event.ApiTypeId === ApiType.EVT_PLAYER_JOIN) {
+      } else if (isApiEventType(event, ApiType.EVT_PLAYER_JOIN)) {
         // 途中参加者のプレイヤー名とランクをセッションに保存
-        const joinEvent = event as ApiEvent<ApiType.EVT_PLAYER_JOIN>
-        if (joinEvent.JoinUser) {
-          currentSession.players.set(joinEvent.JoinUser.UserId, {
-            name: joinEvent.JoinUser.UserName,
-            rank: joinEvent.JoinUser.Rank.RankId
+        if (event.JoinUser) {
+          currentSession.players.set(event.JoinUser.UserId, {
+            name: event.JoinUser.UserName,
+            rank: event.JoinUser.Rank.RankId
           })
         }
       }
