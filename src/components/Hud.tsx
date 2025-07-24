@@ -1,16 +1,16 @@
-import { CSSProperties, useState, useCallback, useMemo, memo, useEffect, useRef } from 'react'
-import { PlayerStats } from '../app'
+import { CSSProperties, useState, useCallback, useMemo, memo } from 'react'
+import type { PlayerStats } from '../app'
 import type { StatDisplayConfig } from '../types'
 import type { StatResult } from '../types/stats'
 import type { RealTimeStats } from '../realtime-stats/realtime-stats-service'
-import { getStartingHandRanking } from '../utils/starting-hand-rankings'
+import { useDraggable } from './Hud/hooks/useDraggable'
+import { DragHandle } from './Hud/DragHandle'
+import { HudHeader } from './Hud/HudHeader'
+import { StatDisplay } from './Hud/StatDisplay'
+import { PlayerTypeIcons } from './Hud/PlayerTypeIcons'
+import { RealTimeStatsDisplay } from './Hud/RealTimeStatsDisplay'
 
 // Types
-interface HudPosition {
-  top: string
-  left: string
-}
-
 interface PlayerPotOdds {
   spr?: number
   potOdds?: {
@@ -31,13 +31,6 @@ interface HudProps {
   playerPotOdds?: PlayerPotOdds
 }
 
-interface DragState {
-  startX: number
-  startY: number
-  startLeft: number
-  startTop: number
-}
-
 // Constants
 const SEAT_POSITIONS: CSSProperties[] = [
   { top: '65%', left: '65%' },
@@ -50,8 +43,6 @@ const SEAT_POSITIONS: CSSProperties[] = [
 
 const EMPTY_SEAT_ID = -1
 const HUD_WIDTH = 240
-const REALTIME_HUD_WIDTH = 200  // リアルタイム統計専用の幅
-const DRAG_OPACITY = 0.3
 const HOVER_BG_COLOR = 'rgba(0, 0, 0, 0.7)'
 const NORMAL_BG_COLOR = 'rgba(0, 0, 0, 0.5)'
 
@@ -102,153 +93,10 @@ const styles = {
     textShadow: '0 1px 2px rgba(0, 0, 0, 0.5)',
   } as CSSProperties,
   
-  statsContainer: {
-    display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
-    gap: '2px 6px',
-    padding: '4px 6px',
-  } as CSSProperties,
-  
-  statItem: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    whiteSpace: 'nowrap' as const,
-  } as CSSProperties,
-  
-  statKey: {
-    fontWeight: 'bold',
-    color: '#aaaaaa',
-    minWidth: '35px',
-    fontSize: '9px',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap' as const,
-  } as CSSProperties,
-  
-  statValue: {
-    color: '#dddddd',
-    textAlign: 'right' as const,
-    marginLeft: '4px',
-    fontSize: '9px',
-    maxWidth: '100px',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap' as const,
-  } as CSSProperties,
-  
   clickable: {
     cursor: 'pointer',
     transition: 'opacity 0.2s ease',
   } as CSSProperties,
-  
-  dragHandle: {
-    cursor: 'move',
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: '20px',
-    opacity: 0,
-    transition: 'opacity 0.2s ease',
-  } as CSSProperties,
-  
-  playerTypeIcons: {
-    display: 'flex',
-    gap: '4px',
-    fontSize: '10px',
-    opacity: 0.4,
-    marginLeft: '4px',
-  } as CSSProperties,
-}
-
-// Custom hooks
-const useDraggable = (seatIndex: number, defaultPosition: CSSProperties) => {
-  const [isDragging, setIsDragging] = useState(false)
-  const [position, setPosition] = useState<HudPosition | null>(null)
-  const dragRef = useRef<DragState | null>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-
-  // Load saved position
-  useEffect(() => {
-    chrome.storage.sync.get(`hudPosition_${seatIndex}`, (result) => {
-      const savedPosition = result[`hudPosition_${seatIndex}`]
-      if (savedPosition) {
-        setPosition(savedPosition)
-      }
-    })
-  }, [seatIndex])
-
-  // Save position
-  useEffect(() => {
-    if (position && !isDragging) {
-      chrome.storage.sync.set({
-        [`hudPosition_${seatIndex}`]: position
-      })
-    }
-  }, [position, seatIndex, isDragging])
-
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-
-    const rect = containerRef.current?.getBoundingClientRect()
-    if (!rect) return
-
-    const currentLeft = position?.left ? parseFloat(position.left) : parseFloat((defaultPosition?.left as string) || '0')
-    const currentTop = position?.top ? parseFloat(position.top) : parseFloat((defaultPosition?.top as string) || '0')
-
-    dragRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      startLeft: (currentLeft / 100) * window.innerWidth,
-      startTop: (currentTop / 100) * window.innerHeight
-    }
-
-    setIsDragging(true)
-  }, [position, defaultPosition])
-
-  useEffect(() => {
-    if (!isDragging) return
-
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!dragRef.current || !containerRef.current) return
-
-      const deltaX = e.clientX - dragRef.current.startX
-      const deltaY = e.clientY - dragRef.current.startY
-
-      const newLeft = ((dragRef.current.startLeft + deltaX) / window.innerWidth) * 100
-      const newTop = ((dragRef.current.startTop + deltaY) / window.innerHeight) * 100
-
-      const clampedLeft = Math.max(0, Math.min(90, newLeft))
-      const clampedTop = Math.max(0, Math.min(90, newTop))
-
-      setPosition({
-        left: `${clampedLeft}%`,
-        top: `${clampedTop}%`
-      })
-    }
-
-    const handleMouseUp = () => {
-      setIsDragging(false)
-      dragRef.current = null
-    }
-
-    document.addEventListener('mousemove', handleMouseMove)
-    document.addEventListener('mouseup', handleMouseUp)
-
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove)
-      document.removeEventListener('mouseup', handleMouseUp)
-    }
-  }, [isDragging])
-
-  return {
-    containerRef,
-    isDragging,
-    position,
-    handleMouseDown
-  }
 }
 
 // Helper functions
@@ -288,234 +136,6 @@ const getPlayerName = (stat: PlayerStats): string | null => {
   
   return null
 }
-
-
-
-// Sub-components
-const PlayerTypeIcons = memo(() => (
-  <div style={styles.playerTypeIcons}>
-    <span>🐟</span>
-    <span>🦈</span>
-  </div>
-))
-
-// Real-time stats display component
-const RealTimeStatsDisplay = memo(({ stats, seatIndex }: { stats: RealTimeStats; seatIndex: number }) => {
-  const [isHovering, setIsHovering] = useState(false)
-  const defaultPosition: CSSProperties = { top: '70%', left: '25%' }
-  
-  const {
-    containerRef,
-    isDragging,
-    position,
-    handleMouseDown
-  } = useDraggable(seatIndex + 100, defaultPosition) // Use seatIndex + 100 to avoid collision with regular HUD positions
-  
-  const hasStats = Object.keys(stats).length > 0
-  
-  
-  if (!hasStats || !stats.handImprovement) return null
-  
-  const potOddsData = stats.potOdds?.value as { pot: number; call: number; percentage: number; ratio: string; isHeroTurn: boolean; spr?: number } | undefined
-  const potOddsPercentage = potOddsData?.percentage
-  const handImprovement = stats.handImprovement?.value as any
-  
-  if (!handImprovement || !handImprovement.improvements) return null
-  
-  const containerStyle: CSSProperties = {
-    position: 'fixed',
-    ...(position || defaultPosition),
-    transform: 'translate(-50%, -50%)',
-    zIndex: 9999,
-    pointerEvents: isDragging ? 'auto' : 'none',
-  }
-  
-  return (
-    <div ref={containerRef} style={containerStyle}>
-      <div 
-        style={{
-          backgroundColor: 'rgba(0, 0, 0, 0.6)',  // More transparent
-          backdropFilter: 'blur(4px)',
-          border: '1px solid rgba(255, 255, 255, 0.2)',
-          borderRadius: '8px',
-          fontSize: '10px',
-          color: '#ffffff',
-          pointerEvents: 'auto',
-          userSelect: 'none',
-          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3)',
-          margin: '4px',
-          position: 'relative',
-          cursor: isDragging ? 'move' : 'default',
-          width: `${REALTIME_HUD_WIDTH}px`,
-        }}
-        onMouseEnter={() => setIsHovering(true)}
-        onMouseLeave={() => setIsHovering(false)}
-      >
-        <DragHandle isHovering={isHovering} onMouseDown={handleMouseDown} />
-      {/* Header with hand ranking and pot odds */}
-      <div style={{ padding: '6px 10px' }}>
-        {/* First line: Hand ranking */}
-        {stats.holeCards && (
-          <div style={{ marginBottom: '2px' }}>
-            {(() => {
-              const handInfo = getStartingHandRanking(stats.holeCards)
-              if (!handInfo) return null
-              
-              // Get color based on ranking strength
-              let rankingColor = '#ffffff'
-              if (handInfo.ranking <= 10) {
-                rankingColor = '#ff6b6b'  // Red for premium hands
-              } else if (handInfo.ranking <= 30) {
-                rankingColor = '#ffd93d'  // Yellow for strong hands
-              } else if (handInfo.ranking <= 60) {
-                rankingColor = '#6bcf7f'  // Green for good hands
-              } else if (handInfo.ranking <= 100) {
-                rankingColor = '#95e1d3'  // Light blue for playable hands
-              } else {
-                rankingColor = '#95a5a6'  // Gray for weak hands
-              }
-              
-              return (
-                <span style={{ 
-                  fontSize: '10px', 
-                  color: rankingColor,
-                  fontWeight: '600',
-                  letterSpacing: '0.5px',
-                  textShadow: '0 1px 2px rgba(0, 0, 0, 0.5)'
-                }}
-                title={`${handInfo.ranking}位/169位`}>
-                  {handInfo.notation} ({handInfo.ranking}/169)
-                </span>
-              )
-            })()}
-          </div>
-        )}
-        
-      </div>
-      
-      {/* Hand improvement table */}
-      <div style={{ padding: '4px' }}>
-        <table style={{ 
-          width: '100%', 
-          borderCollapse: 'collapse',
-          fontSize: '9px'
-        }}>
-          <tbody>
-            {handImprovement.improvements.map((improvement: any) => {
-              const isCurrentHand = improvement.isCurrent
-              const isComplete = improvement.isComplete
-              const probability = improvement.probability
-              const hasGoodOdds = potOddsData && potOddsData.call !== undefined && potOddsData.call > 0 && potOddsPercentage !== undefined && probability > potOddsPercentage && probability < 100
-              const isBetterThanCurrent = improvement.rank > handImprovement.currentHand.rank
-              
-              let rowStyle: React.CSSProperties = {
-                opacity: isCurrentHand ? 1 : (isBetterThanCurrent ? 0.9 : 0.5)
-              }
-              
-              let cellStyle: React.CSSProperties = {
-                padding: '2px 6px',
-                borderBottom: '1px solid rgba(255, 255, 255, 0.05)'
-              }
-              
-              if (isCurrentHand) {
-                rowStyle.backgroundColor = 'rgba(255, 255, 255, 0.1)'
-                rowStyle.fontWeight = 'bold'
-              }
-              
-              const isWaitingForAction = !potOddsData?.isHeroTurn && potOddsData?.call === 0
-              
-              const probabilityColor = isComplete ? '#00ff00' : 
-                                     isWaitingForAction ? '#cccccc' :  // Neutral color when waiting
-                                     hasGoodOdds ? '#00ff00' : 
-                                     probability > 0 ? '#ff6666' : '#666'
-              
-              return (
-                <tr key={improvement.rank} style={rowStyle}>
-                  <td style={{ ...cellStyle, textAlign: 'left' }}>
-                    {improvement.name}
-                  </td>
-                  <td style={{ 
-                    ...cellStyle, 
-                    textAlign: 'right',
-                    color: probabilityColor
-                  }}>
-                    {probability.toFixed(1)}%
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-      </div>
-    </div>
-  )
-})
-
-const DragHandle = memo(({ isHovering, onMouseDown }: { isHovering: boolean, onMouseDown: (e: React.MouseEvent) => void }) => (
-  <div
-    style={{
-      ...styles.dragHandle,
-      opacity: isHovering ? DRAG_OPACITY : 0,
-    }}
-    onMouseDown={onMouseDown}
-  />
-))
-
-const HudHeader = memo(({ playerName, playerId, playerPotOdds }: { 
-  playerName: string | null, 
-  playerId: number,
-  playerPotOdds?: PlayerPotOdds 
-}) => {
-  const hasPotOdds = playerPotOdds?.potOdds && playerPotOdds.potOdds.call > 0
-  const hasSpr = playerPotOdds?.spr !== undefined
-  
-  return (
-    <div style={styles.header}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '4px' }}>
-        <span style={{ ...styles.playerName, flex: '0 1 auto', minWidth: 0 }} title={playerName || 'Unknown'}>
-          {playerName || `Player ${playerId}`}
-        </span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '9px', flex: '0 0 auto' }}>
-          {hasSpr && (
-            <span style={{ color: '#ffcc00', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
-              SPR:{playerPotOdds.spr}
-            </span>
-          )}
-          {hasPotOdds && (
-            <span style={{ 
-              color: playerPotOdds.potOdds!.isPlayerTurn ? '#00ff00' : '#888',
-              fontWeight: playerPotOdds.potOdds!.isPlayerTurn ? 'bold' : 'normal',
-              whiteSpace: 'nowrap'
-            }}>
-              {playerPotOdds.potOdds!.pot}/{playerPotOdds.potOdds!.call} ({playerPotOdds.potOdds!.percentage.toFixed(0)}%)
-            </span>
-          )}
-        </div>
-      </div>
-      <PlayerTypeIcons />
-    </div>
-  )
-})
-
-const StatDisplay = memo(({ displayStats, formatValue }: { 
-  displayStats: Array<[string, any, StatResult?]>, 
-  formatValue: (value: number | [number, number]) => string 
-}) => (
-  <div style={styles.statsContainer}>
-    {displayStats
-      .filter(([, , statResult]) => statResult?.id !== 'playerName')
-      .map(([key, value, statResult], index) => {
-        const displayValue = statResult?.formatted || formatValue(value as number | [number, number])
-        return (
-          <div key={index} style={styles.statItem}>
-            <span style={styles.statKey} title={key}>{key}:</span>
-            <span style={styles.statValue} title={displayValue}>{displayValue}</span>
-          </div>
-        )
-      })}
-  </div>
-))
 
 // Main component
 const Hud = memo((props: HudProps) => {
