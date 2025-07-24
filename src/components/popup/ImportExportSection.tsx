@@ -3,6 +3,7 @@ import Button from '@mui/material/Button'
 import LinearProgress from '@mui/material/LinearProgress'
 import Typography from '@mui/material/Typography'
 import React from 'react'
+import { FileDownload, FileUpload } from '@mui/icons-material'
 import type {
   ExportDataMessage,
   ImportDataChunkMessage,
@@ -150,6 +151,7 @@ export const ImportExportSection = ({
         variant="contained"
         fullWidth
         onClick={() => handleExportClick('pokerstars')}
+        startIcon={<FileDownload />}
         sx={{ 
           marginBottom: '10px',
           backgroundColor: '#d70022',
@@ -159,7 +161,7 @@ export const ImportExportSection = ({
           }
         }}
       >
-        エクスポート (PokerStars)
+        Export Hand History (PokerStars)
       </Button>
 
       <Button
@@ -167,9 +169,10 @@ export const ImportExportSection = ({
         color="primary"
         fullWidth
         onClick={() => handleExportClick('json')}
+        startIcon={<FileDownload />}
         style={{ marginBottom: '10px' }}
       >
-        エクスポート (.ndjson)
+        Export Raw Data (NDJSON)
       </Button>
 
       <input
@@ -185,10 +188,11 @@ export const ImportExportSection = ({
         color="primary"
         fullWidth
         onClick={handleImportClick}
+        startIcon={<FileUpload />}
         style={{ marginBottom: '10px' }}
         disabled={importProgress > 0 && importProgress < 100}
       >
-        {importProgress > 0 && importProgress < 100 ? 'インポート中...' : 'インポート (.ndjson)'}
+        {importProgress > 0 && importProgress < 100 ? 'Importing...' : 'Import Raw Data (NDJSON)'}
       </Button>
 
       {importProgress > 0 && importProgress < 100 && (

@@ -192,12 +192,12 @@ describe('Popup', () => {
 
     await waitForAsyncOperations()
 
-    expect(screen.getByText('エクスポート (PokerStars)')).toBeInTheDocument()
-    expect(screen.getByText('エクスポート (.ndjson)')).toBeInTheDocument()
-    expect(screen.getByText('インポート (.ndjson)')).toBeInTheDocument()
+    expect(screen.getByText('Export Hand History (PokerStars)')).toBeInTheDocument()
+    expect(screen.getByText('Export Raw Data (NDJSON)')).toBeInTheDocument()
+    expect(screen.getByText('Import Raw Data (NDJSON)')).toBeInTheDocument()
 
     // エクスポートボタンをクリック
-    await userEvent.click(screen.getByText('エクスポート (PokerStars)'))
+    await userEvent.click(screen.getByText('Export Hand History (PokerStars)'))
 
     expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith({
       action: 'exportData',
