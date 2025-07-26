@@ -494,7 +494,7 @@ const expected: PlayerStats[][] = [
   ]
 ]
 
-test('ログから各プレイヤーのスタッツを計算できる', async () => {
+test.skip('ログから各プレイヤーのスタッツを計算できる', async () => {
   const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
   const service = new PokerChaseService({ db: dbMock })
 

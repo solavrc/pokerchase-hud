@@ -195,7 +195,20 @@ export class WriteEntityStream extends Transform {
           handState.hand.winningPlayerIds = event.Results.filter(({ HandRanking }) => HandRanking === 1).map(({ UserId }) => UserId)
           handState.hand.approxTimestamp = event.timestamp
           handState.hand.results = event.Results
-          handState.actions = handState.actions.map(action => ({ ...action, handId: event.HandId }))
+          
+          // Update actions with handId and add RIVER_CALL_WON for winning river calls
+          handState.actions = handState.actions.map(action => {
+            const updatedAction = { ...action, handId: event.HandId }
+            
+            // Check if this is a river call by a winning player
+            if (action.actionDetails.includes(ActionDetail.RIVER_CALL) && 
+                handState.hand.winningPlayerIds.includes(action.playerId)) {
+              updatedAction.actionDetails = [...action.actionDetails, ActionDetail.RIVER_CALL_WON]
+            }
+            
+            return updatedAction
+          })
+          
           handState.phases = handState.phases.map(phase => ({ ...phase, handId: event.HandId }))
           break
       }

@@ -30,7 +30,8 @@ const STAT_ORDER = [
   'afq',          // AFq
   'wtsd',         // WTSD
   'wwsf',         // WWSF
-  'wsd'           // W$SD
+  'wsd',          // W$SD
+  'riverCallAccuracy' // RCA
 ]
 
 // Extract all StatDefinition exports (those ending with 'Stat')
