@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v4.0.0...pokerchase-hud-v4.1.0) (2025-07-26)
+
+
+### Features
+
+* **stats:** add river call accuracy (RCA) statistic ([272f9bd](https://github.com/solavrc/pokerchase-hud/commit/272f9bdeb989376f8d51897a48bab3ccd0fc395d))
+
 ## [4.0.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v3.0.0...pokerchase-hud-v4.0.0) (2025-07-24)
 
 
