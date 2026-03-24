@@ -121,7 +121,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   - Always run tests and type checking after code changes
   - Use `npm run test` and `npm run typecheck` commands
   - Ensure all tests pass before completing tasks
-  - Current status: All 270 tests passing ✅
+  - Current status: All 332 tests passing (38 suites) ✅
 - **Build Commands**:
   - `npm run build` - Production build
   - `npm run typecheck` - TypeScript validation
@@ -431,6 +431,7 @@ Components are modularized with feature-specific sub-components in `hud/` and `p
 | `wtsd`       | WTSD | Went to showdown % (excludes preflop all-ins)  |
 | `wwsf`       | WWSF | Won when saw flop % (excludes preflop all-ins) |
 | `wsd`        | W$SD | Won $ at showdown %                            |
+| `riverCallAccuracy` | RCA | River call accuracy % (calls that won)  |
 
 ### Adding New Statistics
 
@@ -439,6 +440,20 @@ For detailed instructions on how to add new statistics to the HUD, please see [C
 ### Statistics Philosophy
 
 **Player Decision Focus**: Statistics like WTSD and WWSF measure player decision-making rather than automatic game outcomes. Preflop all-ins are excluded because they involve no post-flop decisions, ensuring statistics reflect actual player tendencies and "stickiness" rather than forced showdowns.
+
+### Confirmed Statistical Definitions (PT4-aligned, audited 2026-03)
+
+These definitions were validated by hand-tracing 22 hands from the integration test suite:
+
+- **CBet (CB)**: PFR opens betting on flop (phasePrevBetCount=0, cBetter=playerId). Extended to turn/river while initiative retained.
+- **CBetFold (CBF)**: Fold rate **only when a CBet was actually executed** (`cBetExecuted=true`). If PFR checked (no CBet), subsequent bets by others do NOT create CBetFold opportunities. Scoped to the same street as the CBet (`cBetPhase` tracking).
+- **WTSD**: Flops seen → showdown. Preflop ALL_IN excluded (no flop phase). `SHOWDOWN_MUCK (RankType=11)` counts as showdown.
+- **W$SD**: ALL showdowns including preflop ALL_IN. `SHOWDOWN_MUCK` counts as showdown. `NO_CALL (RankType=10)` does NOT count as showdown.
+- **WWSF**: Flops seen → won. Preflop ALL_IN excluded.
+- **AF**: `(BET+RAISE) / CALL` — CHECK and FOLD excluded from both numerator and denominator.
+- **AFq**: `(BET+RAISE) / (BET+RAISE+CALL+FOLD)` — CHECK excluded from denominator.
+
+See `docs/hand-analysis.md` for the full 22-hand audit trail.
 
 ### Key Concepts
 
