@@ -174,7 +174,11 @@ export class HandLogExporter {
   /**
    * Export multiple hands as PokerStars format string
    */
-  static async exportMultipleHands(db: PokerChaseDB, handIds: number[]): Promise<string> {
+  static async exportMultipleHands(
+    db: PokerChaseDB,
+    handIds: number[],
+    onProgress?: (processed: number, total: number) => void
+  ): Promise<string> {
     const results: string[] = []
 
     // Exporting hands
@@ -191,6 +195,7 @@ export class HandLogExporter {
         console.error(`[HandLogExporter] Error exporting hand ${handId}:`, error)
         // Continue with next hand instead of failing completely
       }
+      onProgress?.(results.length, handIds.length)
     }
 
     if (results.length === 0) {
@@ -275,7 +280,12 @@ export class HandLogExporter {
   /**
    * Export recent hands from a session or database
    */
-  static async exportRecentHands(db: PokerChaseDB, sessionId?: string, limit?: number): Promise<string> {
+  static async exportRecentHands(
+    db: PokerChaseDB,
+    sessionId?: string,
+    limit?: number,
+    onProgress?: (processed: number, total: number) => void
+  ): Promise<string> {
     let hands: Hand[]
 
     if (sessionId) {
@@ -298,6 +308,6 @@ export class HandLogExporter {
     }
 
     const handIds = hands.map(h => h.id)
-    return this.exportMultipleHands(db, handIds)
+    return this.exportMultipleHands(db, handIds, onProgress)
   }
 }

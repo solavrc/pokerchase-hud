@@ -354,12 +354,15 @@ class PokerChaseService {
     }
   }
 
-  readonly exportHandHistory = async (handIds?: number[]): Promise<string> => {
+  readonly exportHandHistory = async (
+    handIds?: number[],
+    onProgress?: (processed: number, total: number) => void
+  ): Promise<string> => {
     const { HandLogExporter } = await import('../utils/hand-log-exporter')
 
     if (!handIds) {
       // Export all recent hands (no session filter)
-      return HandLogExporter.exportRecentHands(this.db)
+      return HandLogExporter.exportRecentHands(this.db, undefined, undefined, onProgress)
     }
 
     if (handIds.length === 0) {
@@ -367,7 +370,7 @@ class PokerChaseService {
       return ''
     }
 
-    return HandLogExporter.exportMultipleHands(this.db, handIds)
+    return HandLogExporter.exportMultipleHands(this.db, handIds, onProgress)
   }
   eventLogger = (event: any, level: 'debug' | 'info' | 'warn' | 'error' = 'info') => {
     const timestamp = event.timestamp

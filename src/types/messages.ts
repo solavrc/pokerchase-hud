@@ -39,11 +39,16 @@ export const MESSAGE_ACTIONS = {
   // Data management
   DELETE_ALL_DATA: 'deleteAllData',
   REBUILD_DATA: 'rebuildData',
+  // Export/Rebuild progress
+  EXPORT_PROGRESS: 'exportProgress',
+  REBUILD_PROGRESS: 'rebuildProgress',
   // Hand log
   HAND_LOG_EVENT: 'handLogEvent',
   UPDATE_HAND_LOG_CONFIG: 'updateHandLogConfig',
   // UI
-  UPDATE_UI_CONFIG: 'updateUIConfig'
+  UPDATE_UI_CONFIG: 'updateUIConfig',
+  // Operation state
+  GET_OPERATION_STATE: 'getOperationState',
 } as const
 
 // Import/Export related messages
@@ -110,6 +115,23 @@ export interface DeleteAllDataMessage {
 
 export interface RebuildDataMessage {
   action: 'rebuildData'
+}
+
+export interface ExportProgressMessage {
+  action: 'exportProgress'
+  state: 'started' | 'processing' | 'completed' | 'error'
+  format?: 'json' | 'pokerstars'
+  progress?: number // 0-100
+  processed?: number
+  total?: number
+  message?: string
+}
+
+export interface RebuildProgressMessage {
+  action: 'rebuildProgress'
+  state: 'started' | 'processing' | 'completed' | 'error'
+  progress?: number // 0-100
+  message?: string
 }
 
 // Hand log messages
@@ -200,6 +222,10 @@ export interface ManualSyncDownloadMessage {
   action: 'manualSyncDownload'
 }
 
+export interface GetOperationStateMessage {
+  action: 'getOperationState'
+}
+
 export interface FirebaseBackupProgressMessage {
   action: 'firebaseBackupProgress'
   progress: number
@@ -256,7 +282,18 @@ export interface SyncInfoResponse extends SuccessResponse {
   }
 }
 
-export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse
+export interface OperationStateResponse extends SuccessResponse {
+  operationState: {
+    type: 'idle' | 'export' | 'import' | 'rebuild'
+    format?: 'json' | 'pokerstars'
+    progress?: number
+    processed?: number
+    total?: number
+    message?: string
+  }
+}
+
+export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse
 
 // Union type of all possible messages
 export type ChromeMessage =
@@ -272,6 +309,8 @@ export type ChromeMessage =
   | LatestStatsMessage
   | DeleteAllDataMessage
   | RebuildDataMessage
+  | ExportProgressMessage
+  | RebuildProgressMessage
   | HandLogEventMessage
   | UpdateHandLogConfigMessage
   | UpdateUIConfigMessage
@@ -291,6 +330,7 @@ export type ChromeMessage =
   | SyncStateUpdateMessage
   | ManualSyncUploadMessage
   | ManualSyncDownloadMessage
+  | GetOperationStateMessage
 
 // Helper function for type guard implementation
 const isMessageWithAction = (msg: unknown, action: string): msg is { action: string } =>
@@ -365,3 +405,12 @@ export const isFirebaseBackupDeleteMessage = (msg: unknown): msg is FirebaseBack
 
 export const isFirebaseBackupProgressMessage = (msg: unknown): msg is FirebaseBackupProgressMessage =>
   isMessageWithAction(msg, 'firebaseBackupProgress')
+
+export const isExportProgressMessage = (msg: unknown): msg is ExportProgressMessage =>
+  isMessageWithAction(msg, 'exportProgress')
+
+export const isRebuildProgressMessage = (msg: unknown): msg is RebuildProgressMessage =>
+  isMessageWithAction(msg, 'rebuildProgress')
+
+export const isGetOperationStateMessage = (msg: unknown): msg is GetOperationStateMessage =>
+  isMessageWithAction(msg, 'getOperationState')

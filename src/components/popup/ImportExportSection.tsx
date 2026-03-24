@@ -1,15 +1,19 @@
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
+import CircularProgress from '@mui/material/CircularProgress'
 import LinearProgress from '@mui/material/LinearProgress'
 import Typography from '@mui/material/Typography'
-import React from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { FileDownload, FileUpload } from '@mui/icons-material'
 import type {
   ExportDataMessage,
+  ExportProgressMessage,
   ImportDataChunkMessage,
   ImportDataInitMessage,
   ImportDataProcessMessage,
+  RebuildProgressMessage,
 } from '../../types/messages'
+import { isExportProgressMessage, isRebuildProgressMessage } from '../../types/messages'
 
 interface ImportExportSectionProps {
   importStatus: string
@@ -31,6 +35,9 @@ interface ImportExportSectionProps {
 
 const FILE_CHUNK_SIZE = 5 * 1024 * 1024 // 5MB chunks for file import
 
+type ExportState = 'idle' | 'exporting'
+type RebuildState = 'idle' | 'rebuilding'
+
 export const ImportExportSection = ({
   importStatus,
   importProgress,
@@ -48,16 +55,116 @@ export const ImportExportSection = ({
   setImportSuccess,
   setImportStartTime,
 }: ImportExportSectionProps) => {
-  const handleExportClick = (format: string) => {
+  const [exportState, setExportState] = useState<ExportState>('idle')
+  const [exportFormat, setExportFormat] = useState<'json' | 'pokerstars' | null>(null)
+  const [exportProgress, setExportProgress] = useState(0)
+  const [exportProcessed, setExportProcessed] = useState(0)
+  const [exportTotal, setExportTotal] = useState(0)
+  const [rebuildState, setRebuildState] = useState<RebuildState>('idle')
+  const [rebuildProgress, setRebuildProgress] = useState(0)
+  const [operationStatus, setOperationStatus] = useState('')
+
+  const isImporting = importProgress > 0 && importProgress < 100
+  const isAnyOperationInProgress = isImporting || exportState !== 'idle' || rebuildState !== 'idle'
+
+  // Listen for export/rebuild progress messages and query state on mount
+  useEffect(() => {
+    // Query current operation state on mount (handles popup close/reopen)
+    chrome.runtime.sendMessage({ action: 'getOperationState' }, (response: any) => {
+      if (chrome.runtime.lastError) return // Extension context may be invalid
+      if (response?.operationState) {
+        const state = response.operationState
+        if (state.type === 'export') {
+          setExportState('exporting')
+          setExportFormat(state.format ?? null)
+          setExportProgress(state.progress ?? 0)
+          setExportProcessed(state.processed ?? 0)
+          setExportTotal(state.total ?? 0)
+          setOperationStatus(state.message ?? '')
+        } else if (state.type === 'rebuild') {
+          setRebuildState('rebuilding')
+          setRebuildProgress(state.progress ?? 0)
+          setOperationStatus(state.message ?? '')
+        }
+        // Import state is managed by parent Popup.tsx via importProgress messages
+      }
+    })
+
+    const handleMessage = (message: unknown) => {
+      if (isExportProgressMessage(message)) {
+        const msg = message as ExportProgressMessage
+        switch (msg.state) {
+          case 'started':
+            setExportState('exporting')
+            setExportFormat(msg.format ?? null)
+            setExportProgress(0)
+            setExportProcessed(0)
+            setExportTotal(0)
+            setOperationStatus(msg.message ?? '')
+            break
+          case 'processing':
+            setExportProgress(msg.progress ?? 0)
+            setExportProcessed(msg.processed ?? 0)
+            setExportTotal(msg.total ?? 0)
+            setOperationStatus(msg.message ?? '')
+            break
+          case 'completed':
+            setExportState('idle')
+            setExportFormat(null)
+            setExportProgress(0)
+            setOperationStatus(msg.message ?? 'エクスポート完了')
+            break
+          case 'error':
+            setExportState('idle')
+            setExportFormat(null)
+            setExportProgress(0)
+            setOperationStatus(msg.message ?? 'エクスポート失敗')
+            break
+        }
+      }
+
+      if (isRebuildProgressMessage(message)) {
+        const msg = message as RebuildProgressMessage
+        switch (msg.state) {
+          case 'started':
+            setRebuildState('rebuilding')
+            setRebuildProgress(0)
+            setOperationStatus(msg.message ?? '')
+            break
+          case 'processing':
+            setRebuildProgress(msg.progress ?? 0)
+            setOperationStatus(msg.message ?? '')
+            break
+          case 'completed':
+            setRebuildState('idle')
+            setRebuildProgress(0)
+            setOperationStatus(msg.message ?? 'データ再構築完了')
+            break
+          case 'error':
+            setRebuildState('idle')
+            setRebuildProgress(0)
+            setOperationStatus(msg.message ?? 'データ再構築失敗')
+            break
+        }
+      }
+    }
+
+    chrome.runtime.onMessage.addListener(handleMessage)
+    return () => {
+      chrome.runtime.onMessage.removeListener(handleMessage)
+    }
+  }, [])
+
+  const handleExportClick = useCallback((format: string) => {
     chrome.runtime.sendMessage<ExportDataMessage>({
       action: 'exportData',
       format: format as 'json' | 'pokerstars'
     })
-  }
+  }, [])
 
-  const handleImportClick = () => {
+  const handleImportClick = useCallback(() => {
     fileInputRef.current?.click()
-  }
+  }, [fileInputRef])
 
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -139,11 +246,15 @@ export const ImportExportSection = ({
     }
   }
 
-  const handleRebuildClick = () => {
+  const handleRebuildClick = useCallback(() => {
     if (window.confirm('データを再構築しますか？この処理には時間がかかる場合があります。')) {
       chrome.runtime.sendMessage({ action: 'rebuildData' })
     }
-  }
+  }, [])
+
+  // Determine status display
+  const displayStatus = operationStatus || importStatus
+  const isStatusError = displayStatus.includes('失敗') || displayStatus.includes('エラー')
 
   return (
     <>
@@ -151,17 +262,29 @@ export const ImportExportSection = ({
         variant="contained"
         fullWidth
         onClick={() => handleExportClick('pokerstars')}
-        startIcon={<FileDownload />}
+        startIcon={
+          exportState === 'exporting' && exportFormat === 'pokerstars'
+            ? <CircularProgress size={20} color="inherit" />
+            : <FileDownload />
+        }
+        disabled={isAnyOperationInProgress}
         sx={{ 
           marginBottom: '10px',
           backgroundColor: '#d70022',
           color: 'white',
           '&:hover': {
             backgroundColor: '#b8001c'
+          },
+          '&.Mui-disabled': {
+            backgroundColor: exportState === 'exporting' && exportFormat === 'pokerstars' ? '#d70022' : undefined,
+            color: exportState === 'exporting' && exportFormat === 'pokerstars' ? 'white' : undefined,
+            opacity: exportState === 'exporting' && exportFormat === 'pokerstars' ? 0.8 : undefined,
           }
         }}
       >
-        Export Hand History (PokerStars)
+        {exportState === 'exporting' && exportFormat === 'pokerstars'
+          ? 'Exporting...'
+          : 'Export Hand History (PokerStars)'}
       </Button>
 
       <Button
@@ -169,11 +292,42 @@ export const ImportExportSection = ({
         color="primary"
         fullWidth
         onClick={() => handleExportClick('json')}
-        startIcon={<FileDownload />}
-        style={{ marginBottom: '10px' }}
+        startIcon={
+          exportState === 'exporting' && exportFormat === 'json'
+            ? <CircularProgress size={20} color="inherit" />
+            : <FileDownload />
+        }
+        disabled={isAnyOperationInProgress}
+        sx={{
+          marginBottom: '10px',
+          '&.Mui-disabled': {
+            backgroundColor: exportState === 'exporting' && exportFormat === 'json' ? 'primary.main' : undefined,
+            color: exportState === 'exporting' && exportFormat === 'json' ? 'white' : undefined,
+            opacity: exportState === 'exporting' && exportFormat === 'json' ? 0.8 : undefined,
+          }
+        }}
       >
-        Export Raw Data (NDJSON)
+        {exportState === 'exporting' && exportFormat === 'json'
+          ? 'Exporting...'
+          : 'Export Raw Data (NDJSON)'}
       </Button>
+
+      {/* Export progress bar (both NDJSON and PokerStars) */}
+      {exportState === 'exporting' && exportProgress > 0 && (
+        <Box sx={{ marginBottom: '10px' }}>
+          <LinearProgress variant="determinate" value={exportProgress} />
+          <Typography
+            variant="body2"
+            color="textSecondary"
+            style={{ marginTop: '5px', textAlign: 'center' }}
+          >
+            {exportFormat === 'json'
+              ? `エクスポート中... ${exportProcessed.toLocaleString()}/${exportTotal.toLocaleString()} (${exportProgress}%)`
+              : `ハンドヒストリー変換中... ${exportProcessed.toLocaleString()}/${exportTotal.toLocaleString()} (${exportProgress}%)`
+            }
+          </Typography>
+        </Box>
+      )}
 
       <input
         type="file"
@@ -188,14 +342,25 @@ export const ImportExportSection = ({
         color="primary"
         fullWidth
         onClick={handleImportClick}
-        startIcon={<FileUpload />}
-        style={{ marginBottom: '10px' }}
-        disabled={importProgress > 0 && importProgress < 100}
+        startIcon={
+          isImporting
+            ? <CircularProgress size={20} color="inherit" />
+            : <FileUpload />
+        }
+        disabled={isAnyOperationInProgress}
+        sx={{
+          marginBottom: '10px',
+          '&.Mui-disabled': {
+            backgroundColor: isImporting ? 'primary.main' : undefined,
+            color: isImporting ? 'white' : undefined,
+            opacity: isImporting ? 0.8 : undefined,
+          }
+        }}
       >
-        {importProgress > 0 && importProgress < 100 ? 'Importing...' : 'Import Raw Data (NDJSON)'}
+        {isImporting ? 'Importing...' : 'Import Raw Data (NDJSON)'}
       </Button>
 
-      {importProgress > 0 && importProgress < 100 && (
+      {isImporting && (
         <Box sx={{ marginTop: 2 }}>
           <LinearProgress variant="determinate" value={importProgress} />
           <Typography
@@ -218,24 +383,43 @@ export const ImportExportSection = ({
         </Box>
       )}
 
-      {importStatus && (
+      {displayStatus && (
         <Typography
           variant="body2"
-          color={importStatus.includes('失敗') ? 'error' : 'success'}
+          color={isStatusError ? 'error' : 'success'}
           style={{ marginTop: '5px', textAlign: 'center' }}
         >
-          {importStatus}
+          {displayStatus}
         </Typography>
+      )}
+
+      {/* Rebuild progress bar */}
+      {rebuildState === 'rebuilding' && (
+        <Box sx={{ marginTop: 1, marginBottom: 1 }}>
+          <LinearProgress variant={rebuildProgress > 0 ? 'determinate' : 'indeterminate'} value={rebuildProgress} />
+          <Typography
+            variant="body2"
+            color="textSecondary"
+            style={{ marginTop: '5px', textAlign: 'center' }}
+          >
+            {operationStatus || 'データ再構築中...'}
+          </Typography>
+        </Box>
       )}
 
       <Button
         variant="outlined"
         fullWidth
         onClick={handleRebuildClick}
+        disabled={isAnyOperationInProgress}
+        startIcon={
+          rebuildState === 'rebuilding'
+            ? <CircularProgress size={20} />
+            : undefined
+        }
         style={{ marginTop: '10px' }}
-        disabled={importStatus === 'データ再構築中...'}
       >
-        データ再構築
+        {rebuildState === 'rebuilding' ? 'データ再構築中...' : 'データ再構築'}
       </Button>
 
       <Typography
