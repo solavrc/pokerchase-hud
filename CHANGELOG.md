@@ -1,5 +1,39 @@
 # Changelog
 
+## [4.1.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v4.0.0...pokerchase-hud-v4.1.0) (2026-03-24)
+
+
+### Features
+
+* **stats:** add river call accuracy (RCA) statistic ([272f9bd](https://github.com/solavrc/pokerchase-hud/commit/272f9bdeb989376f8d51897a48bab3ccd0fc395d))
+* **ui:** add progress indicators and double-click prevention for export/rebuild ([4816f4a](https://github.com/solavrc/pokerchase-hud/commit/4816f4a892a4e5ae231de2d2284a90a7e2f2c3ae))
+* スキーマ差分検知ツール追加 (npm run schema-diff) ([7524890](https://github.com/solavrc/pokerchase-hud/commit/752489068f4c3df1b1d5562714e5290d154d4aee))
+
+
+### Bug Fixes
+
+* baseSchema を strict() → passthrough() に変更 ([a8cf72e](https://github.com/solavrc/pokerchase-hud/commit/a8cf72e9fdc8c9c3ce9fff15ee42fc0a8d2bf33d))
+* CBetFold判定修正 + expected値を仕様ベースで再構築 ([636fde8](https://github.com/solavrc/pokerchase-hud/commit/636fde8595e9d0252412e63e4a3af080fce48050))
+* EVT_PLAYER_SEAT_ASSIGNED スキーマに WaitTableType を追加 ([d2b934e](https://github.com/solavrc/pokerchase-hud/commit/d2b934e837f25e959641340fcd40e20c69b3d42f))
+* EVT_SESSION_RESULTS スキーマに新規プロパティ追加 ([24a9c1b](https://github.com/solavrc/pokerchase-hud/commit/24a9c1b16c4823a26922d3636ac5f78f5948c1a4))
+* EVT_SESSION_RESULTS.TableId の型を string | number に修正 ([cda9e2c](https://github.com/solavrc/pokerchase-hud/commit/cda9e2c5e4fc44c774fcc492219c1388723b0fb7))
+* **log:** downgrade hand export errors to warnings ([2c75670](https://github.com/solavrc/pokerchase-hud/commit/2c756707d04d8c2bd39d51bf2a87309bac87f921))
+* PokerStars形式ハンドログのフォーマット修正 ([e2fd460](https://github.com/solavrc/pokerchase-hud/commit/e2fd460df8974fd69705dc6832fdbb1e77ab8b0f))
+* **ui:** block concurrent operations in background + add debug log ([2bffc00](https://github.com/solavrc/pokerchase-hud/commit/2bffc008e2fc036c92e96352fe7443e9eed73e9a))
+* **ui:** cache Firebase auth state for instant popup rendering ([32676f4](https://github.com/solavrc/pokerchase-hud/commit/32676f47aa95c5251a2ea762ab016ad618dbf921))
+* **ui:** ensure exportState/rebuildState is set on processing messages ([35f77f5](https://github.com/solavrc/pokerchase-hud/commit/35f77f5be65c008fd475707f26a378de3826b6c9))
+* **ui:** optimistically disable buttons on export/rebuild click ([2773a0b](https://github.com/solavrc/pokerchase-hud/commit/2773a0bf6618fe7bd2dfc78a36a3ad8ab861a9d2))
+* エクスポートが10,000件で打ち切られる問題を修正 ([1dcf68a](https://github.com/solavrc/pokerchase-hud/commit/1dcf68a0ac00cc2e618a7ed613c8641504d06369))
+* エクスポートのdata URLサイズ制限を解消 ([6d5a7c6](https://github.com/solavrc/pokerchase-hud/commit/6d5a7c657ee9bafac84bd8765f16a49e9b34b820))
+* ハンドログの金額計算修正 + PS形式エクスポート全セッション対応 ([3725832](https://github.com/solavrc/pokerchase-hud/commit/3725832625343da8ab936cb72df4f2e2ea73ba7a))
+* 大容量エクスポートの64MiBメッセージ制限を回避 ([1eefd97](https://github.com/solavrc/pokerchase-hud/commit/1eefd975267ef747caee4e88d3fff60bb287051e))
+* 未知ApiTypeIdイベントの内容をログ出力 ([7c1fb05](https://github.com/solavrc/pokerchase-hud/commit/7c1fb0567acc27c16e65fa56d53f9a06f593fd8a))
+
+
+### Performance Improvements
+
+* **export:** eliminate N+1 query pattern in exportMultipleHands ([2d66f09](https://github.com/solavrc/pokerchase-hud/commit/2d66f0986c407221c0ae8c63babc252b68626713))
+
 ## [4.0.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v3.0.0...pokerchase-hud-v4.0.0) (2025-07-24)
 
 
