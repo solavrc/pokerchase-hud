@@ -118,19 +118,20 @@ export class HandLogProcessor {
     const entries: HandLogEntry[] = []
 
     const timestamp = this.context.handTimestamp || event.timestamp || Date.now()
-    const utcTimestamp = new Date(timestamp).toISOString().replace('T', ' ').substring(0, 19)
+    const jstDate = new Date(timestamp + 9 * 60 * 60 * 1000) // UTC → JST
+    const jstTimestamp = `${jstDate.getUTCFullYear()}/${String(jstDate.getUTCMonth() + 1).padStart(2, '0')}/${String(jstDate.getUTCDate()).padStart(2, '0')} ${String(jstDate.getUTCHours()).padStart(2, '0')}:${String(jstDate.getUTCMinutes()).padStart(2, '0')}:${String(jstDate.getUTCSeconds()).padStart(2, '0')} JST`
 
     // キャッシュゲームかトーナメントかを判定
     const isCashGame = this.context.session.battleType !== undefined && [4, 5].includes(this.context.session.battleType)
 
     let headerText: string
     if (isCashGame) {
-      headerText = `Poker Hand #pending: Hold'em No Limit ($${event.Game.SmallBlind}/$${event.Game.BigBlind} USD) - ${utcTimestamp}`
+      headerText = `PokerStars Hand #pending: Hold'em No Limit (${event.Game.SmallBlind}/${event.Game.BigBlind}) - ${jstTimestamp}`
     } else {
       const sessionName = this.context.session.name || 'Unknown'
       // ブラインドレベルをローマ数字に変換
       const blindLevel = this.getBlindLevelRoman(event.Game.CurrentBlindLv)
-      headerText = `Poker Game #pending: Tournament #pending, ${sessionName} Hold'em No Limit - Level ${blindLevel} (${event.Game.SmallBlind}/${event.Game.BigBlind}) - ${utcTimestamp}`
+      headerText = `PokerStars Hand #pending: Tournament #pending, ${sessionName} Hold'em No Limit - Level ${blindLevel} (${event.Game.SmallBlind}/${event.Game.BigBlind}) - ${jstTimestamp}`
     }
 
     const headerEntry = this.createEntry(headerText, HandLogEntryType.HEADER)
@@ -201,28 +202,18 @@ export class HandLogProcessor {
     const cardsEntry = this.createEntry('*** HOLE CARDS ***', HandLogEntryType.STREET)
     entries.push(cardsEntry)
 
-    // 全プレイヤーに "Dealt to" を表示
-    event.SeatUserIds.forEach((userId, seatIndex) => {
-      if (userId !== -1) {
-        const playerName = this.getPlayerName(userId)
-        let dealtEntry: HandLogEntry
-        
-        // Heroのカードを表示
-        if (event.Player?.SeatIndex === seatIndex && event.Player?.HoleCards) {
-          dealtEntry = this.createEntry(
-            `Dealt to ${playerName} [${formatCards(event.Player.HoleCards)}]`,
-            HandLogEntryType.CARDS
-          )
-        } else {
-          // 他のプレイヤーは "Dealt to" のみ
-          dealtEntry = this.createEntry(
-            `Dealt to ${playerName}`,
-            HandLogEntryType.CARDS
-          )
-        }
+    // ヒーローのホールカードのみ表示（PokerStars準拠）
+    if (event.Player?.SeatIndex !== undefined && event.Player?.HoleCards) {
+      const heroUserId = event.SeatUserIds[event.Player.SeatIndex]
+      if (heroUserId !== undefined && heroUserId !== -1) {
+        const heroName = this.getPlayerName(heroUserId)
+        const dealtEntry = this.createEntry(
+          `Dealt to ${heroName} [${formatCards(event.Player.HoleCards)}]`,
+          HandLogEntryType.CARDS
+        )
         entries.push(dealtEntry)
       }
-    })
+    }
 
     this.currentHand.entries.push(...entries)
     return entries
@@ -292,11 +283,11 @@ export class HandLogProcessor {
           if (!this.firstHandId) {
             this.firstHandId = event.HandId
           }
-          // Tournament format: update Game # with current hand, Tournament # with first hand
-          entry.text = entry.text.replace(/Game #pending/, `Game #${event.HandId}`)
+          // Tournament format: update Hand # with current hand, Tournament # with first hand
+          entry.text = entry.text.replace(/Hand #pending/, `Hand #${event.HandId}`)
             .replace(/Tournament #pending/, `Tournament #${this.firstHandId}`)
         } else {
-          // Cash game: just update Game #
+          // Cash game: just update Hand #
           entry.text = entry.text.replace('#pending', `#${event.HandId}`)
         }
       }
@@ -980,7 +971,9 @@ export class HandLogProcessor {
       }
     }
     
-    const potEntry = this.createEntry(`Total pot ${totalPot}`, HandLogEntryType.SUMMARY)
+    const isCashGame = this.context.session.battleType !== undefined && [4, 5].includes(this.context.session.battleType)
+    const potText = isCashGame ? `Total pot ${totalPot} | Rake 0` : `Total pot ${totalPot}`
+    const potEntry = this.createEntry(potText, HandLogEntryType.SUMMARY)
     entries.push(potEntry)
 
     // ボード
@@ -1032,15 +1025,23 @@ export class HandLogProcessor {
       if (foldEntry) {
         // プレイヤーがフォールド - どのストリートかチェック
         const foldIndex = this.currentHand!.entries.indexOf(foldEntry)
-        const beforeFlop = !this.currentHand!.entries.slice(0, foldIndex).some(e =>
-          e.text.includes('*** FLOP ***')
-        )
+        
+        // フォールド前に最後に出現したストリートを特定
+        let foldStreet: string | null = null
+        for (let i = foldIndex - 1; i >= 0; i--) {
+          const e = this.currentHand!.entries[i]
+          if (e?.type === HandLogEntryType.STREET) {
+            if (e.text.includes('*** FLOP ***')) foldStreet = 'Flop'
+            else if (e.text.includes('*** TURN ***')) foldStreet = 'Turn'
+            else if (e.text.includes('*** RIVER ***')) foldStreet = 'River'
+            break
+          }
+        }
 
-        if (beforeFlop) {
-          // プレイヤーがSBかBBをポストしたかチェック
+        if (!foldStreet) {
+          // プリフロップでフォールド
           const postedBlind = sbEntry || bbEntry
           
-          // プレイヤーがチップを入れたかチェック（ブラインドポストを除く）
           const hasAction = this.currentHand!.entries.slice(0, foldIndex).some(e =>
             e.type === HandLogEntryType.ACTION &&
             e.text.includes(playerName) &&
@@ -1050,10 +1051,9 @@ export class HandLogProcessor {
             !e.text.includes('posts big blind')
           )
           
-          // SB/BBをポストした、または他のアクションがある場合は"didn't bet"を付けない
           summary += (hasAction || postedBlind) ? ' folded before Flop' : " folded before Flop (didn't bet)"
         } else {
-          summary += ' folded'
+          summary += ` folded on the ${foldStreet}`
         }
       } else if (result) {
         // このハンドがショウダウンまで行ったかチェック
