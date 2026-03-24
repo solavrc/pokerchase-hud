@@ -492,7 +492,7 @@ export const apiEventSchemas = {
       JoinNum: z.int().optional(),
     }).optional(),
     IsTimerWinFinish: z.boolean().optional().describe('タイマー勝利で終了したか'),
-    TableId: z.string().optional().describe('テーブルID'),
+    TableId: z.union([z.string(), z.int()]).optional().describe('テーブルID（文字列または数値）'),
     IsOverDailyLimit: z.boolean().optional().describe('デイリー制限超過フラグ'),
     IsChangeDay: z.boolean().optional().describe('日付変更フラグ'),
   }).describe('イベント結果'),

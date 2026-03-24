@@ -211,7 +211,7 @@ const messageHandlers: Record<string, (message: ChromeMessage) => void> = {
   }
 }
 
-chrome.runtime.onMessage.addListener((message: ChromeMessage | { action: 'downloadFile', content: string, filename: string, contentType: string }) => {
+chrome.runtime.onMessage.addListener((message: ChromeMessage | { action: string, [key: string]: unknown }) => {
   // Blob-based file download (avoids Service Worker data URL size limits)
   if (message.action === 'downloadFile' && 'content' in message) {
     const m = message as any
