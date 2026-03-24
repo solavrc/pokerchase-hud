@@ -781,7 +781,7 @@ chrome.runtime.onConnect.addListener(port => {
         // パース失敗 = 必須プロパティ欠損など破壊的変更の可能性
         const validationResult = validateApiEvent(message as ApiMessage)
         const errorDetails = validationResult.error ? getValidationError(validationResult.error) : null
-        console.warn('[background] Schema validation failed (event dropped):', errorDetails, message)
+        console.warn(`[background] Schema validation failed (event dropped):\n  Errors: ${JSON.stringify(errorDetails, null, 2)}\n  Event: ${JSON.stringify(message, null, 2)}`)
         return
       }
 
