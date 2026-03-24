@@ -728,16 +728,27 @@ const downloadFile = (content: string, filename: string, contentType: string) =>
   const finalFilename = getFinalFilename()
 
   // Send to content script for Blob-based download (avoids data URL size limits)
-  chrome.tabs.query({ url: gameUrlPattern }, tabs => {
+  chrome.tabs.query({ url: gameUrlPattern }, async tabs => {
     const tab = tabs.find(t => t.id)
     if (tab?.id) {
-      chrome.tabs.sendMessage(tab.id, {
-        action: 'downloadFile',
-        content,
-        filename: finalFilename,
-        contentType
-      })
-      console.log(`[Export] Download initiated via content script: ${finalFilename} (${(content.length / 1024 / 1024).toFixed(1)}MB)`)
+      const sizeMB = content.length / 1024 / 1024
+      const MAX_CHUNK_MB = 50 // Under Chrome's 64MiB message limit
+      const maxChunkSize = MAX_CHUNK_MB * 1024 * 1024
+
+      if (content.length <= maxChunkSize) {
+        chrome.tabs.sendMessage(tab.id, { action: 'downloadFile', content, filename: finalFilename, contentType })
+      } else {
+        // Split into chunks for large files
+        const totalChunks = Math.ceil(content.length / maxChunkSize)
+        console.log(`[Export] Splitting ${sizeMB.toFixed(1)}MB into ${totalChunks} chunks...`)
+        chrome.tabs.sendMessage(tab.id, { action: 'downloadFileInit', filename: finalFilename, contentType, totalChunks })
+        for (let i = 0; i < totalChunks; i++) {
+          const chunk = content.slice(i * maxChunkSize, (i + 1) * maxChunkSize)
+          chrome.tabs.sendMessage(tab.id, { action: 'downloadFileChunk', chunkIndex: i, chunk, totalChunks })
+        }
+        chrome.tabs.sendMessage(tab.id, { action: 'downloadFileFinish', filename: finalFilename, contentType })
+      }
+      console.log(`[Export] Download initiated via content script: ${finalFilename} (${sizeMB.toFixed(1)}MB)`)
       return
     }
     // Fallback: data URL (may fail for large files >2MB)
