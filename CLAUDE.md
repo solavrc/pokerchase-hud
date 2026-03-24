@@ -2,7 +2,7 @@
 
 > 🎯 **Purpose**: Technical reference for AI coding agents working on the PokerChase HUD Chrome extension.
 >
-> 📅 **Last Updated**: 2025-07-24
+> 📅 **Last Updated**: 2026-03-24
 
 ## 📋 Table of Contents
 
@@ -128,6 +128,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   - `npm run test` - Run test suite
   - `npm run postbuild` - Create extension.zip
   - `npm run validate-schema` - Validate API events in NDJSON files
+  - `npm run schema-diff` - Detect API schema changes (additions/removals) in NDJSON files
   - `npm run firebase:deploy` - Deploy Firestore rules and indexes
   - `npm run firebase:deploy:rules` - Deploy Firestore rules only
   - `npm run firebase:deploy:indexes` - Deploy Firestore indexes only
@@ -273,6 +274,13 @@ Statistics Refresh (batch mode)
 - Batch mode disables real-time updates during import
 - Direct entity conversion bypasses stream overhead
 - Falls back to individual inserts on bulk operation failure
+
+**Critical Design Constraints (learned 2026-03):**
+
+- **EntityConverter state**: `convertEventsToEntities()` tracks hand boundaries via internal local variables (`currentHandEvents`). Must NOT be called in chunks — a hand spanning chunk boundaries will be lost. Always pass all events in a single call.
+- **Dexie Collection reuse**: `processInChunks()` uses `.offset().limit()` on a Collection object, but Dexie Collections accumulate state. For reliable pagination, use cursor-based approach with `where('[timestamp+ApiTypeId]').above(lastKey).limit(N)`.
+- **Export size limits**: Service Worker → content_script message limit is 64MiB. Data URL limit is ~2MB. Large exports use chunked message passing with Blob-based download in content_script.
+- **PokerStars hand history format**: `calls` shows additional call amount (not total bet). `Dealt to` is hero-only. Summary uses `folded on the Flop/Turn/River`.
 
 ## Implementation Details
 
@@ -517,6 +525,8 @@ Dynamic statistics for all players, with hero having additional hand improvement
 - **Event Ordering**: Events arrive in guaranteed logical sequence
 - **Connectivity Issues**: Events may be lost due to player-side network problems
 - **Runtime Validation**: Zod schemas provide runtime type checking and validation
+  - **Schema Mode: `passthrough()`** — Unknown properties are preserved and passed through to processing (not rejected). This prevents API field additions from breaking functionality. Missing required properties still cause validation failure.
+  - **Schema Diff Detection**: `npm run schema-diff -- <NDJSON file>` runs `strict()` validation offline to detect unknown properties (additions) and missing properties (breaking changes) in exported data.
   - **Complete Zod Schema Way Pattern**: Types are now derived from schemas (Single Source of Truth)
   - All API events have corresponding Zod schemas in `src/types/api.ts`
   - Use `ApiEventSchema` for discriminated union validation
