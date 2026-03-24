@@ -25,11 +25,13 @@ import type { Options } from './components/Popup'
 import type { HandLogEvent } from './types/hand-log'
 import type {
   ChromeMessage,
+  ExportProgressMessage,
   HandLogEventMessage,
   ImportProgressMessage,
   ImportStatusMessage,
   LatestStatsMessage,
-  MessageResponse
+  MessageResponse,
+  RebuildProgressMessage
 } from './types/messages'
 import { firebaseAuthService } from './services/firebase-auth-service'
 import { autoSyncService } from './services/auto-sync-service'
@@ -80,6 +82,17 @@ interface ImportSession {
   fileName: string
 }
 let currentImportSession: ImportSession | null = null
+
+interface OperationState {
+  type: 'idle' | 'export' | 'import' | 'rebuild'
+  format?: 'json' | 'pokerstars'
+  progress?: number
+  processed?: number
+  total?: number
+  message?: string
+}
+
+let currentOperationState: OperationState = { type: 'idle' }
 
 let lastKnownStats: PlayerStats[] = []
 
@@ -359,6 +372,9 @@ chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.run
         sendResponse({ success: false, error: error.message })
       })
     return true
+  } else if (request.action === 'getOperationState') {
+    sendResponse({ success: true, operationState: currentOperationState })
+    return true
   }
   return false
 })
@@ -378,6 +394,7 @@ const exportData = async (format: string) => {
  */
 const importData = async (jsonlData: string): Promise<{ successCount: number, totalLines: number, duplicateCount: number }> => {
   try {
+    currentOperationState = { type: 'import', progress: 0 }
     console.log('[importData] Starting optimized import process with direct entity generation')
     const startTime = performance.now()
 
@@ -495,6 +512,7 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
 
       // Send progress update
       const progress = Math.round((processed / lines.length) * 100)
+      currentOperationState = { type: 'import', progress, processed, total: lines.length }
       chrome.runtime.sendMessage<ImportProgressMessage>({
         action: 'importProgress',
         progress: progress,
@@ -613,9 +631,11 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
       }
     }
 
+    currentOperationState = { type: 'idle' }
     return { successCount, totalLines: lines.length, duplicateCount }
 
   } catch (error) {
+    currentOperationState = { type: 'idle' }
     console.error('Import error:', error)
     throw error
   }
@@ -623,6 +643,14 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
 
 const exportJsonData = async (db: PokerChaseDB) => {
   try {
+    currentOperationState = { type: 'export', format: 'json', progress: 0 }
+    chrome.runtime.sendMessage<ExportProgressMessage>({
+      action: 'exportProgress',
+      state: 'started',
+      format: 'json',
+      message: 'NDJSONエクスポート開始...'
+    }).catch(() => {})
+
     const totalCount = await db.apiEvents.count()
     console.log(`[Export] Exporting ${totalCount} events...`)
     
@@ -647,6 +675,19 @@ const exportJsonData = async (db: PokerChaseDB) => {
       const lastEvent = chunk[chunk.length - 1]!
       lastKey = [lastEvent.timestamp, lastEvent.ApiTypeId]
       
+      const progress = Math.round((processedCount / totalCount) * 100)
+      const progressMessage = `エクスポート中... ${processedCount.toLocaleString()}/${totalCount.toLocaleString()} (${progress}%)`
+      currentOperationState = { type: 'export', format: 'json', progress, processed: processedCount, total: totalCount, message: progressMessage }
+      chrome.runtime.sendMessage<ExportProgressMessage>({
+        action: 'exportProgress',
+        state: 'processing',
+        format: 'json',
+        progress,
+        processed: processedCount,
+        total: totalCount,
+        message: progressMessage
+      }).catch(() => {})
+
       if (processedCount % 50000 === 0 || processedCount >= totalCount) {
         console.log(`[Export] Processed ${processedCount}/${totalCount} events`)
       }
@@ -663,19 +704,64 @@ const exportJsonData = async (db: PokerChaseDB) => {
     )
     
     console.log(`[Export] Export completed: ${processedCount} events (${(jsonlContent.length / 1024 / 1024).toFixed(1)}MB)`)
+    
+    currentOperationState = { type: 'idle' }
+    chrome.runtime.sendMessage<ExportProgressMessage>({
+      action: 'exportProgress',
+      state: 'completed',
+      format: 'json',
+      progress: 100,
+      processed: processedCount,
+      total: totalCount,
+      message: `NDJSONエクスポート完了: ${processedCount.toLocaleString()}件`
+    }).catch(() => {})
   } catch (error) {
     console.error('[Export] Export failed:', error)
+    currentOperationState = { type: 'idle' }
+    chrome.runtime.sendMessage<ExportProgressMessage>({
+      action: 'exportProgress',
+      state: 'error',
+      format: 'json',
+      message: `NDJSONエクスポート失敗: ${error}`
+    }).catch(() => {})
     throw error
   }
 }
 
 const exportPokerStarsData = async () => {
   try {
+    currentOperationState = { type: 'export', format: 'pokerstars', progress: 0 }
+    chrome.runtime.sendMessage<ExportProgressMessage>({
+      action: 'exportProgress',
+      state: 'started',
+      format: 'pokerstars',
+      message: 'PokerStarsエクスポート開始...'
+    }).catch(() => {})
+
     // Get the last session's hand history
-    const handHistory = await service.exportHandHistory()
+    const handHistory = await service.exportHandHistory(undefined, (processed, total) => {
+      const progress = Math.round((processed / total) * 100)
+      chrome.runtime.sendMessage<ExportProgressMessage>({
+        action: 'exportProgress',
+        state: 'processing',
+        format: 'pokerstars',
+        progress,
+        processed,
+        total,
+        message: `ハンドヒストリー変換中... ${processed.toLocaleString()}/${total.toLocaleString()} (${progress}%)`
+      }).catch(() => {})
+      currentOperationState = { type: 'export', format: 'pokerstars', progress, processed, total, message: `ハンドヒストリー変換中... ${processed}/${total} (${progress}%)` }
+    })
 
     if (!handHistory) {
       console.error('No hands found to export')
+      currentOperationState = { type: 'idle' }
+      chrome.runtime.sendMessage<ExportProgressMessage>({
+        action: 'exportProgress',
+        state: 'error',
+        format: 'pokerstars',
+        message: 'エクスポートするハンドが見つかりませんでした'
+      }).catch(() => {})
       // Show notification to user
       chrome.notifications.create({
         type: 'basic',
@@ -691,8 +777,23 @@ const exportPokerStarsData = async () => {
       'pokerchase_hand_history.txt',
       'text/plain'
     )
+
+    currentOperationState = { type: 'idle' }
+    chrome.runtime.sendMessage<ExportProgressMessage>({
+      action: 'exportProgress',
+      state: 'completed',
+      format: 'pokerstars',
+      message: 'PokerStarsハンドヒストリーエクスポート完了'
+    }).catch(() => {})
   } catch (error) {
     console.error('Error exporting PokerStars format:', error)
+    currentOperationState = { type: 'idle' }
+    chrome.runtime.sendMessage<ExportProgressMessage>({
+      action: 'exportProgress',
+      state: 'error',
+      format: 'pokerstars',
+      message: `PokerStarsエクスポート失敗: ${error}`
+    }).catch(() => {})
     // Show error notification
     chrome.notifications.create({
       type: 'basic',
@@ -934,6 +1035,13 @@ const rebuildAllData = async (): Promise<void> => {
     console.log('[rebuildAllData] Starting batch rebuild of all data...')
     const startTime = performance.now()
 
+    currentOperationState = { type: 'rebuild', progress: 0, message: 'データ再構築開始...' }
+    chrome.runtime.sendMessage<RebuildProgressMessage>({
+      action: 'rebuildProgress',
+      state: 'started',
+      message: 'データ再構築開始...'
+    }).catch(() => {})
+
     // Clear all entity tables first
     await db.transaction('rw', [db.hands, db.phases, db.actions, db.meta], async () => {
       await db.hands.clear()
@@ -942,12 +1050,27 @@ const rebuildAllData = async (): Promise<void> => {
       await db.meta.delete('lastProcessed')
     })
 
+    currentOperationState = { type: 'rebuild', progress: 10, message: 'テーブルクリア完了、イベント読み込み中...' }
+    chrome.runtime.sendMessage<RebuildProgressMessage>({
+      action: 'rebuildProgress',
+      state: 'processing',
+      progress: 10,
+      message: 'テーブルクリア完了、イベント読み込み中...'
+    }).catch(() => {})
+
     // Get total event count
     const totalCount = await db.apiEvents.count()
     console.log(`[rebuildAllData] Processing ${totalCount} events...`)
 
     if (totalCount === 0) {
       console.log('[rebuildAllData] No events to process')
+      currentOperationState = { type: 'idle' }
+      chrome.runtime.sendMessage<RebuildProgressMessage>({
+        action: 'rebuildProgress',
+        state: 'completed',
+        progress: 100,
+        message: '処理対象のイベントがありません'
+      }).catch(() => {})
       return
     }
 
@@ -976,7 +1099,24 @@ const rebuildAllData = async (): Promise<void> => {
       const allEvents = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
       console.log(`[rebuildAllData] Loaded ${allEvents.length} events, converting to entities...`)
       
+      currentOperationState = { type: 'rebuild', progress: 40, message: `${allEvents.length.toLocaleString()}件のイベントを変換中...` }
+      chrome.runtime.sendMessage<RebuildProgressMessage>({
+        action: 'rebuildProgress',
+        state: 'processing',
+        progress: 40,
+        message: `${allEvents.length.toLocaleString()}件のイベントを変換中...`
+      }).catch(() => {})
+
       const entities = converter.convertEventsToEntities(allEvents)
+      
+      currentOperationState = { type: 'rebuild', progress: 70, message: 'エンティティ保存中...' }
+      chrome.runtime.sendMessage<RebuildProgressMessage>({
+        action: 'rebuildProgress',
+        state: 'processing',
+        progress: 70,
+        message: 'エンティティ保存中...'
+      }).catch(() => {})
+
       const counts = await saveEntities(db, entities)
       totalHands += counts.hands
       totalPhases += counts.phases
@@ -1010,6 +1150,14 @@ const rebuildAllData = async (): Promise<void> => {
       const rebuildTime = ((performance.now() - startTime) / 1000).toFixed(2)
       console.log(`[rebuildAllData] Rebuild completed in ${rebuildTime}s`)
 
+      currentOperationState = { type: 'rebuild', progress: 90, message: '統計情報を再計算中...' }
+      chrome.runtime.sendMessage<RebuildProgressMessage>({
+        action: 'rebuildProgress',
+        state: 'processing',
+        progress: 90,
+        message: '統計情報を再計算中...'
+      }).catch(() => {})
+
       // Trigger stats recalculation once at the end
       if (service.latestEvtDeal && service.latestEvtDeal.SeatUserIds) {
         const playerIds = service.latestEvtDeal.SeatUserIds.filter(id => id !== -1)
@@ -1019,6 +1167,14 @@ const rebuildAllData = async (): Promise<void> => {
         }
       }
 
+      currentOperationState = { type: 'idle' }
+      chrome.runtime.sendMessage<RebuildProgressMessage>({
+        action: 'rebuildProgress',
+        state: 'completed',
+        progress: 100,
+        message: `データ再構築完了 (${rebuildTime}秒) - ハンド: ${totalHands.toLocaleString()}, フェーズ: ${totalPhases.toLocaleString()}, アクション: ${totalActions.toLocaleString()}`
+      }).catch(() => {})
+
     } finally {
       // Disable batch mode
       service.setBatchMode(false)
@@ -1026,6 +1182,12 @@ const rebuildAllData = async (): Promise<void> => {
 
   } catch (error) {
     console.error('[rebuildAllData] Error:', error)
+    currentOperationState = { type: 'idle' }
+    chrome.runtime.sendMessage<RebuildProgressMessage>({
+      action: 'rebuildProgress',
+      state: 'error',
+      message: `データ再構築失敗: ${error}`
+    }).catch(() => {})
     throw error
   }
 }
