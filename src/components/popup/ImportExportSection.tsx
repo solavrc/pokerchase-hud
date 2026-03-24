@@ -155,10 +155,18 @@ export const ImportExportSection = ({
     }
   }, [])
 
-  const handleExportClick = useCallback((format: string) => {
+  const handleExportClick = useCallback((format: 'json' | 'pokerstars') => {
+    // Optimistically set state immediately to disable buttons (prevents double-click)
+    setExportState('exporting')
+    setExportFormat(format)
+    setExportProgress(0)
+    setExportProcessed(0)
+    setExportTotal(0)
+    setOperationStatus(format === 'pokerstars' ? 'PokerStarsエクスポート開始...' : 'NDJSONエクスポート開始...')
+
     chrome.runtime.sendMessage<ExportDataMessage>({
       action: 'exportData',
-      format: format as 'json' | 'pokerstars'
+      format
     })
   }, [])
 
@@ -248,6 +256,11 @@ export const ImportExportSection = ({
 
   const handleRebuildClick = useCallback(() => {
     if (window.confirm('データを再構築しますか？この処理には時間がかかる場合があります。')) {
+      // Optimistically set state immediately to disable buttons
+      setRebuildState('rebuilding')
+      setRebuildProgress(0)
+      setOperationStatus('データ再構築開始...')
+
       chrome.runtime.sendMessage({ action: 'rebuildData' })
     }
   }, [])
