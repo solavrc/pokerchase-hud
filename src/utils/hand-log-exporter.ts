@@ -172,38 +172,177 @@ export class HandLogExporter {
   }
 
   /**
-   * Export multiple hands as PokerStars format string
+   * Export multiple hands as PokerStars format string (batch optimized)
+   *
+   * Uses batch prefetch to avoid N+1 query pattern:
+   * - Fetches all hand objects in one query
+   * - Fetches all API events in one query covering the full time range
+   * - Processes each hand from the in-memory event set
+   *
+   * Note: If the time span across hands is very large (e.g., months of data),
+   * the single events query could return a large result set. This is still
+   * significantly faster than N separate DB queries with overlapping ranges.
    */
   static async exportMultipleHands(
     db: PokerChaseDB,
     handIds: number[],
     onProgress?: (processed: number, total: number) => void
   ): Promise<string> {
+    console.log(`[HandLogExporter] Exporting ${handIds.length} hands (batch mode)`)
+
+    // 1. Build/update player names map ONCE
+    const globalPlayerMap = await this.buildPlayerNamesMap(db)
+
+    // 2. Fetch all hand objects in one query
+    const hands = await db.hands.where('id').anyOf(handIds).toArray()
+    const handMap = new Map(hands.map(h => [h.id, h]))
+
+    // 3. Calculate global time range
+    const timestamps = hands
+      .map(h => h.approxTimestamp!)
+      .filter(t => t !== undefined)
+
+    if (timestamps.length === 0) {
+      throw new Error('No valid hands found')
+    }
+
+    const minTime = Math.min(...timestamps) - this.TIME_BUFFER_MS
+    const maxTime = Math.max(...timestamps) + this.POST_HAND_BUFFER_MS
+
+    // 4. Fetch ALL events in the range in ONE query
+    console.log(`[HandLogExporter] Prefetching events from ${new Date(minTime).toISOString()} to ${new Date(maxTime).toISOString()}`)
+    const allEvents = await db.apiEvents
+      .where('timestamp')
+      .between(minTime, maxTime)
+      .toArray()
+
+    // Sort once for all hands
+    allEvents.sort((a, b) => a.timestamp! - b.timestamp!)
+    console.log(`[HandLogExporter] Prefetched ${allEvents.length} events`)
+
+    // 5. Process each hand using the prefetched events
     const results: string[] = []
-
-    // Exporting hands
-    console.log(`[HandLogExporter] Exporting ${handIds.length} hands`)
-
-    // Build/update player map once for all hands
-    await this.buildPlayerNamesMap(db)
+    let processedCount = 0
 
     for (const handId of handIds) {
+      const hand = handMap.get(handId)
+      if (!hand) {
+        console.error(`[HandLogExporter] Hand ${handId} not found`)
+        processedCount++
+        onProgress?.(processedCount, handIds.length)
+        continue
+      }
+
       try {
-        const handText = await this.exportHand(db, handId)
+        // Extract events for this specific hand from prefetched set
+        const handEvents = this.extractHandEvents(allEvents, hand)
+        if (handEvents.length === 0) {
+          throw new Error(`No API events found for hand ${handId}`)
+        }
+
+        // Build hand text using already-cached player map
+        const handText = this.processHandToText(hand, handEvents, globalPlayerMap)
         results.push(handText)
       } catch (error) {
         console.error(`[HandLogExporter] Error exporting hand ${handId}:`, error)
         // Continue with next hand instead of failing completely
       }
-      onProgress?.(results.length, handIds.length)
+      processedCount++
+      onProgress?.(processedCount, handIds.length)
     }
 
     if (results.length === 0) {
       throw new Error('No hands could be exported successfully')
     }
 
-    // Successfully exported hands
     return results.join('\n\n\n')
+  }
+
+  /**
+   * Extract events for a specific hand from a prefetched event array.
+   * Same logic as getHandApiEvents but operates on in-memory data instead of DB.
+   */
+  private static extractHandEvents(allEvents: ApiEvent[], hand: Hand): ApiEvent[] {
+    // Filter to the hand's time range first
+    const startTime = hand.approxTimestamp! - this.TIME_BUFFER_MS
+    const endTime = hand.approxTimestamp! + this.POST_HAND_BUFFER_MS
+
+    const rangeEvents = allEvents.filter(e =>
+      e.timestamp! >= startTime && e.timestamp! <= endTime
+    )
+
+    // Find EVT_HAND_RESULTS with matching HandId
+    const resultEvent = rangeEvents.find((e: ApiEvent) =>
+      isApiEventType(e, ApiType.EVT_HAND_RESULTS) && e.HandId === hand.id
+    )
+    if (!resultEvent) {
+      throw new Error(`Could not find EVT_HAND_RESULTS for hand ${hand.id}`)
+    }
+
+    // Extract EVT_DEAL to EVT_HAND_RESULTS sequence
+    const handEvents: ApiEvent[] = []
+    let foundDeal = false
+
+    for (const event of rangeEvents) {
+      if (isApiEventType(event, ApiType.EVT_DEAL)) {
+        if (this.arrayEquals(event.SeatUserIds, hand.seatUserIds)) {
+          foundDeal = true
+          handEvents.length = 0
+          handEvents.push(event)
+        }
+      } else if (foundDeal) {
+        handEvents.push(event)
+        if (isApiEventType(event, ApiType.EVT_HAND_RESULTS) && event.HandId === hand.id) {
+          break
+        }
+      }
+    }
+
+    return handEvents
+  }
+
+  /**
+   * Convert a hand + events + player map into PokerStars format text.
+   * Shared logic extracted from exportHand for use in batch processing.
+   */
+  private static processHandToText(
+    hand: Hand,
+    events: ApiEvent[],
+    globalPlayerMap: Map<number, { name: string, rank: string }>
+  ): string {
+    const session: Session = {
+      id: hand.session.id,
+      battleType: hand.session.battleType,
+      name: hand.session.name,
+      players: new Map(),
+      reset: function () {
+        this.id = undefined
+        this.battleType = undefined
+        this.name = undefined
+        this.players.clear()
+      }
+    }
+
+    hand.seatUserIds.forEach(userId => {
+      if (userId !== -1) {
+        const playerInfo = globalPlayerMap.get(userId)
+        if (playerInfo) {
+          session.players.set(userId, playerInfo)
+        } else {
+          session.players.set(userId, { name: `Player${userId}`, rank: 'Unknown' })
+        }
+      }
+    })
+
+    const context: HandLogContext = {
+      session,
+      handLogConfig: DEFAULT_HAND_LOG_CONFIG,
+      handTimestamp: hand.approxTimestamp
+    }
+
+    const processor = new HandLogProcessor(context)
+    const entries = processor.processEvents(events)
+    return entries.map(entry => entry.text).join('\n')
   }
 
   /**
