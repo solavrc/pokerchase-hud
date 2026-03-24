@@ -732,63 +732,96 @@ export class HandLogProcessor {
     const { ActionType: actionType, BetChip } = event
 
     // プレイヤーが現在のストリートで既にベットした金額を取得
+    /** プレイヤーの現在のストリートでの累積ベット額を取得 */
     const getPlayerPreviousBet = (player: string): number => {
       if (!this.currentHand) return 0
       
-      // 現在のストリートでこのプレイヤーの最後のベット/レイズ/コールを探す
+      // 現在のストリートでこのプレイヤーの全アクション金額を累積
+      // raises to Y = ストリート内トータルY、calls X = 追加額X
+      let total = 0
+      let isPostflop = false
+      let foundRaiseOrBet = false
+      
       for (let i = this.currentHand.entries.length - 1; i >= 0; i--) {
         const entry = this.currentHand.entries[i]
         if (!entry) continue
         
-        // ストリートマーカーに到達したら終了
         if (entry.type === HandLogEntryType.STREET) {
+          if (entry.text.includes('*** FLOP ***') || entry.text.includes('*** TURN ***') || entry.text.includes('*** RIVER ***')) {
+            isPostflop = true
+          }
           break
         }
         
         if (entry.type === HandLogEntryType.ACTION && entry.text.includes(player)) {
-          // このプレイヤーのベット/レイズ/コールの金額を取得
-          const match = entry.text.match(/(?:bets|raises \d+ to|calls) (\d+)/)
-          if (match?.[1]) {
-            return parseInt(match[1])
+          // calls X → 追加額を累積
+          const callMatch = entry.text.match(/calls (\d+)/)
+          if (callMatch?.[1]) {
+            total += parseInt(callMatch[1])
+            continue
+          }
+          // raises X to Y → Yがストリート内トータル（以前のcallsも含む）
+          const raiseMatch = entry.text.match(/raises \d+ to (\d+)/)
+          if (raiseMatch?.[1]) {
+            total = parseInt(raiseMatch[1]) + total // raise to Yが基準 + その後のcalls
+            foundRaiseOrBet = true
+            break // raise以前のアクションは含まれている
+          }
+          // bets X → トータルはX
+          const betMatch = entry.text.match(/bets (\d+)/)
+          if (betMatch?.[1]) {
+            total = parseInt(betMatch[1]) + total
+            foundRaiseOrBet = true
+            break
           }
         }
       }
       
-      // プリフロップでBB/SBをポストした場合
+      // ポストフロップではストリート内のみ
+      if (isPostflop) return total
+      
+      // プリフロップ: raise/betが見つかった場合はそれが基準（ブラインド含む）
+      if (foundRaiseOrBet) return total
+      
+      // プリフロップ: callsのみの場合、BB/SBポスト額を加算
       const blindEntry = this.currentHand.entries.find(e =>
         e?.text.includes(player) && 
         (e.text.includes('posts small blind') || e.text.includes('posts big blind'))
       )
       if (blindEntry?.text) {
         const blindMatch = blindEntry.text.match(/posts (?:small|big) blind (\d+)/)
-        if (blindMatch?.[1]) return parseInt(blindMatch[1])
+        if (blindMatch?.[1]) total += parseInt(blindMatch[1])
       }
       
-      return 0
+      return total
     }
 
     const getPreviousBet = (): number => {
       if (!this.currentHand) return 0
 
       // 現在のストリートで最後のベット/レイズ額を探す
-      // ストリートマーカーを見つけたら検索を停止
+      let isPostflop = false
       for (let i = this.currentHand.entries.length - 1; i >= 0; i--) {
         const entry = this.currentHand.entries[i]
         if (!entry) continue
         
-        // ストリートマーカーに到達したら、このストリートではベットがない
         if (entry.type === HandLogEntryType.STREET) {
+          if (entry.text.includes('*** FLOP ***') || entry.text.includes('*** TURN ***') || entry.text.includes('*** RIVER ***')) {
+            isPostflop = true
+          }
           break
         }
         
         if (entry.type === HandLogEntryType.ACTION) {
-          // betsまたはraises ... to XXXのパターンを探す
           const betMatch = entry.text.match(/(?:bets|raises \d+ to) (\d+)/)
           if (betMatch?.[1]) {
             return parseInt(betMatch[1])
           }
         }
       }
+
+      // ポストフロップではストリート内のベットのみ参照
+      if (isPostflop) return 0
 
       // プリフロップの場合、BBを返す
       const bbEntry = this.currentHand.entries.find(e =>
@@ -809,8 +842,12 @@ export class HandLogProcessor {
         return `${playerName}: bets ${BetChip}`
       case ActionType.FOLD:
         return `${playerName}: folds`
-      case ActionType.CALL:
-        return `${playerName}: calls ${BetChip}`
+      case ActionType.CALL: {
+        // PS format: calls shows ADDITIONAL amount (total - already posted)
+        const playerPrevBetForCall = getPlayerPreviousBet(playerName)
+        const callAmount = BetChip - playerPrevBetForCall
+        return `${playerName}: calls ${callAmount}`
+      }
       case ActionType.RAISE: {
         const previousBet = getPreviousBet()
         const raiseAmount = BetChip - previousBet
@@ -827,7 +864,9 @@ export class HandLogProcessor {
           const callAmount = BetChip - playerPrevBet
           return `${playerName}: calls ${callAmount} and is all-in`
         } else if (prevBet > 0) {
-          return `${playerName}: calls ${BetChip} and is all-in`
+          const playerPrevBetAllIn = getPlayerPreviousBet(playerName)
+          const callAmtAllIn = BetChip - playerPrevBetAllIn
+          return `${playerName}: calls ${callAmtAllIn} and is all-in`
         } else {
           return `${playerName}: bets ${BetChip} and is all-in`
         }

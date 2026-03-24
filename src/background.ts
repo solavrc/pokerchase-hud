@@ -19,7 +19,7 @@ import PokerChaseService, {
   isApplicationApiEvent
 } from './app'
 import { EntityConverter } from './entity-converter'
-import { saveEntities, findLatestPlayerDealEvent, processInChunks } from './utils/database-utils'
+import { saveEntities, findLatestPlayerDealEvent } from './utils/database-utils'
 import type { AllPlayersRealTimeStats } from './realtime-stats/realtime-stats-service'
 import type { Options } from './components/Popup'
 import type { HandLogEvent } from './types/hand-log'
@@ -970,25 +970,17 @@ const rebuildAllData = async (): Promise<void> => {
       }
       const converter = new EntityConverter(defaultSession)
       
-      const query = db.apiEvents.orderBy('timestamp')
+      // Load all events and convert in one pass
+      // (EntityConverter tracks hand state internally, so chunked conversion loses cross-chunk hands)
+      console.log(`[rebuildAllData] Loading all events...`)
+      const allEvents = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
+      console.log(`[rebuildAllData] Loaded ${allEvents.length} events, converting to entities...`)
       
-      for await (const chunk of processInChunks(query, DATABASE_CONSTANTS.IMPORT_CHUNK_SIZE, {
-        onProgress: (current, total) => {
-          // Log progress every 50000 events
-          if (current % 50000 === 0 || current >= total) {
-            console.log(`[rebuildAllData] Processed ${current}/${total} events`)
-          }
-        }
-      })) {
-        // Convert chunk to entities
-        const entities = converter.convertEventsToEntities(chunk)
-        
-        // Save entities using common utility
-        const counts = await saveEntities(db, entities)
-        totalHands += counts.hands
-        totalPhases += counts.phases
-        totalActions += counts.actions
-      }
+      const entities = converter.convertEventsToEntities(allEvents)
+      const counts = await saveEntities(db, entities)
+      totalHands += counts.hands
+      totalPhases += counts.phases
+      totalActions += counts.actions
       
       console.log(`[rebuildAllData] Generated entities - Hands: ${totalHands}, Phases: ${totalPhases}, Actions: ${totalActions}`)
 

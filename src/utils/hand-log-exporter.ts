@@ -275,7 +275,7 @@ export class HandLogExporter {
   /**
    * Export recent hands from a session or database
    */
-  static async exportRecentHands(db: PokerChaseDB, sessionId?: string, limit: number = 100): Promise<string> {
+  static async exportRecentHands(db: PokerChaseDB, sessionId?: string, limit?: number): Promise<string> {
     let hands: Hand[]
 
     if (sessionId) {
@@ -288,12 +288,9 @@ export class HandLogExporter {
             .slice(0, limit)
         )
     } else {
-      // Get most recent hands
-      hands = await db.hands
-        .orderBy('id')
-        .reverse()
-        .limit(limit)
-        .toArray()
+      // Get all hands (or limited if specified)
+      const query = db.hands.orderBy('id').reverse()
+      hands = limit ? await query.limit(limit).toArray() : await query.toArray()
     }
 
     if (hands.length === 0) {
