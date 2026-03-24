@@ -51,9 +51,9 @@ export const cbetStat: StatDefinition = {
       }
     }
     
-    // CBetFoldの判定（CBetが実際に行われた後）
-    if (phase !== PhaseType.PREFLOP && !handState?.cBetter && phasePrevBetCount === 1) {
-      // cBetterがないかつphasePrevBetCountが1 = CBetが行われた
+    // CBetFoldの判定（CBetが実際に行われた後のみ、同一ストリートのみ）
+    if (phase !== PhaseType.PREFLOP && handState?.cBetExecuted && handState?.cBetPhase === phase && phasePrevBetCount === 1) {
+      // cBetExecutedがtrue = CBetが実際に実行された後の相手プレイヤーのアクション
       details.push(ActionDetail.CBET_FOLD_CHANCE)
       if (actionType === ActionType.FOLD) {
         details.push(ActionDetail.CBET_FOLD)
@@ -80,10 +80,12 @@ export const cbetStat: StatDefinition = {
       if (phasePrevBetCount === 0) {
         if (handState.cBetter === playerId) {
           if (actionType === ActionType.BET) {
-            // CBが実行された後にcBetterをクリア
+            // CBが実行された
             handState.cBetter = undefined
+            handState.cBetExecuted = true
+            handState.cBetPhase = phase
           } else {
-            handState.cBetter = undefined // CB機会を逃した
+            handState.cBetter = undefined // CB機会を逃した（cBetExecutedはfalseのまま）
           }
         } else {
           if (actionType === ActionType.BET) {
