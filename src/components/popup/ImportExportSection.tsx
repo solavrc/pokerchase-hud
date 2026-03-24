@@ -167,6 +167,13 @@ export const ImportExportSection = ({
     chrome.runtime.sendMessage<ExportDataMessage>({
       action: 'exportData',
       format
+    }, (response: any) => {
+      // If background rejected (e.g., concurrent operation), revert state
+      if (response && !response.success) {
+        setExportState('idle')
+        setExportFormat(null)
+        setOperationStatus(response.error || 'エクスポート失敗')
+      }
     })
   }, [])
 
@@ -261,7 +268,14 @@ export const ImportExportSection = ({
       setRebuildProgress(0)
       setOperationStatus('データ再構築開始...')
 
-      chrome.runtime.sendMessage({ action: 'rebuildData' })
+      chrome.runtime.sendMessage({ action: 'rebuildData' }, (response: any) => {
+        // If background rejected (e.g., concurrent operation), revert state
+        if (response && !response.success) {
+          setRebuildState('idle')
+          setRebuildProgress(0)
+          setOperationStatus(response.error || 'データ再構築失敗')
+        }
+      })
     }
   }, [])
 

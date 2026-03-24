@@ -143,6 +143,12 @@ chrome.storage.sync.get('options', (result) => {
  */
 chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.runtime.MessageSender, sendResponse: (response: MessageResponse) => void) => {
   if (request.action === 'exportData') {
+    // Block concurrent operations
+    if (currentOperationState.type !== 'idle') {
+      console.warn(`[exportData] Blocked: operation already in progress (${currentOperationState.type})`)
+      sendResponse({ success: false, error: '別の処理が実行中です' })
+      return true
+    }
     exportData(request.format)
       .then(() => sendResponse({ success: true }))
       .catch(error => {
@@ -358,6 +364,12 @@ chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.run
       })
     return true
   } else if (request.action === 'rebuildData') {
+    // Block concurrent operations
+    if (currentOperationState.type !== 'idle') {
+      console.warn(`[rebuildData] Blocked: operation already in progress (${currentOperationState.type})`)
+      sendResponse({ success: false, error: '別の処理が実行中です' })
+      return true
+    }
     // 手動でのデータ再構築
     console.log('[rebuildData] Starting manual data rebuild...')
 
@@ -373,6 +385,7 @@ chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.run
       })
     return true
   } else if (request.action === 'getOperationState') {
+    console.log('[getOperationState]', JSON.stringify(currentOperationState))
     sendResponse({ success: true, operationState: currentOperationState })
     return true
   }
