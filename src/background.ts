@@ -623,32 +623,37 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
 
 const exportJsonData = async (db: PokerChaseDB) => {
   try {
-    const query = db.apiEvents.orderBy('timestamp')
-    const totalCount = await query.count()
+    const totalCount = await db.apiEvents.count()
     console.log(`[Export] Exporting ${totalCount} events...`)
     
-    // Process in chunks to avoid memory issues
+    // Direct chunked export using primary key cursor to avoid Dexie Collection offset issues
     const chunks: string[] = []
     let processedCount = 0
+    let lastKey: any = undefined
+    const chunkSize = DATABASE_CONSTANTS.EXPORT_CHUNK_SIZE
     
-    for await (const chunk of processInChunks(query, DATABASE_CONSTANTS.EXPORT_CHUNK_SIZE, {
-      onProgress: (current, total) => {
-        // Log progress every 50000 events
-        if (current % 50000 === 0 || current >= total) {
-          console.log(`[Export] Processed ${current}/${total} events`)
-        }
-      }
-    })) {
-      // Convert chunk to JSONL format
-      const chunkContent = chunk
-        .map(event => JSON.stringify(event))
-        .join('\n')
+    while (true) {
+      // Build fresh query each iteration using primary key range
+      const chunk = lastKey !== undefined
+        ? await db.apiEvents.where('[timestamp+ApiTypeId]').above(lastKey).limit(chunkSize).toArray()
+        : await db.apiEvents.orderBy('[timestamp+ApiTypeId]').limit(chunkSize).toArray()
       
-      chunks.push(chunkContent)
+      if (chunk.length === 0) break
+      
+      chunks.push(chunk.map(event => JSON.stringify(event)).join('\n'))
       processedCount += chunk.length
+      
+      // Track last key for next iteration
+      const lastEvent = chunk[chunk.length - 1]!
+      lastKey = [lastEvent.timestamp, lastEvent.ApiTypeId]
+      
+      if (processedCount % 50000 === 0 || processedCount >= totalCount) {
+        console.log(`[Export] Processed ${processedCount}/${totalCount} events`)
+      }
+      
+      if (chunk.length < chunkSize) break // Last chunk
     }
     
-    // Combine all chunks
     const jsonlContent = chunks.join('\n')
     
     downloadFile(
@@ -657,7 +662,7 @@ const exportJsonData = async (db: PokerChaseDB) => {
       'application/x-ndjson'
     )
     
-    console.log(`[Export] Export completed: ${processedCount} events`)
+    console.log(`[Export] Export completed: ${processedCount} events (${(jsonlContent.length / 1024 / 1024).toFixed(1)}MB)`)
   } catch (error) {
     console.error('[Export] Export failed:', error)
     throw error
@@ -722,18 +727,39 @@ const downloadFile = (content: string, filename: string, contentType: string) =>
 
   const finalFilename = getFinalFilename()
 
-  const getDataUrl = () => {
-    if (contentType.includes('json') || contentType.includes('text') || contentType.includes('ndjson')) {
-      // Modern replacement for deprecated unescape
-      const base64Content = btoa(encodeURIComponent(content).replace(/%([0-9A-F]{2})/g, (_match, p1) => String.fromCharCode(parseInt(p1, 16))))
-      return `data:${contentType};base64,${base64Content}`
-    }
-    console.error('Binary content not supported in this context')
-    return ''
-  }
+  // Send to content script for Blob-based download (avoids data URL size limits)
+  chrome.tabs.query({ url: gameUrlPattern }, async tabs => {
+    const tab = tabs.find(t => t.id)
+    if (tab?.id) {
+      const sizeMB = content.length / 1024 / 1024
+      const MAX_CHUNK_MB = 50 // Under Chrome's 64MiB message limit
+      const maxChunkSize = MAX_CHUNK_MB * 1024 * 1024
 
-  const dataUrl = getDataUrl()
-  if (!dataUrl) return
+      if (content.length <= maxChunkSize) {
+        chrome.tabs.sendMessage(tab.id, { action: 'downloadFile', content, filename: finalFilename, contentType })
+      } else {
+        // Split into chunks for large files
+        const totalChunks = Math.ceil(content.length / maxChunkSize)
+        console.log(`[Export] Splitting ${sizeMB.toFixed(1)}MB into ${totalChunks} chunks...`)
+        chrome.tabs.sendMessage(tab.id, { action: 'downloadFileInit', filename: finalFilename, contentType, totalChunks })
+        for (let i = 0; i < totalChunks; i++) {
+          const chunk = content.slice(i * maxChunkSize, (i + 1) * maxChunkSize)
+          chrome.tabs.sendMessage(tab.id, { action: 'downloadFileChunk', chunkIndex: i, chunk, totalChunks })
+        }
+        chrome.tabs.sendMessage(tab.id, { action: 'downloadFileFinish', filename: finalFilename, contentType })
+      }
+      console.log(`[Export] Download initiated via content script: ${finalFilename} (${sizeMB.toFixed(1)}MB)`)
+      return
+    }
+    // Fallback: data URL (may fail for large files >2MB)
+    console.warn('[Export] No game tab found, falling back to data URL download')
+    downloadViaDataUrl(content, finalFilename, contentType)
+  })
+}
+
+const downloadViaDataUrl = (content: string, finalFilename: string, contentType: string) => {
+  const base64Content = btoa(encodeURIComponent(content).replace(/%([0-9A-F]{2})/g, (_match, p1) => String.fromCharCode(parseInt(p1, 16))))
+  const dataUrl = `data:${contentType};base64,${base64Content}`
 
   chrome.downloads.download({
     url: dataUrl,
@@ -774,20 +800,21 @@ chrome.runtime.onConnect.addListener(port => {
       }
 
       // 通常のAPIメッセージ処理
-      // Zodスキーマで完全検証
+      // Zodスキーマでパース（passthrough: 未知プロパティは保持）
       const data = parseApiEvent(message as ApiMessage)
 
       if (!data) {
+        // パース失敗 = 必須プロパティ欠損など破壊的変更の可能性
         const validationResult = validateApiEvent(message as ApiMessage)
         const errorDetails = validationResult.error ? getValidationError(validationResult.error) : null
-        console.warn('[background] Schema validation failed:', errorDetails, message)
+        console.warn(`[background] Schema validation failed (event dropped):\n  Errors: ${JSON.stringify(errorDetails, null, 2)}\n  Event: ${JSON.stringify(message, null, 2)}`)
         return
       }
 
       // アプリケーション用のイベントかチェック
       if (!isApplicationApiEvent(data)) {
-        // アプリケーションで使用しないApiTypeIdのイベントをスキップ
-        console.debug('[background] Non-application event received:', data.ApiTypeId)
+        // アプリケーションで使用しないApiTypeIdのイベントはDB保存しないが内容は記録
+        console.info(`[background] Non-application event (${data.ApiTypeId}): ${JSON.stringify(data)}`)
         return
       }
 

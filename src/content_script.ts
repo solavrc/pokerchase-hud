@@ -211,10 +211,48 @@ const messageHandlers: Record<string, (message: ChromeMessage) => void> = {
   }
 }
 
-chrome.runtime.onMessage.addListener((message: ChromeMessage) => {
-  const handler = messageHandlers[message.action]
+chrome.runtime.onMessage.addListener((message: ChromeMessage | { action: string, [key: string]: unknown }) => {
+  // Blob-based file download (avoids Service Worker data URL size limits)
+  if (message.action === 'downloadFile' && 'content' in message) {
+    const m = message as any
+    const blob = new Blob([m.content], { type: m.contentType })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = m.filename
+    a.click()
+    URL.revokeObjectURL(url)
+    console.log(`[content_script] Download: ${m.filename} (${(m.content.length / 1024 / 1024).toFixed(1)}MB)`)
+    return
+  }
+  // Chunked file download for large files (>50MB)
+  if (message.action === 'downloadFileInit') {
+    (window as any).__downloadChunks = []
+    return
+  }
+  if (message.action === 'downloadFileChunk' && 'chunk' in message) {
+    const m = message as any
+    if (!(window as any).__downloadChunks) (window as any).__downloadChunks = []
+    ;(window as any).__downloadChunks.push(m.chunk)
+    return
+  }
+  if (message.action === 'downloadFileFinish' && 'filename' in message) {
+    const m = message as any
+    const chunks = (window as any).__downloadChunks || []
+    const blob = new Blob(chunks, { type: m.contentType })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = m.filename
+    a.click()
+    URL.revokeObjectURL(url)
+    console.log(`[content_script] Chunked download: ${m.filename} (${(blob.size / 1024 / 1024).toFixed(1)}MB, ${chunks.length} chunks)`)
+    ;(window as any).__downloadChunks = null
+    return
+  }
+  const handler = messageHandlers[message.action as keyof typeof messageHandlers]
   if (handler) {
-    handler(message)
+    handler(message as ChromeMessage)
   }
 })
 

@@ -7,6 +7,7 @@
     "test": "jest",
     "typecheck": "tsc --noEmit",
     "validate-schema": "tsx src/tools/validate-schemas.ts",
+    "schema-diff": "tsx src/tools/detect-schema-diff.ts",
     "ccusage": "npx ccusage@latest",
     "firebase:deploy": "firebase deploy --only firestore:rules,firestore:indexes",
     "firebase:deploy:rules": "firebase deploy --only firestore:rules",

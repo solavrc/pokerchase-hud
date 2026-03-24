@@ -42,7 +42,7 @@ const messageSchema = z.object({
 /** 各APIイベントの基底スキーマ */
 const baseSchema = z.object({
   timestamp: z.number().int().optional().describe('Unix Milliseconds - WebSocket受信時に付与')
-}).strict().describe('基底スキーマ: 未定義プロパティを検知')
+}).passthrough().describe('基底スキーマ: 未知プロパティは保持して後続処理に流す')
 
 // ===============================
 // Common Sub-Schemas (再利用可能な共通スキーマ)
@@ -491,6 +491,10 @@ export const apiEventSchemas = {
     TournamentReward: z.object({
       JoinNum: z.int().optional(),
     }).optional(),
+    IsTimerWinFinish: z.boolean().optional().describe('タイマー勝利で終了したか'),
+    TableId: z.union([z.string(), z.int()]).optional().describe('テーブルID（文字列または数値）'),
+    IsOverDailyLimit: z.boolean().optional().describe('デイリー制限超過フラグ'),
+    IsChangeDay: z.boolean().optional().describe('日付変更フラグ'),
   }).describe('イベント結果'),
 
   [310]: baseSchema.extend({
@@ -551,6 +555,7 @@ export const apiEventSchemas = {
       SmallBlindSeat: z.union([z.literal(-1), z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).optional().describe('-1:要調査'),
     }).optional().describe('途中参加時'),
     IsSafeLeave: z.boolean().optional(),
+    WaitTableType: z.int().nonnegative().optional().describe('テーブル待機タイプ（0:通常）'),
     OtherPlayers: z.array(z.object({
       BetChip: z.int().nonnegative(),
       BetStatus: z.enum(BetStatusType),
