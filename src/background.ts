@@ -1239,5 +1239,11 @@ const handleFirebaseSignOut = async (): Promise<void> => {
 // Listen for auth state changes on startup
 firebaseAuthService.onAuthStateChange((user) => {
   console.log('[Firebase] Auth state changed:', user ? user.email : 'signed out')
+
+  // Cache auth state for instant popup rendering
+  const authCache = user
+    ? { isSignedIn: true, userInfo: { email: user.email, uid: user.uid } }
+    : { isSignedIn: false, userInfo: null }
+  chrome.storage.local.set({ firebaseAuthCache: authCache })
 })
 

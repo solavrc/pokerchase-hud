@@ -45,6 +45,10 @@ global.chrome = {
       get: mockChromeStorageGet,
       set: mockChromeStorageSet,
     },
+    local: {
+      get: jest.fn((_key: string, cb: (result: Record<string, unknown>) => void) => cb({})),
+      set: jest.fn(),
+    },
   },
 } as any
 
