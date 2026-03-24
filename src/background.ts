@@ -774,13 +774,14 @@ chrome.runtime.onConnect.addListener(port => {
       }
 
       // 通常のAPIメッセージ処理
-      // Zodスキーマで完全検証
+      // Zodスキーマでパース（passthrough: 未知プロパティは保持）
       const data = parseApiEvent(message as ApiMessage)
 
       if (!data) {
+        // パース失敗 = 必須プロパティ欠損など破壊的変更の可能性
         const validationResult = validateApiEvent(message as ApiMessage)
         const errorDetails = validationResult.error ? getValidationError(validationResult.error) : null
-        console.warn('[background] Schema validation failed:', errorDetails, message)
+        console.warn('[background] Schema validation failed (event dropped):', errorDetails, message)
         return
       }
 

@@ -42,7 +42,7 @@ const messageSchema = z.object({
 /** 各APIイベントの基底スキーマ */
 const baseSchema = z.object({
   timestamp: z.number().int().optional().describe('Unix Milliseconds - WebSocket受信時に付与')
-}).strict().describe('基底スキーマ: 未定義プロパティを検知')
+}).passthrough().describe('基底スキーマ: 未知プロパティは保持して後続処理に流す')
 
 // ===============================
 // Common Sub-Schemas (再利用可能な共通スキーマ)
