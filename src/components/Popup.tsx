@@ -198,7 +198,15 @@ const Popup = () => {
         }
       })
 
-      // Check Firebase auth status on load
+      // Load cached Firebase auth state first for instant rendering
+      chrome.storage.local.get('firebaseAuthCache', (result) => {
+        if (result.firebaseAuthCache) {
+          setIsFirebaseSignedIn(result.firebaseAuthCache.isSignedIn || false)
+          setFirebaseUserInfo(result.firebaseAuthCache.userInfo || null)
+        }
+      })
+
+      // Then verify with background (authoritative source)
       chrome.runtime.sendMessage({ action: 'firebaseAuthStatus' }, (response: any) => {
         if (response) {
           setIsFirebaseSignedIn(response.isSignedIn || false)

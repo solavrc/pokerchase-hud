@@ -45,6 +45,10 @@ global.chrome = {
       get: mockChromeStorageGet,
       set: mockChromeStorageSet,
     },
+    local: {
+      get: jest.fn((_key: string, cb: (result: Record<string, unknown>) => void) => cb({})),
+      set: jest.fn(),
+    },
   },
 } as any
 
@@ -199,10 +203,10 @@ describe('Popup', () => {
     // エクスポートボタンをクリック
     await userEvent.click(screen.getByText('Export Hand History (PokerStars)'))
 
-    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith({
-      action: 'exportData',
-      format: 'pokerstars',
-    })
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      { action: 'exportData', format: 'pokerstars' },
+      expect.any(Function)
+    )
   })
 
   it('データ再構築機能', async () => {
@@ -221,9 +225,10 @@ describe('Popup', () => {
       'データを再構築しますか？この処理には時間がかかる場合があります。'
     )
 
-    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith({
-      action: 'rebuildData',
-    })
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      { action: 'rebuildData' },
+      expect.any(Function)
+    )
 
     confirmSpy.mockRestore()
   })

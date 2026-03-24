@@ -103,6 +103,8 @@ export const ImportExportSection = ({
             setOperationStatus(msg.message ?? '')
             break
           case 'processing':
+            setExportState('exporting')
+            setExportFormat(msg.format ?? null)
             setExportProgress(msg.progress ?? 0)
             setExportProcessed(msg.processed ?? 0)
             setExportTotal(msg.total ?? 0)
@@ -132,6 +134,7 @@ export const ImportExportSection = ({
             setOperationStatus(msg.message ?? '')
             break
           case 'processing':
+            setRebuildState('rebuilding')
             setRebuildProgress(msg.progress ?? 0)
             setOperationStatus(msg.message ?? '')
             break
@@ -155,10 +158,25 @@ export const ImportExportSection = ({
     }
   }, [])
 
-  const handleExportClick = useCallback((format: string) => {
+  const handleExportClick = useCallback((format: 'json' | 'pokerstars') => {
+    // Optimistically set state immediately to disable buttons (prevents double-click)
+    setExportState('exporting')
+    setExportFormat(format)
+    setExportProgress(0)
+    setExportProcessed(0)
+    setExportTotal(0)
+    setOperationStatus(format === 'pokerstars' ? 'PokerStarsエクスポート開始...' : 'NDJSONエクスポート開始...')
+
     chrome.runtime.sendMessage<ExportDataMessage>({
       action: 'exportData',
-      format: format as 'json' | 'pokerstars'
+      format
+    }, (response: any) => {
+      // If background rejected (e.g., concurrent operation), revert state
+      if (response && !response.success) {
+        setExportState('idle')
+        setExportFormat(null)
+        setOperationStatus(response.error || 'エクスポート失敗')
+      }
     })
   }, [])
 
@@ -248,7 +266,19 @@ export const ImportExportSection = ({
 
   const handleRebuildClick = useCallback(() => {
     if (window.confirm('データを再構築しますか？この処理には時間がかかる場合があります。')) {
-      chrome.runtime.sendMessage({ action: 'rebuildData' })
+      // Optimistically set state immediately to disable buttons
+      setRebuildState('rebuilding')
+      setRebuildProgress(0)
+      setOperationStatus('データ再構築開始...')
+
+      chrome.runtime.sendMessage({ action: 'rebuildData' }, (response: any) => {
+        // If background rejected (e.g., concurrent operation), revert state
+        if (response && !response.success) {
+          setRebuildState('idle')
+          setRebuildProgress(0)
+          setOperationStatus(response.error || 'データ再構築失敗')
+        }
+      })
     }
   }, [])
 

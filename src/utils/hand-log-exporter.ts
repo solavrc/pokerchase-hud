@@ -244,7 +244,7 @@ export class HandLogExporter {
         const handText = this.processHandToText(hand, handEvents, globalPlayerMap)
         results.push(handText)
       } catch (error) {
-        console.error(`[HandLogExporter] Error exporting hand ${handId}:`, error)
+        console.warn(`[HandLogExporter] Skipped hand ${handId}:`, error instanceof Error ? error.message : error)
         // Continue with next hand instead of failing completely
       }
       processedCount++
