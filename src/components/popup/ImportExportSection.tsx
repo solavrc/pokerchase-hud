@@ -103,6 +103,8 @@ export const ImportExportSection = ({
             setOperationStatus(msg.message ?? '')
             break
           case 'processing':
+            setExportState('exporting')
+            setExportFormat(msg.format ?? null)
             setExportProgress(msg.progress ?? 0)
             setExportProcessed(msg.processed ?? 0)
             setExportTotal(msg.total ?? 0)
@@ -132,6 +134,7 @@ export const ImportExportSection = ({
             setOperationStatus(msg.message ?? '')
             break
           case 'processing':
+            setRebuildState('rebuilding')
             setRebuildProgress(msg.progress ?? 0)
             setOperationStatus(msg.message ?? '')
             break
