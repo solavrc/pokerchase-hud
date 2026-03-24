@@ -160,6 +160,8 @@ export const handStateSchema = z.object({
   phases: z.array(phaseSchema),
   // State tracking for statistics
   cBetter: z.number().optional(),  // Player who made the last raise preflop
+  cBetExecuted: z.boolean().optional(),  // Whether a CBet was actually executed on this street
+  cBetPhase: z.number().optional(),     // Phase where CBet was executed
   lastAggressor: z.number().optional(),  // Player who made the last bet/raise in previous street
   currentStreetAggressor: z.number().optional()  // Player who made the first bet in current street
 })

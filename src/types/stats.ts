@@ -41,6 +41,8 @@ export interface ActionDetailContext {
   // HandState for stateful detection
   handState?: {
     cBetter?: number
+    cBetExecuted?: boolean  // CBetが実際に実行されたかどうか
+    cBetPhase?: number     // CBetが実行されたストリート
     lastAggressor?: number
     currentStreetAggressor?: number
     // 他の状態管理用フィールドを追加可能
