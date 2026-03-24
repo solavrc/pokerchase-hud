@@ -623,32 +623,37 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
 
 const exportJsonData = async (db: PokerChaseDB) => {
   try {
-    const query = db.apiEvents.orderBy('timestamp')
-    const totalCount = await query.count()
+    const totalCount = await db.apiEvents.count()
     console.log(`[Export] Exporting ${totalCount} events...`)
     
-    // Process in chunks to avoid memory issues
+    // Direct chunked export using primary key cursor to avoid Dexie Collection offset issues
     const chunks: string[] = []
     let processedCount = 0
+    let lastKey: any = undefined
+    const chunkSize = DATABASE_CONSTANTS.EXPORT_CHUNK_SIZE
     
-    for await (const chunk of processInChunks(query, DATABASE_CONSTANTS.EXPORT_CHUNK_SIZE, {
-      onProgress: (current, total) => {
-        // Log progress every 50000 events
-        if (current % 50000 === 0 || current >= total) {
-          console.log(`[Export] Processed ${current}/${total} events`)
-        }
-      }
-    })) {
-      // Convert chunk to JSONL format
-      const chunkContent = chunk
-        .map(event => JSON.stringify(event))
-        .join('\n')
+    while (true) {
+      // Build fresh query each iteration using primary key range
+      const chunk = lastKey !== undefined
+        ? await db.apiEvents.where('[timestamp+ApiTypeId]').above(lastKey).limit(chunkSize).toArray()
+        : await db.apiEvents.orderBy('[timestamp+ApiTypeId]').limit(chunkSize).toArray()
       
-      chunks.push(chunkContent)
+      if (chunk.length === 0) break
+      
+      chunks.push(chunk.map(event => JSON.stringify(event)).join('\n'))
       processedCount += chunk.length
+      
+      // Track last key for next iteration
+      const lastEvent = chunk[chunk.length - 1]!
+      lastKey = [lastEvent.timestamp, lastEvent.ApiTypeId]
+      
+      if (processedCount % 50000 === 0 || processedCount >= totalCount) {
+        console.log(`[Export] Processed ${processedCount}/${totalCount} events`)
+      }
+      
+      if (chunk.length < chunkSize) break // Last chunk
     }
     
-    // Combine all chunks
     const jsonlContent = chunks.join('\n')
     
     downloadFile(
@@ -657,7 +662,7 @@ const exportJsonData = async (db: PokerChaseDB) => {
       'application/x-ndjson'
     )
     
-    console.log(`[Export] Export completed: ${processedCount} events`)
+    console.log(`[Export] Export completed: ${processedCount} events (${(jsonlContent.length / 1024 / 1024).toFixed(1)}MB)`)
   } catch (error) {
     console.error('[Export] Export failed:', error)
     throw error
