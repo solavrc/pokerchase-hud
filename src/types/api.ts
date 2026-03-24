@@ -491,6 +491,10 @@ export const apiEventSchemas = {
     TournamentReward: z.object({
       JoinNum: z.int().optional(),
     }).optional(),
+    IsTimerWinFinish: z.boolean().optional().describe('タイマー勝利で終了したか'),
+    TableId: z.string().optional().describe('テーブルID'),
+    IsOverDailyLimit: z.boolean().optional().describe('デイリー制限超過フラグ'),
+    IsChangeDay: z.boolean().optional().describe('日付変更フラグ'),
   }).describe('イベント結果'),
 
   [310]: baseSchema.extend({
