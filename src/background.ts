@@ -797,8 +797,8 @@ chrome.runtime.onConnect.addListener(port => {
 
       // アプリケーション用のイベントかチェック
       if (!isApplicationApiEvent(data)) {
-        // アプリケーションで使用しないApiTypeIdのイベントをスキップ
-        console.debug('[background] Non-application event received:', data.ApiTypeId)
+        // アプリケーションで使用しないApiTypeIdのイベントはDB保存しないが内容は記録
+        console.info(`[background] Non-application event (${data.ApiTypeId}): ${JSON.stringify(data)}`)
         return
       }
 
