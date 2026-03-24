@@ -551,6 +551,7 @@ export const apiEventSchemas = {
       SmallBlindSeat: z.union([z.literal(-1), z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).optional().describe('-1:要調査'),
     }).optional().describe('途中参加時'),
     IsSafeLeave: z.boolean().optional(),
+    WaitTableType: z.int().nonnegative().optional().describe('テーブル待機タイプ（0:通常）'),
     OtherPlayers: z.array(z.object({
       BetChip: z.int().nonnegative(),
       BetStatus: z.enum(BetStatusType),
