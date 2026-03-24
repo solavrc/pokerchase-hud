@@ -358,9 +358,8 @@ class PokerChaseService {
     const { HandLogExporter } = await import('../utils/hand-log-exporter')
 
     if (!handIds) {
-      // Export all hands from the current session or recent hands
-      const sessionId = this.session.id
-      return HandLogExporter.exportRecentHands(this.db, sessionId, 100)
+      // Export all recent hands (no session filter)
+      return HandLogExporter.exportRecentHands(this.db)
     }
 
     if (handIds.length === 0) {
