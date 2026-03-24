@@ -722,18 +722,28 @@ const downloadFile = (content: string, filename: string, contentType: string) =>
 
   const finalFilename = getFinalFilename()
 
-  const getDataUrl = () => {
-    if (contentType.includes('json') || contentType.includes('text') || contentType.includes('ndjson')) {
-      // Modern replacement for deprecated unescape
-      const base64Content = btoa(encodeURIComponent(content).replace(/%([0-9A-F]{2})/g, (_match, p1) => String.fromCharCode(parseInt(p1, 16))))
-      return `data:${contentType};base64,${base64Content}`
+  // Send to content script for Blob-based download (avoids data URL size limits)
+  chrome.tabs.query({ url: gameUrlPattern }, tabs => {
+    const tab = tabs.find(t => t.id)
+    if (tab?.id) {
+      chrome.tabs.sendMessage(tab.id, {
+        action: 'downloadFile',
+        content,
+        filename: finalFilename,
+        contentType
+      })
+      console.log(`[Export] Download initiated via content script: ${finalFilename} (${(content.length / 1024 / 1024).toFixed(1)}MB)`)
+      return
     }
-    console.error('Binary content not supported in this context')
-    return ''
-  }
+    // Fallback: data URL (may fail for large files >2MB)
+    console.warn('[Export] No game tab found, falling back to data URL download')
+    downloadViaDataUrl(content, finalFilename, contentType)
+  })
+}
 
-  const dataUrl = getDataUrl()
-  if (!dataUrl) return
+const downloadViaDataUrl = (content: string, finalFilename: string, contentType: string) => {
+  const base64Content = btoa(encodeURIComponent(content).replace(/%([0-9A-F]{2})/g, (_match, p1) => String.fromCharCode(parseInt(p1, 16))))
+  const dataUrl = `data:${contentType};base64,${base64Content}`
 
   chrome.downloads.download({
     url: dataUrl,

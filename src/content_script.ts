@@ -211,10 +211,22 @@ const messageHandlers: Record<string, (message: ChromeMessage) => void> = {
   }
 }
 
-chrome.runtime.onMessage.addListener((message: ChromeMessage) => {
-  const handler = messageHandlers[message.action]
+chrome.runtime.onMessage.addListener((message: ChromeMessage | { action: 'downloadFile', content: string, filename: string, contentType: string }) => {
+  // Blob-based file download (avoids Service Worker data URL size limits)
+  if (message.action === 'downloadFile' && 'content' in message) {
+    const blob = new Blob([message.content], { type: message.contentType })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = message.filename
+    a.click()
+    URL.revokeObjectURL(url)
+    console.log(`[content_script] Download: ${message.filename} (${(message.content.length / 1024 / 1024).toFixed(1)}MB)`)
+    return
+  }
+  const handler = messageHandlers[message.action as keyof typeof messageHandlers]
   if (handler) {
-    handler(message)
+    handler(message as ChromeMessage)
   }
 })
 
