@@ -163,12 +163,27 @@ export class HandLogProcessor {
     // ブラインドとアンテを追加
     const ante = event.Game.Ante
 
+    // BB優先配分の判定: BBがアンテでオールインする場合、
+    // PS形式ではBB行が必須のため、アンテをスキップしBB行に全額を配分する
+    const bbSeat = event.Game.BigBlindSeat
+    const bbUserId = bbSeat !== undefined ? event.SeatUserIds[bbSeat] : undefined
+    const bbChipsAfterAnte = (bbUserId !== undefined && bbUserId !== -1)
+      ? this.getPlayerChipsAfterAnte(event, bbSeat)
+      : -1
+    const bbAnteAllIn = bbChipsAfterAnte === 0
+
     if (ante > 0) {
       event.SeatUserIds.forEach((userId, seatIdx) => {
         if (userId !== -1) {
           const playerName = this.getPlayerName(userId)
-          // アンテ支払い前のチップを取得し、実際の投入額を計算
           const chipsBeforeAnte = this.getPlayerChips(event, seatIdx)
+
+          // BB優先配分: BBプレイヤーがアンテでオールインの場合、
+          // アンテ行をスキップして全額をBB行で出力する
+          if (bbAnteAllIn && seatIdx === bbSeat) {
+            return
+          }
+
           const actualAnte = Math.min(ante, chipsBeforeAnte)
           const playerChipsAfterAnte = this.getPlayerChipsAfterAnte(event, seatIdx)
           const allInSuffix = playerChipsAfterAnte === 0 ? ' and is all-in' : ''
@@ -199,12 +214,16 @@ export class HandLogProcessor {
     }
 
     // ビッグブラインド
-    const bbSeat = event.Game.BigBlindSeat
-    const bbUserId = bbSeat !== undefined ? event.SeatUserIds[bbSeat] : undefined
     if (bbUserId !== undefined && bbUserId !== -1) {
-      const bbChipsAfterAnte = this.getPlayerChipsAfterAnte(event, bbSeat)
-      if (bbChipsAfterAnte > 0) {
-        // BBがアンテでオールインしていなければBB投稿
+      if (bbAnteAllIn) {
+        // BB優先配分: アンテ分をスキップし、全チップをBBとして投稿
+        const bbChipsTotal = this.getPlayerChips(event, bbSeat!)
+        const bbEntry = this.createEntry(
+          `${this.getPlayerName(bbUserId)}: posts big blind ${bbChipsTotal} and is all-in`,
+          HandLogEntryType.ACTION
+        )
+        entries.push(bbEntry)
+      } else if (bbChipsAfterAnte > 0) {
         const bbChipsAfterBb = bbChipsAfterAnte - event.Game.BigBlind
         const allInSuffix = bbChipsAfterBb <= 0 ? ' and is all-in' : ''
         const bbEntry = this.createEntry(
@@ -212,12 +231,6 @@ export class HandLogProcessor {
           HandLogEntryType.ACTION
         )
         entries.push(bbEntry)
-      } else {
-        // BBがアンテでオールイン → BB未投稿
-        // PokerStars形式にこの状況の前例がなく、GTO Wizard等のツールが
-        // パースできないためハンドをスキップする
-        this.currentHand = null
-        return []
       }
     }
 
