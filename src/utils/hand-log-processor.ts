@@ -218,6 +218,12 @@ export class HandLogProcessor {
       if (bbAnteAllIn) {
         // BB優先配分: アンテ分をスキップし、全チップをBBとして投稿
         const bbChipsTotal = this.getPlayerChips(event, bbSeat!)
+        // BBの全チップ < SB額の場合、SBのプリフロップアクションが
+        // PS形式で表現不可能（calls も checks もポット不整合）→ スキップ
+        if (bbChipsTotal < event.Game.SmallBlind) {
+          this.currentHand = null
+          return []
+        }
         const bbEntry = this.createEntry(
           `${this.getPlayerName(bbUserId)}: posts big blind ${bbChipsTotal} and is all-in`,
           HandLogEntryType.ACTION
