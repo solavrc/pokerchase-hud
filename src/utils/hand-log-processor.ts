@@ -201,8 +201,8 @@ export class HandLogProcessor {
     const bbUserId = bbSeat !== undefined ? event.SeatUserIds[bbSeat] : undefined
     if (bbUserId !== undefined && bbUserId !== -1) {
       const bbChipsAfterAnte = this.getPlayerChipsAfterAnte(event, bbSeat)
-      // BBがアンテでオールインしていなければBB投稿
       if (bbChipsAfterAnte > 0) {
+        // BBがアンテでオールインしていなければBB投稿
         const bbChipsAfterBb = bbChipsAfterAnte - event.Game.BigBlind
         const allInSuffix = bbChipsAfterBb <= 0 ? ' and is all-in' : ''
         const bbEntry = this.createEntry(
@@ -210,6 +210,18 @@ export class HandLogProcessor {
           HandLogEntryType.ACTION
         )
         entries.push(bbEntry)
+      } else {
+        // BBがアンテでオールイン → BB未投稿ハンド
+        // アクティブプレイヤー数を確認（-1 以外の席数）
+        const activePlayers = event.SeatUserIds.filter(id => id !== -1).length
+        if (activePlayers <= 2) {
+          // HU でBBアンテオールイン: PokerChaseのポット計算が不整合になり
+          // PokerStars形式として正しい出力を生成できないためスキップ
+          this.currentHand = null
+          return []
+        }
+        // 3人以上: BBはアンテオールインだがハンドは続行
+        // (他プレイヤーのアクションがあるため分析価値あり)
       }
     }
 
