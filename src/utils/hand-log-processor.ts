@@ -18,6 +18,7 @@ export interface HandLogContext {
   handLogConfig?: HandLogConfig
   playerId?: number
   handTimestamp?: number
+  firstHandId?: number  // トーナメントIDとして使用（エクスポーター用）
 }
 
 export class HandLogProcessor {
@@ -28,6 +29,10 @@ export class HandLogProcessor {
 
   constructor(context: HandLogContext) {
     this.context = context
+    // 外部から firstHandId が渡された場合はそれを使用（エクスポーター用）
+    if (context.firstHandId) {
+      this.firstHandId = context.firstHandId
+    }
   }
 
   /**
