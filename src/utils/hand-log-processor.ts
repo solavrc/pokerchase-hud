@@ -164,11 +164,14 @@ export class HandLogProcessor {
     const ante = event.Game.Ante
 
     if (ante > 0) {
-      event.SeatUserIds.forEach((userId, _seatIndex) => {
+      event.SeatUserIds.forEach((userId, seatIdx) => {
         if (userId !== -1) {
           const playerName = this.getPlayerName(userId)
+          // アンテ支払い後にチップが0になる場合は "and is all-in" を付与
+          const playerChipsAfterAnte = this.getPlayerChipsAfterAnte(event, seatIdx)
+          const allInSuffix = playerChipsAfterAnte === 0 ? ' and is all-in' : ''
           const anteEntry = this.createEntry(
-            `${playerName}: posts the ante ${ante}`,
+            `${playerName}: posts the ante ${ante}${allInSuffix}`,
             HandLogEntryType.ACTION
           )
           entries.push(anteEntry)
@@ -180,22 +183,34 @@ export class HandLogProcessor {
     const sbSeat = event.Game.SmallBlindSeat
     const sbUserId = sbSeat !== undefined ? event.SeatUserIds[sbSeat] : undefined
     if (sbUserId !== undefined && sbUserId !== -1) {
-      const sbEntry = this.createEntry(
-        `${this.getPlayerName(sbUserId)}: posts small blind ${event.Game.SmallBlind}`,
-        HandLogEntryType.ACTION
-      )
-      entries.push(sbEntry)
+      const sbChipsAfterAnte = this.getPlayerChipsAfterAnte(event, sbSeat)
+      // SBがアンテでオールインしていなければSB投稿
+      if (sbChipsAfterAnte > 0) {
+        const sbChipsAfterSb = sbChipsAfterAnte - event.Game.SmallBlind
+        const allInSuffix = sbChipsAfterSb <= 0 ? ' and is all-in' : ''
+        const sbEntry = this.createEntry(
+          `${this.getPlayerName(sbUserId)}: posts small blind ${Math.min(event.Game.SmallBlind, sbChipsAfterAnte)}${allInSuffix}`,
+          HandLogEntryType.ACTION
+        )
+        entries.push(sbEntry)
+      }
     }
 
     // ビッグブラインド
     const bbSeat = event.Game.BigBlindSeat
     const bbUserId = bbSeat !== undefined ? event.SeatUserIds[bbSeat] : undefined
     if (bbUserId !== undefined && bbUserId !== -1) {
-      const bbEntry = this.createEntry(
-        `${this.getPlayerName(bbUserId)}: posts big blind ${event.Game.BigBlind}`,
-        HandLogEntryType.ACTION
-      )
-      entries.push(bbEntry)
+      const bbChipsAfterAnte = this.getPlayerChipsAfterAnte(event, bbSeat)
+      // BBがアンテでオールインしていなければBB投稿
+      if (bbChipsAfterAnte > 0) {
+        const bbChipsAfterBb = bbChipsAfterAnte - event.Game.BigBlind
+        const allInSuffix = bbChipsAfterBb <= 0 ? ' and is all-in' : ''
+        const bbEntry = this.createEntry(
+          `${this.getPlayerName(bbUserId)}: posts big blind ${Math.min(event.Game.BigBlind, bbChipsAfterAnte)}${allInSuffix}`,
+          HandLogEntryType.ACTION
+        )
+        entries.push(bbEntry)
+      }
     }
 
     // ホールカード
@@ -203,16 +218,23 @@ export class HandLogProcessor {
     entries.push(cardsEntry)
 
     // ヒーローのホールカードのみ表示（PokerStars準拠）
-    if (event.Player?.SeatIndex !== undefined && event.Player?.HoleCards) {
-      const heroUserId = event.SeatUserIds[event.Player.SeatIndex]
-      if (heroUserId !== undefined && heroUserId !== -1) {
-        const heroName = this.getPlayerName(heroUserId)
-        const dealtEntry = this.createEntry(
-          `Dealt to ${heroName} [${formatCards(event.Player.HoleCards)}]`,
-          HandLogEntryType.CARDS
-        )
-        entries.push(dealtEntry)
-      }
+    // HoleCards が空 or Player が存在しない場合、heroは参加していない
+    // （テーブル移動直後等）→ ハンド自体をスキップ
+    const heroHoleCards = event.Player?.HoleCards
+    if (!heroHoleCards || heroHoleCards.length === 0) {
+      // Hero未参加ハンド → エントリを空にして終了
+      this.currentHand = null
+      return []
+    }
+
+    const heroUserId = event.SeatUserIds[event.Player!.SeatIndex]
+    if (heroUserId !== undefined && heroUserId !== -1) {
+      const heroName = this.getPlayerName(heroUserId)
+      const dealtEntry = this.createEntry(
+        `Dealt to ${heroName} [${formatCards(heroHoleCards)}]`,
+        HandLogEntryType.CARDS
+      )
+      entries.push(dealtEntry)
     }
 
     this.currentHand.entries.push(...entries)
@@ -294,15 +316,25 @@ export class HandLogProcessor {
     })
 
     // 不足しているコミュニティカードセクションを追加（オールインの場合）
-    // Use accumulated cards if event has empty cards
-    const cardsForMissingStreets = event.CommunityCards.length > 0 ? event.CommunityCards : this.communityCards
-    entries.push(...this.addMissingStreets(cardsForMissingStreets))
-    
-    // Update community cards if event has them
-    // Don't overwrite with empty array - some events have empty CommunityCards
-    if (event.CommunityCards.length > 0) {
-      this.communityCards = event.CommunityCards
+    // EVT_HAND_RESULTS.CommunityCards はフルボードの場合と、
+    // まだ配られていないカードのみの場合がある。
+    // 既に蓄積されたカード(this.communityCards)とマージして完全なボードを構築する。
+    let fullBoard: number[]
+    if (event.CommunityCards.length === 0) {
+      // イベントにカードがない → 蓄積されたカードをそのまま使う
+      fullBoard = [...this.communityCards]
+    } else if (event.CommunityCards.length >= 3 && this.communityCards.length <= event.CommunityCards.length) {
+      // イベントのカードがフルボード（蓄積分以上）→ イベントのカードを使う
+      fullBoard = [...event.CommunityCards]
+    } else {
+      // イベントのカードが蓄積分より少ない → 残りのカード（TURN/RIVERのみ等）
+      // 蓄積されたカードに追加して完全なボードを構築
+      fullBoard = [...this.communityCards, ...event.CommunityCards]
     }
+    entries.push(...this.addMissingStreets(fullBoard))
+    
+    // コミュニティカードを完全なボードで更新
+    this.communityCards = fullBoard
 
     // ショウダウンに参加したプレイヤー（カードを見せた/マックした両方）
     const showdownParticipants = event.Results.filter(r => {
@@ -328,6 +360,62 @@ export class HandLogProcessor {
           entries.push(...uncalledEntries)
         }
       })
+    } else {
+      // ショウダウン時でも uncalled bet が発生するケース:
+      // サイドポットで他プレイヤーが全員フォールドし、メインポットのオールインプレイヤーとのショウダウンが残る場合
+      // 最後のアグレッシブアクション（bet/raise）のプレイヤーが、それに対してコールされていないか確認
+      const lastAggressive = this.currentHand!.entries
+        .slice()
+        .reverse()
+        .find(e => e.type === HandLogEntryType.ACTION &&
+          (e.text.includes(': bets ') || e.text.includes(': raises ')))
+      
+      if (lastAggressive) {
+        // 最後のbet/raise以降、同じストリート内でcallがあったか確認
+        const lastAggIdx = this.currentHand!.entries.indexOf(lastAggressive)
+        let hasCaller = false
+        for (let i = lastAggIdx + 1; i < this.currentHand!.entries.length; i++) {
+          const e = this.currentHand!.entries[i]
+          if (e?.type === HandLogEntryType.ACTION && e.text.includes(': calls ')) {
+            hasCaller = true
+            break
+          }
+        }
+        
+        if (!hasCaller) {
+          // コールされていない → uncalled bet を返す
+          const betMatch = lastAggressive.text.match(/(?:bets|raises \d+ to) (\d+)/)
+          const betterName = lastAggressive.text.split(':')[0]!
+          if (betMatch?.[1] && betterName) {
+            // 同じストリートでの前のベット額を検出
+            let prevBet = 0
+            let streetStart = 0
+            for (let i = lastAggIdx - 1; i >= 0; i--) {
+              const e = this.currentHand!.entries[i]
+              if (e?.type === HandLogEntryType.STREET) {
+                streetStart = i
+                break
+              }
+            }
+            for (let i = streetStart; i < lastAggIdx; i++) {
+              const e = this.currentHand!.entries[i]
+              if (e?.type === HandLogEntryType.ACTION && !e.text.includes(betterName)) {
+                const m = e.text.match(/(?:bets|raises \d+ to|calls) (\d+)/)
+                if (m?.[1]) prevBet = Math.max(prevBet, parseInt(m[1]))
+              }
+            }
+            const betAmount = parseInt(betMatch[1])
+            const uncalledAmount = betAmount - prevBet
+            if (uncalledAmount > 0) {
+              const uncalledEntry = this.createEntry(
+                `Uncalled bet (${uncalledAmount}) returned to ${betterName}`,
+                HandLogEntryType.SHOWDOWN
+              )
+              entries.push(uncalledEntry)
+            }
+          }
+        }
+      }
     }
 
     if (showdownParticipants.length > 0) {
@@ -711,6 +799,26 @@ export class HandLogProcessor {
     return `Player${userId}`
   }
 
+  /**
+   * アンテ支払い後のプレイヤーのチップ数を取得
+   * EVT_DEAL時点のChipはブラインド・アンテ支払い後の値なので、
+   * ブラインド分を戻してアンテのみ支払い後の状態を計算する
+   */
+  private getPlayerChipsAfterAnte(event: ApiEvent<ApiType.EVT_DEAL>, seatIndex: number): number {
+    if (event.Player?.SeatIndex === seatIndex) {
+      // Player.Chip はアンテ+ブラインド支払い後の値
+      // BetChip にブラインド額が入っている → Chip + BetChip がアンテ支払い後
+      return event.Player.Chip + event.Player.BetChip
+    }
+
+    const otherPlayer = event.OtherPlayers.find(p => p.SeatIndex === seatIndex)
+    if (otherPlayer) {
+      // OtherPlayers.Chip + BetChip がアンテ支払い後
+      return otherPlayer.Chip + otherPlayer.BetChip
+    }
+    return 0
+  }
+
   private getPlayerChips(event: ApiEvent<ApiType.EVT_DEAL>, seatIndex: number): number {
     const ante = event.Game.Ante || 0
     
@@ -1016,10 +1124,9 @@ export class HandLogProcessor {
     entries.push(potEntry)
 
     // ボード
-    // Use accumulated community cards if event doesn't have them (e.g., when all-in occurred early)
-    const finalCommunityCards = event.CommunityCards.length > 0 ? event.CommunityCards : this.communityCards
-    if (finalCommunityCards.length > 0) {
-      const boardCards = formatCards(finalCommunityCards)
+    // this.communityCards は handleHandResultsEvent 内で既にフルボードに更新済み
+    if (this.communityCards.length > 0) {
+      const boardCards = formatCards(this.communityCards)
       const boardEntry = this.createEntry(`Board [${boardCards}]`, HandLogEntryType.SUMMARY)
       entries.push(boardEntry)
     }
@@ -1136,6 +1243,23 @@ export class HandLogProcessor {
             // ショウダウンに参加したがカードを見せなかった
             summary += ' mucked'
           }
+        }
+      } else {
+        // フォールドエントリもResultsにも存在しないプレイヤー
+        // タイムアウト/切断等による自動フォールド（EVT_ACTIONが送信されないケース）
+        // アクション記録の有無を確認
+        const hasAnyAction = this.currentHand!.entries.some(e =>
+          e.type === HandLogEntryType.ACTION &&
+          e.text.startsWith(`${playerName}: `) &&
+          !e.text.includes('posts the ante') &&
+          !e.text.includes('posts small blind') &&
+          !e.text.includes('posts big blind')
+        )
+        
+        if (!hasAnyAction) {
+          // アクション未記録 → プリフロップで自動フォールド扱い
+          const postedBlind = sbEntry || bbEntry
+          summary += postedBlind ? ' folded before Flop' : " folded before Flop (didn't bet)"
         }
       }
 
