@@ -464,68 +464,14 @@ export class HandLogProcessor {
     }
 
     // Handle pot collection for showdown winners and tournament finish positions
-    const hasSidePots = event.SidePot && event.SidePot.length > 0 && event.SidePot.some(p => p > 0)
-    
-    // メインポット勝者の特定（HandRanking=1のプレイヤー）
-    const mainPotWinner = event.Results.find(r => r.HandRanking === 1)
-    
-    // Uncalled bet 額を取得（collected 額の調整用）
-    let uncalledBetAmount = 0
-    let uncalledBetPlayer = ''
-    const uncalledEntry = entries.find(e => e.text.includes('Uncalled bet ('))
-    if (uncalledEntry) {
-      const m = uncalledEntry.text.match(/Uncalled bet \((\d+)\) returned to (.+)/)
-      if (m) {
-        uncalledBetAmount = parseInt(m[1]!)
-        uncalledBetPlayer = m[2]!
-      }
-    }
-
     event.Results.forEach(result => {
       if (result.RewardChip > 0 && wentToShowdown) {
         const playerName = this.getPlayerName(result.UserId)
-        // Uncalled bet が返却されたプレイヤーの場合、RewardChip から差し引く
-        const effectiveReward = (playerName === uncalledBetPlayer)
-          ? result.RewardChip - uncalledBetAmount
-          : result.RewardChip
-        
-        if (hasSidePots) {
-          const mainPotAmount = event.Pot
-          const isMainPotWinner = result.UserId === mainPotWinner?.UserId
-          
-          if (isMainPotWinner && effectiveReward > mainPotAmount) {
-            // メインポット勝者がサイドポットも獲得
-            const sideAmount = effectiveReward - mainPotAmount
-            const sideCollectEntry = this.createEntry(
-              `${playerName} collected ${sideAmount} from side pot`,
-              HandLogEntryType.SHOWDOWN
-            )
-            entries.push(sideCollectEntry)
-            const mainCollectEntry = this.createEntry(
-              `${playerName} collected ${mainPotAmount} from main pot`,
-              HandLogEntryType.SHOWDOWN
-            )
-            entries.push(mainCollectEntry)
-          } else if (isMainPotWinner) {
-            const collectEntry = this.createEntry(
-              `${playerName} collected ${effectiveReward} from main pot`,
-              HandLogEntryType.SHOWDOWN
-            )
-            entries.push(collectEntry)
-          } else {
-            const collectEntry = this.createEntry(
-              `${playerName} collected ${effectiveReward} from side pot`,
-              HandLogEntryType.SHOWDOWN
-            )
-            entries.push(collectEntry)
-          }
-        } else {
-          const collectEntry = this.createEntry(
-            `${playerName} collected ${effectiveReward} from pot`,
-            HandLogEntryType.SHOWDOWN
-          )
-          entries.push(collectEntry)
-        }
+        const collectEntry = this.createEntry(
+          `${playerName} collected ${result.RewardChip} from pot`,
+          HandLogEntryType.SHOWDOWN
+        )
+        entries.push(collectEntry)
       }
       
       // Check if player finished the tournament
@@ -1196,25 +1142,7 @@ export class HandLogProcessor {
     }
     
     const isCashGame = this.context.session.battleType !== undefined && [4, 5].includes(this.context.session.battleType)
-    const hasSidePots = event.SidePot && event.SidePot.length > 0 && event.SidePot.some(p => p > 0)
-    
-    let potText: string
-    if (isCashGame) {
-      potText = `Total pot ${totalPot} | Rake 0`
-    } else if (hasSidePots) {
-      // サイドポットがある場合: PS形式で Main pot / Side pot 内訳を表示
-      // uncalled bet はサイドポットから差し引かれる
-      let adjustedSidePot = event.SidePot.reduce((sum, pot) => sum + pot, 0)
-      if (uncalledBetEntry) {
-        const uncalledMatch = uncalledBetEntry.text.match(/Uncalled bet \((\d+)\)/)
-        if (uncalledMatch?.[1]) {
-          adjustedSidePot -= parseInt(uncalledMatch[1])
-        }
-      }
-      potText = `Total pot ${totalPot} Main pot ${event.Pot}. Side pot ${adjustedSidePot}. | Rake 0`
-    } else {
-      potText = `Total pot ${totalPot}`
-    }
+    const potText = isCashGame ? `Total pot ${totalPot} | Rake 0` : `Total pot ${totalPot}`
     const potEntry = this.createEntry(potText, HandLogEntryType.SUMMARY)
     entries.push(potEntry)
 
