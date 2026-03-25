@@ -849,16 +849,28 @@ export class HandLogProcessor {
   private getPlayerChips(event: ApiEvent<ApiType.EVT_DEAL>, seatIndex: number): number {
     const ante = event.Game.Ante || 0
     
-    if (event.Player?.SeatIndex === seatIndex) {
-      return event.Player.Chip + event.Player.BetChip + ante
+    // Chip + BetChip はアンテ(+ブラインド)支払い後の値
+    // アンテ投入前のチップ = chipsAfterAnte + 実際のアンテ投入額
+    const chipsAfterAnte = this.getPlayerChipsAfterAnte(event, seatIndex)
+    
+    if (chipsAfterAnte > 0) {
+      // アンテ全額投入可能だった → Chip + BetChip + Ante
+      return chipsAfterAnte + ante
     }
-
-    const otherPlayer = event.OtherPlayers.find(p => p.SeatIndex === seatIndex)
-    if (otherPlayer) {
-      let chips = otherPlayer.Chip + otherPlayer.BetChip + ante
-      return chips
+    
+    // chipsAfterAnte == 0: アンテでオールインまたはショートオールイン
+    // 実際の投入額を Progress.Pot（メインポット）から推定
+    // メインポットはショートスタックの投入額 × 参加人数
+    const activePlayers = event.SeatUserIds.filter(id => id !== -1).length
+    if (activePlayers > 0 && event.Progress?.Pot > 0) {
+      const perPlayerMainPot = Math.floor(event.Progress.Pot / activePlayers)
+      if (perPlayerMainPot <= ante) {
+        return perPlayerMainPot
+      }
     }
-    return 0
+    
+    // フォールバック
+    return ante
   }
 
   private formatAction(event: ApiEvent<ApiType.EVT_ACTION>, playerName: string): string {
