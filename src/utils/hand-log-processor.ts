@@ -212,8 +212,13 @@ export class HandLogProcessor {
           HandLogEntryType.ACTION
         )
         entries.push(bbEntry)
+      } else {
+        // BBがアンテでオールイン → BB未投稿
+        // PokerStars形式にこの状況の前例がなく、GTO Wizard等のツールが
+        // パースできないためハンドをスキップする
+        this.currentHand = null
+        return []
       }
-      // BBがアンテでオールイン → BB未投稿（他プレイヤーのアクションで続行）
     }
 
     // ホールカード

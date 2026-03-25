@@ -222,7 +222,8 @@ describe('コミュニティカード部分配信 (オールイン後)', () => {
     { userId: 415571738, name: 'Player415571738' },
   ]
 
-  // sola is ante all-in (chip=630, ante=630)
+  // sola is ante all-in at BTN position (chip=630, ante=630)
+  // BB is at seat 2 (normal), not sola
   const events: ApiEvent[] = [
     {
       ApiTypeId: ApiType.EVT_DEAL,
@@ -231,12 +232,12 @@ describe('コミュニティカード部分配信 (オールイン後)', () => {
       Game: {
         CurrentBlindLv: 9, NextBlindUnixSeconds: 1759404900,
         Ante: 630, SmallBlind: 1250, BigBlind: 2500,
-        ButtonSeat: 5, SmallBlindSeat: 0, BigBlindSeat: 1
+        ButtonSeat: 1, SmallBlindSeat: 0, BigBlindSeat: 2
       },
       Player: { SeatIndex: 1, BetStatus: 1, Chip: 0, BetChip: 0, HoleCards: [11, 35] },
       OtherPlayers: [
         { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 15660, BetChip: 1250 },
-        { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 71780, BetChip: 0 },
+        { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 71780, BetChip: 2500 },
         { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 33596, BetChip: 0 },
         { SeatIndex: 4, Status: 0, BetStatus: 1, Chip: 29246, BetChip: 0 },
         { SeatIndex: 5, Status: 0, BetStatus: 1, Chip: 25250, BetChip: 0 },
