@@ -849,31 +849,16 @@ export class HandLogProcessor {
   private getPlayerChips(event: ApiEvent<ApiType.EVT_DEAL>, seatIndex: number): number {
     const ante = event.Game.Ante || 0
     
-    // Chip + BetChip はアンテ(+ブラインド)支払い後の値
-    // アンテ投入前のチップ = chipsAfterAnte + 実際のアンテ投入額
-    // ショートオールインの場合、実際のアンテ < ゲーム設定のアンテ
-    const chipsAfterAnte = this.getPlayerChipsAfterAnte(event, seatIndex)
-    
-    if (chipsAfterAnte > 0) {
-      // アンテ全額投入可能だった
-      return chipsAfterAnte + ante
+    if (event.Player?.SeatIndex === seatIndex) {
+      return event.Player.Chip + event.Player.BetChip + ante
     }
-    
-    // chipsAfterAnte == 0: アンテでオールインまたはショートオールイン
-    // 実際の投入額を Progress.Pot から推定
-    // Pot = ショートスタック × 参加人数（メインポット）
-    const activePlayers = event.SeatUserIds.filter(id => id !== -1).length
-    if (activePlayers > 0 && event.Progress?.Pot > 0) {
-      const perPlayerMainPot = Math.floor(event.Progress.Pot / activePlayers)
-      // ショートスタックの実際の投入額はメインポットの per-player 額
-      // ただしこれがアンテ以下の場合のみ適用（ブラインド投入前）
-      if (perPlayerMainPot < ante) {
-        return perPlayerMainPot
-      }
+
+    const otherPlayer = event.OtherPlayers.find(p => p.SeatIndex === seatIndex)
+    if (otherPlayer) {
+      let chips = otherPlayer.Chip + otherPlayer.BetChip + ante
+      return chips
     }
-    
-    // フォールバック: ゲーム設定のアンテをそのまま使用
-    return ante
+    return 0
   }
 
   private formatAction(event: ApiEvent<ApiType.EVT_ACTION>, playerName: string): string {
