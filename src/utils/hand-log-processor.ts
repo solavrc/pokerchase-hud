@@ -167,11 +167,13 @@ export class HandLogProcessor {
       event.SeatUserIds.forEach((userId, seatIdx) => {
         if (userId !== -1) {
           const playerName = this.getPlayerName(userId)
-          // アンテ支払い後にチップが0になる場合は "and is all-in" を付与
+          // アンテ支払い前のチップを取得し、実際の投入額を計算
+          const chipsBeforeAnte = this.getPlayerChips(event, seatIdx)
+          const actualAnte = Math.min(ante, chipsBeforeAnte)
           const playerChipsAfterAnte = this.getPlayerChipsAfterAnte(event, seatIdx)
           const allInSuffix = playerChipsAfterAnte === 0 ? ' and is all-in' : ''
           const anteEntry = this.createEntry(
-            `${playerName}: posts the ante ${ante}${allInSuffix}`,
+            `${playerName}: posts the ante ${actualAnte}${allInSuffix}`,
             HandLogEntryType.ACTION
           )
           entries.push(anteEntry)
@@ -210,19 +212,8 @@ export class HandLogProcessor {
           HandLogEntryType.ACTION
         )
         entries.push(bbEntry)
-      } else {
-        // BBがアンテでオールイン → BB未投稿ハンド
-        // アクティブプレイヤー数を確認（-1 以外の席数）
-        const activePlayers = event.SeatUserIds.filter(id => id !== -1).length
-        if (activePlayers <= 2) {
-          // HU でBBアンテオールイン: PokerChaseのポット計算が不整合になり
-          // PokerStars形式として正しい出力を生成できないためスキップ
-          this.currentHand = null
-          return []
-        }
-        // 3人以上: BBはアンテオールインだがハンドは続行
-        // (他プレイヤーのアクションがあるため分析価値あり)
       }
+      // BBがアンテでオールイン → BB未投稿（他プレイヤーのアクションで続行）
     }
 
     // ホールカード
@@ -834,18 +825,31 @@ export class HandLogProcessor {
   private getPlayerChips(event: ApiEvent<ApiType.EVT_DEAL>, seatIndex: number): number {
     const ante = event.Game.Ante || 0
     
-    if (event.Player?.SeatIndex === seatIndex) {
-      // Add ante back to show chip count before ante was posted
-      return event.Player.Chip + event.Player.BetChip + ante
+    // Chip + BetChip はアンテ(+ブラインド)支払い後の値
+    // アンテ投入前のチップ = chipsAfterAnte + 実際のアンテ投入額
+    // ショートオールインの場合、実際のアンテ < ゲーム設定のアンテ
+    const chipsAfterAnte = this.getPlayerChipsAfterAnte(event, seatIndex)
+    
+    if (chipsAfterAnte > 0) {
+      // アンテ全額投入可能だった
+      return chipsAfterAnte + ante
     }
-
-    const otherPlayer = event.OtherPlayers.find(p => p.SeatIndex === seatIndex)
-    if (otherPlayer) {
-      // For SB/BB players, need to add back their blinds as well
-      let chips = otherPlayer.Chip + otherPlayer.BetChip + ante
-      return chips
+    
+    // chipsAfterAnte == 0: アンテでオールインまたはショートオールイン
+    // 実際の投入額を Progress.Pot から推定
+    // Pot = ショートスタック × 参加人数（メインポット）
+    const activePlayers = event.SeatUserIds.filter(id => id !== -1).length
+    if (activePlayers > 0 && event.Progress?.Pot > 0) {
+      const perPlayerMainPot = Math.floor(event.Progress.Pot / activePlayers)
+      // ショートスタックの実際の投入額はメインポットの per-player 額
+      // ただしこれがアンテ以下の場合のみ適用（ブラインド投入前）
+      if (perPlayerMainPot < ante) {
+        return perPlayerMainPot
+      }
     }
-    return 0
+    
+    // フォールバック: ゲーム設定のアンテをそのまま使用
+    return ante
   }
 
   private formatAction(event: ApiEvent<ApiType.EVT_ACTION>, playerName: string): string {
@@ -969,19 +973,6 @@ export class HandLogProcessor {
         // callAmount が 0 以下の場合 → check として扱う
         if (callAmount <= 0) {
           return `${playerName}: checks`
-        }
-        // BB が未投稿（アンテオールイン等）の場合、プリフロップでの CALL は
-        // PokerChase が内部的に BB 額への CALL を送るが、出力上 BB が存在しないため
-        // 実質 check として扱う（facing bet が SB 以下なら追加投入不要）
-        const hasBBPosted = this.currentHand!.entries.some(e =>
-          e.type === HandLogEntryType.ACTION && e.text.includes('posts big blind')
-        )
-        if (!hasBBPosted) {
-          // BB 未投稿時: facing bet = 直前のレイズ/ベット、なければ SB 額
-          const currentFacingBet = getPreviousBet()
-          if (playerPrevBetForCall >= currentFacingBet) {
-            return `${playerName}: checks`
-          }
         }
         return `${playerName}: calls ${callAmount}`
       }
