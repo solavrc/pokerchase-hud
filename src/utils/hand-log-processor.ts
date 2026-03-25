@@ -163,27 +163,25 @@ export class HandLogProcessor {
     // ブラインドとアンテを追加
     const ante = event.Game.Ante
 
-    // BB優先配分の判定: BBがアンテでオールインする場合、
-    // PS形式ではBB行が必須のため、アンテをスキップしBB行に全額を配分する
+    // BBアンテオールイン判定
     const bbSeat = event.Game.BigBlindSeat
     const bbUserId = bbSeat !== undefined ? event.SeatUserIds[bbSeat] : undefined
     const bbChipsAfterAnte = (bbUserId !== undefined && bbUserId !== -1)
       ? this.getPlayerChipsAfterAnte(event, bbSeat)
       : -1
-    const bbAnteAllIn = bbChipsAfterAnte === 0
+
+    // BBがアンテでオールイン → BBを投稿できない
+    // GTO Wizard等のツールはBB行が必須のためハンドをスキップ
+    if (bbChipsAfterAnte === 0) {
+      this.currentHand = null
+      return []
+    }
 
     if (ante > 0) {
       event.SeatUserIds.forEach((userId, seatIdx) => {
         if (userId !== -1) {
           const playerName = this.getPlayerName(userId)
           const chipsBeforeAnte = this.getPlayerChips(event, seatIdx)
-
-          // BB優先配分: BBプレイヤーがアンテでオールインの場合、
-          // アンテ行をスキップして全額をBB行で出力する
-          if (bbAnteAllIn && seatIdx === bbSeat) {
-            return
-          }
-
           const actualAnte = Math.min(ante, chipsBeforeAnte)
           const playerChipsAfterAnte = this.getPlayerChipsAfterAnte(event, seatIdx)
           const allInSuffix = playerChipsAfterAnte === 0 ? ' and is all-in' : ''
@@ -214,30 +212,14 @@ export class HandLogProcessor {
     }
 
     // ビッグブラインド
-    if (bbUserId !== undefined && bbUserId !== -1) {
-      if (bbAnteAllIn) {
-        // BB優先配分: アンテ分をスキップし、全チップをBBとして投稿
-        const bbChipsTotal = this.getPlayerChips(event, bbSeat!)
-        // BBの全チップ < SB額の場合、SBのプリフロップアクションが
-        // PS形式で表現不可能（calls も checks もポット不整合）→ スキップ
-        if (bbChipsTotal < event.Game.SmallBlind) {
-          this.currentHand = null
-          return []
-        }
-        const bbEntry = this.createEntry(
-          `${this.getPlayerName(bbUserId)}: posts big blind ${bbChipsTotal} and is all-in`,
-          HandLogEntryType.ACTION
-        )
-        entries.push(bbEntry)
-      } else if (bbChipsAfterAnte > 0) {
-        const bbChipsAfterBb = bbChipsAfterAnte - event.Game.BigBlind
-        const allInSuffix = bbChipsAfterBb <= 0 ? ' and is all-in' : ''
-        const bbEntry = this.createEntry(
-          `${this.getPlayerName(bbUserId)}: posts big blind ${Math.min(event.Game.BigBlind, bbChipsAfterAnte)}${allInSuffix}`,
-          HandLogEntryType.ACTION
-        )
-        entries.push(bbEntry)
-      }
+    if (bbUserId !== undefined && bbUserId !== -1 && bbChipsAfterAnte > 0) {
+      const bbChipsAfterBb = bbChipsAfterAnte - event.Game.BigBlind
+      const allInSuffix = bbChipsAfterBb <= 0 ? ' and is all-in' : ''
+      const bbEntry = this.createEntry(
+        `${this.getPlayerName(bbUserId)}: posts big blind ${Math.min(event.Game.BigBlind, bbChipsAfterAnte)}${allInSuffix}`,
+        HandLogEntryType.ACTION
+      )
+      entries.push(bbEntry)
     }
 
     // ホールカード
