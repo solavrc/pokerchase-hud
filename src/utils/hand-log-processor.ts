@@ -954,6 +954,23 @@ export class HandLogProcessor {
         // PS format: calls shows ADDITIONAL amount (total - already posted)
         const playerPrevBetForCall = getPlayerPreviousBet(playerName)
         const callAmount = BetChip - playerPrevBetForCall
+        // callAmount が 0 以下の場合 → check として扱う
+        if (callAmount <= 0) {
+          return `${playerName}: checks`
+        }
+        // BB が未投稿（アンテオールイン等）の場合、プリフロップでの CALL は
+        // PokerChase が内部的に BB 額への CALL を送るが、出力上 BB が存在しないため
+        // 実質 check として扱う（facing bet が SB 以下なら追加投入不要）
+        const hasBBPosted = this.currentHand!.entries.some(e =>
+          e.type === HandLogEntryType.ACTION && e.text.includes('posts big blind')
+        )
+        if (!hasBBPosted) {
+          // BB 未投稿時: facing bet = 直前のレイズ/ベット、なければ SB 額
+          const currentFacingBet = getPreviousBet()
+          if (playerPrevBetForCall >= currentFacingBet) {
+            return `${playerName}: checks`
+          }
+        }
         return `${playerName}: calls ${callAmount}`
       }
       case ActionType.RAISE: {
