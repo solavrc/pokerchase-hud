@@ -26,6 +26,7 @@ export class HandLogProcessor {
   private communityCards: number[] = []
   private context: HandLogContext
   private firstHandId: number | null = null
+  private _anteAllInChipsMap: Map<number, number> | null = null
 
   constructor(context: HandLogContext) {
     this.context = context
@@ -93,6 +94,7 @@ export class HandLogProcessor {
   resetHandState(): void {
     this.currentHand = null
     this.communityCards = []
+    this._anteAllInChipsMap = null
     // firstHandId は保持（トーナメントID用）
   }
 
@@ -954,6 +956,72 @@ export class HandLogProcessor {
     return 0
   }
 
+  /**
+   * アンテオールインプレイヤーのチップ推定テーブルを構築
+   * 
+   * EVT_DEAL時点で Chip=0, BetChip=0 のプレイヤーが複数いる場合、
+   * Progress.Pot/SidePot から各段差を逆算して正しい拠出額を得る。
+   * 
+   * メインポット = 最低拠出額 × 人数
+   * SidePot[0] = (次の段差) × (人数 - オールイン済み人数)
+   * → 各段差から拠出額の昇順リストを作成し、Chip=0のプレイヤーに割り当てる
+   */
+  private buildAnteAllInChipsMap(event: ApiEvent<ApiType.EVT_DEAL>): Map<number, number> | null {
+    // Chip=0, BetChip=0 のプレイヤー（アンテオールイン）を列挙
+    const allInSeats: number[] = []
+    for (let i = 0; i < event.SeatUserIds.length; i++) {
+      if (event.SeatUserIds[i] === -1) continue
+      const chipsAfterAnte = this.getPlayerChipsAfterAnte(event, i)
+      if (chipsAfterAnte === 0) {
+        allInSeats.push(i)
+      }
+    }
+    
+    // 0人または1人なら従来の推定で十分
+    if (allInSeats.length <= 1) return null
+    
+    // SidePotがなければ区別不能（全員同額）
+    if (!event.Progress?.SidePot || event.Progress.SidePot.length === 0) return null
+    
+    const activePlayers = event.SeatUserIds.filter(id => id !== -1).length
+    if (activePlayers <= 0 || !event.Progress?.Pot) return null
+    
+    // 各段差から拠出額リストを構築
+    // メインポット: minContrib × activePlayers = Pot
+    const minContrib = Math.floor(event.Progress.Pot / activePlayers)
+    const contributions: number[] = [minContrib]
+    
+    let remainingPlayers = activePlayers
+    let cumulative = minContrib
+    
+    for (const sidePot of event.Progress.SidePot) {
+      remainingPlayers-- // 1人オールインで脱落
+      if (remainingPlayers <= 0) break
+      const stepContrib = Math.floor(sidePot / remainingPlayers)
+      cumulative += stepContrib
+      contributions.push(cumulative)
+    }
+    
+    // contributions は拠出額の昇順リスト
+    // allInSeats の数だけ小さい方から割り当てる
+    // ただし allInSeats が contributions より多い場合（同額オールイン）は同値を使う
+    
+    // アンテオールインプレイヤーは contributions の先頭 N 個に対応
+    const result = new Map<number, number>()
+    
+    // allInSeats を座席順にソート（推定の安定性のため）
+    allInSeats.sort((a, b) => a - b)
+    
+    // 各オールインプレイヤーに拠出額を割り当て
+    // 拠出額の昇順 = チップの昇順に対応
+    for (let i = 0; i < allInSeats.length; i++) {
+      const contrib = contributions[Math.min(i, contributions.length - 1)]!
+      result.set(allInSeats[i]!, contrib)
+    }
+    
+    return result
+  }
+
   private getPlayerChips(event: ApiEvent<ApiType.EVT_DEAL>, seatIndex: number): number {
     const ante = event.Game.Ante || 0
     
@@ -967,8 +1035,15 @@ export class HandLogProcessor {
     }
     
     // chipsAfterAnte == 0: アンテでオールインまたはショートオールイン
-    // 実際の投入額を Progress.Pot（メインポット）から推定
-    // メインポットはショートスタックの投入額 × 参加人数
+    // 複数のアンテオールインプレイヤーがいる場合、SidePotから正確な拠出額を推定
+    if (!this._anteAllInChipsMap) {
+      this._anteAllInChipsMap = this.buildAnteAllInChipsMap(event)
+    }
+    if (this._anteAllInChipsMap?.has(seatIndex)) {
+      return this._anteAllInChipsMap.get(seatIndex)!
+    }
+    
+    // 単一のアンテオールインプレイヤー: メインポットから推定
     const activePlayers = event.SeatUserIds.filter(id => id !== -1).length
     if (activePlayers > 0 && event.Progress?.Pot > 0) {
       const perPlayerMainPot = Math.floor(event.Progress.Pot / activePlayers)
