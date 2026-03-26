@@ -121,7 +121,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   - Always run tests and type checking after code changes
   - Use `npm run test` and `npm run typecheck` commands
   - Ensure all tests pass before completing tasks
-  - Current status: All 332 tests passing (38 suites) ✅
+  - Current status: All 338 tests passing (39 suites) ✅
 - **Build Commands**:
   - `npm run build` - Production build
   - `npm run typecheck` - TypeScript validation
@@ -438,7 +438,7 @@ Components are modularized with feature-specific sub-components in `hud/` and `p
 
 ### Adding New Statistics
 
-For detailed instructions on how to add new statistics to the HUD, please see [CONTRIBUTING.md](./CONTRIBUTING.md).
+For detailed instructions on how to add new statistics to the HUD, see [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ### Statistics Philosophy
 

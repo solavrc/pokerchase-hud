@@ -20,6 +20,18 @@
 ├── .firebaserc            # Firebase project settings
 ├── firestore.rules        # Firestore security rules
 ├── firestore.indexes.json # Firestore index definitions
+├── docs/                  # Technical documentation
+│   ├── README.md          # Documentation index
+│   ├── hand-analysis.md   # 22-hand statistics audit trail
+│   ├── adr/               # Architecture Decision Records
+│   │   ├── 001-data-storage-architecture.md
+│   │   └── 002-database-index-optimization.md
+│   ├── implementation/    # Implementation guides
+│   │   ├── file-organization.md  # This file
+│   │   └── firebase-setup.md     # Firebase setup guide
+│   └── reference/         # API & format references
+│       ├── api-events.md          # WebSocket API events
+│       └── pokerstars-export.md   # PokerStars export spec
 ├── icons/                 # Extension icons
 │   ├── icon_16px.png, icon_48px.png, icon_128px.png
 │   └── README.png         # README screenshot
@@ -57,10 +69,6 @@
     │   └── database.ts   # Database-related constants
     ├── db/
     │   └── poker-chase-db.ts  # Database definition (PokerChaseDB)
-    ├── docs/              # Architecture documentation
-    │   └── adr/          # Architecture Decision Records
-    │       ├── 001-data-storage-architecture.md
-    │       └── 002-database-index-optimization.md
     ├── services/
     │   ├── poker-chase-service.ts      # Main service class
     │   ├── firebase-auth-service.ts    # Firebase authentication
@@ -74,8 +82,11 @@
     │   │   ├── cbet.ts, cbet-fold.ts
     │   │   ├── hands.ts, pfr.ts, vpip.ts
     │   │   ├── player-name.ts
-    │   │   └── wsd.ts, wtsd.ts, wwsf.ts
+    │   │   ├── river-call-accuracy.ts
+    │   │   ├── wsd.ts, wtsd.ts, wwsf.ts
+    │   │   └── example-4bet.ts.example  # Example template for new stats
     │   ├── helpers.ts    # Common helper functions
+    │   ├── index.ts      # Module exports
     │   ├── registry.ts   # Statistics registry
     │   └── utils.ts      # Utility functions
     ├── streams/
@@ -91,7 +102,9 @@
     │   └── index.ts                    # Module exports
     ├── test-setup.ts     # Jest setup for React Testing Library
     ├── tools/             # Development tools
-    │   └── validate-schemas.ts  # NDJSON event validator
+    │   ├── detect-schema-diff.ts  # NDJSON schema diff detector
+    │   ├── trace-hands.ts         # Hand tracing/debugging tool
+    │   └── validate-schemas.ts    # NDJSON event validator
     ├── types/             # TypeScript type definitions
     │   ├── api.ts        # API event types, Zod schemas, type guards
     │   ├── entities.ts   # Entity types with Zod schemas

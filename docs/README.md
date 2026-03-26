@@ -17,6 +17,10 @@ Detailed technical implementation guides:
 ### Reference Documentation (`reference/`)
 API and technical references:
 - [API Events Reference](reference/api-events.md) - Complete WebSocket API event documentation
+- [PokerStars Export](reference/pokerstars-export.md) - PokerStars format export specification
+
+### Audit & Analysis
+- [Hand Analysis](hand-analysis.md) - 22-hand audit trail for statistics validation (PT4-aligned)
 
 ## 🔗 Quick Links
 
