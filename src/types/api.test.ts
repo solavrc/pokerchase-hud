@@ -8,9 +8,7 @@ import {
   getAvailableEventTypes,
   getEventFields,
   parseEventWithSchema,
-  apiEventSchemas,
-  seatIndexSchema,
-  playerBaseSchema
+  apiEventSchemas
 } from './api'
 
 describe('API Validation Functions', () => {
@@ -421,24 +419,6 @@ describe('API Validation Functions', () => {
     })
   })
 
-  describe('Common Sub-Schemas', () => {
-    it('should validate seat index correctly', () => {
-      expect(seatIndexSchema.safeParse(0).success).toBe(true)
-      expect(seatIndexSchema.safeParse(5).success).toBe(true)
-      expect(seatIndexSchema.safeParse(6).success).toBe(false)
-      expect(seatIndexSchema.safeParse(-1).success).toBe(false)
-    })
-
-    it('should validate player base schema', () => {
-      const validPlayer = {
-        SeatIndex: 0,
-        BetStatus: 1,
-        Chip: 1000,
-        BetChip: 100
-      }
-      
-      const result = playerBaseSchema.safeParse(validPlayer)
-      expect(result.success).toBe(true)
-    })
-  })
+  // Common sub-schemas (seatIndexSchema, userInfoSchema, etc.) are now
+  // module-private and tested indirectly via apiEventSchemas validation above.
 })

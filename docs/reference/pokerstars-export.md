@@ -2,6 +2,8 @@
 
 > PokerChase ログから PokerStars 形式ハンドログへの変換仕様。
 > フォーマット定義、変換ルール、GTO Wizard 互換性の知見を含む。
+>
+> **関連**: イベントのエッジケース（CommunityCards マージ、アンテオールイン、Chip 値の意味等）は [api-events.md](api-events.md) の「Data Constraints & Edge Cases」セクションに集約。
 
 ## 参考リソース
 
