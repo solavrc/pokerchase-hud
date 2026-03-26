@@ -21,7 +21,7 @@ export const useDraggable = (seatIndex: number, defaultPosition: CSSProperties) 
 
   // Load saved position
   useEffect(() => {
-    chrome.storage.sync.get(`hudPosition_${seatIndex}`, (result) => {
+    chrome.storage.sync.get(`hudPosition_${seatIndex}`, (result: Record<string, any>) => {
       const savedPosition = result[`hudPosition_${seatIndex}`]
       if (savedPosition) {
         setPosition(savedPosition)

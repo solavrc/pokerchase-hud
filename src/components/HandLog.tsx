@@ -195,7 +195,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
 
   // ストレージから保存された幅を読み込み
   useEffect(() => {
-    chrome.storage.sync.get('handLogConfig', (result) => {
+    chrome.storage.sync.get('handLogConfig', (result: Record<string, any>) => {
       if (result.handLogConfig?.width) {
         setWidth(result.handLogConfig.width)
       }
@@ -290,7 +290,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       document.removeEventListener('mousemove', handleMouseMove)
       document.removeEventListener('mouseup', handleMouseUp)
 
-      chrome.storage.sync.get('handLogConfig', (result) => {
+      chrome.storage.sync.get('handLogConfig', (result: Record<string, any>) => {
         const updatedConfig = { ...result.handLogConfig, width }
         chrome.storage.sync.set({ handLogConfig: updatedConfig })
       })
