@@ -654,7 +654,41 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
   }
 }
 
+/**
+ * Service Worker のアイドル停止を防止するキープアライブを開始する。
+ * Chrome MV3 では 30 秒のアイドル後に Worker が停止されるため、
+ * 長時間のバッチ処理中は chrome.offscreen API でオフスクリーン
+ * ドキュメントを作成して Worker を維持する。
+ *
+ * offscreen ドキュメントが存在する間、Worker は停止されない。
+ * @returns クリーンアップ関数
+ */
+const startKeepAlive = async (): Promise<() => void> => {
+  // offscreen API が利用可能な場合はそれを使用（Chrome 109+）
+  if (chrome.offscreen) {
+    try {
+      await chrome.offscreen.createDocument({
+        url: 'offscreen.html',
+        reasons: [chrome.offscreen.Reason.BLOBS],
+        justification: 'Keep service worker alive during batch export'
+      })
+    } catch (e) {
+      // 既に存在する場合は無視
+    }
+    return () => {
+      chrome.offscreen.closeDocument().catch(() => {})
+    }
+  }
+  
+  // フォールバック: setInterval + getPlatformInfo
+  const id = setInterval(() => {
+    chrome.runtime.getPlatformInfo().catch(() => {})
+  }, 25000)
+  return () => clearInterval(id)
+}
+
 const exportJsonData = async (db: PokerChaseDB) => {
+  const stopKeepAlive = await startKeepAlive()
   try {
     currentOperationState = { type: 'export', format: 'json', progress: 0 }
     chrome.runtime.sendMessage<ExportProgressMessage>({
@@ -728,7 +762,9 @@ const exportJsonData = async (db: PokerChaseDB) => {
       total: totalCount,
       message: `NDJSONエクスポート完了: ${processedCount.toLocaleString()}件`
     }).catch(() => {})
+    stopKeepAlive()
   } catch (error) {
+    stopKeepAlive()
     console.error('[Export] Export failed:', error)
     currentOperationState = { type: 'idle' }
     chrome.runtime.sendMessage<ExportProgressMessage>({
@@ -742,6 +778,7 @@ const exportJsonData = async (db: PokerChaseDB) => {
 }
 
 const exportPokerStarsData = async () => {
+  const stopKeepAlive = await startKeepAlive()
   try {
     currentOperationState = { type: 'export', format: 'pokerstars', progress: 0 }
     chrome.runtime.sendMessage<ExportProgressMessage>({
@@ -791,6 +828,7 @@ const exportPokerStarsData = async () => {
       'text/plain'
     )
 
+    stopKeepAlive()
     currentOperationState = { type: 'idle' }
     chrome.runtime.sendMessage<ExportProgressMessage>({
       action: 'exportProgress',
@@ -799,6 +837,7 @@ const exportPokerStarsData = async () => {
       message: 'PokerStarsハンドヒストリーエクスポート完了'
     }).catch(() => {})
   } catch (error) {
+    stopKeepAlive()
     console.error('Error exporting PokerStars format:', error)
     currentOperationState = { type: 'idle' }
     chrome.runtime.sendMessage<ExportProgressMessage>({

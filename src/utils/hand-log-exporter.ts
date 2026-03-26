@@ -262,6 +262,12 @@ export class HandLogExporter {
       }
       processedCount++
       onProgress?.(processedCount, handIds.length)
+
+      // Service Worker のアイドル停止を防止するため、
+      // 定期的にイベントループに制御を返す（100ハンドごと）
+      if (processedCount % 100 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
     }
 
     if (results.length === 0) {
