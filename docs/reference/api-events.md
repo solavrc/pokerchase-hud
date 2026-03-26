@@ -1,113 +1,132 @@
-# API Events Reference
+# API Events リファレンス
 
-> Complete reference for PokerChase WebSocket API events.
+> PokerChase WebSocket API イベントの包括的リファレンス。
 
-## Overview
+## 概要
 
-API events are the primary data source for the HUD. Events arrive via WebSocket in guaranteed logical order, though connectivity issues may cause data loss.
+API イベントは HUD の主要データソース。WebSocket 経由で論理的に保証された順序で到着するが、接続障害によりデータ欠損が発生する可能性がある。
 
-**Important Notes:**
-- Event schema is controlled by PokerChase API and may change without notice
-- All events have corresponding Zod schemas in `src/types/api.ts`
-- Runtime validation ensures type safety
-- Use type guard functions for safe event handling
+**重要事項:**
+- イベントスキーマは PokerChase API が管理しており、予告なく変更される可能性がある
+- 全イベントに対応する Zod スキーマが `src/types/api.ts` に定義されている
+- ランタイムバリデーションにより型安全性を確保
+- 型ガード関数による安全なイベント処理を推奨
 
-## Event Categories
+## イベントカテゴリ
 
-### Session Events
+### セッションイベント
 
-Session events manage game lifecycle from entry to completion.
+ゲームのライフサイクルを管理するイベント。
 
-| Event                 | ID  | Purpose                                    | Key Fields                |
-| --------------------- | --- | ------------------------------------------ | ------------------------- |
-| `EVT_ENTRY_QUEUED`    | 201 | Session start, extracts ID and battle type | `Id`, `BattleType` |
-| `EVT_SESSION_DETAILS` | 308 | Game configuration and name                | `Name`, `BlindStructures` |
-| `EVT_SESSION_RESULTS` | 309 | Session end, triggers cleanup              | `Results`, `Rankings`     |
+| イベント | ID | 目的 | 主要フィールド |
+|---------|-----|------|--------------|
+| `EVT_ENTRY_QUEUED` | 201 | セッション開始、IDとバトルタイプの抽出 | `Id`, `BattleType` |
+| `EVT_SESSION_DETAILS` | 308 | ゲーム設定と名前 | `Name`, `BlindStructures` |
+| `EVT_SESSION_RESULTS` | 309 | セッション終了、クリーンアップ | `Results`, `Rankings` |
 
-### Player Events
+### プレイヤーイベント
 
-Player events track seating, identification, and mid-game joins.
+着席、識別、途中参加を追跡するイベント。
 
-| Event                      | ID  | Purpose                          | Key Fields                                     |
-| -------------------------- | --- | -------------------------------- | ---------------------------------------------- |
-| `EVT_PLAYER_SEAT_ASSIGNED` | 313 | Initial seating with names/ranks | `SeatUserIds[]`, `TableUsers[]`                |
-| `EVT_PLAYER_JOIN`          | 301 | Mid-game joins                   | `JoinPlayer`, `JoinUser`                       |
-| `EVT_DEAL`                 | 303 | Hand start, hero identification  | `Player.SeatIndex`, `SeatUserIds[]`, `Player.HoleCards[]` |
+| イベント | ID | 目的 | 主要フィールド |
+|---------|-----|------|--------------|
+| `EVT_PLAYER_SEAT_ASSIGNED` | 313 | 初期着席（名前・ランク付き） | `SeatUserIds[]`, `TableUsers[]` |
+| `EVT_PLAYER_JOIN` | 301 | 途中参加 | `JoinPlayer`, `JoinUser` |
+| `EVT_DEAL` | 303 | ハンド開始、ヒーロー識別 | `Player.SeatIndex`, `SeatUserIds[]`, `Player.HoleCards[]` |
 
-### Game Events
+### ゲームイベント
 
-Game events represent poker actions and hand progression.
+ポーカーアクションとハンド進行を表すイベント。
 
-| Event              | ID  | Purpose                         | Key Fields                           |
-| ------------------ | --- | ------------------------------- | ------------------------------------ |
-| `EVT_ACTION`       | 304 | Player actions (bet/fold/raise) | `SeatIndex`, `ActionType`, `BetChip` |
-| `EVT_DEAL_ROUND`   | 305 | New street (flop/turn/river)    | `CommunityCards[]`, `Progress`       |
-| `EVT_HAND_RESULTS` | 306 | Hand completion, winners        | `HandId`, `Results[]`, `Pot`         |
+| イベント | ID | 目的 | 主要フィールド |
+|---------|-----|------|--------------|
+| `EVT_ACTION` | 304 | プレイヤーアクション（ベット/フォールド/レイズ） | `SeatIndex`, `ActionType`, `BetChip` |
+| `EVT_DEAL_ROUND` | 305 | 新ストリート（フロップ/ターン/リバー） | `CommunityCards[]`, `Progress` |
+| `EVT_HAND_RESULTS` | 306 | ハンド完了、勝者決定 | `HandId`, `Results[]`, `Pot` |
 
-## Typical Hand Event Sequence
+## 典型的なハンドのイベントシーケンス
 
 ```
 1. EVT_DEAL (303)
-   - Provides: Hero identification, initial SeatUserIds
-   - Extract: Hero UserId = SeatUserIds[Player.SeatIndex]
+   - 提供: ヒーロー識別、SeatUserIds
+   - 抽出: Hero UserId = SeatUserIds[Player.SeatIndex]
 
-2. EVT_ACTION (304) [multiple]
-   - Preflop actions: posts, raises, calls, folds
-   - Track: Who entered pot (VPIP), who raised (PFR)
+2. EVT_ACTION (304) [複数回]
+   - プリフロップアクション: ポスト、レイズ、コール、フォールド
+   - 追跡: ポット参加者(VPIP)、レイザー(PFR)
 
-3. EVT_DEAL_ROUND (305) - Flop
-   - Community cards revealed
-   - Reset street-specific counters
+3. EVT_DEAL_ROUND (305) - フロップ
+   - コミュニティカード公開
+   - ストリート固有カウンターのリセット
 
-4. EVT_ACTION (304) [multiple]
-   - Flop actions: checks, bets, raises
-   - Track: Continuation bets, aggression
+4. EVT_ACTION (304) [複数回]
+   - フロップアクション: チェック、ベット、レイズ
+   - 追跡: コンティニュエーションベット、アグレッション
 
-5. EVT_DEAL_ROUND (305) - Turn
-6. EVT_ACTION (304) [multiple]
-7. EVT_DEAL_ROUND (305) - River
-8. EVT_ACTION (304) [multiple]
+5. EVT_DEAL_ROUND (305) - ターン
+6. EVT_ACTION (304) [複数回]
+7. EVT_DEAL_ROUND (305) - リバー
+8. EVT_ACTION (304) [複数回]
 
 9. EVT_HAND_RESULTS (306)
-   - Provides: HandId, winners, final pot
-   - Triggers: Statistics calculation, hand log generation
+   - 提供: HandId、勝者、最終ポット
+   - トリガー: 統計計算、ハンドログ生成
 ```
 
-## Event Data Relationships
+## フィールド間の関連性
 
-### SeatUserIds Array
-- Length determines table size (4 or 6)
-- Index = logical seat position
-- Value = UserId (or -1 for empty)
-- Order randomly assigned at seating
+イベント間でフィールドを紐付けるためのクロスリファレンスガイド。
 
-### Player Identification Flow
+### プレイヤー識別
+
 ```
-EVT_PLAYER_SEAT_ASSIGNED → Initial player names/ranks
-         ↓
-EVT_DEAL.Player.SeatIndex → Hero seat identification
-         ↓
-SeatUserIds[Player.SeatIndex] → Hero UserId
-         ↓
-EVT_ACTION.UserId → Track hero's actions
+EVT_PLAYER_SEAT_ASSIGNED.TableUsers[].UserId  ──► プレイヤー名・ランク（初期着席）
+EVT_PLAYER_JOIN.JoinUser.UserId               ──► プレイヤー名・ランク（途中参加）
+                    │
+                    ▼
+EVT_DEAL.SeatUserIds[N] = UserId              ──► 席インデックスからプレイヤーへのマッピング
+EVT_DEAL.Player.SeatIndex                     ──► ヒーローの席インデックス
+    → SeatUserIds[Player.SeatIndex] = ヒーローの UserId
+                    │
+                    ▼
+EVT_ACTION.SeatIndex                          ──► アクション実行者 = SeatUserIds[SeatIndex]
+EVT_HAND_RESULTS.Results[].UserId             ──► UserId 直接参照（SeatUserIds の値と一致）
 ```
 
-## Data Dependencies & Timing
+### セッション間のリンク
 
-### Critical Dependencies
-- **Hero Identification**: Requires `EVT_DEAL` with `Player` field (missing in spectator mode)
-- **Player Names**: Available via `EVT_PLAYER_SEAT_ASSIGNED` (initial) or `EVT_PLAYER_JOIN` (mid-game)
-- **Session Info**: From `EVT_ENTRY_QUEUED` (ID, battle type) and `EVT_SESSION_DETAILS` (name)
-- **HandId**: Only available at hand completion (`EVT_HAND_RESULTS`)
-- **UserId**: Obtained via `SeatUserIds[Player.SeatIndex]` from `EVT_DEAL`
+| ソースイベント | フィールド | 用途 |
+|---|---|---|
+| `EVT_ENTRY_QUEUED` | `Id`, `BattleType` | セッション識別子とゲームタイプ |
+| `EVT_SESSION_DETAILS` | `Name`, `BlindStructures` | セッション名、ブラインドレベル |
+| `EVT_PLAYER_SEAT_ASSIGNED` | `SeatUserIds`, `TableUsers` | 席→プレイヤーマッピング |
+| `EVT_DEAL` | `SeatUserIds`, `Game` | ハンドごとの席マッピングとブラインド情報 |
+| `EVT_HAND_RESULTS` | `HandId` | ユニークなハンド識別子（ここでのみ取得可能） |
+| `EVT_SESSION_RESULTS` | `Ranking`, `RankReward` | 最終順位とランク変動 |
 
-### Aggregation Challenges
-- Hand-level aggregation requires `HandId` which only arrives at hand end
-- Must verify all required events are received before processing
-- Player information arrives incrementally across multiple events
-- Cannot aggregate hands in real-time; must buffer until boundary detected
+### 主要な制約
 
-## Hand Log Generation: Behavioral Notes
+- **HandId**: `EVT_HAND_RESULTS` でのみ取得可能。ハンド中のイベントは `EVT_DEAL` → `EVT_HAND_RESULTS` 境界内のタイムスタンプ順序で相関させる必要がある。
+- **SeatUserIds**: 配列インデックス = 論理席番号。値 = UserId（`-1` = 空席）。配列長 = テーブルサイズ（4 または 6）。
+- **プレイヤー名**: `EVT_PLAYER_SEAT_ASSIGNED` または `EVT_PLAYER_JOIN` から解決する必要がある。ハンドイベントからは取得できない。
+- **SeatUserIds の一貫性**: `EVT_DEAL` と `EVT_PLAYER_SEAT_ASSIGNED` に同じ `SeatUserIds` が存在する。途中参加（`EVT_PLAYER_JOIN`）でプレイヤーが追加されるが、更新された `SeatUserIds` は次の `EVT_DEAL` で初めて反映される。
+
+## データの依存関係とタイミング
+
+### 重要な依存関係
+- **ヒーロー識別**: `EVT_DEAL` の `Player` フィールドが必要（観戦モードでは欠落）
+- **プレイヤー名**: `EVT_PLAYER_SEAT_ASSIGNED`（初期）または `EVT_PLAYER_JOIN`（途中参加）で取得
+- **セッション情報**: `EVT_ENTRY_QUEUED`（ID、バトルタイプ）と `EVT_SESSION_DETAILS`（名前）から取得
+- **HandId**: ハンド完了時（`EVT_HAND_RESULTS`）にのみ取得可能
+- **UserId**: `EVT_DEAL` の `SeatUserIds[Player.SeatIndex]` から取得
+
+### 集約の課題
+- ハンドレベルの集約には `HandId` が必要だが、ハンド終了時にのみ到着
+- 必要な全イベントの受信を検証してから処理する必要がある
+- プレイヤー情報は複数イベントにまたがって段階的に到着
+- リアルタイムでのハンド集約は不可能。境界検出までバッファリングが必要
+
+## ハンドログ生成: 実行時の挙動に関する注意事項
 
 > ハンドログ（PokerStars形式）生成に影響する実行時の挙動。
 
@@ -155,15 +174,15 @@ PokerChase はアンテ優先モデルを採用。ショートスタックの場
 
 PokerChase のアンテ/BB 比率は 25% 前後（例: Ante=1400, BB=5700）で、PokerStars より大きい。これにより BB がアンテでオールインするケースが発生しやすい。
 
-## Card Number Mapping
+## カード番号マッピング
 
-Card indices 0–51 encode rank and suit. See `src/utils/card-utils.ts` for implementation.
+カードインデックス 0–51 でランクとスートをエンコード。実装は `src/utils/card-utils.ts` を参照。
 
-**Formula:**
-- Rank index = `floor(card / 4)` → 0=2, 1=3, 2=4, ..., 8=T, 9=J, 10=Q, 11=K, 12=A
-- Suit index = `card % 4` → 0=♠(s), 1=♥(h), 2=♦(d), 3=♣(c)
+**計算式:**
+- ランクインデックス = `floor(card / 4)` → 0=2, 1=3, 2=4, ..., 8=T, 9=J, 10=Q, 11=K, 12=A
+- スートインデックス = `card % 4` → 0=♠(s), 1=♥(h), 2=♦(d), 3=♣(c)
 
-**Full mapping table:**
+**全マッピングテーブル:**
 
 | Index | Card | Index | Card | Index | Card | Index | Card |
 |-------|------|-------|------|-------|------|-------|------|
@@ -181,213 +200,175 @@ Card indices 0–51 encode rank and suit. See `src/utils/card-utils.ts` for impl
 | 44    | K♠   | 45    | K♥   | 46    | K♦   | 47    | K♣   |
 | 48    | A♠   | 49    | A♥   | 50    | A♦   | 51    | A♣   |
 
-## Field Relationships
+## データの制約とエッジケース
 
-Cross-reference guide for linking fields across event types.
+既知の全エッジケースを集約したリファレンス。セクション参照が付いている項目は[ハンドログ生成: 実行時の挙動に関する注意事項](#ハンドログ生成-実行時の挙動に関する注意事項)に詳細がある。
 
-### Player Identification
+### イベントレベルのエッジケース
 
-```
-EVT_PLAYER_SEAT_ASSIGNED.TableUsers[].UserId  ──► Player name/rank (initial seating)
-EVT_PLAYER_JOIN.JoinUser.UserId               ──► Player name/rank (mid-game join)
-                    │
-                    ▼
-EVT_DEAL.SeatUserIds[N] = UserId              ──► Maps seat index to player
-EVT_DEAL.Player.SeatIndex                     ──► Hero's seat index
-    → SeatUserIds[Player.SeatIndex] = Hero's UserId
-                    │
-                    ▼
-EVT_ACTION.SeatIndex                          ──► Acting player = SeatUserIds[SeatIndex]
-EVT_HAND_RESULTS.Results[].UserId             ──► Direct UserId (matches SeatUserIds values)
-```
-
-### Session Linkage
-
-| Source Event | Field | Links To |
+| ケース | 対象イベント | 説明 |
 |---|---|---|
-| `EVT_ENTRY_QUEUED` | `Id`, `BattleType` | Session identifier and game type |
-| `EVT_SESSION_DETAILS` | `Name`, `BlindStructures` | Session name, blind levels |
-| `EVT_PLAYER_SEAT_ASSIGNED` | `SeatUserIds`, `TableUsers` | Seat-to-player mapping |
-| `EVT_DEAL` | `SeatUserIds`, `Game` | Per-hand seat mapping and blind info |
-| `EVT_HAND_RESULTS` | `HandId` | Unique hand identifier (only available here) |
-| `EVT_SESSION_RESULTS` | `Ranking`, `RankReward` | Final placement and rank changes |
+| 観戦モード | `EVT_DEAL` | `Player` フィールドが `undefined`。ヒーロー識別不可。 |
+| テーブル移動 | `EVT_DEAL` | `Player` は存在するが `HoleCards: []`（空配列）。 |
+| アンテオールイン | `EVT_ACTION` | アンテで全チップ消費 — そのプレイヤーの `EVT_ACTION` は発行されない。 |
+| タイムアウト / 切断 | `EVT_ACTION` | 明示的な FOLD アクションが送信されない場合がある。`EVT_HAND_RESULTS.Results[]` にも不在。 |
+| BB 暗黙ベット | `EVT_ACTION` | BB がアンテオールインでも、SB は `CALL bet=BB額` を受信（内部的に BB ベットが存在する扱い）。 |
+| コミュニティカード（ストリート） | `EVT_DEAL_ROUND` | `CommunityCards` は新規配布カードのみ（FLOP: 3枚, TURN: 1枚, RIVER: 1枚）。累積ではない。 |
+| コミュニティカード（オールイン） | `EVT_DEAL_ROUND` | オールイン後、残りストリートで `EVT_DEAL_ROUND` が発行されない場合がある。残りのカードは `EVT_HAND_RESULTS.CommunityCards` に含まれる。 |
+| コミュニティカード（マージ） | `EVT_HAND_RESULTS` | `CommunityCards` は `EVT_DEAL_ROUND` で未配信のカードのみ。全ストリート配信済みなら空配列 `[]`。蓄積した `EVT_DEAL_ROUND` のカードとマージしてフルボードを取得する。 |
+| ディール時のチップ値 | `EVT_DEAL` | `Player.Chip` と `Player.BetChip` は**アンテ/ブラインド支払い後**の値。元チップ = `Chip + BetChip + Ante`（ただしショートスタック推定を参照）。 |
+| ショートスタック推定 | `EVT_DEAL` | アンテだけでオールインするショートスタックの場合、`Chip + BetChip + Ante` は過大評価。`Progress.Pot / activePlayerCount` でプレイヤーあたりのアンテ推定を使用。 |
 
-### Key Constraints
+### スキーマレベルの注意事項
 
-- **HandId**: Only available at `EVT_HAND_RESULTS`. During a hand, events must be correlated by timestamp ordering within an `EVT_DEAL`→`EVT_HAND_RESULTS` boundary.
-- **SeatUserIds**: Array index = logical seat. Value = UserId (`-1` = empty seat). Array length = table size (4 or 6).
-- **Player names**: Must be resolved from `EVT_PLAYER_SEAT_ASSIGNED` or `EVT_PLAYER_JOIN` events, not from hand events.
-- **SeatUserIds consistency**: The same `SeatUserIds` array is present in `EVT_DEAL` and `EVT_PLAYER_SEAT_ASSIGNED`. Mid-game joins (`EVT_PLAYER_JOIN`) add players to seats, but the updated `SeatUserIds` only appears in the next `EVT_DEAL`.
-
-## Data Constraints & Edge Cases
-
-Consolidated reference for all known edge cases. Items marked with a section reference are documented in detail in the [Hand Log Generation: Behavioral Notes](#hand-log-generation-behavioral-notes) section above.
-
-### Event-Level Edge Cases
-
-| Case | Affected Event | Description |
-|---|---|---|
-| Spectator mode | `EVT_DEAL` | `Player` field is `undefined`. No hero identification possible. |
-| Table transfer | `EVT_DEAL` | `Player` exists but `HoleCards: []` (empty array). |
-| Ante all-in | `EVT_ACTION` | Player consumed all chips on ante — no `EVT_ACTION` is emitted for this player. |
-| Timeout / disconnect | `EVT_ACTION` | Explicit FOLD action may not be sent. Player is also absent from `EVT_HAND_RESULTS.Results[]`. |
-| BB implicit bet | `EVT_ACTION` | When BB is ante-all-in, SB still receives `CALL bet=BB amount` (PokerChase treats BB bet as existing internally). |
-| Community cards (street) | `EVT_DEAL_ROUND` | `CommunityCards` contains only newly dealt cards (FLOP: 3, TURN: 1, RIVER: 1), not cumulative. |
-| Community cards (all-in) | `EVT_DEAL_ROUND` | After all-in, remaining streets may not emit `EVT_DEAL_ROUND`. Remaining cards appear in `EVT_HAND_RESULTS.CommunityCards`. |
-| Community cards (merge) | `EVT_HAND_RESULTS` | `CommunityCards` contains only cards NOT previously dealt via `EVT_DEAL_ROUND`. Empty `[]` if all streets were dealt normally. Must merge with accumulated `EVT_DEAL_ROUND` cards to get the full board. |
-| Chip values at deal | `EVT_DEAL` | `Player.Chip` and `Player.BetChip` are **post-ante/blind** values. Original chips = `Chip + BetChip + Ante` (but see short stack estimation below). |
-| Short stack estimation | `EVT_DEAL` | For short-stacked players where ante alone causes all-in, `Chip + BetChip + Ante` overestimates. Use `Progress.Pot / activePlayerCount` for per-player ante estimation. |
-
-### Schema-Level Notes
-
-| Topic | Details |
+| トピック | 詳細 |
 |---|---|
-| Passthrough mode | Zod schemas use `.passthrough()` — unknown API properties are preserved, not rejected. API field additions won't break parsing. |
-| Timestamp source | `timestamp` field is added client-side by `web_accessible_resource.ts` (`Date.now()`), not from the server. Reflects WebSocket message receipt time. |
-| Schema diff tool | `npm run schema-diff -- <file.ndjson>` runs strict validation to detect unknown properties (additions) or missing properties (breaking changes). |
+| パススルーモード | Zod スキーマは `.passthrough()` を使用 — 未知の API プロパティは保持され、拒否されない。API フィールド追加でパースが壊れない。 |
+| タイムスタンプの出所 | `timestamp` フィールドは `web_accessible_resource.ts` がクライアント側で付与（`Date.now()`）。サーバーからではない。WebSocket メッセージ受信時刻を反映。 |
+| スキーマ差分ツール | `npm run schema-diff -- <file.ndjson>` で未知プロパティ（追加）や欠落プロパティ（破壊的変更）を検出。 |
 
-### Unresolved Fields (`要調査`)
+### 未解決フィールド（`要調査`）
 
-Fields observed in production data but not fully documented:
+本番データで観測されているが完全には文書化されていないフィールド:
 
-| Event | Field | Known Values | Notes |
+| イベント | フィールド | 観測値 | 備考 |
 |---|---|---|---|
-| `EVT_DEAL` | `OtherPlayers[].Status` | 0, 1, 5 | Values 1 and 5 appear in <1% of events |
-| `EVT_HAND_RESULTS` | `OtherPlayers[].Status` | 0–7 | 5=ELIMINATED known; 6, 7 undocumented |
-| `EVT_PLAYER_SEAT_ASSIGNED` | `ProcessType` | 0–4 | Only 0 (initial seating) is documented |
-| `EVT_SESSION_DETAILS` | `BlindStructures[].ActiveMinutes` | positive int, -1 | -1 = final blind level (no further increases) |
-| `EVT_HAND_RESULTS` | `ResultType` | 0–4 | 0=normal, 2=table transfer, 3=break start, 4=table leave / no opponents |
+| `EVT_DEAL` | `OtherPlayers[].Status` | 0, 1, 5 | 値 1 と 5 は全イベントの 1% 未満 |
+| `EVT_HAND_RESULTS` | `OtherPlayers[].Status` | 0–7 | 5=ELIMINATED は既知。6, 7 は未文書化 |
+| `EVT_PLAYER_SEAT_ASSIGNED` | `ProcessType` | 0–4 | 0（初期着席）のみ文書化済み |
+| `EVT_SESSION_DETAILS` | `BlindStructures[].ActiveMinutes` | 正の整数, -1 | -1 = 最終ブラインドレベル（以降上昇なし） |
+| `EVT_HAND_RESULTS` | `ResultType` | 0–4 | 0=通常, 2=テーブル移動, 3=休憩開始, 4=テーブル離脱 / 対戦相手不在 |
 
-### Processing Constraints
+### 処理上の制約
 
-| Constraint | Details |
+| 制約 | 詳細 |
 |---|---|
-| EntityConverter single-pass | `convertEventsToEntities()` tracks hand boundaries via internal state. Must receive **all events in a single call** — splitting across chunks loses hands that span boundaries. |
-| Duplicate detection | Events are keyed by `[timestamp+ApiTypeId]` compound key. Same timestamp + same ApiTypeId = duplicate. |
-| Event ordering | Events arrive in guaranteed logical sequence per WebSocket connection, but connectivity losses can cause gaps. |
-| Batch vs live mode | `service.setBatchMode(true)` disables real-time HUD updates during bulk imports. Must be reset after processing. |
+| EntityConverter シングルパス | `convertEventsToEntities()` は内部状態でハンド境界を追跡。**全イベントを単一呼び出しで渡す必要がある** — チャンク分割すると境界をまたぐハンドが失われる。 |
+| 重複検出 | イベントは `[timestamp+ApiTypeId]` 複合キーで識別。同じ timestamp + 同じ ApiTypeId = 重複。 |
+| イベント順序 | WebSocket 接続ごとに論理的順序が保証されるが、接続障害によりギャップが発生する可能性がある。 |
+| バッチ vs ライブモード | `service.setBatchMode(true)` はバルクインポート中のリアルタイム HUD 更新を無効化。処理後にリセットが必要。 |
 
-### Export & Storage Limits
+### エクスポートとストレージの制限
 
-| Limit | Value | Context |
+| 制限 | 値 | コンテキスト |
 |---|---|---|
-| Service Worker → content_script message | 64 MiB | Chrome's message passing limit. Large exports use chunked transfer. |
-| Data URL download | ~2 MB | Fallback when no game tab is available. Blob-based download preferred. |
-| IndexedDB per-origin | Browser-dependent | Typically 50%+ of available disk. No hard cap enforced by the extension. |
+| Service Worker → content_script メッセージ | 64 MiB | Chrome のメッセージパッシング制限。大規模エクスポートはチャンク転送を使用。 |
+| Data URL ダウンロード | 約 2 MB | ゲームタブがない場合のフォールバック。Blob ベースのダウンロードを推奨。 |
+| IndexedDB オリジンあたり | ブラウザ依存 | 通常は利用可能ディスクの 50% 以上。拡張機能によるハードキャップなし。 |
 
-## Enum Reference
+## Enum リファレンス
 
-Complete enum definitions from `src/types/game.ts`. These values appear in raw NDJSON event data.
+`src/types/game.ts` の完全な enum 定義。生の NDJSON イベントデータに出現する値。
 
 ### ActionType
 
-| Value | Name | Description |
+| 値 | 名前 | 説明 |
 |---|---|---|
-| 0 | CHECK | Check (no bet) |
-| 1 | BET | Open bet |
-| 2 | FOLD | Fold hand |
-| 3 | CALL | Call existing bet |
-| 4 | RAISE | Raise existing bet |
-| 5 | ALL_IN | All-in (normalized: stored as BET/CALL/RAISE in entity actions) |
+| 0 | CHECK | チェック（ベットなし） |
+| 1 | BET | オープンベット |
+| 2 | FOLD | フォールド |
+| 3 | CALL | 既存ベットへのコール |
+| 4 | RAISE | 既存ベットへのレイズ |
+| 5 | ALL_IN | オールイン（正規化: エンティティアクションでは BET/CALL/RAISE として保存） |
 
 ### BattleType
 
-| Value | Name | Description |
+| 値 | 名前 | 説明 |
 |---|---|---|
-| 0 | SIT_AND_GO | Ranked SNG tournament |
-| 1 | TOURNAMENT | MTT (multi-table tournament) |
-| 2 | FRIEND_SIT_AND_GO | Friend match SNG |
-| 4 | RING_GAME | Ring game (cash game) |
-| 5 | FRIEND_RING_GAME | Private table ring game |
-| 6 | CLUB_MATCH | Club match SNG |
+| 0 | SIT_AND_GO | ランク戦 SNG トーナメント |
+| 1 | TOURNAMENT | MTT（マルチテーブルトーナメント） |
+| 2 | FRIEND_SIT_AND_GO | フレンドマッチ SNG |
+| 4 | RING_GAME | リングゲーム（キャッシュゲーム） |
+| 5 | FRIEND_RING_GAME | プライベートテーブル リングゲーム |
+| 6 | CLUB_MATCH | クラブマッチ SNG |
 
-> Note: Values 3 is unused (gap in numbering).
+> 注: 値 3 は未使用（欠番）。
 
-**Filter groupings** (from `BATTLE_TYPE_FILTERS`):
+**フィルターグルーピング**（`BATTLE_TYPE_FILTERS` より）:
 - SNG: 0, 2, 6
 - MTT: 1
 - Ring: 4, 5
 
 ### BetStatusType
 
-| Value | Name | Description |
+| 値 | 名前 | 説明 |
 |---|---|---|
-| -1 | HAND_ENDED | Hand complete |
-| 0 | NOT_IN_PLAY | Not currently in play |
-| 1 | BET_ABLE | Can act |
-| 2 | FOLDED | Has folded |
-| 3 | ALL_IN | Is all-in |
-| 4 | ELIMINATED | Eliminated from tournament |
+| -1 | HAND_ENDED | ハンド完了 |
+| 0 | NOT_IN_PLAY | プレイ中でない |
+| 1 | BET_ABLE | アクション可能 |
+| 2 | FOLDED | フォールド済み |
+| 3 | ALL_IN | オールイン中 |
+| 4 | ELIMINATED | トーナメントから脱落 |
 
 ### PhaseType
 
-| Value | Name | Description |
+| 値 | 名前 | 説明 |
 |---|---|---|
-| 0 | PREFLOP | Pre-flop |
-| 1 | FLOP | Flop |
-| 2 | TURN | Turn |
-| 3 | RIVER | River |
-| 4 | SHOWDOWN | Extension (not from API — added by HUD for internal use) |
+| 0 | PREFLOP | プリフロップ |
+| 1 | FLOP | フロップ |
+| 2 | TURN | ターン |
+| 3 | RIVER | リバー |
+| 4 | SHOWDOWN | HUD 内部用の拡張（API からは来ない） |
 
 ### RankType
 
-| Value | Name | Description |
+| 値 | 名前 | 説明 |
 |---|---|---|
-| 0 | ROYAL_FLUSH | Royal flush |
-| 1 | STRAIGHT_FLUSH | Straight flush |
-| 2 | FOUR_OF_A_KIND | Four of a kind |
-| 3 | FULL_HOUSE | Full house |
-| 4 | FLUSH | Flush |
-| 5 | STRAIGHT | Straight |
-| 6 | THREE_OF_A_KIND | Three of a kind |
-| 7 | TWO_PAIR | Two pair |
-| 8 | ONE_PAIR | One pair |
-| 9 | HIGH_CARD | High card |
-| 10 | NO_CALL | Won without call (unchallenged) |
-| 11 | SHOWDOWN_MUCK | Showed down but mucked (lost) |
-| 12 | FOLD_OPEN | Voluntarily showed cards after folding |
+| 0 | ROYAL_FLUSH | ロイヤルフラッシュ |
+| 1 | STRAIGHT_FLUSH | ストレートフラッシュ |
+| 2 | FOUR_OF_A_KIND | フォーカード |
+| 3 | FULL_HOUSE | フルハウス |
+| 4 | FLUSH | フラッシュ |
+| 5 | STRAIGHT | ストレート |
+| 6 | THREE_OF_A_KIND | スリーカード |
+| 7 | TWO_PAIR | ツーペア |
+| 8 | ONE_PAIR | ワンペア |
+| 9 | HIGH_CARD | ハイカード |
+| 10 | NO_CALL | コールなし勝利（無競争） |
+| 11 | SHOWDOWN_MUCK | ショーダウン後マック（敗北） |
+| 12 | FOLD_OPEN | フォールド後に自発的にカード公開 |
 
 ### Position
 
-| Value | Name | Description |
+| 値 | 名前 | 説明 |
 |---|---|---|
-| -2 | BB | Big blind |
-| -1 | SB | Small blind |
-| 0 | BTN | Button (dealer) |
-| 1 | CO | Cutoff |
-| 2 | HJ | Hijack |
-| 3 | UTG | Under the gun |
+| -2 | BB | ビッグブラインド |
+| -1 | SB | スモールブラインド |
+| 0 | BTN | ボタン（ディーラー） |
+| 1 | CO | カットオフ |
+| 2 | HJ | ハイジャック |
+| 3 | UTG | アンダーザガン |
 
 ### ActionDetail
 
-Markers attached to entity `Action` records for statistics calculation. See `src/types/game.ts`.
+エンティティの `Action` レコードに付与される統計計算用マーカー。`src/types/game.ts` 参照。
 
-| Value | Description |
+| 値 | 説明 |
 |---|---|
-| `ALL_IN` | All-in action marker |
-| `VPIP` | Voluntary pot entry |
-| `CBET` | Continuation bet executed |
-| `CBET_CHANCE` | Continuation bet opportunity |
-| `CBET_FOLD` | Folded to continuation bet |
-| `CBET_FOLD_CHANCE` | Faced a continuation bet (fold opportunity) |
-| `3BET` | 3-bet executed |
-| `3BET_CHANCE` | 3-bet opportunity |
-| `3BET_FOLD` | Folded to 3-bet |
-| `3BET_FOLD_CHANCE` | Faced a 3-bet (fold opportunity) |
-| `DONK_BET` | Donk bet executed |
-| `DONK_BET_CHANCE` | Donk bet opportunity |
-| `RIVER_CALL` | Called on the river |
-| `RIVER_CALL_WON` | Called on the river and won |
+| `ALL_IN` | オールインアクションマーカー |
+| `VPIP` | 自発的ポット参加 |
+| `CBET` | コンティニュエーションベット実行 |
+| `CBET_CHANCE` | コンティニュエーションベット機会 |
+| `CBET_FOLD` | コンティニュエーションベットにフォールド |
+| `CBET_FOLD_CHANCE` | コンティニュエーションベットに直面（フォールド機会） |
+| `3BET` | 3ベット実行 |
+| `3BET_CHANCE` | 3ベット機会 |
+| `3BET_FOLD` | 3ベットにフォールド |
+| `3BET_FOLD_CHANCE` | 3ベットに直面（フォールド機会） |
+| `DONK_BET` | ドンクベット実行 |
+| `DONK_BET_CHANCE` | ドンクベット機会 |
+| `RIVER_CALL` | リバーでコール |
+| `RIVER_CALL_WON` | リバーでコールして勝利 |
 
-## Code References
+## コードリファレンス
 
-For implementation details:
-- Type definitions: `src/types/api.ts`
-- Entity types: `src/types/entities.ts`
-- Game enums: `src/types/game.ts`
-- Card utilities: `src/utils/card-utils.ts`
-- Event processing: `src/streams/aggregate-events-stream.ts`
-- Entity conversion: `src/entity-converter.ts`
-- Validation examples: `src/app.test.ts`
-- Schema validation tool: `npm run validate-schema`
-- Schema diff tool: `npm run schema-diff`
+実装の詳細:
+- 型定義: `src/types/api.ts`
+- エンティティ型: `src/types/entities.ts`
+- ゲーム enum: `src/types/game.ts`
+- カードユーティリティ: `src/utils/card-utils.ts`
+- イベント処理: `src/streams/aggregate-events-stream.ts`
+- エンティティ変換: `src/entity-converter.ts`
+- バリデーション例: `src/app.test.ts`
+- スキーマバリデーションツール: `npm run validate-schema`
+- スキーマ差分ツール: `npm run schema-diff`
