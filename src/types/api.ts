@@ -112,8 +112,8 @@ export const apiEventSchemas = {
       - RING_GAME (BattleType=4): "50_100_0002" 等。ルーム種別（ステークス）を表し、セッション一意ではない。
       - FRIEND_RING_GAME (BattleType=5): 空文字列。
       - CLUB_MATCH (BattleType=6): "club_bt_2501_1_1" 等。クラブマッチ固有ID。`),
-    IsRetire: z.boolean(),
-  }).describe('参加申込 - セッション開始時に受信。SessionIdとBattleTypeを抽出'),
+    IsRetire: z.boolean().describe('リタイア（途中退出）フラグ'),
+  }).describe('参加申込 - テーブル着席時に発行。SNG/Ringでは1セッション1回。MTTではテーブル移動ごとに再発行。BattleTypeとIdを抽出してセッション管理に使用'),
 
   [202]: baseSchema.extend({
     ApiTypeId: z.literal(202),
@@ -231,35 +231,35 @@ export const apiEventSchemas = {
       UserName: z.string(),
       ClassLvId: z.string().optional().describe('リングゲームクラス。例: class_lv_j1, class_lv_k3, class_lv_a1, 空文字列=未設定'),
     }),
-  }).describe('プレイヤー途中参加 - ゲーム中の新規参加時にプレイヤー名を提供'),
+  }).describe('プレイヤー途中参加 - ハンド間・ハンド中の両方で発生。MTTのテーブル移動、Ringの途中参加で発行。JoinUser.UserIdとUserNameでプレイヤー名マッピングを更新'),
 
   [ApiType.EVT_DEAL]: baseSchema.extend({
     ApiTypeId: z.literal(ApiType.EVT_DEAL),
     Game: z.object({
-      Ante: z.int().nonnegative(),
-      BigBlind: z.int().nonnegative(),
-      BigBlindSeat: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]),
-      ButtonSeat: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]),
-      CurrentBlindLv: z.int().min(1).describe('リングゲーム: 常に1'),
-      NextBlindUnixSeconds: z.int(),
-      SmallBlind: z.int().nonnegative(),
-      SmallBlindSeat: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]),
-    }),
+      Ante: z.int().nonnegative().describe('アンテ額。アンテ優先モデル: ショートスタックはアンテに先に充当'),
+      BigBlind: z.int().nonnegative().describe('BB額'),
+      BigBlindSeat: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).describe('BBプレイヤーの席インデックス。WriteEntityStreamがポジション計算の基準に使用'),
+      ButtonSeat: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).describe('ボタン（ディーラー）の席インデックス。PS形式エクスポートで使用'),
+      CurrentBlindLv: z.int().min(1).describe('現在のブラインドレベル。リングゲーム: 常に1。トーナメント: BlindStructures[].Lvと対応'),
+      NextBlindUnixSeconds: z.int().describe('次のブラインドレベルまでの時刻（Unix Seconds）。-1 = 最終レベル'),
+      SmallBlind: z.int().nonnegative().describe('SB額'),
+      SmallBlindSeat: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).describe('SBプレイヤーの席インデックス'),
+    }).describe('ブラインド・アンテ・ポジション情報'),
     OtherPlayers: z.array(z.object({
-      BetChip: z.int().nonnegative(),
+      BetChip: z.int().nonnegative().describe('ブラインドとして投入した額（アンテは含まない）。アンテ+ブラインド支払い後の値'),
       BetStatus: z.union([z.enum(BetStatusType)]),
-      Chip: z.int().nonnegative(),
+      Chip: z.int().nonnegative().describe('アンテ+ブラインド支払い後の残チップ。元チップ逆算: Chip + BetChip + Ante（ショートスタック時は不正確、Progress.Pot/人数で推定）'),
       SeatIndex: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]),
-      Status: z.union([z.literal(0), z.literal(1), z.literal(5)]).describe('要調査: 1,5 は 1%未満の割合で出現'),
-      IsSafeLeave: z.boolean().optional(),
-    })).min(1).max(6),
+      Status: z.union([z.literal(0), z.literal(1), z.literal(5)]).describe('0=通常。要調査: 1,5 は 1%未満の割合で出現'),
+      IsSafeLeave: z.boolean().optional().describe('安全退出フラグ（Ringゲーム）'),
+    })).min(1).max(6).describe('ヒーロー以外のプレイヤー情報（アンテ・ブラインド支払い後の状態）'),
     Player: z.object({
-      BetChip: z.int().nonnegative(),
+      BetChip: z.int().nonnegative().describe('ブラインドとして投入した額（アンテは含まない）'),
       BetStatus: z.enum(BetStatusType),
-      Chip: z.int().nonnegative(),
-      HoleCards: z.array(z.int().min(0).max(51)).max(2).describe('カードインデックス (0: 2s, 51: Ac)'),
-      SeatIndex: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).describe('ヒーロー識別用: UserId = SeatUserIds[Player.SeatIndex]'),
-    }).optional().describe('観戦時存在しない - Playerフィールドがない場合は観戦モード'),
+      Chip: z.int().nonnegative().describe('アンテ+ブラインド支払い後の残チップ'),
+      HoleCards: z.array(z.int().min(0).max(51)).max(2).describe('ヒーローのホールカード。カードインデックス 0-51（rank=card/4, suit=card%4）。テーブル移動直後は空配列[]'),
+      SeatIndex: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).describe('ヒーローの席インデックス。UserId = SeatUserIds[Player.SeatIndex] でヒーロー識別'),
+    }).optional().describe('ヒーロー情報。観戦モードではundefined。テーブル移動直後はHoleCards:[]'),
     Progress: z.object({
       MinRaise: z.int().nonnegative(),
       NextActionSeat: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]),
@@ -280,24 +280,24 @@ export const apiEventSchemas = {
 
   [ApiType.EVT_ACTION]: baseSchema.extend({
     ApiTypeId: z.literal(ApiType.EVT_ACTION),
-    ActionType: z.enum(ActionType),
-    BetChip: z.int().nonnegative(),
-    Chip: z.int().nonnegative(),
+    ActionType: z.enum(ActionType).describe('0=CHECK, 1=BET, 2=FOLD, 3=CALL, 4=RAISE, 5=ALL_IN。ALL_INはエンティティ保存時にBET/CALL/RAISEに正規化される'),
+    BetChip: z.int().nonnegative().describe('このアクション後のストリート内累計ベット額'),
+    Chip: z.int().nonnegative().describe('このアクション後の残チップ'),
     Progress: z.object({
-      MinRaise: z.int().nonnegative(),
-      NextActionSeat: z.union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).describe('-2:ハンド終了, -1:ストリート完了→次のカード配布'),
-      NextActionTypes: z.array(z.enum(ActionType)).max(4),
+      MinRaise: z.int().nonnegative().describe('最小レイズ額'),
+      NextActionSeat: z.union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).describe('-2:ハンド終了, -1:ストリート完了→次のカード配布, 0-5:次のアクションプレイヤーの席'),
+      NextActionTypes: z.array(z.enum(ActionType)).max(4).describe('次のプレイヤーが実行可能なアクション種別'),
       NextExtraLimitSeconds: z.int().nonnegative(),
-      Phase: z.enum(PhaseType),
-      Pot: z.int().nonnegative(),
-      SidePot: z.array(z.int().nonnegative()).max(4),
+      Phase: z.enum(PhaseType).describe('現在のフェーズ（0=プリフロップ〜3=リバー）'),
+      Pot: z.int().nonnegative().describe('現在のポット総額（全ストリートの累計）'),
+      SidePot: z.array(z.int().nonnegative()).max(4).describe('サイドポット額の配列。オールインが発生した場合のみ'),
     }),
-    SeatIndex: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]),
-  }).describe('アクション'),
+    SeatIndex: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).describe('アクション実行者の席インデックス。UserId = EVT_DEAL.SeatUserIds[SeatIndex]'),
+  }).describe('プレイヤーアクション - アンテオールインプレイヤーには発行されない。タイムアウト/切断時にFOLDが送信されない場合がある'),
 
   [ApiType.EVT_DEAL_ROUND]: baseSchema.extend({
     ApiTypeId: z.literal(ApiType.EVT_DEAL_ROUND),
-    CommunityCards: z.array(z.int().min(0).max(51)).min(1).max(3).describe('フロップ:3枚, ターン/リバー:1枚'),
+    CommunityCards: z.array(z.int().min(0).max(51)).min(1).max(3).describe('このストリートで新たに配られたカードのみ（累積ではない）。フロップ:3枚, ターン:1枚, リバー:1枚。オールイン後は発行されない場合がありEVT_HAND_RESULTSで補完が必要'),
     OtherPlayers: z.array(z.object({
       BetChip: z.literal(0).describe('新ストリートでリセット'),
       BetStatus: z.enum(BetStatusType),
@@ -330,10 +330,10 @@ export const apiEventSchemas = {
 
   [ApiType.EVT_HAND_RESULTS]: baseSchema.extend({
     ApiTypeId: z.literal(ApiType.EVT_HAND_RESULTS),
-    CommunityCards: z.array(z.int().min(0).max(51)).max(5),
-    DefeatStatus: z.union([z.literal(0), z.literal(1)]).describe('1: ELIMINATED'),
-    HandId: z.int().nonnegative().describe('ハンド完了時にのみ利用可能 - 統計計算とハンドログ生成のトリガー'),
-    HandLog: z.string().optional().describe('要調査'),
+    CommunityCards: z.array(z.int().min(0).max(51)).max(5).describe('EVT_DEAL_ROUNDで未配信のカードのみ。全ストリート配信済みなら空配列[]。蓄積したEVT_DEAL_ROUNDのカードとマージしてフルボードを構築する'),
+    DefeatStatus: z.union([z.literal(0), z.literal(1)]).describe('0=継続, 1=脱落(ELIMINATED)'),
+    HandId: z.int().nonnegative().describe('ハンドの一意識別子。ここでのみ取得可能。セッション全体で単調増加。SNG/Ringのセッション識別やマルチプレイヤーハンド突合に使用可能'),
+    HandLog: z.string().optional().describe('要調査: PokerChase内部のハンドログ文字列？'),
     OtherPlayers: z.array(z.object({
       BetChip: z.literal(0),
       BetStatus: z.literal(-1),
@@ -355,17 +355,17 @@ export const apiEventSchemas = {
       HoleCards: z.array(z.int().min(-1).max(51)).min(0).max(2).describe('ホールカード'),
       Ranking: z.union([z.literal(-2), z.literal(-1), z.int().nonnegative()]).describe('-2:In-Play, -1:Multiway敗退, 正の数:敗退順位'),
       RankType: z.enum(RankType).describe('成立役 または 10:NO_CALL, 11:SHOWDOWN_MUCK, 12:FOLD_OPEN'),
-      RewardChip: z.int().nonnegative(),
-      UserId: z.int().nonnegative(),
+      RewardChip: z.int().nonnegative().describe('このプレイヤーが獲得したチップ量。0=敗北'),
+      UserId: z.int().nonnegative().describe('プレイヤーID。SeatUserIdsの値と一致。タイムアウト/切断プレイヤーはResults[]に含まれない'),
     })).min(1).max(5).describe(`
       RankTypeによる結果パターン:
       - ShowDown: RankType 0-9 (役), Hands 5枚, HoleCards 2枚または[-1, -1]
       - NoCall/ShowDownMuck: RankType 10-11, Hands 空配列, HoleCards 空配列または[-1, -1]
       - FoldOpen: RankType 12, Hands 空配列, HoleCards 2枚
     `),
-    ResultType: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).describe('ハンド終了後 2: テーブル移動, 3: 休憩開始, 4: テーブル離脱 または 対戦相手不在'),
-    SidePot: z.array(z.int().nonnegative()).max(4),
-  }).describe('ハンド結果'),
+    ResultType: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).describe('0=通常続行, 1=要調査, 2=テーブル移動(MTT), 3=休憩開始(MTT), 4=テーブル離脱 or 対戦相手不在'),
+    SidePot: z.array(z.int().nonnegative()).max(4).describe('サイドポット額'),
+  }).describe('ハンド結果 - HandIdはここでのみ取得可能。1ハンドの集約境界（EVT_DEAL→EVT_HAND_RESULTS）。Results[]にショーダウン結果とホールカード（showdown時のみ）を含む'),
 
   [307]: baseSchema.extend({
     ApiTypeId: z.literal(307),
@@ -374,14 +374,14 @@ export const apiEventSchemas = {
   [ApiType.EVT_SESSION_DETAILS]: baseSchema.extend({
     ApiTypeId: z.literal(ApiType.EVT_SESSION_DETAILS),
     BlindStructures: z.array(z.object({
-      ActiveMinutes: z.int(),
-      Ante: z.int().nonnegative(),
-      BigBlind: z.int().nonnegative(),
-      Lv: z.int().nonnegative(),
-    })).min(1).describe('トーナメント時のみ'),
-    CoinNum: z.int(),
-    DefaultChip: z.int(),
-    IsReplay: z.boolean(),
+      ActiveMinutes: z.int().describe('このレベルの持続時間（分）。-1 = 最終レベル（以降上昇なし）'),
+      Ante: z.int().nonnegative().describe('このレベルのアンテ額'),
+      BigBlind: z.int().nonnegative().describe('このレベルのBB額。SB = BigBlind / 2'),
+      Lv: z.int().nonnegative().describe('ブラインドレベル番号（1-based）'),
+    })).min(1).describe('ブラインド構造。トーナメント（SNG/MTT）で使用。リングゲームでは1エントリのみ（レベル上昇なし）'),
+    CoinNum: z.int().describe('参加コスト。-1 = 無料'),
+    DefaultChip: z.int().describe('初期チップ量'),
+    IsReplay: z.boolean().describe('リプレイ（観戦モード）かどうか'),
     Items: z.array(z.object({
       ItemId: z.string().describe('例: season10_point, medal_0001, item0002, item0028'),
       Num: z.int().nonnegative(),
@@ -405,21 +405,21 @@ export const apiEventSchemas = {
       })).min(1),
     })).optional(),
     RingRule: z.object({
-      MaxBuyin: z.int().nonnegative().optional(),
-      MinBuyin: z.int().nonnegative().optional(),
-    }).optional(),
+      MaxBuyin: z.int().nonnegative().optional().describe('リングゲームの最大バイイン'),
+      MinBuyin: z.int().nonnegative().optional().describe('リングゲームの最小バイイン'),
+    }).optional().describe('リングゲーム固有ルール。BattleType=4,5 の場合のみ'),
     TournamentRule: z.object({
-      NextBreakUnixSeconds: z.int().optional(),
-      RebuyChip: z.int().nonnegative().optional(),
-      RebuyCostCoinNum: z.int().nonnegative().optional(),
+      NextBreakUnixSeconds: z.int().optional().describe('次の休憩までの時刻（Unix Seconds）'),
+      RebuyChip: z.int().nonnegative().optional().describe('リバイで追加されるチップ量'),
+      RebuyCostCoinNum: z.int().nonnegative().optional().describe('リバイのコイン費用'),
       RebuyCostTicket: z.object({
         ItemId: z.string().optional(),
         Num: z.int().nonnegative().optional(),
-      }).optional(),
-      RebuyFinishUnixSeconds: z.int().optional(),
-      RebuyLimit: z.int().nonnegative().optional(),
-    }).optional(),
-  }).describe('イベント概要 - セッション名とゲーム設定を提供。セッション=完全なゲームインスタンス(トーナメント、リングゲーム等)'),
+      }).optional().describe('リバイのチケット費用'),
+      RebuyFinishUnixSeconds: z.int().optional().describe('リバイ受付終了時刻（Unix Seconds）'),
+      RebuyLimit: z.int().nonnegative().optional().describe('リバイ回数上限'),
+    }).optional().describe('トーナメント固有ルール。MTT（BattleType=1）の場合のみ'),
+  }).describe('セッション詳細 - 1セッション1回発行。セッション名(Name)はAggregateEventsStreamがsession.nameに保存。BlindStructuresでブラインドレベル構造を提供'),
 
   [ApiType.EVT_SESSION_RESULTS]: baseSchema.extend({
     ApiTypeId: z.literal(ApiType.EVT_SESSION_RESULTS),
@@ -443,8 +443,8 @@ export const apiEventSchemas = {
     })).max(3),
     Emblems: z.array(z.unknown()),
     EventRewards: z.array(z.unknown()),
-    IsLeave: z.boolean(),
-    IsRebuy: z.boolean(),
+    IsLeave: z.boolean().describe('途中退出したかどうか'),
+    IsRebuy: z.boolean().describe('リバイしたかどうか'),
     Items: z.array(z.object({
       ItemId: z.string().describe('例: item0002, item0028, item0038, medal_0001'),
       Num: z.int().nonnegative(),
@@ -501,7 +501,7 @@ export const apiEventSchemas = {
     TableId: z.union([z.string(), z.int()]).optional().describe('テーブルID（文字列または数値）'),
     IsOverDailyLimit: z.boolean().optional().describe('デイリー制限超過フラグ'),
     IsChangeDay: z.boolean().optional().describe('日付変更フラグ'),
-  }).describe('イベント結果'),
+  }).describe('セッション終了 - 1セッション1回発行。最終順位(Ranking)、ランク変動(RankReward)を含む。background.tsはこのイベントでautoSyncService.onGameSessionEnd()をトリガー'),
 
   [310]: baseSchema.extend({
     ApiTypeId: z.literal(310),
@@ -586,7 +586,7 @@ export const apiEventSchemas = {
       Pot: z.int().nonnegative().optional(),
       SidePot: z.array(z.int()).max(4).optional(),
     }).optional().describe('途中参加時'),
-  }).describe('プレイヤー着席 - 初期プレイヤー名とランク情報を提供'),
+  }).describe('プレイヤー着席 - テーブルの全プレイヤー名・ランクを提供。SNGでは1回、MTTではテーブル移動ごとに再発行。TableUsers[]からUserId→名前のマッピングを構築'),
 
   [314]: baseSchema.extend({
     ApiTypeId: z.literal(314),
