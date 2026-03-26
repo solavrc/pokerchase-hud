@@ -105,7 +105,13 @@ export const apiEventSchemas = {
     ApiTypeId: z.literal(ApiType.EVT_ENTRY_QUEUED),
     BattleType: z.enum(BattleType),
     Code: z.literal(0),
-    Id: z.string().describe('SNG: stage006_002, stage005_001 / Ring: 50_100_0002, 10_20_0001 / MTT: 6078 (数値文字列) / Private: 空文字列'),
+    Id: z.string().describe(`ゲームタイプ別のセッション識別子:
+      - SNG (BattleType=0): "stage006_002" 等。ルーム種別を表し、セッション一意ではない。セッション識別には最初の HandId を使用。
+      - MTT (BattleType=1): "6078" 等（数値文字列）。トーナメントIDで同一トーナメント内のプレイヤーに共通。テーブル移動ごとに EVT_ENTRY_QUEUED が再発行されるため、1トーナメントで複数回出現する。
+      - FRIEND_SIT_AND_GO (BattleType=2): "357589" 等（数値文字列）。フレンドマッチ固有ID。観測範囲では一意。
+      - RING_GAME (BattleType=4): "50_100_0002" 等。ルーム種別（ステークス）を表し、セッション一意ではない。
+      - FRIEND_RING_GAME (BattleType=5): 空文字列。
+      - CLUB_MATCH (BattleType=6): "club_bt_2501_1_1" 等。クラブマッチ固有ID。`),
     IsRetire: z.boolean(),
   }).describe('参加申込 - セッション開始時に受信。SessionIdとBattleTypeを抽出'),
 
