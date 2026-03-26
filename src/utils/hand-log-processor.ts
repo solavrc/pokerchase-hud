@@ -466,16 +466,11 @@ export class HandLogProcessor {
     }
 
     // Handle pot collection for showdown winners and tournament finish positions
+    if (wentToShowdown) {
+      entries.push(...this.buildCollectedEntries(event))
+    }
+
     event.Results.forEach(result => {
-      if (result.RewardChip > 0 && wentToShowdown) {
-        const playerName = this.getPlayerName(result.UserId)
-        const collectEntry = this.createEntry(
-          `${playerName} collected ${result.RewardChip} from pot`,
-          HandLogEntryType.SHOWDOWN
-        )
-        entries.push(collectEntry)
-      }
-      
       // Check if player finished the tournament
       if (result.Ranking > 0 && result.RewardChip === 0) {
         const playerName = this.getPlayerName(result.UserId)
@@ -493,6 +488,82 @@ export class HandLogProcessor {
 
     this.currentHand.entries.push(...entries)
     return entries
+  }
+
+  /**
+   * サイドポット対応の collected 行を構築
+   */
+  private buildCollectedEntries(event: ApiEvent<ApiType.EVT_HAND_RESULTS>): HandLogEntry[] {
+    const entries: HandLogEntry[] = []
+    const hasSidePots = event.SidePot.length > 0
+
+    if (!hasSidePots) {
+      event.Results.forEach(result => {
+        if (result.RewardChip > 0) {
+          const playerName = this.getPlayerName(result.UserId)
+          entries.push(this.createEntry(
+            `${playerName} collected ${result.RewardChip} from pot`,
+            HandLogEntryType.SHOWDOWN
+          ))
+        }
+      })
+      return entries
+    }
+
+    const potAmounts = [event.Pot, ...event.SidePot]
+    const potWinners: Map<number, { userIds: number[], amount: number }> = new Map()
+    const mainPotWinnerIds = event.Results
+      .filter(r => r.HandRanking === 1)
+      .map(r => r.UserId)
+    
+    for (let potIdx = 0; potIdx < potAmounts.length; potIdx++) {
+      const targetRanking = potIdx + 1
+      const winners = event.Results.filter(r => r.HandRanking === targetRanking)
+      
+      if (winners.length > 0) {
+        potWinners.set(potIdx, {
+          userIds: winners.map(w => w.UserId),
+          amount: potAmounts[potIdx]!
+        })
+      } else if (potIdx > 0 && mainPotWinnerIds.length > 0) {
+        potWinners.set(potIdx, {
+          userIds: mainPotWinnerIds,
+          amount: potAmounts[potIdx]!
+        })
+      }
+    }
+
+    for (let potIdx = potAmounts.length - 1; potIdx >= 0; potIdx--) {
+      const potInfo = potWinners.get(potIdx)
+      if (!potInfo || potInfo.amount <= 0) continue
+
+      const potLabel = this.getPotLabel(potIdx, event.SidePot.length)
+      
+      if (potInfo.userIds.length === 1) {
+        const playerName = this.getPlayerName(potInfo.userIds[0]!)
+        entries.push(this.createEntry(
+          `${playerName} collected ${potInfo.amount} from ${potLabel}`,
+          HandLogEntryType.SHOWDOWN
+        ))
+      } else {
+        const splitAmount = Math.floor(potInfo.amount / potInfo.userIds.length)
+        for (const userId of potInfo.userIds) {
+          const playerName = this.getPlayerName(userId)
+          entries.push(this.createEntry(
+            `${playerName} collected ${splitAmount} from ${potLabel}`,
+            HandLogEntryType.SHOWDOWN
+          ))
+        }
+      }
+    }
+
+    return entries
+  }
+
+  private getPotLabel(potIdx: number, sidePotCount: number): string {
+    if (potIdx === 0) return 'main pot'
+    if (sidePotCount === 1) return 'side pot'
+    return `side pot-${potIdx}`
   }
 
   private handleUncalledBet(result: unknown, playerName: string): HandLogEntry[] {
@@ -1144,7 +1215,43 @@ export class HandLogProcessor {
     }
     
     const isCashGame = this.context.session.battleType !== undefined && [4, 5].includes(this.context.session.battleType)
-    const potText = isCashGame ? `Total pot ${totalPot} | Rake 0` : `Total pot ${totalPot}`
+    const hasSidePots = event.SidePot.length > 0
+    
+    let potText: string
+    if (hasSidePots) {
+      // サイドポットあり: "Total pot X Main pot Y. Side pot Z." 形式
+      // uncalled betがある場合、最も大きいインデックスのサイドポットから差し引く
+      let mainPot = event.Pot
+      const sidePots = [...event.SidePot]
+      
+      if (uncalledBetEntry) {
+        const uncalledMatch2 = uncalledBetEntry.text.match(/Uncalled bet \((\d+)\)/)
+        if (uncalledMatch2?.[1]) {
+          let remaining = parseInt(uncalledMatch2[1])
+          // 最も大きいインデックスのサイドポットから差し引き
+          for (let i = sidePots.length - 1; i >= 0 && remaining > 0; i--) {
+            const deduct = Math.min(remaining, sidePots[i]!)
+            sidePots[i] = sidePots[i]! - deduct
+            remaining -= deduct
+          }
+          if (remaining > 0) {
+            mainPot -= remaining
+          }
+        }
+      }
+      
+      let breakdown = `Total pot ${totalPot} Main pot ${mainPot}.`
+      if (sidePots.length === 1) {
+        breakdown += ` Side pot ${sidePots[0]}.`
+      } else {
+        for (let i = 0; i < sidePots.length; i++) {
+          breakdown += ` Side pot-${i + 1} ${sidePots[i]}.`
+        }
+      }
+      potText = `${breakdown} | Rake 0`
+    } else {
+      potText = isCashGame ? `Total pot ${totalPot} | Rake 0` : `Total pot ${totalPot}`
+    }
     const potEntry = this.createEntry(potText, HandLogEntryType.SUMMARY)
     entries.push(potEntry)
 

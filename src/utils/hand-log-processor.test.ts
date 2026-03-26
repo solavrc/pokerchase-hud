@@ -502,3 +502,422 @@ describe('SUMMARY: アクション未記録プレイヤー', () => {
     expect(playerBSummary).toContain('folded before Flop')
   })
 })
+
+// ============================================================
+// Test 7: サイドポット1つ (3人オールイン、ショートスタック1人)
+// posts-allin.txt 参考: メインポット勝者とサイドポット勝者が同一
+// ============================================================
+describe('サイドポット1つ (ショウダウン)', () => {
+  const players = [
+    { userId: 100, name: 'ShortStack' },
+    { userId: 200, name: 'BigStack' },
+    { userId: 300, name: 'MedStack' },
+    { userId: 400, name: 'Folder' },
+  ]
+
+  const events: ApiEvent[] = [
+    {
+      ApiTypeId: ApiType.EVT_DEAL,
+      timestamp: 1700000000000,
+      SeatUserIds: [100, 200, 300, 400, -1, -1],
+      Game: {
+        CurrentBlindLv: 0, NextBlindUnixSeconds: 1700000600,
+        Ante: 0, SmallBlind: 50, BigBlind: 100,
+        ButtonSeat: 3, SmallBlindSeat: 0, BigBlindSeat: 1
+      },
+      Player: { SeatIndex: 1, BetStatus: 1, Chip: 900, BetChip: 100, HoleCards: [48, 49] },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 50, BetChip: 50, IsSafeLeave: false },
+        { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 500, BetChip: 0, IsSafeLeave: false },
+        { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 500, BetChip: 0, IsSafeLeave: false },
+      ],
+      Progress: {
+        Phase: 0, NextActionSeat: 2, NextActionTypes: [2, 3, 4, 5],
+        NextExtraLimitSeconds: 1, MinRaise: 200, Pot: 150, SidePot: []
+      }
+    } as unknown as ApiEvent,
+    {
+      ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000001000,
+      SeatIndex: 0, ActionType: 5, Chip: 0, BetChip: 100,
+      Progress: { Phase: 0, NextActionSeat: 2, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 200, Pot: 200, SidePot: [] }
+    } as unknown as ApiEvent,
+    {
+      ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000002000,
+      SeatIndex: 2, ActionType: 3, Chip: 400, BetChip: 100,
+      Progress: { Phase: 0, NextActionSeat: 3, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 200, Pot: 300, SidePot: [] }
+    } as unknown as ApiEvent,
+    {
+      ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000003000,
+      SeatIndex: 3, ActionType: 2, Chip: 500, BetChip: 0,
+      Progress: { Phase: 0, NextActionSeat: 1, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 200, Pot: 300, SidePot: [] }
+    } as unknown as ApiEvent,
+    {
+      ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000004000,
+      SeatIndex: 1, ActionType: 4, Chip: 700, BetChip: 300,
+      Progress: { Phase: 0, NextActionSeat: 2, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 500, Pot: 500, SidePot: [] }
+    } as unknown as ApiEvent,
+    {
+      ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000005000,
+      SeatIndex: 2, ActionType: 3, Chip: 200, BetChip: 300,
+      Progress: { Phase: 0, NextActionSeat: -1, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 300, SidePot: [400] }
+    } as unknown as ApiEvent,
+    {
+      ApiTypeId: ApiType.EVT_DEAL_ROUND, timestamp: 1700000006000,
+      CommunityCards: [0, 4, 8],
+      Player: { SeatIndex: 1, BetStatus: 2, Chip: 700, BetChip: 0, HoleCards: [48, 49] },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 0, BetStatus: 4, Chip: 0, BetChip: 0, IsSafeLeave: false },
+        { SeatIndex: 2, Status: 0, BetStatus: 2, Chip: 200, BetChip: 0, IsSafeLeave: false },
+      ],
+      Progress: { Phase: 1, NextActionSeat: 1, NextActionTypes: [0, 5, 1], NextExtraLimitSeconds: 3, MinRaise: 0, Pot: 300, SidePot: [400] }
+    } as unknown as ApiEvent,
+    {
+      ApiTypeId: ApiType.EVT_DEAL_ROUND, timestamp: 1700000007000,
+      CommunityCards: [12],
+      Player: { SeatIndex: 1, BetStatus: 2, Chip: 700, BetChip: 0, HoleCards: [48, 49] },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 0, BetStatus: 4, Chip: 0, BetChip: 0, IsSafeLeave: false },
+        { SeatIndex: 2, Status: 0, BetStatus: 2, Chip: 200, BetChip: 0, IsSafeLeave: false },
+      ],
+      Progress: { Phase: 2, NextActionSeat: 1, NextActionTypes: [0, 5, 1], NextExtraLimitSeconds: 3, MinRaise: 0, Pot: 300, SidePot: [400] }
+    } as unknown as ApiEvent,
+    {
+      ApiTypeId: ApiType.EVT_DEAL_ROUND, timestamp: 1700000008000,
+      CommunityCards: [16],
+      Player: { SeatIndex: 1, BetStatus: 2, Chip: 700, BetChip: 0, HoleCards: [48, 49] },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 0, BetStatus: 4, Chip: 0, BetChip: 0, IsSafeLeave: false },
+        { SeatIndex: 2, Status: 0, BetStatus: 2, Chip: 200, BetChip: 0, IsSafeLeave: false },
+      ],
+      Progress: { Phase: 3, NextActionSeat: 1, NextActionTypes: [0, 5, 1], NextExtraLimitSeconds: 3, MinRaise: 0, Pot: 300, SidePot: [400] }
+    } as unknown as ApiEvent,
+    {
+      ApiTypeId: ApiType.EVT_HAND_RESULTS, timestamp: 1700000009000,
+      CommunityCards: [0, 4, 8, 12, 16],
+      Pot: 300, SidePot: [400],
+      ResultType: 0, DefeatStatus: 0, HandId: 999001, HandLog: '',
+      Results: [
+        { UserId: 200, HoleCards: [48, 49], RankType: 8, Hands: [48, 49, 0, 4, 8], HandRanking: 1, Ranking: -2, RewardChip: 700 },
+        { UserId: 100, HoleCards: [20, 21], RankType: 9, Hands: [20, 21, 0, 4, 8], HandRanking: -1, Ranking: 4, RewardChip: 0 },
+        { UserId: 300, HoleCards: [24, 25], RankType: 9, Hands: [24, 25, 0, 4, 8], HandRanking: -1, Ranking: -2, RewardChip: 0 },
+      ],
+      Player: { SeatIndex: 1, BetStatus: -1, Chip: 1700, BetChip: 0 },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 5, BetStatus: -1, Chip: 0, BetChip: 0 },
+        { SeatIndex: 2, Status: 0, BetStatus: -1, Chip: 200, BetChip: 0 },
+        { SeatIndex: 3, Status: 0, BetStatus: -1, Chip: 500, BetChip: 0 },
+      ]
+    } as unknown as ApiEvent,
+  ]
+
+  test('collected行がside pot → main pot の順で出力される', () => {
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const ctx = createContext(session)
+    const processor = new HandLogProcessor(ctx)
+    const lines = getLines(processor, events)
+
+    const collectedLines = lines.filter(l => l.includes('collected'))
+    expect(collectedLines).toHaveLength(2)
+    expect(collectedLines[0]).toBe('BigStack collected 400 from side pot')
+    expect(collectedLines[1]).toBe('BigStack collected 300 from main pot')
+  })
+
+  test('Summary行にMain pot / Side pot内訳が表示される', () => {
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const ctx = createContext(session)
+    const processor = new HandLogProcessor(ctx)
+    const lines = getLines(processor, events)
+
+    const totalPotLine = lines.find(l => l.includes('Total pot'))
+    expect(totalPotLine).toBe('Total pot 700 Main pot 300. Side pot 400. | Rake 0')
+  })
+
+  test('ポット整合: Pot + sum(SidePot) == sum(RewardChip)', () => {
+    const resultEvent = events.find(e => (e as any).ApiTypeId === ApiType.EVT_HAND_RESULTS) as any
+    const totalPot = resultEvent.Pot + resultEvent.SidePot.reduce((s: number, p: number) => s + p, 0)
+    const totalReward = resultEvent.Results.reduce((s: number, r: any) => s + r.RewardChip, 0)
+    expect(totalPot).toBe(totalReward)
+  })
+
+  test('SeatサマリーでBigStackの獲得額はRewardChip合計', () => {
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const ctx = createContext(session)
+    const processor = new HandLogProcessor(ctx)
+    const lines = getLines(processor, events)
+
+    const bigStackSummary = lines.find(l => l.startsWith('Seat 2: BigStack') && l.includes('won'))
+    expect(bigStackSummary).toContain('won (700)')
+  })
+})
+
+// ============================================================
+// Test 8: サイドポットで異なるプレイヤーが各ポットを獲得
+// ============================================================
+describe('サイドポット: 異なるプレイヤーが各ポットを獲得', () => {
+  const players = [
+    { userId: 100, name: 'ShortAll' },
+    { userId: 200, name: 'MedAll' },
+    { userId: 300, name: 'BigCaller' },
+    { userId: 400, name: 'Folder' },
+  ]
+
+  const events: ApiEvent[] = [
+    {
+      ApiTypeId: ApiType.EVT_DEAL, timestamp: 1700000000000,
+      SeatUserIds: [100, 200, 300, 400, -1, -1],
+      Game: {
+        CurrentBlindLv: 0, NextBlindUnixSeconds: 1700000600,
+        Ante: 0, SmallBlind: 50, BigBlind: 100,
+        ButtonSeat: 3, SmallBlindSeat: 0, BigBlindSeat: 1
+      },
+      Player: { SeatIndex: 2, BetStatus: 1, Chip: 1000, BetChip: 0, HoleCards: [40, 41] },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 50, BetChip: 50, IsSafeLeave: false },
+        { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 200, BetChip: 100, IsSafeLeave: false },
+        { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 500, BetChip: 0, IsSafeLeave: false },
+      ],
+      Progress: { Phase: 0, NextActionSeat: 2, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 200, Pot: 150, SidePot: [] }
+    } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000001000, SeatIndex: 0, ActionType: 5, Chip: 0, BetChip: 100, Progress: { Phase: 0, NextActionSeat: 1, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 200, Pot: 200, SidePot: [] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000002000, SeatIndex: 1, ActionType: 5, Chip: 0, BetChip: 300, Progress: { Phase: 0, NextActionSeat: 2, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 500, Pot: 300, SidePot: [200] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000003000, SeatIndex: 3, ActionType: 2, Chip: 500, BetChip: 0, Progress: { Phase: 0, NextActionSeat: 2, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 500, Pot: 300, SidePot: [200] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000004000, SeatIndex: 2, ActionType: 3, Chip: 700, BetChip: 300, Progress: { Phase: 0, NextActionSeat: -1, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 300, SidePot: [400] } } as unknown as ApiEvent,
+    {
+      ApiTypeId: ApiType.EVT_HAND_RESULTS, timestamp: 1700000009000,
+      CommunityCards: [0, 4, 8, 12, 16], Pot: 300, SidePot: [400],
+      ResultType: 0, DefeatStatus: 0, HandId: 999002, HandLog: '',
+      Results: [
+        // メインポット勝者: ShortAll (最強ハンドだがオールインで少額)
+        { UserId: 100, HoleCards: [48, 49], RankType: 6, Hands: [48, 49, 0, 4, 8], HandRanking: 1, Ranking: -2, RewardChip: 300 },
+        // サイドポット勝者: MedAll (メインでは負けだがサイドポット分は獲得)
+        { UserId: 200, HoleCards: [44, 45], RankType: 8, Hands: [44, 45, 0, 4, 8], HandRanking: 2, Ranking: -2, RewardChip: 400 },
+        // 敗者: BigCaller
+        { UserId: 300, HoleCards: [40, 41], RankType: 9, Hands: [40, 41, 0, 4, 8], HandRanking: -1, Ranking: -2, RewardChip: 0 },
+      ],
+      Player: { SeatIndex: 2, BetStatus: -1, Chip: 700, BetChip: 0 },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 0, BetStatus: -1, Chip: 300, BetChip: 0 },
+        { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 400, BetChip: 0 },
+        { SeatIndex: 3, Status: 0, BetStatus: -1, Chip: 500, BetChip: 0 },
+      ]
+    } as unknown as ApiEvent,
+  ]
+
+  test('異なるプレイヤーのcollected行が正しく出力される', () => {
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const ctx = createContext(session)
+    const processor = new HandLogProcessor(ctx)
+    const lines = getLines(processor, events)
+
+    // side pot → main pot の順
+    const collectedLines = lines.filter(l => l.includes('collected'))
+    expect(collectedLines).toHaveLength(2)
+    expect(collectedLines[0]).toBe('MedAll collected 400 from side pot')
+    expect(collectedLines[1]).toBe('ShortAll collected 300 from main pot')
+  })
+})
+
+// ============================================================
+// Test 9: 複数サイドポット (全ポットを1人が獲得)
+// ============================================================
+describe('複数サイドポット (2つ)', () => {
+  const players = [
+    { userId: 100, name: 'Tiny' },
+    { userId: 200, name: 'Small' },
+    { userId: 300, name: 'Hero' },
+    { userId: 400, name: 'Big' },
+  ]
+
+  const events: ApiEvent[] = [
+    {
+      ApiTypeId: ApiType.EVT_DEAL, timestamp: 1700000000000,
+      SeatUserIds: [100, 200, 300, 400, -1, -1],
+      Game: {
+        CurrentBlindLv: 0, NextBlindUnixSeconds: 1700000600,
+        Ante: 0, SmallBlind: 10, BigBlind: 20,
+        ButtonSeat: 3, SmallBlindSeat: 0, BigBlindSeat: 1
+      },
+      Player: { SeatIndex: 2, BetStatus: 1, Chip: 500, BetChip: 0, HoleCards: [48, 49] },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 40, BetChip: 10, IsSafeLeave: false },
+        { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 180, BetChip: 20, IsSafeLeave: false },
+        { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 500, BetChip: 0, IsSafeLeave: false },
+      ],
+      Progress: { Phase: 0, NextActionSeat: 2, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 40, Pot: 30, SidePot: [] }
+    } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000001000, SeatIndex: 0, ActionType: 5, Chip: 0, BetChip: 50, Progress: { Phase: 0, NextActionSeat: 1, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 100, Pot: 70, SidePot: [] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000002000, SeatIndex: 1, ActionType: 5, Chip: 0, BetChip: 200, Progress: { Phase: 0, NextActionSeat: 2, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 400, Pot: 200, SidePot: [150] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000003000, SeatIndex: 2, ActionType: 3, Chip: 200, BetChip: 300, Progress: { Phase: 0, NextActionSeat: 3, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 400, Pot: 200, SidePot: [300, 100] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000004000, SeatIndex: 3, ActionType: 3, Chip: 200, BetChip: 300, Progress: { Phase: 0, NextActionSeat: -1, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 200, SidePot: [450, 200] } } as unknown as ApiEvent,
+    {
+      ApiTypeId: ApiType.EVT_HAND_RESULTS, timestamp: 1700000009000,
+      CommunityCards: [0, 4, 8, 12, 16], Pot: 200, SidePot: [450, 200],
+      ResultType: 0, DefeatStatus: 0, HandId: 999003, HandLog: '',
+      Results: [
+        { UserId: 300, HoleCards: [48, 49], RankType: 6, Hands: [48, 49, 0, 4, 8], HandRanking: 1, Ranking: -2, RewardChip: 850 },
+        { UserId: 100, HoleCards: [20, 21], RankType: 9, Hands: [20, 21, 0, 4, 8], HandRanking: -1, Ranking: 4, RewardChip: 0 },
+        { UserId: 200, HoleCards: [24, 25], RankType: 9, Hands: [24, 25, 0, 4, 8], HandRanking: -1, Ranking: -2, RewardChip: 0 },
+        { UserId: 400, HoleCards: [28, 29], RankType: 9, Hands: [28, 29, 0, 4, 8], HandRanking: -1, Ranking: -2, RewardChip: 0 },
+      ],
+      Player: { SeatIndex: 2, BetStatus: -1, Chip: 1050, BetChip: 0 },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 5, BetStatus: -1, Chip: 0, BetChip: 0 },
+        { SeatIndex: 1, Status: 5, BetStatus: -1, Chip: 0, BetChip: 0 },
+        { SeatIndex: 3, Status: 0, BetStatus: -1, Chip: 200, BetChip: 0 },
+      ]
+    } as unknown as ApiEvent,
+  ]
+
+  test('全ポットを1人が獲得: side pot-2 → side pot-1 → main pot', () => {
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const ctx = createContext(session)
+    const processor = new HandLogProcessor(ctx)
+    const lines = getLines(processor, events)
+
+    const collectedLines = lines.filter(l => l.includes('collected'))
+    expect(collectedLines).toHaveLength(3)
+    expect(collectedLines[0]).toBe('Hero collected 200 from side pot-2')
+    expect(collectedLines[1]).toBe('Hero collected 450 from side pot-1')
+    expect(collectedLines[2]).toBe('Hero collected 200 from main pot')
+  })
+
+  test('Summary行に複数サイドポットの内訳が表示される', () => {
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const ctx = createContext(session)
+    const processor = new HandLogProcessor(ctx)
+    const lines = getLines(processor, events)
+
+    const totalPotLine = lines.find(l => l.includes('Total pot'))
+    expect(totalPotLine).toBe('Total pot 850 Main pot 200. Side pot-1 450. Side pot-2 200. | Rake 0')
+  })
+})
+
+// ============================================================
+// Test 10: サイドポットなし (regression)
+// ============================================================
+describe('サイドポットなし (regression)', () => {
+  const players = [
+    { userId: 100, name: 'PlayerA' },
+    { userId: 200, name: 'PlayerB' },
+    { userId: 300, name: 'Hero' },
+  ]
+
+  const events: ApiEvent[] = [
+    {
+      ApiTypeId: ApiType.EVT_DEAL, timestamp: 1700000000000,
+      SeatUserIds: [100, 200, 300, -1, -1, -1],
+      Game: {
+        CurrentBlindLv: 0, NextBlindUnixSeconds: 1700000600,
+        Ante: 0, SmallBlind: 50, BigBlind: 100,
+        ButtonSeat: 2, SmallBlindSeat: 0, BigBlindSeat: 1
+      },
+      Player: { SeatIndex: 2, BetStatus: 1, Chip: 1000, BetChip: 0, HoleCards: [48, 49] },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 950, BetChip: 50, IsSafeLeave: false },
+        { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 900, BetChip: 100, IsSafeLeave: false },
+      ],
+      Progress: { Phase: 0, NextActionSeat: 2, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 200, Pot: 150, SidePot: [] }
+    } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000001000, SeatIndex: 2, ActionType: 4, Chip: 800, BetChip: 200, Progress: { Phase: 0, NextActionSeat: 0, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 300, Pot: 350, SidePot: [] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000002000, SeatIndex: 0, ActionType: 2, Chip: 950, BetChip: 50, Progress: { Phase: 0, NextActionSeat: 1, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 300, Pot: 350, SidePot: [] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000003000, SeatIndex: 1, ActionType: 3, Chip: 800, BetChip: 200, Progress: { Phase: 0, NextActionSeat: -1, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 450, SidePot: [] } } as unknown as ApiEvent,
+    {
+      ApiTypeId: ApiType.EVT_DEAL_ROUND, timestamp: 1700000004000,
+      CommunityCards: [0, 4, 8],
+      Player: { SeatIndex: 2, BetStatus: 2, Chip: 800, BetChip: 0, HoleCards: [48, 49] },
+      OtherPlayers: [{ SeatIndex: 1, Status: 0, BetStatus: 2, Chip: 800, BetChip: 0, IsSafeLeave: false }],
+      Progress: { Phase: 1, NextActionSeat: 1, NextActionTypes: [0, 5, 1], NextExtraLimitSeconds: 3, MinRaise: 0, Pot: 450, SidePot: [] }
+    } as unknown as ApiEvent,
+    {
+      ApiTypeId: ApiType.EVT_HAND_RESULTS, timestamp: 1700000009000,
+      CommunityCards: [0, 4, 8, 12, 16], Pot: 450, SidePot: [],
+      ResultType: 0, DefeatStatus: 0, HandId: 999004, HandLog: '',
+      Results: [
+        { UserId: 300, HoleCards: [48, 49], RankType: 6, Hands: [48, 49, 0, 4, 8], HandRanking: 1, Ranking: -2, RewardChip: 450 },
+        { UserId: 200, HoleCards: [20, 21], RankType: 9, Hands: [20, 21, 0, 4, 8], HandRanking: -1, Ranking: -2, RewardChip: 0 },
+      ],
+      Player: { SeatIndex: 2, BetStatus: -1, Chip: 1450, BetChip: 0 },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 0, BetStatus: -1, Chip: 950, BetChip: 0 },
+        { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 800, BetChip: 0 },
+      ]
+    } as unknown as ApiEvent,
+  ]
+
+  test('サイドポットなしの場合 "from pot" のまま', () => {
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const ctx = createContext(session)
+    const processor = new HandLogProcessor(ctx)
+    const lines = getLines(processor, events)
+
+    const collectedLine = lines.find(l => l.includes('collected'))
+    expect(collectedLine).toBe('Hero collected 450 from pot')
+  })
+
+  test('Summary行にSide pot内訳が含まれない', () => {
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const ctx = createContext(session)
+    const processor = new HandLogProcessor(ctx)
+    const lines = getLines(processor, events)
+
+    const totalPotLine = lines.find(l => l.includes('Total pot'))
+    expect(totalPotLine).toBe('Total pot 450')
+    expect(totalPotLine).not.toContain('Main pot')
+  })
+})
+
+// ============================================================
+// Test 11: キャッシュゲーム + サイドポット
+// ============================================================
+describe('キャッシュゲーム + サイドポット', () => {
+  const players = [
+    { userId: 100, name: 'Short' },
+    { userId: 200, name: 'Hero' },
+    { userId: 300, name: 'Caller' },
+  ]
+
+  const events: ApiEvent[] = [
+    {
+      ApiTypeId: ApiType.EVT_DEAL, timestamp: 1700000000000,
+      SeatUserIds: [100, 200, 300, -1, -1, -1],
+      Game: {
+        CurrentBlindLv: 0, NextBlindUnixSeconds: 1700000600,
+        Ante: 0, SmallBlind: 50, BigBlind: 100,
+        ButtonSeat: 2, SmallBlindSeat: 0, BigBlindSeat: 1
+      },
+      Player: { SeatIndex: 1, BetStatus: 1, Chip: 900, BetChip: 100, HoleCards: [48, 49] },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 50, BetChip: 50, IsSafeLeave: false },
+        { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 1000, BetChip: 0, IsSafeLeave: false },
+      ],
+      Progress: { Phase: 0, NextActionSeat: 2, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 200, Pot: 150, SidePot: [] }
+    } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000001000, SeatIndex: 0, ActionType: 5, Chip: 0, BetChip: 100, Progress: { Phase: 0, NextActionSeat: 2, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 200, Pot: 200, SidePot: [] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000002000, SeatIndex: 2, ActionType: 3, Chip: 900, BetChip: 100, Progress: { Phase: 0, NextActionSeat: -1, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 300, SidePot: [] } } as unknown as ApiEvent,
+    {
+      ApiTypeId: ApiType.EVT_HAND_RESULTS, timestamp: 1700000009000,
+      CommunityCards: [0, 4, 8, 12, 16], Pot: 300, SidePot: [],
+      ResultType: 0, DefeatStatus: 0, HandId: 999005, HandLog: '',
+      Results: [
+        { UserId: 200, HoleCards: [48, 49], RankType: 6, Hands: [48, 49, 0, 4, 8], HandRanking: 1, Ranking: -2, RewardChip: 300 },
+        { UserId: 100, HoleCards: [20, 21], RankType: 9, Hands: [20, 21, 0, 4, 8], HandRanking: -1, Ranking: -2, RewardChip: 0 },
+        { UserId: 300, HoleCards: [24, 25], RankType: 9, Hands: [24, 25, 0, 4, 8], HandRanking: -1, Ranking: -2, RewardChip: 0 },
+      ],
+      Player: { SeatIndex: 1, BetStatus: -1, Chip: 1200, BetChip: 0 },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 0, BetStatus: -1, Chip: 0, BetChip: 0 },
+        { SeatIndex: 2, Status: 0, BetStatus: -1, Chip: 900, BetChip: 0 },
+      ]
+    } as unknown as ApiEvent,
+  ]
+
+  test('キャッシュゲームのSummaryに "| Rake 0" が含まれる', () => {
+    const session = createSession(players, { battleType: 4 })
+    const ctx = createContext(session)
+    const processor = new HandLogProcessor(ctx)
+    const lines = getLines(processor, events)
+
+    const totalPotLine = lines.find(l => l.includes('Total pot'))
+    expect(totalPotLine).toBe('Total pot 300 | Rake 0')
+  })
+})
