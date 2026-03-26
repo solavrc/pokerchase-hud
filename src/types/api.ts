@@ -313,7 +313,14 @@ export const apiEventSchemas = {
       BetStatus: z.literal(-1).describe('ハンド終了時は常に-1(HAND_ENDED)'),
       Chip: z.int().nonnegative().describe('ハンド終了後の残チップ量（ポット獲得分を含む最終値）'),
       SeatIndex: seatIndexSchema.describe('席インデックス。EVT_DEAL.SeatUserIds[SeatIndex]でUserId取得'),
-      Status: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6), z.literal(7)]).describe('0=通常(97.3%), 1=離脱予告/切断(0.33%), 4=BetStatus=ELIMINATED待ち(0.5%、常にBetStatus=-1), 5=脱落済み(1.84%、常にChip=0), 6=離脱確定(0.02%、Chip>0の場合あり), 7=強制退出(0.01%、Chip>0。RT=4との共起あり)。2,3は未観測'),
+      Status: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6), z.literal(7)]).describe(`プレイヤーの離脱状態:
+        0=通常(97.3%)
+        1=離脱予告/切断(0.33%): DEAL時Status=0→RESULTS時Status=1に遷移。数ハンドにわたりStatus=1が続き、最終的にStatus=6 or 7で離脱。チップ変動なし（ハンドに不参加）
+        4=離席中(0.5%): Chip>0を保持したまま次ハンドで不在になることが多い。MTTテーブル移動(RT=2, 53%)、通常ハンド後(RT=0, 41%)、トーナメント敗退(RT=1, 5%)で発生
+        5=バスト(1.84%): 常にChip=0。SNG: トーナメント脱落。Ring: バスト後リバイイン待ち（次ハンドでChip>0に復帰 or 席離脱）
+        6=自発退出(0.02%): Chip>0を残したまま次ハンドで不在。Ringゲームの途中退出。Status=1→6の遷移パターンあり
+        7=強制退出(0.01%): Chip>0を残したまま次ハンドで不在。タイムアウトや接続断による強制退場。Status=1→7の遷移パターンあり
+        2,3=未観測`),
       IsSafeLeave: z.boolean().optional().describe('安全退出フラグ（Ringゲーム）'),
     })).min(1).max(5).describe('ヒーロー以外の全プレイヤーのハンド終了後状態。SeatIndex昇順。BetChip=0, BetStatus=-1は全ハンドで固定'),
     Player: z.object({
