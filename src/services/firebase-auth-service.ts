@@ -30,7 +30,8 @@ export class FirebaseAuthService {
   async signInWithGoogle(): Promise<User> {
     return new Promise((resolve, reject) => {
       // Get OAuth2 token using chrome.identity
-      chrome.identity.getAuthToken({ interactive: true }, async (token) => {
+      chrome.identity.getAuthToken({ interactive: true }, async (result) => {
+        const token = typeof result === 'string' ? result : result?.token
         if (chrome.runtime.lastError || !token) {
           console.error('[FirebaseAuth] Chrome identity error:', chrome.runtime.lastError)
           reject(new Error(chrome.runtime.lastError?.message || 'Failed to get auth token'))
@@ -71,7 +72,8 @@ export class FirebaseAuthService {
     
     // Revoke the Chrome identity token
     return new Promise((resolve, reject) => {
-      chrome.identity.getAuthToken({ interactive: false }, (token) => {
+      chrome.identity.getAuthToken({ interactive: false }, (result) => {
+        const token = typeof result === 'string' ? result : result?.token
         if (token) {
           chrome.identity.removeCachedAuthToken({ token }, () => {
             // Revoke the token on Google's servers
