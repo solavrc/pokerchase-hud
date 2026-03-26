@@ -221,6 +221,18 @@ export class HandLogExporter {
     console.log(`[HandLogExporter] Prefetched ${allEvents.length} events`)
 
     // 5. Process each hand using the prefetched events
+    // プリパス: セッションごとの最小ハンドIDを確定（トーナメントID用）
+    const sessionFirstHandId = new Map<string | undefined, number>()
+    for (const handId of handIds) {
+      const hand = handMap.get(handId)
+      if (!hand) continue
+      const sessionId = hand.session.id
+      const currentMin = sessionFirstHandId.get(sessionId)
+      if (currentMin === undefined || handId < currentMin) {
+        sessionFirstHandId.set(sessionId, handId)
+      }
+    }
+    
     const results: string[] = []
     let processedCount = 0
 
@@ -241,7 +253,8 @@ export class HandLogExporter {
         }
 
         // Build hand text using already-cached player map
-        const handText = this.processHandToText(hand, handEvents, globalPlayerMap)
+        const firstHandId = sessionFirstHandId.get(hand.session.id)
+        const handText = this.processHandToText(hand, handEvents, globalPlayerMap, firstHandId)
         results.push(handText)
       } catch (error) {
         console.warn(`[HandLogExporter] Skipped hand ${handId}:`, error instanceof Error ? error.message : error)
@@ -308,7 +321,8 @@ export class HandLogExporter {
   private static processHandToText(
     hand: Hand,
     events: ApiEvent[],
-    globalPlayerMap: Map<number, { name: string, rank: string }>
+    globalPlayerMap: Map<number, { name: string, rank: string }>,
+    firstHandId?: number
   ): string {
     const session: Session = {
       id: hand.session.id,
@@ -337,7 +351,8 @@ export class HandLogExporter {
     const context: HandLogContext = {
       session,
       handLogConfig: DEFAULT_HAND_LOG_CONFIG,
-      handTimestamp: hand.approxTimestamp
+      handTimestamp: hand.approxTimestamp,
+      firstHandId
     }
 
     const processor = new HandLogProcessor(context)

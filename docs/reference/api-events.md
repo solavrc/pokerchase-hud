@@ -107,6 +107,54 @@ EVT_ACTION.UserId → Track hero's actions
 - Player information arrives incrementally across multiple events
 - Cannot aggregate hands in real-time; must buffer until boundary detected
 
+## Hand Log Generation: Behavioral Notes
+
+> ハンドログ（PokerStars形式）生成に影響する実行時の挙動。
+
+### EVT_DEAL: Chip / BetChip の意味
+
+EVT_DEAL 時点の `Chip` / `BetChip` は **アンテおよびブラインド支払い後** の値。
+
+| フィールド | 内容 |
+|-----------|------|
+| `Player.Chip` | アンテ+ブラインド支払い後の残チップ |
+| `Player.BetChip` | ブラインドとして投入した額（アンテは含まない） |
+
+元チップの逆算: `Chip + BetChip + Ante`（通常ケース）。ショートオールイン時はアンテ全額を支払えないため、`Progress.Pot / アクティブプレイヤー数` で実額を推定する。
+
+### EVT_DEAL: Player フィールドの欠落
+
+- **観戦モード**: Player フィールド自体が undefined
+- **テーブル移動直後**: Player は存在するが `HoleCards: []`
+
+### EVT_ACTION: 送信されないケース
+
+- **アンテオールインプレイヤー**: アンテで全チップを消費した場合、EVT_ACTION は送信されない
+- **タイムアウト / 切断**: 明示的な FOLD の EVT_ACTION が送信されないことがある。この場合、プレイヤーは EVT_HAND_RESULTS の Results にも含まれない
+- **BB 未投稿時の CALL**: PokerChase は BB がアンテオールインでも SB に `CALL bet=BB額` を送信する（内部的に BB ベットが存在する扱い）
+
+### EVT_DEAL_ROUND: CommunityCards
+
+`CommunityCards` はそのストリートで **新たに配られたカードのみ**（FLOP: 3枚, TURN: 1枚, RIVER: 1枚）。オールイン発生後、残りのストリートでは EVT_DEAL_ROUND が送信されない場合があり、残りのカードは EVT_HAND_RESULTS の CommunityCards に含まれる。
+
+### EVT_HAND_RESULTS: CommunityCards の注意点
+
+| ケース | CommunityCards の内容 |
+|-------|---------------------|
+| 全ストリート配信済み | 空配列 `[]` |
+| オールイン後に未配信カードあり | 未配信分のみ（例: TURN+RIVER の2枚） |
+| プリフロップで決着 | 空配列 `[]` |
+
+ハンドログ生成時は、EVT_DEAL_ROUND で蓄積したカードと EVT_HAND_RESULTS のカードをマージする必要がある。
+
+### ブラインド / アンテ構造
+
+PokerChase はアンテ優先モデルを採用。ショートスタックの場合、アンテに先に全額が充当され、残りがあればブラインドに充当される。
+
+> **注**: TDA2024（2024年11月発効）ではショートオールイン時に BB の支払いがアンテより優先されるよう変更された。PokerChase がこの変更に追随しているかは不明。
+
+PokerChase のアンテ/BB 比率は 25% 前後（例: Ante=1400, BB=5700）で、PokerStars より大きい。これにより BB がアンテでオールインするケースが発生しやすい。
+
 ## Code References
 
 For implementation details:
