@@ -1195,16 +1195,20 @@ export class HandLogProcessor {
     const hasSidePots = event.SidePot && event.SidePot.length > 0 && event.SidePot.some(p => p > 0)
     
     let potText: string
-    if (isCashGame) {
+    if (isCashGame && !hasSidePots) {
       potText = `Total pot ${totalPot} | Rake 0`
     } else if (hasSidePots) {
-      // Uncalled bet はサイドポットから差し引く
-      let adjustedSidePot = event.SidePot.reduce((sum, pot) => sum + pot, 0)
+      // Uncalled bet は最大のサイドポットから差し引く
+      const sidePots = [...event.SidePot].filter(p => p > 0)
       if (uncalledBetEntry) {
         const m = uncalledBetEntry.text.match(/Uncalled bet \((\d+)\)/)
-        if (m?.[1]) adjustedSidePot -= parseInt(m[1])
+        if (m?.[1] && sidePots.length > 0) sidePots[sidePots.length - 1]! -= parseInt(m[1])
       }
-      potText = `Total pot ${totalPot} Main pot ${event.Pot}. Side pot ${adjustedSidePot}. | Rake 0`
+      // PS形式: Side pot-1, Side pot-2, ... (単一の場合は Side pot)
+      const sidePotText = sidePots.length === 1
+        ? `Side pot ${sidePots[0]}.`
+        : sidePots.map((p, i) => `Side pot-${i + 1} ${p}.`).join(' ')
+      potText = `Total pot ${totalPot} Main pot ${event.Pot}. ${sidePotText} | Rake 0`
     } else {
       potText = `Total pot ${totalPot}`
     }
