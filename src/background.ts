@@ -654,7 +654,20 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
   }
 }
 
+/**
+ * Service Worker のアイドル停止を防止するキープアライブタイマーを開始する。
+ * Chrome MV3 では 30 秒のアイドル後に Worker が停止されるため、
+ * 長時間のバッチ処理中は定期的にアクティビティを発生させる必要がある。
+ * @returns クリーンアップ用のclearInterval ID
+ */
+const startKeepAlive = (): ReturnType<typeof setInterval> => {
+  return setInterval(() => {
+    chrome.runtime.sendMessage({ action: 'keepAlive' }).catch(() => {})
+  }, 20000)
+}
+
 const exportJsonData = async (db: PokerChaseDB) => {
+  const keepAliveInterval = startKeepAlive()
   try {
     currentOperationState = { type: 'export', format: 'json', progress: 0 }
     chrome.runtime.sendMessage<ExportProgressMessage>({
@@ -728,7 +741,9 @@ const exportJsonData = async (db: PokerChaseDB) => {
       total: totalCount,
       message: `NDJSONエクスポート完了: ${processedCount.toLocaleString()}件`
     }).catch(() => {})
+    clearInterval(keepAliveInterval)
   } catch (error) {
+    clearInterval(keepAliveInterval)
     console.error('[Export] Export failed:', error)
     currentOperationState = { type: 'idle' }
     chrome.runtime.sendMessage<ExportProgressMessage>({
@@ -742,6 +757,7 @@ const exportJsonData = async (db: PokerChaseDB) => {
 }
 
 const exportPokerStarsData = async () => {
+  const keepAliveInterval = startKeepAlive()
   try {
     currentOperationState = { type: 'export', format: 'pokerstars', progress: 0 }
     chrome.runtime.sendMessage<ExportProgressMessage>({
@@ -791,6 +807,7 @@ const exportPokerStarsData = async () => {
       'text/plain'
     )
 
+    clearInterval(keepAliveInterval)
     currentOperationState = { type: 'idle' }
     chrome.runtime.sendMessage<ExportProgressMessage>({
       action: 'exportProgress',
@@ -799,6 +816,7 @@ const exportPokerStarsData = async () => {
       message: 'PokerStarsハンドヒストリーエクスポート完了'
     }).catch(() => {})
   } catch (error) {
+    clearInterval(keepAliveInterval)
     console.error('Error exporting PokerStars format:', error)
     currentOperationState = { type: 'idle' }
     chrome.runtime.sendMessage<ExportProgressMessage>({
