@@ -23,7 +23,7 @@ interface ImportExportSectionProps {
   importDuplicates: number
   importSuccess: number
   importStartTime: number
-  fileInputRef: React.RefObject<HTMLInputElement>
+  fileInputRef: React.RefObject<HTMLInputElement | null>
   setImportStatus: (status: string) => void
   setImportProgress: (progress: number) => void
   setImportProcessed: (processed: number) => void
