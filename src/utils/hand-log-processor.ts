@@ -467,7 +467,16 @@ export class HandLogProcessor {
 
     // Handle pot collection for showdown winners and tournament finish positions
     if (wentToShowdown) {
-      entries.push(...this.buildCollectedEntries(event))
+      // ショウダウン前のuncalled betを検出（サイドポット計算に必要）
+      const uncalledBetEntry = entries.find(e =>
+        e.text.includes('Uncalled bet (') && e.text.includes(') returned to')
+      )
+      let uncalledBetAmount = 0
+      if (uncalledBetEntry) {
+        const m = uncalledBetEntry.text.match(/Uncalled bet \((\d+)\)/)
+        if (m?.[1]) uncalledBetAmount = parseInt(m[1])
+      }
+      entries.push(...this.buildCollectedEntries(event, uncalledBetAmount))
     }
 
     event.Results.forEach(result => {
@@ -493,7 +502,7 @@ export class HandLogProcessor {
   /**
    * サイドポット対応の collected 行を構築
    */
-  private buildCollectedEntries(event: ApiEvent<ApiType.EVT_HAND_RESULTS>): HandLogEntry[] {
+  private buildCollectedEntries(event: ApiEvent<ApiType.EVT_HAND_RESULTS>, uncalledBetAmount: number = 0): HandLogEntry[] {
     const entries: HandLogEntry[] = []
     const hasSidePots = event.SidePot.length > 0
 
@@ -510,7 +519,18 @@ export class HandLogProcessor {
       return entries
     }
 
-    const potAmounts = [event.Pot, ...event.SidePot]
+    // uncalled betがある場合、最も大きいインデックスのサイドポットから差し引く
+    // PS準拠: collected額はuncalled bet差引後
+    const rawPotAmounts = [event.Pot, ...event.SidePot]
+    const potAmounts = [...rawPotAmounts]
+    if (uncalledBetAmount > 0) {
+      let remaining = uncalledBetAmount
+      for (let i = potAmounts.length - 1; i >= 0 && remaining > 0; i--) {
+        const deduct = Math.min(remaining, potAmounts[i]!)
+        potAmounts[i] = potAmounts[i]! - deduct
+        remaining -= deduct
+      }
+    }
     const potWinners: Map<number, { userIds: number[], amount: number }> = new Map()
     const mainPotWinnerIds = event.Results
       .filter(r => r.HandRanking === 1)
