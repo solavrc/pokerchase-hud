@@ -192,14 +192,14 @@ const Popup = () => {
       }
 
       // Load UI config from chrome.storage.sync
-      chrome.storage.sync.get('uiConfig', (result) => {
+      chrome.storage.sync.get('uiConfig', (result: Record<string, any>) => {
         if (result.uiConfig) {
           setUIConfig(result.uiConfig)
         }
       })
 
       // Load cached Firebase auth state first for instant rendering
-      chrome.storage.local.get('firebaseAuthCache', (result) => {
+      chrome.storage.local.get('firebaseAuthCache', (result: Record<string, any>) => {
         if (result.firebaseAuthCache) {
           setIsFirebaseSignedIn(result.firebaseAuthCache.isSignedIn || false)
           setFirebaseUserInfo(result.firebaseAuthCache.userInfo || null)

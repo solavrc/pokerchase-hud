@@ -211,7 +211,7 @@ class PokerChaseService {
     }
 
     try {
-      const result = await chrome.storage.local.get(PokerChaseService.STORAGE_KEY)
+      const result = await chrome.storage.local.get(PokerChaseService.STORAGE_KEY) as Record<string, any>
       const state = result[PokerChaseService.STORAGE_KEY]
 
       if (state) {
