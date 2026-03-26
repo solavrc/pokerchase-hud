@@ -66,7 +66,7 @@ export const playerBaseSchema = z.object({
 export const progressBaseSchema = z.object({
   Phase: z.enum(PhaseType),
   Pot: z.int().nonnegative(),
-  SidePot: z.array(z.int().nonnegative()).max(4),
+  SidePot: z.array(z.int().nonnegative()).max(4).describe('サイドポット額の配列。オールインが発生するたびに要素が追加される（最大4つ）。空配列=サイドポットなし。ハンド中のProgress値はスナップショットであり、EVT_HAND_RESULTSで再計算される'),
   MinRaise: z.int().nonnegative(),
   NextActionTypes: z.array(z.enum(ActionType)).max(4),
   NextExtraLimitSeconds: z.int().nonnegative()
@@ -267,7 +267,7 @@ export const apiEventSchemas = {
       NextExtraLimitSeconds: z.int().nonnegative(),
       Phase: z.literal(PhaseType.PREFLOP),
       Pot: z.int().nonnegative(),
-      SidePot: z.array(z.int()).max(4),
+      SidePot: z.array(z.int()).max(4).describe('プリフロップ時点のサイドポット。アンテオールインが発生した場合に値が入る。通常は空配列'),
     }),
     SeatUserIds: z.array(z.int()).min(4).max(6).describe('-1=空席, 配列長=テーブル席数(4 or 6), インデックス=論理シート番号, 値=UserId'),
     MyRanking: z.object({
@@ -290,7 +290,7 @@ export const apiEventSchemas = {
       NextExtraLimitSeconds: z.int().nonnegative(),
       Phase: z.enum(PhaseType).describe('現在のフェーズ（0=プリフロップ〜3=リバー）'),
       Pot: z.int().nonnegative().describe('現在のポット総額（全ストリートの累計）'),
-      SidePot: z.array(z.int().nonnegative()).max(4).describe('サイドポット額の配列。オールインが発生した場合のみ'),
+      SidePot: z.array(z.int().nonnegative()).max(4).describe('サイドポット額の配列。ALL_INアクション時に要素が追加される。このアクション時点のスナップショット値であり、EVT_HAND_RESULTSの最終値とは異なる場合がある'),
     }),
     SeatIndex: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).describe('アクション実行者の席インデックス。UserId = EVT_DEAL.SeatUserIds[SeatIndex]'),
   }).describe('プレイヤーアクション - アンテオールインプレイヤーには発行されない。タイムアウト/切断時にFOLDが送信されない場合がある'),
@@ -324,7 +324,7 @@ export const apiEventSchemas = {
         z.literal(PhaseType.RIVER)
       ]).describe('このストリートのフェーズ。1=フロップ, 2=ターン, 3=リバー（0=プリフロップはEVT_DEALで処理）'),
       Pot: z.int().nonnegative().describe('現在のポット総額（前ストリートまでの累計）'),
-      SidePot: z.array(z.int().nonnegative()).max(4).describe('サイドポット額の配列'),
+      SidePot: z.array(z.int().nonnegative()).max(4).describe('サイドポット額の配列。前ストリートまでのオールインで発生したサイドポットを引き継ぐ'),
     }).describe('ゲーム進行状況。AggregateEventsStreamがProgress.NextActionSeatで次アクション者の整合性チェックに使用'),
   }).describe('新ストリート開始 - フロップ/ターン/リバーのカード配布。CommunityCardsは新規配布分のみ（累積ではない）。オールイン後は発行されない場合がある'),
 
@@ -348,7 +348,7 @@ export const apiEventSchemas = {
       Chip: z.int().nonnegative().describe('ヒーローのハンド終了後の残チップ量（ポット獲得分を含む最終値）'),
       SeatIndex: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).describe('ヒーローの席インデックス'),
     }).optional().describe('ヒーロー情報。観戦モード（約2%のハンド）ではundefined'),
-    Pot: z.int().nonnegative().describe('最終ポット総額'),
+    Pot: z.int().nonnegative().describe('メインポット額。サイドポットがある場合はメインポットのみ（全プレイヤーが参加可能な額）。サイドポットなしの場合は総額'),
     Results: z.array(z.object({
       HandRanking: z.union([z.literal(-1), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6)]).describe('ポット獲得の序列。1=最強, 2=次点, ...。-1=ポット獲得資格なし（敗北）。同一役の場合は同じ値'),
       Hands: z.array(z.int().min(0).max(51)).min(0).max(5).describe('役判定に使われた5枚のカード（カードインデックス 0-51）。ショーダウン時のみ。NO_CALL/SHOWDOWN_MUCK/FOLD_OPENでは空配列'),
@@ -366,7 +366,7 @@ export const apiEventSchemas = {
       - FoldOpen (RankType 12): Hands=空配列, HoleCards=2枚（自発公開）
       ※フォールド済みプレイヤーはFOLD_OPENしない限りResults[]に含まれない`),
     ResultType: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).describe('ハンド終了後の状態遷移。0=通常続行（次のハンドへ）, 1=要調査, 2=テーブル移動(MTT), 3=休憩開始(MTT), 4=テーブル離脱 or 対戦相手不在'),
-    SidePot: z.array(z.int().nonnegative()).max(4).describe('サイドポット額の配列。オールインが発生した場合のみ値が入る'),
+    SidePot: z.array(z.int().nonnegative()).max(4).describe('サイドポット額の配列（最終値）。Pot=メインポット、SidePot[0]=第1サイドポット、SidePot[1]=第2サイドポット。不変条件: Pot + sum(SidePot) == sum(Results[].RewardChip)（100%成立）。ハンドの7.5%で発生（1サイドポット:95%, 2:5%, 3:<0.1%）'),
   }).describe('ハンド結果 - ハンド集約の終端。HandIdはここでのみ取得可能（EVT_DEAL→EVT_HAND_RESULTSが1ハンドの境界）。Results[]はHandRanking昇順で勝者→敗者の順。フォールド済みプレイヤーはResults[]に含まれない（FOLD_OPEN除く）'),
 
   [307]: baseSchema.extend({
