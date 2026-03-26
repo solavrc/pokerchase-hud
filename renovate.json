@@ -7,7 +7,7 @@
     ":automergePatch"
   ],
   "labels": ["dependencies"],
-  "rebaseWhen": "behind-base-branch",
+  "rebaseWhen": "conflicted",
   "automerge": true,
   "automergeType": "pr",
   "platformAutomerge": true,
