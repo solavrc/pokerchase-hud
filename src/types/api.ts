@@ -49,31 +49,13 @@ const baseSchema = z.object({
 // ===============================
 
 /** 座席インデックスのスキーマ */
-export const seatIndexSchema = z.union([
+const seatIndexSchema = z.union([
   z.literal(0), z.literal(1), z.literal(2),
   z.literal(3), z.literal(4), z.literal(5)
 ])
 
-/** プレイヤー基本情報スキーマ */
-export const playerBaseSchema = z.object({
-  SeatIndex: seatIndexSchema,
-  BetStatus: z.enum(BetStatusType),
-  Chip: z.int().nonnegative(),
-  BetChip: z.int().nonnegative()
-})
-
-/** ゲーム進行状況スキーマ */
-export const progressBaseSchema = z.object({
-  Phase: z.enum(PhaseType),
-  Pot: z.int().nonnegative(),
-  SidePot: z.array(z.int().nonnegative()).max(4).describe('サイドポット額の配列。オールインが発生するたびに要素が追加される（最大4つ）。空配列=サイドポットなし。ハンド中のProgress値はスナップショットであり、EVT_HAND_RESULTSで再計算される'),
-  MinRaise: z.int().nonnegative(),
-  NextActionTypes: z.array(z.enum(ActionType)).max(4),
-  NextExtraLimitSeconds: z.int().nonnegative()
-})
-
 /** ユーザー情報スキーマ */
-export const userInfoSchema = z.object({
+const userInfoSchema = z.object({
   UserId: z.int().nonnegative(),
   UserName: z.string().describe('プレイヤー表示名'),
   FavoriteCharaId: z.string().describe('例: chara0001, fn_chara0003, nj_chara0002'),
@@ -91,10 +73,10 @@ export const userInfoSchema = z.object({
 })
 
 /** ホールカードスキーマ */
-export const holeCardsSchema = z.array(z.int().min(0).max(51)).max(2)
+const holeCardsSchema = z.array(z.int().min(0).max(51)).max(2)
 
 /** コミュニティカードスキーマ */
-export const communityCardsSchema = z.array(z.int().min(0).max(51)).max(5)
+const communityCardsSchema = z.array(z.int().min(0).max(51)).max(5)
 
 /**
  * APIイベントの個別Zodスキーマ
