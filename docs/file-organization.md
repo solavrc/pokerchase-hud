@@ -20,18 +20,13 @@
 ├── .firebaserc            # Firebase project settings
 ├── firestore.rules        # Firestore security rules
 ├── firestore.indexes.json # Firestore index definitions
-├── docs/                  # Technical documentation
-│   ├── README.md          # Documentation index
+├── docs/                  # Technical documentation (flat structure)
+│   ├── api-events.md      # WebSocket API event reference
+│   ├── architecture.md    # Architecture design decisions & rationale
+│   ├── file-organization.md  # This file
+│   ├── firebase-setup.md  # Firebase setup guide
 │   ├── hand-analysis.md   # 22-hand statistics audit trail
-│   ├── adr/               # Architecture Decision Records
-│   │   ├── 001-data-storage-architecture.md
-│   │   └── 002-database-index-optimization.md
-│   ├── implementation/    # Implementation guides
-│   │   ├── file-organization.md  # This file
-│   │   └── firebase-setup.md     # Firebase setup guide
-│   └── reference/         # API & format references
-│       ├── api-events.md          # WebSocket API events
-│       └── pokerstars-export.md   # PokerStars export spec
+│   └── pokerstars-export.md  # PokerStars export specification
 ├── icons/                 # Extension icons
 │   ├── icon_16px.png, icon_48px.png, icon_128px.png
 │   └── README.png         # README screenshot
