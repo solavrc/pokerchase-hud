@@ -280,10 +280,12 @@ Statistics Refresh (batch mode)
 
 **Critical Design Constraints (learned 2026-03):**
 
+> **Data model & event edge cases** are consolidated in [docs/reference/api-events.md](docs/reference/api-events.md) — see "Data Constraints & Edge Cases", "Field Relationships", and "Enum Reference" sections.
+
 - **EntityConverter state**: `convertEventsToEntities()` tracks hand boundaries via internal local variables (`currentHandEvents`). Must NOT be called in chunks — a hand spanning chunk boundaries will be lost. Always pass all events in a single call.
 - **Dexie Collection reuse**: `processInChunks()` uses `.offset().limit()` on a Collection object, but Dexie Collections accumulate state. For reliable pagination, use cursor-based approach with `where('[timestamp+ApiTypeId]').above(lastKey).limit(N)`.
 - **Export size limits**: Service Worker → content_script message limit is 64MiB. Data URL limit is ~2MB. Large exports use chunked message passing with Blob-based download in content_script.
-- **PokerStars hand history format**: `calls` shows additional call amount (not total bet). `Dealt to` is hero-only. Summary uses `folded on the Flop/Turn/River`.
+- **PokerStars hand history format**: `calls` shows additional call amount (not total bet). `Dealt to` is hero-only. Summary uses `folded on the Flop/Turn/River`. See [docs/reference/pokerstars-export.md](docs/reference/pokerstars-export.md).
 - **HandLogExporter batch optimization**: `exportMultipleHands` prefetches all hands and API events in 2 DB queries, then processes in memory. Avoids N+1 query pattern (previously 100 hands = 300+ DB queries). Single-hand `exportHand` retains per-hand DB queries for simplicity.
 - **Popup ↔ Background state synchronization**: Long-running operations (export/import/rebuild) track state in `currentOperationState` global variable in background.ts. Popup queries via `getOperationState` on mount to restore UI after close/reopen. Progress messages (`processing` state) must also set the active operation state (not just `started`), because popup may miss `started` during close/reopen window.
 - **Optimistic UI updates**: Button click handlers set local state immediately before sending message to background, then revert if background rejects. Prevents race window where buttons remain clickable between click and first progress message.
@@ -350,6 +352,8 @@ Recent toArray() optimizations achieved:
 - **AllPlayersRealTimeStats**: Contains heroStats and playerStats properties
 
 ### Event Handling
+
+> **Comprehensive event reference**: See [docs/reference/api-events.md](docs/reference/api-events.md) for event types, field relationships, edge cases, card encoding, and enum definitions.
 
 - **Event Schema**: PokerChase API controls schema; may change without notice
 - **Event Ordering**: Guaranteed logical sequence, but may have connectivity losses
@@ -523,6 +527,8 @@ Dynamic statistics for all players, with hero having additional hand improvement
 - **Categories**: Pocket pairs, suited, offsuit
 
 ## Data Model & Events
+
+> **Canonical reference**: [docs/reference/api-events.md](docs/reference/api-events.md) consolidates event specifications, field relationships, edge cases, card encoding, and enum definitions. This section covers HUD-specific implementation details.
 
 ### ApiEvent Architecture
 
