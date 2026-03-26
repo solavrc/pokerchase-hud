@@ -27,6 +27,8 @@ export class HandLogProcessor {
   private context: HandLogContext
   private firstHandId: number | null = null
   private _anteAllInChipsMap: Map<number, number> | null = null
+  private _anteAllInContribTiers: number[] | null = null
+  private _anteAllInSeats: number[] | null = null
 
   constructor(context: HandLogContext) {
     this.context = context
@@ -95,6 +97,8 @@ export class HandLogProcessor {
     this.currentHand = null
     this.communityCards = []
     this._anteAllInChipsMap = null
+    this._anteAllInContribTiers = null
+    this._anteAllInSeats = null
     // firstHandId は保持（トーナメントID用）
   }
 
@@ -302,6 +306,9 @@ export class HandLogProcessor {
     if (!this.currentHand) return []
 
     const entries: HandLogEntry[] = []
+
+    // アンテオールインプレイヤーのチップ額を修正（Seat行・アンテ行の遡及修正）
+    this.fixAnteAllInChips(event)
 
     // すべてのエントリのHandIdを更新
     this.currentHand.handId = event.HandId
@@ -960,11 +967,11 @@ export class HandLogProcessor {
    * アンテオールインプレイヤーのチップ推定テーブルを構築
    * 
    * EVT_DEAL時点で Chip=0, BetChip=0 のプレイヤーが複数いる場合、
-   * Progress.Pot/SidePot から各段差を逆算して正しい拠出額を得る。
+   * Progress.Pot/SidePot から拠出額の候補リストを算出。
    * 
-   * メインポット = 最低拠出額 × 人数
-   * SidePot[0] = (次の段差) × (人数 - オールイン済み人数)
-   * → 各段差から拠出額の昇順リストを作成し、Chip=0のプレイヤーに割り当てる
+   * ただし、EVT_DEALだけでは各シートへの正確な割り当てが不可能
+   * （座席番号とスタックサイズは無関係）。
+   * 仮割り当てを行い、handleHandResultsEventで結果データを使って修正する。
    */
   private buildAnteAllInChipsMap(event: ApiEvent<ApiType.EVT_DEAL>): Map<number, number> | null {
     // Chip=0, BetChip=0 のプレイヤー（アンテオールイン）を列挙
@@ -987,7 +994,6 @@ export class HandLogProcessor {
     if (activePlayers <= 0 || !event.Progress?.Pot) return null
     
     // 各段差から拠出額リストを構築
-    // メインポット: minContrib × activePlayers = Pot
     const minContrib = Math.floor(event.Progress.Pot / activePlayers)
     const contributions: number[] = [minContrib]
     
@@ -995,31 +1001,124 @@ export class HandLogProcessor {
     let cumulative = minContrib
     
     for (const sidePot of event.Progress.SidePot) {
-      remainingPlayers-- // 1人オールインで脱落
+      remainingPlayers--
       if (remainingPlayers <= 0) break
       const stepContrib = Math.floor(sidePot / remainingPlayers)
       cumulative += stepContrib
       contributions.push(cumulative)
     }
     
-    // contributions は拠出額の昇順リスト
-    // allInSeats の数だけ小さい方から割り当てる
-    // ただし allInSeats が contributions より多い場合（同額オールイン）は同値を使う
-    
-    // アンテオールインプレイヤーは contributions の先頭 N 個に対応
+    // 仮割り当て: 最小値を全員に（handleHandResultsEventで修正する）
     const result = new Map<number, number>()
-    
-    // allInSeats を座席順にソート（推定の安定性のため）
-    allInSeats.sort((a, b) => a - b)
-    
-    // 各オールインプレイヤーに拠出額を割り当て
-    // 拠出額の昇順 = チップの昇順に対応
-    for (let i = 0; i < allInSeats.length; i++) {
-      const contrib = contributions[Math.min(i, contributions.length - 1)]!
-      result.set(allInSeats[i]!, contrib)
+    for (const seat of allInSeats) {
+      result.set(seat, minContrib)
     }
     
+    // 修正用データを保存
+    this._anteAllInContribTiers = contributions.slice(0, allInSeats.length)
+    this._anteAllInSeats = allInSeats
+    
     return result
+  }
+  
+  /**
+   * EVT_HAND_RESULTS の Results データを使って、アンテオールインプレイヤーの
+   * チップ額割り当てを修正する。
+   * 
+   * ロジック: メインポットのみ獲得(RewardChip == Pot) → 最小スタック、
+   * メイン+サイドポット獲得 → 大きいスタック、等。
+   * 敗者(RewardChip=0)は消去法で割り当て。
+   */
+  private fixAnteAllInChips(event: ApiEvent<ApiType.EVT_HAND_RESULTS>): void {
+    if (!this._anteAllInContribTiers || !this._anteAllInSeats || !this.currentHand) return
+    if (this._anteAllInSeats.length <= 1) return
+    
+    const tiers = [...this._anteAllInContribTiers].sort((a, b) => a - b)
+    const seats = [...this._anteAllInSeats]
+    const seatUserIds = this.currentHand.seatUserIds
+    
+    // 各シートの拠出ティアを判定
+    const seatToTier = new Map<number, number>()
+    const usedTierIndices = new Set<number>()
+    
+    // Pass 1: RewardChipから確定できるプレイヤーを割り当て
+    for (const seat of seats) {
+      const userId = seatUserIds[seat]
+      if (userId === undefined || userId === -1) continue
+      const result = event.Results.find(r => r.UserId === userId)
+      if (!result) continue
+      
+      if (result.RewardChip > 0) {
+        // このプレイヤーの獲得ポットからティアを推定
+        // RewardChip == Pot → メインポットのみ勝者 → 最小ティア
+        if (result.RewardChip === event.Pot) {
+          // 最小ティアを割り当て
+          for (let i = 0; i < tiers.length; i++) {
+            if (!usedTierIndices.has(i)) {
+              seatToTier.set(seat, tiers[i]!)
+              usedTierIndices.add(i)
+              break
+            }
+          }
+        } else if (result.RewardChip > event.Pot) {
+          // メインポット以上を獲得 → より大きいティア
+          for (let i = tiers.length - 1; i >= 0; i--) {
+            if (!usedTierIndices.has(i)) {
+              seatToTier.set(seat, tiers[i]!)
+              usedTierIndices.add(i)
+              break
+            }
+          }
+        }
+      }
+    }
+    
+    // Pass 2: 未割当シートに残りティアを割り当て（消去法）
+    const remainingTierIndices = []
+    for (let i = 0; i < tiers.length; i++) {
+      if (!usedTierIndices.has(i)) remainingTierIndices.push(i)
+    }
+    const unassignedSeats = seats.filter(s => !seatToTier.has(s))
+    for (let i = 0; i < unassignedSeats.length; i++) {
+      const tierIdx = remainingTierIndices[i]
+      if (tierIdx !== undefined) {
+        seatToTier.set(unassignedSeats[i]!, tiers[tierIdx]!)
+      }
+    }
+    
+    // _anteAllInChipsMap を更新
+    if (seatToTier.size > 0 && this._anteAllInChipsMap) {
+      for (const [seat, chips] of seatToTier) {
+        this._anteAllInChipsMap.set(seat, chips)
+      }
+    }
+    
+    // Seat行とアンテ行を修正
+    for (const [seat, chips] of seatToTier) {
+      const userId = seatUserIds[seat]
+      if (userId === undefined || userId === -1) continue
+      const playerName = this.getPlayerName(userId)
+      const seatNum = seat + 1
+      
+      // Seat行を修正: "Seat N: Name (XXXXX in chips)"
+      for (const entry of this.currentHand.entries) {
+        if (entry.type === HandLogEntryType.SEAT && 
+            entry.text.startsWith(`Seat ${seatNum}: ${playerName}`)) {
+          entry.text = `Seat ${seatNum}: ${playerName} (${chips} in chips)`
+          break
+        }
+      }
+      
+      // アンテ行を修正: "Name: posts the ante XXXXX and is all-in"
+      for (const entry of this.currentHand.entries) {
+        if (entry.type === HandLogEntryType.ACTION && 
+            entry.text.includes(`${playerName}: posts the ante`) &&
+            entry.text.includes('and is all-in')) {
+          entry.text = `${playerName}: posts the ante ${chips} and is all-in`
+          break
+        }
+      }
+    }
   }
 
   private getPlayerChips(event: ApiEvent<ApiType.EVT_DEAL>, seatIndex: number): number {
