@@ -236,9 +236,10 @@ export class HandLogExporter {
         continue
       }
 
-      // セッション内の最初のハンドIDを記録
+      // セッション内の最小のハンドIDを記録（トーナメントID用）
       const sessionId = hand.session.id
-      if (!sessionFirstHandId.has(sessionId)) {
+      const currentMin = sessionFirstHandId.get(sessionId)
+      if (currentMin === undefined || handId < currentMin) {
         sessionFirstHandId.set(sessionId, handId)
       }
 
