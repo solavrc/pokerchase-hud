@@ -229,7 +229,7 @@ export const apiEventSchemas = {
       BetStatus: z.union([z.enum(BetStatusType)]),
       Chip: z.int().nonnegative().describe('アンテ+ブラインド支払い後の残チップ。元チップ逆算: Chip + BetChip + Ante（ショートスタック時は不正確、Progress.Pot/人数で推定）'),
       SeatIndex: seatIndexSchema,
-      Status: z.union([z.literal(0), z.literal(1), z.literal(5)]).describe('0=通常。要調査: 1,5 は 1%未満の割合で出現'),
+      Status: z.union([z.literal(0), z.literal(1), z.literal(5)]).describe('0=通常, 1=離脱予告/切断（0.33%。次ハンドで不在になる場合あり）, 5=バスト後リバイイン待ち（0.08%。Ringゲームで発生。Chip=0, BetStatus=4。次ハンドでChip>0に復帰するか、席を離れる）'),
       IsSafeLeave: z.boolean().optional().describe('安全退出フラグ（Ringゲーム）'),
     })).min(1).max(6).describe('ヒーロー以外のプレイヤー情報。SeatIndex昇順（100%確認済み）。アンテ・ブラインド支払い後の状態'),
     Player: z.object({
@@ -277,7 +277,7 @@ export const apiEventSchemas = {
       BetStatus: z.enum(BetStatusType).describe('ベット状態。2=FOLDED（前ストリートでフォールド済み）, 3=ALL_IN（オールイン中）'),
       Chip: z.int().nonnegative().describe('現在の残チップ量'),
       SeatIndex: seatIndexSchema.describe('席インデックス。EVT_DEAL.SeatUserIds[SeatIndex]でUserId取得'),
-      Status: z.union([z.literal(0), z.literal(1)]).describe('0=通常。要調査: 1 は 1%未満の割合で出現'),
+      Status: z.union([z.literal(0), z.literal(1)]).describe('0=通常, 1=離脱予告/切断（EVT_DEALと同じパターン）'),
       IsSafeLeave: z.boolean().optional().describe('安全退出フラグ（Ringゲーム）'),
     })).min(1).max(6).describe('ヒーロー以外の全プレイヤー状態。SeatIndex昇順。フォールド済み(BetStatus=2)・オールイン(BetStatus=3)含む'),
     Player: z.object({
@@ -307,13 +307,13 @@ export const apiEventSchemas = {
     CommunityCards: communityCardsSchema.describe('EVT_DEAL_ROUNDで未配信のカードのみ。全ストリート配信済みなら空配列[]。蓄積したEVT_DEAL_ROUNDのカードとマージしてフルボードを構築する'),
     DefeatStatus: z.union([z.literal(0), z.literal(1)]).describe('0=継続, 1=脱落(ELIMINATED)'),
     HandId: z.int().nonnegative().describe('ハンドの一意識別子。ここでのみ取得可能。セッション全体で単調増加。SNG/Ringのセッション識別やマルチプレイヤーハンド突合に使用可能'),
-    HandLog: z.string().optional().describe('要調査: PokerChase内部のハンドログ文字列？'),
+    HandLog: z.string().optional().describe('常に空文字列（全25,322ハンドで確認済み）。PokerChase内部で未使用の予約フィールドと推測'),
     OtherPlayers: z.array(z.object({
       BetChip: z.literal(0).describe('ハンド終了時は常に0（ベットはポットに回収済み）'),
       BetStatus: z.literal(-1).describe('ハンド終了時は常に-1(HAND_ENDED)'),
       Chip: z.int().nonnegative().describe('ハンド終了後の残チップ量（ポット獲得分を含む最終値）'),
       SeatIndex: seatIndexSchema.describe('席インデックス。EVT_DEAL.SeatUserIds[SeatIndex]でUserId取得'),
-      Status: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6), z.literal(7)]).describe('0=通常, 5=ELIMINATED（脱落）, 6=NO_CALL?, 7=要調査。1-4も要調査'),
+      Status: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6), z.literal(7)]).describe('0=通常(97.3%), 1=離脱予告/切断(0.33%), 4=BetStatus=ELIMINATED待ち(0.5%、常にBetStatus=-1), 5=脱落済み(1.84%、常にChip=0), 6=離脱確定(0.02%、Chip>0の場合あり), 7=強制退出(0.01%、Chip>0。RT=4との共起あり)。2,3は未観測'),
       IsSafeLeave: z.boolean().optional().describe('安全退出フラグ（Ringゲーム）'),
     })).min(1).max(5).describe('ヒーロー以外の全プレイヤーのハンド終了後状態。SeatIndex昇順。BetChip=0, BetStatus=-1は全ハンドで固定'),
     Player: z.object({
@@ -339,7 +339,7 @@ export const apiEventSchemas = {
       - ShowDownMuck (RankType 11): Hands=空配列, HoleCards=空配列 or [-1,-1]
       - FoldOpen (RankType 12): Hands=空配列, HoleCards=2枚（自発公開）
       ※フォールド済みプレイヤーはFOLD_OPENしない限りResults[]に含まれない`),
-    ResultType: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).describe('ハンド終了後の状態遷移。0=通常続行（次のハンドへ）, 1=要調査, 2=テーブル移動(MTT), 3=休憩開始(MTT), 4=テーブル離脱 or 対戦相手不在'),
+    ResultType: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).describe('0=通常続行(98.5%), 1=トーナメント敗退(0.8%、ヒーローが脱落), 2=テーブル移動(0.4%、MTT), 3=休憩開始(0.1%、MTT), 4=テーブル離脱/対戦相手不在(0.2%、Ring退出時など)'),
     SidePot: z.array(z.int().nonnegative()).max(4).describe('サイドポット額の配列（最終値）。Pot=メインポット、SidePot[0]=第1サイドポット、SidePot[1]=第2サイドポット。不変条件: Pot + sum(SidePot) == sum(Results[].RewardChip)（100%成立）。ハンドの7.5%で発生（1サイドポット:95%, 2:5%, 3:<0.1%）'),
   }).describe('ハンド結果 - ハンド集約の終端。HandIdはここでのみ取得可能（EVT_DEAL→EVT_HAND_RESULTSが1ハンドの境界）。Results[]はHandRanking昇順で勝者→敗者の順。フォールド済みプレイヤーはResults[]に含まれない（FOLD_OPEN除く）'),
 
@@ -500,7 +500,7 @@ export const apiEventSchemas = {
     ApiTypeId: z.literal(ApiType.EVT_PLAYER_SEAT_ASSIGNED),
     IsLeave: z.boolean(),
     IsRetire: z.boolean(),
-    ProcessType: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).describe('0:初期着席, 他:要調査'),
+    ProcessType: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).describe('0=初期着席（SNG/MTT/Ring。Game/Player/Progressなし）, 1=テーブル移動先着席（MTT/Ring。BB/SBSeat=-1の場合あり＝ハンド間）, 2=ゲーム中途中参加（Ring/MTT。Game/Player/Progress全て存在）, 3=MTT再着席（稀。2件のみ）, 4=テーブル離脱/復帰（Ring離脱IsLeave=trueの場合あり）'),
     SeatUserIds: z.array(z.int()).min(4).max(6).describe('-1=空席, 順番はランダムに割り当て'),
     TableUsers: z.array(userInfoSchema.extend({
       ClassLvId: z.string().optional().describe('リングゲームクラス。例: class_lv_j1, class_lv_k3, class_lv_a1, 空文字列=未設定'),
@@ -510,12 +510,12 @@ export const apiEventSchemas = {
     Game: z.object({
       Ante: z.int().nonnegative(),
       BigBlind: z.int().nonnegative(),
-      BigBlindSeat: z.union([z.literal(-1), z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).describe('-1:要調査'),
+      BigBlindSeat: z.union([z.literal(-1), z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).describe('-1=ハンド間（ProcessType=1でのテーブル移動時。まだブラインド位置が確定していない）'),
       ButtonSeat: seatIndexSchema,
       CurrentBlindLv: z.int().min(1).max(27),
       NextBlindUnixSeconds: z.union([z.int(), z.null()]),
       SmallBlind: z.int().nonnegative(),
-      SmallBlindSeat: z.union([z.literal(-1), z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).describe('-1:要調査'),
+      SmallBlindSeat: z.union([z.literal(-1), z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).describe('-1=ハンド間（BigBlindSeatと同様）'),
     }).optional().describe('途中参加時のみ。存在する場合は全フィールドが揃う'),
     IsSafeLeave: z.boolean().optional(),
     WaitTableType: z.int().nonnegative().optional().describe('テーブル待機タイプ（0:通常）'),
