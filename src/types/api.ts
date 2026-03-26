@@ -54,6 +54,22 @@ const seatIndexSchema = z.union([
   z.literal(3), z.literal(4), z.literal(5)
 ])
 
+/** ランク情報スキーマ */
+const rankSchema = z.object({
+  RankId: z.string().describe('beginner | bronze | silver | gold | platinum | diamond | legend'),
+  RankLvId: z.string().describe('RankIdと同値（現状の観測範囲）'),
+  RankLvName: z.string().describe('例: ビギナー, ブロンズ, レジェンド（日本語表示名）'),
+  RankName: z.string().describe('例: ビギナー, ブロンズ, レジェンド（RankLvNameと同値）'),
+})
+
+/** トーナメントランキング情報スキーマ */
+const myRankingSchema = z.object({
+  ActiveNum: z.int().nonnegative().describe('残りアクティブプレイヤー数'),
+  AverageChip: z.int().nonnegative().describe('平均チップ量'),
+  JoinNum: z.int().nonnegative().describe('トーナメント参加人数'),
+  Ranking: z.int().nonnegative().describe('現在の順位'),
+})
+
 /** ユーザー情報スキーマ */
 const userInfoSchema = z.object({
   UserId: z.int().nonnegative(),
@@ -63,12 +79,7 @@ const userInfoSchema = z.object({
   EmblemId: z.string().describe('例: emblem0001, emblem0192, fn_emblem0001'),
   IsCpu: z.boolean(),
   IsOfficial: z.boolean(),
-  Rank: z.object({
-    RankId: z.string().describe('beginner | bronze | silver | gold | platinum | diamond | legend'),
-    RankLvId: z.string().describe('RankIdと同値（現状の観測範囲）'),
-    RankLvName: z.string().describe('例: ビギナー, ブロンズ, レジェンド（日本語表示名）'),
-    RankName: z.string().describe('例: ビギナー, ブロンズ, レジェンド（RankLvNameと同値）'),
-  }),
+  Rank: rankSchema,
   SettingDecoIds: z.array(z.string()).length(7).describe('装飾品ID 7つ固定。prefix: k_deco, ta_deco, t_deco, b_deco, f_deco, eal_deco, esw_deco')
 })
 
@@ -238,12 +249,7 @@ export const apiEventSchemas = {
       SidePot: z.array(z.int()).max(4).describe('プリフロップ時点のサイドポット。アンテオールインが発生した場合に値が入る。通常は空配列'),
     }),
     SeatUserIds: z.array(z.int()).min(4).max(6).describe('-1=空席, 配列長=テーブル席数(4 or 6), インデックス=論理シート番号, 値=UserId'),
-    MyRanking: z.object({
-      ActiveNum: z.int().nonnegative(),
-      AverageChip: z.int().nonnegative(),
-      JoinNum: z.int().nonnegative(),
-      Ranking: z.int().nonnegative(),
-    }).optional().describe('トーナメント時のみ'),
+    MyRanking: myRankingSchema.optional().describe('トーナメント時のみ。MTTでの現在順位・参加人数・平均チップを提供'),
   }).describe('プリフロップ - ハンド開始。ヒーロー識別に必須: Player.SeatIndexからUserIdを取得'),
 
   [ApiType.EVT_ACTION]: baseSchema.extend({
@@ -438,12 +444,7 @@ export const apiEventSchemas = {
     PopupTitleTextKey: z.string().optional(),
     RankReward: z.object({
       IsSeasonal: z.boolean().describe('シーズナルランクかどうか'),
-      Rank: z.object({
-        RankId: z.string().describe('beginner | bronze | silver | gold | platinum | diamond | legend'),
-        RankLvId: z.string(),
-        RankLvName: z.string(),
-        RankName: z.string(),
-      }).describe('現在のランク情報'),
+      Rank: rankSchema.describe('現在のランク情報'),
       RankPoint: z.int().nonnegative().describe('現在のランクポイント'),
       RankPointDiff: z.int().describe('このセッションでのランクポイント変動（正=上昇、負=下降）'),
       SeasonalRanking: z.literal(0).describe('シーズナルランキング。現状常に0'),
@@ -561,12 +562,7 @@ export const apiEventSchemas = {
   [315]: baseSchema.extend({
     ApiTypeId: z.literal(315),
     FinishUnixSeconds: z.int().nonnegative().describe('休憩終了時刻 (Unix Seconds)'),
-    MyRanking: z.object({
-      ActiveNum: z.int().nonnegative(),
-      AverageChip: z.int().nonnegative(),
-      JoinNum: z.int().nonnegative(),
-      Ranking: z.int().nonnegative(),
-    }),
+    MyRanking: myRankingSchema,
   }).describe('トーナメント: 休憩開始'),
 
   [316]: baseSchema.extend({
