@@ -11,7 +11,7 @@ describe('riverCallAccuracyStat', () => {
   const createAction = (
     playerId: number,
     phase: PhaseType,
-    actionType: ActionType,
+    actionType: Action['actionType'],
     actionDetails: ActionDetail[] = []
   ): Action => ({
     handId: 1,
