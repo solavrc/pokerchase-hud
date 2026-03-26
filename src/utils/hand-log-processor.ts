@@ -531,25 +531,58 @@ export class HandLogProcessor {
         remaining -= deduct
       }
     }
+
+    // RewardChipベースのポット割当アルゴリズム:
+    // HandRankingだけでは不十分（メインポット勝者がサイドポット対象外の場合がある）
+    // 各プレイヤーの残RewardChipを追跡し、ポットごとに正しい勝者を判定
+    const remainingReward = new Map<number, number>()
+    for (const r of event.Results) {
+      if (r.RewardChip > 0) {
+        remainingReward.set(r.UserId, (remainingReward.get(r.UserId) || 0) + r.RewardChip)
+      }
+    }
+
     const potWinners: Map<number, { userIds: number[], amount: number }> = new Map()
-    const mainPotWinnerIds = event.Results
-      .filter(r => r.HandRanking === 1)
-      .map(r => r.UserId)
     
     for (let potIdx = 0; potIdx < potAmounts.length; potIdx++) {
+      const potAmount = potAmounts[potIdx]!
+      if (potAmount <= 0) continue
+
       const targetRanking = potIdx + 1
-      const winners = event.Results.filter(r => r.HandRanking === targetRanking)
+      const rankWinners = event.Results.filter(r => r.HandRanking === targetRanking)
       
-      if (winners.length > 0) {
+      let winnerIds: number[]
+      
+      if (rankWinners.length > 0) {
+        // HandRankingが一致するプレイヤーがいる場合
+        winnerIds = rankWinners.map(w => w.UserId)
+      } else {
+        // HandRankingが一致しない場合: 残RewardChipが最も大きいプレイヤーが勝者
+        // （メインポット勝者がサイドポット対象外のケースに対応）
+        let maxRemaining = 0
+        let maxUserIds: number[] = []
+        for (const [userId, rem] of remainingReward) {
+          if (rem > maxRemaining) {
+            maxRemaining = rem
+            maxUserIds = [userId]
+          } else if (rem === maxRemaining && rem > 0) {
+            maxUserIds.push(userId)
+          }
+        }
+        winnerIds = maxUserIds
+      }
+      
+      if (winnerIds.length > 0) {
+        const perPlayer = Math.floor(potAmount / winnerIds.length)
         potWinners.set(potIdx, {
-          userIds: winners.map(w => w.UserId),
-          amount: potAmounts[potIdx]!
+          userIds: winnerIds,
+          amount: potAmount
         })
-      } else if (potIdx > 0 && mainPotWinnerIds.length > 0) {
-        potWinners.set(potIdx, {
-          userIds: mainPotWinnerIds,
-          amount: potAmounts[potIdx]!
-        })
+        // 割当済み分をremainingRewardから差し引き
+        for (const uid of winnerIds) {
+          const current = remainingReward.get(uid) || 0
+          remainingReward.set(uid, current - perPlayer)
+        }
       }
     }
 
