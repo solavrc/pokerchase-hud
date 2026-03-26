@@ -230,7 +230,7 @@ export const apiEventSchemas = {
       Chip: z.int().nonnegative().describe('アンテ+ブラインド支払い後の残チップ。元チップ逆算: Chip + BetChip + Ante（ショートスタック時は不正確、Progress.Pot/人数で推定）'),
       SeatIndex: seatIndexSchema,
       Status: z.union([z.literal(0), z.literal(1), z.literal(5)]).describe('0=通常, 1=離脱予告/切断（0.33%。次ハンドで不在になる場合あり）, 5=バスト後リバイイン待ち（0.08%。Ringゲームで発生。Chip=0, BetStatus=4。次ハンドでChip>0に復帰するか、席を離れる）'),
-      IsSafeLeave: z.boolean().optional().describe('安全退出フラグ（Ringゲーム）'),
+      IsSafeLeave: z.boolean().optional().describe('安全退出フラグ。MTT限定（BattleType=1でのみTrue観測）。True=このプレイヤーは次の休憩/ブラインド変更で安全に退出可能。15ユニークプレイヤーで観測、Status=0が大半'),
     })).min(1).max(6).describe('ヒーロー以外のプレイヤー情報。SeatIndex昇順（100%確認済み）。アンテ・ブラインド支払い後の状態'),
     Player: z.object({
       BetChip: z.int().nonnegative().describe('ブラインドとして投入した額（アンテは含まない）'),
@@ -305,7 +305,7 @@ export const apiEventSchemas = {
   [ApiType.EVT_HAND_RESULTS]: baseSchema.extend({
     ApiTypeId: z.literal(ApiType.EVT_HAND_RESULTS),
     CommunityCards: communityCardsSchema.describe('EVT_DEAL_ROUNDで未配信のカードのみ。全ストリート配信済みなら空配列[]。蓄積したEVT_DEAL_ROUNDのカードとマージしてフルボードを構築する'),
-    DefeatStatus: z.union([z.literal(0), z.literal(1)]).describe('0=継続, 1=脱落(ELIMINATED)'),
+    DefeatStatus: z.union([z.literal(0), z.literal(1)]).describe('0=継続(96.1%), 1=誰かが脱落(3.9%)。SNG(79%), MTT(17%), Ring(2%)で発生。Player.Chip=0ならヒーロー脱落、no_playerなら観戦中の他プレイヤー脱落'),
     HandId: z.int().nonnegative().describe('ハンドの一意識別子。ここでのみ取得可能。セッション全体で単調増加。SNG/Ringのセッション識別やマルチプレイヤーハンド突合に使用可能'),
     HandLog: z.string().optional().describe('常に空文字列（全25,322ハンドで確認済み）。PokerChase内部で未使用の予約フィールドと推測'),
     OtherPlayers: z.array(z.object({
@@ -333,7 +333,11 @@ export const apiEventSchemas = {
     Results: z.array(z.object({
       HandRanking: z.union([z.literal(-1), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6)]).describe('ポット獲得の序列。1=最強, 2=次点, ...。-1=ポット獲得資格なし（敗北）。同一役の場合は同じ値'),
       Hands: z.array(z.int().min(0).max(51)).min(0).max(5).describe('役判定に使われた5枚のカード（カードインデックス 0-51）。ショーダウン時のみ。NO_CALL/SHOWDOWN_MUCK/FOLD_OPENでは空配列'),
-      HoleCards: z.array(z.int().min(-1).max(51)).min(0).max(2).describe('ホールカード。ショーダウン: 2枚（公開）or [-1,-1]（マック）。NO_CALL: 空配列 or [-1,-1]。FOLD_OPEN: 2枚（自発公開）。マルチプレイヤーデータ収集では他プレイヤーのカードが取得可能なケース'),
+      HoleCards: z.array(z.int().min(-1).max(51)).min(0).max(2).describe(`ホールカード。-1=非公開カード。パターン:
+        - ショーダウン(RT 0-9): [valid, valid]（2枚とも公開）
+        - NO_CALL(RT 10) / SHOWDOWN_MUCK(RT 11): 空配列[]
+        - FOLD_OPEN(RT 12): [valid, valid]（2枚公開）or [valid, -1] / [-1, valid]（1枚だけ公開。290件観測。マックハンド公開UIイベント210に対応）
+        ※[-1,-1]パターンは未観測（0件）`),
       Ranking: z.union([z.literal(-2), z.literal(-1), z.int().nonnegative()]).describe('-2=In-Play（継続中）, -1=Multiway敗退（複数人脱落時）, 正の数=トーナメント敗退順位'),
       RankType: z.enum(RankType).describe('成立役。0-9=ポーカーハンド（0=ロイヤルフラッシュ〜9=ハイカード）。10=NO_CALL（無競争勝利）, 11=SHOWDOWN_MUCK（ショーダウンで敗北しマック）, 12=FOLD_OPEN（フォールド後に自発的にカード公開）'),
       RewardChip: z.int().nonnegative().describe('このプレイヤーが獲得したチップ量。0=敗北。サイドポットがある場合は各ポットからの獲得合計'),
