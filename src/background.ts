@@ -657,13 +657,17 @@ const importData = async (jsonlData: string): Promise<{ successCount: number, to
 /**
  * Service Worker のアイドル停止を防止するキープアライブタイマーを開始する。
  * Chrome MV3 では 30 秒のアイドル後に Worker が停止されるため、
- * 長時間のバッチ処理中は定期的にアクティビティを発生させる必要がある。
+ * 長時間のバッチ処理中は定期的に Chrome API を呼び出して
+ * アクティビティを発生させる必要がある。
+ *
+ * chrome.runtime.getPlatformInfo() は副作用なしで Worker のアクティビティ
+ * タイマーをリセットする。sendMessage と異なりレシーバー不要。
  * @returns クリーンアップ用のclearInterval ID
  */
 const startKeepAlive = (): ReturnType<typeof setInterval> => {
   return setInterval(() => {
-    chrome.runtime.sendMessage({ action: 'keepAlive' }).catch(() => {})
-  }, 20000)
+    chrome.runtime.getPlatformInfo().catch(() => {})
+  }, 25000) // 25秒間隔（30秒制限より短く）
 }
 
 const exportJsonData = async (db: PokerChaseDB) => {
