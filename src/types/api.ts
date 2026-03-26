@@ -357,7 +357,8 @@ export const apiEventSchemas = {
       RankType: z.enum(RankType).describe('成立役。0-9=ポーカーハンド（0=ロイヤルフラッシュ〜9=ハイカード）。10=NO_CALL（無競争勝利）, 11=SHOWDOWN_MUCK（ショーダウンで敗北しマック）, 12=FOLD_OPEN（フォールド後に自発的にカード公開）'),
       RewardChip: z.int().nonnegative().describe('このプレイヤーが獲得したチップ量。0=敗北。サイドポットがある場合は各ポットからの獲得合計'),
       UserId: z.int().nonnegative().describe('プレイヤーID。EVT_DEAL.SeatUserIdsの値と一致。タイムアウト/切断プレイヤーはResults[]に含まれない場合がある'),
-    })).min(1).max(6).describe(`ハンド結果の配列。フォールドしなかったプレイヤーのみ（FOLD_OPEN除く）。HandRanking昇順（1=最強が先頭、-1=敗者が末尾）で並ぶ（99.9%のハンドで確認済み）。実データでは最大5人（25,322ハンド中）だが、6人全員ショーダウンなら6になりうる。
+    })).min(1).max(6).describe(`ハンド結果の配列。フォールドしなかったプレイヤーのみ（FOLD_OPEN除く）。最大6人（6-handed全員ショーダウン時）。
+      並び順: 通常はHandRanking昇順（1=最強が先頭）。サイドポット発生時はポット単位でグルーピング（メインポット勝者→その敗者→サイドポット勝者→…）となり、HandRanking昇順が崩れる場合がある（25,322ハンド中12ハンドで観測）。
       RankTypeによる結果パターン:
       - ShowDown (RankType 0-9): Hands=5枚, HoleCards=2枚 or [-1,-1]（マック時）
       - NoCall (RankType 10): Hands=空配列, HoleCards=空配列 or [-1,-1]
