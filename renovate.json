@@ -4,23 +4,50 @@
     "config:recommended",
     "schedule:monthly",
     ":automergeMinor",
-    ":automergePatch",
-    "group:allNonMajor"
+    ":automergePatch"
   ],
   "labels": ["dependencies"],
+  "rebaseWhen": "behind-base-branch",
   "automerge": true,
   "automergeType": "pr",
   "platformAutomerge": true,
   "packageRules": [
     {
+      "description": "Group all non-major updates into a single PR",
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "all non-major",
+      "automerge": true
+    },
+    {
+      "description": "Group major updates by default",
       "matchUpdateTypes": ["major"],
       "automerge": false,
       "labels": ["dependencies", "major"]
     },
     {
-      "matchPackageNames": ["@types/**"],
-      "automerge": true,
-      "groupName": "type definitions"
+      "description": "Jest ecosystem (jest + @types/jest + ts-jest + jest-environment-jsdom)",
+      "matchPackageNames": ["jest", "@types/jest", "ts-jest", "jest-environment-jsdom"],
+      "groupName": "jest ecosystem"
+    },
+    {
+      "description": "React ecosystem (react + react-dom + @types/react + @types/react-dom)",
+      "matchPackageNames": ["react", "react-dom", "@types/react", "@types/react-dom"],
+      "groupName": "react ecosystem"
+    },
+    {
+      "description": "Material UI ecosystem (@mui/* + @emotion/*)",
+      "matchPackageNames": ["@mui/**", "@emotion/**"],
+      "groupName": "material-ui ecosystem"
+    },
+    {
+      "description": "TypeScript ecosystem (typescript + tsx + esbuild-plugin-tsc)",
+      "matchPackageNames": ["typescript", "tsx", "esbuild-plugin-tsc"],
+      "groupName": "typescript ecosystem"
+    },
+    {
+      "description": "GitHub Actions",
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions"
     }
   ]
 }
