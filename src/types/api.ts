@@ -77,8 +77,8 @@ const userInfoSchema = z.object({
   FavoriteCharaId: z.string().describe('例: chara0001, fn_chara0003, nj_chara0002'),
   CostumeId: z.string().describe('例: costume00011, fn_costume00032'),
   EmblemId: z.string().describe('例: emblem0001, emblem0192, fn_emblem0001'),
-  IsCpu: z.boolean(),
-  IsOfficial: z.boolean(),
+  IsCpu: z.boolean().describe('CPUプレイヤーかどうか。310kイベントでTrue未観測（初心者帯やイベントで出現する可能性あり）'),
+  IsOfficial: z.boolean().describe('公式アカウントかどうか。310kイベントでTrue未観測'),
   Rank: rankSchema,
   SettingDecoIds: z.array(z.string()).length(7).describe('装飾品ID 7つ固定。prefix: k_deco, ta_deco, t_deco, b_deco, f_deco, eal_deco, esw_deco')
 })
@@ -479,10 +479,10 @@ export const apiEventSchemas = {
     TournamentReward: z.object({
       JoinNum: z.int().describe('トーナメント参加人数'),
     }).optional().describe('トーナメント報酬。MTT（BattleType=1）の場合のみ。存在する場合は全フィールドが揃う'),
-    IsTimerWinFinish: z.boolean().optional().describe('タイマー勝利で終了したか'),
-    TableId: z.union([z.string(), z.int()]).optional().describe('テーブルID（文字列または数値）'),
-    IsOverDailyLimit: z.boolean().optional().describe('デイリー制限超過フラグ'),
-    IsChangeDay: z.boolean().optional().describe('日付変更フラグ'),
+    IsTimerWinFinish: z.boolean().optional().describe('タイマー勝利で終了したか。726セッションでTrue未観測（False: 2件、None: 724件）'),
+    TableId: z.union([z.string(), z.int()]).optional().describe('テーブルID。726セッション中2件のみ出現（MTT: 19346658, Ring: 0）。ほぼ未使用フィールド'),
+    IsOverDailyLimit: z.boolean().optional().describe('デイリー制限超過フラグ。726セッションでTrue未観測'),
+    IsChangeDay: z.boolean().optional().describe('日付変更フラグ。726セッションでTrue未観測'),
   }).describe('セッション終了 - 1セッション1回発行。最終順位(Ranking)、ランク変動(RankReward)を含む。background.tsはこのイベントでautoSyncService.onGameSessionEnd()をトリガー'),
 
   [310]: baseSchema.extend({
@@ -509,8 +509,8 @@ export const apiEventSchemas = {
 
   [ApiType.EVT_PLAYER_SEAT_ASSIGNED]: baseSchema.extend({
     ApiTypeId: z.literal(ApiType.EVT_PLAYER_SEAT_ASSIGNED),
-    IsLeave: z.boolean(),
-    IsRetire: z.boolean(),
+    IsLeave: z.boolean().describe('退出フラグ。True=7件、全てProcessType=4（テーブル離脱）。Ring 6件, SNG 1件。IsLeave=trueの313はプレイヤーがテーブルを離れることを通知'),
+    IsRetire: z.boolean().describe('リタイアフラグ。704件中True未観測。EVT_ENTRY_QUEUED.IsRetireとは別フラグ'),
     ProcessType: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).describe('0=初期着席（SNG/MTT/Ring。Game/Player/Progressなし）, 1=テーブル移動先着席（MTT/Ring。BB/SBSeat=-1の場合あり＝ハンド間）, 2=ゲーム中途中参加（Ring/MTT。Game/Player/Progress全て存在）, 3=MTT再着席（稀。2件のみ）, 4=テーブル離脱/復帰（Ring離脱IsLeave=trueの場合あり）'),
     SeatUserIds: z.array(z.int()).min(4).max(6).describe('-1=空席, 順番はランダムに割り当て'),
     TableUsers: z.array(userInfoSchema.extend({
