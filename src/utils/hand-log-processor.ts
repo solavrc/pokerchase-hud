@@ -176,11 +176,8 @@ export class HandLogProcessor {
       : -1
 
     // BBがアンテでオールイン → BBを投稿できない
-    // GTO Wizard等のツールはBB行が必須のためハンドをスキップ
-    if (bbChipsAfterAnte === 0) {
-      this.currentHand = null
-      return []
-    }
+    // GTO Wizard等のツールはBB行必須のためパースエラーになるが、
+    // トーナメントのハンド連続性を維持するため出力は行う
 
     if (ante > 0) {
       event.SeatUserIds.forEach((userId, seatIdx) => {
