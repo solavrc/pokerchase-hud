@@ -26,6 +26,9 @@ export class HandLogProcessor {
   private communityCards: number[] = []
   private context: HandLogContext
   private firstHandId: number | null = null
+  private _anteAllInChipsMap: Map<number, number> | null = null
+  private _anteAllInContribTiers: number[] | null = null
+  private _anteAllInSeats: number[] | null = null
 
   constructor(context: HandLogContext) {
     this.context = context
@@ -93,6 +96,9 @@ export class HandLogProcessor {
   resetHandState(): void {
     this.currentHand = null
     this.communityCards = []
+    this._anteAllInChipsMap = null
+    this._anteAllInContribTiers = null
+    this._anteAllInSeats = null
     // firstHandId は保持（トーナメントID用）
   }
 
@@ -301,6 +307,9 @@ export class HandLogProcessor {
 
     const entries: HandLogEntry[] = []
 
+    // アンテオールインプレイヤーのチップ額を修正（Seat行・アンテ行の遡及修正）
+    this.fixAnteAllInChips(event)
+
     // すべてのエントリのHandIdを更新
     this.currentHand.handId = event.HandId
     this.currentHand.isComplete = true
@@ -346,6 +355,21 @@ export class HandLogProcessor {
     
     // コミュニティカードを完全なボードで更新
     this.communityCards = fullBoard
+
+    // BBアクション未記録の場合に checks を補完
+    // PokerChaseは全員オールイン/フォールド時にBBのアクションをスキップすることがある
+    {
+      const bbCheck = this.getMissingBBCheck(event)
+      if (bbCheck) {
+        const flopInEntries = entries.findIndex(e => e.text.includes('*** FLOP ***'))
+        if (flopInEntries !== -1) {
+          entries.splice(flopInEntries, 0, bbCheck)
+        } else {
+          entries.unshift(bbCheck)
+        }
+        this.currentHand!.entries.push(bbCheck)
+      }
+    }
 
     // ショウダウンに参加したプレイヤー（カードを見せた/マックした両方）
     const showdownParticipants = event.Results.filter(r => {
@@ -466,16 +490,20 @@ export class HandLogProcessor {
     }
 
     // Handle pot collection for showdown winners and tournament finish positions
-    event.Results.forEach(result => {
-      if (result.RewardChip > 0 && wentToShowdown) {
-        const playerName = this.getPlayerName(result.UserId)
-        const collectEntry = this.createEntry(
-          `${playerName} collected ${result.RewardChip} from pot`,
-          HandLogEntryType.SHOWDOWN
-        )
-        entries.push(collectEntry)
+    if (wentToShowdown) {
+      // ショウダウン前のuncalled betを検出（サイドポット計算に必要）
+      const uncalledBetEntry = entries.find(e =>
+        e.text.includes('Uncalled bet (') && e.text.includes(') returned to')
+      )
+      let uncalledBetAmount = 0
+      if (uncalledBetEntry) {
+        const m = uncalledBetEntry.text.match(/Uncalled bet \((\d+)\)/)
+        if (m?.[1]) uncalledBetAmount = parseInt(m[1])
       }
-      
+      entries.push(...this.buildCollectedEntries(event, uncalledBetAmount))
+    }
+
+    event.Results.forEach(result => {
       // Check if player finished the tournament
       if (result.Ranking > 0 && result.RewardChip === 0) {
         const playerName = this.getPlayerName(result.UserId)
@@ -493,6 +521,126 @@ export class HandLogProcessor {
 
     this.currentHand.entries.push(...entries)
     return entries
+  }
+
+  /**
+   * サイドポット対応の collected 行を構築
+   */
+  private buildCollectedEntries(event: ApiEvent<ApiType.EVT_HAND_RESULTS>, uncalledBetAmount: number = 0): HandLogEntry[] {
+    const entries: HandLogEntry[] = []
+    const hasSidePots = event.SidePot.length > 0
+
+    if (!hasSidePots) {
+      event.Results.forEach(result => {
+        if (result.RewardChip > 0) {
+          const playerName = this.getPlayerName(result.UserId)
+          entries.push(this.createEntry(
+            `${playerName} collected ${result.RewardChip} from pot`,
+            HandLogEntryType.SHOWDOWN
+          ))
+        }
+      })
+      return entries
+    }
+
+    // uncalled betがある場合、最も大きいインデックスのサイドポットから差し引く
+    // PS準拠: collected額はuncalled bet差引後
+    const rawPotAmounts = [event.Pot, ...event.SidePot]
+    const potAmounts = [...rawPotAmounts]
+    if (uncalledBetAmount > 0) {
+      let remaining = uncalledBetAmount
+      for (let i = potAmounts.length - 1; i >= 0 && remaining > 0; i--) {
+        const deduct = Math.min(remaining, potAmounts[i]!)
+        potAmounts[i] = potAmounts[i]! - deduct
+        remaining -= deduct
+      }
+    }
+
+    // RewardChipベースのポット割当アルゴリズム:
+    // HandRankingだけでは不十分（メインポット勝者がサイドポット対象外の場合がある）
+    // 各プレイヤーの残RewardChipを追跡し、ポットごとに正しい勝者を判定
+    const remainingReward = new Map<number, number>()
+    for (const r of event.Results) {
+      if (r.RewardChip > 0) {
+        remainingReward.set(r.UserId, (remainingReward.get(r.UserId) || 0) + r.RewardChip)
+      }
+    }
+
+    const potWinners: Map<number, { userIds: number[], amount: number }> = new Map()
+    
+    for (let potIdx = 0; potIdx < potAmounts.length; potIdx++) {
+      const potAmount = potAmounts[potIdx]!
+      if (potAmount <= 0) continue
+
+      const targetRanking = potIdx + 1
+      const rankWinners = event.Results.filter(r => r.HandRanking === targetRanking)
+      
+      let winnerIds: number[]
+      
+      if (rankWinners.length > 0) {
+        // HandRankingが一致するプレイヤーがいる場合
+        winnerIds = rankWinners.map(w => w.UserId)
+      } else {
+        // HandRankingが一致しない場合: 残RewardChipが最も大きいプレイヤーが勝者
+        // （メインポット勝者がサイドポット対象外のケースに対応）
+        let maxRemaining = 0
+        let maxUserIds: number[] = []
+        for (const [userId, rem] of remainingReward) {
+          if (rem > maxRemaining) {
+            maxRemaining = rem
+            maxUserIds = [userId]
+          } else if (rem === maxRemaining && rem > 0) {
+            maxUserIds.push(userId)
+          }
+        }
+        winnerIds = maxUserIds
+      }
+      
+      if (winnerIds.length > 0) {
+        const perPlayer = Math.floor(potAmount / winnerIds.length)
+        potWinners.set(potIdx, {
+          userIds: winnerIds,
+          amount: potAmount
+        })
+        // 割当済み分をremainingRewardから差し引き
+        for (const uid of winnerIds) {
+          const current = remainingReward.get(uid) || 0
+          remainingReward.set(uid, current - perPlayer)
+        }
+      }
+    }
+
+    for (let potIdx = potAmounts.length - 1; potIdx >= 0; potIdx--) {
+      const potInfo = potWinners.get(potIdx)
+      if (!potInfo || potInfo.amount <= 0) continue
+
+      const potLabel = this.getPotLabel(potIdx, event.SidePot.length)
+      
+      if (potInfo.userIds.length === 1) {
+        const playerName = this.getPlayerName(potInfo.userIds[0]!)
+        entries.push(this.createEntry(
+          `${playerName} collected ${potInfo.amount} from ${potLabel}`,
+          HandLogEntryType.SHOWDOWN
+        ))
+      } else {
+        const splitAmount = Math.floor(potInfo.amount / potInfo.userIds.length)
+        for (const userId of potInfo.userIds) {
+          const playerName = this.getPlayerName(userId)
+          entries.push(this.createEntry(
+            `${playerName} collected ${splitAmount} from ${potLabel}`,
+            HandLogEntryType.SHOWDOWN
+          ))
+        }
+      }
+    }
+
+    return entries
+  }
+
+  private getPotLabel(potIdx: number, sidePotCount: number): string {
+    if (potIdx === 0) return 'main pot'
+    if (sidePotCount === 1) return 'side pot'
+    return `side pot-${potIdx}`
   }
 
   private handleUncalledBet(result: unknown, playerName: string): HandLogEntry[] {
@@ -830,6 +978,164 @@ export class HandLogProcessor {
     return 0
   }
 
+  /**
+   * アンテオールインプレイヤーのチップ推定テーブルを構築
+   * 
+   * EVT_DEAL時点で Chip=0, BetChip=0 のプレイヤーが複数いる場合、
+   * Progress.Pot/SidePot から拠出額の候補リストを算出。
+   * 
+   * ただし、EVT_DEALだけでは各シートへの正確な割り当てが不可能
+   * （座席番号とスタックサイズは無関係）。
+   * 仮割り当てを行い、handleHandResultsEventで結果データを使って修正する。
+   */
+  private buildAnteAllInChipsMap(event: ApiEvent<ApiType.EVT_DEAL>): Map<number, number> | null {
+    // Chip=0, BetChip=0 のプレイヤー（アンテオールイン）を列挙
+    const allInSeats: number[] = []
+    for (let i = 0; i < event.SeatUserIds.length; i++) {
+      if (event.SeatUserIds[i] === -1) continue
+      const chipsAfterAnte = this.getPlayerChipsAfterAnte(event, i)
+      if (chipsAfterAnte === 0) {
+        allInSeats.push(i)
+      }
+    }
+    
+    // 0人または1人なら従来の推定で十分
+    if (allInSeats.length <= 1) return null
+    
+    // SidePotがなければ区別不能（全員同額）
+    if (!event.Progress?.SidePot || event.Progress.SidePot.length === 0) return null
+    
+    const activePlayers = event.SeatUserIds.filter(id => id !== -1).length
+    if (activePlayers <= 0 || !event.Progress?.Pot) return null
+    
+    // 各段差から拠出額リストを構築
+    const minContrib = Math.floor(event.Progress.Pot / activePlayers)
+    const contributions: number[] = [minContrib]
+    
+    let remainingPlayers = activePlayers
+    let cumulative = minContrib
+    
+    for (const sidePot of event.Progress.SidePot) {
+      remainingPlayers--
+      if (remainingPlayers <= 0) break
+      const stepContrib = Math.floor(sidePot / remainingPlayers)
+      cumulative += stepContrib
+      contributions.push(cumulative)
+    }
+    
+    // 仮割り当て: 最小値を全員に（handleHandResultsEventで修正する）
+    const result = new Map<number, number>()
+    for (const seat of allInSeats) {
+      result.set(seat, minContrib)
+    }
+    
+    // 修正用データを保存
+    this._anteAllInContribTiers = contributions.slice(0, allInSeats.length)
+    this._anteAllInSeats = allInSeats
+    
+    return result
+  }
+  
+  /**
+   * EVT_HAND_RESULTS の Results データを使って、アンテオールインプレイヤーの
+   * チップ額割り当てを修正する。
+   * 
+   * ロジック: メインポットのみ獲得(RewardChip == Pot) → 最小スタック、
+   * メイン+サイドポット獲得 → 大きいスタック、等。
+   * 敗者(RewardChip=0)は消去法で割り当て。
+   */
+  private fixAnteAllInChips(event: ApiEvent<ApiType.EVT_HAND_RESULTS>): void {
+    if (!this._anteAllInContribTiers || !this._anteAllInSeats || !this.currentHand) return
+    if (this._anteAllInSeats.length <= 1) return
+    
+    const tiers = [...this._anteAllInContribTiers].sort((a, b) => a - b)
+    const seats = [...this._anteAllInSeats]
+    const seatUserIds = this.currentHand.seatUserIds
+    
+    // 各シートの拠出ティアを判定
+    const seatToTier = new Map<number, number>()
+    const usedTierIndices = new Set<number>()
+    
+    // Pass 1: RewardChipから確定できるプレイヤーを割り当て
+    for (const seat of seats) {
+      const userId = seatUserIds[seat]
+      if (userId === undefined || userId === -1) continue
+      const result = event.Results.find(r => r.UserId === userId)
+      if (!result) continue
+      
+      if (result.RewardChip > 0) {
+        // このプレイヤーの獲得ポットからティアを推定
+        // RewardChip == Pot → メインポットのみ勝者 → 最小ティア
+        if (result.RewardChip === event.Pot) {
+          // 最小ティアを割り当て
+          for (let i = 0; i < tiers.length; i++) {
+            if (!usedTierIndices.has(i)) {
+              seatToTier.set(seat, tiers[i]!)
+              usedTierIndices.add(i)
+              break
+            }
+          }
+        } else if (result.RewardChip > event.Pot) {
+          // メインポット以上を獲得 → より大きいティア
+          for (let i = tiers.length - 1; i >= 0; i--) {
+            if (!usedTierIndices.has(i)) {
+              seatToTier.set(seat, tiers[i]!)
+              usedTierIndices.add(i)
+              break
+            }
+          }
+        }
+      }
+    }
+    
+    // Pass 2: 未割当シートに残りティアを割り当て（消去法）
+    const remainingTierIndices = []
+    for (let i = 0; i < tiers.length; i++) {
+      if (!usedTierIndices.has(i)) remainingTierIndices.push(i)
+    }
+    const unassignedSeats = seats.filter(s => !seatToTier.has(s))
+    for (let i = 0; i < unassignedSeats.length; i++) {
+      const tierIdx = remainingTierIndices[i]
+      if (tierIdx !== undefined) {
+        seatToTier.set(unassignedSeats[i]!, tiers[tierIdx]!)
+      }
+    }
+    
+    // _anteAllInChipsMap を更新
+    if (seatToTier.size > 0 && this._anteAllInChipsMap) {
+      for (const [seat, chips] of seatToTier) {
+        this._anteAllInChipsMap.set(seat, chips)
+      }
+    }
+    
+    // Seat行とアンテ行を修正
+    for (const [seat, chips] of seatToTier) {
+      const userId = seatUserIds[seat]
+      if (userId === undefined || userId === -1) continue
+      const playerName = this.getPlayerName(userId)
+      const seatNum = seat + 1
+      
+      // Seat行を修正: "Seat N: Name (XXXXX in chips)"
+      for (const entry of this.currentHand.entries) {
+        if (entry.type === HandLogEntryType.SEAT && 
+            entry.text.startsWith(`Seat ${seatNum}: ${playerName}`)) {
+          entry.text = `Seat ${seatNum}: ${playerName} (${chips} in chips)`
+          break
+        }
+      }
+      
+      // アンテ行を修正: "Name: posts the ante XXXXX and is all-in"
+      for (const entry of this.currentHand.entries) {
+        if (entry.type === HandLogEntryType.ACTION && 
+            entry.text.includes(`${playerName}: posts the ante`) &&
+            entry.text.includes('and is all-in')) {
+          entry.text = `${playerName}: posts the ante ${chips} and is all-in`
+          break
+        }
+      }
+    }
+  }
+
   private getPlayerChips(event: ApiEvent<ApiType.EVT_DEAL>, seatIndex: number): number {
     const ante = event.Game.Ante || 0
     
@@ -843,8 +1149,15 @@ export class HandLogProcessor {
     }
     
     // chipsAfterAnte == 0: アンテでオールインまたはショートオールイン
-    // 実際の投入額を Progress.Pot（メインポット）から推定
-    // メインポットはショートスタックの投入額 × 参加人数
+    // 複数のアンテオールインプレイヤーがいる場合、SidePotから正確な拠出額を推定
+    if (!this._anteAllInChipsMap) {
+      this._anteAllInChipsMap = this.buildAnteAllInChipsMap(event)
+    }
+    if (this._anteAllInChipsMap?.has(seatIndex)) {
+      return this._anteAllInChipsMap.get(seatIndex)!
+    }
+    
+    // 単一のアンテオールインプレイヤー: メインポットから推定
     const activePlayers = event.SeatUserIds.filter(id => id !== -1).length
     if (activePlayers > 0 && event.Progress?.Pot > 0) {
       const perPlayerMainPot = Math.floor(event.Progress.Pot / activePlayers)
@@ -1021,6 +1334,52 @@ export class HandLogProcessor {
     }
   }
 
+  /**
+   * BBがプリフロップでアクション記録なしの場合に checks エントリを返す。
+   * NO_CALL勝利やフォールド済みの場合はnull。
+   */
+  private getMissingBBCheck(event: ApiEvent<ApiType.EVT_HAND_RESULTS>): HandLogEntry | null {
+    if (!this.currentHand) return null
+
+    const bbEntry = this.currentHand.entries.find(e =>
+      e.type === HandLogEntryType.ACTION && e.text.includes(': posts big blind')
+    )
+    if (!bbEntry) return null
+
+    const bbName = bbEntry.text.split(':')[0]!
+
+    const bbUserId = Array.from(this.context.session.players.entries())
+      .find(([, info]) => info.name === bbName)?.[0]
+    if (bbUserId === undefined) return null
+
+    const bbResult = event.Results.find(r => r.UserId === bbUserId)
+    if (!bbResult) return null
+    if (bbResult.RankType === RankType.NO_CALL) return null
+
+    const hasValidCards = bbResult.HoleCards && bbResult.HoleCards.length > 0 && bbResult.HoleCards[0] !== -1
+    if (!hasValidCards && bbResult.RankType !== RankType.SHOWDOWN_MUCK) return null
+
+    // BBが既にプリフロップでアクションしているか確認
+    const holeCardsIdx = this.currentHand.entries.findIndex(e =>
+      e.type === HandLogEntryType.STREET && e.text === '*** HOLE CARDS ***'
+    )
+    const flopIdx = this.currentHand.entries.findIndex(e =>
+      e.type === HandLogEntryType.STREET && e.text.includes('*** FLOP ***')
+    )
+
+    const endIdx = flopIdx !== -1 ? flopIdx : this.currentHand.entries.length
+    for (let i = holeCardsIdx + 1; i < endIdx; i++) {
+      const e = this.currentHand.entries[i]
+      if (e && e.type === HandLogEntryType.ACTION && e.text.startsWith(bbName + ':') &&
+          !e.text.includes('posts the ante') && !e.text.includes('posts big blind') &&
+          !e.text.includes('posts small blind')) {
+        return null // BB already has an action
+      }
+    }
+
+    return this.createEntry(bbName + ': checks', HandLogEntryType.ACTION)
+  }
+
   private addMissingStreets(finalCommunityCards: number[]): HandLogEntry[] {
     if (!this.currentHand) return []
 
@@ -1144,7 +1503,43 @@ export class HandLogProcessor {
     }
     
     const isCashGame = this.context.session.battleType !== undefined && [4, 5].includes(this.context.session.battleType)
-    const potText = isCashGame ? `Total pot ${totalPot} | Rake 0` : `Total pot ${totalPot}`
+    const hasSidePots = event.SidePot.length > 0
+    
+    let potText: string
+    if (hasSidePots) {
+      // サイドポットあり: "Total pot X Main pot Y. Side pot Z." 形式
+      // uncalled betがある場合、最も大きいインデックスのサイドポットから差し引く
+      let mainPot = event.Pot
+      const sidePots = [...event.SidePot]
+      
+      if (uncalledBetEntry) {
+        const uncalledMatch2 = uncalledBetEntry.text.match(/Uncalled bet \((\d+)\)/)
+        if (uncalledMatch2?.[1]) {
+          let remaining = parseInt(uncalledMatch2[1])
+          // 最も大きいインデックスのサイドポットから差し引き
+          for (let i = sidePots.length - 1; i >= 0 && remaining > 0; i--) {
+            const deduct = Math.min(remaining, sidePots[i]!)
+            sidePots[i] = sidePots[i]! - deduct
+            remaining -= deduct
+          }
+          if (remaining > 0) {
+            mainPot -= remaining
+          }
+        }
+      }
+      
+      let breakdown = `Total pot ${totalPot} Main pot ${mainPot}.`
+      if (sidePots.length === 1) {
+        breakdown += ` Side pot ${sidePots[0]}.`
+      } else {
+        for (let i = 0; i < sidePots.length; i++) {
+          breakdown += ` Side pot-${i + 1} ${sidePots[i]}.`
+        }
+      }
+      potText = `${breakdown} | Rake 0`
+    } else {
+      potText = isCashGame ? `Total pot ${totalPot} | Rake 0` : `Total pot ${totalPot}`
+    }
     const potEntry = this.createEntry(potText, HandLogEntryType.SUMMARY)
     entries.push(potEntry)
 
