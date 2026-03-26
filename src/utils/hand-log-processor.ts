@@ -356,6 +356,21 @@ export class HandLogProcessor {
     // コミュニティカードを完全なボードで更新
     this.communityCards = fullBoard
 
+    // BBアクション未記録の場合に checks を補完
+    // PokerChaseは全員オールイン/フォールド時にBBのアクションをスキップすることがある
+    {
+      const bbCheck = this.getMissingBBCheck(event)
+      if (bbCheck) {
+        const flopInEntries = entries.findIndex(e => e.text.includes('*** FLOP ***'))
+        if (flopInEntries !== -1) {
+          entries.splice(flopInEntries, 0, bbCheck)
+        } else {
+          entries.unshift(bbCheck)
+        }
+        this.currentHand!.entries.push(bbCheck)
+      }
+    }
+
     // ショウダウンに参加したプレイヤー（カードを見せた/マックした両方）
     const showdownParticipants = event.Results.filter(r => {
       // Include players who show cards OR who reached showdown (SHOWDOWN_MUCK)
@@ -1317,6 +1332,52 @@ export class HandLogProcessor {
       case PhaseType.SHOWDOWN: return 'SHOWDOWN'
       default: return 'UNKNOWN'
     }
+  }
+
+  /**
+   * BBがプリフロップでアクション記録なしの場合に checks エントリを返す。
+   * NO_CALL勝利やフォールド済みの場合はnull。
+   */
+  private getMissingBBCheck(event: ApiEvent<ApiType.EVT_HAND_RESULTS>): HandLogEntry | null {
+    if (!this.currentHand) return null
+
+    const bbEntry = this.currentHand.entries.find(e =>
+      e.type === HandLogEntryType.ACTION && e.text.includes(': posts big blind')
+    )
+    if (!bbEntry) return null
+
+    const bbName = bbEntry.text.split(':')[0]!
+
+    const bbUserId = Array.from(this.context.session.players.entries())
+      .find(([, info]) => info.name === bbName)?.[0]
+    if (bbUserId === undefined) return null
+
+    const bbResult = event.Results.find(r => r.UserId === bbUserId)
+    if (!bbResult) return null
+    if (bbResult.RankType === RankType.NO_CALL) return null
+
+    const hasValidCards = bbResult.HoleCards && bbResult.HoleCards.length > 0 && bbResult.HoleCards[0] !== -1
+    if (!hasValidCards && bbResult.RankType !== RankType.SHOWDOWN_MUCK) return null
+
+    // BBが既にプリフロップでアクションしているか確認
+    const holeCardsIdx = this.currentHand.entries.findIndex(e =>
+      e.type === HandLogEntryType.STREET && e.text === '*** HOLE CARDS ***'
+    )
+    const flopIdx = this.currentHand.entries.findIndex(e =>
+      e.type === HandLogEntryType.STREET && e.text.includes('*** FLOP ***')
+    )
+
+    const endIdx = flopIdx !== -1 ? flopIdx : this.currentHand.entries.length
+    for (let i = holeCardsIdx + 1; i < endIdx; i++) {
+      const e = this.currentHand.entries[i]
+      if (e && e.type === HandLogEntryType.ACTION && e.text.startsWith(bbName + ':') &&
+          !e.text.includes('posts the ante') && !e.text.includes('posts big blind') &&
+          !e.text.includes('posts small blind')) {
+        return null // BB already has an action
+      }
+    }
+
+    return this.createEntry(bbName + ': checks', HandLogEntryType.ACTION)
   }
 
   private addMissingStreets(finalCommunityCards: number[]): HandLogEntry[] {
