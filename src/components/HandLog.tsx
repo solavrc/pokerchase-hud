@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef, CSSProperties, useCallback, useMemo, memo } from 'react'
-import { VariableSizeList as List } from 'react-window'
+import { List, useListRef } from 'react-window'
 import {
   HandLogEntry,
   HandLogEntryType,
@@ -60,20 +60,23 @@ const formatTimestamp = (timestamp: number): string => {
   })
 }
 
-interface EntryRowProps {
-  index: number
-  style: CSSProperties
-  data: {
-    items: Array<{ entry: HandLogEntry, isSeparator: boolean }>
-    showTimestamps: boolean
-    copiedHandId: number | null
-    onEntryClick: (entry: HandLogEntry) => void
-    fontSize: number
-  }
+interface EntryRowData {
+  items: Array<{ entry: HandLogEntry, isSeparator: boolean }>
+  showTimestamps: boolean
+  copiedHandId: number | null
+  onEntryClick: (entry: HandLogEntry) => void
+  fontSize: number
 }
 
-const EntryRow = memo(({ index, style, data }: EntryRowProps) => {
-  const { items, showTimestamps, copiedHandId, onEntryClick, fontSize } = data
+const EntryRow = ({ index, style, items, showTimestamps, copiedHandId, onEntryClick, fontSize }: {
+  index: number
+  style: CSSProperties
+  ariaAttributes: {
+    'aria-posinset': number
+    'aria-setsize': number
+    role: 'listitem'
+  }
+} & EntryRowData): React.ReactElement | null => {
   const item = items[index]
 
   if (!item) return null
@@ -136,13 +139,11 @@ const EntryRow = memo(({ index, style, data }: EntryRowProps) => {
       {entry.text}
     </div>
   )
-})
-
-EntryRow.displayName = 'EntryRow'
+}
 
 const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, scale = 1, scrollToLatest }) => {
   const config = useMemo(() => ({ ...DEFAULT_HAND_LOG_CONFIG, ...userConfig }), [userConfig])
-  const listRef = useRef<List>(null)
+  const listRef = useListRef(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [isHovered, setIsHovered] = useState(false)
   const [copiedHandId, setCopiedHandId] = useState<number | null>(null)
@@ -204,14 +205,14 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
   // 新しいエントリが到着したとき自動的に下にスクロール
   useEffect(() => {
     if (listRef.current && processedItems.length > 0) {
-      listRef.current.scrollToItem(processedItems.length - 1, 'end')
+      listRef.current.scrollToRow({ index: processedItems.length - 1, align: "end" })
     }
   }, [processedItems.length])
   
   // 外部クリックでスクロールをトリガー
   useEffect(() => {
     if (scrollToLatest && listRef.current && processedItems.length > 0) {
-      listRef.current.scrollToItem(processedItems.length - 1, 'end')
+      listRef.current.scrollToRow({ index: processedItems.length - 1, align: "end" })
     }
   }, [scrollToLatest, processedItems.length])
 
@@ -345,7 +346,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     transition: 'background-color 0.2s ease'
   }
 
-  const itemData = {
+  const rowProps: EntryRowData = {
     items: processedItems,
     showTimestamps: config.showTimestamps,
     copiedHandId,
@@ -363,15 +364,13 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     >
       {processedItems.length > 0 ? (
         <List
-          ref={listRef}
-          height={expandedHeight}
-          itemCount={processedItems.length}
-          itemSize={getItemSize}
-          width={width}
-          itemData={itemData}
-        >
-          {EntryRow}
-        </List>
+          listRef={listRef}
+          rowCount={processedItems.length}
+          rowHeight={getItemSize}
+          rowComponent={EntryRow}
+          rowProps={rowProps}
+          style={{ height: expandedHeight, width }}
+        />
       ) : (
         <div style={{
           color: '#666666',

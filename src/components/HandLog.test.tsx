@@ -1,29 +1,37 @@
-import React from 'react'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import HandLog from './HandLog'
 import { HandLogEntry, HandLogEntryType, HandLogConfig, DEFAULT_HAND_LOG_CONFIG } from '../types/hand-log'
 
-// Mock react-window
-jest.mock('react-window', () => ({
-  VariableSizeList: React.forwardRef(({ children: Children, itemCount, itemData, height, width }: any, ref: any) => {
-    // Mock scrollToItem method
-    React.useImperativeHandle(ref, () => ({
-      scrollToItem: jest.fn(),
-    }))
-    
-    // Children is a React component, not a function
-    return (
-      <div ref={ref} data-testid="virtual-list" style={{ height, width }}>
-        {Array.from({ length: itemCount }).map((_, index) => (
-          <div key={index}>
-            <Children index={index} style={{}} data={itemData} />
-          </div>
-        ))}
-      </div>
-    )
-  }),
-}))
+// Mock react-window v2 API
+jest.mock('react-window', () => {
+  const React = require('react')
+  return {
+    List: ({ rowComponent: RowComponent, rowCount, rowProps, style, listRef }: any) => {
+      // Mock scrollToRow method via listRef
+      React.useImperativeHandle(listRef, () => ({
+        scrollToRow: jest.fn(),
+        get element() { return null },
+      }))
+
+      return (
+        <div data-testid="virtual-list" style={style}>
+          {Array.from({ length: rowCount }).map((_, index) => (
+            <div key={index}>
+              <RowComponent
+                index={index}
+                style={{}}
+                ariaAttributes={{ 'aria-posinset': index + 1, 'aria-setsize': rowCount, role: 'listitem' }}
+                {...rowProps}
+              />
+            </div>
+          ))}
+        </div>
+      )
+    },
+    useListRef: (init: any) => React.useRef(init),
+  }
+})
 
 // Mock navigator.clipboard
 const mockWriteText = jest.fn()
