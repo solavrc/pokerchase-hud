@@ -479,10 +479,10 @@ export const apiEventSchemas = {
     TournamentReward: z.object({
       JoinNum: z.int().describe('トーナメント参加人数'),
     }).optional().describe('トーナメント報酬。MTT（BattleType=1）の場合のみ。存在する場合は全フィールドが揃う'),
-    IsTimerWinFinish: z.boolean().optional().describe('タイマー勝利で終了したか。726セッションでTrue未観測（False: 2件、None: 724件）'),
-    TableId: z.union([z.string(), z.int()]).optional().describe('テーブルID。726セッション中2件のみ出現（MTT: 19346658, Ring: 0）。ほぼ未使用フィールド'),
-    IsOverDailyLimit: z.boolean().optional().describe('デイリー制限超過フラグ。726セッションでTrue未観測'),
-    IsChangeDay: z.boolean().optional().describe('日付変更フラグ。726セッションでTrue未観測'),
+    IsTimerWinFinish: z.boolean().optional().describe('タイマー勝利で終了したか。2026-03-24以降に追加された新フィールド。726セッションでTrue未観測（False: 2件、None: 724件）'),
+    TableId: z.union([z.string(), z.int()]).optional().describe('テーブルID。2026-03-24以降に追加された新フィールド（PR#49でスキーマ対応）。726セッション中2件のみ出現（MTT: 19346658, Ring: 0）。今後出現頻度が増える可能性あり'),
+    IsOverDailyLimit: z.boolean().optional().describe('デイリー制限超過フラグ。2026-03-24以降に追加された新フィールド。726セッションでTrue未観測'),
+    IsChangeDay: z.boolean().optional().describe('日付変更フラグ。2026-03-24以降に追加された新フィールド。726セッションでTrue未観測'),
   }).describe('セッション終了 - 1セッション1回発行。最終順位(Ranking)、ランク変動(RankReward)を含む。background.tsはこのイベントでautoSyncService.onGameSessionEnd()をトリガー'),
 
   [310]: baseSchema.extend({
