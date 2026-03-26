@@ -177,7 +177,7 @@ const App = memo(() => {
 
   // ストレージから設定を読み込み
   useEffect(() => {
-    chrome.storage.sync.get(["handLogConfig", "uiConfig", "options"], (result) => {
+    chrome.storage.sync.get(["handLogConfig", "uiConfig", "options"], (result: Record<string, any>) => {
       if (result.handLogConfig) {
         setHandLogConfig({
           ...DEFAULT_HAND_LOG_CONFIG,

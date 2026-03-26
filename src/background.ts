@@ -102,7 +102,7 @@ chrome.runtime.onInstalled.addListener(async details => {
 })
 
 /** 拡張起動時: フィルター設定を復元（統計の再計算はしない） */
-chrome.storage.sync.get('options', (result) => {
+chrome.storage.sync.get('options', (result: Record<string, any>) => {
   const options = result.options || {}
 
   if (options.filterOptions) {

@@ -47,9 +47,9 @@ class AutoSyncService {
   async initialize(): Promise<void> {
     try {
       // Load last sync time from storage
-      const stored = await chrome.storage.local.get(this.SYNC_STORAGE_KEY)
+      const stored = await chrome.storage.local.get(this.SYNC_STORAGE_KEY) as Record<string, any>
       if (stored[this.SYNC_STORAGE_KEY]) {
-        this.syncState.lastSyncTime = new Date(stored[this.SYNC_STORAGE_KEY])
+        this.syncState.lastSyncTime = new Date(stored[this.SYNC_STORAGE_KEY] as string | number)
       }
 
       // Update timestamps
