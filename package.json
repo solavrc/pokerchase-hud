@@ -37,7 +37,7 @@
     "stream-browserify": "^3.0.0",
     "ts-jest": "^29.1.2",
     "tsx": "^4.7.2",
-    "typescript": "^5.4.4"
+    "typescript": "^6.0.0"
   },
   "dependencies": {
     "@emotion/react": "^11.11.4",
