@@ -8,7 +8,8 @@
     "downloads",
     "tabs",
     "notifications",
-    "identity"
+    "identity",
+    "offscreen"
   ],
   "host_permissions": [
     "https://*.googleapis.com/*"
