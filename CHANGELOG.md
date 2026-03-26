@@ -1,5 +1,48 @@
 # Changelog
 
+## [4.2.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v4.1.0...pokerchase-hud-v4.2.0) (2026-03-26)
+
+
+### Features
+
+* サイドポット表記をPokerStars形式に準拠 + エッジケース修正 ([#78](https://github.com/solavrc/pokerchase-hud/issues/78)) ([5a8639e](https://github.com/solavrc/pokerchase-hud/commit/5a8639ec931779b4395e12c5e6d410b9c4438825))
+
+
+### Bug Fixes
+
+* @types/chrome更新に伴う型エラーを修正 ([a8c4187](https://github.com/solavrc/pokerchase-hud/commit/a8c4187d6c1a393ceef863048a9f0f572011feea))
+* @types/chrome更新に伴う型エラーを修正 ([7dc4ea1](https://github.com/solavrc/pokerchase-hud/commit/7dc4ea1dd2a581ba5ef0a8e31230fedf83774e4c))
+* BBアンテオールイン（BB未投稿）ハンドをスキップ ([fddb9b6](https://github.com/solavrc/pokerchase-hud/commit/fddb9b60e805097518075c0ad0ac746e3e1c6eef))
+* BBアンテオールインのスキップを解除 ([e93e403](https://github.com/solavrc/pokerchase-hud/commit/e93e4033487b3a9c8634bc0889b6a04f8c2cbcee))
+* BBアンテオールインはシンプルにスキップ ([45c87ca](https://github.com/solavrc/pokerchase-hud/commit/45c87ca61eea156702440c82ad3b17115b884505))
+* BBアンテオールイン時にBB優先配分で出力 ([6ff1ea2](https://github.com/solavrc/pokerchase-hud/commit/6ff1ea2d231336812ba14ade0d3073e1c3e8b417))
+* BBアンテオールイン時のSB callをcheckに変換 ([d547c39](https://github.com/solavrc/pokerchase-hud/commit/d547c3977d9f17bed25b2aa4135ee095271ee57e))
+* BB全チップ &lt; SB額のハンドをスキップ ([46af8c2](https://github.com/solavrc/pokerchase-hud/commit/46af8c24e84ce2f3f4d7d2e24c117fdc63d5a6fb))
+* chrome.offscreen APIでWorkerを維持 ([720d307](https://github.com/solavrc/pokerchase-hud/commit/720d307988d7295c10cad986a598c76baa61c7e4))
+* **deps:** update dependency react-window to v2 ([#62](https://github.com/solavrc/pokerchase-hud/issues/62)) ([03f63e9](https://github.com/solavrc/pokerchase-hud/commit/03f63e98f4ae165c5dd7b3b7ac67b7c404c05088))
+* **deps:** update material-ui ecosystem to v7 ([#71](https://github.com/solavrc/pokerchase-hud/issues/71)) ([009a543](https://github.com/solavrc/pokerchase-hud/commit/009a543ca1d34de1b71c1c8402cae12c7be6815e))
+* **deps:** update react ecosystem to v19 (major) ([#72](https://github.com/solavrc/pokerchase-hud/issues/72)) ([c6a452b](https://github.com/solavrc/pokerchase-hud/commit/c6a452b1bc776d39c7987798b8f1499ae2ebbb48))
+* getPlayerChipsのPotベース推定を復活 ([88b41e8](https://github.com/solavrc/pokerchase-hud/commit/88b41e881a324036da91ceb8286ff78c0bb58092))
+* getPlayerChipsをシンプルなロジックに戻す ([9babad3](https://github.com/solavrc/pokerchase-hud/commit/9babad3a8da46817de68c0dc1d9afc1142489abc))
+* HUでBBアンテオールインのハンドをスキップ ([445c7ba](https://github.com/solavrc/pokerchase-hud/commit/445c7ba7dc81898704b84cefd95c378aefb58c96))
+* keepAliveをchrome.runtime.getPlatformInfoに変更 ([32fff2c](https://github.com/solavrc/pokerchase-hud/commit/32fff2cbe1546ca05c56b4fcd0892469950bd772))
+* npm audit脆弱性を修正 (picomatch, yaml) ([#76](https://github.com/solavrc/pokerchase-hud/issues/76)) ([8bde5ce](https://github.com/solavrc/pokerchase-hud/commit/8bde5cec2ba7bd6866cae2d4296cd392bf64eb15))
+* PokerStars形式エクスポートのエッジケース修正 ([2320ff1](https://github.com/solavrc/pokerchase-hud/commit/2320ff112928d3776126d0435a1cb866eb3f5caa))
+* PokerStars形式エクスポートのエッジケース修正 ([f03b19c](https://github.com/solavrc/pokerchase-hud/commit/f03b19c81d67a20dfaf281f6905876f0204fa5d7))
+* アンテショートオールインの実額計算 ([6368ecb](https://github.com/solavrc/pokerchase-hud/commit/6368ecbaabe8096adbc2fead43859f74b207dae5))
+* エクスポートループでイベントループに制御を返す ([8275bcf](https://github.com/solavrc/pokerchase-hud/commit/8275bcf8dd1014a178fdd9ba3688bbc4bdf83a73))
+* エクスポート中のService Workerアイドル停止を防止 ([f159bd2](https://github.com/solavrc/pokerchase-hud/commit/f159bd2a6902dbfe3923921b4098950e12de5fa8))
+* エクスポート中のService Workerアイドル停止を防止 ([#48](https://github.com/solavrc/pokerchase-hud/issues/48)) ([f9f17d7](https://github.com/solavrc/pokerchase-hud/commit/f9f17d7d5f868b8b2a6ede1878859facb1e33b83))
+* サイドポット時の collected/Summary をPS形式に準拠 ([8b445be](https://github.com/solavrc/pokerchase-hud/commit/8b445be639033302d3dc5d7541bd9ec23670b892))
+* トーナメントIDにセッション内最小のハンドIDを使用 ([a9dc536](https://github.com/solavrc/pokerchase-hud/commit/a9dc536cee66d43d6e1b2d1970295064f65199f2))
+* トーナメントIDのプリパス計算 ([97f122d](https://github.com/solavrc/pokerchase-hud/commit/97f122ddafc1c0633ee4f121c422c05e5304d9e3))
+* トーナメントIDをセッション内の最初のハンドIDで統一 ([ca07aa3](https://github.com/solavrc/pokerchase-hud/commit/ca07aa3f7c896ba874ebe1dd190fd73f9bdf724b))
+
+
+### Reverts
+
+* サイドポット表記を元の形式に戻す ([4fcc9d3](https://github.com/solavrc/pokerchase-hud/commit/4fcc9d3435bffe820b347e23806dcd912931f451))
+
 ## [4.1.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v4.0.0...pokerchase-hud-v4.1.0) (2026-03-24)
 
 
