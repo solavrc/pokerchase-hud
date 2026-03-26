@@ -75,19 +75,19 @@ export const progressBaseSchema = z.object({
 /** ユーザー情報スキーマ */
 export const userInfoSchema = z.object({
   UserId: z.int().nonnegative(),
-  UserName: z.string(),
-  FavoriteCharaId: z.string(),
-  CostumeId: z.string(),
-  EmblemId: z.string(),
+  UserName: z.string().describe('プレイヤー表示名'),
+  FavoriteCharaId: z.string().describe('例: chara0001, fn_chara0003, nj_chara0002'),
+  CostumeId: z.string().describe('例: costume00011, fn_costume00032'),
+  EmblemId: z.string().describe('例: emblem0001, emblem0192, fn_emblem0001'),
   IsCpu: z.boolean(),
   IsOfficial: z.boolean(),
   Rank: z.object({
-    RankId: z.string(),
-    RankLvId: z.string(),
-    RankLvName: z.string(),
-    RankName: z.string(),
+    RankId: z.string().describe('beginner | bronze | silver | gold | platinum | diamond | legend'),
+    RankLvId: z.string().describe('RankIdと同値（現状の観測範囲）'),
+    RankLvName: z.string().describe('例: ビギナー, ブロンズ, レジェンド（日本語表示名）'),
+    RankName: z.string().describe('例: ビギナー, ブロンズ, レジェンド（RankLvNameと同値）'),
   }),
-  SettingDecoIds: z.array(z.string()).length(7)
+  SettingDecoIds: z.array(z.string()).length(7).describe('装飾品ID 7つ固定。prefix: k_deco, ta_deco, t_deco, b_deco, f_deco, eal_deco, esw_deco')
 })
 
 /** ホールカードスキーマ */
@@ -105,7 +105,7 @@ export const apiEventSchemas = {
     ApiTypeId: z.literal(ApiType.EVT_ENTRY_QUEUED),
     BattleType: z.enum(BattleType),
     Code: z.literal(0),
-    Id: z.string().describe('例: new_stage007_010 (一意にセッションを特定するものではない) → SessionIdとBattleTypeの抽出に使用'),
+    Id: z.string().describe('SNG: stage006_002, stage005_001 / Ring: 50_100_0002, 10_20_0001 / MTT: 6078 (数値文字列) / Private: 空文字列'),
     IsRetire: z.boolean(),
   }).describe('参加申込 - セッション開始時に受信。SessionIdとBattleTypeを抽出'),
 
@@ -223,7 +223,7 @@ export const apiEventSchemas = {
       SettingDecoIds: z.array(z.string()).length(7),
       UserId: z.int().nonnegative(),
       UserName: z.string(),
-      ClassLvId: z.string().optional(),
+      ClassLvId: z.string().optional().describe('リングゲームクラス。例: class_lv_j1, class_lv_k3, class_lv_a1, 空文字列=未設定'),
     }),
   }).describe('プレイヤー途中参加 - ゲーム中の新規参加時にプレイヤー名を提供'),
 
@@ -377,17 +377,17 @@ export const apiEventSchemas = {
     DefaultChip: z.int(),
     IsReplay: z.boolean(),
     Items: z.array(z.object({
-      ItemId: z.string(),
+      ItemId: z.string().describe('例: season10_point, medal_0001, item0002, item0028'),
       Num: z.int().nonnegative(),
       ExpireAt: z.int().nonnegative().optional(),
     })).max(1),
-    LimitSeconds: z.int().nonnegative(),
+    LimitSeconds: z.int().nonnegative().describe('アクション制限時間（秒）'),
     MoneyList: z.array(z.object({
       FreeMoney: z.int().nonnegative(),
       PaidMoney: z.int().nonnegative(),
     })).max(1),
-    Name: z.string(),
-    Name2: z.string(),
+    Name: z.string().describe('例: シーズンマッチ, 初級ルーム, ランクマッチ'),
+    Name2: z.string().describe('例: 6人対戦【STAGEⅥ】, 空文字列の場合あり'),
     RankingRewards: z.array(z.object({
       HighRanking: z.int().nonnegative(),
       LowRanking: z.int().nonnegative(),
@@ -419,20 +419,20 @@ export const apiEventSchemas = {
     ApiTypeId: z.literal(ApiType.EVT_SESSION_RESULTS),
     Charas: z.array(z.object({
       Bond: z.int(),
-      CharaId: z.string(),
-      CostumeId: z.string(),
+      CharaId: z.string().describe('例: chara0010, fn_chara0003'),
+      CostumeId: z.string().describe('例: costume00101'),
       Evolution: z.boolean(),
       Favorite: z.int(),
       Rank: z.int().nonnegative(),
       Stamps: z.array(z.object({
-        StampId: z.string(),
+        StampId: z.string().describe('例: stamp1001, fn_stamp0312'),
         IsRelease: z.boolean(),
       })).length(12),
       TodayUpNum: z.int().nonnegative(),
     })).max(1),
     Costumes: z.array(z.unknown()),
     Decos: z.array(z.object({
-      DecoId: z.string(),
+      DecoId: z.string().describe('例: k_deco0069, ta_deco0055, t_deco0069'),
       IsSetting: z.boolean(),
     })).max(3),
     Emblems: z.array(z.unknown()),
@@ -440,19 +440,19 @@ export const apiEventSchemas = {
     IsLeave: z.boolean(),
     IsRebuy: z.boolean(),
     Items: z.array(z.object({
-      ItemId: z.string(),
+      ItemId: z.string().describe('例: item0002, item0028, item0038, medal_0001'),
       Num: z.int().nonnegative(),
     })).max(4),
     Money: z.object({
-      FreeMoney: z.int(),
-      PaidMoney: z.int(),
+      FreeMoney: z.int().describe('-1=非表示'),
+      PaidMoney: z.int().describe('-1=非表示'),
     }),
-    Ranking: z.int(),
+    Ranking: z.int().describe('最終順位（1-based）'),
     Rewards: z.array(z.object({
       BuffNum: z.int().nonnegative(),
-      Category: z.int().nonnegative(),
+      Category: z.int().nonnegative().describe('3=チケット, 8=コイン等'),
       Num: z.int().nonnegative(),
-      TargetId: z.string(),
+      TargetId: z.string().describe('例: item0002, 空文字列の場合あり'),
     })).max(5),
     TotalMatch: z.int().nonnegative(),
     BattleFinishTime: z.int().nonnegative().optional(),
@@ -540,7 +540,7 @@ export const apiEventSchemas = {
       SettingDecoIds: z.array(z.string()).length(7),
       UserId: z.int().nonnegative(),
       UserName: z.string().describe('プレイヤー名 - 初期着席時に取得可能'),
-      ClassLvId: z.string().optional(),
+      ClassLvId: z.string().optional().describe('リングゲームクラス。例: class_lv_j1, class_lv_k3, class_lv_a1, 空文字列=未設定'),
     })).min(1).max(6),
     BreakFinishUnixSeconds: z.int().nonnegative().optional(),
     CommunityCards: z.array(z.int()).max(5).optional().describe('途中参加時'),
