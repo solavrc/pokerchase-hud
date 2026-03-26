@@ -121,7 +121,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   - Always run tests and type checking after code changes
   - Use `npm run test` and `npm run typecheck` commands
   - Ensure all tests pass before completing tasks
-  - Current status: All 332 tests passing (38 suites) ✅
+  - Current status: All 338 tests passing (39 suites) ✅
 - **Build Commands**:
   - `npm run build` - Production build
   - `npm run typecheck` - TypeScript validation
@@ -150,10 +150,8 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 
 ## Architecture Decision Records
 
-Important technical decisions are documented in `docs/adr/`:
-
-- **ADR-001: Data Storage Architecture** - Rationale for Dexie.js, normalized entities, and Firestore strategy
-- **ADR-002: Database Index Optimization** - v3 migration with composite indexes for performance
+Important technical decisions are documented in [docs/architecture.md](docs/architecture.md):
+data storage (Dexie.js), normalized entities, Firestore strategy, and v3 index optimization.
 
 ## Architecture
 
@@ -280,12 +278,12 @@ Statistics Refresh (batch mode)
 
 **Critical Design Constraints (learned 2026-03):**
 
-> **Data model & event edge cases** are consolidated in [docs/reference/api-events.md](docs/reference/api-events.md) — see "Data Constraints & Edge Cases", "Field Relationships", and "Enum Reference" sections.
+> **Data model & event edge cases** are consolidated in [docs/api-events.md](docs/api-events.md) — see "Data Constraints & Edge Cases", "Field Relationships", and "Enum Reference" sections.
 
 - **EntityConverter state**: `convertEventsToEntities()` tracks hand boundaries via internal local variables (`currentHandEvents`). Must NOT be called in chunks — a hand spanning chunk boundaries will be lost. Always pass all events in a single call.
 - **Dexie Collection reuse**: `processInChunks()` uses `.offset().limit()` on a Collection object, but Dexie Collections accumulate state. For reliable pagination, use cursor-based approach with `where('[timestamp+ApiTypeId]').above(lastKey).limit(N)`.
 - **Export size limits**: Service Worker → content_script message limit is 64MiB. Data URL limit is ~2MB. Large exports use chunked message passing with Blob-based download in content_script.
-- **PokerStars hand history format**: `calls` shows additional call amount (not total bet). `Dealt to` is hero-only. Summary uses `folded on the Flop/Turn/River`. See [docs/reference/pokerstars-export.md](docs/reference/pokerstars-export.md).
+- **PokerStars hand history format**: `calls` shows additional call amount (not total bet). `Dealt to` is hero-only. Summary uses `folded on the Flop/Turn/River`. See [docs/pokerstars-export.md](docs/pokerstars-export.md).
 - **HandLogExporter batch optimization**: `exportMultipleHands` prefetches all hands and API events in 2 DB queries, then processes in memory. Avoids N+1 query pattern (previously 100 hands = 300+ DB queries). Single-hand `exportHand` retains per-hand DB queries for simplicity.
 - **Popup ↔ Background state synchronization**: Long-running operations (export/import/rebuild) track state in `currentOperationState` global variable in background.ts. Popup queries via `getOperationState` on mount to restore UI after close/reopen. Progress messages (`processing` state) must also set the active operation state (not just `started`), because popup may miss `started` during close/reopen window.
 - **Optimistic UI updates**: Button click handlers set local state immediately before sending message to background, then revert if background rejects. Prevents race window where buttons remain clickable between click and first progress message.
@@ -296,7 +294,7 @@ Statistics Refresh (batch mode)
 
 ### Table & Seat Handling
 
-> **SeatUserIds semantics and field relationships**: See [docs/reference/api-events.md](docs/reference/api-events.md#field-relationships).
+> **SeatUserIds semantics and field relationships**: See [docs/api-events.md](docs/api-events.md#field-relationships).
 
 - **Table size**: 4 or 6 seats (`SeatUserIds.length`), `-1` = empty, null in arrays
 - **HUD-specific**: Hero always at UI position 0 (bottom center). Dual coordinate system: `originalSeatIndex` (DB/export) vs rotated position (UI). Use `rotateArrayFromIndex` utility.
@@ -347,7 +345,7 @@ Recent toArray() optimizations achieved:
 
 ### Event Handling
 
-> **Event types, field relationships, data dependencies, edge cases, enums**: See [docs/reference/api-events.md](docs/reference/api-events.md).
+> **Event types, field relationships, data dependencies, edge cases, enums**: See [docs/api-events.md](docs/api-events.md).
 
 - **HUD behavior**: Show "No Data" or cached values when data incomplete. Preserve session state across reconnections.
 - **Batch vs Live**: Use `service.setBatchMode()` to differentiate import from live events
@@ -365,7 +363,7 @@ Recent toArray() optimizations achieved:
 - `/src/types/` - TypeScript definitions with Zod schemas
 - `/src/utils/` - Utility functions and helpers
 
-For complete directory structure and file descriptions, see [docs/implementation/file-organization.md](docs/implementation/file-organization.md).
+For complete directory structure and file descriptions, see [docs/file-organization.md](docs/file-organization.md).
 
 ### Extension Layer
 
@@ -438,7 +436,7 @@ Components are modularized with feature-specific sub-components in `hud/` and `p
 
 ### Adding New Statistics
 
-For detailed instructions on how to add new statistics to the HUD, please see [CONTRIBUTING.md](./CONTRIBUTING.md).
+For detailed instructions on how to add new statistics to the HUD, see [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ### Statistics Philosophy
 
@@ -511,11 +509,11 @@ Dynamic statistics for all players, with hero having additional hand improvement
 
 ## Data Model & Events
 
-> **Canonical reference**: [docs/reference/api-events.md](docs/reference/api-events.md) consolidates event specifications, field relationships, edge cases, card encoding, and enum definitions. This section covers HUD-specific implementation details.
+> **Canonical reference**: [docs/api-events.md](docs/api-events.md) consolidates event specifications, field relationships, edge cases, card encoding, and enum definitions. This section covers HUD-specific implementation details.
 
 ### ApiEvent Architecture
 
-> **Event types, field relationships, data dependencies, edge cases, enums**: See [docs/reference/api-events.md](docs/reference/api-events.md).
+> **Event types, field relationships, data dependencies, edge cases, enums**: See [docs/api-events.md](docs/api-events.md).
 
 #### Schema & Validation (HUD-specific)
 
@@ -529,7 +527,7 @@ Dynamic statistics for all players, with hero having additional hand improvement
 
 ### Database Schema
 
-Defined in `src/db/poker-chase-db.ts` (Dexie/IndexedDB). See [ADR-001](docs/adr/001-data-storage-architecture.md) and [ADR-002](docs/adr/002-database-index-optimization.md) for design rationale.
+Defined in `src/db/poker-chase-db.ts` (Dexie/IndexedDB). See [docs/architecture.md](docs/architecture.md) for design rationale.
 
 #### Tables (v3)
 
@@ -587,7 +585,7 @@ Key `pokerChaseServiceState` in `storage.local`. Auto-saved with 500ms debounce 
 
 **Important**: Update `src/services/firebase-config.ts` with your Firebase configuration.
 
-For detailed setup instructions, see [docs/implementation/firebase-setup.md](docs/implementation/firebase-setup.md).
+For detailed setup instructions, see [docs/firebase-setup.md](docs/firebase-setup.md).
 
 ---
 

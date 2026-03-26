@@ -71,4 +71,4 @@ Contributions are welcome! The codebase uses a modular architecture for easy ext
 
 📖 **[Contributing Guide](CONTRIBUTING.md)** - Complete guide for adding new statistics with examples and testing requirements
 
-📁 **[Project Structure](docs/implementation/file-organization.md)** - Detailed directory layout and file organization
+📁 **[Project Structure](docs/file-organization.md)** - Detailed directory layout and file organization
