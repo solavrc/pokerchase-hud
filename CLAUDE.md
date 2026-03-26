@@ -296,16 +296,10 @@ Statistics Refresh (batch mode)
 
 ### Table & Seat Handling
 
-- **Variable Table Size**: Maximum 4 or 6 seats
-  - Check `SeatUserIds.length` to determine actual table size
-  - Empty seats represented as null in arrays
-  - PokerStars format compliance required for exports
-- **Hero Positioning**: Always place hero at position 0 (UI bottom center)
-  - No dealer position in PokerChase; no absolute seat numbering
-  - `SeatUserIds` index = logical seat number (randomly assigned)
-  - Hero `UserId` = `SeatUserIds[Player.SeatIndex]` from EVT_DEAL
-  - Dual coordinate system: originalSeatIndex (DB/export) vs rotated position (UI)
-  - Use `rotateArrayFromIndex` utility for seat array transformations
+> **SeatUserIds semantics and field relationships**: See [docs/reference/api-events.md](docs/reference/api-events.md#field-relationships).
+
+- **Table size**: 4 or 6 seats (`SeatUserIds.length`), `-1` = empty, null in arrays
+- **HUD-specific**: Hero always at UI position 0 (bottom center). Dual coordinate system: `originalSeatIndex` (DB/export) vs rotated position (UI). Use `rotateArrayFromIndex` utility.
 
 ### Data Processing
 
@@ -353,22 +347,11 @@ Recent toArray() optimizations achieved:
 
 ### Event Handling
 
-> **Comprehensive event reference**: See [docs/reference/api-events.md](docs/reference/api-events.md) for event types, field relationships, edge cases, card encoding, and enum definitions.
+> **Event types, field relationships, data dependencies, edge cases, enums**: See [docs/reference/api-events.md](docs/reference/api-events.md).
 
-- **Event Schema**: PokerChase API controls schema; may change without notice
-- **Event Ordering**: Guaranteed logical sequence, but may have connectivity losses
-- **Data Dependencies**:
-  - Hero identification requires EVT_DEAL.Player field
-  - HandId only available at hand completion (EVT_HAND_RESULTS)
-  - Player names from EVT_PLAYER_SEAT_ASSIGNED or EVT_PLAYER_JOIN
-- **Graceful Degradation**: Show "No Data" or cached values when data incomplete
-- **Session Continuity**: Preserve session state across WebSocket reconnections
+- **HUD behavior**: Show "No Data" or cached values when data incomplete. Preserve session state across reconnections.
 - **Batch vs Live**: Use `service.setBatchMode()` to differentiate import from live events
-- **Service Worker Keepalive**: 
-  - Sends keepalive messages every 25 seconds during active games
-  - Automatically starts on EVT_SESSION_DETAILS (game start)
-  - Stops on EVT_SESSION_RESULTS (game end) or tab visibility change
-  - Prevents Service Worker from timing out after 30 seconds
+- **Service Worker Keepalive**: 25s interval during active games (EVT_SESSION_DETAILS → EVT_SESSION_RESULTS). Prevents 30s timeout.
 
 ## Components & Modules
 
@@ -532,207 +515,57 @@ Dynamic statistics for all players, with hero having additional hand improvement
 
 ### ApiEvent Architecture
 
-#### Event Schema Constraints
+> **Event types, field relationships, data dependencies, edge cases, enums**: See [docs/reference/api-events.md](docs/reference/api-events.md).
 
-- **External Control**: `ApiEvent` schema is provided by PokerChase API and outside developer control
-- **Schema Volatility**: May change partially without notice, requiring defensive coding
-- **Event Ordering**: Events arrive in guaranteed logical sequence
-- **Connectivity Issues**: Events may be lost due to player-side network problems
-- **Runtime Validation**: Zod schemas provide runtime type checking and validation
-  - **Schema Mode: `passthrough()`** — Unknown properties are preserved and passed through to processing (not rejected). This prevents API field additions from breaking functionality. Missing required properties still cause validation failure.
-  - **Schema Diff Detection**: `npm run schema-diff -- <NDJSON file>` runs `strict()` validation offline to detect unknown properties (additions) and missing properties (breaking changes) in exported data.
-  - **Complete Zod Schema Way Pattern**: Types are now derived from schemas (Single Source of Truth)
-  - All API events have corresponding Zod schemas in `src/types/api.ts`
-  - Use `ApiEventSchema` for discriminated union validation
-  - `validate-schemas` tool can verify NDJSON exports against schemas
-  - **Schema organization**:
-    - Consolidated 5 redundant type definitions into single `ApiEvent<T>` type
-    - Individual event schemas exported via `apiEventSchemas` object
-    - Common sub-schemas for reusability: `seatIndexSchema`, `playerBaseSchema`, `progressBaseSchema`, etc.
-    - Direct schema access: `apiEventSchemas[ApiType.EVT_DEAL]`
-    - Schema access functions: `getEventSchema()`, `parseEventWithSchema()`, `getAvailableEventTypes()`
-  - **Entity types migration** (`src/types/entities.ts`):
-    - Converted `Hand`, `Phase`, `Action`, `User` to Zod schemas
-    - Added MetaRecord schemas with union types for type-safe variants
-    - Export parse functions: `parseHand()`, `parsePhase()`, `parseAction()`, `parseMetaRecord()`
-    - Session kept as interface due to function properties
-- **Type Guard Functions**: Safe type narrowing without assertions
-  - `isApiEventType(event, type)`: Type-safe event type checking
-  - `parseApiEvent(data)`: Parse and validate with proper typing
-  - `getValidationError(error)`: Extract readable error messages
-  - `isApplicationApiEvent(event)`: Filter non-game events
-  - Eliminated all type assertions (`as`) in favor of type guards
-  - Non-application events automatically filtered at database level
-- **Breaking Changes**:
-  - **Removed exports**: `ApiEventType`, `ApiEventUnion`, `ApiEventSubset`, `ApiEventMap`
-  - Use `ApiEvent` instead of removed types
+#### Schema & Validation (HUD-specific)
 
-#### Data Dependencies & Timing
-
-**Critical Dependencies**:
-
-- **Hero Identification**: Requires `EVT_DEAL` with `Player` field (missing in spectator mode)
-- **Player Names**: Available via `EVT_PLAYER_SEAT_ASSIGNED` (initial) or `EVT_PLAYER_JOIN` (mid-game)
-- **Session Info**: From `RES_ENTRY_QUEUED` (ID, battle type) and `EVT_SESSION_DETAILS` (name)
-  - A "Session" represents a complete game instance (tournament, ring game, etc.)
-  - Contains metadata like game type, stakes, and tournament structure
-  - Persists across multiple hands until game completion
-- **HandId**: Only available at hand completion (`EVT_HAND_RESULTS`)
-- **UserId**: Obtained via `SeatUserIds[Player.SeatIndex]` from `EVT_DEAL`
-
-**Aggregation Challenges**:
-
-- Hand-level aggregation requires `HandId` which only arrives at hand end
-- Must verify all required events are received before processing
-- Player information arrives incrementally across multiple events
-- Cannot aggregate hands in real-time; must buffer until boundary detected
-
-**State Management**:
-
-- Must handle missing events gracefully
-- Session continuity must be maintained across reconnections
-- Import vs live events must be differentiated via `service.setBatchMode()`
-
-### Event Types
-
-**Event categories**:
-- **Session Events** - Game lifecycle (RES_ENTRY_QUEUED, EVT_SESSION_DETAILS/RESULTS)
-- **Player Events** - Seating and identification (EVT_PLAYER_SEAT_ASSIGNED, EVT_DEAL)
-- **Game Events** - Actions and results (EVT_ACTION, EVT_DEAL_ROUND, EVT_HAND_RESULTS)
-
-**Key relationships**:
-- Hero ID: `SeatUserIds[EVT_DEAL.Player.SeatIndex]`
-- Table size: `SeatUserIds.length` (4 or 6)
-- HandId: Only available at EVT_HAND_RESULTS
-
-For complete event reference, see [docs/reference/api-events.md](docs/reference/api-events.md).
+- **Single Source of Truth**: Types derived from Zod schemas in `src/types/api.ts`
+  - `ApiEvent<T>` generic type, `apiEventSchemas` object, `ApiEventSchema` discriminated union
+  - Schema mode: `passthrough()` — unknown properties preserved
+  - Schema diff: `npm run schema-diff -- <file.ndjson>` for offline change detection
+- **Entity schemas** in `src/types/entities.ts`: `Hand`, `Phase`, `Action`, `User` with parse functions
+- **Type guards** (no type assertions): `isApiEventType()`, `parseApiEvent()`, `isApplicationApiEvent()`, `getValidationError()`
+- **Breaking changes**: Use `ApiEvent` (removed: `ApiEventType`, `ApiEventUnion`, `ApiEventSubset`, `ApiEventMap`)
 
 ### Database Schema
 
-Database schema is defined in `src/db/poker-chase-db.ts` using Dexie (IndexedDB wrapper).
+Defined in `src/db/poker-chase-db.ts` (Dexie/IndexedDB). See [ADR-001](docs/adr/001-data-storage-architecture.md) and [ADR-002](docs/adr/002-database-index-optimization.md) for design rationale.
 
-#### Tables & Indexes (v3)
+#### Tables (v3)
 
-**`apiEvents`** - Raw WebSocket events storage
+| Table | Primary Key | Key Indexes | Purpose |
+|---|---|---|---|
+| `apiEvents` | `[timestamp+ApiTypeId]` | `[ApiTypeId+timestamp]` | Raw WebSocket events |
+| `hands` | `id` (auto) | `*seatUserIds`, `approxTimestamp` | Processed hand data |
+| `phases` | `[handId+phase]` | `handId`, `*seatUserIds` | Per-street state |
+| `actions` | `[handId+index]` | `[playerId+phase]`, `[playerId+actionType]`, `*actionDetails` | Player actions with stat markers |
+| `meta` | `id` | `updatedAt` | Import status, stats cache, sync state |
 
-- Primary: `[timestamp+ApiTypeId]` (compound key for uniqueness)
-- Indexes: `timestamp`, `ApiTypeId`, `[ApiTypeId+timestamp]` (v3: for efficient type-specific queries)
-- Purpose: Store all events for replay, import/export, debugging
-- **Hooks**: Automatic filtering of non-application events on read/write
-
-**`hands`** - Processed hand data
-
-- Primary: `id` (auto-increment)
-- Indexes: `*seatUserIds`, `*winningPlayerIds` (multi-entry), `approxTimestamp` (v3: for recent hands queries)
-- Contains: Session info, player mapping, winners
-
-**`phases`** - Hand phases (preflop/flop/turn/river)
-
-- Primary: `[handId+phase]` (compound key)
-- Indexes: `handId`, `*seatUserIds`, `phase`
-- Contains: Player states, bet counts, pot size per phase
-
-**`actions`** - Player actions with statistics markers
-
-- Primary: `[handId+index]` (compound key)
-- Indexes: `handId`, `playerId`, `phase`, `actionType`, `*actionDetails`, `[playerId+phase]`, `[playerId+actionType]` (v3: for player-specific queries)
-- Contains: Action type, bet amount, `ActionDetail` flags
-
-**`meta`** - Generic metadata storage (v3: expanded from ImportMeta)
-
-- Primary: `id`
-- Indexes: `updatedAt` (v3: for cache expiration)
-- Purpose: Store various metadata including:
-  - Import tracking (`importStatus`)
-  - Statistics cache (`statisticsCache:*`)
-  - Rebuild status (`rebuildStatus`)
-  - Sync state and other app metadata
-- **Schema**: `MetaRecord` with flexible `value` field
-
-#### Version Migrations
-
-- **v1**: Initial schema
-- **v2**: Added indexes for common queries
-- **v3**: Performance optimization with composite indexes and expanded meta table
-  - Added composite indexes: `[ApiTypeId+timestamp]`, `[playerId+phase]`, `[playerId+actionType]`
-  - `MetaRecord` replaces `ImportMeta` for flexible metadata storage
-  - New indexes enable efficient type-specific and player-specific queries
-
-See `PokerChaseDB` class for detailed schema and hook implementations.
+v3 migration added composite indexes for player-specific queries. `MetaRecord` replaced `ImportMeta`.
 
 ### Configuration & Storage
 
-#### Chrome Storage Architecture
+#### Chrome Storage
 
-Configuration uses Chrome's `storage.sync` API for cross-device synchronization:
+- **`storage.sync`**: User preferences (`options`, `uiConfig`, `handLogConfig`) and HUD positions (`hudPosition_0`–`hudPosition_5`, `hudPosition_100`)
+- **`storage.local`**: Service state persistence (`pokerChaseServiceState` — playerId, latestEvtDeal, session)
 
-**Storage Areas**:
+#### Config Interfaces
 
-- `sync`: User preferences, HUD positions (synced across devices)
-- `local`: Service state persistence (PokerChaseService state)
-
-#### Configuration Interfaces
-
-**`UIConfig`** (`src/types/hand-log.ts`)
-
-- `displayEnabled`: Master toggle for all HUD elements
-- `scale`: Global scale factor (0.5 - 2.0)
-
-**`HandLogConfig`** (`src/types/hand-log.ts`)
-
-- `enabled`: Show/hide hand log
-- `maxHands`: Number of hands to display (1-50)
-- `position`: Screen position ('top-left', 'bottom-right', etc.)
-- `width`, `height`: Dimensions in pixels
-- `fontSize`: Text size (8-16px)
-- `opacity`: Background transparency (0-1)
-
-**`FilterOptions`** (`src/types/filters.ts`)
-
-- `gameTypes`: Object with `sng`, `mtt`, `ring` boolean flags
-- `handLimit`: Number of recent hands for stats (20, 50, 100, 200, 500, or undefined for all)
-- `statDisplayConfigs`: Array of enabled statistics with display order
-
-**`HudPosition`** (`src/components/Hud.tsx`)
-
-- `top`, `left`: Percentage-based positioning
-- Stored per seat for individual HUD placement
-
-#### Storage Keys
-
-**User Preferences**:
-
-- `options`: Main configuration object (includes `FilterOptions`)
-- `uiConfig`: UI scale and display toggle
-- `handLogConfig`: Hand log display settings
-
-**HUD Positions**:
-
-- `hudPosition_0` to `hudPosition_5`: Regular HUD positions per seat
-- `hudPosition_100`: Hero's real-time stats HUD position
+| Interface | Location | Key Fields |
+|---|---|---|
+| `UIConfig` | `src/types/hand-log.ts` | `displayEnabled`, `scale` (0.5–2.0) |
+| `HandLogConfig` | `src/types/hand-log.ts` | `enabled`, `maxHands`, `position`, `width`, `height`, `fontSize`, `opacity` |
+| `FilterOptions` | `src/types/filters.ts` | `gameTypes` (sng/mtt/ring), `handLimit`, `statDisplayConfigs` |
+| `HudPosition` | `src/components/Hud.tsx` | `top`, `left` (percentage) |
 
 #### Data Flow
 
-1. **Popup → Background**: Settings changes via `chrome.runtime.sendMessage`
-2. **Background → Content**: Updates forwarded to all game tabs
-3. **Content → UI**: React components re-render with new settings
-4. **Persistence**: Automatic via Chrome sync storage
+Popup → `chrome.runtime.sendMessage` → Background → forwarded to game tabs → React re-render.
 
 #### Service State Persistence
 
-**Storage Key**: `pokerChaseServiceState`
-
-**Persisted Data**:
-- `playerId`: Current hero player ID
-- `latestEvtDeal`: Most recent EVT_DEAL event for seat mapping
-- `session`: Game session information (id, battleType, name, players)
-- `lastUpdated`: Timestamp of last persistence
-
-**Persistence Features**:
-- **Automatic saving**: Triggered by setter methods with 500ms debounce
-- **Restoration on startup**: Service worker loads state before processing events
-- **Quota handling**: Automatic cleanup of old temporary data on quota exceeded
-- **Error resilience**: Continues operation even if storage fails
+Key `pokerChaseServiceState` in `storage.local`. Auto-saved with 500ms debounce on setter calls. Restored on Service Worker startup. Handles quota exceeded with automatic cleanup.
 
 ---
 
