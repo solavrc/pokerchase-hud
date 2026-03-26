@@ -221,8 +221,17 @@ export class HandLogExporter {
     console.log(`[HandLogExporter] Prefetched ${allEvents.length} events`)
 
     // 5. Process each hand using the prefetched events
-    // セッションごとの最初のハンドIDを追跡（トーナメントID用）
+    // プリパス: セッションごとの最小ハンドIDを確定（トーナメントID用）
     const sessionFirstHandId = new Map<string | undefined, number>()
+    for (const handId of handIds) {
+      const hand = handMap.get(handId)
+      if (!hand) continue
+      const sessionId = hand.session.id
+      const currentMin = sessionFirstHandId.get(sessionId)
+      if (currentMin === undefined || handId < currentMin) {
+        sessionFirstHandId.set(sessionId, handId)
+      }
+    }
     
     const results: string[] = []
     let processedCount = 0
@@ -236,13 +245,6 @@ export class HandLogExporter {
         continue
       }
 
-      // セッション内の最小のハンドIDを記録（トーナメントID用）
-      const sessionId = hand.session.id
-      const currentMin = sessionFirstHandId.get(sessionId)
-      if (currentMin === undefined || handId < currentMin) {
-        sessionFirstHandId.set(sessionId, handId)
-      }
-
       try {
         // Extract events for this specific hand from prefetched set
         const handEvents = this.extractHandEvents(allEvents, hand)
@@ -251,7 +253,7 @@ export class HandLogExporter {
         }
 
         // Build hand text using already-cached player map
-        const firstHandId = sessionFirstHandId.get(sessionId)
+        const firstHandId = sessionFirstHandId.get(hand.session.id)
         const handText = this.processHandToText(hand, handEvents, globalPlayerMap, firstHandId)
         results.push(handText)
       } catch (error) {
