@@ -1,117 +1,199 @@
 /**
- * Firebase Authentication Service for Chrome Extension
- * Uses chrome.identity API for Google Sign-In
+ * Firebase Authentication Service for Chrome Extension.
+ *
+ * Uses chrome.identity for Google OAuth and Firebase Auth REST endpoints for
+ * Firebase ID tokens. Keeping the Firebase Auth SDK out of the extension
+ * bundle avoids MV3 remote-code scanner matches for gapi/reCAPTCHA loaders.
  */
 
-import { 
-  GoogleAuthProvider, 
-  User, 
-  signInWithCredential,
-  signOut as firebaseSignOut,
-  onAuthStateChanged
-} from 'firebase/auth'
-import { auth } from './firebase-config'
+import { firebaseConfig } from './firebase-config'
+
+export interface AuthUser {
+  uid: string
+  email: string | null
+  displayName: string | null
+  photoURL: string | null
+  getIdToken: (forceRefresh?: boolean) => Promise<string>
+}
+
+interface StoredAuthState {
+  uid: string
+  email: string | null
+  displayName: string | null
+  photoURL: string | null
+  idToken: string
+  refreshToken: string
+  expiresAt: number
+}
+
+interface FirebaseSignInResponse {
+  idToken: string
+  refreshToken: string
+  expiresIn: string
+  localId: string
+  email?: string
+  displayName?: string
+  photoUrl?: string
+}
+
+interface FirebaseRefreshResponse {
+  id_token: string
+  refresh_token: string
+  expires_in: string
+  user_id: string
+}
 
 export class FirebaseAuthService {
-  private currentUser: User | null = null
-  private authStateListeners: ((user: User | null) => void)[] = []
+  private static readonly STORAGE_KEY = 'firebaseRestAuthState'
+  private currentState: StoredAuthState | null = null
+  private authStateListeners: ((user: AuthUser | null) => void)[] = []
+  private restorePromise: Promise<void>
 
   constructor() {
-    // Listen to auth state changes
-    onAuthStateChanged(auth, (user) => {
-      this.currentUser = user
-      this.notifyAuthStateListeners(user)
-    })
+    this.restorePromise = this.restoreAuthState()
+  }
+
+  async ready(): Promise<void> {
+    await this.restorePromise
   }
 
   /**
-   * Sign in with Google using chrome.identity API
+   * Sign in with Google using chrome.identity API.
    */
-  async signInWithGoogle(): Promise<User> {
-    return new Promise((resolve, reject) => {
-      // Get OAuth2 token using chrome.identity
-      chrome.identity.getAuthToken({ interactive: true }, async (result) => {
-        const token = typeof result === 'string' ? result : result?.token
-        if (chrome.runtime.lastError || !token) {
-          console.error('[FirebaseAuth] Chrome identity error:', chrome.runtime.lastError)
-          reject(new Error(chrome.runtime.lastError?.message || 'Failed to get auth token'))
-          return
-        }
+  async signInWithGoogle(): Promise<AuthUser> {
+    const token = await this.getChromeAuthToken(true)
+    console.log('[FirebaseAuth] Got Chrome auth token')
 
-        console.log('[FirebaseAuth] Got Chrome auth token')
-
-        try {
-          // Get user info from Google API
-          const response = await fetch('https://www.googleapis.com/oauth2/v1/userinfo?alt=json', {
-            headers: { Authorization: `Bearer ${token}` }
+    try {
+      const response = await fetch(
+        `https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=${firebaseConfig.apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            postBody: `access_token=${encodeURIComponent(token)}&providerId=google.com`,
+            requestUri: `https://${chrome.runtime.id}.chromiumapp.org/`,
+            returnIdpCredential: false,
+            returnSecureToken: true
           })
-          const userInfo = await response.json()
-          console.log('[FirebaseAuth] User info:', userInfo)
-
-          // Create credential from the token
-          const credential = GoogleAuthProvider.credential(null, token)
-          
-          // Sign in to Firebase
-          const result = await signInWithCredential(auth, credential)
-          console.log('[FirebaseAuth] Firebase sign in successful:', result.user.email)
-          resolve(result.user)
-        } catch (error) {
-          console.error('[FirebaseAuth] Firebase sign in error:', error)
-          reject(error)
         }
-      })
-    })
+      )
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Firebase sign-in failed: ${response.status} ${errorText}`)
+      }
+
+      const result = await response.json() as FirebaseSignInResponse
+      this.currentState = {
+        uid: result.localId,
+        email: result.email ?? null,
+        displayName: result.displayName ?? null,
+        photoURL: result.photoUrl ?? null,
+        idToken: result.idToken,
+        refreshToken: result.refreshToken,
+        expiresAt: Date.now() + Number(result.expiresIn) * 1000
+      }
+      await this.persistAuthState()
+      this.notifyAuthStateListeners(this.getCurrentUser())
+      console.log('[FirebaseAuth] Firebase sign in successful:', this.currentState.email)
+      return this.getCurrentUser()!
+    } catch (error) {
+      console.error('[FirebaseAuth] Firebase sign in error:', error)
+      throw error
+    }
   }
 
   /**
-   * Sign out from Firebase and revoke Chrome identity token
+   * Sign out from Firebase and revoke Chrome identity token.
    */
   async signOut(): Promise<void> {
-    // Sign out from Firebase
-    await firebaseSignOut(auth)
-    
-    // Revoke the Chrome identity token
-    return new Promise((resolve, reject) => {
-      chrome.identity.getAuthToken({ interactive: false }, (result) => {
-        const token = typeof result === 'string' ? result : result?.token
-        if (token) {
-          chrome.identity.removeCachedAuthToken({ token }, () => {
-            // Revoke the token on Google's servers
-            fetch(`https://accounts.google.com/o/oauth2/revoke?token=${token}`)
-              .then(() => resolve())
-              .catch(reject)
-          })
-        } else {
-          resolve()
-        }
+    const previousToken = await this.getChromeAuthToken(false).catch(() => null)
+    this.currentState = null
+    await chrome.storage.local.remove(FirebaseAuthService.STORAGE_KEY)
+    this.notifyAuthStateListeners(null)
+
+    if (previousToken) {
+      await new Promise<void>((resolve) => {
+        chrome.identity.removeCachedAuthToken({ token: previousToken }, () => resolve())
       })
-    })
+      await fetch(`https://accounts.google.com/o/oauth2/revoke?token=${previousToken}`).catch(() => {})
+    }
   }
 
   /**
-   * Get the current user
+   * Get the current user.
    */
-  getCurrentUser(): User | null {
-    return this.currentUser
+  getCurrentUser(): AuthUser | null {
+    if (!this.currentState) {
+      return null
+    }
+
+    return {
+      uid: this.currentState.uid,
+      email: this.currentState.email,
+      displayName: this.currentState.displayName,
+      photoURL: this.currentState.photoURL,
+      getIdToken: (forceRefresh = false) => this.getIdToken(forceRefresh)
+    }
   }
 
   /**
-   * Check if user is signed in
+   * Get a valid Firebase ID token for REST API requests.
+   */
+  async getIdToken(forceRefresh = false): Promise<string> {
+    await this.ready()
+    if (!this.currentState) {
+      throw new Error('User not authenticated')
+    }
+
+    if (!forceRefresh && this.currentState.expiresAt - Date.now() > 5 * 60 * 1000) {
+      return this.currentState.idToken
+    }
+
+    const response = await fetch(
+      `https://securetoken.googleapis.com/v1/token?key=${firebaseConfig.apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'refresh_token',
+          refresh_token: this.currentState.refreshToken
+        }).toString()
+      }
+    )
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`Firebase token refresh failed: ${response.status} ${errorText}`)
+    }
+
+    const result = await response.json() as FirebaseRefreshResponse
+    this.currentState = {
+      ...this.currentState,
+      uid: result.user_id,
+      idToken: result.id_token,
+      refreshToken: result.refresh_token,
+      expiresAt: Date.now() + Number(result.expires_in) * 1000
+    }
+    await this.persistAuthState()
+    return this.currentState.idToken
+  }
+
+  /**
+   * Check if user is signed in.
    */
   isSignedIn(): boolean {
-    return this.currentUser !== null
+    return this.currentState !== null
   }
 
   /**
-   * Add auth state listener
+   * Add auth state listener.
    */
-  onAuthStateChange(callback: (user: User | null) => void): () => void {
+  onAuthStateChange(callback: (user: AuthUser | null) => void): () => void {
     this.authStateListeners.push(callback)
-    
-    // Call immediately with current state
-    callback(this.currentUser)
-    
-    // Return unsubscribe function
+    this.ready().then(() => callback(this.getCurrentUser())).catch(() => callback(null))
+
     return () => {
       const index = this.authStateListeners.indexOf(callback)
       if (index > -1) {
@@ -121,28 +203,50 @@ export class FirebaseAuthService {
   }
 
   /**
-   * Notify all auth state listeners
-   */
-  private notifyAuthStateListeners(user: User | null): void {
-    this.authStateListeners.forEach(listener => listener(user))
-  }
-
-  /**
-   * Get user display info
+   * Get user display info.
    */
   getUserInfo(): { email: string | null, displayName: string | null, photoURL: string | null, uid: string } | null {
-    if (!this.currentUser) {
+    const user = this.getCurrentUser()
+    if (!user) {
       return null
     }
 
     return {
-      email: this.currentUser.email,
-      displayName: this.currentUser.displayName,
-      photoURL: this.currentUser.photoURL,
-      uid: this.currentUser.uid
+      email: user.email,
+      displayName: user.displayName,
+      photoURL: user.photoURL,
+      uid: user.uid
     }
+  }
+
+  private async getChromeAuthToken(interactive: boolean): Promise<string> {
+    return await new Promise((resolve, reject) => {
+      chrome.identity.getAuthToken({ interactive }, (result) => {
+        const token = typeof result === 'string' ? result : result?.token
+        if (chrome.runtime.lastError || !token) {
+          reject(new Error(chrome.runtime.lastError?.message || 'Failed to get auth token'))
+          return
+        }
+        resolve(token)
+      })
+    })
+  }
+
+  private async restoreAuthState(): Promise<void> {
+    const stored = await chrome.storage.local.get(FirebaseAuthService.STORAGE_KEY) as Record<string, StoredAuthState | undefined>
+    this.currentState = stored[FirebaseAuthService.STORAGE_KEY] ?? null
+    this.notifyAuthStateListeners(this.getCurrentUser())
+  }
+
+  private async persistAuthState(): Promise<void> {
+    if (this.currentState) {
+      await chrome.storage.local.set({ [FirebaseAuthService.STORAGE_KEY]: this.currentState })
+    }
+  }
+
+  private notifyAuthStateListeners(user: AuthUser | null): void {
+    this.authStateListeners.forEach(listener => listener(user))
   }
 }
 
-// Export singleton instance
 export const firebaseAuthService = new FirebaseAuthService()
