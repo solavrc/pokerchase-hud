@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.2.1](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v4.2.0...pokerchase-hud-v4.2.1) (2026-06-17)
+
+
+### Bug Fixes
+
+* remove Firebase remote auth script loaders ([#82](https://github.com/solavrc/pokerchase-hud/issues/82)) ([657884d](https://github.com/solavrc/pokerchase-hud/commit/657884d751d5257a5835f4f1e49fa475ed5e56c4))
+
 ## [4.2.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v4.1.0...pokerchase-hud-v4.2.0) (2026-03-26)
 
 
