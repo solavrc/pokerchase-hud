@@ -26,6 +26,8 @@ const STAT_ORDER = [
   'cbetFold',     // CBF
   '3bet',         // 3B (mapped from threeBet)
   '3betfold',     // 3BF (mapped from threeBetFold)
+  'steal',        // STL
+  'foldToSteal',  // FTS
   'af',           // AF
   'afq',          // AFq
   'wtsd',         // WTSD
@@ -72,4 +74,3 @@ export const defaultStatDisplayConfigs = orderedCoreStats.map(({ stat }) => ({
 // Export registry and utilities
 export { defaultRegistry } from './registry'
 export * from './utils'
-

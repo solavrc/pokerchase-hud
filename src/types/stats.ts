@@ -3,7 +3,7 @@
  */
 
 import type { Action, Phase, Hand, Session } from './entities'
-import type { ActionDetail, ActionType, PhaseType } from './game'
+import type { ActionDetail, ActionType, PhaseType, Position } from './game'
 
 /**
  * Context provided to statistics calculation functions
@@ -38,13 +38,16 @@ export interface ActionDetailContext {
   phase: PhaseType
   phasePlayerActionIndex: number
   phasePrevBetCount: number
+  position?: Position
   // HandState for stateful detection
   handState?: {
+    actions?: Action[]  // 現在のハンドで記録済みのアクション
     cBetter?: number
     cBetExecuted?: boolean  // CBetが実際に実行されたかどうか
     cBetPhase?: number     // CBetが実行されたストリート
     lastAggressor?: number
     currentStreetAggressor?: number
+    stealRaiser?: number  // スチールレイズを行ったプレイヤー
     // 他の状態管理用フィールドを追加可能
   }
 }

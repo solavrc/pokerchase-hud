@@ -200,28 +200,6 @@ export class EntityConverter {
             action.playerId === playerId
           ).length
 
-          // 統計モジュールを使用してActionDetailを検出
-          const detectionContext: ActionDetailContext = {
-            playerId: playerId ?? 0,
-            actionType,
-            phase,
-            phasePlayerActionIndex,
-            phasePrevBetCount,
-            handState
-          }
-
-          // 統計モジュールからActionDetailsを収集
-          for (const stat of defaultRegistry.getAll()) {
-            if (stat.detectActionDetails) {
-              const detectedDetails = stat.detectActionDetails(detectionContext)
-              actionDetails.push(...detectedDetails)
-            }
-            // 必要に応じてhandStateを更新
-            if (stat.updateHandState) {
-              stat.updateHandState(detectionContext)
-            }
-          }
-
           // ポジション計算のためのユーザーID配列を作成
           const positionUserIds = this.getPositionUserIds(handState.hand.seatUserIds, phase)
 
@@ -240,6 +218,29 @@ export class EntityConverter {
             position = Position.CO // 1
           } else {
             position = Position.BTN // 0
+          }
+
+          // 統計モジュールを使用してActionDetailを検出
+          const detectionContext: ActionDetailContext = {
+            playerId: playerId ?? 0,
+            actionType,
+            phase,
+            phasePlayerActionIndex,
+            phasePrevBetCount,
+            position,
+            handState
+          }
+
+          // 統計モジュールからActionDetailsを収集
+          for (const stat of defaultRegistry.getAll()) {
+            if (stat.detectActionDetails) {
+              const detectedDetails = stat.detectActionDetails(detectionContext)
+              actionDetails.push(...detectedDetails)
+            }
+            // 必要に応じてhandStateを更新
+            if (stat.updateHandState) {
+              stat.updateHandState(detectionContext)
+            }
           }
 
           // アクションの作成（handIdは後でEVT_HAND_RESULTSで更新される）
