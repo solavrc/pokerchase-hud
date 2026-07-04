@@ -6,7 +6,8 @@ import {
   ApiType,
   BetStatusType,
   PhaseType,
-  isShowdownParticipant
+  isShowdownParticipant,
+  Position
 } from '../types'
 import type {
   ApiHandEvent,
@@ -15,7 +16,7 @@ import type {
 } from '../types'
 import type { ActionDetailContext } from '../types/stats'
 import { ErrorHandler } from '../utils/error-handler'
-import { rotateArrayFromIndex } from '../utils/array-utils'
+import { getPositionMap } from '../utils/position-utils'
 import { defaultRegistry } from '../stats'
 import type { ErrorContext } from '../types/errors'
 
@@ -68,7 +69,7 @@ export class WriteEntityStream extends Transform {
     }
   }
   private toHandState = (events: ApiHandEvent[]): HandState => {
-    const positionUserIds = []
+    let positionMap: Map<number, Position> = new Map()
     const handState: HandState = {
       hand: {
         session: {
@@ -93,7 +94,7 @@ export class WriteEntityStream extends Transform {
       switch (event.ApiTypeId) {
         case ApiType.EVT_DEAL:
           handState.hand.seatUserIds = event.SeatUserIds
-          positionUserIds.push(...rotateArrayFromIndex(event.SeatUserIds, event.Game.BigBlindSeat + 1).reverse())
+          positionMap = getPositionMap(event.SeatUserIds, event.Game)
           handState.phases.push({
             phase: event.Progress.Phase,
             seatUserIds: event.SeatUserIds,
@@ -150,7 +151,9 @@ export class WriteEntityStream extends Transform {
           const phaseActions = handState.actions.filter(action => action.phase === phase)
           const phasePlayerActionIndex = phaseActions.filter(action => action.playerId === playerId).length
           const phasePrevBetCount = phaseActions.filter(action => [ActionType.BET, ActionType.RAISE].includes(action.actionType)).length + Number(phase === PhaseType.PREFLOP)
-          const position = positionUserIds.indexOf(playerId ?? 0) - 2
+          // 座席に存在しないplayerId（不正なイベント等）の場合は、旧実装の
+          // `indexOf()`が-1を返す挙動（結果的にposition=-3）を踏襲する
+          const position: Position = positionMap.get(playerId ?? 0) ?? -3 as Position
           // モジュールベース検出用のActionDetailContext
           const detectionContext: ActionDetailContext = {
             playerId: playerId ?? 0,

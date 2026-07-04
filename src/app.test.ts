@@ -535,6 +535,15 @@ test('ログから各プレイヤーのスタッツを計算できる', async ()
   ]))
   expect(rinStats && 'statResults' in rinStats ? rinStats.statResults : []).toEqual(expect.arrayContaining([
     expect.objectContaining({ id: 'steal', value: [5, 10], formatted: '50.0% (5/10)' }),
-    expect.objectContaining({ id: 'foldToSteal', value: [7, 8], formatted: '87.5% (7/8)' })
+    // foldToStealは[7,8]から[8,9]に変化した。event_timelineには複数のヘッズアップハンド
+    // （SeatUserIds: [2, 4, -1, -1], ButtonSeat === SmallBlindSeat === 1）が含まれており、
+    // 旧実装（BigBlindSeatを基準に座席配列を回転させる方式）はヘッズアップ時に
+    // 空席が回転後の配列のスロットを占有してインデックスをズラし、
+    // 実際はSB（ボタン）である凛（playerId 4）をCO(1)と誤ってラベル付けしていた。
+    // 修正後はGame.ButtonSeat/SmallBlindSeat/BigBlindSeatから直接ポジションを求めるため、
+    // ヘッズアップでは正しくSB(-1)と判定される（旧実装のHU挙動: ButtonSeat===SmallBlindSeat
+    // のプレイヤーはSB、という定義自体は踏襲している）。この結果、FTSの機会・成功数が
+    // 1件ずつ増加した。
+    expect.objectContaining({ id: 'foldToSteal', value: [8, 9], formatted: '88.9% (8/9)' })
   ]))
 })
