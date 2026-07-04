@@ -1,5 +1,5 @@
 import { CSSProperties, useState, useCallback, useMemo, memo } from 'react'
-import type { PlayerStats } from '../app'
+import type { PlayerStats } from '../types'
 import type { StatDisplayConfig } from '../types'
 import type { StatResult } from '../types/stats'
 import type { RealTimeStats } from '../realtime-stats/realtime-stats-service'

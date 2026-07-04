@@ -4,7 +4,7 @@
  * @see https://developer.mozilla.org/ja/docs/Mozilla/Add-ons/WebExtensions/manifest.json/web_accessible_resources
  */
 import { decode } from '@msgpack/msgpack'
-import PokerChaseService from './services/poker-chase-service'
+import { POKER_CHASE_ORIGIN } from './constants/runtime'
 /** !!! BACKGROUND、CONTENT_SCRIPTSからインポートしないこと !!! */
 
 const OriginalWebSocket = window.WebSocket
@@ -35,7 +35,7 @@ function createWebSocket(...args: ConstructorParameters<typeof WebSocket>): WebS
           window.postMessage({
             ...decoded,
             timestamp: Date.now()
-          }, PokerChaseService.POKER_CHASE_ORIGIN)
+          }, POKER_CHASE_ORIGIN)
         }
       } catch (error) {
         // デコードエラーは静かに無視（ログも最小限に）
