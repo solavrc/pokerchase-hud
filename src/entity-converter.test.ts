@@ -1563,6 +1563,181 @@ describe('EntityConverter', () => {
       const importPositionsByPlayer = new Map(importActions.map(a => [a.playerId, a.position]))
       expect(importPositionsByPlayer).toEqual(positionsByPlayer)
     })
+
+    /**
+     * 空席（SeatUserIds内の-1）を含むケースの整合性テスト。
+     *
+     * 背景: `rotateArrayFromIndex(seatUserIds, BigBlindSeat + 1).reverse()`で座席配列を
+     * 回転させ、その配列上のインデックスからポジションを逆算する方式（修正前の実装）は、
+     * 「全座席が連続して埋まっている」ことを暗黙に仮定していた。トーナメントのバスト等で
+     * 空席（-1）が生じると、その-1が回転後の配列内でスロットを占有し続けるため、実プレイヤーの
+     * インデックスがズレてポジションが誤って算出される。
+     *
+     * 具体例: SeatUserIds=[-1,-1,A,B,-1,C], Game={ButtonSeat:2, SmallBlindSeat:3, BigBlindSeat:5}
+     * では、A(seat2)が実際のBTN、B(seat3)が実際のSBだが、修正前の方式では
+     * Bをrotate後配列のインデックス2（=BTN）、Aをインデックス3（=CO）と誤ってラベル付けする。
+     * 修正後はGame.ButtonSeat/SmallBlindSeat/BigBlindSeatから直接算出するため、
+     * 空席の有無に関わらずA=BTN、B=SB、C=BBと正しく判定される。
+     *
+     * このテストは修正前のロジックに戻すと失敗する（`git stash`で確認済み）。
+     */
+    it('produces identical and correct action positions when SeatUserIds contains empty seats (-1)', async () => {
+      const A = 100, B = 200, C = 300
+      const events: ApiEvent[] = [
+        createEvent(ApiType.EVT_DEAL, {
+          timestamp: 30000,
+          SeatUserIds: [-1, -1, A, B, -1, C],
+          Game: {
+            CurrentBlindLv: 1,
+            NextBlindUnixSeconds: 30000000,
+            Ante: 0,
+            SmallBlind: 10,
+            BigBlind: 20,
+            ButtonSeat: 2,
+            SmallBlindSeat: 3,
+            BigBlindSeat: 5
+          },
+          Player: {
+            SeatIndex: 2,
+            BetStatus: 1,
+            HoleCards: [37, 51],
+            Chip: 1980,
+            BetChip: 0
+          },
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 2,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 40,
+            Pot: 30,
+            SidePot: []
+          },
+          OtherPlayers: [
+            { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 1990, BetChip: 10 },
+            { SeatIndex: 5, Status: 0, BetStatus: 1, Chip: 1980, BetChip: 20 }
+          ]
+        }),
+        // BTN(seat2, playerA)がレイズ
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 30001,
+          SeatIndex: 2,
+          ActionType: ActionType.RAISE,
+          Chip: 1920,
+          BetChip: 60,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 3,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 100,
+            Pot: 90,
+            SidePot: []
+          }
+        }),
+        // SB(seat3, playerB)がコール
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 30002,
+          SeatIndex: 3,
+          ActionType: ActionType.CALL,
+          Chip: 1940,
+          BetChip: 60,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 5,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 100,
+            Pot: 150,
+            SidePot: []
+          }
+        }),
+        // BB(seat5, playerC)がフォールド
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 30003,
+          SeatIndex: 5,
+          ActionType: ActionType.FOLD,
+          Chip: 1980,
+          BetChip: 0,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: -1,
+            NextActionTypes: [],
+            NextExtraLimitSeconds: 0,
+            MinRaise: 0,
+            Pot: 150,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
+          timestamp: 30004,
+          HandId: 999002,
+          CommunityCards: [],
+          Pot: 150,
+          SidePot: [],
+          ResultType: 0,
+          DefeatStatus: 0,
+          Results: [
+            {
+              UserId: A,
+              HoleCards: [37, 51],
+              RankType: 10, // NO_CALL
+              Hands: [],
+              HandRanking: 1,
+              Ranking: 1,
+              RewardChip: 150
+            }
+          ],
+          OtherPlayers: [
+            { SeatIndex: 3, Status: 0, BetStatus: -1, Chip: 1940, BetChip: 0 },
+            { SeatIndex: 5, Status: 0, BetStatus: -1, Chip: 1980, BetChip: 0 }
+          ]
+        }, { skipValidation: true })
+      ]
+
+      // --- ライブ記録パイプライン: WriteEntityStream経由 ---
+      const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
+      const service = new PokerChaseService({ db: dbMock })
+      await service.ready
+      await new Promise<void>((resolve, reject) => {
+        service.handAggregateStream
+          .on('finish', () => resolve())
+          .on('error', (error: Error) => reject(error))
+        Readable.from(events).pipe(service.handAggregateStream)
+      })
+      await dbMock.open()
+      const liveActions = (await dbMock.actions
+        .where('handId').equals(999002)
+        .toArray())
+        .sort((a, b) => a.index - b.index)
+
+      // --- インポート/リビルドパイプライン: EntityConverter経由 ---
+      const importResult = converter.convertEventsToEntities(events)
+      const importActions = importResult.actions.slice().sort((a, b) => a.index - b.index)
+
+      expect(liveActions.length).toBeGreaterThan(0)
+      expect(importActions.length).toBe(liveActions.length)
+
+      const pickComparable = (action: Action) => ({
+        playerId: action.playerId,
+        phase: action.phase,
+        actionType: action.actionType,
+        position: action.position,
+        actionDetails: action.actionDetails
+      })
+
+      expect(importActions.map(pickComparable)).toEqual(liveActions.map(pickComparable))
+
+      // 空席があっても、明示的なButtonSeat/SmallBlindSeat/BigBlindSeatから
+      // 正しくポジションが割り当てられることを検証する
+      const positionsByPlayer = new Map(liveActions.map(a => [a.playerId, a.position]))
+      expect(positionsByPlayer.get(A)).toBe(Position.BTN)
+      expect(positionsByPlayer.get(B)).toBe(Position.SB)
+      expect(positionsByPlayer.get(C)).toBe(Position.BB)
+
+      const importPositionsByPlayer = new Map(importActions.map(a => [a.playerId, a.position]))
+      expect(importPositionsByPlayer).toEqual(positionsByPlayer)
+    })
   })
 
   /**

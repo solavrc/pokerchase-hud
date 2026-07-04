@@ -27,7 +27,7 @@ import type {
 } from './types'
 
 import { defaultRegistry } from './stats'
-import { rotateArrayFromIndex } from './utils/array-utils'
+import { getPositionMap } from './utils/position-utils'
 
 /**
  * エンティティバンドル（一括保存用）
@@ -148,10 +148,10 @@ export class EntityConverter {
       statStates: {} // 各統計プラグインが自身のIDでネームスペース化した一時状態を保持
     }
 
-    // ポジション計算用のユーザーID配列（EVT_DEALで1ハンドにつき1度だけ設定される。
+    // プレイヤーID → ポジションのマップ（EVT_DEALで1ハンドにつき1度だけ設定される。
     // WriteEntityStream（ライブ記録パイプライン）と同一のロジックで算出し、
     // インポート/リビルド後もポジション値が一致するようにする）
-    let positionUserIds: number[] = []
+    let positionMap: Map<number, Position> = new Map()
 
     let progress: any = undefined
 
@@ -174,9 +174,9 @@ export class EntityConverter {
             results: []
           }
 
-          // ポジション計算用のユーザーID配列を算出（WriteEntityStreamと同一ロジック）。
-          // BigBlindSeatの次（=SB）から逆順に並べ、全フェーズ共通で使用する。
-          positionUserIds = rotateArrayFromIndex(event.SeatUserIds, event.Game.BigBlindSeat + 1).reverse()
+          // プレイヤーID → ポジションのマップを算出（WriteEntityStreamと同一ロジック）。
+          // Game.ButtonSeat/SmallBlindSeat/BigBlindSeatから直接導出し、全フェーズ共通で使用する。
+          positionMap = getPositionMap(event.SeatUserIds, event.Game)
 
           // プリフロップフェーズの作成（handIdは後で更新される）
           handState.phases.push({
@@ -211,8 +211,10 @@ export class EntityConverter {
           ).length
 
           // ポジション計算（WriteEntityStreamと同一ロジック。EVT_DEAL時点で確定した
-          // positionUserIdsを全フェーズで使い回すことで、ライブ記録と同じポジション値を得る）
-          const position: Position = positionUserIds.indexOf(playerId ?? 0) - 2
+          // positionMapを全フェーズで使い回すことで、ライブ記録と同じポジション値を得る）
+          // 座席に存在しないplayerId（不正なイベント等）の場合は、旧実装の
+          // `indexOf()`が-1を返す挙動（結果的にposition=-3）を踏襲する
+          const position: Position = positionMap.get(playerId ?? 0) ?? -3 as Position
 
           // 統計モジュールを使用してActionDetailを検出
           const detectionContext: ActionDetailContext = {
