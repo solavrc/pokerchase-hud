@@ -106,4 +106,47 @@ describe('getPositionMap', () => {
 
     expect(positions.has(-1)).toBe(false)
   })
+
+  /**
+   * 防御的テスト: ButtonSeat === BigBlindSeat（≠ SmallBlindSeat）。
+   * 実データ31,916件のEVT_DEAL全件では0件観測（未観測の組み合わせ）だが、
+   * entity-converter.test.ts（ButtonSeat:1, SmallBlindSeat:0, BigBlindSeat:1）や
+   * hand-log-processor.test.ts（ButtonSeat:3, SmallBlindSeat:5, BigBlindSeat:3）の
+   * 合成フィクスチャに存在するため、誤動作しないことを保証する。
+   *
+   * 旧実装では、この組み合わせだと (a) BB占有者のラベルがBTNで上書きされ、
+   * (b) 時計回り走査の停止条件 `seat === ButtonSeat` が
+   * 開始座席（BigBlindSeat+1）と噛み合わず発火しないため全周してしまい、
+   * SB占有者のラベルまでCO/HJ/UTGで上書きされ得た。
+   */
+  it('ButtonSeat === BigBlindSeat（防御的・実データ未観測）ではBBラベルを優先しBTNは付与しない', () => {
+    // hand-log-processor.test.ts の実フィクスチャに準拠した座席配置
+    const seatUserIds = [-1, -1, -1, 561384657, -1, 898959592]
+    const game = { ButtonSeat: 3, SmallBlindSeat: 5, BigBlindSeat: 3 }
+
+    const positions = getPositionMap(seatUserIds, game)
+
+    expect(positions.get(561384657)).toBe(Position.BB) // BTN===BBの座席はBB優先、BTNは付与されない
+    expect(positions.get(898959592)).toBe(Position.SB) // 誤って上書きされない
+    expect(positions.size).toBe(2)
+  })
+
+  it('ButtonSeat === BigBlindSeat（防御的・実データ未観測）で他の着席プレイヤーはCO/HJ/UTGを正しく受け取る', () => {
+    // entity-converter.test.ts の実フィクスチャに準拠した座席配置（6人フルリング相当）
+    const seatUserIds = [10, 20, 30, 40, 50, 60]
+    const game = { ButtonSeat: 1, SmallBlindSeat: 0, BigBlindSeat: 1 }
+
+    const positions = getPositionMap(seatUserIds, game)
+
+    expect(positions.get(20)).toBe(Position.BB) // ButtonSeat===BigBlindSeat: BB優先、BTN付与なし
+    expect(positions.get(10)).toBe(Position.SB)
+    // BBの次（seat2）からBBの手前（seat0はSBなので除外済み）までを時計回りに収集:
+    // seat2, seat3, seat4, seat5 → 反転してBTNに近い方から CO, HJ, UTG
+    expect(positions.get(60)).toBe(Position.CO)
+    expect(positions.get(50)).toBe(Position.HJ)
+    expect(positions.get(40)).toBe(Position.UTG)
+    // 4番目（seat2=30）はUTGの手前で、ラベルが尽きているため付与されない
+    expect(positions.has(30)).toBe(false)
+    expect(positions.size).toBe(5)
+  })
 })

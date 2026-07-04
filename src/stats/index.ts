@@ -10,6 +10,7 @@
  */
 
 import type { StatDefinition } from '../types/stats'
+import type { StatDisplayConfig } from '../types/filters'
 import { defaultRegistry } from './registry'
 
 // Import all core statistics automatically
@@ -70,6 +71,49 @@ export const defaultStatDisplayConfigs = orderedCoreStats.map(({ stat }) => ({
   enabled: true,
   order: stat.order!
 }))
+
+/**
+ * 保存済みのstatDisplayConfigsをデフォルト構成とマージする。
+ *
+ * 背景: ユーザーが以前保存した設定（storageの`filterOptions.statDisplayConfigs`）は、
+ * リリース後に新しい統計項目が追加されても自動的には増えない。
+ * このマージ処理を通さずにそのまま使うと、STL/FTS等（#86）のような
+ * 新規統計がHUDに一切表示されなくなる（ポップアップを開いて再保存するまで）。
+ *
+ * マージ結果はデフォルト構成をベース（順序・新規項目を保証）にしつつ、
+ * 既存項目についてはユーザーが設定したenabled/orderを保持する:
+ * - デフォルトに存在し、保存済み設定にもある項目 → ユーザーのenabled/orderを維持
+ * - デフォルトに存在するが、保存済み設定にない項目（新規統計） → デフォルト設定のまま追加
+ * - 保存済み設定にあるがデフォルトに存在しない項目（廃止された統計） → 除外
+ *
+ * @param existingConfigs 保存済みのstatDisplayConfigs（undefined/空配列可）
+ * @param defaultConfigs デフォルトのstatDisplayConfigs
+ * @returns マージ後のstatDisplayConfigs（orderでソート済み）
+ */
+export function mergeStatDisplayConfigs(
+  existingConfigs: StatDisplayConfig[] | undefined,
+  defaultConfigs: StatDisplayConfig[]
+): StatDisplayConfig[] {
+  const existingMap = new Map((existingConfigs || []).map(config => [config.id, config]))
+
+  // デフォルト構成をベースにする（順序を保証し、廃止された統計を自動的に除外する）
+  const mergedConfigs = defaultConfigs.map(defaultConfig => {
+    const existingConfig = existingMap.get(defaultConfig.id)
+    if (existingConfig) {
+      // ユーザー設定（enabled/order）を維持しつつ、その他のデフォルト値を反映
+      return {
+        ...defaultConfig,
+        enabled: existingConfig.enabled,
+        order: existingConfig.order
+      }
+    }
+    // 新規統計 - デフォルト設定をそのまま使用
+    return defaultConfig
+  })
+
+  // orderでソートして表示順を安定させる
+  return mergedConfigs.sort((a, b) => a.order - b.order)
+}
 
 // Export registry and utilities
 export { defaultRegistry } from './registry'

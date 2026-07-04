@@ -147,16 +147,27 @@ export class WriteEntityStream extends Transform {
             }
           })(event)
           const playerId = handState.hand.seatUserIds[event.SeatIndex]
+
+          // 途中着席（EVT_ENTRY_QUEUED）によるテーブル移動後、直前にバッファされた
+          // EVT_DEALのSeatUserIdsには新テーブルの座席が反映されておらず、
+          // event.SeatIndexが解決できない（undefined）か空席（-1）を指すことがある。
+          // 実データ検証: 完走した27ハンド / 68アクション（全ハンドの0.09%）でこの状況を確認。
+          // 従来はplayerId ?? 0でplayerId=0を捏造し、position=-3のアクションが
+          // actionsテーブルに混入していた。検出コンテキストも意味を持たないため、
+          // このアクション自体を丸ごとスキップする（ハンドの他のアクションは通常通り処理を続ける）。
+          if (playerId === undefined || playerId === -1) {
+            progress = event.Progress
+            break
+          }
+
           const phase = handState.phases.at(-1)!.phase
           const phaseActions = handState.actions.filter(action => action.phase === phase)
           const phasePlayerActionIndex = phaseActions.filter(action => action.playerId === playerId).length
           const phasePrevBetCount = phaseActions.filter(action => [ActionType.BET, ActionType.RAISE].includes(action.actionType)).length + Number(phase === PhaseType.PREFLOP)
-          // 座席に存在しないplayerId（不正なイベント等）の場合は、旧実装の
-          // `indexOf()`が-1を返す挙動（結果的にposition=-3）を踏襲する
-          const position: Position = positionMap.get(playerId ?? 0) ?? -3 as Position
+          const position: Position = positionMap.get(playerId) ?? -3 as Position
           // モジュールベース検出用のActionDetailContext
           const detectionContext: ActionDetailContext = {
-            playerId: playerId ?? 0,
+            playerId,
             actionType,
             phase,
             phasePlayerActionIndex,
@@ -177,7 +188,7 @@ export class WriteEntityStream extends Transform {
             }
           }
           handState.actions.push({
-            playerId: playerId ?? 0,
+            playerId,
             phase,
             index: handState.actions.length,
             actionType,
