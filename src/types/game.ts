@@ -77,6 +77,10 @@ export enum ActionDetail {
   $3BET_FOLD_CHANCE = '3BET_FOLD_CHANCE',
   DONK_BET = 'DONK_BET',
   DONK_BET_CHANCE = 'DONK_BET_CHANCE',
+  STEAL = 'STEAL',
+  STEAL_CHANCE = 'STEAL_CHANCE',
+  FOLD_TO_STEAL = 'FOLD_TO_STEAL',
+  FOLD_TO_STEAL_CHANCE = 'FOLD_TO_STEAL_CHANCE',
   RIVER_CALL = 'RIVER_CALL',
   RIVER_CALL_WON = 'RIVER_CALL_WON',
 }
@@ -90,4 +94,3 @@ export const BATTLE_TYPE_FILTERS = {
   MTT: [BattleType.TOURNAMENT] as number[],
   RING: [BattleType.RING_GAME, BattleType.FRIEND_RING_GAME] as number[],
 } as const
-

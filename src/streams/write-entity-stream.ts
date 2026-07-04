@@ -148,6 +148,7 @@ export class WriteEntityStream extends Transform {
           const phaseActions = handState.actions.filter(action => action.phase === phase)
           const phasePlayerActionIndex = phaseActions.filter(action => action.playerId === playerId).length
           const phasePrevBetCount = phaseActions.filter(action => [ActionType.BET, ActionType.RAISE].includes(action.actionType)).length + Number(phase === PhaseType.PREFLOP)
+          const position = positionUserIds.indexOf(playerId ?? 0) - 2
           // モジュールベース検出用のActionDetailContext
           const detectionContext: ActionDetailContext = {
             playerId: playerId ?? 0,
@@ -155,6 +156,7 @@ export class WriteEntityStream extends Transform {
             phase,
             phasePlayerActionIndex,
             phasePrevBetCount,
+            position,
             handState
           }
 
@@ -177,7 +179,7 @@ export class WriteEntityStream extends Transform {
             bet: event.BetChip,
             pot: event.Progress.Pot,
             sidePot: event.Progress.SidePot,
-            position: positionUserIds.indexOf(playerId ?? 0) - 2,
+            position,
             actionDetails,
           })
           progress = event.Progress

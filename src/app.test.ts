@@ -494,6 +494,23 @@ const expected: PlayerStats[][] = [
   ]
 ]
 
+const STEAL_STAT_IDS = new Set(['steal', 'foldToSteal'])
+
+function withoutStealStats(results: PlayerStats[][]): PlayerStats[][] {
+  return results.map(hand =>
+    hand.map(playerStats => {
+      if (!('statResults' in playerStats) || !playerStats.statResults) {
+        return playerStats
+      }
+
+      return {
+        ...playerStats,
+        statResults: playerStats.statResults.filter(stat => !STEAL_STAT_IDS.has(stat.id))
+      }
+    })
+  )
+}
+
 test('ログから各プレイヤーのスタッツを計算できる', async () => {
   const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
   const service = new PokerChaseService({ db: dbMock })
@@ -506,5 +523,18 @@ test('ログから各プレイヤーのスタッツを計算できる', async ()
       .on('error', (error: Error) => reject(error))
     Readable.from(event_timeline).pipe(service.handAggregateStream)
   })
-  expect(actual).toStrictEqual(expected)
+  expect(withoutStealStats(actual)).toStrictEqual(expected)
+
+  const finalHand = actual.at(-1)!
+  const miyuStats = finalHand.find(playerStats => playerStats.playerId === 2)
+  const rinStats = finalHand.find(playerStats => playerStats.playerId === 4)
+
+  expect(miyuStats && 'statResults' in miyuStats ? miyuStats.statResults : []).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: 'steal', value: [4, 9], formatted: '44.4% (4/9)' }),
+    expect.objectContaining({ id: 'foldToSteal', value: [2, 8], formatted: '25.0% (2/8)' })
+  ]))
+  expect(rinStats && 'statResults' in rinStats ? rinStats.statResults : []).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: 'steal', value: [5, 10], formatted: '50.0% (5/10)' }),
+    expect.objectContaining({ id: 'foldToSteal', value: [7, 8], formatted: '87.5% (7/8)' })
+  ]))
 })

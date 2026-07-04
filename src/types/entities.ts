@@ -163,7 +163,8 @@ export const handStateSchema = z.object({
   cBetExecuted: z.boolean().optional(),  // Whether a CBet was actually executed on this street
   cBetPhase: z.number().optional(),     // Phase where CBet was executed
   lastAggressor: z.number().optional(),  // Player who made the last bet/raise in previous street
-  currentStreetAggressor: z.number().optional()  // Player who made the first bet in current street
+  currentStreetAggressor: z.number().optional(),  // Player who made the first bet in current street
+  stealRaiser: z.number().optional()  // 未オープンでレイトポジションからレイズしたプレイヤー
 })
 
 export type HandState = z.infer<typeof handStateSchema>
