@@ -158,13 +158,10 @@ export const handStateSchema = z.object({
   hand: handSchema,
   actions: z.array(actionSchema),
   phases: z.array(phaseSchema),
-  // State tracking for statistics
-  cBetter: z.number().optional(),  // Player who made the last raise preflop
-  cBetExecuted: z.boolean().optional(),  // Whether a CBet was actually executed on this street
-  cBetPhase: z.number().optional(),     // Phase where CBet was executed
-  lastAggressor: z.number().optional(),  // Player who made the last bet/raise in previous street
-  currentStreetAggressor: z.number().optional(),  // Player who made the first bet in current street
-  stealRaiser: z.number().optional()  // 未オープンでレイトポジションからレイズしたプレイヤー
+  // Namespaced, transient per-stat state. Each stat plugin owns a private slot
+  // keyed by its own `id` (e.g. statStates['cbet']) and must not read/write
+  // other stats' slots. Never persisted — only hand/actions/phases go to the DB.
+  statStates: z.record(z.string(), z.unknown())
 })
 
 export type HandState = z.infer<typeof handStateSchema>

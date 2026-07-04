@@ -144,7 +144,7 @@ export class EntityConverter {
       hand: {} as Hand,
       phases: [],
       actions: [],
-      cBetter: undefined // CB統計のために追加
+      statStates: {} // 各統計プラグインが自身のIDでネームスペース化した一時状態を保持
     }
 
     // ポジション計算用のユーザーID配列（EVT_DEALで1ハンドにつき1度だけ設定される。

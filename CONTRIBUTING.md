@@ -69,12 +69,26 @@ interface ActionDetailContext {
   phase: PhaseType                    // PREFLOP, FLOP, TURN, RIVER
   phasePlayerActionIndex: number      // Action order in phase (0-based)
   phasePrevBetCount: number          // Previous bet/raise count
+  position?: Position                 // Player's position for this hand
   handState?: {
-    cBetter?: number                // Who made continuation bet
-    lastAggressor?: number          // Last player to bet/raise
-    currentStreetAggressor?: number // Aggressor on current street
+    actions?: Action[]                  // Recorded actions so far this hand (shared, structural)
+    statStates: Record<string, unknown> // Namespaced per-stat transient state
   }
 }
+```
+
+`actions` is structural data — the hand's recorded actions so far — and is shared,
+readable by any stat. `handState.statStates` is a bag with no stat-specific fields:
+each stateful stat reads/writes only its own slot, keyed by its own `id`, so stats
+never need to modify shared core types. For example:
+
+```typescript
+interface MyStatState { seenRaise?: boolean }
+const getMyState = (handState: { statStates: Record<string, unknown> }): MyStatState =>
+  (handState.statStates['myStat'] ??= {}) as MyStatState
+
+// in updateHandState: getMyState(context.handState).seenRaise = true
+// in detectActionDetails: if (getMyState(context.handState).seenRaise) { ... }
 ```
 
 ### Key Concepts

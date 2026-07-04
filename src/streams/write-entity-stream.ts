@@ -84,7 +84,8 @@ export class WriteEntityStream extends Transform {
         results: []
       },
       actions: [],
-      phases: []
+      phases: [],
+      statStates: {}
     }
     let progress: Progress | undefined
     for (const event of events) {

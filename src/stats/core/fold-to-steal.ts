@@ -5,17 +5,22 @@
 import type { StatDefinition, ActionDetailContext } from '../../types/stats'
 import { ActionDetail, ActionType, PhaseType, Position } from '../../types/game'
 import { formatPercentage } from '../utils'
+// FTS intentionally reads STL's namespaced state: steal.ts owns the 'steal'
+// slot (stealRaiser) in statStates, mirroring how cbet.ts owns the
+// CBet/CBetFold detection state under its own 'cbet' slot.
+import { getStealState } from './steal'
 
 const BLIND_POSITIONS = new Set<Position>([Position.SB, Position.BB])
 
 function isFacingSteal(context: ActionDetailContext): boolean {
+  const stealRaiser = context.handState ? getStealState(context.handState).stealRaiser : undefined
   return (
     context.phase === PhaseType.PREFLOP &&
     context.phasePrevBetCount === 2 &&
     context.position !== undefined &&
     BLIND_POSITIONS.has(context.position) &&
-    context.handState?.stealRaiser !== undefined &&
-    context.handState.stealRaiser !== context.playerId
+    stealRaiser !== undefined &&
+    stealRaiser !== context.playerId
   )
 }
 

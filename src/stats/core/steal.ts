@@ -8,6 +8,12 @@ import { formatPercentage } from '../utils'
 
 const STEAL_POSITIONS = new Set<Position>([Position.CO, Position.BTN, Position.SB])
 
+export interface StealState {
+  stealRaiser?: number
+}
+export const getStealState = (handState: { statStates: Record<string, unknown> }): StealState =>
+  (handState.statStates['steal'] ??= {}) as StealState
+
 function isFoldedToLatePosition(context: ActionDetailContext): boolean {
   if (context.phase !== PhaseType.PREFLOP || context.phasePrevBetCount !== 1) {
     return false
@@ -59,7 +65,7 @@ export const stealStat: StatDefinition = {
     if (!context.handState) return
 
     if (isFoldedToLatePosition(context) && context.actionType === ActionType.RAISE) {
-      context.handState.stealRaiser = context.playerId
+      getStealState(context.handState).stealRaiser = context.playerId
     }
   }
 }
