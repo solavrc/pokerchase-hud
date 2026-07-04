@@ -6,7 +6,7 @@
 import type { Session } from '../types'
 import type { ApiEvent } from '../types/api'
 import { ApiType } from '../types/api'
-import { ActionType, RankType, PhaseType } from '../types/game'
+import { ActionType, RankType, PhaseType, isShowdownParticipant } from '../types/game'
 import { HandLogConfig, HandLogEntry, HandLogEntryType, HandLogState } from '../types/hand-log'
 import { formatCards } from './card-utils'
 
@@ -373,13 +373,16 @@ export class HandLogProcessor {
 
     // ショウダウンに参加したプレイヤー（カードを見せた/マックした両方）
     const showdownParticipants = event.Results.filter(r => {
+      // FOLD_OPEN（フォールド後の自発的カード公開）はショウダウンではない
+      // (isShowdownParticipant()と同じ定義。#94参照。片方のみ有効なHoleCards
+      // [valid,-1]/[-1,valid]（フォールド後の1枚公開）が誤って"*** SHOW DOWN ***"を
+      // 発生させないようにする)
+      if (!isShowdownParticipant(r)) return false
       // Include players who show cards OR who reached showdown (SHOWDOWN_MUCK)
       const hasValidCards = r.HoleCards && r.HoleCards.length > 0 && r.HoleCards[0] !== -1
       const reachedShowdown = r.RankType === RankType.SHOWDOWN_MUCK
-      // Exclude NO_CALL wins (e.g., BB wins when everyone folds)
-      const isNoCallWin = r.RankType === RankType.NO_CALL
       // Also check if they have a reward chip (winner) but empty cards (rare case)
-      const wonWithoutShowingCards = r.RewardChip > 0 && (!r.HoleCards || r.HoleCards.length === 0) && !isNoCallWin
+      const wonWithoutShowingCards = r.RewardChip > 0 && (!r.HoleCards || r.HoleCards.length === 0)
       return hasValidCards || reachedShowdown || wonWithoutShowingCards
     })
 

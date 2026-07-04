@@ -921,3 +921,326 @@ describe('キャッシュゲーム + サイドポット', () => {
     expect(totalPotLine).toBe('Total pot 300 | Rake 0')
   })
 })
+
+// ============================================================
+// Test 12: Rare RankTypes in PokerStars-format showdown output
+// (ROYAL_FLUSH, STRAIGHT_FLUSH, FLUSH, FOLD_OPEN) — real-data audit
+// found zero coverage for these branches in getHandDescription()
+// ============================================================
+describe('レアなRankTypeのPokerStars形式ショウダウン出力', () => {
+  const players = [
+    { userId: 100, name: 'Hero' },
+    { userId: 200, name: 'Villain' },
+  ]
+
+  /** Builds a minimal heads-up hand that reaches showdown on a fixed 5-card board. */
+  function buildShowdownEvents(handId: number, winnerRankType: number, winnerHoleCards: number[], winnerHands: number[], loserHoleCards: number[], loserHands: number[], communityCards: number[]): ApiEvent[] {
+    return [
+      {
+        ApiTypeId: ApiType.EVT_DEAL, timestamp: 1700000000000,
+        SeatUserIds: [100, 200, -1, -1, -1, -1],
+        Game: { CurrentBlindLv: 0, NextBlindUnixSeconds: 1700000600, Ante: 0, SmallBlind: 10, BigBlind: 20, ButtonSeat: 0, SmallBlindSeat: 0, BigBlindSeat: 1 },
+        Player: { SeatIndex: 0, BetStatus: 1, Chip: 980, BetChip: 20, HoleCards: winnerHoleCards },
+        OtherPlayers: [
+          { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 980, BetChip: 20 },
+        ],
+        Progress: { Phase: 0, NextActionSeat: -1, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 40, SidePot: [] }
+      } as unknown as ApiEvent,
+      {
+        ApiTypeId: ApiType.EVT_DEAL_ROUND, timestamp: 1700000001000,
+        CommunityCards: communityCards.slice(0, 3),
+        Progress: { Phase: 1, NextActionSeat: 0, NextActionTypes: [0, 5, 1], NextExtraLimitSeconds: 3, MinRaise: 0, Pot: 40, SidePot: [] }
+      } as unknown as ApiEvent,
+      { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000002000, SeatIndex: 0, ActionType: 0, BetChip: 0, Chip: 980, Progress: { Phase: 1, NextActionSeat: 1, NextActionTypes: [0, 5, 1], NextExtraLimitSeconds: 3, MinRaise: 0, Pot: 40, SidePot: [] } } as unknown as ApiEvent,
+      { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000003000, SeatIndex: 1, ActionType: 0, BetChip: 0, Chip: 980, Progress: { Phase: 1, NextActionSeat: -1, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 40, SidePot: [] } } as unknown as ApiEvent,
+      {
+        ApiTypeId: ApiType.EVT_DEAL_ROUND, timestamp: 1700000004000,
+        CommunityCards: [communityCards[3]!],
+        Progress: { Phase: 2, NextActionSeat: 0, NextActionTypes: [0, 5, 1], NextExtraLimitSeconds: 3, MinRaise: 0, Pot: 40, SidePot: [] }
+      } as unknown as ApiEvent,
+      { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000005000, SeatIndex: 0, ActionType: 0, BetChip: 0, Chip: 980, Progress: { Phase: 2, NextActionSeat: 1, NextActionTypes: [0, 5, 1], NextExtraLimitSeconds: 3, MinRaise: 0, Pot: 40, SidePot: [] } } as unknown as ApiEvent,
+      { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000006000, SeatIndex: 1, ActionType: 0, BetChip: 0, Chip: 980, Progress: { Phase: 2, NextActionSeat: -1, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 40, SidePot: [] } } as unknown as ApiEvent,
+      {
+        ApiTypeId: ApiType.EVT_DEAL_ROUND, timestamp: 1700000007000,
+        CommunityCards: [communityCards[4]!],
+        Progress: { Phase: 3, NextActionSeat: 0, NextActionTypes: [0, 5, 1], NextExtraLimitSeconds: 3, MinRaise: 0, Pot: 40, SidePot: [] }
+      } as unknown as ApiEvent,
+      { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000008000, SeatIndex: 0, ActionType: 0, BetChip: 0, Chip: 980, Progress: { Phase: 3, NextActionSeat: 1, NextActionTypes: [0, 5, 1], NextExtraLimitSeconds: 3, MinRaise: 0, Pot: 40, SidePot: [] } } as unknown as ApiEvent,
+      { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000009000, SeatIndex: 1, ActionType: 0, BetChip: 0, Chip: 980, Progress: { Phase: 3, NextActionSeat: -2, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 40, SidePot: [] } } as unknown as ApiEvent,
+      {
+        ApiTypeId: ApiType.EVT_HAND_RESULTS, timestamp: 1700000010000, HandId: handId,
+        CommunityCards: [], Pot: 40, SidePot: [], ResultType: 0, DefeatStatus: 0, HandLog: '',
+        Results: [
+          { UserId: 100, HoleCards: winnerHoleCards, RankType: winnerRankType, Hands: winnerHands, HandRanking: 1, Ranking: -2, RewardChip: 40 },
+          { UserId: 200, HoleCards: loserHoleCards, RankType: 8, Hands: loserHands, HandRanking: -1, Ranking: -2, RewardChip: 0 },
+        ],
+        Player: { SeatIndex: 0, BetStatus: -1, Chip: 1020, BetChip: 0 },
+        OtherPlayers: [
+          { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 980, BetChip: 0 },
+        ]
+      } as unknown as ApiEvent,
+    ]
+  }
+
+  test('RankType 0 (ROYAL_FLUSH) は "a royal flush" と表示される', () => {
+    // Hero: As Ks + board Qs Js Ts x x = royal flush [As Ks Qs Js Ts]
+    const events = buildShowdownEvents(999200, 0, [48, 44], [48, 44, 40, 36, 32], [1, 5], [1, 5, 9, 13, 17], [40, 36, 32, 0, 4])
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const processor = new HandLogProcessor(createContext(session))
+    const lines = getLines(processor, events)
+    expect(lines).toContain('Hero: shows [As Ks] (a royal flush)')
+  })
+
+  test('RankType 1 (STRAIGHT_FLUSH) は "a straight flush" と表示される', () => {
+    // Hero: 9s 8s + board 7s 6s 5s x x = straight flush [9s 8s 7s 6s 5s]
+    const events = buildShowdownEvents(999201, 1, [28, 24], [28, 24, 20, 16, 12], [1, 5], [1, 5, 9, 13, 17], [20, 16, 12, 0, 4])
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const processor = new HandLogProcessor(createContext(session))
+    const lines = getLines(processor, events)
+    expect(lines).toContain('Hero: shows [9s 8s] (a straight flush)')
+  })
+
+  test('RankType 4 (FLUSH) は "a flush" と表示される', () => {
+    // Hero: As Js + board 9s 6s 2s x x = flush [As Js 9s 6s 2s]
+    const events = buildShowdownEvents(999202, 4, [48, 36], [48, 36, 28, 16, 0], [1, 5], [1, 5, 9, 13, 17], [28, 16, 0, 8, 4])
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const processor = new HandLogProcessor(createContext(session))
+    const lines = getLines(processor, events)
+    expect(lines).toContain('Hero: shows [As Js] (a flush)')
+  })
+
+  test('RankType 12 (FOLD_OPEN, 両カード有効) はショウダウンなしの "fold" 表示になる', () => {
+    // FolderA bets, folds are not modeled here — instead we model the mainline
+    // real-world shape (818/1207 real FOLD_OPEN reveals): a fully-revealed
+    // 2-card hand from a player who is NOT part of any genuine showdown
+    // (isShowdownParticipant() excludes RankType 12, see src/types/game.ts).
+    // No *** SHOW DOWN *** section should be fabricated for an uncontested win.
+    const foldOpenPlayers = [
+      { userId: 100, name: 'Hero' },
+      { userId: 200, name: 'FolderA' },
+    ]
+    const events: ApiEvent[] = [
+      {
+        ApiTypeId: ApiType.EVT_DEAL, timestamp: 1700000000000,
+        SeatUserIds: [100, 200, -1, -1, -1, -1],
+        Game: { CurrentBlindLv: 0, NextBlindUnixSeconds: 1700000600, Ante: 0, SmallBlind: 10, BigBlind: 20, ButtonSeat: 0, SmallBlindSeat: 0, BigBlindSeat: 1 },
+        Player: { SeatIndex: 0, BetStatus: 1, Chip: 980, BetChip: 20, HoleCards: [48, 49] },
+        OtherPlayers: [
+          { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 980, BetChip: 20 },
+        ],
+        Progress: { Phase: 0, NextActionSeat: 0, NextActionTypes: [0, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 40, Pot: 40, SidePot: [] }
+      } as unknown as ApiEvent,
+      { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000001000, SeatIndex: 0, ActionType: 1, Chip: 900, BetChip: 100, Progress: { Phase: 0, NextActionSeat: 1, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 160, Pot: 40, SidePot: [] } } as unknown as ApiEvent,
+      { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000002000, SeatIndex: 1, ActionType: 2, Chip: 980, BetChip: 20, Progress: { Phase: 0, NextActionSeat: -1, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 60, SidePot: [] } } as unknown as ApiEvent,
+      {
+        ApiTypeId: ApiType.EVT_HAND_RESULTS, timestamp: 1700000003000, HandId: 999203,
+        CommunityCards: [], Pot: 60, SidePot: [], ResultType: 0, DefeatStatus: 0, HandLog: '',
+        Results: [
+          { UserId: 100, HoleCards: [], RankType: 10, Hands: [], HandRanking: 1, Ranking: -2, RewardChip: 60 },
+          { UserId: 200, HoleCards: [21, 31], RankType: 12, Hands: [], HandRanking: -1, Ranking: -2, RewardChip: 0 },
+        ],
+        Player: { SeatIndex: 0, BetStatus: -1, Chip: 1060, BetChip: 0 },
+        OtherPlayers: [
+          { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 980, BetChip: 0 },
+        ]
+      } as unknown as ApiEvent,
+    ]
+    const session = createSession(foldOpenPlayers, { battleType: BattleType.SIT_AND_GO })
+    const processor = new HandLogProcessor(createContext(session))
+    const lines = getLines(processor, events)
+    expect(lines.find(l => l.includes('*** SHOW DOWN ***'))).toBeUndefined()
+    expect(lines).toContain('Seat 2: FolderA (big blind) folded before Flop')
+  })
+})
+
+// ============================================================
+// Test 13: Partial hole-card reveal on FOLD_OPEN — [valid,-1] / [-1,valid]
+// 389 real occurrences in EVT_HAND_RESULTS.Results[].HoleCards, all RankType=12
+// (self-reveal of a single card after folding). Before the fix in this
+// commit, `[valid,-1]` (HoleCards[0] !== -1) was misclassified as a genuine
+// showdown participant, fabricating a "*** SHOW DOWN ***" section — and
+// `Player: shows [<1 card>] (fold)` — for a hand that never reached
+// showdown. `[-1,valid]` was already handled gracefully (silently omitted).
+// Fix: exclude FOLD_OPEN via isShowdownParticipant() regardless of which
+// slot holds the revealed card, so both shapes behave identically.
+// ============================================================
+describe('部分ホールカード公開 (FOLD_OPEN, [valid,-1] / [-1,valid])', () => {
+  const players = [
+    { userId: 100, name: 'Hero' },
+    { userId: 200, name: 'FolderA' },
+    { userId: 300, name: 'FolderB' },
+  ]
+
+  function buildEvents(handId: number, folderHoleCards: number[]): ApiEvent[] {
+    return [
+      {
+        ApiTypeId: ApiType.EVT_DEAL, timestamp: 1700000000000,
+        SeatUserIds: [100, 200, 300, -1, -1, -1],
+        Game: { CurrentBlindLv: 0, NextBlindUnixSeconds: 1700000600, Ante: 0, SmallBlind: 10, BigBlind: 20, ButtonSeat: 2, SmallBlindSeat: 0, BigBlindSeat: 1 },
+        Player: { SeatIndex: 0, BetStatus: 1, Chip: 1000, BetChip: 10, HoleCards: [48, 49] },
+        OtherPlayers: [
+          { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1000, BetChip: 20 },
+          { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 1000, BetChip: 0 },
+        ],
+        Progress: { Phase: 0, NextActionSeat: 2, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 40, Pot: 30, SidePot: [] }
+      } as unknown as ApiEvent,
+      { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000001000, SeatIndex: 2, ActionType: 2, Chip: 1000, BetChip: 0, Progress: { Phase: 0, NextActionSeat: 0, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 40, Pot: 30, SidePot: [] } } as unknown as ApiEvent,
+      { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000002000, SeatIndex: 0, ActionType: 4, Chip: 960, BetChip: 40, Progress: { Phase: 0, NextActionSeat: 1, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 60, Pot: 50, SidePot: [] } } as unknown as ApiEvent,
+      { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1700000003000, SeatIndex: 1, ActionType: 2, Chip: 1000, BetChip: 20, Progress: { Phase: 0, NextActionSeat: -1, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 70, SidePot: [] } } as unknown as ApiEvent,
+      {
+        ApiTypeId: ApiType.EVT_HAND_RESULTS, timestamp: 1700000004000, HandId: handId,
+        CommunityCards: [], Pot: 70, SidePot: [], ResultType: 0, DefeatStatus: 0, HandLog: '',
+        Results: [
+          { UserId: 100, HoleCards: [], RankType: 10, Hands: [], HandRanking: 1, Ranking: -2, RewardChip: 110 },
+          { UserId: 200, HoleCards: folderHoleCards, RankType: 12, Hands: [], HandRanking: -1, Ranking: -2, RewardChip: 0 },
+        ],
+        Player: { SeatIndex: 0, BetStatus: -1, Chip: 1070, BetChip: 0 },
+        OtherPlayers: [
+          { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 980, BetChip: 0 },
+          { SeatIndex: 2, Status: 5, BetStatus: -1, Chip: 1000, BetChip: 0 },
+        ]
+      } as unknown as ApiEvent,
+    ]
+  }
+
+  test('[valid,-1] は偽の*** SHOW DOWN ***を発生させない', () => {
+    const events = buildEvents(999210, [21, -1])
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const processor = new HandLogProcessor(createContext(session))
+    const lines = getLines(processor, events)
+
+    expect(lines.find(l => l.includes('*** SHOW DOWN ***'))).toBeUndefined()
+    expect(lines.find(l => l.includes('FolderA: shows'))).toBeUndefined()
+    expect(lines).toContain('Seat 2: FolderA (big blind) folded before Flop')
+    expect(lines.find(l => l.startsWith('Seat 1: Hero') && l.includes('collected'))).toBeDefined()
+  })
+
+  test('[-1,valid] は偽の*** SHOW DOWN ***を発生させない', () => {
+    const events = buildEvents(999211, [-1, 31])
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const processor = new HandLogProcessor(createContext(session))
+    const lines = getLines(processor, events)
+
+    expect(lines.find(l => l.includes('*** SHOW DOWN ***'))).toBeUndefined()
+    expect(lines.find(l => l.includes('FolderA: shows'))).toBeUndefined()
+    expect(lines).toContain('Seat 2: FolderA (big blind) folded before Flop')
+    expect(lines.find(l => l.startsWith('Seat 1: Hero') && l.includes('collected'))).toBeDefined()
+  })
+
+  test('[valid,-1] と [-1,valid] は同一の出力になる (どちらの位置に公開カードがあっても対称に処理される)', () => {
+    const eventsA = buildEvents(999212, [21, -1])
+    const eventsB = buildEvents(999212, [-1, 21])
+    const sessionA = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const sessionB = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const linesA = getLines(new HandLogProcessor(createContext(sessionA)), eventsA)
+    const linesB = getLines(new HandLogProcessor(createContext(sessionB)), eventsB)
+    expect(linesA).toEqual(linesB)
+  })
+})
+
+// ============================================================
+// Test 14: Ante all-in reconstruction (buildAnteAllInChipsMap / fixAnteAllInChips)
+// Real hand (anonymized from HandId=260147134): 2 players (seats 0 and 4)
+// have Chip=0,BetChip=0 at EVT_DEAL with a non-empty SidePot, requiring
+// tier-based chip-amount reconstruction. This path had zero dedicated
+// coverage; existing ante-all-in tests in this file only ever have a
+// single Chip=0 player (buildAnteAllInChipsMap requires >=2 to activate).
+// ============================================================
+describe('アンテオールインのチップ額再構築 (buildAnteAllInChipsMap / fixAnteAllInChips)', () => {
+  const players = [
+    { userId: 1001, name: 'PlayerA' },
+    { userId: 561384657, name: 'sola' },
+    { userId: 1002, name: 'PlayerB' },
+    { userId: 1003, name: 'PlayerC' },
+    { userId: 1004, name: 'PlayerD' },
+  ]
+
+  // Seats 0 (PlayerA) and 4 (PlayerC) are both ante all-in (Chip=0, BetChip=0).
+  // Progress.SidePot=[640, 5000] at EVT_DEAL lets buildAnteAllInChipsMap
+  // distinguish their contribution tiers once EVT_HAND_RESULTS resolves
+  // which seat won which pot (fixAnteAllInChips).
+  const events: ApiEvent[] = [
+    {
+      ApiTypeId: ApiType.EVT_DEAL, timestamp: 1727239848825,
+      SeatUserIds: [1001, -1, 561384657, 1002, 1003, 1004],
+      Game: { CurrentBlindLv: 9, NextBlindUnixSeconds: 1727239912, Ante: 950, SmallBlind: 1900, BigBlind: 3800, ButtonSeat: 5, SmallBlindSeat: 0, BigBlindSeat: 2 },
+      Player: { SeatIndex: 2, BetStatus: 1, Chip: 64220, BetChip: 3800, HoleCards: [9, 35] },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 0, BetStatus: 3, Chip: 0, BetChip: 0 },
+        { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 56550, BetChip: 0 },
+        { SeatIndex: 4, Status: 0, BetStatus: 3, Chip: 0, BetChip: 0 },
+        { SeatIndex: 5, Status: 0, BetStatus: 1, Chip: 51640, BetChip: 0 },
+      ],
+      Progress: { Phase: 0, NextActionSeat: 3, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 12, MinRaise: 7600, Pot: 1950, SidePot: [640, 5000] }
+    } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1727239855333, SeatIndex: 3, ActionType: 3, BetChip: 3800, Chip: 52750, Progress: { Phase: 0, NextActionSeat: 5, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 12, MinRaise: 7600, Pot: 1950, SidePot: [640, 8800] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1727239856870, SeatIndex: 5, ActionType: 3, BetChip: 3800, Chip: 47840, Progress: { Phase: 0, NextActionSeat: 2, NextActionTypes: [0, 4, 5], NextExtraLimitSeconds: 12, MinRaise: 7600, Pot: 1950, SidePot: [640, 12600] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1727239858500, SeatIndex: 2, ActionType: 0, BetChip: 3800, Chip: 64220, Progress: { Phase: 0, NextActionSeat: -1, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 1950, SidePot: [640, 12600] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_DEAL_ROUND, timestamp: 1727239859536, CommunityCards: [48, 32, 46], Player: { SeatIndex: 2, Chip: 64220, HoleCards: [9, 35], BetChip: 0, BetStatus: 1 }, OtherPlayers: [{ SeatIndex: 0, Status: 0, BetStatus: 3, BetChip: 0, Chip: 0 }, { SeatIndex: 3, Chip: 52750, Status: 0, BetStatus: 1, BetChip: 0 }, { SeatIndex: 4, BetChip: 0, BetStatus: 3, Chip: 0, Status: 0 }, { SeatIndex: 5, Chip: 47840, Status: 0, BetChip: 0, BetStatus: 1 }], Progress: { Pot: 1950, Phase: 1, NextActionTypes: [0, 5, 1], MinRaise: 0, NextExtraLimitSeconds: 12, NextActionSeat: 2, SidePot: [640, 12600] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1727239862418, SeatIndex: 2, ActionType: 0, BetChip: 0, Chip: 64220, Progress: { Pot: 1950, NextActionSeat: 3, MinRaise: 0, NextExtraLimitSeconds: 12, NextActionTypes: [0, 5, 1], Phase: 1, SidePot: [640, 12600] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1727239863630, SeatIndex: 3, ActionType: 0, BetChip: 0, Chip: 52750, Progress: { SidePot: [640, 12600], Phase: 1, NextActionTypes: [0, 5, 1], NextExtraLimitSeconds: 12, MinRaise: 0, NextActionSeat: 5, Pot: 1950 } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1727239864963, SeatIndex: 5, ActionType: 0, BetChip: 0, Chip: 47840, Progress: { NextActionTypes: [], NextActionSeat: -1, Phase: 1, NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 1950, SidePot: [640, 12600] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_DEAL_ROUND, timestamp: 1727239865983, OtherPlayers: [{ SeatIndex: 0, BetChip: 0, Chip: 0, Status: 0, BetStatus: 3 }, { SeatIndex: 3, BetChip: 0, BetStatus: 1, Chip: 52750, Status: 0 }, { SeatIndex: 4, Status: 0, Chip: 0, BetStatus: 3, BetChip: 0 }, { SeatIndex: 5, BetStatus: 1, BetChip: 0, Chip: 47840, Status: 0 }], Player: { HoleCards: [9, 35], SeatIndex: 2, Chip: 64220, BetStatus: 1, BetChip: 0 }, Progress: { SidePot: [640, 12600], NextExtraLimitSeconds: 12, Pot: 1950, NextActionTypes: [0, 5, 1], Phase: 2, NextActionSeat: 2, MinRaise: 0 }, CommunityCards: [17] } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1727239867863, SeatIndex: 2, ActionType: 0, BetChip: 0, Chip: 64220, Progress: { MinRaise: 0, SidePot: [640, 12600], Pot: 1950, NextActionTypes: [0, 5, 1], NextActionSeat: 3, Phase: 2, NextExtraLimitSeconds: 12 } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1727239869014, SeatIndex: 3, ActionType: 0, BetChip: 0, Chip: 52750, Progress: { SidePot: [640, 12600], MinRaise: 0, NextActionTypes: [0, 5, 1], Pot: 1950, Phase: 2, NextActionSeat: 5, NextExtraLimitSeconds: 12 } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1727239870360, SeatIndex: 5, ActionType: 0, BetChip: 0, Chip: 47840, Progress: { SidePot: [640, 12600], MinRaise: 0, NextExtraLimitSeconds: 0, Phase: 2, NextActionTypes: [], NextActionSeat: -1, Pot: 1950 } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_DEAL_ROUND, timestamp: 1727239871361, CommunityCards: [19], Player: { BetStatus: 1, BetChip: 0, Chip: 64220, SeatIndex: 2, HoleCards: [9, 35] }, Progress: { Pot: 1950, NextExtraLimitSeconds: 12, Phase: 3, NextActionTypes: [0, 5, 1], NextActionSeat: 2, MinRaise: 0, SidePot: [640, 12600] }, OtherPlayers: [{ SeatIndex: 0, Status: 0, BetChip: 0, Chip: 0, BetStatus: 3 }, { SeatIndex: 3, BetStatus: 1, BetChip: 0, Chip: 52750, Status: 0 }, { SeatIndex: 4, BetStatus: 3, BetChip: 0, Chip: 0, Status: 0 }, { SeatIndex: 5, BetChip: 0, Chip: 47840, BetStatus: 1, Status: 0 }] } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1727239873605, SeatIndex: 2, ActionType: 0, BetChip: 0, Chip: 64220, Progress: { Pot: 1950, NextActionTypes: [0, 5, 1], NextActionSeat: 3, NextExtraLimitSeconds: 12, MinRaise: 0, Phase: 3, SidePot: [640, 12600] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1727239874688, SeatIndex: 3, ActionType: 0, BetChip: 0, Chip: 52750, Progress: { Pot: 1950, NextExtraLimitSeconds: 12, SidePot: [640, 12600], Phase: 3, MinRaise: 0, NextActionTypes: [0, 5, 1], NextActionSeat: 5 } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1727239876121, SeatIndex: 5, ActionType: 0, BetChip: 0, Chip: 47840, Progress: { SidePot: [640, 12600], Phase: 3, NextActionSeat: -2, Pot: 1950, NextExtraLimitSeconds: 0, MinRaise: 0, NextActionTypes: [] } } as unknown as ApiEvent,
+    {
+      ApiTypeId: ApiType.EVT_HAND_RESULTS, timestamp: 1727239877145, HandId: 260147134,
+      CommunityCards: [], SidePot: [640, 12600], DefeatStatus: 0, Pot: 1950, ResultType: 0, HandLog: '',
+      Results: [
+        { HandRanking: 1, RewardChip: 15190, Ranking: -2, HoleCards: [9, 35], Hands: [35, 32, 19, 17, 48], UserId: 561384657, RankType: 7 },
+        { UserId: 1003, RewardChip: 0, Ranking: 4, HandRanking: -1, Hands: [19, 17, 48, 46, 41], RankType: 8, HoleCards: [41, 11] },
+        { Hands: [19, 17, 48, 46, 32], HandRanking: -1, Ranking: 5, RankType: 8, HoleCards: [28, 22], UserId: 1001, RewardChip: 0 },
+        { RankType: 8, HoleCards: [1, 29], Hands: [19, 17, 48, 46, 32], RewardChip: 0, UserId: 1002, HandRanking: -1, Ranking: -2 },
+        { Ranking: -2, HandRanking: -1, RankType: 8, Hands: [19, 17, 48, 46, 32], UserId: 1004, RewardChip: 0, HoleCards: [24, 21] },
+      ],
+      Player: { BetStatus: -1, SeatIndex: 2, BetChip: 0, Chip: 79410 },
+      OtherPlayers: [
+        { Chip: 0, BetStatus: -1, SeatIndex: 0, Status: 5, BetChip: 0 },
+        { BetChip: 0, Chip: 52750, Status: 0, SeatIndex: 3, BetStatus: -1 },
+        { SeatIndex: 4, BetStatus: -1, Status: 5, BetChip: 0, Chip: 0 },
+        { BetStatus: -1, Chip: 47840, SeatIndex: 5, Status: 0, BetChip: 0 },
+      ]
+    } as unknown as ApiEvent,
+  ]
+
+  test('ポット整合: Pot + sum(SidePot) == sum(RewardChip)', () => {
+    const resultEvent = events.find(e => (e as any).ApiTypeId === ApiType.EVT_HAND_RESULTS) as any
+    const totalPot = resultEvent.Pot + resultEvent.SidePot.reduce((s: number, p: number) => s + p, 0)
+    const totalReward = resultEvent.Results.reduce((s: number, r: any) => s + r.RewardChip, 0)
+    expect(totalPot).toBe(totalReward)
+  })
+
+  test('2人のアンテオールインプレイヤーに異なるチップ額ティアが再構築される (characterization)', () => {
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const processor = new HandLogProcessor(createContext(session))
+    const lines = getLines(processor, events)
+
+    // PlayerA (seat 1, main-pot-only tier) and PlayerC (seat 5, side-pot tier)
+    // must be reconstructed with distinct, non-zero chip counts (not the
+    // fallback where both get the same minimum tier).
+    const seatLines = lines.filter(l => l.startsWith('Seat ') && l.includes('in chips)'))
+    const playerASeat = seatLines.find(l => l.includes('PlayerA'))
+    const playerCSeat = seatLines.find(l => l.includes('PlayerC'))
+    expect(playerASeat).toBe('Seat 1: PlayerA (390 in chips)')
+    expect(playerCSeat).toBe('Seat 5: PlayerC (550 in chips)')
+
+    expect(lines).toContain('PlayerA: posts the ante 390 and is all-in')
+    expect(lines).toContain('PlayerC: posts the ante 550 and is all-in')
+
+    // Winner collects from both side pots and the main pot.
+    const collectedLines = lines.filter(l => l.includes('collected'))
+    expect(collectedLines).toEqual([
+      'sola collected 12600 from side pot-2',
+      'sola collected 640 from side pot-1',
+      'sola collected 1950 from main pot',
+    ])
+
+    const totalPotLine = lines.find(l => l.includes('Total pot'))
+    expect(totalPotLine).toBe('Total pot 15190 Main pot 1950. Side pot-1 640. Side pot-2 12600. | Rake 0')
+  })
+})
