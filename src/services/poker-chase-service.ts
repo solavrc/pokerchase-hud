@@ -6,6 +6,7 @@ import { ReadEntityStream } from '../streams/read-entity-stream'
 import { HandLogStream } from '../streams/hand-log-stream'
 import { RealTimeStatsStream } from '../streams/realtime-stats-stream'
 import { setHandImprovementBatchMode } from '../realtime-stats'
+import { defaultStatDisplayConfigs, mergeStatDisplayConfigs } from '../stats'
 import {
   POKER_CHASE_SERVICE_EVENT,
   POKER_CHASE_ORIGIN,
@@ -306,7 +307,13 @@ class PokerChaseService {
     this.handLimitFilter = filterOptions.handLimit
 
     // Set stat display configuration
-    this.statDisplayConfigs = filterOptions.statDisplayConfigs
+    // 保存済みのstatDisplayConfigsをデフォルトとマージしてから設定する（background.tsの
+    // 起動時ロードと同じ理由。呼び出し元のfilterOptionsが、マージ処理を経ていない
+    // 古いstorage値や外部由来のメッセージであっても、新しい統計が欠落しないようにする）
+    this.statDisplayConfigs = mergeStatDisplayConfigs(
+      filterOptions.statDisplayConfigs,
+      defaultStatDisplayConfigs
+    )
 
     // Trigger recalculation using the dedicated method
     await this.statsOutputStream.recalculateStats()

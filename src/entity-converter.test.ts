@@ -42,6 +42,73 @@ function createEvent<T extends ApiType>(
   return result as ApiEvent<T>
 }
 
+/**
+ * ライブ記録パイプライン（WriteEntityStream）と同一の書き込みを行い、
+ * IndexedDBへの反映を待ってから読み取り結果を返すヘルパー。
+ *
+ * 背景（デフレーク）: `handAggregateStream`の'finish'イベントは、その書き込み側
+ * （Writable）の完了のみを保証する。実際のDexie書き込みはpipeで繋がった
+ * 下流のWriteEntityStreamの非同期`_transform`内で行われるため、
+ * 'finish'直後に`dbMock.<table>`を読むと、まだ書き込みが終わっていない
+ * （テーブルが空、または一部の行しか反映されていない）状態を読んでしまう
+ * レースコンディションがあった。
+ *
+ * このヘルパーはevents をpipeし、'finish'を待った後、`isReady`が真になるまで
+ * 対象テーブルを短い間隔でポーリングする。タイムアウト時は分かりやすいエラーで失敗する。
+ */
+async function pipeEventsAndWaitForReady<T>(
+  service: PokerChaseService,
+  read: () => Promise<T>,
+  isReady: (result: T) => boolean,
+  options: { timeoutMs?: number, intervalMs?: number, description?: string } = {}
+): Promise<T> {
+  const { timeoutMs = 5000, intervalMs = 50, description = 'expected rows' } = options
+
+  await new Promise<void>((resolve, reject) => {
+    service.handAggregateStream
+      .on('finish', () => resolve())
+      .on('error', (error: Error) => reject(error))
+  })
+
+  const startedAt = Date.now()
+  let lastResult = await read()
+  while (!isReady(lastResult)) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error(
+        `pipeEventsAndWaitForReady: timed out after ${timeoutMs}ms waiting for ${description}. ` +
+        `Last observed result: ${JSON.stringify(lastResult)}`
+      )
+    }
+    await new Promise(resolve => setTimeout(resolve, intervalMs))
+    lastResult = await read()
+  }
+  return lastResult
+}
+
+/**
+ * `pipeEventsAndWaitForReady`の薄いラッパー。EC↔WESパリティテストで最も多く使われる
+ * 「指定handIdのactions行がminCount件以上たまるまで待つ」パターンを簡潔に書ける。
+ */
+async function pipeEventsAndWaitForActions(
+  service: PokerChaseService,
+  dbMock: PokerChaseDB,
+  events: ApiEvent[],
+  { handId, minCount = 1 }: { handId: number, minCount?: number }
+): Promise<Action[]> {
+  Readable.from(events).pipe(service.handAggregateStream)
+  const actions = await pipeEventsAndWaitForReady(
+    service,
+    async () => {
+      await dbMock.open()
+      return (await dbMock.actions.where('handId').equals(handId).toArray())
+        .sort((a, b) => a.index - b.index)
+    },
+    result => result.length >= minCount,
+    { description: `dbMock.actions with handId=${handId} to have >= ${minCount} row(s)` }
+  )
+  return actions
+}
+
 describe('EntityConverter', () => {
   let converter: EntityConverter
   const mockSession: Session = {
@@ -1294,10 +1361,11 @@ describe('EntityConverter', () => {
 
       const result = converter.convertEventsToEntities(events)
 
-      // 無効なアクションは含まれるが、playerIdは0になる
+      // 座席解決不能（範囲外のSeatIndex）なアクションはスキップされる。
+      // ハンド自体は他の情報から正常に変換される（テーブル移動後の
+      // 座席未解決アクションと同じ扱い。実データでは0.09%のハンドで発生）。
       expect(result.hands).toHaveLength(1)
-      expect(result.actions).toHaveLength(1)
-      expect(result.actions[0]!.playerId).toBe(0)
+      expect(result.actions).toHaveLength(0)
     })
   })
 
@@ -1522,23 +1590,15 @@ describe('EntityConverter', () => {
       // restoreState()（コンストラクタ内でトリガーされる非同期処理）の完了を待たないと、
       // handAggregateStreamへの書き込みとレースしてIndexedDBの読み取りが空になることがある
       await service.ready
-      await new Promise<void>((resolve, reject) => {
-        service.handAggregateStream
-          .on('finish', () => resolve())
-          .on('error', (error: Error) => reject(error))
-        Readable.from(events).pipe(service.handAggregateStream)
-      })
-      // Dexie/fake-indexeddbはテスト実行順によって暗黙にクローズされることがあるため、
-      // 読み取り前に明示的にopenし直す（データ自体は書き込み済み）
-      await dbMock.open()
-      const liveActions = (await dbMock.actions
-        .where('handId').equals(999001)
-        .toArray())
-        .sort((a, b) => a.index - b.index)
 
       // --- インポート/リビルドパイプライン: EntityConverter経由 ---
       const importResult = converter.convertEventsToEntities(events)
       const importActions = importResult.actions.slice().sort((a, b) => a.index - b.index)
+
+      const liveActions = (await pipeEventsAndWaitForActions(service, dbMock, events, {
+        handId: 999001,
+        minCount: importActions.length
+      })).slice().sort((a, b) => a.index - b.index)
 
       expect(liveActions.length).toBeGreaterThan(0)
       expect(importActions.length).toBe(liveActions.length)
@@ -1699,21 +1759,15 @@ describe('EntityConverter', () => {
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
       const service = new PokerChaseService({ db: dbMock })
       await service.ready
-      await new Promise<void>((resolve, reject) => {
-        service.handAggregateStream
-          .on('finish', () => resolve())
-          .on('error', (error: Error) => reject(error))
-        Readable.from(events).pipe(service.handAggregateStream)
-      })
-      await dbMock.open()
-      const liveActions = (await dbMock.actions
-        .where('handId').equals(999002)
-        .toArray())
-        .sort((a, b) => a.index - b.index)
 
       // --- インポート/リビルドパイプライン: EntityConverter経由 ---
       const importResult = converter.convertEventsToEntities(events)
       const importActions = importResult.actions.slice().sort((a, b) => a.index - b.index)
+
+      const liveActions = (await pipeEventsAndWaitForActions(service, dbMock, events, {
+        handId: 999002,
+        minCount: importActions.length
+      })).slice().sort((a, b) => a.index - b.index)
 
       expect(liveActions.length).toBeGreaterThan(0)
       expect(importActions.length).toBe(liveActions.length)
@@ -1737,6 +1791,161 @@ describe('EntityConverter', () => {
 
       const importPositionsByPlayer = new Map(importActions.map(a => [a.playerId, a.position]))
       expect(importPositionsByPlayer).toEqual(positionsByPlayer)
+    })
+
+    /**
+     * 座席解決不能なEVT_ACTIONのスキップ（EC↔WESパリティ）
+     *
+     * 背景: 途中着席（EVT_ENTRY_QUEUED）によるテーブル移動後、直前にバッファされた
+     * EVT_DEALのSeatUserIdsには新テーブルの座席が反映されていない状態のまま
+     * EVT_ACTIONが届くことがある。この場合`seatUserIds[event.SeatIndex]`は
+     * undefinedまたは-1（空席）を返す。
+     * 実データ検証: 完走した27ハンド / 68アクション（全ハンドの0.09%）でこの状況を確認。
+     * 修正前は`playerId ?? 0`でplayerId=0を捏造し、position=-3の実在しないアクションが
+     * actionsテーブルに混入していた。修正後は両パイプラインとも該当アクションを
+     * 丸ごとスキップし、ハンドの他のアクションは正常に処理を継続する。
+     */
+    it('skips an EVT_ACTION with an unresolvable SeatIndex in BOTH pipelines, leaving other actions intact', async () => {
+      const events: ApiEvent[] = [
+        createEvent(ApiType.EVT_DEAL, {
+          timestamp: 40000,
+          SeatUserIds: [400, 401, -1, -1],
+          Game: {
+            CurrentBlindLv: 1,
+            NextBlindUnixSeconds: 40000000,
+            Ante: 0,
+            SmallBlind: 10,
+            BigBlind: 20,
+            ButtonSeat: 0,
+            SmallBlindSeat: 0,
+            BigBlindSeat: 1
+          },
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 0,
+            NextActionTypes: [ActionType.CALL, ActionType.FOLD],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 40,
+            Pot: 30,
+            SidePot: []
+          },
+          OtherPlayers: [
+            { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1980, BetChip: 20 }
+          ]
+        }),
+        // BTN/SB(seat0, player400)がコール
+        // NextActionSeat: 3 は、次に届く（座席未解決の）アクションのSeatIndexと一致させておく。
+        // AggregateEventsStreamは`Progress.NextActionSeat !== event.SeatIndex`の場合に
+        // 順序不整合とみなしてバッファをクリアしてしまうため、このテストでは
+        // その整合性チェック自体はパスさせ、EVT_ACTIONハンドラ内のスキップ処理
+        // （本テストの対象）だけを検証する
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 40001,
+          SeatIndex: 0,
+          ActionType: ActionType.CALL,
+          Chip: 1980,
+          BetChip: 20,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 3,
+            NextActionTypes: [ActionType.CHECK, ActionType.BET],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 40,
+            Pot: 40,
+            SidePot: []
+          }
+        }),
+        // 途中着席によるテーブル移動後の座席未反映アクション（SeatIndex=3は空席=-1を指す）
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 40002,
+          SeatIndex: 3,
+          ActionType: ActionType.CALL,
+          BetChip: 20,
+          Chip: 0,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 1,
+            NextActionTypes: [ActionType.CHECK, ActionType.BET],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 40,
+            Pot: 40,
+            SidePot: []
+          }
+        }, { skipValidation: true }),
+        // BB(seat1, player401)がチェック
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 40003,
+          SeatIndex: 1,
+          ActionType: ActionType.CHECK,
+          Chip: 1980,
+          BetChip: 0,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: -1,
+            NextActionTypes: [],
+            NextExtraLimitSeconds: 0,
+            MinRaise: 0,
+            Pot: 40,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
+          timestamp: 40004,
+          HandId: 999020,
+          CommunityCards: [],
+          Pot: 40,
+          SidePot: [],
+          ResultType: 0,
+          DefeatStatus: 0,
+          Results: [
+            {
+              UserId: 400,
+              HoleCards: [],
+              RankType: RankType.NO_CALL,
+              Hands: [],
+              HandRanking: 1,
+              Ranking: 1,
+              RewardChip: 40
+            }
+          ],
+          OtherPlayers: [
+            { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 1980, BetChip: 0 }
+          ]
+        }, { skipValidation: true })
+      ]
+
+      // --- インポート/リビルドパイプライン: EntityConverter経由 ---
+      const importResult = converter.convertEventsToEntities(events)
+      expect(importResult.hands).toHaveLength(1)
+      // 座席解決不能なアクション（SeatIndex=3）はスキップされ、残り2件のみ含まれる
+      expect(importResult.actions).toHaveLength(2)
+      expect(importResult.actions.every(a => a.playerId === 400 || a.playerId === 401)).toBe(true)
+      expect(importResult.actions.some(a => a.actionType === ActionType.CALL && a.playerId === 400)).toBe(true)
+      expect(importResult.actions.some(a => a.actionType === ActionType.CHECK && a.playerId === 401)).toBe(true)
+
+      // --- ライブ記録パイプライン: WriteEntityStream経由 ---
+      const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
+      const service = new PokerChaseService({ db: dbMock })
+      await service.ready
+      const liveActions = await pipeEventsAndWaitForActions(service, dbMock, events, {
+        handId: 999020,
+        minCount: importResult.actions.length
+      })
+
+      // 両パイプラインとも同じ2件のアクションのみ（不正なアクションは混入しない）
+      expect(liveActions).toHaveLength(2)
+      expect(liveActions.every(a => a.playerId === 400 || a.playerId === 401)).toBe(true)
+      expect(liveActions.some(a => a.position === -3 as Position)).toBe(false)
+
+      const pickComparable = (action: Action) => ({
+        playerId: action.playerId,
+        phase: action.phase,
+        actionType: action.actionType,
+        position: action.position,
+        actionDetails: action.actionDetails
+      })
+      expect(importResult.actions.slice().sort((a, b) => a.index - b.index).map(pickComparable))
+        .toEqual(liveActions.slice().sort((a, b) => a.index - b.index).map(pickComparable))
     })
   })
 
@@ -1949,19 +2158,21 @@ describe('EntityConverter', () => {
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
       const service = new PokerChaseService({ db: dbMock })
       await service.ready
-      await new Promise<void>((resolve, reject) => {
-        service.handAggregateStream
-          .on('finish', () => resolve())
-          .on('error', (error: Error) => reject(error))
-        Readable.from(events).pipe(service.handAggregateStream)
-      })
-      await dbMock.open()
-      const livePhases = (await dbMock.phases.where('handId').equals(999010).toArray())
-        .sort((a, b) => a.phase - b.phase)
 
       // --- インポート/リビルドパイプライン: EntityConverter経由 ---
       const importResult = converter.convertEventsToEntities(events)
       const importPhases = importResult.phases.slice().sort((a, b) => a.phase - b.phase)
+
+      Readable.from(events).pipe(service.handAggregateStream)
+      const livePhases = (await pipeEventsAndWaitForReady(
+        service,
+        async () => {
+          await dbMock.open()
+          return (await dbMock.phases.where('handId').equals(999010).toArray())
+        },
+        result => result.length >= importPhases.length,
+        { description: `dbMock.phases with handId=999010 to have >= ${importPhases.length} row(s)` }
+      )).sort((a, b) => a.phase - b.phase)
 
       const pickComparablePhase = (phase: typeof livePhases[0]) => ({
         phase: phase.phase,
@@ -2092,18 +2303,21 @@ describe('EntityConverter', () => {
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
       const service = new PokerChaseService({ db: dbMock })
       await service.ready
-      await new Promise<void>((resolve, reject) => {
-        service.handAggregateStream
-          .on('finish', () => resolve())
-          .on('error', (error: Error) => reject(error))
-        Readable.from(events).pipe(service.handAggregateStream)
-      })
-      await dbMock.open()
-      const liveHand = await dbMock.hands.get(269804225)
 
       // --- インポート/リビルドパイプライン: EntityConverter経由 ---
       const importResult = converter.convertEventsToEntities(events)
       const importHand = importResult.hands.find(h => h.id === 269804225)
+
+      Readable.from(events).pipe(service.handAggregateStream)
+      const liveHand = await pipeEventsAndWaitForReady(
+        service,
+        async () => {
+          await dbMock.open()
+          return dbMock.hands.get(269804225)
+        },
+        result => result !== undefined && result.winningPlayerIds.length >= (importHand?.winningPlayerIds.length ?? 0),
+        { description: 'dbMock.hands row 269804225 with winningPlayerIds populated' }
+      )
 
       // 修正前のWES（HandRanking===1）ではWINNER_SIDEを見逃していたが、
       // 修正後はRewardChip>0に統一されているため、両者ともサイドポット勝者を含む
@@ -2422,14 +2636,11 @@ describe('EntityConverter', () => {
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
       const service = new PokerChaseService({ db: dbMock })
       await service.ready
-      await new Promise<void>((resolve, reject) => {
-        service.handAggregateStream
-          .on('finish', () => resolve())
-          .on('error', (error: Error) => reject(error))
-        Readable.from(events).pipe(service.handAggregateStream)
+      const liveHandActions = await pipeEventsAndWaitForActions(service, dbMock, events, {
+        handId: 271929009,
+        minCount: importResult.actions.filter(a => a.handId === 271929009).length
       })
-      await dbMock.open()
-      const liveRiverCallAction = (await dbMock.actions.where('handId').equals(271929009).toArray())
+      const liveRiverCallAction = liveHandActions
         .find(a => a.playerId === WINNER_CALLER && a.phase === PhaseType.RIVER && a.actionType === ActionType.CALL)
       expect(liveRiverCallAction).toBeDefined()
       expect(liveRiverCallAction!.actionDetails).toContain(ActionDetail.RIVER_CALL_WON)
@@ -2565,19 +2776,24 @@ describe('EntityConverter', () => {
         }
       ])
 
+      // インポート/リビルドパイプラインの結果を先に求め、ライブパイプラインが
+      // 書き込むべきフェーズ数（このハンドはSHOWDOWNなしのPREFLOPのみ）の基準にする
+      const importResult = converter.convertEventsToEntities(events)
+      const importPhasesForHand = importResult.phases.filter(p => p.handId === 34567)
+
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
       const service = new PokerChaseService({ db: dbMock })
       await service.ready
-      await new Promise<void>((resolve, reject) => {
-        service.handAggregateStream
-          .on('finish', () => resolve())
-          .on('error', (error: Error) => reject(error))
-        Readable.from(events).pipe(service.handAggregateStream)
-      })
-      await dbMock.open()
-      const livePhases = await dbMock.phases
-        .where('handId').equals(34567)
-        .toArray()
+      Readable.from(events).pipe(service.handAggregateStream)
+      const livePhases = await pipeEventsAndWaitForReady(
+        service,
+        async () => {
+          await dbMock.open()
+          return dbMock.phases.where('handId').equals(34567).toArray()
+        },
+        result => result.length >= importPhasesForHand.length,
+        { description: `dbMock.phases with handId=34567 to have >= ${importPhasesForHand.length} row(s)` }
+      )
 
       expect(livePhases.find(p => p.phase === PhaseType.SHOWDOWN)).toBeUndefined()
     })

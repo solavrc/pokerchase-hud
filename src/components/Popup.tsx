@@ -2,7 +2,7 @@ import { getBucket } from '@extend-chrome/storage'
 import Divider from '@mui/material/Divider'
 import { ChangeEvent, useEffect, useRef, useState } from 'react'
 import type { FilterOptions, GameTypeFilter } from '../types'
-import { defaultStatDisplayConfigs } from '../stats'
+import { defaultStatDisplayConfigs, mergeStatDisplayConfigs } from '../stats'
 import type { StatDisplayConfig } from '../types/filters'
 import type { UIConfig } from '../types/hand-log'
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
@@ -32,45 +32,6 @@ export interface Options {
 }
 
 const bucket = getBucket<Options>('options', 'sync')
-
-/**
- * Merge existing stat display configurations with new defaults
- * This ensures new statistics appear and obsolete ones are removed for existing users
- */
-function mergeStatDisplayConfigs(
-  existingConfigs: StatDisplayConfig[],
-  defaultConfigs: StatDisplayConfig[]
-): StatDisplayConfig[] {
-  const defaultMap = new Map(defaultConfigs.map(config => [config.id, config]))
-  const existingMap = new Map(existingConfigs.map(config => [config.id, config]))
-
-  // Start with default configs as the base (ensures proper order and removes obsolete stats)
-  const mergedConfigs = defaultConfigs.map(defaultConfig => {
-    const existingConfig = existingMap.get(defaultConfig.id)
-    if (existingConfig) {
-      // Preserve user settings (enabled/disabled state and order) but update defaults if needed
-      return {
-        ...defaultConfig,
-        enabled: existingConfig.enabled,
-        order: existingConfig.order
-      }
-    }
-    // New statistic - use default configuration
-    return defaultConfig
-  })
-
-  // Log removed statistics for debugging
-  const removedStats = existingConfigs
-    .filter(existing => !defaultMap.has(existing.id))
-    .map(stat => stat.id)
-
-  if (removedStats.length > 0) {
-    // Removed obsolete statistics
-  }
-
-  // Sort by order to maintain consistent display
-  return mergedConfigs.sort((a, b) => a.order - b.order)
-}
 
 const Popup = () => {
   const [options, setOptions] = useState<Options>({ sendUserData: true })

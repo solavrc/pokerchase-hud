@@ -23,7 +23,7 @@ import { saveEntities, findLatestPlayerDealEvent } from './utils/database-utils'
 import type { AllPlayersRealTimeStats } from './realtime-stats/realtime-stats-service'
 import type { Options } from './components/Popup'
 import type { HandLogEvent } from './types/hand-log'
-import { defaultRegistry } from './stats'
+import { defaultRegistry, defaultStatDisplayConfigs, mergeStatDisplayConfigs } from './stats'
 import type { StatsRegistry } from './stats/registry'
 import type {
   ChromeMessage,
@@ -149,7 +149,14 @@ chrome.storage.sync.get('options', (result: Record<string, any>) => {
       ])]
       : undefined
     service.handLimitFilter = options.filterOptions.handLimit
-    service.statDisplayConfigs = options.filterOptions.statDisplayConfigs
+    // 保存済みのstatDisplayConfigsをデフォルトとマージしてから設定する。
+    // マージしないと、リリースで新しい統計（例: #86のSTL/FTS）が追加されても、
+    // ユーザーがポップアップを開いて再保存するまでHUDに一切表示されない
+    // （service-worker起動時にstorageの値をそのまま代入していたため）。
+    service.statDisplayConfigs = mergeStatDisplayConfigs(
+      options.filterOptions.statDisplayConfigs,
+      defaultStatDisplayConfigs
+    )
   } else {
     // デフォルトフィルターを設定（再計算をトリガーせずに）
     service.battleTypeFilter = undefined  // デフォルトではすべてのゲームタイプを表示
