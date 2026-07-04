@@ -10,6 +10,10 @@ import {
   apiEventSchemas
 } from '../src/types'
 import type { ApiEvent, Session } from '../src/types'
+import PokerChaseService, { PokerChaseDB } from '../src/app'
+import type { Action } from '../src/types'
+import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
+import { Readable } from 'stream'
 
 // ヘルパー関数：型安全にイベントを作成
 function createEvent<T extends ApiType>(
@@ -1293,6 +1297,270 @@ describe('EntityConverter', () => {
       expect(result.hands).toHaveLength(1)
       expect(result.actions).toHaveLength(1)
       expect(result.actions[0]!.playerId).toBe(0)
+    })
+  })
+
+  /**
+   * ライブ記録パイプライン（WriteEntityStream）とインポート/リビルドパイプライン
+   * （EntityConverter）のポジション整合性テスト
+   *
+   * 背景: WriteEntityStreamはEVT_DEAL.Game.BigBlindSeatを基準にポジションを算出するが、
+   * 旧EntityConverter（getPositionUserIds）はBigBlindSeatを無視し、フルテーブルでは
+   * 常にseat0をSBとみなすヒューリスティックだった。既存フィクスチャは全てBigBlindSeat: 1
+   * （SBがseat0）だったため、このズレが表面化していなかった。
+   * BigBlindSeatが1以外（=SBがseat0以外）の同一イベント列を両パイプラインに通し、
+   * 生成されるActionが完全に一致することを確認する。
+   */
+  describe('position parity with WriteEntityStream', () => {
+    it('produces identical action positions to the live recording pipeline when BigBlindSeat !== 1', async () => {
+      // 4人テーブル。ButtonSeat=1, SmallBlindSeat=2, BigBlindSeat=3
+      // （SBがseat0ではないケース。ここが壊れていたヒューリスティックを踏み抜く）
+      const events: ApiEvent[] = [
+        createEvent(ApiType.EVT_DEAL, {
+          timestamp: 20000,
+          SeatUserIds: [10, 20, 30, 40],
+          Game: {
+            CurrentBlindLv: 1,
+            NextBlindUnixSeconds: 20000000,
+            Ante: 0,
+            SmallBlind: 10,
+            BigBlind: 20,
+            ButtonSeat: 1,
+            SmallBlindSeat: 2,
+            BigBlindSeat: 3
+          },
+          Player: {
+            SeatIndex: 0,
+            BetStatus: 1,
+            HoleCards: [37, 51],
+            Chip: 1980,
+            BetChip: 0
+          },
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 0,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 40,
+            Pot: 30,
+            SidePot: []
+          },
+          OtherPlayers: [
+            { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 2000, BetChip: 0 },
+            { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 1990, BetChip: 10 },
+            { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 1980, BetChip: 20 }
+          ]
+        }),
+        // UTG(seat0, player10)がレイズ
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 20001,
+          SeatIndex: 0,
+          ActionType: ActionType.RAISE,
+          Chip: 1920,
+          BetChip: 60,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 1,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 100,
+            Pot: 90,
+            SidePot: []
+          }
+        }),
+        // BTN(seat1, player20)がフォールド
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 20002,
+          SeatIndex: 1,
+          ActionType: ActionType.FOLD,
+          Chip: 2000,
+          BetChip: 0,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 2,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 100,
+            Pot: 90,
+            SidePot: []
+          }
+        }),
+        // SB(seat2, player30)がコール
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 20003,
+          SeatIndex: 2,
+          ActionType: ActionType.CALL,
+          Chip: 1940,
+          BetChip: 60,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 3,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 100,
+            Pot: 150,
+            SidePot: []
+          }
+        }),
+        // BB(seat3, player40)がフォールド
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 20004,
+          SeatIndex: 3,
+          ActionType: ActionType.FOLD,
+          Chip: 1980,
+          BetChip: 0,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: -1,
+            NextActionTypes: [],
+            NextExtraLimitSeconds: 0,
+            MinRaise: 0,
+            Pot: 150,
+            SidePot: []
+          }
+        }),
+        // フロップ
+        createEvent(ApiType.EVT_DEAL_ROUND, {
+          timestamp: 20005,
+          CommunityCards: [1, 21, 44],
+          Progress: {
+            Phase: 1,
+            NextActionSeat: 2,
+            NextActionTypes: [0, 1, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 0,
+            Pot: 150,
+            SidePot: []
+          },
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 1920, BetChip: 0 },
+            { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 1940, BetChip: 0 }
+          ]
+        }),
+        // SB(seat2, player30)がチェック
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 20006,
+          SeatIndex: 2,
+          ActionType: ActionType.CHECK,
+          Chip: 1940,
+          BetChip: 0,
+          Progress: {
+            Phase: 1,
+            NextActionSeat: 0,
+            NextActionTypes: [0, 1, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 0,
+            Pot: 150,
+            SidePot: []
+          }
+        }),
+        // UTG(seat0, player10)がベット
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 20007,
+          SeatIndex: 0,
+          ActionType: ActionType.BET,
+          Chip: 1820,
+          BetChip: 100,
+          Progress: {
+            Phase: 1,
+            NextActionSeat: 2,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 200,
+            Pot: 250,
+            SidePot: []
+          }
+        }),
+        // SB(seat2, player30)がフォールド
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 20008,
+          SeatIndex: 2,
+          ActionType: ActionType.FOLD,
+          Chip: 1940,
+          BetChip: 0,
+          Progress: {
+            Phase: 1,
+            NextActionSeat: -2,
+            NextActionTypes: [],
+            NextExtraLimitSeconds: 0,
+            MinRaise: 0,
+            Pot: 250,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
+          timestamp: 20009,
+          HandId: 999001,
+          CommunityCards: [1, 21, 44],
+          Pot: 250,
+          SidePot: [],
+          ResultType: 0,
+          DefeatStatus: 0,
+          Results: [
+            {
+              UserId: 10,
+              HoleCards: [37, 51],
+              RankType: 10,
+              Hands: [],
+              HandRanking: 1,
+              Ranking: 1,
+              RewardChip: 250
+            }
+          ],
+          OtherPlayers: [
+            { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 2000, BetChip: 0 },
+            { SeatIndex: 2, Status: 0, BetStatus: -1, Chip: 1940, BetChip: 0 },
+            { SeatIndex: 3, Status: 0, BetStatus: -1, Chip: 1980, BetChip: 0 }
+          ]
+        })
+      ]
+
+      // --- ライブ記録パイプライン: WriteEntityStream経由 ---
+      const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
+      const service = new PokerChaseService({ db: dbMock })
+      // restoreState()（コンストラクタ内でトリガーされる非同期処理）の完了を待たないと、
+      // handAggregateStreamへの書き込みとレースしてIndexedDBの読み取りが空になることがある
+      await service.ready
+      await new Promise<void>((resolve, reject) => {
+        service.handAggregateStream
+          .on('finish', () => resolve())
+          .on('error', (error: Error) => reject(error))
+        Readable.from(events).pipe(service.handAggregateStream)
+      })
+      // Dexie/fake-indexeddbはテスト実行順によって暗黙にクローズされることがあるため、
+      // 読み取り前に明示的にopenし直す（データ自体は書き込み済み）
+      await dbMock.open()
+      const liveActions = (await dbMock.actions
+        .where('handId').equals(999001)
+        .toArray())
+        .sort((a, b) => a.index - b.index)
+
+      // --- インポート/リビルドパイプライン: EntityConverter経由 ---
+      const importResult = converter.convertEventsToEntities(events)
+      const importActions = importResult.actions.slice().sort((a, b) => a.index - b.index)
+
+      expect(liveActions.length).toBeGreaterThan(0)
+      expect(importActions.length).toBe(liveActions.length)
+
+      const pickComparable = (action: Action) => ({
+        playerId: action.playerId,
+        phase: action.phase,
+        actionType: action.actionType,
+        position: action.position,
+        actionDetails: action.actionDetails
+      })
+
+      expect(importActions.map(pickComparable)).toEqual(liveActions.map(pickComparable))
+
+      // 具体的な期待値も明示しておく（BigBlindSeat=3 → SBはseat2=player30、BBはseat3=player40）
+      const positionsByPlayer = new Map(liveActions.map(a => [a.playerId, a.position]))
+      expect(positionsByPlayer.get(30)).toBe(Position.SB)
+      expect(positionsByPlayer.get(40)).toBe(Position.BB)
+      expect(positionsByPlayer.get(20)).toBe(Position.BTN)
+      expect(positionsByPlayer.get(10)).toBe(Position.CO) // 4人卓: BTNの次はCO
+
+      const importPositionsByPlayer = new Map(importActions.map(a => [a.playerId, a.position]))
+      expect(importPositionsByPlayer).toEqual(positionsByPlayer)
     })
   })
 })
