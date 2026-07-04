@@ -55,11 +55,20 @@ export type Item = SessionResultsEvent['Items'][0]
 // ===============================
 
 // Session type - kept as interface for better type inference
+//
+// `players` is intentionally a ReadonlyMap: consumers must not call
+// `.set()`/`.delete()`/`.clear()` on it directly. PokerChaseService's own
+// session is backed by a class that only mutates players through an explicit
+// `setPlayer()` method (so persistence is triggered on every write, with no
+// way to bypass it). Standalone Session objects built elsewhere (e.g.
+// EntityConverter's local working copy, HandLogExporter's per-export
+// snapshot) are plain objects with a real Map underneath and are free to
+// build that Map however they like before handing it out as a Session.
 export interface Session {
   id?: string
   battleType?: BattleType
   name?: string
-  players: Map<number, { name: string, rank: string }>  // Session-based player information
+  players: ReadonlyMap<number, { name: string, rank: string }>  // Session-based player information
   reset: () => void
 }
 

@@ -47,18 +47,18 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           // 誤ってバッファがクリアされてしまう
           // （実データで933件中785件の不一致がこのケース、ハンド損失2.9%の主因）。
           this.service.resetSession()
-          this.service.session.id = event.Id
-          this.service.session.battleType = event.BattleType
+          this.service.session.setId(event.Id)
+          this.service.session.setBattleType(event.BattleType)
           this.progress = undefined
           break
         case ApiType.EVT_SESSION_DETAILS:
-          this.service.session.name = event.Name
+          this.service.session.setName(event.Name)
           break
         case ApiType.EVT_PLAYER_SEAT_ASSIGNED:
           // プレイヤー名とランクをセッションに保存
           if (event.TableUsers) {
             event.TableUsers.forEach(tableUser => {
-              this.service.session.players.set(tableUser.UserId, {
+              this.service.session.setPlayer(tableUser.UserId, {
                 name: tableUser.UserName,
                 rank: tableUser.Rank.RankId
               })
@@ -68,7 +68,7 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
         case ApiType.EVT_PLAYER_JOIN:
           // 途中参加者のプレイヤー名とランクをセッションに保存
           if (event.JoinUser) {
-            this.service.session.players.set(event.JoinUser.UserId, {
+            this.service.session.setPlayer(event.JoinUser.UserId, {
               name: event.JoinUser.UserName,
               rank: event.JoinUser.Rank.RankId
             })

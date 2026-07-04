@@ -23,43 +23,49 @@ global.chrome = {
   },
   storage: {
     sync: {
-      get: jest.fn((keys, callback) => {
+      get: jest.fn((keys, callback?) => {
+        const result = keys ?
+          (Array.isArray(keys) ?
+            keys.reduce((acc, key) => ({ ...acc, [key]: chromeStorageMockData.sync[key] }), {}) :
+            typeof keys === 'string' ? { [keys]: chromeStorageMockData.sync[keys] } :
+            chromeStorageMockData.sync) :
+          chromeStorageMockData.sync
         if (typeof callback === 'function') {
-          const result = keys ? 
-            (Array.isArray(keys) ? 
-              keys.reduce((acc, key) => ({ ...acc, [key]: chromeStorageMockData.sync[key] }), {}) :
-              typeof keys === 'string' ? { [keys]: chromeStorageMockData.sync[keys] } : 
-              chromeStorageMockData.sync) :
-            chromeStorageMockData.sync
           callback(result)
+          return undefined
         }
-        return Promise.resolve({})
+        // Promise-based call style (no callback): resolve with the actual looked-up data
+        return Promise.resolve(result)
       }),
-      set: jest.fn((items, callback) => {
+      set: jest.fn((items, callback?) => {
         Object.assign(chromeStorageMockData.sync, items)
         if (typeof callback === 'function') {
           callback()
+          return undefined
         }
         return Promise.resolve()
       }),
     },
     local: {
-      get: jest.fn((keys, callback) => {
+      get: jest.fn((keys, callback?) => {
+        const result = keys ?
+          (Array.isArray(keys) ?
+            keys.reduce((acc, key) => ({ ...acc, [key]: chromeStorageMockData.local[key] }), {}) :
+            typeof keys === 'string' ? { [keys]: chromeStorageMockData.local[keys] } :
+            chromeStorageMockData.local) :
+          chromeStorageMockData.local
         if (typeof callback === 'function') {
-          const result = keys ? 
-            (Array.isArray(keys) ? 
-              keys.reduce((acc, key) => ({ ...acc, [key]: chromeStorageMockData.local[key] }), {}) :
-              typeof keys === 'string' ? { [keys]: chromeStorageMockData.local[keys] } : 
-              chromeStorageMockData.local) :
-            chromeStorageMockData.local
           callback(result)
+          return undefined
         }
-        return Promise.resolve({})
+        // Promise-based call style (no callback): resolve with the actual looked-up data
+        return Promise.resolve(result)
       }),
-      set: jest.fn((items, callback) => {
+      set: jest.fn((items, callback?) => {
         Object.assign(chromeStorageMockData.local, items)
         if (typeof callback === 'function') {
           callback()
+          return undefined
         }
         return Promise.resolve()
       }),

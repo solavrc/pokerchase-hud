@@ -285,14 +285,14 @@ class AutoSyncService {
               // セッション終了イベント: 次のセッションのためにリセット
               service.session.reset()
             } else if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
-              service.session.id = event.Id
-              service.session.battleType = event.BattleType
+              service.session.setId(event.Id)
+              service.session.setBattleType(event.BattleType)
             } else if (isApiEventType(event, ApiType.EVT_SESSION_DETAILS)) {
-              service.session.name = event.Name
+              service.session.setName(event.Name)
             } else if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED)) {
               if (event.TableUsers) {
                 event.TableUsers.forEach(tableUser => {
-                  service.session.players.set(tableUser.UserId, {
+                  service.session.setPlayer(tableUser.UserId, {
                     name: tableUser.UserName,
                     rank: tableUser.Rank.RankId
                   })
@@ -300,7 +300,7 @@ class AutoSyncService {
               }
             } else if (isApiEventType(event, ApiType.EVT_PLAYER_JOIN)) {
               if (event.JoinUser) {
-                service.session.players.set(event.JoinUser.UserId, {
+                service.session.setPlayer(event.JoinUser.UserId, {
                   name: event.JoinUser.UserName,
                   rank: event.JoinUser.Rank.RankId
                 })

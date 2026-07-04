@@ -17,20 +17,21 @@ function createSession(
   players: Array<{ userId: number; name: string; rank?: string }>,
   opts?: { battleType?: number; name?: string; id?: string }
 ): Session {
+  const playersMap = new Map<number, { name: string, rank: string }>()
+  for (const p of players) {
+    playersMap.set(p.userId, { name: p.name, rank: p.rank ?? 'Unknown' })
+  }
   const session: Session = {
     id: opts?.id,
     battleType: opts?.battleType ?? BattleType.SIT_AND_GO,
     name: opts?.name ?? 'TestTournament',
-    players: new Map(),
+    players: playersMap,
     reset() {
       this.id = undefined
       this.battleType = undefined
       this.name = undefined
-      this.players.clear()
+      playersMap.clear()
     }
-  }
-  for (const p of players) {
-    session.players.set(p.userId, { name: p.name, rank: p.rank ?? 'Unknown' })
   }
   return session
 }
