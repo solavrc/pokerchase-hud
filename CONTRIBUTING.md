@@ -272,6 +272,8 @@ These are the flags defined in the ActionDetail enum (`src/types/game.ts`):
 - `$3BET` / `$3BET_CHANCE` - 3-betting (note the $ prefix)
 - `$3BET_FOLD` / `$3BET_FOLD_CHANCE` - Folding to 3-bet
 - `DONK_BET` / `DONK_BET_CHANCE` - Donk betting
+- `STEAL` / `STEAL_CHANCE` - Attempting to steal from late position (CO/BTN/SB)
+- `FOLD_TO_STEAL` / `FOLD_TO_STEAL_CHANCE` - Blinds folding to a steal raise
 - `RIVER_CALL` / `RIVER_CALL_WON` - Calling on the river / winning after a river call
 
 #### Adding New Flags
