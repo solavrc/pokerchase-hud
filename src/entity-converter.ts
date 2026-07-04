@@ -9,6 +9,7 @@ import {
   ActionDetail,
   ActionType,
   ApiType,
+  BetStatusType,
   PhaseType,
   Position,
   isApiEventType,
@@ -264,10 +265,19 @@ export class EntityConverter {
           // 新しいフェーズの作成
           const newPhase = this.getPhaseFromProgress(event.Progress)
           if (newPhase !== null) {
+            // このストリートに進んだプレイヤー（BET_ABLE=フォールドしていない）のみを
+            // seatUserIdsに含める（WriteEntityStreamと同一ロジック）。
+            // handState.hand.seatUserIds（配札時の全員）をそのまま使うと、
+            // プリフロップで既にフォールドしたプレイヤーもこのフェーズを
+            // 「見た」ことになり、WTSD/WWSFの分母が水増しされる。
+            const seatUserIds = (event.Player ? [event.Player, ...event.OtherPlayers] : event.OtherPlayers)
+              .filter(({ BetStatus }) => BetStatus === BetStatusType.BET_ABLE)
+              .sort((a, b) => a.SeatIndex - b.SeatIndex)
+              .map(({ SeatIndex }) => handState.hand.seatUserIds.at(SeatIndex)!)
             handState.phases.push({
               handId: 0, // EVT_HAND_RESULTSで更新される
               phase: newPhase,
-              seatUserIds: handState.hand.seatUserIds,
+              seatUserIds,
               communityCards: event.CommunityCards || []
             })
           }
@@ -309,6 +319,15 @@ export class EntityConverter {
             .map(result => result.UserId) || []
           handState.hand.results = event.Results || []
           handState.hand.approxTimestamp = event.timestamp
+
+          // RIVER_CALLで勝利したアクションにRIVER_CALL_WONを付与する
+          // （WriteEntityStreamと同一ロジック。River Call Accuracy統計が参照する）
+          handState.actions.forEach(action => {
+            if (action.actionDetails.includes(ActionDetail.RIVER_CALL) &&
+                handState.hand.winningPlayerIds.includes(action.playerId)) {
+              action.actionDetails.push(ActionDetail.RIVER_CALL_WON)
+            }
+          })
           break
         }
       }
