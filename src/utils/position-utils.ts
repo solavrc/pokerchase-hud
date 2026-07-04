@@ -98,6 +98,14 @@ export function getPositionMap(seatUserIds: number[], game: PositionGameInfo): M
   const earlyToLate: number[] = []
   for (let offset = 1; offset < seatCount; offset++) {
     const seat = (BigBlindSeat + offset) % seatCount
+    // 通常ジオメトリではボタン座席で走査を打ち切る。ボタンより後ろ（BTN〜BBの間）に
+    // 配られたプレイヤーが座るケース（dead button等。実データ31,916件中213件で観測）では、
+    // その席はボタンの直前に行動する席ではないため、CO/HJ/UTGのラベル対象に含めない
+    // （旧実装と同一の挙動。ここを「スキップして続行」にするとBTN後方の席が
+    // reverse後の先頭に来てCOラベルを横取りし、実プレイヤーのSTL/FTSがズレる）。
+    // ButtonSeat === BigBlindSeat の防御ケースのみ打ち切りが機能しないため、
+    // specialSeatsスキップで1周収集する。
+    if (seat === ButtonSeat && ButtonSeat !== BigBlindSeat) break
     if (specialSeats.has(seat)) continue
     const playerId = seatOccupant(seat)
     if (playerId !== undefined) {
@@ -106,11 +114,12 @@ export function getPositionMap(seatUserIds: number[], game: PositionGameInfo): M
   }
 
   // BTNに近い方から順にCO, HJ, UTG, ...をラベル付けする
+  // （既にBB/SB/BTNのラベルを持つプレイヤーは上書きしない）
   const lateToEarlyLabels = [Position.CO, Position.HJ, Position.UTG]
   const lateToEarly = earlyToLate.slice().reverse()
   lateToEarly.forEach((playerId, index) => {
     const label = lateToEarlyLabels[index]
-    if (label !== undefined) {
+    if (label !== undefined && !positions.has(playerId)) {
       positions.set(playerId, label)
     }
   })

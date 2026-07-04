@@ -149,4 +149,41 @@ describe('getPositionMap', () => {
     expect(positions.has(30)).toBe(false)
     expect(positions.size).toBe(5)
   })
+
+  // dead button等でボタンより後ろ（BTN〜BBの間）に配られたプレイヤーが座るケース。
+  // 実データ31,916件中213件で観測された実在のジオメトリ。
+  // このプレイヤーはボタンの直前に行動する席ではないため、COラベルを与えてはいけない
+  // （与えると本来のCOのラベルがずれ、STL/FTSの実測値がオラクルと乖離する回帰が発生した）。
+  it('BTNとブラインドの間に座る配られたプレイヤーにはポジションラベルを与えない（実データ観測ジオメトリ）', () => {
+    // 実データ観測例: 6人フル、Button=3, SB=5, BB=0 → seat4がBTNとSBの間
+    const seatUserIds = [100, 200, 300, 400, 500, 600]
+    const game = { ButtonSeat: 3, SmallBlindSeat: 5, BigBlindSeat: 0 }
+
+    const positions = getPositionMap(seatUserIds, game)
+
+    expect(positions.get(100)).toBe(Position.BB)
+    expect(positions.get(600)).toBe(Position.SB)
+    expect(positions.get(400)).toBe(Position.BTN)
+    // BB+1（seat1）からボタン（seat3）の手前まで: seat1, seat2 → 反転して CO=seat2, HJ=seat1
+    expect(positions.get(300)).toBe(Position.CO)
+    expect(positions.get(200)).toBe(Position.HJ)
+    // seat4（BTNとSBの間）はラベルなし = ポジション統計の対象外
+    expect(positions.has(500)).toBe(false)
+    expect(positions.size).toBe(5)
+  })
+
+  it('SBとBBの間に座る配られたプレイヤーにもラベルを与えない（実データ観測ジオメトリ）', () => {
+    // 実データ観測例: [-1,-1,A,B,X,C]、Button=2, SB=3, BB=5 → seat4がSBとBBの間
+    const seatUserIds = [-1, -1, 21, 22, 23, 24]
+    const game = { ButtonSeat: 2, SmallBlindSeat: 3, BigBlindSeat: 5 }
+
+    const positions = getPositionMap(seatUserIds, game)
+
+    expect(positions.get(24)).toBe(Position.BB)
+    expect(positions.get(22)).toBe(Position.SB)
+    expect(positions.get(21)).toBe(Position.BTN)
+    // BB+1（seat0）から: seat0=-1, seat1=-1, seat2=ButtonSeatで打ち切り → 収集なし
+    expect(positions.has(23)).toBe(false)
+    expect(positions.size).toBe(3)
+  })
 })
