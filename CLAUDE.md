@@ -121,7 +121,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   - Always run tests and type checking after code changes
   - Use `npm run test` and `npm run typecheck` commands
   - Ensure all tests pass before completing tasks
-  - Current status: All 338 tests passing (39 suites) ✅
+  - All tests must pass; run `npm run test` to verify the current suite/test counts (grows over time — don't hardcode numbers here)
 - **Build Commands**:
   - `npm run build` - Production build
   - `npm run typecheck` - TypeScript validation
@@ -287,7 +287,10 @@ Statistics Refresh (batch mode)
 - **PokerStars hand history format**: `calls` shows additional call amount (not total bet). `Dealt to` is hero-only. Summary uses `folded on the Flop/Turn/River`. See [docs/pokerstars-export.md](docs/pokerstars-export.md).
 - **Side pot handling**: `collected X from main pot` / `from side pot` / `from side pot-N` (PS format). Winner determination uses `HandRanking` with `RewardChip` fallback. Main pot winner may not be eligible for side pots (e.g., ante all-in). Relies on invariant `Pot + sum(SidePot) == sum(RewardChip)`.
 - **Ante all-in chip estimation**: When multiple players have `Chip=0, BetChip=0`, `Progress.Pot/SidePot` tier differences are used to reconstruct actual contributions (`buildAnteAllInChipsMap`). `EVT_HAND_RESULTS.RewardChip` resolves correct seat assignment (`fixAnteAllInChips`). Seat index ≠ stack order.
-- **BB action skip**: PokerChase skips BB action when all other players are all-in or folded. `getMissingBBCheck` inserts `checks` (excluded for `NO_CALL` wins).
+- **BB action skip**: PokerChase skips BB action when all other players are all-in or folded. Measured on the 393,830-event real-data audit: **31.9% of hands (9,979/31,301)** hit this path (e.g. walks) — a mainline case, not a rare edge case. `getMissingBBCheck` inserts `checks` (excluded for `NO_CALL` wins).
+- **Winner definition (unified, #97)**: Both pipelines (`EntityConverter` and `WriteEntityStream`) define a hand winner as `RewardChip>0` (PT4-style "won any portion of the pot"), not `HandRanking===1` — the latter misses legitimate side-pot winners whose hand wasn't the overall best. See `src/entity-converter.ts` and `src/streams/write-entity-stream.ts`.
+- **Position derivation (#95)**: Positions are derived from explicit `Game.ButtonSeat`/`SmallBlindSeat`/`BigBlindSeat` via `getPositionMap()` (`src/utils/position-utils.ts`), not by rotating `seatUserIds` — the rotation heuristic mislabeled positions whenever a seat was empty (58% of real hands have at least one empty seat).
+- **SHOWDOWN phase gating (#94)**: A SHOWDOWN phase requires **≥2 showdown-participant `RankType`s** (`isShowdownParticipant()` in `src/types/game.ts`: ranks 0-9 or `SHOWDOWN_MUCK`/11), not merely `Results.length > 1` — `NO_CALL`/`FOLD_OPEN` reveals don't count.
 - **HandLogExporter batch optimization**: `exportMultipleHands` prefetches all hands and API events in 2 DB queries, then processes in memory. Avoids N+1 query pattern (previously 100 hands = 300+ DB queries). Single-hand `exportHand` retains per-hand DB queries for simplicity.
 - **Popup ↔ Background state synchronization**: Long-running operations (export/import/rebuild) track state in `currentOperationState` global variable in background.ts. Popup queries via `getOperationState` on mount to restore UI after close/reopen. Progress messages (`processing` state) must also set the active operation state (not just `started`), because popup may miss `started` during close/reopen window.
 - **Optimistic UI updates**: Button click handlers set local state immediately before sending message to background, then revert if background rejects. Prevents race window where buttons remain clickable between click and first progress message.

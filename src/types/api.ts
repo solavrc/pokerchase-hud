@@ -483,6 +483,7 @@ export const apiEventSchemas = {
     TableId: z.union([z.string(), z.int()]).optional().describe('テーブルID。2026-03-24以降に追加された新フィールド（PR#49でスキーマ対応）。726セッション中2件のみ出現（MTT: 19346658, Ring: 0）。観測範囲では全てint型だがAPI仕様上string型の可能性を防御的に許容。今後出現頻度が増える可能性あり'),
     IsOverDailyLimit: z.boolean().optional().describe('デイリー制限超過フラグ。2026-03-24以降に追加された新フィールド。726セッションでTrue未観測'),
     IsChangeDay: z.boolean().optional().describe('日付変更フラグ。2026-03-24以降に追加された新フィールド。726セッションでTrue未観測'),
+    WeeklyRewards: z.array(z.unknown()).optional().describe('週間報酬。734セッション中7件のみ出現、全て空配列[]。要素の型は未観測のため防御的にunknown[]とする'),
   }).describe('セッション終了 - 1セッション1回発行。最終順位(Ranking)、ランク変動(RankReward)を含む。background.tsはこのイベントでautoSyncService.onGameSessionEnd()をトリガー'),
 
   [310]: baseSchema.extend({
