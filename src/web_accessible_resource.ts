@@ -12,15 +12,6 @@ const OriginalWebSocket = window.WebSocket
 function createWebSocket(...args: ConstructorParameters<typeof WebSocket>): WebSocket {
   const instance: WebSocket = new OriginalWebSocket(...args)
 
-  const connectionUrl = args[0]
-  const connectionProtocols = args.length > 1 ? args[1] : undefined
-
-  let wasConnected = false
-
-  instance.addEventListener('open', () => {
-    wasConnected = true
-  })
-
   instance.addEventListener('message', ({ data }) => {
     if (data instanceof ArrayBuffer) {
       try {
@@ -44,14 +35,8 @@ function createWebSocket(...args: ConstructorParameters<typeof WebSocket>): WebS
     }
   })
 
-  instance.addEventListener('close', (event) => {
-    if (wasConnected && !event.wasClean) {
-      // 予期せず接続が閉じられた、再接続を試しています...
-      setTimeout(() => {
-        new WebSocket(connectionUrl, connectionProtocols)
-      }, 500)
-    }
-  })
+  // 再接続はゲームクライアント自身に任せる。
+  // 拡張側で new WebSocket() しても参照を保持できず、ゲームが関知しない接続が増えるだけのため行わない。
 
   return instance
 }
