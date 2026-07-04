@@ -4,7 +4,6 @@
  * @see https://developer.chrome.com/docs/extensions/reference/api/storage
  * @see https://zenn.dev/dotdotdot/articles/b123e67552fe3c
  */
-import process from 'process'
 import PokerChaseService, {
   ApiEvent,
   ApiType,
@@ -54,8 +53,6 @@ declare global {
     statsRegistry: StatsRegistry
   }
 }
-
-self.process = process
 
 const db = new PokerChaseDB(self.indexedDB, self.IDBKeyRange)
 const service = new PokerChaseService({ db })

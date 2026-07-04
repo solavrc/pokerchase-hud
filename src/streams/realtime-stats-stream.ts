@@ -5,8 +5,8 @@
  * Operates only on the current hand and only for the hero player
  */
 
-import { Transform } from 'stream'
-import type { ApiHandEvent } from '../types'
+import { SimpleTransform } from './simple-transform'
+import type { ApiEvent, ApiHandEvent } from '../types'
 import { ApiType, PhaseType } from '../types'
 import { RealTimeStatsService } from '../realtime-stats/realtime-stats-service'
 import type { RealTimeStats, AllPlayersRealTimeStats } from '../realtime-stats/realtime-stats-service'
@@ -20,7 +20,7 @@ import { setHandImprovementHeroHoleCards } from '../realtime-stats'
  * 2. Community cards are present (flop or later)
  * 3. Session is active (not ended)
  */
-export class RealTimeStatsStream extends Transform {
+export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: number; stats: AllPlayersRealTimeStats; timestamp: number }> {
   private heroPlayerId?: number
   private heroHoleCards?: number[]
   private currentHandId?: number
@@ -36,10 +36,10 @@ export class RealTimeStatsStream extends Transform {
   private seatUserIds: number[] = []  // Track user IDs for each seat
 
   constructor() {
-    super({ objectMode: true })
+    super()
   }
 
-  _transform(event: ApiHandEvent, _encoding: string, callback: Function) {
+  protected async transform(event: ApiEvent): Promise<void> {
     try {
       // Handle session events separately due to TypeScript limitations
       const eventType = (event as any).ApiTypeId
@@ -238,10 +238,8 @@ export class RealTimeStatsStream extends Transform {
           }
           break
       }
-
-      callback()
     } catch (error) {
-      callback(error as Error)
+      this.handleError(error)
     }
   }
 

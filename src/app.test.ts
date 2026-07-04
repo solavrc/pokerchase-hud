@@ -1,7 +1,6 @@
 import PokerChaseService, { PokerChaseDB } from '../src/app'
 import type { ApiEvent, PlayerStats } from '../src/app'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
-import { Readable } from 'stream'
 
 export const event_timeline: ApiEvent[] = [
   { "ApiTypeId": 201, "Code": 0, "BattleType": 0, "Id": "stage000_003", "IsRetire": false, "timestamp": 1752427303234 },
@@ -515,14 +514,11 @@ test('ログから各プレイヤーのスタッツを計算できる', async ()
   const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
   const service = new PokerChaseService({ db: dbMock })
 
-  const actual = await new Promise<PlayerStats[][]>((resolve, reject) => {
-    const results: PlayerStats[][] = []
-    service.statsOutputStream
-      .on('data', (hand: PlayerStats[]) => results.push(hand))
-      .on('end', () => resolve(results))
-      .on('error', (error: Error) => reject(error))
-    Readable.from(event_timeline).pipe(service.handAggregateStream)
-  })
+  const results: PlayerStats[][] = []
+  service.statsOutputStream.on('data', (hand: PlayerStats[]) => results.push(hand))
+  for (const event of event_timeline) service.handAggregateStream.write(event)
+  await service.handAggregateStream.whenIdle()
+  const actual = results
   expect(withoutStealStats(actual)).toStrictEqual(expected)
 
   const finalHand = actual.at(-1)!

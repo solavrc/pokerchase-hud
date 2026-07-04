@@ -28,7 +28,12 @@ const options: BuildOptions = {
   treeShaking: true,
   legalComments: 'none',
   define: {
-    'process.env.NODE_ENV': '"production"'
+    'process.env.NODE_ENV': '"production"',
+    // ReadEntityStreamのキャッシュ無効化フラグ。ブラウザ（Service Worker）実行時には
+    // 環境変数を設定する手段がそもそも無いため、ビルド時にfalseへ畳み込むことで
+    // `process`オブジェクトへのランタイム依存を無くす（Node上のjestではts-jest経由の
+    // ためこのdefineは適用されず、実際の`process.env.DEBUG_NO_CACHE`を参照できる）。
+    'process.env.DEBUG_NO_CACHE': 'false'
   },
   external: [],
   plugins: [{
@@ -45,18 +50,8 @@ const options: BuildOptions = {
     setup(build) {
       const __filename = fileURLToPath(import.meta.url)
       const __dirname = dirname(__filename)
-      build.onResolve({ filter: /^process$/ }, () => {
-        /** `browser.js` OR `index.js` */
-        return { path: resolve(__dirname, 'node_modules/process/browser.js') }
-      })
       build.onResolve({ filter: /^events$/ }, () => {
         return { path: resolve(__dirname, 'node_modules/events/events.js') }
-      })
-      build.onResolve({ filter: /^buffer$/ }, () => {
-        return { path: resolve(__dirname, 'node_modules/buffer/index.js') }
-      })
-      build.onResolve({ filter: /^stream$/ }, () => {
-        return { path: resolve(__dirname, 'node_modules/stream-browserify/index.js') }
       })
     }
   }]

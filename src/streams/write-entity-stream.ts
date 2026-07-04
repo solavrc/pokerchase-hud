@@ -1,4 +1,4 @@
-import { Transform } from 'stream'
+import { SimpleTransform } from './simple-transform'
 import type PokerChaseService from '../services/poker-chase-service'
 import {
   ActionDetail,
@@ -20,8 +20,6 @@ import { getPositionMap } from '../utils/position-utils'
 import { defaultRegistry } from '../stats'
 import type { ErrorContext } from '../types/errors'
 
-type TransformCallback<T> = (error?: Error | null, data?: T) => void
-
 /**
  * エンティティ書き込みStream（パイプライン第2段階）
  *
@@ -36,13 +34,13 @@ type TransformCallback<T> = (error?: Error | null, data?: T) => void
  * 入力: 1ハンド分のApiHandEvent配列
  * 出力: プレイヤーIDの配列（seatUserIds） → ReadEntityStream
  */
-export class WriteEntityStream extends Transform {
+export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]> {
   private service: PokerChaseService
   constructor(service: PokerChaseService) {
-    super({ objectMode: true })
+    super()
     this.service = service
   }
-  async _transform(events: ApiHandEvent[], _: string, callback: TransformCallback<number[]>) {
+  protected async transform(events: ApiHandEvent[]): Promise<void> {
     try {
       const { hand, actions, phases } = this.toHandState(events)
 
@@ -53,19 +51,17 @@ export class WriteEntityStream extends Transform {
           this.service.db.phases.bulkPut(phases)
         ])
       })
-      callback(null, hand.seatUserIds)
+      this.push(hand.seatUserIds)
     } catch (error: unknown) {
       const context: ErrorContext = {
         streamName: 'WriteEntityStream',
         handId: events.find(e => e.ApiTypeId === ApiType.EVT_HAND_RESULTS)?.HandId,
         eventsCount: events.length
       }
-      const errorCallback = ErrorHandler.createStreamErrorCallback(
-        callback,
-        'WriteEntityStream',
-        context
-      )
-      errorCallback(error)
+      const appError = ErrorHandler.handleStreamError(error, 'WriteEntityStream', context)
+      if (this.listenerCount('error') > 0) {
+        this.emit('error', appError)
+      }
     }
   }
   private toHandState = (events: ApiHandEvent[]): HandState => {
