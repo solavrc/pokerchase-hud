@@ -39,9 +39,19 @@ export class AggregateEventsStream extends Transform {
 
       switch (event.ApiTypeId) {
         case ApiType.EVT_ENTRY_QUEUED:
+          // セッション境界: MTTではテーブル移動ごとに再発行されるため、進行中のハンド
+          // （EVT_DEAL〜EVT_HAND_RESULTSの間）に割り込むことがある。テーブル移動後も
+          // 同じハンドの残りのアクションは新しい席番号で配信され続けるため、
+          // this.events（ハンドバッファ）はクリアしてはいけない
+          // （クリアすると移動を挟むハンドが丸ごと失われる）。
+          // 一方 this.progress（移動前の席番号を基準にしたNextActionSeat）は移動後には
+          // 無効なので、ここでリセットしないと直後のEVT_ACTIONが席不一致とみなされ、
+          // 誤ってバッファがクリアされてしまう
+          // （実データで933件中785件の不一致がこのケース、ハンド損失2.9%の主因）。
           this.service.resetSession()
           this.service.session.id = event.Id
           this.service.session.battleType = event.BattleType
+          this.progress = undefined
           break
         case ApiType.EVT_SESSION_DETAILS:
           this.service.session.name = event.Name
