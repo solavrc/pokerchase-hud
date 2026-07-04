@@ -14,7 +14,6 @@ import type { ApiEvent, Session } from '../src/types'
 import PokerChaseService, { PokerChaseDB } from '../src/app'
 import type { Action } from '../src/types'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
-import { Readable } from 'stream'
 
 // ヘルパー関数：型安全にイベントを作成
 function createEvent<T extends ApiType>(
@@ -46,15 +45,16 @@ function createEvent<T extends ApiType>(
  * ライブ記録パイプライン（WriteEntityStream）と同一の書き込みを行い、
  * IndexedDBへの反映を待ってから読み取り結果を返すヘルパー。
  *
- * 背景（デフレーク）: `handAggregateStream`の'finish'イベントは、その書き込み側
- * （Writable）の完了のみを保証する。実際のDexie書き込みはpipeで繋がった
- * 下流のWriteEntityStreamの非同期`_transform`内で行われるため、
- * 'finish'直後に`dbMock.<table>`を読むと、まだ書き込みが終わっていない
- * （テーブルが空、または一部の行しか反映されていない）状態を読んでしまう
+ * 背景（デフレーク）: 以前は`handAggregateStream`の'finish'イベント（Node Transform時代）
+ * が上流Writableの完了のみを保証し、pipeで繋がった下流のWriteEntityStreamの非同期
+ * transform内で行われる実際のDexie書き込みの完了は保証されなかった。そのため
+ * 'finish'直後に`dbMock.<table>`を読むと書き込み未完了の状態を読んでしまう
  * レースコンディションがあった。
  *
- * このヘルパーはevents をpipeし、'finish'を待った後、`isReady`が真になるまで
- * 対象テーブルを短い間隔でポーリングする。タイムアウト時は分かりやすいエラーで失敗する。
+ * 現在は`SimpleTransform.whenIdle()`がpipe()チェーンを下流まで連鎖的に辿って
+ * 待つため、`service.handAggregateStream.whenIdle()`を待てば下流の書き込みも
+ * 完了している。念のためのセーフティネットとして、`isReady`が真になるまでの
+ * 短い間隔のポーリングは残す（タイムアウト時は分かりやすいエラーで失敗する）。
  */
 async function pipeEventsAndWaitForReady<T>(
   service: PokerChaseService,
@@ -64,11 +64,7 @@ async function pipeEventsAndWaitForReady<T>(
 ): Promise<T> {
   const { timeoutMs = 5000, intervalMs = 50, description = 'expected rows' } = options
 
-  await new Promise<void>((resolve, reject) => {
-    service.handAggregateStream
-      .on('finish', () => resolve())
-      .on('error', (error: Error) => reject(error))
-  })
+  await service.handAggregateStream.whenIdle()
 
   const startedAt = Date.now()
   let lastResult = await read()
@@ -95,7 +91,7 @@ async function pipeEventsAndWaitForActions(
   events: ApiEvent[],
   { handId, minCount = 1 }: { handId: number, minCount?: number }
 ): Promise<Action[]> {
-  Readable.from(events).pipe(service.handAggregateStream)
+  for (const event of events) service.handAggregateStream.write(event)
   const actions = await pipeEventsAndWaitForReady(
     service,
     async () => {
@@ -2163,7 +2159,7 @@ describe('EntityConverter', () => {
       const importResult = converter.convertEventsToEntities(events)
       const importPhases = importResult.phases.slice().sort((a, b) => a.phase - b.phase)
 
-      Readable.from(events).pipe(service.handAggregateStream)
+      for (const event of events) service.handAggregateStream.write(event)
       const livePhases = (await pipeEventsAndWaitForReady(
         service,
         async () => {
@@ -2308,7 +2304,7 @@ describe('EntityConverter', () => {
       const importResult = converter.convertEventsToEntities(events)
       const importHand = importResult.hands.find(h => h.id === 269804225)
 
-      Readable.from(events).pipe(service.handAggregateStream)
+      for (const event of events) service.handAggregateStream.write(event)
       const liveHand = await pipeEventsAndWaitForReady(
         service,
         async () => {
@@ -2784,7 +2780,7 @@ describe('EntityConverter', () => {
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
       const service = new PokerChaseService({ db: dbMock })
       await service.ready
-      Readable.from(events).pipe(service.handAggregateStream)
+      for (const event of events) service.handAggregateStream.write(event)
       const livePhases = await pipeEventsAndWaitForReady(
         service,
         async () => {

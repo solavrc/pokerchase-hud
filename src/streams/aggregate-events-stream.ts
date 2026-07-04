@@ -1,11 +1,9 @@
-import { Transform } from 'stream'
+import { SimpleTransform } from './simple-transform'
 import type PokerChaseService from '../services/poker-chase-service'
 import { ApiType } from '../types'
 import type { ApiEvent, ApiHandEvent, Progress } from '../types'
 import { ErrorHandler } from '../utils/error-handler'
 import { setHandImprovementHeroHoleCards } from '../realtime-stats'
-
-type TransformCallback<T> = (error?: Error | null, data?: T) => void
 
 /**
  * APIイベント集約処理Stream（パイプライン第1段階）
@@ -20,17 +18,17 @@ type TransformCallback<T> = (error?: Error | null, data?: T) => void
  *
  * 出力: 1ハンド分のApiHandEvent配列 → WriteEntityStream
  */
-export class AggregateEventsStream extends Transform {
+export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]> {
   private service: PokerChaseService
   private events: ApiHandEvent[] = []
   private progress?: Progress
   private lastTimestamp = 0
 
   constructor(service: PokerChaseService) {
-    super({ objectMode: true })
+    super()
     this.service = service
   }
-  _transform(event: ApiEvent, _: string, callback: TransformCallback<ApiEvent[]>) {
+  protected async transform(event: ApiEvent): Promise<void> {
     try {
       /** 順序整合性チェック */
       if (this.lastTimestamp > event.timestamp!)
@@ -128,18 +126,19 @@ export class AggregateEventsStream extends Transform {
           }
           break
       }
-      callback()
     } catch (error: unknown) {
-      this.handleError(error, callback)
+      this.handleError(error)
     }
   }
 
-  private handleError(error: unknown, callback: TransformCallback<ApiEvent[]>) {
-    const errorCallback = ErrorHandler.createStreamErrorCallback(
-      callback,
+  protected override handleError(error: unknown): void {
+    const appError = ErrorHandler.handleStreamError(
+      error,
       'AggregateEventsStream',
       { lastTimestamp: this.lastTimestamp, eventsCount: this.events.length }
     )
-    errorCallback(error)
+    if (this.listenerCount('error') > 0) {
+      this.emit('error', appError)
+    }
   }
 }

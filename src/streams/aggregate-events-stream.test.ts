@@ -17,7 +17,6 @@ import PokerChaseService, { PokerChaseDB } from '../app'
 import type { ApiEvent } from '../app'
 import { ApiType } from '../types'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
-import { Readable } from 'stream'
 
 describe('AggregateEventsStream', () => {
   test('EVT_ENTRY_QUEUEDがハンド途中（テーブル移動）に割り込んでも、そのハンドは欠損なく出力される', async () => {
@@ -99,14 +98,10 @@ describe('AggregateEventsStream', () => {
     const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
     const service = new PokerChaseService({ db: dbMock })
 
-    const emittedHands = await new Promise<ApiEvent[][]>((resolve, reject) => {
-      const hands: ApiEvent[][] = []
-      service.handAggregateStream
-        .on('data', (hand: ApiEvent[]) => hands.push(hand))
-        .on('end', () => resolve(hands))
-        .on('error', (error: Error) => reject(error))
-      Readable.from(events).pipe(service.handAggregateStream)
-    })
+    const emittedHands: ApiEvent[][] = []
+    service.handAggregateStream.on('data', (hand: ApiEvent[]) => emittedHands.push(hand))
+    for (const event of events) service.handAggregateStream.write(event)
+    await service.handAggregateStream.whenIdle()
 
     // テーブル移動を挟んだハンドが、DEALからHAND_RESULTSまで欠損なく1つ出力される
     expect(emittedHands.length).toBe(1)
@@ -158,14 +153,10 @@ describe('AggregateEventsStream', () => {
     const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
     const service = new PokerChaseService({ db: dbMock })
 
-    const emittedHands = await new Promise<ApiEvent[][]>((resolve, reject) => {
-      const hands: ApiEvent[][] = []
-      service.handAggregateStream
-        .on('data', (hand: ApiEvent[]) => hands.push(hand))
-        .on('end', () => resolve(hands))
-        .on('error', (error: Error) => reject(error))
-      Readable.from(events).pipe(service.handAggregateStream)
-    })
+    const emittedHands: ApiEvent[][] = []
+    service.handAggregateStream.on('data', (hand: ApiEvent[]) => emittedHands.push(hand))
+    for (const event of events) service.handAggregateStream.write(event)
+    await service.handAggregateStream.whenIdle()
 
     expect(emittedHands.length).toBe(1)
     expect((emittedHands[0]!.at(-1) as { HandId: number }).HandId).toBe(777)

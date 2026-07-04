@@ -1,4 +1,4 @@
-import { Transform } from 'stream'
+import { SimpleTransform } from './simple-transform'
 import type PokerChaseService from '../services/poker-chase-service'
 import {
   PhaseType
@@ -12,8 +12,6 @@ import type {
 import { ErrorHandler } from '../utils/error-handler'
 import { defaultRegistry } from '../stats'
 import type { ErrorContext } from '../types/errors'
-
-type TransformCallback<T> = (error?: Error | null, data?: T) => void
 
 /**
  * 統計計算Stream（パイプライン第3段階）
@@ -29,14 +27,14 @@ type TransformCallback<T> = (error?: Error | null, data?: T) => void
  * 入力: プレイヤーIDの配列（seatUserIds）
  * 出力: PlayerStats配列 → HUD（background.ts経由）
  */
-export class ReadEntityStream extends Transform {
+export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
   private service: PokerChaseService
   private statsCache: Map<string, { stats: PlayerStats[], timestamp: number }> = new Map()
   private readonly CACHE_DURATION_MS = 5000 // 5秒のキャッシュ
   private readonly MAX_CACHE_SIZE = 50 // キャッシュエントリの最大数
 
   constructor(service: PokerChaseService) {
-    super({ objectMode: true })
+    super()
     this.service = service
   }
 
@@ -73,11 +71,10 @@ export class ReadEntityStream extends Transform {
     }
   }
 
-  async _transform(seatUserIds: number[], _: string, callback: TransformCallback<PlayerStats[]>) {
+  protected async transform(seatUserIds: number[]): Promise<void> {
     try {
       // バッチモード中は統計計算をスキップ
       if (this.service.batchMode) {
-        callback()
         return
       }
 
@@ -92,7 +89,7 @@ export class ReadEntityStream extends Transform {
       if (useCache) {
         const cached = this.statsCache.get(cacheKey)
         if (cached && (now - cached.timestamp) < this.CACHE_DURATION_MS) {
-          callback(null, cached.stats)
+          this.push(cached.stats)
           return
         }
       }
@@ -120,7 +117,7 @@ export class ReadEntityStream extends Transform {
         entriesToDelete.forEach(key => this.statsCache.delete(key))
       }
 
-      callback(null, stats)
+      this.push(stats)
     } catch (error: unknown) {
       const context: ErrorContext = {
         streamName: 'ReadEntityStream',
@@ -129,12 +126,10 @@ export class ReadEntityStream extends Transform {
         battleTypeFilter: this.service.battleTypeFilter,
         handLimitFilter: this.service.handLimitFilter
       }
-      const errorCallback = ErrorHandler.createStreamErrorCallback(
-        callback,
-        'ReadEntityStream',
-        context
-      )
-      errorCallback(error)
+      const appError = ErrorHandler.handleStreamError(error, 'ReadEntityStream', context)
+      if (this.listenerCount('error') > 0) {
+        this.emit('error', appError)
+      }
     }
   }
   /** モジュラーレジストリシステムを使用して統計を計算 */

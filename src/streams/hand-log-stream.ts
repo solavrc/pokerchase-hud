@@ -4,7 +4,7 @@
  * 共有フォーマットロジックにHandLogProcessorを使用
  */
 
-import { Transform } from 'stream'
+import { SimpleTransform } from './simple-transform'
 import type PokerChaseService from '../app'
 import type { ApiEvent } from '../types/api'
 import { ApiType, isApiEventType } from '../types/api'
@@ -16,8 +16,6 @@ import {
 } from '../types/hand-log'
 import { ErrorHandler } from '../utils/error-handler'
 import { HandLogContext, HandLogProcessor } from '../utils/hand-log-processor'
-
-type TransformCallback<T> = (error?: Error | null, data?: T) => void
 
 // セッション終了をトリガーするイベントタイプ
 const SESSION_END_EVENTS = [ApiType.EVT_SESSION_RESULTS] as const
@@ -35,22 +33,21 @@ const SESSION_END_EVENTS = [ApiType.EVT_SESSION_RESULTS] as const
  * - 並列処理（メインパイプラインに影響しない）
  * - 共有フォーマットロジックにHandLogProcessorを使用
  */
-export class HandLogStream extends Transform {
+export class HandLogStream extends SimpleTransform<ApiEvent, HandLogEvent> {
   private service: PokerChaseService
   private processor: HandLogProcessor
   private completedHands: HandLogEntry[][] = []
 
   constructor(service: PokerChaseService) {
-    super({ objectMode: true })
+    super()
     this.service = service
 
     this.processor = new HandLogProcessor(this.createContext())
   }
 
-  _transform(event: ApiEvent, _: string, callback: TransformCallback<HandLogEvent>) {
+  protected async transform(event: ApiEvent): Promise<void> {
     // バッチモード中はハンドログ処理をスキップ
     if (this.service.batchMode) {
-      callback()
       return
     }
     try {
@@ -82,9 +79,8 @@ export class HandLogStream extends Transform {
           }
         }
       }
-      callback()
     } catch (error: unknown) {
-      this.handleError(error, callback)
+      this.handleError(error)
     }
   }
 
@@ -135,18 +131,16 @@ export class HandLogStream extends Transform {
   /**
    * エラーを処理
    */
-  private handleError(error: unknown, callback: TransformCallback<HandLogEvent>) {
+  protected override handleError(error: unknown): void {
     const context: ErrorContext = {
       streamName: 'HandLogStream',
       currentHandId: this.processor.isHandComplete() ? undefined : 'incomplete',
       entriesCount: this.processor.getCurrentHandEntries().length || 0
     }
 
-    const errorCallback = ErrorHandler.createStreamErrorCallback(
-      callback,
-      'HandLogStream',
-      context
-    )
-    errorCallback(error)
+    const appError = ErrorHandler.handleStreamError(error, 'HandLogStream', context)
+    if (this.listenerCount('error') > 0) {
+      this.emit('error', appError)
+    }
   }
 }

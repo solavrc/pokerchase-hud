@@ -8,7 +8,6 @@ import { ApiType } from '../types/api'
 import { BattleType } from '../types/game'
 import PokerChaseService, { PokerChaseDB } from '../app'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
-import { Readable } from 'stream'
 
 const expected: string = [
   // hand 1
@@ -708,15 +707,13 @@ test('ApiEventsからPokerStars形式のログを生成できる', async () => {
     })
   })
 
-  const actual = await new Promise<string[]>((resolve, reject) => {
-    const actualHandLogs: string[] = []
-    service.handLogStream.on('data', (event: HandLogEvent) => {
-      if (event.type === 'update' && event.entries)
-        actualHandLogs.push(event.entries.map(({ text }) => text).join('\n'))
-    })
-      .on('end', () => resolve(actualHandLogs))
-      .on('error', (error: Error) => reject(error))
-    Readable.from(event_timeline).pipe(service.handLogStream)
+  const actualHandLogs: string[] = []
+  service.handLogStream.on('data', (event: HandLogEvent) => {
+    if (event.type === 'update' && event.entries)
+      actualHandLogs.push(event.entries.map(({ text }) => text).join('\n'))
   })
+  for (const event of event_timeline) service.handLogStream.write(event)
+  await service.handLogStream.whenIdle()
+  const actual = actualHandLogs
   expect(actual.join('\n')).toEqual(expected)
 })
