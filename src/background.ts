@@ -96,6 +96,35 @@ let currentOperationState: OperationState = { type: 'idle' }
 
 let lastKnownStats: PlayerStats[] = []
 
+// Store latest real-time stats (module scope: shared across all port connections)
+let latestRealTimeStats: AllPlayersRealTimeStats | undefined
+
+/**
+ * `chrome.runtime.onConnect`で接続されたポートの集合
+ * ストリームイベントをブロードキャストする際の送信先として利用する
+ */
+const connectedPorts = new Set<chrome.runtime.Port>()
+
+/**
+ * 接続中の全ポートにメッセージをブロードキャストする
+ * 切断済みポートを検出した場合は`connectedPorts`から取り除く
+ */
+const broadcastMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
+  connectedPorts.forEach(port => {
+    try {
+      port.postMessage(data)
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        /** when `content_script` is inactive */
+        if (error.message === 'Attempting to use a disconnected port object')
+          connectedPorts.delete(port)
+        else
+          console.error(error)
+      }
+    }
+  })
+}
+
 /** 拡張更新時の処理 */
 chrome.runtime.onInstalled.addListener(async details => {
   console.log(`[onInstalled] Extension ${details.reason}: previousVersion=${details.previousVersion}`)
@@ -936,8 +965,52 @@ const downloadViaDataUrl = (content: string, finalFilename: string, contentType:
  * 2. content_script.ts: ApiMessage型として受信・転送
  * 3. background.ts: ApiMessage型として受信し、完全な検証を実施
  */
+// 以下の3つのストリームリスナーは、Service Workerのライフタイム中に一度だけ登録する
+// （`onConnect`のたびに登録すると、ページリロード/再接続のたびにリスナーが積み重なり、
+// 特に`handLogStream`のハンドラーはNタブ分`chrome.tabs.sendMessage`を重複送信してしまう）
+
+// Listen for real-time stats from dedicated stream
+service.realTimeStatsStream.on('data', (data: { handId?: number, stats: AllPlayersRealTimeStats, timestamp: number }) => {
+  latestRealTimeStats = data.stats
+
+  // Send update with real-time stats only
+  if (lastKnownStats && lastKnownStats.length > 0) {
+    broadcastMessage({
+      stats: lastKnownStats,
+      evtDeal: service.latestEvtDeal,
+      realTimeStats: latestRealTimeStats
+    })
+  }
+})
+service.statsOutputStream.on('data', async (hand: PlayerStats[]) => {
+  lastKnownStats = hand // Store for later use
+
+  // Real-time stats are now handled by RealTimeStatsStream
+  broadcastMessage({
+    stats: hand,
+    evtDeal: service.latestEvtDeal,  // Include EVT_DEAL for seat mapping
+    realTimeStats: latestRealTimeStats  // Include latest real-time stats from stream
+  })
+})
+
+// Handle hand log events
+service.handLogStream.on('data', (event: HandLogEvent) => {
+  // Send to all tabs with the game
+  chrome.tabs.query({ url: gameUrlPattern }, tabs => {
+    tabs.forEach(tab => {
+      if (tab.id) {
+        chrome.tabs.sendMessage<HandLogEventMessage>(tab.id, {
+          action: 'handLogEvent',
+          event: event
+        })
+      }
+    })
+  })
+})
+
 chrome.runtime.onConnect.addListener(port => {
   if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
+    connectedPorts.add(port)
     port.onMessage.addListener(async (message: ApiMessage | { type: string }) => {
       // キープアライブメッセージの処理
       if (typeof message === 'object' && 'type' in message && message.type === 'keepalive') {
@@ -988,7 +1061,8 @@ chrome.runtime.onConnect.addListener(port => {
         )
       }
     })
-    const postMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
+    // PINGは自ポートにのみ送信する（ブロードキャストしない）
+    const pingPort = (data: string) => {
       try {
         port.postMessage(data)
       } catch (error: unknown) {
@@ -1001,54 +1075,13 @@ chrome.runtime.onConnect.addListener(port => {
         }
       }
     }
-    const intervalId = setInterval(() => { postMessage(`[PING] ${new Date().toISOString()}`) }, PING_INTERVAL_MS)
-
-    // Store latest real-time stats
-    let latestRealTimeStats: AllPlayersRealTimeStats | undefined
-
-    // Listen for real-time stats from dedicated stream
-    service.realTimeStatsStream.on('data', (data: { handId?: number, stats: AllPlayersRealTimeStats, timestamp: number }) => {
-      latestRealTimeStats = data.stats
-
-      // Send update with real-time stats only
-      if (lastKnownStats && lastKnownStats.length > 0) {
-        postMessage({
-          stats: lastKnownStats,
-          evtDeal: service.latestEvtDeal,
-          realTimeStats: latestRealTimeStats
-        })
-      }
-    })
-    service.statsOutputStream.on('data', async (hand: PlayerStats[]) => {
-      lastKnownStats = hand // Store for later use
-
-      // Real-time stats are now handled by RealTimeStatsStream
-      postMessage({
-        stats: hand,
-        evtDeal: service.latestEvtDeal,  // Include EVT_DEAL for seat mapping
-        realTimeStats: latestRealTimeStats  // Include latest real-time stats from stream
-      })
-    })
-
-    // Handle hand log events
-    service.handLogStream.on('data', (event: HandLogEvent) => {
-      // Send to all tabs with the game
-      chrome.tabs.query({ url: gameUrlPattern }, tabs => {
-        tabs.forEach(tab => {
-          if (tab.id) {
-            chrome.tabs.sendMessage<HandLogEventMessage>(tab.id, {
-              action: 'handLogEvent',
-              event: event
-            })
-          }
-        })
-      })
-    })
+    const intervalId = setInterval(() => { pingPort(`[PING] ${new Date().toISOString()}`) }, PING_INTERVAL_MS)
 
     // Clean up when port disconnects
     port.onDisconnect.addListener(() => {
       // Keep lastKnownStats for page reloads - only clear interval
       clearInterval(intervalId)
+      connectedPorts.delete(port)
     })
   }
 })
