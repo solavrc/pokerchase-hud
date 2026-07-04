@@ -696,12 +696,12 @@ test('ApiEventsからPokerStars形式のログを生成できる', async () => {
   const service = new PokerChaseService({ db: dbMock })
 
   const sessionEvent = event_timeline.find(e => e.ApiTypeId === ApiType.EVT_SESSION_DETAILS)!
-  service.session.name = sessionEvent.Name
-  service.session.battleType = BattleType.SIT_AND_GO
+  service.session.setName(sessionEvent.Name)
+  service.session.setBattleType(BattleType.SIT_AND_GO)
 
   const seatEvent = event_timeline.find(e => e.ApiTypeId === ApiType.EVT_PLAYER_SEAT_ASSIGNED)!
   seatEvent.TableUsers?.forEach(user => {
-    service.session.players.set(user.UserId, {
+    service.session.setPlayer(user.UserId, {
       name: user.UserName,
       rank: user.Rank.RankName
     })

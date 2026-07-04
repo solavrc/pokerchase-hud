@@ -18,11 +18,98 @@ import {
 } from '../types'
 import type {
   ApiEvent,
+  BattleType,
   FilterOptions,
   HandLogConfig,
   Session,
   StatDisplayConfig
 } from '../types'
+
+/** Serialized shape of a single session's player-info entry (persisted as an array tuple). */
+type SessionPlayerInfo = { name: string, rank: string }
+
+/**
+ * セッション状態を保持するクラス
+ *
+ * PokerChaseServiceが管理する「現在のセッション」を表す。全てのミューテーション
+ * （id/battleType/name/players/reset）は明示的なメソッドを経由し、それぞれが
+ * コンストラクタで渡された `notifyChange` を呼び出す一本道になっている。
+ * これにより「フィールドを追加したら誰かがpersistState()の呼び出しを
+ * 書き忘れる」という構造的な穴を型レベルで塞ぐ（`players`はReadonlyMapとして
+ * 公開され、`.set()`は型エラーになる）。
+ *
+ * リストア時は `hydrate()` を使う。これは同じフィールドを更新するが
+ * `notifyChange` を呼ばない（「復元してもストレージに書き戻さない」という
+ * 復元専用の経路）。
+ */
+export class SessionState implements Session {
+  private _id?: string
+  private _battleType?: BattleType
+  private _name?: string
+  private readonly _players = new Map<number, SessionPlayerInfo>()
+
+  constructor(private readonly notifyChange: () => void) { }
+
+  get id(): string | undefined { return this._id }
+  get battleType(): BattleType | undefined { return this._battleType }
+  get name(): string | undefined { return this._name }
+  /** 読み取り専用ビュー。ミューテーションは setPlayer()/reset() 経由のみ許可される */
+  get players(): ReadonlyMap<number, SessionPlayerInfo> { return this._players }
+
+  setId(value: string | undefined): void {
+    this._id = value
+    this.notifyChange()
+  }
+
+  setBattleType(value: BattleType | undefined): void {
+    this._battleType = value
+    this.notifyChange()
+  }
+
+  setName(value: string | undefined): void {
+    this._name = value
+    this.notifyChange()
+  }
+
+  setPlayer(userId: number, info: SessionPlayerInfo): void {
+    this._players.set(userId, info)
+    this.notifyChange()
+  }
+
+  reset(): void {
+    this._id = undefined
+    this._battleType = undefined
+    this._name = undefined
+    this._players.clear()
+    this.notifyChange()
+  }
+
+  /**
+   * ストレージから復元した値を、永続化をトリガーせずに適用する。
+   * restoreState() 専用。
+   */
+  hydrate(data: { id?: string, battleType?: BattleType, name?: string, players?: [number, SessionPlayerInfo][] }): void {
+    this._id = data.id
+    this._battleType = data.battleType
+    this._name = data.name
+    this._players.clear()
+    if (data.players && Array.isArray(data.players)) {
+      for (const [key, value] of data.players) {
+        this._players.set(key, value)
+      }
+    }
+  }
+
+  /** シリアライズ用（永続化状態の構築に使用） */
+  toJSON() {
+    return {
+      id: this._id,
+      battleType: this._battleType,
+      name: this._name,
+      players: Array.from(this._players.entries())
+    }
+  }
+}
 
 /**
  * PokerChase HUDのメインサービスクラス
@@ -40,7 +127,7 @@ import type {
 class PokerChaseService {
   private _playerId?: number
   private _latestEvtDeal?: ApiEvent<ApiType.EVT_DEAL>
-  private _sessionData: Session
+  private readonly _sessionData: SessionState
   private _isInitialized: boolean = false
   private _initializationError?: Error
   private _persistStateTimer?: ReturnType<typeof setTimeout>
@@ -59,7 +146,8 @@ class PokerChaseService {
   static readonly POKER_CHASE_ORIGIN = POKER_CHASE_ORIGIN
   static readonly STORAGE_KEY = STORAGE_KEY
 
-  // Getter/Setter for automatic persistence
+  // Getter/Setter for automatic persistence.
+  // どちらも同じ persistState()（500msデバウンス）を呼ぶ一本道。
   get playerId(): number | undefined {
     return this._playerId
   }
@@ -77,7 +165,14 @@ class PokerChaseService {
     this._latestEvtDeal = value
     this.persistState()
   }
-  get session(): Session {
+
+  /**
+   * 現在のセッション。ミューテーションは SessionState の明示的なメソッド
+   * （setId/setBattleType/setName/setPlayer/reset）を経由すること。
+   * players は ReadonlyMap として公開されるため `session.players.set(...)`
+   * は型エラーになる。
+   */
+  get session(): SessionState {
     return this._sessionData
   }
 
@@ -86,55 +181,9 @@ class PokerChaseService {
     return this._isInitialized && !this._initializationError
   }
 
-  private initializeSession(): Session {
-    const self = this
-    const session = {
-      _id: undefined as number | undefined,
-      _battleType: undefined as number | undefined,
-      _name: undefined as string | undefined,
-      players: new Map<number, { name: string, rank: string }>(),
-
-      get id() { return this._id },
-      set id(value: number | undefined) {
-        this._id = value
-        self.persistState()
-      },
-
-      get battleType() { return this._battleType },
-      set battleType(value: number | undefined) {
-        this._battleType = value
-        self.persistState()
-      },
-
-      get name() { return this._name },
-      set name(value: string | undefined) {
-        this._name = value
-        self.persistState()
-      },
-
-      reset: function () {
-        this.id = undefined
-        this.battleType = undefined
-        this.name = undefined
-        this.players.clear()
-        self.persistState()
-      }
-    }
-
-    // プレイヤー追加時も永続化
-    const originalSet = session.players.set.bind(session.players)
-    session.players.set = function (key: number, value: { name: string, rank: string }) {
-      const result = originalSet(key, value)
-      self.persistState()
-      return result
-    }
-
-    return session as Session
-  }
-
   /** Reset session and clear player data */
   readonly resetSession = () => {
-    this.session.reset()
+    this._sessionData.reset()
   }
 
   /** Persist current state to Chrome Storage with debouncing */
@@ -156,18 +205,10 @@ class PokerChaseService {
 
   /** Actual persistence logic */
   private actualPersistState = () => {
-    // Convert Map to array for serialization
-    const playersArray = Array.from(this._sessionData.players.entries())
-
     const state = {
       playerId: this._playerId,
       latestEvtDeal: this._latestEvtDeal,
-      session: {
-        id: this._sessionData.id,
-        battleType: this._sessionData.battleType,
-        name: this._sessionData.name,
-        players: playersArray
-      },
+      session: this._sessionData.toJSON(),
       lastUpdated: Date.now()
     }
 
@@ -225,20 +266,8 @@ class PokerChaseService {
         this._latestEvtDeal = state.latestEvtDeal
 
         if (state.session) {
-          // Direct assignment to avoid setter side effects during restoration
-          const sessionData = this._sessionData as any // Type assertion for private properties
-          sessionData._id = state.session.id
-          sessionData._battleType = state.session.battleType
-          sessionData._name = state.session.name
-
-          // Restore players Map from array
-          if (state.session.players && Array.isArray(state.session.players)) {
-            this._sessionData.players.clear()
-            state.session.players.forEach(([key, value]: [number, { name: string, rank: string }]) => {
-              // Use original Map.set to avoid persistence trigger
-              Map.prototype.set.call(this._sessionData.players, key, value)
-            })
-          }
+          // hydrate() applies the fields directly without calling notifyChange()
+          this._sessionData.hydrate(state.session)
         }
 
         console.log('[PokerChaseService] State restored successfully:', {
@@ -267,7 +296,7 @@ class PokerChaseService {
   readonly realTimeStatsStream: RealTimeStatsStream        // Real-time stats for hero only
   constructor({ db, playerId }: { db: PokerChaseDB, playerId?: number }) {
     this._playerId = playerId
-    this._sessionData = this.initializeSession()
+    this._sessionData = new SessionState(this.persistState)
     this.db = db
 
     // Initialize the ready promise

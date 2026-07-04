@@ -120,36 +120,39 @@ export class HandLogExporter {
     // Build or get global player names map
     const globalPlayerMap = await this.buildPlayerNamesMap(db)
 
-    // Create session with player names from global map
-    const session: Session = {
-      id: hand.session.id,
-      battleType: hand.session.battleType,
-      name: hand.session.name,
-      players: new Map(),
-      reset: function () {
-        this.id = undefined
-        this.battleType = undefined
-        this.name = undefined
-        this.players.clear()
-      }
-    }
-
-    // Populate session players from global map for this hand's players
+    // Populate session players from global map for this hand's players.
+    // Built as a plain, mutable Map first since Session.players is exposed
+    // as a ReadonlyMap once assigned below.
+    const players = new Map<number, { name: string, rank: string }>()
     hand.seatUserIds.forEach(userId => {
       if (userId !== -1) {
         const playerInfo = globalPlayerMap.get(userId)
         if (playerInfo) {
-          session.players.set(userId, playerInfo)
+          players.set(userId, playerInfo)
         } else {
           // Fallback for players not found in global map
           console.warn(`[HandLogExporter] Player ${userId} not found in global map`)
-          session.players.set(userId, {
+          players.set(userId, {
             name: `Player${userId}`,
             rank: 'Unknown'
           })
         }
       }
     })
+
+    // Create session with player names from global map
+    const session: Session = {
+      id: hand.session.id,
+      battleType: hand.session.battleType,
+      name: hand.session.name,
+      players,
+      reset: function () {
+        this.id = undefined
+        this.battleType = undefined
+        this.name = undefined
+        players.clear()
+      }
+    }
 
     // Session has players for hand
 
@@ -330,29 +333,32 @@ export class HandLogExporter {
     globalPlayerMap: Map<number, { name: string, rank: string }>,
     firstHandId?: number
   ): string {
-    const session: Session = {
-      id: hand.session.id,
-      battleType: hand.session.battleType,
-      name: hand.session.name,
-      players: new Map(),
-      reset: function () {
-        this.id = undefined
-        this.battleType = undefined
-        this.name = undefined
-        this.players.clear()
-      }
-    }
-
+    // Built as a plain, mutable Map first since Session.players is exposed
+    // as a ReadonlyMap once assigned below.
+    const players = new Map<number, { name: string, rank: string }>()
     hand.seatUserIds.forEach(userId => {
       if (userId !== -1) {
         const playerInfo = globalPlayerMap.get(userId)
         if (playerInfo) {
-          session.players.set(userId, playerInfo)
+          players.set(userId, playerInfo)
         } else {
-          session.players.set(userId, { name: `Player${userId}`, rank: 'Unknown' })
+          players.set(userId, { name: `Player${userId}`, rank: 'Unknown' })
         }
       }
     })
+
+    const session: Session = {
+      id: hand.session.id,
+      battleType: hand.session.battleType,
+      name: hand.session.name,
+      players,
+      reset: function () {
+        this.id = undefined
+        this.battleType = undefined
+        this.name = undefined
+        players.clear()
+      }
+    }
 
     const context: HandLogContext = {
       session,
