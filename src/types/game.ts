@@ -55,6 +55,21 @@ export enum RankType {
   FOLD_OPEN = 12
 }
 
+/**
+ * ショーダウン（カードの強制/自発的公開による勝敗比較）が実際に発生したことを示すRankTypeか判定する。
+ *
+ * - 0-9（実役）: ショーダウンで役を比較した結果
+ * - 11 (SHOWDOWN_MUCK): ショーダウンに参加したが敗北してマック（＝ショーダウンは発生した）
+ * - 10 (NO_CALL) / 12 (FOLD_OPEN): ショーダウンは発生していない（無競争勝利／フォールド後の自発公開）
+ *
+ * `EVT_HAND_RESULTS.Results`は`RankType`を持つオブジェクトの配列であり、SHOWDOWNフェーズ生成や
+ * WTSD/W$SD統計はこの述語で「ショーダウン参加者」を判定する必要がある（詳細はCLAUDE.mdの
+ * Confirmed Statistical Definitions参照）。
+ */
+export function isShowdownParticipant(result: { RankType: RankType }): boolean {
+  return result.RankType !== RankType.NO_CALL && result.RankType !== RankType.FOLD_OPEN
+}
+
 export enum Position {
   BB = -2,
   SB = -1,
