@@ -129,6 +129,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   - `npm run postbuild` - Create extension.zip
   - `npm run validate-schema` - Validate API events in NDJSON files
   - `npm run schema-diff` - Detect API schema changes (additions/removals) in NDJSON files
+  - `npm run verify-stats -- <file.ndjson>` - Cross-check stats pipeline output against an independent oracle (regression check for entity-converter/write-entity-stream/stats changes; see CONTRIBUTING.md)
   - `npm run firebase:deploy` - Deploy Firestore rules and indexes
   - `npm run firebase:deploy:rules` - Deploy Firestore rules only
   - `npm run firebase:deploy:indexes` - Deploy Firestore indexes only
