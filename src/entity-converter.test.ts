@@ -1741,6 +1741,705 @@ describe('EntityConverter', () => {
   })
 
   /**
+   * フェーズ所属（Phase.seatUserIds）と勝者定義（Hand.winningPlayerIds）のパリティ
+   *
+   * バグ1: EntityConverterのEVT_DEAL_ROUNDハンドラは新フェーズのseatUserIdsに
+   * `handState.hand.seatUserIds`（配札時の全員）をそのまま使い回していたため、
+   * プリフロップで既にフォールドしたプレイヤーもフロップ/ターン/リバーを
+   * 「見た」ことになっていた（WriteEntityStreamはevent.Player/OtherPlayersを
+   * BetStatus===BET_ABLEでフィルタしてから使用）。これによりWTSD/WWSFの分母が
+   * 水増しされる（オラクル比較で該当プレイヤーのWWSF分母が130 vs 真値39など）。
+   *
+   * バグ2: 勝者定義がEC（RewardChip>0）とWES（HandRanking===1）で乖離していた。
+   * サイドポット発生ハンド（実データの8.23%）のうち44.25%でこの2定義が異なる
+   * 勝者集合を返す（メインポットの役が最強でも、サイドポットのみを獲得した
+   * プレイヤーはHandRanking!==1だがRewardChip>0になるため）。WWSF/W$SDは
+   * 「ポットの一部でも獲得したか」を問うPT4準拠の定義であり、RewardChip>0が
+   * 正しい。両パスをRewardChip>0に統一する。
+   *
+   * バグ3: RIVER_CALL_WON（River Call Accuracy統計の分子）はWriteEntityStreamの
+   * EVT_HAND_RESULTSハンドラにのみ実装されており、EntityConverterには存在しな
+   * かった（実データで3,297件のRIVER_CALLアクション中0件がRIVER_CALL_WON）。
+   */
+  describe('phase membership, winner definition, and river-call-won parity', () => {
+    it('excludes a preflop folder from the flop phase seatUserIds in BOTH pipelines (scenario a)', async () => {
+      // 4人テーブル（seat3は空席）。UTG(seat0, player A)がプリフロップでフォールドし、
+      // 残り2人(B, C)がフロップ・ターン・リバーを経てショーダウンに至る。
+      // フォールドしたAはフロップ以降のPhase.seatUserIdsに含まれてはならない。
+      const A = 111, B = 222, C = 333
+      const events: ApiEvent[] = [
+        createEvent(ApiType.EVT_DEAL, {
+          timestamp: 40000,
+          SeatUserIds: [A, B, C, -1],
+          Game: {
+            CurrentBlindLv: 1,
+            NextBlindUnixSeconds: 40000000,
+            Ante: 0,
+            SmallBlind: 10,
+            BigBlind: 20,
+            ButtonSeat: 0,
+            SmallBlindSeat: 1,
+            BigBlindSeat: 2
+          },
+          Player: {
+            SeatIndex: 0,
+            BetStatus: 1,
+            HoleCards: [37, 51],
+            Chip: 1980,
+            BetChip: 0
+          },
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 0,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 40,
+            Pot: 30,
+            SidePot: []
+          },
+          OtherPlayers: [
+            { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1990, BetChip: 10 },
+            { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 1980, BetChip: 20 }
+          ]
+        }),
+        // UTG(seat0, A)がフォールド
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 40001,
+          SeatIndex: 0,
+          ActionType: ActionType.FOLD,
+          Chip: 1980,
+          BetChip: 0,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 1,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 40,
+            Pot: 30,
+            SidePot: []
+          }
+        }),
+        // SB(seat1, B)がコール
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 40002,
+          SeatIndex: 1,
+          ActionType: ActionType.CALL,
+          Chip: 1980,
+          BetChip: 20,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 2,
+            NextActionTypes: [2, 3],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 0,
+            Pot: 40,
+            SidePot: []
+          }
+        }),
+        // BB(seat2, C)がチェック
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 40003,
+          SeatIndex: 2,
+          ActionType: ActionType.CHECK,
+          Chip: 1980,
+          BetChip: 0,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: -1,
+            NextActionTypes: [],
+            NextExtraLimitSeconds: 0,
+            MinRaise: 0,
+            Pot: 40,
+            SidePot: []
+          }
+        }),
+        // フロップ: BとCのみ引き続き参加（Aはフォールド済みのためOtherPlayersに含まれない）
+        createEvent(ApiType.EVT_DEAL_ROUND, {
+          timestamp: 40004,
+          CommunityCards: [1, 21, 44],
+          Progress: {
+            Phase: 1,
+            NextActionSeat: 1,
+            NextActionTypes: [0, 1, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 0,
+            Pot: 40,
+            SidePot: []
+          },
+          OtherPlayers: [
+            { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 1980, BetChip: 0 }
+          ],
+          Player: {
+            SeatIndex: 1,
+            BetStatus: 1,
+            HoleCards: [3, 4],
+            Chip: 1980,
+            BetChip: 0
+          }
+        }),
+        // SB(seat1, B)がチェック
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 40005,
+          SeatIndex: 1,
+          ActionType: ActionType.CHECK,
+          Chip: 1980,
+          BetChip: 0,
+          Progress: {
+            Phase: 1,
+            NextActionSeat: 2,
+            NextActionTypes: [0, 1, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 0,
+            Pot: 40,
+            SidePot: []
+          }
+        }),
+        // BB(seat2, C)がチェック
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 40006,
+          SeatIndex: 2,
+          ActionType: ActionType.CHECK,
+          Chip: 1980,
+          BetChip: 0,
+          Progress: {
+            Phase: 1,
+            NextActionSeat: -1,
+            NextActionTypes: [],
+            NextExtraLimitSeconds: 0,
+            MinRaise: 0,
+            Pot: 40,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
+          timestamp: 40007,
+          HandId: 999010,
+          CommunityCards: [7, 8],
+          Pot: 40,
+          SidePot: [],
+          ResultType: 0,
+          DefeatStatus: 0,
+          Results: [
+            {
+              UserId: B,
+              HoleCards: [3, 4],
+              RankType: RankType.HIGH_CARD,
+              Hands: [1, 3, 4, 7, 8],
+              HandRanking: 1,
+              Ranking: 1,
+              RewardChip: 40
+            },
+            {
+              UserId: C,
+              HoleCards: [5, 6],
+              RankType: RankType.HIGH_CARD,
+              Hands: [1, 5, 6, 7, 8],
+              HandRanking: -1,
+              Ranking: 2,
+              RewardChip: 0
+            }
+          ],
+          OtherPlayers: [
+            { SeatIndex: 2, Status: 0, BetStatus: -1, Chip: 1980, BetChip: 0 }
+          ]
+        })
+      ]
+
+      // --- ライブ記録パイプライン: WriteEntityStream経由 ---
+      const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
+      const service = new PokerChaseService({ db: dbMock })
+      await service.ready
+      await new Promise<void>((resolve, reject) => {
+        service.handAggregateStream
+          .on('finish', () => resolve())
+          .on('error', (error: Error) => reject(error))
+        Readable.from(events).pipe(service.handAggregateStream)
+      })
+      await dbMock.open()
+      const livePhases = (await dbMock.phases.where('handId').equals(999010).toArray())
+        .sort((a, b) => a.phase - b.phase)
+
+      // --- インポート/リビルドパイプライン: EntityConverter経由 ---
+      const importResult = converter.convertEventsToEntities(events)
+      const importPhases = importResult.phases.slice().sort((a, b) => a.phase - b.phase)
+
+      const pickComparablePhase = (phase: typeof livePhases[0]) => ({
+        phase: phase.phase,
+        seatUserIds: [...phase.seatUserIds].sort((a, b) => a - b)
+      })
+
+      // ライブパイプライン: フロップのseatUserIdsはB,Cのみ（Aはフォールド済みで除外）
+      const liveFlopPhase = livePhases.find(p => p.phase === PhaseType.FLOP)
+      expect(liveFlopPhase).toBeDefined()
+      expect([...liveFlopPhase!.seatUserIds].sort((a, b) => a - b)).toEqual([B, C])
+      expect(liveFlopPhase!.seatUserIds).not.toContain(A)
+
+      // インポート/リビルドパイプライン: 修正後はライブと同じくAを含まない
+      const importFlopPhase = importPhases.find(p => p.phase === PhaseType.FLOP)
+      expect(importFlopPhase).toBeDefined()
+      expect([...importFlopPhase!.seatUserIds].sort((a, b) => a - b)).toEqual([B, C])
+      expect(importFlopPhase!.seatUserIds).not.toContain(A)
+
+      // 両パイプラインの全フェーズが完全一致
+      expect(importPhases.map(pickComparablePhase)).toEqual(livePhases.map(pickComparablePhase))
+    })
+
+    /**
+     * サイドポット勝者の不一致（scenario b）。
+     *
+     * 実データ（pokerchase_raw_data_2026-07-04T18-31-12-252Z.ndjson、HandId=269804225）
+     * から抽出したハンドを匿名化したもの。ヘッズアップでプリフロップオールイン、
+     * アンテ差によるサイドポットが発生し、メインポット勝者（HandRanking=1、
+     * RewardChip=3576）とサイドポット勝者（HandRanking=2、RewardChip=14412）が
+     * 異なるプレイヤーになる。
+     *
+     * `Pot(3576) + SidePot(14412) === sum(RewardChip)(3576+14412)` の不変条件を維持。
+     */
+    it('unifies main-pot and side-pot winners under RewardChip>0 in BOTH pipelines (scenario b)', async () => {
+      const WINNER_MAIN = 850121266 // メインポット勝者（HandRanking=1）
+      const WINNER_SIDE = 561384657 // サイドポットのみの勝者（HandRanking=2、RewardChip>0）
+      const events: ApiEvent[] = [
+        createEvent(ApiType.EVT_DEAL, {
+          timestamp: 50000,
+          SeatUserIds: [WINNER_SIDE, -1, -1, WINNER_MAIN, -1, -1],
+          Game: {
+            CurrentBlindLv: 12,
+            NextBlindUnixSeconds: 1729100631,
+            Ante: 3200,
+            SmallBlind: 6500,
+            BigBlind: 13000,
+            ButtonSeat: 3,
+            SmallBlindSeat: 3,
+            BigBlindSeat: 0
+          },
+          Player: {
+            SeatIndex: 0,
+            BetStatus: 1,
+            HoleCards: [49, 8],
+            Chip: 162012,
+            BetChip: 13000
+          },
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 0,
+            NextActionTypes: [0],
+            NextExtraLimitSeconds: 12,
+            MinRaise: 0,
+            Pot: 3576,
+            SidePot: [14412]
+          },
+          OtherPlayers: [
+            { SeatIndex: 3, Status: 0, BetStatus: 3, Chip: 0, BetChip: 0 }
+          ]
+        }, { skipValidation: true }),
+        // ヒーロー(seat0, WINNER_SIDE)がオールイン後のチェック扱い（進行イベント）
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 50001,
+          SeatIndex: 0,
+          ActionType: ActionType.CHECK,
+          Chip: 162012,
+          BetChip: 13000,
+          Progress: {
+            Phase: 3,
+            NextActionSeat: -2,
+            NextActionTypes: [],
+            NextExtraLimitSeconds: 0,
+            MinRaise: 0,
+            Pot: 3576,
+            SidePot: [14412]
+          }
+        }, { skipValidation: true }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
+          timestamp: 50002,
+          HandId: 269804225,
+          CommunityCards: [40, 7, 2, 33, 39],
+          Pot: 3576,
+          SidePot: [14412],
+          ResultType: 0,
+          DefeatStatus: 0,
+          Results: [
+            {
+              UserId: WINNER_MAIN,
+              HoleCards: [25, 35],
+              RankType: RankType.STRAIGHT,
+              Hands: [35, 33, 40, 39, 25],
+              HandRanking: 1,
+              Ranking: -2,
+              RewardChip: 3576
+            },
+            {
+              UserId: WINNER_SIDE,
+              HoleCards: [49, 8],
+              RankType: RankType.TWO_PAIR,
+              Hands: [49, 40, 39, 33, 8],
+              HandRanking: 2,
+              Ranking: -2,
+              RewardChip: 14412
+            }
+          ],
+          OtherPlayers: [
+            { SeatIndex: 3, Status: 0, BetStatus: -1, Chip: 3576, BetChip: 0 }
+          ]
+        }, { skipValidation: true })
+      ]
+
+      // 不変条件の確認: Pot + sum(SidePot) === sum(RewardChip)
+      const resultsEvt = events.find(e => e.ApiTypeId === ApiType.EVT_HAND_RESULTS)!
+      const totalReward = resultsEvt.Results!.reduce((sum, r) => sum + r.RewardChip, 0)
+      expect(resultsEvt.Pot + resultsEvt.SidePot!.reduce((a, b) => a + b, 0)).toBe(totalReward)
+
+      // --- ライブ記録パイプライン: WriteEntityStream経由 ---
+      const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
+      const service = new PokerChaseService({ db: dbMock })
+      await service.ready
+      await new Promise<void>((resolve, reject) => {
+        service.handAggregateStream
+          .on('finish', () => resolve())
+          .on('error', (error: Error) => reject(error))
+        Readable.from(events).pipe(service.handAggregateStream)
+      })
+      await dbMock.open()
+      const liveHand = await dbMock.hands.get(269804225)
+
+      // --- インポート/リビルドパイプライン: EntityConverter経由 ---
+      const importResult = converter.convertEventsToEntities(events)
+      const importHand = importResult.hands.find(h => h.id === 269804225)
+
+      // 修正前のWES（HandRanking===1）ではWINNER_SIDEを見逃していたが、
+      // 修正後はRewardChip>0に統一されているため、両者ともサイドポット勝者を含む
+      expect(liveHand).toBeDefined()
+      expect(importHand).toBeDefined()
+      expect(new Set(liveHand!.winningPlayerIds)).toEqual(new Set([WINNER_MAIN, WINNER_SIDE]))
+      expect(new Set(importHand!.winningPlayerIds)).toEqual(new Set([WINNER_MAIN, WINNER_SIDE]))
+      expect(new Set(importHand!.winningPlayerIds)).toEqual(new Set(liveHand!.winningPlayerIds))
+
+      // 旧HandRanking===1定義ではWINNER_SIDEが漏れることの確認（回帰防止のドキュメント）
+      const oldDefinitionWinners = new Set(
+        resultsEvt.Results!.filter(r => r.HandRanking === 1).map(r => r.UserId)
+      )
+      expect(oldDefinitionWinners.has(WINNER_SIDE)).toBe(false)
+    })
+
+    /**
+     * リバーコール勝利（scenario c）。
+     *
+     * 実データ（HandId=271929009）から抽出したヘッズアップハンドを匿名化。
+     * プリフロップ レイズ/コール、フロップ チェック/チェック、ターン ベット/コール、
+     * リバー ベット/コールを経てスプリットポット（両者HandRanking=1、RewardChip>0）
+     * に至る。リバーでコールしたseat0のプレイヤー(WINNER_CALLER)は
+     * RIVER_CALL_WONが付与されるべき。
+     */
+    it('tags RIVER_CALL_WON on the import path for a winning river call (scenario c)', async () => {
+      const WINNER_CALLER = 111222333 // seat0, リバーでコールして勝利
+      const OPPONENT = 444555666 // seat3, リバーでベットして勝利（スプリット）
+      const events: ApiEvent[] = [
+        createEvent(ApiType.EVT_DEAL, {
+          timestamp: 60000,
+          SeatUserIds: [WINNER_CALLER, -1, -1, OPPONENT, -1, -1],
+          Game: {
+            CurrentBlindLv: 9,
+            NextBlindUnixSeconds: 1729533620,
+            Ante: 950,
+            SmallBlind: 1900,
+            BigBlind: 3800,
+            ButtonSeat: 0,
+            SmallBlindSeat: 0,
+            BigBlindSeat: 3
+          },
+          Player: {
+            SeatIndex: 3,
+            BetStatus: 1,
+            HoleCards: [10, 34],
+            Chip: 107880,
+            BetChip: 3800
+          },
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 0,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 12,
+            MinRaise: 7600,
+            Pot: 7600,
+            SidePot: []
+          },
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 64520, BetChip: 1900 }
+          ]
+        }, { skipValidation: true }),
+        // seat0(WINNER_CALLER)がレイズ
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 60001,
+          SeatIndex: 0,
+          ActionType: ActionType.RAISE,
+          Chip: 58820,
+          BetChip: 7600,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 3,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 12,
+            MinRaise: 11400,
+            Pot: 13300,
+            SidePot: []
+          }
+        }),
+        // seat3(OPPONENT)がコール
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 60002,
+          SeatIndex: 3,
+          ActionType: ActionType.CALL,
+          Chip: 104080,
+          BetChip: 7600,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: -1,
+            NextActionTypes: [],
+            NextExtraLimitSeconds: 0,
+            MinRaise: 0,
+            Pot: 17100,
+            SidePot: []
+          }
+        }),
+        // フロップ: 両者チェック
+        createEvent(ApiType.EVT_DEAL_ROUND, {
+          timestamp: 60003,
+          CommunityCards: [15, 30, 25],
+          Progress: {
+            Phase: 1,
+            NextActionSeat: 3,
+            NextActionTypes: [0, 1, 5],
+            NextExtraLimitSeconds: 12,
+            MinRaise: 0,
+            Pot: 17100,
+            SidePot: []
+          },
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 58820, BetChip: 0 }
+          ],
+          Player: {
+            SeatIndex: 3,
+            BetStatus: 1,
+            HoleCards: [10, 34],
+            Chip: 104080,
+            BetChip: 0
+          }
+        }),
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 60004,
+          SeatIndex: 3,
+          ActionType: ActionType.CHECK,
+          Chip: 104080,
+          BetChip: 0,
+          Progress: {
+            Phase: 1,
+            NextActionSeat: 0,
+            NextActionTypes: [0, 1, 5],
+            NextExtraLimitSeconds: 12,
+            MinRaise: 0,
+            Pot: 17100,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 60005,
+          SeatIndex: 0,
+          ActionType: ActionType.CHECK,
+          Chip: 58820,
+          BetChip: 0,
+          Progress: {
+            Phase: 1,
+            NextActionSeat: -1,
+            NextActionTypes: [],
+            NextExtraLimitSeconds: 0,
+            MinRaise: 0,
+            Pot: 17100,
+            SidePot: []
+          }
+        }),
+        // ターン: OPPONENTがベット、WINNER_CALLERがコール
+        createEvent(ApiType.EVT_DEAL_ROUND, {
+          timestamp: 60006,
+          CommunityCards: [23],
+          Progress: {
+            Phase: 2,
+            NextActionSeat: 3,
+            NextActionTypes: [0, 1, 5],
+            NextExtraLimitSeconds: 12,
+            MinRaise: 0,
+            Pot: 17100,
+            SidePot: []
+          },
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 58820, BetChip: 0 }
+          ],
+          Player: {
+            SeatIndex: 3,
+            BetStatus: 1,
+            HoleCards: [10, 34],
+            Chip: 104080,
+            BetChip: 0
+          }
+        }),
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 60007,
+          SeatIndex: 3,
+          ActionType: ActionType.BET,
+          Chip: 98380,
+          BetChip: 5700,
+          Progress: {
+            Phase: 2,
+            NextActionSeat: 0,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 12,
+            MinRaise: 11400,
+            Pot: 22800,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 60008,
+          SeatIndex: 0,
+          ActionType: ActionType.CALL,
+          Chip: 53120,
+          BetChip: 5700,
+          Progress: {
+            Phase: 2,
+            NextActionSeat: -1,
+            NextActionTypes: [],
+            NextExtraLimitSeconds: 0,
+            MinRaise: 0,
+            Pot: 28500,
+            SidePot: []
+          }
+        }),
+        // リバー: OPPONENTがベット、WINNER_CALLERがコール（これがRIVER_CALL_WON対象）
+        createEvent(ApiType.EVT_DEAL_ROUND, {
+          timestamp: 60009,
+          CommunityCards: [39],
+          Progress: {
+            Phase: 3,
+            NextActionSeat: 3,
+            NextActionTypes: [0, 1, 5],
+            NextExtraLimitSeconds: 12,
+            MinRaise: 0,
+            Pot: 28500,
+            SidePot: []
+          },
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 53120, BetChip: 0 }
+          ],
+          Player: {
+            SeatIndex: 3,
+            BetStatus: 1,
+            HoleCards: [10, 34],
+            Chip: 98380,
+            BetChip: 0
+          }
+        }),
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 60010,
+          SeatIndex: 3,
+          ActionType: ActionType.BET,
+          Chip: 84130,
+          BetChip: 14250,
+          Progress: {
+            Phase: 3,
+            NextActionSeat: 0,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 12,
+            MinRaise: 28500,
+            Pot: 42750,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 60011,
+          SeatIndex: 0,
+          ActionType: ActionType.CALL,
+          Chip: 38870,
+          BetChip: 14250,
+          Progress: {
+            Phase: 3,
+            NextActionSeat: -2,
+            NextActionTypes: [],
+            NextExtraLimitSeconds: 0,
+            MinRaise: 0,
+            Pot: 57000,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
+          timestamp: 60012,
+          HandId: 271929009,
+          CommunityCards: [],
+          Pot: 57000,
+          SidePot: [],
+          ResultType: 0,
+          DefeatStatus: 0,
+          Results: [
+            {
+              UserId: WINNER_CALLER,
+              HoleCards: [5, 33],
+              RankType: RankType.STRAIGHT,
+              Hands: [39, 33, 30, 25, 23],
+              HandRanking: 1,
+              Ranking: -2,
+              RewardChip: 28500
+            },
+            {
+              UserId: OPPONENT,
+              HoleCards: [10, 34],
+              RankType: RankType.STRAIGHT,
+              Hands: [39, 34, 30, 25, 23],
+              HandRanking: 1,
+              Ranking: -2,
+              RewardChip: 28500
+            }
+          ],
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: -1, Chip: 67370, BetChip: 0 }
+          ]
+        })
+      ]
+
+      // --- インポート/リビルドパイプライン: EntityConverter経由 ---
+      const importResult = converter.convertEventsToEntities(events)
+      const importHand = importResult.hands.find(h => h.id === 271929009)
+      expect(importHand).toBeDefined()
+      expect(new Set(importHand!.winningPlayerIds)).toEqual(new Set([WINNER_CALLER, OPPONENT]))
+
+      const riverCallAction = importResult.actions.find(a =>
+        a.handId === 271929009 &&
+        a.playerId === WINNER_CALLER &&
+        a.phase === PhaseType.RIVER &&
+        a.actionType === ActionType.CALL
+      )
+      expect(riverCallAction).toBeDefined()
+      expect(riverCallAction!.actionDetails).toContain(ActionDetail.RIVER_CALL)
+      expect(riverCallAction!.actionDetails).toContain(ActionDetail.RIVER_CALL_WON)
+
+      // --- ライブ記録パイプライン: WriteEntityStream経由（既に正しく動作している基準） ---
+      const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
+      const service = new PokerChaseService({ db: dbMock })
+      await service.ready
+      await new Promise<void>((resolve, reject) => {
+        service.handAggregateStream
+          .on('finish', () => resolve())
+          .on('error', (error: Error) => reject(error))
+        Readable.from(events).pipe(service.handAggregateStream)
+      })
+      await dbMock.open()
+      const liveRiverCallAction = (await dbMock.actions.where('handId').equals(271929009).toArray())
+        .find(a => a.playerId === WINNER_CALLER && a.phase === PhaseType.RIVER && a.actionType === ActionType.CALL)
+      expect(liveRiverCallAction).toBeDefined()
+      expect(liveRiverCallAction!.actionDetails).toContain(ActionDetail.RIVER_CALL_WON)
+
+      // 両パイプラインが完全一致
+      expect(riverCallAction!.actionDetails.slice().sort()).toEqual(liveRiverCallAction!.actionDetails.slice().sort())
+    })
+  })
+
+  /**
    * SHOWDOWNフェーズ生成のRankTypeゲーティング
    *
    * バグ: 修正前は`Results.length > 1`のみでSHOWDOWNフェーズを生成していたため、

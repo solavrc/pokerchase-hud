@@ -202,7 +202,12 @@ export class WriteEntityStream extends Transform {
             })
           }
           handState.hand.id = event.HandId
-          handState.hand.winningPlayerIds = event.Results.filter(({ HandRanking }) => HandRanking === 1).map(({ UserId }) => UserId)
+          // 勝者定義: RewardChip > 0（獲得チップがあるプレイヤー）。
+          // HandRanking === 1（最強役）ではサイドポットのみを獲得したプレイヤーを
+          // 見逃す（メインポット勝者の役が最強でも、サイドポット勝者は別役の場合がある）。
+          // WWSF/W$SDはPT4の定義上「ポットの一部でも獲得したか」を問うため、
+          // RewardChip基準がこれらの統計と整合する。
+          handState.hand.winningPlayerIds = event.Results.filter(({ RewardChip }) => RewardChip > 0).map(({ UserId }) => UserId)
           handState.hand.approxTimestamp = event.timestamp
           handState.hand.results = event.Results
 
