@@ -1,0 +1,306 @@
+/** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
+import PokerChaseService, { PokerChaseDB } from '../app'
+import type { Options } from '../components/Popup'
+import type {
+  ChromeMessage,
+  ImportStatusMessage,
+  LatestStatsMessage,
+  MessageResponse
+} from '../types/messages'
+import { firebaseAuthService } from '../services/firebase-auth-service'
+import { autoSyncService } from '../services/auto-sync-service'
+import { getOperationState, isOperationIdle } from './operation-state'
+import { getLastKnownStats, setLastKnownStats } from './ports'
+import {
+  createImportExportHandlers,
+  getCurrentImportSession,
+  startImportSession,
+  addImportChunk,
+  clearImportSession
+} from './import-export'
+
+/**
+ * Firebase Auth Handlers
+ */
+const handleFirebaseSignIn = async (): Promise<void> => {
+  try {
+    const user = await firebaseAuthService.signInWithGoogle()
+    console.log('[Firebase] User signed in:', user.email)
+
+    // Initialize auto sync after sign in
+    await autoSyncService.onAuthStateChanged(user)
+  } catch (error) {
+    console.error('[Firebase] Sign in error:', error)
+    throw error
+  }
+}
+
+const handleFirebaseSignOut = async (): Promise<void> => {
+  try {
+    await firebaseAuthService.signOut()
+    console.log('[Firebase] User signed out')
+
+    // Update sync state
+    await autoSyncService.onAuthStateChanged(null)
+  } catch (error) {
+    console.error('[Firebase] Sign out error:', error)
+    throw error
+  }
+}
+
+/**
+ * データエクスポート機能
+ * `chrome.runtime.onMessage`のディスパッチを登録する。
+ */
+export const registerMessageRouter = (service: PokerChaseService, db: PokerChaseDB, gameUrlPattern: string): void => {
+  const { exportData, importData, deleteAllData, getLatestSessionStats, rebuildAllData } = createImportExportHandlers(service, db, gameUrlPattern)
+
+  chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.runtime.MessageSender, sendResponse: (response: MessageResponse) => void) => {
+    if (request.action === 'exportData') {
+      // Block concurrent operations
+      if (!isOperationIdle()) {
+        console.warn(`[exportData] Blocked: operation already in progress (${getOperationState().type})`)
+        sendResponse({ success: false, error: '別の処理が実行中です' })
+        return true
+      }
+      exportData(request.format)
+        .then(() => sendResponse({ success: true }))
+        .catch(error => {
+          console.error('Export error:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true // 非同期レスポンスを示す
+    } else if (request.action === 'importData') {
+      importData(request.data)
+        .then((result) => {
+          chrome.runtime.sendMessage<ImportStatusMessage>({
+            action: 'importStatus',
+            status: `インポートが完了しました (${result.successCount.toLocaleString()}件のログ${result.duplicateCount > 0 ? `, ${result.duplicateCount.toLocaleString()}件の重複をスキップ` : ''})`
+          })
+          sendResponse({ success: true })
+        })
+        .catch(error => {
+          console.error('Import error:', error)
+          chrome.runtime.sendMessage<ImportStatusMessage>({
+            action: 'importStatus',
+            status: 'インポートに失敗しました: ' + error.message
+          })
+          sendResponse({ success: false, error: error.message })
+        })
+      return true // 非同期レスポンスを示す
+    } else if (request.action === 'importDataInit') {
+      startImportSession(request.totalChunks, request.fileName)
+      sendResponse({ success: true })
+      return true
+    } else if (request.action === 'importDataChunk') {
+      if (!getCurrentImportSession()) {
+        sendResponse({ success: false, error: 'No import session active' })
+        return true
+      }
+
+      addImportChunk(request.chunkIndex, request.chunkData)
+
+      sendResponse({ success: true })
+      return true
+    } else if (request.action === 'importDataProcess') {
+      const currentImportSession = getCurrentImportSession()
+      if (!currentImportSession || currentImportSession.chunks.length !== currentImportSession.totalChunks) {
+        sendResponse({ success: false, error: 'Import session incomplete' })
+        return true
+      }
+
+      // すべてのチャンクを結合
+      const completeData = currentImportSession.chunks.join('')
+      clearImportSession() // セッションをクリア
+
+      // データを処理
+      importData(completeData)
+        .then((result) => {
+          chrome.runtime.sendMessage<ImportStatusMessage>({
+            action: 'importStatus',
+            status: `インポートが完了しました (${result.successCount.toLocaleString()}件のログ${result.duplicateCount > 0 ? `, ${result.duplicateCount.toLocaleString()}件の重複をスキップ` : ''})`
+          })
+          sendResponse({ success: true })
+        })
+        .catch(error => {
+          console.error('Import error:', error)
+          chrome.runtime.sendMessage<ImportStatusMessage>({
+            action: 'importStatus',
+            status: 'インポートに失敗しました: ' + error.message
+          })
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'updateBattleTypeFilter') {
+      // フィルター値がundefinedかチェック
+      if (!request.filterOptions) {
+        sendResponse({ success: false, error: 'No filter options provided' })
+        return true
+      }
+
+      // サービス内のフィルターを更新
+      service.setBattleTypeFilter(request.filterOptions)
+        .then(() => {
+          sendResponse({ success: true })
+        })
+        .catch((error: Error) => {
+          console.error('[background.ts] Filter update error:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+
+      // ストレージに保存
+      const storageUpdate: Partial<Options> = {
+        filterOptions: request.filterOptions
+      }
+      chrome.storage.sync.set({ options: storageUpdate })
+
+      // コンテンツスクリプトにメッセージを転送
+      chrome.tabs.query({ url: gameUrlPattern }, tabs => {
+        tabs.forEach(tab => tab.id && chrome.tabs.sendMessage(tab.id, request))
+      })
+
+      // 新しいフィルターに基づいてHUD表示を強制更新
+      const lastKnownStats = getLastKnownStats()
+      if (lastKnownStats.length > 0) {
+        // 現在の席ユーザーIDで計算を再トリガー
+        service.statsOutputStream.write(lastKnownStats.map(stat => stat.playerId))
+      }
+
+      return true // 非同期レスポンスを示す
+    } else if (request.action === 'requestLatestStats') {
+      getLatestSessionStats()
+        .then(stats => {
+          if (sender.tab?.id) {
+            chrome.tabs.sendMessage<LatestStatsMessage>(sender.tab.id, {
+              action: 'latestStats',
+              stats: stats
+            })
+          }
+          sendResponse({ success: true })
+        })
+        .catch(error => {
+          console.error('Error getting latest stats:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'deleteAllData') {
+      // ログと設定を含むすべてのデータを削除
+      deleteAllData()
+        .then(() => {
+          sendResponse({ success: true })
+          // キャッシュされた統計をクリア
+          setLastKnownStats([])
+        })
+        .catch(error => {
+          console.error('Error deleting data:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'firebaseAuthStatus') {
+      // Check current auth status
+      const isSignedIn = firebaseAuthService.isSignedIn()
+      const userInfo = firebaseAuthService.getUserInfo()
+
+      sendResponse({ success: true, isSignedIn, userInfo })
+      return true
+    } else if (request.action === 'firebaseSignIn') {
+      // Firebase sign in
+      handleFirebaseSignIn()
+        .then(() => sendResponse({ success: true }))
+        .catch(error => {
+          console.error('Firebase sign in error:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'firebaseSignOut') {
+      // Firebase sign out
+      handleFirebaseSignOut()
+        .then(() => sendResponse({ success: true }))
+        .catch(error => {
+          console.error('Firebase sign out error:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'firebaseSyncToCloud' || request.action === 'firebaseSyncFromCloud') {
+      // Manual sync now uses auto sync service
+      autoSyncService.performSync()
+        .then(() => sendResponse({ success: true }))
+        .catch(error => {
+          console.error('Manual sync error:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'manualSyncUpload') {
+      // Manual upload to cloud
+      autoSyncService.performSync('upload')
+        .then(() => sendResponse({ success: true }))
+        .catch(error => {
+          console.error('Manual upload error:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'manualSyncDownload') {
+      // Manual download from cloud
+      autoSyncService.performSync('download')
+        .then(() => sendResponse({ success: true }))
+        .catch(error => {
+          console.error('Manual download error:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'getSyncState') {
+      // Get current sync state
+      const state = autoSyncService.getSyncState()
+      sendResponse({ success: true, syncState: state })
+      return false
+    } else if (request.action === 'getUnsyncedCount') {
+      // Get unsynced event count
+      autoSyncService.getUnsyncedEventCount()
+        .then(count => {
+          sendResponse({ success: true, count })
+        })
+        .catch(error => {
+          console.error('Error getting unsynced count:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'getSyncInfo') {
+      // Get detailed sync information
+      autoSyncService.getSyncInfo()
+        .then(info => {
+          sendResponse({ success: true, syncInfo: info })
+        })
+        .catch(error => {
+          console.error('Error getting sync info:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'rebuildData') {
+      // Block concurrent operations
+      if (!isOperationIdle()) {
+        console.warn(`[rebuildData] Blocked: operation already in progress (${getOperationState().type})`)
+        sendResponse({ success: false, error: '別の処理が実行中です' })
+        return true
+      }
+      // 手動でのデータ再構築
+      console.log('[rebuildData] Starting manual data rebuild...')
+
+      // バッチモードで全データを再構築（ダウンロード同期と同じ処理）
+      rebuildAllData()
+        .then(() => {
+          console.log('[rebuildData] Data rebuild completed')
+          sendResponse({ success: true })
+        })
+        .catch(error => {
+          console.error('[rebuildData] Error rebuilding data:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'getOperationState') {
+      console.log('[getOperationState]', JSON.stringify(getOperationState()))
+      sendResponse({ success: true, operationState: getOperationState() })
+      return true
+    }
+    return false
+  })
+}
