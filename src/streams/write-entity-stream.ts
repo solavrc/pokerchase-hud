@@ -5,7 +5,8 @@ import {
   ActionType,
   ApiType,
   BetStatusType,
-  PhaseType
+  PhaseType,
+  isShowdownParticipant
 } from '../types'
 import type {
   ApiHandEvent,
@@ -186,34 +187,38 @@ export class WriteEntityStream extends Transform {
           progress = event.Progress
         }
           break
-        case ApiType.EVT_HAND_RESULTS:
-          if (event.Results.length > 1) {
+        case ApiType.EVT_HAND_RESULTS: {
+          // ショーダウンフェーズの生成（実際にカードを比較したプレイヤーが2名以上いる場合）
+          // NO_CALL（無競争勝利）やFOLD_OPEN（フォールド後の自発公開）はショーダウンではないため除外する
+          const showdownParticipants = event.Results.filter(isShowdownParticipant)
+          if (showdownParticipants.length >= 2) {
             handState.phases.push({
               phase: PhaseType.SHOWDOWN,
               communityCards: [...handState.phases.at(-1)!.communityCards, ...event.CommunityCards],
-              seatUserIds: event.Results.map(({ UserId }) => UserId),
+              seatUserIds: showdownParticipants.map(({ UserId }) => UserId),
             })
           }
           handState.hand.id = event.HandId
           handState.hand.winningPlayerIds = event.Results.filter(({ HandRanking }) => HandRanking === 1).map(({ UserId }) => UserId)
           handState.hand.approxTimestamp = event.timestamp
           handState.hand.results = event.Results
-          
+
           // Update actions with handId and add RIVER_CALL_WON for winning river calls
           handState.actions = handState.actions.map(action => {
             const updatedAction = { ...action, handId: event.HandId }
-            
+
             // Check if this is a river call by a winning player
-            if (action.actionDetails.includes(ActionDetail.RIVER_CALL) && 
+            if (action.actionDetails.includes(ActionDetail.RIVER_CALL) &&
                 handState.hand.winningPlayerIds.includes(action.playerId)) {
               updatedAction.actionDetails = [...action.actionDetails, ActionDetail.RIVER_CALL_WON]
             }
-            
+
             return updatedAction
           })
-          
+
           handState.phases = handState.phases.map(phase => ({ ...phase, handId: event.HandId }))
           break
+        }
       }
     }
     return handState

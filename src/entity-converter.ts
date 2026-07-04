@@ -11,7 +11,8 @@ import {
   ApiType,
   PhaseType,
   Position,
-  isApiEventType
+  isApiEventType,
+  isShowdownParticipant
 } from './types'
 
 import type {
@@ -285,15 +286,19 @@ export class EntityConverter {
             action.handId = event.HandId
           })
 
-          // ショーダウンフェーズの生成（複数のプレイヤーが結果に含まれる場合）
-          if (event.Results && event.Results.length > 1) {
-            const lastPhase = handState.phases.at(-1)
-            handState.phases.push({
-              handId: event.HandId,
-              phase: PhaseType.SHOWDOWN,
-              communityCards: [...(lastPhase?.communityCards || []), ...(event.CommunityCards || [])],
-              seatUserIds: event.Results.map(result => result.UserId)
-            })
+          // ショーダウンフェーズの生成（実際にカードを比較したプレイヤーが2名以上いる場合）
+          // NO_CALL（無競争勝利）やFOLD_OPEN（フォールド後の自発公開）はショーダウンではないため除外する
+          {
+            const showdownParticipants = (event.Results || []).filter(isShowdownParticipant)
+            if (showdownParticipants.length >= 2) {
+              const lastPhase = handState.phases.at(-1)
+              handState.phases.push({
+                handId: event.HandId,
+                phase: PhaseType.SHOWDOWN,
+                communityCards: [...(lastPhase?.communityCards || []), ...(event.CommunityCards || [])],
+                seatUserIds: showdownParticipants.map(result => result.UserId)
+              })
+            }
           }
 
           // ハンド結果の更新

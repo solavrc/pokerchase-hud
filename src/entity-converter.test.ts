@@ -7,6 +7,7 @@ import {
   ActionDetail,
   Position,
   BetStatusType,
+  RankType,
   apiEventSchemas
 } from '../src/types'
 import type { ApiEvent, Session } from '../src/types'
@@ -1561,6 +1562,209 @@ describe('EntityConverter', () => {
 
       const importPositionsByPlayer = new Map(importActions.map(a => [a.playerId, a.position]))
       expect(importPositionsByPlayer).toEqual(positionsByPlayer)
+    })
+  })
+
+  /**
+   * SHOWDOWNフェーズ生成のRankTypeゲーティング
+   *
+   * バグ: 修正前は`Results.length > 1`のみでSHOWDOWNフェーズを生成していたため、
+   * 「無競争勝利（NO_CALL）＋フォールド後の自発公開（FOLD_OPEN）」のような、実際には
+   * カードを比較していない2件の結果でも誤ってSHOWDOWNフェーズが作られていた
+   * （実データ393,830件中、複数結果ハンド12,329件のうち692件＝5.6%で発生）。
+   * これによりWTSD/W$SDの分母が水増しされる。
+   * CLAUDE.mdのConfirmed Statistical Definitionsに従い、ショーダウン参加者は
+   * 「実役（RankType 0-9）またはSHOWDOWN_MUCK（11）」のみとし、NO_CALL（10）と
+   * FOLD_OPEN（12）は除外する。
+   */
+  describe('SHOWDOWN phase gating by RankType', () => {
+    // 2人テーブルでプリフロップにオールインし、そのままハンド結果を迎える最小フィクスチャ。
+    // Resultsだけを差し替えて各RankTypeの組み合わせを検証する。
+    const buildHeadsUpAllInEvents = (results: ApiEvent<ApiType.EVT_HAND_RESULTS>['Results']): ApiEvent[] => [
+      createEvent(ApiType.EVT_DEAL, {
+        timestamp: 3000,
+        SeatUserIds: [300, 301, -1, -1, -1, -1],
+        Game: {
+          CurrentBlindLv: 1,
+          NextBlindUnixSeconds: 3000000,
+          Ante: 0,
+          SmallBlind: 50,
+          BigBlind: 100,
+          ButtonSeat: 0,
+          SmallBlindSeat: 0,
+          BigBlindSeat: 1
+        },
+        Progress: {
+          Phase: 0,
+          NextActionSeat: 0,
+          NextActionTypes: [ActionType.BET, ActionType.FOLD],
+          NextExtraLimitSeconds: 15,
+          MinRaise: 200,
+          Pot: 150,
+          SidePot: []
+        },
+        OtherPlayers: [
+          { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1900, BetChip: 100 }
+        ]
+      }),
+      createEvent(ApiType.EVT_ACTION, {
+        timestamp: 3001,
+        SeatIndex: 0,
+        ActionType: ActionType.ALL_IN,
+        Chip: 0,
+        BetChip: 2000,
+        Progress: {
+          Phase: 0,
+          NextActionSeat: 1,
+          NextActionTypes: [ActionType.BET],
+          NextExtraLimitSeconds: 15,
+          MinRaise: 4000,
+          Pot: 2150,
+          SidePot: []
+        }
+      }),
+      createEvent(ApiType.EVT_HAND_RESULTS, {
+        timestamp: 3002,
+        HandId: 34567,
+        CommunityCards: [1, 21, 44, 2, 15],
+        Pot: 2150,
+        SidePot: [],
+        ResultType: 0,
+        DefeatStatus: 0,
+        Results: results,
+        OtherPlayers: [
+          { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 1900, BetChip: 0 }
+        ]
+      }, { skipValidation: true })
+    ]
+
+    it('does NOT create a SHOWDOWN phase for NO_CALL + FOLD_OPEN (uncontested win, no cards compared)', () => {
+      // 実例（hand 295913653）: 相手がフォールドしたため無競争勝利（NO_CALL）。
+      // フォールドしたプレイヤーは自発的にカードを公開した（FOLD_OPEN）だけで、
+      // ショーダウンは発生していない。
+      const events = buildHeadsUpAllInEvents([
+        {
+          UserId: 300,
+          HoleCards: [],
+          RankType: RankType.NO_CALL,
+          Hands: [],
+          HandRanking: 1,
+          Ranking: 1,
+          RewardChip: 2150
+        },
+        {
+          UserId: 301,
+          HoleCards: [48, 13],
+          RankType: RankType.FOLD_OPEN,
+          Hands: [],
+          HandRanking: -1,
+          Ranking: -1,
+          RewardChip: 0
+        }
+      ])
+
+      // インポート/リビルドパイプライン: EntityConverter経由
+      // （ライブ記録パイプライン=WriteEntityStreamでの同等テストは次のitを参照）
+      const importResult = converter.convertEventsToEntities(events)
+      expect(importResult.phases.find(p => p.phase === PhaseType.SHOWDOWN)).toBeUndefined()
+    })
+
+    it('does NOT create a SHOWDOWN phase for NO_CALL + FOLD_OPEN via the live WriteEntityStream pipeline either', async () => {
+      const events = buildHeadsUpAllInEvents([
+        {
+          UserId: 300,
+          HoleCards: [],
+          RankType: RankType.NO_CALL,
+          Hands: [],
+          HandRanking: 1,
+          Ranking: 1,
+          RewardChip: 2150
+        },
+        {
+          UserId: 301,
+          HoleCards: [48, 13],
+          RankType: RankType.FOLD_OPEN,
+          Hands: [],
+          HandRanking: -1,
+          Ranking: -1,
+          RewardChip: 0
+        }
+      ])
+
+      const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
+      const service = new PokerChaseService({ db: dbMock })
+      await service.ready
+      await new Promise<void>((resolve, reject) => {
+        service.handAggregateStream
+          .on('finish', () => resolve())
+          .on('error', (error: Error) => reject(error))
+        Readable.from(events).pipe(service.handAggregateStream)
+      })
+      await dbMock.open()
+      const livePhases = await dbMock.phases
+        .where('handId').equals(34567)
+        .toArray()
+
+      expect(livePhases.find(p => p.phase === PhaseType.SHOWDOWN)).toBeUndefined()
+    })
+
+    it('creates a SHOWDOWN phase for a real rank vs SHOWDOWN_MUCK (loser mucked, but showdown occurred)', () => {
+      // ショーダウンが発生し、敗者がマックした（SHOWDOWN_MUCK）ケース。CLAUDE.mdの定義通り、
+      // SHOWDOWN_MUCKはショーダウンとしてカウントする。
+      const events = buildHeadsUpAllInEvents([
+        {
+          UserId: 300,
+          HoleCards: [37, 51],
+          RankType: RankType.ONE_PAIR,
+          Hands: [1, 21, 44, 37, 51],
+          HandRanking: 1,
+          Ranking: 1,
+          RewardChip: 2150
+        },
+        {
+          UserId: 301,
+          HoleCards: [],
+          RankType: RankType.SHOWDOWN_MUCK,
+          Hands: [],
+          HandRanking: -1,
+          Ranking: -1,
+          RewardChip: 0
+        }
+      ])
+
+      const importResult = converter.convertEventsToEntities(events)
+      const showdownPhase = importResult.phases.find(p => p.phase === PhaseType.SHOWDOWN)
+      expect(showdownPhase).toBeDefined()
+      expect(showdownPhase!.seatUserIds).toEqual([300, 301])
+    })
+
+    it('does NOT create a SHOWDOWN phase for a real rank vs NO_CALL (only one player actually revealed)', () => {
+      // RankType 0-9とNO_CALLの組み合わせは実データ上は稀だが、NO_CALLは常に「比較していない」
+      // ことを意味するため、もう片方が実役でもショーダウン参加者は1名のみとなり、
+      // SHOWDOWNフェーズは生成されないべき。
+      const events = buildHeadsUpAllInEvents([
+        {
+          UserId: 300,
+          HoleCards: [37, 51],
+          RankType: RankType.HIGH_CARD,
+          Hands: [1, 21, 44, 37, 51],
+          HandRanking: 1,
+          Ranking: 1,
+          RewardChip: 2150
+        },
+        {
+          UserId: 301,
+          HoleCards: [],
+          RankType: RankType.NO_CALL,
+          Hands: [],
+          HandRanking: -1,
+          Ranking: -1,
+          RewardChip: 0
+        }
+      ])
+
+      const importResult = converter.convertEventsToEntities(events)
+      expect(importResult.phases.find(p => p.phase === PhaseType.SHOWDOWN)).toBeUndefined()
     })
   })
 })
