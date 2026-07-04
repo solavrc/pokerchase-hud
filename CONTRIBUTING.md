@@ -224,6 +224,20 @@ After unit tests pass:
 await db.actions.where('actionDetails').anyOf(['MY_OPPORTUNITY', 'MY_OCCURRENCE']).toArray()
 ```
 
+### Applying Your Statistic to Existing Data (Rebuild)
+
+`detectActionDetails` flags are only assigned at write time, when hands are recorded into the database (see `src/streams/write-entity-stream.ts` and `src/entity-converter.ts`). This means a new statistic will only show correct/non-zero values for hands played (or imported) **after** your code change — previously recorded hands were never evaluated against your new detection logic, so their `actionDetails` won't contain your new flags.
+
+To backfill existing hands so your new statistic reflects historical data too, rebuild is required:
+
+1. Load the updated extension (`npm run build` → reload in `chrome://extensions/`).
+2. Open the extension popup.
+3. Click the "データ再構築" button (rebuild button) in the Import/Export section.
+4. Confirm the dialog ("データを再構築しますか？この処理には時間がかかる場合があります。"). This re-runs `detectActionDetails` for every stat — including yours — against all previously imported `apiEvents`, regenerating `hands`/`phases`/`actions` from scratch.
+5. Wait for the "データ再構築完了" status message; progress is shown via a progress bar while rebuilding.
+
+Without this step, your statistic will look like it's stuck at 0 (or empty) for any session recorded before the change, even though the logic itself is correct.
+
 ### Debugging Tips
 
 1. **Add logging to your detection logic:**
@@ -237,7 +251,7 @@ await db.actions.where('actionDetails').anyOf(['MY_OPPORTUNITY', 'MY_OCCURRENCE'
 2. **Check if your statistic is registered:**
    ```javascript
    // In background console
-   service.statsRegistry.getAll().map(s => s.id)
+   statsRegistry.getAll().map(s => s.id)
    ```
 
 3. **Verify action details are saved:**
@@ -258,6 +272,7 @@ These are the flags defined in the ActionDetail enum (`src/types/game.ts`):
 - `$3BET` / `$3BET_CHANCE` - 3-betting (note the $ prefix)
 - `$3BET_FOLD` / `$3BET_FOLD_CHANCE` - Folding to 3-bet
 - `DONK_BET` / `DONK_BET_CHANCE` - Donk betting
+- `RIVER_CALL` / `RIVER_CALL_WON` - Calling on the river / winning after a river call
 
 #### Adding New Flags
 To add new ActionDetail flags for your statistic:
