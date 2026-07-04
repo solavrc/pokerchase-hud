@@ -252,6 +252,29 @@ To backfill existing hands so your new statistic reflects historical data too, r
 
 Without this step, your statistic will look like it's stuck at 0 (or empty) for any session recorded before the change, even though the logic itself is correct.
 
+### Verifying Against Real Data (`verify-stats`)
+
+Unit tests cover individual stats in isolation, but they can't catch a bug that only shows up when many hands' worth of state accumulates (off-by-one phase membership, position derivation on tables with empty seats, etc.). `npm run verify-stats` closes that gap by cross-checking the live pipeline against an independently re-implemented "oracle":
+
+- `src/tools/verify-stats/pipeline.ts` runs the real `EntityConverter` + `StatDefinition.calculate` over the given NDJSON (the same code path the extension itself uses on import/rebuild).
+- `src/tools/verify-stats/oracle.ts` recomputes the same stats **from scratch** directly off the raw events, importing only enums/types from `src/types` — it never imports `src/stats` or `src/entity-converter`, so a bug introduced in either can't "leak" into the oracle and silently agree with itself.
+- `src/tools/verify-stats/compare.ts` diffs the two, per player (players with ≥50 hands by default) and per stat, and reports a percentage agreement table.
+
+Run it whenever you change **`src/entity-converter.ts`, `src/streams/write-entity-stream.ts`, or anything in `src/stats/`**:
+
+```bash
+npm run verify-stats -- <path/to/export.ndjson>
+# optional flags:
+npm run verify-stats -- <file.ndjson> --min-hands=100 --threshold=99.5
+```
+
+The command exits non-zero if any stat's agreement drops below `--threshold` (default 99%). Two gaps are expected and do not indicate a bug:
+
+- **WTSD/WWSF ≈ 99.5–99.7%**: a handful of hands in real captures carry a duplicated FLOP `EVT_DEAL_ROUND` event (a dual-board/run-it-twice-shaped anomaly in the source data). The oracle only tracks one "who's still in at the flop" snapshot per hand, so it can't represent this; the live pipeline (which stores a `Phase` per `EVT_DEAL_ROUND`) handles it correctly. This shows up as an occasional denominator off-by-one for the affected player.
+- **CBet ≈ 99.8%**: at least one real capture contains a duplicated `EVT_ACTION` event for the same seat/street, inflating the oracle's c-bet-fold opportunity count by one for that hand.
+
+To obtain an NDJSON file to run this against: open the extension popup → Import/Export section → export your captured hand history (this is the same NDJSON format `validate-schema`/`schema-diff` consume).
+
 ### Debugging Tips
 
 1. **Add logging to your detection logic:**
