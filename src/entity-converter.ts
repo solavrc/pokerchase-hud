@@ -147,6 +147,11 @@ export class EntityConverter {
       cBetter: undefined // CB統計のために追加
     }
 
+    // ポジション計算用のユーザーID配列（EVT_DEALで1ハンドにつき1度だけ設定される。
+    // WriteEntityStream（ライブ記録パイプライン）と同一のロジックで算出し、
+    // インポート/リビルド後もポジション値が一致するようにする）
+    let positionUserIds: number[] = []
+
     let progress: any = undefined
 
     for (const event of events) {
@@ -167,6 +172,10 @@ export class EntityConverter {
             },
             results: []
           }
+
+          // ポジション計算用のユーザーID配列を算出（WriteEntityStreamと同一ロジック）。
+          // BigBlindSeatの次（=SB）から逆順に並べ、全フェーズ共通で使用する。
+          positionUserIds = rotateArrayFromIndex(event.SeatUserIds, event.Game.BigBlindSeat + 1).reverse()
 
           // プリフロップフェーズの作成（handIdは後で更新される）
           handState.phases.push({
@@ -200,25 +209,9 @@ export class EntityConverter {
             action.playerId === playerId
           ).length
 
-          // ポジション計算のためのユーザーID配列を作成
-          const positionUserIds = this.getPositionUserIds(handState.hand.seatUserIds, phase)
-
-          // ポジション計算
-          let position: Position
-          const playerIndex = positionUserIds.indexOf(playerId ?? 0)
-          if (playerIndex === 0) {
-            position = Position.SB // -1
-          } else if (playerIndex === 1) {
-            position = Position.BB // -2
-          } else if (playerIndex === 2) {
-            position = Position.UTG // 3
-          } else if (playerIndex === 3) {
-            position = Position.HJ // 2
-          } else if (playerIndex === 4) {
-            position = Position.CO // 1
-          } else {
-            position = Position.BTN // 0
-          }
+          // ポジション計算（WriteEntityStreamと同一ロジック。EVT_DEAL時点で確定した
+          // positionUserIdsを全フェーズで使い回すことで、ライブ記録と同じポジション値を得る）
+          const position: Position = positionUserIds.indexOf(playerId ?? 0) - 2
 
           // 統計モジュールを使用してActionDetailを検出
           const detectionContext: ActionDetailContext = {
@@ -362,43 +355,5 @@ export class EntityConverter {
       case 3: return PhaseType.RIVER
       default: return null
     }
-  }
-
-  /**
-   * ポジション計算用のユーザーID配列を取得
-   */
-  private getPositionUserIds(seatUserIds: number[], phase: PhaseType): number[] {
-    // プリフロップの場合はSB/BBから始まる順序
-    if (phase === PhaseType.PREFLOP) {
-      // SBの位置を見つける（BBの1つ前）
-      let sbIndex = -1
-      for (let i = 0; i < seatUserIds.length; i++) {
-        if (seatUserIds[i] !== -1 && seatUserIds[(i + 1) % seatUserIds.length] !== -1) {
-          sbIndex = i
-          break
-        }
-      }
-
-      if (sbIndex === -1) return seatUserIds // フォールバック
-
-      // SBから順に並べ替え
-      return rotateArrayFromIndex(seatUserIds, sbIndex)
-    }
-
-    // ポストフロップの場合はボタンの次から始まる順序
-    // 簡単のため、最後の有効なプレイヤーをボタンとする
-    let buttonIndex = -1
-    for (let i = seatUserIds.length - 1; i >= 0; i--) {
-      if (seatUserIds[i] !== -1) {
-        buttonIndex = i
-        break
-      }
-    }
-
-    if (buttonIndex === -1) return seatUserIds // フォールバック
-
-    // ボタンの次から順に並べ替え
-    const nextIndex = (buttonIndex + 1) % seatUserIds.length
-    return rotateArrayFromIndex(seatUserIds, nextIndex)
   }
 }
