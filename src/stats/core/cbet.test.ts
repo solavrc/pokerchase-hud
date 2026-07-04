@@ -10,7 +10,7 @@ describe('cbetStat', () => {
     phase: PhaseType.FLOP,
     phasePlayerActionIndex: 0,
     phasePrevBetCount: 0,
-    handState: {},
+    handState: { statStates: {} },
     ...overrides
   })
 
@@ -20,7 +20,7 @@ describe('cbetStat', () => {
         playerId: 1,
         actionType: ActionType.BET,
         phasePrevBetCount: 0,
-        handState: { cBetter: 1 }
+        handState: { statStates: { cbet: { cBetter: 1 } } }
       }))
       expect(details).toContain(ActionDetail.CBET_CHANCE)
       expect(details).toContain(ActionDetail.CBET)
@@ -31,7 +31,7 @@ describe('cbetStat', () => {
         playerId: 1,
         actionType: ActionType.CHECK,
         phasePrevBetCount: 0,
-        handState: { cBetter: 1 }
+        handState: { statStates: { cbet: { cBetter: 1 } } }
       }))
       expect(details).toContain(ActionDetail.CBET_CHANCE)
       expect(details).not.toContain(ActionDetail.CBET)
@@ -42,7 +42,7 @@ describe('cbetStat', () => {
         playerId: 2,
         actionType: ActionType.BET,
         phasePrevBetCount: 0,
-        handState: { cBetter: 1 }
+        handState: { statStates: { cbet: { cBetter: 1 } } }
       }))
       expect(details).toEqual([])
     })
@@ -50,7 +50,7 @@ describe('cbetStat', () => {
     it('should not detect anything on preflop', () => {
       const details = cbetStat.detectActionDetails!(createContext({
         phase: PhaseType.PREFLOP,
-        handState: { cBetter: 1 }
+        handState: { statStates: { cbet: { cBetter: 1 } } }
       }))
       expect(details).toEqual([])
     })
@@ -60,7 +60,7 @@ describe('cbetStat', () => {
         playerId: 1,
         actionType: ActionType.RAISE,
         phasePrevBetCount: 1,
-        handState: { cBetter: 1 }
+        handState: { statStates: { cbet: { cBetter: 1 } } }
       }))
       expect(details).toEqual([])
     })
@@ -72,7 +72,7 @@ describe('cbetStat', () => {
         playerId: 2,
         actionType: ActionType.CALL,
         phasePrevBetCount: 1,
-        handState: { cBetExecuted: true, cBetPhase: PhaseType.FLOP }
+        handState: { statStates: { cbet: { cBetExecuted: true, cBetPhase: PhaseType.FLOP } } }
       }))
       expect(details).toContain(ActionDetail.CBET_FOLD_CHANCE)
       expect(details).not.toContain(ActionDetail.CBET_FOLD)
@@ -83,7 +83,7 @@ describe('cbetStat', () => {
         playerId: 2,
         actionType: ActionType.FOLD,
         phasePrevBetCount: 1,
-        handState: { cBetExecuted: true, cBetPhase: PhaseType.FLOP }
+        handState: { statStates: { cbet: { cBetExecuted: true, cBetPhase: PhaseType.FLOP } } }
       }))
       expect(details).toContain(ActionDetail.CBET_FOLD_CHANCE)
       expect(details).toContain(ActionDetail.CBET_FOLD)
@@ -94,7 +94,7 @@ describe('cbetStat', () => {
         playerId: 2,
         actionType: ActionType.FOLD,
         phasePrevBetCount: 1,
-        handState: {}
+        handState: { statStates: {} }
       }))
       expect(details).not.toContain(ActionDetail.CBET_FOLD_CHANCE)
     })
@@ -105,7 +105,7 @@ describe('cbetStat', () => {
         actionType: ActionType.FOLD,
         phase: PhaseType.TURN,
         phasePrevBetCount: 1,
-        handState: { cBetExecuted: true, cBetPhase: PhaseType.FLOP }
+        handState: { statStates: { cbet: { cBetExecuted: true, cBetPhase: PhaseType.FLOP } } }
       }))
       expect(details).not.toContain(ActionDetail.CBET_FOLD_CHANCE)
     })
@@ -113,61 +113,61 @@ describe('cbetStat', () => {
 
   describe('updateHandState', () => {
     it('should set cBetter on preflop RAISE', () => {
-      const handState: any = {}
+      const handState: any = { statStates: {} }
       cbetStat.updateHandState!(createContext({
         playerId: 3,
         actionType: ActionType.RAISE,
         phase: PhaseType.PREFLOP,
         handState
       }))
-      expect(handState.cBetter).toBe(3)
+      expect(handState.statStates.cbet.cBetter).toBe(3)
     })
 
     it('should update cBetter to last raiser on preflop', () => {
-      const handState: any = { cBetter: 1 }
+      const handState: any = { statStates: { cbet: { cBetter: 1 } } }
       cbetStat.updateHandState!(createContext({
         playerId: 5,
         actionType: ActionType.RAISE,
         phase: PhaseType.PREFLOP,
         handState
       }))
-      expect(handState.cBetter).toBe(5)
+      expect(handState.statStates.cbet.cBetter).toBe(5)
     })
 
     it('should clear cBetter and set cBetExecuted when PFR bets on flop', () => {
-      const handState: any = { cBetter: 1 }
+      const handState: any = { statStates: { cbet: { cBetter: 1 } } }
       cbetStat.updateHandState!(createContext({
         playerId: 1,
         actionType: ActionType.BET,
         phasePrevBetCount: 0,
         handState
       }))
-      expect(handState.cBetter).toBeUndefined()
-      expect(handState.cBetExecuted).toBe(true)
-      expect(handState.cBetPhase).toBe(PhaseType.FLOP)
+      expect(handState.statStates.cbet.cBetter).toBeUndefined()
+      expect(handState.statStates.cbet.cBetExecuted).toBe(true)
+      expect(handState.statStates.cbet.cBetPhase).toBe(PhaseType.FLOP)
     })
 
     it('should clear cBetter without cBetExecuted when PFR checks', () => {
-      const handState: any = { cBetter: 1 }
+      const handState: any = { statStates: { cbet: { cBetter: 1 } } }
       cbetStat.updateHandState!(createContext({
         playerId: 1,
         actionType: ActionType.CHECK,
         phasePrevBetCount: 0,
         handState
       }))
-      expect(handState.cBetter).toBeUndefined()
-      expect(handState.cBetExecuted).toBeUndefined()
+      expect(handState.statStates.cbet.cBetter).toBeUndefined()
+      expect(handState.statStates.cbet.cBetExecuted).toBeUndefined()
     })
 
     it('should clear cBetter when another player bets first', () => {
-      const handState: any = { cBetter: 1 }
+      const handState: any = { statStates: { cbet: { cBetter: 1 } } }
       cbetStat.updateHandState!(createContext({
         playerId: 2,
         actionType: ActionType.BET,
         phasePrevBetCount: 0,
         handState
       }))
-      expect(handState.cBetter).toBeUndefined()
+      expect(handState.statStates.cbet.cBetter).toBeUndefined()
     })
   })
 

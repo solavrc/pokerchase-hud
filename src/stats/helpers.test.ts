@@ -134,7 +134,7 @@ describe('Statistics Helpers', () => {
     it('should return true when player was last aggressor', () => {
       const context = createContext({
         playerId: 123,
-        handState: { lastAggressor: 123 }
+        handState: { statStates: { helpers: { lastAggressor: 123 } } }
       })
       expect(wasPreflopRaiser(context)).toBe(true)
     })
@@ -142,7 +142,7 @@ describe('Statistics Helpers', () => {
     it('should return false when player was not last aggressor', () => {
       const context = createContext({
         playerId: 123,
-        handState: { lastAggressor: 456 }
+        handState: { statStates: { helpers: { lastAggressor: 456 } } }
       })
       expect(wasPreflopRaiser(context)).toBe(false)
     })
@@ -159,7 +159,7 @@ describe('Statistics Helpers', () => {
         phase: PhaseType.FLOP,
         phasePlayerActionIndex: 0,
         playerId: 123,
-        handState: { lastAggressor: 123 }
+        handState: { statStates: { helpers: { lastAggressor: 123 } } }
       })
       expect(isCBetOpportunity(context)).toBe(true)
     })
@@ -169,7 +169,7 @@ describe('Statistics Helpers', () => {
         phase: PhaseType.PREFLOP,
         phasePlayerActionIndex: 0,
         playerId: 123,
-        handState: { lastAggressor: 123 }
+        handState: { statStates: { helpers: { lastAggressor: 123 } } }
       })
       expect(isCBetOpportunity(context)).toBe(false)
     })
@@ -179,7 +179,7 @@ describe('Statistics Helpers', () => {
         phase: PhaseType.FLOP,
         phasePlayerActionIndex: 1,
         playerId: 123,
-        handState: { lastAggressor: 123 }
+        handState: { statStates: { helpers: { lastAggressor: 123 } } }
       })
       expect(isCBetOpportunity(context)).toBe(false)
     })

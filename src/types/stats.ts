@@ -39,16 +39,24 @@ export interface ActionDetailContext {
   phasePlayerActionIndex: number
   phasePrevBetCount: number
   position?: Position
-  // HandState for stateful detection
+  /**
+   * HandState for stateful detection.
+   *
+   * `actions` is structural data — the hand's recorded actions so far — and is
+   * shared, readable by any stat. Namespacing convention for everything else:
+   * shared core types carry no stat-specific fields. Each stateful stat stores
+   * its own private, transient state under `statStates[statId]`, keyed by the
+   * stat's own `id`, so stats never need to modify shared core types. For
+   * example, a stat with id 'myStat' would do:
+   *
+   *   const state = (handState.statStates['myStat'] ??= {}) as MyStatState
+   *   state.someFlag = true
+   *
+   * See src/stats/core/cbet.ts's `getCBetState` helper for a concrete example.
+   */
   handState?: {
     actions?: Action[]  // 現在のハンドで記録済みのアクション
-    cBetter?: number
-    cBetExecuted?: boolean  // CBetが実際に実行されたかどうか
-    cBetPhase?: number     // CBetが実行されたストリート
-    lastAggressor?: number
-    currentStreetAggressor?: number
-    stealRaiser?: number  // スチールレイズを行ったプレイヤー
-    // 他の状態管理用フィールドを追加可能
+    statStates: Record<string, unknown>
   }
 }
 

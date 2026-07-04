@@ -12,7 +12,8 @@ describe('stealStat', () => {
     phasePrevBetCount: 1,
     position: Position.BTN,
     handState: {
-      actions: []
+      actions: [],
+      statStates: {}
     },
     ...overrides
   })
@@ -50,7 +51,8 @@ describe('stealStat', () => {
               playerId: 2,
               position: Position.UTG
             })
-          ]
+          ],
+          statStates: {}
         }
       }))
 
@@ -75,7 +77,8 @@ describe('stealStat', () => {
   describe('updateHandState', () => {
     it('should remember the steal raiser after a steal attempt', () => {
       const handState: any = {
-        actions: []
+        actions: [],
+        statStates: {}
       }
 
       stealStat.updateHandState!(createContext({
@@ -85,7 +88,7 @@ describe('stealStat', () => {
         handState
       }))
 
-      expect(handState.stealRaiser).toBe(7)
+      expect(handState.statStates.steal.stealRaiser).toBe(7)
     })
   })
 

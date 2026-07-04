@@ -13,7 +13,7 @@ describe('foldToStealStat', () => {
     position: Position.BB,
     handState: {
       actions: [],
-      stealRaiser: 1
+      statStates: { steal: { stealRaiser: 1 } }
     },
     ...overrides
   })
@@ -42,7 +42,8 @@ describe('foldToStealStat', () => {
     it('should not detect fold-to-steal without a remembered steal raiser', () => {
       const details = foldToStealStat.detectActionDetails!(createContext({
         handState: {
-          actions: []
+          actions: [],
+          statStates: {}
         },
         actionType: ActionType.FOLD
       }))

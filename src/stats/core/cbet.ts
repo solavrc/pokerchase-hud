@@ -6,6 +6,14 @@ import type { StatDefinition, ActionDetailContext } from '../../types/stats'
 import { PhaseType, ActionDetail, ActionType } from '../../types/game'
 import { formatPercentage } from '../utils'
 
+interface CBetState {
+  cBetter?: number
+  cBetExecuted?: boolean
+  cBetPhase?: number
+}
+const getCBetState = (handState: { statStates: Record<string, unknown> }): CBetState =>
+  (handState.statStates['cbet'] ??= {}) as CBetState
+
 export const cbetStat: StatDefinition = {
   id: 'cbet',
   name: 'CB',
@@ -35,10 +43,11 @@ export const cbetStat: StatDefinition = {
   detectActionDetails: (context: ActionDetailContext): ActionDetail[] => {
     const { playerId, actionType, phase, phasePrevBetCount, handState } = context
     const details: ActionDetail[] = []
-    
-    if (phase !== PhaseType.PREFLOP && handState?.cBetter) {
+    const cBetState = handState ? getCBetState(handState) : undefined
+
+    if (phase !== PhaseType.PREFLOP && cBetState?.cBetter) {
       if (phasePrevBetCount === 0) {
-        if (handState.cBetter === playerId) {
+        if (cBetState.cBetter === playerId) {
           details.push(ActionDetail.CBET_CHANCE)
           if (actionType === ActionType.BET) {
             details.push(ActionDetail.CBET)
@@ -50,16 +59,16 @@ export const cbetStat: StatDefinition = {
         // CBetFoldの機会はない
       }
     }
-    
+
     // CBetFoldの判定（CBetが実際に行われた後のみ、同一ストリートのみ）
-    if (phase !== PhaseType.PREFLOP && handState?.cBetExecuted && handState?.cBetPhase === phase && phasePrevBetCount === 1) {
+    if (phase !== PhaseType.PREFLOP && cBetState?.cBetExecuted && cBetState?.cBetPhase === phase && phasePrevBetCount === 1) {
       // cBetExecutedがtrue = CBetが実際に実行された後の相手プレイヤーのアクション
       details.push(ActionDetail.CBET_FOLD_CHANCE)
       if (actionType === ActionType.FOLD) {
         details.push(ActionDetail.CBET_FOLD)
       }
     }
-    
+
     return details
   },
   
@@ -69,27 +78,28 @@ export const cbetStat: StatDefinition = {
    */
   updateHandState: (context: ActionDetailContext): void => {
     const { playerId, actionType, phase, phasePrevBetCount, handState } = context
-    
+
     if (!handState) return
-    
+    const cBetState = getCBetState(handState)
+
     if (phase === PhaseType.PREFLOP) {
       if (actionType === ActionType.RAISE) {
-        handState.cBetter = playerId // PREFLOPで最後にRAISEしたプレイヤー
+        cBetState.cBetter = playerId // PREFLOPで最後にRAISEしたプレイヤー
       }
-    } else if (handState.cBetter) {
+    } else if (cBetState.cBetter) {
       if (phasePrevBetCount === 0) {
-        if (handState.cBetter === playerId) {
+        if (cBetState.cBetter === playerId) {
           if (actionType === ActionType.BET) {
             // CBが実行された
-            handState.cBetter = undefined
-            handState.cBetExecuted = true
-            handState.cBetPhase = phase
+            cBetState.cBetter = undefined
+            cBetState.cBetExecuted = true
+            cBetState.cBetPhase = phase
           } else {
-            handState.cBetter = undefined // CB機会を逃した（cBetExecutedはfalseのまま）
+            cBetState.cBetter = undefined // CB機会を逃した（cBetExecutedはfalseのまま）
           }
         } else {
           if (actionType === ActionType.BET) {
-            handState.cBetter = undefined // 他のプレイヤーが先にベット
+            cBetState.cBetter = undefined // 他のプレイヤーが先にベット
           }
         }
       }

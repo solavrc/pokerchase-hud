@@ -74,9 +74,15 @@ export function isPassiveAction(actionType: ActionType): boolean {
 /**
  * Check if player was the preflop raiser (PFR)
  * プリフロップレイザーだったかチェック
+ *
+ * Note: `lastAggressor` is namespaced under `statStates['helpers']` since this
+ * is a shared helper, not a registered stat with its own id. No stat plugin
+ * currently populates this slot, so this always evaluates to false in
+ * production; the field/behavior is preserved here for API compatibility.
  */
 export function wasPreflopRaiser(context: ActionDetailContext): boolean {
-  return context.handState?.lastAggressor === context.playerId
+  const helpersState = context.handState?.statStates['helpers'] as { lastAggressor?: number } | undefined
+  return helpersState?.lastAggressor === context.playerId
 }
 
 /**
