@@ -23,6 +23,8 @@ import { saveEntities, findLatestPlayerDealEvent } from './utils/database-utils'
 import type { AllPlayersRealTimeStats } from './realtime-stats/realtime-stats-service'
 import type { Options } from './components/Popup'
 import type { HandLogEvent } from './types/hand-log'
+import { defaultRegistry } from './stats'
+import type { StatsRegistry } from './stats/registry'
 import type {
   ChromeMessage,
   ExportProgressMessage,
@@ -49,6 +51,7 @@ declare global {
   interface Window {
     db: PokerChaseDB
     service: PokerChaseService
+    statsRegistry: StatsRegistry
   }
 }
 
@@ -58,6 +61,7 @@ const db = new PokerChaseDB(self.indexedDB, self.IDBKeyRange)
 const service = new PokerChaseService({ db })
 self.db = db
 self.service = service
+self.statsRegistry = defaultRegistry
 
 // Wait for service initialization
 service.ready.then(async () => {

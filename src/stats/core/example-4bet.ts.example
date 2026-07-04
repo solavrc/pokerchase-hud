@@ -1,73 +1,64 @@
 /**
  * Example: 4-Bet Statistic
- * 
+ *
  * This is an example implementation showing how to create a new statistic.
  * To use this:
- * 1. Remove the .example extension from the filename
- * 2. Add the export to src/stats/core/index.ts
- * 3. The statistic will automatically appear in the HUD
+ * 1. Add `$4BET_CHANCE = '4BET_CHANCE'` and `$4BET = '4BET'` to the `ActionDetail`
+ *    enum in `src/types/game.ts` (follow the existing `$3BET`-style naming
+ *    convention already used there).
+ * 2. Rename this file from `example-4bet.ts.example` to `4bet.ts`.
+ * 3. Add the export to `src/stats/core/index.ts`.
+ * 4. Add unit tests (required — see CONTRIBUTING.md's "Unit Tests (Required)"
+ *    section).
+ * 5. Rebuild existing data: new flags are only assigned to hands recorded
+ *    going forward, so existing (previously imported) hands need a rebuild
+ *    to show non-zero values for this statistic. See CONTRIBUTING.md's
+ *    "Applying Your Statistic to Existing Data (Rebuild)" section.
  */
 
 import type { StatDefinition, ActionDetailContext } from '../../types/stats'
-import { ActionType } from '../../types/game'
+import { ActionDetail, ActionType } from '../../types/game'
 import { formatPercentage } from '../utils'
 import { isFacing3Bet } from '../helpers'
-
-// Custom action detail flags for this statistic
-// In a real implementation, these would be added to the ActionDetail enum
-const FOUR_BET_OPPORTUNITY = '4BET_OPPORTUNITY'
-const FOUR_BET = '4BET'
 
 export const fourBetStat: StatDefinition = {
   id: '4bet',
   name: '4B',
   description: '4-bet percentage',
-  
+
   // Detect when a player has the opportunity to 4-bet and whether they do
-  detectActionDetails: (context: ActionDetailContext): string[] => {
-    const details: string[] = []
-    
+  detectActionDetails: (context: ActionDetailContext): ActionDetail[] => {
+    const details: ActionDetail[] = []
+
     // Player is facing a 3-bet (phasePrevBetCount === 3)
     if (isFacing3Bet(context)) {
-      details.push(FOUR_BET_OPPORTUNITY)
-      
+      details.push(ActionDetail.$4BET_CHANCE)
+
       // Check if player responds with a raise (4-bet)
       if (context.actionType === ActionType.RAISE) {
-        details.push(FOUR_BET)
+        details.push(ActionDetail.$4BET)
       }
     }
-    
+
     return details
   },
-  
+
   // Calculate the statistic from accumulated data
   calculate: ({ actions }) => {
     // Count opportunities (when facing 3-bet)
-    const opportunities = actions.filter(a => 
-      a.actionDetails.includes(FOUR_BET_OPPORTUNITY)
+    const opportunities = actions.filter(a =>
+      a.actionDetails.includes(ActionDetail.$4BET_CHANCE)
     ).length
-    
+
     // Count actual 4-bets
-    const fourBets = actions.filter(a => 
-      a.actionDetails.includes(FOUR_BET)
+    const fourBets = actions.filter(a =>
+      a.actionDetails.includes(ActionDetail.$4BET)
     ).length
-    
+
     // Return as [numerator, denominator] for percentage calculation
     return [fourBets, opportunities]
   },
-  
+
   // Use the standard percentage formatter
   format: formatPercentage  // Will display as "25.0% (1/4)"
 }
-
-/**
- * Alternative implementation using ActionPatterns helper:
- * 
- * import { ActionPatterns } from '../helpers'
- * 
- * detectActionDetails: ActionPatterns.createOpportunityPattern(
- *   '4BET',
- *   (context) => isFacing3Bet(context),
- *   (context) => context.actionType === ActionType.RAISE
- * )
- */
