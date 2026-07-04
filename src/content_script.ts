@@ -6,7 +6,9 @@
 import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { web_accessible_resources } from '../manifest.json'
-import PokerChaseService, { ApiEvent, ApiType, PlayerStats } from './app'
+import { POKER_CHASE_SERVICE_EVENT, POKER_CHASE_ORIGIN } from './constants/runtime'
+import { ApiType } from './types'
+import type { ApiEvent, PlayerStats } from './types'
 import App from './components/App'
 import type { ChromeMessage } from './types/messages'
 import { MESSAGE_ACTIONS as EVENTS } from './types/messages'
@@ -28,13 +30,13 @@ export interface StatsData {
 
 declare global {
   interface WindowEventMap {
-    [PokerChaseService.POKER_CHASE_SERVICE_EVENT]: CustomEvent<StatsData>
+    [POKER_CHASE_SERVICE_EVENT]: CustomEvent<StatsData>
   }
 }
 
 const connectToBackgroundService = () => {
   try {
-    const port = chrome.runtime.connect({ name: PokerChaseService.POKER_CHASE_SERVICE_EVENT })
+    const port = chrome.runtime.connect({ name: POKER_CHASE_SERVICE_EVENT })
 
     // 接続成功時、ゲーム中ならキープアライブを開始
     if (isGameActive) {
@@ -44,7 +46,7 @@ const connectToBackgroundService = () => {
     port.onMessage.addListener((message: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
       if (typeof message === 'object' && message !== null && 'stats' in message) {
         console.time('[content_script] Dispatching stats event')
-        window.dispatchEvent(new CustomEvent(PokerChaseService.POKER_CHASE_SERVICE_EVENT, { detail: message }))
+        window.dispatchEvent(new CustomEvent(POKER_CHASE_SERVICE_EVENT, { detail: message }))
         console.timeEnd('[content_script] Dispatching stats event')
         if (message.realTimeStats) {
           console.log('[content_script] Real-time stats received:', Object.keys(message.realTimeStats))
@@ -101,7 +103,7 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   if (
     // セキュリティチェック: ゲームのオリジンからのメッセージのみ受け付ける
     event.source !== window ||
-    event.origin !== PokerChaseService.POKER_CHASE_ORIGIN ||
+    event.origin !== POKER_CHASE_ORIGIN ||
     // PokerChase APIメッセージの型ガード: ApiTypeIdを持つことを確認
     !event.data ||
     typeof event.data !== 'object' ||
@@ -181,7 +183,7 @@ const messageHandlers: Record<string, (message: ChromeMessage) => void> = {
   },
   latestStats: (message) => {
     if ('stats' in message) {
-      window.dispatchEvent(new CustomEvent(PokerChaseService.POKER_CHASE_SERVICE_EVENT, {
+      window.dispatchEvent(new CustomEvent(POKER_CHASE_SERVICE_EVENT, {
         detail: { stats: message.stats }
       }))
     }

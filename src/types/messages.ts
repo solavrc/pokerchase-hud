@@ -3,7 +3,7 @@
  * Uses discriminated union pattern for type safety
  */
 
-import { FilterOptions, PlayerStats } from '../app'
+import type { FilterOptions, PlayerStats } from './index'
 import { HandLogConfig, HandLogEvent, UIConfig } from './hand-log'
 import type { SyncState } from '../services/auto-sync-service'
 

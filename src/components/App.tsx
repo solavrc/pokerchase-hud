@@ -1,5 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react"
-import PokerChaseService, { ApiType, PlayerStats, isApiEventType } from "../app"
+import { POKER_CHASE_SERVICE_EVENT } from "../constants/runtime"
+import { ApiType, isApiEventType } from "../types"
+import type { PlayerStats } from "../types"
 import type { StatsData } from "../content_script"
 import { defaultStatDisplayConfigs } from "../stats"
 import type { StatDisplayConfig } from "../types"
@@ -59,13 +61,13 @@ const App = memo(() => {
 
   useEffect(() => {
     window.addEventListener(
-      PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      POKER_CHASE_SERVICE_EVENT,
       handleStatsMessage
     )
 
     return () => {
       window.removeEventListener(
-        PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+        POKER_CHASE_SERVICE_EVENT,
         handleStatsMessage
       )
     }

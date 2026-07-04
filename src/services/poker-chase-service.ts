@@ -1,4 +1,3 @@
-import { content_scripts } from '../../manifest.json'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { findLatestPlayerDealEvent } from '../utils/database-utils'
 import { AggregateEventsStream } from '../streams/aggregate-events-stream'
@@ -7,6 +6,11 @@ import { ReadEntityStream } from '../streams/read-entity-stream'
 import { HandLogStream } from '../streams/hand-log-stream'
 import { RealTimeStatsStream } from '../streams/realtime-stats-stream'
 import { setHandImprovementBatchMode } from '../realtime-stats'
+import {
+  POKER_CHASE_SERVICE_EVENT,
+  POKER_CHASE_ORIGIN,
+  STORAGE_KEY
+} from '../constants/runtime'
 import {
   ApiType,
   BATTLE_TYPE_FILTERS
@@ -50,9 +54,9 @@ class PokerChaseService {
   handLogConfig?: HandLogConfig = undefined // Hand log display configuration
   batchMode: boolean = false // Batch mode flag for bulk operations
 
-  static readonly POKER_CHASE_SERVICE_EVENT = 'PokerChaseServiceEvent'
-  static readonly POKER_CHASE_ORIGIN = new URL(content_scripts[0]!.matches[0]!).origin
-  static readonly STORAGE_KEY = 'pokerChaseServiceState'
+  static readonly POKER_CHASE_SERVICE_EVENT = POKER_CHASE_SERVICE_EVENT
+  static readonly POKER_CHASE_ORIGIN = POKER_CHASE_ORIGIN
+  static readonly STORAGE_KEY = STORAGE_KEY
 
   // Getter/Setter for automatic persistence
   get playerId(): number | undefined {

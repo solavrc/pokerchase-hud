@@ -4,7 +4,7 @@ import FormControl from '@mui/material/FormControl'
 import FormControlLabel from '@mui/material/FormControlLabel'
 import FormGroup from '@mui/material/FormGroup'
 import Typography from '@mui/material/Typography'
-import type { GameTypeFilter } from '../../app'
+import type { GameTypeFilter } from '../../types'
 
 interface GameTypeFilterSectionProps {
   gameTypeFilter: GameTypeFilter

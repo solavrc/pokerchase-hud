@@ -1,7 +1,7 @@
 import { getBucket } from '@extend-chrome/storage'
 import Divider from '@mui/material/Divider'
 import { ChangeEvent, useEffect, useRef, useState } from 'react'
-import { FilterOptions, GameTypeFilter } from '../app'
+import type { FilterOptions, GameTypeFilter } from '../types'
 import { defaultStatDisplayConfigs } from '../stats'
 import type { StatDisplayConfig } from '../types/filters'
 import type { UIConfig } from '../types/hand-log'
