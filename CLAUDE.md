@@ -204,6 +204,7 @@ data storage (Dexie.js), normalized entities, Firestore strategy, and v3 index o
 12. **Operation Exclusivity**: Only one long-running operation (export/import/rebuild) at a time, enforced in background.ts via `currentOperationState`
 13. **Optimistic UI + Server Guard**: Popup sets state immediately on click (responsive UX), background validates and rejects if busy (correctness)
 14. **Cache-First Rendering**: Frequently needed state (Firebase auth) cached in `chrome.storage.local` for instant popup rendering
+15. **Rebuild Advisory Versioning**: Bump `REBUILD_ADVISORY_VERSION` (`src/constants/database.ts`) whenever a change alters write-time entity derivation for already-recorded data, so existing users get prompted (badge/notification/popup banner via `src/background/rebuild-advisory.ts`) to run データ再構築 after updating
 
 ### Data Flow
 

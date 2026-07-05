@@ -11,6 +11,7 @@ import { firebaseAuthService } from '../services/firebase-auth-service'
 import { autoSyncService } from '../services/auto-sync-service'
 import { getOperationState, isOperationIdle } from './operation-state'
 import { getLastKnownStats, setLastKnownStats } from './ports'
+import { resolveAdvisory } from './rebuild-advisory'
 import {
   createImportExportHandlers,
   getCurrentImportSession,
@@ -299,6 +300,15 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
     } else if (request.action === 'getOperationState') {
       console.log('[getOperationState]', JSON.stringify(getOperationState()))
       sendResponse({ success: true, operationState: getOperationState() })
+      return true
+    } else if (request.action === 'acknowledgeRebuildAdvisory') {
+      // Popupのバナー「閉じる」によるアドバイザリの手動解消
+      resolveAdvisory()
+        .then(() => sendResponse({ success: true }))
+        .catch(error => {
+          console.error('[acknowledgeRebuildAdvisory] Error:', error)
+          sendResponse({ success: false, error: error.message })
+        })
       return true
     }
     return false

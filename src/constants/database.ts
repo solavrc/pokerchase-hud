@@ -49,3 +49,18 @@ export type BatchSize = 10 | 100 | 300 | 500
 // Database operation modes
 export type DbTransactionMode = 'r' | 'rw'
 export type DbOperationType = 'import' | 'export' | 'sync' | 'rebuild'
+
+/**
+ * データ再構築アドバイザリのバージョン。
+ *
+ * `detectActionDetails`（ActionDetailフラグ）、ポジション算出、ショーダウン
+ * フェーズ判定など、書き込み時に確定させるエンティティ導出ロジックを変更し、
+ * 既存に記録済みのハンドを再評価すると異なる結果になる場合はこの値をインクリ
+ * メントすること（例: #94–#97, #100–#101 の修正 = version 1）。
+ *
+ * インクリメントすると、拡張機能の更新後に既存ユーザーへ一度だけ
+ * 「データ再構築」の実行を促すアドバイソリーが表示される
+ * （`src/background/rebuild-advisory.ts`参照）。単なるUI変更やバグ修正でも
+ * 書き込み時の導出結果に影響しないものはバンプ不要。
+ */
+export const REBUILD_ADVISORY_VERSION = 1

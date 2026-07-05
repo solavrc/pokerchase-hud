@@ -252,6 +252,8 @@ To backfill existing hands so your new statistic reflects historical data too, r
 
 Without this step, your statistic will look like it's stuck at 0 (or empty) for any session recorded before the change, even though the logic itself is correct.
 
+**Prompting existing users to rebuild:** the steps above only help users who know to look for the rebuild button. If your change alters write-time derivation for data that's *already* recorded (not just new stats going forward — e.g. changing `detectActionDetails`, position/seat derivation, or showdown phase detection so previously recorded hands would now compute differently), bump `REBUILD_ADVISORY_VERSION` in `src/constants/database.ts`. This triggers a one-time advisory (badge + notification + popup banner, see `src/background/rebuild-advisory.ts`) prompting existing users to rebuild after they update the extension. Don't bump it for changes that only affect newly recorded data (e.g. adding a brand-new stat with no backward-looking derivation change).
+
 ### Verifying Against Real Data (`verify-stats`)
 
 Unit tests cover individual stats in isolation, but they can't catch a bug that only shows up when many hands' worth of state accumulates (off-by-one phase membership, position derivation on tables with empty seats, etc.). `npm run verify-stats` closes that gap by cross-checking the live pipeline against an independently re-implemented "oracle":

@@ -16,6 +16,7 @@ import { content_scripts } from '../manifest.json'
 import { registerStreamSubscriptions } from './background/ports'
 import { registerEventIngestion } from './background/event-ingestion'
 import { registerMessageRouter } from './background/message-router'
+import { checkOnUpdate } from './background/rebuild-advisory'
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
 
 // Get game URL pattern from manifest
@@ -55,6 +56,14 @@ service.ready.then(async () => {
 /** 拡張更新時の処理 */
 chrome.runtime.onInstalled.addListener(async details => {
   console.log(`[onInstalled] Extension ${details.reason}: previousVersion=${details.previousVersion}`)
+
+  if (details.reason === 'update') {
+    try {
+      await checkOnUpdate(db)
+    } catch (error) {
+      console.error('[onInstalled] Rebuild advisory check failed:', error)
+    }
+  }
 })
 
 /** 拡張起動時: フィルター設定を復元（統計の再計算はしない） */

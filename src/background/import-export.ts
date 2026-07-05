@@ -19,6 +19,7 @@ import type {
   RebuildProgressMessage
 } from '../types/messages'
 import { setOperationState } from './operation-state'
+import { resolveAdvisory } from './rebuild-advisory'
 
 const IMPORT_CHUNK_SIZE = DATABASE_CONSTANTS.IMPORT_CHUNK_SIZE
 
@@ -546,6 +547,9 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
       // データベースを完全に削除
       await db.delete()
 
+      // データが無くなったので再構築アドバイザリも解消する（reloadより前に行う）
+      await resolveAdvisory()
+
       // データベースの新しいインスタンスを確保するために拡張機能をリロード
       chrome.runtime.reload()
     } catch (error) {
@@ -601,6 +605,8 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
 
       if (totalCount === 0) {
         console.log('[rebuildAllData] No events to process')
+        // 対象イベントが無い＝再構築の必要が無いため、保留中のアドバイザリも解消する
+        await resolveAdvisory()
         setOperationState({ type: 'idle' })
         chrome.runtime.sendMessage<RebuildProgressMessage>({
           action: 'rebuildProgress',
@@ -703,6 +709,9 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
             service.statsOutputStream.write(service.latestEvtDeal.SeatUserIds)
           }
         }
+
+        // 再構築が完了したので、保留中の再構築アドバイザリがあれば解消する
+        await resolveAdvisory()
 
         setOperationState({ type: 'idle' })
         chrome.runtime.sendMessage<RebuildProgressMessage>({

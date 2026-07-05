@@ -1,3 +1,4 @@
+import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import CircularProgress from '@mui/material/CircularProgress'
@@ -6,6 +7,7 @@ import Typography from '@mui/material/Typography'
 import React, { useCallback, useEffect, useState } from 'react'
 import { FileDownload, FileUpload } from '@mui/icons-material'
 import type {
+  AcknowledgeRebuildAdvisoryMessage,
   ExportDataMessage,
   ExportProgressMessage,
   ImportDataChunkMessage,
@@ -14,6 +16,7 @@ import type {
   RebuildProgressMessage,
 } from '../../types/messages'
 import { isExportProgressMessage, isRebuildProgressMessage } from '../../types/messages'
+import { REBUILD_ADVISORY_STORAGE_KEY, type RebuildAdvisoryState } from '../../background/rebuild-advisory'
 
 interface ImportExportSectionProps {
   importStatus: string
@@ -63,6 +66,7 @@ export const ImportExportSection = ({
   const [rebuildState, setRebuildState] = useState<RebuildState>('idle')
   const [rebuildProgress, setRebuildProgress] = useState(0)
   const [operationStatus, setOperationStatus] = useState('')
+  const [rebuildAdvisoryPending, setRebuildAdvisoryPending] = useState(false)
 
   const isImporting = importProgress > 0 && importProgress < 100
   const isAnyOperationInProgress = isImporting || exportState !== 'idle' || rebuildState !== 'idle'
@@ -156,6 +160,38 @@ export const ImportExportSection = ({
     return () => {
       chrome.runtime.onMessage.removeListener(handleMessage)
     }
+  }, [])
+
+  // データ再構築アドバイザリ: マウント時に一度読み込み、以後はstorage変更を購読する
+  // （rebuildAllData完了時のresolveAdvisory()によるstorage書き込みでバナーが自動的に消える）
+  useEffect(() => {
+    chrome.storage.local.get(REBUILD_ADVISORY_STORAGE_KEY, (result: Record<string, any>) => {
+      if (chrome.runtime.lastError) return
+      const state = result?.[REBUILD_ADVISORY_STORAGE_KEY] as RebuildAdvisoryState | undefined
+      setRebuildAdvisoryPending(!!state?.pendingVersion)
+    })
+
+    const handleStorageChange = (
+      changes: { [key: string]: chrome.storage.StorageChange },
+      areaName: string
+    ) => {
+      if (areaName !== 'local' || !changes[REBUILD_ADVISORY_STORAGE_KEY]) return
+      const newState = changes[REBUILD_ADVISORY_STORAGE_KEY].newValue as RebuildAdvisoryState | undefined
+      setRebuildAdvisoryPending(!!newState?.pendingVersion)
+    }
+
+    chrome.storage.onChanged.addListener(handleStorageChange)
+    return () => {
+      chrome.storage.onChanged.removeListener(handleStorageChange)
+    }
+  }, [])
+
+  const handleDismissRebuildAdvisory = useCallback(() => {
+    // 楽観的に即座に消す（background側の書き込みでも二重に消えるが問題ない）
+    setRebuildAdvisoryPending(false)
+    chrome.runtime.sendMessage<AcknowledgeRebuildAdvisoryMessage>({
+      action: 'acknowledgeRebuildAdvisory'
+    })
   }, [])
 
   const handleExportClick = useCallback((format: 'json' | 'pokerstars') => {
@@ -435,6 +471,18 @@ export const ImportExportSection = ({
             {operationStatus || 'データ再構築中...'}
           </Typography>
         </Box>
+      )}
+
+      {/* データ再構築アドバイザリ: 統計ロジック更新後、既存ユーザーに再構築を促すバナー */}
+      {rebuildAdvisoryPending && (
+        <Alert
+          severity="warning"
+          onClose={handleDismissRebuildAdvisory}
+          closeText="閉じる"
+          sx={{ marginTop: 1, marginBottom: 1 }}
+        >
+          拡張機能の更新により統計ロジックが改善されました。既存データに正しい統計を反映するには「データ再構築」を実行してください。
+        </Alert>
       )}
 
       <Button
