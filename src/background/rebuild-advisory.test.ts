@@ -81,6 +81,27 @@ describe('rebuild-advisory', () => {
       expect(chrome.notifications.create).not.toHaveBeenCalled()
       expect(chrome.action.setBadgeText).not.toHaveBeenCalled()
     })
+
+    it('re-asserts the badge but does not re-notify on a second update while the advisory is still pending (#105)', async () => {
+      ;(mockDb.apiEvents.count as jest.Mock).mockResolvedValue(42)
+
+      // 1回目の拡張機能更新: 通常どおりpendingVersionをセットし、バッジと通知を出す
+      await checkOnUpdate(mockDb)
+      expect(chrome.notifications.create).toHaveBeenCalledTimes(1)
+      expect(chrome.action.setBadgeText).toHaveBeenCalledTimes(1)
+
+      jest.clearAllMocks()
+
+      // 2回目の拡張機能更新: ユーザーはリビルド/解消せず、pendingVersionは同じバージョンのまま。
+      // 通知は再送されるべきではないが、バッジは再アサートされてよい（ブラウザ再起動対策）。
+      await checkOnUpdate(mockDb)
+
+      expect(chrome.notifications.create).not.toHaveBeenCalled()
+      expect(chrome.action.setBadgeText).toHaveBeenCalledWith({ text: '!' })
+
+      const state = await getRebuildAdvisoryState()
+      expect(state.pendingVersion).toBe(REBUILD_ADVISORY_VERSION)
+    })
   })
 
   describe('resolveAdvisory', () => {

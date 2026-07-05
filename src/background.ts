@@ -17,6 +17,8 @@ import { registerStreamSubscriptions } from './background/ports'
 import { registerEventIngestion } from './background/event-ingestion'
 import { registerMessageRouter } from './background/message-router'
 import { checkOnUpdate } from './background/rebuild-advisory'
+import { needsConfigPersist } from './background/hud-config-sync'
+import type { Options } from './components/Popup'
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
 
 // Get game URL pattern from manifest
@@ -85,10 +87,29 @@ chrome.storage.sync.get('options', (result: Record<string, any>) => {
     // マージしないと、リリースで新しい統計（例: #86のSTL/FTS）が追加されても、
     // ユーザーがポップアップを開いて再保存するまでHUDに一切表示されない
     // （service-worker起動時にstorageの値をそのまま代入していたため）。
-    service.statDisplayConfigs = mergeStatDisplayConfigs(
-      options.filterOptions.statDisplayConfigs,
+    const savedStatDisplayConfigs = options.filterOptions.statDisplayConfigs
+    const mergedStatDisplayConfigs = mergeStatDisplayConfigs(
+      savedStatDisplayConfigs,
       defaultStatDisplayConfigs
     )
+    service.statDisplayConfigs = mergedStatDisplayConfigs
+
+    // HUD（src/components/App.tsx）はservice worker経由ではなく、
+    // chrome.storage.syncの`options.filterOptions.statDisplayConfigs`を直接読む。
+    // Popupを一度も開かないユーザーだと、上記のマージ結果がインメモリの
+    // service.statDisplayConfigsにしか反映されず、HUDには古い設定のまま
+    // 表示され続けてしまう（#100）。差分がある場合のみ、マージ結果をstorageへ
+    // 書き戻す（冪等: 差分が無くなれば以降の起動では書き込まれない）。
+    if (needsConfigPersist(savedStatDisplayConfigs, mergedStatDisplayConfigs)) {
+      const updatedOptions: Options = {
+        ...options,
+        filterOptions: {
+          ...options.filterOptions,
+          statDisplayConfigs: mergedStatDisplayConfigs
+        }
+      }
+      chrome.storage.sync.set({ options: updatedOptions })
+    }
   } else {
     // デフォルトフィルターを設定（再計算をトリガーせずに）
     service.battleTypeFilter = undefined  // デフォルトではすべてのゲームタイプを表示
