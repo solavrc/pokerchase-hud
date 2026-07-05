@@ -12,6 +12,7 @@ import {
 } from '../src/types'
 import type { ApiEvent, Session } from '../src/types'
 import PokerChaseService, { PokerChaseDB } from '../src/app'
+import { SessionState } from '../src/services/poker-chase-service'
 import type { Action } from '../src/types'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 
@@ -1362,6 +1363,121 @@ describe('EntityConverter', () => {
       // 座席未解決アクションと同じ扱い。実データでは0.09%のハンドで発生）。
       expect(result.hands).toHaveLength(1)
       expect(result.actions).toHaveLength(0)
+    })
+  })
+
+  /**
+   * 回帰テスト（#104由来のリグレッション）
+   *
+   * 背景: `service.session`は#104以降、`id`/`battleType`/`name`がprototype上の
+   * getterであるSessionStateクラスのインスタンス。EntityConverter内部で
+   * `{ ...this.session, players: new Map(...) }`のようにオブジェクトスプレッドで
+   * コピーすると、getterはコピーされず（privateな`_id`/`_battleType`/`_name`の方が
+   * コピーされてしまい、それらは`Session`インターフェース上には存在しないため）、
+   * `currentSession.id`等が`undefined`になってしまう。
+   *
+   * インポート系のパイプライン（インクリメンタルインポート等）はイベントウィンドウの
+   * 先頭にEVT_ENTRY_QUEUEDが含まれない場合があり、その場合はEntityConverter内で
+   * セッションIDが復元されないため、上記のスプレッドのバグがそのまま
+   * `hand.session.id`/`battleType`の欠落として表面化する。
+   */
+  describe('SessionState seeding (regression, #104)', () => {
+    it('carries over session id/battleType/name from a real SessionState instance even without a leading EVT_ENTRY_QUEUED', () => {
+      // 実際のSessionStateインスタンスを構築し、setter経由でフィールドを設定する
+      // （#104で導入されたクラス。id/battleType/nameはprototypeのgetterで公開される）
+      const realSession = new SessionState(() => { })
+      realSession.setId('real-session-456')
+      realSession.setBattleType(BattleType.SIT_AND_GO)
+      realSession.setName('Real Session')
+
+      // EVT_ENTRY_QUEUEDを含まないイベントウィンドウ（インクリメンタルインポートを模した状況）
+      const events: ApiEvent[] = [
+        createEvent(ApiType.EVT_DEAL, {
+          timestamp: 1000,
+          SeatUserIds: [100, 101, 102, 103, 104, 105],
+          Game: {
+            CurrentBlindLv: 1,
+            NextBlindUnixSeconds: 1000000,
+            Ante: 0,
+            SmallBlind: 10,
+            BigBlind: 20,
+            ButtonSeat: 5,
+            SmallBlindSeat: 0,
+            BigBlindSeat: 1
+          },
+          Player: {
+            SeatIndex: 2,
+            BetStatus: 1,
+            HoleCards: [37, 51],
+            Chip: 1980,
+            BetChip: 0
+          },
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 2,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 40,
+            Pot: 30,
+            SidePot: []
+          },
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 1990, BetChip: 10 },
+            { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1980, BetChip: 20 },
+            { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 2000, BetChip: 0 },
+            { SeatIndex: 4, Status: 0, BetStatus: 1, Chip: 2000, BetChip: 0 },
+            { SeatIndex: 5, Status: 0, BetStatus: 1, Chip: 2000, BetChip: 0 }
+          ]
+        }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
+          timestamp: 1005,
+          HandId: 22345,
+          CommunityCards: [],
+          Pot: 30,
+          SidePot: [],
+          ResultType: 0,
+          DefeatStatus: 0,
+          Results: [
+            {
+              UserId: 102,
+              HoleCards: [37, 51],
+              RankType: 8,
+              Hands: [1, 21, 44, 37, 51],
+              HandRanking: 1,
+              Ranking: 1,
+              RewardChip: 30
+            }
+          ],
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: -1, Chip: 1990, BetChip: 0 },
+            { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 1980, BetChip: 0 },
+            { SeatIndex: 3, Status: 0, BetStatus: -1, Chip: 2000, BetChip: 0 },
+            { SeatIndex: 4, Status: 0, BetStatus: -1, Chip: 2000, BetChip: 0 },
+            { SeatIndex: 5, Status: 0, BetStatus: -1, Chip: 2000, BetChip: 0 }
+          ]
+        }, { skipValidation: true })
+      ]
+
+      // 事前条件: `Session`インターフェースに対するオブジェクトスプレッドではgetterが
+      // 引き継がれないことを確認する（このバグの直接的な実証）
+      const naiveSpread = { ...(realSession as unknown as Record<string, unknown>) }
+      expect(naiveSpread.id).toBeUndefined()
+      expect(naiveSpread.battleType).toBeUndefined()
+      expect(naiveSpread.name).toBeUndefined()
+      // 一方、getter経由では正しい値が読める
+      expect(realSession.id).toBe('real-session-456')
+
+      const converterWithRealSession = new EntityConverter(realSession)
+      const result = converterWithRealSession.convertEventsToEntities(events)
+
+      expect(result.hands).toHaveLength(1)
+      expect(result.hands[0]).toMatchObject({
+        session: {
+          id: 'real-session-456',
+          battleType: BattleType.SIT_AND_GO,
+          name: 'Real Session'
+        }
+      })
     })
   })
 

@@ -62,9 +62,16 @@ export class EntityConverter {
 
     let currentHandEvents: ApiHandEvent[] = []
     // セッション情報をローカルに保持（インポートデータから抽出）
+    // NOTE: this.session は SessionState クラスのインスタンスの場合があり、
+    // id/battleType/name は prototype 上の getter のため、オブジェクトスプレッドでは
+    // コピーされない（private な _id/_battleType/_name のみコピーされ、値が undefined になる）。
+    // そのため各フィールドを明示的に読み出す。
     let currentSession = {
-      ...this.session,
-      players: new Map(this.session.players) // Mapを正しくコピー
+      id: this.session.id,
+      battleType: this.session.battleType,
+      name: this.session.name,
+      players: new Map(this.session.players), // Mapを正しくコピー（可変Mapとして扱う）
+      reset: () => { } // ローカルな作業コピーではreset()は使用されない
     }
 
     for (const event of events) {

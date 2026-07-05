@@ -85,6 +85,15 @@ export const checkOnUpdate = async (db: PokerChaseDB): Promise<void> => {
     return
   }
 
+  if (state.pendingVersion === REBUILD_ADVISORY_VERSION) {
+    // 既に本バージョンのアドバイザリを提示済み（ユーザーがリビルド/解消せずに
+    // 再度拡張機能を更新した状態）。通知を再送すると更新の度に通知が積み重なって
+    // しまうため、バッジ（ブラウザ再起動後も見えるように再アサートしておく）だけ
+    // 更新し、通知の再送と冗長なストレージ書き込みはスキップする。
+    setBadge()
+    return
+  }
+
   const eventCount = await db.apiEvents.count()
 
   if (eventCount === 0) {
