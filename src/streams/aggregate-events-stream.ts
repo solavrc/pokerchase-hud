@@ -112,9 +112,29 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           this.events.push(event)
           break
         case ApiType.EVT_ACTION:
-          /** 順序整合性チェック */
+          // 【注意: このチェックを「安全のため」復活させないこと】
+          // 従来はここで this.progress.NextActionSeat !== event.SeatIndex の不一致を
+          // 検出するとバッファ（this.events）を丸ごとクリアしていたが、この不一致は
+          // ライブ配信下では正常系（ドキュメント化済み）でも高頻度に発生することが判明した。
+          // docs/api-events.md「EVT_ACTION: 送信されないケース」記載の通り、
+          // タイムアウト/切断時は明示的なFOLDが送信されず（該当プレイヤーはEVT_HAND_RESULTS.
+          // Resultsにも現れない）、次アクターのSeatIndexがNextActionSeatと食い違う。
+          // 実データ（393,830イベント）でのアジャッジ結果: セッション境界外で発生した
+          // 不一致80件のうち71件がこのタイムアウト/切断シグネチャ、9件がオールイン絡みの
+          // 順序変化で、原因不明は0件だった。つまりこの不一致は異常の兆候ではなく、
+          // サーバーの正常な省略仕様そのものであり、それを理由にハンド全体を破棄すると
+          // 正当なハンドがライブ集計から失われる（バッチ再構築のEntityConverterには
+          // 同種のチェックが存在せず、この非対称性がライブ/バッチ間の乖離の根本原因だった）。
+          // このチェックが本来担っていたセッション境界（テーブル移動によるキメラハンド）の
+          // 防御は、#96（EVT_ENTRY_QUEUEDでのprogressリセット）、#100（EC/WES双方の
+          // SeatIndex未解決アクションのスキップ）、#106（hasResultsOutsideDealtLineupに
+          // よるキメラハンド棄却、EC/WES双方に実装）で既に別レイヤーとしてカバー済み。
+          // 観測用にログのみ残し、バッファはクリアしない。
           if (this.progress && this.progress.NextActionSeat !== event.SeatIndex) {
-            this.events = []
+            console.debug(
+              `[AggregateEventsStream] NextActionSeat mismatch (expected=${this.progress.NextActionSeat}, actual=${event.SeatIndex}); ` +
+              'buffer retained — see docs/api-events.md "EVT_ACTION: 送信されないケース"'
+            )
           }
           this.progress = event.Progress
           this.events.push(event)
@@ -124,6 +144,14 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           if (this.events.length > 0 && this.events[0]?.ApiTypeId === ApiType.EVT_DEAL) {
             this.push(this.events)
           }
+          // ハンド確定後はバッファを必ず空にする。以前はこの明示的なクリアが無く、
+          // 直後に本来来るはずのEVT_DEALが（生データの欠落等により）来なかった場合、
+          // this.events[0]が古いEVT_DEALのまま無限に伸び続け、以降毎回のEVT_HAND_RESULTSで
+          // 同じ（肥大化した）バッファが再送出され続けるバグがあった
+          // （上のNextActionSeat不一致チェックがバッファを丸ごとクリアする副作用で
+          // 偶然隠蔽されていた）。実データで1件、EVT_DEALが欠落しHandId=259403865の
+          // バッファが26回・長さ156まで肥大化して再送出される事例を確認した。
+          this.events = []
           break
       }
     } catch (error: unknown) {

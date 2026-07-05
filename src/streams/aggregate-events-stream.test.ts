@@ -161,4 +161,78 @@ describe('AggregateEventsStream', () => {
     expect(emittedHands.length).toBe(1)
     expect((emittedHands[0]!.at(-1) as { HandId: number }).HandId).toBe(777)
   })
+
+  test('タイムアウト/切断でEVT_ACTIONが送信されないハンドも欠損なく出力される（NextActionSeat不一致で捨てない）', async () => {
+    // docs/api-events.md「EVT_ACTION: 送信されないケース」記載の通り、タイムアウト/切断時は
+    // 期待された次アクター（NextActionSeat）の明示的なFOLDが送信されず、次のEVT_ACTIONは
+    // 別の席番号から届く。当該プレイヤーはEVT_HAND_RESULTS.Resultsにも現れない。
+    // 実データでの検証（393,830イベント）ではセッション境界外の不一致80件中71件がこの
+    // シグネチャに一致した。以前はこのNextActionSeat不一致だけでハンドバッファ全体を
+    // クリアしていたため、このような正常系のハンドが丸ごと欠損していた。
+    const events: ApiEvent[] = [
+      {
+        ApiTypeId: ApiType.EVT_DEAL,
+        SeatUserIds: [101, 102, 103],
+        Game: { CurrentBlindLv: 1, NextBlindUnixSeconds: 0, Ante: 0, SmallBlind: 100, BigBlind: 200, ButtonSeat: 0, SmallBlindSeat: 1, BigBlindSeat: 2 },
+        Player: { SeatIndex: 0, BetStatus: 1, HoleCards: [0, 1], Chip: 5000, BetChip: 0 },
+        OtherPlayers: [
+          { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 100, IsSafeLeave: false },
+          { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 200, IsSafeLeave: false },
+        ],
+        // NextActionSeat=1 (seat1/userId102がアクションする番)だが、実際にはこのプレイヤーの
+        // FOLDは送信されない（タイムアウト/切断）。
+        Progress: { Phase: 0, NextActionSeat: 1, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 400, Pot: 300, SidePot: [] },
+        timestamp: 3000,
+      },
+      // seat1（userId102）のアクションはスキップされ、次に届くのはseat2（userId103）。
+      // NextActionSeat(1) !== event.SeatIndex(2) の不一致が発生する。
+      {
+        ApiTypeId: ApiType.EVT_ACTION,
+        SeatIndex: 2,
+        ActionType: 3,
+        Chip: 4800,
+        BetChip: 200,
+        Progress: { Phase: 3, NextActionSeat: -2, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 500, SidePot: [] },
+        timestamp: 3001,
+      },
+      {
+        ApiTypeId: ApiType.EVT_HAND_RESULTS,
+        CommunityCards: [],
+        Pot: 500,
+        SidePot: [],
+        ResultType: 0,
+        DefeatStatus: 0,
+        HandId: 888,
+        HandLog: '',
+        // userId102（タイムアウトしたプレイヤー）はResultsに現れない
+        Results: [
+          { UserId: 101, HoleCards: [], RankType: 10, Hands: [], HandRanking: 1, Ranking: -2, RewardChip: 500 },
+          { UserId: 103, HoleCards: [], RankType: 11, Hands: [], HandRanking: -1, Ranking: -2, RewardChip: 0 },
+        ],
+        Player: { SeatIndex: 0, BetStatus: -1, Chip: 5300, BetChip: 0 },
+        OtherPlayers: [
+          { SeatIndex: 1, Status: 1, BetStatus: -1, Chip: 5000, BetChip: 0, IsSafeLeave: false },
+          { SeatIndex: 2, Status: 0, BetStatus: -1, Chip: 4800, BetChip: 0, IsSafeLeave: false },
+        ],
+        timestamp: 3002,
+      },
+    ]
+
+    const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
+    const service = new PokerChaseService({ db: dbMock })
+
+    const emittedHands: ApiEvent[][] = []
+    service.handAggregateStream.on('data', (hand: ApiEvent[]) => emittedHands.push(hand))
+    for (const event of events) service.handAggregateStream.write(event)
+    await service.handAggregateStream.whenIdle()
+
+    // NextActionSeat不一致（タイムアウト/切断の正常系）だけを理由にハンドが消えないこと
+    expect(emittedHands.length).toBe(1)
+
+    const hand = emittedHands[0]!
+    expect(hand[0]?.ApiTypeId).toBe(ApiType.EVT_DEAL)
+    expect(hand.at(-1)?.ApiTypeId).toBe(ApiType.EVT_HAND_RESULTS)
+    expect((hand.at(-1) as { HandId: number }).HandId).toBe(888)
+    expect(hand.filter(e => e.ApiTypeId === ApiType.EVT_ACTION).length).toBe(1)
+  })
 })
