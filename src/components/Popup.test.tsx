@@ -49,6 +49,10 @@ global.chrome = {
       get: jest.fn((_key: string, cb: (result: Record<string, unknown>) => void) => cb({})),
       set: jest.fn(),
     },
+    onChanged: {
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
+    },
   },
 } as any
 

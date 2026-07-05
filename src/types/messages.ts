@@ -49,6 +49,8 @@ export const MESSAGE_ACTIONS = {
   UPDATE_UI_CONFIG: 'updateUIConfig',
   // Operation state
   GET_OPERATION_STATE: 'getOperationState',
+  // Rebuild advisory
+  ACKNOWLEDGE_REBUILD_ADVISORY: 'acknowledgeRebuildAdvisory',
 } as const
 
 // Import/Export related messages
@@ -226,6 +228,11 @@ export interface GetOperationStateMessage {
   action: 'getOperationState'
 }
 
+// Rebuild advisory messages
+export interface AcknowledgeRebuildAdvisoryMessage {
+  action: 'acknowledgeRebuildAdvisory'
+}
+
 export interface FirebaseBackupProgressMessage {
   action: 'firebaseBackupProgress'
   progress: number
@@ -331,6 +338,7 @@ export type ChromeMessage =
   | ManualSyncUploadMessage
   | ManualSyncDownloadMessage
   | GetOperationStateMessage
+  | AcknowledgeRebuildAdvisoryMessage
 
 // Helper function for type guard implementation
 const isMessageWithAction = (msg: unknown, action: string): msg is { action: string } =>
@@ -414,3 +422,6 @@ export const isRebuildProgressMessage = (msg: unknown): msg is RebuildProgressMe
 
 export const isGetOperationStateMessage = (msg: unknown): msg is GetOperationStateMessage =>
   isMessageWithAction(msg, 'getOperationState')
+
+export const isAcknowledgeRebuildAdvisoryMessage = (msg: unknown): msg is AcknowledgeRebuildAdvisoryMessage =>
+  isMessageWithAction(msg, 'acknowledgeRebuildAdvisory')

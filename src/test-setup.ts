@@ -13,6 +13,17 @@ const chromeStorageMockData = {
   local: {} as Record<string, any>,
 }
 
+// chrome.storage.onChanged listeners (fired by the local/sync `set` mocks below)
+const storageChangeListeners: Array<(changes: Record<string, { oldValue?: any, newValue?: any }>, areaName: string) => void> = []
+
+const fireStorageChange = (areaName: 'sync' | 'local', items: Record<string, any>) => {
+  const changes: Record<string, { oldValue?: any, newValue?: any }> = {}
+  for (const key of Object.keys(items)) {
+    changes[key] = { oldValue: chromeStorageMockData[areaName][key], newValue: items[key] }
+  }
+  storageChangeListeners.forEach(listener => listener(changes, areaName))
+}
+
 global.chrome = {
   runtime: {
     sendMessage: jest.fn(),
@@ -20,6 +31,8 @@ global.chrome = {
       addListener: jest.fn(),
       removeListener: jest.fn(),
     },
+    getURL: jest.fn((path: string) => `chrome-extension://mock-extension-id/${path}`),
+    reload: jest.fn(),
   },
   storage: {
     sync: {
@@ -38,6 +51,7 @@ global.chrome = {
         return Promise.resolve(result)
       }),
       set: jest.fn((items, callback?) => {
+        fireStorageChange('sync', items)
         Object.assign(chromeStorageMockData.sync, items)
         if (typeof callback === 'function') {
           callback()
@@ -62,12 +76,22 @@ global.chrome = {
         return Promise.resolve(result)
       }),
       set: jest.fn((items, callback?) => {
+        fireStorageChange('local', items)
         Object.assign(chromeStorageMockData.local, items)
         if (typeof callback === 'function') {
           callback()
           return undefined
         }
         return Promise.resolve()
+      }),
+    },
+    onChanged: {
+      addListener: jest.fn((listener: (changes: Record<string, any>, areaName: string) => void) => {
+        storageChangeListeners.push(listener)
+      }),
+      removeListener: jest.fn((listener: (changes: Record<string, any>, areaName: string) => void) => {
+        const index = storageChangeListeners.indexOf(listener)
+        if (index !== -1) storageChangeListeners.splice(index, 1)
       }),
     },
   },
@@ -81,6 +105,32 @@ global.chrome = {
   },
   identity: {
     getAuthToken: jest.fn(),
+  },
+  notifications: {
+    create: jest.fn((_idOrOptions?: any, _optionsOrCallback?: any, callback?: any) => {
+      const cb = typeof _optionsOrCallback === 'function' ? _optionsOrCallback : callback
+      if (typeof cb === 'function') {
+        cb('mock-notification-id')
+        return undefined
+      }
+      return Promise.resolve('mock-notification-id')
+    }),
+  },
+  action: {
+    setBadgeText: jest.fn((_details, callback?) => {
+      if (typeof callback === 'function') {
+        callback()
+        return undefined
+      }
+      return Promise.resolve()
+    }),
+    setBadgeBackgroundColor: jest.fn((_details, callback?) => {
+      if (typeof callback === 'function') {
+        callback()
+        return undefined
+      }
+      return Promise.resolve()
+    }),
   },
 } as any
 
