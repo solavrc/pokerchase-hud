@@ -12,6 +12,7 @@ import {
   BetStatusType,
   PhaseType,
   Position,
+  hasResultsOutsideDealtLineup,
   isApiEventType,
   isShowdownParticipant
 } from './types'
@@ -299,6 +300,16 @@ export class EntityConverter {
         }
 
         case ApiType.EVT_HAND_RESULTS: {
+          // テーブル移動キメラハンドの棄却（詳細はhasResultsOutsideDealtLineupのdocコメント参照）。
+          // Results[]に配札時のseatUserIdsへ存在しないUserIdが1件でもあれば、このRESULTSは
+          // 移動先テーブルのものであり、バッファ中のハンド（移動元テーブルのDEAL）とは
+          // 対応しない。真の対応先RESULTSは二度と届かないため、ハンド全体を棄却する
+          // （handState.hand.idを0のままにし、末尾の有効性チェックでnullを返させる）。
+          if (hasResultsOutsideDealtLineup(handState.hand.seatUserIds || [], event.Results || [])) {
+            console.log(`[EntityConverter] Rejected chimera hand (HandId=${event.HandId}): EVT_HAND_RESULTS.Results references a player outside the dealt lineup (mid-hand table move)`)
+            break
+          }
+
           // HandIdを設定
           handState.hand.id = event.HandId
 

@@ -38,7 +38,8 @@ export {
   Position,
   ActionDetail,
   BATTLE_TYPE_FILTERS,
-  isShowdownParticipant
+  isShowdownParticipant,
+  hasResultsOutsideDealtLineup
 } from './game'
 
 // Entity types
