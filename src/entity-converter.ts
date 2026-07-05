@@ -284,6 +284,15 @@ export class EntityConverter {
 
           // 新しいフェーズの作成
           const newPhase = this.getPhaseFromProgress(event.Progress)
+          // 同一フェーズのEVT_DEAL_ROUND重複 = テーブル移動/再編成で2つのハンドが
+          // 融合したバッファのシグネチャ（WriteEntityStreamの同名ガードとdocs/api-events.md
+          // 「デュアルボード」参照。実データ12/12件でハンド内EQ/313割込みと相関）。
+          // Resultsの顔ぶれが偶然一致するとhasResultsOutsideDealtLineupを通過するため、
+          // ここで独立に検出してハンド全体を棄却する。
+          if (newPhase !== null && handState.phases.some(p => p.phase === newPhase)) {
+            console.log(`[EntityConverter] Rejected fused hand buffer: duplicate EVT_DEAL_ROUND for phase ${newPhase} (mid-hand table move/rebalance)`)
+            return null
+          }
           if (newPhase !== null) {
             // このストリートに進んだプレイヤー（BET_ABLE=フォールドしていない）のみを
             // seatUserIdsに含める（WriteEntityStreamと同一ロジック）。

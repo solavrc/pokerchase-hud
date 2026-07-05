@@ -95,6 +95,15 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
       statStates: {}
     }
     let progress: Progress | undefined
+    // 同一フェーズのEVT_DEAL_ROUND重複検出用（テーブル移動キメラのシグネチャ）。
+    // 実データ検証: 同一ハンドバッファ内でフェーズが重複した12件は、12件全てで
+    // ハンド内にEVT_ENTRY_QUEUED/EVT_PLAYER_SEAT_ASSIGNEDが割り込んでおり、
+    // 「旧ハンドのDEAL + 移動/再編成先テーブルの別ハンド（異なるボード）」が
+    // 融合したバッファだった（いわゆる「デュアルボード」の正体。run it twice等の
+    // ゲーム機能ではない）。うち9件はResultsの顔ぶれ不一致で#106のガードに掛かるが、
+    // 3件は偶然同じプレイヤー構成のため通過してしまう。フェーズ重複は融合の
+    // 自己完結的なシグネチャなので、検出したらハンド全体を棄却する。
+    const seenDealRoundPhases = new Set<number>()
     for (const event of events) {
       switch (event.ApiTypeId) {
         case ApiType.EVT_DEAL:
@@ -110,6 +119,11 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           progress = event.Progress
           break
         case ApiType.EVT_DEAL_ROUND:
+          if (seenDealRoundPhases.has(event.Progress.Phase)) {
+            console.warn(`[WriteEntityStream] Rejected fused hand buffer: duplicate EVT_DEAL_ROUND for phase ${event.Progress.Phase} (mid-hand table move/rebalance)`)
+            return null
+          }
+          seenDealRoundPhases.add(event.Progress.Phase)
           handState.phases.push({
             phase: event.Progress.Phase,
             seatUserIds: (event.Player ? [event.Player, ...event.OtherPlayers] : event.OtherPlayers)

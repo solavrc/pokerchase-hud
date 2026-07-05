@@ -259,6 +259,23 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
       if (hasForeignResult) return
     }
 
+    // Fused-buffer rejection, kept in sync with write-entity-stream.ts /
+    // entity-converter.ts: a duplicate EVT_DEAL_ROUND for the same phase is the
+    // signature of a mid-hand table move/rebalance fusing two hands into one
+    // buffer (the "dual board" observation -- 12/12 such hands in the real
+    // capture carry a mid-hand EVT_ENTRY_QUEUED/EVT_PLAYER_SEAT_ASSIGNED; 3 of
+    // them slip past the results-membership guard because both hands happen to
+    // involve the same players).
+    {
+      const seenPhases = new Set<number>()
+      for (const e of handEvents) {
+        if (e.ApiTypeId !== ApiType.EVT_DEAL_ROUND) continue
+        const p = (e as RawDealRoundEvent).Progress.Phase
+        if (seenPhases.has(p)) return
+        seenPhases.add(p)
+      }
+    }
+
     const seatUserIds = dealEvt.SeatUserIds
     const { ButtonSeat: buttonSeat, SmallBlindSeat: sbSeat, BigBlindSeat: bbSeat } = dealEvt.Game
     const posMap = computePositions(seatUserIds, buttonSeat, sbSeat, bbSeat)
