@@ -59,6 +59,15 @@ global.chrome = {
         }
         return Promise.resolve()
       }),
+      remove: jest.fn((keys, callback?) => {
+        const keyList = Array.isArray(keys) ? keys : [keys]
+        keyList.forEach((key: string) => { delete chromeStorageMockData.sync[key] })
+        if (typeof callback === 'function') {
+          callback()
+          return undefined
+        }
+        return Promise.resolve()
+      }),
     },
     local: {
       get: jest.fn((keys, callback?) => {
@@ -78,6 +87,15 @@ global.chrome = {
       set: jest.fn((items, callback?) => {
         fireStorageChange('local', items)
         Object.assign(chromeStorageMockData.local, items)
+        if (typeof callback === 'function') {
+          callback()
+          return undefined
+        }
+        return Promise.resolve()
+      }),
+      remove: jest.fn((keys, callback?) => {
+        const keyList = Array.isArray(keys) ? keys : [keys]
+        keyList.forEach((key: string) => { delete chromeStorageMockData.local[key] })
         if (typeof callback === 'function') {
           callback()
           return undefined
