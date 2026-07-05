@@ -2,7 +2,7 @@
  * verify-stats: independent oracle.
  *
  * Computes VPIP/PFR/3BET/3BETFOLD/CBET/CBETFOLD/AF/AFq/WTSD/WSD/WWSF/STEAL/
- * FOLDTOSTEAL directly from raw NDJSON events, with NO imports from
+ * FOLDTOSTEAL/RCA directly from raw NDJSON events, with NO imports from
  * `src/stats` or `src/entity-converter`. Only wire-protocol enums are
  * imported -- `ApiType` from `src/types/api` and `ActionType`/
  * `BetStatusType`/`RankType` from `src/types/game` -- for readability;
@@ -31,9 +31,18 @@
  *      are excluded, everything else (0-9 real ranks, SHOWDOWN_MUCK)
  *      counts as a showdown.
  *  (d) Winners are players with RewardChip > 0 in EVT_HAND_RESULTS.Results.
+ *  (e) River Call Accuracy (RCA): numerator is river CALL actions by a player
+ *      in hands where that player ends up with RewardChip > 0; denominator is
+ *      all river CALL actions by that player -- mirroring
+ *      src/stats/core/river-call-accuracy.ts's RIVER_CALL/RIVER_CALL_WON
+ *      ActionDetail tagging (RIVER_CALL is set when a CALL action occurs on
+ *      the river; RIVER_CALL_WON is added post-hoc, in EVT_HAND_RESULTS, to
+ *      any RIVER_CALL action taken by a player who ends up with
+ *      RewardChip > 0 for that hand -- see entity-converter.ts /
+ *      write-entity-stream.ts).
  */
 import { ApiType } from '../../types/api'
-import { ActionType, BetStatusType, RankType } from '../../types/game'
+import { ActionType, BetStatusType, PhaseType, RankType } from '../../types/game'
 
 type ActionTypeNum = Exclude<ActionType, ActionType.ALL_IN>
 
@@ -102,6 +111,7 @@ export interface OraclePlayerResult {
     wwsf: OracleFraction
     steal: OracleFraction
     foldToSteal: OracleFraction
+    riverCallAccuracy: OracleFraction
   }
 }
 
@@ -131,6 +141,8 @@ interface PlayerAcc {
   steal: number
   foldToStealChance: number
   foldToSteal: number
+  riverCall: number
+  riverCallWon: number
 }
 
 function newAcc(): PlayerAcc {
@@ -142,6 +154,7 @@ function newAcc(): PlayerAcc {
     flopsSeen: new Set(), showdownsReached: new Set(),
     wonAtShowdownAllHands: new Set(), showdownAllCount: new Set(), wonAfterFlop: new Set(),
     stealChance: 0, steal: 0, foldToStealChance: 0, foldToSteal: 0,
+    riverCall: 0, riverCallWon: 0,
   }
 }
 
@@ -266,6 +279,10 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
     const preflopActionsSoFar: ActionRec[] = []
     // Players confirmed to have reached the flop (BetStatus===BET_ABLE at the FLOP deal-round).
     let flopActivePlayers: Set<number> | undefined
+    // Count of river CALL actions by player this hand (RIVER_CALL is tagged
+    // per-action in the product; RIVER_CALL_WON is resolved for ALL of a
+    // winning player's river-call actions once EVT_HAND_RESULTS is known).
+    const riverCallsThisHand = new Map<number, number>()
 
     const phaseActionsMap = new Map<number, ActionRec[]>([[0, []]])
     const perPlayerPhaseActionIdx = new Map<string, number>()
@@ -353,6 +370,13 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
         if (normType === ActionType.CALL) acc(playerId).call++
         if (normType === ActionType.FOLD) acc(playerId).fold++
 
+        // RCA: RIVER_CALL is tagged on every river CALL action (denominator);
+        // RIVER_CALL_WON is resolved below, once Results is known.
+        if (phase === PhaseType.RIVER && normType === ActionType.CALL) {
+          acc(playerId).riverCall++
+          riverCallsThisHand.set(playerId, (riverCallsThisHand.get(playerId) ?? 0) + 1)
+        }
+
         if (phase === 0 && normType === ActionType.RAISE) preflopRaisers.push(playerId)
 
         actionsInPhase.push(rec)
@@ -396,6 +420,12 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
     const results = resultsEvt.Results || []
     // Semantic-sync (d): winners are players with RewardChip > 0.
     const winners = new Set(results.filter(r => r.RewardChip > 0).map(r => r.UserId))
+
+    // Semantic-sync (e): RIVER_CALL_WON is added to every RIVER_CALL action
+    // taken by a player who ends up with RewardChip > 0 for this hand.
+    for (const [pid, count] of riverCallsThisHand) {
+      if (winners.has(pid)) acc(pid).riverCallWon += count
+    }
 
     for (const r of results) {
       const pid = r.UserId
@@ -459,6 +489,7 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
         wwsf: [a.wonAfterFlop.size, a.flopsSeen.size],
         steal: [a.steal, a.stealChance],
         foldToSteal: [a.foldToSteal, a.foldToStealChance],
+        riverCallAccuracy: [a.riverCallWon, a.riverCall],
       }
     })
   }
