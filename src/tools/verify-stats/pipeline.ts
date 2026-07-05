@@ -63,8 +63,21 @@ export async function runPipeline(events: ApiEvent[]): Promise<PipelineResult> {
     list.push(a)
   }
 
-  const phasesByPlayer = new Map<number, Phase[]>()
+  // Mirror Dexie's `phases` table primary key `[handId+phase]`: the real import
+  // path writes phases via `bulkPut`, so multiple EntityConverter-emitted phase
+  // records for the same (handId, phase) collapse to ONE record (last write
+  // wins, by array order) before ReadEntityStream.calcStats ever sees them.
+  // Without this de-dup, the harness indexes every phase EntityConverter
+  // emits, which diverges from product behavior for hands with duplicate
+  // street events (e.g. the documented dual-board/run-it-twice-shaped hands).
+  const dedupedPhasesByKey = new Map<string, Phase>()
   for (const p of bundle.phases) {
+    dedupedPhasesByKey.set(`${p.handId}:${p.phase}`, p)
+  }
+  const dedupedPhases = [...dedupedPhasesByKey.values()]
+
+  const phasesByPlayer = new Map<number, Phase[]>()
+  for (const p of dedupedPhases) {
     for (const pid of p.seatUserIds) {
       if (pid === -1 || pid == null) continue
       let list = phasesByPlayer.get(pid)

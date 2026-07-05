@@ -8,6 +8,10 @@
  *    with a known preflop raise, a continuation bet + fold, and a showdown
  *  - compareResults/formatReport correctly report a mismatch when one side's
  *    stat is deliberately perturbed
+ *  - a missing/non-fraction stat on one side is counted as a mismatch (not
+ *    silently skipped), with a distinct `missing` counter
+ *  - eligibility is the union of both sides, so a player entirely absent
+ *    from one side still surfaces as a mismatch instead of vanishing
  *
  * This exercises the same code path `npm run verify-stats` uses, just
  * against a fixture small enough for CI instead of a real ndjson export.
@@ -252,5 +256,61 @@ describe('verify-stats harness', () => {
     const rendered = formatReport(report)
     expect(rendered).toContain('Mismatches for vpip')
     expect(rendered).toContain(`player ${PLAYER_A}`)
+  })
+
+  it('counts a missing/non-fraction stat as a mismatch, not a silent skip', () => {
+    // Pipeline-side vpip resolved to scalar 0 (mirrors StatsRegistry's catch
+    // handler reducing a thrown StatDefinition.calculate to `0`) while the
+    // oracle has a legitimate fraction. A `continue`-based skip would drop
+    // this player from `total` entirely and let the stat report 100%
+    // agreement despite the divergence; hardened compareResults must count
+    // it as a mismatch with `missing: true` and expose a distinct `missing`
+    // counter on the StatAgreement.
+    const pipeline = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { vpip: 0 } }],
+    ])
+    const oracle = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { vpip: [30, 60] as [number, number] } }],
+    ])
+
+    const report = compareResults(pipeline as any, oracle as any, 50)
+    const vpip = report.stats.find(s => s.stat === 'vpip')!
+    expect(vpip.total).toBe(1)
+    expect(vpip.agree).toBe(0)
+    expect(vpip.missing).toBe(1)
+    expect(vpip.pct).toBe(0)
+    expect(vpip.mismatches).toHaveLength(1)
+    expect(vpip.mismatches[0]).toMatchObject({ playerId: PLAYER_A, missing: true, pipeline: undefined, oracle: [30, 60] })
+
+    const rendered = formatReport(report)
+    expect(rendered).toContain('Mismatches for vpip')
+    expect(rendered).toContain('MISSING')
+  })
+
+  it('builds eligibility from the union of both sides, not the pipeline alone', () => {
+    // PLAYER_B only appears on the oracle side with >= minHands (e.g.
+    // EntityConverter dropped the player entirely, or undercounted their
+    // hands below the threshold). Using only pipeline-side eligibility would
+    // silently exclude PLAYER_B from every stat comparison; union-based
+    // eligibility must still surface this as a mismatch for every compared
+    // stat, with the pipeline side reported as absent.
+    const pipeline = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { vpip: [30, 60] } }],
+      // PLAYER_B absent entirely from the pipeline side.
+    ])
+    const oracle = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { vpip: [30, 60] as [number, number] } }],
+      [PLAYER_B, { playerId: PLAYER_B, hands: 55, stats: { vpip: [20, 55] as [number, number] } }],
+    ])
+
+    const report = compareResults(pipeline as any, oracle as any, 50)
+    expect(report.eligiblePlayers).toBe(2)
+
+    const vpip = report.stats.find(s => s.stat === 'vpip')!
+    expect(vpip.total).toBe(2)
+    expect(vpip.agree).toBe(1) // PLAYER_A agrees
+    expect(vpip.missing).toBe(1) // PLAYER_B missing on the pipeline side
+    const bMismatch = vpip.mismatches.find(m => m.playerId === PLAYER_B)
+    expect(bMismatch).toMatchObject({ missing: true, pipeline: undefined, oracle: [20, 55] })
   })
 })
