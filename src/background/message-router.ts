@@ -1,6 +1,5 @@
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
 import PokerChaseService, { PokerChaseDB } from '../app'
-import type { Options } from '../components/Popup'
 import type {
   ChromeMessage,
   ImportStatusMessage,
@@ -149,11 +148,8 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
           sendResponse({ success: false, error: error.message })
         })
 
-      // ストレージに保存
-      const storageUpdate: Partial<Options> = {
-        filterOptions: request.filterOptions
-      }
-      chrome.storage.sync.set({ options: storageUpdate })
+      // 永続化はPopup側（saveOptions）が行う。ここで部分オブジェクトを
+      // 書き戻すとsendUserData等を落としたoptionsで上書きしてしまう
 
       // コンテンツスクリプトにメッセージを転送
       chrome.tabs.query({ url: gameUrlPattern }, tabs => {

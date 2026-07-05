@@ -18,7 +18,7 @@ import { registerEventIngestion } from './background/event-ingestion'
 import { registerMessageRouter } from './background/message-router'
 import { checkOnUpdate } from './background/rebuild-advisory'
 import { needsConfigPersist } from './background/hud-config-sync'
-import type { Options } from './components/Popup'
+import { loadOptions, saveOptions, type Options } from './utils/options-storage'
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
 
 // Get game URL pattern from manifest
@@ -68,11 +68,11 @@ chrome.runtime.onInstalled.addListener(async details => {
   }
 })
 
-/** 拡張起動時: フィルター設定を復元（統計の再計算はしない） */
-chrome.storage.sync.get('options', (result: Record<string, any>) => {
-  const options = result.options || {}
-
-  if (options.filterOptions) {
+/** 拡張起動時: フィルター設定を復元（統計の再計算はしない）。
+ * loadOptionsは旧@extend-chrome/storage bucketキーからのマイグレーションも行う
+ * （Popupを開かないユーザーでもservice worker起動時に移行が完了する） */
+loadOptions().then((options) => {
+  if (options?.filterOptions) {
     service.battleTypeFilter = options.filterOptions.gameTypes.sng ||
       options.filterOptions.gameTypes.mtt ||
       options.filterOptions.gameTypes.ring
@@ -108,7 +108,7 @@ chrome.storage.sync.get('options', (result: Record<string, any>) => {
           statDisplayConfigs: mergedStatDisplayConfigs
         }
       }
-      chrome.storage.sync.set({ options: updatedOptions })
+      saveOptions(updatedOptions)
     }
   } else {
     // デフォルトフィルターを設定（再計算をトリガーせずに）

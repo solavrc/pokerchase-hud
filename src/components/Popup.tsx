@@ -1,7 +1,7 @@
-import { getBucket } from '@extend-chrome/storage'
 import Divider from '@mui/material/Divider'
 import { ChangeEvent, useEffect, useRef, useState } from 'react'
 import type { FilterOptions, GameTypeFilter } from '../types'
+import { loadOptions, saveOptions, type Options } from '../utils/options-storage'
 import { defaultStatDisplayConfigs, mergeStatDisplayConfigs } from '../stats'
 import type { StatDisplayConfig } from '../types/filters'
 import type { UIConfig } from '../types/hand-log'
@@ -25,13 +25,7 @@ import { GameTypeFilterSection } from './popup/GameTypeFilterSection'
 import { HandLimitSection } from './popup/HandLimitSection'
 import { StatisticsConfigSection } from './popup/StatisticsConfigSection'
 
-export interface Options {
-  sendUserData: boolean;
-  gameTypeFilter?: GameTypeFilter; // New filter format
-  filterOptions?: FilterOptions; // Complete filter options
-}
-
-const bucket = getBucket<Options>('options', 'sync')
+export type { Options }
 
 const Popup = () => {
   const [options, setOptions] = useState<Options>({ sendUserData: true })
@@ -123,7 +117,7 @@ const Popup = () => {
     // Check and switch to game tab on popup open
     openGameTab()
     
-    bucket.get().then((savedOptions) => {
+    loadOptions().then((savedOptions) => {
       if (savedOptions) {
         setOptions(savedOptions)
         if (savedOptions.filterOptions) {
@@ -138,7 +132,7 @@ const Popup = () => {
 
           // Save merged configurations back to storage if new stats were added
           if (savedOptions.filterOptions.statDisplayConfigs && mergedConfigs.length > savedOptions.filterOptions.statDisplayConfigs.length) {
-            bucket.set({
+            saveOptions({
               ...savedOptions,
               filterOptions: {
                 ...savedOptions.filterOptions,
@@ -299,7 +293,8 @@ const Popup = () => {
   const saveAndBroadcastOptions = (filterOptions: FilterOptions) => {
     const newOptions = { ...options, filterOptions }
     setOptions(newOptions)
-    bucket.set(newOptions)
+    // 永続化はここが唯一の書き込み元（message-routerは書かない）
+    saveOptions(newOptions)
 
     chrome.runtime.sendMessage<UpdateBattleTypeFilterMessage>({
       action: 'updateBattleTypeFilter',

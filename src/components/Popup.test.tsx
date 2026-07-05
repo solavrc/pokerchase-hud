@@ -4,17 +4,6 @@ import Popup from './Popup'
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import { defaultStatDisplayConfigs } from '../stats'
 
-// Mock @extend-chrome/storage
-jest.mock('@extend-chrome/storage', () => {
-  const mockBucket = {
-    get: jest.fn(() => Promise.resolve(null)),
-    set: jest.fn(() => Promise.resolve()),
-  }
-  return {
-    getBucket: jest.fn(() => mockBucket),
-  }
-})
-
 // Mock chrome APIs
 const mockChromeRuntimeSendMessage = jest.fn()
 const mockChromeTabsQuery = jest.fn()
@@ -23,6 +12,7 @@ const mockChromeTabsUpdate = jest.fn()
 const mockChromeWindowsUpdate = jest.fn()
 const mockChromeStorageGet = jest.fn()
 const mockChromeStorageSet = jest.fn()
+const mockChromeStorageRemove = jest.fn()
 
 global.chrome = {
   runtime: {
@@ -44,6 +34,7 @@ global.chrome = {
     sync: {
       get: mockChromeStorageGet,
       set: mockChromeStorageSet,
+      remove: mockChromeStorageRemove,
     },
     local: {
       get: jest.fn((_key: string, cb: (result: Record<string, unknown>) => void) => cb({})),
@@ -66,13 +57,11 @@ jest.mock('../../manifest.json', () => ({
 }))
 
 describe('Popup', () => {
-  let mockBucket: any
+  // chrome.storage.syncのバッキングストア（フラットな`options`キーを含む）
+  let syncData: Record<string, any>
 
   // Helper to wait for all initial async operations
   const waitForAsyncOperations = async () => {
-    await waitFor(() => {
-      expect(mockBucket.get).toHaveBeenCalled()
-    })
     await waitFor(() => {
       expect(mockChromeStorageGet).toHaveBeenCalled()
     })
@@ -85,28 +74,37 @@ describe('Popup', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
-    
-    // Get the mocked bucket instance
-    const { getBucket } = require('@extend-chrome/storage')
-    mockBucket = getBucket()
-    
-    // Default mock implementations
-    mockBucket.get.mockResolvedValue({
-      sendUserData: true,
-      filterOptions: {
-        gameTypes: { sng: true, mtt: true, ring: true },
-        handLimit: 500,
-        statDisplayConfigs: defaultStatDisplayConfigs,
+
+    // Default mock implementations: Popupはフラットな`options`キーを読む
+    syncData = {
+      options: {
+        sendUserData: true,
+        filterOptions: {
+          gameTypes: { sng: true, mtt: true, ring: true },
+          handLimit: 500,
+          statDisplayConfigs: defaultStatDisplayConfigs,
+        },
       },
-    })
-    
-    mockChromeStorageGet.mockImplementation((_keys, callback) => {
+      uiConfig: DEFAULT_UI_CONFIG,
+    }
+
+    mockChromeStorageGet.mockImplementation((keys, callback) => {
       // Execute callback immediately - tests will use waitFor
-      callback({
-        uiConfig: DEFAULT_UI_CONFIG,
-      })
+      const keyList = Array.isArray(keys) ? keys : [keys]
+      callback(keyList.reduce((acc: Record<string, any>, key: string) => ({ ...acc, [key]: syncData[key] }), {}))
     })
-    
+
+    mockChromeStorageSet.mockImplementation((items, callback?) => {
+      Object.assign(syncData, items)
+      if (typeof callback === 'function') callback()
+    })
+
+    mockChromeStorageRemove.mockImplementation((keys, callback?) => {
+      const keyList = Array.isArray(keys) ? keys : [keys]
+      keyList.forEach((key: string) => { delete syncData[key] })
+      if (typeof callback === 'function') callback()
+    })
+
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       // Execute callback immediately - tests will use waitFor
       if (message.action === 'firebaseAuthStatus') {
@@ -125,8 +123,11 @@ describe('Popup', () => {
 
     await waitForAsyncOperations()
 
-    expect(mockBucket.get).toHaveBeenCalled()
-    expect(mockChromeStorageGet).toHaveBeenCalled()
+    // フラットな`options`キーから読み込む
+    expect(mockChromeStorageGet).toHaveBeenCalledWith(
+      expect.arrayContaining(['options']),
+      expect.any(Function)
+    )
     expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
       { action: 'firebaseAuthStatus' },
       expect.any(Function)
@@ -164,6 +165,70 @@ describe('Popup', () => {
     // Check that at least one checkbox exists
     const checkboxes = screen.getAllByRole('checkbox')
     expect(checkboxes.length).toBeGreaterThan(0)
+  })
+
+  it('フィルター変更時はフラットなoptionsキーへ保存しメッセージを送る', async () => {
+    render(<Popup />)
+
+    await waitForAsyncOperations()
+
+    await userEvent.click(screen.getByRole('checkbox', { name: 'MTT' }))
+
+    // フラットキーへoptions全体（sendUserData含む）が書き込まれる
+    await waitFor(() => {
+      expect(syncData.options).toEqual(
+        expect.objectContaining({
+          sendUserData: true,
+          filterOptions: expect.objectContaining({
+            gameTypes: { sng: true, mtt: false, ring: true },
+          }),
+        })
+      )
+    })
+
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'updateBattleTypeFilter' })
+    )
+  })
+
+  it('旧@extend-chrome/storage bucketキーのみのユーザーはフラットキーへ移行される', async () => {
+    // フラットキーが無く、旧bucketキーのみ存在する状態
+    syncData = {
+      'extend-chrome/storage__options_keys': ['sendUserData', 'filterOptions'],
+      'extend-chrome/storage__options--sendUserData': false,
+      'extend-chrome/storage__options--filterOptions': {
+        gameTypes: { sng: false, mtt: true, ring: true },
+        handLimit: 200,
+        statDisplayConfigs: defaultStatDisplayConfigs,
+      },
+      uiConfig: DEFAULT_UI_CONFIG,
+    }
+
+    render(<Popup />)
+
+    await waitForAsyncOperations()
+
+    // フラットキーへ移行され、旧キーは削除される
+    await waitFor(() => {
+      expect(syncData.options).toEqual({
+        sendUserData: false,
+        filterOptions: {
+          gameTypes: { sng: false, mtt: true, ring: true },
+          handLimit: 200,
+          statDisplayConfigs: defaultStatDisplayConfigs,
+        },
+      })
+    })
+    expect(syncData['extend-chrome/storage__options_keys']).toBeUndefined()
+    expect(syncData['extend-chrome/storage__options--sendUserData']).toBeUndefined()
+    expect(syncData['extend-chrome/storage__options--filterOptions']).toBeUndefined()
+
+    // 移行した設定がUIに反映される（handLimit 200）
+    expect(screen.getByText('200')).toBeInTheDocument()
+    const mttCheckbox = screen.getByRole('checkbox', { name: 'MTT' }) as HTMLInputElement
+    expect(mttCheckbox.checked).toBe(true)
+    const sngCheckbox = screen.getByRole('checkbox', { name: 'Sit & Go' }) as HTMLInputElement
+    expect(sngCheckbox.checked).toBe(false)
   })
 
   it('ハンド数制限を表示・変更できる', async () => {
