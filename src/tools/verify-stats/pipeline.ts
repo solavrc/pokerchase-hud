@@ -113,7 +113,7 @@ export async function runPipeline(events: ApiEvent[]): Promise<PipelineResult> {
     }
     const winningHandIds = new Set(winningHands.map(h => h.id))
 
-    const statResults = await defaultRegistry.calculateWithConfig({
+    const context = {
       playerId,
       actions: relevantActions,
       phases: relevantPhases,
@@ -122,11 +122,23 @@ export async function runPipeline(events: ApiEvent[]): Promise<PipelineResult> {
       allPlayerPhases: relevantPhases,
       winningHandIds,
       session
-    }, undefined)
+    }
 
+    // Deliberately compute EVERY registered stat (defaultRegistry.getAll()),
+    // not just the enabled ones (calculateWithConfig(ctx, undefined) would use
+    // calculateAll -> getEnabled()). Opt-in variants (e.g. wtsdNoAi/wwsfNoAi,
+    // #115) are disabled by default in the product but must still be checked
+    // against the oracle here -- verify-stats is a regression harness for the
+    // full registered stat surface, independent of the live UI's default
+    // enabled state.
     const stats: Record<string, unknown> = {}
-    for (const sr of statResults) {
-      stats[sr.id] = sr.value
+    for (const stat of defaultRegistry.getAll()) {
+      try {
+        stats[stat.id] = await stat.calculate(context)
+      } catch (error) {
+        console.error(`[verify-stats pipeline] Error calculating stat ${stat.id}:`, error)
+        stats[stat.id] = 0
+      }
     }
 
     result.set(playerId, {

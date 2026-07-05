@@ -17,7 +17,7 @@ import type {
 } from '../types'
 import type { ActionDetailContext } from '../types/stats'
 import { ErrorHandler } from '../utils/error-handler'
-import { getPositionMap } from '../utils/position-utils'
+import { getPositionMap, getBigBlindUserId } from '../utils/position-utils'
 import { defaultRegistry } from '../stats'
 import type { ErrorContext } from '../types/errors'
 
@@ -116,6 +116,8 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           })
           handState.hand.bigBlind = event.Game.BigBlind
           handState.hand.smallBlind = event.Game.SmallBlind
+          // VPIP/PFRのウォーク除外（#115）判定用（EntityConverterと同一ロジック）。
+          handState.hand.bigBlindUserId = getBigBlindUserId(event.SeatUserIds, event.Game.BigBlindSeat)
           progress = event.Progress
           break
         case ApiType.EVT_DEAL_ROUND:
@@ -126,8 +128,14 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           seenDealRoundPhases.add(event.Progress.Phase)
           handState.phases.push({
             phase: event.Progress.Phase,
+            // このストリートに進んだプレイヤー（BET_ABLE=フォールドしていない、
+            // または ALL_IN=プリフロップオールイン済み）のみをseatUserIdsに
+            // 含める（EntityConverterと同一ロジック）。FOLDEDのプレイヤーは
+            // 引き続き除外する（#97）。ALL_INを含めるのはPT4公式の
+            // 「flops seen」定義（プリフロップオールインを含む）に合わせるため
+            // （#115）。
             seatUserIds: (event.Player ? [event.Player, ...event.OtherPlayers] : event.OtherPlayers)
-              .filter(({ BetStatus }) => BetStatus === BetStatusType.BET_ABLE)
+              .filter(({ BetStatus }) => BetStatus === BetStatusType.BET_ABLE || BetStatus === BetStatusType.ALL_IN)
               .sort((a, b) => a.SeatIndex - b.SeatIndex)
               .map(({ SeatIndex }) => handState.hand.seatUserIds.at(SeatIndex)!),
             communityCards: [...handState.phases.at(-1)!.communityCards, ...event.CommunityCards],

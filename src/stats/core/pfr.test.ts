@@ -75,4 +75,51 @@ describe('pfrStat', () => {
       expect(formatted).toBe('20.0% (20/100)')
     })
   })
+
+  // PT4/HM標準の分母（hands - walks, #115）: BBが一度もプリフロップアクションを
+  // 行っていないハンド（真のウォーク、またはBBアクションスキップ）は機会から除外する。
+  describe('calculate - walk exclusion (#115)', () => {
+    const baseHand = { seatUserIds: [], winningPlayerIds: [], smallBlind: 0, bigBlind: 0, session: {} } as any
+    const baseContext = (actions: any[], hands: any[]) => ({
+      playerId: 1,
+      actions,
+      hands,
+      phases: [],
+      allPlayerActions: actions,
+      allPlayerPhases: [],
+      winningHandIds: new Set<number>(),
+      session: { id: '1', battleType: 0, name: 'Test', players: new Map(), reset: () => {} }
+    })
+
+    it('should exclude a walk hand from the denominator for the BB', () => {
+      const hands = [
+        { id: 1, bigBlindUserId: 1, ...baseHand }, // walk: player 1 (BB) has no preflop action
+        { id: 2, bigBlindUserId: 2, ...baseHand }, // player 1 is not BB here
+      ]
+      const actions = [
+        { handId: 2, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE },
+      ]
+      const result = pfrStat.calculate(baseContext(actions, hands) as any)
+      expect(result).toEqual([1, 1]) // hand 1 (walk) excluded from denominator
+    })
+
+    it('should still count a hand where the BB folded/called/raised preflop', () => {
+      const hands = [
+        { id: 1, bigBlindUserId: 1, ...baseHand },
+      ]
+      const actions = [
+        { handId: 1, phase: PhaseType.PREFLOP, actionType: ActionType.CALL }, // BB acted, not a walk
+      ]
+      const result = pfrStat.calculate(baseContext(actions, hands) as any)
+      expect(result).toEqual([0, 1]) // opportunity retained, just no PFR
+    })
+
+    it('should not exclude non-BB players', () => {
+      const hands = [
+        { id: 1, bigBlindUserId: 2, ...baseHand }, // player 1 is NOT the BB
+      ]
+      const result = pfrStat.calculate(baseContext([], hands) as any)
+      expect(result).toEqual([0, 1]) // still counted as an opportunity
+    })
+  })
 })

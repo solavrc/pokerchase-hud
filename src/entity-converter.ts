@@ -29,7 +29,7 @@ import type {
 } from './types'
 
 import { defaultRegistry } from './stats'
-import { getPositionMap } from './utils/position-utils'
+import { getPositionMap, getBigBlindUserId } from './utils/position-utils'
 
 /**
  * エンティティバンドル（一括保存用）
@@ -175,6 +175,8 @@ export class EntityConverter {
             winningPlayerIds: [],
             smallBlind: event.Game.SmallBlind,
             bigBlind: event.Game.BigBlind,
+            // VPIP/PFRのウォーク除外（#115）判定用（WriteEntityStreamと同一ロジック）。
+            bigBlindUserId: getBigBlindUserId(event.SeatUserIds, event.Game.BigBlindSeat),
             session: {
               id: session.id,
               battleType: session.battleType,
@@ -294,13 +296,20 @@ export class EntityConverter {
             return null
           }
           if (newPhase !== null) {
-            // このストリートに進んだプレイヤー（BET_ABLE=フォールドしていない）のみを
-            // seatUserIdsに含める（WriteEntityStreamと同一ロジック）。
+            // このストリートに進んだプレイヤー（BET_ABLE=フォールドしていない、
+            // または ALL_IN=プリフロップオールイン済み）のみをseatUserIdsに
+            // 含める（WriteEntityStreamと同一ロジック）。
             // handState.hand.seatUserIds（配札時の全員）をそのまま使うと、
             // プリフロップで既にフォールドしたプレイヤーもこのフェーズを
-            // 「見た」ことになり、WTSD/WWSFの分母が水増しされる。
+            // 「見た」ことになり、WTSD/WWSFの分母が水増しされる（#97で修正済み、
+            // この制約は維持する）。
+            // 一方、PT4公式の「flops seen」はプリフロップオールインを含む
+            // （PT4スタッフ: "Those stats are based on flops seen, not based
+            // on flops seen when not all-in, so all-in spots will count"）ため、
+            // ALL_INステータスのプレイヤーもこのフェーズの参加者に含める
+            // （#115）。FOLDEDのプレイヤーのみが引き続き除外される。
             const seatUserIds = (event.Player ? [event.Player, ...event.OtherPlayers] : event.OtherPlayers)
-              .filter(({ BetStatus }) => BetStatus === BetStatusType.BET_ABLE)
+              .filter(({ BetStatus }) => BetStatus === BetStatusType.BET_ABLE || BetStatus === BetStatusType.ALL_IN)
               .sort((a, b) => a.SeatIndex - b.SeatIndex)
               .map(({ SeatIndex }) => handState.hand.seatUserIds.at(SeatIndex)!)
             handState.phases.push({

@@ -1,4 +1,5 @@
-import { mergeStatDisplayConfigs } from './index'
+import { mergeStatDisplayConfigs, defaultStatDisplayConfigs } from './index'
+import { defaultRegistry } from './registry'
 import type { StatDisplayConfig } from '../types/filters'
 
 /**
@@ -77,5 +78,51 @@ describe('mergeStatDisplayConfigs', () => {
     const merged = mergeStatDisplayConfigs(saved, defaults)
     expect(merged.every(c => c.enabled === false)).toBe(true)
     expect(merged).toHaveLength(defaults.length)
+  })
+})
+
+/**
+ * defaultStatDisplayConfigs（実際のコア統計レジストリから生成される
+ * デフォルト設定）のユニットテスト。
+ *
+ * 背景（#115）: 以前は`enabled: true`をハードコードしていたため、
+ * StatDefinition側で`enabled: false`を明示した統計（wtsdNoAi/wwsfNoAi等の
+ * オプトイン変種）もデフォルトのstatDisplayConfigsではenabled: trueとして
+ * 扱われてしまい、HUDに常時表示される意図しない挙動を引き起こしていた。
+ * `stat.enabled !== false`を尊重するよう修正し、既存ユーザーの保存済み設定
+ * にmergeStatDisplayConfigsで追加される際も無効のまま追加されることを保証する。
+ */
+describe('defaultStatDisplayConfigs', () => {
+  it('StatDefinition.enabled === false の統計はデフォルトでenabled: falseになる', () => {
+    const wtsdNoAi = defaultStatDisplayConfigs.find(c => c.id === 'wtsdNoAi')
+    const wwsfNoAi = defaultStatDisplayConfigs.find(c => c.id === 'wwsfNoAi')
+    expect(wtsdNoAi).toBeDefined()
+    expect(wwsfNoAi).toBeDefined()
+    expect(wtsdNoAi!.enabled).toBe(false)
+    expect(wwsfNoAi!.enabled).toBe(false)
+
+    // レジストリ側の判定（getEnabled）とも整合していることを確認
+    expect(defaultRegistry.isEnabled('wtsdNoAi')).toBe(false)
+    expect(defaultRegistry.isEnabled('wwsfNoAi')).toBe(false)
+  })
+
+  it('enabledを明示していない（または true の）統計はデフォルトでenabled: trueになる', () => {
+    const vpip = defaultStatDisplayConfigs.find(c => c.id === 'vpip')
+    const wtsd = defaultStatDisplayConfigs.find(c => c.id === 'wtsd')
+    expect(vpip!.enabled).toBe(true)
+    expect(wtsd!.enabled).toBe(true)
+  })
+
+  it('既存ユーザーの保存済み設定にマージされた際も新規のオプトイン変種は無効のまま追加される', () => {
+    // wtsdNoAi/wwsfNoAi導入前の保存済み設定を模したもの（それ以外は保存済みのまま）
+    const savedBeforeVariants: StatDisplayConfig[] = defaultStatDisplayConfigs
+      .filter(c => c.id !== 'wtsdNoAi' && c.id !== 'wwsfNoAi')
+      .map(c => ({ ...c }))
+
+    const merged = mergeStatDisplayConfigs(savedBeforeVariants, defaultStatDisplayConfigs)
+    const wtsdNoAi = merged.find(c => c.id === 'wtsdNoAi')
+    const wwsfNoAi = merged.find(c => c.id === 'wwsfNoAi')
+    expect(wtsdNoAi?.enabled).toBe(false)
+    expect(wwsfNoAi?.enabled).toBe(false)
   })
 })
