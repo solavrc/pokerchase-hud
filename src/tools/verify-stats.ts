@@ -18,18 +18,18 @@
  * Exits non-zero if any stat's agreement (for players with >= min-hands
  * hands) falls below --threshold percent.
  *
- * Known benign gaps (do not indicate a pipeline bug):
- *  - WTSD/WWSF typically settle around 99.5-99.7% agreement, not 100%, on
- *    large real captures. This repo's audit traced the residual mismatches
- *    to 8 hands with a dual-board/run-it-twice-shaped anomaly in the raw
- *    event stream that a single flat community-card oracle model cannot
- *    represent; the live pipeline's phase-membership logic is correct.
- *  - CBet can show a single-hand discrepancy caused by one duplicate
- *    EVT_ACTION event recorded for the same seat/street in the source
- *    capture (an artifact of the capture, not of either implementation).
- * The default --threshold=99 is set below both pipeline stats' typical
- * ceiling so these two known gaps do not fail CI, while still catching any
- * new, larger divergence.
+ * Known benign gaps: none, as of the fused-buffer (duplicate-phase) hand
+ * rejection. Earlier documented gaps are resolved:
+ *  - WTSD/WWSF residuals were fixed by mirroring Dexie's [handId+phase]
+ *    de-duplication in pipeline.ts (#108).
+ *  - The former "dual-board" WTSD/WWSF/CBet residuals turned out to be
+ *    fused table-move buffers (two hands merged around a mid-hand
+ *    EVT_ENTRY_QUEUED/EVT_PLAYER_SEAT_ASSIGNED — see docs/api-events.md
+ *    「デュアルボード観測」); such hands are now rejected identically by
+ *    write-entity-stream.ts, entity-converter.ts, and the oracle, so the
+ *    reference capture reaches 100% agreement on every compared stat.
+ * The default --threshold=99 provides headroom for as-yet-unknown anomalies
+ * in future captures while still catching real divergences.
  */
 import { existsSync, createReadStream } from 'fs'
 import { resolve } from 'path'
@@ -72,10 +72,27 @@ function parseArgs(argv: string[]): CliOptions {
 
 async function readNdjson(filePath: string): Promise<ApiEvent[]> {
   const events: ApiEvent[] = []
+  // 実際のインポート経路（src/background/import-export.ts）は apiEvents の主キー
+  // [timestamp+ApiTypeId] に基づき `${timestamp}-${ApiTypeId}` キーの先勝ちで
+  // 重複イベントを除外してから EntityConverter に渡す。ハーネスも同じ前処理を
+  // 行わないと、キャプチャ内の重複イベント（例: 同一 EVT_ACTION の二重記録）が
+  // 製品では起こらない統計差分を生む（実データで cbet 1 件の偽性不一致を確認）。
+  const seenKeys = new Set<string>()
+  let duplicateCount = 0
   const rl = createInterface({ input: createReadStream(filePath), crlfDelay: Infinity })
   for await (const line of rl) {
     if (!line.trim()) continue
-    events.push(JSON.parse(line))
+    const event = JSON.parse(line)
+    const key = `${event.timestamp}-${event.ApiTypeId}`
+    if (seenKeys.has(key)) {
+      duplicateCount++
+      continue
+    }
+    seenKeys.add(key)
+    events.push(event)
+  }
+  if (duplicateCount > 0) {
+    console.log(`Skipped ${duplicateCount} duplicate event(s) ([timestamp+ApiTypeId] first-wins, mirroring the import path)`)
   }
   return events
 }

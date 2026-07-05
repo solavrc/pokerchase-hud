@@ -69,7 +69,7 @@ export async function runPipeline(events: ApiEvent[]): Promise<PipelineResult> {
   // wins, by array order) before ReadEntityStream.calcStats ever sees them.
   // Without this de-dup, the harness indexes every phase EntityConverter
   // emits, which diverges from product behavior for hands with duplicate
-  // street events (e.g. the documented dual-board/run-it-twice-shaped hands).
+  // street events (fused table-move buffers are now rejected upstream, but the semantics must still mirror bulkPut for any future duplicate-street capture).
   const dedupedPhasesByKey = new Map<string, Phase>()
   for (const p of bundle.phases) {
     dedupedPhasesByKey.set(`${p.handId}:${p.phase}`, p)
