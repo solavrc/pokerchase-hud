@@ -461,6 +461,8 @@ These definitions were validated by hand-tracing 22 hands from the integration t
 - **WWSF**: Flops seen → won. Preflop ALL_IN excluded.
 - **AF**: `(BET+RAISE) / CALL` — CHECK and FOLD excluded from both numerator and denominator.
 - **AFq**: `(BET+RAISE) / (BET+RAISE+CALL+FOLD)` — CHECK excluded from denominator.
+- **Steal (STL)**: First-in raise from CO/BTN/SB when folded to (mechanical PT4/HM3 definition). **Heads-up hands are INCLUDED**: the HU button posts the SB and is labeled `SB` by `getPositionMap` (a steal position), so HU button opens count as steal attempts — this matches PT4/HM3/Poker Copilot, none of which carve out heads-up. Measured on real data: HU contributes 6.9% of all steal chances (~98% of HU hands generate one, since the SB first-in is always unopened). Do not "fix" this by excluding HU; it is the industry-standard behavior.
+- **FoldToSteal (FTS)**: Blind (SB/BB) folds when facing an identified steal raise (`phasePrevBetCount=2`). Heads-up BB defenses are likewise INCLUDED (5.1% of all FTS chances), per the same standard.
 
 See `docs/hand-analysis.md` for the full 22-hand audit trail.
 
