@@ -92,6 +92,14 @@ export const handSchema = z.object({
   winningPlayerIds: z.array(z.number()),
   smallBlind: z.number(),
   bigBlind: z.number(),
+  /**
+   * このハンドでビッグブラインドを務めたプレイヤーのID（EVT_DEALの
+   * `Game.BigBlindSeat`から算出）。VPIP/PFRの「機会」判定（#115: ウォーク
+   * 除外）に使用する。非インデックスフィールドのため、DexieスキーマVer上げ
+   * 不要（poker-chase-db.ts参照）。BigBlindSeatが-1/未定義の異常系では
+   * 設定しない（undefinedのまま）。
+   */
+  bigBlindUserId: z.number().optional(),
   session: z.object({
     id: z.string().optional(),
     battleType: z.enum(BattleType).optional(),

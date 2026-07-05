@@ -126,4 +126,70 @@ describe('vpipStat', () => {
       expect(formatted).toBe('50.0% (1/2)')
     })
   })
+
+  // PT4/HM標準の分母（hands - walks, #115）: BBが一度もプリフロップアクションを
+  // 行っていないハンド（真のウォーク、またはBBアクションスキップ）は機会から除外する。
+  describe('calculate - walk exclusion (#115)', () => {
+    const baseHand = { seatUserIds: [], winningPlayerIds: [], smallBlind: 0, bigBlind: 0, session: {} } as any
+
+    it('should exclude a walk hand from the denominator for the BB', () => {
+      const hands = [
+        { id: 1, bigBlindUserId: 1, ...baseHand }, // walk: player 1 (BB) has no preflop action
+        { id: 2, bigBlindUserId: 2, ...baseHand }, // player 1 is not BB here
+      ]
+      const actions = [
+        // Hand 2: player 1 (not BB) calls preflop
+        { handId: 2, phase: PhaseType.PREFLOP, actionDetails: [ActionDetail.VPIP] },
+      ]
+      const result = vpipStat.calculate({
+        playerId: 1,
+        actions,
+        hands,
+        phases: [],
+        allPlayerActions: actions,
+        allPlayerPhases: [],
+        winningHandIds: new Set(),
+        session: { id: '1', battleType: 0, name: 'Test', players: new Map(), reset: () => {} }
+      } as any)
+      // Hand 1 (walk) excluded from denominator; only hand 2 counts as an opportunity.
+      expect(result).toEqual([1, 1])
+    })
+
+    it('should still count a hand where the BB folded/called/raised preflop', () => {
+      const hands = [
+        { id: 1, bigBlindUserId: 1, ...baseHand }, // BB acted (e.g. folded to a raise) -> not a walk
+      ]
+      const actions = [
+        { handId: 1, phase: PhaseType.PREFLOP, actionDetails: [] }, // e.g. a FOLD, no VPIP flag
+      ]
+      const result = vpipStat.calculate({
+        playerId: 1,
+        actions,
+        hands,
+        phases: [],
+        allPlayerActions: actions,
+        allPlayerPhases: [],
+        winningHandIds: new Set(),
+        session: { id: '1', battleType: 0, name: 'Test', players: new Map(), reset: () => {} }
+      } as any)
+      expect(result).toEqual([0, 1]) // opportunity retained, just no VPIP
+    })
+
+    it('should not exclude non-BB players even if they never acted preflop (should not normally happen, but is not walk logic)', () => {
+      const hands = [
+        { id: 1, bigBlindUserId: 2, ...baseHand }, // player 1 is NOT the BB
+      ]
+      const result = vpipStat.calculate({
+        playerId: 1,
+        actions: [],
+        hands,
+        phases: [],
+        allPlayerActions: [],
+        allPlayerPhases: [],
+        winningHandIds: new Set(),
+        session: { id: '1', battleType: 0, name: 'Test', players: new Map(), reset: () => {} }
+      } as any)
+      expect(result).toEqual([0, 1]) // not the BB, so the hand still counts as an opportunity
+    })
+  })
 })

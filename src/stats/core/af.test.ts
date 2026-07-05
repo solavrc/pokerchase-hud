@@ -1,10 +1,12 @@
 import { afStat } from './af'
-import { ActionType } from '../../types/game'
+import { ActionType, PhaseType } from '../../types/game'
 import { makeAction, makeCalcContext } from './__test-helpers'
 
 describe('afStat', () => {
   describe('calculate', () => {
-    it('should compute AF = [aggressive, passive] counts', () => {
+    // makeAction()のデフォルトphaseはFLOP（ポストフロップ）のため、
+    // 以下の既存ケースはPT4のポストフロップ限定定義でも値は変わらない。
+    it('should compute AF = [aggressive, passive] counts (postflop)', () => {
       const actions = [
         makeAction({ actionType: ActionType.BET }),
         makeAction({ actionType: ActionType.RAISE }),
@@ -29,6 +31,27 @@ describe('afStat', () => {
     it('should handle all passive (no bets/raises)', () => {
       const actions = [makeAction({ actionType: ActionType.CALL }), makeAction({ actionType: ActionType.CALL })]
       expect(afStat.calculate(makeCalcContext({ actions }))).toEqual([0, 2])
+    })
+
+    // PT4公式定義: "Ratio of the times a player makes a POSTFLOP aggressive
+    // action (bet or raise) to the times they call" — プリフロップのアクションは
+    // 分子・分母のいずれからも除外される。
+    it('should exclude preflop actions entirely (PT4 postflop-only definition)', () => {
+      const actions = [
+        makeAction({ phase: PhaseType.PREFLOP, actionType: ActionType.RAISE }), // excluded
+        makeAction({ phase: PhaseType.PREFLOP, actionType: ActionType.CALL }),  // excluded
+        makeAction({ phase: PhaseType.FLOP, actionType: ActionType.BET }),
+        makeAction({ phase: PhaseType.TURN, actionType: ActionType.CALL }),
+      ]
+      expect(afStat.calculate(makeCalcContext({ actions }))).toEqual([1, 1])
+    })
+
+    it('should return [0, 0] when only preflop actions exist', () => {
+      const actions = [
+        makeAction({ phase: PhaseType.PREFLOP, actionType: ActionType.RAISE }),
+        makeAction({ phase: PhaseType.PREFLOP, actionType: ActionType.CALL }),
+      ]
+      expect(afStat.calculate(makeCalcContext({ actions }))).toEqual([0, 0])
     })
   })
 

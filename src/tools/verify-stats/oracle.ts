@@ -1,10 +1,10 @@
 /**
  * verify-stats: independent oracle.
  *
- * Computes VPIP/PFR/3BET/3BETFOLD/CBET/CBETFOLD/AF/AFq/WTSD/WSD/WWSF/STEAL/
- * FOLDTOSTEAL/RCA directly from raw NDJSON events, with NO imports from
- * `src/stats` or `src/entity-converter`. Only wire-protocol enums are
- * imported -- `ApiType` from `src/types/api` and `ActionType`/
+ * Computes VPIP/PFR/3BET/3BETFOLD/CBET/CBETFOLD/AF/AFq/WTSD/WSD/WWSF/
+ * WTSDa/WWSFa/STEAL/FOLDTOSTEAL/RCA directly from raw NDJSON events, with NO
+ * imports from `src/stats` or `src/entity-converter`. Only wire-protocol
+ * enums are imported -- `ApiType` from `src/types/api` and `ActionType`/
  * `BetStatusType`/`RankType` from `src/types/game` -- for readability;
  * every detection rule below is written from
  * scratch against the documented event semantics in CLAUDE.md /
@@ -18,12 +18,34 @@
  *
  * Semantics deliberately kept in sync with the pipeline (verified against
  * entity-converter.ts / src/stats/core during the 2026-07 real-data audit
- * that produced this harness, PRs #93-#97):
- *  (a) "saw flop" is derived from the FLOP EVT_DEAL_ROUND event's per-seat
- *      BetStatus === BET_ABLE (Player + OtherPlayers), not from "did not
- *      fold preflop" -- a player who went all-in preflop has BetStatus
- *      ALL_IN, not BET_ABLE, so they are correctly excluded even though
- *      they never "folded".
+ * that produced this harness, PRs #93-#97, and the 2026-07 conformance
+ * audit against PT4/HM3 official definitions, #115):
+ *  (a) "saw flop" (WTSD/WWSF denominator) is derived from the FLOP
+ *      EVT_DEAL_ROUND event's per-seat BetStatus === BET_ABLE ||
+ *      BetStatus === ALL_IN (Player + OtherPlayers). PT4 staff describe WTSD/
+ *      WWSF as built on "flops seen", explicitly INCLUDING preflop all-in
+ *      spots ("Those stats are based on flops seen, not based on flops seen
+ *      when not all-in, so all-in spots will count") -- only FOLDED players
+ *      are excluded from this population (the #97 fix, which stays in place).
+ *  (a2) WTSDa/WWSFa (opt-in decision-focused variants, #115) instead use a
+ *      "took a flop action" base: hands where the player has >= 1 EVT_ACTION
+ *      with phase===FLOP. A BET_ABLE flop-seer always acts at least once on
+ *      the flop; a preflop all-in player never does. This reproduces the
+ *      lineage semantics (PT4 custom-stat "WTSD without preflop all-ins" /
+ *      Hand2Note "Flop Any Action") without needing a second BetStatus
+ *      re-derivation.
+ *  (a3) VPIP/PFR denominators exclude "walks": a hand where the player is
+ *      the BB (Game.BigBlindSeat) and took ZERO preflop actions (true walk,
+ *      or the "BB action skip" path where NextActionSeat=-2 and the BB's
+ *      check is never sent as an EVT_ACTION -- CLAUDE.md "BB action skip").
+ *      In both cases the BB had no voluntary preflop decision to make.
+ *      Non-BB players who folded preflop still made a decision and remain
+ *      counted as an opportunity. This mirrors the PT4/HM3 standard
+ *      denominator of "hands - walks".
+ *  (a4) AF/AFq are POSTFLOP-only (PT4 official definition: "Ratio of the
+ *      times a player makes a POSTFLOP aggressive action (bet or raise) to
+ *      the times they call"). Preflop actions are excluded from both sides
+ *      of both fractions.
  *  (b) Positions are derived purely from Game.ButtonSeat / SmallBlindSeat /
  *      BigBlindSeat (never by rotating/inferring from seat order), which
  *      handles empty seats (busted players) correctly.
@@ -109,6 +131,8 @@ export interface OraclePlayerResult {
     wtsd: OracleFraction
     wsd: OracleFraction
     wwsf: OracleFraction
+    wtsdNoAi: OracleFraction
+    wwsfNoAi: OracleFraction
     steal: OracleFraction
     foldToSteal: OracleFraction
     riverCallAccuracy: OracleFraction
@@ -121,6 +145,17 @@ interface PlayerAcc {
   hands: Set<number>
   vpip: number
   pfrHands: Set<number>
+  /**
+   * VPIP/PFR opportunity hands (#115, PT4/HM walk-exclusion standard:
+   * denominator = hands - walks). A hand is excluded from THIS set (not from
+   * `hands`, which is the plain "hands played" count used elsewhere, e.g.
+   * `hands` stat) when the player was the BB in that hand and never took a
+   * single preflop action -- a true walk, or the "BB action skip" path
+   * (NextActionSeat=-2 with no BB EVT_ACTION, CLAUDE.md). In both cases the BB
+   * had no voluntary preflop decision to make. Non-BB folds still count as an
+   * opportunity (the player did make a decision).
+   */
+  vpipPfrOpportunityHands: Set<number>
   threeBetChance: number
   threeBet: number
   threeBetFoldChance: number
@@ -137,6 +172,17 @@ interface PlayerAcc {
   wonAtShowdownAllHands: Set<number>
   showdownAllCount: Set<number>
   wonAfterFlop: Set<number>
+  /**
+   * WTSDa/WWSFa base (#115, opt-in decision-focused variant lineage: PT4
+   * custom-stat "WTSD without preflop all-ins" / Hand2Note "Flop Any Action").
+   * Hands where the player took at least one FLOP-phase action -- a BET_ABLE
+   * flop-seer always acts at least once on the flop, while a preflop all-in
+   * player never does, so this set is exactly the "saw flop, not all-in"
+   * population without needing a separate BetStatus re-derivation.
+   */
+  flopActionHands: Set<number>
+  flopActionShowdowns: Set<number>
+  flopActionWins: Set<number>
   stealChance: number
   steal: number
   foldToStealChance: number
@@ -147,12 +193,13 @@ interface PlayerAcc {
 
 function newAcc(): PlayerAcc {
   return {
-    hands: new Set(), vpip: 0, pfrHands: new Set(),
+    hands: new Set(), vpip: 0, pfrHands: new Set(), vpipPfrOpportunityHands: new Set(),
     threeBetChance: 0, threeBet: 0, threeBetFoldChance: 0, threeBetFold: 0,
     cbetChance: 0, cbet: 0, cbetFoldChance: 0, cbetFold: 0,
     betRaise: 0, call: 0, fold: 0,
     flopsSeen: new Set(), showdownsReached: new Set(),
     wonAtShowdownAllHands: new Set(), showdownAllCount: new Set(), wonAfterFlop: new Set(),
+    flopActionHands: new Set(), flopActionShowdowns: new Set(), flopActionWins: new Set(),
     stealChance: 0, steal: 0, foldToStealChance: 0, foldToSteal: 0,
     riverCall: 0, riverCallWon: 0,
   }
@@ -280,6 +327,10 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
     const { ButtonSeat: buttonSeat, SmallBlindSeat: sbSeat, BigBlindSeat: bbSeat } = dealEvt.Game
     const posMap = computePositions(seatUserIds, buttonSeat, sbSeat, bbSeat)
     const handId = resultsEvt.HandId
+    // BB player for this hand (VPIP/PFR walk-exclusion, #115); undefined if the
+    // seat is somehow empty (defensive -- BigBlindSeat always points to an
+    // occupied seat in real data per docs/api-events.md).
+    const bbUserId = bbSeat !== -1 && seatUserIds[bbSeat] !== -1 ? seatUserIds[bbSeat] : undefined
 
     for (const pid of seatUserIds) {
       if (pid === -1) continue
@@ -294,6 +345,10 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
     let cBetPhase: number | undefined
     let stealRaiser: number | undefined
     const preflopActionsSoFar: ActionRec[] = []
+    // Players who took at least one preflop action this hand (VPIP/PFR
+    // walk-exclusion, #115: a BB with zero preflop actions had no voluntary
+    // decision -- true walk or the "BB action skip" path, CLAUDE.md).
+    const playersWithPreflopAction = new Set<number>()
     // Players confirmed to have reached the flop (BetStatus===BET_ABLE at the FLOP deal-round).
     let flopActivePlayers: Set<number> | undefined
     // Count of river CALL actions by player this hand (RIVER_CALL is tagged
@@ -319,6 +374,11 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
         const key = `${phase}:${playerId}`
         const phasePlayerActionIndex = perPlayerPhaseActionIdx.get(key) ?? 0
         const rec: ActionRec = { playerId, actionType: normType }
+
+        if (phase === 0) playersWithPreflopAction.add(playerId)
+
+        // WTSDa/WWSFa base (#115): any FLOP-phase action by this player this hand.
+        if (phase === PhaseType.FLOP) acc(playerId).flopActionHands.add(handId)
 
         // VPIP: preflop, player's first preflop action, CALL or RAISE.
         if (phase === 0 && phasePlayerActionIndex === 0 && (normType === ActionType.CALL || normType === ActionType.RAISE)) {
@@ -382,10 +442,14 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
           if (normType === ActionType.FOLD) acc(playerId).cbetFold++
         }
 
-        // AF / AFq.
-        if (normType === ActionType.BET || normType === ActionType.RAISE) acc(playerId).betRaise++
-        if (normType === ActionType.CALL) acc(playerId).call++
-        if (normType === ActionType.FOLD) acc(playerId).fold++
+        // AF / AFq: PT4 official definition is POSTFLOP-only ("Ratio of the
+        // times a player makes a POSTFLOP aggressive action (bet or raise) to
+        // the times they call"), #115. Preflop actions are excluded entirely.
+        if (phase !== 0) {
+          if (normType === ActionType.BET || normType === ActionType.RAISE) acc(playerId).betRaise++
+          if (normType === ActionType.CALL) acc(playerId).call++
+          if (normType === ActionType.FOLD) acc(playerId).fold++
+        }
 
         // RCA: RIVER_CALL is tagged on every river CALL action (denominator);
         // RIVER_CALL_WON is resolved below, once Results is known.
@@ -414,14 +478,16 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
         prevProgress = roundEvt.Progress
 
         if (phase === 1) {
-          // Semantic-sync (a): "saw flop" = BetStatus===BET_ABLE for this seat at the
-          // FLOP deal-round, exactly mirroring entity-converter.ts's phase-membership
-          // filter. This correctly excludes preflop all-ins (BetStatus=ALL_IN) even
-          // though they never technically "folded".
+          // Semantic-sync (a): "saw flop" = BetStatus===BET_ABLE || BetStatus===ALL_IN
+          // for this seat at the FLOP deal-round, exactly mirroring
+          // entity-converter.ts's / write-entity-stream.ts's phase-membership
+          // filter (#115). PT4's WTSD/WWSF are built on "flops seen" and
+          // explicitly INCLUDE preflop all-in spots; only FOLDED players are
+          // excluded from this population (the #97 fix, which stays in place).
           const seatPlayers = roundEvt.Player ? [roundEvt.Player, ...roundEvt.OtherPlayers] : roundEvt.OtherPlayers
           flopActivePlayers = new Set(
             seatPlayers
-              .filter(p => p.BetStatus === BetStatusType.BET_ABLE)
+              .filter(p => p.BetStatus === BetStatusType.BET_ABLE || p.BetStatus === BetStatusType.ALL_IN)
               .map(p => seatUserIds[p.SeatIndex]!)
               .filter(pid => pid !== -1)
           )
@@ -456,6 +522,10 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
       if (flopActivePlayers?.has(pid) && isShowdownParticipant) {
         acc(pid).showdownsReached.add(handId) // WTSD numerator (flop seen -> showdown).
       }
+      // WTSDa numerator (#115): base hand (flop action taken) that reached showdown.
+      if (acc(pid).flopActionHands.has(handId) && isShowdownParticipant) {
+        acc(pid).flopActionShowdowns.add(handId)
+      }
     }
 
     if (traceHandIds.has(handId)) {
@@ -469,6 +539,29 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
         acc(pid).flopsSeen.add(handId)
         if (winners.has(pid)) acc(pid).wonAfterFlop.add(handId)
       }
+    }
+
+    // WWSFa numerator (#115): base hand (flop action taken) that this player won.
+    // Only players who acted on the flop can have this hand in flopActionHands,
+    // so iterate the seated players for this hand rather than all known players.
+    for (const pid of seatUserIds) {
+      if (pid === -1) continue
+      if (acc(pid).flopActionHands.has(handId) && winners.has(pid)) {
+        acc(pid).flopActionWins.add(handId)
+      }
+    }
+
+    // VPIP/PFR opportunity hands (#115, PT4/HM walk-exclusion standard):
+    // every seated player gets this hand as an opportunity UNLESS they are the
+    // BB and never took a preflop action (true walk, or the "BB action skip"
+    // path where all other players are all-in/folded before the BB acts).
+    // Non-BB players who folded preflop still made a decision, so their
+    // opportunity is retained even with zero preflop actions being impossible
+    // for them (folding IS an action).
+    for (const pid of seatUserIds) {
+      if (pid === -1) continue
+      const isBbWalk = pid === bbUserId && !playersWithPreflopAction.has(pid)
+      if (!isBbWalk) acc(pid).vpipPfrOpportunityHands.add(handId)
     }
   }
 
@@ -493,8 +586,10 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
       playerId: pid,
       hands: a.hands.size,
       stats: {
-        vpip: [a.vpip, a.hands.size],
-        pfr: [a.pfrHands.size, a.hands.size],
+        // VPIP/PFR denominators use the walk-excluded opportunity set (#115),
+        // not the raw hands-played count.
+        vpip: [a.vpip, a.vpipPfrOpportunityHands.size],
+        pfr: [a.pfrHands.size, a.vpipPfrOpportunityHands.size],
         '3bet': [a.threeBet, a.threeBetChance],
         '3betfold': [a.threeBetFold, a.threeBetFoldChance],
         cbet: [a.cbet, a.cbetChance],
@@ -504,6 +599,9 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
         wtsd: [a.showdownsReached.size, a.flopsSeen.size],
         wsd: [a.wonAtShowdownAllHands.size, a.showdownAllCount.size],
         wwsf: [a.wonAfterFlop.size, a.flopsSeen.size],
+        // WTSDa/WWSFa (#115): opt-in decision-focused variants, flop-action base.
+        wtsdNoAi: [a.flopActionShowdowns.size, a.flopActionHands.size],
+        wwsfNoAi: [a.flopActionWins.size, a.flopActionHands.size],
         steal: [a.steal, a.stealChance],
         foldToSteal: [a.foldToSteal, a.foldToStealChance],
         riverCallAccuracy: [a.riverCallWon, a.riverCall],

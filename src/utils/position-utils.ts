@@ -10,6 +10,22 @@ export interface PositionGameInfo {
 }
 
 /**
+ * EVT_DEALのGame.BigBlindSeat/SeatUserIdsからBBプレイヤーのIDを解決する。
+ *
+ * VPIP/PFRのウォーク除外（#115）判定用にHand.bigBlindUserIdへ設定する値を
+ * 算出する共通ヘルパー。entity-converter.ts / write-entity-stream.ts の
+ * 双方から同一ロジックで呼び出すことで、インポート/リビルドとライブ記録の
+ * パリティを保つ。BigBlindSeatが不正（-1/未定義）、または対応座席が空席
+ * （SeatUserIds[seat] === -1）の場合はundefinedを返す（防御的：実データでは
+ * BigBlindSeatは常に着席済み座席を指す。docs/api-events.md参照）。
+ */
+export function getBigBlindUserId(seatUserIds: number[], bigBlindSeat: number): number | undefined {
+  if (bigBlindSeat === undefined || bigBlindSeat === -1) return undefined
+  const bbUserId = seatUserIds.at(bigBlindSeat)
+  return bbUserId !== undefined && bbUserId !== -1 ? bbUserId : undefined
+}
+
+/**
  * 着席プレイヤーIDからポジション（Position enum値）へのマップを構築する。
  *
  * 背景（バグ修正の経緯）:

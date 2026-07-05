@@ -429,16 +429,18 @@ Components are modularized with feature-specific sub-components in `hud/` and `p
 | ------------ | ---- | ---------------------------------------------- |
 | `hands`      | HAND | Total hands played                             |
 | `playerName` | Name | Player name with rank                          |
-| `vpip`       | VPIP | Voluntarily put $ in pot %                     |
-| `pfr`        | PFR  | Pre-flop raise %                               |
+| `vpip`       | VPIP | Voluntarily put $ in pot % (walks excluded)    |
+| `pfr`        | PFR  | Pre-flop raise % (walks excluded)              |
 | `3bet`       | 3B   | 3-bet %                                        |
 | `3betfold`   | 3BF  | Fold to 3-bet %                                |
 | `cbet`       | CB   | Continuation bet %                             |
 | `cbetFold`   | CBF  | Fold to c-bet %                                |
-| `af`         | AF   | Aggression factor                              |
-| `afq`        | AFq  | Aggression frequency %                         |
-| `wtsd`       | WTSD | Went to showdown % (excludes preflop all-ins)  |
-| `wwsf`       | WWSF | Won when saw flop % (excludes preflop all-ins) |
+| `af`         | AF   | Aggression factor (postflop only)              |
+| `afq`        | AFq  | Aggression frequency % (postflop only)         |
+| `wtsd`       | WTSD | Went to showdown % (flops seen, incl. preflop all-ins) |
+| `wwsf`       | WWSF | Won when saw flop % (flops seen, incl. preflop all-ins) |
+| `wtsdNoAi`   | WTSDa | Went to showdown %, decision-focused variant (preflop all-ins excluded; **disabled by default**, opt-in via popup) |
+| `wwsfNoAi`   | WWSFa | Won when saw flop %, decision-focused variant (preflop all-ins excluded; **disabled by default**, opt-in via popup) |
 | `wsd`        | W$SD | Won $ at showdown %                            |
 | `riverCallAccuracy` | RCA | River call accuracy % (calls that won)  |
 
@@ -448,23 +450,27 @@ For detailed instructions on how to add new statistics to the HUD, see [CONTRIBU
 
 ### Statistics Philosophy
 
-**Player Decision Focus**: Statistics like WTSD and WWSF measure player decision-making rather than automatic game outcomes. Preflop all-ins are excluded because they involve no post-flop decisions, ensuring statistics reflect actual player tendencies and "stickiness" rather than forced showdowns.
+**Tracker-standard primaries, opt-in decision-focused variants**: Primary stats (VPIP, PFR, AF, AFq, WTSD, WWSF, etc.) follow official tracker (PT4/HM3) definitions so values are directly comparable with other trackers and with players' existing intuitions built on those tools. The previous "player decision focus" philosophy — measuring decision-making rather than automatic game outcomes — now lives in the opt-in `*a` variants (`wtsdNoAi`/WTSDa, `wwsfNoAi`/WWSFa): these exclude preflop all-ins (no postflop decision was made) and are disabled by default, enabled per-user from the popup's HUD display settings.
 
-### Confirmed Statistical Definitions (PT4-aligned, audited 2026-03)
+### Confirmed Statistical Definitions (PT4-aligned, audited 2026-03, re-aligned 2026-07 #115)
 
-These definitions were validated by hand-tracing 22 hands from the integration test suite:
+These definitions were validated by hand-tracing 22 hands from the integration test suite (2026-03), then cross-checked against PT4/HM3 official documentation and an independent oracle over a 393,830-event real-data capture (2026-07, #115 — see `npm run verify-stats`):
 
 - **CBet (CB)**: PFR opens betting on flop (phasePrevBetCount=0, cBetter=playerId). Extended to turn/river while initiative retained.
 - **CBetFold (CBF)**: Fold rate **only when a CBet was actually executed** (`cBetExecuted=true`). If PFR checked (no CBet), subsequent bets by others do NOT create CBetFold opportunities. Scoped to the same street as the CBet (`cBetPhase` tracking).
-- **WTSD**: Flops seen → showdown. Preflop ALL_IN excluded (no flop phase). `SHOWDOWN_MUCK (RankType=11)` counts as showdown.
+- **WTSD** (PT4 built-in definition): Flops seen → showdown, where "flops seen" **includes preflop all-ins** — PT4 staff: "Those stats are based on flops seen, not based on flops seen when not all-in, so all-in spots will count." Phase membership for FLOP is `BetStatus === BET_ABLE || BetStatus === ALL_IN` in both `entity-converter.ts` and `write-entity-stream.ts` (#115); FOLDED players remain excluded (the original #97 fix stays in place — only the all-in carve-out was reversed). `SHOWDOWN_MUCK (RankType=11)` counts as showdown.
 - **W$SD**: ALL showdowns including preflop ALL_IN. `SHOWDOWN_MUCK` counts as showdown. `NO_CALL (RankType=10)` does NOT count as showdown.
-- **WWSF**: Flops seen → won. Preflop ALL_IN excluded.
-- **AF**: `(BET+RAISE) / CALL` — CHECK and FOLD excluded from both numerator and denominator.
-- **AFq**: `(BET+RAISE) / (BET+RAISE+CALL+FOLD)` — CHECK excluded from denominator.
+- **WWSF** (PT4 built-in definition): Flops seen → won, same "flops seen incl. preflop all-ins" population as WTSD above.
+- **WTSDa / WWSFa** (opt-in variants, disabled by default, #115): Preserve the pre-#115 decision-focused semantics as an explicit choice rather than the primary definition. Lineage: PT4's custom stat "WTSD without preflop all-ins" and Hand2Note's "Flop Any Action"-based variants. Base (denominator) is hands where the player took **≥1 action with `phase === FLOP`** — a `BET_ABLE` flop-seer always acts at least once; a preflop all-in player never does, reproducing the "no preflop all-ins" population without a second BetStatus re-derivation. WTSDa numerator: base hands that reached a SHOWDOWN phase. WWSFa numerator: base hands in `winningHandIds`. Implemented purely in `calculate()` (no schema changes). Enable from the popup's HUD display settings (`StatisticsConfigSection`); `defaultStatDisplayConfigs` respects `StatDefinition.enabled !== false`, and `mergeStatDisplayConfigs` appends them disabled for existing users.
+- **AF** (PT4 official definition, postflop-only): `(BET+RAISE) / CALL`, **counting only actions with `phase !== PREFLOP`**. PT4: "Ratio of the times a player makes a POSTFLOP aggressive action (bet or raise) to the times they call." CHECK and FOLD excluded from both numerator and denominator; preflop opens/3-bets/etc. are excluded entirely (previously counted across all streets — corrected in #115).
+- **AFq** (postflop-only, same scope as AF): `(BET+RAISE) / (BET+RAISE+CALL+FOLD)`, postflop actions only. CHECK excluded from denominator.
+- **VPIP / PFR** (PT4/HM walk-exclusion standard, #115): Denominator is **hands − walks**, not all hands played. A hand is excluded from the denominator when the player was the BB (`Hand.bigBlindUserId`, derived from `Game.BigBlindSeat` at EVT_DEAL in both `entity-converter.ts` and `write-entity-stream.ts`) **and** took zero preflop actions in that hand — this covers both a true walk (everyone folds to the BB) and the documented "BB action skip" path (`NextActionSeat=-2`, no BB EVT_ACTION emitted; 31.9% of hands per the real-data audit). In both cases the BB had no voluntary preflop decision to make. A non-BB player who folded preflop still made a decision and remains counted as an opportunity. `Hand.bigBlindUserId` is a non-indexed optional field (no Dexie schema version bump required).
+- **3-Bet Fold (3BF)**: PT4's **general** "Fold to 3-Bet" variant — fold rate when facing curPrevBetCount=3, regardless of whether this player made the original raise being 3-bet ("cold-facing" is included). This is distinct from PT4's separate "Fold to 3-Bet After Raising" stat, which HUD does not implement.
 - **Steal (STL)**: First-in raise from CO/BTN/SB when folded to (mechanical PT4/HM3 definition). **Heads-up hands are INCLUDED**: the HU button posts the SB and is labeled `SB` by `getPositionMap` (a steal position), so HU button opens count as steal attempts — this matches PT4/HM3/Poker Copilot, none of which carve out heads-up. Measured on real data: HU contributes 6.9% of all steal chances (~98% of HU hands generate one, since the SB first-in is always unopened). Do not "fix" this by excluding HU; it is the industry-standard behavior.
 - **FoldToSteal (FTS)**: Blind (SB/BB) folds when facing an identified steal raise (`phasePrevBetCount=2`). Heads-up BB defenses are likewise INCLUDED (5.1% of all FTS chances), per the same standard.
+- **River Call Accuracy (RCA)**: **HUD-original stat with no tracker equivalent** (not a PT4/HM3/Poker Copilot stat). Numerator is river CALL actions that won the hand (`RIVER_CALL_WON`); denominator is all river CALL actions (`RIVER_CALL`). Included for its own diagnostic value, not as a cross-tracker-comparable metric.
 
-See `docs/hand-analysis.md` for the full 22-hand audit trail.
+See `docs/hand-analysis.md` for the 22-hand audit trail (note: that document predates the 2026-07 #115 re-alignment — its AF/AFq/WTSD/WWSF/VPIP values reflect the pre-#115 definitions; see the note at the top of that file).
 
 ### Key Concepts
 

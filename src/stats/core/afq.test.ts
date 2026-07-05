@@ -1,9 +1,11 @@
 import { afqStat } from './afq'
-import { ActionType } from '../../types/game'
+import { ActionType, PhaseType } from '../../types/game'
 import { makeAction, makeCalcContext } from './__test-helpers'
 
 describe('afqStat', () => {
   describe('calculate', () => {
+    // makeAction()のデフォルトphaseはFLOP（ポストフロップ）のため、
+    // 以下の既存ケースはPT4のポストフロップ限定定義でも値は変わらない。
     it('should compute AFq = aggressive / (aggressive + passive + fold)', () => {
       const actions = [
         makeAction({ actionType: ActionType.BET }),
@@ -32,6 +34,25 @@ describe('afqStat', () => {
     it('should count FOLD in denominator but not numerator', () => {
       const actions = [makeAction({ actionType: ActionType.FOLD }), makeAction({ actionType: ActionType.FOLD })]
       expect(afqStat.calculate(makeCalcContext({ actions }))).toEqual([0, 2])
+    })
+
+    // PT4/HM3標準に合わせ、AFと同じくポストフロップのみをカウントする。
+    it('should exclude preflop actions entirely (PT4 postflop-only definition)', () => {
+      const actions = [
+        makeAction({ phase: PhaseType.PREFLOP, actionType: ActionType.RAISE }), // excluded
+        makeAction({ phase: PhaseType.PREFLOP, actionType: ActionType.FOLD }),  // excluded
+        makeAction({ phase: PhaseType.FLOP, actionType: ActionType.BET }),
+        makeAction({ phase: PhaseType.RIVER, actionType: ActionType.CALL }),
+      ]
+      expect(afqStat.calculate(makeCalcContext({ actions }))).toEqual([1, 2])
+    })
+
+    it('should return [0, 0] when only preflop actions exist', () => {
+      const actions = [
+        makeAction({ phase: PhaseType.PREFLOP, actionType: ActionType.RAISE }),
+        makeAction({ phase: PhaseType.PREFLOP, actionType: ActionType.CALL }),
+      ]
+      expect(afqStat.calculate(makeCalcContext({ actions }))).toEqual([0, 0])
     })
   })
 

@@ -33,6 +33,8 @@ const STAT_ORDER = [
   'afq',          // AFq
   'wtsd',         // WTSD
   'wwsf',         // WWSF
+  'wtsdNoAi',     // WTSDa (opt-in variant, disabled by default)
+  'wwsfNoAi',     // WWSFa (opt-in variant, disabled by default)
   'wsd',          // W$SD
   'riverCallAccuracy' // RCA
 ]
@@ -66,9 +68,15 @@ orderedCoreStats.forEach(({ stat, order }) => {
 // Automatically registered core statistics
 
 // Create default stat display configuration
+// stat.enabled !== false を尊重する: StatDefinitionでenabled: falseを明示した
+// 統計（例: wtsdNoAi/wwsfNoAi等のオプトイン変種）はデフォルト非表示のまま
+// マージ処理（mergeStatDisplayConfigs）に渡され、ポップアップの統計設定UIから
+// ユーザーが個別に有効化できる。以前はここで無条件にenabled: trueとしていた
+// ため、StatDefinition.enabled = falseの意図がdisplay configに反映されず、
+// 新規統計が常時有効な状態でHUDに表示されてしまっていた。
 export const defaultStatDisplayConfigs = orderedCoreStats.map(({ stat }) => ({
   id: stat.id,
-  enabled: true,
+  enabled: stat.enabled !== false,
   order: stat.order!
 }))
 

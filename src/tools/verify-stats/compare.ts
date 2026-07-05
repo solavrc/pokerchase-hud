@@ -24,7 +24,7 @@ import type { OracleFraction, OracleResult } from './oracle'
 /** Stats compared -- must exist as a [num, denom] tuple on both sides. */
 export const COMPARED_STATS = [
   'vpip', 'pfr', '3bet', '3betfold', 'cbet', 'cbetFold', 'af', 'afq',
-  'wtsd', 'wsd', 'wwsf', 'steal', 'foldToSteal', 'riverCallAccuracy',
+  'wtsd', 'wsd', 'wwsf', 'wtsdNoAi', 'wwsfNoAi', 'steal', 'foldToSteal', 'riverCallAccuracy',
 ] as const
 export type ComparedStat = typeof COMPARED_STATS[number]
 
