@@ -6,6 +6,7 @@ import {
   ApiType,
   BetStatusType,
   PhaseType,
+  hasResultsOutsideDealtLineup,
   isShowdownParticipant,
   Position
 } from '../types'
@@ -42,7 +43,15 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
   }
   protected async transform(events: ApiHandEvent[]): Promise<void> {
     try {
-      const { hand, actions, phases } = this.toHandState(events)
+      const handState = this.toHandState(events)
+      if (handState === null) {
+        // キメラハンド（テーブル移動によるDEAL/RESULTS不整合）。DB書き込み・
+        // seatUserIdsのダウンストリーム配信ともにスキップする。
+        const handId = events.find(e => e.ApiTypeId === ApiType.EVT_HAND_RESULTS)?.HandId
+        console.log(`[WriteEntityStream] Rejected chimera hand (HandId=${handId}): EVT_HAND_RESULTS.Results references a player outside the dealt lineup (mid-hand table move)`)
+        return
+      }
+      const { hand, actions, phases } = handState
 
       await this.service.db.transaction('rw', [this.service.db.hands, this.service.db.phases, this.service.db.actions], async () => {
         return Promise.all([
@@ -64,7 +73,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
       }
     }
   }
-  private toHandState = (events: ApiHandEvent[]): HandState => {
+  private toHandState = (events: ApiHandEvent[]): HandState | null => {
     let positionMap: Map<number, Position> = new Map()
     const handState: HandState = {
       hand: {
@@ -198,6 +207,13 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
         }
           break
         case ApiType.EVT_HAND_RESULTS: {
+          // テーブル移動キメラハンドの棄却（詳細はhasResultsOutsideDealtLineupのdocコメント参照）。
+          // Results[]に配札時のseatUserIdsへ存在しないUserIdが1件でもあれば、このRESULTSは
+          // 移動先テーブルのものであり、バッファ中のハンド（移動元テーブルのDEAL）とは
+          // 対応しない。真の対応先RESULTSは二度と届かないため、ハンド全体を棄却する。
+          if (hasResultsOutsideDealtLineup(handState.hand.seatUserIds, event.Results)) {
+            return null
+          }
           // ショーダウンフェーズの生成（実際にカードを比較したプレイヤーが2名以上いる場合）
           // NO_CALL（無競争勝利）やFOLD_OPEN（フォールド後の自発公開）はショーダウンではないため除外する
           const showdownParticipants = event.Results.filter(isShowdownParticipant)

@@ -233,6 +233,19 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
     // pipeline's `handState.hand.id > 0` completeness check.
     if (!dealEvt || !resultsEvt) return
 
+    // Table-move chimera hand rejection, kept in sync with
+    // hasResultsOutsideDealtLineup (src/types/game.ts) / entity-converter.ts /
+    // write-entity-stream.ts: if EVT_HAND_RESULTS.Results references a UserId
+    // absent from this hand's EVT_DEAL.SeatUserIds, the RESULTS belongs to the
+    // destination table reached via a mid-hand EVT_ENTRY_QUEUED move, not to the
+    // buffered DEAL. The oracle must drop the same hands the pipeline drops or
+    // verify-stats would report a spurious divergence.
+    {
+      const dealtUserIds = new Set(dealEvt.SeatUserIds.filter(id => id !== -1))
+      const hasForeignResult = resultsEvt.Results.some(({ UserId }) => !dealtUserIds.has(UserId))
+      if (hasForeignResult) return
+    }
+
     const seatUserIds = dealEvt.SeatUserIds
     const { ButtonSeat: buttonSeat, SmallBlindSeat: sbSeat, BigBlindSeat: bbSeat } = dealEvt.Game
     const posMap = computePositions(seatUserIds, buttonSeat, sbSeat, bbSeat)

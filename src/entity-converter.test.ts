@@ -1943,6 +1943,301 @@ describe('EntityConverter', () => {
       expect(importResult.actions.slice().sort((a, b) => a.index - b.index).map(pickComparable))
         .toEqual(liveActions.slice().sort((a, b) => a.index - b.index).map(pickComparable))
     })
+
+    /**
+     * テーブル移動キメラハンドの棄却（EC↔WESパリティ）
+     *
+     * 背景: MTTでヒーローがハンド途中に別テーブルへ移動する（EVT_ENTRY_QUEUED）と、
+     * クライアントは移動先テーブルで進行中だったハンドの残り（EVT_ACTIONの末尾、
+     * および対応するEVT_HAND_RESULTS）を受信する。移動先のEVT_ACTION.SeatIndexが
+     * 偶然、旧テーブルの有効な席番号・NextActionSeatの遷移パターンと一致すると、
+     * #100のSeatIndex未解決ガードをすり抜けてハンドバッファが継続してしまい、
+     * 旧テーブルのEVT_DEAL（座席構成・ブラインド・ヒーローのホールカード）と
+     * 新テーブルのEVT_HAND_RESULTS（HandId・勝者・獲得チップ）が1つのハンドとして
+     * 混ざり合う「キメラハンド」が生成される。
+     *
+     * 実データ検証（393,830イベント、31,392完走ハンド）: この機序で71ハンド
+     * （0.23%）が汚染されており、うち25ハンドはSeatIndex未解決アクションを伴う
+     * （23ハンドはResults[]が新テーブルの座席構成と完全一致、2ハンドは新旧混在）。
+     * 残り46ハンドはSeatIndex未解決アクションを伴わない（席番号の偶然の一致）が、
+     * 全てEVT_ENTRY_QUEUED直後の最初の完走ハンドであり、同一機序による汚染と
+     * 断定できる。修正: EVT_HAND_RESULTS.Results[]のUserIdが1件でも配札時の
+     * seatUserIdsに存在しない場合、バッファ中のハンドを丸ごと棄却する
+     * （hasResultsOutsideDealtLineup、src/types/game.ts）。
+     */
+    it('rejects a table-move chimera hand (RESULTS references players outside the dealt lineup) in BOTH pipelines', async () => {
+      const tableAEvents: ApiEvent[] = [
+        // テーブルAでのDEAL（座席構成: 500, 501, 502, 503）
+        createEvent(ApiType.EVT_DEAL, {
+          timestamp: 50000,
+          SeatUserIds: [500, 501, 502, 503],
+          Game: {
+            CurrentBlindLv: 1,
+            NextBlindUnixSeconds: 50000000,
+            Ante: 0,
+            SmallBlind: 10,
+            BigBlind: 20,
+            ButtonSeat: 0,
+            SmallBlindSeat: 1,
+            BigBlindSeat: 2
+          },
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 3,
+            NextActionTypes: [ActionType.CALL, ActionType.FOLD, ActionType.RAISE],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 40,
+            Pot: 30,
+            SidePot: []
+          },
+          OtherPlayers: [
+            { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 990, BetChip: 10 },
+            { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 980, BetChip: 20 },
+            { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 1000, BetChip: 0 }
+          ]
+        }),
+        // 移動前の正常なアクション（テーブルAの座席501=player501によるコール）
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 50001,
+          SeatIndex: 3,
+          ActionType: ActionType.CALL,
+          Chip: 980,
+          BetChip: 20,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 0,
+            NextActionTypes: [ActionType.CALL, ActionType.FOLD, ActionType.RAISE],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 40,
+            Pot: 50,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 50002,
+          SeatIndex: 0,
+          ActionType: ActionType.CALL,
+          Chip: 980,
+          BetChip: 20,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 1,
+            NextActionTypes: [ActionType.CALL, ActionType.CHECK, ActionType.RAISE],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 40,
+            Pot: 70,
+            SidePot: []
+          }
+        }),
+        // ここでヒーローがEVT_ENTRY_QUEUEDにより別テーブルへ移動する（本テストの
+        // 対象コードはハンドイベントのみを見るため、AggregateEventsStream相当の
+        // 集約はテスト対象外。EC/WESどちらも「1ハンド分のイベント配列」を受け取る
+        // 前提のため、集約済みの配列をそのまま構築する）。
+        // 移動先テーブルの残りアクション。SeatIndex=1は偶然テーブルAの有効な
+        // 座席（player501）を指すため、#100のSeatIndex未解決ガードはすり抜ける。
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 50003,
+          SeatIndex: 1,
+          ActionType: ActionType.CHECK,
+          Chip: 5000,
+          BetChip: 0,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: -1,
+            NextActionTypes: [],
+            NextExtraLimitSeconds: 0,
+            MinRaise: 0,
+            Pot: 70,
+            SidePot: []
+          }
+        }, { skipValidation: true }),
+        // 移動先テーブルのEVT_HAND_RESULTS。UserId 900/901はテーブルAのDEALの
+        // 座席構成（500, 501, 502, 503）に一切含まれない（ゼロオーバーラップの
+        // 実データ観測ケース、HandId 258419183と同型）。
+        createEvent(ApiType.EVT_HAND_RESULTS, {
+          timestamp: 50004,
+          HandId: 999030,
+          CommunityCards: [],
+          Pot: 700,
+          SidePot: [],
+          ResultType: 0,
+          DefeatStatus: 0,
+          Results: [
+            {
+              UserId: 900,
+              HoleCards: [],
+              RankType: RankType.NO_CALL,
+              Hands: [],
+              HandRanking: 1,
+              Ranking: 1,
+              RewardChip: 700
+            },
+            {
+              UserId: 901,
+              HoleCards: [],
+              RankType: RankType.NO_CALL,
+              Hands: [],
+              HandRanking: 2,
+              Ranking: -1,
+              RewardChip: 0
+            }
+          ],
+          OtherPlayers: [
+            { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 5700, BetChip: 0 }
+          ]
+        }, { skipValidation: true })
+      ]
+
+      // --- インポート/リビルドパイプライン: EntityConverter経由 ---
+      const importResult = converter.convertEventsToEntities(tableAEvents)
+      // キメラハンドは棄却され、hands/phases/actionsのいずれにも現れない
+      expect(importResult.hands).toHaveLength(0)
+      expect(importResult.hands.some(h => h.id === 999030)).toBe(false)
+
+      // --- ライブ記録パイプライン: WriteEntityStream経由 ---
+      const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
+      const service = new PokerChaseService({ db: dbMock })
+      await service.ready
+      for (const event of tableAEvents) service.handAggregateStream.write(event)
+      await service.handAggregateStream.whenIdle()
+
+      const liveHand = await dbMock.hands.get(999030)
+      expect(liveHand).toBeUndefined()
+      const liveActions = await dbMock.actions.where('handId').equals(999030).toArray()
+      expect(liveActions).toHaveLength(0)
+      const livePhases = await dbMock.phases.where('handId').equals(999030).toArray()
+      expect(livePhases).toHaveLength(0)
+    })
+
+    /**
+     * 対照実験: 正常なRESULTS（配札時のseatUserIdsの部分集合）は引き続き受理される。
+     * キメラハンド棄却ガードが、通常のフォールド落ち（Results[]がseatUserIdsの
+     * 全員ではなく一部のみを含む、ごく一般的なケース）まで誤って棄却しないことを
+     * 確認する。
+     */
+    it('still accepts a normal hand whose RESULTS is a subset of the dealt lineup', async () => {
+      const events: ApiEvent[] = [
+        createEvent(ApiType.EVT_DEAL, {
+          timestamp: 51000,
+          SeatUserIds: [600, 601, 602, 603],
+          Game: {
+            CurrentBlindLv: 1,
+            NextBlindUnixSeconds: 51000000,
+            Ante: 0,
+            SmallBlind: 10,
+            BigBlind: 20,
+            ButtonSeat: 0,
+            SmallBlindSeat: 1,
+            BigBlindSeat: 2
+          },
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 3,
+            NextActionTypes: [ActionType.CALL, ActionType.FOLD, ActionType.RAISE],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 40,
+            Pot: 30,
+            SidePot: []
+          },
+          OtherPlayers: [
+            { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 990, BetChip: 10 },
+            { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 980, BetChip: 20 },
+            { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 1000, BetChip: 0 }
+          ]
+        }),
+        // 3名がフォールドし、602(BB)だけがポットを獲得して終わる、ごく普通のハンド
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 51001,
+          SeatIndex: 3,
+          ActionType: ActionType.FOLD,
+          Chip: 1000,
+          BetChip: 0,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 0,
+            NextActionTypes: [ActionType.CALL, ActionType.FOLD, ActionType.RAISE],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 40,
+            Pot: 30,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 51002,
+          SeatIndex: 0,
+          ActionType: ActionType.FOLD,
+          Chip: 1000,
+          BetChip: 0,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 1,
+            NextActionTypes: [ActionType.CALL, ActionType.FOLD, ActionType.RAISE],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 40,
+            Pot: 30,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 51003,
+          SeatIndex: 1,
+          ActionType: ActionType.FOLD,
+          Chip: 990,
+          BetChip: 10,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: -2,
+            NextActionTypes: [],
+            NextExtraLimitSeconds: 0,
+            MinRaise: 0,
+            Pot: 30,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
+          timestamp: 51004,
+          HandId: 999031,
+          CommunityCards: [],
+          Pot: 30,
+          SidePot: [],
+          ResultType: 0,
+          DefeatStatus: 0,
+          Results: [
+            {
+              UserId: 602,
+              HoleCards: [],
+              RankType: RankType.NO_CALL,
+              Hands: [],
+              HandRanking: 1,
+              Ranking: 1,
+              RewardChip: 30
+            }
+          ],
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: -1, Chip: 1000, BetChip: 0 },
+            { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 990, BetChip: 0 },
+            { SeatIndex: 3, Status: 0, BetStatus: -1, Chip: 1000, BetChip: 0 }
+          ]
+        }, { skipValidation: true })
+      ]
+
+      // --- インポート/リビルドパイプライン: EntityConverter経由 ---
+      const importResult = converter.convertEventsToEntities(events)
+      expect(importResult.hands).toHaveLength(1)
+      expect(importResult.hands[0]?.id).toBe(999031)
+      expect(importResult.hands[0]?.winningPlayerIds).toEqual([602])
+
+      // --- ライブ記録パイプライン: WriteEntityStream経由 ---
+      const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
+      const service = new PokerChaseService({ db: dbMock })
+      await service.ready
+      for (const event of events) service.handAggregateStream.write(event)
+      await service.handAggregateStream.whenIdle()
+
+      const liveHand = await dbMock.hands.get(999031)
+      expect(liveHand).toBeDefined()
+      expect(liveHand?.winningPlayerIds).toEqual([602])
+    })
   })
 
   /**
