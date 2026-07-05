@@ -361,4 +361,59 @@ describe('App', () => {
     // Chrome messageリスナーが削除される
     expect(removeMessageListenerSpy).toHaveBeenCalled()
   })
+
+  /**
+   * codexレビュー指摘（#109）への対応: マウント時の一括get()は一度きりのため、
+   * background起動時のマージ書き戻しやPopupでの保存がその後に発生した場合、
+   * 開きっぱなしのゲームタブのHUDには反映されなかった。
+   * 平坦'options'キーのstorage.onChanged購読で反映されることを検証する。
+   */
+  it('storage.onChangedのoptions変更でstatDisplayConfigsがHUDへ反映される（開いているタブへの追随）', async () => {
+    const addListenerMock = chrome.storage.onChanged.addListener as jest.Mock
+    const removeListenerMock = chrome.storage.onChanged.removeListener as jest.Mock
+    addListenerMock.mockClear()
+    removeListenerMock.mockClear()
+
+    const { unmount } = render(<App />)
+
+    // HUDを表示させる（Hudモックは statDisplayConfigs の要素数を描画する）
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('PokerChaseServiceEvent', { detail: mockStatsData })
+      )
+    })
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('Stats: 0')
+
+    // マウント時にoptions変更リスナーが登録されている
+    expect(addListenerMock).toHaveBeenCalledWith(expect.any(Function))
+    const listener = addListenerMock.mock.calls[0][0]
+
+    // sync領域のoptions変更 → HUDの統計列設定に反映される
+    await act(async () => {
+      listener(
+        {
+          options: {
+            newValue: {
+              filterOptions: {
+                statDisplayConfigs: [{ id: 'vpip', enabled: true, order: 0 }],
+              },
+            },
+          },
+        },
+        'sync'
+      )
+    })
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('Stats: 1')
+
+    // 対象外の領域・キーは無視される（値が変わらずクラッシュもしない）
+    await act(async () => {
+      listener({ rebuildAdvisory: { newValue: {} } }, 'local')
+      listener({ uiConfig: { newValue: {} } }, 'sync')
+    })
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('Stats: 1')
+
+    // アンマウント時に同一の関数で解除される
+    unmount()
+    expect(removeListenerMock).toHaveBeenCalledWith(listener)
+  })
 })

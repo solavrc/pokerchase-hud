@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react"
 import { POKER_CHASE_SERVICE_EVENT } from "../constants/runtime"
 import { ApiType, isApiEventType } from "../types"
+import type { Options } from '../utils/options-storage'
 import type { PlayerStats } from "../types"
 import type { StatsData } from "../content_script"
 import { defaultStatDisplayConfigs } from "../stats"
@@ -198,6 +199,24 @@ const App = memo(() => {
       setConfigLoaded(true)
     })
 
+    // 平坦'options'キーの変更を購読する。マウント時の一括get()は一度きりのため、
+    // その後に発生する書き込み — background起動時のマージ書き戻し（新統計の追加、
+    // #100/#109）やPopupでの保存（#111で書き込み元はPopupに一本化）— を反映するには
+    // この購読が必要。これが無いと、拡張更新時に既に開いていたゲームタブのHUDには
+    // 新しい統計列が表示されないままになる（マウント時get()との起動レースも
+    // 同様に救済される）。
+    const handleOptionsStorageChange = (
+      changes: { [key: string]: chrome.storage.StorageChange },
+      areaName: string
+    ) => {
+      if (areaName !== 'sync') return
+      const nextOptions = changes['options']?.newValue as Options | undefined
+      if (nextOptions?.filterOptions?.statDisplayConfigs) {
+        setStatDisplayConfigs(nextOptions.filterOptions.statDisplayConfigs)
+      }
+    }
+    chrome.storage.onChanged?.addListener(handleOptionsStorageChange)
+
     // ポップアップからの設定更新をリッスン
     window.addEventListener(
       "updateHandLogConfig",
@@ -208,6 +227,7 @@ const App = memo(() => {
       handleUIConfigUpdate as EventListener
     )
     return () => {
+      chrome.storage.onChanged?.removeListener(handleOptionsStorageChange)
       window.removeEventListener(
         "updateHandLogConfig",
         handleConfigUpdate as EventListener
