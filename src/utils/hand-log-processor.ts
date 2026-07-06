@@ -6,7 +6,7 @@
 import type { Session } from '../types'
 import type { ApiEvent } from '../types/api'
 import { ApiType } from '../types/api'
-import { ActionType, RankType, PhaseType, isShowdownParticipant } from '../types/game'
+import { ActionType, BetStatusType, RankType, PhaseType, isShowdownParticipant } from '../types/game'
 import { HandLogConfig, HandLogEntry, HandLogEntryType, HandLogState } from '../types/hand-log'
 import { formatCards } from './card-utils'
 
@@ -187,7 +187,8 @@ export class HandLogProcessor {
 
     if (ante > 0) {
       event.SeatUserIds.forEach((userId, seatIdx) => {
-        if (userId !== -1) {
+        // 着席していてもNOT_IN_PLAY(離席中)・ELIMINATEDのプレイヤーはアンテを支払わない
+        if (userId !== -1 && this.isAnteContributor(event, seatIdx)) {
           const playerName = this.getPlayerName(userId)
           const chipsBeforeAnte = this.getPlayerChips(event, seatIdx)
           const actualAnte = Math.min(ante, chipsBeforeAnte)
@@ -982,8 +983,35 @@ export class HandLogProcessor {
   }
 
   /**
+   * 指定シートのプレイヤーがアンテ拠出者かを判定
+   * 着席していてもNOT_IN_PLAY(離席中)・ELIMINATEDのプレイヤーはアンテを支払わないため、
+   * BetStatusがBET_ABLEまたはALL_INのプレイヤーのみを拠出者とみなす。
+   * プレイヤー状態が見つからない場合は従来通り拠出者として扱う（フォールバック）。
+   */
+  private isAnteContributor(event: ApiEvent<ApiType.EVT_DEAL>, seatIndex: number): boolean {
+    const betStatus = event.Player?.SeatIndex === seatIndex
+      ? event.Player.BetStatus
+      : event.OtherPlayers.find(p => p.SeatIndex === seatIndex)?.BetStatus
+    return betStatus === undefined ||
+      betStatus === BetStatusType.BET_ABLE ||
+      betStatus === BetStatusType.ALL_IN
+  }
+
+  /** アンテ拠出者数をカウント */
+  private countAnteContributors(event: ApiEvent<ApiType.EVT_DEAL>): number {
+    let count = 0
+    for (let i = 0; i < event.SeatUserIds.length; i++) {
+      if (event.SeatUserIds[i] === -1) continue
+      if (this.isAnteContributor(event, i)) {
+        count++
+      }
+    }
+    return count
+  }
+
+  /**
    * アンテオールインプレイヤーのチップ推定テーブルを構築
-   * 
+   *
    * EVT_DEAL時点で Chip=0, BetChip=0 のプレイヤーが複数いる場合、
    * Progress.Pot/SidePot から拠出額の候補リストを算出。
    * 
@@ -993,9 +1021,11 @@ export class HandLogProcessor {
    */
   private buildAnteAllInChipsMap(event: ApiEvent<ApiType.EVT_DEAL>): Map<number, number> | null {
     // Chip=0, BetChip=0 のプレイヤー（アンテオールイン）を列挙
+    // アンテ非拠出者(ELIMINATED等)のChip=0はアンテオールインではないため除外
     const allInSeats: number[] = []
     for (let i = 0; i < event.SeatUserIds.length; i++) {
       if (event.SeatUserIds[i] === -1) continue
+      if (!this.isAnteContributor(event, i)) continue
       const chipsAfterAnte = this.getPlayerChipsAfterAnte(event, i)
       if (chipsAfterAnte === 0) {
         allInSeats.push(i)
@@ -1008,14 +1038,15 @@ export class HandLogProcessor {
     // SidePotがなければ区別不能（全員同額）
     if (!event.Progress?.SidePot || event.Progress.SidePot.length === 0) return null
     
-    const activePlayers = event.SeatUserIds.filter(id => id !== -1).length
-    if (activePlayers <= 0 || !event.Progress?.Pot) return null
-    
+    // メインポットはアンテ拠出者で均等割（離席中プレイヤーは含めない）
+    const anteContributors = this.countAnteContributors(event)
+    if (anteContributors <= 0 || !event.Progress?.Pot) return null
+
     // 各段差から拠出額リストを構築
-    const minContrib = Math.floor(event.Progress.Pot / activePlayers)
+    const minContrib = Math.floor(event.Progress.Pot / anteContributors)
     const contributions: number[] = [minContrib]
-    
-    let remainingPlayers = activePlayers
+
+    let remainingPlayers = anteContributors
     let cumulative = minContrib
     
     for (const sidePot of event.Progress.SidePot) {
@@ -1141,11 +1172,16 @@ export class HandLogProcessor {
 
   private getPlayerChips(event: ApiEvent<ApiType.EVT_DEAL>, seatIndex: number): number {
     const ante = event.Game.Ante || 0
-    
+
     // Chip + BetChip はアンテ(+ブラインド)支払い後の値
     // アンテ投入前のチップ = chipsAfterAnte + 実際のアンテ投入額
     const chipsAfterAnte = this.getPlayerChipsAfterAnte(event, seatIndex)
-    
+
+    // アンテ非拠出者(NOT_IN_PLAY/ELIMINATED)はスタックが減っていないためそのまま返す
+    if (!this.isAnteContributor(event, seatIndex)) {
+      return chipsAfterAnte
+    }
+
     if (chipsAfterAnte > 0) {
       // アンテ全額投入可能だった → Chip + BetChip + Ante
       return chipsAfterAnte + ante
@@ -1161,9 +1197,10 @@ export class HandLogProcessor {
     }
     
     // 単一のアンテオールインプレイヤー: メインポットから推定
-    const activePlayers = event.SeatUserIds.filter(id => id !== -1).length
-    if (activePlayers > 0 && event.Progress?.Pot > 0) {
-      const perPlayerMainPot = Math.floor(event.Progress.Pot / activePlayers)
+    // （メインポットはアンテ拠出者で均等割。離席中プレイヤーは含めない）
+    const anteContributors = this.countAnteContributors(event)
+    if (anteContributors > 0 && event.Progress?.Pot > 0) {
+      const perPlayerMainPot = Math.floor(event.Progress.Pot / anteContributors)
       if (perPlayerMainPot <= ante) {
         return perPlayerMainPot
       }

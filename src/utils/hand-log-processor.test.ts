@@ -1245,3 +1245,98 @@ describe('アンテオールインのチップ額再構築 (buildAnteAllInChipsM
     expect(totalPotLine).toBe('Total pot 15190 Main pot 1950. Side pot-1 640. Side pot-2 12600. | Rake 0')
   })
 })
+
+// ============================================================
+// Test: Short-stack ante estimation with a sitting-out player
+// Hand #296039758 (anonymized) — Seat 2 is seated but NOT_IN_PLAY
+// (BetStatus=0) and posts no ante. Main pot must be divided by the
+// number of ante CONTRIBUTORS (4), not seated players (5).
+// Pot 620448 / 4 = 155112 (hero's true ante all-in amount).
+// Cross-check: SidePot 695023 = (200000-155112)*3 + 560359.
+// ============================================================
+describe('ショートスタックアンテ推定: 離席中(NOT_IN_PLAY)プレイヤーを拠出者に含めない', () => {
+  const players = [
+    { userId: 100000001, name: 'PlayerA' },
+    { userId: 100000002, name: 'PlayerB' },
+    { userId: 100000003, name: 'PlayerC' },
+    { userId: 100000004, name: 'Hero' },
+    { userId: 100000005, name: 'PlayerE' },
+  ]
+
+  // Hero (seat 4) is ante all-in (Chip=0, BetChip=0). Seat 1 (PlayerB) is
+  // seated but sitting out (BetStatus=0, NOT_IN_PLAY) — stack unchanged at
+  // hand results. Seat 3 is empty.
+  const events: ApiEvent[] = [
+    {
+      ApiTypeId: ApiType.EVT_DEAL, timestamp: 1735318901395,
+      SeatUserIds: [100000001, 100000002, 100000003, -1, 100000004, 100000005],
+      Game: { CurrentBlindLv: 16, NextBlindUnixSeconds: -1, Ante: 200000, SmallBlind: 500000, BigBlind: 1000000, ButtonSeat: 2, SmallBlindSeat: 4, BigBlindSeat: 5 },
+      Player: { SeatIndex: 4, BetStatus: 3, Chip: 0, BetChip: 0, HoleCards: [24, 2] },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 516390, BetChip: 0 },
+        { SeatIndex: 1, Status: 0, BetStatus: 0, Chip: 972708, BetChip: 0 },
+        { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 2262310, BetChip: 0 },
+        { SeatIndex: 5, Status: 0, BetStatus: 3, Chip: 0, BetChip: 560359 },
+      ],
+      Progress: { Phase: 0, NextActionSeat: 0, NextActionTypes: [2, 5], NextExtraLimitSeconds: 1, MinRaise: 0, Pot: 620448, SidePot: [695023] }
+    } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1735318912801, SeatIndex: 0, ActionType: 2, BetChip: 0, Chip: 516390, Progress: { Phase: 0, NextActionSeat: 2, NextActionTypes: [2, 3], NextExtraLimitSeconds: 6, MinRaise: 0, Pot: 620448, SidePot: [695023] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1735318915388, SeatIndex: 2, ActionType: 3, BetChip: 1000000, Chip: 1262310, Progress: { Phase: 3, NextActionSeat: -2, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 620448, SidePot: [1255382, 439641] } } as unknown as ApiEvent,
+    {
+      ApiTypeId: ApiType.EVT_HAND_RESULTS, timestamp: 1735318916405, HandId: 296039758,
+      CommunityCards: [21, 51, 29, 7, 23], Pot: 620448, SidePot: [1255382, 439641], ResultType: 0, DefeatStatus: 1, HandLog: '',
+      Results: [
+        { UserId: 100000005, RankType: 7, HandRanking: 1, Hands: [29, 28, 23, 21, 51], HoleCards: [28, 40], Ranking: -2, RewardChip: 1875830 },
+        { UserId: 100000003, RankType: 8, HandRanking: 2, Hands: [23, 21, 51, 45, 43], HoleCards: [45, 43], Ranking: -2, RewardChip: 439641 },
+        { UserId: 100000004, RankType: 8, HandRanking: -1, Hands: [23, 21, 51, 29, 24], HoleCards: [24, 2], Ranking: 10, RewardChip: 0 },
+      ],
+      Player: { SeatIndex: 4, BetStatus: -1, Chip: 0, BetChip: 0 },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 0, BetStatus: -1, Chip: 516390, BetChip: 0 },
+        { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 972708, BetChip: 0 },
+        { SeatIndex: 2, Status: 0, BetStatus: -1, Chip: 1701951, BetChip: 0 },
+        { SeatIndex: 5, Status: 0, BetStatus: -1, Chip: 1875830, BetChip: 0 },
+      ]
+    } as unknown as ApiEvent,
+  ]
+
+  test('ポット整合: Pot + sum(SidePot) == sum(RewardChip)', () => {
+    const resultEvent = events.find(e => (e as any).ApiTypeId === ApiType.EVT_HAND_RESULTS) as any
+    const totalPot = resultEvent.Pot + resultEvent.SidePot.reduce((s: number, p: number) => s + p, 0)
+    const totalReward = resultEvent.Results.reduce((s: number, r: any) => s + r.RewardChip, 0)
+    expect(totalPot).toBe(totalReward)
+  })
+
+  test('アンテオールインのチップ額はPot/アンテ拠出者数で推定される (620448/4=155112)', () => {
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const ctx = createContext(session)
+    const processor = new HandLogProcessor(ctx)
+    const lines = getLines(processor, events)
+
+    // 離席中のPlayerB(seat 1)を除いた4人で均等割: 620448 / 4 = 155112
+    // (誤って着席者5人で割ると 620448 / 5 = 124089 になる)
+    const heroSeatLine = lines.find(l => l.startsWith('Seat 5: Hero'))
+    expect(heroSeatLine).toBe('Seat 5: Hero (155112 in chips)')
+    expect(lines).toContain('Hero: posts the ante 155112 and is all-in')
+
+    // アンテ全額を払えたプレイヤーは従来通り
+    expect(lines).toContain('PlayerA: posts the ante 200000')
+  })
+
+  test('離席中(NOT_IN_PLAY)プレイヤーにはアンテ行を出力せず、Seat行のチップも増額しない', () => {
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const ctx = createContext(session)
+    const processor = new HandLogProcessor(ctx)
+    const lines = getLines(processor, events)
+
+    // PlayerB(seat 1)はBetStatus=0(NOT_IN_PLAY)でアンテを支払っていない
+    // (実データではEVT_DEAL/EVT_HAND_RESULTS間でChip=972708のまま不変)
+    expect(lines.filter(l => l.startsWith('PlayerB: posts the ante'))).toHaveLength(0)
+
+    // Seat行はスタックそのまま (誤ってアンテを足し戻すと 1172708 になる)
+    expect(lines).toContain('Seat 2: PlayerB (972708 in chips)')
+
+    // アンテ行は拠出者4人分のみ
+    expect(lines.filter(l => l.includes('posts the ante'))).toHaveLength(4)
+  })
+})
