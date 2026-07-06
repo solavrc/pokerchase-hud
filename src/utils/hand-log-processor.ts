@@ -426,25 +426,26 @@ export class HandLogProcessor {
           const betMatch = lastAggressive.text.match(/(?:bets|raises \d+ to) (\d+)/)
           const betterName = lastAggressive.text.split(':')[0]!
           if (betMatch?.[1] && betterName) {
-            // 同じストリートでの前のベット額を検出
-            let prevBet = 0
-            let streetStart = 0
-            for (let i = lastAggIdx - 1; i >= 0; i--) {
-              const e = this.currentHand!.entries[i]
-              if (e?.type === HandLogEntryType.STREET) {
-                streetStart = i
-                break
-              }
-            }
-            for (let i = streetStart; i < lastAggIdx; i++) {
-              const e = this.currentHand!.entries[i]
-              if (e?.type === HandLogEntryType.ACTION && !e.text.includes(betterName)) {
-                const m = e.text.match(/(?:bets|raises \d+ to|calls) (\d+)/)
-                if (m?.[1]) prevBet = Math.max(prevBet, parseInt(m[1]))
-              }
-            }
             const betAmount = parseInt(betMatch[1])
-            const uncalledAmount = betAmount - prevBet
+            // 相手の同一ストリート最大コミット額を算出。
+            // bets/raises/calls エントリの正規表現走査だけでは、ブラインド投稿による
+            // オールイン（"posts big blind 1148 and is all-in"、EVT_ACTIONなし）を
+            // 見逃してレイズ全額を uncalled と誤認する
+            let maxOpponentCommitment = 0
+            for (const userId of this.currentHand!.seatUserIds) {
+              if (userId === -1) continue
+              const opponentName = this.getPlayerName(userId)
+              if (opponentName === betterName) continue
+              maxOpponentCommitment = Math.max(maxOpponentCommitment, this.getPlayerStreetCommitment(opponentName))
+            }
+            let uncalledAmount = betAmount - maxOpponentCommitment
+            // EVT_HAND_RESULTSとの照合: コールされなかった超過分はレイザー単独の
+            // 最上位ティア＝SidePot末尾要素に必ず含まれるため、それを上限とする
+            // （超過分はResults[].RewardChipでレイザーに払い戻される）
+            const lastSidePot = event.SidePot[event.SidePot.length - 1]
+            if (lastSidePot !== undefined && uncalledAmount > lastSidePot) {
+              uncalledAmount = lastSidePot
+            }
             if (uncalledAmount > 0) {
               const uncalledEntry = this.createEntry(
                 `Uncalled bet (${uncalledAmount}) returned to ${betterName}`,
@@ -1210,73 +1211,75 @@ export class HandLogProcessor {
     return ante
   }
 
-  private formatAction(event: ApiEvent<ApiType.EVT_ACTION>, playerName: string): string {
-    const { ActionType: actionType, BetChip } = event
+  /**
+   * プレイヤーの現在のストリートでの累積コミット額を取得
+   * （ブラインド投稿・オールインコールを含む）
+   */
+  private getPlayerStreetCommitment(player: string): number {
+    if (!this.currentHand) return 0
 
-    // プレイヤーが現在のストリートで既にベットした金額を取得
-    /** プレイヤーの現在のストリートでの累積ベット額を取得 */
-    const getPlayerPreviousBet = (player: string): number => {
-      if (!this.currentHand) return 0
-      
-      // 現在のストリートでこのプレイヤーの全アクション金額を累積
-      // raises to Y = ストリート内トータルY、calls X = 追加額X
-      let total = 0
-      let isPostflop = false
-      let foundRaiseOrBet = false
-      
-      for (let i = this.currentHand.entries.length - 1; i >= 0; i--) {
-        const entry = this.currentHand.entries[i]
-        if (!entry) continue
-        
-        if (entry.type === HandLogEntryType.STREET) {
-          if (entry.text.includes('*** FLOP ***') || entry.text.includes('*** TURN ***') || entry.text.includes('*** RIVER ***')) {
-            isPostflop = true
-          }
+    // 現在のストリートでこのプレイヤーの全アクション金額を累積
+    // raises to Y = ストリート内トータルY、calls X = 追加額X
+    let total = 0
+    let isPostflop = false
+    let foundRaiseOrBet = false
+
+    for (let i = this.currentHand.entries.length - 1; i >= 0; i--) {
+      const entry = this.currentHand.entries[i]
+      if (!entry) continue
+
+      if (entry.type === HandLogEntryType.STREET) {
+        if (entry.text.includes('*** FLOP ***') || entry.text.includes('*** TURN ***') || entry.text.includes('*** RIVER ***')) {
+          isPostflop = true
+        }
+        break
+      }
+
+      if (entry.type === HandLogEntryType.ACTION && entry.text.includes(player)) {
+        // calls X → 追加額を累積
+        const callMatch = entry.text.match(/calls (\d+)/)
+        if (callMatch?.[1]) {
+          total += parseInt(callMatch[1])
+          continue
+        }
+        // raises X to Y → Yがストリート内トータル（以前のcallsも含む）
+        const raiseMatch = entry.text.match(/raises \d+ to (\d+)/)
+        if (raiseMatch?.[1]) {
+          total = parseInt(raiseMatch[1]) + total // raise to Yが基準 + その後のcalls
+          foundRaiseOrBet = true
+          break // raise以前のアクションは含まれている
+        }
+        // bets X → トータルはX
+        const betMatch = entry.text.match(/bets (\d+)/)
+        if (betMatch?.[1]) {
+          total = parseInt(betMatch[1]) + total
+          foundRaiseOrBet = true
           break
         }
-        
-        if (entry.type === HandLogEntryType.ACTION && entry.text.includes(player)) {
-          // calls X → 追加額を累積
-          const callMatch = entry.text.match(/calls (\d+)/)
-          if (callMatch?.[1]) {
-            total += parseInt(callMatch[1])
-            continue
-          }
-          // raises X to Y → Yがストリート内トータル（以前のcallsも含む）
-          const raiseMatch = entry.text.match(/raises \d+ to (\d+)/)
-          if (raiseMatch?.[1]) {
-            total = parseInt(raiseMatch[1]) + total // raise to Yが基準 + その後のcalls
-            foundRaiseOrBet = true
-            break // raise以前のアクションは含まれている
-          }
-          // bets X → トータルはX
-          const betMatch = entry.text.match(/bets (\d+)/)
-          if (betMatch?.[1]) {
-            total = parseInt(betMatch[1]) + total
-            foundRaiseOrBet = true
-            break
-          }
-        }
       }
-      
-      // ポストフロップではストリート内のみ
-      if (isPostflop) return total
-      
-      // プリフロップ: raise/betが見つかった場合はそれが基準（ブラインド含む）
-      if (foundRaiseOrBet) return total
-      
-      // プリフロップ: callsのみの場合、BB/SBポスト額を加算
-      const blindEntry = this.currentHand.entries.find(e =>
-        e?.text.includes(player) && 
-        (e.text.includes('posts small blind') || e.text.includes('posts big blind'))
-      )
-      if (blindEntry?.text) {
-        const blindMatch = blindEntry.text.match(/posts (?:small|big) blind (\d+)/)
-        if (blindMatch?.[1]) total += parseInt(blindMatch[1])
-      }
-      
-      return total
     }
+
+    // ポストフロップではストリート内のみ
+    if (isPostflop) return total
+
+    // プリフロップ: raise/betが見つかった場合はそれが基準（ブラインド含む）
+    if (foundRaiseOrBet) return total
+
+    // プリフロップ: callsのみの場合、BB/SBポスト額を加算
+    const blindEntry = this.currentHand.entries.find(e =>
+      e?.text.includes(player) &&
+      (e.text.includes('posts small blind') || e.text.includes('posts big blind'))
+    )
+    if (blindEntry?.text) {
+      const blindMatch = blindEntry.text.match(/posts (?:small|big) blind (\d+)/)
+      if (blindMatch?.[1]) total += parseInt(blindMatch[1])
+    }
+
+    return total
+  }
+
+  private formatAction(event: ApiEvent<ApiType.EVT_ACTION>, playerName: string): string {
+    const { ActionType: actionType, BetChip } = event
 
     const getPreviousBet = (): number => {
       if (!this.currentHand) return 0
@@ -1326,7 +1329,7 @@ export class HandLogProcessor {
         return `${playerName}: folds`
       case ActionType.CALL: {
         // PS format: calls shows ADDITIONAL amount (total - already posted)
-        const playerPrevBetForCall = getPlayerPreviousBet(playerName)
+        const playerPrevBetForCall = this.getPlayerStreetCommitment(playerName)
         const callAmount = BetChip - playerPrevBetForCall
         // callAmount が 0 以下の場合 → check として扱う
         if (callAmount <= 0) {
@@ -1346,11 +1349,11 @@ export class HandLogProcessor {
           return `${playerName}: raises ${raiseAmt} to ${BetChip} and is all-in`
         } else if (prevBet > 0 && BetChip === prevBet) {
           // 前のベットと同額の場合、差額を表示
-          const playerPrevBet = getPlayerPreviousBet(playerName)
+          const playerPrevBet = this.getPlayerStreetCommitment(playerName)
           const callAmount = BetChip - playerPrevBet
           return `${playerName}: calls ${callAmount} and is all-in`
         } else if (prevBet > 0) {
-          const playerPrevBetAllIn = getPlayerPreviousBet(playerName)
+          const playerPrevBetAllIn = this.getPlayerStreetCommitment(playerName)
           const callAmtAllIn = BetChip - playerPrevBetAllIn
           return `${playerName}: calls ${callAmtAllIn} and is all-in`
         } else {
