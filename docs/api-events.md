@@ -216,6 +216,7 @@ MTTでハンド途中（EVT_DEAL〜EVT_HAND_RESULTSの間）に `EVT_ENTRY_QUEUE
 - **タイムアウト / 切断**: 明示的な FOLD の EVT_ACTION が送信されないことがある。この場合、プレイヤーは EVT_HAND_RESULTS の Results にも含まれない
 - **BB 未投稿時の CALL**: PokerChase は BB がアンテオールインでも SB に `CALL bet=BB額` を送信する（内部的に BB ベットが存在する扱い）
 - **BB アクションスキップ**: 他の全プレイヤーがオールインまたはフォールド済みの場合、BB の EVT_ACTION（check）が送信されない。`NextActionSeat=-2` で即座にハンド終了。PS 形式エクスポートでは `getMissingBBCheck` で `checks` を補完する
+- **クロージングコールの欠落（観測1件・稀）**: ストリートを閉じるコールの EVT_ACTION が送信/捕捉されず、そのチップが**次街の EVT_DEAL_ROUND の Progress.Pot にのみ現れる**事例を本番データで1件観測（hand 499644872: プリフロップで SB のクロージングコール +600 が無言でフロップの Pot に加算。プレイヤーはフォールドでもオールインでもなくその後も正常にプレイ継続）。全コーパス45.2万イベント中1件（ハンドの0.003%）のため機序（サーバー省略かキャプチャ欠落か）は未特定。**Pot+ΣSidePot はアクション以外で増加し得ない**ことを利用し、poker-warehouse 側は街境界のポット増加を capture anomaly として検出・隔離している（`has_street_boundary_pot_jump`）。会計処理を実装する場合はこのパターンに備えること
 
 > **NextActionSeat不一致はハンド破棄の根拠にならない（アジャッジ結果）**: 上記の「送信されないケース」があるため、直前の `Progress.NextActionSeat` と次に届く `EVT_ACTION.SeatIndex` が食い違うことは正常系として高頻度に発生する。実データ（393,830イベント）でセッション境界（テーブル移動）外に発生したこの不一致80件を全数アジャッジしたところ、71件がタイムアウト/切断シグネチャ（期待された次アクターがEVT_HAND_RESULTS.Resultsにも不在）、9件がオールイン絡みの順序変化、原因不明は0件だった。かつて `AggregateEventsStream`（ライブ集計）はこの不一致を検出するとハンドバッファを丸ごと破棄していたが、上記アジャッジ結果によりこれは異常検知ではなく通常のサーバー省略仕様への誤反応であると判明したため、当該チェックは削除された（バッファはクリアせず`console.debug`ログのみ残す）。セッション境界由来のバッファ汚染（テーブル移動キメラハンド、下記参照）への防御は、EVT_ENTRY_QUEUEDでの`this.progress`リセット、EC/WES双方のSeatIndex未解決アクションスキップ、`hasResultsOutsideDealtLineup`によるキメラハンド棄却の3層に委譲されている。
 
