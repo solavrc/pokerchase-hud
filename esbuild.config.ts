@@ -31,7 +31,7 @@ const options: BuildOptions = {
     'process.env.NODE_ENV': '"production"',
     // ReadEntityStreamのキャッシュ無効化フラグ。ブラウザ（Service Worker）実行時には
     // 環境変数を設定する手段がそもそも無いため、ビルド時にfalseへ畳み込むことで
-    // `process`オブジェクトへのランタイム依存を無くす（Node上のjestではts-jest経由の
+    // `process`オブジェクトへのランタイム依存を無くす（Node上のjestではテスト変換経由の
     // ためこのdefineは適用されず、実際の`process.env.DEBUG_NO_CACHE`を参照できる）。
     'process.env.DEBUG_NO_CACHE': 'false'
   },
