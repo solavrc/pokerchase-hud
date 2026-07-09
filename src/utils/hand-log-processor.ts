@@ -1220,6 +1220,19 @@ export class HandLogProcessor {
 
     // 現在のストリートでこのプレイヤーの全アクション金額を累積
     // raises to Y = ストリート内トータルY、calls X = 追加額X
+    //
+    // 【走査範囲の前提（変更時注意）】このメソッドの唯一の呼び出し元は
+    // EVT_HAND_RESULTS処理内のショウダウンuncalled-bet分岐であり、その時点の
+    // this.currentHand.entriesには「実際にライブ配信されたストリート」までしか
+    // 含まれない。オールイン後に自動ロールアウトされたTURN/RIVERのSTREET行は
+    // addMissingStreets()がローカルのentries配列に生成し、この分岐の実行後に
+    // マージされる（handleHandResultsEvent末尾）。そのため「末尾のSTREET行で
+    // 走査を打ち切る」実装で、最後にアクションが発生したストリートに正しく
+    // スコープされる。実データ検証: フロップのbet/raiseがコールされないまま
+    // ライブのEVT_DEAL_ROUNDが後続した事例は32,221ハンド中0件
+    // （docs/api-events.md「オールイン後のEVT_DEAL_ROUND省略」参照）。
+    // マージ順序を変更する場合はこの前提が崩れるため、lastAggIdx基準の
+    // 明示的なストリートスコープへ置き換えること。
     let total = 0
     let isPostflop = false
     let foundRaiseOrBet = false
@@ -1235,7 +1248,12 @@ export class HandLogProcessor {
         break
       }
 
-      if (entry.type === HandLogEntryType.ACTION && entry.text.includes(player)) {
+      // プレイヤー名の照合は「名前 + ': '」の接頭辞完全一致で行う。
+      // PS形式のACTION行は必ず「Name: bets 100」の形式であり、
+      // text.includes(name)による部分一致では接頭辞関係にある表示名
+      // （例: 'Ann' と 'Annette'）同士でアクション行を取り違える
+      // （表示名はユーザー任意文字列で一意性の保証がない）。
+      if (entry.type === HandLogEntryType.ACTION && entry.text.startsWith(`${player}: `)) {
         // calls X → 追加額を累積
         const callMatch = entry.text.match(/calls (\d+)/)
         if (callMatch?.[1]) {
