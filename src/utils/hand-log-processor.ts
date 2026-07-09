@@ -561,56 +561,51 @@ export class HandLogProcessor {
     }
 
     // RewardChipベースのポット割当アルゴリズム:
-    // HandRankingだけでは不十分（メインポット勝者がサイドポット対象外の場合がある）
-    // 各プレイヤーの残RewardChipを追跡し、ポットごとに正しい勝者を判定
-    const remainingReward = new Map<number, number>()
-    for (const r of event.Results) {
-      if (r.RewardChip > 0) {
-        remainingReward.set(r.UserId, (remainingReward.get(r.UserId) || 0) + r.RewardChip)
-      }
-    }
+    // ポットの参加資格は入れ子構造（メイン ⊇ side1 ⊇ side2 …）なので、
+    // 最強ハンドは資格のある全ポット（メインから連続する区間）を総取りし、
+    // 以降のポットはより弱い勝者へ順に移る。「potIdx+1 == HandRanking」の
+    // 対応付けは成立しない（例: HandRanking=1がメイン+side1を獲得し、
+    // HandRanking=2がside2のみ獲得するケース）。
+    // HandRanking順に勝者を並べ、メインポットから順に残RewardChipを
+    // 消費しながら割り当てることでこの構造を復元する。
+    const winners = event.Results
+      .filter(r => r.RewardChip > 0)
+      .map(r => ({
+        userId: r.UserId,
+        // NO_CALL勝者（HandRanking=-1）は単独勝者: 先頭に来るよう0扱い
+        handRanking: r.HandRanking > 0 ? r.HandRanking : 0,
+        remaining: r.RewardChip
+      }))
+      .sort((a, b) => a.handRanking - b.handRanking)
 
     const potWinners: Map<number, { userIds: number[], amount: number }> = new Map()
-    
+
     for (let potIdx = 0; potIdx < potAmounts.length; potIdx++) {
       const potAmount = potAmounts[potIdx]!
       if (potAmount <= 0) continue
 
-      const targetRanking = potIdx + 1
-      const rankWinners = event.Results.filter(r => r.HandRanking === targetRanking)
-      
-      let winnerIds: number[]
-      
-      if (rankWinners.length > 0) {
-        // HandRankingが一致するプレイヤーがいる場合
-        winnerIds = rankWinners.map(w => w.UserId)
-      } else {
-        // HandRankingが一致しない場合: 残RewardChipが最も大きいプレイヤーが勝者
-        // （メインポット勝者がサイドポット対象外のケースに対応）
-        let maxRemaining = 0
-        let maxUserIds: number[] = []
-        for (const [userId, rem] of remainingReward) {
-          if (rem > maxRemaining) {
-            maxRemaining = rem
-            maxUserIds = [userId]
-          } else if (rem === maxRemaining && rem > 0) {
-            maxUserIds.push(userId)
-          }
-        }
-        winnerIds = maxUserIds
-      }
-      
-      if (winnerIds.length > 0) {
-        const perPlayer = Math.floor(potAmount / winnerIds.length)
-        potWinners.set(potIdx, {
-          userIds: winnerIds,
-          amount: potAmount
-        })
-        // 割当済み分をremainingRewardから差し引き
-        for (const uid of winnerIds) {
-          const current = remainingReward.get(uid) || 0
-          remainingReward.set(uid, current - perPlayer)
-        }
+      // 残RewardChipを持つ最強HandRankingグループが現在のポットの勝者（同点はスプリット）
+      const active = winners.filter(w => w.remaining > 0)
+      if (active.length === 0) break
+      const bestRanking = active[0]!.handRanking
+      const group = active.filter(w => w.handRanking === bestRanking)
+
+      potWinners.set(potIdx, {
+        userIds: group.map(w => w.userId),
+        amount: potAmount
+      })
+
+      // 割当分を残RewardChipから消費。端数（オッドチップ）は残額が最小の
+      // メンバーに寄せる: オッドチップを受け取って退場するメンバーを
+      // ちょうど0にし、後続ポットの勝者判定を狂わせないため
+      const perPlayer = Math.floor(potAmount / group.length)
+      for (const w of group) w.remaining -= perPlayer
+      let leftover = potAmount - perPlayer * group.length
+      while (leftover > 0) {
+        const candidates = group.filter(w => w.remaining > 0)
+        if (candidates.length === 0) break
+        candidates.reduce((min, w) => w.remaining < min.remaining ? w : min).remaining -= 1
+        leftover -= 1
       }
     }
 

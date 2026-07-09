@@ -794,6 +794,91 @@ describe('複数サイドポット (2つ)', () => {
 })
 
 // ============================================================
+// Test 9.5: サイドポット帰属 (regression) — Hand #296039758
+// HandRanking=1 がメインポット+side pot-1 を総取りし、
+// HandRanking=2 が side pot-2 のみ獲得する実データハンド。
+// 旧実装は「potIdx+1 == HandRanking」で対応付けていたため、
+// side pot-1 を HandRanking=2 に誤帰属していた。
+// ============================================================
+describe('サイドポット帰属: HandRanking=1がメイン+side1を総取り (Hand #296039758)', () => {
+  const players = [
+    { userId: 1001, name: 'PlayerA' },
+    { userId: 1002, name: 'PlayerB' },
+    { userId: 1003, name: 'PlayerC' },
+    { userId: 561384657, name: 'sola' },
+    { userId: 1004, name: 'PlayerD' },
+  ]
+
+  // Hero (SB) はアンテオールイン (Chip=0, BetChip=0)、BB (PlayerD) は 560359 で
+  // オールイン、BTN (PlayerC) が 1000000 をコール。
+  // RewardChip: PlayerD = 1875830 = main 620448 + side1 1255382 (HandRanking=1),
+  //             PlayerC = 439641 = side2 のみ (HandRanking=2)。
+  const events: ApiEvent[] = [
+    {
+      ApiTypeId: ApiType.EVT_DEAL, timestamp: 1735318901395,
+      SeatUserIds: [1001, 1002, 1003, -1, 561384657, 1004],
+      Game: { CurrentBlindLv: 16, NextBlindUnixSeconds: -1, Ante: 200000, SmallBlind: 500000, BigBlind: 1000000, ButtonSeat: 2, SmallBlindSeat: 4, BigBlindSeat: 5 },
+      Player: { SeatIndex: 4, BetStatus: 3, Chip: 0, BetChip: 0, HoleCards: [24, 2] },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 516390, BetChip: 0 },
+        { SeatIndex: 1, Status: 0, BetStatus: 0, Chip: 972708, BetChip: 0 },
+        { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 2262310, BetChip: 0 },
+        { SeatIndex: 5, Status: 0, BetStatus: 3, Chip: 0, BetChip: 560359 },
+      ],
+      Progress: { Phase: 0, NextActionSeat: 0, NextActionTypes: [2, 5], NextExtraLimitSeconds: 1, MinRaise: 0, Pot: 620448, SidePot: [695023] }
+    } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1735318912801, SeatIndex: 0, ActionType: 2, BetChip: 0, Chip: 516390, Progress: { Phase: 0, NextActionSeat: 2, NextActionTypes: [2, 3], NextExtraLimitSeconds: 6, MinRaise: 0, Pot: 620448, SidePot: [695023] } } as unknown as ApiEvent,
+    { ApiTypeId: ApiType.EVT_ACTION, timestamp: 1735318915388, SeatIndex: 2, ActionType: 3, BetChip: 1000000, Chip: 1262310, Progress: { Phase: 3, NextActionSeat: -2, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 620448, SidePot: [1255382, 439641] } } as unknown as ApiEvent,
+    {
+      ApiTypeId: ApiType.EVT_HAND_RESULTS, timestamp: 1735318916405, HandId: 296039758,
+      CommunityCards: [21, 51, 29, 7, 23], Pot: 620448, SidePot: [1255382, 439641],
+      ResultType: 0, DefeatStatus: 1, HandLog: '',
+      Results: [
+        { UserId: 1004, HoleCards: [28, 40], RankType: 7, Hands: [29, 28, 23, 21, 51], HandRanking: 1, Ranking: -2, RewardChip: 1875830 },
+        { UserId: 1003, HoleCards: [45, 43], RankType: 8, Hands: [23, 21, 51, 45, 43], HandRanking: 2, Ranking: -2, RewardChip: 439641 },
+        { UserId: 561384657, HoleCards: [24, 2], RankType: 8, Hands: [23, 21, 51, 29, 24], HandRanking: -1, Ranking: 10, RewardChip: 0 },
+      ],
+      Player: { SeatIndex: 4, BetStatus: -1, Chip: 0, BetChip: 0 },
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 0, BetStatus: -1, Chip: 516390, BetChip: 0 },
+        { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 972708, BetChip: 0 },
+        { SeatIndex: 2, Status: 0, BetStatus: -1, Chip: 1701951, BetChip: 0 },
+        { SeatIndex: 5, Status: 0, BetStatus: -1, Chip: 1875830, BetChip: 0 },
+      ]
+    } as unknown as ApiEvent,
+  ]
+
+  test('ポット整合: Pot + sum(SidePot) == sum(RewardChip)', () => {
+    const resultEvent = events.find(e => (e as any).ApiTypeId === ApiType.EVT_HAND_RESULTS) as any
+    const totalPot = resultEvent.Pot + resultEvent.SidePot.reduce((s: number, p: number) => s + p, 0)
+    const totalReward = resultEvent.Results.reduce((s: number, r: any) => s + r.RewardChip, 0)
+    expect(totalPot).toBe(totalReward)
+  })
+
+  test('HandRanking=1がmain+side1、HandRanking=2がside2のみ獲得', () => {
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const processor = new HandLogProcessor(createContext(session))
+    const lines = getLines(processor, events)
+
+    const collectedLines = lines.filter(l => l.includes('collected'))
+    expect(collectedLines).toEqual([
+      'PlayerC collected 439641 from side pot-2',
+      'PlayerD collected 1255382 from side pot-1',
+      'PlayerD collected 620448 from main pot',
+    ])
+  })
+
+  test('Summary行のポット内訳が正しい', () => {
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const processor = new HandLogProcessor(createContext(session))
+    const lines = getLines(processor, events)
+
+    const totalPotLine = lines.find(l => l.includes('Total pot'))
+    expect(totalPotLine).toBe('Total pot 2315471 Main pot 620448. Side pot-1 1255382. Side pot-2 439641. | Rake 0')
+  })
+})
+
+// ============================================================
 // Test 10: サイドポットなし (regression)
 // ============================================================
 describe('サイドポットなし (regression)', () => {
