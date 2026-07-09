@@ -139,6 +139,27 @@ PlayerA collected 450 from side pot-1
 PlayerA collected 200 from main pot
 ```
 
+### ポットごとの勝者の割り当て（分配ロジック）
+
+`EVT_HAND_RESULTS` はポット単位の内訳（どのポットを誰が獲得したか）を直接は提供しない
+（`Pot` / `SidePot[]` の金額列と、プレイヤーごとの `HandRanking` / `RewardChip` 合計のみ）。
+collected 行の帰属は以下の前提から復元する:
+
+- **参加資格は入れ子構造**: メインポット ⊇ side pot-1 ⊇ side pot-2 …（早くオールインした
+  プレイヤーほど浅いポットまでしか資格がない）
+- したがって各勝者が獲得するのは**メイン側から連続する区間**であり、最強ハンドが資格の
+  ある全ポットを総取りし、その資格が尽きた次のポットからはより弱い勝者に移る
+- 「potIdx+1 == HandRanking」のような 1:1 対応は**成立しない**（例: HandRanking=1 が
+  メイン+side1 を獲得し、side2 は HandRanking=2 が獲得するケース。実データ
+  Hand #296039758 で確認済み）
+
+実装（`buildCollectedEntries`）: 勝者（`RewardChip > 0`、NO_CALL 勝者は先頭扱い）を
+`HandRanking` 昇順に並べ、メインポットから順に、残 `RewardChip` を持つ最強グループへ
+ポットを割り当てて残額を消費していく貪欲法。同点スプリット時の端数（オッドチップ）は
+残額が最小のメンバーに寄せることで、後続ポットの資格判定（残額 > 0）が壊れないように
+している。検算の不変条件は `Pot + sum(SidePot) == sum(RewardChip)`（実データで 100% 成立、
+docs/api-events.md 参照）。
+
 ### Summary 行
 
 ```
