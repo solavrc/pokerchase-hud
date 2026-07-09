@@ -1,5 +1,49 @@
 # Changelog
 
+## [5.0.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v4.2.1...pokerchase-hud-v5.0.0) (2026-07-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* requires reinstalling node_modules (typescript@7 ships platform-specific native binaries; ts-jest removed)
+
+### build
+
+* migrate to TypeScript 7 native compiler ([#121](https://github.com/solavrc/pokerchase-hud/issues/121)) ([bbc4c96](https://github.com/solavrc/pokerchase-hud/commit/bbc4c96db135d05bd2545c33bbd0aebf9da7557b))
+
+
+### Features
+
+* **hud:** prompt users to rebuild data after stat-logic updates ([#105](https://github.com/solavrc/pokerchase-hud/issues/105)) ([e16e325](https://github.com/solavrc/pokerchase-hud/commit/e16e32546cffdc11fed52f00e0f61615c2d016d8))
+* **stats:** add steal and fold-to-steal stats ([#86](https://github.com/solavrc/pokerchase-hud/issues/86)) ([6b57f1a](https://github.com/solavrc/pokerchase-hud/commit/6b57f1a1cab0e2c32662486ca9938e421c0d3dd8))
+* **tools:** add independent stats verification harness (verify-stats) ([#98](https://github.com/solavrc/pokerchase-hud/issues/98)) ([501bdba](https://github.com/solavrc/pokerchase-hud/commit/501bdba7116910cb921b9608f248ab7a58c18782))
+
+
+### Bug Fixes
+
+* **api:** stop spawning untracked WebSocket reconnects from the page hook ([#88](https://github.com/solavrc/pokerchase-hud/issues/88)) ([c805633](https://github.com/solavrc/pokerchase-hud/commit/c805633905685bdc4e4925652c60c52f9f95d0c0))
+* **export:** exclude fold-open reveals from showdown; sync docs and close fixture gaps ([#99](https://github.com/solavrc/pokerchase-hud/issues/99)) ([f7b44af](https://github.com/solavrc/pokerchase-hud/commit/f7b44af9f684bbb582e1584a1a41d30c6f92f12d))
+* **export:** exclude sitting-out players from ante posts and short-stack ante estimation ([#120](https://github.com/solavrc/pokerchase-hud/issues/120)) ([c75fbad](https://github.com/solavrc/pokerchase-hud/commit/c75fbadbf3a018bd264d1736d01c1913536e820d))
+* **export:** サイドポットのcollected行を入れ子資格ベースで正しい勝者に帰属 ([#119](https://github.com/solavrc/pokerchase-hud/issues/119)) ([db59ed2](https://github.com/solavrc/pokerchase-hud/commit/db59ed2aa627b8e6788ddf3b8387bab0c32e7dbb))
+* harden position mapping, action attribution, and config merge per codex review ([#100](https://github.com/solavrc/pokerchase-hud/issues/100)) ([d31cdb2](https://github.com/solavrc/pokerchase-hud/commit/d31cdb23979343418d372d08212cc6866d1c8c55))
+* **hud:** derive showdown uncalled-bet amount from opponent street commitments ([#117](https://github.com/solavrc/pokerchase-hud/issues/117)) ([b80af55](https://github.com/solavrc/pokerchase-hud/commit/b80af55b27ea7ef032142a91f3673bfbfb9ca33c))
+* **hud:** register stream listeners once to prevent duplicate sends across port reconnects ([#87](https://github.com/solavrc/pokerchase-hud/issues/87)) ([f6c354a](https://github.com/solavrc/pokerchase-hud/commit/f6c354afb1ed06004ed5655d8a99a2b7bbd13bf1))
+* **hud:** reset stale progress on session boundaries to stop live hand loss ([#96](https://github.com/solavrc/pokerchase-hud/issues/96)) ([1fd2ff2](https://github.com/solavrc/pokerchase-hud/commit/1fd2ff2acd5ea6412d19d3f6dc20faa85f7c2c40))
+* **hud:** restore session seeding for imports, persist merged HUD configs, dedupe advisory notifications ([#109](https://github.com/solavrc/pokerchase-hud/issues/109)) ([caa8765](https://github.com/solavrc/pokerchase-hud/commit/caa8765a53d2c7f99611f5758736850cf928971f))
+* **hud:** stop discarding hands on documented action-skip patterns ([#107](https://github.com/solavrc/pokerchase-hud/issues/107)) ([8c8e131](https://github.com/solavrc/pokerchase-hud/commit/8c8e1315a342874fdf2e3483c215b6f4f5f3e0fa))
+* **hud:** subscribe to options storage changes so open tabs pick up new stat columns ([#112](https://github.com/solavrc/pokerchase-hud/issues/112)) ([2d699f9](https://github.com/solavrc/pokerchase-hud/commit/2d699f95c96cae676f5a63d71c8cbd7ccd91d503))
+* **hud:** unify options storage on the flat chrome.storage.sync key ([#111](https://github.com/solavrc/pokerchase-hud/issues/111)) ([928e33f](https://github.com/solavrc/pokerchase-hud/commit/928e33fbbe5038d9d411042b7aef018169e0ba77))
+* **stats:** align AF/AFq/VPIP/PFR/WTSD/WWSF with PT4 definitions; add WTSDa/WWSFa variants ([#115](https://github.com/solavrc/pokerchase-hud/issues/115)) ([e8544db](https://github.com/solavrc/pokerchase-hud/commit/e8544db9b10ff14f386683087548e2fc09466d00))
+* **stats:** align import-path phase membership, winners, and river-call tagging with live pipeline ([#97](https://github.com/solavrc/pokerchase-hud/issues/97)) ([c15854f](https://github.com/solavrc/pokerchase-hud/commit/c15854fae2cc8f3d9e0610901cdf3eebf989adb8))
+* **stats:** derive import-path positions from BigBlindSeat to match live pipeline ([#93](https://github.com/solavrc/pokerchase-hud/issues/93)) ([5d7c89b](https://github.com/solavrc/pokerchase-hud/commit/5d7c89b0b5b2b67e4f598dd1c643f7f79117b78e))
+* **stats:** derive positions from explicit blind/button seats to handle empty seats ([#95](https://github.com/solavrc/pokerchase-hud/issues/95)) ([a0bb451](https://github.com/solavrc/pokerchase-hud/commit/a0bb451c7eb1468afbfaad5aa6868a5bb89edb22))
+* **stats:** gate showdown phase on revealing RankTypes, not result count ([#94](https://github.com/solavrc/pokerchase-hud/issues/94)) ([02f4182](https://github.com/solavrc/pokerchase-hud/commit/02f4182b3c19d3d67090f961ef209aa865aa230c))
+* **stats:** rank wheel straights below higher runs in poker evaluator ([#118](https://github.com/solavrc/pokerchase-hud/issues/118)) ([b3c1057](https://github.com/solavrc/pokerchase-hud/commit/b3c105744b41398a19dc281b0f6153e46b4a6c85))
+* **stats:** reject fused dual-board hand buffers; verify-stats reaches 100% on all stats ([#110](https://github.com/solavrc/pokerchase-hud/issues/110)) ([06c0376](https://github.com/solavrc/pokerchase-hud/commit/06c0376720c94a778eb25fc9735bcc633d268e21))
+* **stats:** reject hands whose results reference players outside the dealt lineup ([#106](https://github.com/solavrc/pokerchase-hud/issues/106)) ([d659d9e](https://github.com/solavrc/pokerchase-hud/commit/d659d9e343df663d721dcc81777970ce359ac91e))
+* **stats:** terminate position walk at the button to exclude dead-button seats ([#101](https://github.com/solavrc/pokerchase-hud/issues/101)) ([634abd4](https://github.com/solavrc/pokerchase-hud/commit/634abd4ebd70926209bbb4789e85d0787e2a018d))
+* **tools:** harden verify-stats against silent skips and add RCA comparison ([#108](https://github.com/solavrc/pokerchase-hud/issues/108)) ([8918d3e](https://github.com/solavrc/pokerchase-hud/commit/8918d3e6b601da2bd4c904a400d10849f1344ed5))
+
 ## [4.2.1](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v4.2.0...pokerchase-hud-v4.2.1) (2026-06-17)
 
 
