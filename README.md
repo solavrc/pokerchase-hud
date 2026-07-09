@@ -21,11 +21,6 @@ This is an **unofficial** Chrome extension not affiliated with PokerChase. Use a
 
 ## Quick Start
 
-### Prerequisites
-
-- Node.js 16+
-- Google Chrome
-
 ### Installation
 
 #### Option 1: From Release (Recommended)
