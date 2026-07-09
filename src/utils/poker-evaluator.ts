@@ -59,14 +59,14 @@ export function evaluateHand(cards: number[]): HandRank {
   
   // Check for straight (including wheel A-2-3-4-5)
   const checkStraight = (bits: number): number => {
-    // Check A-2-3-4-5 (wheel)
-    if ((bits & 0x100F) === 0x100F) return 3 // 5-high straight
-    
-    // Check other straights
+    // Scan from highest first: the wheel is only the best straight when
+    // no higher 5-card run exists (e.g. A + 2-3-4-5-6 is a 6-high straight)
     for (let high = 12; high >= 4; high--) {
       const mask = 0x1F << (high - 4)
       if ((bits & mask) === mask) return high
     }
+    // A-2-3-4-5 (wheel)
+    if ((bits & 0x100F) === 0x100F) return 3 // 5-high straight
     return -1
   }
   
