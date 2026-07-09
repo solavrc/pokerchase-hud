@@ -44,16 +44,22 @@ const extractStatement = (code, startIndex) => {
   }
 }
 
+// 行頭（カラム0）の呼び出しのみ抽出する。esbuildの整形出力ではトップレベル文は
+// インデントされないため、describe/it内やコールバック内のjest.mock()（ブロック
+// スコープのモック）はインデントされており対象外になる。それらをモジュール
+// スコープへ巻き上げるとモックの適用範囲が変わってしまう。
+const TOP_LEVEL_MOCK_CALL = /^_getJestObj\(\)\.mock\(/m
+
 const extractTopLevelMocks = code => {
   const mocks = []
   let output = code
-  let startIndex = output.indexOf('_getJestObj().mock(')
+  let match = TOP_LEVEL_MOCK_CALL.exec(output)
 
-  while (startIndex !== -1) {
-    const { statement, endIndex } = extractStatement(output, startIndex)
+  while (match) {
+    const { statement, endIndex } = extractStatement(output, match.index)
     mocks.push(statement)
-    output = output.slice(0, startIndex) + output.slice(endIndex)
-    startIndex = output.indexOf('_getJestObj().mock(')
+    output = output.slice(0, match.index) + output.slice(endIndex)
+    match = TOP_LEVEL_MOCK_CALL.exec(output)
   }
 
   return { code: output, mocks }
@@ -137,6 +143,9 @@ module.exports = {
       .update(sourceText)
       .update(sourcePath)
       .update(transformOptions.configString)
+      // 計装（--coverage）の有無で変換結果が異なるためキーに含める。
+      // 含めないと通常実行のキャッシュがcoverage実行で再利用され得る
+      .update(transformOptions.instrument ? 'instrument' : 'no-instrument')
       .update(__filename)
       .digest('hex')
   }
