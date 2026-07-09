@@ -3,7 +3,7 @@ module.exports = {
   roots: ['<rootDir>/src'],
   testMatch: ['**/*.test.{ts,tsx}'],
   transform: {
-    '^.+\\.tsx?$': 'ts-jest'
+    '^.+\\.tsx?$': '<rootDir>/jest.esbuild-transformer.cjs'
   },
   setupFilesAfterEnv: ['<rootDir>/src/test-setup.ts'],
   testPathIgnorePatterns: ['/node_modules/', '/dist/'],
