@@ -205,16 +205,12 @@ export class AutoSyncService {
    * Sync cloud events to local (cloud as source of truth)
    */
   private async syncFromCloud(): Promise<void> {
-    console.log('[AutoSync] Starting incremental download from cloud...')
+    console.log('[AutoSync] Starting complete download from cloud...')
 
-    const latestLocalEvent = await this.db.apiEvents.orderBy('[timestamp+ApiTypeId]').reverse().first()
     let downloadedEvents = 0
 
     try {
       await firestoreBackupService.syncFromCloud({
-        afterEvent: latestLocalEvent?.timestamp !== undefined
-          ? { timestamp: latestLocalEvent.timestamp, apiTypeId: latestLocalEvent.ApiTypeId }
-          : undefined,
         onBatch: async (events) => {
           await this.db.apiEvents.bulkPut(events)
           downloadedEvents += events.length
@@ -227,7 +223,7 @@ export class AutoSyncService {
       })
     } catch (error) {
       // A previous page may already be durable. Rebuild before surfacing the
-      // error so a retry that starts after that page cannot leave entities stale.
+      // error so partially downloaded raw events cannot leave entities stale.
       if (downloadedEvents > 0) await this.rebuildLocalEntities()
       throw error
     }

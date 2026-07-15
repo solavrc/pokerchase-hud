@@ -21,16 +21,8 @@ describe('AutoSyncService cloud downloads', () => {
     await db.delete()
   })
 
-  test('persists each cloud page and resumes after the latest local timestamp', async () => {
+  test('persists older cloud pages without deriving a cursor from local history', async () => {
     const localEvent = {
-      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
-      Code: 0,
-      BattleType: BattleType.SIT_AND_GO,
-      Id: 'stage-100',
-      IsRetire: false,
-      timestamp: 100
-    } as ApiEvent
-    const cloudEvent = {
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
       Code: 0,
       BattleType: BattleType.SIT_AND_GO,
@@ -38,14 +30,19 @@ describe('AutoSyncService cloud downloads', () => {
       IsRetire: false,
       timestamp: 101
     } as ApiEvent
+    const cloudEvent = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-100',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
     await db.apiEvents.put(localEvent)
 
     const syncSpy = jest.spyOn(firestoreBackupService, 'syncFromCloud')
       .mockImplementation(async options => {
-        expect(options.afterEvent).toEqual({
-          timestamp: 100,
-          apiTypeId: ApiType.EVT_ENTRY_QUEUED
-        })
+        expect(options).not.toHaveProperty('afterEvent')
         await options.onBatch([cloudEvent])
         options.onProgress?.({ current: 1, total: 1 })
         return 1
@@ -56,7 +53,7 @@ describe('AutoSyncService cloud downloads', () => {
 
     expect(syncSpy).toHaveBeenCalledTimes(1)
     expect(await db.apiEvents.count()).toBe(2)
-    expect(await db.apiEvents.get([101, ApiType.EVT_ENTRY_QUEUED])).toEqual(cloudEvent)
+    expect(await db.apiEvents.get([100, ApiType.EVT_ENTRY_QUEUED])).toEqual(cloudEvent)
     expect(service.getSyncState()).toMatchObject({
       status: 'success',
       localLastTimestamp: 101,

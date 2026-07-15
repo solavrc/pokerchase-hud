@@ -17,7 +17,6 @@ export interface BackupSummary {
 }
 
 export interface CloudSyncOptions {
-  afterEvent?: { timestamp: number, apiTypeId: number }
   onBatch: (events: ApiEvent[]) => Promise<void>
   onProgress?: (progress: { current: number, total: number }) => void
 }
@@ -112,13 +111,10 @@ export class FirestoreBackupService {
   async syncFromCloud(options: CloudSyncOptions): Promise<number> {
     try {
       const user = await this.requireUser()
-      const initialCursor = options.afterEvent
-        ? this.eventCursor(user.uid, options.afterEvent.timestamp, options.afterEvent.apiTypeId)
-        : undefined
-      const total = await this.countEventDocuments(user.uid, initialCursor)
+      const total = await this.countEventDocuments(user.uid)
       let processed = 0
 
-      for await (const documents of this.queryEventDocumentPages(user.uid, initialCursor)) {
+      for await (const documents of this.queryEventDocumentPages(user.uid)) {
         const events = documents.map(doc => decodeFields(doc.fields ?? {}) as ApiEvent)
         await options.onBatch(events)
         processed += events.length
@@ -472,13 +468,6 @@ export class FirestoreBackupService {
     return segments.map(segment => encodeURIComponent(segment)).join('/')
   }
 
-  private eventCursor(uid: string, timestamp: number, apiTypeId: number): EventQueryCursor {
-    const eventId = `${timestamp}_${apiTypeId}`
-    return {
-      timestamp: { integerValue: String(timestamp) },
-      documentName: `${this.documentsPath}/${this.docPath(this.USERS_COLLECTION, uid, this.EVENTS_COLLECTION, eventId)}`
-    }
-  }
 }
 
 function encodeFields(input: Record<string, unknown>): Record<string, FirestoreValue> {

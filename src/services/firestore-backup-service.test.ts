@@ -111,7 +111,6 @@ describe('FirestoreBackupService', () => {
     const receivedBatches: ApiEvent[][] = []
     const onProgress = jest.fn()
     await expect(new FirestoreBackupService().syncFromCloud({
-      afterEvent: { timestamp: 100, apiTypeId: 304 },
       onBatch: async events => { receivedBatches.push(events) },
       onProgress
     })).resolves.toBe(1001)
@@ -119,13 +118,7 @@ describe('FirestoreBackupService', () => {
     expect(receivedBatches.map(batch => batch.length)).toEqual([1000, 1])
     expect(onProgress).toHaveBeenLastCalledWith({ current: 1001, total: 1001 })
 
-    expect(aggregationBody.structuredAggregationQuery.structuredQuery.startAt).toEqual({
-      values: [
-        { integerValue: '100' },
-        { referenceValue: documentName(100) }
-      ],
-      before: false
-    })
+    expect(aggregationBody.structuredAggregationQuery.structuredQuery.startAt).toBeUndefined()
 
     const firstQuery = queryBodies[0].structuredQuery
     expect(firstQuery.limit).toBe(1000)
@@ -133,13 +126,7 @@ describe('FirestoreBackupService', () => {
       { field: { fieldPath: 'timestamp' }, direction: 'ASCENDING' },
       { field: { fieldPath: '__name__' }, direction: 'ASCENDING' }
     ])
-    expect(firstQuery.startAt).toEqual({
-      values: [
-        { integerValue: '100' },
-        { referenceValue: documentName(100) }
-      ],
-      before: false
-    })
+    expect(firstQuery.startAt).toBeUndefined()
 
     const secondQuery = queryBodies[1].structuredQuery
     expect(secondQuery.startAt).toEqual({
