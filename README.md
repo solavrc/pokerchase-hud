@@ -46,6 +46,20 @@ npm run build
 3. Enable "Developer mode"
 4. Click "Load unpacked" and select the project folder
 
+### UI visual mockup
+
+Run the HUD against deterministic mock data without loading the extension or
+opening PokerChase:
+
+```sh
+npm run mockup
+```
+
+Open `http://127.0.0.1:4173`. The control panel switches between representative
+table states, changes the HUD scale, toggles the hand log, and resets dragged
+HUD positions. The mockup renders the production `Hud` and `HandLog` components,
+so visual changes are shared with the extension rather than duplicated.
+
 ## Architecture
 
 ![Architecture Diagram](README.drawio.png)

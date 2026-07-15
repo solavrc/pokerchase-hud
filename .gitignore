@@ -1,5 +1,8 @@
 node_modules/
 dist/
+mockup-dist/
+output/playwright/
+.playwright-cli/
 coverage/
 *.log
 *.zip
