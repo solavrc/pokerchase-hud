@@ -18,6 +18,7 @@ export const DATABASE_CONSTANTS = {
   FIRESTORE_DELETE_BATCH: 500,   // Firestore delete batch size
   FIRESTORE_PARALLEL_BATCHES: 3, // Number of parallel Firestore batches
   FIRESTORE_BATCH_DELAY_MS: 500, // Delay between batch groups
+  FIRESTORE_DOWNLOAD_PAGE_SIZE: 1000, // Maximum documents per Firestore download response
   
   // Cache durations
   PLAYER_CACHE_DURATION_MS: 60000,     // 1 minute

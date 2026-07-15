@@ -773,6 +773,33 @@ describe('EntityConverter', () => {
       expect(result.actions).toHaveLength(0)
     })
 
+    it('should preserve an unfinished hand across event chunks', () => {
+      const deal = createEvent(ApiType.EVT_DEAL, {
+        timestamp: 1000,
+        SeatUserIds: [100, 101],
+        Game: {
+          SmallBlind: 10,
+          BigBlind: 20,
+          ButtonSeat: 0,
+          SmallBlindSeat: 0,
+          BigBlindSeat: 1
+        },
+        Progress: { Phase: 0 }
+      } as any, { skipValidation: true })
+      const result = createEvent(ApiType.EVT_HAND_RESULTS, {
+        timestamp: 1001,
+        HandId: 12345,
+        CommunityCards: [],
+        Results: []
+      } as any, { skipValidation: true })
+
+      expect(converter.convertEventChunk([deal]).hands).toHaveLength(0)
+      expect(converter.convertEventChunk([result]).hands).toEqual([
+        expect.objectContaining({ id: 12345, seatUserIds: [100, 101] })
+      ])
+      expect(converter.flush().hands).toHaveLength(0)
+    })
+
     it('should extract session information from EVT_ENTRY_QUEUED and EVT_SESSION_DETAILS', () => {
       const events: ApiEvent[] = [
         // セッション開始

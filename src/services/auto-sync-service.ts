@@ -9,7 +9,7 @@ import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
 import { ApiType, isApiEventType } from '../types'
 import type { ApiEvent } from '../types'
-import { saveEntities } from '../utils/database-utils'
+import { processInChunks, saveEntities } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
 
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'success'
@@ -28,7 +28,7 @@ export interface SyncState {
   }
 }
 
-class AutoSyncService {
+export class AutoSyncService {
   private db: PokerChaseDB
   private syncState: SyncState = { status: 'idle' }
   private isSyncing = false
@@ -37,8 +37,8 @@ class AutoSyncService {
   private readonly SYNC_STORAGE_KEY = 'autoSyncLastTime'
   private readonly EVENTS_THRESHOLD = 100 // 100イベント溜まったら同期
 
-  constructor() {
-    this.db = new PokerChaseDB(self.indexedDB, self.IDBKeyRange)
+  constructor(db?: PokerChaseDB) {
+    this.db = db ?? new PokerChaseDB(self.indexedDB, self.IDBKeyRange)
   }
 
   /**
@@ -205,145 +205,143 @@ class AutoSyncService {
    * Sync cloud events to local (cloud as source of truth)
    */
   private async syncFromCloud(): Promise<void> {
-    console.log('[AutoSync] Starting download from cloud (cloud as source of truth)...')
+    console.log('[AutoSync] Starting complete download from cloud...')
 
-    // Get all events from cloud
-    const cloudEvents = await firestoreBackupService.syncFromCloud((progress) => {
-      this.updateSyncState({
-        progress: { ...progress, direction: 'download' }
+    let downloadedEvents = 0
+
+    try {
+      await firestoreBackupService.syncFromCloud({
+        onBatch: async (events) => {
+          await this.db.apiEvents.bulkPut(events)
+          downloadedEvents += events.length
+        },
+        onProgress: (progress) => {
+          this.updateSyncState({
+            progress: { ...progress, direction: 'download' }
+          })
+        }
       })
-    })
+    } catch (error) {
+      // A previous page may already be durable. Rebuild before surfacing the
+      // error so partially downloaded raw events cannot leave entities stale.
+      if (downloadedEvents > 0) await this.rebuildLocalEntities()
+      throw error
+    }
 
-    if (cloudEvents.length > 0) {
-      // Use bulkPut to update existing events and add new ones
-      await this.db.apiEvents.bulkPut(cloudEvents)
-      console.log(`[AutoSync] Downloaded and updated ${cloudEvents.length} events from cloud`)
-      
-      // データ再構築をトリガー
-      try {
-        console.log('[AutoSync] Triggering data rebuild after download...')
-        
-        // EntityConverterを使用してエンティティを生成
-        // セッション情報はイベントから自動的に抽出される
-        const defaultSession = { 
-          id: undefined, 
-          battleType: undefined, 
-          name: undefined, 
-          players: new Map(), 
-          reset: () => {} 
-        }
-        const converter = new EntityConverter(defaultSession)
-        const entities = converter.convertEventsToEntities(cloudEvents)
-        
-        // Save entities using common utility
-        await saveEntities(this.db, entities, {
-          onProgress: (counts) => {
-            console.log(`[AutoSync] Generated entities - Hands: ${counts.hands}, Phases: ${counts.phases}, Actions: ${counts.actions}`)
-          }
-        })
-        
-        // Update metadata separately
-        const lastTimestamp = cloudEvents.reduce((max, event) => {
-          const timestamp = event.timestamp || 0
-          return timestamp > max ? timestamp : max
-        }, 0)
-        
-        await this.db.meta.put({
-          id: 'importStatus',
-          value: {
-            lastProcessedTimestamp: lastTimestamp,
-            lastProcessedEventCount: cloudEvents.length,
-            lastImportDate: new Date().toISOString()
-          },
-          updatedAt: Date.now()
-        })
-        
-        console.log('[AutoSync] Data rebuild completed')
-        
-        // serviceの状態を復元
-        const service = (self as any).service
-        if (service) {
-          // セッション情報を復元（最新のセッションを特定するためEVT_SESSION_RESULTSも含める）
-          const sessionEvents = cloudEvents
-            .filter((e: ApiEvent) => 
-              e.ApiTypeId === ApiType.EVT_ENTRY_QUEUED || 
-              e.ApiTypeId === ApiType.EVT_SESSION_DETAILS ||
-              e.ApiTypeId === ApiType.EVT_PLAYER_SEAT_ASSIGNED ||
-              e.ApiTypeId === ApiType.EVT_PLAYER_JOIN ||
-              e.ApiTypeId === ApiType.EVT_SESSION_RESULTS
-            )
-            .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
-          
-          // セッション情報をリセット
-          if (service.session) {
-            service.session.reset()
-          }
-          
-          // セッションイベントを順番に処理
-          for (const event of sessionEvents) {
-            if (event.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
-              // セッション終了イベント: 次のセッションのためにリセット
-              service.session.reset()
-            } else if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
-              service.session.setId(event.Id)
-              service.session.setBattleType(event.BattleType)
-            } else if (isApiEventType(event, ApiType.EVT_SESSION_DETAILS)) {
-              service.session.setName(event.Name)
-            } else if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED)) {
-              if (event.TableUsers) {
-                event.TableUsers.forEach(tableUser => {
-                  service.session.setPlayer(tableUser.UserId, {
-                    name: tableUser.UserName,
-                    rank: tableUser.Rank.RankId
-                  })
-                })
-              }
-            } else if (isApiEventType(event, ApiType.EVT_PLAYER_JOIN)) {
-              if (event.JoinUser) {
-                service.session.setPlayer(event.JoinUser.UserId, {
-                  name: event.JoinUser.UserName,
-                  rank: event.JoinUser.Rank.RankId
-                })
-              }
-            }
-          }
-          
-          if (service.session.id) {
-            console.log(`[AutoSync] Restored session: ${service.session.id} - ${service.session.name || 'Unknown'}`)
-          }
-          
-          // 最新のEVT_DEALイベントを検索してhero情報を復元
-          const latestDealEvent = cloudEvents
-            .filter((e: ApiEvent) => isApiEventType(e, ApiType.EVT_DEAL))
-            .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))[0]
-          
-          if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
-            console.log('[AutoSync] Restoring service state from latest EVT_DEAL event')
-            service.latestEvtDeal = latestDealEvent
-            
-            // playerIdを設定
-            if (latestDealEvent.Player && latestDealEvent.Player.SeatIndex >= 0 && latestDealEvent.SeatUserIds) {
-              const playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex]
-              if (playerId && playerId !== -1) {
-                service.playerId = playerId
-                console.log(`[AutoSync] Restored playerId: ${playerId}`)
-              }
-            }
-          }
-          
-          // 統計の再計算をトリガー（latestEvtDealがある場合）
-          if (service.latestEvtDeal && service.latestEvtDeal.SeatUserIds) {
-            const playerIds = service.latestEvtDeal.SeatUserIds.filter((id: number) => id !== -1)
-            if (playerIds.length > 0) {
-              console.log('[AutoSync] Triggering stats recalculation...')
-              service.statsOutputStream.write(playerIds)
-            }
-          }
-        }
-      } catch (error) {
-        console.error('[AutoSync] Data rebuild error:', error)
-        // エラーが発生しても同期自体は成功とする
+    if (downloadedEvents > 0) {
+      console.log(`[AutoSync] Downloaded and updated ${downloadedEvents} events from cloud`)
+      await this.rebuildLocalEntities()
+    }
+  }
+
+  /** Rebuild derived tables without loading the entire event history into memory. */
+  private async rebuildLocalEntities(): Promise<void> {
+    try {
+      console.log('[AutoSync] Triggering chunked data rebuild after download...')
+
+      const defaultSession = {
+        id: undefined,
+        battleType: undefined,
+        name: undefined,
+        players: new Map(),
+        reset: () => { }
       }
+      const converter = new EntityConverter(defaultSession)
+      const service = (self as any).service
+      const totalEventCount = await this.db.apiEvents.count()
+      let lastProcessedTimestamp = 0
+      let latestDealEvent: ApiEvent | undefined
+
+      if (service?.session) service.session.reset()
+
+      for await (const events of processInChunks(
+        this.db.apiEvents.orderBy('[timestamp+ApiTypeId]'),
+        DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
+      )) {
+        const entities = converter.convertEventChunk(events)
+        await this.saveRebuiltEntities(entities)
+
+        for (const event of events) {
+          lastProcessedTimestamp = Math.max(lastProcessedTimestamp, event.timestamp || 0)
+          this.restoreSessionEvent(service, event)
+          if (isApiEventType(event, ApiType.EVT_DEAL)) latestDealEvent = event
+        }
+      }
+
+      await this.saveRebuiltEntities(converter.flush())
+      await this.db.meta.put({
+        id: 'importStatus',
+        value: {
+          lastProcessedTimestamp,
+          lastProcessedEventCount: totalEventCount,
+          lastImportDate: new Date().toISOString()
+        },
+        updatedAt: Date.now()
+      })
+
+      this.restoreLatestDeal(service, latestDealEvent)
+      console.log(`[AutoSync] Chunked data rebuild completed (${totalEventCount} events)`)
+    } catch (error) {
+      console.error('[AutoSync] Data rebuild error:', error)
+      // Preserve the existing behavior: raw event sync remains successful even
+      // if rebuilding derived data fails.
+    }
+  }
+
+  private async saveRebuiltEntities(entities: ReturnType<EntityConverter['flush']>): Promise<void> {
+    await saveEntities(this.db, entities, {
+      onProgress: (counts) => {
+        if (counts.hands + counts.phases + counts.actions > 0) {
+          console.log(`[AutoSync] Generated entities - Hands: ${counts.hands}, Phases: ${counts.phases}, Actions: ${counts.actions}`)
+        }
+      }
+    })
+  }
+
+  private restoreSessionEvent(service: any, event: ApiEvent): void {
+    if (!service?.session) return
+
+    if (event.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+      service.session.reset()
+    } else if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
+      service.session.setId(event.Id)
+      service.session.setBattleType(event.BattleType)
+    } else if (isApiEventType(event, ApiType.EVT_SESSION_DETAILS)) {
+      service.session.setName(event.Name)
+    } else if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED)) {
+      event.TableUsers?.forEach(tableUser => {
+        service.session.setPlayer(tableUser.UserId, {
+          name: tableUser.UserName,
+          rank: tableUser.Rank.RankId
+        })
+      })
+    } else if (isApiEventType(event, ApiType.EVT_PLAYER_JOIN) && event.JoinUser) {
+      service.session.setPlayer(event.JoinUser.UserId, {
+        name: event.JoinUser.UserName,
+        rank: event.JoinUser.Rank.RankId
+      })
+    }
+  }
+
+  private restoreLatestDeal(service: any, latestDealEvent?: ApiEvent): void {
+    if (!service) return
+
+    if (service.session?.id) {
+      console.log(`[AutoSync] Restored session: ${service.session.id} - ${service.session.name || 'Unknown'}`)
+    }
+
+    if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
+      service.latestEvtDeal = latestDealEvent
+      const playerSeatIndex = latestDealEvent.Player?.SeatIndex
+      if (playerSeatIndex !== undefined && playerSeatIndex >= 0) {
+        const playerId = latestDealEvent.SeatUserIds?.[playerSeatIndex]
+        if (playerId && playerId !== -1) service.playerId = playerId
+      }
+    }
+
+    if (service.latestEvtDeal?.SeatUserIds) {
+      const playerIds = service.latestEvtDeal.SeatUserIds.filter((id: number) => id !== -1)
+      if (playerIds.length > 0) service.statsOutputStream.write(playerIds)
     }
   }
 
