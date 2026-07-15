@@ -259,7 +259,7 @@ export class FirestoreBackupService {
   }
 
   private async queryEventDocuments(uid: string, direction: 'asc' | 'desc', maxResults?: number): Promise<FirestoreDocument[]> {
-    const results = await this.request(`${this.baseUrl}/${this.docPath(this.USERS_COLLECTION, uid)}:runQuery`, {
+    const results = await this.request<RunQueryResult[]>(`${this.baseUrl}/${this.docPath(this.USERS_COLLECTION, uid)}:runQuery`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -272,7 +272,7 @@ export class FirestoreBackupService {
           ...(maxResults ? { limit: maxResults } : {})
         }
       })
-    }) as RunQueryResult[]
+    }) ?? []
 
     return results.map(result => result.document).filter((doc): doc is FirestoreDocument => !!doc)
   }
@@ -285,7 +285,7 @@ export class FirestoreBackupService {
     })
   }
 
-  private async request(url: string, init: RequestInit): Promise<unknown> {
+  private async request<T = unknown>(url: string, init: RequestInit): Promise<T | null> {
     const token = await firebaseAuthService.getIdToken()
     const response = await fetch(url, {
       ...init,
@@ -294,13 +294,13 @@ export class FirestoreBackupService {
         Authorization: `Bearer ${token}`
       }
     })
+    const responseText = await response.text()
 
     if (!response.ok) {
-      const errorText = await response.text()
-      throw new Error(`Firestore REST request failed: ${response.status} ${errorText}`)
+      throw new Error(`Firestore REST request failed: ${response.status} ${responseText}`)
     }
 
-    return await response.json()
+    return responseText.trim() ? JSON.parse(responseText) as T : null
   }
 
   private async requireUser() {
