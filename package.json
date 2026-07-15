@@ -3,6 +3,8 @@
   "version": "5.0.0",
   "scripts": {
     "build": "tsx esbuild.config.ts",
+    "mockup": "tsx mockup.config.ts --serve",
+    "mockup:build": "tsx mockup.config.ts",
     "postbuild": "zip -r extension.zip dist/ icons/ manifest.json",
     "test": "jest",
     "typecheck": "tsc --noEmit",
