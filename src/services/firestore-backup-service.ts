@@ -16,12 +16,19 @@ export interface BackupSummary {
   lastSyncTime: Date
 }
 
+export interface CloudSyncOptions {
+  afterEvent?: { timestamp: number, apiTypeId: number }
+  onBatch: (events: ApiEvent[]) => Promise<void>
+  onProgress?: (progress: { current: number, total: number }) => void
+}
+
 type FirestoreValue =
   | { nullValue: null }
   | { booleanValue: boolean }
   | { integerValue: string }
   | { doubleValue: number }
   | { stringValue: string }
+  | { referenceValue: string }
   | { arrayValue: { values?: FirestoreValue[] } }
   | { mapValue: { fields?: Record<string, FirestoreValue> } }
 
@@ -34,12 +41,44 @@ interface RunQueryResult {
   document?: FirestoreDocument
 }
 
+interface RunAggregationQueryResult {
+  result?: {
+    aggregateFields?: Record<string, FirestoreValue>
+  }
+}
+
+interface FirestoreStatus {
+  code?: number
+  message?: string
+}
+
+interface BatchWriteResponse {
+  status?: FirestoreStatus[]
+}
+
+interface EventQueryCursor {
+  timestamp: FirestoreValue
+  documentName: string
+}
+
+class FirestoreBatchWriteError extends Error {
+  constructor(
+    readonly code: number,
+    readonly failedWrites: number,
+    message: string
+  ) {
+    super(message)
+    this.name = 'FirestoreBatchWriteError'
+  }
+}
+
 export class FirestoreBackupService {
   private readonly USERS_COLLECTION = 'users'
   private readonly EVENTS_COLLECTION = 'apiEvents'
   private readonly BATCH_SIZE = DATABASE_CONSTANTS.FIRESTORE_BATCH_SIZE
   private readonly BATCH_DELAY_MS = DATABASE_CONSTANTS.FIRESTORE_BATCH_DELAY_MS
   private readonly DELETE_BATCH_SIZE = DATABASE_CONSTANTS.FIRESTORE_DELETE_BATCH
+  private readonly DOWNLOAD_PAGE_SIZE = DATABASE_CONSTANTS.FIRESTORE_DOWNLOAD_PAGE_SIZE
   private readonly documentsPath = `projects/${firebaseConfig.projectId}/databases/(default)/documents`
   private readonly baseUrl = `https://firestore.googleapis.com/v1/${this.documentsPath}`
 
@@ -59,8 +98,8 @@ export class FirestoreBackupService {
    */
   async getCloudStatus(): Promise<{ eventCount: number }> {
     try {
-      const events = await this.queryEvents('asc')
-      return { eventCount: events.length }
+      const user = await this.requireUser()
+      return { eventCount: await this.countEventDocuments(user.uid) }
     } catch (error) {
       console.error('Failed to get cloud status:', error)
       return { eventCount: 0 }
@@ -70,22 +109,28 @@ export class FirestoreBackupService {
   /**
    * Sync cloud events to local (cloud as source of truth).
    */
-  async syncFromCloud(
-    onProgress?: (progress: { current: number, total: number }) => void
-  ): Promise<ApiEvent[]> {
+  async syncFromCloud(options: CloudSyncOptions): Promise<number> {
     try {
-      const newEvents = await this.queryEvents('asc')
-      const total = newEvents.length
-      console.log(`[Firestore] Found ${total} events in cloud`)
+      const user = await this.requireUser()
+      const initialCursor = options.afterEvent
+        ? this.eventCursor(user.uid, options.afterEvent.timestamp, options.afterEvent.apiTypeId)
+        : undefined
+      const total = await this.countEventDocuments(user.uid, initialCursor)
+      let processed = 0
 
-      if (onProgress) {
-        for (let processed = 100; processed < total; processed += 100) {
-          onProgress({ current: processed, total })
-        }
-        onProgress({ current: total, total })
+      for await (const documents of this.queryEventDocumentPages(user.uid, initialCursor)) {
+        const events = documents.map(doc => decodeFields(doc.fields ?? {}) as ApiEvent)
+        await options.onBatch(events)
+        processed += events.length
+        options.onProgress?.({ current: processed, total })
       }
 
-      return newEvents
+      if (processed === 0) {
+        options.onProgress?.({ current: 0, total })
+      }
+
+      console.log(`[Firestore] Downloaded ${processed} of ${total} matching cloud events`)
+      return processed
     } catch (error) {
       console.error('Failed to sync from cloud:', error)
       throw new Error(`Cloud sync failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
@@ -222,7 +267,11 @@ export class FirestoreBackupService {
         await this.batchWrite(writes)
         return
       } catch (error: any) {
-        if ((error?.message || '').includes('RESOURCE_EXHAUSTED') && retries > 1) {
+        const message = error instanceof Error ? error.message : ''
+        const rateLimited = (error instanceof FirestoreBatchWriteError && error.code === 8) ||
+          message.includes('RESOURCE_EXHAUSTED') ||
+          message.includes('REST request failed: 429')
+        if (rateLimited && retries > 1) {
           console.warn(`[Firestore] Rate limit hit, retrying in ${this.BATCH_DELAY_MS}ms...`)
           await new Promise(resolve => setTimeout(resolve, this.BATCH_DELAY_MS))
           retries--
@@ -258,17 +307,61 @@ export class FirestoreBackupService {
     return docs.map(doc => decodeFields(doc.fields ?? {}) as ApiEvent)
   }
 
-  private async queryEventDocuments(uid: string, direction: 'asc' | 'desc', maxResults?: number): Promise<FirestoreDocument[]> {
+  private async *queryEventDocumentPages(uid: string, initialCursor?: EventQueryCursor): AsyncGenerator<FirestoreDocument[]> {
+    let cursor = initialCursor
+
+    while (true) {
+      const documents = await this.queryEventDocuments(
+        uid,
+        'asc',
+        this.DOWNLOAD_PAGE_SIZE,
+        cursor
+      )
+      if (documents.length === 0) break
+
+      yield documents
+      if (documents.length < this.DOWNLOAD_PAGE_SIZE) break
+
+      const lastDocument = documents.at(-1)!
+      const timestamp = lastDocument.fields?.timestamp
+      if (!timestamp || !('integerValue' in timestamp)) {
+        throw new Error(`Firestore event document lacks an integer timestamp: ${lastDocument.name}`)
+      }
+      cursor = { timestamp, documentName: lastDocument.name }
+    }
+  }
+
+  private async queryEventDocuments(
+    uid: string,
+    direction: 'asc' | 'desc',
+    maxResults?: number,
+    cursor?: EventQueryCursor
+  ): Promise<FirestoreDocument[]> {
     const results = await this.request<RunQueryResult[]>(`${this.baseUrl}/${this.docPath(this.USERS_COLLECTION, uid)}:runQuery`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         structuredQuery: {
           from: [{ collectionId: this.EVENTS_COLLECTION }],
-          orderBy: [{
-            field: { fieldPath: 'timestamp' },
-            direction: direction === 'asc' ? 'ASCENDING' : 'DESCENDING'
-          }],
+          orderBy: [
+            {
+              field: { fieldPath: 'timestamp' },
+              direction: direction === 'asc' ? 'ASCENDING' : 'DESCENDING'
+            },
+            {
+              field: { fieldPath: '__name__' },
+              direction: direction === 'asc' ? 'ASCENDING' : 'DESCENDING'
+            }
+          ],
+          ...(cursor ? {
+            startAt: {
+              values: [
+                cursor.timestamp,
+                { referenceValue: cursor.documentName }
+              ],
+              before: false
+            }
+          } : {}),
           ...(maxResults ? { limit: maxResults } : {})
         }
       })
@@ -277,12 +370,67 @@ export class FirestoreBackupService {
     return results.map(result => result.document).filter((doc): doc is FirestoreDocument => !!doc)
   }
 
+  private async countEventDocuments(uid: string, cursor?: EventQueryCursor): Promise<number> {
+    const alias = 'eventCount'
+    const results = await this.request<RunAggregationQueryResult[]>(
+      `${this.baseUrl}/${this.docPath(this.USERS_COLLECTION, uid)}:runAggregationQuery`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          structuredAggregationQuery: {
+            structuredQuery: {
+              from: [{ collectionId: this.EVENTS_COLLECTION }],
+              ...(cursor ? {
+                orderBy: [
+                  { field: { fieldPath: 'timestamp' }, direction: 'ASCENDING' },
+                  { field: { fieldPath: '__name__' }, direction: 'ASCENDING' }
+                ],
+                startAt: {
+                  values: [cursor.timestamp, { referenceValue: cursor.documentName }],
+                  before: false
+                }
+              } : {})
+            },
+            aggregations: [{ alias, count: {} }]
+          }
+        })
+      }
+    ) ?? []
+
+    const count = results[0]?.result?.aggregateFields?.[alias]
+    return count && 'integerValue' in count ? Number(count.integerValue) : 0
+  }
+
   private async batchWrite(writes: Array<Record<string, unknown>>): Promise<void> {
-    await this.request(`${this.baseUrl}:batchWrite`, {
+    const response = await this.request<BatchWriteResponse>(`${this.baseUrl}:batchWrite`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ writes })
     })
+
+    const statuses = response?.status ?? []
+    if (statuses.length !== writes.length) {
+      throw new Error(
+        `Firestore batchWrite returned ${statuses.length} statuses for ${writes.length} writes`
+      )
+    }
+
+    const failures = statuses
+      .map((status, index) => ({ status, index }))
+      .filter(({ status }) => (status.code ?? 0) !== 0)
+    if (failures.length > 0) {
+      const first = failures[0]!
+      const code = first.status.code ?? 2
+      const details = failures.slice(0, 3)
+        .map(({ status, index }) => `write ${index}: code ${status.code ?? 2} ${status.message ?? 'Unknown error'}`)
+        .join('; ')
+      throw new FirestoreBatchWriteError(
+        code,
+        failures.length,
+        `Firestore batchWrite failed for ${failures.length}/${writes.length} writes (${details})`
+      )
+    }
   }
 
   private async request<T = unknown>(url: string, init: RequestInit): Promise<T | null> {
@@ -300,7 +448,15 @@ export class FirestoreBackupService {
       throw new Error(`Firestore REST request failed: ${response.status} ${responseText}`)
     }
 
-    return responseText.trim() ? JSON.parse(responseText) as T : null
+    if (!responseText.trim()) return null
+
+    try {
+      return JSON.parse(responseText) as T
+    } catch (error) {
+      throw new Error(
+        `Firestore REST response was invalid JSON (${responseText.length} bytes): ${error instanceof Error ? error.message : 'Unknown error'}`
+      )
+    }
   }
 
   private async requireUser() {
@@ -314,6 +470,14 @@ export class FirestoreBackupService {
 
   private docPath(...segments: string[]): string {
     return segments.map(segment => encodeURIComponent(segment)).join('/')
+  }
+
+  private eventCursor(uid: string, timestamp: number, apiTypeId: number): EventQueryCursor {
+    const eventId = `${timestamp}_${apiTypeId}`
+    return {
+      timestamp: { integerValue: String(timestamp) },
+      documentName: `${this.documentsPath}/${this.docPath(this.USERS_COLLECTION, uid, this.EVENTS_COLLECTION, eventId)}`
+    }
   }
 }
 
@@ -353,6 +517,7 @@ function decodeValue(value: FirestoreValue): unknown {
   if ('integerValue' in value) return Number(value.integerValue)
   if ('doubleValue' in value) return value.doubleValue
   if ('stringValue' in value) return value.stringValue
+  if ('referenceValue' in value) return value.referenceValue
   if ('arrayValue' in value) return (value.arrayValue.values ?? []).map(decodeValue)
   if ('mapValue' in value) return decodeFields(value.mapValue.fields ?? {})
   return null

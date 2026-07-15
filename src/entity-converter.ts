@@ -40,54 +40,66 @@ export interface EntityBundle {
   actions: Action[]
 }
 
+type MutableSession = Omit<Session, 'players'> & {
+  players: Map<number, { name: string, rank: string }>
+}
+
 /**
  * APIイベントからエンティティを変換するコンバーター
  */
 export class EntityConverter {
-  private session: Session
+  private currentHandEvents: ApiHandEvent[] = []
+  private currentSession: MutableSession
 
   constructor(session: Session) {
-    this.session = session
+    // SessionState の id/battleType/name は prototype 上の getter のため、
+    // オブジェクトスプレッドではなく各フィールドを明示的に読み出す。
+    this.currentSession = {
+      id: session.id,
+      battleType: session.battleType,
+      name: session.name,
+      players: new Map(session.players),
+      reset: () => { }
+    }
   }
 
   /**
    * イベント配列をエンティティに変換（バッチ処理用）
    */
   convertEventsToEntities(events: ApiEvent[]): EntityBundle {
+    const entities = this.convertEventChunk(events)
+    const remaining = this.flush()
+
+    entities.hands.push(...remaining.hands)
+    entities.phases.push(...remaining.phases)
+    entities.actions.push(...remaining.actions)
+    return entities
+  }
+
+  /**
+   * イベントの一部分を変換する。未完了ハンドとセッション状態は次の呼び出しへ引き継ぐ。
+   */
+  convertEventChunk(events: ApiEvent[]): EntityBundle {
     const entities: EntityBundle = {
       hands: [],
       phases: [],
       actions: []
     }
 
-    let currentHandEvents: ApiHandEvent[] = []
-    // セッション情報をローカルに保持（インポートデータから抽出）
-    // NOTE: this.session は SessionState クラスのインスタンスの場合があり、
-    // id/battleType/name は prototype 上の getter のため、オブジェクトスプレッドでは
-    // コピーされない（private な _id/_battleType/_name のみコピーされ、値が undefined になる）。
-    // そのため各フィールドを明示的に読み出す。
-    let currentSession = {
-      id: this.session.id,
-      battleType: this.session.battleType,
-      name: this.session.name,
-      players: new Map(this.session.players), // Mapを正しくコピー（可変Mapとして扱う）
-      reset: () => { } // ローカルな作業コピーではreset()は使用されない
-    }
-
     for (const event of events) {
       // セッション開始イベントの処理
       if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
-        currentSession.id = event.Id
-        currentSession.battleType = event.BattleType
+        this.currentSession.id = event.Id
+        this.currentSession.battleType = event.BattleType
         // 新しいセッション開始時はプレイヤー情報をクリア
-        currentSession.players = new Map()
+        this.currentSession.players = new Map()
       } else if (isApiEventType(event, ApiType.EVT_SESSION_DETAILS)) {
-        currentSession.name = event.Name
+        this.currentSession.name = event.Name
       } else if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED)) {
         // プレイヤー名とランクをセッションに保存
         if (event.TableUsers) {
           event.TableUsers.forEach(tableUser => {
-            currentSession.players.set(tableUser.UserId, {
+            this.currentSession.players.set(tableUser.UserId, {
               name: tableUser.UserName,
               rank: tableUser.Rank.RankId
             })
@@ -96,7 +108,7 @@ export class EntityConverter {
       } else if (isApiEventType(event, ApiType.EVT_PLAYER_JOIN)) {
         // 途中参加者のプレイヤー名とランクをセッションに保存
         if (event.JoinUser) {
-          currentSession.players.set(event.JoinUser.UserId, {
+          this.currentSession.players.set(event.JoinUser.UserId, {
             name: event.JoinUser.UserName,
             rank: event.JoinUser.Rank.RankId
           })
@@ -106,42 +118,38 @@ export class EntityConverter {
       // EVT_DEALでハンド開始
       if (event.ApiTypeId === ApiType.EVT_DEAL) {
         // 前のハンドが完了していない場合も処理
-        if (currentHandEvents.length > 0) {
-          const handEntities = this.convertHandEvents(currentHandEvents, currentSession)
-          if (handEntities) {
-            entities.hands.push(handEntities.hand)
-            entities.phases.push(...handEntities.phases)
-            entities.actions.push(...handEntities.actions)
-          }
-        }
-        currentHandEvents = [event as ApiHandEvent]
-      } else if (currentHandEvents.length > 0) {
-        currentHandEvents.push(event as ApiHandEvent)
+        this.appendCurrentHand(entities)
+        this.currentHandEvents = [event as ApiHandEvent]
+      } else if (this.currentHandEvents.length > 0) {
+        this.currentHandEvents.push(event as ApiHandEvent)
 
         // EVT_HAND_RESULTSでハンド終了
         if (event.ApiTypeId === ApiType.EVT_HAND_RESULTS) {
-          const handEntities = this.convertHandEvents(currentHandEvents, currentSession)
-          if (handEntities) {
-            entities.hands.push(handEntities.hand)
-            entities.phases.push(...handEntities.phases)
-            entities.actions.push(...handEntities.actions)
-          }
-          currentHandEvents = []
+          this.appendCurrentHand(entities)
         }
-      }
-    }
-
-    // 残りのハンドデータを処理
-    if (currentHandEvents.length > 0) {
-      const handEntities = this.convertHandEvents(currentHandEvents, currentSession)
-      if (handEntities) {
-        entities.hands.push(handEntities.hand)
-        entities.phases.push(...handEntities.phases)
-        entities.actions.push(...handEntities.actions)
       }
     }
 
     return entities
+  }
+
+  /** 残っている未完了ハンドを最終化する。 */
+  flush(): EntityBundle {
+    const entities: EntityBundle = { hands: [], phases: [], actions: [] }
+    this.appendCurrentHand(entities)
+    return entities
+  }
+
+  private appendCurrentHand(entities: EntityBundle): void {
+    if (this.currentHandEvents.length === 0) return
+
+    const handEntities = this.convertHandEvents(this.currentHandEvents, this.currentSession)
+    if (handEntities) {
+      entities.hands.push(handEntities.hand)
+      entities.phases.push(...handEntities.phases)
+      entities.actions.push(...handEntities.actions)
+    }
+    this.currentHandEvents = []
   }
 
   /**
