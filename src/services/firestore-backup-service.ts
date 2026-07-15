@@ -40,7 +40,8 @@ export class FirestoreBackupService {
   private readonly BATCH_SIZE = DATABASE_CONSTANTS.FIRESTORE_BATCH_SIZE
   private readonly BATCH_DELAY_MS = DATABASE_CONSTANTS.FIRESTORE_BATCH_DELAY_MS
   private readonly DELETE_BATCH_SIZE = DATABASE_CONSTANTS.FIRESTORE_DELETE_BATCH
-  private readonly baseUrl = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents`
+  private readonly documentsPath = `projects/${firebaseConfig.projectId}/databases/(default)/documents`
+  private readonly baseUrl = `https://firestore.googleapis.com/v1/${this.documentsPath}`
 
   /**
    * Sync local events to cloud (upload events newer than cloud's latest timestamp).
@@ -209,7 +210,7 @@ export class FirestoreBackupService {
       const eventId = `${event.timestamp}_${event.ApiTypeId}`
       return {
         update: {
-          name: `${this.baseUrl}/${this.docPath(this.USERS_COLLECTION, uid, this.EVENTS_COLLECTION, eventId)}`,
+          name: `${this.documentsPath}/${this.docPath(this.USERS_COLLECTION, uid, this.EVENTS_COLLECTION, eventId)}`,
           fields: encodeFields(event as Record<string, unknown>)
         }
       }
