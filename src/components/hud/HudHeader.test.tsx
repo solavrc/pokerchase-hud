@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { HudHeader } from './HudHeader'
 
 describe('HudHeader', () => {
@@ -86,8 +87,67 @@ describe('HudHeader', () => {
 
   it('ポットオッズがない場合は表示しない', () => {
     render(<HudHeader playerName="TestPlayer" playerId={123} />)
-    
+
     expect(screen.queryByText(/SPR:/)).not.toBeInTheDocument()
     expect(screen.queryByText(/%/)).not.toBeInTheDocument()
+  })
+
+  describe('ポジション別ドリルダウン・トリガー', () => {
+    it('onTogglePositionalPanelが渡されない場合はトリガーを表示しない', () => {
+      render(<HudHeader playerName="TestPlayer" playerId={123} />)
+      expect(screen.queryByTitle('ポジション別スタッツ')).not.toBeInTheDocument()
+    })
+
+    it('onTogglePositionalPanelが渡された場合はトリガーを表示する', () => {
+      render(
+        <HudHeader
+          playerName="TestPlayer"
+          playerId={123}
+          onTogglePositionalPanel={jest.fn()}
+        />
+      )
+      expect(screen.getByTitle('ポジション別スタッツ')).toBeInTheDocument()
+    })
+
+    it('クリックでonTogglePositionalPanelが呼ばれる', async () => {
+      const handleToggle = jest.fn()
+      render(
+        <HudHeader
+          playerName="TestPlayer"
+          playerId={123}
+          onTogglePositionalPanel={handleToggle}
+        />
+      )
+
+      await userEvent.click(screen.getByTitle('ポジション別スタッツ'))
+      expect(handleToggle).toHaveBeenCalledTimes(1)
+    })
+
+    it('isPositionalPanelOpenに応じてaria-expandedとアイコンが変わる', () => {
+      const { rerender } = render(
+        <HudHeader
+          playerName="TestPlayer"
+          playerId={123}
+          onTogglePositionalPanel={jest.fn()}
+          isPositionalPanelOpen={false}
+        />
+      )
+
+      const trigger = screen.getByTitle('ポジション別スタッツ')
+      expect(trigger).toHaveAttribute('aria-expanded', 'false')
+      expect(trigger).toHaveTextContent('▸')
+
+      rerender(
+        <HudHeader
+          playerName="TestPlayer"
+          playerId={123}
+          onTogglePositionalPanel={jest.fn()}
+          isPositionalPanelOpen={true}
+        />
+      )
+
+      expect(trigger).toHaveAttribute('aria-expanded', 'true')
+      expect(trigger).toHaveTextContent('▾')
+    })
   })
 })

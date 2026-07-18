@@ -9,6 +9,8 @@ import { HudHeader } from './hud/HudHeader'
 import { StatDisplay } from './hud/StatDisplay'
 import { PlayerTypeIcons } from './hud/PlayerTypeIcons'
 import { RealTimeStatsDisplay } from './hud/RealTimeStatsDisplay'
+import { PositionalStatsPanel } from './hud/PositionalStatsPanel'
+import { PositionalPanelTrigger } from './hud/PositionalPanelTrigger'
 
 // Types
 interface PlayerPotOdds {
@@ -29,6 +31,10 @@ interface HudProps {
   statDisplayConfigs: StatDisplayConfig[]
   realTimeStats?: RealTimeStats
   playerPotOdds?: PlayerPotOdds
+  /** ポジション別ドリルダウンパネルが開いているか（Appが単一のopenPlayerIdで管理） */
+  isPositionalPanelOpen?: boolean
+  /** ドリルダウンパネルの開閉トグル。渡された時のみヘッダーにトリガーを表示する */
+  onTogglePositionalPanel?: () => void
 }
 
 // Constants
@@ -226,7 +232,17 @@ const Hud = memo((props: HudProps) => {
             <span style={{ ...styles.playerName, color: '#888888' }}>
               {playerName || `Player ${props.stat.playerId}`}
             </span>
-            <PlayerTypeIcons />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              {props.onTogglePositionalPanel && (
+                <PositionalPanelTrigger
+                  playerName={playerName}
+                  playerId={props.stat.playerId}
+                  isOpen={props.isPositionalPanelOpen}
+                  onToggle={props.onTogglePositionalPanel}
+                />
+              )}
+              <PlayerTypeIcons />
+            </div>
           </div>
           <div style={{
             padding: '4px 6px',
@@ -235,11 +251,14 @@ const Hud = memo((props: HudProps) => {
           }}>
             <span style={{ color: '#888888', fontSize: '9px' }}>No Data</span>
           </div>
+          {props.isPositionalPanelOpen && (
+            <PositionalStatsPanel playerId={props.stat.playerId} />
+          )}
         </div>
       </div>
     )
   }
-  
+
   // Normal HUD with stats
   return (
     <>
@@ -247,7 +266,7 @@ const Hud = memo((props: HudProps) => {
       {props.actualSeatIndex === 0 && props.realTimeStats && (
         <RealTimeStatsDisplay stats={props.realTimeStats} seatIndex={props.actualSeatIndex} />
       )}
-      
+
       {/* Regular HUD */}
       <div ref={containerRef} style={containerStyle}>
         <div
@@ -261,8 +280,17 @@ const Hud = memo((props: HudProps) => {
           title="Click to copy stats to clipboard"
         >
           <DragHandle isHovering={isHovering} onMouseDown={handleMouseDown} />
-          <HudHeader playerName={playerName} playerId={props.stat.playerId} playerPotOdds={props.playerPotOdds} />
+          <HudHeader
+            playerName={playerName}
+            playerId={props.stat.playerId}
+            playerPotOdds={props.playerPotOdds}
+            isPositionalPanelOpen={props.isPositionalPanelOpen}
+            onTogglePositionalPanel={props.onTogglePositionalPanel}
+          />
           <StatDisplay displayStats={displayStats} formatValue={formatStatValue} />
+          {props.isPositionalPanelOpen && (
+            <PositionalStatsPanel playerId={props.stat.playerId} />
+          )}
         </div>
       </div>
     </>
@@ -271,7 +299,8 @@ const Hud = memo((props: HudProps) => {
   if (prevProps.actualSeatIndex !== nextProps.actualSeatIndex) return false
   if (prevProps.stat.playerId !== nextProps.stat.playerId) return false
   if (prevProps.scale !== nextProps.scale) return false
-  
+  if (prevProps.isPositionalPanelOpen !== nextProps.isPositionalPanelOpen) return false
+
   // Check real-time stats changes for hero
   if (prevProps.actualSeatIndex === 0) {
     if (prevProps.realTimeStats !== nextProps.realTimeStats) return false
