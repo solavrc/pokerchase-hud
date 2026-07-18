@@ -12,6 +12,9 @@
     "schema-diff": "tsx src/tools/detect-schema-diff.ts",
     "verify-stats": "tsx src/tools/verify-stats.ts",
     "ccusage": "npx ccusage@latest",
+    "build:e2e": "tsx e2e/tools/build-e2e.ts",
+    "e2e:smoke": "tsx e2e/scenarios/smoke.ts",
+    "e2e": "tsx e2e/run.ts",
     "firebase:deploy": "firebase deploy --only firestore:rules,firestore:indexes",
     "firebase:deploy:rules": "firebase deploy --only firestore:rules",
     "firebase:deploy:indexes": "firebase deploy --only firestore:indexes",
@@ -24,6 +27,7 @@
     "@babel/plugin-transform-modules-commonjs": "^7.29.7",
     "@babel/preset-react": "^7.29.7",
     "@babel/preset-typescript": "^7.29.7",
+    "@puppeteer/browsers": "^3.0.6",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^14.6.1",
@@ -39,8 +43,10 @@
     "identity-obj-proxy": "^3.0.0",
     "jest": "^30.0.0",
     "jest-environment-jsdom": "^30.0.5",
+    "puppeteer-core": "^25.3.0",
     "tsx": "^4.7.2",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "ws": "^8.21.1"
   },
   "dependencies": {
     "@emotion/react": "^11.11.4",

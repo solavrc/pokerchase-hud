@@ -11,3 +11,11 @@ coverage/
 *.ndjson
 *.txt
 *.ndjson
+
+# E2E QA harness (see e2e/README.md)
+e2e/.cache/
+e2e/.build/
+e2e/out/
+# the blanket *.ndjson rule above would also hide our committed, anonymized
+# fixture -- explicitly un-ignore it.
+!e2e/fixtures/*.ndjson

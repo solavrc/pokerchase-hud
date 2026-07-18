@@ -1,4 +1,4 @@
-import { build, BuildOptions } from 'esbuild'
+import { build, BuildOptions, Plugin } from 'esbuild'
 import { copyFileSync, mkdirSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { parse } from 'path'
@@ -11,6 +11,27 @@ const {
   web_accessible_resources: [{ resources: [web_accessible_resource] }]
 } = manifest
 
+// --- E2E QA harness support (see e2e/README.md) ---------------------------
+// Both env vars are unset during the normal `npm run build`, so production
+// output (outdir/manifest resolution) is completely unaffected. Set by
+// `e2e/tools/build-e2e.ts` only.
+//   E2E_OUTDIR   - build into this directory instead of `dist/`
+//   E2E_MANIFEST - redirect every `manifest.json` import resolved while
+//                  bundling (content_script.ts, background.ts,
+//                  constants/runtime.ts) to this file instead of the real
+//                  repo-root manifest.json, so POKER_CHASE_ORIGIN resolves
+//                  to the e2e fixture origin in the e2e build only.
+const outdir = process.env.E2E_OUTDIR || 'dist'
+const e2eManifestOverride = process.env.E2E_MANIFEST
+const e2eManifestPlugin: Plugin | undefined = e2eManifestOverride ? {
+  name: 'e2e-manifest-override',
+  setup(build) {
+    const overridePath = resolve(process.cwd(), e2eManifestOverride)
+    build.onResolve({ filter: /manifest\.json$/ }, () => ({ path: overridePath }))
+  }
+} : undefined
+// ---------------------------------------------------------------------------
+
 const options: BuildOptions = {
   bundle: true,
   entryPoints: [
@@ -21,7 +42,7 @@ const options: BuildOptions = {
   ],
   format: 'iife',
   logLevel: 'info',
-  outdir: 'dist',
+  outdir,
   platform: 'browser',
   target: ['chrome123'],
   minify: true,
@@ -54,12 +75,13 @@ const options: BuildOptions = {
         return { path: resolve(__dirname, 'node_modules/events/events.js') }
       })
     }
-  }]
+  },
+  ...(e2eManifestPlugin ? [e2eManifestPlugin] : [])]
 }
 
 try {
-  mkdirSync('dist', { recursive: true })
-  copyFileSync('src/index.html', 'dist/index.html')
+  mkdirSync(outdir, { recursive: true })
+  copyFileSync('src/index.html', `${outdir}/index.html`)
   await build(options)
   console.log('Build succeeded')
 } catch (error) {
