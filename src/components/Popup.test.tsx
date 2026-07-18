@@ -191,6 +191,72 @@ describe('Popup', () => {
     )
   })
 
+  it('卓人数フィルターを表示・変更できる（デフォルトは全層選択）', async () => {
+    render(<Popup />)
+
+    await waitForAsyncOperations()
+
+    expect(screen.getByText('卓人数')).toBeInTheDocument()
+
+    const fullCheckbox = screen.getByRole('checkbox', { name: 'フル' }) as HTMLInputElement
+    const fourPCheckbox = screen.getByRole('checkbox', { name: '4人' }) as HTMLInputElement
+    const threePCheckbox = screen.getByRole('checkbox', { name: '3人' }) as HTMLInputElement
+    const huCheckbox = screen.getByRole('checkbox', { name: 'HU' }) as HTMLInputElement
+
+    // デフォルト（新規ユーザー/tableSizeキー欠落時）は全層選択 = フィルタなし
+    expect(fullCheckbox.checked).toBe(true)
+    expect(fourPCheckbox.checked).toBe(true)
+    expect(threePCheckbox.checked).toBe(true)
+    expect(huCheckbox.checked).toBe(true)
+  })
+
+  it('卓人数フィルター変更時はフラットなoptionsキーへ保存しupdateBattleTypeFilterメッセージを送る', async () => {
+    render(<Popup />)
+
+    await waitForAsyncOperations()
+
+    await userEvent.click(screen.getByRole('checkbox', { name: 'HU' }))
+
+    await waitFor(() => {
+      expect(syncData.options).toEqual(
+        expect.objectContaining({
+          sendUserData: true,
+          filterOptions: expect.objectContaining({
+            tableSize: { full: true, '4p': true, '3p': true, hu: false },
+          }),
+        })
+      )
+    })
+
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'updateBattleTypeFilter' })
+    )
+  })
+
+  it('旧storageにtableSizeキーが無いユーザーはデフォルト（全層選択）で復元される（グレースフルなマイグレーション）', async () => {
+    syncData = {
+      options: {
+        sendUserData: true,
+        filterOptions: {
+          gameTypes: { sng: true, mtt: true, ring: true },
+          handLimit: 500,
+          statDisplayConfigs: defaultStatDisplayConfigs,
+          // tableSize キーが存在しない（#130以前のユーザー）
+        },
+      },
+      uiConfig: DEFAULT_UI_CONFIG,
+    }
+
+    render(<Popup />)
+
+    await waitForAsyncOperations()
+
+    const fullCheckbox = screen.getByRole('checkbox', { name: 'フル' }) as HTMLInputElement
+    const huCheckbox = screen.getByRole('checkbox', { name: 'HU' }) as HTMLInputElement
+    expect(fullCheckbox.checked).toBe(true)
+    expect(huCheckbox.checked).toBe(true)
+  })
+
   it('旧@extend-chrome/storage bucketキーのみのユーザーはフラットキーへ移行される', async () => {
     // フラットキーが無く、旧bucketキーのみ存在する状態
     syncData = {

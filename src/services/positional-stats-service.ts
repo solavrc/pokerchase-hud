@@ -9,8 +9,8 @@
  *   StatDefinition.calculate() を、ポジション別に絞り込んだ
  *   StatCalculationContext で呼び出すことで正確性を担保する
  *   （read-entity-stream.tsのcalcStatsと同じ考え方）。
- * - フィルター（battleTypeFilter/handLimitFilter）の適用順序・意味論は
- *   calcStatsと完全に一致させる。この2つが食い違うと、通常のHUD統計と
+ * - フィルター（battleTypeFilter/tableSizeFilter/handLimitFilter）の適用順序・
+ *   意味論はcalcStatsと完全に一致させる。これらが食い違うと、通常のHUD統計と
  *   ドリルダウンの数字が一致しなくなり信頼性を損なうため。
  * - DBアクセスはテーブルごとに1回のインデックス付きクエリに抑える
  *   （hands: 'seatUserIds'、actions: 'playerId'）。どちらもプレイヤー単位で
@@ -29,6 +29,7 @@ import type {
 import type { PokerChaseDB } from '../db/poker-chase-db'
 import type PokerChaseService from './poker-chase-service'
 import { defaultRegistry } from '../stats'
+import { matchesTableSizeFilter } from '../utils/table-size'
 
 /** Bucket display order: standard late→early preflop order, blinds, then unknown. */
 const POSITION_BUCKETS: PositionalStatsBucketId[] = [
@@ -53,8 +54,11 @@ const CACHE_DURATION_MS = 30_000
 const MAX_CACHE_SIZE = 50
 const cache: Map<string, { result: PositionalStatsResult, timestamp: number }> = new Map()
 
-const buildCacheKey = (playerId: number, service: PokerChaseService): string =>
-  `${playerId}_${service.battleTypeFilter?.join(',') ?? 'all'}_${service.handLimitFilter ?? 'all'}`
+/** Exported for direct unit testing (see positional-stats-service.test.ts) -- caching itself
+ * is disabled under NODE_ENV=test (see `useCache` below), so key-differs-when-filter-differs
+ * can't be observed behaviorally in tests and is instead pinned down against this function directly. */
+export const buildCacheKey = (playerId: number, service: PokerChaseService): string =>
+  `${playerId}_${service.battleTypeFilter?.join(',') ?? 'all'}_${service.tableSizeFilter?.join(',') ?? 'all'}_${service.handLimitFilter ?? 'all'}`
 
 const emptyStats = (): Record<PositionalStatId, [number, number]> => ({
   vpip: [0, 0],
@@ -97,7 +101,7 @@ function resolveHandBucket(
  * プレイヤーのポジション別スタッツを計算する。
  *
  * @param db プレイヤーのハンド/アクションを取得するDexie DB
- * @param service battleTypeFilter/handLimitFilterを保持するサービスインスタンス
+ * @param service battleTypeFilter/tableSizeFilter/handLimitFilterを保持するサービスインスタンス
  * @param playerId 対象プレイヤーID
  */
 export async function getPositionalStats(
@@ -120,7 +124,8 @@ export async function getPositionalStats(
   // calcStats（read-entity-stream.ts）と全く同じ取得・フィルター順序を踏む:
   //   1. プレイヤーの全ハンドを取得
   //   2. battleTypeFilterを適用
-  //   3. handLimitFilterを適用（新しいハンドから優先）
+  //   3. tableSizeFilterを適用（C案）
+  //   4. handLimitFilterを適用（新しいハンドから優先）
   let allPlayerHands = await db.hands
     .where('seatUserIds').equals(playerId)
     .toArray()
@@ -131,15 +136,22 @@ export async function getPositionalStats(
     )
   }
 
+  if (service.tableSizeFilter) {
+    allPlayerHands = allPlayerHands.filter((hand: Hand) =>
+      matchesTableSizeFilter(hand, service.tableSizeFilter)
+    )
+  }
+
   if (service.handLimitFilter !== undefined && service.handLimitFilter > 0) {
     allPlayerHands = [...allPlayerHands]
       .sort((a, b) => b.id - a.id)
       .slice(0, service.handLimitFilter)
   }
 
-  // battleType/handLimitフィルターの結果、対象ハンドが0件ならactionsクエリ自体が
-  // 不要（新規プレイヤーの0ハンド表示と、フィルターで全滅した場合の両方が
-  // 同じ「全バケットhandsN=0」の結果になるため、区別なく早期returnできる）
+  // battleType/tableSize/handLimitフィルターの結果、対象ハンドが0件なら
+  // actionsクエリ自体が不要（新規プレイヤーの0ハンド表示と、フィルターで
+  // 全滅した場合の両方が同じ「全バケットhandsN=0」の結果になるため、
+  // 区別なく早期returnできる）
   if (allPlayerHands.length === 0) {
     const result = buildEmptyResult()
     cache.set(cacheKey, { result, timestamp: now })

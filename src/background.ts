@@ -19,6 +19,7 @@ import { registerMessageRouter } from './background/message-router'
 import { checkOnUpdate } from './background/rebuild-advisory'
 import { needsConfigPersist } from './background/hud-config-sync'
 import { loadOptions, saveOptions, type Options } from './utils/options-storage'
+import { DEFAULT_TABLE_SIZE_FILTER, selectedTableSizeLayers } from './utils/table-size'
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
 
 // Get game URL pattern from manifest
@@ -82,6 +83,9 @@ loadOptions().then((options) => {
         ...(options.filterOptions.gameTypes.ring ? BATTLE_TYPE_FILTERS.RING : [])
       ])]
       : undefined
+    // 卓人数フィルタ（C案）。旧storage値にtableSizeが無ければデフォルト
+    // （全層選択=フィルタなし）として扱う（グレースフルなマイグレーション）。
+    service.tableSizeFilter = selectedTableSizeLayers(options.filterOptions.tableSize ?? DEFAULT_TABLE_SIZE_FILTER)
     service.handLimitFilter = options.filterOptions.handLimit
     // 保存済みのstatDisplayConfigsをデフォルトとマージしてから設定する。
     // マージしないと、リリースで新しい統計（例: #86のSTL/FTS）が追加されても、
@@ -113,6 +117,7 @@ loadOptions().then((options) => {
   } else {
     // デフォルトフィルターを設定（再計算をトリガーせずに）
     service.battleTypeFilter = undefined  // デフォルトではすべてのゲームタイプを表示
+    service.tableSizeFilter = undefined  // デフォルトではすべての卓人数層を表示
     service.handLimitFilter = 500
   }
 
