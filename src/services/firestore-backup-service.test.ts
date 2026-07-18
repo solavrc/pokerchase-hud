@@ -26,11 +26,11 @@ describe('FirestoreBackupService', () => {
     }
   })
 
-  test('batchWrite uses a Firestore resource name instead of a REST URL', async () => {
+  test('commitWrites uses a Firestore resource name instead of a REST URL', async () => {
     const fetchMock = jest.fn().mockImplementation(async (url: string) => ({
       ok: true,
-      text: async () => String(url).endsWith(':batchWrite')
-        ? JSON.stringify({ status: [{}] })
+      text: async () => String(url).endsWith(':commit')
+        ? JSON.stringify({ writeResults: [{}], commitTime: '2026-07-18T00:00:00Z' })
         : '{}'
     } as Response))
     global.fetch = fetchMock
@@ -41,12 +41,12 @@ describe('FirestoreBackupService', () => {
 
     await new FirestoreBackupService().syncToCloudBatch([event], null)
 
-    const batchWriteCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith(':batchWrite'))
-    expect(batchWriteCall).toBeDefined()
+    const commitCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith(':commit'))
+    expect(commitCall).toBeDefined()
 
-    const [url, init] = batchWriteCall!
+    const [url, init] = commitCall!
     expect(url).toBe(
-      'https://firestore.googleapis.com/v1/projects/pokerchase-hud/databases/(default)/documents:batchWrite'
+      'https://firestore.googleapis.com/v1/projects/pokerchase-hud/databases/(default)/documents:commit'
     )
 
     const body = JSON.parse(String(init?.body))
@@ -57,17 +57,47 @@ describe('FirestoreBackupService', () => {
     expect(body.writes[0].update.name).not.toMatch(/^https?:\/\//)
   })
 
-  test('batchWrite rejects an individual write failure returned with HTTP 200', async () => {
+  test('commitWrites rejects when Firestore denies the write at the HTTP level (e.g. rules PERMISSION_DENIED)', async () => {
     global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
+      ok: false,
+      status: 403,
       text: async () => JSON.stringify({
-        status: [{ code: 7, message: 'Missing or insufficient permissions.' }]
+        error: { code: 403, message: 'Missing or insufficient permissions.', status: 'PERMISSION_DENIED' }
       })
     } as Response)
 
     const event = { timestamp: 1779859063171, ApiTypeId: 304 } as unknown as ApiEvent
     await expect(new FirestoreBackupService().syncToCloudBatch([event], null))
-      .rejects.toThrow('Firestore batchWrite failed for 1/1 writes')
+      .rejects.toThrow('Firestore REST request failed: 403')
+  })
+
+  test('commitWrites retries on HTTP 429 RESOURCE_EXHAUSTED', async () => {
+    let commitCalls = 0
+    global.fetch = jest.fn().mockImplementation(async (url: string) => {
+      if (!String(url).endsWith(':commit')) {
+        return { ok: true, text: async () => '{}' } as Response
+      }
+      commitCalls++
+      if (commitCalls === 1) {
+        return {
+          ok: false,
+          status: 429,
+          text: async () => JSON.stringify({
+            error: { code: 429, message: 'RESOURCE_EXHAUSTED', status: 'RESOURCE_EXHAUSTED' }
+          })
+        } as Response
+      }
+      return {
+        ok: true,
+        text: async () => JSON.stringify({ writeResults: [{}], commitTime: '2026-07-18T00:00:00Z' })
+      } as Response
+    })
+
+    const event = { timestamp: 1779859063171, ApiTypeId: 304 } as unknown as ApiEvent
+    const summary = await new FirestoreBackupService().syncToCloudBatch([event], null)
+
+    expect(summary.syncedEvents).toBe(1)
+    expect(commitCalls).toBe(2)
   })
 
   test('syncFromCloud downloads matching events in bounded, cursor-based pages', async () => {

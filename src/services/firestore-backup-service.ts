@@ -46,13 +46,9 @@ interface RunAggregationQueryResult {
   }
 }
 
-interface FirestoreStatus {
-  code?: number
-  message?: string
-}
-
-interface BatchWriteResponse {
-  status?: FirestoreStatus[]
+interface CommitResponse {
+  writeResults?: unknown[]
+  commitTime?: string
 }
 
 interface EventQueryCursor {
@@ -60,20 +56,11 @@ interface EventQueryCursor {
   documentName: string
 }
 
-class FirestoreBatchWriteError extends Error {
-  constructor(
-    readonly code: number,
-    readonly failedWrites: number,
-    message: string
-  ) {
-    super(message)
-    this.name = 'FirestoreBatchWriteError'
-  }
-}
-
 export class FirestoreBackupService {
   private readonly USERS_COLLECTION = 'users'
   private readonly EVENTS_COLLECTION = 'apiEvents'
+  // Writes go through Firestore's :commit REST method, which applies at most
+  // 500 writes atomically in a single request. Both of these must stay <=500.
   private readonly BATCH_SIZE = DATABASE_CONSTANTS.FIRESTORE_BATCH_SIZE
   private readonly BATCH_DELAY_MS = DATABASE_CONSTANTS.FIRESTORE_BATCH_DELAY_MS
   private readonly DELETE_BATCH_SIZE = DATABASE_CONSTANTS.FIRESTORE_DELETE_BATCH
@@ -224,7 +211,7 @@ export class FirestoreBackupService {
         const docs = await this.queryEventDocuments(user.uid, 'asc', this.DELETE_BATCH_SIZE)
         if (docs.length === 0) break
 
-        await this.batchWrite(docs.map(doc => ({ delete: doc.name })))
+        await this.commitWrites(docs.map(doc => ({ delete: doc.name })))
         totalDeleted += docs.length
 
         if (Math.floor(totalDeleted / 10000) > Math.floor((totalDeleted - docs.length) / 10000)) {
@@ -260,12 +247,11 @@ export class FirestoreBackupService {
     let retries = 3
     while (retries > 0) {
       try {
-        await this.batchWrite(writes)
+        await this.commitWrites(writes)
         return
       } catch (error: any) {
         const message = error instanceof Error ? error.message : ''
-        const rateLimited = (error instanceof FirestoreBatchWriteError && error.code === 8) ||
-          message.includes('RESOURCE_EXHAUSTED') ||
+        const rateLimited = message.includes('RESOURCE_EXHAUSTED') ||
           message.includes('REST request failed: 429')
         if (rateLimited && retries > 1) {
           console.warn(`[Firestore] Rate limit hit, retrying in ${this.BATCH_DELAY_MS}ms...`)
@@ -398,35 +384,23 @@ export class FirestoreBackupService {
     return count && 'integerValue' in count ? Number(count.integerValue) : 0
   }
 
-  private async batchWrite(writes: Array<Record<string, unknown>>): Promise<void> {
-    const response = await this.request<BatchWriteResponse>(`${this.baseUrl}:batchWrite`, {
+  /**
+   * Apply up to 500 writes atomically via Firestore's `:commit` REST method.
+   *
+   * `:commit` (unlike `:batchWrite`) reports failures as a normal HTTP error
+   * on the request itself (handled by `request()`'s `!response.ok` check),
+   * rather than embedding a per-write `status` array inside an HTTP 200
+   * response. That keeps failure handling identical to every other call in
+   * this service (`setUserMetadata`, `runQuery`, ...) and means a write that
+   * a security rule denies fails the whole call instead of silently
+   * succeeding for the rest of the batch.
+   */
+  private async commitWrites(writes: Array<Record<string, unknown>>): Promise<void> {
+    await this.request<CommitResponse>(`${this.baseUrl}:commit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ writes })
     })
-
-    const statuses = response?.status ?? []
-    if (statuses.length !== writes.length) {
-      throw new Error(
-        `Firestore batchWrite returned ${statuses.length} statuses for ${writes.length} writes`
-      )
-    }
-
-    const failures = statuses
-      .map((status, index) => ({ status, index }))
-      .filter(({ status }) => (status.code ?? 0) !== 0)
-    if (failures.length > 0) {
-      const first = failures[0]!
-      const code = first.status.code ?? 2
-      const details = failures.slice(0, 3)
-        .map(({ status, index }) => `write ${index}: code ${status.code ?? 2} ${status.message ?? 'Unknown error'}`)
-        .join('; ')
-      throw new FirestoreBatchWriteError(
-        code,
-        failures.length,
-        `Firestore batchWrite failed for ${failures.length}/${writes.length} writes (${details})`
-      )
-    }
   }
 
   private async request<T = unknown>(url: string, init: RequestInit): Promise<T | null> {
