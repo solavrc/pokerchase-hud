@@ -62,6 +62,15 @@
  *      any RIVER_CALL action taken by a player who ends up with
  *      RewardChip > 0 for that hand -- see entity-converter.ts /
  *      write-entity-stream.ts).
+ *  (f) VPIP·F (vpipF, opt-in HUD-original stat, see hand-over
+ *      workspace/reports/pokerchase-hud-vpip-f-handover.md): same VPIP
+ *      numerator/denominator logic as (a3) above, restricted to "full table
+ *      layer" hands -- table-type relative: a 6-max hand (SeatUserIds.length
+ *      === 6) qualifies when >= 5 of the 6 seats are dealt (non -1); a 4-max
+ *      hand (SeatUserIds.length === 4) qualifies only when all 4 seats are
+ *      dealt. This is an independent re-derivation of
+ *      src/stats/core/vpip-full.ts's `classifyVpipFLayer` -- deliberately not
+ *      imported, per this file's independence contract.
  */
 import { ApiType } from '../../types/api'
 import { ActionType, BetStatusType, PhaseType, RankType } from '../../types/game'
@@ -136,6 +145,7 @@ export interface OraclePlayerResult {
     steal: OracleFraction
     foldToSteal: OracleFraction
     riverCallAccuracy: OracleFraction
+    vpipF: OracleFraction
   }
 }
 
@@ -156,6 +166,13 @@ interface PlayerAcc {
    * opportunity (the player did make a decision).
    */
   vpipPfrOpportunityHands: Set<number>
+  /**
+   * VPIP·F (vpipF, see semantic-sync (f) above): same VPIP counter/opportunity
+   * pair as `vpip`/`vpipPfrOpportunityHands`, but scoped to "full table layer"
+   * hands only (table-type-relative: 6-max >= 5 dealt, 4-max = 4 dealt).
+   */
+  vpipF: number
+  vpipFOpportunityHands: Set<number>
   threeBetChance: number
   threeBet: number
   threeBetFoldChance: number
@@ -194,6 +211,7 @@ interface PlayerAcc {
 function newAcc(): PlayerAcc {
   return {
     hands: new Set(), vpip: 0, pfrHands: new Set(), vpipPfrOpportunityHands: new Set(),
+    vpipF: 0, vpipFOpportunityHands: new Set(),
     threeBetChance: 0, threeBet: 0, threeBetFoldChance: 0, threeBetFold: 0,
     cbetChance: 0, cbet: 0, cbetFoldChance: 0, cbetFold: 0,
     betRaise: 0, call: 0, fold: 0,
@@ -332,6 +350,12 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
     // occupied seat in real data per docs/api-events.md).
     const bbUserId = bbSeat !== -1 && seatUserIds[bbSeat] !== -1 ? seatUserIds[bbSeat] : undefined
 
+    // VPIP·F (semantic-sync (f)): "full table layer" classification, table-type
+    // relative -- independent re-derivation of classifyVpipFLayer.
+    const dealtCount = seatUserIds.filter(id => id !== -1).length
+    const tableSize = seatUserIds.length
+    const isFullLayerHand = (tableSize === 6 && dealtCount >= 5) || (tableSize === 4 && dealtCount === 4)
+
     for (const pid of seatUserIds) {
       if (pid === -1) continue
       acc(pid).hands.add(handId)
@@ -383,6 +407,8 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
         // VPIP: preflop, player's first preflop action, CALL or RAISE.
         if (phase === 0 && phasePlayerActionIndex === 0 && (normType === ActionType.CALL || normType === ActionType.RAISE)) {
           acc(playerId).vpip++
+          // VPIP·F (semantic-sync (f)): same trigger, scoped to full-layer hands.
+          if (isFullLayerHand) acc(playerId).vpipF++
         }
 
         // PFR: any preflop RAISE (unique hand count).
@@ -561,7 +587,12 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
     for (const pid of seatUserIds) {
       if (pid === -1) continue
       const isBbWalk = pid === bbUserId && !playersWithPreflopAction.has(pid)
-      if (!isBbWalk) acc(pid).vpipPfrOpportunityHands.add(handId)
+      if (!isBbWalk) {
+        acc(pid).vpipPfrOpportunityHands.add(handId)
+        // VPIP·F opportunity set (semantic-sync (f)): same walk-exclusion rule,
+        // scoped to full-layer hands only.
+        if (isFullLayerHand) acc(pid).vpipFOpportunityHands.add(handId)
+      }
     }
   }
 
@@ -605,6 +636,7 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
         steal: [a.steal, a.stealChance],
         foldToSteal: [a.foldToSteal, a.foldToStealChance],
         riverCallAccuracy: [a.riverCallWon, a.riverCall],
+        vpipF: [a.vpipF, a.vpipFOpportunityHands.size],
       }
     })
   }

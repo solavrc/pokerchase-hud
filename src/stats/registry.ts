@@ -75,11 +75,16 @@ export class StatsRegistry {
       try {
         const value = await stat.calculate(context)
         const formatted = stat.format ? stat.format(value) : undefined
+        // Only add the `tooltip` key when the stat actually defines one --
+        // an explicit `tooltip: undefined` property (vs. the key being
+        // absent) would still show up under toStrictEqual/toEqual snapshot
+        // comparisons elsewhere in the codebase.
         return {
           id: stat.id,
           name: stat.name,
           value,
-          formatted
+          formatted,
+          ...(stat.tooltip ? { tooltip: stat.tooltip(context) } : {})
         }
       } catch (error) {
         console.error(`[StatsRegistry] Error calculating stat ${stat.id}:`, error)
@@ -122,11 +127,16 @@ export class StatsRegistry {
       try {
         const value = await stat.calculate(context)
         const formatted = stat.format ? stat.format(value) : undefined
+        // Only add the `tooltip` key when the stat actually defines one --
+        // an explicit `tooltip: undefined` property (vs. the key being
+        // absent) would still show up under toStrictEqual/toEqual snapshot
+        // comparisons elsewhere in the codebase.
         return {
           id: stat.id,
           name: stat.name,
           value,
-          formatted
+          formatted,
+          ...(stat.tooltip ? { tooltip: stat.tooltip(context) } : {})
         }
       } catch (error) {
         console.error(`[StatsRegistry] Error calculating stat ${stat.id}:`, error)

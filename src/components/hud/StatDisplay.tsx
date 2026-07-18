@@ -50,10 +50,14 @@ export const StatDisplay = memo(({ displayStats, formatValue }: StatDisplayProps
       .filter(([, , statResult]) => statResult?.id !== 'playerName')
       .map(([key, value, statResult], index) => {
         const displayValue = statResult?.formatted || formatValue(value as number | [number, number])
+        // native title tooltip: stats that define StatDefinition.tooltip (e.g.
+        // vpipF's per-layer breakdown) surface it here instead of repeating
+        // the cell's own display value on hover.
+        const tooltipText = statResult?.tooltip || displayValue
         return (
           <div key={index} style={styles.statItem}>
             <span style={styles.statKey} title={key}>{key}:</span>
-            <span style={styles.statValue} title={displayValue}>{displayValue}</span>
+            <span style={styles.statValue} title={tooltipText}>{displayValue}</span>
           </div>
         )
       })}

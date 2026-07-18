@@ -78,7 +78,16 @@ export interface StatDefinition {
   
   /** Optional custom formatter */
   format?: (value: StatValue) => string
-  
+
+  /**
+   * Optional tooltip formatter. Unlike `format` (which only sees the final
+   * value), this receives the full calculation context so a stat can surface
+   * a richer breakdown (e.g. per-layer sub-values) without changing what the
+   * HUD cell itself displays. Rendered via the native `title` attribute on
+   * the stat's value cell (see StatDisplay.tsx) — no new UI component.
+   */
+  tooltip?: (context: StatCalculationContext) => string
+
   /** Display order (lower numbers appear first) */
   order?: number
   
@@ -100,6 +109,8 @@ export interface StatResult {
   name: string
   value: StatValue
   formatted?: string
+  /** Rendered by `StatDefinition.tooltip`, if defined; see that field's doc. */
+  tooltip?: string
 }
 
 /**
