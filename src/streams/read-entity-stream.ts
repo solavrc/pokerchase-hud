@@ -11,6 +11,7 @@ import type {
 } from '../types'
 import { ErrorHandler } from '../utils/error-handler'
 import { defaultRegistry } from '../stats'
+import { matchesTableSizeFilter } from '../utils/table-size'
 import type { ErrorContext } from '../types/errors'
 
 /**
@@ -79,7 +80,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       }
 
       // seatUserIdsとフィルター設定に基づいてキャッシュキーを作成
-      const cacheKey = `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}`
+      const cacheKey = `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}`
       const now = Date.now()
 
       // テスト環境（NODE_ENV=test）またはデバッグモードではキャッシュを無効化
@@ -122,8 +123,9 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       const context: ErrorContext = {
         streamName: 'ReadEntityStream',
         playerIds: seatUserIds,
-        cacheKey: `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}`,
+        cacheKey: `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}`,
         battleTypeFilter: this.service.battleTypeFilter,
+        tableSizeFilter: this.service.tableSizeFilter,
         handLimitFilter: this.service.handLimitFilter
       }
       const appError = ErrorHandler.handleStreamError(error, 'ReadEntityStream', context)
@@ -164,7 +166,23 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
         }
       }
 
-      // 次に指定されていればハンド制限フィルターを適用
+      // 次に指定されていれば卓人数（配られた人数）フィルターを適用（C案）。
+      // battleTypeフィルターと同じ適用点・同じ早期returnの考え方。
+      if (this.service.tableSizeFilter) {
+        const originalHandsCount = allPlayerHands.length
+        allPlayerHands = allPlayerHands.filter((hand: Hand) =>
+          matchesTableSizeFilter(hand, this.service.tableSizeFilter)
+        )
+
+        if (allPlayerHands.length === 0 && originalHandsCount > 0) {
+          return {
+            playerId,
+            statResults: []
+          }
+        }
+      }
+
+      // 最後にハンド制限フィルターを適用（フィルタ後にlimit、既存の順序を維持）
       if (this.service.handLimitFilter !== undefined && this.service.handLimitFilter > 0) {
         // 最新のハンドを取得するためハンドIDでソート（降順）
         allPlayerHands.sort((a, b) => b.id - a.id)
@@ -172,7 +190,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       }
 
       // アクションフィルタリング用のフィルタリングされたハンドIDを作成
-      if (this.service.battleTypeFilter || this.service.handLimitFilter !== undefined) {
+      if (this.service.battleTypeFilter || this.service.tableSizeFilter || this.service.handLimitFilter !== undefined) {
         filteredHandIds = allPlayerHands.map((h: Hand) => h.id)
         filteredHandIdSet = new Set(filteredHandIds)
       }

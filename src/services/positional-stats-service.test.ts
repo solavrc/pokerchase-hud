@@ -16,7 +16,7 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import PokerChaseService from './poker-chase-service'
-import { getPositionalStats, clearPositionalStatsCache } from './positional-stats-service'
+import { getPositionalStats, clearPositionalStatsCache, buildCacheKey } from './positional-stats-service'
 import { ActionDetail, ActionType, BattleType, PhaseType, Position } from '../types/game'
 import type { Action, Hand } from '../types/entities'
 import type { PositionalStatsBucketId } from '../types/stats'
@@ -261,5 +261,84 @@ describe('PositionalStatsService', () => {
       expect(bucket.handsN).toBe(0)
       expect(bucket.stats).toEqual(zeroStats())
     }
+  })
+
+  describe('tableSizeFilter (C案: table-size / players-dealt filter)', () => {
+    // Of the 10 seeded hands, only hand 7 (seatUserIds [1,2,3,4], 4-max full) and
+    // hand 8 (seatUserIds [1,2,3,4,5,6], 6-max full) classify into a known layer
+    // at all -- every other hand's seatUserIds length (2, 3, 5 or 7) doesn't match
+    // the 4-max/6-max rule and classifies as null (unclassifiable).
+
+    test('narrows hands exactly like calcStats before bucketing', async () => {
+      service.tableSizeFilter = ['full']
+      const result = await getPositionalStats(db, service, PLAYER_ID)
+
+      const sb = bucketOf(result, Position.SB) // hand 7
+      expect(sb.handsN).toBe(1)
+      expect(sb.stats.foldToSteal).toEqual([1, 1])
+      expect(sb.stats.vpip).toEqual([0, 1])
+
+      const hj = bucketOf(result, Position.HJ) // hand 8
+      expect(hj.handsN).toBe(1)
+      expect(hj.stats.vpip).toEqual([0, 1])
+      expect(hj.stats.pfr).toEqual([0, 1])
+
+      for (const position of [Position.BTN, Position.CO, Position.UTG, Position.BB, 'unknown' as const]) {
+        const bucket = bucketOf(result, position)
+        expect(bucket.handsN).toBe(0)
+        expect(bucket.stats).toEqual(zeroStats())
+      }
+    })
+
+    test('a table-size filter matching nothing returns all-empty buckets, not an error', async () => {
+      // None of the 10 seeded hands classify as 'hu'.
+      service.tableSizeFilter = ['hu']
+      const result = await getPositionalStats(db, service, PLAYER_ID)
+
+      expect(result.positions).toHaveLength(7)
+      for (const bucket of result.positions) {
+        expect(bucket.handsN).toBe(0)
+        expect(bucket.stats).toEqual(zeroStats())
+      }
+    })
+
+    test('ordering: table-size filter narrows the population BEFORE handLimit caps it', async () => {
+      // ['full'] narrows to hands {7, 8}. handLimit=1 must then keep only the
+      // more recent of *those two* (hand 8, HJ) -- not the most recent hand
+      // overall (hand 10, BTN, which isn't in the 'full' layer at all).
+      service.tableSizeFilter = ['full']
+      service.handLimitFilter = 1
+      const result = await getPositionalStats(db, service, PLAYER_ID)
+
+      const hj = bucketOf(result, Position.HJ)
+      expect(hj.handsN).toBe(1)
+
+      for (const position of [Position.BTN, Position.CO, Position.UTG, Position.SB, Position.BB, 'unknown' as const]) {
+        expect(bucketOf(result, position).handsN).toBe(0)
+      }
+    })
+
+    test('default/undefined tableSizeFilter is a no-op -- total handsN across buckets matches the unfiltered baseline (10)', async () => {
+      expect(service.tableSizeFilter).toBeUndefined()
+      const result = await getPositionalStats(db, service, PLAYER_ID)
+      const totalHandsN = result.positions.reduce((sum, p) => sum + p.handsN, 0)
+      expect(totalHandsN).toBe(10) // all 10 seeded hands accounted for, matching the "emits all 7 buckets" test above
+    })
+
+    test('cache key differs when tableSizeFilter differs, and when it matches the same key stays stable', () => {
+      const withoutFilter = { ...service, tableSizeFilter: undefined } as PokerChaseService
+      const withFull = { ...service, tableSizeFilter: ['full'] } as PokerChaseService
+      const withFullAgain = { ...service, tableSizeFilter: ['full'] } as PokerChaseService
+      const withHu = { ...service, tableSizeFilter: ['hu'] } as PokerChaseService
+
+      const keyNone = buildCacheKey(PLAYER_ID, withoutFilter)
+      const keyFull = buildCacheKey(PLAYER_ID, withFull)
+      const keyFullAgain = buildCacheKey(PLAYER_ID, withFullAgain)
+      const keyHu = buildCacheKey(PLAYER_ID, withHu)
+
+      expect(keyFull).not.toBe(keyNone)
+      expect(keyFull).not.toBe(keyHu)
+      expect(keyFull).toBe(keyFullAgain) // same filter state -> same key (stable, cache-hit-able)
+    })
   })
 })

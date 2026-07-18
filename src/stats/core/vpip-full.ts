@@ -33,40 +33,31 @@
  * 導出するのみで、entity-converter.ts / write-entity-stream.ts /
  * スキーマには一切触れない。REBUILD_ADVISORY_VERSIONのbump不要
  * （#115のWTSDa/WWSFaパターンと同じ）。
+ *
+ * 層分類ロジック（`classifyVpipFLayer`）は C案（卓人数フィルタ、
+ * src/streams/read-entity-stream.ts 等）と共用するため
+ * src/utils/table-size.ts の `classifyTableSizeLayer` に抽出済み。実装は
+ * 1箇所のみ（このファイルは再エクスポートするだけ）。
  */
 
 import type { StatDefinition, StatCalculationContext } from '../../types/stats'
-import type { Hand, Action } from '../../types/entities'
+import type { Action, Hand } from '../../types/entities'
 import { ActionDetail, PhaseType } from '../../types/game'
 import { formatPercentage } from '../utils'
+import { classifyTableSizeLayer, type TableSizeLayer } from '../../utils/table-size'
 
 /** フルテーブル層の区分。'full' が vpipF の主値、他3層はツールチップ内訳用。 */
-export type VpipFLayer = 'full' | '4p' | '3p' | 'hu'
+export type VpipFLayer = TableSizeLayer
 
 /**
  * ハンドをフルテーブル層に分類する（テーブル種別相対のルール）。
  * どの層にも該当しない異常系（配られた人数が1人以下、テーブルサイズが
  * 4/6以外等）は null を返し、vpipF・ツールチップ内訳のいずれからも除外する。
+ *
+ * 実装本体は src/utils/table-size.ts の `classifyTableSizeLayer`
+ * （C案の卓人数フィルタと共用）。この関数はその再エクスポート。
  */
-export function classifyVpipFLayer(hand: Pick<Hand, 'seatUserIds'>): VpipFLayer | null {
-  const tableSize = hand.seatUserIds.length
-  const dealtCount = hand.seatUserIds.filter(id => id !== -1).length
-
-  if (tableSize === 6) {
-    if (dealtCount >= 5) return 'full'
-    if (dealtCount === 4) return '4p'
-    if (dealtCount === 3) return '3p'
-    if (dealtCount === 2) return 'hu'
-    return null
-  }
-  if (tableSize === 4) {
-    if (dealtCount === 4) return 'full'
-    if (dealtCount === 3) return '3p'
-    if (dealtCount === 2) return 'hu'
-    return null
-  }
-  return null
-}
+export const classifyVpipFLayer = classifyTableSizeLayer
 
 /**
  * 与えられたハンド部分集合に対して、vpip.ts と同一ロジック（ウォーク除外

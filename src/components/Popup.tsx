@@ -1,6 +1,7 @@
 import Divider from '@mui/material/Divider'
 import { ChangeEvent, useEffect, useRef, useState } from 'react'
-import type { FilterOptions, GameTypeFilter } from '../types'
+import type { FilterOptions, GameTypeFilter, TableSizeFilter } from '../types'
+import { DEFAULT_TABLE_SIZE_FILTER } from '../types'
 import { loadOptions, saveOptions, type Options } from '../utils/options-storage'
 import { defaultStatDisplayConfigs, mergeStatDisplayConfigs } from '../stats'
 import type { StatDisplayConfig } from '../types/filters'
@@ -23,6 +24,7 @@ import { UIScaleSection } from './popup/UIScaleSection'
 import { ImportExportSection } from './popup/ImportExportSection'
 import { FirebaseAuthSection } from './popup/FirebaseAuthSection'
 import { GameTypeFilterSection } from './popup/GameTypeFilterSection'
+import { TableSizeFilterSection } from './popup/TableSizeFilterSection'
 import { HandLimitSection } from './popup/HandLimitSection'
 import { StatisticsConfigSection } from './popup/StatisticsConfigSection'
 
@@ -38,6 +40,7 @@ const Popup = () => {
   const [importSuccess, setImportSuccess] = useState<number>(0)
   const [importStartTime, setImportStartTime] = useState<number>(0)
   const [gameTypeFilter, setGameTypeFilter] = useState<GameTypeFilter>({ sng: true, mtt: true, ring: true })
+  const [tableSizeFilter, setTableSizeFilter] = useState<TableSizeFilter>(DEFAULT_TABLE_SIZE_FILTER)
   const [handLimit, setHandLimit] = useState<number | undefined>(500)
   const [statDisplayConfigs, setStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
   const [pendingStatDisplayConfigs, setPendingStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
@@ -145,6 +148,7 @@ const Popup = () => {
           }
 
           setGameTypeFilter(savedOptions.filterOptions.gameTypes || { sng: true, mtt: true, ring: true })
+          setTableSizeFilter(savedOptions.filterOptions.tableSize || DEFAULT_TABLE_SIZE_FILTER)
           setHandLimit(savedOptions.filterOptions.handLimit)
         }
       }
@@ -236,9 +240,29 @@ const Popup = () => {
 
     // Game type filter changed
     setGameTypeFilter(newFilter)
-    
+
     const updatedOptions: FilterOptions = {
       gameTypes: newFilter,
+      tableSize: tableSizeFilter,
+      handLimit,
+      statDisplayConfigs  // Use current applied configs for immediate filters
+    }
+
+    saveAndBroadcastOptions(updatedOptions)
+  }
+
+  const handleTableSizeFilterChange = (layer: keyof TableSizeFilter) => (event: ChangeEvent<HTMLInputElement>) => {
+    const newFilter = {
+      ...tableSizeFilter,
+      [layer]: event.target.checked
+    }
+
+    // Table-size filter changed (C案)
+    setTableSizeFilter(newFilter)
+
+    const updatedOptions: FilterOptions = {
+      gameTypes: gameTypeFilter,
+      tableSize: newFilter,
       handLimit,
       statDisplayConfigs  // Use current applied configs for immediate filters
     }
@@ -252,9 +276,10 @@ const Popup = () => {
 
     // Hand limit changed
     setHandLimit(newHandLimit)
-    
+
     const updatedOptions: FilterOptions = {
       gameTypes: gameTypeFilter,
+      tableSize: tableSizeFilter,
       handLimit: newHandLimit,
       statDisplayConfigs  // Use current applied configs for immediate filters
     }
@@ -316,6 +341,7 @@ const Popup = () => {
 
     const updatedOptions: FilterOptions = {
       gameTypes: gameTypeFilter,
+      tableSize: tableSizeFilter,
       handLimit,
       statDisplayConfigs: pendingStatDisplayConfigs
     }
@@ -359,6 +385,13 @@ const Popup = () => {
     <GameTypeFilterSection
       gameTypeFilter={gameTypeFilter}
       handleGameTypeFilterChange={handleGameTypeFilterChange}
+    />
+
+    <Divider style={{ margin: '10px 0' }} />
+
+    <TableSizeFilterSection
+      tableSizeFilter={tableSizeFilter}
+      handleTableSizeFilterChange={handleTableSizeFilterChange}
     />
 
     <Divider style={{ margin: '10px 0' }} />

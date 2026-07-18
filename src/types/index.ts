@@ -102,8 +102,19 @@ export {
 export type {
   GameTypeFilter,
   FilterOptions,
-  StatDisplayConfig
+  StatDisplayConfig,
+  TableSizeFilter
 } from './filters'
+
+// Table-size layer classification/filtering (shared by vpipF and the table-size filter)
+export {
+  classifyTableSizeLayer,
+  matchesTableSizeFilter,
+  selectedTableSizeLayers,
+  ALL_TABLE_SIZE_LAYERS,
+  DEFAULT_TABLE_SIZE_FILTER,
+  type TableSizeLayer
+} from '../utils/table-size'
 
 // Statistics types
 export type {

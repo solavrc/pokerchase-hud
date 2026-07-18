@@ -16,6 +16,7 @@ import {
   ApiType,
   BATTLE_TYPE_FILTERS
 } from '../types'
+import { DEFAULT_TABLE_SIZE_FILTER, selectedTableSizeLayers, type TableSizeLayer } from '../utils/table-size'
 import type {
   ApiEvent,
   BattleType,
@@ -137,6 +138,7 @@ class PokerChaseService {
 
   // 永続化不要なプロパティ
   battleTypeFilter?: number[] = undefined // undefined = all, array = specific battleTypes
+  tableSizeFilter?: TableSizeLayer[] = undefined // undefined = all layers (no filtering), array = selected layers (C案)
   handLimitFilter?: number = undefined // undefined = all hands, number = limit to recent N hands
   statDisplayConfigs?: StatDisplayConfig[] = undefined // Custom stat display configuration
   handLogConfig?: HandLogConfig = undefined // Hand log display configuration
@@ -331,6 +333,10 @@ class PokerChaseService {
     this.battleTypeFilter = selectedTypes.length > 0
       ? [...new Set(selectedTypes)]
       : undefined // If nothing selected, show all game types
+
+    // Set table-size (players-dealt) filter (C案). Missing tableSize (older
+    // storage values / callers) falls back to the default (all layers = no filter).
+    this.tableSizeFilter = selectedTableSizeLayers(filterOptions.tableSize ?? DEFAULT_TABLE_SIZE_FILTER)
 
     // Set hand limit filter
     this.handLimitFilter = filterOptions.handLimit
