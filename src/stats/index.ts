@@ -22,6 +22,7 @@ const STAT_ORDER = [
   'hands',        // HAND count
   'playerName',   // Player Name
   'vpip',         // VPIP
+  'vpipF',        // VPIP·F (opt-in variant, disabled by default)
   'pfr',          // PFR
   'cbet',         // CB
   'cbetFold',     // CBF

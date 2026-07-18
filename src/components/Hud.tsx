@@ -323,7 +323,8 @@ const Hud = memo((props: HudProps) => {
     const next = nextResults[i]
     return prev.id === next?.id &&
       prev.value === next?.value &&
-      prev.formatted === next?.formatted
+      prev.formatted === next?.formatted &&
+      prev.tooltip === next?.tooltip
   })
 })
 

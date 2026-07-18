@@ -11,6 +11,7 @@
 export { handsStat } from './hands'
 export { playerNameStat } from './player-name'
 export { vpipStat } from './vpip'
+export { vpipFullStat } from './vpip-full'
 export { pfrStat } from './pfr'
 export { cbetStat } from './cbet'
 export { cbetFoldStat } from './cbet-fold'
