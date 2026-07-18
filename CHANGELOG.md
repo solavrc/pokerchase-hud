@@ -1,5 +1,19 @@
 # Changelog
 
+## [5.1.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v5.0.0...pokerchase-hud-v5.1.0) (2026-07-18)
+
+
+### Features
+
+* **ui:** add local HUD visual mockup ([#123](https://github.com/solavrc/pokerchase-hud/issues/123)) ([91d063f](https://github.com/solavrc/pokerchase-hud/commit/91d063f89dc5d921f8f85323473d2fdaa8ff50e0))
+
+
+### Bug Fixes
+
+* **popup:** time out service-worker requests and stop 5s getSyncInfo re-fires ([#127](https://github.com/solavrc/pokerchase-hud/issues/127)) ([95b7e49](https://github.com/solavrc/pokerchase-hud/commit/95b7e49ade6739ea3b9d4e14627f90e3cc4bd8b4))
+* **sync:** make Firestore cloud sync reliable ([#124](https://github.com/solavrc/pokerchase-hud/issues/124)) ([72db6b6](https://github.com/solavrc/pokerchase-hud/commit/72db6b63f9fe2e3337923fd13791290e1c63ac31))
+* **sync:** switch cloud upload/delete writes to Firestore :commit ([#126](https://github.com/solavrc/pokerchase-hud/issues/126)) ([ce5b5cb](https://github.com/solavrc/pokerchase-hud/commit/ce5b5cbf9d3d9774a5fd5325e509264515f7dcaa))
+
 ## [5.0.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v4.2.1...pokerchase-hud-v5.0.0) (2026-07-09)
 
 
