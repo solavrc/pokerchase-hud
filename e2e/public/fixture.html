@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>PokerChase HUD E2E Fixture</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #0b3d0b; }
+      #unity-container { position: relative; width: 100%; height: 100%; }
+      #e2e-status { position: fixed; top: 4px; left: 4px; color: #9f9; font: 12px monospace; z-index: 9999; }
+    </style>
+  </head>
+  <body>
+    <!--
+      content_script.ts's mountApp() does a synchronous
+      `document.querySelector('#unity-container')` at inject time (no
+      MutationObserver/retry), so this element MUST already be present in
+      the initial HTML -- it stands in for the real game's Unity WebGL
+      canvas container.
+    -->
+    <div id="unity-container"></div>
+    <div id="e2e-status">e2e fixture: connecting...</div>
+    <script>
+      // Mimics the real game client: opens a WebSocket and receives
+      // msgpack-encoded ArrayBuffer frames. The extension's real
+      // web_accessible_resource.ts patches window.WebSocket for ANY socket
+      // (no URL filter), decodes each binary frame, and re-emits it via
+      // window.postMessage -- so this page doesn't need to know anything
+      // about the extension; it just needs to be a normal WebSocket client
+      // with binaryType='arraybuffer' (browsers default to 'blob', which
+      // the interceptor's `data instanceof ArrayBuffer` check would reject).
+      //
+      // Timing: content_script.ts runs at the default "document_idle" --
+      // strictly after this inline script (which runs synchronously while
+      // the HTML is still parsing, before DOMContentLoaded). It appends
+      // web_accessible_resource.js as a real <script src="chrome-extension://...">
+      // tag, which is fetched and executed *asynchronously* -- that's the
+      // script that actually replaces window.WebSocket. If we opened the
+      // WebSocket immediately here, it would very likely still be the
+      // *original*, unpatched WebSocket (this bit us during harness
+      // development: the tag can appear in the DOM before its body has
+      // run). The real game doesn't hit this race because its heavy Unity
+      // WebGL client takes far longer to open its first socket than any of
+      // this takes. We reproduce "connect only once the hook is live" by
+      // polling for the actual effect of the patch (window.WebSocket no
+      // longer being native code), not just the injected tag's presence.
+      const statusEl = document.getElementById('e2e-status')
+      window.__e2eReplayEvents = 0
+
+      const isWebSocketPatched = () => !window.WebSocket.toString().includes('[native code]')
+
+      const waitForWebSocketHook = () => new Promise((resolve, reject) => {
+        const deadline = Date.now() + 10000
+        const poll = () => {
+          if (isWebSocketPatched()) {
+            resolve()
+            return
+          }
+          if (Date.now() > deadline) {
+            reject(new Error('timed out waiting for the extension to patch window.WebSocket'))
+            return
+          }
+          setTimeout(poll, 10)
+        }
+        poll()
+      })
+
+      waitForWebSocketHook().then(() => {
+        const wsUrl = `ws://${location.host}/replay`
+        const socket = new WebSocket(wsUrl)
+        socket.binaryType = 'arraybuffer'
+        socket.addEventListener('open', () => { statusEl.textContent = 'e2e fixture: connected' })
+        socket.addEventListener('message', () => { window.__e2eReplayEvents++ })
+        socket.addEventListener('close', () => { statusEl.textContent = 'e2e fixture: replay done' })
+        socket.addEventListener('error', (e) => { statusEl.textContent = 'e2e fixture: ws error'; console.error('[e2e fixture] ws error', e) })
+      }).catch((err) => {
+        statusEl.textContent = 'e2e fixture: ' + err.message
+        console.error('[e2e fixture]', err)
+      })
+    </script>
+  </body>
+</html>

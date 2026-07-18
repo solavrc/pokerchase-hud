@@ -1,6 +1,9 @@
 module.exports = {
   testEnvironment: 'jsdom',
-  roots: ['<rootDir>/src'],
+  // e2e/tools/anonymize.ts is a pure helper (no browser/DOM APIs); it's unit
+  // tested here per repo convention even though the rest of e2e/ (live
+  // Chrome automation) is intentionally NOT jest-covered -- see e2e/README.md.
+  roots: ['<rootDir>/src', '<rootDir>/e2e'],
   testMatch: ['**/*.test.{ts,tsx}'],
   transform: {
     // babel-jest標準経路: babel-preset-jest（jest.mock巻き上げ）・キャッシュキー・
