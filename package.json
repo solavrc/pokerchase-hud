@@ -1,6 +1,6 @@
 {
   "name": "pokerchase-hud",
-  "version": "5.0.0",
+  "version": "5.1.0",
   "scripts": {
     "build": "tsx esbuild.config.ts",
     "mockup": "tsx mockup.config.ts --serve",
