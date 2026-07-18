@@ -6,7 +6,7 @@
  */
 import { createServer, type Server as HttpServer } from 'node:http'
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { encode } from '@msgpack/msgpack'
 import { FIXTURE_PORT, PUBLIC_DIR, DEFAULT_FIXTURE } from './config.ts'
@@ -58,11 +58,37 @@ export const startFixtureServer = async (options: FixtureServerOptions = {}): Pr
   let resolveReplayDone!: () => void
   const replayDone = new Promise<void>((resolve) => { resolveReplayDone = resolve })
 
+  const publicDirResolved = resolve(PUBLIC_DIR)
+
   const httpServer: HttpServer = createServer((req, res) => {
-    const url = req.url === '/' ? '/fixture.html' : req.url || '/fixture.html'
-    const ext = url.includes('.') ? url.slice(url.lastIndexOf('.')) : '.html'
+    const rawUrl = req.url === '/' ? '/fixture.html' : req.url || '/fixture.html'
+    // Strip any query string before touching the filesystem.
+    const pathname = rawUrl.split('?')[0]!
+    let decodedPathname: string
     try {
-      const body = readFileSync(join(PUBLIC_DIR, url))
+      decodedPathname = decodeURIComponent(pathname)
+    } catch {
+      res.writeHead(400)
+      res.end('bad request')
+      return
+    }
+
+    // `join` collapses `..` segments, so a request like `/../../package.json`
+    // can otherwise resolve outside PUBLIC_DIR (local-only server, but this
+    // is served over plain HTTP, so verify the resolved path actually stays
+    // under PUBLIC_DIR before reading it -- don't just trust `join`).
+    const resolvedPath = resolve(join(PUBLIC_DIR, decodedPathname))
+    const staysInPublicDir =
+      resolvedPath === publicDirResolved || resolvedPath.startsWith(publicDirResolved + sep)
+    if (!staysInPublicDir) {
+      res.writeHead(403)
+      res.end('forbidden')
+      return
+    }
+
+    const ext = decodedPathname.includes('.') ? decodedPathname.slice(decodedPathname.lastIndexOf('.')) : '.html'
+    try {
+      const body = readFileSync(resolvedPath)
       res.writeHead(200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream' })
       res.end(body)
     } catch {

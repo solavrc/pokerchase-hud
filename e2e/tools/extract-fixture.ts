@@ -32,9 +32,22 @@ interface Options {
 }
 
 const parseArgs = (argv: string[]): Options => {
-  const positional = argv.filter((a) => !a.startsWith('--'))
-  const handsFlagIndex = argv.indexOf('--hands')
-  const hands = handsFlagIndex >= 0 ? Number(argv[handsFlagIndex + 1]) : 3
+  const positional: string[] = []
+  let hands = 3
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!
+    if (arg === '--hands') {
+      const value = argv[i + 1]
+      if (value === undefined) throw new Error('--hands requires a value')
+      hands = Number(value)
+      i++ // consume the value too, so it never falls through to positionals
+      continue
+    }
+    if (arg.startsWith('--')) {
+      throw new Error(`Unknown flag: ${arg}`)
+    }
+    positional.push(arg)
+  }
   const input = positional[0]
   if (!input) {
     throw new Error(

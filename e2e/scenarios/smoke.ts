@@ -30,6 +30,24 @@ const parseArgs = (argv: string[]) => ({
     : DEFAULT_FIXTURE,
 })
 
+/**
+ * Races `promise` against a timeout so a scenario step that depends on
+ * something that may never happen (e.g. the fixture page never opening its
+ * WebSocket) fails cleanly with a diagnosable error instead of hanging the
+ * whole `npm run e2e:smoke` run forever.
+ */
+const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> =>
+  new Promise<T>((resolvePromise, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+      timeoutMs
+    )
+    promise.then(
+      (value) => { clearTimeout(timer); resolvePromise(value) },
+      (err) => { clearTimeout(timer); reject(err) }
+    )
+  })
+
 const dumpFailureEvidence = async (harness: Harness, screenshotDir: string, label: string): Promise<void> => {
   mkdirSync(screenshotDir, { recursive: true })
   try {
@@ -69,7 +87,20 @@ const run = async (): Promise<void> => {
       check('HUD mounts at least one player panel', false, (e as Error).message)
     }
 
-    await harness.waitForReplayDone()
+    try {
+      // Bounded: if the fixture page never opens its WebSocket (extension
+      // failed to inject, page crashed, etc.) `replayDone` would otherwise
+      // never resolve and this script would hang forever instead of
+      // dumping evidence and exiting non-zero.
+      await withTimeout(harness.waitForReplayDone(), 20000, 'fixture replay')
+      check('fixture replay completes', true)
+    } catch (e) {
+      check('fixture replay completes', false, (e as Error).message)
+      await dumpFailureEvidence(harness, screenshotDir, 'replay-timeout')
+      console.error(`\n[smoke] FAILED: ${checks.filter((c) => !c.pass).length}/${checks.length} checks failed`)
+      process.exitCode = 1
+      return
+    }
     // Give the background service worker a moment to finish processing the
     // last hand's events and push updated stats down to the content script.
     await new Promise((resolve) => setTimeout(resolve, 1500))
@@ -96,9 +127,13 @@ const run = async (): Promise<void> => {
     check('positional drill-down chevron exists', chevronCount > 0, `${chevronCount} chevron(s) found`)
 
     // 4. Popup opens and renders (no error boundary / blank page).
-    const popup = await harness.openPopup()
+    // Attach the `pageerror` listener via the pre-navigation hook so it
+    // catches errors thrown during the popup's *initial* render, not just
+    // ones thrown after `openPopup()` already resolved.
     let popupError: Error | undefined
-    popup.on('pageerror', (err) => { popupError = err })
+    const popup = await harness.openPopup((page) => {
+      page.on('pageerror', (err) => { popupError = err })
+    })
     await new Promise((resolve) => setTimeout(resolve, 1000))
     await popup.screenshot({ path: join(screenshotDir, 'smoke-popup.png') as `${string}.png` })
     const popupHasContent = await popup.evaluate(() => {

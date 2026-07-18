@@ -39,8 +39,15 @@ export interface LaunchOptions {
 export interface HarnessHelpers {
   /** The fixture page tab (where the extension's content_script + HUD run). */
   gamePage: Page
-  /** Opens the extension's popup/options page (dist/index.html) as a new tab. */
-  openPopup: () => Promise<Page>
+  /**
+   * Opens the extension's popup/options page (dist/index.html) as a new tab.
+   * `onPageCreated`, if given, runs synchronously right after the tab is
+   * created but *before* navigation starts -- use it to attach listeners
+   * (e.g. `page.on('pageerror', ...)`) that need to observe the initial
+   * render, since anything attached after this resolves has already missed
+   * errors thrown while `dist/index.html` first loaded.
+   */
+  openPopup: (onPageCreated?: (page: Page) => void) => Promise<Page>
   /** Evaluates `fn` in `gamePage`'s context and returns the result. */
   evaluate: <T>(fn: (...args: any[]) => T, ...args: any[]) => Promise<T>
   /** PNG screenshot of `gamePage` (or the given page) to `path`. Creates parent dirs. */
@@ -99,7 +106,7 @@ const buildHelpers = (browser: Browser, gamePage: Page): HarnessHelpers => {
   const evaluate = <T,>(fn: (...args: any[]) => T, ...args: any[]): Promise<T> =>
     gamePage.evaluate(fn as any, ...args)
 
-  const openPopup = async (): Promise<Page> => {
+  const openPopup = async (onPageCreated?: (page: Page) => void): Promise<Page> => {
     // Resolve the extension's id from its own runtime by reading it off the
     // service worker target rather than hardcoding it (the "key" in
     // manifest.json pins it, but re-deriving here keeps this robust if that
@@ -109,7 +116,10 @@ const buildHelpers = (browser: Browser, gamePage: Page): HarnessHelpers => {
     if (!swTarget) throw new Error('Could not find the extension service worker target -- is the extension loaded?')
     const extensionId = new URL(swTarget.url()).host
     const popupPage = await browser.newPage()
+    // Attach listeners *before* navigating so callers can observe errors
+    // thrown during the popup's initial render, not just after.
     popupPage.on('pageerror', (err) => console.error('[popupPage pageerror]', err))
+    onPageCreated?.(popupPage)
     await popupPage.goto(`chrome-extension://${extensionId}/dist/index.html`, { waitUntil: 'domcontentloaded' })
     return popupPage
   }
@@ -140,30 +150,46 @@ export const launchHarness = async (options: LaunchOptions = {}): Promise<Harnes
     port,
   })
 
-  const executablePath = await ensureChromeForTesting()
+  // Everything below can fail (Chrome download, launch, or the initial
+  // navigation) after the fixture server is already listening. Without a
+  // teardown here, any such failure would leave the HTTP+WS server (and its
+  // held port) running forever with no `harness` object for the caller to
+  // close -- best case a leaked process, worst case a stuck port blocking
+  // the next run. Tear the fixture server down on any failure and rethrow.
+  let launchedBrowser: Browser | undefined
+  let browser: Browser
+  let gamePage: Page
+  try {
+    const executablePath = await ensureChromeForTesting()
 
-  const browser = await puppeteer.launch({
-    executablePath,
-    headless: !headed,
-    args: [
-      `--disable-extensions-except=${extensionDir}`,
-      `--load-extension=${extensionDir}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--window-size=1280,900',
-    ],
-    defaultViewport: null,
-  })
+    browser = await puppeteer.launch({
+      executablePath,
+      headless: !headed,
+      args: [
+        `--disable-extensions-except=${extensionDir}`,
+        `--load-extension=${extensionDir}`,
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--window-size=1280,900',
+      ],
+      defaultViewport: null,
+    })
+    launchedBrowser = browser
 
-  // Chrome opens an initial about:blank tab; reuse it for the fixture page.
-  const pages = await browser.pages()
-  const gamePage = pages[0] ?? await browser.newPage()
-  gamePage.on('console', (msg) => {
-    if (msg.type() === 'error') console.error(`[gamePage console.error] ${msg.text()}`)
-  })
-  gamePage.on('pageerror', (err) => console.error('[gamePage pageerror]', err))
+    // Chrome opens an initial about:blank tab; reuse it for the fixture page.
+    const pages = await browser.pages()
+    gamePage = pages[0] ?? await browser.newPage()
+    gamePage.on('console', (msg) => {
+      if (msg.type() === 'error') console.error(`[gamePage console.error] ${msg.text()}`)
+    })
+    gamePage.on('pageerror', (err) => console.error('[gamePage pageerror]', err))
 
-  await gamePage.goto(fixtureServer.origin, { waitUntil: 'domcontentloaded' })
+    await gamePage.goto(fixtureServer.origin, { waitUntil: 'domcontentloaded' })
+  } catch (err) {
+    await fixtureServer.close().catch(() => {})
+    await launchedBrowser?.close().catch(() => {})
+    throw err
+  }
 
   const helpers = buildHelpers(browser, gamePage)
 

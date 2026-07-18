@@ -22,9 +22,9 @@
  * `puppeteer.connect()`, so state (HUD, hand log, drilldown panels you've
  * opened, etc.) persists across calls until you run `close`.
  */
-import { spawn } from 'node:child_process'
+import { spawn, execSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { launchHarness, attachHarness } from './harness.ts'
 import { buildE2E } from './tools/build-e2e.ts'
@@ -98,9 +98,24 @@ const cmdLaunch = async (argv: string[]): Promise<void> => {
     buildE2E()
   }
 
+  // Resolve `--fixture` against the invoker's cwd *before* daemonizing --
+  // the daemon child process runs with `cwd: E2E_DIR`, so a relative path
+  // (e.g. the documented `e2e/fixtures/session-3hands.ndjson`, typed from
+  // the repo root) would otherwise be re-resolved from inside `e2e/`,
+  // silently looking under `e2e/e2e/fixtures/...` and failing to start.
+  const invokerCwd = process.cwd()
+  const daemonArgv = [...argv]
+  const fixtureFlagIndex = daemonArgv.indexOf('--fixture')
+  if (fixtureFlagIndex >= 0 && daemonArgv[fixtureFlagIndex + 1] !== undefined) {
+    const rawFixturePath = daemonArgv[fixtureFlagIndex + 1]!
+    daemonArgv[fixtureFlagIndex + 1] = isAbsolute(rawFixturePath)
+      ? rawFixturePath
+      : resolve(invokerCwd, rawFixturePath)
+  }
+
   console.log('[run launch] starting detached session daemon...')
   const runScript = fileURLToPath(import.meta.url)
-  const child = spawn('npx', ['tsx', runScript, '--daemon', ...argv], {
+  const child = spawn('npx', ['tsx', runScript, '--daemon', ...daemonArgv], {
     cwd: E2E_DIR,
     detached: true,
     stdio: 'ignore',
@@ -182,12 +197,40 @@ const cmdEval = async (argv: string[]): Promise<void> => {
   h.browser.disconnect()
 }
 
+/**
+ * Best-effort check that `pid` is still our session daemon before we send it
+ * a signal. If `session.json` is stale (the daemon crashed without cleaning
+ * up) the OS may since have reused that PID for an unrelated process; a bare
+ * `process.kill(pid)` would then SIGTERM a stranger. We only have a PID (not
+ * a full process handle) to go on, so verify identity by inspecting the
+ * live process's command line for markers unique to how the daemon was
+ * spawned (this file's path, invoked with `--daemon`).
+ */
+const isOurDaemonProcess = (pid: number): boolean => {
+  try {
+    const command = execSync(`ps -p ${pid} -o command=`, { encoding: 'utf-8' }).trim()
+    if (!command) return false // no such process
+    return command.includes('run.ts') && command.includes('--daemon')
+  } catch {
+    // `ps` exits non-zero when the PID doesn't exist -- treat as "not ours".
+    return false
+  }
+}
+
 const cmdClose = async (): Promise<void> => {
   if (!existsSync(SESSION_FILE)) {
     console.log('no active session')
     return
   }
   const session = readSession()
+  if (!isOurDaemonProcess(session.pid)) {
+    console.error(
+      `[run close] pid ${session.pid} from ${SESSION_FILE} is no longer (or never was) the session daemon -- ` +
+      'not signaling it, just clearing the stale session file.'
+    )
+    rmSync(SESSION_FILE, { force: true })
+    return
+  }
   try {
     process.kill(session.pid, 'SIGTERM')
   } catch (e) {
