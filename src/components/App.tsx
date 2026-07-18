@@ -35,6 +35,13 @@ const App = memo(() => {
   const [shouldScrollToLatest, setShouldScrollToLatest] = useState(false)
   const [allPlayersRealTimeStats, setAllPlayersRealTimeStats] = useState<AllPlayersRealTimeStats | undefined>()
   const [heroOriginalSeatIndex, setHeroOriginalSeatIndex] = useState<number | undefined>()
+  // ポジション別ドリルダウンパネル: 開いているプレイヤーは常に高々1人（HUDツリーに
+  // ローカルなReact state。グローバル設定への永続化はv1では不要）。
+  const [openPositionalStatsPlayerId, setOpenPositionalStatsPlayerId] = useState<number | null>(null)
+
+  const handleTogglePositionalPanel = useCallback((playerId: number) => {
+    setOpenPositionalStatsPlayerId(prev => (prev === playerId ? null : playerId))
+  }, [])
 
   const handleStatsMessage = useCallback(
     ({ detail }: CustomEvent<StatsData>) => {
@@ -278,6 +285,8 @@ const App = memo(() => {
               statDisplayConfigs={statDisplayConfigs}
               realTimeStats={position.actualSeatIndex === 0 ? allPlayersRealTimeStats?.heroStats : undefined}
               playerPotOdds={allPlayersRealTimeStats?.playerStats[position.originalSeatIndex]}
+              isPositionalPanelOpen={openPositionalStatsPlayerId === position.stat.playerId}
+              onTogglePositionalPanel={() => handleTogglePositionalPanel(position.stat.playerId)}
             />
           )
       )}

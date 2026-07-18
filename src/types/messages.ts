@@ -3,7 +3,7 @@
  * Uses discriminated union pattern for type safety
  */
 
-import type { FilterOptions, PlayerStats } from './index'
+import type { FilterOptions, PlayerStats, PositionalStatsResult } from './index'
 import { HandLogConfig, HandLogEvent, UIConfig } from './hand-log'
 import type { SyncState } from '../services/auto-sync-service'
 
@@ -51,6 +51,8 @@ export const MESSAGE_ACTIONS = {
   GET_OPERATION_STATE: 'getOperationState',
   // Rebuild advisory
   ACKNOWLEDGE_REBUILD_ADVISORY: 'acknowledgeRebuildAdvisory',
+  // Positional drill-down
+  GET_POSITIONAL_STATS: 'getPositionalStats',
 } as const
 
 // Import/Export related messages
@@ -233,6 +235,12 @@ export interface AcknowledgeRebuildAdvisoryMessage {
   action: 'acknowledgeRebuildAdvisory'
 }
 
+// Positional drill-down messages
+export interface GetPositionalStatsMessage {
+  action: 'getPositionalStats'
+  playerId: number
+}
+
 export interface FirebaseBackupProgressMessage {
   action: 'firebaseBackupProgress'
   progress: number
@@ -300,7 +308,11 @@ export interface OperationStateResponse extends SuccessResponse {
   }
 }
 
-export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse
+export interface PositionalStatsResponse extends SuccessResponse {
+  positionalStats: PositionalStatsResult
+}
+
+export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse
 
 // Union type of all possible messages
 export type ChromeMessage =
@@ -339,6 +351,7 @@ export type ChromeMessage =
   | ManualSyncDownloadMessage
   | GetOperationStateMessage
   | AcknowledgeRebuildAdvisoryMessage
+  | GetPositionalStatsMessage
 
 // Helper function for type guard implementation
 const isMessageWithAction = (msg: unknown, action: string): msg is { action: string } =>
@@ -425,3 +438,6 @@ export const isGetOperationStateMessage = (msg: unknown): msg is GetOperationSta
 
 export const isAcknowledgeRebuildAdvisoryMessage = (msg: unknown): msg is AcknowledgeRebuildAdvisoryMessage =>
   isMessageWithAction(msg, 'acknowledgeRebuildAdvisory')
+
+export const isGetPositionalStatsMessage = (msg: unknown): msg is GetPositionalStatsMessage =>
+  isMessageWithAction(msg, 'getPositionalStats')

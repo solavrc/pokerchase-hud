@@ -1,4 +1,5 @@
 import { render, screen, waitFor, act } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { ApiType } from '../app'
 import App from './App'
 import type { StatsData } from '../content_script'
@@ -9,13 +10,17 @@ import type { ApiEvent } from '../types'
 // Mock components
 jest.mock('./Hud', () => ({
   __esModule: true,
-  default: ({ actualSeatIndex, stat, scale, statDisplayConfigs, realTimeStats, playerPotOdds }: any) => (
+  default: ({ actualSeatIndex, stat, scale, statDisplayConfigs, realTimeStats, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel }: any) => (
     <div data-testid={`hud-${actualSeatIndex}`}>
       Player: {stat.playerId}
       Scale: {scale}
       Stats: {statDisplayConfigs?.length || 0}
       RealTime: {realTimeStats ? 'yes' : 'no'}
       PotOdds: {playerPotOdds ? 'yes' : 'no'}
+      PositionalPanelOpen: {isPositionalPanelOpen ? 'yes' : 'no'}
+      {onTogglePositionalPanel && (
+        <button onClick={onTogglePositionalPanel}>toggle-{stat.playerId}</button>
+      )}
     </div>
   ),
 }))
@@ -415,5 +420,36 @@ describe('App', () => {
     // アンマウント時に同一の関数で解除される
     unmount()
     expect(removeListenerMock).toHaveBeenCalledWith(listener)
+  })
+
+  describe('ポジション別ドリルダウン: 開閉はApp側で一元管理', () => {
+    it('別プレイヤーのパネルを開くと、開いていたパネルは閉じる', async () => {
+      const user = userEvent.setup()
+
+      render(<App />)
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', { detail: mockStatsData })
+        )
+      })
+
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('PositionalPanelOpen: no')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('PositionalPanelOpen: no')
+
+      // 席0を開く
+      await user.click(screen.getByText('toggle-1'))
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('PositionalPanelOpen: yes')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('PositionalPanelOpen: no')
+
+      // 席1を開くと、席0は自動的に閉じる
+      await user.click(screen.getByText('toggle-2'))
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('PositionalPanelOpen: no')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('PositionalPanelOpen: yes')
+
+      // 同じトリガーをもう一度クリックすると閉じる
+      await user.click(screen.getByText('toggle-2'))
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('PositionalPanelOpen: no')
+    })
   })
 })

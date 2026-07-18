@@ -101,3 +101,37 @@ export interface StatResult {
   value: StatValue
   formatted?: string
 }
+
+/**
+ * Positional Drill-Down Types (#positional-drilldown)
+ *
+ * A per-position breakdown of the core preflop/postflop stats, computed by
+ * src/services/positional-stats-service.ts. Each hand the player has played
+ * is bucketed by the position they held in that hand:
+ *  - The primary source is the `position` recorded on the player's own
+ *    PREFLOP action rows for the hand (all such rows share one position).
+ *  - Hands with NO preflop action by the player (BB walks / BB-skip, see
+ *    vpip.ts) fall back to `hand.bigBlindUserId === playerId` → BB bucket.
+ *  - Hands where the position can't be determined by either method (legacy
+ *    `position === -3` rows, or no preflop action and no/foreign
+ *    `bigBlindUserId`) land in the 'unknown' bucket.
+ */
+
+/** A concrete Position, or 'unknown' when the position couldn't be determined for a hand. */
+export type PositionalStatsBucketId = Position | 'unknown'
+
+/** The stat ids surfaced per position bucket, each as a [numerator, denominator] pair. */
+export type PositionalStatId = 'vpip' | 'pfr' | '3bet' | 'steal' | 'foldToSteal' | 'cbet'
+
+export interface PositionalStatsBucket {
+  position: PositionalStatsBucketId
+  /** Number of hands the player played at this position (includes BB walks for the BB bucket). */
+  handsN: number
+  stats: Record<PositionalStatId, [number, number]>
+}
+
+export interface PositionalStatsResult {
+  positions: PositionalStatsBucket[]
+  /** `Date.now()` at calculation time, so callers/UI can tell fresh results from cached ones. */
+  computedAt: number
+}

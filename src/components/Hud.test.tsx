@@ -87,6 +87,13 @@ describe('Hud', () => {
     mockChromeStorageGet.mockImplementation((_, callback) => {
       callback({ [`hudPosition_0`]: { top: '50%', left: '50%' } })
     })
+    global.chrome = {
+      ...global.chrome,
+      runtime: {
+        ...global.chrome.runtime,
+        sendMessage: jest.fn(),
+      },
+    } as any
   })
 
   it('空席の場合は"Waiting for Hand..."を表示', () => {
@@ -335,6 +342,115 @@ describe('Hud', () => {
       }
 
       unmount()
+    })
+  })
+
+  describe('ポジション別ドリルダウン', () => {
+    it('onTogglePositionalPanelが渡されない場合はトリガーを表示しない', () => {
+      render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+        />
+      )
+
+      expect(screen.queryByTitle('ポジション別スタッツ')).not.toBeInTheDocument()
+    })
+
+    it('トリガーをクリックするとonTogglePositionalPanelが呼ばれ、クリップボードコピーは発火しない', async () => {
+      const handleToggle = jest.fn()
+
+      render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onTogglePositionalPanel={handleToggle}
+        />
+      )
+
+      const trigger = screen.getByTitle('ポジション別スタッツ')
+      await userEvent.click(trigger)
+
+      expect(handleToggle).toHaveBeenCalledTimes(1)
+      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+    })
+
+    it('isPositionalPanelOpenがtrueの時のみドリルダウンパネルを表示する', async () => {
+      (chrome.runtime.sendMessage as jest.Mock).mockImplementation(
+        (_message: unknown, callback: (response: unknown) => void) => {
+          callback({
+            success: true,
+            positionalStats: {
+              computedAt: Date.now(),
+              positions: [
+                { position: 0, handsN: 12, stats: { vpip: [3, 12], pfr: [2, 12], '3bet': [0, 5], steal: [0, 0], foldToSteal: [0, 0], cbet: [0, 0] } },
+              ],
+            },
+          })
+        }
+      )
+
+      const { rerender } = render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onTogglePositionalPanel={jest.fn()}
+          isPositionalPanelOpen={false}
+        />
+      )
+
+      expect(screen.queryByTestId('positional-stats-panel')).not.toBeInTheDocument()
+
+      rerender(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onTogglePositionalPanel={jest.fn()}
+          isPositionalPanelOpen={true}
+        />
+      )
+
+      await waitFor(() => {
+        expect(screen.getByTestId('positional-stats-panel')).toBeInTheDocument()
+      })
+      expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+        { action: 'getPositionalStats', playerId: mockPlayerStats.playerId },
+        expect.any(Function)
+      )
+    })
+
+    it('データがない("No Data")プレイヤーにもトリガーとパネルを表示できる', async () => {
+      (chrome.runtime.sendMessage as jest.Mock).mockImplementation(
+        (_message: unknown, callback: (response: unknown) => void) => {
+          callback({ success: false, error: 'no data' })
+        }
+      )
+
+      const noDataStats: PlayerStats = { playerId: 456, statResults: [] }
+
+      render(
+        <Hud
+          actualSeatIndex={0}
+          stat={noDataStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onTogglePositionalPanel={jest.fn()}
+          isPositionalPanelOpen={true}
+        />
+      )
+
+      expect(screen.getByTitle('ポジション別スタッツ')).toBeInTheDocument()
+      await waitFor(() => {
+        expect(screen.getByTestId('positional-stats-panel')).toBeInTheDocument()
+      })
     })
   })
 })

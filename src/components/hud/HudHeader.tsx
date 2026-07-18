@@ -1,6 +1,7 @@
 import { memo } from 'react'
 import type { CSSProperties } from 'react'
 import { PlayerTypeIcons } from './PlayerTypeIcons'
+import { PositionalPanelTrigger } from './PositionalPanelTrigger'
 
 interface PlayerPotOdds {
   spr?: number
@@ -17,6 +18,10 @@ interface HudHeaderProps {
   playerName: string | null
   playerId: number
   playerPotOdds?: PlayerPotOdds
+  /** ポジション別ドリルダウンパネルが開いているか（未指定ならトリガー自体を表示しない） */
+  isPositionalPanelOpen?: boolean
+  /** ドリルダウンパネルの開閉トグル。渡された時のみトリガーを表示する */
+  onTogglePositionalPanel?: () => void
 }
 
 const styles = {
@@ -44,7 +49,7 @@ const styles = {
   } as CSSProperties,
 }
 
-export const HudHeader = memo(({ playerName, playerId, playerPotOdds }: HudHeaderProps) => {
+export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel }: HudHeaderProps) => {
   const hasPotOdds = playerPotOdds?.potOdds && playerPotOdds.potOdds.call > 0
   const hasSpr = playerPotOdds?.spr !== undefined
   
@@ -68,6 +73,14 @@ export const HudHeader = memo(({ playerName, playerId, playerPotOdds }: HudHeade
             }}>
               {playerPotOdds.potOdds!.pot}/{playerPotOdds.potOdds!.call} ({playerPotOdds.potOdds!.percentage.toFixed(0)}%)
             </span>
+          )}
+          {onTogglePositionalPanel && (
+            <PositionalPanelTrigger
+              playerName={playerName}
+              playerId={playerId}
+              isOpen={isPositionalPanelOpen}
+              onToggle={onTogglePositionalPanel}
+            />
           )}
         </div>
       </div>
