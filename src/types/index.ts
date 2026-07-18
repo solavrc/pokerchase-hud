@@ -111,7 +111,11 @@ export type {
   StatCalculationContext,
   StatValue,
   StatResult,
-  ActionDetailContext
+  ActionDetailContext,
+  PositionalStatsBucketId,
+  PositionalStatId,
+  PositionalStatsBucket,
+  PositionalStatsResult
 } from './stats'
 
 // Error handling types

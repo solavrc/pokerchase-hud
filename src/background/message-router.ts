@@ -6,6 +6,7 @@ import type {
   LatestStatsMessage,
   MessageResponse
 } from '../types/messages'
+import { getPositionalStats } from '../services/positional-stats-service'
 import { firebaseAuthService } from '../services/firebase-auth-service'
 import { autoSyncService } from '../services/auto-sync-service'
 import { getOperationState, isOperationIdle } from './operation-state'
@@ -303,6 +304,17 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         .then(() => sendResponse({ success: true }))
         .catch(error => {
           console.error('[acknowledgeRebuildAdvisory] Error:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'getPositionalStats') {
+      // ポジション別スタッツ・ドリルダウン
+      getPositionalStats(db, service, request.playerId)
+        .then(positionalStats => {
+          sendResponse({ success: true, positionalStats })
+        })
+        .catch(error => {
+          console.error('[getPositionalStats] Error:', error)
           sendResponse({ success: false, error: error.message })
         })
       return true
