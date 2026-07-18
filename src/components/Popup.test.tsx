@@ -516,4 +516,41 @@ describe('Popup', () => {
       jest.useRealTimers()
     }, 10000)
   })
+
+  describe('Service Worker無応答時のフェイルオープン', () => {
+    it('firebaseAuthStatus/getSyncStateがタイムアウトしてもUIはブロックされず既定状態で使用可能', async () => {
+      jest.useFakeTimers()
+
+      // Simulate a busy/unresponsive service worker: sendMessage never calls its callback
+      mockChromeRuntimeSendMessage.mockImplementation(() => {
+        // no-op: never invokes the callback
+      })
+
+      render(<Popup />)
+
+      // The mount effect calls chrome.storage.sync/local.get synchronously,
+      // and sendMessage is invoked (even though it never responds)
+      await waitFor(() => {
+        expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+          { action: 'firebaseAuthStatus' },
+          expect.any(Function)
+        )
+      })
+
+      // The rest of the popup renders immediately — not blocked on the SW response
+      expect(screen.getByText('サイズ:')).toBeInTheDocument()
+
+      // Advance past the sendMessageWithTimeout window (8s default default) for
+      // both getSyncState poll and firebaseAuthStatus; must not throw or hang
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(9000)
+      })
+
+      // Fail-open default: still shows the "enable backup" sign-in button
+      // (isFirebaseSignedIn stayed at its default `false`), not a stuck spinner
+      expect(screen.getByText('自動バックアップを有効にする')).toBeInTheDocument()
+
+      jest.useRealTimers()
+    }, 15000)
+  })
 })

@@ -16,6 +16,7 @@ import type {
 } from '../types/messages'
 import type { SyncState } from '../services/auto-sync-service'
 import { content_scripts } from '../../manifest.json'
+import { sendMessageWithTimeout } from './popup/send-message'
 
 // Import sub-components
 import { UIScaleSection } from './popup/UIScaleSection'
@@ -52,8 +53,10 @@ const Popup = () => {
   // Fetch sync state
   useEffect(() => {
     const fetchSyncState = () => {
-      chrome.runtime.sendMessage({ action: 'getSyncState' }, (response: any) => {
-        if (response && response.syncState) {
+      // Fails open: on timeout/error, leave syncState as-is rather than
+      // blocking the poll loop or surfacing a stuck spinner.
+      sendMessageWithTimeout<{ syncState?: SyncState }>({ action: 'getSyncState' }).then((response) => {
+        if (response?.syncState) {
           setSyncState(response.syncState)
         }
       })
@@ -161,15 +164,19 @@ const Popup = () => {
         }
       })
 
-      // Then verify with background (authoritative source)
-      chrome.runtime.sendMessage({ action: 'firebaseAuthStatus' }, (response: any) => {
+      // Then verify with background (authoritative source).
+      // Fails open: on timeout/error, keep whatever was already set from
+      // the chrome.storage.local cache above instead of blocking the UI.
+      sendMessageWithTimeout<{ isSignedIn?: boolean; userInfo?: { email: string; uid: string } | null }>({
+        action: 'firebaseAuthStatus'
+      }).then((response) => {
         if (response) {
           setIsFirebaseSignedIn(response.isSignedIn || false)
           setFirebaseUserInfo(response.userInfo || null)
-          
+
           // Also get sync state if signed in
-          chrome.runtime.sendMessage({ action: 'getSyncState' }, (syncResponse: any) => {
-            if (syncResponse && syncResponse.syncState) {
+          sendMessageWithTimeout<{ syncState?: SyncState }>({ action: 'getSyncState' }).then((syncResponse) => {
+            if (syncResponse?.syncState) {
               setSyncState(syncResponse.syncState)
             }
           })

@@ -4,6 +4,7 @@ import Typography from '@mui/material/Typography'
 import { ArrowUpward, ArrowDownward } from '@mui/icons-material'
 import type { SyncState } from '../../services/auto-sync-service'
 import { useEffect, useState } from 'react'
+import { sendMessageWithTimeout } from './send-message'
 
 interface SyncStatusSectionProps {
   syncState: SyncState
@@ -25,13 +26,28 @@ export const SyncStatusSection = ({
   const [syncInfo, setSyncInfo] = useState<SyncInfo | null>(null)
 
   useEffect(() => {
-    // Get sync info on mount and when syncState changes
-    chrome.runtime.sendMessage({ action: 'getSyncInfo' }, (response: any) => {
-      if (response && response.syncInfo) {
+    // Get sync info on mount and when syncState actually transitions.
+    // Depend on primitive fields (content), not the syncState object
+    // identity — Popup.tsx polls getSyncState every 5s and always sets a
+    // freshly-identitied object, which would otherwise re-fire this on
+    // every poll tick and re-run a live db.apiEvents.count() over the
+    // full event store each time.
+    let cancelled = false
+
+    // Fails open: on timeout/error, keep the last known syncInfo (or the
+    // initial null) rather than blocking — the timestamp line simply
+    // stays hidden/stale, nothing spins forever.
+    sendMessageWithTimeout<{ syncInfo?: SyncInfo }>({ action: 'getSyncInfo' }).then((response) => {
+      if (cancelled) return
+      if (response?.syncInfo) {
         setSyncInfo(response.syncInfo)
       }
     })
-  }, [syncState])
+
+    return () => {
+      cancelled = true
+    }
+  }, [syncState.status, syncState.lastSyncTime])
 
   const formatTimestamp = (timestamp?: number) => {
     if (!timestamp) return '未確認'

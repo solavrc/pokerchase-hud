@@ -17,6 +17,7 @@ import type {
 } from '../../types/messages'
 import { isExportProgressMessage, isRebuildProgressMessage } from '../../types/messages'
 import { REBUILD_ADVISORY_STORAGE_KEY, type RebuildAdvisoryState } from '../../background/rebuild-advisory'
+import { sendMessageWithTimeout } from './send-message'
 
 interface ImportExportSectionProps {
   importStatus: string
@@ -73,9 +74,10 @@ export const ImportExportSection = ({
 
   // Listen for export/rebuild progress messages and query state on mount
   useEffect(() => {
-    // Query current operation state on mount (handles popup close/reopen)
-    chrome.runtime.sendMessage({ action: 'getOperationState' }, (response: any) => {
-      if (chrome.runtime.lastError) return // Extension context may be invalid
+    // Query current operation state on mount (handles popup close/reopen).
+    // Fails open: on timeout/error, leave export/rebuild state at their
+    // 'idle' defaults instead of blocking the buttons or showing a spinner.
+    sendMessageWithTimeout<{ operationState?: any }>({ action: 'getOperationState' }).then((response) => {
       if (response?.operationState) {
         const state = response.operationState
         if (state.type === 'export') {

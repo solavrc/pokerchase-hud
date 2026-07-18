@@ -45,7 +45,7 @@ describe('FirebaseAuthSection', () => {
     expect(screen.queryByText('ログアウト')).not.toBeInTheDocument()
   })
 
-  it('サインイン時はユーザー情報と同期ボタンを表示', () => {
+  it('サインイン時はユーザー情報と同期ボタンを表示', async () => {
     const syncState: SyncState = {
       status: 'idle',
       lastSyncTime: new Date(Date.now() - 60000), // 1分前
@@ -62,7 +62,9 @@ describe('FirebaseAuthSection', () => {
 
     expect(screen.getByText('test@example.com')).toBeInTheDocument()
     // 最終同期時刻が表示されることを確認（日時形式）
-    expect(screen.getByText(/最終同期:/)).toBeInTheDocument()
+    // getSyncInfo is now fetched via sendMessageWithTimeout (resolves as a
+    // microtask), so the timestamp line appears asynchronously
+    expect(await screen.findByText(/最終同期:/)).toBeInTheDocument()
     expect(screen.getByText('アップロード')).toBeInTheDocument()
     expect(screen.getByText('ダウンロード')).toBeInTheDocument()
     expect(screen.getByText('ログアウト')).toBeInTheDocument()

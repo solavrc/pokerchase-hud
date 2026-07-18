@@ -31,7 +31,13 @@ describe('ImportExportSection - rebuild advisory banner', () => {
   beforeEach(() => {
     storageChangeListeners = []
     storageLocalData = {}
-    mockSendMessage = jest.fn()
+    // Default: respond synchronously with no operationState (mirrors "nothing in
+    // progress"), so the sendMessageWithTimeout() call in the mount effect
+    // resolves immediately instead of leaving a real 8s timeout timer pending
+    // after each test.
+    mockSendMessage = jest.fn((_message: unknown, callback?: (response: unknown) => void) => {
+      if (typeof callback === 'function') callback({})
+    })
 
     global.chrome = {
       ...global.chrome,
