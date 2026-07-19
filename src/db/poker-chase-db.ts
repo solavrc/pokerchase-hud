@@ -6,15 +6,26 @@ import type {
   Action,
   MetaRecord
 } from '../types'
-import { isApplicationApiEvent } from '../types'
 
 /**
  * PokerChase HUD用IndexedDBクラス
  *
  * ポーカーゲームのデータ永続化を担当する。
- * - APIイベントの生ログを保存
+ * - APIイベントの生ログを保存（"Raw Event Lake" — 検証可否・アプリケーション種別に
+ *   関わらず、数値のtimestamp+ApiTypeIdを持つ受信イベントは全て保存する。バリデー
+ *   ションはリアルタイム処理パイプラインへの投入可否のみを左右し、保存そのものを
+ *   左右しない。詳細はdocs/architecture.md「Raw Event Lake」参照）
  * - 処理済みのハンド、フェーズ、アクションデータを構造化して保存
  * - 統計計算のための効率的なインデックスを提供
+ *
+ * 設計変遷: 2024年の初期実装（コミット5f7d60c/fce0343）は生ログ全件保存だったが、
+ * 2025-07-24のリファクタ（a6480ff）でapiEventsのcreating/readingフックにより
+ * アプリケーションイベント以外を実質的に不可視化していた（creatingフックは
+ * `this.onsuccess = null`のみで実際の書き込み自体は防げておらず、reading側の
+ * フックだけが読み取り結果からnullとして除外していた）。この結果、スキーマ変更で
+ * Zodパースに失敗したイベント（2026年シーズン3のEVT_SESSION_RESULTS等）は保存
+ * すらされず、リビルドでも復旧不能なデータ損失が発生した。本バージョンで
+ * フックを撤廃し、元々の「生ログは常に保存する」設計に復元した。
  */
 export class PokerChaseDB extends Dexie {
   apiEvents!: Table<ApiEvent, number>
@@ -52,33 +63,17 @@ export class PokerChaseDB extends Dexie {
       meta: 'id,updatedAt'
     })
 
-    // apiEventsテーブルのフックを設定
-    // 非ゲームイベントを自動的にフィルタリング
-    this.setupApiEventHooks()
-  }
-
-  /**
-   * apiEventsテーブルのフックを設定
-   * 非アプリケーションイベントを自動的にフィルタリング
-   */
-  private setupApiEventHooks(): void {
-    // 作成時のフィルタリング - 非ゲームイベントの保存を防ぐ
-    this.apiEvents.hook('creating', function(_primKey, obj, _trans) {
-      if (!isApplicationApiEvent(obj)) {
-        // 非アプリケーションイベントは保存しない
-        // @ts-ignore - Dexie内部APIを使用
-        this.onsuccess = null
-        return
-      }
-    })
-
-    // 読み取り時のフィルタリング - 既存の非ゲームイベントを除外
-    this.apiEvents.hook('reading', function(obj) {
-      if (obj && !isApplicationApiEvent(obj)) {
-        // 非アプリケーションイベントはnullとして扱う（結果から除外）
-        return null
-      }
-      return obj
-    })
+    // v4以降へのバンプは不要: [timestamp+ApiTypeId]キーは検証可否・ApiTypeIdの
+    // 既知/未知に関わらずどんな生イベントにも適用できるため、フック撤廃だけなら
+    // インデックス変更は発生しない（意図的にバンプしていない。CLAUDE.md参照）。
+    //
+    // 旧: apiEventsのcreating/readingフックで非アプリケーションイベントを自動
+    // フィルタリングしていたが撤廃した（setupApiEventHooks削除）。フィルタリングは
+    // 各読み取り箇所（EntityConverter/HandLogProcessorへ渡す直前）で明示的に行う。
+    // 理由: (1) creatingフックは実際には書き込みを止められておらず有名無実だった
+    // （`this.onsuccess = null`はDexieの完了コールバックを止めるだけで、配下の
+    // IDBObjectStore.add()自体は既に発行済み）、(2) readingフックがあると
+    // apiEvents.toArray()等で「生ログの全件保存」という本来の目的を果たせない
+    // （エクスポート/インポート/リビルドが常に部分集合しか見えなくなる）。
   }
 }

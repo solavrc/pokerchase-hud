@@ -2,11 +2,13 @@
 import PokerChaseService, {
   ApiType,
   ApiMessage,
+  validateMessage,
   validateApiEvent,
   parseApiEvent,
   getValidationError,
   isApplicationApiEvent
 } from '../app'
+import type { ApiEvent } from '../app'
 import { autoSyncService } from '../services/auto-sync-service'
 import { connectedPorts, startPortPing } from './ports'
 
@@ -33,21 +35,40 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           return
         }
 
+        // Raw Event Lake（docs/architecture.md参照）: timestamp/ApiTypeIdが数値である
+        // 限り、Zodパースの成否・アプリケーションイベントか否かに関わらず生のまま
+        // 保存する。バリデーションは後続のリアルタイム処理パイプライン（ストリーム）
+        // への投入可否のみを左右し、保存の可否は左右しない。これにより将来
+        // PokerChase側のペイロード変更でスキーマ検証が壊れても、修正後のデータ
+        // 再構築で復旧可能になる（2026年シーズン3のEVT_SESSION_RESULTS破壊的変更で
+        // 実際にデータが失われた反省による）。
+        if (validateMessage(message).success) {
+          // Dexieの型はApiEvent（既知スキーマ）を想定しているが、Lakeとして未検証・
+          // 未知のApiTypeIdの生イベントも意図的に保存するためアサーションが必要
+          service.db.apiEvents.add(message as ApiEvent)
+            .catch(err => console.error('[background] Failed to save event:', err))
+        } else {
+          // timestamp/ApiTypeIdが数値でない = キーとして使えないため保存不可
+          console.warn('[background] Event missing numeric timestamp/ApiTypeId, cannot store:', message)
+        }
+
         // 通常のAPIメッセージ処理
         // Zodスキーマでパース（passthrough: 未知プロパティは保持）
         const data = parseApiEvent(message as ApiMessage)
 
         if (!data) {
-          // パース失敗 = 必須プロパティ欠損など破壊的変更の可能性
+          // パース失敗 = 必須プロパティ欠損など破壊的変更の可能性。生ログは上で
+          // 既に保存済みなので、ここではリアルタイムパイプラインへの投入のみ諦める
           const validationResult = validateApiEvent(message as ApiMessage)
           const errorDetails = validationResult.error ? getValidationError(validationResult.error) : null
-          console.warn(`[background] Schema validation failed (event dropped):\n  Errors: ${JSON.stringify(errorDetails, null, 2)}\n  Event: ${JSON.stringify(message, null, 2)}`)
+          console.warn(`[background] Schema validation failed (stored raw, pipeline skipped):\n  Errors: ${JSON.stringify(errorDetails, null, 2)}\n  Event: ${JSON.stringify(message, null, 2)}`)
           return
         }
 
         // アプリケーション用のイベントかチェック
         if (!isApplicationApiEvent(data)) {
-          // アプリケーションで使用しないApiTypeIdのイベントはDB保存しないが内容は記録
+          // アプリケーションで使用しないApiTypeIdのイベントはパイプラインに投入しないが
+          // 内容は記録（生ログとしては上で既に保存済み）
           console.info(`[background] Non-application event (${data.ApiTypeId}): ${JSON.stringify(data)}`)
           return
         }
@@ -55,9 +76,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // ここでdataはApiEvent型（isApplicationApiEventで保証済み）
         service.eventLogger(data, 'info')
 
-        // DB保存とストリーム処理
-        service.db.apiEvents.add(data)
-          .catch(err => console.error('[background] Failed to save event:', err))
+        // ストリーム処理（DB保存は上で完了済み）
         service.handLogStream.write(data)
         service.handAggregateStream.write(data)
         service.realTimeStatsStream.write(data)
