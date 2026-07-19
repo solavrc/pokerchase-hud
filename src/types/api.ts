@@ -23,7 +23,8 @@ export enum ApiType {
   EVT_HAND_RESULTS = 306,
   /** イベント概要: { "ApiTypeId": 308, "CoinNum": -1, "Items": [{ "ItemId": "season10_point", "Num": 9 }], "Name": "シーズンマッチ", "Name2": "6人対戦【シーズン10】", "DefaultChip": 20000, "LimitSeconds": 8, "IsReplay": true, "BlindStructures": [{ "Lv": 1, "ActiveMinutes": 4, "BigBlind": 200, "Ante": 50 }, { "Lv": 2, "ActiveMinutes": 4, "BigBlind": 280, "Ante": 70 }, { "Lv": 3, "ActiveMinutes": 4, "BigBlind": 400, "Ante": 100 }, { "Lv": 4, "ActiveMinutes": 4, "BigBlind": 560, "Ante": 140 }, { "Lv": 5, "ActiveMinutes": 4, "BigBlind": 780, "Ante": 200 }, { "Lv": 6, "ActiveMinutes": 4, "BigBlind": 1100, "Ante": 280 }, { "Lv": 7, "ActiveMinutes": 4, "BigBlind": 1640, "Ante": 410 }, { "Lv": 8, "ActiveMinutes": 4, "BigBlind": 2500, "Ante": 630 }, { "Lv": 9, "ActiveMinutes": 4, "BigBlind": 3800, "Ante": 950 }, { "Lv": 10, "ActiveMinutes": 4, "BigBlind": 5700, "Ante": 1400 }, { "Lv": 11, "ActiveMinutes": 4, "BigBlind": 8600, "Ante": 2200 }, { "Lv": 12, "ActiveMinutes": 4, "BigBlind": 13000, "Ante": 3200 }, { "Lv": 13, "ActiveMinutes": 4, "BigBlind": 19600, "Ante": 4900 }, { "Lv": 14, "ActiveMinutes": 4, "BigBlind": 29500, "Ante": 7400 }, { "Lv": 15, "ActiveMinutes": 4, "BigBlind": 44300, "Ante": 11000 }, { "Lv": 16, "ActiveMinutes": -1, "BigBlind": 60000, "Ante": 15000 }] }, */
   EVT_SESSION_DETAILS = 308,
-  /** イベント結果: { "ApiTypeId": 309, "Ranking": 3, "IsLeave": false, "IsRebuy": false, "TotalMatch": 285, "RankReward": { "IsSeasonal": true, "RankPoint": 11, "RankPointDiff": 2, "Rank": { "RankId": "diamond", "RankName": "ダイヤモンド", "RankLvId": "diamond", "RankLvName": "ダイヤモンド" }, "SeasonalRanking": 1458 }, "Rewards": [{ "Category": 8, "TargetId": "", "Num": 70 }, { "Category": 3, "TargetId": "item0002", "Num": 450 }, { "Category": 3, "TargetId": "item0028", "Num": 2 }], "EventRewards": [], "Charas": [{ "CharaId": "chara0010", "CostumeId": "costume00101", "Favorite": 29605, "Rank": 3, "TodayUpNum": 0, "Evolution": false, "Stamps": [{ "StampId": "stamp1001", "IsRelease": true }, { "StampId": "stamp1002", "IsRelease": true }, { "StampId": "stamp1003", "IsRelease": true }, { "StampId": "stamp1004", "IsRelease": true }, { "StampId": "stamp1005", "IsRelease": true }, { "StampId": "stamp1006", "IsRelease": true }, { "StampId": "stamp1007", "IsRelease": true }, { "StampId": "stamp1008", "IsRelease": false }, { "StampId": "stamp1009", "IsRelease": false }, { "StampId": "stamp1010", "IsRelease": false }, { "StampId": "stamp1011", "IsRelease": false }, { "StampId": "stamp1012", "IsRelease": false }] }], "Costumes": [], "Decos": [], "Items": [{ "ItemId": "item0002", "Num": 28900 }, { "ItemId": "item0028", "Num": 452 }, { "ItemId": "season10_point", "Num": 11 }], "Money": { "FreeMoney": -1, "PaidMoney": -1 }, "Emblems": [] } */
+  /** イベント結果: { "ApiTypeId": 309, "Ranking": 3, "IsLeave": false, "IsRebuy": false, "TotalMatch": 285, "RankReward": { "IsSeasonal": true, "RankPoint": 11, "RankPointDiff": 2, "Rank": { "RankId": "diamond", "RankName": "ダイヤモンド", "RankLvId": "diamond", "RankLvName": "ダイヤモンド" }, "SeasonalRanking": 1458 }, "Rewards": [{ "Category": 8, "TargetId": "", "Num": 70 }, { "Category": 3, "TargetId": "item0002", "Num": 450 }, { "Category": 3, "TargetId": "item0028", "Num": 2 }], "EventRewards": [], "Charas": [{ "CharaId": "chara0010", "CostumeId": "costume00101", "Favorite": 29605, "Rank": 3, "TodayUpNum": 0, "Evolution": false, "Stamps": [{ "StampId": "stamp1001", "IsRelease": true }, { "StampId": "stamp1002", "IsRelease": true }, { "StampId": "stamp1003", "IsRelease": true }, { "StampId": "stamp1004", "IsRelease": true }, { "StampId": "stamp1005", "IsRelease": true }, { "StampId": "stamp1006", "IsRelease": true }, { "StampId": "stamp1007", "IsRelease": true }, { "StampId": "stamp1008", "IsRelease": false }, { "StampId": "stamp1009", "IsRelease": false }, { "StampId": "stamp1010", "IsRelease": false }, { "StampId": "stamp1011", "IsRelease": false }, { "StampId": "stamp1012", "IsRelease": false }] }], "Costumes": [], "Decos": [], "Items": [{ "ItemId": "item0002", "Num": 28900 }, { "ItemId": "item0028", "Num": 452 }, { "ItemId": "season10_point", "Num": 11 }], "Money": { "FreeMoney": -1, "PaidMoney": -1 }, "Emblems": [] }
+   * season3/Legend Match（2026-07観測）ではRankRewardのシェイプが変わる: { "ApiTypeId": 309, "Ranking": 2, "IsLeave": false, "IsSeasonOver": false, "IsCountOverRingMedal": false, "IsRebuy": false, "IsTimerWinFinish": false, "TotalMatch": 2404, "RankReward": { "IsLegendMatch": true, "RankPoint": 2524, "RankPointDiff": 24, "Rank": { "RankId": "legend", "RankName": "text_rank_name_legend", "RankLvId": "legend", "RankLvName": "text_rank_lv_name_legend" }, "SeasonalRankPoint": 215, "SeasonalRankPointDiff": 15, "SeasonalRanking": 2813, "LegendRankWeeklyRewardId": "legend_weekly_reward_season3", "LegendMatchWeeklyPoint": 35, "LegendMatchWeeklyPointDiff": 35, "LegendMatchWeeklyBattleCount": 1 }, "Items": [{ "ItemId": "item0002", "Num": 50079 }, { "ItemId": "item0028", "Num": 3203 }, { "ItemId": "legend_season3_point", "Num": 215 }, { "ItemId": "nn2_item_0001", "Num": 5690 }, { "ItemId": "rbag_stg06", "Num": 1 }] } — IsSeasonalが省略され、SeasonalRankingが実際の順位整数(固定値0ではない)になり、Itemsが5件に増える。IsSeasonalの省略とSeasonalRankingの整数化・Items 5件化により旧スキーマ（IsSeasonal必須・SeasonalRanking===0固定・Items.max(4)）はこのイベントを弾いてparseApiEventがイベントを破棄していた（2026-01/03頃〜、本ファイルのメタルールコメント参照） */
   EVT_SESSION_RESULTS = 309,
   /** プレイヤー着席: { "ApiTypeId": 313, "ProcessType": 0, "TableUsers": [{ "UserId": 583654032, "UserName": "シュレディンガー", "FavoriteCharaId": "nj_chara0002", "CostumeId": "nj_costume00022", "EmblemId": "emblem0003", "Rank": { "RankId": "legend", "RankName": "レジェンド", "RankLvId": "legend", "RankLvName": "レジェンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0001", "fn_ta_deco0007", "fn_t_deco0005", "b_deco0001", "f_deco0001", "eal_deco0002", "esw_deco0007"] }, { "UserId": 561384657, "UserName": "sola", "FavoriteCharaId": "chara0010", "CostumeId": "costume00101", "EmblemId": "emblem0001", "Rank": { "RankId": "diamond", "RankName": "ダイヤモンド", "RankLvId": "diamond", "RankLvName": "ダイヤモンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0001", "ta_deco0001", "t_deco0009", "b_deco0001", "f_deco0001", "eal_deco0001", "esw_deco0001"] }, { "UserId": 750532695, "UserName": "ちいまう", "FavoriteCharaId": "chara0022", "CostumeId": "costume00221", "EmblemId": "emblem0001", "Rank": { "RankId": "legend", "RankName": "レジェンド", "RankLvId": "legend", "RankLvName": "レジェンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0014", "ta_deco0001", "t_deco0012", "b_deco0001", "f_deco0001", "eal_deco0001", "esw_deco0006"] }, { "UserId": 172432670, "UserName": "ラロムジ", "FavoriteCharaId": "chara0001", "CostumeId": "costume00012", "EmblemId": "emblem0001", "Rank": { "RankId": "legend", "RankName": "レジェンド", "RankLvId": "legend", "RankLvName": "レジェンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0001", "ta_deco0001", "t_deco0001", "b_deco0001", "f_deco0001", "eal_deco0001", "esw_deco0001"] }, { "UserId": 575402650, "UserName": "夜菊0721", "FavoriteCharaId": "chara0021", "CostumeId": "costume00212", "EmblemId": "emblem0001", "Rank": { "RankId": "legend", "RankName": "レジェンド", "RankLvId": "legend", "RankLvName": "レジェンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0069", "ta_deco0055", "t_deco0069", "bg_deco0006", "f_deco0001", "eal_deco0007", "esw_deco0001"] }, { "UserId": 619317634, "UserName": "ぽちこん", "FavoriteCharaId": "chara0009", "CostumeId": "costume00092", "EmblemId": "emblem0001", "Rank": { "RankId": "legend", "RankName": "レジェンド", "RankLvId": "legend", "RankLvName": "レジェンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0062", "ta_deco0018", "t_deco0058", "b_deco0001", "f_deco0001", "eal_deco0002", "esw_deco0001"] }], "SeatUserIds": [583654032, 619317634, 561384657, 575402650, 750532695, 172432670] } */
   EVT_PLAYER_SEAT_ASSIGNED = 313,
@@ -408,6 +409,22 @@ export const apiEventSchemas = {
     }).optional().describe('トーナメント固有ルール。MTT（BattleType=1）の場合のみ。存在する場合は全フィールドが揃う'),
   }).describe('セッション詳細 - 1セッション1回発行。セッション名(Name)はAggregateEventsStreamがsession.nameに保存。BlindStructuresでブラインドレベル構造を提供'),
 
+  // --------------------------------------------------------------
+  // メタルール（EVT_SESSION_RESULTS 以下、報酬/コスメ/シーズン系の
+  // サブスキーマに適用）:
+  // PokerChase はシーズン切り替え・新モード（例: Legend Match season3）
+  // 投入のたびに Rewards/Items/Charas/Stamps/Decos 等の「運用コンテンツ」
+  // 配列の要素数や個々の値域を変更してくる（例: Items が3→4→5件に増加、
+  // SeasonalRanking が固定値0→実際の順位整数に変化）。これらは実際の
+  // ゲームコンテンツ次第で変わるものであり、厳密な .max()/.length()/
+  // z.literal() を課すと将来の季節更新のたびにスキーマが壊れ、
+  // parseApiEvent が黙ってイベントを破棄してしまう（本ファイルが2026-01/03
+  // 頃から実際に踏んだ障害）。
+  // よって、コンテンツ配列（報酬・アイテム・コスチューム・スタンプ等）は
+  // 値域を絞らずゆるく持たせ、逆に座席インデックス・BetStatus・Phase・
+  // ActionType 等の「ゲーム状態セマンティクス」（stats集計パイプラインが
+  // 依存する不変条件）には引き続き厳密な制約を課す。
+  // --------------------------------------------------------------
   [ApiType.EVT_SESSION_RESULTS]: baseSchema.extend({
     ApiTypeId: z.literal(ApiType.EVT_SESSION_RESULTS),
     Charas: z.array(z.object({
@@ -420,22 +437,22 @@ export const apiEventSchemas = {
       Stamps: z.array(z.object({
         StampId: z.string().describe('例: stamp1001, fn_stamp0312'),
         IsRelease: z.boolean(),
-      })).length(12),
+      })).describe('キャラクターのスタンプ一覧。現状観測範囲では12個固定だが、コンテンツ追加で増減しうるため件数を固定しない（運用コンテンツ配列のためメタルール適用）'),
       TodayUpNum: z.int().nonnegative(),
-    })).max(1),
+    })).describe('お気に入りキャラクターの進行状況。現状観測範囲では常に1件だが、コンテンツ拡張で増減しうるため件数を固定しない（運用コンテンツ配列のためメタルール適用）'),
     Costumes: z.array(z.unknown()),
     Decos: z.array(z.object({
       DecoId: z.string().describe('例: k_deco0069, ta_deco0055, t_deco0069'),
       IsSetting: z.boolean(),
-    })).max(3),
+    })).describe('装飾品報酬。現状観測範囲では最大3件だが、コンテンツ追加で増減しうるため件数を固定しない（運用コンテンツ配列のためメタルール適用）'),
     Emblems: z.array(z.unknown()),
     EventRewards: z.array(z.unknown()),
     IsLeave: z.boolean().describe('途中退出したかどうか'),
     IsRebuy: z.boolean().describe('リバイしたかどうか'),
     Items: z.array(z.object({
-      ItemId: z.string().describe('例: item0002, item0028, item0038, medal_0001'),
+      ItemId: z.string().describe('例: item0002, item0028, item0038, medal_0001, legend_season3_point（season3/legend match 2026で観測）'),
       Num: z.int().nonnegative(),
-    })).max(4),
+    })).describe('所持アイテム一覧（このセッション終了時点のスナップショット）。2026-01/03頃のseason3更新で3→5件に増加し、旧来の.max(4)制約により実イベントが破棄される障害が発生したため、件数上限を撤廃（運用コンテンツ配列のためメタルール適用）'),
     Money: z.object({
       FreeMoney: z.int().describe('-1=非表示'),
       PaidMoney: z.int().describe('-1=非表示'),
@@ -446,7 +463,7 @@ export const apiEventSchemas = {
       Category: z.int().nonnegative().describe('3=チケット, 8=コイン等'),
       Num: z.int().nonnegative(),
       TargetId: z.string().describe('例: item0002, 空文字列の場合あり'),
-    })).max(5),
+    })).describe('報酬一覧。現状観測範囲では最大5件だが、コンテンツ追加で増減しうるため件数を固定しない（運用コンテンツ配列のためメタルール適用）'),
     TotalMatch: z.int().nonnegative(),
     BattleFinishTime: z.int().nonnegative().optional(),
     IsCountOverRingMedal: z.boolean().optional(),
@@ -454,12 +471,19 @@ export const apiEventSchemas = {
     PopupMessageTextKey: z.string().optional(),
     PopupTitleTextKey: z.string().optional(),
     RankReward: z.object({
-      IsSeasonal: z.boolean().describe('シーズナルランクかどうか'),
+      IsSeasonal: z.boolean().optional().describe('シーズナルランクかどうか。season3/legend match 2026以降のペイロードではフィールド自体が送信されなくなった（省略）ため任意化'),
+      IsLegendMatch: z.boolean().optional().describe('Legend Matchモードでの結果かどうか。season3/legend match 2026で新規観測（例: true）'),
       Rank: rankSchema.describe('現在のランク情報'),
-      RankPoint: z.int().nonnegative().describe('現在のランクポイント'),
+      RankPoint: z.int().nonnegative().describe('現在のランクポイント（生涯ラダーRP）。Legend Matchでも引き続き送信される'),
       RankPointDiff: z.int().describe('このセッションでのランクポイント変動（正=上昇、負=下降）'),
-      SeasonalRanking: z.literal(0).describe('シーズナルランキング。現状常に0'),
-    }).optional().describe('ランク報酬。SNG/MTT（BattleType=0,1）の場合のみ。存在する場合は全フィールドが揃う'),
+      SeasonalRanking: z.int().nonnegative().describe('シーズナルランキング。旧仕様では常に0（未使用）だったが、season3/legend match 2026では実際の順位整数が入るようになった（例: 2813）ため固定値制約を撤廃'),
+      SeasonalRankPoint: z.int().nonnegative().optional().describe('シーズン3独自のシーズナルランクポイント。season3/legend match 2026で新規観測（例: 215）'),
+      SeasonalRankPointDiff: z.int().optional().describe('このセッションでのシーズナルランクポイント変動。season3/legend match 2026で新規観測（例: 15）'),
+      LegendRankWeeklyRewardId: z.string().optional().describe('Legend Match週間報酬ID。season3/legend match 2026で新規観測（例: legend_weekly_reward_season3）'),
+      LegendMatchWeeklyPoint: z.int().nonnegative().optional().describe('Legend Match週間トラックのポイント。season3/legend match 2026で新規観測（例: 35）'),
+      LegendMatchWeeklyPointDiff: z.int().optional().describe('このセッションでのLegend Match週間ポイント変動。season3/legend match 2026で新規観測（例: 35）'),
+      LegendMatchWeeklyBattleCount: z.int().nonnegative().optional().describe('Legend Match週間トラックでの対戦回数。season3/legend match 2026で新規観測（例: 1）'),
+    }).optional().describe('ランク報酬。SNG/MTT（BattleType=0,1）の場合のみ。存在する場合は基本フィールド（Rank/RankPoint/RankPointDiff/SeasonalRanking）は揃うが、season3/legend match 2026以降はIsSeasonal省略やLegend Match専用フィールドの有無でシェイプが変わる'),
     ResultChip: z.int().nonnegative().optional(),
     RingReward: z.object({
       Class: z.record(z.string(), z.string()).optional(),
@@ -484,6 +508,9 @@ export const apiEventSchemas = {
     IsOverDailyLimit: z.boolean().optional().describe('デイリー制限超過フラグ。2026-03-24以降に追加された新フィールド。726セッションでTrue未観測'),
     IsChangeDay: z.boolean().optional().describe('日付変更フラグ。2026-03-24以降に追加された新フィールド。726セッションでTrue未観測'),
     WeeklyRewards: z.array(z.unknown()).optional().describe('週間報酬。734セッション中7件のみ出現、全て空配列[]。要素の型は未観測のため防御的にunknown[]とする'),
+    TournamentRatePoint: z.int().optional().describe('トーナメントレートポイント。season3/legend match 2026で新規観測（例: 0）。用途未確定のため防御的にoptional'),
+    TournamentRatePointDiff: z.int().optional().describe('トーナメントレートポイント変動。season3/legend match 2026で新規観測（例: 0）。用途未確定のため防御的にoptional'),
+    TournamentRateRanking: z.int().optional().describe('トーナメントレートランキング。season3/legend match 2026で新規観測（例: 0）。用途未確定のため防御的にoptional'),
   }).describe('セッション終了 - 1セッション1回発行。最終順位(Ranking)、ランク変動(RankReward)を含む。background.tsはこのイベントでautoSyncService.onGameSessionEnd()をトリガー'),
 
   [310]: baseSchema.extend({

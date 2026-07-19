@@ -421,4 +421,165 @@ describe('API Validation Functions', () => {
 
   // Common sub-schemas (seatIndexSchema, userInfoSchema, etc.) are now
   // module-private and tested indirectly via apiEventSchemas validation above.
+
+  describe('EVT_SESSION_RESULTS (309) - season3/Legend Match schema evolution', () => {
+    it('should parse the pre-season3 (legacy) shape: IsSeasonal present, SeasonalRanking fixed at 0, Items <=4', () => {
+      // 実際に観測された旧仕様の309イベント（2026-07-04キャプチャより抜粋）
+      // ソース: ~/Downloads/pokerchase_raw_data_2026-07-04T18-31-12-252Z.ndjson
+      const legacyEvent = {
+        Costumes: [],
+        Decos: [],
+        Charas: [{
+          CostumeId: 'costume00101',
+          Favorite: 37542,
+          Evolution: false,
+          Rank: 3,
+          TodayUpNum: 0,
+          Stamps: [
+            { IsRelease: true, StampId: 'stamp1001' },
+            { IsRelease: true, StampId: 'stamp1002' },
+            { StampId: 'stamp1003', IsRelease: true },
+            { StampId: 'stamp1004', IsRelease: true },
+            { IsRelease: true, StampId: 'stamp1005' },
+            { IsRelease: true, StampId: 'stamp1006' },
+            { IsRelease: true, StampId: 'stamp1007' },
+            { StampId: 'stamp1008', IsRelease: false },
+            { StampId: 'stamp1009', IsRelease: false },
+            { StampId: 'stamp1010', IsRelease: false },
+            { IsRelease: false, StampId: 'stamp1011' },
+            { IsRelease: false, StampId: 'stamp1012' },
+          ],
+          CharaId: 'chara0010',
+          Bond: -1,
+        }],
+        Emblems: [],
+        IsRebuy: false,
+        ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+        EventRewards: [],
+        RankReward: {
+          IsSeasonal: false,
+          RankPointDiff: 29,
+          Rank: { RankLvId: 'legend', RankLvName: 'レジェンド', RankName: 'レジェンド', RankId: 'legend' },
+          SeasonalRanking: 0,
+          RankPoint: 2315,
+        },
+        timestamp: 1726939370344,
+        IsLeave: false,
+        Rewards: [
+          { Num: 130, BuffNum: 0, Category: 8, TargetId: '' },
+          { BuffNum: 0, Category: 3, Num: 610, TargetId: 'item0002' },
+          { Category: 3, Num: 3, BuffNum: 0, TargetId: 'item0028' },
+          { BuffNum: 0, Num: 1, TargetId: 'rbag_gp002', Category: 3 },
+        ],
+        Money: { FreeMoney: -1, PaidMoney: -1 },
+        TotalMatch: 419,
+        Ranking: 1,
+        Items: [
+          { ItemId: 'item0002', Num: 989410 },
+          { Num: 661, ItemId: 'item0028' },
+          { ItemId: 'rbag_gp002', Num: 37 },
+        ],
+      }
+
+      const result = validateApiEvent(legacyEvent)
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.ApiTypeId).toBe(ApiType.EVT_SESSION_RESULTS)
+      }
+    })
+
+    it('should parse the season3/Legend Match shape: IsSeasonal omitted, SeasonalRanking real int, Items=5, new RankReward fields', () => {
+      // 実際に観測されたLegend Match(season3)の309イベント
+      // ソース: legend-match-console-1784442880612.log（Schema validation failed箇所の生イベント）
+      const legendMatchEvent = {
+        ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+        Ranking: 2,
+        IsLeave: false,
+        IsSeasonOver: false,
+        IsCountOverRingMedal: false,
+        IsRebuy: false,
+        IsTimerWinFinish: false,
+        TotalMatch: 2404,
+        BattleFinishTime: 1784442607,
+        RankReward: {
+          IsLegendMatch: true,
+          RankPoint: 2524,
+          RankPointDiff: 24,
+          Rank: {
+            RankId: 'legend',
+            RankName: 'text_rank_name_legend',
+            RankLvId: 'legend',
+            RankLvName: 'text_rank_lv_name_legend',
+          },
+          SeasonalRankPoint: 215,
+          SeasonalRankPointDiff: 15,
+          SeasonalRanking: 2813,
+          LegendRankWeeklyRewardId: 'legend_weekly_reward_season3',
+          LegendMatchWeeklyPoint: 35,
+          LegendMatchWeeklyPointDiff: 35,
+          LegendMatchWeeklyBattleCount: 1,
+        },
+        Rewards: [
+          { Category: 8, TargetId: '', Num: 105, BuffNum: 0 },
+          { Category: 3, TargetId: 'item0002', Num: 220, BuffNum: 0 },
+          { Category: 3, TargetId: 'item0028', Num: 2, BuffNum: 0 },
+          { Category: 3, TargetId: 'nn2_item_0001', Num: 420, BuffNum: 0 },
+          { Category: 3, TargetId: 'rbag_stg06', Num: 1, BuffNum: 0 },
+        ],
+        EventRewards: [],
+        WeeklyRewards: [],
+        Charas: [{
+          CharaId: 'fn_chara0003',
+          CostumeId: 'fn_costume00032',
+          Favorite: -1,
+          Bond: 2856,
+          Rank: 5,
+          TodayUpNum: 0,
+          Evolution: true,
+          Stamps: [
+            { StampId: 'fn_stamp0301', IsRelease: true },
+            { StampId: 'fn_stamp0302', IsRelease: true },
+            { StampId: 'fn_stamp0303', IsRelease: true },
+            { StampId: 'fn_stamp0304', IsRelease: true },
+            { StampId: 'fn_stamp0305', IsRelease: true },
+            { StampId: 'fn_stamp0306', IsRelease: true },
+            { StampId: 'fn_stamp0307', IsRelease: true },
+            { StampId: 'fn_stamp0308', IsRelease: true },
+            { StampId: 'fn_stamp0309', IsRelease: true },
+            { StampId: 'fn_stamp0310', IsRelease: true },
+            { StampId: 'fn_stamp0311', IsRelease: true },
+            { StampId: 'fn_stamp0312', IsRelease: true },
+          ],
+        }],
+        Costumes: [],
+        Decos: [],
+        Items: [
+          { ItemId: 'item0002', Num: 50079 },
+          { ItemId: 'item0028', Num: 3203 },
+          { ItemId: 'legend_season3_point', Num: 215 },
+          { ItemId: 'nn2_item_0001', Num: 5690 },
+          { ItemId: 'rbag_stg06', Num: 1 },
+        ],
+        Money: { FreeMoney: -1, PaidMoney: -1 },
+        Emblems: [],
+        TargetBlindLv: 0,
+        ResultChip: 0,
+        TournamentRatePoint: 0,
+        TournamentRatePointDiff: 0,
+        TournamentRateRanking: 0,
+        PopupTitleTextKey: '',
+        PopupMessageTextKey: '',
+        TableId: 0,
+        IsOverDailyLimit: false,
+        IsChangeDay: false,
+        timestamp: 1784442605331,
+      }
+
+      const result = validateApiEvent(legendMatchEvent)
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.ApiTypeId).toBe(ApiType.EVT_SESSION_RESULTS)
+      }
+    })
+  })
 })
