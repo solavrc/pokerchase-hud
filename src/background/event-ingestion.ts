@@ -11,6 +11,7 @@ import PokerChaseService, {
 import type { ApiEvent } from '../app'
 import { autoSyncService } from '../services/auto-sync-service'
 import { connectedPorts, startPortPing } from './ports'
+import { recordUndecodedEvent } from './undecoded-event-tracker'
 
 /**
  * `chrome.runtime.onConnect`のハンドラーを登録する。
@@ -62,6 +63,19 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           const validationResult = validateApiEvent(message as ApiMessage)
           const errorDetails = validationResult.error ? getValidationError(validationResult.error) : null
           console.warn(`[background] Schema validation failed (stored raw, pipeline skipped):\n  Errors: ${JSON.stringify(errorDetails, null, 2)}\n  Event: ${JSON.stringify(message, null, 2)}`)
+
+          // drop可視化（docs/postmortems/2026-07-session-results-drop.md 再発防止#2）:
+          // 検証失敗イベントの件数をApiTypeIdごとに集計してmetaテーブルへ永続化し、
+          // Popupから可視化できるようにする。309インシデントは半年間これが
+          // console.warnの中にしか無かったために気づけなかった
+          const rawApiTypeId = (message as { ApiTypeId?: unknown }).ApiTypeId
+          if (typeof rawApiTypeId === 'number') {
+            const rawTimestamp = (message as { timestamp?: unknown }).timestamp
+            const eventTimestamp = typeof rawTimestamp === 'number' ? rawTimestamp : Date.now()
+            recordUndecodedEvent(service.db, rawApiTypeId, eventTimestamp).catch(err =>
+              console.error('[background] Failed to record undecoded event stats:', err)
+            )
+          }
           return
         }
 
