@@ -205,6 +205,7 @@ data storage (Dexie.js), normalized entities, Firestore strategy, and v3 index o
 13. **Optimistic UI + Server Guard**: Popup sets state immediately on click (responsive UX), background validates and rejects if busy (correctness)
 14. **Cache-First Rendering**: Frequently needed state (Firebase auth) cached in `chrome.storage.local` for instant popup rendering
 15. **Rebuild Advisory Versioning**: Bump `REBUILD_ADVISORY_VERSION` (`src/constants/database.ts`) whenever a change alters write-time entity derivation for already-recorded data, so existing users get prompted (badge/notification/popup banner via `src/background/rebuild-advisory.ts`) to run データ再構築 after updating
+16. **Raw Event Lake**: `apiEvents` is the raw wire log — any event with a numeric `timestamp`+`ApiTypeId` is stored, independent of whether it parses under the current Zod schema or is an application type. Validation gates only the real-time pipeline (streams/stats/entity generation), never storage. This is what makes データ再構築 an actual recovery path after a PokerChase payload change breaks a schema: rebuild re-validates every stored raw row against the *current* schema, so a later schema fix retroactively recovers rows that failed to parse when first received — no separate promotion mechanism needed. See "ApiEvent Architecture" and `docs/architecture.md` for the full rationale and history.
 
 ### Data Flow
 
@@ -214,6 +215,12 @@ data storage (Dexie.js), normalized entities, Firestore strategy, and v3 index o
 WebSocket Events (from content_script)
     │
     ├─► Database (apiEvents.add) ─── Persistent storage
+    │   (numeric timestamp+ApiTypeId only — the Raw Event Lake;
+    │    independent of parseApiEvent/isApplicationApiEvent below)
+    │
+    ▼ parseApiEvent + isApplicationApiEvent gate
+    (non-application / unparseable events stop here — already durably
+     stored above, just not forwarded into the real-time pipeline)
     │
     ├─► HandLogStream ─────────────► Hand Log Output
     │   (Independent stream)          (via 'data' event)
@@ -239,6 +246,7 @@ WebSocket Events (from content_script)
 - Only the main statistics pipeline uses `.pipe()` for sequential processing
 - HandLogStream and RealTimeStatsStream operate in parallel, not as branches
 - Each stream emits results via 'data' events to update different UI components
+- Storage happens *before* the validation gate, not alongside it — see "Raw Event Lake" (Design Principles #16)
 
 **Event Order Handling:**
 
@@ -252,13 +260,14 @@ WebSocket Events (from content_script)
 ```
 NDJSON File (.ndjson)
     ↓
-Parse & Validate
-    ↓
 Chunk Processing
-    ├─► Duplicate Detection (Set-based, O(1))
-    └─► New Events Collection
+    ├─► Duplicate Detection (Set-based, O(1) — keyed on timestamp+ApiTypeId)
+    ├─► Raw Event Storage: every line with numeric timestamp+ApiTypeId is
+    │   bulkAdd'ed to apiEvents (the Lake), regardless of Zod validity
+    └─► Valid Application Events Collection (subset that also parses AND
+        isApplicationApiEvent — tracked only for rows confirmed stored)
          ↓
-EntityConverter (Direct generation)
+EntityConverter (Direct generation, fed only the valid-application subset)
     ├─► Extracts session/player info
     ├─► Generates entities without streams
     └─► Uses statistics modules for ActionDetails
@@ -277,12 +286,16 @@ Statistics Refresh (batch mode)
 - Batch mode disables real-time updates during import
 - Direct entity conversion bypasses stream overhead
 - Falls back to individual inserts on bulk operation failure
+- Storage and entity generation are decoupled: a line that fails to parse (or
+  is a known non-application type) is still stored raw — it just doesn't
+  reach `EntityConverter`. See "Raw Event Lake" (Design Principles #16).
 
 **Critical Design Constraints (learned 2026-03):**
 
 > **Data model & event edge cases** are consolidated in [docs/api-events.md](docs/api-events.md) — see "Data Constraints & Edge Cases", "Field Relationships", and "Enum Reference" sections.
 
 - **EntityConverter state**: `convertEventsToEntities()` tracks hand boundaries via internal local variables (`currentHandEvents`). Must NOT be called in chunks — a hand spanning chunk boundaries will be lost. Always pass all events in a single call.
+- **EntityConverter/HandLogProcessor never see raw, unvalidated rows**: both read required fields (e.g. `EVT_DEAL.Game.SmallBlind`) via unguarded `switch (event.ApiTypeId)` dispatch, with no `default:` case protecting against a well-known-ApiTypeId-but-malformed payload. Every call site that reads from `apiEvents` (the raw Lake) and feeds either of them re-validates first with `filterValidApplicationEvents()` (`src/utils/database-utils.ts`): `rebuildAllData`, `AutoSyncService.rebuildLocalEntities`, `HandLogExporter.exportHand`/`exportMultipleHands`. This re-validation on every rebuild is also the *entire* recovery mechanism for a PokerChase schema break — a later schema fix makes previously-unparseable rows parse on the next rebuild automatically, no promotion step required.
 - **Dexie Collection reuse**: `processInChunks()` uses `.offset().limit()` on a Collection object, but Dexie Collections accumulate state. For reliable pagination, use cursor-based approach with `where('[timestamp+ApiTypeId]').above(lastKey).limit(N)`.
 - **Export size limits**: Service Worker → content_script message limit is 64MiB. Data URL limit is ~2MB. Large exports use chunked message passing with Blob-based download in content_script.
 - **PokerStars hand history format**: `calls` shows additional call amount (not total bet). `Dealt to` is hero-only. Summary uses `folded on the Flop/Turn/River`. See [docs/pokerstars-export.md](docs/pokerstars-export.md).
@@ -542,6 +555,8 @@ Dynamic statistics for all players, with hero having additional hand improvement
 - **Entity schemas** in `src/types/entities.ts`: `Hand`, `Phase`, `Action`, `User` with parse functions
 - **Type guards** (no type assertions): `isApiEventType()`, `parseApiEvent()`, `isApplicationApiEvent()`, `getValidationError()`
 - **Breaking changes**: Use `ApiEvent` (removed: `ApiEventType`, `ApiEventUnion`, `ApiEventSubset`, `ApiEventMap`)
+- **Validation gates the pipeline, never storage** (Raw Event Lake — see Design Principles #16 and `docs/architecture.md`): `apiEvents.add()` in `src/background/event-ingestion.ts` runs before `parseApiEvent`/`isApplicationApiEvent` and stores anything with a numeric `timestamp`+`ApiTypeId` — non-application events (202/205 keepalive/timer), ApiTypeIds unknown to `apiEventSchemas`, and app-type events that currently fail to parse are all persisted. The same event is only forwarded to `eventLogger`/`handLogStream`/`handAggregateStream`/`realTimeStatsStream` when it *does* parse as a known application event. Any code path that reads raw `apiEvents` rows and feeds them into `EntityConverter` or `HandLogProcessor` (which read required fields like `EVT_DEAL.Game.SmallBlind` without guards) must first re-validate with `filterValidApplicationEvents()` (`src/utils/database-utils.ts`) — see `rebuildAllData`, `AutoSyncService.rebuildLocalEntities`, and `HandLogExporter`'s two prefetch sites for the pattern.
+- **Cloud sync is application-type-only** (cost decision, not a data-loss concern): `AutoSyncService.syncToCloud()` filters each raw chunk to `isApplicationApiEvent` before upload — non-application noise and unparseable rows never leave the device. The upload cursor still advances on the *raw* chunk boundary (not the filtered subset), otherwise a chunk that's 100% noise would never advance and the sync loop would refetch it forever.
 
 ### Database Schema
 
@@ -551,13 +566,15 @@ Defined in `src/db/poker-chase-db.ts` (Dexie/IndexedDB). See [docs/architecture.
 
 | Table | Primary Key | Key Indexes | Purpose |
 |---|---|---|---|
-| `apiEvents` | `[timestamp+ApiTypeId]` | `[ApiTypeId+timestamp]` | Raw WebSocket events |
+| `apiEvents` | `[timestamp+ApiTypeId]` | `[ApiTypeId+timestamp]` | Raw WebSocket events — the full Lake (see above), not just application events |
 | `hands` | `id` (auto) | `*seatUserIds`, `approxTimestamp` | Processed hand data |
 | `phases` | `[handId+phase]` | `handId`, `*seatUserIds` | Per-street state |
 | `actions` | `[handId+index]` | `[playerId+phase]`, `[playerId+actionType]`, `*actionDetails` | Player actions with stat markers |
 | `meta` | `id` | `updatedAt` | Import status, stats cache, sync state |
 
-v3 migration added composite indexes for player-specific queries. `MetaRecord` replaced `ImportMeta`.
+v3 migration added composite indexes for player-specific queries. `MetaRecord` replaced `ImportMeta`. No later version bump was needed to restore full-Lake storage (removing the `creating`/`reading` hooks is not an index change).
+
+**Storage growth**: `apiEvents` now also durably stores non-application noise (202/205 keepalive/timer events at roughly the same volume as application events per session — expect apiEvents row count to grow, not just its "useful" subset). IndexedDB quota is browser-managed and generally GB-scale (much larger than `storage.local`'s ~10MB), so this is not expected to be a practical problem. There is currently **no automatic pruning** of `apiEvents`: the existing quota-exceeded handling in `src/services/poker-chase-service.ts` (`cleanupOldStorageData`) and `src/utils/database-utils.ts` (`withTransaction`'s `QuotaExceededError` branch) targets `chrome.storage.local` service-state persistence and IndexedDB transaction errors respectively — neither actively prunes `apiEvents` rows. Users can reset via the popup's "全データ削除" if this ever becomes a real problem; revisit with active pruning only if it does.
 
 ### Configuration & Storage
 
@@ -593,6 +610,7 @@ Key `pokerChaseServiceState` in `storage.local`. Auto-saved with 500ms debounce 
 - **Data Structure**: `/users/{userId}/apiEvents/{timestamp_ApiTypeId}`
 - **Sync Strategy**: Incremental upload, full download (cloud as source of truth)
 - **Cost Optimized**: 100+ event threshold, no periodic sync
+- **Application-type-only sync**: unlike local `apiEvents` (the full Raw Event Lake), Firestore only ever receives application-type events — `AutoSyncService.syncToCloud()` filters each raw chunk with `isApplicationApiEvent` before upload. Non-application noise (202/205 keepalive/timer) and anything that fails to parse stay local-only; this is a cost decision (Firestore write/storage cost), not a data-loss risk, since the local Lake already has the raw copy.
 
 ### Key Features
 
