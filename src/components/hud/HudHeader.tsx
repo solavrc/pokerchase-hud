@@ -1,5 +1,6 @@
 import { memo } from 'react'
 import type { CSSProperties } from 'react'
+import type { StatResult } from '../../types/stats'
 import { PlayerTypeIcons } from './PlayerTypeIcons'
 import { PositionalPanelTrigger } from './PositionalPanelTrigger'
 
@@ -22,6 +23,8 @@ interface HudHeaderProps {
   isPositionalPanelOpen?: boolean
   /** ドリルダウンパネルの開閉トグル。渡された時のみトリガーを表示する */
   onTogglePositionalPanel?: () => void
+  /** プレイヤータイプ分類アイコン（PlayerTypeIcons）に渡す、フィルタ前の全statResults */
+  statResults?: StatResult[]
 }
 
 const styles = {
@@ -49,7 +52,7 @@ const styles = {
   } as CSSProperties,
 }
 
-export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel }: HudHeaderProps) => {
+export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, statResults }: HudHeaderProps) => {
   const hasPotOdds = playerPotOdds?.potOdds && playerPotOdds.potOdds.call > 0
   const hasSpr = playerPotOdds?.spr !== undefined
   
@@ -84,7 +87,7 @@ export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPosition
           )}
         </div>
       </div>
-      <PlayerTypeIcons />
+      <PlayerTypeIcons statResults={statResults} />
     </div>
   )
 })

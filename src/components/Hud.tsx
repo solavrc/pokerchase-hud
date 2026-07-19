@@ -201,6 +201,12 @@ const Hud = memo((props: HudProps) => {
     [displayStats, props.statDisplayConfigs]
   )
   const playerName = useMemo(() => getPlayerName(props.stat), [props.stat])
+  // Unfiltered statResults for the player-type classification icon
+  // (PlayerTypeIcons, via HudHeader) -- same "ignore the grid's enabled
+  // filter" rationale as displayStats above, since the classifier's
+  // required stats (vpip/af/vpipF) are forced on regardless of the user's
+  // display config (see stats/compactStats.ts's CLASSIFIER_REQUIRED_STAT_IDS).
+  const statResultsForHeader = 'statResults' in props.stat ? props.stat.statResults : undefined
   const scale = props.scale || 1
   const hudDisplayMode = props.hudDisplayMode || 'full'
   const hudColorCoding = props.hudColorCoding || false
@@ -340,6 +346,7 @@ const Hud = memo((props: HudProps) => {
             playerPotOdds={props.playerPotOdds}
             isPositionalPanelOpen={props.isPositionalPanelOpen}
             onTogglePositionalPanel={props.onTogglePositionalPanel}
+            statResults={statResultsForHeader}
           />
           {hudDisplayMode === 'compact' ? (
             <div

@@ -131,3 +131,108 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(2)
   })
 })
+
+describe('ReadEntityStream.calcStats -- CLASSIFIER_REQUIRED_STAT_IDS forcing (player-type icon)', () => {
+  let db: PokerChaseDB
+  let service: PokerChaseService
+
+  beforeEach(async () => {
+    db = new PokerChaseDB(indexedDB, IDBKeyRange)
+    await db.open()
+    service = new PokerChaseService({ db })
+    await service.ready
+
+    // statDisplayConfigs is only populated via setBattleTypeFilter (the
+    // production path from background.ts/the popup) -- it stays undefined
+    // otherwise (see the separate describe block below for that case).
+    // Mirror the populated-config production path here with default (no-op)
+    // filters so statDisplayConfigs is the default-merged config (vpipF
+    // still enabled:false, unless the classifier's forcing kicks in
+    // per-request).
+    await service.setBattleTypeFilter({ gameTypes: { sng: true, mtt: true, ring: true } })
+
+    await db.hands.bulkAdd([
+      makeHand({ id: 1, seatUserIds: [1, 2, 3, 4, 5, 6] }),
+      makeHand({ id: 2, seatUserIds: [1, 2, 3, 4, 5, -1] }),
+    ])
+  })
+
+  afterEach(async () => {
+    db.close()
+    await db.delete()
+  })
+
+  test('vpipF (opt-in, enabled:false by default) is still computed -- the player-type classifier needs it for the whale override even when the user never enabled its HUD row', () => {
+    const vpipFConfig = service.statDisplayConfigs?.find(c => c.id === 'vpipF')
+    // Sanity check on the premise: vpipF really is disabled by default (opt-in stat).
+    expect(vpipFConfig?.enabled).toBe(false)
+  })
+
+  test('vpipF, vpip and af all appear in statResults regardless of the disabled display config', async () => {
+    const stats = await runCalcStats(service, SEAT_USER_IDS)
+    const player = stats.find(s => s.playerId === PLAYER_ID)
+    const statResults = player && 'statResults' in player ? player.statResults : undefined
+    expect(statResults?.find(r => r.id === 'vpipF')).toBeDefined()
+    expect(statResults?.find(r => r.id === 'vpip')).toBeDefined()
+    expect(statResults?.find(r => r.id === 'af')).toBeDefined()
+    // vpipF's value is a real [numerator, denominator] fraction, not a
+    // placeholder -- it was actually calculated, not just listed.
+    expect(statResults?.find(r => r.id === 'vpipF')?.value).toEqual(expect.any(Array))
+  })
+
+  test("forcing vpipF on for calculation doesn't mutate the stored display config -- it stays opt-in for the full grid/popup", async () => {
+    // This mirrors Hud.tsx's filterEnabledDisplayStats: the forced calculation
+    // widens statResults, but the user's own enabled flag still governs what
+    // the full 16-stat grid shows. Forcing on the calculation side (this
+    // stream) must not mutate the config object the popup / grid read from.
+    await runCalcStats(service, SEAT_USER_IDS)
+    const vpipFConfig = service.statDisplayConfigs?.find(c => c.id === 'vpipF')
+    expect(vpipFConfig?.enabled).toBe(false)
+  })
+})
+
+describe('ReadEntityStream.calcStats -- forcing still applies when statDisplayConfigs is undefined (fresh install / PR #146 review)', () => {
+  let db: PokerChaseDB
+  let service: PokerChaseService
+
+  beforeEach(async () => {
+    db = new PokerChaseDB(indexedDB, IDBKeyRange)
+    await db.open()
+    service = new PokerChaseService({ db })
+    await service.ready
+
+    // Deliberately do NOT call setBattleTypeFilter (or anything else that
+    // populates statDisplayConfigs) -- this mirrors a fresh install /
+    // background.ts's default branch (no saved options.filterOptions yet),
+    // where service.statDisplayConfigs stays undefined until the user opens
+    // the popup and saves. calculateWithConfig(context, undefined) used to
+    // fall back to calculateAll(), which only computes registry-enabled
+    // stats and skips opt-in ones (vpipF) entirely -- so the classifier's
+    // forcing never ran for these users.
+    await db.hands.bulkAdd([
+      makeHand({ id: 1, seatUserIds: [1, 2, 3, 4, 5, 6] }),
+      makeHand({ id: 2, seatUserIds: [1, 2, 3, 4, 5, -1] }),
+    ])
+  })
+
+  afterEach(async () => {
+    db.close()
+    await db.delete()
+  })
+
+  test('statDisplayConfigs is really undefined (sanity check on the premise)', () => {
+    expect(service.statDisplayConfigs).toBeUndefined()
+  })
+
+  test('vpip, af and vpipF all appear in statResults even with statDisplayConfigs undefined', async () => {
+    const stats = await runCalcStats(service, SEAT_USER_IDS)
+    const player = stats.find(s => s.playerId === PLAYER_ID)
+    const statResults = player && 'statResults' in player ? player.statResults : undefined
+    expect(statResults?.find(r => r.id === 'vpip')).toBeDefined()
+    expect(statResults?.find(r => r.id === 'af')).toBeDefined()
+    expect(statResults?.find(r => r.id === 'vpipF')).toBeDefined()
+    // vpipF's value is a real [numerator, denominator] fraction, not a
+    // placeholder -- it was actually calculated, not just listed.
+    expect(statResults?.find(r => r.id === 'vpipF')?.value).toEqual(expect.any(Array))
+  })
+})
