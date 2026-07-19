@@ -246,7 +246,7 @@ export const apiEventSchemas = {
       NextActionTypes: z.array(z.enum(ActionType)).min(1).max(4),
       NextExtraLimitSeconds: z.int().nonnegative(),
       Phase: z.literal(PhaseType.PREFLOP),
-      Pot: z.int().nonnegative(),
+      Pot: z.int().nonnegative().describe('配札時点のポット額。**アンテだけでなく投稿済みブラインド（SB+BB）も含む**（poker-warehouse I1監査で全数検証: 29,715/29,715本番ハンド+2キャプチャでΣ(Chip)+Pot+ΣSidePot==table_size×DefaultChipが成立、BetChipを別途加算すると二重計上になる）。ただしアンテオールインでデッキ時点のオールインキャップが発生している場合はこの限りでない: Pot/SidePotは既にサイドポット分割済みで、ブラインドは最上位（未キャップ）のサイドポットにのみ含まれる（Pot自体はアンテ拠出者数で割り切れるブラインド抜きの額になる）。ショートスタック推定（下記）はこの分割後の値を前提に組まれている'),
       SidePot: z.array(z.int()).max(4).describe('プリフロップ時点のサイドポット。アンテオールインが発生した場合に値が入る。通常は空配列'),
     }),
     SeatUserIds: z.array(z.int()).min(4).max(6).describe('-1=空席, 配列長=テーブル席数(4 or 6), インデックス=論理シート番号, 値=UserId'),
@@ -319,8 +319,8 @@ export const apiEventSchemas = {
         1=離脱予告/切断(0.33%): DEAL時Status=0→RESULTS時Status=1に遷移。数ハンドにわたりStatus=1が続き、最終的にStatus=6 or 7で離脱。チップ変動なし（ハンドに不参加）
         4=離席中(0.5%): Chip>0を保持したまま次ハンドで不在になることが多い。MTTテーブル移動(RT=2, 53%)、通常ハンド後(RT=0, 41%)、トーナメント敗退(RT=1, 5%)で発生
         5=バスト(1.84%): 常にChip=0。SNG: トーナメント脱落。Ring: バスト後リバイイン待ち（次ハンドでChip>0に復帰 or 席離脱）
-        6=自発退出(0.02%): Chip>0を残したまま次ハンドで不在。Ringゲームの途中退出。Status=1→6の遷移パターンあり
-        7=強制退出(0.01%): Chip>0を残したまま次ハンドで不在。タイムアウトや接続断による強制退場。Status=1→7の遷移パターンあり
+        6=自発退出(0.02%): Chip>0を残したまま次ハンドで不在。Ring途中退出のほか、ランク戦SNG(BattleType=0)でも発生する（リタイア機能 — poker-warehouse I1監査でChip>0のままSeatUserIdsから恒久消失しチップが再配分されない事例を確認。離脱者にResults[].Rankingは付かない。docs/api-events.md「プレイヤー離脱状態」の訂正注記参照）。Status=1→6の遷移パターンあり
+        7=強制退出(0.01%): Chip>0を残したまま次ハンドで不在。タイムアウトや接続断による強制退場。Ring限定ではない（6と同様）。Status=1→7の遷移パターンあり
         2,3=未観測`),
       IsSafeLeave: z.boolean().optional().describe('安全退出フラグ（Ringゲーム）'),
     })).min(1).max(5).describe('ヒーロー以外の全プレイヤーのハンド終了後状態。SeatIndex昇順。BetChip=0, BetStatus=-1は全ハンドで固定'),
@@ -339,7 +339,7 @@ export const apiEventSchemas = {
         - NO_CALL(RT 10) / SHOWDOWN_MUCK(RT 11): 空配列[]
         - FOLD_OPEN(RT 12): [valid, valid]（2枚公開）or [valid, -1] / [-1, valid]（1枚だけ公開。290件観測。マックハンド公開UIイベント210に対応）
         ※[-1,-1]パターンは未観測（0件）`),
-      Ranking: z.union([z.literal(-2), z.literal(-1), z.int().nonnegative()]).describe('-2=In-Play（継続中）, -1=Multiway敗退（複数人脱落時）, 正の数=トーナメント敗退順位'),
+      Ranking: z.union([z.literal(-2), z.literal(-1), z.int().nonnegative()]).describe('-2=In-Play（継続中）, -1=Multiway敗退（複数人脱落時）, 正の数=このプレイヤーの**トーナメント最終着順**（脱落したこのハンドで確定、以降のハンドに再登場しない — poker-warehouse SNG継続性監査 I3 で全数検証: BQ本番839-857セッション+2キャプチャ全てゼロ違反）。優勝者はトーナメント最終ハンドでRanking=1になる（監査対象の全終端セッションで278/278）。同着（同一ハンドでの複数バスト）もサーバー側が個別の着順に割り振る場合があり、スタック残量など公開フィールドからは再現できないタイブレークが働いている'),
       RankType: z.enum(RankType).describe('成立役。0-9=ポーカーハンド（0=ロイヤルフラッシュ〜9=ハイカード）。10=NO_CALL（無競争勝利）, 11=SHOWDOWN_MUCK（ショーダウンで敗北しマック）, 12=FOLD_OPEN（フォールド後に自発的にカード公開）'),
       RewardChip: z.int().nonnegative().describe('このプレイヤーが獲得したチップ量。0=敗北。サイドポットがある場合は各ポットからの獲得合計'),
       UserId: z.int().nonnegative().describe('プレイヤーID。EVT_DEAL.SeatUserIdsの値と一致。タイムアウト/切断プレイヤーはResults[]に含まれない場合がある'),
@@ -457,7 +457,7 @@ export const apiEventSchemas = {
       FreeMoney: z.int().describe('-1=非表示'),
       PaidMoney: z.int().describe('-1=非表示'),
     }),
-    Ranking: z.int().describe('最終順位（1-based）'),
+    Ranking: z.int().describe('最終順位（1-based）。負値は非トーナメント/未確定のセンチネル: -1=着順なし（単一キャプチャ734件中150件、BQ全履歴922件中169件。Ring全件で100%出現し、MTTの一部＜BQでは32/87＞でも出現。観測範囲ではIsLeaveは常にfalseで「途中退出だから-1」という単純な説明は成立しない、要因未特定）。-3=意味未特定（単一キャプチャ13件、BQ全履歴14件。MTTのみで観測、要因不明のため正直にunknownとして記録）'),
     Rewards: z.array(z.object({
       BuffNum: z.int().nonnegative(),
       Category: z.int().nonnegative().describe('3=チケット, 8=コイン等'),
@@ -465,17 +465,17 @@ export const apiEventSchemas = {
       TargetId: z.string().describe('例: item0002, 空文字列の場合あり'),
     })).describe('報酬一覧。現状観測範囲では最大5件だが、コンテンツ追加で増減しうるため件数を固定しない（運用コンテンツ配列のためメタルール適用）'),
     TotalMatch: z.int().nonnegative(),
-    BattleFinishTime: z.int().nonnegative().optional(),
-    IsCountOverRingMedal: z.boolean().optional(),
-    IsSeasonOver: z.boolean().optional(),
-    PopupMessageTextKey: z.string().optional(),
-    PopupTitleTextKey: z.string().optional(),
+    BattleFinishTime: z.int().nonnegative().optional().describe('対戦終了時刻（Unix Seconds）。単一キャプチャ(734件中562件)・BQ全履歴(922件中750件=81%)いずれでも全BattleTypeに横断的に出現（BQ内訳: SNG 497/643, Ring 126/137, MTT 72/87, bt2 44/44, bt6 11/11）。2024-11-25以降のセッションで初観測（最古の309イベント自体は2024-09-21）— 特定タイプ限定の新フィールドではなく、導入後は全タイプで安定して付与される（詳細: docs/api-events.md「EVT_SESSION_RESULTS の条件付きフィールドファミリー」）'),
+    IsCountOverRingMedal: z.boolean().optional().describe('リングメダル上限超過フラグ。BattleFinishTime/IsSeasonOverと常に共起（同じ母集団、全BattleType横断）'),
+    IsSeasonOver: z.boolean().optional().describe('シーズン終了フラグ。BattleFinishTime/IsCountOverRingMedalと常に共起（同上）'),
+    PopupMessageTextKey: z.string().optional().describe('結果ポップアップの本文テキストキー。TargetBlindLv/ResultChip/PopupTitleTextKeyと常に共起するフィールド群（単一キャプチャ734件中423件、BQ全履歴922件中611件=66%。いずれも全BattleTypeに横断: BQ内訳 SNG 384/643, Ring 115/137, MTT 59/87, bt2 44/44, bt6 9/11）。Ring限定ではない（詳細: docs/api-events.md 同項）'),
+    PopupTitleTextKey: z.string().optional().describe('結果ポップアップのタイトルテキストキー。共起関係はPopupMessageTextKeyの説明を参照'),
     RankReward: z.object({
       IsSeasonal: z.boolean().optional().describe('シーズナルランクかどうか。season3/legend match 2026以降のペイロードではフィールド自体が送信されなくなった（省略）ため任意化'),
       IsLegendMatch: z.boolean().optional().describe('Legend Matchモードでの結果かどうか。season3/legend match 2026で新規観測（例: true）'),
       Rank: rankSchema.describe('現在のランク情報'),
       RankPoint: z.int().nonnegative().describe('現在のランクポイント（生涯ラダーRP）。Legend Matchでも引き続き送信される'),
-      RankPointDiff: z.int().describe('このセッションでのランクポイント変動（正=上昇、負=下降）'),
+      RankPointDiff: z.int().describe('このセッションでのランクポイント変動（正=上昇、負=下降）。変動式（STAGE別基準値+RP差補正±14）は非公式Wikiで解説されており、実測と矛盾ゼロ — Wikiの表が完全な基準値を与えるSTAGEでBQ実測637/637件が理論バンド内、残6件も表と不整合なし。詳細・出典・Wiki内部矛盾の注記は docs/api-events.md 「RankPoint の変動式」参照'),
       SeasonalRanking: z.int().nonnegative().describe('シーズナルランキング。旧仕様では常に0（未使用）だったが、season3/legend match 2026では実際の順位整数が入るようになった（例: 2813）ため固定値制約を撤廃'),
       SeasonalRankPoint: z.int().nonnegative().optional().describe('シーズン3独自のシーズナルランクポイント。season3/legend match 2026で新規観測（例: 215）'),
       SeasonalRankPointDiff: z.int().optional().describe('このセッションでのシーズナルランクポイント変動。season3/legend match 2026で新規観測（例: 15）'),
@@ -484,7 +484,7 @@ export const apiEventSchemas = {
       LegendMatchWeeklyPointDiff: z.int().optional().describe('このセッションでのLegend Match週間ポイント変動。season3/legend match 2026で新規観測（例: 35）'),
       LegendMatchWeeklyBattleCount: z.int().nonnegative().optional().describe('Legend Match週間トラックでの対戦回数。season3/legend match 2026で新規観測（例: 1）'),
     }).optional().describe('ランク報酬。ランク戦SNG（BattleType=0）のみで出現し、MTT（BattleType=1）含む他タイプでは出現しない（BQ実測643/661 vs 他タイプ0/260）。SNG/MTT（BattleType=0,1）の場合のみ。存在する場合は基本フィールド（Rank/RankPoint/RankPointDiff/SeasonalRanking）は揃うが、season3/legend match 2026以降はIsSeasonal省略やLegend Match専用フィールドの有無でシェイプが変わる'),
-    ResultChip: z.int().nonnegative().optional(),
+    ResultChip: z.int().nonnegative().optional().describe('セッション結果のチップ量。TargetBlindLv/Popup*TextKeyと共起するフィールド群の一員（単一キャプチャ734件中423件、BQ全履歴922件中611件。母集団・出現率は PopupMessageTextKey の説明を参照）'),
     RingReward: z.object({
       Class: z.record(z.string(), z.string()).optional(),
       ClassPoint: z.int().nonnegative().optional(),
@@ -494,15 +494,15 @@ export const apiEventSchemas = {
       })).max(2).optional(),
       ClassPointDiff: z.int().optional(),
       IsNotPlay: z.boolean().optional(),
-      Ranking: z.int().nonnegative().optional(),
+      Ranking: z.int().nonnegative().optional().describe('リーダーボード順位（トーナメント順位ではない）'),
       ResultNum: z.int().optional(),
       Score: z.int().optional(),
       SeasonalKey: z.string().regex(/^\d+$/).optional(),
-    }).optional(),
-    TargetBlindLv: z.int().nonnegative().optional(),
+    }).optional().describe('リング（キャッシュゲーム）専用の結果報酬。単一キャプチャ734件中122件、BQ全履歴では Ring（BattleType=4）セッション137/137に出現、他タイプ0/785では一度も出現しない（RankRewardのMTT/SNG排他性と対をなす関係）'),
+    TargetBlindLv: z.int().nonnegative().optional().describe('セッション終了時点の目標ブラインドレベル。ResultChip/Popup*TextKeyと共起するフィールド群の一員（単一キャプチャ734件中423件、BQ全履歴922件中611件。母集団・出現率は PopupMessageTextKey の説明を参照）。**Ring限定ではなく全BattleTypeに横断的に出現する**（旧仮説の訂正）'),
     TournamentReward: z.object({
       JoinNum: z.int().describe('トーナメント参加人数'),
-    }).optional().describe('トーナメント報酬。MTT（BattleType=1）の場合のみ。存在する場合は全フィールドが揃う'),
+    }).optional().describe('トーナメント報酬。MTT（BattleType=1）の場合のみ。存在する場合は全フィールドが揃う。単一キャプチャ734件中77件、BQ全履歴ではMTTセッション87/87に出現、他タイプ0/835では一度も出現しない（RingRewardのRing排他性と対をなす関係）'),
     IsTimerWinFinish: z.boolean().optional().describe('タイマー勝利で終了したか。2026-03-24以降に追加された新フィールド。726セッションでTrue未観測（False: 2件、None: 724件）'),
     TableId: z.union([z.string(), z.int()]).optional().describe('テーブルID。2026-03-24以降に追加された新フィールド（PR#49でスキーマ対応）。726セッション中2件のみ出現（MTT: 19346658, Ring: 0）。観測範囲では全てint型だがAPI仕様上string型の可能性を防御的に許容。今後出現頻度が増える可能性あり'),
     IsOverDailyLimit: z.boolean().optional().describe('デイリー制限超過フラグ。2026-03-24以降に追加された新フィールド。726セッションでTrue未観測'),
