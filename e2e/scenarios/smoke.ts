@@ -3,7 +3,7 @@
  * 3-hand fixture, and assert the HUD + popup actually work end to end.
  *
  *   npm run e2e:smoke
- *   tsx e2e/scenarios/smoke.ts [--headed] [--screenshot-dir <dir>] [--fixture <path>]
+ *   tsx e2e/scenarios/smoke.ts [--headed] [--screenshot-dir <dir>] [--fixture <path>] [--viewport <WxH>]
  *
  * On any failure this dumps a screenshot + DOM snapshot before exiting
  * non-zero, so a failed CI/local run always leaves evidence behind.
@@ -12,7 +12,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildE2E } from '../tools/build-e2e.ts'
 import { launchHarness, type Harness } from '../harness.ts'
-import { DEFAULT_OUTPUT_DIR, DEFAULT_FIXTURE } from '../config.ts'
+import { DEFAULT_OUTPUT_DIR, DEFAULT_FIXTURE, DEFAULT_VIEWPORT, parseViewport } from '../config.ts'
 
 interface CheckResult {
   name: string
@@ -28,6 +28,9 @@ const parseArgs = (argv: string[]) => ({
   fixturePath: argv.includes('--fixture')
     ? argv[argv.indexOf('--fixture') + 1]!
     : DEFAULT_FIXTURE,
+  viewport: argv.includes('--viewport')
+    ? parseViewport(argv[argv.indexOf('--viewport') + 1]!)
+    : DEFAULT_VIEWPORT,
 })
 
 /**
@@ -62,14 +65,14 @@ const dumpFailureEvidence = async (harness: Harness, screenshotDir: string, labe
 }
 
 const run = async (): Promise<void> => {
-  const { headed, screenshotDir, fixturePath } = parseArgs(process.argv.slice(2))
+  const { headed, screenshotDir, fixturePath, viewport } = parseArgs(process.argv.slice(2))
   mkdirSync(screenshotDir, { recursive: true })
 
   console.log('[smoke] building e2e extension (npm run build:e2e logic)...')
   const extensionDir = buildE2E()
   console.log(`[smoke] extension built at ${extensionDir}`)
 
-  console.log('[smoke] launching harness and replaying fixture...')
+  console.log(`[smoke] launching harness (viewport ${viewport.width}x${viewport.height}) and replaying fixture...`)
   let harness: Harness | undefined
   const checks: CheckResult[] = []
   const check = (name: string, pass: boolean, detail?: string) => {
@@ -78,7 +81,7 @@ const run = async (): Promise<void> => {
   }
 
   try {
-    harness = await launchHarness({ headed, fixturePath, extensionDir })
+    harness = await launchHarness({ headed, fixturePath, extensionDir, viewport })
     // 1. HUD appears (at least one player panel mounted).
     try {
       await harness.waitForHudMount(20000)
@@ -153,7 +156,10 @@ const run = async (): Promise<void> => {
     }
 
     console.log(`\n[smoke] PASSED: all ${checks.length} checks passed`)
-    console.log(`[smoke] screenshots: ${join(screenshotDir, 'smoke-hud.png')}, ${join(screenshotDir, 'smoke-popup.png')}`)
+    console.log(
+      `[smoke] screenshots (viewport ${viewport.width}x${viewport.height}): ` +
+      `${join(screenshotDir, 'smoke-hud.png')}, ${join(screenshotDir, 'smoke-popup.png')}`
+    )
   } catch (err) {
     console.error('[smoke] unexpected error:', err)
     if (harness) await dumpFailureEvidence(harness, screenshotDir, 'unexpected')

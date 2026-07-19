@@ -184,6 +184,15 @@ pointed at `e2e/.build/extension/`. Headless was verified to work fine for
 this harness (Chrome for Testing supports extensions in headless mode) and
 is the default; pass `{ headed: true }` to watch it.
 
+The default viewport is **1920x1080** (`DEFAULT_VIEWPORT` in
+`e2e/config.ts`), not puppeteer's own ~1280x800 default -- real gameplay
+runs on a fullscreen ~1920x1080 Unity WebGL canvas, and the HUD
+(`src/components/Hud.tsx`) positions player panels with percentage
+coordinates plus fixed 240px widths, so a smaller viewport visibly crowds
+or overlaps panels that don't overlap in the real game. Override it with
+`{ viewport: { width, height } }` on `launchHarness`, `--viewport WxH` on
+`e2e/run.ts launch`, or `--viewport WxH` on `e2e/scenarios/smoke.ts`.
+
 ## AI-agent QA: the step-by-step CLI
 
 For exploratory QA (by a human or an AI agent), `e2e/run.ts` gives you a
@@ -193,9 +202,10 @@ you've opened, popup tabs, etc.) persists across calls until `close`.
 
 ```sh
 # Start a session (builds the e2e extension automatically if none exists).
-npx tsx e2e/run.ts launch                       # headless, default fixture
+npx tsx e2e/run.ts launch                       # headless, default fixture, 1920x1080 viewport
 npx tsx e2e/run.ts launch --headed               # watch the browser
 npx tsx e2e/run.ts launch --fixture path/to.ndjson --replay-delay 300
+npx tsx e2e/run.ts launch --viewport 1280x800    # override the default (game-realistic) viewport
 
 npx tsx e2e/run.ts status                        # is a session running? where?
 npx tsx e2e/run.ts wait-hud                       # block until the HUD mounts
