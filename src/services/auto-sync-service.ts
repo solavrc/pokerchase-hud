@@ -413,9 +413,16 @@ export class AutoSyncService {
   // rough "pending" UI number, not billing-accurate counts.
 
   /**
-   * Handle game session events
+   * バックログが閾値を超えていればuploadを起動する共通ロジック。
+   * `onGameSessionEnd`（309到着時）と`onNewSessionStart`（201/308到着時、
+   * postmortem再発防止#3のフォールバックトリガー）の両方から呼ばれる。
+   *
+   * 二重発火ガード: `this.isSyncing`チェックと、成功した同期が
+   * `syncState.lastSyncTime`を進める（＝以降のバックログ件数を減らす）ことの
+   * 組み合わせで自然に防がれる。309が正常に動作していれば、その直後に
+   * 201/308が来てもバックログは既に閾値未満になっているため再発火しない。
    */
-  async onGameSessionEnd(): Promise<void> {
+  private async syncIfBacklogExceedsThreshold(trigger: string): Promise<void> {
     // Only sync if there are enough new events to justify the cost
     const user = firebaseAuthService.getCurrentUser()
     if (!user || this.isSyncing) return
@@ -429,14 +436,34 @@ export class AutoSyncService {
         .count()
 
       if (newEventsCount >= this.EVENTS_THRESHOLD) {
-        console.log(`[AutoSync] Game ended with ${newEventsCount} new events, performing upload sync...`)
+        console.log(`[AutoSync] ${trigger} with ${newEventsCount} new events, performing upload sync...`)
         await this.performSync('upload')
       } else {
-        console.log(`[AutoSync] Game ended with only ${newEventsCount} new events, skipping sync (threshold: ${this.EVENTS_THRESHOLD})`)
+        console.log(`[AutoSync] ${trigger} with only ${newEventsCount} new events, skipping sync (threshold: ${this.EVENTS_THRESHOLD})`)
       }
     } catch (error) {
-      console.error('[AutoSync] Error checking event count:', error)
+      console.error(`[AutoSync] Error checking event count (${trigger}):`, error)
     }
+  }
+
+  /**
+   * Handle game session end (EVT_SESSION_RESULTS / 309). Primary auto-sync trigger.
+   */
+  async onGameSessionEnd(): Promise<void> {
+    await this.syncIfBacklogExceedsThreshold('Game ended')
+  }
+
+  /**
+   * Handle new session start (EVT_ENTRY_QUEUED / 201, EVT_SESSION_DETAILS / 308).
+   *
+   * postmortem再発防止#3（docs/postmortems/2026-07-session-results-drop.md）:
+   * 309単一トリガーはSPOFだった（2026年シーズン3で実際にRP/セッション結果が
+   * 半年間喪失した）。新セッション開始はまだ進行中ハンドが存在しない安全な
+   * タイミングなので、ここでも同じ閾値判定でuploadを起動し、309が再び壊れても
+   * 「最大1セッション遅れ」を保証するフォールバックにする。
+   */
+  async onNewSessionStart(): Promise<void> {
+    await this.syncIfBacklogExceedsThreshold('New session started')
   }
 
   /**
