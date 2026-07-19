@@ -135,6 +135,14 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   - `npm run firebase:deploy:indexes` - Deploy Firestore indexes only
   - `npm run firebase:emulators` - Start local Firestore emulator
 
+#### Incident Diagnosis Practices
+
+Learned from the 2026-07 season-3 silent-drop incident (`docs/postmortems/2026-07-session-results-drop.md`) — apply when diagnosing missing/inconsistent data:
+
+- **Declare observability**: any claimed mechanism ("X stopped arriving", "the game changed Y") must state where in the causal chain the evidence sits and which rival hypotheses it CANNOT distinguish. Stored data (IndexedDB/exports/Firestore/BQ) contains only validation-passing events — it can never distinguish "never arrived" from "arrived but was dropped pre-storage".
+- **Prefer direct observation over inference**: before concluding from stored data, check whether the boundary can be observed directly (service-worker console, a single live session capture, packet-level logs). One console log settled in minutes what hours of stored-data inference could not.
+- Write mechanisms as falsifiable predictions and check them; have a second pass with a DIFFERENT observation channel attempt to refute a mechanism before documenting it as fact.
+
 #### Version Control
 
 - **Conventional Commits**: Use standard format for all commits
