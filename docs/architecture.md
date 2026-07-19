@@ -2,6 +2,77 @@
 
 > データストレージ、データモデル、クラウド同期、インデックス最適化に関する設計判断とその根拠。
 
+## 0. Raw Event Lake: `apiEvents` は生ログ、バリデーションは保存を左右しない
+
+### 設計原則
+`apiEvents`テーブルは**受信した生イベントの完全なログ**であり、Zodスキーマ検証の
+成否やアプリケーションイベントか否かに関わらず、数値の`timestamp`+`ApiTypeId`を
+持つイベントは全て保存する。バリデーションが左右するのはリアルタイム処理
+パイプライン（`handLogStream`/`handAggregateStream`/`realTimeStatsStream`と
+`EntityConverter`/`HandLogProcessor`への投入可否）だけであり、保存そのものを
+左右しない。
+
+### 経緯（設計のドリフトと復元）
+- **2024年（初期実装、コミット5f7d60c/fce0343）**: 当初から「APIイベントの生ログを
+  保存」する設計だった（`src/db/poker-chase-db.ts`のクラスdocコメントに今も残る文言）。
+- **2025-07-24（コミットa6480ff）**: `apiEvents`テーブルに`creating`/`reading`の
+  Dexieフックを追加し、非アプリケーションイベントを自動フィルタリングする実装に
+  リファクタ。意図は「フィルタリングをDB層に一元化する」ことだったが、副作用として:
+  - `creating`フックは`this.onsuccess = null`しか行っておらず、配下の
+    `IDBObjectStore.add()`自体は既に発行済みのため**実際には書き込みを止められて
+    いなかった**（非アプリケーションイベントは静かに物理保存されたまま、
+    `reading`フックが読み取り結果からnullとして除外することで見えなくしていた）。
+  - より深刻な問題: `event-ingestion.ts`/`import-export.ts`側で
+    Zodパース失敗時に`db.apiEvents.add()`を呼ぶ前に`return`していたため、
+    **パースに失敗したイベントはそもそも保存されていなかった**。PokerChase側の
+    ペイロード仕様変更でスキーマ検証が壊れた場合（2026年シーズン3の
+    `EVT_SESSION_RESULTS`）、そのイベント種別のデータは月単位で完全に失われ、
+    データ再構築でも復旧不能だった。
+- **本バージョン（2026年、feat/restore-raw-event-lake）**: `creating`/`reading`
+  フックを完全に撤廃し、`event-ingestion.ts`/`import-export.ts`の保存判定を
+  「`validateMessage()`が通る（timestamp/ApiTypeIdが数値）」だけに緩和。元々の
+  設計意図を復元しつつ、実際のデータ損失の原因（パース失敗イベントが保存前に
+  discardされていたこと）を修正した。
+
+### 保存とパイプライン投入の分離
+| 判定 | 保存（`apiEvents.add`） | パイプライン投入（ストリーム/EntityConverter） |
+|---|---|---|
+| `timestamp`/`ApiTypeId`が数値でない | ✗ 不可（キーが作れない） | ✗ |
+| 数値だがZodパース失敗（未知の`ApiTypeId`含む） | ✓ 生のまま保存 | ✗（`console.warn`のみ） |
+| パース成功・非アプリケーションイベント（202/205等） | ✓ 保存 | ✗（`console.info`のみ） |
+| パース成功・アプリケーションイベント | ✓ 保存 | ✓ |
+
+### リビルド = 復旧経路
+`rebuildAllData`（`src/background/import-export.ts`）は`apiEvents`の全行を
+`filterValidApplicationEvents()`（`src/utils/database-utils.ts`）で**再検証**して
+から`EntityConverter`に渡す。これにより、PokerChase側のペイロード変更で
+一時的にパースできなくなったイベント種別も、後日スキーマ側を修正して
+データ再構築を実行するだけで自動的に復旧する。dead-letterテーブルや
+プロモーション処理のような別機構は不要——同じ生の行を、直近のスキーマで
+再解釈するだけで済む。同じ再検証は`AutoSyncService.rebuildLocalEntities`
+（クラウドダウンロード後の再構築）と`HandLogExporter`（PokerStarsエクスポート）
+でも行っている。`EntityConverter`/`HandLogProcessor`は`switch (event.ApiTypeId)`
+で必須フィールド（例: `EVT_DEAL.Game.SmallBlind`）を無検証で読むため、
+未検証の生の行を直接渡すとクラッシュしうる。
+
+### クラウド同期は対象外
+Firestoreへのアップロードはアプリケーションイベントのみに限定する
+（`AutoSyncService.syncToCloud()`の`isApplicationApiEvent`フィルタ）。
+これはコスト上の判断（Firestore書き込み/ストレージ課金）であり、データ損失の
+懸念ではない——非アプリケーションイベントや未検証イベントはローカルの
+Raw Event Lakeに既に生のまま残っている。
+
+### ストレージ増加とプルーニング
+`apiEvents`は非アプリケーションノイズ（202/205のキープアライブ/タイマー等、
+セッションあたりアプリケーションイベントとほぼ同程度の件数）も恒久的に保存する
+ため行数は増加するが、IndexedDBのクォータはブラウザ管理でGB級が一般的であり、
+実務上問題になる可能性は低いと想定している。**現時点で`apiEvents`の自動
+プルーニングは実装していない**（`src/services/poker-chase-service.ts`の
+`cleanupOldStorageData`は`chrome.storage.local`のサービス状態用、
+`src/utils/database-utils.ts`の`withTransaction`の`QuotaExceededError`分岐は
+ログのみで能動的なクリーンアップは行わない）。将来的に問題が顕在化した場合の
+フォローアップ候補（詳細な設計は本バージョンでは意図的に見送り）。
+
 ## 1. データストレージ: Dexie.js (IndexedDB)
 
 ### 採用理由
@@ -34,6 +105,9 @@
 大規模なデータ重複、個別アクションのクエリ困難、スケールでの性能低下。
 
 ## 3. クラウド同期: Firestore + 生イベントのみ
+
+> ローカルの`apiEvents`（Raw Event Lake、セクション0参照）とは異なり、Firestoreへの
+> 同期対象はアプリケーションイベントのみ（コスト最適化。データ損失の懸念ではない）。
 
 ### データ構造
 ```

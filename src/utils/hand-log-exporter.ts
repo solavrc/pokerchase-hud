@@ -9,7 +9,7 @@ import { ApiType, isApiEventType } from '../types/api'
 import { HandLogProcessor, HandLogContext } from './hand-log-processor'
 import { DEFAULT_HAND_LOG_CONFIG } from '../types/hand-log'
 import { DATABASE_CONSTANTS } from '../constants/database'
-import { processInChunks } from '../utils/database-utils'
+import { processInChunks, filterValidApplicationEvents } from '../utils/database-utils'
 
 export class HandLogExporter {
   // Cache for player names across all exports
@@ -214,14 +214,21 @@ export class HandLogExporter {
 
     // 4. Fetch ALL events in the range in ONE query
     console.log(`[HandLogExporter] Prefetching events from ${new Date(minTime).toISOString()} to ${new Date(maxTime).toISOString()}`)
-    const allEvents = await db.apiEvents
+    const rawEvents = await db.apiEvents
       .where('timestamp')
       .between(minTime, maxTime)
       .toArray()
 
+    // apiEvents is the raw Lake (see docs/architecture.md): the time window may
+    // include non-application noise, unknown ApiTypeIds, or app-type payloads
+    // that fail the current schema. HandLogProcessor's switch on ApiTypeId
+    // reads required fields (e.g. EVT_DEAL.Game) without guards, so only
+    // validated application events may reach it.
+    const allEvents = await filterValidApplicationEvents(rawEvents)
+
     // Sort once for all hands
     allEvents.sort((a, b) => a.timestamp! - b.timestamp!)
-    console.log(`[HandLogExporter] Prefetched ${allEvents.length} events`)
+    console.log(`[HandLogExporter] Prefetched ${allEvents.length} events (${rawEvents.length} raw)`)
 
     // 5. Process each hand using the prefetched events
     // プリパス: セッションごとの最小ハンドIDを確定（トーナメントID用）
@@ -380,10 +387,15 @@ export class HandLogExporter {
     const startTime = hand.approxTimestamp! - this.TIME_BUFFER_MS
     const endTime = hand.approxTimestamp! + this.POST_HAND_BUFFER_MS
 
-    const allEvents = await db.apiEvents
+    const rawEvents = await db.apiEvents
       .where('timestamp')
       .between(startTime, endTime)
       .toArray()
+
+    // apiEvents is the raw Lake (see docs/architecture.md): filter to validated
+    // application events before this feeds HandLogProcessor, same reasoning as
+    // exportMultipleHands's prefetch above.
+    const allEvents = await filterValidApplicationEvents(rawEvents)
 
     // Time range for hand events
     // Found total events in time range
