@@ -594,5 +594,47 @@ describe('Hud', () => {
 
       expect(screen.getByText('45')).toHaveStyle({ color: '#e57373' })
     })
+
+    it('statDisplayConfigsでvpipを無効化しても、compactラインは実際のVPIP値を表示する（#143 review）', async () => {
+      // read-entity-stream.ts はcompact必須統計(vpip等)を、ユーザーがフルグリッドで
+      // 無効化していても常に計算してstatResultsに含める(stats/compactStats.ts)。
+      // ここではその後段(Hud.tsx)の挙動を検証する: statDisplayConfigsでvpipを
+      // enabled:falseにしても、statResultsには実データが乗っている想定。
+      const statsWithVpipDisabled: PlayerStats = {
+        playerId: 123,
+        statResults: [
+          { id: 'playerName', name: 'Name', value: 'TestPlayer', formatted: 'TestPlayer' },
+          { id: 'vpip', name: 'VPIP', value: [30, 100], formatted: '30.0% (30/100)' },
+          { id: 'pfr', name: 'PFR', value: [20, 100], formatted: '20.0% (20/100)' },
+          { id: '3bet', name: '3B', value: [5, 50], formatted: '10.0% (5/50)' },
+        ],
+      }
+      const configsWithVpipDisabled: StatDisplayConfig[] = [
+        { id: 'vpip', enabled: false, order: 0 },
+        { id: 'pfr', enabled: true, order: 1 },
+        { id: '3bet', enabled: true, order: 2 },
+      ]
+
+      render(
+        <Hud
+          actualSeatIndex={0}
+          stat={statsWithVpipDisabled}
+          scale={1}
+          statDisplayConfigs={configsWithVpipDisabled}
+          hudDisplayMode="compact"
+        />
+      )
+
+      // compactのクラシックラインはvpipが無効化されていても実値(30)を表示する
+      // ("-"や0にフォールバックしない)
+      expect(screen.getByText('30')).toBeInTheDocument()
+
+      // フルグリッドを展開すると、無効化されたvpipは行として現れない
+      // （可視性設定が支配するのはフルグリッドの行のみ、という仕様どおり）
+      await userEvent.click(screen.getByText('30'))
+      expect(screen.queryByText('VPIP:')).not.toBeInTheDocument()
+      expect(screen.getByText('PFR:')).toBeInTheDocument()
+      expect(screen.getByText('3B:')).toBeInTheDocument()
+    })
   })
 })

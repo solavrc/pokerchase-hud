@@ -33,6 +33,16 @@ describe('statColorRules', () => {
     it('40%超は非常にルース/レッド', () => {
       expect(getStatValueColor('vpip', [45, 100])).toBe('#e57373')
     })
+
+    it('境界値はちょうどの上限側の帯に属する（上限inclusive、#143 review）', () => {
+      // 20.0% ちょうど -> ブルー帯の上限（次の帯にフォールスルーしない）
+      expect(getStatValueColor('vpip', [20, 100])).toBe('#64b5f6')
+      // 28.0% ちょうど -> デフォルト帯の上限
+      expect(getStatValueColor('vpip', [28, 100])).toBeNull()
+      // 40.0% ちょうど -> オレンジ帯の上限（レッドに繰り上がらない）
+      expect(getStatValueColor('vpip', [40, 100])).toBe('#ffb74d')
+      expect(getStatValueColor('pfr', [40, 100])).toBe('#ffb74d')
+    })
   })
 
   describe('3betの帯', () => {
@@ -47,6 +57,13 @@ describe('statColorRules', () => {
     it('10%超はオレンジ', () => {
       expect(getStatValueColor('3bet', [15, 100])).toBe('#ffb74d')
     })
+
+    it('境界値はちょうどの上限側の帯に属する（上限inclusive、#143 review）', () => {
+      // 6.0% ちょうど -> ブルー帯の上限
+      expect(getStatValueColor('3bet', [6, 100])).toBe('#64b5f6')
+      // 10.0% ちょうど -> デフォルト帯の上限（オレンジに繰り上がらない）
+      expect(getStatValueColor('3bet', [10, 100])).toBeNull()
+    })
   })
 
   describe('AFの帯', () => {
@@ -60,6 +77,15 @@ describe('statColorRules', () => {
 
     it('3超はレッド', () => {
       expect(getStatValueColor('af', [400, 100])).toBe('#e57373')
+    })
+
+    it('境界値はちょうどの上限側の帯に属する（上限inclusive、#143 review）', () => {
+      // 分母はn-gate(MIN_DENOMINATOR_FOR_COLOR=20)以上にする -- 未満だと
+      // 帯にかかわらず低信頼度グレーになるため
+      // 1.5 ちょうど -> ブルー帯の上限
+      expect(getStatValueColor('af', [30, 20])).toBe('#64b5f6')
+      // 3.0 ちょうど -> デフォルト帯の上限（レッドに繰り上がらない）
+      expect(getStatValueColor('af', [60, 20])).toBeNull()
     })
   })
 

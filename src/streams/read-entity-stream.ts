@@ -11,6 +11,7 @@ import type {
 } from '../types'
 import { ErrorHandler } from '../utils/error-handler'
 import { defaultRegistry } from '../stats'
+import { COMPACT_REQUIRED_STAT_IDS } from '../stats/compactStats'
 import { matchesTableSizeFilter } from '../utils/table-size'
 import type { ErrorContext } from '../types/errors'
 
@@ -243,8 +244,22 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
         session: this.service.session
       }
 
+      // Compact HUD mode (#143) has a fixed classic-line format (VPIP/PFR/3B
+      // (HAND) + AF/CB/STL) that must always be populated, even when the
+      // user has hidden one of those stats from the full 16-stat grid via
+      // statDisplayConfigs. Force those ids into the calculation regardless
+      // of their configured `enabled` flag -- Hud.tsx re-applies the user's
+      // actual enabled flag when building the full grid's displayStats, so
+      // this only widens what's calculated here, not what's shown in the
+      // grid (PR #143 review).
+      const configsForCalculation = this.service.statDisplayConfigs?.map(config =>
+        !config.enabled && COMPACT_REQUIRED_STAT_IDS.includes(config.id)
+          ? { ...config, enabled: true }
+          : config
+      )
+
       // Calculate stats using the registry with custom configuration
-      const statResults = await defaultRegistry.calculateWithConfig(context, this.service.statDisplayConfigs)
+      const statResults = await defaultRegistry.calculateWithConfig(context, configsForCalculation)
 
       // Return simple stat results format
       const stats: ExistPlayerStats = {

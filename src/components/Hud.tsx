@@ -127,7 +127,7 @@ const formatStatValue = (value: number | [number, number]): string => {
 
 const getDisplayStats = (stat: PlayerStats): Array<[string, any, StatResult?]> => {
   if (stat.playerId === EMPTY_SEAT_ID) return []
-  
+
   if ('statResults' in stat && stat.statResults && stat.statResults.length > 0) {
     return stat.statResults.map(s => [
       s.name || s.id.toUpperCase(),
@@ -135,8 +135,31 @@ const getDisplayStats = (stat: PlayerStats): Array<[string, any, StatResult?]> =
       s
     ])
   }
-  
+
   return []
+}
+
+/**
+ * Filters the (unfiltered) displayStats tuples down to only the stats the
+ * user has enabled via the HUD statistics settings (statDisplayConfigs).
+ * Used for the full 16-stat grid and the clipboard copy.
+ *
+ * NOT used for CompactStatDisplay: read-entity-stream.ts always computes a
+ * fixed set of compact-required stats (vpip/pfr/3bet/hands/af/cbet/steal,
+ * see stats/compactStats.ts) regardless of the user's enabled flag, so that
+ * the compact line's fixed format never silently blanks out a stat the
+ * user merely hid from the full grid (PR #143 review). CompactStatDisplay
+ * is handed the raw, unfiltered displayStats so it can still find those
+ * stats even when this filter would have excluded them.
+ */
+const filterEnabledDisplayStats = (
+  displayStats: Array<[string, any, StatResult?]>,
+  statDisplayConfigs: StatDisplayConfig[]
+): Array<[string, any, StatResult?]> => {
+  const enabledIds = new Set(
+    statDisplayConfigs.filter(config => config.enabled).map(config => config.id)
+  )
+  return displayStats.filter(([, , statResult]) => !!statResult && enabledIds.has(statResult.id))
 }
 
 const getPlayerName = (stat: PlayerStats): string | null => {
@@ -168,7 +191,15 @@ const Hud = memo((props: HudProps) => {
     handleMouseDown
   } = useDraggable(props.actualSeatIndex, defaultPosition)
 
+  // Unfiltered: every stat currently computed for this player (includes
+  // compact-required stats even when the user disabled them, see
+  // stats/compactStats.ts). Feed this to CompactStatDisplay directly.
   const displayStats = useMemo(() => getDisplayStats(props.stat), [props.stat])
+  // Full-grid rows honor the user's HUD statistics visibility settings.
+  const gridDisplayStats = useMemo(
+    () => filterEnabledDisplayStats(displayStats, props.statDisplayConfigs),
+    [displayStats, props.statDisplayConfigs]
+  )
   const playerName = useMemo(() => getPlayerName(props.stat), [props.stat])
   const scale = props.scale || 1
   const hudDisplayMode = props.hudDisplayMode || 'full'
@@ -191,16 +222,16 @@ const Hud = memo((props: HudProps) => {
         statsText += '---\n'
       }
       
-      displayStats.forEach(([key, value, statResult]) => {
+      gridDisplayStats.forEach(([key, value, statResult]) => {
         const formattedValue = statResult?.formatted || formatStatValue(value as number | [number, number])
         statsText += `${key}: ${formattedValue}\n`
       })
-      
+
       await navigator.clipboard.writeText(statsText.trim())
     } catch (error) {
       console.error('Failed to copy stats to clipboard:', error)
     }
-  }, [displayStats, playerName])
+  }, [gridDisplayStats, playerName])
 
   // Container styles
   const containerStyle: CSSProperties = {
@@ -317,11 +348,11 @@ const Hud = memo((props: HudProps) => {
               title={isStatBodyExpanded ? 'クリックで折りたたむ' : 'クリックで全統計を表示'}
             >
               {isStatBodyExpanded
-                ? <StatDisplay displayStats={displayStats} formatValue={formatStatValue} colorCoding={hudColorCoding} />
+                ? <StatDisplay displayStats={gridDisplayStats} formatValue={formatStatValue} colorCoding={hudColorCoding} />
                 : <CompactStatDisplay displayStats={displayStats} colorCoding={hudColorCoding} />}
             </div>
           ) : (
-            <StatDisplay displayStats={displayStats} formatValue={formatStatValue} colorCoding={hudColorCoding} />
+            <StatDisplay displayStats={gridDisplayStats} formatValue={formatStatValue} colorCoding={hudColorCoding} />
           )}
           {props.isPositionalPanelOpen && (
             <PositionalStatsPanel playerId={props.stat.playerId} />
@@ -337,6 +368,10 @@ const Hud = memo((props: HudProps) => {
   if (prevProps.isPositionalPanelOpen !== nextProps.isPositionalPanelOpen) return false
   if (prevProps.hudDisplayMode !== nextProps.hudDisplayMode) return false
   if (prevProps.hudColorCoding !== nextProps.hudColorCoding) return false
+  // statDisplayConfigs governs which stats reach the full grid
+  // (filterEnabledDisplayStats) -- a config change must re-render even if
+  // statResults itself is unchanged.
+  if (prevProps.statDisplayConfigs !== nextProps.statDisplayConfigs) return false
 
   // Check real-time stats changes for hero
   if (prevProps.actualSeatIndex === 0) {

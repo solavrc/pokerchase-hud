@@ -20,7 +20,7 @@ export const MIN_DENOMINATOR_FOR_COLOR = 20
 /** Dimmed color shown for stats below {@link MIN_DENOMINATOR_FOR_COLOR}, matching StatDisplay's existing low-confidence style. */
 export const LOW_SAMPLE_COLOR = '#888888'
 
-/** One color band: values below `upTo` (exclusive) get `color`; `null` means "leave the default text color". */
+/** One color band: values at or below `upTo` (inclusive) get `color`; `null` means "leave the default text color". A boundary value belongs to the band whose `upTo` it matches, not the next band up. */
 interface ColorBand {
   upTo: number
   color: string | null
@@ -33,10 +33,11 @@ interface StatColorRule {
   bands: ColorBand[]
 }
 
-// Design brief thresholds (sola-approved, see PR #143):
-//  - VPIP/PFR: <20 tight/blue, 20-28 default, 28-40 loose/orange, >40 very loose/red
-//  - 3bet: <6 blue, 6-10 default, >10 orange (no red band specified)
-//  - AF: <1.5 blue, 1.5-3 default, >3 red (no orange band specified)
+// Design brief thresholds (sola-approved, see PR #143). Upper bounds are
+// inclusive -- a boundary value belongs to the lower band:
+//  - VPIP/PFR: <=20 tight/blue, (20,28] default, (28,40] loose/orange, >40 very loose/red
+//  - 3bet: <=6 blue, (6,10] default, >10 orange (no red band specified)
+//  - AF: <=1.5 blue, (1.5,3] default, >3 red (no orange band specified)
 const TIGHT_LOOSE_BANDS: ColorBand[] = [
   { upTo: 20, color: '#64b5f6' },
   { upTo: 28, color: null },
@@ -78,6 +79,12 @@ export const getStatValueColor = (statId: string, value: StatValue): string | nu
   if (denominator < MIN_DENOMINATOR_FOR_COLOR) return LOW_SAMPLE_COLOR
 
   const ratio = rule.scale === 'percent' ? (numerator / denominator) * 100 : numerator / denominator
-  const band = rule.bands.find((b) => ratio < b.upTo)
+  // Epsilon guards boundary values against float noise, e.g. (28/100)*100 ===
+  // 28.000000000000004 in IEEE 754 -- without it, an exact 28.0% VPIP would
+  // wrongly skip the `<=28` band and fall through to the next one (#143
+  // review). 1e-9 is far below any real stat's precision, so it can't blur
+  // two genuinely different values together.
+  const EPSILON = 1e-9
+  const band = rule.bands.find((b) => ratio <= b.upTo + EPSILON)
   return band?.color ?? null
 }
