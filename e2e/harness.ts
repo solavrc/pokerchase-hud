@@ -24,7 +24,7 @@ import { dirname } from 'node:path'
 import { install, computeExecutablePath, Browser as BrowserId, detectBrowserPlatform } from '@puppeteer/browsers'
 import puppeteer, { type Browser, type Page } from 'puppeteer-core'
 import { startFixtureServer, type FixtureServerHandle } from './fixture-server.ts'
-import { FIXTURE_PORT, EXTENSION_DIR, BROWSER_CACHE_DIR, CHROME_BUILD_ID, DEFAULT_FIXTURE } from './config.ts'
+import { FIXTURE_PORT, EXTENSION_DIR, BROWSER_CACHE_DIR, CHROME_BUILD_ID, DEFAULT_FIXTURE, DEFAULT_VIEWPORT, type Viewport } from './config.ts'
 
 export interface LaunchOptions {
   /** Path to the built e2e extension directory (must contain manifest.json + dist/). */
@@ -34,6 +34,8 @@ export interface LaunchOptions {
   port?: number
   /** Show the Chrome window. Extensions are unreliable in headless Chrome, but headless has been verified to also work for this harness (see e2e/README.md) -- defaults to false (headless) for unattended/CI-style use. */
   headed?: boolean
+  /** Browser viewport size. Defaults to {@link DEFAULT_VIEWPORT} (1920x1080, matching the real game's fullscreen Unity canvas -- see its doc comment for why this matters for HUD panel geometry). */
+  viewport?: Viewport
 }
 
 export interface HarnessHelpers {
@@ -143,6 +145,7 @@ export const launchHarness = async (options: LaunchOptions = {}): Promise<Harnes
   const extensionDir = options.extensionDir ?? EXTENSION_DIR
   const port = options.port ?? FIXTURE_PORT
   const headed = options.headed ?? false
+  const viewport = options.viewport ?? DEFAULT_VIEWPORT
 
   const fixtureServer = await startFixtureServer({
     fixturePath: options.fixturePath ?? DEFAULT_FIXTURE,
@@ -170,9 +173,20 @@ export const launchHarness = async (options: LaunchOptions = {}): Promise<Harnes
         `--load-extension=${extensionDir}`,
         '--no-first-run',
         '--no-default-browser-check',
-        '--window-size=1280,900',
+        // Window size in *headed* mode only affects the outer OS window
+        // (Chrome adds its own title/tab/toolbar chrome on top of this);
+        // it has no effect headless, where there's no window chrome to
+        // account for. The actual page viewport -- what the HUD's
+        // percentage-based panel positioning sees -- is controlled by
+        // `defaultViewport` below via CDP, independent of this flag. Kept
+        // equal to the viewport so a `--headed` run's window is at least
+        // as large as the content it's showing.
+        `--window-size=${viewport.width},${viewport.height}`,
       ],
-      defaultViewport: null,
+      // Explicit (not `null`) so the viewport is game-realistic regardless
+      // of window size/chrome -- see DEFAULT_VIEWPORT's doc comment in
+      // e2e/config.ts for why 1920x1080 matters to HUD panel geometry.
+      defaultViewport: { width: viewport.width, height: viewport.height, deviceScaleFactor: 1 },
     })
     launchedBrowser = browser
 

@@ -5,7 +5,7 @@
  * number of small commands against the *same* running browser/HUD, in any
  * order, with normal shell tool calls.
  *
- *   npx tsx e2e/run.ts launch [--headed] [--fixture <path>] [--replay-delay <ms>] [--build]
+ *   npx tsx e2e/run.ts launch [--headed] [--fixture <path>] [--replay-delay <ms>] [--build] [--viewport <WxH>]
  *   npx tsx e2e/run.ts status
  *   npx tsx e2e/run.ts wait-hud [--timeout <ms>]
  *   npx tsx e2e/run.ts screenshot <out.png>
@@ -28,7 +28,7 @@ import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { launchHarness, attachHarness } from './harness.ts'
 import { buildE2E } from './tools/build-e2e.ts'
-import { BUILD_DIR, DEFAULT_FIXTURE, DEFAULT_OUTPUT_DIR, E2E_DIR } from './config.ts'
+import { BUILD_DIR, DEFAULT_FIXTURE, DEFAULT_OUTPUT_DIR, E2E_DIR, parseViewport } from './config.ts'
 
 const SESSION_FILE = join(BUILD_DIR, 'session.json')
 
@@ -59,8 +59,9 @@ const runDaemon = async (argv: string[]): Promise<void> => {
   const headed = argv.includes('--headed')
   const fixturePath = flag(argv, '--fixture') ?? DEFAULT_FIXTURE
   const replayDelayMs = flag(argv, '--replay-delay') ? Number(flag(argv, '--replay-delay')) : 0
+  const viewport = flag(argv, '--viewport') ? parseViewport(flag(argv, '--viewport')!) : undefined
 
-  const harness = await launchHarness({ headed, fixturePath, replayDelayMs })
+  const harness = await launchHarness({ headed, fixturePath, replayDelayMs, viewport })
   const state: SessionState = {
     browserWSEndpoint: harness.browser.wsEndpoint(),
     fixtureOrigin: harness.fixtureServer.origin,
@@ -249,7 +250,7 @@ const cmdClose = async (): Promise<void> => {
 const HELP = `Usage: npx tsx e2e/run.ts <command> [args]
 
 Commands:
-  launch [--headed] [--fixture <path>] [--replay-delay <ms>] [--build]
+  launch [--headed] [--fixture <path>] [--replay-delay <ms>] [--build] [--viewport <WxH>]
   status
   wait-hud [--timeout <ms>]
   screenshot [out.png]

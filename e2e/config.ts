@@ -47,6 +47,30 @@ export const CHROME_BUILD_ID = process.env.E2E_CHROME_BUILD_ID || '151.0.7922.34
 /** Default fixture replayed by the smoke scenario / CLI when none is given. */
 export const DEFAULT_FIXTURE = join(E2E_DIR, 'fixtures', 'session-3hands.ndjson')
 
+export interface Viewport {
+  width: number
+  height: number
+}
+
+/**
+ * Default browser viewport. Real gameplay happens on a ~1920x1080
+ * fullscreen Unity WebGL canvas, and the HUD (`src/components/Hud.tsx`)
+ * positions player panels with percentage coordinates plus fixed 240px
+ * widths -- geometry that only reproduces game-realistic (non-overlapping)
+ * panel layout at a game-realistic viewport size. Puppeteer's own default
+ * (~1280x800) is too small and causes panels to visibly overlap. Override
+ * with `--viewport WxH` (`e2e/run.ts launch`, `e2e/scenarios/smoke.ts`) or
+ * the `viewport` option to `launchHarness`.
+ */
+export const DEFAULT_VIEWPORT: Viewport = { width: 1920, height: 1080 }
+
+/** Parses a `WIDTHxHEIGHT` string (e.g. `"1920x1080"`) into a {@link Viewport}. Throws on malformed input. */
+export const parseViewport = (spec: string): Viewport => {
+  const match = /^(\d+)x(\d+)$/.exec(spec.trim())
+  if (!match) throw new Error(`Invalid --viewport value ${JSON.stringify(spec)} -- expected "WIDTHxHEIGHT", e.g. "1920x1080"`)
+  return { width: Number(match[1]), height: Number(match[2]) }
+}
+
 /** Default directory for screenshots / DOM snapshots written by the CLI. */
 export const DEFAULT_OUTPUT_DIR = join(E2E_DIR, 'out')
 
