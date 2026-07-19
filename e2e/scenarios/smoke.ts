@@ -110,13 +110,22 @@ const run = async (): Promise<void> => {
 
     await harness.screenshot(join(screenshotDir, 'smoke-hud.png'))
 
-    // 2. At least one player panel shows a HAND count > 0.
+    // 2. At least one player panel shows a HAND count > 0. Selects on the
+    // stable `data-stat-id="hands"` marker (StatDisplay.tsx / #143's
+    // CompactStatDisplay.tsx) rather than the `title` attribute -- #143
+    // made `title` a composed tooltip (name + value + helpText, and in
+    // compact mode a bare "(n)" text node) instead of a plain "HAND"
+    // string, so it's no longer a stable value-extraction target. Full
+    // mode's `[data-stat-id="hands"]` is a `div` wrapping "HAND:" + value
+    // spans (text like "HAND:67"); compact mode's is a single `span`
+    // rendering "(67)". `parseInt` on either textContent skips the
+    // non-numeric prefix and finds the count.
     const handCount = await harness.evaluate(() => {
-      const labels = Array.from(document.querySelectorAll('span[title="HAND"]'))
+      const cells = Array.from(document.querySelectorAll('[data-stat-id="hands"]'))
       let max = 0
-      for (const label of labels) {
-        const valueEl = label.nextElementSibling
-        const value = valueEl ? parseInt(valueEl.textContent || '', 10) : NaN
+      for (const cell of cells) {
+        const match = (cell.textContent || '').match(/\d+/)
+        const value = match ? parseInt(match[0], 10) : NaN
         if (!Number.isNaN(value)) max = Math.max(max, value)
       }
       return max

@@ -28,6 +28,7 @@ export const foldToStealStat: StatDefinition = {
   id: 'foldToSteal',
   name: 'FTS',
   description: 'スチールに対するフォールド率',
+  helpText: 'スチール(盗み)レイズを受けてブラインドがフォールドした割合',
   calculate: ({ actions }) => {
     const foldToStealChanceCount = actions.filter(a =>
       a.actionDetails.includes(ActionDetail.FOLD_TO_STEAL_CHANCE)

@@ -8,6 +8,7 @@ export const playerNameStat: StatDefinition = {
   id: 'playerName',
   name: 'Name',
   description: 'プレイヤー名',
+  helpText: 'プレイヤー名',
   calculate: (context) => {
     const playerInfo = context.session.players.get(context.playerId)
     if (playerInfo) {

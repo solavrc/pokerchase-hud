@@ -72,7 +72,15 @@ export interface StatDefinition {
   
   /** Optional description for documentation */
   description?: string
-  
+
+  /**
+   * Optional beginner-friendly one-line explanation (Japanese), shown as part
+   * of the native `title` tooltip on every HUD stat cell (compact elements
+   * and full-grid rows alike) — see `src/components/hud/statTooltip.ts`.
+   * Static per stat id (unlike `tooltip`, which is context-dependent).
+   */
+  helpText?: string
+
   /** The calculation function */
   calculate: (context: StatCalculationContext) => StatValue | Promise<StatValue>
   

@@ -287,6 +287,8 @@ const App = memo(() => {
               playerPotOdds={allPlayersRealTimeStats?.playerStats[position.originalSeatIndex]}
               isPositionalPanelOpen={openPositionalStatsPlayerId === position.stat.playerId}
               onTogglePositionalPanel={() => handleTogglePositionalPanel(position.stat.playerId)}
+              hudDisplayMode={uiConfig.hudDisplayMode}
+              hudColorCoding={uiConfig.hudColorCoding}
             />
           )
       )}

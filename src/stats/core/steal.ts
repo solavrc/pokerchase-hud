@@ -31,6 +31,7 @@ export const stealStat: StatDefinition = {
   id: 'steal',
   name: 'STL',
   description: 'スチール試行率',
+  helpText: 'CO/BTN/SBからのファーストイン・レイズ率',
   calculate: ({ actions }) => {
     const stealChanceCount = actions.filter(a =>
       a.actionDetails.includes(ActionDetail.STEAL_CHANCE)

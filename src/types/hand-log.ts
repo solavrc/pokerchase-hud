@@ -62,6 +62,27 @@ export interface HandLogConfig {
 export interface UIConfig {
   displayEnabled: boolean     // Master ON/OFF for all UI elements (HUD + Log)
   scale: number              // UI scale factor (0.5 - 2.0)
+  /**
+   * HUD display density (#143).
+   * 'compact' (default) = single classic-HUD line (VPIP/PFR/3B (HAND)) plus
+   * a secondary line (AF/CB/STL); zero-opportunity stats are suppressed
+   * rather than shown as '-'. Click the stat body to expand the full grid
+   * inline for that player.
+   * 'full' = the existing 2-column 16-stat grid, unchanged.
+   * Optional so existing persisted configs / literals that predate this
+   * field keep compiling; callers merge with DEFAULT_UI_CONFIG so a missing
+   * key resolves to 'compact', not `undefined`.
+   */
+  hudDisplayMode?: 'full' | 'compact'
+  /**
+   * Threshold-based value coloring (#143), on by default.
+   * See src/components/hud/statColorRules.ts for the per-stat thresholds.
+   * Applies in both 'full' and 'compact' hudDisplayMode.
+   * Optional so existing persisted configs / literals that predate this
+   * field keep compiling; callers merge with DEFAULT_UI_CONFIG so a missing
+   * key resolves to `true`, not `undefined`.
+   */
+  hudColorCoding?: boolean
 }
 
 /**
@@ -93,6 +114,8 @@ export const DEFAULT_HAND_LOG_CONFIG: HandLogConfig = {
  * Default UI configuration
  */
 export const DEFAULT_UI_CONFIG: UIConfig = {
-  displayEnabled: true,  // UI is visible by default
-  scale: 1.0            // Normal size
+  displayEnabled: true,   // UI is visible by default
+  scale: 1.0,             // Normal size
+  hudDisplayMode: 'compact', // Compact classic-HUD line by default (#143)
+  hudColorCoding: true    // Threshold-based value coloring on by default (#143)
 }

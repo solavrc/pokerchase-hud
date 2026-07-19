@@ -7,6 +7,7 @@ import { useDraggable } from './hud/hooks/useDraggable'
 import { DragHandle } from './hud/DragHandle'
 import { HudHeader } from './hud/HudHeader'
 import { StatDisplay } from './hud/StatDisplay'
+import { CompactStatDisplay } from './hud/CompactStatDisplay'
 import { PlayerTypeIcons } from './hud/PlayerTypeIcons'
 import { RealTimeStatsDisplay } from './hud/RealTimeStatsDisplay'
 import { PositionalStatsPanel } from './hud/PositionalStatsPanel'
@@ -35,6 +36,10 @@ interface HudProps {
   isPositionalPanelOpen?: boolean
   /** ドリルダウンパネルの開閉トグル。渡された時のみヘッダーにトリガーを表示する */
   onTogglePositionalPanel?: () => void
+  /** HUD表示密度。'full'（デフォルト、既存の16統計グリッド）または'compact'（クラシックHUDライン）。UIConfig.hudDisplayMode参照 */
+  hudDisplayMode?: 'full' | 'compact'
+  /** しきい値ベースの値カラーリング（compact/full両モード共通）。UIConfig.hudColorCoding参照 */
+  hudColorCoding?: boolean
 }
 
 // Constants
@@ -103,6 +108,10 @@ const styles = {
     cursor: 'pointer',
     transition: 'opacity 0.2s ease',
   } as CSSProperties,
+
+  expandableStatBody: {
+    cursor: 'pointer',
+  } as CSSProperties,
 }
 
 // Helper functions
@@ -146,8 +155,12 @@ const getPlayerName = (stat: PlayerStats): string | null => {
 // Main component
 const Hud = memo((props: HudProps) => {
   const [isHovering, setIsHovering] = useState(false)
+  // クリックで展開する16統計グリッド（compactモードのみ）。パネルごとのローカル
+  // state -- 各Hudインスタンスが自分のstateを持つため、複数プレイヤーを同時に
+  // 展開できる。
+  const [isStatBodyExpanded, setIsStatBodyExpanded] = useState(false)
   const defaultPosition = SEAT_POSITIONS[props.actualSeatIndex] || { top: '50%', left: '50%' }
-  
+
   const {
     containerRef,
     isDragging,
@@ -158,6 +171,16 @@ const Hud = memo((props: HudProps) => {
   const displayStats = useMemo(() => getDisplayStats(props.stat), [props.stat])
   const playerName = useMemo(() => getPlayerName(props.stat), [props.stat])
   const scale = props.scale || 1
+  const hudDisplayMode = props.hudDisplayMode || 'full'
+  const hudColorCoding = props.hudColorCoding || false
+
+  // compactモードの統計ボディをクリックすると16統計グリッドをその場で展開する
+  // （#128のポジション別ドリルダウン用トリガーと同様、stopPropagationでHUD全体の
+  // クリップボードコピーハンドラーへの伝播とドラッグ開始を断つ）。
+  const toggleStatBodyExpand = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    setIsStatBodyExpanded(prev => !prev)
+  }, [])
 
   const copyStatsToClipboard = useCallback(async () => {
     try {
@@ -287,7 +310,19 @@ const Hud = memo((props: HudProps) => {
             isPositionalPanelOpen={props.isPositionalPanelOpen}
             onTogglePositionalPanel={props.onTogglePositionalPanel}
           />
-          <StatDisplay displayStats={displayStats} formatValue={formatStatValue} />
+          {hudDisplayMode === 'compact' ? (
+            <div
+              style={styles.expandableStatBody}
+              onClick={toggleStatBodyExpand}
+              title={isStatBodyExpanded ? 'クリックで折りたたむ' : 'クリックで全統計を表示'}
+            >
+              {isStatBodyExpanded
+                ? <StatDisplay displayStats={displayStats} formatValue={formatStatValue} colorCoding={hudColorCoding} />
+                : <CompactStatDisplay displayStats={displayStats} colorCoding={hudColorCoding} />}
+            </div>
+          ) : (
+            <StatDisplay displayStats={displayStats} formatValue={formatStatValue} colorCoding={hudColorCoding} />
+          )}
           {props.isPositionalPanelOpen && (
             <PositionalStatsPanel playerId={props.stat.playerId} />
           )}
@@ -300,6 +335,8 @@ const Hud = memo((props: HudProps) => {
   if (prevProps.stat.playerId !== nextProps.stat.playerId) return false
   if (prevProps.scale !== nextProps.scale) return false
   if (prevProps.isPositionalPanelOpen !== nextProps.isPositionalPanelOpen) return false
+  if (prevProps.hudDisplayMode !== nextProps.hudDisplayMode) return false
+  if (prevProps.hudColorCoding !== nextProps.hudColorCoding) return false
 
   // Check real-time stats changes for hero
   if (prevProps.actualSeatIndex === 0) {

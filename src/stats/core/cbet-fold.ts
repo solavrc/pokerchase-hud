@@ -10,6 +10,7 @@ export const cbetFoldStat: StatDefinition = {
   id: 'cbetFold',
   name: 'CBF',
   description: 'フロップコンティニュエーションベットに対するフォールド率',
+  helpText: 'フロップCベットを受けてフォールドした割合',
   calculate: ({ actions }) => {
     const cbetFoldChanceCount = actions.filter(a => 
       a.actionDetails.includes(ActionDetail.CBET_FOLD_CHANCE)

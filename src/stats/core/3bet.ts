@@ -11,6 +11,7 @@ export const threeBetStat: StatDefinition = {
   id: '3bet',
   name: '3B',
   description: 'スリーベット率',
+  helpText: 'プリフロップで3ベットした割合',
   calculate: ({ actions }) => {
     const threeBetChanceCount = actions.filter(a => 
       a.actionDetails.includes(ActionDetail.$3BET_CHANCE)

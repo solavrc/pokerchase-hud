@@ -453,4 +453,146 @@ describe('Hud', () => {
       })
     })
   })
+
+  describe('コンパクト表示モード（#143）', () => {
+    it('hudDisplayModeを渡さない場合はフルの16統計グリッドのまま（ゼロリグレッション）', () => {
+      render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+        />
+      )
+
+      // フルグリッドの完全な値表示（"30.0% (30/100)"）が出る = compactの丸め表示("30")ではない
+      expect(screen.getByText('VPIP:')).toBeInTheDocument()
+      expect(screen.getByText('30.0% (30/100)')).toBeInTheDocument()
+    })
+
+    it('hudDisplayMode="compact"の場合はクラシックライン(VPIP/PFR/3B (HAND))を表示する', () => {
+      render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          hudDisplayMode="compact"
+        />
+      )
+
+      // compactは丸めた整数のみ表示（フルの"30.0% (30/100)"は出ない）
+      expect(screen.getByText('30')).toBeInTheDocument()
+      expect(screen.queryByText('30.0% (30/100)')).not.toBeInTheDocument()
+      expect(screen.queryByText('VPIP:')).not.toBeInTheDocument()
+    })
+
+    it('compactの統計ボディをクリックするとフルの16統計グリッドが展開され、クリップボードコピーは発火しない', async () => {
+      render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          hudDisplayMode="compact"
+        />
+      )
+
+      // 展開前: compact表示
+      expect(screen.getByText('30')).toBeInTheDocument()
+      expect(screen.queryByText('30.0% (30/100)')).not.toBeInTheDocument()
+
+      // クリックで展開
+      await userEvent.click(screen.getByText('30'))
+
+      expect(screen.getByText('30.0% (30/100)')).toBeInTheDocument()
+      expect(screen.getByText('VPIP:')).toBeInTheDocument()
+      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+
+      // 再クリックで折りたたむ
+      await userEvent.click(screen.getByText('30.0% (30/100)'))
+      expect(screen.getByText('30')).toBeInTheDocument()
+      expect(screen.queryByText('30.0% (30/100)')).not.toBeInTheDocument()
+      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+    })
+
+    it('compactモードでもヘッダー領域のクリックはクリップボードコピーを発火する（コピー機能が壊れていない）', async () => {
+      render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          hudDisplayMode="compact"
+        />
+      )
+
+      await userEvent.click(screen.getByText('TestPlayer'))
+
+      await waitFor(() => {
+        expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+          expect.stringContaining('Player: TestPlayer')
+        )
+      })
+    })
+
+    it('#128のポジション別ドリルダウンはcompactモードでも独立して機能する', async () => {
+      const handleToggle = jest.fn()
+
+      render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          hudDisplayMode="compact"
+          onTogglePositionalPanel={handleToggle}
+        />
+      )
+
+      const trigger = screen.getByTitle('ポジション別スタッツ')
+      await userEvent.click(trigger)
+
+      expect(handleToggle).toHaveBeenCalledTimes(1)
+      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+      // ポジション別トリガーのクリックはcompactの展開もトグルしない
+      expect(screen.getByText('30')).toBeInTheDocument()
+    })
+
+    it('hudColorCoding=trueをcompact/fullどちらのStatDisplayにも伝播する', () => {
+      const highVpipStats = {
+        playerId: 123,
+        statResults: [
+          { id: 'playerName', name: 'Name', value: 'TestPlayer', formatted: 'TestPlayer' },
+          { id: 'vpip', name: 'VPIP', value: [45, 100], formatted: '45.0% (45/100)' },
+        ],
+      }
+
+      const { rerender } = render(
+        <Hud
+          actualSeatIndex={0}
+          stat={highVpipStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          hudDisplayMode="full"
+          hudColorCoding
+        />
+      )
+
+      expect(screen.getByText('45.0% (45/100)')).toHaveStyle({ color: '#e57373' })
+
+      rerender(
+        <Hud
+          actualSeatIndex={0}
+          stat={highVpipStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          hudDisplayMode="compact"
+          hudColorCoding
+        />
+      )
+
+      expect(screen.getByText('45')).toHaveStyle({ color: '#e57373' })
+    })
+  })
 })

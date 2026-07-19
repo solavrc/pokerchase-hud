@@ -10,6 +10,7 @@ export const wsdStat: StatDefinition = {
   id: 'wsd',
   name: 'W$SD',
   description: 'ショーダウン勝率',
+  helpText: 'ショーダウンに進んだ際に勝った割合',
   calculate: ({ phases, winningHandIds }) => {
     const showdownPhases = phases.filter(p => p.phase === PhaseType.SHOWDOWN)
     

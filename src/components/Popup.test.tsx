@@ -134,6 +134,46 @@ describe('Popup', () => {
     )
   })
 
+  it('HUD表示設定（コンパクト/フル・統計カラー表示）を表示・変更できる', async () => {
+    render(<Popup />)
+
+    await waitForAsyncOperations()
+
+    expect(screen.getByText('表示モード:')).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'コンパクト' })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: '統計カラー表示' })).toBeChecked()
+
+    await userEvent.click(screen.getByRole('radio', { name: 'フル' }))
+
+    await waitFor(() => {
+      expect(syncData.uiConfig).toEqual(
+        expect.objectContaining({ hudDisplayMode: 'full' })
+      )
+    })
+  })
+
+  it('旧storageのuiConfigにhudDisplayMode/hudColorCodingキーが無いユーザーはコンパクト+カラーONで復元される（グレースフルなマイグレーション, #143）', async () => {
+    syncData = {
+      options: {
+        sendUserData: true,
+        filterOptions: {
+          gameTypes: { sng: true, mtt: true, ring: true },
+          handLimit: 500,
+          statDisplayConfigs: defaultStatDisplayConfigs,
+        },
+      },
+      // #143以前に保存されたuiConfig相当（新フィールドが無い）
+      uiConfig: { displayEnabled: true, scale: 1.0 },
+    }
+
+    render(<Popup />)
+
+    await waitForAsyncOperations()
+
+    expect(screen.getByRole('radio', { name: 'コンパクト' })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: '統計カラー表示' })).toBeChecked()
+  })
+
   it('UIスケール設定を表示・変更できる', async () => {
     render(<Popup />)
 

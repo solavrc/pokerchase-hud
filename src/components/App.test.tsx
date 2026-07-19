@@ -10,7 +10,7 @@ import type { ApiEvent } from '../types'
 // Mock components
 jest.mock('./Hud', () => ({
   __esModule: true,
-  default: ({ actualSeatIndex, stat, scale, statDisplayConfigs, realTimeStats, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel }: any) => (
+  default: ({ actualSeatIndex, stat, scale, statDisplayConfigs, realTimeStats, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, hudDisplayMode, hudColorCoding }: any) => (
     <div data-testid={`hud-${actualSeatIndex}`}>
       Player: {stat.playerId}
       Scale: {scale}
@@ -18,6 +18,8 @@ jest.mock('./Hud', () => ({
       RealTime: {realTimeStats ? 'yes' : 'no'}
       PotOdds: {playerPotOdds ? 'yes' : 'no'}
       PositionalPanelOpen: {isPositionalPanelOpen ? 'yes' : 'no'}
+      DisplayMode: {hudDisplayMode ?? 'undefined'}
+      ColorCoding: {hudColorCoding === undefined ? 'undefined' : hudColorCoding ? 'yes' : 'no'}
       {onTogglePositionalPanel && (
         <button onClick={onTogglePositionalPanel}>toggle-{stat.playerId}</button>
       )}
@@ -92,10 +94,45 @@ describe('App', () => {
     })
 
     const { container } = render(<App />)
-    
+
     await waitFor(() => {
       expect(container.firstChild).toBeNull()
     })
+  })
+
+  it('uiConfigにhudDisplayMode/hudColorCodingが渡された場合、そのままHudへ伝播する', async () => {
+    (global.chrome.storage.sync.get as jest.Mock).mockImplementation((_, callback) => {
+      callback({
+        uiConfig: { ...DEFAULT_UI_CONFIG, hudDisplayMode: 'full', hudColorCoding: false },
+      })
+    })
+
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('hud-0')).toBeInTheDocument()
+    })
+
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('DisplayMode: full')
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('ColorCoding: no')
+  })
+
+  it('旧storageのuiConfigにhudDisplayMode/hudColorCodingキーが無い場合、DEFAULT_UI_CONFIGとマージしてcompact+カラーONになる（グレースフルなマイグレーション, #143）', async () => {
+    (global.chrome.storage.sync.get as jest.Mock).mockImplementation((_, callback) => {
+      callback({
+        // #143以前に保存されたuiConfig相当（新フィールドが無い）
+        uiConfig: { displayEnabled: true, scale: 1.0 },
+      })
+    })
+
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('hud-0')).toBeInTheDocument()
+    })
+
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('DisplayMode: compact')
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('ColorCoding: yes')
   })
 
   it('PokerChaseServiceイベントでstatsが更新される', async () => {

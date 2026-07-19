@@ -25,6 +25,7 @@ export const afStat: StatDefinition = {
   id: 'af',
   name: 'AF',
   description: 'アグレッションファクター（ポストフロップのベット・レイズ回数／コール回数）',
+  helpText: 'ポストフロップの(ベット+レイズ)÷コール。高いほどアグレッシブ',
   calculate: ({ actions }) => {
     // ポストフロップ（フロップ以降）のアクションのみを対象とする（PT4公式定義）
     const postflopActions = actions.filter(a => a.phase !== PhaseType.PREFLOP)

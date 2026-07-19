@@ -8,6 +8,7 @@ export const handsStat: StatDefinition = {
   id: 'hands',
   name: 'HAND',
   description: 'プレイしたハンド数',
+  helpText: 'これまでにプレイしたハンド数',
   calculate: ({ hands }) => {
     return hands.length
   },

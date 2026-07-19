@@ -25,6 +25,7 @@ export const wwsfStat: StatDefinition = {
   id: 'wwsf',
   name: 'WWSF',
   description: 'フロップ以降の勝率（プリフロップオールイン含む）',
+  helpText: 'フロップを見た後に勝った割合(プリフロップオールイン含む)',
   calculate: ({ phases, winningHandIds }) => {
     // フロップを見たハンド（プリフロップオールインを含む。#115）
     const flopPhases = phases.filter(p => p.phase === PhaseType.FLOP)
