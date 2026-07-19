@@ -118,6 +118,7 @@ export const vpipFullStat: StatDefinition = {
   id: 'vpipF',
   name: 'VPIP·F',
   description: 'フルテーブル層（6max≥5人 / 4max=4人）に限定したVPIP（ウォーク除外, HUD独自指標, opt-in）',
+  helpText: '全員着席した卓に限定したVPIP。卓が縮小するほどVPIPは自然に上がるため、比較しやすいよう絞った指標(HUD独自指標)',
   enabled: false,
   calculate: ({ playerId, actions, hands }) => {
     const { full } = groupHandsByLayer(hands)

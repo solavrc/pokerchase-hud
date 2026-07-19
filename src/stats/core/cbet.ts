@@ -18,6 +18,7 @@ export const cbetStat: StatDefinition = {
   id: 'cbet',
   name: 'CB',
   description: 'フロップコンティニュエーションベット率',
+  helpText: 'プリフロップの主導者がフロップで先制ベットした割合',
   calculate: ({ actions }) => {
     const flopCBChanceCount = actions.filter(a => 
       a.phase === PhaseType.FLOP && 

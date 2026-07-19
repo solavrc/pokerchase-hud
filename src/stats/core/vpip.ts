@@ -28,6 +28,7 @@ export const vpipStat: StatDefinition = {
   id: 'vpip',
   name: 'VPIP',
   description: 'プリフロップで自発的にポットに参加した割合（ウォーク除外）',
+  helpText: '自発的にチップをポットに入れたハンドの割合(ウォーク除外)',
   calculate: ({ playerId, actions, hands }) => {
     // ActionDetail.VPIPが付与されたアクションをカウント
     // このフラグは、プリフロップで自発的なCALL/RAISEアクション時に付与される

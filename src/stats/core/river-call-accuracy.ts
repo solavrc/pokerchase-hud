@@ -13,6 +13,7 @@ export const riverCallAccuracyStat: StatDefinition = {
   id: 'riverCallAccuracy',
   name: 'RCA',
   description: 'リバーコール精度',
+  helpText: 'リバーでコールした際に勝てた割合(HUD独自指標)',
   calculate: ({ actions }) => {
     // リバーでコールしたアクション
     const riverCalls = actions.filter(a => 

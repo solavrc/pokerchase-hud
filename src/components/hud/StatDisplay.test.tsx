@@ -86,4 +86,75 @@ describe('StatDisplay', () => {
     const dashes = screen.getAllByText('-')
     expect(dashes).toHaveLength(2)
   })
+
+  describe('カラーコーディング', () => {
+    it('colorCoding未指定時は色を適用しない（デフォルトのstatValue色のまま）', () => {
+      render(<StatDisplay displayStats={mockDisplayStats} formatValue={mockFormatValue} />)
+
+      const vpipValue = screen.getByText('30.0% (30/100)')
+      expect(vpipValue).toHaveStyle({ color: '#dddddd' })
+    })
+
+    it('colorCoding有効時はしきい値に応じた色を適用する（n>=20）', () => {
+      const highVpip: Array<[string, any, StatResult?]> = [
+        ['VPIP', [45, 100], { id: 'vpip', name: 'VPIP', value: [45, 100], formatted: '45.0% (45/100)' }],
+      ]
+
+      render(<StatDisplay displayStats={highVpip} formatValue={mockFormatValue} colorCoding />)
+
+      expect(screen.getByText('45.0% (45/100)')).toHaveStyle({ color: '#e57373' })
+    })
+
+    it('colorCoding有効でもn<20の場合は低信頼度グレーになる', () => {
+      const lowSample: Array<[string, any, StatResult?]> = [
+        ['VPIP', [5, 10], { id: 'vpip', name: 'VPIP', value: [5, 10], formatted: '50.0% (5/10)' }],
+      ]
+
+      render(<StatDisplay displayStats={lowSample} formatValue={mockFormatValue} colorCoding />)
+
+      expect(screen.getByText('50.0% (5/10)')).toHaveStyle({ color: '#888888' })
+    })
+
+    it('しきい値ルールのない統計はcolorCoding有効でも既定色のまま', () => {
+      const handsOnly: Array<[string, any, StatResult?]> = [
+        ['Hands', 100, { id: 'hands', name: 'Hands', value: 100, formatted: '100' }],
+      ]
+
+      render(<StatDisplay displayStats={handsOnly} formatValue={mockFormatValue} colorCoding />)
+
+      expect(screen.getByText('100')).toHaveStyle({ color: '#dddddd' })
+    })
+  })
+
+  describe('title tooltip合成（#143）', () => {
+    it('helpTextのみ（動的tooltipなし）: "統計名: 値"の次にhelpTextを続ける', () => {
+      const stats: Array<[string, any, StatResult?]> = [
+        ['VPIP', [30, 100], { id: 'vpip', name: 'VPIP', value: [30, 100], formatted: '30.0% (30/100)' }],
+      ]
+
+      render(<StatDisplay displayStats={stats} formatValue={mockFormatValue} />)
+
+      const expectedTitle = 'VPIP: 30.0% (30/100)\n自発的にチップをポットに入れたハンドの割合(ウォーク除外)'
+      expect(screen.getByText('VPIP:')).toHaveAttribute('title', expectedTitle)
+      expect(screen.getByText('30.0% (30/100)')).toHaveAttribute('title', expectedTitle)
+    })
+
+    it('helpText + 動的tooltip: 動的tooltipを基底行にしてhelpTextを続ける（vpipFの例）', () => {
+      const dynamicTooltip = 'VPIP·F 35.2% (n=1252) | 4p 47.0% (n=279) | 3p 56.1% (n=221) | HU 71.9% (n=146)'
+      const stats: Array<[string, any, StatResult?]> = [
+        ['VPIP·F', [441, 1252], {
+          id: 'vpipF',
+          name: 'VPIP·F',
+          value: [441, 1252],
+          formatted: '35.2% (n=1252)',
+          tooltip: dynamicTooltip,
+        }],
+      ]
+
+      render(<StatDisplay displayStats={stats} formatValue={mockFormatValue} />)
+
+      const expectedTitle = `${dynamicTooltip}\n全員着席した卓に限定したVPIP。卓が縮小するほどVPIPは自然に上がるため、比較しやすいよう絞った指標(HUD独自指標)`
+      expect(screen.getByText('35.2% (n=1252)')).toHaveAttribute('title', expectedTitle)
+    })
+  })
 })

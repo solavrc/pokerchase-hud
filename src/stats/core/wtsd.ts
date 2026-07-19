@@ -25,6 +25,7 @@ export const wtsdStat: StatDefinition = {
   id: 'wtsd',
   name: 'WTSD',
   description: 'ショーダウン率（フロップ以降、プリフロップオールイン含む）',
+  helpText: 'フロップを見た後にショーダウンまで進んだ割合(プリフロップオールイン含む)',
   calculate: ({ phases }) => {
     // フロップを見たハンドID（プリフロップオールインを含む。#115）
     const activeFlopHandIds = new Set(

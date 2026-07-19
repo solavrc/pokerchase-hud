@@ -27,6 +27,7 @@ export const wtsdNoAiStat: StatDefinition = {
   id: 'wtsdNoAi',
   name: 'WTSDa',
   description: 'ショーダウン率（プリフロップオールイン除外、意思決定ベースの変種）',
+  helpText: 'フロップを見た後にショーダウンまで進んだ割合(プリフロップオールイン除外)',
   enabled: false,
   calculate: ({ actions, phases }) => {
     // フロップで最低1アクションを行ったハンドID（プリフロップオールイン除外）

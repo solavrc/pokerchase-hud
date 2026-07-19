@@ -25,6 +25,7 @@ export const pfrStat: StatDefinition = {
   id: 'pfr',
   name: 'PFR',
   description: 'プリフロップレイズ率（ウォーク除外）',
+  helpText: 'プリフロップでレイズしたハンドの割合',
   calculate: ({ playerId, actions, hands }) => {
     // プリフロップでRAISEアクションを行ったユニークなハンド数を取得
     // ALL_INがRAISEに変換されたものも自動的に含まれる

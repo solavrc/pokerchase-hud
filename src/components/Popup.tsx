@@ -21,6 +21,7 @@ import { sendMessageWithTimeout } from './popup/send-message'
 
 // Import sub-components
 import { UIScaleSection } from './popup/UIScaleSection'
+import { HudDisplaySection } from './popup/HudDisplaySection'
 import { ImportExportSection } from './popup/ImportExportSection'
 import { FirebaseAuthSection } from './popup/FirebaseAuthSection'
 import { GameTypeFilterSection } from './popup/GameTypeFilterSection'
@@ -155,9 +156,16 @@ const Popup = () => {
       }
 
       // Load UI config from chrome.storage.sync
+      // DEFAULT_UI_CONFIGとマージする: 新フィールド追加前（#143以前）に保存された
+      // uiConfigにはhudDisplayMode/hudColorCodingが存在しないため、マージせず
+      // そのまま使うとポップアップのHUD表示設定セクションが未定義値を表示して
+      // しまう（App.tsx側の読み込みは既にこのマージを行っている）。
       chrome.storage.sync.get('uiConfig', (result: Record<string, any>) => {
         if (result.uiConfig) {
-          setUIConfig(result.uiConfig)
+          setUIConfig({
+            ...DEFAULT_UI_CONFIG,
+            ...result.uiConfig,
+          })
         }
       })
 
@@ -377,6 +385,11 @@ const Popup = () => {
   return <div style={{ width: 300, padding: '10px' }}>
     {/* UI Display Controls */}
     <UIScaleSection
+      uiConfig={uiConfig}
+      setUIConfig={setUIConfig}
+    />
+
+    <HudDisplaySection
       uiConfig={uiConfig}
       setUIConfig={setUIConfig}
     />

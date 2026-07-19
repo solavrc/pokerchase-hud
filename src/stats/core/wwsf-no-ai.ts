@@ -19,6 +19,7 @@ export const wwsfNoAiStat: StatDefinition = {
   id: 'wwsfNoAi',
   name: 'WWSFa',
   description: 'フロップ以降の勝率（プリフロップオールイン除外、意思決定ベースの変種）',
+  helpText: 'フロップを見た後に勝った割合(プリフロップオールイン除外)',
   enabled: false,
   calculate: ({ actions, winningHandIds }) => {
     // フロップで最低1アクションを行ったハンドID（プリフロップオールイン除外）
