@@ -37,6 +37,7 @@ import { createInterface } from 'readline'
 import { runPipeline } from './verify-stats/pipeline'
 import { runOracle } from './verify-stats/oracle'
 import { compareResults, formatReport } from './verify-stats/compare'
+import { filterValidApplicationEvents } from '../utils/database-utils'
 import type { ApiEvent } from '../types'
 
 interface CliOptions {
@@ -71,7 +72,7 @@ function parseArgs(argv: string[]): CliOptions {
 }
 
 async function readNdjson(filePath: string): Promise<ApiEvent[]> {
-  const events: ApiEvent[] = []
+  const rawEvents: unknown[] = []
   // 実際のインポート経路（src/background/import-export.ts）は apiEvents の主キー
   // [timestamp+ApiTypeId] に基づき `${timestamp}-${ApiTypeId}` キーの先勝ちで
   // 重複イベントを除外してから EntityConverter に渡す。ハーネスも同じ前処理を
@@ -89,12 +90,22 @@ async function readNdjson(filePath: string): Promise<ApiEvent[]> {
       continue
     }
     seenKeys.add(key)
-    events.push(event)
+    rawEvents.push(event)
   }
   if (duplicateCount > 0) {
     console.log(`Skipped ${duplicateCount} duplicate event(s) ([timestamp+ApiTypeId] first-wins, mirroring the import path)`)
   }
-  return events
+  // ファイルは Raw Event Lake の生ダンプたり得る（docs/architecture.md）: 202/205
+  // keepalive、未知の ApiTypeId、スキーマ検証に失敗したアプリケーションイベントを
+  // 含み得る。EntityConverter は EVT_DEAL.Game 等を無防備に参照するため、rebuild
+  // 経路（import-export.ts, auto-sync-service.ts, hand-log-exporter.ts）と同じく
+  // filterValidApplicationEvents() で再検証してから渡す。
+  const validEvents = await filterValidApplicationEvents(rawEvents)
+  const skippedCount = rawEvents.length - validEvents.length
+  if (skippedCount > 0) {
+    console.log(`Filtered out ${skippedCount} non-application/invalid event(s) (raw Lake noise — see filterValidApplicationEvents)`)
+  }
+  return validEvents
 }
 
 async function main() {

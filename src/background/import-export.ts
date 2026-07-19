@@ -7,11 +7,12 @@ import PokerChaseService, {
   isApiEventType,
   parseApiEvent,
   validateApiEvent,
+  validateMessage,
   getValidationError,
   isApplicationApiEvent
 } from '../app'
 import { EntityConverter } from '../entity-converter'
-import { saveEntities, findLatestPlayerDealEvent } from '../utils/database-utils'
+import { saveEntities, findLatestPlayerDealEvent, filterValidApplicationEvents } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
 import type {
   ExportProgressMessage,
@@ -106,7 +107,12 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
 
       for (let i = 0; i < lines.length; i += IMPORT_CHUNK_SIZE) {
         const chunkLines = lines.slice(i, i + IMPORT_CHUNK_SIZE)
-        const newEvents: ApiEvent[] = []
+        // Raw Event Lake: 保存対象は「timestamp/ApiTypeIdが数値」の行すべて
+        // （Zod検証の成否・アプリケーションイベントか否かは問わない）
+        const rawEventsToStore: Array<Record<string, unknown> & { timestamp: number, ApiTypeId: number }> = []
+        // エンティティ生成対象（検証済みアプリケーションイベントのみ）。
+        // key（`${timestamp}-${ApiTypeId}`）で対応するrawEventsToStoreの要素と紐付ける
+        const validAppEventsByKey = new Map<string, ApiEvent>()
 
         // チャンク内の各行をパース
         for (let j = 0; j < chunkLines.length; j++) {
@@ -117,36 +123,39 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           try {
             const parsed = JSON.parse(line)
 
-            // タイムスタンプチェック（インポートでは必須）
-            if (!('timestamp' in parsed && parsed.timestamp)) {
-              errors.push(`Line ${lineNumber}: Missing timestamp`)
+            // 保存条件のチェック（インポートでは必須）: timestamp/ApiTypeIdが数値であること
+            if (!validateMessage(parsed).success) {
+              errors.push(`Line ${lineNumber}: Missing/invalid timestamp or ApiTypeId`)
               continue
             }
 
-            // Zodスキーマ検証
+            const key = `${parsed.timestamp}-${parsed.ApiTypeId}`
+
+            // メモリ内で重複チェック（最適化ポイント2）
+            if (existingKeys.has(key)) {
+              duplicateCount++
+              continue
+            }
+
+            rawEventsToStore.push(parsed)
+            existingKeys.add(key) // 次の重複チェック用
+
+            // Zodスキーマ検証（エンティティ生成対象かどうかの判定のみ。保存は上で確定済み）
             const event = parseApiEvent(parsed)
             if (!event) {
               const result = validateApiEvent(parsed)
               const errorDetails = result.error ? getValidationError(result.error)[0] : null
-              errors.push(`Line ${lineNumber}: ${errorDetails?.message || 'Validation failed'}`)
+              errors.push(`Line ${lineNumber}: ${errorDetails?.message || 'Validation failed'} (保存済み・エンティティ生成対象外)`)
               continue
             }
 
             // アプリケーション用のイベントかチェック
             if (!isApplicationApiEvent(event)) {
-              // アプリケーションで使用しないApiTypeIdのイベントをスキップ
+              // 非アプリケーションイベント: 生ログとしては保存対象だがエンティティ生成対象外
               continue
             }
 
-            const key = `${event.timestamp}-${event.ApiTypeId}`
-
-            // メモリ内で重複チェック（最適化ポイント2）
-            if (!existingKeys.has(key)) {
-              newEvents.push(event)
-              existingKeys.add(key) // 次の重複チェック用
-            } else {
-              duplicateCount++
-            }
+            validAppEventsByKey.set(key, event)
           } catch (parseError) {
             // 無効なJSON行をスキップ
             if (line.trim()) {
@@ -155,32 +164,45 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           }
         }
 
-        // 新規イベントをbulkAddで一括保存（最適化ポイント3）
-        if (newEvents.length > 0) {
+        // 生イベントをbulkAddで一括保存（最適化ポイント3。検証可否に関わらず全件保存）
+        if (rawEventsToStore.length > 0) {
+          const storedKeys = new Set<string>()
+
           try {
-            await db.apiEvents.bulkAdd(newEvents)
-            successCount += newEvents.length
-            allNewEvents.push(...newEvents)
+            // apiEvents is the raw Lake (see docs/architecture.md): rows may not
+            // conform to the ApiEvent union (non-application types, unknown
+            // ApiTypeIds, or app-type payloads that fail the current schema) —
+            // the assertion is intentional, mirroring the same pattern used in
+            // event-ingestion.ts's real-time storage path.
+            await db.apiEvents.bulkAdd(rawEventsToStore as ApiEvent[])
+            successCount += rawEventsToStore.length
+            rawEventsToStore.forEach(raw => storedKeys.add(`${raw.timestamp}-${raw.ApiTypeId}`))
           } catch (dbError) {
             // 部分的な失敗の場合、個別に保存を試みる
             console.warn(`Bulk add failed for chunk ${Math.floor(i / IMPORT_CHUNK_SIZE) + 1}, falling back to individual adds:`, dbError)
 
-            for (const event of newEvents) {
+            for (const raw of rawEventsToStore) {
+              const key = `${raw.timestamp}-${raw.ApiTypeId}`
               try {
-                await db.apiEvents.add(event)
+                await db.apiEvents.add(raw as ApiEvent)
                 successCount++
-                allNewEvents.push(event)
+                storedKeys.add(key)
               } catch (individualError) {
                 // 個別エラーは重複以外の場合のみログ
                 const errorMessage = individualError instanceof Error ? individualError.message : String(individualError)
                 if (!errorMessage.includes('Key already exists')) {
-                  errors.push(`Event at timestamp ${event.timestamp}: ${errorMessage}`)
+                  errors.push(`Event at timestamp ${raw.timestamp}: ${errorMessage}`)
                 } else {
                   duplicateCount++
                   successCount-- // 重複の場合は成功数から除外
                 }
               }
             }
+          }
+
+          // エンティティ生成には、実際に保存が確認できたアプリケーションイベントのみを渡す
+          for (const [key, event] of validAppEventsByKey) {
+            if (storedKeys.has(key)) allNewEvents.push(event)
           }
         }
 
@@ -331,7 +353,10 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
       const totalCount = await db.apiEvents.count()
       console.log(`[Export] Exporting ${totalCount} events...`)
 
-      // Direct chunked export using primary key cursor to avoid Dexie Collection offset issues
+      // Direct chunked export using primary key cursor to avoid Dexie Collection offset issues.
+      // Dumps the full apiEvents Lake verbatim (raw fidelity, "a line is a line") — no
+      // filtering by validity or application-type here; this is what feeds the warehouse
+      // and offline schema-diff tooling (see docs/architecture.md "Raw Event Lake").
       const chunks: string[] = []
       let processedCount = 0
       let lastKey: any = undefined
@@ -636,11 +661,24 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         }
         const converter = new EntityConverter(defaultSession)
 
-        // Load all events and convert in one pass
+        // Load all raw events and convert in one pass
         // (EntityConverter tracks hand state internally, so chunked conversion loses cross-chunk hands)
         console.log(`[rebuildAllData] Loading all events...`)
-        const allEvents = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
-        console.log(`[rebuildAllData] Loaded ${allEvents.length} events, converting to entities...`)
+        const rawEvents = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
+
+        // apiEvents is the raw Lake: it may contain non-application noise (202/205
+        // keepalive/timer events), ApiTypeIds unknown to the current schema, or
+        // application-type events whose payload doesn't match the current Zod schema
+        // (either not-yet-fixed, or already fixed since the row was first stored).
+        // Re-validating here — rather than trusting raw rows — is what makes this the
+        // recovery path: any row a schema fix now makes parseable is automatically
+        // picked up, no separate promotion mechanism required (docs/architecture.md
+        // "Raw Event Lake"). It's also what keeps EntityConverter (which reads
+        // required fields like EVT_DEAL.Game.SmallBlind without guards) from
+        // throwing on a still-malformed row.
+        const allEvents = await filterValidApplicationEvents(rawEvents)
+        const skippedCount = rawEvents.length - allEvents.length
+        console.log(`[rebuildAllData] Loaded ${rawEvents.length} raw events, ${allEvents.length} valid application events after re-validation${skippedCount > 0 ? ` (${skippedCount} non-application/unparseable rows skipped)` : ''}`)
 
         setOperationState({ type: 'rebuild', progress: 40, message: `${allEvents.length.toLocaleString()}件のイベントを変換中...` })
         chrome.runtime.sendMessage<RebuildProgressMessage>({

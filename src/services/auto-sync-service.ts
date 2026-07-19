@@ -7,9 +7,9 @@ import { firestoreBackupService } from './firestore-backup-service'
 import { firebaseAuthService } from './firebase-auth-service'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
-import { ApiType, isApiEventType } from '../types'
+import { ApiType, isApiEventType, isApplicationApiEvent } from '../types'
 import type { ApiEvent } from '../types'
-import { processInChunks, saveEntities } from '../utils/database-utils'
+import { processInChunks, saveEntities, filterValidApplicationEvents } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
 
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'success'
@@ -161,40 +161,53 @@ export class AutoSyncService {
     let lastProcessedTimestamp = cloudMaxTimestamp || 0
     
     while (processed < totalCount) {
-      // Get chunk of events newer than lastProcessedTimestamp
-      const chunk = await this.db.apiEvents
+      // Get chunk of raw events newer than lastProcessedTimestamp. apiEvents is the
+      // raw Lake (see docs/architecture.md) — it may contain non-application noise
+      // (202/205 keepalive/timer events) that we deliberately never sync to cloud
+      // (cost decision: only application-type events go to Firestore).
+      const rawChunk = await this.db.apiEvents
         .where('timestamp')
         .above(lastProcessedTimestamp)
         .limit(CHUNK_SIZE)
         .toArray()
-      
-      if (chunk.length === 0) break
-      
+
+      if (rawChunk.length === 0) break
+
       // Sort chunk by timestamp to ensure order
-      chunk.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
-      
-      // Sync this chunk
-      const summary = await firestoreBackupService.syncToCloudBatch(
-        chunk, 
-        cloudMaxTimestamp,
-        (progress) => {
-          this.updateSyncState({
-            progress: { 
-              current: processed + progress.current, 
-              total: totalCount, 
-              direction: 'upload' 
-            }
-          })
-        }
-      )
-      
-      synced += summary.syncedEvents
-      processed += chunk.length
-      
-      // Update timestamp for next chunk
-      const lastEvent = chunk[chunk.length - 1]
-      if (lastEvent && lastEvent.timestamp) {
-        lastProcessedTimestamp = lastEvent.timestamp
+      rawChunk.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+
+      // Application-type-only filter for cloud upload. Deliberately filtered AFTER
+      // sorting/tracking the raw chunk's boundary, not before: lastProcessedTimestamp
+      // must advance based on the raw chunk regardless of how many rows in it are
+      // noise, otherwise a chunk containing only non-application events would never
+      // advance the cursor and the loop would refetch it forever.
+      const chunk = rawChunk.filter(isApplicationApiEvent)
+
+      // Sync this chunk (skip the Firestore round-trip entirely if it's all noise)
+      if (chunk.length > 0) {
+        const summary = await firestoreBackupService.syncToCloudBatch(
+          chunk,
+          cloudMaxTimestamp,
+          (progress) => {
+            this.updateSyncState({
+              progress: {
+                current: processed + progress.current,
+                total: totalCount,
+                direction: 'upload'
+              }
+            })
+          }
+        )
+
+        synced += summary.syncedEvents
+      }
+
+      processed += rawChunk.length
+
+      // Update timestamp for next chunk (based on the raw chunk, see comment above)
+      const lastRawEvent = rawChunk[rawChunk.length - 1]
+      if (lastRawEvent && lastRawEvent.timestamp) {
+        lastProcessedTimestamp = lastRawEvent.timestamp
       }
     }
 
@@ -258,7 +271,14 @@ export class AutoSyncService {
         this.db.apiEvents.orderBy('[timestamp+ApiTypeId]'),
         DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
       )) {
-        const entities = converter.convertEventChunk(events)
+        // events is a raw Lake chunk (see docs/architecture.md) — it may contain
+        // non-application noise, unknown ApiTypeIds, or app-type payloads that
+        // fail the current schema. EntityConverter reads required fields (e.g.
+        // EVT_DEAL.Game.SmallBlind) without guards, so only hand it validated
+        // application events; isApiEventType()/restoreSessionEvent() below
+        // already re-validate internally so they're safe on the raw chunk as-is.
+        const validEvents = await filterValidApplicationEvents(events)
+        const entities = converter.convertEventChunk(validEvents)
         await this.saveRebuiltEntities(entities)
 
         for (const event of events) {
@@ -380,6 +400,17 @@ export class AutoSyncService {
       this.updateSyncState({ status: 'idle', lastSyncTime: undefined })
     }
   }
+
+  // Note on the raw `.count()`/`.where(...).count()` calls below (onGameSessionEnd,
+  // getUnsyncedEventCount, getSyncInfo): apiEvents is the raw Lake and these counts
+  // include non-application noise (202/205 keepalive/timer events) that syncToCloud()
+  // never actually uploads (see its isApplicationApiEvent filter above). This was
+  // already true before the Lake restoration — Dexie's `.count()` doesn't invoke the
+  // `reading` hook that used to hide non-application rows, so these thresholds/UI
+  // counts have always been raw-row counts, not "events that will actually sync"
+  // counts. Left as-is here (not over-engineered into per-call `.and(isApplicationApiEvent)`
+  // filters): they're a "is there enough new activity to justify a sync" threshold and a
+  // rough "pending" UI number, not billing-accurate counts.
 
   /**
    * Handle game session events

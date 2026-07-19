@@ -5,6 +5,7 @@
 
 import type { PokerChaseDB } from '../db/poker-chase-db'
 import type { EntityBundle } from '../entity-converter'
+import type { ApiEvent } from '../types/api'
 import type Dexie from 'dexie'
 
 /**
@@ -110,6 +111,37 @@ export async function findLatestPlayerDealEvent(
   }
   
   return undefined
+}
+
+/**
+ * Filter raw `apiEvents` rows down to ones that currently parse as a known,
+ * validated application event.
+ *
+ * `apiEvents` is the raw "Lake" (see docs/architecture.md "Raw Event Lake") —
+ * it may contain non-application noise (202/205 keepalive/timer spam),
+ * ApiTypeIds unknown to the current schema (a future PokerChase payload
+ * type), or application-type events whose payload doesn't match the current
+ * Zod schema (either a PokerChase payload change not yet accounted for, or
+ * one already fixed since the row was first stored). `EntityConverter` and
+ * `HandLogProcessor` assume well-typed, schema-valid `ApiEvent` shapes and
+ * read required fields (e.g. `EVT_DEAL.Game.SmallBlind`) without guards —
+ * feeding them raw, unvalidated rows can throw and abort a whole rebuild or
+ * export. Re-running `parseApiEvent` here before handing events to either of
+ * those is what keeps that safe.
+ *
+ * It's also what makes a later schema fix retroactively recover previously
+ * unparseable rows on the very next rebuild: no separate promotion mechanism
+ * is needed, because the fix is validated against the exact same raw rows
+ * that have been sitting in `apiEvents` all along.
+ */
+export async function filterValidApplicationEvents(rawEvents: unknown[]): Promise<ApiEvent[]> {
+  const { parseApiEvent, isApplicationApiEvent } = await import('../types/api')
+  const valid: ApiEvent[] = []
+  for (const raw of rawEvents) {
+    const parsed = parseApiEvent(raw)
+    if (parsed && isApplicationApiEvent(parsed)) valid.push(parsed)
+  }
+  return valid
 }
 
 /**
