@@ -100,6 +100,15 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           autoSyncService.onGameSessionEnd().catch(err =>
             console.error('[background] Auto sync on game end failed:', err)
           )
+        } else if (data.ApiTypeId === ApiType.EVT_ENTRY_QUEUED || data.ApiTypeId === ApiType.EVT_SESSION_DETAILS) {
+          // フォールバックトリガー（docs/postmortems/2026-07-session-results-drop.md
+          // 再発防止#3）: 309単一トリガーのSPOF対策。新セッション開始時点は
+          // 進行中ハンドが存在しない安全なタイミングなので、ここでも同じ閾値判定
+          // でuploadを起動する（309が正常なら直前で既にバックログが閾値未満に
+          // なっているため二重発火しない）
+          autoSyncService.onNewSessionStart().catch(err =>
+            console.error('[background] Auto sync on new session start failed:', err)
+          )
         }
       })
       const stopPing = startPortPing(port)

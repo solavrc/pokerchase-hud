@@ -614,7 +614,9 @@ Key `pokerChaseServiceState` in `storage.local`. Auto-saved with 500ms debounce 
 
 ### Key Features
 
-- **Auto Sync**: Triggers on game end with 100+ new events
+- **Auto Sync**: Triggers on two independent events, both gated by the same 100+ new-event backlog threshold (`AutoSyncService.EVENTS_THRESHOLD`) via a shared `syncIfBacklogExceedsThreshold()` helper:
+  - **Primary — session end** (`EVT_SESSION_RESULTS`/309): `AutoSyncService.onGameSessionEnd()`
+  - **Fallback — session start** (`EVT_ENTRY_QUEUED`/201 or `EVT_SESSION_DETAILS`/308): `AutoSyncService.onNewSessionStart()`. Added after the 2026 season-3 incident (`docs/postmortems/2026-07-session-results-drop.md`) where 309 alone was a single point of failure — a PokerChase payload change broke its schema and silently stopped auto-sync for ~2 months. Session start is a safe moment to sync (no hand is in flight), and reusing the same threshold check means a broken 309 now costs at most one session's lag instead of indefinite silence. No extra debounce is needed: the in-flight guard (`isSyncing`) and the fact that a successful sync advances `lastSyncTime` (shrinking the backlog below threshold) together prevent a double-fire when 309 fired normally just before session start.
 - **Manual Sync**: Upload/download controls in popup
 - **BigQuery Export**: Automatic daily snapshots for analysis
 - **Free Tier Friendly**: Typical usage stays within limits
