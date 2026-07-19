@@ -483,7 +483,7 @@ export const apiEventSchemas = {
       LegendMatchWeeklyPoint: z.int().nonnegative().optional().describe('Legend Match週間トラックのポイント。season3/legend match 2026で新規観測（例: 35）'),
       LegendMatchWeeklyPointDiff: z.int().optional().describe('このセッションでのLegend Match週間ポイント変動。season3/legend match 2026で新規観測（例: 35）'),
       LegendMatchWeeklyBattleCount: z.int().nonnegative().optional().describe('Legend Match週間トラックでの対戦回数。season3/legend match 2026で新規観測（例: 1）'),
-    }).optional().describe('ランク報酬。SNG/MTT（BattleType=0,1）の場合のみ。存在する場合は基本フィールド（Rank/RankPoint/RankPointDiff/SeasonalRanking）は揃うが、season3/legend match 2026以降はIsSeasonal省略やLegend Match専用フィールドの有無でシェイプが変わる'),
+    }).optional().describe('ランク報酬。ランク戦SNG（BattleType=0）のみで出現し、MTT（BattleType=1）含む他タイプでは出現しない（BQ実測643/661 vs 他タイプ0/260）。SNG/MTT（BattleType=0,1）の場合のみ。存在する場合は基本フィールド（Rank/RankPoint/RankPointDiff/SeasonalRanking）は揃うが、season3/legend match 2026以降はIsSeasonal省略やLegend Match専用フィールドの有無でシェイプが変わる'),
     ResultChip: z.int().nonnegative().optional(),
     RingReward: z.object({
       Class: z.record(z.string(), z.string()).optional(),
