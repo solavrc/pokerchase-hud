@@ -27,6 +27,7 @@ import { GameTypeFilterSection } from './popup/GameTypeFilterSection'
 import { TableSizeFilterSection } from './popup/TableSizeFilterSection'
 import { HandLimitSection } from './popup/HandLimitSection'
 import { StatisticsConfigSection } from './popup/StatisticsConfigSection'
+import { UndecodedEventSection } from './popup/UndecodedEventSection'
 
 export type { Options }
 
@@ -445,6 +446,8 @@ const Popup = () => {
       setImportSuccess={setImportSuccess}
       setImportStartTime={setImportStartTime}
     />
+
+    <UndecodedEventSection />
   </div>
 }
 
