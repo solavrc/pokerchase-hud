@@ -10,8 +10,10 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { ApiType } from '../types'
 import { registerEventIngestion } from './event-ingestion'
 import { connectedPorts } from './ports'
+import { getUndecodedEventStats, resetUndecodedEventStats, UNDECODED_EVENT_STATS_KEY } from './undecoded-event-tracker'
 
 describe('registerEventIngestion (Raw Event Lake)', () => {
   let db: PokerChaseDB
@@ -23,6 +25,11 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
+    // undecoded-event-tracker caches its in-memory state at module scope
+    // (mirrors production, where there's exactly one db for the service
+    // worker's lifetime); reset it so tests don't leak counts across the
+    // fresh `db` instance each test creates.
+    await resetUndecodedEventStats(db)
     service = new PokerChaseService({ db })
     await service.ready
 
@@ -102,6 +109,53 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
 
     const stored = await db.apiEvents.get([444, 9999])
     expect(stored).toEqual(unknownEvent)
+  })
+
+  test('drop visibility: an app-type parse failure is counted in the dangerous appTypeParseFailed class', async () => {
+    const brokenDealEvent = { ApiTypeId: ApiType.EVT_DEAL, timestamp: 222 }
+    await onMessageHandler(brokenDealEvent)
+    await new Promise(resolve => setTimeout(resolve, 550))
+
+    const stats = await getUndecodedEventStats(db)
+    expect(stats.total).toBe(1)
+    expect(stats.perApiTypeId[ApiType.EVT_DEAL]).toEqual({ count: 1, lastSeen: 222 })
+
+    const persisted = await db.meta.get(UNDECODED_EVENT_STATS_KEY)
+    expect(persisted?.value).toEqual(stats)
+  })
+
+  test('drop visibility: an ApiTypeId unknown to the ApiType enum is counted in the unknownApiType class', async () => {
+    const unknownEvent = { ApiTypeId: 9999, timestamp: 444, SomeFutureField: 'x' }
+    await onMessageHandler(unknownEvent)
+    await new Promise(resolve => setTimeout(resolve, 550))
+
+    const stats = await getUndecodedEventStats(db)
+    expect(stats.total).toBe(1)
+    expect(stats.perApiTypeId[9999]).toEqual({ count: 1, lastSeen: 444 })
+  })
+
+  test('drop visibility: a known non-application event (202) is NOT counted (by-design, not a drop)', async () => {
+    const nonAppEvent = { ApiTypeId: 202, timestamp: 333, Code: 0 }
+    await onMessageHandler(nonAppEvent)
+    await new Promise(resolve => setTimeout(resolve, 550))
+
+    const stats = await getUndecodedEventStats(db)
+    expect(stats.total).toBe(0)
+    // No new undecoded event was recorded, so the meta record still reflects
+    // the empty baseline written by the beforeEach's resetUndecodedEventStats
+    // call rather than being entirely absent.
+    expect((await db.meta.get(UNDECODED_EVENT_STATS_KEY))?.value).toEqual({ total: 0, perApiTypeId: {} })
+  })
+
+  test('drop visibility: a valid application event is NOT counted', async () => {
+    const validEvent = {
+      ApiTypeId: 201, timestamp: 111, Code: 0, BattleType: 0, Id: 'stage000_003', IsRetire: false
+    }
+    await onMessageHandler(validEvent)
+    await new Promise(resolve => setTimeout(resolve, 550))
+
+    const stats = await getUndecodedEventStats(db)
+    expect(stats.total).toBe(0)
   })
 
   test('an event without a numeric timestamp/ApiTypeId is not stored (no usable key)', async () => {

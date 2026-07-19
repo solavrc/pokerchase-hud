@@ -6,6 +6,7 @@
 import type { FilterOptions, PlayerStats, PositionalStatsResult } from './index'
 import { HandLogConfig, HandLogEvent, UIConfig } from './hand-log'
 import type { SyncState } from '../services/auto-sync-service'
+import type { UndecodedEventStats } from '../background/undecoded-event-tracker'
 
 // Message action constants
 export const MESSAGE_ACTIONS = {
@@ -53,6 +54,9 @@ export const MESSAGE_ACTIONS = {
   ACKNOWLEDGE_REBUILD_ADVISORY: 'acknowledgeRebuildAdvisory',
   // Positional drill-down
   GET_POSITIONAL_STATS: 'getPositionalStats',
+  // Undecoded event (drop) visibility
+  GET_UNDECODED_EVENT_STATS: 'getUndecodedEventStats',
+  ACKNOWLEDGE_UNDECODED_EVENT_STATS: 'acknowledgeUndecodedEventStats',
 } as const
 
 // Import/Export related messages
@@ -241,6 +245,15 @@ export interface GetPositionalStatsMessage {
   playerId: number
 }
 
+// Undecoded event (drop) visibility messages
+export interface GetUndecodedEventStatsMessage {
+  action: 'getUndecodedEventStats'
+}
+
+export interface AcknowledgeUndecodedEventStatsMessage {
+  action: 'acknowledgeUndecodedEventStats'
+}
+
 export interface FirebaseBackupProgressMessage {
   action: 'firebaseBackupProgress'
   progress: number
@@ -312,7 +325,11 @@ export interface PositionalStatsResponse extends SuccessResponse {
   positionalStats: PositionalStatsResult
 }
 
-export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse
+export interface UndecodedEventStatsResponse extends SuccessResponse {
+  undecodedEventStats: UndecodedEventStats
+}
+
+export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse | UndecodedEventStatsResponse
 
 // Union type of all possible messages
 export type ChromeMessage =
@@ -352,6 +369,8 @@ export type ChromeMessage =
   | GetOperationStateMessage
   | AcknowledgeRebuildAdvisoryMessage
   | GetPositionalStatsMessage
+  | GetUndecodedEventStatsMessage
+  | AcknowledgeUndecodedEventStatsMessage
 
 // Helper function for type guard implementation
 const isMessageWithAction = (msg: unknown, action: string): msg is { action: string } =>
@@ -441,3 +460,9 @@ export const isAcknowledgeRebuildAdvisoryMessage = (msg: unknown): msg is Acknow
 
 export const isGetPositionalStatsMessage = (msg: unknown): msg is GetPositionalStatsMessage =>
   isMessageWithAction(msg, 'getPositionalStats')
+
+export const isGetUndecodedEventStatsMessage = (msg: unknown): msg is GetUndecodedEventStatsMessage =>
+  isMessageWithAction(msg, 'getUndecodedEventStats')
+
+export const isAcknowledgeUndecodedEventStatsMessage = (msg: unknown): msg is AcknowledgeUndecodedEventStatsMessage =>
+  isMessageWithAction(msg, 'acknowledgeUndecodedEventStats')

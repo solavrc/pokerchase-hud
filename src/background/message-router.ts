@@ -12,6 +12,7 @@ import { autoSyncService } from '../services/auto-sync-service'
 import { getOperationState, isOperationIdle } from './operation-state'
 import { getLastKnownStats, setLastKnownStats } from './ports'
 import { resolveAdvisory } from './rebuild-advisory'
+import { getUndecodedEventStats, resetUndecodedEventStats } from './undecoded-event-tracker'
 import {
   createImportExportHandlers,
   getCurrentImportSession,
@@ -315,6 +316,26 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         })
         .catch(error => {
           console.error('[getPositionalStats] Error:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'getUndecodedEventStats') {
+      // drop可視化: 未解釈イベントの集計値を取得
+      getUndecodedEventStats(db)
+        .then(undecodedEventStats => {
+          sendResponse({ success: true, undecodedEventStats })
+        })
+        .catch(error => {
+          console.error('[getUndecodedEventStats] Error:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'acknowledgeUndecodedEventStats') {
+      // Popupの「確認済みにする」操作: カウンタをリセット
+      resetUndecodedEventStats(db)
+        .then(() => sendResponse({ success: true }))
+        .catch(error => {
+          console.error('[acknowledgeUndecodedEventStats] Error:', error)
           sendResponse({ success: false, error: error.message })
         })
       return true
