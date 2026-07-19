@@ -1,6 +1,6 @@
 import Box from '@mui/material/Box'
 import Slider from '@mui/material/Slider'
-import Typography from '@mui/material/Typography'
+import { SectionHeading } from './SectionHeading'
 
 interface HandLimitSectionProps {
   handLimit: number | undefined
@@ -13,8 +13,8 @@ export const HandLimitSection = ({
 }: HandLimitSectionProps) => {
   return (
     <>
-      <Typography variant="h6">ハンド数</Typography>
-      <Box sx={{ px: 2, mt: 2, mb: 2 }}>
+      <SectionHeading>ハンド数</SectionHeading>
+      <Box sx={{ px: 1, mt: 1, mb: 0.5 }}>
         <Slider
           value={(() => {
             if (handLimit === undefined) return 6

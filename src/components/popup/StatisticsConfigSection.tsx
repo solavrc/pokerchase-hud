@@ -9,6 +9,7 @@ import Switch from '@mui/material/Switch'
 import Typography from '@mui/material/Typography'
 import { defaultRegistry } from '../../stats'
 import type { StatDisplayConfig } from '../../types/filters'
+import { SectionHeading } from './SectionHeading'
 
 interface StatisticsConfigSectionProps {
   pendingStatDisplayConfigs: StatDisplayConfig[]
@@ -29,14 +30,14 @@ export const StatisticsConfigSection = ({
 }: StatisticsConfigSectionProps) => {
   return (
     <>
-      <Typography variant="h6">
+      <SectionHeading>
         HUD表示設定
         {hasUnsavedStatChanges && (
-          <Typography component="span" variant="body2" color="orange" style={{ marginLeft: 8 }}>
+          <Typography component="span" variant="caption" color="warning.main" style={{ marginLeft: 8, letterSpacing: 'normal', fontWeight: 400 }}>
             (未適用の変更があります)
           </Typography>
         )}
-      </Typography>
+      </SectionHeading>
       <List dense style={{ maxHeight: 200, overflow: 'auto' }}>
         {pendingStatDisplayConfigs
           .filter(config => config.id !== 'playerName') // playerNameはヘッダーに常に表示されるため除外

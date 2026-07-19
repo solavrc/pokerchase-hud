@@ -328,6 +328,7 @@ export const ImportExportSection = ({
     <>
       <Button
         variant="contained"
+        color="primary"
         fullWidth
         onClick={() => handleExportClick('pokerstars')}
         startIcon={
@@ -336,27 +337,21 @@ export const ImportExportSection = ({
             : <FileDownload />
         }
         disabled={isAnyOperationInProgress}
-        sx={{ 
+        sx={{
           marginBottom: '10px',
-          backgroundColor: '#d70022',
-          color: 'white',
-          '&:hover': {
-            backgroundColor: '#b8001c'
-          },
           '&.Mui-disabled': {
-            backgroundColor: exportState === 'exporting' && exportFormat === 'pokerstars' ? '#d70022' : undefined,
-            color: exportState === 'exporting' && exportFormat === 'pokerstars' ? 'white' : undefined,
+            backgroundColor: exportState === 'exporting' && exportFormat === 'pokerstars' ? 'primary.main' : undefined,
             opacity: exportState === 'exporting' && exportFormat === 'pokerstars' ? 0.8 : undefined,
           }
         }}
       >
         {exportState === 'exporting' && exportFormat === 'pokerstars'
-          ? 'Exporting...'
-          : 'Export Hand History (PokerStars)'}
+          ? 'エクスポート中...'
+          : 'ハンド履歴をエクスポート (PokerStars)'}
       </Button>
 
       <Button
-        variant="contained"
+        variant="outlined"
         color="primary"
         fullWidth
         onClick={() => handleExportClick('json')}
@@ -369,15 +364,13 @@ export const ImportExportSection = ({
         sx={{
           marginBottom: '10px',
           '&.Mui-disabled': {
-            backgroundColor: exportState === 'exporting' && exportFormat === 'json' ? 'primary.main' : undefined,
-            color: exportState === 'exporting' && exportFormat === 'json' ? 'white' : undefined,
             opacity: exportState === 'exporting' && exportFormat === 'json' ? 0.8 : undefined,
           }
         }}
       >
         {exportState === 'exporting' && exportFormat === 'json'
-          ? 'Exporting...'
-          : 'Export Raw Data (NDJSON)'}
+          ? 'エクスポート中...'
+          : '生データをエクスポート (NDJSON)'}
       </Button>
 
       {/* Export progress bar (both NDJSON and PokerStars) */}
@@ -406,7 +399,7 @@ export const ImportExportSection = ({
       />
 
       <Button
-        variant="contained"
+        variant="outlined"
         color="primary"
         fullWidth
         onClick={handleImportClick}
@@ -419,13 +412,11 @@ export const ImportExportSection = ({
         sx={{
           marginBottom: '10px',
           '&.Mui-disabled': {
-            backgroundColor: isImporting ? 'primary.main' : undefined,
-            color: isImporting ? 'white' : undefined,
             opacity: isImporting ? 0.8 : undefined,
           }
         }}
       >
-        {isImporting ? 'Importing...' : 'Import Raw Data (NDJSON)'}
+        {isImporting ? 'インポート中...' : '生データをインポート (NDJSON)'}
       </Button>
 
       {isImporting && (
@@ -489,6 +480,7 @@ export const ImportExportSection = ({
 
       <Button
         variant="outlined"
+        color="inherit"
         fullWidth
         onClick={handleRebuildClick}
         disabled={isAnyOperationInProgress}
@@ -497,7 +489,7 @@ export const ImportExportSection = ({
             ? <CircularProgress size={20} />
             : undefined
         }
-        style={{ marginTop: '10px' }}
+        sx={{ mt: 1.25, borderColor: 'divider', color: 'text.secondary' }}
       >
         {rebuildState === 'rebuilding' ? 'データ再構築中...' : 'データ再構築'}
       </Button>
