@@ -193,6 +193,8 @@ EVT_DEAL 時点の `Chip` / `BetChip` は **アンテおよびブラインド支
 
 元チップの逆算: `Chip + BetChip + Ante`（通常ケース）。ショートオールイン時はアンテ全額を支払えないため、`Progress.Pot / アンテ拠出者数`（`BetStatus` が `BET_ABLE`/`ALL_IN` のプレイヤー数。着席していても `NOT_IN_PLAY` はアンテを支払わない）で実額を推定する。
 
+**アンテオールイン時の Pot/SidePot キャップ（2026-07 検証）**: deal 時点の `Progress.Pot` は投稿済みブラインド（各席の `BetChip`）を含む（poker-warehouse I1 監査 `audit_sng_table_conservation`: `Σ Chip + Pot + Σ SidePot = テーブル総チップ` が厳密成立し、`BetChip` は独立項として現れない）— **ただしブラインドが `Pot` 本体に含まれるのは、deal 時点にオールインによるキャップが存在しない場合のみ**。アンテオールイン（deal 時点で `ALL_IN` かつ `Chip=0, BetChip=0`）のプレイヤーが1人でもいる場合、deal 時点の `Pot`/`SidePot` は既にサイドポット分割済みで、`Pot` は最短オールインスタック s1 でキャップされ（`Pot = s1 × アンテ拠出者数` が厳密成立 — 2026-07-04 キャプチャの全アンテオールイン51ハンド中、追跡可能な50ハンドすべてで検証）、各 `SidePot[k]` も上位ティアでキャップされる。ブラインドは**最上位（キャップなし）のサイドポットにのみ**積まれる。実例: hand 260147134 は `SidePot[1]=5000` = アンテ超過分 1,200 + BB 3,800、hand 296039468 は `SidePot[1]=1,877,752` = アンテ超過分 377,752 + ブラインド 1,500,000。したがって上記の `Progress.Pot / アンテ拠出者数` によるアンテ推定はブラインドで水増しされない正確な値であり、ここから `Σ BetChip` を差し引く「修正」を加えてはならない（poker-warehouse `marts__fct_player_hand_results` のティア推定はこの性質に依存し、DuckDB 実測でグラウンドトゥルース一致を確認済み）。
+
 ### EVT_DEAL: Player フィールドの欠落
 
 - **観戦モード**: Player フィールド自体が undefined
