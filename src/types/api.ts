@@ -319,8 +319,8 @@ export const apiEventSchemas = {
         1=離脱予告/切断(0.33%): DEAL時Status=0→RESULTS時Status=1に遷移。数ハンドにわたりStatus=1が続き、最終的にStatus=6 or 7で離脱。チップ変動なし（ハンドに不参加）
         4=離席中(0.5%): Chip>0を保持したまま次ハンドで不在になることが多い。MTTテーブル移動(RT=2, 53%)、通常ハンド後(RT=0, 41%)、トーナメント敗退(RT=1, 5%)で発生
         5=バスト(1.84%): 常にChip=0。SNG: トーナメント脱落。Ring: バスト後リバイイン待ち（次ハンドでChip>0に復帰 or 席離脱）
-        6=自発退出(0.02%): Chip>0を残したまま次ハンドで不在。Ringゲームの途中退出。Status=1→6の遷移パターンあり
-        7=強制退出(0.01%): Chip>0を残したまま次ハンドで不在。タイムアウトや接続断による強制退場。Status=1→7の遷移パターンあり
+        6=自発退出(0.02%): Chip>0を残したまま次ハンドで不在。Ring途中退出のほか、ランク戦SNG(BattleType=0)でも発生する（リタイア機能 — poker-warehouse I1監査でChip>0のままSeatUserIdsから恒久消失しチップが再配分されない事例を確認。離脱者にResults[].Rankingは付かない。docs/api-events.md「プレイヤー離脱状態」の訂正注記参照）。Status=1→6の遷移パターンあり
+        7=強制退出(0.01%): Chip>0を残したまま次ハンドで不在。タイムアウトや接続断による強制退場。Ring限定ではない（6と同様）。Status=1→7の遷移パターンあり
         2,3=未観測`),
       IsSafeLeave: z.boolean().optional().describe('安全退出フラグ（Ringゲーム）'),
     })).min(1).max(5).describe('ヒーロー以外の全プレイヤーのハンド終了後状態。SeatIndex昇順。BetChip=0, BetStatus=-1は全ハンドで固定'),
@@ -475,7 +475,7 @@ export const apiEventSchemas = {
       IsLegendMatch: z.boolean().optional().describe('Legend Matchモードでの結果かどうか。season3/legend match 2026で新規観測（例: true）'),
       Rank: rankSchema.describe('現在のランク情報'),
       RankPoint: z.int().nonnegative().describe('現在のランクポイント（生涯ラダーRP）。Legend Matchでも引き続き送信される'),
-      RankPointDiff: z.int().describe('このセッションでのランクポイント変動（正=上昇、負=下降）。変動式は非公式Wikiで解説されており（外部検証済み、詳細は docs/api-events.md 「RankPoint の変動式」）、BQ実測643/643件のRankReward全件がその式の理論レンジ内に収まる'),
+      RankPointDiff: z.int().describe('このセッションでのランクポイント変動（正=上昇、負=下降）。変動式（STAGE別基準値+RP差補正±14）は非公式Wikiで解説されており、実測と矛盾ゼロ — Wikiの表が完全な基準値を与えるSTAGEでBQ実測637/637件が理論バンド内、残6件も表と不整合なし。詳細・出典・Wiki内部矛盾の注記は docs/api-events.md 「RankPoint の変動式」参照'),
       SeasonalRanking: z.int().nonnegative().describe('シーズナルランキング。旧仕様では常に0（未使用）だったが、season3/legend match 2026では実際の順位整数が入るようになった（例: 2813）ため固定値制約を撤廃'),
       SeasonalRankPoint: z.int().nonnegative().optional().describe('シーズン3独自のシーズナルランクポイント。season3/legend match 2026で新規観測（例: 215）'),
       SeasonalRankPointDiff: z.int().optional().describe('このセッションでのシーズナルランクポイント変動。season3/legend match 2026で新規観測（例: 15）'),
