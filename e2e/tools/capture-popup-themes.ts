@@ -17,10 +17,17 @@
  * popup page's own context (it's a chrome-extension:// page, so it has
  * full extension API access), then reload so `popup.ts`'s pre-render fetch
  * picks up the new value.
+ *
+ * Default `outDir` is the repo-local `e2e/out/popup-themes/` (gitignored,
+ * see `e2e/out/` in `.gitignore`) so the documented no-argument invocation
+ * works on any checkout instead of only the workstation that authored this
+ * script.
  */
+import { mkdirSync } from 'node:fs'
 import { launchHarness } from '../harness.ts'
 
-const OUT_DIR = process.argv[2] ?? '/private/tmp/claude-501/-Users-local--openclaw/c9e06c82-28ae-48a2-8eb1-17a3f8529191/scratchpad/popupprod-shots'
+const OUT_DIR = process.argv[2] ?? new URL('../out/popup-themes/', import.meta.url).pathname
+mkdirSync(OUT_DIR, { recursive: true })
 
 const openPopupWithRetry = async (h: Awaited<ReturnType<typeof launchHarness>>) => {
   let lastErr: unknown

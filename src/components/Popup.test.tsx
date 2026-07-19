@@ -266,11 +266,13 @@ describe('Popup', () => {
     await waitForAsyncOperations()
 
     expect(screen.getByText('テーブル人数')).toBeInTheDocument()
-    // 「フル」が何を意味するか（6maxは5-6人/4maxは4人）が一目でわかるよう、
-    // キャプションと各チップの可視サブラベルで明示する
     expect(screen.getByText('配られた人数でHUD統計の集計対象を絞り込みます')).toBeInTheDocument()
+    // 「フル」が何を意味するか（6maxは5〜6人/4maxは4人）はテーブルタイプ依存で
+    // チップの可視ラベルだけでは表現しきれないため、常時表示のキャプションで
+    // 明示する（ホバーtitleだけに頼らない。codex review, PR #145）
+    expect(screen.getByText('「フル」は6maxで5〜6人、4maxで4人(満席)を対象とします')).toBeInTheDocument()
 
-    const fullCheckbox = screen.getByRole('checkbox', { name: 'フル (5-6人)' }) as HTMLInputElement
+    const fullCheckbox = screen.getByRole('checkbox', { name: 'フル' }) as HTMLInputElement
     const fourPCheckbox = screen.getByRole('checkbox', { name: '4人 (ショート)' }) as HTMLInputElement
     const threePCheckbox = screen.getByRole('checkbox', { name: '3人' }) as HTMLInputElement
     const huCheckbox = screen.getByRole('checkbox', { name: 'HU (2人)' }) as HTMLInputElement
@@ -323,7 +325,7 @@ describe('Popup', () => {
 
     await waitForAsyncOperations()
 
-    const fullCheckbox = screen.getByRole('checkbox', { name: 'フル (5-6人)' }) as HTMLInputElement
+    const fullCheckbox = screen.getByRole('checkbox', { name: 'フル' }) as HTMLInputElement
     const huCheckbox = screen.getByRole('checkbox', { name: 'HU (2人)' }) as HTMLInputElement
     expect(fullCheckbox.checked).toBe(true)
     expect(huCheckbox.checked).toBe(true)

@@ -23,8 +23,8 @@ export const TableSizeFilterSection = ({
         <ToggleChip
           checked={tableSizeFilter.full}
           onChange={handleTableSizeFilterChange('full')}
-          label="フル (5-6人)"
-          title="満席〜1人欠け(6maxは5-6人 / 4maxは4人)"
+          label="フル"
+          title="6maxは5〜6人 / 4maxは4人満席"
         />
         <ToggleChip
           checked={tableSizeFilter['4p']}
@@ -45,6 +45,15 @@ export const TableSizeFilterSection = ({
           title="ヘッズアップ(2人)"
         />
       </Box>
+      {/*
+        「フル」の定義は卓サイズに依存する(classifyTableSizeLayer, table-size.ts):
+        6maxは5〜6人、4maxは4人(満席)。1チップの可視ラベルだけでこの分岐を
+        表現すると長すぎるかホバー頼みになるため、ここに常時表示のキャプション
+        として明記する(sola要件: 正しいこと AND 推測なしで発見できること)。
+      */}
+      <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mt: 1 }}>
+        「フル」は6maxで5〜6人、4maxで4人(満席)を対象とします
+      </Typography>
     </>
   )
 }

@@ -340,7 +340,18 @@ export const ImportExportSection = ({
         sx={{
           marginBottom: '10px',
           '&.Mui-disabled': {
+            // While a PokerStars export is running, keep this button on its
+            // themed primary background instead of MUI's disabled-gray, so
+            // the active operation stays visually obvious. Doing that alone
+            // regresses foreground contrast (MUI defaults disabled text to
+            // `action.disabled`, and the CircularProgress uses
+            // `color="inherit"`), so the foreground must be pinned to
+            // `primary.contrastText` too -- both theme.ts variants already
+            // define one for exactly this kind of on-primary content
+            // (dark-felt: #211804 on #d9a842 ~8.0:1; modern-light: #ffffff
+            // on #1f6b45 ~6.5:1, both well above WCAG AA's 4.5:1).
             backgroundColor: exportState === 'exporting' && exportFormat === 'pokerstars' ? 'primary.main' : undefined,
+            color: exportState === 'exporting' && exportFormat === 'pokerstars' ? 'primary.contrastText' : undefined,
             opacity: exportState === 'exporting' && exportFormat === 'pokerstars' ? 0.8 : undefined,
           }
         }}
