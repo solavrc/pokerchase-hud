@@ -152,6 +152,35 @@ describe('Popup', () => {
     })
   })
 
+  it('popupTheme未設定（新規インストール）は自動（auto）で表示され、uiConfigとは独立して永続化される', async () => {
+    render(<Popup />)
+
+    await waitForAsyncOperations()
+
+    // デフォルトは自動 -- popupThemeキーが無い状態からのマイグレーション
+    expect(screen.getByRole('radio', { name: '自動' })).toBeChecked()
+
+    await userEvent.click(screen.getByRole('radio', { name: 'ライト' }))
+
+    await waitFor(() => {
+      expect(syncData.popupTheme).toBe('light')
+    })
+    // uiConfig（HUD/game-tab向け設定）は変化しない -- popupThemeはuiConfigに
+    // ネストせず別キーに保存する（全タブへのupdateUIConfig broadcastを
+    // 誘発しないため、popup-theme-storage.tsを参照）
+    expect(syncData.uiConfig).toEqual(DEFAULT_UI_CONFIG)
+  })
+
+  it('保存済みのpopupThemeモードを起動時に読み込んで反映する', async () => {
+    syncData.popupTheme = 'dark'
+
+    render(<Popup />)
+
+    await waitForAsyncOperations()
+
+    expect(screen.getByRole('radio', { name: 'ダーク' })).toBeChecked()
+  })
+
   it('旧storageのuiConfigにhudDisplayMode/hudColorCodingキーが無いユーザーはコンパクト+カラーONで復元される（グレースフルなマイグレーション, #143）', async () => {
     syncData = {
       options: {
@@ -231,17 +260,22 @@ describe('Popup', () => {
     )
   })
 
-  it('卓人数フィルターを表示・変更できる（デフォルトは全層選択）', async () => {
+  it('テーブル人数フィルターを表示・変更できる（デフォルトは全層選択）', async () => {
     render(<Popup />)
 
     await waitForAsyncOperations()
 
-    expect(screen.getByText('卓人数')).toBeInTheDocument()
+    expect(screen.getByText('テーブル人数')).toBeInTheDocument()
+    expect(screen.getByText('配られた人数でHUD統計の集計対象を絞り込みます')).toBeInTheDocument()
+    // 「フル」が何を意味するか（6maxは5〜6人/4maxは4人）はテーブルタイプ依存で
+    // チップの可視ラベルだけでは表現しきれないため、常時表示のキャプションで
+    // 明示する（ホバーtitleだけに頼らない。codex review, PR #145）
+    expect(screen.getByText('「フル」は6maxで5〜6人、4maxで4人(満席)を対象とします')).toBeInTheDocument()
 
     const fullCheckbox = screen.getByRole('checkbox', { name: 'フル' }) as HTMLInputElement
-    const fourPCheckbox = screen.getByRole('checkbox', { name: '4人' }) as HTMLInputElement
+    const fourPCheckbox = screen.getByRole('checkbox', { name: '4人 (ショート)' }) as HTMLInputElement
     const threePCheckbox = screen.getByRole('checkbox', { name: '3人' }) as HTMLInputElement
-    const huCheckbox = screen.getByRole('checkbox', { name: 'HU' }) as HTMLInputElement
+    const huCheckbox = screen.getByRole('checkbox', { name: 'HU (2人)' }) as HTMLInputElement
 
     // デフォルト（新規ユーザー/tableSizeキー欠落時）は全層選択 = フィルタなし
     expect(fullCheckbox.checked).toBe(true)
@@ -250,12 +284,12 @@ describe('Popup', () => {
     expect(huCheckbox.checked).toBe(true)
   })
 
-  it('卓人数フィルター変更時はフラットなoptionsキーへ保存しupdateBattleTypeFilterメッセージを送る', async () => {
+  it('テーブル人数フィルター変更時はフラットなoptionsキーへ保存しupdateBattleTypeFilterメッセージを送る', async () => {
     render(<Popup />)
 
     await waitForAsyncOperations()
 
-    await userEvent.click(screen.getByRole('checkbox', { name: 'HU' }))
+    await userEvent.click(screen.getByRole('checkbox', { name: 'HU (2人)' }))
 
     await waitFor(() => {
       expect(syncData.options).toEqual(
@@ -292,7 +326,7 @@ describe('Popup', () => {
     await waitForAsyncOperations()
 
     const fullCheckbox = screen.getByRole('checkbox', { name: 'フル' }) as HTMLInputElement
-    const huCheckbox = screen.getByRole('checkbox', { name: 'HU' }) as HTMLInputElement
+    const huCheckbox = screen.getByRole('checkbox', { name: 'HU (2人)' }) as HTMLInputElement
     expect(fullCheckbox.checked).toBe(true)
     expect(huCheckbox.checked).toBe(true)
   })
@@ -371,12 +405,12 @@ describe('Popup', () => {
 
     await waitForAsyncOperations()
 
-    expect(screen.getByText('Export Hand History (PokerStars)')).toBeInTheDocument()
-    expect(screen.getByText('Export Raw Data (NDJSON)')).toBeInTheDocument()
-    expect(screen.getByText('Import Raw Data (NDJSON)')).toBeInTheDocument()
+    expect(screen.getByText('ハンド履歴をエクスポート (PokerStars)')).toBeInTheDocument()
+    expect(screen.getByText('生データをエクスポート (NDJSON)')).toBeInTheDocument()
+    expect(screen.getByText('生データをインポート (NDJSON)')).toBeInTheDocument()
 
     // エクスポートボタンをクリック
-    await userEvent.click(screen.getByText('Export Hand History (PokerStars)'))
+    await userEvent.click(screen.getByText('ハンド履歴をエクスポート (PokerStars)'))
 
     expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
       { action: 'exportData', format: 'pokerstars' },

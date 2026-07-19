@@ -1,10 +1,10 @@
 import Box from '@mui/material/Box'
 import Checkbox from '@mui/material/Checkbox'
 import FormControlLabel from '@mui/material/FormControlLabel'
-import Radio from '@mui/material/Radio'
 import RadioGroup from '@mui/material/RadioGroup'
 import Typography from '@mui/material/Typography'
 import type { UIConfig } from '../../types/hand-log'
+import { SegmentRadio } from './SegmentRadio'
 
 interface HudDisplaySectionProps {
   uiConfig: UIConfig
@@ -41,8 +41,8 @@ export const HudDisplaySection = ({
   const hudColorCoding = uiConfig.hudColorCoding ?? true
 
   return (
-    <Box sx={{ mb: 2 }}>
-      <Typography variant="body2" sx={{ mb: 0.5 }}>表示モード:</Typography>
+    <Box sx={{ mt: 1.5 }}>
+      <Typography variant="body2" sx={{ mb: 0.75, color: 'text.secondary' }}>表示モード:</Typography>
       <RadioGroup
         row
         aria-label="HUD表示モード"
@@ -50,9 +50,10 @@ export const HudDisplaySection = ({
         onChange={(_event, newValue) => {
           updateUIConfig({ ...uiConfig, hudDisplayMode: newValue as 'full' | 'compact' })
         }}
+        sx={{ mb: 1 }}
       >
-        <FormControlLabel value="compact" control={<Radio size="small" />} label="コンパクト" />
-        <FormControlLabel value="full" control={<Radio size="small" />} label="フル" />
+        <SegmentRadio value="compact" checked={hudDisplayMode === 'compact'} label="コンパクト" />
+        <SegmentRadio value="full" checked={hudDisplayMode === 'full'} label="フル" />
       </RadioGroup>
       <FormControlLabel
         control={
@@ -65,6 +66,7 @@ export const HudDisplaySection = ({
           />
         }
         label="統計カラー表示"
+        sx={{ '& .MuiFormControlLabel-label': { fontSize: 13, color: 'text.primary' } }}
       />
     </Box>
   )

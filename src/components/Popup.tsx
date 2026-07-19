@@ -1,4 +1,6 @@
-import Divider from '@mui/material/Divider'
+import CssBaseline from '@mui/material/CssBaseline'
+import { ThemeProvider } from '@mui/material/styles'
+import useMediaQuery from '@mui/material/useMediaQuery'
 import { ChangeEvent, useEffect, useRef, useState } from 'react'
 import type { FilterOptions, GameTypeFilter, TableSizeFilter } from '../types'
 import { DEFAULT_TABLE_SIZE_FILTER } from '../types'
@@ -29,10 +31,28 @@ import { TableSizeFilterSection } from './popup/TableSizeFilterSection'
 import { HandLimitSection } from './popup/HandLimitSection'
 import { StatisticsConfigSection } from './popup/StatisticsConfigSection'
 import { UndecodedEventSection } from './popup/UndecodedEventSection'
+import { PopupHeader } from './popup/PopupHeader'
+import { SectionCard } from './popup/SectionCard'
+import type { PopupThemeMode } from './popup/theme'
+import { DEFAULT_POPUP_THEME_MODE, getPopupTheme, resolvePopupThemeVariant } from './popup/theme'
+import { POPUP_THEME_STORAGE_KEY, savePopupThemeMode } from './popup/popup-theme-storage'
 
 export type { Options }
 
-const Popup = () => {
+export interface PopupProps {
+  /**
+   * Pre-resolved `popupTheme` mode, read from `chrome.storage.sync` by
+   * `popup.ts` *before* the first `render()` call so the popup never paints
+   * with the wrong theme and then swaps (flash-of-wrong-theme). Left
+   * `undefined` in tests / any caller that renders `<Popup />` directly
+   * (e.g. `Popup.test.tsx`), where it falls back to `DEFAULT_POPUP_THEME_MODE`
+   * and gets reconciled from storage in the mount effect below like every
+   * other setting on this page.
+   */
+  initialPopupThemeMode?: PopupThemeMode
+}
+
+const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   const [options, setOptions] = useState<Options>({ sendUserData: true })
   const [importStatus, setImportStatus] = useState<string>('')
   const [importProgress, setImportProgress] = useState<number>(0)
@@ -48,6 +68,13 @@ const Popup = () => {
   const [pendingStatDisplayConfigs, setPendingStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
   const [hasUnsavedStatChanges, setHasUnsavedStatChanges] = useState<boolean>(false)
   const [uiConfig, setUIConfig] = useState<UIConfig>(DEFAULT_UI_CONFIG)
+  const [popupThemeMode, setPopupThemeMode] = useState<PopupThemeMode>(
+    initialPopupThemeMode ?? DEFAULT_POPUP_THEME_MODE
+  )
+  // Live OS color-scheme signal for 'auto' mode; MUI's useMediaQuery falls
+  // back to `false` (no crash) in environments without `window.matchMedia`
+  // (e.g. jsdom under Jest).
+  const prefersDarkScheme = useMediaQuery('(prefers-color-scheme: dark)')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Firebase states
@@ -168,6 +195,21 @@ const Popup = () => {
           })
         }
       })
+
+      // Load popupTheme (自動/ダーク/ライト) from chrome.storage.sync.
+      // Skipped when `initialPopupThemeMode` was already supplied by the
+      // caller (popup.ts pre-fetches it before the first render to avoid a
+      // flash-of-wrong-theme); this effect exists so `<Popup />` rendered
+      // directly (tests, or any future embedding) still picks up a
+      // persisted value on mount.
+      if (initialPopupThemeMode === undefined) {
+        chrome.storage.sync.get(POPUP_THEME_STORAGE_KEY, (result: Record<string, any>) => {
+          const value = result[POPUP_THEME_STORAGE_KEY]
+          if (value === 'auto' || value === 'dark' || value === 'light') {
+            setPopupThemeMode(value)
+          }
+        })
+      }
 
       // Load cached Firebase auth state first for instant rendering
       chrome.storage.local.get('firebaseAuthCache', (result: Record<string, any>) => {
@@ -382,86 +424,106 @@ const Popup = () => {
     chrome.runtime.sendMessage<ManualSyncDownloadMessage>({ action: 'manualSyncDownload' })
   }
 
-  return <div style={{ width: 300, padding: '10px' }}>
-    {/* UI Display Controls */}
-    <UIScaleSection
-      uiConfig={uiConfig}
-      setUIConfig={setUIConfig}
-    />
+  const handlePopupThemeModeChange = (mode: PopupThemeMode) => {
+    setPopupThemeMode(mode)
+    // Popup-only setting: persisted directly, no chrome.tabs broadcast (see
+    // popup-theme-storage.ts -- unlike updateUIConfig, this must not
+    // trigger a HUD re-render in game tabs).
+    savePopupThemeMode(mode)
+  }
 
-    <HudDisplaySection
-      uiConfig={uiConfig}
-      setUIConfig={setUIConfig}
-    />
+  const theme = getPopupTheme(resolvePopupThemeVariant(popupThemeMode, prefersDarkScheme))
 
-    <Divider style={{ margin: '10px 0' }} />
+  return <ThemeProvider theme={theme}>
+    <CssBaseline />
+    <div style={{ width: 380, padding: '12px' }}>
+      <PopupHeader
+        popupThemeMode={popupThemeMode}
+        onPopupThemeModeChange={handlePopupThemeModeChange}
+      />
 
-    <GameTypeFilterSection
-      gameTypeFilter={gameTypeFilter}
-      handleGameTypeFilterChange={handleGameTypeFilterChange}
-    />
+      {/* UI Display Controls */}
+      <SectionCard>
+        <UIScaleSection
+          uiConfig={uiConfig}
+          setUIConfig={setUIConfig}
+        />
 
-    <Divider style={{ margin: '10px 0' }} />
+        <HudDisplaySection
+          uiConfig={uiConfig}
+          setUIConfig={setUIConfig}
+        />
+      </SectionCard>
 
-    <TableSizeFilterSection
-      tableSizeFilter={tableSizeFilter}
-      handleTableSizeFilterChange={handleTableSizeFilterChange}
-    />
+      <SectionCard>
+        <GameTypeFilterSection
+          gameTypeFilter={gameTypeFilter}
+          handleGameTypeFilterChange={handleGameTypeFilterChange}
+        />
+      </SectionCard>
 
-    <Divider style={{ margin: '10px 0' }} />
+      <SectionCard>
+        <TableSizeFilterSection
+          tableSizeFilter={tableSizeFilter}
+          handleTableSizeFilterChange={handleTableSizeFilterChange}
+        />
+      </SectionCard>
 
-    <HandLimitSection
-      handLimit={handLimit}
-      handleHandLimitChange={handleHandLimitChange}
-    />
+      <SectionCard>
+        <HandLimitSection
+          handLimit={handLimit}
+          handleHandLimitChange={handleHandLimitChange}
+        />
+      </SectionCard>
 
-    <Divider style={{ margin: '10px 0' }} />
+      {/* Cloud Backup - ハンド数とHUD表示設定の間 */}
+      <SectionCard>
+        <FirebaseAuthSection
+          isFirebaseSignedIn={isFirebaseSignedIn}
+          firebaseUserInfo={firebaseUserInfo}
+          syncState={syncState}
+          setImportStatus={setImportStatus}
+          handleFirebaseSignIn={handleFirebaseSignIn}
+          handleFirebaseSignOut={handleFirebaseSignOut}
+          handleManualSyncUpload={handleManualSyncUpload}
+          handleManualSyncDownload={handleManualSyncDownload}
+        />
+      </SectionCard>
 
-    {/* Cloud Backup - ハンド数とHUD表示設定の間 */}
-    <FirebaseAuthSection
-      isFirebaseSignedIn={isFirebaseSignedIn}
-      firebaseUserInfo={firebaseUserInfo}
-      syncState={syncState}
-      setImportStatus={setImportStatus}
-      handleFirebaseSignIn={handleFirebaseSignIn}
-      handleFirebaseSignOut={handleFirebaseSignOut}
-      handleManualSyncUpload={handleManualSyncUpload}
-      handleManualSyncDownload={handleManualSyncDownload}
-    />
+      <SectionCard>
+        <StatisticsConfigSection
+          pendingStatDisplayConfigs={pendingStatDisplayConfigs}
+          hasUnsavedStatChanges={hasUnsavedStatChanges}
+          handleStatToggle={handleStatToggle}
+          handleStatOrderChange={handleStatOrderChange}
+          handleApplyStatChanges={handleApplyStatChanges}
+          handleResetStatChanges={handleResetStatChanges}
+        />
+      </SectionCard>
 
-    <Divider style={{ margin: '10px 0' }} />
+      <SectionCard>
+        <ImportExportSection
+          importStatus={importStatus}
+          importProgress={importProgress}
+          importProcessed={importProcessed}
+          importTotal={importTotal}
+          importDuplicates={importDuplicates}
+          importSuccess={importSuccess}
+          importStartTime={importStartTime}
+          fileInputRef={fileInputRef}
+          setImportStatus={setImportStatus}
+          setImportProgress={setImportProgress}
+          setImportProcessed={setImportProcessed}
+          setImportTotal={setImportTotal}
+          setImportDuplicates={setImportDuplicates}
+          setImportSuccess={setImportSuccess}
+          setImportStartTime={setImportStartTime}
+        />
+      </SectionCard>
 
-    <StatisticsConfigSection
-      pendingStatDisplayConfigs={pendingStatDisplayConfigs}
-      hasUnsavedStatChanges={hasUnsavedStatChanges}
-      handleStatToggle={handleStatToggle}
-      handleStatOrderChange={handleStatOrderChange}
-      handleApplyStatChanges={handleApplyStatChanges}
-      handleResetStatChanges={handleResetStatChanges}
-    />
-
-    <Divider style={{ margin: '10px 0' }} />
-
-    <ImportExportSection
-      importStatus={importStatus}
-      importProgress={importProgress}
-      importProcessed={importProcessed}
-      importTotal={importTotal}
-      importDuplicates={importDuplicates}
-      importSuccess={importSuccess}
-      importStartTime={importStartTime}
-      fileInputRef={fileInputRef}
-      setImportStatus={setImportStatus}
-      setImportProgress={setImportProgress}
-      setImportProcessed={setImportProcessed}
-      setImportTotal={setImportTotal}
-      setImportDuplicates={setImportDuplicates}
-      setImportSuccess={setImportSuccess}
-      setImportStartTime={setImportStartTime}
-    />
-
-    <UndecodedEventSection />
-  </div>
+      <UndecodedEventSection />
+    </div>
+  </ThemeProvider>
 }
 
 export default Popup

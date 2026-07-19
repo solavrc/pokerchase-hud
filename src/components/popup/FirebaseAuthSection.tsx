@@ -33,7 +33,6 @@ export const FirebaseAuthSection = ({
         color="primary"
         fullWidth
         onClick={handleFirebaseSignIn}
-        style={{ marginBottom: '15px' }}
         size="large"
         startIcon={<CloudIcon />}
       >
@@ -43,14 +42,7 @@ export const FirebaseAuthSection = ({
   }
 
   return (
-    <Box sx={{
-      bgcolor: 'background.paper',
-      border: 1,
-      borderColor: 'primary.main',
-      borderRadius: 1,
-      p: 1.5,
-      mb: 2
-    }}>
+    <Box>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
         <CloudIcon sx={{ color: 'primary.main' }} />
         <Box sx={{ flex: 1, overflow: 'hidden' }}>

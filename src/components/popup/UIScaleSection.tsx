@@ -30,9 +30,9 @@ export const UIScaleSection = ({
   }
 
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <Typography variant="body2">サイズ:</Typography>
+        <Typography variant="body2" sx={{ color: 'text.secondary' }}>サイズ:</Typography>
         <IconButton
           size="small"
           onClick={() => {
@@ -67,29 +67,30 @@ export const UIScaleSection = ({
           }
         }}
         size="small"
-        sx={{
+        sx={(theme) => ({
           '& .MuiToggleButton-root': {
             padding: '4px 12px',
             fontSize: '12px',
             fontWeight: 'bold',
+            textTransform: 'none',
             '&.Mui-selected': {
               '&[value="off"]': {
-                backgroundColor: '#f44336',
-                color: '#ffffff',
+                backgroundColor: theme.palette.error.main,
+                color: theme.palette.getContrastText(theme.palette.error.main),
                 '&:hover': {
-                  backgroundColor: '#d32f2f',
+                  backgroundColor: theme.palette.error.dark,
                 }
               },
               '&[value="on"]': {
-                backgroundColor: '#4caf50',
-                color: '#ffffff',
+                backgroundColor: theme.palette.secondary.main,
+                color: theme.palette.getContrastText(theme.palette.secondary.main),
                 '&:hover': {
-                  backgroundColor: '#388e3c',
+                  backgroundColor: theme.palette.secondary.dark,
                 }
               }
             }
           }
-        }}
+        })}
       >
         <ToggleButton value="off">
           非表示
