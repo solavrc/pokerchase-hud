@@ -154,7 +154,7 @@ EVT_HAND_RESULTS.Results[].UserId             ──► UserId 直接参照（Se
 | `EVT_PLAYER_SEAT_ASSIGNED` | `SeatUserIds`, `TableUsers` | 席→プレイヤーマッピング |
 | `EVT_DEAL` | `SeatUserIds`, `Game` | ハンドごとの席マッピングとブラインド情報 |
 | `EVT_HAND_RESULTS` | `HandId` | ユニークなハンド識別子（ここでのみ取得可能） |
-| `EVT_SESSION_RESULTS` | `Ranking`, `RankReward` | 最終順位とランク変動 |
+| `EVT_SESSION_RESULTS` | `Ranking`, `RankReward` | 最終順位とランク変動。`RankReward` はランク戦 SNG（BattleType=0）のみで、MTT 含む他の BattleType には出現しない（BQ実測: BattleType=0 は 643/661 セッションに存在、他タイプ 260 セッションで 0 件） |
 
 ### 主要な制約
 
