@@ -9,7 +9,13 @@ interface PlayerTypeIconsProps {
 }
 
 const styles = {
+  // DragHandle (position:absolute, height:20px, z-index:auto) sits on top of
+  // the header row and is the frontmost hit-test target there by default.
+  // Without an explicit position+z-index this icon's `title` tooltip would
+  // never trigger on hover -- same fix as PositionalPanelTrigger.tsx.
   playerTypeIcon: {
+    position: 'relative',
+    zIndex: 1,
     fontSize: '10px',
     marginLeft: '4px',
     lineHeight: 1,

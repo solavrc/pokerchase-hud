@@ -19,7 +19,7 @@ describe('classifyPlayerType', () => {
       expect(r?.icon).toBe(PLAYER_TYPE_META.tag.icon)
       expect(r?.label).toBe('TAG')
       expect(r?.reason).toBe(
-        'プレイヤータイプ: TAG (タイト・アグレッシブ)\nVPIP 20% (n=100) < 25 / AF 2.0 (n=20) ≥ 1.5'
+        'プレイヤータイプ: TAG (タイト・アグレッシブ)\nVPIP 20.0% (n=100) < 25 / AF 2.0 (n=20) ≥ 1.5'
       )
     })
 
@@ -40,12 +40,18 @@ describe('classifyPlayerType', () => {
     })
 
     it('フィッシュ (fish): loose VPIP + passive AF -- matches the spec example exactly', () => {
-      const r = classifyPlayerType(results({ vpip: [50, 120], af: [36, 45] })) // 42% VPIP (rounds to 42), AF 0.8
+      const r = classifyPlayerType(results({ vpip: [50, 120], af: [36, 45] })) // 41.7% VPIP, AF 0.8
       expect(r?.type).toBe('fish')
       expect(r?.icon).toBe(PLAYER_TYPE_META.fish.icon)
       expect(r?.reason).toBe(
-        'プレイヤータイプ: フィッシュ (ルース・パッシブ)\nVPIP 42% (n=120) ≥ 25 / AF 0.8 (n=45) < 1.5'
+        'プレイヤータイプ: フィッシュ (ルース・パッシブ)\nVPIP 41.7% (n=120) ≥ 25 / AF 0.8 (n=45) < 1.5'
       )
+    })
+
+    it('rounded-value/comparator contradiction regression (PR #146 review): 24.6% VPIP would round up to 25 under Math.round, contradicting the "<" comparator -- one-decimal rendering keeps it consistent', () => {
+      const r = classifyPlayerType(results({ vpip: [123, 500], af: [30, 20] })) // 24.6% VPIP (tight), AF 1.5 (aggressive)
+      expect(r?.type).toBe('tag')
+      expect(r?.reason).toContain('VPIP 24.6% (n=500) < 25')
     })
 
     it('VPIP boundary (25%) is inclusive on the loose side', () => {

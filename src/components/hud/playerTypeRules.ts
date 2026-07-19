@@ -134,8 +134,13 @@ export function classifyPlayerType(statResults: StatResult[] | undefined): Playe
     type,
     icon: meta.icon,
     label: meta.label,
+    // VPIP renders at one decimal place (not Math.round) so the displayed
+    // value can't contradict the comparator it's paired with -- e.g. a
+    // rounded "25%" next to "< 25" reads as a contradiction even though the
+    // underlying value (24.6%) is genuinely below the threshold (PR #146
+    // review).
     reason: `プレイヤータイプ: ${meta.label} (${style})\n` +
-      `VPIP ${Math.round(vpipPct)}% (n=${vpipDenom}) ${vpipCmp} ${PLAYER_TYPE_THRESHOLDS.vpipTightLoose} / ` +
+      `VPIP ${vpipPct.toFixed(1)}% (n=${vpipDenom}) ${vpipCmp} ${PLAYER_TYPE_THRESHOLDS.vpipTightLoose} / ` +
       `AF ${afRatio.toFixed(1)} (n=${afDenom}) ${afCmp} ${PLAYER_TYPE_THRESHOLDS.afPassiveAggressive}`,
   }
 }

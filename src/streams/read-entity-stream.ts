@@ -10,7 +10,7 @@ import type {
   StatCalculationContext
 } from '../types'
 import { ErrorHandler } from '../utils/error-handler'
-import { defaultRegistry } from '../stats'
+import { defaultRegistry, defaultStatDisplayConfigs } from '../stats'
 import { COMPACT_REQUIRED_STAT_IDS, CLASSIFIER_REQUIRED_STAT_IDS } from '../stats/compactStats'
 import { matchesTableSizeFilter } from '../utils/table-size'
 import type { ErrorContext } from '../types/errors'
@@ -269,7 +269,19 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       // the user's actual enabled flag when building the full grid's
       // displayStats, so this only widens what's calculated here, not what's
       // shown in the grid (PR #143 review).
-      const configsForCalculation = this.service.statDisplayConfigs?.map(config =>
+      //
+      // service.statDisplayConfigs is undefined until background.ts's
+      // onInstalled handler observes a saved `options.filterOptions` (see
+      // background.ts's default branch) -- i.e. on a fresh install, or for
+      // any user who hasn't opened the popup/saved filters yet.
+      // calculateWithConfig(context, undefined) falls back to calculateAll(),
+      // which only computes registry-enabled stats and excludes opt-in ones
+      // like vpipF entirely -- the forcing above would never even run since
+      // there'd be no configs array to map over. Fall back to
+      // defaultStatDisplayConfigs (same base background.ts merges saved
+      // configs onto) so a configs array -- and therefore the forcing -- is
+      // always in play, fresh install or not (PR #146 review).
+      const configsForCalculation = (this.service.statDisplayConfigs ?? defaultStatDisplayConfigs).map(config =>
         !config.enabled && FORCED_ENABLED_STAT_IDS.has(config.id)
           ? { ...config, enabled: true }
           : config

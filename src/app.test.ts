@@ -513,9 +513,21 @@ const expected: PlayerStats[][] = [
   ]
 ]
 
-const STEAL_STAT_IDS = new Set(['steal', 'foldToSteal'])
+// Stat ids that appear in the live `statResults` output but were never
+// folded into this hand-by-hand golden fixture (`expected`, above) when
+// they were introduced -- rebuilding the whole fixture for each addition
+// isn't worth it, so they're stripped from `actual` before comparison
+// instead:
+//  - steal/foldToSteal: added by #86 (steal stats).
+//  - vpipF: forced into every calculation (regardless of statDisplayConfigs)
+//    by the PR #146 review fix in read-entity-stream.ts -- this test's
+//    service never calls setBattleTypeFilter, so it exercises the
+//    statDisplayConfigs-undefined/fresh-install path, where vpipF is now
+//    always computed (previously it silently fell back to calculateAll()
+//    and vpipF, being opt-in/disabled by default, never appeared here).
+const EXCLUDED_FROM_FIXTURE_STAT_IDS = new Set(['steal', 'foldToSteal', 'vpipF'])
 
-function withoutStealStats(results: PlayerStats[][]): PlayerStats[][] {
+function withoutFixtureExcludedStats(results: PlayerStats[][]): PlayerStats[][] {
   return results.map(hand =>
     hand.map(playerStats => {
       if (!('statResults' in playerStats) || !playerStats.statResults) {
@@ -524,7 +536,7 @@ function withoutStealStats(results: PlayerStats[][]): PlayerStats[][] {
 
       return {
         ...playerStats,
-        statResults: playerStats.statResults.filter(stat => !STEAL_STAT_IDS.has(stat.id))
+        statResults: playerStats.statResults.filter(stat => !EXCLUDED_FROM_FIXTURE_STAT_IDS.has(stat.id))
       }
     })
   )
@@ -539,7 +551,7 @@ test('ログから各プレイヤーのスタッツを計算できる', async ()
   for (const event of event_timeline) service.handAggregateStream.write(event)
   await service.handAggregateStream.whenIdle()
   const actual = results
-  expect(withoutStealStats(actual)).toStrictEqual(expected)
+  expect(withoutFixtureExcludedStats(actual)).toStrictEqual(expected)
 
   const finalHand = actual.at(-1)!
   const miyuStats = finalHand.find(playerStats => playerStats.playerId === 2)
