@@ -11,7 +11,7 @@ import type {
 } from '../types'
 import { ErrorHandler } from '../utils/error-handler'
 import { defaultRegistry } from '../stats'
-import { COMPACT_REQUIRED_STAT_IDS } from '../stats/compactStats'
+import { COMPACT_REQUIRED_STAT_IDS, CLASSIFIER_REQUIRED_STAT_IDS } from '../stats/compactStats'
 import { matchesTableSizeFilter } from '../utils/table-size'
 import type { ErrorContext } from '../types/errors'
 
@@ -29,6 +29,19 @@ import type { ErrorContext } from '../types/errors'
  * 入力: プレイヤーIDの配列（seatUserIds）
  * 出力: PlayerStats配列 → HUD（background.ts経由）
  */
+
+/**
+ * Union of every stat id some HUD surface always needs regardless of the
+ * user's statDisplayConfigs.enabled flag -- compact mode's fixed classic
+ * line (COMPACT_REQUIRED_STAT_IDS) and the HUD-header player-type
+ * classifier (CLASSIFIER_REQUIRED_STAT_IDS, notably `vpipF` for the whale
+ * override). See compactStats.ts for the rationale behind each list.
+ */
+const FORCED_ENABLED_STAT_IDS: ReadonlySet<string> = new Set([
+  ...COMPACT_REQUIRED_STAT_IDS,
+  ...CLASSIFIER_REQUIRED_STAT_IDS,
+])
+
 export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
   private service: PokerChaseService
   private statsCache: Map<string, { stats: PlayerStats[], timestamp: number }> = new Map()
@@ -247,13 +260,17 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       // Compact HUD mode (#143) has a fixed classic-line format (VPIP/PFR/3B
       // (HAND) + AF/CB/STL) that must always be populated, even when the
       // user has hidden one of those stats from the full 16-stat grid via
-      // statDisplayConfigs. Force those ids into the calculation regardless
-      // of their configured `enabled` flag -- Hud.tsx re-applies the user's
-      // actual enabled flag when building the full grid's displayStats, so
-      // this only widens what's calculated here, not what's shown in the
-      // grid (PR #143 review).
+      // statDisplayConfigs. The player-type classifier (HM-style auto-rate
+      // icon) has the same requirement for vpip/af/vpipF -- notably vpipF,
+      // which is opt-in (enabled: false by default) and would otherwise
+      // never reach the classifier for users who haven't turned its row on.
+      // Force every id in FORCED_ENABLED_STAT_IDS into the calculation
+      // regardless of its configured `enabled` flag -- Hud.tsx re-applies
+      // the user's actual enabled flag when building the full grid's
+      // displayStats, so this only widens what's calculated here, not what's
+      // shown in the grid (PR #143 review).
       const configsForCalculation = this.service.statDisplayConfigs?.map(config =>
-        !config.enabled && COMPACT_REQUIRED_STAT_IDS.includes(config.id)
+        !config.enabled && FORCED_ENABLED_STAT_IDS.has(config.id)
           ? { ...config, enabled: true }
           : config
       )
