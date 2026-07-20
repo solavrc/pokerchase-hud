@@ -90,12 +90,56 @@ const findGamePage = async (browser: Browser, fixtureOrigin: string): Promise<Pa
   return pages.find((p) => p.url().startsWith(fixtureOrigin))
 }
 
+/**
+ * Workaround for a headless Chrome for Testing compositor stall (observed on
+ * the pinned build, Chrome 151): once a page has been *idle* for a few
+ * minutes, the compositor stops producing on-demand frames, and every
+ * subsequent CDP `Page.captureScreenshot` hangs until protocol timeout --
+ * while `evaluate` on the same page keeps working fine. `--disable-gpu` does
+ * not help. An invisible, infinitely-running CSS animation keeps BeginFrames
+ * flowing so the stall never happens, and injecting it also *recovers* an
+ * already-stalled compositor (verified live: after injection, previously
+ * hanging screenshots all succeed). Idempotent per page (keyed on element
+ * id). Called on every harness-owned page at load time, and re-asserted
+ * before each `screenshot()` so it self-heals across page reloads and
+ * `attachHarness` sessions started by an older build. See e2e/README.md
+ * "Flaky bits".
+ */
+const COMPOSITOR_KEEPALIVE_ID = '__e2e-compositor-keepalive'
+
+const ensureCompositorKeepalive = async (page: Page): Promise<void> => {
+  await page.evaluate((id: string) => {
+    if (document.getElementById(id)) return
+    const style = document.createElement('style')
+    style.textContent =
+      `@keyframes ${id}-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`
+    const el = document.createElement('div')
+    el.id = id
+    // 1x1px at the viewport corner, near-zero opacity: effectively invisible
+    // but NOT opacity:0 or offscreen -- the compositor may cull those,
+    // defeating the whole point of forcing continuous frame production.
+    el.style.cssText =
+      'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0.01;' +
+      `pointer-events:none;animation:${id}-spin 1s linear infinite;`
+    const parent = document.body ?? document.documentElement
+    parent.appendChild(style)
+    parent.appendChild(el)
+  }, COMPOSITOR_KEEPALIVE_ID)
+}
+
 const buildHelpers = (browser: Browser, gamePage: Page): HarnessHelpers => {
   const withPage = (page?: Page): Page => page ?? gamePage
 
   const screenshot = async (path: string, page?: Page): Promise<string> => {
+    const target = withPage(page)
     mkdirSync(dirname(path), { recursive: true })
-    await withPage(page).screenshot({ path: path as `${string}.png`, fullPage: false })
+    // Re-assert the anti-stall animation right before capturing (idempotent,
+    // one cheap evaluate). This both prevents and *recovers from* the
+    // idle-compositor stall -- see ensureCompositorKeepalive. Best-effort:
+    // if the page is mid-navigation the screenshot below fails with its own,
+    // more useful error.
+    await ensureCompositorKeepalive(target).catch(() => {})
+    await target.screenshot({ path: path as `${string}.png`, fullPage: false })
     return path
   }
 
@@ -123,6 +167,10 @@ const buildHelpers = (browser: Browser, gamePage: Page): HarnessHelpers => {
     popupPage.on('pageerror', (err) => console.error('[popupPage pageerror]', err))
     onPageCreated?.(popupPage)
     await popupPage.goto(`chrome-extension://${extensionId}/dist/index.html`, { waitUntil: 'domcontentloaded' })
+    // Popup tabs are screenshotted directly (popupPage.screenshot) by
+    // smoke.ts / run.ts, bypassing the screenshot() helper's re-assert -- so
+    // install the anti-stall keepalive here at open time.
+    await ensureCompositorKeepalive(popupPage)
     return popupPage
   }
 
@@ -199,6 +247,10 @@ export const launchHarness = async (options: LaunchOptions = {}): Promise<Harnes
     gamePage.on('pageerror', (err) => console.error('[gamePage pageerror]', err))
 
     await gamePage.goto(fixtureServer.origin, { waitUntil: 'domcontentloaded' })
+    // Keep the compositor producing frames from the start so screenshots
+    // still work after the page idles for minutes (agent think-time between
+    // CLI commands) -- see ensureCompositorKeepalive.
+    await ensureCompositorKeepalive(gamePage)
   } catch (err) {
     await fixtureServer.close().catch(() => {})
     await launchedBrowser?.close().catch(() => {})
