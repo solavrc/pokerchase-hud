@@ -70,6 +70,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
    * @returns Object containing import statistics
    */
   const importData = async (jsonlData: string): Promise<{ successCount: number, totalLines: number, duplicateCount: number }> => {
+    let batchModeEnabled = false
     try {
       setOperationState({ type: 'import', progress: 0 })
       console.log('[importData] Starting optimized import process with direct entity generation')
@@ -95,6 +96,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
 
       // バッチモードを有効化
       service.setBatchMode(true)
+      batchModeEnabled = true
 
       // 直接エンティティ生成用のイベントを収集
       const allNewEvents: ApiEvent[] = []
@@ -293,9 +295,6 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         console.log('[importData] No new events to process')
       }
 
-      // バッチモードを無効化
-      service.setBatchMode(false)
-
       // インポート後に統計を強制的に更新
       // 最新のEVT_DEALを取得して統計計算をトリガー
       const latestDealEvent = await findLatestPlayerDealEvent(db)
@@ -329,13 +328,15 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         }
       }
 
-      setOperationState({ type: 'idle' })
       return { successCount, totalLines: lines.length, duplicateCount }
 
     } catch (error) {
-      setOperationState({ type: 'idle' })
       console.error('Import error:', error)
       throw error
+    } finally {
+      // Every exit path must restore live processing before advertising idle.
+      if (batchModeEnabled) service.setBatchMode(false)
+      setOperationState({ type: 'idle' })
     }
   }
 
