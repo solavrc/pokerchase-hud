@@ -190,21 +190,51 @@ class PokerChaseService {
     this.persistState()
   }
 
+  // 意味論: 「ヒーロー在籍」の文脈（永続化対象）。呼び出し元は必ずPlayerが
+  // 存在するdeal（aggregate-events-stream.ts、findLatestPlayerDealEvent()経由の
+  // import-export.ts/auto-sync-service.ts/recalculateAllStats()）だけをここに
+  // 代入すること -- 呼び出し元側で保証されている前提（このsetter自体はPlayerの
+  // 有無を検証しない）。
   get latestEvtDeal(): ApiEvent<ApiType.EVT_DEAL> | undefined {
     return this._latestEvtDeal
   }
 
   set latestEvtDeal(value: ApiEvent<ApiType.EVT_DEAL> | undefined) {
     this._latestEvtDeal = value
+    // ヒーロー在籍dealへの再アンカーは、ライブ配信文脈（liveEvtDeal）も同時に
+    // 同期する（codex #177 3巡目レビューP2「Use restored deal context for
+    // batch broadcasts」で判明）。理由: import/rebuild/auto-sync復元の各経路
+    // （import-export.ts, auto-sync-service.ts）は「service.latestEvtDealだけ
+    // 更新してからstatsOutputStream.write()で再ブロードキャストする」という
+    // パターンを繰り返し使っている。ports.tsのライブブロードキャストは常に
+    // service.liveEvtDealを座席文脈として同梱するため、このsetterが
+    // liveEvtDealを追従させないと、SW起動後すでに何らかのEVT_DEAL（観戦モード
+    // 含む）を1件でも見ていた場合（_liveEvtDealが既にセット済みでgetterの
+    // `??`フォールバックが効かない場合）、直前の（観戦テーブルなど無関係な）
+    // liveEvtDealが取り残されたままimport/rebuild後の再計算結果とペアリング
+    // されてしまい、App.tsxが誤った席インデックスで回転してしまう。
+    // ヒーロー在籍dealへの再アンカーは常に「今表示すべき最新の文脈」でもある
+    // ため、liveEvtDealを上書きするのが正しい。
+    this._liveEvtDeal = value
     this.persistState()
   }
 
   // liveEvtDeal: 意図的に永続化しない（persistState()を呼ばない）。
+  //
+  // 意味論: 「今まさに配信中の席」の文脈（非永続・一時的）。
+  // 更新元は2種類:
+  //   (1) aggregate-events-stream.ts の EVT_DEAL ケース -- Player の有無に
+  //       関わらず毎回このsetterを直接呼ぶ（観戦モードdealでも追従させる
+  //       ことで、ports.tsのライブブロードキャストが正しい座席文脈を持つ。
+  //       codex #177 1巡目レビュー）。
+  //   (2) latestEvtDeal のsetterからの同期代入 -- ヒーロー在籍dealへの
+  //       再アンカー（フィルター変更時のrecalculateStats()、バッチモード
+  //       終了時のrecalculateAllStats()、import/rebuild/auto-sync復元）が
+  //       起きた瞬間は、それが「今表示すべき最新の文脈」でもあるため
+  //       （codex #177 3巡目レビューP2、下記参照）。
+  //
   // 未設定（SW起動直後でまだ一度もEVT_DEALを見ていない）の間は latestEvtDeal
-  // （ヒーロー在籍・永続化済みの直近deal）にフォールバックする。これにより
-  // 復元直後・再構築直後（rebuildAllData/importData/AutoSyncのrestoreLatestDeal
-  // が service.latestEvtDeal を設定した直後）のライブブロードキャストも、次の
-  // 実際のEVT_DEALが来るまでは妥当な座席文脈を持てる。
+  // （ヒーロー在籍・永続化済みの直近deal）にフォールバックする。
   get liveEvtDeal(): ApiEvent<ApiType.EVT_DEAL> | undefined {
     return this._liveEvtDeal ?? this._latestEvtDeal
   }
@@ -445,6 +475,13 @@ class PokerChaseService {
   private readonly recalculateAllStats = async () => {
     // 最新のplayerIdsを取得して再計算をトリガー
     if (this.latestEvtDeal && this.latestEvtDeal.SeatUserIds) {
+      // ここは latestEvtDeal（永続化済み・ヒーロー在籍の文脈）を"読むだけ"で
+      // 再代入しないパスなので、latestEvtDealのsetterが持つliveEvtDeal同期
+      // ロジックが自動では効かない。observing-while-batchなどでliveEvtDealが
+      // 既に別の（観戦）dealを指したまま取り残されていると、直後の
+      // statsOutputStream.write()がports.tsで誤った座席文脈とペアリングされる
+      // （codex #177 3巡目レビューP2）。ここで明示的に同期する。
+      this.liveEvtDeal = this.latestEvtDeal
       const playerIds = this.latestEvtDeal.SeatUserIds.filter(id => id !== -1)
       if (playerIds.length > 0) {
         this.statsOutputStream.write(playerIds)

@@ -111,9 +111,14 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
         // may be a spectator-mode table after the hero busts). latestEvtDeal
         // stays pinned to the hero's own most recent seated deal (used by
         // recalculateStats()/recalculateAllStats() to rebuild hero-context
-        // stats on filter changes / batch-mode end) -- see the getter/setter
-        // doc comments on PokerChaseService and aggregate-events-stream.ts's
-        // EVT_DEAL case for the full rationale (codex #177).
+        // stats on filter changes / batch-mode end). Every code path that
+        // re-anchors to the hero's deal (a fresh live hand, a filter-change
+        // recalc, batch-mode end, import/rebuild/auto-sync restore) keeps
+        // liveEvtDeal in sync with latestEvtDeal at that same moment (either
+        // via the latestEvtDeal setter itself, or an explicit assignment at
+        // the read-only recalc call sites) -- see the getter/setter doc
+        // comments on PokerChaseService and aggregate-events-stream.ts's
+        // EVT_DEAL case for the full rationale (codex #177, all 3 review rounds).
         evtDeal: service.liveEvtDeal,
         realTimeStats: latestRealTimeStats
       })

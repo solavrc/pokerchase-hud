@@ -63,8 +63,21 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       return
     }
 
-    // latestEvtDealから直接seatUserIdsを取得（DBアクセス不要）
+    // latestEvtDealから直接seatUserIdsを取得（DBアクセス不要）。これは常に
+    // ヒーロー在籍時点のSeatUserIds（永続化対象・latestEvtDealの意味論）。
     const seatUserIds = this.service.latestEvtDeal.SeatUserIds
+
+    // ここは latestEvtDeal を"読むだけ"で再代入しないパス（フィルター変更時の
+    // 明示的な再計算、setBattleTypeFilter()経由）なので、setterのliveEvtDeal
+    // 同期ロジックは効かない。もし直前に観戦モードdealが届いていて
+    // service.liveEvtDealがそちらを指したままだと、ここでpush()する
+    // ヒーロー在籍の統計が、ports.tsのブロードキャストではPlayer不在の
+    // （回転しない）evtDealとペアリングされ、App.tsxがヒーローパネルを
+    // 実際の生の席（seat 0でない場合はズレた位置）に表示してしまう
+    // （codex #177 3巡目レビューP2「Preserve hero deal when recalculating
+    // filters」）。ここで明示的に同期し、以降のブロードキャストがヒーロー
+    // 在籍dealの座席文脈（Player.SeatIndex含む）を使うようにする。
+    this.service.liveEvtDeal = this.service.latestEvtDeal
 
     try {
       // すべてのプレイヤーの統計を計算

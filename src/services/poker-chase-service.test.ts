@@ -390,6 +390,60 @@ describe('PokerChaseService - hero playerId survives session end + SW restart (s
     // ヒーロー在籍テーブルの顔ぶれ（dealEvent: 101/102/103）で再計算されている
     expect(stats.map(s => s.playerId)).toEqual(dealEvent.SeatUserIds)
     expect(stats.map(s => s.playerId)).not.toEqual(spectatorDealEvent.SeatUserIds)
+
+    // codex #177 3巡目レビューP2「Preserve hero deal when recalculating
+    // filters」: 上のフィルター変更前、observerモードdealによって
+    // service.liveEvtDealはspectatorDealEvent（Player不在）を指していた。
+    // recalculateStats()はlatestEvtDealを"読むだけ"のパスなので、明示的に
+    // liveEvtDealをlatestEvtDealへ同期しないと、ports.tsのブロードキャストが
+    // 「ヒーロー在籍の統計」を「Player不在のevtDeal」とペアリングしてしまい、
+    // App.tsxが回転をスキップしてヒーローパネルを生の席（seat 0以外）に
+    // 表示してしまう。ここでliveEvtDealがlatestEvtDeal（Player.SeatIndex=0）
+    // と同期していることを確認する。
+    expect(service.liveEvtDeal?.Player?.SeatIndex).toBe(0)
+    expect(service.liveEvtDeal?.SeatUserIds).toEqual(dealEvent.SeatUserIds)
+  })
+
+  test('観戦モードdeal後にヒーロー在籍dealへ再アンカーすると、取り残されたliveEvtDealも即座に同期する（import/rebuild/auto-sync復元の再現、codex #177 3巡目レビューP2「Use restored deal context for batch broadcasts」）', async () => {
+    // 再現シナリオ: ライブでヒーロー敗退→観戦モードdealが届く（liveEvtDealが
+    // 観戦テーブルを指すようになる）→ その状態のままimport/rebuild/auto-sync
+    // 相当の「service.latestEvtDeal = 復元されたヒーロー在籍deal」という直接
+    // 代入が起きる（実際のコードはimport-export.ts の importData/rebuildAllData、
+    // auto-sync-service.ts の restoreLatestDeal がこのパターンを使う）。
+    //
+    // liveEvtDealのgetterは`_liveEvtDeal ?? _latestEvtDeal`という
+    // フォールバックしか持たないため、_liveEvtDealが観戦dealで既にセット
+    // 済みだとフォールバックが効かず、latestEvtDealだけを更新しても
+    // liveEvtDealは古い観戦dealを指したまま取り残されてしまう
+    // （そのすぐ後にstatsOutputStream.write()で再ブロードキャストすると、
+    // ports.tsが古いliveEvtDealとペアリングしてしまう）。
+    const service = newService()
+    await service.ready
+
+    service.handAggregateStream.write(dealEvent)
+    await service.handAggregateStream.whenIdle()
+    service.handAggregateStream.write(handResultsEvent)
+    await service.handAggregateStream.whenIdle()
+
+    // ヒーロー敗退後、観戦モードdealが届く -- liveEvtDealが観戦テーブルを指す
+    service.handAggregateStream.write(spectatorDealEvent)
+    await service.handAggregateStream.whenIdle()
+    expect(service.liveEvtDeal?.SeatUserIds).toEqual(spectatorDealEvent.SeatUserIds)
+    expect(service.liveEvtDeal?.Player).toBeUndefined()
+
+    // import/rebuild/auto-sync復元相当: 復元された（Player在籍の）dealを
+    // service.latestEvtDealへ直接代入する
+    const restoredHeroDeal: ApiEvent<ApiType.EVT_DEAL> = {
+      ...dealEvent,
+      SeatUserIds: [777, 102, 103],
+      Player: { SeatIndex: 0, BetStatus: 1, HoleCards: [4, 5], Chip: 5000, BetChip: 0 },
+      timestamp: 2000,
+    }
+    service.latestEvtDeal = restoredHeroDeal
+
+    // 修正前はここでliveEvtDealがspectatorDealEventのまま取り残されていた
+    expect(service.liveEvtDeal?.SeatUserIds).toEqual(restoredHeroDeal.SeatUserIds)
+    expect(service.liveEvtDeal?.Player?.SeatIndex).toBe(0)
   })
 })
 

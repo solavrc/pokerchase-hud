@@ -300,7 +300,13 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
       const latestDealEvent = await findLatestPlayerDealEvent(db)
 
       if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
-        // latestEvtDealを更新
+        // latestEvtDealを更新（findLatestPlayerDealEvent()はPlayer.SeatIndexが
+        // 存在するdealだけを返すため、常にヒーロー在籍の文脈）。このsetterは
+        // service.liveEvtDeal（ライブ配信文脈）も同時に同期する
+        // （poker-chase-service.ts参照）ため、直後のwrite()による再
+        // ブロードキャストが、インポート前に観戦モードで取り残されていたかも
+        // しれない古いliveEvtDealではなく、この復元されたヒーロー在籍dealと
+        // 正しくペアリングされる（codex #177 3巡目レビューP2）。
         service.latestEvtDeal = latestDealEvent
 
         // プレイヤーIDも更新（インポートデータからヒーローを特定）
@@ -762,7 +768,11 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
 
         console.log(`[rebuildAllData] Generated entities - Hands: ${totalHands}, Phases: ${totalPhases}, Actions: ${totalActions}`)
 
-        // Restore service state from latest events  
+        // Restore service state from latest events
+        // (codex #177 3巡目レビューP2: このsetterはservice.liveEvtDealも同時に
+        // 同期するため、下のsetBatchMode(false)がトリガーするrecalculateAllStats()
+        // の再ブロードキャストは、再構築前のliveEvtDeal（観戦中に取り残された
+        // 可能性がある）ではなく、この復元されたヒーロー在籍dealの座席文脈を使う)
         const latestDealEvent = await findLatestPlayerDealEvent(db)
 
         if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
@@ -796,7 +806,13 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           message: '統計情報を再計算中...'
         }).catch(() => {})
 
-        // Trigger stats recalculation once at the end
+        // Trigger stats recalculation once at the end. NOTE: batchMode is still
+        // true here (disabled in the `finally` block below via
+        // service.setBatchMode(false)), so ReadEntityStream.transform() no-ops
+        // this particular write() -- the real broadcast is the one
+        // setBatchMode(false) triggers via PokerChaseService.recalculateAllStats(),
+        // which reads the already-restored (hero-anchored) service.latestEvtDeal
+        // above and keeps calling this again mostly harmless/redundant.
         if (service.latestEvtDeal && service.latestEvtDeal.SeatUserIds) {
           const playerIds = service.latestEvtDeal.SeatUserIds.filter(id => id !== -1)
           if (playerIds.length > 0) {
