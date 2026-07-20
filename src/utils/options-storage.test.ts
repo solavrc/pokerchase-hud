@@ -66,7 +66,7 @@ describe('options-storage', () => {
     const after = await new Promise<Record<string, any>>(resolve =>
       chrome.storage.sync.get(
         [OPTIONS_STORAGE_KEY, LEGACY_KEYS_KEY, legacyKey('sendUserData'), legacyKey('filterOptions')],
-        resolve
+        items => resolve(items)
       )
     )
     expect(after[OPTIONS_STORAGE_KEY]).toEqual({ sendUserData: false, filterOptions: sampleFilterOptions })
