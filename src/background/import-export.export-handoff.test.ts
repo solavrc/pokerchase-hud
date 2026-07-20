@@ -137,7 +137,16 @@ describe('export download-handoff completion', () => {
 
     let releaseSendMessage: (() => void) | undefined
     const sendMessageAcked = new Promise<void>(resolve => { releaseSendMessage = resolve })
+    // Resolves the instant chrome.tabs.sendMessage is actually invoked --
+    // lets the test wait on the real observable side effect instead of
+    // sleeping an arbitrary duration (PR #199 review, pass 2: a fixed 10ms
+    // sleep raced the Dexie export work + the deferred chrome.tabs.query
+    // callback under a slow/loaded test run, and could assert before
+    // sendMessage was ever called).
+    let resolveSendMessageInvoked: (() => void) | undefined
+    const sendMessageInvoked = new Promise<void>(resolve => { resolveSendMessageInvoked = resolve })
     ;(chrome.tabs.sendMessage as jest.Mock).mockImplementation((_tabId, _message, callback) => {
+      resolveSendMessageInvoked?.()
       // Do NOT call back synchronously -- simulate a slow/deferred content
       // script acknowledgment. Before the fix, downloadFile() didn't wait on
       // this callback at all, so operationState would already be 'idle' by
@@ -148,10 +157,10 @@ describe('export download-handoff completion', () => {
     const handlers = createImportExportHandlers(service, db, 'https://example.com/*')
     const exportPromise = handlers.exportData('json')
 
-    // Give chrome.tabs.query's deferred callback (and the sendMessage call it
-    // triggers) a chance to run, then assert the operation is still marked
-    // 'export' -- not yet resolved to idle -- while the handoff is pending.
-    await new Promise(resolve => setTimeout(resolve, 10))
+    // Wait deterministically for the handoff to actually be dispatched, then
+    // assert the operation is still marked 'export' -- not yet resolved to
+    // idle -- while the handoff itself is still pending acknowledgment.
+    await sendMessageInvoked
     expect(chrome.tabs.sendMessage).toHaveBeenCalled()
     expect(getOperationState().type).toBe('export')
 
