@@ -460,6 +460,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
 
       if (!handHistory) {
         console.error('No hands found to export')
+        stopKeepAlive()
         setOperationState({ type: 'idle' })
         chrome.runtime.sendMessage<ExportProgressMessage>({
           action: 'exportProgress',
@@ -788,30 +789,12 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
 /**
  * Service Worker のアイドル停止を防止するキープアライブを開始する。
  * Chrome MV3 では 30 秒のアイドル後に Worker が停止されるため、
- * 長時間のバッチ処理中は chrome.offscreen API でオフスクリーン
- * ドキュメントを作成して Worker を維持する。
- *
- * offscreen ドキュメントが存在する間、Worker は停止されない。
+ * 長時間のバッチ処理中は30秒未満の間隔でExtension APIを呼び出す。
+ * Chrome 110以降はExtension API呼び出しがService Workerのアイドル
+ * タイマーをリセットする。manifestのminimum_chrome_versionは120。
  * @returns クリーンアップ関数
  */
-const startKeepAlive = async (): Promise<() => void> => {
-  // offscreen API が利用可能な場合はそれを使用（Chrome 109+）
-  if (chrome.offscreen) {
-    try {
-      await chrome.offscreen.createDocument({
-        url: 'offscreen.html',
-        reasons: [chrome.offscreen.Reason.BLOBS],
-        justification: 'Keep service worker alive during batch export'
-      })
-    } catch (e) {
-      // 既に存在する場合は無視
-    }
-    return () => {
-      chrome.offscreen.closeDocument().catch(() => {})
-    }
-  }
-
-  // フォールバック: setInterval + getPlatformInfo
+export const startKeepAlive = async (): Promise<() => void> => {
   const id = setInterval(() => {
     chrome.runtime.getPlatformInfo().catch(() => {})
   }, 25000)

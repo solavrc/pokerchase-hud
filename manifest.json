@@ -9,7 +9,6 @@
     "tabs",
     "notifications",
     "identity",
-    "offscreen",
     "alarms"
   ],
   "host_permissions": [
