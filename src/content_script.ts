@@ -13,6 +13,7 @@ import App from './components/App'
 import type { ChromeMessage } from './types/messages'
 import { MESSAGE_ACTIONS as EVENTS } from './types/messages'
 import type { AllPlayersRealTimeStats } from './realtime-stats/realtime-stats-service'
+import { RuntimePortManager } from './utils/runtime-port-manager'
 /** !!! BACKGROUND、WEB_ACCESSIBLE_RESOURCES からインポートしないこと !!! */
 
 const RECONNECT_DELAY_MS = 500
@@ -33,41 +34,6 @@ declare global {
     [POKER_CHASE_SERVICE_EVENT]: CustomEvent<StatsData>
   }
 }
-
-const connectToBackgroundService = () => {
-  try {
-    const port = chrome.runtime.connect({ name: POKER_CHASE_SERVICE_EVENT })
-
-    // 接続成功時、ゲーム中ならキープアライブを開始
-    if (isGameActive) {
-      startKeepalive(port)
-    }
-
-    port.onMessage.addListener((message: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
-      if (typeof message === 'object' && message !== null && 'stats' in message) {
-        console.time('[content_script] Dispatching stats event')
-        window.dispatchEvent(new CustomEvent(POKER_CHASE_SERVICE_EVENT, { detail: message }))
-        console.timeEnd('[content_script] Dispatching stats event')
-        if (message.realTimeStats) {
-          console.log('[content_script] Real-time stats received:', Object.keys(message.realTimeStats))
-        }
-      }
-    })
-    port.onDisconnect.addListener(() => {
-      // 切断時にキープアライブを停止
-      stopKeepalive()
-      // 再接続を試みる
-      setTimeout(connectToBackgroundService, RECONNECT_DELAY_MS)
-    })
-    return port
-  } catch (e) {
-    // 拡張機能のコンテキストが無効な場合は、少し待ってから再試行
-    setTimeout(connectToBackgroundService, RECONNECT_DELAY_MS)
-    return null as any
-  }
-}
-
-let port = connectToBackgroundService()
 
 // キープアライブ管理
 const startKeepalive = (port: chrome.runtime.Port | null) => {
@@ -97,6 +63,37 @@ const stopKeepalive = () => {
   }
 }
 
+const portManager = new RuntimePortManager({
+  connect: () => chrome.runtime.connect({ name: POKER_CHASE_SERVICE_EVENT }),
+  reconnectDelayMs: RECONNECT_DELAY_MS,
+  onConnected: port => {
+    if (isGameActive) startKeepalive(port)
+  },
+  onDisconnected: stopKeepalive,
+  onMessage: message => {
+    if (typeof message === 'object' && message !== null && 'stats' in message) {
+      const statsMessage = message as {
+        stats: PlayerStats[]
+        evtDeal?: ApiEvent<ApiType.EVT_DEAL>
+        realTimeStats?: AllPlayersRealTimeStats
+      }
+      console.time('[content_script] Dispatching stats event')
+      window.dispatchEvent(new CustomEvent(POKER_CHASE_SERVICE_EVENT, { detail: statsMessage }))
+      console.timeEnd('[content_script] Dispatching stats event')
+      if (statsMessage.realTimeStats) {
+        console.log('[content_script] Real-time stats received:', Object.keys(statsMessage.realTimeStats))
+      }
+    }
+  },
+  onSendError: error => {
+    if (error instanceof Error && error.message === 'Extension context invalidated.') {
+      window.location.reload()
+    }
+  }
+})
+
+portManager.connect()
+
 // window.postMessageはさまざまなソースからのメッセージを受信する可能性がある
 window.addEventListener('message', (event: MessageEvent<unknown>) => {
   // 全ての条件を統合してチェック
@@ -119,7 +116,7 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       // セッション開始
       if (!isGameActive) {
         isGameActive = true
-        startKeepalive(port)
+        startKeepalive(portManager.port)
       }
       break
 
@@ -132,30 +129,16 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       break
   }
 
-  if (!port) {
-    // ポートが無効な場合は再接続を試みる
-    port = connectToBackgroundService()
-    return
-  }
-
-  try {
-    port.postMessage(event.data)
-  } catch (error: unknown) {
-    if (error instanceof Error && error.message === 'Extension context invalidated.') {
-      // 拡張機能が更新または無効化された場合は静かにリロード
-      window.location.reload()
-    }
-    // その他のエラーも静かに処理（コンソールに出力しない）
-  }
+  portManager.send(event.data)
 })
 
 // Cleanup on window unload
 window.addEventListener('beforeunload', () => {
   stopKeepalive()
   // Disconnect port gracefully
-  if (port) {
+  if (portManager.port) {
     try {
-      port.disconnect()
+      portManager.disconnect()
     } catch (e) {
       // ポートが既に切断されている可能性があるため、エラーは静かに無視
     }
@@ -167,9 +150,9 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     // Tab is hidden, stop keepalive to save resources
     stopKeepalive()
-  } else if (isGameActive && port) {
+  } else if (isGameActive && portManager.port) {
     // Tab is visible again and game is active, restart keepalive
-    startKeepalive(port)
+    startKeepalive(portManager.port)
   }
 })
 
