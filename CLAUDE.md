@@ -164,7 +164,13 @@ Clean-streak requirement: semantics-bearing changes (sync/watermark logic, stati
 
 **Mentions have exactly two legitimate uses**: (a) the non-fire fallback — at most once per head SHA, only after no outcome for that SHA exists on any channel ~10min after the expected trigger (the push, or the mention), whether or not an in-progress signal ever appeared (a true non-fire may never place the eyes reaction); (b) the second-clean confirmation pass — at most once per head SHA. Any other mention doubles review cost for nothing.
 
-**Outcome detection is structural, never string-matched.** The verdict message's flavor text varies (17+ known variants; not a stable contract). Determine each pass's outcome by combining, for the current head SHA: `Reviewed commit` SHA bindings in comment/review bodies; Badge-marked inline findings created during the pass; unresolved review-thread count; and reactions on BOTH the PR description and the trigger comment (eyes = in progress; thumbs-up = clean) — counting only **Codex-authored** reactions (a maintainer's thumbs-up is not a review outcome), and noting that **reactions accumulate and are not SHA-bound**: a reaction only counts for the pass whose push (auto-review) or trigger comment (mention pass) it postdates. A reaction-only clean pass carries no `Reviewed commit` field — its SHA binding IS that timestamp ordering, which is why the gate's first condition accepts either form of binding. If the channels disagree or the outcome is ambiguous, do not merge — escalate.
+**Outcome detection: the PR-description reaction is the primary state signal.** The connector maintains a Codex-authored reaction on the PR description as CURRENT state (it re-places the reaction as state changes):
+
+- **no reaction** — either "review finished with findings" or "not started yet"; the two are trivially distinguished by whether new content exists (fetch inline findings with `gh api --paginate .../pulls/N/comments` — pagination is mandatory, unpaginated reads hide recent findings on comment-heavy PRs). Findings present → fix → push (which triggers the next review).
+- **eyes** — review in progress: wait, regardless of elapsed time. After ~1 hour with no change, a fallback mention MAY be considered (mention-inventory check first: never mention while a prior mention is unanswered).
+- **thumbs-up** — LGTM for the current state: the confirmation-pass mention is permitted (inventory check first).
+
+Two secondary guards, both from measured failure modes: (1) sanity-check the reaction's `created_at` against the latest push time — a reaction predating the head push is stale history, not current state; (2) never string-match verdict flavor text. If the reaction state and the content channels genuinely contradict, do not merge — escalate.
 
 **Finite-exit rules (loop cost control):**
 
