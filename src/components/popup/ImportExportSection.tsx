@@ -13,6 +13,7 @@ import type {
   ImportDataChunkMessage,
   ImportDataInitMessage,
   ImportDataProcessMessage,
+  MessageResponse,
   RebuildProgressMessage,
 } from '../../types/messages'
 import { isExportProgressMessage, isRebuildProgressMessage } from '../../types/messages'
@@ -38,6 +39,15 @@ interface ImportExportSectionProps {
 }
 
 const FILE_CHUNK_SIZE = 5 * 1024 * 1024 // 5MB chunks for file import
+
+const requireSuccessfulResponse = (
+  response: MessageResponse | undefined,
+  fallbackMessage: string
+): void => {
+  if (!response?.success) {
+    throw new Error(response?.error || fallbackMessage)
+  }
+}
 
 type ExportState = 'idle' | 'exporting'
 type RebuildState = 'idle' | 'rebuilding'
@@ -247,6 +257,7 @@ export const ImportExportSection = ({
       setImportTotal(0)
       setImportDuplicates(0)
       setImportSuccess(0)
+      setOperationStatus('')
       setImportStatus('インポート開始...')
       setImportStartTime(Date.now())
 
@@ -254,11 +265,12 @@ export const ImportExportSection = ({
       const totalChunks = Math.ceil(file.size / FILE_CHUNK_SIZE)
 
       // Initialize import session
-      await chrome.runtime.sendMessage<ImportDataInitMessage>({
+      const initResponse = await chrome.runtime.sendMessage({
         action: 'importDataInit',
         totalChunks: totalChunks,
         fileName: file.name
-      })
+      } satisfies ImportDataInitMessage) as MessageResponse | undefined
+      requireSuccessfulResponse(initResponse, 'インポートを開始できませんでした')
 
       // Read and send file in chunks
       for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
@@ -274,11 +286,12 @@ export const ImportExportSection = ({
         })
 
         // Send chunk to background
-        await chrome.runtime.sendMessage<ImportDataChunkMessage>({
+        const chunkResponse = await chrome.runtime.sendMessage({
           action: 'importDataChunk',
           chunkIndex: chunkIndex,
           chunkData: chunkContent
-        })
+        } satisfies ImportDataChunkMessage) as MessageResponse | undefined
+        requireSuccessfulResponse(chunkResponse, 'インポートデータを送信できませんでした')
 
         // Update progress
         const fileProgress = Math.round(((chunkIndex + 1) / totalChunks) * 100)
@@ -286,15 +299,18 @@ export const ImportExportSection = ({
       }
 
       // Process the complete data
-      await chrome.runtime.sendMessage<ImportDataProcessMessage>({
+      const processResponse = await chrome.runtime.sendMessage({
         action: 'importDataProcess'
-      })
+      } satisfies ImportDataProcessMessage) as MessageResponse | undefined
+      requireSuccessfulResponse(processResponse, 'インポートを処理できませんでした')
 
       if (fileInputRef.current) {
         fileInputRef.current.value = ''
       }
     } catch (error) {
-      setImportStatus(`インポート失敗: ${error}`)
+      const message = error instanceof Error ? error.message : String(error)
+      setOperationStatus('')
+      setImportStatus(`インポート失敗: ${message}`)
       setImportProgress(0)
       if (fileInputRef.current) {
         fileInputRef.current.value = ''
