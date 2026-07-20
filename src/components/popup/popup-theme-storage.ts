@@ -12,29 +12,70 @@
  * theme change. A dedicated key keeps the write popup-local, matching
  * `options-storage.ts`'s pattern of one flat `chrome.storage.sync` key per
  * independent concern.
+ *
+ * The mode is *also* mirrored to `localStorage` (same-origin, synchronous,
+ * readable before anything async resolves) so that `popup-boot.ts` -- a
+ * tiny synchronous script that runs before `popup.js` parses -- can paint
+ * the correct background for users who explicitly forced 'dark'/'light'
+ * against their OS scheme, closing the last gap in the white-flash fix (see
+ * `fix/popup-white-flash`). `chrome.storage.sync` stays the source of
+ * truth; `localStorage` is a best-effort read-side cache the boot script
+ * consults, never the other way around.
  */
 import type { PopupThemeMode } from './theme'
 import { DEFAULT_POPUP_THEME_MODE } from './theme'
 
 export const POPUP_THEME_STORAGE_KEY = 'popupTheme'
 
+/**
+ * Deliberately a different key name than `POPUP_THEME_STORAGE_KEY`, even
+ * though the two storages (`chrome.storage.sync` vs. `localStorage`) can't
+ * collide -- keeps it obvious at a glance which key belongs to which API.
+ * Keep in sync with `POPUP_BOOT_LOCAL_STORAGE_KEY` in `popup-boot-theme.ts`
+ * (that file is intentionally standalone and can't import this constant --
+ * see its top comment).
+ */
+export const POPUP_THEME_LOCAL_STORAGE_KEY = 'popupThemeMode'
+
 const isPopupThemeMode = (value: unknown): value is PopupThemeMode =>
   value === 'auto' || value === 'dark' || value === 'light'
 
 /**
+ * Best-effort mirror to `localStorage` for `popup-boot.ts` to read
+ * synchronously on the next popup open. Guarded: `localStorage` can throw
+ * (disabled storage, locked-down context) and that must never break the
+ * actual `chrome.storage.sync` persistence this mirrors.
+ */
+const mirrorPopupThemeModeToLocalStorage = (mode: PopupThemeMode): void => {
+  try {
+    window.localStorage.setItem(POPUP_THEME_LOCAL_STORAGE_KEY, mode)
+  } catch {
+    // localStorage unavailable/blocked -- popup-boot.ts just falls back to
+    // its CSS defaults next time; never worse than before this fix.
+  }
+}
+
+/**
  * Resolves with the persisted mode, or `DEFAULT_POPUP_THEME_MODE` ('auto')
  * if unset (fresh install) or malformed (defensive against corrupted sync
- * data / a future value this build doesn't know about).
+ * data / a future value this build doesn't know about). Also backfills the
+ * `localStorage` mirror on every load -- covers the case where the mode was
+ * never explicitly saved from *this* browser profile (e.g. it arrived via
+ * `chrome.storage.sync` from another device) so the mirror still exists in
+ * time for the boot script's next read.
  */
 export const loadPopupThemeMode = (): Promise<PopupThemeMode> =>
   new Promise((resolve) => {
     chrome.storage.sync.get(POPUP_THEME_STORAGE_KEY, (result: Record<string, unknown>) => {
       const value = result[POPUP_THEME_STORAGE_KEY]
-      resolve(isPopupThemeMode(value) ? value : DEFAULT_POPUP_THEME_MODE)
+      const mode = isPopupThemeMode(value) ? value : DEFAULT_POPUP_THEME_MODE
+      mirrorPopupThemeModeToLocalStorage(mode)
+      resolve(mode)
     })
   })
 
 export const savePopupThemeMode = (mode: PopupThemeMode): Promise<void> =>
   new Promise((resolve) => {
+    mirrorPopupThemeModeToLocalStorage(mode)
     chrome.storage.sync.set({ [POPUP_THEME_STORAGE_KEY]: mode }, () => resolve())
   })

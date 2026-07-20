@@ -45,6 +45,15 @@ export const resolvePopupThemeVariant = (
 // HUDオーバーレイと世界観を統一: フェルト地の暗い背景 + ポーカーゴールドの
 // アクセント。HUDの統計色（青/オレンジ/赤）はここでは使わない
 // （このポップアップにスタッツ表示要素は無いため、意図的に持ち込まない）。
+//
+// NOTE: `background` below (and MODERN_LIGHT.background further down) is
+// duplicated in two other places, to eliminate the white-flash-before-paint
+// bug (see fix/popup-white-flash) without paying MUI's import/build cost
+// before first paint:
+//   - src/index.html's inline <style> (CSS-only, handles 'auto' mode)
+//   - src/components/popup/popup-boot-theme.ts (handles explicit dark/light
+//     overrides, via the tiny synchronous src/popup-boot.ts boot script)
+// Keep all three in sync by hand when these hex values change.
 const DARK_FELT = {
   background: '#0d1512',
   paper: '#16201b',

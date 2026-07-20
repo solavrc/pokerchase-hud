@@ -38,7 +38,13 @@ const options: BuildOptions = {
     'src/' + parse(content_script).name + '.ts',
     'src/' + parse(service_worker).name + '.ts',
     'src/' + parse(web_accessible_resource).name + '.ts',
-    'src/popup.ts'
+    'src/popup.ts',
+    // Tiny synchronous, non-module boot script loaded in index.html's
+    // <head> before popup.js -- see src/popup-boot.ts for why (eliminates
+    // the white-flash-before-paint bug, fix/popup-white-flash). Emitted as
+    // popup-boot.js alongside popup.js; no manifest change needed since
+    // it's referenced only from index.html, not `manifest.json`.
+    'src/popup-boot.ts'
   ],
   format: 'iife',
   logLevel: 'info',
