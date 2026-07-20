@@ -169,6 +169,9 @@ Clean-streak requirement: semantics-bearing changes (sync/watermark logic, stati
 - **no reaction** — either "review finished with findings" or "not started yet"; the two are trivially distinguished by whether new content exists (fetch inline findings with `gh api --paginate .../pulls/N/comments` — pagination is mandatory, unpaginated reads hide recent findings on comment-heavy PRs). Findings present → fix → push (which triggers the next review).
 - **eyes** — review in progress: wait, regardless of elapsed time. After ~1 hour with no change, a fallback mention MAY be considered (mention-inventory check first: never mention while a prior mention is unanswered).
 - **thumbs-up** — LGTM for the current state: the confirmation-pass mention is permitted (inventory check first).
+- **no reaction AND no new content, persisting well past the trigger** — likely non-fire. Do not auto-mention: report the observation and leave the re-trigger to a manual decision (misfiring at a still-queued review costs quota irreversibly; waiting costs only time).
+
+For mention-triggered passes, read the same three states on the TRIGGER comment's reactions (the in-progress eyes has been observed there rather than on the description); the description reaction remains canonical for push-triggered passes.
 
 Two secondary guards, both from measured failure modes: (1) sanity-check the reaction's `created_at` against the latest push time — a reaction predating the head push is stale history, not current state; (2) never string-match verdict flavor text. If the reaction state and the content channels genuinely contradict, do not merge — escalate.
 
