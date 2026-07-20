@@ -243,6 +243,21 @@ export class AutoSyncService {
 
   constructor(db?: PokerChaseDB) {
     this.db = db ?? new PokerChaseDB(self.indexedDB, self.IDBKeyRange)
+    // codex review r3615952256, P2, "Clear stale sync state when exposing
+    // the new user": firebaseAuthService.signInWithGoogle()/signOut() now
+    // notify this listener SYNCHRONOUSLY, in the same step as their own
+    // currentState/authGeneration mutation -- before their own
+    // persistAuthState()/storage-removal await, and well before
+    // message-router.ts's explicit `autoSyncService.onAuthStateChanged(user)`
+    // call even runs. This closes the gap one layer earlier than
+    // `initialize()`'s own window fix (r3615781411): during a direct A->B
+    // sign-in, a session-end/start trigger firing between "B is live per
+    // firebaseAuthService" and "onAuthStateChanged(B) has run" would
+    // otherwise still read A's stale in-memory `syncState.lastSyncTime`
+    // under B's now-live identity.
+    firebaseAuthService.onAuthStateChange(() => {
+      this.syncState.lastSyncTime = undefined
+    })
   }
 
   /**

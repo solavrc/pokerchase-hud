@@ -1373,4 +1373,26 @@ describe('AutoSyncService cloud downloads', () => {
     // never synced).
     expect(performSyncSpy).toHaveBeenCalledTimes(1)
   })
+
+  test('clears the in-memory lastSyncTime as soon as firebaseAuthService notifies an auth state change -- one layer earlier than initialize()\'s own window fix (P2, codex review r3615952256)', async () => {
+    // Simulates account A having a real, recent lastSyncTime already in
+    // memory, as a prior successful sync would leave.
+    const service = new AutoSyncService(db)
+    ;(service as any).syncState.lastSyncTime = new Date('2026-07-20T00:00:00.000Z')
+
+    // firebaseAuthService.signInWithGoogle()/signOut() now notify
+    // listeners SYNCHRONOUSLY as part of exposing a new identity -- before
+    // their own persistAuthState()/storage-removal await, and well before
+    // message-router.ts's explicit onAuthStateChanged(user) call (which is
+    // what initialize()'s own r3615781411 fix guards) even runs.
+    // AutoSyncService registers exactly such a listener in its constructor
+    // -- invoke the notification directly here, the same way
+    // notifyAuthStateListeners() does internally, to prove the registered
+    // callback clears the stale value the instant it fires, independent of
+    // whether onAuthStateChanged()/initialize() has run yet.
+    const userB = { uid: 'user-b', email: 'b@example.com' } as any
+    ;(firebaseAuthService as any).notifyAuthStateListeners(userB)
+
+    expect((service as any).syncState.lastSyncTime).toBeUndefined()
+  })
 })

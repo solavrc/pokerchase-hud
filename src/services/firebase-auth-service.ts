@@ -126,8 +126,19 @@ export class FirebaseAuthService {
         expiresAt: Date.now() + Number(result.expiresIn) * 1000
       }
       this.authGeneration++ // sign-in transition -- see authGeneration's doc comment
-      await this.persistAuthState()
+      // Notify listeners SYNCHRONOUSLY, in the same step as the currentState/
+      // authGeneration mutation above -- BEFORE the persistAuthState() await
+      // (codex review r3615952256, P2, "Clear stale sync state when
+      // exposing the new user"). Moving this earlier closes the window
+      // where getCurrentUser()/getAuthGeneration() already report the NEW
+      // account but registered listeners (e.g. AutoSyncService clearing its
+      // own stale in-memory state, see its constructor) hadn't been told
+      // yet -- during a direct A->B sign-in, anything reading auth state in
+      // that gap used to see B live while dependent state still reflected
+      // A. persistAuthState() below is a fire-and-forget durability step
+      // from listeners' perspective; it doesn't need to precede them.
       this.notifyAuthStateListeners(this.getCurrentUser())
+      await this.persistAuthState()
       console.log('[FirebaseAuth] Firebase sign in successful:', this.currentState.email)
       return this.getCurrentUser()!
     } catch (error) {
