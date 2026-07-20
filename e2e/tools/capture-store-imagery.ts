@@ -9,6 +9,10 @@
  *
  *   npx tsx e2e/tools/capture-store-imagery.ts
  *
+ * Builds the e2e extension itself (same `buildE2E()` call `smoke.ts` makes)
+ * before launching, so the command above works standalone on a fresh
+ * checkout without a separate `npm run build:e2e` first.
+ *
  * Backdrop: `e2e/public/assets/table-backdrop.jpg`, a real PokerChase 6-max
  * screenshot (anonymized in-image; hero holds K♦K♣ at the BB preflop facing
  * a raise) -- see `e2e/public/table-backdrop.js`. Because the backdrop is a
@@ -35,9 +39,20 @@
  *    fixture ends on a KK hand at those stakes, so this tool derives one
  *    deterministically from `e2e/fixtures/session-bust.ndjson` (into the
  *    gitignored `e2e/.build/`):
- *      - keep the first 29 complete hands (the full-6-seat stretch of that
- *        SNG -- the first bust happens at hand 30, and a busted/empty seat
- *        would contradict the backdrop's six occupied seats);
+ *      - keep the first 11 complete hands, NOT the SNG's full 29-hand,
+ *        full-6-seat stretch (first bust at hand 30) -- the donor fixture's
+ *        own blind level climbs every few hands (Lv1 100/200/50 for hands
+ *        1-4, Lv2 140/280/70 -- the backdrop's own stakes -- for hands
+ *        5-11, Lv3 200/400/100 from hand 12 on), and the hand log panel's
+ *        visible tail shows whichever real hand is retained immediately
+ *        before the appended synthetic one verbatim (its own "posts ...",
+ *        blind/ante lines, read from that hand's own EVT_DEAL
+ *        `Game.SmallBlind`/`BigBlind`/`Ante`, not from anything this tool
+ *        controls). Cutting at hand 11 -- the last Lv2 hand -- means every
+ *        real hand left visible in the log already carries the backdrop's
+ *        own 140/280/70, so it never contradicts the synthetic hand
+ *        appended after it; hands 1-11 are still well within the
+ *        full-6-seat stretch, so no seat is busted/empty;
  *      - rename the anonymized players to the same dummy names baked onto
  *        the backdrop's plates (Hero / プレイヤーA..E), keyed by display
  *        position so every HUD panel name matches the plate it sits on;
@@ -58,18 +73,24 @@
  * once after the position-seeding reload); that is idempotent for stats --
  * hand/phase/action entities are keyed by HandId and bulkPut'ed, and
  * apiEvents dedupes on timestamp+ApiTypeId -- which the tool asserts by
- * checking the hero panel's HAND stat is exactly 29 after the reload.
+ * checking the hero panel's HAND stat is exactly KEEP_HANDS after the reload.
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { launchHarness, type Harness } from '../harness.ts'
 import { E2E_DIR, REPO_ROOT, BUILD_DIR } from '../config.ts'
+import { buildE2E } from './build-e2e.ts'
 
 const SRC_FIXTURE = join(E2E_DIR, 'fixtures', 'session-bust.ndjson')
 const DERIVED_FIXTURE = join(BUILD_DIR, 'store-imagery-fixture.ndjson')
 
-/** Complete hands to keep from the source fixture (its full-6-seat stretch). */
-const KEEP_HANDS = 29
+/**
+ * Complete hands to keep from the source fixture: through its last hand at
+ * the SAME blind level the backdrop shows (Lv2, SB/BB/ante 140/280/70),
+ * NOT its whole full-6-seat stretch (which runs through hand 29, climbing
+ * blind levels along the way -- see the module doc comment above).
+ */
+const KEEP_HANDS = 11
 
 /**
  * Dummy names baked onto the backdrop's plates, keyed by the player's
@@ -167,7 +188,20 @@ export const buildStoreFixture = (): string => {
   // badge).
   const SB = 140, BB = 280, ANTE = 70
   const sbSeat = 0, bbSeat = heroSeat, btnSeat = 5
-  const pot0 = SB + BB + 6 * ANTE
+
+  // Hero's own pre-raise commitment, read off the chip stack baked directly
+  // onto the felt in front of her BB badge in the screenshot ("1,400" --
+  // distinct from, and 5x, the official BB of 280; the backdrop's own real
+  // hand history that produced this frame isn't available to this tool, so
+  // this is taken as given rather than re-derived). The hand log's "posts
+  // big blind" text is unaffected either way -- src/utils/hand-log-processor.ts
+  // always sources that displayed amount from `Game.BigBlind`, never from a
+  // seat's `Chip`/`BetChip` -- so this constant only feeds the pot/call
+  // arithmetic below, which the backdrop's action bar pins to two other
+  // baked-in numbers: Pot 9,800, and Hero's own call cost 6,440 (= RAISE_TO
+  // 7,840 - 1,400). Both are asserted by construction below.
+  const HERO_ALREADY_COMMITTED = 1400
+  const pot0 = SB + HERO_ALREADY_COMMITTED + 6 * ANTE
   let ts = kept[kept.length - 1]!.timestamp as number
 
   const progress = (over: Record<string, unknown>) => ({
@@ -176,14 +210,15 @@ export const buildStoreFixture = (): string => {
 
   /**
    * Chip stack behind each seat right after antes (and, for the SB seat,
-   * its blind) are posted -- i.e. exactly what's printed in each seat's
-   * nameplate on the backdrop at the moment it was captured, EXCEPT
-   * プレイヤーC (seat 4), whose plate already shows her stack AFTER the
-   * raise below (14,579); her pre-raise, post-ante figure (22,419) is
-   * derived here as 14,579 + RAISE_TO so the deal event -- which predates
-   * her raise -- is itself consistent. Keyed by original seat index (same
-   * indexing as `seatUserIds`), not display position. Hardcoded straight
-   * from the screenshot rather than derived from the source fixture's
+   * its blind; for the BB/hero seat, HERO_ALREADY_COMMITTED) are posted --
+   * i.e. exactly what's printed in each seat's nameplate on the backdrop at
+   * the moment it was captured, EXCEPT プレイヤーC (seat 4), whose plate
+   * already shows her stack AFTER the raise below (14,579); her pre-raise,
+   * post-ante figure (22,419) is derived here as 14,579 + RAISE_TO so the
+   * deal event -- which predates her raise -- is itself consistent. Keyed
+   * by original seat index (same indexing as `seatUserIds`), not display
+   * position. Hardcoded straight from the screenshot rather than derived
+   * from the source fixture's
    * closing chip counts (which belong to an unrelated real hand and have
    * no relationship to this backdrop) -- see the finding this fixes:
    * synthetic stakes/stacks must match the scene, not just continue
@@ -192,7 +227,12 @@ export const buildStoreFixture = (): string => {
   const RAISE_TO = 7840 // matches the bet stack under プレイヤーC's raise
   const BACKDROP_CHIPS_AFTER_ANTE: Record<number, number> = {
     0: 17790 + SB, // プレイヤーE (SB): plate shows 17,790 (post ante+SB)
-    [heroSeat]: 21974 + BB, // Hero (BB): plate shows 21,974 (post ante+BB)
+    // Hero (BB): plate shows 21,974 (post ante+her actual 1,400 commit, not
+    // just the 280 BB -- see HERO_ALREADY_COMMITTED above). Cross-checks
+    // against a second baked-in number: 21,974 + 1,400 = 23,374, exactly
+    // the store screenshot's "レイズ 23,374" all-in button (Hero's total
+    // stack = her remaining chips plus what she's already committed).
+    [heroSeat]: 21974 + HERO_ALREADY_COMMITTED,
     2: 21818, // プレイヤーA: plate shows 21,818 (post ante, folded before betting)
     3: 18830, // プレイヤーB: plate shows 18,830 (post ante, folded before betting)
     4: 14579 + RAISE_TO, // プレイヤーC: plate shows 14,579 (post ante+raise)
@@ -210,7 +250,7 @@ export const buildStoreFixture = (): string => {
     },
     Player: {
       SeatIndex: heroSeat, BetStatus: 1, HoleCards: HERO_HOLE_CARDS,
-      Chip: BACKDROP_CHIPS_AFTER_ANTE[heroSeat]! - BB, BetChip: BB,
+      Chip: BACKDROP_CHIPS_AFTER_ANTE[heroSeat]! - HERO_ALREADY_COMMITTED, BetChip: HERO_ALREADY_COMMITTED,
     },
     OtherPlayers: [0, 2, 3, 4, 5].map((seat) => ({
       SeatIndex: seat, Status: 0, BetStatus: 1,
@@ -395,6 +435,17 @@ const runPlan = async (fixturePath: string, totalEvents: number, plan: ShotPlan)
 }
 
 const main = async (): Promise<void> => {
+  // On a fresh checkout (or after cleaning e2e/.build/), e2e/.build/extension/
+  // doesn't exist yet -- launchHarness() defaults to loading it regardless,
+  // so without building it first Chrome starts with no extension, the
+  // replay hook never appears, and every wait below eventually times out.
+  // smoke.ts calls this same buildE2E() before launching for the identical
+  // reason; mirrored here so the documented
+  // `npx tsx e2e/tools/capture-store-imagery.ts` invocation works standalone.
+  console.log('[capture-store-imagery] building e2e extension (npm run build:e2e logic)...')
+  const extensionDir = buildE2E()
+  console.log(`[capture-store-imagery] extension built at ${extensionDir}`)
+
   const fixturePath = buildStoreFixture()
   const totalEvents = readFileSync(fixturePath, 'utf8').trim().split('\n').length
   console.log(`[capture-store-imagery] derived fixture: ${fixturePath} (${totalEvents} events)`)
