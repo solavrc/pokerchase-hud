@@ -45,6 +45,7 @@ global.chrome = {
   alarms: {
     create: jest.fn().mockResolvedValue(undefined),
     clear: jest.fn().mockResolvedValue(true),
+    get: jest.fn().mockResolvedValue(undefined),
     onAlarm: {
       addListener: jest.fn(),
     },
@@ -132,6 +133,16 @@ global.chrome = {
     query: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
+    sendMessage: jest.fn(),
+  },
+  downloads: {
+    download: jest.fn((_options, callback?) => {
+      if (typeof callback === 'function') {
+        callback(1)
+        return undefined
+      }
+      return Promise.resolve(1)
+    }),
   },
   windows: {
     update: jest.fn(),
