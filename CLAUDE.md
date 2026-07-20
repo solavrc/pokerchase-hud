@@ -317,30 +317,36 @@ Statistics Refresh (batch mode)
 - **Overlap imports re-derive from the Lake, not from new events alone**: when
   the DB already contained events before the import, the entity pass re-reads
   the affected range from `apiEvents` — expanded back to the last *valid*
-  `EVT_HAND_RESULTS` (306) strictly before the earliest new event (the
-  previous completed-hand boundary), then to the last *valid*
-  `EVT_ENTRY_QUEUED` (201) at/before that boundary that is *provably outside
-  any hand* (session-context anchor — an MTT table-move 201 can land
-  mid-hand, including inside the previous completed hand itself, and would
-  cut off an opening `EVT_DEAL`; candidates whose most recent valid DEAL
-  isn't yet closed by a valid 306 are rejected and the scan steps back one
-  hand at a time), and forward to the first *valid pre-existing* 306 at/after the
-  latest new event (newly-imported 306s are skipped, so the range always
-  reaches the end of the OLD derivation's hand pairing — e.g. a DEAL that a
-  capture gap had mis-paired with a later 306) — so a hand split between
-  existing and imported rows (e.g. re-importing a complete export into a DB
-  missing the hand's middle ACTIONs) gets its derived entities repaired. Boundary candidates are re-validated
-  with the current Zod schema before use, because the Lake intentionally
-  stores unparseable rows (a malformed 306 must not truncate the range). New
-  events alone cannot form such a hand's 303→306 boundary. The converter is
-  seeded with the empty default session only when the range starts at a
-  session boundary — a found 201 anchor, or (Lake-start fallback) a Lake
-  that begins with a valid 201 before its first valid DEAL; otherwise
-  (incremental hands without a 201) the live `service.session` seeds it,
-  matching the direct path and the #104 SessionState-seeding regression (a
-  201 overwrites id/battleType but not `session.name`, so live-session
-  seeding at a session boundary could leak a live table name into
-  historical repairs). Saving is delete-then-put in one transaction:
+  `EVT_ENTRY_QUEUED` (201) strictly before the earliest new event that is
+  *provably outside any hand* (session-context anchor — an MTT table-move 201
+  can land mid-hand, including inside a previous completed hand, and would
+  cut off an opening `EVT_DEAL`; a candidate qualifies only if its most
+  recent valid DEAL is already closed by a valid 306 between that DEAL and
+  the candidate, or has no preceding DEAL at all; candidates that fail this
+  are rejected and the scan steps back one hand at a time), and forward to
+  the first *valid pre-existing* 306 at/after the latest new event
+  (newly-imported 306s are skipped, so the range always reaches the end of
+  the OLD derivation's hand pairing — e.g. a DEAL that a capture gap had
+  mis-paired with a later 306) — so a hand split between existing and
+  imported rows (e.g. re-importing a complete export into a DB missing the
+  hand's middle ACTIONs) gets its derived entities repaired. The anchor scan
+  searches the whole Lake below the earliest new event, not just below the
+  previous completed hand's 306 — a valid session-boundary 201 can sit in the
+  gap *after* that 306 and *before* the affected hand's own DEAL, and capping
+  the scan there would miss it (this doesn't risk picking a mid-hand 201
+  instead: the outside-any-hand proof rejects those regardless of how far the
+  scan window reaches). Boundary candidates are re-validated with the current
+  Zod schema before use, because the Lake intentionally stores unparseable
+  rows (a malformed 306 must not truncate the range). New events alone cannot
+  form such a hand's 303→306 boundary. The converter is seeded with the empty
+  default session only when a qualifying 201 anchor was found (the range
+  starts at a session boundary, whether or not a previous completed hand
+  precedes it); otherwise (incremental hands without a 201 anywhere in the
+  Lake below them) the live `service.session` seeds it, matching the direct
+  path and the #104 SessionState-seeding regression (a 201 overwrites
+  id/battleType but not `session.name`, so live-session seeding at a session
+  boundary could leak a live table name into historical repairs). Saving is
+  delete-then-put in one transaction:
   existing derived hands whose `id` matches a *validated*
   `EVT_HAND_RESULTS` HandId inside the repair range (the hands this repair
   can account for) are deleted with their phases/actions before the

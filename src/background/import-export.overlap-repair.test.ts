@@ -80,6 +80,12 @@ const MID_HAND_ENTRY_QUEUED = { ...ENTRY_QUEUED, "timestamp": 1752427314500 }
 // (...319431).
 const MALFORMED_RESULTS_ROW = { "ApiTypeId": 306, "timestamp": 1752427319000 }
 
+// A valid EVT_ENTRY_QUEUED sitting in the gap strictly AFTER HAND0's
+// EVT_HAND_RESULTS (...309431) and strictly BEFORE HAND1's EVT_DEAL
+// (...313426) -- legitimately outside any hand (HAND0 is already closed,
+// HAND1 hasn't opened yet).
+const GAP_ENTRY_QUEUED = { ...ENTRY_QUEUED, "timestamp": 1752427310000 }
+
 const toJsonl = (events: unknown[]): string => events.map(event => JSON.stringify(event)).join('\n')
 
 const snapshotDerived = async (db: PokerChaseDB) => ({
@@ -108,15 +114,35 @@ const runWithFreshDb = async <T>(
   try {
     return await fn({ db, service, handlers })
   } finally {
+    // Cancel PokerChaseService's pending 500ms-debounced persistState()
+    // timer (pass-5 review, "Clear persisted service state between tests"):
+    // a test that mutates service.session (setId/setBattleType/setName/...)
+    // schedules a REAL setTimeout via the service's private
+    // `_persistStateTimer`. Without cancelling it here, that timer keeps
+    // running in the background after this db/service is torn down and can
+    // fire during a LATER test in this file, writing this (now-defunct)
+    // service's session into the shared chrome.storage.local mock --
+    // test-setup.ts's mock storage is a single module-scoped object, so a
+    // later test's freshly-constructed PokerChaseService would hydrate that
+    // leaked state on construction (restoreState()) even though it never
+    // touched service.session itself. Reaching into the private field is
+    // deliberate: there is no public dispose()/cancel() on the service.
+    clearTimeout((service as unknown as { _persistStateTimer?: ReturnType<typeof setTimeout> })._persistStateTimer)
     db.close()
     await db.delete()
   }
 }
 
 describe('importData() overlap import repair (audit finding #7)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setOperationState({ type: 'idle' })
     ;(chrome.runtime.sendMessage as jest.Mock).mockReturnValue(Promise.resolve())
+    // Defense in depth alongside the timer cancellation in runWithFreshDb()'s
+    // teardown above: clear any session state a previous test in this file
+    // left in the shared chrome.storage.local mock, so every test's
+    // PokerChaseService.restoreState() (called from `service.ready`) starts
+    // from a genuinely empty slate regardless of run order (pass-5 review).
+    await chrome.storage.local.set({ [PokerChaseService.STORAGE_KEY]: undefined })
   })
 
   afterEach(() => {
@@ -563,6 +589,67 @@ describe('importData() overlap import repair (audit finding #7)', () => {
       expect(await db.hands.get(HAND0_ID)).toBeDefined()
       expect(await db.actions.where('handId').equals(HAND0_ID).count()).toBe(3)
       expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(3)
+      expect(await db.hands.count()).toBe(2)
+    })
+  })
+
+  test('a valid EVT_ENTRY_QUEUED in the gap after the previous hand\'s RESULTS and before the affected hand becomes the anchor, even when the Lake starts with an earlier contextless hand (PR #203 codex P2, pass 5)', async () => {
+    // Lake layout: HAND0 (DEAL...RESULTS, no leading 201 -- a "contextless"
+    // first hand) -> GAP_ENTRY_QUEUED, strictly after HAND0's RESULTS
+    // (...309431) and strictly before HAND1's DEAL (...313426) -> HAND1's
+    // DEAL -> [missing ACTIONs] -> HAND1's RESULTS. The previous
+    // completed-hand boundary for HAND1's repair is HAND0's RESULTS; capping
+    // the anchor scan's search window there (instead of at minNewTimestamp)
+    // means GAP_ENTRY_QUEUED -- which sits AFTER that boundary -- is never
+    // even considered, even though it plainly lies outside any hand (HAND0
+    // already closed, HAND1 not yet opened) and is exactly the anchor
+    // HAND1's repair needs.
+    const fullExport = [
+      ...HAND0_EVENTS,
+      GAP_ENTRY_QUEUED,
+      ...HAND1_EVENTS,
+    ]
+
+    const expected = await runWithFreshDb(async ({ db, handlers }) => {
+      await handlers.importData(toJsonl(fullExport))
+      return snapshotDerived(db)
+    })
+    expect(expected.hands.map(hand => hand.id).sort()).toEqual([HAND0_ID, HAND1_ID])
+    const expectedHand1 = expected.hands.find(hand => hand.id === HAND1_ID)!
+    expect(expectedHand1.session).toMatchObject({ id: 'stage000_003', battleType: 0 })
+    expect(expectedHand1.session.name).toBeUndefined()
+
+    await runWithFreshDb(async ({ db, service, handlers }) => {
+      // Damaged DB: everything except HAND1's middle ACTIONs.
+      await db.apiEvents.bulkAdd([
+        ...HAND0_EVENTS,
+        GAP_ENTRY_QUEUED,
+        HAND1_DEAL,
+        HAND1_RESULTS,
+      ] as never[])
+      await handlers.rebuildAllData()
+      expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(0)
+
+      // A live session with a table name that must NOT leak into HAND1's
+      // repaired session: if GAP_ENTRY_QUEUED isn't recognized as a session
+      // anchor, hasSessionAnchor comes back false and importData() falls
+      // back to seeding the converter with this live session instead of the
+      // empty default one used at a real session boundary.
+      service.session.setId('live-session-456')
+      service.session.setBattleType(1)
+      service.session.setName('Live Table Name')
+
+      const result = await handlers.importData(toJsonl(fullExport))
+      expect(result.successCount).toBe(3) // HAND1's ACTIONs
+      expect(result.duplicateCount).toBe(fullExport.length - 3)
+
+      expect(await snapshotDerived(db)).toEqual(expected)
+      const hand1 = await db.hands.get(HAND1_ID)
+      expect(hand1).toBeDefined()
+      // Session identity comes from the Lake's own gap 201...
+      expect(hand1!.session).toMatchObject({ id: 'stage000_003', battleType: 0 })
+      // ...and the live table name must NOT have leaked in.
+      expect(hand1!.session.name).toBeUndefined()
       expect(await db.hands.count()).toBe(2)
     })
   })
