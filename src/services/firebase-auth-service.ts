@@ -195,6 +195,23 @@ export class FirebaseAuthService {
       return this.currentState.idToken
     }
 
+    // Snapshot which identity this refresh is FOR, before the network await
+    // (codex review r3616116753, P1, "Count stale refreshes as auth
+    // transitions"): if the user signs into a DIFFERENT account while this
+    // refresh is in flight, applying the response back into the shared
+    // `currentState` unconditionally would silently corrupt it -- spreading
+    // the NEW account's other fields (`...this.currentState`, which by then
+    // already reflects the NEW account) together with the OLD account's
+    // refreshed uid/token/refreshToken, resurrecting the OLD uid into
+    // `currentState.uid` (and therefore `getCurrentUser()`). Nothing in
+    // this method bumps `authGeneration`, so every commit-point
+    // `assertGenerationUnchanged()` check elsewhere would see "unchanged"
+    // even though the live identity had silently flipped back underneath
+    // them -- defeating the entire generation-gate mechanism this PR
+    // builds on.
+    const refreshingUid = this.currentState.uid
+    const refreshToken = this.currentState.refreshToken
+
     const response = await fetch(
       `https://securetoken.googleapis.com/v1/token?key=${firebaseConfig.apiKey}`,
       {
@@ -202,7 +219,7 @@ export class FirebaseAuthService {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
           grant_type: 'refresh_token',
-          refresh_token: this.currentState.refreshToken
+          refresh_token: refreshToken
         }).toString()
       }
     )
@@ -213,6 +230,19 @@ export class FirebaseAuthService {
     }
 
     const result = await response.json() as FirebaseRefreshResponse
+
+    // Discard a stale refresh response: the account live NOW is not the one
+    // this refresh was requested for. Still return the freshly-fetched
+    // token to THIS caller -- whatever in-flight operation asked for it
+    // (e.g. a Firestore call already under way for the OLD account) can
+    // still complete using a valid, unexpired token for the account it
+    // actually started with -- but do NOT let it become the new shared
+    // `currentState`, and do NOT persist it.
+    if (this.currentState?.uid !== refreshingUid) {
+      console.warn('[FirebaseAuth] Discarding a token refresh for a no-longer-current account (the signed-in account changed while the refresh was in flight)')
+      return result.id_token
+    }
+
     this.currentState = {
       ...this.currentState,
       uid: result.user_id,

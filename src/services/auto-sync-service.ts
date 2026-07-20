@@ -401,6 +401,24 @@ export class AutoSyncService {
         // cross-account leak this migration exists to prevent.
         await chrome.storage.local.remove(this.SYNC_STORAGE_KEY)
         if (storedLastSyncTime === undefined) {
+          // COMMIT POINT (invariant (2), codex review r3616056817, P2,
+          // "Recheck auth before writing the scoped legacy time"):
+          // re-check AGAIN, immediately before this scoped write -- the
+          // FIRST assert above only covers up to the `remove()` await
+          // just completed. If the account changed while THAT await was
+          // in flight, this scoped write would otherwise durably persist
+          // the OLD (now-stale) uid's `autoSyncLastTime:<uid>` key from an
+          // `initialize()` attempt whose in-memory result is already known
+          // to be discarded by the later generation-moved check further
+          // down -- but that discard only prevents the STALE attempt from
+          // publishing to `syncState`; it does nothing to undo a durable
+          // storage write that already landed. If that uid signs in again
+          // later, it would wrongly look "already synced" off a value it
+          // never actually earned. Failing closed here (not writing) only
+          // costs that account one extra "first sync" later -- the legacy
+          // key is already gone either way (removed above), so there's no
+          // repeat-migration risk from skipping this write.
+          this.assertGenerationUnchanged(identity.generation, 'before scoped legacy migration write')
           storedLastSyncTime = legacyLastSyncTime
           console.log(`[AutoSync] Migrating legacy unscoped ${this.SYNC_STORAGE_KEY} to this account (${uid})`)
           await chrome.storage.local.set({ [scopedSyncKey]: storedLastSyncTime })

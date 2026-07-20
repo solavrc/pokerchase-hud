@@ -1395,4 +1395,41 @@ describe('AutoSyncService cloud downloads', () => {
 
     expect((service as any).syncState.lastSyncTime).toBeUndefined()
   })
+
+  test('rechecks the generation before the scoped legacy migration write, so an account switch during the remove() await cannot persist a stale uid\'s scoped key (P2, codex review r3616056817)', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime', 'autoSyncLastTime:user-a'])
+
+    const userA = { uid: 'user-a', email: 'a@example.com' } as any
+    jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue(userA)
+    let generation = 1
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockImplementation(() => generation)
+
+    const legacyIso = new Date('2026-01-01T00:00:00.000Z').toISOString()
+    await chrome.storage.local.set({ autoSyncLastTime: legacyIso })
+
+    // Bump the generation as a side effect of the remove() call -- the
+    // window BETWEEN the first assert (before remove()) and the scoped
+    // set() that follows it, which is exactly what the finding describes.
+    const originalRemove = (chrome.storage.local.remove as jest.Mock).getMockImplementation()!
+    jest.spyOn(chrome.storage.local, 'remove').mockImplementation((keys: any) => {
+      const result = originalRemove(keys)
+      generation++
+      return result
+    })
+
+    const service = new AutoSyncService(db)
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue(undefined)
+
+    await service.initialize()
+
+    // The legacy key IS gone -- removing it is unconditionally safe
+    // regardless of which account ends up live (r3615664896's ordering
+    // fix), so that part still lands.
+    expect(await chrome.storage.local.get('autoSyncLastTime')).toEqual({ autoSyncLastTime: undefined })
+    // But the scoped write for the now-STALE uid never happened -- it
+    // would have durably persisted a value this account never actually
+    // earned, letting it wrongly look "already synced" on a later sign-in.
+    expect(await chrome.storage.local.get('autoSyncLastTime:user-a')).toEqual({ 'autoSyncLastTime:user-a': undefined })
+    expect(performSyncSpy).not.toHaveBeenCalled()
+  })
 })
