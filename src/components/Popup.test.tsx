@@ -22,6 +22,10 @@ global.chrome = {
       addListener: jest.fn(),
       removeListener: jest.fn(),
     },
+    // WhatsNewSection reads this to pick the entry matching the running
+    // version; kept in sync with test-setup.ts's default so this file's
+    // full-chrome-object override doesn't diverge from the global mock.
+    getManifest: jest.fn(() => ({ version: '5.1.0' })),
   },
   tabs: {
     query: mockChromeTabsQuery,

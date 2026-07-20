@@ -15,6 +15,7 @@ import { getLastKnownStats, setLastKnownStats, getLiveBroadcastSequence } from '
 import { resolveAdvisory } from './rebuild-advisory'
 import { getUndecodedEventStats, resetUndecodedEventStats } from './undecoded-event-tracker'
 import { applyUpdateNow } from './update-manager'
+import { acknowledgeWhatsNew } from './whats-new-badge'
 import {
   createImportExportHandlers,
   getCurrentImportSession,
@@ -390,6 +391,15 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         .then(result => sendResponse({ success: true, applied: result.applied, reason: result.reason }))
         .catch(error => {
           console.error('[applyPendingUpdate] Error:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'acknowledgeWhatsNew') {
+      // Popupの更新情報セクション（WhatsNewSection）マウント時の既読化
+      acknowledgeWhatsNew()
+        .then(() => sendResponse({ success: true }))
+        .catch(error => {
+          console.error('[acknowledgeWhatsNew] Error:', error)
           sendResponse({ success: false, error: error.message })
         })
       return true

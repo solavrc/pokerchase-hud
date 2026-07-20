@@ -18,6 +18,7 @@ import { registerEventIngestion } from './background/event-ingestion'
 import { registerMessageRouter } from './background/message-router'
 import { checkOnUpdate } from './background/rebuild-advisory'
 import { initUpdateManager } from './background/update-manager'
+import { markWhatsNewOnUpdate, reassertWhatsNewBadgeOnStartup } from './background/whats-new-badge'
 import { needsConfigPersist } from './background/hud-config-sync'
 import { loadOptions, saveOptions, type Options } from './utils/options-storage'
 import { DEFAULT_TABLE_SIZE_FILTER, selectedTableSizeLayers } from './utils/table-size'
@@ -67,6 +68,14 @@ chrome.runtime.onInstalled.addListener(async details => {
       await checkOnUpdate(db)
     } catch (error) {
       console.error('[onInstalled] Rebuild advisory check failed:', error)
+    }
+
+    // 更新情報（What's New）: 新規インストール（'install'）ではバッジ churn
+    // 防止のため呼ばない（whats-new-badge.ts冒頭のコメント参照）
+    try {
+      await markWhatsNewOnUpdate(chrome.runtime.getManifest().version)
+    } catch (error) {
+      console.error('[onInstalled] What\'s New badge check failed:', error)
     }
   }
 })
@@ -169,6 +178,17 @@ registerEventIngestion(service)
  * 詳細はsrc/background/update-manager.tsとCLAUDE.mdを参照。
  */
 initUpdateManager()
+
+/**
+ * 更新情報（What's New）バッジのSW起動時再評価。onInstalled('update')時点で
+ * rebuild-advisory/update-managerのバッジが先に使用中だった場合、
+ * whats-newバッジは抑制されたままになる。SW起動のたびにここで優先順位を
+ * 再評価し、他の2つが解消済みならwhats-newバッジに昇格させる（詳細は
+ * src/background/whats-new-badge.tsとCLAUDE.md参照）。
+ */
+reassertWhatsNewBadgeOnStartup().catch(error => {
+  console.error('[background] What\'s New badge reassertion failed:', error)
+})
 
 /**
  * Forced update: リモート最低バージョンゲート（キルスイッチ）。

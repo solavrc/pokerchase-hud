@@ -22,11 +22,15 @@
  * 上記いずれかが「unknown」（SW再起動直後などでセッション状態を未観測）の
  * 場合もunsafeとして扱う（保守的なデフォルト）。
  *
- * バッジ優先順位: rebuild-advisory（データ再構築の提要）が既にバッジを
- * 表示している間は、update-managerのバッジは表示・消去のどちらも行わない
+ * バッジ優先順位（3-way, rebuild-advisory > update-manager > whats-new）:
+ * rebuild-advisory（データ再構築の提要）が既にバッジを表示している間は、
+ * update-managerのバッジは表示・消去のどちらも行わない
  * （`getRebuildAdvisoryState().pendingVersion`をチェックしてno-op）。
  * rebuild-advisoryは既存の実装のまま変更せず、常に無条件でバッジを
- * 制御する「勝ち」側。詳細はCLAUDE.md参照。
+ * 制御する「勝ち」側。whats-new-badge.ts（更新情報バッジ）はこのファイルより
+ * さらに下位で、rebuild-advisoryとこのファイルの**両方**を確認してから
+ * 自分のバッジを出す/消す（このファイル自身はwhats-newの存在を知らない）。
+ * 詳細はwhats-new-badge.ts冒頭のコメント・CLAUDE.md参照。
  */
 import { getRebuildAdvisoryState } from './rebuild-advisory'
 import { isOperationIdle, onOperationBecameIdle } from './operation-state'

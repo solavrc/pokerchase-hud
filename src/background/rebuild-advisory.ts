@@ -7,6 +7,13 @@
  * 「データ再構築」の実行を促す。状態は`chrome.storage.local`の`rebuildAdvisory`
  * キーに永続化し、拡張機能アイコンのバッジと通知、およびPopup内バナーで
  * ユーザーに知らせる。
+ *
+ * バッジ優先順位（3-way, rebuild-advisory > update-manager > whats-new）:
+ * このファイルは最上位固定で、他モジュールの存在を知らず常に無条件で
+ * バッジを制御する（「勝ち」側）。update-manager.ts/whats-new-badge.tsは
+ * このファイルの状態（`getRebuildAdvisoryState().pendingVersion`）を
+ * 確認してからno-opする側。詳細はupdate-manager.ts冒頭のコメント・
+ * whats-new-badge.ts冒頭のコメント・CLAUDE.mdを参照。
  */
 import type { PokerChaseDB } from '../db/poker-chase-db'
 import { REBUILD_ADVISORY_VERSION } from '../constants/database'

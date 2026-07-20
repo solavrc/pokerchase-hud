@@ -61,6 +61,8 @@ export const MESSAGE_ACTIONS = {
   ACKNOWLEDGE_UNDECODED_EVENT_STATS: 'acknowledgeUndecodedEventStats',
   // Forced update (auto-apply)
   APPLY_PENDING_UPDATE: 'applyPendingUpdate',
+  // What's New (per-version release notes)
+  ACKNOWLEDGE_WHATS_NEW: 'acknowledgeWhatsNew',
 } as const
 
 // Import/Export related messages
@@ -284,6 +286,11 @@ export interface ApplyPendingUpdateMessage {
   action: 'applyPendingUpdate'
 }
 
+// What's New (per-version release notes) messages
+export interface AcknowledgeWhatsNewMessage {
+  action: 'acknowledgeWhatsNew'
+}
+
 export interface FirebaseBackupProgressMessage {
   action: 'firebaseBackupProgress'
   progress: number
@@ -412,6 +419,7 @@ export type ChromeMessage =
   | GetUndecodedEventStatsMessage
   | AcknowledgeUndecodedEventStatsMessage
   | ApplyPendingUpdateMessage
+  | AcknowledgeWhatsNewMessage
 
 // Helper function for type guard implementation
 const isMessageWithAction = (msg: unknown, action: string): msg is { action: string } =>
@@ -513,3 +521,6 @@ export const isAcknowledgeUndecodedEventStatsMessage = (msg: unknown): msg is Ac
 
 export const isApplyPendingUpdateMessage = (msg: unknown): msg is ApplyPendingUpdateMessage =>
   isMessageWithAction(msg, 'applyPendingUpdate')
+
+export const isAcknowledgeWhatsNewMessage = (msg: unknown): msg is AcknowledgeWhatsNewMessage =>
+  isMessageWithAction(msg, 'acknowledgeWhatsNew')
