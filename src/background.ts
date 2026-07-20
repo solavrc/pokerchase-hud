@@ -20,6 +20,7 @@ import { checkOnUpdate } from './background/rebuild-advisory'
 import { initUpdateManager } from './background/update-manager'
 import { markWhatsNewOnUpdate, reassertWhatsNewBadgeOnStartup } from './background/whats-new-badge'
 import { needsConfigPersist } from './background/hud-config-sync'
+import { initializeAutoSyncOnReady, createSignInTransitionHandler } from './background/auto-sync-boot'
 import { loadOptions, saveOptions, type Options } from './utils/options-storage'
 import { DEFAULT_TABLE_SIZE_FILTER, selectedTableSizeLayers } from './utils/table-size'
 import { checkMinVersionGate } from './services/min-version-gate'
@@ -46,12 +47,19 @@ self.statsRegistry = defaultRegistry
 service.ready.then(async () => {
   console.log('[background] PokerChaseService is ready')
 
-  // Initialize auto sync if user is authenticated
+  // Initialize auto sync if user is authenticated.
+  //
+  // codex post-merge audit finding ("cold-start auth-restore race loses the
+  // initial sync"): `firebaseAuthService`'s auth-state restore
+  // (`restoreAuthState()`, kicked off from its constructor at import time)
+  // is independent of `service.ready` (IndexedDB init) above -- there is no
+  // ordering guarantee between the two. `initializeAutoSyncOnReady()`
+  // (`src/background/auto-sync-boot.ts`) awaits `firebaseAuthService.ready()`
+  // before checking `getCurrentUser()`, so an already-signed-in user's
+  // initial sync is no longer skipped whenever IndexedDB init happens to
+  // resolve first.
   try {
-    const user = firebaseAuthService.getCurrentUser()
-    if (user) {
-      await autoSyncService.initialize()
-    }
+    await initializeAutoSyncOnReady(firebaseAuthService, autoSyncService)
   } catch (error) {
     console.error('[background] Auto sync initialization failed:', error)
   }
@@ -207,8 +215,30 @@ checkMinVersionGate(chrome.runtime.getManifest().version).catch(error => {
   console.error('[background] Min-version gate check failed:', error)
 })
 
+// Same audit finding as above: also trigger autoSyncService.initialize() on
+// an observed sign-in TRANSITION, as a defensive backstop beyond the
+// cold-start await in the service.ready.then() block -- e.g. if this
+// Service Worker instance observes a sign-in that didn't arrive through
+// background/message-router.ts's own explicit
+// `autoSyncService.onAuthStateChanged(user)` call (that call site already
+// invokes initialize() on the popup-driven sign-in flow). See
+// createSignInTransitionHandler()'s doc comment
+// (src/background/auto-sync-boot.ts) for why the very first callback
+// invocation on Service Worker startup deliberately does NOT count as a
+// transition (avoids double-invoking initialize() on top of the cold-start
+// path above), AND why a `source === 'sign-in'` transition is ALSO excluded
+// (codex post-merge review on this PR, P2, "Avoid double auto-sync
+// initialization on popup sign-in" -- that path, driven by
+// `firebaseAuthService.signInWithGoogle()`, already has its own explicit
+// caller in message-router.ts, and this listener fires synchronously
+// *before* that caller's own call, so triggering initialize() here too used
+// to race it).
+const handleAuthSignInTransition = createSignInTransitionHandler(autoSyncService, (error) => {
+  console.error('[background] Auto sync initialization on sign-in transition failed:', error)
+})
+
 // Listen for auth state changes on startup
-firebaseAuthService.onAuthStateChange((user) => {
+firebaseAuthService.onAuthStateChange((user, source) => {
   console.log('[Firebase] Auth state changed:', user ? user.email : 'signed out')
 
   // Cache auth state for instant popup rendering
@@ -216,4 +246,6 @@ firebaseAuthService.onAuthStateChange((user) => {
     ? { isSignedIn: true, userInfo: { email: user.email, uid: user.uid } }
     : { isSignedIn: false, userInfo: null }
   chrome.storage.local.set({ firebaseAuthCache: authCache })
+
+  handleAuthSignInTransition(user, source)
 })
