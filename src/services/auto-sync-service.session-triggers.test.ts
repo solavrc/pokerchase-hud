@@ -48,7 +48,7 @@ describe('AutoSyncService session start/end sync triggers', () => {
     await db.apiEvents.bulkAdd(events)
 
     const service = new AutoSyncService(db)
-    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue(undefined)
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue({ success: true })
 
     await service.onNewSessionStart()
 
@@ -60,7 +60,7 @@ describe('AutoSyncService session start/end sync triggers', () => {
     await db.apiEvents.bulkAdd(events)
 
     const service = new AutoSyncService(db)
-    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue(undefined)
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue({ success: true })
 
     await service.onNewSessionStart()
 
@@ -72,7 +72,7 @@ describe('AutoSyncService session start/end sync triggers', () => {
     await db.apiEvents.bulkAdd(events)
 
     const service = new AutoSyncService(db)
-    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue(undefined)
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue({ success: true })
 
     await service.onGameSessionEnd()
 
@@ -84,7 +84,7 @@ describe('AutoSyncService session start/end sync triggers', () => {
     await db.apiEvents.bulkAdd(events)
 
     const service = new AutoSyncService(db)
-    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue(undefined)
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue({ success: true })
 
     // Simulate a sync already in progress (e.g. 309's onGameSessionEnd fired
     // just before this session-start event arrived)
@@ -105,6 +105,7 @@ describe('AutoSyncService session start/end sync triggers', () => {
       // backlog it just cleared -- mirror that here without exercising the
       // full Firestore path.
       ;(service as any).syncState.lastSyncTime = new Date(events[events.length - 1]!.timestamp!)
+      return { success: true }
     })
 
     // 309 fires first (session end) and clears the backlog
@@ -123,7 +124,7 @@ describe('AutoSyncService session start/end sync triggers', () => {
     await db.apiEvents.bulkAdd(events)
 
     const service = new AutoSyncService(db)
-    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue(undefined)
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue({ success: true })
 
     await service.onNewSessionStart()
     await service.onGameSessionEnd()

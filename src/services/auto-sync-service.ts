@@ -50,6 +50,37 @@ interface SyncPassIdentity {
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'success'
 export type SyncDirection = 'upload' | 'download' | 'both'
 
+/**
+ * `performSync()`'s resolved return value (independent release-audit finding
+ * #12, "manual sync reports success on internal failure").
+ *
+ * `performSync()` itself must keep its long-standing NEVER-THROW contract on
+ * its own internal failure paths (the remote min-version gate blocking sync,
+ * or `syncToCloud()`/`syncFromCloud()` throwing) -- `initialize()` and
+ * `syncIfBacklogExceedsThreshold()` both call it fire-and-forget-style
+ * (`await this.performSync()` / `await this.performSync('upload')`, ignoring
+ * the resolved value entirely) and rely on that resolving cleanly so their
+ * own retry/backoff logic runs on every path, not just the happy one. Before
+ * this fix, `Promise<void>` gave callers no way to distinguish "sync ran and
+ * succeeded" from "sync ran and failed internally" other than re-reading
+ * `getSyncState()` afterward -- `message-router.ts`'s manual-sync handlers
+ * (`firebaseSyncToCloud`/`firebaseSyncFromCloud`/`manualSyncUpload`/
+ * `manualSyncDownload`) didn't do that, so `.then(() => sendResponse({
+ * success: true }))` fired unconditionally on resolution, even when the
+ * min-version gate blocked the sync or Firestore itself failed --
+ * `updateSyncState({ status: 'error', ... })` ran, but the message response
+ * still claimed success.
+ *
+ * This structured outcome lets `performSync()` keep resolving (never
+ * rejecting) on those same internal failure paths while still reporting the
+ * truth to a caller that chooses to look -- `message-router.ts`'s manual-sync
+ * handlers now build their response from this value instead of assuming
+ * resolution implies success.
+ */
+export type SyncOutcome =
+  | { success: true }
+  | { success: false, error: string }
+
 export interface SyncState {
   status: SyncStatus
   lastSyncTime?: Date
@@ -493,19 +524,30 @@ export class AutoSyncService {
   /**
    * Perform sync with optional direction
    * @param direction - Optional sync direction: 'upload', 'download', or 'both' (default)
+   * @returns A {@link SyncOutcome} describing whether this call actually
+   *   synced successfully. NEVER rejects on an internal sync failure (see the
+   *   `SyncOutcome` doc comment) -- only a truly unexpected/unhandled
+   *   exception (e.g. `firebaseAuthService.ready()` itself throwing) would
+   *   reject this promise, same as before this fix.
    */
-  async performSync(direction: SyncDirection = 'both'): Promise<void> {
+  async performSync(direction: SyncDirection = 'both'): Promise<SyncOutcome> {
     // Check minimum interval (currently disabled)
     const now = Date.now()
     if (this.MIN_SYNC_INTERVAL_MS > 0 && now - this.lastSyncAttempt < this.MIN_SYNC_INTERVAL_MS) {
       console.log('[AutoSync] Skipping sync - too soon since last attempt')
-      return
+      // Not a failure -- this pass simply deferred to whatever the previous
+      // sync already established (MIN_SYNC_INTERVAL_MS is currently 0/
+      // disabled, so this path is not reachable today; kept truthful for
+      // when it's re-enabled).
+      return { success: true }
     }
 
     // Check if already syncing
     if (this._isSyncing) {
       console.log('[AutoSync] Sync already in progress')
-      return
+      // Not a failure -- a concurrent pass owns this sync; its own outcome
+      // (success or failure) is what will actually land in syncState.
+      return { success: true }
     }
 
     // Latch BEFORE the awaited gate check below (codex#3612092798): if we set
@@ -552,7 +594,11 @@ export class AutoSyncService {
       if (await isCloudSyncBlockedByMinVersionGate()) {
         console.warn('[AutoSync] Cloud sync blocked: extension version is below the remote minimum-supported version')
         this.updateSyncState({ status: 'error', error: MIN_VERSION_SYNC_BLOCKED_MESSAGE })
-        return
+        // Independent release-audit finding #12: this used to be a bare
+        // `return` (implicit success) even though the gate just blocked the
+        // sync -- a manual-sync caller inspecting only promise resolution
+        // (message-router.ts) would report `{ success: true }` to the popup.
+        return { success: false, error: MIN_VERSION_SYNC_BLOCKED_MESSAGE }
       }
 
       this.lastSyncAttempt = now
@@ -624,12 +670,25 @@ export class AutoSyncService {
         })
 
         console.log(`[AutoSync] Sync completed successfully (direction: ${direction})`)
+        return { success: true }
       } catch (error) {
         console.error('[AutoSync] Sync error:', error)
+        // Independent release-audit finding #12, "manual sync reports
+        // success on internal failure": this catch block used to only
+        // update `syncState` and fall off the end of the function (implicit
+        // `return undefined`), so `performSync()` still RESOLVED here --
+        // `message-router.ts`'s manual-sync handlers, which only checked
+        // resolve-vs-reject, reported `{ success: true }` to the popup even
+        // though the sync (e.g. a Firestore write) actually failed. Keeping
+        // this never-throw for internal callers (`initialize()`,
+        // `syncIfBacklogExceedsThreshold()`, both of which ignore the
+        // resolved value) -- only the resolved SHAPE now tells the truth.
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error'
         this.updateSyncState({
           status: 'error',
-          error: error instanceof Error ? error.message : 'Unknown error'
+          error: errorMessage
         })
+        return { success: false, error: errorMessage }
       }
     } finally {
       this._isSyncing = false

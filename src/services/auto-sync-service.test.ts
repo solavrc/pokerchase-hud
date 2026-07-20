@@ -846,6 +846,7 @@ describe('AutoSyncService cloud downloads', () => {
     // dedicated test below.
     const performSyncSpy = jest.spyOn(service, 'performSync').mockImplementation(async () => {
       (service as any).syncState.lastSyncTime = new Date()
+      return { success: true } as const
     })
 
     // --- Account A is the first to sign in after upgrade -------------------
@@ -1085,6 +1086,7 @@ describe('AutoSyncService cloud downloads', () => {
     const service = new AutoSyncService(db)
     const performSyncSpy = jest.spyOn(service, 'performSync').mockImplementation(async () => {
       (service as any).syncState.lastSyncTime = new Date()
+      return { success: true } as const
     })
 
     await service.initialize()
@@ -1130,6 +1132,7 @@ describe('AutoSyncService cloud downloads', () => {
     const service = new AutoSyncService(db)
     const performSyncSpy = jest.spyOn(service, 'performSync').mockImplementation(async () => {
       (service as any).syncState.lastSyncTime = new Date()
+      return { success: true } as const
     })
 
     await service.initialize()
@@ -1169,7 +1172,7 @@ describe('AutoSyncService cloud downloads', () => {
     })
 
     const service = new AutoSyncService(db)
-    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue(undefined)
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue({ success: true })
 
     await service.initialize()
 
@@ -1348,7 +1351,7 @@ describe('AutoSyncService cloud downloads', () => {
     })
 
     const service = new AutoSyncService(db)
-    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue(undefined)
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue({ success: true })
 
     await service.initialize()
 
@@ -1400,6 +1403,7 @@ describe('AutoSyncService cloud downloads', () => {
     // dedicated test elsewhere) and inflating the call count asserted below.
     const performSyncSpy = jest.spyOn(service, 'performSync').mockImplementation(async () => {
       (service as any).syncState.lastSyncTime = new Date()
+      return { success: true } as const
     })
 
     await service.initialize()
@@ -1457,7 +1461,7 @@ describe('AutoSyncService cloud downloads', () => {
     })
 
     const service = new AutoSyncService(db)
-    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue(undefined)
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue({ success: true })
 
     await service.initialize()
 

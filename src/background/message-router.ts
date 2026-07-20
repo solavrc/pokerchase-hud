@@ -303,27 +303,35 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         })
       return true
     } else if (request.action === 'firebaseSyncToCloud' || request.action === 'firebaseSyncFromCloud') {
-      // Manual sync now uses auto sync service
+      // Manual sync now uses auto sync service.
+      // performSync() never rejects on an internal sync failure (see its own
+      // never-throw contract, relied on by initialize()/
+      // syncIfBacklogExceedsThreshold()) -- it reports failure via the
+      // resolved SyncOutcome instead (min-version gate block, Firestore
+      // error, etc.). Forwarding `.then(() => sendResponse({success:true}))`
+      // unconditionally here used to report success even when the sync
+      // itself failed (independent release-audit finding #12) -- the
+      // resolved outcome must be inspected, not just its resolution.
       autoSyncService.performSync()
-        .then(() => sendResponse({ success: true }))
+        .then(result => sendResponse(result.success ? { success: true } : { success: false, error: result.error }))
         .catch(error => {
           console.error('Manual sync error:', error)
           sendResponse({ success: false, error: error.message })
         })
       return true
     } else if (request.action === 'manualSyncUpload') {
-      // Manual upload to cloud
+      // Manual upload to cloud (see the truthful-outcome note above)
       autoSyncService.performSync('upload')
-        .then(() => sendResponse({ success: true }))
+        .then(result => sendResponse(result.success ? { success: true } : { success: false, error: result.error }))
         .catch(error => {
           console.error('Manual upload error:', error)
           sendResponse({ success: false, error: error.message })
         })
       return true
     } else if (request.action === 'manualSyncDownload') {
-      // Manual download from cloud
+      // Manual download from cloud (see the truthful-outcome note above)
       autoSyncService.performSync('download')
-        .then(() => sendResponse({ success: true }))
+        .then(result => sendResponse(result.success ? { success: true } : { success: false, error: result.error }))
         .catch(error => {
           console.error('Manual download error:', error)
           sendResponse({ success: false, error: error.message })
