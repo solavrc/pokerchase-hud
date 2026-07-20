@@ -316,17 +316,27 @@ Statistics Refresh (batch mode)
   reach `EntityConverter`. See "Raw Event Lake" (Design Principles #16).
 - **Overlap imports re-derive from the Lake, not from new events alone**: when
   the DB already contained events before the import, the entity pass re-reads
-  the affected range from `apiEvents` — expanded back to the last
-  `EVT_ENTRY_QUEUED` (201) at/before the earliest new event (hand boundary and
-  session-context start) and forward to the first `EVT_HAND_RESULTS` (306)
-  at/after the latest new event — so a hand split between existing and
-  imported rows (e.g. re-importing a complete export into a DB missing the
-  hand's middle ACTIONs) gets its derived entities repaired. New events alone
-  cannot form such a hand's 303→306 boundary. Re-deriving existing hands is
-  idempotent (deterministic entity keys + `bulkPut`). See
-  `collectOverlapRepairEvents()` in `src/background/import-export.ts`
-  (independent release-audit finding #7). A fresh import into an empty DB
-  keeps the direct new-events path.
+  the affected range from `apiEvents` — expanded back to the last *valid*
+  `EVT_HAND_RESULTS` (306) strictly before the earliest new event (the
+  previous completed-hand boundary), then to the last *valid*
+  `EVT_ENTRY_QUEUED` (201) at/before that boundary (session-context anchor —
+  anchoring on the 201 nearest the new events directly would be wrong, since
+  an MTT table-move 201 can land mid-hand and cut off the opening
+  `EVT_DEAL`), and forward to the first *valid* 306 at/after the latest new
+  event — so a hand split between existing and imported rows (e.g.
+  re-importing a complete export into a DB missing the hand's middle ACTIONs)
+  gets its derived entities repaired. Boundary candidates are re-validated
+  with the current Zod schema before use, because the Lake intentionally
+  stores unparseable rows (a malformed 306 must not truncate the range). New
+  events alone cannot form such a hand's 303→306 boundary. The converter is
+  seeded with the empty default session only when the range actually starts
+  at a found 201 anchor; otherwise (incremental hands without a 201) the
+  live `service.session` seeds it, matching the direct path and the #104
+  SessionState-seeding regression. Re-deriving existing hands is idempotent
+  (deterministic entity keys + `bulkPut`). See `collectOverlapRepairEvents()`
+  in `src/background/import-export.ts` (independent release-audit finding #7;
+  boundary/session refinements from PR #203 codex review). A fresh import
+  into an empty DB keeps the direct new-events path.
 
 **Critical Design Constraints (learned 2026-03):**
 

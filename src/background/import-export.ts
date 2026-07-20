@@ -68,45 +68,82 @@ export const clearImportSession = (): void => {
  * この関数は新規イベントのtimestamp範囲 [minNewTimestamp, maxNewTimestamp] を
  * 以下の境界までLake上で拡張し、既存行と新規行を合わせた連続領域を返す:
  *
- * - 開始境界: minNewTimestamp 以前で最後の EVT_ENTRY_QUEUED(201)。201は
- *   ハンド間（テーブル着席時）にのみ発行されるためハンド境界として安全で、
- *   かつEntityConverterのセッション文脈（BattleType/Id、以降の313/301が
- *   積むプレイヤー名）の起点でもある —— 新規イベントが属するハンドの
- *   DEALが既存行だった場合も、そのDEALより前から変換を始められる。
- *   201が見つからない場合はLake先頭から（rebuildAllDataと同じ条件で）変換する。
- * - 終了境界: maxNewTimestamp 以後で最初の EVT_HAND_RESULTS(306)（それ自身を
- *   含む）。新規イベントが既存ハンドの中間に挿入された場合、そのハンドの
- *   RESULTSまでを含める。306が無い場合（Lake末尾が未完了ハンド）はLake末尾
- *   まで —— 未完了ハンドはEntityConverterがHandId未設定として棄却するため
- *   ゴミは生成されない。
+ * - 開始境界（PR #203 codexレビューP2で修正）: まず minNewTimestamp より厳密に
+ *   前で最後の「検証済み」EVT_HAND_RESULTS(306) = 直前の完了ハンド境界を探し、
+ *   さらにその境界以前で最後の「検証済み」EVT_ENTRY_QUEUED(201) をanchorとする。
+ *   201を直接（minNewTimestamp基準で）anchorにしてはならない: MTTのテーブル
+ *   移動201はハンドの最中（EVT_DEALとEVT_HAND_RESULTSの間）に割り込むことが
+ *   あり（docs/api-events.md、EntityConverterの融合ハンド棄却ガード参照）、
+ *   その201から変換を始めると影響ハンドの先頭のDEALが範囲外になって、
+ *   EntityConverter（DEALでのみバッファ開始）が新規行を導出できない。
+ *   「完了ハンド境界→その前の201」の順で辿ればanchorは必ずハンド外にあり、
+ *   影響ハンドのDEALとセッション文脈（BattleType/Id、以降の313/301が積む
+ *   プレイヤー名）の両方が範囲に含まれる。201が見つからない場合（および
+ *   完了ハンド境界自体が無い場合）はLake先頭から（rebuildAllDataと同じ
+ *   条件で）変換する。
+ * - 終了境界: maxNewTimestamp 以後で最初の「検証済み」EVT_HAND_RESULTS(306)
+ *   （それ自身を含む）。新規イベントが既存ハンドの中間に挿入された場合、
+ *   そのハンドのRESULTSまでを含める。306が無い場合（Lake末尾が未完了ハンド）
+ *   はLake末尾まで —— 未完了ハンドはEntityConverterがHandId未設定として
+ *   棄却するためゴミは生成されない。
+ *
+ * どちらの境界も、候補行を現行Zodスキーマで検証してから採用する
+ * （PR #203 codexレビューP2）: Raw LakeにはApiTypeIdが306/201でもパース
+ * 不能な行が混在し得る（Raw Event Lakeの設計上の仕様）。生のApiTypeId一致
+ * だけで境界を決めると、パース不能な306を終了境界に選んでしまい、直後の
+ * filterValidApplicationEvents()でその行自体が除去されて本物のRESULTSが
+ * 範囲外に残り、ハンドが未終了扱いで棄却される（修復が黙って失敗する）。
  *
  * 範囲内の既存ハンドを再導出しても重複は生じない: hands(id) / phases
  * ([handId+phase]) / actions([handId+index]) はいずれも決定的キーで、
  * saveEntities()のbulkPutが同キー行を上書きする（冪等）。範囲外の派生行には
  * 一切触れない。返す前にfilterValidApplicationEvents()で再検証するのは
- * rebuildAllData()と同じ理由（Raw Lakeには非アプリケーション行・現行スキーマで
- * パース不能な行が混在し得る。CLAUDE.md「Raw Event Lake」参照）。
+ * rebuildAllData()と同じ理由（CLAUDE.md「Raw Event Lake」参照）。
+ *
+ * 戻り値の`hasSessionAnchor`は「範囲が検証済みEVT_ENTRY_QUEUEDから始まって
+ * いる = 範囲内のイベント列だけでセッション文脈を再構築できる」ことを示す。
+ * 呼び出し元はこれがtrueの場合のみコンバーターを空セッションで初期化し、
+ * falseの場合（201無しの増分ハンド等）はライブのservice.sessionを
+ * 初期値として使う（PR #203 codexレビューP2 / #104のSessionState
+ * seedingリグレッション参照）。
  */
 export const collectOverlapRepairEvents = async (
   db: PokerChaseDB,
   minNewTimestamp: number,
   maxNewTimestamp: number
-): Promise<ApiEvent[]> => {
-  // 開始境界: minNewTimestamp以前（同時刻含む）で最後のEVT_ENTRY_QUEUED。
-  // ApiTypeIdは小さい正の整数のため、[minNewTimestamp, MAX_SAFE_INTEGER]を
-  // 上限にすればminNewTimestampと同時刻の行も全て走査対象に含まれる。
-  const anchorEvent = await db.apiEvents
+): Promise<{ events: ApiEvent[], hasSessionAnchor: boolean }> => {
+  // 境界候補は現行スキーマで検証してから採用する（doc comment参照）。
+  // parseApiEventは同期のZodパースなのでDexieのfilterコールバック内で使える。
+  const isValidApplicationRow = (row: ApiEvent): boolean => {
+    const parsed = parseApiEvent(row)
+    return !!parsed && isApplicationApiEvent(parsed)
+  }
+
+  // 直前の完了ハンド境界: minNewTimestampより厳密に前（.below([ts, 0])は
+  // timestampがminNewTimestamp未満の行のみを含む）で最後の検証済み306。
+  const prevHandBoundary = await db.apiEvents
     .where('[timestamp+ApiTypeId]')
-    .belowOrEqual([minNewTimestamp, Number.MAX_SAFE_INTEGER])
+    .below([minNewTimestamp, 0])
     .reverse()
-    .filter(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED)
+    .filter(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS && isValidApplicationRow(event))
     .first()
 
-  // 終了境界: maxNewTimestamp以後（同時刻含む）で最初のEVT_HAND_RESULTS。
+  // セッション文脈anchor: 完了ハンド境界以前で最後の検証済みEVT_ENTRY_QUEUED。
+  // 306より前を探すため、テーブル移動でハンド中に割り込んだ201を掴むことはない。
+  const anchorEvent = prevHandBoundary
+    ? await db.apiEvents
+      .where('[timestamp+ApiTypeId]')
+      .belowOrEqual([prevHandBoundary.timestamp!, prevHandBoundary.ApiTypeId])
+      .reverse()
+      .filter(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED && isValidApplicationRow(event))
+      .first()
+    : undefined
+
+  // 終了境界: maxNewTimestamp以後（同時刻含む）で最初の検証済みEVT_HAND_RESULTS。
   const endEvent = await db.apiEvents
     .where('[timestamp+ApiTypeId]')
     .aboveOrEqual([maxNewTimestamp, 0])
-    .filter(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)
+    .filter(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS && isValidApplicationRow(event))
     .first()
 
   const lowerKey: [number, number] | undefined = anchorEvent
@@ -127,7 +164,10 @@ export const collectOverlapRepairEvents = async (
     rawRows = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
   }
 
-  return await filterValidApplicationEvents(rawRows)
+  return {
+    events: await filterValidApplicationEvents(rawRows),
+    hasSessionAnchor: anchorEvent !== undefined
+  }
 }
 
 /**
@@ -388,22 +428,30 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           //   （EVT_DEAL〜EVT_HAND_RESULTS）を構成できないため、影響範囲を
           //   Lakeから読み直して既存行と新規行を合わせて再導出する
           //   （境界の決め方・冪等性はcollectOverlapRepairEvents()参照）。
-          //   セッション文脈は範囲先頭のEVT_ENTRY_QUEUEDから再構築されるため、
-          //   rebuildAllData()と同じ空のデフォルトセッションを初期値にする
-          //   （ライブのservice.sessionを流用すると、現在のセッション名等が
-          //   過去の再導出ハンドに混入し得る）。
+          //   コンバーターの初期セッションは、範囲が検証済みEVT_ENTRY_QUEUED
+          //   から始まる場合のみrebuildAllData()と同じ空のデフォルト
+          //   セッションにする（範囲内のイベント列がセッション文脈を自前で
+          //   再構築でき、かつライブのservice.sessionの名前等が過去の
+          //   再導出ハンドに混入しない）。201を含まない増分ハンドの
+          //   インポートでは従来の直接経路と同じくservice.sessionを
+          //   初期値に使う —— さもないとhand.sessionが空になり、#104の
+          //   SessionState seedingリグレッションが守っている挙動が
+          //   overlap経路でだけ壊れる（PR #203 codexレビューP2）。
           let entitySourceEvents: ApiEvent[] = allNewEvents
           let converterSession: Session = service.session
           if (hadPreexistingEvents) {
-            entitySourceEvents = await collectOverlapRepairEvents(db, minNewTimestamp, maxNewTimestamp)
-            converterSession = {
-              id: undefined,
-              battleType: undefined,
-              name: undefined,
-              players: new Map(),
-              reset: () => { }
+            const repairRange = await collectOverlapRepairEvents(db, minNewTimestamp, maxNewTimestamp)
+            entitySourceEvents = repairRange.events
+            if (repairRange.hasSessionAnchor) {
+              converterSession = {
+                id: undefined,
+                battleType: undefined,
+                name: undefined,
+                players: new Map(),
+                reset: () => { }
+              }
             }
-            console.log(`[importData] Overlap import detected - re-deriving entities from ${entitySourceEvents.length} Lake events covering the affected range`)
+            console.log(`[importData] Overlap import detected - re-deriving entities from ${entitySourceEvents.length} Lake events covering the affected range (session anchor in range: ${repairRange.hasSessionAnchor})`)
           }
 
           // EntityConverterを使用してエンティティを生成

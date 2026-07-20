@@ -52,15 +52,33 @@ const HAND1_DEAL = HAND1_EVENTS[0]!
 const HAND1_ACTIONS = HAND1_EVENTS.slice(1, 4)
 const HAND1_RESULTS = HAND1_EVENTS[4]!
 
-// A second, structurally identical hand strictly after HAND1 (timestamps
-// shifted forward, distinct HandId) for range-scoping assertions.
-const HAND2_ID = 384370065
-const HAND2_EVENTS = HAND1_EVENTS.map(event => {
+// Structurally identical hands shifted in time with distinct HandIds, for
+// boundary/range-scoping assertions.
+const shiftHand = (deltaMs: number, handId: number) => HAND1_EVENTS.map(event => {
   const clone = JSON.parse(JSON.stringify(event))
-  clone.timestamp = (event as { timestamp: number }).timestamp + 1_000_000
-  if (clone.ApiTypeId === 306) clone.HandId = HAND2_ID
+  clone.timestamp = (event as { timestamp: number }).timestamp + deltaMs
+  if (clone.ApiTypeId === 306) clone.HandId = handId
   return clone
 })
+
+// A second hand strictly after HAND1.
+const HAND2_ID = 384370065
+const HAND2_EVENTS = shiftHand(1_000_000, HAND2_ID)
+
+// A hand strictly before HAND1 (still after ENTRY_QUEUED's timestamp).
+const HAND0_ID = 384370063
+const HAND0_EVENTS = shiftHand(-10_000, HAND0_ID)
+
+// An MTT table-move EVT_ENTRY_QUEUED injected INSIDE HAND1 (between its
+// EVT_DEAL at ...313426 and its first EVT_ACTION at ...315428) -- the repo
+// documents 201 can land mid-hand on MTT table moves (docs/api-events.md).
+const MID_HAND_ENTRY_QUEUED = { ...ENTRY_QUEUED, "timestamp": 1752427314500 }
+
+// A malformed EVT_HAND_RESULTS Lake row (numeric timestamp+ApiTypeId only --
+// stored raw per the Lake rules, but unparseable under the current schema),
+// sitting between HAND1's last ACTION (...318516) and its valid RESULTS
+// (...319431).
+const MALFORMED_RESULTS_ROW = { "ApiTypeId": 306, "timestamp": 1752427319000 }
 
 const toJsonl = (events: unknown[]): string => events.map(event => JSON.stringify(event)).join('\n')
 
@@ -202,6 +220,103 @@ describe('importData() overlap import repair (audit finding #7)', () => {
 
       expect(await db.hands.get(HAND1_ID)).toBeDefined()
       expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(3)
+    })
+  })
+
+  test('a mid-hand MTT table-move 201 does not cut off the opening DEAL: the lower bound is the previous completed-hand boundary (PR #203 codex P2 #1)', async () => {
+    // Lake layout: 201 -> HAND0 (complete) -> HAND1's DEAL -> mid-hand 201
+    // (MTT table move) -> [missing ACTIONs] -> HAND1's RESULTS. Anchoring on
+    // "last 201 at/before the earliest new event" would pick the mid-hand
+    // 201 and exclude HAND1's DEAL, so the imported ACTIONs still couldn't
+    // form the hand. The correct lower bound walks back to the previous
+    // valid EVT_HAND_RESULTS (HAND0's) and then to the 201 before it.
+    const fullExport = [
+      ENTRY_QUEUED,
+      ...HAND0_EVENTS,
+      HAND1_DEAL,
+      MID_HAND_ENTRY_QUEUED,
+      ...HAND1_ACTIONS,
+      HAND1_RESULTS,
+    ]
+
+    const expected = await runWithFreshDb(async ({ db, handlers }) => {
+      await handlers.importData(toJsonl(fullExport))
+      return snapshotDerived(db)
+    })
+    expect(expected.hands.map(hand => hand.id).sort()).toEqual([HAND0_ID, HAND1_ID])
+
+    await runWithFreshDb(async ({ db, handlers }) => {
+      // Damaged DB: everything except HAND1's middle ACTIONs.
+      await db.apiEvents.bulkAdd([
+        ENTRY_QUEUED,
+        ...HAND0_EVENTS,
+        HAND1_DEAL,
+        MID_HAND_ENTRY_QUEUED,
+        HAND1_RESULTS,
+      ] as never[])
+      await handlers.rebuildAllData()
+      expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(0)
+
+      const result = await handlers.importData(toJsonl(fullExport))
+      expect(result.successCount).toBe(3) // HAND1's ACTIONs
+      expect(result.duplicateCount).toBe(fullExport.length - 3)
+
+      expect(await snapshotDerived(db)).toEqual(expected)
+      expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(3)
+      expect(await db.actions.where('handId').equals(HAND0_ID).count()).toBe(3)
+    })
+  })
+
+  test('a malformed 306 Lake row between the new events and the real RESULTS does not truncate the repair range (PR #203 codex P2 #2)', async () => {
+    await runWithFreshDb(async ({ db, handlers }) => {
+      // Damaged DB: DEAL and valid RESULTS present, ACTIONs missing, plus an
+      // unparseable ApiTypeId=306 noise row sitting between where the
+      // imported ACTIONs land and the valid RESULTS. A raw-ApiTypeId
+      // boundary search would stop at the noise row; the later
+      // filterValidApplicationEvents() pass removes it, leaving the hand
+      // unterminated and the repair silently ineffective.
+      await db.apiEvents.bulkAdd([
+        ENTRY_QUEUED,
+        HAND1_DEAL,
+        MALFORMED_RESULTS_ROW,
+        HAND1_RESULTS,
+      ] as never[])
+
+      const result = await handlers.importData(toJsonl([ENTRY_QUEUED, ...HAND1_EVENTS]))
+      expect(result.successCount).toBe(3)
+      expect(result.duplicateCount).toBe(3)
+
+      expect(await db.hands.get(HAND1_ID)).toBeDefined()
+      expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(3)
+      // The noise row itself is untouched Lake data.
+      expect(await db.apiEvents.get([1752427319000, 306])).toBeDefined()
+    })
+  })
+
+  test('an incremental import without a 201 keeps seeding hand.session from the live service.session (PR #203 codex P2 #3)', async () => {
+    await runWithFreshDb(async ({ db, service, handlers }) => {
+      // Non-empty DB (noise only, no 201 anywhere) forces the overlap path.
+      await db.apiEvents.bulkAdd([{ ApiTypeId: 9999, timestamp: 1000 }] as never[])
+
+      // Live in-memory session context, as during mid-play imports -- the
+      // same situation the #104 SessionState-seeding regression test covers
+      // for the direct path.
+      service.session.setId('live-session-456')
+      service.session.setBattleType(0)
+      service.session.setName('Live Session')
+
+      const result = await handlers.importData(toJsonl(HAND1_EVENTS)) // no EVT_ENTRY_QUEUED in the window
+      expect(result.successCount).toBe(HAND1_EVENTS.length)
+
+      const hand = await db.hands.get(HAND1_ID)
+      expect(hand).toBeDefined()
+      // No session anchor in the repair range -> the live session must seed
+      // the converter, exactly like the direct (empty-DB) path would.
+      expect(hand!.session).toMatchObject({
+        id: 'live-session-456',
+        battleType: 0,
+        name: 'Live Session',
+      })
     })
   })
 
