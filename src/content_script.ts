@@ -113,7 +113,23 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   }
 
   // ゲーム状態の追跡
+  //
+  // ACTIVE化のトリガーはEVT_SESSION_DETAILS(308)単独に頼らない
+  // （release-blocker監査 finding B。background/update-manager.tsの
+  // `markSessionActive()`呼び出し箇所[background/event-ingestion.ts]と
+  // 同じトリガー集合をここでミラーする -- background/content_script間は
+  // import禁止のため、変更時は両ファイルを手動で揃えること）。
+  // docs/api-events.md:99が明記する通り308の欠落は正常系のバリアント
+  // （観測ギャップ）で、309の後に308無しで次の試合が201/303から始まる
+  // ケースは普通に起こる。308だけを見ているとisGameActiveがfalseのまま
+  // 固まり、keepaliveが起動せずService Workerがゲーム中にサスペンドされ
+  // うる。保守的に、以下のいずれかを観測したら即active化する:
+  //   - EVT_ENTRY_QUEUED(201): 着席（新セッション/新テーブルの入口）
+  //   - EVT_DEAL(303): ハンド進行中の最も強いシグナル
+  //   - EVT_SESSION_DETAILS(308): 従来からのシグナル（来れば最速）
   switch (event.data.ApiTypeId) {
+    case ApiType.EVT_ENTRY_QUEUED:
+    case ApiType.EVT_DEAL:
     case ApiType.EVT_SESSION_DETAILS:
       // セッション開始
       if (!isGameActive) {

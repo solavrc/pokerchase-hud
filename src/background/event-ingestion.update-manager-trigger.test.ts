@@ -169,11 +169,18 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     expect(markSessionInactiveSpy).not.toHaveBeenCalled()
   })
 
-  test('an unrelated application event (EVT_DEAL) does not touch session-activity tracking', async () => {
+  test('EVT_DEAL (303, hand-in-flight signal) marks the session active (release-blocker audit finding B: 308 alone is not a reliable ACTIVE trigger)', async () => {
+    // docs/api-events.md:99 documents 308 (EVT_SESSION_DETAILS) absence as a
+    // normal variant (an observation gap), not an anomaly. A new game can
+    // legitimately start 201/303-first with no 308 at all. Before this fix,
+    // session-activity tracking only listened for 308, so a session ending
+    // (309 -> inactive) followed by a 308-less restart left the tri-state
+    // stuck inactive, and the Forced Update safety predicate would judge a
+    // mid-game reload "safe".
     const dealEvent = {
       ApiTypeId: ApiType.EVT_DEAL,
       timestamp: 4000,
-      SeatUserIds: [1, 2, 3],
+      SeatUserIds: [1, 2, 3, 4],
       Game: { CurrentBlindLv: 1, NextBlindUnixSeconds: 0, Ante: 0, SmallBlind: 100, BigBlind: 200, ButtonSeat: 0, SmallBlindSeat: 1, BigBlindSeat: 2 },
       Player: { SeatIndex: 0, BetStatus: 1, HoleCards: [0, 1], Chip: 5000, BetChip: 0 },
       OtherPlayers: [
@@ -184,8 +191,78 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     }
     await onMessageHandler(dealEvent)
 
-    expect(markSessionActiveSpy).not.toHaveBeenCalled()
+    expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
     expect(markSessionInactiveSpy).not.toHaveBeenCalled()
+    // EVT_DEAL is not a pending-update recheck point (only session end/
+    // operation completion/SW startup are, per update-manager.ts) -- marking
+    // active is not the same as re-checking a *pending* update.
+    expect(recheckPendingUpdateSpy).not.toHaveBeenCalled()
+  })
+
+  test('raw sequence 309 -> 201 -> 303 without an intervening 308 does not leave the session stuck inactive (release-blocker audit exact scenario)', async () => {
+    // The audit's precise regression scenario: a session ends (309), then a
+    // brand-new game starts 201/303-first with no 308 in between (a normal
+    // variant per docs/api-events.md:99, e.g. an observation gap). Only a
+    // real EVT_SESSION_RESULTS (309) may mark the tri-state inactive again --
+    // it must not silently stay 'inactive' (which `isSafeToUpdate()` would
+    // read as SAFE and reload mid-game).
+    const sessionResultsEvent = {
+      ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+      timestamp: 8000,
+      Ranking: 1,
+      IsLeave: false,
+      IsRebuy: false,
+      TotalMatch: 10,
+      RankReward: {
+        IsSeasonal: true,
+        RankPoint: 1,
+        RankPointDiff: 1,
+        Rank: { RankId: 'gold', RankName: 'ゴールド', RankLvId: 'gold', RankLvName: 'ゴールド' },
+        SeasonalRanking: 0
+      },
+      Rewards: [],
+      EventRewards: [],
+      Charas: [],
+      Costumes: [],
+      Decos: [],
+      Items: [],
+      Money: { FreeMoney: -1, PaidMoney: -1 },
+      Emblems: []
+    }
+    const entryQueuedEvent = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 8100,
+      Code: 0,
+      BattleType: 0,
+      Id: 'stage000_003',
+      IsRetire: false
+    }
+    const dealEvent = {
+      ApiTypeId: ApiType.EVT_DEAL,
+      timestamp: 8200,
+      SeatUserIds: [1, 2, 3, 4],
+      Game: { CurrentBlindLv: 1, NextBlindUnixSeconds: 0, Ante: 0, SmallBlind: 100, BigBlind: 200, ButtonSeat: 0, SmallBlindSeat: 1, BigBlindSeat: 2 },
+      Player: { SeatIndex: 0, BetStatus: 1, HoleCards: [0, 1], Chip: 5000, BetChip: 0 },
+      OtherPlayers: [
+        { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 100 },
+        { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 200 }
+      ],
+      Progress: { Phase: 0, NextActionSeat: 0, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 400, Pot: 300, SidePot: [] }
+    }
+
+    await onMessageHandler(sessionResultsEvent)
+    await new Promise(resolve => setTimeout(resolve, 0)) // let the 309 recheck chain settle
+    recheckPendingUpdateSpy.mockClear()
+
+    await onMessageHandler(entryQueuedEvent)
+    await onMessageHandler(dealEvent)
+
+    // No 309 has occurred since the deal -- update-manager must still see
+    // the session as active (unsafe to reload), never as stuck 'inactive'.
+    expect(updateManager.isSafeToUpdate()).toBe(false)
+    // Session start (201/308) is a pending-update recheck point, but a plain
+    // EVT_DEAL is not -- confirms the tri-state itself (not just the recheck
+    // call) is what's carrying the fix.
     expect(recheckPendingUpdateSpy).not.toHaveBeenCalled()
   })
 })

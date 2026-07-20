@@ -13,10 +13,18 @@
  *   3. Service Worker起動時（`initUpdateManager()`呼び出し時）
  *
  * SAFE（安全）の定義（`isSafeToUpdate()`）:
- *   - アクティブなゲームセッションが無い（EVT_SESSION_DETAILS〜
- *     EVT_SESSION_RESULTSの間はunsafe。content_script.tsのkeepaliveゲート
- *     [`isGameActive`]と同じ境界イベントを、Service Worker側で
- *     `markSessionActive()`/`markSessionInactive()`により独立に追跡する）
+ *   - アクティブなゲームセッションが無い（EVT_ENTRY_QUEUED(201)/EVT_DEAL(303)/
+ *     EVT_SESSION_DETAILS(308)のいずれかからEVT_SESSION_RESULTS(309)までの
+ *     間はunsafe。content_script.tsのkeepaliveゲート[`isGameActive`]と同じ
+ *     境界イベントを、Service Worker側で`markSessionActive()`/
+ *     `markSessionInactive()`により独立に追跡する。308単独をACTIVEの
+ *     トリガーにしないのは、docs/api-events.md:99が明記する通り308の欠落
+ *     （観測ギャップ）が正常系のバリアントとして起こりうるため——309で
+ *     inactiveにした直後、308無しで次の試合が201/303から始まるケースを
+ *     inactiveのまま固めてしまうと、この安全性述語がゲーム中に「安全」と
+ *     誤判定してService Workerをreloadしてしまう（release-blocker監査
+ *     finding B）。ACTIVE化のトリガーを201/303/308の3つに広げても、
+ *     INACTIVEへ戻すトリガーは引き続き309のみ）
  *   - `AutoSyncService.isSyncing`がfalse（同期中でない）
  *   - `currentOperationState.type === 'idle'`（export/import/rebuild中でない）
  * 上記いずれかが「unknown」（SW再起動直後などでセッション状態を未観測）の
@@ -61,7 +69,11 @@ type SessionActivity = 'unknown' | 'active' | 'inactive'
 /** SW再起動のたびに`'unknown'`にリセットされる（保守的なデフォルト = unsafe扱い） */
 let sessionActivity: SessionActivity = 'unknown'
 
-/** `event-ingestion.ts`のEVT_SESSION_DETAILS(308)受信時に呼ぶ */
+/**
+ * `event-ingestion.ts`のEVT_ENTRY_QUEUED(201)/EVT_DEAL(303)/
+ * EVT_SESSION_DETAILS(308)いずれかの受信時に呼ぶ（308単独に頼らない理由は
+ * 本ファイル冒頭のコメント参照）
+ */
 export const markSessionActive = (): void => {
   sessionActivity = 'active'
 }
