@@ -24,7 +24,12 @@
  *     inactiveのまま固めてしまうと、この安全性述語がゲーム中に「安全」と
  *     誤判定してService Workerをreloadしてしまう（release-blocker監査
  *     finding B）。ACTIVE化のトリガーを201/303/308の3つに広げても、
- *     INACTIVEへ戻すトリガーは引き続き309のみ）
+ *     INACTIVEへ戻すトリガーは引き続き309のみ。ACTIVE化とINACTIVE化は
+ *     呼ばれるタイミングが非対称（前者は同期、後者はRaw Event Lakeの
+ *     耐久性バリアの後ろ）なため、生の到着順序を保つための`arrivalSeq`
+ *     ゲーティングと、真の重複判明時のロールバックが必要——詳細は
+ *     `markSessionActive`/`markSessionInactive`/
+ *     `revertSessionActivityIfStillApplied`のコメント参照）
  *   - `AutoSyncService.isSyncing`がfalse（同期中でない）
  *   - `currentOperationState.type === 'idle'`（export/import/rebuild中でない）
  * 上記いずれかが「unknown」（SW再起動直後などでセッション状態を未観測）の
@@ -70,22 +75,110 @@ type SessionActivity = 'unknown' | 'active' | 'inactive'
 let sessionActivity: SessionActivity = 'unknown'
 
 /**
- * `event-ingestion.ts`のEVT_ENTRY_QUEUED(201)/EVT_DEAL(303)/
- * EVT_SESSION_DETAILS(308)いずれかの受信時に呼ぶ（308単独に頼らない理由は
- * 本ファイル冒頭のコメント参照）
+ * 到着シーケンス番号ゲーティング（P1, codexレビュー 2026-07-21指摘）:
+ *
+ * ACTIVE化（event-ingestion.tsのport.onMessage受信直後、完全に同期的）と
+ * INACTIVE化（同ファイルのRaw Event Lake耐久性バリアの後ろ、`ingestionQueue`
+ * 経由で非同期に決着）は、意図的に異なるタイミングで呼ばれる（理由は
+ * event-ingestion.tsの`markSessionActiveFromRawMessage()`コメント参照）。
+ * しかし生の到着順序が[309, 201]（セッション終了の直後に次のセッションが
+ * 始まる、docs/api-events.md:99が明記する正常系のバリアント）だった場合、
+ * 309は耐久性バリアの後ろでキューに積まれ決着が遅れる一方、201は同期的に
+ * 即座にACTIVE化する。何もしなければ、後から決着する（が到着順序としては
+ * 古い）309のINACTIVE化が、より新しいはずの201のACTIVE化を上書きしてしまい、
+ * 「新しいハンドが進行中なのにinactiveのまま」という状態反転が起こる。
+ *
+ * 対策として、各呼び出し元（event-ingestion.ts）に、その生メッセージの
+ * *到着*順序を表す単調増加の`arrivalSeq`を明示的に渡させ、
+ * `lastAppliedSeq`より新しい`arrivalSeq`の遷移だけを適用する。これにより
+ * 「後から決着したが、実際は先に到着していた」遷移が「先に決着したが、
+ * 実際は後から到着していた」遷移を上書きすることを防ぐ——真の到着順序
+ * だけが最終状態を決める。
+ *
+ * `arrivalSeq`を省略した呼び出し（既存のテスト等、レガシー用途）は
+ * `internalAutoSeq`による自動採番にフォールバックする。呼び出しごとに
+ * 単調増加する値が振られるため、「直近の呼び出しが常に勝つ」という
+ * 従来通りの単純な挙動が保たれる。
  */
-export const markSessionActive = (): void => {
-  sessionActivity = 'active'
+let lastAppliedSeq = 0
+let previousSessionActivity: SessionActivity = 'unknown'
+let previousAppliedSeq = 0
+let internalAutoSeq = 0
+
+/**
+ * `next`への遷移を、`seq`（省略時は内部自動採番）が現在適用済みの
+ * `lastAppliedSeq`より新しい場合にのみ適用する。適用時は直前の状態を
+ * 1段階分だけ`previousSessionActivity`/`previousAppliedSeq`に退避する
+ * （`revertSessionActivityIfStillApplied()`によるロールバック用）。
+ * 実際に適用したかに関わらず、使用した`effectiveSeq`を返す。
+ */
+const applyActivityTransition = (next: SessionActivity, seq?: number): number => {
+  const effectiveSeq = seq ?? ++internalAutoSeq
+  if (effectiveSeq <= lastAppliedSeq) {
+    // 到着順序としてより新しい遷移が既に適用済み -- 古い遷移は無視する
+    return effectiveSeq
+  }
+  previousSessionActivity = sessionActivity
+  previousAppliedSeq = lastAppliedSeq
+  sessionActivity = next
+  lastAppliedSeq = effectiveSeq
+  return effectiveSeq
 }
 
-/** `event-ingestion.ts`のEVT_SESSION_RESULTS(309)受信時に呼ぶ */
-export const markSessionInactive = (): void => {
-  sessionActivity = 'inactive'
+/**
+ * `event-ingestion.ts`のEVT_ENTRY_QUEUED(201)/EVT_DEAL(303, Player在席時)/
+ * EVT_SESSION_DETAILS(308)いずれかの受信時に呼ぶ（308単独に頼らない理由は
+ * 本ファイル冒頭のコメント参照）。`arrivalSeq`は呼び出し元での生メッセージ
+ * 到着順序（上のコメント参照）。
+ */
+export const markSessionActive = (arrivalSeq?: number): void => {
+  applyActivityTransition('active', arrivalSeq)
+}
+
+/**
+ * `event-ingestion.ts`のEVT_SESSION_RESULTS(309)受信時に呼ぶ。`arrivalSeq`は
+ * 呼び出し元での生メッセージ到着順序（上のコメント参照）。
+ */
+export const markSessionInactive = (arrivalSeq?: number): void => {
+  applyActivityTransition('inactive', arrivalSeq)
+}
+
+/**
+ * 重複検知の取り消し（P2, codexレビュー 2026-07-21指摘）: `arrivalSeq`が
+ * まだ現在適用中の遷移（`lastAppliedSeq === arrivalSeq`）であれば、その
+ * 遷移を取り消して直前の状態へ1段階ロールバックする。
+ *
+ * 想定用途: event-ingestion.tsは201/303[Player在席]/308の受信直後に
+ * `markSessionActive()`を同期的に（raw書き込みの耐久性バリアより前に）
+ * 呼ぶ「楽観的」な設計になっている（P2#3, 2026-07-21の前回修正）。これは
+ * 再チェックとの競合を防ぐために必要な一方、この生メッセージが実は
+ * reconnect resend等による**真の重複**（同一(timestamp, ApiTypeId)・
+ * 同一ペイロードが既にRaw Event Lakeに存在する）だと後から判明した場合、
+ * その楽観的なACTIVE化は本来起こるべきではなかった遷移である。
+ * このケースを放置すると、309で正しくinactive化された後にstaleな
+ * resendが届いただけでsessionActivityがactiveに戻ってしまい、
+ * 新しいハンドが無いのに保留中アップデートが無期限にブロックされ続ける
+ * （このバグはtri-stateを`'unknown'`に一律フォールバックさせるのではなく、
+ * 遷移前の状態へ正しくロールバックすることで、「本当は309で終わっていた」
+ * という正しい状態を復元する——1段階の巻き戻しで十分なのは、この関数は
+ * 「まだ現在の状態として有効な遷移」だけを対象にするため。既に別の新しい
+ * 遷移で上書きされていれば`lastAppliedSeq !== arrivalSeq`となり、
+ * 何もしない[その新しい遷移の方が正しいため]）。
+ */
+export const revertSessionActivityIfStillApplied = (arrivalSeq: number): void => {
+  if (lastAppliedSeq === arrivalSeq) {
+    sessionActivity = previousSessionActivity
+    lastAppliedSeq = previousAppliedSeq
+  }
 }
 
 /** テスト専用: モジュールスコープの状態をリセットする */
 export const __resetUpdateManagerStateForTests = (): void => {
   sessionActivity = 'unknown'
+  lastAppliedSeq = 0
+  previousSessionActivity = 'unknown'
+  previousAppliedSeq = 0
+  internalAutoSeq = 0
 }
 
 /** 保留中アップデートを適用できない理由を日本語で説明する（Popup表示用） */

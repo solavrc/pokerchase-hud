@@ -13,7 +13,7 @@ import type { ApiEvent } from '../app'
 import { autoSyncService } from '../services/auto-sync-service'
 import { connectedPorts, startPortPing, setLastKnownStats } from './ports'
 import { recordUndecodedEvent } from './undecoded-event-tracker'
-import { markSessionActive, markSessionInactive, recheckPendingUpdate } from './update-manager'
+import { markSessionActive, markSessionInactive, recheckPendingUpdate, revertSessionActivityIfStillApplied } from './update-manager'
 
 /**
  * `chrome.runtime.onConnect`のハンドラーを登録する。
@@ -56,6 +56,21 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   // （最小要件を満たしつつ上回る、意図的な選択）。
   let ingestionQueue: Promise<void> = Promise.resolve()
 
+  // 到着シーケンス番号（P1, codexレビュー 2026-07-21指摘）: ACTIVE化は
+  // port.onMessage受信直後に完全に同期的に、INACTIVE化はingestionQueue
+  // 経由でRaw Event Lake耐久性バリアの後ろに非同期に決着する。両者は
+  // タイミングが非対称なため、生の到着順序が[309, 201]（セッション終了の
+  // 直後に次のセッションが201/303から始まる、正常系のバリアント）だと、
+  // 遅れて決着する309のINACTIVE化が、先に決着していた201のACTIVE化を
+  // 後から上書きしてしまい「新しいハンドが進行中なのにinactiveのまま」
+  // という状態反転が起こりうる。この`arrivalSequence`を各メッセージの
+  // 受信直後（同期的に、キューへ積むより前）にインクリメントして
+  // `markSessionActive`/`markSessionInactive`へ明示的に渡すことで、
+  // update-manager.ts側が「真の到着順序」を判定でき、決着が遅れた古い
+  // 遷移が新しい遷移を上書きすることを防げる（詳細は
+  // update-manager.tsの該当コメント参照）。
+  let arrivalSequence = 0
+
   chrome.runtime.onConnect.addListener(port => {
     if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
       connectedPorts.add(port)
@@ -66,16 +81,20 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           return
         }
 
+        // このメッセージの到着順序を同期的に記録する（他のどの非同期処理
+        // よりも前に採番することが重要 -- 上のコメント参照）。
+        const arrivalSeq = ++arrivalSequence
+
         // ACTIVE化は`service.ready`・raw書き込みの耐久性バリアより前に、
         // 完全に同期的に行う（P2, codexレビュー指摘 2026-07-21）。
         // 詳細は`markSessionActiveFromRawMessage()`のコメント参照。
-        markSessionActiveFromRawMessage(message)
+        markSessionActiveFromRawMessage(message, arrivalSeq)
 
         // このイベントの処理を、直前のイベントの処理（add()の決着含む）の
         // 後ろに連結する。`processEvent`は内部で全エラーを捕捉して素通し
         // させない設計だが、想定外のバグでqueueが壊れて以降のイベントが
         // 永久に詰まることのないよう、キューの継続用チェーンは別途catchする。
-        const task = ingestionQueue.then(() => processEvent(service, message))
+        const task = ingestionQueue.then(() => processEvent(service, message, arrivalSeq))
         ingestionQueue = task.catch(err => {
           console.error('[background] Unhandled ingestion queue error (fail-safe, queue continues):', err)
         })
@@ -127,17 +146,25 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
  * 無期限にブロックされてしまう。raw-firstパターンに従い、Zodパース前の
  * 生フィールドの有無だけで判定する（content_script.tsのkeepalive起動条件も
  * 同じ判定をミラーする）。
+ *
+ * `arrivalSeq`はこのメッセージの到着順序（`registerEventIngestion()`の
+ * `arrivalSequence`カウンタ参照）。真の到着順序を保つため、以降の
+ * `processEvent`内での（決着が遅れうる）INACTIVE化との整合判定に使う
+ * （update-manager.tsの`markSessionActive`/`markSessionInactive`コメント
+ * 参照）。また、この呼び出しが実は真の重複（reconnect resend等）だったと
+ * 後で判明した場合の`revertSessionActivityIfStillApplied(arrivalSeq)`
+ * （P2, codexレビュー指摘, processEvent内）にも同じ値を使う。
  */
-const markSessionActiveFromRawMessage = (message: ApiMessage | { type: string }): void => {
+const markSessionActiveFromRawMessage = (message: ApiMessage | { type: string }, arrivalSeq: number): void => {
   const rawApiTypeId = (message as { ApiTypeId?: unknown }).ApiTypeId
   if (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED || rawApiTypeId === ApiType.EVT_SESSION_DETAILS) {
-    markSessionActive()
+    markSessionActive(arrivalSeq)
     return
   }
   if (rawApiTypeId === ApiType.EVT_DEAL) {
     const rawPlayer = (message as { Player?: unknown }).Player
     if (rawPlayer != null) {
-      markSessionActive()
+      markSessionActive(arrivalSeq)
     }
   }
 }
@@ -165,11 +192,18 @@ const isSamePayload = (a: unknown, b: unknown): boolean => {
  *
  * ACTIVE化のセッション状態追跡（`markSessionActiveFromRawMessage()`）は
  * この関数の外（`port.onMessage`受信直後、耐久性バリアより前）で完全に
- * 同期的に既に処理済み。ここで扱うのはINACTIVE化（309）のみ。
+ * 同期的に既に処理済み。ここで扱うのはINACTIVE化（309）と、真の重複判明時の
+ * ACTIVE化ロールバックのみ。
+ *
+ * `arrivalSeq`は呼び出し元（`registerEventIngestion()`）が同期的に採番した
+ * このメッセージの到着順序。`markSessionInactive`/
+ * `revertSessionActivityIfStillApplied`へそのまま渡し、決着タイミングが
+ * 前後しても真の到着順序で状態が決まるようにする。
  */
 const processEvent = async (
   service: PokerChaseService,
-  message: ApiMessage | { type: string }
+  message: ApiMessage | { type: string },
+  arrivalSeq: number
 ): Promise<void> => {
   // Ensure service is ready before processing messages
   try {
@@ -224,6 +258,19 @@ const processEvent = async (
           // すると二重処理（統計の二重計上等）になるため、dedup semantics
           // として以降の全処理をスキップする。
           console.warn('[background] Duplicate event (identical payload already in Raw Event Lake), skipping re-processing:', message)
+
+          // P2 (codexレビュー指摘 2026-07-21): この生メッセージが201/303
+          // [Player在席]/308形状だった場合、`markSessionActiveFromRawMessage()`
+          // が既にこのイベントの到着時点で楽観的にACTIVE化を試みている
+          // （耐久性バリアより前の同期処理のため、この時点ではまだ重複と
+          // 判明していなかった）。今ここで真の重複と判明したので、その
+          // 楽観的なACTIVE化がまだ現在の状態として有効であれば
+          // （＝それ以降により新しい遷移が適用されていなければ）取り消し、
+          // 直前の状態（例: 309で既にinactiveだった場合はinactive）へ
+          // ロールバックする。stale reconnect resend等が
+          // 「新しいハンドが無いのにsessionActivityをactiveへ戻し、保留中
+          // アップデートを無期限にブロックする」事態を防ぐ。
+          revertSessionActivityIfStillApplied(arrivalSeq)
           return
         }
 
@@ -289,9 +336,13 @@ const processEvent = async (
   // ペイロード破壊的変更でparseApiEvent()がnullを返すようになっても、
   // セッション状態が永久にinactiveへ戻らず、まさにその変更を修正する
   // 更新の安全性判定がずっとunsafeのまま詰まる、という事態を避けるため
-  // （codexレビュー指摘）
+  // （codexレビュー指摘）。`arrivalSeq`を渡すのはP1（codexレビュー指摘
+  // 2026-07-21）対応: この309の決着が耐久性バリアの後ろで遅れている間に
+  // より新しいメッセージ（201/303等）が同期的にACTIVE化を先に適用して
+  // いた場合、この（実際には古い）INACTIVE化がそれを上書きしないよう
+  // update-manager.ts側で到着順序を判定させるため。
   if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
-    markSessionInactive()
+    markSessionInactive(arrivalSeq)
     // #179 round3指摘: セッション終了(EVT_SESSION_RESULTS)によるHUDクリアは
     // App.tsx側のReact stateだけで完結しており、background(ports.ts)の
     // `lastKnownStats`はセッションをまたいで残り続ける。この状態で
