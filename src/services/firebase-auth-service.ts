@@ -48,9 +48,40 @@ export class FirebaseAuthService {
   private currentState: StoredAuthState | null = null
   private authStateListeners: ((user: AuthUser | null) => void)[] = []
   private restorePromise: Promise<void>
+  /**
+   * Monotonic counter, incremented on every auth-state TRANSITION (sign-in,
+   * sign-out, or the initial restore-from-storage on startup) -- never on a
+   * same-account token refresh (`getIdToken(forceRefresh)`'s `currentState`
+   * reassignment preserves the same `uid`, so it does NOT bump this).
+   *
+   * WHY (codex post-merge review on #192, r3615389112, P1, "Detect ABA
+   * account switches before committing bookkeeping"): callers used to
+   * compare a snapshotted uid string against `getCurrentUser()?.uid` to
+   * detect a mid-pass account switch. That is blind to an A -> B -> A
+   * round trip: by the time the check runs, the live uid is back to "A",
+   * string-equal to the snapshot, even though a DIFFERENT account (B) was
+   * live in between and may have driven whatever cloud read/write the
+   * check was meant to guard. This counter can't be fooled by a value
+   * cycling back -- an A -> B -> A round trip still advances it by (at
+   * least) 2, so a caller comparing the snapshotted GENERATION (not the
+   * uid) correctly detects that *something* changed in between, regardless
+   * of whether the uid happens to match again afterward.
+   */
+  private authGeneration = 0
 
   constructor() {
     this.restorePromise = this.restoreAuthState()
+  }
+
+  /**
+   * Current auth-state generation. See `authGeneration`'s doc comment.
+   * Callers that need to detect a mid-operation account switch (including
+   * an A -> B -> A round trip) should snapshot this alongside
+   * `getCurrentUser()?.uid` at the start of the operation and compare
+   * generations (not uid strings) before any consequential commit.
+   */
+  getAuthGeneration(): number {
+    return this.authGeneration
   }
 
   async ready(): Promise<void> {
@@ -94,8 +125,20 @@ export class FirebaseAuthService {
         refreshToken: result.refreshToken,
         expiresAt: Date.now() + Number(result.expiresIn) * 1000
       }
-      await this.persistAuthState()
+      this.authGeneration++ // sign-in transition -- see authGeneration's doc comment
+      // Notify listeners SYNCHRONOUSLY, in the same step as the currentState/
+      // authGeneration mutation above -- BEFORE the persistAuthState() await
+      // (codex review r3615952256, P2, "Clear stale sync state when
+      // exposing the new user"). Moving this earlier closes the window
+      // where getCurrentUser()/getAuthGeneration() already report the NEW
+      // account but registered listeners (e.g. AutoSyncService clearing its
+      // own stale in-memory state, see its constructor) hadn't been told
+      // yet -- during a direct A->B sign-in, anything reading auth state in
+      // that gap used to see B live while dependent state still reflected
+      // A. persistAuthState() below is a fire-and-forget durability step
+      // from listeners' perspective; it doesn't need to precede them.
       this.notifyAuthStateListeners(this.getCurrentUser())
+      await this.persistAuthState()
       console.log('[FirebaseAuth] Firebase sign in successful:', this.currentState.email)
       return this.getCurrentUser()!
     } catch (error) {
@@ -110,6 +153,7 @@ export class FirebaseAuthService {
   async signOut(): Promise<void> {
     const previousToken = await this.getChromeAuthToken(false).catch(() => null)
     this.currentState = null
+    this.authGeneration++ // sign-out transition -- see authGeneration's doc comment
     await chrome.storage.local.remove(FirebaseAuthService.STORAGE_KEY)
     this.notifyAuthStateListeners(null)
 
@@ -151,6 +195,23 @@ export class FirebaseAuthService {
       return this.currentState.idToken
     }
 
+    // Snapshot which identity this refresh is FOR, before the network await
+    // (codex review r3616116753, P1, "Count stale refreshes as auth
+    // transitions"): if the user signs into a DIFFERENT account while this
+    // refresh is in flight, applying the response back into the shared
+    // `currentState` unconditionally would silently corrupt it -- spreading
+    // the NEW account's other fields (`...this.currentState`, which by then
+    // already reflects the NEW account) together with the OLD account's
+    // refreshed uid/token/refreshToken, resurrecting the OLD uid into
+    // `currentState.uid` (and therefore `getCurrentUser()`). Nothing in
+    // this method bumps `authGeneration`, so every commit-point
+    // `assertGenerationUnchanged()` check elsewhere would see "unchanged"
+    // even though the live identity had silently flipped back underneath
+    // them -- defeating the entire generation-gate mechanism this PR
+    // builds on.
+    const refreshingUid = this.currentState.uid
+    const refreshToken = this.currentState.refreshToken
+
     const response = await fetch(
       `https://securetoken.googleapis.com/v1/token?key=${firebaseConfig.apiKey}`,
       {
@@ -158,7 +219,7 @@ export class FirebaseAuthService {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
           grant_type: 'refresh_token',
-          refresh_token: this.currentState.refreshToken
+          refresh_token: refreshToken
         }).toString()
       }
     )
@@ -169,6 +230,19 @@ export class FirebaseAuthService {
     }
 
     const result = await response.json() as FirebaseRefreshResponse
+
+    // Discard a stale refresh response: the account live NOW is not the one
+    // this refresh was requested for. Still return the freshly-fetched
+    // token to THIS caller -- whatever in-flight operation asked for it
+    // (e.g. a Firestore call already under way for the OLD account) can
+    // still complete using a valid, unexpired token for the account it
+    // actually started with -- but do NOT let it become the new shared
+    // `currentState`, and do NOT persist it.
+    if (this.currentState?.uid !== refreshingUid) {
+      console.warn('[FirebaseAuth] Discarding a token refresh for a no-longer-current account (the signed-in account changed while the refresh was in flight)')
+      return result.id_token
+    }
+
     this.currentState = {
       ...this.currentState,
       uid: result.user_id,
@@ -235,6 +309,12 @@ export class FirebaseAuthService {
   private async restoreAuthState(): Promise<void> {
     const stored = await chrome.storage.local.get(FirebaseAuthService.STORAGE_KEY) as Record<string, StoredAuthState | undefined>
     this.currentState = stored[FirebaseAuthService.STORAGE_KEY] ?? null
+    // Initial-restore transition -- see authGeneration's doc comment. Every
+    // Service Worker (re)start is a fresh generation baseline, even when it
+    // restores the SAME account: a sync pass whose in-memory snapshot was
+    // taken before an SW restart is not meaningfully "the same pass"
+    // afterward regardless of whether the restored uid matches.
+    this.authGeneration++
     this.notifyAuthStateListeners(this.getCurrentUser())
   }
 

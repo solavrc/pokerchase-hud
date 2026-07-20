@@ -5,6 +5,7 @@ import type { ApiEvent } from '../types'
 import { DATABASE_CONSTANTS } from '../constants/database'
 import { AutoSyncService } from './auto-sync-service'
 import { firestoreBackupService } from './firestore-backup-service'
+import { firebaseAuthService } from './firebase-auth-service'
 import * as minVersionGate from './min-version-gate'
 
 describe('AutoSyncService cloud downloads', () => {
@@ -750,10 +751,19 @@ describe('AutoSyncService cloud downloads', () => {
 
     // By the time both calls have been issued (synchronously, before the
     // gate promise resolves), the latch must already be set -- proving the
-    // first call set it before yielding at the `await` for the gate.
+    // first call set it before yielding at its first await.
     expect((service as any)._isSyncing).toBe(true)
 
-    resolveGate?.(false) // gate: not blocked
+    // Flush microtasks until the first call's execution actually reaches
+    // the gate check and `resolveGate` is captured -- performSync() now has
+    // an earlier `await firebaseAuthService.ready()` ahead of the gate
+    // check (r3615553034), so reaching it can take more than one microtask
+    // hop; polling (rather than assuming a fixed hop count) keeps this
+    // test robust to that either way.
+    while (!resolveGate) {
+      await Promise.resolve()
+    }
+    resolveGate(false) // gate: not blocked
     await firstSync
     await secondSync
 
@@ -781,5 +791,645 @@ describe('AutoSyncService cloud downloads', () => {
     jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
     await service.performSync('upload')
     expect(service.getSyncState().status).toBe('success')
+  })
+
+  test('migrates the legacy unscoped autoSyncLastTime to whichever account consumes it first, deleting it so a later DIFFERENT account is never granted it (invariant (1))', async () => {
+    // Other tests in this file may leave these scoped keys set (a plain
+    // module-level object in test-setup.ts, not reset per test).
+    await chrome.storage.local.remove(['autoSyncLastTime', 'autoSyncLastTime:user-a', 'autoSyncLastTime:user-b'])
+
+    const userA = { uid: 'user-a', email: 'a@example.com' } as any
+    const userB = { uid: 'user-b', email: 'b@example.com' } as any
+    const getCurrentUserSpy = jest.spyOn(firebaseAuthService, 'getCurrentUser')
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+
+    // Simulates an upgraded profile that still has the pre-scoping legacy
+    // value with no account attribution.
+    const legacyIso = new Date('2026-01-01T00:00:00.000Z').toISOString()
+    await chrome.storage.local.set({ autoSyncLastTime: legacyIso })
+
+    const service = new AutoSyncService(db)
+    // Simulate a successful sync (sets lastSyncTime) -- a plain no-op mock
+    // would leave lastSyncTime unset, which now triggers initialize()'s
+    // retry-on-incomplete-first-sync logic (invariant (2b)) and inflates
+    // the call count this test asserts on; that retry behavior has its own
+    // dedicated test below.
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockImplementation(async () => {
+      (service as any).syncState.lastSyncTime = new Date()
+    })
+
+    // --- Account A is the first to sign in after upgrade -------------------
+    getCurrentUserSpy.mockReturnValue(userA)
+    await service.initialize()
+
+    // The legacy value was migrated to A's OWN scoped key and consumed (not
+    // just copied) -- A is treated as already synced (no phantom first sync).
+    expect(performSyncSpy).not.toHaveBeenCalled()
+    const migrated = await chrome.storage.local.get(['autoSyncLastTime:user-a', 'autoSyncLastTime'])
+    expect(migrated['autoSyncLastTime:user-a']).toBe(legacyIso)
+    expect(migrated['autoSyncLastTime']).toBeUndefined()
+
+    // --- Account B signs in afterward on the same device -------------------
+    getCurrentUserSpy.mockReturnValue(userB)
+    await service.initialize()
+
+    // B must NOT inherit A's migrated-and-consumed legacy value -- the
+    // legacy key is gone, so B correctly looks like it has never synced and
+    // gets its own first-time sync.
+    expect(performSyncSpy).toHaveBeenCalledTimes(1)
+    expect(await chrome.storage.local.get('autoSyncLastTime:user-b')).toEqual({ 'autoSyncLastTime:user-b': undefined })
+  })
+
+  test('aborts a sync pass with ZERO bookkeeping writes for the new account if the signed-in account changes mid-pass, before the pass reaches its final commit (invariant (2))', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime:user-a', 'autoSyncLastTime:user-b'])
+
+    const userA = { uid: 'user-a', email: 'a@example.com' } as any
+    const userB = { uid: 'user-b', email: 'b@example.com' } as any
+    const getCurrentUserSpy = jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue(userA)
+    // Real account switches always bump firebase-auth-service's own auth
+    // generation counter (see its doc comment) -- mocking getCurrentUser()
+    // alone does NOT, since the real signInWithGoogle()/signOut() methods
+    // that own that counter are never called here. Mock getAuthGeneration()
+    // too, with its own local counter incremented in lockstep with every
+    // simulated account switch, so assertGenerationUnchanged() sees exactly
+    // what it would in production.
+    let generation = 1
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockImplementation(() => generation)
+
+    // An unparseable row (forces a mid-pass EAGER floor persist under A's
+    // scope, BEFORE the account switch below -- this write is legitimate,
+    // made while A was still live, and is expected to survive) followed by
+    // a later valid row.
+    const orphan = { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 200 }
+    const laterValidRow = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'later-valid',
+      IsRetire: false,
+      timestamp: 300
+    } as ApiEvent
+    await db.apiEvents.bulkAdd([orphan, laterValidRow] as any)
+
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+    // Simulates the account switching WHILE the upload network request for
+    // this chunk is in flight -- by the time it resolves, a different
+    // account is signed in. Per the owner-decided scope, this upload itself
+    // is allowed to proceed/complete under whichever account ends up live
+    // (accepted risk) -- what must NOT happen is committing bookkeeping
+    // under the wrong account afterward.
+    jest.spyOn(firestoreBackupService, 'syncToCloudBatch').mockImplementation(async (chunk: ApiEvent[]) => {
+      generation++
+      getCurrentUserSpy.mockReturnValue(userB)
+      return { totalEvents: chunk.length, syncedEvents: chunk.length, lastSyncTime: new Date() }
+    })
+
+    const service = new AutoSyncService(db)
+    await service.performSync('upload')
+
+    // The pass aborted with a clear, attributable error -- not a silent
+    // partial success reported as success.
+    expect(service.getSyncState().status).toBe('error')
+    expect(service.getSyncState().error).toContain('sync-floor commit')
+
+    // The EAGER persist from BEFORE the switch is legitimately under A's
+    // scope and stays -- this is not what the fix prevents.
+    expect((await db.meta.get('syncUnparseableFloor:user-a'))?.value).toBe(200)
+
+    // ZERO bookkeeping writes happened under B's scope, and A's final
+    // lastSyncTime commit never ran either (the pass never reached it).
+    expect(await db.meta.get('syncUnparseableFloor:user-b')).toBeUndefined()
+    expect(await chrome.storage.local.get('autoSyncLastTime:user-a')).toEqual({ 'autoSyncLastTime:user-a': undefined })
+    expect(await chrome.storage.local.get('autoSyncLastTime:user-b')).toEqual({ 'autoSyncLastTime:user-b': undefined })
+  })
+
+  test('sign-in-mistake round trip: switching to a different account and back leaves the original account\'s own bookkeeping intact, and its next sync uploads exactly what its own cloud still lacks (owner-decided scope)', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime:user-a', 'autoSyncLastTime:user-b'])
+
+    const userA = { uid: 'user-a', email: 'a@example.com' } as any
+    const userB = { uid: 'user-b', email: 'b@example.com' } as any
+    const getCurrentUserSpy = jest.spyOn(firebaseAuthService, 'getCurrentUser')
+    const cloudMaxSpy = jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp')
+    const syncBatchSpy = jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockImplementation(async (chunk: ApiEvent[]) => ({ totalEvents: chunk.length, syncedEvents: chunk.length, lastSyncTime: new Date() }))
+
+    const rowA1 = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO,
+      Id: 'a1', IsRetire: false, timestamp: 100
+    } as ApiEvent
+    await db.apiEvents.add(rowA1)
+
+    const service = new AutoSyncService(db)
+
+    // --- Phase 1: signed in as A, first-ever sync for A --------------------
+    getCurrentUserSpy.mockReturnValue(userA)
+    cloudMaxSpy.mockResolvedValue(null) // persistent for this phase -- covers both the syncToCloud() call and updateTimestamps()'s own call
+    await service.performSync('upload')
+
+    expect(syncBatchSpy).toHaveBeenCalledTimes(1)
+    expect(syncBatchSpy.mock.calls[0]![0]).toEqual([rowA1])
+    const aLastSyncAfterPhase1 = (await chrome.storage.local.get('autoSyncLastTime:user-a'))['autoSyncLastTime:user-a']
+    expect(aLastSyncAfterPhase1).toBeDefined()
+
+    // --- Sign-in mistake: switch to B. Local capture (the shared, --------
+    // unpartitioned apiEvents Lake) keeps recording regardless of which
+    // account is signed in -- a poker session B plays here adds rowB1.
+    const rowB1 = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO,
+      Id: 'b1', IsRetire: false, timestamp: 200
+    } as ApiEvent
+    await db.apiEvents.add(rowB1)
+
+    getCurrentUserSpy.mockReturnValue(userB)
+    cloudMaxSpy.mockResolvedValue(null) // B's own cloud is empty
+    await service.performSync('upload')
+
+    // Owner-decided scope: this upload IS allowed to send the WHOLE shared
+    // local backlog (including rowA1, which "belongs" to A's session) to
+    // B's Firestore -- accepted data duplication, not blocked.
+    expect(syncBatchSpy).toHaveBeenCalledTimes(2)
+    expect(syncBatchSpy.mock.calls[1]![0]).toEqual([rowA1, rowB1])
+    expect((await chrome.storage.local.get('autoSyncLastTime:user-b'))['autoSyncLastTime:user-b']).toBeDefined()
+
+    // THE CORE INVARIANT: A's own bookkeeping is completely untouched by
+    // B's entire session (both its cloud read and its upload/commit).
+    expect((await chrome.storage.local.get('autoSyncLastTime:user-a'))['autoSyncLastTime:user-a']).toBe(aLastSyncAfterPhase1)
+
+    // --- Sign back into A (the mistake is noticed and corrected) ---------
+    const rowA2 = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO,
+      Id: 'a2', IsRetire: false, timestamp: 300
+    } as ApiEvent
+    await db.apiEvents.add(rowA2)
+
+    getCurrentUserSpy.mockReturnValue(userA)
+    // A's OWN cloud watermark is still only 100 -- B's upload went to B's
+    // Firestore, not A's -- so from A's perspective its cloud still lacks
+    // rowB1 (200) and rowA2 (300). This is the concrete "no permanent
+    // upload gap" assertion: A's bookkeeping survived B's session with
+    // enough fidelity that A's own watermark (100) is still exactly right.
+    cloudMaxSpy.mockResolvedValue(100)
+    await service.performSync('upload')
+
+    // A's next sync uploads EXACTLY what A's own cloud lacks -- not rowA1
+    // (already covered by A's own watermark), but rowB1 and rowA2.
+    expect(syncBatchSpy).toHaveBeenCalledTimes(3)
+    expect(syncBatchSpy.mock.calls[2]![0]).toEqual([rowB1, rowA2])
+    expect(service.getSyncState().status).toBe('success')
+    // A's bookkeeping is intact and correctly advances -- no permanent gap.
+    expect((await chrome.storage.local.get('autoSyncLastTime:user-a'))['autoSyncLastTime:user-a']).not.toBe(aLastSyncAfterPhase1)
+  })
+
+  test('detects an A -> B -> A round trip and aborts with zero bookkeeping writes, even though the live uid matches the snapshot again by the final commit (P1, ABA, codex review r3615389112)', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime:user-a', 'autoSyncLastTime:user-b'])
+
+    const userA = { uid: 'user-a', email: 'a@example.com' } as any
+    const userB = { uid: 'user-b', email: 'b@example.com' } as any
+    const getCurrentUserSpy = jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue(userA)
+    // A uid-string-only check would be fooled here: by the time
+    // performSync()'s final commit assert runs, getCurrentUser() is back to
+    // returning userA, string-equal to the pass-start snapshot. The auth
+    // generation counter is not fooled -- two real transitions (A->B, B->A)
+    // happened in between, advancing it by 2.
+    let generation = 1
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockImplementation(() => generation)
+
+    const validRow = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO,
+      Id: 'aba-row', IsRetire: false, timestamp: 100
+    } as ApiEvent
+    await db.apiEvents.add(validRow)
+
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+    // direction: 'download' below, so syncToCloud() (and its own internal
+    // sync-floor commit-point assert, already covered by a separate test)
+    // never runs -- this isolates performSync()'s OWN final
+    // `autoSyncLastTime` commit-point assert as the thing that must catch
+    // the ABA round trip.
+    jest.spyOn(firestoreBackupService, 'syncFromCloud').mockImplementation(async () => {
+      generation++
+      getCurrentUserSpy.mockReturnValue(userB)
+      generation++
+      getCurrentUserSpy.mockReturnValue(userA)
+      return 0
+    })
+
+    const service = new AutoSyncService(db)
+    await service.performSync('download')
+
+    expect(service.getSyncState().status).toBe('error')
+    expect(service.getSyncState().error).toContain('final lastSyncTime commit')
+    expect(await chrome.storage.local.get('autoSyncLastTime:user-a')).toEqual({ 'autoSyncLastTime:user-a': undefined })
+    expect(await chrome.storage.local.get('autoSyncLastTime:user-b')).toEqual({ 'autoSyncLastTime:user-b': undefined })
+  })
+
+  test('re-runs initialize() fresh (does not publish a stale result) if the SAME account signs out and back in mid-computation (invariant (2b), codex review r3615389139/r3615389133)', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime:user-a'])
+
+    const userA = { uid: 'user-a', email: 'a@example.com' } as any
+    jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue(userA)
+    let generation = 1
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockImplementation(() => generation)
+
+    // A sign-out+sign-in of the SAME account (uid unchanged) still advances
+    // the generation by 2 -- simulated as a side effect of the FIRST
+    // updateTimestamps() call's own getCloudMaxTimestamp() read, landing in
+    // the gap between initialize()'s identity snapshot and its
+    // result-application check.
+    let cloudMaxCalls = 0
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockImplementation(async () => {
+      cloudMaxCalls++
+      if (cloudMaxCalls === 1) generation += 2
+      return null
+    })
+
+    const service = new AutoSyncService(db)
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockImplementation(async () => {
+      (service as any).syncState.lastSyncTime = new Date()
+    })
+
+    await service.initialize()
+
+    // The FIRST attempt's computation (generation 1) was discarded once the
+    // mismatch was detected; initialize() re-ran fresh under generation 3
+    // and correctly triggered exactly one first sync from THAT attempt --
+    // not zero (silently abandoned) and not two (the stale attempt also
+    // publishing/triggering before being caught).
+    expect(performSyncSpy).toHaveBeenCalledTimes(1)
+    expect(cloudMaxCalls).toBe(2) // one per attempt (first discarded, second applied)
+  })
+
+  test('discards a stale initialize() result and never publishes it into syncState when the account changes mid-computation to a genuinely DIFFERENT account (invariant (2b))', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime:user-a', 'autoSyncLastTime:user-b'])
+
+    const userA = { uid: 'user-a', email: 'a@example.com' } as any
+    const userB = { uid: 'user-b', email: 'b@example.com' } as any
+    // A already has its OWN real lastSyncTime -- if this were incorrectly
+    // published for whoever ends up live, initialize() would wrongly
+    // conclude "already synced" and skip triggering a first sync.
+    const staleIso = new Date('2020-01-01T00:00:00.000Z').toISOString()
+    await chrome.storage.local.set({ 'autoSyncLastTime:user-a': staleIso })
+
+    const getCurrentUserSpy = jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue(userA)
+    let generation = 1
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockImplementation(() => generation)
+    let cloudMaxCalls = 0
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockImplementation(async () => {
+      cloudMaxCalls++
+      if (cloudMaxCalls === 1) {
+        // Account switches to B (a genuinely different, never-synced
+        // account) while initialize() -- still computing for A -- awaits
+        // this FIRST call inside updateTimestamps(). Only on the first call
+        // -- the retry's own updateTimestamps() call must see a stable
+        // account so the re-run actually converges.
+        generation++
+        getCurrentUserSpy.mockReturnValue(userB)
+      }
+      return null
+    })
+
+    const service = new AutoSyncService(db)
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockImplementation(async () => {
+      (service as any).syncState.lastSyncTime = new Date()
+    })
+
+    await service.initialize()
+
+    // A's stale lastSyncTime (2020) was never published -- the re-run
+    // correctly re-evaluates for B (who has no scoped key at all) and
+    // triggers B's own first sync, rather than silently applying A's
+    // "already synced" conclusion to whoever happens to be live afterward.
+    expect(performSyncSpy).toHaveBeenCalledTimes(1)
+  })
+
+  test('blocks the legacy migration/clear write if the account changes mid-computation, leaving the legacy key untouched for a later attempt to retry (invariant (2), codex review r3615389121)', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime', 'autoSyncLastTime:user-a'])
+
+    const userA = { uid: 'user-a', email: 'a@example.com' } as any
+    const legacyIso = new Date('2026-01-01T00:00:00.000Z').toISOString()
+    await chrome.storage.local.set({ autoSyncLastTime: legacyIso })
+
+    jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue(userA)
+    let generation = 1
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockImplementation(() => generation)
+
+    // Bump the generation as a side effect of the ONE await between
+    // initialize()'s identity snapshot and the legacy-migration commit
+    // point: the chrome.storage.local.get() read of the scoped+legacy keys.
+    // Capture the CURRENT implementation function (not just the mutable
+    // `chrome.storage.local.get` property reference) before overriding it --
+    // `chrome.storage.local.get` is already a jest.fn() from test-setup.ts,
+    // so re-assigning its implementation via mockImplementation() below
+    // would otherwise make a naively-captured "original" reference recurse
+    // into the NEW implementation too (same underlying mock object).
+    const originalStorageGetImpl = (chrome.storage.local.get as jest.Mock).getMockImplementation()!
+    jest.spyOn(chrome.storage.local, 'get').mockImplementation((keys: any) => {
+      const result = originalStorageGetImpl(keys)
+      generation++
+      return result
+    })
+
+    const service = new AutoSyncService(db)
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue(undefined)
+
+    await service.initialize()
+
+    // The migration/clear write never happened -- the legacy key survives
+    // untouched (available for a later, non-stale attempt), and no scoped
+    // key was created from a computation already known to be stale. No
+    // first sync was triggered off it either.
+    expect(await chrome.storage.local.get('autoSyncLastTime')).toEqual({ autoSyncLastTime: legacyIso })
+    expect(await chrome.storage.local.get('autoSyncLastTime:user-a')).toEqual({ 'autoSyncLastTime:user-a': undefined })
+    expect(performSyncSpy).not.toHaveBeenCalled()
+  })
+
+  test('awaits auth restore before snapshotting identity, so a pass starting during Service Worker startup does not snapshot a pre-restore identity (P2, codex review r3615553034)', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime:user-a'])
+
+    const userA = { uid: 'user-a', email: 'a@example.com' } as any
+    // Simulates firebaseAuthService's own constructor-kicked-off
+    // restoreAuthState() not having resolved yet: getCurrentUser()/
+    // getAuthGeneration() report "nobody signed in yet, generation 0" until
+    // `restored` flips, mirroring how the real service looks before vs.
+    // after its restorePromise settles.
+    let restored = false
+    let resolveReady: (() => void) | undefined
+    jest.spyOn(firebaseAuthService, 'ready').mockImplementation(() => new Promise<void>(resolve => { resolveReady = resolve }))
+    jest.spyOn(firebaseAuthService, 'getCurrentUser').mockImplementation(() => restored ? userA : null)
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockImplementation(() => restored ? 1 : 0)
+
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+    jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockResolvedValue({ totalEvents: 0, syncedEvents: 0, lastSyncTime: new Date() })
+
+    const service = new AutoSyncService(db)
+    const syncPromise = service.performSync('upload')
+
+    // Restore "completes" while performSync() is awaiting
+    // firebaseAuthService.ready() -- exactly the startup race the finding
+    // describes. If the identity snapshot were taken BEFORE this await
+    // (the bug), it would have already captured `{ uid: undefined,
+    // generation: 0 }` synchronously, before this line ever runs.
+    restored = true
+    resolveReady?.()
+
+    await syncPromise
+
+    // Must have succeeded under the RESTORED identity's own scoped key --
+    // not the bare/unscoped key a pre-restore `{ uid: undefined }` snapshot
+    // would have written to, and not aborted by a later commit-point check
+    // wrongly seeing "generation changed" relative to a stale pre-restore
+    // snapshot.
+    expect(service.getSyncState().status).toBe('success')
+    expect((await chrome.storage.local.get('autoSyncLastTime:user-a'))['autoSyncLastTime:user-a']).toBeDefined()
+    expect(await chrome.storage.local.get('autoSyncLastTime')).toEqual({ autoSyncLastTime: undefined })
+  })
+
+  test('re-checks the generation before publishing sync success into the shared syncState, closing the gap during updateTimestamps() (P2, codex review r3615553045)', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime:user-a', 'autoSyncLastTime:user-b'])
+
+    const userA = { uid: 'user-a', email: 'a@example.com' } as any
+    const userB = { uid: 'user-b', email: 'b@example.com' } as any
+    const getCurrentUserSpy = jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue(userA)
+    let generation = 1
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockImplementation(() => generation)
+
+    const validRow = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO,
+      Id: 'x', IsRetire: false, timestamp: 100
+    } as ApiEvent
+    await db.apiEvents.add(validRow)
+
+    jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockResolvedValue({ totalEvents: 1, syncedEvents: 1, lastSyncTime: new Date() })
+
+    let cloudMaxCalls = 0
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockImplementation(async () => {
+      cloudMaxCalls++
+      // Call #1 is syncToCloud()'s own watermark read (before any
+      // bookkeeping write). Call #2 is updateTimestamps()'s own read,
+      // which runs AFTER the scoped autoSyncLastTime write below has
+      // already landed -- switch accounts exactly there, simulating the
+      // account changing during that specific gap.
+      if (cloudMaxCalls === 2) {
+        generation++
+        getCurrentUserSpy.mockReturnValue(userB)
+      }
+      return null
+    })
+
+    const service = new AutoSyncService(db)
+    await service.performSync('upload')
+
+    expect(service.getSyncState().status).toBe('error')
+    expect(service.getSyncState().error).toContain('before publishing sync success')
+
+    // The scoped bookkeeping WRITE already landed under A -- legitimate,
+    // made while A was still live (before the switch inside updateTimestamps()).
+    expect((await chrome.storage.local.get('autoSyncLastTime:user-a'))['autoSyncLastTime:user-a']).toBeDefined()
+
+    // But the SHARED in-memory syncState.lastSyncTime was never published --
+    // this is exactly what a newly-signed-in B's own
+    // syncIfBacklogExceedsThreshold() would otherwise read and use to
+    // (wrongly) shrink its own upload backlog.
+    expect(service.getSyncState().lastSyncTime).toBeUndefined()
+  })
+
+  test('waits for an in-flight sync from a DIFFERENT pass to settle before retrying initialization, instead of burning through all retry attempts immediately (P2, codex review r3615664890)', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime:user-b'])
+
+    const userB = { uid: 'user-b', email: 'b@example.com' } as any
+    jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue(userB)
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockReturnValue(1)
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+    // initialize()'s own performSync() call defaults to direction 'both' --
+    // mock the download leg too (the mocked `userB` has no real
+    // getIdToken(), so the REAL firestoreBackupService.syncFromCloud()
+    // would fail authentication and mask this test's actual concern).
+    jest.spyOn(firestoreBackupService, 'syncFromCloud').mockResolvedValue(0)
+
+    const service = new AutoSyncService(db)
+
+    // Simulate a DIFFERENT pass (e.g. account A's) already genuinely
+    // holding the sync latch when initialize() is called for B -- mirrors
+    // exactly what performSync() itself sets up at its own entry.
+    let resolveOtherPass: (() => void) | undefined
+    ;(service as any)._isSyncing = true
+    ;(service as any).inFlightSyncPromise = new Promise<void>(resolve => { resolveOtherPass = resolve })
+
+    const initializePromise = service.initialize()
+
+    // Flush the microtask queue (a macrotask boundary drains it completely)
+    // so initialize()'s first attempt actually reaches the "wait for the
+    // in-flight pass" branch and is blocked on `await this.inFlightSyncPromise`
+    // -- not still spinning through immediate, doomed retries.
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // Release the OTHER pass, exactly as performSync()'s own `finally`
+    // block would once that pass actually completes.
+    ;(service as any)._isSyncing = false
+    ;(service as any).inFlightSyncPromise = null
+    resolveOtherPass?.()
+
+    await initializePromise
+
+    // B's own first sync succeeded once the latch was actually free -- not
+    // abandoned after 3 immediate, doomed retries that all short-circuited
+    // on the same still-held latch.
+    expect((await chrome.storage.local.get('autoSyncLastTime:user-b'))['autoSyncLastTime:user-b']).toBeDefined()
+  })
+
+  test('removes the legacy autoSyncLastTime key BEFORE writing the scoped copy during migration, so a crash between them cannot leave it available for a different account to inherit (P2, codex review r3615664896)', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime', 'autoSyncLastTime:user-a'])
+
+    const userA = { uid: 'user-a', email: 'a@example.com' } as any
+    jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue(userA)
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockReturnValue(1)
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+
+    const legacyIso = new Date('2026-01-01T00:00:00.000Z').toISOString()
+    await chrome.storage.local.set({ autoSyncLastTime: legacyIso })
+
+    // Track call order exactly like the existing r3614064524 crash-window
+    // regression test does for the sync-floor commit -- capture the
+    // CURRENT mock implementations (not just the mutable property
+    // references) before overriding them, same fix as the earlier
+    // recursive-mock issue in the "blocks the legacy migration/clear
+    // write" test above.
+    const callOrder: string[] = []
+    const originalSet = (chrome.storage.local.set as jest.Mock).getMockImplementation()!
+    const originalRemove = (chrome.storage.local.remove as jest.Mock).getMockImplementation()!
+    jest.spyOn(chrome.storage.local, 'set').mockImplementation((items: any) => {
+      callOrder.push(`set:${Object.keys(items).join(',')}`)
+      return originalSet(items)
+    })
+    jest.spyOn(chrome.storage.local, 'remove').mockImplementation((keys: any) => {
+      callOrder.push(`remove:${Array.isArray(keys) ? keys.join(',') : keys}`)
+      return originalRemove(keys)
+    })
+
+    const service = new AutoSyncService(db)
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue(undefined)
+
+    await service.initialize()
+
+    const removeIndex = callOrder.findIndex(entry => entry === 'remove:autoSyncLastTime')
+    const setIndex = callOrder.findIndex(entry => entry === 'set:autoSyncLastTime:user-a')
+    expect(removeIndex).toBeGreaterThanOrEqual(0)
+    expect(setIndex).toBeGreaterThanOrEqual(0)
+    // happens-before: the legacy key must already be gone before the
+    // scoped copy is written, so a crash in between leaves no legacy value
+    // for a later, different account to wrongly inherit.
+    expect(removeIndex).toBeLessThan(setIndex)
+
+    // Sanity: the migration still landed correctly for A.
+    expect((await chrome.storage.local.get('autoSyncLastTime:user-a'))['autoSyncLastTime:user-a']).toBe(legacyIso)
+    expect(performSyncSpy).not.toHaveBeenCalled()
+  })
+
+  test('clears the previous account\'s in-memory lastSyncTime immediately (before any awaits), so a session trigger firing during a direct A -> B sign-in cannot undercount B\'s backlog against A\'s stale value (P2, codex review r3615781411)', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime:user-a', 'autoSyncLastTime:user-b'])
+
+    const userB = { uid: 'user-b', email: 'b@example.com' } as any
+
+    const service = new AutoSyncService(db)
+    // Simulate account A's PREVIOUS successful sync having left a RECENT
+    // lastSyncTime in the shared in-memory syncState -- exactly what a
+    // real prior performSync() call for A would have set.
+    ;(service as any).syncState.lastSyncTime = new Date('2026-07-20T00:00:00.000Z')
+
+    jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue(userB)
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockReturnValue(1)
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+
+    // Capture syncState.lastSyncTime at the exact moment initialize()'s
+    // storage read (scoped + legacy keys) is issued -- this is the window
+    // the finding describes: a session-end/start trigger firing here would
+    // read whatever is current.
+    let lastSyncTimeDuringAwait: Date | undefined | 'not-observed' = 'not-observed'
+    const originalGet = (chrome.storage.local.get as jest.Mock).getMockImplementation()!
+    jest.spyOn(chrome.storage.local, 'get').mockImplementation((keys: any) => {
+      if (lastSyncTimeDuringAwait === 'not-observed') {
+        lastSyncTimeDuringAwait = (service as any).syncState.lastSyncTime
+      }
+      return originalGet(keys)
+    })
+
+    // Simulate a successful sync (sets lastSyncTime) -- a plain no-op mock
+    // would leave lastSyncTime unset, triggering initialize()'s
+    // retry-on-incomplete-first-sync logic (invariant (2b), its own
+    // dedicated test elsewhere) and inflating the call count asserted below.
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockImplementation(async () => {
+      (service as any).syncState.lastSyncTime = new Date()
+    })
+
+    await service.initialize()
+
+    // Must already be cleared BEFORE the storage read below -- not A's
+    // stale, more-recent value, which would otherwise make a concurrent
+    // syncIfBacklogExceedsThreshold() undercount B's real backlog.
+    expect(lastSyncTimeDuringAwait).toBeUndefined()
+    // Sanity: B correctly triggers its own first sync afterward (B has
+    // never synced).
+    expect(performSyncSpy).toHaveBeenCalledTimes(1)
+  })
+
+  test('clears the in-memory lastSyncTime as soon as firebaseAuthService notifies an auth state change -- one layer earlier than initialize()\'s own window fix (P2, codex review r3615952256)', async () => {
+    // Simulates account A having a real, recent lastSyncTime already in
+    // memory, as a prior successful sync would leave.
+    const service = new AutoSyncService(db)
+    ;(service as any).syncState.lastSyncTime = new Date('2026-07-20T00:00:00.000Z')
+
+    // firebaseAuthService.signInWithGoogle()/signOut() now notify
+    // listeners SYNCHRONOUSLY as part of exposing a new identity -- before
+    // their own persistAuthState()/storage-removal await, and well before
+    // message-router.ts's explicit onAuthStateChanged(user) call (which is
+    // what initialize()'s own r3615781411 fix guards) even runs.
+    // AutoSyncService registers exactly such a listener in its constructor
+    // -- invoke the notification directly here, the same way
+    // notifyAuthStateListeners() does internally, to prove the registered
+    // callback clears the stale value the instant it fires, independent of
+    // whether onAuthStateChanged()/initialize() has run yet.
+    const userB = { uid: 'user-b', email: 'b@example.com' } as any
+    ;(firebaseAuthService as any).notifyAuthStateListeners(userB)
+
+    expect((service as any).syncState.lastSyncTime).toBeUndefined()
+  })
+
+  test('rechecks the generation before the scoped legacy migration write, so an account switch during the remove() await cannot persist a stale uid\'s scoped key (P2, codex review r3616056817)', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime', 'autoSyncLastTime:user-a'])
+
+    const userA = { uid: 'user-a', email: 'a@example.com' } as any
+    jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue(userA)
+    let generation = 1
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockImplementation(() => generation)
+
+    const legacyIso = new Date('2026-01-01T00:00:00.000Z').toISOString()
+    await chrome.storage.local.set({ autoSyncLastTime: legacyIso })
+
+    // Bump the generation as a side effect of the remove() call -- the
+    // window BETWEEN the first assert (before remove()) and the scoped
+    // set() that follows it, which is exactly what the finding describes.
+    const originalRemove = (chrome.storage.local.remove as jest.Mock).getMockImplementation()!
+    jest.spyOn(chrome.storage.local, 'remove').mockImplementation((keys: any) => {
+      const result = originalRemove(keys)
+      generation++
+      return result
+    })
+
+    const service = new AutoSyncService(db)
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue(undefined)
+
+    await service.initialize()
+
+    // The legacy key IS gone -- removing it is unconditionally safe
+    // regardless of which account ends up live (r3615664896's ordering
+    // fix), so that part still lands.
+    expect(await chrome.storage.local.get('autoSyncLastTime')).toEqual({ autoSyncLastTime: undefined })
+    // But the scoped write for the now-STALE uid never happened -- it
+    // would have durably persisted a value this account never actually
+    // earned, letting it wrongly look "already synced" on a later sign-in.
+    expect(await chrome.storage.local.get('autoSyncLastTime:user-a')).toEqual({ 'autoSyncLastTime:user-a': undefined })
+    expect(performSyncSpy).not.toHaveBeenCalled()
   })
 })
