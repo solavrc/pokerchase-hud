@@ -160,12 +160,28 @@ export const clearImportSession = (): void => {
  * old Lake、新規import、Lake先頭fallbackのどこから来た201でも同じ定義になり、
  * 最初にハンド途中のACTION/306断片があっても、最初のopening DEALより前の
  * 201なら正しく数える。逆に最初のDEALより後のmid-hand 201は数えない。
+ *
+ * これに加え、rangeが「今回のインポートより前から存在した完全な
+ * DEAL→306ペア」を1つでも含む場合もhasSessionAnchorはtrueになる（7巡目
+ * レビューP2「Avoid live-session seeding for Lake-start replays」）。201が
+ * 全く見つからずLake先頭までfallbackするケースでは、range先頭の
+ * 「最初のDEAL」はしばしば今回のimportとは無関係な既存の古いハンドの
+ * ものであり、この修復はaccountされた既存ハンドをdelete-then-putで
+ * 丸ごと再導出するため、201の有無だけで判定すると、その古い（本来
+ * contextlessな）ハンドがライブセッションのid/battleType/nameで
+ * 上書きされてしまう。判定は削除対象の算出（下記`accountedHandIds`）と
+ * 同じ「今回のimportで新規保存された行を除いたevents」上でのDEAL→306
+ * ペアリングを再利用する——rangeにそのような既存ペアが1つも無ければ、
+ * range内のデータは今回importされた行だけで完結する真に新規の
+ * インクリメンタルハンドであり（例: ノイズ行に囲まれているだけ）、
+ * 書き換えられる既存の派生ハンドがそもそも無いため、従来通り直接経路と
+ * 同じくlive sessionをseedに使う。
  * 呼び出し元はhasSessionAnchorがtrueの場合のみコンバーターを空セッション
- * で初期化し、falseの場合（201無しの増分ハンド等）はライブの
- * service.sessionを初期値として使う——201がid/battleTypeを上書きしても
- * session.nameは消さないため、そうしないと308を持たないハンドの修復結果に
- * ライブのテーブル名が混入し得る（PR #203 codexレビューP2 / #104の
- * SessionState seedingリグレッション参照）。
+ * で初期化し、falseの場合（201無しかつ既存ペアも無い増分ハンド等）は
+ * ライブのservice.sessionを初期値として使う——201がid/battleTypeを
+ * 上書きしてもsession.nameは消さないため、そうしないと308を持たない
+ * ハンドの修復結果にライブのテーブル名が混入し得る（PR #203 codexレビュー
+ * P2 / #104のSessionState seedingリグレッション参照）。
  */
 export const collectOverlapRepairEvents = async (
   db: PokerChaseDB,
@@ -276,8 +292,22 @@ export const collectOverlapRepairEvents = async (
   const events = await filterValidApplicationEvents(rawRows)
 
   // Post-validation range invariants (the scan path is deliberately irrelevant):
-  // 1. Empty/rebuild-style converter seed iff a valid 201 precedes the range's
-  //    first opening DEAL. With no DEAL, no session seed is needed.
+  // 1. Empty/rebuild-style converter seed iff EITHER a valid 201 precedes the
+  //    range's first opening DEAL, OR the range already contains a complete
+  //    pre-existing (older than this import) DEAL->306 pair -- i.e. an
+  //    already-derived hand this repair is about to delete-then-put (PR #203
+  //    codex review pass 7, "Avoid live-session seeding for Lake-start
+  //    replays"). With no 201 anywhere, the Lake-start fallback's range can
+  //    start at an unrelated older hand's DEAL; seeding that whole replay
+  //    from the live session would stamp the live table's id/battleType/name
+  //    onto that older, previously-contextless hand -- and every accounted
+  //    hand in the range gets rewritten by the delete-then-put below, not
+  //    just the newly imported one. A range with no pre-existing paired hand
+  //    at all -- a genuinely new incremental hand, e.g. one surrounded only
+  //    by non-application noise -- has no existing derived hand to corrupt,
+  //    so it keeps live-session seeding, matching the direct empty-DB path
+  //    (see the "old" pairing reused below for `accountedHandIds`). With no
+  //    DEAL at all, no session seed is needed either way.
   // 2. Cleanup authority exists only for a valid 306 paired with an opening DEAL
   //    inside this range in either the old (new rows excluded) or repaired replay.
   //    This deletes old mis-pairings but never a leading orphan 306 fragment.
@@ -307,14 +337,22 @@ export const collectOverlapRepairEvents = async (
     }
     return handIds
   }
+  // "Old" view = range events minus this import's own new rows -- the same
+  // view rebuildAllData()/the pre-repair Lake would have exposed. A non-empty
+  // pairing here means the range contains at least one hand that was already
+  // fully derived (DEAL+306 both pre-existing) before this import touched
+  // anything, so seeding the whole replay from the live session would leak
+  // it into that older hand once the delete-then-put below rewrites it
+  // (invariant 1 above).
+  const oldPairedHandIds = collectPairedHandIds(events.filter(event => !newEventKeys.has(`${event.timestamp}-${event.ApiTypeId}`)))
   const accountedHandIds = Array.from(new Set([
-    ...collectPairedHandIds(events.filter(event => !newEventKeys.has(`${event.timestamp}-${event.ApiTypeId}`))),
+    ...oldPairedHandIds,
     ...collectPairedHandIds(events),
   ]))
 
   return {
     events,
-    hasSessionAnchor: sawFirstDeal && sawSessionAnchorBeforeFirstDeal,
+    hasSessionAnchor: sawFirstDeal && (sawSessionAnchorBeforeFirstDeal || oldPairedHandIds.length > 0),
     accountedHandIds
   }
 }
@@ -578,14 +616,21 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           //   Lakeから読み直して既存行と新規行を合わせて再導出する
           //   （境界の決め方・冪等性はcollectOverlapRepairEvents()参照）。
           //   コンバーターの初期セッションは、検証済みrangeの最初のDEALより
-          //   前に検証済みEVT_ENTRY_QUEUEDがある場合のみrebuildAllData()と
-          //   同じ空のデフォルトセッションにする（range内容がセッション文脈を
-          //   自前で再構築でき、かつライブのservice.sessionの名前等が過去の
-          //   再導出ハンドに混入しない）。最初のDEALより前に201が無い増分ハンドの
-          //   インポートでは従来の直接経路と同じくservice.sessionを
-          //   初期値に使う —— さもないとhand.sessionが空になり、#104の
-          //   SessionState seedingリグレッションが守っている挙動が
-          //   overlap経路でだけ壊れる（PR #203 codexレビューP2）。
+          //   前に検証済みEVT_ENTRY_QUEUEDがあるか、rangeが今回のimportより前
+          //   から存在した完全なDEAL→306ペア（＝これから削除→再導出される
+          //   既存の派生ハンド）を含む場合にのみrebuildAllData()と同じ空の
+          //   デフォルトセッションにする（range内容がセッション文脈を自前で
+          //   再構築でき、かつライブのservice.sessionの名前等が過去の再導出
+          //   ハンドに混入しない。後者の条件が無いと、201が全く無いLakeで
+          //   fallbackした際にrange先頭の既存ハンドがライブセッションで
+          //   書き換わってしまう —— PR #203 codexレビューP2 7巡目「Avoid
+          //   live-session seeding for Lake-start replays」）。どちらにも
+          //   当てはまらない、既存の派生ハンドを含まない真に新規の増分ハンド
+          //   （ノイズ行のみに囲まれている等）のインポートでは従来の直接経路
+          //   と同じくservice.sessionを初期値に使う —— さもないと
+          //   hand.sessionが空になり、#104のSessionState seedingリグレッション
+          //   が守っている挙動がoverlap経路でだけ壊れる（PR #203 codex
+          //   レビューP2）。
           let entitySourceEvents: ApiEvent[] = allNewEvents
           let converterSession: Session = service.session
           let repairRange: Awaited<ReturnType<typeof collectOverlapRepairEvents>> | undefined

@@ -764,6 +764,67 @@ describe('importData() overlap import repair (audit finding #7)', () => {
     })
   })
 
+  test('a Lake with no 201 anywhere: repairing a later contextless hand does not leak the live session into an earlier pre-existing contextless hand (PR #203 codex P2, pass 7)', async () => {
+    // Lake layout: HAND0 (DEAL...RESULTS, fully present, already derived) ->
+    // HAND1 (DEAL...RESULTS present, middle ACTIONs missing). No
+    // EVT_ENTRY_QUEUED anywhere -- capture began mid-session, so both hands
+    // are genuinely contextless. Repairing HAND1 forces the Lake-start
+    // fallback (no 201 to anchor on), and that replay range's first opening
+    // DEAL belongs to HAND0, not the hand actually being repaired. Since the
+    // repair deletes and re-derives every accounted hand in that range (both
+    // HAND0 and HAND1 here), seeding the whole replay from a live session
+    // would rewrite HAND0's id/battleType/name even though HAND0 itself has
+    // no new data in this import at all.
+    const fullExport = [...HAND0_EVENTS, ...HAND1_EVENTS]
+
+    // Control: the same 201-less export imported into an empty DB with no
+    // live session ever set -- exactly what a from-scratch rebuild produces
+    // for both hands (empty/rebuild-style session throughout).
+    const expected = await runWithFreshDb(async ({ db, handlers }) => {
+      await handlers.importData(toJsonl(fullExport))
+      return snapshotDerived(db)
+    })
+    expect(expected.hands.map(hand => hand.id).sort()).toEqual([HAND0_ID, HAND1_ID])
+    const expectedHand0 = expected.hands.find(hand => hand.id === HAND0_ID)!
+    expect(expectedHand0.session.id).toBeUndefined()
+    expect(expectedHand0.session.name).toBeUndefined()
+
+    await runWithFreshDb(async ({ db, service, handlers }) => {
+      // HAND0 fully present and already derived via rebuild; HAND1 is
+      // missing its middle ACTIONs.
+      await db.apiEvents.bulkAdd([...HAND0_EVENTS, HAND1_DEAL, HAND1_RESULTS] as never[])
+      await handlers.rebuildAllData()
+      const hand0Before = await db.hands.get(HAND0_ID)
+      expect(hand0Before).toBeDefined()
+      expect(hand0Before!.session.id).toBeUndefined()
+      expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(0)
+
+      // A live session is active while the user keeps playing, as during any
+      // mid-session import. It must NOT leak into HAND0's re-derivation just
+      // because the Lake-start fallback replays HAND0 alongside HAND1's repair.
+      service.session.setId('live-session-456')
+      service.session.setBattleType(1)
+      service.session.setName('Live Table Name')
+
+      const result = await handlers.importData(toJsonl(fullExport))
+      expect(result.successCount).toBe(3) // HAND1's 3 missing ACTIONs
+      expect(result.duplicateCount).toBe(fullExport.length - 3)
+
+      // Derived state must match a from-scratch rebuild exactly -- HAND0's
+      // previously empty/rebuild-style session context is preserved, not
+      // overwritten by the live table's id/battleType/name.
+      expect(await snapshotDerived(db)).toEqual(expected)
+      const hand0 = await db.hands.get(HAND0_ID)
+      expect(hand0).toEqual(hand0Before)
+      expect(hand0!.session.id).toBeUndefined()
+      expect(hand0!.session.name).toBeUndefined()
+      const hand1 = await db.hands.get(HAND1_ID)
+      expect(hand1).toBeDefined()
+      expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(3)
+      expect(await db.hands.count()).toBe(2)
+    })
+  })
+
   test('a fresh import into an empty DB still derives entities through the unchanged direct path', async () => {
     await runWithFreshDb(async ({ db, handlers }) => {
       const result = await handlers.importData(toJsonl([ENTRY_QUEUED, ...HAND1_EVENTS]))

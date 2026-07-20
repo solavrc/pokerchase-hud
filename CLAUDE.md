@@ -343,14 +343,26 @@ Statistics Refresh (batch mode)
 
   After range selection and validation, two content-based invariants apply.
   First, the converter is seeded with the empty rebuild-style session **iff**
-  the range's first opening DEAL is preceded within that validated range by a
-  valid 201, regardless of whether the 201 came from the old Lake, the new
-  import, or Lake-start fallback. Leading mid-hand ACTION/306 fragments do not
-  change that rule; a 201 after the first DEAL does not qualify. Otherwise the
-  live `service.session` seeds the converter, matching the direct path and the
-  #104 SessionState-seeding regression (a 201 overwrites id/battleType but not
-  `session.name`, so live-session seeding at a real boundary could leak a live
-  table name into historical repairs).
+  either (a) the range's first opening DEAL is preceded within that validated
+  range by a valid 201, regardless of whether the 201 came from the old Lake,
+  the new import, or Lake-start fallback (leading mid-hand ACTION/306
+  fragments do not change that rule; a 201 after the first DEAL does not
+  qualify), **or** (b) the range already contains a complete DEAL→306 pair
+  that pre-dates this import — an already-derived hand the repair is about to
+  delete-then-put. (b) exists because a Lake with no 201 anywhere falls back
+  to replaying from Lake start, and that range's first DEAL is often an
+  unrelated older hand's, not the newly-imported hand's; judging solely on
+  201-before-first-DEAL would seed that whole replay from the live session and
+  stamp the live table's id/battleType/name onto a previously-contextless
+  historical hand, corrupting it and any battle-type/table filters over it
+  (PR #203 codex review pass 7, "Avoid live-session seeding for Lake-start
+  replays"). A range with no such pre-existing pair — a genuinely new
+  incremental hand with nothing but non-application noise around it — has no
+  existing derived hand to corrupt, so the live `service.session` seeds the
+  converter there, matching the direct path and the #104 SessionState-seeding
+  regression (a 201 overwrites id/battleType but not `session.name`, so
+  live-session seeding at a real boundary, or over pre-existing hands, could
+  leak a live table name into historical repairs).
 
   Second, saving is delete-then-put in one transaction. Existing derived hands
   are cleanup-accounted only when their HandId closes a validated DEAL→306
