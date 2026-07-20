@@ -13,18 +13,14 @@
  * the raw Lake got repaired but the derived hands/phases/actions (and every
  * stat computed from them) stayed stale until a later full rebuild.
  *
- * The fix (see `collectOverlapRepairEvents()` in import-export.ts): when the
- * DB already contained events before the import, the derived-entity pass
- * re-reads the affected range from the Lake -- expanded backwards to the last
- * validated outside-hand EVT_ENTRY_QUEUED(201) at/before the earliest new
- * event (including a newly imported 201 at the exact endpoint), and forwards
- * to the first validated pre-existing EVT_HAND_RESULTS(306) at/after the
- * latest new event -- and re-derives entities from existing and new rows
- * together. Converter seeding and cleanup authority are then derived from the
- * validated range content, not from which boundary scan happened to succeed.
- * Re-deriving hands already present is idempotent: hands
- * (id), phases ([handId+phase]) and actions ([handId+index]) all have
- * deterministic keys and `saveEntities()` uses bulkPut.
+ * The fix (see `buildOverlapRepairPlan()` in import-export.ts): when the
+ * DB already contained events before the import, a bounded Lake replay builds
+ * pre/post-import DEAL->306 pairings, but deletion, conversion, and writes are
+ * selected per hand. Only a hand whose source span contains a new row, whose
+ * pairing changes, or whose Lake-derived session context changes is repaired;
+ * replayed bystanders are discarded and remain byte-identical. Each affected
+ * hand is seeded from the latest valid 201 (+ subsequent 308 name) before its
+ * own DEAL, with live-session seeding reserved for a genuinely new tail append.
  *
  * Each scenario below asserts the repaired DB's derived state deep-equals a
  * control DB produced by importing the same complete export into an empty DB
@@ -68,6 +64,10 @@ const shiftHand = (deltaMs: number, handId: number) => HAND1_EVENTS.map(event =>
 const HAND2_ID = 384370065
 const HAND2_EVENTS = shiftHand(1_000_000, HAND2_ID)
 
+// A third hand strictly after HAND2, used by the pure-append scope test.
+const HAND3_ID = 384370066
+const HAND3_EVENTS = shiftHand(2_000_000, HAND3_ID)
+
 // A hand strictly before HAND1 (still after ENTRY_QUEUED's timestamp).
 const HAND0_ID = 384370063
 const HAND0_EVENTS = shiftHand(-10_000, HAND0_ID)
@@ -93,6 +93,28 @@ const MALFORMED_RESULTS_ROW = { "ApiTypeId": 306, "timestamp": 1752427319000 }
 // (...313426) -- legitimately outside any hand (HAND0 is already closed,
 // HAND1 hasn't opened yet).
 const GAP_ENTRY_QUEUED = { ...ENTRY_QUEUED, "timestamp": 1752427310000 }
+
+// Minimal current-schema EVT_SESSION_DETAILS fixtures. The replacement sits
+// at the exact same millisecond as HAND0's RESULTS but sorts after it by the
+// compound [timestamp+ApiTypeId] key (308 > 306).
+const sessionDetails = (timestamp: number, name: string) => ({
+  "ApiTypeId": 308,
+  "BlindStructures": [{ "ActiveMinutes": -1, "Ante": 0, "BigBlind": 200, "Lv": 1 }],
+  "CoinNum": -1,
+  "DefaultChip": 6000,
+  "IsReplay": false,
+  "Items": [],
+  "LimitSeconds": 8,
+  "MoneyList": [],
+  "Name": name,
+  "Name2": "",
+  "timestamp": timestamp,
+})
+const INITIAL_SESSION_DETAILS = sessionDetails(1752427303300, 'Initial Lake Table')
+const SAME_MS_REPLACEMENT_SESSION_DETAILS = sessionDetails(
+  (HAND0_EVENTS[4] as { timestamp: number }).timestamp,
+  'Same-ms Replacement Table'
+)
 
 // Valid tail fragments whose opening DEAL is outside the captured Lake.
 // They exercise the range-content and delete-safety invariants without
@@ -741,10 +763,8 @@ describe('importData() overlap import repair (audit finding #7)', () => {
       expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(0)
 
       // A live session with a table name that must NOT leak into HAND1's
-      // repaired session: if GAP_ENTRY_QUEUED isn't recognized as a session
-      // anchor, hasSessionAnchor comes back false and importData() falls
-      // back to seeding the converter with this live session instead of the
-      // empty default one used at a real session boundary.
+      // repaired session: the affected hand must derive its own context from
+      // this Lake 201 rather than inherit the live session.
       service.session.setId('live-session-456')
       service.session.setBattleType(1)
       service.session.setName('Live Table Name')
@@ -822,6 +842,146 @@ describe('importData() overlap import repair (audit finding #7)', () => {
       expect(hand1).toBeDefined()
       expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(3)
       expect(await db.hands.count()).toBe(2)
+    })
+  })
+
+  test('an appended contextless hand keeps the live service.session even when an older complete contextless hand exists (PR #203 codex P2, pass 8 #1)', async () => {
+    await runWithFreshDb(async ({ db, service, handlers }) => {
+      await db.apiEvents.bulkAdd(HAND0_EVENTS as never[])
+      await handlers.rebuildAllData()
+      const hand0Before = await db.hands.get(HAND0_ID)
+      expect(hand0Before).toBeDefined()
+
+      service.session.setId('live-appended-session')
+      service.session.setBattleType(4)
+      service.session.setName('Live Appended Table')
+
+      const result = await handlers.importData(toJsonl(HAND1_EVENTS))
+      expect(result.successCount).toBe(HAND1_EVENTS.length)
+      expect(result.duplicateCount).toBe(0)
+
+      expect(await db.hands.get(HAND0_ID)).toEqual(hand0Before)
+      expect((await db.hands.get(HAND1_ID))?.session).toEqual({
+        id: 'live-appended-session',
+        battleType: 4,
+        name: 'Live Appended Table',
+      })
+    })
+  })
+
+  test('a valid 201 after a discarded leading DEAL supplies the repaired hand session without leaking the live name (PR #203 codex P2, pass 8 #2)', async () => {
+    await runWithFreshDb(async ({ db, service, handlers }) => {
+      // The first DEAL never closes. EntityConverter discards it when HAND1's
+      // real DEAL arrives, so the 201 between those DEALs is HAND1's Lake
+      // session anchor even though it follows the range's first DEAL.
+      await db.apiEvents.bulkAdd([PRE_ENTRY_HAND_EVENTS[0]!, ENTRY_QUEUED] as never[])
+      await handlers.rebuildAllData()
+      expect(await db.hands.count()).toBe(0)
+
+      service.session.setId('live-session-should-not-win')
+      service.session.setBattleType(1)
+      service.session.setName('Leaked Live Table')
+
+      await handlers.importData(toJsonl(HAND1_EVENTS))
+
+      const hand1 = await db.hands.get(HAND1_ID)
+      expect(hand1?.session).toMatchObject({ id: 'stage000_003', battleType: 0 })
+      expect(hand1?.session.name).toBeUndefined()
+    })
+  })
+
+  test('a pure append converts and writes only the appended hand, not every older hand since the 201 (PR #203 codex P2, pass 8 #3)', async () => {
+    await runWithFreshDb(async ({ db, handlers }) => {
+      await db.apiEvents.bulkAdd([
+        ENTRY_QUEUED,
+        ...HAND0_EVENTS,
+        ...HAND1_EVENTS,
+        ...HAND2_EVENTS,
+      ] as never[])
+      await handlers.rebuildAllData()
+
+      const deletedHandIds: number[] = []
+      const updatedHandIds: number[] = []
+      db.hands.hook('deleting', primaryKey => {
+        deletedHandIds.push(primaryKey as number)
+      })
+      db.hands.hook('updating', (_modifications, primaryKey) => {
+        updatedHandIds.push(primaryKey as number)
+      })
+
+      const result = await handlers.importData(toJsonl(HAND3_EVENTS))
+      expect(result.successCount).toBe(HAND3_EVENTS.length)
+      expect(result.duplicateCount).toBe(0)
+      expect(deletedHandIds).toEqual([])
+      expect(updatedHandIds).toEqual([])
+      expect((await db.hands.orderBy('id').primaryKeys()).sort()).toEqual([
+        HAND0_ID,
+        HAND1_ID,
+        HAND2_ID,
+        HAND3_ID,
+      ])
+    })
+  })
+
+  test('a same-millisecond 308 after a 306 remains inside the repair range and updates the following hand (PR #203 codex P2, pass 8 #4)', async () => {
+    await runWithFreshDb(async ({ db, handlers }) => {
+      await db.apiEvents.bulkAdd([
+        ENTRY_QUEUED,
+        INITIAL_SESSION_DETAILS,
+        ...HAND0_EVENTS,
+        ...HAND1_EVENTS,
+      ] as never[])
+      await handlers.rebuildAllData()
+      expect((await db.hands.get(HAND1_ID))?.session.name).toBe('Initial Lake Table')
+
+      const result = await handlers.importData(toJsonl([SAME_MS_REPLACEMENT_SESSION_DETAILS]))
+      expect(result.successCount).toBe(1)
+      expect(result.duplicateCount).toBe(0)
+
+      expect((await db.hands.get(HAND1_ID))?.session).toMatchObject({
+        id: 'stage000_003',
+        battleType: 0,
+        name: 'Same-ms Replacement Table',
+      })
+    })
+  })
+
+  test('an unrelated bystander hand stays byte-identical while a later hand is repaired', async () => {
+    const fullExport = [ENTRY_QUEUED, ...HAND0_EVENTS, ...HAND1_EVENTS]
+
+    await runWithFreshDb(async ({ db, handlers }) => {
+      await db.apiEvents.bulkAdd([
+        ENTRY_QUEUED,
+        ...HAND0_EVENTS,
+        HAND1_DEAL,
+        HAND1_RESULTS,
+      ] as never[])
+      await handlers.rebuildAllData()
+
+      // A valid persisted value that does not come from the Lake makes any
+      // delete-then-recreate of the bystander observable, even if ordinary
+      // converter output would otherwise compare equal by coincidence.
+      await db.hands.update(HAND0_ID, {
+        session: { id: 'bystander-sentinel', battleType: 5, name: 'Do Not Rewrite' },
+      })
+      const before = {
+        hand: await db.hands.get(HAND0_ID),
+        phases: await db.phases.where('handId').equals(HAND0_ID).sortBy('phase'),
+        actions: await db.actions.where('handId').equals(HAND0_ID).sortBy('index'),
+      }
+      const beforeBytes = JSON.stringify(before)
+
+      const result = await handlers.importData(toJsonl(fullExport))
+      expect(result.successCount).toBe(HAND1_ACTIONS.length)
+      expect(result.duplicateCount).toBe(fullExport.length - HAND1_ACTIONS.length)
+      expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(3)
+
+      const after = {
+        hand: await db.hands.get(HAND0_ID),
+        phases: await db.phases.where('handId').equals(HAND0_ID).sortBy('phase'),
+        actions: await db.actions.where('handId').equals(HAND0_ID).sortBy('index'),
+      }
+      expect(JSON.stringify(after)).toBe(beforeBytes)
     })
   })
 

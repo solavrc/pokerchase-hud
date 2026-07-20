@@ -314,79 +314,44 @@ Statistics Refresh (batch mode)
 - Storage and entity generation are decoupled: a line that fails to parse (or
   is a known non-application type) is still stored raw — it just doesn't
   reach `EntityConverter`. See "Raw Event Lake" (Design Principles #16).
-- **Overlap imports re-derive from the Lake, not from new events alone**: when
-  the DB already contained events before the import, the entity pass re-reads
-  the affected range from `apiEvents` — expanded back to the last *valid*
-  `EVT_ENTRY_QUEUED` (201) at or before the earliest new event that is
-  *provably outside any hand* (session-context anchor — an MTT table-move 201
-  can land mid-hand, including inside a previous completed hand, and would
-  cut off an opening `EVT_DEAL`; a candidate qualifies only if its most
-  recent valid DEAL is already closed by a valid 306 between that DEAL and
-  the candidate, or has no preceding DEAL at all; candidates that fail this
-  are rejected and the scan steps back one hand at a time), and forward to
-  the first *valid pre-existing* 306 at/after the latest new event
-  (newly-imported 306s are skipped, so the range always reaches the end of
-  the OLD derivation's hand pairing — e.g. a DEAL that a capture gap had
-  mis-paired with a later 306) — so a hand split between existing and
-  imported rows (e.g. re-importing a complete export into a DB missing the
-  hand's middle ACTIONs) gets its derived entities repaired. The anchor scan
-  searches the whole Lake up to the earliest new event, not just below the
-  previous completed hand's 306 — a valid session-boundary 201 can sit in the
-  gap *after* that 306 and *before* the affected hand's own DEAL. A newly
-  imported 201 at exactly the earliest-new timestamp is eligible too, so
-  unrelated earlier Lake rows do not force the replay to start before the
-  import's own boundary. The same outside-hand proof applies in both cases,
-  so a mid-hand 201 is still rejected. Boundary candidates are re-validated
-  with the current Zod schema before use, because the Lake intentionally
-  stores unparseable rows (a malformed 306 must not truncate the range). New
-  events alone cannot form such a hand's 303→306 boundary.
+- **Overlap imports repair per hand from the Lake, not per range from new
+  events alone**: when the DB already contained rows, the entity pass reads a
+  bounded replay window from `apiEvents` and builds validated DEAL→306 pairings
+  for both the pre-import view (new keys removed) and post-import view. The
+  lower boundary is immediately after the last valid 306 before the minimum
+  new compound key, so a split hand keeps its opening DEAL without replaying a
+  whole session on a pure append. The upper boundary reaches the later of the
+  first valid old-view and post-view 306 at/after the **maximum new
+  `[timestamp+ApiTypeId]` key**. Compound-key comparison is required: at one
+  millisecond `[T,308]` sorts after `[T,306]`, so a timestamp-only boundary
+  would drop a newly imported session-detail/player-context tail row. Every
+  boundary candidate and replay row is re-validated with the current schema;
+  malformed raw Lake rows never become boundaries.
 
-  After range selection and validation, two content-based invariants apply.
-  First, the converter is seeded with the empty rebuild-style session **iff**
-  either (a) the range's first opening DEAL is preceded within that validated
-  range by a valid 201, regardless of whether the 201 came from the old Lake,
-  the new import, or Lake-start fallback (leading mid-hand ACTION/306
-  fragments do not change that rule; a 201 after the first DEAL does not
-  qualify), **or** (b) the range already contains a complete DEAL→306 pair
-  that pre-dates this import — an already-derived hand the repair is about to
-  delete-then-put. (b) exists because a Lake with no 201 anywhere falls back
-  to replaying from Lake start, and that range's first DEAL is often an
-  unrelated older hand's, not the newly-imported hand's; judging solely on
-  201-before-first-DEAL would seed that whole replay from the live session and
-  stamp the live table's id/battleType/name onto a previously-contextless
-  historical hand, corrupting it and any battle-type/table filters over it
-  (PR #203 codex review pass 7, "Avoid live-session seeding for Lake-start
-  replays"). A range with no such pre-existing pair — a genuinely new
-  incremental hand with nothing but non-application noise around it — has no
-  existing derived hand to corrupt, so the live `service.session` seeds the
-  converter there, matching the direct path and the #104 SessionState-seeding
-  regression (a 201 overwrites id/battleType but not `session.name`, so
-  live-session seeding at a real boundary, or over pre-existing hands, could
-  leak a live table name into historical repairs).
+  The replay window supplies context only; it does **not** authorize rewriting
+  every hand in that window. A hand is affected only when (a) its validated
+  DEAL→306 source span contains a new row, (b) its DEAL/result pairing differs
+  between the pre/post views, or (c) its Lake-derived session at DEAL changes.
+  Only affected HandIds and their phases/actions are deleted, then only
+  affected post-view hands are `bulkPut` in the same transaction. This removes
+  stale old pair ids and action tails while leaving unrelated bystander hands
+  byte-identical, including legacy hands without `approxTimestamp` and hands
+  whose raw sources no longer validate. A leading orphan 306 has no DEAL pair
+  and therefore grants no deletion authority. The Raw Event Lake is never
+  mutated by repair.
 
-  Second, saving is delete-then-put in one transaction. Existing derived hands
-  are cleanup-accounted only when their HandId closes a validated DEAL→306
-  pairing wholly inside the range under either the old replay (new import keys
-  excluded) or the repaired replay (all range rows). Considering both pairings
-  deletes stale ids from the OLD derivation while retaining ids introduced by
-  the repaired derivation; requiring an in-range opening DEAL prevents a
-  leading orphan 306 from authorizing deletion. Accounted hands and their
-  phases/actions are deleted before the regenerated bundle is `bulkPut` —
-  upsert alone (idempotent for hands
-  present in both derivations via deterministic entity keys) would leave
-  rows that existed only in the old derivation (a mis-paired hand's id
-  absent from the new derivation, or leftover `[handId+index]` action
-  tails), double-counting stats. Id-based accounting (not a timestamp
-  window) means legacy hands lacking `approxTimestamp` are still cleaned
-  up, while hands whose source raw rows no longer pass the current schema
-  are never deleted (the re-derivation could not recreate them; they keep
-  their pre-import derived state until an explicit rebuild, same as
-  before). The regenerated bundle's hand ids are a subset of the accounted
-  set by construction; the Raw Event Lake is never touched. See
-  `collectOverlapRepairEvents()` in `src/background/import-export.ts`
-  (independent release-audit finding #7; boundary/session/stale-deletion
-  refinements from PR #203 codex review). A fresh import into an empty DB
-  keeps the direct new-events path.
+  Session context is also per hand. For each affected DEAL, use the most recent
+  valid 201 before that DEAL for id/battleType and the latest valid 308 after
+  that 201 but before the DEAL for name. This remains true when discarded or
+  unterminated leading rows precede the 201; a mid-hand 201 affects a later
+  DEAL, not the already-open hand. With no preceding 201, use an empty
+  rebuild-style session. The sole exception is a genuinely new, not previously
+  derived hand in a pure incremental tail append (all new application keys are
+  after the old valid-application tail): seed that hand from live
+  `service.session`, preserving #104. The old range-wide `hasSessionAnchor`
+  decision must not be reintroduced. See `buildOverlapRepairPlan()` in
+  `src/background/import-export.ts` (independent release-audit finding #7 and
+  PR #203 review refinements). A fresh empty-DB import keeps the direct path.
 
 **Critical Design Constraints (learned 2026-03):**
 
