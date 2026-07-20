@@ -328,9 +328,11 @@ describe('FirestoreBackupService transport hardening (release audit 2026-07-21: 
     // Generation moves between the request-start snapshot and the 401
     // handling -- an account switch landed while the request was in flight.
     // A uid comparison could be fooled by an A -> B -> A round trip; the
-    // generation counter cannot.
+    // generation counter cannot. Reads in order: pass-start snapshot (7),
+    // the fail-fast check after the initial token acquisition (still 7 --
+    // the switch lands later, mid-request), then the 401 gate (9).
     const generationSpy = firebaseAuthService.getAuthGeneration as jest.Mock
-    generationSpy.mockReturnValueOnce(7).mockReturnValue(9)
+    generationSpy.mockReturnValueOnce(7).mockReturnValueOnce(7).mockReturnValue(9)
 
     const fetchMock = jest.fn().mockResolvedValue({
       ok: false,
@@ -375,6 +377,55 @@ describe('FirestoreBackupService transport hardening (release audit 2026-07-21: 
 
     await expect(new FirestoreBackupService(fastTransport).getCloudMaxTimestamp()).resolves.toBeNull()
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  test('an account switch DURING the initial token acquisition aborts before any request is issued (codex review r3617090425)', async () => {
+    // getIdToken() internally awaits a network refresh when the cached token
+    // is expired -- an account switch landing inside that await used to slip
+    // past the gate entirely, because the generation snapshot was taken
+    // AFTER the token await (against the NEW account's baseline). Reads in
+    // order: pass-start snapshot (7), then the post-acquisition check (9 --
+    // the switch landed while the token was being refreshed).
+    const generationSpy = firebaseAuthService.getAuthGeneration as jest.Mock
+    generationSpy.mockReturnValueOnce(7).mockReturnValue(9)
+
+    const fetchMock = jest.fn()
+    global.fetch = fetchMock
+
+    await expect(new FirestoreBackupService(fastTransport).getCloudMaxTimestamp())
+      .rejects.toThrow('the signed-in account changed while the request was in flight')
+    // Fails fast: nothing is ever sent under the ambiguous identity, and no
+    // forced refresh is attempted.
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(firebaseAuthService.getIdToken).not.toHaveBeenCalledWith(true)
+  })
+
+  test('a persistent 429 on a write batch is retried by exactly one layer -- the transport budget, not writeBatch times transport (codex review r3617090429)', async () => {
+    let commitCalls = 0
+    const fetchMock = jest.fn().mockImplementation(async (url: string) => {
+      if (!String(url).endsWith(':commit')) {
+        return { ok: true, status: 200, text: async () => '{}' } as Response
+      }
+      commitCalls++
+      return {
+        ok: false,
+        status: 429,
+        text: async () => JSON.stringify({
+          error: { code: 429, message: 'RESOURCE_EXHAUSTED', status: 'RESOURCE_EXHAUSTED' }
+        })
+      } as Response
+    })
+    global.fetch = fetchMock
+
+    const event = { timestamp: 1779859063171, ApiTypeId: 304 } as unknown as ApiEvent
+
+    await expect(new FirestoreBackupService(fastTransport).syncToCloudBatch([event], null))
+      .rejects.toThrow('Cloud sync failed')
+    // Exactly the transport's budget (1 initial + 2 transient retries).
+    // Before r3617090429's fix, writeBatch ran its OWN 3-attempt rate-limit
+    // loop on top of the transport's, hammering the throttled backend with
+    // up to 9 commit attempts for a single batch.
+    expect(commitCalls).toBe(3)
   })
 
   test('a non-retryable 4xx (400) fails immediately with no retry and no token refresh', async () => {

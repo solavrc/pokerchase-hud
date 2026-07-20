@@ -273,24 +273,16 @@ export class FirestoreBackupService {
       }
     })
 
-    let retries = 3
-    while (retries > 0) {
-      try {
-        await this.commitWrites(writes)
-        return
-      } catch (error: any) {
-        const message = error instanceof Error ? error.message : ''
-        const rateLimited = message.includes('RESOURCE_EXHAUSTED') ||
-          message.includes('REST request failed: 429')
-        if (rateLimited && retries > 1) {
-          console.warn(`[Firestore] Rate limit hit, retrying in ${this.BATCH_DELAY_MS}ms...`)
-          await new Promise(resolve => setTimeout(resolve, this.BATCH_DELAY_MS))
-          retries--
-        } else {
-          throw error
-        }
-      }
-    }
+    // 429/RESOURCE_EXHAUSTED retry ownership lives in `request()`'s
+    // transport-level classification (codex review r3617090429, P2, "Avoid
+    // stacking 429 retries for write batches"): this method used to run its
+    // own 3-attempt rate-limit loop on top, which -- once the transport
+    // gained its own 429 backoff -- multiplied to up to 9 commit attempts
+    // per batch under a persistent rate limit, amplifying the very
+    // throttling being backed off from. Exactly one layer (the transport)
+    // now retries 429; an error surfacing here has already exhausted that
+    // bounded budget and must propagate.
+    await this.commitWrites(writes)
   }
 
   private async updateLastSyncTimestamp(uid: string, timestamp: number): Promise<void> {
@@ -453,10 +445,10 @@ export class FirestoreBackupService {
    *   document name, metadata `PATCH`) are idempotent.
    * - 401 TOKEN REFRESH: a single retry after `getIdToken(true)` (forced
    *   refresh). Gated on the auth generation (`firebaseAuthService.
-   *   getAuthGeneration()`) still matching the value snapshotted when this
-   *   request acquired its original token -- if the signed-in account
-   *   changed mid-request (including an A -> B -> A round trip, which a
-   *   uid comparison would miss), the retry is ABORTED instead of silently
+   *   getAuthGeneration()`) still matching the value snapshotted BEFORE the
+   *   initial token acquisition -- if the signed-in account changed
+   *   mid-request (including an A -> B -> A round trip, which a uid
+   *   comparison would miss), the retry is ABORTED instead of silently
    *   re-issuing the request against whichever account is live now. A 401
    *   on the refreshed token is terminal (no second refresh).
    * - NON-RETRYABLE: any other 4xx (permission denied, bad request, ...)
@@ -465,11 +457,25 @@ export class FirestoreBackupService {
    *   callers (e.g. `writeBatch`'s RESOURCE_EXHAUSTED check) match on.
    */
   private async request<T = unknown>(url: string, init: RequestInit): Promise<T | null> {
-    // `getIdToken()` awaits auth restore internally (`ready()`), so the
-    // generation snapshot below is taken AFTER the initial-restore bump --
-    // it only moves again on a real sign-in/sign-out transition.
-    let token = await firebaseAuthService.getIdToken()
+    // SNAPSHOT ORDER (codex review r3617090425, P2, "Snapshot auth
+    // generation before awaiting the token"): the generation snapshot must
+    // be taken BEFORE the awaited `getIdToken()` call, not after it --
+    // `getIdToken()` internally awaits a network token refresh when the
+    // cached token is expired, and an account switch landing during THAT
+    // await used to be invisible: the old account's refreshed token came
+    // back while the snapshot recorded the NEW account's generation as the
+    // baseline, so a later 401 passed `assertAccountUnchanged` and re-issued
+    // the old account's request with the new account's token. `ready()` is
+    // awaited explicitly first so the initial-restore generation bump (every
+    // Service Worker start does one) settles before the snapshot -- after
+    // that, the counter only moves on a real sign-in/sign-out transition.
+    // The assert right after the token acquisition fails fast: if the
+    // account switched while the initial token was being fetched/refreshed,
+    // the request aborts before anything is sent under an ambiguous identity.
+    await firebaseAuthService.ready()
     const generationAtStart = firebaseAuthService.getAuthGeneration()
+    let token = await firebaseAuthService.getIdToken()
+    this.assertAccountUnchanged(generationAtStart, 'after initial token acquisition')
     let authRetryUsed = false
     let transientRetriesUsed = 0
 
