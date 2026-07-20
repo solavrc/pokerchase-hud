@@ -128,6 +128,12 @@ export const setIngestionDrainProvider = (provider: IngestionDrainProvider): voi
   ingestionDrainProvider = provider
 }
 
+/** `awaitIngestionDrain()`のループ安全上限。通常は数イテレーションで
+ * 安定するが、プロバイダ実装のバグ等で新しいタスクが積まれ続ける異常系
+ * でも呼び出し元を無期限にブロックしないための保険（P1, codexレビュー
+ * 指摘 2026-07-21, pass-4, "Wait for tasks appended while draining"）。 */
+const MAX_DRAIN_ITERATIONS = 1000
+
 /**
  * reload判定（`isSafeToUpdate()`を使う各エントリーポイント）の直前で待つ
  * 「キュー・ドレイン・バリア」（2026-07-21 pass-3 codexレビュー3件の帰結、
@@ -141,16 +147,39 @@ export const setIngestionDrainProvider = (provider: IngestionDrainProvider): voi
  * しまうことを防ぐ（呼び出し後に新たに到着したイベントは、因果的に
  * この判定より後なので待つ必要が無い）。
  *
- * 例外: `event-ingestion.ts`の`processEvent`が309自身の処理の中から直接
- * 呼ぶ`recheckPendingUpdate()`はこのバリアを使わない——`ingestionQueue`は
- * その309自身の処理が完了するまで解決しないため、その中からこの関数を
- * 呼ぶと自己参照でデッドロックする。その経路は代わりに
- * `processEvent`内で素直に`await`することでキューの直列化にそのまま
- * 乗せている（event-ingestion.tsの309ブロックのコメント参照）。
+ * ループする理由（P1, codexレビュー指摘 2026-07-21, pass-4, "Wait for
+ * tasks appended while draining"）: `ingestionDrainProvider()`は呼んだ
+ * 瞬間のキュー末尾のスナップショットを返すだけなので、そのPromiseの
+ * 決着を待っている間に新しいイベントが到着して`ingestionQueue`が
+ * 再代入されると、待っていたスナップショットは「古い末尾」のまま
+ * 決着してしまい、新しく積まれた分の決着を待たずに戻ってしまう
+ * （ドレインバリアを使っている呼び出し元でも、その僅かな隙間で
+ * mid-hand reloadが起こりうる）。決着後にもう一度プロバイダを呼び直し、
+ * 参照が変わっていれば（＝待っている間に何か新しく積まれた）そちらも
+ * 待つ、を「2回連続で同じ参照が返る」まで繰り返すことで、呼び出し
+ * 時点までに到着した全てのイベントの決着を確実に待つ。
+ *
+ * `event-ingestion.ts`の`processEvent`が309/203自身の処理の中から直接
+ * 呼ぶ`recheckPendingUpdate()`はこのバリアを使わない（使うと自己参照で
+ * デッドロックする——`ingestionQueue`はその309/203自身の処理が完了する
+ * まで解決しないため）。その経路は別の機構（`event-ingestion.ts`の
+ * `queueGeneration`比較）で同種の安全性を確保している——詳細は
+ * event-ingestion.tsの309/203ブロックのコメント参照。
  */
 export const awaitIngestionDrain = async (): Promise<void> => {
-  if (ingestionDrainProvider) {
-    await ingestionDrainProvider()
+  if (!ingestionDrainProvider) return
+
+  let previous: Promise<void> | undefined
+  let current = ingestionDrainProvider()
+  let iterations = 0
+  while (current !== previous && iterations < MAX_DRAIN_ITERATIONS) {
+    previous = current
+    await current
+    current = ingestionDrainProvider()
+    iterations++
+  }
+  if (iterations >= MAX_DRAIN_ITERATIONS) {
+    console.warn('[update-manager] awaitIngestionDrain: hit the iteration safety cap -- the ingestion queue may be receiving new work faster than it can settle')
   }
 }
 

@@ -42,6 +42,19 @@ const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
 let ingestionQueue: Promise<void> = Promise.resolve()
 
 /**
+ * 到着世代カウンタ（P1, codexレビュー指摘 2026-07-21, pass-4,
+ * "Don't reload before queued session starts run"）。キューへ何か（キープ
+ * アライブ以外のメッセージ）が積まれるたびに同期的にインクリメントする。
+ * `ingestionQueue`自体の参照比較（`awaitIngestionDrain()`のループ）とは
+ * 別に、309/203自身の`processEvent`実行の**内側**から「自分の後に何か
+ * 積まれていないか」を同期的に確認するために使う——その場所では
+ * `awaitIngestionDrain()`（自己参照でデッドロックする）は使えない
+ * ため、単調増加のカウンタで代用する。詳細は`processEvent`の309/203
+ * ブロックのコメント参照。
+ */
+let queueGeneration = 0
+
+/**
  * `chrome.runtime.onConnect`のハンドラーを登録する。
  * content_scriptからのポート接続を受け取り、APIイベントの検証・DB保存・
  * 各ストリームへの書き込み・自動同期トリガーを行う。
@@ -82,18 +95,26 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   // sessionActivityを読んでしまう）は書く側でなく読む側で解決する——
   // update-manager.tsの`awaitIngestionDrain()`参照。
   //
-  // なお、`autoSyncService.onGameSessionEnd()`/`onNewSessionStart()`自体は
-  // raw Lakeの行数を見るだけの非同期処理で、直接`chrome.runtime.reload()`を
-  // 呼ぶわけではない（reloadを呼びうるのはそこから連鎖される
-  // `recheckPendingUpdate()`のみ）。そのため理屈の上では同期トリガーの発火
-  // 自体はadd()の完了を待たなくても安全ではある。ただし、
-  //   - どの内部処理が将来reload隣接になるか将来にわたって保証できない
-  //   - 直列化を「ストリームだけ」「セッションフックだけ」で線引きすると
-  //     実装・レビューの複雑さが増し、境界の取り違えバグを生みやすい
-  // という理由で、本実装では簡潔さと防御的深さを優先し、セッションフック・
-  // 同期トリガー・ストリーム書き込みの全てをadd()決着後に統一して実行する
-  // （最小要件を満たしつつ上回る、意図的な選択）。
+  // 同期トリガー（`autoSyncService.onGameSessionEnd()`/`onNewSessionStart()`）
+  // は、このキューを塞がない（P2, codexレビュー指摘 2026-07-21, pass-4,
+  // "Don't block raw ingestion on cloud uploads"）。認証済みユーザーで
+  // 未同期行数が閾値を超えていれば`onGameSessionEnd()`は実際の
+  // Firestoreアップロードを走らせうる非同期処理で、これをここでawaitして
+  // キューを塞ぐと、次のハンドの生イベントが`apiEvents.add()`にすら到達
+  // できずメモリ上で滞留し、アップロード完了までライブHUDが凍結し、SW
+  // サスペンド/リロード・タブクローズが起きればそれらのイベントは失われる。
+  // `chrome.runtime.reload()`を呼びうる`recheckPendingUpdate()`だけは
+  // 引き続き同期トリガーの決着後にチェーンするが、`processEvent`からawait
+  // せずfire-and-forgetにし、代わりに呼ぶ直前で`queueGeneration`を確認
+  // する（「自分の到着後に何か新しく積まれていないか」の同期的な
+  // チェック——詳細は`processEvent`の309/203ブロックのコメント参照）。
+  // これにより、以前のラウンドで「reloadが次イベントのin-flightなadd()と
+  // 競合する」ことを防ぐために採用していた「キューをブロックして順序を
+  // 強制する」戦略から、「決定の直前に鮮度を確認し、古ければreloadを
+  // 諦めて次の契機に委ねる」戦略へ切り替えている——ブロックしなくても
+  // 同じ安全性が得られ、かつスループットを犠牲にしない。
   ingestionQueue = Promise.resolve()
+  queueGeneration = 0
   setIngestionDrainProvider(() => ingestionQueue)
 
   chrome.runtime.onConnect.addListener(port => {
@@ -106,11 +127,15 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           return
         }
 
+        // このメッセージが積まれた時点の世代を記録する（上の
+        // `queueGeneration`コメント参照）。
+        const enqueueGeneration = ++queueGeneration
+
         // このイベントの処理を、直前のイベントの処理（add()の決着含む）の
         // 後ろに連結する。`processEvent`は内部で全エラーを捕捉して素通し
         // させない設計だが、想定外のバグでqueueが壊れて以降のイベントが
         // 永久に詰まることのないよう、キューの継続用チェーンは別途catchする。
-        const task = ingestionQueue.then(() => processEvent(service, message))
+        const task = ingestionQueue.then(() => processEvent(service, message, enqueueGeneration))
         ingestionQueue = task.catch(err => {
           console.error('[background] Unhandled ingestion queue error (fail-safe, queue continues):', err)
         })
@@ -172,9 +197,23 @@ const isSamePayload = (a: unknown, b: unknown): boolean => {
  * 同じトリガー集合をcontent_script.tsのkeepalive起動/解除条件にも
  * ミラーする必要がある（背景・コンテンツスクリプト間でimport不可のため
  * 手動同期。変更時は両ファイルを揃えること）。
+ *
+ * `activeOnly`（P2, codexレビュー指摘 2026-07-21, pass-4, "Fail closed
+ * on dropped ACTIVE writes"）: `true`の場合、INACTIVE化（309/203）を
+ * 一切行わない。raw書き込み自体が失敗した（quota超過等、真の重複でも
+ * 衝突でもない）イベントに対する`processEvent`のfail-closed処理から
+ * 呼ばれる場合に使う。理由: 309/203の永続化に失敗したという事実は
+ * 「本当にセッションが終わった/キャンセルされた」ことの確証にならない
+ * ため、INACTIVE化（＝reload許可という「危険側」の遷移）は生書き込みの
+ * 成功を要求する。一方ACTIVE化（＝reload禁止という「安全側」の遷移）は
+ * 生メッセージから読み取れる限り、書き込みが失敗していても即座に反映
+ * してよい——「不明ならunsafe」という保守的デフォルトの単純な延長。
+ * これを怠ると、直前が309でinactiveのまま、実際には新しいハンドが
+ * 始まっているのに（201/303/308の生書き込みがたまたま失敗しただけで）
+ * reloadが「安全」と誤判定されうる。
  */
-const applySessionActivity = (rawApiTypeId: unknown, message: ApiMessage | { type: string }): void => {
-  if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS || rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID) {
+const applySessionActivity = (rawApiTypeId: unknown, message: ApiMessage | { type: string }, activeOnly = false): void => {
+  if (!activeOnly && (rawApiTypeId === ApiType.EVT_SESSION_RESULTS || rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID)) {
     markSessionInactive()
     return
   }
@@ -194,10 +233,16 @@ const applySessionActivity = (rawApiTypeId: unknown, message: ApiMessage | { typ
  * 1件のAPIイベントを処理する: Raw Event Lakeへの保存（耐久性バリア）→
  * セッション状態追跡・自動同期トリガー（raw書き込み決着後のみ）→
  * リアルタイムパイプラインへの投入。
+ *
+ * `enqueueGeneration`は呼び出し元（`registerEventIngestion()`）が
+ * このメッセージをキューへ積んだ時点で採番した`queueGeneration`の値。
+ * 309/203ブロックが「自分の到着後に何か新しく積まれていないか」を
+ * 同期的に確認するために使う（詳細は該当ブロックのコメント参照）。
  */
 const processEvent = async (
   service: PokerChaseService,
-  message: ApiMessage | { type: string }
+  message: ApiMessage | { type: string },
+  enqueueGeneration: number
 ): Promise<void> => {
   // Ensure service is ready before processing messages
   try {
@@ -285,10 +330,10 @@ const processEvent = async (
         // 重複/衝突以外の理由（quota超過等）でraw書き込みが失敗 = この
         // イベントはLakeに存在しない。「派生統計はraw行があって初めて
         // 存在してよい」というLakeの不変条件を守るため、ストリーム・
-        // セッションフック・同期トリガーのいずれにも投入しない
-        // （forward NGが正しい判断——「ログだけ出して素通しする」は
-        // 不変条件違反を積極的に作りにいくことになるため選ばない）。
-        // #141のdrop可視化カウンタで運用上気づけるようにする。
+        // 同期トリガーには投入しない（forward NGが正しい判断——
+        // 「ログだけ出して素通しする」は不変条件違反を積極的に作りに
+        // いくことになるため選ばない）。#141のdrop可視化カウンタで
+        // 運用上気づけるようにする。
         console.error('[background] Raw Event Lake write failed -- dropping from pipeline to preserve the Lake invariant (derived stats require a raw row):', err, message)
         if (typeof rawApiTypeId === 'number') {
           const eventTimestamp = typeof rawTimestamp === 'number' ? rawTimestamp : Date.now()
@@ -296,6 +341,17 @@ const processEvent = async (
             console.error('[background] Failed to record dropped-event stats:', recordErr)
           )
         }
+        // 例外: セッション状態のACTIVE化だけはfail-closedで適用する
+        // （P2, codexレビュー指摘 2026-07-21, pass-4, "Fail closed on
+        // dropped ACTIVE writes"）。この生メッセージが201/303[Player
+        // 在席]/308形状であれば、raw書き込みが失敗していても「新しい
+        // ハンドが観測された」という事実そのものは疑いようが無い
+        // （生メッセージは実際に届いている）。ここでACTIVE化を諦めると、
+        // 直前が309でinactiveのまま、実際には新しいハンドが始まって
+        // いるのにreloadが「安全」と誤判定されうる。INACTIVE化
+        // （309/203）は適用しない——理由は`applySessionActivity`の
+        // `activeOnly`引数のコメント参照。
+        applySessionActivity(rawApiTypeId, message, true)
         return
       }
     }
@@ -398,28 +454,65 @@ const processEvent = async (
     // chrome.runtime.reload()でService Workerを巻き込んでしまう恐れが
     // あるため（codexレビュー指摘, P1）。
     //
-    // このチェーン全体を`await`し、`processEvent`自体（延いては
-    // `ingestionQueue`）がこの決着を待ってから次のイベントへ進むように
-    // する（P2, codexレビュー指摘 2026-07-21, pass-3, 「Keep the reload
-    // recheck inside the ingestion queue」）: 以前はfire-and-forgetして
-    // いたため、`processEvent()`がここで即座にresolveしてキューが次の
-    // rawイベントの処理（＝新たな`apiEvents.add()`）を始めてしまう一方、
-    // まだ実行中の`recheckPendingUpdate()`が`chrome.runtime.reload()`を
-    // 呼べる状態のままだった。保留中アップデートがある状態で309の直後に
-    // 非ACTIVEなイベントが1件でも続くと、そのreloadが次イベントの
-    // in-flightな`apiEvents.add()`と競合してabortさせ、耐久性バリアが
-    // あるにもかかわらずraw-Lakeに欠落を作りうる。`await`することで、
-    // この309自身の処理が完全に終わる（＝reloadするかどうかの決着が
-    // 付く）までキューが先に進まなくなり、この競合が構造的に無くなる。
-    try {
-      await autoSyncService.onGameSessionEnd()
-    } catch (err) {
-      console.error('[background] Auto sync on game end failed:', err)
-    }
-    try {
-      await recheckPendingUpdate()
-    } catch (err) {
-      console.error('[background] Pending update recheck on session end failed:', err)
+    // このチェーン全体はfire-and-forgetで、`processEvent`からawaitしない
+    // （P2, codexレビュー指摘 2026-07-21, pass-4, "Don't block raw
+    // ingestion on cloud uploads"）: `onGameSessionEnd()`は認証済み
+    // ユーザーで未同期行数が閾値を超えていれば実際のFirestoreアップロード
+    // を走らせうる非同期処理で、これを`ingestionQueue`内でawaitすると、
+    // 次のハンドの生イベントが`apiEvents.add()`にすら到達できずメモリ上に
+    // 滞留し、アップロード完了までライブHUDが凍結し、SWサスペンド/
+    // リロード・タブクローズが起きればそれらのイベントは失われる
+    // （前回の暫定対策——チェーン全体をawaitしてreloadとの競合を防ぐ——は
+    // このスループット問題を引き起こしていた）。
+    //
+    // reload競合の防止は、キューをブロックする代わりに`queueGeneration`
+    // の比較で行う（P1, codexレビュー指摘 2026-07-21, pass-4, "Don't
+    // reload before queued session starts run"）: `onGameSessionEnd()`
+    // が完了した時点で、このメッセージが積まれてから（＝
+    // `enqueueGeneration`採番時から）`queueGeneration`が進んでいれば、
+    // 自分の後に新しいイベント（次のハンドの201/303等、まだ
+    // `applySessionActivity()`未実行）が既に積まれているということ。
+    // その状態で`recheckPendingUpdate()`を呼ぶと、`isSafeToUpdate()`が
+    // まだ反映されていない古い（309由来の）inactiveを読んで「安全」と
+    // 誤判定し、次イベントのin-flightな`apiEvents.add()`と競合する
+    // reloadを引き起こしうる。世代が変わっていなければ（＝自分の後に
+    // 何も積まれていない）、この時点でのreloadは安全——`ingestionQueue`
+    // は直列なので、自分より後に何も積まれていない限り新しいイベントが
+    // 割り込む余地は無い。世代が変わっていれば今回のrecheckは諦め、次の
+    // 自然な契機（次のセッション終了・操作完了・SW起動）に委ねる
+    // （その新しいイベント自身がいずれ309/203に到達すれば、その時点で
+    // 改めてこの同じチェックが走る）。
+    autoSyncService.onGameSessionEnd()
+      .catch(err => console.error('[background] Auto sync on game end failed:', err))
+      .finally(() => {
+        if (queueGeneration !== enqueueGeneration) {
+          console.log('[background] Skipping pending-update recheck after session end -- a newer event has already been queued, deferring to a later recheck trigger')
+          return
+        }
+        recheckPendingUpdate().catch(err =>
+          console.error('[background] Pending update recheck on session end failed:', err)
+        )
+      })
+  } else if (rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID) {
+    // 参加取消申込(203)も保留中アップデートの安全性再チェック地点の1つに
+    // 加える（P2, codexレビュー指摘 2026-07-21, pass-4, "Recheck updates
+    // after entry cancellation"）: `applySessionActivity()`は203を309と
+    // 同様にINACTIVE化トリガーとして扱う（本ファイル冒頭の定数コメント
+    // 参照）が、この再チェック地点が309専用のままだと、参加キャンセルで
+    // ちょうど安全になったケースでも別の契機（次のセッション終了・操作
+    // 完了・SW起動）が来るまで保留され続けてしまう。203はauto-syncの
+    // トリガー対象ではない（バックアップすべきセッションデータが無い）
+    // ため`onGameSessionEnd()`は呼ばず、309と同じ`queueGeneration`鮮度
+    // チェックの後に`recheckPendingUpdate()`だけを呼ぶ（このイベント自体
+    // には`onGameSessionEnd()`のような遅い非同期処理が挟まらないため、
+    // 実際にここで世代がずれることは稀だが、同じガードを一貫して適用
+    // しておく）。
+    if (queueGeneration !== enqueueGeneration) {
+      console.log('[background] Skipping pending-update recheck after entry cancellation -- a newer event has already been queued, deferring to a later recheck trigger')
+    } else {
+      recheckPendingUpdate().catch(err =>
+        console.error('[background] Pending update recheck on entry cancellation failed:', err)
+      )
     }
   } else if (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED || rawApiTypeId === ApiType.EVT_SESSION_DETAILS) {
     // フォールバックトリガー（docs/postmortems/2026-07-session-results-drop.md

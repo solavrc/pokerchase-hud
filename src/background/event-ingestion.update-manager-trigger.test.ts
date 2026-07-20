@@ -363,4 +363,39 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     expect(markSessionInactiveSpy).toHaveBeenCalledTimes(1)
     expect(updateManager.isSafeToUpdate()).toBe(true) // inactive again -- no hand ever started
   })
+
+  test('EVT_ENTRY_CANCELLED (203) also triggers the pending-update recheck, same as EVT_SESSION_RESULTS (309) (P2, codex review 2026-07-20 pass-4: "Recheck updates after entry cancellation")', async () => {
+    // applySessionActivity() treats 203 as an INACTIVE trigger (previous
+    // test), but that alone doesn't help a pending Forced Update: without
+    // also firing recheckPendingUpdate() here, a pending update stays
+    // blocked until some unrelated future trigger (a later session's 309,
+    // operation completion, or a Service Worker restart) happens to poke
+    // it, even though cancelling the entry is itself the exact moment it
+    // became safe to apply.
+    const entryQueuedEvent = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 11000,
+      Code: 0,
+      BattleType: 0,
+      Id: 'stage000_003',
+      IsRetire: false
+    }
+    const entryCancelledEvent = {
+      ApiTypeId: 203,
+      timestamp: 11100,
+      Code: 0
+    }
+
+    await onMessageHandler(entryQueuedEvent)
+    recheckPendingUpdateSpy.mockClear()
+
+    await onMessageHandler(entryCancelledEvent)
+    // event-ingestion.ts's 203 branch is fire-and-forget-free (no slow
+    // upload precedes it) but still routed through the same
+    // queueGeneration freshness check as 309 -- flush microtasks so that
+    // synchronous chain settles before asserting.
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(recheckPendingUpdateSpy).toHaveBeenCalledTimes(1)
+  })
 })

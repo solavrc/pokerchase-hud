@@ -276,6 +276,47 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     expect(persisted?.value).toEqual(stats)
   })
 
+  test('a non-duplicate raw-write failure on a session-START event (201) still fails closed to ACTIVE (P2, codex review 2026-07-20 pass-4: "Fail closed on dropped ACTIVE writes")', async () => {
+    // Start from a genuine prior 309 so sessionActivity begins 'inactive'.
+    await onMessageHandler(sessionResults(350))
+
+    const handLogSpy = jest.spyOn(service.handLogStream, 'write')
+    const markSessionActiveSpy = jest.spyOn(updateManager, 'markSessionActive')
+    const onNewSessionStartSpy = jest.spyOn(autoSyncService, 'onNewSessionStart').mockResolvedValue(undefined)
+
+    const quotaError = new Error('The quota has been exceeded.')
+    quotaError.name = 'QuotaExceededError'
+    jest.spyOn(db.apiEvents, 'add').mockRejectedValue(quotaError)
+
+    await onMessageHandler(entryQueued(360))
+
+    // No raw row for this event -- the Lake invariant still holds, and it
+    // still isn't forwarded to streams or the auto-sync trigger.
+    expect(await db.apiEvents.count()).toBe(1) // only the 309 from setup
+    expect(handLogSpy).not.toHaveBeenCalled()
+    expect(onNewSessionStartSpy).not.toHaveBeenCalled()
+    // But the raw message unambiguously shows a new hand starting -- that
+    // fact doesn't depend on whether the write succeeded, so ACTIVE must
+    // still be applied. Without this, sessionActivity would incorrectly
+    // stay 'inactive' (from the prior 309) through an actually-live hand,
+    // and a Forced Update recheck could judge a mid-game reload "safe".
+    expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
+    expect(updateManager.isSafeToUpdate()).toBe(false)
+  })
+
+  test('control: a non-duplicate raw-write failure on EVT_SESSION_RESULTS (309) does NOT fail open to INACTIVE', async () => {
+    // Mirrors the existing quota-failure test above but asserts the
+    // asymmetry explicitly: ACTIVE-direction failures fail closed (previous
+    // test), INACTIVE-direction failures must NOT fail open, since a
+    // failed 309 write is not confirmation the session actually ended.
+    jest.spyOn(db.apiEvents, 'add').mockRejectedValue(Object.assign(new Error('quota'), { name: 'QuotaExceededError' }))
+    const markSessionInactiveSpy = jest.spyOn(updateManager, 'markSessionInactive')
+
+    await onMessageHandler(sessionResults(370))
+
+    expect(markSessionInactiveSpy).not.toHaveBeenCalled()
+  })
+
   test('a burst of events preserves stream-write order even though each event awaits its own raw add() (serialization invariant)', async () => {
     const writeOrder: number[] = []
     jest.spyOn(service.handLogStream, 'write').mockImplementation((event: any) => {
@@ -306,41 +347,80 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     expect(writeOrder).toEqual([1000, 1001, 1002, 1003, 1004])
   })
 
-  test('the session-end pending-update recheck (and any reload it decides on) settles BEFORE the next queued event\'s raw write begins (P2, codex review 2026-07-20 pass-3: "Keep the reload recheck inside the ingestion queue")', async () => {
-    // A pending update exists and becomes safe to apply the instant this
-    // 309 marks the session inactive (sync not in flight, no operation
-    // running -- both hold by default in this harness).
+  test('raw ingestion is NOT blocked behind autoSyncService.onGameSessionEnd() (P2, codex review 2026-07-20 pass-4: "Don\'t block raw ingestion on cloud uploads")', async () => {
+    // Make onGameSessionEnd() (standing in for a real, slow Firestore
+    // upload) stay pending indefinitely. Before this fix, the sync trigger
+    // was awaited inside processEvent, so the entire ingestionQueue --
+    // including apiEvents.add() for the NEXT hand's raw events -- stayed
+    // blocked behind it, freezing the live HUD and risking losing those
+    // events entirely if the Service Worker suspended/reloaded meanwhile.
+    let resolveSync!: () => void
+    jest.spyOn(autoSyncService, 'onGameSessionEnd').mockImplementation(
+      () => new Promise<void>(resolve => { resolveSync = resolve })
+    )
+
+    await onMessageHandler(sessionResults(2200))
+    // The next hand's raw event must reach apiEvents.add() promptly --
+    // NOT stuck waiting behind the still-pending onGameSessionEnd().
+    await onMessageHandler(entryQueued(2300))
+
+    expect(await db.apiEvents.count()).toBe(2)
+
+    resolveSync()
+    await new Promise(resolve => setTimeout(resolve, 0)) // let the deferred sync settle cleanly
+  })
+
+  test('the session-end reload recheck is skipped (not just delayed) when a newer event was already queued while onGameSessionEnd() was running (P1, codex review 2026-07-20 pass-4: "Don\'t reload before queued session starts run")', async () => {
+    // A pending update exists and would become "safe to apply" the instant
+    // this 309 marks the session inactive -- but a new hand's 201 arrives
+    // and gets queued (behind the 309, ahead of having its own ACTIVE
+    // transition applied yet) while the sync trigger is still running.
     await chrome.storage.local.set({ pendingUpdate: { pending: true, version: '9.9.9' } })
 
-    const callOrder: string[] = []
-    const realAdd = db.apiEvents.add.bind(db.apiEvents)
-    jest.spyOn(db.apiEvents, 'add').mockImplementation(((event: any) => {
-      callOrder.push(`add:${event.ApiTypeId}`)
-      return realAdd(event)
-    }) as any)
+    let resolveSync!: () => void
+    jest.spyOn(autoSyncService, 'onGameSessionEnd').mockImplementation(
+      () => new Promise<void>(resolve => { resolveSync = resolve })
+    )
     ;(chrome.runtime.reload as jest.Mock).mockClear()
-    ;(chrome.runtime.reload as jest.Mock).mockImplementation(() => {
-      callOrder.push('reload')
-    })
 
-    // Fire the session-end 309, then immediately (without awaiting)
-    // whatever the next raw event is -- simulating messages arriving
-    // faster than the recheck settles. Before this fix, `processEvent`
-    // fired the sync-trigger + recheck chain without awaiting it, so it
-    // could resolve (letting the queue start the next event's `add()`)
-    // while `recheckPendingUpdate()` was still deciding whether to
-    // `chrome.runtime.reload()` -- a reload right then could abort that
-    // next event's in-flight write despite the durability barrier.
-    const pendingSessionResults = onMessageHandler(sessionResults(2000))
-    const pendingNext = onMessageHandler(entryQueued(2100))
+    const pendingSessionResults = onMessageHandler(sessionResults(2400))
+    const pendingNext = onMessageHandler(entryQueued(2500)) // queued behind the 309, not yet processed
 
+    // Let the queue actually reach the mocked (still-unresolved)
+    // onGameSessionEnd() call before releasing it -- poll rather than a
+    // single fixed tick, since the number of microtask hops through
+    // `service.ready` + `apiEvents.add()` before reaching the sync trigger
+    // isn't guaranteed stable under parallel test-worker load.
+    for (let i = 0; i < 20 && !resolveSync; i++) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    resolveSync() // let onGameSessionEnd() settle now that a newer event is already queued
     await pendingSessionResults
     await pendingNext
 
-    expect(callOrder).toEqual([
-      'add:309',
-      'reload',
-      'add:201'
-    ])
+    // The stale-relative-to-arrival recheck must not have reloaded --
+    // reading isSafeToUpdate() at that moment would have seen the 309's
+    // 'inactive' without yet reflecting the queued 201's ACTIVE transition.
+    expect(chrome.runtime.reload).not.toHaveBeenCalled()
+    // The 201 legitimately re-armed the session afterward.
+    expect(updateManager.isSafeToUpdate()).toBe(false)
+    // The pending update is still recorded (deferred to a later recheck
+    // trigger -- the next session end, operation completion, or SW
+    // startup), not silently lost.
+    const state = await chrome.storage.local.get('pendingUpdate')
+    expect((state as any).pendingUpdate?.pending).toBe(true)
+  })
+
+  test('control: the session-end reload recheck still applies a safe pending update when nothing new was queued while onGameSessionEnd() was running', async () => {
+    await chrome.storage.local.set({ pendingUpdate: { pending: true, version: '9.9.9' } })
+    jest.spyOn(autoSyncService, 'onGameSessionEnd').mockResolvedValue(undefined)
+    ;(chrome.runtime.reload as jest.Mock).mockClear()
+
+    await onMessageHandler(sessionResults(2600))
+    // Let the fire-and-forget sync-trigger/recheck chain (unawaited by
+    // processEvent as of the pass-4 decoupling) settle.
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(chrome.runtime.reload).toHaveBeenCalledTimes(1)
   })
 })
