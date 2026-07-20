@@ -354,16 +354,50 @@ export class EntityConverter {
             action.handId = event.HandId
           })
 
+          // このハンドで最終的に見えているコミュニティカード全体（既存フェーズの
+          // 蓄積分 + このEVT_HAND_RESULTS自身が運ぶ分）。SHOWDOWNフェーズの
+          // communityCardsはこれをそのまま使う（下のFLOP合成ブロックがphasesに
+          // 要素をpushした後で再度lastPhase.communityCardsを参照すると、
+          // EVT_HAND_RESULTSのCommunityCardsを二重に数えてしまう）。
+          const fullBoard = [...(handState.phases.at(-1)?.communityCards || []), ...(event.CommunityCards || [])]
+
+          // プリフロップ全員オールインでストリートが自動進行した場合、PokerChaseは
+          // 残りのEVT_DEAL_ROUNDを一切送信せず、コミュニティカードは全てこの
+          // EVT_HAND_RESULTS.CommunityCardsにまとめて届く（docs/api-events.md
+          // 「EVT_DEAL_ROUND: CommunityCards」）。この場合FLOPフェーズが一度も
+          // pushされないため、WTSD/WWSFの「flops seen」分母がゼロ扱いになり、
+          // PT4公式定義（プリフロップオールインを含む「flops seen」）と食い違う
+          // （#115で修正した通常のDEAL_ROUND経由のALL_IN救済では、DEAL_ROUND自体が
+          // 送信されないこのケースを救えていなかった。sola監査、#115未解決コメント）。
+          // フェーズ配列にFLOPが一度も現れておらず、かつボードが3枚以上到達して
+          // いる場合のみ、プリフロップでFOLDしなかったプレイヤーからFLOPフェーズを
+          // 合成する（WriteEntityStreamと同一ロジック）。BetStatusのスナップショットが
+          // 存在しないため、通常経路（BET_ABLE || ALL_IN）の代わりにPREFLOPフェーズの
+          // FOLDアクションで判定する（#97のフォールド除外と同じ結論に達する、
+          // EVT_DEAL_ROUND非依存の導出）。
+          if (fullBoard.length >= 3 && !handState.phases.some(p => p.phase === PhaseType.FLOP)) {
+            const preflopFoldedPlayerIds = new Set(
+              handState.actions
+                .filter(a => a.phase === PhaseType.PREFLOP && a.actionType === ActionType.FOLD)
+                .map(a => a.playerId)
+            )
+            handState.phases.push({
+              handId: event.HandId,
+              phase: PhaseType.FLOP,
+              seatUserIds: (handState.hand.seatUserIds || []).filter(uid => uid !== -1 && !preflopFoldedPlayerIds.has(uid)),
+              communityCards: fullBoard.slice(0, 3),
+            })
+          }
+
           // ショーダウンフェーズの生成（実際にカードを比較したプレイヤーが2名以上いる場合）
           // NO_CALL（無競争勝利）やFOLD_OPEN（フォールド後の自発公開）はショーダウンではないため除外する
           {
             const showdownParticipants = (event.Results || []).filter(isShowdownParticipant)
             if (showdownParticipants.length >= 2) {
-              const lastPhase = handState.phases.at(-1)
               handState.phases.push({
                 handId: event.HandId,
                 phase: PhaseType.SHOWDOWN,
-                communityCards: [...(lastPhase?.communityCards || []), ...(event.CommunityCards || [])],
+                communityCards: fullBoard,
                 seatUserIds: showdownParticipants.map(result => result.UserId)
               })
             }

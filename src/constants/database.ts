@@ -59,9 +59,14 @@ export type DbOperationType = 'import' | 'export' | 'sync' | 'rebuild'
  * 既存に記録済みのハンドを再評価すると異なる結果になる場合はこの値をインクリ
  * メントすること（例: #94–#97, #100–#101 の修正 = version 1）。
  *
+ * version 2: プリフロップ全員オールインでEVT_DEAL_ROUNDが一切送信されない
+ * ハンド（docs/api-events.md）でFLOPフェーズが合成されず、WTSD/WWSFの
+ * 「flops seen」分母から漏れていたバグを修正（entity-converter.ts /
+ * write-entity-stream.ts、PR #115未解決コメントのsola監査分）。
+ *
  * インクリメントすると、拡張機能の更新後に既存ユーザーへ一度だけ
  * 「データ再構築」の実行を促すアドバイソリーが表示される
  * （`src/background/rebuild-advisory.ts`参照）。単なるUI変更やバグ修正でも
  * 書き込み時の導出結果に影響しないものはバンプ不要。
  */
-export const REBUILD_ADVISORY_VERSION = 1
+export const REBUILD_ADVISORY_VERSION = 2

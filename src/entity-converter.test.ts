@@ -3268,6 +3268,190 @@ describe('EntityConverter', () => {
       // 両パイプラインが完全一致
       expect(riverCallAction!.actionDetails.slice().sort()).toEqual(liveRiverCallAction!.actionDetails.slice().sort())
     })
+
+    /**
+     * DEAL_ROUND省略されたプリフロップ全員オールイン（scenario d、PR #115未解決コメント）。
+     *
+     * PokerChaseは「残り全員がプリフロップでオールイン」の場合、残りの
+     * EVT_DEAL_ROUNDを一切送信せず、フルボードをEVT_HAND_RESULTS.CommunityCards
+     * にまとめて送る（docs/api-events.md）。3人テーブルでC(BTN)がフォールドし、
+     * A(SB)がオールイン、B(BB)がコール（オールイン一致）してリバーまで一気に
+     * 進行、EVT_DEAL_ROUNDが一度も来ない。旧実装はFLOPフェーズのseatUserIdsを
+     * EVT_DEAL_ROUNDのBetStatusスナップショットからしか構築できず、このケースで
+     * FLOPフェーズが一度も生成されないため、実際にはショーダウンまで進んだ
+     * A・Bの「flops seen」（WTSD/WWSFの分母）が0のまま扱われていた。
+     * 修正後はPREFLOPでFOLDしなかったプレイヤー（A, B）からFLOPフェーズを
+     * 合成し、FOLDしたC は引き続き除外される。
+     */
+    it('synthesizes a FLOP phase when the flop DEAL_ROUND is entirely omitted by a preflop all-in runout in BOTH pipelines (scenario d)', async () => {
+      const A = 700111, B = 700222, C = 700333
+      const events: ApiEvent[] = [
+        createEvent(ApiType.EVT_DEAL, {
+          timestamp: 70000,
+          SeatUserIds: [A, B, C, -1],
+          Game: {
+            CurrentBlindLv: 1,
+            NextBlindUnixSeconds: 70000000,
+            Ante: 0,
+            SmallBlind: 50,
+            BigBlind: 100,
+            ButtonSeat: 2,
+            SmallBlindSeat: 0,
+            BigBlindSeat: 1
+          },
+          Player: {
+            SeatIndex: 0,
+            BetStatus: 1,
+            HoleCards: [37, 51],
+            Chip: 2000,
+            BetChip: 50
+          },
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 2,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 200,
+            Pot: 150,
+            SidePot: []
+          },
+          OtherPlayers: [
+            { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 2000, BetChip: 100 },
+            { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 2000, BetChip: 0 }
+          ]
+        }),
+        // C(BTN, seat2)がフォールド
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 70001,
+          SeatIndex: 2,
+          ActionType: ActionType.FOLD,
+          Chip: 2000,
+          BetChip: 0,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 0,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 200,
+            Pot: 150,
+            SidePot: []
+          }
+        }),
+        // A(SB, seat0)がオールイン
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 70002,
+          SeatIndex: 0,
+          ActionType: ActionType.ALL_IN,
+          Chip: 0,
+          BetChip: 2000,
+          Progress: {
+            Phase: 0,
+            NextActionSeat: 1,
+            NextActionTypes: [2, 3],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 0,
+            Pot: 2100,
+            SidePot: []
+          }
+        }),
+        // B(BB, seat1)がコール（オールイン一致）。以降EVT_DEAL_ROUNDは一切来ない。
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 70003,
+          SeatIndex: 1,
+          ActionType: ActionType.CALL,
+          Chip: 0,
+          BetChip: 2000,
+          Progress: {
+            Phase: 3,
+            NextActionSeat: -2,
+            NextActionTypes: [],
+            NextExtraLimitSeconds: 0,
+            MinRaise: 0,
+            Pot: 4000,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
+          timestamp: 70004,
+          HandId: 700123456,
+          CommunityCards: [1, 21, 44, 2, 15],
+          Pot: 4000,
+          SidePot: [],
+          ResultType: 0,
+          DefeatStatus: 0,
+          Results: [
+            {
+              UserId: A,
+              HoleCards: [37, 51],
+              RankType: RankType.ONE_PAIR,
+              Hands: [1, 21, 44, 37, 51],
+              HandRanking: 1,
+              Ranking: 1,
+              RewardChip: 4000
+            },
+            {
+              UserId: B,
+              HoleCards: [3, 4],
+              RankType: RankType.HIGH_CARD,
+              Hands: [1, 21, 44, 3, 4],
+              HandRanking: -1,
+              Ranking: 2,
+              RewardChip: 0
+            }
+          ],
+          OtherPlayers: [
+            { SeatIndex: 0, Status: 0, BetStatus: -1, Chip: 4000, BetChip: 0 },
+            { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 0, BetChip: 0 }
+          ]
+        })
+      ]
+
+      // --- インポート/リビルドパイプライン: EntityConverter経由 ---
+      const importResult = converter.convertEventsToEntities(events)
+      const importFlopPhase = importResult.phases.find(p => p.phase === PhaseType.FLOP)
+      expect(importFlopPhase).toBeDefined()
+      expect([...importFlopPhase!.seatUserIds].sort((a, b) => a - b)).toEqual([A, B])
+      expect(importFlopPhase!.seatUserIds).not.toContain(C)
+      // 合成されたFLOPフェーズのcommunityCardsはボードの最初の3枚
+      expect(importFlopPhase!.communityCards).toEqual([1, 21, 44])
+      // ショーダウンフェーズも通常通り生成される（既存ロジック、本テストの対象外）
+      const importShowdownPhase = importResult.phases.find(p => p.phase === PhaseType.SHOWDOWN)
+      expect(importShowdownPhase).toBeDefined()
+      expect(importShowdownPhase!.communityCards).toEqual([1, 21, 44, 2, 15])
+
+      // --- ライブ記録パイプライン: WriteEntityStream経由 ---
+      const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
+      const service = new PokerChaseService({ db: dbMock })
+      await service.ready
+      for (const event of events) service.handAggregateStream.write(event)
+      const livePhases = await pipeEventsAndWaitForReady(
+        service,
+        async () => {
+          await dbMock.open()
+          return dbMock.phases.where('handId').equals(700123456).toArray()
+        },
+        result => result.length >= importResult.phases.length,
+        { description: `dbMock.phases with handId=700123456 to have >= ${importResult.phases.length} row(s)` }
+      )
+
+      const liveFlopPhase = livePhases.find(p => p.phase === PhaseType.FLOP)
+      expect(liveFlopPhase).toBeDefined()
+      expect([...liveFlopPhase!.seatUserIds].sort((a, b) => a - b)).toEqual([A, B])
+      expect(liveFlopPhase!.seatUserIds).not.toContain(C)
+      expect(liveFlopPhase!.communityCards).toEqual([1, 21, 44])
+
+      // 両パイプラインの全フェーズが完全一致
+      const pickComparablePhase = (phase: typeof livePhases[0]) => ({
+        phase: phase.phase,
+        seatUserIds: [...phase.seatUserIds].sort((a, b) => a - b),
+        communityCards: phase.communityCards
+      })
+      expect(
+        importResult.phases.slice().sort((a, b) => a.phase - b.phase).map(pickComparablePhase)
+      ).toEqual(
+        livePhases.slice().sort((a, b) => a.phase - b.phase).map(pickComparablePhase)
+      )
+    })
   })
 
   /**
