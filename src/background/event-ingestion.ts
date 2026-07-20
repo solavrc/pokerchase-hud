@@ -10,7 +10,7 @@ import PokerChaseService, {
 } from '../app'
 import type { ApiEvent } from '../app'
 import { autoSyncService } from '../services/auto-sync-service'
-import { connectedPorts, startPortPing } from './ports'
+import { connectedPorts, startPortPing, setLastKnownStats } from './ports'
 import { recordUndecodedEvent } from './undecoded-event-tracker'
 import { markSessionActive, markSessionInactive, recheckPendingUpdate } from './update-manager'
 
@@ -70,6 +70,23 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           markSessionActive()
         } else if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
           markSessionInactive()
+          // #179 round3指摘: セッション終了(EVT_SESSION_RESULTS)によるHUDクリアは
+          // App.tsx側のReact stateだけで完結しており、background(ports.ts)の
+          // `lastKnownStats`はセッションをまたいで残り続ける。この状態で
+          // Popupのバトルタイプフィルターが変更されると、message-router.tsの
+          // `updateBattleTypeFilter`ハンドラーが`getLastKnownStats()`（終了済み
+          // lineupのまま）を使って`service.statsOutputStream.write(...)`を
+          // 再トリガーし、ブロードキャストで終了済みlineupが復活してApp.tsxの
+          // クリア済みパネルへ再度流し込まれてしまう。上と同じ「パース成功後の
+          // data.ApiTypeIdではなく生メッセージの数値ApiTypeIdだけを見る」
+          // raw-firstパターンで（309のペイロード破壊的変更に影響されないよう）
+          // ここでlastKnownStatsを空にしておけば、以降のフィルター変更は
+          // `lastKnownStats.length > 0`のガードに引っかからずセッション開始前と
+          // 同じ「何もブロードキャストしない」挙動になる。プリゲーム・ヒーロー
+          // スタッツの復元（#158, `requestLatestStats`→`getLatestSessionStats`）
+          // はDBを読む別経路でありlastKnownStatsを参照しないため、この変更の
+          // 影響を受けない。
+          setLastKnownStats([])
         }
 
         // 通常のAPIメッセージ処理

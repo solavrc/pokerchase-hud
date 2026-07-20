@@ -133,26 +133,45 @@ const App = memo(() => {
       //   ごと入れ替わった強い証拠になる。
       // - キャッシュはあるが今回incomingが空席(-1)、またはincomingにはいるが
       //   その座席がキャッシュに記録なし(まだ誰も座ったことのない座席)、は
-      //   どちらの証拠にもならないので無視する(#179 round2の反例そのもの)。
-      // continuityが1つも無く、conflictが1つ以上あるときだけテーブル移動と
-      // みなし、キャッシュを全座席(hero分含む)クリアしてから通常のミュート
-      // 処理に入る。両方0件（判断材料なし。例: hero以外が同一ハンドで全員
-      // 同時bustした直後のhero単独lineup）なら何もしない -- 誤ってテーブル
-      // 移動と判定してキャッシュを消す誤クリアより、移動を見逃してキャッシュを
-      // 残す方が実害が小さい（ミュートパネルが1テンポ遅れて消える程度）ため、
-      // 「わからない時は消さない」に倒す。
+      //   どちらの証拠にもならないので無視する(#179 round2の反例)。
+      //
+      // round3レビューで「conflictが1件でもあればクリア」も誤発火することが
+      // 指摘された: ショートハンドで座席1がミュート中、座席2だけがA→Bへ
+      // 通常の乗っ取りで入れ替わり、他の座席は全て空席というケース。この時
+      // conflictは座席2の1件のみでcontinuityは0件になるが、これは単なる
+      // 座席2の乗っ取り(すでに下の上書きロジックが正しく処理する)であって
+      // テーブル移動ではない。座席1のミュートまで巻き込んでクリアするのは
+      // 誤り。そこで閾値をconflict 2件以上(かつcontinuity 0件)に引き上げた
+      // -- 複数の座席が"同時に"別人へ入れ替わっているという事象は、通常の
+      // 単発の乗っ取り/リバイでは起きず、lineup全体が入れ替わるテーブル移動
+      // でのみ自然に発生するため、より強い証拠になる。
+      //
+      // 残存する既知の限界(正直に記録しておく): 移動先テーブルの非hero在席が
+      // ちょうど1人しかいない実際のテーブル移動は、この閾値だと即座には
+      // 検知されない(conflictが1件しか立たないため)。許容範囲とする -- その
+      // 1つの座席自体は上書きロジックで即座に正しい表示になり、残る他の
+      // ミュート座席も後続のハンドで(a)本物の在席者到着で個別に上書きされる
+      // か、(b)空席のまま次にconflictが2件以上になるタイミングでまとめて
+      // クリアされるか、(c)セッション終了でクリアされる。「わからない時は
+      // 消さない」というsola仕様の優先順位（bustパネルが1テンポ遅れて消える
+      // 程度の実害 < 無関係な旧テーブルのbustパネルを誤って蘇らせる実害）に
+      // 沿っている。
+      //
+      // conflictが0件、または1件のみ(continuityの有無を問わず)なら何もしない
+      // -- 例: hero以外が同一ハンドで全員同時bustした直後のhero単独lineup
+      // (conflict 0件)や、通常の単発席乗っ取り(conflict 1件)。
       const dimCache = dimCacheRef.current
       let hasContinuitySeat = false
-      let hasConflictSeat = false
+      let conflictSeatCount = 0
       for (const [seatIndex, cached] of dimCache) {
         if (seatIndex === HERO_SEAT_INDEX) continue
         const incoming = mappedStats[seatIndex]
         if (incoming && isExistPlayerStats(incoming)) {
           if (incoming.playerId === cached.playerId) hasContinuitySeat = true
-          else hasConflictSeat = true
+          else conflictSeatCount++
         }
       }
-      const isTableChange = hasConflictSeat && !hasContinuitySeat
+      const isTableChange = conflictSeatCount >= 2 && !hasContinuitySeat
       if (isTableChange) {
         dimCache.clear()
       }

@@ -773,6 +773,45 @@ describe('App', () => {
         expect(screen.getByTestId('hud-2')).toHaveTextContent('Player: 99')
         expect(screen.getByTestId('hud-2')).toHaveTextContent('Dimmed: no')
       })
+
+      it('単発の席の乗っ取り(conflict1件)は他の席のbustミュートを巻き込まない（#179 round3 codex反例: ショートハンドで席2だけがA→Bへ入れ替わり席1は無関係にミュート中）', async () => {
+        render(<App />)
+
+        // ショートハンドテーブル: hero(1)、席1にX(2)、席2にA(3)が在席。
+        // 他の席(3-5)は一度も誰も座ったことがない
+        const shortHandedLineup: StatsData['stats'] = [
+          { playerId: 1, statResults: [] },
+          { playerId: 2, statResults: [] },
+          { playerId: 3, statResults: [] },
+          { playerId: -1 },
+          { playerId: -1 },
+          { playerId: -1 },
+        ]
+        await dispatchStats(shortHandedLineup)
+
+        // Xがbustして席1が空席になり、直近統計がミュート表示のまま残る（席2のAは無関係に在席継続）
+        const bustedLineup: StatsData['stats'] = shortHandedLineup.map((s, i) => (i === 1 ? { playerId: -1 } : s))
+        await dispatchStats(bustedLineup)
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
+
+        // 席2で通常の乗っ取りが起きる: A(3)がbustし、その場に別プレイヤーB(4)が
+        // 直接着席する。conflictは席2の1件のみ(cached=3, incoming=4)で、
+        // continuityは0件（席1はincomingが空席で判断材料なし、席2は不一致）。
+        // 「conflictが1件でもあればクリア」という旧ルールだと、これをテーブル
+        // 移動と誤判定して席1の正当なミュートまで巻き込んで消してしまっていた
+        const seatTurnoverLineup: StatsData['stats'] = bustedLineup.map((s, i) => (
+          i === 2 ? { playerId: 4, statResults: [] } : s
+        ))
+        await dispatchStats(seatTurnoverLineup)
+
+        // 席1(X)は同一テーブルのままミュート表示を継続する（誤って巻き込みクリアされていない証拠）
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
+        // 席2は通常通り乗っ取りが反映される
+        expect(screen.getByTestId('hud-2')).toHaveTextContent('Player: 4')
+        expect(screen.getByTestId('hud-2')).toHaveTextContent('Dimmed: no')
+      })
     })
   })
 })
