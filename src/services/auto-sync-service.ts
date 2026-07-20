@@ -204,6 +204,18 @@ export class AutoSyncService {
   private db: PokerChaseDB
   private syncState: SyncState = { status: 'idle' }
   private _isSyncing = false
+  /**
+   * Resolves when the CURRENT in-flight `performSync()` call's `finally`
+   * block runs (`null` when nothing is in flight). Lets `initialize()`'s
+   * retry (invariant (2b)) wait for a DIFFERENT pass holding `_isSyncing` to
+   * settle instead of immediately re-recursing into a `performSync()` call
+   * that would just short-circuit again (codex review r3615664890, P2,
+   * "Wait for the in-flight sync before retrying initialization") --
+   * without this, all `MAX_INITIALIZE_ATTEMPTS` retries could burn through
+   * before the other pass ever releases the latch, permanently stranding
+   * this account.
+   */
+  private inFlightSyncPromise: Promise<void> | null = null
   private lastSyncAttempt = 0
   private readonly MIN_SYNC_INTERVAL_MS = 0 // No minimum interval restriction
   private readonly SYNC_STORAGE_KEY = 'autoSyncLastTime'
@@ -336,14 +348,27 @@ export class AutoSyncService {
         // COMMIT POINT (invariant (2)): re-check before this migration/
         // clear write.
         this.assertGenerationUnchanged(identity.generation, 'before legacy autoSyncLastTime migration/clear')
+        // Consume (delete) the legacy key BEFORE writing the scoped copy
+        // (codex review r3615664896, P2, "Consume the legacy sync key
+        // before writing the scoped copy"): if the MV3 worker/browser stops
+        // in the gap between these two writes, this ordering guarantees the
+        // legacy key is already gone -- worst case THIS account's own
+        // scoped value fails to land and it simply re-derives "first sync"
+        // on the next `initialize()` call (one extra sync attempt). The
+        // opposite ordering (write-scoped-then-remove-legacy) risks worse:
+        // if the crash lands AFTER the scoped write already durable but
+        // BEFORE the legacy removal, the legacy key survives, remaining
+        // available for a completely DIFFERENT account's later
+        // `initialize()` call to wrongly inherit -- exactly the
+        // cross-account leak this migration exists to prevent.
+        await chrome.storage.local.remove(this.SYNC_STORAGE_KEY)
         if (storedLastSyncTime === undefined) {
           storedLastSyncTime = legacyLastSyncTime
           console.log(`[AutoSync] Migrating legacy unscoped ${this.SYNC_STORAGE_KEY} to this account (${uid})`)
           await chrome.storage.local.set({ [scopedSyncKey]: storedLastSyncTime })
         } else {
-          console.log(`[AutoSync] Clearing orphaned legacy unscoped ${this.SYNC_STORAGE_KEY} (this account already has its own scoped value)`)
+          console.log(`[AutoSync] Cleared orphaned legacy unscoped ${this.SYNC_STORAGE_KEY} (this account already has its own scoped value)`)
         }
-        await chrome.storage.local.remove(this.SYNC_STORAGE_KEY)
       }
 
       // Update timestamps
@@ -384,7 +409,19 @@ export class AutoSyncService {
         if (!this.syncState.lastSyncTime &&
           firebaseAuthService.getAuthGeneration() === identity.generation &&
           attempt + 1 < MAX_INITIALIZE_ATTEMPTS) {
-          console.warn('[AutoSync] initialize(): first sync did not complete (likely a concurrent sync elsewhere), retrying')
+          // codex review r3615664890, P2, "Wait for the in-flight sync
+          // before retrying initialization": if a DIFFERENT pass is still
+          // holding `_isSyncing`, immediately recursing would just call
+          // performSync() again, which short-circuits instantly on the same
+          // latch -- all `MAX_INITIALIZE_ATTEMPTS` retries could burn
+          // through before that other pass ever releases it, permanently
+          // stranding this account. Wait for it to actually settle first.
+          if (this.isSyncing && this.inFlightSyncPromise) {
+            console.warn('[AutoSync] initialize(): first sync did not run because a different pass is still in flight, waiting for it to settle before retrying')
+            await this.inFlightSyncPromise
+          } else {
+            console.warn('[AutoSync] initialize(): first sync did not complete, retrying')
+          }
           return this.initialize(attempt + 1)
         }
       } else {
@@ -421,6 +458,8 @@ export class AutoSyncService {
     // race this flag exists to prevent. Reset in `finally` so every return
     // path (gate-blocked or sync completed/failed) releases the latch.
     this._isSyncing = true
+    let resolveInFlightSyncPromise: (() => void) | undefined
+    this.inFlightSyncPromise = new Promise<void>(resolve => { resolveInFlightSyncPromise = resolve })
 
     try {
       // Wait for auth state to settle BEFORE snapshotting it (codex review
@@ -481,7 +520,6 @@ export class AutoSyncService {
         // COMMIT POINT below for why that assignment is deferred).
         const syncCompletedAt = new Date()
         const scopedSyncKey = this.scopedMetaKey(this.SYNC_STORAGE_KEY, identity.uid)
-        await chrome.storage.local.set({ [scopedSyncKey]: syncCompletedAt.toISOString() })
         // Opportunistically clear an orphaned legacy key here too (codex
         // review r3615389121): `initialize()` is the primary migration
         // path, but a manual sync (bypassing `initialize()` entirely, e.g.
@@ -490,8 +528,15 @@ export class AutoSyncService {
         // available for a later different account to inherit. Only when
         // signed in -- if `identity.uid` is undefined, `scopedSyncKey`
         // already equals the bare legacy key itself (see `scopedMetaKey()`),
-        // and removing it here would just delete what was just written.
+        // and removing it here would delete what's about to be written, so
+        // skip it in that case. Removed BEFORE the scoped write lands (codex
+        // review r3615664896, P2, same ordering rationale as
+        // `initialize()`'s migration): a crash between the two writes then
+        // leaves the legacy key already gone (worst case just an extra
+        // sync attempt) rather than surviving for a different account to
+        // inherit later.
         if (identity.uid) await chrome.storage.local.remove(this.SYNC_STORAGE_KEY)
+        await chrome.storage.local.set({ [scopedSyncKey]: syncCompletedAt.toISOString() })
 
         // Update timestamps after sync
         await this.updateTimestamps()
@@ -531,6 +576,8 @@ export class AutoSyncService {
       }
     } finally {
       this._isSyncing = false
+      this.inFlightSyncPromise = null
+      resolveInFlightSyncPromise?.()
     }
   }
 

@@ -1234,4 +1234,96 @@ describe('AutoSyncService cloud downloads', () => {
     // (wrongly) shrink its own upload backlog.
     expect(service.getSyncState().lastSyncTime).toBeUndefined()
   })
+
+  test('waits for an in-flight sync from a DIFFERENT pass to settle before retrying initialization, instead of burning through all retry attempts immediately (P2, codex review r3615664890)', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime:user-b'])
+
+    const userB = { uid: 'user-b', email: 'b@example.com' } as any
+    jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue(userB)
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockReturnValue(1)
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+    // initialize()'s own performSync() call defaults to direction 'both' --
+    // mock the download leg too (the mocked `userB` has no real
+    // getIdToken(), so the REAL firestoreBackupService.syncFromCloud()
+    // would fail authentication and mask this test's actual concern).
+    jest.spyOn(firestoreBackupService, 'syncFromCloud').mockResolvedValue(0)
+
+    const service = new AutoSyncService(db)
+
+    // Simulate a DIFFERENT pass (e.g. account A's) already genuinely
+    // holding the sync latch when initialize() is called for B -- mirrors
+    // exactly what performSync() itself sets up at its own entry.
+    let resolveOtherPass: (() => void) | undefined
+    ;(service as any)._isSyncing = true
+    ;(service as any).inFlightSyncPromise = new Promise<void>(resolve => { resolveOtherPass = resolve })
+
+    const initializePromise = service.initialize()
+
+    // Flush the microtask queue (a macrotask boundary drains it completely)
+    // so initialize()'s first attempt actually reaches the "wait for the
+    // in-flight pass" branch and is blocked on `await this.inFlightSyncPromise`
+    // -- not still spinning through immediate, doomed retries.
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // Release the OTHER pass, exactly as performSync()'s own `finally`
+    // block would once that pass actually completes.
+    ;(service as any)._isSyncing = false
+    ;(service as any).inFlightSyncPromise = null
+    resolveOtherPass?.()
+
+    await initializePromise
+
+    // B's own first sync succeeded once the latch was actually free -- not
+    // abandoned after 3 immediate, doomed retries that all short-circuited
+    // on the same still-held latch.
+    expect((await chrome.storage.local.get('autoSyncLastTime:user-b'))['autoSyncLastTime:user-b']).toBeDefined()
+  })
+
+  test('removes the legacy autoSyncLastTime key BEFORE writing the scoped copy during migration, so a crash between them cannot leave it available for a different account to inherit (P2, codex review r3615664896)', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime', 'autoSyncLastTime:user-a'])
+
+    const userA = { uid: 'user-a', email: 'a@example.com' } as any
+    jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue(userA)
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockReturnValue(1)
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+
+    const legacyIso = new Date('2026-01-01T00:00:00.000Z').toISOString()
+    await chrome.storage.local.set({ autoSyncLastTime: legacyIso })
+
+    // Track call order exactly like the existing r3614064524 crash-window
+    // regression test does for the sync-floor commit -- capture the
+    // CURRENT mock implementations (not just the mutable property
+    // references) before overriding them, same fix as the earlier
+    // recursive-mock issue in the "blocks the legacy migration/clear
+    // write" test above.
+    const callOrder: string[] = []
+    const originalSet = (chrome.storage.local.set as jest.Mock).getMockImplementation()!
+    const originalRemove = (chrome.storage.local.remove as jest.Mock).getMockImplementation()!
+    jest.spyOn(chrome.storage.local, 'set').mockImplementation((items: any) => {
+      callOrder.push(`set:${Object.keys(items).join(',')}`)
+      return originalSet(items)
+    })
+    jest.spyOn(chrome.storage.local, 'remove').mockImplementation((keys: any) => {
+      callOrder.push(`remove:${Array.isArray(keys) ? keys.join(',') : keys}`)
+      return originalRemove(keys)
+    })
+
+    const service = new AutoSyncService(db)
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockResolvedValue(undefined)
+
+    await service.initialize()
+
+    const removeIndex = callOrder.findIndex(entry => entry === 'remove:autoSyncLastTime')
+    const setIndex = callOrder.findIndex(entry => entry === 'set:autoSyncLastTime:user-a')
+    expect(removeIndex).toBeGreaterThanOrEqual(0)
+    expect(setIndex).toBeGreaterThanOrEqual(0)
+    // happens-before: the legacy key must already be gone before the
+    // scoped copy is written, so a crash in between leaves no legacy value
+    // for a later, different account to wrongly inherit.
+    expect(removeIndex).toBeLessThan(setIndex)
+
+    // Sanity: the migration still landed correctly for A.
+    expect((await chrome.storage.local.get('autoSyncLastTime:user-a'))['autoSyncLastTime:user-a']).toBe(legacyIso)
+    expect(performSyncSpy).not.toHaveBeenCalled()
+  })
 })
