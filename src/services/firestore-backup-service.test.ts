@@ -308,6 +308,24 @@ describe('FirestoreBackupService transport hardening (release audit 2026-07-21: 
     expect(secondHeaders['Authorization']).toBe('Bearer refreshed-token')
   })
 
+  test('a hung INITIAL token acquisition is bounded by the transport timeout too -- no fetch is ever issued (codex review r3617258715)', async () => {
+    // An expired cached token makes the very first getIdToken() of a request
+    // hit the same unbounded Secure Token API fetch as the forced refresh --
+    // simulate it stalling forever. This runs BEFORE fetchWithTimeout() ever
+    // gets involved, so without its own bound the whole sync pass hung here.
+    jest.spyOn(firebaseAuthService, 'getIdToken').mockImplementation(
+      () => new Promise<string>(() => { }) // hangs forever
+    )
+    const fetchMock = jest.fn()
+    global.fetch = fetchMock
+
+    await expect(new FirestoreBackupService(fastTransport).getCloudMaxTimestamp())
+      .rejects.toThrow('initial token acquisition timed out after 30ms')
+    // Terminal auth failure: nothing was ever sent, no forced refresh tried.
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(firebaseAuthService.getIdToken).not.toHaveBeenCalledWith(true)
+  })
+
   test('a hung forced token refresh during 401 recovery is bounded by the transport timeout instead of stalling the request funnel (codex review r3617177865)', async () => {
     // FirebaseAuthService.getIdToken()'s internal Secure Token API fetch has
     // no AbortController -- simulate it stalling forever on the forced

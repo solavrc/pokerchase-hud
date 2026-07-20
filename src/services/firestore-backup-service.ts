@@ -450,10 +450,13 @@ export class FirestoreBackupService {
    *   mid-request (including an A -> B -> A round trip, which a uid
    *   comparison would miss), the retry is ABORTED instead of silently
    *   re-issuing the request against whichever account is live now. A 401
-   *   on the refreshed token is terminal (no second refresh). The forced
-   *   refresh itself is bounded by the same timeout as requests
-   *   (`forceRefreshIdTokenBounded()`) -- a hung refresh fails the request
-   *   instead of stalling it indefinitely.
+   *   on the refreshed token is terminal (no second refresh).
+   * - BOUNDED AUTH: every auth-service await in this method (the `ready()`
+   *   restore, the initial `getIdToken()`, and the 401 path's
+   *   `getIdToken(true)`) goes through `boundedAuthAcquisition()` -- the
+   *   same timeout discipline as the fetches themselves, so a stalled
+   *   Secure Token endpoint (or storage restore) fails the request instead
+   *   of stalling it indefinitely outside the timeout budget.
    * - NON-RETRYABLE: any other 4xx (permission denied, bad request, ...)
    *   throws immediately, preserving the pre-existing
    *   `Firestore REST request failed: <status> <body>` message shape that
@@ -475,9 +478,18 @@ export class FirestoreBackupService {
     // The assert right after the token acquisition fails fast: if the
     // account switched while the initial token was being fetched/refreshed,
     // the request aborts before anything is sent under an ambiguous identity.
-    await firebaseAuthService.ready()
+    //
+    // BOTH awaits are bounded (codex review r3617258715, P2, "Bound the
+    // initial token refresh too"): when the cached token is expired, the
+    // INITIAL `getIdToken()` performs the exact same unbounded Secure Token
+    // API fetch as the 401 path's forced refresh -- it runs before
+    // `fetchWithTimeout()` ever gets involved, so without this bound a
+    // stalled token endpoint left the sync pass hanging outside every
+    // timeout budget. Same discipline applied to `ready()` for completeness
+    // (storage-only, but an unbounded await is an unbounded await).
+    await this.boundedAuthAcquisition(() => firebaseAuthService.ready(), 'auth state restore')
     const generationAtStart = firebaseAuthService.getAuthGeneration()
-    let token = await firebaseAuthService.getIdToken()
+    let token = await this.boundedAuthAcquisition(() => firebaseAuthService.getIdToken(), 'initial token acquisition')
     this.assertAccountUnchanged(generationAtStart, 'after initial token acquisition')
     let authRetryUsed = false
     let transientRetriesUsed = 0
@@ -516,7 +528,7 @@ export class FirestoreBackupService {
         // refresh await, which is itself a window for a switch to land.
         this.assertAccountUnchanged(generationAtStart, 'before 401 token-refresh retry')
         console.warn('[Firestore] Request returned 401, force-refreshing token and retrying once...')
-        token = await this.forceRefreshIdTokenBounded()
+        token = await this.boundedAuthAcquisition(() => firebaseAuthService.getIdToken(true), 'forced token refresh')
         this.assertAccountUnchanged(generationAtStart, 'after 401 token refresh')
         authRetryUsed = true
         continue
@@ -559,35 +571,42 @@ export class FirestoreBackupService {
   }
 
   /**
-   * The 401 recovery's forced token refresh, bounded by the same transport
-   * timeout as requests (codex review r3617177865, P2, "Bound the forced
-   * token refresh"): `FirebaseAuthService.getIdToken()` performs its own
-   * Secure Token API `fetch` WITHOUT an `AbortController`, so awaiting it
-   * bare in the 401 path reintroduced exactly the unbounded stall this
-   * transport hardening exists to prevent -- a hung refresh never reached
-   * the retry loop or the outer timeout and could leave
-   * `AutoSyncService._isSyncing` latched indefinitely.
+   * Runs one auth-service acquisition bounded by the same transport timeout
+   * as the requests themselves. Used for EVERY auth await in `request()`:
+   * the `ready()` restore, the initial `getIdToken()`, and the 401 path's
+   * `getIdToken(true)`.
+   *
+   * WHY (codex reviews r3617177865 + r3617258715, P2 x2, "Bound the forced
+   * token refresh" / "Bound the initial token refresh too"):
+   * `FirebaseAuthService.getIdToken()` performs its own Secure Token API
+   * `fetch` WITHOUT an `AbortController` whenever the cached token is
+   * expired -- and BOTH acquisition sites can hit that path, the forced 401
+   * refresh and the very first `getIdToken()` of a request alike. Each runs
+   * outside `fetchWithTimeout()`'s budget, so a bare await on either meant
+   * a stalled token endpoint left the sync pass hanging with
+   * `AutoSyncService._isSyncing` latched indefinitely -- exactly the stall
+   * this transport hardening exists to prevent.
    *
    * Bounded from the CALLER side via `Promise.race` (`firebase-auth-service.
    * ts` is deliberately untouched -- other callers keep its existing
    * semantics). A timeout is terminal for this request: treated as an auth
-   * failure, surfaced as an error, no retry. The underlying refresh promise
-   * is not cancelled (nothing to abort without touching the auth service);
-   * a late settle just updates the auth service's own cached state
-   * harmlessly, and its potential late REJECTION is explicitly observed so
-   * it can never surface as an unhandled rejection.
+   * failure, surfaced as an error, no retry. The losing promise is not
+   * cancelled (nothing to abort without touching the auth service); a late
+   * settle just updates the auth service's own cached state harmlessly, and
+   * its potential late REJECTION is explicitly observed so it can never
+   * surface as an unhandled rejection.
    */
-  private async forceRefreshIdTokenBounded(): Promise<string> {
-    const refreshPromise = firebaseAuthService.getIdToken(true)
+  private async boundedAuthAcquisition<T>(acquire: () => Promise<T>, label: string): Promise<T> {
+    const acquisition = acquire()
     // Observe (don't act on) a rejection that lands after the race is lost.
-    refreshPromise.catch(() => { })
+    acquisition.catch(() => { })
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       return await Promise.race([
-        refreshPromise,
+        acquisition,
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(
-            () => reject(new Error(`Firestore 401 recovery aborted: forced token refresh timed out after ${this.REQUEST_TIMEOUT_MS}ms`)),
+            () => reject(new Error(`Firestore ${label} timed out after ${this.REQUEST_TIMEOUT_MS}ms`)),
             this.REQUEST_TIMEOUT_MS
           )
         })
