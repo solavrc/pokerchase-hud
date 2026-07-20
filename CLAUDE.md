@@ -314,6 +314,19 @@ Statistics Refresh (batch mode)
 - Storage and entity generation are decoupled: a line that fails to parse (or
   is a known non-application type) is still stored raw — it just doesn't
   reach `EntityConverter`. See "Raw Event Lake" (Design Principles #16).
+- **Overlap imports re-derive from the Lake, not from new events alone**: when
+  the DB already contained events before the import, the entity pass re-reads
+  the affected range from `apiEvents` — expanded back to the last
+  `EVT_ENTRY_QUEUED` (201) at/before the earliest new event (hand boundary and
+  session-context start) and forward to the first `EVT_HAND_RESULTS` (306)
+  at/after the latest new event — so a hand split between existing and
+  imported rows (e.g. re-importing a complete export into a DB missing the
+  hand's middle ACTIONs) gets its derived entities repaired. New events alone
+  cannot form such a hand's 303→306 boundary. Re-deriving existing hands is
+  idempotent (deterministic entity keys + `bulkPut`). See
+  `collectOverlapRepairEvents()` in `src/background/import-export.ts`
+  (independent release-audit finding #7). A fresh import into an empty DB
+  keeps the direct new-events path.
 
 **Critical Design Constraints (learned 2026-03):**
 

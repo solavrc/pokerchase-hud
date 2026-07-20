@@ -15,6 +15,7 @@ import PokerChaseService, {
 import { EntityConverter } from '../entity-converter'
 import { saveEntities, findLatestPlayerDealEvent, filterValidApplicationEvents } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
+import type { Session } from '../types'
 import type {
   ExportProgressMessage,
   ImportProgressMessage,
@@ -49,6 +50,84 @@ export const addImportChunk = (chunkIndex: number, chunkData: string): void => {
 
 export const clearImportSession = (): void => {
   currentImportSession = null
+}
+
+/**
+ * 差分インポート（既存データがあるDBへのインポート）でエンティティ再導出の
+ * 対象にすべきイベントを、Raw Event Lake（apiEvents）から読み直して返す
+ * （独立監査finding #7）。
+ *
+ * 修正前は、インポートで「新規に保存された行」だけをEntityConverterへ渡して
+ * いた。EntityConverterはEVT_DEAL(303)〜EVT_HAND_RESULTS(306)のイベント列が
+ * 揃って初めて1ハンドを構成できるため、既存ハンドの一部（例: DEALとRESULTSは
+ * 保存済みだが中間のACTIONだけ欠けていたDBに、完全なエクスポートを再インポート
+ * したケース）では、新規行（ACTION単体）がduplicate除外されたDEAL/RESULTSと
+ * 切り離され、ハンド境界を構成できずに黙って捨てられていた —— Raw Lakeだけが
+ * 修復され、派生hands/phases/actionsと統計は古いまま残る。
+ *
+ * この関数は新規イベントのtimestamp範囲 [minNewTimestamp, maxNewTimestamp] を
+ * 以下の境界までLake上で拡張し、既存行と新規行を合わせた連続領域を返す:
+ *
+ * - 開始境界: minNewTimestamp 以前で最後の EVT_ENTRY_QUEUED(201)。201は
+ *   ハンド間（テーブル着席時）にのみ発行されるためハンド境界として安全で、
+ *   かつEntityConverterのセッション文脈（BattleType/Id、以降の313/301が
+ *   積むプレイヤー名）の起点でもある —— 新規イベントが属するハンドの
+ *   DEALが既存行だった場合も、そのDEALより前から変換を始められる。
+ *   201が見つからない場合はLake先頭から（rebuildAllDataと同じ条件で）変換する。
+ * - 終了境界: maxNewTimestamp 以後で最初の EVT_HAND_RESULTS(306)（それ自身を
+ *   含む）。新規イベントが既存ハンドの中間に挿入された場合、そのハンドの
+ *   RESULTSまでを含める。306が無い場合（Lake末尾が未完了ハンド）はLake末尾
+ *   まで —— 未完了ハンドはEntityConverterがHandId未設定として棄却するため
+ *   ゴミは生成されない。
+ *
+ * 範囲内の既存ハンドを再導出しても重複は生じない: hands(id) / phases
+ * ([handId+phase]) / actions([handId+index]) はいずれも決定的キーで、
+ * saveEntities()のbulkPutが同キー行を上書きする（冪等）。範囲外の派生行には
+ * 一切触れない。返す前にfilterValidApplicationEvents()で再検証するのは
+ * rebuildAllData()と同じ理由（Raw Lakeには非アプリケーション行・現行スキーマで
+ * パース不能な行が混在し得る。CLAUDE.md「Raw Event Lake」参照）。
+ */
+export const collectOverlapRepairEvents = async (
+  db: PokerChaseDB,
+  minNewTimestamp: number,
+  maxNewTimestamp: number
+): Promise<ApiEvent[]> => {
+  // 開始境界: minNewTimestamp以前（同時刻含む）で最後のEVT_ENTRY_QUEUED。
+  // ApiTypeIdは小さい正の整数のため、[minNewTimestamp, MAX_SAFE_INTEGER]を
+  // 上限にすればminNewTimestampと同時刻の行も全て走査対象に含まれる。
+  const anchorEvent = await db.apiEvents
+    .where('[timestamp+ApiTypeId]')
+    .belowOrEqual([minNewTimestamp, Number.MAX_SAFE_INTEGER])
+    .reverse()
+    .filter(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED)
+    .first()
+
+  // 終了境界: maxNewTimestamp以後（同時刻含む）で最初のEVT_HAND_RESULTS。
+  const endEvent = await db.apiEvents
+    .where('[timestamp+ApiTypeId]')
+    .aboveOrEqual([maxNewTimestamp, 0])
+    .filter(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)
+    .first()
+
+  const lowerKey: [number, number] | undefined = anchorEvent
+    ? [anchorEvent.timestamp!, anchorEvent.ApiTypeId]
+    : undefined
+  const upperKey: [number, number] | undefined = endEvent
+    ? [endEvent.timestamp!, endEvent.ApiTypeId]
+    : undefined
+
+  let rawRows: ApiEvent[]
+  if (lowerKey && upperKey) {
+    rawRows = await db.apiEvents.where('[timestamp+ApiTypeId]').between(lowerKey, upperKey, true, true).toArray()
+  } else if (lowerKey) {
+    rawRows = await db.apiEvents.where('[timestamp+ApiTypeId]').aboveOrEqual(lowerKey).toArray()
+  } else if (upperKey) {
+    rawRows = await db.apiEvents.where('[timestamp+ApiTypeId]').belowOrEqual(upperKey).toArray()
+  } else {
+    rawRows = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
+  }
+
+  return await filterValidApplicationEvents(rawRows)
 }
 
 /**
@@ -90,6 +169,13 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           })
         })
       console.log(`[importData] Loaded ${existingKeys.size} existing keys`)
+
+      // 既存データが1件でもあるインポートは「差分インポート」: 新規イベントが
+      // 既存ハンドの一部（欠落していた中間イベント等）を埋める可能性があり、
+      // 新規イベント単体ではエンティティを再導出できない（独立監査finding #7、
+      // collectOverlapRepairEvents()のdocコメント参照）。この判定は後続の
+      // ループでexistingKeysへ新規キーを追記する前に確定させておく。
+      const hadPreexistingEvents = existingKeys.size > 0
 
       // 行で分割し、空行をフィルタリング
       const lines = jsonlData.split('\n').filter(line => line.trim())
@@ -283,10 +369,46 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         console.log(`[importData] Generating entities from ${allNewEvents.length} new events...`)
         const entityStartTime = performance.now()
 
+        // 新規イベントのtimestamp範囲。Math.maxでスプレッド演算子を使うと
+        // スタックオーバーフローになるため、単一ループで両端を求める
+        let minNewTimestamp = Number.POSITIVE_INFINITY
+        let maxNewTimestamp = 0
+        for (const event of allNewEvents) {
+          const timestamp = event.timestamp || 0
+          if (timestamp < minNewTimestamp) minNewTimestamp = timestamp
+          if (timestamp > maxNewTimestamp) maxNewTimestamp = timestamp
+        }
+
         try {
+          // エンティティ生成対象の決定（独立監査finding #7）:
+          // - 空のDBへのインポート（従来からの正常系）: 新規イベントが全て
+          //   なので、そのままEntityConverterへ渡す（従来経路そのまま）。
+          // - 既存データがあるDBへの差分インポート: 新規イベントが既存ハンドの
+          //   欠落部分を埋めた可能性がある。新規イベント単体ではハンド境界
+          //   （EVT_DEAL〜EVT_HAND_RESULTS）を構成できないため、影響範囲を
+          //   Lakeから読み直して既存行と新規行を合わせて再導出する
+          //   （境界の決め方・冪等性はcollectOverlapRepairEvents()参照）。
+          //   セッション文脈は範囲先頭のEVT_ENTRY_QUEUEDから再構築されるため、
+          //   rebuildAllData()と同じ空のデフォルトセッションを初期値にする
+          //   （ライブのservice.sessionを流用すると、現在のセッション名等が
+          //   過去の再導出ハンドに混入し得る）。
+          let entitySourceEvents: ApiEvent[] = allNewEvents
+          let converterSession: Session = service.session
+          if (hadPreexistingEvents) {
+            entitySourceEvents = await collectOverlapRepairEvents(db, minNewTimestamp, maxNewTimestamp)
+            converterSession = {
+              id: undefined,
+              battleType: undefined,
+              name: undefined,
+              players: new Map(),
+              reset: () => { }
+            }
+            console.log(`[importData] Overlap import detected - re-deriving entities from ${entitySourceEvents.length} Lake events covering the affected range`)
+          }
+
           // EntityConverterを使用してエンティティを生成
-          const converter = new EntityConverter(service.session)
-          const entities = converter.convertEventsToEntities(allNewEvents)
+          const converter = new EntityConverter(converterSession)
+          const entities = converter.convertEventsToEntities(entitySourceEvents)
 
           console.log(`[importData] Generated entities - Hands: ${entities.hands.length}, Phases: ${entities.phases.length}, Actions: ${entities.actions.length}`)
 
@@ -297,23 +419,19 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
             }
           })
 
-          // Update metadata separately
-          // Math.maxでスプレッド演算子を使うとスタックオーバーフローになるため、reduceを使用
-          const lastTimestamp = allNewEvents.reduce((max, event) => {
-            const timestamp = event.timestamp || 0
-            return timestamp > max ? timestamp : max
-          }, 0)
-
+          // Update metadata separately（lastProcessedTimestampは従来通り
+          // 「今回のインポートで新規保存されたイベント」の最大timestamp。
+          // overlap修復で再導出対象に含めた既存行は含めない）
           await db.meta.put({
             id: 'importStatus',
             value: {
-              lastProcessedTimestamp: lastTimestamp,
+              lastProcessedTimestamp: maxNewTimestamp,
               lastProcessedEventCount: allNewEvents.length,
               lastImportDate: new Date().toISOString()
             },
             updatedAt: Date.now()
           })
-          console.log(`[importData] Updated metadata - lastTimestamp: ${lastTimestamp}`)
+          console.log(`[importData] Updated metadata - lastTimestamp: ${maxNewTimestamp}`)
 
           const entityTime = ((performance.now() - entityStartTime) / 1000).toFixed(2)
           console.log(`[importData] Entity generation completed in ${entityTime}s`)
