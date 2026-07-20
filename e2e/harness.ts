@@ -36,6 +36,16 @@ export interface LaunchOptions {
   headed?: boolean
   /** Browser viewport size. Defaults to {@link DEFAULT_VIEWPORT} (1920x1080, matching the real game's fullscreen Unity canvas -- see its doc comment for why this matters for HUD panel geometry). */
   viewport?: Viewport
+  /**
+   * Query string (no leading `?`) appended to the initial fixture page
+   * navigation, e.g. `'heroCards=Qd4h&heroLabel=' + encodeURIComponent('Q4 オフスート')`
+   * to override `table-backdrop.js`'s configurable hero-card params for a
+   * fixture whose actual dealt hero hand differs from the backdrop's
+   * default (see e2e/.build/capture-table-backdrop.ts, which needs this
+   * for the gitignored 400-hand fixture). Omit to navigate to the fixture
+   * server's origin unchanged (served as fixture.html).
+   */
+  fixtureQuery?: string
 }
 
 export interface HarnessHelpers {
@@ -255,7 +265,10 @@ export const launchHarness = async (options: LaunchOptions = {}): Promise<Harnes
     })
     gamePage.on('pageerror', (err) => console.error('[gamePage pageerror]', err))
 
-    await gamePage.goto(fixtureServer.origin, { waitUntil: 'domcontentloaded' })
+    const gameUrl = options.fixtureQuery
+      ? `${fixtureServer.origin}/fixture.html?${options.fixtureQuery}`
+      : fixtureServer.origin
+    await gamePage.goto(gameUrl, { waitUntil: 'domcontentloaded' })
     // Keep the compositor producing frames from the start so screenshots
     // still work after the page idles for minutes (agent think-time between
     // CLI commands) -- see ensureCompositorKeepalive.

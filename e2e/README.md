@@ -154,6 +154,52 @@ npx tsx e2e/tools/extract-fixture.ts <path-to-raw-capture.ndjson> [output.ndjson
 - Default output is `e2e/fixtures/session-3hands.ndjson`; re-running with
   the same source and options is deterministic (byte-identical output).
 
+### Table backdrop (`table-backdrop.js`)
+
+Both `fixture.html` and `no-replay.html` include `e2e/public/table-backdrop.js`,
+a small script that draws an ORIGINAL, generic poker-table backdrop (dark
+vignette, oval felt with a rail rim, seat plates, card backs, bet chips, a
+center pot, a top-left blinds/phase strip, and bottom-center hero hole
+cards) as a sibling *behind* `#unity-container` (not a child of it -- see
+below). It exists purely so screenshots/QA sessions read as "HUD overlaying
+a real poker game" instead of a plain green void -- it is not PokerChase
+artwork (no character art, logos, or UI copied from the game), and it is
+entirely inert: `pointer-events: none` throughout, `z-index: 1` (below the
+HUD's own `z-index: 9999`, see `src/components/Hud.tsx`), it never touches
+`window.WebSocket`, and it adds no element that matches any `smoke.ts`
+selector.
+
+It is mounted as a **preceding sibling** of `#unity-container`, not a child
+-- `harness.ts`'s `waitForHudMount()` polls
+`#unity-container`'s own children for a `position: fixed` descendant as its
+proxy for "the HUD mounted", and the backdrop's wrapper is itself
+`position: fixed`; nesting it inside `#unity-container` would satisfy that
+check the instant this script runs, before the extension ever mounts,
+producing a false-positive HUD mount. `position: fixed` stacking is
+viewport-relative regardless of DOM parent, so this has no visual effect.
+
+Every prop (seat plates, card backs, chips, dealer button, pot, hero cards)
+is a plain HTML/CSS element positioned with top/left **percentages** -- the
+same scheme `Hud.tsx`'s own `SEAT_POSITIONS` uses for its panels -- with
+any decorative offset expressed as a fixed-px `calc()` addition, so each
+prop stays paired with its seat's HUD panel at **any** viewport aspect
+ratio (not just 16:9 -- e.g. the store-image capture's 1280x800 is 16:10).
+Only the background felt/rail art lives inside an SVG, and that SVG uses
+`preserveAspectRatio="none"` (stretch, not slice) so it fills the viewport
+with no crop; it has no HUD-alignment requirement so stretching it is fine.
+
+The bottom-center hero hole cards are configurable via `?heroCards=<4
+chars>` (rank+suit, rank+suit, e.g. `Qd4h`) and `?heroLabel=<text>` (e.g.
+`Q4+オフスート`, `+` decodes to a space). The default (no params) matches
+the committed `session-3hands.ndjson` fixture's actual final hero hand;
+see `table-backdrop.js`'s module doc comment for the decode and for how
+the gitignored 400-hand fixture (used for `README.png` / `docs/store-assets/`)
+overrides both via `harness.ts`'s `fixtureQuery` launch option.
+
+Default on. Append `?plain=1` to either page's URL (e.g.
+`http://localhost:<port>/fixture.html?plain=1`) to render the old bare
+page for a scenario that specifically needs sterility.
+
 ### `no-replay.html`: a fresh mount with zero WS events
 
 `e2e/public/no-replay.html` is a second static page served by the same
@@ -323,6 +369,7 @@ e2e/
   run.ts                    step-by-step CLI (launch/status/screenshot/eval/close/...)
   public/fixture.html       minimal page with #unity-container + WS client
   public/no-replay.html     same shell, no WS client -- fresh mount, zero events (pre-game hero stats)
+  public/table-backdrop.js  shared generic table backdrop for both pages above (?plain=1 to disable)
   fixtures/session-3hands.ndjson   anonymized fixture (committed)
   scenarios/smoke.ts        scripted pass/fail smoke test
   tools/
