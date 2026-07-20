@@ -172,6 +172,19 @@ describe('SimpleTransform', () => {
     expect(results).toEqual([])
   })
 
+  test('off(): once()へ渡した元のdataリスナーを発火前に解除する', async () => {
+    const stream = new CountingStream()
+    const results: number[] = []
+    const listener = (value: number) => results.push(value)
+    stream.once('data', listener)
+    stream.off('data', listener)
+
+    stream.write(1)
+    await stream.whenIdle()
+
+    expect(results).toEqual([])
+  })
+
   test('end(): キュー完了後に"end"をemitし、pipe先にend()を伝播する', async () => {
     const upstream = new CountingStream()
     const downstream = new CountingStream()

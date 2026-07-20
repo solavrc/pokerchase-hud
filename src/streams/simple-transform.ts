@@ -30,6 +30,9 @@ export type SimpleTransformTarget = {
 
 type SimpleTransformEventName = 'data' | 'error' | 'end'
 type SimpleTransformListener = (...args: any[]) => void
+type SimpleTransformRegisteredListener = SimpleTransformListener & {
+  originalListener?: SimpleTransformListener
+}
 
 /**
  * エラーハンドラ関数の型。呼び出し側（各Streamサブクラス）が現在のTransform/Callback
@@ -48,7 +51,7 @@ export abstract class SimpleTransform<In = any, Out = any> {
   /** end()が呼ばれたかどうか */
   private ended = false
   /** Node EventEmitterを持ち込まずにdata/error/end購読を提供するリスナー集合 */
-  private readonly listeners: Record<SimpleTransformEventName, Set<SimpleTransformListener>> = {
+  private readonly listeners: Record<SimpleTransformEventName, Set<SimpleTransformRegisteredListener>> = {
     data: new Set(),
     error: new Set(),
     end: new Set()
@@ -70,10 +73,11 @@ export abstract class SimpleTransform<In = any, Out = any> {
   once(event: 'error', listener: (error: unknown) => void): this
   once(event: 'end', listener: () => void): this
   once(event: SimpleTransformEventName, listener: SimpleTransformListener): this {
-    const onceListener: SimpleTransformListener = (...args) => {
+    const onceListener: SimpleTransformRegisteredListener = (...args) => {
       this.listeners[event].delete(onceListener)
       listener(...args)
     }
+    onceListener.originalListener = listener
     this.listeners[event].add(onceListener)
     return this
   }
@@ -82,7 +86,12 @@ export abstract class SimpleTransform<In = any, Out = any> {
   off(event: 'error', listener: (error: unknown) => void): this
   off(event: 'end', listener: () => void): this
   off(event: SimpleTransformEventName, listener: SimpleTransformListener): this {
-    this.listeners[event].delete(listener)
+    const listeners = this.listeners[event]
+    // EventEmitter同様、once()へ渡した元のlistenerでも発火前に解除できるようにする。
+    const registeredListener = [...listeners]
+      .reverse()
+      .find(registered => registered === listener || registered.originalListener === listener)
+    if (registeredListener) listeners.delete(registeredListener)
     return this
   }
 
