@@ -13,6 +13,7 @@ import App from './components/App'
 import type { ChromeMessage } from './types/messages'
 import { MESSAGE_ACTIONS as EVENTS } from './types/messages'
 import type { AllPlayersRealTimeStats } from './realtime-stats/realtime-stats-service'
+import { setPendingStats } from './utils/pending-stats-cache'
 import { RuntimePortManager } from './utils/runtime-port-manager'
 /** !!! BACKGROUND、WEB_ACCESSIBLE_RESOURCES からインポートしないこと !!! */
 
@@ -188,9 +189,13 @@ const messageHandlers: Record<string, (message: ChromeMessage) => void> = {
   },
   latestStats: (message) => {
     if ('stats' in message) {
-      window.dispatchEvent(new CustomEvent(POKER_CHASE_SERVICE_EVENT, {
-        detail: { stats: message.stats }
-      }))
+      const data: StatsData = { stats: message.stats }
+      // App's mount effect may not have registered its POKER_CHASE_SERVICE_EVENT
+      // listener yet (warm SW + small local DB can resolve this before React's
+      // effects flush) -- cache it so App can replay a pre-mount arrival instead
+      // of silently losing it. See pending-stats-cache.ts for the full race.
+      setPendingStats(data)
+      window.dispatchEvent(new CustomEvent(POKER_CHASE_SERVICE_EVENT, { detail: data }))
     }
   },
   handLogEvent: (message) => {

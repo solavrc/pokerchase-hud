@@ -17,6 +17,7 @@ import type {
   ChromeMessage,
 } from "../types/messages"
 import { rotateArrayFromIndex } from "../utils/array-utils"
+import { consumePendingStats } from "../utils/pending-stats-cache"
 import HandLog from "./HandLog"
 import Hud from "./Hud"
 import type { AllPlayersRealTimeStats } from "../realtime-stats/realtime-stats-service"
@@ -72,6 +73,18 @@ const App = memo(() => {
       POKER_CHASE_SERVICE_EVENT,
       handleStatsMessage
     )
+
+    // Warm-SW race: content_script.ts's chrome.runtime.onMessage listener is
+    // registered at module load and always receives a 'latestStats' response,
+    // but it can only hand it off via a window CustomEvent -- if that arrives
+    // before this effect runs (React flushes effects asynchronously after the
+    // initial commit), there was no listener yet and the event is lost. Pick
+    // up anything content_script.ts cached in the gap (see
+    // pending-stats-cache.ts) now that the listener above is registered.
+    const pendingStats = consumePendingStats()
+    if (pendingStats) {
+      handleStatsMessage({ detail: pendingStats } as CustomEvent<StatsData>)
+    }
 
     return () => {
       window.removeEventListener(

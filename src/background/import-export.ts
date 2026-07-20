@@ -623,11 +623,22 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
    * operation is in flight (`service.batchMode` -- don't fight that
    * refresh storm; it recomputes and broadcasts the real lineup itself
    * once the batch completes, see `importData`/`rebuildAllData` below).
+   *
+   * Also awaits `service.filtersRestored`: `service.ready` only covers
+   * chrome.storage.local's playerId/session restore -- battleTypeFilter/
+   * tableSizeFilter/handLimitFilter/statDisplayConfigs are restored
+   * separately by background.ts's startup `loadOptions().then(...)`
+   * (see beginFiltersRestore()/markFiltersRestored() on the service).
+   * On a cold MV3 Service Worker start triggered by this very
+   * `requestLatestStats` message, `calcStats()` below could otherwise run
+   * before those saved filters are applied, computing an unfiltered
+   * pre-game hero panel for users with non-default filters.
    */
   const getLatestSessionStats = async (preGame: boolean): Promise<PlayerStats[]> => {
     if (!preGame) return []
 
     await service.ready // guards the SW-just-woke-up race: playerId/session are only valid after restoreState() resolves
+    await service.filtersRestored // guards the same race for battleType/tableSize/handLimit filters (see background.ts)
 
     if (service.batchMode) return []
     if (!service.playerId) return []

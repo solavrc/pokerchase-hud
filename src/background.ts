@@ -73,7 +73,15 @@ chrome.runtime.onInstalled.addListener(async details => {
 
 /** 拡張起動時: フィルター設定を復元（統計の再計算はしない）。
  * loadOptionsは旧@extend-chrome/storage bucketキーからのマイグレーションも行う
- * （Popupを開かないユーザーでもservice worker起動時に移行が完了する） */
+ * （Popupを開かないユーザーでもservice worker起動時に移行が完了する）
+ *
+ * service.beginFiltersRestore()でゲートを張ってから非同期のloadOptions()を呼ぶ。
+ * これにより、MV3のService WorkerがrequestLatestStats（preGame:true、
+ * background/import-export.tsのgetLatestSessionStats参照）でコールドスタートした
+ * 場合でも、この.then()/.catch()ブロックがbattleTypeFilter/tableSizeFilter/
+ * handLimitFilterを反映し終えるまでgetLatestSessionStatsの計算を待たせられる
+ * （service.filtersRestoredをawait）。 */
+service.beginFiltersRestore()
 loadOptions().then((options) => {
   if (options?.filterOptions) {
     service.battleTypeFilter = options.filterOptions.gameTypes.sng ||
@@ -135,6 +143,14 @@ loadOptions().then((options) => {
     autoScroll: true,
     showTimestamps: false
   }
+
+  service.markFiltersRestored()
+}).catch(error => {
+  console.error('[background] Failed to restore filter options:', error)
+  // 失敗してもゲートを解放する -- filtersRestoredを待つ側（プリゲーム・
+  // ヒーロースタッツのフォールバック等）を永久にハングさせないため。
+  // フィルターはservice側のデフォルト（undefined=全件）のままになる。
+  service.markFiltersRestored()
 })
 
 /**

@@ -10,7 +10,7 @@ import { getPositionalStats } from '../services/positional-stats-service'
 import { firebaseAuthService } from '../services/firebase-auth-service'
 import { autoSyncService } from '../services/auto-sync-service'
 import { getOperationState, isOperationIdle } from './operation-state'
-import { getLastKnownStats, setLastKnownStats } from './ports'
+import { getLastKnownStats, setLastKnownStats, getLiveBroadcastSequence } from './ports'
 import { resolveAdvisory } from './rebuild-advisory'
 import { getUndecodedEventStats, resetUndecodedEventStats } from './undecoded-event-tracker'
 import { applyUpdateNow } from './update-manager'
@@ -176,8 +176,27 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
 
       return true // 非同期レスポンスを示す
     } else if (request.action === 'requestLatestStats') {
-      getLatestSessionStats(request.preGame === true)
+      const preGame = request.preGame === true
+      // プリゲーム・ヒーロースタッツのレース対策: getLatestSessionStats()は
+      // service.ready/filtersRestoredを待ってからDBを読むため、その待機中に
+      // 本物のEVT_DEALがこのタブのportを経由して処理され、ライブの完全な
+      // 席順がbroadcastMessage（ports.ts）で先にこのタブへ届く可能性がある。
+      // その場合、後から届くヒーロー単独のフォールバックを送ってしまうと、
+      // 届いたばかりのライブ席順を上書きしてしまう。この一手リクエストを
+      // 受け取った時点のliveBroadcastSequenceを控えておき、フォールバック
+      // 計算が終わった時点で値が変わっていれば「待機中に本物のブロード
+      // キャストが発生した」ということなので、送信せず静かに捨てる。
+      // （`lastKnownStats.length > 0`のような単純な非空チェックでは代用
+      // できない -- Service Workerの生存期間中はタブを跨いで残り続けるため、
+      // このセッションで最初のハンドが終わった後は常に非空になってしまい、
+      // 無関係な別タブのマウントでもフォールバックが永久に抑制されてしまう）
+      const liveBroadcastSequenceAtRequest = getLiveBroadcastSequence()
+      getLatestSessionStats(preGame)
         .then(stats => {
+          if (preGame && getLiveBroadcastSequence() !== liveBroadcastSequenceAtRequest) {
+            sendResponse({ success: true })
+            return
+          }
           // 空配列は「送るものが無い」の意味（プリゲーム・ヒーロースタッツの
           // フォールバック条件を満たさない場合など、import-export.ts参照）。
           // ここで stats:[] を送ってしまうと、呼び出し側（App.tsx）の

@@ -18,6 +18,22 @@ export const setLastKnownStats = (stats: PlayerStats[]): void => {
   lastKnownStats = stats
 }
 
+// Monotonic counter bumped every time the live pipeline (statsOutputStream, driven by a
+// real EVT_DEAL) broadcasts a fresh lineup -- see registerStreamSubscriptions() below.
+// message-router.ts's `requestLatestStats` handler snapshots this before computing the
+// pre-game hero-only fallback (getLatestSessionStats) and compares it again once that
+// (async) computation resolves: a changed value means a real live broadcast landed while
+// the fallback was in flight, so the now-stale fallback must be dropped rather than sent
+// -- otherwise it would overwrite the live lineup the tab already received via the port
+// channel (broadcastMessage, below). A plain "is lastKnownStats non-empty" check can't
+// substitute for this: lastKnownStats survives across tab reloads for the life of the
+// Service Worker, so it is very often already non-empty by the time an unrelated tab
+// mounts, which would wrongly suppress the fallback forever after the first hand ever
+// played in that Service Worker's lifetime.
+let liveBroadcastSequence = 0
+
+export const getLiveBroadcastSequence = (): number => liveBroadcastSequence
+
 export const getLatestRealTimeStats = (): AllPlayersRealTimeStats | undefined => latestRealTimeStats
 
 /**
@@ -97,6 +113,7 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
   })
   service.statsOutputStream.on('data', async (hand: PlayerStats[]) => {
     lastKnownStats = hand // Store for later use
+    liveBroadcastSequence++ // A real live lineup broadcast just went out -- see getLiveBroadcastSequence()'s doc comment
 
     // Real-time stats are now handled by RealTimeStatsStream
     broadcastMessage({

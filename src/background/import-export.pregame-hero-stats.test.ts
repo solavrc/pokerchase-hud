@@ -132,4 +132,39 @@ describe('getLatestSessionStats -- pre-game hero stats fallback', () => {
     const handsResult = stats[0].statResults.find((r: any) => r.id === 'hands')
     expect(handsResult?.value).toBe(1) // most recent hand only
   })
+
+  test('cold SW start: waits for service.filtersRestored before computing, so a filter restored mid-flight is respected', async () => {
+    // background.ts's real startup sequence: arm the gate synchronously, then
+    // (asynchronously) restore battleType/tableSize/handLimit filters and call
+    // markFiltersRestored() once they're applied. `service.ready` alone
+    // (chrome.storage.local's playerId/session restore) doesn't cover this --
+    // it's a separate restoration path (background.ts's loadOptions().then(...)).
+    service.playerId = HERO_ID
+    service.beginFiltersRestore()
+
+    let settled = false
+    const statsPromise = getLatestSessionStats(true).then(stats => {
+      settled = true
+      return stats
+    })
+
+    // Let every already-queued microtask run (service.ready resolves, batchMode/
+    // playerId checks pass) -- calcStats() must NOT have started yet because
+    // filtersRestored is still pending.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(settled).toBe(false)
+
+    // Simulate background.ts's loadOptions().then(...) applying the user's saved
+    // filter, then resolving the gate.
+    service.handLimitFilter = 1
+    service.markFiltersRestored()
+
+    const stats = await statsPromise
+    expect(settled).toBe(true)
+    // The restored handLimitFilter (applied *during* the wait, not before
+    // getLatestSessionStats was called) was respected -- not the pre-restore
+    // default of "all hands" (which would have counted both seeded hands).
+    const handsResult = stats[0].statResults.find((r: any) => r.id === 'hands')
+    expect(handsResult?.value).toBe(1)
+  })
 })
