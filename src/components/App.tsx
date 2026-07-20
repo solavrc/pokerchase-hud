@@ -106,43 +106,53 @@ const App = memo(() => {
       // - 座席が空でキャッシュも無ければ、これまで通り{playerId:-1}
       //   ("Waiting for Hand...")のまま。
       //
-      // テーブル移動時のキャッシュ無効化（#179 codex P2指摘）: MTT/cashで
-      // ヒーローが別テーブルへ移動すると、docs/api-events.md の通り
-      // `EVT_ENTRY_QUEUED` が再発行されlineupが丸ごと入れ替わる。しかしこの
-      // シグナル自体はcontent_script.tsの`latestStats`メッセージ
-      // (StatsData = {stats, evtDeal, realTimeStats}) に含まれずUIまで届かない
-      // ため、明示的な移動イベントにフックできない。代わりに「直前にキャッシュ
-      // されていたhero以外の在席者と、今回のlineupのhero以外の在席者が完全に
-      // 不連続（重複ゼロ）」を移動の代理シグナルとして使う（案(a): 座席index
-      // 単位ではなくplayerId集合の連続性で判定 -- 席の乗っ取り/リバイは
-      // 上のロジックが個別座席で正しく処理するため、ここでは「lineup全体が
-      // 別物か」だけを見ればよい）。
-      // - heroの座席は判定から除外する: 移動してもヒーローは同一人物なので
-      //   必ず重複し、判定の役に立たない。
-      // - どちらかの集合が空なら判定不能として何もしない。特に「同一テーブルで
-      //   ヒーロー以外が全員同時bust（レアなオールイン）」した直後はhero単独
-      //   lineupになり空集合になるが、これはテーブル移動ではなくキャッシュは
-      //   そのまま(sola仕様通りbustした全員分ミュート継続)が正しい。誤って
-      //   移動と判定してキャッシュを消す誤クリアより、移動を見逃してキャッシュを
-      //   残す方が実害が小さい（ミュートパネルが1テンポ遅れて消える程度）ため、
-      //   「わからない時は消さない」に倒す。
-      // - 両者とも空でなく共通点ゼロなら丸ごとテーブル移動とみなし、キャッシュを
-      //   全座席（hero分含む）クリアしてから通常のミュート処理に入る。
+      // テーブル移動時のキャッシュ無効化（#179 codex P2指摘、round2で判定ロジックを
+      // 座席単位の一致/不一致比較に精緻化）: MTT/cashでヒーローが別テーブルへ
+      // 移動すると、docs/api-events.md の通り `EVT_ENTRY_QUEUED` が再発行され
+      // lineupが丸ごと入れ替わる。しかしこのシグナル自体はcontent_script.tsの
+      // `latestStats`メッセージ(StatsData = {stats, evtDeal, realTimeStats})に
+      // 含まれずUIまで届かないため、明示的な移動イベントにフックできない。
+      //
+      // 初版はhero以外の在席者playerIdを全座席分プールした集合同士の重複ゼロ判定
+      // だったが、round2レビューで「A(座席1)がbustしてミュート中に、それまで
+      // 誰も座ったことのない別座席へ新規プレイヤーBが着席しただけ」でも誤発火
+      // する反例が指摘された(=Aの座席1はincomingで空のまま=判断材料なし、Bの
+      // 座席は一度もキャッシュされたことがない=旧テーブルの記憶と比較しようが
+      // ないのに、「hero以外の集合が丸ごと不連続」というだけでキャッシュ全体を
+      // 消してしまっていた)。
+      //
+      // 精緻化した判定は「キャッシュに記録が残っている座席」だけを見て、座席単位で
+      // 一致(continuity)/不一致(conflict)を数える:
+      // - continuity: その座席の直近キャッシュと今回の在席者が同一playerId
+      //   → 同じテーブルにいる動かぬ証拠(1つでもあれば以降のconflictは無視して
+      //   クリアしない -- 一部の席だけ入れ替わる通常の席の乗っ取りと区別が
+      //   つかないケースを「同一テーブル」側に倒す)。
+      // - conflict: キャッシュがある座席に、キャッシュとは異なる実プレイヤーが
+      //   今座っている → その座席自体は既存の下の上書きロジックで正しく
+      //   更新されるので無害だが、"複数の座席で同時多発"していればテーブル
+      //   ごと入れ替わった強い証拠になる。
+      // - キャッシュはあるが今回incomingが空席(-1)、またはincomingにはいるが
+      //   その座席がキャッシュに記録なし(まだ誰も座ったことのない座席)、は
+      //   どちらの証拠にもならないので無視する(#179 round2の反例そのもの)。
+      // continuityが1つも無く、conflictが1つ以上あるときだけテーブル移動と
+      // みなし、キャッシュを全座席(hero分含む)クリアしてから通常のミュート
+      // 処理に入る。両方0件（判断材料なし。例: hero以外が同一ハンドで全員
+      // 同時bustした直後のhero単独lineup）なら何もしない -- 誤ってテーブル
+      // 移動と判定してキャッシュを消す誤クリアより、移動を見逃してキャッシュを
+      // 残す方が実害が小さい（ミュートパネルが1テンポ遅れて消える程度）ため、
+      // 「わからない時は消さない」に倒す。
       const dimCache = dimCacheRef.current
-      const previousNonHeroPlayerIds = new Set<number>()
+      let hasContinuitySeat = false
+      let hasConflictSeat = false
       for (const [seatIndex, cached] of dimCache) {
-        if (seatIndex !== HERO_SEAT_INDEX) previousNonHeroPlayerIds.add(cached.playerId)
-      }
-      const incomingNonHeroPlayerIds = new Set<number>()
-      mappedStats.forEach((stat, seatIndex) => {
-        if (seatIndex !== HERO_SEAT_INDEX && isExistPlayerStats(stat)) {
-          incomingNonHeroPlayerIds.add(stat.playerId)
+        if (seatIndex === HERO_SEAT_INDEX) continue
+        const incoming = mappedStats[seatIndex]
+        if (incoming && isExistPlayerStats(incoming)) {
+          if (incoming.playerId === cached.playerId) hasContinuitySeat = true
+          else hasConflictSeat = true
         }
-      })
-      const isTableChange =
-        previousNonHeroPlayerIds.size > 0 &&
-        incomingNonHeroPlayerIds.size > 0 &&
-        Array.from(incomingNonHeroPlayerIds).every(id => !previousNonHeroPlayerIds.has(id))
+      }
+      const isTableChange = hasConflictSeat && !hasContinuitySeat
       if (isTableChange) {
         dimCache.clear()
       }

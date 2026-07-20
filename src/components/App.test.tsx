@@ -734,6 +734,45 @@ describe('App', () => {
           expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Dimmed: no')
         }
       })
+
+      it('無関係な空席への新規着席では、既存のbustミュートを巻き込んでクリアしない（#179 round2 codex反例: ショートハンドで別プレイヤーが未使用の席に座っただけ）', async () => {
+        render(<App />)
+
+        // ショートハンドテーブル: hero(1)と席1のA(2)だけが在席、他の席(2-5)は
+        // 一度も誰も座ったことがない(常に-1)
+        const shortHandedLineup: StatsData['stats'] = [
+          { playerId: 1, statResults: [] },
+          { playerId: 2, statResults: [] },
+          { playerId: -1 },
+          { playerId: -1 },
+          { playerId: -1 },
+          { playerId: -1 },
+        ]
+        await dispatchStats(shortHandedLineup)
+
+        // Aがbustして席1が空席になり、直近統計がミュート表示のまま残る
+        const bustedLineup: StatsData['stats'] = shortHandedLineup.map((s, i) => (i === 1 ? { playerId: -1 } : s))
+        await dispatchStats(bustedLineup)
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
+
+        // 別プレイヤーB(99)が、これまで誰も座ったことのない席2へ新規着席する。
+        // Aの席1は引き続き空席のまま(判断材料なし)なので、
+        // 「hero以外の在席者集合が丸ごと不連続({2}→{99})」という初版ヒューリスティック
+        // だと同一テーブルのはずなのに誤ってテーブル移動と判定しキャッシュ全体を
+        // クリアしてしまっていた
+        const newJoinLineup: StatsData['stats'] = bustedLineup.map((s, i) => (
+          i === 2 ? { playerId: 99, statResults: [] } : s
+        ))
+        await dispatchStats(newJoinLineup)
+
+        // Aは同一テーブルのまま席1でミュート表示を継続する（誤クリアされていない証拠）
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
+        // Bは通常通りその場で表示される
+        expect(screen.getByTestId('hud-2')).toHaveTextContent('Player: 99')
+        expect(screen.getByTestId('hud-2')).toHaveTextContent('Dimmed: no')
+      })
     })
   })
 })
