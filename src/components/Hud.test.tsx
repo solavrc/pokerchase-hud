@@ -454,6 +454,135 @@ describe('Hud', () => {
     })
   })
 
+  describe('直近ハンド・ドリルダウン', () => {
+    it('onToggleRecentHandsPanelが渡されない場合はトリガーを表示しない', () => {
+      render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+        />
+      )
+
+      expect(screen.queryByTitle('直近ハンド')).not.toBeInTheDocument()
+    })
+
+    it('トリガーをクリックするとonToggleRecentHandsPanelが呼ばれ、クリップボードコピーは発火しない', async () => {
+      const handleToggle = jest.fn()
+
+      render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onToggleRecentHandsPanel={handleToggle}
+        />
+      )
+
+      const trigger = screen.getByTitle('直近ハンド')
+      await userEvent.click(trigger)
+
+      expect(handleToggle).toHaveBeenCalledTimes(1)
+      expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+    })
+
+    it('isRecentHandsPanelOpenがtrueの時のみドリルダウンパネルを表示する', async () => {
+      (chrome.runtime.sendMessage as jest.Mock).mockImplementation(
+        (_message: unknown, callback: (response: unknown) => void) => {
+          callback({
+            success: true,
+            recentHands: {
+              computedAt: Date.now(),
+              hands: [
+                { handId: 1, approxTimestamp: Date.now(), position: 0, holeCards: ['As', 'Ah'], preflopLine: 'Open', sawFlop: true, wentToShowdown: true, won: true, netChips: 1240 },
+              ],
+            },
+          })
+        }
+      )
+
+      const { rerender } = render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onToggleRecentHandsPanel={jest.fn()}
+          isRecentHandsPanelOpen={false}
+        />
+      )
+
+      expect(screen.queryByTestId('recent-hands-panel')).not.toBeInTheDocument()
+
+      rerender(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onToggleRecentHandsPanel={jest.fn()}
+          isRecentHandsPanelOpen={true}
+        />
+      )
+
+      await waitFor(() => {
+        expect(screen.getByTestId('recent-hands-panel')).toBeInTheDocument()
+      })
+      expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+        { action: 'getRecentHands', playerId: mockPlayerStats.playerId },
+        expect.any(Function)
+      )
+    })
+
+    it('データがない("No Data")プレイヤーにもトリガーとパネルを表示できる', async () => {
+      (chrome.runtime.sendMessage as jest.Mock).mockImplementation(
+        (_message: unknown, callback: (response: unknown) => void) => {
+          callback({ success: false, error: 'no data' })
+        }
+      )
+
+      const noDataStats: PlayerStats = { playerId: 456, statResults: [] }
+
+      render(
+        <Hud
+          actualSeatIndex={0}
+          stat={noDataStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onToggleRecentHandsPanel={jest.fn()}
+          isRecentHandsPanelOpen={true}
+        />
+      )
+
+      expect(screen.getByTitle('直近ハンド')).toBeInTheDocument()
+      await waitFor(() => {
+        expect(screen.getByTestId('recent-hands-panel')).toBeInTheDocument()
+      })
+    })
+
+    it('ポジション別トリガーと同時に表示しても両方独立してクリックできる', async () => {
+      const handleTogglePositional = jest.fn()
+      const handleToggleRecentHands = jest.fn()
+
+      render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onTogglePositionalPanel={handleTogglePositional}
+          onToggleRecentHandsPanel={handleToggleRecentHands}
+        />
+      )
+
+      await userEvent.click(screen.getByTitle('直近ハンド'))
+      expect(handleToggleRecentHands).toHaveBeenCalledTimes(1)
+      expect(handleTogglePositional).not.toHaveBeenCalled()
+    })
+  })
+
   describe('コンパクト表示モード（#143）', () => {
     it('hudDisplayModeを渡さない場合はフルの16統計グリッドのまま（ゼロリグレッション）', () => {
       render(

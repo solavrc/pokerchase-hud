@@ -1,4 +1,4 @@
-import { formatCardsArray } from './card-utils'
+import { formatCardsArray, isRedSuit } from './card-utils'
 
 test('カードを文字列に変換できる', () => {
   expect(formatCardsArray([37, 51])).toStrictEqual(['Jh', 'Ac'])
@@ -32,4 +32,20 @@ test('カードを文字列に変換できる', () => {
     'Ks', 'Kh', 'Kd', 'Kc', // 44
     'As', 'Ah', 'Ad', 'Ac', // 48
   ])
+})
+
+describe('isRedSuit', () => {
+  test('数値カード番号でハート/ダイヤをred判定できる', () => {
+    expect(isRedSuit(1)).toBe(true)  // 2h
+    expect(isRedSuit(2)).toBe(true)  // 2d
+    expect(isRedSuit(0)).toBe(false) // 2s
+    expect(isRedSuit(3)).toBe(false) // 2c
+  })
+
+  test('フォーマット済みカード文字列でも判定できる', () => {
+    expect(isRedSuit('Ah')).toBe(true)
+    expect(isRedSuit('Kd')).toBe(true)
+    expect(isRedSuit('As')).toBe(false)
+    expect(isRedSuit('Kc')).toBe(false)
+  })
 })

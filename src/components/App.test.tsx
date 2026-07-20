@@ -10,7 +10,7 @@ import type { ApiEvent } from '../types'
 // Mock components
 jest.mock('./Hud', () => ({
   __esModule: true,
-  default: ({ actualSeatIndex, stat, scale, statDisplayConfigs, realTimeStats, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, hudDisplayMode, hudColorCoding }: any) => (
+  default: ({ actualSeatIndex, stat, scale, statDisplayConfigs, realTimeStats, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, isRecentHandsPanelOpen, onToggleRecentHandsPanel, hudDisplayMode, hudColorCoding }: any) => (
     <div data-testid={`hud-${actualSeatIndex}`}>
       Player: {stat.playerId}
       Scale: {scale}
@@ -18,10 +18,14 @@ jest.mock('./Hud', () => ({
       RealTime: {realTimeStats ? 'yes' : 'no'}
       PotOdds: {playerPotOdds ? 'yes' : 'no'}
       PositionalPanelOpen: {isPositionalPanelOpen ? 'yes' : 'no'}
+      RecentHandsPanelOpen: {isRecentHandsPanelOpen ? 'yes' : 'no'}
       DisplayMode: {hudDisplayMode ?? 'undefined'}
       ColorCoding: {hudColorCoding === undefined ? 'undefined' : hudColorCoding ? 'yes' : 'no'}
       {onTogglePositionalPanel && (
         <button onClick={onTogglePositionalPanel}>toggle-{stat.playerId}</button>
+      )}
+      {onToggleRecentHandsPanel && (
+        <button onClick={onToggleRecentHandsPanel}>toggle-recent-{stat.playerId}</button>
       )}
     </div>
   ),
@@ -482,6 +486,40 @@ describe('App', () => {
       // 席1を開くと、席0は自動的に閉じる
       await user.click(screen.getByText('toggle-2'))
       expect(screen.getByTestId('hud-0')).toHaveTextContent('PositionalPanelOpen: no')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('PositionalPanelOpen: yes')
+
+      // 同じトリガーをもう一度クリックすると閉じる
+      await user.click(screen.getByText('toggle-2'))
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('PositionalPanelOpen: no')
+    })
+
+    it('ポジション別パネルと直近ハンドパネルは互いに排他（同一プレイヤーでも別プレイヤーでも）', async () => {
+      const user = userEvent.setup()
+
+      render(<App />)
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', { detail: mockStatsData })
+        )
+      })
+
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('PositionalPanelOpen: no')
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: no')
+
+      // 席0のポジション別を開く
+      await user.click(screen.getByText('toggle-1'))
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('PositionalPanelOpen: yes')
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: no')
+
+      // 同じプレイヤーの直近ハンドを開くと、ポジション別は自動的に閉じる
+      await user.click(screen.getByText('toggle-recent-1'))
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('PositionalPanelOpen: no')
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: yes')
+
+      // 別プレイヤーのポジション別を開くと、席0の直近ハンドも自動的に閉じる
+      await user.click(screen.getByText('toggle-2'))
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: no')
       expect(screen.getByTestId('hud-1')).toHaveTextContent('PositionalPanelOpen: yes')
 
       // 同じトリガーをもう一度クリックすると閉じる

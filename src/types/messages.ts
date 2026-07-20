@@ -3,7 +3,7 @@
  * Uses discriminated union pattern for type safety
  */
 
-import type { FilterOptions, PlayerStats, PositionalStatsResult } from './index'
+import type { FilterOptions, PlayerStats, PositionalStatsResult, RecentHandsResult } from './index'
 import { HandLogConfig, HandLogEvent, UIConfig } from './hand-log'
 import type { SyncState } from '../services/auto-sync-service'
 import type { UndecodedEventStats } from '../background/undecoded-event-tracker'
@@ -54,6 +54,8 @@ export const MESSAGE_ACTIONS = {
   ACKNOWLEDGE_REBUILD_ADVISORY: 'acknowledgeRebuildAdvisory',
   // Positional drill-down
   GET_POSITIONAL_STATS: 'getPositionalStats',
+  // Recent hands drill-down
+  GET_RECENT_HANDS: 'getRecentHands',
   // Undecoded event (drop) visibility
   GET_UNDECODED_EVENT_STATS: 'getUndecodedEventStats',
   ACKNOWLEDGE_UNDECODED_EVENT_STATS: 'acknowledgeUndecodedEventStats',
@@ -247,6 +249,14 @@ export interface GetPositionalStatsMessage {
   playerId: number
 }
 
+// Recent hands drill-down messages
+export interface GetRecentHandsMessage {
+  action: 'getRecentHands'
+  playerId: number
+  /** Defaults to DEFAULT_RECENT_HANDS_LIMIT (10) in recent-hands-service.ts when omitted. */
+  limit?: number
+}
+
 // Undecoded event (drop) visibility messages
 export interface GetUndecodedEventStatsMessage {
   action: 'getUndecodedEventStats'
@@ -332,6 +342,10 @@ export interface PositionalStatsResponse extends SuccessResponse {
   positionalStats: PositionalStatsResult
 }
 
+export interface RecentHandsResponse extends SuccessResponse {
+  recentHands: RecentHandsResult
+}
+
 export interface UndecodedEventStatsResponse extends SuccessResponse {
   undecodedEventStats: UndecodedEventStats
 }
@@ -341,7 +355,7 @@ export interface ApplyUpdateResponse extends SuccessResponse {
   reason?: string
 }
 
-export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse | UndecodedEventStatsResponse | ApplyUpdateResponse
+export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse | RecentHandsResponse | UndecodedEventStatsResponse | ApplyUpdateResponse
 
 // Union type of all possible messages
 export type ChromeMessage =
@@ -381,6 +395,7 @@ export type ChromeMessage =
   | GetOperationStateMessage
   | AcknowledgeRebuildAdvisoryMessage
   | GetPositionalStatsMessage
+  | GetRecentHandsMessage
   | GetUndecodedEventStatsMessage
   | AcknowledgeUndecodedEventStatsMessage
   | ApplyPendingUpdateMessage
@@ -473,6 +488,9 @@ export const isAcknowledgeRebuildAdvisoryMessage = (msg: unknown): msg is Acknow
 
 export const isGetPositionalStatsMessage = (msg: unknown): msg is GetPositionalStatsMessage =>
   isMessageWithAction(msg, 'getPositionalStats')
+
+export const isGetRecentHandsMessage = (msg: unknown): msg is GetRecentHandsMessage =>
+  isMessageWithAction(msg, 'getRecentHands')
 
 export const isGetUndecodedEventStatsMessage = (msg: unknown): msg is GetUndecodedEventStatsMessage =>
   isMessageWithAction(msg, 'getUndecodedEventStats')

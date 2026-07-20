@@ -150,4 +150,81 @@ describe('HudHeader', () => {
       expect(trigger).toHaveTextContent('▾')
     })
   })
+
+  describe('直近ハンド・ドリルダウン・トリガー', () => {
+    it('onToggleRecentHandsPanelが渡されない場合はトリガーを表示しない', () => {
+      render(<HudHeader playerName="TestPlayer" playerId={123} />)
+      expect(screen.queryByTitle('直近ハンド')).not.toBeInTheDocument()
+    })
+
+    it('onToggleRecentHandsPanelが渡された場合はトリガーを表示する', () => {
+      render(
+        <HudHeader
+          playerName="TestPlayer"
+          playerId={123}
+          onToggleRecentHandsPanel={jest.fn()}
+        />
+      )
+      expect(screen.getByTitle('直近ハンド')).toBeInTheDocument()
+    })
+
+    it('クリックでonToggleRecentHandsPanelが呼ばれる', async () => {
+      const handleToggle = jest.fn()
+      render(
+        <HudHeader
+          playerName="TestPlayer"
+          playerId={123}
+          onToggleRecentHandsPanel={handleToggle}
+        />
+      )
+
+      await userEvent.click(screen.getByTitle('直近ハンド'))
+      expect(handleToggle).toHaveBeenCalledTimes(1)
+    })
+
+    it('isRecentHandsPanelOpenに応じてaria-expandedが変わる', () => {
+      const { rerender } = render(
+        <HudHeader
+          playerName="TestPlayer"
+          playerId={123}
+          onToggleRecentHandsPanel={jest.fn()}
+          isRecentHandsPanelOpen={false}
+        />
+      )
+
+      const trigger = screen.getByTitle('直近ハンド')
+      expect(trigger).toHaveAttribute('aria-expanded', 'false')
+
+      rerender(
+        <HudHeader
+          playerName="TestPlayer"
+          playerId={123}
+          onToggleRecentHandsPanel={jest.fn()}
+          isRecentHandsPanelOpen={true}
+        />
+      )
+
+      expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    })
+
+    it('両トリガーが同時に表示されても独立している', async () => {
+      const handlePositional = jest.fn()
+      const handleRecentHands = jest.fn()
+      render(
+        <HudHeader
+          playerName="TestPlayer"
+          playerId={123}
+          onTogglePositionalPanel={handlePositional}
+          onToggleRecentHandsPanel={handleRecentHands}
+        />
+      )
+
+      expect(screen.getByTitle('ポジション別スタッツ')).toBeInTheDocument()
+      expect(screen.getByTitle('直近ハンド')).toBeInTheDocument()
+
+      await userEvent.click(screen.getByTitle('直近ハンド'))
+      expect(handleRecentHands).toHaveBeenCalledTimes(1)
+      expect(handlePositional).not.toHaveBeenCalled()
+    })
+  })
 })

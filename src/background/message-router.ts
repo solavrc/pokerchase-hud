@@ -7,6 +7,7 @@ import type {
   MessageResponse
 } from '../types/messages'
 import { getPositionalStats } from '../services/positional-stats-service'
+import { getRecentHands } from '../services/recent-hands-service'
 import { firebaseAuthService } from '../services/firebase-auth-service'
 import { autoSyncService } from '../services/auto-sync-service'
 import { getOperationState, isOperationIdle } from './operation-state'
@@ -325,6 +326,17 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         })
         .catch(error => {
           console.error('[getPositionalStats] Error:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'getRecentHands') {
+      // 直近ハンド・ドリルダウン
+      getRecentHands(db, service, request.playerId, request.limit)
+        .then(recentHands => {
+          sendResponse({ success: true, recentHands })
+        })
+        .catch(error => {
+          console.error('[getRecentHands] Error:', error)
           sendResponse({ success: false, error: error.message })
         })
       return true

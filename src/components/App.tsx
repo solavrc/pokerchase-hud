@@ -35,12 +35,18 @@ const App = memo(() => {
   const [shouldScrollToLatest, setShouldScrollToLatest] = useState(false)
   const [allPlayersRealTimeStats, setAllPlayersRealTimeStats] = useState<AllPlayersRealTimeStats | undefined>()
   const [heroOriginalSeatIndex, setHeroOriginalSeatIndex] = useState<number | undefined>()
-  // ポジション別ドリルダウンパネル: 開いているプレイヤーは常に高々1人（HUDツリーに
-  // ローカルなReact state。グローバル設定への永続化はv1では不要）。
-  const [openPositionalStatsPlayerId, setOpenPositionalStatsPlayerId] = useState<number | null>(null)
+  // ドリルダウンパネル（ポジション別 / 直近ハンド）: 開いているのは常にどちらか
+  // 一方、高々1プレイヤー分（HUDツリーにローカルなReact state。グローバル設定
+  // への永続化はv1では不要）。#128のポジション別ドリルダウンの単一state管理を
+  // 拡張し、パネル種別を持たせることで両パネルを互いに排他にしている。
+  const [openPanel, setOpenPanel] = useState<{ playerId: number, kind: 'positional' | 'recentHands' } | null>(null)
 
   const handleTogglePositionalPanel = useCallback((playerId: number) => {
-    setOpenPositionalStatsPlayerId(prev => (prev === playerId ? null : playerId))
+    setOpenPanel(prev => (prev?.kind === 'positional' && prev.playerId === playerId) ? null : { playerId, kind: 'positional' })
+  }, [])
+
+  const handleToggleRecentHandsPanel = useCallback((playerId: number) => {
+    setOpenPanel(prev => (prev?.kind === 'recentHands' && prev.playerId === playerId) ? null : { playerId, kind: 'recentHands' })
   }, [])
 
   const handleStatsMessage = useCallback(
@@ -285,8 +291,10 @@ const App = memo(() => {
               statDisplayConfigs={statDisplayConfigs}
               realTimeStats={position.actualSeatIndex === 0 ? allPlayersRealTimeStats?.heroStats : undefined}
               playerPotOdds={allPlayersRealTimeStats?.playerStats[position.originalSeatIndex]}
-              isPositionalPanelOpen={openPositionalStatsPlayerId === position.stat.playerId}
+              isPositionalPanelOpen={openPanel?.kind === 'positional' && openPanel.playerId === position.stat.playerId}
               onTogglePositionalPanel={() => handleTogglePositionalPanel(position.stat.playerId)}
+              isRecentHandsPanelOpen={openPanel?.kind === 'recentHands' && openPanel.playerId === position.stat.playerId}
+              onToggleRecentHandsPanel={() => handleToggleRecentHandsPanel(position.stat.playerId)}
               hudDisplayMode={uiConfig.hudDisplayMode}
               hudColorCoding={uiConfig.hudColorCoding}
             />
