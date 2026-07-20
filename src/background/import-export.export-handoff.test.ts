@@ -195,6 +195,37 @@ describe('export download-handoff completion', () => {
     expect(getOperationState()).toEqual({ type: 'idle' })
   })
 
+  test('an explicit failure ack ({success:false}, no lastError) surfaces as an error, not an idle-success (PR #199 review finding #1)', async () => {
+    // content_script.ts's download handlers now send an explicit
+    // sendResponse({success: true/false}) ack (see content_script.ts and the
+    // sendTabMessageAsync doc comment in import-export.ts) -- this covers the
+    // case where the handoff itself was DELIVERED (no chrome.runtime.lastError)
+    // but the content script's own Blob-download work threw (e.g.
+    // URL.createObjectURL failing), which it reports back via
+    // {success:false, error}. Before this fix, sendTabMessageAsync only
+    // checked chrome.runtime.lastError, so a delivered-but-failed handoff like
+    // this would be silently treated as a success.
+    ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => {
+      setTimeout(() => callback([{ id: 42 }]), 0)
+    })
+    ;(chrome.tabs.sendMessage as jest.Mock).mockImplementation((_tabId, _message, callback) => {
+      callback?.({ success: false, error: 'createObjectURL boom' })
+    })
+
+    const handlers = createImportExportHandlers(service, db, 'https://example.com/*')
+
+    await expect(handlers.exportData('json')).rejects.toThrow(/createObjectURL boom/)
+
+    const progressCalls = (chrome.runtime.sendMessage as jest.Mock).mock.calls
+      .map(([msg]) => msg)
+      .filter(msg => msg?.action === 'exportProgress')
+    expect(progressCalls[progressCalls.length - 1]).toEqual(
+      expect.objectContaining({ action: 'exportProgress', state: 'error' })
+    )
+    expect(progressCalls.some(msg => msg.state === 'completed')).toBe(false)
+    expect(getOperationState()).toEqual({ type: 'idle' })
+  })
+
   test('every chunk of a large (>50MB) export is individually acknowledged before resolving', async () => {
     ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => {
       setTimeout(() => callback([{ id: 42 }]), 0)

@@ -224,43 +224,77 @@ const messageHandlers: Record<string, (message: ChromeMessage) => void> = {
   }
 }
 
-chrome.runtime.onMessage.addListener((message: ChromeMessage | { action: string, [key: string]: unknown }) => {
+// downloadFile/downloadFileInit/downloadFileChunk/downloadFileFinishの4種は
+// 必ずsendResponse()を呼ぶ（PR #199レビュー指摘、finding #1）。
+//
+// import-export.ts側のdownloadFile()は各ハンドオフをchrome.tabs.sendMessage()
+// のコールバック経由でawaitし、chrome.runtime.lastErrorがあれば失敗として
+// reject するようになった。ところがChromeのメッセージングAPIは、受信側の
+// リスナーがsendResponse()を呼ばず`true`もreturnしない場合、リスナーが
+// returnした時点でメッセージポートを閉じ、送信側のコールバックに
+// `chrome.runtime.lastError = "The message port closed before a response was
+// received"`をセットする ―― これは受信側の処理が実際に成功していても発生する。
+// 修正前のこの4ハンドラーはBlobダウンロード処理をして`return`するだけだった
+// ため、正常に配信されたエクスポートまで送信側から失敗と誤判定されていた
+// （content scriptが実在しない・メッセージ拒否などの本物の配信失敗とは
+// 区別できなかった）。
+// ここで明示的に`sendResponse({ success: true/false })`を返すことで、
+// 送信側は「本当に届いたか」を`chrome.runtime.lastError`だけでなく
+// レスポンスの中身でも確認できる（import-export.tsのsendTabMessageAsync
+// 参照）。sendResponse()はリスナー内で同期的に呼んでいるため、
+// 非同期レスポンス用の`return true`は不要。
+chrome.runtime.onMessage.addListener((message: ChromeMessage | { action: string, [key: string]: unknown }, _sender, sendResponse) => {
   // Blob-based file download (avoids Service Worker data URL size limits)
   if (message.action === 'downloadFile' && 'content' in message) {
     const m = message as any
-    const blob = new Blob([m.content], { type: m.contentType })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = m.filename
-    a.click()
-    URL.revokeObjectURL(url)
-    console.log(`[content_script] Download: ${m.filename} (${(m.content.length / 1024 / 1024).toFixed(1)}MB)`)
+    try {
+      const blob = new Blob([m.content], { type: m.contentType })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = m.filename
+      a.click()
+      URL.revokeObjectURL(url)
+      console.log(`[content_script] Download: ${m.filename} (${(m.content.length / 1024 / 1024).toFixed(1)}MB)`)
+      sendResponse({ success: true })
+    } catch (error) {
+      console.error('[content_script] Download failed:', error)
+      sendResponse({ success: false, error: error instanceof Error ? error.message : String(error) })
+    }
     return
   }
   // Chunked file download for large files (>50MB)
   if (message.action === 'downloadFileInit') {
     (window as any).__downloadChunks = []
+    sendResponse({ success: true })
     return
   }
   if (message.action === 'downloadFileChunk' && 'chunk' in message) {
     const m = message as any
     if (!(window as any).__downloadChunks) (window as any).__downloadChunks = []
     ;(window as any).__downloadChunks.push(m.chunk)
+    sendResponse({ success: true })
     return
   }
   if (message.action === 'downloadFileFinish' && 'filename' in message) {
     const m = message as any
-    const chunks = (window as any).__downloadChunks || []
-    const blob = new Blob(chunks, { type: m.contentType })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = m.filename
-    a.click()
-    URL.revokeObjectURL(url)
-    console.log(`[content_script] Chunked download: ${m.filename} (${(blob.size / 1024 / 1024).toFixed(1)}MB, ${chunks.length} chunks)`)
-    ;(window as any).__downloadChunks = null
+    try {
+      const chunks = (window as any).__downloadChunks || []
+      const blob = new Blob(chunks, { type: m.contentType })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = m.filename
+      a.click()
+      URL.revokeObjectURL(url)
+      console.log(`[content_script] Chunked download: ${m.filename} (${(blob.size / 1024 / 1024).toFixed(1)}MB, ${chunks.length} chunks)`)
+      sendResponse({ success: true })
+    } catch (error) {
+      console.error('[content_script] Chunked download failed:', error)
+      sendResponse({ success: false, error: error instanceof Error ? error.message : String(error) })
+    } finally {
+      ;(window as any).__downloadChunks = null
+    }
     return
   }
   const handler = messageHandlers[message.action as keyof typeof messageHandlers]

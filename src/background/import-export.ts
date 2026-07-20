@@ -1,4 +1,5 @@
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
+import Dexie from 'dexie'
 import PokerChaseService, {
   ApiType,
   PokerChaseDB,
@@ -183,8 +184,36 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
             // 部分的な失敗の場合、個別に保存を試みる
             console.warn(`Bulk add failed for chunk ${Math.floor(i / IMPORT_CHUNK_SIZE) + 1}, falling back to individual adds:`, dbError)
 
-            for (const raw of rawEventsToStore) {
+            // 明示的トランザクション外で呼んだbulkAdd()は、一部の行が失敗して
+            // Dexie.BulkErrorをthrowしても、失敗しなかった行はその時点で既に
+            // 永続化済み（IndexedDB側は各addリクエストの個別エラーを飲み込み、
+            // トランザクション全体はabortしない実装のため）。BulkErrorの
+            // `failuresByPos`は「失敗したインデックス」だけをErrorへ
+            // マッピングするので、そこに含まれないインデックスは既に確実に
+            // 保存されている（codexレビュー指摘, PR #199 finding #2）。
+            // それらに対して個別add()を再度呼ぶと、今まさに正規に書き込んだ
+            // 行自体に対するConstraintErrorとなり、以下の「重複」判定に
+            // 落ちて誤ってスキップ扱いになる ―― successCountが実際の保存数
+            // より少なく数えられるだけでなく、対応するアプリケーションイベント
+            // がstoredKeysに入らずallNewEventsから漏れ、hands/phases/actions
+            // が生成されないまま（次回の再構築まで）残ってしまう。
+            // BulkError以外（例: QuotaExceededErrorでバッチ全体がabortされた
+            // 場合など）はどの行も永続化されていないと分かっているため、
+            // 全件を個別add()にかける従来の挙動のままでよい。
+            const failuresByPos = dbError instanceof Dexie.BulkError ? dbError.failuresByPos : undefined
+
+            for (let idx = 0; idx < rawEventsToStore.length; idx++) {
+              const raw = rawEventsToStore[idx]!
               const key = `${raw.timestamp}-${raw.ApiTypeId}`
+
+              if (failuresByPos && !(idx in failuresByPos)) {
+                // bulkAdd()の失敗リストに載っていない = 既に永続化済み。
+                // add()を再度呼ばず、そのまま成功として計上する。
+                successCount++
+                storedKeys.add(key)
+                continue
+              }
+
               try {
                 await db.apiEvents.add(raw as ApiEvent)
                 successCount++
@@ -544,12 +573,26 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
    * `chrome.runtime.lastError`（例: "Receiving end does not exist" ―
    * コンテンツスクリプト未注入、拡張機能リロード直後のタブなど）を検出し、
    * 呼び出し元（downloadFile）へ失敗として伝播できるようにする。
+   *
+   * 受信側（content_script.ts）は4種のdownload*メッセージ全てで明示的に
+   * `sendResponse({ success: true/false })`を返す（PR #199レビュー指摘、
+   * finding #1）ようになっている ―― Chromeのメッセージングは、受信側が
+   * sendResponse()を呼ばず`true`もreturnしない場合、リスナーがreturnした
+   * 時点でポートを閉じ、送信側コールバックに`chrome.runtime.lastError =
+   * "message port closed before a response was received"`をセットする。
+   * これは受信側の処理が実際に成功していても発生するため、修正前は
+   * 正常に配信されたエクスポートまで失敗と誤判定していた。明示的なackが
+   * 返るようになった今は、`lastError`（配信自体の失敗）に加えて
+   * レスポンスの`success:false`（受信側で処理中に例外が起きた場合）も
+   * 確認し、どちらの失敗も呼び出し元へ伝播する。
    */
   const sendTabMessageAsync = (tabId: number, message: Record<string, unknown>): Promise<void> => {
     return new Promise<void>((resolve, reject) => {
-      chrome.tabs.sendMessage(tabId, message, () => {
+      chrome.tabs.sendMessage(tabId, message, (response?: { success?: boolean, error?: string }) => {
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message))
+        } else if (response && response.success === false) {
+          reject(new Error(response.error || 'content script reported a download handoff failure'))
         } else {
           resolve()
         }
