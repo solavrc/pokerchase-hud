@@ -16,10 +16,13 @@
  * The fix (see `collectOverlapRepairEvents()` in import-export.ts): when the
  * DB already contained events before the import, the derived-entity pass
  * re-reads the affected range from the Lake -- expanded backwards to the last
- * EVT_ENTRY_QUEUED(201) at/before the earliest new event (hand boundary AND
- * session-context start) and forwards to the first EVT_HAND_RESULTS(306)
- * at/after the latest new event -- and re-derives entities from existing and
- * new rows together. Re-deriving hands already present is idempotent: hands
+ * validated outside-hand EVT_ENTRY_QUEUED(201) at/before the earliest new
+ * event (including a newly imported 201 at the exact endpoint), and forwards
+ * to the first validated pre-existing EVT_HAND_RESULTS(306) at/after the
+ * latest new event -- and re-derives entities from existing and new rows
+ * together. Converter seeding and cleanup authority are then derived from the
+ * validated range content, not from which boundary scan happened to succeed.
+ * Re-deriving hands already present is idempotent: hands
  * (id), phases ([handId+phase]) and actions ([handId+index]) all have
  * deterministic keys and `saveEntities()` uses bulkPut.
  *
@@ -69,6 +72,11 @@ const HAND2_EVENTS = shiftHand(1_000_000, HAND2_ID)
 const HAND0_ID = 384370063
 const HAND0_EVENTS = shiftHand(-10_000, HAND0_ID)
 
+// A contextless hand wholly before ENTRY_QUEUED, used to prove an exact-min
+// newly imported 201 can become the lower boundary without replaying history.
+const PRE_ENTRY_HAND_ID = 384370061
+const PRE_ENTRY_HAND_EVENTS = shiftHand(-20_000, PRE_ENTRY_HAND_ID)
+
 // An MTT table-move EVT_ENTRY_QUEUED injected INSIDE HAND1 (between its
 // EVT_DEAL at ...313426 and its first EVT_ACTION at ...315428) -- the repo
 // documents 201 can land mid-hand on MTT table moves (docs/api-events.md).
@@ -85,6 +93,17 @@ const MALFORMED_RESULTS_ROW = { "ApiTypeId": 306, "timestamp": 1752427319000 }
 // (...313426) -- legitimately outside any hand (HAND0 is already closed,
 // HAND1 hasn't opened yet).
 const GAP_ENTRY_QUEUED = { ...ENTRY_QUEUED, "timestamp": 1752427310000 }
+
+// Valid tail fragments whose opening DEAL is outside the captured Lake.
+// They exercise the range-content and delete-safety invariants without
+// inventing new event payload shapes.
+const LEADING_ACTION_FRAGMENT = { ...HAND1_ACTIONS[0]!, "timestamp": 1752427302000 }
+const LEADING_RESULTS_FRAGMENT_ID = 384370062
+const LEADING_RESULTS_FRAGMENT = {
+  ...HAND0_EVENTS[4]!,
+  "HandId": LEADING_RESULTS_FRAGMENT_ID,
+  "timestamp": 1752427301000,
+}
 
 const toJsonl = (events: unknown[]): string => events.map(event => JSON.stringify(event)).join('\n')
 
@@ -343,6 +362,97 @@ describe('importData() overlap import repair (audit finding #7)', () => {
         battleType: 0,
         name: 'Live Session',
       })
+    })
+  })
+
+  test('a newly imported 201 at exactly minNewTimestamp anchors after an earlier contextless hand without rewriting it or leaking the live name (PR #203 codex P2, pass 6)', async () => {
+    await runWithFreshDb(async ({ db, service, handlers }) => {
+      // An unrelated, already-complete hand precedes the import, but its Lake
+      // capture has no 201. The import itself begins with a valid 201. If the
+      // backward scan remains strictly below minNewTimestamp, it falls back
+      // to Lake start, replays/re-writes the earlier hand, and reports no anchor.
+      await db.apiEvents.bulkAdd(PRE_ENTRY_HAND_EVENTS as never[])
+      await handlers.rebuildAllData()
+      const hand0Before = await db.hands.get(PRE_ENTRY_HAND_ID)
+      expect(hand0Before).toBeDefined()
+      expect(hand0Before!.session.name).toBeUndefined()
+
+      service.session.setId('live-session-456')
+      service.session.setBattleType(1)
+      service.session.setName('Live Table Name')
+
+      const result = await handlers.importData(toJsonl([ENTRY_QUEUED, ...HAND1_EVENTS]))
+      expect(result.successCount).toBe(1 + HAND1_EVENTS.length)
+
+      // The exact-min 201 is a valid outside-hand lower boundary: HAND0 stays
+      // outside the replay/delete range and the new historical hand is seeded
+      // from an empty rebuild-style session before that 201 is applied.
+      expect(await db.hands.get(PRE_ENTRY_HAND_ID)).toEqual(hand0Before)
+      const hand1 = await db.hands.get(HAND1_ID)
+      expect(hand1).toBeDefined()
+      expect(hand1!.session).toMatchObject({ id: 'stage000_003', battleType: 0 })
+      expect(hand1!.session.name).toBeUndefined()
+    })
+  })
+
+  test('a replay range with a leading mid-hand fragment derives session anchoring from the validated range content before its first DEAL (PR #203 codex P2, pass 6)', async () => {
+    await runWithFreshDb(async ({ db, service, handlers }) => {
+      // Pre-existing non-application noise forces overlap repair. The first
+      // new valid event is an orphan ACTION fragment, followed by a new 201
+      // and then the first DEAL in the range. No backward scan can find that
+      // later 201, but the replay itself establishes session context before
+      // its first hand and must therefore use the empty seed.
+      await db.apiEvents.add({ ApiTypeId: 9999, timestamp: 1000 } as never)
+
+      service.session.setId('live-session-456')
+      service.session.setBattleType(1)
+      service.session.setName('Live Table Name')
+
+      const imported = [LEADING_ACTION_FRAGMENT, ENTRY_QUEUED, ...HAND1_EVENTS]
+      const result = await handlers.importData(toJsonl(imported))
+      expect(result.successCount).toBe(imported.length)
+
+      const hand = await db.hands.get(HAND1_ID)
+      expect(hand).toBeDefined()
+      expect(hand!.session).toMatchObject({ id: 'stage000_003', battleType: 0 })
+      expect(hand!.session.name).toBeUndefined()
+    })
+  })
+
+  test('a validated leading 306 fragment without an opening DEAL in the replay range never authorizes derived-hand deletion (PR #203 codex P2, pass 6)', async () => {
+    await runWithFreshDb(async ({ db, handlers }) => {
+      // The Lake begins with the tail of a hand whose DEAL was never captured.
+      // Keep an older-schema derived representation of that hand to prove
+      // overlap repair cannot delete it merely because its valid 306 lies in
+      // the fallback range: the range cannot re-derive or otherwise account
+      // for a hand whose opening DEAL is absent.
+      await db.apiEvents.add(LEADING_RESULTS_FRAGMENT as never)
+      const preservedHand = {
+        id: LEADING_RESULTS_FRAGMENT_ID,
+        approxTimestamp: 1752427299000,
+        seatUserIds: [2, 4, 3, 1],
+        winningPlayerIds: [4],
+        smallBlind: 100,
+        bigBlind: 200,
+        session: { id: 'older-capture', battleType: 0, name: 'Preserved Table' },
+        results: [],
+      }
+      await db.hands.put(preservedHand as never)
+      await db.phases.put({ handId: LEADING_RESULTS_FRAGMENT_ID, phase: 0, seatUserIds: [2, 4, 3, 1], communityCards: [] } as never)
+      await db.actions.put({ handId: LEADING_RESULTS_FRAGMENT_ID, index: 0, playerId: 2, phase: 0, actionType: 2, bet: 0, pot: 500, sidePot: [], position: 0, actionDetails: [] } as never)
+
+      // The orphan ACTION keeps the later 201 outside the backward scan, so
+      // the validated replay starts with the orphan 306 fragment.
+      const imported = [LEADING_ACTION_FRAGMENT, ENTRY_QUEUED, ...HAND1_EVENTS]
+      const result = await handlers.importData(toJsonl(imported))
+      expect(result.successCount).toBe(imported.length)
+
+      expect(await db.hands.get(LEADING_RESULTS_FRAGMENT_ID)).toEqual(preservedHand)
+      expect(await db.phases.where('handId').equals(LEADING_RESULTS_FRAGMENT_ID).count()).toBe(1)
+      expect(await db.actions.where('handId').equals(LEADING_RESULTS_FRAGMENT_ID).count()).toBe(1)
+      expect(await db.hands.get(HAND1_ID)).toBeDefined()
+      // Repair writes derived tables only; the raw leading fragment remains.
+      expect(await db.apiEvents.get([LEADING_RESULTS_FRAGMENT.timestamp, 306])).toEqual(LEADING_RESULTS_FRAGMENT)
     })
   })
 

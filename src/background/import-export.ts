@@ -68,8 +68,8 @@ export const clearImportSession = (): void => {
  * この関数は新規イベントのtimestamp範囲 [minNewTimestamp, maxNewTimestamp] を
  * 以下の境界までLake上で拡張し、既存行と新規行を合わせた連続領域を返す:
  *
- * - 開始境界（PR #203 codexレビューP2で修正、5巡目P2でさらに修正）: minNewTimestamp
- *   より厳密に前で最後の「いかなるハンドの内部でもない」と証明できた検証済み
+ * - 開始境界（PR #203 codexレビューP2で修正、5・6巡目P2でさらに修正）:
+ *   minNewTimestamp以前で最後の「いかなるハンドの内部でもない」と証明できた検証済み
  *   EVT_ENTRY_QUEUED(201) をanchorとする。201を無条件に（証明なしで）anchor
  *   にしてはならない: MTTのテーブル移動201はハンドの最中（EVT_DEALと
  *   EVT_HAND_RESULTSの間）に割り込むことがあり（docs/api-events.md、
@@ -83,6 +83,10 @@ export const clearImportSession = (): void => {
  *   anchorは必ずハンド外にあり、影響ハンドのDEALとセッション文脈
  *   （BattleType/Id、以降の313/301が積むプレイヤー名）の両方が範囲に含まれる。
  *   201が見つからない場合はLake先頭から（rebuildAllDataと同じ条件で）変換する。
+ *   minNewTimestampと同時刻の201も候補に含めるのは、インポート自身の先頭行が
+ *   セッション境界である場合に、それ以前の無関係なLake行までreplayして
+ *   「範囲の最初のハンドには201が無い」と誤判定しないため。新規201でも同じ
+ *   外部性証明を通すので、mid-handのテーブル移動201は従来どおりanchorにならない。
  *
  *   探索の上限をminNewTimestamp自体（直前の完了ハンドの306ではなく）にするのが
  *   重要（5巡目レビューP2「Include session anchors after the previous hand」）:
@@ -121,38 +125,41 @@ export const clearImportSession = (): void => {
  * （PR #203 codexレビュー2巡目P2）: 誤ペアリングされていた旧ハンドの
  * HandIdが新導出に現れない、旧導出の方がaction数が多い等。このため
  * 呼び出し元は、保存前に「この修復が説明できる既存派生ハンド」= idが
- * 「範囲内の検証済みEVT_HAND_RESULTSのHandId」に一致する既存ハンド
+ * 「範囲内で検証済みDEALにより開かれ、その後の検証済み
+ * EVT_HAND_RESULTSで閉じたHandId」に一致する既存ハンド
  * （とそのphases/actions）を、再導出バンドルの保存と同一トランザクション
  * 内で削除する。削除判定をtimestampウィンドウではなくHandIdで行うのは
  * （codexレビュー3巡目P2×2）:
  * - hand.idは必ずその導出元306のHandId由来なので、「idが範囲内の検証済み
- *   306に一致する」ことがそのハンドの導出元が範囲内にある直接の証拠に
- *   なり、approxTimestampが未設定のレガシー行（モデル上optional）も
+ *   DEAL→306ペアに一致する」ことがそのハンドの全raw spanが範囲内にある
+ *   直接の証拠になり、approxTimestampが未設定のレガシー行（モデル上optional）も
  *   インデックスに頼らず正しく対象に含まれる。
  * - 逆に、導出元の生306が現行スキーマでパース不能になったハンドは
  *   検証済み306集合に現れないため削除されない —— 再導出で作り直せない
  *   ものを消して、明示的な再構築まで残っていたはずの派生状態を
  *   失うことがない（新導出が説明できるハンドだけを削除する）。
+ * ペアは、全range（修復後の並び）とnewEventKeysを除いたrange（修復前の
+ * 並び）の両方でEntityConverterと同じ境界規則を再現して求める。後者が
+ * 必要なのは、新規306が旧DEALを先に閉じた結果、旧導出で後続306と
+ * 誤ペアリングされていたstale HandIdが修復後の並びだけでは見えなくなる
+ * ため。Lake先頭がハンド途中の断片で始まる場合など、どちらの並びにも
+ * 対応するDEALが無い先行306はこの集合に入らず、既存派生ハンドを削除する
+ * 根拠にならない。
  * 新バンドルが再生成するハンドのidはこの集合の部分集合（definition上、
- * bundleの各hand.idは範囲内の検証済み306由来）なので、削除→bulkPutで
+ * bundleの各hand.idは範囲内の検証済みDEAL→306由来）なので、削除→bulkPutで
  * 欠落は生じない。集合内だが新導出に現れないid（誤ペアリング修正・
  * キメラ棄却）は意図的な削除で、全再構築と同じ結果に収束する。範囲外の
  * 派生行には一切触れない。返す前にfilterValidApplicationEvents()で
  * 再検証するのはrebuildAllData()と同じ理由（CLAUDE.md「Raw Event
  * Lake」参照）。
  *
- * 戻り値の`hasSessionAnchor`は「範囲の先頭からハンド開始までに検証済み
+ * 戻り値の`hasSessionAnchor`は「検証済みrangeの先頭から最初のDEALまでに
  * EVT_ENTRY_QUEUEDがある = 範囲内のイベント列だけでセッション文脈を
- * 再構築できる」ことを示す —— anchorEventが見つかったかどうかそのもの
- * （`anchorEvent !== undefined`）。anchorが見つからない場合（Lake全体に
- * 「いかなるハンドの内部でもない」201が一つも無い場合）は範囲がLake先頭
- * まで広がるだけで、範囲はセッション境界を含まないため常にfalse
- * （201が無条件にLake先頭から読まれる場合を含む —— 5巡目レビューP2で
- * 探索上限をminNewTimestamp自体に広げたことで、この判定はLake先頭
- * フォールバックを特別扱いする必要がなくなった。以前はLake先頭に
- * ついてだけ別の弱い判定（「最初の検証済み201の前にDEALが無いか」）を
- * 行っていたが、直前の完了ハンドの306より後・影響ハンドのDEALより前の
- * 「隙間」にある201を探索範囲の外に置いてしまい見逃していた）。
+ * 再構築できる」ことを示す。これはanchor探索の成否ではなく、境界決定後・
+ * Zod検証後の`events`そのものを走査して決める（6巡目レビューP2）。したがって
+ * old Lake、新規import、Lake先頭fallbackのどこから来た201でも同じ定義になり、
+ * 最初にハンド途中のACTION/306断片があっても、最初のopening DEALより前の
+ * 201なら正しく数える。逆に最初のDEALより後のmid-hand 201は数えない。
  * 呼び出し元はhasSessionAnchorがtrueの場合のみコンバーターを空セッション
  * で初期化し、falseの場合（201無しの増分ハンド等）はライブの
  * service.sessionを初期値として使う——201がid/battleTypeを上書きしても
@@ -169,6 +176,8 @@ export const collectOverlapRepairEvents = async (
 ): Promise<{
   events: ApiEvent[]
   hasSessionAnchor: boolean
+  /** 修復前または修復後のrange内で検証済みDEAL→306を構成し、安全に削除→再導出できるHandId */
+  accountedHandIds: number[]
 }> => {
   // 境界候補は現行スキーマで検証してから採用する（doc comment参照）。
   // parseApiEventは同期のZodパースなのでDexieのfilterコールバック内で使える。
@@ -177,7 +186,7 @@ export const collectOverlapRepairEvents = async (
     return !!parsed && isApplicationApiEvent(parsed)
   }
 
-  // セッション文脈anchor: minNewTimestampより厳密に前で最後の「いかなる
+  // セッション文脈anchor: minNewTimestamp以前で最後の「いかなる
   // ハンドの内部でもない」と証明できた検証済みEVT_ENTRY_QUEUED（codexレビュー
   // 4巡目・5巡目P2）。探索の上限をminNewTimestamp自体にするのが重要
   // （5巡目P2「Include session anchors after the previous hand」）: 直前の
@@ -194,11 +203,12 @@ export const collectOverlapRepairEvents = async (
   // そのハンドの開始DEALより前から1ハンドずつ遡って探し直す（毎回より前の
   // DEALへ厳密に後退するため必ず停止する）。
   let anchorEvent: ApiEvent | undefined
-  let searchUpperKey: [number, number] = [minNewTimestamp, 0]
+  // 201自身が今回の最古行なら[minNewTimestamp, 201]を含める（6巡目P2）。
+  let searchUpperKey: [number, number] = [minNewTimestamp, ApiType.EVT_ENTRY_QUEUED]
   while (true) {
     const candidate = await db.apiEvents
       .where('[timestamp+ApiTypeId]')
-      .below(searchUpperKey)
+      .belowOrEqual(searchUpperKey)
       .reverse()
       .filter(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED && isValidApplicationRow(event))
       .first()
@@ -263,9 +273,49 @@ export const collectOverlapRepairEvents = async (
     rawRows = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
   }
 
+  const events = await filterValidApplicationEvents(rawRows)
+
+  // Post-validation range invariants (the scan path is deliberately irrelevant):
+  // 1. Empty/rebuild-style converter seed iff a valid 201 precedes the range's
+  //    first opening DEAL. With no DEAL, no session seed is needed.
+  // 2. Cleanup authority exists only for a valid 306 paired with an opening DEAL
+  //    inside this range in either the old (new rows excluded) or repaired replay.
+  //    This deletes old mis-pairings but never a leading orphan 306 fragment.
+  let sawSessionAnchorBeforeFirstDeal = false
+  let sawFirstDeal = false
+  for (const event of events) {
+    if (!sawFirstDeal && isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
+      sawSessionAnchorBeforeFirstDeal = true
+    }
+
+    if (isApiEventType(event, ApiType.EVT_DEAL)) {
+      sawFirstDeal = true
+    }
+  }
+
+  const collectPairedHandIds = (candidateEvents: ApiEvent[]): number[] => {
+    let hasOpenDeal = false
+    const handIds: number[] = []
+    for (const event of candidateEvents) {
+      if (isApiEventType(event, ApiType.EVT_DEAL)) {
+        // Matches EntityConverter: a later DEAL replaces any unfinished buffer.
+        hasOpenDeal = true
+      } else if (isApiEventType(event, ApiType.EVT_HAND_RESULTS)) {
+        if (hasOpenDeal) handIds.push(event.HandId)
+        hasOpenDeal = false
+      }
+    }
+    return handIds
+  }
+  const accountedHandIds = Array.from(new Set([
+    ...collectPairedHandIds(events.filter(event => !newEventKeys.has(`${event.timestamp}-${event.ApiTypeId}`))),
+    ...collectPairedHandIds(events),
+  ]))
+
   return {
-    events: await filterValidApplicationEvents(rawRows),
-    hasSessionAnchor: anchorEvent !== undefined
+    events,
+    hasSessionAnchor: sawFirstDeal && sawSessionAnchorBeforeFirstDeal,
+    accountedHandIds
   }
 }
 
@@ -527,11 +577,11 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           //   （EVT_DEAL〜EVT_HAND_RESULTS）を構成できないため、影響範囲を
           //   Lakeから読み直して既存行と新規行を合わせて再導出する
           //   （境界の決め方・冪等性はcollectOverlapRepairEvents()参照）。
-          //   コンバーターの初期セッションは、範囲が検証済みEVT_ENTRY_QUEUED
-          //   から始まる場合のみrebuildAllData()と同じ空のデフォルト
-          //   セッションにする（範囲内のイベント列がセッション文脈を自前で
-          //   再構築でき、かつライブのservice.sessionの名前等が過去の
-          //   再導出ハンドに混入しない）。201を含まない増分ハンドの
+          //   コンバーターの初期セッションは、検証済みrangeの最初のDEALより
+          //   前に検証済みEVT_ENTRY_QUEUEDがある場合のみrebuildAllData()と
+          //   同じ空のデフォルトセッションにする（range内容がセッション文脈を
+          //   自前で再構築でき、かつライブのservice.sessionの名前等が過去の
+          //   再導出ハンドに混入しない）。最初のDEALより前に201が無い増分ハンドの
           //   インポートでは従来の直接経路と同じくservice.sessionを
           //   初期値に使う —— さもないとhand.sessionが空になり、#104の
           //   SessionState seedingリグレッションが守っている挙動が
@@ -574,24 +624,17 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
             // 統計が新旧両方を数えてしまう。
             //
             // 削除対象は「この修復が説明できるハンド」= idが範囲内の検証済み
-            // EVT_HAND_RESULTSのHandIdに一致する既存派生ハンドのみ
+            // DEAL→EVT_HAND_RESULTSペアのHandIdに一致する既存派生ハンドのみ
             // （collectOverlapRepairEvents()のdocコメント参照。codexレビュー
             // 3巡目P2×2: idベースの判定にすることで、approxTimestamp未設定の
             // レガシー行もインデックスに頼らず対象に含まれ、逆に導出元の生行が
             // 現行スキーマでパース不能になったハンド —— 再導出で作り直せない
-            // もの —— は削除されない）。それらとphases/actionsを、再導出
-            // バンドルの保存と同一トランザクションで先に削除する。
+            // もの —— は削除されない。6巡目P2: range先頭のmid-hand断片など、
+            // 306だけが範囲内にありopening DEALが無いHandIdも削除しない）。
+            // それらとphases/actionsを、再導出バンドルの保存と同一
+            // トランザクションで先に削除する。
             // Raw Event Lake（apiEvents）には一切触れない。
-            const accountedHandIds: number[] = []
-            {
-              const seen = new Set<number>()
-              for (const event of entitySourceEvents) {
-                if (isApiEventType(event, ApiType.EVT_HAND_RESULTS) && !seen.has(event.HandId)) {
-                  seen.add(event.HandId)
-                  accountedHandIds.push(event.HandId)
-                }
-              }
-            }
+            const { accountedHandIds } = repairRange
             await db.transaction('rw', [db.hands, db.phases, db.actions], async () => {
               const existingAccountedHands = accountedHandIds.length > 0
                 ? await db.hands.bulkGet(accountedHandIds)

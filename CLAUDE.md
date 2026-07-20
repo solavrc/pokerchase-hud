@@ -317,7 +317,7 @@ Statistics Refresh (batch mode)
 - **Overlap imports re-derive from the Lake, not from new events alone**: when
   the DB already contained events before the import, the entity pass re-reads
   the affected range from `apiEvents` — expanded back to the last *valid*
-  `EVT_ENTRY_QUEUED` (201) strictly before the earliest new event that is
+  `EVT_ENTRY_QUEUED` (201) at or before the earliest new event that is
   *provably outside any hand* (session-context anchor — an MTT table-move 201
   can land mid-hand, including inside a previous completed hand, and would
   cut off an opening `EVT_DEAL`; a candidate qualifies only if its most
@@ -330,27 +330,37 @@ Statistics Refresh (batch mode)
   mis-paired with a later 306) — so a hand split between existing and
   imported rows (e.g. re-importing a complete export into a DB missing the
   hand's middle ACTIONs) gets its derived entities repaired. The anchor scan
-  searches the whole Lake below the earliest new event, not just below the
+  searches the whole Lake up to the earliest new event, not just below the
   previous completed hand's 306 — a valid session-boundary 201 can sit in the
-  gap *after* that 306 and *before* the affected hand's own DEAL, and capping
-  the scan there would miss it (this doesn't risk picking a mid-hand 201
-  instead: the outside-any-hand proof rejects those regardless of how far the
-  scan window reaches). Boundary candidates are re-validated with the current
-  Zod schema before use, because the Lake intentionally stores unparseable
-  rows (a malformed 306 must not truncate the range). New events alone cannot
-  form such a hand's 303→306 boundary. The converter is seeded with the empty
-  default session only when a qualifying 201 anchor was found (the range
-  starts at a session boundary, whether or not a previous completed hand
-  precedes it); otherwise (incremental hands without a 201 anywhere in the
-  Lake below them) the live `service.session` seeds it, matching the direct
-  path and the #104 SessionState-seeding regression (a 201 overwrites
-  id/battleType but not `session.name`, so live-session seeding at a session
-  boundary could leak a live table name into historical repairs). Saving is
-  delete-then-put in one transaction:
-  existing derived hands whose `id` matches a *validated*
-  `EVT_HAND_RESULTS` HandId inside the repair range (the hands this repair
-  can account for) are deleted with their phases/actions before the
-  regenerated bundle is `bulkPut` — upsert alone (idempotent for hands
+  gap *after* that 306 and *before* the affected hand's own DEAL. A newly
+  imported 201 at exactly the earliest-new timestamp is eligible too, so
+  unrelated earlier Lake rows do not force the replay to start before the
+  import's own boundary. The same outside-hand proof applies in both cases,
+  so a mid-hand 201 is still rejected. Boundary candidates are re-validated
+  with the current Zod schema before use, because the Lake intentionally
+  stores unparseable rows (a malformed 306 must not truncate the range). New
+  events alone cannot form such a hand's 303→306 boundary.
+
+  After range selection and validation, two content-based invariants apply.
+  First, the converter is seeded with the empty rebuild-style session **iff**
+  the range's first opening DEAL is preceded within that validated range by a
+  valid 201, regardless of whether the 201 came from the old Lake, the new
+  import, or Lake-start fallback. Leading mid-hand ACTION/306 fragments do not
+  change that rule; a 201 after the first DEAL does not qualify. Otherwise the
+  live `service.session` seeds the converter, matching the direct path and the
+  #104 SessionState-seeding regression (a 201 overwrites id/battleType but not
+  `session.name`, so live-session seeding at a real boundary could leak a live
+  table name into historical repairs).
+
+  Second, saving is delete-then-put in one transaction. Existing derived hands
+  are cleanup-accounted only when their HandId closes a validated DEAL→306
+  pairing wholly inside the range under either the old replay (new import keys
+  excluded) or the repaired replay (all range rows). Considering both pairings
+  deletes stale ids from the OLD derivation while retaining ids introduced by
+  the repaired derivation; requiring an in-range opening DEAL prevents a
+  leading orphan 306 from authorizing deletion. Accounted hands and their
+  phases/actions are deleted before the regenerated bundle is `bulkPut` —
+  upsert alone (idempotent for hands
   present in both derivations via deterministic entity keys) would leave
   rows that existed only in the old derivation (a mis-paired hand's id
   absent from the new derivation, or leftover `[handId+index]` action
