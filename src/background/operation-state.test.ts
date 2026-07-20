@@ -1,4 +1,4 @@
-import { getOperationState, setOperationState, isOperationIdle } from './operation-state'
+import { getOperationState, setOperationState, isOperationIdle, onOperationBecameIdle } from './operation-state'
 
 describe('operation-state', () => {
   afterEach(() => {
@@ -34,5 +34,61 @@ describe('operation-state', () => {
     setOperationState({ type: 'idle' })
     expect(isOperationIdle()).toBe(true)
     expect(getOperationState()).toEqual({ type: 'idle' })
+  })
+
+  describe('onOperationBecameIdle', () => {
+    it('notifies listeners on a non-idle -> idle transition', () => {
+      const listener = jest.fn()
+      const unsubscribe = onOperationBecameIdle(listener)
+
+      setOperationState({ type: 'rebuild', progress: 90 })
+      expect(listener).not.toHaveBeenCalled()
+
+      setOperationState({ type: 'idle' })
+      expect(listener).toHaveBeenCalledTimes(1)
+
+      unsubscribe()
+    })
+
+    it('does not notify on idle -> idle (no-op transitions) or progress updates within the same operation', () => {
+      const listener = jest.fn()
+      const unsubscribe = onOperationBecameIdle(listener)
+
+      setOperationState({ type: 'idle' }) // already idle
+      expect(listener).not.toHaveBeenCalled()
+
+      setOperationState({ type: 'export', format: 'json', progress: 0 })
+      setOperationState({ type: 'export', format: 'json', progress: 50 }) // still non-idle
+      expect(listener).not.toHaveBeenCalled()
+
+      unsubscribe()
+    })
+
+    it('stops notifying after unsubscribe', () => {
+      const listener = jest.fn()
+      const unsubscribe = onOperationBecameIdle(listener)
+      unsubscribe()
+
+      setOperationState({ type: 'import', progress: 0 })
+      setOperationState({ type: 'idle' })
+
+      expect(listener).not.toHaveBeenCalled()
+    })
+
+    it('isolates a throwing listener from other listeners', () => {
+      const throwingListener = jest.fn(() => { throw new Error('boom') })
+      const okListener = jest.fn()
+      const unsubscribe1 = onOperationBecameIdle(throwingListener)
+      const unsubscribe2 = onOperationBecameIdle(okListener)
+
+      setOperationState({ type: 'rebuild', progress: 50 })
+      expect(() => setOperationState({ type: 'idle' })).not.toThrow()
+
+      expect(throwingListener).toHaveBeenCalledTimes(1)
+      expect(okListener).toHaveBeenCalledTimes(1)
+
+      unsubscribe1()
+      unsubscribe2()
+    })
   })
 })

@@ -12,6 +12,7 @@ import type { ApiEvent } from '../app'
 import { autoSyncService } from '../services/auto-sync-service'
 import { connectedPorts, startPortPing } from './ports'
 import { recordUndecodedEvent } from './undecoded-event-tracker'
+import { markSessionActive, markSessionInactive, recheckPendingUpdate } from './update-manager'
 
 /**
  * `chrome.runtime.onConnect`のハンドラーを登録する。
@@ -95,10 +96,25 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         service.handAggregateStream.write(data)
         service.realTimeStatsStream.write(data)
 
+        // Forced-update安全性述語（update-manager.ts）のセッション状態追跡:
+        // content_script.tsのkeepaliveゲート（isGameActive）と同じ境界イベントを
+        // Service Worker側で独立に追跡する（SW再起動でリセットされるため
+        // content_script側の状態と厳密に同期している必要はない -- 保守的に
+        // 「unknown = unsafe」から始まり、実イベント観測で確定させるだけでよい）
+        if (data.ApiTypeId === ApiType.EVT_SESSION_DETAILS) {
+          markSessionActive()
+        }
+
         // Handle game session end for auto sync
         if (data.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+          markSessionInactive()
           autoSyncService.onGameSessionEnd().catch(err =>
             console.error('[background] Auto sync on game end failed:', err)
+          )
+          // セッション終了は保留中アップデートの安全性再チェック地点の1つ
+          // （src/background/update-manager.ts参照）
+          recheckPendingUpdate().catch(err =>
+            console.error('[background] Pending update recheck on session end failed:', err)
           )
         } else if (data.ApiTypeId === ApiType.EVT_ENTRY_QUEUED || data.ApiTypeId === ApiType.EVT_SESSION_DETAILS) {
           // フォールバックトリガー（docs/postmortems/2026-07-session-results-drop.md

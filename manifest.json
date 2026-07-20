@@ -9,7 +9,8 @@
     "tabs",
     "notifications",
     "identity",
-    "offscreen"
+    "offscreen",
+    "alarms"
   ],
   "host_permissions": [
     "https://*.googleapis.com/*"

@@ -31,8 +31,23 @@ global.chrome = {
       addListener: jest.fn(),
       removeListener: jest.fn(),
     },
+    onInstalled: {
+      addListener: jest.fn(),
+    },
+    onUpdateAvailable: {
+      addListener: jest.fn(),
+    },
+    requestUpdateCheck: jest.fn().mockResolvedValue({ status: 'no_update' }),
+    getManifest: jest.fn(() => ({ version: '5.1.0' })),
     getURL: jest.fn((path: string) => `chrome-extension://mock-extension-id/${path}`),
     reload: jest.fn(),
+  },
+  alarms: {
+    create: jest.fn().mockResolvedValue(undefined),
+    clear: jest.fn().mockResolvedValue(true),
+    onAlarm: {
+      addListener: jest.fn(),
+    },
   },
   storage: {
     sync: {

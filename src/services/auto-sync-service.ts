@@ -11,6 +11,10 @@ import { ApiType, isApiEventType, isApplicationApiEvent } from '../types'
 import type { ApiEvent } from '../types'
 import { processInChunks, saveEntities, filterValidApplicationEvents } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
+import { isCloudSyncBlockedByMinVersionGate } from './min-version-gate'
+
+/** Shown in the popup and logged when the min-version gate stops cloud sync (#forced-update). */
+export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます'
 
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'success'
 export type SyncDirection = 'upload' | 'download' | 'both'
@@ -31,7 +35,7 @@ export interface SyncState {
 export class AutoSyncService {
   private db: PokerChaseDB
   private syncState: SyncState = { status: 'idle' }
-  private isSyncing = false
+  private _isSyncing = false
   private lastSyncAttempt = 0
   private readonly MIN_SYNC_INTERVAL_MS = 0 // No minimum interval restriction
   private readonly SYNC_STORAGE_KEY = 'autoSyncLastTime'
@@ -39,6 +43,16 @@ export class AutoSyncService {
 
   constructor(db?: PokerChaseDB) {
     this.db = db ?? new PokerChaseDB(self.indexedDB, self.IDBKeyRange)
+  }
+
+  /**
+   * `true` while an upload/download sync is in flight. Read-only outside this
+   * class -- used by `src/background/update-manager.ts`'s safety predicate
+   * (part of the "SAFE to auto-apply an update" check) so the extension never
+   * reloads mid-sync.
+   */
+  get isSyncing(): boolean {
+    return this._isSyncing
   }
 
   /**
@@ -88,12 +102,24 @@ export class AutoSyncService {
     }
 
     // Check if already syncing
-    if (this.isSyncing) {
+    if (this._isSyncing) {
       console.log('[AutoSync] Sync already in progress')
       return
     }
 
-    this.isSyncing = true
+    // Remote min-version gate (kill switch, #forced-update): every sync entry
+    // point funnels through performSync(), so a single guard here covers
+    // manual sync, auto sync (session end/start triggers), and initialize()'s
+    // first-time sync alike. Fail-open by design (see min-version-gate.ts) --
+    // this only ever fires when the extension's own version has been
+    // explicitly marked unsupported in the remote config.
+    if (await isCloudSyncBlockedByMinVersionGate()) {
+      console.warn('[AutoSync] Cloud sync blocked: extension version is below the remote minimum-supported version')
+      this.updateSyncState({ status: 'error', error: MIN_VERSION_SYNC_BLOCKED_MESSAGE })
+      return
+    }
+
+    this._isSyncing = true
     this.lastSyncAttempt = now
     this.updateSyncState({ status: 'syncing' })
 
@@ -128,7 +154,7 @@ export class AutoSyncService {
         error: error instanceof Error ? error.message : 'Unknown error'
       })
     } finally {
-      this.isSyncing = false
+      this._isSyncing = false
     }
   }
 

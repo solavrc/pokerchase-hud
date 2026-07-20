@@ -19,12 +19,41 @@ export interface OperationState {
 
 let currentOperationState: OperationState = { type: 'idle' }
 
+/**
+ * `type: 'idle'`への遷移（export/import/rebuildの完了・失敗いずれか）を購読する
+ * リスナー集合。`src/background/update-manager.ts`が「operation completion」
+ * 時点での保留中アップデートの安全性再チェックをフックするために使う
+ * （CLAUDE.md「Forced Update」参照）。operation-state.tsはupdate-managerに
+ * 依存しない一方向の依存にするため、コールバック登録方式にしている。
+ */
+type IdleListener = () => void
+const idleListeners: IdleListener[] = []
+
+/** `type: 'idle'`への遷移時に呼ばれるリスナーを登録する。解除関数を返す */
+export const onOperationBecameIdle = (listener: IdleListener): (() => void) => {
+  idleListeners.push(listener)
+  return () => {
+    const index = idleListeners.indexOf(listener)
+    if (index !== -1) idleListeners.splice(index, 1)
+  }
+}
+
 /** 現在の操作状態を取得する（Popupの`getOperationState`クエリ用） */
 export const getOperationState = (): OperationState => currentOperationState
 
 /** 操作状態を更新する（進捗更新や完了/失敗時のidle復帰など） */
 export const setOperationState = (state: OperationState): void => {
+  const wasIdle = currentOperationState.type === 'idle'
   currentOperationState = state
+  if (!wasIdle && state.type === 'idle') {
+    idleListeners.forEach(listener => {
+      try {
+        listener()
+      } catch (error) {
+        console.error('[operation-state] onOperationBecameIdle listener failed:', error)
+      }
+    })
+  }
 }
 
 /** アイドル状態かどうか（同時実行不可な操作の開始可否判定用） */
