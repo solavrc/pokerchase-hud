@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ImportExportSection } from './ImportExportSection'
 import { REBUILD_ADVISORY_STORAGE_KEY } from '../../background/rebuild-advisory'
@@ -126,5 +126,35 @@ describe('ImportExportSection - rebuild advisory banner', () => {
     await waitFor(() => {
       expect(screen.queryByText(/データ再構築」を実行してください/)).not.toBeInTheDocument()
     })
+  })
+
+  it('stops chunk upload and shows the background error when import initialization is rejected', async () => {
+    const setImportStatus = jest.fn()
+    mockSendMessage.mockImplementation((message: { action?: string }, callback?: (response: unknown) => void) => {
+      if (typeof callback === 'function') {
+        callback({})
+        return undefined
+      }
+      if (message.action === 'importDataInit') {
+        return Promise.resolve({ success: false, error: '別の処理が実行中です' })
+      }
+      return Promise.resolve({ success: true })
+    })
+
+    const { container } = render(
+      <ImportExportSection {...defaultProps} setImportStatus={setImportStatus} />
+    )
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['{}'], 'data.ndjson', { type: 'application/x-ndjson' })
+
+    fireEvent.change(input, { target: { files: [file] } })
+
+    await waitFor(() => {
+      expect(setImportStatus).toHaveBeenCalledWith('インポート失敗: 別の処理が実行中です')
+    })
+    const actions = mockSendMessage.mock.calls.map(([message]) => message.action)
+    expect(actions).toContain('importDataInit')
+    expect(actions).not.toContain('importDataChunk')
+    expect(actions).not.toContain('importDataProcess')
   })
 })
