@@ -446,5 +446,59 @@ describe('PositionalStatsService', () => {
       // itself, from makeMinimalHandEvents) are both now reflected.
       expect(afterHandCompletion.positions.reduce((sum, p) => sum + p.handsN, 0)).toBe(12)
     })
+
+    // 監査finding 11フォローアップ・pass-3（P2、codexレビュー指摘）: 進行中フェッチが
+    // ハンド完了後にキャッシュへ古い結果を書き込んでしまうレース。
+    // `db.hands.where(...).toArray()`をゲート（実データは即座に読むが、Promiseの
+    // 解決だけをテストが手動で制御するまで遅らせる）して、「DB読み取り中に
+    // ハンドが完了する」という進行中フェッチの状態を確定的に再現する。
+    test('an in-flight fetch resolving after a hand completes does NOT fill the cache with a stale result', async () => {
+      process.env.NODE_ENV = 'production' // enable the real 30s cache path (disabled under 'test')
+
+      let releaseGate!: () => void
+      const gate = new Promise<void>(resolve => { releaseGate = resolve })
+      const realWhere = db.hands.where.bind(db.hands)
+      jest.spyOn(db.hands, 'where').mockImplementationOnce((indexName: any) => {
+        const whereClause: any = realWhere(indexName)
+        const realEquals = whereClause.equals.bind(whereClause)
+        whereClause.equals = (value: any) => {
+          const collection: any = realEquals(value)
+          const realToArray = collection.toArray.bind(collection)
+          collection.toArray = async () => {
+            const data = await realToArray() // captures the real (pre-completion) snapshot immediately
+            await gate // ...but withholds it from the caller until the test releases it
+            return data
+          }
+          return collection
+        }
+        return whereClause
+      })
+
+      // Starts the fetch; its `db.hands...toArray()` call is now blocked on `gate`
+      // (cache miss, since nothing has been cached in this test yet -- fetchGeneration
+      // is captured before this call, per getPositionalStats()'s own doc comment).
+      const inFlightFetch = getPositionalStats(db, service, PLAYER_ID)
+
+      // A genuine hand completes WHILE the fetch above is still blocked mid-read.
+      await new Promise<void>(resolve => {
+        service.writeEntityStream.once('data', () => resolve())
+        service.writeEntityStream.write(makeMinimalHandEvents(11, [1, 2, 3]))
+      })
+
+      // Now let the blocked fetch resolve -- with the snapshot it captured BEFORE
+      // hand 11 completed (10 hands).
+      releaseGate()
+      const staleResult = await inFlightFetch
+      expect(staleResult.positions.reduce((sum, p) => sum + p.handsN, 0)).toBe(10)
+
+      // The bug this guards against: cache.set(cacheKey, { result: staleResult, ... })
+      // would have run here unconditionally, planting a stale fill that a subsequent
+      // same-key call (the handEpoch-triggered refetch for an open panel) would then
+      // serve for the rest of the 30s window. Assert it recomputes instead and
+      // reflects hand 11.
+      const afterRace = await getPositionalStats(db, service, PLAYER_ID)
+      expect(afterRace).not.toBe(staleResult)
+      expect(afterRace.positions.reduce((sum, p) => sum + p.handsN, 0)).toBe(11)
+    })
   })
 })

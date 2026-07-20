@@ -456,5 +456,61 @@ describe('RecentHandsService', () => {
       // itself, from makeMinimalHandEvents) are both now reflected.
       expect(afterHandCompletion.hands.map(h => h.handId)).toEqual([5, 4, 3, 2, 1])
     })
+
+    // 監査finding 11フォローアップ・pass-3（P2、codexレビュー指摘）: 進行中フェッチが
+    // ハンド完了後にキャッシュへ古い結果を書き込んでしまうレース。
+    // positional-stats-service.test.tsの同名テストと全く同じゲート手法（実データは
+    // 即座に読むが、Promiseの解決だけをテストが手動で制御するまで遅らせる）で、
+    // 「DB読み取り中にハンドが完了する」という進行中フェッチの状態を確定的に再現する。
+    test('an in-flight fetch resolving after a hand completes does NOT fill the cache with a stale result', async () => {
+      process.env.NODE_ENV = 'production' // enable the real 30s cache path (disabled under 'test')
+
+      await db.hands.bulkAdd([1, 2, 3].map(id => makeHand({ id, approxTimestamp: id * 1000 })))
+
+      let releaseGate!: () => void
+      const gate = new Promise<void>(resolve => { releaseGate = resolve })
+      const realWhere = db.hands.where.bind(db.hands)
+      jest.spyOn(db.hands, 'where').mockImplementationOnce((indexName: any) => {
+        const whereClause: any = realWhere(indexName)
+        const realEquals = whereClause.equals.bind(whereClause)
+        whereClause.equals = (value: any) => {
+          const collection: any = realEquals(value)
+          const realToArray = collection.toArray.bind(collection)
+          collection.toArray = async () => {
+            const data = await realToArray() // captures the real (pre-completion) snapshot immediately
+            await gate // ...but withholds it from the caller until the test releases it
+            return data
+          }
+          return collection
+        }
+        return whereClause
+      })
+
+      // Starts the fetch; its `db.hands...toArray()` call is now blocked on `gate`
+      // (cache miss, since nothing has been cached in this test yet -- fetchGeneration
+      // is captured before this call, per getRecentHands()'s own doc comment).
+      const inFlightFetch = getRecentHands(db, service, PLAYER_ID, 10)
+
+      // A genuine hand completes WHILE the fetch above is still blocked mid-read.
+      await new Promise<void>(resolve => {
+        service.writeEntityStream.once('data', () => resolve())
+        service.writeEntityStream.write(makeMinimalHandEvents(4, [1, 2, 3]))
+      })
+
+      // Now let the blocked fetch resolve -- with the snapshot it captured BEFORE
+      // hand 4 completed (hands 1-3 only).
+      releaseGate()
+      const staleResult = await inFlightFetch
+      expect(staleResult.hands.map(h => h.handId)).toEqual([3, 2, 1])
+
+      // The bug this guards against: cache.set(cacheKey, { result: staleResult, ... })
+      // would have run here unconditionally, planting a stale fill that a subsequent
+      // same-key call (the handEpoch-triggered refetch for an open panel) would then
+      // serve for the rest of the 30s window. Assert it recomputes instead and
+      // reflects hand 4.
+      const afterRace = await getRecentHands(db, service, PLAYER_ID, 10)
+      expect(afterRace).not.toBe(staleResult)
+      expect(afterRace.hands.map(h => h.handId)).toEqual([4, 3, 2, 1])
+    })
   })
 })
