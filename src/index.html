@@ -9,9 +9,9 @@
     <title>PokerChase HUD</title>
     <!--
       Instant paint, before popup.js (a minified MUI+React bundle) has even
-      been fetched/parsed, and before the #145 defer-until-theme-loaded first
-      render -- without this, the popup window shows the browser's default
-      white background for ~0.5s on every open (see fix/popup-white-flash).
+      been fetched/parsed or started its first render -- without this, the
+      popup window shows the browser's default white background while that
+      bundle initializes (see fix/popup-white-flash).
 
       `html` carries the actual theme ground color; `body` stays transparent
       so that color shows through underneath it. This CSS-only rule handles

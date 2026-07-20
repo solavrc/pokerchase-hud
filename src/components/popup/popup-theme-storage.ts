@@ -14,13 +14,11 @@
  * independent concern.
  *
  * The mode is *also* mirrored to `localStorage` (same-origin, synchronous,
- * readable before anything async resolves) so that `popup-boot.ts` -- a
- * tiny synchronous script that runs before `popup.js` parses -- can paint
- * the correct background for users who explicitly forced 'dark'/'light'
- * against their OS scheme, closing the last gap in the white-flash fix (see
- * `fix/popup-white-flash`). `chrome.storage.sync` stays the source of
- * truth; `localStorage` is a best-effort read-side cache the boot script
- * consults, never the other way around.
+ * readable before anything async resolves). `popup-boot.ts` uses it to paint
+ * the correct background before `popup.js` parses, and `popup.ts` uses it as
+ * the first-render hint so chrome.storage.sync never blocks popup content.
+ * `chrome.storage.sync` stays the source of truth; `localStorage` is only a
+ * best-effort startup cache.
  */
 import type { PopupThemeMode } from './theme'
 import { DEFAULT_POPUP_THEME_MODE } from './theme'
@@ -39,6 +37,26 @@ export const POPUP_THEME_LOCAL_STORAGE_KEY = 'popupThemeMode'
 
 const isPopupThemeMode = (value: unknown): value is PopupThemeMode =>
   value === 'auto' || value === 'dark' || value === 'light'
+
+/**
+ * Returns the best theme hint available synchronously for the very first
+ * React render. The mirror is written whenever the authoritative
+ * `chrome.storage.sync` value is loaded or saved, so normal subsequent popup
+ * opens use the right theme without putting an async storage call on the
+ * click-to-content critical path.
+ *
+ * A missing/stale mirror is safe: callers render `auto` immediately and then
+ * reconcile with `loadPopupThemeMode()` after mount. `localStorage` is only a
+ * startup cache; `chrome.storage.sync` remains the source of truth.
+ */
+export const loadCachedPopupThemeMode = (): PopupThemeMode => {
+  try {
+    const value = window.localStorage.getItem(POPUP_THEME_LOCAL_STORAGE_KEY)
+    return isPopupThemeMode(value) ? value : DEFAULT_POPUP_THEME_MODE
+  } catch {
+    return DEFAULT_POPUP_THEME_MODE
+  }
+}
 
 /**
  * Best-effort mirror to `localStorage` for `popup-boot.ts` to read

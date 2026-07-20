@@ -2,10 +2,9 @@
  * Synchronous, non-module boot script -- loaded in `index.html`'s `<head>`
  * BEFORE `popup.js` (see that file's script order) to eliminate the
  * white-flash-before-first-paint bug: `popup.js` is a minified MUI+React
- * bundle, and parsing/executing it -- plus the #145 defer-until-theme-loaded
- * first `render()` in `popup.ts` -- takes long enough that the popup
- * window's unstyled default white background is visible for ~0.5s on every
- * open (see `fix/popup-white-flash`).
+ * bundle, and parsing/executing it before the first `render()` takes long
+ * enough that the popup window's unstyled default white background can be
+ * visible while it initializes (see `fix/popup-white-flash`).
  *
  * `index.html`'s inline CSS already paints the right ground color for
  * `auto` mode via `prefers-color-scheme`. This script exists only for the

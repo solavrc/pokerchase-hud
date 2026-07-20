@@ -181,6 +181,32 @@ describe('Popup', () => {
     expect(screen.getByRole('radio', { name: 'ダーク' })).toBeChecked()
   })
 
+  it('同期キャッシュのテーマで即時描画し、storage.syncの正本を描画後に反映する', async () => {
+    let resolveThemeRead: ((result: Record<string, any>) => void) | undefined
+    mockChromeStorageGet.mockImplementation((keys, callback) => {
+      if (keys === 'popupTheme') {
+        resolveThemeRead = callback
+        return
+      }
+      const keyList = Array.isArray(keys) ? keys : [keys]
+      callback(keyList.reduce((acc: Record<string, any>, key: string) => ({ ...acc, [key]: syncData[key] }), {}))
+    })
+
+    render(<Popup initialPopupThemeMode="light" />)
+
+    // The popup is usable before chrome.storage.sync answers.
+    expect(screen.getByRole('radio', { name: 'ライト' })).toBeChecked()
+    expect(resolveThemeRead).toBeDefined()
+
+    act(() => {
+      resolveThemeRead?.({ popupTheme: 'dark' })
+    })
+
+    await waitFor(() => {
+      expect(screen.getByRole('radio', { name: 'ダーク' })).toBeChecked()
+    })
+  })
+
   it('旧storageのuiConfigにhudDisplayMode/hudColorCodingキーが無いユーザーはコンパクト+カラーONで復元される（グレースフルなマイグレーション, #143）', async () => {
     syncData = {
       options: {

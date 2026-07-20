@@ -36,15 +36,16 @@ import { PopupHeader } from './popup/PopupHeader'
 import { SectionCard } from './popup/SectionCard'
 import type { PopupThemeMode } from './popup/theme'
 import { DEFAULT_POPUP_THEME_MODE, getPopupTheme, resolvePopupThemeVariant } from './popup/theme'
-import { POPUP_THEME_STORAGE_KEY, savePopupThemeMode } from './popup/popup-theme-storage'
+import { loadPopupThemeMode, savePopupThemeMode } from './popup/popup-theme-storage'
 
 export type { Options }
 
 export interface PopupProps {
   /**
-   * Pre-resolved `popupTheme` mode, read from `chrome.storage.sync` by
-   * `popup.ts` *before* the first `render()` call so the popup never paints
-   * with the wrong theme and then swaps (flash-of-wrong-theme). Left
+   * Synchronously cached `popupTheme` mode read from localStorage by
+   * `popup.ts` before the first render. The authoritative sync value is
+   * reconciled after mount, keeping async storage off the click-to-content
+   * critical path. Left
    * `undefined` in tests / any caller that renders `<Popup />` directly
    * (e.g. `Popup.test.tsx`), where it falls back to `DEFAULT_POPUP_THEME_MODE`
    * and gets reconciled from storage in the mount effect below like every
@@ -77,6 +78,21 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   // (e.g. jsdom under Jest).
   const prefersDarkScheme = useMediaQuery('(prefers-color-scheme: dark)')
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Reconcile the synchronous startup hint with chrome.storage.sync after the
+  // first commit. Avoid setting an identical primitive so the common cached
+  // path does not cause another full popup render.
+  useEffect(() => {
+    let cancelled = false
+    loadPopupThemeMode().then((mode) => {
+      if (!cancelled) {
+        setPopupThemeMode((currentMode) => currentMode === mode ? currentMode : mode)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Firebase states
   const [isFirebaseSignedIn, setIsFirebaseSignedIn] = useState<boolean>(false)
@@ -196,21 +212,6 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           })
         }
       })
-
-      // Load popupTheme (自動/ダーク/ライト) from chrome.storage.sync.
-      // Skipped when `initialPopupThemeMode` was already supplied by the
-      // caller (popup.ts pre-fetches it before the first render to avoid a
-      // flash-of-wrong-theme); this effect exists so `<Popup />` rendered
-      // directly (tests, or any future embedding) still picks up a
-      // persisted value on mount.
-      if (initialPopupThemeMode === undefined) {
-        chrome.storage.sync.get(POPUP_THEME_STORAGE_KEY, (result: Record<string, any>) => {
-          const value = result[POPUP_THEME_STORAGE_KEY]
-          if (value === 'auto' || value === 'dark' || value === 'light') {
-            setPopupThemeMode(value)
-          }
-        })
-      }
 
       // Load cached Firebase auth state first for instant rendering
       chrome.storage.local.get('firebaseAuthCache', (result: Record<string, any>) => {
