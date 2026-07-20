@@ -320,6 +320,93 @@ describe('importData() overlap import repair (audit finding #7)', () => {
     })
   })
 
+  test('a capture-gap mis-paired hand is fully replaced on re-import: derived rows absent from the new derivation are deleted (PR #203 codex P2, pass 2)', async () => {
+    // Damaged Lake: HAND1's RESULTS and HAND2's DEAL were both lost to a
+    // capture gap, so the old derivation pairs HAND1's DEAL with HAND2's
+    // RESULTS -- a single chimera hand under HAND2_ID carrying all 6 actions
+    // (same table lineup, so no rejection guard fires).
+    const damagedLake = [
+      ENTRY_QUEUED,
+      HAND1_DEAL,
+      ...HAND1_ACTIONS,
+      ...HAND2_EVENTS.slice(1, 4), // HAND2's ACTIONs
+      HAND2_EVENTS[4]!, // HAND2's RESULTS
+    ]
+    const fullExport = [ENTRY_QUEUED, ...HAND1_EVENTS, ...HAND2_EVENTS]
+
+    const expected = await runWithFreshDb(async ({ db, handlers }) => {
+      await handlers.importData(toJsonl(fullExport))
+      return snapshotDerived(db)
+    })
+    expect(expected.hands.map(hand => hand.id).sort()).toEqual([HAND1_ID, HAND2_ID])
+
+    await runWithFreshDb(async ({ db, handlers }) => {
+      await db.apiEvents.bulkAdd(damagedLake as never[])
+      await handlers.rebuildAllData()
+      // Stale state from the old derivation: one chimera hand under
+      // HAND2_ID that swallowed HAND1's actions.
+      expect(await db.hands.count()).toBe(1)
+      expect(await db.hands.get(HAND2_ID)).toBeDefined()
+      expect(await db.actions.where('handId').equals(HAND2_ID).count()).toBe(6)
+
+      // Re-import the complete export: only the two gap rows are new.
+      const result = await handlers.importData(toJsonl(fullExport))
+      expect(result.successCount).toBe(2) // HAND1's RESULTS + HAND2's DEAL
+      expect(result.duplicateCount).toBe(fullExport.length - 2)
+
+      // Upsert alone would overwrite the chimera's hand row and action
+      // indexes 0-2 but leave the orphaned action tail (indexes 3-5)
+      // behind. The stale-window deletion must remove the whole old
+      // derivation first, leaving state identical to a from-scratch import.
+      expect(await snapshotDerived(db)).toEqual(expected)
+      expect(await db.actions.where('handId').equals(HAND2_ID).count()).toBe(3)
+      expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(3)
+    })
+  })
+
+  test('a stale mis-paired hand whose id vanishes from the new derivation is deleted, not double-counted (PR #203 codex P2, pass 2)', async () => {
+    // Same capture-gap chimera as above, but the import brings only HAND1's
+    // events (HAND2's DEAL stays missing). The new derivation emits HAND1
+    // only -- HAND2's tail events still can't form a hand -- so the chimera
+    // under HAND2_ID must be deleted outright, or stats keep counting both
+    // the corrected HAND1 and the stale chimera until a full rebuild.
+    const damagedLake = [
+      ENTRY_QUEUED,
+      HAND1_DEAL,
+      ...HAND1_ACTIONS,
+      ...HAND2_EVENTS.slice(1, 4),
+      HAND2_EVENTS[4]!,
+    ]
+    const partialImport = [ENTRY_QUEUED, ...HAND1_EVENTS]
+    // What the damaged Lake contains AFTER the partial import -- the control
+    // is a from-scratch import of exactly that content.
+    const postImportLakeContent = [
+      ENTRY_QUEUED,
+      ...HAND1_EVENTS,
+      ...HAND2_EVENTS.slice(1),
+    ]
+
+    const expected = await runWithFreshDb(async ({ db, handlers }) => {
+      await handlers.importData(toJsonl(postImportLakeContent))
+      return snapshotDerived(db)
+    })
+    expect(expected.hands.map(hand => hand.id)).toEqual([HAND1_ID])
+
+    await runWithFreshDb(async ({ db, handlers }) => {
+      await db.apiEvents.bulkAdd(damagedLake as never[])
+      await handlers.rebuildAllData()
+      expect(await db.hands.get(HAND2_ID)).toBeDefined()
+
+      const result = await handlers.importData(toJsonl(partialImport))
+      expect(result.successCount).toBe(1) // HAND1's RESULTS
+      expect(result.duplicateCount).toBe(partialImport.length - 1)
+
+      expect(await snapshotDerived(db)).toEqual(expected)
+      expect(await db.hands.count()).toBe(1)
+      expect(await db.hands.get(HAND2_ID)).toBeUndefined()
+    })
+  })
+
   test('a fresh import into an empty DB still derives entities through the unchanged direct path', async () => {
     await runWithFreshDb(async ({ db, handlers }) => {
       const result = await handlers.importData(toJsonl([ENTRY_QUEUED, ...HAND1_EVENTS]))

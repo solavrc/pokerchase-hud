@@ -81,11 +81,17 @@ export const clearImportSession = (): void => {
  *   プレイヤー名）の両方が範囲に含まれる。201が見つからない場合（および
  *   完了ハンド境界自体が無い場合）はLake先頭から（rebuildAllDataと同じ
  *   条件で）変換する。
- * - 終了境界: maxNewTimestamp 以後で最初の「検証済み」EVT_HAND_RESULTS(306)
- *   （それ自身を含む）。新規イベントが既存ハンドの中間に挿入された場合、
- *   そのハンドのRESULTSまでを含める。306が無い場合（Lake末尾が未完了ハンド）
- *   はLake末尾まで —— 未完了ハンドはEntityConverterがHandId未設定として
- *   棄却するためゴミは生成されない。
+ * - 終了境界（PR #203 codexレビュー2巡目P2で修正）: maxNewTimestamp 以後で
+ *   最初の「検証済みかつ既存（今回のインポートで保存された行を除く）」
+ *   EVT_HAND_RESULTS(306)（それ自身を含む）。既存行に限るのは、修復前の
+ *   派生状態が「新規306の位置」ではなく「旧Lakeでの次の306」までを1ハンド
+ *   として束ねていた可能性があるため（キャプチャ欠落でDEALが後続の別306と
+ *   誤ペアリングされるケース）: 旧ペアリングの末尾まで範囲を広げないと、
+ *   その旧ハンドを削除した後に範囲内の再導出だけで正しく作り直せない
+ *   （下のstale削除ウィンドウ参照）。新規306で終わる正常な差分は、範囲が
+ *   その先の既存306（または Lake末尾）まで伸びるだけで、再導出は冪等。
+ *   既存306が無い場合はLake末尾まで —— 未完了ハンドはEntityConverterが
+ *   HandId未設定として棄却するためゴミは生成されない。
  *
  * どちらの境界も、候補行を現行Zodスキーマで検証してから採用する
  * （PR #203 codexレビューP2）: Raw LakeにはApiTypeIdが306/201でもパース
@@ -94,11 +100,23 @@ export const clearImportSession = (): void => {
  * filterValidApplicationEvents()でその行自体が除去されて本物のRESULTSが
  * 範囲外に残り、ハンドが未終了扱いで棄却される（修復が黙って失敗する）。
  *
- * 範囲内の既存ハンドを再導出しても重複は生じない: hands(id) / phases
- * ([handId+phase]) / actions([handId+index]) はいずれも決定的キーで、
- * saveEntities()のbulkPutが同キー行を上書きする（冪等）。範囲外の派生行には
- * 一切触れない。返す前にfilterValidApplicationEvents()で再検証するのは
- * rebuildAllData()と同じ理由（CLAUDE.md「Raw Event Lake」参照）。
+ * 範囲内の既存ハンドの再導出はbulkPut上書きで冪等（hands(id) /
+ * phases([handId+phase]) / actions([handId+index])は決定的キー）だが、
+ * 上書きだけでは「旧導出には存在したが新導出には存在しない」行が残る
+ * （PR #203 codexレビュー2巡目P2）: 誤ペアリングされていた旧ハンドの
+ * HandIdが新導出に現れない、旧導出の方がaction数が多い等。このため
+ * 呼び出し元は、保存前に「stale削除ウィンドウ」= approxTimestampが
+ * (staleWindowStartExclusive, staleWindowEndInclusive] に入る既存派生
+ * ハンド（とそのphases/actions）を同一トランザクション内で削除する。
+ * ウィンドウ下限が「直前の完了ハンド境界306」(exclusive)なのは、そこまでの
+ * ハンドは新旧の導出が一致していて触る必要がなく、かつ範囲開始（201
+ * anchor）をまたぐハンド —— ハンド中に割り込んだ201がanchorになった
+ * 場合、そのDEALは範囲外 —— を誤って削除して再導出できない事態を防ぐ
+ * ため。ウィンドウ内のハンドは定義上すべて範囲内のイベントだけから
+ * 再導出可能（DEALは境界306より後、306は終了境界以前）。範囲外の
+ * 派生行には一切触れない。返す前にfilterValidApplicationEvents()で
+ * 再検証するのはrebuildAllData()と同じ理由（CLAUDE.md「Raw Event
+ * Lake」参照）。
  *
  * 戻り値の`hasSessionAnchor`は「範囲が検証済みEVT_ENTRY_QUEUEDから始まって
  * いる = 範囲内のイベント列だけでセッション文脈を再構築できる」ことを示す。
@@ -110,8 +128,17 @@ export const clearImportSession = (): void => {
 export const collectOverlapRepairEvents = async (
   db: PokerChaseDB,
   minNewTimestamp: number,
-  maxNewTimestamp: number
-): Promise<{ events: ApiEvent[], hasSessionAnchor: boolean }> => {
+  maxNewTimestamp: number,
+  /** 今回のインポートで新規保存された行のキー（`${timestamp}-${ApiTypeId}`）。終了境界の探索から除外する */
+  newEventKeys: ReadonlySet<string>
+): Promise<{
+  events: ApiEvent[]
+  hasSessionAnchor: boolean
+  /** stale削除ウィンドウ下限（直前の完了ハンド境界306のtimestamp、exclusive）。無ければundefined = Lake先頭から */
+  staleWindowStartExclusive: number | undefined
+  /** stale削除ウィンドウ上限（終了境界306のtimestamp、inclusive）。無ければundefined = Lake末尾まで */
+  staleWindowEndInclusive: number | undefined
+}> => {
   // 境界候補は現行スキーマで検証してから採用する（doc comment参照）。
   // parseApiEventは同期のZodパースなのでDexieのfilterコールバック内で使える。
   const isValidApplicationRow = (row: ApiEvent): boolean => {
@@ -139,11 +166,16 @@ export const collectOverlapRepairEvents = async (
       .first()
     : undefined
 
-  // 終了境界: maxNewTimestamp以後（同時刻含む）で最初の検証済みEVT_HAND_RESULTS。
+  // 終了境界: maxNewTimestamp以後（同時刻含む）で最初の検証済み「既存」
+  // EVT_HAND_RESULTS（今回新規保存された306は除外 —— doc comment参照）。
   const endEvent = await db.apiEvents
     .where('[timestamp+ApiTypeId]')
     .aboveOrEqual([maxNewTimestamp, 0])
-    .filter(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS && isValidApplicationRow(event))
+    .filter(event =>
+      event.ApiTypeId === ApiType.EVT_HAND_RESULTS &&
+      !newEventKeys.has(`${event.timestamp}-${event.ApiTypeId}`) &&
+      isValidApplicationRow(event)
+    )
     .first()
 
   const lowerKey: [number, number] | undefined = anchorEvent
@@ -166,7 +198,9 @@ export const collectOverlapRepairEvents = async (
 
   return {
     events: await filterValidApplicationEvents(rawRows),
-    hasSessionAnchor: anchorEvent !== undefined
+    hasSessionAnchor: anchorEvent !== undefined,
+    staleWindowStartExclusive: prevHandBoundary?.timestamp,
+    staleWindowEndInclusive: endEvent?.timestamp
   }
 }
 
@@ -439,8 +473,10 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           //   overlap経路でだけ壊れる（PR #203 codexレビューP2）。
           let entitySourceEvents: ApiEvent[] = allNewEvents
           let converterSession: Session = service.session
+          let repairRange: Awaited<ReturnType<typeof collectOverlapRepairEvents>> | undefined
           if (hadPreexistingEvents) {
-            const repairRange = await collectOverlapRepairEvents(db, minNewTimestamp, maxNewTimestamp)
+            const newEventKeys = new Set(allNewEvents.map(event => `${event.timestamp}-${event.ApiTypeId}`))
+            repairRange = await collectOverlapRepairEvents(db, minNewTimestamp, maxNewTimestamp, newEventKeys)
             entitySourceEvents = repairRange.events
             if (repairRange.hasSessionAnchor) {
               converterSession = {
@@ -460,12 +496,46 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
 
           console.log(`[importData] Generated entities - Hands: ${entities.hands.length}, Phases: ${entities.phases.length}, Actions: ${entities.actions.length}`)
 
-          // Save entities using common utility
-          await saveEntities(db, entities, {
-            onProgress: (counts) => {
-              console.log(`[importData] Saved/updated ${counts.hands} hands, ${counts.phases} phases, ${counts.actions} actions`)
-            }
-          })
+          const logSavedCounts = (counts: { hands: number, phases: number, actions: number }) => {
+            console.log(`[importData] Saved/updated ${counts.hands} hands, ${counts.phases} phases, ${counts.actions} actions`)
+          }
+
+          if (repairRange) {
+            // Overlap修復はbulkPut（上書き）だけでは足りない（PR #203 codex
+            // レビュー2巡目P2）: 旧導出には存在したが新導出には存在しない
+            // 派生行 —— 例: キャプチャ欠落で後続の306と誤ペアリングされて
+            // いた旧ハンド（HandIdが新導出に現れない）、旧導出の方が多かった
+            // action行（[handId+index]の末尾が残る）—— がそのまま残り、
+            // 統計が新旧両方を数えてしまう。stale削除ウィンドウ
+            // （collectOverlapRepairEvents()のdocコメント参照。ウィンドウ内の
+            // ハンドは定義上すべて範囲内から再導出可能）に入る既存派生
+            // ハンドとそのphases/actionsを、再導出バンドルの保存と同一
+            // トランザクションで先に削除する。Raw Event Lake（apiEvents）
+            // には一切触れない。
+            const { staleWindowStartExclusive, staleWindowEndInclusive } = repairRange
+            await db.transaction('rw', [db.hands, db.phases, db.actions], async () => {
+              const staleHandIds = await db.hands
+                .where('approxTimestamp')
+                .between(
+                  staleWindowStartExclusive ?? 0,
+                  staleWindowEndInclusive ?? Number.MAX_SAFE_INTEGER,
+                  staleWindowStartExclusive === undefined, // 下限は境界306自身のハンドを含めない（exclusive）。境界なしならLake先頭から（inclusive）
+                  true
+                )
+                .primaryKeys()
+              if (staleHandIds.length > 0) {
+                console.log(`[importData] Removing ${staleHandIds.length} stale derived hand(s) in the repair window before re-deriving`)
+                await db.hands.bulkDelete(staleHandIds)
+                await db.phases.where('handId').anyOf(staleHandIds).delete()
+                await db.actions.where('handId').anyOf(staleHandIds).delete()
+              }
+              // saveEntities()内のtransactionは同一テーブル集合の親トランザクションに合流する
+              await saveEntities(db, entities, { onProgress: logSavedCounts })
+            })
+          } else {
+            // Save entities using common utility
+            await saveEntities(db, entities, { onProgress: logSavedCounts })
+          }
 
           // Update metadata separately（lastProcessedTimestampは従来通り
           // 「今回のインポートで新規保存されたイベント」の最大timestamp。

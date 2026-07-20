@@ -322,21 +322,32 @@ Statistics Refresh (batch mode)
   `EVT_ENTRY_QUEUED` (201) at/before that boundary (session-context anchor —
   anchoring on the 201 nearest the new events directly would be wrong, since
   an MTT table-move 201 can land mid-hand and cut off the opening
-  `EVT_DEAL`), and forward to the first *valid* 306 at/after the latest new
-  event — so a hand split between existing and imported rows (e.g.
-  re-importing a complete export into a DB missing the hand's middle ACTIONs)
-  gets its derived entities repaired. Boundary candidates are re-validated
+  `EVT_DEAL`), and forward to the first *valid pre-existing* 306 at/after the
+  latest new event (newly-imported 306s are skipped, so the range always
+  reaches the end of the OLD derivation's hand pairing — e.g. a DEAL that a
+  capture gap had mis-paired with a later 306) — so a hand split between
+  existing and imported rows (e.g. re-importing a complete export into a DB
+  missing the hand's middle ACTIONs) gets its derived entities repaired. Boundary candidates are re-validated
   with the current Zod schema before use, because the Lake intentionally
   stores unparseable rows (a malformed 306 must not truncate the range). New
   events alone cannot form such a hand's 303→306 boundary. The converter is
   seeded with the empty default session only when the range actually starts
   at a found 201 anchor; otherwise (incremental hands without a 201) the
   live `service.session` seeds it, matching the direct path and the #104
-  SessionState-seeding regression. Re-deriving existing hands is idempotent
-  (deterministic entity keys + `bulkPut`). See `collectOverlapRepairEvents()`
-  in `src/background/import-export.ts` (independent release-audit finding #7;
-  boundary/session refinements from PR #203 codex review). A fresh import
-  into an empty DB keeps the direct new-events path.
+  SessionState-seeding regression. Saving is delete-then-put in one
+  transaction: derived hands whose `approxTimestamp` falls in the stale
+  window (previous completed-hand boundary exclusive → end boundary
+  inclusive) are deleted with their phases/actions before the regenerated
+  bundle is `bulkPut` — upsert alone (idempotent for hands present in both
+  derivations via deterministic entity keys) would leave rows that existed
+  only in the old derivation (a mis-paired hand's id absent from the new
+  derivation, or leftover `[handId+index]` action tails), double-counting
+  stats. Every hand in that window is re-derivable from the range by
+  construction; the Raw Event Lake is never touched. See
+  `collectOverlapRepairEvents()` in `src/background/import-export.ts`
+  (independent release-audit finding #7; boundary/session/stale-deletion
+  refinements from PR #203 codex review). A fresh import into an empty DB
+  keeps the direct new-events path.
 
 **Critical Design Constraints (learned 2026-03):**
 
