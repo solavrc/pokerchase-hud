@@ -3,7 +3,8 @@ import { PokerChaseDB } from '../db/poker-chase-db'
 import { ApiType, ApiTypeValues, BattleType, BetStatusType } from '../types'
 import type { ApiEvent } from '../types'
 import { DATABASE_CONSTANTS } from '../constants/database'
-import { AutoSyncService } from './auto-sync-service'
+import { EntityConverter } from '../entity-converter'
+import { AutoSyncService, REBUILD_AFTER_DOWNLOAD_FAILED_MESSAGE } from './auto-sync-service'
 import { firestoreBackupService } from './firestore-backup-service'
 import { firebaseAuthService } from './firebase-auth-service'
 import * as minVersionGate from './min-version-gate'
@@ -66,6 +67,92 @@ describe('AutoSyncService cloud downloads', () => {
       lastProcessedTimestamp: 101,
       lastProcessedEventCount: 2
     })
+  })
+
+  test('a failed derived-table rebuild after download surfaces as a sync ERROR and is not marked as done (release audit 2026-07-21, finding 5)', async () => {
+    const cloudEvent = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-rebuild-fail',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
+
+    // Download succeeds and durably stores the raw event...
+    jest.spyOn(firestoreBackupService, 'syncFromCloud')
+      .mockImplementation(async options => {
+        await options.onBatch([cloudEvent])
+        return 1
+      })
+    // ...but deriving hands/phases/actions from it fails (quota, transaction
+    // abort, malformed chunk -- any error in the rebuild path).
+    jest.spyOn(EntityConverter.prototype, 'convertEventChunk').mockImplementation(() => {
+      throw new Error('QuotaExceededError: derived-table save failed')
+    })
+
+    const service = new AutoSyncService(db)
+    await service.performSync('download')
+
+    // The pass must NOT be reported as a success -- before this fix the
+    // rebuild error was swallowed and the popup showed 成功 over stale stats.
+    const state = service.getSyncState()
+    expect(state.status).toBe('error')
+    expect(state.error).toContain(REBUILD_AFTER_DOWNLOAD_FAILED_MESSAGE)
+    expect(state.error).toContain('QuotaExceededError')
+
+    // The error state reaches the popup via the same chrome.runtime message
+    // channel every other sync-state change already uses.
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'SYNC_STATE_UPDATE',
+        state: expect.objectContaining({ status: 'error' })
+      })
+    )
+
+    // Raw Event Lake invariant: the downloaded raw event stays stored -- only
+    // the derived tables are stale.
+    expect(await db.apiEvents.count()).toBe(1)
+
+    // A failed rebuild is never marked complete: `importStatus` (the rebuild's
+    // own completion bookkeeping) must remain untouched so nothing claims the
+    // derived tables are current.
+    expect(await db.meta.get('importStatus')).toBeUndefined()
+  })
+
+  test('partial download (page 1 durable, page 2 fails) with a failing rebuild still surfaces the DOWNLOAD error and leaves no completion bookkeeping (release audit 2026-07-21, coverage gap #5)', async () => {
+    const pageOneEvent = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-page-1',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
+
+    // Page 1 lands via onBatch, then the next REST page fails.
+    jest.spyOn(firestoreBackupService, 'syncFromCloud')
+      .mockImplementation(async options => {
+        await options.onBatch([pageOneEvent])
+        throw new Error('Cloud sync failed: Firestore REST request failed: 503')
+      })
+    // The best-effort rebuild over the partial data fails as well.
+    jest.spyOn(EntityConverter.prototype, 'convertEventChunk').mockImplementation(() => {
+      throw new Error('derived-table save failed')
+    })
+
+    const service = new AutoSyncService(db)
+    await service.performSync('download')
+
+    // The download failure is the primary error surfaced (the rebuild
+    // failure is logged, not allowed to mask the root cause).
+    const state = service.getSyncState()
+    expect(state.status).toBe('error')
+    expect(state.error).toContain('503')
+
+    // Page 1's raw events remain durable, and nothing marked the rebuild done.
+    expect(await db.apiEvents.count()).toBe(1)
+    expect(await db.meta.get('importStatus')).toBeUndefined()
   })
 
   test('upload: filters non-application noise before syncing, and still advances past a chunk that is 100% noise', async () => {

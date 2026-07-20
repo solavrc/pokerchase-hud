@@ -17,6 +17,15 @@ import { isCloudSyncBlockedByMinVersionGate } from './min-version-gate'
 export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます'
 
 /**
+ * Shown in the popup (via `syncState.error`) when a cloud download stored its
+ * raw events but the derived-table rebuild failed. The raw data is safe (Raw
+ * Event Lake invariant) -- only hands/phases/actions are stale until a
+ * rebuild succeeds, which the user can trigger manually from the popup.
+ */
+export const REBUILD_AFTER_DOWNLOAD_FAILED_MESSAGE =
+  'クラウドデータの保存は完了しましたが、統計データの再構築に失敗しました。ポップアップの「データ再構築」を実行してください'
+
+/**
  * Thrown internally whenever a bookkeeping write is about to happen under an
  * auth-state generation that no longer matches the one live when this sync
  * pass started -- i.e. the account changed (possibly more than once) since
@@ -1260,7 +1269,17 @@ export class AutoSyncService {
     } catch (error) {
       // A previous page may already be durable. Rebuild before surfacing the
       // error so partially downloaded raw events cannot leave entities stale.
-      if (downloadedEvents > 0) await this.rebuildLocalEntities()
+      // If the rebuild ALSO fails here, log it but keep the DOWNLOAD error as
+      // the primary failure surfaced to performSync()'s catch -- both paths
+      // end in `syncState.status = 'error'` either way, and the download
+      // error is the root cause the user should see first.
+      if (downloadedEvents > 0) {
+        try {
+          await this.rebuildLocalEntities()
+        } catch (rebuildError) {
+          console.error('[AutoSync] Rebuild after a partial download failed too:', rebuildError)
+        }
+      }
       throw error
     }
 
@@ -1270,7 +1289,28 @@ export class AutoSyncService {
     }
   }
 
-  /** Rebuild derived tables without loading the entire event history into memory. */
+  /**
+   * Rebuild derived tables without loading the entire event history into memory.
+   *
+   * THROWS on failure (independent release audit 2026-07-21, finding 5,
+   * "派生テーブル再構築失敗を同期成功として確定する"): this used to catch and
+   * swallow every error, so a download pass whose raw `bulkPut` succeeded but
+   * whose hands/phases/actions derivation failed (quota, malformed chunk,
+   * transaction abort) still reported `status: 'success'` to the popup while
+   * the HUD silently served stale/partial aggregates. Now the error
+   * propagates to `performSync()`'s catch, which sets
+   * `syncState.status = 'error'` and broadcasts it via the existing
+   * `SYNC_STATE_UPDATE` chrome.runtime message the popup already renders.
+   *
+   * Failure-state invariants:
+   * - Raw Event Lake is unaffected: the downloaded raw rows were durably
+   *   `bulkPut` BEFORE this rebuild ran and are never rolled back -- only the
+   *   DERIVED tables are stale, and a manual データ再構築 (or the next
+   *   successful download's rebuild) re-derives everything from the Lake.
+   * - A failed rebuild is never marked as done: the `importStatus` meta write
+   *   below only runs after every chunk (and the final flush) succeeded, so
+   *   an error always leaves the previous `importStatus` untouched.
+   */
   private async rebuildLocalEntities(): Promise<void> {
     try {
       console.log('[AutoSync] Triggering chunked data rebuild after download...')
@@ -1342,8 +1382,12 @@ export class AutoSyncService {
       console.log(`[AutoSync] Chunked data rebuild completed (${totalEventCount} events)`)
     } catch (error) {
       console.error('[AutoSync] Data rebuild error:', error)
-      // Preserve the existing behavior: raw event sync remains successful even
-      // if rebuilding derived data fails.
+      // Surface the failure instead of confirming the sync as successful (see
+      // doc comment above). The raw events are already durable; only the
+      // derived statistics are stale until a rebuild succeeds.
+      throw new Error(
+        `${REBUILD_AFTER_DOWNLOAD_FAILED_MESSAGE} (${error instanceof Error ? error.message : 'Unknown error'})`
+      )
     }
   }
 

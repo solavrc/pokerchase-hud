@@ -56,6 +56,17 @@ interface EventQueryCursor {
   documentName: string
 }
 
+/**
+ * Transport tuning knobs for `FirestoreBackupService.request()`. Production
+ * uses the `DATABASE_CONSTANTS` defaults; tests inject small values so
+ * timeout/backoff paths run in milliseconds instead of seconds.
+ */
+export interface FirestoreTransportOptions {
+  requestTimeoutMs?: number
+  retryBaseDelayMs?: number
+  maxTransientRetries?: number
+}
+
 export class FirestoreBackupService {
   private readonly USERS_COLLECTION = 'users'
   private readonly EVENTS_COLLECTION = 'apiEvents'
@@ -65,8 +76,17 @@ export class FirestoreBackupService {
   private readonly BATCH_DELAY_MS = DATABASE_CONSTANTS.FIRESTORE_BATCH_DELAY_MS
   private readonly DELETE_BATCH_SIZE = DATABASE_CONSTANTS.FIRESTORE_DELETE_BATCH
   private readonly DOWNLOAD_PAGE_SIZE = DATABASE_CONSTANTS.FIRESTORE_DOWNLOAD_PAGE_SIZE
+  private readonly REQUEST_TIMEOUT_MS: number
+  private readonly RETRY_BASE_DELAY_MS: number
+  private readonly MAX_TRANSIENT_RETRIES: number
   private readonly documentsPath = `projects/${firebaseConfig.projectId}/databases/(default)/documents`
   private readonly baseUrl = `https://firestore.googleapis.com/v1/${this.documentsPath}`
+
+  constructor(transportOptions?: FirestoreTransportOptions) {
+    this.REQUEST_TIMEOUT_MS = transportOptions?.requestTimeoutMs ?? DATABASE_CONSTANTS.FIRESTORE_REQUEST_TIMEOUT_MS
+    this.RETRY_BASE_DELAY_MS = transportOptions?.retryBaseDelayMs ?? DATABASE_CONSTANTS.FIRESTORE_RETRY_BASE_DELAY_MS
+    this.MAX_TRANSIENT_RETRIES = transportOptions?.maxTransientRetries ?? DATABASE_CONSTANTS.FIRESTORE_TRANSIENT_RETRIES
+  }
 
   /**
    * Sync local events to cloud (upload events newer than cloud's latest timestamp).
@@ -412,29 +432,138 @@ export class FirestoreBackupService {
     })
   }
 
+  /**
+   * Hardened REST transport (release audit 2026-07-21, "Firestore fetchに
+   * timeout/abort/401 refresh retryがなく同期が固着可能"): every Firestore
+   * REST call in this service funnels through here, and used to be a single
+   * bare `fetch` -- a stalled connection held `AutoSyncService.isSyncing`
+   * (and therefore the forced-update safety gate) indefinitely, a transient
+   * 5xx/network blip failed the whole sync pass outright, and an expired
+   * token (401) had no recovery path.
+   *
+   * Behavior:
+   * - TIMEOUT: each attempt is bounded by an `AbortController` timeout
+   *   (`REQUEST_TIMEOUT_MS`, covering the response body read as well), so a
+   *   hung fetch can never stall a sync pass forever.
+   * - TRANSIENT RETRY: network errors, timeouts, HTTP 5xx and 429 are
+   *   retried with exponential backoff (`RETRY_BASE_DELAY_MS * 2^n`), at
+   *   most `MAX_TRANSIENT_RETRIES` extra attempts. Retrying is safe for
+   *   every call in this service: reads (`:runQuery`/`:runAggregationQuery`)
+   *   are side-effect-free, and writes (`:commit` upserts/deletes keyed by
+   *   document name, metadata `PATCH`) are idempotent.
+   * - 401 TOKEN REFRESH: a single retry after `getIdToken(true)` (forced
+   *   refresh). Gated on the auth generation (`firebaseAuthService.
+   *   getAuthGeneration()`) still matching the value snapshotted when this
+   *   request acquired its original token -- if the signed-in account
+   *   changed mid-request (including an A -> B -> A round trip, which a
+   *   uid comparison would miss), the retry is ABORTED instead of silently
+   *   re-issuing the request against whichever account is live now. A 401
+   *   on the refreshed token is terminal (no second refresh).
+   * - NON-RETRYABLE: any other 4xx (permission denied, bad request, ...)
+   *   throws immediately, preserving the pre-existing
+   *   `Firestore REST request failed: <status> <body>` message shape that
+   *   callers (e.g. `writeBatch`'s RESOURCE_EXHAUSTED check) match on.
+   */
   private async request<T = unknown>(url: string, init: RequestInit): Promise<T | null> {
-    const token = await firebaseAuthService.getIdToken()
-    const response = await fetch(url, {
-      ...init,
-      headers: {
-        ...(init.headers || {}),
-        Authorization: `Bearer ${token}`
+    // `getIdToken()` awaits auth restore internally (`ready()`), so the
+    // generation snapshot below is taken AFTER the initial-restore bump --
+    // it only moves again on a real sign-in/sign-out transition.
+    let token = await firebaseAuthService.getIdToken()
+    const generationAtStart = firebaseAuthService.getAuthGeneration()
+    let authRetryUsed = false
+    let transientRetriesUsed = 0
+
+    while (true) {
+      let outcome: { ok: boolean, status: number, text: string }
+      try {
+        outcome = await this.fetchWithTimeout(url, init, token)
+      } catch (error) {
+        const timedOut = (error as { name?: string })?.name === 'AbortError'
+        if (transientRetriesUsed < this.MAX_TRANSIENT_RETRIES) {
+          transientRetriesUsed++
+          console.warn(`[Firestore] ${timedOut ? 'Request timed out' : 'Network error'}, retrying (${transientRetriesUsed}/${this.MAX_TRANSIENT_RETRIES})...`)
+          await this.delayBeforeRetry(transientRetriesUsed)
+          continue
+        }
+        throw new Error(timedOut
+          ? `Firestore REST request timed out after ${this.REQUEST_TIMEOUT_MS}ms`
+          : `Firestore REST request failed: network error (${error instanceof Error ? error.message : 'Unknown error'})`)
       }
-    })
-    const responseText = await response.text()
 
-    if (!response.ok) {
-      throw new Error(`Firestore REST request failed: ${response.status} ${responseText}`)
+      if (outcome.ok) {
+        if (!outcome.text.trim()) return null
+        try {
+          return JSON.parse(outcome.text) as T
+        } catch (error) {
+          throw new Error(
+            `Firestore REST response was invalid JSON (${outcome.text.length} bytes): ${error instanceof Error ? error.message : 'Unknown error'}`
+          )
+        }
+      }
+
+      if (outcome.status === 401 && !authRetryUsed) {
+        // Abort (do not refresh, do not retry) if the signed-in account
+        // changed since this request started -- both before AND after the
+        // refresh await, which is itself a window for a switch to land.
+        this.assertAccountUnchanged(generationAtStart, 'before 401 token-refresh retry')
+        console.warn('[Firestore] Request returned 401, force-refreshing token and retrying once...')
+        token = await firebaseAuthService.getIdToken(true)
+        this.assertAccountUnchanged(generationAtStart, 'after 401 token refresh')
+        authRetryUsed = true
+        continue
+      }
+
+      const transientStatus = outcome.status === 429 || outcome.status >= 500
+      if (transientStatus && transientRetriesUsed < this.MAX_TRANSIENT_RETRIES) {
+        transientRetriesUsed++
+        console.warn(`[Firestore] Request failed with ${outcome.status}, retrying (${transientRetriesUsed}/${this.MAX_TRANSIENT_RETRIES})...`)
+        await this.delayBeforeRetry(transientRetriesUsed)
+        continue
+      }
+
+      throw new Error(`Firestore REST request failed: ${outcome.status} ${outcome.text}`)
     }
+  }
 
-    if (!responseText.trim()) return null
-
+  /**
+   * One fetch attempt bounded by `REQUEST_TIMEOUT_MS` via `AbortController`.
+   * The timer also covers `response.text()` (cleared only after the body is
+   * fully read), so a connection that stalls mid-body is aborted too.
+   */
+  private async fetchWithTimeout(url: string, init: RequestInit, token: string): Promise<{ ok: boolean, status: number, text: string }> {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), this.REQUEST_TIMEOUT_MS)
     try {
-      return JSON.parse(responseText) as T
-    } catch (error) {
-      throw new Error(
-        `Firestore REST response was invalid JSON (${responseText.length} bytes): ${error instanceof Error ? error.message : 'Unknown error'}`
-      )
+      const response = await fetch(url, {
+        ...init,
+        headers: {
+          ...(init.headers || {}),
+          Authorization: `Bearer ${token}`
+        },
+        signal: controller.signal
+      })
+      const text = await response.text()
+      return { ok: response.ok, status: response.status, text }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  private async delayBeforeRetry(retryNumber: number): Promise<void> {
+    const delayMs = this.RETRY_BASE_DELAY_MS * 2 ** (retryNumber - 1)
+    await new Promise(resolve => setTimeout(resolve, delayMs))
+  }
+
+  /**
+   * Throws if the auth-state generation moved since `generationAtStart` --
+   * i.e. the signed-in account changed (sign-in/sign-out/switch, including an
+   * A -> B -> A round trip) while this request was in flight. Deliberately a
+   * generation comparison, not a uid comparison, for the same ABA rationale
+   * as `AutoSyncService.assertGenerationUnchanged()`.
+   */
+  private assertAccountUnchanged(generationAtStart: number, context: string): void {
+    if (firebaseAuthService.getAuthGeneration() !== generationAtStart) {
+      throw new Error(`Firestore request aborted (${context}): the signed-in account changed while the request was in flight`)
     }
   }
 
