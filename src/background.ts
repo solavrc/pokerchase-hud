@@ -18,6 +18,7 @@ import { registerEventIngestion } from './background/event-ingestion'
 import { registerMessageRouter } from './background/message-router'
 import { checkOnUpdate } from './background/rebuild-advisory'
 import { initUpdateManager } from './background/update-manager'
+import { markWhatsNewOnUpdate, reassertWhatsNewBadgeOnStartup } from './background/whats-new-badge'
 import { needsConfigPersist } from './background/hud-config-sync'
 import { loadOptions, saveOptions, type Options } from './utils/options-storage'
 import { DEFAULT_TABLE_SIZE_FILTER, selectedTableSizeLayers } from './utils/table-size'
@@ -67,6 +68,14 @@ chrome.runtime.onInstalled.addListener(async details => {
       await checkOnUpdate(db)
     } catch (error) {
       console.error('[onInstalled] Rebuild advisory check failed:', error)
+    }
+
+    // 更新情報（What's New）: 新規インストール（'install'）ではバッジ churn
+    // 防止のため呼ばない（whats-new-badge.ts冒頭のコメント参照）
+    try {
+      await markWhatsNewOnUpdate(chrome.runtime.getManifest().version)
+    } catch (error) {
+      console.error('[onInstalled] What\'s New badge check failed:', error)
     }
   }
 })
@@ -167,8 +176,25 @@ registerEventIngestion(service)
  * onUpdateAvailable購読・加速チェック（起動時1回 + 6時間ごとのalarm）・
  * SW起動時点での保留中アップデート再チェックをまとめて行う。
  * 詳細はsrc/background/update-manager.tsとCLAUDE.mdを参照。
+ *
+ * 更新情報（What's New）バッジのSW起動時再評価は、この`initUpdateManager()`が
+ * 返すSW起動時`recheckPendingUpdate()`のpromiseに続けて実行する（codex
+ * review, PR #172）。`recheckPendingUpdate()`は`pendingUpdate`のstorage状態を
+ * 読んで（既に適用済みなら）クリーンアップすることがあるため、この完了を
+ * 待たずに`reassertWhatsNewBadgeOnStartup()`を並行実行すると、そのクリーン
+ * アップ途中の古い`pendingUpdate`状態を読んでしまい、whats-newバッジへの
+ * 「昇格」判定を誤ることがある。onInstalled('update')時点でrebuild-advisory/
+ * update-managerのバッジが先に使用中だった場合、whats-newバッジは抑制された
+ * ままになるため、他の2つが解消済みならここで優先順位を再評価し、
+ * whats-newバッジへ昇格させる（詳細はsrc/background/whats-new-badge.tsと
+ * CLAUDE.md参照）。全体としては（`.then()`チェーンをawaitしないので）SW起動を
+ * ブロックしない -- fire-and-forgetのまま、実行順序だけを保証する。
  */
 initUpdateManager()
+  .then(() => reassertWhatsNewBadgeOnStartup())
+  .catch(error => {
+    console.error('[background] What\'s New badge reassertion failed:', error)
+  })
 
 /**
  * Forced update: リモート最低バージョンゲート（キルスイッチ）。

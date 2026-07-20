@@ -22,11 +22,15 @@
  * 上記いずれかが「unknown」（SW再起動直後などでセッション状態を未観測）の
  * 場合もunsafeとして扱う（保守的なデフォルト）。
  *
- * バッジ優先順位: rebuild-advisory（データ再構築の提要）が既にバッジを
- * 表示している間は、update-managerのバッジは表示・消去のどちらも行わない
+ * バッジ優先順位（3-way, rebuild-advisory > update-manager > whats-new）:
+ * rebuild-advisory（データ再構築の提要）が既にバッジを表示している間は、
+ * update-managerのバッジは表示・消去のどちらも行わない
  * （`getRebuildAdvisoryState().pendingVersion`をチェックしてno-op）。
  * rebuild-advisoryは既存の実装のまま変更せず、常に無条件でバッジを
- * 制御する「勝ち」側。詳細はCLAUDE.md参照。
+ * 制御する「勝ち」側。whats-new-badge.ts（更新情報バッジ）はこのファイルより
+ * さらに下位で、rebuild-advisoryとこのファイルの**両方**を確認してから
+ * 自分のバッジを出す/消す（このファイル自身はwhats-newの存在を知らない）。
+ * 詳細はwhats-new-badge.ts冒頭のコメント・CLAUDE.md参照。
  */
 import { getRebuildAdvisoryState } from './rebuild-advisory'
 import { isOperationIdle, onOperationBecameIdle } from './operation-state'
@@ -211,8 +215,17 @@ const setupUpdateCheckAlarm = (): void => {
  * - operation completion時の再チェック購読
  * - 加速チェック（SW起動時1回 + 6時間おきのalarm）
  * - SW起動時の保留中アップデート再チェック
+ *
+ * 戻り値はSW起動時の`recheckPendingUpdate()`呼び出しのpromise（常にresolve
+ * する -- 内部でcatch済み）。呼び出し側（background.ts）はこれを使って
+ * 「pendingUpdateのSW起動時クリーンアップが終わってから」whats-newバッジの
+ * 再評価を行うよう順序付けできる（codex review, PR #172:
+ * `reassertWhatsNewBadgeOnStartup()`がこのクリーンアップの完了前に
+ * `pendingUpdate`の中間状態を読んでしまうレースの防止）。この関数自体は
+ * 呼び出しをブロックしない（他のセットアップは同期的に完了する）ので、
+ * SW起動を止めたくない呼び出し側はそのままfire-and-forgetしてよい。
  */
-export const initUpdateManager = (): void => {
+export const initUpdateManager = (): Promise<void> => {
   chrome.runtime.onUpdateAvailable.addListener((details) => {
     handleUpdateAvailable(details).catch(error => {
       console.error('[update-manager] handleUpdateAvailable failed:', error)
@@ -230,7 +243,7 @@ export const initUpdateManager = (): void => {
   })
   setupUpdateCheckAlarm()
 
-  recheckPendingUpdate().catch(error => {
+  return recheckPendingUpdate().catch(error => {
     console.error('[update-manager] recheckPendingUpdate (SW startup) failed:', error)
   })
 }

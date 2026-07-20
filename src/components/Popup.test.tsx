@@ -22,6 +22,10 @@ global.chrome = {
       addListener: jest.fn(),
       removeListener: jest.fn(),
     },
+    // WhatsNewSection reads this to pick the entry matching the running
+    // version; kept in sync with test-setup.ts's default so this file's
+    // full-chrome-object override doesn't diverge from the global mock.
+    getManifest: jest.fn(() => ({ version: '5.1.0' })),
   },
   tabs: {
     query: mockChromeTabsQuery,
@@ -113,9 +117,14 @@ describe('Popup', () => {
         callback({ isSignedIn: false, userInfo: null })
       } else if (message.action === 'getSyncState') {
         callback({ syncState: null })
+      } else if (message.action === 'acknowledgeWhatsNew') {
+        // WhatsNewSection (rendered inside every <Popup />) fires this on
+        // mount; answer it so sendMessageWithTimeout's real 8s timer never
+        // arms (codex review, PR #172 — otherwise this stalls the suite).
+        callback({ success: true })
       }
     })
-    
+
     // Default mock for chrome.tabs.query to prevent errors
     mockChromeTabsQuery.mockResolvedValue([])
   })
@@ -134,6 +143,37 @@ describe('Popup', () => {
       { action: 'firebaseAuthStatus' },
       expect.any(Function)
     )
+  })
+
+  it('WhatsNewSectionのマウント時acknowledgeWhatsNewメッセージが共有sendMessageモックで処理される（codex review, PR #172）', async () => {
+    // WhatsNewSection is mounted unconditionally inside every <Popup />
+    // render and fires this message on mount (fire-and-forget, via
+    // sendMessageWithTimeout). Before this fix the shared mock only
+    // answered 'firebaseAuthStatus'/'getSyncState', so this call never
+    // settled and left an unanswered real 8s timer armed per render
+    // (28 renders in this suite) -- stalling `npx jest` for minutes.
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+
+    render(<Popup />)
+
+    // Resolves near-instantly (well within waitFor's default timeout)
+    // because the shared mock now answers synchronously -- proving the
+    // call is actually stubbed rather than merely tolerated.
+    await waitFor(() => {
+      expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+        { action: 'acknowledgeWhatsNew' },
+        expect.any(Function)
+      )
+    })
+
+    // No "Unchecked runtime.lastError" / unhandled-callback style warnings
+    // from a message that never got a response.
+    expect(warnSpy).not.toHaveBeenCalled()
+    expect(errorSpy).not.toHaveBeenCalled()
+
+    warnSpy.mockRestore()
+    errorSpy.mockRestore()
   })
 
   it('HUD表示設定（コンパクト/フル・統計カラー表示）を表示・変更できる', async () => {
@@ -518,6 +558,8 @@ describe('Popup', () => {
             progress: 0,
           },
         })
+      } else if (message.action === 'acknowledgeWhatsNew') {
+        callback({ success: true })
       }
     })
 
@@ -654,6 +696,8 @@ describe('Popup', () => {
               totalEvents: 500,
             },
           })
+        } else if (message.action === 'acknowledgeWhatsNew') {
+          callback({ success: true })
         }
       })
 
@@ -684,6 +728,8 @@ describe('Popup', () => {
               totalEvents: 500,
             },
           })
+        } else if (message.action === 'acknowledgeWhatsNew') {
+          callback({ success: true })
         }
       })
 
