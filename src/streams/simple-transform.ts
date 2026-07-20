@@ -10,7 +10,7 @@
  * バンドルサイズとSW起動時間を圧迫していた。
  *
  * このクラスは実際に使われている機能（write/push/pipe/データ・エラーイベント）
- * のみを、軽量な`events`ポリフィル上に再実装したものである。
+ * のみを、Promiseチェーンと標準JavaScriptのSetで再実装したものである。
  *
  * ## シリアライゼーション不変条件（重要）
  * Node.jsのTransformは内部的に1度に1つの`_transform`呼び出ししか実行しない
@@ -23,11 +23,15 @@
  * 開始する」という厳密な直列実行を保証する。この直列性は本クラスの中核的な
  * 不変条件であり、変更してはならない。
  */
-import { EventEmitter } from 'events'
-
-export type SimpleTransformTarget = Pick<EventEmitter, 'on' | 'emit' | 'listenerCount'> & {
+export type SimpleTransformTarget = {
   write(chunk: any): void
   end(): void
+}
+
+type SimpleTransformEventName = 'data' | 'error' | 'end'
+type SimpleTransformListener = (...args: any[]) => void
+type SimpleTransformRegisteredListener = SimpleTransformListener & {
+  originalListener?: SimpleTransformListener
 }
 
 /**
@@ -37,7 +41,7 @@ export type SimpleTransformTarget = Pick<EventEmitter, 'on' | 'emit' | 'listener
  */
 export type SimpleTransformErrorHandler = (error: unknown) => void
 
-export abstract class SimpleTransform<In = any, Out = any> extends EventEmitter {
+export abstract class SimpleTransform<In = any, Out = any> {
   /** 直列実行を保証する内部プロミスチェーン */
   private queue: Promise<void> = Promise.resolve()
   /** キューに積まれた（まだ完了していない）チャンク数 */
@@ -46,6 +50,66 @@ export abstract class SimpleTransform<In = any, Out = any> extends EventEmitter 
   private target?: SimpleTransformTarget
   /** end()が呼ばれたかどうか */
   private ended = false
+  /** Node EventEmitterを持ち込まずにdata/error/end購読を提供するリスナー集合 */
+  private readonly listeners: Record<SimpleTransformEventName, Set<SimpleTransformRegisteredListener>> = {
+    data: new Set(),
+    error: new Set(),
+    end: new Set()
+  }
+
+  /**
+   * Stream群が公開してきた最小イベントAPIを維持する。
+   * 同じリスナーの重複登録はSetにより冪等になる。
+   */
+  on(event: 'data', listener: (data: Out) => void): this
+  on(event: 'error', listener: (error: unknown) => void): this
+  on(event: 'end', listener: () => void): this
+  on(event: SimpleTransformEventName, listener: SimpleTransformListener): this {
+    this.listeners[event].add(listener)
+    return this
+  }
+
+  once(event: 'data', listener: (data: Out) => void): this
+  once(event: 'error', listener: (error: unknown) => void): this
+  once(event: 'end', listener: () => void): this
+  once(event: SimpleTransformEventName, listener: SimpleTransformListener): this {
+    const onceListener: SimpleTransformRegisteredListener = (...args) => {
+      this.listeners[event].delete(onceListener)
+      listener(...args)
+    }
+    onceListener.originalListener = listener
+    this.listeners[event].add(onceListener)
+    return this
+  }
+
+  off(event: 'data', listener: (data: Out) => void): this
+  off(event: 'error', listener: (error: unknown) => void): this
+  off(event: 'end', listener: () => void): this
+  off(event: SimpleTransformEventName, listener: SimpleTransformListener): this {
+    const listeners = this.listeners[event]
+    // EventEmitter同様、once()へ渡した元のlistenerでも発火前に解除できるようにする。
+    const registeredListener = [...listeners]
+      .reverse()
+      .find(registered => registered === listener || registered.originalListener === listener)
+    if (registeredListener) listeners.delete(registeredListener)
+    return this
+  }
+
+  protected emit(event: 'data', data: Out): boolean
+  protected emit(event: 'error', error: unknown): boolean
+  protected emit(event: 'end'): boolean
+  protected emit(event: SimpleTransformEventName, ...args: any[]): boolean {
+    const listeners = this.listeners[event]
+    if (listeners.size === 0) return false
+
+    // dispatch中の登録変更が現在の通知順序へ影響しないようスナップショットを使う。
+    for (const listener of [...listeners]) listener(...args)
+    return true
+  }
+
+  protected listenerCount(event: SimpleTransformEventName): number {
+    return this.listeners[event].size
+  }
 
   /**
    * サブクラスが実装する変換処理本体。

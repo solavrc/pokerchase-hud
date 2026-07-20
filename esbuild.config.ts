@@ -1,8 +1,7 @@
 import { build, BuildOptions, Plugin } from 'esbuild'
 import { copyFileSync, mkdirSync } from 'fs'
-import { fileURLToPath } from 'url'
 import { parse } from 'path'
-import { resolve, dirname } from 'path'
+import { resolve } from 'path'
 import manifest from './manifest.json'
 
 const {
@@ -71,15 +70,6 @@ const options: BuildOptions = {
         path: '@mui/material/index.js',
         external: false
       }))
-    }
-  }, {
-    name: 'nodePolyfills',
-    setup(build) {
-      const __filename = fileURLToPath(import.meta.url)
-      const __dirname = dirname(__filename)
-      build.onResolve({ filter: /^events$/ }, () => {
-        return { path: resolve(__dirname, 'node_modules/events/events.js') }
-      })
     }
   },
   ...(e2eManifestPlugin ? [e2eManifestPlugin] : [])]

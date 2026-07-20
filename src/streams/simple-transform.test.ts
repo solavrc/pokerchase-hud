@@ -147,6 +147,44 @@ describe('SimpleTransform', () => {
     expect(stream.transformCallCount).toBe(1)
   })
 
+  test('once(): 最初のdataイベントだけを通知する', async () => {
+    const stream = new CountingStream()
+    const results: number[] = []
+    stream.once('data', (value: number) => results.push(value))
+
+    stream.write(1)
+    stream.write(2)
+    await stream.whenIdle()
+
+    expect(results).toEqual([10])
+  })
+
+  test('off(): 登録済みのdataリスナーを解除する', async () => {
+    const stream = new CountingStream()
+    const results: number[] = []
+    const listener = (value: number) => results.push(value)
+    stream.on('data', listener)
+    stream.off('data', listener)
+
+    stream.write(1)
+    await stream.whenIdle()
+
+    expect(results).toEqual([])
+  })
+
+  test('off(): once()へ渡した元のdataリスナーを発火前に解除する', async () => {
+    const stream = new CountingStream()
+    const results: number[] = []
+    const listener = (value: number) => results.push(value)
+    stream.once('data', listener)
+    stream.off('data', listener)
+
+    stream.write(1)
+    await stream.whenIdle()
+
+    expect(results).toEqual([])
+  })
+
   test('end(): キュー完了後に"end"をemitし、pipe先にend()を伝播する', async () => {
     const upstream = new CountingStream()
     const downstream = new CountingStream()
