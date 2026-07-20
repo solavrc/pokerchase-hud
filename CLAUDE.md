@@ -151,7 +151,7 @@ PRs in this repo are reviewed by Codex automatically — **auto-review is enable
 
 ```text
 MERGE_READY =
-  reviewed_commit_sha == current_head_sha        # stale verdicts never count
+  pass_bound_to_current_head_sha                 # via Reviewed-commit SHA, or a Codex reaction postdating this head's push/trigger; stale evidence never counts
   AND actionable_findings == 0                   # no unaddressed Badge-marked inline findings
   AND unresolved_review_threads == 0
   AND required_checks_on_exact_head == SUCCESS
@@ -162,9 +162,9 @@ MERGE_READY =
 
 Clean-streak requirement: semantics-bearing changes (sync/watermark logic, statistics, session/state management, event processing) need **two consecutive clean passes on the same head SHA**; docs and trivially-mechanical changes need one. Since auto-review fires once per push, the second pass cannot arrive on its own: **after a clean first pass (which may surface only as a thumbs-up reaction on the PR description), request the confirmation pass with a single `@codex review` mention — at most one confirmation mention per head SHA.** If any pass yields findings, the clean streak resets to zero; fix, push (auto-review fires), and continue. A fix commit that goes beyond finding-scoped local patches (new mechanism, rebase integration, cross-file ripple) always resets the streak regardless of verdict history.
 
-**Mentions have exactly two legitimate uses**: (a) the non-fire fallback — at most once per head SHA, only after confirming no outcome for that SHA on any channel ~10min after the in-progress signal clears; (b) the second-clean confirmation pass — at most once per head SHA. Any other mention doubles review cost for nothing.
+**Mentions have exactly two legitimate uses**: (a) the non-fire fallback — at most once per head SHA, only after no outcome for that SHA exists on any channel ~10min after the expected trigger (the push, or the mention), whether or not an in-progress signal ever appeared (a true non-fire may never place the eyes reaction); (b) the second-clean confirmation pass — at most once per head SHA. Any other mention doubles review cost for nothing.
 
-**Outcome detection is structural, never string-matched.** The verdict message's flavor text varies (17+ known variants; not a stable contract). Determine each pass's outcome by combining, for the current head SHA: `Reviewed commit` SHA bindings in comment/review bodies; Badge-marked inline findings created during the pass; unresolved review-thread count; and PR-description reactions (eyes = in progress; thumbs-up = clean) — noting that **reactions accumulate and are not SHA-bound**, so a reaction only counts for the pass whose push/mention it postdates. If the channels disagree or the outcome is ambiguous, do not merge — escalate.
+**Outcome detection is structural, never string-matched.** The verdict message's flavor text varies (17+ known variants; not a stable contract). Determine each pass's outcome by combining, for the current head SHA: `Reviewed commit` SHA bindings in comment/review bodies; Badge-marked inline findings created during the pass; unresolved review-thread count; and reactions on BOTH the PR description and the trigger comment (eyes = in progress; thumbs-up = clean) — counting only **Codex-authored** reactions (a maintainer's thumbs-up is not a review outcome), and noting that **reactions accumulate and are not SHA-bound**: a reaction only counts for the pass whose push (auto-review) or trigger comment (mention pass) it postdates. A reaction-only clean pass carries no `Reviewed commit` field — its SHA binding IS that timestamp ordering, which is why the gate's first condition accepts either form of binding. If the channels disagree or the outcome is ambiguous, do not merge — escalate.
 
 **Finite-exit rules (loop cost control):**
 
