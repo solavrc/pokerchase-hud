@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>PokerChase HUD E2E Fixture (no replay)</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #0b3d0b; }
+      #unity-container { position: relative; width: 100%; height: 100%; }
+      #e2e-status { position: fixed; top: 4px; left: 4px; color: #9f9; font: 12px monospace; z-index: 9999; }
+    </style>
+  </head>
+  <body>
+    <!--
+      Same #unity-container shell as fixture.html (content_script.ts's
+      mountApp() needs it present synchronously at inject time), but
+      deliberately has NO WebSocket-opening script -- this page is for
+      exercising a fresh HUD mount ("page reload before the first deal")
+      with zero replay/API events reaching the extension, e.g. for the
+      pre-game hero stats fallback (see App.tsx / getLatestSessionStats in
+      background/import-export.ts): the background service worker's
+      persisted DB + hero playerId (from a previous fixture.html replay in
+      the same browser session) must be enough on its own, with nothing
+      streamed on this page load.
+    -->
+    <div id="unity-container"></div>
+    <div id="e2e-status">e2e fixture: no-replay page (no WebSocket opened)</div>
+  </body>
+</html>

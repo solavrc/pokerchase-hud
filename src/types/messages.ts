@@ -111,6 +111,19 @@ export interface UpdateBattleTypeFilterMessage {
 // Stats related messages
 export interface RequestLatestStatsMessage {
   action: 'requestLatestStats'
+  /**
+   * true only for the request content_script.ts's mountApp() fires right at
+   * HUD mount. Distinguishes it from the pre-existing post-import
+   * refreshStats round-trip (same action, preGame omitted/false), which
+   * must keep its original "always return []" semantics -- import
+   * completion already triggers a real recompute+broadcast
+   * (statsOutputStream.write) moments before refreshStats fires, so
+   * enabling the pre-game hero-only fallback for that call site risks a
+   * stale hero-only response clobbering the fresher full lineup if it
+   * arrives second. See getLatestSessionStats() in
+   * background/import-export.ts.
+   */
+  preGame?: boolean
 }
 
 export interface LatestStatsMessage {

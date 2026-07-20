@@ -148,8 +148,17 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       }
     }
   }
-  /** モジュラーレジストリシステムを使用して統計を計算 */
-  private calcStats = async (seatUserIds: number[]): Promise<PlayerStats[]> => {
+  /**
+   * モジュラーレジストリシステムを使用して統計を計算
+   *
+   * Public: `transform()`/`recalculateStats()`（このクラス内部のライブパイプライン）
+   * だけでなく、`background/import-export.ts`の`getLatestSessionStats()`
+   * （プリゲーム・ヒーロースタッツのフォールバック）からも直接呼び出される。
+   * 統計計算式を再実装せず、同じ`calcStats`を使い回すための公開エントリポイント
+   * -- ただし`push()`しないため、`statsOutputStream`の'data'購読（ports.ts）を
+   * 経由したブロードキャストは発生しない（呼び出し元が結果を自分で届ける）。
+   */
+  calcStats = async (seatUserIds: number[]): Promise<PlayerStats[]> => {
     return await Promise.all(seatUserIds.map(async playerId => {
       if (playerId === -1)
         return { playerId: -1 }

@@ -586,12 +586,56 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
   }
 
   /**
-   * Get the latest session stats from the last known data or database
+   * Get the latest session stats from the last known data or database.
+   *
+   * Pre-game hero stats fallback (`preGame: true`, sent only by
+   * content_script.ts's mountApp() right at HUD mount): before the first
+   * EVT_DEAL of a browser session establishes a live seat lineup, there is
+   * nothing for the live pipeline (ReadEntityStream.transform, driven by
+   * statsOutputStream.write) to compute yet -- the HUD would otherwise sit
+   * on "Waiting for Hand..." for every seat, including the hero's own,
+   * until the first hand is dealt. If the hero's identity is already known
+   * (persisted `service.playerId`), compute the hero's stats via the exact
+   * same `calcStats()` the live pipeline uses (respecting the service's
+   * active battleType/tableSize/handLimit filters) for a hero-only lineup
+   * of one, and pad the remaining 5 seats with the same empty-seat
+   * sentinel (`{ playerId: -1 }`) App.tsx's `EMPTY_SEATS` default uses --
+   * this keeps the returned array the same 6-element shape callers already
+   * render (App.tsx keys HUD panels by seat index 0-5), so non-hero seats
+   * keep showing "Waiting for Hand..." exactly as before, and the eventual
+   * real EVT_DEAL swap-in reuses the same seat-0 key for the hero panel
+   * (seamless takeover, no remount).
+   *
+   * `preGame: false/omitted` (the pre-existing post-import `refreshStats`
+   * round-trip, see content_script.ts) keeps the original "always return
+   * []" stub behavior verbatim -- import completion already triggers a
+   * real recompute+broadcast (`service.statsOutputStream.write(playerIds)`)
+   * moments before `refreshStats` is sent, so enabling the hero-only
+   * fallback on that call site too would risk a stale hero-only response
+   * arriving *after* that fresher full lineup and clobbering it back down
+   * to one seat. Restricting the fallback to the mount-only `preGame: true`
+   * request sidesteps that race entirely: a fresh mount can't already have
+   * a fresher in-tab lineup to clobber.
+   *
+   * Also returns [] (send nothing, don't touch the caller's current state)
+   * when hero identity isn't known yet (fresh install / never played --
+   * behavior stays unchanged for that case) or an import/rebuild batch
+   * operation is in flight (`service.batchMode` -- don't fight that
+   * refresh storm; it recomputes and broadcasts the real lineup itself
+   * once the batch completes, see `importData`/`rebuildAllData` below).
    */
-  const getLatestSessionStats = async (): Promise<PlayerStats[]> => {
-    // Return empty array - stats will be calculated when game starts
-    // This avoids showing stale data and ensures EVT_DEAL is available for seat mapping
-    return []
+  const getLatestSessionStats = async (preGame: boolean): Promise<PlayerStats[]> => {
+    if (!preGame) return []
+
+    await service.ready // guards the SW-just-woke-up race: playerId/session are only valid after restoreState() resolves
+
+    if (service.batchMode) return []
+    if (!service.playerId) return []
+
+    const heroStats = await service.statsOutputStream.calcStats([service.playerId])
+    const heroStat = heroStats[0] ?? { playerId: service.playerId, statResults: [] }
+    const emptySeats: PlayerStats[] = Array.from({ length: 5 }, () => ({ playerId: -1 }))
+    return [heroStat, ...emptySeats]
   }
 
   /**

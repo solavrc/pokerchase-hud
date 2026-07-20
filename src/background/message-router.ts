@@ -176,9 +176,14 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
 
       return true // 非同期レスポンスを示す
     } else if (request.action === 'requestLatestStats') {
-      getLatestSessionStats()
+      getLatestSessionStats(request.preGame === true)
         .then(stats => {
-          if (sender.tab?.id) {
+          // 空配列は「送るものが無い」の意味（プリゲーム・ヒーロースタッツの
+          // フォールバック条件を満たさない場合など、import-export.ts参照）。
+          // ここで stats:[] を送ってしまうと、呼び出し側（App.tsx）の
+          // 既存state（EMPTY_SEATS初期値やライブパイプラインの現在値）を
+          // 空配列で上書きしてHUD全体を一瞬ブランクにしてしまうため送らない。
+          if (sender.tab?.id && stats.length > 0) {
             chrome.tabs.sendMessage<LatestStatsMessage>(sender.tab.id, {
               action: 'latestStats',
               stats: stats
