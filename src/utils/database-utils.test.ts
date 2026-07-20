@@ -1,8 +1,19 @@
 /**
  * Unit tests for database utility functions
+ *
+ * NOTE: `processInChunks()` cursor-pagination tests live in
+ * `database-utils.chunking.test.ts`, not here. That helper now needs a REAL
+ * `Dexie.Table` (backed by fake-indexeddb) to exercise genuine cursor
+ * behavior -- both `jest.mock('dexie')` and `jest.mock('../types/api')`
+ * below are incompatible with that (the former breaks real `PokerChaseDB`
+ * construction, the latter strips `filterValidApplicationEvents()`'s
+ * dynamic-imported `parseApiEvent`/`isApplicationApiEvent`). Splitting the
+ * file avoids re-mixing a mocked Collection (`.offset().limit().mockReturnThis()`)
+ * back into the pagination path, which is exactly what previously masked the
+ * bug (see CLAUDE.md "Dexie Collection reuse").
  */
 
-import { saveEntities, processInChunks, findLatestPlayerDealEvent, withTransaction } from './database-utils'
+import { saveEntities, findLatestPlayerDealEvent, withTransaction } from './database-utils'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import type { EntityBundle } from '../entity-converter'
 import { ApiType } from '../types'
@@ -130,81 +141,6 @@ describe('database-utils', () => {
         phases: 0,
         actions: 0
       })
-    })
-  })
-
-  describe('processInChunks', () => {
-    it('should process data in chunks', async () => {
-      const mockData = Array.from({ length: 25 }, (_, i) => ({ id: i }))
-      const chunkSize = 10
-      
-      const mockCollection = {
-        count: jest.fn().mockResolvedValue(mockData.length),
-        offset: jest.fn().mockReturnThis(),
-        limit: jest.fn().mockReturnThis(),
-        toArray: jest.fn()
-      } as any
-
-      // Mock toArray to return chunks
-      mockCollection.toArray
-        .mockResolvedValueOnce(mockData.slice(0, 10))
-        .mockResolvedValueOnce(mockData.slice(10, 20))
-        .mockResolvedValueOnce(mockData.slice(20, 25))
-        .mockResolvedValue([])
-
-      const chunks: any[][] = []
-      for await (const chunk of processInChunks(mockCollection, chunkSize)) {
-        chunks.push(chunk)
-      }
-
-      expect(chunks).toHaveLength(3)
-      expect(chunks[0]).toHaveLength(10)
-      expect(chunks[1]).toHaveLength(10)
-      expect(chunks[2]).toHaveLength(5)
-      
-      expect(mockCollection.offset).toHaveBeenCalledWith(0)
-      expect(mockCollection.offset).toHaveBeenCalledWith(10)
-      expect(mockCollection.offset).toHaveBeenCalledWith(20)
-    })
-
-    it('should call progress callback', async () => {
-      const mockCollection = {
-        count: jest.fn().mockResolvedValue(20),
-        offset: jest.fn().mockReturnThis(),
-        limit: jest.fn().mockReturnThis(),
-        toArray: jest.fn()
-      } as any
-
-      mockCollection.toArray
-        .mockResolvedValueOnce(Array(10).fill({ id: 1 }))
-        .mockResolvedValueOnce(Array(10).fill({ id: 2 }))
-        .mockResolvedValue([])
-
-      const onProgress = jest.fn()
-      
-      const chunks: any[][] = []
-      for await (const chunk of processInChunks(mockCollection, 10, { onProgress })) {
-        chunks.push(chunk)
-      }
-
-      expect(onProgress).toHaveBeenCalledWith(10, 20)
-      expect(onProgress).toHaveBeenCalledWith(20, 20)
-    })
-
-    it('should handle empty collection', async () => {
-      const mockCollection = {
-        count: jest.fn().mockResolvedValue(0),
-        offset: jest.fn().mockReturnThis(),
-        limit: jest.fn().mockReturnThis(),
-        toArray: jest.fn().mockResolvedValue([])
-      } as any
-
-      const chunks: any[][] = []
-      for await (const chunk of processInChunks(mockCollection, 10)) {
-        chunks.push(chunk)
-      }
-
-      expect(chunks).toHaveLength(0)
     })
   })
 

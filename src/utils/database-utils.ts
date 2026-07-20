@@ -49,32 +49,83 @@ export async function saveEntities(
 }
 
 /**
- * Process database queries in chunks to avoid memory issues
- * Generic helper for chunked data processing
+ * Process a Dexie table in chunks using true cursor-based pagination.
+ * Generic helper for chunked data processing.
+ *
+ * IMPORTANT (see CLAUDE.md "Dexie Collection reuse"): `.offset(n).limit(m)`
+ * on a single, already-built `Dexie.Collection` instance is NOT safe
+ * pagination. Dexie Collections accumulate query modifiers rather than
+ * replacing them, so calling `.offset()`/`.limit()` again on the SAME
+ * Collection object on the next loop iteration stacks a second offset/limit
+ * on top of the first one instead of re-querying from scratch. A prior
+ * version of this helper took a single pre-built `Collection<T>` and looped
+ * `.offset(offset).limit(chunkSize)` over it -- after the first chunk, the
+ * Collection was already permanently limited to `chunkSize` rows, so every
+ * subsequent `.offset()` call skipped past that already-exhausted result set
+ * and every later chunk silently came back empty (the loop's
+ * `chunk.length === 0` check then ended iteration early). For any
+ * caller with `total > chunkSize` this meant only the FIRST chunk was ever
+ * processed, with no error -- e.g. a cloud restore rebuild would silently
+ * stop deriving hands/phases/actions after the first `chunkSize` raw events
+ * while still marking the import complete.
+ *
+ * This version takes the `Dexie.Table` itself (not a Collection) and issues
+ * a brand-new query for every chunk, cursoring on the table's
+ * `[timestamp+ApiTypeId]` compound primary key -- exactly the pattern
+ * CLAUDE.md prescribes: `where('[timestamp+ApiTypeId]').above(lastKey).limit(N)`.
+ * This is currently only used against `db.apiEvents` (whose primary key is
+ * that compound index); if a future caller needs this for a table with a
+ * different key shape, extend/generalize the cursor extraction rather than
+ * reusing this implementation's hardcoded `timestamp`/`ApiTypeId` fields.
  */
-export async function* processInChunks<T>(
-  query: Dexie.Collection<T>,
+export async function* processInChunks<T extends { timestamp?: number; ApiTypeId: number }>(
+  table: Dexie.Table<T, any>,
   chunkSize: number,
   options?: {
-    orderBy?: string
+    /**
+     * Only include rows whose `timestamp` is strictly greater than this
+     * value -- matches the semantics of the `.where('timestamp').above(x)`
+     * queries this helper's callers previously built by hand.
+     */
+    afterTimestamp?: number
     onProgress?: (current: number, total: number) => void
   }
 ): AsyncGenerator<T[], void, unknown> {
-  const total = await query.count()
-  let offset = 0
+  const afterTimestamp = options?.afterTimestamp
+  const total = afterTimestamp !== undefined
+    ? await table.where('timestamp').above(afterTimestamp).count()
+    : await table.count()
 
-  while (offset < total) {
-    const chunk = await query
-      .offset(offset)
-      .limit(chunkSize)
-      .toArray()
+  if (total === 0) return
 
+  // Cursor into the `[timestamp+ApiTypeId]` compound primary key. When
+  // filtering by `afterTimestamp`, seed the cursor at
+  // `[afterTimestamp, MAX_SAFE_INTEGER]` -- since real `ApiTypeId` values are
+  // small enum integers, `.above()` this sentinel excludes every row tied at
+  // `afterTimestamp` regardless of its `ApiTypeId`, matching the strict
+  // `timestamp > afterTimestamp` filter it replaces, while still being a
+  // real (sortable) key the compound index can seek on.
+  let cursor: [number, number] | undefined = afterTimestamp !== undefined
+    ? [afterTimestamp, Number.MAX_SAFE_INTEGER]
+    : undefined
+  let processed = 0
+
+  while (true) {
+    // Fresh query every iteration -- never reuse a Collection across chunks.
+    const collection = cursor !== undefined
+      ? table.where('[timestamp+ApiTypeId]').above(cursor)
+      : table.orderBy('[timestamp+ApiTypeId]')
+
+    const chunk = await collection.limit(chunkSize).toArray()
     if (chunk.length === 0) break
 
     yield chunk
-    offset += chunk.length
+    processed += chunk.length
 
-    options?.onProgress?.(offset, total)
+    const last = chunk[chunk.length - 1]!
+    cursor = [last.timestamp!, last.ApiTypeId]
+
+    options?.onProgress?.(processed, total)
   }
 }
 

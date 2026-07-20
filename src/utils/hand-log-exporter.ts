@@ -34,22 +34,23 @@ export class HandLogExporter {
 
     try {
       // Process events newer than last processed timestamp
-      const newEventsQuery = db.apiEvents
+      const totalNew = await db.apiEvents
         .where('timestamp')
         .above(this.lastProcessedTimestamp)
-      
-      const totalNew = await newEventsQuery.count()
+        .count()
       if (totalNew === 0) {
         console.log('[HandLogExporter] No new events since last cache update')
         return playerMap
       }
-      
+
       console.log(`[HandLogExporter] Processing ${totalNew} new events for player names`)
-      
+
       // Process in chunks to avoid memory issues
       let updatedPlayers = 0
-      
-      for await (const chunk of processInChunks(newEventsQuery, DATABASE_CONSTANTS.SYNC_CHUNK_SIZE)) {
+
+      for await (const chunk of processInChunks(db.apiEvents, DATABASE_CONSTANTS.SYNC_CHUNK_SIZE, {
+        afterTimestamp: this.lastProcessedTimestamp
+      })) {
         // Process chunk for player information
         for (const event of chunk) {
           // Update timestamp tracker

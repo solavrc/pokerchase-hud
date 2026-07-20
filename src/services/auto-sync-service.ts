@@ -1195,7 +1195,7 @@ export class AutoSyncService {
       if (service?.session) service.session.reset()
 
       for await (const events of processInChunks(
-        this.db.apiEvents.orderBy('[timestamp+ApiTypeId]'),
+        this.db.apiEvents,
         DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
       )) {
         // events is a raw Lake chunk (see docs/architecture.md) — it may contain
