@@ -1,4 +1,5 @@
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
+import Dexie from 'dexie'
 import PokerChaseService, {
   ApiType,
   PokerChaseDB,
@@ -183,8 +184,36 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
             // 部分的な失敗の場合、個別に保存を試みる
             console.warn(`Bulk add failed for chunk ${Math.floor(i / IMPORT_CHUNK_SIZE) + 1}, falling back to individual adds:`, dbError)
 
-            for (const raw of rawEventsToStore) {
+            // 明示的トランザクション外で呼んだbulkAdd()は、一部の行が失敗して
+            // Dexie.BulkErrorをthrowしても、失敗しなかった行はその時点で既に
+            // 永続化済み（IndexedDB側は各addリクエストの個別エラーを飲み込み、
+            // トランザクション全体はabortしない実装のため）。BulkErrorの
+            // `failuresByPos`は「失敗したインデックス」だけをErrorへ
+            // マッピングするので、そこに含まれないインデックスは既に確実に
+            // 保存されている（codexレビュー指摘, PR #199 finding #2）。
+            // それらに対して個別add()を再度呼ぶと、今まさに正規に書き込んだ
+            // 行自体に対するConstraintErrorとなり、以下の「重複」判定に
+            // 落ちて誤ってスキップ扱いになる ―― successCountが実際の保存数
+            // より少なく数えられるだけでなく、対応するアプリケーションイベント
+            // がstoredKeysに入らずallNewEventsから漏れ、hands/phases/actions
+            // が生成されないまま（次回の再構築まで）残ってしまう。
+            // BulkError以外（例: QuotaExceededErrorでバッチ全体がabortされた
+            // 場合など）はどの行も永続化されていないと分かっているため、
+            // 全件を個別add()にかける従来の挙動のままでよい。
+            const failuresByPos = dbError instanceof Dexie.BulkError ? dbError.failuresByPos : undefined
+
+            for (let idx = 0; idx < rawEventsToStore.length; idx++) {
+              const raw = rawEventsToStore[idx]!
               const key = `${raw.timestamp}-${raw.ApiTypeId}`
+
+              if (failuresByPos && !(idx in failuresByPos)) {
+                // bulkAdd()の失敗リストに載っていない = 既に永続化済み。
+                // add()を再度呼ばず、そのまま成功として計上する。
+                successCount++
+                storedKeys.add(key)
+                continue
+              }
+
               try {
                 await db.apiEvents.add(raw as ApiEvent)
                 successCount++
@@ -195,8 +224,14 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
                 if (!errorMessage.includes('Key already exists')) {
                   errors.push(`Event at timestamp ${raw.timestamp}: ${errorMessage}`)
                 } else {
+                  // この行はbulkAdd失敗により個別add()にフォールバックした結果
+                  // 重複と判明したもので、successCountはまだ加算されていない
+                  // （加算は直上tryブロックの成功時のみ、11行下）。ここで
+                  // successCount--するとまだ一度も加算されていないカウントを
+                  // 減算することになり、重複が多いインポートでsuccessCountが
+                  // 負数になり得た（codexレビュー指摘、監査finding #13）。
+                  // duplicateCountのみ加算する。
                   duplicateCount++
-                  successCount-- // 重複の場合は成功数から除外
                 }
               }
             }
@@ -528,22 +563,70 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
   }
 
   /**
-   * コンテンツスクリプトへのダウンロードハンドオフ（chrome.tabs.query→
-   * chrome.tabs.sendMessage）が実際に発行されるまで待てるようPromiseを返す
-   * （codexレビュー指摘, PR #150監査#2）。
+   * `chrome.tabs.sendMessage()`をコールバック形式で呼び、
+   * `chrome.runtime.lastError`を確認してから解決/拒否するPromiseに包む
+   * （codexレビュー指摘、監査finding #10）。
    *
-   * 修正前はこの関数が`void`を返し、`chrome.tabs.query`のコールバックが
-   * 実行される前に呼び出し元へ制御を返していた。呼び出し元（exportJsonData/
-   * exportPokerStarsData）は直後に`setOperationState({ type: 'idle' })`を
-   * 呼んでおり、`operation-state.ts`の`onOperationBecameIdle`購読経由で
-   * `update-manager.ts`の`recheckPendingUpdate()`が即座に発火しうる。
-   * そのタイミングが安全（`isSafeToUpdate()`）と判定されると
-   * `chrome.runtime.reload()`でService Workerごと巻き込まれ、まだ
-   * `chrome.tabs.sendMessage`すら呼ばれていないダウンロードが失われる
-   * （ユーザーには「エクスポート完了」と表示されるのに実際のファイルは
-   * 届かない）。ここでハンドオフの発行完了を待てるようにし、呼び出し元で
-   * `await`してから`setOperationState({ type: 'idle' })`を呼ぶことで、
-   * このレースを解消する。
+   * `chrome.tabs.sendMessage(tabId, message)`（コールバック省略）はfire-and-
+   * forgetで、コンテンツスクリプト不在・メッセージ拒否・受信側エラーの
+   * いずれもここでは観測できない。コールバックを渡すことで
+   * `chrome.runtime.lastError`（例: "Receiving end does not exist" ―
+   * コンテンツスクリプト未注入、拡張機能リロード直後のタブなど）を検出し、
+   * 呼び出し元（downloadFile）へ失敗として伝播できるようにする。
+   *
+   * 受信側（content_script.ts）は4種のdownload*メッセージ全てで明示的に
+   * `sendResponse({ success: true/false })`を返す（PR #199レビュー指摘、
+   * finding #1）ようになっている ―― Chromeのメッセージングは、受信側が
+   * sendResponse()を呼ばず`true`もreturnしない場合、リスナーがreturnした
+   * 時点でポートを閉じ、送信側コールバックに`chrome.runtime.lastError =
+   * "message port closed before a response was received"`をセットする。
+   * これは受信側の処理が実際に成功していても発生するため、修正前は
+   * 正常に配信されたエクスポートまで失敗と誤判定していた。明示的なackが
+   * 返るようになった今は、`lastError`（配信自体の失敗）に加えて
+   * レスポンスの`success:false`（受信側で処理中に例外が起きた場合）も
+   * 確認し、どちらの失敗も呼び出し元へ伝播する。
+   */
+  const sendTabMessageAsync = (tabId: number, message: Record<string, unknown>): Promise<void> => {
+    return new Promise<void>((resolve, reject) => {
+      chrome.tabs.sendMessage(tabId, message, (response?: { success?: boolean, error?: string }) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message))
+        } else if (response && response.success === false) {
+          reject(new Error(response.error || 'content script reported a download handoff failure'))
+        } else {
+          resolve()
+        }
+      })
+    })
+  }
+
+  /**
+   * コンテンツスクリプトへのダウンロードハンドオフ（chrome.tabs.query→
+   * chrome.tabs.sendMessage、大容量ファイルの場合は複数チャンク）の
+   * 全チャンクが受信側に確実に届いたことを確認してから解決する
+   * （codexレビュー指摘, PR #150監査#2 / 監査finding #10）。
+   *
+   * PR #150監査#2の修正では`chrome.tabs.query`のコールバックが実行される
+   * までは待てるようになったが、その内側の`chrome.tabs.sendMessage()`自体は
+   * 依然fire-and-forget（チャンクごとに投げっぱなし）で、`chrome.downloads`
+   * フォールバックもコールバック/`downloads.lastError`を見る前に解決して
+   * いた。コンテンツスクリプト不在・メッセージ拒否・64MiB境界超過・
+   * downloads側のエラーのいずれが起きても`downloadFile()`は成功したかの
+   * ように解決し、呼び出し元（exportJsonData/exportPokerStarsData）が直後に
+   * `setOperationState({ type: 'idle' })`を呼んでしまう ――
+   * `operation-state.ts`の`onOperationBecameIdle`購読経由で
+   * `update-manager.ts`の`recheckPendingUpdate()`が発火し、保留中アップデート
+   * が安全と誤判定されて`chrome.runtime.reload()`が先行し得るうえ、
+   * ユーザーには「エクスポート完了」と表示されるのに実際のファイルは
+   * 一切届かない。
+   *
+   * ここでは各ハンドオフ（単発送信・チャンク送信の全て）を`await`し、
+   * いずれかが失敗（拒否）したら`downloadFile()`自体もreject、
+   * `chrome.downloads`フォールバックも`downloads.lastError`を確認して
+   * からでなければ解決しないようにする。呼び出し元は`await downloadFile()`
+   * が投げた例外を既存のcatchブロックでそのまま処理する ―― `state: 'error'`
+   * をpopupへ通知し、`idle`への遷移は「完了成功」としてではなく単に
+   * 操作終了として行われる。
    */
   const downloadFile = (content: string, filename: string, contentType: string): Promise<void> => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
@@ -568,35 +651,46 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
     const finalFilename = getFinalFilename()
 
     // Send to content script for Blob-based download (avoids data URL size limits)
-    return new Promise<void>(resolve => {
+    return new Promise<void>((resolve, reject) => {
       chrome.tabs.query({ url: gameUrlPattern }, async tabs => {
         const tab = tabs.find(t => t.id)
         if (tab?.id) {
-          const sizeMB = content.length / 1024 / 1024
-          const MAX_CHUNK_MB = 50 // Under Chrome's 64MiB message limit
-          const maxChunkSize = MAX_CHUNK_MB * 1024 * 1024
+          const tabId = tab.id
+          try {
+            const sizeMB = content.length / 1024 / 1024
+            const MAX_CHUNK_MB = 50 // Under Chrome's 64MiB message limit
+            const maxChunkSize = MAX_CHUNK_MB * 1024 * 1024
 
-          if (content.length <= maxChunkSize) {
-            chrome.tabs.sendMessage(tab.id, { action: 'downloadFile', content, filename: finalFilename, contentType })
-          } else {
-            // Split into chunks for large files
-            const totalChunks = Math.ceil(content.length / maxChunkSize)
-            console.log(`[Export] Splitting ${sizeMB.toFixed(1)}MB into ${totalChunks} chunks...`)
-            chrome.tabs.sendMessage(tab.id, { action: 'downloadFileInit', filename: finalFilename, contentType, totalChunks })
-            for (let i = 0; i < totalChunks; i++) {
-              const chunk = content.slice(i * maxChunkSize, (i + 1) * maxChunkSize)
-              chrome.tabs.sendMessage(tab.id, { action: 'downloadFileChunk', chunkIndex: i, chunk, totalChunks })
+            if (content.length <= maxChunkSize) {
+              await sendTabMessageAsync(tabId, { action: 'downloadFile', content, filename: finalFilename, contentType })
+            } else {
+              // Split into chunks for large files
+              const totalChunks = Math.ceil(content.length / maxChunkSize)
+              console.log(`[Export] Splitting ${sizeMB.toFixed(1)}MB into ${totalChunks} chunks...`)
+              await sendTabMessageAsync(tabId, { action: 'downloadFileInit', filename: finalFilename, contentType, totalChunks })
+              for (let i = 0; i < totalChunks; i++) {
+                const chunk = content.slice(i * maxChunkSize, (i + 1) * maxChunkSize)
+                await sendTabMessageAsync(tabId, { action: 'downloadFileChunk', chunkIndex: i, chunk, totalChunks })
+              }
+              await sendTabMessageAsync(tabId, { action: 'downloadFileFinish', filename: finalFilename, contentType })
             }
-            chrome.tabs.sendMessage(tab.id, { action: 'downloadFileFinish', filename: finalFilename, contentType })
+            console.log(`[Export] Download initiated via content script: ${finalFilename} (${sizeMB.toFixed(1)}MB)`)
+            resolve()
+          } catch (error) {
+            console.error('[Export] Content script download handoff failed:', error)
+            reject(error instanceof Error ? error : new Error(String(error)))
           }
-          console.log(`[Export] Download initiated via content script: ${finalFilename} (${sizeMB.toFixed(1)}MB)`)
-          resolve()
           return
         }
-        // Fallback: data URL (may fail for large files >2MB)
+        // Fallback: data URL via chrome.downloads (may fail for large files >2MB)
         console.warn('[Export] No game tab found, falling back to data URL download')
-        downloadViaDataUrl(content, finalFilename, contentType)
-        resolve()
+        try {
+          await downloadViaDataUrl(content, finalFilename, contentType)
+          resolve()
+        } catch (error) {
+          console.error('[Export] chrome.downloads fallback failed:', error)
+          reject(error instanceof Error ? error : new Error(String(error)))
+        }
       })
     })
   }
@@ -932,17 +1026,31 @@ export const startKeepAlive = async (): Promise<() => void> => {
   return () => clearInterval(id)
 }
 
-const downloadViaDataUrl = (content: string, finalFilename: string, contentType: string) => {
+/**
+ * `chrome.downloads.download()`のコールバック（および`downloads.lastError`）
+ * を確認してから解決/拒否するPromiseを返す（codexレビュー指摘、監査
+ * finding #10）。修正前はコールバック内で`lastError`をログするだけで
+ * 呼び出し元（downloadFile）は待たずに解決していたため、ダウンロード自体が
+ * 失敗（例: ユーザーがsaveAsダイアログをキャンセル、ディスク容量不足）
+ * してもエクスポートは「完了」として扱われていた。
+ */
+const downloadViaDataUrl = (content: string, finalFilename: string, contentType: string): Promise<void> => {
   const base64Content = btoa(encodeURIComponent(content).replace(/%([0-9A-F]{2})/g, (_match, p1) => String.fromCharCode(parseInt(p1, 16))))
   const dataUrl = `data:${contentType};base64,${base64Content}`
 
-  chrome.downloads.download({
-    url: dataUrl,
-    filename: finalFilename,
-    saveAs: true
-  }, () => {
-    if (chrome.runtime.lastError) {
-      console.error('Download error:', chrome.runtime.lastError)
-    }
+  return new Promise<void>((resolve, reject) => {
+    chrome.downloads.download({
+      url: dataUrl,
+      filename: finalFilename,
+      saveAs: true
+    }, (downloadId) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message))
+      } else if (downloadId === undefined) {
+        reject(new Error('chrome.downloads.download failed: no downloadId returned'))
+      } else {
+        resolve()
+      }
+    })
   })
 }
