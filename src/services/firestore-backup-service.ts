@@ -122,16 +122,25 @@ export class FirestoreBackupService {
 
   /**
    * Get the latest timestamp from cloud events.
+   *
+   * Returns `null` ONLY when the cloud collection is PROVEN empty (a
+   * successful query that returned zero documents for this user) -- never as
+   * a stand-in for an auth/network/REST failure, which now throws instead of
+   * being swallowed. This distinction is load-bearing for callers:
+   * `AutoSyncService.backfillUnparseableFloorIfNeeded()` treats a `null`
+   * result as "nothing has ever been uploaded, so there's no watermark to
+   * backfill past" and permanently marks its one-time backfill done. Before
+   * this fix, a transient error on the very first post-upgrade sync was
+   * indistinguishable from a genuinely empty cloud, so it could permanently
+   * suppress the only backfill attempt for a pre-existing unparseable row
+   * (codex review round 4 on PR #182). Callers that want the old
+   * swallow-to-null behavior (e.g. `updateTimestamps()`, a best-effort UI
+   * value) must wrap this call in their own try/catch.
    */
   async getCloudMaxTimestamp(): Promise<number | null> {
-    try {
-      const events = await this.queryEvents('desc', 1)
-      const latestEvent = events[0]
-      return typeof latestEvent?.timestamp === 'number' ? latestEvent.timestamp : null
-    } catch (error) {
-      console.error('Failed to get cloud max timestamp:', error)
-      return null
-    }
+    const events = await this.queryEvents('desc', 1)
+    const latestEvent = events[0]
+    return typeof latestEvent?.timestamp === 'number' ? latestEvent.timestamp : null
   }
 
   /**

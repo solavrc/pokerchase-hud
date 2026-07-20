@@ -168,6 +168,53 @@ describe('FirestoreBackupService', () => {
     })
   })
 
+  test('getCloudMaxTimestamp rejects instead of swallowing to null when the REST query fails (codex review round 4 on PR #182)', async () => {
+    // `null` from this method is load-bearing elsewhere (AutoSyncService's
+    // one-time unparseable-floor backfill treats it as "cloud proven empty,
+    // nothing to backfill past"). A transient auth/network/REST failure must
+    // never be indistinguishable from that -- it has to throw instead.
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => JSON.stringify({
+        error: { code: 500, message: 'Internal error', status: 'INTERNAL' }
+      })
+    } as Response)
+
+    await expect(new FirestoreBackupService().getCloudMaxTimestamp())
+      .rejects.toThrow('Firestore REST request failed: 500')
+  })
+
+  test('getCloudMaxTimestamp returns null when the cloud collection is proven empty', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      // Firestore's runQuery returns a readTime-only entry (no `document`)
+      // for a query that matched nothing -- same shape asserted by the
+      // "syncFromCloud treats ... as no events" cases below.
+      text: async () => JSON.stringify([{ readTime: '2026-07-20T00:00:00Z' }])
+    } as Response)
+
+    await expect(new FirestoreBackupService().getCloudMaxTimestamp()).resolves.toBeNull()
+  })
+
+  test('getCloudMaxTimestamp returns the latest event timestamp when the cloud has data (proven watermark)', async () => {
+    const uid = 'XK00mmVIZdg8J52OlfyKvN467SK2'
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify([{
+        document: {
+          name: `projects/pokerchase-hud/databases/(default)/documents/users/${uid}/apiEvents/12345_304`,
+          fields: {
+            timestamp: { integerValue: '12345' },
+            ApiTypeId: { integerValue: '304' }
+          }
+        }
+      }])
+    } as Response)
+
+    await expect(new FirestoreBackupService().getCloudMaxTimestamp()).resolves.toBe(12345)
+  })
+
   test.each([
     ['an empty response body', ''],
     ['a metadata-only query response', JSON.stringify([{ readTime: '2026-07-15T00:00:00Z' }])]

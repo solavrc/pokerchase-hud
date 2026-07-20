@@ -438,13 +438,25 @@ export class AutoSyncService {
    * every normal `syncToCloud()` pass's own per-chunk detection) and paginates
    * via `processInChunks` so a 300k-row install never loads more than one
    * chunk into memory at a time.
+   *
+   * PROVEN-STATE REQUIREMENT (codex review round 4 on PR #182): this method
+   * must only ever mark itself done when `cloudMaxTimestamp` reflects a
+   * proven cloud state -- either a real watermark, or a confirmed-empty
+   * cloud. `getCloudMaxTimestamp()` upholds this by throwing on auth/
+   * network/REST failure instead of returning `null` for "unknown" (see its
+   * doc comment) -- so by the time `cloudMaxTimestamp` reaches this method
+   * (the call in `syncToCloud()` above is unguarded and lets that throw
+   * abort the whole sync attempt before this method is ever invoked), `null`
+   * here can ONLY mean "proven empty". Do not add a try/catch around that
+   * call site that would reintroduce the ambiguity.
    */
   private async backfillUnparseableFloorIfNeeded(cloudMaxTimestamp: number | null): Promise<void> {
     const alreadyDone = await this.db.meta.get(this.SYNC_UNPARSEABLE_BACKFILL_DONE_KEY)
     if (alreadyDone) return
 
     if (cloudMaxTimestamp === null) {
-      // Nothing uploaded yet -- there is no "already past the watermark"
+      // Proven empty (see PROVEN-STATE REQUIREMENT above) -- nothing has
+      // ever been uploaded, so there is no "already past the watermark"
       // region below which a pre-existing orphan could be hiding.
       await this.markUnparseableFloorBackfillDone()
       return

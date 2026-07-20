@@ -326,6 +326,84 @@ describe('AutoSyncService cloud downloads', () => {
     expect(syncBatchSpy).toHaveBeenCalledTimes(2)
   })
 
+  test('marks the one-time backfill done immediately when the cloud is proven empty (first sync ever, nothing uploaded yet)', async () => {
+    const validEntry = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-1',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
+    await db.apiEvents.add(validEntry)
+
+    // `null` here is the PROVEN-empty case (a successful query that found
+    // zero cloud documents), not an error -- see getCloudMaxTimestamp's doc
+    // comment and the "rejects instead of swallowing" test in
+    // firestore-backup-service.test.ts.
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+    jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockResolvedValue({ totalEvents: 1, syncedEvents: 1, lastSyncTime: new Date() })
+
+    expect(await db.meta.get('syncUnparseableFloorBackfillDone')).toBeUndefined()
+
+    const service = new AutoSyncService(db)
+    await service.performSync('upload')
+
+    expect(service.getSyncState().status).toBe('success')
+    expect((await db.meta.get('syncUnparseableFloorBackfillDone'))?.value).toBe(true)
+    expect(await db.meta.get('syncUnparseableFloor')).toBeUndefined() // nothing pending
+  })
+
+  test('a transient getCloudMaxTimestamp failure does NOT mark the one-time backfill done, and the next successful sync still runs it (codex review round 4 on PR #182)', async () => {
+    // Before this fix, getCloudMaxTimestamp() swallowed auth/network/REST
+    // errors to `null` -- indistinguishable from "cloud proven empty" --
+    // which let backfillUnparseableFloorIfNeeded() permanently mark itself
+    // done off a transient failure on the very first post-upgrade sync,
+    // never getting a real chance to find a pre-existing unparseable row.
+    const validEntry = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-1',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
+    // A pre-existing unparseable row, as if left behind by a pre-fix version
+    // of the extension, sitting below where the cloud watermark will turn
+    // out to be once it's actually reachable.
+    const preExistingOrphan = { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 200 }
+    await db.apiEvents.bulkAdd([validEntry, preExistingOrphan] as any)
+
+    const cloudMaxSpy = jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp')
+    const syncBatchSpy = jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockResolvedValue({ totalEvents: 0, syncedEvents: 0, lastSyncTime: new Date() })
+
+    // --- Sync #1: getCloudMaxTimestamp fails (network blip / REST error) ---
+    cloudMaxSpy.mockRejectedValueOnce(new Error('simulated network failure'))
+
+    const service = new AutoSyncService(db)
+    await service.performSync('upload')
+
+    expect(service.getSyncState().status).toBe('error')
+    // The unguarded getCloudMaxTimestamp() call at the top of syncToCloud()
+    // aborted the whole sync attempt BEFORE backfillUnparseableFloorIfNeeded()
+    // was ever reached -- neither marker was touched.
+    expect(await db.meta.get('syncUnparseableFloorBackfillDone')).toBeUndefined()
+    expect(await db.meta.get('syncUnparseableFloor')).toBeUndefined()
+    expect(syncBatchSpy).not.toHaveBeenCalled()
+
+    // --- Sync #2: cloud max now resolves successfully (proven watermark) ---
+    cloudMaxSpy.mockResolvedValueOnce(300)
+    await service.performSync('upload')
+
+    expect(service.getSyncState().status).toBe('success')
+    // This time the backfill ran to completion against a proven cloud state
+    // and found the pre-existing orphan below that watermark.
+    expect((await db.meta.get('syncUnparseableFloorBackfillDone'))?.value).toBe(true)
+    expect((await db.meta.get('syncUnparseableFloor'))?.value).toBe(200)
+  })
+
   test('holds the sync floor at its old value across a failed upload of a just-recovered row, and only advances it once that upload is confirmed (codex review r3614189347)', async () => {
     // Pre-seed state as if a previous pass already recorded row@100 as the
     // pending floor (it was unparseable then). Also mark the backfill done
