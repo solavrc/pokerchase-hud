@@ -31,6 +31,7 @@ import { TableSizeFilterSection } from './popup/TableSizeFilterSection'
 import { HandLimitSection } from './popup/HandLimitSection'
 import { StatisticsConfigSection } from './popup/StatisticsConfigSection'
 import { UndecodedEventSection } from './popup/UndecodedEventSection'
+import { UpdateSection } from './popup/UpdateSection'
 import { PopupHeader } from './popup/PopupHeader'
 import { SectionCard } from './popup/SectionCard'
 import type { PopupThemeMode } from './popup/theme'
@@ -441,6 +442,11 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
         popupThemeMode={popupThemeMode}
         onPopupThemeModeChange={handlePopupThemeModeChange}
       />
+
+      {/* Forced update: 保留中アップデート / リモート最低バージョンゲート
+        (どちらも該当時のみ描画。他セクションより先に表示し、ユーザーの
+        目に触れやすくする) */}
+      <UpdateSection />
 
       {/* UI Display Controls */}
       <SectionCard>

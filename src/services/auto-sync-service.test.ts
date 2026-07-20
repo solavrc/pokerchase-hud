@@ -5,6 +5,7 @@ import type { ApiEvent } from '../types'
 import { DATABASE_CONSTANTS } from '../constants/database'
 import { AutoSyncService } from './auto-sync-service'
 import { firestoreBackupService } from './firestore-backup-service'
+import * as minVersionGate from './min-version-gate'
 
 describe('AutoSyncService cloud downloads', () => {
   let db: PokerChaseDB
@@ -105,4 +106,57 @@ describe('AutoSyncService cloud downloads', () => {
     expect(uploadedChunk).toEqual([validEvent])
     expect(service.getSyncState().status).toBe('success')
   }, 15000)
+
+  test('latches _isSyncing BEFORE the awaited min-version gate so two concurrent performSync() calls cannot both pass the guard (codex review P2, race fix)', async () => {
+    const service = new AutoSyncService(db)
+
+    // Hold the gate check open so both performSync() calls' synchronous
+    // prologue (up to their first await) runs before either resolves --
+    // this is exactly the interleaving window the old code (which set
+    // `_isSyncing = true` AFTER awaiting the gate) was vulnerable to: a
+    // second call arriving in that window used to see `_isSyncing === false`
+    // and slip through the guard too.
+    let resolveGate: ((blocked: boolean) => void) | undefined
+    const gateSpy = jest.spyOn(minVersionGate, 'isCloudSyncBlockedByMinVersionGate')
+      .mockImplementation(() => new Promise<boolean>(resolve => { resolveGate = resolve }))
+    const getCloudMaxTimestampSpy = jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp')
+      .mockResolvedValue(null)
+
+    const firstSync = service.performSync('upload')
+    const secondSync = service.performSync('upload')
+
+    // By the time both calls have been issued (synchronously, before the
+    // gate promise resolves), the latch must already be set -- proving the
+    // first call set it before yielding at the `await` for the gate.
+    expect((service as any)._isSyncing).toBe(true)
+
+    resolveGate?.(false) // gate: not blocked
+    await firstSync
+    await secondSync
+
+    // The second call must have short-circuited on the `_isSyncing` check
+    // synchronously (before ever reaching the gate/cloud calls) -- if the
+    // latch race were still present, both calls would reach the gate and
+    // both would call getCloudMaxTimestamp.
+    expect(gateSpy).toHaveBeenCalledTimes(1)
+    expect(getCloudMaxTimestampSpy).toHaveBeenCalledTimes(1)
+    expect((service as any)._isSyncing).toBe(false)
+  })
+
+  test('releases the _isSyncing latch (via finally) even when the min-version gate blocks the sync', async () => {
+    const service = new AutoSyncService(db)
+    jest.spyOn(minVersionGate, 'isCloudSyncBlockedByMinVersionGate').mockResolvedValue(true)
+
+    await service.performSync('upload')
+
+    expect(service.getSyncState().status).toBe('error')
+    expect((service as any)._isSyncing).toBe(false)
+
+    // Latch was released, so a subsequent sync attempt is not blocked by a
+    // stuck `_isSyncing` flag (only by the gate itself, re-checked below).
+    jest.spyOn(minVersionGate, 'isCloudSyncBlockedByMinVersionGate').mockResolvedValue(false)
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+    await service.performSync('upload')
+    expect(service.getSyncState().status).toBe('success')
+  })
 })

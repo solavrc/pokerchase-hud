@@ -4,11 +4,22 @@ service cloud.firestore {
     // ユーザーは自分のドキュメントのみアクセス可能
     match /users/{userId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
-      
+
       // APIイベントサブコレクション（直接保存）
       match /apiEvents/{eventId} {
         allow read, write: if request.auth != null && request.auth.uid == userId;
       }
+    }
+
+    // 公開設定ドキュメント: 未認証クライアントから読める必要がある
+    // (src/services/min-version-gate.ts -- リモート最低バージョンゲート/
+    // キルスイッチ。未サインインの拡張機能インスタンスも起動時にチェックする
+    // ため、認証必須にできない)。書き込みはコンソール/Admin SDK経由のみ許可
+    // （クライアントからの書き込みは常に拒否）。ここ以外のドキュメントを
+    // 緩めるものではない。
+    match /config/client {
+      allow read: if true;
+      allow write: if false;
     }
   }
 }

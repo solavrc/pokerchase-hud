@@ -88,7 +88,7 @@ describe('AutoSyncService session start/end sync triggers', () => {
 
     // Simulate a sync already in progress (e.g. 309's onGameSessionEnd fired
     // just before this session-start event arrived)
-    ;(service as any).isSyncing = true
+    ;(service as any)._isSyncing = true
 
     await service.onNewSessionStart()
 

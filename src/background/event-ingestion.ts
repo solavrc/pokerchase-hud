@@ -12,6 +12,7 @@ import type { ApiEvent } from '../app'
 import { autoSyncService } from '../services/auto-sync-service'
 import { connectedPorts, startPortPing } from './ports'
 import { recordUndecodedEvent } from './undecoded-event-tracker'
+import { markSessionActive, markSessionInactive, recheckPendingUpdate } from './update-manager'
 
 /**
  * `chrome.runtime.onConnect`のハンドラーを登録する。
@@ -53,6 +54,24 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           console.warn('[background] Event missing numeric timestamp/ApiTypeId, cannot store:', message)
         }
 
+        // Forced-update安全性述語（update-manager.ts）のセッション状態追跡:
+        // content_script.tsのkeepaliveゲート（isGameActive）と同じ境界イベントを
+        // Service Worker側で独立に追跡する（SW再起動でリセットされるため
+        // content_script側の状態と厳密に同期している必要はない -- 保守的に
+        // 「unknown = unsafe」から始まり、実イベント観測で確定させるだけでよい）。
+        // 意図的にパース成功後のdata.ApiTypeIdではなく、ここで生メッセージの
+        // 数値ApiTypeIdだけを見て判定する: PokerChase側の309ペイロード破壊的
+        // 変更でparseApiEvent()がnullを返すようになっても、308で一度activeに
+        // なったセッション状態が永久にinactiveへ戻らず、まさにその変更を
+        // 修正する更新の安全性判定がずっとunsafeのまま詰まる、という事態を
+        // 避けるため（codexレビュー指摘）
+        const rawApiTypeId = (message as { ApiTypeId?: unknown }).ApiTypeId
+        if (rawApiTypeId === ApiType.EVT_SESSION_DETAILS) {
+          markSessionActive()
+        } else if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+          markSessionInactive()
+        }
+
         // 通常のAPIメッセージ処理
         // Zodスキーマでパース（passthrough: 未知プロパティは保持）
         const data = parseApiEvent(message as ApiMessage)
@@ -68,7 +87,6 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           // 検証失敗イベントの件数をApiTypeIdごとに集計してmetaテーブルへ永続化し、
           // Popupから可視化できるようにする。309インシデントは半年間これが
           // console.warnの中にしか無かったために気づけなかった
-          const rawApiTypeId = (message as { ApiTypeId?: unknown }).ApiTypeId
           if (typeof rawApiTypeId === 'number') {
             const rawTimestamp = (message as { timestamp?: unknown }).timestamp
             const eventTimestamp = typeof rawTimestamp === 'number' ? rawTimestamp : Date.now()
@@ -96,10 +114,25 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         service.realTimeStatsStream.write(data)
 
         // Handle game session end for auto sync
+        // （セッション状態[markSessionActive/Inactive]は上の生メッセージ判定で
+        // 追跡済み。ここはパース成功時のみ動く同期トリガー）
         if (data.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
-          autoSyncService.onGameSessionEnd().catch(err =>
-            console.error('[background] Auto sync on game end failed:', err)
-          )
+          // セッション終了は保留中アップデートの安全性再チェック地点の1つ
+          // （src/background/update-manager.ts参照）。recheckPendingUpdate()は
+          // onGameSessionEnd()のPromiseが完了(成功/失敗いずれか)してから
+          // 必ずチェーンして呼ぶ -- 両方を並列で撃つと、performSync()が
+          // `_isSyncing`を立てる前の非同期区間（min-versionゲートのawait等）を
+          // recheckPendingUpdate()がすり抜けて安全と誤判定し、直近セッションの
+          // クラウドバックアップがまだ始まってもいないうちに
+          // chrome.runtime.reload()でService Workerを巻き込んでしまう恐れが
+          // あるため（codexレビュー指摘, P1）
+          autoSyncService.onGameSessionEnd()
+            .catch(err => console.error('[background] Auto sync on game end failed:', err))
+            .finally(() => {
+              recheckPendingUpdate().catch(err =>
+                console.error('[background] Pending update recheck on session end failed:', err)
+              )
+            })
         } else if (data.ApiTypeId === ApiType.EVT_ENTRY_QUEUED || data.ApiTypeId === ApiType.EVT_SESSION_DETAILS) {
           // フォールバックトリガー（docs/postmortems/2026-07-session-results-drop.md
           // 再発防止#3）: 309単一トリガーのSPOF対策。新セッション開始時点は

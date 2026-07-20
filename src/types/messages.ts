@@ -57,6 +57,8 @@ export const MESSAGE_ACTIONS = {
   // Undecoded event (drop) visibility
   GET_UNDECODED_EVENT_STATS: 'getUndecodedEventStats',
   ACKNOWLEDGE_UNDECODED_EVENT_STATS: 'acknowledgeUndecodedEventStats',
+  // Forced update (auto-apply)
+  APPLY_PENDING_UPDATE: 'applyPendingUpdate',
 } as const
 
 // Import/Export related messages
@@ -254,6 +256,11 @@ export interface AcknowledgeUndecodedEventStatsMessage {
   action: 'acknowledgeUndecodedEventStats'
 }
 
+// Forced update (auto-apply) messages
+export interface ApplyPendingUpdateMessage {
+  action: 'applyPendingUpdate'
+}
+
 export interface FirebaseBackupProgressMessage {
   action: 'firebaseBackupProgress'
   progress: number
@@ -329,7 +336,12 @@ export interface UndecodedEventStatsResponse extends SuccessResponse {
   undecodedEventStats: UndecodedEventStats
 }
 
-export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse | UndecodedEventStatsResponse
+export interface ApplyUpdateResponse extends SuccessResponse {
+  applied: boolean
+  reason?: string
+}
+
+export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse | UndecodedEventStatsResponse | ApplyUpdateResponse
 
 // Union type of all possible messages
 export type ChromeMessage =
@@ -371,6 +383,7 @@ export type ChromeMessage =
   | GetPositionalStatsMessage
   | GetUndecodedEventStatsMessage
   | AcknowledgeUndecodedEventStatsMessage
+  | ApplyPendingUpdateMessage
 
 // Helper function for type guard implementation
 const isMessageWithAction = (msg: unknown, action: string): msg is { action: string } =>
@@ -466,3 +479,6 @@ export const isGetUndecodedEventStatsMessage = (msg: unknown): msg is GetUndecod
 
 export const isAcknowledgeUndecodedEventStatsMessage = (msg: unknown): msg is AcknowledgeUndecodedEventStatsMessage =>
   isMessageWithAction(msg, 'acknowledgeUndecodedEventStats')
+
+export const isApplyPendingUpdateMessage = (msg: unknown): msg is ApplyPendingUpdateMessage =>
+  isMessageWithAction(msg, 'applyPendingUpdate')

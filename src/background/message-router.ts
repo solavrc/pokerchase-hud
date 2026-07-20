@@ -13,6 +13,7 @@ import { getOperationState, isOperationIdle } from './operation-state'
 import { getLastKnownStats, setLastKnownStats } from './ports'
 import { resolveAdvisory } from './rebuild-advisory'
 import { getUndecodedEventStats, resetUndecodedEventStats } from './undecoded-event-tracker'
+import { applyUpdateNow } from './update-manager'
 import {
   createImportExportHandlers,
   getCurrentImportSession,
@@ -336,6 +337,15 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         .then(() => sendResponse({ success: true }))
         .catch(error => {
           console.error('[acknowledgeUndecodedEventStats] Error:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'applyPendingUpdate') {
+      // Popupの「今すぐ適用」操作: 安全性を再チェックしてから適用（unsafeなら理由を返す）
+      applyUpdateNow()
+        .then(result => sendResponse({ success: true, applied: result.applied, reason: result.reason }))
+        .catch(error => {
+          console.error('[applyPendingUpdate] Error:', error)
           sendResponse({ success: false, error: error.message })
         })
       return true

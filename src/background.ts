@@ -17,9 +17,11 @@ import { registerStreamSubscriptions } from './background/ports'
 import { registerEventIngestion } from './background/event-ingestion'
 import { registerMessageRouter } from './background/message-router'
 import { checkOnUpdate } from './background/rebuild-advisory'
+import { initUpdateManager } from './background/update-manager'
 import { needsConfigPersist } from './background/hud-config-sync'
 import { loadOptions, saveOptions, type Options } from './utils/options-storage'
 import { DEFAULT_TABLE_SIZE_FILTER, selectedTableSizeLayers } from './utils/table-size'
+import { checkMinVersionGate } from './services/min-version-gate'
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
 
 // Get game URL pattern from manifest
@@ -143,6 +145,25 @@ registerMessageRouter(service, db, gameUrlPattern)
 registerStreamSubscriptions(service, gameUrlPattern)
 
 registerEventIngestion(service)
+
+/**
+ * Forced update（sola承認）: 安全な瞬間にダウンロード済み更新を自動適用する。
+ * onUpdateAvailable購読・加速チェック（起動時1回 + 6時間ごとのalarm）・
+ * SW起動時点での保留中アップデート再チェックをまとめて行う。
+ * 詳細はsrc/background/update-manager.tsとCLAUDE.mdを参照。
+ */
+initUpdateManager()
+
+/**
+ * Forced update: リモート最低バージョンゲート（キルスイッチ）。
+ * SW起動時に一度チェックし、結果を12hキャッシュする（AutoSyncServiceの
+ * 各同期エントリポイントはperformSync()経由でこのキャッシュを参照する）。
+ * フェイルオープン: フェッチ失敗時は既定でsupportedとして扱われる
+ * （src/services/min-version-gate.ts参照）。
+ */
+checkMinVersionGate(chrome.runtime.getManifest().version).catch(error => {
+  console.error('[background] Min-version gate check failed:', error)
+})
 
 // Listen for auth state changes on startup
 firebaseAuthService.onAuthStateChange((user) => {
