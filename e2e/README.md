@@ -249,6 +249,21 @@ and DOM dump on any failure. Checks:
 
 ## Flaky bits / timing waits
 
+- **Idle-compositor screenshot stall (headless Chrome for Testing 151)**:
+  after a page sits idle for a few minutes (typical agent think-time between
+  `run.ts` CLI commands), the compositor stops producing on-demand frames
+  and every CDP `Page.captureScreenshot` hangs until protocol timeout --
+  while `evaluate` on the same page keeps working, so the session *looks*
+  healthy right up until the screenshot call. `--disable-gpu` does not fix
+  it. The harness works around this permanently by injecting an invisible
+  1x1px element with an infinite CSS animation into every page it owns
+  (`ensureCompositorKeepalive` in `harness.ts`: on fixture-page load, on
+  popup open, and re-asserted before every `screenshot()` call), which
+  keeps BeginFrames flowing so the stall never happens -- and, because
+  injection also *recovers* an already-stalled compositor, the
+  pre-screenshot re-assert self-heals page reloads and sessions started by
+  an older build. Discovered and verified live 2026-07-20 during a
+  README/store screenshot session.
 - The `document_idle` WebSocket-patch race described above -- mitigated
   with a bounded poll on an observable effect (`window.WebSocket` no
   longer being native code), not a fixed sleep.
