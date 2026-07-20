@@ -128,6 +128,22 @@ export class SessionState implements Session {
 class PokerChaseService {
   private _playerId?: number
   private _latestEvtDeal?: ApiEvent<ApiType.EVT_DEAL>
+  // ライブ配信専用の「今まさに配信中の席」文脈。Player有無に関わらず毎EVT_DEALで
+  // 更新される（aggregate-events-stream.ts参照）が、意図的に永続化しない
+  // （persistState()を呼ばない・actualPersistState()のstateに含めない）。
+  //
+  // なぜ latestEvtDeal と分離しているか（codex #177 再レビューP2）: latestEvtDeal
+  // は「ヒーロー在籍」時点のSeatUserIdsという意味論を持ち、recalculateStats()/
+  // recalculateAllStats()（フィルター変更・バッチモード終了時の再計算）がこれを
+  // 使ってヒーロー基準の統計を再構築する。観戦モードdeal（Playerフィールド欠落）
+  // でこれを更新してしまうと、ヒーロー敗退後に観戦しながらフィルターを変更した
+  // 際、生きているはずのヒーローplayerIdに対して観戦テーブルの（履歴のない）
+  // 顔ぶれで統計が上書きされてしまう。一方 ports.ts のライブブロードキャスト
+  // （registerStreamSubscriptions）は座席回転のためだけに「今何が配信されて
+  // いるか」という一時的な文脈を必要とし、観戦モードdealでも追従してほしい
+  // （さもないと新しい観戦テーブルの統計が古いヒーロー席インデックスで誤回転
+  // される）。この2つの要求は両立しないため、フィールドを分けた。
+  private _liveEvtDeal?: ApiEvent<ApiType.EVT_DEAL>
   private readonly _sessionData: SessionState
   private _isInitialized: boolean = false
   private _initializationError?: Error
@@ -181,6 +197,22 @@ class PokerChaseService {
   set latestEvtDeal(value: ApiEvent<ApiType.EVT_DEAL> | undefined) {
     this._latestEvtDeal = value
     this.persistState()
+  }
+
+  // liveEvtDeal: 意図的に永続化しない（persistState()を呼ばない）。
+  // 未設定（SW起動直後でまだ一度もEVT_DEALを見ていない）の間は latestEvtDeal
+  // （ヒーロー在籍・永続化済みの直近deal）にフォールバックする。これにより
+  // 復元直後・再構築直後（rebuildAllData/importData/AutoSyncのrestoreLatestDeal
+  // が service.latestEvtDeal を設定した直後）のライブブロードキャストも、次の
+  // 実際のEVT_DEALが来るまでは妥当な座席文脈を持てる。
+  get liveEvtDeal(): ApiEvent<ApiType.EVT_DEAL> | undefined {
+    return this._liveEvtDeal ?? this._latestEvtDeal
+  }
+
+  set liveEvtDeal(value: ApiEvent<ApiType.EVT_DEAL> | undefined) {
+    this._liveEvtDeal = value
+    // 意図的にpersistState()を呼ばない -- ライブ配信専用の一時的な文脈のため、
+    // chrome.storage.localへの永続化対象（actualPersistState()のstate）にも含めない。
   }
 
   /**

@@ -13,7 +13,7 @@
 import PokerChaseService, { PokerChaseDB } from '../app'
 import { SessionState } from './poker-chase-service'
 import { ApiType } from '../types'
-import type { ApiEvent } from '../types'
+import type { ApiEvent, PlayerStats } from '../types'
 import { BattleType } from '../types/game'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 
@@ -285,12 +285,17 @@ describe('PokerChaseService - hero playerId survives session end + SW restart (s
     // 修正前はここで undefined になっていた（観戦モードdealが無条件で
     // playerIdを上書きしていたため）
     expect(service.playerId).toBe(101)
-    // latestEvtDealはPlayerの有無に関わらず追従する（席マッピング用の生データ）。
-    // 観戦モードdealでも直前のヒーローdealに固定したままだと、observeしている
-    // 別テーブルの統計がApp.tsxで古いヒーロー席インデックスを基準に誤回転されて
-    // しまうため（codex #177 P2指摘）、観戦モードdealのSeatUserIdsに更新される
-    // のが正しい挙動。
-    expect(service.latestEvtDeal?.SeatUserIds).toEqual(spectatorDealEvent.SeatUserIds)
+    // latestEvtDeal（永続化対象・「ヒーロー在籍」の文脈）は観戦モードdealでは
+    // 更新されず、直前のヒーロー在籍dealのまま保持される。これは
+    // recalculateStats()/recalculateAllStats()（フィルター変更・バッチモード
+    // 終了時の再計算）が常にヒーロー基準のSeatUserIdsを使うために必要
+    // （codex #177 再レビューP2指摘 — 観戦モードdealでこれも更新すると、観戦中の
+    // フィルター変更でヒーロー統計が観戦テーブルの顔ぶれに上書きされてしまう）。
+    expect(service.latestEvtDeal?.SeatUserIds).toEqual(dealEvent.SeatUserIds)
+    // liveEvtDeal（非永続化・「今配信中の席」の文脈）はPlayerの有無に関わらず
+    // 追従する。観戦中の別テーブルの統計がApp.tsxで古いヒーロー席インデックスを
+    // 基準に誤回転されないようにするため（codex #177 1回目のレビュー指摘）。
+    expect(service.liveEvtDeal?.SeatUserIds).toEqual(spectatorDealEvent.SeatUserIds)
   })
 
   test('観戦モードdeal後もchrome.storage.localへplayerIdが正しく永続化され、SW再起動（新規service+restoreState）を跨いで生存する', async () => {
@@ -348,6 +353,43 @@ describe('PokerChaseService - hero playerId survives session end + SW restart (s
     await service.handAggregateStream.whenIdle()
 
     expect(service.playerId).toBe(555)
+  })
+
+  test('観戦モード中にHUDフィルターを変更しても、統計は観戦テーブルの顔ぶれで上書きされない（codex #177 再レビューP2）', async () => {
+    // 再現シナリオ: ヒーロー敗退→観戦モードdeal→（この状態で）フィルター変更。
+    // setBattleTypeFilter()は本番でpopup/background.tsがフィルター保存時に呼ぶ
+    // 経路で、内部でReadEntityStream.recalculateStats()を呼ぶ。これは
+    // `!playerId || !latestEvtDeal`という素通しのガードしか持たないため、
+    // latestEvtDealの中身がヒーロー在籍時点のSeatUserIdsなのか観戦テーブルの
+    // SeatUserIdsなのかで結果が変わる。1段階目の修正（latestEvtDealをPlayer
+    // 有無に関わらず追従させる）だとここで観戦テーブルの顔ぶれ（履歴なし）に
+    // 上書きされてしまっていた。
+    const service = newService()
+    await service.ready
+
+    service.handAggregateStream.write(dealEvent)
+    await service.handAggregateStream.whenIdle()
+    service.handAggregateStream.write(handResultsEvent)
+    await service.handAggregateStream.whenIdle()
+
+    // ヒーロー敗退後、他テーブルの観戦モードdealが届く
+    service.handAggregateStream.write(spectatorDealEvent)
+    await service.handAggregateStream.whenIdle()
+
+    expect(service.playerId).toBe(101)
+    expect(service.latestEvtDeal?.SeatUserIds).toEqual(dealEvent.SeatUserIds)
+
+    // フィルター変更（本番の実際の呼び出し経路）
+    const dataPromise = new Promise<PlayerStats[]>(resolve => {
+      service.statsOutputStream.once('data', resolve)
+    })
+    await service.setBattleTypeFilter({ gameTypes: { sng: true, mtt: true, ring: true } })
+    const stats = await dataPromise
+
+    // 観戦テーブルの顔ぶれ（spectatorDealEvent: 201/202/203）ではなく、
+    // ヒーロー在籍テーブルの顔ぶれ（dealEvent: 101/102/103）で再計算されている
+    expect(stats.map(s => s.playerId)).toEqual(dealEvent.SeatUserIds)
+    expect(stats.map(s => s.playerId)).not.toEqual(spectatorDealEvent.SeatUserIds)
   })
 })
 

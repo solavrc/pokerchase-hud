@@ -106,7 +106,15 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
     if (lastKnownStats && lastKnownStats.length > 0) {
       broadcastMessage({
         stats: lastKnownStats,
-        evtDeal: service.latestEvtDeal,
+        // liveEvtDeal (not latestEvtDeal): this pairing drives App.tsx's seat
+        // rotation for whatever table is *currently* being broadcast (which
+        // may be a spectator-mode table after the hero busts). latestEvtDeal
+        // stays pinned to the hero's own most recent seated deal (used by
+        // recalculateStats()/recalculateAllStats() to rebuild hero-context
+        // stats on filter changes / batch-mode end) -- see the getter/setter
+        // doc comments on PokerChaseService and aggregate-events-stream.ts's
+        // EVT_DEAL case for the full rationale (codex #177).
+        evtDeal: service.liveEvtDeal,
         realTimeStats: latestRealTimeStats
       })
     }
@@ -118,7 +126,7 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
     // Real-time stats are now handled by RealTimeStatsStream
     broadcastMessage({
       stats: hand,
-      evtDeal: service.latestEvtDeal,  // Include EVT_DEAL for seat mapping
+      evtDeal: service.liveEvtDeal,  // Include EVT_DEAL for seat mapping (live context, not the persisted hero-anchored one -- see above)
       realTimeStats: latestRealTimeStats  // Include latest real-time stats from stream
     })
   })
