@@ -197,9 +197,23 @@ export const applyUpdateNow = async (): Promise<ApplyUpdateResult> => {
   return { applied: true }
 }
 
-const setupUpdateCheckAlarm = (): void => {
+/**
+ * 更新チェックalarmをセットアップする。
+ *
+ * `initUpdateManager()`経由でService Worker起動のたびに呼ばれるが、
+ * alarm自体はSW再起動をまたいで既にChrome側に生き続けている。
+ * `chrome.alarms.create()`は「同名のalarmが既にあればキャンセルして
+ * 置き換える」仕様（https://developer.chrome.com/docs/extensions/reference/api/alarms）
+ * のため、無条件に呼び直すと`periodInMinutes`のカウントダウンがその
+ * 都度リセットされる。SWが6時間より頻繁に再起動する環境（アクティブに
+ * 使われている場合はよくある）では、この定期チェックが実質永遠に
+ * 発火しなくなり、`requestUpdateCheck()`はSW起動時1回のスロットリング
+ * された呼び出しにしか頼れなくなる（codexレビュー指摘, PR #150監査#3）。
+ * `chrome.alarms.get()`で既存のalarmを確認し、無い場合（初回インストール時
+ * や何らかの理由でalarmがクリアされていた場合）のみ`create()`する。
+ */
+const setupUpdateCheckAlarm = async (): Promise<void> => {
   if (!chrome.alarms) return
-  chrome.alarms.create(UPDATE_CHECK_ALARM_NAME, { periodInMinutes: UPDATE_CHECK_PERIOD_MINUTES })
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === UPDATE_CHECK_ALARM_NAME) {
       chrome.runtime.requestUpdateCheck?.().catch((error: unknown) => {
@@ -207,6 +221,13 @@ const setupUpdateCheckAlarm = (): void => {
       })
     }
   })
+
+  const existingAlarm = await chrome.alarms.get(UPDATE_CHECK_ALARM_NAME)
+  if (existingAlarm) {
+    console.log(`[update-manager] Update-check alarm already scheduled (next: ${new Date(existingAlarm.scheduledTime).toISOString()}) -- not recreating`)
+    return
+  }
+  chrome.alarms.create(UPDATE_CHECK_ALARM_NAME, { periodInMinutes: UPDATE_CHECK_PERIOD_MINUTES })
 }
 
 /**
@@ -241,7 +262,9 @@ export const initUpdateManager = (): Promise<void> => {
   chrome.runtime.requestUpdateCheck?.().catch((error: unknown) => {
     console.warn('[update-manager] requestUpdateCheck (startup) failed:', error)
   })
-  setupUpdateCheckAlarm()
+  setupUpdateCheckAlarm().catch(error => {
+    console.error('[update-manager] setupUpdateCheckAlarm failed:', error)
+  })
 
   return recheckPendingUpdate().catch(error => {
     console.error('[update-manager] recheckPendingUpdate (SW startup) failed:', error)

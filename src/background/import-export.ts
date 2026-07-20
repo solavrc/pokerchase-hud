@@ -400,7 +400,12 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
 
       const jsonlContent = chunks.join('\n')
 
-      downloadFile(
+      // ハンドオフ（chrome.tabs.query/sendMessage）の発行完了を待ってから
+      // `setOperationState({ type: 'idle' })`を呼ぶ（codexレビュー指摘,
+      // PR #150監査#2: 待たずに呼ぶとupdate-managerのoperation-idle
+      // recheckがハンドオフ未発行のままchrome.runtime.reload()し、
+      // ダウンロードが失われるレースがあった -- downloadFile()のコメント参照）
+      await downloadFile(
         jsonlContent,
         'pokerchase_raw_data.ndjson',
         'application/x-ndjson'
@@ -479,7 +484,9 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         return
       }
 
-      downloadFile(
+      // ハンドオフ発行完了を待ってからidleに戻す（上のexportJsonData内
+      // downloadFile()呼び出しのコメント参照、codexレビュー指摘 PR #150監査#2）
+      await downloadFile(
         handHistory,
         'pokerchase_hand_history.txt',
         'text/plain'
@@ -514,7 +521,25 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
     }
   }
 
-  const downloadFile = (content: string, filename: string, contentType: string) => {
+  /**
+   * コンテンツスクリプトへのダウンロードハンドオフ（chrome.tabs.query→
+   * chrome.tabs.sendMessage）が実際に発行されるまで待てるようPromiseを返す
+   * （codexレビュー指摘, PR #150監査#2）。
+   *
+   * 修正前はこの関数が`void`を返し、`chrome.tabs.query`のコールバックが
+   * 実行される前に呼び出し元へ制御を返していた。呼び出し元（exportJsonData/
+   * exportPokerStarsData）は直後に`setOperationState({ type: 'idle' })`を
+   * 呼んでおり、`operation-state.ts`の`onOperationBecameIdle`購読経由で
+   * `update-manager.ts`の`recheckPendingUpdate()`が即座に発火しうる。
+   * そのタイミングが安全（`isSafeToUpdate()`）と判定されると
+   * `chrome.runtime.reload()`でService Workerごと巻き込まれ、まだ
+   * `chrome.tabs.sendMessage`すら呼ばれていないダウンロードが失われる
+   * （ユーザーには「エクスポート完了」と表示されるのに実際のファイルは
+   * 届かない）。ここでハンドオフの発行完了を待てるようにし、呼び出し元で
+   * `await`してから`setOperationState({ type: 'idle' })`を呼ぶことで、
+   * このレースを解消する。
+   */
+  const downloadFile = (content: string, filename: string, contentType: string): Promise<void> => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
 
     const extensionMatch = filename.match(/\.[^.]+$/)
@@ -537,32 +562,36 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
     const finalFilename = getFinalFilename()
 
     // Send to content script for Blob-based download (avoids data URL size limits)
-    chrome.tabs.query({ url: gameUrlPattern }, async tabs => {
-      const tab = tabs.find(t => t.id)
-      if (tab?.id) {
-        const sizeMB = content.length / 1024 / 1024
-        const MAX_CHUNK_MB = 50 // Under Chrome's 64MiB message limit
-        const maxChunkSize = MAX_CHUNK_MB * 1024 * 1024
+    return new Promise<void>(resolve => {
+      chrome.tabs.query({ url: gameUrlPattern }, async tabs => {
+        const tab = tabs.find(t => t.id)
+        if (tab?.id) {
+          const sizeMB = content.length / 1024 / 1024
+          const MAX_CHUNK_MB = 50 // Under Chrome's 64MiB message limit
+          const maxChunkSize = MAX_CHUNK_MB * 1024 * 1024
 
-        if (content.length <= maxChunkSize) {
-          chrome.tabs.sendMessage(tab.id, { action: 'downloadFile', content, filename: finalFilename, contentType })
-        } else {
-          // Split into chunks for large files
-          const totalChunks = Math.ceil(content.length / maxChunkSize)
-          console.log(`[Export] Splitting ${sizeMB.toFixed(1)}MB into ${totalChunks} chunks...`)
-          chrome.tabs.sendMessage(tab.id, { action: 'downloadFileInit', filename: finalFilename, contentType, totalChunks })
-          for (let i = 0; i < totalChunks; i++) {
-            const chunk = content.slice(i * maxChunkSize, (i + 1) * maxChunkSize)
-            chrome.tabs.sendMessage(tab.id, { action: 'downloadFileChunk', chunkIndex: i, chunk, totalChunks })
+          if (content.length <= maxChunkSize) {
+            chrome.tabs.sendMessage(tab.id, { action: 'downloadFile', content, filename: finalFilename, contentType })
+          } else {
+            // Split into chunks for large files
+            const totalChunks = Math.ceil(content.length / maxChunkSize)
+            console.log(`[Export] Splitting ${sizeMB.toFixed(1)}MB into ${totalChunks} chunks...`)
+            chrome.tabs.sendMessage(tab.id, { action: 'downloadFileInit', filename: finalFilename, contentType, totalChunks })
+            for (let i = 0; i < totalChunks; i++) {
+              const chunk = content.slice(i * maxChunkSize, (i + 1) * maxChunkSize)
+              chrome.tabs.sendMessage(tab.id, { action: 'downloadFileChunk', chunkIndex: i, chunk, totalChunks })
+            }
+            chrome.tabs.sendMessage(tab.id, { action: 'downloadFileFinish', filename: finalFilename, contentType })
           }
-          chrome.tabs.sendMessage(tab.id, { action: 'downloadFileFinish', filename: finalFilename, contentType })
+          console.log(`[Export] Download initiated via content script: ${finalFilename} (${sizeMB.toFixed(1)}MB)`)
+          resolve()
+          return
         }
-        console.log(`[Export] Download initiated via content script: ${finalFilename} (${sizeMB.toFixed(1)}MB)`)
-        return
-      }
-      // Fallback: data URL (may fail for large files >2MB)
-      console.warn('[Export] No game tab found, falling back to data URL download')
-      downloadViaDataUrl(content, finalFilename, contentType)
+        // Fallback: data URL (may fail for large files >2MB)
+        console.warn('[Export] No game tab found, falling back to data URL download')
+        downloadViaDataUrl(content, finalFilename, contentType)
+        resolve()
+      })
     })
   }
 

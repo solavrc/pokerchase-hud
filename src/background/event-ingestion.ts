@@ -72,6 +72,46 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           markSessionInactive()
         }
 
+        // Auto-sync起動・保留中アップデートの安全性再チェックも、上のセッション状態
+        // 追跡と同じ理由で生メッセージの数値ApiTypeIdだけを見て判定する（codexレビュー
+        // 指摘, P2）。autoSyncService.onGameSessionEnd()/onNewSessionStart()は
+        // 生のapiEvents Lake（上で既に保存済み）の件数だけを見るヘルパーで、
+        // パース済みdataには一切依存しない。以前はこのトリガーが後段の
+        // `if (data.ApiTypeId === ...)`（パース成功時のみ到達するブロック）に
+        // ぶら下がっていたため、PokerChase側の309ペイロード破壊的変更で
+        // parseApiEvent()がnullを返すケースでは、下のearly returnによって
+        // recheckPendingUpdate()が一切呼ばれず、保留中アップデートは次の
+        // セッション終了までずっと詰まったままになっていた（309の生データは
+        // 上のRaw Event Lake保存で既に確保済みなので、この再チェック自体を
+        // パース成否に依存させる理由はそもそも無い）。
+        if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+          // セッション終了は保留中アップデートの安全性再チェック地点の1つ
+          // （src/background/update-manager.ts参照）。recheckPendingUpdate()は
+          // onGameSessionEnd()のPromiseが完了(成功/失敗いずれか)してから
+          // 必ずチェーンして呼ぶ -- 両方を並列で撃つと、performSync()が
+          // `_isSyncing`を立てる前の非同期区間（min-versionゲートのawait等）を
+          // recheckPendingUpdate()がすり抜けて安全と誤判定し、直近セッションの
+          // クラウドバックアップがまだ始まってもいないうちに
+          // chrome.runtime.reload()でService Workerを巻き込んでしまう恐れが
+          // あるため（codexレビュー指摘, P1）
+          autoSyncService.onGameSessionEnd()
+            .catch(err => console.error('[background] Auto sync on game end failed:', err))
+            .finally(() => {
+              recheckPendingUpdate().catch(err =>
+                console.error('[background] Pending update recheck on session end failed:', err)
+              )
+            })
+        } else if (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED || rawApiTypeId === ApiType.EVT_SESSION_DETAILS) {
+          // フォールバックトリガー（docs/postmortems/2026-07-session-results-drop.md
+          // 再発防止#3）: 309単一トリガーのSPOF対策。新セッション開始時点は
+          // 進行中ハンドが存在しない安全なタイミングなので、ここでも同じ閾値判定
+          // でuploadを起動する（309が正常なら直前で既にバックログが閾値未満に
+          // なっているため二重発火しない）
+          autoSyncService.onNewSessionStart().catch(err =>
+            console.error('[background] Auto sync on new session start failed:', err)
+          )
+        }
+
         // 通常のAPIメッセージ処理
         // Zodスキーマでパース（passthrough: 未知プロパティは保持）
         const data = parseApiEvent(message as ApiMessage)
@@ -112,37 +152,9 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         service.handLogStream.write(data)
         service.handAggregateStream.write(data)
         service.realTimeStatsStream.write(data)
-
-        // Handle game session end for auto sync
-        // （セッション状態[markSessionActive/Inactive]は上の生メッセージ判定で
-        // 追跡済み。ここはパース成功時のみ動く同期トリガー）
-        if (data.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
-          // セッション終了は保留中アップデートの安全性再チェック地点の1つ
-          // （src/background/update-manager.ts参照）。recheckPendingUpdate()は
-          // onGameSessionEnd()のPromiseが完了(成功/失敗いずれか)してから
-          // 必ずチェーンして呼ぶ -- 両方を並列で撃つと、performSync()が
-          // `_isSyncing`を立てる前の非同期区間（min-versionゲートのawait等）を
-          // recheckPendingUpdate()がすり抜けて安全と誤判定し、直近セッションの
-          // クラウドバックアップがまだ始まってもいないうちに
-          // chrome.runtime.reload()でService Workerを巻き込んでしまう恐れが
-          // あるため（codexレビュー指摘, P1）
-          autoSyncService.onGameSessionEnd()
-            .catch(err => console.error('[background] Auto sync on game end failed:', err))
-            .finally(() => {
-              recheckPendingUpdate().catch(err =>
-                console.error('[background] Pending update recheck on session end failed:', err)
-              )
-            })
-        } else if (data.ApiTypeId === ApiType.EVT_ENTRY_QUEUED || data.ApiTypeId === ApiType.EVT_SESSION_DETAILS) {
-          // フォールバックトリガー（docs/postmortems/2026-07-session-results-drop.md
-          // 再発防止#3）: 309単一トリガーのSPOF対策。新セッション開始時点は
-          // 進行中ハンドが存在しない安全なタイミングなので、ここでも同じ閾値判定
-          // でuploadを起動する（309が正常なら直前で既にバックログが閾値未満に
-          // なっているため二重発火しない）
-          autoSyncService.onNewSessionStart().catch(err =>
-            console.error('[background] Auto sync on new session start failed:', err)
-          )
-        }
+        // Auto-sync起動・pending update再チェック（309/201/308）は上のRaw
+        // Event Lake保存直後に生ApiTypeIdベースで既にトリガー済み（本ブロックの
+        // パース成功はストリーム投入のみが目的）
       })
       const stopPing = startPortPing(port)
 

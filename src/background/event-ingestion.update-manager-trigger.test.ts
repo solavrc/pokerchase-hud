@@ -133,6 +133,30 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     expect(markSessionActiveSpy).not.toHaveBeenCalled()
   })
 
+  test('a malformed EVT_SESSION_RESULTS (309) still runs the pending-update recheck via the raw ApiTypeId (codex review, PR #150 audit finding #1)', async () => {
+    // The companion regression to the test above: it's not enough for
+    // session-activity tracking to survive a malformed 309 -- the actual
+    // recheckPendingUpdate() *call* also has to run, or a pending Forced
+    // Update stays stuck until the next session ends even though the
+    // safety predicate itself would already report inactive/safe. Before
+    // this fix, recheckPendingUpdate() was chained only inside the
+    // `if (data.ApiTypeId === EVT_SESSION_RESULTS)` branch guarded by a
+    // successful `parseApiEvent()`, which this event never reaches (it
+    // `return`s early in the `if (!data)` branch).
+    const brokenSessionResultsEvent = {
+      ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+      timestamp: 6100
+      // every other required field omitted -> parseApiEvent() returns null
+    }
+    await onMessageHandler(brokenSessionResultsEvent)
+
+    // recheckPendingUpdate() is chained after autoSyncService.onGameSessionEnd()
+    // settles (same ordering fix as the well-formed-309 test above) -- flush
+    // the microtask queue for that chain to complete before asserting.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(recheckPendingUpdateSpy).toHaveBeenCalledTimes(1)
+  })
+
   test('a malformed EVT_SESSION_DETAILS (308) still marks the session active via the raw ApiTypeId (codex review, P2)', async () => {
     const brokenSessionDetailsEvent = {
       ApiTypeId: ApiType.EVT_SESSION_DETAILS,

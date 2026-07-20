@@ -8,6 +8,12 @@
  *    docs/postmortems/2026-07-session-results-drop.md 再発防止#3, so a
  *    broken 309 doesn't leave sync stuck forever)
  *  - no other application event fires either trigger
+ *  - these triggers are hooked off the RAW ApiTypeId (codex review, PR #150
+ *    audit finding #1), same as update-manager's session-activity tracking:
+ *    onGameSessionEnd()/onNewSessionStart() only read the already-persisted
+ *    raw apiEvents Lake row count and never touch the parsed payload, so a
+ *    parse failure (parseApiEvent() -> null, e.g. a PokerChase payload
+ *    schema change) must not skip them
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
@@ -141,13 +147,34 @@ describe('registerEventIngestion (auto-sync triggers)', () => {
     expect(onNewSessionStartSpy).not.toHaveBeenCalled()
   })
 
-  test('a parse-failed EVT_ENTRY_QUEUED (201) does not trigger onNewSessionStart (never reaches the pipeline dispatch)', async () => {
-    // Missing every required field -- fails Zod validation, so this never
-    // reaches the ApiTypeId dispatch below the isApplicationApiEvent gate.
+  test('a parse-failed EVT_ENTRY_QUEUED (201) still triggers onNewSessionStart via the raw ApiTypeId (codex review, PR #150 audit)', async () => {
+    // Missing every required field -- fails Zod validation (parseApiEvent()
+    // returns null), so this never reaches the parsed-data ApiTypeId
+    // dispatch below the isApplicationApiEvent gate. Before this fix the
+    // trigger lived exclusively in that unreachable parsed branch, so a
+    // schema change on 201 would have silently dropped the fallback sync
+    // trigger too (same root cause as the 309 pending-update-recheck bug).
     const brokenEntryQueuedEvent = { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, timestamp: 5000 }
     await onMessageHandler(brokenEntryQueuedEvent)
 
-    expect(onNewSessionStartSpy).not.toHaveBeenCalled()
+    expect(onNewSessionStartSpy).toHaveBeenCalledTimes(1)
     expect(onGameSessionEndSpy).not.toHaveBeenCalled()
+  })
+
+  test('a parse-failed EVT_SESSION_RESULTS (309) still triggers onGameSessionEnd -> recheckPendingUpdate via the raw ApiTypeId (codex review, PR #150 audit finding #1)', async () => {
+    // Simulates the season-3 postmortem scenario: PokerChase changes the 309
+    // payload shape so parseApiEvent() returns null. The raw event is still
+    // persisted to the apiEvents Lake above, and onGameSessionEnd() only
+    // counts raw Lake rows -- it doesn't need the parsed payload -- so there
+    // is no reason for a parse failure to skip it. Before this fix, this
+    // trigger (and the recheckPendingUpdate() chained after it) lived only
+    // in the parsed-data branch, which `return`s early on parse failure, so
+    // a malformed 309 left any pending Forced Update stuck until the *next*
+    // session ended.
+    const brokenSessionResultsEvent = { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 6000 }
+    await onMessageHandler(brokenSessionResultsEvent)
+
+    expect(onGameSessionEndSpy).toHaveBeenCalledTimes(1)
+    expect(onNewSessionStartSpy).not.toHaveBeenCalled()
   })
 })

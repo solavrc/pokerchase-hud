@@ -255,18 +255,57 @@ describe('update-manager', () => {
   })
 
   describe('initUpdateManager (wiring)', () => {
-    it('registers onUpdateAvailable listener, triggers an update check, and creates the alarm', () => {
+    it('registers onUpdateAvailable listener, triggers an update check, and creates the alarm when none exists yet', async () => {
       markSessionInactive()
+      ;(chrome.alarms.get as jest.Mock).mockResolvedValue(undefined) // no alarm scheduled yet (e.g. first install)
 
       initUpdateManager()
 
       expect(chrome.runtime.onUpdateAvailable.addListener).toHaveBeenCalledTimes(1)
       expect(chrome.runtime.requestUpdateCheck).toHaveBeenCalledTimes(1)
+      // The onAlarm listener registration is synchronous (before the
+      // alarms.get() await), unlike alarm creation below.
+      expect(chrome.alarms.onAlarm.addListener).toHaveBeenCalledTimes(1)
+
+      // setupUpdateCheckAlarm() awaits chrome.alarms.get() before deciding
+      // whether to create -- flush the microtask queue for that to resolve.
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      expect(chrome.alarms.get).toHaveBeenCalledWith('pokerchase-hud-update-check')
       expect(chrome.alarms.create).toHaveBeenCalledWith(
         'pokerchase-hud-update-check',
         { periodInMinutes: 6 * 60 }
       )
+    })
+
+    it('does NOT recreate the update-check alarm on SW startup when one is already scheduled (codex review, PR #150 audit finding #3)', async () => {
+      // Regression for: chrome.alarms.create() with an existing alarm name
+      // cancels and replaces it, resetting its periodInMinutes countdown.
+      // Calling it unconditionally on every initUpdateManager() (i.e. every
+      // SW startup) meant a SW that restarts more often than the 6h period
+      // would keep postponing the periodic check indefinitely, leaving only
+      // the throttled startup requestUpdateCheck() call.
+      markSessionInactive()
+      const scheduledTime = Date.now() + 3 * 60 * 60 * 1000 // 3h from now
+      ;(chrome.alarms.get as jest.Mock).mockResolvedValue({
+        name: 'pokerchase-hud-update-check',
+        scheduledTime,
+        periodInMinutes: 6 * 60,
+      })
+
+      initUpdateManager()
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      expect(chrome.alarms.get).toHaveBeenCalledWith('pokerchase-hud-update-check')
+      expect(chrome.alarms.create).not.toHaveBeenCalled()
+      // The onAlarm listener still gets (re-)registered every startup --
+      // only the schedule-resetting create() call is skipped.
       expect(chrome.alarms.onAlarm.addListener).toHaveBeenCalledTimes(1)
+
+      // Restore the default "no alarm scheduled" resolution for subsequent
+      // tests -- jest.clearAllMocks() (in this file's beforeEach) clears
+      // call history but not a mockResolvedValue override.
+      ;(chrome.alarms.get as jest.Mock).mockResolvedValue(undefined)
     })
 
     it('re-checks (and applies) any pending update left over from before the SW restart', async () => {
