@@ -8,6 +8,7 @@
  */
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -32,8 +33,15 @@ export const E2E_MANIFEST_PATH = join(BUILD_DIR, 'manifest.e2e.json')
 export const EXTENSION_DIR = join(BUILD_DIR, 'extension')
 export const EXTENSION_DIST_DIR = join(EXTENSION_DIR, 'dist')
 
-/** Downloaded Chrome for Testing binaries. Gitignored, reused across runs. */
-export const BROWSER_CACHE_DIR = join(E2E_DIR, '.cache')
+/**
+ * Downloaded Chrome for Testing binaries. Uses `@puppeteer/browsers`'
+ * standard cache layout (`~/.cache/puppeteer/chrome/<platform>-<buildId>/`)
+ * rather than a per-worktree `e2e/.cache/` -- that way multiple worktrees
+ * share one download, and outbound-firewall tools (e.g. LuLu) that key on
+ * executable path see one stable path instead of a new one per worktree.
+ * Override with E2E_BROWSER_CACHE_DIR for local debugging only.
+ */
+export const BROWSER_CACHE_DIR = process.env.E2E_BROWSER_CACHE_DIR || join(homedir(), '.cache', 'puppeteer')
 
 /**
  * Chrome for Testing build to install/launch. Pinned (not "stable") so runs

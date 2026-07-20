@@ -13,7 +13,8 @@ coverage/
 *.ndjson
 
 # E2E QA harness (see e2e/README.md)
-e2e/.cache/
+# Chrome for Testing downloads live in ~/.cache/puppeteer/ (see BROWSER_CACHE_DIR
+# in e2e/config.ts), not a per-worktree e2e/.cache/, so nothing to ignore here.
 e2e/.build/
 e2e/out/
 # the blanket *.ndjson rule above would also hide our committed, anonymized
