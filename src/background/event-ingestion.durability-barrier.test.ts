@@ -47,6 +47,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
   let mockPort: any
 
   beforeEach(async () => {
+    updateManager.__resetUpdateManagerStateForTests()
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
     await resetUndecodedEventStats(db)
@@ -370,7 +371,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     await new Promise(resolve => setTimeout(resolve, 0)) // let the deferred sync settle cleanly
   })
 
-  test('the session-end reload recheck is skipped (not just delayed) when a newer event was already queued while onGameSessionEnd() was running (P1, codex review 2026-07-20 pass-4: "Don\'t reload before queued session starts run")', async () => {
+  test('the session-end reload recheck drains and observes a newer queued session start before deciding not to reload (P1, codex review 2026-07-20 pass-4: "Don\'t reload before queued session starts run")', async () => {
     // A pending update exists and would become "safe to apply" the instant
     // this 309 marks the session inactive -- but a new hand's 201 arrives
     // and gets queued (behind the 309, ahead of having its own ACTIVE
@@ -398,9 +399,9 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     await pendingSessionResults
     await pendingNext
 
-    // The stale-relative-to-arrival recheck must not have reloaded --
-    // reading isSafeToUpdate() at that moment would have seen the 309's
-    // 'inactive' without yet reflecting the queued 201's ACTIVE transition.
+    // The recheck must not have reloaded -- its shared commit point drains
+    // the queued 201 and therefore observes ACTIVE instead of trusting the
+    // 309's stale INACTIVE snapshot.
     expect(chrome.runtime.reload).not.toHaveBeenCalled()
     // The 201 legitimately re-armed the session afterward.
     expect(updateManager.isSafeToUpdate()).toBe(false)
@@ -425,18 +426,10 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
   })
 
   // The companion "an event arrives DURING recheckPendingUpdate()'s own
-  // internal awaits (not just before it starts)" scenario (P1, codex
-  // review 2026-07-21, pass-5, "Guard reload rechecks through the async
-  // path") is covered as a direct, isolated unit test of
-  // recheckPendingUpdate()'s isStillFresh evaluation timing in
-  // update-manager.test.ts, rather than here: reproducing that exact race
-  // through the full event-ingestion.ts integration requires stalling
-  // chrome.storage.local.get() globally, which interacts badly with other
-  // concurrent callers (getRebuildAdvisoryState() inside setBadge()/
-  // clearBadge()) and reliably exhausts the test worker's heap. The
-  // property under test -- that isStillFresh is (re-)evaluated after
-  // recheckPendingUpdate()'s own awaits, not cached from before they
-  // started -- is fully covered without that hazard.
+  // pending-state await (after an operation-complete/SW-startup pre-drain)"
+  // scenario is covered directly in update-manager.test.ts. That isolated
+  // test verifies the shared commit point re-drains after the storage await,
+  // without globally stalling storage for this integration suite.
 
   test('a noise event (202, non-application) queued while onGameSessionEnd() is running does NOT permanently suppress the session-end recheck (P2, codex review 2026-07-21, pass-5: "Don\'t let noise suppress session-end rechecks")', async () => {
     await chrome.storage.local.set({ pendingUpdate: { pending: true, version: '9.9.9' } })
@@ -469,6 +462,13 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     resolveSync() // let onGameSessionEnd() settle
     await pendingSessionResults
     await pendingNoise
+
+    // The recheck is intentionally fire-and-forget from processEvent and
+    // now performs its own stable-tail drain. Wait for that bounded chain
+    // instead of assuming one ingestion promise also represents it.
+    for (let i = 0; i < 20 && !(chrome.runtime.reload as jest.Mock).mock.calls.length; i++) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
 
     // The recheck must still have applied the (still) safe pending update
     // -- the noise event must not have counted against freshness.

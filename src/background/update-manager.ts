@@ -41,8 +41,10 @@
  *
  *     この直列化の裏で残る唯一の懸念——「rawの書き込みがキューに詰まって
  *     いる間、reload判定がまだ反映されていない古いsessionActivityを
- *     読んでしまう」——は書く側ではなく読む側で解決する:
- *     `awaitIngestionDrain()`を参照。
+ *     読んでしまう」——は書く側ではなく、全reload経路が通る
+ *     `commitReloadIfStillSafe()`で解決する。同関数はキューを安定するまで
+ *     drainしたうえで、drain後にtailが差し替わっていないことと
+ *     `isSafeToUpdate()`を、reloadとの間にawaitを挟まず最終確認する。
  *   - `AutoSyncService.isSyncing`がfalse（同期中でない）
  *   - `currentOperationState.type === 'idle'`（export/import/rebuild中でない）
  * 上記いずれかが「unknown」（SW再起動直後などでセッション状態を未観測）の
@@ -87,6 +89,9 @@ type SessionActivity = 'unknown' | 'active' | 'inactive'
 /** SW再起動のたびに`'unknown'`にリセットされる（保守的なデフォルト = unsafe扱い） */
 let sessionActivity: SessionActivity = 'unknown'
 
+/** 1つのSWインスタンスからreloadを二重commitしないための同期ガード。 */
+let reloadCommitted = false
+
 /**
  * `event-ingestion.ts`のEVT_ENTRY_QUEUED(201)/EVT_DEAL(303, Player在席時)/
  * EVT_SESSION_DETAILS(308)いずれかの受信時に呼ぶ（308単独に頼らない理由は
@@ -124,7 +129,7 @@ let ingestionDrainProvider: IngestionDrainProvider | undefined
  * 待てるようにするための登録フック（circular importを避けるための
  * 依存性逆転——update-manager.tsはevent-ingestion.tsを一切importしない）。
  */
-export const setIngestionDrainProvider = (provider: IngestionDrainProvider): void => {
+export const setIngestionDrainProvider = (provider: IngestionDrainProvider | undefined): void => {
   ingestionDrainProvider = provider
 }
 
@@ -159,34 +164,41 @@ const MAX_DRAIN_ITERATIONS = 1000
  * 待つ、を「2回連続で同じ参照が返る」まで繰り返すことで、呼び出し
  * 時点までに到着した全てのイベントの決着を確実に待つ。
  *
- * `event-ingestion.ts`の`processEvent`が309/203自身の処理の中から直接
- * 呼ぶ`recheckPendingUpdate()`はこのバリアを使わない（使うと自己参照で
- * デッドロックする——`ingestionQueue`はその309/203自身の処理が完了する
- * まで解決しないため）。その経路は別の機構（`event-ingestion.ts`の
- * `activityGeneration`比較、`recheckPendingUpdate()`の`isStillFresh`
- * オプション経由）で同種の安全性を確保している——詳細は
- * event-ingestion.tsの309/203ブロックのコメント参照。
+ * この公開関数は既存のテスト・診断用に「待つ」だけのAPIを保つ。reload
+ * commitでは、安定確認済みtailを返す内部版を使い、async関数から呼び出し元へ
+ * 戻るmicrotask境界で新しいtailが積まれた場合も最終同期チェックで検出する。
  */
-export const awaitIngestionDrain = async (): Promise<void> => {
-  if (!ingestionDrainProvider) return
+interface IngestionDrainCheckpoint {
+  stable: boolean
+  tail: Promise<void> | undefined
+}
 
+const awaitStableIngestionCheckpoint = async (): Promise<IngestionDrainCheckpoint> => {
   let previous: Promise<void> | undefined
-  let current = ingestionDrainProvider()
+  let current = ingestionDrainProvider?.()
   let iterations = 0
   while (current !== previous && iterations < MAX_DRAIN_ITERATIONS) {
     previous = current
     await current
-    current = ingestionDrainProvider()
+    current = ingestionDrainProvider?.()
     iterations++
   }
-  if (iterations >= MAX_DRAIN_ITERATIONS) {
+
+  const stable = current === previous
+  if (!stable) {
     console.warn('[update-manager] awaitIngestionDrain: hit the iteration safety cap -- the ingestion queue may be receiving new work faster than it can settle')
   }
+  return { stable, tail: current }
+}
+
+export const awaitIngestionDrain = async (): Promise<void> => {
+  await awaitStableIngestionCheckpoint()
 }
 
 /** テスト専用: モジュールスコープの状態をリセットする */
 export const __resetUpdateManagerStateForTests = (): void => {
   sessionActivity = 'unknown'
+  reloadCommitted = false
 }
 
 /** 保留中アップデートを適用できない理由を日本語で説明する（Popup表示用） */
@@ -243,6 +255,49 @@ const clearBadge = async (): Promise<void> => {
 }
 
 /**
+ * 全ての`chrome.runtime.reload()`が通る唯一のcommit point。
+ *
+ * 1. 現在のingestion tailを「同じ参照が2回続く」までdrainする。
+ * 2. async関数の復帰microtaskより先に新しいmessageがenqueueされてtailが
+ *    差し替わった場合は、同期比較で検出して1へ戻る。
+ * 3. 安定したtailの同一性・sessionActivity/同期/operationの安全性・
+ *    二重commitガードを、`chrome.runtime.reload()`との間にawaitを挟まず
+ *    確認する。
+ *
+ * これにより、storage/badge await中だけでなく、drain自体が返した直後の
+ * microtask境界で201/303/308等が積まれた場合も、未処理のACTIVE遷移を
+ * 古いINACTIVE状態で追い越してreloadすることはない。drainの安全上限に
+ * 達した場合も「安全」とはみなさず、保留したまま次の再チェックへ委ねる。
+ */
+type ReloadCommitResult = 'committed' | 'already-committed' | 'unsafe'
+
+const commitReloadIfStillSafe = async (commitLog?: string): Promise<ReloadCommitResult> => {
+  for (let attempt = 0; attempt < MAX_DRAIN_ITERATIONS; attempt++) {
+    const checkpoint = await awaitStableIngestionCheckpoint()
+    if (!checkpoint.stable) return 'unsafe'
+
+    // `awaitStableIngestionCheckpoint()`のreturnからこの継続へ移る間にも
+    // microtaskが走りうる。現在tailを同期的に取り直し、変わっていれば
+    // その新tailもdrainする。ここからreloadまではawaitを一切挟まない。
+    if (ingestionDrainProvider?.() !== checkpoint.tail) continue
+    if (reloadCommitted) return 'already-committed'
+    if (!isSafeToUpdate()) return 'unsafe'
+
+    reloadCommitted = true
+    if (commitLog) console.log(commitLog)
+    chrome.runtime.reload()
+    // reload後のクリアはfire-and-forget。SWが即終了して未完了でも、次回
+    // startupのバージョン一致分岐がstale stateを確実に片付ける。
+    clearPendingUpdateState().catch(err => console.error('[update-manager] Failed to clear pending update state after reload:', err))
+    clearBadge().catch(err => console.error('[update-manager] Failed to clear badge after reload:', err))
+    return 'committed'
+  }
+
+  console.warn('[update-manager] Reload commit aborted -- ingestion tail never stayed stable at the commit point')
+  return 'unsafe'
+}
+
+/**
  * `chrome.runtime.onUpdateAvailable`のハンドラー本体。
  * SAFEなら即座に適用、そうでなければ保留状態を記録してバッジを出す。
  */
@@ -261,23 +316,12 @@ export const handleUpdateAvailable = async (details: { version: string }): Promi
   await setPendingUpdateState({ pending: true, version: details.version, detectedAt: Date.now() })
   await setBadge()
 
-  // キュー・ドレイン・バリア（本ファイル冒頭のSAFE定義コメント参照）:
-  // `onUpdateAvailable`はevent-ingestion.tsのキューとは無関係な任意の
-  // タイミングで発火しうるため、判定前に必ず待つ。
-  await awaitIngestionDrain()
-
-  if (!isSafeToUpdate()) {
+  const result = await commitReloadIfStillSafe(
+    `[update-manager] Update ${details.version} available and safe -- applying immediately`
+  )
+  if (result === 'unsafe') {
     console.log(`[update-manager] Update ${details.version} available but unsafe (${describeUnsafeReason()}) -- pending`)
-    return
   }
-
-  // ここから`chrome.runtime.reload()`まで`await`を一切挟まない（P1,
-  // codexレビュー指摘 2026-07-21, pass-5, "Guard reload rechecks through
-  // the async path"）。詳細は`recheckPendingUpdate()`の同種コメント参照。
-  console.log(`[update-manager] Update ${details.version} available and safe -- applying immediately`)
-  chrome.runtime.reload()
-  clearPendingUpdateState().catch(err => console.error('[update-manager] Failed to clear pending update state after reload:', err))
-  clearBadge().catch(err => console.error('[update-manager] Failed to clear badge after reload:', err))
 }
 
 /**
@@ -285,27 +329,14 @@ export const handleUpdateAvailable = async (details: { version: string }): Promi
  * session end / entry cancellation / operation completion / SW startup の
  * 4箇所から呼ばれる。
  *
- * キュー・ドレイン・バリアはこの関数自身の中には置かない（意図的）:
- * event-ingestion.tsの309/203自身の`processEvent`内から直接呼ぶ経路が
- * あり、そこで`awaitIngestionDrain()`を呼ぶとその309/203自身を含む
- * `ingestionQueue`の決着を待つことになり自己参照でデッドロックする。
- * 呼び出し元（operation-complete契機・SW起動時契機）側で個別に
- * `awaitIngestionDrain()`してから呼ぶ（`initUpdateManager()`参照）。
- *
- * `options.isStillFresh`（P1, codexレビュー指摘 2026-07-21, pass-5,
- * "Guard reload rechecks through the async path"）: 呼び出し元固有の
- * 追加鮮度チェック。event-ingestion.tsの309/203自身の処理から呼ぶ場合、
- * 「自分の到着以降にセッション状態へ影響しうる新しいイベントが既に
- * キューへ積まれていないか」（`activityGeneration`比較）を渡す——この
- * 経路は`awaitIngestionDrain()`を使えない（自己参照デッドロック）ため、
- * 同期的な世代比較で代替する。下の「原子的な最終確認」の一部として、
- * `isSafeToUpdate()`と**同じタイミングで**（間に`await`を挟まず）評価する
- * ことが重要——この関数はこの2つのawait（`getPendingUpdateState()`と、
- * バージョン一致チェック内の各種await）自体が「その間に新しいイベントが
- * 到着・処理されうる隙間」であるため、呼び出し前に1回チェックするだけ
- * では不十分（それ自体がこのpass-5指摘の内容）。
+ * pending stateやstale-version cleanupに必要なawaitを全て終えた後、共有の
+ * `commitReloadIfStillSafe()`が改めてdrainと最終tail比較を行う。309/203の
+ * ingestion内呼び出しでも、最初の`getPendingUpdateState()` awaitで現在の
+ * `processEvent`が先にreturnできるため、自己参照デッドロックは起こらない。
+ * 呼び出し元ごとのgeneration callbackは不要で、operation completion・
+ * SW startupを含む全経路が同じcommit保証を得る。
  */
-export const recheckPendingUpdate = async (options?: { isStillFresh?: () => boolean }): Promise<void> => {
+export const recheckPendingUpdate = async (): Promise<void> => {
   const state = await getPendingUpdateState()
   if (!state.pending) return
 
@@ -322,34 +353,15 @@ export const recheckPendingUpdate = async (options?: { isStillFresh?: () => bool
     return
   }
 
-  if (!isSafeToUpdate()) {
-    // まだunsafe: バッジを再アサート（rebuild-advisoryが解消済みなら表示に切り替わる）
+  const result = await commitReloadIfStillSafe(
+    '[update-manager] Pending update is now safe to apply -- applying'
+  )
+  if (result === 'unsafe') {
+    // まだunsafe、またはdrainが上限内で安定しなかった: バッジを再アサート
+    // （rebuild-advisory解消後なら表示）。別経路がreloadをcommit済みなら
+    // 先行経路のclearBadgeと競合するため何もしない。
     await setBadge()
-    return
   }
-
-  // 原子的な最終確認（P1, codexレビュー指摘 2026-07-21, pass-5,
-  // "Guard reload rechecks through the async path"）: ここまでの
-  // `await`（`getPendingUpdateState()`等）は、その間に新しいイベントが
-  // 到着・処理されうる隙間である。この直後から`chrome.runtime.reload()`
-  // までの間に一切`await`を挟まないことで、最終チェックと実際のreloadを
-  // 原子的（隣接）にする——`isSafeToUpdate()`と`options.isStillFresh`を
-  // 同じタイミングで評価するのが肝要。
-  if (options?.isStillFresh && !options.isStillFresh()) {
-    console.log('[update-manager] Pending update recheck aborted -- a newer session-activity-relevant event was already queued, deferring to a later recheck trigger')
-    await setBadge()
-    return
-  }
-
-  console.log('[update-manager] Pending update is now safe to apply -- applying')
-  chrome.runtime.reload()
-  // 状態クリアはreload後にfire-and-forgetする: 上のreload()呼び出し直前に
-  // `await`を挟まないことがこの関数の安全性の核なので、クリア処理は
-  // reload()の後段へ回す。仮にSWがreload()で即座に終了してクリアが
-  // 完了しなくても、SW再起動後の`recheckPendingUpdate()`（起動時契機）が
-  // 上のバージョン一致ブランチで確実に片付けるため実害は無い。
-  clearPendingUpdateState().catch(err => console.error('[update-manager] Failed to clear pending update state after reload:', err))
-  clearBadge().catch(err => console.error('[update-manager] Failed to clear badge after reload:', err))
 }
 
 /**
@@ -357,23 +369,13 @@ export const recheckPendingUpdate = async (options?: { isStillFresh?: () => bool
  * SAFEなら適用、そうでなければ理由を返す（Popupに表示させる）。
  */
 export const applyUpdateNow = async (): Promise<ApplyUpdateResult> => {
-  // キュー・ドレイン・バリア（本ファイル冒頭のSAFE定義コメント参照）:
-  // ユーザー操作起点でevent-ingestion.tsのキューとは無関係なタイミングで
-  // 呼ばれるため、判定前に必ず待つ。
-  await awaitIngestionDrain()
-
-  if (!isSafeToUpdate()) {
+  const result = await commitReloadIfStillSafe()
+  if (result === 'unsafe') {
     const reason = describeUnsafeReason()
     const current = await getPendingUpdateState()
     await setPendingUpdateState({ ...current, pending: true, lastBlockedReason: reason })
     return { applied: false, reason }
   }
-
-  // ここから`chrome.runtime.reload()`まで`await`を一切挟まない（P1,
-  // codexレビュー指摘 2026-07-21, pass-5）。詳細は`recheckPendingUpdate()`
-  // の同種コメント参照。
-  chrome.runtime.reload()
-  clearPendingUpdateState().catch(err => console.error('[update-manager] Failed to clear pending update state after reload:', err))
   return { applied: true }
 }
 
@@ -426,18 +428,6 @@ const setupUpdateCheckAlarm = async (): Promise<void> => {
  * 呼び出しをブロックしない（他のセットアップは同期的に完了する）ので、
  * SW起動を止めたくない呼び出し側はそのままfire-and-forgetしてよい。
  */
-/**
- * `recheckPendingUpdate()`をキュー・ドレイン・バリアの後ろで呼ぶラッパー。
- * event-ingestion.tsの309自身の処理からは呼ばない（そちらは
- * `recheckPendingUpdate()`自身のコメント参照）——operation-complete契機・
- * SW起動時契機はどちらもingestionQueueとは無関係なタイミングで発火しうる
- * ため、両方ともこのラッパー経由で呼ぶ。
- */
-const recheckPendingUpdateAfterDrain = async (): Promise<void> => {
-  await awaitIngestionDrain()
-  await recheckPendingUpdate()
-}
-
 export const initUpdateManager = (): Promise<void> => {
   chrome.runtime.onUpdateAvailable.addListener((details) => {
     handleUpdateAvailable(details).catch(error => {
@@ -446,7 +436,7 @@ export const initUpdateManager = (): Promise<void> => {
   })
 
   onOperationBecameIdle(() => {
-    recheckPendingUpdateAfterDrain().catch(error => {
+    recheckPendingUpdate().catch(error => {
       console.error('[update-manager] recheckPendingUpdate (operation completion) failed:', error)
     })
   })
@@ -458,7 +448,7 @@ export const initUpdateManager = (): Promise<void> => {
     console.error('[update-manager] setupUpdateCheckAlarm failed:', error)
   })
 
-  return recheckPendingUpdateAfterDrain().catch(error => {
+  return recheckPendingUpdate().catch(error => {
     console.error('[update-manager] recheckPendingUpdate (SW startup) failed:', error)
   })
 }

@@ -390,10 +390,8 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     recheckPendingUpdateSpy.mockClear()
 
     await onMessageHandler(entryCancelledEvent)
-    // event-ingestion.ts's 203 branch is fire-and-forget-free (no slow
-    // upload precedes it) but still routed through the same
-    // queueGeneration freshness check as 309 -- flush microtasks so that
-    // synchronous chain settles before asserting.
+    // event-ingestion.ts's 203 branch has no slow upload before its recheck;
+    // flush microtasks so the fire-and-forget call is observable here.
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(recheckPendingUpdateSpy).toHaveBeenCalledTimes(1)
