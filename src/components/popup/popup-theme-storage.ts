@@ -64,7 +64,7 @@ export const loadCachedPopupThemeMode = (): PopupThemeMode => {
  * (disabled storage, locked-down context) and that must never break the
  * actual `chrome.storage.sync` persistence this mirrors.
  */
-const mirrorPopupThemeModeToLocalStorage = (mode: PopupThemeMode): void => {
+export const cachePopupThemeMode = (mode: PopupThemeMode): void => {
   try {
     window.localStorage.setItem(POPUP_THEME_LOCAL_STORAGE_KEY, mode)
   } catch {
@@ -72,6 +72,15 @@ const mirrorPopupThemeModeToLocalStorage = (mode: PopupThemeMode): void => {
     // its CSS defaults next time; never worse than before this fix.
   }
 }
+
+/** Read the authoritative synced value without mutating the startup cache. */
+export const readSyncedPopupThemeMode = (): Promise<PopupThemeMode> =>
+  new Promise((resolve) => {
+    chrome.storage.sync.get(POPUP_THEME_STORAGE_KEY, (result: Record<string, unknown>) => {
+      const value = result[POPUP_THEME_STORAGE_KEY]
+      resolve(isPopupThemeMode(value) ? value : DEFAULT_POPUP_THEME_MODE)
+    })
+  })
 
 /**
  * Resolves with the persisted mode, or `DEFAULT_POPUP_THEME_MODE` ('auto')
@@ -82,18 +91,14 @@ const mirrorPopupThemeModeToLocalStorage = (mode: PopupThemeMode): void => {
  * `chrome.storage.sync` from another device) so the mirror still exists in
  * time for the boot script's next read.
  */
-export const loadPopupThemeMode = (): Promise<PopupThemeMode> =>
-  new Promise((resolve) => {
-    chrome.storage.sync.get(POPUP_THEME_STORAGE_KEY, (result: Record<string, unknown>) => {
-      const value = result[POPUP_THEME_STORAGE_KEY]
-      const mode = isPopupThemeMode(value) ? value : DEFAULT_POPUP_THEME_MODE
-      mirrorPopupThemeModeToLocalStorage(mode)
-      resolve(mode)
-    })
-  })
+export const loadPopupThemeMode = async (): Promise<PopupThemeMode> => {
+  const mode = await readSyncedPopupThemeMode()
+  cachePopupThemeMode(mode)
+  return mode
+}
 
 export const savePopupThemeMode = (mode: PopupThemeMode): Promise<void> =>
   new Promise((resolve) => {
-    mirrorPopupThemeModeToLocalStorage(mode)
+    cachePopupThemeMode(mode)
     chrome.storage.sync.set({ [POPUP_THEME_STORAGE_KEY]: mode }, () => resolve())
   })

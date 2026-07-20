@@ -36,7 +36,11 @@ import { PopupHeader } from './popup/PopupHeader'
 import { SectionCard } from './popup/SectionCard'
 import type { PopupThemeMode } from './popup/theme'
 import { DEFAULT_POPUP_THEME_MODE, getPopupTheme, resolvePopupThemeVariant } from './popup/theme'
-import { loadPopupThemeMode, savePopupThemeMode } from './popup/popup-theme-storage'
+import {
+  cachePopupThemeMode,
+  readSyncedPopupThemeMode,
+  savePopupThemeMode,
+} from './popup/popup-theme-storage'
 
 export type { Options }
 
@@ -78,14 +82,16 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   // (e.g. jsdom under Jest).
   const prefersDarkScheme = useMediaQuery('(prefers-color-scheme: dark)')
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const popupThemeChangedByUserRef = useRef(false)
 
   // Reconcile the synchronous startup hint with chrome.storage.sync after the
   // first commit. Avoid setting an identical primitive so the common cached
   // path does not cause another full popup render.
   useEffect(() => {
     let cancelled = false
-    loadPopupThemeMode().then((mode) => {
-      if (!cancelled) {
+    readSyncedPopupThemeMode().then((mode) => {
+      if (!cancelled && !popupThemeChangedByUserRef.current) {
+        cachePopupThemeMode(mode)
         setPopupThemeMode((currentMode) => currentMode === mode ? currentMode : mode)
       }
     })
@@ -427,6 +433,10 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   }
 
   const handlePopupThemeModeChange = (mode: PopupThemeMode) => {
+    // A pending startup read may contain the value from before this user
+    // action. Mark the local choice first so a late response cannot revert
+    // either the open popup or its local startup cache.
+    popupThemeChangedByUserRef.current = true
     setPopupThemeMode(mode)
     // Popup-only setting: persisted directly, no chrome.tabs broadcast (see
     // popup-theme-storage.ts -- unlike updateUIConfig, this must not
