@@ -641,5 +641,99 @@ describe('App', () => {
       expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: -1')
       expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
     })
+
+    describe('テーブル移動時のミュートキャッシュ無効化（#179 codex P2指摘）', () => {
+      it('lineupがhero以外まるごと入れ替わったら、旧テーブルの空席ゴーストは出ない（テーブル移動）', async () => {
+        render(<App />)
+        await dispatchStats(mockStatsData.stats)
+
+        // 席1のプレイヤー(2)がbustして次のlineupから消える（旧テーブルでの出来事）
+        const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
+        await dispatchStats(bustedLineup)
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
+
+        // MTT/cashでテーブル移動。新テーブルの席1はたまたま空席のままだが、
+        // hero以外の在席者(20,21,22,23)は旧テーブル(2,3,4,5,6)と完全に不連続
+        const tableMoveLineup: StatsData['stats'] = [
+          { playerId: 1, statResults: [] },   // hero, 同一人物なので変わらない
+          { playerId: -1 },                    // 新テーブルでも空席（旧テーブルの席1とindexが偶然一致）
+          { playerId: 20, statResults: [] },
+          { playerId: 21, statResults: [] },
+          { playerId: 22, statResults: [] },
+          { playerId: 23, statResults: [] },
+        ]
+        await dispatchStats(tableMoveLineup)
+
+        // 旧テーブルのプレイヤー(2)がミュート表示のまま蘇ってはいけない
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: -1')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
+        // 新テーブルの在席者はそのまま表示される
+        expect(screen.getByTestId('hud-2')).toHaveTextContent('Player: 20')
+        expect(screen.getByTestId('hud-2')).toHaveTextContent('Dimmed: no')
+      })
+
+      it('lineupに一部重複があれば同一テーブルとみなし、bustミュートは継続する（部分重複）', async () => {
+        render(<App />)
+        await dispatchStats(mockStatsData.stats)
+
+        // 席1(プレイヤー2)がbust
+        const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
+        await dispatchStats(bustedLineup)
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
+
+        // 続けて席2(プレイヤー3)もbust。他の席(4,5,6)は同一プレイヤーのまま
+        // なので、hero以外の在席者集合は{4,5,6}⊂{2,3,4,5,6}で重複あり=同一テーブル
+        const secondBustLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) =>
+          (i === 1 || i === 2) ? { playerId: -1 } : s
+        )
+        await dispatchStats(secondBustLineup)
+
+        // どちらの席も旧プレイヤーのままミュート表示が継続する（誤ってキャッシュが
+        // クリアされていない証拠）
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
+        expect(screen.getByTestId('hud-2')).toHaveTextContent('Player: 3')
+        expect(screen.getByTestId('hud-2')).toHaveTextContent('Dimmed: yes')
+      })
+
+      it('hero以外が同一ハンドで全員同時bustした直後（hero単独lineup）はテーブル移動と誤判定せず、キャッシュはそのまま全員分ミュート継続する（不連続-空集合の境界）', async () => {
+        render(<App />)
+        await dispatchStats(mockStatsData.stats)
+
+        // レアなオールインで、hero以外(2,3,4,5,6)が同一ハンド内で同時にbust。
+        // 次のlineupはhero単独になり、hero以外の在席者集合は空集合になる
+        const allBustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (
+          i === 0 ? s : { playerId: -1 }
+        ))
+        await dispatchStats(allBustedLineup)
+
+        // 空集合との比較は判定不能として何もしない -- 全員分が引き続き
+        // ミュート表示される（テーブル移動ではなく同一テーブルの出来事のため）
+        for (let i = 1; i < 6; i++) {
+          expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent(`Player: ${i + 1}`)
+          expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Dimmed: yes')
+        }
+
+        // その後、実際にテーブル移動して新しい在席者が届けば通常通り検知される
+        const tableMoveLineup: StatsData['stats'] = [
+          { playerId: 1, statResults: [] },
+          { playerId: 30, statResults: [] },
+          { playerId: 31, statResults: [] },
+          { playerId: -1 },
+          { playerId: -1 },
+          { playerId: -1 },
+        ]
+        await dispatchStats(tableMoveLineup)
+
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 30')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
+        // 旧テーブルの残骸(3,4,5,6)は蘇らずただの空席になる
+        for (let i = 3; i < 6; i++) {
+          expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Player: -1')
+          expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Dimmed: no')
+        }
+      })
+    })
   })
 })

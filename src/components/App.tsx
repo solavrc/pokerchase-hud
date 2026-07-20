@@ -105,7 +105,48 @@ const App = memo(() => {
       //   PlayerStatsをそのまま使い続けミュート表示にする。
       // - 座席が空でキャッシュも無ければ、これまで通り{playerId:-1}
       //   ("Waiting for Hand...")のまま。
+      //
+      // テーブル移動時のキャッシュ無効化（#179 codex P2指摘）: MTT/cashで
+      // ヒーローが別テーブルへ移動すると、docs/api-events.md の通り
+      // `EVT_ENTRY_QUEUED` が再発行されlineupが丸ごと入れ替わる。しかしこの
+      // シグナル自体はcontent_script.tsの`latestStats`メッセージ
+      // (StatsData = {stats, evtDeal, realTimeStats}) に含まれずUIまで届かない
+      // ため、明示的な移動イベントにフックできない。代わりに「直前にキャッシュ
+      // されていたhero以外の在席者と、今回のlineupのhero以外の在席者が完全に
+      // 不連続（重複ゼロ）」を移動の代理シグナルとして使う（案(a): 座席index
+      // 単位ではなくplayerId集合の連続性で判定 -- 席の乗っ取り/リバイは
+      // 上のロジックが個別座席で正しく処理するため、ここでは「lineup全体が
+      // 別物か」だけを見ればよい）。
+      // - heroの座席は判定から除外する: 移動してもヒーローは同一人物なので
+      //   必ず重複し、判定の役に立たない。
+      // - どちらかの集合が空なら判定不能として何もしない。特に「同一テーブルで
+      //   ヒーロー以外が全員同時bust（レアなオールイン）」した直後はhero単独
+      //   lineupになり空集合になるが、これはテーブル移動ではなくキャッシュは
+      //   そのまま(sola仕様通りbustした全員分ミュート継続)が正しい。誤って
+      //   移動と判定してキャッシュを消す誤クリアより、移動を見逃してキャッシュを
+      //   残す方が実害が小さい（ミュートパネルが1テンポ遅れて消える程度）ため、
+      //   「わからない時は消さない」に倒す。
+      // - 両者とも空でなく共通点ゼロなら丸ごとテーブル移動とみなし、キャッシュを
+      //   全座席（hero分含む）クリアしてから通常のミュート処理に入る。
       const dimCache = dimCacheRef.current
+      const previousNonHeroPlayerIds = new Set<number>()
+      for (const [seatIndex, cached] of dimCache) {
+        if (seatIndex !== HERO_SEAT_INDEX) previousNonHeroPlayerIds.add(cached.playerId)
+      }
+      const incomingNonHeroPlayerIds = new Set<number>()
+      mappedStats.forEach((stat, seatIndex) => {
+        if (seatIndex !== HERO_SEAT_INDEX && isExistPlayerStats(stat)) {
+          incomingNonHeroPlayerIds.add(stat.playerId)
+        }
+      })
+      const isTableChange =
+        previousNonHeroPlayerIds.size > 0 &&
+        incomingNonHeroPlayerIds.size > 0 &&
+        Array.from(incomingNonHeroPlayerIds).every(id => !previousNonHeroPlayerIds.has(id))
+      if (isTableChange) {
+        dimCache.clear()
+      }
+
       const nextDimmedSeatIndices = new Set<number>()
       const dimmedStats = mappedStats.map((stat, seatIndex) => {
         if (stat.playerId === -1) {
