@@ -26,7 +26,7 @@ const legacyFieldKey = (field: string) => `${LEGACY_BUCKET_PREFIX}--${field}`
 // コールバック形式で呼び出す（jestのchromeモックが両形式に対応しているが、
 // 既存コード（App.tsx / background.ts）と同じ形式に揃える）
 const syncGet = (keys: string[]): Promise<Record<string, any>> =>
-  new Promise(resolve => chrome.storage.sync.get(keys, resolve))
+  new Promise(resolve => chrome.storage.sync.get(keys, items => resolve(items)))
 
 const syncSet = (items: Record<string, any>): Promise<void> =>
   new Promise(resolve => chrome.storage.sync.set(items, resolve))
