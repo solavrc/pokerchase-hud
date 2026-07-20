@@ -988,6 +988,102 @@ describe('App', () => {
         expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
       })
 
+      it('観戦モードdealを挟んだ後のフィルター変更は、観戦先の生の座席インデックスが偶然在席していても「ライブ在籍中」とは扱わず、hero自身のテーブルの古いキャッシュを正しくクリアする（post-merge review descope pass2「Clear spectator-context caches on filter updates」）', async () => {
+        render(<App />)
+        // ヒーロー在籍のhandで席1(プレイヤー2)がbustしてミュート表示になる
+        await act(async () => {
+          window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
+            detail: { stats: mockStatsData.stats, evtDeal: heroDeal() } as StatsData,
+          }))
+        })
+        const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
+        await act(async () => {
+          window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
+            detail: { stats: bustedLineup, evtDeal: heroDeal() } as StatsData,
+          }))
+        })
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
+
+        // ヒーロー敗退後、観戦モードdealが届く。観戦先の生の座席1には
+        // 偶然別の在席者(777)がいる -- これはhero自身のテーブルの席1とは
+        // 無関係の別空間の座席
+        const spectatorLineup: StatsData['stats'] = [
+          { playerId: -1 },
+          { playerId: 777, statResults: [] },
+          { playerId: -1 }, { playerId: -1 }, { playerId: -1 }, { playerId: -1 },
+        ]
+        await act(async () => {
+          window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
+            detail: { stats: spectatorLineup, evtDeal: makeEvtDeal() } as StatsData,
+          }))
+        })
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 777')
+
+        // この観戦中にフィルターが変わる。席1(数値インデックス)には観戦先の
+        // 777が在席しているが、これはhero自身のテーブルの「ライブ在籍中」
+        // ではないので、旧テーブルのプレイヤー2の古いキャッシュはクリア
+        // されなければならない
+        await act(async () => {
+          window.dispatchEvent(new CustomEvent('updateBattleTypeFilter', {
+            detail: { gameTypes: { sng: true, mtt: false, ring: true } },
+          }))
+        })
+
+        // ヒーロー在籍dealに戻り、hero自身のテーブルの席1は引き続き空席
+        const stillBustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
+        await act(async () => {
+          window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
+            detail: { stats: stillBustedLineup, evtDeal: heroDeal() } as StatsData,
+          }))
+        })
+
+        // プレイヤー2の古いキャッシュがクリアされていれば、席1は
+        // 「Waiting for Hand...」のまま -- クリアされていなければ、
+        // 観戦を挟んでも古いプレイヤー2がミュート表示のまま蘇ってしまう
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: -1')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
+      })
+
+      it('座席数が縮んだ更新（4-maxなど）の後のフィルター変更は、6-max時代のキャッシュを「存在しない座席=ライブ在籍中」と誤認せず正しくクリアする（post-merge review descope pass2「Treat missing seats as empty when clearing caches」）', async () => {
+        render(<App />)
+        await dispatchStats(mockStatsData.stats)
+
+        // 席4(プレイヤー5)がbustしてミュート表示になる(6-max)
+        const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 4 ? { playerId: -1 } : s))
+        await dispatchStats(bustedLineup)
+        expect(screen.getByTestId('hud-4')).toHaveTextContent('Player: 5')
+        expect(screen.getByTestId('hud-4')).toHaveTextContent('Dimmed: yes')
+
+        // 4-maxへ縮小したlineupが届く(配列長4、座席4/5に対応する要素自体が
+        // 無い)。この更新のmapループはindex 0-3しか処理しないため、席4の
+        // 古いキャッシュには一切触れられない
+        const fourMaxLineup: StatsData['stats'] = [
+          { playerId: 1, statResults: [] },
+          { playerId: 2, statResults: [] },
+          { playerId: 3, statResults: [] },
+          { playerId: 4, statResults: [] },
+        ]
+        await dispatchStats(fourMaxLineup)
+
+        // この状態でフィルターが変わる。席4は現在の表示に存在しない
+        // （currentStats[4]がundefined）ので「ライブ在籍中」ではなく、
+        // 古いキャッシュはクリアされなければならない
+        await act(async () => {
+          window.dispatchEvent(new CustomEvent('updateBattleTypeFilter', {
+            detail: { gameTypes: { sng: true, mtt: false, ring: true } },
+          }))
+        })
+
+        // 6-maxに戻り、席4が引き続き空席のlineupが届く
+        await dispatchStats(bustedLineup)
+
+        // プレイヤー5の古いキャッシュがクリアされていれば、席4は
+        // 「Waiting for Hand...」のまま
+        expect(screen.getByTestId('hud-4')).toHaveTextContent('Player: -1')
+        expect(screen.getByTestId('hud-4')).toHaveTextContent('Dimmed: no')
+      })
+
       it('latestStats(バッチ再計算)でdimmedSeatIndicesが空にリセットされた後でも、フィルター変更は取り残されたdimCacheエントリを無効化する（post-merge review P2「Clear cached muted seats even after dim state resets」）', async () => {
         render(<App />)
         await dispatchStats(mockStatsData.stats)
