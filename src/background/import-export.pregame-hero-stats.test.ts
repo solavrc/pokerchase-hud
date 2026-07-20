@@ -32,6 +32,19 @@ import { BattleType } from '../types/game'
 import { ApiType } from '../types'
 import type { ApiEvent } from '../types'
 import type { Hand } from '../types/entities'
+import { findLatestPlayerDealEvent } from '../utils/database-utils'
+
+// Wraps the real findLatestPlayerDealEvent by default (every existing test
+// below relies on its actual DB-querying behavior); only the concurrent-live-
+// EVT_DEAL regression test below overrides it per-call via
+// mockImplementationOnce to control exactly when the DB lookup "resolves".
+jest.mock('../utils/database-utils', () => {
+  const actual = jest.requireActual('../utils/database-utils')
+  return {
+    ...actual,
+    findLatestPlayerDealEvent: jest.fn(actual.findLatestPlayerDealEvent),
+  }
+})
 
 const HERO_ID = 1
 const EMPTY_SEAT = { playerId: -1 }
@@ -266,6 +279,45 @@ describe('getLatestSessionStats -- DB-inference fallback for unknown in-memory p
     expect(chrome.storage.local.set).toHaveBeenCalled()
     const lastCall = (chrome.storage.local.set as jest.Mock).mock.calls.at(-1)
     expect(lastCall[0][STORAGE_KEY].playerId).toBe(HERO_ID)
+  })
+
+  test('live EVT_DEAL sets service.playerId while the DB lookup is still in flight: the live value wins, the DB-derived value is discarded (see fix/pregame-playerid-inference PR #175 review)', async () => {
+    const LIVE_ID = 999
+    await db.apiEvents.add(dealEvent) // DB has a recoverable candidate for HERO_ID
+
+    // Signals the exact moment getLatestSessionStats() actually invokes
+    // findLatestPlayerDealEvent(db) -- i.e. once it's past the outer
+    // `if (!service.playerId)` guard and truly mid-lookup -- so the manual
+    // trigger below lands inside the await window, not before or after it.
+    let lookupStarted = false
+    let resolveDealEvent!: (value: typeof dealEvent) => void
+    const pendingLookup = new Promise<typeof dealEvent>(resolve => { resolveDealEvent = resolve })
+    ;(findLatestPlayerDealEvent as jest.Mock).mockImplementationOnce(() => {
+      lookupStarted = true
+      return pendingLookup
+    })
+
+    const statsPromise = getLatestSessionStats(true)
+
+    // Let queued microtasks (service.ready / service.filtersRestored, both
+    // already-resolved) drain until the mocked DB lookup actually starts.
+    for (let i = 0; i < 20 && !lookupStarted; i++) {
+      await Promise.resolve()
+    }
+    expect(lookupStarted).toBe(true) // sanity: the race window below is real, not skipped
+    expect(service.playerId).toBeUndefined() // still unset at the moment the DB lookup began
+
+    // Simulate a live EVT_DEAL landing on the service (e.g. via ReadEntityStream)
+    // while findLatestPlayerDealEvent(db) is still awaiting.
+    service.playerId = LIVE_ID
+
+    // Now the (now-stale) DB lookup resolves with the old candidate.
+    resolveDealEvent(dealEvent)
+    const stats = await statsPromise
+
+    // The live value must not be clobbered by the DB-derived one.
+    expect(service.playerId).toBe(LIVE_ID)
+    expect(stats[0].playerId).toBe(LIVE_ID)
   })
 
   test('no hero deal event anywhere in the DB (true fresh install / never played): stays a silent no-op, returns []', async () => {

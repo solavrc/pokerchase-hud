@@ -664,7 +664,10 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
       // In-memory hero identity is unknown -- see if the DB already knows it
       // (cloud download / NDJSON import ahead of the first live EVT_DEAL).
       const latestDealEvent = await findLatestPlayerDealEvent(db)
-      if (latestDealEvent && latestDealEvent.Player?.SeatIndex !== undefined) {
+      // A live EVT_DEAL may have set service.playerId while the lookup above
+      // was in flight -- that's fresher than anything the DB can tell us, so
+      // don't clobber it with the (now possibly stale) DB-derived value.
+      if (!service.playerId && latestDealEvent && latestDealEvent.Player?.SeatIndex !== undefined) {
         service.playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex] // setter persists via the normal debounced save
       }
     }
