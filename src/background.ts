@@ -226,13 +226,19 @@ checkMinVersionGate(chrome.runtime.getManifest().version).catch(error => {
 // (src/background/auto-sync-boot.ts) for why the very first callback
 // invocation on Service Worker startup deliberately does NOT count as a
 // transition (avoids double-invoking initialize() on top of the cold-start
-// path above).
+// path above), AND why a `source === 'sign-in'` transition is ALSO excluded
+// (codex post-merge review on this PR, P2, "Avoid double auto-sync
+// initialization on popup sign-in" -- that path, driven by
+// `firebaseAuthService.signInWithGoogle()`, already has its own explicit
+// caller in message-router.ts, and this listener fires synchronously
+// *before* that caller's own call, so triggering initialize() here too used
+// to race it).
 const handleAuthSignInTransition = createSignInTransitionHandler(autoSyncService, (error) => {
   console.error('[background] Auto sync initialization on sign-in transition failed:', error)
 })
 
 // Listen for auth state changes on startup
-firebaseAuthService.onAuthStateChange((user) => {
+firebaseAuthService.onAuthStateChange((user, source) => {
   console.log('[Firebase] Auth state changed:', user ? user.email : 'signed out')
 
   // Cache auth state for instant popup rendering
@@ -241,5 +247,5 @@ firebaseAuthService.onAuthStateChange((user) => {
     : { isSignedIn: false, userInfo: null }
   chrome.storage.local.set({ firebaseAuthCache: authCache })
 
-  handleAuthSignInTransition(user)
+  handleAuthSignInTransition(user, source)
 })

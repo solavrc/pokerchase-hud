@@ -25,13 +25,35 @@
  * サインイン「遷移」を検知して`initialize()`を叩けるようにする
  * （`background/message-router.ts`の明示的なサインインフロー
  * -- `autoSyncService.onAuthStateChanged(user)` -- を経由しない形で
- * サインインが観測されるケースへの保険）。ただし「起動直後、リストア完了を
- * 通知する最初の1回」は遷移として数えない -- そこは上の
- * `initializeAutoSyncOnReady()`が既に担当済みであり、二重に数えると
- * cold start時に`initialize()`が無駄にもう一度呼ばれてしまう
+ * サインインが観測されるケースへの保険）。ただし2つのケースは意図的に
+ * 「遷移」として数えない:
+ *
+ * 1. 「起動直後、リストア完了を通知する最初の1回」-- そこは上の
+ *    `initializeAutoSyncOnReady()`が既に担当済みであり、二重に数えると
+ *    cold start時に`initialize()`が無駄にもう一度呼ばれてしまう。
+ *
+ * 2. `source === 'sign-in'`（codex post-merge review on this PR, P2,
+ *    "Avoid double auto-sync initialization on popup sign-in"）:
+ *    `firebaseAuthService.signInWithGoogle()`はリスナーを同期的に
+ *    （自身の`persistAuthState()`のawaitより前に）通知する。その唯一の
+ *    呼び出し元 `background/message-router.ts`の`handleFirebaseSignIn`は、
+ *    `signInWithGoogle()`が解決した直後に自分自身で明示的に
+ *    `autoSyncService.onAuthStateChanged(user)`（内部で`initialize()`を
+ *    呼ぶ）をawaitしている -- つまりこのリスナー経由の同期通知は、その
+ *    明示呼び出しより前に発火する。ここでも`initialize()`を呼ぶと、その
+ *    明示呼び出しと競合する: `AutoSyncService.initialize()`自身の簿記処理
+ *    （scoped `lastSyncTime`の読み取り・移行・書き込み）は`performSync()`が
+ *    実際に始まるまで`_isSyncing`ラッチで保護されないため、重複した
+ *    初回`initialize()`呼び出し同士が互いの書き込みを踏みつけ合い、
+ *    初回クラウド同期が二重に走ってしまう。ポップアップ経由のサインインは
+ *    常にこの明示呼び出しを持つため、`'sign-in'`ソースの遷移は無条件で
+ *    スキップする。
+ *
  * （`AutoSyncService.initialize()`自体は世代ゲート・上限付きリトライで
- * 再入安全だが、意味のない二重呼び出しを増やす理由が無い）。
+ * 再入安全だが、上記2つを除外しないと意味のない/有害な二重呼び出しを
+ * 増やしてしまう）。
  */
+import type { AuthChangeSource } from '../services/firebase-auth-service'
 
 /** `initializeAutoSyncOnReady()`が必要とする最小限のFirebaseAuthService面 */
 export interface AutoSyncBootAuthGate {
@@ -64,24 +86,28 @@ export async function initializeAutoSyncOnReady(
 /**
  * `firebaseAuthService.onAuthStateChange`に渡すコールバックを作る。返す関数は
  * 「直近で観測した状態」を閉じ込め、signed-out → signed-in の実際の「遷移」を
- * 検知した時だけ`syncService.initialize()`を叩く。
+ * 検知した時だけ`syncService.initialize()`を叩く -- ただし以下の2ケースは
+ * 意図的に除外する（このファイル冒頭のコメント参照）:
  *
- * 内部状態は`null`（「まだ何も観測していない」）から始まる -- `false`ではない。
- * これは意図的: このコールバックの最初の1回の呼び出しは、Service Worker起動時の
- * リストア完了通知（＝その時点で既にサインイン済みかもしれない状態）を表す。
- * それを`initializeAutoSyncOnReady()`が既に処理した初回同期と重複カウントしない
- * ために、「まだ観測していない」→「signed-in」という最初の遷移は無視し、
- * その後の実際のsigned-out → signed-in遷移だけを拾う。
+ * 1. コールバックの最初の1回の呼び出し（内部状態が`null`、つまり
+ *    「まだ何も観測していない」→「signed-in」という最初の遷移) --
+ *    Service Worker起動時のリストア完了通知を表し、
+ *    `initializeAutoSyncOnReady()`が既に処理済み。
+ *
+ * 2. `source === 'sign-in'`（codex review, P2, "Avoid double auto-sync
+ *    initialization on popup sign-in"） -- ポップアップ経由の明示的な
+ *    サインインフローは常に自分自身で`initialize()`相当を呼ぶため、
+ *    ここで呼ぶと二重初期化になる。
  */
 export function createSignInTransitionHandler(
   syncService: AutoSyncBootSyncService,
   onError: (error: unknown) => void = () => {}
-): (user: unknown) => void {
+): (user: unknown, source: AuthChangeSource) => void {
   let previousSignedIn: boolean | null = null
 
-  return (user: unknown): void => {
+  return (user: unknown, source: AuthChangeSource): void => {
     const isSignedIn = !!user
-    if (isSignedIn && previousSignedIn === false) {
+    if (isSignedIn && previousSignedIn === false && source !== 'sign-in') {
       syncService.initialize().catch(onError)
     }
     previousSignedIn = isSignedIn

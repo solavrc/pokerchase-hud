@@ -64,7 +64,7 @@ describe('initializeAutoSyncOnReady', () => {
 })
 
 describe('createSignInTransitionHandler', () => {
-  test('does NOT treat the first callback invocation as a transition (avoids double-invoking initialize() on top of initializeAutoSyncOnReady\'s cold-start call), but DOES fire on a later signed-out -> signed-in transition, and is idempotent on repeat', () => {
+  test('does NOT treat the first callback invocation as a transition (avoids double-invoking initialize() on top of initializeAutoSyncOnReady\'s cold-start call), but DOES fire on a later signed-out -> signed-in transition (source \'restore\'), and is idempotent on repeat', () => {
     const initialize = jest.fn().mockResolvedValue(undefined)
     const handler = createSignInTransitionHandler({ initialize })
 
@@ -73,25 +73,48 @@ describe('createSignInTransitionHandler', () => {
     // NOT trigger initialize() here -- that case is already handled by
     // initializeAutoSyncOnReady() in background.ts's service.ready.then()
     // block.
-    handler({ uid: 'user-a' })
+    handler({ uid: 'user-a' }, 'restore')
     expect(initialize).not.toHaveBeenCalled()
 
     // Explicit sign-out.
-    handler(null)
+    handler(null, 'sign-out')
     expect(initialize).not.toHaveBeenCalled()
 
-    // A real transition: signed-out -> signed-in.
-    handler({ uid: 'user-a' })
+    // A real transition: signed-out -> signed-in (not sourced from the
+    // interactive popup sign-in flow).
+    handler({ uid: 'user-a' }, 'restore')
     expect(initialize).toHaveBeenCalledTimes(1)
 
     // Idempotent: repeating the same signed-in state must not re-trigger.
-    handler({ uid: 'user-a' })
+    handler({ uid: 'user-a' }, 'restore')
     expect(initialize).toHaveBeenCalledTimes(1)
 
     // Sign out, then sign back in -- a genuinely new transition -- fires again.
-    handler(null)
-    handler({ uid: 'user-a' })
+    handler(null, 'sign-out')
+    handler({ uid: 'user-a' }, 'restore')
     expect(initialize).toHaveBeenCalledTimes(2)
+  })
+
+  // Independent release-audit follow-up: codex post-merge review on this PR,
+  // P2, "Avoid double auto-sync initialization on popup sign-in".
+  // firebaseAuthService.signInWithGoogle() (the ONLY thing that produces a
+  // 'sign-in'-sourced transition) notifies onAuthStateChange listeners
+  // SYNCHRONOUSLY, before its own persistAuthState() await -- well before
+  // background/message-router.ts's handleFirebaseSignIn (its only caller)
+  // gets to its own explicit `await autoSyncService.onAuthStateChanged(user)`
+  // call. Firing initialize() here too used to race that explicit call:
+  // AutoSyncService.initialize()'s bookkeeping isn't guarded by `_isSyncing`
+  // until performSync() itself starts, so two overlapping first-time
+  // initialize() calls could each read a stale snapshot and clobber the
+  // timestamp the other just wrote, forcing a duplicate initial cloud sync.
+  test('does NOT call initialize() on a \'sign-in\'-sourced transition, since that path (background/message-router.ts) always has its own explicit initialize() caller', () => {
+    const initialize = jest.fn().mockResolvedValue(undefined)
+    const handler = createSignInTransitionHandler({ initialize })
+
+    handler(null, 'sign-out') // establish a signed-out baseline
+    handler({ uid: 'user-a' }, 'sign-in') // the popup-driven interactive sign-in
+
+    expect(initialize).not.toHaveBeenCalled()
   })
 
   test('routes a rejected initialize() to onError instead of throwing', async () => {
@@ -100,8 +123,8 @@ describe('createSignInTransitionHandler', () => {
     const onError = jest.fn()
     const handler = createSignInTransitionHandler({ initialize }, onError)
 
-    handler(null) // establish a signed-out baseline
-    expect(() => handler({ uid: 'user-a' })).not.toThrow() // triggers initialize()
+    handler(null, 'sign-out') // establish a signed-out baseline
+    expect(() => handler({ uid: 'user-a' }, 'restore')).not.toThrow() // triggers initialize()
 
     // Flush the rejected promise's microtask.
     await Promise.resolve()
@@ -114,8 +137,8 @@ describe('createSignInTransitionHandler', () => {
     const initialize = jest.fn().mockRejectedValue(new Error('boom'))
     const handler = createSignInTransitionHandler({ initialize })
 
-    handler(null)
-    handler({ uid: 'user-a' })
+    handler(null, 'sign-out')
+    handler({ uid: 'user-a' }, 'restore')
 
     await Promise.resolve()
     await Promise.resolve()

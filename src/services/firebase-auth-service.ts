@@ -16,6 +16,36 @@ export interface AuthUser {
   getIdToken: (forceRefresh?: boolean) => Promise<string>
 }
 
+/**
+ * Why a given auth-state change is being announced to `onAuthStateChange`
+ * listeners: `'restore'` (Service Worker startup -- both the one-time
+ * `restoreAuthState()` broadcast and the synthesized "here's the current
+ * state" call a newly-registered listener gets), `'sign-in'`
+ * (`signInWithGoogle()`), or `'sign-out'` (`signOut()`).
+ *
+ * Exists so a listener can distinguish an INTERACTIVE sign-in from other
+ * kinds of transitions without guessing from timing alone (codex post-merge
+ * review on this PR, P2, "Avoid double auto-sync initialization on popup
+ * sign-in"): `signInWithGoogle()`'s only caller,
+ * `background/message-router.ts`'s `handleFirebaseSignIn`, already
+ * explicitly awaits `autoSyncService.onAuthStateChanged(user)` (which calls
+ * `initialize()`) immediately after `signInWithGoogle()` resolves -- and
+ * `signInWithGoogle()` notifies listeners SYNCHRONOUSLY, well before that.
+ * A listener that reacted to every signed-in transition uniformly (e.g.
+ * `background.ts`'s auth-cache listener, see
+ * `src/background/auto-sync-boot.ts`'s `createSignInTransitionHandler()`)
+ * would therefore call `initialize()` a SECOND time for the exact same
+ * sign-in, racing the explicit call: `AutoSyncService.initialize()`'s own
+ * bookkeeping (scoped `lastSyncTime` read/migrate/write) isn't guarded by
+ * its `_isSyncing` latch until `performSync()` itself starts, so two
+ * overlapping first-time `initialize()` calls can each read a stale
+ * snapshot and clobber the timestamp the other just wrote, forcing a
+ * duplicate initial cloud sync. Tagging the source lets such a listener
+ * skip `'sign-in'`-sourced transitions specifically, since that path always
+ * has its own explicit caller.
+ */
+export type AuthChangeSource = 'restore' | 'sign-in' | 'sign-out'
+
 interface StoredAuthState {
   uid: string
   email: string | null
@@ -46,7 +76,7 @@ interface FirebaseRefreshResponse {
 export class FirebaseAuthService {
   private static readonly STORAGE_KEY = 'firebaseRestAuthState'
   private currentState: StoredAuthState | null = null
-  private authStateListeners: ((user: AuthUser | null) => void)[] = []
+  private authStateListeners: ((user: AuthUser | null, source: AuthChangeSource) => void)[] = []
   private restorePromise: Promise<void>
   /**
    * Monotonic counter, incremented on every auth-state TRANSITION (sign-in,
@@ -137,7 +167,7 @@ export class FirebaseAuthService {
       // that gap used to see B live while dependent state still reflected
       // A. persistAuthState() below is a fire-and-forget durability step
       // from listeners' perspective; it doesn't need to precede them.
-      this.notifyAuthStateListeners(this.getCurrentUser())
+      this.notifyAuthStateListeners(this.getCurrentUser(), 'sign-in')
       await this.persistAuthState()
       console.log('[FirebaseAuth] Firebase sign in successful:', this.currentState.email)
       return this.getCurrentUser()!
@@ -155,7 +185,7 @@ export class FirebaseAuthService {
     this.currentState = null
     this.authGeneration++ // sign-out transition -- see authGeneration's doc comment
     await chrome.storage.local.remove(FirebaseAuthService.STORAGE_KEY)
-    this.notifyAuthStateListeners(null)
+    this.notifyAuthStateListeners(null, 'sign-out')
 
     if (previousToken) {
       await new Promise<void>((resolve) => {
@@ -277,11 +307,16 @@ export class FirebaseAuthService {
   }
 
   /**
-   * Add auth state listener.
+   * Add auth state listener. The callback also receives the `source` of the
+   * change (see `AuthChangeSource`'s doc comment) -- the initial "here's the
+   * current state" call every newly-registered listener gets (once `ready()`
+   * resolves) is tagged `'restore'`, same as the one-time
+   * `restoreAuthState()` broadcast, since both represent "the currently
+   * known state as of the last restore/transition," not a fresh sign-in.
    */
-  onAuthStateChange(callback: (user: AuthUser | null) => void): () => void {
+  onAuthStateChange(callback: (user: AuthUser | null, source: AuthChangeSource) => void): () => void {
     this.authStateListeners.push(callback)
-    this.ready().then(() => callback(this.getCurrentUser())).catch(() => callback(null))
+    this.ready().then(() => callback(this.getCurrentUser(), 'restore')).catch(() => callback(null, 'restore'))
 
     return () => {
       const index = this.authStateListeners.indexOf(callback)
@@ -330,7 +365,7 @@ export class FirebaseAuthService {
     // taken before an SW restart is not meaningfully "the same pass"
     // afterward regardless of whether the restored uid matches.
     this.authGeneration++
-    this.notifyAuthStateListeners(this.getCurrentUser())
+    this.notifyAuthStateListeners(this.getCurrentUser(), 'restore')
   }
 
   private async persistAuthState(): Promise<void> {
@@ -339,8 +374,8 @@ export class FirebaseAuthService {
     }
   }
 
-  private notifyAuthStateListeners(user: AuthUser | null): void {
-    this.authStateListeners.forEach(listener => listener(user))
+  private notifyAuthStateListeners(user: AuthUser | null, source: AuthChangeSource): void {
+    this.authStateListeners.forEach(listener => listener(user, source))
   }
 }
 
