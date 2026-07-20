@@ -105,25 +105,40 @@ export const clearImportSession = (): void => {
  * 上書きだけでは「旧導出には存在したが新導出には存在しない」行が残る
  * （PR #203 codexレビュー2巡目P2）: 誤ペアリングされていた旧ハンドの
  * HandIdが新導出に現れない、旧導出の方がaction数が多い等。このため
- * 呼び出し元は、保存前に「stale削除ウィンドウ」= approxTimestampが
- * (staleWindowStartExclusive, staleWindowEndInclusive] に入る既存派生
- * ハンド（とそのphases/actions）を同一トランザクション内で削除する。
- * ウィンドウ下限が「直前の完了ハンド境界306」(exclusive)なのは、そこまでの
- * ハンドは新旧の導出が一致していて触る必要がなく、かつ範囲開始（201
- * anchor）をまたぐハンド —— ハンド中に割り込んだ201がanchorになった
- * 場合、そのDEALは範囲外 —— を誤って削除して再導出できない事態を防ぐ
- * ため。ウィンドウ内のハンドは定義上すべて範囲内のイベントだけから
- * 再導出可能（DEALは境界306より後、306は終了境界以前）。範囲外の
+ * 呼び出し元は、保存前に「この修復が説明できる既存派生ハンド」= idが
+ * 「範囲内の検証済みEVT_HAND_RESULTSのHandId」に一致する既存ハンド
+ * （とそのphases/actions）を、再導出バンドルの保存と同一トランザクション
+ * 内で削除する。削除判定をtimestampウィンドウではなくHandIdで行うのは
+ * （codexレビュー3巡目P2×2）:
+ * - hand.idは必ずその導出元306のHandId由来なので、「idが範囲内の検証済み
+ *   306に一致する」ことがそのハンドの導出元が範囲内にある直接の証拠に
+ *   なり、approxTimestampが未設定のレガシー行（モデル上optional）も
+ *   インデックスに頼らず正しく対象に含まれる。
+ * - 逆に、導出元の生306が現行スキーマでパース不能になったハンドは
+ *   検証済み306集合に現れないため削除されない —— 再導出で作り直せない
+ *   ものを消して、明示的な再構築まで残っていたはずの派生状態を
+ *   失うことがない（新導出が説明できるハンドだけを削除する）。
+ * 新バンドルが再生成するハンドのidはこの集合の部分集合（definition上、
+ * bundleの各hand.idは範囲内の検証済み306由来）なので、削除→bulkPutで
+ * 欠落は生じない。集合内だが新導出に現れないid（誤ペアリング修正・
+ * キメラ棄却）は意図的な削除で、全再構築と同じ結果に収束する。範囲外の
  * 派生行には一切触れない。返す前にfilterValidApplicationEvents()で
  * 再検証するのはrebuildAllData()と同じ理由（CLAUDE.md「Raw Event
  * Lake」参照）。
  *
- * 戻り値の`hasSessionAnchor`は「範囲が検証済みEVT_ENTRY_QUEUEDから始まって
- * いる = 範囲内のイベント列だけでセッション文脈を再構築できる」ことを示す。
- * 呼び出し元はこれがtrueの場合のみコンバーターを空セッションで初期化し、
- * falseの場合（201無しの増分ハンド等）はライブのservice.sessionを
- * 初期値として使う（PR #203 codexレビューP2 / #104のSessionState
- * seedingリグレッション参照）。
+ * 戻り値の`hasSessionAnchor`は「範囲の先頭からハンド開始までに検証済み
+ * EVT_ENTRY_QUEUEDがある = 範囲内のイベント列だけでセッション文脈を
+ * 再構築できる」ことを示す。201 anchorが見つかった場合に加えて、
+ * Lake先頭フォールバック時も「Lakeが最初の検証済みEVT_DEALより前の
+ * 検証済み201で始まっている」ならtrue（codexレビュー3巡目P2）——
+ * この場合も範囲はセッション境界から始まっており、ライブの
+ * service.sessionをseedにすると、201がid/battleTypeを上書きしても
+ * session.nameは消さないため、308を持たない先頭ハンドの修復結果に
+ * ライブのテーブル名が混入し得る。呼び出し元はこれがtrueの場合のみ
+ * コンバーターを空セッションで初期化し、falseの場合（201無しの
+ * 増分ハンド等）はライブのservice.sessionを初期値として使う
+ * （PR #203 codexレビューP2 / #104のSessionState seeding
+ * リグレッション参照）。
  */
 export const collectOverlapRepairEvents = async (
   db: PokerChaseDB,
@@ -134,10 +149,6 @@ export const collectOverlapRepairEvents = async (
 ): Promise<{
   events: ApiEvent[]
   hasSessionAnchor: boolean
-  /** stale削除ウィンドウ下限（直前の完了ハンド境界306のtimestamp、exclusive）。無ければundefined = Lake先頭から */
-  staleWindowStartExclusive: number | undefined
-  /** stale削除ウィンドウ上限（終了境界306のtimestamp、inclusive）。無ければundefined = Lake末尾まで */
-  staleWindowEndInclusive: number | undefined
 }> => {
   // 境界候補は現行スキーマで検証してから採用する（doc comment参照）。
   // parseApiEventは同期のZodパースなのでDexieのfilterコールバック内で使える。
@@ -178,6 +189,27 @@ export const collectOverlapRepairEvents = async (
     )
     .first()
 
+  // Lake先頭フォールバック時のセッション境界判定（codexレビュー3巡目P2）:
+  // 完了ハンド境界（またはその前の201）が無くても、Lakeが「最初の検証済み
+  // EVT_DEALより前の検証済みEVT_ENTRY_QUEUED」で始まっていれば、Lake先頭
+  // から読む範囲は同様にセッション境界から始まっている。この場合も空
+  // セッションseedを使う（doc comment参照）。
+  let lakeStartsAtSessionAnchor = false
+  if (!anchorEvent) {
+    const firstValidEntryQueued = await db.apiEvents
+      .orderBy('[timestamp+ApiTypeId]')
+      .filter(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED && isValidApplicationRow(event))
+      .first()
+    if (firstValidEntryQueued) {
+      const dealBeforeFirstEntryQueued = await db.apiEvents
+        .where('[timestamp+ApiTypeId]')
+        .below([firstValidEntryQueued.timestamp!, firstValidEntryQueued.ApiTypeId])
+        .filter(event => event.ApiTypeId === ApiType.EVT_DEAL && isValidApplicationRow(event))
+        .first()
+      lakeStartsAtSessionAnchor = dealBeforeFirstEntryQueued === undefined
+    }
+  }
+
   const lowerKey: [number, number] | undefined = anchorEvent
     ? [anchorEvent.timestamp!, anchorEvent.ApiTypeId]
     : undefined
@@ -198,9 +230,7 @@ export const collectOverlapRepairEvents = async (
 
   return {
     events: await filterValidApplicationEvents(rawRows),
-    hasSessionAnchor: anchorEvent !== undefined,
-    staleWindowStartExclusive: prevHandBoundary?.timestamp,
-    staleWindowEndInclusive: endEvent?.timestamp
+    hasSessionAnchor: anchorEvent !== undefined || lakeStartsAtSessionAnchor
   }
 }
 
@@ -506,25 +536,34 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
             // 派生行 —— 例: キャプチャ欠落で後続の306と誤ペアリングされて
             // いた旧ハンド（HandIdが新導出に現れない）、旧導出の方が多かった
             // action行（[handId+index]の末尾が残る）—— がそのまま残り、
-            // 統計が新旧両方を数えてしまう。stale削除ウィンドウ
-            // （collectOverlapRepairEvents()のdocコメント参照。ウィンドウ内の
-            // ハンドは定義上すべて範囲内から再導出可能）に入る既存派生
-            // ハンドとそのphases/actionsを、再導出バンドルの保存と同一
-            // トランザクションで先に削除する。Raw Event Lake（apiEvents）
-            // には一切触れない。
-            const { staleWindowStartExclusive, staleWindowEndInclusive } = repairRange
+            // 統計が新旧両方を数えてしまう。
+            //
+            // 削除対象は「この修復が説明できるハンド」= idが範囲内の検証済み
+            // EVT_HAND_RESULTSのHandIdに一致する既存派生ハンドのみ
+            // （collectOverlapRepairEvents()のdocコメント参照。codexレビュー
+            // 3巡目P2×2: idベースの判定にすることで、approxTimestamp未設定の
+            // レガシー行もインデックスに頼らず対象に含まれ、逆に導出元の生行が
+            // 現行スキーマでパース不能になったハンド —— 再導出で作り直せない
+            // もの —— は削除されない）。それらとphases/actionsを、再導出
+            // バンドルの保存と同一トランザクションで先に削除する。
+            // Raw Event Lake（apiEvents）には一切触れない。
+            const accountedHandIds: number[] = []
+            {
+              const seen = new Set<number>()
+              for (const event of entitySourceEvents) {
+                if (isApiEventType(event, ApiType.EVT_HAND_RESULTS) && !seen.has(event.HandId)) {
+                  seen.add(event.HandId)
+                  accountedHandIds.push(event.HandId)
+                }
+              }
+            }
             await db.transaction('rw', [db.hands, db.phases, db.actions], async () => {
-              const staleHandIds = await db.hands
-                .where('approxTimestamp')
-                .between(
-                  staleWindowStartExclusive ?? 0,
-                  staleWindowEndInclusive ?? Number.MAX_SAFE_INTEGER,
-                  staleWindowStartExclusive === undefined, // 下限は境界306自身のハンドを含めない（exclusive）。境界なしならLake先頭から（inclusive）
-                  true
-                )
-                .primaryKeys()
+              const existingAccountedHands = accountedHandIds.length > 0
+                ? await db.hands.bulkGet(accountedHandIds)
+                : []
+              const staleHandIds = accountedHandIds.filter((_, index) => existingAccountedHands[index] !== undefined)
               if (staleHandIds.length > 0) {
-                console.log(`[importData] Removing ${staleHandIds.length} stale derived hand(s) in the repair window before re-deriving`)
+                console.log(`[importData] Removing ${staleHandIds.length} stale derived hand(s) accounted for by the repair range before re-deriving`)
                 await db.hands.bulkDelete(staleHandIds)
                 await db.phases.where('handId').anyOf(staleHandIds).delete()
                 await db.actions.where('handId').anyOf(staleHandIds).delete()

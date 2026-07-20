@@ -407,6 +407,111 @@ describe('importData() overlap import repair (audit finding #7)', () => {
     })
   })
 
+  test('a Lake starting with a 201 before its first hand counts as a session anchor: no live session name leaks into first-hand repairs (PR #203 codex P2, pass 3)', async () => {
+    await runWithFreshDb(async ({ db, service, handlers }) => {
+      // The repaired hand is the FIRST hand in the Lake: no prior 306, so
+      // the lower bound falls back to the Lake start -- which begins with a
+      // valid 201. The empty rebuild-style session must seed the converter
+      // here too: a replayed 201 overwrites id/battleType but NOT
+      // session.name, so live-session seeding would leak the live table
+      // name into a historical first-hand repair that has no 308.
+      await db.apiEvents.bulkAdd([ENTRY_QUEUED, HAND1_DEAL, HAND1_RESULTS] as never[])
+
+      service.session.setId('live-session-456')
+      service.session.setBattleType(1)
+      service.session.setName('Live Table Name')
+
+      const result = await handlers.importData(toJsonl([ENTRY_QUEUED, ...HAND1_EVENTS]))
+      expect(result.successCount).toBe(3)
+
+      const hand = await db.hands.get(HAND1_ID)
+      expect(hand).toBeDefined()
+      // Session identity comes from the Lake's own 201...
+      expect(hand!.session).toMatchObject({ id: 'stage000_003', battleType: 0 })
+      // ...and the live table name must NOT have leaked in.
+      expect(hand!.session.name).toBeUndefined()
+    })
+  })
+
+  test('legacy derived hands without approxTimestamp are still cleaned up by the repair (PR #203 codex P2, pass 3)', async () => {
+    // Same capture-gap chimera as the pass-2 test, but the stale derived
+    // hand row predates approxTimestamp (the model treats it as optional) --
+    // a timestamp-window index query would silently skip it and leave the
+    // orphaned action tail behind.
+    const damagedLake = [
+      ENTRY_QUEUED,
+      HAND1_DEAL,
+      ...HAND1_ACTIONS,
+      ...HAND2_EVENTS.slice(1, 4),
+      HAND2_EVENTS[4]!,
+    ]
+    const fullExport = [ENTRY_QUEUED, ...HAND1_EVENTS, ...HAND2_EVENTS]
+
+    const expected = await runWithFreshDb(async ({ db, handlers }) => {
+      await handlers.importData(toJsonl(fullExport))
+      return snapshotDerived(db)
+    })
+
+    await runWithFreshDb(async ({ db, handlers }) => {
+      await db.apiEvents.bulkAdd(damagedLake as never[])
+      await handlers.rebuildAllData()
+      // Simulate a legacy row: strip approxTimestamp from the stale chimera.
+      await db.hands.toCollection().modify(hand => { delete (hand as { approxTimestamp?: number }).approxTimestamp })
+      expect((await db.hands.get(HAND2_ID))?.approxTimestamp).toBeUndefined()
+      expect(await db.actions.where('handId').equals(HAND2_ID).count()).toBe(6)
+
+      const result = await handlers.importData(toJsonl(fullExport))
+      expect(result.successCount).toBe(2)
+
+      expect(await snapshotDerived(db)).toEqual(expected)
+      expect(await db.actions.where('handId').equals(HAND2_ID).count()).toBe(3)
+      expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(3)
+    })
+  })
+
+  test('derived hands whose raw rows no longer validate are NOT deleted by the repair (PR #203 codex P2, pass 3)', async () => {
+    await runWithFreshDb(async ({ db, handlers }) => {
+      // Lake: a schema-broken hand (raw 303/306 rows that no longer parse
+      // under the current schema -- e.g. an old PokerChase payload shape)
+      // sits between the 201 and HAND1, whose middle ACTIONs are missing.
+      await db.apiEvents.bulkAdd([
+        ENTRY_QUEUED,
+        { ApiTypeId: 303, timestamp: 1752427305000 }, // malformed DEAL
+        { ApiTypeId: 306, timestamp: 1752427306000, HandId: 99999 }, // malformed RESULTS
+        HAND1_DEAL,
+        HAND1_RESULTS,
+      ] as never[])
+
+      // Derived state for the schema-broken hand, as an OLDER schema once
+      // produced it. The re-derivation cannot recreate it (its raw rows are
+      // filtered out), so the repair must leave it untouched -- exactly the
+      // state a plain import would have preserved until an explicit rebuild.
+      await db.hands.put({
+        id: 99999,
+        approxTimestamp: 1752427306000, // inside what a timestamp window would cover
+        seatUserIds: [2, 4, 3, 1],
+        winningPlayerIds: [4],
+        smallBlind: 100,
+        bigBlind: 200,
+        session: { id: 'stage000_003', battleType: 0 },
+        results: [],
+      } as never)
+      await db.phases.put({ handId: 99999, phase: 0, seatUserIds: [2, 4, 3, 1], communityCards: [] } as never)
+      await db.actions.put({ handId: 99999, index: 0, playerId: 2, phase: 0, actionType: 2, bet: 0, pot: 500, sidePot: [], position: 0, actionDetails: [] } as never)
+
+      const result = await handlers.importData(toJsonl([ENTRY_QUEUED, ...HAND1_EVENTS]))
+      expect(result.successCount).toBe(3)
+
+      // HAND1 is repaired...
+      expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(3)
+      // ...and the schema-broken hand's derived state survives untouched.
+      expect(await db.hands.get(99999)).toBeDefined()
+      expect(await db.phases.where('handId').equals(99999).count()).toBe(1)
+      expect(await db.actions.where('handId').equals(99999).count()).toBe(1)
+      expect(await db.hands.count()).toBe(2)
+    })
+  })
+
   test('a fresh import into an empty DB still derives entities through the unchanged direct path', async () => {
     await runWithFreshDb(async ({ db, handlers }) => {
       const result = await handlers.importData(toJsonl([ENTRY_QUEUED, ...HAND1_EVENTS]))

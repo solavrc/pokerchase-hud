@@ -331,19 +331,28 @@ Statistics Refresh (batch mode)
   with the current Zod schema before use, because the Lake intentionally
   stores unparseable rows (a malformed 306 must not truncate the range). New
   events alone cannot form such a hand's 303→306 boundary. The converter is
-  seeded with the empty default session only when the range actually starts
-  at a found 201 anchor; otherwise (incremental hands without a 201) the
-  live `service.session` seeds it, matching the direct path and the #104
-  SessionState-seeding regression. Saving is delete-then-put in one
-  transaction: derived hands whose `approxTimestamp` falls in the stale
-  window (previous completed-hand boundary exclusive → end boundary
-  inclusive) are deleted with their phases/actions before the regenerated
-  bundle is `bulkPut` — upsert alone (idempotent for hands present in both
-  derivations via deterministic entity keys) would leave rows that existed
-  only in the old derivation (a mis-paired hand's id absent from the new
-  derivation, or leftover `[handId+index]` action tails), double-counting
-  stats. Every hand in that window is re-derivable from the range by
-  construction; the Raw Event Lake is never touched. See
+  seeded with the empty default session only when the range starts at a
+  session boundary — a found 201 anchor, or (Lake-start fallback) a Lake
+  that begins with a valid 201 before its first valid DEAL; otherwise
+  (incremental hands without a 201) the live `service.session` seeds it,
+  matching the direct path and the #104 SessionState-seeding regression (a
+  201 overwrites id/battleType but not `session.name`, so live-session
+  seeding at a session boundary could leak a live table name into
+  historical repairs). Saving is delete-then-put in one transaction:
+  existing derived hands whose `id` matches a *validated*
+  `EVT_HAND_RESULTS` HandId inside the repair range (the hands this repair
+  can account for) are deleted with their phases/actions before the
+  regenerated bundle is `bulkPut` — upsert alone (idempotent for hands
+  present in both derivations via deterministic entity keys) would leave
+  rows that existed only in the old derivation (a mis-paired hand's id
+  absent from the new derivation, or leftover `[handId+index]` action
+  tails), double-counting stats. Id-based accounting (not a timestamp
+  window) means legacy hands lacking `approxTimestamp` are still cleaned
+  up, while hands whose source raw rows no longer pass the current schema
+  are never deleted (the re-derivation could not recreate them; they keep
+  their pre-import derived state until an explicit rebuild, same as
+  before). The regenerated bundle's hand ids are a subset of the accounted
+  set by construction; the Raw Event Lake is never touched. See
   `collectOverlapRepairEvents()` in `src/background/import-export.ts`
   (independent release-audit finding #7; boundary/session/stale-deletion
   refinements from PR #203 codex review). A fresh import into an empty DB
