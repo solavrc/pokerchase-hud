@@ -86,6 +86,38 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           // スタッツの復元（#158, `requestLatestStats`→`getLatestSessionStats`）
           // はDBを読む別経路でありlastKnownStatsを参照しないため、この変更の
           // 影響を受けない。
+          //
+          // post-merge reviewでは一時ここにhero単独lineupを合成する修正
+          // （round4/round5）や、App.tsx側にセッション状態・ヒーロー身元の
+          // 検証機構を足す修正（round6の「相互作用マトリクス」設計）を
+          // 積んだが、いずれもオーナー判断で撤回されている（PR #191,
+          // 2026-07-20, sola「それほど重要な機能ではないので、bで十分です」）。
+          // 理由: `service.setBattleTypeFilter()`は内部で無条件に
+          // `ReadEntityStream.recalculateStats()`を呼び、`lastKnownStats`の
+          // 中身に関係なく`service.latestEvtDeal.SeatUserIds`（ヒーローの
+          // 直近の実在席時点のフルの顔ぶれ。セッション終了後もクリアされ
+          // ない）を再計算・再ブロードキャストしてしまう。つまりこのファイル
+          // 側で`lastKnownStats`をどう作っても、その再ブロードキャストは
+          // 止められない別経路であり、追いかけるだけ複雑化する一方だった。
+          //
+          // 採用した方針（保守的な縮小スコープ）: bust後のミュート表示・
+          // hero身元の保持は「連続したライブシーケンス内」でのみ保証する
+          // （#158のセッション終了時hero保持は例外的にApp.tsx側で維持）。
+          // セッション終了後にフィルターを変更すると、`recalculateStats()`
+          // がヒーロー在籍時点の最後の実テーブル（対戦相手を含む）を新
+          // フィルターで再表示することがあるが、これは「不正確なデータ」
+          // ではなく「文脈的に古い可能性のある正確なデータ」であり、この
+          // 機能の重要度に見合わないため許容する。ここは元のround3の
+          // 意図通り単純な`[]`のままにする -- `updateBattleTypeFilter`の
+          // 明示的な`getLastKnownStats()`ベースの再write()を単にno-opに
+          // するだけで、他には何もしない。
+          //
+          // なお#188（read-entity-stream.tsのrecalculateStats()を呼ぶ
+          // message-router.tsのupdateBattleTypeFilterハンドラー自身）で、
+          // このwrite()と`recalculateStats()`の競合（観戦中のlineupが
+          // ヒーロー在籍dealのevtDealとペアリングされてしまうケース）に
+          // 対する`lineup-identity`ガードが別途入っており、この単純な
+          // `[]`のままでも競合は起きない。
           setLastKnownStats([])
         }
 

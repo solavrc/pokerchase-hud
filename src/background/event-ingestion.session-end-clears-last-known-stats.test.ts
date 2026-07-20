@@ -14,9 +14,9 @@
  * to every connected tab -- repopulating the HUD panels App.tsx had just
  * cleared, with the previous (now-departed) session's players.
  *
- * Fix: hook `setLastKnownStats([])` alongside the existing raw-ApiTypeId
- * session-end tracking in event-ingestion.ts (same raw-first pattern
- * `markSessionInactive()` already uses -- see
+ * Fix (round3): hook `setLastKnownStats([])` alongside the existing
+ * raw-ApiTypeId session-end tracking in event-ingestion.ts (same raw-first
+ * pattern `markSessionInactive()` already uses -- see
  * event-ingestion.update-manager-trigger.test.ts -- so this isn't affected
  * by the season3 EVT_SESSION_RESULTS payload breakage documented in
  * docs/postmortems/2026-07-session-results-drop.md; the raw numeric
@@ -24,13 +24,44 @@
  * `updateBattleTypeFilter`'s `lastKnownStats.length > 0` guard is false, so
  * a post-session filter change behaves like pre-session: no rebroadcast.
  *
+ * Rounds 4-6 (all since reverted, PR #191 post-merge review passes 2-3)
+ * tried, in turn: seeding `lastKnownStats` with a hero-only lineup here
+ * instead of `[]` (rounds 4/5), and adding a full session-aware hero-identity
+ * verification layer to App.tsx (round 6, the "相互作用マトリクス" design).
+ * Both directions targeted the wrong lever or over-engineered a low-priority
+ * feature: independent of `lastKnownStats`'s content, `service.
+ * setBattleTypeFilter()` (called by every `updateBattleTypeFilter` request)
+ * unconditionally runs `ReadEntityStream.recalculateStats()`, which
+ * re-broadcasts `service.latestEvtDeal.SeatUserIds` (the hero's full
+ * last-seated lineup, *including* the ended session's opponents, since
+ * `latestEvtDeal` survives session end by design) regardless of what this
+ * file sets `lastKnownStats` to. Chasing that broadcast (matching its
+ * seat-index convention, its evtDeal pairing, gating the whole display on a
+ * session-active ref, etc.) turned into a losing game of whack-a-mole across
+ * three review rounds.
+ *
+ * Owner decision (2026-07-20, sola: 「それほど重要な機能ではないので、bで
+ * 十分です」): descope to the conservative option. Busted-player dim/hero
+ * preservation is only guaranteed within an uninterrupted live sequence and
+ * at session end (#158's hero-panel survival, kept as-is in App.tsx's
+ * `handleSessionEnd`). A post-session filter change may occasionally
+ * re-display the hero's last real (pre-session-end) table via
+ * `recalculateStats()` -- accepted as "accurate but possibly stale", not
+ * engineered around further. This file stays exactly as simple as the
+ * original round3 fix. See event-ingestion.ts's inline comment for the full
+ * trace, and message-router.ts's `updateBattleTypeFilter` handler (#188) for
+ * the separate lineup-identity guard that independently prevents the
+ * spectator-lineup/hero-evtDeal mismatch broadcast race.
+ *
  * The pre-game hero-stats fallback (#158, `requestLatestStats` ->
  * `getLatestSessionStats`) is a separate DB-backed code path
  * (import-export.ts) that never reads `lastKnownStats`, so it's unaffected
- * by this change -- verified directly below rather than via a nonexistent
- * `e2e:playerid` scenario (no such npm script or e2e/scenarios file exists
- * in this repo; import-export.pregame-hero-stats.test.ts already covers
- * that path in isolation and is untouched by this change).
+ * by any of this -- verified directly below at the unit level, in addition
+ * to `e2e/scenarios/playerid-session-persistence.ts` (`npm run
+ * e2e:playerid`) exercising the same fallback end-to-end against a fixture
+ * that includes a spectator-mode `EVT_DEAL` + `EVT_SESSION_RESULTS`;
+ * `import-export.pregame-hero-stats.test.ts` also covers this path in
+ * isolation and is untouched by this change.
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
@@ -179,7 +210,7 @@ describe('session end (309) invalidates background lastKnownStats', () => {
     expect(getLastKnownStats()).toEqual([])
   })
 
-  test('filter change after session end does not rebroadcast the ended lineup (309 -> filter change -> no repopulation)', async () => {
+  test('filter change after session end does not rebroadcast the ended lineup via the explicit getLastKnownStats() write path (309 -> filter change -> no repopulation from this path)', async () => {
     // Simulate an ended session's lineup still cached from before the fix's
     // trigger point in this test (i.e. what would have lingered pre-fix).
     setLastKnownStats([{ playerId: 2, statResults: [] } as any, { playerId: 3, statResults: [] } as any])
@@ -196,8 +227,14 @@ describe('session end (309) invalidates background lastKnownStats', () => {
     )
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    // No rebroadcast: lastKnownStats was empty, so the ended lineup can't
-    // resurrect into App.tsx's already-cleared HUD panels.
+    // No rebroadcast from message-router.ts's explicit `getLastKnownStats()`
+    // write: lastKnownStats was empty, so the ended lineup can't resurrect
+    // into App.tsx's already-cleared HUD panels via *this* path. Note this
+    // test only observes `service.statsOutputStream.write`, not the
+    // separate `recalculateStats()` call `setBattleTypeFilter()` also makes
+    // (which pushes directly and doesn't go through `.write()`) -- that
+    // path, and App.tsx's defense against it, is covered by App.test.tsx's
+    // "セッション終了後" / sessionActiveRef test cases, not here.
     expect(writeSpy).not.toHaveBeenCalled()
   })
 
