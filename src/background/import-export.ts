@@ -617,10 +617,28 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
    * request sidesteps that race entirely: a fresh mount can't already have
    * a fresher in-tab lineup to clobber.
    *
-   * Also returns [] (send nothing, don't touch the caller's current state)
-   * when hero identity isn't known yet (fresh install / never played --
-   * behavior stays unchanged for that case) or an import/rebuild batch
-   * operation is in flight (`service.batchMode` -- don't fight that
+   * If hero identity isn't known in memory yet (`service.playerId` unset --
+   * e.g. a freshly-loaded unpacked extension instance whose in-memory
+   * service state starts empty, or a persisted state restored before any
+   * live EVT_DEAL ever arrived this browser session), fall back to
+   * `findLatestPlayerDealEvent(db)` before giving up: a cloud download or
+   * NDJSON import may already have populated the local DB with hero deal
+   * events, and there's no reason to sit dark until the next live EVT_DEAL
+   * re-derives it. This mirrors the DB-recovery path
+   * `PokerChaseService.recalculateAllStats()` already uses on batch-mode
+   * exit (see poker-chase-service.ts) -- same `Player?.SeatIndex !==
+   * undefined` derivation, same lack of extra re-validation beyond what
+   * `findLatestPlayerDealEvent()` already does internally (it re-validates
+   * each candidate row against the current Zod schema via
+   * `isApiEventType()`, consistent with the Raw Event Lake rules in
+   * docs/architecture.md). The derived id is assigned through the
+   * `service.playerId` setter, so it persists via the service's normal
+   * 500ms-debounced `chrome.storage.local` save and is visible to every
+   * later feature exactly as if it had come from a live EVT_DEAL. Still
+   * returns [] (send nothing, don't touch the caller's current state) if
+   * the DB has no hero deal event either (true fresh install / never
+   * played -- behavior stays unchanged for that case) or an import/rebuild
+   * batch operation is in flight (`service.batchMode` -- don't fight that
    * refresh storm; it recomputes and broadcasts the real lineup itself
    * once the batch completes, see `importData`/`rebuildAllData` below).
    *
@@ -641,6 +659,18 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
     await service.filtersRestored // guards the same race for battleType/tableSize/handLimit filters (see background.ts)
 
     if (service.batchMode) return []
+
+    if (!service.playerId) {
+      // In-memory hero identity is unknown -- see if the DB already knows it
+      // (cloud download / NDJSON import ahead of the first live EVT_DEAL).
+      const latestDealEvent = await findLatestPlayerDealEvent(db)
+      // A live EVT_DEAL may have set service.playerId while the lookup above
+      // was in flight -- that's fresher than anything the DB can tell us, so
+      // don't clobber it with the (now possibly stale) DB-derived value.
+      if (!service.playerId && latestDealEvent && latestDealEvent.Player?.SeatIndex !== undefined) {
+        service.playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex] // setter persists via the normal debounced save
+      }
+    }
     if (!service.playerId) return []
 
     const heroStats = await service.statsOutputStream.calcStats([service.playerId])
