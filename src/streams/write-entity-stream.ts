@@ -253,20 +253,43 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           // （#115で修正した通常のDEAL_ROUND経由のALL_IN救済では、DEAL_ROUND自体が
           // 送信されないこのケースを救えていなかった。sola監査、#115未解決コメント）。
           // フェーズ配列にFLOPが一度も現れておらず、かつボードが3枚以上到達して
-          // いる場合のみ、プリフロップでFOLDしなかったプレイヤーからFLOPフェーズを
-          // 合成する。BetStatusのスナップショットが存在しないため、通常経路
-          // （BET_ABLE || ALL_IN）の代わりにPREFLOPフェーズのFOLDアクションで
-          // 判定する（#97のフォールド除外と同じ結論に達する、EVT_DEAL_ROUND非依存の
-          // 導出）。
+          // いる場合のみ、FLOPフェーズを合成する。BetStatusのスナップショットが
+          // 存在しないため、通常経路（BET_ABLE || ALL_IN）の代わりに以下2条件の
+          // AND でメンバーシップを判定する（PR #184 codex review, P2）:
+          //   (i)  PREFLOPフェーズでFOLDアクションを送っていない（#97のフォールド
+          //        除外と同じ結論）
+          //   (ii) EVT_HAND_RESULTS.Results[]に存在する
+          // (i)単独では不十分: タイムアウト/切断したプレイヤーは明示的なFOLDの
+          // EVT_ACTIONが送信されないことがあり、かつこの場合Results[]にも一切
+          // 含まれない（docs/api-events.md「EVT_ACTION: 送信されないケース」
+          // 「タイムアウト / 切断」、src/types/api.ts EVT_HAND_RESULTS.Results[].UserId
+          // のdescribe）。このプレイヤーはフォールドもオールインもしていない
+          // （黙って消えただけ）ため、(i)だけで判定するとFLOP合成メンバーに誤って
+          // 含まれてしまう。
+          // (ii)単独でも不十分: PREFLOPでFOLDしたプレイヤーがFOLD_OPEN（フォールド後
+          // の自発的カード公開）を選んだ場合、そのプレイヤーはResults[]に含まれる
+          // （RankType=12）にもかかわらずFLOPを見ていない（src/types/api.ts
+          // 「フォールド済みプレイヤーはFOLD_OPENしない限りResults[]に含まれない」＝
+          // FOLD_OPENなら含まれる）。
+          // 一方、真にプリフロップオールインでボードが自動進行した生存者は、それ以上
+          // ベット判断の余地がないため必ずショーダウンへ到達しResults[]に実役
+          // （RankType 0-9）またはSHOWDOWN_MUCK（11）で現れる — src/types/api.ts の
+          // 不変条件「Pot + sum(SidePot) == sum(Results[].RewardChip)」が100%成立する
+          // こと（docs/api-events.md該当行）はチップを持つ全参加者がResults[]に
+          // エントリを持つことを要求する。したがって両条件のANDのみがゲームの実際の
+          // 意味論と一致する。
           if (fullBoard.length >= 3 && !handState.phases.some(p => p.phase === PhaseType.FLOP)) {
             const preflopFoldedPlayerIds = new Set(
               handState.actions
                 .filter(a => a.phase === PhaseType.PREFLOP && a.actionType === ActionType.FOLD)
                 .map(a => a.playerId)
             )
+            const resultUserIds = new Set(event.Results.map(({ UserId }) => UserId))
             handState.phases.push({
               phase: PhaseType.FLOP,
-              seatUserIds: handState.hand.seatUserIds.filter(uid => uid !== -1 && !preflopFoldedPlayerIds.has(uid)),
+              seatUserIds: handState.hand.seatUserIds.filter(uid =>
+                uid !== -1 && !preflopFoldedPlayerIds.has(uid) && resultUserIds.has(uid)
+              ),
               communityCards: fullBoard.slice(0, 3),
             })
           }

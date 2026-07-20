@@ -46,11 +46,33 @@
  *      write-entity-stream.ts do it: if no EVT_DEAL_ROUND for phase FLOP was
  *      ever observed AND the accumulated board (DEAL_ROUND CommunityCards +
  *      EVT_HAND_RESULTS.CommunityCards) reaches >= 3 cards, "saw flop" is
- *      instead every dealt seat that never took a PREFLOP FOLD action --
- *      the only way to leave the hand before an unconditional preflop
- *      all-in runout. This is deliberately actions-derived (mirroring how
- *      folded players are excluded everywhere else in this file), not a
- *      copy of the pipeline's own fallback.
+ *      every dealt seat that (i) never took a PREFLOP FOLD action AND
+ *      (ii) is present in EVT_HAND_RESULTS.Results[]. (i) alone is NOT
+ *      sufficient (PR #184 codex review, P2): on a timeout/disconnect
+ *      PokerChase may send no explicit FOLD EVT_ACTION at all for that seat,
+ *      AND omit the player from Results[] entirely (docs/api-events.md
+ *      "EVT_ACTION: 送信されないケース" / "タイムアウト / 切断"; also
+ *      src/types/api.ts EVT_HAND_RESULTS.Results[].UserId doc: "タイムアウト/
+ *      切断プレイヤーはResults[]に含まれない場合がある"). Such a player never
+ *      folded and never went all-in -- they just silently vanished -- so a
+ *      FOLD-action-only check wrongly keeps them in the synthesized FLOP.
+ *      Requiring Results[] presence closes this: every genuine preflop
+ *      all-in survivor is guaranteed to reach an unconditional showdown (no
+ *      further betting decisions remain once all contesting players are
+ *      all-in) and therefore IS present in Results[] with a real RankType
+ *      (0-9) or SHOWDOWN_MUCK (11) -- confirmed by src/types/api.ts's own
+ *      invariant "Pot + sum(SidePot) == sum(Results[].RewardChip)" holding
+ *      100% (docs/api-events.md line 285), which requires every chip-bearing
+ *      contestant to have a Results[] entry. The (i) FOLD-action check is
+ *      still needed alongside (ii): a player who folded preflop but later
+ *      chose FOLD_OPEN (self-reveal) DOES appear in Results[] (RankType=12)
+ *      despite never seeing the flop, so Results[] presence alone is not a
+ *      sufficient condition either -- src/types/api.ts: "フォールド済み
+ *      プレイヤーはFOLD_OPENしない限りResults[]に含まれない". Only the AND of
+ *      both conditions matches the game's actual semantics. This is
+ *      deliberately actions/results-derived (mirroring how folded players
+ *      are excluded everywhere else in this file), not a copy of the
+ *      pipeline's own fallback.
  *  (a3) VPIP/PFR denominators exclude "walks": a hand where the player is
  *      the BB (Game.BigBlindSeat) and took ZERO preflop actions (true walk,
  *      or the "BB action skip" path where NextActionSeat=-2 and the BB's
@@ -561,13 +583,18 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
     // for the FLOP was ever observed (flopActivePlayers still undefined) but
     // the board nonetheless reached the flop -- the remaining cards arrived
     // solely via EVT_HAND_RESULTS.CommunityCards -- derive "saw flop"
-    // independently from PREFLOP fold actions rather than a BetStatus
-    // snapshot that was never sent. Every dealt seat that did NOT fold
-    // preflop necessarily went all-in for the board to run out unconditionally.
+    // independently from a BetStatus snapshot that was never sent. A dealt
+    // seat only belongs in the synthesized FLOP if it (i) never took a
+    // PREFLOP FOLD action AND (ii) is present in Results[] -- see this
+    // file's header comment (a4b) for why the AND of both is required: (i)
+    // alone wrongly keeps silent timeout/disconnect seats (no FOLD action
+    // AND absent from Results[]), while (ii) alone wrongly keeps FOLD_OPEN
+    // self-reveals (present in Results[] despite folding preflop).
     const finalBoardCardCount = dealRoundCommunityCardCount + (resultsEvt.CommunityCards?.length ?? 0)
     if (flopActivePlayers === undefined && finalBoardCardCount >= 3) {
+      const resultUserIds = new Set((resultsEvt.Results || []).map(r => r.UserId))
       flopActivePlayers = new Set(
-        seatUserIds.filter(pid => pid !== -1 && !preflopFoldedPlayers.has(pid))
+        seatUserIds.filter(pid => pid !== -1 && !preflopFoldedPlayers.has(pid) && resultUserIds.has(pid))
       )
     }
 
