@@ -244,7 +244,7 @@ export const buildStoreFixture = (): string => {
     timestamp: (ts += 2000),
     SeatUserIds: seatUserIds,
     Game: {
-      CurrentBlindLv: 6, SmallBlind: SB, BigBlind: BB, Ante: ANTE,
+      CurrentBlindLv: 2, SmallBlind: SB, BigBlind: BB, Ante: ANTE,
       ButtonSeat: btnSeat, SmallBlindSeat: sbSeat, BigBlindSeat: bbSeat,
       NextBlindUnixSeconds: Math.floor(ts / 1000) + 300,
     },
