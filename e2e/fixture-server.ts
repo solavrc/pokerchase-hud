@@ -99,6 +99,15 @@ export const startFixtureServer = async (options: FixtureServerOptions = {}): Pr
 
   const wss = new WebSocketServer({ server: httpServer, path: '/replay' })
 
+  // `ws` forwards the underlying `httpServer`'s `error` event onto `wss`
+  // itself (`server.on('error', this.emit.bind(this, 'error'))` in
+  // websocket-server.js), so a startup failure like EADDRINUSE surfaces
+  // *twice*: once on `httpServer` (handled below, to reject the listen
+  // promise) and once re-emitted on `wss`. Without a listener here, that
+  // second emission is itself an unhandled `'error'` event and crashes the
+  // process before the listen-promise rejection is ever observed.
+  wss.on('error', () => {})
+
   wss.on('connection', (socket: WebSocket) => {
     void (async () => {
       for (const event of events) {
@@ -113,7 +122,27 @@ export const startFixtureServer = async (options: FixtureServerOptions = {}): Pr
     })()
   })
 
-  await new Promise<void>((resolve) => httpServer.listen(port, '127.0.0.1', resolve))
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      const onError = (err: Error): void => {
+        httpServer.removeListener('listening', onListening)
+        rejectListen(err)
+      }
+      const onListening = (): void => {
+        httpServer.removeListener('error', onError)
+        resolveListen()
+      }
+      httpServer.once('error', onError)
+      httpServer.once('listening', onListening)
+      httpServer.listen(port, '127.0.0.1')
+    })
+  } catch (err) {
+    // `listen` failed (e.g. EADDRINUSE from a stale daemon) -- without this
+    // catch the caller never learns why, and the WebSocketServer we already
+    // attached to `httpServer` would otherwise leak.
+    wss.close()
+    throw err
+  }
 
   const close = (): Promise<void> =>
     new Promise((resolve, reject) => {
