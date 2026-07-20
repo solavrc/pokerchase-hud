@@ -129,8 +129,23 @@ const run = async (): Promise<void> => {
     // PokerChaseService.persistState().
     await new Promise((resolve) => setTimeout(resolve, 1500))
 
-    const preReloadHandCount = await maxHandCount(harness)
-    check('phase1: hero panel shows HAND > 0 before reload', preReloadHandCount > 0, `max HAND seen = ${preReloadHandCount}`)
+    // NOTE (codex #177 P2): we intentionally do NOT assert `HAND > 0` here.
+    // The fixture's final EVT_DEAL (303) is a spectator-mode deal with lineup
+    // [2001,2002,2003,-1,-1,-1] (hero absent). AggregateEventsStream calls
+    // `statsOutputStream.write(event.SeatUserIds)` for every EVT_DEAL once the
+    // DB has hands (see aggregate-events-stream.ts's unconditional DB-count
+    // check), regardless of whether `Player` is present -- so by the time this
+    // 1.5s wait elapses, the live HUD has already been overwritten with stats
+    // for the spectated table's playerIds (2001/2002/2003), which have no
+    // history and render HAND=0. That is correct, current behavior (not a
+    // regression this scenario is about) -- the pre-fix bug and its fix are
+    // about whether `service.playerId`/`service.latestEvtDeal` survive this
+    // spectator deal internally, not about what the live panel happens to
+    // show for an unrelated table at this instant. The actual regression this
+    // scenario guards is the POST-reload hero panel below, which is driven by
+    // the #158 pre-game fallback (`getLatestSessionStats({ preGame: true })`)
+    // and depends only on `service.playerId` having survived. We still
+    // capture a screenshot here for debugging.
     await harness.screenshot(join(screenshotDir, 'playerid-before-reload.png'))
 
     // --- Phase 2: "browser reload" -- navigate to a fresh mount with zero

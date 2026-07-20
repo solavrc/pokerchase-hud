@@ -81,28 +81,51 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           // EVT_DEAL — 例: トーナメント敗退後もクライアントが他プレイヤーのテーブルを
           // 受信し続けるケース。docs/api-events.md「EVT_DEAL: Playerフィールドの欠落」
           // 「観戦モード: Playerフィールド自体がundefined」参照）では undefined になる。
-          // 以前はここで無条件に `this.service.playerId = undefined` / `latestEvtDeal = event`
-          // を代入していたため、既に確定していたヒーローの playerId が観戦モードの
-          // deal 1件だけで消え、500msデバウンス後に chrome.storage.local へ undefined が
-          // 永続化されていた。セッション終盤（ヒーロー敗退後の観戦・テーブル終了間際）に
-          // この種の deal が起きやすく、「初手でplayerId確定→セッション終了後リロードで
-          // undefinedに戻る」という実地報告（sola 2026-07-20）と一致する。クラウドDL後の
-          // 明示的な再構築（rebuildAllData/importData）で復旧してリロードを跨いで生存する
-          // のは、それらが findLatestPlayerDealEvent()（database-utils.ts）で
+          // 以前はここで無条件に `this.service.playerId = undefined` を代入していたため、
+          // 既に確定していたヒーローの playerId が観戦モードの deal 1件だけで消え、
+          // 500msデバウンス後に chrome.storage.local へ undefined が永続化されていた。
+          // セッション終盤（ヒーロー敗退後の観戦・テーブル終了間際）にこの種の deal が
+          // 起きやすく、「初手でplayerId確定→セッション終了後リロードでundefinedに
+          // 戻る」という実地報告（sola 2026-07-20）と一致する。クラウドDL後の明示的な
+          // 再構築（rebuildAllData/importData）で復旧してリロードを跨いで生存するのは、
+          // それらが findLatestPlayerDealEvent()（database-utils.ts）で
           // Player.SeatIndexが存在する直近dealだけを見て再設定するため — 同じ生イベント列
           // に対してここ（ライブ経路）とそちら（再構築経路）とで挙動が非対称だったのが
           // 本質。
           //
-          // 修正: Player が存在する deal（＝ヒーローとして着席している）のときだけ
-          // playerId と 席マッピング用の latestEvtDeal を更新する。観戦モードの deal は
+          // 修正（スコープをplayerIdのみに限定）: playerId は Player が存在する deal
+          // （＝ヒーローとして着席している）のときだけ更新する。観戦モードの deal は
           // 無視して直前の値を保持する。別アカウントへのログイン切り替えは、次に
           // Player が存在する EVT_DEAL が来た時点で正しく上書きされるため、この変更後も
           // 追従する（意図的に維持する挙動）。
+          //
+          // 一方 latestEvtDeal は Player の有無に関わらず毎回更新する（修正前の挙動に
+          // 戻す）。理由: 下のブロック（117行目付近）は Player の有無を問わず、DBに
+          // ハンドが1件でもあれば毎 EVT_DEAL で
+          // `this.service.statsOutputStream.write(event.SeatUserIds)` を呼び、観戦中の
+          // 別テーブルの新しい顔ぶれで統計を再計算・ブロードキャストする
+          // （ports.ts registerStreamSubscriptions の statsOutputStream 購読）。
+          // その際 broadcastMessage は `evtDeal: service.latestEvtDeal` を同梱し、
+          // App.tsx の handleStatsMessage は `evtDeal.Player?.SeatIndex` が存在する
+          // ときだけヒーロー基準に座席を回転させる（存在しなければ回転せず生の席順で
+          // 表示）。latestEvtDeal も一緒にガードして直前のヒーロー在籍dealのまま
+          // 固定してしまうと、新しい観戦テーブルの統計（新SeatUserIds）が古いヒーロー
+          // 席インデックスで誤って回転され、パネルが実際の座席とズレる
+          // （codex #177 P2指摘）。latestEvtDeal を Player の有無に関わらず追従させれば、
+          // 観戦モードでは evtDeal.Player が undefined になるため回転自体が発生せず、
+          // 新しい観戦テーブルの統計と一致する。
+          //
+          // このガード分離がplayerId消失を再導入しないことの確認: chrome.storage.local
+          // からの復元（restoreState(), poker-chase-service.ts:302-305）は保存済みの
+          // `state.playerId` を直接 `_playerId` に代入するだけで、`state.latestEvtDeal`
+          // から playerId を再導出する経路は存在しない。したがって Player 不在の
+          // latestEvtDeal が永続化されていても、playerId 自体は影響を受けない
+          // （poker-chase-service.test.ts の3件の観戦モード回帰テストで検証済み）。
           if (event.Player?.SeatIndex !== undefined) {
             this.service.playerId = event.SeatUserIds[event.Player.SeatIndex]
-            // 席マッピング用に最新のEVT_DEALを保存
-            this.service.latestEvtDeal = event
           }
+          // 席マッピング用に最新のEVT_DEALを保存（Player有無に関わらず毎回更新）
+          this.service.latestEvtDeal = event
 
           // Capture hero's hole cards for hand improvement calculations (only in real-time play)
           if (!this.service.batchMode && event.Player?.HoleCards && event.Player.HoleCards.length === 2 && this.service.playerId) {

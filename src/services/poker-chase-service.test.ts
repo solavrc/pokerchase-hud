@@ -283,9 +283,14 @@ describe('PokerChaseService - hero playerId survives session end + SW restart (s
     await service.handAggregateStream.whenIdle()
 
     // 修正前はここで undefined になっていた（観戦モードdealが無条件で
-    // playerId/latestEvtDealを上書きしていたため）
+    // playerIdを上書きしていたため）
     expect(service.playerId).toBe(101)
-    expect(service.latestEvtDeal?.SeatUserIds).toEqual(dealEvent.SeatUserIds)
+    // latestEvtDealはPlayerの有無に関わらず追従する（席マッピング用の生データ）。
+    // 観戦モードdealでも直前のヒーローdealに固定したままだと、observeしている
+    // 別テーブルの統計がApp.tsxで古いヒーロー席インデックスを基準に誤回転されて
+    // しまうため（codex #177 P2指摘）、観戦モードdealのSeatUserIdsに更新される
+    // のが正しい挙動。
+    expect(service.latestEvtDeal?.SeatUserIds).toEqual(spectatorDealEvent.SeatUserIds)
   })
 
   test('観戦モードdeal後もchrome.storage.localへplayerIdが正しく永続化され、SW再起動（新規service+restoreState）を跨いで生存する', async () => {
