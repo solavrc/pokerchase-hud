@@ -12,6 +12,7 @@ export {
   type ApiMessage,
   // Validation functions
   isApplicationApiEvent,
+  isUnparseableApplicationEvent,
   validateApiEvent,
   validateMessage,
   isApiEventType,

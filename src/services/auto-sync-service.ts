@@ -7,7 +7,7 @@ import { firestoreBackupService } from './firestore-backup-service'
 import { firebaseAuthService } from './firebase-auth-service'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
-import { ApiType, isApiEventType, isApplicationApiEvent } from '../types'
+import { ApiType, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent } from '../types'
 import type { ApiEvent } from '../types'
 import { processInChunks, saveEntities, filterValidApplicationEvents } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
@@ -40,6 +40,13 @@ export class AutoSyncService {
   private readonly MIN_SYNC_INTERVAL_MS = 0 // No minimum interval restriction
   private readonly SYNC_STORAGE_KEY = 'autoSyncLastTime'
   private readonly EVENTS_THRESHOLD = 100 // 100イベント溜まったら同期
+  /**
+   * `meta`テーブルのキー。`syncToCloud()`のwatermarkガード（下記コメント参照）が
+   * 「アプリケーション種別だが現在パースできない生行のうち、最も古いタイムスタンプ」
+   * を永続化する場所。存在する限り、以降の全`syncToCloud()`呼び出しはこの値の
+   * 直前までスキャン開始点を巻き戻す。
+   */
+  private readonly SYNC_UNPARSEABLE_FLOOR_KEY = 'syncUnparseableFloor'
 
   constructor(db?: PokerChaseDB) {
     this.db = db ?? new PokerChaseDB(self.indexedDB, self.IDBKeyRange)
@@ -172,29 +179,86 @@ export class AutoSyncService {
    */
   private async syncToCloud(): Promise<void> {
     console.log('[AutoSync] Starting upload to cloud...')
-    
+
     // Get the latest timestamp from cloud first
     const cloudMaxTimestamp = await firestoreBackupService.getCloudMaxTimestamp()
     console.log(`[AutoSync] Cloud max timestamp: ${cloudMaxTimestamp || 'none'}`)
-    
-    // Count events newer than cloud's latest
-    const totalCount = cloudMaxTimestamp
-      ? await this.db.apiEvents.where('timestamp').above(cloudMaxTimestamp).count()
+
+    // --- Unparseable-row watermark guard (PR #142 review r3611258695) -------
+    //
+    // The problem: `chunk = rawChunk.filter(isApplicationApiEvent)` below drops
+    // any raw row whose ApiTypeId IS an application type but whose payload
+    // currently fails Zod validation (e.g. a 309 broken by a PokerChase payload
+    // change -- see docs/postmortems/2026-07-session-results-drop.md). That row
+    // is never uploaded, but `lastProcessedTimestamp` -- and therefore
+    // Firestore's own max timestamp, which `getCloudMaxTimestamp()` reads back
+    // on every subsequent call -- still advances past it as soon as a *later*
+    // valid event (same or a following session) gets uploaded. From that point
+    // on, `.where('timestamp').above(cloudMaxTimestamp)` starts strictly after
+    // the broken row forever. The raw copy survives locally (Raw Event Lake),
+    // but the row is structurally excluded from every future upload query --
+    // even after a future schema fix makes it parseable again. That's not a
+    // delay, it's a permanent, silent loss of that row from the cloud backup
+    // (and `syncFromCloud()` on a fresh install after local data loss could
+    // never recover it either).
+    //
+    // Alternatives considered and rejected:
+    // - Never advance the cursor past ANY unparseable row: reintroduces the
+    //   exact starvation this raw-chunk-boundary cursor design exists to avoid
+    //   (see the "100% noise chunk" test) -- one stuck row would block all
+    //   future uploads forever, not just its own.
+    // - Upload the raw/unparsed row to Firestore as an opaque blob so it counts
+    //   toward `getCloudMaxTimestamp()`: pollutes Firestore with non-`ApiEvent`
+    //   documents that `syncFromCloud()`/`decodeFields()` and every downstream
+    //   consumer would need to special-case.
+    // - Only re-scan from the earliest unparseable timestamp right after an
+    //   explicit rebuild: misses the case where the schema fix ships and the
+    //   very next auto-sync fires before any rebuild runs.
+    //
+    // Chosen fix: persist the earliest currently-known unparseable-application
+    // timestamp in `meta` (`SYNC_UNPARSEABLE_FLOOR_KEY`), independent of
+    // Firestore's own max. Every `syncToCloud()` call rewinds its scan floor to
+    // just before that marker (if one is pending), so the row keeps getting
+    // re-offered to `isApplicationApiEvent` on every sync -- once it parses, it
+    // uploads normally and the marker clears. A row that's known noise (202/205,
+    // or any ApiTypeId not in `ApiTypeValues` at all) never sets the marker, so
+    // a noise-only chunk still advances the cursor immediately and can't starve
+    // the loop -- this only holds back rows that *should* eventually parse.
+    const pendingUnparseableTimestamp = await this.getUnparseableSyncFloor()
+    const scanFloor = pendingUnparseableTimestamp !== null && cloudMaxTimestamp !== null
+      ? Math.min(cloudMaxTimestamp, pendingUnparseableTimestamp - 1)
+      : cloudMaxTimestamp
+    if (scanFloor !== cloudMaxTimestamp) {
+      console.log(`[AutoSync] Rewinding upload scan to ${scanFloor} to re-offer a previously unparseable row at ${pendingUnparseableTimestamp}`)
+    }
+
+    // Count events newer than the (possibly rewound) scan floor
+    const totalCount = scanFloor !== null
+      ? await this.db.apiEvents.where('timestamp').above(scanFloor).count()
       : await this.db.apiEvents.count()
-    
+
     if (totalCount === 0) {
       console.log('[AutoSync] No new events to sync')
+      // Nothing at all above the floor -- if a marker was pending, its row no
+      // longer exists locally (e.g. local data was cleared). Nothing left to
+      // recover, so clear the stale marker rather than rewinding forever.
+      if (pendingUnparseableTimestamp !== null) await this.persistUnparseableSyncFloor(null)
       return
     }
-    
+
     console.log(`[AutoSync] Found ${totalCount} new events to sync`)
-    
+
     // Process in chunks to avoid memory issues
     const CHUNK_SIZE = DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
     let processed = 0
     let synced = 0
-    let lastProcessedTimestamp = cloudMaxTimestamp || 0
-    
+    let lastProcessedTimestamp = scanFloor || 0
+    // Earliest still-unparseable-application timestamp seen across this whole
+    // pass. Only committed to `meta` once the pass completes (success or not
+    // found), so a mid-pass failure (e.g. a Firestore write error) leaves the
+    // previous marker untouched instead of losing track of it.
+    let earliestUnparseableThisPass: number | null = null
+
     while (processed < totalCount) {
       // Get chunk of raw events newer than lastProcessedTimestamp. apiEvents is the
       // raw Lake (see docs/architecture.md) — it may contain non-application noise
@@ -218,11 +282,31 @@ export class AutoSyncService {
       // advance the cursor and the loop would refetch it forever.
       const chunk = rawChunk.filter(isApplicationApiEvent)
 
+      // Track any application-typed rows in this raw chunk that still can't
+      // parse (see watermark guard above) so the floor marker reflects the
+      // earliest one still pending after this pass.
+      for (const raw of rawChunk) {
+        if (isUnparseableApplicationEvent(raw) && typeof raw.timestamp === 'number') {
+          earliestUnparseableThisPass = earliestUnparseableThisPass === null
+            ? raw.timestamp
+            : Math.min(earliestUnparseableThisPass, raw.timestamp)
+        }
+      }
+
       // Sync this chunk (skip the Firestore round-trip entirely if it's all noise)
       if (chunk.length > 0) {
         const summary = await firestoreBackupService.syncToCloudBatch(
           chunk,
-          cloudMaxTimestamp,
+          // Pass the (possibly rewound) scan floor, not the raw Firestore max:
+          // otherwise a just-recovered row whose timestamp sits below the real
+          // cloud max would be filtered back out by syncToCloudBatch's own
+          // dedup check, defeating the whole point of rewinding. Firestore
+          // writes are idempotent upserts keyed by `${timestamp}_${ApiTypeId}`,
+          // so redundantly re-sending already-uploaded rows in
+          // [scanFloor, cloudMaxTimestamp] while a marker is pending is safe --
+          // just extra write cost, bounded to however much happened since the
+          // break, and it stops once the row resolves.
+          scanFloor,
           (progress) => {
             this.updateSyncState({
               progress: {
@@ -246,7 +330,31 @@ export class AutoSyncService {
       }
     }
 
+    // Full pass completed without throwing: commit what we learned about
+    // pending unparseable rows (clears the marker if none remain).
+    await this.persistUnparseableSyncFloor(earliestUnparseableThisPass)
+
     console.log(`[AutoSync] Uploaded ${synced} new events to cloud`)
+  }
+
+  /** Read the persisted unparseable-row sync floor (see `syncToCloud()`). */
+  private async getUnparseableSyncFloor(): Promise<number | null> {
+    const record = await this.db.meta.get(this.SYNC_UNPARSEABLE_FLOOR_KEY)
+    const value = record?.value
+    return typeof value === 'number' ? value : null
+  }
+
+  /** Persist (or clear, when `timestamp` is `null`) the unparseable-row sync floor. */
+  private async persistUnparseableSyncFloor(timestamp: number | null): Promise<void> {
+    if (timestamp === null) {
+      await this.db.meta.delete(this.SYNC_UNPARSEABLE_FLOOR_KEY)
+      return
+    }
+    await this.db.meta.put({
+      id: this.SYNC_UNPARSEABLE_FLOOR_KEY,
+      value: timestamp,
+      updatedAt: Date.now()
+    })
   }
 
   /**
