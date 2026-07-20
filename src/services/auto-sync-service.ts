@@ -770,9 +770,79 @@ export class AutoSyncService {
       console.log(`[AutoSync] Rewinding upload scan to ${scanFloor} to re-offer a previously unparseable row at ${pendingUnparseableTimestamp}`)
     }
 
-    // Count events newer than the (possibly rewound) scan floor
+    // ==========================================================================
+    // P1 FIX (release blocker; independent audit, 2026-07-21) -- COMPOUND-KEY
+    // UPLOAD PAGINATION
+    // ==========================================================================
+    //
+    // apiEvents' PRIMARY KEY is the compound `[timestamp+ApiTypeId]`
+    // (poker-chase-db.ts), not bare `timestamp` alone -- two raw rows CAN
+    // legitimately share the exact same millisecond with different
+    // ApiTypeId (a burst of near-simultaneous API responses). Every cursor
+    // below (the count, the pass-start cursor, and the per-chunk cursor at
+    // the end of the while-loop further down) used to key off bare
+    // `timestamp` alone via `.where('timestamp').above(x)`. That is broken
+    // in two equivalent ways:
+    //
+    // (a) MID-PASS CHUNK BOUNDARY: if a CHUNK_SIZE-row page boundary falls
+    //     between two same-millisecond rows, the chunk that uploads first
+    //     advances `lastProcessedTimestamp` to that shared millisecond, and
+    //     the NEXT page's `.above(lastProcessedTimestamp)` is strictly
+    //     greater-than -- it permanently excludes the second row. The loop
+    //     still completes "successfully" (every OTHER row uploaded and
+    //     confirmed), so the end-of-loop commit further down advances/clears
+    //     the unparseable-floor protection right past the silently-skipped
+    //     row exactly as if it had actually been uploaded.
+    //
+    // (b) PASS-START BOUNDARY (the same bug, one layer up): even with (a)
+    //     fixed, the very first chunk of a pass still started its query
+    //     strictly above `scanFloor` (== `cloudMaxTimestamp` in the common,
+    //     no-pending-floor case). A local row sharing `cloudMaxTimestamp`'s
+    //     exact millisecond with a DIFFERENT ApiTypeId than whatever cloud
+    //     doc actually pushed the watermark there -- because a PRIOR pass
+    //     hit exactly the (a) bug at what happened to be its own last chunk
+    //     -- would never even be fetched, on this pass or any future one,
+    //     since every future pass's `cloudMaxTimestamp` still reads back
+    //     that same millisecond.
+    //
+    // FIX: cursor the primary key `[timestamp+ApiTypeId]` end-to-end,
+    // tracking BOTH components between chunks (fixes (a)), and make the
+    // PASS-START cursor's ApiTypeId component `ApiTypeIdFloorSentinel` (0) --
+    // below every real ApiTypeId (all >= 100; see `ApiTypeValues` /
+    // `z.number().int()` in types/api.ts, and the existing `[apiTypeId, 0]`
+    // lower-bound convention already used in
+    // `backfillUnparseableFloorIfNeeded` above) -- which makes the first
+    // page's lower bound INCLUSIVE of `scanFloor`'s own millisecond instead
+    // of strictly-after it (fixes (b)).
+    //
+    // COST: the pass-start inclusivity means the first page may re-examine,
+    // and harmlessly re-upload, whatever OTHER row(s) already sit at cloud's
+    // exact watermark millisecond -- Firestore writes are idempotent upserts
+    // keyed by `${timestamp}_${ApiTypeId}` (firestore-backup-service.ts), so
+    // this is a no-op write, not a correctness or growing-cost concern: it's
+    // bounded to however many rows tie at that one instant, and the
+    // watermark itself advances past it on the next pass that uploads
+    // anything newer.
+    //
+    // `firestoreBackupService.syncToCloudBatch()`'s OWN internal dedup filter
+    // (`event.timestamp > <threshold>`, see its doc comment) is bare-
+    // timestamp-only -- it has no ApiTypeId to compare against, so it can't
+    // be made compound-aware the way the cursor above just was. Shifting the
+    // threshold VALUE passed to it one millisecond earlier than `scanFloor`
+    // makes its `>` check inclusive of `scanFloor`'s own millisecond too,
+    // consistent with the cursor above -- reusing the exact same "pass a
+    // deliberately lowered threshold, rely on idempotent upserts" pattern
+    // this file already established for the unparseable-floor rewind (see
+    // the big comment block above this one). Pre-existing floor-rewind
+    // tests' asserted `floor` values shift down by 1 accordingly (see
+    // auto-sync-service.test.ts).
+    const ApiTypeIdFloorSentinel = 0
+    const uploadDedupThreshold = scanFloor !== null ? scanFloor - 1 : null
+
+    // Count events at-or-newer than the (possibly rewound) scan floor,
+    // inclusive of ties at `scanFloor`'s own millisecond (see fix (b) above).
     const totalCount = scanFloor !== null
-      ? await this.db.apiEvents.where('timestamp').above(scanFloor).count()
+      ? await this.db.apiEvents.where('[timestamp+ApiTypeId]').above([scanFloor, ApiTypeIdFloorSentinel]).count()
       : await this.db.apiEvents.count()
 
     if (totalCount === 0) {
@@ -792,7 +862,11 @@ export class AutoSyncService {
     const CHUNK_SIZE = DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
     let processed = 0
     let synced = 0
-    let lastProcessedTimestamp = scanFloor || 0
+    // Compound cursor: BOTH components must track the actual last-processed
+    // row between chunks (see fix (a) above). Starts at `scanFloor`'s own
+    // millisecond with the sentinel ApiTypeId (see fix (b) above).
+    let lastProcessedTimestamp = scanFloor ?? 0
+    let lastProcessedApiTypeId = ApiTypeIdFloorSentinel
     // Earliest still-unparseable-application timestamp seen across this whole
     // pass (see invariant spec above). Only ever reflects rows that are
     // STILL unparseable as of this pass's scan -- a row that resolved (now
@@ -809,20 +883,27 @@ export class AutoSyncService {
     let persistedFloorValue = pendingUnparseableTimestamp
 
     while (processed < totalCount) {
-      // Get chunk of raw events newer than lastProcessedTimestamp. apiEvents is the
-      // raw Lake (see docs/architecture.md) — it may contain non-application noise
-      // (202/205 keepalive/timer events) that we deliberately never sync to cloud
-      // (cost decision: only application-type events go to Firestore).
+      // Get chunk of raw events newer than the compound (timestamp, ApiTypeId)
+      // cursor. apiEvents is the raw Lake (see docs/architecture.md) — it may
+      // contain non-application noise (202/205 keepalive/timer events) that
+      // we deliberately never sync to cloud (cost decision: only
+      // application-type events go to Firestore). Cursoring the PRIMARY key
+      // `[timestamp+ApiTypeId]` (not bare `timestamp`) is the P1 fix above --
+      // it is what lets same-millisecond rows survive a CHUNK_SIZE page
+      // boundary instead of one of them being silently, permanently skipped.
       const rawChunk = await this.db.apiEvents
-        .where('timestamp')
-        .above(lastProcessedTimestamp)
+        .where('[timestamp+ApiTypeId]')
+        .above([lastProcessedTimestamp, lastProcessedApiTypeId])
         .limit(CHUNK_SIZE)
         .toArray()
 
       if (rawChunk.length === 0) break
 
-      // Sort chunk by timestamp to ensure order
-      rawChunk.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+      // Sort chunk by the full compound key (timestamp, then ApiTypeId) --
+      // matches primary-key order already, but sorting explicitly (rather
+      // than relying on Dexie's cursor order) keeps same-millisecond ties
+      // deterministically ordered regardless of index internals.
+      rawChunk.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0) || (a.ApiTypeId || 0) - (b.ApiTypeId || 0))
 
       // Application-type-only filter for cloud upload. Deliberately filtered AFTER
       // sorting/tracking the raw chunk's boundary, not before: lastProcessedTimestamp
@@ -877,16 +958,26 @@ export class AutoSyncService {
       if (chunk.length > 0) {
         const summary = await firestoreBackupService.syncToCloudBatch(
           chunk,
-          // Pass the (possibly rewound) scan floor, not the raw Firestore max:
-          // otherwise a just-recovered row whose timestamp sits below the real
-          // cloud max would be filtered back out by syncToCloudBatch's own
-          // dedup check, defeating the whole point of rewinding. Firestore
-          // writes are idempotent upserts keyed by `${timestamp}_${ApiTypeId}`,
-          // so redundantly re-sending already-uploaded rows in
+          // Pass the (possibly rewound, and now also millisecond-shifted)
+          // scan floor, not the raw Firestore max: otherwise a just-recovered
+          // row whose timestamp sits below the real cloud max would be
+          // filtered back out by syncToCloudBatch's own dedup check,
+          // defeating the whole point of rewinding. Firestore writes are
+          // idempotent upserts keyed by `${timestamp}_${ApiTypeId}`, so
+          // redundantly re-sending already-uploaded rows in
           // [scanFloor, cloudMaxTimestamp] while a marker is pending is safe --
           // just extra write cost, bounded to however much happened since the
           // break, and it stops once the row resolves.
-          scanFloor,
+          //
+          // `uploadDedupThreshold` (== `scanFloor - 1` when a floor exists;
+          // see P1 fix doc comment above) rather than `scanFloor` itself:
+          // syncToCloudBatch's own filter is `event.timestamp > threshold`,
+          // bare-timestamp-only. Passing `scanFloor` unchanged would make
+          // that filter re-exclude the exact same-millisecond row the
+          // compound-key cursor above was just fixed to include (its
+          // timestamp equals `scanFloor`, not greater than it) -- silently
+          // undoing the fix one layer downstream.
+          uploadDedupThreshold,
           (progress) => {
             this.updateSyncState({
               progress: {
@@ -908,10 +999,15 @@ export class AutoSyncService {
 
       processed += rawChunk.length
 
-      // Update timestamp for next chunk (based on the raw chunk, see comment above)
+      // Update the compound cursor for next chunk (based on the raw chunk's
+      // actual last row's FULL [timestamp, ApiTypeId] key -- see P1 fix doc
+      // comment above). Tracking ApiTypeId here too is what lets the NEXT
+      // chunk's query correctly resume mid-millisecond instead of skipping
+      // past every row sharing the boundary row's timestamp.
       const lastRawEvent = rawChunk[rawChunk.length - 1]
-      if (lastRawEvent && lastRawEvent.timestamp) {
+      if (lastRawEvent && typeof lastRawEvent.timestamp === 'number') {
         lastProcessedTimestamp = lastRawEvent.timestamp
+        lastProcessedApiTypeId = typeof lastRawEvent.ApiTypeId === 'number' ? lastRawEvent.ApiTypeId : ApiTypeIdFloorSentinel
       }
     }
 
@@ -1381,6 +1477,20 @@ export class AutoSyncService {
 
     try {
       // Check how many events we have since last sync
+      //
+      // AUDITED (P1 fix bookkeeping review, 2026-07-21): `lastSyncTime` here
+      // is a WALL-CLOCK `Date` (`syncCompletedAt = new Date()` at the moment
+      // a sync pass finished, see `performSync()`), not an event-position
+      // watermark like `cloudMaxTimestamp`/the unparseable-row floor. This
+      // bare `.where('timestamp').above(lastSyncTime)` count is used ONLY as
+      // a heuristic threshold gate ("is it worth triggering another sync
+      // pass at all") -- it is NOT the actual upload cursor, so it cannot
+      // cause the compound-key data-loss bug fixed in `syncToCloud()` above
+      // (that logic owns the real cursor and is unaffected by whatever this
+      // count returns). Worst case if a same-millisecond event coincides
+      // with `lastSyncTime` and gets excluded here: one proactive sync is
+      // skipped and its backlog is simply picked up by the next trigger --
+      // not a permanent gap. Left as bare-timestamp intentionally.
       const lastSyncTime = this.syncState.lastSyncTime?.getTime() || 0
       const newEventsCount = await this.db.apiEvents
         .where('timestamp')
@@ -1477,7 +1587,14 @@ export class AutoSyncService {
   }> {
     await this.updateTimestamps()
     
-    // Calculate upload pending count based on cloud timestamp
+    // Calculate upload pending count based on cloud timestamp.
+    //
+    // AUDITED (P1 fix bookkeeping review, 2026-07-21): display-only figure
+    // (see the return type below) -- not the actual sync cursor, so a
+    // same-millisecond boundary tie can at worst undercount this UI number
+    // by the tied row(s); it never causes the tied row to be skipped by an
+    // actual upload, which is driven entirely by `syncToCloud()`'s own
+    // compound-key cursor above. Left as bare-timestamp intentionally.
     let uploadPendingCount = 0
     if (this.syncState.cloudLastTimestamp !== undefined) {
       uploadPendingCount = await this.db.apiEvents
