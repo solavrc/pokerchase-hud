@@ -31,16 +31,13 @@
 import { getRebuildAdvisoryState } from './rebuild-advisory'
 import { isOperationIdle, onOperationBecameIdle } from './operation-state'
 import { autoSyncService } from '../services/auto-sync-service'
+import { PENDING_UPDATE_STORAGE_KEY, type PendingUpdateState } from '../constants/update'
 
-export const PENDING_UPDATE_STORAGE_KEY = 'pendingUpdate'
-
-export interface PendingUpdateState {
-  pending: boolean
-  version?: string
-  detectedAt?: number
-  /** 直近の「今すぐ適用」失敗理由（Popup表示用）。適用成功時は消える(pending: false) */
-  lastBlockedReason?: string
-}
+// popup等の非backgroundコンシューマー向けに再エクスポート（codex#3612092812:
+// 実体は../constants/update.ts。popupはそちらから直接importし、この
+// バックグラウンド専用モジュール[autoSyncServiceのDB/Firestore依存を持つ]を
+// importしないこと）
+export { PENDING_UPDATE_STORAGE_KEY, type PendingUpdateState }
 
 export interface ApplyUpdateResult {
   applied: boolean
@@ -153,6 +150,19 @@ export const handleUpdateAvailable = async (details: { version: string }): Promi
 export const recheckPendingUpdate = async (): Promise<void> => {
   const state = await getPendingUpdateState()
   if (!state.pending) return
+
+  // Chromeはこのマネージャーの関与なしにダウンロード済みの更新をブラウザ再起動時に
+  // 自分で適用することがある（chrome.runtime.reload()はこのマネージャーが更新を
+  // 適用する手段の1つに過ぎない）。保留中として記録していたバージョンと現在
+  // 実行中の拡張機能バージョンが一致していれば、それは既に適用済みという
+  // ことなので、二度と来ない「安全な瞬間でのreload」を待たずに古いフラグ・
+  // バッジをここで片付ける（codex#3612092805）
+  if (state.version && state.version === chrome.runtime.getManifest().version) {
+    console.log(`[update-manager] Pending update ${state.version} is already running (installed outside this manager, e.g. Chrome restart) -- clearing stale pending state`)
+    await clearPendingUpdateState()
+    await clearBadge()
+    return
+  }
 
   if (isSafeToUpdate()) {
     console.log('[update-manager] Pending update is now safe to apply -- applying')

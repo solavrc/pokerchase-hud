@@ -103,9 +103,46 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     }
     await onMessageHandler(sessionResultsEvent)
 
+    // markSessionInactive() is called synchronously from the raw-message path
+    // (before/independent of parsing), so it's already recorded here.
     expect(markSessionInactiveSpy).toHaveBeenCalledTimes(1)
     expect(markSessionActiveSpy).not.toHaveBeenCalled()
+
+    // recheckPendingUpdate() is intentionally chained AFTER
+    // autoSyncService.onGameSessionEnd() settles (ordering fix, codex review
+    // P1) rather than fired in parallel -- flush the microtask queue for that
+    // chain to complete before asserting.
+    await new Promise(resolve => setTimeout(resolve, 0))
     expect(recheckPendingUpdateSpy).toHaveBeenCalledTimes(1)
+  })
+
+  test('a malformed EVT_SESSION_RESULTS (309) still marks the session inactive via the raw ApiTypeId (codex review, P2)', async () => {
+    // Missing every required field -- fails Zod validation (parseApiEvent()
+    // returns null), simulating PokerChase changing the 309 payload shape
+    // (the season-3 postmortem scenario). Before this fix, session-activity
+    // tracking read the *parsed* event and would never run here, leaving the
+    // Forced Update safety predicate stuck unsafe forever after the prior 308.
+    const brokenSessionResultsEvent = {
+      ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+      timestamp: 6000
+      // every other required field omitted -> parseApiEvent() returns null
+    }
+    await onMessageHandler(brokenSessionResultsEvent)
+
+    expect(markSessionInactiveSpy).toHaveBeenCalledTimes(1)
+    expect(markSessionActiveSpy).not.toHaveBeenCalled()
+  })
+
+  test('a malformed EVT_SESSION_DETAILS (308) still marks the session active via the raw ApiTypeId (codex review, P2)', async () => {
+    const brokenSessionDetailsEvent = {
+      ApiTypeId: ApiType.EVT_SESSION_DETAILS,
+      timestamp: 7000
+      // every other required field omitted -> parseApiEvent() returns null
+    }
+    await onMessageHandler(brokenSessionDetailsEvent)
+
+    expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
+    expect(markSessionInactiveSpy).not.toHaveBeenCalled()
   })
 
   test('an unrelated application event (EVT_DEAL) does not touch session-activity tracking', async () => {

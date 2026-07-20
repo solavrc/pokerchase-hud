@@ -142,6 +142,53 @@ describe('update-manager', () => {
       expect(chrome.runtime.reload).not.toHaveBeenCalled()
     })
 
+    it('clears a stale pending-update flag on recheck when Chrome already installed it outside this manager (codex review P2, e.g. full browser restart)', async () => {
+      // Pending update recorded while unsafe (session active) -- never got a
+      // chance to reload via this manager.
+      markSessionActive()
+      await handleUpdateAvailable({ version: '5.2.0' })
+      expect(chrome.runtime.reload).not.toHaveBeenCalled()
+      jest.clearAllMocks()
+
+      // Chrome restarts and applies the downloaded update on its own; the
+      // running extension version now matches what we recorded as pending.
+      // Session activity resets to 'unknown' (fresh SW), which alone would
+      // otherwise keep the state "unsafe" forever and never clear the badge.
+      __resetUpdateManagerStateForTests()
+      ;(chrome.runtime.getManifest as jest.Mock).mockReturnValue({ version: '5.2.0' })
+
+      await recheckPendingUpdate()
+
+      // Must clear via the version-match short-circuit, NOT via a reload
+      // (Chrome already did the reload/relaunch itself).
+      expect(chrome.runtime.reload).not.toHaveBeenCalled()
+      const state = await getPendingUpdateState()
+      expect(state.pending).toBe(false)
+      expect(chrome.action.setBadgeText).toHaveBeenCalledWith({ text: '' })
+
+      // Restore the default manifest version for subsequent tests --
+      // jest.clearAllMocks() (in this file's beforeEach) clears call history
+      // but not a mockReturnValue override.
+      ;(chrome.runtime.getManifest as jest.Mock).mockReturnValue({ version: '5.1.0' })
+    })
+
+    it('does NOT clear a pending update on recheck when the running version still differs from the recorded pending version', async () => {
+      markSessionActive()
+      await handleUpdateAvailable({ version: '5.3.0' })
+      jest.clearAllMocks()
+
+      // Still on the old version (5.1.0, the test-setup default) -- the
+      // pending 5.3.0 update has genuinely not been applied yet.
+      markSessionActive() // still unsafe for an unrelated reason too
+
+      await recheckPendingUpdate()
+
+      expect(chrome.runtime.reload).not.toHaveBeenCalled()
+      const state = await getPendingUpdateState()
+      expect(state.pending).toBe(true)
+      expect(state.version).toBe('5.3.0')
+    })
+
     it('re-asserts the badge on recheck once the rebuild-advisory badge that was blocking it has cleared', async () => {
       await chrome.storage.local.set({
         [REBUILD_ADVISORY_STORAGE_KEY]: { pendingVersion: REBUILD_ADVISORY_VERSION },

@@ -3,7 +3,7 @@ import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Typography from '@mui/material/Typography'
 import { useCallback, useEffect, useState } from 'react'
-import { PENDING_UPDATE_STORAGE_KEY, type PendingUpdateState } from '../../background/update-manager'
+import { PENDING_UPDATE_STORAGE_KEY, type PendingUpdateState } from '../../constants/update'
 import { MIN_VERSION_GATE_STORAGE_KEY, type MinVersionGateState } from '../../services/min-version-gate'
 import type { ApplyPendingUpdateMessage, ApplyUpdateResponse } from '../../types/messages'
 import { sendMessageWithTimeout } from './send-message'
@@ -89,15 +89,24 @@ export const UpdateSection = () => {
           <Typography variant="body2">
             このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます
           </Typography>
-          <Button
-            size="small"
-            color="inherit"
-            onClick={handleApplyNow}
-            disabled={applying}
-            sx={{ mt: 0.5 }}
-          >
-            {applying ? '確認中...' : '今すぐ適用'}
-          </Button>
+          {/* ゲートのみunsupportedでpendingUpdateが無い場合はボタンを出さない
+              （codexレビュー指摘）: applyPendingUpdate/applyUpdateNow()は
+              実際にダウンロード済みの更新が無いとchrome.runtime.reload()が
+              「安全なら今の(古い)バージョンのまま再読み込みするだけ」になり、
+              何も解決しないのに「保留中の更新」バナーだけ捏造されうる。
+              ボタンは実際に更新が保留中(isPending)のときだけ表示し、
+              ゲートのみの状態では案内文だけを見せる */}
+          {isPending && (
+            <Button
+              size="small"
+              color="inherit"
+              onClick={handleApplyNow}
+              disabled={applying}
+              sx={{ mt: 0.5 }}
+            >
+              {applying ? '確認中...' : '今すぐ適用'}
+            </Button>
+          )}
         </Alert>
       )}
 

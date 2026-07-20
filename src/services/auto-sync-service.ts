@@ -107,52 +107,61 @@ export class AutoSyncService {
       return
     }
 
-    // Remote min-version gate (kill switch, #forced-update): every sync entry
-    // point funnels through performSync(), so a single guard here covers
-    // manual sync, auto sync (session end/start triggers), and initialize()'s
-    // first-time sync alike. Fail-open by design (see min-version-gate.ts) --
-    // this only ever fires when the extension's own version has been
-    // explicitly marked unsupported in the remote config.
-    if (await isCloudSyncBlockedByMinVersionGate()) {
-      console.warn('[AutoSync] Cloud sync blocked: extension version is below the remote minimum-supported version')
-      this.updateSyncState({ status: 'error', error: MIN_VERSION_SYNC_BLOCKED_MESSAGE })
-      return
-    }
-
+    // Latch BEFORE the awaited gate check below (codex#3612092798): if we set
+    // this after awaiting, two performSync() calls arriving close together can
+    // both pass the `this._isSyncing` check above, both await the gate, and
+    // then both proceed to sync concurrently -- reopening the double-sync
+    // race this flag exists to prevent. Reset in `finally` so every return
+    // path (gate-blocked or sync completed/failed) releases the latch.
     this._isSyncing = true
-    this.lastSyncAttempt = now
-    this.updateSyncState({ status: 'syncing' })
 
     try {
-      // Perform sync based on direction
-      if (direction === 'upload' || direction === 'both') {
-        await this.syncToCloud()
+      // Remote min-version gate (kill switch, #forced-update): every sync entry
+      // point funnels through performSync(), so a single guard here covers
+      // manual sync, auto sync (session end/start triggers), and initialize()'s
+      // first-time sync alike. Fail-open by design (see min-version-gate.ts) --
+      // this only ever fires when the extension's own version has been
+      // explicitly marked unsupported in the remote config.
+      if (await isCloudSyncBlockedByMinVersionGate()) {
+        console.warn('[AutoSync] Cloud sync blocked: extension version is below the remote minimum-supported version')
+        this.updateSyncState({ status: 'error', error: MIN_VERSION_SYNC_BLOCKED_MESSAGE })
+        return
       }
 
-      if (direction === 'download' || direction === 'both') {
-        await this.syncFromCloud()
+      this.lastSyncAttempt = now
+      this.updateSyncState({ status: 'syncing' })
+
+      try {
+        // Perform sync based on direction
+        if (direction === 'upload' || direction === 'both') {
+          await this.syncToCloud()
+        }
+
+        if (direction === 'download' || direction === 'both') {
+          await this.syncFromCloud()
+        }
+
+        // Update success state
+        this.syncState.lastSyncTime = new Date()
+        await chrome.storage.local.set({ [this.SYNC_STORAGE_KEY]: this.syncState.lastSyncTime.toISOString() })
+
+        // Update timestamps after sync
+        await this.updateTimestamps()
+
+        this.updateSyncState({
+          status: 'success',
+          lastSyncTime: this.syncState.lastSyncTime,
+          error: undefined
+        })
+
+        console.log(`[AutoSync] Sync completed successfully (direction: ${direction})`)
+      } catch (error) {
+        console.error('[AutoSync] Sync error:', error)
+        this.updateSyncState({
+          status: 'error',
+          error: error instanceof Error ? error.message : 'Unknown error'
+        })
       }
-
-      // Update success state
-      this.syncState.lastSyncTime = new Date()
-      await chrome.storage.local.set({ [this.SYNC_STORAGE_KEY]: this.syncState.lastSyncTime.toISOString() })
-      
-      // Update timestamps after sync
-      await this.updateTimestamps()
-      
-      this.updateSyncState({ 
-        status: 'success',
-        lastSyncTime: this.syncState.lastSyncTime,
-        error: undefined 
-      })
-
-      console.log(`[AutoSync] Sync completed successfully (direction: ${direction})`)
-    } catch (error) {
-      console.error('[AutoSync] Sync error:', error)
-      this.updateSyncState({ 
-        status: 'error',
-        error: error instanceof Error ? error.message : 'Unknown error'
-      })
     } finally {
       this._isSyncing = false
     }

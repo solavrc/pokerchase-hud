@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { UpdateSection } from './UpdateSection'
-import { PENDING_UPDATE_STORAGE_KEY } from '../../background/update-manager'
+import { PENDING_UPDATE_STORAGE_KEY } from '../../constants/update'
 import { MIN_VERSION_GATE_STORAGE_KEY } from '../../services/min-version-gate'
 
 describe('UpdateSection', () => {
@@ -53,6 +53,24 @@ describe('UpdateSection', () => {
     await waitFor(() => {
       expect(screen.getByText(/このバージョンはサポートが終了しました/)).toBeInTheDocument()
     })
+  })
+
+  it('ゲートのみunsupported（pendingUpdate無し）のときは案内文のみで「今すぐ適用」ボタンを出さない (codexレビュー指摘)', async () => {
+    // No pendingUpdate recorded -- applyPendingUpdate/applyUpdateNow() cannot
+    // actually fetch/install anything here (there's no downloaded update to
+    // apply); a reload would just relaunch the same unsupported version and
+    // could fabricate a misleading "pending update" banner.
+    await chrome.storage.local.set({
+      [MIN_VERSION_GATE_STORAGE_KEY]: { supported: false, minSupportedVersion: '6.0.0', checkedAt: Date.now() },
+    })
+
+    render(<UpdateSection />)
+
+    await waitFor(() => {
+      expect(screen.getByText(/このバージョンはサポートが終了しました/)).toBeInTheDocument()
+    })
+    expect(screen.queryByText('今すぐ適用')).not.toBeInTheDocument()
+    expect(mockSendMessage).not.toHaveBeenCalled()
   })
 
   it('supported=trueのときは未サポートバナーを表示しない', async () => {

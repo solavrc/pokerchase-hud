@@ -28,6 +28,16 @@ export interface MinVersionGateState {
   supported: boolean
   minSupportedVersion?: string
   checkedAt: number
+  /**
+   * The extension version this result was computed for. A mismatch against
+   * the currently-running version (e.g. right after the extension itself
+   * updated) invalidates the cache immediately, regardless of the 12h TTL --
+   * otherwise a stale `supported: false` computed for an old version could
+   * keep blocking cloud sync / showing the unsupported warning for up to
+   * 12h after the extension already updated to a supported version
+   * (codex#3612092776).
+   */
+  checkedVersion?: string
 }
 
 const documentsPath = `projects/${firebaseConfig.projectId}/databases/(default)/documents`
@@ -43,10 +53,11 @@ const documentsPath = `projects/${firebaseConfig.projectId}/databases/(default)/
 const buildConfigClientUrl = (): string =>
   `https://firestore.googleapis.com/v1/${documentsPath}/config/client?key=${firebaseConfig.apiKey}`
 
-const supportedFailOpen = (minSupportedVersion?: string): MinVersionGateState => ({
+const supportedFailOpen = (currentVersion: string, minSupportedVersion?: string): MinVersionGateState => ({
   supported: true,
   minSupportedVersion,
-  checkedAt: Date.now()
+  checkedAt: Date.now(),
+  checkedVersion: currentVersion
 })
 
 /** Fetches and evaluates the remote gate. Never throws — every failure path fails open. */
@@ -56,14 +67,14 @@ const fetchMinVersionGateState = async (currentVersion: string): Promise<MinVers
     response = await fetch(buildConfigClientUrl())
   } catch (error) {
     console.warn('[min-version-gate] Fetch failed, failing open:', error)
-    return supportedFailOpen()
+    return supportedFailOpen(currentVersion)
   }
 
   if (!response.ok) {
     // 404 = doc doesn't exist yet (owner hasn't created it), or any other
     // transient/HTTP error -- both fail open the same way.
     console.warn(`[min-version-gate] REST request failed (${response.status}), failing open`)
-    return supportedFailOpen()
+    return supportedFailOpen(currentVersion)
   }
 
   let body: any
@@ -71,20 +82,21 @@ const fetchMinVersionGateState = async (currentVersion: string): Promise<MinVers
     body = await response.json()
   } catch (error) {
     console.warn('[min-version-gate] Response was not valid JSON, failing open:', error)
-    return supportedFailOpen()
+    return supportedFailOpen(currentVersion)
   }
 
   const minSupportedVersion = body?.fields?.minSupportedVersion?.stringValue
   if (typeof minSupportedVersion !== 'string' || minSupportedVersion.length === 0) {
     console.warn('[min-version-gate] Missing/malformed minSupportedVersion field, failing open')
-    return supportedFailOpen()
+    return supportedFailOpen(currentVersion)
   }
 
   const below = isVersionBelow(currentVersion, minSupportedVersion)
   return {
     supported: !below,
     minSupportedVersion,
-    checkedAt: Date.now()
+    checkedAt: Date.now(),
+    checkedVersion: currentVersion
   }
 }
 
@@ -96,7 +108,11 @@ export const checkMinVersionGate = async (currentVersion: string, now = Date.now
   const stored = await chrome.storage.local.get(MIN_VERSION_GATE_STORAGE_KEY)
   const cached = stored?.[MIN_VERSION_GATE_STORAGE_KEY] as MinVersionGateState | undefined
 
-  if (cached && now - cached.checkedAt < CACHE_TTL_MS) {
+  // codex#3612092776: a cache computed for a different extension version
+  // (most commonly: right after the extension itself updated) is stale
+  // regardless of the TTL -- re-check immediately rather than serving up
+  // to 12h of a possibly-wrong `supported` value for the new version.
+  if (cached && cached.checkedVersion === currentVersion && now - cached.checkedAt < CACHE_TTL_MS) {
     return cached
   }
 

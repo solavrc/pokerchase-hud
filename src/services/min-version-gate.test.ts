@@ -163,6 +163,46 @@ describe('min-version-gate', () => {
       expect(cached?.supported).toBe(true)
       expect(cached?.minSupportedVersion).toBe('5.0.0')
     })
+
+    it('invalidates the cache immediately (ignoring the TTL) when the running extension version changes (codex review)', async () => {
+      // Old version (5.0.0) checks against a remote minimum of 6.0.0 -> unsupported,
+      // cached. This mirrors a user stuck on an old, killed version.
+      const fetchMock = jest.fn().mockResolvedValue(
+        jsonResponse({ fields: { minSupportedVersion: { stringValue: '6.0.0' } } })
+      )
+      global.fetch = fetchMock
+
+      const now = Date.now()
+      const stale = await checkMinVersionGate('5.0.0', now)
+      expect(stale.supported).toBe(false)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+
+      // Extension updates to 6.0.0 moments later (well within the 12h TTL).
+      // A naive TTL-only cache would still return the stale supported:false
+      // computed for 5.0.0 for up to 12h. The version-keyed cache must
+      // instead re-check immediately.
+      fetchMock.mockResolvedValue(
+        jsonResponse({ fields: { minSupportedVersion: { stringValue: '6.0.0' } } })
+      )
+      const fresh = await checkMinVersionGate('6.0.0', now + 1000)
+
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(fresh.supported).toBe(true)
+      expect(fresh.checkedVersion).toBe('6.0.0')
+    })
+
+    it('still serves the TTL cache when the version has NOT changed (no regression from the version check)', async () => {
+      const fetchMock = jest.fn().mockResolvedValue(
+        jsonResponse({ fields: { minSupportedVersion: { stringValue: '5.0.0' } } })
+      )
+      global.fetch = fetchMock
+
+      const now = Date.now()
+      await checkMinVersionGate('5.1.0', now)
+      await checkMinVersionGate('5.1.0', now + 60 * 60 * 1000) // +1h, same version, within TTL
+
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    })
   })
 
   describe('isCloudSyncBlockedByMinVersionGate', () => {
