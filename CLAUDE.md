@@ -143,6 +143,22 @@ Learned from the 2026-07 season-3 silent-drop incident (a PokerChase payload cha
 - **Prefer direct observation over inference**: before concluding from stored data, check whether the boundary can be observed directly (service-worker console, a single live session capture, packet-level logs). One console log settled in minutes what hours of stored-data inference could not.
 - Write mechanisms as falsifiable predictions and check them; have a second pass with a DIFFERENT observation channel attempt to refute a mechanism before documenting it as fact.
 
+#### Codex Review Loop Protocol
+
+PRs in this repo are reviewed by Codex (`@codex review` comment; the GitHub connector reviews the head commit). Codex review is valued for **diversity**: a different model reading the diff in a clean context catches problems the authoring agent's self-review structurally cannot. Self-review (reading the final commit's full diff) is always performed in addition, never as a substitute.
+
+**Convergence condition (when is a PR merge-ready?)**
+- Semantics-bearing changes (sync/watermark logic, statistics, session/state management, event processing): keep the fix → re-request loop running until **two consecutive clean verdicts** ("Didn't find any major issues") on the head commit.
+- Docs and trivially-mechanical changes: one clean verdict suffices.
+- A fix commit that goes beyond finding-scoped local patches (new mechanism, rebase integration, cross-file ripple) always needs a fresh review pass before merge — never merge such a commit on an older verdict.
+
+**Loop guards (these are what prevent cost blow-up — the loop has no natural termination otherwise)**
+- Every re-request MUST follow a fix commit. The only exception is a single retry after apparent silence.
+- **Verdict detection must be deterministic and cover ALL delivery channels.** Codex's verdict arrives variably as (a) an issue comment, (b) a review object, or (c) a 👍 reaction on the trigger comment, with inline finding comments carrying `P1/P2/P3 Badge` markers. A watcher that polls only a subset will false-negative and provoke redundant (costly) re-triggers. Check all channels before declaring silence; retry at most once.
+- If ~6 total passes elapse without two consecutive cleans, STOP: escalate to the repo owner with the open findings instead of merging or continuing the loop.
+
+**Division of labor (learned 2026-07-20, from an actual runaway-loop incident)**: completion detection, retry decisions, and termination conditions must be encoded deterministically (string/marker checks, bounded counters) — never left to in-context judgment, which is exactly how the incident's redundant re-triggers happened (a deterministic-but-incomplete watcher missed the verdict channel, and an unbounded judgment call re-triggered on the false silence). What stays with the reviewing agent's judgment: whether a finding is valid, and how to scope the fix.
+
 #### Version Control
 
 - **Conventional Commits**: Use standard format for all commits
