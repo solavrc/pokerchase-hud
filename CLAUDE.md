@@ -319,10 +319,12 @@ Statistics Refresh (batch mode)
   the affected range from `apiEvents` — expanded back to the last *valid*
   `EVT_HAND_RESULTS` (306) strictly before the earliest new event (the
   previous completed-hand boundary), then to the last *valid*
-  `EVT_ENTRY_QUEUED` (201) at/before that boundary (session-context anchor —
-  anchoring on the 201 nearest the new events directly would be wrong, since
-  an MTT table-move 201 can land mid-hand and cut off the opening
-  `EVT_DEAL`), and forward to the first *valid pre-existing* 306 at/after the
+  `EVT_ENTRY_QUEUED` (201) at/before that boundary that is *provably outside
+  any hand* (session-context anchor — an MTT table-move 201 can land
+  mid-hand, including inside the previous completed hand itself, and would
+  cut off an opening `EVT_DEAL`; candidates whose most recent valid DEAL
+  isn't yet closed by a valid 306 are rejected and the scan steps back one
+  hand at a time), and forward to the first *valid pre-existing* 306 at/after the
   latest new event (newly-imported 306s are skipped, so the range always
   reaches the end of the OLD derivation's hand pairing — e.g. a DEAL that a
   capture gap had mis-paired with a later 306) — so a hand split between

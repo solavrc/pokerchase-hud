@@ -76,11 +76,14 @@ export const clearImportSession = (): void => {
  *   あり（docs/api-events.md、EntityConverterの融合ハンド棄却ガード参照）、
  *   その201から変換を始めると影響ハンドの先頭のDEALが範囲外になって、
  *   EntityConverter（DEALでのみバッファ開始）が新規行を導出できない。
- *   「完了ハンド境界→その前の201」の順で辿ればanchorは必ずハンド外にあり、
- *   影響ハンドのDEALとセッション文脈（BattleType/Id、以降の313/301が積む
- *   プレイヤー名）の両方が範囲に含まれる。201が見つからない場合（および
- *   完了ハンド境界自体が無い場合）はLake先頭から（rebuildAllDataと同じ
- *   条件で）変換する。
+ *   さらに「完了ハンド境界以前」というだけでは足りない（codexレビュー
+ *   4巡目P2）: テーブル移動201はその「直前の完了ハンド」自身の内部にも
+ *   割り込み得るため、候補201が「いかなるハンドの内部でもない」ことを
+ *   確認できるまで1ハンドずつ遡る（実装内コメント参照）。こうして得た
+ *   anchorは必ずハンド外にあり、影響ハンドのDEALとセッション文脈
+ *   （BattleType/Id、以降の313/301が積むプレイヤー名）の両方が範囲に
+ *   含まれる。201が見つからない場合（および完了ハンド境界自体が無い
+ *   場合）はLake先頭から（rebuildAllDataと同じ条件で）変換する。
  * - 終了境界（PR #203 codexレビュー2巡目P2で修正）: maxNewTimestamp 以後で
  *   最初の「検証済みかつ既存（今回のインポートで保存された行を除く）」
  *   EVT_HAND_RESULTS(306)（それ自身を含む）。既存行に限るのは、修復前の
@@ -166,16 +169,63 @@ export const collectOverlapRepairEvents = async (
     .filter(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS && isValidApplicationRow(event))
     .first()
 
-  // セッション文脈anchor: 完了ハンド境界以前で最後の検証済みEVT_ENTRY_QUEUED。
-  // 306より前を探すため、テーブル移動でハンド中に割り込んだ201を掴むことはない。
-  const anchorEvent = prevHandBoundary
-    ? await db.apiEvents
-      .where('[timestamp+ApiTypeId]')
-      .belowOrEqual([prevHandBoundary.timestamp!, prevHandBoundary.ApiTypeId])
-      .reverse()
-      .filter(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED && isValidApplicationRow(event))
-      .first()
-    : undefined
+  // セッション文脈anchor: 完了ハンド境界以前で最後の検証済みEVT_ENTRY_QUEUED
+  // …のうち「いかなるハンドの内部でもない」と証明できたもの（codexレビュー
+  // 4巡目P2）。完了ハンド境界の「以前」というだけでは不十分: MTTのテーブル
+  // 移動201は「直前の完了ハンド」自身の内部（そのDEALと306の間）にも割り込み
+  // 得る。そこから変換を始めると、直前ハンドの306は範囲内・DEALは範囲外に
+  // なり、クリーンアップがそのHandIdを（範囲内の検証済み306として）削除した
+  // 上で、EntityConverter（DEALでのみバッファ開始）が再導出できず、直前
+  // ハンドが全再構築まで消失する。候補201の外部性は「候補の直前の検証済み
+  // 303が、その303と候補の間の検証済み306で既に閉じている（または303自体が
+  // 存在しない）」ことで判定する —— この判定はコンバーターと同じ検証済み
+  // イベント列上のハンド境界に基づくため、anchorがこの判定を通れば、
+  // 範囲内のあらゆる検証済み306の開始DEALも必ず範囲内に含まれる
+  // （306がanchor後にあるのに開始303がanchor前なら、anchorはそのハンドの
+  // 内部にあったことになり判定と矛盾する）。候補がハンド内部なら、その
+  // ハンドの開始DEALより前から1ハンドずつ遡って探し直す。
+  let anchorEvent: ApiEvent | undefined
+  if (prevHandBoundary) {
+    let searchUpperKey: [number, number] = [prevHandBoundary.timestamp!, prevHandBoundary.ApiTypeId]
+    while (true) {
+      const candidate = await db.apiEvents
+        .where('[timestamp+ApiTypeId]')
+        .belowOrEqual(searchUpperKey)
+        .reverse()
+        .filter(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED && isValidApplicationRow(event))
+        .first()
+      if (!candidate) break
+
+      const candidateKey: [number, number] = [candidate.timestamp!, candidate.ApiTypeId]
+      const lastDealBeforeCandidate = await db.apiEvents
+        .where('[timestamp+ApiTypeId]')
+        .below(candidateKey)
+        .reverse()
+        .filter(event => event.ApiTypeId === ApiType.EVT_DEAL && isValidApplicationRow(event))
+        .first()
+      if (!lastDealBeforeCandidate) {
+        // 候補より前にハンドが一度も開いていない → ハンド外
+        anchorEvent = candidate
+        break
+      }
+
+      const resultsBetween = await db.apiEvents
+        .where('[timestamp+ApiTypeId]')
+        .between([lastDealBeforeCandidate.timestamp!, lastDealBeforeCandidate.ApiTypeId], candidateKey, false, false)
+        .filter(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS && isValidApplicationRow(event))
+        .first()
+      if (resultsBetween) {
+        // 直近に開いたハンドは候補より前に閉じている → ハンド外
+        anchorEvent = candidate
+        break
+      }
+
+      // 候補はハンド内部に割り込んだテーブル移動201 → そのハンドの開始DEALより
+      // 前（belowOrEqualだがDEAL自身は201でないため実質strictly before）から
+      // 探し直す。毎回より前のDEALへ厳密に後退するため必ず停止する。
+      searchUpperKey = [lastDealBeforeCandidate.timestamp!, lastDealBeforeCandidate.ApiTypeId]
+    }
+  }
 
   // 終了境界: maxNewTimestamp以後（同時刻含む）で最初の検証済み「既存」
   // EVT_HAND_RESULTS（今回新規保存された306は除外 —— doc comment参照）。

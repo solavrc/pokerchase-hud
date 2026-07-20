@@ -512,6 +512,61 @@ describe('importData() overlap import repair (audit finding #7)', () => {
     })
   })
 
+  test('a table-move 201 inside the PREVIOUS completed hand does not become the anchor: that hand survives the repair (PR #203 codex P2, pass 4)', async () => {
+    // Lake layout: 201 -> HAND0's DEAL -> mid-hand 201 (MTT table move
+    // INSIDE the previous completed hand) -> HAND0's ACTIONs/RESULTS ->
+    // HAND1's DEAL -> [missing ACTIONs] -> HAND1's RESULTS. The anchor scan
+    // walks back from HAND0's RESULTS (previous completed-hand boundary);
+    // the nearest 201 at/before it is the mid-hand one. Anchoring there
+    // would put HAND0's RESULTS inside the repair range but its DEAL
+    // outside -- the cleanup would account HAND0's id and delete it while
+    // the converter (buffering starts at DEAL) cannot re-emit it, erasing
+    // HAND0 until a full rebuild. The anchor must instead walk back past
+    // the mid-hand 201 to the outer 201, keeping HAND0 fully in range.
+    const MID_HAND0_ENTRY_QUEUED = { ...ENTRY_QUEUED, "timestamp": 1752427304000 } // between HAND0's DEAL (...303426) and its first ACTION (...305428)
+    const fullExport = [
+      ENTRY_QUEUED,
+      HAND0_EVENTS[0]!, // HAND0 DEAL
+      MID_HAND0_ENTRY_QUEUED,
+      ...HAND0_EVENTS.slice(1), // HAND0 ACTIONs + RESULTS
+      ...HAND1_EVENTS,
+    ]
+
+    const expected = await runWithFreshDb(async ({ db, handlers }) => {
+      await handlers.importData(toJsonl(fullExport))
+      return snapshotDerived(db)
+    })
+    expect(expected.hands.map(hand => hand.id).sort()).toEqual([HAND0_ID, HAND1_ID])
+
+    await runWithFreshDb(async ({ db, handlers }) => {
+      // Damaged DB: everything except HAND1's middle ACTIONs.
+      await db.apiEvents.bulkAdd([
+        ENTRY_QUEUED,
+        HAND0_EVENTS[0]!,
+        MID_HAND0_ENTRY_QUEUED,
+        ...HAND0_EVENTS.slice(1),
+        HAND1_DEAL,
+        HAND1_RESULTS,
+      ] as never[])
+      await handlers.rebuildAllData()
+      expect(await db.actions.where('handId').equals(HAND0_ID).count()).toBe(3)
+      expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(0)
+
+      const result = await handlers.importData(toJsonl(fullExport))
+      expect(result.successCount).toBe(3) // HAND1's ACTIONs
+      expect(result.duplicateCount).toBe(fullExport.length - 3)
+
+      // HAND0 must survive intact (not deleted-without-re-emit), HAND1 must
+      // be repaired, and the whole derived state must equal a from-scratch
+      // import of the same data.
+      expect(await snapshotDerived(db)).toEqual(expected)
+      expect(await db.hands.get(HAND0_ID)).toBeDefined()
+      expect(await db.actions.where('handId').equals(HAND0_ID).count()).toBe(3)
+      expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(3)
+      expect(await db.hands.count()).toBe(2)
+    })
+  })
+
   test('a fresh import into an empty DB still derives entities through the unchanged direct path', async () => {
     await runWithFreshDb(async ({ db, handlers }) => {
       const result = await handlers.importData(toJsonl([ENTRY_QUEUED, ...HAND1_EVENTS]))
