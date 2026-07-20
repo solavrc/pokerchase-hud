@@ -26,25 +26,33 @@
  *    No production positioning code is touched.
  *
  * 2. **Fixture coherence.** The replayed HUD content must not contradict
- *    the baked-in K♦K♣: the hand log's final "Dealt to ..." line and the
+ *    the baked-in scene: the hand log's final "Dealt to ..." line and the
  *    hero's real-time hand-improvement panel both surface the hero's hole
- *    cards. No committed fixture ends on a KK hand, so this tool derives
- *    one deterministically from `e2e/fixtures/session-bust.ndjson` (into
- *    the gitignored `e2e/.build/`):
+ *    cards (K♦K♣), and the hand log's blind/ante/raise lines surface the
+ *    blinds, ante, and stack sizes -- all of which the backdrop's own
+ *    game-info panel and nameplates also print, so they must match
+ *    (SB/BB 140/280, ante 70, プレイヤーC's raise to 7,840). No committed
+ *    fixture ends on a KK hand at those stakes, so this tool derives one
+ *    deterministically from `e2e/fixtures/session-bust.ndjson` (into the
+ *    gitignored `e2e/.build/`):
  *      - keep the first 29 complete hands (the full-6-seat stretch of that
  *        SNG -- the first bust happens at hand 30, and a busted/empty seat
  *        would contradict the backdrop's six occupied seats);
  *      - rename the anonymized players to the same dummy names baked onto
  *        the backdrop's plates (Hero / プレイヤーA..E), keyed by display
  *        position so every HUD panel name matches the plate it sits on;
- *      - append one synthetic partial hand, built from the real hand-29
- *        closing chip counts: hero posts the BB with HoleCards [46, 47]
- *        (K♦K♣ per src/utils/card-utils.ts's rank=floor(card/4),
- *        suit=card%4 encoding), one opponent raises, the others fold, and
- *        the replay stops with the action on the hero -- exactly the
- *        preflop raise-vs-BB spot the screenshot shows. No EVT_HAND_RESULTS
- *        is appended, so the partial hand never pollutes per-player stats;
- *        it only drives the hand log tail + real-time KK panel.
+ *      - append one synthetic partial hand built to match the backdrop's
+ *        own numbers rather than continuing the source fixture's chip
+ *        progression: SB/BB/ante 140/280/70, each seat's post-ante chip stack
+ *        read off its nameplate (`BACKDROP_CHIPS_AFTER_ANTE`), hero posts
+ *        the BB with HoleCards [46, 47] (K♦K♣ per src/utils/card-utils.ts's
+ *        rank=floor(card/4), suit=card%4 encoding), プレイヤーC raises to
+ *        7,840 (matching her bet stack in the screenshot), the others
+ *        fold, and the replay stops with the action on the hero -- exactly
+ *        the preflop raise-vs-BB spot the screenshot shows. No
+ *        EVT_HAND_RESULTS is appended, so the partial hand never pollutes
+ *        per-player stats; it only drives the hand log tail + real-time KK
+ *        panel.
  *
  * The fixture replays twice per session (once on the initial navigation,
  * once after the position-seeding reload); that is idempotent for stats --
@@ -52,7 +60,7 @@
  * apiEvents dedupes on timestamp+ApiTypeId -- which the tool asserts by
  * checking the hero panel's HAND stat is exactly 29 after the reload.
  */
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { launchHarness, type Harness } from '../harness.ts'
 import { E2E_DIR, REPO_ROOT, BUILD_DIR } from '../config.ts'
@@ -140,20 +148,24 @@ export const buildStoreFixture = (): string => {
   const kept = events.slice(0, cut)
   for (const e of kept) renameUsers(e)
 
-  // Closing chip counts of the last kept hand, from its EVT_HAND_RESULTS.
+  // The last kept hand's EVT_HAND_RESULTS establishes hero's seat (must be
+  // seat 1 -- see the seat-rotation note on PLAYER_NAMES above); the closing
+  // chip counts themselves are NOT used for the synthetic hand below (see
+  // BACKDROP_CHIPS_AFTER_ANTE's doc comment for why).
   const lastResults = [...kept].reverse().find((e) => e.ApiTypeId === 306) as any
   if (!lastResults) throw new Error('source fixture has no EVT_HAND_RESULTS')
-  const chips: Record<number, number> = { [lastResults.Player.SeatIndex]: lastResults.Player.Chip }
-  for (const p of lastResults.OtherPlayers) chips[p.SeatIndex] = p.Chip
-
   const heroSeat = lastResults.Player.SeatIndex as number // 1
   const seatUserIds = [1001, 1002, 1003, 1004, 1005, 1006]
 
-  // Synthetic partial hand: blinds/ante continue the source's level 6
-  // structure (SB 550 / BB 1100 / ante 280). Hero posts the BB; seat 0
-  // posts the SB (matching the backdrop, where the bottom-right seat --
-  // プレイヤーE, original seat 0 -- wears the SB badge).
-  const SB = 550, BB = 1100, ANTE = 280
+  // Stakes read directly off the backdrop's own baked-in game-info panel
+  // (top-left: "SB/BB 140/280", "アンティ 70") -- the synthetic hand MUST
+  // use these, not the source fixture's level-6 structure (SB 550/BB 1100/
+  // ante 280), or the hand log's "posts small/big blind"/"posts the ante"
+  // lines directly contradict what's visibly printed on the table felt.
+  // Hero posts the BB; seat 0 posts the SB (matching the backdrop, where
+  // the bottom-right seat -- プレイヤーE, original seat 0 -- wears the SB
+  // badge).
+  const SB = 140, BB = 280, ANTE = 70
   const sbSeat = 0, bbSeat = heroSeat, btnSeat = 5
   const pot0 = SB + BB + 6 * ANTE
   let ts = kept[kept.length - 1]!.timestamp as number
@@ -161,6 +173,31 @@ export const buildStoreFixture = (): string => {
   const progress = (over: Record<string, unknown>) => ({
     Phase: 0, SidePot: [], NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 12, ...over,
   })
+
+  /**
+   * Chip stack behind each seat right after antes (and, for the SB seat,
+   * its blind) are posted -- i.e. exactly what's printed in each seat's
+   * nameplate on the backdrop at the moment it was captured, EXCEPT
+   * プレイヤーC (seat 4), whose plate already shows her stack AFTER the
+   * raise below (14,579); her pre-raise, post-ante figure (22,419) is
+   * derived here as 14,579 + RAISE_TO so the deal event -- which predates
+   * her raise -- is itself consistent. Keyed by original seat index (same
+   * indexing as `seatUserIds`), not display position. Hardcoded straight
+   * from the screenshot rather than derived from the source fixture's
+   * closing chip counts (which belong to an unrelated real hand and have
+   * no relationship to this backdrop) -- see the finding this fixes:
+   * synthetic stakes/stacks must match the scene, not just continue
+   * whatever the donor fixture happened to have.
+   */
+  const RAISE_TO = 7840 // matches the bet stack under プレイヤーC's raise
+  const BACKDROP_CHIPS_AFTER_ANTE: Record<number, number> = {
+    0: 17790 + SB, // プレイヤーE (SB): plate shows 17,790 (post ante+SB)
+    [heroSeat]: 21974 + BB, // Hero (BB): plate shows 21,974 (post ante+BB)
+    2: 21818, // プレイヤーA: plate shows 21,818 (post ante, folded before betting)
+    3: 18830, // プレイヤーB: plate shows 18,830 (post ante, folded before betting)
+    4: 14579 + RAISE_TO, // プレイヤーC: plate shows 14,579 (post ante+raise)
+    5: 15209, // プレイヤーD (button): plate shows 15,209 (post ante, folded before betting)
+  }
 
   const deal: ApiEventRecord = {
     ApiTypeId: 303,
@@ -173,17 +210,16 @@ export const buildStoreFixture = (): string => {
     },
     Player: {
       SeatIndex: heroSeat, BetStatus: 1, HoleCards: HERO_HOLE_CARDS,
-      Chip: chips[heroSeat]! - ANTE - BB, BetChip: BB,
+      Chip: BACKDROP_CHIPS_AFTER_ANTE[heroSeat]! - BB, BetChip: BB,
     },
     OtherPlayers: [0, 2, 3, 4, 5].map((seat) => ({
       SeatIndex: seat, Status: 0, BetStatus: 1,
-      Chip: chips[seat]! - ANTE - (seat === sbSeat ? SB : 0),
+      Chip: BACKDROP_CHIPS_AFTER_ANTE[seat]! - (seat === sbSeat ? SB : 0),
       BetChip: seat === sbSeat ? SB : 0,
     })),
     Progress: progress({ Pot: pot0, MinRaise: 2 * BB, NextActionSeat: 2 }),
   }
 
-  const RAISE_TO = 2750
   const action = (seat: number, type: number, betChip: number, chip: number, over: Record<string, unknown>): ApiEventRecord => ({
     ApiTypeId: 304, timestamp: (ts += 1500), SeatIndex: seat, ActionType: type,
     BetChip: betChip, Chip: chip, Progress: progress(over),
@@ -192,14 +228,18 @@ export const buildStoreFixture = (): string => {
   const FOLD = 2, RAISE = 4
   const synthetic = [
     deal,
-    action(2, FOLD, 0, chips[2]! - ANTE, { Pot: pot0, MinRaise: 2 * BB, NextActionSeat: 3 }),
-    action(3, FOLD, 0, chips[3]! - ANTE, { Pot: pot0, MinRaise: 2 * BB, NextActionSeat: 4 }),
-    action(4, RAISE, RAISE_TO, chips[4]! - ANTE - RAISE_TO, { Pot: pot0 + RAISE_TO, MinRaise: 2 * RAISE_TO - BB, NextActionSeat: 5 }),
-    action(5, FOLD, 0, chips[5]! - ANTE, { Pot: pot0 + RAISE_TO, MinRaise: 2 * RAISE_TO - BB, NextActionSeat: 0 }),
-    action(0, FOLD, SB, chips[0]! - ANTE - SB, { Pot: pot0 + RAISE_TO, MinRaise: 2 * RAISE_TO - BB, NextActionSeat: heroSeat }),
+    action(2, FOLD, 0, BACKDROP_CHIPS_AFTER_ANTE[2]!, { Pot: pot0, MinRaise: 2 * BB, NextActionSeat: 3 }),
+    action(3, FOLD, 0, BACKDROP_CHIPS_AFTER_ANTE[3]!, { Pot: pot0, MinRaise: 2 * BB, NextActionSeat: 4 }),
+    action(4, RAISE, RAISE_TO, BACKDROP_CHIPS_AFTER_ANTE[4]! - RAISE_TO, { Pot: pot0 + RAISE_TO, MinRaise: 2 * RAISE_TO - BB, NextActionSeat: 5 }),
+    action(5, FOLD, 0, BACKDROP_CHIPS_AFTER_ANTE[5]!, { Pot: pot0 + RAISE_TO, MinRaise: 2 * RAISE_TO - BB, NextActionSeat: 0 }),
+    action(0, FOLD, SB, BACKDROP_CHIPS_AFTER_ANTE[0]! - SB, { Pot: pot0 + RAISE_TO, MinRaise: 2 * RAISE_TO - BB, NextActionSeat: heroSeat }),
   ]
 
   const out = [...kept, ...synthetic].map((e) => JSON.stringify(e)).join('\n') + '\n'
+  // e2e/.build/ is gitignored and absent on a fresh checkout -- create it
+  // before writing into it so `npx tsx e2e/tools/capture-store-imagery.ts`
+  // (the documented invocation) doesn't throw ENOENT as its first act.
+  mkdirSync(BUILD_DIR, { recursive: true })
   writeFileSync(DERIVED_FIXTURE, out)
   return DERIVED_FIXTURE
 }
@@ -209,6 +249,27 @@ export const buildStoreFixture = (): string => {
 // ---------------------------------------------------------------------------
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Races `promise` against a timeout so a step that depends on something
+ * that may never happen (e.g. the fixture page never opening its replay
+ * WebSocket, because the extension failed to load/inject) fails with a
+ * diagnosable error instead of hanging this script -- and the harness's
+ * `finally` cleanup -- forever. Mirrors `withTimeout` in
+ * e2e/scenarios/smoke.ts, which wraps the same `waitForReplayDone()` call
+ * for the identical failure mode.
+ */
+export const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> =>
+  new Promise<T>((resolvePromise, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${timeoutMs}ms -- did the fixture page open its replay WebSocket? (extension missing/not loaded, or the page failed to hook the WS)`)),
+      timeoutMs
+    )
+    promise.then(
+      (value) => { clearTimeout(timer); resolvePromise(value) },
+      (err) => { clearTimeout(timer); reject(err) }
+    )
+  })
 
 /** Waits until the fixture page has received every replayed WS frame. */
 const waitForReplayEvents = async (h: Harness, total: number): Promise<void> => {
@@ -295,7 +356,11 @@ const runPlan = async (fixturePath: string, totalEvents: number, plan: ShotPlan)
   const h = await launchHarness({ viewport: plan.viewport, fixturePath, replayDelayMs: REPLAY_DELAY_MS })
   try {
     await h.waitForHudMount()
-    await h.waitForReplayDone()
+    // Bounded: if the fixture page never opens its WebSocket, the harness's
+    // replayDone promise would otherwise never settle and this script would
+    // hang before ever reaching the `finally` cleanup below (see smoke.ts's
+    // identical guard around the same call).
+    await withTimeout(h.waitForReplayDone(), 20000, 'fixture replay')
     await sleep(1500)
 
     await seedPositions(h, plan.viewport)
@@ -392,7 +457,13 @@ const main = async (): Promise<void> => {
   })
 }
 
-main().catch((err) => {
-  console.error('[capture-store-imagery] FAILED:', err)
-  process.exitCode = 1
-})
+// Guard so this module can be imported (e.g. from a test, to exercise
+// `buildStoreFixture`/`withTimeout` in isolation) without also kicking off
+// the full launch-Chrome-and-screenshot pipeline as an import side effect --
+// same pattern as build-e2e.ts/generate-e2e-manifest.ts/extract-fixture.ts.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    console.error('[capture-store-imagery] FAILED:', err)
+    process.exitCode = 1
+  })
+}
