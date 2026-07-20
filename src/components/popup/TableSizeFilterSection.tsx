@@ -46,7 +46,7 @@ export const TableSizeFilterSection = ({
         />
       </Box>
       {/*
-        「フル」の定義は卓サイズに依存する(classifyTableSizeLayer, table-size.ts):
+        「フル」の定義はテーブルサイズに依存する(classifyTableSizeLayer, table-size.ts):
         6maxは5〜6人、4maxは4人(満席)。1チップの可視ラベルだけでこの分岐を
         表現すると長すぎるかホバー頼みになるため、ここに常時表示のキャプション
         として明記する(sola要件: 正しいこと AND 推測なしで発見できること)。

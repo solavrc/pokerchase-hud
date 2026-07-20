@@ -1,5 +1,6 @@
 import Box from '@mui/material/Box'
 import Slider from '@mui/material/Slider'
+import Typography from '@mui/material/Typography'
 import { SectionHeading } from './SectionHeading'
 
 interface HandLimitSectionProps {
@@ -14,6 +15,10 @@ export const HandLimitSection = ({
   return (
     <>
       <SectionHeading>ハンド数</SectionHeading>
+      {/* ゲームタイプ/テーブル人数と同じ理由・同じ文末で「これもフィルタだ」を明示する */}
+      <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 1 }}>
+        直近Nハンドに限定してHUD統計の集計対象を絞り込みます
+      </Typography>
       <Box sx={{ px: 1, mt: 1, mb: 0.5 }}>
         <Slider
           value={(() => {

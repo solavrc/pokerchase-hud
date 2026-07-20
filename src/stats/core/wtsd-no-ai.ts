@@ -26,7 +26,10 @@ import { formatPercentage } from '../utils'
 export const wtsdNoAiStat: StatDefinition = {
   id: 'wtsdNoAi',
   name: 'WTSDa',
-  description: 'ショーダウン率（プリフロップオールイン除外、意思決定ベースの変種）',
+  // wtsd.ts側の記法「ショーダウン率（フロップ以降、プリフロップオールイン含む）」
+  // と対で読めるよう、括弧内は除外条件のみに揃える(旧文言の「意思決定ベースの
+  // 変種」は説明にならない専門用語だったため削除。由来は上のdocblock参照)。
+  description: 'ショーダウン率（プリフロップオールイン除外）',
   helpText: 'フロップを見た後にショーダウンまで進んだ割合(プリフロップオールイン除外)',
   enabled: false,
   calculate: ({ actions, phases }) => {

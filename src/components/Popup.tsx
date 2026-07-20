@@ -476,7 +476,24 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
         />
       </SectionCard>
 
-      {/* Cloud Backup - ハンド数とHUD表示設定の間 */}
+      {/*
+        HUD表示設定（統計の有効/無効・並び順）→ クラウド同期（自動バックアップ）
+        の順（sola要件, 2026-07 popup polish）: 統計フィルタ3セクションの直後に
+        「その統計をどう表示するか」を置き、「その設定をどうバックアップするか」
+        は最後に回す方が読む順として自然、との指摘に対応。状態やロジックの結合は
+        無く、単なるJSX順序の入れ替え。
+      */}
+      <SectionCard>
+        <StatisticsConfigSection
+          pendingStatDisplayConfigs={pendingStatDisplayConfigs}
+          hasUnsavedStatChanges={hasUnsavedStatChanges}
+          handleStatToggle={handleStatToggle}
+          handleStatOrderChange={handleStatOrderChange}
+          handleApplyStatChanges={handleApplyStatChanges}
+          handleResetStatChanges={handleResetStatChanges}
+        />
+      </SectionCard>
+
       <SectionCard>
         <FirebaseAuthSection
           isFirebaseSignedIn={isFirebaseSignedIn}
@@ -487,17 +504,6 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           handleFirebaseSignOut={handleFirebaseSignOut}
           handleManualSyncUpload={handleManualSyncUpload}
           handleManualSyncDownload={handleManualSyncDownload}
-        />
-      </SectionCard>
-
-      <SectionCard>
-        <StatisticsConfigSection
-          pendingStatDisplayConfigs={pendingStatDisplayConfigs}
-          hasUnsavedStatChanges={hasUnsavedStatChanges}
-          handleStatToggle={handleStatToggle}
-          handleStatOrderChange={handleStatOrderChange}
-          handleApplyStatChanges={handleApplyStatChanges}
-          handleResetStatChanges={handleResetStatChanges}
         />
       </SectionCard>
 

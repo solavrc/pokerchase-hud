@@ -14,7 +14,7 @@ describe('composeStatTitle', () => {
     const title = composeStatTitle('vpipF', 'VPIP·F', '35.2% (n=1252)', dynamicTooltip)
     expect(title).toBe(
       'VPIP·F 35.2% (n=1252) | 4p 47.0% (n=279) | 3p 56.1% (n=221) | HU 71.9% (n=146)\n' +
-      '全員着席した卓に限定したVPIP。卓が縮小するほどVPIPは自然に上がるため、比較しやすいよう絞った指標(HUD独自指標)'
+      '全員着席したテーブルに限定したVPIP。テーブルが縮小するほどVPIPは自然に上がるため、比較しやすいよう絞った指標'
     )
   })
 

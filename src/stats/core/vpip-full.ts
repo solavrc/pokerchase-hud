@@ -117,8 +117,14 @@ function formatLayerBreakdown(playerId: number, actions: Action[], hands: Hand[]
 export const vpipFullStat: StatDefinition = {
   id: 'vpipF',
   name: 'VPIP·F',
-  description: 'フルテーブル層（6max≥5人 / 4max=4人）に限定したVPIP（ウォーク除外, HUD独自指標, opt-in）',
-  helpText: '全員着席した卓に限定したVPIP。卓が縮小するほどVPIPは自然に上がるため、比較しやすいよう絞った指標(HUD独自指標)',
+  // description/helpTextの文言(2026-07, popup polish): 旧説明文
+  // 「フルテーブル層（6max≥5人 / 4max=4人）に限定したVPIP（ウォーク除外,
+  // HUD独自指標, opt-in）」はsolaレビューで「直感的でない」と指摘された
+  // (opt-inかどうかはトグル自体で分かるため説明文に書く情報ではない)。
+  // vpip.ts描写の文体（〜割合、パレン内は除外条件のみ）に合わせつつ、
+  // このスタッツ固有の「なぜ存在するか」を平易に書く。
+  description: 'ほぼ満席のテーブルに限定したVPIP（6maxは5〜6人、4maxは満席）。少人数テーブルほどVPIPが自然に上がる歪みを除きます',
+  helpText: '全員着席したテーブルに限定したVPIP。テーブルが縮小するほどVPIPは自然に上がるため、比較しやすいよう絞った指標',
   enabled: false,
   calculate: ({ playerId, actions, hands }) => {
     const { full } = groupHandsByLayer(hands)
