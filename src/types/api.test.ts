@@ -1,8 +1,9 @@
-import { 
-  ApiType, 
-  validateMessage, 
-  isApplicationApiEvent, 
-  validateApiEvent, 
+import {
+  ApiType,
+  validateMessage,
+  isApplicationApiEvent,
+  isUnparseableApplicationEvent,
+  validateApiEvent,
   isApiEventType,
   getEventSchema,
   getAvailableEventTypes,
@@ -146,6 +147,43 @@ describe('API Validation Functions', () => {
 
       expect(isApplicationApiEvent(nonAppEvent1)).toBe(false)
       // isApplicationApiEvent requires KnownApiEvent, so unknown events cannot be tested directly
+    })
+  })
+
+  describe('isUnparseableApplicationEvent', () => {
+    it('distinguishes an application-typed row that fails schema validation from known non-application noise', () => {
+      // ApiTypeId 309 (EVT_SESSION_RESULTS) is an application type, but this
+      // payload is missing every required field -- same shape of failure as
+      // the season-3 payload break (docs/postmortems/2026-07-session-results-drop.md).
+      const brokenSessionResults = { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 200 }
+      // 202 is a known, validating schema, but not an application type --
+      // this is "noise" and must NOT be flagged as recoverable/unparseable.
+      const noiseEvent = { ApiTypeId: 202, Code: 0, timestamp: 200 }
+      // An ApiTypeId the schema has never heard of at all.
+      const unknownTypeEvent = { ApiTypeId: 99999, timestamp: 200 }
+
+      expect(isUnparseableApplicationEvent(brokenSessionResults)).toBe(true)
+      expect(isUnparseableApplicationEvent(noiseEvent)).toBe(false)
+      expect(isUnparseableApplicationEvent(unknownTypeEvent)).toBe(false)
+    })
+
+    it('returns false for an application event that parses successfully', () => {
+      const validEntry = {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        BattleType: 0,
+        Code: 0,
+        Id: 'test',
+        IsRetire: false
+      }
+
+      expect(isUnparseableApplicationEvent(validEntry)).toBe(false)
+    })
+
+    it('returns false for malformed input without a numeric ApiTypeId', () => {
+      expect(isUnparseableApplicationEvent(null)).toBe(false)
+      expect(isUnparseableApplicationEvent(undefined)).toBe(false)
+      expect(isUnparseableApplicationEvent({})).toBe(false)
+      expect(isUnparseableApplicationEvent({ ApiTypeId: '309' })).toBe(false)
     })
   })
 

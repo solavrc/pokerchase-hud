@@ -893,6 +893,28 @@ export const isApplicationApiEvent = (event: unknown): event is ApiEvent<ApiType
   return result.success && ApiTypeValues.includes(result.data.ApiTypeId as ApiType)
 }
 
+/**
+ * `ApiTypeId`がアプリケーション種別（`ApiTypeValues`）に属するにもかかわらず、
+ * 現在のZodスキーマでは検証に失敗する生イベントかどうかを判定する
+ * （例: PokerChase側のペイロード破壊的変更で壊れた309。2026年シーズン3の
+ * 実例はdocs/postmortems/2026-07-session-results-drop.md参照）。
+ *
+ * `isApplicationApiEvent`はこのケースと「本当に非アプリケーションの既知ノイズ」
+ * （202/205等）を区別できず、両方とも`false`を返す。この関数は生の`ApiTypeId`
+ * フィールドだけを（フルスキーマ検証を経由せず）見ることで両者を切り分ける。
+ *
+ * `AutoSyncService.syncToCloud()`のクラウド同期watermarkが、まだ復旧可能な
+ * パース失敗行と永久にスキップしてよいノイズ行を区別するために使う
+ * （PR #142 review r3611258695: クラウド側のwatermarkがこの行を追い越すと、
+ * 後日スキーマが直ってparseできるようになっても二度とアップロード対象に
+ * ならず、クラウドバックアップだけが永久に欠落する）。
+ */
+export const isUnparseableApplicationEvent = (event: unknown): boolean => {
+  if (isApplicationApiEvent(event)) return false
+  const rawApiTypeId = (event as { ApiTypeId?: unknown } | null)?.ApiTypeId
+  return typeof rawApiTypeId === 'number' && ApiTypeValues.includes(rawApiTypeId as ApiType)
+}
+
 /** 検証エラーの詳細を取得 */
 export const getValidationError = (error: z.ZodError) => {
   return error.issues.map(issue => ({

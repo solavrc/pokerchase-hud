@@ -107,6 +107,444 @@ describe('AutoSyncService cloud downloads', () => {
     expect(service.getSyncState().status).toBe('success')
   }, 15000)
 
+  test('upload: a normal chunk of only valid application events uploads and advances the cloud watermark past every event (unaffected by the unparseable-row guard)', async () => {
+    const firstEntry = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-1',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
+    const secondEntry = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-2',
+      IsRetire: false,
+      timestamp: 200
+    } as ApiEvent
+    await db.apiEvents.bulkAdd([firstEntry, secondEntry] as any)
+
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+    const syncBatchSpy = jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockResolvedValue({ totalEvents: 2, syncedEvents: 2, lastSyncTime: new Date() })
+
+    const service = new AutoSyncService(db)
+    await service.performSync('upload')
+
+    expect(syncBatchSpy).toHaveBeenCalledTimes(1)
+    const [uploadedChunk, floor] = syncBatchSpy.mock.calls[0]!
+    expect(uploadedChunk).toEqual([firstEntry, secondEntry])
+    expect(floor).toBeNull() // no cloud data yet, no unparseable rows -- scan floor unchanged
+    expect(service.getSyncState().status).toBe('success')
+    // No unparseable-application rows were ever seen, so no floor marker is persisted.
+    expect(await db.meta.get('syncUnparseableFloor')).toBeUndefined()
+  })
+
+  test('unparseable application-typed row is never permanently skipped by the cloud watermark, and a later schema-recovery re-includes it (PR #142 review r3611258695)', async () => {
+    const firstEntry = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-1',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
+    // ApiTypeId 309 (EVT_SESSION_RESULTS) is an application type, but this raw
+    // row is missing every required field -- it fails Zod validation exactly
+    // like the season-3 payload break did. It's still stored in the Raw Event
+    // Lake (event-ingestion.ts stores raw rows regardless of parseability),
+    // just not forwarded to the pipeline or included in the app-type-filtered
+    // upload chunk.
+    const brokenSessionResults = { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 200 }
+    // A later session's start event -- newer than the broken row, and what
+    // would (without this fix) push Firestore's own max timestamp past it.
+    const nextSessionEntry = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-2',
+      IsRetire: false,
+      timestamp: 300
+    } as ApiEvent
+
+    await db.apiEvents.bulkAdd([firstEntry, brokenSessionResults, nextSessionEntry] as any)
+
+    const cloudMaxSpy = jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp')
+    const syncBatchSpy = jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockResolvedValue({ totalEvents: 0, syncedEvents: 2, lastSyncTime: new Date() })
+
+    const service = new AutoSyncService(db)
+
+    // --- Sync #1: first ever sync, nothing in Firestore yet ---------------
+    cloudMaxSpy.mockResolvedValueOnce(null)
+    await service.performSync('upload')
+
+    expect(syncBatchSpy).toHaveBeenCalledTimes(1)
+    const [firstChunk] = syncBatchSpy.mock.calls[0]!
+    // The broken 309 is excluded from the upload chunk -- only the two valid
+    // events go to Firestore. In the real service, Firestore's own max
+    // timestamp becomes 300 (the highest *uploaded* row), which is what the
+    // next getCloudMaxTimestamp() call is simulating below.
+    expect(firstChunk).toEqual([firstEntry, nextSessionEntry])
+
+    // The fix must have recorded the broken row so it isn't orphaned once the
+    // cloud watermark moves past it.
+    expect((await db.meta.get('syncUnparseableFloor'))?.value).toBe(200)
+
+    // --- Sync #2: before any schema fix, cloud max is already past the ------
+    // broken row (300). The buggy version of this code computes
+    // `totalCount = count(timestamp > 300) = 0` here and returns immediately
+    // without ever looking at the broken row again -- permanently orphaning
+    // it even after a future fix. The fixed version must rewind its scan
+    // floor below the pending marker and keep re-offering it.
+    cloudMaxSpy.mockResolvedValueOnce(300)
+    await service.performSync('upload')
+
+    expect(syncBatchSpy).toHaveBeenCalledTimes(2)
+    const [secondChunk, secondFloor] = syncBatchSpy.mock.calls[1]!
+    // Still can't upload the broken row (schema hasn't been fixed), but the
+    // scan floor was rewound to just below the pending marker (200 - 1 = 199)
+    // instead of trusting the real cloud max (300) -- proving the row is
+    // still being re-scanned, not skipped.
+    expect(secondFloor).toBe(199)
+    // firstEntry (timestamp 100) sits below the rewound floor (199), so it's
+    // not re-scanned -- only rows from the broken row's timestamp onward are.
+    expect(secondChunk).toEqual([nextSessionEntry])
+    expect((await db.meta.get('syncUnparseableFloor'))?.value).toBe(200) // still pending
+
+    // --- Simulate the schema recovery --------------------------------------
+    // The raw bytes for this exact [timestamp, ApiTypeId] key are replaced
+    // with a shape that now validates -- the closest a unit test can get to
+    // "PokerChase's schema break gets fixed and the app re-validates the same
+    // raw row" without swapping Zod schemas at runtime. This mirrors the
+    // actual recovery mechanism documented for `filterValidApplicationEvents`
+    // (src/utils/database-utils.ts): the exact same raw row is re-validated,
+    // no separate promotion step exists.
+    const recoveredSessionResults = {
+      ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+      timestamp: 200,
+      Ranking: 3,
+      IsLeave: false,
+      IsRebuy: false,
+      TotalMatch: 100,
+      RankReward: {
+        IsSeasonal: true,
+        RankPoint: 10,
+        RankPointDiff: 1,
+        Rank: { RankId: 'gold', RankName: 'ゴールド', RankLvId: 'gold', RankLvName: 'ゴールド' },
+        SeasonalRanking: 0
+      },
+      Rewards: [],
+      EventRewards: [],
+      Charas: [],
+      Costumes: [],
+      Decos: [],
+      Items: [],
+      Money: { FreeMoney: -1, PaidMoney: -1 },
+      Emblems: []
+    } as unknown as ApiEvent
+    await db.apiEvents.put(recoveredSessionResults)
+
+    // --- Sync #3: schema is fixed, next sync uploads the recovered row -----
+    cloudMaxSpy.mockResolvedValueOnce(300)
+    await service.performSync('upload')
+
+    expect(syncBatchSpy).toHaveBeenCalledTimes(3)
+    const [thirdChunk] = syncBatchSpy.mock.calls[2]!
+    expect(thirdChunk).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 200 })
+    ]))
+
+    // Fully resolved: no unparseable rows remain, so the floor marker clears
+    // and future syncs stop rewinding.
+    expect(await db.meta.get('syncUnparseableFloor')).toBeUndefined()
+  })
+
+  test('backfills the sync floor from a pre-existing unparseable row below the cloud watermark on first sync after upgrade (codex review r3614189343)', async () => {
+    // Simulates a user who already has a season-3-style unparseable 309 in
+    // their local Raw Event Lake, uploaded by an OLDER version of the
+    // extension -- before this floor mechanism (or this ordering fix)
+    // existed -- so the cloud watermark is already past it and no
+    // `syncUnparseableFloor` marker was ever recorded. Without a backfill,
+    // the very first `scanFloor` computation would trust `cloudMaxTimestamp`
+    // outright and never look at this row again.
+    const oldValidEntry = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-pre-upgrade',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
+    const preExistingOrphan = { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 200 }
+    const newEntryAboveCloudMax = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-post-upgrade',
+      IsRetire: false,
+      timestamp: 400
+    } as ApiEvent
+
+    await db.apiEvents.bulkAdd([oldValidEntry, preExistingOrphan, newEntryAboveCloudMax] as any)
+
+    // Cloud already advanced to 300 by the pre-fix version of the extension
+    // -- strictly past the orphan (200) -- with a completely fresh `meta`
+    // table (no floor, no backfill-done flag), simulating first sync after
+    // upgrading to this fix.
+    const cloudMaxSpy = jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(300)
+    const syncBatchSpy = jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockResolvedValue({ totalEvents: 1, syncedEvents: 1, lastSyncTime: new Date() })
+
+    expect(await db.meta.get('syncUnparseableFloor')).toBeUndefined()
+    expect(await db.meta.get('syncUnparseableFloorBackfillDone')).toBeUndefined()
+
+    const service = new AutoSyncService(db)
+    await service.performSync('upload')
+
+    // The backfill scan must have found the pre-existing orphan and seeded
+    // the floor from it BEFORE trusting the cloud max as the scan start.
+    expect((await db.meta.get('syncUnparseableFloor'))?.value).toBe(200)
+    expect((await db.meta.get('syncUnparseableFloorBackfillDone'))?.value).toBe(true)
+
+    // With the floor seeded, the scan floor rewinds to 199 -- re-offering
+    // the orphan even though the cloud max (300) is well past it -- and the
+    // newer row (400) still uploads normally.
+    expect(syncBatchSpy).toHaveBeenCalledTimes(1)
+    const [uploadedChunk, floor] = syncBatchSpy.mock.calls[0]!
+    expect(floor).toBe(199)
+    expect(uploadedChunk).toEqual([newEntryAboveCloudMax])
+
+    // --- Second sync: the backfill must not run again (one-time, idempotent) ---
+    cloudMaxSpy.mockResolvedValueOnce(300)
+    await service.performSync('upload')
+    // Only one more syncToCloudBatch call (the rewound re-offer of the still-
+    // broken orphan's chunk) -- not a third from a re-triggered backfill scan
+    // re-discovering and re-uploading the same already-synced row.
+    expect(syncBatchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  test('marks the one-time backfill done immediately when the cloud is proven empty (first sync ever, nothing uploaded yet)', async () => {
+    const validEntry = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-1',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
+    await db.apiEvents.add(validEntry)
+
+    // `null` here is the PROVEN-empty case (a successful query that found
+    // zero cloud documents), not an error -- see getCloudMaxTimestamp's doc
+    // comment and the "rejects instead of swallowing" test in
+    // firestore-backup-service.test.ts.
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+    jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockResolvedValue({ totalEvents: 1, syncedEvents: 1, lastSyncTime: new Date() })
+
+    expect(await db.meta.get('syncUnparseableFloorBackfillDone')).toBeUndefined()
+
+    const service = new AutoSyncService(db)
+    await service.performSync('upload')
+
+    expect(service.getSyncState().status).toBe('success')
+    expect((await db.meta.get('syncUnparseableFloorBackfillDone'))?.value).toBe(true)
+    expect(await db.meta.get('syncUnparseableFloor')).toBeUndefined() // nothing pending
+  })
+
+  test('a transient getCloudMaxTimestamp failure does NOT mark the one-time backfill done, and the next successful sync still runs it (codex review round 4 on PR #182)', async () => {
+    // Before this fix, getCloudMaxTimestamp() swallowed auth/network/REST
+    // errors to `null` -- indistinguishable from "cloud proven empty" --
+    // which let backfillUnparseableFloorIfNeeded() permanently mark itself
+    // done off a transient failure on the very first post-upgrade sync,
+    // never getting a real chance to find a pre-existing unparseable row.
+    const validEntry = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-1',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
+    // A pre-existing unparseable row, as if left behind by a pre-fix version
+    // of the extension, sitting below where the cloud watermark will turn
+    // out to be once it's actually reachable.
+    const preExistingOrphan = { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 200 }
+    await db.apiEvents.bulkAdd([validEntry, preExistingOrphan] as any)
+
+    const cloudMaxSpy = jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp')
+    const syncBatchSpy = jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockResolvedValue({ totalEvents: 0, syncedEvents: 0, lastSyncTime: new Date() })
+
+    // --- Sync #1: getCloudMaxTimestamp fails (network blip / REST error) ---
+    cloudMaxSpy.mockRejectedValueOnce(new Error('simulated network failure'))
+
+    const service = new AutoSyncService(db)
+    await service.performSync('upload')
+
+    expect(service.getSyncState().status).toBe('error')
+    // The unguarded getCloudMaxTimestamp() call at the top of syncToCloud()
+    // aborted the whole sync attempt BEFORE backfillUnparseableFloorIfNeeded()
+    // was ever reached -- neither marker was touched.
+    expect(await db.meta.get('syncUnparseableFloorBackfillDone')).toBeUndefined()
+    expect(await db.meta.get('syncUnparseableFloor')).toBeUndefined()
+    expect(syncBatchSpy).not.toHaveBeenCalled()
+
+    // --- Sync #2: cloud max now resolves successfully (proven watermark) ---
+    cloudMaxSpy.mockResolvedValueOnce(300)
+    await service.performSync('upload')
+
+    expect(service.getSyncState().status).toBe('success')
+    // This time the backfill ran to completion against a proven cloud state
+    // and found the pre-existing orphan below that watermark.
+    expect((await db.meta.get('syncUnparseableFloorBackfillDone'))?.value).toBe(true)
+    expect((await db.meta.get('syncUnparseableFloor'))?.value).toBe(200)
+  })
+
+  test('holds the sync floor at its old value across a failed upload of a just-recovered row, and only advances it once that upload is confirmed (codex review r3614189347)', async () => {
+    // Pre-seed state as if a previous pass already recorded row@100 as the
+    // pending floor (it was unparseable then). Also mark the backfill done
+    // so this test exercises only the advance/hold behavior, not backfill.
+    await db.meta.put({ id: 'syncUnparseableFloor', value: 100, updatedAt: Date.now() })
+    await db.meta.put({ id: 'syncUnparseableFloorBackfillDone', value: true, updatedAt: Date.now() })
+
+    // row@100 has SINCE become parseable (the schema fix landed) -- it will
+    // be included in this pass's upload chunk. row@200 is a DIFFERENT,
+    // newly-discovered still-unparseable row in the very same raw chunk.
+    // row@300 is an ordinary valid row after both.
+    const recoveredRow = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-recovered',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
+    const newOrphan = { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 200 }
+    const laterValidRow = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-later',
+      IsRetire: false,
+      timestamp: 300
+    } as ApiEvent
+    await db.apiEvents.bulkAdd([recoveredRow, newOrphan, laterValidRow] as any)
+
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(500)
+    const syncBatchSpy = jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+
+    // --- Sync #1: the upload of this chunk (which includes the recovered ---
+    // row@100) fails, simulating a Firestore write error or the service
+    // worker dying mid-batch.
+    syncBatchSpy.mockRejectedValueOnce(new Error('simulated Firestore write failure'))
+
+    const service = new AutoSyncService(db)
+    await service.performSync('upload')
+
+    expect(syncBatchSpy).toHaveBeenCalledTimes(1)
+    const [firstAttemptChunk, firstAttemptFloor] = syncBatchSpy.mock.calls[0]!
+    // Scan floor rewound to just below the OLD pending marker (100 - 1 =
+    // 99), re-offering row@100 despite the newer cloud max (500).
+    expect(firstAttemptFloor).toBe(99)
+    expect(firstAttemptChunk).toEqual([recoveredRow, laterValidRow])
+
+    // The critical assertion (P1 #2): even though this chunk's raw scan
+    // discovered a NEW later orphan (row@200) and the recovered row@100 was
+    // about to be uploaded, the failed upload must NOT have left the floor
+    // advanced to 200 -- if it had, the next sync would rewind only to 199
+    // and never re-offer row@100, which was never actually confirmed
+    // uploaded. The floor must still be exactly the OLD value (100).
+    expect((await db.meta.get('syncUnparseableFloor'))?.value).toBe(100)
+    expect(service.getSyncState().status).toBe('error')
+
+    // --- Sync #2: the same upload now succeeds. ------------------------------
+    syncBatchSpy.mockResolvedValueOnce({ totalEvents: 2, syncedEvents: 2, lastSyncTime: new Date() })
+    await service.performSync('upload')
+
+    expect(syncBatchSpy).toHaveBeenCalledTimes(2)
+    const [secondAttemptChunk, secondAttemptFloor] = syncBatchSpy.mock.calls[1]!
+    // Still rewound the same way -- row@100 is re-offered again (proving it
+    // was never dropped after the failed attempt).
+    expect(secondAttemptFloor).toBe(99)
+    expect(secondAttemptChunk).toEqual([recoveredRow, laterValidRow])
+
+    // Only now -- after this upload was awaited and confirmed -- is it safe
+    // to advance the floor, and it advances to the new orphan's timestamp
+    // (200), not clear entirely (row@200 is still pending).
+    expect((await db.meta.get('syncUnparseableFloor'))?.value).toBe(200)
+    expect(service.getSyncState().status).toBe('success')
+  })
+
+  test('persists the unparseable floor to meta BEFORE uploading any later-timestamped valid row in the same chunk (codex review r3614064524, crash-window regression)', async () => {
+    const firstEntry = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-1',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
+    // Application-typed but unparseable, same as the season-3 payload break.
+    const brokenSessionResults = { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 200 }
+    // Newer than the broken row -- the row whose upload would (pre-fix) be
+    // allowed to advance Firestore's own max past the still-unrecorded orphan.
+    const nextSessionEntry = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-2',
+      IsRetire: false,
+      timestamp: 300
+    } as ApiEvent
+
+    await db.apiEvents.bulkAdd([firstEntry, brokenSessionResults, nextSessionEntry] as any)
+
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+
+    // Record the interleaving of the durable meta write (what actually makes
+    // the floor crash-safe -- a real IndexedDB write via fake-indexeddb, not
+    // just an in-memory variable) against the Firestore upload call that is
+    // what allows a subsequent getCloudMaxTimestamp() to observe a cloud max
+    // past the orphan. This is the exact ordering the crash window depends
+    // on: if the service worker were terminated between these two calls, a
+    // durable floor (persisted first) survives; without it (persisted only
+    // after), the row is permanently orphaned -- which is what the pre-fix
+    // code did (it deferred the sole `persistUnparseableSyncFloor` call to
+    // after the whole while-loop, i.e. after every chunk's upload).
+    const callOrder: string[] = []
+    const realMetaPut = db.meta.put.bind(db.meta)
+    ;(jest.spyOn(db.meta, 'put') as jest.SpyInstance).mockImplementation((item: any) => {
+      callOrder.push(`meta.put:${item.id}=${JSON.stringify(item.value)}`)
+      return realMetaPut(item)
+    })
+    jest.spyOn(firestoreBackupService, 'syncToCloudBatch').mockImplementation(async (chunk: ApiEvent[]) => {
+      callOrder.push(`syncToCloudBatch:${chunk.map(e => e.timestamp).join(',')}`)
+      return { totalEvents: chunk.length, syncedEvents: chunk.length, lastSyncTime: new Date() }
+    })
+
+    const service = new AutoSyncService(db)
+    await service.performSync('upload')
+
+    // The uploaded chunk is [firstEntry(100), nextSessionEntry(300)] -- the
+    // broken row (200) is filtered out of the upload but nextSessionEntry
+    // (300) is timestamped AFTER it and sits in the very same raw chunk.
+    const floorPutIndex = callOrder.findIndex(entry => entry.startsWith('meta.put:syncUnparseableFloor=200'))
+    const uploadIndex = callOrder.findIndex(entry => entry.startsWith('syncToCloudBatch:100,300'))
+
+    expect(floorPutIndex).toBeGreaterThanOrEqual(0)
+    expect(uploadIndex).toBeGreaterThanOrEqual(0)
+    // happens-before: the durable floor write must complete before the
+    // upload call that could push the cloud max past the orphan it guards.
+    expect(floorPutIndex).toBeLessThan(uploadIndex)
+
+    // Sanity: the persisted value actually is the orphan's timestamp.
+    expect((await db.meta.get('syncUnparseableFloor'))?.value).toBe(200)
+  })
+
   test('latches _isSyncing BEFORE the awaited min-version gate so two concurrent performSync() calls cannot both pass the guard (codex review P2, race fix)', async () => {
     const service = new AutoSyncService(db)
 
