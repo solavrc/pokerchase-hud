@@ -29,6 +29,8 @@ import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
 import { createImportExportHandlers } from './import-export'
 import { BattleType } from '../types/game'
+import { ApiType } from '../types'
+import type { ApiEvent } from '../types'
 import type { Hand } from '../types/entities'
 
 const HERO_ID = 1
@@ -166,5 +168,139 @@ describe('getLatestSessionStats -- pre-game hero stats fallback', () => {
     // default of "all hands" (which would have counted both seeded hands).
     const handsResult = stats[0].statResults.find((r: any) => r.id === 'hands')
     expect(handsResult?.value).toBe(1)
+  })
+})
+
+/**
+ * getLatestSessionStats() - DB-inference fallback when `service.playerId` is
+ * unknown in memory
+ *
+ * Real-world trigger (see fix/pregame-playerid-inference): a freshly-loaded
+ * unpacked extension instance starts with empty in-memory service state.
+ * After a cloud download or NDJSON import, the local DB already has hero
+ * deal events, but until a live EVT_DEAL arrives `service.playerId` is still
+ * unset, so the pre-existing "unknown playerId -> no-op" branch left the
+ * pre-game panel dark even though the hero's identity was recoverable.
+ *
+ * This mirrors the DB-recovery derivation `PokerChaseService.
+ * recalculateAllStats()` already performs on batch-mode exit (see
+ * poker-chase-service.ts): `findLatestPlayerDealEvent(db)`, then
+ * `Player?.SeatIndex !== undefined` -> `SeatUserIds[Player.SeatIndex]`. The
+ * derived id is assigned through the `service.playerId` setter so it
+ * persists via the service's normal 500ms-debounced chrome.storage.local
+ * save, same as if it had come from a live EVT_DEAL.
+ */
+describe('getLatestSessionStats -- DB-inference fallback for unknown in-memory playerId', () => {
+  const STORAGE_KEY = PokerChaseService.STORAGE_KEY
+
+  const dealEvent: ApiEvent<ApiType.EVT_DEAL> = {
+    ApiTypeId: ApiType.EVT_DEAL,
+    SeatUserIds: [HERO_ID, 2, 3, 4], // >=4 seats required by the EVT_DEAL schema (see ApiEventSchema)
+    Game: { CurrentBlindLv: 1, NextBlindUnixSeconds: 0, Ante: 0, SmallBlind: 100, BigBlind: 200, ButtonSeat: 0, SmallBlindSeat: 1, BigBlindSeat: 2 },
+    Player: { SeatIndex: 0, BetStatus: 1, HoleCards: [0, 1], Chip: 5000, BetChip: 0 },
+    OtherPlayers: [
+      { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 100, IsSafeLeave: false },
+      { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 200, IsSafeLeave: false },
+      { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 0, IsSafeLeave: false },
+    ],
+    Progress: { Phase: 0, NextActionSeat: 0, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 400, Pot: 300, SidePot: [] },
+    timestamp: 1000,
+  }
+
+  let db: PokerChaseDB
+  let service: PokerChaseService
+  let getLatestSessionStats: (preGame: boolean) => Promise<any[]>
+
+  beforeEach(async () => {
+    // Fake only setTimeout/setInterval (used by the service's 500ms
+    // persistState debounce) -- fake-indexeddb schedules its own request/
+    // versionchange events via a real setImmediate internally, so faking
+    // that too would hang db.open()/apiEvents.add()/db.delete() below.
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] })
+
+    db = new PokerChaseDB(indexedDB, IDBKeyRange)
+    await db.open()
+    service = new PokerChaseService({ db })
+    await service.ready
+
+    await db.hands.bulkAdd([
+      makeHand({ id: 1, seatUserIds: [HERO_ID, 2, 3, 4, 5, 6] }),
+      makeHand({ id: 2, seatUserIds: [HERO_ID, 2, 3, 4, 5, -1] }),
+    ])
+
+    ;(getLatestSessionStats = createImportExportHandlers(service, db, 'https://example.com/*').getLatestSessionStats)
+  })
+
+  afterEach(async () => {
+    jest.useRealTimers()
+    db.close()
+    await db.delete()
+    await chrome.storage.local.set({ [STORAGE_KEY]: undefined })
+    jest.clearAllMocks()
+  })
+
+  test('hero deal event recoverable from DB: derives playerId, sets+persists it on the service, and returns hero stats', async () => {
+    await db.apiEvents.add(dealEvent)
+    expect(service.playerId).toBeUndefined()
+
+    const stats = await getLatestSessionStats(true)
+
+    // Set on the service itself (not just used locally for this one call) --
+    // later features (live pipeline, next mount, etc.) see it too.
+    expect(service.playerId).toBe(HERO_ID)
+
+    expect(stats).toHaveLength(6)
+    expect(stats[0].playerId).toBe(HERO_ID)
+    const handsResult = stats[0].statResults.find((r: any) => r.id === 'hands')
+    expect(handsResult?.value).toBe(2)
+    for (let i = 1; i < 6; i++) {
+      expect(stats[i]).toEqual(EMPTY_SEAT)
+    }
+
+    // Persists via the normal debounced save (the plain `service.playerId =`
+    // setter), same as PokerChaseService.recalculateAllStats()'s DB-recovery
+    // path -- not a one-off side-channel write.
+    expect(chrome.storage.local.set).not.toHaveBeenCalled() // still inside the 500ms debounce window
+    jest.advanceTimersByTime(500)
+    await Promise.resolve()
+    expect(chrome.storage.local.set).toHaveBeenCalled()
+    const lastCall = (chrome.storage.local.set as jest.Mock).mock.calls.at(-1)
+    expect(lastCall[0][STORAGE_KEY].playerId).toBe(HERO_ID)
+  })
+
+  test('no hero deal event anywhere in the DB (true fresh install / never played): stays a silent no-op, returns []', async () => {
+    // apiEvents left empty -- findLatestPlayerDealEvent() finds nothing to recover.
+    const stats = await getLatestSessionStats(true)
+
+    expect(service.playerId).toBeUndefined()
+    expect(stats).toEqual([])
+
+    jest.advanceTimersByTime(500)
+    await Promise.resolve()
+    expect(chrome.storage.local.set).not.toHaveBeenCalled()
+  })
+
+  test('known in-memory playerId: DB is never consulted (no apiEvents lookup), existing behavior unchanged', async () => {
+    service.playerId = HERO_ID
+    jest.advanceTimersByTime(500)
+    await Promise.resolve()
+    ;(chrome.storage.local.set as jest.Mock).mockClear()
+
+    const whereSpy = jest.spyOn(db.apiEvents, 'where')
+
+    const stats = await getLatestSessionStats(true)
+
+    expect(whereSpy).not.toHaveBeenCalled() // findLatestPlayerDealEvent() was never invoked
+    expect(stats[0].playerId).toBe(HERO_ID)
+  })
+
+  test('batch mode still wins over DB inference: no-op, returns [], even with a recoverable hero deal event in the DB', async () => {
+    await db.apiEvents.add(dealEvent)
+    service.setBatchMode(true)
+
+    const stats = await getLatestSessionStats(true)
+
+    expect(service.playerId).toBeUndefined() // inference never ran
+    expect(stats).toEqual([])
   })
 })
