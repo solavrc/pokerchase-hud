@@ -262,6 +262,72 @@ describe('AutoSyncService cloud downloads', () => {
     expect(await db.meta.get('syncUnparseableFloor')).toBeUndefined()
   })
 
+  test('persists the unparseable floor to meta BEFORE uploading any later-timestamped valid row in the same chunk (codex review r3614064524, crash-window regression)', async () => {
+    const firstEntry = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-1',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
+    // Application-typed but unparseable, same as the season-3 payload break.
+    const brokenSessionResults = { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 200 }
+    // Newer than the broken row -- the row whose upload would (pre-fix) be
+    // allowed to advance Firestore's own max past the still-unrecorded orphan.
+    const nextSessionEntry = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-2',
+      IsRetire: false,
+      timestamp: 300
+    } as ApiEvent
+
+    await db.apiEvents.bulkAdd([firstEntry, brokenSessionResults, nextSessionEntry] as any)
+
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+
+    // Record the interleaving of the durable meta write (what actually makes
+    // the floor crash-safe -- a real IndexedDB write via fake-indexeddb, not
+    // just an in-memory variable) against the Firestore upload call that is
+    // what allows a subsequent getCloudMaxTimestamp() to observe a cloud max
+    // past the orphan. This is the exact ordering the crash window depends
+    // on: if the service worker were terminated between these two calls, a
+    // durable floor (persisted first) survives; without it (persisted only
+    // after), the row is permanently orphaned -- which is what the pre-fix
+    // code did (it deferred the sole `persistUnparseableSyncFloor` call to
+    // after the whole while-loop, i.e. after every chunk's upload).
+    const callOrder: string[] = []
+    const realMetaPut = db.meta.put.bind(db.meta)
+    ;(jest.spyOn(db.meta, 'put') as jest.SpyInstance).mockImplementation((item: any) => {
+      callOrder.push(`meta.put:${item.id}=${JSON.stringify(item.value)}`)
+      return realMetaPut(item)
+    })
+    jest.spyOn(firestoreBackupService, 'syncToCloudBatch').mockImplementation(async (chunk: ApiEvent[]) => {
+      callOrder.push(`syncToCloudBatch:${chunk.map(e => e.timestamp).join(',')}`)
+      return { totalEvents: chunk.length, syncedEvents: chunk.length, lastSyncTime: new Date() }
+    })
+
+    const service = new AutoSyncService(db)
+    await service.performSync('upload')
+
+    // The uploaded chunk is [firstEntry(100), nextSessionEntry(300)] -- the
+    // broken row (200) is filtered out of the upload but nextSessionEntry
+    // (300) is timestamped AFTER it and sits in the very same raw chunk.
+    const floorPutIndex = callOrder.findIndex(entry => entry.startsWith('meta.put:syncUnparseableFloor=200'))
+    const uploadIndex = callOrder.findIndex(entry => entry.startsWith('syncToCloudBatch:100,300'))
+
+    expect(floorPutIndex).toBeGreaterThanOrEqual(0)
+    expect(uploadIndex).toBeGreaterThanOrEqual(0)
+    // happens-before: the durable floor write must complete before the
+    // upload call that could push the cloud max past the orphan it guards.
+    expect(floorPutIndex).toBeLessThan(uploadIndex)
+
+    // Sanity: the persisted value actually is the orphan's timestamp.
+    expect((await db.meta.get('syncUnparseableFloor'))?.value).toBe(200)
+  })
+
   test('latches _isSyncing BEFORE the awaited min-version gate so two concurrent performSync() calls cannot both pass the guard (codex review P2, race fix)', async () => {
     const service = new AutoSyncService(db)
 

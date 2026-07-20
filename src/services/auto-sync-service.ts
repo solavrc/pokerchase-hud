@@ -254,9 +254,23 @@ export class AutoSyncService {
     let synced = 0
     let lastProcessedTimestamp = scanFloor || 0
     // Earliest still-unparseable-application timestamp seen across this whole
-    // pass. Only committed to `meta` once the pass completes (success or not
-    // found), so a mid-pass failure (e.g. a Firestore write error) leaves the
-    // previous marker untouched instead of losing track of it.
+    // pass. Updated (and durably persisted -- see the per-chunk `await
+    // this.persistUnparseableSyncFloor(...)` below) the moment a chunk
+    // reveals one, never merely accumulated in memory until the pass ends.
+    //
+    // INVARIANT (codex review r3614064524 on PR #182): the cloud max
+    // timestamp (what the *next* `getCloudMaxTimestamp()` call will read
+    // back from Firestore) may never advance past an orphan row whose
+    // timestamp is not yet durably recorded in `meta`. `syncToCloudBatch`
+    // is what advances Firestore's own max, so every chunk that reveals a
+    // new (or still-pending) unparseable timestamp must have that timestamp
+    // `await`-persisted BEFORE this loop calls `syncToCloudBatch` again --
+    // including for its own chunk, since a raw chunk is sorted and can
+    // contain valid rows timestamped after the orphan it also contains. A
+    // mid-pass failure (e.g. a Firestore write error) after that persist
+    // has already landed still leaves the correct marker in place; only the
+    // final commit below additionally needs to *clear* a stale marker once
+    // a full pass confirms nothing remains pending.
     let earliestUnparseableThisPass: number | null = null
 
     while (processed < totalCount) {
@@ -282,15 +296,34 @@ export class AutoSyncService {
       // advance the cursor and the loop would refetch it forever.
       const chunk = rawChunk.filter(isApplicationApiEvent)
 
-      // Track any application-typed rows in this raw chunk that still can't
-      // parse (see watermark guard above) so the floor marker reflects the
-      // earliest one still pending after this pass.
+      // Find any application-typed rows in THIS raw chunk that still can't
+      // parse (see watermark guard above).
+      let earliestUnparseableThisChunk: number | null = null
       for (const raw of rawChunk) {
         if (isUnparseableApplicationEvent(raw) && typeof raw.timestamp === 'number') {
-          earliestUnparseableThisPass = earliestUnparseableThisPass === null
+          earliestUnparseableThisChunk = earliestUnparseableThisChunk === null
             ? raw.timestamp
-            : Math.min(earliestUnparseableThisPass, raw.timestamp)
+            : Math.min(earliestUnparseableThisChunk, raw.timestamp)
         }
+      }
+
+      if (earliestUnparseableThisChunk !== null) {
+        earliestUnparseableThisPass = earliestUnparseableThisPass === null
+          ? earliestUnparseableThisChunk
+          : Math.min(earliestUnparseableThisPass, earliestUnparseableThisChunk)
+
+        // Persist BEFORE the upload below (codex review r3614064524): this
+        // raw chunk is timestamp-sorted and may contain valid rows after the
+        // orphan's position, and `syncToCloudBatch` upserts by document ID
+        // (not append-only), so as soon as it runs, a subsequent
+        // `getCloudMaxTimestamp()` can observe a cloud max past the orphan.
+        // If the marker weren't durable yet at that point and the service
+        // worker died right after the upload, the next sync would compute
+        // `totalCount = count(timestamp > cloudMax) = 0` for this row
+        // forever -- exactly the permanent-orphan window this mechanism
+        // exists to close. Awaiting here closes it: the marker lands before
+        // any upload call (this chunk's or a later one's) can advance past it.
+        await this.persistUnparseableSyncFloor(earliestUnparseableThisPass)
       }
 
       // Sync this chunk (skip the Firestore round-trip entirely if it's all noise)
@@ -330,8 +363,13 @@ export class AutoSyncService {
       }
     }
 
-    // Full pass completed without throwing: commit what we learned about
-    // pending unparseable rows (clears the marker if none remain).
+    // Full pass completed without throwing. Any pending marker is already
+    // durable (persisted per-chunk above, before it could be outrun by an
+    // upload); this call's remaining job is to CLEAR a stale marker once a
+    // complete pass confirms nothing is pending any more (e.g. a previously
+    // broken row parsed successfully this time and no other orphan exists).
+    // Re-persisting a still-pending value here is redundant but harmless
+    // (same value, idempotent `meta.put`).
     await this.persistUnparseableSyncFloor(earliestUnparseableThisPass)
 
     console.log(`[AutoSync] Uploaded ${synced} new events to cloud`)
