@@ -173,6 +173,8 @@ describe('FirestoreBackupService', () => {
     // one-time unparseable-floor backfill treats it as "cloud proven empty,
     // nothing to backfill past"). A transient auth/network/REST failure must
     // never be indistinguishable from that -- it has to throw instead.
+    // (Small retryBaseDelayMs keeps the transient-retry backoff from slowing
+    // the suite -- a persistent 500 is retried before the final throw.)
     global.fetch = jest.fn().mockResolvedValue({
       ok: false,
       status: 500,
@@ -181,7 +183,7 @@ describe('FirestoreBackupService', () => {
       })
     } as Response)
 
-    await expect(new FirestoreBackupService().getCloudMaxTimestamp())
+    await expect(new FirestoreBackupService({ retryBaseDelayMs: 1 }).getCloudMaxTimestamp())
       .rejects.toThrow('Firestore REST request failed: 500')
   })
 
@@ -229,5 +231,257 @@ describe('FirestoreBackupService', () => {
     const onBatch = jest.fn()
     await expect(new FirestoreBackupService().syncFromCloud({ onBatch })).resolves.toBe(0)
     expect(onBatch).not.toHaveBeenCalled()
+  })
+})
+
+describe('FirestoreBackupService transport hardening (release audit 2026-07-21: timeout/abort/retry/401-refresh)', () => {
+  const originalFetch = global.fetch
+  // Small values so timeout/backoff paths run in milliseconds. Retry budget
+  // matches the production default shape: 1 initial attempt + 2 transient
+  // retries = 3 attempts max.
+  const fastTransport = { requestTimeoutMs: 30, retryBaseDelayMs: 1, maxTransientRetries: 2 }
+
+  beforeEach(() => {
+    jest.spyOn(firebaseAuthService, 'ready').mockResolvedValue()
+    jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue({
+      uid: 'XK00mmVIZdg8J52OlfyKvN467SK2',
+      email: null,
+      displayName: null,
+      photoURL: null,
+      getIdToken: jest.fn()
+    })
+    jest.spyOn(firebaseAuthService, 'getIdToken').mockImplementation(
+      async (forceRefresh?: boolean) => forceRefresh ? 'refreshed-token' : 'initial-token'
+    )
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockReturnValue(7)
+  })
+
+  afterEach(() => {
+    jest.restoreAllMocks()
+    if (originalFetch) {
+      global.fetch = originalFetch
+    } else {
+      delete (global as { fetch?: typeof fetch }).fetch
+    }
+  })
+
+  test('a stalled fetch is aborted by the request timeout, retried with backoff, and rejects after the bounded retry budget', async () => {
+    // Never-resolving fetch that only settles when the AbortController fires
+    // -- the exact "stalled connection holds isSyncing forever" failure mode
+    // the timeout exists to prevent.
+    const fetchMock = jest.fn().mockImplementation((_url: string, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }))
+        })
+      })
+    )
+    global.fetch = fetchMock
+
+    await expect(new FirestoreBackupService(fastTransport).getCloudMaxTimestamp())
+      .rejects.toThrow('Firestore REST request timed out after 30ms')
+    // 1 initial attempt + 2 transient retries, then a terminal throw.
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  test('401 force-refreshes the token via getIdToken(true) and retries exactly once with the refreshed token', async () => {
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        text: async () => JSON.stringify({ error: { code: 401, status: 'UNAUTHENTICATED' } })
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify([{ readTime: '2026-07-21T00:00:00Z' }])
+      } as Response)
+    global.fetch = fetchMock
+
+    await expect(new FirestoreBackupService(fastTransport).getCloudMaxTimestamp()).resolves.toBeNull()
+
+    expect(firebaseAuthService.getIdToken).toHaveBeenCalledWith(true)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const firstHeaders = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>
+    const secondHeaders = (fetchMock.mock.calls[1]![1] as RequestInit).headers as Record<string, string>
+    expect(firstHeaders['Authorization']).toBe('Bearer initial-token')
+    expect(secondHeaders['Authorization']).toBe('Bearer refreshed-token')
+  })
+
+  test('a hung INITIAL token acquisition is bounded by the transport timeout too -- no fetch is ever issued (codex review r3617258715)', async () => {
+    // An expired cached token makes the very first getIdToken() of a request
+    // hit the same unbounded Secure Token API fetch as the forced refresh --
+    // simulate it stalling forever. This runs BEFORE fetchWithTimeout() ever
+    // gets involved, so without its own bound the whole sync pass hung here.
+    jest.spyOn(firebaseAuthService, 'getIdToken').mockImplementation(
+      () => new Promise<string>(() => { }) // hangs forever
+    )
+    const fetchMock = jest.fn()
+    global.fetch = fetchMock
+
+    await expect(new FirestoreBackupService(fastTransport).getCloudMaxTimestamp())
+      .rejects.toThrow('initial token acquisition timed out after 30ms')
+    // Terminal auth failure: nothing was ever sent, no forced refresh tried.
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(firebaseAuthService.getIdToken).not.toHaveBeenCalledWith(true)
+  })
+
+  test('a hung forced token refresh during 401 recovery is bounded by the transport timeout instead of stalling the request funnel (codex review r3617177865)', async () => {
+    // FirebaseAuthService.getIdToken()'s internal Secure Token API fetch has
+    // no AbortController -- simulate it stalling forever on the forced
+    // refresh, while the initial (cached-token) call resolves normally.
+    jest.spyOn(firebaseAuthService, 'getIdToken').mockImplementation(
+      (forceRefresh?: boolean) => forceRefresh
+        ? new Promise<string>(() => { }) // hangs forever
+        : Promise.resolve('initial-token')
+    )
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => JSON.stringify({ error: { code: 401, status: 'UNAUTHENTICATED' } })
+    } as Response)
+    global.fetch = fetchMock
+
+    // Fails within the bound (30ms here) as an auth failure -- before this
+    // fix the bare `await getIdToken(true)` hung the funnel indefinitely,
+    // leaving AutoSyncService._isSyncing latched.
+    await expect(new FirestoreBackupService(fastTransport).getCloudMaxTimestamp())
+      .rejects.toThrow('forced token refresh timed out after 30ms')
+    // Terminal: no retry was attempted after the timed-out refresh.
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  test('a second 401 on the refreshed token is terminal (no refresh loop)', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => JSON.stringify({ error: { code: 401, status: 'UNAUTHENTICATED' } })
+    } as Response)
+    global.fetch = fetchMock
+
+    await expect(new FirestoreBackupService(fastTransport).getCloudMaxTimestamp())
+      .rejects.toThrow('Firestore REST request failed: 401')
+    // Exactly one refresh, exactly two attempts -- 401 is not in the
+    // transient-retry class, so no backoff retries pile on top.
+    expect(firebaseAuthService.getIdToken).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  test('the 401 retry is aborted without a token refresh when the signed-in account changed mid-request (auth generation gate)', async () => {
+    // Generation moves between the request-start snapshot and the 401
+    // handling -- an account switch landed while the request was in flight.
+    // A uid comparison could be fooled by an A -> B -> A round trip; the
+    // generation counter cannot. Reads in order: pass-start snapshot (7),
+    // the fail-fast check after the initial token acquisition (still 7 --
+    // the switch lands later, mid-request), then the 401 gate (9).
+    const generationSpy = firebaseAuthService.getAuthGeneration as jest.Mock
+    generationSpy.mockReturnValueOnce(7).mockReturnValueOnce(7).mockReturnValue(9)
+
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => JSON.stringify({ error: { code: 401, status: 'UNAUTHENTICATED' } })
+    } as Response)
+    global.fetch = fetchMock
+
+    await expect(new FirestoreBackupService(fastTransport).getCloudMaxTimestamp())
+      .rejects.toThrow('the signed-in account changed while the request was in flight')
+    // Aborted WITHOUT committing to a retry: no forced refresh, no second fetch.
+    expect(firebaseAuthService.getIdToken).not.toHaveBeenCalledWith(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  test('persistent 5xx is retried with backoff but strictly bounded', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: async () => JSON.stringify({ error: { code: 503, status: 'UNAVAILABLE' } })
+    } as Response)
+    global.fetch = fetchMock
+
+    await expect(new FirestoreBackupService(fastTransport).getCloudMaxTimestamp())
+      .rejects.toThrow('Firestore REST request failed: 503')
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  test('a transient 5xx recovers on retry without failing the call', async () => {
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: async () => JSON.stringify({ error: { code: 500, status: 'INTERNAL' } })
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify([{ readTime: '2026-07-21T00:00:00Z' }])
+      } as Response)
+    global.fetch = fetchMock
+
+    await expect(new FirestoreBackupService(fastTransport).getCloudMaxTimestamp()).resolves.toBeNull()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  test('an account switch DURING the initial token acquisition aborts before any request is issued (codex review r3617090425)', async () => {
+    // getIdToken() internally awaits a network refresh when the cached token
+    // is expired -- an account switch landing inside that await used to slip
+    // past the gate entirely, because the generation snapshot was taken
+    // AFTER the token await (against the NEW account's baseline). Reads in
+    // order: pass-start snapshot (7), then the post-acquisition check (9 --
+    // the switch landed while the token was being refreshed).
+    const generationSpy = firebaseAuthService.getAuthGeneration as jest.Mock
+    generationSpy.mockReturnValueOnce(7).mockReturnValue(9)
+
+    const fetchMock = jest.fn()
+    global.fetch = fetchMock
+
+    await expect(new FirestoreBackupService(fastTransport).getCloudMaxTimestamp())
+      .rejects.toThrow('the signed-in account changed while the request was in flight')
+    // Fails fast: nothing is ever sent under the ambiguous identity, and no
+    // forced refresh is attempted.
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(firebaseAuthService.getIdToken).not.toHaveBeenCalledWith(true)
+  })
+
+  test('a persistent 429 on a write batch is retried by exactly one layer -- the transport budget, not writeBatch times transport (codex review r3617090429)', async () => {
+    let commitCalls = 0
+    const fetchMock = jest.fn().mockImplementation(async (url: string) => {
+      if (!String(url).endsWith(':commit')) {
+        return { ok: true, status: 200, text: async () => '{}' } as Response
+      }
+      commitCalls++
+      return {
+        ok: false,
+        status: 429,
+        text: async () => JSON.stringify({
+          error: { code: 429, message: 'RESOURCE_EXHAUSTED', status: 'RESOURCE_EXHAUSTED' }
+        })
+      } as Response
+    })
+    global.fetch = fetchMock
+
+    const event = { timestamp: 1779859063171, ApiTypeId: 304 } as unknown as ApiEvent
+
+    await expect(new FirestoreBackupService(fastTransport).syncToCloudBatch([event], null))
+      .rejects.toThrow('Cloud sync failed')
+    // Exactly the transport's budget (1 initial + 2 transient retries).
+    // Before r3617090429's fix, writeBatch ran its OWN 3-attempt rate-limit
+    // loop on top of the transport's, hammering the throttled backend with
+    // up to 9 commit attempts for a single batch.
+    expect(commitCalls).toBe(3)
+  })
+
+  test('a non-retryable 4xx (400) fails immediately with no retry and no token refresh', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: async () => JSON.stringify({ error: { code: 400, status: 'INVALID_ARGUMENT' } })
+    } as Response)
+    global.fetch = fetchMock
+
+    await expect(new FirestoreBackupService(fastTransport).getCloudMaxTimestamp())
+      .rejects.toThrow('Firestore REST request failed: 400')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(firebaseAuthService.getIdToken).not.toHaveBeenCalledWith(true)
   })
 })

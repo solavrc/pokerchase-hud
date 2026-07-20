@@ -19,7 +19,10 @@ export const DATABASE_CONSTANTS = {
   FIRESTORE_PARALLEL_BATCHES: 3, // Number of parallel Firestore batches
   FIRESTORE_BATCH_DELAY_MS: 500, // Delay between batch groups
   FIRESTORE_DOWNLOAD_PAGE_SIZE: 1000, // Maximum documents per Firestore download response
-  
+  FIRESTORE_REQUEST_TIMEOUT_MS: 30000,   // Per-request AbortController timeout (a stalled fetch must not hold isSyncing forever)
+  FIRESTORE_TRANSIENT_RETRIES: 2,        // Extra attempts after the first, for transient failures only (network error/timeout/5xx/429)
+  FIRESTORE_RETRY_BASE_DELAY_MS: 500,    // Backoff base: 500ms, then 1000ms (doubles per retry)
+
   // Cache durations
   PLAYER_CACHE_DURATION_MS: 60000,     // 1 minute
   STATS_CACHE_DURATION_MS: 5000,       // 5 seconds
