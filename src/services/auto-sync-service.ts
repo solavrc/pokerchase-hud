@@ -16,6 +16,24 @@ import { isCloudSyncBlockedByMinVersionGate } from './min-version-gate'
 /** Shown in the popup and logged when the min-version gate stops cloud sync (#forced-update). */
 export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます'
 
+/**
+ * Thrown internally whenever a bookkeeping write is about to happen under a
+ * uid that no longer matches the one signed in live -- i.e. the account
+ * changed since this sync pass started. Never thrown for the actual
+ * Firestore upload/download calls themselves (accepted risk, see the
+ * ACCOUNT-SCOPING INVARIANTS spec below) -- only for this file's own
+ * `meta`/`chrome.storage.local` bookkeeping writes. Caught by
+ * `performSync()`'s existing catch block, which sets `syncState.status =
+ * 'error'` -- the next `performSync()` call retries cleanly under whichever
+ * account is signed in by then.
+ */
+export class SyncAccountChangedError extends Error {
+  constructor(context: string) {
+    super(`同期中にサインインアカウントが変更されたため、このアカウント宛の記録を中止しました (${context})`)
+    this.name = 'SyncAccountChangedError'
+  }
+}
+
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'success'
 export type SyncDirection = 'upload' | 'download' | 'both'
 
@@ -32,6 +50,102 @@ export interface SyncState {
   }
 }
 
+/**
+ * ==============================================================================
+ * ACCOUNT-SCOPING INVARIANTS (owner-decided scope, sola, 2026-07-20/21 --
+ * post-merge diversity reviews on #182 and #192)
+ * ==============================================================================
+ *
+ * A same-device account switch (sign-in mistake, shared device, etc.) is a
+ * realistic case that must be handled -- but the owner-decided requirement
+ * is narrower than "prevent cross-account uploads entirely":
+ *
+ * EXPLICITLY ACCEPTED: local storage (`apiEvents`/`hands`/... in Dexie) is a
+ * single unpartitioned store per browser profile, and an in-flight sync pass
+ * can legitimately end up reading from or writing to whichever Firebase
+ * account is live at the moment `firestore-backup-service.ts` makes its own
+ * internal `requireUser()`/`getIdToken()` calls -- this file does NOT try to
+ * pin those network calls to a snapshotted identity (see ACCEPTED RESIDUAL
+ * RISK below). The worst case is data ending up duplicated in the wrong
+ * account's Firestore. Accepted, not fixed here (an earlier draft of this
+ * fix added a `localDataOwnerUid` ownership guard blocking automatic
+ * cross-account uploads entirely -- removed per this decision).
+ *
+ * WHAT MUST HOLD: bookkeeping integrity per account. After a user signs back
+ * into the correct account (following a sign-in mistake), THAT account's own
+ * sync state (watermark/floor/backfill markers, `lastSyncTime`) must be
+ * intact and correct -- no permanent gap, no marker silently advanced or
+ * cleared by a DIFFERENT account's session in between.
+ *
+ * (1) LEGACY VALUES MIGRATE ONCE, TO WHOEVER IS SIGNED IN, NEVER INHERITED BY
+ *     A DIFFERENT UID: an upgraded profile can have an old unscoped
+ *     `autoSyncLastTime` value with no account attribution at all. The first
+ *     `initialize()` call after upgrade migrates it to that specific uid's
+ *     scoped key AND DELETES the unscoped key in the same step -- so it is
+ *     consumed exactly once, by whichever account happens to be signed in
+ *     the first time this code runs, and can never be read by (or
+ *     accidentally granted to) a later, different uid. A subsequent account
+ *     that has never synced correctly sees no stored `lastSyncTime` at all,
+ *     not a borrowed one.
+ *
+ * (2) EVERY BOOKKEEPING WRITE IS GATED ON THE PASS-START UID STILL BEING
+ *     LIVE: `performSync()` captures `firebaseAuthService.getCurrentUser()?.uid`
+ *     once at sync start and threads that same value through the rest of
+ *     the pass. `persistUnparseableSyncFloor()` and
+ *     `markUnparseableFloorBackfillDone()` -- the ONLY two methods that ever
+ *     write floor/backfill-done `meta` bookkeeping -- each re-check the LIVE
+ *     signed-in uid against the uid they were called with, immediately
+ *     before their own `db.meta` write, and throw `SyncAccountChangedError`
+ *     instead of writing if it no longer matches. `performSync()`'s own
+ *     final `autoSyncLastTime` write and `initialize()`'s legacy-migration
+ *     write get the same inline check. Every bookkeeping write in this file
+ *     is gated at its own write site -- not by remembering to guard every
+ *     caller.
+ *
+ *     Deliberately NOT gated: the Firestore upload/download calls themselves
+ *     (`syncToCloudBatch`/`syncFromCloud`/`getCloudMaxTimestamp`) -- see
+ *     ACCEPTED RESIDUAL RISK. This is what closes the scenario that a naive
+ *     "assert before the network call" guard would still miss:
+ *     `getCloudMaxTimestamp()` at the top of `syncToCloud()` can legitimately
+ *     reflect a DIFFERENT account's cloud state if the user switched
+ *     accounts between `performSync()`'s snapshot and that call, and
+ *     `backfillUnparseableFloorIfNeeded()` downstream still runs against
+ *     that (possibly stale-account) value -- but it can never actually
+ *     COMMIT `syncUnparseableFloorBackfillDoneV2` or a floor value derived
+ *     from it under the SNAPSHOTTED (now wrong) uid's key, because the write
+ *     methods themselves refuse once the live uid has moved on. The pass
+ *     aborts with `SyncAccountChangedError`, `performSync()`'s catch block
+ *     sets `status: 'error'`, and the NEXT sync pass (by either account)
+ *     re-derives cleanly from scratch.
+ *
+ * (3) AUTOMATIC SYNC IS NOT GATED ON WHO LAST SYNCED LOCAL DATA: there is
+ *     deliberately no "local data owner" marker or any check blocking
+ *     automatic sync when local data may belong to a different account --
+ *     the owner confirmed cross-account uploads are acceptable.
+ *     `initialize()`'s first-sync trigger and `syncIfBacklogExceedsThreshold()`
+ *     (backing `onGameSessionEnd`/`onNewSessionStart`) behave exactly as
+ *     they did before any account-scoping work in that respect; only the
+ *     per-account BOOKKEEPING they read/write is scoped and write-gated per
+ *     (1)/(2) above.
+ *
+ * ACCEPTED RESIDUAL RISK (`firestore-backup-service.ts`, deliberately
+ * untouched by this fix): every public method there (`getCloudMaxTimestamp`,
+ * `syncToCloudBatch`, `syncFromCloud`, ...) independently calls its own
+ * `requireUser()`, re-resolving `firebaseAuthService.getCurrentUser()` live
+ * at call time regardless of what this file snapshotted -- so the actual
+ * Firestore document path a given network call targets is decided at the
+ * last possible moment, not pinned to `performSync()`'s snapshot.
+ * 簿記はpass開始時のuidの下でのみ、そのuidが依然liveである時のみ前進する。
+ * アップロード先の誤りはデータ重複に留まり、復帰したアカウントの簿記は
+ * 常に正しい。
+ *
+ * Sign-out/sign-in transitions do not touch any OTHER account's scoped keys
+ * (`onAuthStateChanged(null)` only resets in-memory `syncState`, never
+ * deletes `meta`/`chrome.storage.local` entries) -- each account's
+ * bookkeeping survives a sign-out/sign-in cycle for a different account
+ * untouched, satisfying the isolation half of these invariants together with
+ * (1)/(2) above.
+ */
 export class AutoSyncService {
   private db: PokerChaseDB
   private syncState: SyncState = { status: 'idle' }
@@ -44,17 +158,20 @@ export class AutoSyncService {
    * `meta`テーブルのキー。`syncToCloud()`のwatermarkガード（下記コメント参照）が
    * 「アプリケーション種別だが現在パースできない生行のうち、最も古いタイムスタンプ」
    * を永続化する場所。存在する限り、以降の全`syncToCloud()`呼び出しはこの値の
-   * 直前までスキャン開始点を巻き戻す。
+   * 直前までスキャン開始点を巻き戻す。実際のキーは`scopedMetaKey()`でサインイン中の
+   * uidにスコープされる（上記 ACCOUNT-SCOPING INVARIANTS 参照）。
    */
   private readonly SYNC_UNPARSEABLE_FLOOR_KEY = 'syncUnparseableFloor'
   /**
    * `meta`テーブルのキー。一度だけ実行するバックフィルスキャン
    * （`backfillUnparseableFloorIfNeeded`、下記の invariant spec 参照）が
    * 完了したかどうかを記録する。存在する限り、以降の`syncToCloud()`は
-   * バックフィルスキャンを二度と実行しない。定数の文字列自体を`V2`に
-   * リネームしてある: 旧ロジック（現在パースできない行だけを探す）で既に
-   * done=trueを記録済みのインストールに、修正後のロジック（P1 fix、下記
-   * `backfillUnparseableFloorIfNeeded`参照）を確実に一度だけ再実行させるため。
+   * バックフィルスキャンを二度と実行しない。実際のキーは`scopedMetaKey()`で
+   * uidスコープされる。定数の文字列自体も`V2`にリネームしてある: 旧ロジック
+   * （現在パースできない行だけを探す、かつuidスコープなし）で既にdone=trueを
+   * 記録済みのインストールに、修正後のロジック（P1 fix、下記
+   * `backfillUnparseableFloorIfNeeded`参照）とuidスコープを確実に一度だけ
+   * 適用させるため。
    */
   private readonly SYNC_UNPARSEABLE_BACKFILL_DONE_KEY = 'syncUnparseableFloorBackfillDoneV2'
 
@@ -73,27 +190,75 @@ export class AutoSyncService {
   }
 
   /**
+   * Scopes a local sync-bookkeeping key to a specific Firebase account.
+   * Returns `${baseKey}:${uid}` when `uid` is provided, else the bare
+   * `baseKey` (signed-out fallback -- defensive only, see invariant (2)
+   * above; every real call site passes the pass-start snapshot).
+   */
+  private scopedMetaKey(baseKey: string, uid: string | undefined): string {
+    return uid ? `${baseKey}:${uid}` : baseKey
+  }
+
+  /**
+   * Throws `SyncAccountChangedError` if the live signed-in uid no longer
+   * matches `uid` (the value snapshotted at this sync pass's start). Called
+   * ONLY from the bookkeeping write choke points (`persistUnparseableSyncFloor`,
+   * `markUnparseableFloorBackfillDone`, `performSync()`'s final
+   * `autoSyncLastTime` write, `initialize()`'s legacy-migration write) --
+   * never around the Firestore network calls themselves. See invariant (2)
+   * in the ACCOUNT-SCOPING INVARIANTS spec above.
+   */
+  private assertUidUnchanged(uid: string | undefined, context: string): void {
+    const liveUid = firebaseAuthService.getCurrentUser()?.uid
+    if (liveUid !== uid) {
+      throw new SyncAccountChangedError(context)
+    }
+  }
+
+  /**
    * Initialize auto sync service
    */
   async initialize(): Promise<void> {
     try {
-      // Load last sync time from storage
-      const stored = await chrome.storage.local.get(this.SYNC_STORAGE_KEY) as Record<string, any>
-      if (stored[this.SYNC_STORAGE_KEY]) {
-        this.syncState.lastSyncTime = new Date(stored[this.SYNC_STORAGE_KEY] as string | number)
-      }
-
-      // Update timestamps
-      await this.updateTimestamps()
-
-      // Check if user is authenticated
+      // Check who is signed in FIRST -- everything below needs a
+      // snapshotted uid (invariant (2)).
       const user = firebaseAuthService.getCurrentUser()
       if (!user) {
         console.log('[AutoSync] User not authenticated, skipping initialization')
         return
       }
+      const uid = user.uid
 
-      // Perform initial sync only if never synced before
+      // Load last sync time from storage, scoped to this account (invariant
+      // (1)). If this account's scoped key doesn't exist yet but the LEGACY
+      // unscoped key does, migrate it: this account is whoever happens to be
+      // signed in the first time this runs post-upgrade, so it's the only
+      // reasonable owner to attribute an unattributed legacy value to.
+      // Migration deletes the legacy key in the same step, so it is consumed
+      // exactly once and can never later be read by (or granted to) a
+      // DIFFERENT uid.
+      const scopedSyncKey = this.scopedMetaKey(this.SYNC_STORAGE_KEY, uid)
+      const stored = await chrome.storage.local.get([scopedSyncKey, this.SYNC_STORAGE_KEY]) as Record<string, any>
+      let storedLastSyncTime = stored[scopedSyncKey]
+      if (storedLastSyncTime === undefined && stored[this.SYNC_STORAGE_KEY] !== undefined) {
+        storedLastSyncTime = stored[this.SYNC_STORAGE_KEY]
+        // COMMIT POINT (invariant (2)): re-check before this migration write.
+        this.assertUidUnchanged(uid, 'before legacy autoSyncLastTime migration')
+        console.log(`[AutoSync] Migrating legacy unscoped ${this.SYNC_STORAGE_KEY} to this account (${uid}) and clearing it`)
+        await chrome.storage.local.set({ [scopedSyncKey]: storedLastSyncTime })
+        await chrome.storage.local.remove(this.SYNC_STORAGE_KEY)
+      }
+      // Explicitly reset (not just "leave whatever was there") so a direct
+      // account switch without an intervening sign-out can't leak the
+      // previous account's in-memory lastSyncTime into this one.
+      this.syncState.lastSyncTime = storedLastSyncTime ? new Date(storedLastSyncTime as string | number) : undefined
+
+      // Update timestamps
+      await this.updateTimestamps()
+
+      // Perform initial sync only if never synced before (invariant (3):
+      // no cross-account ownership check here -- automatic sync for a
+      // never-synced account is allowed to proceed, by owner decision).
       if (!this.syncState.lastSyncTime) {
         console.log('[AutoSync] First time sync, performing initial sync...')
         await this.performSync()
@@ -132,6 +297,12 @@ export class AutoSyncService {
     // path (gate-blocked or sync completed/failed) releases the latch.
     this._isSyncing = true
 
+    // SNAPSHOT the uid ONCE for this entire pass (invariant (2) in the
+    // ACCOUNT-SCOPING INVARIANTS spec above). `syncToCloud`/`syncFromCloud`
+    // and their bookkeeping helpers all use THIS value, never a freshly
+    // re-resolved `getCurrentUser()`. `undefined` when signed out.
+    const uid = firebaseAuthService.getCurrentUser()?.uid
+
     try {
       // Remote min-version gate (kill switch, #forced-update): every sync entry
       // point funnels through performSync(), so a single guard here covers
@@ -151,16 +322,22 @@ export class AutoSyncService {
       try {
         // Perform sync based on direction
         if (direction === 'upload' || direction === 'both') {
-          await this.syncToCloud()
+          await this.syncToCloud(uid)
         }
 
         if (direction === 'download' || direction === 'both') {
           await this.syncFromCloud()
         }
 
+        // COMMIT POINT (invariant (2)): the live uid must still match the
+        // snapshot before writing the final success bookkeeping below.
+        this.assertUidUnchanged(uid, 'before final lastSyncTime commit')
+
         // Update success state
         this.syncState.lastSyncTime = new Date()
-        await chrome.storage.local.set({ [this.SYNC_STORAGE_KEY]: this.syncState.lastSyncTime.toISOString() })
+        await chrome.storage.local.set({
+          [this.scopedMetaKey(this.SYNC_STORAGE_KEY, uid)]: this.syncState.lastSyncTime.toISOString()
+        })
 
         // Update timestamps after sync
         await this.updateTimestamps()
@@ -187,7 +364,7 @@ export class AutoSyncService {
   /**
    * Sync local events to cloud
    */
-  private async syncToCloud(): Promise<void> {
+  private async syncToCloud(uid: string | undefined): Promise<void> {
     console.log('[AutoSync] Starting upload to cloud...')
 
     // Get the latest timestamp from cloud first
@@ -306,9 +483,9 @@ export class AutoSyncService {
     //   application-typed rows below the watermark -- that's tens of
     //   thousands of extra reads (recurring cost risk, not a bounded
     //   one-time migration) versus the near-O(1) local lookup this fix uses.
-    await this.backfillUnparseableFloorIfNeeded(cloudMaxTimestamp)
+    await this.backfillUnparseableFloorIfNeeded(cloudMaxTimestamp, uid)
 
-    const pendingUnparseableTimestamp = await this.getUnparseableSyncFloor()
+    const pendingUnparseableTimestamp = await this.getUnparseableSyncFloor(uid)
     const scanFloor = pendingUnparseableTimestamp !== null && cloudMaxTimestamp !== null
       ? Math.min(cloudMaxTimestamp, pendingUnparseableTimestamp - 1)
       : cloudMaxTimestamp
@@ -328,7 +505,7 @@ export class AutoSyncService {
       // recover, so clear the stale marker rather than rewinding forever.
       // (No upload happened in this branch, so there's nothing for the floor
       // to have advanced past -- clearing here is always safe.)
-      if (pendingUnparseableTimestamp !== null) await this.persistUnparseableSyncFloor(null)
+      if (pendingUnparseableTimestamp !== null) await this.persistUnparseableSyncFloor(null, uid)
       return
     }
 
@@ -410,7 +587,7 @@ export class AutoSyncService {
         // after confirmed upload" rule applies to RAISING/clearing, not to
         // lowering).
         if (persistedFloorValue === null || earliestUnparseableThisPass < persistedFloorValue) {
-          await this.persistUnparseableSyncFloor(earliestUnparseableThisPass)
+          await this.persistUnparseableSyncFloor(earliestUnparseableThisPass, uid)
           persistedFloorValue = earliestUnparseableThisPass
         }
         // else: the durable floor is already <= earliestUnparseableThisPass
@@ -466,8 +643,11 @@ export class AutoSyncService {
     // to advance or clear the floor to its final value for this pass. If this
     // commit itself is lost to a crash, the next pass re-derives and
     // re-persists the same value (see invariant spec above) -- not a
-    // correctness gap, just a redundant re-scan/re-upload.
-    await this.persistUnparseableSyncFloor(earliestUnparseableThisPass)
+    // correctness gap, just a redundant re-scan/re-upload. (No explicit
+    // account-switch assert needed at this specific call site -- it's
+    // built into `persistUnparseableSyncFloor()` itself, see the
+    // ACCOUNT-SCOPING INVARIANTS spec's invariant (2).)
+    await this.persistUnparseableSyncFloor(earliestUnparseableThisPass, uid)
 
     console.log(`[AutoSync] Uploaded ${synced} new events to cloud`)
   }
@@ -556,15 +736,16 @@ export class AutoSyncService {
    * empty". Do not add a try/catch around that call site that would
    * reintroduce the ambiguity.
    */
-  private async backfillUnparseableFloorIfNeeded(cloudMaxTimestamp: number | null): Promise<void> {
-    const alreadyDone = await this.db.meta.get(this.SYNC_UNPARSEABLE_BACKFILL_DONE_KEY)
+  private async backfillUnparseableFloorIfNeeded(cloudMaxTimestamp: number | null, uid: string | undefined): Promise<void> {
+    const doneKey = this.scopedMetaKey(this.SYNC_UNPARSEABLE_BACKFILL_DONE_KEY, uid)
+    const alreadyDone = await this.db.meta.get(doneKey)
     if (alreadyDone) return
 
     if (cloudMaxTimestamp === null) {
       // Proven empty (see PROVEN-STATE REQUIREMENT above) -- nothing has
       // ever been uploaded, so there is no "already past the watermark"
       // region below which a pre-existing orphan could be hiding.
-      await this.markUnparseableFloorBackfillDone()
+      await this.markUnparseableFloorBackfillDone(uid)
       return
     }
 
@@ -618,46 +799,70 @@ export class AutoSyncService {
       // chance to run), it already protects at least as much history, so
       // leave it alone rather than risk moving it later (see invariant spec
       // in syncToCloud() above).
-      const existing = await this.getUnparseableSyncFloor()
+      const existing = await this.getUnparseableSyncFloor(uid)
       if (existing === null || existing > earliestAppRow.timestamp) {
         console.log(`[AutoSync] Backfill: earliest local application row (${earliestAppRow.timestamp}) is at or below the cloud watermark (${cloudMaxTimestamp}); seeding sync floor to force a one-time full reconciliation re-offer`)
-        await this.persistUnparseableSyncFloor(earliestAppRow.timestamp)
+        await this.persistUnparseableSyncFloor(earliestAppRow.timestamp, uid)
       }
     }
 
-    await this.markUnparseableFloorBackfillDone()
+    await this.markUnparseableFloorBackfillDone(uid)
   }
 
-  private async markUnparseableFloorBackfillDone(): Promise<void> {
+  /**
+   * Marks the one-time backfill done for `uid`. One of the two bookkeeping
+   * WRITE CHOKE POINTS for this floor mechanism (invariant (2) in the
+   * ACCOUNT-SCOPING INVARIANTS spec above) -- asserts the live signed-in uid
+   * still matches `uid` immediately before the `db.meta` write, so a mid-pass
+   * account switch can never commit this marker under the wrong (stale,
+   * snapshotted) account's key, regardless of which account's cloud state
+   * `cloudMaxTimestamp` (read earlier in `syncToCloud()`) actually reflected.
+   */
+  private async markUnparseableFloorBackfillDone(uid: string | undefined): Promise<void> {
+    this.assertUidUnchanged(uid, 'before backfill-done commit')
     await this.db.meta.put({
-      id: this.SYNC_UNPARSEABLE_BACKFILL_DONE_KEY,
+      id: this.scopedMetaKey(this.SYNC_UNPARSEABLE_BACKFILL_DONE_KEY, uid),
       value: true,
       updatedAt: Date.now()
     })
   }
 
-  /** Read the persisted unparseable-row sync floor (see `syncToCloud()`). */
-  private async getUnparseableSyncFloor(): Promise<number | null> {
-    const record = await this.db.meta.get(this.SYNC_UNPARSEABLE_FLOOR_KEY)
+  /** Read the persisted unparseable-row sync floor for `uid` (see `syncToCloud()`). */
+  private async getUnparseableSyncFloor(uid: string | undefined): Promise<number | null> {
+    const record = await this.db.meta.get(this.scopedMetaKey(this.SYNC_UNPARSEABLE_FLOOR_KEY, uid))
     const value = record?.value
     return typeof value === 'number' ? value : null
   }
 
-  /** Persist (or clear, when `timestamp` is `null`) the unparseable-row sync floor. */
-  private async persistUnparseableSyncFloor(timestamp: number | null): Promise<void> {
+  /**
+   * Persist (or clear, when `timestamp` is `null`) the unparseable-row sync
+   * floor for `uid`. The OTHER bookkeeping WRITE CHOKE POINT (invariant (2)
+   * above, alongside `markUnparseableFloorBackfillDone()`) -- same
+   * assert-before-write guarantee, for every floor set/lower/raise/clear in
+   * this file (there is no other place that writes `SYNC_UNPARSEABLE_FLOOR_KEY`).
+   */
+  private async persistUnparseableSyncFloor(timestamp: number | null, uid: string | undefined): Promise<void> {
+    this.assertUidUnchanged(uid, 'before sync-floor commit')
+    const key = this.scopedMetaKey(this.SYNC_UNPARSEABLE_FLOOR_KEY, uid)
     if (timestamp === null) {
-      await this.db.meta.delete(this.SYNC_UNPARSEABLE_FLOOR_KEY)
+      await this.db.meta.delete(key)
       return
     }
     await this.db.meta.put({
-      id: this.SYNC_UNPARSEABLE_FLOOR_KEY,
+      id: key,
       value: timestamp,
       updatedAt: Date.now()
     })
   }
 
   /**
-   * Sync cloud events to local (cloud as source of truth)
+   * Sync cloud events to local (cloud as source of truth). No `uid` parameter
+   * -- unlike `syncToCloud()`, this method never writes account-scoped
+   * bookkeeping (it only merges raw events into the shared local Lake and
+   * rebuilds derived entities, both of which are already unpartitioned by
+   * design). Which account's cloud data actually lands here is exactly the
+   * ACCEPTED RESIDUAL RISK described in the ACCOUNT-SCOPING INVARIANTS spec
+   * above -- deliberately not gated here.
    */
   private async syncFromCloud(): Promise<void> {
     console.log('[AutoSync] Starting complete download from cloud...')
