@@ -352,4 +352,48 @@ describe('RecentHandsService', () => {
       expect(key1).not.toBe(keyTable)
     })
   })
+
+  // 監査指摘11（P2）「開いたドリルダウンパネルが無期限に古くなる」対応: 上の全テストは
+  // NODE_ENV=test下でこの関数の30秒キャッシュ自体を無効化してもらっているため
+  // （`useCache`参照）、実際にキャッシュが効いている状態での「新しいハンドが
+  // 終わったら古いキャッシュを返さない」という不変条件はどのテストも検証していない
+  // （監査で指摘された「テストが実キャッシュの陳腐化を一度も検証していない」点）。
+  // positional-stats-service.test.tsの同名describeと全く同じ理由・同じ実装。
+  describe('real backend cache (audit finding 11, P2): hand completion rotates the 30s cache', () => {
+    const originalNodeEnv = process.env.NODE_ENV
+
+    afterEach(() => {
+      process.env.NODE_ENV = originalNodeEnv
+    })
+
+    test('a same-key call is served from cache until a live hand completes, then recomputes', async () => {
+      process.env.NODE_ENV = 'production' // enable the real 30s cache path (disabled under 'test')
+
+      await db.hands.bulkAdd([1, 2, 3].map(id => makeHand({ id, approxTimestamp: id * 1000 })))
+
+      const first = await getRecentHands(db, service, PLAYER_ID, 10)
+      expect(first.hands.map(h => h.handId)).toEqual([3, 2, 1])
+
+      // Seed a 4th (newer) hand -- with the cache alone (no invalidation), a
+      // same-key call within the 30s window would still return `first` unchanged.
+      await db.hands.add(makeHand({ id: 4, approxTimestamp: 4000 }))
+
+      const stillCached = await getRecentHands(db, service, PLAYER_ID, 10)
+      expect(stillCached).toBe(first) // same cached object reference -- proves caching is actually live here
+      expect(stillCached.hands.map(h => h.handId)).toEqual([3, 2, 1]) // hand 4 not yet reflected
+
+      // A real live hand completion. getRecentHands() self-subscribes to this same
+      // stream (subscribeToHandCompletion, module-level above) the first time it's
+      // called for a given service instance, independent of the front-end
+      // hand-epoch plumbing (App.tsx/Hud.tsx/ports.ts).
+      await new Promise<void>(resolve => {
+        service.statsOutputStream.once('data', () => resolve())
+        service.statsOutputStream.write([1, 2, 3])
+      })
+
+      const afterHandCompletion = await getRecentHands(db, service, PLAYER_ID, 10)
+      expect(afterHandCompletion).not.toBe(first) // recomputed, not served from the now-stale cache
+      expect(afterHandCompletion.hands.map(h => h.handId)).toEqual([4, 3, 2, 1]) // hand 4 now included
+    })
+  })
 })

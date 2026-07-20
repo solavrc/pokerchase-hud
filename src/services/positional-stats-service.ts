@@ -54,6 +54,39 @@ const CACHE_DURATION_MS = 30_000
 const MAX_CACHE_SIZE = 50
 const cache: Map<string, { result: PositionalStatsResult, timestamp: number }> = new Map()
 
+// 監査指摘11（P2）「開いたドリルダウンパネルが無期限に古くなる」対応:
+// RecentHandsPanel/PositionalStatsPanelのフェッチeffectはApp.tsxから渡される
+// 「hand epoch」propをdepsに含めるようになり、生きたハンドが1件完了するたびに
+// 再フェッチする(App.tsx参照)。しかしそれだけでは、この再フェッチが引き続き
+// 「直前と同じcacheKey」に対してこの30秒キャッシュへヒットしてしまい、古い
+// 結果を返し続ける(cacheKeyはplayerId+フィルターのみで、「どのハンドまでの
+// 結果か」を持たない)。
+//
+// 対応方針（プロンプト指定の2案のうち「配線の少ない方」）: メッセージに
+// epochを積んでcacheKeyを回転させる案は、その配線がmessage-router.ts
+// （別ワークストリームが所有）を経由する必要があり本タスクのスコープ外。
+// 代わりに、この関数が既に受け取っている`service`引数（PokerChaseService）
+// が公開する`statsOutputStream`（ports.tsが生アクティブなハンド完了ごとに
+// 'data'を発火させ、`liveBroadcastSequence`をインクリメントしているのと
+// 全く同じイベント -- ports.ts参照）に直接購読する。これでbackground.ts/
+// ports.ts/content_script.ts/message-router.tsのいずれにも触れずに完結する。
+// 購読はサービスインスタンスごとに一度だけ（WeakSetで冪等化、テストごとに
+// 新しいPokerChaseServiceインスタンスが作られるため明示的な解除は不要 --
+// 古いインスタンスがGCされればリスナーごと消える）。
+// 全クリアである理由: 1つのハンドは同卓の複数プレイヤーのハンド履歴/
+// ポジションを同時に更新しうる（そのハンドに参加した全員分）。個別
+// エントリ単位の的確な無効化よりも全クリアの方が単純で、頻度も低い
+// （ハンド完了ごとに高々1回）ためコストは無視できる。
+const subscribedServices = new WeakSet<PokerChaseService>()
+
+function subscribeToHandCompletion(service: PokerChaseService): void {
+  if (subscribedServices.has(service)) return
+  subscribedServices.add(service)
+  service.statsOutputStream.on('data', () => {
+    clearPositionalStatsCache()
+  })
+}
+
 /** Exported for direct unit testing (see positional-stats-service.test.ts) -- caching itself
  * is disabled under NODE_ENV=test (see `useCache` below), so key-differs-when-filter-differs
  * can't be observed behaviorally in tests and is instead pinned down against this function directly. */
@@ -109,6 +142,8 @@ export async function getPositionalStats(
   service: PokerChaseService,
   playerId: number
 ): Promise<PositionalStatsResult> {
+  subscribeToHandCompletion(service)
+
   const cacheKey = buildCacheKey(playerId, service)
   const useCache = process.env.NODE_ENV !== 'test' && !process.env.DEBUG_NO_CACHE
   const now = Date.now()

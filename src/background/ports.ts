@@ -30,6 +30,18 @@ export const setLastKnownStats = (stats: PlayerStats[]): void => {
 // Service Worker, so it is very often already non-empty by the time an unrelated tab
 // mounts, which would wrongly suppress the fallback forever after the first hand ever
 // played in that Service Worker's lifetime.
+//
+// Also reused as the wire-level "hand epoch" for audit finding 11 (P2, open
+// drill-down panels going stale indefinitely): every broadcastMessage() call below
+// stamps the *current* value of this counter onto the payload as `handEpoch`. Only the
+// statsOutputStream handler increments it before stamping, so a realtime-only
+// broadcast (realTimeStatsStream, driven by individual actions within the same hand)
+// repeats the same handEpoch value, while a genuine hand-completion broadcast carries a
+// freshly bumped one. content_script.ts forwards this untyped port payload straight
+// through as the CustomEvent detail (see its `onMessage` -- it doesn't need to know
+// about this field), and App.tsx reads it off `detail` via a locally-widened type
+// (StatsData there predates this field and is owned by a different workstream) to
+// decide when an open RecentHandsPanel/PositionalStatsPanel should refetch.
 let liveBroadcastSequence = 0
 
 export const getLiveBroadcastSequence = (): number => liveBroadcastSequence
@@ -46,7 +58,7 @@ export const connectedPorts = new Set<chrome.runtime.Port>()
  * 接続中の全ポートにメッセージをブロードキャストする
  * 切断済みポートを検出した場合は`connectedPorts`から取り除く
  */
-export const broadcastMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats } | string) => {
+export const broadcastMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats, handEpoch?: number } | string) => {
   connectedPorts.forEach(port => {
     try {
       port.postMessage(data)
@@ -120,7 +132,11 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
         // comments on PokerChaseService and aggregate-events-stream.ts's
         // EVT_DEAL case for the full rationale (codex #177, all 3 review rounds).
         evtDeal: service.liveEvtDeal,
-        realTimeStats: latestRealTimeStats
+        realTimeStats: latestRealTimeStats,
+        // Same handEpoch as the last hand-completion broadcast (unchanged since this
+        // is a realtime-only, per-action update) -- see liveBroadcastSequence's doc
+        // comment above.
+        handEpoch: liveBroadcastSequence
       })
     }
   })
@@ -132,7 +148,8 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
     broadcastMessage({
       stats: hand,
       evtDeal: service.liveEvtDeal,  // Include EVT_DEAL for seat mapping (live context, not the persisted hero-anchored one -- see above)
-      realTimeStats: latestRealTimeStats  // Include latest real-time stats from stream
+      realTimeStats: latestRealTimeStats,  // Include latest real-time stats from stream
+      handEpoch: liveBroadcastSequence  // Freshly bumped above -- signals a completed hand to the HUD's drill-down panels
     })
   })
 

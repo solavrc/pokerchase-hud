@@ -42,6 +42,12 @@ interface HudProps {
   isRecentHandsPanelOpen?: boolean
   /** 直近ハンド・ドリルダウンパネルの開閉トグル。渡された時のみヘッダーにトリガーを表示する */
   onToggleRecentHandsPanel?: () => void
+  /**
+   * 生きたハンドが1件完了するたびに増える「hand epoch」（App.tsx参照、監査指摘11
+   * P2対応）。ドリルダウンパネル（PositionalStatsPanel/RecentHandsPanel）へ
+   * そのまま渡し、開いている間の再フェッチトリガーに使う。
+   */
+  handEpoch?: number
   /** HUD表示密度。'full'（デフォルト、既存の16統計グリッド）または'compact'（クラシックHUDライン）。UIConfig.hudDisplayMode参照 */
   hudDisplayMode?: 'full' | 'compact'
   /** しきい値ベースの値カラーリング（compact/full両モード共通）。UIConfig.hudColorCoding参照 */
@@ -366,10 +372,10 @@ const Hud = memo((props: HudProps) => {
             <span style={{ color: '#888888', fontSize: '9px' }}>No Data</span>
           </div>
           {props.isPositionalPanelOpen && (
-            <PositionalStatsPanel playerId={props.stat.playerId} />
+            <PositionalStatsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
           )}
           {props.isRecentHandsPanelOpen && (
-            <RecentHandsPanel playerId={props.stat.playerId} />
+            <RecentHandsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
           )}
         </div>
       </div>
@@ -423,10 +429,10 @@ const Hud = memo((props: HudProps) => {
             <StatDisplay displayStats={gridDisplayStats} formatValue={formatStatValue} colorCoding={hudColorCoding} />
           )}
           {props.isPositionalPanelOpen && (
-            <PositionalStatsPanel playerId={props.stat.playerId} />
+            <PositionalStatsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
           )}
           {props.isRecentHandsPanelOpen && (
-            <RecentHandsPanel playerId={props.stat.playerId} />
+            <RecentHandsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
           )}
         </div>
       </div>
@@ -441,6 +447,12 @@ const Hud = memo((props: HudProps) => {
   if (prevProps.hudDisplayMode !== nextProps.hudDisplayMode) return false
   if (prevProps.hudColorCoding !== nextProps.hudColorCoding) return false
   if (prevProps.isDimmed !== nextProps.isDimmed) return false
+  // handEpoch (audit finding 11, P2): only forces a re-render while one of this
+  // seat's drill-down panels is actually open -- an open panel needs the fresh
+  // handEpoch prop to reach its fetch effect's deps so it refetches once per
+  // completed hand, but bumping it on every hand would otherwise re-render all 6
+  // closed-panel Huds for nothing.
+  if ((nextProps.isPositionalPanelOpen || nextProps.isRecentHandsPanelOpen) && prevProps.handEpoch !== nextProps.handEpoch) return false
   // statDisplayConfigs governs which stats reach the full grid
   // (filterEnabledDisplayStats) -- a config change must re-render even if
   // statResults itself is unchanged.

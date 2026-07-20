@@ -41,6 +41,22 @@ const CACHE_DURATION_MS = 30_000
 const MAX_CACHE_SIZE = 50
 const cache: Map<string, { result: RecentHandsResult, timestamp: number }> = new Map()
 
+// 監査指摘11（P2）「開いたドリルダウンパネルが無期限に古くなる」対応。
+// positional-stats-service.tsの同名の仕組みと全く同じ理由・同じ実装パターン
+// （そちらのコメント参照）: `service.statsOutputStream`の'data'（生アクティブな
+// ハンド完了ごとに1回、ports.tsの`liveBroadcastSequence`と同一のイベント）に
+// 購読して、この30秒キャッシュをbackground.ts/ports.ts/content_script.ts/
+// message-router.tsを一切経由せずに無効化する。
+const subscribedServices = new WeakSet<PokerChaseService>()
+
+function subscribeToHandCompletion(service: PokerChaseService): void {
+  if (subscribedServices.has(service)) return
+  subscribedServices.add(service)
+  service.statsOutputStream.on('data', () => {
+    clearRecentHandsCache()
+  })
+}
+
 /** Exported for direct unit testing -- caching itself is disabled under NODE_ENV=test
  * (see `useCache` below), so key-differs-when-filter-or-limit-differs can't be observed
  * behaviorally in tests and is instead pinned down against this function directly. */
@@ -186,6 +202,8 @@ export async function getRecentHands(
   playerId: number,
   limit: number = DEFAULT_RECENT_HANDS_LIMIT
 ): Promise<RecentHandsResult> {
+  subscribeToHandCompletion(service)
+
   const effectiveLimit = limit > 0 ? limit : DEFAULT_RECENT_HANDS_LIMIT
   const cacheKey = buildRecentHandsCacheKey(playerId, service, effectiveLimit)
   const useCache = process.env.NODE_ENV !== 'test' && !process.env.DEBUG_NO_CACHE

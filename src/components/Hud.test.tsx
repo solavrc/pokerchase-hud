@@ -583,6 +583,109 @@ describe('Hud', () => {
     })
   })
 
+  describe('handEpoch — 開いたドリルダウンパネルの再フェッチ（監査指摘11、P2）', () => {
+    it('statが同一でもhandEpochが変わればパネルが再フェッチする（memoのカスタム比較関数を素通りしない）', async () => {
+      let callCount = 0
+      ;(chrome.runtime.sendMessage as jest.Mock).mockImplementation(
+        (_message: unknown, callback: (response: unknown) => void) => {
+          callCount++
+          callback({
+            success: true,
+            positionalStats: {
+              computedAt: Date.now(),
+              positions: [
+                { position: 0, handsN: callCount, stats: { vpip: [3, 12], pfr: [2, 12], '3bet': [0, 5], steal: [0, 0], foldToSteal: [0, 0], cbet: [0, 0] } },
+              ],
+            },
+          })
+        }
+      )
+
+      // statもactualSeatIndexも一切変えない再レンダーだけで、Hudのカスタムmemo
+      // 比較関数が「statResultsが同一なので再レンダー不要」と誤って早期returnし、
+      // パネル側に新しいhandEpochが届かない…という回帰を防ぐテスト。
+      const { rerender } = render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onTogglePositionalPanel={jest.fn()}
+          isPositionalPanelOpen={true}
+          handEpoch={1}
+        />
+      )
+
+      await waitFor(() => {
+        expect(chrome.runtime.sendMessage).toHaveBeenCalledTimes(1)
+      })
+
+      // 実況の1アクションごとの更新はhandEpochを変えない想定 -- 同じepochでの
+      // 再レンダーは再フェッチを引き起こさない。
+      rerender(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onTogglePositionalPanel={jest.fn()}
+          isPositionalPanelOpen={true}
+          handEpoch={1}
+        />
+      )
+      expect(chrome.runtime.sendMessage).toHaveBeenCalledTimes(1)
+
+      // ハンドが1件完了してhandEpochが増える(statは不変)
+      rerender(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onTogglePositionalPanel={jest.fn()}
+          isPositionalPanelOpen={true}
+          handEpoch={2}
+        />
+      )
+
+      await waitFor(() => {
+        expect(chrome.runtime.sendMessage).toHaveBeenCalledTimes(2)
+      })
+    })
+
+    it('パネルが閉じている座席ではhandEpochの変化だけで再レンダー(sendMessage)を起こさない', () => {
+      (chrome.runtime.sendMessage as jest.Mock).mockClear()
+
+      const { rerender } = render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onTogglePositionalPanel={jest.fn()}
+          isPositionalPanelOpen={false}
+          handEpoch={1}
+        />
+      )
+      expect(screen.queryByTestId('positional-stats-panel')).not.toBeInTheDocument()
+
+      rerender(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onTogglePositionalPanel={jest.fn()}
+          isPositionalPanelOpen={false}
+          handEpoch={2}
+        />
+      )
+
+      expect(screen.queryByTestId('positional-stats-panel')).not.toBeInTheDocument()
+      expect(chrome.runtime.sendMessage).not.toHaveBeenCalled()
+    })
+  })
+
   describe('コンパクト表示モード（#143）', () => {
     it('hudDisplayModeを渡さない場合はフルの16統計グリッドのまま（ゼロリグレッション）', () => {
       render(

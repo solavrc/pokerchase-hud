@@ -341,4 +341,49 @@ describe('PositionalStatsService', () => {
       expect(keyFull).toBe(keyFullAgain) // same filter state -> same key (stable, cache-hit-able)
     })
   })
+
+  // 監査指摘11（P2）「開いたドリルダウンパネルが無期限に古くなる」対応: 上の全テストは
+  // NODE_ENV=test下でこの関数の30秒キャッシュ自体を無効化してもらっているため
+  // （`useCache`参照）、実際にキャッシュが効いている状態での「新しいハンドが
+  // 終わったら古いキャッシュを返さない」という不変条件はどのテストも検証していない
+  // （監査で指摘された「テストが実キャッシュの陳腐化を一度も検証していない」点）。
+  // ここではNODE_ENVを一時的に上書きしてキャッシュを実際に有効化し、
+  // `service.statsOutputStream`（ports.tsがhandEpochをインクリメントするのと
+  // 同じ、生のハンド完了イベント）が発火した後の呼び出しがキャッシュに
+  // ヒットしないことを直接確認する。
+  describe('real backend cache (audit finding 11, P2): hand completion rotates the 30s cache', () => {
+    const originalNodeEnv = process.env.NODE_ENV
+
+    afterEach(() => {
+      process.env.NODE_ENV = originalNodeEnv
+    })
+
+    test('a same-key call is served from cache until a live hand completes, then recomputes', async () => {
+      process.env.NODE_ENV = 'production' // enable the real 30s cache path (disabled under 'test')
+
+      const first = await getPositionalStats(db, service, PLAYER_ID)
+      expect(first.positions.reduce((sum, p) => sum + p.handsN, 0)).toBe(10)
+
+      // Seed an 11th hand -- with the cache alone (no invalidation), a same-key call
+      // within the 30s window would still return `first` unchanged.
+      await db.hands.add(makeHand({ id: 11, bigBlindUserId: 2, seatUserIds: [1, 2, 3] }))
+
+      const stillCached = await getPositionalStats(db, service, PLAYER_ID)
+      expect(stillCached).toBe(first) // same cached object reference -- proves caching is actually live here
+      expect(stillCached.positions.reduce((sum, p) => sum + p.handsN, 0)).toBe(10) // hand 11 not yet reflected
+
+      // A real live hand completion. getPositionalStats() self-subscribes to this
+      // same stream (subscribeToHandCompletion, module-level above) the first time
+      // it's called for a given service instance, independent of the front-end
+      // hand-epoch plumbing (App.tsx/Hud.tsx/ports.ts).
+      await new Promise<void>(resolve => {
+        service.statsOutputStream.once('data', () => resolve())
+        service.statsOutputStream.write([1, 2, 3])
+      })
+
+      const afterHandCompletion = await getPositionalStats(db, service, PLAYER_ID)
+      expect(afterHandCompletion).not.toBe(first) // recomputed, not served from the now-stale cache
+      expect(afterHandCompletion.positions.reduce((sum, p) => sum + p.handsN, 0)).toBe(11) // hand 11 now included
+    })
+  })
 })
