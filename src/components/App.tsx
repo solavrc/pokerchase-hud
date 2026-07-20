@@ -72,26 +72,6 @@ const App = memo(() => {
     dimmedSeatIndicesRef.current = next
     setDimmedSeatIndices(next)
   }, [])
-  // 現在表示中のstatsの同期読み取り用ミラー（#191 post-merge review descope
-  // pass1「Avoid clearing freshly rebuilt live-seat cache」指摘への対応で追加、
-  // dimmedSeatIndicesRefと同じ理由）。handleBattleTypeFilterUpdateが「この
-  // 座席は今まさにライブ在籍中か」を判定するのに使う -- フィルター変更は
-  // ユーザー操作起点の独立したイベントなので、React stateのコミット
-  // （useEffect経由）で十分間に合う。
-  const statsRef = useRef<PlayerStats[]>(EMPTY_SEATS)
-  useEffect(() => {
-    statsRef.current = stats
-  }, [stats])
-  // statsRefが「hero在籍時点の表示座席（回転後）空間」を指しているかどうか
-  // （#191 post-merge review descope pass2「Clear spectator-context caches
-  // on filter updates」指摘への対応で追加）。handleBattleTypeFilterUpdateの
-  // `isLiveNow`判定はstatsRefの各座席indexを"表示座席"として解釈するが、
-  // 観戦モードdeal分岐・latestStatsバッチ経路はどちらもstatsRefへ生の
-  // （別空間・別由来の）座席順を書き込むことがある。この2つの分岐だけが
-  // trueを立て、それ以外（観戦・バッチ・セッション終了直後）はfalseに
-  // 戻すことで、isLiveNowが数値インデックスの偶然の一致だけで「ライブ
-  // 在籍中」と誤判定しないようにする。
-  const liveDisplaySpaceRef = useRef(false)
   // ドリルダウンパネル（ポジション別 / 直近ハンド）: 開いているのは常にどちらか
   // 一方、高々1プレイヤー分（HUDツリーにローカルなReact state。グローバル設定
   // への永続化はv1では不要）。#128のポジション別ドリルダウンの単一state管理を
@@ -179,7 +159,6 @@ const App = memo(() => {
         && isApiEventType(detail.evtDeal, ApiType.EVT_DEAL)
         && detail.evtDeal.Player === undefined
       if (isSpectatorDeal) {
-        liveDisplaySpaceRef.current = false
         applyDimmedSeatIndices(new Set())
         setStats(mappedStats)
         return
@@ -306,7 +285,6 @@ const App = memo(() => {
         return stat
       })
 
-      liveDisplaySpaceRef.current = true
       applyDimmedSeatIndices(nextDimmedSeatIndices)
       setStats(dimmedStats)
     },
@@ -345,7 +323,6 @@ const App = memo(() => {
   // 表示であり、セッションをまたいで残す理由が無いため。heroパネル(座席0)は#158の
   // 通りここでは一切触らない(pregameでのキャリア統計復元は別経路)。
   const handleSessionEnd = useCallback(() => {
-    liveDisplaySpaceRef.current = false
     const dimCache = dimCacheRef.current
     // #179 post-merge review P2「Preserve the hero by player id at session
     // end」指摘: 直前の更新が観戦モードdeal（上のisSpectatorDeal分岐）だった
@@ -383,7 +360,6 @@ const App = memo(() => {
       // フラグを引きずって別データに重ねて表示してしまわないよう、表示中の
       // ミュート集合はここでリセットする（次のライブEVT_DEALでdimCacheRef自体は
       // 引き続き使われるので、bustの記憶自体は失われない）。
-      liveDisplaySpaceRef.current = false
       applyDimmedSeatIndices(new Set())
       setStats(message.stats)
 
@@ -430,83 +406,49 @@ const App = memo(() => {
   // 発火元）が、これまでApp.tsxは購読していなかった。ここで購読し、
   // dimCache自体（非hero座席分すべて）を無条件で無効化する。
   //
-  // 当初はdimmedSeatIndicesRef（現在ミュート「表示」中の座席集合）に含まれる
-  // 座席だけをクリアしていたが、post-merge review P2「Clear cached muted
-  // seats even after dim state resets」指摘で反例が見つかった: dimmedSeat
-  // Indicesを空にリセットしつつdimCacheRef自体は生かしたままにするパスが
-  // 他に2つある --
-  //   (1) `latestStats` chromeメッセージ経路（handleChromeMessage、インポート
-  //       後のrefreshStats往復・バッチ再計算）。「バッチ更新はミュート状態を
-  //       経由しない」仕様どおりdimmedSeatIndicesは空にするが、dimCacheの
-  //       中身はそのまま。
-  //   (2) 上の観戦モードdeal分岐（isSpectatorDeal）。表示は生のlineupに
-  //       切り替えてdimmedSeatIndicesを空にするが、dimCacheはヒーロー在籍
-  //       dealに戻った時に正しく再開できるよう意図的に一切触らない。
-  // この状態でフィルターが変わると、dimmedSeatIndicesRef基準のクリアでは
-  // 「今は見えていないが後で複活し得る」dimCacheの中身を見逃す -- 後続の
-  // ライブ更新でその座席が引き続き空席(-1)のままなら、
-  // handleStatsMessageの通常ロジックがdimCacheから古いフィルターの統計を
-  // 拾って再びミュート表示してしまう。
+  // 無条件クリアである理由: dimmedSeatIndicesRef（現在ミュート「表示」中の
+  // 座席集合）に含まれる座席だけをクリアする案も検討したが、post-merge
+  // review P2「Clear cached muted seats even after dim state resets」指摘
+  // の通り、dimmedSeatIndicesを空にリセットしつつdimCacheRef自体は生かした
+  // ままにするパスが他に2つある（`latestStats` chromeメッセージ経路の
+  // バッチ再計算、観戦モードdeal分岐）ため、表示状態だけを見た選択的
+  // クリアは取り残しを生む。
   //
-  // 対策: dimCache自体はheroを除く「今まさにライブ在籍中ではない」全
-  // エントリを無条件でクリアする(ミュート表示中の座席・orphanedな座席の
-  // 両方を含む)。表示(`stats`/`dimmedSeatIndices`)の書き換えは従来どおり
-  // 「今まさにミュート表示中」の座席だけに限定する -- 今「Waiting for
-  // Hand...」で見えている座席には触れる必要が無く、ライブ在籍中の座席を
-  // 一瞬ブランクにする不要なちらつきも避けられる。
+  // post-merge review descope pass1-2で「今まさにライブ在籍中の座席だけは
+  // クリアから除外する」精緻化（isLiveNow判定、statsRef/liveDisplaySpaceRef
+  // という2つの追加refを要した）を試みたが、これはオーナー判断で撤回された
+  // （PR #191、2026-07-21、sola承認の縮小スコープの精神に反する
+  // over-engineering — 観戦/バッチ経路の座席空間の食い違いや、4-maxで
+  // 存在しない座席インデックスなど、精緻化するたびに新しい境界ケースが
+  // 見つかり続けた）。この関数は非hero座席分のdimCache・表示中ミュートの
+  // 両方を常に無条件でクリアするだけの単純な形に戻している。
   //
-  // post-merge review descope pass1「Avoid clearing freshly rebuilt
-  // live-seat cache」指摘: 当初は「ライブ在籍中の座席分も含めて無条件で
-  // クリアしても、直後に届く再計算ブロードキャストがhandleStatsMessageの
-  // 通常経路でdimCache.set()を打ち直すので実害は無い」としていたが、この
-  // 順序保証は誤りだった。message-router.tsのupdateBattleTypeFilter
-  // ハンドラーは`service.setBattleTypeFilter()`（再計算・再ブロードキャスト
-  // をトリガー、ポート経由）と、このwindowイベントの転送
-  // （`chrome.tabs.query`→`chrome.tabs.sendMessage`、2段のchrome API
-  // ラウンドトリップ）を並行して開始するだけで、どちらが先に届くかは
-  // DBクエリ量やIPCの負荷次第で入れ替わりうる。再計算ブロードキャストが
-  // 先に届いてdimCacheをフレッシュな値で打ち直した直後にこのハンドラーが
-  // 動くと、そのフレッシュな値ごと無条件で消してしまい、対戦相手がその
-  // 席で次にbustした時にdim表示が出ない（キャッシュが空のまま）という、
-  // 縮小スコープの核であるはずの「連続したライブシーケンス内でのbust→
-  // dim」自体が壊れてしまう。
-  //
-  // 対処: 「今まさにライブ在籍中」（=statsRefがhero在籍時点の表示座席空間を
-  // 指しており、かつそのplayerIdが実在し-1でなく、かつ現在ミュート表示中
-  // でもない、つまりキャッシュ値ではなく生きた実データがそのまま表示
-  // されている）座席のキャッシュだけをクリア対象から除外する。ミュート
-  // 表示中（キャッシュ値を経由して表示されている）・完全に空席(orphaned
-  // 含む)・座席そのものが存在しない（4-maxで6-max時代のキャッシュを
-  // 参照する等）座席は引き続きクリアする。
-  //
-  // post-merge review descope pass2の2指摘の反映:
-  // 「Clear spectator-context caches on filter updates」-- statsRefが
-  // 観戦モードdeal分岐やlatestStatsバッチ経路経由で書き換わっていると、
-  // その座席indexは表示座席空間ではなく生の（別由来の）席順を指しており、
-  // 数値インデックスがたまたま一致した非-1の在席者を「ライブ在籍中」と
-  // 誤認しうる。`liveDisplaySpaceRef`（上のuseRef宣言）がtrueの時だけ
-  // （＝直近の更新がhandleStatsMessageの信頼できるライブ経路だった時
-  // だけ）isLiveNow判定を有効にする。
-  // 「Treat missing seats as empty when clearing caches」-- 4-max
-  // テーブル（`currentStats.length`が4）でindex 4/5にはそもそも要素が
-  // 無く、`currentStats[4]`はundefined。オプショナルチェイニングだけだと
-  // `undefined?.playerId !== -1`が`undefined !== -1`でtrueになり、
-  // 存在しない座席を「ライブ在籍中」と誤認してしまう。`currentStat !==
-  // undefined`を明示的に要求する。
+  // 許容する既知のギャップ（意図的に直さない）: message-router.tsの
+  // updateBattleTypeFilterハンドラーは`service.setBattleTypeFilter()`
+  // （再計算・再ブロードキャストをトリガー、ポート経由）と、この
+  // windowイベントの転送（`chrome.tabs.query`→`chrome.tabs.sendMessage`、
+  // 2段のchrome APIラウンドトリップ）を並行して開始するため、どちらが
+  // 先に届くかは非決定的。再計算ブロードキャストがこのクリアより先に
+  // 届いていた場合、そのフレッシュな値ごとここで消してしまうため、
+  // フィルター変更の直後・次のライブdealが届く前に対戦相手が1人bustすると
+  // その1回だけdim表示が出ない（キャッシュが空のまま「Waiting for
+  // Hand...」になる）。これは「フィルター変更」という稀なユーザー操作と
+  // 「その直後・数秒以内のbust」という稀なタイミングの掛け合わせでしか
+  // 起きず、1人・1回限りの見た目の欠落に過ぎない。加えて、届く順序に
+  // 関わらず必ず自己修復する: 到着順序がどちらであっても、次に届く
+  // ライブブロードキャスト（この直後の再計算ブロードキャスト自身、または
+  // その次の通常のハンド進行）は必ずhandleStatsMessageの通常経路を通り、
+  // 在席中の全座席についてdimCache.set()を無条件で打ち直す（このファイル
+  // 上部のbust-dimコメント参照）。つまりこのクリアがどちらの順序で発火
+  // しても、次のライブ更新一回でdimCacheは必ず現在のフィルターの下で
+  // 再構築され、以降のbustは正しくdim表示される（レースそのものが
+  // "消えてしまう"のではなく、"実害が高々1回・1人に限定され、次の
+  // ライブ更新で必ず解消する"という順序非依存性がここでのポイント）。
+  // sola「それほど重要な機能ではないので、bで十分です」の縮小スコープの
+  // 精神に沿って、この1回限りのギャップは直さずに受け入れる。
   const handleBattleTypeFilterUpdate = useCallback(() => {
     const dimCache = dimCacheRef.current
-    const currentStats = statsRef.current
-    const currentlyDimmed = dimmedSeatIndicesRef.current
-    const inLiveDisplaySpace = liveDisplaySpaceRef.current
-    const nonHeroCachedSeats = Array.from(dimCache.keys()).filter(seatIndex => {
-      if (seatIndex === HERO_SEAT_INDEX) return false
-      const currentStat = currentStats[seatIndex]
-      const isLiveNow = inLiveDisplaySpace
-        && !currentlyDimmed.has(seatIndex)
-        && currentStat !== undefined
-        && currentStat.playerId !== -1
-      return !isLiveNow
-    })
+    const nonHeroCachedSeats = Array.from(dimCache.keys()).filter(seatIndex => seatIndex !== HERO_SEAT_INDEX)
     if (nonHeroCachedSeats.length === 0) return
     for (const seatIndex of nonHeroCachedSeats) dimCache.delete(seatIndex)
 

@@ -962,33 +962,7 @@ describe('App', () => {
         }
       })
 
-      it('フィルター変更は今まさにライブ在籍中の座席のキャッシュを消さない -- 変更直後にその席がbustしても正しくdim表示される（post-merge review descope pass1「Avoid clearing freshly rebuilt live-seat cache」）', async () => {
-        render(<App />)
-        await dispatchStats(mockStatsData.stats)
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
-
-        // 誰もミュートされていない状態でフィルターが変わる（message-router.ts
-        // の再計算ブロードキャストが、このwindowイベント転送より先に届いて
-        // dimCacheを打ち直した直後、というシナリオを模す -- 実際にはタイミング
-        // 非決定だが、App.tsx側はどちらの順序でも安全でなければならない）
-        await act(async () => {
-          window.dispatchEvent(new CustomEvent('updateBattleTypeFilter', {
-            detail: { gameTypes: { sng: true, mtt: false, ring: true } },
-          }))
-        })
-
-        // 席1(プレイヤー2)がまだライブ在籍中のうちにbustする。フィルター
-        // 変更が席1のキャッシュを無条件で消していたら、この時点でキャッシュが
-        // 空になっており、dim表示されず素の「Waiting for Hand...」に
-        // 落ちてしまう
-        const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
-        await dispatchStats(bustedLineup)
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
-      })
-
-      it('観戦モードdealを挟んだ後のフィルター変更は、観戦先の生の座席インデックスが偶然在席していても「ライブ在籍中」とは扱わず、hero自身のテーブルの古いキャッシュを正しくクリアする（post-merge review descope pass2「Clear spectator-context caches on filter updates」）', async () => {
+      it('観戦モードdealを挟んだ後のフィルター変更も、hero以外のdimCacheを無条件でクリアする（観戦先の生の座席に偶然誰か在席していても関係ない。post-merge review descope pass3でisLiveNowの選択的温存を撤回し単純な無条件クリアに戻した）', async () => {
         render(<App />)
         // ヒーロー在籍のhandで席1(プレイヤー2)がbustしてミュート表示になる
         await act(async () => {
@@ -1020,10 +994,8 @@ describe('App', () => {
         })
         expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 777')
 
-        // この観戦中にフィルターが変わる。席1(数値インデックス)には観戦先の
-        // 777が在席しているが、これはhero自身のテーブルの「ライブ在籍中」
-        // ではないので、旧テーブルのプレイヤー2の古いキャッシュはクリア
-        // されなければならない
+        // この観戦中にフィルターが変わる -- 座席の在籍状況を問わず、
+        // hero以外のdimCacheは無条件でクリアされる
         await act(async () => {
           window.dispatchEvent(new CustomEvent('updateBattleTypeFilter', {
             detail: { gameTypes: { sng: true, mtt: false, ring: true } },
@@ -1038,50 +1010,80 @@ describe('App', () => {
           }))
         })
 
-        // プレイヤー2の古いキャッシュがクリアされていれば、席1は
-        // 「Waiting for Hand...」のまま -- クリアされていなければ、
-        // 観戦を挟んでも古いプレイヤー2がミュート表示のまま蘇ってしまう
+        // プレイヤー2の古いキャッシュがクリアされているので、席1は
+        // 「Waiting for Hand...」のまま -- 観戦を挟んでも古いプレイヤー2が
+        // ミュート表示のまま蘇ってはいけない
         expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: -1')
         expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
       })
 
-      it('座席数が縮んだ更新（4-maxなど）の後のフィルター変更は、6-max時代のキャッシュを「存在しない座席=ライブ在籍中」と誤認せず正しくクリアする（post-merge review descope pass2「Treat missing seats as empty when clearing caches」）', async () => {
+      it('latestStats(バッチ再計算)を挟んだ後のフィルター変更も、hero以外のdimCacheを無条件でクリアする（post-merge review descope pass3、バッチ経路でも同じ無条件クリアが効くことの確認）', async () => {
         render(<App />)
         await dispatchStats(mockStatsData.stats)
-
-        // 席4(プレイヤー5)がbustしてミュート表示になる(6-max)
-        const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 4 ? { playerId: -1 } : s))
+        const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
         await dispatchStats(bustedLineup)
-        expect(screen.getByTestId('hud-4')).toHaveTextContent('Player: 5')
-        expect(screen.getByTestId('hud-4')).toHaveTextContent('Dimmed: yes')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
 
-        // 4-maxへ縮小したlineupが届く(配列長4、座席4/5に対応する要素自体が
-        // 無い)。この更新のmapループはindex 0-3しか処理しないため、席4の
-        // 古いキャッシュには一切触れられない
-        const fourMaxLineup: StatsData['stats'] = [
-          { playerId: 1, statResults: [] },
-          { playerId: 2, statResults: [] },
-          { playerId: 3, statResults: [] },
-          { playerId: 4, statResults: [] },
-        ]
-        await dispatchStats(fourMaxLineup)
+        // インポート後のrefreshStats往復相当: 'latestStats'が来る
+        const addListenerCalls = (chrome.runtime.onMessage.addListener as jest.Mock).mock.calls
+        const messageHandler = addListenerCalls[0][0]
+        await act(async () => {
+          messageHandler({ action: 'latestStats', stats: bustedLineup })
+        })
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: -1')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
 
-        // この状態でフィルターが変わる。席4は現在の表示に存在しない
-        // （currentStats[4]がundefined）ので「ライブ在籍中」ではなく、
-        // 古いキャッシュはクリアされなければならない
         await act(async () => {
           window.dispatchEvent(new CustomEvent('updateBattleTypeFilter', {
             detail: { gameTypes: { sng: true, mtt: false, ring: true } },
           }))
         })
 
-        // 6-maxに戻り、席4が引き続き空席のlineupが届く
         await dispatchStats(bustedLineup)
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: -1')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
+      })
 
-        // プレイヤー5の古いキャッシュがクリアされていれば、席4は
-        // 「Waiting for Hand...」のまま
-        expect(screen.getByTestId('hud-4')).toHaveTextContent('Player: -1')
-        expect(screen.getByTestId('hud-4')).toHaveTextContent('Dimmed: no')
+      it('許容する既知のギャップ: フィルター変更の直後・次のライブdealが届く前に対戦相手がbustすると、その1回だけdim表示が出ない。ただし次のライブ更新でdimCacheは必ず再構築され、以降のbustは正しくdim表示される（自己修復。post-merge review descope pass3でオーナー承認のギャップとして明記）', async () => {
+        render(<App />)
+        await dispatchStats(mockStatsData.stats)
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
+
+        // 誰もミュートされていない状態でフィルターが変わる -- 無条件クリア
+        // により、席1(まだライブ在籍中のプレイヤー2)のキャッシュも消える
+        await act(async () => {
+          window.dispatchEvent(new CustomEvent('updateBattleTypeFilter', {
+            detail: { gameTypes: { sng: true, mtt: false, ring: true } },
+          }))
+        })
+
+        // フィルター変更の直後、次のライブdealが届く前にプレイヤー2がbust
+        // する -- キャッシュが無いのでdim表示は出ない（許容するギャップ）
+        const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
+        await dispatchStats(bustedLineup)
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: -1')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
+
+        // 自己修復の確認: 同じ席に新しいプレイヤー(99)が着席する。この
+        // ライブ更新でdimCacheが打ち直され、bust→dimの仕組みが以降の
+        // bustについて正常に機能するようになる
+        const newOccupantLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (
+          i === 1 ? { playerId: 99, statResults: [] } : s
+        ))
+        await dispatchStats(newOccupantLineup)
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 99')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
+
+        // この新しいプレイヤー(99)がbustすると、通常通りdim表示される --
+        // キャッシュ基盤がフィルター変更のギャップから完全に回復している証拠
+        const newOccupantBustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (
+          i === 1 ? { playerId: -1 } : s
+        ))
+        await dispatchStats(newOccupantBustedLineup)
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 99')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
       })
 
       it('latestStats(バッチ再計算)でdimmedSeatIndicesが空にリセットされた後でも、フィルター変更は取り残されたdimCacheエントリを無効化する（post-merge review P2「Clear cached muted seats even after dim state resets」）', async () => {
