@@ -751,10 +751,19 @@ describe('AutoSyncService cloud downloads', () => {
 
     // By the time both calls have been issued (synchronously, before the
     // gate promise resolves), the latch must already be set -- proving the
-    // first call set it before yielding at the `await` for the gate.
+    // first call set it before yielding at its first await.
     expect((service as any)._isSyncing).toBe(true)
 
-    resolveGate?.(false) // gate: not blocked
+    // Flush microtasks until the first call's execution actually reaches
+    // the gate check and `resolveGate` is captured -- performSync() now has
+    // an earlier `await firebaseAuthService.ready()` ahead of the gate
+    // check (r3615553034), so reaching it can take more than one microtask
+    // hop; polling (rather than assuming a fixed hop count) keeps this
+    // test robust to that either way.
+    while (!resolveGate) {
+      await Promise.resolve()
+    }
+    resolveGate(false) // gate: not blocked
     await firstSync
     await secondSync
 
@@ -1132,5 +1141,97 @@ describe('AutoSyncService cloud downloads', () => {
     expect(await chrome.storage.local.get('autoSyncLastTime')).toEqual({ autoSyncLastTime: legacyIso })
     expect(await chrome.storage.local.get('autoSyncLastTime:user-a')).toEqual({ 'autoSyncLastTime:user-a': undefined })
     expect(performSyncSpy).not.toHaveBeenCalled()
+  })
+
+  test('awaits auth restore before snapshotting identity, so a pass starting during Service Worker startup does not snapshot a pre-restore identity (P2, codex review r3615553034)', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime:user-a'])
+
+    const userA = { uid: 'user-a', email: 'a@example.com' } as any
+    // Simulates firebaseAuthService's own constructor-kicked-off
+    // restoreAuthState() not having resolved yet: getCurrentUser()/
+    // getAuthGeneration() report "nobody signed in yet, generation 0" until
+    // `restored` flips, mirroring how the real service looks before vs.
+    // after its restorePromise settles.
+    let restored = false
+    let resolveReady: (() => void) | undefined
+    jest.spyOn(firebaseAuthService, 'ready').mockImplementation(() => new Promise<void>(resolve => { resolveReady = resolve }))
+    jest.spyOn(firebaseAuthService, 'getCurrentUser').mockImplementation(() => restored ? userA : null)
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockImplementation(() => restored ? 1 : 0)
+
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+    jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockResolvedValue({ totalEvents: 0, syncedEvents: 0, lastSyncTime: new Date() })
+
+    const service = new AutoSyncService(db)
+    const syncPromise = service.performSync('upload')
+
+    // Restore "completes" while performSync() is awaiting
+    // firebaseAuthService.ready() -- exactly the startup race the finding
+    // describes. If the identity snapshot were taken BEFORE this await
+    // (the bug), it would have already captured `{ uid: undefined,
+    // generation: 0 }` synchronously, before this line ever runs.
+    restored = true
+    resolveReady?.()
+
+    await syncPromise
+
+    // Must have succeeded under the RESTORED identity's own scoped key --
+    // not the bare/unscoped key a pre-restore `{ uid: undefined }` snapshot
+    // would have written to, and not aborted by a later commit-point check
+    // wrongly seeing "generation changed" relative to a stale pre-restore
+    // snapshot.
+    expect(service.getSyncState().status).toBe('success')
+    expect((await chrome.storage.local.get('autoSyncLastTime:user-a'))['autoSyncLastTime:user-a']).toBeDefined()
+    expect(await chrome.storage.local.get('autoSyncLastTime')).toEqual({ autoSyncLastTime: undefined })
+  })
+
+  test('re-checks the generation before publishing sync success into the shared syncState, closing the gap during updateTimestamps() (P2, codex review r3615553045)', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime:user-a', 'autoSyncLastTime:user-b'])
+
+    const userA = { uid: 'user-a', email: 'a@example.com' } as any
+    const userB = { uid: 'user-b', email: 'b@example.com' } as any
+    const getCurrentUserSpy = jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue(userA)
+    let generation = 1
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockImplementation(() => generation)
+
+    const validRow = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO,
+      Id: 'x', IsRetire: false, timestamp: 100
+    } as ApiEvent
+    await db.apiEvents.add(validRow)
+
+    jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockResolvedValue({ totalEvents: 1, syncedEvents: 1, lastSyncTime: new Date() })
+
+    let cloudMaxCalls = 0
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockImplementation(async () => {
+      cloudMaxCalls++
+      // Call #1 is syncToCloud()'s own watermark read (before any
+      // bookkeeping write). Call #2 is updateTimestamps()'s own read,
+      // which runs AFTER the scoped autoSyncLastTime write below has
+      // already landed -- switch accounts exactly there, simulating the
+      // account changing during that specific gap.
+      if (cloudMaxCalls === 2) {
+        generation++
+        getCurrentUserSpy.mockReturnValue(userB)
+      }
+      return null
+    })
+
+    const service = new AutoSyncService(db)
+    await service.performSync('upload')
+
+    expect(service.getSyncState().status).toBe('error')
+    expect(service.getSyncState().error).toContain('before publishing sync success')
+
+    // The scoped bookkeeping WRITE already landed under A -- legitimate,
+    // made while A was still live (before the switch inside updateTimestamps()).
+    expect((await chrome.storage.local.get('autoSyncLastTime:user-a'))['autoSyncLastTime:user-a']).toBeDefined()
+
+    // But the SHARED in-memory syncState.lastSyncTime was never published --
+    // this is exactly what a newly-signed-in B's own
+    // syncIfBacklogExceedsThreshold() would otherwise read and use to
+    // (wrongly) shrink its own upload backlog.
+    expect(service.getSyncState().lastSyncTime).toBeUndefined()
   })
 })

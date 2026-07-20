@@ -293,6 +293,18 @@ export class AutoSyncService {
     // this caps the recursion so a pathological case can't loop forever.
     const MAX_INITIALIZE_ATTEMPTS = 3
     try {
+      // Wait for auth state to settle BEFORE reading it (codex review
+      // r3615553034, P2, "Await auth restore before snapshotting identity"):
+      // firebaseAuthService's constructor kicks off an async
+      // restoreAuthState() that has not necessarily resolved yet on a fresh
+      // Service Worker start. Reading getCurrentUser() before it resolves
+      // could see "signed out" for an already-signed-in user, or -- once
+      // snapshotIdentity() exists -- capture a stale generation right
+      // before the restore bumps it. Reuses the SAME readiness barrier
+      // `firestore-backup-service.ts` already awaits internally
+      // (`requireUser()`'s `await firebaseAuthService.ready()`).
+      await firebaseAuthService.ready()
+
       // Check who is signed in FIRST -- everything below needs a
       // snapshotted identity (invariant (2)).
       const user = firebaseAuthService.getCurrentUser()
@@ -410,14 +422,31 @@ export class AutoSyncService {
     // path (gate-blocked or sync completed/failed) releases the latch.
     this._isSyncing = true
 
-    // SNAPSHOT identity ONCE for this entire pass (invariant (2) in the
-    // ACCOUNT-SCOPING INVARIANTS spec above). `syncToCloud()` and its
-    // bookkeeping helpers all use THIS snapshot -- `uid` for key
-    // derivation, `generation` for the ABA-proof validity check -- never a
-    // freshly re-resolved `getCurrentUser()`/`getAuthGeneration()`.
-    const identity = this.snapshotIdentity()
-
     try {
+      // Wait for auth state to settle BEFORE snapshotting it (codex review
+      // r3615553034, P2, "Await auth restore before snapshotting identity"):
+      // on a fresh Service Worker start, firebaseAuthService's constructor
+      // kicks off an async restoreAuthState() that has not necessarily
+      // resolved yet. Snapshotting before it resolves could capture
+      // `{ uid: undefined, generation: 0 }` even for an already-signed-in
+      // user -- the FIRST firestoreBackupService call downstream (via
+      // `requireUser()`'s own `await ready()`) would then complete the
+      // restore and bump the generation, making every later commit-point
+      // assert see a false account switch and abort a sync that should
+      // have succeeded. Placed INSIDE the try (after the `_isSyncing`
+      // latch, matching the existing min-version-gate await below) so this
+      // await can't reopen the double-sync race the latch exists to
+      // prevent, and so `finally` still releases the latch if `ready()`
+      // itself ever rejected.
+      await firebaseAuthService.ready()
+
+      // SNAPSHOT identity ONCE for this entire pass (invariant (2) in the
+      // ACCOUNT-SCOPING INVARIANTS spec above). `syncToCloud()` and its
+      // bookkeeping helpers all use THIS snapshot -- `uid` for key
+      // derivation, `generation` for the ABA-proof validity check -- never a
+      // freshly re-resolved `getCurrentUser()`/`getAuthGeneration()`.
+      const identity = this.snapshotIdentity()
+
       // Remote min-version gate (kill switch, #forced-update): every sync entry
       // point funnels through performSync(), so a single guard here covers
       // manual sync, auto sync (session end/start triggers), and initialize()'s
@@ -447,10 +476,12 @@ export class AutoSyncService {
         // the snapshot before writing the final success bookkeeping below.
         this.assertGenerationUnchanged(identity.generation, 'before final lastSyncTime commit')
 
-        // Update success state
-        this.syncState.lastSyncTime = new Date()
+        // Update success state -- computed as a LOCAL value here, not yet
+        // assigned into the shared `this.syncState` (see the second
+        // COMMIT POINT below for why that assignment is deferred).
+        const syncCompletedAt = new Date()
         const scopedSyncKey = this.scopedMetaKey(this.SYNC_STORAGE_KEY, identity.uid)
-        await chrome.storage.local.set({ [scopedSyncKey]: this.syncState.lastSyncTime.toISOString() })
+        await chrome.storage.local.set({ [scopedSyncKey]: syncCompletedAt.toISOString() })
         // Opportunistically clear an orphaned legacy key here too (codex
         // review r3615389121): `initialize()` is the primary migration
         // path, but a manual sync (bypassing `initialize()` entirely, e.g.
@@ -464,6 +495,25 @@ export class AutoSyncService {
 
         // Update timestamps after sync
         await this.updateTimestamps()
+
+        // COMMIT POINT (invariant (2), codex review r3615553045, P2,
+        // "Recheck before publishing sync success"): re-check AGAIN,
+        // immediately before publishing into the shared (unscoped,
+        // cross-account-visible) in-memory `syncState` -- `updateTimestamps()`
+        // above is itself an async gap (it makes its own
+        // `getCloudMaxTimestamp()` call) during which the account could have
+        // changed again, even though the scoped bookkeeping WRITES above
+        // already landed safely under a validated generation. This is why
+        // `syncState.lastSyncTime` is assigned HERE, at the very last
+        // possible moment, rather than right after the first assert above:
+        // `syncIfBacklogExceedsThreshold()` and other readers see this
+        // in-memory value change the instant it's assigned (a direct field
+        // read, not gated by `updateSyncState()`'s broadcast), so if it were
+        // set earlier and the account changed during `updateTimestamps()`,
+        // a newly-signed-in account could transiently compute its own
+        // upload backlog against the PREVIOUS account's completion time.
+        this.assertGenerationUnchanged(identity.generation, 'before publishing sync success')
+        this.syncState.lastSyncTime = syncCompletedAt
 
         this.updateSyncState({
           status: 'success',
