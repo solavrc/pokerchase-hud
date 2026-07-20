@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import { WhatsNewSection } from './WhatsNewSection'
 import { WHATS_NEW_ENTRIES, GITHUB_RELEASES_URL } from '../../constants/whats-new'
+import { compareVersions } from '../../utils/version-compare'
 
 describe('WhatsNewSection', () => {
   let mockSendMessage: jest.Mock
@@ -68,10 +69,15 @@ describe('WhatsNewSection', () => {
     expect(screen.getByText(/v5\.1\.0/)).toBeInTheDocument()
     expect(screen.queryByText(/v5\.2\.0/)).not.toBeInTheDocument()
 
-    // History: only 5.0.0 (strictly older than the selected 5.1.0 entry) --
-    // the future 5.2.0 entry must be filtered out, not merely deduplicated
-    // against the primary entry.
-    expect(screen.getByText(/過去の更新情報（1件）/)).toBeInTheDocument()
+    // History: every curated entry strictly older than the selected 5.1.0
+    // entry (5.0.0 and all earlier releases) -- the future 5.2.0 entry must
+    // be filtered out, not merely deduplicated against the primary entry.
+    // Count is derived rather than hardcoded so it doesn't rot as sola adds
+    // more curated history to WHATS_NEW_ENTRIES.
+    const expectedOlderCount = WHATS_NEW_ENTRIES.filter(entry => compareVersions(entry.version, '5.1.0') === -1).length
+    expect(
+      screen.getByText(new RegExp(`過去の更新情報（${expectedOlderCount}件）`))
+    ).toBeInTheDocument()
     expect(screen.getByText(/v5\.0\.0/)).toBeInTheDocument()
     expect(screen.queryByText(/v5\.2\.0/)).not.toBeInTheDocument()
   })
