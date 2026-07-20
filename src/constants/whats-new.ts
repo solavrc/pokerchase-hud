@@ -130,7 +130,7 @@ export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   },
   {
     version: '2.4.0',
-    date: '2025-07-15',
+    date: '2025-07-16',
     title: 'データ取り込みの信頼性を改善',
     points: [
       { text: '対戦データの形式チェックを強化し、想定外のデータによる不具合を防ぎやすくなりました' },
