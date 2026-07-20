@@ -282,12 +282,36 @@ describe('update-manager', () => {
       markSessionInactive()
 
       initUpdateManager()
-      // recheckPendingUpdate() inside initUpdateManager is fire-and-forget;
-      // flush the macrotask queue so its promise chain (storage get -> check
-      // -> storage set -> reload) fully resolves before asserting.
+      // recheckPendingUpdate() inside initUpdateManager is fire-and-forget
+      // from the caller's perspective in this test (its return value is
+      // ignored here); flush the macrotask queue so its promise chain
+      // (storage get -> check -> storage set -> reload) fully resolves
+      // before asserting.
       await new Promise(resolve => setTimeout(resolve, 0))
 
       expect(chrome.runtime.reload).toHaveBeenCalledTimes(1)
+    })
+
+    it('returns the SW-startup recheckPendingUpdate() promise, so awaiting it (instead of a manual macrotask flush) is enough to observe stale pending-update cleanup having completed (codex review, PR #172)', async () => {
+      // Record a pending update, then simulate Chrome having applied it
+      // out-of-band (browser restart) by making the running manifest
+      // version match the recorded pending version -- recheckPendingUpdate()
+      // must clear the now-stale pending state in this case.
+      markSessionActive()
+      await handleUpdateAvailable({ version: '5.2.0' })
+      expect((await getPendingUpdateState()).pending).toBe(true)
+
+      __resetUpdateManagerStateForTests()
+      jest.clearAllMocks()
+      ;(chrome.runtime.getManifest as jest.Mock).mockReturnValueOnce({ version: '5.2.0' })
+
+      // background.ts sequences reassertWhatsNewBadgeOnStartup() after this
+      // promise specifically to avoid reading pendingUpdate mid-cleanup;
+      // this asserts that sequencing point actually works -- no extra
+      // setTimeout(0) flush, just awaiting the returned promise directly.
+      await initUpdateManager()
+
+      expect(await getPendingUpdateState()).toEqual({ pending: false })
     })
   })
 })

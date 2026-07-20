@@ -52,6 +52,30 @@ describe('WhatsNewSection', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
+  it('excludes future entries from both the primary slot and the history disclosure (codex review, PR #172)', () => {
+    // Regression for: manifest.json/package.json still at 5.1.0 while
+    // WHATS_NEW_ENTRIES[0] is the newer, not-yet-released 5.2.0 (this repo's
+    // actual state right now -- the whats-new copy for a release is added
+    // ahead of release-please bumping the manifest, see whats-new.ts's
+    // header comment). An entry newer than the running version must never
+    // render anywhere, including tucked away in "過去の更新情報".
+    expect(WHATS_NEW_ENTRIES[0]!.version).toBe('5.2.0')
+    mockGetManifest.mockReturnValue({ version: '5.1.0' })
+
+    render(<WhatsNewSection />)
+
+    // Primary: the 5.1.0 entry (exact match), never the future 5.2.0 one.
+    expect(screen.getByText(/v5\.1\.0/)).toBeInTheDocument()
+    expect(screen.queryByText(/v5\.2\.0/)).not.toBeInTheDocument()
+
+    // History: only 5.0.0 (strictly older than the selected 5.1.0 entry) --
+    // the future 5.2.0 entry must be filtered out, not merely deduplicated
+    // against the primary entry.
+    expect(screen.getByText(/過去の更新情報（1件）/)).toBeInTheDocument()
+    expect(screen.getByText(/v5\.0\.0/)).toBeInTheDocument()
+    expect(screen.queryByText(/v5\.2\.0/)).not.toBeInTheDocument()
+  })
+
   it('collapses older entries under a <details> disclosure and lists them all', () => {
     render(<WhatsNewSection />)
 

@@ -9,6 +9,7 @@ import {
   type WhatsNewEntry,
 } from '../../constants/whats-new'
 import type { AcknowledgeWhatsNewMessage } from '../../types/messages'
+import { compareVersions } from '../../utils/version-compare'
 import { SectionCard } from './SectionCard'
 import { SectionHeading } from './SectionHeading'
 import { sendMessageWithTimeout } from './send-message'
@@ -54,8 +55,19 @@ export const WhatsNewSection = () => {
 
   const currentVersion = useMemo(() => chrome.runtime.getManifest().version, [])
   const current = useMemo(() => selectWhatsNewEntry(currentVersion), [currentVersion])
+  // 過去の更新情報は`current`（実行中バージョン以下で選ばれたエントリ）より
+  // 厳密に古いものだけに絞る。`current.version !== entry.version`だけでは
+  // 不十分 -- マニフェストがまだ更新エントリより古い版の場合（例:
+  // manifest=5.1.0だがWHATS_NEW_ENTRIES[0]は未リリースの5.2.0）、単純な
+  // 「currentと違う」フィルタだと未来のエントリまで「過去の更新情報」の
+  // 折りたたみに紛れ込んでしまう（codex review, PR #172）。
   const olderEntries = useMemo(
-    () => WHATS_NEW_ENTRIES.filter(entry => entry.version !== current?.version),
+    () =>
+      WHATS_NEW_ENTRIES.filter(entry => {
+        if (!current) return false
+        const cmp = compareVersions(entry.version, current.version)
+        return cmp !== null && cmp < 0
+      }),
     [current]
   )
 

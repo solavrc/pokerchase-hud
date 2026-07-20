@@ -176,19 +176,25 @@ registerEventIngestion(service)
  * onUpdateAvailable購読・加速チェック（起動時1回 + 6時間ごとのalarm）・
  * SW起動時点での保留中アップデート再チェックをまとめて行う。
  * 詳細はsrc/background/update-manager.tsとCLAUDE.mdを参照。
+ *
+ * 更新情報（What's New）バッジのSW起動時再評価は、この`initUpdateManager()`が
+ * 返すSW起動時`recheckPendingUpdate()`のpromiseに続けて実行する（codex
+ * review, PR #172）。`recheckPendingUpdate()`は`pendingUpdate`のstorage状態を
+ * 読んで（既に適用済みなら）クリーンアップすることがあるため、この完了を
+ * 待たずに`reassertWhatsNewBadgeOnStartup()`を並行実行すると、そのクリーン
+ * アップ途中の古い`pendingUpdate`状態を読んでしまい、whats-newバッジへの
+ * 「昇格」判定を誤ることがある。onInstalled('update')時点でrebuild-advisory/
+ * update-managerのバッジが先に使用中だった場合、whats-newバッジは抑制された
+ * ままになるため、他の2つが解消済みならここで優先順位を再評価し、
+ * whats-newバッジへ昇格させる（詳細はsrc/background/whats-new-badge.tsと
+ * CLAUDE.md参照）。全体としては（`.then()`チェーンをawaitしないので）SW起動を
+ * ブロックしない -- fire-and-forgetのまま、実行順序だけを保証する。
  */
 initUpdateManager()
-
-/**
- * 更新情報（What's New）バッジのSW起動時再評価。onInstalled('update')時点で
- * rebuild-advisory/update-managerのバッジが先に使用中だった場合、
- * whats-newバッジは抑制されたままになる。SW起動のたびにここで優先順位を
- * 再評価し、他の2つが解消済みならwhats-newバッジに昇格させる（詳細は
- * src/background/whats-new-badge.tsとCLAUDE.md参照）。
- */
-reassertWhatsNewBadgeOnStartup().catch(error => {
-  console.error('[background] What\'s New badge reassertion failed:', error)
-})
+  .then(() => reassertWhatsNewBadgeOnStartup())
+  .catch(error => {
+    console.error('[background] What\'s New badge reassertion failed:', error)
+  })
 
 /**
  * Forced update: リモート最低バージョンゲート（キルスイッチ）。

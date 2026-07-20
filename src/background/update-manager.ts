@@ -215,8 +215,17 @@ const setupUpdateCheckAlarm = (): void => {
  * - operation completion時の再チェック購読
  * - 加速チェック（SW起動時1回 + 6時間おきのalarm）
  * - SW起動時の保留中アップデート再チェック
+ *
+ * 戻り値はSW起動時の`recheckPendingUpdate()`呼び出しのpromise（常にresolve
+ * する -- 内部でcatch済み）。呼び出し側（background.ts）はこれを使って
+ * 「pendingUpdateのSW起動時クリーンアップが終わってから」whats-newバッジの
+ * 再評価を行うよう順序付けできる（codex review, PR #172:
+ * `reassertWhatsNewBadgeOnStartup()`がこのクリーンアップの完了前に
+ * `pendingUpdate`の中間状態を読んでしまうレースの防止）。この関数自体は
+ * 呼び出しをブロックしない（他のセットアップは同期的に完了する）ので、
+ * SW起動を止めたくない呼び出し側はそのままfire-and-forgetしてよい。
  */
-export const initUpdateManager = (): void => {
+export const initUpdateManager = (): Promise<void> => {
   chrome.runtime.onUpdateAvailable.addListener((details) => {
     handleUpdateAvailable(details).catch(error => {
       console.error('[update-manager] handleUpdateAvailable failed:', error)
@@ -234,7 +243,7 @@ export const initUpdateManager = (): void => {
   })
   setupUpdateCheckAlarm()
 
-  recheckPendingUpdate().catch(error => {
+  return recheckPendingUpdate().catch(error => {
     console.error('[update-manager] recheckPendingUpdate (SW startup) failed:', error)
   })
 }
