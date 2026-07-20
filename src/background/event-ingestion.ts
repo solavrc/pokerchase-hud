@@ -43,16 +43,62 @@ let ingestionQueue: Promise<void> = Promise.resolve()
 
 /**
  * 到着世代カウンタ（P1, codexレビュー指摘 2026-07-21, pass-4,
- * "Don't reload before queued session starts run"）。キューへ何か（キープ
- * アライブ以外のメッセージ）が積まれるたびに同期的にインクリメントする。
- * `ingestionQueue`自体の参照比較（`awaitIngestionDrain()`のループ）とは
- * 別に、309/203自身の`processEvent`実行の**内側**から「自分の後に何か
- * 積まれていないか」を同期的に確認するために使う——その場所では
- * `awaitIngestionDrain()`（自己参照でデッドロックする）は使えない
- * ため、単調増加のカウンタで代用する。詳細は`processEvent`の309/203
- * ブロックのコメント参照。
+ * "Don't reload before queued session starts run"）。キューへ積まれる
+ * メッセージのうち、セッション状態（ACTIVE/INACTIVE）に影響しうるもの
+ * ——`isSessionActivityRelevant()`参照——だけを対象に同期的に
+ * インクリメントする。`ingestionQueue`自体の参照比較
+ * （`awaitIngestionDrain()`のループ）とは別に、309/203自身の
+ * `processEvent`実行の**内側**から「自分の後にセッション状態へ影響しうる
+ * イベントが既に積まれていないか」を同期的に確認するために使う——
+ * その場所では`awaitIngestionDrain()`（自己参照でデッドロックする）は
+ * 使えないため、単調増加のカウンタで代用する。詳細は`processEvent`の
+ * 309/203ブロックのコメント参照。
+ *
+ * セッション状態に無関係なメッセージ（202/205等の非アプリケーション
+ * イベント、真の重複と後で判明するイベント等）ではインクリメントしない
+ * （P2, codexレビュー指摘 2026-07-21, pass-5, "Don't let noise suppress
+ * session-end rechecks"）: このカウンタが「何かキューへ積まれたら
+ * 一律インクリメント」だった旧実装では、309/203自身も再チェックできず、
+ * かつそのノイズイベント自身も自分のrecheckを一切トリガーしないため、
+ * 保留中アップデートが無関係な操作完了・SW再起動まで永遠にブロックされ
+ * うる問題があった。ACTIVE/INACTIVEを動かしうるイベントだけを対象に
+ * 絞ることで、「本当に安全性判定に影響しうる新しい到着」だけを検知する。
  */
-let queueGeneration = 0
+let activityGeneration = 0
+
+/**
+ * 生メッセージが（決着すれば）セッションのACTIVE/INACTIVE状態に影響し
+ * うるかどうかを、Zodパース前の数値ApiTypeId・生フィールドだけで判定
+ * する。`applySessionActivity()`が実際に扱うトリガー集合と完全に一致
+ * させること（判定基準がズレると`activityGeneration`が過大/過小に
+ * カウントされ、finding 1/finding 3のどちらかを再発させる）。
+ *
+ * 保守的に倒す判断（P2, codexレビュー指摘 2026-07-21, pass-5）: この
+ * 関数はまだraw書き込み・重複判定の**前**、`port.onMessage`受信直後の
+ * 同期的な文脈で呼ぶため、このメッセージが後で真の重複と判明して
+ * `applySessionActivity()`まで到達しない可能性がある（`processEvent`の
+ * 重複判定コメント参照）。それでもここでは「ApiTypeId/Playerの形」
+ * だけで判定し、重複かどうかは考慮しない——真の重複を稀に過大カウント
+ * しても、309/203の再チェックが「今回は見送り、次の契機に委ねる」だけで
+ * 実害は無い（安全側）。逆に見逃す（過小カウントする）と、決着済みの
+ * ACTIVE化がreload判定に反映される前にreloadしてしまう恐れがあり、
+ * それは実害があるため、疑わしきは「影響しうる」側に倒す。
+ */
+const isSessionActivityRelevant = (rawApiTypeId: unknown, message: ApiMessage | { type: string }): boolean => {
+  if (
+    rawApiTypeId === ApiType.EVT_SESSION_RESULTS ||
+    rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID ||
+    rawApiTypeId === ApiType.EVT_ENTRY_QUEUED ||
+    rawApiTypeId === ApiType.EVT_SESSION_DETAILS
+  ) {
+    return true
+  }
+  if (rawApiTypeId === ApiType.EVT_DEAL) {
+    const rawPlayer = (message as { Player?: unknown }).Player
+    return rawPlayer != null
+  }
+  return false
+}
 
 /**
  * `chrome.runtime.onConnect`のハンドラーを登録する。
@@ -105,16 +151,19 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   // サスペンド/リロード・タブクローズが起きればそれらのイベントは失われる。
   // `chrome.runtime.reload()`を呼びうる`recheckPendingUpdate()`だけは
   // 引き続き同期トリガーの決着後にチェーンするが、`processEvent`からawait
-  // せずfire-and-forgetにし、代わりに呼ぶ直前で`queueGeneration`を確認
-  // する（「自分の到着後に何か新しく積まれていないか」の同期的な
-  // チェック——詳細は`processEvent`の309/203ブロックのコメント参照）。
-  // これにより、以前のラウンドで「reloadが次イベントのin-flightなadd()と
-  // 競合する」ことを防ぐために採用していた「キューをブロックして順序を
-  // 強制する」戦略から、「決定の直前に鮮度を確認し、古ければreloadを
-  // 諦めて次の契機に委ねる」戦略へ切り替えている——ブロックしなくても
-  // 同じ安全性が得られ、かつスループットを犠牲にしない。
+  // せずfire-and-forgetにする。再チェック自体の安全性は、キューを
+  // ブロックする代わりに`recheckPendingUpdate()`の`isStillFresh`
+  // オプション（`activityGeneration`比較を渡す）で担保する——`reload()`
+  // 呼び出し直前まで`await`を挟まず原子的に確認する（詳細は
+  // update-manager.tsの`recheckPendingUpdate()`コメント、および
+  // `processEvent`の309/203ブロックのコメント参照）。これにより、以前の
+  // ラウンドで「reloadが次イベントのin-flightなadd()と競合する」ことを
+  // 防ぐために採用していた「キューをブロックして順序を強制する」戦略
+  // から、「決定の直前に鮮度を確認し、古ければreloadを諦めて次の契機に
+  // 委ねる」戦略へ切り替えている——ブロックしなくても同じ安全性が得られ、
+  // かつスループットを犠牲にしない。
   ingestionQueue = Promise.resolve()
-  queueGeneration = 0
+  activityGeneration = 0
   setIngestionDrainProvider(() => ingestionQueue)
 
   chrome.runtime.onConnect.addListener(port => {
@@ -127,15 +176,20 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           return
         }
 
-        // このメッセージが積まれた時点の世代を記録する（上の
-        // `queueGeneration`コメント参照）。
-        const enqueueGeneration = ++queueGeneration
+        // このメッセージがセッション状態に影響しうる場合のみ、積まれた
+        // 時点の世代を記録する（上の`activityGeneration`/
+        // `isSessionActivityRelevant`コメント参照）。
+        const rawApiTypeIdForGeneration = (message as { ApiTypeId?: unknown }).ApiTypeId
+        if (isSessionActivityRelevant(rawApiTypeIdForGeneration, message)) {
+          activityGeneration++
+        }
+        const enqueueActivityGeneration = activityGeneration
 
         // このイベントの処理を、直前のイベントの処理（add()の決着含む）の
         // 後ろに連結する。`processEvent`は内部で全エラーを捕捉して素通し
         // させない設計だが、想定外のバグでqueueが壊れて以降のイベントが
         // 永久に詰まることのないよう、キューの継続用チェーンは別途catchする。
-        const task = ingestionQueue.then(() => processEvent(service, message, enqueueGeneration))
+        const task = ingestionQueue.then(() => processEvent(service, message, enqueueActivityGeneration))
         ingestionQueue = task.catch(err => {
           console.error('[background] Unhandled ingestion queue error (fail-safe, queue continues):', err)
         })
@@ -234,15 +288,17 @@ const applySessionActivity = (rawApiTypeId: unknown, message: ApiMessage | { typ
  * セッション状態追跡・自動同期トリガー（raw書き込み決着後のみ）→
  * リアルタイムパイプラインへの投入。
  *
- * `enqueueGeneration`は呼び出し元（`registerEventIngestion()`）が
- * このメッセージをキューへ積んだ時点で採番した`queueGeneration`の値。
- * 309/203ブロックが「自分の到着後に何か新しく積まれていないか」を
- * 同期的に確認するために使う（詳細は該当ブロックのコメント参照）。
+ * `enqueueActivityGeneration`は呼び出し元（`registerEventIngestion()`）が
+ * このメッセージをキューへ積んだ時点で採番した`activityGeneration`の値
+ * （セッション状態に無関係なメッセージでは単に現在値のスナップショット、
+ * 比較には使わない）。309/203ブロックが「自分の到着後にセッション状態へ
+ * 影響しうるイベントが既に積まれていないか」を同期的に確認するために使う
+ * （詳細は該当ブロックのコメント参照）。
  */
 const processEvent = async (
   service: PokerChaseService,
   message: ApiMessage | { type: string },
-  enqueueGeneration: number
+  enqueueActivityGeneration: number
 ): Promise<void> => {
   // Ensure service is ready before processing messages
   try {
@@ -465,31 +521,49 @@ const processEvent = async (
     // （前回の暫定対策——チェーン全体をawaitしてreloadとの競合を防ぐ——は
     // このスループット問題を引き起こしていた）。
     //
-    // reload競合の防止は、キューをブロックする代わりに`queueGeneration`
-    // の比較で行う（P1, codexレビュー指摘 2026-07-21, pass-4, "Don't
-    // reload before queued session starts run"）: `onGameSessionEnd()`
-    // が完了した時点で、このメッセージが積まれてから（＝
-    // `enqueueGeneration`採番時から）`queueGeneration`が進んでいれば、
-    // 自分の後に新しいイベント（次のハンドの201/303等、まだ
+    // reload競合の防止は、キューをブロックする代わりに
+    // `recheckPendingUpdate()`の`isStillFresh`オプション（
+    // `activityGeneration`比較）で行う（P1, codexレビュー指摘
+    // 2026-07-21, pass-4/pass-5, "Don't reload before queued session
+    // starts run" / "Guard reload rechecks through the async path"）。
+    //
+    // pass-4時点では「`onGameSessionEnd()`決着直後、`recheckPendingUpdate()`
+    // を呼ぶ前」の1回だけ`activityGeneration`を比較していたが、
+    // `recheckPendingUpdate()`自身も`getPendingUpdateState()`等の
+    // `await`を複数挟む非同期関数であり、その隙間で新しいイベントが
+    // 到着・キューへ積まれうる（pass-5, codexレビュー指摘: 「事前の
+    // 1回チェック」では不十分で、実際にreloadする直前でもう一度確認
+    // しないと隙間を締め切れない）。そこで比較そのものを
+    // `recheckPendingUpdate()`側へ渡し、`isSafeToUpdate()`と全く同じ
+    // タイミング（`chrome.runtime.reload()`直前、間に`await`を挟まない
+    // 原子的な確認——詳細はupdate-manager.tsの`recheckPendingUpdate()`
+    // コメント参照）で評価させる。
+    //
+    // このメッセージが積まれてから（＝`enqueueActivityGeneration`採番
+    // 時から）`activityGeneration`が進んでいれば、自分の後にセッション
+    // 状態へ影響しうる新しいイベント（次のハンドの201/303等、まだ
     // `applySessionActivity()`未実行）が既に積まれているということ。
-    // その状態で`recheckPendingUpdate()`を呼ぶと、`isSafeToUpdate()`が
-    // まだ反映されていない古い（309由来の）inactiveを読んで「安全」と
-    // 誤判定し、次イベントのin-flightな`apiEvents.add()`と競合する
-    // reloadを引き起こしうる。世代が変わっていなければ（＝自分の後に
-    // 何も積まれていない）、この時点でのreloadは安全——`ingestionQueue`
-    // は直列なので、自分より後に何も積まれていない限り新しいイベントが
-    // 割り込む余地は無い。世代が変わっていれば今回のrecheckは諦め、次の
-    // 自然な契機（次のセッション終了・操作完了・SW起動）に委ねる
-    // （その新しいイベント自身がいずれ309/203に到達すれば、その時点で
-    // 改めてこの同じチェックが走る）。
+    // その状態で`isSafeToUpdate()`が真だとしても、それはまだ反映されて
+    // いない古い（309由来の）inactiveを読んでいるだけであり、
+    // 実際にreloadすると次イベントのin-flightな`apiEvents.add()`と
+    // 競合しうる。世代が変わっていなければ（＝自分の後にセッション状態へ
+    // 影響しうるイベントが何も積まれていない）、この時点でのreloadは
+    // 安全——`ingestionQueue`は直列なので、割り込む余地は無い。世代が
+    // 変わっていれば今回のrecheckは諦め、次の自然な契機（次のセッション
+    // 終了・操作完了・SW起動）に委ねる（その新しいイベント自身がいずれ
+    // 309/203に到達すれば、その時点で改めてこの同じチェックが走る）。
+    //
+    // セッション状態に無関係な「ノイズ」イベント（202/205等の非
+    // アプリケーションイベント、真の重複と判明したイベント）は
+    // `activityGeneration`をそもそも進めない（P2, codexレビュー指摘
+    // 2026-07-21, pass-5, "Don't let noise suppress session-end
+    // rechecks"）ため、この鮮度チェックを無用に失敗させて再チェックを
+    // 妨げることはない——詳細は`isSessionActivityRelevant()`のコメント
+    // 参照。
     autoSyncService.onGameSessionEnd()
       .catch(err => console.error('[background] Auto sync on game end failed:', err))
       .finally(() => {
-        if (queueGeneration !== enqueueGeneration) {
-          console.log('[background] Skipping pending-update recheck after session end -- a newer event has already been queued, deferring to a later recheck trigger')
-          return
-        }
-        recheckPendingUpdate().catch(err =>
+        recheckPendingUpdate({ isStillFresh: () => activityGeneration === enqueueActivityGeneration }).catch(err =>
           console.error('[background] Pending update recheck on session end failed:', err)
         )
       })
@@ -502,18 +576,14 @@ const processEvent = async (
     // ちょうど安全になったケースでも別の契機（次のセッション終了・操作
     // 完了・SW起動）が来るまで保留され続けてしまう。203はauto-syncの
     // トリガー対象ではない（バックアップすべきセッションデータが無い）
-    // ため`onGameSessionEnd()`は呼ばず、309と同じ`queueGeneration`鮮度
-    // チェックの後に`recheckPendingUpdate()`だけを呼ぶ（このイベント自体
-    // には`onGameSessionEnd()`のような遅い非同期処理が挟まらないため、
-    // 実際にここで世代がずれることは稀だが、同じガードを一貫して適用
-    // しておく）。
-    if (queueGeneration !== enqueueGeneration) {
-      console.log('[background] Skipping pending-update recheck after entry cancellation -- a newer event has already been queued, deferring to a later recheck trigger')
-    } else {
-      recheckPendingUpdate().catch(err =>
-        console.error('[background] Pending update recheck on entry cancellation failed:', err)
-      )
-    }
+    // ため`onGameSessionEnd()`は呼ばず、309と同じ`isStillFresh`ガード
+    // 付きで`recheckPendingUpdate()`だけを呼ぶ（このイベント自体には
+    // `onGameSessionEnd()`のような遅い非同期処理が挟まらないため、実際
+    // にここで世代がずれることは稀だが、同じガードを一貫して適用して
+    // おく）。
+    recheckPendingUpdate({ isStillFresh: () => activityGeneration === enqueueActivityGeneration }).catch(err =>
+      console.error('[background] Pending update recheck on entry cancellation failed:', err)
+    )
   } else if (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED || rawApiTypeId === ApiType.EVT_SESSION_DETAILS) {
     // フォールバックトリガー（docs/postmortems/2026-07-session-results-drop.md
     // 再発防止#3): 309単一トリガーのSPOF対策。新セッション開始時点は

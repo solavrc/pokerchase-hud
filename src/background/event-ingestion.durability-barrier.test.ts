@@ -423,4 +423,55 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
 
     expect(chrome.runtime.reload).toHaveBeenCalledTimes(1)
   })
+
+  // The companion "an event arrives DURING recheckPendingUpdate()'s own
+  // internal awaits (not just before it starts)" scenario (P1, codex
+  // review 2026-07-21, pass-5, "Guard reload rechecks through the async
+  // path") is covered as a direct, isolated unit test of
+  // recheckPendingUpdate()'s isStillFresh evaluation timing in
+  // update-manager.test.ts, rather than here: reproducing that exact race
+  // through the full event-ingestion.ts integration requires stalling
+  // chrome.storage.local.get() globally, which interacts badly with other
+  // concurrent callers (getRebuildAdvisoryState() inside setBadge()/
+  // clearBadge()) and reliably exhausts the test worker's heap. The
+  // property under test -- that isStillFresh is (re-)evaluated after
+  // recheckPendingUpdate()'s own awaits, not cached from before they
+  // started -- is fully covered without that hazard.
+
+  test('a noise event (202, non-application) queued while onGameSessionEnd() is running does NOT permanently suppress the session-end recheck (P2, codex review 2026-07-21, pass-5: "Don\'t let noise suppress session-end rechecks")', async () => {
+    await chrome.storage.local.set({ pendingUpdate: { pending: true, version: '9.9.9' } })
+
+    let resolveSync!: () => void
+    jest.spyOn(autoSyncService, 'onGameSessionEnd').mockImplementation(
+      () => new Promise<void>(resolve => { resolveSync = resolve })
+    )
+    ;(chrome.runtime.reload as jest.Mock).mockClear()
+
+    const pendingSessionResults = onMessageHandler(sessionResults(2900))
+
+    // Let the queue reach the mocked (still-unresolved) onGameSessionEnd()
+    // call before injecting noise.
+    for (let i = 0; i < 20; i++) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+
+    // A non-application "noise" event (202) arrives and gets queued while
+    // onGameSessionEnd() is still running. It neither marks the session
+    // active nor triggers any recheck of its own -- under the pre-pass-5
+    // "any newer queued message invalidates freshness" rule, this alone
+    // would have permanently suppressed the 309's recheck this cycle,
+    // leaving the pending update blocked until an unrelated operation
+    // completion or SW restart even though nothing about the session
+    // actually changed.
+    const noiseEvent = { ApiTypeId: 202, timestamp: 2950, Code: 0 }
+    const pendingNoise = onMessageHandler(noiseEvent)
+
+    resolveSync() // let onGameSessionEnd() settle
+    await pendingSessionResults
+    await pendingNoise
+
+    // The recheck must still have applied the (still) safe pending update
+    // -- the noise event must not have counted against freshness.
+    expect(chrome.runtime.reload).toHaveBeenCalledTimes(1)
+  })
 })

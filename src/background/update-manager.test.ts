@@ -14,6 +14,7 @@ import {
   markSessionInactive,
   getPendingUpdateState,
   initUpdateManager,
+  setIngestionDrainProvider,
   PENDING_UPDATE_STORAGE_KEY,
   __resetUpdateManagerStateForTests,
 } from './update-manager'
@@ -27,6 +28,11 @@ describe('update-manager', () => {
     __resetUpdateManagerStateForTests()
     setOperationState({ type: 'idle' })
     ;(autoSyncService as any)._isSyncing = false
+    // No ingestion-drain provider registered by default (mirrors "SW just
+    // started, registerEventIngestion() hasn't run yet") -- awaitIngestionDrain()
+    // must be a no-op in that state. Tests that specifically exercise the
+    // drain barrier register their own provider.
+    setIngestionDrainProvider(undefined as unknown as () => Promise<void>)
     await chrome.storage.local.set({
       [PENDING_UPDATE_STORAGE_KEY]: undefined,
       [REBUILD_ADVISORY_STORAGE_KEY]: undefined,
@@ -203,6 +209,125 @@ describe('update-manager', () => {
 
       await recheckPendingUpdate() // still unsafe (session active) -> stays pending, reasserts badge
       expect(chrome.action.setBadgeText).toHaveBeenCalledWith({ text: 'UPD' })
+    })
+  })
+
+  describe('recheckPendingUpdate isStillFresh option (P1, codex review 2026-07-21, pass-5: "Guard reload rechecks through the async path")', () => {
+    // event-ingestion.ts's 309/203-nested recheck can't use
+    // awaitIngestionDrain() (self-referential deadlock), so it passes an
+    // `isStillFresh` closure instead (an `activityGeneration` comparison).
+    // The critical property under test here is *timing*: recheckPendingUpdate()
+    // is itself async (getPendingUpdateState() awaits chrome.storage.local.get()
+    // before ever reaching isSafeToUpdate()/reload()), so a naive
+    // implementation could evaluate `isStillFresh` once, cache the result,
+    // and use the stale cached value at the actual reload() commit point.
+    // These tests flip the callback's return value via a timer that only
+    // fires once recheckPendingUpdate() has itself yielded (awaited), so a
+    // pass requires the callback to be *called* after that await, not
+    // pre-evaluated before it.
+    it('is evaluated AFTER recheckPendingUpdate()\'s own internal awaits, not cached from before they started', async () => {
+      markSessionActive() // unsafe -- handleUpdateAvailable() must persist as pending, not apply immediately
+      await handleUpdateAvailable({ version: '5.2.0' })
+      jest.clearAllMocks()
+      markSessionInactive() // session ends -- now safe by the time recheckPendingUpdate() runs
+
+      let isFreshValue = true
+      // Queued as a microtask BEFORE calling recheckPendingUpdate() below,
+      // so it's strictly ahead of that call's own internal awaits
+      // (getPendingUpdateState() -> chrome.storage.local.get(), themselves
+      // microtask-based) in FIFO microtask-queue order. It will flip
+      // isFreshValue to false by the time recheckPendingUpdate() resumes
+      // from its first await -- so a pass here requires isStillFresh() to
+      // actually be *called* at that later point, not evaluated/cached
+      // synchronously before recheckPendingUpdate() was even invoked.
+      Promise.resolve().then(() => { isFreshValue = false })
+
+      await recheckPendingUpdate({ isStillFresh: () => isFreshValue })
+
+      expect(chrome.runtime.reload).not.toHaveBeenCalled()
+      const state = await getPendingUpdateState()
+      expect(state.pending).toBe(true) // deferred, not lost
+    })
+
+    it('still applies when isStillFresh stays true throughout (control)', async () => {
+      markSessionActive() // unsafe -- handleUpdateAvailable() must persist as pending, not apply immediately
+      await handleUpdateAvailable({ version: '5.2.0' })
+      jest.clearAllMocks()
+      markSessionInactive() // session ends -- now safe by the time recheckPendingUpdate() runs
+
+      await recheckPendingUpdate({ isStillFresh: () => true })
+
+      expect(chrome.runtime.reload).toHaveBeenCalledTimes(1)
+      const state = await getPendingUpdateState()
+      expect(state.pending).toBe(false)
+    })
+
+    it('behaves exactly as before (no extra gating) when isStillFresh is omitted', async () => {
+      markSessionActive() // unsafe -- handleUpdateAvailable() must persist as pending, not apply immediately
+      await handleUpdateAvailable({ version: '5.2.0' })
+      jest.clearAllMocks()
+      markSessionInactive() // session ends -- now safe by the time recheckPendingUpdate() runs
+
+      await recheckPendingUpdate()
+
+      expect(chrome.runtime.reload).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('handleUpdateAvailable persists BEFORE draining (P2, codex review 2026-07-21, pass-5: "Persist pending updates before draining ingestion")', () => {
+    it('records the pending update in storage (and sets the badge) BEFORE awaitIngestionDrain() resolves, so a SW restart mid-drain would not lose it', async () => {
+      // Return a STABLE promise reference until resolved (mirroring how
+      // event-ingestion.ts's real `ingestionQueue` only changes reference
+      // when a genuinely new message arrives) -- awaitIngestionDrain()'s
+      // loop-until-stable algorithm (previous round's fix) would otherwise
+      // never converge against a provider that hands back a fresh,
+      // never-resolving promise on every call.
+      let resolveDrain!: () => void
+      const stalledTail = new Promise<void>(resolve => { resolveDrain = resolve })
+      setIngestionDrainProvider(() => stalledTail)
+
+      // handleUpdateAvailable() is fire-and-forget from
+      // initUpdateManager()'s onUpdateAvailable listener in production --
+      // if the Service Worker is suspended/killed while the drain below is
+      // still pending, this whole promise chain vanishes with it. The
+      // pending-update record must already be durably written by then.
+      const handlePromise = handleUpdateAvailable({ version: '5.2.0' })
+
+      // Let the call reach (and stall on) the never-resolving drain.
+      for (let i = 0; i < 20; i++) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+
+      const stateWhileDraining = await getPendingUpdateState()
+      expect(stateWhileDraining.pending).toBe(true)
+      expect(stateWhileDraining.version).toBe('5.2.0')
+      expect(chrome.action.setBadgeText).toHaveBeenCalledWith({ text: 'UPD' })
+      // Must not have reloaded yet either -- the safety check itself is
+      // still gated behind the (still-pending) drain.
+      expect(chrome.runtime.reload).not.toHaveBeenCalled()
+
+      resolveDrain()
+      await handlePromise
+      setIngestionDrainProvider(undefined as unknown as () => Promise<void>)
+    })
+
+    it('still applies immediately once the drain resolves and the session is safe', async () => {
+      markSessionInactive()
+      let resolveDrain!: () => void
+      const stalledTail = new Promise<void>(resolve => { resolveDrain = resolve })
+      setIngestionDrainProvider(() => stalledTail)
+
+      const handlePromise = handleUpdateAvailable({ version: '5.2.0' })
+      for (let i = 0; i < 20; i++) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+      resolveDrain()
+      await handlePromise
+
+      expect(chrome.runtime.reload).toHaveBeenCalledTimes(1)
+      const state = await getPendingUpdateState()
+      expect(state.pending).toBe(false)
+      setIngestionDrainProvider(undefined as unknown as () => Promise<void>)
     })
   })
 

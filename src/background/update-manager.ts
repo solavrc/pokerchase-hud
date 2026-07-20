@@ -163,7 +163,8 @@ const MAX_DRAIN_ITERATIONS = 1000
  * 呼ぶ`recheckPendingUpdate()`はこのバリアを使わない（使うと自己参照で
  * デッドロックする——`ingestionQueue`はその309/203自身の処理が完了する
  * まで解決しないため）。その経路は別の機構（`event-ingestion.ts`の
- * `queueGeneration`比較）で同種の安全性を確保している——詳細は
+ * `activityGeneration`比較、`recheckPendingUpdate()`の`isStillFresh`
+ * オプション経由）で同種の安全性を確保している——詳細は
  * event-ingestion.tsの309/203ブロックのコメント参照。
  */
 export const awaitIngestionDrain = async (): Promise<void> => {
@@ -246,36 +247,65 @@ const clearBadge = async (): Promise<void> => {
  * SAFEなら即座に適用、そうでなければ保留状態を記録してバッジを出す。
  */
 export const handleUpdateAvailable = async (details: { version: string }): Promise<void> => {
+  // まず保留状態を永続化してからドレインする（P2, codexレビュー指摘
+  // 2026-07-21, pass-5, "Persist pending updates before draining
+  // ingestion"）: この関数は`chrome.runtime.onUpdateAvailable`リスナー
+  // からfire-and-forgetで呼ばれる（`initUpdateManager()`参照）。下の
+  // `awaitIngestionDrain()`はキューが詰まっていれば長時間かかりうるが、
+  // その待機中にService Workerがサスペンド/強制終了されると、この関数
+  // 自体のPromiseチェーンごと消え去り、どこにも保留記録が残らない
+  // （SW再起動時契機の`recheckPendingUpdate()`は`pendingUpdate`が
+  // 無ければ何もすることが無く、ダウンロード済みの更新が事実上失われる）。
+  // 先に「保留中」として記録しておけば、途中でSWが落ちてもSW再起動時に
+  // 必ず拾われる。安全であることが分かった場合のクリアは末尾で行う。
+  await setPendingUpdateState({ pending: true, version: details.version, detectedAt: Date.now() })
+  await setBadge()
+
   // キュー・ドレイン・バリア（本ファイル冒頭のSAFE定義コメント参照）:
   // `onUpdateAvailable`はevent-ingestion.tsのキューとは無関係な任意の
   // タイミングで発火しうるため、判定前に必ず待つ。
   await awaitIngestionDrain()
 
-  if (isSafeToUpdate()) {
-    console.log(`[update-manager] Update ${details.version} available and safe -- applying immediately`)
-    await clearPendingUpdateState()
-    await clearBadge()
-    chrome.runtime.reload()
+  if (!isSafeToUpdate()) {
+    console.log(`[update-manager] Update ${details.version} available but unsafe (${describeUnsafeReason()}) -- pending`)
     return
   }
 
-  console.log(`[update-manager] Update ${details.version} available but unsafe (${describeUnsafeReason()}) -- pending`)
-  await setPendingUpdateState({ pending: true, version: details.version, detectedAt: Date.now() })
-  await setBadge()
+  // ここから`chrome.runtime.reload()`まで`await`を一切挟まない（P1,
+  // codexレビュー指摘 2026-07-21, pass-5, "Guard reload rechecks through
+  // the async path"）。詳細は`recheckPendingUpdate()`の同種コメント参照。
+  console.log(`[update-manager] Update ${details.version} available and safe -- applying immediately`)
+  chrome.runtime.reload()
+  clearPendingUpdateState().catch(err => console.error('[update-manager] Failed to clear pending update state after reload:', err))
+  clearBadge().catch(err => console.error('[update-manager] Failed to clear badge after reload:', err))
 }
 
 /**
  * 保留中アップデートの安全性を再チェックし、SAFEになっていれば適用する。
- * session end / operation completion / SW startup の3箇所から呼ばれる。
+ * session end / entry cancellation / operation completion / SW startup の
+ * 4箇所から呼ばれる。
  *
  * キュー・ドレイン・バリアはこの関数自身の中には置かない（意図的）:
- * event-ingestion.tsの309自身の`processEvent`内から直接呼ぶ経路が
- * あり、そこで`awaitIngestionDrain()`を呼ぶとその309自身を含む
+ * event-ingestion.tsの309/203自身の`processEvent`内から直接呼ぶ経路が
+ * あり、そこで`awaitIngestionDrain()`を呼ぶとその309/203自身を含む
  * `ingestionQueue`の決着を待つことになり自己参照でデッドロックする。
  * 呼び出し元（operation-complete契機・SW起動時契機）側で個別に
  * `awaitIngestionDrain()`してから呼ぶ（`initUpdateManager()`参照）。
+ *
+ * `options.isStillFresh`（P1, codexレビュー指摘 2026-07-21, pass-5,
+ * "Guard reload rechecks through the async path"）: 呼び出し元固有の
+ * 追加鮮度チェック。event-ingestion.tsの309/203自身の処理から呼ぶ場合、
+ * 「自分の到着以降にセッション状態へ影響しうる新しいイベントが既に
+ * キューへ積まれていないか」（`activityGeneration`比較）を渡す——この
+ * 経路は`awaitIngestionDrain()`を使えない（自己参照デッドロック）ため、
+ * 同期的な世代比較で代替する。下の「原子的な最終確認」の一部として、
+ * `isSafeToUpdate()`と**同じタイミングで**（間に`await`を挟まず）評価する
+ * ことが重要——この関数はこの2つのawait（`getPendingUpdateState()`と、
+ * バージョン一致チェック内の各種await）自体が「その間に新しいイベントが
+ * 到着・処理されうる隙間」であるため、呼び出し前に1回チェックするだけ
+ * では不十分（それ自体がこのpass-5指摘の内容）。
  */
-export const recheckPendingUpdate = async (): Promise<void> => {
+export const recheckPendingUpdate = async (options?: { isStillFresh?: () => boolean }): Promise<void> => {
   const state = await getPendingUpdateState()
   if (!state.pending) return
 
@@ -292,16 +322,34 @@ export const recheckPendingUpdate = async (): Promise<void> => {
     return
   }
 
-  if (isSafeToUpdate()) {
-    console.log('[update-manager] Pending update is now safe to apply -- applying')
-    await clearPendingUpdateState()
-    await clearBadge()
-    chrome.runtime.reload()
+  if (!isSafeToUpdate()) {
+    // まだunsafe: バッジを再アサート（rebuild-advisoryが解消済みなら表示に切り替わる）
+    await setBadge()
     return
   }
 
-  // まだunsafe: バッジを再アサート（rebuild-advisoryが解消済みなら表示に切り替わる）
-  await setBadge()
+  // 原子的な最終確認（P1, codexレビュー指摘 2026-07-21, pass-5,
+  // "Guard reload rechecks through the async path"）: ここまでの
+  // `await`（`getPendingUpdateState()`等）は、その間に新しいイベントが
+  // 到着・処理されうる隙間である。この直後から`chrome.runtime.reload()`
+  // までの間に一切`await`を挟まないことで、最終チェックと実際のreloadを
+  // 原子的（隣接）にする——`isSafeToUpdate()`と`options.isStillFresh`を
+  // 同じタイミングで評価するのが肝要。
+  if (options?.isStillFresh && !options.isStillFresh()) {
+    console.log('[update-manager] Pending update recheck aborted -- a newer session-activity-relevant event was already queued, deferring to a later recheck trigger')
+    await setBadge()
+    return
+  }
+
+  console.log('[update-manager] Pending update is now safe to apply -- applying')
+  chrome.runtime.reload()
+  // 状態クリアはreload後にfire-and-forgetする: 上のreload()呼び出し直前に
+  // `await`を挟まないことがこの関数の安全性の核なので、クリア処理は
+  // reload()の後段へ回す。仮にSWがreload()で即座に終了してクリアが
+  // 完了しなくても、SW再起動後の`recheckPendingUpdate()`（起動時契機）が
+  // 上のバージョン一致ブランチで確実に片付けるため実害は無い。
+  clearPendingUpdateState().catch(err => console.error('[update-manager] Failed to clear pending update state after reload:', err))
+  clearBadge().catch(err => console.error('[update-manager] Failed to clear badge after reload:', err))
 }
 
 /**
@@ -321,8 +369,11 @@ export const applyUpdateNow = async (): Promise<ApplyUpdateResult> => {
     return { applied: false, reason }
   }
 
-  await clearPendingUpdateState()
+  // ここから`chrome.runtime.reload()`まで`await`を一切挟まない（P1,
+  // codexレビュー指摘 2026-07-21, pass-5）。詳細は`recheckPendingUpdate()`
+  // の同種コメント参照。
   chrome.runtime.reload()
+  clearPendingUpdateState().catch(err => console.error('[update-manager] Failed to clear pending update state after reload:', err))
   return { applied: true }
 }
 
