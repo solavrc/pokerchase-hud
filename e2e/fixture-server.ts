@@ -35,6 +35,8 @@ export interface FixtureServerHandle {
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.jpg': 'image/jpeg',
+  '.png': 'image/png',
 }
 
 const loadEvents = (fixturePath: string): unknown[] =>
