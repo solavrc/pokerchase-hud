@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import Popup from './Popup'
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import { defaultStatDisplayConfigs } from '../stats'
+import { POPUP_THEME_LOCAL_STORAGE_KEY } from './popup/popup-theme-storage'
 
 // Mock chrome APIs
 const mockChromeRuntimeSendMessage = jest.fn()
@@ -74,6 +75,7 @@ describe('Popup', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
+    window.localStorage.removeItem(POPUP_THEME_LOCAL_STORAGE_KEY)
 
     // Default mock implementations: Popupはフラットな`options`キーを読む
     syncData = {
@@ -179,6 +181,59 @@ describe('Popup', () => {
     await waitForAsyncOperations()
 
     expect(screen.getByRole('radio', { name: 'ダーク' })).toBeChecked()
+  })
+
+  it('同期キャッシュのテーマで即時描画し、storage.syncの正本を描画後に反映する', async () => {
+    let resolveThemeRead: ((result: Record<string, any>) => void) | undefined
+    mockChromeStorageGet.mockImplementation((keys, callback) => {
+      if (keys === 'popupTheme') {
+        resolveThemeRead = callback
+        return
+      }
+      const keyList = Array.isArray(keys) ? keys : [keys]
+      callback(keyList.reduce((acc: Record<string, any>, key: string) => ({ ...acc, [key]: syncData[key] }), {}))
+    })
+
+    render(<Popup initialPopupThemeMode="light" />)
+
+    // The popup is usable before chrome.storage.sync answers.
+    expect(screen.getByRole('radio', { name: 'ライト' })).toBeChecked()
+    expect(resolveThemeRead).toBeDefined()
+
+    act(() => {
+      resolveThemeRead?.({ popupTheme: 'dark' })
+    })
+
+    await waitFor(() => {
+      expect(screen.getByRole('radio', { name: 'ダーク' })).toBeChecked()
+    })
+  })
+
+  it('起動時のstorage.sync読込中に選んだテーマを古い応答で巻き戻さない', async () => {
+    let resolveThemeRead: ((result: Record<string, any>) => void) | undefined
+    mockChromeStorageGet.mockImplementation((keys, callback) => {
+      if (keys === 'popupTheme') {
+        resolveThemeRead = callback
+        return
+      }
+      const keyList = Array.isArray(keys) ? keys : [keys]
+      callback(keyList.reduce((acc: Record<string, any>, key: string) => ({ ...acc, [key]: syncData[key] }), {}))
+    })
+
+    render(<Popup initialPopupThemeMode="light" />)
+    expect(screen.getByRole('radio', { name: 'ライト' })).toBeChecked()
+
+    await userEvent.click(screen.getByRole('radio', { name: 'ダーク' }))
+    expect(screen.getByRole('radio', { name: 'ダーク' })).toBeChecked()
+    expect(window.localStorage.getItem(POPUP_THEME_LOCAL_STORAGE_KEY)).toBe('dark')
+
+    await act(async () => {
+      resolveThemeRead?.({ popupTheme: 'light' })
+      await Promise.resolve()
+    })
+
+    expect(screen.getByRole('radio', { name: 'ダーク' })).toBeChecked()
+    expect(window.localStorage.getItem(POPUP_THEME_LOCAL_STORAGE_KEY)).toBe('dark')
   })
 
   it('旧storageのuiConfigにhudDisplayMode/hudColorCodingキーが無いユーザーはコンパクト+カラーONで復元される（グレースフルなマイグレーション, #143）', async () => {

@@ -1,4 +1,5 @@
 import {
+  loadCachedPopupThemeMode,
   loadPopupThemeMode,
   savePopupThemeMode,
   POPUP_THEME_STORAGE_KEY,
@@ -46,6 +47,22 @@ describe('popup-theme-storage', () => {
   })
 
   describe('localStorage ミラー（popup-boot.ts が次回起動時に同期的に読む）', () => {
+    it('初回描画では localStorage を同期的に読み、chrome.storage.sync を待たない', () => {
+      window.localStorage.setItem(POPUP_THEME_LOCAL_STORAGE_KEY, 'dark')
+      const syncGet = chrome.storage.sync.get as jest.Mock
+      const callsBefore = syncGet.mock.calls.length
+
+      expect(loadCachedPopupThemeMode()).toBe('dark')
+      expect(syncGet).toHaveBeenCalledTimes(callsBefore)
+    })
+
+    it('同期キャッシュが未設定または不正なら auto で即時描画できる', () => {
+      expect(loadCachedPopupThemeMode()).toBe('auto')
+
+      window.localStorage.setItem(POPUP_THEME_LOCAL_STORAGE_KEY, 'sepia')
+      expect(loadCachedPopupThemeMode()).toBe('auto')
+    })
+
     it('savePopupThemeMode は localStorage にも同じ値を書き込む', async () => {
       await savePopupThemeMode('dark')
       expect(window.localStorage.getItem(POPUP_THEME_LOCAL_STORAGE_KEY)).toBe('dark')
