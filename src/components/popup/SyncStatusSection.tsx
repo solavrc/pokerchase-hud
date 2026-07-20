@@ -99,7 +99,7 @@ export const SyncStatusSection = ({
         )}
       </Box>
       {syncState.error && (
-        <Typography variant="caption" color="error" display="block" sx={{ mt: 0.5 }}>
+        <Typography variant="caption" color="error" sx={{ display: 'block', mt: 0.5 }}>
           {syncState.error}
         </Typography>
       )}
