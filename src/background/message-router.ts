@@ -194,14 +194,25 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         // 一致しないと判明している場合だけ、この追加リフレッシュを
         // スキップする（lineup-identityチェック）。setBattleTypeFilter()の
         // recalculateStats()が別途ヒーロー在籍の統計を正しく再計算・
-        // ブロードキャストするため、スキップしても表示が欠けることはない。
-        // service.latestEvtDealが未設定（この関数のテストのように現実には
-        // 起きない合成状態、または本当にまだ一度もヒーロー在籍dealを見て
-        // いない場合）は「不一致と確定できない」として従来通り実行する
-        // （デフォルトは安全側＝現状維持）。
+        // ブロードキャストするため、スキップしても表示が欠けることはない
+        // -- ただしそれは recalculateStats() が実際に走る場合に限る。
+        // read-entity-stream.ts の recalculateStats() は
+        // `!playerId || !latestEvtDeal` で早期returnするため、
+        // service.latestEvtDealはあるがservice.playerIdがまだ不明な
+        // （復元直後の破損/中間状態）場合、recalculateStats()は何も
+        // ブロードキャストしない。そこでこの追加リフレッシュまでスキップ
+        // すると、フィルター変更がHUDに一切反映されなくなってしまう
+        // （codex #188レビュー、2026-07-20指摘）。そのため「スキップして
+        // 良い」と判定するには、不一致に加えて service.playerId も
+        // 存在する（＝recalculateStats()が実際に代替のブロードキャストを
+        // 行える）ことを要求する。playerId未定義またはlatestEvtDeal未定義
+        // （この関数のテストのように現実には起きない合成状態を含む）の
+        // 場合は「不一致と確定できない／代替を保証できない」として従来通り
+        // 実行する（デフォルトは安全側＝現状維持）。
         const lastKnownLineup = lastKnownStats.map(stat => stat.playerId)
         const heroSeatUserIds = service.latestEvtDeal?.SeatUserIds
-        const lineupMismatchesHeroDeal = heroSeatUserIds !== undefined && (
+        const heroAnchoredRecalcCanRun = service.playerId !== undefined && heroSeatUserIds !== undefined
+        const lineupMismatchesHeroDeal = heroAnchoredRecalcCanRun && (
           lastKnownLineup.length !== heroSeatUserIds.length ||
           lastKnownLineup.some((playerId, index) => playerId !== heroSeatUserIds[index])
         )

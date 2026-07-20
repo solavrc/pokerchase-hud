@@ -161,4 +161,30 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
 
     expect(writeSpy).toHaveBeenCalledWith([2])
   })
+
+  test('playerId unknown even though latestEvtDeal is set (restored/corrupt intermediate state): recalculateStats() cannot run, so the refresh still fires as the only broadcast (codex #188 review)', async () => {
+    // A state read-entity-stream.ts's recalculateStats() can't act on: it
+    // early-returns on `!playerId || !latestEvtDeal` (read-entity-stream.ts),
+    // so if this refresh were skipped too, a filter change would silently
+    // stop updating the visible HUD stats entirely.
+    service.playerId = undefined
+    service.latestEvtDeal = HERO_DEAL
+    // A mismatching lineup by SeatUserIds -- if the mismatch check alone
+    // gated the skip (ignoring whether recalc can actually run), this would
+    // wrongly be dropped.
+    setLastKnownStats([
+      { playerId: 10, statResults: [] } as any,
+      { playerId: 20, statResults: [] } as any,
+    ])
+
+    const sendResponse = jest.fn()
+    messageListener(
+      { action: 'updateBattleTypeFilter', filterOptions: FILTER_OPTIONS } as unknown as ChromeMessage,
+      {} as chrome.runtime.MessageSender,
+      sendResponse
+    )
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(writeSpy).toHaveBeenCalledWith([10, 20])
+  })
 })
