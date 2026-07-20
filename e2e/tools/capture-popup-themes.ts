@@ -23,8 +23,9 @@
  * works on any checkout instead of only the workstation that authored this
  * script.
  */
-import { mkdirSync } from 'node:fs'
-import { launchHarness } from '../harness.ts'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { ensureCompositorKeepalive, launchHarness } from '../harness.ts'
+import type { Page } from 'puppeteer-core'
 
 const OUT_DIR = process.argv[2] ?? new URL('../out/popup-themes/', import.meta.url).pathname
 mkdirSync(OUT_DIR, { recursive: true })
@@ -40,6 +41,37 @@ const openPopupWithRetry = async (h: Awaited<ReturnType<typeof launchHarness>>) 
     }
   }
   throw lastErr
+}
+
+/** Reads a PNG buffer's pixel height straight out of its IHDR chunk (bytes 20-23, big-endian). Avoids pulling in an image-decoding dependency just to sanity-check a screenshot. */
+const pngHeight = (buf: Uint8Array): number =>
+  (buf[20]! << 24) | (buf[21]! << 16) | (buf[22]! << 8) | buf[23]!
+
+/**
+ * `page.screenshot({ fullPage: true })` on this popup page has been observed
+ * to intermittently return a frame sized to the *viewport* (900 CSS px tall)
+ * instead of the full scrollable content (~1350px+) -- same symptom as the
+ * documented compositor-stall class of flakiness (e2e/README.md "Flaky
+ * bits"), just manifesting as a truncated frame instead of a hung capture.
+ * Re-asserting the keepalive alone did not make it fully deterministic in
+ * testing, so this additionally verifies the captured PNG's actual height
+ * against the page's real content height (via CDP `Page.getLayoutMetrics`)
+ * and retries (fresh keepalive re-assert + short wait) until they agree.
+ */
+const screenshotFullPageWithRetry = async (page: Page, maxAttempts = 5): Promise<Uint8Array> => {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await ensureCompositorKeepalive(page)
+    const metrics = await (page as any)._client().send('Page.getLayoutMetrics')
+    const expectedHeightPx = Math.round(metrics.cssContentSize.height * (page.viewport()?.deviceScaleFactor ?? 1))
+    const buf = await page.screenshot({ fullPage: true })
+    const actualHeightPx = pngHeight(buf as Uint8Array)
+    // Small tolerance for rounding; a truncated capture is off by hundreds
+    // of px (an entire section's worth), not a rounding error.
+    if (actualHeightPx >= expectedHeightPx - 4) return buf as Uint8Array
+    console.log(`[capture] retry ${attempt}/${maxAttempts}: screenshot height ${actualHeightPx}px < expected ${expectedHeightPx}px (stale/truncated compositor frame)`)
+    await new Promise((r) => setTimeout(r, 300))
+  }
+  throw new Error(`screenshotFullPageWithRetry: gave up after ${maxAttempts} attempts`)
 }
 
 const capture = async (mode: 'dark' | 'light', label: string) => {
@@ -58,9 +90,12 @@ const capture = async (mode: 'dark' | 'light', label: string) => {
     )
     await popupPage.setViewport({ width: 420, height: 900, deviceScaleFactor: 2 })
     await popupPage.reload({ waitUntil: 'networkidle0' })
-    // Give MUI a beat to finish its first paint/transition-free render.
+    // reload() wipes the anti-stall keepalive that openPopup() injected
+    // pre-reload -- screenshotFullPageWithRetry re-asserts it itself, but
+    // give MUI a beat first to finish its first paint/transition-free render.
     await new Promise((r) => setTimeout(r, 300))
-    await popupPage.screenshot({ path: `${OUT_DIR}/${label}-full.png` as `${string}.png`, fullPage: true })
+    const buf = await screenshotFullPageWithRetry(popupPage)
+    writeFileSync(`${OUT_DIR}/${label}-full.png`, buf)
     console.log(`[capture] wrote ${OUT_DIR}/${label}-full.png`)
   } finally {
     await h.close()

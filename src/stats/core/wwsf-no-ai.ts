@@ -18,7 +18,9 @@ import { formatPercentage } from '../utils'
 export const wwsfNoAiStat: StatDefinition = {
   id: 'wwsfNoAi',
   name: 'WWSFa',
-  description: 'フロップ以降の勝率（プリフロップオールイン除外、意思決定ベースの変種）',
+  // wwsf.ts側の記法「フロップ以降の勝率（プリフロップオールイン含む）」と
+  // 対で読めるよう、括弧内は除外条件のみに揃える(理由はwtsd-no-ai.ts参照)。
+  description: 'フロップ以降の勝率（プリフロップオールイン除外）',
   helpText: 'フロップを見た後に勝った割合(プリフロップオールイン除外)',
   enabled: false,
   calculate: ({ actions, winningHandIds }) => {

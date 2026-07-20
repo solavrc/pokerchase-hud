@@ -153,7 +153,7 @@ describe('StatDisplay', () => {
 
       render(<StatDisplay displayStats={stats} formatValue={mockFormatValue} />)
 
-      const expectedTitle = `${dynamicTooltip}\n全員着席した卓に限定したVPIP。卓が縮小するほどVPIPは自然に上がるため、比較しやすいよう絞った指標(HUD独自指標)`
+      const expectedTitle = `${dynamicTooltip}\n全員着席したテーブルに限定したVPIP。テーブルが縮小するほどVPIPは自然に上がるため、比較しやすいよう絞った指標`
       expect(screen.getByText('35.2% (n=1252)')).toHaveAttribute('title', expectedTitle)
     })
   })

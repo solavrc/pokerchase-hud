@@ -264,6 +264,22 @@ and DOM dump on any failure. Checks:
   pre-screenshot re-assert self-heals page reloads and sessions started by
   an older build. Discovered and verified live 2026-07-20 during a
   README/store screenshot session.
+- **Same compositor issue, different symptom -- silently truncated
+  `fullPage` screenshots**: `e2e/tools/capture-popup-themes.ts` seeds
+  `chrome.storage.sync` then calls `popupPage.reload()` before
+  screenshotting, and `reload()` wipes the keepalive element injected at
+  `openPopup()` time (fresh document). Without a fresh re-assert *after* the
+  reload, `page.screenshot({ fullPage: true })` on the reloaded page
+  intermittently (not every run) captures a frame sized to the *viewport*
+  instead of the full scrollable content height -- `Page.getLayoutMetrics`
+  reports the correct full content height throughout, so this isn't a
+  layout bug, just a stale/short compositor frame. Fix (2026-07 popup-polish
+  session): re-assert `ensureCompositorKeepalive` (now exported from
+  `harness.ts`) right after the reload, *and* verify the captured PNG's
+  actual height (read straight from its IHDR chunk, no image-decoding
+  dependency needed) against the expected content height before accepting
+  it, retrying a few times if they disagree -- the re-assert alone was not
+  reliably sufficient in testing, only the verify+retry loop was.
 - The `document_idle` WebSocket-patch race described above -- mitigated
   with a bounded poll on an observable effect (`window.WebSocket` no
   longer being native code), not a fixed sleep.

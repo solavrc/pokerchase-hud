@@ -104,10 +104,19 @@ const findGamePage = async (browser: Browser, fixtureOrigin: string): Promise<Pa
  * before each `screenshot()` so it self-heals across page reloads and
  * `attachHarness` sessions started by an older build. See e2e/README.md
  * "Flaky bits".
+ *
+ * Exported (not just used internally) because a `reload()` wipes the
+ * injected style/div -- any caller that reloads a harness-owned page and
+ * then screenshots it directly (bypassing `screenshot()`'s own re-assert,
+ * e.g. `e2e/tools/capture-popup-themes.ts`, which needs `fullPage: true`
+ * that `screenshot()` doesn't support) must re-call this after the reload
+ * or risk a stale/truncated `fullPage` capture -- observed in practice as
+ * a `fullPage` screenshot silently sized to the viewport instead of the
+ * full scrollHeight, not just the documented hang.
  */
 const COMPOSITOR_KEEPALIVE_ID = '__e2e-compositor-keepalive'
 
-const ensureCompositorKeepalive = async (page: Page): Promise<void> => {
+export const ensureCompositorKeepalive = async (page: Page): Promise<void> => {
   await page.evaluate((id: string) => {
     if (document.getElementById(id)) return
     const style = document.createElement('style')
