@@ -257,6 +257,7 @@ export const ImportExportSection = ({
       setImportTotal(0)
       setImportDuplicates(0)
       setImportSuccess(0)
+      setOperationStatus('')
       setImportStatus('インポート開始...')
       setImportStartTime(Date.now())
 
@@ -308,6 +309,7 @@ export const ImportExportSection = ({
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      setOperationStatus('')
       setImportStatus(`インポート失敗: ${message}`)
       setImportProgress(0)
       if (fileInputRef.current) {

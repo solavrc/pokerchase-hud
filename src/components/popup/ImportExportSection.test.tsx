@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { useRef, useState } from 'react'
 import userEvent from '@testing-library/user-event'
 import { ImportExportSection } from './ImportExportSection'
 import { REBUILD_ADVISORY_STORAGE_KEY } from '../../background/rebuild-advisory'
@@ -21,6 +22,20 @@ const defaultProps = {
   setImportDuplicates: noop,
   setImportSuccess: noop,
   setImportStartTime: noop,
+}
+
+const ImportStatusHarness = () => {
+  const [importStatus, setImportStatus] = useState('')
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  return (
+    <ImportExportSection
+      {...defaultProps}
+      importStatus={importStatus}
+      fileInputRef={fileInputRef}
+      setImportStatus={setImportStatus}
+    />
+  )
 }
 
 describe('ImportExportSection - rebuild advisory banner', () => {
@@ -121,7 +136,7 @@ describe('ImportExportSection - rebuild advisory banner', () => {
     await screen.findByText(/データ再構築」を実行してください/)
 
     // Simulate resolveAdvisory() writing storage while the popup is open
-    emitStorageChange({ acknowledgedVersion: 1 })
+    act(() => emitStorageChange({ acknowledgedVersion: 1 }))
 
     await waitFor(() => {
       expect(screen.queryByText(/データ再構築」を実行してください/)).not.toBeInTheDocument()
@@ -129,7 +144,6 @@ describe('ImportExportSection - rebuild advisory banner', () => {
   })
 
   it('stops chunk upload and shows the background error when import initialization is rejected', async () => {
-    const setImportStatus = jest.fn()
     mockSendMessage.mockImplementation((message: { action?: string }, callback?: (response: unknown) => void) => {
       if (typeof callback === 'function') {
         callback({})
@@ -141,17 +155,25 @@ describe('ImportExportSection - rebuild advisory banner', () => {
       return Promise.resolve({ success: true })
     })
 
-    const { container } = render(
-      <ImportExportSection {...defaultProps} setImportStatus={setImportStatus} />
-    )
+    const { container } = render(<ImportStatusHarness />)
+    const handleRuntimeMessage = (chrome.runtime.onMessage.addListener as jest.Mock).mock.calls[0][0]
+    act(() => {
+      handleRuntimeMessage({
+        action: 'exportProgress',
+        state: 'completed',
+        format: 'json',
+        message: 'エクスポート完了'
+      })
+    })
+    expect(screen.getByText('エクスポート完了')).toBeInTheDocument()
+
     const input = container.querySelector('input[type="file"]') as HTMLInputElement
     const file = new File(['{}'], 'data.ndjson', { type: 'application/x-ndjson' })
 
     fireEvent.change(input, { target: { files: [file] } })
 
-    await waitFor(() => {
-      expect(setImportStatus).toHaveBeenCalledWith('インポート失敗: 別の処理が実行中です')
-    })
+    expect(await screen.findByText('インポート失敗: 別の処理が実行中です')).toBeInTheDocument()
+    expect(screen.queryByText('エクスポート完了')).not.toBeInTheDocument()
     const actions = mockSendMessage.mock.calls.map(([message]) => message.action)
     expect(actions).toContain('importDataInit')
     expect(actions).not.toContain('importDataChunk')
