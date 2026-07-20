@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react'
 import type { StatResult } from '../../types/stats'
 import { PlayerTypeIcons } from './PlayerTypeIcons'
 import { PositionalPanelTrigger } from './PositionalPanelTrigger'
+import { RecentHandsPanelTrigger } from './RecentHandsPanelTrigger'
 
 interface PlayerPotOdds {
   spr?: number
@@ -23,6 +24,10 @@ interface HudHeaderProps {
   isPositionalPanelOpen?: boolean
   /** ドリルダウンパネルの開閉トグル。渡された時のみトリガーを表示する */
   onTogglePositionalPanel?: () => void
+  /** 直近ハンド・ドリルダウンパネルが開いているか（未指定ならトリガー自体を表示しない） */
+  isRecentHandsPanelOpen?: boolean
+  /** 直近ハンド・ドリルダウンパネルの開閉トグル。渡された時のみトリガーを表示する */
+  onToggleRecentHandsPanel?: () => void
   /** プレイヤータイプ分類アイコン（PlayerTypeIcons）に渡す、フィルタ前の全statResults */
   statResults?: StatResult[]
 }
@@ -52,7 +57,7 @@ const styles = {
   } as CSSProperties,
 }
 
-export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, statResults }: HudHeaderProps) => {
+export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, isRecentHandsPanelOpen, onToggleRecentHandsPanel, statResults }: HudHeaderProps) => {
   const hasPotOdds = playerPotOdds?.potOdds && playerPotOdds.potOdds.call > 0
   const hasSpr = playerPotOdds?.spr !== undefined
   
@@ -83,6 +88,14 @@ export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPosition
               playerId={playerId}
               isOpen={isPositionalPanelOpen}
               onToggle={onTogglePositionalPanel}
+            />
+          )}
+          {onToggleRecentHandsPanel && (
+            <RecentHandsPanelTrigger
+              playerName={playerName}
+              playerId={playerId}
+              isOpen={isRecentHandsPanelOpen}
+              onToggle={onToggleRecentHandsPanel}
             />
           )}
         </div>

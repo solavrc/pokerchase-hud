@@ -126,7 +126,10 @@ export type {
   PositionalStatsBucketId,
   PositionalStatId,
   PositionalStatsBucket,
-  PositionalStatsResult
+  PositionalStatsResult,
+  PreflopLine,
+  RecentHandEntry,
+  RecentHandsResult
 } from './stats'
 
 // Error handling types

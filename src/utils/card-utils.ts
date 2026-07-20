@@ -93,3 +93,14 @@ export function formatCards(cards: number[], options: FormatOptions = {}): strin
 export function formatCardsArray(cards: number[], options: FormatOptions = {}): string[] {
   return cards.map(card => formatCard(card, options)).filter(Boolean)
 }
+
+/**
+ * Whether a card number's suit is red (h/d) as opposed to black (s/c).
+ * Used by suit-colored card displays (e.g. RecentHandsPanel). Accepts both
+ * the raw 0-51 card number and a single formatted card string (e.g. "Ah")
+ * so callers holding either representation don't need to re-derive it.
+ */
+export function isRedSuit(card: number | string): boolean {
+  const suitChar = typeof card === 'number' ? SUITS[getCardSuit(card)] : card.slice(-1)
+  return suitChar === 'h' || suitChar === 'd'
+}

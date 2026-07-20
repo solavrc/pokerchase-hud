@@ -12,6 +12,8 @@ import { PlayerTypeIcons } from './hud/PlayerTypeIcons'
 import { RealTimeStatsDisplay } from './hud/RealTimeStatsDisplay'
 import { PositionalStatsPanel } from './hud/PositionalStatsPanel'
 import { PositionalPanelTrigger } from './hud/PositionalPanelTrigger'
+import { RecentHandsPanel } from './hud/RecentHandsPanel'
+import { RecentHandsPanelTrigger } from './hud/RecentHandsPanelTrigger'
 
 // Types
 interface PlayerPotOdds {
@@ -36,6 +38,10 @@ interface HudProps {
   isPositionalPanelOpen?: boolean
   /** ドリルダウンパネルの開閉トグル。渡された時のみヘッダーにトリガーを表示する */
   onTogglePositionalPanel?: () => void
+  /** 直近ハンド・ドリルダウンパネルが開いているか（Appが単一のopenPanelで管理、ポジション別と排他） */
+  isRecentHandsPanelOpen?: boolean
+  /** 直近ハンド・ドリルダウンパネルの開閉トグル。渡された時のみヘッダーにトリガーを表示する */
+  onToggleRecentHandsPanel?: () => void
   /** HUD表示密度。'full'（デフォルト、既存の16統計グリッド）または'compact'（クラシックHUDライン）。UIConfig.hudDisplayMode参照 */
   hudDisplayMode?: 'full' | 'compact'
   /** しきい値ベースの値カラーリング（compact/full両モード共通）。UIConfig.hudColorCoding参照 */
@@ -301,6 +307,14 @@ const Hud = memo((props: HudProps) => {
                   onToggle={props.onTogglePositionalPanel}
                 />
               )}
+              {props.onToggleRecentHandsPanel && (
+                <RecentHandsPanelTrigger
+                  playerName={playerName}
+                  playerId={props.stat.playerId}
+                  isOpen={props.isRecentHandsPanelOpen}
+                  onToggle={props.onToggleRecentHandsPanel}
+                />
+              )}
               <PlayerTypeIcons />
             </div>
           </div>
@@ -313,6 +327,9 @@ const Hud = memo((props: HudProps) => {
           </div>
           {props.isPositionalPanelOpen && (
             <PositionalStatsPanel playerId={props.stat.playerId} />
+          )}
+          {props.isRecentHandsPanelOpen && (
+            <RecentHandsPanel playerId={props.stat.playerId} />
           )}
         </div>
       </div>
@@ -346,6 +363,8 @@ const Hud = memo((props: HudProps) => {
             playerPotOdds={props.playerPotOdds}
             isPositionalPanelOpen={props.isPositionalPanelOpen}
             onTogglePositionalPanel={props.onTogglePositionalPanel}
+            isRecentHandsPanelOpen={props.isRecentHandsPanelOpen}
+            onToggleRecentHandsPanel={props.onToggleRecentHandsPanel}
             statResults={statResultsForHeader}
           />
           {hudDisplayMode === 'compact' ? (
@@ -364,6 +383,9 @@ const Hud = memo((props: HudProps) => {
           {props.isPositionalPanelOpen && (
             <PositionalStatsPanel playerId={props.stat.playerId} />
           )}
+          {props.isRecentHandsPanelOpen && (
+            <RecentHandsPanel playerId={props.stat.playerId} />
+          )}
         </div>
       </div>
     </>
@@ -373,6 +395,7 @@ const Hud = memo((props: HudProps) => {
   if (prevProps.stat.playerId !== nextProps.stat.playerId) return false
   if (prevProps.scale !== nextProps.scale) return false
   if (prevProps.isPositionalPanelOpen !== nextProps.isPositionalPanelOpen) return false
+  if (prevProps.isRecentHandsPanelOpen !== nextProps.isRecentHandsPanelOpen) return false
   if (prevProps.hudDisplayMode !== nextProps.hudDisplayMode) return false
   if (prevProps.hudColorCoding !== nextProps.hudColorCoding) return false
   // statDisplayConfigs governs which stats reach the full grid

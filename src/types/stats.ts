@@ -154,3 +154,89 @@ export interface PositionalStatsResult {
   /** `Date.now()` at calculation time, so callers/UI can tell fresh results from cached ones. */
   computedAt: number
 }
+
+/**
+ * Recent Hands Panel Types (#recent-hands-panel)
+ *
+ * A per-player "last N hands" drill-down, computed by
+ * src/services/recent-hands-service.ts (HM3/PT4 "Last Hands" +
+ * Hand2Note "recent showdown hole cards" pattern). Unlike the positional
+ * drill-down, this is intentionally NOT bucketed -- each hand the player was
+ * dealt into becomes one row, newest first, independent of the app-wide
+ * `handLimitFilter` (which controls how much history feeds the aggregate
+ * stats, not this "last N hands" list).
+ */
+
+/**
+ * Simplified preflop-line taxonomy. Derived purely from the player's own
+ * PREFLOP actions for the hand plus a locally-recomputed `phasePrevBetCount`
+ * (same formula as `write-entity-stream.ts`: count of prior BET/RAISE
+ * actions in the phase, +1 for PREFLOP to account for the forced blind).
+ * The label reflects the LAST action taken (not the "most notable" one):
+ *
+ *  - No preflop action at all: `'Walk'` if the player was BB (uncontested,
+ *    the server never even recorded a BB action), else `null` (no data --
+ *    e.g. the player disconnected before any action was recorded).
+ *  - First action is a plain CHECK (BB's option after being limped to, or a
+ *    walk-adjacent check): `'Check'`.
+ *  - First action is a FOLD: `'Fold'`.
+ *  - CALL with `phasePrevBetCount <= 1` (just the blind posted, i.e. a
+ *    limp): `'Limp'`.
+ *  - CALL with `phasePrevBetCount >= 2` as the player's FIRST preflop
+ *    action (calling a raise cold): `'ColdCall'`.
+ *  - CALL with `phasePrevBetCount >= 2` after the player already had a
+ *    preflop line (e.g. they limped, then called a raise): `'Call'`.
+ *  - RAISE/BET with `phasePrevBetCount === 1` (the opening raise):
+ *    `'Open'`.
+ *  - RAISE/BET with `phasePrevBetCount === 2` (raising over one prior
+ *    raise): `'3Bet'`.
+ *  - RAISE/BET with `phasePrevBetCount >= 3`: `` `${phasePrevBetCount + 1}Bet` `` (e.g. `'4Bet'`).
+ *  - If the LAST action in the sequence is a FOLD and the player had a
+ *    preceding label (i.e. this isn't their first preflop action), the
+ *    preceding label gets a `'-F'` suffix (e.g. opened, got 3-bet, folded
+ *    -> `'Open-F'`; 3-bet, got 4-bet, folded -> `'3Bet-F'`).
+ */
+export type PreflopLine = string
+
+export interface RecentHandEntry {
+  handId: number
+  /** `Hand.approxTimestamp`, or `null` if the hand predates that field. */
+  approxTimestamp: number | null
+  /** `null` when the position can't be determined (see positional drill-down's identical fallback rules). */
+  position: Position | null
+  /**
+   * Revealed hole cards as `['Ah', 'Kd']`, ONLY when actually shown at
+   * showdown. Gated on BOTH conditions: `isShowdownParticipant(result)`
+   * (RankType is a real comparison 0-9, or 11 SHOWDOWN_MUCK -- i.e.
+   * excludes 10 NO_CALL and 12 FOLD_OPEN, so a voluntary post-fold reveal
+   * never counts as "revealed" here even though the server does send real
+   * card values for it) AND `HoleCards` actually holding valid card indices
+   * (SHOWDOWN_MUCK almost always means `HoleCards` is empty/[-1,-1] since
+   * the player mucked without showing -- the RankType alone doesn't
+   * guarantee visibility, the card data has to back it up too). `null`
+   * otherwise. See docs/api-events.md's RankType table.
+   */
+  holeCards: string[] | null
+  /** See `PreflopLine`'s doc comment for the taxonomy. `null` when no preflop data exists for this hand/player. */
+  preflopLine: PreflopLine | null
+  /** Player reached the flop (BET_ABLE or ALL_IN when FLOP was dealt), or -- when no FLOP phase was even recorded because the hand went all-in preflop and ran out without any `EVT_DEAL_ROUND` -- reached showdown at all (which is only possible once the full board is out). */
+  sawFlop: boolean
+  /** `isShowdownParticipant(result)` for this player's result row -- true for any real comparison or a showdown muck, false for uncontested wins/folds. */
+  wentToShowdown: boolean
+  /** `result.RewardChip > 0` for this player. */
+  won: boolean
+  /**
+   * `result.RewardChip` when `won`, else `null`. This is the gross amount
+   * awarded back (winnings), NOT a true net profit/loss for the hand --
+   * reconstructing "chips contributed this hand" would require replaying
+   * every street's pot/side-pot accounting, which isn't worth it for a
+   * glanceable recent-hands row (see the feature's task brief).
+   */
+  netChips: number | null
+}
+
+export interface RecentHandsResult {
+  hands: RecentHandEntry[]
+  /** `Date.now()` at calculation time, so callers/UI can tell fresh results from cached ones. */
+  computedAt: number
+}
