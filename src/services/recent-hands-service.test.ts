@@ -25,6 +25,8 @@ import {
   DEFAULT_RECENT_HANDS_LIMIT,
 } from './recent-hands-service'
 import { ActionType, BattleType, PhaseType, Position, RankType } from '../types/game'
+import { ApiType } from '../types'
+import type { ApiHandEvent } from '../types'
 import type { Action, Hand } from '../types/entities'
 
 const PLAYER_ID = 1
@@ -50,6 +52,47 @@ function makeAction(overrides: Partial<Action> & { handId: number, index: number
     actionDetails: [],
     ...overrides
   }
+}
+
+/** Minimal valid EVT_DEAL + EVT_HAND_RESULTS pair for one hand -- enough for
+ * WriteEntityStream.toHandState() to accept it and persist a real hand (not
+ * rejected as a chimera), so `service.writeEntityStream`'s 'data' fires for real.
+ * Used only to drive the genuine hand-completion signal in the "real backend
+ * cache" tests below -- not part of the fixtures above (which intentionally
+ * bypass this pipeline, per the file header). Mirrors
+ * positional-stats-service.test.ts's identical helper. */
+function makeMinimalHandEvents(handId: number, seatUserIds: [number, number, number]): ApiHandEvent[] {
+  return [
+    {
+      ApiTypeId: ApiType.EVT_DEAL,
+      SeatUserIds: seatUserIds,
+      Game: { CurrentBlindLv: 1, NextBlindUnixSeconds: 0, Ante: 0, SmallBlind: 100, BigBlind: 200, ButtonSeat: 0, SmallBlindSeat: 1, BigBlindSeat: 2 },
+      Player: { SeatIndex: 0, BetStatus: 1, HoleCards: [0, 1], Chip: 5000, BetChip: 0 },
+      OtherPlayers: [
+        { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 100, IsSafeLeave: false },
+        { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 200, IsSafeLeave: false },
+      ],
+      Progress: { Phase: 0, NextActionSeat: 0, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 400, Pot: 300, SidePot: [] },
+      timestamp: handId * 1000,
+    },
+    {
+      ApiTypeId: ApiType.EVT_HAND_RESULTS,
+      CommunityCards: [],
+      Pot: 300,
+      SidePot: [],
+      ResultType: 0,
+      DefeatStatus: 0,
+      HandId: handId,
+      HandLog: '',
+      Results: [{ UserId: seatUserIds[0], HoleCards: [], RankType: 10, Hands: [], HandRanking: 1, Ranking: -2, RewardChip: 300 }],
+      Player: { SeatIndex: 0, BetStatus: -1, Chip: 5000, BetChip: 0 },
+      OtherPlayers: [
+        { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 5000, BetChip: 0, IsSafeLeave: false },
+        { SeatIndex: 2, Status: 0, BetStatus: -1, Chip: 5000, BetChip: 0, IsSafeLeave: false },
+      ],
+      timestamp: handId * 1000 + 1,
+    },
+  ]
 }
 
 describe('RecentHandsService', () => {
@@ -382,18 +425,36 @@ describe('RecentHandsService', () => {
       expect(stillCached).toBe(first) // same cached object reference -- proves caching is actually live here
       expect(stillCached.hands.map(h => h.handId)).toEqual([3, 2, 1]) // hand 4 not yet reflected
 
-      // A real live hand completion. getRecentHands() self-subscribes to this same
-      // stream (subscribeToHandCompletion, module-level above) the first time it's
-      // called for a given service instance, independent of the front-end
-      // hand-epoch plumbing (App.tsx/Hud.tsx/ports.ts).
+      // A hand-start-warmup/filter-change/import-shaped rebroadcast (direct
+      // statsOutputStream.write(), the same call aggregate-events-stream.ts's EVT_DEAL
+      // warmup branch and message-router.ts's updateBattleTypeFilter/
+      // recalculateStats() make) must NOT invalidate the cache -- audit finding 11
+      // follow-up (P2, codex review): a first pass subscribed to statsOutputStream,
+      // which also fires for these non-completion broadcasts.
       await new Promise<void>(resolve => {
         service.statsOutputStream.once('data', () => resolve())
         service.statsOutputStream.write([1, 2, 3])
       })
+      const stillCachedAfterNonCompletionBroadcast = await getRecentHands(db, service, PLAYER_ID, 10)
+      expect(stillCachedAfterNonCompletionBroadcast).toBe(first) // still the same stale cached object
+
+      // A real live hand completion, through the actual live pipeline
+      // (writeEntityStream is the direct pipe target and the one true completion
+      // signal -- see its doc comment on PokerChaseService and ports.ts's
+      // handCompletionEpoch). getRecentHands() self-subscribes to this stream
+      // (subscribeToHandCompletion, module-level above) the first time it's called
+      // for a given service instance, independent of the front-end hand-epoch
+      // plumbing (App.tsx/Hud.tsx/ports.ts).
+      await new Promise<void>(resolve => {
+        service.writeEntityStream.once('data', () => resolve())
+        service.writeEntityStream.write(makeMinimalHandEvents(5, [1, 2, 3]))
+      })
 
       const afterHandCompletion = await getRecentHands(db, service, PLAYER_ID, 10)
       expect(afterHandCompletion).not.toBe(first) // recomputed, not served from the now-stale cache
-      expect(afterHandCompletion.hands.map(h => h.handId)).toEqual([4, 3, 2, 1]) // hand 4 now included
+      // hand 4 (seeded directly above) AND hand 5 (persisted by writeEntityStream
+      // itself, from makeMinimalHandEvents) are both now reflected.
+      expect(afterHandCompletion.hands.map(h => h.handId)).toEqual([5, 4, 3, 2, 1])
     })
   })
 })

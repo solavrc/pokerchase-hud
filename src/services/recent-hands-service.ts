@@ -43,16 +43,21 @@ const cache: Map<string, { result: RecentHandsResult, timestamp: number }> = new
 
 // 監査指摘11（P2）「開いたドリルダウンパネルが無期限に古くなる」対応。
 // positional-stats-service.tsの同名の仕組みと全く同じ理由・同じ実装パターン
-// （そちらのコメント参照）: `service.statsOutputStream`の'data'（生アクティブな
-// ハンド完了ごとに1回、ports.tsの`liveBroadcastSequence`と同一のイベント）に
-// 購読して、この30秒キャッシュをbackground.ts/ports.ts/content_script.ts/
-// message-router.tsを一切経由せずに無効化する。
+// （そちらのコメント参照）: `service.writeEntityStream`の'data'（生きたポート
+// 経由の取り込みだけがたどるパイプラインで、ハンドが実際にDBへ書き込まれた
+// 後にのみ発火する、ports.tsの`handCompletionEpoch`と同一の完了限定シグナル）
+// に購読して、この30秒キャッシュをbackground.ts/ports.ts/content_script.ts/
+// message-router.tsを一切経由せずに無効化する。`service.statsOutputStream`の
+// 'data'はハンド完了以外（ハンド開始時のウォームアップ、フィルター変更/
+// インポート/auto-sync復元の再計算）でも発火するため使わない（audit finding 11
+// フォローアップ、P2、codexレビュー指摘 -- positional-stats-service.tsの
+// 詳細なコメント参照）。
 const subscribedServices = new WeakSet<PokerChaseService>()
 
 function subscribeToHandCompletion(service: PokerChaseService): void {
   if (subscribedServices.has(service)) return
   subscribedServices.add(service)
-  service.statsOutputStream.on('data', () => {
+  service.writeEntityStream.on('data', () => {
     clearRecentHandsCache()
   })
 }

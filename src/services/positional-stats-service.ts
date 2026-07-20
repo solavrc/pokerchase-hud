@@ -66,10 +66,31 @@ const cache: Map<string, { result: PositionalStatsResult, timestamp: number }> =
 // epochを積んでcacheKeyを回転させる案は、その配線がmessage-router.ts
 // （別ワークストリームが所有）を経由する必要があり本タスクのスコープ外。
 // 代わりに、この関数が既に受け取っている`service`引数（PokerChaseService）
-// が公開する`statsOutputStream`（ports.tsが生アクティブなハンド完了ごとに
-// 'data'を発火させ、`liveBroadcastSequence`をインクリメントしているのと
-// 全く同じイベント -- ports.ts参照）に直接購読する。これでbackground.ts/
+// が公開する`writeEntityStream`に直接購読する。これでbackground.ts/
 // ports.ts/content_script.ts/message-router.tsのいずれにも触れずに完結する。
+//
+// `statsOutputStream`ではなく`writeEntityStream`である理由（audit finding 11の
+// フォローアップ、P2、codexレビュー指摘）: 当初`statsOutputStream`の'data'に
+// 購読していたが、このイベントはハンド完了時だけでなく、(1)新しいハンド開始時
+// （EVT_DEAL）にDBへ既存ハンドがあれば毎回発火する「ウォームアップ」ブロード
+// キャスト（aggregate-events-stream.ts）、(2)フィルター変更・インポート/
+// リビルド・auto-sync復元時の明示的な再計算（message-router.ts、
+// import-export.ts、poker-chase-service.tsのrecalculateStats/
+// recalculateAllStats、auto-sync-service.ts。いずれも`statsOutputStream.write()`
+// を直接呼ぶ）でも発火する。これらは「ハンドが1件完了した」わけではないため、
+// このタイミングでキャッシュを無効化すると、開いたパネルの再フェッチが
+// 起きていないのに無駄にキャッシュだけ消える（逆に、フィルター変更直後の
+// 再フェッチではまだ古いキャッシュを消してほしいのに、handEpoch自体は
+// 変わらないため再フェッチ自体が起きない、というズレも生む）。
+// `writeEntityStream`の'data'は`write-entity-stream.ts`の
+// `this.push(hand.seatUserIds)`からのみ発火し、これは生きたポート経由の
+// イベント取り込み（event-ingestion.ts→handAggregateStream）だけがたどる
+// パイプラインで、かつハンドが実際にDBへ書き込まれた後にのみ届く
+// （キメラハンドはpushされずreturnする）。ports.tsのhandCompletionEpochと
+// 全く同じ完了限定シグナルであり、frontend側のhandEpoch（App.tsx/
+// Hud.tsx経由でこのパネルのフェッチeffectのdepsに入る値）が実際に変化する
+// タイミングとキャッシュ無効化のタイミングを揃えられる。
+//
 // 購読はサービスインスタンスごとに一度だけ（WeakSetで冪等化、テストごとに
 // 新しいPokerChaseServiceインスタンスが作られるため明示的な解除は不要 --
 // 古いインスタンスがGCされればリスナーごと消える）。
@@ -82,7 +103,7 @@ const subscribedServices = new WeakSet<PokerChaseService>()
 function subscribeToHandCompletion(service: PokerChaseService): void {
   if (subscribedServices.has(service)) return
   subscribedServices.add(service)
-  service.statsOutputStream.on('data', () => {
+  service.writeEntityStream.on('data', () => {
     clearPositionalStatsCache()
   })
 }

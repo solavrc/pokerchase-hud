@@ -392,6 +392,17 @@ class PokerChaseService {
   }
   readonly db
   readonly handAggregateStream: AggregateEventsStream      // Entry point for all events and groups events by hand
+  // Persists hand entities to DB; 'data' fires exactly once per genuinely-completed
+  // AND successfully-persisted hand (write-entity-stream.ts's `this.push(hand.
+  // seatUserIds)`, reached only via the live pipeline below -- chimera hands return
+  // early without pushing). Exposed (rather than kept as a local constructor
+  // variable) specifically so ports.ts/positional-stats-service.ts/
+  // recent-hands-service.ts can subscribe to this as the one true "hand completion"
+  // signal -- unlike statsOutputStream's 'data', which also fires for the hand-start
+  // warmup broadcast and filter-change/import/auto-sync-restore rebroadcasts (audit
+  // finding 11 follow-up, P2; see ports.ts's handCompletionEpoch doc comment for the
+  // full enumeration of those other call sites).
+  readonly writeEntityStream: WriteEntityStream
   readonly statsOutputStream: ReadEntityStream             // Calculates and outputs stats
   readonly handLogStream: HandLogStream                    // Real-time hand log display
   readonly realTimeStatsStream: RealTimeStatsStream        // Real-time stats for hero only
@@ -410,9 +421,9 @@ class PokerChaseService {
     this.realTimeStatsStream = new RealTimeStatsStream()
 
     // Main pipeline for stats calculation
-    const writeStream = new WriteEntityStream(this)
+    this.writeEntityStream = new WriteEntityStream(this)
     this.handAggregateStream
-      .pipe<WriteEntityStream>(writeStream)
+      .pipe<WriteEntityStream>(this.writeEntityStream)
       .pipe<ReadEntityStream>(this.statsOutputStream)
   }
   readonly setBattleTypeFilter = async (filterOptions: FilterOptions) => {

@@ -30,21 +30,33 @@ export const setLastKnownStats = (stats: PlayerStats[]): void => {
 // Service Worker, so it is very often already non-empty by the time an unrelated tab
 // mounts, which would wrongly suppress the fallback forever after the first hand ever
 // played in that Service Worker's lifetime.
-//
-// Also reused as the wire-level "hand epoch" for audit finding 11 (P2, open
-// drill-down panels going stale indefinitely): every broadcastMessage() call below
-// stamps the *current* value of this counter onto the payload as `handEpoch`. Only the
-// statsOutputStream handler increments it before stamping, so a realtime-only
-// broadcast (realTimeStatsStream, driven by individual actions within the same hand)
-// repeats the same handEpoch value, while a genuine hand-completion broadcast carries a
-// freshly bumped one. content_script.ts forwards this untyped port payload straight
-// through as the CustomEvent detail (see its `onMessage` -- it doesn't need to know
-// about this field), and App.tsx reads it off `detail` via a locally-widened type
-// (StatsData there predates this field and is owned by a different workstream) to
-// decide when an open RecentHandsPanel/PositionalStatsPanel should refetch.
 let liveBroadcastSequence = 0
 
 export const getLiveBroadcastSequence = (): number => liveBroadcastSequence
+
+// Monotonic counter for the wire-level "hand epoch" (audit finding 11 follow-up, P2:
+// a first pass reused `liveBroadcastSequence` for this, but codex review correctly
+// pointed out that counter -- and `statsOutputStream`'s 'data' event it's driven by --
+// fires on more than genuine hand completions: it also fires for the hand-start
+// "warmup" broadcast (aggregate-events-stream.ts's EVT_DEAL handler, when the DB
+// already has hands for the newly-dealt lineup) and for filter-change/import/
+// auto-sync-restore rebroadcasts (message-router.ts's `updateBattleTypeFilter`,
+// recalculateStats()/recalculateAllStats(), import-export.ts, auto-sync-service.ts --
+// all of which call `service.statsOutputStream.write()` directly). None of those are
+// "a hand just completed", so bumping this epoch on them caused spurious refetches
+// (and would have caused premature cache invalidation, see positional-stats-service.ts/
+// recent-hands-service.ts's subscribeToHandCompletion) on an open drill-down panel.
+//
+// `service.writeEntityStream`'s 'data' event is the one true completion signal: it
+// only fires from `write-entity-stream.ts`'s `this.push(hand.seatUserIds)`, reached
+// exclusively via the live pipeline (`handAggregateStream.pipe(writeEntityStream)`,
+// itself only fed by the real-time port in event-ingestion.ts) after a hand's events
+// have actually been detected as complete (EVT_HAND_RESULTS) and successfully
+// persisted (chimera hands return early without pushing, see that file). The
+// hand-start warmup and filter/import/auto-sync rebroadcasts above all call
+// `statsOutputStream.write()` *directly*, bypassing `writeEntityStream` entirely, so
+// none of them touch this counter.
+let handCompletionEpoch = 0
 
 export const getLatestRealTimeStats = (): AllPlayersRealTimeStats | undefined => latestRealTimeStats
 
@@ -134,9 +146,10 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
         evtDeal: service.liveEvtDeal,
         realTimeStats: latestRealTimeStats,
         // Same handEpoch as the last hand-completion broadcast (unchanged since this
-        // is a realtime-only, per-action update) -- see liveBroadcastSequence's doc
-        // comment above.
-        handEpoch: liveBroadcastSequence
+        // is a realtime-only, per-action update, and handCompletionEpoch is only
+        // bumped by the writeEntityStream subscription below) -- see
+        // handCompletionEpoch's doc comment above.
+        handEpoch: handCompletionEpoch
       })
     }
   })
@@ -149,8 +162,17 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
       stats: hand,
       evtDeal: service.liveEvtDeal,  // Include EVT_DEAL for seat mapping (live context, not the persisted hero-anchored one -- see above)
       realTimeStats: latestRealTimeStats,  // Include latest real-time stats from stream
-      handEpoch: liveBroadcastSequence  // Freshly bumped above -- signals a completed hand to the HUD's drill-down panels
+      // NOT bumped here -- this handler also fires for the hand-start warmup and
+      // filter/import/auto-sync rebroadcasts (see handCompletionEpoch's doc comment),
+      // so it just stamps whatever handCompletionEpoch currently holds. Only a real
+      // completion (the writeEntityStream subscription below) advances it.
+      handEpoch: handCompletionEpoch
     })
+  })
+  // The one true "hand completed" signal -- see handCompletionEpoch's doc comment
+  // above for why this must be writeEntityStream, not statsOutputStream.
+  service.writeEntityStream.on('data', () => {
+    handCompletionEpoch++
   })
 
   // Handle hand log events
