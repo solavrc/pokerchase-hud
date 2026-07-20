@@ -75,10 +75,34 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           }
           break
         case ApiType.EVT_DEAL:
-          // プレイヤーIDの割り当て
-          this.service.playerId = event.Player?.SeatIndex !== undefined ? event.SeatUserIds[event.Player.SeatIndex] : undefined
-          // 席マッピング用に最新のEVT_DEALを保存
-          this.service.latestEvtDeal = event
+          // プレイヤーIDの割り当て。
+          //
+          // 【根本原因メモ】event.Player は「観戦モード」（ヒーローが着席していない
+          // EVT_DEAL — 例: トーナメント敗退後もクライアントが他プレイヤーのテーブルを
+          // 受信し続けるケース。docs/api-events.md「EVT_DEAL: Playerフィールドの欠落」
+          // 「観戦モード: Playerフィールド自体がundefined」参照）では undefined になる。
+          // 以前はここで無条件に `this.service.playerId = undefined` / `latestEvtDeal = event`
+          // を代入していたため、既に確定していたヒーローの playerId が観戦モードの
+          // deal 1件だけで消え、500msデバウンス後に chrome.storage.local へ undefined が
+          // 永続化されていた。セッション終盤（ヒーロー敗退後の観戦・テーブル終了間際）に
+          // この種の deal が起きやすく、「初手でplayerId確定→セッション終了後リロードで
+          // undefinedに戻る」という実地報告（sola 2026-07-20）と一致する。クラウドDL後の
+          // 明示的な再構築（rebuildAllData/importData）で復旧してリロードを跨いで生存する
+          // のは、それらが findLatestPlayerDealEvent()（database-utils.ts）で
+          // Player.SeatIndexが存在する直近dealだけを見て再設定するため — 同じ生イベント列
+          // に対してここ（ライブ経路）とそちら（再構築経路）とで挙動が非対称だったのが
+          // 本質。
+          //
+          // 修正: Player が存在する deal（＝ヒーローとして着席している）のときだけ
+          // playerId と 席マッピング用の latestEvtDeal を更新する。観戦モードの deal は
+          // 無視して直前の値を保持する。別アカウントへのログイン切り替えは、次に
+          // Player が存在する EVT_DEAL が来た時点で正しく上書きされるため、この変更後も
+          // 追従する（意図的に維持する挙動）。
+          if (event.Player?.SeatIndex !== undefined) {
+            this.service.playerId = event.SeatUserIds[event.Player.SeatIndex]
+            // 席マッピング用に最新のEVT_DEALを保存
+            this.service.latestEvtDeal = event
+          }
 
           // Capture hero's hole cards for hand improvement calculations (only in real-time play)
           if (!this.service.batchMode && event.Player?.HoleCards && event.Player.HoleCards.length === 2 && this.service.playerId) {

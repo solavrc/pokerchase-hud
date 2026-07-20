@@ -210,6 +210,142 @@ describe('PokerChaseService - explicit session persistence', () => {
   })
 })
 
+describe('PokerChaseService - hero playerId survives session end + SW restart (sola 2026-07-20 field report)', () => {
+  // 実地報告の再現: (1) 生ハンドでplayerIdが確定 → (2) セッション終盤、ヒーロー敗退後も
+  // クライアントが他プレイヤーのテーブルを観戦し続ける観戦モードdeal（EVT_DEALだが
+  // `Player`フィールドがundefined -- docs/api-events.md「EVT_DEAL: Playerフィールドの
+  // 欠落」「観戦モード」参照）が届く → (3) ブラウザリロード（= SW再起動、
+  // chrome.storage.localからの復元）。
+  //
+  // 修正前（aggregate-events-stream.ts のEVT_DEALケース）は観戦モードdealのたびに
+  // `this.service.playerId = undefined` を無条件代入し、500msデバウンス後に
+  // chrome.storage.localへその undefined が永続化されていた。このテストはそれを
+  // playerIdセッターだけでなく実際のイベントパイプライン（handAggregateStream）経由で
+  // 再現する。
+  const spectatorDealEvent: ApiEvent<ApiType.EVT_DEAL> = {
+    ApiTypeId: ApiType.EVT_DEAL,
+    // 観戦中の別テーブルの顔ぶれ（ヒーロー=101はこの配列に含まれない）
+    SeatUserIds: [201, 202, 203],
+    Game: { CurrentBlindLv: 1, NextBlindUnixSeconds: 0, Ante: 0, SmallBlind: 100, BigBlind: 200, ButtonSeat: 0, SmallBlindSeat: 1, BigBlindSeat: 2 },
+    // 観戦モード: Playerフィールド自体が存在しない
+    OtherPlayers: [
+      { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 0, IsSafeLeave: false },
+      { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 100, IsSafeLeave: false },
+      { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 200, IsSafeLeave: false },
+    ],
+    Progress: { Phase: 0, NextActionSeat: 0, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 400, Pot: 300, SidePot: [] },
+    timestamp: 1010,
+  }
+
+  const handResultsEvent: ApiEvent<ApiType.EVT_HAND_RESULTS> = {
+    ApiTypeId: ApiType.EVT_HAND_RESULTS,
+    CommunityCards: [],
+    Pot: 400,
+    SidePot: [],
+    ResultType: 1, // トーナメント敗退（ヒーロー脱落）
+    DefeatStatus: 1,
+    HandId: 999,
+    HandLog: '',
+    Results: [{ UserId: 102, HoleCards: [], RankType: 10, Hands: [], HandRanking: 1, Ranking: -2, RewardChip: 400 }],
+    Player: { SeatIndex: 0, BetStatus: -1, Chip: 0, BetChip: 0 },
+    OtherPlayers: [
+      { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 4900, BetChip: 0, IsSafeLeave: false },
+      { SeatIndex: 2, Status: 0, BetStatus: -1, Chip: 4800, BetChip: 0, IsSafeLeave: false },
+    ],
+    timestamp: 1005,
+  }
+
+  // このdescribeブロックは実タイマーを使う: handAggregateStream.write()は
+  // fake-indexeddb経由の実DB書き込みを伴い、jest.useFakeTimers()と組み合わせると
+  // トランザクションのマイクロタスク順序が崩れてハングする（他のdescribeブロックが
+  // fake timersを使えているのは、そちらがsession/playerIdのセッターを直接呼ぶだけで
+  // DBを経由しないため）。500msデバウンスは実際に待つ。
+  const waitForDebounce = () => new Promise(resolve => setTimeout(resolve, 600))
+
+  afterEach(async () => {
+    await clearStorage()
+  })
+
+  test('観戦モードdeal（Player欠落）はライブのplayerIdを消さない', async () => {
+    const service = newService()
+    await service.ready
+
+    // (1) 生ハンドでplayerIdが確定
+    service.handAggregateStream.write(dealEvent)
+    await service.handAggregateStream.whenIdle()
+    expect(service.playerId).toBe(101) // dealEvent: SeatUserIds[Player.SeatIndex=0] = 101
+
+    service.handAggregateStream.write(handResultsEvent)
+    await service.handAggregateStream.whenIdle()
+
+    // (2) ヒーロー敗退後、他テーブルの観戦モードdealが届く（Playerフィールドなし）
+    service.handAggregateStream.write(spectatorDealEvent)
+    await service.handAggregateStream.whenIdle()
+
+    // 修正前はここで undefined になっていた（観戦モードdealが無条件で
+    // playerId/latestEvtDealを上書きしていたため）
+    expect(service.playerId).toBe(101)
+    expect(service.latestEvtDeal?.SeatUserIds).toEqual(dealEvent.SeatUserIds)
+  })
+
+  test('観戦モードdeal後もchrome.storage.localへplayerIdが正しく永続化され、SW再起動（新規service+restoreState）を跨いで生存する', async () => {
+    const service = newService()
+    await service.ready
+
+    service.handAggregateStream.write(dealEvent)
+    await service.handAggregateStream.whenIdle()
+    service.handAggregateStream.write(handResultsEvent)
+    await service.handAggregateStream.whenIdle()
+    service.handAggregateStream.write(spectatorDealEvent)
+    await service.handAggregateStream.whenIdle()
+
+    // (3-a) 500msデバウンスを経てchrome.storage.localへ永続化される
+    await waitForDebounce()
+
+    expect(chrome.storage.local.set).toHaveBeenCalled()
+    const lastCallIndex = (chrome.storage.local.set as jest.Mock).mock.calls.length - 1
+    const [payload] = (chrome.storage.local.set as jest.Mock).mock.calls[lastCallIndex]
+    const persisted = payload[STORAGE_KEY]
+    // 修正前はここが undefined として永続化されていた
+    expect(persisted.playerId).toBe(101)
+
+    // (3-b) SW再起動をシミュレート: 新しいPokerChaseServiceインスタンスを作り、
+    // 同じ（モックの）chrome.storage.localから復元する
+    const restartedService = newService()
+    await restartedService.ready
+
+    expect(restartedService.playerId).toBe(101)
+    // #158 事前ゲームヒーロー統計パス（background/import-export.tsのgetLatestSessionStats）
+    // が要求する `!service.playerId` ガードを通過できることを確認
+    expect(restartedService.playerId).toBeTruthy()
+  })
+
+  test('観戦モードを挟んでも、別アカウントへのログイン切り替え（新しいPlayerありdeal）はplayerIdを正しく上書きする', async () => {
+    const service = newService()
+    await service.ready
+
+    service.handAggregateStream.write(dealEvent)
+    await service.handAggregateStream.whenIdle()
+    expect(service.playerId).toBe(101)
+
+    service.handAggregateStream.write(spectatorDealEvent)
+    await service.handAggregateStream.whenIdle()
+    expect(service.playerId).toBe(101) // 観戦モードでは変化しない
+
+    // 別アカウントでの再ログインを模した、Playerが存在する新しいdeal
+    const otherAccountDeal: ApiEvent<ApiType.EVT_DEAL> = {
+      ...dealEvent,
+      SeatUserIds: [555, 102, 103],
+      Player: { SeatIndex: 0, BetStatus: 1, HoleCards: [2, 3], Chip: 5000, BetChip: 0 },
+      timestamp: 1020,
+    }
+    service.handAggregateStream.write(otherAccountDeal)
+    await service.handAggregateStream.whenIdle()
+
+    expect(service.playerId).toBe(555)
+  })
+})
+
 describe('SessionState (standalone unit tests)', () => {
   test('明示的なセッターは全てnotifyChangeを一度だけ呼ぶ', () => {
     const notifyChange = jest.fn()
