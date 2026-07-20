@@ -58,14 +58,18 @@ const handleFirebaseSignOut = async (): Promise<void> => {
 export const registerMessageRouter = (service: PokerChaseService, db: PokerChaseDB, gameUrlPattern: string): void => {
   const { exportData, importData, deleteAllData, getLatestSessionStats, rebuildAllData } = createImportExportHandlers(service, db, gameUrlPattern)
 
+  const rejectIfOperationBusy = (action: string, sendResponse: (response: MessageResponse) => void): boolean => {
+    if (isOperationIdle()) return false
+
+    console.warn(`[${action}] Blocked: operation already in progress (${getOperationState().type})`)
+    sendResponse({ success: false, error: '別の処理が実行中です' })
+    return true
+  }
+
   chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.runtime.MessageSender, sendResponse: (response: MessageResponse) => void) => {
     if (request.action === 'exportData') {
       // Block concurrent operations
-      if (!isOperationIdle()) {
-        console.warn(`[exportData] Blocked: operation already in progress (${getOperationState().type})`)
-        sendResponse({ success: false, error: '別の処理が実行中です' })
-        return true
-      }
+      if (rejectIfOperationBusy('exportData', sendResponse)) return true
       exportData(request.format)
         .then(() => sendResponse({ success: true }))
         .catch(error => {
@@ -74,6 +78,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         })
       return true // 非同期レスポンスを示す
     } else if (request.action === 'importData') {
+      if (rejectIfOperationBusy('importData', sendResponse)) return true
       importData(request.data)
         .then((result) => {
           chrome.runtime.sendMessage<ImportStatusMessage>({
@@ -92,6 +97,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         })
       return true // 非同期レスポンスを示す
     } else if (request.action === 'importDataInit') {
+      if (rejectIfOperationBusy('importDataInit', sendResponse)) return true
       startImportSession(request.totalChunks, request.fileName)
       sendResponse({ success: true })
       return true
@@ -111,6 +117,8 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         sendResponse({ success: false, error: 'Import session incomplete' })
         return true
       }
+
+      if (rejectIfOperationBusy('importDataProcess', sendResponse)) return true
 
       // すべてのチャンクを結合
       const completeData = currentImportSession.chunks.join('')
