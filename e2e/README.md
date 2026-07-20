@@ -19,8 +19,10 @@ This builds the e2e extension variant, launches Chrome for Testing headless,
 replays the anonymized fixture over a real WebSocket, and asserts the HUD
 + popup work. Screenshots land in `e2e/out/`.
 
-First run downloads Chrome for Testing (~200MB) into `e2e/.cache/` -- later
-runs reuse the cache and take a few seconds.
+First run downloads Chrome for Testing (~200MB) into `~/.cache/puppeteer/`
+(puppeteer's standard cache location, shared across worktrees -- override
+with `E2E_BROWSER_CACHE_DIR`) -- later runs reuse the cache and take a few
+seconds.
 
 ## How it works: the replay seam
 
@@ -260,9 +262,10 @@ Key methods: `evaluate`, `screenshot`, `domSnapshotText`, `domSnapshotHtml`,
 and `browser` (raw `puppeteer-core` objects) are also exposed for anything
 not covered by the helpers.
 
-`launchHarness` downloads (once, cached under `e2e/.cache/`) and launches
-a pinned Chrome for Testing build (see `CHROME_BUILD_ID` in
-`e2e/config.ts`) with `--load-extension`/`--disable-extensions-except`
+`launchHarness` downloads (once, cached under `~/.cache/puppeteer/`, see
+`BROWSER_CACHE_DIR` in `e2e/config.ts`) and launches a pinned Chrome for
+Testing build (see `CHROME_BUILD_ID` in `e2e/config.ts`) with
+`--load-extension`/`--disable-extensions-except`
 pointed at `e2e/.build/extension/`. Headless was verified to work fine for
 this harness (Chrome for Testing supports extensions in headless mode) and
 is the default; pass `{ headed: true }` to watch it.
@@ -396,7 +399,10 @@ e2e/
     build-e2e.ts               orchestrates the full e2e build
     extract-fixture.ts         CLI to regenerate fixtures from a raw capture
     anonymize.ts / .test.ts    pure UserId/UserName remapping (jest-tested)
-  .cache/    gitignored -- downloaded Chrome for Testing
   .build/    gitignored -- generated manifest + built e2e extension + session.json
   out/       gitignored -- default screenshot/output directory
 ```
+
+Chrome for Testing downloads are *not* under `e2e/`: they live in
+`~/.cache/puppeteer/` (puppeteer's standard, worktree-independent cache
+location; see `BROWSER_CACHE_DIR` in `e2e/config.ts`).
