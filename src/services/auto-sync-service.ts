@@ -386,6 +386,11 @@ export class AutoSyncService {
     }
 
     if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
+      // This setter also syncs service.liveEvtDeal (see poker-chase-service.ts),
+      // so the statsOutputStream.write() below (and any earlier stale
+      // spectator-mode liveEvtDeal from before this cloud-sync restore ran)
+      // broadcasts paired with this restored hero-anchored deal's seat
+      // context, not a leftover one (codex #177 3rd review round P2).
       service.latestEvtDeal = latestDealEvent
       const playerSeatIndex = latestDealEvent.Player?.SeatIndex
       if (playerSeatIndex !== undefined && playerSeatIndex >= 0) {

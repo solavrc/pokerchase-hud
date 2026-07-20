@@ -75,10 +75,83 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           }
           break
         case ApiType.EVT_DEAL:
-          // プレイヤーIDの割り当て
-          this.service.playerId = event.Player?.SeatIndex !== undefined ? event.SeatUserIds[event.Player.SeatIndex] : undefined
-          // 席マッピング用に最新のEVT_DEALを保存
-          this.service.latestEvtDeal = event
+          // プレイヤーIDの割り当て。
+          //
+          // 【根本原因メモ】event.Player は「観戦モード」（ヒーローが着席していない
+          // EVT_DEAL — 例: トーナメント敗退後もクライアントが他プレイヤーのテーブルを
+          // 受信し続けるケース。docs/api-events.md「EVT_DEAL: Playerフィールドの欠落」
+          // 「観戦モード: Playerフィールド自体がundefined」参照）では undefined になる。
+          // 以前はここで無条件に `this.service.playerId = undefined` を代入していたため、
+          // 既に確定していたヒーローの playerId が観戦モードの deal 1件だけで消え、
+          // 500msデバウンス後に chrome.storage.local へ undefined が永続化されていた。
+          // セッション終盤（ヒーロー敗退後の観戦・テーブル終了間際）にこの種の deal が
+          // 起きやすく、「初手でplayerId確定→セッション終了後リロードでundefinedに
+          // 戻る」という実地報告（sola 2026-07-20）と一致する。クラウドDL後の明示的な
+          // 再構築（rebuildAllData/importData）で復旧してリロードを跨いで生存するのは、
+          // それらが findLatestPlayerDealEvent()（database-utils.ts）で
+          // Player.SeatIndexが存在する直近dealだけを見て再設定するため — 同じ生イベント列
+          // に対してここ（ライブ経路）とそちら（再構築経路）とで挙動が非対称だったのが
+          // 本質。
+          //
+          // 修正（2段階目・codex #177 再レビューP2で判明した状態分離）:
+          //
+          // playerId と latestEvtDeal（永続化対象・「ヒーロー在籍」の文脈）は
+          // Player が存在する deal のときだけ更新し、観戦モードの deal では直前の
+          // 値を保持する。別アカウントへのログイン切り替えは、次に Player が存在する
+          // EVT_DEAL が来た時点で正しく上書きされるため、この変更後も追従する
+          // （意図的に維持する挙動）。
+          //
+          // 一方 liveEvtDeal（非永続化・「今まさに配信中の席」の文脈、Player有無に
+          // 関わらず毎回更新）を別に持ち、ports.ts のライブ統計ブロードキャスト
+          // （registerStreamSubscriptions の statsOutputStream/realTimeStatsStream
+          // 購読）だけがこちらを参照する。
+          //
+          // この2フィールド分離が必要な理由（1段階目の修正でlatestEvtDealをガード
+          // なしにしたことで新たに生じた問題 — codex #177 再レビュー指摘）:
+          // 下のブロック（151行目付近）は Player の有無を問わず、DBにハンドが1件
+          // でもあれば毎 EVT_DEAL で `this.service.statsOutputStream.write(event.
+          // SeatUserIds)` を呼び、観戦中の別テーブルの新しい顔ぶれで統計を再計算・
+          // ブロードキャストする。broadcastMessage はその際の座席文脈として
+          // evtDeal を同梱し、App.tsx の handleStatsMessage は
+          // `evtDeal.Player?.SeatIndex` が存在するときだけヒーロー基準に座席を
+          // 回転させる（存在しなければ回転せず生の席順で表示）。
+          //   - latestEvtDeal（永続化対象）をガードなしで観戦dealに追従させると、
+          //     ブロードキャスト自体は座席ズレなく直る一方、setBattleTypeFilter()
+          //     経由の ReadEntityStream.recalculateStats()（フィルター変更時の
+          //     明示的な再計算）が `!playerId || !latestEvtDeal` のガードしか
+          //     見ておらず、その中身が観戦テーブルのSeatUserIdsなのかヒーロー
+          //     在籍dealのSeatUserIdsなのかを区別しない。ヒーロー敗退後に観戦
+          //     しながらHUDフィルターを変更すると、保持されているはずのヒーロー
+          //     playerId は生きたまま、統計だけが観戦テーブルの顔ぶれ
+          //     （履歴なし）で上書き表示されてしまう。
+          //   - 対処として、永続化対象の latestEvtDeal は「ヒーロー在籍」の
+          //     ときだけ更新するよう元に戻し（recalculateStats/
+          //     recalculateAllStats はこちらだけを見るので、フィルター変更後の
+          //     再計算は常にヒーロー在籍時点のSeatUserIdsに基づく）、ライブ
+          //     ブロードキャスト用の座席文脈だけを別の非永続フィールド
+          //     （liveEvtDeal）に切り出した。これで
+          //     (1) 観戦モードのライブ配信は正しい座席文脈で回転スキップされ
+          //         （1段階目の要件）、
+          //     (2) playerId/latestEvtDealは観戦dealで消えず永続化を跨いで
+          //         生存し（元のバグ)、
+          //     (3) 観戦中のフィルター変更でヒーロー統計が観戦テーブルの
+          //         顔ぶれに上書きされない（今回の指摘）
+          //     の3つを同時に満たす。
+          //
+          // このガード分離がplayerId消失を再導入しないことの確認: chrome.storage.local
+          // からの復元（restoreState(), poker-chase-service.ts）は保存済みの
+          // `state.playerId` を直接 `_playerId` に代入するだけで、`state.latestEvtDeal`
+          // から playerId を再導出する経路は存在しない。したがって（本来ここでは
+          // 起こらないが）Player 不在の latestEvtDeal が万一永続化されていても、
+          // playerId 自体は影響を受けない
+          // （poker-chase-service.test.ts の観戦モード回帰テストで検証済み）。
+          if (event.Player?.SeatIndex !== undefined) {
+            this.service.playerId = event.SeatUserIds[event.Player.SeatIndex]
+            // 席マッピング用に最新のEVT_DEALを保存（ヒーロー在籍時のみ更新・永続化対象）
+            this.service.latestEvtDeal = event
+          }
+          // ライブ配信用の現在の座席文脈（Player有無に関わらず毎回更新・非永続）
+          this.service.liveEvtDeal = event
 
           // Capture hero's hole cards for hand improvement calculations (only in real-time play)
           if (!this.service.batchMode && event.Player?.HoleCards && event.Player.HoleCards.length === 2 && this.service.playerId) {
