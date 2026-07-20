@@ -13,10 +13,38 @@
  *   3. Service Worker起動時（`initUpdateManager()`呼び出し時）
  *
  * SAFE（安全）の定義（`isSafeToUpdate()`）:
- *   - アクティブなゲームセッションが無い（EVT_SESSION_DETAILS〜
- *     EVT_SESSION_RESULTSの間はunsafe。content_script.tsのkeepaliveゲート
- *     [`isGameActive`]と同じ境界イベントを、Service Worker側で
- *     `markSessionActive()`/`markSessionInactive()`により独立に追跡する）
+ *   - アクティブなゲームセッションが無い（EVT_ENTRY_QUEUED(201)/EVT_DEAL(303)/
+ *     EVT_SESSION_DETAILS(308)のいずれかからEVT_SESSION_RESULTS(309)/
+ *     EVT_ENTRY_CANCELLED(203)までの間はunsafe。content_script.tsの
+ *     keepaliveゲート[`isGameActive`]と同じ境界イベントを、Service Worker
+ *     側で`markSessionActive()`/`markSessionInactive()`により独立に
+ *     追跡する。308単独をACTIVEのトリガーにしないのは、
+ *     docs/api-events.md:99が明記する通り308の欠落（観測ギャップ）が
+ *     正常系のバリアントとして起こりうるため——309でinactiveにした直後、
+ *     308無しで次の試合が201/303から始まるケースをinactiveのまま
+ *     固めてしまうと、この安全性述語がゲーム中に「安全」と誤判定して
+ *     Service Workerをreloadしてしまう（release-blocker監査finding B）。
+ *     203(参加取消申込)もINACTIVEトリガーに加えているのは、参加後・
+ *     着席前にキャンセルするとハンドが一度も始まらず309も届かない
+ *     ケースがあり（2026-07-21 pass-3 codexレビュー指摘）、それを
+ *     放置するとsessionActivityがactiveのまま固まるため。
+ *
+ *     ACTIVE化・INACTIVE化はいずれも`event-ingestion.ts`の
+ *     `ingestionQueue`（Raw Event Lakeの耐久性バリア・重複排除の内側）
+ *     で直列に決着する——キュー自体が真の到着順序を保証するため、
+ *     どちらの遷移も「決着が遅れて古い遷移が新しい遷移を上書きする」
+ *     心配が構造的に無い（2026-07-21 pass-3: 以前は同期的な楽観的ACTIVE
+ *     化+到着シーケンス番号ゲーティング+ロールバックという設計だったが、
+ *     reconnectが複数の重複をまとめて再送するケースでロールバックの
+ *     退避スロットが上書きされる等、対症療法が自分自身と衝突し始めた
+ *     ため、根本的にシンプル化した）。
+ *
+ *     この直列化の裏で残る唯一の懸念——「rawの書き込みがキューに詰まって
+ *     いる間、reload判定がまだ反映されていない古いsessionActivityを
+ *     読んでしまう」——は書く側ではなく、全reload経路が通る
+ *     `commitReloadIfStillSafe()`で解決する。同関数はキューを安定するまで
+ *     drainしたうえで、drain後にtailが差し替わっていないことと
+ *     `isSafeToUpdate()`を、reloadとの間にawaitを挟まず最終確認する。
  *   - `AutoSyncService.isSyncing`がfalse（同期中でない）
  *   - `currentOperationState.type === 'idle'`（export/import/rebuild中でない）
  * 上記いずれかが「unknown」（SW再起動直後などでセッション状態を未観測）の
@@ -61,19 +89,116 @@ type SessionActivity = 'unknown' | 'active' | 'inactive'
 /** SW再起動のたびに`'unknown'`にリセットされる（保守的なデフォルト = unsafe扱い） */
 let sessionActivity: SessionActivity = 'unknown'
 
-/** `event-ingestion.ts`のEVT_SESSION_DETAILS(308)受信時に呼ぶ */
+/** 1つのSWインスタンスからreloadを二重commitしないための同期ガード。 */
+let reloadCommitted = false
+
+/**
+ * `event-ingestion.ts`のEVT_ENTRY_QUEUED(201)/EVT_DEAL(303, Player在席時)/
+ * EVT_SESSION_DETAILS(308)いずれかの受信時に呼ぶ（308単独に頼らない理由は
+ * 本ファイル冒頭のコメント参照）。`event-ingestion.ts`の`ingestionQueue`
+ * （Raw Event Lakeの耐久性バリア・重複排除判定の後ろ）から直列に呼ばれる
+ * ため、単純に最新の呼び出しを適用するだけでよい（到着順序はキュー自体が
+ * 保証する）。
+ */
 export const markSessionActive = (): void => {
   sessionActivity = 'active'
 }
 
-/** `event-ingestion.ts`のEVT_SESSION_RESULTS(309)受信時に呼ぶ */
+/**
+ * `event-ingestion.ts`のEVT_SESSION_RESULTS(309)/EVT_ENTRY_CANCELLED(203)
+ * 受信時に呼ぶ。`markSessionActive()`と同じく`ingestionQueue`から直列に
+ * 呼ばれる。
+ */
 export const markSessionInactive = (): void => {
   sessionActivity = 'inactive'
+}
+
+/**
+ * `event-ingestion.ts`の`registerEventIngestion()`が登録する、
+ * 「現時点までにキューへ積まれた取り込み処理が全て決着するまで待つ」
+ * プロバイダ。未登録（`registerEventIngestion()`が一度も呼ばれていない
+ * ごく初期のSW起動時など）ならno-op。
+ */
+type IngestionDrainProvider = () => Promise<void>
+
+let ingestionDrainProvider: IngestionDrainProvider | undefined
+
+/**
+ * `event-ingestion.ts`専用: このモジュールの外からsessionActivityの
+ * 「書き込みタイミング」を変えることなく、reload判定地点だけが安全に
+ * 待てるようにするための登録フック（circular importを避けるための
+ * 依存性逆転——update-manager.tsはevent-ingestion.tsを一切importしない）。
+ */
+export const setIngestionDrainProvider = (provider: IngestionDrainProvider | undefined): void => {
+  ingestionDrainProvider = provider
+}
+
+/** `awaitIngestionDrain()`のループ安全上限。通常は数イテレーションで
+ * 安定するが、プロバイダ実装のバグ等で新しいタスクが積まれ続ける異常系
+ * でも呼び出し元を無期限にブロックしないための保険（P1, codexレビュー
+ * 指摘 2026-07-21, pass-4, "Wait for tasks appended while draining"）。 */
+const MAX_DRAIN_ITERATIONS = 1000
+
+/**
+ * reload判定（`isSafeToUpdate()`を使う各エントリーポイント）の直前で待つ
+ * 「キュー・ドレイン・バリア」（2026-07-21 pass-3 codexレビュー3件の帰結、
+ * 詳細は本ファイル冒頭のSAFE定義コメント参照）。
+ *
+ * ACTIVE化・INACTIVE化は`event-ingestion.ts`の`ingestionQueue`内で決着する
+ * ため、そのキューにまだ何か積まれている（rawの書き込みが進行中、または
+ * 重複判定待ち）間は、`sessionActivity`が最新の生イベントを反映していない
+ * 可能性がある。この関数は「呼び出し時点までに到着したイベントの処理が
+ * 全て終わるまで」待つことで、reload判定が古い/遷移途中の状態を読んで
+ * しまうことを防ぐ（呼び出し後に新たに到着したイベントは、因果的に
+ * この判定より後なので待つ必要が無い）。
+ *
+ * ループする理由（P1, codexレビュー指摘 2026-07-21, pass-4, "Wait for
+ * tasks appended while draining"）: `ingestionDrainProvider()`は呼んだ
+ * 瞬間のキュー末尾のスナップショットを返すだけなので、そのPromiseの
+ * 決着を待っている間に新しいイベントが到着して`ingestionQueue`が
+ * 再代入されると、待っていたスナップショットは「古い末尾」のまま
+ * 決着してしまい、新しく積まれた分の決着を待たずに戻ってしまう
+ * （ドレインバリアを使っている呼び出し元でも、その僅かな隙間で
+ * mid-hand reloadが起こりうる）。決着後にもう一度プロバイダを呼び直し、
+ * 参照が変わっていれば（＝待っている間に何か新しく積まれた）そちらも
+ * 待つ、を「2回連続で同じ参照が返る」まで繰り返すことで、呼び出し
+ * 時点までに到着した全てのイベントの決着を確実に待つ。
+ *
+ * この公開関数は既存のテスト・診断用に「待つ」だけのAPIを保つ。reload
+ * commitでは、安定確認済みtailを返す内部版を使い、async関数から呼び出し元へ
+ * 戻るmicrotask境界で新しいtailが積まれた場合も最終同期チェックで検出する。
+ */
+interface IngestionDrainCheckpoint {
+  stable: boolean
+  tail: Promise<void> | undefined
+}
+
+const awaitStableIngestionCheckpoint = async (): Promise<IngestionDrainCheckpoint> => {
+  let previous: Promise<void> | undefined
+  let current = ingestionDrainProvider?.()
+  let iterations = 0
+  while (current !== previous && iterations < MAX_DRAIN_ITERATIONS) {
+    previous = current
+    await current
+    current = ingestionDrainProvider?.()
+    iterations++
+  }
+
+  const stable = current === previous
+  if (!stable) {
+    console.warn('[update-manager] awaitIngestionDrain: hit the iteration safety cap -- the ingestion queue may be receiving new work faster than it can settle')
+  }
+  return { stable, tail: current }
+}
+
+export const awaitIngestionDrain = async (): Promise<void> => {
+  await awaitStableIngestionCheckpoint()
 }
 
 /** テスト専用: モジュールスコープの状態をリセットする */
 export const __resetUpdateManagerStateForTests = (): void => {
   sessionActivity = 'unknown'
+  reloadCommitted = false
 }
 
 /** 保留中アップデートを適用できない理由を日本語で説明する（Popup表示用） */
@@ -130,26 +255,86 @@ const clearBadge = async (): Promise<void> => {
 }
 
 /**
+ * 全ての`chrome.runtime.reload()`が通る唯一のcommit point。
+ *
+ * 1. 現在のingestion tailを「同じ参照が2回続く」までdrainする。
+ * 2. async関数の復帰microtaskより先に新しいmessageがenqueueされてtailが
+ *    差し替わった場合は、同期比較で検出して1へ戻る。
+ * 3. 安定したtailの同一性・sessionActivity/同期/operationの安全性・
+ *    二重commitガードを、`chrome.runtime.reload()`との間にawaitを挟まず
+ *    確認する。
+ *
+ * これにより、storage/badge await中だけでなく、drain自体が返した直後の
+ * microtask境界で201/303/308等が積まれた場合も、未処理のACTIVE遷移を
+ * 古いINACTIVE状態で追い越してreloadすることはない。drainの安全上限に
+ * 達した場合も「安全」とはみなさず、保留したまま次の再チェックへ委ねる。
+ */
+type ReloadCommitResult = 'committed' | 'already-committed' | 'unsafe'
+
+const commitReloadIfStillSafe = async (commitLog?: string): Promise<ReloadCommitResult> => {
+  for (let attempt = 0; attempt < MAX_DRAIN_ITERATIONS; attempt++) {
+    const checkpoint = await awaitStableIngestionCheckpoint()
+    if (!checkpoint.stable) return 'unsafe'
+
+    // `awaitStableIngestionCheckpoint()`のreturnからこの継続へ移る間にも
+    // microtaskが走りうる。現在tailを同期的に取り直し、変わっていれば
+    // その新tailもdrainする。ここからreloadまではawaitを一切挟まない。
+    if (ingestionDrainProvider?.() !== checkpoint.tail) continue
+    if (reloadCommitted) return 'already-committed'
+    if (!isSafeToUpdate()) return 'unsafe'
+
+    reloadCommitted = true
+    if (commitLog) console.log(commitLog)
+    chrome.runtime.reload()
+    // reload後のクリアはfire-and-forget。SWが即終了して未完了でも、次回
+    // startupのバージョン一致分岐がstale stateを確実に片付ける。
+    clearPendingUpdateState().catch(err => console.error('[update-manager] Failed to clear pending update state after reload:', err))
+    clearBadge().catch(err => console.error('[update-manager] Failed to clear badge after reload:', err))
+    return 'committed'
+  }
+
+  console.warn('[update-manager] Reload commit aborted -- ingestion tail never stayed stable at the commit point')
+  return 'unsafe'
+}
+
+/**
  * `chrome.runtime.onUpdateAvailable`のハンドラー本体。
  * SAFEなら即座に適用、そうでなければ保留状態を記録してバッジを出す。
  */
 export const handleUpdateAvailable = async (details: { version: string }): Promise<void> => {
-  if (isSafeToUpdate()) {
-    console.log(`[update-manager] Update ${details.version} available and safe -- applying immediately`)
-    await clearPendingUpdateState()
-    await clearBadge()
-    chrome.runtime.reload()
-    return
-  }
-
-  console.log(`[update-manager] Update ${details.version} available but unsafe (${describeUnsafeReason()}) -- pending`)
+  // まず保留状態を永続化してからドレインする（P2, codexレビュー指摘
+  // 2026-07-21, pass-5, "Persist pending updates before draining
+  // ingestion"）: この関数は`chrome.runtime.onUpdateAvailable`リスナー
+  // からfire-and-forgetで呼ばれる（`initUpdateManager()`参照）。下の
+  // `awaitIngestionDrain()`はキューが詰まっていれば長時間かかりうるが、
+  // その待機中にService Workerがサスペンド/強制終了されると、この関数
+  // 自体のPromiseチェーンごと消え去り、どこにも保留記録が残らない
+  // （SW再起動時契機の`recheckPendingUpdate()`は`pendingUpdate`が
+  // 無ければ何もすることが無く、ダウンロード済みの更新が事実上失われる）。
+  // 先に「保留中」として記録しておけば、途中でSWが落ちてもSW再起動時に
+  // 必ず拾われる。安全であることが分かった場合のクリアは末尾で行う。
   await setPendingUpdateState({ pending: true, version: details.version, detectedAt: Date.now() })
   await setBadge()
+
+  const result = await commitReloadIfStillSafe(
+    `[update-manager] Update ${details.version} available and safe -- applying immediately`
+  )
+  if (result === 'unsafe') {
+    console.log(`[update-manager] Update ${details.version} available but unsafe (${describeUnsafeReason()}) -- pending`)
+  }
 }
 
 /**
  * 保留中アップデートの安全性を再チェックし、SAFEになっていれば適用する。
- * session end / operation completion / SW startup の3箇所から呼ばれる。
+ * session end / entry cancellation / operation completion / SW startup の
+ * 4箇所から呼ばれる。
+ *
+ * pending stateやstale-version cleanupに必要なawaitを全て終えた後、共有の
+ * `commitReloadIfStillSafe()`が改めてdrainと最終tail比較を行う。309/203の
+ * ingestion内呼び出しでも、最初の`getPendingUpdateState()` awaitで現在の
+ * `processEvent`が先にreturnできるため、自己参照デッドロックは起こらない。
+ * 呼び出し元ごとのgeneration callbackは不要で、operation completion・
+ * SW startupを含む全経路が同じcommit保証を得る。
  */
 export const recheckPendingUpdate = async (): Promise<void> => {
   const state = await getPendingUpdateState()
@@ -168,16 +353,15 @@ export const recheckPendingUpdate = async (): Promise<void> => {
     return
   }
 
-  if (isSafeToUpdate()) {
-    console.log('[update-manager] Pending update is now safe to apply -- applying')
-    await clearPendingUpdateState()
-    await clearBadge()
-    chrome.runtime.reload()
-    return
+  const result = await commitReloadIfStillSafe(
+    '[update-manager] Pending update is now safe to apply -- applying'
+  )
+  if (result === 'unsafe') {
+    // まだunsafe、またはdrainが上限内で安定しなかった: バッジを再アサート
+    // （rebuild-advisory解消後なら表示）。別経路がreloadをcommit済みなら
+    // 先行経路のclearBadgeと競合するため何もしない。
+    await setBadge()
   }
-
-  // まだunsafe: バッジを再アサート（rebuild-advisoryが解消済みなら表示に切り替わる）
-  await setBadge()
 }
 
 /**
@@ -185,15 +369,13 @@ export const recheckPendingUpdate = async (): Promise<void> => {
  * SAFEなら適用、そうでなければ理由を返す（Popupに表示させる）。
  */
 export const applyUpdateNow = async (): Promise<ApplyUpdateResult> => {
-  if (!isSafeToUpdate()) {
+  const result = await commitReloadIfStillSafe()
+  if (result === 'unsafe') {
     const reason = describeUnsafeReason()
     const current = await getPendingUpdateState()
     await setPendingUpdateState({ ...current, pending: true, lastBlockedReason: reason })
     return { applied: false, reason }
   }
-
-  await clearPendingUpdateState()
-  chrome.runtime.reload()
   return { applied: true }
 }
 
