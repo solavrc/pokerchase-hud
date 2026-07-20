@@ -594,7 +594,23 @@ export class AutoSyncService {
         for (const event of events) {
           lastProcessedTimestamp = Math.max(lastProcessedTimestamp, event.timestamp || 0)
           this.restoreSessionEvent(service, event)
-          if (isApiEventType(event, ApiType.EVT_DEAL)) latestDealEvent = event
+          // 席着席時のみ latestDealEvent を更新する（findLatestPlayerDealEvent()
+          // ／aggregate-events-stream.tsのEVT_DEALケースと同じ判別: event.Player?.
+          // SeatIndex !== undefined）。ダウンロード履歴の末尾が観戦モードのdeal
+          // （ヒーロー敗退後もクライアントが他プレイヤーのテーブルを受信し続ける
+          // ケース）で終わっていた場合、ここで無条件に最後のEVT_DEALを採用すると、
+          // 下のrestoreLatestDeal()がそれを`service.latestEvtDeal`（ヒーロー在籍の
+          // 文脈・setterがliveEvtDealも同期する）に代入してしまい、クラウド復元
+          // 直後にヒーローのplayerIdを再導出できないばかりか、#177が塞いだはずの
+          // 「観戦テーブルの顔ぶれでヒーロー統計が上書きされる」混在状態を
+          // 復元パス（新規インストールでのクラウドDL）自体が再現してしまう
+          // （codex #177マージ後レビュー、2026-07-20指摘）。観戦モードのdealは
+          // ここで単純に無視する（意図的な選択: リビルドはライブ表示の瞬間では
+          // ないため、liveEvtDeal相当の非永続フィールドへ別途フィードする必要は
+          // ない -- 次の本物のライブdealが来ればliveEvtDealは正しく更新される）。
+          if (isApiEventType(event, ApiType.EVT_DEAL) && event.Player?.SeatIndex !== undefined) {
+            latestDealEvent = event
+          }
         }
       }
 
@@ -666,6 +682,10 @@ export class AutoSyncService {
       // spectator-mode liveEvtDeal from before this cloud-sync restore ran)
       // broadcasts paired with this restored hero-anchored deal's seat
       // context, not a leftover one (codex #177 3rd review round P2).
+      // `latestEvtDeal`'s own contract (poker-chase-service.ts) requires
+      // callers to only ever assign a deal with Player.SeatIndex present --
+      // rebuildLocalEntities() above now upholds that (guards latestDealEvent
+      // to seated deals only), so this is never a spectator-mode deal.
       service.latestEvtDeal = latestDealEvent
       const playerSeatIndex = latestDealEvent.Player?.SeatIndex
       if (playerSeatIndex !== undefined && playerSeatIndex >= 0) {
