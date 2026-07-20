@@ -145,19 +145,39 @@ Learned from the 2026-07 season-3 silent-drop incident (a PokerChase payload cha
 
 #### Codex Review Loop Protocol
 
-PRs in this repo are reviewed by Codex automatically — **auto-review is enabled for solavrc/* repos: the connector reviews on PR creation AND on every push. Do not comment `@codex review`** (it doubles the review cost); the mention has exactly two legitimate uses: (a) a fallback after confirming an auto-review did not fire (no outcome for the head SHA on any channel after the in-progress signal clears / ~10min), and (b) **obtaining the second consecutive clean pass** on a semantics-bearing PR — auto-reviews only trigger on pushes, so after a clean first pass (which may be nothing more than a thumbs-up on the description) there is no code change to push and the confirmation pass must be requested explicitly. While a review is in progress, an **eyes reaction sits on the PR description**. Codex review is valued for **diversity**: a different model reading the diff in a clean context catches problems the authoring agent's self-review structurally cannot. Self-review (reading the final commit's full diff) is always performed in addition, never as a substitute.
+PRs in this repo are reviewed by Codex automatically — **auto-review is enabled for solavrc/* repos: the connector reviews on PR creation and on every push** (this is repo-specific configuration; other repos differ — verify a repo's review setup from its recent PRs before assuming any of this section applies there). While a review is in progress, an eyes reaction sits on the PR description. Codex review is valued for **diversity**: a different model reading the diff in a clean context catches problems the authoring agent's self-review structurally cannot. Self-review (reading the final commit's full diff) is always performed in addition, never as a substitute. Note: Codex positions its GitHub review as an additional high-signal pass, not a formal approval — the termination conditions below are this repo's own orchestration policy, not a Codex contract.
 
-**Convergence condition (when is a PR merge-ready?)**
-- Semantics-bearing changes (sync/watermark logic, statistics, session/state management, event processing): keep the fix → re-request loop running until **two consecutive clean outcomes** on the head commit. A clean outcome is detected STRUCTURALLY: a codex response bound to the current head SHA exists AND that pass produced zero `Badge`-marked inline findings. Do not string-match the verdict message — its wording varies (the "Didn't find any major issues" stem has at least 17 known flavor-text variants and may change entirely); treat verdict text as a secondary signal only.
-- Docs and trivially-mechanical changes: one clean verdict suffices.
-- A fix commit that goes beyond finding-scoped local patches (new mechanism, rebase integration, cross-file ripple) always needs a fresh review pass before merge — never merge such a commit on an older verdict.
+**Deterministic merge gate.** A PR is merge-ready only when ALL of the following hold, checked mechanically:
 
-**Loop guards (these are what prevent cost blow-up — the loop has no natural termination otherwise)**
-- Reviews are triggered by pushes: push the fix commit and wait for its auto-review. Manual mentions are limited to the two uses above — the non-fire fallback (at most once per commit) and the second-clean confirmation pass.
-- **Verdict detection must be deterministic and cover ALL delivery channels.** Codex's verdict arrives variably as (a) an issue comment, (b) a review object, or (c) a 👍 reaction on the trigger comment, with inline finding comments carrying `P1/P2/P3 Badge` markers. A watcher that polls only a subset will false-negative and provoke redundant (costly) re-triggers. Check all channels before declaring silence, and **bind every verdict to its `Reviewed commit` SHA — only a verdict for the current head SHA counts** (a clean verdict for a stale commit is not convergence evidence).
-- If ~6 total passes elapse without two consecutive cleans, STOP: escalate to the repo owner with the open findings instead of merging or continuing the loop.
+```text
+MERGE_READY =
+  reviewed_commit_sha == current_head_sha        # stale verdicts never count
+  AND actionable_findings == 0                   # no unaddressed Badge-marked inline findings
+  AND unresolved_review_threads == 0
+  AND required_checks_on_exact_head == SUCCESS
+  AND mergeable == MERGEABLE
+  AND clean_streak_requirement_met               # see below
+  AND head_sha_unchanged_after_final_refresh
+```
 
-**Division of labor (learned 2026-07-20, from an actual runaway-loop incident)**: completion detection, retry decisions, and termination conditions must be encoded deterministically (string/marker checks, bounded counters) — never left to in-context judgment, which is exactly how the incident's redundant re-triggers happened (a deterministic-but-incomplete watcher missed the verdict channel, and an unbounded judgment call re-triggered on the false silence). What stays with the reviewing agent's judgment: whether a finding is valid, and how to scope the fix.
+Clean-streak requirement: semantics-bearing changes (sync/watermark logic, statistics, session/state management, event processing) need **two consecutive clean passes on the same head SHA**; docs and trivially-mechanical changes need one. Since auto-review fires once per push, the second pass cannot arrive on its own: **after a clean first pass (which may surface only as a thumbs-up reaction on the PR description), request the confirmation pass with a single `@codex review` mention — at most one confirmation mention per head SHA.** If any pass yields findings, the clean streak resets to zero; fix, push (auto-review fires), and continue. A fix commit that goes beyond finding-scoped local patches (new mechanism, rebase integration, cross-file ripple) always resets the streak regardless of verdict history.
+
+**Mentions have exactly two legitimate uses**: (a) the non-fire fallback — at most once per head SHA, only after confirming no outcome for that SHA on any channel ~10min after the in-progress signal clears; (b) the second-clean confirmation pass — at most once per head SHA. Any other mention doubles review cost for nothing.
+
+**Outcome detection is structural, never string-matched.** The verdict message's flavor text varies (17+ known variants; not a stable contract). Determine each pass's outcome by combining, for the current head SHA: `Reviewed commit` SHA bindings in comment/review bodies; Badge-marked inline findings created during the pass; unresolved review-thread count; and PR-description reactions (eyes = in progress; thumbs-up = clean) — noting that **reactions accumulate and are not SHA-bound**, so a reaction only counts for the pass whose push/mention it postdates. If the channels disagree or the outcome is ambiguous, do not merge — escalate.
+
+**Finite-exit rules (loop cost control):**
+
+```text
+- silence retry per head SHA:              max 1
+- total review passes per PR:              max 6, then STOP_ESCALATE
+- same finding reappears after two fixes:  STOP_ESCALATE
+- verdict SHA != head SHA:                 ignore as stale
+- ambiguous outcome channels:              STOP_ESCALATE (never merge on ambiguity)
+- cap reached / conflict / undecidable:    hand back to the owner
+```
+
+**Merge authority.** The repository owner has explicitly granted autonomous merging on MERGE_READY (standing instruction, 2026-07-18). If that grant is ever withdrawn, the terminal state becomes `MERGE_READY / AWAITING_OWNER_APPROVAL` and the actual merge waits for an owner instruction.
 
 #### Version Control
 
