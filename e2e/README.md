@@ -154,6 +154,25 @@ npx tsx e2e/tools/extract-fixture.ts <path-to-raw-capture.ndjson> [output.ndjson
 - Default output is `e2e/fixtures/session-3hands.ndjson`; re-running with
   the same source and options is deterministic (byte-identical output).
 
+### `no-replay.html`: a fresh mount with zero WS events
+
+`e2e/public/no-replay.html` is a second static page served by the same
+fixture server, at `http://localhost:<port>/no-replay.html`. It has the
+same `#unity-container` shell `content_script.ts` needs, but -- unlike
+`fixture.html` -- **no inline script ever opens a WebSocket**, so navigating
+to it triggers zero replay/API events. It exists to test the pre-game hero
+stats fallback (`getLatestSessionStats({ preGame: true })`,
+`background/import-export.ts`): replay the standard fixture once (so the
+extension's DB + persisted `service.playerId` are populated), then navigate
+the *same* browser to `no-replay.html` (`page.goto`, not `close`+`launch` --
+the background service worker and its storage must survive the navigation)
+to get a genuinely fresh HUD mount with no live lineup, and assert the hero
+panel (seat 0) still renders real stats. There's no dedicated CLI
+subcommand for this navigation step (`e2e/run.ts` has no `goto`) -- drive it
+with a short one-off script using `attachHarness()` + `h.gamePage.goto(...)`
+(see `e2e/harness.ts`'s exported `attachHarness`), the same pattern
+`e2e/run.ts`'s own subcommands use internally.
+
 ## Harness API
 
 `e2e/harness.ts` is importable directly for programmatic/scripted use
@@ -303,6 +322,7 @@ e2e/
   fixture-server.ts         HTTP (fixture page) + WS (NDJSON replay) server
   run.ts                    step-by-step CLI (launch/status/screenshot/eval/close/...)
   public/fixture.html       minimal page with #unity-container + WS client
+  public/no-replay.html     same shell, no WS client -- fresh mount, zero events (pre-game hero stats)
   fixtures/session-3hands.ndjson   anonymized fixture (committed)
   scenarios/smoke.ts        scripted pass/fail smoke test
   tools/

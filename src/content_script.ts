@@ -13,6 +13,7 @@ import App from './components/App'
 import type { ChromeMessage } from './types/messages'
 import { MESSAGE_ACTIONS as EVENTS } from './types/messages'
 import type { AllPlayersRealTimeStats } from './realtime-stats/realtime-stats-service'
+import { setPendingStats } from './utils/pending-stats-cache'
 import { RuntimePortManager } from './utils/runtime-port-manager'
 /** !!! BACKGROUND、WEB_ACCESSIBLE_RESOURCES からインポートしないこと !!! */
 
@@ -156,6 +157,28 @@ document.addEventListener('visibilitychange', () => {
   }
 })
 
+/**
+ * バックグラウンドサービスワーカーに最新統計をリクエストする。
+ * インポート後の`refreshStats`ラウンドトリップと、HUDマウント直後の
+ * プリゲーム・ヒーロースタッツ取得（`mountApp()`参照）の両方で使う共通処理。
+ * レスポンスは`messageHandlers.latestStats`が受け取る。
+ *
+ * `preGame`はマウント直後の呼び出しでのみtrueにする
+ * （background/import-export.tsのgetLatestSessionStats参照）。
+ * refreshStats経由の呼び出しはpreGame省略（=false相当）のまま、
+ * 元々の「常に何もしない」挙動を保つ -- インポート完了時点で既に本物の
+ * 再計算・ブロードキャストがトリガーされているため、そちらにまで
+ * ヒーロー単独フォールバックを効かせると、後から届いた新鮮なフルの
+ * 席順を古いヒーロー単独データで上書きしてしまうレースになりうる。
+ */
+const requestLatestStats = (preGame = false) => {
+  try {
+    chrome.runtime.sendMessage({ action: 'requestLatestStats', preGame })
+  } catch (e) {
+    // 拡張機能のコンテキストが無効な場合は静かに無視
+  }
+}
+
 const messageHandlers: Record<string, (message: ChromeMessage) => void> = {
   updateBattleTypeFilter: (message) => {
     if ('filterOptions' in message) {
@@ -166,9 +189,13 @@ const messageHandlers: Record<string, (message: ChromeMessage) => void> = {
   },
   latestStats: (message) => {
     if ('stats' in message) {
-      window.dispatchEvent(new CustomEvent(POKER_CHASE_SERVICE_EVENT, {
-        detail: { stats: message.stats }
-      }))
+      const data: StatsData = { stats: message.stats }
+      // App's mount effect may not have registered its POKER_CHASE_SERVICE_EVENT
+      // listener yet (warm SW + small local DB can resolve this before React's
+      // effects flush) -- cache it so App can replay a pre-mount arrival instead
+      // of silently losing it. See pending-stats-cache.ts for the full race.
+      setPendingStats(data)
+      window.dispatchEvent(new CustomEvent(POKER_CHASE_SERVICE_EVENT, { detail: data }))
     }
   },
   handLogEvent: (message) => {
@@ -188,11 +215,7 @@ const messageHandlers: Record<string, (message: ChromeMessage) => void> = {
   refreshStats: () => {
     // インポート後の統計更新をリクエスト
     // 最新の統計をバックグラウンドサービスから取得
-    try {
-      chrome.runtime.sendMessage({ action: 'requestLatestStats' })
-    } catch (e) {
-      // 拡張機能のコンテキストが無効な場合は静かに無視
-    }
+    requestLatestStats()
   }
 }
 
@@ -259,5 +282,12 @@ const mountApp = () => {
   const appRoot = document.createElement('div')
   unityContainer.appendChild(appRoot)
   createRoot(appRoot).render(createElement(App))
+
+  // プリゲーム・ヒーロースタッツ: 最初のEVT_DEALより前でも、既知のヒーローが
+  // いればその場でHUDにスタッツを表示する。バックグラウンド側
+  // （getLatestSessionStats, background/import-export.ts）がplayerId未知・
+  // 既存のライブ席順・バッチモード中の場合は何も送り返さないので、それ以外の
+  // ケース（フレッシュインストール等）は無変化。
+  requestLatestStats(true)
 }
 mountApp()

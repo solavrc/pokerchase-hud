@@ -136,6 +136,21 @@ class PokerChaseService {
   // Initialization promise
   public readonly ready: Promise<void>
 
+  // background.ts's loadOptions().then(...) (startup filter restoration) resolves this once
+  // battleTypeFilter/tableSizeFilter/handLimitFilter/statDisplayConfigs have been applied
+  // (see beginFiltersRestore()/markFiltersRestored()). `ready` alone only covers
+  // chrome.storage.local's playerId/session restore -- callers that need the *filters*
+  // settled too (e.g. the pre-game hero stats fallback in background/import-export.ts)
+  // must await this instead/as well.
+  //
+  // Defaults to an already-resolved promise: only background.ts's real startup path
+  // calls beginFiltersRestore() to arm the gate before it starts restoring options.
+  // Every other construction site (Popup, tests that construct PokerChaseService
+  // directly without running background.ts's bootstrap) never arms it, so awaiting
+  // this stays a no-op for them -- there is nothing for those call sites to wait on.
+  public filtersRestored: Promise<void> = Promise.resolve()
+  private resolveFiltersRestored: (() => void) | undefined
+
   // 永続化不要なプロパティ
   battleTypeFilter?: number[] = undefined // undefined = all, array = specific battleTypes
   tableSizeFilter?: TableSizeLayer[] = undefined // undefined = all layers (no filtering), array = selected layers (C案)
@@ -186,6 +201,28 @@ class PokerChaseService {
   /** Reset session and clear player data */
   readonly resetSession = () => {
     this._sessionData.reset()
+  }
+
+  /**
+   * background.ts calls this synchronously, before it kicks off its startup
+   * loadOptions() call, to arm the `filtersRestored` gate (replacing the
+   * default already-resolved promise with a pending one). Pairs with
+   * markFiltersRestored().
+   */
+  readonly beginFiltersRestore = () => {
+    this.filtersRestored = new Promise(resolve => { this.resolveFiltersRestored = resolve })
+  }
+
+  /**
+   * background.ts calls this once, after its startup loadOptions() call
+   * settles (both the saved-options and default-filters success branches,
+   * and the error branch -- see background.ts) once battleTypeFilter/
+   * tableSizeFilter/handLimitFilter/statDisplayConfigs have all been
+   * assigned. Resolves `filtersRestored`. No-op if beginFiltersRestore()
+   * was never called (nothing to resolve).
+   */
+  readonly markFiltersRestored = () => {
+    this.resolveFiltersRestored?.()
   }
 
   /** Persist current state to Chrome Storage with debouncing */
