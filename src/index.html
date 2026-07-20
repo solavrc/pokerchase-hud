@@ -4,7 +4,53 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta http-equiv="X-UA-Compatible" content="ie=edge" />
+    <!-- Avoids a white scrollbar flash alongside the background fix below. -->
+    <meta name="color-scheme" content="dark light" />
     <title>PokerChase HUD</title>
+    <!--
+      Instant paint, before popup.js (a minified MUI+React bundle) has even
+      been fetched/parsed, and before the #145 defer-until-theme-loaded first
+      render -- without this, the popup window shows the browser's default
+      white background for ~0.5s on every open (see fix/popup-white-flash).
+
+      `html` carries the actual theme ground color; `body` stays transparent
+      so that color shows through underneath it. This CSS-only rule handles
+      'auto' mode (the default) via `prefers-color-scheme`. Users who
+      explicitly forced a mode that disagrees with their OS scheme are
+      handled by `popup-boot.js` below, which overrides `html`'s inline
+      style before popup.js runs once it knows the saved mode.
+
+      Colors are duplicated from DARK_FELT.background / MODERN_LIGHT.background
+      in src/components/popup/theme.ts -- keep in sync (see the comment
+      there, and in src/components/popup/popup-boot-theme.ts).
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+      }
+      body {
+        width: 380px;
+        min-height: 400px;
+        background: transparent;
+      }
+      html {
+        background-color: #faf9f6; /* MODERN_LIGHT.background */
+      }
+      @media (prefers-color-scheme: dark) {
+        html {
+          background-color: #0d1512; /* DARK_FELT.background */
+        }
+      }
+    </style>
+    <!--
+      Deliberately non-module and loaded before popup.js: a tiny synchronous
+      script that reads the saved theme mode back out of localStorage (see
+      popup-theme-storage.ts) and, if it disagrees with the OS scheme,
+      overrides `html`'s background before anything else paints. See
+      popup-boot.ts for the full rationale.
+    -->
+    <script src="./popup-boot.js"></script>
   </head>
 
   <body>
