@@ -1253,7 +1253,7 @@ describe('SPR (Stack to Pot Ratio) Tracking', () => {
           const potOddsData = data.stats.heroStats.potOdds.value
           // Hero has 12000 chips in second hand, pot is 300
           // SPR should be 12000 / 300 = 40.0
-          expect(potOddsData.spr).toBe(40.0)
+          expect(potOddsData).toMatchObject({ spr: 40.0 })
         }
       }
     })
