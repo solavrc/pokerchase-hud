@@ -46,6 +46,13 @@ interface HudProps {
   hudDisplayMode?: 'full' | 'compact'
   /** しきい値ベースの値カラーリング（compact/full両モード共通）。UIConfig.hudColorCoding参照 */
   hudColorCoding?: boolean
+  /**
+   * bustした（最新のlineupに不在の）プレイヤーの、直近キャッシュされた統計を
+   * ミュート表示中かどうか（App.tsxの座席単位dimCache参照）。trueの場合、
+   * パネル全体を減光しヘッダーに「離席」バッジを出す。ドリルダウン等の
+   * インタラクティブ要素はplayerId経由でそのまま機能する。
+   */
+  isDimmed?: boolean
 }
 
 // Constants
@@ -62,6 +69,11 @@ const EMPTY_SEAT_ID = -1
 const HUD_WIDTH = 240
 const HOVER_BG_COLOR = 'rgba(0, 0, 0, 0.7)'
 const NORMAL_BG_COLOR = 'rgba(0, 0, 0, 0.5)'
+// bustしたプレイヤーのミュート表示（sola仕様）: 統計は読めるが明確に副次的と
+// わかる程度に減光する。opacityはパネル全体（枠・テキスト・compactラインの
+// カラーコーディングを含む）に一様にかかるため、個々のstat色を別途ミュートする
+// 実装は不要。
+const DIMMED_OPACITY = 0.45
 
 // Styles
 const styles = {
@@ -118,7 +130,28 @@ const styles = {
   expandableStatBody: {
     cursor: 'pointer',
   } as CSSProperties,
+
+  dimmedBadge: {
+    fontSize: '8px',
+    fontWeight: 'bold',
+    color: '#ffcc66',
+    border: '1px solid rgba(255, 204, 102, 0.5)',
+    borderRadius: '3px',
+    padding: '0 3px',
+    letterSpacing: '0.2px',
+    whiteSpace: 'nowrap' as const,
+    flexShrink: 0,
+  } as CSSProperties,
 }
+
+// bustしたプレイヤーの薄暗い表示に付ける小さなバッジ。ミュート表示が
+// 「データが壊れている/読み込み中」ではなく「離席中」だと一目でわかるように
+// する（sola仕様: 「背景色薄くするなどして表示自体は目立たず続けて欲しい」）。
+const DimmedBadge = () => (
+  <span style={styles.dimmedBadge} title="このプレイヤーは現在の卓にいません（bust/離席）。表示は最後の統計のままです">
+    離席
+  </span>
+)
 
 // Helper functions
 const formatStatValue = (value: number | [number, number]): string => {
@@ -260,6 +293,10 @@ const Hud = memo((props: HudProps) => {
     backgroundColor: isHovering || isDragging ? HOVER_BG_COLOR : NORMAL_BG_COLOR,
     pointerEvents: 'auto',
     position: 'relative',
+    // bustしたプレイヤーのミュート表示。ホバー/ドラッグ中は視認性のため通常の
+    // 濃さへ戻す（減光したままだとドリルダウン操作等がしづらいため）。
+    opacity: props.isDimmed && !isHovering && !isDragging ? DIMMED_OPACITY : 1,
+    transition: 'opacity 0.15s ease',
   }
   
   // Empty seat
@@ -267,6 +304,7 @@ const Hud = memo((props: HudProps) => {
     return (
       <div ref={containerRef} style={containerStyle}>
         <div
+          data-testid="hud-panel"
           style={backgroundStyle}
           onMouseEnter={() => setIsHovering(true)}
           onMouseLeave={() => setIsHovering(false)}
@@ -283,12 +321,13 @@ const Hud = memo((props: HudProps) => {
       </div>
     )
   }
-  
+
   // Player exists but no stats
   if (displayStats.length === 0) {
     return (
       <div ref={containerRef} style={containerStyle}>
         <div
+          data-testid="hud-panel"
           style={backgroundStyle}
           onMouseEnter={() => setIsHovering(true)}
           onMouseLeave={() => setIsHovering(false)}
@@ -299,6 +338,7 @@ const Hud = memo((props: HudProps) => {
               {playerName || `Player ${props.stat.playerId}`}
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              {props.isDimmed && <DimmedBadge />}
               {props.onTogglePositionalPanel && (
                 <PositionalPanelTrigger
                   playerName={playerName}
@@ -347,6 +387,7 @@ const Hud = memo((props: HudProps) => {
       {/* Regular HUD */}
       <div ref={containerRef} style={containerStyle}>
         <div
+          data-testid="hud-panel"
           style={{
             ...backgroundStyle,
             ...styles.clickable,
@@ -366,6 +407,7 @@ const Hud = memo((props: HudProps) => {
             isRecentHandsPanelOpen={props.isRecentHandsPanelOpen}
             onToggleRecentHandsPanel={props.onToggleRecentHandsPanel}
             statResults={statResultsForHeader}
+            isDimmed={props.isDimmed}
           />
           {hudDisplayMode === 'compact' ? (
             <div
@@ -398,6 +440,7 @@ const Hud = memo((props: HudProps) => {
   if (prevProps.isRecentHandsPanelOpen !== nextProps.isRecentHandsPanelOpen) return false
   if (prevProps.hudDisplayMode !== nextProps.hudDisplayMode) return false
   if (prevProps.hudColorCoding !== nextProps.hudColorCoding) return false
+  if (prevProps.isDimmed !== nextProps.isDimmed) return false
   // statDisplayConfigs governs which stats reach the full grid
   // (filterEnabledDisplayStats) -- a config change must re-render even if
   // statResults itself is unchanged.

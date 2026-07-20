@@ -200,6 +200,24 @@ Default on. Append `?plain=1` to either page's URL (e.g.
 `http://localhost:<port>/fixture.html?plain=1`) to render the old bare
 page for a scenario that specifically needs sterility.
 
+`e2e/fixtures/session-bust.ndjson` (544 events, one full SNG) covers the
+busted-player-dim feature: extracted with the one-off
+`e2e/tools/extract-bust-fixture.ts` (not `extract-fixture.ts` -- this
+scenario needs a specific mid-file session plus its trailing
+`EVT_SESSION_RESULTS`, which `extract-fixture.ts`'s "first
+`EVT_ENTRY_QUEUED` in the file, stop on a hand boundary" rule can't
+express) from source lines 1381-1924 of the 2026-07-04 raw capture (the
+same one `docs/api-events.md`'s "実データ（393,830イベント）" analysis is
+drawn from, reused here since it's already known-good). Reuses
+`anonymize.ts` directly. A player at raw seat 0 busts mid-session
+(`EVT_HAND_RESULTS` `Ranking:6`), a second player at raw seat 2 busts
+several hands later, and the table keeps dealing to the remaining seats
+throughout -- both busted seats' HUD panels should stay dimmed, not clear,
+until the fixture's closing `EVT_SESSION_RESULTS`. Being a fixed-field SNG,
+no new player ever takes either vacated seat (no reseating mid-tournament),
+so this fixture alone can't exercise seat-takeover replacement -- that path
+is covered by `src/components/App.test.tsx`'s unit tests instead.
+
 ### `no-replay.html`: a fresh mount with zero WS events
 
 `e2e/public/no-replay.html` is a second static page served by the same
@@ -371,6 +389,7 @@ e2e/
   public/no-replay.html     same shell, no WS client -- fresh mount, zero events (pre-game hero stats)
   public/table-backdrop.js  shared generic table backdrop for both pages above (?plain=1 to disable)
   fixtures/session-3hands.ndjson   anonymized fixture (committed)
+  fixtures/session-bust.ndjson     anonymized SNG fixture w/ mid-session busts + session end (committed)
   scenarios/smoke.ts        scripted pass/fail smoke test
   tools/
     generate-e2e-manifest.ts   writes e2e/.build/manifest.e2e.json

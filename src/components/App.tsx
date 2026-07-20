@@ -1,8 +1,8 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react"
-import { POKER_CHASE_SERVICE_EVENT } from "../constants/runtime"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { POKER_CHASE_SERVICE_EVENT, POKER_CHASE_SESSION_END_EVENT } from "../constants/runtime"
 import { ApiType, isApiEventType } from "../types"
 import type { Options } from '../utils/options-storage'
-import type { PlayerStats } from "../types"
+import type { ExistPlayerStats, PlayerStats } from "../types"
 import type { StatsData } from "../content_script"
 import { defaultStatDisplayConfigs } from "../stats"
 import type { StatDisplayConfig } from "../types"
@@ -24,6 +24,20 @@ import type { AllPlayersRealTimeStats } from "../realtime-stats/realtime-stats-s
 
 const EMPTY_SEATS: PlayerStats[] = Array.from({ length: 6 }, () => ({ playerId: -1 }))
 
+// PlayerStats = ExistPlayerStats | { playerId: -1, statResults?: never[] }（zod union）。
+// ExistPlayerStats.playerId は z.number()（リテラルでない）なので、TSの標準的な
+// `stat.playerId !== -1` だけでは判別共用体として綺麗に絞り込まれない
+// （bust-dimキャッシュへの書き込み時にExistPlayerStats型を要求するため必要）。
+// 明示的な型ガード関数で確実に絞り込む。
+const isExistPlayerStats = (stat: PlayerStats): stat is ExistPlayerStats =>
+  stat.playerId !== -1
+
+// ヒーローは常に配列index 0（rotateArrayFromIndexでヒーローの席をposition 0へ
+// 回転済み。pregameフォールバック[background/import-export.tsのgetLatestSessionStats]
+// も`[heroStat, ...emptySeats]`で同じ規約に従う）。sola仕様: セッション終了後も
+// hero以外だけクリアする（#158でhero単独のキャリア統計はpregameで別途復元される）。
+const HERO_SEAT_INDEX = 0
+
 const App = memo(() => {
   const [stats, setStats] = useState<PlayerStats[]>(EMPTY_SEATS)
   const [handLogEntries, setHandLogEntries] = useState<HandLogEntry[]>([])
@@ -36,6 +50,14 @@ const App = memo(() => {
   const [shouldScrollToLatest, setShouldScrollToLatest] = useState(false)
   const [allPlayersRealTimeStats, setAllPlayersRealTimeStats] = useState<AllPlayersRealTimeStats | undefined>()
   const [heroOriginalSeatIndex, setHeroOriginalSeatIndex] = useState<number | undefined>()
+  // bustしたプレイヤーの薄暗い表示（sola仕様）: 表示座席index(rotate後、Hudの
+  // `seat-${actualSeatIndex}`キーと同じ空間)ごとに直近の実データ入りPlayerStatsを
+  // キャッシュする。ライブの1ハンド分イベント(handleStatsMessage)でのみ読み書きし、
+  // ミュート状態にはReactの再レンダリングを要さないのでuseRefに置く -- 読み書きは
+  // 常に同一の同期的コールバック内で完結する。
+  const dimCacheRef = useRef<Map<number, ExistPlayerStats>>(new Map())
+  // 現在ミュート表示中の座席index集合。Hudへ`isDimmed`として渡す。
+  const [dimmedSeatIndices, setDimmedSeatIndices] = useState<ReadonlySet<number>>(new Set())
   // ドリルダウンパネル（ポジション別 / 直近ハンド）: 開いているのは常にどちらか
   // 一方、高々1プレイヤー分（HUDツリーにローカルなReact state。グローバル設定
   // への永続化はv1では不要）。#128のポジション別ドリルダウンの単一state管理を
@@ -69,7 +91,41 @@ const App = memo(() => {
         mappedStats = rotateArrayFromIndex(detail.stats, heroSeatIndex)
       }
 
-      setStats(mappedStats)
+      // bustしたプレイヤーの薄暗い表示（sola仕様）:「bustしたプレイヤーのstatsは
+      // 即座にクリアせず、背景色薄くするなどして表示自体は目立たず続けて欲しい。
+      // MTTやcashでは空いたシートに誰か他のプレイヤーが座ることがあるので更新漏れが
+      // ないように注意」。
+      //
+      // - 新しいlineupで座席に実プレイヤー(playerId !== -1)がいれば、常にそれが
+      //   正。キャッシュを最新化してミュート解除する -- 新規プレイヤーの着席
+      //   (#2 席の乗っ取り)も、bust前のプレイヤーの再入室(#2b リバイ/再接続)も
+      //   同じ扱いでよい(SeatUserIdsが示す通りに信頼し、それ以上ハンドをまたいだ
+      //   同一性の推測はしない)。
+      // - 座席が空(playerId === -1)でキャッシュがあれば、最後の実データ入り
+      //   PlayerStatsをそのまま使い続けミュート表示にする。
+      // - 座席が空でキャッシュも無ければ、これまで通り{playerId:-1}
+      //   ("Waiting for Hand...")のまま。
+      const dimCache = dimCacheRef.current
+      const nextDimmedSeatIndices = new Set<number>()
+      const dimmedStats = mappedStats.map((stat, seatIndex) => {
+        if (stat.playerId === -1) {
+          const cached = dimCache.get(seatIndex)
+          if (cached) {
+            nextDimmedSeatIndices.add(seatIndex)
+            return cached
+          }
+          return stat
+        }
+        // playerId !== -1: 生きた着席者。同じ座席の以前の値（別プレイヤーの
+        // bust後の残骸を含む）を必ず上書きする。
+        if (isExistPlayerStats(stat)) {
+          dimCache.set(seatIndex, stat)
+        }
+        return stat
+      })
+
+      setDimmedSeatIndices(nextDimmedSeatIndices)
+      setStats(dimmedStats)
     },
     []
   )
@@ -100,8 +156,40 @@ const App = memo(() => {
     }
   }, [handleStatsMessage])
 
+  // セッション終了(EVT_SESSION_RESULTS)でhero以外のHUDパネルをクリアする(sola仕様:
+  // 「引き続きセッション終了後はhero以外のstatsはクリアしてOK」)。bustミュート表示中
+  // だった座席も対象に含む -- ミュートは「同一セッション内で席が空いている間」の
+  // 表示であり、セッションをまたいで残す理由が無いため。heroパネル(座席0)は#158の
+  // 通りここでは一切触らない(pregameでのキャリア統計復元は別経路)。
+  const handleSessionEnd = useCallback(() => {
+    const dimCache = dimCacheRef.current
+    for (const seatIndex of Array.from(dimCache.keys())) {
+      if (seatIndex !== HERO_SEAT_INDEX) dimCache.delete(seatIndex)
+    }
+    setDimmedSeatIndices(prev => {
+      if (!prev.has(HERO_SEAT_INDEX) && prev.size === 0) return prev
+      return prev.has(HERO_SEAT_INDEX) ? new Set([HERO_SEAT_INDEX]) : new Set()
+    })
+    setStats(prev => prev.map((stat, seatIndex) => (
+      seatIndex === HERO_SEAT_INDEX ? stat : { playerId: -1 }
+    )))
+  }, [])
+
+  useEffect(() => {
+    window.addEventListener(POKER_CHASE_SESSION_END_EVENT, handleSessionEnd)
+    return () => window.removeEventListener(POKER_CHASE_SESSION_END_EVENT, handleSessionEnd)
+  }, [handleSessionEnd])
+
   const handleChromeMessage = useCallback((message: ChromeMessage) => {
     if (message.action === "latestStats" && message.stats) {
+      // インポート後のrefreshStats往復やマウント直後のpregameヒーロー単独
+      // フォールバックは、bustミュートcacheを経由しない別経路（DBからの一括再計算）
+      // なので、その場のstatsをそのまま反映するだけでよい。ただし直前のライブ
+      // ハンドでミュート表示中の座席があった場合、この一括更新後もそのミュート
+      // フラグを引きずって別データに重ねて表示してしまわないよう、表示中の
+      // ミュート集合はここでリセットする（次のライブEVT_DEALでdimCacheRef自体は
+      // 引き続き使われるので、bustの記憶自体は失われない）。
+      setDimmedSeatIndices(new Set())
       setStats(message.stats)
     } else if (message.action === "updateUIConfig" && message.config) {
       setUIConfig(message.config)
@@ -310,6 +398,7 @@ const App = memo(() => {
               onToggleRecentHandsPanel={() => handleToggleRecentHandsPanel(position.stat.playerId)}
               hudDisplayMode={uiConfig.hudDisplayMode}
               hudColorCoding={uiConfig.hudColorCoding}
+              isDimmed={dimmedSeatIndices.has(position.actualSeatIndex)}
             />
           )
       )}

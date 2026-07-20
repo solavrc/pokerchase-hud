@@ -766,4 +766,117 @@ describe('Hud', () => {
       expect(screen.getByText('3B:')).toBeInTheDocument()
     })
   })
+
+  describe('bustしたプレイヤーの薄暗い表示（isDimmed, sola仕様）', () => {
+    it('isDimmedがfalse（未指定）の場合は「離席」バッジを表示せず、通常の不透明度で表示する', () => {
+      render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+        />
+      )
+
+      expect(screen.queryByText('離席')).not.toBeInTheDocument()
+      const panel = screen.getByTestId('hud-panel')
+      expect(panel).toHaveStyle({ opacity: '1' })
+    })
+
+    it('isDimmedがtrueの場合、統計は表示したまま「離席」バッジを出し、パネル全体を減光する', () => {
+      render(
+        <Hud
+          actualSeatIndex={1}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          isDimmed
+        />
+      )
+
+      // 統計自体は読める（クリアされていない）
+      expect(screen.getByText('TestPlayer')).toBeInTheDocument()
+      expect(screen.getByText('VPIP:')).toBeInTheDocument()
+      expect(screen.getByText('30.0% (30/100)')).toBeInTheDocument()
+
+      // 離席インジケーターが出る
+      expect(screen.getByText('離席')).toBeInTheDocument()
+
+      // パネル全体が減光される
+      const panel = screen.getByTestId('hud-panel')
+      expect(panel).toHaveStyle({ opacity: '0.45' })
+    })
+
+    it('isDimmedがtrueでも、ホバー中はドリルダウン操作しやすいよう通常の不透明度へ戻る', () => {
+      render(
+        <Hud
+          actualSeatIndex={1}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          isDimmed
+        />
+      )
+
+      const panel = screen.getByTestId('hud-panel')
+      expect(panel).toHaveStyle({ opacity: '0.45' })
+
+      fireEvent.mouseEnter(panel)
+      expect(panel).toHaveStyle({ opacity: '1' })
+
+      fireEvent.mouseLeave(panel)
+      expect(panel).toHaveStyle({ opacity: '0.45' })
+    })
+
+    it('「プレイヤーがいるがデータがない」状態でもisDimmedなら離席バッジを出す（fail-open）', () => {
+      const noDataStats: PlayerStats = { playerId: 123, statResults: [] }
+      render(
+        <Hud
+          actualSeatIndex={0}
+          stat={noDataStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          isDimmed
+        />
+      )
+
+      expect(screen.getByText('No Data')).toBeInTheDocument()
+      expect(screen.getByText('離席')).toBeInTheDocument()
+    })
+
+    it('ドリルダウン（ポジション別）トリガーはisDimmed中も引き続き機能する（playerId経由でfail-open、離席プレイヤーでもクラッシュしない）', async () => {
+      (chrome.runtime.sendMessage as jest.Mock).mockImplementation(
+        (_message: unknown, callback: (response: unknown) => void) => {
+          callback({ success: false, error: 'player not at table' })
+        }
+      )
+      const onTogglePositionalPanel = jest.fn()
+
+      render(
+        <Hud
+          actualSeatIndex={1}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          isDimmed
+          onTogglePositionalPanel={onTogglePositionalPanel}
+          isPositionalPanelOpen={true}
+        />
+      )
+
+      // ミュート中でもトリガーは表示・操作可能
+      const trigger = screen.getByTitle('ポジション別スタッツ')
+      await userEvent.click(trigger)
+      expect(onTogglePositionalPanel).toHaveBeenCalledTimes(1)
+
+      // playerId経由でリクエストが飛び、失敗レスポンスでもクラッシュしない（fail-open）
+      expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+        { action: 'getPositionalStats', playerId: mockPlayerStats.playerId },
+        expect.any(Function)
+      )
+      await waitFor(() => {
+        expect(screen.getByTestId('positional-stats-panel')).toBeInTheDocument()
+      })
+    })
+  })
 })

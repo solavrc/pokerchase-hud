@@ -30,6 +30,8 @@ interface HudHeaderProps {
   onToggleRecentHandsPanel?: () => void
   /** プレイヤータイプ分類アイコン（PlayerTypeIcons）に渡す、フィルタ前の全statResults */
   statResults?: StatResult[]
+  /** bustしたプレイヤーの薄暗い表示中かどうか（Hud.tsx参照）。trueなら「離席」バッジを出す */
+  isDimmed?: boolean
 }
 
 const styles = {
@@ -55,9 +57,21 @@ const styles = {
     letterSpacing: '0.3px',
     textShadow: '0 1px 2px rgba(0, 0, 0, 0.5)',
   } as CSSProperties,
+
+  dimmedBadge: {
+    fontSize: '8px',
+    fontWeight: 'bold',
+    color: '#ffcc66',
+    border: '1px solid rgba(255, 204, 102, 0.5)',
+    borderRadius: '3px',
+    padding: '0 3px',
+    letterSpacing: '0.2px',
+    whiteSpace: 'nowrap' as const,
+    flexShrink: 0,
+  } as CSSProperties,
 }
 
-export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, isRecentHandsPanelOpen, onToggleRecentHandsPanel, statResults }: HudHeaderProps) => {
+export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, isRecentHandsPanelOpen, onToggleRecentHandsPanel, statResults, isDimmed }: HudHeaderProps) => {
   const hasPotOdds = playerPotOdds?.potOdds && playerPotOdds.potOdds.call > 0
   const hasSpr = playerPotOdds?.spr !== undefined
   
@@ -68,6 +82,11 @@ export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPosition
           {playerName || `Player ${playerId}`}
         </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '9px', flex: '0 0 auto' }}>
+          {isDimmed && (
+            <span style={styles.dimmedBadge} title="このプレイヤーは現在の卓にいません（bust/離席）。表示は最後の統計のままです">
+              離席
+            </span>
+          )}
           {hasSpr && (
             <span style={{ color: '#ffcc00', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
               SPR:{playerPotOdds.spr}
