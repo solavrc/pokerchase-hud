@@ -203,13 +203,25 @@ export class FirebaseAuthService {
     // the NEW account's other fields (`...this.currentState`, which by then
     // already reflects the NEW account) together with the OLD account's
     // refreshed uid/token/refreshToken, resurrecting the OLD uid into
-    // `currentState.uid` (and therefore `getCurrentUser()`). Nothing in
-    // this method bumps `authGeneration`, so every commit-point
-    // `assertGenerationUnchanged()` check elsewhere would see "unchanged"
-    // even though the live identity had silently flipped back underneath
-    // them -- defeating the entire generation-gate mechanism this PR
-    // builds on.
+    // `currentState.uid` (and therefore `getCurrentUser()`).
+    //
+    // A bare uid snapshot is not enough on its own, though (independent
+    // release-audit finding, "getIdToken's refresh path still has an
+    // A->B->A ABA hole"): sign out A, sign in B, then back to A -- all while
+    // THIS refresh (started for A) is still in flight -- and the live uid by
+    // the time the response arrives is "user-a" again, string-equal to
+    // `refreshingUid` below, even though a DIFFERENT account (B) was live in
+    // between and A's *current* session (a fresh sign-in, not the same one
+    // that started this refresh) has its own idToken/refreshToken already.
+    // Applying the stale response would silently overwrite that fresh A
+    // session's tokens with the old, discarded ones. `authGeneration` is
+    // bumped on every auth-state TRANSITION (sign-in, sign-out, restore --
+    // see its doc comment) and can't be fooled by a value cycling back: an
+    // A->B->A round trip still advances it by (at least) 2. Snapshotting it
+    // here alongside the uid and requiring BOTH to still match before
+    // committing closes the hole a uid-only check leaves open.
     const refreshingUid = this.currentState.uid
+    const refreshingGeneration = this.authGeneration
     const refreshToken = this.currentState.refreshToken
 
     const response = await fetch(
@@ -231,15 +243,18 @@ export class FirebaseAuthService {
 
     const result = await response.json() as FirebaseRefreshResponse
 
-    // Discard a stale refresh response: the account live NOW is not the one
-    // this refresh was requested for. Still return the freshly-fetched
-    // token to THIS caller -- whatever in-flight operation asked for it
-    // (e.g. a Firestore call already under way for the OLD account) can
-    // still complete using a valid, unexpired token for the account it
-    // actually started with -- but do NOT let it become the new shared
-    // `currentState`, and do NOT persist it.
-    if (this.currentState?.uid !== refreshingUid) {
-      console.warn('[FirebaseAuth] Discarding a token refresh for a no-longer-current account (the signed-in account changed while the refresh was in flight)')
+    // Discard a stale refresh response: EITHER the account live NOW is not
+    // the one this refresh was requested for (uid mismatch), OR the uid
+    // happens to match again but a DIFFERENT account was live in between
+    // (generation mismatch -- the A->B->A case the uid check alone misses,
+    // see the comment above `refreshingGeneration`). Still return the
+    // freshly-fetched token to THIS caller -- whatever in-flight operation
+    // asked for it (e.g. a Firestore call already under way for the OLD
+    // account) can still complete using a valid, unexpired token for the
+    // account it actually started with -- but do NOT let it become the new
+    // shared `currentState`, and do NOT persist it.
+    if (this.currentState?.uid !== refreshingUid || this.authGeneration !== refreshingGeneration) {
+      console.warn('[FirebaseAuth] Discarding a token refresh for a no-longer-current account/generation (the signed-in account changed while the refresh was in flight)')
       return result.id_token
     }
 
