@@ -13,7 +13,33 @@ import type { ApiEvent } from '../app'
 import { autoSyncService } from '../services/auto-sync-service'
 import { connectedPorts, startPortPing, setLastKnownStats } from './ports'
 import { recordUndecodedEvent } from './undecoded-event-tracker'
-import { markSessionActive, markSessionInactive, recheckPendingUpdate, revertSessionActivityIfStillApplied } from './update-manager'
+import { markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
+
+/**
+ * 参加取消申込（ApiTypeId 203）。`ApiType` enum（アプリケーションで使用する
+ * イベント種別、`isApplicationApiEvent`の判定基準）には意図的に含めない
+ * ——enumに加えると`isApplicationApiEvent`がtrueを返すようになり、
+ * ストリーム（handLogStream等）に本来対象外のイベントが投入されてしまう
+ * ため。ここではセッション状態追跡専用の生ApiTypeId定数として扱う
+ * （201/303/308/309と同じraw-firstパターン）。
+ *
+ * 参加申込(201)後、着席（303/308）に至る前にユーザーが参加をキャンセル
+ * すると、ハンドが一度も始まらないため309も届かない
+ * （P2, codexレビュー指摘 2026-07-21, pass-3）。この203を観測したら309と
+ * 同様にsessionActivityをINACTIVEへ戻す（詳細は`applySessionActivity()`
+ * コメント参照）。content_script.tsのkeepalive解除条件も同じ判定を
+ * ミラーする。
+ */
+const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
+
+/**
+ * Raw Event Lakeの耐久性バリア（release-blocker監査 finding A）を実現する
+ * ための直列化キュー。モジュールスコープに置くのは、update-manager.tsの
+ * `awaitIngestionDrain()`（キュー・ドレイン・バリア、2026-07-21 pass-3）
+ * から`setIngestionDrainProvider()`経由で参照させるため
+ * （`registerEventIngestion()`のコメント参照）。
+ */
+let ingestionQueue: Promise<void> = Promise.resolve()
 
 /**
  * `chrome.runtime.onConnect`のハンドラーを登録する。
@@ -43,9 +69,22 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   // 入れ替わらないこと」も保証する——add()を待つ以上、後続イベントのadd()が
   // 先に決着してしまうと素朴な実装では順序が壊れうるため）。
   //
+  // セッション状態追跡（markSessionActive/markSessionInactive）もこの
+  // キューの内側、耐久性バリア・重複排除判定の後で行う（2026-07-21
+  // pass-3で統一。経緯: 過去2ラウンドはACTIVE化だけを同期的に前倒しする
+  // 「楽観的arm」設計を採ったが、到着順序ゲーティング・重複判明時の
+  // ロールバックといった対症療法を重ねるほど設計が自分自身と衝突する
+  // ようになった——詳細はupdate-manager.tsの`markSessionActive`コメント
+  // 参照）。この統一により(a)重複イベントがそもそもACTIVE/INACTIVE判定に
+  // 到達しない（判定より先にreturnする）、(b)キュー自体が到着順序を
+  // 保証するため順序反転が起こりえない、という2点が構造的に保証される。
+  // 残る懸念（rawの書き込みが詰まっている間、reload判定が古い
+  // sessionActivityを読んでしまう）は書く側でなく読む側で解決する——
+  // update-manager.tsの`awaitIngestionDrain()`参照。
+  //
   // なお、`autoSyncService.onGameSessionEnd()`/`onNewSessionStart()`自体は
   // raw Lakeの行数を見るだけの非同期処理で、直接`chrome.runtime.reload()`を
-  // 呼ぶわけではない（reloadを呼びうるのはそこから`.finally()`で連鎖される
+  // 呼ぶわけではない（reloadを呼びうるのはそこから連鎖される
   // `recheckPendingUpdate()`のみ）。そのため理屈の上では同期トリガーの発火
   // 自体はadd()の完了を待たなくても安全ではある。ただし、
   //   - どの内部処理が将来reload隣接になるか将来にわたって保証できない
@@ -54,22 +93,8 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   // という理由で、本実装では簡潔さと防御的深さを優先し、セッションフック・
   // 同期トリガー・ストリーム書き込みの全てをadd()決着後に統一して実行する
   // （最小要件を満たしつつ上回る、意図的な選択）。
-  let ingestionQueue: Promise<void> = Promise.resolve()
-
-  // 到着シーケンス番号（P1, codexレビュー 2026-07-21指摘）: ACTIVE化は
-  // port.onMessage受信直後に完全に同期的に、INACTIVE化はingestionQueue
-  // 経由でRaw Event Lake耐久性バリアの後ろに非同期に決着する。両者は
-  // タイミングが非対称なため、生の到着順序が[309, 201]（セッション終了の
-  // 直後に次のセッションが201/303から始まる、正常系のバリアント）だと、
-  // 遅れて決着する309のINACTIVE化が、先に決着していた201のACTIVE化を
-  // 後から上書きしてしまい「新しいハンドが進行中なのにinactiveのまま」
-  // という状態反転が起こりうる。この`arrivalSequence`を各メッセージの
-  // 受信直後（同期的に、キューへ積むより前）にインクリメントして
-  // `markSessionActive`/`markSessionInactive`へ明示的に渡すことで、
-  // update-manager.ts側が「真の到着順序」を判定でき、決着が遅れた古い
-  // 遷移が新しい遷移を上書きすることを防げる（詳細は
-  // update-manager.tsの該当コメント参照）。
-  let arrivalSequence = 0
+  ingestionQueue = Promise.resolve()
+  setIngestionDrainProvider(() => ingestionQueue)
 
   chrome.runtime.onConnect.addListener(port => {
     if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
@@ -81,20 +106,11 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           return
         }
 
-        // このメッセージの到着順序を同期的に記録する（他のどの非同期処理
-        // よりも前に採番することが重要 -- 上のコメント参照）。
-        const arrivalSeq = ++arrivalSequence
-
-        // ACTIVE化は`service.ready`・raw書き込みの耐久性バリアより前に、
-        // 完全に同期的に行う（P2, codexレビュー指摘 2026-07-21）。
-        // 詳細は`markSessionActiveFromRawMessage()`のコメント参照。
-        markSessionActiveFromRawMessage(message, arrivalSeq)
-
         // このイベントの処理を、直前のイベントの処理（add()の決着含む）の
         // 後ろに連結する。`processEvent`は内部で全エラーを捕捉して素通し
         // させない設計だが、想定外のバグでqueueが壊れて以降のイベントが
         // 永久に詰まることのないよう、キューの継続用チェーンは別途catchする。
-        const task = ingestionQueue.then(() => processEvent(service, message, arrivalSeq))
+        const task = ingestionQueue.then(() => processEvent(service, message))
         ingestionQueue = task.catch(err => {
           console.error('[background] Unhandled ingestion queue error (fail-safe, queue continues):', err)
         })
@@ -110,63 +126,6 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
       })
     }
   })
-}
-
-/**
- * 生メッセージだけを見て、セッションをACTIVEとしてマークすべきかを判定し、
- * 該当すれば即座に`markSessionActive()`を呼ぶ。
- *
- * 呼び出しタイミング（P2, codexレビュー 2026-07-21指摘）: `service.ready`や
- * raw書き込みの耐久性バリア（`processEvent`内の`await service.db.apiEvents.add()`）
- * より前、`port.onMessage`受信直後の完全に同期的な処理として呼ぶこと。
- * session-activityはService Worker側のメモリ上の状態でしかなく、Raw Event
- * Lakeの行に由来する派生統計ではないため、耐久性バリアへの依存が一切無い
- * （このイベント自身のraw書き込みが後で失敗・重複・衝突になっても、
- * ACTIVEのままにしておくことは「安全側に倒す」設計方針そのものと矛盾
- * しない——`processEvent`側で何度呼ばれても`markSessionActive()`は冪等）。
- * 逆にここを`await`の後ろに置くと、遅い/詰まったadd()の裏で
- * `onUpdateAvailable`等の再チェック（このイベントの処理とは独立に、任意の
- * タイミングで発火しうる別経路）が「まだ前回309のまま=inactive=safe」と
- * 誤認し、Service Workerをゲーム中にreloadしてしまう恐れがある。
- *
- * 309(EVT_SESSION_RESULTS)によるinactive化は、意図的にここに含めない
- * （`processEvent`側で耐久性バリアの後ろに残したまま）: SAFE(=inactive)へ
- * 倒す方向の遷移は、finding Aが塞いだのと同じリスク（このイベント自身の
- * raw書き込みが確定する前にreloadでService Workerが巻き込まれ、309が
- * 失われる）を再度開けてしまうため。ACTIVEへ倒す方向は「より保守的
- * （unsafe側）」な変更なので即座に反映して問題ないが、INACTIVEへ倒す方向は
- * 引き続きraw書き込みの決着を待つ必要がある——tri-stateの2つの遷移は
- * 対称ではない。
- *
- * EVT_DEAL(303)は観戦モード（ヒーロー未着席、`Player`フィールド自体が
- * undefined -- docs/api-events.md「EVT_DEAL: Playerフィールドの欠落」/
- * aggregate-events-stream.ts参照）ではACTIVEトリガーから除外する
- * （P2, codexレビュー指摘）: バスト後の観戦中に届く303まで拾うと、以降
- * 309が来ない限りsessionActivityがactiveに固まり、保留中アップデートが
- * 無期限にブロックされてしまう。raw-firstパターンに従い、Zodパース前の
- * 生フィールドの有無だけで判定する（content_script.tsのkeepalive起動条件も
- * 同じ判定をミラーする）。
- *
- * `arrivalSeq`はこのメッセージの到着順序（`registerEventIngestion()`の
- * `arrivalSequence`カウンタ参照）。真の到着順序を保つため、以降の
- * `processEvent`内での（決着が遅れうる）INACTIVE化との整合判定に使う
- * （update-manager.tsの`markSessionActive`/`markSessionInactive`コメント
- * 参照）。また、この呼び出しが実は真の重複（reconnect resend等）だったと
- * 後で判明した場合の`revertSessionActivityIfStillApplied(arrivalSeq)`
- * （P2, codexレビュー指摘, processEvent内）にも同じ値を使う。
- */
-const markSessionActiveFromRawMessage = (message: ApiMessage | { type: string }, arrivalSeq: number): void => {
-  const rawApiTypeId = (message as { ApiTypeId?: unknown }).ApiTypeId
-  if (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED || rawApiTypeId === ApiType.EVT_SESSION_DETAILS) {
-    markSessionActive(arrivalSeq)
-    return
-  }
-  if (rawApiTypeId === ApiType.EVT_DEAL) {
-    const rawPlayer = (message as { Player?: unknown }).Player
-    if (rawPlayer != null) {
-      markSessionActive(arrivalSeq)
-    }
-  }
 }
 
 /**
@@ -186,24 +145,59 @@ const isSamePayload = (a: unknown, b: unknown): boolean => {
 }
 
 /**
+ * 生メッセージの数値ApiTypeIdだけを見て、セッションのACTIVE/INACTIVE状態を
+ * 判定し、該当すれば`markSessionActive()`/`markSessionInactive()`を呼ぶ。
+ *
+ * 呼び出しは`processEvent`内、Raw Event Lakeの耐久性バリア（add()の決着）
+ * および重複判定の**後**でのみ行う（真の重複はここに到達する前に
+ * `processEvent`がreturn済み——重複イベントがACTIVE/INACTIVEを動かす
+ * ことは無い。詳細は`processEvent`のコメント参照）。
+ *
+ * ACTIVE化のトリガーは308(EVT_SESSION_DETAILS)単独に頼らない
+ * （release-blocker監査 finding B）: docs/api-events.md:99が明記する
+ * 通り、308の欠落は正常系のバリアント（観測ギャップ）であり、
+ * 「308が来ない試合開始」は普通に起こる。以下のいずれかを観測したら
+ * 即active化する:
+ *   - EVT_ENTRY_QUEUED(201): 着席（新セッション/新テーブルの入口）
+ *   - EVT_DEAL(303, Player在席時のみ): ハンド進行中の最も強いシグナル
+ *     （観戦モード=Playerフィールド自体が無い場合は除外——P2, codex
+ *     レビュー指摘。docs/api-events.md「EVT_DEAL: Playerフィールドの
+ *     欠落」参照）
+ *   - EVT_SESSION_DETAILS(308): 従来からのシグナル（来れば最速）
+ *
+ * INACTIVEへ戻すトリガーはEVT_SESSION_RESULTS(309)と
+ * EVT_ENTRY_CANCELLED(203, 本ファイル冒頭の定数コメント参照)の2つ
+ * （tri-stateのunknown=unsafeデフォルトは変更しない）。
+ *
+ * 同じトリガー集合をcontent_script.tsのkeepalive起動/解除条件にも
+ * ミラーする必要がある（背景・コンテンツスクリプト間でimport不可のため
+ * 手動同期。変更時は両ファイルを揃えること）。
+ */
+const applySessionActivity = (rawApiTypeId: unknown, message: ApiMessage | { type: string }): void => {
+  if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS || rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID) {
+    markSessionInactive()
+    return
+  }
+  if (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED || rawApiTypeId === ApiType.EVT_SESSION_DETAILS) {
+    markSessionActive()
+    return
+  }
+  if (rawApiTypeId === ApiType.EVT_DEAL) {
+    const rawPlayer = (message as { Player?: unknown }).Player
+    if (rawPlayer != null) {
+      markSessionActive()
+    }
+  }
+}
+
+/**
  * 1件のAPIイベントを処理する: Raw Event Lakeへの保存（耐久性バリア）→
  * セッション状態追跡・自動同期トリガー（raw書き込み決着後のみ）→
  * リアルタイムパイプラインへの投入。
- *
- * ACTIVE化のセッション状態追跡（`markSessionActiveFromRawMessage()`）は
- * この関数の外（`port.onMessage`受信直後、耐久性バリアより前）で完全に
- * 同期的に既に処理済み。ここで扱うのはINACTIVE化（309）と、真の重複判明時の
- * ACTIVE化ロールバックのみ。
- *
- * `arrivalSeq`は呼び出し元（`registerEventIngestion()`）が同期的に採番した
- * このメッセージの到着順序。`markSessionInactive`/
- * `revertSessionActivityIfStillApplied`へそのまま渡し、決着タイミングが
- * 前後しても真の到着順序で状態が決まるようにする。
  */
 const processEvent = async (
   service: PokerChaseService,
-  message: ApiMessage | { type: string },
-  arrivalSeq: number
+  message: ApiMessage | { type: string }
 ): Promise<void> => {
   // Ensure service is ready before processing messages
   try {
@@ -243,8 +237,7 @@ const processEvent = async (
         //       持ってしまい[timestamp+ApiTypeId]がぶつかったケース
         // (b)を(a)と同じ「スキップ」扱いにすると、衝突した方のイベント
         // （アクション・結果・セッション遷移等）がライブパイプラインから
-        // 静かに消えてしまう（このコメントの直前のレビューで指摘された
-        // リグレッション）。既存行のペイロードと比較して区別する。
+        // 静かに消えてしまう。既存行のペイロードと比較して区別する。
         let existing: ApiEvent | undefined
         try {
           existing = await service.db.apiEvents.get([rawTimestamp as number, rawApiTypeId as number])
@@ -256,21 +249,15 @@ const processEvent = async (
           // (a) 真の重複: このイベントは初回受信時に既にセッションフック・
           // 同期トリガー・ストリームを一度通過済みのはず。ここで再度投入
           // すると二重処理（統計の二重計上等）になるため、dedup semantics
-          // として以降の全処理をスキップする。
+          // として以降の全処理をスキップする——ACTIVE/INACTIVE判定
+          // （`applySessionActivity`）にも到達させない。これにより
+          // reconnectが複数の重複をまとめて再送しても（各イベントごとに
+          // 個別にここで判定・スキップされるだけなので）セッション状態が
+          // 一切動かない（2026-07-21 pass-3, codexレビュー指摘: 過去の
+          // 「楽観的ACTIVE化+ロールバック」設計はスタックした重複バースト
+          // で破綻していたが、判定そのものを重複チェックの後ろに統一した
+          // ことで、そもそも動かすものが無くなり構造的に解消される）。
           console.warn('[background] Duplicate event (identical payload already in Raw Event Lake), skipping re-processing:', message)
-
-          // P2 (codexレビュー指摘 2026-07-21): この生メッセージが201/303
-          // [Player在席]/308形状だった場合、`markSessionActiveFromRawMessage()`
-          // が既にこのイベントの到着時点で楽観的にACTIVE化を試みている
-          // （耐久性バリアより前の同期処理のため、この時点ではまだ重複と
-          // 判明していなかった）。今ここで真の重複と判明したので、その
-          // 楽観的なACTIVE化がまだ現在の状態として有効であれば
-          // （＝それ以降により新しい遷移が適用されていなければ）取り消し、
-          // 直前の状態（例: 309で既にinactiveだった場合はinactive）へ
-          // ロールバックする。stale reconnect resend等が
-          // 「新しいハンドが無いのにsessionActivityをactiveへ戻し、保留中
-          // アップデートを無期限にブロックする」事態を防ぐ。
-          revertSessionActivityIfStillApplied(arrivalSeq)
           return
         }
 
@@ -298,11 +285,10 @@ const processEvent = async (
         // 重複/衝突以外の理由（quota超過等）でraw書き込みが失敗 = この
         // イベントはLakeに存在しない。「派生統計はraw行があって初めて
         // 存在してよい」というLakeの不変条件を守るため、ストリーム・
-        // セッションフック（の残り。ACTIVE化は既にこの関数の外で処理
-        // 済み）・同期トリガーのいずれにも投入しない（forward NGが正しい
-        // 判断——「ログだけ出して素通しする」は不変条件違反を積極的に
-        // 作りにいくことになるため選ばない）。#141のdrop可視化カウンタで
-        // 運用上気づけるようにする。
+        // セッションフック・同期トリガーのいずれにも投入しない
+        // （forward NGが正しい判断——「ログだけ出して素通しする」は
+        // 不変条件違反を積極的に作りにいくことになるため選ばない）。
+        // #141のdrop可視化カウンタで運用上気づけるようにする。
         console.error('[background] Raw Event Lake write failed -- dropping from pipeline to preserve the Lake invariant (derived stats require a raw row):', err, message)
         if (typeof rawApiTypeId === 'number') {
           const eventTimestamp = typeof rawTimestamp === 'number' ? rawTimestamp : Date.now()
@@ -325,24 +311,15 @@ const processEvent = async (
   // いずれか）。add()が実際に失敗した（重複以外の失敗、または真の重複）
   // ケースは上で既にreturnしている。
 
-  // Forced-update安全性述語（update-manager.ts）のセッション状態追跡・
-  // INACTIVE化（309のみ）: ACTIVE化（201/303[Player在席時]/308）はこの
-  // 関数の外（`port.onMessage`受信直後、耐久性バリアより前）で
-  // `markSessionActiveFromRawMessage()`により既に同期的に処理済み
-  // （理由は同関数のコメント参照 -- ACTIVE/INACTIVEの2方向は対称ではなく、
-  // INACTIVE化だけがreloadを許可する方向のため引き続き耐久性バリアの
-  // 後ろに残す）。ここでは意図的にパース成功後のdata.ApiTypeIdではなく、
-  // 生メッセージの数値ApiTypeIdだけを見て判定する: PokerChase側の309
-  // ペイロード破壊的変更でparseApiEvent()がnullを返すようになっても、
-  // セッション状態が永久にinactiveへ戻らず、まさにその変更を修正する
-  // 更新の安全性判定がずっとunsafeのまま詰まる、という事態を避けるため
-  // （codexレビュー指摘）。`arrivalSeq`を渡すのはP1（codexレビュー指摘
-  // 2026-07-21）対応: この309の決着が耐久性バリアの後ろで遅れている間に
-  // より新しいメッセージ（201/303等）が同期的にACTIVE化を先に適用して
-  // いた場合、この（実際には古い）INACTIVE化がそれを上書きしないよう
-  // update-manager.ts側で到着順序を判定させるため。
+  // Forced-update安全性述語（update-manager.ts）のセッション状態追跡。
+  // 意図的にパース成功後のdata.ApiTypeIdではなく、生メッセージの数値
+  // ApiTypeIdだけを見て判定する: PokerChase側のペイロード破壊的変更で
+  // parseApiEvent()がnullを返すようになっても、セッション状態が永久に
+  // 誤った値のまま詰まらないようにするため（codexレビュー指摘）。
+  // 詳細は`applySessionActivity`のコメント参照。
+  applySessionActivity(rawApiTypeId, message)
+
   if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
-    markSessionInactive(arrivalSeq)
     // #179 round3指摘: セッション終了(EVT_SESSION_RESULTS)によるHUDクリアは
     // App.tsx側のReact stateだけで完結しており、background(ports.ts)の
     // `lastKnownStats`はセッションをまたいで残り続ける。この状態で
@@ -391,6 +368,10 @@ const processEvent = async (
     // ヒーロー在籍dealのevtDealとペアリングされてしまうケース）に
     // 対する`lineup-identity`ガードが別途入っており、この単純な
     // `[]`のままでも競合は起きない。
+    //
+    // 203(参加取消申込)はここに含めない: 303/308が一度も届いていない
+    // （ハンドが一度も始まっていない）ため、そもそもクリアすべき
+    // ライブlineupが存在しない。
     setLastKnownStats([])
   }
 
@@ -408,21 +389,38 @@ const processEvent = async (
   // パース成否に依存させる理由はそもそも無い）。
   if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
     // セッション終了は保留中アップデートの安全性再チェック地点の1つ
-    // （src/background/update-manager.ts参照）。recheckPendingUpdate()は
-    // onGameSessionEnd()のPromiseが完了(成功/失敗いずれか)してから
-    // 必ずチェーンして呼ぶ -- 両方を並列で撃つと、performSync()が
+    // （src/background/update-manager.ts参照）。onGameSessionEnd()の
+    // Promiseが完了(成功/失敗いずれか)してから必ずチェーンして
+    // recheckPendingUpdate()を呼ぶ -- 両方を並列で撃つと、performSync()が
     // `_isSyncing`を立てる前の非同期区間（min-versionゲートのawait等）を
     // recheckPendingUpdate()がすり抜けて安全と誤判定し、直近セッションの
     // クラウドバックアップがまだ始まってもいないうちに
     // chrome.runtime.reload()でService Workerを巻き込んでしまう恐れが
-    // あるため（codexレビュー指摘, P1）
-    autoSyncService.onGameSessionEnd()
-      .catch(err => console.error('[background] Auto sync on game end failed:', err))
-      .finally(() => {
-        recheckPendingUpdate().catch(err =>
-          console.error('[background] Pending update recheck on session end failed:', err)
-        )
-      })
+    // あるため（codexレビュー指摘, P1）。
+    //
+    // このチェーン全体を`await`し、`processEvent`自体（延いては
+    // `ingestionQueue`）がこの決着を待ってから次のイベントへ進むように
+    // する（P2, codexレビュー指摘 2026-07-21, pass-3, 「Keep the reload
+    // recheck inside the ingestion queue」）: 以前はfire-and-forgetして
+    // いたため、`processEvent()`がここで即座にresolveしてキューが次の
+    // rawイベントの処理（＝新たな`apiEvents.add()`）を始めてしまう一方、
+    // まだ実行中の`recheckPendingUpdate()`が`chrome.runtime.reload()`を
+    // 呼べる状態のままだった。保留中アップデートがある状態で309の直後に
+    // 非ACTIVEなイベントが1件でも続くと、そのreloadが次イベントの
+    // in-flightな`apiEvents.add()`と競合してabortさせ、耐久性バリアが
+    // あるにもかかわらずraw-Lakeに欠落を作りうる。`await`することで、
+    // この309自身の処理が完全に終わる（＝reloadするかどうかの決着が
+    // 付く）までキューが先に進まなくなり、この競合が構造的に無くなる。
+    try {
+      await autoSyncService.onGameSessionEnd()
+    } catch (err) {
+      console.error('[background] Auto sync on game end failed:', err)
+    }
+    try {
+      await recheckPendingUpdate()
+    } catch (err) {
+      console.error('[background] Pending update recheck on session end failed:', err)
+    }
   } else if (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED || rawApiTypeId === ApiType.EVT_SESSION_DETAILS) {
     // フォールバックトリガー（docs/postmortems/2026-07-session-results-drop.md
     // 再発防止#3): 309単一トリガーのSPOF対策。新セッション開始時点は

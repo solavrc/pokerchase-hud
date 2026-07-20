@@ -134,6 +134,14 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
     }
   }
 
+  // 参加取消申込（ApiTypeId 203）。`ApiType` enumには含まれないため生の
+  // 数値リテラルを使う（background/event-ingestion.tsの
+  // `EVT_ENTRY_CANCELLED_API_TYPE_ID`コメント参照）。参加(201)後・着席
+  // (303/308)前にキャンセルするとハンドが一度も始まらず309も来ないため、
+  // これも309と同じくkeepalive解除トリガーとして扱う（P2, codexレビュー
+  // 指摘 2026-07-21, pass-3）。
+  const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
+
   switch (event.data.ApiTypeId) {
     case ApiType.EVT_ENTRY_QUEUED:
     case ApiType.EVT_SESSION_DETAILS:
@@ -149,7 +157,7 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       // isGameActiveがtrueに固まる（309が来るとは限らない -- 観戦を続けたまま
       // タブを閉じる等）。raw-firstパターンに従い、パース前の生フィールドの
       // 有無だけで判定する（background/event-ingestion.tsの
-      // `markSessionActiveFromRawMessage()`と同じ判定をミラー）。
+      // `applySessionActivity()`と同じ判定をミラー）。
       if ((event.data as { Player?: unknown }).Player != null) {
         armSession()
       }
@@ -165,6 +173,17 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       // hero以外の全HUDパネルをクリアするため）。309はここで生イベントとして
       // 既に観測済みなので、background往復の新チャネルを追加せずその場でdispatchする。
       window.dispatchEvent(new CustomEvent(POKER_CHASE_SESSION_END_EVENT))
+      break
+
+    case EVT_ENTRY_CANCELLED_API_TYPE_ID:
+      // 参加取消: ハンドが一度も始まっていないので、309と違いApp.tsxへの
+      // セッション終了通知（POKER_CHASE_SESSION_END_EVENT）は不要
+      // （そもそもクリアすべきライブHUDが存在しない）。keepaliveの解除
+      // だけ行う。
+      if (isGameActive) {
+        isGameActive = false
+        stopKeepalive()
+      }
       break
   }
 

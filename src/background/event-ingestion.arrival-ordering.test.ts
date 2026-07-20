@@ -1,32 +1,43 @@
 /**
- * event-ingestion.ts - session-activity arrival-order integrity
+ * event-ingestion.ts - session-activity: strict queue serialization
  *
- * Verifies two pass-2 findings on PR #196 (both created 2026-07-21,
- * chatgpt-codex-connector, on top of the P2#3 fix that made ACTIVE-marking
- * synchronous while INACTIVE-marking (309) stays behind the Raw Event Lake
- * durability barrier -- an intentional asymmetry, see event-ingestion.ts's
- * markSessionActiveFromRawMessage() docstring):
+ * 2026-07-21, pass-3 consolidation. Two earlier rounds of findings against
+ * a design where ACTIVE-marking (201/303[Player]/308) fired synchronously
+ * in port.onMessage while INACTIVE-marking (309/203) settled later, behind
+ * the `ingestionQueue` durability barrier:
+ *   - pass-2 P1 "arrival-order inversion": a slow-to-settle 309 could
+ *     overwrite a chronologically-newer 201's synchronous ACTIVE mark.
+ *     Patched with an `arrivalSeq`-gated ordering scheme.
+ *   - pass-2 P2 "duplicate re-arms activity": a stale resend armed ACTIVE
+ *     optimistically before the dedupe check could identify it. Patched
+ *     with a 1-level rollback.
+ *   - pass-3 P2 "stacked duplicate rollback": the 1-level rollback broke
+ *     when a reconnect resent MORE THAN ONE stale duplicate in a row (the
+ *     second optimistic ACTIVE mark clobbered the rollback slot meant for
+ *     the first).
  *
- * P1 "Preserve session activity ordering across queued events": because
- * ACTIVE-marking (201/303[Player]/308) fires synchronously in
- * port.onMessage while INACTIVE-marking (309) only settles later, behind
- * `ingestionQueue`, the raw arrival order [309, 201] could invert: 201's
- * synchronous ACTIVE mark lands first, then the *older* (but slower to
- * settle) 309's INACTIVE mark overwrites it, leaving the tri-state
- * 'inactive' while a brand new hand is actually live. The fix
- * (update-manager.ts's `arrivalSeq`-gated `markSessionActive`/
- * `markSessionInactive`) makes only the transition with the *newest*
- * arrival sequence number win, regardless of which one settles first.
+ * Each patch fixed the finding that prompted it but created the next one --
+ * the write-side design was fighting itself. The actual fix: move ALL
+ * session-activity transitions inside the same serialized `ingestionQueue`
+ * that already gates the Raw Event Lake durability barrier and the
+ * duplicate/collision dedupe check (see event-ingestion.ts's
+ * `applySessionActivity` docstring):
+ *   - the queue preserves true arrival order by construction, so there is
+ *     no inversion to guard against and no `arrivalSeq` machinery needed
+ *   - the dedupe check runs BEFORE the activity decision, so a duplicate
+ *     (however many are resent in a row) never reaches
+ *     markSessionActive()/markSessionInactive() at all -- nothing to roll
+ *     back, ever
  *
- * P2 "Skip duplicate starts before arming activity": a reconnect
- * resend/duplicate of an already-stored 201/303/308 arms ACTIVE
- * optimistically (before the queued ConstraintError dedupe check can
- * identify it as a duplicate and skip it), so a stale resend arriving
- * after a genuine 309 can flip sessionActivity back to 'active' with no
- * live hand, blocking pending Forced Updates indefinitely. The fix
- * (`revertSessionActivityIfStillApplied()`) rolls the optimistic ACTIVE
- * mark back to whatever it was immediately before, once the duplicate is
- * confirmed -- but only if nothing newer has applied since.
+ * The original motivation for making ACTIVE-marking synchronous in the
+ * first place (a slow/stuck `apiEvents.add()` leaving `sessionActivity`
+ * stale while a safety recheck fires) is now solved on the READ side
+ * instead: `awaitIngestionDrain()` (see
+ * event-ingestion.durability-barrier.test.ts for that test).
+ *
+ * This file keeps the ordering/duplicate *scenarios* from the earlier
+ * rounds (they're still valid regression coverage) and adds the
+ * multi-duplicate-burst case that broke the 1-level rollback.
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
@@ -36,7 +47,7 @@ import { connectedPorts } from './ports'
 import * as updateManager from './update-manager'
 import { autoSyncService } from '../services/auto-sync-service'
 
-describe('registerEventIngestion (session-activity arrival-order integrity)', () => {
+describe('registerEventIngestion (session-activity: strict queue serialization)', () => {
   let db: PokerChaseDB
   let service: PokerChaseService
   let onMessageHandler: (message: any) => Promise<void>
@@ -44,12 +55,9 @@ describe('registerEventIngestion (session-activity arrival-order integrity)', ()
   let mockPort: any
 
   beforeEach(async () => {
-    // update-manager.ts's session-activity state (sessionActivity,
-    // lastAppliedSeq, etc.) is module-scope and persists across `test()`
-    // blocks within this file (only `registerEventIngestion`'s own
-    // `arrivalSequence` closure is fresh per test) -- reset it so each
-    // test's arrival sequence numbers are compared against a clean
-    // baseline, matching the pattern in update-manager.test.ts /
+    // update-manager.ts's session-activity state is module-scope and
+    // persists across `test()` blocks within this file -- reset it,
+    // matching the pattern in update-manager.test.ts /
     // message-router.forced-update.test.ts.
     updateManager.__resetUpdateManagerStateForTests()
 
@@ -72,9 +80,9 @@ describe('registerEventIngestion (session-activity arrival-order integrity)', ()
     connectListener(mockPort)
     onMessageHandler = mockPort.onMessage.addListener.mock.calls[0][0]
 
-    // These tests are about session-activity ordering, not the sync
-    // trigger's own (unrelated, auth/network-dependent) behavior -- mock it
-    // out so `isSafeToUpdate()`'s `!autoSyncService.isSyncing` term doesn't
+    // These tests are about session-activity, not the sync trigger's own
+    // (unrelated, auth/network-dependent) behavior -- mock it out so
+    // `isSafeToUpdate()`'s `!autoSyncService.isSyncing` term doesn't
     // introduce timing noise unrelated to what's under test here.
     jest.spyOn(autoSyncService, 'onGameSessionEnd').mockResolvedValue(undefined)
     jest.spyOn(autoSyncService, 'onNewSessionStart').mockResolvedValue(undefined)
@@ -116,67 +124,23 @@ describe('registerEventIngestion (session-activity arrival-order integrity)', ()
     Emblems: []
   })
 
-  test('P1: raw arrival order [309, 201] -- a 309 whose durability write settles AFTER a later 201 must not overwrite that 201\'s ACTIVE mark (audit\'s exact ordering scenario)', async () => {
-    // Make the 309's own apiEvents.add() settle only when we say so, so we
-    // can arrange for the 201 (which arrives *after* the 309 chronologically,
-    // but whose ACTIVE mark is synchronous) to complete first -- reproducing
-    // "session end immediately followed by a new hand, before the 309's raw
-    // write has actually settled".
-    let resolveSessionResultsAdd!: (key: number) => void
-    const realAdd = db.apiEvents.add.bind(db.apiEvents)
-    jest.spyOn(db.apiEvents, 'add').mockImplementation(((event: any) => {
-      if (event.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
-        return new Promise<number>(resolve => { resolveSessionResultsAdd = resolve })
-      }
-      return realAdd(event)
-    }) as any)
+  test('raw arrival order [309, 201] resolves to ACTIVE (queue serialization preserves true arrival order, no inversion possible)', async () => {
+    await onMessageHandler(sessionResults(100))
+    expect(updateManager.isSafeToUpdate()).toBe(true) // inactive
 
-    // 1) The session-end 309 arrives first (true arrival order) -- its
-    // processing is now stuck behind the mocked, unresolved add(). Note:
-    // `ingestionQueue` strictly serializes `processEvent` calls, so this
-    // event's OWN promise won't settle until we release it below -- do not
-    // await it yet.
-    const pendingSessionResults = onMessageHandler(sessionResults(100))
-
-    // 2) A brand new hand's 201 arrives next (true arrival order: AFTER the
-    // 309) -- markSessionActive() fires synchronously in the port.onMessage
-    // listener, before this event is even enqueued, so it has already run
-    // by the time this call returns (regardless of the fact that this
-    // event's own queued processing is stuck behind the still-unresolved
-    // 309 and its returned promise won't settle until that unblocks either
-    // -- captured but deliberately not awaited yet).
-    const pendingEntryQueued = onMessageHandler(entryQueued(200))
-
-    // At this point the newer (201) transition has already applied.
-    expect(updateManager.isSafeToUpdate()).toBe(false) // active -- unsafe, correctly
-
-    // Let the queue actually reach the mocked (still-unresolved) 309 add()
-    // call before releasing it -- `ingestionQueue.then(...)` and the
-    // `await service.ready` / `await apiEvents.add(...)` chain inside
-    // `processEvent` each take a few microtask hops to get there.
-    await new Promise(resolve => setTimeout(resolve, 0))
-
-    // 3) Now let the 309's raw write settle -- its markSessionInactive()
-    // call finally runs, but carries the OLDER arrival sequence number.
-    resolveSessionResultsAdd(1)
-    await pendingSessionResults
-    await pendingEntryQueued
-
-    // The older (309) transition must NOT have overwritten the newer (201)
-    // one -- the true arrival order says a new hand is live.
-    expect(updateManager.isSafeToUpdate()).toBe(false)
+    await onMessageHandler(entryQueued(200))
+    expect(updateManager.isSafeToUpdate()).toBe(false) // active -- the newer arrival correctly wins
   })
 
-  test('P1 sanity check: raw arrival order [201, 309] (no inversion) still ends inactive as expected', async () => {
+  test('raw arrival order [201, 309] resolves to INACTIVE (the reverse direction, for symmetry)', async () => {
     await onMessageHandler(entryQueued(300))
     expect(updateManager.isSafeToUpdate()).toBe(false) // active
 
     await onMessageHandler(sessionResults(400))
-    expect(updateManager.isSafeToUpdate()).toBe(true) // inactive, and no other unsafe condition
+    expect(updateManager.isSafeToUpdate()).toBe(true) // inactive
   })
 
-  test('P2: a reconnect-resend duplicate of an already-processed 201 does not re-arm session activity after a genuine 309 (audit\'s exact duplicate scenario)', async () => {
-    // Genuine session: 201 starts it, 309 ends it.
+  test('a single reconnect-resend duplicate of an already-processed 201 does not re-arm session activity after a genuine 309', async () => {
     const originalEntryQueued = entryQueued(500)
     await onMessageHandler(originalEntryQueued)
     await onMessageHandler(sessionResults(600))
@@ -184,28 +148,74 @@ describe('registerEventIngestion (session-activity arrival-order integrity)', ()
     expect(updateManager.isSafeToUpdate()).toBe(true) // inactive, session truly over
 
     // A stale reconnect resend of the *exact same* 201 event arrives late
-    // (identical timestamp+ApiTypeId+payload -- e.g. a buffered unacked
-    // message replayed after the port reconnects). It optimistically arms
-    // ACTIVE the instant it arrives (synchronous, fail-closed by design)...
+    // (identical timestamp+ApiTypeId+payload). Its raw add() rejects with a
+    // real ConstraintError, and the dedupe check runs BEFORE the
+    // session-activity decision is ever reached -- the resend never touches
+    // markSessionActive() at all.
     await onMessageHandler({ ...originalEntryQueued })
 
-    // ...but once its raw add() rejects with a real ConstraintError and the
-    // payload comparison confirms it's a true duplicate (not a same-ms
-    // collision), the optimistic ACTIVE mark is rolled back to whatever it
-    // was immediately before -- 'inactive', matching reality (no live hand).
-    expect(updateManager.isSafeToUpdate()).toBe(true)
+    expect(updateManager.isSafeToUpdate()).toBe(true) // unchanged
     expect(await db.apiEvents.count()).toBe(2) // only the two genuine rows, resend added nothing
   })
 
-  test('P2 control: a genuinely NEW 201 after a 309 (not a duplicate) is NOT reverted -- only true duplicates roll back', async () => {
-    await onMessageHandler(entryQueued(700))
+  test('a BURST of multiple stacked reconnect-resend duplicates never re-arms session activity (P2, codex review 2026-07-20 pass-3: this is exactly the case that broke the earlier 1-level rollback design)', async () => {
+    // Genuine session: 201 (via 308 too, to also exercise that trigger),
+    // then a genuine 309 ends it.
+    const originalEntryQueued = entryQueued(700)
+    const sessionDetails = {
+      ApiTypeId: ApiType.EVT_SESSION_DETAILS,
+      timestamp: 701,
+      BlindStructures: [{ ActiveMinutes: 4, Ante: 50, BigBlind: 200, Lv: 1 }],
+      CoinNum: -1,
+      DefaultChip: 20000,
+      IsReplay: false,
+      Items: [],
+      LimitSeconds: 8,
+      MoneyList: [],
+      Name: 'テストセッション',
+      Name2: ''
+    }
+    await onMessageHandler(originalEntryQueued)
+    await onMessageHandler(sessionDetails)
     await onMessageHandler(sessionResults(800))
+
+    expect(updateManager.isSafeToUpdate()).toBe(true) // inactive, session truly over
+
+    // A reconnect replays a BURST of multiple already-processed events in a
+    // row -- e.g. an old 201 immediately followed by the old 308 for the
+    // same (now long-over) session. Under the earlier "optimistic
+    // ACTIVE + 1-level rollback" design, the second optimistic ACTIVE mark
+    // would clobber the rollback slot meant to restore the first, so
+    // deduping the first did nothing and deduping the second restored
+    // 'active' instead of the true prior 'inactive'. With activity
+    // transitions unified inside the queue (after the dedupe check),
+    // NEITHER resend ever reaches markSessionActive() -- there's no
+    // optimistic mark to stack or clobber in the first place.
+    //
+    // Deliberately NOT awaited between the two calls -- the old buggy
+    // design only broke when both resends' synchronous "optimistic ACTIVE"
+    // marks fired back-to-back, before either one's own async dedupe check
+    // (and rollback) had a chance to run. Awaiting each resend fully before
+    // sending the next would fully serialize them and never exercise the
+    // overlap the bug depended on.
+    const pendingResendA = onMessageHandler({ ...originalEntryQueued })
+    const pendingResendB = onMessageHandler({ ...sessionDetails })
+    await pendingResendA
+    await pendingResendB
+
+    expect(updateManager.isSafeToUpdate()).toBe(true) // still inactive -- neither resend moved it
+    expect(await db.apiEvents.count()).toBe(3) // only the three genuine rows
+  })
+
+  test('control: a genuinely NEW 201 after a 309 (not a duplicate) legitimately arms activity', async () => {
+    await onMessageHandler(entryQueued(900))
+    await onMessageHandler(sessionResults(1000))
     expect(updateManager.isSafeToUpdate()).toBe(true) // inactive
 
     // A brand new, distinct 201 (different timestamp -- no key collision at
     // all, let alone a duplicate) legitimately starts a new session.
-    await onMessageHandler(entryQueued(900))
+    await onMessageHandler(entryQueued(1100))
 
-    expect(updateManager.isSafeToUpdate()).toBe(false) // active, correctly NOT reverted
+    expect(updateManager.isSafeToUpdate()).toBe(false) // active, correctly not suppressed
   })
 })

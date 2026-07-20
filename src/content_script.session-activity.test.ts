@@ -20,6 +20,12 @@
  * but the client keeps receiving another table) as having no `Player` field
  * at all. Arming keepalive on those would keep it running through a
  * spectated session that may never see another 309.
+ *
+ * ApiTypeId 203 (参加取消申込, entry cancellation -- see src/types/api.ts)
+ * also disarms keepalive, alongside 309 (P2, codex review 2026-07-20
+ * pass-3): entering matchmaking (201) and cancelling before any hand starts
+ * never produces a 309, so 203 is the only signal that the pending
+ * entry -- and the keepalive it armed -- is moot.
  */
 import { ApiType } from './types'
 import { POKER_CHASE_ORIGIN } from './constants/runtime'
@@ -102,6 +108,18 @@ describe('content_script keepalive (session-activity triggers)', () => {
   test('EVT_SESSION_RESULTS (309) stops keepalive', () => {
     dispatchGameMessage({ ApiTypeId: ApiType.EVT_ENTRY_QUEUED, timestamp: 6 })
     dispatchGameMessage({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 7 })
+    mockPort.postMessage.mockClear()
+
+    jest.advanceTimersByTime(KEEPALIVE_INTERVAL_MS * 2)
+
+    expect(mockPort.postMessage).not.toHaveBeenCalled()
+  })
+
+  test('ApiTypeId 203 (参加取消申込, entry cancellation) stops keepalive when no hand ever started (P2, codex review 2026-07-20 pass-3)', () => {
+    dispatchGameMessage({ ApiTypeId: ApiType.EVT_ENTRY_QUEUED, timestamp: 8 })
+    // 203 is not part of the `ApiType` enum -- use the raw literal, matching
+    // event-ingestion.ts's own EVT_ENTRY_CANCELLED_API_TYPE_ID.
+    dispatchGameMessage({ ApiTypeId: 203, timestamp: 9 })
     mockPort.postMessage.mockClear()
 
     jest.advanceTimersByTime(KEEPALIVE_INTERVAL_MS * 2)

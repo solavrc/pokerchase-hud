@@ -14,22 +14,35 @@
  *
  * SAFE（安全）の定義（`isSafeToUpdate()`）:
  *   - アクティブなゲームセッションが無い（EVT_ENTRY_QUEUED(201)/EVT_DEAL(303)/
- *     EVT_SESSION_DETAILS(308)のいずれかからEVT_SESSION_RESULTS(309)までの
- *     間はunsafe。content_script.tsのkeepaliveゲート[`isGameActive`]と同じ
- *     境界イベントを、Service Worker側で`markSessionActive()`/
- *     `markSessionInactive()`により独立に追跡する。308単独をACTIVEの
- *     トリガーにしないのは、docs/api-events.md:99が明記する通り308の欠落
- *     （観測ギャップ）が正常系のバリアントとして起こりうるため——309で
- *     inactiveにした直後、308無しで次の試合が201/303から始まるケースを
- *     inactiveのまま固めてしまうと、この安全性述語がゲーム中に「安全」と
- *     誤判定してService Workerをreloadしてしまう（release-blocker監査
- *     finding B）。ACTIVE化のトリガーを201/303/308の3つに広げても、
- *     INACTIVEへ戻すトリガーは引き続き309のみ。ACTIVE化とINACTIVE化は
- *     呼ばれるタイミングが非対称（前者は同期、後者はRaw Event Lakeの
- *     耐久性バリアの後ろ）なため、生の到着順序を保つための`arrivalSeq`
- *     ゲーティングと、真の重複判明時のロールバックが必要——詳細は
- *     `markSessionActive`/`markSessionInactive`/
- *     `revertSessionActivityIfStillApplied`のコメント参照）
+ *     EVT_SESSION_DETAILS(308)のいずれかからEVT_SESSION_RESULTS(309)/
+ *     EVT_ENTRY_CANCELLED(203)までの間はunsafe。content_script.tsの
+ *     keepaliveゲート[`isGameActive`]と同じ境界イベントを、Service Worker
+ *     側で`markSessionActive()`/`markSessionInactive()`により独立に
+ *     追跡する。308単独をACTIVEのトリガーにしないのは、
+ *     docs/api-events.md:99が明記する通り308の欠落（観測ギャップ）が
+ *     正常系のバリアントとして起こりうるため——309でinactiveにした直後、
+ *     308無しで次の試合が201/303から始まるケースをinactiveのまま
+ *     固めてしまうと、この安全性述語がゲーム中に「安全」と誤判定して
+ *     Service Workerをreloadしてしまう（release-blocker監査finding B）。
+ *     203(参加取消申込)もINACTIVEトリガーに加えているのは、参加後・
+ *     着席前にキャンセルするとハンドが一度も始まらず309も届かない
+ *     ケースがあり（2026-07-21 pass-3 codexレビュー指摘）、それを
+ *     放置するとsessionActivityがactiveのまま固まるため。
+ *
+ *     ACTIVE化・INACTIVE化はいずれも`event-ingestion.ts`の
+ *     `ingestionQueue`（Raw Event Lakeの耐久性バリア・重複排除の内側）
+ *     で直列に決着する——キュー自体が真の到着順序を保証するため、
+ *     どちらの遷移も「決着が遅れて古い遷移が新しい遷移を上書きする」
+ *     心配が構造的に無い（2026-07-21 pass-3: 以前は同期的な楽観的ACTIVE
+ *     化+到着シーケンス番号ゲーティング+ロールバックという設計だったが、
+ *     reconnectが複数の重複をまとめて再送するケースでロールバックの
+ *     退避スロットが上書きされる等、対症療法が自分自身と衝突し始めた
+ *     ため、根本的にシンプル化した）。
+ *
+ *     この直列化の裏で残る唯一の懸念——「rawの書き込みがキューに詰まって
+ *     いる間、reload判定がまだ反映されていない古いsessionActivityを
+ *     読んでしまう」——は書く側ではなく読む側で解決する:
+ *     `awaitIngestionDrain()`を参照。
  *   - `AutoSyncService.isSyncing`がfalse（同期中でない）
  *   - `currentOperationState.type === 'idle'`（export/import/rebuild中でない）
  * 上記いずれかが「unknown」（SW再起動直後などでセッション状態を未観測）の
@@ -75,110 +88,75 @@ type SessionActivity = 'unknown' | 'active' | 'inactive'
 let sessionActivity: SessionActivity = 'unknown'
 
 /**
- * 到着シーケンス番号ゲーティング（P1, codexレビュー 2026-07-21指摘）:
- *
- * ACTIVE化（event-ingestion.tsのport.onMessage受信直後、完全に同期的）と
- * INACTIVE化（同ファイルのRaw Event Lake耐久性バリアの後ろ、`ingestionQueue`
- * 経由で非同期に決着）は、意図的に異なるタイミングで呼ばれる（理由は
- * event-ingestion.tsの`markSessionActiveFromRawMessage()`コメント参照）。
- * しかし生の到着順序が[309, 201]（セッション終了の直後に次のセッションが
- * 始まる、docs/api-events.md:99が明記する正常系のバリアント）だった場合、
- * 309は耐久性バリアの後ろでキューに積まれ決着が遅れる一方、201は同期的に
- * 即座にACTIVE化する。何もしなければ、後から決着する（が到着順序としては
- * 古い）309のINACTIVE化が、より新しいはずの201のACTIVE化を上書きしてしまい、
- * 「新しいハンドが進行中なのにinactiveのまま」という状態反転が起こる。
- *
- * 対策として、各呼び出し元（event-ingestion.ts）に、その生メッセージの
- * *到着*順序を表す単調増加の`arrivalSeq`を明示的に渡させ、
- * `lastAppliedSeq`より新しい`arrivalSeq`の遷移だけを適用する。これにより
- * 「後から決着したが、実際は先に到着していた」遷移が「先に決着したが、
- * 実際は後から到着していた」遷移を上書きすることを防ぐ——真の到着順序
- * だけが最終状態を決める。
- *
- * `arrivalSeq`を省略した呼び出し（既存のテスト等、レガシー用途）は
- * `internalAutoSeq`による自動採番にフォールバックする。呼び出しごとに
- * 単調増加する値が振られるため、「直近の呼び出しが常に勝つ」という
- * 従来通りの単純な挙動が保たれる。
- */
-let lastAppliedSeq = 0
-let previousSessionActivity: SessionActivity = 'unknown'
-let previousAppliedSeq = 0
-let internalAutoSeq = 0
-
-/**
- * `next`への遷移を、`seq`（省略時は内部自動採番）が現在適用済みの
- * `lastAppliedSeq`より新しい場合にのみ適用する。適用時は直前の状態を
- * 1段階分だけ`previousSessionActivity`/`previousAppliedSeq`に退避する
- * （`revertSessionActivityIfStillApplied()`によるロールバック用）。
- * 実際に適用したかに関わらず、使用した`effectiveSeq`を返す。
- */
-const applyActivityTransition = (next: SessionActivity, seq?: number): number => {
-  const effectiveSeq = seq ?? ++internalAutoSeq
-  if (effectiveSeq <= lastAppliedSeq) {
-    // 到着順序としてより新しい遷移が既に適用済み -- 古い遷移は無視する
-    return effectiveSeq
-  }
-  previousSessionActivity = sessionActivity
-  previousAppliedSeq = lastAppliedSeq
-  sessionActivity = next
-  lastAppliedSeq = effectiveSeq
-  return effectiveSeq
-}
-
-/**
  * `event-ingestion.ts`のEVT_ENTRY_QUEUED(201)/EVT_DEAL(303, Player在席時)/
  * EVT_SESSION_DETAILS(308)いずれかの受信時に呼ぶ（308単独に頼らない理由は
- * 本ファイル冒頭のコメント参照）。`arrivalSeq`は呼び出し元での生メッセージ
- * 到着順序（上のコメント参照）。
+ * 本ファイル冒頭のコメント参照）。`event-ingestion.ts`の`ingestionQueue`
+ * （Raw Event Lakeの耐久性バリア・重複排除判定の後ろ）から直列に呼ばれる
+ * ため、単純に最新の呼び出しを適用するだけでよい（到着順序はキュー自体が
+ * 保証する）。
  */
-export const markSessionActive = (arrivalSeq?: number): void => {
-  applyActivityTransition('active', arrivalSeq)
+export const markSessionActive = (): void => {
+  sessionActivity = 'active'
 }
 
 /**
- * `event-ingestion.ts`のEVT_SESSION_RESULTS(309)受信時に呼ぶ。`arrivalSeq`は
- * 呼び出し元での生メッセージ到着順序（上のコメント参照）。
+ * `event-ingestion.ts`のEVT_SESSION_RESULTS(309)/EVT_ENTRY_CANCELLED(203)
+ * 受信時に呼ぶ。`markSessionActive()`と同じく`ingestionQueue`から直列に
+ * 呼ばれる。
  */
-export const markSessionInactive = (arrivalSeq?: number): void => {
-  applyActivityTransition('inactive', arrivalSeq)
+export const markSessionInactive = (): void => {
+  sessionActivity = 'inactive'
 }
 
 /**
- * 重複検知の取り消し（P2, codexレビュー 2026-07-21指摘）: `arrivalSeq`が
- * まだ現在適用中の遷移（`lastAppliedSeq === arrivalSeq`）であれば、その
- * 遷移を取り消して直前の状態へ1段階ロールバックする。
+ * `event-ingestion.ts`の`registerEventIngestion()`が登録する、
+ * 「現時点までにキューへ積まれた取り込み処理が全て決着するまで待つ」
+ * プロバイダ。未登録（`registerEventIngestion()`が一度も呼ばれていない
+ * ごく初期のSW起動時など）ならno-op。
+ */
+type IngestionDrainProvider = () => Promise<void>
+
+let ingestionDrainProvider: IngestionDrainProvider | undefined
+
+/**
+ * `event-ingestion.ts`専用: このモジュールの外からsessionActivityの
+ * 「書き込みタイミング」を変えることなく、reload判定地点だけが安全に
+ * 待てるようにするための登録フック（circular importを避けるための
+ * 依存性逆転——update-manager.tsはevent-ingestion.tsを一切importしない）。
+ */
+export const setIngestionDrainProvider = (provider: IngestionDrainProvider): void => {
+  ingestionDrainProvider = provider
+}
+
+/**
+ * reload判定（`isSafeToUpdate()`を使う各エントリーポイント）の直前で待つ
+ * 「キュー・ドレイン・バリア」（2026-07-21 pass-3 codexレビュー3件の帰結、
+ * 詳細は本ファイル冒頭のSAFE定義コメント参照）。
  *
- * 想定用途: event-ingestion.tsは201/303[Player在席]/308の受信直後に
- * `markSessionActive()`を同期的に（raw書き込みの耐久性バリアより前に）
- * 呼ぶ「楽観的」な設計になっている（P2#3, 2026-07-21の前回修正）。これは
- * 再チェックとの競合を防ぐために必要な一方、この生メッセージが実は
- * reconnect resend等による**真の重複**（同一(timestamp, ApiTypeId)・
- * 同一ペイロードが既にRaw Event Lakeに存在する）だと後から判明した場合、
- * その楽観的なACTIVE化は本来起こるべきではなかった遷移である。
- * このケースを放置すると、309で正しくinactive化された後にstaleな
- * resendが届いただけでsessionActivityがactiveに戻ってしまい、
- * 新しいハンドが無いのに保留中アップデートが無期限にブロックされ続ける
- * （このバグはtri-stateを`'unknown'`に一律フォールバックさせるのではなく、
- * 遷移前の状態へ正しくロールバックすることで、「本当は309で終わっていた」
- * という正しい状態を復元する——1段階の巻き戻しで十分なのは、この関数は
- * 「まだ現在の状態として有効な遷移」だけを対象にするため。既に別の新しい
- * 遷移で上書きされていれば`lastAppliedSeq !== arrivalSeq`となり、
- * 何もしない[その新しい遷移の方が正しいため]）。
+ * ACTIVE化・INACTIVE化は`event-ingestion.ts`の`ingestionQueue`内で決着する
+ * ため、そのキューにまだ何か積まれている（rawの書き込みが進行中、または
+ * 重複判定待ち）間は、`sessionActivity`が最新の生イベントを反映していない
+ * 可能性がある。この関数は「呼び出し時点までに到着したイベントの処理が
+ * 全て終わるまで」待つことで、reload判定が古い/遷移途中の状態を読んで
+ * しまうことを防ぐ（呼び出し後に新たに到着したイベントは、因果的に
+ * この判定より後なので待つ必要が無い）。
+ *
+ * 例外: `event-ingestion.ts`の`processEvent`が309自身の処理の中から直接
+ * 呼ぶ`recheckPendingUpdate()`はこのバリアを使わない——`ingestionQueue`は
+ * その309自身の処理が完了するまで解決しないため、その中からこの関数を
+ * 呼ぶと自己参照でデッドロックする。その経路は代わりに
+ * `processEvent`内で素直に`await`することでキューの直列化にそのまま
+ * 乗せている（event-ingestion.tsの309ブロックのコメント参照）。
  */
-export const revertSessionActivityIfStillApplied = (arrivalSeq: number): void => {
-  if (lastAppliedSeq === arrivalSeq) {
-    sessionActivity = previousSessionActivity
-    lastAppliedSeq = previousAppliedSeq
+export const awaitIngestionDrain = async (): Promise<void> => {
+  if (ingestionDrainProvider) {
+    await ingestionDrainProvider()
   }
 }
 
 /** テスト専用: モジュールスコープの状態をリセットする */
 export const __resetUpdateManagerStateForTests = (): void => {
   sessionActivity = 'unknown'
-  lastAppliedSeq = 0
-  previousSessionActivity = 'unknown'
-  previousAppliedSeq = 0
-  internalAutoSeq = 0
 }
 
 /** 保留中アップデートを適用できない理由を日本語で説明する（Popup表示用） */
@@ -239,6 +217,11 @@ const clearBadge = async (): Promise<void> => {
  * SAFEなら即座に適用、そうでなければ保留状態を記録してバッジを出す。
  */
 export const handleUpdateAvailable = async (details: { version: string }): Promise<void> => {
+  // キュー・ドレイン・バリア（本ファイル冒頭のSAFE定義コメント参照）:
+  // `onUpdateAvailable`はevent-ingestion.tsのキューとは無関係な任意の
+  // タイミングで発火しうるため、判定前に必ず待つ。
+  await awaitIngestionDrain()
+
   if (isSafeToUpdate()) {
     console.log(`[update-manager] Update ${details.version} available and safe -- applying immediately`)
     await clearPendingUpdateState()
@@ -255,6 +238,13 @@ export const handleUpdateAvailable = async (details: { version: string }): Promi
 /**
  * 保留中アップデートの安全性を再チェックし、SAFEになっていれば適用する。
  * session end / operation completion / SW startup の3箇所から呼ばれる。
+ *
+ * キュー・ドレイン・バリアはこの関数自身の中には置かない（意図的）:
+ * event-ingestion.tsの309自身の`processEvent`内から直接呼ぶ経路が
+ * あり、そこで`awaitIngestionDrain()`を呼ぶとその309自身を含む
+ * `ingestionQueue`の決着を待つことになり自己参照でデッドロックする。
+ * 呼び出し元（operation-complete契機・SW起動時契機）側で個別に
+ * `awaitIngestionDrain()`してから呼ぶ（`initUpdateManager()`参照）。
  */
 export const recheckPendingUpdate = async (): Promise<void> => {
   const state = await getPendingUpdateState()
@@ -290,6 +280,11 @@ export const recheckPendingUpdate = async (): Promise<void> => {
  * SAFEなら適用、そうでなければ理由を返す（Popupに表示させる）。
  */
 export const applyUpdateNow = async (): Promise<ApplyUpdateResult> => {
+  // キュー・ドレイン・バリア（本ファイル冒頭のSAFE定義コメント参照）:
+  // ユーザー操作起点でevent-ingestion.tsのキューとは無関係なタイミングで
+  // 呼ばれるため、判定前に必ず待つ。
+  await awaitIngestionDrain()
+
   if (!isSafeToUpdate()) {
     const reason = describeUnsafeReason()
     const current = await getPendingUpdateState()
@@ -351,6 +346,18 @@ const setupUpdateCheckAlarm = async (): Promise<void> => {
  * 呼び出しをブロックしない（他のセットアップは同期的に完了する）ので、
  * SW起動を止めたくない呼び出し側はそのままfire-and-forgetしてよい。
  */
+/**
+ * `recheckPendingUpdate()`をキュー・ドレイン・バリアの後ろで呼ぶラッパー。
+ * event-ingestion.tsの309自身の処理からは呼ばない（そちらは
+ * `recheckPendingUpdate()`自身のコメント参照）——operation-complete契機・
+ * SW起動時契機はどちらもingestionQueueとは無関係なタイミングで発火しうる
+ * ため、両方ともこのラッパー経由で呼ぶ。
+ */
+const recheckPendingUpdateAfterDrain = async (): Promise<void> => {
+  await awaitIngestionDrain()
+  await recheckPendingUpdate()
+}
+
 export const initUpdateManager = (): Promise<void> => {
   chrome.runtime.onUpdateAvailable.addListener((details) => {
     handleUpdateAvailable(details).catch(error => {
@@ -359,7 +366,7 @@ export const initUpdateManager = (): Promise<void> => {
   })
 
   onOperationBecameIdle(() => {
-    recheckPendingUpdate().catch(error => {
+    recheckPendingUpdateAfterDrain().catch(error => {
       console.error('[update-manager] recheckPendingUpdate (operation completion) failed:', error)
     })
   })
@@ -371,7 +378,7 @@ export const initUpdateManager = (): Promise<void> => {
     console.error('[update-manager] setupUpdateCheckAlarm failed:', error)
   })
 
-  return recheckPendingUpdate().catch(error => {
+  return recheckPendingUpdateAfterDrain().catch(error => {
     console.error('[update-manager] recheckPendingUpdate (SW startup) failed:', error)
   })
 }

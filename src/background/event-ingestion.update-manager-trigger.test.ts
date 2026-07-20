@@ -224,15 +224,17 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     expect(markSessionInactiveSpy).not.toHaveBeenCalled()
   })
 
-  test('markSessionActive() runs synchronously before the raw-write durability await settles (P2, codex review 2026-07-21)', async () => {
-    // The durability barrier (finding A) awaits apiEvents.add() before
-    // forwarding to streams/sync-triggers -- but session-activity tracking
-    // must NOT wait behind that same await, or a safety recheck racing a
-    // slow/stuck add() would still see the stale 'inactive' value from the
-    // previous 309 and judge a mid-game reload "safe". Verify
-    // markSessionActive() has already run before the message handler's
-    // returned promise even settles (i.e. before any awaited work inside
-    // processEvent has had a chance to resolve).
+  test('markSessionActive() waits behind the raw-write durability barrier (2026-07-21, pass-3 consolidation)', async () => {
+    // Session-activity tracking now lives entirely inside `processEvent`,
+    // behind the same `ingestionQueue` durability barrier as
+    // streams/sync-triggers (see event-ingestion.ts's `applySessionActivity`
+    // docstring for the pass-3 rationale: an earlier design made
+    // ACTIVE-marking synchronous/pre-barrier specifically to avoid this,
+    // but that created its own class of bugs -- ordering inversions and
+    // stacked-duplicate rollback corruption -- so the write side was
+    // simplified back to "everything happens in arrival order, inside the
+    // queue" and the original latency concern is now handled on the READ
+    // side instead, via `awaitIngestionDrain()`).
     let resolveAdd!: (key: number) => void
     jest.spyOn(db.apiEvents, 'add').mockImplementation(
       (() => new Promise<number>(resolve => { resolveAdd = resolve })) as any
@@ -241,20 +243,22 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     const entryQueuedEvent = {
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED, timestamp: 9000, Code: 0, BattleType: 0, Id: 'stage000_003', IsRetire: false
     }
-    // Deliberately not awaited yet -- markSessionActiveSpy must already have
-    // fired by the time this synchronous call returns, well before add()
-    // resolves.
-    void onMessageHandler(entryQueuedEvent)
+    const pending = onMessageHandler(entryQueuedEvent)
+
+    // While add() is stuck, markSessionActive() must NOT have fired yet --
+    // and a reload decision reading isSafeToUpdate() directly would still
+    // see the previous (here: initial 'unknown') value. This is exactly why
+    // reload decision points must use `awaitIngestionDrain()` instead of
+    // reading `isSafeToUpdate()` directly (see the dedicated drain-barrier
+    // test in event-ingestion.durability-barrier.test.ts).
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(markSessionActiveSpy).not.toHaveBeenCalled()
+
+    resolveAdd(1)
+    await pending
 
     expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
     expect(updateManager.isSafeToUpdate()).toBe(false)
-
-    // Let the queue actually reach the mocked (still-unresolved) add() call
-    // before releasing it, so the test cleans up without leaking a pending
-    // promise.
-    await new Promise(resolve => setTimeout(resolve, 0))
-    resolveAdd(1)
-    await new Promise(resolve => setTimeout(resolve, 0))
   })
 
   test('raw sequence 309 -> 201 -> 303 without an intervening 308 does not leave the session stuck inactive (release-blocker audit exact scenario)', async () => {
@@ -322,5 +326,41 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     // EVT_DEAL is not -- confirms the tri-state itself (not just the recheck
     // call) is what's carrying the fix.
     expect(recheckPendingUpdateSpy).not.toHaveBeenCalled()
+  })
+
+  test('EVT_ENTRY_CANCELLED (203, 参加取消申込) marks the session inactive when no hand ever started (P2, codex review 2026-07-20 pass-3)', async () => {
+    // src/types/api.ts defines 203 as 参加取消申込 (entry cancellation
+    // request). If a user enters matchmaking (201) and cancels before any
+    // deal/session-result is emitted, the raw sequence is 201 -> 203 --
+    // 309 never arrives, since no hand ever started. Before this fix,
+    // sessionActivity had no INACTIVE trigger other than 309, so it stayed
+    // stuck 'active' (and the mirrored content_script.ts switch kept
+    // keepalive armed) until an unrelated future session's 309, or a
+    // Service Worker restart.
+    const entryQueuedEvent = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 10000,
+      Code: 0,
+      BattleType: 0,
+      Id: 'stage000_003',
+      IsRetire: false
+    }
+    // ApiTypeId 203 is not part of the `ApiType` enum (deliberately, so it
+    // doesn't widen isApplicationApiEvent's scope) -- use the raw literal,
+    // matching event-ingestion.ts's own EVT_ENTRY_CANCELLED_API_TYPE_ID.
+    const entryCancelledEvent = {
+      ApiTypeId: 203,
+      timestamp: 10100,
+      Code: 0
+    }
+
+    await onMessageHandler(entryQueuedEvent)
+    expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
+    expect(updateManager.isSafeToUpdate()).toBe(false) // active
+
+    await onMessageHandler(entryCancelledEvent)
+
+    expect(markSessionInactiveSpy).toHaveBeenCalledTimes(1)
+    expect(updateManager.isSafeToUpdate()).toBe(true) // inactive again -- no hand ever started
   })
 })

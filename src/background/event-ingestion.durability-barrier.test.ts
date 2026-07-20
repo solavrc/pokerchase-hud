@@ -17,6 +17,18 @@
  * with a *handled* failure (duplicate-key -> skip as already-processed;
  * any other failure -> drop from the pipeline and surface it via the #141
  * drop-visibility counter, never forward without a raw row).
+ *
+ * 2026-07-21 pass-3 consolidation: session-activity tracking
+ * (markSessionActive/markSessionInactive) used to be deliberately EXEMPT
+ * from this barrier (fired synchronously, before the durability await) to
+ * avoid a Forced Update safety recheck reading a stale value. Two more
+ * rounds of findings (arrival-order inversion, stacked-duplicate rollback
+ * corruption) showed that exemption fighting the barrier was the wrong
+ * shape of fix. Session-activity tracking now lives fully INSIDE the
+ * barrier like everything else (see event-ingestion.ts's
+ * `applySessionActivity` docstring) -- the original latency concern is
+ * instead solved on the READ side via update-manager.ts's
+ * `awaitIngestionDrain()` (see the dedicated test below).
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
@@ -92,7 +104,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     Emblems: []
   })
 
-  test('streams / auto-sync trigger do not run before apiEvents.add() resolves, and do run after (session-activity tracking is exempt -- see the dedicated test below)', async () => {
+  test('streams / auto-sync trigger / session-activity tracking all wait behind apiEvents.add(), and all run after it resolves', async () => {
     const handLogSpy = jest.spyOn(service.handLogStream, 'write')
     const markSessionActiveSpy = jest.spyOn(updateManager, 'markSessionActive')
     const onNewSessionStartSpy = jest.spyOn(autoSyncService, 'onNewSessionStart').mockResolvedValue(undefined)
@@ -104,45 +116,61 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
 
     const pending = onMessageHandler(entryQueued(100))
 
-    // markSessionActive() runs synchronously on message arrival, before any
-    // await -- see the dedicated durability-exemption test below and
-    // markSessionActiveFromRawMessage()'s docstring for why this one is
-    // deliberately NOT gated behind the raw-write barrier.
-    expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
-
     // Flush the microtask queue repeatedly without resolving add() -- if the
-    // durability barrier is in place, nothing else downstream may have run
-    // yet.
+    // durability barrier is in place, nothing downstream (including
+    // session-activity tracking, unified into the same barrier as of the
+    // pass-3 consolidation) may have run yet.
     await new Promise(resolve => setTimeout(resolve, 0))
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(handLogSpy).not.toHaveBeenCalled()
     expect(onNewSessionStartSpy).not.toHaveBeenCalled()
+    expect(markSessionActiveSpy).not.toHaveBeenCalled()
 
     resolveAdd(1)
     await pending
 
     expect(handLogSpy).toHaveBeenCalledTimes(1)
     expect(onNewSessionStartSpy).toHaveBeenCalledTimes(1)
+    expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
   })
 
-  test('session-activity tracking (markSessionActive) is exempt from the durability barrier and fires even while apiEvents.add() is still stuck (P2, codex review 2026-07-21)', async () => {
-    // A recheck racing the awaited raw-write window must already observe
-    // ACTIVE -- session-activity is Service Worker memory-only state with no
-    // durability dependency on the raw row, so gating it behind a slow/stuck
-    // add() would reopen exactly the risk finding A closed (a stale
-    // 'inactive' reading permitting a mid-game reload).
-    const markSessionActiveSpy = jest.spyOn(updateManager, 'markSessionActive')
+  test('a reload decision using awaitIngestionDrain() correctly waits out a stuck apiEvents.add() instead of reading stale session-activity state', async () => {
+    // This is the read-side fix for the original "mark-active-latency"
+    // concern (a slow/stuck add() leaving sessionActivity stale while a
+    // safety recheck fires): any reload decision point must await
+    // update-manager.ts's `awaitIngestionDrain()` before consulting
+    // `isSafeToUpdate()`, not just read it directly.
+    let resolveAdd!: (key: number) => void
     jest.spyOn(db.apiEvents, 'add').mockImplementation(
-      (() => new Promise<number>(() => { /* never resolves */ })) as any
+      (() => new Promise<number>(resolve => { resolveAdd = resolve })) as any
     )
 
-    void onMessageHandler(entryQueued(150))
+    const pending = onMessageHandler(entryQueued(105))
+    await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
+    // Reading isSafeToUpdate() directly right now would (incorrectly, from
+    // a "is a new hand actually live" standpoint) still see the initial
+    // 'unknown'/unsafe baseline -- which happens to already be unsafe here,
+    // so this assertion alone wouldn't distinguish a real fix from a bug.
+    // The actual guarantee under test is that awaitIngestionDrain() doesn't
+    // resolve until the stuck add() does.
+    let drained = false
+    const drainCheck = updateManager.awaitIngestionDrain().then(() => { drained = true })
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(drained).toBe(false) // still stuck behind the unresolved add()
+
+    resolveAdd(1)
+    await pending
+    await drainCheck
+
+    expect(drained).toBe(true)
+    // Now that the queue has drained, isSafeToUpdate() reflects this
+    // event's fully-applied ACTIVE transition.
     expect(updateManager.isSafeToUpdate()).toBe(false)
   })
 
-  test('on duplicate-key rejection (event already in the Raw Event Lake), all downstream *pipeline* processing is skipped (dedup semantics, no double-processing) -- session-activity still fires (unconditional, see above)', async () => {
+  test('on duplicate-key rejection (event already in the Raw Event Lake), ALL downstream processing is skipped, including session-activity tracking -- duplicates never re-arm', async () => {
     const event = entryQueued(200)
     await onMessageHandler(event) // first arrival: stored + processed normally
 
@@ -157,17 +185,20 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     // (ports.ts/import-export.ts resend scenarios, reconnect replays, etc.),
     // and the payload comparison against the existing row confirms it's a
     // true duplicate (not a same-millisecond key collision -- see the
-    // dedicated collision test below).
+    // dedicated collision test below). Since the dedup check now runs
+    // BEFORE the session-activity decision (2026-07-21 pass-3
+    // consolidation), a duplicate never reaches markSessionActive() at
+    // all -- there's no optimistic pre-barrier mark left to roll back, so a
+    // reconnect resending any number of stacked duplicates can never
+    // re-arm activity (see event-ingestion.arrival-ordering.test.ts for the
+    // multi-duplicate-burst regression test).
     await onMessageHandler({ ...event })
 
     expect(handLogSpy).not.toHaveBeenCalled()
     expect(aggregateSpy).not.toHaveBeenCalled()
     expect(realTimeSpy).not.toHaveBeenCalled()
     expect(onNewSessionStartSpy).not.toHaveBeenCalled()
-    // markSessionActive() is unconditional per raw message (see the
-    // dedicated exemption test above) -- it fires again here, harmlessly
-    // (idempotent), even though the *pipeline* re-processing is skipped.
-    expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
+    expect(markSessionActiveSpy).not.toHaveBeenCalled()
     expect(await db.apiEvents.count()).toBe(1)
   })
 
@@ -273,5 +304,43 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     await Promise.all(pending)
 
     expect(writeOrder).toEqual([1000, 1001, 1002, 1003, 1004])
+  })
+
+  test('the session-end pending-update recheck (and any reload it decides on) settles BEFORE the next queued event\'s raw write begins (P2, codex review 2026-07-20 pass-3: "Keep the reload recheck inside the ingestion queue")', async () => {
+    // A pending update exists and becomes safe to apply the instant this
+    // 309 marks the session inactive (sync not in flight, no operation
+    // running -- both hold by default in this harness).
+    await chrome.storage.local.set({ pendingUpdate: { pending: true, version: '9.9.9' } })
+
+    const callOrder: string[] = []
+    const realAdd = db.apiEvents.add.bind(db.apiEvents)
+    jest.spyOn(db.apiEvents, 'add').mockImplementation(((event: any) => {
+      callOrder.push(`add:${event.ApiTypeId}`)
+      return realAdd(event)
+    }) as any)
+    ;(chrome.runtime.reload as jest.Mock).mockClear()
+    ;(chrome.runtime.reload as jest.Mock).mockImplementation(() => {
+      callOrder.push('reload')
+    })
+
+    // Fire the session-end 309, then immediately (without awaiting)
+    // whatever the next raw event is -- simulating messages arriving
+    // faster than the recheck settles. Before this fix, `processEvent`
+    // fired the sync-trigger + recheck chain without awaiting it, so it
+    // could resolve (letting the queue start the next event's `add()`)
+    // while `recheckPendingUpdate()` was still deciding whether to
+    // `chrome.runtime.reload()` -- a reload right then could abort that
+    // next event's in-flight write despite the durability barrier.
+    const pendingSessionResults = onMessageHandler(sessionResults(2000))
+    const pendingNext = onMessageHandler(entryQueued(2100))
+
+    await pendingSessionResults
+    await pendingNext
+
+    expect(callOrder).toEqual([
+      'add:309',
+      'reload',
+      'add:201'
+    ])
   })
 })
