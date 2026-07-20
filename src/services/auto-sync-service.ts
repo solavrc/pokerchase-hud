@@ -7,7 +7,7 @@ import { firestoreBackupService } from './firestore-backup-service'
 import { firebaseAuthService } from './firebase-auth-service'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
-import { ApiType, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent } from '../types'
+import { ApiType, ApiTypeValues, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent } from '../types'
 import type { ApiEvent } from '../types'
 import { processInChunks, saveEntities, filterValidApplicationEvents } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
@@ -47,6 +47,13 @@ export class AutoSyncService {
    * 直前までスキャン開始点を巻き戻す。
    */
   private readonly SYNC_UNPARSEABLE_FLOOR_KEY = 'syncUnparseableFloor'
+  /**
+   * `meta`テーブルのキー。一度だけ実行するバックフィルスキャン
+   * （`backfillUnparseableFloorIfNeeded`、下記の invariant spec 参照）が
+   * 完了したかどうかを記録する。存在する限り、以降の`syncToCloud()`は
+   * バックフィルスキャンを二度と実行しない。
+   */
+  private readonly SYNC_UNPARSEABLE_BACKFILL_DONE_KEY = 'syncUnparseableFloorBackfillDone'
 
   constructor(db?: PokerChaseDB) {
     this.db = db ?? new PokerChaseDB(self.indexedDB, self.IDBKeyRange)
@@ -184,23 +191,71 @@ export class AutoSyncService {
     const cloudMaxTimestamp = await firestoreBackupService.getCloudMaxTimestamp()
     console.log(`[AutoSync] Cloud max timestamp: ${cloudMaxTimestamp || 'none'}`)
 
-    // --- Unparseable-row watermark guard (PR #142 review r3611258695) -------
+    // ==========================================================================
+    // UNPARSEABLE-ROW SYNC FLOOR -- invariant spec (PR #142 review r3611258695;
+    // hardened by codex reviews r3614064524, r3614189343, r3614189347 on #182)
+    // ==========================================================================
     //
-    // The problem: `chunk = rawChunk.filter(isApplicationApiEvent)` below drops
+    // THE PROBLEM: `chunk = rawChunk.filter(isApplicationApiEvent)` below drops
     // any raw row whose ApiTypeId IS an application type but whose payload
     // currently fails Zod validation (e.g. a 309 broken by a PokerChase payload
     // change -- see docs/postmortems/2026-07-session-results-drop.md). That row
     // is never uploaded, but `lastProcessedTimestamp` -- and therefore
     // Firestore's own max timestamp, which `getCloudMaxTimestamp()` reads back
-    // on every subsequent call -- still advances past it as soon as a *later*
-    // valid event (same or a following session) gets uploaded. From that point
-    // on, `.where('timestamp').above(cloudMaxTimestamp)` starts strictly after
-    // the broken row forever. The raw copy survives locally (Raw Event Lake),
-    // but the row is structurally excluded from every future upload query --
-    // even after a future schema fix makes it parseable again. That's not a
-    // delay, it's a permanent, silent loss of that row from the cloud backup
-    // (and `syncFromCloud()` on a fresh install after local data loss could
-    // never recover it either).
+    // on every subsequent call -- would advance past it as soon as a *later*
+    // valid event (same or a following session) gets uploaded, permanently
+    // excluding the row from every future upload query, even after a future
+    // schema fix makes it parseable again (and `syncFromCloud()` on a fresh
+    // install after local data loss could never recover it either).
+    //
+    // MEANING: `SYNC_UNPARSEABLE_FLOOR_KEY` in `meta`, when non-null, names the
+    // earliest local timestamp that is not yet SAFE -- either (a) still an
+    // application-typed row that fails to parse, or (b) parses now but has not
+    // yet been confirmed (Firestore write acknowledged) as uploaded. Every
+    // `syncToCloud()` call rewinds its scan floor to just below this marker
+    // (see `scanFloor` below), so nothing at or after it is ever treated as
+    // "already covered" by the cloud watermark alone -- it keeps getting
+    // re-offered to `isApplicationApiEvent` every sync until it both parses
+    // and uploads successfully.
+    //
+    // WHEN THE FLOOR MAY BE SET (null -> a value): immediately, the moment a
+    // chunk reveals a *new* unparseable row while no floor is currently
+    // persisted -- BEFORE that chunk's (or any later chunk's) upload can push
+    // the cloud max past it (r3614064524: `syncToCloudBatch` is what advances
+    // Firestore's own max, so a durable marker must land first or a SW death
+    // right after the upload reopens the permanent-orphan window). Setting
+    // from null only *narrows exposure* (protects a row that had none before),
+    // so it is always safe to do eagerly, mid-pass, per chunk.
+    //
+    // WHEN THE FLOOR MAY ADVANCE (a value -> a LATER value) OR CLEAR (a value
+    // -> null): only *after* every `syncToCloudBatch` call covering the range
+    // being released has been awaited and did not throw (r3614189347: raising
+    // the floor past a row that was recovered-but-not-yet-confirmed-uploaded
+    // would let a later sync stop re-offering that row before it is actually
+    // durable in Firestore -- silently losing it exactly like the original
+    // bug this mechanism exists to fix). Concretely: this loop never raises an
+    // *already-persisted* floor mid-pass -- only sets it from null. The
+    // (possibly advanced or cleared) final value is committed once, after the
+    // while-loop below, once every chunk in the pass has been uploaded and
+    // confirmed. Note an already-persisted floor from an earlier pass is
+    // always <= anything discovered THIS pass (scanning starts right at it,
+    // ascending), so leaving it untouched mid-pass never under-protects a new,
+    // later orphan -- a future rewind-scan from floor-1 still reaches it. If
+    // the final commit itself is lost to a crash, the next pass harmlessly
+    // re-derives and re-persists the same value (`syncToCloudBatch` upserts by
+    // `${timestamp}_${ApiTypeId}`, so redundantly re-uploading already-synced
+    // rows while re-deriving is just extra write cost, not a correctness bug).
+    //
+    // BACKFILL GUARANTEE (r3614189343): this floor did not always exist, so an
+    // install that already had an unparseable row *below* the current cloud
+    // max before this mechanism (or this fix) shipped would otherwise never
+    // get it recorded -- `pendingUnparseableTimestamp` would read `null` and
+    // `scanFloor` would fall back to trusting `cloudMaxTimestamp` outright,
+    // permanently skipping that pre-existing orphan. `backfillUnparseableFloorIfNeeded()`
+    // runs once (tracked by `SYNC_UNPARSEABLE_BACKFILL_DONE_KEY`) before this
+    // trust decision, scanning local application-typed rows at/below the cloud
+    // max for any that are still unparseable and seeding the floor from the
+    // earliest one found.
     //
     // Alternatives considered and rejected:
     // - Never advance the cursor past ANY unparseable row: reintroduces the
@@ -214,16 +269,8 @@ export class AutoSyncService {
     // - Only re-scan from the earliest unparseable timestamp right after an
     //   explicit rebuild: misses the case where the schema fix ships and the
     //   very next auto-sync fires before any rebuild runs.
-    //
-    // Chosen fix: persist the earliest currently-known unparseable-application
-    // timestamp in `meta` (`SYNC_UNPARSEABLE_FLOOR_KEY`), independent of
-    // Firestore's own max. Every `syncToCloud()` call rewinds its scan floor to
-    // just before that marker (if one is pending), so the row keeps getting
-    // re-offered to `isApplicationApiEvent` on every sync -- once it parses, it
-    // uploads normally and the marker clears. A row that's known noise (202/205,
-    // or any ApiTypeId not in `ApiTypeValues` at all) never sets the marker, so
-    // a noise-only chunk still advances the cursor immediately and can't starve
-    // the loop -- this only holds back rows that *should* eventually parse.
+    await this.backfillUnparseableFloorIfNeeded(cloudMaxTimestamp)
+
     const pendingUnparseableTimestamp = await this.getUnparseableSyncFloor()
     const scanFloor = pendingUnparseableTimestamp !== null && cloudMaxTimestamp !== null
       ? Math.min(cloudMaxTimestamp, pendingUnparseableTimestamp - 1)
@@ -242,6 +289,8 @@ export class AutoSyncService {
       // Nothing at all above the floor -- if a marker was pending, its row no
       // longer exists locally (e.g. local data was cleared). Nothing left to
       // recover, so clear the stale marker rather than rewinding forever.
+      // (No upload happened in this branch, so there's nothing for the floor
+      // to have advanced past -- clearing here is always safe.)
       if (pendingUnparseableTimestamp !== null) await this.persistUnparseableSyncFloor(null)
       return
     }
@@ -254,24 +303,15 @@ export class AutoSyncService {
     let synced = 0
     let lastProcessedTimestamp = scanFloor || 0
     // Earliest still-unparseable-application timestamp seen across this whole
-    // pass. Updated (and durably persisted -- see the per-chunk `await
-    // this.persistUnparseableSyncFloor(...)` below) the moment a chunk
-    // reveals one, never merely accumulated in memory until the pass ends.
-    //
-    // INVARIANT (codex review r3614064524 on PR #182): the cloud max
-    // timestamp (what the *next* `getCloudMaxTimestamp()` call will read
-    // back from Firestore) may never advance past an orphan row whose
-    // timestamp is not yet durably recorded in `meta`. `syncToCloudBatch`
-    // is what advances Firestore's own max, so every chunk that reveals a
-    // new (or still-pending) unparseable timestamp must have that timestamp
-    // `await`-persisted BEFORE this loop calls `syncToCloudBatch` again --
-    // including for its own chunk, since a raw chunk is sorted and can
-    // contain valid rows timestamped after the orphan it also contains. A
-    // mid-pass failure (e.g. a Firestore write error) after that persist
-    // has already landed still leaves the correct marker in place; only the
-    // final commit below additionally needs to *clear* a stale marker once
-    // a full pass confirms nothing remains pending.
+    // pass (see invariant spec above). Only ever reflects rows that are
+    // STILL unparseable as of this pass's scan -- a row that resolved (now
+    // parses) simply stops contributing to it, which is how the floor
+    // eventually clears.
     let earliestUnparseableThisPass: number | null = null
+    // Tracks whether a floor is already persisted (from a prior pass, or set
+    // fresh earlier in THIS pass) -- gates the "set from null" fast path so
+    // it only ever SETS, never RAISES, a value mid-pass (see invariant spec).
+    let floorAlreadyPersisted = pendingUnparseableTimestamp !== null
 
     while (processed < totalCount) {
       // Get chunk of raw events newer than lastProcessedTimestamp. apiEvents is the
@@ -312,18 +352,20 @@ export class AutoSyncService {
           ? earliestUnparseableThisChunk
           : Math.min(earliestUnparseableThisPass, earliestUnparseableThisChunk)
 
-        // Persist BEFORE the upload below (codex review r3614064524): this
-        // raw chunk is timestamp-sorted and may contain valid rows after the
-        // orphan's position, and `syncToCloudBatch` upserts by document ID
-        // (not append-only), so as soon as it runs, a subsequent
-        // `getCloudMaxTimestamp()` can observe a cloud max past the orphan.
-        // If the marker weren't durable yet at that point and the service
-        // worker died right after the upload, the next sync would compute
-        // `totalCount = count(timestamp > cloudMax) = 0` for this row
-        // forever -- exactly the permanent-orphan window this mechanism
-        // exists to close. Awaiting here closes it: the marker lands before
-        // any upload call (this chunk's or a later one's) can advance past it.
-        await this.persistUnparseableSyncFloor(earliestUnparseableThisPass)
+        if (!floorAlreadyPersisted) {
+          // First orphan discovered THIS pass with nothing currently
+          // persisted -- SET (not raise) the floor before the upload below,
+          // closing the r3614064524 window. Safe unconditionally: there is
+          // no pre-existing recovered-but-unconfirmed row this could be
+          // prematurely releasing (r3614189347 does not apply to a null ->
+          // value transition).
+          await this.persistUnparseableSyncFloor(earliestUnparseableThisPass)
+          floorAlreadyPersisted = true
+        }
+        // else: a floor is already durable and (per the invariant spec) is
+        // guaranteed <= earliestUnparseableThisPass -- it already protects
+        // this timestamp. Raising it further must wait until every upload up
+        // to that point is confirmed, which happens once, after the loop.
       }
 
       // Sync this chunk (skip the Firestore round-trip entirely if it's all noise)
@@ -350,7 +392,12 @@ export class AutoSyncService {
             })
           }
         )
-
+        // Reaching this line means the await above did not throw, i.e.
+        // Firestore acknowledged every write in this chunk -- this chunk's
+        // rows (including any recovered row the persisted floor was still
+        // protecting) are now confirmed durable. This is what makes it safe
+        // for the end-of-loop commit below to eventually advance/clear the
+        // floor past them.
         synced += summary.syncedEvents
       }
 
@@ -363,16 +410,86 @@ export class AutoSyncService {
       }
     }
 
-    // Full pass completed without throwing. Any pending marker is already
-    // durable (persisted per-chunk above, before it could be outrun by an
-    // upload); this call's remaining job is to CLEAR a stale marker once a
-    // complete pass confirms nothing is pending any more (e.g. a previously
-    // broken row parsed successfully this time and no other orphan exists).
-    // Re-persisting a still-pending value here is redundant but harmless
-    // (same value, idempotent `meta.put`).
+    // Full pass completed without throwing -- every chunk's upload above was
+    // awaited and confirmed (see comment inside the loop), so it is now safe
+    // to advance or clear the floor to its final value for this pass. If this
+    // commit itself is lost to a crash, the next pass re-derives and
+    // re-persists the same value (see invariant spec above) -- not a
+    // correctness gap, just a redundant re-scan/re-upload.
     await this.persistUnparseableSyncFloor(earliestUnparseableThisPass)
 
     console.log(`[AutoSync] Uploaded ${synced} new events to cloud`)
+  }
+
+  /**
+   * One-time backfill (see the UNPARSEABLE-ROW SYNC FLOOR invariant spec in
+   * `syncToCloud()`, "BACKFILL GUARANTEE"): seeds `SYNC_UNPARSEABLE_FLOOR_KEY`
+   * from any local application-typed-but-unparseable row at or below the
+   * current cloud max, for installs where such a row already existed before
+   * this floor mechanism (or this ordering fix) shipped and was therefore
+   * never recorded. No-ops after the first successful run
+   * (`SYNC_UNPARSEABLE_BACKFILL_DONE_KEY`).
+   *
+   * Bounded scan: restricts to the `ApiTypeId` index over `ApiTypeValues`
+   * first (so non-application noise like 202/205 keepalives -- typically the
+   * majority of rows in a long-lived Raw Event Lake -- is skipped by the
+   * IndexedDB index itself and never Zod-validated), then filters to
+   * `timestamp <= cloudMaxTimestamp` (rows above it are already covered by
+   * every normal `syncToCloud()` pass's own per-chunk detection) and paginates
+   * via `processInChunks` so a 300k-row install never loads more than one
+   * chunk into memory at a time.
+   */
+  private async backfillUnparseableFloorIfNeeded(cloudMaxTimestamp: number | null): Promise<void> {
+    const alreadyDone = await this.db.meta.get(this.SYNC_UNPARSEABLE_BACKFILL_DONE_KEY)
+    if (alreadyDone) return
+
+    if (cloudMaxTimestamp === null) {
+      // Nothing uploaded yet -- there is no "already past the watermark"
+      // region below which a pre-existing orphan could be hiding.
+      await this.markUnparseableFloorBackfillDone()
+      return
+    }
+
+    console.log('[AutoSync] Running one-time unparseable-floor backfill scan...')
+    let earliestBackfilledOrphan: number | null = null
+
+    for await (const chunk of processInChunks(
+      this.db.apiEvents
+        .where('ApiTypeId').anyOf(ApiTypeValues)
+        .and(raw => typeof raw.timestamp === 'number' && raw.timestamp <= cloudMaxTimestamp),
+      DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
+    )) {
+      for (const raw of chunk) {
+        if (isUnparseableApplicationEvent(raw) && typeof raw.timestamp === 'number') {
+          earliestBackfilledOrphan = earliestBackfilledOrphan === null
+            ? raw.timestamp
+            : Math.min(earliestBackfilledOrphan, raw.timestamp)
+        }
+      }
+    }
+
+    if (earliestBackfilledOrphan !== null) {
+      // Only ever SET (never raise past) an existing floor: if a marker is
+      // somehow already pending (e.g. a fresh orphan surfaced in an earlier
+      // sync before this backfill got a chance to run), it is already <=
+      // anything a backfill of older history could find, so leave it alone
+      // rather than risk moving it later (see invariant spec above).
+      const existing = await this.getUnparseableSyncFloor()
+      if (existing === null) {
+        console.log(`[AutoSync] Backfill found a pre-existing unparseable row at ${earliestBackfilledOrphan}; seeding sync floor`)
+        await this.persistUnparseableSyncFloor(earliestBackfilledOrphan)
+      }
+    }
+
+    await this.markUnparseableFloorBackfillDone()
+  }
+
+  private async markUnparseableFloorBackfillDone(): Promise<void> {
+    await this.db.meta.put({
+      id: this.SYNC_UNPARSEABLE_BACKFILL_DONE_KEY,
+      value: true,
+      updatedAt: Date.now()
+    })
   }
 
   /** Read the persisted unparseable-row sync floor (see `syncToCloud()`). */
