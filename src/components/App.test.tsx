@@ -962,6 +962,32 @@ describe('App', () => {
         }
       })
 
+      it('フィルター変更は今まさにライブ在籍中の座席のキャッシュを消さない -- 変更直後にその席がbustしても正しくdim表示される（post-merge review descope pass1「Avoid clearing freshly rebuilt live-seat cache」）', async () => {
+        render(<App />)
+        await dispatchStats(mockStatsData.stats)
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
+
+        // 誰もミュートされていない状態でフィルターが変わる（message-router.ts
+        // の再計算ブロードキャストが、このwindowイベント転送より先に届いて
+        // dimCacheを打ち直した直後、というシナリオを模す -- 実際にはタイミング
+        // 非決定だが、App.tsx側はどちらの順序でも安全でなければならない）
+        await act(async () => {
+          window.dispatchEvent(new CustomEvent('updateBattleTypeFilter', {
+            detail: { gameTypes: { sng: true, mtt: false, ring: true } },
+          }))
+        })
+
+        // 席1(プレイヤー2)がまだライブ在籍中のうちにbustする。フィルター
+        // 変更が席1のキャッシュを無条件で消していたら、この時点でキャッシュが
+        // 空になっており、dim表示されず素の「Waiting for Hand...」に
+        // 落ちてしまう
+        const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
+        await dispatchStats(bustedLineup)
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
+      })
+
       it('latestStats(バッチ再計算)でdimmedSeatIndicesが空にリセットされた後でも、フィルター変更は取り残されたdimCacheエントリを無効化する（post-merge review P2「Clear cached muted seats even after dim state resets」）', async () => {
         render(<App />)
         await dispatchStats(mockStatsData.stats)

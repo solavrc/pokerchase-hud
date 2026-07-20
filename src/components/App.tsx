@@ -72,6 +72,16 @@ const App = memo(() => {
     dimmedSeatIndicesRef.current = next
     setDimmedSeatIndices(next)
   }, [])
+  // 現在表示中のstatsの同期読み取り用ミラー（#191 post-merge review descope
+  // pass1「Avoid clearing freshly rebuilt live-seat cache」指摘への対応で追加、
+  // dimmedSeatIndicesRefと同じ理由）。handleBattleTypeFilterUpdateが「この
+  // 座席は今まさにライブ在籍中か」を判定するのに使う -- フィルター変更は
+  // ユーザー操作起点の独立したイベントなので、React stateのコミット
+  // （useEffect経由）で十分間に合う。
+  const statsRef = useRef<PlayerStats[]>(EMPTY_SEATS)
+  useEffect(() => {
+    statsRef.current = stats
+  }, [stats])
   // ドリルダウンパネル（ポジション別 / 直近ハンド）: 開いているのは常にどちらか
   // 一方、高々1プレイヤー分（HUDツリーにローカルなReact state。グローバル設定
   // への永続化はv1では不要）。#128のポジション別ドリルダウンの単一state管理を
@@ -362,6 +372,24 @@ const App = memo(() => {
       // 引き続き使われるので、bustの記憶自体は失われない）。
       applyDimmedSeatIndices(new Set())
       setStats(message.stats)
+
+      // post-merge review descope pass1「Prefer visible hero stats after
+      // batch refreshes」指摘: この経路（信頼できるDB再計算）が席0のヒーロー
+      // 統計をこの時点の最新値に更新しても、dimCacheのHERO_SEAT_INDEX
+      // エントリ自体はここでは触れていなかった。セッション中に一度でも
+      // ライブのヒーロー在籍dealを見ていれば、dimCacheにはその時点の
+      // （インポート前の、より古い）ヒーロー統計が残ったままになる。この
+      // 状態で、次のライブハンド（dimCacheを打ち直す機会）を挟まずに
+      // セッションが終了(309)すると、handleSessionEndは`dimCache.get(
+      // HERO_SEAT_INDEX)`を優先するため、たった今表示したはずのより新しい
+      // 値ではなく、古いキャッシュ値へロールバックして表示してしまう。
+      // ここでdimCacheのヒーロー枠も同時に最新化しておけば、この経路も
+      // ライブ経路（handleTrustedLineup相当）と同じく「常に最新のヒーロー
+      // 値をdimCacheに保つ」という一貫した不変条件を満たす。
+      const heroEntry = message.stats[HERO_SEAT_INDEX]
+      if (heroEntry && isExistPlayerStats(heroEntry)) {
+        dimCacheRef.current.set(HERO_SEAT_INDEX, heroEntry)
+      }
     } else if (message.action === "updateUIConfig" && message.config) {
       setUIConfig(message.config)
     }
@@ -406,19 +434,43 @@ const App = memo(() => {
   // handleStatsMessageの通常ロジックがdimCacheから古いフィルターの統計を
   // 拾って再びミュート表示してしまう。
   //
-  // 対策: dimCache自体はheroを除く全エントリを無条件でクリアする(ライブ
-  // 在籍中の座席分も含む -- 直後に届く再計算ブロードキャストが
-  // handleStatsMessageの通常経路でdimCache.set()を打ち直すので、実害は無い。
-  // message-router.tsのupdateBattleTypeFilterハンドラーは`chrome.tabs.
-  // sendMessage`によるこのwindowイベント転送と同じタイミングで
-  // `service.statsOutputStream.write(...)`も呼んでおり、そちらの方が
-  // ポート経由で高速に届く)。表示(`stats`/`dimmedSeatIndices`)の書き換えは
-  // 従来どおり「今まさにミュート表示中」の座席だけに限定する -- 今
-  // 「Waiting for Hand...」で見えている座席には触れる必要が無く、ライブ
-  // 在籍中の座席を一瞬ブランクにする不要なちらつきも避けられる。
+  // 対策: dimCache自体はheroを除く「今まさにライブ在籍中ではない」全
+  // エントリを無条件でクリアする(ミュート表示中の座席・orphanedな座席の
+  // 両方を含む)。表示(`stats`/`dimmedSeatIndices`)の書き換えは従来どおり
+  // 「今まさにミュート表示中」の座席だけに限定する -- 今「Waiting for
+  // Hand...」で見えている座席には触れる必要が無く、ライブ在籍中の座席を
+  // 一瞬ブランクにする不要なちらつきも避けられる。
+  //
+  // post-merge review descope pass1「Avoid clearing freshly rebuilt
+  // live-seat cache」指摘: 当初は「ライブ在籍中の座席分も含めて無条件で
+  // クリアしても、直後に届く再計算ブロードキャストがhandleStatsMessageの
+  // 通常経路でdimCache.set()を打ち直すので実害は無い」としていたが、この
+  // 順序保証は誤りだった。message-router.tsのupdateBattleTypeFilter
+  // ハンドラーは`service.setBattleTypeFilter()`（再計算・再ブロードキャスト
+  // をトリガー、ポート経由）と、このwindowイベントの転送
+  // （`chrome.tabs.query`→`chrome.tabs.sendMessage`、2段のchrome API
+  // ラウンドトリップ）を並行して開始するだけで、どちらが先に届くかは
+  // DBクエリ量やIPCの負荷次第で入れ替わりうる。再計算ブロードキャストが
+  // 先に届いてdimCacheをフレッシュな値で打ち直した直後にこのハンドラーが
+  // 動くと、そのフレッシュな値ごと無条件で消してしまい、対戦相手がその
+  // 席で次にbustした時にdim表示が出ない（キャッシュが空のまま）という、
+  // 縮小スコープの核であるはずの「連続したライブシーケンス内でのbust→
+  // dim」自体が壊れてしまう。
+  //
+  // 対処: 「今まさにライブ在籍中」（=statsRef上そのplayerIdが-1でなく、
+  // かつ現在ミュート表示中でもない、つまりキャッシュ値ではなく生きた
+  // 実データがそのまま表示されている）座席のキャッシュはクリア対象から
+  // 除外する。ミュート表示中（キャッシュ値を経由して表示されている）・
+  // 完全に空席（orphaned含む）の座席だけを引き続きクリアする。
   const handleBattleTypeFilterUpdate = useCallback(() => {
     const dimCache = dimCacheRef.current
-    const nonHeroCachedSeats = Array.from(dimCache.keys()).filter(seatIndex => seatIndex !== HERO_SEAT_INDEX)
+    const currentStats = statsRef.current
+    const currentlyDimmed = dimmedSeatIndicesRef.current
+    const nonHeroCachedSeats = Array.from(dimCache.keys()).filter(seatIndex => {
+      if (seatIndex === HERO_SEAT_INDEX) return false
+      const isLiveNow = !currentlyDimmed.has(seatIndex) && currentStats[seatIndex]?.playerId !== -1
+      return !isLiveNow
+    })
     if (nonHeroCachedSeats.length === 0) return
     for (const seatIndex of nonHeroCachedSeats) dimCache.delete(seatIndex)
 

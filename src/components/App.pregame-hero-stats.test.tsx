@@ -159,4 +159,84 @@ describe('App - pre-game hero stats takeover', () => {
     // unmount/remount flicker).
     expect(screen.getByTestId('hud-0')).toBe(heroNodeBefore)
   })
+
+  // Regression for a post-merge review P2 finding on PR #191 (descope pass1):
+  // "Prefer visible hero stats after batch refreshes". A `latestStats`
+  // batch refresh (post-import round-trip, or any other trusted DB
+  // recompute mid-session) updates the *visible* hero stat but historically
+  // left dimCacheRef's hero entry untouched. If no further live hero-anchored
+  // deal arrived before the session ended, handleSessionEnd's `dimCache.get
+  // (HERO_SEAT_INDEX) ?? stat` preferred the older cached value over the
+  // fresher batch-refreshed one, rolling the hero panel back to stale numbers
+  // right when the user would expect the latest (just-imported) stats to
+  // persist.
+  it('hero panel does not roll back to a stale live-cache value after a latestStats batch refresh, when session ends before another live deal', async () => {
+    render(<App />)
+    await waitFor(() => {
+      expect(screen.getByTestId('hud-0')).toBeInTheDocument()
+    })
+
+    // A live, hero-anchored hand establishes an "old" cached hero stat
+    // (dimCacheRef's HERO_SEAT_INDEX entry).
+    const evtDeal = {
+      ApiTypeId: ApiType.EVT_DEAL as const,
+      Player: { SeatIndex: 0, BetStatus: 1, HoleCards: [], Chip: 1000, BetChip: 0 },
+      SeatUserIds: [HERO_ID, 2, 3, 4, 5, 6],
+      Game: {
+        CurrentBlindLv: 1, NextBlindUnixSeconds: 0, Ante: 0,
+        SmallBlind: 50, BigBlind: 100, ButtonSeat: 0, SmallBlindSeat: 1, BigBlindSeat: 2
+      },
+      OtherPlayers: [
+        { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 0, IsSafeLeave: false },
+        { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 0, IsSafeLeave: false },
+        { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 0, IsSafeLeave: false },
+        { SeatIndex: 4, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 0, IsSafeLeave: false },
+        { SeatIndex: 5, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 0, IsSafeLeave: false },
+      ],
+      Progress: { Phase: 0, NextActionSeat: 0, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 0, SidePot: [] },
+      timestamp: Date.now(),
+    } as ApiEvent<ApiType.EVT_DEAL>
+    const liveStats: StatsData['stats'] = [
+      { playerId: HERO_ID, statResults: [{ id: 'hands', name: 'HAND', value: 10, formatted: '10' } as any] },
+      { playerId: 2, statResults: [] },
+      { playerId: 3, statResults: [] },
+      { playerId: 4, statResults: [] },
+      { playerId: 5, statResults: [] },
+      { playerId: 6, statResults: [] },
+    ]
+    act(() => {
+      window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
+        detail: { stats: liveStats, evtDeal } as StatsData,
+      }))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('Hands: 10')
+    })
+
+    // Mid-session import/refresh: a trusted DB recompute delivers fresher
+    // hero stats (e.g. newly-imported hands raised the HAND count) via the
+    // same `latestStats` chrome message path as the pregame fallback.
+    const messageHandler = (chrome.runtime.onMessage.addListener as jest.Mock).mock.calls[0][0]
+    act(() => {
+      messageHandler({
+        action: 'latestStats',
+        stats: [
+          { playerId: HERO_ID, statResults: [{ id: 'hands', name: 'HAND', value: 99, formatted: '99' } as any] },
+          { playerId: -1 }, { playerId: -1 }, { playerId: -1 }, { playerId: -1 }, { playerId: -1 },
+        ],
+      } as ChromeMessage)
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('Hands: 99')
+    })
+
+    // Session ends with no further live hero-anchored deal in between --
+    // the hero panel must keep showing the fresher batch-refreshed value,
+    // not roll back to the stale live-cache snapshot from before the import.
+    act(() => {
+      window.dispatchEvent(new CustomEvent('PokerChaseSessionEndEvent'))
+    })
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('Player: 1')
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('Hands: 99')
+  })
 })
