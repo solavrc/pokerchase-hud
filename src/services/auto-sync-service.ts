@@ -570,18 +570,48 @@ export class AutoSyncService {
 
     console.log('[AutoSync] Running one-time sync-floor backfill scan...')
 
-    // Earliest application-typed row anywhere in the local Lake, regardless
+    // Earliest application-typed row AT OR BELOW cloudMaxTimestamp, regardless
     // of whether it currently parses (see P1 fix doc comment above for why
-    // this must NOT be restricted to currently-unparseable rows only). Cheap:
-    // apiEvents's primary key is [timestamp+ApiTypeId], so this cursors in
-    // true timestamp order and `.first()` stops at the very first match --
-    // near-O(1), not a full scan.
-    const earliestAppRow = await this.db.apiEvents
-      .orderBy('[timestamp+ApiTypeId]')
-      .filter(raw => typeof raw.timestamp === 'number' && ApiTypeValues.includes(raw.ApiTypeId as ApiType))
-      .first()
+    // this must NOT be restricted to currently-unparseable rows only).
+    //
+    // BOUNDED, INDEXED SCAN (codex review r3615140413, P2, "Avoid unbounded
+    // scans in the V2 backfill"): the original version cursored the PRIMARY
+    // key `[timestamp+ApiTypeId]` with a `.filter()` predicate. Since the
+    // `ApiTypeId` check isn't part of that index's range, Dexie has to walk
+    // the cursor row-by-row (can't skip via the index alone) -- and because
+    // the query had no upper bound, it could keep cursoring past
+    // `cloudMaxTimestamp` (the only region this backfill has any business
+    // examining -- everything above it is already covered by every normal
+    // `syncToCloud()` pass's own per-chunk detection) before finding a match,
+    // e.g. if the Lake starts with a long run of non-application noise.
+    // Fixed: query the `[ApiTypeId+timestamp]` index once PER application
+    // type (`ApiTypeValues` -- currently 9 types, a small fixed constant,
+    // not proportional to Lake size), each bounded to `[apiTypeId, 0]..
+    // [apiTypeId, cloudMaxTimestamp]`. Every one of these is a true indexed
+    // range seek (no filter callback, no cursoring through rows of other
+    // types or noise) that can never look above the watermark, and
+    // `.first()` within each bound gives that type's own earliest candidate.
+    // Taking the min across all 9 gives the true global earliest -- O(number
+    // of application types) indexed seeks, not O(rows scanned).
+    const earliestAppRowCandidates = await Promise.all(
+      ApiTypeValues.map(apiTypeId =>
+        this.db.apiEvents
+          .where('[ApiTypeId+timestamp]')
+          .between([apiTypeId, 0], [apiTypeId, cloudMaxTimestamp], true, true)
+          .first()
+      )
+    )
+    let earliestAppRow: ApiEvent | undefined
+    for (const candidate of earliestAppRowCandidates) {
+      if (candidate && typeof candidate.timestamp === 'number' &&
+        (earliestAppRow === undefined || candidate.timestamp < earliestAppRow.timestamp!)) {
+        earliestAppRow = candidate
+      }
+    }
 
-    if (earliestAppRow && typeof earliestAppRow.timestamp === 'number' && earliestAppRow.timestamp <= cloudMaxTimestamp) {
+    // No separate `<= cloudMaxTimestamp` check needed here -- every
+    // candidate above was already bounded to that range by its own query.
+    if (earliestAppRow && typeof earliestAppRow.timestamp === 'number') {
       // Only ever LOWER (never raise past) an existing floor: if a marker is
       // somehow already pending at or below this row's timestamp (e.g. a
       // fresh orphan surfaced in an earlier sync before this backfill got a

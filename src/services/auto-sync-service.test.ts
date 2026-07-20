@@ -1,6 +1,6 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { PokerChaseDB } from '../db/poker-chase-db'
-import { ApiType, BattleType } from '../types'
+import { ApiType, ApiTypeValues, BattleType } from '../types'
 import type { ApiEvent } from '../types'
 import { DATABASE_CONSTANTS } from '../constants/database'
 import { AutoSyncService } from './auto-sync-service'
@@ -402,6 +402,44 @@ describe('AutoSyncService cloud downloads', () => {
     // and clears once the pass is confirmed -- proving this was a genuine
     // one-time reconciliation, not a permanently-stuck marker.
     expect(await db.meta.get('syncUnparseableFloor')).toBeUndefined()
+  })
+
+  test('backfill scan issues one bounded, indexed [ApiTypeId+timestamp] lookup per application type -- not an unbounded filtered cursor over the whole Lake (codex review r3615140413, P2)', async () => {
+    // A single valid application row is enough to exercise the backfill scan
+    // -- this test cares about HOW the scan queries the DB, not about a
+    // specific seeded-floor outcome (already covered by the other backfill
+    // tests above).
+    const validRow = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-1',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
+    await db.apiEvents.add(validRow)
+
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(300)
+    jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockResolvedValue({ totalEvents: 1, syncedEvents: 1, lastSyncTime: new Date() })
+
+    const whereSpy = jest.spyOn(db.apiEvents, 'where')
+
+    const service = new AutoSyncService(db)
+    await service.performSync('upload')
+
+    // Exactly one indexed range query per application type (a small fixed
+    // constant -- ApiTypeValues.length, currently 9 -- not proportional to
+    // Lake size) against the [ApiTypeId+timestamp] compound index. The OLD
+    // implementation instead issued a single `.orderBy('[timestamp+ApiTypeId]')`
+    // cursor with a `.filter()` predicate that could walk arbitrarily far
+    // (unbounded above cloudMaxTimestamp, and unable to skip non-matching
+    // ApiTypeIds via the index) before finding a match.
+    const indexLookups = whereSpy.mock.calls.filter(([index]) => typeof index === 'string' && index === '[ApiTypeId+timestamp]')
+    expect(indexLookups.length).toBe(ApiTypeValues.length)
+    // Never falls back to the old unbounded primary-key cursor pattern.
+    const primaryKeyCursorCalls = whereSpy.mock.calls.filter(([index]) => typeof index === 'string' && index === '[timestamp+ApiTypeId]')
+    expect(primaryKeyCursorCalls.length).toBe(0)
   })
 
   test('lowers an already-persisted LATER floor to a newly discovered EARLIER orphan before that chunk uploads (P2 fix, codex review r3614469176)', async () => {
