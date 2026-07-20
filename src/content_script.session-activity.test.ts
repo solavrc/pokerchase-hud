@@ -13,6 +13,13 @@
  *
  * Only EVT_SESSION_RESULTS (309) may disarm it again -- the tri-state stays
  * conservative (inactive only on an explicit session-end signal).
+ *
+ * EVT_DEAL is further gated on the raw `Player` field's presence (P2, codex
+ * review 2026-07-21): docs/api-events.md "EVT_DEAL: Playerフィールドの欠落"
+ * documents spectator-mode deals (hero not seated, e.g. after busting out
+ * but the client keeps receiving another table) as having no `Player` field
+ * at all. Arming keepalive on those would keep it running through a
+ * spectated session that may never see another 309.
  */
 import { ApiType } from './types'
 import { POKER_CHASE_ORIGIN } from './constants/runtime'
@@ -62,22 +69,30 @@ describe('content_script keepalive (session-activity triggers)', () => {
     expect(mockPort.postMessage).toHaveBeenCalledWith({ type: 'keepalive' })
   })
 
-  test('EVT_DEAL (303) alone starts keepalive without a prior 308', () => {
-    dispatchGameMessage({ ApiTypeId: ApiType.EVT_DEAL, timestamp: 2 })
+  test('EVT_DEAL (303) with Player present alone starts keepalive without a prior 308', () => {
+    dispatchGameMessage({ ApiTypeId: ApiType.EVT_DEAL, timestamp: 2, Player: { SeatIndex: 0 } })
 
     jest.advanceTimersByTime(KEEPALIVE_INTERVAL_MS)
 
     expect(mockPort.postMessage).toHaveBeenCalledWith({ type: 'keepalive' })
   })
 
-  test('raw sequence 309 -> 201 -> 303 (no intervening 308) keeps keepalive armed (release-blocker audit exact scenario)', () => {
+  test('EVT_DEAL (303) with Player absent (spectator mode) does NOT start keepalive (P2, codex review 2026-07-21)', () => {
+    dispatchGameMessage({ ApiTypeId: ApiType.EVT_DEAL, timestamp: 2 }) // no Player field
+
+    jest.advanceTimersByTime(KEEPALIVE_INTERVAL_MS)
+
+    expect(mockPort.postMessage).not.toHaveBeenCalledWith({ type: 'keepalive' })
+  })
+
+  test('raw sequence 309 -> 201 -> 303[Player present] (no intervening 308) keeps keepalive armed (release-blocker audit exact scenario)', () => {
     // beforeEach already sent a 309 baseline; repeat explicitly so the
     // scenario reads standalone.
     dispatchGameMessage({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 3 })
     mockPort.postMessage.mockClear()
 
     dispatchGameMessage({ ApiTypeId: ApiType.EVT_ENTRY_QUEUED, timestamp: 4 })
-    dispatchGameMessage({ ApiTypeId: ApiType.EVT_DEAL, timestamp: 5 })
+    dispatchGameMessage({ ApiTypeId: ApiType.EVT_DEAL, timestamp: 5, Player: { SeatIndex: 0 } })
 
     jest.advanceTimersByTime(KEEPALIVE_INTERVAL_MS)
 

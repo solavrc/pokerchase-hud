@@ -66,6 +66,11 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           return
         }
 
+        // ACTIVE化は`service.ready`・raw書き込みの耐久性バリアより前に、
+        // 完全に同期的に行う（P2, codexレビュー指摘 2026-07-21）。
+        // 詳細は`markSessionActiveFromRawMessage()`のコメント参照。
+        markSessionActiveFromRawMessage(message)
+
         // このイベントの処理を、直前のイベントの処理（add()の決着含む）の
         // 後ろに連結する。`processEvent`は内部で全エラーを捕捉して素通し
         // させない設計だが、想定外のバグでqueueが壊れて以降のイベントが
@@ -89,9 +94,78 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
 }
 
 /**
+ * 生メッセージだけを見て、セッションをACTIVEとしてマークすべきかを判定し、
+ * 該当すれば即座に`markSessionActive()`を呼ぶ。
+ *
+ * 呼び出しタイミング（P2, codexレビュー 2026-07-21指摘）: `service.ready`や
+ * raw書き込みの耐久性バリア（`processEvent`内の`await service.db.apiEvents.add()`）
+ * より前、`port.onMessage`受信直後の完全に同期的な処理として呼ぶこと。
+ * session-activityはService Worker側のメモリ上の状態でしかなく、Raw Event
+ * Lakeの行に由来する派生統計ではないため、耐久性バリアへの依存が一切無い
+ * （このイベント自身のraw書き込みが後で失敗・重複・衝突になっても、
+ * ACTIVEのままにしておくことは「安全側に倒す」設計方針そのものと矛盾
+ * しない——`processEvent`側で何度呼ばれても`markSessionActive()`は冪等）。
+ * 逆にここを`await`の後ろに置くと、遅い/詰まったadd()の裏で
+ * `onUpdateAvailable`等の再チェック（このイベントの処理とは独立に、任意の
+ * タイミングで発火しうる別経路）が「まだ前回309のまま=inactive=safe」と
+ * 誤認し、Service Workerをゲーム中にreloadしてしまう恐れがある。
+ *
+ * 309(EVT_SESSION_RESULTS)によるinactive化は、意図的にここに含めない
+ * （`processEvent`側で耐久性バリアの後ろに残したまま）: SAFE(=inactive)へ
+ * 倒す方向の遷移は、finding Aが塞いだのと同じリスク（このイベント自身の
+ * raw書き込みが確定する前にreloadでService Workerが巻き込まれ、309が
+ * 失われる）を再度開けてしまうため。ACTIVEへ倒す方向は「より保守的
+ * （unsafe側）」な変更なので即座に反映して問題ないが、INACTIVEへ倒す方向は
+ * 引き続きraw書き込みの決着を待つ必要がある——tri-stateの2つの遷移は
+ * 対称ではない。
+ *
+ * EVT_DEAL(303)は観戦モード（ヒーロー未着席、`Player`フィールド自体が
+ * undefined -- docs/api-events.md「EVT_DEAL: Playerフィールドの欠落」/
+ * aggregate-events-stream.ts参照）ではACTIVEトリガーから除外する
+ * （P2, codexレビュー指摘）: バスト後の観戦中に届く303まで拾うと、以降
+ * 309が来ない限りsessionActivityがactiveに固まり、保留中アップデートが
+ * 無期限にブロックされてしまう。raw-firstパターンに従い、Zodパース前の
+ * 生フィールドの有無だけで判定する（content_script.tsのkeepalive起動条件も
+ * 同じ判定をミラーする）。
+ */
+const markSessionActiveFromRawMessage = (message: ApiMessage | { type: string }): void => {
+  const rawApiTypeId = (message as { ApiTypeId?: unknown }).ApiTypeId
+  if (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED || rawApiTypeId === ApiType.EVT_SESSION_DETAILS) {
+    markSessionActive()
+    return
+  }
+  if (rawApiTypeId === ApiType.EVT_DEAL) {
+    const rawPlayer = (message as { Player?: unknown }).Player
+    if (rawPlayer != null) {
+      markSessionActive()
+    }
+  }
+}
+
+/**
+ * ペイロードが構造的に同一かどうかの簡易比較。生イベントはmsgpackデコード後の
+ * 素朴なJSON互換オブジェクトであり、暗号学的な保証は不要な用途（同一
+ * (timestamp, ApiTypeId)への再到着が「本当に同じイベントの再送か」を見分ける
+ * だけ）のため、JSON.stringifyによる構造比較で十分とする（フィールド順序が
+ * 変わりうる別経路からの再構築物を比較する用途ではないため、キー順序依存の
+ * 弱さは実害にならない）。
+ */
+const isSamePayload = (a: unknown, b: unknown): boolean => {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b)
+  } catch {
+    return false
+  }
+}
+
+/**
  * 1件のAPIイベントを処理する: Raw Event Lakeへの保存（耐久性バリア）→
  * セッション状態追跡・自動同期トリガー（raw書き込み決着後のみ）→
  * リアルタイムパイプラインへの投入。
+ *
+ * ACTIVE化のセッション状態追跡（`markSessionActiveFromRawMessage()`）は
+ * この関数の外（`port.onMessage`受信直後、耐久性バリアより前）で完全に
+ * 同期的に既に処理済み。ここで扱うのはINACTIVE化（309）のみ。
  */
 const processEvent = async (
   service: PokerChaseService,
@@ -123,31 +197,74 @@ const processEvent = async (
     try {
       await service.db.apiEvents.add(message as ApiEvent)
     } catch (err) {
-      const isDuplicateKey = err instanceof Dexie.DexieError && err.name === 'ConstraintError'
-      if (isDuplicateKey) {
-        // 同一(timestamp, ApiTypeId)は既にRaw Event Lakeに存在する = この
-        // イベントは初回受信時に既にセッションフック・同期トリガー・
-        // ストリームを一度通過済みのはず。ここで再度投入すると二重処理
-        // （統計の二重計上等）になるため、dedup semanticsとして以降の
-        // 全処理をスキップする。
-        console.warn('[background] Duplicate event (already in Raw Event Lake), skipping re-processing:', message)
+      const isConstraintError = err instanceof Dexie.DexieError && err.name === 'ConstraintError'
+      if (isConstraintError) {
+        // ConstraintError = 既に同じ[timestamp+ApiTypeId]の行がLakeに存在
+        // する。これは2つの別々のケースを区別する必要がある
+        // （P2, codexレビュー指摘 2026-07-21, 監査finding 6）:
+        //   (a) 真の重複: 同一イベントの再到着（再送・reconnect replay等）
+        //   (b) 真の衝突: 同一ミリ秒バーストで2つの"別々の"生WebSocket
+        //       メッセージが同じApiTypeIdで届き、両方とも同じ
+        //       `Date.now()`由来のtimestamp（web_accessible_resource.ts）を
+        //       持ってしまい[timestamp+ApiTypeId]がぶつかったケース
+        // (b)を(a)と同じ「スキップ」扱いにすると、衝突した方のイベント
+        // （アクション・結果・セッション遷移等）がライブパイプラインから
+        // 静かに消えてしまう（このコメントの直前のレビューで指摘された
+        // リグレッション）。既存行のペイロードと比較して区別する。
+        let existing: ApiEvent | undefined
+        try {
+          existing = await service.db.apiEvents.get([rawTimestamp as number, rawApiTypeId as number])
+        } catch (getErr) {
+          console.error('[background] Failed to read colliding row for dedup comparison (treating as a genuine collision, not a duplicate):', getErr)
+        }
+
+        if (existing !== undefined && isSamePayload(existing, message)) {
+          // (a) 真の重複: このイベントは初回受信時に既にセッションフック・
+          // 同期トリガー・ストリームを一度通過済みのはず。ここで再度投入
+          // すると二重処理（統計の二重計上等）になるため、dedup semantics
+          // として以降の全処理をスキップする。
+          console.warn('[background] Duplicate event (identical payload already in Raw Event Lake), skipping re-processing:', message)
+          return
+        }
+
+        // (b) 真の衝突: 別イベントが同じprimary keyを先取りしていたため、
+        // このイベント自身の生ログはRaw Event Lakeに残せない（add()は
+        // 既存行を上書きしない）。根本修正はwave-3で予定されている
+        // シーケンスキー移行（[timestamp+ApiTypeId]をこの種の衝突が起こら
+        // ないキーへ置き換える）で、それまでの当面の対処として、同一
+        // ミリ秒バーストでアクション・結果・セッション遷移を静かに握り
+        // つぶす方が実害が大きいと判断し、ライブパイプラインへの投入は
+        // 続行する（returnしない）。raw行を持てなかったという事実は
+        // drop可視化カウンタ（#141）で大きく可視化し、運用上気づける
+        // ようにする（quota等の失敗と同じ経路 -- どちらも「raw行が無い
+        // まま素通しした」事実を運用に晒す点は共通）。
+        console.error('[background] Primary-key collision (different event landed on the same [timestamp+ApiTypeId] -- see wave-3 sequence-key migration for the real fix; forwarding to the live pipeline anyway, no raw row persisted for this event):', err, { incoming: message, existing })
+        if (typeof rawApiTypeId === 'number') {
+          const eventTimestamp = typeof rawTimestamp === 'number' ? rawTimestamp : Date.now()
+          recordUndecodedEvent(service.db, rawApiTypeId, eventTimestamp).catch(recordErr =>
+            console.error('[background] Failed to record dropped-event stats:', recordErr)
+          )
+        }
+        // フォールスルー（returnしない）: 以降のセッション状態追跡・
+        // 同期トリガー・ストリーム投入へ進む。
+      } else {
+        // 重複/衝突以外の理由（quota超過等）でraw書き込みが失敗 = この
+        // イベントはLakeに存在しない。「派生統計はraw行があって初めて
+        // 存在してよい」というLakeの不変条件を守るため、ストリーム・
+        // セッションフック（の残り。ACTIVE化は既にこの関数の外で処理
+        // 済み）・同期トリガーのいずれにも投入しない（forward NGが正しい
+        // 判断——「ログだけ出して素通しする」は不変条件違反を積極的に
+        // 作りにいくことになるため選ばない）。#141のdrop可視化カウンタで
+        // 運用上気づけるようにする。
+        console.error('[background] Raw Event Lake write failed -- dropping from pipeline to preserve the Lake invariant (derived stats require a raw row):', err, message)
+        if (typeof rawApiTypeId === 'number') {
+          const eventTimestamp = typeof rawTimestamp === 'number' ? rawTimestamp : Date.now()
+          recordUndecodedEvent(service.db, rawApiTypeId, eventTimestamp).catch(recordErr =>
+            console.error('[background] Failed to record dropped-event stats:', recordErr)
+          )
+        }
         return
       }
-      // 重複以外の理由（quota超過等）でraw書き込みが失敗 = このイベントは
-      // Lakeに存在しない。「派生統計はraw行があって初めて存在してよい」
-      // というLakeの不変条件を守るため、ストリーム・セッションフック・
-      // 同期トリガーのいずれにも投入しない（forward NGが正しい判断——
-      // 「ログだけ出して素通しする」は不変条件違反を積極的に作りにいく
-      // ことになるため選ばない）。#141のdrop可視化カウンタで運用上
-      // 気づけるようにする。
-      console.error('[background] Raw Event Lake write failed -- dropping from pipeline to preserve the Lake invariant (derived stats require a raw row):', err, message)
-      if (typeof rawApiTypeId === 'number') {
-        const eventTimestamp = typeof rawTimestamp === 'number' ? rawTimestamp : Date.now()
-        recordUndecodedEvent(service.db, rawApiTypeId, eventTimestamp).catch(recordErr =>
-          console.error('[background] Failed to record dropped-event stats:', recordErr)
-        )
-      }
-      return
     }
   } else {
     // timestamp/ApiTypeIdが数値でない = キーとして使えないため保存不可。
@@ -156,39 +273,23 @@ const processEvent = async (
     console.warn('[background] Event missing numeric timestamp/ApiTypeId, cannot store:', message)
   }
 
-  // ここから先は、raw書き込みが成功した（または保存不可能で待つべきI/Oが
-  // 無かった）場合にのみ到達する。add()が実際に失敗したケースは上で既に
-  // returnしている。
+  // ここから先は、raw書き込みが成功した・保存不可能で待つべきI/Oが無かった・
+  // または真の衝突でフォールスルーしてきた場合にのみ到達する（上記
+  // いずれか）。add()が実際に失敗した（重複以外の失敗、または真の重複）
+  // ケースは上で既にreturnしている。
 
-  // Forced-update安全性述語（update-manager.ts）のセッション状態追跡:
-  // content_script.tsのkeepaliveゲート（isGameActive）と同じ境界イベントを
-  // Service Worker側で独立に追跡する（SW再起動でリセットされるため
-  // content_script側の状態と厳密に同期している必要はない -- 保守的に
-  // 「unknown = unsafe」から始まり、実イベント観測で確定させるだけでよい）。
-  // 意図的にパース成功後のdata.ApiTypeIdではなく、ここで生メッセージの
-  // 数値ApiTypeIdだけを見て判定する: PokerChase側の309ペイロード破壊的
-  // 変更でparseApiEvent()がnullを返すようになっても、308で一度activeに
-  // なったセッション状態が永久にinactiveへ戻らず、まさにその変更を
-  // 修正する更新の安全性判定がずっとunsafeのまま詰まる、という事態を
-  // 避けるため（codexレビュー指摘）
-  //
-  // ACTIVEトリガーは308(EVT_SESSION_DETAILS)単独に頼らない
-  // （release-blocker監査 finding B）: docs/api-events.md:99が明記する
-  // 通り、308の欠落は正常系のバリアント（観測ギャップ）であり、
-  // 「308が来ない試合開始」は普通に起こる。309でinactiveにした直後、
-  // 308無しで次の試合が201/303から始まると、旧実装ではsession-activityが
-  // inactiveのまま固まり、onUpdateAvailable/operation-complete契機の
-  // 安全性再チェックが「安全」と誤判定してService Workerをゲーム中に
-  // reloadしてしまう。保守的に、以下のいずれかを観測したら即active化する:
-  //   - EVT_ENTRY_QUEUED(201): 着席（新セッション/新テーブルの入口）
-  //   - EVT_DEAL(303): ハンド進行中の最も強いシグナル
-  //   - EVT_SESSION_DETAILS(308): 従来からのシグナル（来れば最速）
-  // いずれも「試合が始まった」ことしか示さず「終わった」ことは示さない
-  // ため、inactiveへ戻すトリガーは引き続き309(EVT_SESSION_RESULTS)のみ
-  // （tri-stateのunknown=unsafeデフォルトは変更しない）。
-  // 同じトリガー集合をcontent_script.tsのkeepalive起動条件にも
-  // ミラーする必要がある（背景・コンテンツスクリプト間でimport不可のため
-  // 手動同期。変更時は両ファイルを揃えること）。
+  // Forced-update安全性述語（update-manager.ts）のセッション状態追跡・
+  // INACTIVE化（309のみ）: ACTIVE化（201/303[Player在席時]/308）はこの
+  // 関数の外（`port.onMessage`受信直後、耐久性バリアより前）で
+  // `markSessionActiveFromRawMessage()`により既に同期的に処理済み
+  // （理由は同関数のコメント参照 -- ACTIVE/INACTIVEの2方向は対称ではなく、
+  // INACTIVE化だけがreloadを許可する方向のため引き続き耐久性バリアの
+  // 後ろに残す）。ここでは意図的にパース成功後のdata.ApiTypeIdではなく、
+  // 生メッセージの数値ApiTypeIdだけを見て判定する: PokerChase側の309
+  // ペイロード破壊的変更でparseApiEvent()がnullを返すようになっても、
+  // セッション状態が永久にinactiveへ戻らず、まさにその変更を修正する
+  // 更新の安全性判定がずっとunsafeのまま詰まる、という事態を避けるため
+  // （codexレビュー指摘）
   if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
     markSessionInactive()
     // #179 round3指摘: セッション終了(EVT_SESSION_RESULTS)によるHUDクリアは
@@ -240,12 +341,6 @@ const processEvent = async (
     // 対する`lineup-identity`ガードが別途入っており、この単純な
     // `[]`のままでも競合は起きない。
     setLastKnownStats([])
-  } else if (
-    rawApiTypeId === ApiType.EVT_ENTRY_QUEUED ||
-    rawApiTypeId === ApiType.EVT_DEAL ||
-    rawApiTypeId === ApiType.EVT_SESSION_DETAILS
-  ) {
-    markSessionActive()
   }
 
   // Auto-sync起動・保留中アップデートの安全性再チェックも、上のセッション状態
@@ -323,7 +418,9 @@ const processEvent = async (
   // ここでdataはApiEvent型（isApplicationApiEventで保証済み）
   service.eventLogger(data, 'info')
 
-  // ストリーム処理（DB保存は上で完了済み・耐久性確定済み）
+  // ストリーム処理（DB保存は上で完了済み・耐久性確定済み -- ただし
+  // primary-key衝突でフォールスルーしてきた場合のみ例外: このイベント
+  // 自身の生ログはRaw Event Lakeに残っていない。上のコメント参照）
   service.handLogStream.write(data)
   service.handAggregateStream.write(data)
   service.realTimeStatsStream.write(data)

@@ -92,7 +92,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     Emblems: []
   })
 
-  test('streams / session-activity tracking / auto-sync trigger do not run before apiEvents.add() resolves, and do run after', async () => {
+  test('streams / auto-sync trigger do not run before apiEvents.add() resolves, and do run after (session-activity tracking is exempt -- see the dedicated test below)', async () => {
     const handLogSpy = jest.spyOn(service.handLogStream, 'write')
     const markSessionActiveSpy = jest.spyOn(updateManager, 'markSessionActive')
     const onNewSessionStartSpy = jest.spyOn(autoSyncService, 'onNewSessionStart').mockResolvedValue(undefined)
@@ -104,23 +104,45 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
 
     const pending = onMessageHandler(entryQueued(100))
 
+    // markSessionActive() runs synchronously on message arrival, before any
+    // await -- see the dedicated durability-exemption test below and
+    // markSessionActiveFromRawMessage()'s docstring for why this one is
+    // deliberately NOT gated behind the raw-write barrier.
+    expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
+
     // Flush the microtask queue repeatedly without resolving add() -- if the
-    // durability barrier is in place, nothing downstream may have run yet.
+    // durability barrier is in place, nothing else downstream may have run
+    // yet.
     await new Promise(resolve => setTimeout(resolve, 0))
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(handLogSpy).not.toHaveBeenCalled()
-    expect(markSessionActiveSpy).not.toHaveBeenCalled()
     expect(onNewSessionStartSpy).not.toHaveBeenCalled()
 
     resolveAdd(1)
     await pending
 
     expect(handLogSpy).toHaveBeenCalledTimes(1)
-    expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
     expect(onNewSessionStartSpy).toHaveBeenCalledTimes(1)
   })
 
-  test('on duplicate-key rejection (event already in the Raw Event Lake), all downstream processing is skipped (dedup semantics, no double-processing)', async () => {
+  test('session-activity tracking (markSessionActive) is exempt from the durability barrier and fires even while apiEvents.add() is still stuck (P2, codex review 2026-07-21)', async () => {
+    // A recheck racing the awaited raw-write window must already observe
+    // ACTIVE -- session-activity is Service Worker memory-only state with no
+    // durability dependency on the raw row, so gating it behind a slow/stuck
+    // add() would reopen exactly the risk finding A closed (a stale
+    // 'inactive' reading permitting a mid-game reload).
+    const markSessionActiveSpy = jest.spyOn(updateManager, 'markSessionActive')
+    jest.spyOn(db.apiEvents, 'add').mockImplementation(
+      (() => new Promise<number>(() => { /* never resolves */ })) as any
+    )
+
+    void onMessageHandler(entryQueued(150))
+
+    expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
+    expect(updateManager.isSafeToUpdate()).toBe(false)
+  })
+
+  test('on duplicate-key rejection (event already in the Raw Event Lake), all downstream *pipeline* processing is skipped (dedup semantics, no double-processing) -- session-activity still fires (unconditional, see above)', async () => {
     const event = entryQueued(200)
     await onMessageHandler(event) // first arrival: stored + processed normally
 
@@ -130,17 +152,64 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     const markSessionActiveSpy = jest.spyOn(updateManager, 'markSessionActive')
     const onNewSessionStartSpy = jest.spyOn(autoSyncService, 'onNewSessionStart').mockResolvedValue(undefined)
 
-    // Re-arrival of the exact same (timestamp, ApiTypeId) -- Dexie's add()
-    // throws a real ConstraintError here (ports.ts/import-export.ts resend
-    // scenarios, reconnect replays, etc.)
+    // Re-arrival of the exact same (timestamp, ApiTypeId) AND the exact same
+    // payload -- Dexie's add() throws a real ConstraintError here
+    // (ports.ts/import-export.ts resend scenarios, reconnect replays, etc.),
+    // and the payload comparison against the existing row confirms it's a
+    // true duplicate (not a same-millisecond key collision -- see the
+    // dedicated collision test below).
     await onMessageHandler({ ...event })
 
     expect(handLogSpy).not.toHaveBeenCalled()
     expect(aggregateSpy).not.toHaveBeenCalled()
     expect(realTimeSpy).not.toHaveBeenCalled()
-    expect(markSessionActiveSpy).not.toHaveBeenCalled()
     expect(onNewSessionStartSpy).not.toHaveBeenCalled()
+    // markSessionActive() is unconditional per raw message (see the
+    // dedicated exemption test above) -- it fires again here, harmlessly
+    // (idempotent), even though the *pipeline* re-processing is skipped.
+    expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
     expect(await db.apiEvents.count()).toBe(1)
+  })
+
+  test('on a primary-key collision (a DIFFERENT event landing on the same [timestamp+ApiTypeId] -- e.g. a same-millisecond burst), the event is still forwarded to the live pipeline and the raw-row gap is surfaced (audit finding 6, P2 codex review 2026-07-21)', async () => {
+    // Two distinct EVT_ENTRY_QUEUED events can share a client timestamp
+    // (Date.now() collision in web_accessible_resource.ts under a fast
+    // burst), colliding on the [timestamp+ApiTypeId] primary key. Treating
+    // this exactly like a true duplicate (skip) would silently drop the
+    // second, DIFFERENT event from streams/session-hooks/sync-trigger --
+    // that's the regression this test guards against. The interim fix
+    // forwards it anyway (the full fix is the wave-3 sequence-key
+    // migration) and surfaces the raw-row gap loudly.
+    const first = entryQueued(400)
+    await onMessageHandler(first)
+
+    const handLogSpy = jest.spyOn(service.handLogStream, 'write')
+    const markSessionActiveSpy = jest.spyOn(updateManager, 'markSessionActive')
+    const onNewSessionStartSpy = jest.spyOn(autoSyncService, 'onNewSessionStart').mockResolvedValue(undefined)
+
+    // Same (timestamp, ApiTypeId) as `first`, but a genuinely different
+    // event (different Id -- a different table/room).
+    const second = { ...entryQueued(400), Id: 'stage000_099' }
+    await onMessageHandler(second)
+
+    // Forwarded to the live pipeline despite having no raw row of its own.
+    expect(handLogSpy).toHaveBeenCalledTimes(1)
+    expect(handLogSpy).toHaveBeenCalledWith(expect.objectContaining({ Id: 'stage000_099' }))
+    expect(onNewSessionStartSpy).toHaveBeenCalledTimes(1)
+    expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
+
+    // The colliding row was never overwritten -- `first`'s payload is still
+    // the one durably stored under this key.
+    const stored = await db.apiEvents.get([400, ApiType.EVT_ENTRY_QUEUED])
+    expect(stored).toEqual(first)
+    expect(await db.apiEvents.count()).toBe(1)
+
+    // The raw-row gap for `second` is surfaced via the drop-visibility
+    // counter (#141 mechanism), same as any other raw-write failure.
+    await new Promise(resolve => setTimeout(resolve, 550)) // flush the tracker's debounce
+    const stats = await getUndecodedEventStats(db)
+    expect(stats.total).toBe(1)
+    expect(stats.perApiTypeId[ApiType.EVT_ENTRY_QUEUED]).toEqual({ count: 1, lastSeen: 400 })
   })
 
   test('on a non-duplicate raw-write failure (e.g. quota), the event is dropped from the pipeline entirely (Lake invariant: no derived stats without a raw row) and surfaced via the drop-visibility counter', async () => {

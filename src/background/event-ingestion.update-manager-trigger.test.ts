@@ -199,6 +199,64 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     expect(recheckPendingUpdateSpy).not.toHaveBeenCalled()
   })
 
+  test('a spectator-mode EVT_DEAL (303, Player absent) does NOT mark the session active (P2, codex review 2026-07-21)', async () => {
+    // docs/api-events.md "EVT_DEAL: Playerフィールドの欠落" / spectator-mode
+    // deals (e.g. after the hero busts but the client keeps receiving other
+    // players' table) have no `Player` field at all. Treating every 303 as
+    // ACTIVE would keep sessionActivity stuck 'active' through a spectated
+    // session that never gets another 309, blocking pending Forced Updates
+    // indefinitely.
+    const spectatorDealEvent = {
+      ApiTypeId: ApiType.EVT_DEAL,
+      timestamp: 4500,
+      SeatUserIds: [1, 2, 3, 4],
+      Game: { CurrentBlindLv: 1, NextBlindUnixSeconds: 0, Ante: 0, SmallBlind: 100, BigBlind: 200, ButtonSeat: 0, SmallBlindSeat: 1, BigBlindSeat: 2 },
+      // Player omitted entirely -- spectator mode
+      OtherPlayers: [
+        { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 100 },
+        { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 200 }
+      ],
+      Progress: { Phase: 0, NextActionSeat: 0, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 400, Pot: 300, SidePot: [] }
+    }
+    await onMessageHandler(spectatorDealEvent)
+
+    expect(markSessionActiveSpy).not.toHaveBeenCalled()
+    expect(markSessionInactiveSpy).not.toHaveBeenCalled()
+  })
+
+  test('markSessionActive() runs synchronously before the raw-write durability await settles (P2, codex review 2026-07-21)', async () => {
+    // The durability barrier (finding A) awaits apiEvents.add() before
+    // forwarding to streams/sync-triggers -- but session-activity tracking
+    // must NOT wait behind that same await, or a safety recheck racing a
+    // slow/stuck add() would still see the stale 'inactive' value from the
+    // previous 309 and judge a mid-game reload "safe". Verify
+    // markSessionActive() has already run before the message handler's
+    // returned promise even settles (i.e. before any awaited work inside
+    // processEvent has had a chance to resolve).
+    let resolveAdd!: (key: number) => void
+    jest.spyOn(db.apiEvents, 'add').mockImplementation(
+      (() => new Promise<number>(resolve => { resolveAdd = resolve })) as any
+    )
+
+    const entryQueuedEvent = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED, timestamp: 9000, Code: 0, BattleType: 0, Id: 'stage000_003', IsRetire: false
+    }
+    // Deliberately not awaited yet -- markSessionActiveSpy must already have
+    // fired by the time this synchronous call returns, well before add()
+    // resolves.
+    void onMessageHandler(entryQueuedEvent)
+
+    expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
+    expect(updateManager.isSafeToUpdate()).toBe(false)
+
+    // Let the queue actually reach the mocked (still-unresolved) add() call
+    // before releasing it, so the test cleans up without leaking a pending
+    // promise.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    resolveAdd(1)
+    await new Promise(resolve => setTimeout(resolve, 0))
+  })
+
   test('raw sequence 309 -> 201 -> 303 without an intervening 308 does not leave the session stuck inactive (release-blocker audit exact scenario)', async () => {
     // The audit's precise regression scenario: a session ends (309), then a
     // brand-new game starts 201/303-first with no 308 in between (a normal

@@ -125,16 +125,33 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   // 固まり、keepaliveが起動せずService Workerがゲーム中にサスペンドされ
   // うる。保守的に、以下のいずれかを観測したら即active化する:
   //   - EVT_ENTRY_QUEUED(201): 着席（新セッション/新テーブルの入口）
-  //   - EVT_DEAL(303): ハンド進行中の最も強いシグナル
+  //   - EVT_DEAL(303, Player在席時のみ): ハンド進行中の最も強いシグナル
   //   - EVT_SESSION_DETAILS(308): 従来からのシグナル（来れば最速）
+  const armSession = () => {
+    if (!isGameActive) {
+      isGameActive = true
+      startKeepalive(portManager.port)
+    }
+  }
+
   switch (event.data.ApiTypeId) {
     case ApiType.EVT_ENTRY_QUEUED:
-    case ApiType.EVT_DEAL:
     case ApiType.EVT_SESSION_DETAILS:
-      // セッション開始
-      if (!isGameActive) {
-        isGameActive = true
-        startKeepalive(portManager.port)
+      armSession()
+      break
+
+    case ApiType.EVT_DEAL:
+      // 観戦モード（ヒーロー未着席）のdealはACTIVEトリガーから除外する
+      // （P2, codexレビュー指摘 2026-07-21）: docs/api-events.md「EVT_DEAL:
+      // Playerフィールドの欠落」の通り、観戦モードでは`Player`フィールド
+      // 自体が無い（undefined）。ここを除外しないと、ヒーローがバストして
+      // 観戦中に届く303までkeepaliveを起動してしまい、以降309が来ない限り
+      // isGameActiveがtrueに固まる（309が来るとは限らない -- 観戦を続けたまま
+      // タブを閉じる等）。raw-firstパターンに従い、パース前の生フィールドの
+      // 有無だけで判定する（background/event-ingestion.tsの
+      // `markSessionActiveFromRawMessage()`と同じ判定をミラー）。
+      if ((event.data as { Player?: unknown }).Player != null) {
+        armSession()
       }
       break
 
