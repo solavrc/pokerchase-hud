@@ -1,6 +1,6 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { PokerChaseDB } from '../db/poker-chase-db'
-import { ApiType, ApiTypeValues, BattleType } from '../types'
+import { ApiType, ApiTypeValues, BattleType, BetStatusType } from '../types'
 import type { ApiEvent } from '../types'
 import { DATABASE_CONSTANTS } from '../constants/database'
 import { AutoSyncService } from './auto-sync-service'
@@ -208,8 +208,11 @@ describe('AutoSyncService cloud downloads', () => {
     // Still can't upload the broken row (schema hasn't been fixed), but the
     // scan floor was rewound to just below the pending marker (200 - 1 = 199)
     // instead of trusting the real cloud max (300) -- proving the row is
-    // still being re-scanned, not skipped.
-    expect(secondFloor).toBe(199)
+    // still being re-scanned, not skipped. 198, not 199: the P1 fix
+    // (auto-sync-service.ts) shifts the threshold syncToCloudBatch actually
+    // receives one further millisecond earlier -- see the threshold-shift
+    // comment in the backfill test below.
+    expect(secondFloor).toBe(198)
     // firstEntry (timestamp 100) sits below the rewound floor (199), so it's
     // not re-scanned -- only rows from the broken row's timestamp onward are.
     expect(secondChunk).toEqual([nextSessionEntry])
@@ -324,7 +327,14 @@ describe('AutoSyncService cloud downloads', () => {
     // specific orphan.
     expect(syncBatchSpy).toHaveBeenCalledTimes(1)
     const [uploadedChunk, floor] = syncBatchSpy.mock.calls[0]!
-    expect(floor).toBe(99)
+    // 98, not 99: syncToCloudBatch's own dedup filter is bare-timestamp-only
+    // (`event.timestamp > threshold`), so the P1 compound-key-pagination fix
+    // (auto-sync-service.ts) shifts the threshold it receives one
+    // millisecond earlier than the scan floor itself -- makes that filter
+    // INCLUSIVE of the scan floor's own millisecond, closing the gap where a
+    // not-yet-uploaded row could share that exact millisecond with a
+    // different ApiTypeId than whatever pushed the cloud watermark there.
+    expect(floor).toBe(98)
     expect(uploadedChunk).toEqual([oldValidEntry, newEntryAboveCloudMax])
 
     // --- Second sync: the backfill must not run again (one-time, idempotent) ---
@@ -336,7 +346,7 @@ describe('AutoSyncService cloud downloads', () => {
     // re-uploading the already-reconciled history.
     expect(syncBatchSpy).toHaveBeenCalledTimes(2)
     const [secondChunk, secondFloor] = syncBatchSpy.mock.calls[1]!
-    expect(secondFloor).toBe(199)
+    expect(secondFloor).toBe(198) // 199 - 1, same P1 threshold shift as above
     expect(secondChunk).toEqual([newEntryAboveCloudMax])
   })
 
@@ -393,7 +403,9 @@ describe('AutoSyncService cloud downloads', () => {
     // one (there is none) -- and the pass rewound to re-offer it.
     expect(syncBatchSpy).toHaveBeenCalledTimes(1)
     const [uploadedChunk, floor] = syncBatchSpy.mock.calls[0]!
-    expect(floor).toBe(149)
+    // 148, not 149: see the P1 threshold-shift comment in the backfill test
+    // above.
+    expect(floor).toBe(148)
     // recoveredRow is actually included in the upload -- this is the
     // concrete "rows below watermark, parseable, absent from cloud -> floored
     // -> uploaded on next sync" regression the finding calls for.
@@ -438,9 +450,19 @@ describe('AutoSyncService cloud downloads', () => {
     // ApiTypeIds via the index) before finding a match.
     const indexLookups = whereSpy.mock.calls.filter(([index]) => typeof index === 'string' && index === '[ApiTypeId+timestamp]')
     expect(indexLookups.length).toBe(ApiTypeValues.length)
-    // Never falls back to the old unbounded primary-key cursor pattern.
+    // The backfill scan itself never falls back to an unbounded primary-key
+    // cursor with a `.filter()` predicate (that's the whole point of this
+    // test). `[timestamp+ApiTypeId]` IS legitimately used elsewhere in this
+    // same pass now, though: the P1 fix (compound-key upload pagination,
+    // 2026-07-21) made `syncToCloud()`'s own count and per-chunk cursor key
+    // off this exact primary index (see its doc comment) -- a BOUNDED range
+    // query (`.above([cursor]).count()` / `.above([cursor]).limit(N)`), not
+    // the old unbounded `.filter()`-cursor pattern this test guards against.
+    // Exactly 2 calls are expected here: one for `totalCount`'s `.count()`,
+    // one for the single chunk fetch (this test's Lake has only one row, so
+    // the loop never needs a second page).
     const primaryKeyCursorCalls = whereSpy.mock.calls.filter(([index]) => typeof index === 'string' && index === '[timestamp+ApiTypeId]')
-    expect(primaryKeyCursorCalls.length).toBe(0)
+    expect(primaryKeyCursorCalls.length).toBe(2)
   })
 
   test('lowers an already-persisted LATER floor to a newly discovered EARLIER orphan before that chunk uploads (P2 fix, codex review r3614469176)', async () => {
@@ -508,7 +530,11 @@ describe('AutoSyncService cloud downloads', () => {
     // matching the scenario precondition, and the later row still uploaded.
     const syncBatchSpy = firestoreBackupService.syncToCloudBatch as jest.Mock
     const [uploadedChunk, floor] = syncBatchSpy.mock.calls[0]!
-    expect(floor).toBe(300)
+    // 299, not 300: see the P1 threshold-shift comment in the backfill test
+    // above -- this pass's scanFloor happens to land exactly on
+    // cloudMaxTimestamp (300) here, which is precisely the case the shift
+    // protects.
+    expect(floor).toBe(299)
     expect(uploadedChunk).toEqual([laterValidRow])
   })
 
@@ -634,8 +660,11 @@ describe('AutoSyncService cloud downloads', () => {
     expect(syncBatchSpy).toHaveBeenCalledTimes(1)
     const [firstAttemptChunk, firstAttemptFloor] = syncBatchSpy.mock.calls[0]!
     // Scan floor rewound to just below the OLD pending marker (100 - 1 =
-    // 99), re-offering row@100 despite the newer cloud max (500).
-    expect(firstAttemptFloor).toBe(99)
+    // 99), re-offering row@100 despite the newer cloud max (500). 98, not
+    // 99: the P1 fix (auto-sync-service.ts) shifts the threshold
+    // syncToCloudBatch actually receives one further millisecond earlier --
+    // see the threshold-shift comment in the backfill test below.
+    expect(firstAttemptFloor).toBe(98)
     expect(firstAttemptChunk).toEqual([recoveredRow, laterValidRow])
 
     // The critical assertion (P1 #2): even though this chunk's raw scan
@@ -654,8 +683,9 @@ describe('AutoSyncService cloud downloads', () => {
     expect(syncBatchSpy).toHaveBeenCalledTimes(2)
     const [secondAttemptChunk, secondAttemptFloor] = syncBatchSpy.mock.calls[1]!
     // Still rewound the same way -- row@100 is re-offered again (proving it
-    // was never dropped after the failed attempt).
-    expect(secondAttemptFloor).toBe(99)
+    // was never dropped after the failed attempt). 98, not 99: same P1
+    // threshold shift as the first attempt above.
+    expect(secondAttemptFloor).toBe(98)
     expect(secondAttemptChunk).toEqual([recoveredRow, laterValidRow])
 
     // Only now -- after this upload was awaited and confirmed -- is it safe
@@ -971,10 +1001,19 @@ describe('AutoSyncService cloud downloads', () => {
     cloudMaxSpy.mockResolvedValue(100)
     await service.performSync('upload')
 
-    // A's next sync uploads EXACTLY what A's own cloud lacks -- not rowA1
-    // (already covered by A's own watermark), but rowB1 and rowA2.
+    // A's next sync uploads rowB1 and rowA2 (what A's own cloud actually
+    // lacks) -- PLUS a harmless redundant re-send of rowA1 itself. rowA1's
+    // timestamp (100) is exactly A's own cloud watermark, and the P1 fix
+    // (compound-key upload pagination, auto-sync-service.ts) makes the scan
+    // INCLUSIVE of the watermark's own millisecond -- otherwise a
+    // not-yet-uploaded row sharing that exact millisecond with a DIFFERENT
+    // ApiTypeId than whatever cloud doc set the watermark there would be
+    // silently, permanently skipped (the actual release-blocker bug this
+    // fix addresses). Firestore writes are idempotent upserts keyed by
+    // `${timestamp}_${ApiTypeId}`, so re-sending rowA1 is a no-op, not a
+    // correctness issue -- see the fix's doc comment in syncToCloud().
     expect(syncBatchSpy).toHaveBeenCalledTimes(3)
-    expect(syncBatchSpy.mock.calls[2]![0]).toEqual([rowB1, rowA2])
+    expect(syncBatchSpy.mock.calls[2]![0]).toEqual([rowA1, rowB1, rowA2])
     expect(service.getSyncState().status).toBe('success')
     // A's bookkeeping is intact and correctly advances -- no permanent gap.
     expect((await chrome.storage.local.get('autoSyncLastTime:user-a'))['autoSyncLastTime:user-a']).not.toBe(aLastSyncAfterPhase1)
@@ -1431,5 +1470,181 @@ describe('AutoSyncService cloud downloads', () => {
     // earned, letting it wrongly look "already synced" on a later sign-in.
     expect(await chrome.storage.local.get('autoSyncLastTime:user-a')).toEqual({ 'autoSyncLastTime:user-a': undefined })
     expect(performSyncSpy).not.toHaveBeenCalled()
+  })
+
+  describe('P1 fix: compound-key upload pagination (release blocker, independent audit 2026-07-21)', () => {
+    // apiEvents' primary key is the compound `[timestamp+ApiTypeId]`
+    // (poker-chase-db.ts), so two raw rows CAN legitimately share the exact
+    // same millisecond with different ApiTypeId. Before this fix,
+    // `syncToCloud()` paginated uploads on bare `timestamp` alone -- a
+    // CHUNK_SIZE-row page boundary (or, in the steady state, the very first
+    // page's own boundary at the cloud watermark) that fell between two such
+    // rows permanently excluded whichever one lost the tie, and the pass
+    // still completed "successfully" (see auto-sync-service.ts's `syncToCloud`
+    // doc comment for the full writeup).
+    //
+    // These tests scale `DATABASE_CONSTANTS.SYNC_CHUNK_SIZE` down (it's a
+    // plain runtime object despite its `as const` type -- not frozen) so a
+    // chunk boundary can be forced deterministically without seeding
+    // thousands of rows.
+    const originalChunkSize = DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
+
+    afterEach(() => {
+      (DATABASE_CONSTANTS as any).SYNC_CHUNK_SIZE = originalChunkSize
+    })
+
+    test('a chunk-boundary tie (two rows sharing one millisecond, different ApiTypeId, split across a CHUNK_SIZE page break) uploads BOTH rows exactly once', async () => {
+      (DATABASE_CONSTANTS as any).SYNC_CHUNK_SIZE = 4
+
+      // Four rows fill the first page exactly; the 5th shares the 4th row's
+      // exact millisecond with a DIFFERENT (higher) ApiTypeId, so it sorts
+      // immediately after row 4 in the compound-key order and lands as the
+      // very first row of page 2 -- exactly the "row 5,000 and 5,001" chunk
+      // boundary the audit describes, scaled down to 4/5.
+      const row1 = { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'r1', IsRetire: false, timestamp: 100 } as ApiEvent
+      const row2 = { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'r2', IsRetire: false, timestamp: 101 } as ApiEvent
+      const row3 = { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'r3', IsRetire: false, timestamp: 102 } as ApiEvent
+      // row4 and row5 tie on timestamp (103); row4's ApiTypeId (201) is
+      // lower than row5's (301), so row4 sorts first -- landing as the LAST
+      // row of page 1, with row5 pushed to page 2.
+      const row4 = { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'r4', IsRetire: false, timestamp: 103 } as ApiEvent
+      const row5 = {
+        ApiTypeId: ApiType.EVT_PLAYER_JOIN,
+        timestamp: 103,
+        JoinPlayer: { BetChip: 0, BetStatus: BetStatusType.NOT_IN_PLAY, Chip: 2000, SeatIndex: 2, Status: 0 },
+        JoinUser: {
+          UserId: 999, UserName: 'r5-player', FavoriteCharaId: 'chara01', CostumeId: 'costume01', EmblemId: 'emblem01',
+          IsCpu: false, IsOfficial: false, SettingDecoIds: ['', '', '', '', '', '', ''],
+          Rank: { RankId: 'gold', RankName: 'ゴールド', RankLvId: 'gold', RankLvName: 'ゴールド' }
+        }
+      } as unknown as ApiEvent
+      await db.apiEvents.bulkAdd([row1, row2, row3, row4, row5] as any)
+
+      jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+      const syncBatchSpy = jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+        .mockImplementation(async (chunk: ApiEvent[]) => ({ totalEvents: chunk.length, syncedEvents: chunk.length, lastSyncTime: new Date() }))
+
+      const service = new AutoSyncService(db)
+      await service.performSync('upload')
+
+      expect(service.getSyncState().status).toBe('success')
+      // Two pages: [row1..row4], then [row5]. Without the fix, the second
+      // page's `.where('timestamp').above(103)` query would return zero
+      // rows (row5 also sits at 103), the loop would `break` early having
+      // processed only 4 of the 5 total rows, and row5 would never appear
+      // in any `syncToCloudBatch` call.
+      expect(syncBatchSpy).toHaveBeenCalledTimes(2)
+      expect(syncBatchSpy.mock.calls[0]![0]).toEqual([row1, row2, row3, row4])
+      expect(syncBatchSpy.mock.calls[1]![0]).toEqual([row5])
+
+      // Every row uploaded exactly once across the whole pass.
+      const allUploaded = syncBatchSpy.mock.calls.flatMap(([chunk]) => chunk as ApiEvent[])
+      expect(allUploaded).toHaveLength(5)
+      expect(allUploaded).toEqual([row1, row2, row3, row4, row5])
+    })
+
+    test('incremental sync: a local row sharing the cloud watermark\'s exact millisecond with a different ApiTypeId is uploaded, not silently skipped, with no duplicate upload', async () => {
+      // Mark the one-time unparseable-floor backfill already done (as it
+      // would be on any real-world Nth sync, long after the one-time
+      // post-upgrade backfill ran) -- this ISOLATES the bug under test.
+      // Without this, `backfillUnparseableFloorIfNeeded()` would itself
+      // notice `notYetUploaded` sitting at-or-below the cloud watermark and
+      // seed a floor that rewinds `scanFloor` below 100 as a side effect,
+      // accidentally masking the exact bug this test targets (that
+      // mechanism is a one-time post-upgrade reconciliation, not a
+      // substitute for correct steady-state pagination).
+      await db.meta.put({ id: 'syncUnparseableFloorBackfillDoneV2', value: true, updatedAt: Date.now() })
+
+      // Simulates the cross-pass version of the same bug: a PRIOR pass's
+      // chunk boundary already landed exactly here -- `alreadyUploaded` is
+      // what pushed the cloud watermark to exactly 100, and `notYetUploaded`
+      // shares that same millisecond with a different, never-uploaded
+      // ApiTypeId.
+      const alreadyUploaded = { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'already-uploaded', IsRetire: false, timestamp: 100 } as ApiEvent
+      const notYetUploaded = {
+        ApiTypeId: ApiType.EVT_PLAYER_JOIN,
+        timestamp: 100,
+        JoinPlayer: { BetChip: 0, BetStatus: BetStatusType.NOT_IN_PLAY, Chip: 2000, SeatIndex: 3, Status: 0 },
+        JoinUser: {
+          UserId: 998, UserName: 'tie-player', FavoriteCharaId: 'chara02', CostumeId: 'costume02', EmblemId: 'emblem02',
+          IsCpu: false, IsOfficial: false, SettingDecoIds: ['', '', '', '', '', '', ''],
+          Rank: { RankId: 'silver', RankName: 'シルバー', RankLvId: 'silver', RankLvName: 'シルバー' }
+        }
+      } as unknown as ApiEvent
+      const genuinelyNewRow = { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'genuinely-new', IsRetire: false, timestamp: 200 } as ApiEvent
+      await db.apiEvents.bulkAdd([alreadyUploaded, notYetUploaded, genuinelyNewRow] as any)
+
+      // Cloud watermark sits exactly at 100 -- the same millisecond as the
+      // not-yet-uploaded row. Without the fix, `scanFloor` (== 100 here,
+      // steady state, no pending unparseable floor) is used with a strict
+      // `.above()` bound, so `notYetUploaded` (timestamp === 100) is
+      // excluded from the very first query of the pass and never uploaded,
+      // on this pass or any future one (the watermark never moves off 100
+      // for this row's sake).
+      jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(100)
+      const syncBatchSpy = jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+        .mockImplementation(async (chunk: ApiEvent[]) => ({ totalEvents: chunk.length, syncedEvents: chunk.length, lastSyncTime: new Date() }))
+
+      const service = new AutoSyncService(db)
+      await service.performSync('upload')
+
+      expect(service.getSyncState().status).toBe('success')
+      expect(syncBatchSpy).toHaveBeenCalledTimes(1)
+      const [uploadedChunk] = syncBatchSpy.mock.calls[0]!
+      // notYetUploaded IS included -- the core regression this test guards.
+      // alreadyUploaded is also harmlessly re-sent (Firestore's write is an
+      // idempotent upsert keyed by `${timestamp}_${ApiTypeId}` -- see
+      // firestore-backup-service.ts -- so this is a no-op, not data
+      // corruption or a real duplicate in Firestore).
+      expect(uploadedChunk).toEqual([alreadyUploaded, notYetUploaded, genuinelyNewRow])
+      // No row appears more than once in the single upload call itself.
+      expect(new Set(uploadedChunk.map((e: ApiEvent) => `${e.timestamp}_${e.ApiTypeId}`)).size).toBe(uploadedChunk.length)
+    })
+
+    test('floor interplay: an unparseable row that loses a chunk-boundary tie is still discovered within the SAME pass, and the floor does not advance past it', async () => {
+      (DATABASE_CONSTANTS as any).SYNC_CHUNK_SIZE = 2
+
+      // rowA and rowB exactly fill page 1 (CHUNK_SIZE=2). rowB and the
+      // unparseable row share timestamp 200; the unparseable row's ApiTypeId
+      // (309, EVT_SESSION_RESULTS) is higher than rowB's (201), so it sorts
+      // immediately after rowB -- landing as the first row of page 2, tied
+      // with the page-1/page-2 boundary itself. rowD is a genuinely later,
+      // valid row also in page 2.
+      const rowA = { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'rowA', IsRetire: false, timestamp: 100 } as ApiEvent
+      const rowB = { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'rowB', IsRetire: false, timestamp: 200 } as ApiEvent
+      // Application-typed (309) but missing every required field -- fails
+      // Zod validation exactly like the season-3 payload break (see the
+      // unparseable-floor tests above).
+      const unparseableAtBoundary = { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 200 }
+      const rowD = { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'rowD', IsRetire: false, timestamp: 300 } as ApiEvent
+      await db.apiEvents.bulkAdd([rowA, rowB, unparseableAtBoundary, rowD] as any)
+
+      jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+      const syncBatchSpy = jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+        .mockImplementation(async (chunk: ApiEvent[]) => ({ totalEvents: chunk.length, syncedEvents: chunk.length, lastSyncTime: new Date() }))
+
+      const service = new AutoSyncService(db)
+      await service.performSync('upload')
+
+      expect(service.getSyncState().status).toBe('success')
+      // Page 1: [rowA, rowB]. Page 2: [unparseableAtBoundary, rowD] -- without
+      // the fix, page 2's `.where('timestamp').above(200)` would exclude
+      // `unparseableAtBoundary` (also at 200) entirely; it would never be
+      // examined by `isUnparseableApplicationEvent`, `earliestUnparseableThisPass`
+      // would stay `null` for the whole pass, and the end-of-loop commit
+      // would clear the floor to `null` -- permanently losing track of a row
+      // that was never actually uploaded (it can't be; it's unparseable) and
+      // that the cloud watermark (now advanced to rowD's 300 via the
+      // uploaded chunks) has already sailed past.
+      expect(syncBatchSpy).toHaveBeenCalledTimes(2)
+      expect(syncBatchSpy.mock.calls[0]![0]).toEqual([rowA, rowB])
+      expect(syncBatchSpy.mock.calls[1]![0]).toEqual([rowD]) // unparseable row filtered out of the upload itself
+
+      // The floor must reflect the still-unparseable row's timestamp (200),
+      // not be cleared -- this is what lets a future schema fix re-offer it
+      // instead of it being permanently orphaned below the (now-advanced)
+      // cloud watermark.
+      expect((await db.meta.get('syncUnparseableFloor'))?.value).toBe(200)
+    })
   })
 })
