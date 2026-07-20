@@ -24,6 +24,16 @@ import type { AllPlayersRealTimeStats } from "../realtime-stats/realtime-stats-s
 
 const EMPTY_SEATS: PlayerStats[] = Array.from({ length: 6 }, () => ({ playerId: -1 }))
 
+// 監査指摘11（P2）「開いたドリルダウンパネルが無期限に古くなる」対応:
+// ports.tsのbroadcastMessage()は既にPOKER_CHASE_SERVICE_EVENTの生payloadへ
+// `handEpoch`（`liveBroadcastSequence`をそのまま積んだもの、詳細はports.ts参照）
+// を積んでいるが、content_script.ts側の`StatsData`型（同ファイル定義）は
+// 別ワークストリームが所有しておりこのフィールドをまだ宣言していない。
+// content_script.tsの転送コード自体は型アサーションを経由するだけで実行時の
+// フィールドを一切削らないため、実行時には確実に載ってくる -- ここでは
+// content_script.tsを変更せず、ローカルに型を拡張して読み取るだけにする。
+type StatsDataWithHandEpoch = StatsData & { handEpoch?: number }
+
 // PlayerStats = ExistPlayerStats | { playerId: -1, statResults?: never[] }（zod union）。
 // ExistPlayerStats.playerId は z.number()（リテラルでない）なので、TSの標準的な
 // `stat.playerId !== -1` だけでは判別共用体として綺麗に絞り込まれない
@@ -77,6 +87,13 @@ const App = memo(() => {
   // への永続化はv1では不要）。#128のポジション別ドリルダウンの単一state管理を
   // 拡張し、パネル種別を持たせることで両パネルを互いに排他にしている。
   const [openPanel, setOpenPanel] = useState<{ playerId: number, kind: 'positional' | 'recentHands' } | null>(null)
+  // 監査指摘11（P2）対応: 生きたハンドが1件完了するたびに増える「hand epoch」
+  // （ports.tsの`liveBroadcastSequence`をそのまま反映、上のStatsDataWithHandEpoch
+  // 参照）。Hud経由でドリルダウンパネルへpropとして渡し、そのフェッチeffectの
+  // depsに含めることで、開いたままのパネルがハンド完了ごとに1回だけ再フェッチ
+  // するようにする（実況の1アクションごとの更新では変化しないため再フェッチ
+  // ストームは起きない）。
+  const [handEpoch, setHandEpoch] = useState(0)
 
   const handleTogglePositionalPanel = useCallback((playerId: number) => {
     setOpenPanel(prev => (prev?.kind === 'positional' && prev.playerId === playerId) ? null : { playerId, kind: 'positional' })
@@ -112,6 +129,16 @@ const App = memo(() => {
   const handleStatsMessage = useCallback(
     ({ detail }: CustomEvent<StatsData>) => {
       let mappedStats = detail.stats
+
+      // 監査指摘11（P2）対応: ports.tsが積んだhandEpochをそのまま状態へ反映する。
+      // 実況の1アクションごとの更新（realTimeStatsのみの配信）ではports.ts側で
+      // 値が据え置かれるため、setStateはされても値としては変化せず、開いた
+      // パネルの再フェッチeffectは発火しない -- 生きたハンドが1件完了した
+      // ときだけports.tsがこの値をインクリメントする。
+      const incomingHandEpoch = (detail as StatsDataWithHandEpoch).handEpoch
+      if (incomingHandEpoch !== undefined) {
+        setHandEpoch(incomingHandEpoch)
+      }
 
       // Update real-time stats if available
       if (detail.realTimeStats) {
@@ -665,6 +692,7 @@ const App = memo(() => {
               onTogglePositionalPanel={() => handleTogglePositionalPanel(position.stat.playerId)}
               isRecentHandsPanelOpen={openPanel?.kind === 'recentHands' && openPanel.playerId === position.stat.playerId}
               onToggleRecentHandsPanel={() => handleToggleRecentHandsPanel(position.stat.playerId)}
+              handEpoch={handEpoch}
               hudDisplayMode={uiConfig.hudDisplayMode}
               hudColorCoding={uiConfig.hudColorCoding}
               isDimmed={dimmedSeatIndices.has(position.actualSeatIndex)}

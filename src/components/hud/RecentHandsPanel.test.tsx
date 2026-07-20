@@ -194,6 +194,42 @@ describe('RecentHandsPanel', () => {
       expect.any(Function)
     )
   })
+
+  // 監査指摘11（P2）「開いたドリルダウンパネルが無期限に古くなる」対応:
+  // playerIdが同じままでもhandEpochが変わればフェッチeffectを再発火する。
+  it('playerIdが同じでもhandEpochが変わると再フェッチする(監査指摘11)', async () => {
+    let callCount = 0
+    mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
+      callCount++
+      // 2回目の応答は1回目と区別できるよう新しいハンドを1件追加する
+      // （新しいハンドが完了して初めて反映されるべきデータ）
+      const result = callCount === 2
+        ? buildResult({ hands: [{ handId: 4, approxTimestamp: NOW, position: Position.CO, holeCards: null, preflopLine: 'Open', sawFlop: false, wentToShowdown: false, won: false, netChips: null }, ...buildResult().hands] })
+        : buildResult()
+      callback({ success: true, recentHands: result })
+    })
+
+    const { rerender } = render(<RecentHandsPanel playerId={1} handEpoch={1} />)
+    await waitFor(() => {
+      expect(screen.getAllByTestId('recent-hands-row')).toHaveLength(3)
+    })
+    expect(mockSendMessage).toHaveBeenCalledTimes(1)
+
+    // 実況の1アクションごとの更新はhandEpochを変えない想定 -- 同じepochでの
+    // 再レンダーは再フェッチを引き起こさない。
+    rerender(<RecentHandsPanel playerId={1} handEpoch={1} />)
+    expect(mockSendMessage).toHaveBeenCalledTimes(1)
+
+    // ハンドが1件完了してhandEpochが増える
+    rerender(<RecentHandsPanel playerId={1} handEpoch={2} />)
+
+    await waitFor(() => {
+      expect(mockSendMessage).toHaveBeenCalledTimes(2)
+    })
+    await waitFor(() => {
+      expect(screen.getAllByTestId('recent-hands-row')).toHaveLength(4)
+    })
+  })
 })
 
 describe('formatRelativeTime', () => {

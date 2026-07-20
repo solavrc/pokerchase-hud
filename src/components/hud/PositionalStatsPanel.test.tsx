@@ -197,4 +197,39 @@ describe('PositionalStatsPanel', () => {
       expect.any(Function)
     )
   })
+
+  // 監査指摘11（P2）「開いたドリルダウンパネルが無期限に古くなる」対応:
+  // playerIdが同じままでもhandEpochが変わればフェッチeffectを再発火する。
+  it('playerIdが同じでもhandEpochが変わると再フェッチする(監査指摘11)', async () => {
+    let callCount = 0
+    mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
+      callCount++
+      const result = buildResult()
+      // 2回目の応答は1回目と区別できるようBTNのhandsNを変える
+      if (callCount === 2) {
+        result.positions.find(p => p.position === Position.BTN)!.handsN = 99
+      }
+      callback({ success: true, positionalStats: result })
+    })
+
+    const { rerender } = render(<PositionalStatsPanel playerId={1} handEpoch={1} />)
+    await waitFor(() => screen.getByText('BTN'))
+    expect(mockSendMessage).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('BTN').closest('tr')).toHaveTextContent('42')
+
+    // 実況の1アクションごとの更新はhandEpochを変えない想定 -- 同じepochでの
+    // 再レンダーは再フェッチを引き起こさない。
+    rerender(<PositionalStatsPanel playerId={1} handEpoch={1} />)
+    expect(mockSendMessage).toHaveBeenCalledTimes(1)
+
+    // ハンドが1件完了してhandEpochが増える
+    rerender(<PositionalStatsPanel playerId={1} handEpoch={2} />)
+
+    await waitFor(() => {
+      expect(mockSendMessage).toHaveBeenCalledTimes(2)
+    })
+    await waitFor(() => {
+      expect(screen.getByText('BTN').closest('tr')).toHaveTextContent('99')
+    })
+  })
 })

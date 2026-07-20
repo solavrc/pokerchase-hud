@@ -41,6 +41,39 @@ const CACHE_DURATION_MS = 30_000
 const MAX_CACHE_SIZE = 50
 const cache: Map<string, { result: RecentHandsResult, timestamp: number }> = new Map()
 
+// 監査finding 11フォローアップ・pass-3（P2、codexレビュー指摘）: 「進行中フェッチが
+// 完了後キャッシュへ古い結果を書き込んでしまう」レース対応。
+// positional-stats-service.tsの同名の仕組みと全く同じ理由・同じ実装パターン
+// （そちらのコメント参照）: 進行中のgetRecentHands()呼び出しがDB読み取り中に
+// ハンドが完了してcache.clear()が走っても、その呼び出し自体は完了前のDB状態を
+// 基にした結果でcache.set()を実行してしまう。各フェッチをその開始時点の
+// cacheGeneration値でスタンプし、書き込み時に現在値と比較する -- フェッチ中に
+// 世代が進んでいれば呼び出し元へはそのまま結果を返すが、キャッシュへの書き込みは
+// スキップする。
+let cacheGeneration = 0
+
+// 監査指摘11（P2）「開いたドリルダウンパネルが無期限に古くなる」対応。
+// positional-stats-service.tsの同名の仕組みと全く同じ理由・同じ実装パターン
+// （そちらのコメント参照）: `service.writeEntityStream`の'data'（生きたポート
+// 経由の取り込みだけがたどるパイプラインで、ハンドが実際にDBへ書き込まれた
+// 後にのみ発火する、ports.tsの`handCompletionEpoch`と同一の完了限定シグナル）
+// に購読して、この30秒キャッシュをbackground.ts/ports.ts/content_script.ts/
+// message-router.tsを一切経由せずに無効化する。`service.statsOutputStream`の
+// 'data'はハンド完了以外（ハンド開始時のウォームアップ、フィルター変更/
+// インポート/auto-sync復元の再計算）でも発火するため使わない（audit finding 11
+// フォローアップ、P2、codexレビュー指摘 -- positional-stats-service.tsの
+// 詳細なコメント参照）。
+const subscribedServices = new WeakSet<PokerChaseService>()
+
+function subscribeToHandCompletion(service: PokerChaseService): void {
+  if (subscribedServices.has(service)) return
+  subscribedServices.add(service)
+  service.writeEntityStream.on('data', () => {
+    cacheGeneration++
+    clearRecentHandsCache()
+  })
+}
+
 /** Exported for direct unit testing -- caching itself is disabled under NODE_ENV=test
  * (see `useCache` below), so key-differs-when-filter-or-limit-differs can't be observed
  * behaviorally in tests and is instead pinned down against this function directly. */
@@ -186,6 +219,11 @@ export async function getRecentHands(
   playerId: number,
   limit: number = DEFAULT_RECENT_HANDS_LIMIT
 ): Promise<RecentHandsResult> {
+  subscribeToHandCompletion(service)
+  // このフェッチ開始時点のgeneration -- 下の2箇所のcache.set()で、フェッチ中に
+  // ハンド完了(cacheGeneration++)が割り込んでいないか照合する（上のコメント参照）。
+  const fetchGeneration = cacheGeneration
+
   const effectiveLimit = limit > 0 ? limit : DEFAULT_RECENT_HANDS_LIMIT
   const cacheKey = buildRecentHandsCacheKey(playerId, service, effectiveLimit)
   const useCache = process.env.NODE_ENV !== 'test' && !process.env.DEBUG_NO_CACHE
@@ -223,7 +261,11 @@ export async function getRecentHands(
 
   if (recentHands.length === 0) {
     const result: RecentHandsResult = { hands: [], computedAt: now }
-    cache.set(cacheKey, { result, timestamp: now })
+    // フェッチ中にハンドが完了していれば(cacheGenerationが進んでいれば)書き込まない
+    // -- 上のコメント参照。呼び出し元にはそのまま最新の結果を返す。
+    if (cacheGeneration === fetchGeneration) {
+      cache.set(cacheKey, { result, timestamp: now })
+    }
     return result
   }
 
@@ -274,11 +316,15 @@ export async function getRecentHands(
 
   const result: RecentHandsResult = { hands, computedAt: now }
 
-  cache.set(cacheKey, { result, timestamp: now })
-  if (cache.size > MAX_CACHE_SIZE) {
-    for (const [key, entry] of cache.entries()) {
-      if (now - entry.timestamp > CACHE_DURATION_MS) {
-        cache.delete(key)
+  // フェッチ中にハンドが完了していれば(cacheGenerationが進んでいれば)書き込まない
+  // -- ファイル冒頭のコメント参照。呼び出し元にはそのまま最新の結果を返す。
+  if (cacheGeneration === fetchGeneration) {
+    cache.set(cacheKey, { result, timestamp: now })
+    if (cache.size > MAX_CACHE_SIZE) {
+      for (const [key, entry] of cache.entries()) {
+        if (now - entry.timestamp > CACHE_DURATION_MS) {
+          cache.delete(key)
+        }
       }
     }
   }

@@ -54,6 +54,80 @@ const CACHE_DURATION_MS = 30_000
 const MAX_CACHE_SIZE = 50
 const cache: Map<string, { result: PositionalStatsResult, timestamp: number }> = new Map()
 
+// 監査finding 11フォローアップ・pass-3（P2、codexレビュー指摘）: 「進行中フェッチが
+// 完了後キャッシュへ古い結果を書き込んでしまう」レース対応。
+//
+// 上のsubscribeToHandCompletion()によるcache.clear()だけでは不十分だった:
+// (1) 進行中のgetPositionalStats()呼び出しがDB読み取り中（awaitで中断中）、
+// (2) その最中に生きたハンドが1件完了してこのリスナーが発火しcache.clear()、
+// (3) しかし(1)の呼び出しはキャンセルされずそのまま続行し、完了前のDB状態を基に
+//     計算した結果でcache.set()を実行してしまう。
+// これにより、直後（bumpされたhandEpochによる）オープンパネルの再フェッチが
+// この「完了直後に書き込まれた古い結果」にヒットし、30秒間ずっと新しいハンドを
+// 反映しないまま古いデータを表示し続けてしまう。
+//
+// 対応: 各フェッチをその開始時点のcacheGeneration値でスタンプし（下の
+// getPositionalStats()冒頭参照）、書き込み時に現在値と比較する -- フェッチ中に
+// ハンドが完了して世代が進んでいれば、計算結果は呼び出し元にはそのまま返す
+// （呼び出された時点では最新の正しい答え）が、キャッシュへの書き込みはスキップ
+// する（未来の呼び出しを汚染させない）。
+let cacheGeneration = 0
+
+// 監査指摘11（P2）「開いたドリルダウンパネルが無期限に古くなる」対応:
+// RecentHandsPanel/PositionalStatsPanelのフェッチeffectはApp.tsxから渡される
+// 「hand epoch」propをdepsに含めるようになり、生きたハンドが1件完了するたびに
+// 再フェッチする(App.tsx参照)。しかしそれだけでは、この再フェッチが引き続き
+// 「直前と同じcacheKey」に対してこの30秒キャッシュへヒットしてしまい、古い
+// 結果を返し続ける(cacheKeyはplayerId+フィルターのみで、「どのハンドまでの
+// 結果か」を持たない)。
+//
+// 対応方針（プロンプト指定の2案のうち「配線の少ない方」）: メッセージに
+// epochを積んでcacheKeyを回転させる案は、その配線がmessage-router.ts
+// （別ワークストリームが所有）を経由する必要があり本タスクのスコープ外。
+// 代わりに、この関数が既に受け取っている`service`引数（PokerChaseService）
+// が公開する`writeEntityStream`に直接購読する。これでbackground.ts/
+// ports.ts/content_script.ts/message-router.tsのいずれにも触れずに完結する。
+//
+// `statsOutputStream`ではなく`writeEntityStream`である理由（audit finding 11の
+// フォローアップ、P2、codexレビュー指摘）: 当初`statsOutputStream`の'data'に
+// 購読していたが、このイベントはハンド完了時だけでなく、(1)新しいハンド開始時
+// （EVT_DEAL）にDBへ既存ハンドがあれば毎回発火する「ウォームアップ」ブロード
+// キャスト（aggregate-events-stream.ts）、(2)フィルター変更・インポート/
+// リビルド・auto-sync復元時の明示的な再計算（message-router.ts、
+// import-export.ts、poker-chase-service.tsのrecalculateStats/
+// recalculateAllStats、auto-sync-service.ts。いずれも`statsOutputStream.write()`
+// を直接呼ぶ）でも発火する。これらは「ハンドが1件完了した」わけではないため、
+// このタイミングでキャッシュを無効化すると、開いたパネルの再フェッチが
+// 起きていないのに無駄にキャッシュだけ消える（逆に、フィルター変更直後の
+// 再フェッチではまだ古いキャッシュを消してほしいのに、handEpoch自体は
+// 変わらないため再フェッチ自体が起きない、というズレも生む）。
+// `writeEntityStream`の'data'は`write-entity-stream.ts`の
+// `this.push(hand.seatUserIds)`からのみ発火し、これは生きたポート経由の
+// イベント取り込み（event-ingestion.ts→handAggregateStream）だけがたどる
+// パイプラインで、かつハンドが実際にDBへ書き込まれた後にのみ届く
+// （キメラハンドはpushされずreturnする）。ports.tsのhandCompletionEpochと
+// 全く同じ完了限定シグナルであり、frontend側のhandEpoch（App.tsx/
+// Hud.tsx経由でこのパネルのフェッチeffectのdepsに入る値）が実際に変化する
+// タイミングとキャッシュ無効化のタイミングを揃えられる。
+//
+// 購読はサービスインスタンスごとに一度だけ（WeakSetで冪等化、テストごとに
+// 新しいPokerChaseServiceインスタンスが作られるため明示的な解除は不要 --
+// 古いインスタンスがGCされればリスナーごと消える）。
+// 全クリアである理由: 1つのハンドは同卓の複数プレイヤーのハンド履歴/
+// ポジションを同時に更新しうる（そのハンドに参加した全員分）。個別
+// エントリ単位の的確な無効化よりも全クリアの方が単純で、頻度も低い
+// （ハンド完了ごとに高々1回）ためコストは無視できる。
+const subscribedServices = new WeakSet<PokerChaseService>()
+
+function subscribeToHandCompletion(service: PokerChaseService): void {
+  if (subscribedServices.has(service)) return
+  subscribedServices.add(service)
+  service.writeEntityStream.on('data', () => {
+    cacheGeneration++
+    clearPositionalStatsCache()
+  })
+}
+
 /** Exported for direct unit testing (see positional-stats-service.test.ts) -- caching itself
  * is disabled under NODE_ENV=test (see `useCache` below), so key-differs-when-filter-differs
  * can't be observed behaviorally in tests and is instead pinned down against this function directly. */
@@ -109,6 +183,11 @@ export async function getPositionalStats(
   service: PokerChaseService,
   playerId: number
 ): Promise<PositionalStatsResult> {
+  subscribeToHandCompletion(service)
+  // このフェッチ開始時点のgeneration -- 下の2箇所のcache.set()で、フェッチ中に
+  // ハンド完了(cacheGeneration++)が割り込んでいないか照合する（上のコメント参照）。
+  const fetchGeneration = cacheGeneration
+
   const cacheKey = buildCacheKey(playerId, service)
   const useCache = process.env.NODE_ENV !== 'test' && !process.env.DEBUG_NO_CACHE
   const now = Date.now()
@@ -154,7 +233,11 @@ export async function getPositionalStats(
   // 区別なく早期returnできる）
   if (allPlayerHands.length === 0) {
     const result = buildEmptyResult()
-    cache.set(cacheKey, { result, timestamp: now })
+    // フェッチ中にハンドが完了していれば(cacheGenerationが進んでいれば)書き込まない
+    // -- 上のコメント参照。呼び出し元にはそのまま最新の結果を返す。
+    if (cacheGeneration === fetchGeneration) {
+      cache.set(cacheKey, { result, timestamp: now })
+    }
     return result
   }
 
@@ -225,11 +308,15 @@ export async function getPositionalStats(
 
   const result: PositionalStatsResult = { positions, computedAt: now }
 
-  cache.set(cacheKey, { result, timestamp: now })
-  if (cache.size > MAX_CACHE_SIZE) {
-    for (const [key, entry] of cache.entries()) {
-      if (now - entry.timestamp > CACHE_DURATION_MS) {
-        cache.delete(key)
+  // フェッチ中にハンドが完了していれば(cacheGenerationが進んでいれば)書き込まない
+  // -- ファイル冒頭のコメント参照。呼び出し元にはそのまま最新の結果を返す。
+  if (cacheGeneration === fetchGeneration) {
+    cache.set(cacheKey, { result, timestamp: now })
+    if (cache.size > MAX_CACHE_SIZE) {
+      for (const [key, entry] of cache.entries()) {
+        if (now - entry.timestamp > CACHE_DURATION_MS) {
+          cache.delete(key)
+        }
       }
     }
   }

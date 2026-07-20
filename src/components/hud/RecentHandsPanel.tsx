@@ -8,6 +8,17 @@ import { isRedSuit } from '../../utils/card-utils'
 
 interface RecentHandsPanelProps {
   playerId: number
+  /**
+   * 生きたハンドが1件完了するたびに増える「hand epoch」（App.tsx/Hud.tsx参照、
+   * 監査指摘11 P2「開いたドリルダウンパネルが無期限に古くなる」対応）。
+   * playerIdと一緒にフェッチeffectのdepsへ入れることで、このパネルを開いた
+   * ままにしていても新しいハンドが終わるたびに1回だけ再フェッチする
+   * （実況の1アクションごとの更新ではこの値は変化しないため再フェッチ
+   * ストームは起きない）。バックエンド側の30秒キャッシュも同じイベントで
+   * 無効化される（recent-hands-service.tsのsubscribeToHandCompletion参照）
+   * ので、この再フェッチは古いキャッシュ結果を受け取らない。
+   */
+  handEpoch?: number
 }
 
 type FetchStatus = 'loading' | 'ready' | 'error'
@@ -119,7 +130,7 @@ const styles = {
  * タイムアウト・chrome.runtime.lastError・success:falseのいずれも
  * フェイルオープンでエラープレースホルダーへ倒す。HUDをクラッシュさせない（#127踏襲）。
  */
-export const RecentHandsPanel = memo(({ playerId }: RecentHandsPanelProps) => {
+export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelProps) => {
   const [status, setStatus] = useState<FetchStatus>('loading')
   const [data, setData] = useState<RecentHandsResult | undefined>(undefined)
 
@@ -146,7 +157,10 @@ export const RecentHandsPanel = memo(({ playerId }: RecentHandsPanelProps) => {
     return () => {
       cancelled = true
     }
-  }, [playerId])
+    // handEpoch: 監査指摘11(P2)対応。値が変わるのは生きたハンドが1件完了した
+    // ときだけ（App.tsx/ports.ts参照）なので、このパネルを開いたままにしていても
+    // 最新のハンドを反映して再フェッチする。
+  }, [playerId, handEpoch])
 
   if (status === 'loading') {
     return (
