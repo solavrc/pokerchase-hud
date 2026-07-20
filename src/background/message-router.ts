@@ -172,8 +172,44 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       // 新しいフィルターに基づいてHUD表示を強制更新
       const lastKnownStats = getLastKnownStats()
       if (lastKnownStats.length > 0) {
-        // 現在の席ユーザーIDで計算を再トリガー
-        service.statsOutputStream.write(lastKnownStats.map(stat => stat.playerId))
+        // 上の service.setBattleTypeFilter() は内部で
+        // ReadEntityStream.recalculateStats()（read-entity-stream.ts）を
+        // 呼び、ヒーロー在籍dealの席文脈（service.latestEvtDeal）で
+        // service.liveEvtDealを同期してから再計算・ブロードキャストする
+        // （setBattleTypeFilterはasync関数で、その同期処理は最初のawaitに
+        // 到達する前、つまりこの行に制御が戻る前に完了している）。
+        //
+        // この下のwrite()は歴史的に別経路で存在する「現在ブロードキャスト
+        // 中の顔ぶれ」の強制再計算で、`lastKnownStats`（ports.tsの直近の
+        // ライブブロードキャスト、ヒーロー敗退後は観戦テーブルの顔ぶれの
+        // こともある）を使う。ヒーローが観戦中（lastKnownStatsの顔ぶれが
+        // latestEvtDealのSeatUserIdsと一致しない）場合、この2つの再計算が
+        // 競合すると、write()側のPromiseがrecalculateStats()側より後に
+        // 解決した際、その時点で既にヒーロー在籍dealに向いたservice.
+        // liveEvtDealと、observing側の（顔ぶれの異なる）statsがペアリング
+        // されてブロードキャストされてしまう（App.tsxの座席回転がズレる/
+        // 上書きされる。codex #177マージ後レビュー、2026-07-20指摘）。
+        //
+        // 対処: lastKnownStatsの顔ぶれがヒーロー在籍dealのSeatUserIdsと
+        // 一致しないと判明している場合だけ、この追加リフレッシュを
+        // スキップする（lineup-identityチェック）。setBattleTypeFilter()の
+        // recalculateStats()が別途ヒーロー在籍の統計を正しく再計算・
+        // ブロードキャストするため、スキップしても表示が欠けることはない。
+        // service.latestEvtDealが未設定（この関数のテストのように現実には
+        // 起きない合成状態、または本当にまだ一度もヒーロー在籍dealを見て
+        // いない場合）は「不一致と確定できない」として従来通り実行する
+        // （デフォルトは安全側＝現状維持）。
+        const lastKnownLineup = lastKnownStats.map(stat => stat.playerId)
+        const heroSeatUserIds = service.latestEvtDeal?.SeatUserIds
+        const lineupMismatchesHeroDeal = heroSeatUserIds !== undefined && (
+          lastKnownLineup.length !== heroSeatUserIds.length ||
+          lastKnownLineup.some((playerId, index) => playerId !== heroSeatUserIds[index])
+        )
+
+        if (!lineupMismatchesHeroDeal) {
+          // 現在の席ユーザーIDで計算を再トリガー
+          service.statsOutputStream.write(lastKnownLineup)
+        }
       }
 
       return true // 非同期レスポンスを示す
