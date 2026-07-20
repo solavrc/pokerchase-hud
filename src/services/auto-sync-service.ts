@@ -327,6 +327,29 @@ export class AutoSyncService {
       const identity = this.snapshotIdentity()
       const uid = identity.uid! // definitely defined -- `user` above proves it
 
+      // Clear the (possibly stale, possibly a DIFFERENT account's)
+      // in-memory lastSyncTime IMMEDIATELY, before the awaits below (codex
+      // review r3615781411, P2, "Clear the previous account's sync time
+      // before awaits"): `syncIfBacklogExceedsThreshold()` reads
+      // `this.syncState.lastSyncTime` directly and is not gated by any of
+      // this method's own commit points, so during a direct A -> B sign-in,
+      // a session-end/start trigger firing while the storage read /
+      // `updateTimestamps()` awaits below are still pending would otherwise
+      // see A's stale value under B's live identity. If A synced more
+      // recently than B's real watermark, that undercounts B's backlog and
+      // can skip an upload B actually needs -- and if B already has an
+      // OLDER scoped value of its own, the "perform initial sync only if
+      // never synced before" check further down won't fire to make up for
+      // it either, since B correctly looks "already synced" once its own
+      // value is restored. Clearing to `undefined` here is conservative in
+      // the safe direction -- a trigger firing in this narrow window
+      // computes the backlog as "everything", which can only ever
+      // OVER-count (at worst one redundant sync attempt), never undercount
+      // -- and gets corrected to this account's own real value once the
+      // async work below completes and generation is reconfirmed (see the
+      // COMMIT POINT before the real assignment further down).
+      this.syncState.lastSyncTime = undefined
+
       // Load last sync time from storage, scoped to this account (invariant
       // (1)). If the LEGACY unscoped key is present, consume/delete it
       // unconditionally (codex review r3615389121, P2, "Clear stale legacy
@@ -388,9 +411,10 @@ export class AutoSyncService {
         return this.initialize(attempt + 1)
       }
 
-      // Explicitly reset (not just "leave whatever was there") so a direct
-      // account switch without an intervening sign-out can't leak the
-      // previous account's in-memory lastSyncTime into this one.
+      // Publish this account's REAL value now (already cleared to
+      // `undefined` up front, before the awaits -- see r3615781411 above)
+      // now that the async work is done and the generation is reconfirmed
+      // current.
       this.syncState.lastSyncTime = storedLastSyncTime ? new Date(storedLastSyncTime as string | number) : undefined
 
       // Perform initial sync only if never synced before (invariant (3):

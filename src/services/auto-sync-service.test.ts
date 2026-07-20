@@ -1326,4 +1326,51 @@ describe('AutoSyncService cloud downloads', () => {
     expect((await chrome.storage.local.get('autoSyncLastTime:user-a'))['autoSyncLastTime:user-a']).toBe(legacyIso)
     expect(performSyncSpy).not.toHaveBeenCalled()
   })
+
+  test('clears the previous account\'s in-memory lastSyncTime immediately (before any awaits), so a session trigger firing during a direct A -> B sign-in cannot undercount B\'s backlog against A\'s stale value (P2, codex review r3615781411)', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime:user-a', 'autoSyncLastTime:user-b'])
+
+    const userB = { uid: 'user-b', email: 'b@example.com' } as any
+
+    const service = new AutoSyncService(db)
+    // Simulate account A's PREVIOUS successful sync having left a RECENT
+    // lastSyncTime in the shared in-memory syncState -- exactly what a
+    // real prior performSync() call for A would have set.
+    ;(service as any).syncState.lastSyncTime = new Date('2026-07-20T00:00:00.000Z')
+
+    jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue(userB)
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockReturnValue(1)
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+
+    // Capture syncState.lastSyncTime at the exact moment initialize()'s
+    // storage read (scoped + legacy keys) is issued -- this is the window
+    // the finding describes: a session-end/start trigger firing here would
+    // read whatever is current.
+    let lastSyncTimeDuringAwait: Date | undefined | 'not-observed' = 'not-observed'
+    const originalGet = (chrome.storage.local.get as jest.Mock).getMockImplementation()!
+    jest.spyOn(chrome.storage.local, 'get').mockImplementation((keys: any) => {
+      if (lastSyncTimeDuringAwait === 'not-observed') {
+        lastSyncTimeDuringAwait = (service as any).syncState.lastSyncTime
+      }
+      return originalGet(keys)
+    })
+
+    // Simulate a successful sync (sets lastSyncTime) -- a plain no-op mock
+    // would leave lastSyncTime unset, triggering initialize()'s
+    // retry-on-incomplete-first-sync logic (invariant (2b), its own
+    // dedicated test elsewhere) and inflating the call count asserted below.
+    const performSyncSpy = jest.spyOn(service, 'performSync').mockImplementation(async () => {
+      (service as any).syncState.lastSyncTime = new Date()
+    })
+
+    await service.initialize()
+
+    // Must already be cleared BEFORE the storage read below -- not A's
+    // stale, more-recent value, which would otherwise make a concurrent
+    // syncIfBacklogExceedsThreshold() undercount B's real backlog.
+    expect(lastSyncTimeDuringAwait).toBeUndefined()
+    // Sanity: B correctly triggers its own first sync afterward (B has
+    // never synced).
+    expect(performSyncSpy).toHaveBeenCalledTimes(1)
+  })
 })
