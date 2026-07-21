@@ -159,12 +159,13 @@ npx tsx e2e/tools/extract-fixture.ts <path-to-raw-capture.ndjson> [output.ndjson
 ### Table backdrop (`table-backdrop.js`)
 
 Both `fixture.html` and `no-replay.html` include `e2e/public/table-backdrop.js`,
-a small script that renders `e2e/public/assets/table-backdrop.jpg` -- a
-real, owner-provided PokerChase 6-max table screenshot (hero holding K♦K♣
-at the BB preflop, facing a raise) -- full-bleed as a sibling *behind*
-`#unity-container` (not a child of it -- see below). It exists purely so
-screenshots/QA sessions read as "HUD overlaying a real poker game" instead
-of a plain green void. The asset is strictly cropped to the game page's own
+a small script that, when opted in (see "Default off" below), renders
+`e2e/public/assets/table-backdrop.jpg` -- a real, owner-provided PokerChase
+6-max table screenshot (hero holding K♦K♣ at the BB preflop, facing a
+raise) -- full-bleed as a sibling *behind* `#unity-container` (not a child
+of it -- see below). It exists purely so screenshots/QA sessions can read
+as "HUD overlaying a real poker game" instead of a plain green void. The
+asset is strictly cropped to the game page's own
 viewport (no macOS window chrome, browser tab strip, URL bar, or rounded
 window corners/shadow) and has all six seat name plates (the five opponents
 plus the hero) anonymized in-image -- drawn natively over the original
@@ -197,9 +198,15 @@ whose final hero hand is KK and whose player names match the backdrop's
 plates -- see that file's module doc comment and its `SEAT_ANCHORS` table
 for the full alignment mechanics.
 
-Default on. Append `?plain=1` to either page's URL (e.g.
-`http://localhost:<port>/fixture.html?plain=1`) to render the bare
-page for a scenario that specifically needs sterility.
+Default OFF (scene-neutral, bare page): `smoke.ts` and `run.ts` both replay
+`DEFAULT_FIXTURE` (`session-3hands.ndjson`) unless told otherwise, which
+ends on hero's real J♣8♦ hand -- painting this backdrop's baked-in K♦K♣
+scene under those paths by default would make the HUD's own content
+contradict what's behind it. Append `?backdrop=1` to either page's URL
+(e.g. `http://localhost:<port>/fixture.html?backdrop=1`, or
+`launchHarness`'s `fixtureQuery: 'backdrop=1'` option) to opt in; only
+`e2e/tools/capture-store-imagery.ts` does, since it derives its own fixture
+specifically to end on a KK hand matching this scene.
 
 `e2e/fixtures/session-bust.ndjson` (544 events, one full SNG) covers the
 busted-player-dim feature: extracted with the one-off
@@ -389,7 +396,7 @@ e2e/
   run.ts                    step-by-step CLI (launch/status/screenshot/eval/close/...)
   public/fixture.html       minimal page with #unity-container + WS client
   public/no-replay.html     same shell, no WS client -- fresh mount, zero events (pre-game hero stats)
-  public/table-backdrop.js  shared real-gameplay table backdrop for both pages above (?plain=1 to disable)
+  public/table-backdrop.js  shared real-gameplay table backdrop for both pages above (off by default; ?backdrop=1 to enable)
   public/assets/table-backdrop.jpg   the backdrop's real, anonymized PokerChase screenshot (committed)
   fixtures/session-3hands.ndjson   anonymized fixture (committed)
   fixtures/session-bust.ndjson     anonymized SNG fixture w/ mid-session busts + session end (committed)

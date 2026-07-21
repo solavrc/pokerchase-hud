@@ -61,13 +61,18 @@
  *        progression: SB/BB/ante 140/280/70, each seat's post-ante chip stack
  *        read off its nameplate (`BACKDROP_CHIPS_AFTER_ANTE`), hero posts
  *        the BB with HoleCards [46, 47] (K♦K♣ per src/utils/card-utils.ts's
- *        rank=floor(card/4), suit=card%4 encoding), then immediately raises
+ *        rank=floor(card/4), suit=card%4 encoding). Preflop action follows
+ *        genuine seat order (button=5, SB=0, BB=hero=1, so it opens at seat
+ *        2/UTG): UTG/MP (seats 2, 3) fold, プレイヤーC (seat 4, CO) limps in
+ *        for the bare BB rather than folding or raising yet, BTN/SB (seats
+ *        5, 0) fold, and only THEN does hero -- last to act as BB -- raise
  *        her own blind to 1,400 (a distinct EVT_ACTION, not just baked into
  *        her posted BetChip -- see HERO_ALREADY_COMMITTED below) so the hand
- *        log actually narrates how her chips got in, UTG/MP fold, プレイヤー
- *        C raises to 7,840 (matching her bet stack in the screenshot), the
- *        others fold, and the replay stops with the action back on the hero
- *        -- exactly the preflop raise-vs-BB spot the screenshot shows. No
+ *        log actually narrates how her chips got in. That raise reopens the
+ *        action to プレイヤーC, the only other player still live, who
+ *        re-raises to 7,840 (matching her bet stack in the screenshot), and
+ *        the replay stops there with the action back on the hero -- exactly
+ *        the preflop raise-vs-BB spot the screenshot shows. No
  *        EVT_HAND_RESULTS is appended, so the partial hand never pollutes
  *        per-player stats; it only drives the hand log tail + real-time KK
  *        panel.
@@ -188,7 +193,10 @@ export const buildStoreFixture = (): string => {
   // lines directly contradict what's visibly printed on the table felt.
   // Hero posts the BB; seat 0 posts the SB (matching the backdrop, where
   // the bottom-right seat -- プレイヤーE, original seat 0 -- wears the SB
-  // badge).
+  // badge). Button is seat 5, so preflop action opens at seat 2 (UTG) and
+  // runs 2 -> 3 -> 4 -> 5 -> 0 -> 1 (hero, BB, last to act in this first
+  // pass) -- see HERO_ALREADY_COMMITTED below for why hero and プレイヤーC
+  // (seat 4) each get a second turn once that first pass closes.
   const SB = 140, BB = 280, ANTE = 70
   const sbSeat = 0, bbSeat = heroSeat, btnSeat = 5
 
@@ -199,28 +207,35 @@ export const buildStoreFixture = (): string => {
   // this is taken as given rather than re-derived). Because
   // HandLogProcessor.handleDealEvent() always sources the "posts big blind"
   // line's displayed amount from `Game.BigBlind` (never from a seat's
-  // `Chip`/`BetChip`), seeding this straight into the EVT_DEAL Player's
-  // `BetChip` would make it feed the pot/call math below without ever
-  // surfacing in the visible hand log -- the bug this fixes (the log jumped
-  // from the folds straight to プレイヤーC's raise with no line explaining
-  // where hero's extra 1,120 came from). Instead only the official BB (280)
-  // is posted at deal time; the remaining 1,120 is posted below as a
-  // genuine EVT_ACTION raise (`heroCommit`) immediately after the deal, so
-  // HandLogProcessor.formatAction() renders "Hero: raises 1,120 to 1,400"
-  // and every later reference to "the previous bet" (プレイヤーC's own raise
-  // included) resolves against that line instead of silently against 280.
-  // This constant still feeds the same pot/call arithmetic the backdrop's
-  // action bar pins to: Pot 9,800, and Hero's own call cost 6,440 (=
-  // RAISE_TO 7,840 - 1,400). Both are asserted by construction below.
+  // `Chip`/`BetChip`), this can't be baked into the EVT_DEAL Player's own
+  // `BetChip` -- it has to be a genuine EVT_ACTION raise (`heroCommit`
+  // below) so HandLogProcessor.formatAction() actually narrates it
+  // ("Hero: raises 1,120 to 1,400"). And because hero is the BB, she's the
+  // LAST seat to act in the first preflop pass (2 -> 3 -> 4 -> 5 -> 0 -> 1)
+  // -- she can only raise here at all once everyone ahead of her has
+  // folded or limped, never as her first action off the deal (that was the
+  // bug this fixes: an impossible BB-acts-first order -- see the review
+  // finding this addresses). The only seat still live in front of her
+  // after that first pass is プレイヤーC (seat 4), who limps in for the bare
+  // BB below instead of folding or raising, so when hero raises to 1,400
+  // the action reopens to プレイヤーC alone, who then re-raises to the
+  // backdrop's baked-in 7,840 (RAISE_TO below). This constant still feeds
+  // the same pot/call arithmetic the backdrop's action bar pins to: Pot
+  // 9,800, and Hero's own call cost 6,440 (= RAISE_TO 7,840 - 1,400). Both
+  // are asserted by construction below.
   const HERO_ALREADY_COMMITTED = 1400
-  // Pot right after blinds + antes only (before hero's own raise below) --
+  // Pot right after blinds + antes only (before any preflop action) --
   // this is the EVT_DEAL snapshot's Pot.
   const potAfterBlinds = SB + BB + 6 * ANTE
-  // Pot after hero's raise closes out her turn -- algebraically
-  // `potAfterBlinds + (HERO_ALREADY_COMMITTED - BB)`, i.e. unchanged from
-  // this tool's previous single-shot pot0. Every subsequent synthetic
-  // action's Progress.Pot is still relative to this value.
-  const pot0 = SB + HERO_ALREADY_COMMITTED + 6 * ANTE
+  // Pot after プレイヤーC limps in for the bare BB (her first action, seat
+  // order permitting -- see HERO_ALREADY_COMMITTED above).
+  const potAfterCCall = potAfterBlinds + BB
+  // Pot after hero's own raise (to HERO_ALREADY_COMMITTED) closes out the
+  // first pass.
+  const potAfterHeroRaise = potAfterCCall + (HERO_ALREADY_COMMITTED - BB)
+  // Pot after プレイヤーC's reopened re-raise to RAISE_TO (defined below,
+  // alongside BACKDROP_CHIPS_AFTER_ANTE) -- must land on the backdrop's own
+  // baked-in "Pot : 9,800", asserted once RAISE_TO is in scope.
   let ts = kept[kept.length - 1]!.timestamp as number
 
   const progress = (over: Record<string, unknown>) => ({
@@ -258,6 +273,15 @@ export const buildStoreFixture = (): string => {
     5: 15209, // プレイヤーD (button): plate shows 15,209 (post ante, folded before betting)
   }
 
+  // Pot after プレイヤーC's reopened re-raise to RAISE_TO -- must land on
+  // the backdrop's own baked-in "Pot : 9,800" (see potAfterHeroRaise above
+  // for the earlier stages of this same sum: blinds+antes, then プレイヤーC's
+  // limp, then hero's raise).
+  const potAfterCRaise = potAfterHeroRaise + (RAISE_TO - BB)
+  if (potAfterCRaise !== 9800) {
+    throw new Error(`synthetic pot arithmetic drifted from the backdrop's baked-in 9,800 (got ${potAfterCRaise}) -- check SB/BB/ANTE/HERO_ALREADY_COMMITTED/RAISE_TO`)
+  }
+
   const deal: ApiEventRecord = {
     ApiTypeId: 303,
     timestamp: (ts += 2000),
@@ -284,9 +308,10 @@ export const buildStoreFixture = (): string => {
       Chip: BACKDROP_CHIPS_AFTER_ANTE[seat]! - (seat === sbSeat ? SB : 0),
       BetChip: seat === sbSeat ? SB : 0,
     })),
-    // NextActionSeat is hero's own -- her raise (below) comes immediately
-    // after the deal, before UTG's turn.
-    Progress: progress({ Pot: potAfterBlinds, MinRaise: 2 * BB, NextActionSeat: heroSeat }),
+    // Preflop action opens at seat 2 (UTG), the seat immediately left of
+    // hero's own BB -- NOT at hero's own seat (see HERO_ALREADY_COMMITTED's
+    // doc comment above for why hero can't act first).
+    Progress: progress({ Pot: potAfterBlinds, MinRaise: 2 * BB, NextActionSeat: 2 }),
   }
 
   const action = (seat: number, type: number, betChip: number, chip: number, over: Record<string, unknown>): ApiEventRecord => ({
@@ -294,29 +319,43 @@ export const buildStoreFixture = (): string => {
     BetChip: betChip, Chip: chip, Progress: progress(over),
   })
 
-  const FOLD = 2, RAISE = 4
+  const FOLD = 2, CALL = 3, RAISE = 4
 
   // Hero's own preflop raise, from her posted BB (280) up to the backdrop's
   // baked-in 1,400 (HERO_ALREADY_COMMITTED) -- see that constant's doc
   // comment above for why this needs to be a distinct EVT_ACTION rather
-  // than folded into the deal event's BetChip. HandLogProcessor.formatAction()
-  // derives the printed raise amount from the prior "posts big blind" line
-  // (still only 280 at this point), so this renders as "Hero: raises 1,120
-  // to 1,400" -- and because it's the most recent bet/raise line, プレイヤー
-  // C's own raise below is in turn computed relative to 1,400, not 280.
+  // than folded into the deal event's BetChip, and why it can only happen
+  // once the first pass (2 -> 3 -> 4 -> 5 -> 0) has already closed on hero.
+  // HandLogProcessor.formatAction() derives the printed raise amount from
+  // the prior "posts big blind" line (still only 280 at this point --
+  // プレイヤーC's own limp call below doesn't touch it, only bet/raise lines
+  // do), so this renders as "Hero: raises 1,120 to 1,400" -- and because
+  // it's the most recent bet/raise line, it reopens the action to プレイヤー
+  // C (the only other player still live), whose own re-raise below is in
+  // turn computed relative to 1,400, not 280.
   const heroCommit = action(
     heroSeat, RAISE, HERO_ALREADY_COMMITTED, BACKDROP_CHIPS_AFTER_ANTE[heroSeat]! - HERO_ALREADY_COMMITTED,
-    { Pot: pot0, MinRaise: 2 * HERO_ALREADY_COMMITTED - BB, NextActionSeat: 2 }
+    { Pot: potAfterHeroRaise, MinRaise: 2 * HERO_ALREADY_COMMITTED - BB, NextActionSeat: 4 }
   )
 
   const synthetic = [
     deal,
+    action(2, FOLD, 0, BACKDROP_CHIPS_AFTER_ANTE[2]!, { Pot: potAfterBlinds, MinRaise: 2 * BB, NextActionSeat: 3 }),
+    action(3, FOLD, 0, BACKDROP_CHIPS_AFTER_ANTE[3]!, { Pot: potAfterBlinds, MinRaise: 2 * BB, NextActionSeat: 4 }),
+    // プレイヤーC limps in for the bare BB rather than folding or opening a
+    // raise herself -- her own raise only makes sense as a RE-raise once
+    // hero has committed 1,400 (see HERO_ALREADY_COMMITTED's doc comment
+    // above), so her first turn here has to be a call, not that raise.
+    action(4, CALL, BB, BACKDROP_CHIPS_AFTER_ANTE[4]! - BB, { Pot: potAfterCCall, MinRaise: 2 * BB, NextActionSeat: 5 }),
+    action(5, FOLD, 0, BACKDROP_CHIPS_AFTER_ANTE[5]!, { Pot: potAfterCCall, MinRaise: 2 * BB, NextActionSeat: 0 }),
+    action(0, FOLD, SB, BACKDROP_CHIPS_AFTER_ANTE[0]! - SB, { Pot: potAfterCCall, MinRaise: 2 * BB, NextActionSeat: heroSeat }),
     heroCommit,
-    action(2, FOLD, 0, BACKDROP_CHIPS_AFTER_ANTE[2]!, { Pot: pot0, MinRaise: 2 * HERO_ALREADY_COMMITTED - BB, NextActionSeat: 3 }),
-    action(3, FOLD, 0, BACKDROP_CHIPS_AFTER_ANTE[3]!, { Pot: pot0, MinRaise: 2 * HERO_ALREADY_COMMITTED - BB, NextActionSeat: 4 }),
-    action(4, RAISE, RAISE_TO, BACKDROP_CHIPS_AFTER_ANTE[4]! - RAISE_TO, { Pot: pot0 + RAISE_TO, MinRaise: 2 * RAISE_TO - BB, NextActionSeat: 5 }),
-    action(5, FOLD, 0, BACKDROP_CHIPS_AFTER_ANTE[5]!, { Pot: pot0 + RAISE_TO, MinRaise: 2 * RAISE_TO - BB, NextActionSeat: 0 }),
-    action(0, FOLD, SB, BACKDROP_CHIPS_AFTER_ANTE[0]! - SB, { Pot: pot0 + RAISE_TO, MinRaise: 2 * RAISE_TO - BB, NextActionSeat: heroSeat }),
+    // プレイヤーC's reopened re-raise, matching her bet stack in the
+    // screenshot (7,840); computed against hero's 1,400 (the most recent
+    // bet/raise line), it renders as "raises 6,440 to 7,840" -- exactly the
+    // backdrop's baked-in pending-call amount. Replay stops here, action
+    // back on hero.
+    action(4, RAISE, RAISE_TO, BACKDROP_CHIPS_AFTER_ANTE[4]! - RAISE_TO, { Pot: potAfterCRaise, MinRaise: 2 * RAISE_TO - HERO_ALREADY_COMMITTED, NextActionSeat: heroSeat }),
   ]
 
   const out = [...kept, ...synthetic].map((e) => JSON.stringify(e)).join('\n') + '\n'
@@ -437,7 +476,13 @@ interface ShotPlan {
 const REPLAY_DELAY_MS = 30
 
 const runPlan = async (fixturePath: string, totalEvents: number, plan: ShotPlan): Promise<void> => {
-  const h = await launchHarness({ viewport: plan.viewport, fixturePath, replayDelayMs: REPLAY_DELAY_MS })
+  // The real-gameplay backdrop (table-backdrop.js) is opt-in, off by
+  // default, so the normal e2e paths (smoke.ts / run.ts, replaying
+  // DEFAULT_FIXTURE) never paint a scene their own replayed hand
+  // contradicts -- see that file's module doc comment. This tool's own
+  // fixture is derived specifically to match the backdrop's baked-in KK
+  // scene, so it explicitly opts in here via `fixtureQuery`.
+  const h = await launchHarness({ viewport: plan.viewport, fixturePath, replayDelayMs: REPLAY_DELAY_MS, fixtureQuery: 'backdrop=1' })
   try {
     await h.waitForHudMount()
     // Bounded: if the fixture page never opens its WebSocket, the harness's

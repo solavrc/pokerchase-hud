@@ -55,12 +55,19 @@
  * visually behind it purely via z-index (`position:fixed` stacking is
  * viewport-relative regardless of DOM parent).
  *
- * Default ON. Append `?plain=1` to the fixture URL to render the old plain
- * felt-void page (e.g. for a scenario that specifically needs sterility).
+ * Default OFF (scene-neutral, bare page): the normal e2e paths --
+ * `smoke.ts` and `run.ts`, both of which replay `DEFAULT_FIXTURE`
+ * (`session-3hands.ndjson`) unless told otherwise -- end on hero's real
+ * J♣8♦ hand, which would directly contradict this backdrop's baked-in
+ * K♦K♣ preflop-raise scene if it were painted underneath by default.
+ * Append `?backdrop=1` to the fixture URL to opt in; only
+ * `e2e/tools/capture-store-imagery.ts` does, via `launchHarness`'s
+ * `fixtureQuery` option, because it derives its own fixture specifically to
+ * match this scene (see that file's module doc comment).
  */
 ;(function () {
   var params = new URLSearchParams(location.search)
-  if (params.get('plain') === '1') return
+  if (params.get('backdrop') !== '1') return
 
   var container = document.getElementById('unity-container')
   if (!container || !container.parentNode) return

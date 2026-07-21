@@ -38,10 +38,10 @@ export interface LaunchOptions {
   viewport?: Viewport
   /**
    * Query string (no leading `?`) appended to the initial fixture page
-   * navigation, e.g. `'plain=1'` to render the bare (backdrop-free) page --
-   * see `table-backdrop.js`'s module doc comment for the params it reads.
-   * Omit to navigate to the fixture server's origin unchanged (served as
-   * fixture.html).
+   * navigation, e.g. `'backdrop=1'` to opt into the real-gameplay table
+   * backdrop (off by default) -- see `table-backdrop.js`'s module doc
+   * comment for the params it reads. Omit to navigate to the fixture
+   * server's origin unchanged (served as fixture.html).
    */
   fixtureQuery?: string
 }
