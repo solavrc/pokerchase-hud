@@ -1,4 +1,4 @@
-import { FirestoreBackupService } from './firestore-backup-service'
+import { FirestoreBackupService, getFirestoreEventDocumentId } from './firestore-backup-service'
 import { firebaseAuthService } from './firebase-auth-service'
 import type { ApiEvent } from '../types'
 
@@ -55,6 +55,32 @@ describe('FirestoreBackupService', () => {
       'XK00mmVIZdg8J52OlfyKvN467SK2/apiEvents/1779859063171_304'
     )
     expect(body.writes[0].update.name).not.toMatch(/^https?:\/\//)
+  })
+
+  test('same-millisecond same-type sequences use distinct deterministic document IDs while sequence 0 keeps the legacy ID', async () => {
+    expect(getFirestoreEventDocumentId({ timestamp: 100, ApiTypeId: 304, sequence: 0 } as ApiEvent)).toBe('100_304')
+    expect(getFirestoreEventDocumentId({ timestamp: 100, ApiTypeId: 304, sequence: 1 } as ApiEvent)).toBe('100_304_1')
+
+    const fetchMock = jest.fn().mockImplementation(async (url: string) => ({
+      ok: true,
+      text: async () => String(url).endsWith(':commit')
+        ? JSON.stringify({ writeResults: [{}, {}], commitTime: '2026-07-21T00:00:00Z' })
+        : '{}'
+    } as Response))
+    global.fetch = fetchMock
+
+    const burst = [
+      { timestamp: 100, ApiTypeId: 304, sequence: 0, marker: 'first' },
+      { timestamp: 100, ApiTypeId: 304, sequence: 1, marker: 'second' }
+    ] as unknown as ApiEvent[]
+    await new FirestoreBackupService().syncToCloudBatch(burst, null)
+
+    const commitCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith(':commit'))
+    const body = JSON.parse(String(commitCall?.[1]?.body))
+    expect(body.writes.map((write: any) => write.update.name.split('/').pop())).toEqual([
+      '100_304',
+      '100_304_1'
+    ])
   })
 
   test('commitWrites rejects when Firestore denies the write at the HTTP level (e.g. rules PERMISSION_DENIED)', async () => {

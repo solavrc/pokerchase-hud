@@ -9,6 +9,20 @@ import { firebaseConfig } from './firebase-config'
 import { firebaseAuthService } from './firebase-auth-service'
 import type { ApiEvent } from '../types'
 import { DATABASE_CONSTANTS } from '../constants/database'
+import { getApiEventSequence } from '../utils/api-event-key'
+
+/**
+ * Sequence 0 intentionally retains the legacy document ID. This makes every
+ * v3 row migrated to sequence 0 map to the document it may already have in
+ * Firestore, so a reconciliation pass is an idempotent overwrite rather than
+ * a second copy of history. Only additional same-ms/same-type rows append a
+ * suffix and therefore need a new document name.
+ */
+export const getFirestoreEventDocumentId = (event: ApiEvent): string => {
+  const sequence = getApiEventSequence(event)
+  const legacyId = `${event.timestamp}_${event.ApiTypeId}`
+  return sequence === 0 ? legacyId : `${legacyId}_${sequence}`
+}
 
 export interface BackupSummary {
   totalEvents: number
@@ -264,7 +278,7 @@ export class FirestoreBackupService {
 
   private async writeBatch(uid: string, events: ApiEvent[]): Promise<void> {
     const writes = events.map(event => {
-      const eventId = `${event.timestamp}_${event.ApiTypeId}`
+      const eventId = getFirestoreEventDocumentId(event)
       return {
         update: {
           name: `${this.documentsPath}/${this.docPath(this.USERS_COLLECTION, uid, this.EVENTS_COLLECTION, eventId)}`,

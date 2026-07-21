@@ -6,6 +6,10 @@ import type {
   Action,
   MetaRecord
 } from '../types'
+import { API_EVENT_PRIMARY_KEY } from '../utils/api-event-key'
+
+const API_EVENT_MIGRATION_TABLE = '_apiEventsSequenceMigration'
+const API_EVENT_MIGRATION_CHUNK_SIZE = 5000
 
 /**
  * PokerChase HUD用IndexedDBクラス
@@ -25,10 +29,10 @@ import type {
  * フックだけが読み取り結果からnullとして除外していた）。この結果、スキーマ変更で
  * Zodパースに失敗したイベント（2026年シーズン3のEVT_SESSION_RESULTS等）は保存
  * すらされず、リビルドでも復旧不能なデータ損失が発生した。本バージョンで
- * フックを撤廃し、元々の「生ログは常に保存する」設計に復元した。
+ * 旧フィルタリングフックを撤廃し、元々の「生ログは常に保存する」設計に復元した。
  */
 export class PokerChaseDB extends Dexie {
-  apiEvents!: Table<ApiEvent, number>
+  apiEvents!: Table<ApiEvent, [number, number, number]>
   hands!: Table<Hand, number>
   phases!: Table<Phase, number>
   actions!: Table<Action, number>
@@ -63,17 +67,85 @@ export class PokerChaseDB extends Dexie {
       meta: 'id,updatedAt'
     })
 
-    // v4以降へのバンプは不要: [timestamp+ApiTypeId]キーは検証可否・ApiTypeIdの
-    // 既知/未知に関わらずどんな生イベントにも適用できるため、フック撤廃だけなら
-    // インデックス変更は発生しない（意図的にバンプしていない。CLAUDE.md参照）。
-    //
-    // 旧: apiEventsのcreating/readingフックで非アプリケーションイベントを自動
-    // フィルタリングしていたが撤廃した（setupApiEventHooks削除）。フィルタリングは
-    // 各読み取り箇所（EntityConverter/HandLogProcessorへ渡す直前）で明示的に行う。
-    // 理由: (1) creatingフックは実際には書き込みを止められておらず有名無実だった
-    // （`this.onsuccess = null`はDexieの完了コールバックを止めるだけで、配下の
-    // IDBObjectStore.add()自体は既に発行済み）、(2) readingフックがあると
-    // apiEvents.toArray()等で「生ログの全件保存」という本来の目的を果たせない
-    // （エクスポート/インポート/リビルドが常に部分集合しか見えなくなる）。
+    // IndexedDB/Dexie cannot change an existing object store's primary key
+    // in place (`UpgradeError: Not yet support for changing primary key`).
+    // Use a transactionally-upgraded staging store instead:
+    //   v4 copies every old row and assigns sequence=0 (the old key already
+    //      guaranteed one row per timestamp+ApiTypeId),
+    //   v5 removes the old apiEvents store,
+    //   v6 recreates it with the sequence key, copies the staged rows back,
+    //      then removes the staging store.
+    // All three logical versions run inside IndexedDB's single versionchange
+    // transaction when a v3 install opens v6, so a failure rolls the database
+    // back intact rather than exposing a half-migrated Lake.
+    this.version(4).stores({
+      apiEvents: '[timestamp+ApiTypeId],timestamp,ApiTypeId,[ApiTypeId+timestamp]',
+      hands: 'id,*seatUserIds,*winningPlayerIds,approxTimestamp',
+      phases: '[handId+phase],handId,*seatUserIds,phase',
+      actions: '[handId+index],handId,playerId,phase,actionType,*actionDetails,[playerId+phase],[playerId+actionType]',
+      meta: 'id,updatedAt',
+      [API_EVENT_MIGRATION_TABLE]: API_EVENT_PRIMARY_KEY
+    }).upgrade(async transaction => {
+      const source = transaction.table('apiEvents')
+      const staging = transaction.table(API_EVENT_MIGRATION_TABLE)
+      let cursor: [number, number] | undefined
+      while (true) {
+        const oldRows = await (cursor
+          ? source.where('[timestamp+ApiTypeId]').above(cursor)
+          : source.orderBy('[timestamp+ApiTypeId]'))
+          .limit(API_EVENT_MIGRATION_CHUNK_SIZE)
+          .toArray() as Array<Record<string, unknown> & { timestamp: number, ApiTypeId: number }>
+        if (oldRows.length === 0) break
+        await staging.bulkAdd(
+          oldRows.map(row => ({ ...row, sequence: 0 }))
+        )
+        const last = oldRows[oldRows.length - 1]!
+        cursor = [last.timestamp, last.ApiTypeId]
+      }
+    })
+
+    this.version(5).stores({
+      apiEvents: null,
+      hands: 'id,*seatUserIds,*winningPlayerIds,approxTimestamp',
+      phases: '[handId+phase],handId,*seatUserIds,phase',
+      actions: '[handId+index],handId,playerId,phase,actionType,*actionDetails,[playerId+phase],[playerId+actionType]',
+      meta: 'id,updatedAt',
+      [API_EVENT_MIGRATION_TABLE]: API_EVENT_PRIMARY_KEY
+    })
+
+    this.version(6).stores({
+      apiEvents: `${API_EVENT_PRIMARY_KEY},timestamp,ApiTypeId,[timestamp+ApiTypeId],[ApiTypeId+timestamp]`,
+      hands: 'id,*seatUserIds,*winningPlayerIds,approxTimestamp',
+      phases: '[handId+phase],handId,*seatUserIds,phase',
+      actions: '[handId+index],handId,playerId,phase,actionType,*actionDetails,[playerId+phase],[playerId+actionType]',
+      meta: 'id,updatedAt',
+      [API_EVENT_MIGRATION_TABLE]: null
+    }).upgrade(async transaction => {
+      const staging = transaction.table(API_EVENT_MIGRATION_TABLE)
+      const destination = transaction.table('apiEvents')
+      let cursor: [number, number, number] | undefined
+      while (true) {
+        const stagedRows = await (cursor
+          ? staging.where(API_EVENT_PRIMARY_KEY).above(cursor)
+          : staging.orderBy(API_EVENT_PRIMARY_KEY))
+          .limit(API_EVENT_MIGRATION_CHUNK_SIZE)
+          .toArray() as Array<Record<string, unknown> & { timestamp: number, ApiTypeId: number, sequence: number }>
+        if (stagedRows.length === 0) break
+        await destination.bulkAdd(stagedRows)
+        const last = stagedRows[stagedRows.length - 1]!
+        cursor = [last.timestamp, last.ApiTypeId, last.sequence]
+      }
+    })
+
+    // Backward-compatible default for existing internal/test callers that
+    // insert a single legacy-shaped row directly. Collision-sensitive
+    // production writers use mergeApiEvents(), which performs indexed
+    // content deduplication and atomic next-sequence allocation.
+    this.apiEvents.hook('creating', (_primaryKey, object) => {
+      const raw = object as ApiEvent & { sequence?: unknown }
+      if (typeof raw.sequence !== 'number' || !Number.isSafeInteger(raw.sequence) || raw.sequence < 0) {
+        raw.sequence = 0
+      }
+    })
   }
 }

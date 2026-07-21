@@ -13,6 +13,7 @@ import { ApiType } from '../types'
 import { registerEventIngestion } from './event-ingestion'
 import { connectedPorts } from './ports'
 import * as updateManager from './update-manager'
+import * as apiEventKey from '../utils/api-event-key'
 
 describe('registerEventIngestion (update-manager triggers)', () => {
   let db: PokerChaseDB
@@ -235,9 +236,11 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     // simplified back to "everything happens in arrival order, inside the
     // queue" and the original latency concern is now handled on the READ
     // side instead, via `awaitIngestionDrain()`).
-    let resolveAdd!: (key: number) => void
-    jest.spyOn(db.apiEvents, 'add').mockImplementation(
-      (() => new Promise<number>(resolve => { resolveAdd = resolve })) as any
+    let resolveAdd!: () => void
+    jest.spyOn(apiEventKey, 'mergeApiEvents').mockImplementation(
+      (async (_db: PokerChaseDB, events: apiEventKey.RawApiEvent[]) => await new Promise(resolve => {
+        resolveAdd = () => resolve({ added: events, duplicates: 0 })
+      })) as any
     )
 
     const entryQueuedEvent = {
@@ -245,7 +248,7 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     }
     const pending = onMessageHandler(entryQueuedEvent)
 
-    // While add() is stuck, markSessionActive() must NOT have fired yet --
+    // While the raw merge is stuck, markSessionActive() must NOT have fired yet --
     // and a reload decision reading isSafeToUpdate() directly would still
     // see the previous (here: initial 'unknown') value. This is exactly why
     // reload decision points must use `awaitIngestionDrain()` instead of
@@ -254,7 +257,7 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(markSessionActiveSpy).not.toHaveBeenCalled()
 
-    resolveAdd(1)
+    resolveAdd()
     await pending
 
     expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)

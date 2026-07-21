@@ -10,11 +10,17 @@ import { HandLogProcessor, HandLogContext } from './hand-log-processor'
 import { DEFAULT_HAND_LOG_CONFIG } from '../types/hand-log'
 import { DATABASE_CONSTANTS } from '../constants/database'
 import { processInChunks, filterValidApplicationEvents } from '../utils/database-utils'
+import {
+  API_EVENT_PRIMARY_KEY,
+  compareApiEventKeys,
+  getApiEventKey,
+  type ApiEventKey
+} from './api-event-key'
 
 export class HandLogExporter {
   // Cache for player names across all exports
   private static playerNamesCache: Map<number, { name: string, rank: string }> | null = null
-  private static lastProcessedTimestamp: number = 0
+  private static lastProcessedKey: ApiEventKey | undefined
   
   // Time constants for event retrieval
   private static readonly TIME_BUFFER_MS = 300000 // 5 minutes buffer to catch player seat assignments
@@ -33,11 +39,11 @@ export class HandLogExporter {
     const playerMap = this.playerNamesCache
 
     try {
-      // Process events newer than last processed timestamp
-      const totalNew = await db.apiEvents
-        .where('timestamp')
-        .above(this.lastProcessedTimestamp)
-        .count()
+      // Resume from the exact raw-event key. A timestamp-only watermark can
+      // miss a later sequence added in the same millisecond.
+      const totalNew = this.lastProcessedKey
+        ? await db.apiEvents.where(API_EVENT_PRIMARY_KEY).above(this.lastProcessedKey).count()
+        : await db.apiEvents.count()
       if (totalNew === 0) {
         console.log('[HandLogExporter] No new events since last cache update')
         return playerMap
@@ -49,14 +55,11 @@ export class HandLogExporter {
       let updatedPlayers = 0
 
       for await (const chunk of processInChunks(db.apiEvents, DATABASE_CONSTANTS.SYNC_CHUNK_SIZE, {
-        afterTimestamp: this.lastProcessedTimestamp
+        afterKey: this.lastProcessedKey
       })) {
         // Process chunk for player information
         for (const event of chunk) {
-          // Update timestamp tracker
-          if (event.timestamp && event.timestamp > this.lastProcessedTimestamp) {
-            this.lastProcessedTimestamp = event.timestamp
-          }
+          this.lastProcessedKey = getApiEventKey(event as Parameters<typeof getApiEventKey>[0])
           
           // Process EVT_PLAYER_SEAT_ASSIGNED
           if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED) && event.TableUsers) {
@@ -94,7 +97,7 @@ export class HandLogExporter {
    */
   static clearCache() {
     this.playerNamesCache = null
-    this.lastProcessedTimestamp = 0
+    this.lastProcessedKey = undefined
     console.log('[HandLogExporter] Player names cache cleared')
   }
 
@@ -228,7 +231,7 @@ export class HandLogExporter {
     const allEvents = await filterValidApplicationEvents(rawEvents)
 
     // Sort once for all hands
-    allEvents.sort((a, b) => a.timestamp! - b.timestamp!)
+    allEvents.sort((a, b) => compareApiEventKeys(a as any, b as any))
     console.log(`[HandLogExporter] Prefetched ${allEvents.length} events (${rawEvents.length} raw)`)
 
     // 5. Process each hand using the prefetched events
@@ -422,7 +425,7 @@ export class HandLogExporter {
     let foundDeal = false
 
     // Sort events by timestamp to ensure correct order
-    allEvents.sort((a, b) => a.timestamp! - b.timestamp!)
+    allEvents.sort((a, b) => compareApiEventKeys(a as any, b as any))
 
     for (const event of allEvents) {
       // Start collecting from EVT_DEAL that matches our seat configuration

@@ -13,9 +13,10 @@
 ```
 Firestore:
 /users/{userId}/
-  /apiEvents/{eventId}  // eventId = timestamp_ApiTypeId
+  /apiEvents/{eventId}  // sequence 0: timestamp_ApiTypeId; sequence > 0: timestamp_ApiTypeId_sequence
     - timestamp: number
     - ApiTypeId: number
+    - sequence: number
     - [event data...]
 ```
 
@@ -103,12 +104,12 @@ Firestore:
 1. Query cloud for latest timestamp (single document)
 2. Filter local events newer than cloud's latest timestamp
 3. Batch process in chunks of 300 events
-4. Use composite key `timestamp_ApiTypeId` for deduplication
+4. Use deterministic document IDs: legacy-compatible `timestamp_ApiTypeId` for sequence 0, and `timestamp_ApiTypeId_sequence` for additional same-ms/same-type events
 5. Update user metadata with sync timestamp
 
 ### Download Sync Strategy
 1. Get all events from cloud (cloud is source of truth)
-2. Bulk insert to IndexedDB using bulkPut (updates existing records)
+2. Merge into IndexedDB by canonical payload content; old documents without `sequence` receive 0 and new documents preserve their sequence
 3. Restore service state from downloaded events:
    - Latest EVT_DEAL → playerId, latestEvtDeal
    - Session events → session.id, battleType, name, players

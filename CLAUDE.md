@@ -239,7 +239,7 @@ data storage (Dexie.js), normalized entities, Firestore strategy, and v3 index o
 ```
 WebSocket Events (from content_script)
     │
-    ├─► Database (apiEvents.add) ─── Persistent storage
+    ├─► Database (content dedup + sequenced apiEvents add) ─── Persistent storage
     │   (numeric timestamp+ApiTypeId only — the Raw Event Lake;
     │    independent of parseApiEvent/isApplicationApiEvent below)
     │
@@ -278,7 +278,7 @@ WebSocket Events (from content_script)
 - **AggregateEventsStream**: Buffers events until hand boundaries (EVT_HAND_RESULTS)
 - **Incomplete Data**: Streams handle missing player info gracefully
 - **Late Arrivals**: Session info updates retroactively when received
-- **Duplicate Prevention**: Events keyed by timestamp+ApiTypeId
+- **Duplicate Prevention**: reconnect resends are identified by canonical payload content (ignoring storage-only `sequence`), not by timestamp+ApiTypeId alone. Distinct payloads sharing the same millisecond and type are both retained.
 
 #### Import Processing
 
@@ -286,7 +286,7 @@ WebSocket Events (from content_script)
 NDJSON File (.ndjson)
     ↓
 Chunk Processing
-    ├─► Duplicate Detection (Set-based, O(1) — keyed on timestamp+ApiTypeId)
+    ├─► Indexed content dedup within each timestamp+ApiTypeId group
     ├─► Raw Event Storage: every line with numeric timestamp+ApiTypeId is
     │   bulkAdd'ed to apiEvents (the Lake), regardless of Zod validity
     └─► Valid Application Events Collection (subset that also parses AND
@@ -324,7 +324,7 @@ on large DBs (bounded, local work; import is a rare operation).
 - Designed for processing tens of thousands of records
 - Batch mode disables real-time updates during import
 - Direct entity conversion (empty-DB path) bypasses stream overhead
-- Falls back to individual inserts on bulk operation failure
+- Legacy exports without `sequence` are assigned a per-timestamp/type sequence during import; re-importing the same payload is content-deduplicated against both existing and earlier rows in the same chunk
 - Storage and entity generation are decoupled: a line that fails to parse (or
   is a known non-application type) is still stored raw — it just doesn't
   reach `EntityConverter`/rebuild. See "Raw Event Lake" (Design Principles #16).
@@ -337,7 +337,7 @@ on large DBs (bounded, local work; import is a rare operation).
 
 - **EntityConverter state**: `convertEventsToEntities()` tracks hand boundaries via internal local variables (`currentHandEvents`). Must NOT be called in chunks — a hand spanning chunk boundaries will be lost. Always pass all events in a single call.
 - **EntityConverter/HandLogProcessor never see raw, unvalidated rows**: both read required fields (e.g. `EVT_DEAL.Game.SmallBlind`) via unguarded `switch (event.ApiTypeId)` dispatch, with no `default:` case protecting against a well-known-ApiTypeId-but-malformed payload. Every call site that reads from `apiEvents` (the raw Lake) and feeds either of them re-validates first with `filterValidApplicationEvents()` (`src/utils/database-utils.ts`): `performFullRebuild` (`src/background/import-export.ts`, shared by `rebuildAllData` and `importData`'s non-empty-DB path), `AutoSyncService.rebuildLocalEntities`, `HandLogExporter.exportHand`/`exportMultipleHands`. This re-validation on every rebuild is also the *entire* recovery mechanism for a PokerChase schema break — a later schema fix makes previously-unparseable rows parse on the next rebuild automatically, no promotion step required.
-- **Dexie Collection reuse**: `.offset(n).limit(m)` on a single, already-built Collection object is NOT safe pagination -- Dexie Collections accumulate query modifiers instead of replacing them, so a second `.offset()/.limit()` call on the SAME Collection stacks on top of the first rather than re-querying (a prior version of `processInChunks()` did exactly this and silently only ever processed the first chunk). `processInChunks()` (`src/utils/database-utils.ts`) now takes a `Dexie.Table` and issues a fresh query per chunk, cursor-pagination style: `where('[timestamp+ApiTypeId]').above(lastKey).limit(N)`. Any new caller must pass the Table, not a pre-built Collection.
+- **Dexie Collection reuse**: `.offset(n).limit(m)` on a single, already-built Collection object is NOT safe pagination -- Dexie Collections accumulate query modifiers instead of replacing them, so a second `.offset()/.limit()` call on the SAME Collection stacks on top of the first rather than re-querying (a prior version of `processInChunks()` did exactly this and silently only ever processed the first chunk). `processInChunks()` (`src/utils/database-utils.ts`) now takes a `Dexie.Table` and issues a fresh query per chunk, cursor-pagination style: `where('[timestamp+ApiTypeId+sequence]').above(lastKey).limit(N)`. Any new caller must pass the Table, not a pre-built Collection, and must retain all three cursor components across pages.
 - **Export size limits**: Service Worker → content_script message limit is 64MiB. Data URL limit is ~2MB. Large exports use chunked message passing with Blob-based download in content_script.
 - **PokerStars hand history format**: `calls` shows additional call amount (not total bet). `Dealt to` is hero-only. Summary uses `folded on the Flop/Turn/River`. See [docs/pokerstars-export.md](docs/pokerstars-export.md).
 - **Side pot handling**: `collected X from main pot` / `from side pot` / `from side pot-N` (PS format). Winner determination uses `HandRanking` with `RewardChip` fallback. Main pot winner may not be eligible for side pots (e.g., ante all-in). Relies on invariant `Pot + sum(SidePot) == sum(RewardChip)`.
@@ -612,7 +612,7 @@ Dynamic statistics for all players, with hero having additional hand improvement
 - **Entity schemas** in `src/types/entities.ts`: `Hand`, `Phase`, `Action`, `User` with parse functions
 - **Type guards** (no type assertions): `isApiEventType()`, `parseApiEvent()`, `isApplicationApiEvent()`, `getValidationError()`
 - **Breaking changes**: Use `ApiEvent` (removed: `ApiEventType`, `ApiEventUnion`, `ApiEventSubset`, `ApiEventMap`)
-- **Validation gates the pipeline, never storage** (Raw Event Lake — see Design Principles #16 and `docs/architecture.md`): `apiEvents.add()` in `src/background/event-ingestion.ts` runs before `parseApiEvent`/`isApplicationApiEvent` and stores anything with a numeric `timestamp`+`ApiTypeId` — non-application events (202/205 keepalive/timer), ApiTypeIds unknown to `apiEventSchemas`, and app-type events that currently fail to parse are all persisted. The same event is only forwarded to `eventLogger`/`handLogStream`/`handAggregateStream`/`realTimeStatsStream` when it *does* parse as a known application event. Any code path that reads raw `apiEvents` rows and feeds them into `EntityConverter` or `HandLogProcessor` (which read required fields like `EVT_DEAL.Game.SmallBlind` without guards) must first re-validate with `filterValidApplicationEvents()` (`src/utils/database-utils.ts`) — see `performFullRebuild` (shared by `rebuildAllData` and `importData`'s non-empty-DB rebuild path), `AutoSyncService.rebuildLocalEntities`, and `HandLogExporter`'s two prefetch sites for the pattern.
+- **Validation gates the pipeline, never storage** (Raw Event Lake — see Design Principles #16 and `docs/architecture.md`): the content-deduplicating raw merge in `src/background/event-ingestion.ts` runs before `parseApiEvent`/`isApplicationApiEvent` and stores anything with a numeric `timestamp`+`ApiTypeId` — non-application events (202/205 keepalive/timer), ApiTypeIds unknown to `apiEventSchemas`, and app-type events that currently fail to parse are all persisted. The same event is only forwarded to `eventLogger`/`handLogStream`/`handAggregateStream`/`realTimeStatsStream` when it *does* parse as a known application event. Any code path that reads raw `apiEvents` rows and feeds them into `EntityConverter` or `HandLogProcessor` (which read required fields like `EVT_DEAL.Game.SmallBlind` without guards) must first re-validate with `filterValidApplicationEvents()` (`src/utils/database-utils.ts`) — see `performFullRebuild` (shared by `rebuildAllData` and `importData`'s non-empty-DB rebuild path), `AutoSyncService.rebuildLocalEntities`, and `HandLogExporter`'s two prefetch sites for the pattern.
 - **Cloud sync is application-type-only** (cost decision): `AutoSyncService.syncToCloud()` filters each raw chunk to `isApplicationApiEvent` before upload — non-application noise (202/205 keepalive/timer, or any ApiTypeId outside `ApiTypeValues`) never leaves the device. The upload cursor still advances on the *raw* chunk boundary (not the filtered subset) for these rows, otherwise a chunk that's 100% noise would never advance and the sync loop would refetch it forever.
 - **Watermark never advances past a recoverable unparseable row** (PR #142 review r3611258695, fixed in `fix/sync-watermark-unparseable`): an application-typed row that currently fails Zod validation (e.g. a 309 broken by a PokerChase payload change, see `docs/postmortems/2026-07-session-results-drop.md`) is *not* treated like noise for watermark purposes — `isUnparseableApplicationEvent()` (`src/types/api.ts`) tells them apart by ApiTypeId membership in `ApiTypeValues` alone (not full schema success), since `isApplicationApiEvent` collapses both to `false`. Naively advancing the raw-chunk cursor past such a row is a **permanent loss**, not a delay: once a *later* valid event uploads, Firestore's own max timestamp (`getCloudMaxTimestamp()`) moves past the unparseable row, and every future `.where('timestamp').above(cloudMaxTimestamp)` query excludes it forever — even after a future schema fix makes it parseable, since the raw Lake copy is never re-offered to the query. `AutoSyncService` persists the earliest such row's timestamp in `meta` (`syncUnparseableFloor`) and rewinds each sync's scan floor to just before it until it resolves, re-offering it to `isApplicationApiEvent` (and therefore to upload) on every sync. This can't starve the loop (only rows that structurally *should* eventually parse hold the floor back — known noise still advances immediately) and can't silently lose data (the marker persists across Service Worker restarts and is only cleared once a full scan finds nothing pending). See the tradeoff comment at the top of `AutoSyncService.syncToCloud()` for alternatives considered (never-advance-at-all reintroduces the SPOF-era starvation; uploading unparsed rows as opaque blobs pollutes Firestore's document shape; rebuild-triggered-only re-scan misses the ship-then-sync-before-rebuild race).
 
@@ -620,17 +620,17 @@ Dynamic statistics for all players, with hero having additional hand improvement
 
 Defined in `src/db/poker-chase-db.ts` (Dexie/IndexedDB). See [docs/architecture.md](docs/architecture.md) for design rationale.
 
-#### Tables (v3)
+#### Tables (v6)
 
 | Table | Primary Key | Key Indexes | Purpose |
 |---|---|---|---|
-| `apiEvents` | `[timestamp+ApiTypeId]` | `[ApiTypeId+timestamp]` | Raw WebSocket events — the full Lake (see above), not just application events |
+| `apiEvents` | `[timestamp+ApiTypeId+sequence]` | `[timestamp+ApiTypeId]`, `[ApiTypeId+timestamp]` | Raw WebSocket events — the full Lake (see above), not just application events |
 | `hands` | `id` (auto) | `*seatUserIds`, `approxTimestamp` | Processed hand data |
 | `phases` | `[handId+phase]` | `handId`, `*seatUserIds` | Per-street state |
 | `actions` | `[handId+index]` | `[playerId+phase]`, `[playerId+actionType]`, `*actionDetails` | Player actions with stat markers |
 | `meta` | `id` | `updatedAt` | Import status, stats cache, sync state |
 
-v3 migration added composite indexes for player-specific queries. `MetaRecord` replaced `ImportMeta`. No later version bump was needed to restore full-Lake storage (removing the `creating`/`reading` hooks is not an index change).
+v3 added composite indexes for player-specific queries. v6 changes the Raw Lake primary key to `[timestamp+ApiTypeId+sequence]`. Since IndexedDB cannot change an object-store primary key in place, v4 copies old rows to a staging store with `sequence: 0`, v5 drops the old store, and v6 recreates/copies it transactionally. Existing rows were already unique under the old key, so this is mechanical and does not change `hands`/`phases`/`actions`; `REBUILD_ADVISORY_VERSION` therefore remains 3.
 
 **Storage growth**: `apiEvents` now also durably stores non-application noise (202/205 keepalive/timer events at roughly the same volume as application events per session — expect apiEvents row count to grow, not just its "useful" subset). IndexedDB quota is browser-managed and generally GB-scale (much larger than `storage.local`'s ~10MB), so this is not expected to be a practical problem. There is currently **no automatic pruning** of `apiEvents`: the existing quota-exceeded handling in `src/services/poker-chase-service.ts` (`cleanupOldStorageData`) and `src/utils/database-utils.ts` (`withTransaction`'s `QuotaExceededError` branch) targets `chrome.storage.local` service-state persistence and IndexedDB transaction errors respectively — neither actively prunes `apiEvents` rows. Users can reset via the popup's "全データ削除" if this ever becomes a real problem; revisit with active pruning only if it does.
 
@@ -668,7 +668,7 @@ Key `pokerChaseServiceState` in `storage.local`. Auto-saved with 500ms debounce 
 ### Architecture
 
 - **Service Worker Compatible**: Firebase SDK v12+ with chrome.identity authentication
-- **Data Structure**: `/users/{userId}/apiEvents/{timestamp_ApiTypeId}`
+- **Data Structure**: `/users/{userId}/apiEvents/{timestamp_ApiTypeId}` for sequence 0 (legacy-compatible), `/users/{userId}/apiEvents/{timestamp_ApiTypeId_sequence}` for later rows in the same timestamp/type burst
 - **Sync Strategy**: Incremental upload, full download (cloud as source of truth)
 - **Cost Optimized**: 100+ event threshold, no periodic sync
 - **Application-type-only sync**: unlike local `apiEvents` (the full Raw Event Lake), Firestore only ever receives application-type events that currently parse — `AutoSyncService.syncToCloud()` filters each raw chunk with `isApplicationApiEvent` before upload. Non-application noise (202/205 keepalive/timer) stays local-only; this is a cost decision (Firestore write/storage cost), not a data-loss risk, since the local Lake already has the raw copy and noise is never meant to reach Firestore. Application-typed rows that currently fail to parse are different: they're also excluded from upload, but `AutoSyncService` tracks them separately (`meta.syncUnparseableFloor`) and keeps re-offering them to every future sync instead of letting the watermark pass them by — see "Watermark never advances past a recoverable unparseable row" above.

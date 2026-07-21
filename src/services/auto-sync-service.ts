@@ -12,6 +12,13 @@ import type { ApiEvent } from '../types'
 import { processInChunks, saveEntities, filterValidApplicationEvents } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
 import { isCloudSyncBlockedByMinVersionGate } from './min-version-gate'
+import {
+  API_EVENT_PRIMARY_KEY,
+  compareApiEventKeys,
+  getApiEventSequence,
+  mergeApiEvents,
+  type RawApiEvent
+} from '../utils/api-event-key'
 
 /** Shown in the popup and logged when the min-version gate stops cloud sync (#forced-update). */
 export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます'
@@ -790,9 +797,10 @@ export class AutoSyncService {
     // final value is committed once, after the while-loop below, once every
     // chunk in the pass has been uploaded and confirmed. If the final commit
     // itself is lost to a crash, the next pass harmlessly re-derives and
-    // re-persists the same value (`syncToCloudBatch` upserts by
-    // `${timestamp}_${ApiTypeId}`, so redundantly re-uploading already-synced
-    // rows while re-deriving is just extra write cost, not a correctness bug).
+    // re-persists the same value (`syncToCloudBatch` upserts by the stable
+    // legacy-ID-plus-sequence scheme, so redundantly re-uploading already-
+    // synced rows while re-deriving is just extra write cost, not a
+    // correctness bug).
     //
     // BACKFILL GUARANTEE (r3614189343; broadened by r3614469177, P1, "Seed
     // floors for rows that already parse after upgrade"): this floor did not
@@ -843,10 +851,10 @@ export class AutoSyncService {
     // UPLOAD PAGINATION
     // ==========================================================================
     //
-    // apiEvents' PRIMARY KEY is the compound `[timestamp+ApiTypeId]`
-    // (poker-chase-db.ts), not bare `timestamp` alone -- two raw rows CAN
-    // legitimately share the exact same millisecond with different
-    // ApiTypeId (a burst of near-simultaneous API responses). Every cursor
+    // apiEvents' PRIMARY KEY is the compound `[timestamp+ApiTypeId+sequence]`
+    // (poker-chase-db.ts), not bare `timestamp` alone -- raw rows CAN
+    // legitimately share the exact same millisecond with either different
+    // ApiTypeIds or the same ApiTypeId and different sequence values. Every cursor
     // below (the count, the pass-start cursor, and the per-chunk cursor at
     // the end of the while-loop further down) used to key off bare
     // `timestamp` alone via `.where('timestamp').above(x)`. That is broken
@@ -873,8 +881,9 @@ export class AutoSyncService {
     //     since every future pass's `cloudMaxTimestamp` still reads back
     //     that same millisecond.
     //
-    // FIX: cursor the primary key `[timestamp+ApiTypeId]` end-to-end,
-    // tracking BOTH components between chunks (fixes (a)), and make the
+    // FIX: cursor the primary key `[timestamp+ApiTypeId+sequence]` end-to-end,
+    // tracking all THREE components between chunks (fixes both the original
+    // different-type boundary and same-type burst boundary), and make the
     // PASS-START cursor's ApiTypeId component `ApiTypeIdFloorSentinel` (0) --
     // below every real ApiTypeId (all >= 100; see `ApiTypeValues` /
     // `z.number().int()` in types/api.ts, and the existing `[apiTypeId, 0]`
@@ -885,9 +894,12 @@ export class AutoSyncService {
     //
     // COST: the pass-start inclusivity means the first page may re-examine,
     // and harmlessly re-upload, whatever OTHER row(s) already sit at cloud's
-    // exact watermark millisecond -- Firestore writes are idempotent upserts
-    // keyed by `${timestamp}_${ApiTypeId}` (firestore-backup-service.ts), so
-    // this is a no-op write, not a correctness or growing-cost concern: it's
+    // exact watermark millisecond -- Firestore writes are idempotent upserts.
+    // Sequence 0 deliberately keeps the legacy `${timestamp}_${ApiTypeId}`
+    // document ID; later sequences append `_${sequence}`. Therefore migrated
+    // history rewrites the same old docs while burst rows remain distinct.
+    // Rewriting a sequence-0 row is a no-op write, not a correctness or
+    // growing-cost concern: it's
     // bounded to however many rows tie at that one instant, and the
     // watermark itself advances past it on the next pass that uploads
     // anything newer.
@@ -905,12 +917,13 @@ export class AutoSyncService {
     // tests' asserted `floor` values shift down by 1 accordingly (see
     // auto-sync-service.test.ts).
     const ApiTypeIdFloorSentinel = 0
+    const SequenceFloorSentinel = -1
     const uploadDedupThreshold = scanFloor !== null ? scanFloor - 1 : null
 
     // Count events at-or-newer than the (possibly rewound) scan floor,
     // inclusive of ties at `scanFloor`'s own millisecond (see fix (b) above).
     const totalCount = scanFloor !== null
-      ? await this.db.apiEvents.where('[timestamp+ApiTypeId]').above([scanFloor, ApiTypeIdFloorSentinel]).count()
+      ? await this.db.apiEvents.where(API_EVENT_PRIMARY_KEY).above([scanFloor, ApiTypeIdFloorSentinel, SequenceFloorSentinel]).count()
       : await this.db.apiEvents.count()
 
     if (totalCount === 0) {
@@ -930,11 +943,12 @@ export class AutoSyncService {
     const CHUNK_SIZE = DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
     let processed = 0
     let synced = 0
-    // Compound cursor: BOTH components must track the actual last-processed
+    // Compound cursor: all THREE components must track the actual last-processed
     // row between chunks (see fix (a) above). Starts at `scanFloor`'s own
     // millisecond with the sentinel ApiTypeId (see fix (b) above).
     let lastProcessedTimestamp = scanFloor ?? 0
     let lastProcessedApiTypeId = ApiTypeIdFloorSentinel
+    let lastProcessedSequence = SequenceFloorSentinel
     // Earliest still-unparseable-application timestamp seen across this whole
     // pass (see invariant spec above). Only ever reflects rows that are
     // STILL unparseable as of this pass's scan -- a row that resolved (now
@@ -951,27 +965,27 @@ export class AutoSyncService {
     let persistedFloorValue = pendingUnparseableTimestamp
 
     while (processed < totalCount) {
-      // Get chunk of raw events newer than the compound (timestamp, ApiTypeId)
+      // Get chunk of raw events newer than the compound
+      // (timestamp, ApiTypeId, sequence)
       // cursor. apiEvents is the raw Lake (see docs/architecture.md) — it may
       // contain non-application noise (202/205 keepalive/timer events) that
       // we deliberately never sync to cloud (cost decision: only
-      // application-type events go to Firestore). Cursoring the PRIMARY key
-      // `[timestamp+ApiTypeId]` (not bare `timestamp`) is the P1 fix above --
-      // it is what lets same-millisecond rows survive a CHUNK_SIZE page
-      // boundary instead of one of them being silently, permanently skipped.
+      // application-type events go to Firestore). Cursoring the sequence-bearing
+      // PRIMARY key is what lets same-millisecond,
+      // same-type rows survive a CHUNK_SIZE page boundary.
       const rawChunk = await this.db.apiEvents
-        .where('[timestamp+ApiTypeId]')
-        .above([lastProcessedTimestamp, lastProcessedApiTypeId])
+        .where(API_EVENT_PRIMARY_KEY)
+        .above([lastProcessedTimestamp, lastProcessedApiTypeId, lastProcessedSequence])
         .limit(CHUNK_SIZE)
         .toArray()
 
       if (rawChunk.length === 0) break
 
-      // Sort chunk by the full compound key (timestamp, then ApiTypeId) --
+      // Sort chunk by the full compound key --
       // matches primary-key order already, but sorting explicitly (rather
       // than relying on Dexie's cursor order) keeps same-millisecond ties
       // deterministically ordered regardless of index internals.
-      rawChunk.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0) || (a.ApiTypeId || 0) - (b.ApiTypeId || 0))
+      rawChunk.sort((a, b) => compareApiEventKeys(a as unknown as RawApiEvent, b as unknown as RawApiEvent))
 
       // Application-type-only filter for cloud upload. Deliberately filtered AFTER
       // sorting/tracking the raw chunk's boundary, not before: lastProcessedTimestamp
@@ -1031,7 +1045,8 @@ export class AutoSyncService {
           // row whose timestamp sits below the real cloud max would be
           // filtered back out by syncToCloudBatch's own dedup check,
           // defeating the whole point of rewinding. Firestore writes are
-          // idempotent upserts keyed by `${timestamp}_${ApiTypeId}`, so
+          // idempotent upserts keyed by the backward-compatible sequence
+          // document-ID scheme, so
           // redundantly re-sending already-uploaded rows in
           // [scanFloor, cloudMaxTimestamp] while a marker is pending is safe --
           // just extra write cost, bounded to however much happened since the
@@ -1068,14 +1083,13 @@ export class AutoSyncService {
       processed += rawChunk.length
 
       // Update the compound cursor for next chunk (based on the raw chunk's
-      // actual last row's FULL [timestamp, ApiTypeId] key -- see P1 fix doc
-      // comment above). Tracking ApiTypeId here too is what lets the NEXT
-      // chunk's query correctly resume mid-millisecond instead of skipping
-      // past every row sharing the boundary row's timestamp.
+      // actual last row's FULL [timestamp, ApiTypeId, sequence] key. Tracking
+      // sequence is what lets the next query resume inside a same-type burst.
       const lastRawEvent = rawChunk[rawChunk.length - 1]
       if (lastRawEvent && typeof lastRawEvent.timestamp === 'number') {
         lastProcessedTimestamp = lastRawEvent.timestamp
         lastProcessedApiTypeId = typeof lastRawEvent.ApiTypeId === 'number' ? lastRawEvent.ApiTypeId : ApiTypeIdFloorSentinel
+        lastProcessedSequence = getApiEventSequence(lastRawEvent)
       }
     }
 
@@ -1130,15 +1144,15 @@ export class AutoSyncService {
    * sits at or below the cloud max -- regardless of whether it currently
    * parses. This forces exactly one full reconciliation re-offer of the
    * entire below-watermark history on the next `syncToCloud()` pass.
-   * `syncToCloudBatch`'s Firestore writes are idempotent upserts keyed by
-   * `${timestamp}_${ApiTypeId}`, so re-sending already-uploaded rows is not
-   * a correctness bug, only extra write volume.
+   * `syncToCloudBatch`'s Firestore writes are idempotent upserts keyed by the
+   * stable legacy-ID-plus-sequence scheme, so re-sending already-uploaded
+   * rows is not a correctness bug, only extra write volume.
    *
    * COST (reasoned for a 300k-row install, ~50% application-typed per the
    * Raw Event Lake's documented noise ratio -- CLAUDE.md Design Principles
    * #16 "Storage growth"):
    * - READ side: near-O(1), not O(n). `apiEvents`'s primary key is
-   *   `[timestamp+ApiTypeId]`, so cursoring in that order and taking the
+   *   `[timestamp+ApiTypeId+sequence]`, so cursoring in that order and taking the
    *   FIRST row whose `ApiTypeId` is an application type stops almost
    *   immediately -- it does not get more expensive as the Lake grows, and
    *   does not need `processInChunks` pagination (a single row is fetched).
@@ -1198,7 +1212,8 @@ export class AutoSyncService {
     //
     // BOUNDED, INDEXED SCAN (codex review r3615140413, P2, "Avoid unbounded
     // scans in the V2 backfill"): the original version cursored the PRIMARY
-    // key `[timestamp+ApiTypeId]` with a `.filter()` predicate. Since the
+    // key `[timestamp+ApiTypeId]` (the primary key at the time) with a
+    // `.filter()` predicate. Since the
     // `ApiTypeId` check isn't part of that index's range, Dexie has to walk
     // the cursor row-by-row (can't skip via the index alone) -- and because
     // the query had no upper bound, it could keep cursoring past
@@ -1312,12 +1327,18 @@ export class AutoSyncService {
     console.log('[AutoSync] Starting complete download from cloud...')
 
     let downloadedEvents = 0
+    let addedEvents = 0
 
     try {
       await firestoreBackupService.syncFromCloud({
         onBatch: async (events) => {
-          await this.db.apiEvents.bulkPut(events)
+          // Old-ID documents do not carry sequence; new-ID documents do.
+          // Content-first merge assigns legacy sequence 0, preserves new
+          // sequences when possible, and collapses an old/new document pair
+          // that contains the same payload.
+          const merge = await mergeApiEvents(this.db, events as unknown as RawApiEvent[])
           downloadedEvents += events.length
+          addedEvents += merge.added.length
         },
         onProgress: (progress) => {
           this.updateSyncState({
@@ -1343,7 +1364,7 @@ export class AutoSyncService {
     }
 
     if (downloadedEvents > 0) {
-      console.log(`[AutoSync] Downloaded and updated ${downloadedEvents} events from cloud`)
+      console.log(`[AutoSync] Downloaded ${downloadedEvents} cloud events and added ${addedEvents} new raw rows`)
       await this.rebuildLocalEntities()
     }
   }

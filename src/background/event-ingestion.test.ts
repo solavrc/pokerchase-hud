@@ -6,7 +6,7 @@
  * validation, while only forwarding validated application events into the
  * real-time pipeline (eventLogger + handLogStream/handAggregateStream/
  * realTimeStatsStream). This is the fix for the season-3 data-loss bug: a
- * parse failure used to `return` before ever reaching `db.apiEvents.add()`.
+ * parse failure used to `return` before ever reaching raw persistence.
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
@@ -65,8 +65,8 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     }
     await onMessageHandler(validEvent)
 
-    const stored = await db.apiEvents.get([111, 201])
-    expect(stored).toEqual(validEvent)
+    const stored = await db.apiEvents.get([111, 201, 0])
+    expect(stored).toEqual({ ...validEvent, sequence: 0 })
 
     expect(handLogSpy).toHaveBeenCalledTimes(1)
     expect(aggregateSpy).toHaveBeenCalledTimes(1)
@@ -84,8 +84,8 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     const brokenDealEvent = { ApiTypeId: 303, timestamp: 222 }
     await onMessageHandler(brokenDealEvent)
 
-    const stored = await db.apiEvents.get([222, 303])
-    expect(stored).toEqual(brokenDealEvent)
+    const stored = await db.apiEvents.get([222, 303, 0])
+    expect(stored).toEqual({ ...brokenDealEvent, sequence: 0 })
 
     expect(handLogSpy).not.toHaveBeenCalled()
     expect(aggregateSpy).not.toHaveBeenCalled()
@@ -98,8 +98,8 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     const nonAppEvent = { ApiTypeId: 202, timestamp: 333, Code: 0 }
     await onMessageHandler(nonAppEvent)
 
-    const stored = await db.apiEvents.get([333, 202])
-    expect(stored).toEqual(nonAppEvent)
+    const stored = await db.apiEvents.get([333, 202, 0])
+    expect(stored).toEqual({ ...nonAppEvent, sequence: 0 })
     expect(handLogSpy).not.toHaveBeenCalled()
   })
 
@@ -107,8 +107,8 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     const unknownEvent = { ApiTypeId: 9999, timestamp: 444, SomeFutureField: 'x' }
     await onMessageHandler(unknownEvent)
 
-    const stored = await db.apiEvents.get([444, 9999])
-    expect(stored).toEqual(unknownEvent)
+    const stored = await db.apiEvents.get([444, 9999, 0])
+    expect(stored).toEqual({ ...unknownEvent, sequence: 0 })
   })
 
   test('drop visibility: an app-type parse failure is counted in the dangerous appTypeParseFailed class', async () => {

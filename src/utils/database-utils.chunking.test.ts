@@ -156,6 +156,53 @@ describe('processInChunks (cursor-based pagination over a real Dexie table)', ()
     )
   })
 
+  test('full-key cursor crosses a same-millisecond same-type sequence boundary without skipping or duplicating', async () => {
+    const rows = [
+      { timestamp: 100, ApiTypeId: 304, sequence: 0, marker: 'burst-0' },
+      { timestamp: 100, ApiTypeId: 304, sequence: 1, marker: 'burst-1' },
+      { timestamp: 100, ApiTypeId: 305, sequence: 0, marker: 'next-type' },
+      { timestamp: 101, ApiTypeId: 304, sequence: 0, marker: 'next-ms' }
+    ]
+    await db.apiEvents.bulkAdd(rows as any)
+
+    const chunks: any[][] = []
+    for await (const chunk of processInChunks(db.apiEvents, 1, {
+      afterKey: [100, 304, 0]
+    })) chunks.push(chunk)
+
+    expect(chunks.map(chunk => chunk[0].marker)).toEqual(['burst-1', 'next-type', 'next-ms'])
+  })
+
+  test('same-millisecond same-type events both survive storage and entity derivation', async () => {
+    const events = makeHandEvents(9_999_001, 0)
+    events[2].timestamp = events[1].timestamp
+    for (const event of events) event.sequence = 0
+    events[2].sequence = 1
+    await db.apiEvents.bulkAdd(events)
+
+    const burstRows = await db.apiEvents
+      .where('[timestamp+ApiTypeId]')
+      .equals([events[1].timestamp, 304])
+      .toArray()
+    expect(burstRows).toHaveLength(2)
+
+    const validEvents = await filterValidApplicationEvents(
+      await db.apiEvents.orderBy('[timestamp+ApiTypeId+sequence]').toArray()
+    )
+    const defaultSession: Session = {
+      id: undefined,
+      battleType: undefined,
+      name: undefined,
+      players: new Map(),
+      reset: () => { },
+    }
+    const converter = new EntityConverter(defaultSession)
+    await saveEntities(db, converter.convertEventsToEntities(validEvents))
+
+    expect(await db.hands.count()).toBe(1)
+    expect(await db.actions.count()).toBe(3)
+  })
+
   test('rebuild-shaped: derives entities for ALL raw events across >2x chunk-size boundaries, mirroring AutoSyncService.rebuildLocalEntities', async () => {
     // 5 hands x 5 events = 25 raw events, well over 2x a chunkSize of 10 --
     // the exact shape that would have silently stopped after the first
