@@ -1,5 +1,66 @@
 # Changelog
 
+## [5.2.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v5.1.0...pokerchase-hud-v5.2.0) (2026-07-21)
+
+
+### Features
+
+* **db:** restore raw event Lake, remove apiEvents hook-based filtering ([#135](https://github.com/solavrc/pokerchase-hud/issues/135)) ([48f6738](https://github.com/solavrc/pokerchase-hud/commit/48f6738e39e44ccd3bd1ecbf9042913411f0fa42))
+* **e2e:** AI-agent-drivable E2E QA harness with WS replay ([#132](https://github.com/solavrc/pokerchase-hud/issues/132)) ([2faf956](https://github.com/solavrc/pokerchase-hud/commit/2faf95638dbf88899fa161a21fb19f98fcfe9192))
+* **hud:** add session-start fallback trigger for auto-sync ([#142](https://github.com/solavrc/pokerchase-hud/issues/142)) ([706f94c](https://github.com/solavrc/pokerchase-hud/commit/706f94c38c2929737978bb6d1868f1eee3b65f53))
+* **hud:** compact display mode with color-coded stats and stat tooltips ([#143](https://github.com/solavrc/pokerchase-hud/issues/143)) ([1ee093b](https://github.com/solavrc/pokerchase-hud/commit/1ee093bb2d21f0ba5e44c5042e2edc13c6f8d002))
+* **hud:** HM-style player-type classification icons with whale override ([#146](https://github.com/solavrc/pokerchase-hud/issues/146)) ([06c1d8a](https://github.com/solavrc/pokerchase-hud/commit/06c1d8a345dd1c9f26105a8291305e0338328b3d))
+* **hud:** keep busted players' stats dimmed until seat turnover or session end ([#179](https://github.com/solavrc/pokerchase-hud/issues/179)) ([3c34150](https://github.com/solavrc/pokerchase-hud/commit/3c34150bac38e2f4e89aec6dc993e62a1cc3a9fe))
+* **hud:** per-player recent hands panel with revealed hole cards ([#160](https://github.com/solavrc/pokerchase-hud/issues/160)) ([fd30576](https://github.com/solavrc/pokerchase-hud/commit/fd3057653a7bd2b4cd9375605ed46221c613a6c5))
+* **hud:** positional stat drill-down panel ([#128](https://github.com/solavrc/pokerchase-hud/issues/128)) ([2f6d44b](https://github.com/solavrc/pokerchase-hud/commit/2f6d44bdb608e9cb712e9c496c4913fe389981aa))
+* **hud:** render hero stats before the first deal ([#158](https://github.com/solavrc/pokerchase-hud/issues/158)) ([4246a45](https://github.com/solavrc/pokerchase-hud/commit/4246a452ffcb154d891c7dad11ffefdb6effea39))
+* **hud:** surface undecoded-event (drop) counts in the popup ([#141](https://github.com/solavrc/pokerchase-hud/issues/141)) ([591471e](https://github.com/solavrc/pokerchase-hud/commit/591471ef41b031ef2135bc7ebc487241ada58c18))
+* **popup:** per-version what's-new section with post-update badge ([#172](https://github.com/solavrc/pokerchase-hud/issues/172)) ([591c3eb](https://github.com/solavrc/pokerchase-hud/commit/591c3eb764389d94b91f330205f67899fa5017f7))
+* **popup:** redesigned settings UI with dark-felt and light themes ([#145](https://github.com/solavrc/pokerchase-hud/issues/145)) ([ba03d3a](https://github.com/solavrc/pokerchase-hud/commit/ba03d3a1580f5ff9c9f0f90a83ab637a3e978d0d))
+* **popup:** what's-new entries for all past releases ([#183](https://github.com/solavrc/pokerchase-hud/issues/183)) ([b97ca00](https://github.com/solavrc/pokerchase-hud/commit/b97ca007388f3a5942c528fc2c51506403b91f32))
+* **stats:** VPIP·F full-table-layer VPIP variant (opt-in) ([#130](https://github.com/solavrc/pokerchase-hud/issues/130)) ([2446e21](https://github.com/solavrc/pokerchase-hud/commit/2446e21852ad489f9ea95ac75d36b34ecd21cc6a))
+* **ui:** table-size (players-dealt) filter for HUD stats ([#131](https://github.com/solavrc/pokerchase-hud/issues/131)) ([25ef220](https://github.com/solavrc/pokerchase-hud/commit/25ef22054e2781b7a218b965cc949a85e1b391fb))
+* **update:** auto-apply updates in safe windows with remote min-version gate ([#150](https://github.com/solavrc/pokerchase-hud/issues/150)) ([5f70f2a](https://github.com/solavrc/pokerchase-hud/commit/5f70f2a654ce8f5b897bc8ab8b143d4340c1c6ef))
+
+
+### Bug Fixes
+
+* **auth:** close auto-sync init race and token-refresh ABA hole ([#198](https://github.com/solavrc/pokerchase-hud/issues/198)) ([a44fdaa](https://github.com/solavrc/pokerchase-hud/commit/a44fdaad766f402045146d68dde499e64d3903f8))
+* **content:** restore background port after disconnect ([#156](https://github.com/solavrc/pokerchase-hud/issues/156)) ([250b0ca](https://github.com/solavrc/pokerchase-hud/commit/250b0ca170f3e06fe762fbf4e7c54285f02e95a3))
+* **db:** cursor-based pagination in processInChunks (release blocker) ([#195](https://github.com/solavrc/pokerchase-hud/issues/195)) ([2ba82c0](https://github.com/solavrc/pokerchase-hud/commit/2ba82c099561f94b8ec2f66d14b04ea370dabf89))
+* **db:** sequence keys for same-millisecond API events ([#211](https://github.com/solavrc/pokerchase-hud/issues/211)) ([92370b7](https://github.com/solavrc/pokerchase-hud/commit/92370b7c9413443a72705179f25bfeba0debb406))
+* **deps:** remove unused Firebase SDK ([#154](https://github.com/solavrc/pokerchase-hud/issues/154)) ([3f34210](https://github.com/solavrc/pokerchase-hud/commit/3f3421023e52c36826f101f52f183188fe6ac9a7))
+* **deps:** update material-ui ecosystem to v9 ([#171](https://github.com/solavrc/pokerchase-hud/issues/171)) ([3d16e45](https://github.com/solavrc/pokerchase-hud/commit/3d16e450c51035c1386543514a92767179e685fd))
+* **docs,e2e:** resolve merged-PR audit findings ([#180](https://github.com/solavrc/pokerchase-hud/issues/180)) ([5273a63](https://github.com/solavrc/pokerchase-hud/commit/5273a635cf3ecb796729ae05f1cb8eecc2b420ef))
+* **e2e:** game-realistic 1920x1080 default viewport for QA harness ([#133](https://github.com/solavrc/pokerchase-hud/issues/133)) ([4408057](https://github.com/solavrc/pokerchase-hud/commit/44080576cd5406b2fa0fc436d5894e00413f4dac))
+* **e2e:** keep compositor alive so screenshots survive idle pages ([#148](https://github.com/solavrc/pokerchase-hud/issues/148)) ([1a33af1](https://github.com/solavrc/pokerchase-hud/commit/1a33af1ff169357d38118def4d010a690cb6a7e7))
+* **e2e:** use the standard puppeteer cache dir for Chrome for Testing ([#193](https://github.com/solavrc/pokerchase-hud/issues/193)) ([5f79328](https://github.com/solavrc/pokerchase-hud/commit/5f79328b6b453bd4c875e844e0bc649d29bd7853))
+* **export:** replace inert offscreen keepalive ([#155](https://github.com/solavrc/pokerchase-hud/issues/155)) ([ac5098a](https://github.com/solavrc/pokerchase-hud/commit/ac5098ae1b388aa7a6f4c41a3f529a321a7e5ed8))
+* **export:** verified download handoffs, honest sync outcomes, correct import accounting ([#199](https://github.com/solavrc/pokerchase-hud/issues/199)) ([6ae302f](https://github.com/solavrc/pokerchase-hud/commit/6ae302f659855ef6059b877b3034938f2e33e94f))
+* **hud:** descope busted-player dim to the uninterrupted live sequence ([#191](https://github.com/solavrc/pokerchase-hud/issues/191)) ([56b5115](https://github.com/solavrc/pokerchase-hud/commit/56b5115bbf32922baa12be8315b4b041bcd65fe4))
+* **hud:** hand-completion epoch invalidation for positional/recent-hands panels ([#200](https://github.com/solavrc/pokerchase-hud/issues/200)) ([404ab97](https://github.com/solavrc/pokerchase-hud/commit/404ab9731062e0b0195e3c78262af6967ae27ce0))
+* **hud:** infer hero playerId from DB for pre-game stats ([#175](https://github.com/solavrc/pokerchase-hud/issues/175)) ([b16342d](https://github.com/solavrc/pokerchase-hud/commit/b16342de20ec460a1aa443e77e5915c5ee4e75ac))
+* **hud:** make hand log entry ids collision-free so in-progress hand lines are not silently dropped ([#208](https://github.com/solavrc/pokerchase-hud/issues/208)) ([a59b8d7](https://github.com/solavrc/pokerchase-hud/commit/a59b8d707126cfa5c351eb8a7d405d96dd6f0a0e))
+* **import:** always exit batch mode ([#157](https://github.com/solavrc/pokerchase-hud/issues/157)) ([005a214](https://github.com/solavrc/pokerchase-hud/commit/005a214dc65da170c81b929d05f10c316e93d571))
+* **import:** enforce operation exclusivity ([#153](https://github.com/solavrc/pokerchase-hud/issues/153)) ([553bbc5](https://github.com/solavrc/pokerchase-hud/commit/553bbc5eaa00bc30d6cfc144bcb7563a7f6ef41c))
+* **import:** full derived-data rebuild after overlapping imports ([#207](https://github.com/solavrc/pokerchase-hud/issues/207)) ([93f717d](https://github.com/solavrc/pokerchase-hud/commit/93f717d36db782e6d48de67d8ed4db47c2ae21d5))
+* **import:** surface rejected import requests ([#159](https://github.com/solavrc/pokerchase-hud/issues/159)) ([4a6a599](https://github.com/solavrc/pokerchase-hud/commit/4a6a599ef21ea8d765329bad57bffa138d772243))
+* **ingestion:** durability barrier and robust session-activity detection (release blocker) ([#196](https://github.com/solavrc/pokerchase-hud/issues/196)) ([be38df1](https://github.com/solavrc/pokerchase-hud/commit/be38df18715199b4e88a5dc239198e3d80733aed))
+* **popup:** eliminate white flash before first paint ([#151](https://github.com/solavrc/pokerchase-hud/issues/151)) ([77bbad8](https://github.com/solavrc/pokerchase-hud/commit/77bbad8c2092e851fd85ee98ea72d30b222bedf2))
+* **popup:** explicit filter captions, intuitive stat descriptions, section reorder ([#149](https://github.com/solavrc/pokerchase-hud/issues/149)) ([45e3884](https://github.com/solavrc/pokerchase-hud/commit/45e3884f01654577f732467f424fa63920bb982f))
+* **popup:** render before sync theme lookup ([#152](https://github.com/solavrc/pokerchase-hud/issues/152)) ([ec67106](https://github.com/solavrc/pokerchase-hud/commit/ec6710664cc66a0834660b6bd005c7bde8bebd73))
+* **popup:** rewrite what's-new copy for end users ([#176](https://github.com/solavrc/pokerchase-hud/issues/176)) ([1f3f614](https://github.com/solavrc/pokerchase-hud/commit/1f3f6143d2fb1d22abe115367b9aa5c1ef98dd89))
+* **schema:** accept season3/Legend Match EVT_SESSION_RESULTS payload ([#134](https://github.com/solavrc/pokerchase-hud/issues/134)) ([2d57ec0](https://github.com/solavrc/pokerchase-hud/commit/2d57ec0b203c1d19a7f33b083893766c60bd0ef0))
+* **service:** preserve hero playerId across session end and SW restarts ([#177](https://github.com/solavrc/pokerchase-hud/issues/177)) ([c169998](https://github.com/solavrc/pokerchase-hud/commit/c169998ad75c901559e03b32a93f343e0fee18bf))
+* **service:** seated-deal guard for rebuild; consistent lineup pairing for spectator recalc ([#188](https://github.com/solavrc/pokerchase-hud/issues/188)) ([ac5b16c](https://github.com/solavrc/pokerchase-hud/commit/ac5b16c17818e42eb8a69ec5ee3322931f9b4ad5))
+* **stats:** count DEAL_ROUND-omitted preflop all-ins as flops seen in WTSD/WWSF ([#184](https://github.com/solavrc/pokerchase-hud/issues/184)) ([65bb9e0](https://github.com/solavrc/pokerchase-hud/commit/65bb9e0e8514f5a75daeb31042f1a7e7b1a9411d))
+* **sync:** compound-key upload pagination (release blocker) ([#197](https://github.com/solavrc/pokerchase-hud/issues/197)) ([9fbfa1e](https://github.com/solavrc/pokerchase-hud/commit/9fbfa1ed676c2c82baf5ba6bc9b3719d873df42f))
+* **sync:** floor seeding for recovered rows and eager earlier-floor persistence ([#194](https://github.com/solavrc/pokerchase-hud/issues/194)) ([9087d3f](https://github.com/solavrc/pokerchase-hud/commit/9087d3fbdfc827982502dcf73901b93f6cbb6fa7))
+* **sync:** never advance cloud watermark past recoverable unparseable events ([#182](https://github.com/solavrc/pokerchase-hud/issues/182)) ([1f8ca98](https://github.com/solavrc/pokerchase-hud/commit/1f8ca98e38b9d54dc43e79f512363b213535673e))
+* **sync:** per-account bookkeeping integrity with auth-generation gating ([#192](https://github.com/solavrc/pokerchase-hud/issues/192)) ([4b02f23](https://github.com/solavrc/pokerchase-hud/commit/4b02f237668fc3dcabbf9386f522c1d021a5cea8))
+* **sync:** surface rebuild failures and harden Firestore transport ([#202](https://github.com/solavrc/pokerchase-hud/issues/202)) ([caf7909](https://github.com/solavrc/pokerchase-hud/commit/caf790998ff6882c98ed0b74cee10cda618215cb))
+* **update:** audit findings — raw 309 recheck, export-safe reload, idempotent alarm ([#181](https://github.com/solavrc/pokerchase-hud/issues/181)) ([1771229](https://github.com/solavrc/pokerchase-hud/commit/177122902f069cdbc71fd36969118a7967043efe))
+
 ## [5.1.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v5.0.0...pokerchase-hud-v5.1.0) (2026-07-18)
 
 
