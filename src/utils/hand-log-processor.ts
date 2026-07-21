@@ -13,6 +13,11 @@ import { formatCards } from './card-utils'
 // 定数定義
 const MAX_SEATS = 6 // PokerChaseの6人テーブル
 
+// HandLogProcessorインスタンス生成順を表すモジュールレベル単調カウンタ。
+// 同一ミリ秒内に複数インスタンスが生成されても（Date.now()だけでは衝突しうる）、
+// createEntry()が発行するidが過去インスタンス分と衝突しないことを保証するために使う。
+let handLogProcessorInstanceCounter = 0
+
 export interface HandLogContext {
   session: Session
   handLogConfig?: HandLogConfig
@@ -29,9 +34,17 @@ export class HandLogProcessor {
   private _anteAllInChipsMap: Map<number, number> | null = null
   private _anteAllInContribTiers: number[] | null = null
   private _anteAllInSeats: number[] | null = null
+  // インスタンス固有のnonce（createEntry()のid生成に使用）。
+  // 生成時刻 + モジュールレベル単調カウンタで構成し、SWリロードやセッション終了で
+  // HandLogProcessorが再生成された後でも、過去インスタンスが発行したidと衝突しない。
+  private readonly instanceNonce: string
+  // インスタンス内でcreateEntry()が呼ばれるたびに増加する連番。ハンド境界をまたいでも
+  // リセットしない（id一意性はインスタンスの生存期間全体で保証する）。
+  private entrySeq = 0
 
   constructor(context: HandLogContext) {
     this.context = context
+    this.instanceNonce = `${Date.now().toString(36)}_${(handLogProcessorInstanceCounter++).toString(36)}`
     // 外部から firstHandId が渡された場合はそれを使用（エクスポーター用）
     if (context.firstHandId) {
       this.firstHandId = context.firstHandId
@@ -812,11 +825,17 @@ export class HandLogProcessor {
 
   private createEntry(text: string, type: HandLogEntryType): HandLogEntry {
     const timestamp = Date.now()
-    // コンテンツとハンド内の位置に基づいたより決定的なIDを作成
-    // これにより、同じイベントが複数回処理されたときの重複を防ぐ
-    const handPosition = this.currentHand?.entries.length || 0
-    const contentHash = this.hashString(text)
-    const uniqueId = `hand_${this.currentHand?.handId || 'pending'}_pos_${handPosition}_${contentHash}`
+    // idは衝突不可能な一意識別子であり、内容や位置とは無関係に発行する
+    // （インスタンスnonce + インスタンス内連番）。
+    // 「同一イベントが複数回処理されたときの重複防止」はここでは扱わない
+    // ——それはingestion側のRaw Event Lake dedup（src/background/event-ingestion.ts,
+    // PR #196）が真の重複イベントをスキップする形で担っている。以前はcreateEntry()の
+    // id自体をコンテンツ/位置ベースにしてその役割を代替しようとしていたが、
+    // EVT_DEALバッチ内の全エントリが同一position(0)で生成されるため、
+    // ハンド完了後もidが再生成されずhandIdだけ差し替わる結果、後続ハンドの
+    // 同一テキスト・同一position行（アンテ行、*** HOLE CARDS ***等）がApp.tsx側の
+    // idベースdedupで誤って捨てられていた（進行中ハンドの行が黙って消えるバグ）。
+    const uniqueId = `hle_${this.instanceNonce}_${this.entrySeq++}`
     return {
       id: uniqueId,
       handId: this.currentHand?.handId,
@@ -825,18 +844,6 @@ export class HandLogProcessor {
       type
     }
   }
-
-  private hashString(str: string): string {
-    // 一貫したIDを作成するためのシンプルなハッシュ関数
-    let hash = 0
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i)
-      hash = ((hash << 5) - hash) + char
-      hash = hash & hash // 32ビット整数に変換
-    }
-    return Math.abs(hash).toString(36)
-  }
-
 
   private getShowdownOrder(_results: any[], playersWithCards: any[]): any[] {
     // Get last aggressive action from current hand entries

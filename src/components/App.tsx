@@ -505,7 +505,10 @@ const App = memo(() => {
       case "add":
         if (handLogEvent.entries) {
           setHandLogEntries((prev) => {
-            // IDで重複エントリをチェック
+            // 同一entryオブジェクトの再送に対するガード（idはHandLogProcessorが
+            // インスタンスnonce+連番で発行する衝突不可能な値なので、正当な新規行が
+            // ここで誤って捨てられることはない）。イベント自体の重複処理防止は
+            // ingestion側のRaw Event Lake dedup（background/event-ingestion.ts）が担う。
             const existingIds = new Set(prev.map((e) => e.id))
             const newEntries = handLogEvent.entries!.filter(
               (e) => !existingIds.has(e.id)
