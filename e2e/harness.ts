@@ -38,11 +38,9 @@ export interface LaunchOptions {
   viewport?: Viewport
   /**
    * Query string (no leading `?`) appended to the initial fixture page
-   * navigation, e.g. `'heroCards=Qd4h&heroLabel=' + encodeURIComponent('Q4 オフスート')`
-   * to override `table-backdrop.js`'s configurable hero-card params for a
-   * fixture whose actual dealt hero hand differs from the backdrop's
-   * default (see e2e/.build/capture-table-backdrop.ts, which needs this
-   * for the gitignored 400-hand fixture). Omit to navigate to the fixture
+   * navigation, e.g. `'backdrop=1'` to opt into the real-gameplay table
+   * backdrop (off by default) -- see `table-backdrop.js`'s module doc
+   * comment for the params it reads. Omit to navigate to the fixture
    * server's origin unchanged (served as fixture.html).
    */
   fixtureQuery?: string
