@@ -38,6 +38,7 @@ import { runPipeline } from './verify-stats/pipeline'
 import { runOracle } from './verify-stats/oracle'
 import { compareResults, formatReport } from './verify-stats/compare'
 import { filterValidApplicationEvents } from '../utils/database-utils'
+import { getApiEventContentIdentity, type RawApiEvent } from '../utils/api-event-key'
 import type { ApiEvent } from '../types'
 
 interface CliOptions {
@@ -73,27 +74,27 @@ function parseArgs(argv: string[]): CliOptions {
 
 async function readNdjson(filePath: string): Promise<ApiEvent[]> {
   const rawEvents: unknown[] = []
-  // 実際のインポート経路（src/background/import-export.ts）は apiEvents の主キー
-  // [timestamp+ApiTypeId] に基づき `${timestamp}-${ApiTypeId}` キーの先勝ちで
-  // 重複イベントを除外してから EntityConverter に渡す。ハーネスも同じ前処理を
-  // 行わないと、キャプチャ内の重複イベント（例: 同一 EVT_ACTION の二重記録）が
-  // 製品では起こらない統計差分を生む（実データで cbet 1 件の偽性不一致を確認）。
-  const seenKeys = new Set<string>()
+  // 実際のインポート経路（src/background/import-export.ts）は sequence を除いた
+  // payload 全体の同一性で reconnect resend / 再インポートを除外する。同じ
+  // timestamp+ApiTypeId でも payload が異なるイベントは、sequence を割り当てて
+  // 両方を保存する。ハーネスも同じ前処理を行わないと、キャプチャ内の真の重複
+  // （例: 同一 EVT_ACTION の二重記録）が製品では起こらない統計差分を生む。
+  const seenContent = new Set<string>()
   let duplicateCount = 0
   const rl = createInterface({ input: createReadStream(filePath), crlfDelay: Infinity })
   for await (const line of rl) {
     if (!line.trim()) continue
     const event = JSON.parse(line)
-    const key = `${event.timestamp}-${event.ApiTypeId}`
-    if (seenKeys.has(key)) {
+    const identity = getApiEventContentIdentity(event as RawApiEvent)
+    if (seenContent.has(identity)) {
       duplicateCount++
       continue
     }
-    seenKeys.add(key)
+    seenContent.add(identity)
     rawEvents.push(event)
   }
   if (duplicateCount > 0) {
-    console.log(`Skipped ${duplicateCount} duplicate event(s) ([timestamp+ApiTypeId] first-wins, mirroring the import path)`)
+    console.log(`Skipped ${duplicateCount} content-identical duplicate event(s) (mirroring the import path)`)
   }
   // ファイルは Raw Event Lake の生ダンプたり得る（docs/architecture.md）: 202/205
   // keepalive、未知の ApiTypeId、スキーマ検証に失敗したアプリケーションイベントを

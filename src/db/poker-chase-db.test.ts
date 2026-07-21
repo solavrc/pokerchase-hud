@@ -9,8 +9,11 @@
  * physically stored while invisible. This suite locks in that both hooks are
  * gone: whatever is written is exactly what comes back on read.
  */
+import Dexie from 'dexie'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { PokerChaseDB } from './poker-chase-db'
+import { API_EVENT_PRIMARY_KEY } from '../utils/api-event-key'
+import { processInChunks } from '../utils/database-utils'
 
 describe('PokerChaseDB Raw Event Lake', () => {
   let db: PokerChaseDB
@@ -25,8 +28,8 @@ describe('PokerChaseDB Raw Event Lake', () => {
     await db.delete()
   })
 
-  it('stays on database version 3 (no index change was needed to remove the hooks)', () => {
-    expect(db.verno).toBe(3)
+  it('uses database version 6 for the staged primary-key migration', () => {
+    expect(db.verno).toBe(6)
   })
 
   it('stores and reads back a known non-application event (202) unfiltered', async () => {
@@ -37,7 +40,7 @@ describe('PokerChaseDB Raw Event Lake', () => {
     expect(stored).toHaveLength(1)
     expect(stored[0]).toEqual(nonAppEvent)
 
-    const byKey = await db.apiEvents.get([123, 202])
+    const byKey = await db.apiEvents.get([123, 202, 0])
     expect(byKey).toEqual(nonAppEvent)
   })
 
@@ -68,8 +71,51 @@ describe('PokerChaseDB Raw Event Lake', () => {
     ]
     await db.apiEvents.bulkAdd(events as any)
 
-    const stored = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
+    const stored = await db.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).toArray()
     expect(stored).toHaveLength(4)
     expect(stored.map((e: any) => e.ApiTypeId)).toEqual([201, 202, 9999, 303])
   })
+})
+
+describe('PokerChaseDB v3 -> v6 apiEvents sequence-key migration', () => {
+  afterEach(async () => {
+    const cleanup = new PokerChaseDB(indexedDB, IDBKeyRange)
+    await cleanup.delete()
+  })
+
+  test('migrates every old-key row intact with sequence 0 and keeps cursor pagination usable', async () => {
+    const legacy = new Dexie('PokerChaseDB', { indexedDB, IDBKeyRange })
+    legacy.version(3).stores({
+      apiEvents: '[timestamp+ApiTypeId],timestamp,ApiTypeId,[ApiTypeId+timestamp]',
+      hands: 'id,*seatUserIds,*winningPlayerIds,approxTimestamp',
+      phases: '[handId+phase],handId,*seatUserIds,phase',
+      actions: '[handId+index],handId,playerId,phase,actionType,*actionDetails,[playerId+phase],[playerId+actionType]',
+      meta: 'id,updatedAt'
+    })
+    await legacy.open()
+    // Cross the production migration's 5,000-row copy boundary so both
+    // staging directions exercise their cursor-resume path.
+    const oldRows = Array.from({ length: 5002 }, (_, index) => ({
+      timestamp: 100 + index,
+      ApiTypeId: 202,
+      Code: 0,
+      marker: `row-${index}`
+    }))
+    await legacy.table('apiEvents').bulkAdd(oldRows)
+    legacy.close()
+
+    const migrated = new PokerChaseDB(indexedDB, IDBKeyRange)
+    await migrated.open()
+
+    expect(migrated.verno).toBe(6)
+    const stored = await migrated.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).toArray() as any[]
+    expect(stored).toEqual(oldRows.map(row => ({ ...row, sequence: 0 })))
+
+    const chunks: any[][] = []
+    for await (const chunk of processInChunks(migrated.apiEvents, 2000)) chunks.push(chunk)
+    expect(chunks.map(chunk => chunk.length)).toEqual([2000, 2000, 1002])
+    expect(chunks.flat().map(row => row.marker)).toEqual(oldRows.map(row => row.marker))
+
+    migrated.close()
+  }, 15_000)
 })

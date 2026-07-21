@@ -23,7 +23,7 @@
     いなかった**（非アプリケーションイベントは静かに物理保存されたまま、
     `reading`フックが読み取り結果からnullとして除外することで見えなくしていた）。
   - より深刻な問題: `event-ingestion.ts`/`import-export.ts`側で
-    Zodパース失敗時に`db.apiEvents.add()`を呼ぶ前に`return`していたため、
+    Zodパース失敗時にraw保存処理を呼ぶ前に`return`していたため、
     **パースに失敗したイベントはそもそも保存されていなかった**。PokerChase側の
     ペイロード仕様変更でスキーマ検証が壊れた場合（2026年シーズン3の
     `EVT_SESSION_RESULTS`）、そのイベント種別のデータは月単位で完全に失われ、
@@ -35,12 +35,27 @@
   discardされていたこと）を修正した。
 
 ### 保存とパイプライン投入の分離
-| 判定 | 保存（`apiEvents.add`） | パイプライン投入（ストリーム/EntityConverter） |
+| 判定 | 保存（content dedup + sequence採番） | パイプライン投入（ストリーム/EntityConverter） |
 |---|---|---|
 | `timestamp`/`ApiTypeId`が数値でない | ✗ 不可（キーが作れない） | ✗ |
 | 数値だがZodパース失敗（未知の`ApiTypeId`含む） | ✓ 生のまま保存 | ✗（`console.warn`のみ） |
 | パース成功・非アプリケーションイベント（202/205等） | ✓ 保存 | ✗（`console.info`のみ） |
 | パース成功・アプリケーションイベント | ✓ 保存 | ✓ |
+
+### `apiEvents` sequence key と重複判定
+
+主キーは`[timestamp+ApiTypeId+sequence]`（DB v6）。`Date.now()`由来の
+`timestamp`とイベント種別が同一でも、payloadが異なるイベントには同じ組内で
+0から単調増加する`sequence`を割り当て、全行を保持する。`[timestamp+ApiTypeId]`は
+重複し得る二次インデックスとして残し、content dedupとsequence採番を一つのDexie
+transactionで行う。reconnect resendの判定はトップレベルの`sequence`を除く
+canonical payload全体の一致であり、時刻と種別だけでは重複とみなさない。
+
+IndexedDBは既存object storeの主キーを直接変更できないため、v3→v6はv4で全行を
+一時storeへ`sequence: 0`付きでコピーし、v5で旧storeを削除、v6で新主キーのstoreへ
+戻す。versionchange transaction内で完結し、旧主キー下では既存行が一意なので
+機械的な移行である。`hands`/`phases`/`actions`のキーや導出結果は変わらないため、
+`REBUILD_ADVISORY_VERSION`は3のままで追加再構築を要求しない。
 
 ### リビルド = 復旧経路
 `rebuildAllData`（`src/background/import-export.ts`）は`apiEvents`の全行を
@@ -76,7 +91,7 @@ Raw Event Lakeに既に生のまま残っている。
 ## 1. データストレージ: Dexie.js (IndexedDB)
 
 ### 採用理由
-- 複合インデックス（`[timestamp+ApiTypeId]`）とマルチエントリインデックス（`*seatUserIds`）のネイティブサポート
+- 複合主キー（`[timestamp+ApiTypeId+sequence]`）、複合インデックス（`[timestamp+ApiTypeId]`）とマルチエントリインデックス（`*seatUserIds`）のネイティブサポート
 - 効率的なバルク操作（`bulkPut`、`bulkAdd`）
 - TypeScript型安全性
 - 88KB、v4.0.4 安定版
@@ -111,13 +126,23 @@ Raw Event Lakeに既に生のまま残っている。
 
 ### データ構造
 ```
-/users/{userId}/apiEvents/{timestamp_ApiTypeId}
+/users/{userId}/apiEvents/{timestamp_ApiTypeId}            # sequence 0
+/users/{userId}/apiEvents/{timestamp_ApiTypeId_sequence}   # sequence > 0
 ```
 
 ### 採用理由
 - シンプルな単一コレクション、タイムスタンプによる増分同期
 - BigQuery 直接エクスポート対応
 - 処理ロジックをローカルで自由に更新可能
+
+sequence 0が従来のdocument IDを維持するため、既にアップロード済みの履歴を
+別documentとして再送しない。新クライアントは旧ID document（`sequence`なし）を
+`sequence: 0`として取り込み、新ID documentはsuffixと保存フィールドのsequenceで
+別行として取り込む。移行期間中の旧クライアントは新ID document自体のdecodeでは
+例外にならないが、旧ローカル主キーでは同一timestamp/typeの二行を表現できず、
+download時に片方だけが残る。旧クライアントがsequence>0 documentを上書きすることは
+ないものの、そのローカル表示・派生データは欠落し得る。remote min-version gate / Forced
+Updateで併存期間を短くするが、この一時的な旧クライアント側欠落が残余リスクである。
 
 ### 却下した選択肢
 | 選択肢 | 却下理由 |

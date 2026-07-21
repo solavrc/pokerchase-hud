@@ -115,10 +115,10 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     expect(service.playerId).toBe(HERO_ID)
     // latestEvtDeal (persisted, hero-anchored context) is the last SEATED
     // deal -- the spectator tail never reaches it.
-    expect(service.latestEvtDeal).toEqual(SEATED_DEAL)
+    expect(service.latestEvtDeal).toEqual({ ...SEATED_DEAL, sequence: 0 })
     // The latestEvtDeal setter syncs liveEvtDeal too (poker-chase-service.ts)
     // -- the spectator tail is ignored outright, not fed to either field.
-    expect(service.liveEvtDeal).toEqual(SEATED_DEAL)
+    expect(service.liveEvtDeal).toEqual({ ...SEATED_DEAL, sequence: 0 })
   })
 
   test('control: a cloud download ending on a seated deal still restores it as before', async () => {
@@ -133,7 +133,7 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     await autoSyncService.performSync('download')
 
     expect(service.playerId).toBe(HERO_ID)
-    expect(service.latestEvtDeal).toEqual(laterSeatedDeal)
-    expect(service.liveEvtDeal).toEqual(laterSeatedDeal)
+    expect(service.latestEvtDeal).toEqual({ ...laterSeatedDeal, sequence: 0 })
+    expect(service.liveEvtDeal).toEqual({ ...laterSeatedDeal, sequence: 0 })
   })
 })

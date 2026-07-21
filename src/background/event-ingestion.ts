@@ -1,5 +1,4 @@
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
-import Dexie from 'dexie'
 import PokerChaseService, {
   ApiType,
   ApiMessage,
@@ -9,11 +8,11 @@ import PokerChaseService, {
   getValidationError,
   isApplicationApiEvent
 } from '../app'
-import type { ApiEvent } from '../app'
 import { autoSyncService } from '../services/auto-sync-service'
 import { connectedPorts, startPortPing, setLastKnownStats } from './ports'
 import { recordUndecodedEvent } from './undecoded-event-tracker'
 import { markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
+import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
 
 /**
  * 参加取消申込（ApiTypeId 203）。`ApiType` enum（アプリケーションで使用する
@@ -55,10 +54,10 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   //       無い」というRaw Event Lakeの不変条件違反（CLAUDE.md「Raw Event
   //       Lake」/ "Storage happens *before* the validation gate" 参照）が
   //       起こりうる
-  //   (2) 重複キー失敗（同一(timestamp, ApiTypeId)が既に保存済み）の場合、
-  //       そのイベントは初回処理時に既にストリーム/セッションフックを一度
-  //       通過済みのはずなのに、ここでも投入してしまうと二重処理になる
-  //   (3) add()のトランザクションが確定する前にreloadでService Workerが
+  //   (2) reconnect再送（同一payloadが既に保存済み）の場合、そのイベントは
+  //       初回処理時に既にストリーム/セッションフックを一度通過済みのはず
+  //       なのに、ここでも投入してしまうと二重処理になる
+  //   (3) raw mergeのトランザクションが確定する前にreloadでService Workerが
   //       巻き込まれ、書き込みが失われる恐れがある
   // という3つの安全性違反を起こしうる。
   //
@@ -131,22 +130,6 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
       })
     }
   })
-}
-
-/**
- * ペイロードが構造的に同一かどうかの簡易比較。生イベントはmsgpackデコード後の
- * 素朴なJSON互換オブジェクトであり、暗号学的な保証は不要な用途（同一
- * (timestamp, ApiTypeId)への再到着が「本当に同じイベントの再送か」を見分ける
- * だけ）のため、JSON.stringifyによる構造比較で十分とする（フィールド順序が
- * 変わりうる別経路からの再構築物を比較する用途ではないため、キー順序依存の
- * 弱さは実害にならない）。
- */
-const isSamePayload = (a: unknown, b: unknown): boolean => {
-  try {
-    return JSON.stringify(a) === JSON.stringify(b)
-  } catch {
-    return false
-  }
 }
 
 /**
@@ -238,97 +221,31 @@ const processEvent = async (
   // 再構築で復旧可能になる（2026年シーズン3のEVT_SESSION_RESULTS破壊的変更で
   // 実際にデータが失われた反省による）。
   if (validateMessage(message).success) {
-    // Dexieの型はApiEvent（既知スキーマ）を想定しているが、Lakeとして未検証・
-    // 未知のApiTypeIdの生イベントも意図的に保存するためアサーションが必要。
-    // ここを`await`し、決着（成功/失敗）してから以降の全処理へ進むのが
-    // 今回の耐久性バリア本体（release-blocker監査 finding A）。
+    // Content-based dedup runs before sequence allocation. This retains the
+    // reconnect-resend contract without making `(timestamp, ApiTypeId)`
+    // unique: a genuinely different same-ms/same-type burst row receives the
+    // next sequence and is durably stored instead of being mistaken for a
+    // duplicate. The indexed lookup + add are one transaction, while the
+    // outer ingestionQueue preserves WebSocket arrival order.
     try {
-      await service.db.apiEvents.add(message as ApiEvent)
-    } catch (err) {
-      const isConstraintError = err instanceof Dexie.DexieError && err.name === 'ConstraintError'
-      if (isConstraintError) {
-        // ConstraintError = 既に同じ[timestamp+ApiTypeId]の行がLakeに存在
-        // する。これは2つの別々のケースを区別する必要がある
-        // （P2, codexレビュー指摘 2026-07-21, 監査finding 6）:
-        //   (a) 真の重複: 同一イベントの再到着（再送・reconnect replay等）
-        //   (b) 真の衝突: 同一ミリ秒バーストで2つの"別々の"生WebSocket
-        //       メッセージが同じApiTypeIdで届き、両方とも同じ
-        //       `Date.now()`由来のtimestamp（web_accessible_resource.ts）を
-        //       持ってしまい[timestamp+ApiTypeId]がぶつかったケース
-        // (b)を(a)と同じ「スキップ」扱いにすると、衝突した方のイベント
-        // （アクション・結果・セッション遷移等）がライブパイプラインから
-        // 静かに消えてしまう。既存行のペイロードと比較して区別する。
-        let existing: ApiEvent | undefined
-        try {
-          existing = await service.db.apiEvents.get([rawTimestamp as number, rawApiTypeId as number])
-        } catch (getErr) {
-          console.error('[background] Failed to read colliding row for dedup comparison (treating as a genuine collision, not a duplicate):', getErr)
-        }
-
-        if (existing !== undefined && isSamePayload(existing, message)) {
-          // (a) 真の重複: このイベントは初回受信時に既にセッションフック・
-          // 同期トリガー・ストリームを一度通過済みのはず。ここで再度投入
-          // すると二重処理（統計の二重計上等）になるため、dedup semantics
-          // として以降の全処理をスキップする——ACTIVE/INACTIVE判定
-          // （`applySessionActivity`）にも到達させない。これにより
-          // reconnectが複数の重複をまとめて再送しても（各イベントごとに
-          // 個別にここで判定・スキップされるだけなので）セッション状態が
-          // 一切動かない（2026-07-21 pass-3, codexレビュー指摘: 過去の
-          // 「楽観的ACTIVE化+ロールバック」設計はスタックした重複バースト
-          // で破綻していたが、判定そのものを重複チェックの後ろに統一した
-          // ことで、そもそも動かすものが無くなり構造的に解消される）。
-          console.warn('[background] Duplicate event (identical payload already in Raw Event Lake), skipping re-processing:', message)
-          return
-        }
-
-        // (b) 真の衝突: 別イベントが同じprimary keyを先取りしていたため、
-        // このイベント自身の生ログはRaw Event Lakeに残せない（add()は
-        // 既存行を上書きしない）。根本修正はwave-3で予定されている
-        // シーケンスキー移行（[timestamp+ApiTypeId]をこの種の衝突が起こら
-        // ないキーへ置き換える）で、それまでの当面の対処として、同一
-        // ミリ秒バーストでアクション・結果・セッション遷移を静かに握り
-        // つぶす方が実害が大きいと判断し、ライブパイプラインへの投入は
-        // 続行する（returnしない）。raw行を持てなかったという事実は
-        // drop可視化カウンタ（#141）で大きく可視化し、運用上気づける
-        // ようにする（quota等の失敗と同じ経路 -- どちらも「raw行が無い
-        // まま素通しした」事実を運用に晒す点は共通）。
-        console.error('[background] Primary-key collision (different event landed on the same [timestamp+ApiTypeId] -- see wave-3 sequence-key migration for the real fix; forwarding to the live pipeline anyway, no raw row persisted for this event):', err, { incoming: message, existing })
-        if (typeof rawApiTypeId === 'number') {
-          const eventTimestamp = typeof rawTimestamp === 'number' ? rawTimestamp : Date.now()
-          recordUndecodedEvent(service.db, rawApiTypeId, eventTimestamp).catch(recordErr =>
-            console.error('[background] Failed to record dropped-event stats:', recordErr)
-          )
-        }
-        // フォールスルー（returnしない）: 以降のセッション状態追跡・
-        // 同期トリガー・ストリーム投入へ進む。
-      } else {
-        // 重複/衝突以外の理由（quota超過等）でraw書き込みが失敗 = この
-        // イベントはLakeに存在しない。「派生統計はraw行があって初めて
-        // 存在してよい」というLakeの不変条件を守るため、ストリーム・
-        // 同期トリガーには投入しない（forward NGが正しい判断——
-        // 「ログだけ出して素通しする」は不変条件違反を積極的に作りに
-        // いくことになるため選ばない）。#141のdrop可視化カウンタで
-        // 運用上気づけるようにする。
-        console.error('[background] Raw Event Lake write failed -- dropping from pipeline to preserve the Lake invariant (derived stats require a raw row):', err, message)
-        if (typeof rawApiTypeId === 'number') {
-          const eventTimestamp = typeof rawTimestamp === 'number' ? rawTimestamp : Date.now()
-          recordUndecodedEvent(service.db, rawApiTypeId, eventTimestamp).catch(recordErr =>
-            console.error('[background] Failed to record dropped-event stats:', recordErr)
-          )
-        }
-        // 例外: セッション状態のACTIVE化だけはfail-closedで適用する
-        // （P2, codexレビュー指摘 2026-07-21, pass-4, "Fail closed on
-        // dropped ACTIVE writes"）。この生メッセージが201/303[Player
-        // 在席]/308形状であれば、raw書き込みが失敗していても「新しい
-        // ハンドが観測された」という事実そのものは疑いようが無い
-        // （生メッセージは実際に届いている）。ここでACTIVE化を諦めると、
-        // 直前が309でinactiveのまま、実際には新しいハンドが始まって
-        // いるのにreloadが「安全」と誤判定されうる。INACTIVE化
-        // （309/203）は適用しない——理由は`applySessionActivity`の
-        // `activeOnly`引数のコメント参照。
-        applySessionActivity(rawApiTypeId, message, true)
+      const merge = await mergeApiEvents(service.db, [message as unknown as RawApiEvent])
+      if (merge.duplicates === 1) {
+        console.warn('[background] Duplicate event (identical payload already in Raw Event Lake), skipping re-processing:', message)
         return
       }
+    } catch (err) {
+      // quota/transaction failure = this event is absent from the Lake.
+      // Preserve the invariant by dropping it from streams/sync hooks while
+      // still applying only fail-closed ACTIVE transitions.
+      console.error('[background] Raw Event Lake write failed -- dropping from pipeline to preserve the Lake invariant (derived stats require a raw row):', err, message)
+      if (typeof rawApiTypeId === 'number') {
+        const eventTimestamp = typeof rawTimestamp === 'number' ? rawTimestamp : Date.now()
+        recordUndecodedEvent(service.db, rawApiTypeId, eventTimestamp).catch(recordErr =>
+          console.error('[background] Failed to record dropped-event stats:', recordErr)
+        )
+      }
+      applySessionActivity(rawApiTypeId, message, true)
+      return
     }
   } else {
     // timestamp/ApiTypeIdが数値でない = キーとして使えないため保存不可。
@@ -337,10 +254,8 @@ const processEvent = async (
     console.warn('[background] Event missing numeric timestamp/ApiTypeId, cannot store:', message)
   }
 
-  // ここから先は、raw書き込みが成功した・保存不可能で待つべきI/Oが無かった・
-  // または真の衝突でフォールスルーしてきた場合にのみ到達する（上記
-  // いずれか）。add()が実際に失敗した（重複以外の失敗、または真の重複）
-  // ケースは上で既にreturnしている。
+  // ここから先はraw書き込みが成功したか、保存不可能で待つべきI/Oが
+  // 無かった場合のみ到達する。真の重複と書き込み失敗は上でreturn済み。
 
   // Forced-update安全性述語（update-manager.ts）のセッション状態追跡。
   // 意図的にパース成功後のdata.ApiTypeIdではなく、生メッセージの数値
@@ -513,9 +428,7 @@ const processEvent = async (
   // ここでdataはApiEvent型（isApplicationApiEventで保証済み）
   service.eventLogger(data, 'info')
 
-  // ストリーム処理（DB保存は上で完了済み・耐久性確定済み -- ただし
-  // primary-key衝突でフォールスルーしてきた場合のみ例外: このイベント
-  // 自身の生ログはRaw Event Lakeに残っていない。上のコメント参照）
+  // ストリーム処理（DB保存は上で完了済み・耐久性確定済み）
   service.handLogStream.write(data)
   service.handAggregateStream.write(data)
   service.realTimeStatsStream.write(data)

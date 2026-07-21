@@ -79,6 +79,10 @@ export type DbOperationType = 'import' | 'export' | 'sync' | 'rebuild'
  * rebuildが起動しない ―― 派生データの修復にはこのアドバイザリで
  * 明示的な「データ再構築」実行を促す必要がある。
  *
+ * DB v6のapiEvents sequence-key移行は既存raw行へ`sequence: 0`を付ける
+ * 機械的な主キー移行で、hands/phases/actionsのキー・導出ロジック・内容を
+ * 変更しないため、このアドバイザリはバンプしない。
+ *
  * インクリメントすると、拡張機能の更新後に既存ユーザーへ一度だけ
  * 「データ再構築」の実行を促すアドバイソリーが表示される
  * （`src/background/rebuild-advisory.ts`参照）。単なるUI変更やバグ修正でも

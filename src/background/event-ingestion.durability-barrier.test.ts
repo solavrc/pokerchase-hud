@@ -1,7 +1,7 @@
 /**
  * event-ingestion.ts - Raw Event Lake durability barrier
  *
- * Verifies the release-blocker audit's finding A fix: `db.apiEvents.add()`
+ * Verifies the release-blocker audit's finding A fix: the raw Lake write
  * used to be fire-and-forget, so the parse/validation gate, the three live
  * streams, and the session-end side effects (auto-sync trigger, pending
  * Forced Update recheck -> possible `chrome.runtime.reload()`) could all run
@@ -13,8 +13,8 @@
  *
  * The fix serializes each event's processing so nothing downstream
  * (session-activity tracking, the auto-sync trigger, and stream forwarding)
- * runs until that event's `apiEvents.add()` has settled -- successfully, or
- * with a *handled* failure (duplicate-key -> skip as already-processed;
+ * runs until that event's content-deduplicating `apiEvents.bulkAdd()` has
+ * settled -- successfully, or with a *handled* duplicate result;
  * any other failure -> drop from the pipeline and surface it via the #141
  * drop-visibility counter, never forward without a raw row).
  *
@@ -38,6 +38,7 @@ import { connectedPorts } from './ports'
 import * as updateManager from './update-manager'
 import { autoSyncService } from '../services/auto-sync-service'
 import { getUndecodedEventStats, resetUndecodedEventStats, UNDECODED_EVENT_STATS_KEY } from './undecoded-event-tracker'
+import * as apiEventKey from '../utils/api-event-key'
 
 describe('registerEventIngestion (raw-write durability barrier)', () => {
   let db: PokerChaseDB
@@ -105,14 +106,16 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     Emblems: []
   })
 
-  test('streams / auto-sync trigger / session-activity tracking all wait behind apiEvents.add(), and all run after it resolves', async () => {
+  test('streams / auto-sync trigger / session-activity tracking all wait behind the raw merge, and all run after it resolves', async () => {
     const handLogSpy = jest.spyOn(service.handLogStream, 'write')
     const markSessionActiveSpy = jest.spyOn(updateManager, 'markSessionActive')
     const onNewSessionStartSpy = jest.spyOn(autoSyncService, 'onNewSessionStart').mockResolvedValue(undefined)
 
-    let resolveAdd!: (key: number) => void
-    jest.spyOn(db.apiEvents, 'add').mockImplementation(
-      (() => new Promise<number>(resolve => { resolveAdd = resolve })) as any
+    let resolveAdd!: () => void
+    jest.spyOn(apiEventKey, 'mergeApiEvents').mockImplementation(
+      (async (_db: PokerChaseDB, events: apiEventKey.RawApiEvent[]) => await new Promise(resolve => {
+        resolveAdd = () => resolve({ added: events, duplicates: 0 })
+      })) as any
     )
 
     const pending = onMessageHandler(entryQueued(100))
@@ -127,7 +130,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     expect(onNewSessionStartSpy).not.toHaveBeenCalled()
     expect(markSessionActiveSpy).not.toHaveBeenCalled()
 
-    resolveAdd(1)
+    resolveAdd()
     await pending
 
     expect(handLogSpy).toHaveBeenCalledTimes(1)
@@ -135,15 +138,17 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
   })
 
-  test('a reload decision using awaitIngestionDrain() correctly waits out a stuck apiEvents.add() instead of reading stale session-activity state', async () => {
+  test('a reload decision using awaitIngestionDrain() correctly waits out a stuck raw merge instead of reading stale session-activity state', async () => {
     // This is the read-side fix for the original "mark-active-latency"
     // concern (a slow/stuck add() leaving sessionActivity stale while a
     // safety recheck fires): any reload decision point must await
     // update-manager.ts's `awaitIngestionDrain()` before consulting
     // `isSafeToUpdate()`, not just read it directly.
-    let resolveAdd!: (key: number) => void
-    jest.spyOn(db.apiEvents, 'add').mockImplementation(
-      (() => new Promise<number>(resolve => { resolveAdd = resolve })) as any
+    let resolveAdd!: () => void
+    jest.spyOn(apiEventKey, 'mergeApiEvents').mockImplementation(
+      (async (_db: PokerChaseDB, events: apiEventKey.RawApiEvent[]) => await new Promise(resolve => {
+        resolveAdd = () => resolve({ added: events, duplicates: 0 })
+      })) as any
     )
 
     const pending = onMessageHandler(entryQueued(105))
@@ -161,7 +166,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(drained).toBe(false) // still stuck behind the unresolved add()
 
-    resolveAdd(1)
+    resolveAdd()
     await pending
     await drainCheck
 
@@ -182,11 +187,9 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     const onNewSessionStartSpy = jest.spyOn(autoSyncService, 'onNewSessionStart').mockResolvedValue(undefined)
 
     // Re-arrival of the exact same (timestamp, ApiTypeId) AND the exact same
-    // payload -- Dexie's add() throws a real ConstraintError here
-    // (ports.ts/import-export.ts resend scenarios, reconnect replays, etc.),
-    // and the payload comparison against the existing row confirms it's a
-    // true duplicate (not a same-millisecond key collision -- see the
-    // dedicated collision test below). Since the dedup check now runs
+    // payload. Content identity is checked before sequence allocation, so
+    // reconnect/import/cloud replays remain idempotent even though a fresh
+    // sequence would otherwise make every add succeed. Since the dedup check runs
     // BEFORE the session-activity decision (2026-07-21 pass-3
     // consolidation), a duplicate never reaches markSessionActive() at
     // all -- there's no optimistic pre-barrier mark left to roll back, so a
@@ -203,15 +206,11 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     expect(await db.apiEvents.count()).toBe(1)
   })
 
-  test('on a primary-key collision (a DIFFERENT event landing on the same [timestamp+ApiTypeId] -- e.g. a same-millisecond burst), the event is still forwarded to the live pipeline and the raw-row gap is surfaced (audit finding 6, P2 codex review 2026-07-21)', async () => {
+  test('same-millisecond same-type distinct events are both stored with sequences and both forwarded (audit finding 6)', async () => {
     // Two distinct EVT_ENTRY_QUEUED events can share a client timestamp
     // (Date.now() collision in web_accessible_resource.ts under a fast
-    // burst), colliding on the [timestamp+ApiTypeId] primary key. Treating
-    // this exactly like a true duplicate (skip) would silently drop the
-    // second, DIFFERENT event from streams/session-hooks/sync-trigger --
-    // that's the regression this test guards against. The interim fix
-    // forwards it anyway (the full fix is the wave-3 sequence-key
-    // migration) and surfaces the raw-row gap loudly.
+    // burst). The sequence-bearing key must preserve both instead of treating
+    // the second, different payload as a reconnect resend.
     const first = entryQueued(400)
     await onMessageHandler(first)
 
@@ -224,24 +223,25 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     const second = { ...entryQueued(400), Id: 'stage000_099' }
     await onMessageHandler(second)
 
-    // Forwarded to the live pipeline despite having no raw row of its own.
+    // Both arrivals reach the live derivation pipeline.
     expect(handLogSpy).toHaveBeenCalledTimes(1)
     expect(handLogSpy).toHaveBeenCalledWith(expect.objectContaining({ Id: 'stage000_099' }))
     expect(onNewSessionStartSpy).toHaveBeenCalledTimes(1)
     expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
 
-    // The colliding row was never overwritten -- `first`'s payload is still
-    // the one durably stored under this key.
-    const stored = await db.apiEvents.get([400, ApiType.EVT_ENTRY_QUEUED])
-    expect(stored).toEqual(first)
-    expect(await db.apiEvents.count()).toBe(1)
+    const stored = await db.apiEvents
+      .where('[timestamp+ApiTypeId]')
+      .equals([400, ApiType.EVT_ENTRY_QUEUED])
+      .sortBy('sequence') as any[]
+    expect(stored).toEqual([
+      { ...first, sequence: 0 },
+      { ...second, sequence: 1 }
+    ])
 
-    // The raw-row gap for `second` is surfaced via the drop-visibility
-    // counter (#141 mechanism), same as any other raw-write failure.
-    await new Promise(resolve => setTimeout(resolve, 550)) // flush the tracker's debounce
+    // No Raw Lake gap was created, so the drop-visibility counter stays clear.
     const stats = await getUndecodedEventStats(db)
-    expect(stats.total).toBe(1)
-    expect(stats.perApiTypeId[ApiType.EVT_ENTRY_QUEUED]).toEqual({ count: 1, lastSeen: 400 })
+    expect(stats.total).toBe(0)
+    expect(stats.perApiTypeId[ApiType.EVT_ENTRY_QUEUED]).toBeUndefined()
   })
 
   test('on a non-duplicate raw-write failure (e.g. quota), the event is dropped from the pipeline entirely (Lake invariant: no derived stats without a raw row) and surfaced via the drop-visibility counter', async () => {
@@ -252,7 +252,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
 
     const quotaError = new Error('The quota has been exceeded.')
     quotaError.name = 'QuotaExceededError'
-    jest.spyOn(db.apiEvents, 'add').mockRejectedValue(quotaError)
+    jest.spyOn(apiEventKey, 'mergeApiEvents').mockRejectedValue(quotaError)
 
     await onMessageHandler(sessionResults(300))
 
@@ -287,7 +287,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
 
     const quotaError = new Error('The quota has been exceeded.')
     quotaError.name = 'QuotaExceededError'
-    jest.spyOn(db.apiEvents, 'add').mockRejectedValue(quotaError)
+    jest.spyOn(apiEventKey, 'mergeApiEvents').mockRejectedValue(quotaError)
 
     await onMessageHandler(entryQueued(360))
 
@@ -310,7 +310,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     // asymmetry explicitly: ACTIVE-direction failures fail closed (previous
     // test), INACTIVE-direction failures must NOT fail open, since a
     // failed 309 write is not confirmation the session actually ended.
-    jest.spyOn(db.apiEvents, 'add').mockRejectedValue(Object.assign(new Error('quota'), { name: 'QuotaExceededError' }))
+    jest.spyOn(apiEventKey, 'mergeApiEvents').mockRejectedValue(Object.assign(new Error('quota'), { name: 'QuotaExceededError' }))
     const markSessionInactiveSpy = jest.spyOn(updateManager, 'markSessionInactive')
 
     await onMessageHandler(sessionResults(370))
@@ -329,13 +329,12 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     // event is the slowest) -- if events weren't serialized, a naive
     // implementation could let a later event's write resolve before an
     // earlier one's, reordering what the streams observe.
-    const realAdd = db.apiEvents.add.bind(db.apiEvents)
-    jest.spyOn(db.apiEvents, 'add').mockImplementation(((event: any) => {
-      const index = event.timestamp - 1000
+    const realMerge = apiEventKey.mergeApiEvents
+    jest.spyOn(apiEventKey, 'mergeApiEvents').mockImplementation((async (targetDb: PokerChaseDB, events: apiEventKey.RawApiEvent[]) => {
+      const index = events[0]!.timestamp - 1000
       const delayMs = (5 - index) * 5
-      return new Promise((resolve, reject) => {
-        setTimeout(() => { realAdd(event).then(resolve, reject) }, delayMs)
-      })
+      await new Promise(resolve => setTimeout(resolve, delayMs))
+      return await realMerge(targetDb, events)
     }) as any)
 
     const events = [0, 1, 2, 3, 4].map(i => entryQueued(1000 + i))

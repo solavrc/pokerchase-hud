@@ -32,7 +32,8 @@ describe('AutoSyncService cloud downloads', () => {
       BattleType: BattleType.SIT_AND_GO,
       Id: 'stage-101',
       IsRetire: false,
-      timestamp: 101
+      timestamp: 101,
+      sequence: 0
     } as ApiEvent
     const cloudEvent = {
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
@@ -57,7 +58,7 @@ describe('AutoSyncService cloud downloads', () => {
 
     expect(syncSpy).toHaveBeenCalledTimes(1)
     expect(await db.apiEvents.count()).toBe(2)
-    expect(await db.apiEvents.get([100, ApiType.EVT_ENTRY_QUEUED])).toEqual(cloudEvent)
+    expect(await db.apiEvents.get([100, ApiType.EVT_ENTRY_QUEUED, 0])).toEqual({ ...cloudEvent, sequence: 0 })
     expect(service.getSyncState()).toMatchObject({
       status: 'success',
       localLastTimestamp: 101,
@@ -67,6 +68,40 @@ describe('AutoSyncService cloud downloads', () => {
       lastProcessedTimestamp: 101,
       lastProcessedEventCount: 2
     })
+  })
+
+  test('restores legacy-ID and sequence-ID cloud documents sharing timestamp+ApiTypeId as distinct local rows', async () => {
+    const legacyDocument = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'legacy-document',
+      IsRetire: false,
+      timestamp: 500
+    } as ApiEvent
+    const sequenceDocument = {
+      ...legacyDocument,
+      Id: 'sequence-document',
+      sequence: 1
+    } as ApiEvent
+
+    jest.spyOn(firestoreBackupService, 'syncFromCloud').mockImplementation(async options => {
+      await options.onBatch([legacyDocument, sequenceDocument])
+      options.onProgress?.({ current: 2, total: 2 })
+      return 2
+    })
+
+    const service = new AutoSyncService(db)
+    await service.performSync('download')
+
+    const stored = await db.apiEvents
+      .where('[timestamp+ApiTypeId]')
+      .equals([500, ApiType.EVT_ENTRY_QUEUED])
+      .sortBy('sequence') as any[]
+    expect(stored).toEqual([
+      { ...legacyDocument, sequence: 0 },
+      sequenceDocument
+    ])
   })
 
   test('a failed derived-table rebuild after download surfaces as a sync ERROR and is not marked as done (release audit 2026-07-21, finding 5)', async () => {
@@ -316,6 +351,7 @@ describe('AutoSyncService cloud downloads', () => {
     const recoveredSessionResults = {
       ApiTypeId: ApiType.EVT_SESSION_RESULTS,
       timestamp: 200,
+      sequence: 0,
       Ranking: 3,
       IsLeave: false,
       IsRebuy: false,
@@ -539,16 +575,16 @@ describe('AutoSyncService cloud downloads', () => {
     expect(indexLookups.length).toBe(ApiTypeValues.length)
     // The backfill scan itself never falls back to an unbounded primary-key
     // cursor with a `.filter()` predicate (that's the whole point of this
-    // test). `[timestamp+ApiTypeId]` IS legitimately used elsewhere in this
-    // same pass now, though: the P1 fix (compound-key upload pagination,
+    // test). `[timestamp+ApiTypeId+sequence]` IS legitimately used elsewhere
+    // in this same pass now, though: the upload-pagination fix
     // 2026-07-21) made `syncToCloud()`'s own count and per-chunk cursor key
-    // off this exact primary index (see its doc comment) -- a BOUNDED range
+    // uses this exact primary index (see its doc comment) -- a BOUNDED range
     // query (`.above([cursor]).count()` / `.above([cursor]).limit(N)`), not
     // the old unbounded `.filter()`-cursor pattern this test guards against.
     // Exactly 2 calls are expected here: one for `totalCount`'s `.count()`,
     // one for the single chunk fetch (this test's Lake has only one row, so
     // the loop never needs a second page).
-    const primaryKeyCursorCalls = whereSpy.mock.calls.filter(([index]) => typeof index === 'string' && index === '[timestamp+ApiTypeId]')
+    const primaryKeyCursorCalls = whereSpy.mock.calls.filter(([index]) => typeof index === 'string' && index === '[timestamp+ApiTypeId+sequence]')
     expect(primaryKeyCursorCalls.length).toBe(2)
   })
 
@@ -1564,9 +1600,9 @@ describe('AutoSyncService cloud downloads', () => {
   })
 
   describe('P1 fix: compound-key upload pagination (release blocker, independent audit 2026-07-21)', () => {
-    // apiEvents' primary key is the compound `[timestamp+ApiTypeId]`
-    // (poker-chase-db.ts), so two raw rows CAN legitimately share the exact
-    // same millisecond with different ApiTypeId. Before this fix,
+    // apiEvents' primary key is the compound `[timestamp+ApiTypeId+sequence]`
+    // (poker-chase-db.ts), so raw rows can legitimately share the exact
+    // same millisecond and ApiTypeId. Before this fix,
     // `syncToCloud()` paginated uploads on bare `timestamp` alone -- a
     // CHUNK_SIZE-row page boundary (or, in the steady state, the very first
     // page's own boundary at the cloud watermark) that fell between two such
@@ -1584,31 +1620,21 @@ describe('AutoSyncService cloud downloads', () => {
       (DATABASE_CONSTANTS as any).SYNC_CHUNK_SIZE = originalChunkSize
     })
 
-    test('a chunk-boundary tie (two rows sharing one millisecond, different ApiTypeId, split across a CHUNK_SIZE page break) uploads BOTH rows exactly once', async () => {
+    test('a same-millisecond same-type sequence boundary split across a CHUNK_SIZE page break uploads BOTH rows exactly once', async () => {
       (DATABASE_CONSTANTS as any).SYNC_CHUNK_SIZE = 4
 
       // Four rows fill the first page exactly; the 5th shares the 4th row's
-      // exact millisecond with a DIFFERENT (higher) ApiTypeId, so it sorts
-      // immediately after row 4 in the compound-key order and lands as the
+      // exact millisecond and ApiTypeId with sequence 1, so it sorts
+      // immediately after row 4 (sequence 0) and lands as the
       // very first row of page 2 -- exactly the "row 5,000 and 5,001" chunk
       // boundary the audit describes, scaled down to 4/5.
       const row1 = { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'r1', IsRetire: false, timestamp: 100 } as ApiEvent
       const row2 = { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'r2', IsRetire: false, timestamp: 101 } as ApiEvent
       const row3 = { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'r3', IsRetire: false, timestamp: 102 } as ApiEvent
-      // row4 and row5 tie on timestamp (103); row4's ApiTypeId (201) is
-      // lower than row5's (301), so row4 sorts first -- landing as the LAST
-      // row of page 1, with row5 pushed to page 2.
-      const row4 = { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'r4', IsRetire: false, timestamp: 103 } as ApiEvent
-      const row5 = {
-        ApiTypeId: ApiType.EVT_PLAYER_JOIN,
-        timestamp: 103,
-        JoinPlayer: { BetChip: 0, BetStatus: BetStatusType.NOT_IN_PLAY, Chip: 2000, SeatIndex: 2, Status: 0 },
-        JoinUser: {
-          UserId: 999, UserName: 'r5-player', FavoriteCharaId: 'chara01', CostumeId: 'costume01', EmblemId: 'emblem01',
-          IsCpu: false, IsOfficial: false, SettingDecoIds: ['', '', '', '', '', '', ''],
-          Rank: { RankId: 'gold', RankName: 'ゴールド', RankLvId: 'gold', RankLvName: 'ゴールド' }
-        }
-      } as unknown as ApiEvent
+      // row4 and row5 tie on both timestamp and ApiTypeId. The sequence
+      // component alone puts row4 last on page 1 and row5 first on page 2.
+      const row4 = { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'r4', IsRetire: false, timestamp: 103, sequence: 0 } as ApiEvent
+      const row5 = { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'r5', IsRetire: false, timestamp: 103, sequence: 1 } as ApiEvent
       await db.apiEvents.bulkAdd([row1, row2, row3, row4, row5] as any)
 
       jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
@@ -1689,7 +1715,7 @@ describe('AutoSyncService cloud downloads', () => {
       // corruption or a real duplicate in Firestore).
       expect(uploadedChunk).toEqual([alreadyUploaded, notYetUploaded, genuinelyNewRow])
       // No row appears more than once in the single upload call itself.
-      expect(new Set(uploadedChunk.map((e: ApiEvent) => `${e.timestamp}_${e.ApiTypeId}`)).size).toBe(uploadedChunk.length)
+      expect(new Set(uploadedChunk.map((e: ApiEvent) => `${e.timestamp}_${e.ApiTypeId}_${e.sequence ?? 0}`)).size).toBe(uploadedChunk.length)
     })
 
     test('floor interplay: an unparseable row that loses a chunk-boundary tie is still discovered within the SAME pass, and the floor does not advance past it', async () => {

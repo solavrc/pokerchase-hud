@@ -7,6 +7,11 @@ import type { PokerChaseDB } from '../db/poker-chase-db'
 import type { EntityBundle } from '../entity-converter'
 import type { ApiEvent } from '../types/api'
 import type Dexie from 'dexie'
+import {
+  API_EVENT_PRIMARY_KEY,
+  type ApiEventKey,
+  getApiEventSequence
+} from './api-event-key'
 
 /**
  * Save entities to database in a transaction
@@ -71,14 +76,14 @@ export async function saveEntities(
  *
  * This version takes the `Dexie.Table` itself (not a Collection) and issues
  * a brand-new query for every chunk, cursoring on the table's
- * `[timestamp+ApiTypeId]` compound primary key -- exactly the pattern
- * CLAUDE.md prescribes: `where('[timestamp+ApiTypeId]').above(lastKey).limit(N)`.
+ * `[timestamp+ApiTypeId+sequence]` compound primary key -- exactly the pattern
+ * CLAUDE.md prescribes: `where('[timestamp+ApiTypeId+sequence]').above(lastKey).limit(N)`.
  * This is currently only used against `db.apiEvents` (whose primary key is
  * that compound index); if a future caller needs this for a table with a
  * different key shape, extend/generalize the cursor extraction rather than
  * reusing this implementation's hardcoded `timestamp`/`ApiTypeId` fields.
  */
-export async function* processInChunks<T extends { timestamp?: number; ApiTypeId: number }>(
+export async function* processInChunks<T extends { timestamp?: number; ApiTypeId: number; sequence?: number }>(
   table: Dexie.Table<T, any>,
   chunkSize: number,
   options?: {
@@ -88,33 +93,38 @@ export async function* processInChunks<T extends { timestamp?: number; ApiTypeId
      * queries this helper's callers previously built by hand.
      */
     afterTimestamp?: number
+    /** Resume strictly after this exact raw-event key. */
+    afterKey?: ApiEventKey
     onProgress?: (current: number, total: number) => void
   }
 ): AsyncGenerator<T[], void, unknown> {
+  const afterKey = options?.afterKey
   const afterTimestamp = options?.afterTimestamp
-  const total = afterTimestamp !== undefined
+  const total = afterKey !== undefined
+    ? await table.where(API_EVENT_PRIMARY_KEY).above(afterKey).count()
+    : afterTimestamp !== undefined
     ? await table.where('timestamp').above(afterTimestamp).count()
     : await table.count()
 
   if (total === 0) return
 
-  // Cursor into the `[timestamp+ApiTypeId]` compound primary key. When
+  // Cursor into the `[timestamp+ApiTypeId+sequence]` compound primary key. When
   // filtering by `afterTimestamp`, seed the cursor at
-  // `[afterTimestamp, MAX_SAFE_INTEGER]` -- since real `ApiTypeId` values are
-  // small enum integers, `.above()` this sentinel excludes every row tied at
-  // `afterTimestamp` regardless of its `ApiTypeId`, matching the strict
+  // `[afterTimestamp, MAX_SAFE_INTEGER, MAX_SAFE_INTEGER]`. `.above()` this
+  // sentinel excludes every row tied at `afterTimestamp` regardless of its
+  // `ApiTypeId`/sequence, matching the strict
   // `timestamp > afterTimestamp` filter it replaces, while still being a
   // real (sortable) key the compound index can seek on.
-  let cursor: [number, number] | undefined = afterTimestamp !== undefined
-    ? [afterTimestamp, Number.MAX_SAFE_INTEGER]
-    : undefined
+  let cursor: ApiEventKey | undefined = afterKey ?? (afterTimestamp !== undefined
+    ? [afterTimestamp, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER]
+    : undefined)
   let processed = 0
 
   while (true) {
     // Fresh query every iteration -- never reuse a Collection across chunks.
     const collection = cursor !== undefined
-      ? table.where('[timestamp+ApiTypeId]').above(cursor)
-      : table.orderBy('[timestamp+ApiTypeId]')
+      ? table.where(API_EVENT_PRIMARY_KEY).above(cursor)
+      : table.orderBy(API_EVENT_PRIMARY_KEY)
 
     const chunk = await collection.limit(chunkSize).toArray()
     if (chunk.length === 0) break
@@ -123,7 +133,7 @@ export async function* processInChunks<T extends { timestamp?: number; ApiTypeId
     processed += chunk.length
 
     const last = chunk[chunk.length - 1]!
-    cursor = [last.timestamp!, last.ApiTypeId]
+    cursor = [last.timestamp!, last.ApiTypeId, getApiEventSequence(last)]
 
     options?.onProgress?.(processed, total)
   }

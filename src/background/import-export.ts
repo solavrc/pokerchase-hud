@@ -1,5 +1,4 @@
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
-import Dexie from 'dexie'
 import PokerChaseService, {
   ApiType,
   PokerChaseDB,
@@ -22,6 +21,12 @@ import type {
 } from '../types/messages'
 import { setOperationState } from './operation-state'
 import { resolveAdvisory, markAdvisoryPending } from './rebuild-advisory'
+import {
+  API_EVENT_PRIMARY_KEY,
+  getApiEventKey,
+  mergeApiEvents,
+  type RawApiEvent
+} from '../utils/api-event-key'
 
 const IMPORT_CHUNK_SIZE = DATABASE_CONSTANTS.IMPORT_CHUNK_SIZE
 
@@ -77,24 +82,11 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
       console.log('[importData] Starting optimized import process with direct entity generation')
       const startTime = performance.now()
 
-      // 既存キーを一括取得（最適化ポイント1）
-      console.log('[importData] Loading existing keys...')
-      const existingKeys = new Set<string>()
-      await db.apiEvents
-        .orderBy('[timestamp+ApiTypeId]')
-        .keys(keys => {
-          keys.forEach(key => {
-            if (Array.isArray(key) && key.length === 2) {
-              existingKeys.add(`${key[0]}-${key[1]}`)
-            }
-          })
-        })
-      console.log(`[importData] Loaded ${existingKeys.size} existing keys`)
       // インポート開始時点でDBが空だったか（このインポートより前に保存
       // されていた行があったか）。既存データがある状態への追加インポートは
       // 「オーバーラップ」の可能性があるため、下の分岐で経路を変える
       // （監査finding #7、plan C — 詳細は下のコメント参照）
-      const hadExistingDataBeforeImport = existingKeys.size > 0
+      const hadExistingDataBeforeImport = (await db.apiEvents.count()) > 0
 
       // 行で分割し、空行をフィルタリング
       const lines = jsonlData.split('\n').filter(line => line.trim())
@@ -117,10 +109,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         const chunkLines = lines.slice(i, i + IMPORT_CHUNK_SIZE)
         // Raw Event Lake: 保存対象は「timestamp/ApiTypeIdが数値」の行すべて
         // （Zod検証の成否・アプリケーションイベントか否かは問わない）
-        const rawEventsToStore: Array<Record<string, unknown> & { timestamp: number, ApiTypeId: number }> = []
-        // エンティティ生成対象（検証済みアプリケーションイベントのみ）。
-        // key（`${timestamp}-${ApiTypeId}`）で対応するrawEventsToStoreの要素と紐付ける
-        const validAppEventsByKey = new Map<string, ApiEvent>()
+        const rawEventsToStore: RawApiEvent[] = []
 
         // チャンク内の各行をパース
         for (let j = 0; j < chunkLines.length; j++) {
@@ -137,16 +126,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
               continue
             }
 
-            const key = `${parsed.timestamp}-${parsed.ApiTypeId}`
-
-            // メモリ内で重複チェック（最適化ポイント2）
-            if (existingKeys.has(key)) {
-              duplicateCount++
-              continue
-            }
-
             rawEventsToStore.push(parsed)
-            existingKeys.add(key) // 次の重複チェック用
 
             // Zodスキーマ検証（エンティティ生成対象かどうかの判定のみ。保存は上で確定済み）
             const event = parseApiEvent(parsed)
@@ -157,13 +137,9 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
               continue
             }
 
-            // アプリケーション用のイベントかチェック
-            if (!isApplicationApiEvent(event)) {
-              // 非アプリケーションイベント: 生ログとしては保存対象だがエンティティ生成対象外
-              continue
-            }
-
-            validAppEventsByKey.set(key, event)
+            // Application/non-application classification is repeated on the
+            // actually-added rows below; sequence assignment is storage
+            // metadata and does not change parseability.
           } catch (parseError) {
             // 無効なJSON行をスキップ
             if (line.trim()) {
@@ -172,79 +148,20 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           }
         }
 
-        // 生イベントをbulkAddで一括保存（最適化ポイント3。検証可否に関わらず全件保存）
+        // Content identity, not the old timestamp+ApiTypeId key, defines an
+        // import duplicate. Legacy exports have no sequence; mergeApiEvents
+        // assigns one atomically. New-format rows preserve their sequence
+        // when free, and a conflicting slot is safely reallocated.
         if (rawEventsToStore.length > 0) {
-          const storedKeys = new Set<string>()
+          const merge = await mergeApiEvents(db, rawEventsToStore)
+          successCount += merge.added.length
+          duplicateCount += merge.duplicates
 
-          try {
-            // apiEvents is the raw Lake (see docs/architecture.md): rows may not
-            // conform to the ApiEvent union (non-application types, unknown
-            // ApiTypeIds, or app-type payloads that fail the current schema) —
-            // the assertion is intentional, mirroring the same pattern used in
-            // event-ingestion.ts's real-time storage path.
-            await db.apiEvents.bulkAdd(rawEventsToStore as ApiEvent[])
-            successCount += rawEventsToStore.length
-            rawEventsToStore.forEach(raw => storedKeys.add(`${raw.timestamp}-${raw.ApiTypeId}`))
-          } catch (dbError) {
-            // 部分的な失敗の場合、個別に保存を試みる
-            console.warn(`Bulk add failed for chunk ${Math.floor(i / IMPORT_CHUNK_SIZE) + 1}, falling back to individual adds:`, dbError)
-
-            // 明示的トランザクション外で呼んだbulkAdd()は、一部の行が失敗して
-            // Dexie.BulkErrorをthrowしても、失敗しなかった行はその時点で既に
-            // 永続化済み（IndexedDB側は各addリクエストの個別エラーを飲み込み、
-            // トランザクション全体はabortしない実装のため）。BulkErrorの
-            // `failuresByPos`は「失敗したインデックス」だけをErrorへ
-            // マッピングするので、そこに含まれないインデックスは既に確実に
-            // 保存されている（codexレビュー指摘, PR #199 finding #2）。
-            // それらに対して個別add()を再度呼ぶと、今まさに正規に書き込んだ
-            // 行自体に対するConstraintErrorとなり、以下の「重複」判定に
-            // 落ちて誤ってスキップ扱いになる ―― successCountが実際の保存数
-            // より少なく数えられるだけでなく、対応するアプリケーションイベント
-            // がstoredKeysに入らずallNewEventsから漏れ、hands/phases/actions
-            // が生成されないまま（次回の再構築まで）残ってしまう。
-            // BulkError以外（例: QuotaExceededErrorでバッチ全体がabortされた
-            // 場合など）はどの行も永続化されていないと分かっているため、
-            // 全件を個別add()にかける従来の挙動のままでよい。
-            const failuresByPos = dbError instanceof Dexie.BulkError ? dbError.failuresByPos : undefined
-
-            for (let idx = 0; idx < rawEventsToStore.length; idx++) {
-              const raw = rawEventsToStore[idx]!
-              const key = `${raw.timestamp}-${raw.ApiTypeId}`
-
-              if (failuresByPos && !(idx in failuresByPos)) {
-                // bulkAdd()の失敗リストに載っていない = 既に永続化済み。
-                // add()を再度呼ばず、そのまま成功として計上する。
-                successCount++
-                storedKeys.add(key)
-                continue
-              }
-
-              try {
-                await db.apiEvents.add(raw as ApiEvent)
-                successCount++
-                storedKeys.add(key)
-              } catch (individualError) {
-                // 個別エラーは重複以外の場合のみログ
-                const errorMessage = individualError instanceof Error ? individualError.message : String(individualError)
-                if (!errorMessage.includes('Key already exists')) {
-                  errors.push(`Event at timestamp ${raw.timestamp}: ${errorMessage}`)
-                } else {
-                  // この行はbulkAdd失敗により個別add()にフォールバックした結果
-                  // 重複と判明したもので、successCountはまだ加算されていない
-                  // （加算は直上tryブロックの成功時のみ、11行下）。ここで
-                  // successCount--するとまだ一度も加算されていないカウントを
-                  // 減算することになり、重複が多いインポートでsuccessCountが
-                  // 負数になり得た（codexレビュー指摘、監査finding #13）。
-                  // duplicateCountのみ加算する。
-                  duplicateCount++
-                }
-              }
-            }
-          }
-
-          // エンティティ生成には、実際に保存が確認できたアプリケーションイベントのみを渡す
-          for (const [key, event] of validAppEventsByKey) {
-            if (storedKeys.has(key)) allNewEvents.push(event)
+          // エンティティ生成には、実際に保存が確認できた検証済み
+          // アプリケーションイベントのみを渡す。
+          for (const raw of merge.added) {
+            const event = parseApiEvent(raw)
+            if (event && isApplicationApiEvent(event)) allNewEvents.push(event)
           }
         }
 
@@ -511,14 +428,14 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
       // and offline schema-diff tooling (see docs/architecture.md "Raw Event Lake").
       const chunks: string[] = []
       let processedCount = 0
-      let lastKey: any = undefined
+      let lastKey: ReturnType<typeof getApiEventKey> | undefined
       const chunkSize = DATABASE_CONSTANTS.EXPORT_CHUNK_SIZE
 
       while (true) {
         // Build fresh query each iteration using primary key range
         const chunk = lastKey !== undefined
-          ? await db.apiEvents.where('[timestamp+ApiTypeId]').above(lastKey).limit(chunkSize).toArray()
-          : await db.apiEvents.orderBy('[timestamp+ApiTypeId]').limit(chunkSize).toArray()
+          ? await db.apiEvents.where(API_EVENT_PRIMARY_KEY).above(lastKey).limit(chunkSize).toArray()
+          : await db.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).limit(chunkSize).toArray()
 
         if (chunk.length === 0) break
 
@@ -527,7 +444,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
 
         // Track last key for next iteration
         const lastEvent = chunk[chunk.length - 1]!
-        lastKey = [lastEvent.timestamp, lastEvent.ApiTypeId]
+        lastKey = getApiEventKey(lastEvent as unknown as RawApiEvent)
 
         const progress = Math.round((processedCount / totalCount) * 100)
         const progressMessage = `エクスポート中... ${processedCount.toLocaleString()}/${totalCount.toLocaleString()} (${progress}%)`
@@ -982,10 +899,10 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
    * 高々1回で収束する。
    *
    * 再確認は**件数比較**で行う（`db.apiEvents.count()`とスナップショット
-   * 時点の行数を比較する）―― コンパウンドキー`[timestamp+ApiTypeId]`の
+   * 時点の行数を比較する）―― コンパウンドキーの
    * 大小関係には一切依存しない（codexレビュー指摘、PR #207 pass-4
    * 「Merge live rows that do not sort after the snapshot」: 以前は
-   * `.where('[timestamp+ApiTypeId]').above(snapshotUpperBound)`で新着行を
+   * 当時の主キー`.where('[timestamp+ApiTypeId]').above(snapshotUpperBound)`で新着行を
    * 検出していたが、クロックスキューや同一ミリ秒での到着順によっては
    * 新着行がスナップショット末尾より小さいキーを持つことがあり、その
    * ケースを取りこぼしていた）。件数が変わっていれば、rawEvents全体を
@@ -1039,7 +956,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         // Load all raw events and convert in one pass
         // (EntityConverter tracks hand state internally, so chunked conversion loses cross-chunk hands)
         console.log(`[performFullRebuild] Loading all events...`)
-        rawEvents = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
+        rawEvents = await db.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).toArray()
 
         // apiEvents is the raw Lake: it may contain non-application noise (202/205
         // keepalive/timer events), ApiTypeIds unknown to the current schema, or
@@ -1083,7 +1000,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           // 誰も追加できない）。キーの大小に依存しないよう、差分合流ではなく
           // フルスキャンをやり直して完全な結果を作り直す。
           console.log(`[performFullRebuild] apiEvents changed since the snapshot (${rawEvents.length} -> ${currentCount} rows; live play or another writer during rebuild) -- re-deriving from a fresh read`)
-          const freshRaw = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
+          const freshRaw = await db.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).toArray()
           const freshValidEvents = await filterValidApplicationEvents(freshRaw)
           finalEntities = new EntityConverter(defaultSession).convertEventsToEntities(freshValidEvents)
           finalTotalEvents = freshRaw.length

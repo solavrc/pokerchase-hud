@@ -591,3 +591,32 @@ test('ログから各プレイヤーのスタッツを計算できる', async ()
     expect.objectContaining({ id: 'foldToSteal', value: [8, 9], formatted: '88.9% (8/9)' })
   ]))
 })
+
+test('WriteEntityStream derives both same-millisecond same-type actions in arrival order', async () => {
+  const db = new PokerChaseDB(indexedDB, IDBKeyRange)
+  const service = new PokerChaseService({ db })
+  await service.ready
+
+  try {
+    // First complete hand in the canonical fixture: DEAL, three ACTIONs,
+    // RESULTS. Make the first two distinct ACTION payloads share the exact
+    // timestamp; the sequence-key ingestion regression tests prove both raw
+    // rows reach this stream in this same order.
+    const handEvents = JSON.parse(JSON.stringify(event_timeline.slice(3, 8))) as ApiEvent[]
+    handEvents[2]!.timestamp = handEvents[1]!.timestamp
+    const handId = 9_999_001
+    ;(handEvents[4] as any).HandId = handId
+    const handsBefore = await db.hands.count()
+    const actionsBefore = await db.actions.count()
+
+    for (const event of handEvents) service.handAggregateStream.write(event)
+    await service.handAggregateStream.whenIdle()
+
+    expect(await db.hands.count()).toBe(handsBefore + 1)
+    expect(await db.actions.count()).toBe(actionsBefore + 3)
+    expect((await db.actions.where('handId').equals(handId).sortBy('index')).map(action => action.playerId)).toEqual([3, 1, 2])
+  } finally {
+    db.close()
+    await db.delete()
+  }
+})
