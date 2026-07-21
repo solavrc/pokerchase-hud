@@ -321,23 +321,19 @@ export const buildStoreFixture = (): string => {
 
   const FOLD = 2, CALL = 3, RAISE = 4
 
-  // Hero's own preflop raise, from her posted BB (280) up to the backdrop's
-  // baked-in 1,400 (HERO_ALREADY_COMMITTED) -- see that constant's doc
-  // comment above for why this needs to be a distinct EVT_ACTION rather
-  // than folded into the deal event's BetChip, and why it can only happen
-  // once the first pass (2 -> 3 -> 4 -> 5 -> 0) has already closed on hero.
-  // HandLogProcessor.formatAction() derives the printed raise amount from
-  // the prior "posts big blind" line (still only 280 at this point --
-  // プレイヤーC's own limp call below doesn't touch it, only bet/raise lines
-  // do), so this renders as "Hero: raises 1,120 to 1,400" -- and because
-  // it's the most recent bet/raise line, it reopens the action to プレイヤー
-  // C (the only other player still live), whose own re-raise below is in
-  // turn computed relative to 1,400, not 280.
-  const heroCommit = action(
-    heroSeat, RAISE, HERO_ALREADY_COMMITTED, BACKDROP_CHIPS_AFTER_ANTE[heroSeat]! - HERO_ALREADY_COMMITTED,
-    { Pot: potAfterHeroRaise, MinRaise: 2 * HERO_ALREADY_COMMITTED - BB, NextActionSeat: 4 }
-  )
-
+  // `action()` stamps `timestamp: (ts += 1500)` at CALL time, so every
+  // action below MUST be constructed inline, directly inside this array
+  // literal, in the exact order it's emitted -- never hoisted into a
+  // standalone `const` above the array and referenced here (hero's raise
+  // briefly was exactly that, which stamped its timestamp at its own
+  // earlier point in the code instead of its later position in this list,
+  // leaving `ts` non-monotonic: her raise carried an EARLIER timestamp than
+  // the fold/limp/fold actions emitted before it here). The live WS replay
+  // happens to use file order regardless, but `rebuildAllData()` and
+  // `HandLogExporter` both consume raw `apiEvents` sorted by timestamp, so
+  // any imported/rebuilt use of this fixture would silently see hero's
+  // raise before UTG/MP/CO/BTN/SB have acted -- undoing the seat-order fix
+  // above (see the review finding this addresses).
   const synthetic = [
     deal,
     action(2, FOLD, 0, BACKDROP_CHIPS_AFTER_ANTE[2]!, { Pot: potAfterBlinds, MinRaise: 2 * BB, NextActionSeat: 3 }),
@@ -349,7 +345,23 @@ export const buildStoreFixture = (): string => {
     action(4, CALL, BB, BACKDROP_CHIPS_AFTER_ANTE[4]! - BB, { Pot: potAfterCCall, MinRaise: 2 * BB, NextActionSeat: 5 }),
     action(5, FOLD, 0, BACKDROP_CHIPS_AFTER_ANTE[5]!, { Pot: potAfterCCall, MinRaise: 2 * BB, NextActionSeat: 0 }),
     action(0, FOLD, SB, BACKDROP_CHIPS_AFTER_ANTE[0]! - SB, { Pot: potAfterCCall, MinRaise: 2 * BB, NextActionSeat: heroSeat }),
-    heroCommit,
+    // Hero's own preflop raise, from her posted BB (280) up to the
+    // backdrop's baked-in 1,400 (HERO_ALREADY_COMMITTED) -- see that
+    // constant's doc comment above for why this needs to be a distinct
+    // EVT_ACTION rather than folded into the deal event's BetChip, and why
+    // it can only happen once the first pass (2 -> 3 -> 4 -> 5 -> 0) has
+    // already closed on hero. HandLogProcessor.formatAction() derives the
+    // printed raise amount from the prior "posts big blind" line (still
+    // only 280 at this point -- プレイヤーC's own limp call above doesn't
+    // touch it, only bet/raise lines do), so this renders as "Hero: raises
+    // 1,120 to 1,400" -- and because it's the most recent bet/raise line,
+    // it reopens the action to プレイヤーC (the only other player still
+    // live), whose own re-raise below is in turn computed relative to
+    // 1,400, not 280.
+    action(
+      heroSeat, RAISE, HERO_ALREADY_COMMITTED, BACKDROP_CHIPS_AFTER_ANTE[heroSeat]! - HERO_ALREADY_COMMITTED,
+      { Pot: potAfterHeroRaise, MinRaise: 2 * HERO_ALREADY_COMMITTED - BB, NextActionSeat: 4 }
+    ),
     // プレイヤーC's reopened re-raise, matching her bet stack in the
     // screenshot (7,840); computed against hero's 1,400 (the most recent
     // bet/raise line), it renders as "raises 6,440 to 7,840" -- exactly the
