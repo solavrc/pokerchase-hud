@@ -26,3 +26,15 @@ jobs:
 
     - name: Run tests
       run: npm test
+
+    - name: Build extension
+      run: npm run build
+
+    - name: Smoke test CRX packaging
+      run: |
+        key_file=$(mktemp)
+        crx_file=$(mktemp --suffix=.crx)
+        trap 'rm -f "$key_file" "$crx_file"' EXIT
+        openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$key_file" 2>/dev/null
+        xvfb-run -a npm run pack:crx -- "$key_file" "$crx_file"
+        test -s "$crx_file"
