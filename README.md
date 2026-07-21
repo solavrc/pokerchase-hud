@@ -12,12 +12,16 @@ This is an **unofficial** Chrome extension not affiliated with PokerChase. Use a
 
 ## Features
 
-- **Real-time HUD**: Player statistics overlay with 13+ poker metrics
+- **Real-time HUD**: Player statistics overlay with 15+ poker metrics — compact classic-style display by default (click to expand the full grid), threshold-based color coding, and per-stat tooltips
+- **Player-type icons**: Automatic HM-style classification per opponent (🦈 TAG / 💣 LAG / 🪨 nit / 🐟 fish, with a 🐳 whale override)
+- **Drill-down panels**: Per-player positional stats and recent hands (with showdown hole cards), straight from the HUD
+- **Pre-game hero stats**: Your own career stats render before the first hand is dealt
 - **Hand History**: Live PokerStars-format hand log with export
-- **Flexible Filtering**: Game type and hand count filters
+- **Flexible Filtering**: Game type, table size, and hand count filters
 - **Drag & Drop UI**: Customizable HUD positioning
 - **Data Export**: JSON and PokerStars formats
 - **Cloud Backup**: Automatic backups with cloud sync
+- **Self-updating**: Chrome-delivered updates (Web Store / managed installs) auto-apply between games, with in-popup release notes (dark/light themed popup). Unpacked (Developer-mode) installs update by re-downloading the release ZIP
 
 ## Quick Start
 
