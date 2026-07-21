@@ -175,6 +175,8 @@ For mention-triggered passes, read the same three states on the TRIGGER comment'
 
 Two secondary guards, both from measured failure modes: (1) sanity-check the reaction's `created_at` against the latest push time — a reaction predating the head push is stale history, not current state; (2) never string-match verdict flavor text. If the reaction state and the content channels genuinely contradict, do not merge — escalate.
 
+**Determinism boundary.** Everything above — head-SHA binding, reaction-state reads, Badge-marker counts, the clean-streak counter, the finite-exit caps below — is mechanical: string/marker checks and bounded counters, never an in-context call about whether "enough" reviewing has happened. This is a hard-won rule: a prior runaway-loop incident traced directly to a judgment call filling a gap left by an incomplete deterministic watcher. LLM judgment is reserved for exactly two questions — whether a given finding is valid, and how to scope its fix — and nothing else in the loop's control flow.
+
 **Finite-exit rules (loop cost control):**
 
 ```text
@@ -187,6 +189,12 @@ Two secondary guards, both from measured failure modes: (1) sanity-check the rea
 ```
 
 **Merge authority.** The repository owner has explicitly granted autonomous merging on MERGE_READY (standing instruction, 2026-07-18). If that grant is ever withdrawn, the terminal state becomes `MERGE_READY / AWAITING_OWNER_APPROVAL` and the actual merge waits for an owner instruction.
+
+**Review-loop ownership (policy, 2026-07-21).** Each PR's review loop has exactly one owner at a time. When implementation is delegated to a subagent, that agent owns the loop end-to-end: fetching findings (`gh api --paginate`, Badge-marked inline comments), assessing their validity, fixing, replying to and resolving threads, waiting out the post-push review, verifying against the head SHA, and repeating until MERGE_READY or an escalation condition below is hit. The delegating orchestrator does not poll the same PR in parallel with the owning agent, does not wake periodically just to check on a review that's still in flight, and does not report clean/no-change passes back to the user — only the owner's terminal state (MERGE_READY, or an escalation) is worth surfacing.
+
+**Escalation to the orchestrator** is what STOP_ESCALATE above resolves to when the loop is delegated — not a second, competing escalation path, but the delegated case's landing point for the same event. It is the only point at which the parent looks at review state directly, and it fires on: a derivative finding persisting across ≥2 rounds; the same underlying invariant's finding recurring in changed form; a race spanning multiple modules; auth, migration, or data-loss topics; contradictory findings; a fix that balloons from a finding-scoped local patch into a new mechanism; or multiple valid designs the agent cannot choose between. The orchestrator's response is a one-shot design memo, not resumed ownership — once it lands, the loop owner takes the decision and keeps running the loop to convergence. If the memo itself doesn't resolve it, the orchestrator is the one who hands the PR to the repository owner.
+
+**Delegated implementation.** High-difficulty fixes may be delegated to gpt-5.6-sol via `codex exec` (effort `high` by default). The single-owner rule applies unchanged: whichever agent pushes the fix commit owns that push's review loop through MERGE_READY or escalation — the orchestrator does not take it back mid-loop just because the fix itself came from a different agent.
 
 #### Version Control
 
