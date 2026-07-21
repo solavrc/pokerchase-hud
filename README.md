@@ -21,7 +21,7 @@ This is an **unofficial** Chrome extension not affiliated with PokerChase. Use a
 - **Drag & Drop UI**: Customizable HUD positioning
 - **Data Export**: JSON and PokerStars formats
 - **Cloud Backup**: Automatic backups with cloud sync
-- **Self-updating**: Updates auto-apply between games, with in-popup release notes (dark/light themed popup)
+- **Self-updating**: Chrome-delivered updates (Web Store / managed installs) auto-apply between games, with in-popup release notes (dark/light themed popup). Unpacked (Developer-mode) installs update by re-downloading the release ZIP
 
 ## Quick Start
 

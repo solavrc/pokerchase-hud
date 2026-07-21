@@ -31,7 +31,8 @@
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml             # CI pipeline (test, typecheck)
-│       └── build.yml          # Build, release automation (release-please job), CWS upload
+│       └── build.yml          # Build, release-please job, signed CRX upload to the GitHub Release
+│                              #   (Chrome Web Store submission itself is manual — docs/chrome-web-store-release.md)
 ├── docs/                      # Technical documentation (flat)
 │   ├── api-events.md          # WebSocket API event reference (canonical event semantics)
 │   ├── architecture.md        # Design decisions & rationale (ADR)
@@ -40,7 +41,6 @@
 │   ├── firebase-setup.md      # Firebase setup guide
 │   ├── hand-analysis.md       # 22-hand statistics audit trail (pre-#115 definitions)
 │   ├── pokerstars-export.md   # PokerStars export specification
-│   ├── postmortems/           # Incident postmortems
 │   └── store-assets/          # Chrome Web Store screenshots + promo tiles (440×280 / 1400×560)
 │       └── src/               # Promo tile HTML generators (capture-promo-tiles.ts renders these)
 ├── e2e/                       # E2E QA harness (WS replay into the real extension; see e2e/README.md)
