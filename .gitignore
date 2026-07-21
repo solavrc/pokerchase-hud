@@ -6,6 +6,7 @@ output/playwright/
 coverage/
 *.log
 *.zip
+*.crx
 .DS_Store
 .mcp.json
 *.ndjson

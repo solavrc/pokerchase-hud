@@ -57,9 +57,23 @@ jobs:
       - name: Build extension
         run: npm run build
 
+      - name: Build signed CRX
+        env:
+          CWS_CRX_PRIVATE_KEY: ${{ secrets.CWS_CRX_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$CWS_CRX_PRIVATE_KEY" ]]; then
+            echo "CWS_CRX_PRIVATE_KEY is not configured" >&2
+            exit 1
+          fi
+
+          key_file=$(mktemp)
+          trap 'rm -f "$key_file"' EXIT
+          chmod 600 "$key_file"
+          printf '%s' "$CWS_CRX_PRIVATE_KEY" > "$key_file"
+          npm run pack:crx -- "$key_file"
+
       - name: Upload Release Asset
         run: |
-          gh release upload ${{ needs.release-please.outputs.tag_name }} extension.zip --clobber
+          gh release upload ${{ needs.release-please.outputs.tag_name }} extension.zip extension.crx --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
