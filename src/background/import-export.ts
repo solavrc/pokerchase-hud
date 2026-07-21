@@ -60,15 +60,22 @@ interface PairedLakeHand {
   dealKey: CompoundEventKey
   resultKey: CompoundEventKey
   pairKey: string
-  events: ApiEvent[]
 }
 
 interface OverlapRepairPlan {
   entities: EntityBundle
-  /** 旧・新viewのいずれかで実際に影響を受けたHandIdだけ。 */
-  affectedHandIds: number[]
+  /** 同一transactionでdeleteしてからentitiesで置き換えるHandId。 */
+  replaceHandIds: number[]
   replayEventCount: number
   repairedHandCount: number
+  affectedSessionCount: number
+  preservedRejectedHandCount: number
+}
+
+interface SessionWindow {
+  id: string
+  startKey?: CompoundEventKey
+  endKey?: CompoundEventKey
 }
 
 const eventKey = (event: ApiEvent): CompoundEventKey => [event.timestamp ?? 0, event.ApiTypeId]
@@ -95,23 +102,32 @@ const copyImportSession = (session: Session): Session => ({
 })
 
 /**
- * Overlap修復の不変条件（独立監査finding #7、PR #203 review pass 8）:
+ * Overlap修復の不変条件（独立監査finding #7、PR #203 review pass 9）:
  *
- * 1. replay windowはconverter文脈の読取り範囲であり、書込み範囲ではない。
- *    新規行を含むraw hand span、旧/新viewでDEAL→306 pairingが変わるhand、
- *    または新規session rowによりLake由来sessionが変わるhandだけを
- *    affectedとする。その他のbystanderはconverter出力を捨て、deleteもputも
- *    しないためbyte-identicalに残る。
- * 2. session seedはrange単位でなくhand単位。各DEALより前で最新の検証済み
- *    201からid/battleTypeを、その201以後・DEAL以前で最新の308からnameを
- *    再構築する。201が無ければ空/rebuild-style。ただし全new rowが既存の
- *    valid application tailより後に付くincremental tail importで、かつ以前に
- *    派生していないhandだけはlive service.sessionをseedにする（#104）。
- * 3. 範囲境界・session候補は常に現行schemaで再検証する。上端探索はtimestamp
- *    だけでなく最大new [timestamp+ApiTypeId] keyから始めるため、同一msで
- *    [T,306]の後ろにある[T,308]/[T,313]を落とさない。
- * 4. Raw Event Lakeは読取り専用。affected HandIdのhands/phases/actionsだけを
- *    同一transactionでdelete-then-putし、消滅した旧pairやaction tailも除く。
+ * 1. 修復単位はhandではなくsession window。new rowが属するwindowを、検証済み
+ *    201（無ければLake先頭）から次の検証済み201（無ければLake末尾）まで
+ *    rebuild-styleで再導出する。handはDEAL時点のwindowへ所属させるため、hand内
+ *    201（MTT table move）でopening DEALを切らない。複数windowは独立に処理し、
+ *    対象外sessionのbystanderはdeleteもputもしないのでbyte-identicalに残る。
+ * 2. 各handのsessionはDEAL前のwindow内容から作る。最新201はid/battleTypeを
+ *    設定してnameをresetし、その後の最新308はnameを設定する。201がなく308だけ
+ *    でも{name}を持つLake sessionとして扱う。Lake contextが一切ない場合だけ
+ *    empty/rebuild-styleとし、純粋なappend tailの未派生handに限りlive sessionを
+ *    seedする（#104）。
+ * 3. delete候補は対象windowのold/post DEAL→306 pairのHandId和集合。ただしpost
+ *    pairのraw rowsが現存するのにEntityConverterのsemantic guardが再出力を拒否
+ *    したHandIdは候補から除外し、legacy derived rowsを保存する。old pairがpost
+ *    pairingから消えた場合だけは論理raw handが消滅したためstale idを削除できる。
+ * 4. 境界・pair・contextは全て現行schemaで再検証し、compound key順で扱う。
+ *    Raw Event Lakeは読取り専用。replace対象だけを同一transactionで
+ *    delete-then-putし、session外の派生行には触れない。
+ *
+ * Decision matrix:
+ * - hand rows / both: そのrowを含むold/post pairのDEAL所属windowを全再導出。
+ * - session rows: 201は自身から、308はgoverning 201（無ければLake先頭）から
+ *   次boundaryまで全再導出。contextは201 / 308-only / noneを上記2で決定。
+ * - converter re-emits: delete-then-put。rejects + post pair persists: preserve。
+ *   old-only pair（postで論理rows-gone）: delete。これで全組合せを閉じる。
  */
 export const buildOverlapRepairPlan = async (
   db: PokerChaseDB,
@@ -123,59 +139,6 @@ export const buildOverlapRepairPlan = async (
     const parsed = parseApiEvent(row)
     return !!parsed && isApplicationApiEvent(parsed)
   }
-
-  let minNewKey = eventKey(newEvents[0]!)
-  let maxNewKey = minNewKey
-  for (const event of newEvents.slice(1)) {
-    const key = eventKey(event)
-    if (compareEventKeys(key, minNewKey) < 0) minNewKey = key
-    if (compareEventKeys(key, maxNewKey) > 0) maxNewKey = key
-  }
-
-  // 直前のvalid 306より後から読むと、new rowを含む旧handのopening DEALを
-  // 保持しつつ、pure appendでは過去session全体を読み直さない。
-  const previousResult = await db.apiEvents
-    .where('[timestamp+ApiTypeId]')
-    .below(minNewKey)
-    .reverse()
-    .filter(row => row.ApiTypeId === ApiType.EVT_HAND_RESULTS && isValidApplicationRow(row))
-    .first()
-
-  // 新viewの最初の306と、new rowを除いた旧viewの最初の306の遅い方まで読む。
-  // 新306が旧pairを早く閉じるcapture-gap修復でも、旧pairの末尾を含められる。
-  // 探索開始をmaxNewKeyそのものにするのがsame-ms tail inclusivityの要点。
-  const firstPostResult = await db.apiEvents
-    .where('[timestamp+ApiTypeId]')
-    .aboveOrEqual(maxNewKey)
-    .filter(row => row.ApiTypeId === ApiType.EVT_HAND_RESULTS && isValidApplicationRow(row))
-    .first()
-  const firstOldResult = await db.apiEvents
-    .where('[timestamp+ApiTypeId]')
-    .aboveOrEqual(maxNewKey)
-    .filter(row =>
-      row.ApiTypeId === ApiType.EVT_HAND_RESULTS &&
-      !newEventKeys.has(eventStorageKey(row)) &&
-      isValidApplicationRow(row)
-    )
-    .first()
-  const upperEvent = [firstPostResult, firstOldResult]
-    .filter((event): event is ApiEvent => event !== undefined)
-    .sort((left, right) => compareEventKeys(eventKey(right), eventKey(left)))[0]
-
-  const lowerKey = previousResult ? eventKey(previousResult) : undefined
-  const upperKey = upperEvent ? eventKey(upperEvent) : undefined
-  let rawRows: ApiEvent[]
-  if (lowerKey && upperKey) {
-    rawRows = await db.apiEvents.where('[timestamp+ApiTypeId]').between(lowerKey, upperKey, false, true).toArray()
-  } else if (lowerKey) {
-    rawRows = await db.apiEvents.where('[timestamp+ApiTypeId]').above(lowerKey).toArray()
-  } else if (upperKey) {
-    rawRows = await db.apiEvents.where('[timestamp+ApiTypeId]').belowOrEqual(upperKey).toArray()
-  } else {
-    rawRows = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
-  }
-  const events = await filterValidApplicationEvents(rawRows)
-  const oldEvents = events.filter(event => !newEventKeys.has(eventStorageKey(event)))
 
   const collectPairedHands = (candidateEvents: ApiEvent[]): PairedLakeHand[] => {
     const hands: PairedLakeHand[] = []
@@ -194,8 +157,7 @@ export const buildOverlapRepairPlan = async (
             handId: event.HandId,
             dealKey,
             resultKey,
-            pairKey: pairStorageKey(dealKey, resultKey),
-            events: candidateEvents.slice(openDealIndex, index + 1)
+            pairKey: pairStorageKey(dealKey, resultKey)
           })
         }
         openDealIndex = undefined
@@ -204,87 +166,131 @@ export const buildOverlapRepairPlan = async (
     return hands
   }
 
-  const oldHands = collectPairedHands(oldEvents)
-  const postHands = collectPairedHands(events)
+  // Session starts and hand pairings are the only global information needed.
+  // Loading these indexed event kinds avoids turning every overlap import into
+  // a full-Lake rebuild; complete raw rows are fetched only for affected windows.
+  const boundaryRows = await db.apiEvents
+    .where('ApiTypeId')
+    .anyOf([ApiType.EVT_ENTRY_QUEUED, ApiType.EVT_DEAL, ApiType.EVT_HAND_RESULTS])
+    .toArray()
+  const boundaryEvents = (await filterValidApplicationEvents(boundaryRows))
+    .sort((left, right) => compareEventKeys(eventKey(left), eventKey(right)))
+  const oldBoundaryEvents = boundaryEvents.filter(event => !newEventKeys.has(eventStorageKey(event)))
+  const oldHands = collectPairedHands(oldBoundaryEvents)
+  const postHands = collectPairedHands(boundaryEvents)
   const oldByPair = new Map(oldHands.map(hand => [hand.pairKey, hand]))
   const postByPair = new Map(postHands.map(hand => [hand.pairKey, hand]))
+  const sessionStarts = boundaryEvents.filter(event => isApiEventType(event, ApiType.EVT_ENTRY_QUEUED))
 
-  type LakeSession = Pick<Session, 'id' | 'battleType' | 'name'>
-  const sessionCache = new Map<string, LakeSession | undefined>()
-  const lakeSessionBeforeDeal = async (
-    dealKey: CompoundEventKey,
-    excludeNewRows: boolean
-  ): Promise<LakeSession | undefined> => {
-    const cacheKey = `${excludeNewRows ? 'old' : 'post'}:${dealKey[0]}-${dealKey[1]}`
-    if (sessionCache.has(cacheKey)) return sessionCache.get(cacheKey)
-
-    const anchorRow = await db.apiEvents
-      .where('[timestamp+ApiTypeId]')
-      .below(dealKey)
-      .reverse()
-      .filter(row =>
-        row.ApiTypeId === ApiType.EVT_ENTRY_QUEUED &&
-        (!excludeNewRows || !newEventKeys.has(eventStorageKey(row))) &&
-        isValidApplicationRow(row)
-      )
-      .first()
-    const anchor = anchorRow ? parseApiEvent(anchorRow) : null
-    if (!anchor || !isApiEventType(anchor, ApiType.EVT_ENTRY_QUEUED)) {
-      sessionCache.set(cacheKey, undefined)
-      return undefined
+  const sessionWindowForKey = (key: CompoundEventKey): SessionWindow => {
+    let low = 0
+    let high = sessionStarts.length
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2)
+      if (compareEventKeys(eventKey(sessionStarts[middle]!), key) <= 0) low = middle + 1
+      else high = middle
     }
-
-    const contextRows = await db.apiEvents
-      .where('[timestamp+ApiTypeId]')
-      .between(eventKey(anchor), dealKey, true, false)
-      .filter(row =>
-        (!excludeNewRows || !newEventKeys.has(eventStorageKey(row))) &&
-        isValidApplicationRow(row)
-      )
-      .toArray()
-    let name: string | undefined
-    for (const rawContext of contextRows) {
-      const context = parseApiEvent(rawContext)
-      if (context && isApiEventType(context, ApiType.EVT_SESSION_DETAILS)) name = context.Name
-    }
-    const session = { id: anchor.Id, battleType: anchor.BattleType, name }
-    sessionCache.set(cacheKey, session)
-    return session
-  }
-
-  const sessionsEqual = (left: LakeSession | undefined, right: LakeSession | undefined): boolean =>
-    left?.id === right?.id && left?.battleType === right?.battleType && left?.name === right?.name
-  const containsNewKey = (hand: PairedLakeHand): boolean => newEvents.some(event => {
-    const key = eventKey(event)
-    return compareEventKeys(key, hand.dealKey) >= 0 && compareEventKeys(key, hand.resultKey) <= 0
-  })
-
-  const affectedOldPairs = new Set<string>()
-  const affectedPostPairs = new Set<string>()
-  for (const oldHand of oldHands) {
-    if (!postByPair.has(oldHand.pairKey) || containsNewKey(oldHand)) affectedOldPairs.add(oldHand.pairKey)
-  }
-  for (const postHand of postHands) {
-    if (!oldByPair.has(postHand.pairKey) || containsNewKey(postHand)) affectedPostPairs.add(postHand.pairKey)
-  }
-  for (const postHand of postHands) {
-    const oldHand = oldByPair.get(postHand.pairKey)
-    if (!oldHand) continue
-    const [oldSession, postSession] = await Promise.all([
-      lakeSessionBeforeDeal(oldHand.dealKey, true),
-      lakeSessionBeforeDeal(postHand.dealKey, false)
-    ])
-    if (!sessionsEqual(oldSession, postSession)) {
-      affectedOldPairs.add(oldHand.pairKey)
-      affectedPostPairs.add(postHand.pairKey)
+    const startIndex = low - 1
+    const startKey = startIndex >= 0 ? eventKey(sessionStarts[startIndex]!) : undefined
+    const endKey = startIndex + 1 < sessionStarts.length
+      ? eventKey(sessionStarts[startIndex + 1]!)
+      : undefined
+    return {
+      id: startKey ? `session:${startKey[0]}-${startKey[1]}` : 'lake-start',
+      startKey,
+      endKey
     }
   }
+  const affectedWindows = new Map<string, SessionWindow>()
+  const addWindowForKey = (key: CompoundEventKey): void => {
+    const window = sessionWindowForKey(key)
+    affectedWindows.set(window.id, window)
+  }
 
-  const affectedPostHands = postHands.filter(hand => affectedPostPairs.has(hand.pairKey))
-  const affectedHandIds = Array.from(new Set([
-    ...oldHands.filter(hand => affectedOldPairs.has(hand.pairKey)).map(hand => hand.handId),
-    ...affectedPostHands.map(hand => hand.handId)
-  ]))
+  const isSessionRow = (event: ApiEvent): boolean =>
+    event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED ||
+    event.ApiTypeId === ApiType.EVT_SESSION_DETAILS
+  const sessionRows = newEvents.filter(isSessionRow)
+  for (const sessionRow of sessionRows) addWindowForKey(eventKey(sessionRow))
+
+  const handRows = newEvents
+    .filter(event => !isSessionRow(event))
+    .sort((left, right) => compareEventKeys(eventKey(left), eventKey(right)))
+  const pairedNewKeys = new Set<string>()
+  const addWindowsForPairedRows = (hands: PairedLakeHand[]): void => {
+    let handIndex = 0
+    for (const newEvent of handRows) {
+      const key = eventKey(newEvent)
+      while (handIndex < hands.length && compareEventKeys(hands[handIndex]!.resultKey, key) < 0) {
+        handIndex++
+      }
+      const hand = hands[handIndex]
+      if (hand && compareEventKeys(key, hand.dealKey) >= 0 && compareEventKeys(key, hand.resultKey) <= 0) {
+        addWindowForKey(hand.dealKey)
+        pairedNewKeys.add(eventStorageKey(newEvent))
+      }
+    }
+  }
+  addWindowsForPairedRows(oldHands)
+  addWindowsForPairedRows(postHands)
+
+  for (const newEvent of handRows) {
+    // Incomplete/orphan session-tail rows still belong to their surrounding
+    // window even though no complete DEAL→306 pair can claim them yet.
+    if (!pairedNewKeys.has(eventStorageKey(newEvent))) addWindowForKey(eventKey(newEvent))
+  }
+
+  // Pairing can change beyond the exact new key (capture-gap repair). Mark the
+  // session of every old-only/new-only pair so stale ids and replacement ids
+  // are handled together by one session rebuild.
+  for (const hand of oldHands) {
+    if (!postByPair.has(hand.pairKey)) addWindowForKey(hand.dealKey)
+  }
+  for (const hand of postHands) {
+    if (!oldByPair.has(hand.pairKey)) addWindowForKey(hand.dealKey)
+  }
+
+  const affectedWindowList = Array.from(affectedWindows.values())
+  const affectedOldHands = oldHands.filter(hand => affectedWindows.has(sessionWindowForKey(hand.dealKey).id))
+  const affectedPostHands = postHands.filter(hand => affectedWindows.has(sessionWindowForKey(hand.dealKey).id))
+  const affectedHandsByWindow = new Map<string, PairedLakeHand[]>()
+  for (const hand of [...affectedOldHands, ...affectedPostHands]) {
+    const windowId = sessionWindowForKey(hand.dealKey).id
+    const hands = affectedHandsByWindow.get(windowId) ?? []
+    hands.push(hand)
+    affectedHandsByWindow.set(windowId, hands)
+  }
+
+  const replayEventsByKey = new Map<string, ApiEvent>()
+  for (const window of affectedWindowList) {
+    const crossingResult = (affectedHandsByWindow.get(window.id) ?? [])
+      .map(hand => hand.resultKey)
+      .sort((left, right) => compareEventKeys(right, left))[0]
+    const upperKey = window.endKey && crossingResult && compareEventKeys(crossingResult, window.endKey) >= 0
+      ? crossingResult
+      : window.endKey
+    const includeUpper = !!(window.endKey && crossingResult && compareEventKeys(crossingResult, window.endKey) >= 0)
+
+    let rawRows: ApiEvent[]
+    if (window.startKey && upperKey) {
+      rawRows = await db.apiEvents
+        .where('[timestamp+ApiTypeId]')
+        .between(window.startKey, upperKey, true, includeUpper)
+        .toArray()
+    } else if (window.startKey) {
+      rawRows = await db.apiEvents.where('[timestamp+ApiTypeId]').aboveOrEqual(window.startKey).toArray()
+    } else if (upperKey) {
+      rawRows = includeUpper
+        ? await db.apiEvents.where('[timestamp+ApiTypeId]').belowOrEqual(upperKey).toArray()
+        : await db.apiEvents.where('[timestamp+ApiTypeId]').below(upperKey).toArray()
+    } else {
+      rawRows = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
+    }
+    const validRows = await filterValidApplicationEvents(rawRows)
+    for (const event of validRows) replayEventsByKey.set(eventStorageKey(event), event)
+  }
+  const replayEvents = Array.from(replayEventsByKey.values())
+    .sort((left, right) => compareEventKeys(eventKey(left), eventKey(right)))
 
   // Pure tail append = 今回の最古new application keyが、旧viewの最後のvalid
   // application keyより後。複数handを一度にappendしても同じ判定になる。
@@ -293,6 +299,11 @@ export const buildOverlapRepairPlan = async (
     .reverse()
     .filter(row => !newEventKeys.has(eventStorageKey(row)) && isValidApplicationRow(row))
     .first()
+  let minNewKey = eventKey(newEvents[0]!)
+  for (const event of newEvents.slice(1)) {
+    const key = eventKey(event)
+    if (compareEventKeys(key, minNewKey) < 0) minNewKey = key
+  }
   const isTailAppend = !lastOldApplicationEvent || compareEventKeys(minNewKey, eventKey(lastOldApplicationEvent)) > 0
   const existingAffectedHands = affectedPostHands.length > 0
     ? await db.hands.bulkGet(affectedPostHands.map(hand => hand.handId))
@@ -304,8 +315,19 @@ export const buildOverlapRepairPlan = async (
   )
 
   const entities: EntityBundle = { hands: [], phases: [], actions: [] }
+  const emittedHandIds = new Set<number>()
+  const rejectedPostHandIds = new Set<number>()
   for (const hand of affectedPostHands) {
-    const lakeSession = await lakeSessionBeforeDeal(hand.dealKey, false)
+    type LakeSession = Pick<Session, 'id' | 'battleType' | 'name'>
+    let lakeSession: LakeSession | undefined
+    for (const context of replayEvents) {
+      if (compareEventKeys(eventKey(context), hand.dealKey) >= 0) break
+      if (isApiEventType(context, ApiType.EVT_ENTRY_QUEUED)) {
+        lakeSession = { id: context.Id, battleType: context.BattleType, name: undefined }
+      } else if (isApiEventType(context, ApiType.EVT_SESSION_DETAILS)) {
+        lakeSession = { ...lakeSession, name: context.Name }
+      }
+    }
     const session = lakeSession
       ? { ...emptyImportSession(), ...lakeSession }
       : isTailAppend && !previouslyDerivedIds.has(hand.handId)
@@ -315,23 +337,42 @@ export const buildOverlapRepairPlan = async (
     // SessionはDEAL時点のLake文脈で固定する。hand内に割り込む201/308を
     // converterへ渡すとclose時のcurrentSessionへ反映されるため、派生に必要な
     // 303/304/305/306だけをhandごとに変換する。
-    const handEvents = hand.events.filter(event =>
+    const handEvents = replayEvents.filter(event =>
+      compareEventKeys(eventKey(event), hand.dealKey) >= 0 &&
+      compareEventKeys(eventKey(event), hand.resultKey) <= 0 &&
+      (
       event.ApiTypeId === ApiType.EVT_DEAL ||
       event.ApiTypeId === ApiType.EVT_ACTION ||
       event.ApiTypeId === ApiType.EVT_DEAL_ROUND ||
       event.ApiTypeId === ApiType.EVT_HAND_RESULTS
+      )
     )
     const bundle = new EntityConverter(session).convertEventsToEntities(handEvents)
+    if (bundle.hands.length === 0) {
+      rejectedPostHandIds.add(hand.handId)
+      continue
+    }
+    bundle.hands.forEach(entity => emittedHandIds.add(entity.id))
     entities.hands.push(...bundle.hands)
     entities.phases.push(...bundle.phases)
     entities.actions.push(...bundle.actions)
   }
 
+  const preserveHandIds = new Set(
+    Array.from(rejectedPostHandIds).filter(handId => !emittedHandIds.has(handId))
+  )
+  const replaceHandIds = Array.from(new Set([
+    ...affectedOldHands.map(hand => hand.handId),
+    ...affectedPostHands.map(hand => hand.handId)
+  ])).filter(handId => !preserveHandIds.has(handId))
+
   return {
     entities,
-    affectedHandIds,
-    replayEventCount: events.length,
-    repairedHandCount: affectedPostHands.length
+    replaceHandIds,
+    replayEventCount: replayEvents.length,
+    repairedHandCount: entities.hands.length,
+    affectedSessionCount: affectedWindowList.length,
+    preservedRejectedHandCount: preserveHandIds.size
   }
 }
 
@@ -592,7 +633,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           if (hadPreexistingEvents) {
             repairPlan = await buildOverlapRepairPlan(db, allNewEvents, service.session)
             entities = repairPlan.entities
-            console.log(`[importData] Overlap import detected - inspected ${repairPlan.replayEventCount} Lake events and re-derived ${repairPlan.repairedHandCount} affected hand(s)`)
+            console.log(`[importData] Overlap import detected - rebuilt ${repairPlan.affectedSessionCount} session window(s), inspected ${repairPlan.replayEventCount} Lake events, re-derived ${repairPlan.repairedHandCount} hand(s), preserved ${repairPlan.preservedRejectedHandCount} converter-rejected hand(s)`)
           } else {
             entities = new EntityConverter(service.session).convertEventsToEntities(allNewEvents)
           }
@@ -604,15 +645,15 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           }
 
           if (repairPlan) {
-            // putだけでは消滅した旧pair/action tailが残るため、affected IDsだけ
-            // 同一transactionでdelete-then-putする。replay中のbystanderは
-            // affectedHandIdsへ入らず、hands/phases/actions全て無変更。
-            const { affectedHandIds } = repairPlan
+            // putだけでは消滅した旧pair/action tailが残るため、replace IDsだけ
+            // 同一transactionでdelete-then-putする。対象session外のbystanderと、
+            // raw pairは残るがconverterが再出力できないlegacy handは全て無変更。
+            const { replaceHandIds } = repairPlan
             await db.transaction('rw', [db.hands, db.phases, db.actions], async () => {
-              const existingAffectedHands = affectedHandIds.length > 0
-                ? await db.hands.bulkGet(affectedHandIds)
+              const existingAffectedHands = replaceHandIds.length > 0
+                ? await db.hands.bulkGet(replaceHandIds)
                 : []
-              const staleHandIds = affectedHandIds.filter((_, index) => existingAffectedHands[index] !== undefined)
+              const staleHandIds = replaceHandIds.filter((_, index) => existingAffectedHands[index] !== undefined)
               if (staleHandIds.length > 0) {
                 console.log(`[importData] Removing ${staleHandIds.length} affected derived hand(s) before re-deriving`)
                 await db.hands.bulkDelete(staleHandIds)

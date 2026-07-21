@@ -314,44 +314,58 @@ Statistics Refresh (batch mode)
 - Storage and entity generation are decoupled: a line that fails to parse (or
   is a known non-application type) is still stored raw — it just doesn't
   reach `EntityConverter`. See "Raw Event Lake" (Design Principles #16).
-- **Overlap imports repair per hand from the Lake, not per range from new
-  events alone**: when the DB already contained rows, the entity pass reads a
-  bounded replay window from `apiEvents` and builds validated DEAL→306 pairings
-  for both the pre-import view (new keys removed) and post-import view. The
-  lower boundary is immediately after the last valid 306 before the minimum
-  new compound key, so a split hand keeps its opening DEAL without replaying a
-  whole session on a pure append. The upper boundary reaches the later of the
-  first valid old-view and post-view 306 at/after the **maximum new
-  `[timestamp+ApiTypeId]` key**. Compound-key comparison is required: at one
-  millisecond `[T,308]` sorts after `[T,306]`, so a timestamp-only boundary
-  would drop a newly imported session-detail/player-context tail row. Every
-  boundary candidate and replay row is re-validated with the current schema;
-  malformed raw Lake rows never become boundaries.
+- **Overlap imports repair whole session windows from the Lake**: when the DB
+  already contained rows, `buildOverlapRepairPlan()` first reads only the
+  indexed, validated 201/303/306 boundary rows. A new row selects the session
+  window containing it: the governing valid `EVT_ENTRY_QUEUED` (201), or Lake
+  start when no 201 exists, through the next valid 201 or Lake end. Hand rows
+  are assigned by their DEAL's window, so an MTT table-move 201 inside an open
+  hand never cuts off that hand's opening DEAL. Complete raw rows are then read
+  only for selected windows, and every complete hand in those windows is
+  re-derived. This deliberately trades the previous fragile per-hand minimum
+  write set for a bounded, convergent invariant. Hands in all other sessions
+  are neither deleted nor put and remain byte-identical. Boundary, pairing, and
+  context rows are re-validated with the current schema and ordered by the full
+  `[timestamp+ApiTypeId]` compound key; malformed Lake rows cannot create a
+  boundary. The Raw Event Lake is read-only throughout repair.
 
-  The replay window supplies context only; it does **not** authorize rewriting
-  every hand in that window. A hand is affected only when (a) its validated
-  DEAL→306 source span contains a new row, (b) its DEAL/result pairing differs
-  between the pre/post views, or (c) its Lake-derived session at DEAL changes.
-  Only affected HandIds and their phases/actions are deleted, then only
-  affected post-view hands are `bulkPut` in the same transaction. This removes
-  stale old pair ids and action tails while leaving unrelated bystander hands
-  byte-identical, including legacy hands without `approxTimestamp` and hands
-  whose raw sources no longer validate. A leading orphan 306 has no DEAL pair
-  and therefore grants no deletion authority. The Raw Event Lake is never
-  mutated by repair.
+  Session context is still frozen per hand at its DEAL. The latest valid 201
+  before the DEAL sets id/battleType and resets name; the latest valid 308 after
+  that 201 sets name. If no 201 exists, a preceding valid 308 still establishes
+  a real `{name}` context (id/battleType remain undefined), rather than falling
+  through to the contextless seed. Only when neither 201 nor 308 exists is the
+  rebuild-style seed empty. The sole exception remains a genuinely appended,
+  not-previously-derived tail hand (the minimum new application compound key is
+  after the old valid-application tail): that hand is seeded from live
+  `service.session`, preserving #104. Older hands in the same affected window
+  continue to use Lake/empty context; live state never leaks backward.
 
-  Session context is also per hand. For each affected DEAL, use the most recent
-  valid 201 before that DEAL for id/battleType and the latest valid 308 after
-  that 201 but before the DEAL for name. This remains true when discarded or
-  unterminated leading rows precede the 201; a mid-hand 201 affects a later
-  DEAL, not the already-open hand. With no preceding 201, use an empty
-  rebuild-style session. The sole exception is a genuinely new, not previously
-  derived hand in a pure incremental tail append (all new application keys are
-  after the old valid-application tail): seed that hand from live
-  `service.session`, preserving #104. The old range-wide `hasSessionAnchor`
-  decision must not be reintroduced. See `buildOverlapRepairPlan()` in
-  `src/background/import-export.ts` (independent release-audit finding #7 and
-  PR #203 review refinements). A fresh empty-DB import keeps the direct path.
+  Delete-then-put is atomic across `hands`/`phases`/`actions`. Its candidate ids
+  are the union of old-view and post-view validated DEAL→306 pairs whose DEAL
+  belongs to an affected window. Before deletion, every post-view pair is run
+  through `EntityConverter`: if current semantic guards reject it (duplicate
+  DEAL_ROUND, RESULTS outside the dealt lineup, etc.) while that post pair's raw
+  rows still exist, its HandId is removed from the delete set and all legacy
+  derived rows are preserved byte-for-byte. An old-only pair may be deleted
+  because the post-import pairing no longer contains that logical raw hand;
+  this is what removes capture-gap stale ids/action tails. Unparseable raw rows
+  and orphan 306 fragments form no validated pair and grant no deletion scope.
+
+  Complete decision matrix:
+
+  | Added rows | Context at each DEAL | Converter outcome | Repair result |
+  | --- | --- | --- | --- |
+  | hand rows | 201 (+ optional later 308) | re-emitted | rebuild the full governing session; delete-then-put old/post ids |
+  | hand rows | 308 only | re-emitted | rebuild the Lake-start window with `{name}` context |
+  | hand rows | none | re-emitted | empty rebuild seed; live seed only for a genuinely new tail hand |
+  | session rows (201 or 308) | 201 or 308 only | re-emitted | rebuild every hand through the next 201/Lake end, not only the first 306 |
+  | hand + session rows | 201, 308 only, or none | re-emitted | union the selected windows and apply the same per-DEAL rules |
+  | any of the above | any | rejected, post raw pair persists | preserve existing hand/phases/actions; do not delete |
+  | any of the above | any | old pair absent from post view | delete the stale old-only id |
+
+  See `buildOverlapRepairPlan()` in `src/background/import-export.ts`
+  (independent release-audit finding #7 and PR #203 review refinements). A fresh
+  empty-DB import keeps the direct path.
 
 **Critical Design Constraints (learned 2026-03):**
 

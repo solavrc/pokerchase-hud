@@ -14,13 +14,13 @@
  * stat computed from them) stayed stale until a later full rebuild.
  *
  * The fix (see `buildOverlapRepairPlan()` in import-export.ts): when the
- * DB already contained events before the import, a bounded Lake replay builds
- * pre/post-import DEAL->306 pairings, but deletion, conversion, and writes are
- * selected per hand. Only a hand whose source span contains a new row, whose
- * pairing changes, or whose Lake-derived session context changes is repaired;
- * replayed bystanders are discarded and remain byte-identical. Each affected
- * hand is seeded from the latest valid 201 (+ subsequent 308 name) before its
- * own DEAL, with live-session seeding reserved for a genuinely new tail append.
+ * DB already contained events before the import, indexed session/hand
+ * boundaries identify the affected session window(s). Every complete hand in
+ * those windows is re-derived; hands in other sessions remain byte-identical.
+ * Each hand is seeded from validated 201/308 context before its own DEAL (308
+ * works even without a 201), with live-session seeding reserved for a genuinely
+ * new tail append. A legacy hand whose post-import raw pair still exists but
+ * whose converter guards reject it is preserved instead of deleted.
  *
  * Each scenario below asserts the repaired DB's derived state deep-equals a
  * control DB produced by importing the same complete export into an empty DB
@@ -93,6 +93,17 @@ const MALFORMED_RESULTS_ROW = { "ApiTypeId": 306, "timestamp": 1752427319000 }
 // (...313426) -- legitimately outside any hand (HAND0 is already closed,
 // HAND1 hasn't opened yet).
 const GAP_ENTRY_QUEUED = { ...ENTRY_QUEUED, "timestamp": 1752427310000 }
+const RECOVERED_SESSION_ENTRY = {
+  ...GAP_ENTRY_QUEUED,
+  "Id": "recovered-session",
+  "BattleType": 1,
+}
+const NEXT_SESSION_ENTRY = {
+  ...ENTRY_QUEUED,
+  "Id": "next-session",
+  "BattleType": 2,
+  "timestamp": 1752428800000,
+}
 
 // Minimal current-schema EVT_SESSION_DETAILS fixtures. The replacement sits
 // at the exact same millisecond as HAND0's RESULTS but sorts after it by the
@@ -111,6 +122,7 @@ const sessionDetails = (timestamp: number, name: string) => ({
   "timestamp": timestamp,
 })
 const INITIAL_SESSION_DETAILS = sessionDetails(1752427303300, 'Initial Lake Table')
+const SESSION_DETAILS_WITHOUT_201 = sessionDetails(1752427303000, '308-only Lake Table')
 const SAME_MS_REPLACEMENT_SESSION_DETAILS = sessionDetails(
   (HAND0_EVENTS[4] as { timestamp: number }).timestamp,
   'Same-ms Replacement Table'
@@ -890,7 +902,7 @@ describe('importData() overlap import repair (audit finding #7)', () => {
     })
   })
 
-  test('a pure append converts and writes only the appended hand, not every older hand since the 201 (PR #203 codex P2, pass 8 #3)', async () => {
+  test('a pure append rebuilds its session but reserves live-session seeding for the appended hand (PR #203 round 3 session granularity)', async () => {
     await runWithFreshDb(async ({ db, handlers }) => {
       await db.apiEvents.bulkAdd([
         ENTRY_QUEUED,
@@ -912,7 +924,9 @@ describe('importData() overlap import repair (audit finding #7)', () => {
       const result = await handlers.importData(toJsonl(HAND3_EVENTS))
       expect(result.successCount).toBe(HAND3_EVENTS.length)
       expect(result.duplicateCount).toBe(0)
-      expect(deletedHandIds).toEqual([])
+      // Session-granularity repair deliberately rewrites the three older hands
+      // in this same 201 window. The append itself is new, so it is not deleted.
+      expect(deletedHandIds.sort()).toEqual([HAND0_ID, HAND1_ID, HAND2_ID])
       expect(updatedHandIds).toEqual([])
       expect((await db.hands.orderBy('id').primaryKeys()).sort()).toEqual([
         HAND0_ID,
@@ -946,13 +960,139 @@ describe('importData() overlap import repair (audit finding #7)', () => {
     })
   })
 
-  test('an unrelated bystander hand stays byte-identical while a later hand is repaired', async () => {
-    const fullExport = [ENTRY_QUEUED, ...HAND0_EVENTS, ...HAND1_EVENTS]
+  test('an imported 201 repairs every later hand through the next session boundary (PR #203 round 3 P2 #1)', async () => {
+    await runWithFreshDb(async ({ db, handlers }) => {
+      await db.apiEvents.bulkAdd([
+        ENTRY_QUEUED,
+        ...HAND0_EVENTS,
+        // RECOVERED_SESSION_ENTRY is intentionally missing here.
+        ...HAND1_EVENTS,
+        ...HAND2_EVENTS,
+        NEXT_SESSION_ENTRY,
+        ...HAND3_EVENTS,
+      ] as never[])
+      await handlers.rebuildAllData()
+
+      expect((await db.hands.get(HAND1_ID))?.session.id).toBe('stage000_003')
+      expect((await db.hands.get(HAND2_ID))?.session.id).toBe('stage000_003')
+      const hand0Before = JSON.stringify(await db.hands.get(HAND0_ID))
+      const hand3Before = JSON.stringify(await db.hands.get(HAND3_ID))
+
+      const result = await handlers.importData(toJsonl([RECOVERED_SESSION_ENTRY]))
+      expect(result.successCount).toBe(1)
+      expect(result.duplicateCount).toBe(0)
+
+      // Both hands in the recovered session change, not only the first 306
+      // after the newly inserted 201.
+      expect((await db.hands.get(HAND1_ID))?.session).toMatchObject({
+        id: 'recovered-session',
+        battleType: 1,
+      })
+      expect((await db.hands.get(HAND2_ID))?.session).toMatchObject({
+        id: 'recovered-session',
+        battleType: 1,
+      })
+      // Adjacent sessions are outside the affected window.
+      expect(JSON.stringify(await db.hands.get(HAND0_ID))).toBe(hand0Before)
+      expect(JSON.stringify(await db.hands.get(HAND3_ID))).toBe(hand3Before)
+    })
+  })
+
+  test('a 308-only Lake context names every hand until the first 201 without leaking live id/battleType (PR #203 round 3 P2 #2)', async () => {
+    await runWithFreshDb(async ({ db, service, handlers }) => {
+      await db.apiEvents.bulkAdd([...HAND0_EVENTS, ...HAND1_EVENTS] as never[])
+      await handlers.rebuildAllData()
+      expect((await db.hands.get(HAND0_ID))?.session.name).toBeUndefined()
+      expect((await db.hands.get(HAND1_ID))?.session.name).toBeUndefined()
+
+      service.session.setId('live-id-must-not-fill-308-context')
+      service.session.setBattleType(4)
+      service.session.setName('Live name must not win')
+
+      const result = await handlers.importData(toJsonl([SESSION_DETAILS_WITHOUT_201]))
+      expect(result.successCount).toBe(1)
+      expect(result.duplicateCount).toBe(0)
+
+      for (const handId of [HAND0_ID, HAND1_ID]) {
+        expect((await db.hands.get(handId))?.session).toEqual({
+          id: undefined,
+          battleType: undefined,
+          name: '308-only Lake Table',
+        })
+      }
+    })
+  })
+
+  test('a legacy hand rejected by current converter guards is preserved while its valid raw pair remains (PR #203 round 3 P2 #3)', async () => {
+    await runWithFreshDb(async ({ db, handlers }) => {
+      const rejectedResults = JSON.parse(JSON.stringify(HAND1_RESULTS))
+      rejectedResults.Results[0].UserId = 999_999 // outside DEAL.SeatUserIds
+      const rejectedDeal = HAND1_DEAL as typeof HAND1_DEAL & {
+        SeatUserIds: number[]
+        Game: { SmallBlind: number, BigBlind: number }
+      }
+      await db.apiEvents.bulkAdd([
+        ENTRY_QUEUED,
+        HAND1_DEAL,
+        ...HAND1_ACTIONS,
+        rejectedResults,
+      ] as never[])
+      await handlers.rebuildAllData()
+      expect(await db.hands.count()).toBe(0)
+
+      // Simulate a hand produced by an older converter before the semantic
+      // outside-lineup guard existed. Its current raw rows still parse and its
+      // DEAL→306 pair still exists, but current EntityConverter rejects it.
+      await db.hands.put({
+        id: HAND1_ID,
+        approxTimestamp: rejectedResults.timestamp,
+        seatUserIds: rejectedDeal.SeatUserIds,
+        winningPlayerIds: [999_999],
+        smallBlind: rejectedDeal.Game.SmallBlind,
+        bigBlind: rejectedDeal.Game.BigBlind,
+        session: { id: 'legacy-session', battleType: 5, name: 'Preserve Me' },
+        results: rejectedResults.Results,
+      } as never)
+      await db.phases.put({
+        handId: HAND1_ID,
+        phase: 0,
+        seatUserIds: rejectedDeal.SeatUserIds,
+        communityCards: [],
+      } as never)
+      await db.actions.put({
+        handId: HAND1_ID,
+        index: 0,
+        playerId: rejectedDeal.SeatUserIds[0],
+        phase: 0,
+        actionType: 2,
+        bet: 0,
+        pot: 500,
+        sidePot: [],
+        position: 0,
+        actionDetails: [],
+      } as never)
+      const beforeBytes = JSON.stringify(await snapshotDerived(db))
+
+      const result = await handlers.importData(toJsonl([
+        sessionDetails(1752427303301, 'New context that triggers this session'),
+      ]))
+      expect(result.successCount).toBe(1)
+
+      expect(JSON.stringify(await snapshotDerived(db))).toBe(beforeBytes)
+      expect(await db.apiEvents.get([HAND1_DEAL.timestamp, HAND1_DEAL.ApiTypeId])).toBeDefined()
+      expect(await db.apiEvents.get([rejectedResults.timestamp, rejectedResults.ApiTypeId])).toBeDefined()
+    })
+  })
+
+  test('an unrelated bystander hand outside the affected session stays byte-identical', async () => {
+    const hand1Session = { ...GAP_ENTRY_QUEUED, Id: 'hand1-session' }
+    const fullExport = [ENTRY_QUEUED, ...HAND0_EVENTS, hand1Session, ...HAND1_EVENTS]
 
     await runWithFreshDb(async ({ db, handlers }) => {
       await db.apiEvents.bulkAdd([
         ENTRY_QUEUED,
         ...HAND0_EVENTS,
+        hand1Session,
         HAND1_DEAL,
         HAND1_RESULTS,
       ] as never[])
