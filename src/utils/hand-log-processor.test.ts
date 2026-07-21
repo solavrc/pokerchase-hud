@@ -8,6 +8,7 @@
 
 import { HandLogProcessor, HandLogContext } from './hand-log-processor'
 import { DEFAULT_HAND_LOG_CONFIG } from '../types/hand-log'
+import type { HandLogEntry } from '../types/hand-log'
 import type { Session, ApiEvent } from '../types'
 import { ApiType } from '../types/api'
 import { BattleType } from '../types/game'
@@ -1595,5 +1596,168 @@ describe('ショウダウン時のuncalled bet: 接頭辞衝突する表示名 (
     // 旧実装: getPlayerStreetCommitment('sol')が「sola: raises ...」に部分一致し
     // maxOpponentCommitment=3280 → uncalled=0 → Uncalled行が消失
     expect(lines.find(l => l.includes('Uncalled bet (2132) returned to sola'))).toBeDefined()
+  })
+})
+
+// ============================================================
+// Test 9: entry idの衝突不可能性 (store-5-handlog.png欠落バグの回帰テスト)
+//
+// 旧実装は id を `hand_${handId||'pending'}_pos_${position}_${hash}` という
+// コンテンツ/位置ベースで生成していた。EVT_DEALのバッチ処理は全エントリを
+// ローカル配列に貯めてから最後に一括pushするため、DEAL由来の全行(header/table/
+// seat/ante/blind/HOLE CARDS/dealt)は生成時点で position=0 になる。さらに
+// ハンド完了時(handleHandResultsEvent)はテキストとhandIdを書き換えるだけで
+// idは再生成しないため、完了済みハンドのDEAL由来エントリは `hand_pending_pos_0_*`
+// のままUI側stateに残り続ける。次のハンドのDEALで同一テキスト(同一ante額の
+// ante行・常に同一の"*** HOLE CARDS ***"等)が生成されると、App.tsxのadd
+// dedup(既存id集合でのフィルタ)が「別ハンドの新規行」を誤って捨てていた。
+// 新実装はコンテンツ/位置と無関係な (instanceNonce, entrySeq) の組で
+// 衝突不可能なidを発行することでこれを解消する。
+// ============================================================
+describe('entry idの衝突不可能性', () => {
+  const players = [
+    { userId: 561384657, name: 'sola' },
+    { userId: 900000001, name: 'Villain' },
+  ]
+
+  /** 同一ブラインドレベル・同一アンテ額のDEALイベントを生成（handSeedのみ変える） */
+  function buildDealEvent(handSeed: number): ApiEvent {
+    return {
+      ApiTypeId: ApiType.EVT_DEAL,
+      timestamp: 1700000000000 + handSeed,
+      SeatUserIds: [561384657, 900000001, -1, -1, -1, -1],
+      Game: {
+        CurrentBlindLv: 0, NextBlindUnixSeconds: 1700000600,
+        Ante: 70, SmallBlind: 140, BigBlind: 280,
+        ButtonSeat: 0, SmallBlindSeat: 0, BigBlindSeat: 1
+      },
+      Player: { SeatIndex: 0, BetStatus: 1, Chip: 9790, BetChip: 140, HoleCards: [48, 49] },
+      OtherPlayers: [
+        { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 9650, BetChip: 280 },
+      ],
+      Progress: {
+        Phase: 0, NextActionSeat: 0, NextActionTypes: [0, 3, 4, 5],
+        NextExtraLimitSeconds: 1, MinRaise: 560, Pot: 490, SidePot: []
+      }
+    } as unknown as ApiEvent
+  }
+
+  function buildResultsEvent(handId: number): ApiEvent {
+    return {
+      ApiTypeId: ApiType.EVT_HAND_RESULTS,
+      timestamp: 1700000003000 + handId,
+      HandId: handId,
+      CommunityCards: [],
+      Pot: 490, SidePot: [], ResultType: 0, DefeatStatus: 0,
+      Results: [
+        { UserId: 561384657, RankType: 10, HandRanking: 1, Hands: [], HoleCards: [], Ranking: -2, RewardChip: 490 },
+      ],
+      Player: { SeatIndex: 0, BetStatus: -1, Chip: 10280, BetChip: 0 },
+      OtherPlayers: []
+    } as unknown as ApiEvent
+  }
+
+  test('DEALイベント1発から生成される全エントリのidが互いにユニーク', () => {
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const processor = new HandLogProcessor(createContext(session))
+    const entries = processor.processSingleEvent(buildDealEvent(1))
+
+    expect(entries.length).toBeGreaterThan(1)
+    const ids = entries.map(e => e.id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  test('同一テキストの行が出る2連続ハンドでエントリidが一切重複しない', () => {
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const processor = new HandLogProcessor(createContext(session))
+
+    const hand1Deal = processor.processSingleEvent(buildDealEvent(1))
+    const hand1Results = processor.processSingleEvent(buildResultsEvent(111))
+    processor.resetHandState()
+    const hand2Deal = processor.processSingleEvent(buildDealEvent(2))
+    const hand2Results = processor.processSingleEvent(buildResultsEvent(112))
+
+    // 前提のサニティチェック: ante行・HOLE CARDS行のテキストは2ハンドで完全一致する
+    // （これが一致しないと、そもそも旧実装のid衝突は再現しない）
+    const anteTexts = (entries: HandLogEntry[]) =>
+      entries.filter(e => e.text.includes('posts the ante')).map(e => e.text)
+    expect(anteTexts(hand2Deal)).toEqual(anteTexts(hand1Deal))
+    expect(anteTexts(hand1Deal).length).toBeGreaterThan(0)
+    expect(hand1Deal.some(e => e.text === '*** HOLE CARDS ***')).toBe(true)
+    expect(hand2Deal.some(e => e.text === '*** HOLE CARDS ***')).toBe(true)
+
+    const allIds = [...hand1Deal, ...hand1Results, ...hand2Deal, ...hand2Results].map(e => e.id)
+    expect(new Set(allIds).size).toBe(allIds.length)
+  })
+
+  test('別インスタンスのHandLogProcessorを作り直してもidが重複しない（nonce検証）', () => {
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+
+    const processorA = new HandLogProcessor(createContext(session))
+    const entriesA = processorA.processSingleEvent(buildDealEvent(1))
+
+    const processorB = new HandLogProcessor(createContext(session))
+    const entriesB = processorB.processSingleEvent(buildDealEvent(1))
+
+    const allIds = [...entriesA, ...entriesB].map(e => e.id)
+    expect(new Set(allIds).size).toBe(allIds.length)
+  })
+
+  test('Date.now()が同一値でもモジュールカウンタでnonceの衝突を防ぐ', () => {
+    const originalNow = Date.now
+    try {
+      Date.now = () => 1700000000000
+      const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+
+      const processorA = new HandLogProcessor(createContext(session))
+      const entriesA = processorA.processSingleEvent(buildDealEvent(1))
+
+      const processorB = new HandLogProcessor(createContext(session))
+      const entriesB = processorB.processSingleEvent(buildDealEvent(1))
+
+      const allIds = [...entriesA, ...entriesB].map(e => e.id)
+      expect(new Set(allIds).size).toBe(allIds.length)
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  test('回帰: App.tsxのadd/updateデデュープを2ハンド分のストリーム出力に適用しても2ハンド目のante行・HOLE CARDS行が残る (store-5バグの再現形)', () => {
+    const session = createSession(players, { battleType: BattleType.SIT_AND_GO })
+    const processor = new HandLogProcessor(createContext(session))
+
+    // App.tsx handleHandLogEvent の 'add' ケース相当:
+    // 既存id集合に無いエントリだけを追記する
+    const applyAdd = (prev: HandLogEntry[], incoming: HandLogEntry[]): HandLogEntry[] => {
+      const existingIds = new Set(prev.map(e => e.id))
+      return [...prev, ...incoming.filter(e => !existingIds.has(e.id))]
+    }
+    // App.tsx handleHandLogEvent の 'update' ケース相当:
+    // 対象handIdのエントリとpending(handId未定義)のエントリを、完了ハンドの全エントリで置き換える
+    const applyUpdate = (prev: HandLogEntry[], handId: number, allEntries: HandLogEntry[]): HandLogEntry[] => {
+      const otherEntries = prev.filter(e => e.handId !== handId && e.handId !== undefined)
+      return [...otherEntries, ...allEntries]
+    }
+
+    let displayed: HandLogEntry[] = []
+
+    // ハンド1: DEALで'add'、HAND_RESULTSで'update'（HandLogStreamの実挙動どおり）
+    const hand1Deal = processor.processSingleEvent(buildDealEvent(1))
+    displayed = applyAdd(displayed, hand1Deal)
+    processor.processSingleEvent(buildResultsEvent(111))
+    displayed = applyUpdate(displayed, 111, processor.getCurrentHandEntries())
+    processor.resetHandState()
+
+    // ハンド2: DEALのみ処理 = 進行中ハンド（store-5-handlog.pngで欠落していた状態）
+    const hand2Deal = processor.processSingleEvent(buildDealEvent(2))
+    displayed = applyAdd(displayed, hand2Deal)
+
+    // ハンド2のDEAL由来エントリ（ante行・HOLE CARDS行を含む）は
+    // 1件も欠落せずdisplayedに含まれていなければならない
+    expect(hand2Deal.some(e => e.text === '*** HOLE CARDS ***')).toBe(true)
+    expect(hand2Deal.filter(e => e.text.includes('posts the ante')).length).toBeGreaterThan(0)
+    for (const entry of hand2Deal) {
+      expect(displayed.some(d => d.id === entry.id)).toBe(true)
+    }
   })
 })
