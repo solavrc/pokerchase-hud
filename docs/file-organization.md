@@ -31,7 +31,7 @@
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml             # CI pipeline (test, typecheck)
-│       └── release-please.yml # Release automation workflow
+│       └── build.yml          # Build, release automation (release-please job), CWS upload
 ├── docs/                      # Technical documentation (flat)
 │   ├── api-events.md          # WebSocket API event reference (canonical event semantics)
 │   ├── architecture.md        # Design decisions & rationale (ADR)

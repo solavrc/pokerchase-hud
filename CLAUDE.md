@@ -80,7 +80,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 - **Release Management**: Release-Please with GitHub Actions
   - Manual trigger via GitHub Actions → "Release Please"
   - Protected main branch with CODEOWNERS
-  - Workflow details: `.github/workflows/release-please.yml`
+  - Workflow details: `.github/workflows/build.yml` (the `release-please` job)
 
 ## Development Guidelines
 
