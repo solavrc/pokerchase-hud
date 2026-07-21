@@ -32,6 +32,8 @@ import { createImportExportHandlers } from './import-export'
 import { setOperationState } from './operation-state'
 import { EntityConverter } from '../entity-converter'
 import * as databaseUtils from '../utils/database-utils'
+import { getRebuildAdvisoryState, REBUILD_ADVISORY_STORAGE_KEY } from './rebuild-advisory'
+import { REBUILD_ADVISORY_VERSION } from '../constants/database'
 
 // A known-good session-start + hand (EVT_ENTRY_QUEUED, then EVT_DEAL -> 3x
 // EVT_ACTION -> EVT_HAND_RESULTS), copied verbatim from src/app.test.ts's
@@ -59,6 +61,31 @@ const HAND2_EVENTS = HAND1_EVENTS.map(event => {
   const clone = JSON.parse(JSON.stringify(event))
   clone.timestamp = (event as { timestamp: number }).timestamp + 1_000_000
   if (clone.ApiTypeId === 306) clone.HandId = HAND2_ID
+  return clone
+})
+
+// A third, structurally-identical hand slotted chronologically BETWEEN
+// ENTRY_QUEUED and HAND1 (still a normal, non-interleaved consecutive hand
+// in the same session -- shifted -8000ms keeps its own span from 305426 to
+// 311431, entirely before HAND1_DEAL at 313426), but with a distinct HandId.
+// Its [timestamp+ApiTypeId] compound key therefore sorts BELOW the
+// snapshot's max key (HAND1's EVT_HAND_RESULTS at 319431) even though it
+// arrives (in Lake-storage terms) AFTER the snapshot was read. Stands in for
+// a live row that lands after the snapshot but does NOT sort after it
+// (clock skew, a same-millisecond row with a lower ApiTypeId, etc.) --
+// codex PR #207 pass-4, "Merge live rows that do not sort after the
+// snapshot". (Shifting it before ENTRY_QUEUED itself, rather than merely
+// before HAND1, would desync from the control below: an ordinary import
+// processes events in file order rather than re-sorting by timestamp, so a
+// hand chronologically preceding its own session-establishing ENTRY_QUEUED
+// would attribute session context differently there than in a
+// snapshot-order-respecting rebuild -- an artifact of the fixture, not the
+// bug this test targets.)
+const HAND0_ID = 384370063
+const HAND0_EVENTS = HAND1_EVENTS.map(event => {
+  const clone = JSON.parse(JSON.stringify(event))
+  clone.timestamp = (event as { timestamp: number }).timestamp - 8_000
+  if (clone.ApiTypeId === 306) clone.HandId = HAND0_ID
   return clone
 })
 
@@ -105,7 +132,7 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
   beforeEach(async () => {
     setOperationState({ type: 'idle' })
     ;(chrome.runtime.sendMessage as jest.Mock).mockClear().mockReturnValue(Promise.resolve())
-    await chrome.storage.local.set({ [PokerChaseService.STORAGE_KEY]: undefined })
+    await chrome.storage.local.set({ [PokerChaseService.STORAGE_KEY]: undefined, [REBUILD_ADVISORY_STORAGE_KEY]: undefined })
   })
 
   afterEach(() => {
@@ -380,6 +407,172 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         // Raw Lake integrity: both hands' raw events are present regardless.
         const rawCount = await db.apiEvents.count()
         expect(rawCount).toBe(fullExport.length + HAND2_EVENTS.length)
+      })
+    })
+
+    test('a live hand whose raw rows arrive after the snapshot but sort BELOW the snapshot boundary key is still preserved (codex PR #207 pass-4, "Merge live rows that do not sort after the snapshot")', async () => {
+      const fullExport = [ENTRY_QUEUED, ...HAND1_EVENTS]
+
+      // Control: a from-scratch import of both hands into an empty DB, in
+      // chronological order (ENTRY_QUEUED, then HAND0, then HAND1) --
+      // matching how the rebuild path (which reads apiEvents sorted by
+      // [timestamp+ApiTypeId]) will see them, so this is a true apples-to-
+      // apples control rather than an artifact of file ordering.
+      const expected = await runWithFreshDb(async ({ db, handlers }) => {
+        await handlers.importData(toJsonl([ENTRY_QUEUED, ...HAND0_EVENTS, ...HAND1_EVENTS]))
+        return snapshotDerived(db)
+      })
+      expect(expected.hands).toHaveLength(2)
+
+      await runWithFreshDb(async ({ db, handlers }) => {
+        // Damaged DB, same setup as the parity test.
+        await db.apiEvents.bulkAdd([ENTRY_QUEUED, HAND1_DEAL, HAND1_RESULTS] as never[])
+
+        // Hook the first filterValidApplicationEvents call (the snapshot
+        // processing step) to inject HAND0 -- whose [timestamp+ApiTypeId]
+        // keys sort BELOW every row already in the snapshot (HAND0_EVENTS
+        // is timestamped 2,000,000ms before HAND1). A boundary-comparison
+        // recheck (`.where(...).above(snapshotUpperBound)`) would miss
+        // this entirely, since it only looks for keys greater than the
+        // snapshot's own max key -- exactly the bug this test targets.
+        const originalFilterValidApplicationEvents = databaseUtils.filterValidApplicationEvents
+        let hooked = false
+        const filterSpy = jest.spyOn(databaseUtils, 'filterValidApplicationEvents')
+          .mockImplementation(async (rawEvents) => {
+            const result = await originalFilterValidApplicationEvents(rawEvents)
+            if (!hooked) {
+              hooked = true
+              await db.apiEvents.bulkAdd(HAND0_EVENTS as never[])
+              const liveEntities = new EntityConverter({
+                id: undefined, battleType: undefined, name: undefined, players: new Map(), reset: () => { }
+              }).convertEventsToEntities(HAND0_EVENTS as never[])
+              await db.hands.bulkPut(liveEntities.hands)
+              await db.phases.bulkPut(liveEntities.phases)
+              await db.actions.bulkPut(liveEntities.actions)
+            }
+            return result
+          })
+
+        const result = await handlers.importData(toJsonl(fullExport))
+        expect(result.successCount).toBe(3) // the 3 missing HAND1 ACTIONs
+
+        filterSpy.mockRestore()
+
+        // HAND0 (the low-key "live" hand) must survive AND be correctly
+        // derived -- matching the from-scratch control for both hands,
+        // regardless of key ordering.
+        const repaired = await snapshotDerived(db)
+        expect(repaired).toEqual(expected)
+        expect(repaired.hands.map(h => h.id).sort()).toEqual([HAND0_ID, HAND1_ID].sort())
+
+        const rawCount = await db.apiEvents.count()
+        expect(rawCount).toBe(fullExport.length + HAND0_EVENTS.length)
+      })
+    })
+  })
+
+  describe('recheck apiEvents before clearing the zero-count path (codex PR #207 pass-4, "Recheck apiEvents before clearing the zero-count path")', () => {
+    afterEach(() => {
+      jest.restoreAllMocks()
+    })
+
+    test('a live hand that lands right after apiEvents.count() reports 0 -- but before the rebuild clears the tables -- is not lost', async () => {
+      // Control: a from-scratch import of the (soon-to-be "live") hand into
+      // an empty DB.
+      const expected = await runWithFreshDb(async ({ db, handlers }) => {
+        await handlers.importData(toJsonl(HAND1_EVENTS))
+        return snapshotDerived(db)
+      })
+      expect(expected.hands).toHaveLength(1)
+
+      await runWithFreshDb(async ({ db, handlers }) => {
+        // apiEvents starts genuinely empty -- this is the manual "データ再構築"
+        // button scenario codex's finding describes (rebuildAllData on an
+        // empty Lake), not an import.
+        expect(await db.apiEvents.count()).toBe(0)
+
+        // Hook the FIRST db.apiEvents.count() call (performFullRebuild's
+        // initial, non-authoritative estimate) to inject a live hand right
+        // after it observes 0 -- simulating event-ingestion.ts storing the
+        // raw rows and WriteEntityStream writing the derived hand in the
+        // gap between that estimate and the final clear+write transaction.
+        const originalCount = db.apiEvents.count.bind(db.apiEvents)
+        let hooked = false
+        const countSpy = jest.spyOn(db.apiEvents, 'count').mockImplementation((async () => {
+          const result = await originalCount()
+          if (!hooked && result === 0) {
+            hooked = true
+            await db.apiEvents.bulkAdd(HAND1_EVENTS as never[])
+            const liveEntities = new EntityConverter({
+              id: undefined, battleType: undefined, name: undefined, players: new Map(), reset: () => { }
+            }).convertEventsToEntities(HAND1_EVENTS as never[])
+            await db.hands.bulkPut(liveEntities.hands)
+            await db.phases.bulkPut(liveEntities.phases)
+            await db.actions.bulkPut(liveEntities.actions)
+          }
+          return result
+        }) as unknown as typeof db.apiEvents.count)
+
+        await handlers.rebuildAllData()
+
+        countSpy.mockRestore()
+
+        // The live hand must survive the rebuild -- not cleared and left
+        // unrebuilt under the old "count() said 0, so just clear and
+        // report done" shortcut.
+        const repaired = await snapshotDerived(db)
+        expect(repaired).toEqual(expected)
+        expect(await db.hands.count()).toBe(1)
+      })
+    })
+  })
+
+  describe('retry rebuild after a failed import instead of silently skipping duplicates (codex PR #207 pass-4, "Retry rebuild after failed import instead of skipping duplicates")', () => {
+    afterEach(() => {
+      jest.restoreAllMocks()
+    })
+
+    test('a failed post-import rebuild marks the rebuild advisory pending, so a later successful rebuild is what actually repairs the derived data', async () => {
+      const fullExport = [ENTRY_QUEUED, ...HAND1_EVENTS]
+
+      await runWithFreshDb(async ({ db, handlers }) => {
+        // Damaged DB, same setup as the parity test: DEAL+RESULTS present,
+        // ACTIONs missing -- the re-import below stores new raw rows into a
+        // non-empty DB and triggers importData()'s rebuild path.
+        await db.apiEvents.bulkAdd([ENTRY_QUEUED, HAND1_DEAL, HAND1_RESULTS] as never[])
+        await handlers.rebuildAllData()
+
+        expect((await getRebuildAdvisoryState()).pendingVersion).toBeUndefined()
+
+        // Force the rebuild to fail.
+        const convertSpy = jest.spyOn(EntityConverter.prototype, 'convertEventsToEntities')
+          .mockImplementation(() => { throw new Error('synthetic rebuild failure') })
+
+        await expect(handlers.importData(toJsonl(fullExport))).rejects.toThrow(/rebuild failed/i)
+
+        convertSpy.mockRestore()
+
+        // The failure must not be a dead end: marking the advisory pending
+        // is what lets the user retry via the "データ再構築" button even
+        // though a naive re-import of the same file would now just see
+        // duplicates and skip the rebuild entirely (see the next assertion).
+        expect((await getRebuildAdvisoryState()).pendingVersion).toBe(REBUILD_ADVISORY_VERSION)
+
+        // Confirms the actual dead end this test guards against: retrying
+        // the SAME import is a no-op for the rebuild (every row is now a
+        // duplicate), so the advisory marker is genuinely the only path to
+        // recovery here, not an incidental side effect.
+        const retryResult = await handlers.importData(toJsonl(fullExport))
+        expect(retryResult.successCount).toBe(0)
+        expect(retryResult.duplicateCount).toBe(fullExport.length)
+        expect(await db.actions.count()).toBe(0) // still chimeric -- the retried import did not repair it
+
+        // The advisory-driven recovery path: the user clicks "データ再構築".
+        await handlers.rebuildAllData()
+
+        const repaired = await snapshotDerived(db)
+        expect(repaired.actions.filter(a => a.handId === HAND1_ID)).toHaveLength(3)
+        expect((await getRebuildAdvisoryState()).pendingVersion).toBeUndefined()
       })
     })
   })

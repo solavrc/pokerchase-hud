@@ -12,7 +12,7 @@ import PokerChaseService, {
   getValidationError,
   isApplicationApiEvent
 } from '../app'
-import { EntityConverter } from '../entity-converter'
+import { EntityConverter, type EntityBundle } from '../entity-converter'
 import { saveEntities, findLatestPlayerDealEvent, filterValidApplicationEvents } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
 import type {
@@ -21,7 +21,7 @@ import type {
   RebuildProgressMessage
 } from '../types/messages'
 import { setOperationState } from './operation-state'
-import { resolveAdvisory } from './rebuild-advisory'
+import { resolveAdvisory, markAdvisoryPending } from './rebuild-advisory'
 
 const IMPORT_CHUNK_SIZE = DATABASE_CONSTANTS.IMPORT_CHUNK_SIZE
 
@@ -357,6 +357,24 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
               state: 'error',
               message: `インポート後の再構築に失敗しました: ${rebuildError}`
             }).catch(() => {})
+
+            // 再構築アドバイザリを保留にする（codexレビュー指摘, PR #207
+            // pass-4 finding 3「Retry rebuild after failed import instead
+            // of skipping duplicates」）: このまま何もしないと、生イベント
+            // は既に確定保存済みのため、同じファイルを再インポートしても
+            // 今度は全行重複となり（successCount === 0）、下の「純粋な
+            // 重複インポート」分岐に入って再構築が二度と走らなくなる ――
+            // 派生データは古いまま永久に取り残される。アドバイザリを保留
+            // にしておけば、popupのバナー/バッジが「データ再構築」ボタンの
+            // 実行を促し続け、それが唯一かつ確実な復旧手段として常に
+            // 提示される（成功時にresolveAdvisory()で自動的に解消する）。
+            // rebuildAllData自身の失敗（ボタン経由）はこのマーキングをしない
+            // ――失敗はrebuildProgressのerror状態で既にユーザーへ即座に
+            // 見えており、ボタンを再度押すだけで再試行できるため、
+            // インポートのように「再試行が別経路(重複判定)に吸収されて
+            // 再構築が起動しなくなる」問題が構造的に起きない。
+            await markAdvisoryPending()
+
             const errorMessage = rebuildError instanceof Error ? rebuildError.message : String(rebuildError)
             throw new Error(`Post-import rebuild failed (raw data was stored successfully): ${errorMessage}`)
           }
@@ -944,7 +962,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
    * `rebuildAllData`（ボタン）・`importData`の再構築分岐の両方が保護される。
    *
    * **ライブ中に完了したハンドの保護**（codexレビュー指摘、PR #207 P2
-   * 3巡目）: 上のraw読み込み（スナップショット）～変換の間にライブ
+   * 3巡目・4巡目）: 上のraw読み込み（スナップショット）～変換の間にライブ
    * プレイ中のハンドが1つ完了すると、`WriteEntityStream`
    * （write-entity-stream.ts）は`service.batchMode`を見ずに無条件で
    * hands/phases/actionsへ書き込む（#196のライブ取り込みパイプラインは
@@ -952,18 +970,39 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
    * その書き込みが下の最終トランザクション開始より前に確定していた場合、
    * スナップショットから導出した`entities`はそのハンドの元イベントを
    * 含んでおらず、clear()で消すとbulkPut(entities)では復元できない。
+   *
    * 最終トランザクションのスコープに`apiEvents`も含めているため、IDBの
    * トランザクション分離により、他のreadwriteトランザクション
    * （WriteEntityStreamのhands/phases/actions書き込み、event-ingestion.ts
    * のapiEvents書き込み）はこのトランザクションの開始からコミットまでの
    * 間は割り込めない（同じテーブルへのreadwriteトランザクションはIDBが
-   * 直列化する）。したがって、トランザクション内でスナップショット境界
-   * より新しい行が無いか一度だけ再確認すれば十分 ―― 見つかった場合は
-   * それらをスナップショットに合流させて変換をやり直してから書き込む
-   * （EntityConverterはハンド境界をローカル状態で追うため、差分だけを
-   * 渡すと監査finding #7と同じ問題を再現してしまう。よってrawEvents
-   * 全体+新着分で再変換する）。トランザクションが開いている間は誰も
-   * 新しい行をapiEventsへ追加できないため、この再確認は高々1回で収束する。
+   * 直列化する）。したがって、トランザクション内でスナップショット取得後に
+   * apiEventsが変化していないか一度だけ再確認すれば十分 ―― トランザクション
+   * が開いている間は誰も新しい行をapiEventsへ追加できないため、この再確認は
+   * 高々1回で収束する。
+   *
+   * 再確認は**件数比較**で行う（`db.apiEvents.count()`とスナップショット
+   * 時点の行数を比較する）―― コンパウンドキー`[timestamp+ApiTypeId]`の
+   * 大小関係には一切依存しない（codexレビュー指摘、PR #207 pass-4
+   * 「Merge live rows that do not sort after the snapshot」: 以前は
+   * `.where('[timestamp+ApiTypeId]').above(snapshotUpperBound)`で新着行を
+   * 検出していたが、クロックスキューや同一ミリ秒での到着順によっては
+   * 新着行がスナップショット末尾より小さいキーを持つことがあり、その
+   * ケースを取りこぼしていた）。件数が変わっていれば、rawEvents全体を
+   * 破棄してapiEventsをもう一度フルスキャンし、そこから作り直す ―― 差分
+   * だけを合流させるのではなくスキャン自体をやり直すことで、キーの大小に
+   * 一切依存しない正しさを得る。apiEventsは追記のみで行が減ることは
+   * ない（DB全削除はdeleteAllData経由の拡張機能reloadを伴い、
+   * この関数と並行実行され得ない）ため、件数一致は行集合一致を意味する。
+   *
+   * この再確認は「rawEvents=0件（対象イベントなし）」の場合にも同じ
+   * トランザクション内でそのまま行われる（同上pass-4「Recheck apiEvents
+   * before clearing the zero-count path」対応）―― 以前は`totalCount===0`
+   * を個別の早期returnとして扱い、この再確認をスキップして無条件に
+   * クリアしていたため、`count()`が0を返した直後・クリアより前に最初の
+   * ライブハンドが書き込まれるレースでその派生データを消してしまい得た。
+   * 今は「空だと思って始める」ことと「実際に書き込み前に再確認する」ことが
+   * 同じコードパスになったため、この特別扱いが構造的に消えている。
    * @param onProgress 各フェーズの`(progress, message)`。呼び出し元はこれを
    *   使って自分のoperationState/メッセージ経路へ橋渡しする
    */
@@ -977,28 +1016,6 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
     // 操作全体に掛ける（上のJSDoc「SW keepalive」参照）
     const stopKeepAlive = await startKeepAlive()
     try {
-      // Get total event count first (read-only; no tables touched yet)
-      const totalCount = await db.apiEvents.count()
-      console.log(`[performFullRebuild] Processing ${totalCount} events...`)
-
-      if (totalCount === 0) {
-        console.log('[performFullRebuild] No events to process')
-        // 対象イベントが無い場合のみ、クリアそのものに失敗リスクが実質無い
-        // （変換/保存を伴わない単純な削除のみ）ため、従来通りここでクリアする
-        await db.transaction('rw', [db.hands, db.phases, db.actions, db.meta], async () => {
-          await db.hands.clear()
-          await db.phases.clear()
-          await db.actions.clear()
-          await db.meta.delete('lastProcessed')
-        })
-        // 対象イベントが無い＝再構築の必要が無いため、保留中のアドバイザリも解消する
-        await resolveAdvisory()
-        return { totalCount: 0, totalHands: 0, totalPhases: 0, totalActions: 0 }
-      }
-
-      onProgress(10, 'イベント読み込み中...')
-
-      // Initialize EntityConverter
       const defaultSession = {
         id: undefined,
         battleType: undefined,
@@ -1006,41 +1023,45 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         players: new Map(),
         reset: () => { }
       }
-      const converter = new EntityConverter(defaultSession)
 
-      // Load all raw events and convert in one pass
-      // (EntityConverter tracks hand state internally, so chunked conversion loses cross-chunk hands)
-      console.log(`[performFullRebuild] Loading all events...`)
-      const rawEvents = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
+      // 初期見積もり（最適化のみ）: ここで0件なら下の重い読み込み/変換を
+      // 省略する。これは権威あるチェックではない ―― 最終的な正しさは下の
+      // トランザクション内の再確認が保証する（上のJSDoc参照）。
+      const totalCountEstimate = await db.apiEvents.count()
+      console.log(`[performFullRebuild] Processing ${totalCountEstimate} events...`)
 
-      // このスナップショットの上限境界（[timestamp, ApiTypeId]）。下の最終
-      // トランザクション内で「この境界より新しい行が無いか」を再確認する
-      // ために使う（上のJSDoc「ライブ中に完了したハンドの保護」参照）。
-      const lastSnapshotEvent = rawEvents[rawEvents.length - 1]
-      const snapshotUpperBound: [number, number] | undefined = lastSnapshotEvent
-        ? [lastSnapshotEvent.timestamp!, lastSnapshotEvent.ApiTypeId]
-        : undefined
+      onProgress(10, 'イベント読み込み中...')
 
-      // apiEvents is the raw Lake: it may contain non-application noise (202/205
-      // keepalive/timer events), ApiTypeIds unknown to the current schema, or
-      // application-type events whose payload doesn't match the current Zod schema
-      // (either not-yet-fixed, or already fixed since the row was first stored).
-      // Re-validating here — rather than trusting raw rows — is what makes this the
-      // recovery path: any row a schema fix now makes parseable is automatically
-      // picked up, no separate promotion mechanism required (docs/architecture.md
-      // "Raw Event Lake"). It's also what keeps EntityConverter (which reads
-      // required fields like EVT_DEAL.Game.SmallBlind without guards) from
-      // throwing on a still-malformed row.
-      const allEvents = await filterValidApplicationEvents(rawEvents)
-      const skippedCount = rawEvents.length - allEvents.length
-      console.log(`[performFullRebuild] Loaded ${rawEvents.length} raw events, ${allEvents.length} valid application events after re-validation${skippedCount > 0 ? ` (${skippedCount} non-application/unparseable rows skipped)` : ''}`)
+      let rawEvents: ApiEvent[] = []
+      let entities: EntityBundle = { hands: [], phases: [], actions: [] }
 
-      onProgress(40, `${allEvents.length.toLocaleString()}件のイベントを変換中...`)
+      if (totalCountEstimate > 0) {
+        // Load all raw events and convert in one pass
+        // (EntityConverter tracks hand state internally, so chunked conversion loses cross-chunk hands)
+        console.log(`[performFullRebuild] Loading all events...`)
+        rawEvents = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
 
-      // 変換はメモリ上のみの処理で、この時点ではまだテーブルに一切触れて
-      // いない ―― ここで例外が起きても（例: 未知の形状での変換失敗）既存の
-      // 派生データはそのまま残る
-      const entities = converter.convertEventsToEntities(allEvents)
+        // apiEvents is the raw Lake: it may contain non-application noise (202/205
+        // keepalive/timer events), ApiTypeIds unknown to the current schema, or
+        // application-type events whose payload doesn't match the current Zod schema
+        // (either not-yet-fixed, or already fixed since the row was first stored).
+        // Re-validating here — rather than trusting raw rows — is what makes this the
+        // recovery path: any row a schema fix now makes parseable is automatically
+        // picked up, no separate promotion mechanism required (docs/architecture.md
+        // "Raw Event Lake"). It's also what keeps EntityConverter (which reads
+        // required fields like EVT_DEAL.Game.SmallBlind without guards) from
+        // throwing on a still-malformed row.
+        const allEvents = await filterValidApplicationEvents(rawEvents)
+        const skippedCount = rawEvents.length - allEvents.length
+        console.log(`[performFullRebuild] Loaded ${rawEvents.length} raw events, ${allEvents.length} valid application events after re-validation${skippedCount > 0 ? ` (${skippedCount} non-application/unparseable rows skipped)` : ''}`)
+
+        onProgress(40, `${allEvents.length.toLocaleString()}件のイベントを変換中...`)
+
+        // 変換はメモリ上のみの処理で、この時点ではまだテーブルに一切触れて
+        // いない ―― ここで例外が起きても（例: 未知の形状での変換失敗）既存の
+        // 派生データはそのまま残る
+        entities = new EntityConverter(defaultSession).convertEventsToEntities(allEvents)
+      }
 
       onProgress(70, 'テーブルを更新中...')
 
@@ -1051,26 +1072,21 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
       // ハンドの保護」の通り、トランザクション内での再確認とIDBの直列化を
       // 成立させるため。
       const counts = await db.transaction('rw', [db.apiEvents, db.hands, db.phases, db.actions, db.meta], async () => {
+        const currentCount = await db.apiEvents.count()
+
         let finalEntities = entities
         let finalTotalEvents = rawEvents.length
 
-        if (snapshotUpperBound) {
-          const newerRaw = await db.apiEvents
-            .where('[timestamp+ApiTypeId]').above(snapshotUpperBound)
-            .toArray()
-
-          if (newerRaw.length > 0) {
-            // ライブプレイがスナップショット取得後に新しい行を書き込んだ
-            // （このトランザクションが開くまでの間の話 -- 開いた後は上の
-            // JSDoc通りIDBの直列化により誰も追加できない）。差分だけでなく
-            // rawEvents全体+新着分で再変換し、そのハンドを含む完全な結果を
-            // 作り直す。
-            console.log(`[performFullRebuild] ${newerRaw.length} raw row(s) arrived after the snapshot (live play during rebuild) -- re-deriving with them included`)
-            const mergedRaw = [...rawEvents, ...newerRaw]
-            const mergedValidEvents = await filterValidApplicationEvents(mergedRaw)
-            finalEntities = new EntityConverter(defaultSession).convertEventsToEntities(mergedValidEvents)
-            finalTotalEvents = mergedRaw.length
-          }
+        if (currentCount !== rawEvents.length) {
+          // apiEventsがスナップショット取得後に変化した（このトランザクション
+          // が開くまでの間の話 -- 開いた後は上のJSDoc通りIDBの直列化により
+          // 誰も追加できない）。キーの大小に依存しないよう、差分合流ではなく
+          // フルスキャンをやり直して完全な結果を作り直す。
+          console.log(`[performFullRebuild] apiEvents changed since the snapshot (${rawEvents.length} -> ${currentCount} rows; live play or another writer during rebuild) -- re-deriving from a fresh read`)
+          const freshRaw = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
+          const freshValidEvents = await filterValidApplicationEvents(freshRaw)
+          finalEntities = new EntityConverter(defaultSession).convertEventsToEntities(freshValidEvents)
+          finalTotalEvents = freshRaw.length
         }
 
         await db.hands.clear()
@@ -1106,10 +1122,17 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           updatedAt: Date.now()
         })
 
-        return c
+        return { ...c, totalEvents: finalTotalEvents }
       })
 
       console.log(`[performFullRebuild] Generated entities - Hands: ${counts.hands}, Phases: ${counts.phases}, Actions: ${counts.actions}`)
+
+      if (counts.totalEvents === 0) {
+        console.log('[performFullRebuild] No events to process')
+        // 対象イベントが無い＝再構築の必要が無いため、保留中のアドバイザリも解消する
+        await resolveAdvisory()
+        return { totalCount: 0, totalHands: 0, totalPhases: 0, totalActions: 0 }
+      }
 
       // Restore service state from latest events
       // (codex #177 3巡目レビューP2: このsetterはservice.liveEvtDealも同時に
@@ -1146,7 +1169,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
       // 再構築が完了したので、保留中の再構築アドバイザリがあれば解消する
       await resolveAdvisory()
 
-      return { totalCount, totalHands: counts.hands, totalPhases: counts.phases, totalActions: counts.actions }
+      return { totalCount: counts.totalEvents, totalHands: counts.hands, totalPhases: counts.phases, totalActions: counts.actions }
     } finally {
       stopKeepAlive()
     }
