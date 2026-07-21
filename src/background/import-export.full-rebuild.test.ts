@@ -30,6 +30,8 @@ import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
 import { createImportExportHandlers } from './import-export'
 import { setOperationState } from './operation-state'
+import { EntityConverter } from '../entity-converter'
+import * as databaseUtils from '../utils/database-utils'
 
 // A known-good session-start + hand (EVT_ENTRY_QUEUED, then EVT_DEAL -> 3x
 // EVT_ACTION -> EVT_HAND_RESULTS), copied verbatim from src/app.test.ts's
@@ -47,6 +49,18 @@ const HAND1_EVENTS = [
 const HAND1_ID = 384370064
 const HAND1_DEAL = HAND1_EVENTS[0]!
 const HAND1_RESULTS = HAND1_EVENTS[4]!
+
+// A second, structurally-identical hand shifted well after HAND1 in time,
+// with a distinct HandId -- stands in for "a hand that completes via live
+// play while a rebuild's snapshot read is in flight" (codex PR #207 P2
+// pass-3, "Preserve live hands written after the rebuild snapshot").
+const HAND2_ID = 384370065
+const HAND2_EVENTS = HAND1_EVENTS.map(event => {
+  const clone = JSON.parse(JSON.stringify(event))
+  clone.timestamp = (event as { timestamp: number }).timestamp + 1_000_000
+  if (clone.ApiTypeId === 306) clone.HandId = HAND2_ID
+  return clone
+})
 
 const toJsonl = (events: unknown[]): string => events.map(event => JSON.stringify(event)).join('\n')
 
@@ -241,6 +255,132 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         .map(([msg]) => msg as { action?: string, state?: string })
         .filter(msg => msg?.action === 'rebuildProgress' && msg?.state === 'error')
       expect(errorMessages.length).toBeGreaterThan(0)
+    })
+  })
+
+  describe('service-worker keepalive during an import-triggered rebuild (codex PR #207 P2 pass-3, "Keep the worker alive during import-triggered rebuilds")', () => {
+    afterEach(() => {
+      jest.restoreAllMocks()
+    })
+
+    test('engages the same 25s keepalive interval startKeepAlive() uses (export paths), and stops it once the import-triggered rebuild completes', async () => {
+      const fullExport = [ENTRY_QUEUED, ...HAND1_EVENTS]
+
+      // Real timers throughout -- fake-indexeddb dispatches its events via
+      // real setImmediate/timers internally, so freezing timers here would
+      // deadlock the DB operations. We don't need time to actually elapse:
+      // we just need to observe that startKeepAlive()'s setInterval(...,
+      // 25000) was armed and later torn down; the callback itself is
+      // invoked directly below rather than by waiting out a real 25s.
+      chrome.runtime.getPlatformInfo = jest.fn().mockResolvedValue({})
+
+      await runWithFreshDb(async ({ db, handlers }) => {
+        // Damaged DB, same setup as the parity test: DEAL+RESULTS present,
+        // ACTIONs missing -- the re-import below stores new raw rows into a
+        // non-empty DB, so importData() must run the full rebuild path.
+        await db.apiEvents.bulkAdd([ENTRY_QUEUED, HAND1_DEAL, HAND1_RESULTS] as never[])
+
+        const setIntervalSpy = jest.spyOn(global, 'setInterval')
+        const clearIntervalSpy = jest.spyOn(global, 'clearInterval')
+
+        await handlers.importData(toJsonl(fullExport))
+
+        // startKeepAlive()'s observable effect (import-export.ts): a
+        // setInterval(..., 25000) that pings an Extension API on a timer to
+        // keep the MV3 service worker from being reaped mid-rebuild.
+        const keepAliveCallIndex = setIntervalSpy.mock.calls.findIndex(([, delay]) => delay === 25000)
+        expect(keepAliveCallIndex).toBeGreaterThanOrEqual(0)
+
+        // Invoking the captured callback directly proves it's really
+        // startKeepAlive()'s ping (not some unrelated 25000ms timer that
+        // happens to share the delay).
+        const keepAliveFn = setIntervalSpy.mock.calls[keepAliveCallIndex]![0] as () => void
+        keepAliveFn()
+        expect(chrome.runtime.getPlatformInfo).toHaveBeenCalled()
+
+        // The interval was torn down again (stopKeepAlive() ran in
+        // performFullRebuild's `finally`), not left dangling after the
+        // import completed -- clean up the real interval either way so it
+        // can't fire after this test ends.
+        const keepAliveIntervalId = setIntervalSpy.mock.results[keepAliveCallIndex]!.value
+        expect(clearIntervalSpy).toHaveBeenCalledWith(keepAliveIntervalId)
+        clearInterval(keepAliveIntervalId)
+      })
+    })
+  })
+
+  describe('preserving live hands written after the rebuild snapshot (codex PR #207 P2 pass-3, "Preserve live hands written after the rebuild snapshot")', () => {
+    afterEach(() => {
+      jest.restoreAllMocks()
+    })
+
+    test('a hand completing via live play while the rebuild snapshot is being read/converted is not lost, and derives correctly alongside the snapshot hand', async () => {
+      const fullExport = [ENTRY_QUEUED, ...HAND1_EVENTS]
+
+      // Control: a from-scratch import of BOTH hands into an empty DB --
+      // the target shape the "live write survives" path must match.
+      const expected = await runWithFreshDb(async ({ db, handlers }) => {
+        await handlers.importData(toJsonl([...fullExport, ...HAND2_EVENTS]))
+        return snapshotDerived(db)
+      })
+      expect(expected.hands).toHaveLength(2)
+
+      await runWithFreshDb(async ({ db, handlers }) => {
+        // Damaged DB, same setup as the parity test: DEAL+RESULTS present
+        // for HAND1, ACTIONs missing -- the re-import below stores new raw
+        // rows into a non-empty DB, triggering importData()'s rebuild path.
+        await db.apiEvents.bulkAdd([ENTRY_QUEUED, HAND1_DEAL, HAND1_RESULTS] as never[])
+
+        // Hook the FIRST call to filterValidApplicationEvents -- this is
+        // performFullRebuild's snapshot-processing call (the empty-DB
+        // import path above never calls it; a possible second call, if the
+        // fix's merge-and-redo path fires, is left untouched below). Right
+        // as the snapshot is being processed, simulate HAND2 completing via
+        // live play: WriteEntityStream (write-entity-stream.ts) writes
+        // straight to hands/phases/actions regardless of service.batchMode
+        // (see performFullRebuild's JSDoc) -- reproduced here by directly
+        // deriving HAND2 with a throwaway EntityConverter and bulkPutting
+        // it, plus storing its raw events into apiEvents (event-ingestion.ts's
+        // job, simulated directly since that pipeline isn't wired up in this
+        // unit test).
+        let hooked = false
+        // Capture the real implementation BEFORE spying -- jest.spyOn
+        // mutates the shared module-namespace object in place, so calling
+        // through via jest.requireActual() here would return that SAME
+        // (already-mutated) object and recurse into the mock forever.
+        const originalFilterValidApplicationEvents = databaseUtils.filterValidApplicationEvents
+        const filterSpy = jest.spyOn(databaseUtils, 'filterValidApplicationEvents')
+          .mockImplementation(async (rawEvents) => {
+            const result = await originalFilterValidApplicationEvents(rawEvents)
+            if (!hooked) {
+              hooked = true
+              await db.apiEvents.bulkAdd(HAND2_EVENTS as never[])
+              const liveEntities = new EntityConverter({
+                id: undefined, battleType: undefined, name: undefined, players: new Map(), reset: () => { }
+              }).convertEventsToEntities(HAND2_EVENTS as never[])
+              await db.hands.bulkPut(liveEntities.hands)
+              await db.phases.bulkPut(liveEntities.phases)
+              await db.actions.bulkPut(liveEntities.actions)
+            }
+            return result
+          })
+
+        const result = await handlers.importData(toJsonl(fullExport))
+        expect(result.successCount).toBe(3) // the 3 missing HAND1 ACTIONs
+
+        filterSpy.mockRestore()
+
+        // HAND2 (the "live" hand) must survive AND be correctly derived --
+        // not merely present-but-stale, not lost to the clear() -- matching
+        // the from-scratch control exactly for both hands.
+        const repaired = await snapshotDerived(db)
+        expect(repaired).toEqual(expected)
+        expect(repaired.hands.map(h => h.id).sort()).toEqual([HAND1_ID, HAND2_ID].sort())
+
+        // Raw Lake integrity: both hands' raw events are present regardless.
+        const rawCount = await db.apiEvents.count()
+        expect(rawCount).toBe(fullExport.length + HAND2_EVENTS.length)
+      })
     })
   })
 })

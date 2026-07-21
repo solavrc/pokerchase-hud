@@ -936,6 +936,34 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
    * 「データ再構築」ボタンでいつでもやり直せる ―― 強制すべき不変条件は
    * 「インポート/再構築は、見つけたときより派生データを悪化させない」
    * ことであり、apiEventsさえ無事なら回復可能性は常に保たれる。
+   *
+   * **SW keepalive**（codexレビュー指摘、PR #207 P2 3巡目）: 大規模履歴では
+   * 読み込み→変換→書き込みの全体がChrome MV3の30秒アイドルタイムアウトを
+   * 超え得る。エクスポート系（`exportJsonData`/`exportPokerStarsData`）が
+   * 既にやっているのと同じ`startKeepAlive()`をここで一括して掛けることで、
+   * `rebuildAllData`（ボタン）・`importData`の再構築分岐の両方が保護される。
+   *
+   * **ライブ中に完了したハンドの保護**（codexレビュー指摘、PR #207 P2
+   * 3巡目）: 上のraw読み込み（スナップショット）～変換の間にライブ
+   * プレイ中のハンドが1つ完了すると、`WriteEntityStream`
+   * （write-entity-stream.ts）は`service.batchMode`を見ずに無条件で
+   * hands/phases/actionsへ書き込む（#196のライブ取り込みパイプラインは
+   * このリビルドと無関係に動き続ける ―― event-ingestion.tsは変更しない）。
+   * その書き込みが下の最終トランザクション開始より前に確定していた場合、
+   * スナップショットから導出した`entities`はそのハンドの元イベントを
+   * 含んでおらず、clear()で消すとbulkPut(entities)では復元できない。
+   * 最終トランザクションのスコープに`apiEvents`も含めているため、IDBの
+   * トランザクション分離により、他のreadwriteトランザクション
+   * （WriteEntityStreamのhands/phases/actions書き込み、event-ingestion.ts
+   * のapiEvents書き込み）はこのトランザクションの開始からコミットまでの
+   * 間は割り込めない（同じテーブルへのreadwriteトランザクションはIDBが
+   * 直列化する）。したがって、トランザクション内でスナップショット境界
+   * より新しい行が無いか一度だけ再確認すれば十分 ―― 見つかった場合は
+   * それらをスナップショットに合流させて変換をやり直してから書き込む
+   * （EntityConverterはハンド境界をローカル状態で追うため、差分だけを
+   * 渡すと監査finding #7と同じ問題を再現してしまう。よってrawEvents
+   * 全体+新着分で再変換する）。トランザクションが開いている間は誰も
+   * 新しい行をapiEventsへ追加できないため、この再確認は高々1回で収束する。
    * @param onProgress 各フェーズの`(progress, message)`。呼び出し元はこれを
    *   使って自分のoperationState/メッセージ経路へ橋渡しする
    */
@@ -944,143 +972,184 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
   ): Promise<{ totalCount: number, totalHands: number, totalPhases: number, totalActions: number }> => {
     console.log('[performFullRebuild] Starting full rebuild of derived data...')
 
-    // Get total event count first (read-only; no tables touched yet)
-    const totalCount = await db.apiEvents.count()
-    console.log(`[performFullRebuild] Processing ${totalCount} events...`)
+    // 大規模履歴では以下全体（読み込み→変換→書き込み）がMV3の30秒アイドル
+    // タイムアウトを超え得るため、エクスポート系と同じキープアライブを
+    // 操作全体に掛ける（上のJSDoc「SW keepalive」参照）
+    const stopKeepAlive = await startKeepAlive()
+    try {
+      // Get total event count first (read-only; no tables touched yet)
+      const totalCount = await db.apiEvents.count()
+      console.log(`[performFullRebuild] Processing ${totalCount} events...`)
 
-    if (totalCount === 0) {
-      console.log('[performFullRebuild] No events to process')
-      // 対象イベントが無い場合のみ、クリアそのものに失敗リスクが実質無い
-      // （変換/保存を伴わない単純な削除のみ）ため、従来通りここでクリアする
-      await db.transaction('rw', [db.hands, db.phases, db.actions, db.meta], async () => {
+      if (totalCount === 0) {
+        console.log('[performFullRebuild] No events to process')
+        // 対象イベントが無い場合のみ、クリアそのものに失敗リスクが実質無い
+        // （変換/保存を伴わない単純な削除のみ）ため、従来通りここでクリアする
+        await db.transaction('rw', [db.hands, db.phases, db.actions, db.meta], async () => {
+          await db.hands.clear()
+          await db.phases.clear()
+          await db.actions.clear()
+          await db.meta.delete('lastProcessed')
+        })
+        // 対象イベントが無い＝再構築の必要が無いため、保留中のアドバイザリも解消する
+        await resolveAdvisory()
+        return { totalCount: 0, totalHands: 0, totalPhases: 0, totalActions: 0 }
+      }
+
+      onProgress(10, 'イベント読み込み中...')
+
+      // Initialize EntityConverter
+      const defaultSession = {
+        id: undefined,
+        battleType: undefined,
+        name: undefined,
+        players: new Map(),
+        reset: () => { }
+      }
+      const converter = new EntityConverter(defaultSession)
+
+      // Load all raw events and convert in one pass
+      // (EntityConverter tracks hand state internally, so chunked conversion loses cross-chunk hands)
+      console.log(`[performFullRebuild] Loading all events...`)
+      const rawEvents = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
+
+      // このスナップショットの上限境界（[timestamp, ApiTypeId]）。下の最終
+      // トランザクション内で「この境界より新しい行が無いか」を再確認する
+      // ために使う（上のJSDoc「ライブ中に完了したハンドの保護」参照）。
+      const lastSnapshotEvent = rawEvents[rawEvents.length - 1]
+      const snapshotUpperBound: [number, number] | undefined = lastSnapshotEvent
+        ? [lastSnapshotEvent.timestamp!, lastSnapshotEvent.ApiTypeId]
+        : undefined
+
+      // apiEvents is the raw Lake: it may contain non-application noise (202/205
+      // keepalive/timer events), ApiTypeIds unknown to the current schema, or
+      // application-type events whose payload doesn't match the current Zod schema
+      // (either not-yet-fixed, or already fixed since the row was first stored).
+      // Re-validating here — rather than trusting raw rows — is what makes this the
+      // recovery path: any row a schema fix now makes parseable is automatically
+      // picked up, no separate promotion mechanism required (docs/architecture.md
+      // "Raw Event Lake"). It's also what keeps EntityConverter (which reads
+      // required fields like EVT_DEAL.Game.SmallBlind without guards) from
+      // throwing on a still-malformed row.
+      const allEvents = await filterValidApplicationEvents(rawEvents)
+      const skippedCount = rawEvents.length - allEvents.length
+      console.log(`[performFullRebuild] Loaded ${rawEvents.length} raw events, ${allEvents.length} valid application events after re-validation${skippedCount > 0 ? ` (${skippedCount} non-application/unparseable rows skipped)` : ''}`)
+
+      onProgress(40, `${allEvents.length.toLocaleString()}件のイベントを変換中...`)
+
+      // 変換はメモリ上のみの処理で、この時点ではまだテーブルに一切触れて
+      // いない ―― ここで例外が起きても（例: 未知の形状での変換失敗）既存の
+      // 派生データはそのまま残る
+      const entities = converter.convertEventsToEntities(allEvents)
+
+      onProgress(70, 'テーブルを更新中...')
+
+      // クリアと保存を単一トランザクションにまとめる（上のJSDoc参照）:
+      // bulkPutがQuotaExceededError等で失敗した場合、Dexieがこのトランザクション
+      // 全体（クリアを含む）をロールバックし、失敗前の派生データがそのまま残る。
+      // `apiEvents`もスコープに含めているのは、上のJSDoc「ライブ中に完了した
+      // ハンドの保護」の通り、トランザクション内での再確認とIDBの直列化を
+      // 成立させるため。
+      const counts = await db.transaction('rw', [db.apiEvents, db.hands, db.phases, db.actions, db.meta], async () => {
+        let finalEntities = entities
+        let finalTotalEvents = rawEvents.length
+
+        if (snapshotUpperBound) {
+          const newerRaw = await db.apiEvents
+            .where('[timestamp+ApiTypeId]').above(snapshotUpperBound)
+            .toArray()
+
+          if (newerRaw.length > 0) {
+            // ライブプレイがスナップショット取得後に新しい行を書き込んだ
+            // （このトランザクションが開くまでの間の話 -- 開いた後は上の
+            // JSDoc通りIDBの直列化により誰も追加できない）。差分だけでなく
+            // rawEvents全体+新着分で再変換し、そのハンドを含む完全な結果を
+            // 作り直す。
+            console.log(`[performFullRebuild] ${newerRaw.length} raw row(s) arrived after the snapshot (live play during rebuild) -- re-deriving with them included`)
+            const mergedRaw = [...rawEvents, ...newerRaw]
+            const mergedValidEvents = await filterValidApplicationEvents(mergedRaw)
+            finalEntities = new EntityConverter(defaultSession).convertEventsToEntities(mergedValidEvents)
+            finalTotalEvents = mergedRaw.length
+          }
+        }
+
         await db.hands.clear()
         await db.phases.clear()
         await db.actions.clear()
         await db.meta.delete('lastProcessed')
+
+        const c = { hands: 0, phases: 0, actions: 0 }
+        if (finalEntities.hands.length > 0) {
+          await db.hands.bulkPut(finalEntities.hands)
+          c.hands = finalEntities.hands.length
+        }
+        if (finalEntities.phases.length > 0) {
+          await db.phases.bulkPut(finalEntities.phases)
+          c.phases = finalEntities.phases.length
+        }
+        if (finalEntities.actions.length > 0) {
+          await db.actions.bulkPut(finalEntities.actions)
+          c.actions = finalEntities.actions.length
+        }
+
+        // Update metadata with rebuild info (同じトランザクション内 -- 派生
+        // データとメタデータが不整合な状態でコミットされることがない)
+        await db.meta.put({
+          id: 'rebuildStatus',
+          value: {
+            lastRebuildDate: new Date().toISOString(),
+            totalEvents: finalTotalEvents,
+            totalHands: c.hands,
+            totalPhases: c.phases,
+            totalActions: c.actions
+          },
+          updatedAt: Date.now()
+        })
+
+        return c
       })
-      // 対象イベントが無い＝再構築の必要が無いため、保留中のアドバイザリも解消する
+
+      console.log(`[performFullRebuild] Generated entities - Hands: ${counts.hands}, Phases: ${counts.phases}, Actions: ${counts.actions}`)
+
+      // Restore service state from latest events
+      // (codex #177 3巡目レビューP2: このsetterはservice.liveEvtDealも同時に
+      // 同期するため、呼び出し元のsetBatchMode(false)がトリガーする
+      // recalculateAllStats()の再ブロードキャストは、再構築前のliveEvtDeal
+      // （観戦中に取り残された可能性がある）ではなく、この復元された
+      // ヒーロー在籍dealの座席文脈を使う)
+      const latestDealEvent = await findLatestPlayerDealEvent(db)
+
+      if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
+        service.latestEvtDeal = latestDealEvent
+        if (latestDealEvent.Player?.SeatIndex !== undefined) {
+          service.playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex]
+        }
+      }
+
+      onProgress(90, '統計情報を再計算中...')
+
+      // Trigger stats recalculation once at the end. Whether this write() gets
+      // broadcast immediately or is a no-op depends on the caller's batch-mode
+      // state (see ReadEntityStream.transform()) -- the caller's own
+      // setBatchMode(false) is what triggers the real broadcast via
+      // PokerChaseService.recalculateAllStats(), which reads the
+      // already-restored (hero-anchored) service.latestEvtDeal above, making
+      // this call mostly harmless/redundant in that case.
+      if (service.latestEvtDeal && service.latestEvtDeal.SeatUserIds) {
+        const playerIds = service.latestEvtDeal.SeatUserIds.filter(id => id !== -1)
+        if (playerIds.length > 0) {
+          console.log('[performFullRebuild] Triggering stats recalculation...')
+          service.statsOutputStream.write(service.latestEvtDeal.SeatUserIds)
+        }
+      }
+
+      // 再構築が完了したので、保留中の再構築アドバイザリがあれば解消する
       await resolveAdvisory()
-      return { totalCount: 0, totalHands: 0, totalPhases: 0, totalActions: 0 }
+
+      return { totalCount, totalHands: counts.hands, totalPhases: counts.phases, totalActions: counts.actions }
+    } finally {
+      stopKeepAlive()
     }
-
-    onProgress(10, 'イベント読み込み中...')
-
-    // Initialize EntityConverter
-    const defaultSession = {
-      id: undefined,
-      battleType: undefined,
-      name: undefined,
-      players: new Map(),
-      reset: () => { }
-    }
-    const converter = new EntityConverter(defaultSession)
-
-    // Load all raw events and convert in one pass
-    // (EntityConverter tracks hand state internally, so chunked conversion loses cross-chunk hands)
-    console.log(`[performFullRebuild] Loading all events...`)
-    const rawEvents = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
-
-    // apiEvents is the raw Lake: it may contain non-application noise (202/205
-    // keepalive/timer events), ApiTypeIds unknown to the current schema, or
-    // application-type events whose payload doesn't match the current Zod schema
-    // (either not-yet-fixed, or already fixed since the row was first stored).
-    // Re-validating here — rather than trusting raw rows — is what makes this the
-    // recovery path: any row a schema fix now makes parseable is automatically
-    // picked up, no separate promotion mechanism required (docs/architecture.md
-    // "Raw Event Lake"). It's also what keeps EntityConverter (which reads
-    // required fields like EVT_DEAL.Game.SmallBlind without guards) from
-    // throwing on a still-malformed row.
-    const allEvents = await filterValidApplicationEvents(rawEvents)
-    const skippedCount = rawEvents.length - allEvents.length
-    console.log(`[performFullRebuild] Loaded ${rawEvents.length} raw events, ${allEvents.length} valid application events after re-validation${skippedCount > 0 ? ` (${skippedCount} non-application/unparseable rows skipped)` : ''}`)
-
-    onProgress(40, `${allEvents.length.toLocaleString()}件のイベントを変換中...`)
-
-    // 変換はメモリ上のみの処理で、この時点ではまだテーブルに一切触れて
-    // いない ―― ここで例外が起きても（例: 未知の形状での変換失敗）既存の
-    // 派生データはそのまま残る
-    const entities = converter.convertEventsToEntities(allEvents)
-
-    onProgress(70, 'テーブルを更新中...')
-
-    // クリアと保存を単一トランザクションにまとめる（上のJSDoc参照）:
-    // bulkPutがQuotaExceededError等で失敗した場合、Dexieがこのトランザクション
-    // 全体（クリアを含む）をロールバックし、失敗前の派生データがそのまま残る。
-    const counts = await db.transaction('rw', [db.hands, db.phases, db.actions, db.meta], async () => {
-      await db.hands.clear()
-      await db.phases.clear()
-      await db.actions.clear()
-      await db.meta.delete('lastProcessed')
-
-      const c = { hands: 0, phases: 0, actions: 0 }
-      if (entities.hands.length > 0) {
-        await db.hands.bulkPut(entities.hands)
-        c.hands = entities.hands.length
-      }
-      if (entities.phases.length > 0) {
-        await db.phases.bulkPut(entities.phases)
-        c.phases = entities.phases.length
-      }
-      if (entities.actions.length > 0) {
-        await db.actions.bulkPut(entities.actions)
-        c.actions = entities.actions.length
-      }
-
-      // Update metadata with rebuild info (同じトランザクション内 -- 派生
-      // データとメタデータが不整合な状態でコミットされることがない)
-      await db.meta.put({
-        id: 'rebuildStatus',
-        value: {
-          lastRebuildDate: new Date().toISOString(),
-          totalEvents: totalCount,
-          totalHands: c.hands,
-          totalPhases: c.phases,
-          totalActions: c.actions
-        },
-        updatedAt: Date.now()
-      })
-
-      return c
-    })
-
-    console.log(`[performFullRebuild] Generated entities - Hands: ${counts.hands}, Phases: ${counts.phases}, Actions: ${counts.actions}`)
-
-    // Restore service state from latest events
-    // (codex #177 3巡目レビューP2: このsetterはservice.liveEvtDealも同時に
-    // 同期するため、呼び出し元のsetBatchMode(false)がトリガーする
-    // recalculateAllStats()の再ブロードキャストは、再構築前のliveEvtDeal
-    // （観戦中に取り残された可能性がある）ではなく、この復元された
-    // ヒーロー在籍dealの座席文脈を使う)
-    const latestDealEvent = await findLatestPlayerDealEvent(db)
-
-    if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
-      service.latestEvtDeal = latestDealEvent
-      if (latestDealEvent.Player?.SeatIndex !== undefined) {
-        service.playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex]
-      }
-    }
-
-    onProgress(90, '統計情報を再計算中...')
-
-    // Trigger stats recalculation once at the end. Whether this write() gets
-    // broadcast immediately or is a no-op depends on the caller's batch-mode
-    // state (see ReadEntityStream.transform()) -- the caller's own
-    // setBatchMode(false) is what triggers the real broadcast via
-    // PokerChaseService.recalculateAllStats(), which reads the
-    // already-restored (hero-anchored) service.latestEvtDeal above, making
-    // this call mostly harmless/redundant in that case.
-    if (service.latestEvtDeal && service.latestEvtDeal.SeatUserIds) {
-      const playerIds = service.latestEvtDeal.SeatUserIds.filter(id => id !== -1)
-      if (playerIds.length > 0) {
-        console.log('[performFullRebuild] Triggering stats recalculation...')
-        service.statsOutputStream.write(service.latestEvtDeal.SeatUserIds)
-      }
-    }
-
-    // 再構築が完了したので、保留中の再構築アドバイザリがあれば解消する
-    await resolveAdvisory()
-
-    return { totalCount, totalHands: counts.hands, totalPhases: counts.phases, totalActions: counts.actions }
   }
 
   /**

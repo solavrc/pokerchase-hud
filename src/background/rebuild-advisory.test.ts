@@ -104,6 +104,37 @@ describe('rebuild-advisory', () => {
     })
   })
 
+  describe('PR #207 backfill (audit finding #7, codex review pass-3 P2 "Prompt rebuilds for already-stored overlap repairs")', () => {
+    it('re-surfaces the advisory for a user who already acknowledged the pre-#207 version, so their pre-existing overlap-import staleness gets a manual rebuild prompt', async () => {
+      // A user on the version just before this rollout (REBUILD_ADVISORY_VERSION
+      // was bumped from 2 -> 3 specifically for this fix, see
+      // src/constants/database.ts) already acknowledged version 2 -- e.g. they
+      // ran a rebuild for the #115 fix and have not needed one since.
+      //
+      // If they also, at some point on an OLDER build, imported an export that
+      // overlapped existing data, the old incremental-conversion bug (audit
+      // finding #7) may have left their hands/phases/actions silently stale for
+      // hands split across existing+imported rows. Their raw apiEvents rows are
+      // already complete (the Lake always stores every row), so re-importing the
+      // same export today just hits the pure-duplicate path (successCount === 0)
+      // and never triggers importData()'s new rebuild-on-overlap behavior --
+      // there's nothing left to bump this user onto the fixed code path except
+      // this advisory. REBUILD_ADVISORY_VERSION must have moved past what they
+      // already acknowledged so checkOnUpdate() prompts them again.
+      await chrome.storage.local.set({
+        [REBUILD_ADVISORY_STORAGE_KEY]: { acknowledgedVersion: 2 }
+      })
+      ;(mockDb.apiEvents.count as jest.Mock).mockResolvedValue(1)
+
+      await checkOnUpdate(mockDb)
+
+      const state = await getRebuildAdvisoryState()
+      expect(state.pendingVersion).toBe(REBUILD_ADVISORY_VERSION)
+      expect(chrome.action.setBadgeText).toHaveBeenCalledWith({ text: '!' })
+      expect(chrome.notifications.create).toHaveBeenCalledTimes(1)
+    })
+  })
+
   describe('resolveAdvisory', () => {
     it('clears pendingVersion, sets acknowledgedVersion, and clears the badge', async () => {
       await chrome.storage.local.set({
