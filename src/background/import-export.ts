@@ -912,7 +912,30 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
    * ごとに異なる（rebuildAllDataは`rebuildProgress`の`started`/`completed`/
    * `error`まで含めて自分の操作として報告し、importDataは自分の`import`
    * 操作の一部としてラップする）ため、それらは呼び出し元に委ね、ここでは
-   * 実際のクリア→再読み込み→変換→保存→サービス状態復元のみを行う。
+   * 実際の再読み込み→変換→クリア＋保存（1トランザクション）→サービス
+   * 状態復元のみを行う。
+   *
+   * **失敗時に既存の派生データを失わない不変条件**（codexレビュー指摘、
+   * PR #207 P2）: 以前の実装はまず`hands`/`phases`/`actions`をクリアして
+   * から、その後でイベント読み込み→変換→保存を行っていた。大きな既存
+   * 履歴での変換例外やQuotaExceededError（保存側のbulkPut失敗）が
+   * クリアの*後*に起きると、importData/rebuildAllDataは失敗を報告する
+   * ものの、その時点で古い（動いていた）派生データは既に消えており、
+   * 「インポート前よりHUD統計/ハンド履歴が悪化する」―― インポート前の
+   * 単なる古さ（監査finding #7）より明確に悪い結果になっていた。
+   * ここでは変換（`convertEventsToEntities`、例外を投げ得る）を先に
+   * メモリ上だけで完了させ、実際のテーブル書き込み（クリア＋bulkPut＋
+   * メタ更新）は全て単一の`db.transaction('rw', ...)`にまとめる。
+   * Dexieのトランザクションは、スコープ内のいずれかの操作が例外を
+   * 投げると、そのトランザクション開始以降の全書き込み（クリアを含む）
+   * をロールバックする ―― これにより「クリアはコミット済みだが保存は
+   * 失敗した」という中間状態が構造的に起こり得なくなる。変換自体が
+   * 例外を投げた場合はテーブルへは一切触れていないため、そもそも
+   * ロールバックの必要すらない。いずれの失敗経路でも、生イベントは
+   * apiEvents（Raw Event Lake）に確定保存されたまま残るため、
+   * 「データ再構築」ボタンでいつでもやり直せる ―― 強制すべき不変条件は
+   * 「インポート/再構築は、見つけたときより派生データを悪化させない」
+   * ことであり、apiEventsさえ無事なら回復可能性は常に保たれる。
    * @param onProgress 各フェーズの`(progress, message)`。呼び出し元はこれを
    *   使って自分のoperationState/メッセージ経路へ橋渡しする
    */
@@ -921,26 +944,26 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
   ): Promise<{ totalCount: number, totalHands: number, totalPhases: number, totalActions: number }> => {
     console.log('[performFullRebuild] Starting full rebuild of derived data...')
 
-    // Clear all entity tables first
-    await db.transaction('rw', [db.hands, db.phases, db.actions, db.meta], async () => {
-      await db.hands.clear()
-      await db.phases.clear()
-      await db.actions.clear()
-      await db.meta.delete('lastProcessed')
-    })
-
-    onProgress(10, 'テーブルクリア完了、イベント読み込み中...')
-
-    // Get total event count
+    // Get total event count first (read-only; no tables touched yet)
     const totalCount = await db.apiEvents.count()
     console.log(`[performFullRebuild] Processing ${totalCount} events...`)
 
     if (totalCount === 0) {
       console.log('[performFullRebuild] No events to process')
+      // 対象イベントが無い場合のみ、クリアそのものに失敗リスクが実質無い
+      // （変換/保存を伴わない単純な削除のみ）ため、従来通りここでクリアする
+      await db.transaction('rw', [db.hands, db.phases, db.actions, db.meta], async () => {
+        await db.hands.clear()
+        await db.phases.clear()
+        await db.actions.clear()
+        await db.meta.delete('lastProcessed')
+      })
       // 対象イベントが無い＝再構築の必要が無いため、保留中のアドバイザリも解消する
       await resolveAdvisory()
       return { totalCount: 0, totalHands: 0, totalPhases: 0, totalActions: 0 }
     }
+
+    onProgress(10, 'イベント読み込み中...')
 
     // Initialize EntityConverter
     const defaultSession = {
@@ -973,11 +996,52 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
 
     onProgress(40, `${allEvents.length.toLocaleString()}件のイベントを変換中...`)
 
+    // 変換はメモリ上のみの処理で、この時点ではまだテーブルに一切触れて
+    // いない ―― ここで例外が起きても（例: 未知の形状での変換失敗）既存の
+    // 派生データはそのまま残る
     const entities = converter.convertEventsToEntities(allEvents)
 
-    onProgress(70, 'エンティティ保存中...')
+    onProgress(70, 'テーブルを更新中...')
 
-    const counts = await saveEntities(db, entities)
+    // クリアと保存を単一トランザクションにまとめる（上のJSDoc参照）:
+    // bulkPutがQuotaExceededError等で失敗した場合、Dexieがこのトランザクション
+    // 全体（クリアを含む）をロールバックし、失敗前の派生データがそのまま残る。
+    const counts = await db.transaction('rw', [db.hands, db.phases, db.actions, db.meta], async () => {
+      await db.hands.clear()
+      await db.phases.clear()
+      await db.actions.clear()
+      await db.meta.delete('lastProcessed')
+
+      const c = { hands: 0, phases: 0, actions: 0 }
+      if (entities.hands.length > 0) {
+        await db.hands.bulkPut(entities.hands)
+        c.hands = entities.hands.length
+      }
+      if (entities.phases.length > 0) {
+        await db.phases.bulkPut(entities.phases)
+        c.phases = entities.phases.length
+      }
+      if (entities.actions.length > 0) {
+        await db.actions.bulkPut(entities.actions)
+        c.actions = entities.actions.length
+      }
+
+      // Update metadata with rebuild info (同じトランザクション内 -- 派生
+      // データとメタデータが不整合な状態でコミットされることがない)
+      await db.meta.put({
+        id: 'rebuildStatus',
+        value: {
+          lastRebuildDate: new Date().toISOString(),
+          totalEvents: totalCount,
+          totalHands: c.hands,
+          totalPhases: c.phases,
+          totalActions: c.actions
+        },
+        updatedAt: Date.now()
+      })
+
+      return c
+    })
 
     console.log(`[performFullRebuild] Generated entities - Hands: ${counts.hands}, Phases: ${counts.phases}, Actions: ${counts.actions}`)
 
@@ -995,19 +1059,6 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         service.playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex]
       }
     }
-
-    // Update metadata with rebuild info
-    await db.meta.put({
-      id: 'rebuildStatus',
-      value: {
-        lastRebuildDate: new Date().toISOString(),
-        totalEvents: totalCount,
-        totalHands: counts.hands,
-        totalPhases: counts.phases,
-        totalActions: counts.actions
-      },
-      updatedAt: Date.now()
-    })
 
     onProgress(90, '統計情報を再計算中...')
 

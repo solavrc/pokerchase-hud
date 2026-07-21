@@ -181,7 +181,7 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
     })
   })
 
-  test('a failed post-import rebuild surfaces as an import error and keeps the newly-stored raw rows', async () => {
+  test('a failed post-import rebuild surfaces as an import error, keeps the newly-stored raw rows, AND leaves the old derived rows untouched (codex PR #207 P2)', async () => {
     const fullExport = [ENTRY_QUEUED, ...HAND1_EVENTS]
 
     await runWithFreshDb(async ({ db, handlers }) => {
@@ -191,7 +191,27 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
       await db.apiEvents.bulkAdd([ENTRY_QUEUED, HAND1_DEAL, HAND1_RESULTS] as never[])
       await handlers.rebuildAllData()
 
-      // Force the rebuild's entity-generation step to blow up.
+      // Snapshot the derived state produced by that successful rebuild --
+      // chimeric (hand exists, zero actions), but it's real, previously
+      // working HUD data. A failed rebuild attempt below must leave this
+      // exactly as-is: `performFullRebuild()` used to clear hands/phases/
+      // actions BEFORE attempting conversion/save, so a conversion or
+      // save failure left the tables empty -- strictly worse than the
+      // pre-import staleness this whole feature exists to fix. The fix
+      // defers the clear until it can be committed atomically together
+      // with the new data (a single Dexie 'rw' transaction), so a failure
+      // after that point rolls the clear back too.
+      const beforeFailedRebuild = await snapshotDerived(db)
+      expect(beforeFailedRebuild.hands).toHaveLength(1)
+      expect(beforeFailedRebuild.actions).toHaveLength(0)
+
+      // Force the rebuild's entity-generation step to blow up -- this runs
+      // BEFORE any table is touched (see performFullRebuild's JSDoc), so
+      // it's the cleanest failure point to prove "nothing was written yet"
+      // survives. A failure inside the write transaction itself (e.g. a
+      // bulkPut quota error) is covered by the same atomicity guarantee and
+      // is exercised implicitly: Dexie either commits the whole
+      // clear+bulkPut+meta.put transaction or none of it.
       const converterError = new Error('synthetic rebuild failure')
       const EntityConverterModule = await import('../entity-converter')
       const convertSpy = jest.spyOn(EntityConverterModule.EntityConverter.prototype, 'convertEventsToEntities')
@@ -206,6 +226,14 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
       // ACTION rows must still be present.
       const rawCount = await db.apiEvents.count()
       expect(rawCount).toBe(fullExport.length) // 201 + DEAL + 3 ACTIONs + RESULTS, all now stored
+
+      // The invariant this test exists to prove: derived state after a
+      // failed rebuild must be byte-identical to derived state before the
+      // attempt -- import must never leave derived data worse than it
+      // found it. NOT empty tables, NOT a partial write -- the untouched
+      // pre-attempt snapshot.
+      const afterFailedRebuild = await snapshotDerived(db)
+      expect(afterFailedRebuild).toEqual(beforeFailedRebuild)
 
       // An error rebuildProgress message was surfaced (per #202's
       // error-surfacing contract, preserved for the import-triggered path).
