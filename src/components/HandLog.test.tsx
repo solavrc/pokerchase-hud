@@ -35,11 +35,6 @@ jest.mock('react-window', () => {
 
 // Mock navigator.clipboard
 const mockWriteText = jest.fn()
-Object.assign(navigator, {
-  clipboard: {
-    writeText: mockWriteText,
-  },
-})
 
 describe('HandLog', () => {
   const mockEntries: HandLogEntry[] = [
@@ -78,6 +73,16 @@ describe('HandLog', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     mockWriteText.mockResolvedValue(undefined)
+    // Re-install the clipboard mock every test: `userEvent.setup()` (used by
+    // the double-click test) unconditionally replaces `navigator.clipboard`
+    // with user-event's own ClipboardStub (a configurable getter), so under
+    // `jest --randomize` any test running after it would otherwise assert
+    // against the stub instead of this mock. defineProperty (not
+    // Object.assign) because the stub property is getter-only.
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: mockWriteText },
+      configurable: true,
+    })
   })
 
   it('コンフィグが無効の場合は何も表示されない', () => {
