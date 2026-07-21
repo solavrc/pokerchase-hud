@@ -61,10 +61,13 @@
  *        progression: SB/BB/ante 140/280/70, each seat's post-ante chip stack
  *        read off its nameplate (`BACKDROP_CHIPS_AFTER_ANTE`), hero posts
  *        the BB with HoleCards [46, 47] (K♦K♣ per src/utils/card-utils.ts's
- *        rank=floor(card/4), suit=card%4 encoding), プレイヤーC raises to
- *        7,840 (matching her bet stack in the screenshot), the others
- *        fold, and the replay stops with the action on the hero -- exactly
- *        the preflop raise-vs-BB spot the screenshot shows. No
+ *        rank=floor(card/4), suit=card%4 encoding), then immediately raises
+ *        her own blind to 1,400 (a distinct EVT_ACTION, not just baked into
+ *        her posted BetChip -- see HERO_ALREADY_COMMITTED below) so the hand
+ *        log actually narrates how her chips got in, UTG/MP fold, プレイヤー
+ *        C raises to 7,840 (matching her bet stack in the screenshot), the
+ *        others fold, and the replay stops with the action back on the hero
+ *        -- exactly the preflop raise-vs-BB spot the screenshot shows. No
  *        EVT_HAND_RESULTS is appended, so the partial hand never pollutes
  *        per-player stats; it only drives the hand log tail + real-time KK
  *        panel.
@@ -193,14 +196,30 @@ export const buildStoreFixture = (): string => {
   // onto the felt in front of her BB badge in the screenshot ("1,400" --
   // distinct from, and 5x, the official BB of 280; the backdrop's own real
   // hand history that produced this frame isn't available to this tool, so
-  // this is taken as given rather than re-derived). The hand log's "posts
-  // big blind" text is unaffected either way -- src/utils/hand-log-processor.ts
-  // always sources that displayed amount from `Game.BigBlind`, never from a
-  // seat's `Chip`/`BetChip` -- so this constant only feeds the pot/call
-  // arithmetic below, which the backdrop's action bar pins to two other
-  // baked-in numbers: Pot 9,800, and Hero's own call cost 6,440 (= RAISE_TO
-  // 7,840 - 1,400). Both are asserted by construction below.
+  // this is taken as given rather than re-derived). Because
+  // HandLogProcessor.handleDealEvent() always sources the "posts big blind"
+  // line's displayed amount from `Game.BigBlind` (never from a seat's
+  // `Chip`/`BetChip`), seeding this straight into the EVT_DEAL Player's
+  // `BetChip` would make it feed the pot/call math below without ever
+  // surfacing in the visible hand log -- the bug this fixes (the log jumped
+  // from the folds straight to プレイヤーC's raise with no line explaining
+  // where hero's extra 1,120 came from). Instead only the official BB (280)
+  // is posted at deal time; the remaining 1,120 is posted below as a
+  // genuine EVT_ACTION raise (`heroCommit`) immediately after the deal, so
+  // HandLogProcessor.formatAction() renders "Hero: raises 1,120 to 1,400"
+  // and every later reference to "the previous bet" (プレイヤーC's own raise
+  // included) resolves against that line instead of silently against 280.
+  // This constant still feeds the same pot/call arithmetic the backdrop's
+  // action bar pins to: Pot 9,800, and Hero's own call cost 6,440 (=
+  // RAISE_TO 7,840 - 1,400). Both are asserted by construction below.
   const HERO_ALREADY_COMMITTED = 1400
+  // Pot right after blinds + antes only (before hero's own raise below) --
+  // this is the EVT_DEAL snapshot's Pot.
+  const potAfterBlinds = SB + BB + 6 * ANTE
+  // Pot after hero's raise closes out her turn -- algebraically
+  // `potAfterBlinds + (HERO_ALREADY_COMMITTED - BB)`, i.e. unchanged from
+  // this tool's previous single-shot pot0. Every subsequent synthetic
+  // action's Progress.Pot is still relative to this value.
   const pot0 = SB + HERO_ALREADY_COMMITTED + 6 * ANTE
   let ts = kept[kept.length - 1]!.timestamp as number
 
@@ -249,15 +268,25 @@ export const buildStoreFixture = (): string => {
       NextBlindUnixSeconds: Math.floor(ts / 1000) + 300,
     },
     Player: {
+      // Only the official BB (280) is posted here -- her extra 1,120 is a
+      // separate EVT_ACTION (`heroCommit` below), not baked into this
+      // event's BetChip, so it shows up in the hand log (see
+      // HERO_ALREADY_COMMITTED above). `Chip + BetChip` still sums to
+      // BACKDROP_CHIPS_AFTER_ANTE[heroSeat] (her post-ante stack), matching
+      // HandLogProcessor.getPlayerChipsAfterAnte()'s expectation and
+      // leaving the Seat-line stack total (and the "レイズ 23,374" all-in
+      // cross-check) unaffected by this split.
       SeatIndex: heroSeat, BetStatus: 1, HoleCards: HERO_HOLE_CARDS,
-      Chip: BACKDROP_CHIPS_AFTER_ANTE[heroSeat]! - HERO_ALREADY_COMMITTED, BetChip: HERO_ALREADY_COMMITTED,
+      Chip: BACKDROP_CHIPS_AFTER_ANTE[heroSeat]! - BB, BetChip: BB,
     },
     OtherPlayers: [0, 2, 3, 4, 5].map((seat) => ({
       SeatIndex: seat, Status: 0, BetStatus: 1,
       Chip: BACKDROP_CHIPS_AFTER_ANTE[seat]! - (seat === sbSeat ? SB : 0),
       BetChip: seat === sbSeat ? SB : 0,
     })),
-    Progress: progress({ Pot: pot0, MinRaise: 2 * BB, NextActionSeat: 2 }),
+    // NextActionSeat is hero's own -- her raise (below) comes immediately
+    // after the deal, before UTG's turn.
+    Progress: progress({ Pot: potAfterBlinds, MinRaise: 2 * BB, NextActionSeat: heroSeat }),
   }
 
   const action = (seat: number, type: number, betChip: number, chip: number, over: Record<string, unknown>): ApiEventRecord => ({
@@ -266,10 +295,25 @@ export const buildStoreFixture = (): string => {
   })
 
   const FOLD = 2, RAISE = 4
+
+  // Hero's own preflop raise, from her posted BB (280) up to the backdrop's
+  // baked-in 1,400 (HERO_ALREADY_COMMITTED) -- see that constant's doc
+  // comment above for why this needs to be a distinct EVT_ACTION rather
+  // than folded into the deal event's BetChip. HandLogProcessor.formatAction()
+  // derives the printed raise amount from the prior "posts big blind" line
+  // (still only 280 at this point), so this renders as "Hero: raises 1,120
+  // to 1,400" -- and because it's the most recent bet/raise line, プレイヤー
+  // C's own raise below is in turn computed relative to 1,400, not 280.
+  const heroCommit = action(
+    heroSeat, RAISE, HERO_ALREADY_COMMITTED, BACKDROP_CHIPS_AFTER_ANTE[heroSeat]! - HERO_ALREADY_COMMITTED,
+    { Pot: pot0, MinRaise: 2 * HERO_ALREADY_COMMITTED - BB, NextActionSeat: 2 }
+  )
+
   const synthetic = [
     deal,
-    action(2, FOLD, 0, BACKDROP_CHIPS_AFTER_ANTE[2]!, { Pot: pot0, MinRaise: 2 * BB, NextActionSeat: 3 }),
-    action(3, FOLD, 0, BACKDROP_CHIPS_AFTER_ANTE[3]!, { Pot: pot0, MinRaise: 2 * BB, NextActionSeat: 4 }),
+    heroCommit,
+    action(2, FOLD, 0, BACKDROP_CHIPS_AFTER_ANTE[2]!, { Pot: pot0, MinRaise: 2 * HERO_ALREADY_COMMITTED - BB, NextActionSeat: 3 }),
+    action(3, FOLD, 0, BACKDROP_CHIPS_AFTER_ANTE[3]!, { Pot: pot0, MinRaise: 2 * HERO_ALREADY_COMMITTED - BB, NextActionSeat: 4 }),
     action(4, RAISE, RAISE_TO, BACKDROP_CHIPS_AFTER_ANTE[4]! - RAISE_TO, { Pot: pot0 + RAISE_TO, MinRaise: 2 * RAISE_TO - BB, NextActionSeat: 5 }),
     action(5, FOLD, 0, BACKDROP_CHIPS_AFTER_ANTE[5]!, { Pot: pot0 + RAISE_TO, MinRaise: 2 * RAISE_TO - BB, NextActionSeat: 0 }),
     action(0, FOLD, SB, BACKDROP_CHIPS_AFTER_ANTE[0]! - SB, { Pot: pot0 + RAISE_TO, MinRaise: 2 * RAISE_TO - BB, NextActionSeat: heroSeat }),
