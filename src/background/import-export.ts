@@ -12,7 +12,7 @@ import PokerChaseService, {
   getValidationError,
   isApplicationApiEvent
 } from '../app'
-import { EntityConverter } from '../entity-converter'
+import { EntityConverter, type EntityBundle } from '../entity-converter'
 import { saveEntities, findLatestPlayerDealEvent, filterValidApplicationEvents } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
 import type {
@@ -21,7 +21,7 @@ import type {
   RebuildProgressMessage
 } from '../types/messages'
 import { setOperationState } from './operation-state'
-import { resolveAdvisory } from './rebuild-advisory'
+import { resolveAdvisory, markAdvisoryPending } from './rebuild-advisory'
 
 const IMPORT_CHUNK_SIZE = DATABASE_CONSTANTS.IMPORT_CHUNK_SIZE
 
@@ -90,6 +90,11 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           })
         })
       console.log(`[importData] Loaded ${existingKeys.size} existing keys`)
+      // インポート開始時点でDBが空だったか（このインポートより前に保存
+      // されていた行があったか）。既存データがある状態への追加インポートは
+      // 「オーバーラップ」の可能性があるため、下の分岐で経路を変える
+      // （監査finding #7、plan C — 詳細は下のコメント参照）
+      const hadExistingDataBeforeImport = existingKeys.size > 0
 
       // 行で分割し、空行をフィルタリング
       const lines = jsonlData.split('\n').filter(line => line.trim())
@@ -278,8 +283,113 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
       const importTime = ((performance.now() - startTime) / 1000).toFixed(2)
       console.log(`[importData] Import completed in ${importTime}s - Success: ${successCount}, Duplicates: ${duplicateCount}`)
 
-      // 直接エンティティ生成（Phase 2最適化）
-      if (allNewEvents.length > 0) {
+      if (hadExistingDataBeforeImport) {
+        // 既存データがある状態への追加インポート（監査finding #7 / plan C）:
+        //
+        // 既存Lakeと新規行にハンドがまたがるケース（例: 既存にDEAL/RESULTSは
+        // あるが中間のACTIONsが欠けている「キメラ」状態で保存されており、
+        // 今回のインポートで欠けていたACTIONsが到着する）では、新規イベント
+        // だけをEntityConverterに渡す増分変換では対応できない
+        // ―― EntityConverterは呼び出し単位でハンド境界をローカル変数管理
+        // しており（CLAUDE.md「EntityConverter state」参照）、ハンドの前半が
+        // 「今回のインポート対象外（重複扱いで除外済み）」だと後半の
+        // イベントだけを渡しても正しいエンティティは作れず、派生データ
+        // （hands/phases/actions、およびそこから計算される統計）が
+        // サイレントに古いまま残ってしまう。
+        //
+        // PR #203はこれを「オーバーラップした範囲だけ再構築する」サージカル
+        // 修復で解決しようとしたが、11巡のレビューでも収束せず
+        // （結局フルリビルドと同等の意味論を部分的に再実装することになる）、
+        // オーナー判断でこの経路自体を廃止した（plan C）。代わりに、新規行が
+        // 1件でも実際に保存された場合は、「データ再構築」ボタンが使っている
+        // のと同じフルリビルド（`performFullRebuild`）をapiEvents Lake全体に
+        // 対して実行する ―― ユーザーから見て「インポート後にデータ再構築を
+        // 押したのと同じ結果」になることを保証する、単純で
+        // レビューしやすいコード。
+        if (successCount > 0) {
+          console.log(`[importData] Non-empty DB received ${successCount} new raw row(s) - running full rebuild instead of incremental entity generation`)
+
+          // 再構築フェーズの進捗は、rebuildAllData（データ再構築ボタン）と
+          // 同じ`rebuildProgress`メッセージ経路で報告する。popup
+          // （ImportExportSection.tsx）は既にこのメッセージ種別を購読して
+          // 専用の再構築プログレスバーを表示するため、ここから流すだけで
+          // 「今どのフェーズか」がそのままpopupに反映される
+          // （読み手向けメモ: importProgressの0-100%は生ログ保存フェーズの
+          // 進捗で完結しており、この後に続くrebuildProgressの0-100%は
+          // 別フェーズとして独立に表示される）
+          chrome.runtime.sendMessage<RebuildProgressMessage>({
+            action: 'rebuildProgress',
+            state: 'started',
+            message: 'インポートにより新規データを検出、データを再構築中...'
+          }).catch(() => {})
+
+          try {
+            const rebuildResult = await performFullRebuild((progress, message) => {
+              setOperationState({ type: 'rebuild', progress, message })
+              chrome.runtime.sendMessage<RebuildProgressMessage>({
+                action: 'rebuildProgress',
+                state: 'processing',
+                progress,
+                message
+              }).catch(() => {})
+            })
+
+            console.log(`[importData] Post-import rebuild completed - Hands: ${rebuildResult.totalHands}, Phases: ${rebuildResult.totalPhases}, Actions: ${rebuildResult.totalActions}`)
+
+            chrome.runtime.sendMessage<RebuildProgressMessage>({
+              action: 'rebuildProgress',
+              state: 'completed',
+              progress: 100,
+              message: `インポート後の再構築完了 - ハンド: ${rebuildResult.totalHands.toLocaleString()}, フェーズ: ${rebuildResult.totalPhases.toLocaleString()}, アクション: ${rebuildResult.totalActions.toLocaleString()}`
+            }).catch(() => {})
+          } catch (rebuildError) {
+            // ここに来た時点で、生イベントは既にapiEvents（Lake）へ確定
+            // 保存済み（上のraw保存ループ参照）―― 失敗したのは派生データ
+            // （hands/phases/actions）の再構築のみ。#202が確立した
+            // 「再構築失敗はサイレントな成功にしない」契約を、インポートに
+            // 統合したこの経路でも維持する: ここでthrowし、下のouter
+            // catchブロック経由でインポート全体をエラー状態として呼び出し元
+            // （message-router.ts）へ伝播させる。raw dataはロールバックせず
+            // 保存されたまま残す。
+            console.error('[importData] Post-import rebuild failed:', rebuildError)
+            chrome.runtime.sendMessage<RebuildProgressMessage>({
+              action: 'rebuildProgress',
+              state: 'error',
+              message: `インポート後の再構築に失敗しました: ${rebuildError}`
+            }).catch(() => {})
+
+            // 再構築アドバイザリを保留にする（codexレビュー指摘, PR #207
+            // pass-4 finding 3「Retry rebuild after failed import instead
+            // of skipping duplicates」）: このまま何もしないと、生イベント
+            // は既に確定保存済みのため、同じファイルを再インポートしても
+            // 今度は全行重複となり（successCount === 0）、下の「純粋な
+            // 重複インポート」分岐に入って再構築が二度と走らなくなる ――
+            // 派生データは古いまま永久に取り残される。アドバイザリを保留
+            // にしておけば、popupのバナー/バッジが「データ再構築」ボタンの
+            // 実行を促し続け、それが唯一かつ確実な復旧手段として常に
+            // 提示される（成功時にresolveAdvisory()で自動的に解消する）。
+            // rebuildAllData自身の失敗（ボタン経由）はこのマーキングをしない
+            // ――失敗はrebuildProgressのerror状態で既にユーザーへ即座に
+            // 見えており、ボタンを再度押すだけで再試行できるため、
+            // インポートのように「再試行が別経路(重複判定)に吸収されて
+            // 再構築が起動しなくなる」問題が構造的に起きない。
+            await markAdvisoryPending()
+
+            const errorMessage = rebuildError instanceof Error ? rebuildError.message : String(rebuildError)
+            throw new Error(`Post-import rebuild failed (raw data was stored successfully): ${errorMessage}`)
+          }
+        } else {
+          // 純粋な重複インポート（新規行0件）: apiEvents Lakeに変化がない
+          // ため、既存の派生データも既に整合が取れている。監査finding #7の
+          // シナリオ（新規行がハンド境界をまたぐことで派生データが古くなる）
+          // は新規行が保存された場合にのみ起こり得るため、再構築は不要
+          console.log('[importData] Pure duplicate import (no new rows stored) - skipping rebuild, derived data already consistent')
+        }
+      } else if (allNewEvents.length > 0) {
+        // 空DBへの初回インポート（既存の挙動を変更しない）:
+        // 全イベントが新規のため「既存データとのオーバーラップ」は原理的に
+        // 起こり得ず、新規イベントのみを渡す直接変換で完全かつ正しい
+        // （増分/フルリビルドを区別する必要がない）
         console.log(`[importData] Generating entities from ${allNewEvents.length} new events...`)
         const entityStartTime = performance.now()
 
@@ -809,78 +919,127 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
   }
 
   /**
-   * Rebuild all data from apiEvents using batch processing
-   * Similar to download sync processing to avoid multiple HUD updates
+   * apiEvents Lake全体から派生データ（hands/phases/actions）を再構成する
+   * コア処理。以下2つの呼び出し元から共有される:
+   *   - `rebuildAllData`（popupの「データ再構築」ボタン）
+   *   - `importData`（既存データがある状態への追加インポートで新規行が
+   *     実際に保存された場合。監査finding #7、PR #203のsurgical repairを
+   *     置き換えるplan Cの中心 — import-export.ts先頭のコメント参照）
+   *
+   * operationState/バッチモードの管理・進捗メッセージの送信先は呼び出し元
+   * ごとに異なる（rebuildAllDataは`rebuildProgress`の`started`/`completed`/
+   * `error`まで含めて自分の操作として報告し、importDataは自分の`import`
+   * 操作の一部としてラップする）ため、それらは呼び出し元に委ね、ここでは
+   * 実際の再読み込み→変換→クリア＋保存（1トランザクション）→サービス
+   * 状態復元のみを行う。
+   *
+   * **失敗時に既存の派生データを失わない不変条件**（codexレビュー指摘、
+   * PR #207 P2）: 以前の実装はまず`hands`/`phases`/`actions`をクリアして
+   * から、その後でイベント読み込み→変換→保存を行っていた。大きな既存
+   * 履歴での変換例外やQuotaExceededError（保存側のbulkPut失敗）が
+   * クリアの*後*に起きると、importData/rebuildAllDataは失敗を報告する
+   * ものの、その時点で古い（動いていた）派生データは既に消えており、
+   * 「インポート前よりHUD統計/ハンド履歴が悪化する」―― インポート前の
+   * 単なる古さ（監査finding #7）より明確に悪い結果になっていた。
+   * ここでは変換（`convertEventsToEntities`、例外を投げ得る）を先に
+   * メモリ上だけで完了させ、実際のテーブル書き込み（クリア＋bulkPut＋
+   * メタ更新）は全て単一の`db.transaction('rw', ...)`にまとめる。
+   * Dexieのトランザクションは、スコープ内のいずれかの操作が例外を
+   * 投げると、そのトランザクション開始以降の全書き込み（クリアを含む）
+   * をロールバックする ―― これにより「クリアはコミット済みだが保存は
+   * 失敗した」という中間状態が構造的に起こり得なくなる。変換自体が
+   * 例外を投げた場合はテーブルへは一切触れていないため、そもそも
+   * ロールバックの必要すらない。いずれの失敗経路でも、生イベントは
+   * apiEvents（Raw Event Lake）に確定保存されたまま残るため、
+   * 「データ再構築」ボタンでいつでもやり直せる ―― 強制すべき不変条件は
+   * 「インポート/再構築は、見つけたときより派生データを悪化させない」
+   * ことであり、apiEventsさえ無事なら回復可能性は常に保たれる。
+   *
+   * **SW keepalive**（codexレビュー指摘、PR #207 P2 3巡目）: 大規模履歴では
+   * 読み込み→変換→書き込みの全体がChrome MV3の30秒アイドルタイムアウトを
+   * 超え得る。エクスポート系（`exportJsonData`/`exportPokerStarsData`）が
+   * 既にやっているのと同じ`startKeepAlive()`をここで一括して掛けることで、
+   * `rebuildAllData`（ボタン）・`importData`の再構築分岐の両方が保護される。
+   *
+   * **ライブ中に完了したハンドの保護**（codexレビュー指摘、PR #207 P2
+   * 3巡目・4巡目）: 上のraw読み込み（スナップショット）～変換の間にライブ
+   * プレイ中のハンドが1つ完了すると、`WriteEntityStream`
+   * （write-entity-stream.ts）は`service.batchMode`を見ずに無条件で
+   * hands/phases/actionsへ書き込む（#196のライブ取り込みパイプラインは
+   * このリビルドと無関係に動き続ける ―― event-ingestion.tsは変更しない）。
+   * その書き込みが下の最終トランザクション開始より前に確定していた場合、
+   * スナップショットから導出した`entities`はそのハンドの元イベントを
+   * 含んでおらず、clear()で消すとbulkPut(entities)では復元できない。
+   *
+   * 最終トランザクションのスコープに`apiEvents`も含めているため、IDBの
+   * トランザクション分離により、他のreadwriteトランザクション
+   * （WriteEntityStreamのhands/phases/actions書き込み、event-ingestion.ts
+   * のapiEvents書き込み）はこのトランザクションの開始からコミットまでの
+   * 間は割り込めない（同じテーブルへのreadwriteトランザクションはIDBが
+   * 直列化する）。したがって、トランザクション内でスナップショット取得後に
+   * apiEventsが変化していないか一度だけ再確認すれば十分 ―― トランザクション
+   * が開いている間は誰も新しい行をapiEventsへ追加できないため、この再確認は
+   * 高々1回で収束する。
+   *
+   * 再確認は**件数比較**で行う（`db.apiEvents.count()`とスナップショット
+   * 時点の行数を比較する）―― コンパウンドキー`[timestamp+ApiTypeId]`の
+   * 大小関係には一切依存しない（codexレビュー指摘、PR #207 pass-4
+   * 「Merge live rows that do not sort after the snapshot」: 以前は
+   * `.where('[timestamp+ApiTypeId]').above(snapshotUpperBound)`で新着行を
+   * 検出していたが、クロックスキューや同一ミリ秒での到着順によっては
+   * 新着行がスナップショット末尾より小さいキーを持つことがあり、その
+   * ケースを取りこぼしていた）。件数が変わっていれば、rawEvents全体を
+   * 破棄してapiEventsをもう一度フルスキャンし、そこから作り直す ―― 差分
+   * だけを合流させるのではなくスキャン自体をやり直すことで、キーの大小に
+   * 一切依存しない正しさを得る。apiEventsは追記のみで行が減ることは
+   * ない（DB全削除はdeleteAllData経由の拡張機能reloadを伴い、
+   * この関数と並行実行され得ない）ため、件数一致は行集合一致を意味する。
+   *
+   * この再確認は「rawEvents=0件（対象イベントなし）」の場合にも同じ
+   * トランザクション内でそのまま行われる（同上pass-4「Recheck apiEvents
+   * before clearing the zero-count path」対応）―― 以前は`totalCount===0`
+   * を個別の早期returnとして扱い、この再確認をスキップして無条件に
+   * クリアしていたため、`count()`が0を返した直後・クリアより前に最初の
+   * ライブハンドが書き込まれるレースでその派生データを消してしまい得た。
+   * 今は「空だと思って始める」ことと「実際に書き込み前に再確認する」ことが
+   * 同じコードパスになったため、この特別扱いが構造的に消えている。
+   * @param onProgress 各フェーズの`(progress, message)`。呼び出し元はこれを
+   *   使って自分のoperationState/メッセージ経路へ橋渡しする
    */
-  const rebuildAllData = async (): Promise<void> => {
+  const performFullRebuild = async (
+    onProgress: (progress: number, message: string) => void
+  ): Promise<{ totalCount: number, totalHands: number, totalPhases: number, totalActions: number }> => {
+    console.log('[performFullRebuild] Starting full rebuild of derived data...')
+
+    // 大規模履歴では以下全体（読み込み→変換→書き込み）がMV3の30秒アイドル
+    // タイムアウトを超え得るため、エクスポート系と同じキープアライブを
+    // 操作全体に掛ける（上のJSDoc「SW keepalive」参照）
+    const stopKeepAlive = await startKeepAlive()
     try {
-      console.log('[rebuildAllData] Starting batch rebuild of all data...')
-      const startTime = performance.now()
-
-      setOperationState({ type: 'rebuild', progress: 0, message: 'データ再構築開始...' })
-      chrome.runtime.sendMessage<RebuildProgressMessage>({
-        action: 'rebuildProgress',
-        state: 'started',
-        message: 'データ再構築開始...'
-      }).catch(() => {})
-
-      // Clear all entity tables first
-      await db.transaction('rw', [db.hands, db.phases, db.actions, db.meta], async () => {
-        await db.hands.clear()
-        await db.phases.clear()
-        await db.actions.clear()
-        await db.meta.delete('lastProcessed')
-      })
-
-      setOperationState({ type: 'rebuild', progress: 10, message: 'テーブルクリア完了、イベント読み込み中...' })
-      chrome.runtime.sendMessage<RebuildProgressMessage>({
-        action: 'rebuildProgress',
-        state: 'processing',
-        progress: 10,
-        message: 'テーブルクリア完了、イベント読み込み中...'
-      }).catch(() => {})
-
-      // Get total event count
-      const totalCount = await db.apiEvents.count()
-      console.log(`[rebuildAllData] Processing ${totalCount} events...`)
-
-      if (totalCount === 0) {
-        console.log('[rebuildAllData] No events to process')
-        // 対象イベントが無い＝再構築の必要が無いため、保留中のアドバイザリも解消する
-        await resolveAdvisory()
-        setOperationState({ type: 'idle' })
-        chrome.runtime.sendMessage<RebuildProgressMessage>({
-          action: 'rebuildProgress',
-          state: 'completed',
-          progress: 100,
-          message: '処理対象のイベントがありません'
-        }).catch(() => {})
-        return
+      const defaultSession = {
+        id: undefined,
+        battleType: undefined,
+        name: undefined,
+        players: new Map(),
+        reset: () => { }
       }
 
-      // Enable batch mode to prevent real-time updates
-      service.setBatchMode(true)
+      // 初期見積もり（最適化のみ）: ここで0件なら下の重い読み込み/変換を
+      // 省略する。これは権威あるチェックではない ―― 最終的な正しさは下の
+      // トランザクション内の再確認が保証する（上のJSDoc参照）。
+      const totalCountEstimate = await db.apiEvents.count()
+      console.log(`[performFullRebuild] Processing ${totalCountEstimate} events...`)
 
-      try {
-        // Process in chunks to avoid memory issues
-        let totalHands = 0
-        let totalPhases = 0
-        let totalActions = 0
+      onProgress(10, 'イベント読み込み中...')
 
-        // Initialize EntityConverter
-        const defaultSession = {
-          id: undefined,
-          battleType: undefined,
-          name: undefined,
-          players: new Map(),
-          reset: () => { }
-        }
-        const converter = new EntityConverter(defaultSession)
+      let rawEvents: ApiEvent[] = []
+      let entities: EntityBundle = { hands: [], phases: [], actions: [] }
 
+      if (totalCountEstimate > 0) {
         // Load all raw events and convert in one pass
         // (EntityConverter tracks hand state internally, so chunked conversion loses cross-chunk hands)
-        console.log(`[rebuildAllData] Loading all events...`)
-        const rawEvents = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
+        console.log(`[performFullRebuild] Loading all events...`)
+        rawEvents = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
 
         // apiEvents is the raw Lake: it may contain non-application noise (202/205
         // keepalive/timer events), ApiTypeIds unknown to the current schema, or
@@ -894,95 +1053,178 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         // throwing on a still-malformed row.
         const allEvents = await filterValidApplicationEvents(rawEvents)
         const skippedCount = rawEvents.length - allEvents.length
-        console.log(`[rebuildAllData] Loaded ${rawEvents.length} raw events, ${allEvents.length} valid application events after re-validation${skippedCount > 0 ? ` (${skippedCount} non-application/unparseable rows skipped)` : ''}`)
+        console.log(`[performFullRebuild] Loaded ${rawEvents.length} raw events, ${allEvents.length} valid application events after re-validation${skippedCount > 0 ? ` (${skippedCount} non-application/unparseable rows skipped)` : ''}`)
 
-        setOperationState({ type: 'rebuild', progress: 40, message: `${allEvents.length.toLocaleString()}件のイベントを変換中...` })
-        chrome.runtime.sendMessage<RebuildProgressMessage>({
-          action: 'rebuildProgress',
-          state: 'processing',
-          progress: 40,
-          message: `${allEvents.length.toLocaleString()}件のイベントを変換中...`
-        }).catch(() => {})
+        onProgress(40, `${allEvents.length.toLocaleString()}件のイベントを変換中...`)
 
-        const entities = converter.convertEventsToEntities(allEvents)
+        // 変換はメモリ上のみの処理で、この時点ではまだテーブルに一切触れて
+        // いない ―― ここで例外が起きても（例: 未知の形状での変換失敗）既存の
+        // 派生データはそのまま残る
+        entities = new EntityConverter(defaultSession).convertEventsToEntities(allEvents)
+      }
 
-        setOperationState({ type: 'rebuild', progress: 70, message: 'エンティティ保存中...' })
-        chrome.runtime.sendMessage<RebuildProgressMessage>({
-          action: 'rebuildProgress',
-          state: 'processing',
-          progress: 70,
-          message: 'エンティティ保存中...'
-        }).catch(() => {})
+      onProgress(70, 'テーブルを更新中...')
 
-        const counts = await saveEntities(db, entities)
-        totalHands += counts.hands
-        totalPhases += counts.phases
-        totalActions += counts.actions
+      // クリアと保存を単一トランザクションにまとめる（上のJSDoc参照）:
+      // bulkPutがQuotaExceededError等で失敗した場合、Dexieがこのトランザクション
+      // 全体（クリアを含む）をロールバックし、失敗前の派生データがそのまま残る。
+      // `apiEvents`もスコープに含めているのは、上のJSDoc「ライブ中に完了した
+      // ハンドの保護」の通り、トランザクション内での再確認とIDBの直列化を
+      // 成立させるため。
+      const counts = await db.transaction('rw', [db.apiEvents, db.hands, db.phases, db.actions, db.meta], async () => {
+        const currentCount = await db.apiEvents.count()
 
-        console.log(`[rebuildAllData] Generated entities - Hands: ${totalHands}, Phases: ${totalPhases}, Actions: ${totalActions}`)
+        let finalEntities = entities
+        let finalTotalEvents = rawEvents.length
 
-        // Restore service state from latest events
-        // (codex #177 3巡目レビューP2: このsetterはservice.liveEvtDealも同時に
-        // 同期するため、下のsetBatchMode(false)がトリガーするrecalculateAllStats()
-        // の再ブロードキャストは、再構築前のliveEvtDeal（観戦中に取り残された
-        // 可能性がある）ではなく、この復元されたヒーロー在籍dealの座席文脈を使う)
-        const latestDealEvent = await findLatestPlayerDealEvent(db)
-
-        if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
-          service.latestEvtDeal = latestDealEvent
-          if (latestDealEvent.Player?.SeatIndex !== undefined) {
-            service.playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex]
-          }
+        if (currentCount !== rawEvents.length) {
+          // apiEventsがスナップショット取得後に変化した（このトランザクション
+          // が開くまでの間の話 -- 開いた後は上のJSDoc通りIDBの直列化により
+          // 誰も追加できない）。キーの大小に依存しないよう、差分合流ではなく
+          // フルスキャンをやり直して完全な結果を作り直す。
+          console.log(`[performFullRebuild] apiEvents changed since the snapshot (${rawEvents.length} -> ${currentCount} rows; live play or another writer during rebuild) -- re-deriving from a fresh read`)
+          const freshRaw = await db.apiEvents.orderBy('[timestamp+ApiTypeId]').toArray()
+          const freshValidEvents = await filterValidApplicationEvents(freshRaw)
+          finalEntities = new EntityConverter(defaultSession).convertEventsToEntities(freshValidEvents)
+          finalTotalEvents = freshRaw.length
         }
 
-        // Update metadata with rebuild info
+        await db.hands.clear()
+        await db.phases.clear()
+        await db.actions.clear()
+        await db.meta.delete('lastProcessed')
+
+        const c = { hands: 0, phases: 0, actions: 0 }
+        if (finalEntities.hands.length > 0) {
+          await db.hands.bulkPut(finalEntities.hands)
+          c.hands = finalEntities.hands.length
+        }
+        if (finalEntities.phases.length > 0) {
+          await db.phases.bulkPut(finalEntities.phases)
+          c.phases = finalEntities.phases.length
+        }
+        if (finalEntities.actions.length > 0) {
+          await db.actions.bulkPut(finalEntities.actions)
+          c.actions = finalEntities.actions.length
+        }
+
+        // Update metadata with rebuild info (同じトランザクション内 -- 派生
+        // データとメタデータが不整合な状態でコミットされることがない)
         await db.meta.put({
           id: 'rebuildStatus',
           value: {
             lastRebuildDate: new Date().toISOString(),
-            totalEvents: totalCount,
-            totalHands: totalHands,
-            totalPhases: totalPhases,
-            totalActions: totalActions
+            totalEvents: finalTotalEvents,
+            totalHands: c.hands,
+            totalPhases: c.phases,
+            totalActions: c.actions
           },
           updatedAt: Date.now()
         })
 
-        const rebuildTime = ((performance.now() - startTime) / 1000).toFixed(2)
-        console.log(`[rebuildAllData] Rebuild completed in ${rebuildTime}s`)
+        return { ...c, totalEvents: finalTotalEvents }
+      })
 
-        setOperationState({ type: 'rebuild', progress: 90, message: '統計情報を再計算中...' })
-        chrome.runtime.sendMessage<RebuildProgressMessage>({
-          action: 'rebuildProgress',
-          state: 'processing',
-          progress: 90,
-          message: '統計情報を再計算中...'
-        }).catch(() => {})
+      console.log(`[performFullRebuild] Generated entities - Hands: ${counts.hands}, Phases: ${counts.phases}, Actions: ${counts.actions}`)
 
-        // Trigger stats recalculation once at the end. NOTE: batchMode is still
-        // true here (disabled in the `finally` block below via
-        // service.setBatchMode(false)), so ReadEntityStream.transform() no-ops
-        // this particular write() -- the real broadcast is the one
-        // setBatchMode(false) triggers via PokerChaseService.recalculateAllStats(),
-        // which reads the already-restored (hero-anchored) service.latestEvtDeal
-        // above and keeps calling this again mostly harmless/redundant.
-        if (service.latestEvtDeal && service.latestEvtDeal.SeatUserIds) {
-          const playerIds = service.latestEvtDeal.SeatUserIds.filter(id => id !== -1)
-          if (playerIds.length > 0) {
-            console.log('[rebuildAllData] Triggering stats recalculation...')
-            service.statsOutputStream.write(service.latestEvtDeal.SeatUserIds)
-          }
+      if (counts.totalEvents === 0) {
+        console.log('[performFullRebuild] No events to process')
+        // 対象イベントが無い＝再構築の必要が無いため、保留中のアドバイザリも解消する
+        await resolveAdvisory()
+        return { totalCount: 0, totalHands: 0, totalPhases: 0, totalActions: 0 }
+      }
+
+      // Restore service state from latest events
+      // (codex #177 3巡目レビューP2: このsetterはservice.liveEvtDealも同時に
+      // 同期するため、呼び出し元のsetBatchMode(false)がトリガーする
+      // recalculateAllStats()の再ブロードキャストは、再構築前のliveEvtDeal
+      // （観戦中に取り残された可能性がある）ではなく、この復元された
+      // ヒーロー在籍dealの座席文脈を使う)
+      const latestDealEvent = await findLatestPlayerDealEvent(db)
+
+      if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
+        service.latestEvtDeal = latestDealEvent
+        if (latestDealEvent.Player?.SeatIndex !== undefined) {
+          service.playerId = latestDealEvent.SeatUserIds[latestDealEvent.Player.SeatIndex]
+        }
+      }
+
+      onProgress(90, '統計情報を再計算中...')
+
+      // Trigger stats recalculation once at the end. Whether this write() gets
+      // broadcast immediately or is a no-op depends on the caller's batch-mode
+      // state (see ReadEntityStream.transform()) -- the caller's own
+      // setBatchMode(false) is what triggers the real broadcast via
+      // PokerChaseService.recalculateAllStats(), which reads the
+      // already-restored (hero-anchored) service.latestEvtDeal above, making
+      // this call mostly harmless/redundant in that case.
+      if (service.latestEvtDeal && service.latestEvtDeal.SeatUserIds) {
+        const playerIds = service.latestEvtDeal.SeatUserIds.filter(id => id !== -1)
+        if (playerIds.length > 0) {
+          console.log('[performFullRebuild] Triggering stats recalculation...')
+          service.statsOutputStream.write(service.latestEvtDeal.SeatUserIds)
+        }
+      }
+
+      // 再構築が完了したので、保留中の再構築アドバイザリがあれば解消する
+      await resolveAdvisory()
+
+      return { totalCount: counts.totalEvents, totalHands: counts.hands, totalPhases: counts.phases, totalActions: counts.actions }
+    } finally {
+      stopKeepAlive()
+    }
+  }
+
+  /**
+   * Rebuild all data from apiEvents using batch processing
+   * Similar to download sync processing to avoid multiple HUD updates
+   */
+  const rebuildAllData = async (): Promise<void> => {
+    const startTime = performance.now()
+    try {
+      console.log('[rebuildAllData] Starting batch rebuild of all data...')
+
+      setOperationState({ type: 'rebuild', progress: 0, message: 'データ再構築開始...' })
+      chrome.runtime.sendMessage<RebuildProgressMessage>({
+        action: 'rebuildProgress',
+        state: 'started',
+        message: 'データ再構築開始...'
+      }).catch(() => {})
+
+      // Enable batch mode to prevent real-time updates
+      service.setBatchMode(true)
+
+      try {
+        const result = await performFullRebuild((progress, message) => {
+          setOperationState({ type: 'rebuild', progress, message })
+          chrome.runtime.sendMessage<RebuildProgressMessage>({
+            action: 'rebuildProgress',
+            state: 'processing',
+            progress,
+            message
+          }).catch(() => {})
+        })
+
+        if (result.totalCount === 0) {
+          setOperationState({ type: 'idle' })
+          chrome.runtime.sendMessage<RebuildProgressMessage>({
+            action: 'rebuildProgress',
+            state: 'completed',
+            progress: 100,
+            message: '処理対象のイベントがありません'
+          }).catch(() => {})
+          return
         }
 
-        // 再構築が完了したので、保留中の再構築アドバイザリがあれば解消する
-        await resolveAdvisory()
+        const rebuildTime = ((performance.now() - startTime) / 1000).toFixed(2)
+        console.log(`[rebuildAllData] Rebuild completed in ${rebuildTime}s`)
 
         setOperationState({ type: 'idle' })
         chrome.runtime.sendMessage<RebuildProgressMessage>({
           action: 'rebuildProgress',
           state: 'completed',
           progress: 100,
-          message: `データ再構築完了 (${rebuildTime}秒) - ハンド: ${totalHands.toLocaleString()}, フェーズ: ${totalPhases.toLocaleString()}, アクション: ${totalActions.toLocaleString()}`
+          message: `データ再構築完了 (${rebuildTime}秒) - ハンド: ${result.totalHands.toLocaleString()}, フェーズ: ${result.totalPhases.toLocaleString()}, アクション: ${result.totalActions.toLocaleString()}`
         }).catch(() => {})
 
       } finally {

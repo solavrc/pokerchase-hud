@@ -67,9 +67,21 @@ export type DbOperationType = 'import' | 'export' | 'sync' | 'rebuild'
  * 「flops seen」分母から漏れていたバグを修正（entity-converter.ts /
  * write-entity-stream.ts、PR #115未解決コメントのsola監査分）。
  *
+ * version 3: 独立監査finding #7（PR #207, plan C）。既存データがある状態
+ * への追加インポートが既存行とハンド境界をまたいでオーバーラップする
+ * ケース（例: DEAL/RESULTSは既存・中間ACTIONsが今回のインポートで到着）
+ * で、旧実装（インクリメンタルなEntityConverter直接変換）は新規イベント
+ * だけでは正しいハンドを作れず、hands/phases/actionsが古いまま
+ * サイレントに残っていた。修正後のimportData()は新規行が1件でもあれば
+ * full rebuildを行うため今後のインポートは正しく直るが、**既にこの
+ * バグを踏んだユーザー**の生イベント自体は既に完全（apiEventsは常に
+ * 全件保存されるため）で、その後の再インポートは全行重複となり
+ * rebuildが起動しない ―― 派生データの修復にはこのアドバイザリで
+ * 明示的な「データ再構築」実行を促す必要がある。
+ *
  * インクリメントすると、拡張機能の更新後に既存ユーザーへ一度だけ
  * 「データ再構築」の実行を促すアドバイソリーが表示される
  * （`src/background/rebuild-advisory.ts`参照）。単なるUI変更やバグ修正でも
  * 書き込み時の導出結果に影響しないものはバンプ不要。
  */
-export const REBUILD_ADVISORY_VERSION = 2
+export const REBUILD_ADVISORY_VERSION = 3

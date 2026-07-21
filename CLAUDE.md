@@ -292,35 +292,51 @@ Chunk Processing
     └─► Valid Application Events Collection (subset that also parses AND
         isApplicationApiEvent — tracked only for rows confirmed stored)
          ↓
-EntityConverter (Direct generation, fed only the valid-application subset)
-    ├─► Extracts session/player info
-    ├─► Generates entities without streams
-    └─► Uses statistics modules for ActionDetails
-         ↓
-Bulk Database Insert (bulkPut)
-    ├─► hands
-    ├─► phases
-    └─► actions
-         ↓
-Statistics Refresh (batch mode)
+    DB was empty before this import?
+    ├─► YES: EntityConverter (direct generation, fed only the new
+    │   valid-application events) → Bulk Database Insert (bulkPut) into
+    │   hands/phases/actions → Statistics Refresh (batch mode)
+    └─► NO, and ≥1 new row was actually stored: full rebuild
+        (`performFullRebuild`, the same path `rebuildAllData` / the
+        popup's "データ再構築" button uses) over the entire apiEvents
+        Lake — clears hands/phases/actions and regenerates them from
+        scratch. No new rows stored (pure-duplicate import) → nothing to
+        do, existing derived data is already consistent.
 ```
+
+**Why a full rebuild on non-empty-DB imports:** an import into a non-empty
+DB can partially overlap existing rows — e.g. the DB already has a hand's
+DEAL and RESULTS but is missing the middle ACTIONs, and the import brings
+those missing ACTIONs. Feeding only the *new* events to `EntityConverter`
+can't reconstruct that hand: `EntityConverter` tracks hand boundaries via
+local state within a single call and never sees the already-stored
+DEAL/RESULTS, so the hand — and everything derived from it (stats) — stays
+silently stale. An incremental "repair only the affected range" approach
+was attempted (PR #203) and abandoned after 11 review rounds failed to make
+it converge — it ends up re-implementing full-rebuild semantics piecemeal.
+Running the already-trusted full rebuild instead is simple, trivially
+reviewable, and guarantees the post-import state is byte-identical to what
+manually clicking "データ再構築" would produce. The tradeoff is import time
+on large DBs (bounded, local work; import is a rare operation).
 
 **Import Optimizations:**
 
 - Designed for processing tens of thousands of records
 - Batch mode disables real-time updates during import
-- Direct entity conversion bypasses stream overhead
+- Direct entity conversion (empty-DB path) bypasses stream overhead
 - Falls back to individual inserts on bulk operation failure
 - Storage and entity generation are decoupled: a line that fails to parse (or
   is a known non-application type) is still stored raw — it just doesn't
-  reach `EntityConverter`. See "Raw Event Lake" (Design Principles #16).
+  reach `EntityConverter`/rebuild. See "Raw Event Lake" (Design Principles #16).
+- A failed post-import rebuild surfaces as an import error (not a silent
+  success) — the raw rows already committed to the Lake are kept as-is.
 
 **Critical Design Constraints (learned 2026-03):**
 
 > **Data model & event edge cases** are consolidated in [docs/api-events.md](docs/api-events.md) — see "Data Constraints & Edge Cases", "Field Relationships", and "Enum Reference" sections.
 
 - **EntityConverter state**: `convertEventsToEntities()` tracks hand boundaries via internal local variables (`currentHandEvents`). Must NOT be called in chunks — a hand spanning chunk boundaries will be lost. Always pass all events in a single call.
-- **EntityConverter/HandLogProcessor never see raw, unvalidated rows**: both read required fields (e.g. `EVT_DEAL.Game.SmallBlind`) via unguarded `switch (event.ApiTypeId)` dispatch, with no `default:` case protecting against a well-known-ApiTypeId-but-malformed payload. Every call site that reads from `apiEvents` (the raw Lake) and feeds either of them re-validates first with `filterValidApplicationEvents()` (`src/utils/database-utils.ts`): `rebuildAllData`, `AutoSyncService.rebuildLocalEntities`, `HandLogExporter.exportHand`/`exportMultipleHands`. This re-validation on every rebuild is also the *entire* recovery mechanism for a PokerChase schema break — a later schema fix makes previously-unparseable rows parse on the next rebuild automatically, no promotion step required.
+- **EntityConverter/HandLogProcessor never see raw, unvalidated rows**: both read required fields (e.g. `EVT_DEAL.Game.SmallBlind`) via unguarded `switch (event.ApiTypeId)` dispatch, with no `default:` case protecting against a well-known-ApiTypeId-but-malformed payload. Every call site that reads from `apiEvents` (the raw Lake) and feeds either of them re-validates first with `filterValidApplicationEvents()` (`src/utils/database-utils.ts`): `performFullRebuild` (`src/background/import-export.ts`, shared by `rebuildAllData` and `importData`'s non-empty-DB path), `AutoSyncService.rebuildLocalEntities`, `HandLogExporter.exportHand`/`exportMultipleHands`. This re-validation on every rebuild is also the *entire* recovery mechanism for a PokerChase schema break — a later schema fix makes previously-unparseable rows parse on the next rebuild automatically, no promotion step required.
 - **Dexie Collection reuse**: `.offset(n).limit(m)` on a single, already-built Collection object is NOT safe pagination -- Dexie Collections accumulate query modifiers instead of replacing them, so a second `.offset()/.limit()` call on the SAME Collection stacks on top of the first rather than re-querying (a prior version of `processInChunks()` did exactly this and silently only ever processed the first chunk). `processInChunks()` (`src/utils/database-utils.ts`) now takes a `Dexie.Table` and issues a fresh query per chunk, cursor-pagination style: `where('[timestamp+ApiTypeId]').above(lastKey).limit(N)`. Any new caller must pass the Table, not a pre-built Collection.
 - **Export size limits**: Service Worker → content_script message limit is 64MiB. Data URL limit is ~2MB. Large exports use chunked message passing with Blob-based download in content_script.
 - **PokerStars hand history format**: `calls` shows additional call amount (not total bet). `Dealt to` is hero-only. Summary uses `folded on the Flop/Turn/River`. See [docs/pokerstars-export.md](docs/pokerstars-export.md).
@@ -596,7 +612,7 @@ Dynamic statistics for all players, with hero having additional hand improvement
 - **Entity schemas** in `src/types/entities.ts`: `Hand`, `Phase`, `Action`, `User` with parse functions
 - **Type guards** (no type assertions): `isApiEventType()`, `parseApiEvent()`, `isApplicationApiEvent()`, `getValidationError()`
 - **Breaking changes**: Use `ApiEvent` (removed: `ApiEventType`, `ApiEventUnion`, `ApiEventSubset`, `ApiEventMap`)
-- **Validation gates the pipeline, never storage** (Raw Event Lake — see Design Principles #16 and `docs/architecture.md`): `apiEvents.add()` in `src/background/event-ingestion.ts` runs before `parseApiEvent`/`isApplicationApiEvent` and stores anything with a numeric `timestamp`+`ApiTypeId` — non-application events (202/205 keepalive/timer), ApiTypeIds unknown to `apiEventSchemas`, and app-type events that currently fail to parse are all persisted. The same event is only forwarded to `eventLogger`/`handLogStream`/`handAggregateStream`/`realTimeStatsStream` when it *does* parse as a known application event. Any code path that reads raw `apiEvents` rows and feeds them into `EntityConverter` or `HandLogProcessor` (which read required fields like `EVT_DEAL.Game.SmallBlind` without guards) must first re-validate with `filterValidApplicationEvents()` (`src/utils/database-utils.ts`) — see `rebuildAllData`, `AutoSyncService.rebuildLocalEntities`, and `HandLogExporter`'s two prefetch sites for the pattern.
+- **Validation gates the pipeline, never storage** (Raw Event Lake — see Design Principles #16 and `docs/architecture.md`): `apiEvents.add()` in `src/background/event-ingestion.ts` runs before `parseApiEvent`/`isApplicationApiEvent` and stores anything with a numeric `timestamp`+`ApiTypeId` — non-application events (202/205 keepalive/timer), ApiTypeIds unknown to `apiEventSchemas`, and app-type events that currently fail to parse are all persisted. The same event is only forwarded to `eventLogger`/`handLogStream`/`handAggregateStream`/`realTimeStatsStream` when it *does* parse as a known application event. Any code path that reads raw `apiEvents` rows and feeds them into `EntityConverter` or `HandLogProcessor` (which read required fields like `EVT_DEAL.Game.SmallBlind` without guards) must first re-validate with `filterValidApplicationEvents()` (`src/utils/database-utils.ts`) — see `performFullRebuild` (shared by `rebuildAllData` and `importData`'s non-empty-DB rebuild path), `AutoSyncService.rebuildLocalEntities`, and `HandLogExporter`'s two prefetch sites for the pattern.
 - **Cloud sync is application-type-only** (cost decision): `AutoSyncService.syncToCloud()` filters each raw chunk to `isApplicationApiEvent` before upload — non-application noise (202/205 keepalive/timer, or any ApiTypeId outside `ApiTypeValues`) never leaves the device. The upload cursor still advances on the *raw* chunk boundary (not the filtered subset) for these rows, otherwise a chunk that's 100% noise would never advance and the sync loop would refetch it forever.
 - **Watermark never advances past a recoverable unparseable row** (PR #142 review r3611258695, fixed in `fix/sync-watermark-unparseable`): an application-typed row that currently fails Zod validation (e.g. a 309 broken by a PokerChase payload change, see `docs/postmortems/2026-07-session-results-drop.md`) is *not* treated like noise for watermark purposes — `isUnparseableApplicationEvent()` (`src/types/api.ts`) tells them apart by ApiTypeId membership in `ApiTypeValues` alone (not full schema success), since `isApplicationApiEvent` collapses both to `false`. Naively advancing the raw-chunk cursor past such a row is a **permanent loss**, not a delay: once a *later* valid event uploads, Firestore's own max timestamp (`getCloudMaxTimestamp()`) moves past the unparseable row, and every future `.where('timestamp').above(cloudMaxTimestamp)` query excludes it forever — even after a future schema fix makes it parseable, since the raw Lake copy is never re-offered to the query. `AutoSyncService` persists the earliest such row's timestamp in `meta` (`syncUnparseableFloor`) and rewinds each sync's scan floor to just before it until it resolves, re-offering it to `isApplicationApiEvent` (and therefore to upload) on every sync. This can't starve the loop (only rows that structurally *should* eventually parse hold the floor back — known noise still advances immediately) and can't silently lose data (the marker persists across Service Worker restarts and is only cleared once a full scan finds nothing pending). See the tradeoff comment at the top of `AutoSyncService.syncToCloud()` for alternatives considered (never-advance-at-all reintroduces the SPOF-era starvation; uploading unparsed rows as opaque blobs pollutes Firestore's document shape; rebuild-triggered-only re-scan misses the ship-then-sync-before-rebuild race).
 

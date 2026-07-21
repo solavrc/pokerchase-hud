@@ -115,6 +115,44 @@ export const checkOnUpdate = async (db: PokerChaseDB): Promise<void> => {
 }
 
 /**
+ * `REBUILD_ADVISORY_VERSION`のバンプ（`checkOnUpdate`）を待たず、今すぐ
+ * アドバイザリを保留状態にする（PR #207 pass-4 codexレビュー指摘, finding 3
+ * 「Retry rebuild after failed import instead of skipping duplicates」）。
+ *
+ * 呼び出し元: `importData()`が非空DBへのインポートで新規行を保存した後、
+ * `performFullRebuild`が失敗した場合（src/background/import-export.ts）。
+ * その時点で生イベントはapiEvents（Raw Event Lake）へ確定保存済みだが、
+ * 派生データ（hands/phases/actions）は意図的に古いまま残る（PR #207 P2の
+ * 不変条件「派生データを悪化させない」）。同じファイルを再インポートしても
+ * 今度は全行重複となり（`successCount === 0`）、`importData()`は
+ * 「pure duplicate、再構築不要」の経路に入ってしまい、失敗した再構築を
+ * リトライする手段が無くなる。ここでアドバイザリを保留にしておくことで、
+ * 手動の「データ再構築」ボタン（`resolveAdvisory()`で解消）が唯一かつ
+ * 確実な復旧手段として常にユーザーへ提示され続ける。
+ *
+ * `checkOnUpdate`と異なり`acknowledgedVersion`との比較は行わない ――
+ * 「このバージョンのアドバイザリを既に確認済みか」ではなく「今まさに
+ * 派生データの再構築が必要になった」という事実を無条件に記録する。
+ * `acknowledgedVersion`自体は変更しない（次回`checkOnUpdate()`が同じ
+ * バージョンを「確認済み」と誤って早期returnしないように）。
+ *
+ * 既に同バージョンで保留中なら（例: リトライを繰り返して複数回失敗）、
+ * `checkOnUpdate`の二重通知防止と同じ方針でバッジの再アサートのみ行い、
+ * 通知は再送しない。
+ */
+export const markAdvisoryPending = async (): Promise<void> => {
+  const state = await getRebuildAdvisoryState()
+
+  if (state.pendingVersion === REBUILD_ADVISORY_VERSION) {
+    setBadge()
+    return
+  }
+
+  await setRebuildAdvisoryState({ ...state, pendingVersion: REBUILD_ADVISORY_VERSION })
+  setBadge()
+}
+
+/**
  * アドバイザリを解消する。
  *
  * 呼び出し元:
