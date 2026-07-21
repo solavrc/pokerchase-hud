@@ -145,19 +145,56 @@ Learned from the 2026-07 season-3 silent-drop incident (a PokerChase payload cha
 
 #### Codex Review Loop Protocol
 
-PRs in this repo are reviewed by Codex automatically — **auto-review is enabled for solavrc/* repos: the connector reviews on PR creation AND on every push. Do not comment `@codex review`** (it doubles the review cost); the mention is only a fallback after confirming an auto-review did not fire (no verdict for the head SHA on any channel after the in-progress signal clears / ~10min). While a review is in progress, an **eyes reaction sits on the PR description**. Codex review is valued for **diversity**: a different model reading the diff in a clean context catches problems the authoring agent's self-review structurally cannot. Self-review (reading the final commit's full diff) is always performed in addition, never as a substitute.
+PRs in this repo are reviewed by Codex automatically — **auto-review is enabled for solavrc/* repos: the connector reviews on PR creation and on every push** (this is repo-specific configuration; other repos differ — verify a repo's review setup from its recent PRs before assuming any of this section applies there). While a review is in progress, an eyes reaction sits on the PR description. Codex review is valued for **diversity**: a different model reading the diff in a clean context catches problems the authoring agent's self-review structurally cannot. Self-review (reading the final commit's full diff) is always performed in addition, never as a substitute. Note: Codex positions its GitHub review as an additional high-signal pass, not a formal approval — the termination conditions below are this repo's own orchestration policy, not a Codex contract.
 
-**Convergence condition (when is a PR merge-ready?)**
-- Semantics-bearing changes (sync/watermark logic, statistics, session/state management, event processing): keep the fix → re-request loop running until **two consecutive clean outcomes** on the head commit. A clean outcome is detected STRUCTURALLY: a codex response bound to the current head SHA exists AND that pass produced zero `Badge`-marked inline findings. Do not string-match the verdict message — its wording varies (the "Didn't find any major issues" stem has at least 17 known flavor-text variants and may change entirely); treat verdict text as a secondary signal only.
-- Docs and trivially-mechanical changes: one clean verdict suffices.
-- A fix commit that goes beyond finding-scoped local patches (new mechanism, rebase integration, cross-file ripple) always needs a fresh review pass before merge — never merge such a commit on an older verdict.
+**Deterministic merge gate.** A PR is merge-ready only when ALL of the following hold, checked mechanically:
 
-**Loop guards (these are what prevent cost blow-up — the loop has no natural termination otherwise)**
-- Reviews are triggered by pushes, not requests: push the fix commit and wait for its auto-review. A manual mention may only follow a confirmed-unreviewed head commit, at most once.
-- **Verdict detection must be deterministic and cover ALL delivery channels.** Codex's verdict arrives variably as (a) an issue comment, (b) a review object, or (c) a 👍 reaction on the trigger comment, with inline finding comments carrying `P1/P2/P3 Badge` markers. A watcher that polls only a subset will false-negative and provoke redundant (costly) re-triggers. Check all channels before declaring silence, and **bind every verdict to its `Reviewed commit` SHA — only a verdict for the current head SHA counts** (a clean verdict for a stale commit is not convergence evidence).
-- If ~6 total passes elapse without two consecutive cleans, STOP: escalate to the repo owner with the open findings instead of merging or continuing the loop.
+```text
+MERGE_READY =
+  pass_bound_to_current_head_sha                 # via Reviewed-commit SHA, or a Codex reaction postdating this head's push/trigger; stale evidence never counts
+  AND actionable_findings == 0                   # no unaddressed Badge-marked inline findings
+  AND unresolved_review_threads == 0
+  AND required_checks_on_exact_head == SUCCESS
+  AND mergeable == MERGEABLE
+  AND clean_streak_requirement_met               # see below
+  AND head_sha_unchanged_after_final_refresh
+```
 
-**Division of labor (learned 2026-07-20, from an actual runaway-loop incident)**: completion detection, retry decisions, and termination conditions must be encoded deterministically (string/marker checks, bounded counters) — never left to in-context judgment, which is exactly how the incident's redundant re-triggers happened (a deterministic-but-incomplete watcher missed the verdict channel, and an unbounded judgment call re-triggered on the false silence). What stays with the reviewing agent's judgment: whether a finding is valid, and how to scope the fix.
+Clean-streak requirement: semantics-bearing changes (sync/watermark logic, statistics, session/state management, event processing) need **two consecutive clean passes on the same head SHA**; docs and trivially-mechanical changes need one. Since auto-review fires once per push, the second pass cannot arrive on its own: **after a clean first pass (which may surface only as a thumbs-up reaction on the PR description), request the confirmation pass with a single `@codex review` mention — at most one confirmation mention per head SHA.** If any pass yields findings, the clean streak resets to zero; fix, push (auto-review fires), and continue. A fix commit that goes beyond finding-scoped local patches (new mechanism, rebase integration, cross-file ripple) always resets the streak regardless of verdict history.
+
+**Mentions have exactly two legitimate uses**: (a) the non-fire fallback — at most once per head SHA, only after no outcome for that SHA exists on any channel ~10min after the expected trigger (the push, or the mention), whether or not an in-progress signal ever appeared (a true non-fire may never place the eyes reaction); (b) the second-clean confirmation pass — at most once per head SHA. Any other mention doubles review cost for nothing.
+
+**Outcome detection: the PR-description reaction is the primary state signal.** The connector maintains a Codex-authored reaction on the PR description as CURRENT state (it re-places the reaction as state changes):
+
+- **no reaction** — either "review finished with findings" or "not started yet"; the two are trivially distinguished by whether new content exists (fetch inline findings with `gh api --paginate .../pulls/N/comments` — pagination is mandatory, unpaginated reads hide recent findings on comment-heavy PRs). Findings present → fix → push (which triggers the next review).
+- **eyes** — review in progress: wait, regardless of elapsed time. The `eyes` reaction is itself proof a pass is already running, so it never justifies a fallback mention — mentioning here just queues a second, redundant pass on top of the one already in flight. If `eyes` is still there well past the pass's normal duration (~1 hour), that is a stall, not a silence: report it and let a human decide whether to intervene, per the finite-exit rules' escalation path.
+- **thumbs-up** — LGTM for the current state: the confirmation-pass mention is permitted (inventory check first).
+- **no reaction AND no new content, persisting well past the trigger** — likely non-fire. Do not auto-mention: report the observation and leave the re-trigger to a manual decision (misfiring at a still-queued review costs quota irreversibly; waiting costs only time).
+
+For mention-triggered passes, read the same three states on the TRIGGER comment's reactions (the in-progress eyes has been observed there rather than on the description); the description reaction remains canonical for push-triggered passes.
+
+Two secondary guards, both from measured failure modes: (1) sanity-check the reaction's `created_at` against the latest push time — a reaction predating the head push is stale history, not current state; (2) never string-match verdict flavor text. If the reaction state and the content channels genuinely contradict, do not merge — escalate.
+
+**Determinism boundary.** Everything above — head-SHA binding, reaction-state reads, Badge-marker counts, the clean-streak counter, the finite-exit caps below — is mechanical: string/marker checks and bounded counters, never an in-context call about whether "enough" reviewing has happened. This is a hard-won rule: a prior runaway-loop incident traced directly to a judgment call filling a gap left by an incomplete deterministic watcher. LLM judgment is reserved for exactly two questions — whether a given finding is valid, and how to scope its fix — and nothing else in the loop's control flow.
+
+**Finite-exit rules (loop cost control):**
+
+```text
+- silence retry per head SHA:              max 1
+- total review passes per PR:              max 6, then STOP_ESCALATE
+- same finding reappears after two fixes:  STOP_ESCALATE
+- verdict SHA != head SHA:                 ignore as stale
+- ambiguous outcome channels:              STOP_ESCALATE (never merge on ambiguity)
+- cap reached / conflict / undecidable:    hand back to the owner
+```
+
+**Merge authority.** The repository owner has explicitly granted autonomous merging on MERGE_READY (standing instruction, 2026-07-18). If that grant is ever withdrawn, the terminal state becomes `MERGE_READY / AWAITING_OWNER_APPROVAL` and the actual merge waits for an owner instruction.
+
+**Review-loop ownership (policy, 2026-07-21).** Each PR's review loop has exactly one owner at a time. When implementation is delegated to a subagent, that agent owns the loop end-to-end: fetching findings (`gh api --paginate`, Badge-marked inline comments), assessing their validity, fixing, replying to and resolving threads, waiting out the post-push review, verifying against the head SHA, and repeating until MERGE_READY or an escalation condition below is hit. The delegating orchestrator does not poll the same PR in parallel with the owning agent, does not wake periodically just to check on a review that's still in flight, and does not report clean/no-change passes back to the user — only the owner's terminal state (MERGE_READY, or an escalation) is worth surfacing.
+
+**Escalation to the orchestrator** is what STOP_ESCALATE above resolves to when the loop is delegated — not a second, competing escalation path, but the delegated case's landing point for the same event. It is the only point at which the parent looks at review state directly, and it fires on: a derivative finding persisting across ≥2 rounds; the same underlying invariant's finding recurring in changed form; a race spanning multiple modules; auth, migration, or data-loss topics; contradictory findings; a fix that balloons from a finding-scoped local patch into a new mechanism; or multiple valid designs the agent cannot choose between. The orchestrator's response is a one-shot design memo, not resumed ownership — once it lands, the loop owner takes the decision and keeps running the loop to convergence. If the memo itself doesn't resolve it, the orchestrator is the one who hands the PR to the repository owner.
+
+**Delegated implementation.** High-difficulty fixes may be delegated to gpt-5.6-sol via `codex exec` (effort `high` by default). The single-owner rule applies unchanged: whichever agent pushes the fix commit owns that push's review loop through MERGE_READY or escalation — the orchestrator does not take it back mid-loop just because the fix itself came from a different agent.
 
 #### Version Control
 
