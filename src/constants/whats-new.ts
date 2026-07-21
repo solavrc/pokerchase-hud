@@ -39,7 +39,7 @@ export interface WhatsNewEntry {
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
     version: '5.2.0',
-    date: '2026-07-20',
+    date: '2026-07-21',
     title: 'HUDが見やすく、賢くなりました',
     points: [
       { text: '対戦中のHUDがすっきり読みやすくなりました', why: '主要な数値だけを大きく表示し、数値の高低を色で判別。クリックで従来の詳細表示に切り替わります' }, // #143
