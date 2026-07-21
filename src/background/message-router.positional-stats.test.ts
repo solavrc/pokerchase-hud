@@ -6,6 +6,7 @@
  * given { action: 'getPositionalStats', playerId }, calls the positional
  * stats service and responds with { success: true, positionalStats }.
  */
+import { waitFor } from '@testing-library/dom'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
 import { registerMessageRouter } from './message-router'
@@ -73,8 +74,11 @@ describe('message-router getPositionalStats', () => {
 
     expect(handled).toBe(true) // async response signaled
 
-    // Let the underlying promise chain resolve.
-    await new Promise(resolve => setTimeout(resolve, 0))
+    // Let the underlying promise chain resolve. Poll instead of a single
+    // setTimeout(0): the chain includes fake-indexeddb reads that can take
+    // more than one macrotask to settle on a loaded machine (observed as a
+    // rare flake during `jest --randomize` seed sweeps, 2026-07-21).
+    await waitFor(() => expect(sendResponse).toHaveBeenCalledTimes(1))
 
     expect(sendResponse).toHaveBeenCalledTimes(1)
     const response = sendResponse.mock.calls[0][0]

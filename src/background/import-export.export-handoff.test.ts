@@ -267,7 +267,12 @@ describe('export download-handoff completion', () => {
     ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => {
       setTimeout(() => callback([]), 0) // no matching tabs -- forces the chrome.downloads fallback
     })
-    ;(chrome.downloads.download as jest.Mock).mockImplementation((_options, callback) => {
+    // mockImplementationOnce, NOT mockImplementation: chrome.downloads.download
+    // is a shared jest.fn from test-setup.ts, and neither clearAllMocks (call
+    // history only) nor restoreAllMocks (spyOn spies only) removes a permanent
+    // implementation override -- it would leak USER_CANCELED into whichever
+    // test in this file next hits the fallback path under `jest --randomize`.
+    ;(chrome.downloads.download as jest.Mock).mockImplementationOnce((_options, callback) => {
       ;(chrome.runtime as any).lastError = { message: 'USER_CANCELED' }
       callback?.(undefined)
       delete (chrome.runtime as any).lastError

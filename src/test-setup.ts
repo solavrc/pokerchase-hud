@@ -16,6 +16,18 @@ const chromeStorageMockData = {
 // chrome.storage.onChanged listeners (fired by the local/sync `set` mocks below)
 const storageChangeListeners: Array<(changes: Record<string, { oldValue?: any, newValue?: any }>, areaName: string) => void> = []
 
+// The mock storage above is module-scoped, so without a per-test reset any
+// key a test writes leaks into every later test in the same file — an
+// order-dependence that only surfaces under `jest --randomize` (e.g. a
+// leftover legacy `autoSyncLastTime` makes AutoSyncService.initialize()
+// conclude "already synced" and skip the first sync another test asserts on).
+// Listeners are intentionally NOT cleared: module singletons register
+// chrome.storage.onChanged listeners as import-time side effects (once per
+// file), and clearing them here would desubscribe them for every test after
+// the first in a way real Chrome never would. The reset itself is registered
+// in the beforeEach at the bottom of this file, alongside the chrome-mock
+// implementation restore.
+
 const fireStorageChange = (areaName: 'sync' | 'local', items: Record<string, any>) => {
   const changes: Record<string, { oldValue?: any, newValue?: any }> = {}
   for (const key of Object.keys(items)) {
@@ -177,6 +189,43 @@ global.chrome = {
     }),
   },
 } as any
+
+// Per-test isolation for the shared chrome mock above.
+//
+// `jest.clearAllMocks()` clears call history but NOT implementations, and
+// `jest.restoreAllMocks()` only covers `jest.spyOn` spies — so a test that
+// calls `mockImplementation()`/`mockReturnValue()` on one of these shared
+// jest.fn()s would otherwise leak that override into every later test in the
+// same file (order-dependent failures under `jest --randomize`). Snapshot
+// each mock's default implementation once at setup, then reset and re-install
+// it before every test. File-level `beforeEach` hooks run after this root
+// one, so per-file overrides installed there keep working unchanged.
+const chromeMockDefaults: Array<{ fn: jest.Mock, impl: ((...args: any[]) => any) | undefined }> = []
+const collectMockDefaults = (obj: Record<string, any>) => {
+  for (const value of Object.values(obj)) {
+    if (jest.isMockFunction(value)) {
+      chromeMockDefaults.push({ fn: value as jest.Mock, impl: (value as jest.Mock).getMockImplementation() })
+    } else if (value && typeof value === 'object') {
+      collectMockDefaults(value)
+    }
+  }
+}
+collectMockDefaults(global.chrome)
+
+beforeEach(() => {
+  chromeStorageMockData.sync = {}
+  chromeStorageMockData.local = {}
+  // Some test files replace global.chrome wholesale with a minimal stub
+  // (e.g. useDraggable.test.ts) — guard, and only clean lastError when the
+  // runtime namespace actually exists.
+  if ((global.chrome as any)?.runtime) {
+    delete (global.chrome.runtime as any).lastError
+  }
+  for (const { fn, impl } of chromeMockDefaults) {
+    fn.mockReset()
+    if (impl) fn.mockImplementation(impl)
+  }
+})
 
 // Mock document.body.style for dragging tests
 if (typeof document !== 'undefined') {
