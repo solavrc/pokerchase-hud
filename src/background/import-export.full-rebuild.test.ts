@@ -17,8 +17,8 @@
  * PR #203 attempted a surgical incremental repair of only the affected
  * range; after 11 review rounds it proved non-convergent (it re-implements
  * full-rebuild semantics piecemeal). The owner-approved fix (plan C) drops
- * that machinery entirely: when an import into a non-empty DB actually
- * stores at least one new raw row, `importData()` runs the same full
+ * that machinery entirely: whenever an import actually stores at least one
+ * new raw row, `importData()` runs the same full
  * rebuild the popup's "データ再構築" button uses
  * (`performFullRebuild`/`rebuildAllData`) instead of incremental entity
  * generation. This test proves the resulting derived state is identical to
@@ -181,11 +181,39 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
     })
   })
 
+  test('canonical rebuild includes a live hand prefix committed immediately after an empty-DB count snapshot', async () => {
+    await runWithFreshDb(async ({ db, handlers }) => {
+      const realCount = db.apiEvents.count.bind(db.apiEvents)
+      let injectedLivePrefix = false
+
+      // Reproduce the production race at the old empty/non-empty branch:
+      // count() observes an empty Lake, then a live-ingestion transaction
+      // which was already queued behind that read commits ENTRY+DEAL before
+      // importData continues with the imported ACTION+RESULT tail. Returning
+      // the stale snapshot value after committing the prefix makes the
+      // interleaving deterministic without mocking any derived-data writes.
+      jest.spyOn(db.apiEvents, 'count').mockImplementation((() => {
+        if (!injectedLivePrefix) {
+          injectedLivePrefix = true
+          return db.apiEvents.bulkAdd([ENTRY_QUEUED, HAND1_DEAL] as never[]).then(() => 0)
+        }
+        return realCount()
+      }) as typeof db.apiEvents.count)
+
+      const result = await handlers.importData(toJsonl(HAND1_EVENTS.slice(1)))
+
+      expect(result).toMatchObject({ successCount: 4, duplicateCount: 0 })
+      expect(await realCount()).toBe(6)
+      expect(await db.hands.get(HAND1_ID)).toBeDefined()
+      expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(3)
+    })
+  })
+
   test('a pure-duplicate import into a non-empty DB does not trigger a rebuild and leaves derived state unchanged', async () => {
     const fullExport = [ENTRY_QUEUED, ...HAND1_EVENTS]
 
     await runWithFreshDb(async ({ db, handlers }) => {
-      // Seed a complete, healthy hand via a normal (empty-DB) import.
+      // Seed a complete, healthy hand via a normal import.
       await handlers.importData(toJsonl(fullExport))
       const before = await snapshotDerived(db)
       expect(before.hands).toHaveLength(1)
@@ -197,7 +225,7 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
       ;(chrome.runtime.sendMessage as jest.Mock).mockClear()
 
       // Spy on the entity-table clear that only `performFullRebuild` issues
-      // (both `rebuildAllData` and importData's non-empty-DB rebuild branch
+      // (both `rebuildAllData` and importData's canonical rebuild branch
       // share that one code path) -- a pure-duplicate import must never
       // reach it. This is a more precise probe than spying on the exported
       // `rebuildAllData` handler, since importData() invokes the shared
@@ -359,9 +387,9 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         await db.apiEvents.bulkAdd([ENTRY_QUEUED, HAND1_DEAL, HAND1_RESULTS] as never[])
 
         // Hook the FIRST call to orderAndFilterApplicationEventsForReplay -- this is
-        // performFullRebuild's snapshot-processing call (the empty-DB
-        // import path above never calls it; a possible second call, if the
-        // fix's merge-and-redo path fires, is left untouched below). Right
+        // performFullRebuild's snapshot-processing call (a possible second
+        // call, if the fix's merge-and-redo path fires, is left untouched
+        // below). Right
         // as the snapshot is being processed, simulate HAND2 completing via
         // live play: WriteEntityStream (write-entity-stream.ts) writes
         // straight to hands/phases/actions regardless of service.batchMode
@@ -586,18 +614,18 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         const convertSpy = jest.spyOn(EntityConverter.prototype, 'convertEventsToEntities')
           .mockImplementation(() => { throw new Error('synthetic initial entity-generation failure') })
 
-        await expect(handlers.importData(toJsonl(fullExport))).rejects.toThrow(/entity generation failed/i)
+        await expect(handlers.importData(toJsonl(fullExport))).rejects.toThrow(/post-import rebuild failed/i)
         convertSpy.mockRestore()
 
-        // Raw rows landed before entity generation failed, so the next import
-        // is no longer an "empty DB" import even though no derived rows exist.
+        // Raw rows landed before the canonical rebuild failed, so the next
+        // import contains only duplicates even though no derived rows exist.
         expect(await db.apiEvents.count()).toBe(fullExport.length)
         expect(await db.hands.count()).toBe(0)
         expect(await db.actions.count()).toBe(0)
 
         // Required recovery invariant: the user must keep seeing the manual
-        // rebuild prompt, because retrying this exact file cannot trigger the
-        // non-empty/new-row rebuild branch (all rows are now duplicates).
+        // rebuild prompt, because retrying this exact file cannot trigger a
+        // canonical rebuild (all rows are now duplicates).
         expect((await getRebuildAdvisoryState()).pendingVersion).toBe(REBUILD_ADVISORY_VERSION)
 
         const retryResult = await handlers.importData(toJsonl(fullExport))
