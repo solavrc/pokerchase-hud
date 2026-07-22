@@ -27,6 +27,7 @@ import {
   mergeApiEvents,
   type RawApiEvent
 } from '../utils/api-event-key'
+import { HandLogExporter } from '../utils/hand-log-exporter'
 
 const IMPORT_CHUNK_SIZE = DATABASE_CONSTANTS.IMPORT_CHUNK_SIZE
 
@@ -399,6 +400,14 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           })
         }
       }
+
+      // HandLogExporter normally advances its name cache with an exact
+      // raw-event key. Imports can backfill older 301/313 events below that
+      // cursor, so a successful history merge must force the next export to
+      // rebuild the map from the full Lake. Do this only after the complete
+      // import path succeeds; duplicate-only and failed imports leave the
+      // existing cache untouched.
+      if (successCount > 0) HandLogExporter.clearCache()
 
       return { successCount, totalLines: lines.length, duplicateCount }
 
@@ -1125,6 +1134,12 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
             message
           }).catch(() => {})
         })
+
+        // Manual full rebuild is the recovery boundary for raw history that
+        // an earlier import stored before entity generation failed. Rebuild
+        // the exporter name map from the same Raw Lake on its next use, even
+        // when the Lake is empty (where this is a harmless cache reset).
+        HandLogExporter.clearCache()
 
         if (result.totalCount === 0) {
           setOperationState({ type: 'idle' })

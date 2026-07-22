@@ -24,6 +24,7 @@ import {
   mergeApiEvents,
   type RawApiEvent
 } from '../utils/api-event-key'
+import { HandLogExporter } from '../utils/hand-log-exporter'
 
 /** Shown in the popup and logged when the min-version gate stops cloud sync (#forced-update). */
 export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます'
@@ -1413,6 +1414,12 @@ export class AutoSyncService {
       if (downloadedEvents > 0) {
         try {
           await this.rebuildLocalEntities()
+          // Earlier pages are already durable even though a later page
+          // failed. A retry may download only duplicates, but if recovery
+          // rebuilt the durable rows successfully, historical 301/313 events
+          // are usable and the exporter must rescan below its previous
+          // cursor. A failed recovery rebuild leaves the cache as-is.
+          HandLogExporter.clearCache()
         } catch (rebuildError) {
           console.error('[AutoSync] Rebuild after a partial download failed too:', rebuildError)
         }
@@ -1423,6 +1430,11 @@ export class AutoSyncService {
     if (downloadedEvents > 0) {
       console.log(`[AutoSync] Downloaded ${downloadedEvents} cloud events and added ${addedEvents} new raw rows`)
       await this.rebuildLocalEntities()
+      // A successful download rebuild is also the recovery boundary for an
+      // earlier partial pass whose raw rows landed but whose rebuild failed.
+      // Such a retry can receive only duplicates (addedEvents === 0), yet it
+      // still makes historical 301/313 rows below the old cursor usable.
+      HandLogExporter.clearCache()
     }
   }
 

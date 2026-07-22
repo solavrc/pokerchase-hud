@@ -10,6 +10,7 @@ import { firebaseAuthService } from './firebase-auth-service'
 import * as minVersionGate from './min-version-gate'
 import { mergeApiEvents } from '../utils/api-event-key'
 import { getOperationState, setOperationState } from '../background/operation-state'
+import { HandLogExporter } from '../utils/hand-log-exporter'
 
 describe('AutoSyncService cloud downloads', () => {
   let db: PokerChaseDB
@@ -57,10 +58,12 @@ describe('AutoSyncService cloud downloads', () => {
         return 1
       })
 
+    const clearCache = jest.spyOn(HandLogExporter, 'clearCache')
     const service = new AutoSyncService(db)
     await service.performSync('download')
 
     expect(syncSpy).toHaveBeenCalledTimes(1)
+    expect(clearCache).toHaveBeenCalledTimes(1)
     expect(await db.apiEvents.count()).toBe(2)
     expect(await db.apiEvents.get([100, ApiType.EVT_ENTRY_QUEUED, 0])).toEqual({ ...cloudEvent, sequence: 0 })
     expect(service.getSyncState()).toMatchObject({
@@ -108,6 +111,30 @@ describe('AutoSyncService cloud downloads', () => {
     ])
   })
 
+  test('clears the hand-log name cache after a successful duplicate-only download rebuild', async () => {
+    const existingEvent = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'duplicate-cloud-document',
+      IsRetire: false,
+      timestamp: 100,
+      sequence: 0
+    } as ApiEvent
+    await db.apiEvents.put(existingEvent)
+    jest.spyOn(firestoreBackupService, 'syncFromCloud').mockImplementation(async options => {
+      await options.onBatch([existingEvent])
+      return 1
+    })
+    const clearCache = jest.spyOn(HandLogExporter, 'clearCache')
+
+    const service = new AutoSyncService(db)
+    await service.performSync('download')
+
+    expect(service.getSyncState().status).toBe('success')
+    expect(clearCache).toHaveBeenCalledTimes(1)
+  })
+
   test('a failed derived-table rebuild after download surfaces as a sync ERROR and is not marked as done (release audit 2026-07-21, finding 5)', async () => {
     const cloudEvent = {
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
@@ -130,6 +157,7 @@ describe('AutoSyncService cloud downloads', () => {
       throw new Error('QuotaExceededError: derived-table save failed')
     })
 
+    const clearCache = jest.spyOn(HandLogExporter, 'clearCache')
     const service = new AutoSyncService(db)
     await service.performSync('download')
 
@@ -157,6 +185,7 @@ describe('AutoSyncService cloud downloads', () => {
     // own completion bookkeeping) must remain untouched so nothing claims the
     // derived tables are current.
     expect(await db.meta.get('importStatus')).toBeUndefined()
+    expect(clearCache).not.toHaveBeenCalled()
   })
 
   test('partial download (page 1 durable, page 2 fails) with a failing rebuild still surfaces the DOWNLOAD error and leaves no completion bookkeeping (release audit 2026-07-21, coverage gap #5)', async () => {
@@ -180,6 +209,7 @@ describe('AutoSyncService cloud downloads', () => {
       throw new Error('derived-table save failed')
     })
 
+    const clearCache = jest.spyOn(HandLogExporter, 'clearCache')
     const service = new AutoSyncService(db)
     await service.performSync('download')
 
@@ -192,6 +222,72 @@ describe('AutoSyncService cloud downloads', () => {
     // Page 1's raw events remain durable, and nothing marked the rebuild done.
     expect(await db.apiEvents.count()).toBe(1)
     expect(await db.meta.get('importStatus')).toBeUndefined()
+    expect(clearCache).not.toHaveBeenCalled()
+  })
+
+  test('clears the hand-log name cache after successfully rebuilding a durable partial download', async () => {
+    const pageOneEvent = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-page-1-recovered',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
+    jest.spyOn(firestoreBackupService, 'syncFromCloud').mockImplementation(async options => {
+      await options.onBatch([pageOneEvent])
+      throw new Error('Cloud sync failed: Firestore REST request failed: 503')
+    })
+    const clearCache = jest.spyOn(HandLogExporter, 'clearCache')
+
+    const service = new AutoSyncService(db)
+    await service.performSync('download')
+
+    expect(service.getSyncState().status).toBe('error')
+    expect(await db.apiEvents.count()).toBe(1)
+    expect((await db.meta.get('importStatus'))?.value).toMatchObject({
+      lastProcessedTimestamp: 100,
+      lastProcessedEventCount: 1
+    })
+    expect(clearCache).toHaveBeenCalledTimes(1)
+  })
+
+  test('clears stale names when a failed partial rebuild is recovered by a duplicate-only partial retry', async () => {
+    const durableEvent = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'stage-partial-retry',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
+    const download = jest.spyOn(firestoreBackupService, 'syncFromCloud')
+      .mockImplementationOnce(async options => {
+        await options.onBatch([durableEvent])
+        throw new Error('Cloud sync failed: Firestore REST request failed: 503')
+      })
+      .mockImplementationOnce(async options => {
+        // Same document on retry: mergeApiEvents reports it as a duplicate.
+        await options.onBatch([durableEvent])
+        throw new Error('Cloud sync failed again after the duplicate page: 503')
+      })
+    jest.spyOn(EntityConverter.prototype, 'convertEventChunk')
+      .mockImplementationOnce(() => { throw new Error('first recovery rebuild failed') })
+    const clearCache = jest.spyOn(HandLogExporter, 'clearCache')
+    const service = new AutoSyncService(db)
+
+    await service.performSync('download')
+    expect(service.getSyncState().status).toBe('error')
+    expect(await db.apiEvents.count()).toBe(1)
+    expect(clearCache).not.toHaveBeenCalled()
+
+    await service.performSync('download')
+    expect(download).toHaveBeenCalledTimes(2)
+    // The later page still fails, but the catch-path rebuild succeeds and
+    // makes the already-durable name row usable.
+    expect(service.getSyncState().status).toBe('error')
+    expect(await db.apiEvents.count()).toBe(1)
+    expect(clearCache).toHaveBeenCalledTimes(1)
   })
 
   test('upload: filters non-application noise before syncing, and still advances past a chunk that is 100% noise', async () => {

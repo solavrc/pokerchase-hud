@@ -22,6 +22,7 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
 import { createImportExportHandlers } from './import-export'
+import { HandLogExporter } from '../utils/hand-log-exporter'
 
 // A known-good hand (EVT_DEAL -> 3x EVT_ACTION -> EVT_HAND_RESULTS), copied
 // verbatim from src/app.test.ts's event_timeline fixture (already exercised
@@ -70,7 +71,9 @@ describe('rebuildAllData Raw Event Lake recovery', () => {
     ] as any)
 
     const handlers = createImportExportHandlers(service, db, 'https://example.com/*')
+    const clearCache = jest.spyOn(HandLogExporter, 'clearCache')
     await expect(handlers.rebuildAllData()).resolves.toBeUndefined()
+    expect(clearCache).toHaveBeenCalledTimes(1)
 
     const hand = await db.hands.get(384370064)
     expect(hand).toBeDefined()
