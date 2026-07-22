@@ -102,6 +102,32 @@ describe('derivePlayerHandChipAccounting', () => {
     })
   })
 
+  test('Ring rake may make table net negative without invalidating exact per-seat results', () => {
+    const deal = {
+      ...uncalledReturnDeal,
+      SeatUserIds: [1, 2],
+      Game: { ...uncalledReturnDeal.Game, Ante: 0, SmallBlind: 100, BigBlind: 100, SmallBlindSeat: 0, BigBlindSeat: 1 },
+      Player: { SeatIndex: 0, BetStatus: 1, Chip: 900, BetChip: 100, HoleCards: [0, 1] },
+      OtherPlayers: [{ SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 900, BetChip: 100 }],
+      Progress: { ...uncalledReturnDeal.Progress, Pot: 200, SidePot: [] },
+    } as unknown as ApiEvent<ApiType.EVT_DEAL>
+    const handResult = {
+      ...uncalledReturnResult,
+      Pot: 190,
+      SidePot: [],
+      Results: [{ ...uncalledReturnResult.Results[0], UserId: 1, RewardChip: 190 }],
+      Player: { SeatIndex: 0, BetStatus: -1, Chip: 1090, BetChip: 0 },
+      OtherPlayers: [{ SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 900, BetChip: 0 }],
+    } as unknown as ApiEvent<ApiType.EVT_HAND_RESULTS>
+
+    const result = derivePlayerHandChipAccounting(deal, handResult)
+    expect(result).toEqual({
+      '1': { grossPayout: 190, totalContribution: 100, netChips: 90 },
+      '2': { grossPayout: 0, totalContribution: 100, netChips: -100 },
+    })
+    expect(Object.values(result).reduce((sum, entry) => sum + (entry?.netChips ?? 0), 0)).toBe(-10)
+  })
+
   test('multiple short ante all-ins with side-pot tiers stay unknown when the seat-to-tier assignment is ambiguous', () => {
     const deal = {
       ...uncalledReturnDeal,

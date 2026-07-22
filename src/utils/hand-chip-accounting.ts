@@ -112,7 +112,9 @@ const emptyAccounting = (event: DealEvent): PlayerHandChipAccountingMap =>
  * summed: it is cumulative within each street, so replaying it as incremental
  * amounts would double-count calls/raises. Endpoint stacks also remain exact
  * when a redundant action was not captured. Any ambiguous or inconsistent
- * player remains null rather than receiving an estimated loss.
+ * player remains null rather than receiving an estimated loss. Table-wide
+ * starting/final totals are deliberately not required to match: Ring rake is
+ * a legitimate chip outflow, so exact per-seat net can sum to `-rake`.
  */
 export const derivePlayerHandChipAccounting = (
   deal: DealEvent,
@@ -144,25 +146,11 @@ export const derivePlayerHandChipAccounting = (
   if (duplicateFinalSeat) return accounting
 
   const starts = new Map<number, number>()
-  let allStartingStacksKnown = true
-  let startingStackTotal = 0
   for (let seatIndex = 0; seatIndex < deal.SeatUserIds.length; seatIndex++) {
     if (deal.SeatUserIds[seatIndex] === -1) continue
     const startingStack = deriveStartingStack(deal, seatIndex)
-    const snapshot = getDealSnapshot(deal, seatIndex)
-    if (startingStack === null || !snapshot) {
-      allStartingStacksKnown = false
-      continue
-    }
+    if (startingStack === null) continue
     starts.set(seatIndex, startingStack)
-    startingStackTotal += startingStack
-  }
-
-  const everyFinalStackKnown = deal.SeatUserIds.every((userId, seatIndex) =>
-    userId === -1 || getResultSnapshot(results, seatIndex) !== undefined)
-  if (allStartingStacksKnown && everyFinalStackKnown) {
-    const finalStackTotal = finalSeats.reduce((sum, snapshot) => sum + snapshot.Chip + snapshot.BetChip, 0)
-    if (startingStackTotal !== finalStackTotal) return accounting
   }
 
   for (let seatIndex = 0; seatIndex < deal.SeatUserIds.length; seatIndex++) {
