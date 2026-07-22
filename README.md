@@ -12,7 +12,7 @@ This is an **unofficial** Chrome extension not affiliated with PokerChase. Use a
 
 ## Features
 
-- **Real-time HUD**: Player statistics overlay with 15+ poker metrics — compact classic-style display by default (click to expand the full grid), threshold-based color coding, and per-stat tooltips
+- **Real-time HUD**: Player statistics overlay with 17 poker metrics (14 enabled by default) — compact classic-style display by default (click to expand the full grid), threshold-based color coding, and per-stat tooltips
 - **Player-type icons**: Automatic HM-style classification per opponent (🦈 TAG / 💣 LAG / 🪨 nit / 🐟 fish, with a 🐳 whale override)
 - **Drill-down panels**: Per-player positional stats and recent hands (with showdown hole cards), straight from the HUD
 - **Pre-game hero stats**: Your own career stats render before the first hand is dealt
@@ -42,13 +42,20 @@ This is an **unofficial** Chrome extension not affiliated with PokerChase. Use a
 ```sh
 git clone https://github.com/solavrc/pokerchase-hud.git
 cd pokerchase-hud
-npm install
+npm ci
 npm run build
 ```
 
 2. Open `chrome://extensions/`
 3. Enable "Developer mode"
 4. Click "Load unpacked" and select the project folder
+
+### Requirements and data
+
+- Chrome 120 or later is required.
+- The in-game script runs only on `https://game.poker-chase.com/*`.
+- Hand history and HUD data are stored in the browser. JSON and PokerStars exports are saved through Chrome's download function.
+- Google sign-in is optional. When enabled, Cloud Backup synchronizes game data through the configured Firebase / Google APIs; the extension requests the Google account email and profile scopes for authentication.
 
 ### UI visual mockup
 
