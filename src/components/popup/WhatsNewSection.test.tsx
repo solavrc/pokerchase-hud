@@ -33,9 +33,12 @@ describe('WhatsNewSection', () => {
     render(<WhatsNewSection />)
 
     expect(screen.getByText('更新情報')).toBeInTheDocument()
-    expect(screen.getByText(/v5\.2\.0/)).toBeVisible()
-    expect(screen.getByText(/v5\.1\.0/)).toBeVisible()
-    expect(screen.getByText(/v5\.0\.0/)).not.toBeVisible()
+    for (const entry of WHATS_NEW_ENTRIES.slice(0, 2)) {
+      expect(screen.getByText(new RegExp(`v${entry.version.replace(/\./g, '\\.')}`))).toBeVisible()
+    }
+    expect(
+      screen.getByText(new RegExp(`v${WHATS_NEW_ENTRIES[2]!.version.replace(/\./g, '\\.')}`)),
+    ).not.toBeVisible()
 
     const history = screen.getByRole('button', { name: new RegExp(`過去の更新情報（${WHATS_NEW_ENTRIES.length - 2}件）`) })
     expect(history).toHaveAttribute('aria-expanded', 'false')
