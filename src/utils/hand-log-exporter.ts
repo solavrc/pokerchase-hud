@@ -26,7 +26,6 @@ export class HandLogExporter {
   
   // Time constants for event retrieval
   private static readonly TIME_BUFFER_MS = 300000 // 5 minutes buffer to catch player seat assignments
-  private static readonly POST_HAND_BUFFER_MS = 30000 // 30 seconds after hand completion
 
   /**
    * Build a global player names map from all available events in the database
@@ -216,13 +215,27 @@ export class HandLogExporter {
     }
 
     const minTime = Math.min(...timestamps) - this.TIME_BUFFER_MS
-    const maxTime = Math.max(...timestamps) + this.POST_HAND_BUFFER_MS
+    const targetHandIds = new Set(handIds)
+    const resultEvents = await db.apiEvents
+      .where('[ApiTypeId+timestamp]')
+      .between(
+        [ApiType.EVT_HAND_RESULTS, minTime],
+        [ApiType.EVT_HAND_RESULTS, Number.MAX_SAFE_INTEGER],
+        true,
+        true
+      )
+      .filter(event => isApiEventType(event, ApiType.EVT_HAND_RESULTS) && targetHandIds.has(event.HandId))
+      .toArray()
+    const maxTime = Math.max(
+      ...timestamps,
+      ...resultEvents.map(event => event.timestamp!)
+    )
 
     // 4. Fetch ALL events in the range in ONE query
     console.log(`[HandLogExporter] Prefetching events from ${new Date(minTime).toISOString()} to ${new Date(maxTime).toISOString()}`)
     const rawEvents = await db.apiEvents
       .where('timestamp')
-      .between(minTime, maxTime)
+      .between(minTime, maxTime, true, true)
       .toArray()
 
     // apiEvents is the raw Lake (see docs/architecture.md): the time window may
@@ -299,21 +312,20 @@ export class HandLogExporter {
    * Same logic as getHandApiEvents but operates on in-memory data instead of DB.
    */
   private static extractHandEvents(allEvents: ApiEvent[], hand: Hand): ApiEvent[] {
-    // Filter to the hand's time range first
-    const startTime = hand.approxTimestamp! - this.TIME_BUFFER_MS
-    const endTime = hand.approxTimestamp! + this.POST_HAND_BUFFER_MS
-
-    const rangeEvents = allEvents.filter(e =>
-      e.timestamp! >= startTime && e.timestamp! <= endTime
-    )
-
-    // Find EVT_HAND_RESULTS with matching HandId
-    const resultEvent = rangeEvents.find((e: ApiEvent) =>
-      isApiEventType(e, ApiType.EVT_HAND_RESULTS) && e.HandId === hand.id
+    const resultEvent = allEvents.find((event): event is ApiEvent<ApiType.EVT_HAND_RESULTS> =>
+      isApiEventType(event, ApiType.EVT_HAND_RESULTS) && event.HandId === hand.id
     )
     if (!resultEvent) {
       throw new Error(`Could not find EVT_HAND_RESULTS for hand ${hand.id}`)
     }
+
+    // Filter from before the deal through this hand's independently-located result.
+    const startTime = hand.approxTimestamp! - this.TIME_BUFFER_MS
+    const endTime = resultEvent.timestamp!
+
+    const rangeEvents = allEvents.filter(e =>
+      e.timestamp! >= startTime && e.timestamp! <= endTime
+    )
 
     // Extract EVT_DEAL to EVT_HAND_RESULTS sequence
     const handEvents: ApiEvent[] = []
@@ -390,13 +402,29 @@ export class HandLogExporter {
    * Get API events for a specific hand
    */
   private static async getHandApiEvents(db: PokerChaseDB, hand: Hand): Promise<ApiEvent[]> {
-    // Get events around the hand timestamp (with buffer for related events and player names)
     const startTime = hand.approxTimestamp! - this.TIME_BUFFER_MS
-    const endTime = hand.approxTimestamp! + this.POST_HAND_BUFFER_MS
+    // Find the terminal event independently. `approxTimestamp` is the hand
+    // start time, so a fixed post-start window would drop ordinary long hands.
+    const resultEvent = await db.apiEvents
+      .where('[ApiTypeId+timestamp]')
+      .between(
+        [ApiType.EVT_HAND_RESULTS, startTime],
+        [ApiType.EVT_HAND_RESULTS, Number.MAX_SAFE_INTEGER],
+        true,
+        true
+      )
+      .filter(event => isApiEventType(event, ApiType.EVT_HAND_RESULTS) && event.HandId === hand.id)
+      .first()
+    if (!resultEvent) {
+      throw new Error(`Could not find EVT_HAND_RESULTS for hand ${hand.id}`)
+    }
+
+    // Get events from before the deal through the matching result.
+    const endTime = resultEvent.timestamp!
 
     const rawEvents = await db.apiEvents
       .where('timestamp')
-      .between(startTime, endTime)
+      .between(startTime, endTime, true, true)
       .toArray()
 
     // apiEvents is the raw Lake (see docs/architecture.md): filter to validated
@@ -413,15 +441,6 @@ export class HandLogExporter {
       eventTypeCounts[e.ApiTypeId] = (eventTypeCounts[e.ApiTypeId] || 0) + 1
     })
     // Event type distribution
-
-    // Find the specific hand events by looking for EVT_HAND_RESULTS with matching HandId
-    const resultEvent = allEvents.find((e: ApiEvent) =>
-      isApiEventType(e, ApiType.EVT_HAND_RESULTS) && e.HandId === hand.id
-    )
-
-    if (!resultEvent) {
-      throw new Error(`Could not find EVT_HAND_RESULTS for hand ${hand.id}`)
-    }
 
     // Get all events from EVT_DEAL to EVT_HAND_RESULTS for this hand
     const handEvents: ApiEvent[] = []

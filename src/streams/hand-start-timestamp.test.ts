@@ -2,7 +2,7 @@ import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
 import { EntityConverter } from '../entity-converter'
 import { MTT_TABLE_MOVE_FIXTURE } from '../test-fixtures/mtt-table-move-lifecycle'
-import type { Session } from '../types'
+import { ApiType, type Session } from '../types'
 import { HandLogExporter } from '../utils/hand-log-exporter'
 
 const EMPTY_SESSION: Session = {
@@ -35,9 +35,14 @@ describe('hand start timestamps', () => {
   })
 
   test('live writes, rebuilds, and exported logs use EVT_DEAL rather than EVT_HAND_RESULTS time', async () => {
-    const events = MTT_TABLE_MOVE_FIXTURE.events.slice(0, 6)
     const handId = MTT_TABLE_MOVE_FIXTURE.handIds.oldAccepted
     const dealTimestamp = MTT_TABLE_MOVE_FIXTURE.timestamps.oldAcceptedDeal
+    const resultTimestamp = dealTimestamp + 60_000
+    const events = MTT_TABLE_MOVE_FIXTURE.events.slice(0, 6).map(event =>
+      event.ApiTypeId === ApiType.EVT_HAND_RESULTS ? { ...event, timestamp: resultTimestamp } : event
+    )
+
+    expect(resultTimestamp - dealTimestamp).toBeGreaterThan(30_000)
 
     await db.apiEvents.bulkPut(events.map(event => ({ ...event, sequence: 0 })))
 
@@ -55,5 +60,8 @@ describe('hand start timestamps', () => {
 
     const exported = await HandLogExporter.exportHand(db, handId)
     expect(exported).toContain(`- ${formatJst(dealTimestamp)}`)
+
+    const batchExported = await HandLogExporter.exportRecentHands(db, undefined, 1)
+    expect(batchExported).toContain(`- ${formatJst(dealTimestamp)}`)
   })
 })
