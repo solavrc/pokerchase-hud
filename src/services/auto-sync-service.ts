@@ -14,7 +14,7 @@ import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
 import { ApiType, ApiTypeValues, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent } from '../types'
 import type { ApiEvent } from '../types'
-import { processInReplayChunks, saveEntities, filterValidApplicationEvents } from '../utils/database-utils'
+import { processInReplayChunks, filterValidApplicationEvents } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
 import { isCloudSyncBlockedByMinVersionGate } from './min-version-gate'
 import {
@@ -1465,6 +1465,13 @@ export class AutoSyncService {
       const converter = new EntityConverter(defaultSession)
       const service = (self as any).service
       const totalEventCount = await this.db.apiEvents.count()
+      // Keep the pre-rebuild key set so a successful canonical replay can
+      // remove hands that were derived from an incomplete local Lake but are
+      // invalid once cloud-only events fill the gap. Restricting cleanup to
+      // this snapshot preserves hands completed by the live pipeline while
+      // the chunked rebuild is running.
+      const previousHandIds = await this.db.hands.toCollection().primaryKeys() as number[]
+      const rebuiltHandIds = new Set<number>()
       let lastProcessedTimestamp = 0
       let latestDealEvent: ApiEvent | undefined
 
@@ -1482,6 +1489,7 @@ export class AutoSyncService {
         // already re-validate internally so they're safe on the raw chunk as-is.
         const validEvents = await filterValidApplicationEvents(events)
         const entities = converter.convertEventChunk(validEvents)
+        entities.hands.forEach(hand => rebuiltHandIds.add(hand.id))
         await this.saveRebuiltEntities(entities)
 
         for (const event of events) {
@@ -1507,7 +1515,28 @@ export class AutoSyncService {
         }
       }
 
-      await this.saveRebuiltEntities(converter.flush())
+      const remainingEntities = converter.flush()
+      remainingEntities.hands.forEach(hand => rebuiltHandIds.add(hand.id))
+      await this.saveRebuiltEntities(remainingEntities)
+
+      // bulkPut alone cannot remove a formerly-derived hand which canonical
+      // replay now rejects (for example, a missing table-move EVT_DEAL arrives
+      // from another device and reveals that the old DEAL -> RESULTS pairing
+      // was a chimera). Clean only keys present before this rebuild; a hand
+      // completed concurrently by live ingestion was not in the snapshot and
+      // must remain intact.
+      const staleHandIds = previousHandIds.filter(handId => !rebuiltHandIds.has(handId))
+      if (staleHandIds.length > 0) {
+        await this.db.transaction('rw', [this.db.hands, this.db.phases, this.db.actions], async () => {
+          for (let offset = 0; offset < staleHandIds.length; offset += DATABASE_CONSTANTS.SYNC_CHUNK_SIZE) {
+            const handIds = staleHandIds.slice(offset, offset + DATABASE_CONSTANTS.SYNC_CHUNK_SIZE)
+            await this.db.phases.where('handId').anyOf(handIds).delete()
+            await this.db.actions.where('handId').anyOf(handIds).delete()
+            await this.db.hands.bulkDelete(handIds)
+          }
+        })
+      }
+
       await this.db.meta.put({
         id: 'importStatus',
         value: {
@@ -1532,13 +1561,22 @@ export class AutoSyncService {
   }
 
   private async saveRebuiltEntities(entities: ReturnType<EntityConverter['flush']>): Promise<void> {
-    await saveEntities(this.db, entities, {
-      onProgress: (counts) => {
-        if (counts.hands + counts.phases + counts.actions > 0) {
-          console.log(`[AutoSync] Generated entities - Hands: ${counts.hands}, Phases: ${counts.phases}, Actions: ${counts.actions}`)
-        }
-      }
+    const handIds = [...new Set(entities.hands.map(hand => hand.id))]
+    if (handIds.length === 0) return
+
+    // Replaying a hand can legitimately produce fewer child records after a
+    // cloud gap is filled. Replace each emitted hand's children instead of
+    // merely bulkPutting the new rows, which would leave obsolete higher
+    // action indexes or phases behind.
+    await this.db.transaction('rw', [this.db.hands, this.db.phases, this.db.actions], async () => {
+      await this.db.phases.where('handId').anyOf(handIds).delete()
+      await this.db.actions.where('handId').anyOf(handIds).delete()
+      await this.db.hands.bulkPut(entities.hands)
+      if (entities.phases.length > 0) await this.db.phases.bulkPut(entities.phases)
+      if (entities.actions.length > 0) await this.db.actions.bulkPut(entities.actions)
     })
+
+    console.log(`[AutoSync] Generated entities - Hands: ${entities.hands.length}, Phases: ${entities.phases.length}, Actions: ${entities.actions.length}`)
   }
 
   private restoreSessionEvent(service: any, event: ApiEvent): void {
