@@ -4,9 +4,9 @@
 
 ## 結論
 
-- HUD が宣言する `BattleType` は `0, 1, 2, 4, 5, 6` の6種類で、BigQuery の
-  `EVT_ENTRY_QUEUED`（201）にも6種類すべてが実在した。`null`、値3、その他の
-  enum外値は0件だった。
+- HUD が宣言する `BattleType` は `0, 1, 2, 4, 5, 6` の6種類で、BigQuery Rawの
+  `EVT_ENTRY_QUEUED`（201）にも6種類すべてが実在した。schema検証前のRawで
+  `null`、値3、その他のenum外値は0件だった。
 - ランク戦SNG（0）以外もパース・保存・フィルター対象には含まれる。しかし、
   ライフサイクルを通した E2E fixture は0と4だけで、1はunit testのみ、2/6はtestがなく、
   5はisolated stats testだけである。特に5は1セッション78ハンドしかなく、正常性を
@@ -55,7 +55,7 @@ cutoffとする。
 | 5 | `FRIEND_RING_GAME` | yes | yes | yes | isolated statsのみ | no | 1セッションのみ。未検証領域が大きい |
 | 6 | `CLUB_MATCH` | yes | yes | yes | no | no | 実ログはあるが回帰テストなし |
 | 3 / その他 | なし | no | no | 3は欠番と記載 | no | no | 出現時はschema driftとして扱う |
-| `null` / 欠落 | なし | no | no | 不正 | no | no | 201では0件。出現時は破壊的変更候補 |
+| `null` / 欠落 | なし | no | Rawでもno | 不正 | no | no | 201では0件。出現時は破壊的変更候補 |
 
 `src/types/api.ts` 冒頭の201例示だけは2を列挙していないが、同ファイルの201 schema説明と
 `docs/api-events.md` の一覧には6種すべてが記載されている。

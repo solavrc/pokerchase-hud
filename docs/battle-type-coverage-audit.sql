@@ -28,23 +28,24 @@ SELECT
   MAX(ingested_at)
 FROM `pokerchase-hud.stg_pokerchase.events`;
 
--- Q1. Declared-value observation, null/out-of-enum detection, and freshness.
+-- Q1. Raw 201 BattleType observation and enum-drift detection. This must run
+-- before staging validation because an invalid enum value is absent from the
+-- accepted-event staging table by definition.
 WITH entry AS (
   SELECT
-    observer_ref,
-    event_ts,
-    SAFE_CAST(JSON_VALUE(event_json, '$.BattleType') AS INT64) AS battle_type
-  FROM `pokerchase-hud.stg_pokerchase.events`
-  WHERE api_type_id = 201
+    TIMESTAMP_MILLIS(SAFE_CAST(JSON_VALUE(data, '$.timestamp') AS INT64))
+      AS event_ts,
+    SAFE_CAST(JSON_VALUE(data, '$.BattleType') AS INT64) AS battle_type
+  FROM `pokerchase-hud.firestore_export.apiEvents_raw_latest`
+  WHERE SAFE_CAST(JSON_VALUE(data, '$.ApiTypeId') AS INT64) = 201
 )
 SELECT
   battle_type,
   COUNT(*) AS entry_events,
-  COUNT(DISTINCT observer_ref) AS observer_count,
   MIN(event_ts) AS first_seen,
   MAX(event_ts) AS last_seen,
-  battle_type IS NULL AS is_missing,
-  battle_type NOT IN (0, 1, 2, 4, 5, 6) AS is_out_of_enum
+  COUNTIF(battle_type IS NULL) AS missing_values,
+  COUNTIF(battle_type NOT IN (0, 1, 2, 4, 5, 6)) AS out_of_enum_values
 FROM entry
 GROUP BY battle_type
 ORDER BY battle_type;
@@ -225,7 +226,15 @@ WITH base AS (
 ), rebuy AS (
   SELECT
     spectator.*,
-    ring.event_ts AS rebuy_at
+    ring.event_ts AS rebuy_at,
+    (
+      SELECT COUNTIF(boundary.api_type_id = 309)
+      FROM ring AS boundary
+      WHERE boundary.observer_ref = spectator.observer_ref
+        AND boundary.entry_seq = spectator.entry_seq
+        AND boundary.event_ordinal > spectator.bust_ordinal
+        AND boundary.event_ordinal < ring.event_ordinal
+    ) AS session_results_between
   FROM spectator
   JOIN ring USING (observer_ref, entry_seq, battle_type)
   WHERE ring.event_ordinal > spectator_ordinal
@@ -246,9 +255,11 @@ SELECT
   bust_at,
   spectator_at,
   rebuy_at,
+  session_results_between,
   TIMESTAMP_DIFF(spectator_at, bust_at, SECOND) AS seconds_to_spectator,
   TIMESTAMP_DIFF(rebuy_at, spectator_at, SECOND) AS seconds_to_rebuy
 FROM rebuy
+WHERE session_results_between = 0
 ORDER BY bust_at;
 
 -- Q5. Accepted-hand identity and lineup invariants by BattleType.
