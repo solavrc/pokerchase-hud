@@ -33,8 +33,8 @@ describe('HudHeader', () => {
       />
     )
 
-    const potOdds = screen.getByText('17%')
-    const spr = screen.getByText('10.5')
+    const potOdds = screen.getByText('Odds 17%')
+    const spr = screen.getByText('SPR 10.5')
 
     expect(potOdds).toBeInTheDocument()
     expect(spr).toBeInTheDocument()
@@ -43,7 +43,7 @@ describe('HudHeader', () => {
     expect(potOdds.compareDocumentPosition(spr) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('ポットオッズとSPRの意味・式をhoverとscreen readerで説明できる', () => {
+  it('ポットオッズとSPRの意味・式をvisual tooltipとscreen readerで説明できる', async () => {
     render(
       <HudHeader
         playerName="TestPlayer"
@@ -63,11 +63,25 @@ describe('HudHeader', () => {
 
     const potOddsTooltip = 'ポットオッズ: コールに必要な最低勝率。式: コール額 ÷（メインポット＋全サイドポット＋コール額）'
     const sprTooltip = 'SPR: このプレイヤーの残りスタックと現在のポット総額の比。式: 残りスタック ÷（メインポット＋全サイドポット）'
-    const potOdds = screen.getByTitle(potOddsTooltip)
-    const spr = screen.getByTitle(sprTooltip)
+    const potOdds = screen.getByText('Odds 17%')
+    const spr = screen.getByText('SPR 10.5')
 
-    expect(potOdds).toHaveAttribute('aria-label', `ポットオッズ 17%。${potOddsTooltip}`)
+    expect(potOdds).not.toHaveAttribute('title')
+    expect(spr).not.toHaveAttribute('title')
+    expect(potOdds).toHaveAttribute('aria-label', `Odds 17%。${potOddsTooltip}`)
     expect(spr).toHaveAttribute('aria-label', `SPR 10.5。${sprTooltip}`)
+
+    await userEvent.hover(potOdds)
+    const visualTooltip = await screen.findByRole('tooltip')
+    expect(visualTooltip).toHaveTextContent(potOddsTooltip)
+    expect(visualTooltip).toHaveStyle({ boxSizing: 'border-box' })
+    expect(visualTooltip.style.maxWidth).toBe('min(280px, calc(100vw - 16px))')
+
+    await userEvent.unhover(potOdds)
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+
+    await userEvent.hover(spr)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(sprTooltip)
   })
 
   it('プレイヤーのターンの場合はポットオッズがハイライトされる', () => {
@@ -90,7 +104,7 @@ describe('HudHeader', () => {
       />
     )
 
-    const potOddsElement = screen.getByText('17%')
+    const potOddsElement = screen.getByText('Odds 17%')
     expect(potOddsElement).toHaveStyle({ color: '#00ff00' })
   })
 
@@ -114,7 +128,7 @@ describe('HudHeader', () => {
       />
     )
 
-    const potOddsElement = screen.getByText('17%')
+    const potOddsElement = screen.getByText('Odds 17%')
     expect(potOddsElement).toHaveStyle({ color: '#b8b8b8' })
   })
 
@@ -122,6 +136,7 @@ describe('HudHeader', () => {
     render(<HudHeader playerName="TestPlayer" playerId={123} />)
 
     expect(screen.queryByText(/SPR:/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^SPR /)).not.toBeInTheDocument()
     expect(screen.queryByText(/%/)).not.toBeInTheDocument()
   })
 

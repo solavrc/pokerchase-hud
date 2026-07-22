@@ -1,4 +1,5 @@
 import { CSSProperties, useState, useCallback, useMemo, memo } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
 import type { PlayerStats } from '../types'
 import type { StatDisplayConfig } from '../types'
 import type { StatResult } from '../types/stats'
@@ -15,6 +16,7 @@ import { PositionalPanelTrigger } from './hud/PositionalPanelTrigger'
 import { RecentHandsPanel } from './hud/RecentHandsPanel'
 import { RecentHandsPanelTrigger } from './hud/RecentHandsPanelTrigger'
 import { HUD_MUTED_TEXT_COLOR } from './hud/hudColors'
+import { HudTooltipPortal } from './hud/HudTooltip'
 
 // Types
 interface PlayerPotOdds {
@@ -76,6 +78,7 @@ const EMPTY_SEAT_ID = -1
 const HUD_WIDTH = 240
 const HOVER_BG_COLOR = 'rgba(0, 0, 0, 0.7)'
 const NORMAL_BG_COLOR = 'rgba(0, 0, 0, 0.5)'
+const COPY_TOOLTIP = 'Click to copy stats to clipboard'
 // bustしたプレイヤーのミュート表示（sola仕様）: 統計は読めるが明確に副次的と
 // わかる程度に減光する。opacityはパネル全体（枠・テキスト・compactラインの
 // カラーコーディングを含む）に一様にかかるため、個々のstat色を別途ミュートする
@@ -224,6 +227,7 @@ const getPlayerName = (stat: PlayerStats): string | null => {
 // Main component
 const Hud = memo((props: HudProps) => {
   const [isHovering, setIsHovering] = useState(false)
+  const [copyTooltipPosition, setCopyTooltipPosition] = useState<{ left: number; top: number }>()
   // クリックで展開する16統計グリッド（compactモードのみ）。パネルごとのローカル
   // state -- 各Hudインスタンスが自分のstateを持つため、複数プレイヤーを同時に
   // 展開できる。
@@ -284,6 +288,24 @@ const Hud = memo((props: HudProps) => {
       console.error('Failed to copy stats to clipboard:', error)
     }
   }, [gridDisplayStats, playerName])
+
+  const handleHudMouseMove = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    const target = event.target
+    if (
+      target instanceof Element
+      && target.closest('[data-hud-metric="true"], [title]')
+    ) {
+      setCopyTooltipPosition(undefined)
+      return
+    }
+
+    setCopyTooltipPosition({ left: event.clientX + 12, top: event.clientY + 16 })
+  }, [])
+
+  const handleHudMouseLeave = useCallback(() => {
+    setIsHovering(false)
+    setCopyTooltipPosition(undefined)
+  }, [])
 
   // Container styles
   const containerStyle: CSSProperties = {
@@ -401,8 +423,8 @@ const Hud = memo((props: HudProps) => {
           }}
           onClick={copyStatsToClipboard}
           onMouseEnter={() => setIsHovering(true)}
-          onMouseLeave={() => setIsHovering(false)}
-          title="Click to copy stats to clipboard"
+          onMouseMove={handleHudMouseMove}
+          onMouseLeave={handleHudMouseLeave}
         >
           <DragHandle isHovering={isHovering} onMouseDown={handleMouseDown} />
           <HudHeader
@@ -435,6 +457,7 @@ const Hud = memo((props: HudProps) => {
           {props.isRecentHandsPanelOpen && (
             <RecentHandsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
           )}
+          <HudTooltipPortal position={copyTooltipPosition}>{COPY_TOOLTIP}</HudTooltipPortal>
         </div>
       </div>
     </>
