@@ -9,9 +9,11 @@ interface FirebaseAuthSectionProps {
   isFirebaseSignedIn: boolean
   firebaseUserInfo: { email: string; uid: string } | null
   syncState: SyncState | null
+  isAuthPending: boolean
+  authError: string
   setImportStatus: (status: string) => void
-  handleFirebaseSignIn: () => void
-  handleFirebaseSignOut: () => void
+  handleFirebaseSignIn: () => Promise<void>
+  handleFirebaseSignOut: () => Promise<void>
   handleManualSyncUpload: () => void
   handleManualSyncDownload: () => void
 }
@@ -20,6 +22,8 @@ export const FirebaseAuthSection = ({
   isFirebaseSignedIn,
   firebaseUserInfo,
   syncState,
+  isAuthPending,
+  authError,
   setImportStatus,
   handleFirebaseSignIn,
   handleFirebaseSignOut,
@@ -28,16 +32,24 @@ export const FirebaseAuthSection = ({
 }: FirebaseAuthSectionProps) => {
   if (!isFirebaseSignedIn) {
     return (
-      <Button
-        variant="contained"
-        color="primary"
-        fullWidth
-        onClick={handleFirebaseSignIn}
-        size="large"
-        startIcon={<CloudIcon />}
-      >
-        自動バックアップを有効にする
-      </Button>
+      <Box>
+        <Button
+          variant="contained"
+          color="primary"
+          fullWidth
+          onClick={handleFirebaseSignIn}
+          disabled={isAuthPending}
+          size="large"
+          startIcon={<CloudIcon />}
+        >
+          {isAuthPending ? '有効化しています...' : '自動バックアップを有効にする'}
+        </Button>
+        {authError && (
+          <Typography role="alert" variant="caption" color="error" sx={{ display: 'block', mt: 1 }}>
+            {authError}
+          </Typography>
+        )}
+      </Box>
     )
   }
 
@@ -77,11 +89,17 @@ export const FirebaseAuthSection = ({
         size="small"
         fullWidth
         onClick={handleFirebaseSignOut}
+        disabled={isAuthPending}
         startIcon={<CloudOffIcon />}
         sx={{ mt: 1 }}
       >
-        ログアウト
+        {isAuthPending ? 'ログアウトしています...' : 'ログアウト'}
       </Button>
+      {authError && (
+        <Typography role="alert" variant="caption" color="error" sx={{ display: 'block', mt: 1 }}>
+          {authError}
+        </Typography>
+      )}
 
       {/* Sync Status */}
       {syncState && (

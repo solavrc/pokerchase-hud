@@ -11,6 +11,7 @@ import type { UIConfig } from '../types/hand-log'
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import type {
   ChromeMessage,
+  MessageResponse,
   UpdateBattleTypeFilterMessage,
   FirebaseSignInMessage,
   FirebaseSignOutMessage,
@@ -44,6 +45,8 @@ import {
 } from './popup/popup-theme-storage'
 
 export type { Options }
+
+const FIREBASE_AUTH_COMMUNICATION_ERROR = 'バックグラウンドとの通信に失敗しました。もう一度お試しください。'
 
 export interface PopupProps {
   /**
@@ -105,6 +108,9 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   const [isFirebaseSignedIn, setIsFirebaseSignedIn] = useState<boolean>(false)
   const [firebaseUserInfo, setFirebaseUserInfo] = useState<{ email: string; uid: string } | null>(null)
   const [syncState, setSyncState] = useState<SyncState | null>(null)
+  const [isFirebaseAuthPending, setIsFirebaseAuthPending] = useState(false)
+  const [firebaseAuthError, setFirebaseAuthError] = useState('')
+  const firebaseAuthRequestInFlightRef = useRef(false)
 
   // Fetch sync state
   useEffect(() => {
@@ -416,14 +422,39 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   }
 
   // Firebase handlers
-  const handleFirebaseSignIn = async () => {
-    await openGameTab()
-    chrome.runtime.sendMessage<FirebaseSignInMessage>({ action: 'firebaseSignIn' })
+  const performFirebaseAuthAction = async (
+    message: FirebaseSignInMessage | FirebaseSignOutMessage,
+    beforeSend?: () => Promise<void>
+  ) => {
+    if (firebaseAuthRequestInFlightRef.current) return
+
+    firebaseAuthRequestInFlightRef.current = true
+    setIsFirebaseAuthPending(true)
+    setFirebaseAuthError('')
+
+    try {
+      await beforeSend?.()
+      const response = await sendMessageWithTimeout<MessageResponse>(message)
+
+      if (!response) {
+        setFirebaseAuthError(FIREBASE_AUTH_COMMUNICATION_ERROR)
+      } else if (!response.success) {
+        setFirebaseAuthError(response.error)
+      }
+    } catch {
+      setFirebaseAuthError(FIREBASE_AUTH_COMMUNICATION_ERROR)
+    } finally {
+      firebaseAuthRequestInFlightRef.current = false
+      setIsFirebaseAuthPending(false)
+    }
   }
 
-  const handleFirebaseSignOut = () => {
-    chrome.runtime.sendMessage<FirebaseSignOutMessage>({ action: 'firebaseSignOut' })
-  }
+  const handleFirebaseSignIn = () => performFirebaseAuthAction(
+    { action: 'firebaseSignIn' },
+    openGameTab
+  )
+
+  const handleFirebaseSignOut = () => performFirebaseAuthAction({ action: 'firebaseSignOut' })
 
   const handleManualSyncUpload = () => {
     chrome.runtime.sendMessage<ManualSyncUploadMessage>({ action: 'manualSyncUpload' })
@@ -524,6 +555,8 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           isFirebaseSignedIn={isFirebaseSignedIn}
           firebaseUserInfo={firebaseUserInfo}
           syncState={syncState}
+          isAuthPending={isFirebaseAuthPending}
+          authError={firebaseAuthError}
           setImportStatus={setImportStatus}
           handleFirebaseSignIn={handleFirebaseSignIn}
           handleFirebaseSignOut={handleFirebaseSignOut}

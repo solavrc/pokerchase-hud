@@ -77,6 +77,22 @@ describe('Popup', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
   }
 
+  const mockSignedOutPopupMessages = (
+    handleSignIn: (callback: (response?: unknown) => void) => void
+  ) => {
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'firebaseAuthStatus') {
+        callback({ success: true, isSignedIn: false, userInfo: null })
+      } else if (message.action === 'getSyncState') {
+        callback({ success: true, syncState: null })
+      } else if (message.action === 'acknowledgeWhatsNew') {
+        callback({ success: true })
+      } else if (message.action === 'firebaseSignIn') {
+        handleSignIn(callback)
+      }
+    })
+  }
+
   beforeEach(() => {
     jest.clearAllMocks()
     window.localStorage.removeItem(POPUP_THEME_LOCAL_STORAGE_KEY)
@@ -493,6 +509,148 @@ describe('Popup', () => {
     // Component should render without errors
     const buttons = screen.getAllByRole('button')
     expect(buttons.length).toBeGreaterThan(0)
+  })
+
+  describe('Firebase認証操作のフィードバック', () => {
+    it('成功応答までボタンを無効化し、成功後はlistenerによる認証状態更新を待つ', async () => {
+      let respondToSignIn: ((response?: unknown) => void) | undefined
+      mockSignedOutPopupMessages((callback) => {
+        respondToSignIn = callback
+      })
+
+      render(<Popup />)
+      await waitForAsyncOperations()
+
+      fireEvent.click(screen.getByRole('button', { name: '自動バックアップを有効にする' }))
+
+      await waitFor(() => {
+        expect(respondToSignIn).toBeDefined()
+        expect(screen.getByRole('button', { name: '有効化しています...' })).toBeDisabled()
+      })
+
+      act(() => {
+        respondToSignIn?.({ success: true })
+      })
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: '自動バックアップを有効にする' })).toBeEnabled()
+      })
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      // A successful response does not optimistically change auth state;
+      // the existing firebaseAuthStatus listener remains authoritative.
+      expect(screen.queryByText('ログアウト')).not.toBeInTheDocument()
+    })
+
+    it('backgroundのエラー応答を表示し、再試行開始時に古いエラーを消す', async () => {
+      let attempt = 0
+      let respondToRetry: ((response?: unknown) => void) | undefined
+      mockSignedOutPopupMessages((callback) => {
+        attempt += 1
+        if (attempt === 1) {
+          callback({ success: false, error: 'Google認証に失敗しました' })
+        } else {
+          respondToRetry = callback
+        }
+      })
+
+      render(<Popup />)
+      await waitForAsyncOperations()
+
+      await userEvent.click(screen.getByRole('button', { name: '自動バックアップを有効にする' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('Google認証に失敗しました')
+
+      fireEvent.click(screen.getByRole('button', { name: '自動バックアップを有効にする' }))
+
+      await waitFor(() => {
+        expect(respondToRetry).toBeDefined()
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+        expect(screen.getByRole('button', { name: '有効化しています...' })).toBeDisabled()
+      })
+
+      act(() => {
+        respondToRetry?.({ success: true })
+      })
+    })
+
+    it.each(['undefined response', 'synchronous sendMessage rejection'])('%sを通信エラーとして表示する', async (failureMode) => {
+      mockSignedOutPopupMessages((callback) => {
+        if (failureMode === 'undefined response') {
+          callback(undefined)
+          return
+        }
+        throw new Error('Extension context invalidated')
+      })
+
+      render(<Popup />)
+      await waitForAsyncOperations()
+
+      await userEvent.click(screen.getByRole('button', { name: '自動バックアップを有効にする' }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'バックグラウンドとの通信に失敗しました。もう一度お試しください。'
+      )
+      expect(screen.getByRole('button', { name: '自動バックアップを有効にする' })).toBeEnabled()
+    })
+
+    it('backgroundが応答しない場合は8秒でタイムアウトして再試行可能にする', async () => {
+      jest.useFakeTimers()
+      mockSignedOutPopupMessages(() => {
+        // Deliberately leave the callback unresolved.
+      })
+
+      render(<Popup />)
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: '自動バックアップを有効にする' }))
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(screen.getByRole('button', { name: '有効化しています...' })).toBeDisabled()
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(8000)
+      })
+
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'バックグラウンドとの通信に失敗しました。もう一度お試しください。'
+      )
+      expect(screen.getByRole('button', { name: '自動バックアップを有効にする' })).toBeEnabled()
+
+      jest.useRealTimers()
+    })
+
+    it('素早い二重クリックでも認証要求を1件だけ送る', async () => {
+      let respondToSignIn: ((response?: unknown) => void) | undefined
+      mockSignedOutPopupMessages((callback) => {
+        respondToSignIn = callback
+      })
+
+      render(<Popup />)
+      await waitForAsyncOperations()
+
+      const button = screen.getByRole('button', { name: '自動バックアップを有効にする' })
+      act(() => {
+        fireEvent.click(button)
+        fireEvent.click(button)
+      })
+
+      await waitFor(() => {
+        expect(respondToSignIn).toBeDefined()
+      })
+      expect(
+        mockChromeRuntimeSendMessage.mock.calls.filter(([message]) => message.action === 'firebaseSignIn')
+      ).toHaveLength(1)
+
+      act(() => {
+        respondToSignIn?.({ success: true })
+      })
+    })
   })
 
   it('インポート/エクスポート機能', async () => {
