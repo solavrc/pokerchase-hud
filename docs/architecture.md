@@ -51,6 +51,16 @@
 transactionで行う。reconnect resendの判定はトップレベルの`sequence`を除く
 canonical payload全体の一致であり、時刻と種別だけでは重複とみなさない。
 
+この主キーは保存・ページング順であって、異なる`ApiTypeId`間の受信順ではない。
+異種イベントが同一millisecondなら主キーは`ApiTypeId`順に並び、`sequence`も同じ
+`timestamp+ApiTypeId`組の内部にしか意味を持たない。ライブ処理は直列キューの到着順を使い、
+保存済みイベントから状態を再生・監査するconsumerはsession/hand境界の因果関係を別途扱う。
+
+順序解決の設計原則は、ポーカーを強整合性のある状態機械として扱うことである。各遷移は
+stack、pot、phase、seat、およびhand/session境界のinvariantで因果検証する。保存主キーや
+`ApiTypeId`の昇順だけを受信順の根拠にせず、同一timestampの関係をinvariantから一意に
+canonicalizeできない場合は推測せず、その順序に依存する処理をfail-closedにする。
+
 IndexedDBは既存object storeの主キーを直接変更できないため、v3→v6はv4で全行を
 一時storeへ`sequence: 0`付きでコピーし、v5で旧storeを削除、v6で新主キーのstoreへ
 戻す。versionchange transaction内で完結し、旧主キー下では既存行が一意なので

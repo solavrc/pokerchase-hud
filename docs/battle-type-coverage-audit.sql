@@ -90,11 +90,25 @@ LEFT JOIN session_census USING (battle_type)
 LEFT JOIN hand_census USING (battle_type)
 ORDER BY battle_type;
 
--- Shared event annotation for Q3-Q5. Repeat this CTE in an interactive query;
--- BigQuery CTE scope ends at each semicolon.
+-- Ordering contract for Q3-Q4:
+--   Poker is treated as a strongly consistent state machine: stack, pot,
+--   phase, seat, and hand/session-boundary invariants constrain causal order.
+--   [event_ts_ms, api_type_id, event_sequence] is the persisted primary-key
+--   order, not proof of WebSocket receive order. Different ApiTypeIds can share
+--   a Date.now() millisecond, and primary-key order then sorts by ApiTypeId.
+--   These audit queries need only session/hand boundary causality, so they use
+--   the narrow canonical_boundary_order below:
+--     306 hand close -> 309 session close -> 201 next entry
+--       -> 308 details -> 313 seat snapshot -> 303 next deal.
+--   Other event types retain a deterministic middle rank plus primary-key
+--   tie-breakers, but Q3/Q4 do not infer a causal edge from their placement.
+--   This is deliberately NOT a general reconstruction of wire order. If the
+--   listed invariants do not determine a causal relation needed by an audit,
+--   that audit must fail closed instead of guessing. Repeat the CTE in an
+--   interactive query because BigQuery CTE scope ends at each semicolon.
 
 -- Q3. MTT table-move profile. entry_id is used for grouping but never emitted.
-WITH annotated AS (
+WITH canonical_order AS (
   SELECT
     observer_ref,
     event_ts,
@@ -103,14 +117,26 @@ WITH annotated AS (
     event_json,
     COALESCE(SAFE_CAST(JSON_VALUE(event_json, '$.sequence') AS INT64), 0)
       AS event_sequence,
+    CASE api_type_id
+      WHEN 306 THEN 10 -- finish the current hand
+      WHEN 309 THEN 20 -- finish the current session
+      WHEN 201 THEN 30 -- open the next session/table segment
+      WHEN 308 THEN 40 -- attach details to that segment
+      WHEN 313 THEN 50 -- attach the new seat snapshot
+      WHEN 303 THEN 60 -- start the next hand
+      ELSE 55          -- deterministic only; no general causal claim
+    END AS canonical_boundary_order
+  FROM `pokerchase-hud.stg_pokerchase.events`
+), annotated AS (
+  SELECT
+    *,
     LAST_VALUE(IF(
       api_type_id = 201,
       SAFE_CAST(JSON_VALUE(event_json, '$.BattleType') AS INT64),
       NULL
     ) IGNORE NULLS) OVER (
       PARTITION BY observer_ref
-      ORDER BY event_ts_ms, api_type_id,
-        COALESCE(SAFE_CAST(JSON_VALUE(event_json, '$.sequence') AS INT64), 0)
+      ORDER BY event_ts_ms, canonical_boundary_order, api_type_id, event_sequence
       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
     ) AS battle_type,
     LAST_VALUE(IF(
@@ -119,11 +145,10 @@ WITH annotated AS (
       NULL
     ) IGNORE NULLS) OVER (
       PARTITION BY observer_ref
-      ORDER BY event_ts_ms, api_type_id,
-        COALESCE(SAFE_CAST(JSON_VALUE(event_json, '$.sequence') AS INT64), 0)
+      ORDER BY event_ts_ms, canonical_boundary_order, api_type_id, event_sequence
       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
     ) AS entry_id
-  FROM `pokerchase-hud.stg_pokerchase.events`
+  FROM canonical_order
 ), mtt AS (
   SELECT * FROM annotated WHERE battle_type = 1
 ), tournaments AS (
@@ -139,7 +164,9 @@ WITH annotated AS (
     ARRAY_AGG(
       IF(api_type_id = 306,
         SAFE_CAST(JSON_VALUE(event_json, '$.HandId') AS INT64), NULL)
-      IGNORE NULLS ORDER BY event_ts_ms, api_type_id, event_sequence LIMIT 3
+      IGNORE NULLS
+      ORDER BY event_ts_ms, canonical_boundary_order, api_type_id, event_sequence
+      LIMIT 3
     ) AS sample_hand_ids
   FROM mtt
   GROUP BY observer_ref, entry_id
@@ -161,7 +188,7 @@ WHERE event_201 > 1 OR event_308 > 1 OR event_313 > 1
 ORDER BY event_201 DESC, event_313 DESC;
 
 -- Q4. Ring bust -> spectator -> rebuy inside one 201 segment.
-WITH base AS (
+WITH canonical_order AS (
   SELECT
     observer_ref,
     event_ts,
@@ -170,10 +197,22 @@ WITH base AS (
     event_json,
     COALESCE(SAFE_CAST(JSON_VALUE(event_json, '$.sequence') AS INT64), 0)
       AS event_sequence,
+    CASE api_type_id
+      WHEN 306 THEN 10 -- bust/result belongs before the following deal
+      WHEN 309 THEN 20 -- close the old session before a new 201
+      WHEN 201 THEN 30
+      WHEN 308 THEN 40
+      WHEN 313 THEN 50
+      WHEN 303 THEN 60 -- spectator/rebuy deal follows the result boundary
+      ELSE 55
+    END AS canonical_boundary_order
+  FROM `pokerchase-hud.stg_pokerchase.events`
+), base AS (
+  SELECT
+    *,
     COUNTIF(api_type_id = 201) OVER (
       PARTITION BY observer_ref
-      ORDER BY event_ts_ms, api_type_id,
-        COALESCE(SAFE_CAST(JSON_VALUE(event_json, '$.sequence') AS INT64), 0)
+      ORDER BY event_ts_ms, canonical_boundary_order, api_type_id, event_sequence
       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
     ) AS entry_seq,
     LAST_VALUE(IF(
@@ -182,17 +221,16 @@ WITH base AS (
       NULL
     ) IGNORE NULLS) OVER (
       PARTITION BY observer_ref
-      ORDER BY event_ts_ms, api_type_id,
-        COALESCE(SAFE_CAST(JSON_VALUE(event_json, '$.sequence') AS INT64), 0)
+      ORDER BY event_ts_ms, canonical_boundary_order, api_type_id, event_sequence
       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
     ) AS battle_type
-  FROM `pokerchase-hud.stg_pokerchase.events`
+  FROM canonical_order
 ), ordered AS (
   SELECT
     *,
     ROW_NUMBER() OVER (
       PARTITION BY observer_ref, entry_seq
-      ORDER BY event_ts_ms, api_type_id, event_sequence
+      ORDER BY event_ts_ms, canonical_boundary_order, api_type_id, event_sequence
     ) AS event_ordinal
   FROM base
 ), ring AS (
