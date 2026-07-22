@@ -191,13 +191,13 @@ export class FirestoreBackupService {
       let processed = 0
       let synced = 0
 
-      console.log(`[Firestore] Processing batch of ${apiEvents.length} events...`)
+      console.log(`[Firestore] Processing batch of ${apiEvents.length} upload candidates...`)
 
       const newEvents = cloudMaxTimestamp
         ? apiEvents.filter(event => (event.timestamp || 0) > cloudMaxTimestamp)
         : apiEvents
 
-      console.log(`[Firestore] ${newEvents.length} new events in this batch`)
+      console.log(`[Firestore] ${newEvents.length} events remain after the upload watermark filter`)
 
       const PARALLEL_BATCHES = DATABASE_CONSTANTS.FIRESTORE_PARALLEL_BATCHES
       for (let i = 0; i < newEvents.length; i += this.BATCH_SIZE * PARALLEL_BATCHES) {
