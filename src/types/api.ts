@@ -352,7 +352,7 @@ export const apiEventSchemas = {
       - ShowDownMuck (RankType 11): Hands=空配列, HoleCards=空配列 or [-1,-1]
       - FoldOpen (RankType 12): Hands=空配列, HoleCards=2枚（自発公開）
       ※フォールド済みプレイヤーはFOLD_OPENしない限りResults[]に含まれない`),
-    ResultType: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).describe('0=通常続行(98.5%), 1=トーナメント敗退(0.8%、ヒーローが脱落), 2=テーブル移動(0.4%、MTT), 3=休憩開始(0.1%、MTT), 4=テーブル離脱/対戦相手不在(0.2%、Ring退出時など)'),
+    ResultType: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).describe('0=通常続行(98.5%), 1=トーナメント終了(0.8%、ヒーローの敗退または優勝), 2=テーブル移動(0.4%、MTT), 3=休憩開始(0.1%、MTT), 4=テーブル離脱/対戦相手不在(0.2%、Ring退出時など)'),
     SidePot: z.array(z.int().nonnegative()).max(4).describe('サイドポット額の配列（最終値）。Pot=メインポット、SidePot[0]=第1サイドポット、SidePot[1]=第2サイドポット。不変条件: Pot + sum(SidePot) == sum(Results[].RewardChip)（100%成立）。ハンドの7.5%で発生（1サイドポット:95%, 2:5%, 3:<0.1%）'),
   }).describe('ハンド結果 - ハンド集約の終端。HandIdはここでのみ取得可能（EVT_DEAL→EVT_HAND_RESULTSが1ハンドの境界）。Results[]はHandRanking昇順で勝者→敗者の順。フォールド済みプレイヤーはResults[]に含まれない（FOLD_OPEN除く）'),
 
