@@ -152,22 +152,40 @@ export async function* processInReplayChunks<T extends { timestamp?: number; Api
   table: Dexie.Table<T, any>,
   chunkSize: number,
   options?: {
+    /** Exact primary keys captured at the start of a stable export snapshot. */
+    snapshotKeys?: ApiEventKey[]
     onProgress?: (current: number, total: number) => void
   }
 ): AsyncGenerator<T[], void, unknown> {
-  const total = await table.count()
+  const snapshotKeys = options?.snapshotKeys
+  const total = snapshotKeys?.length ?? await table.count()
   if (total === 0) return
 
   let cursor: ApiEventKey | undefined
+  let snapshotOffset = 0
   let carry: T[] = []
   let processed = 0
 
   while (true) {
-    const rawChunk = await (cursor
-      ? table.where(API_EVENT_PRIMARY_KEY).above(cursor)
-      : table.orderBy(API_EVENT_PRIMARY_KEY))
-      .limit(chunkSize)
-      .toArray()
+    let rawChunk: T[]
+    let reachedEnd: boolean
+    if (snapshotKeys) {
+      const pageKeys = snapshotKeys.slice(snapshotOffset, snapshotOffset + chunkSize)
+      const rows = await table.bulkGet(pageKeys)
+      if (rows.some(row => row === undefined)) {
+        throw new Error('Raw export snapshot changed while it was being read')
+      }
+      rawChunk = rows as T[]
+      snapshotOffset += pageKeys.length
+      reachedEnd = snapshotOffset >= snapshotKeys.length
+    } else {
+      rawChunk = await (cursor
+        ? table.where(API_EVENT_PRIMARY_KEY).above(cursor)
+        : table.orderBy(API_EVENT_PRIMARY_KEY))
+        .limit(chunkSize)
+        .toArray()
+      reachedEnd = rawChunk.length < chunkSize
+    }
 
     if (rawChunk.length === 0) {
       if (carry.length > 0) {
@@ -183,7 +201,7 @@ export async function* processInReplayChunks<T extends { timestamp?: number; Api
     cursor = [last.timestamp!, last.ApiTypeId, getApiEventSequence(last)]
     const combined = [...carry, ...rawChunk]
 
-    if (rawChunk.length < chunkSize) {
+    if (reachedEnd) {
       const ordered = orderApiEventsForReplay(combined as unknown as RawApiEvent[]) as unknown as T[]
       yield ordered
       processed += ordered.length

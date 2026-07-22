@@ -27,6 +27,7 @@ import { resolveAdvisory, markAdvisoryPending } from './rebuild-advisory'
 import {
   API_EVENT_PRIMARY_KEY,
   mergeApiEvents,
+  type ApiEventKey,
   type RawApiEvent
 } from '../utils/api-event-key'
 import { HandLogExporter } from '../utils/hand-log-exporter'
@@ -431,19 +432,28 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         message: 'NDJSONエクスポート開始...'
       }).catch(() => {})
 
-      const totalCount = await db.apiEvents.count()
-      console.log(`[Export] Exporting ${totalCount} events...`)
-
       // Cursor by stable primary key, but hold/resolve each equal-timestamp group
       // before emitting it so the NDJSON preserves the proven causal order.
       // Dumps the full apiEvents Lake verbatim (raw fidelity, "a line is a line") — no
       // filtering by validity or application-type here; this is what feeds the warehouse
       // and offline schema-diff tooling (see docs/architecture.md "Raw Event Lake").
-      const chunks: string[] = []
+      let totalCount = 0
       let processedCount = 0
       const chunkSize = DATABASE_CONSTANTS.EXPORT_CHUNK_SIZE
+      // Capture only the ordered primary keys in a short read transaction, then
+      // release the store before fetching/stringifying the full rows. Exact keys
+      // exclude every later insert, including an equal-ms row whose ApiTypeId
+      // sorts below the start-time maximum; unlike a transaction held for the
+      // complete export, live ingestion is blocked only for this lightweight
+      // key scan.
+      const snapshotKeys = await db.transaction('r', db.apiEvents, async () =>
+        await db.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).primaryKeys() as ApiEventKey[]
+      )
+      totalCount = snapshotKeys.length
+      console.log(`[Export] Exporting ${totalCount} events...`)
+      const chunks: string[] = []
 
-      for await (const chunk of processInReplayChunks(db.apiEvents, chunkSize)) {
+      for await (const chunk of processInReplayChunks(db.apiEvents, chunkSize, { snapshotKeys })) {
         chunks.push(chunk.map(event => JSON.stringify(event)).join('\n'))
         processedCount += chunk.length
 
