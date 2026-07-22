@@ -62,6 +62,8 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
           this.currentHandEvents = []  // Clear previous hand events
           this.activePlayerCount = 0
           this.currentProgress = undefined
+          this.heroPlayerId = undefined
+          this.heroHoleCards = undefined
           this.heroSeatIndex = undefined
           this.seatBetAmounts = [0, 0, 0, 0, 0, 0]  // Reset bet amounts
           this.seatChips = [0, 0, 0, 0, 0, 0]  // Reset chip stacks

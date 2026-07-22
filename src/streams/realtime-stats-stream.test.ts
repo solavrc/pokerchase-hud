@@ -404,6 +404,66 @@ describe('RealTimeStatsStream', () => {
   })
 
   describe('新しいハンド開始時のクリア', () => {
+    test('306欠落後の観戦DEALで直前Heroのホールカードを再利用しない', async () => {
+      const baseDeal = {
+        ApiTypeId: ApiType.EVT_DEAL,
+        SeatUserIds: [101, 102, -1, -1, -1, -1],
+        OtherPlayers: [
+          { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1000, BetChip: 20 }
+        ],
+        Game: {
+          CurrentBlindLv: 1,
+          NextBlindUnixSeconds: 0,
+          Ante: 0,
+          SmallBlind: 10,
+          BigBlind: 20,
+          ButtonSeat: 0,
+          SmallBlindSeat: 0,
+          BigBlindSeat: 1
+        },
+        Progress: {
+          Phase: PhaseType.PREFLOP,
+          NextActionSeat: 0,
+          NextActionTypes: [2, 3, 4, 5],
+          NextExtraLimitSeconds: 30,
+          MinRaise: 40,
+          Pot: 30,
+          SidePot: []
+        }
+      }
+      const outputs: any[] = []
+      stream.on('data', data => outputs.push(data))
+
+      stream.write({
+        ...baseDeal,
+        timestamp: 100,
+        Player: {
+          SeatIndex: 0,
+          BetStatus: 1,
+          HoleCards: [48, 49],
+          Chip: 1000,
+          BetChip: 10
+        }
+      } as ApiHandEvent)
+      // EVT_HAND_RESULTSを受信しないまま、Playerのない観戦DEALへ遷移する。
+      stream.write({
+        ...baseDeal,
+        timestamp: 200,
+        Player: undefined,
+        OtherPlayers: [
+          { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 1000, BetChip: 10 },
+          { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1000, BetChip: 20 }
+        ]
+      } as ApiHandEvent)
+      stream.end()
+
+      await new Promise<void>(resolve => stream.once('end', resolve))
+
+      expect(outputs).toHaveLength(3)
+      expect(outputs[1].stats.heroStats.holeCards).toEqual([48, 49])
+      expect(outputs[2].stats.heroStats).toEqual({})
+    })
+
     test('EVT_DEALで前のハンドの表示がクリアされる', (done) => {
       /**
        * シナリオ: ハンドが終了し、新しいハンドが開始される場合
