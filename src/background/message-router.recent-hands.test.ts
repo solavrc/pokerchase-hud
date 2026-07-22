@@ -51,7 +51,12 @@ describe('message-router getRecentHands', () => {
       smallBlind: 100,
       bigBlind: 200,
       session: {},
-      results: [{ UserId: PLAYER_ID, HandRanking: 1, Ranking: -2, RewardChip: id === 3 ? 500 : 0, RankType: RankType.NO_CALL, Hands: [], HoleCards: [] }]
+      results: [{ UserId: PLAYER_ID, HandRanking: 1, Ranking: -2, RewardChip: id === 3 ? 500 : 0, RankType: RankType.NO_CALL, Hands: [], HoleCards: [] }],
+      playerChipAccounting: {
+        [String(PLAYER_ID)]: id === 3
+          ? { grossPayout: 500, totalContribution: 100, netChips: 400 }
+          : { grossPayout: 0, totalContribution: 100, netChips: -100 }
+      }
     }))
     await db.hands.bulkAdd(hands)
 
@@ -84,7 +89,7 @@ describe('message-router getRecentHands', () => {
     expect(typeof response.recentHands.computedAt).toBe('number')
     expect(response.recentHands.hands.map((h: any) => h.handId)).toEqual([3, 2, 1])
     expect(response.recentHands.hands[0].won).toBe(true)
-    expect(response.recentHands.hands[0].netChips).toBe(500)
+    expect(response.recentHands.hands[0].netChips).toBe(400)
   })
 
   test('respects an explicit limit', async () => {
