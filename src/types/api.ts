@@ -217,7 +217,7 @@ export const apiEventSchemas = {
   [ApiType.EVT_DEAL]: baseSchema.extend({
     ApiTypeId: z.literal(ApiType.EVT_DEAL),
     Game: z.object({
-      Ante: z.int().nonnegative().describe('アンテ額。アンテ優先モデル: ショートスタックはアンテに先に充当'),
+      Ante: z.int().nonnegative().describe('アンテ額。ショートスタック時のEVT_DEAL会計では、ante相当額を控除した残額がBetChipへ割り当てられる。実際の投稿時系列は非観測'),
       BigBlind: z.int().nonnegative().describe('BB額'),
       BigBlindSeat: seatIndexSchema.describe('BBプレイヤーの席インデックス。WriteEntityStreamがポジション計算の基準に使用'),
       ButtonSeat: seatIndexSchema.describe('ボタン（ディーラー）の席インデックス。PS形式エクスポートで使用'),
@@ -247,8 +247,8 @@ export const apiEventSchemas = {
       NextActionTypes: z.array(z.enum(ActionType)).min(1).max(4),
       NextExtraLimitSeconds: z.int().nonnegative(),
       Phase: z.literal(PhaseType.PREFLOP),
-      Pot: z.int().nonnegative().describe('配札時点のポット額。**アンテだけでなく投稿済みブラインド（SB+BB）も含む**（poker-warehouse I1監査で全数検証: 29,715/29,715本番ハンド+2キャプチャでΣ(Chip)+Pot+ΣSidePot==table_size×DefaultChipが成立、BetChipを別途加算すると二重計上になる）。ただしアンテオールインでデッキ時点のオールインキャップが発生している場合はこの限りでない: Pot/SidePotは既にサイドポット分割済みで、ブラインドは最上位（未キャップ）のサイドポットにのみ含まれる（Pot自体はアンテ拠出者数で割り切れるブラインド抜きの額になる）。ショートスタック推定（下記）はこの分割後の値を前提に組まれている'),
-      SidePot: z.array(z.int()).max(4).describe('プリフロップ時点のサイドポット。アンテオールインが発生した場合に値が入る。通常は空配列'),
+      Pot: z.int().nonnegative().describe('配札時点のポット額。**アンテだけでなく投稿済みブラインド（SB+BB）も含む**（poker-warehouse I1監査で全数検証: 29,715/29,715本番ハンド+2キャプチャでΣ(Chip)+Pot+ΣSidePot==table_size×DefaultChipが成立、BetChipを別途加算すると二重計上になる）。アンテまたはブラインドの強制投稿で配札時点のオールインキャップがある場合、Pot/SidePotは既にティア別スナップショットになる。最短オールイン総額までの拠出（短縮ブラインドと相手の同額までのブラインドを含む）はPotに残り、超過分だけがSidePotに入る。アンテのみオールインではブラインドは最上位（未キャップ）のサイドポットにのみ含まれ、Pot自体はアンテ拠出者数で割り切れるブラインド抜きの額になる。ショートスタック推定（下記）はこの分割後の値を前提に組まれている'),
+      SidePot: z.array(z.int()).max(4).describe('プリフロップ時点のサイドポット。アンテまたはブラインドの強制投稿オールイン上限を超える拠出がある場合に値が入る。通常は空配列'),
     }),
     SeatUserIds: z.array(z.int()).min(4).max(6).describe('-1=空席, 配列長=テーブル席数(4 or 6), インデックス=論理シート番号, 値=UserId'),
     MyRanking: myRankingSchema.optional().describe('トーナメント時のみ。MTTでの現在順位・参加人数・平均チップを提供'),
@@ -352,7 +352,7 @@ export const apiEventSchemas = {
       - ShowDownMuck (RankType 11): Hands=空配列, HoleCards=空配列 or [-1,-1]
       - FoldOpen (RankType 12): Hands=空配列, HoleCards=2枚（自発公開）
       ※フォールド済みプレイヤーはFOLD_OPENしない限りResults[]に含まれない`),
-    ResultType: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).describe('0=通常続行(98.5%), 1=トーナメント敗退(0.8%、ヒーローが脱落), 2=テーブル移動(0.4%、MTT), 3=休憩開始(0.1%、MTT), 4=テーブル離脱/対戦相手不在(0.2%、Ring退出時など)'),
+    ResultType: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).describe('0=通常結果(98.5%、早期脱落を含む), 1=トーナメント終了遷移の観測値(0.8%、優勝/敗退の双方で出現するが全脱落を網羅しない), 2=テーブル移動(0.4%、MTT), 3=休憩開始(0.1%、MTT), 4=テーブル離脱/対戦相手不在(0.2%、Ring退出時など)。ヒーロー脱落/最終順位はResultType単独で判定せずResults[].RankingとDefeatStatusを使う'),
     SidePot: z.array(z.int().nonnegative()).max(4).describe('サイドポット額の配列（最終値）。Pot=メインポット、SidePot[0]=第1サイドポット、SidePot[1]=第2サイドポット。不変条件: Pot + sum(SidePot) == sum(Results[].RewardChip)（100%成立）。ハンドの7.5%で発生（1サイドポット:95%, 2:5%, 3:<0.1%）'),
   }).describe('ハンド結果 - ハンド集約の終端。HandIdはここでのみ取得可能（EVT_DEAL→EVT_HAND_RESULTSが1ハンドの境界）。Results[]はHandRanking昇順で勝者→敗者の順。フォールド済みプレイヤーはResults[]に含まれない（FOLD_OPEN除く）'),
 
