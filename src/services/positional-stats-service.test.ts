@@ -262,11 +262,12 @@ describe('PositionalStatsService', () => {
     }
   })
 
-  test('handLimitFilter keeps only the most recent N hands, sorted by id desc like calcStats', async () => {
+  test('handLimitFilter keeps the most recent N legacy hands with deterministic HandId fallback', async () => {
     service.handLimitFilter = 3
     const result = await getPositionalStats(db, service, PLAYER_ID)
 
-    // Top 3 hands by id: 10 (BTN), 9 (BTN), 8 (HJ)
+    // These legacy fixtures omit approxTimestamp, so the documented fallback
+    // keeps the prior HandId order: 10 (BTN), 9 (BTN), 8 (HJ).
     const btn = bucketOf(result, Position.BTN)
     expect(btn.handsN).toBe(2)
     expect(btn.stats.vpip).toEqual([2, 2])

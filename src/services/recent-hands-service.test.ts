@@ -125,7 +125,7 @@ describe('RecentHandsService', () => {
       await db.hands.bulkAdd(hands)
     })
 
-    test('returns hands newest-first (by hand id) and applies the limit', async () => {
+    test('returns timestamped hands newest-first and applies the limit', async () => {
       const result = await getRecentHands(db, service, PLAYER_ID, 3)
       expect(result.hands.map(h => h.handId)).toEqual([5, 4, 3])
       expect(typeof result.computedAt).toBe('number')

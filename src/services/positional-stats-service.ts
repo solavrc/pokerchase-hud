@@ -30,6 +30,7 @@ import type { PokerChaseDB } from '../db/poker-chase-db'
 import type PokerChaseService from './poker-chase-service'
 import { defaultRegistry } from '../stats'
 import { matchesTableSizeFilter } from '../utils/table-size'
+import { compareHandsNewestFirst } from '../utils/hand-order'
 
 /** Bucket display order: standard late→early preflop order, blinds, then unknown. */
 const POSITION_BUCKETS: PositionalStatsBucketId[] = [
@@ -223,7 +224,7 @@ export async function getPositionalStats(
 
   if (service.handLimitFilter !== undefined && service.handLimitFilter > 0) {
     allPlayerHands = [...allPlayerHands]
-      .sort((a, b) => b.id - a.id)
+      .sort(compareHandsNewestFirst)
       .slice(0, service.handLimitFilter)
   }
 
