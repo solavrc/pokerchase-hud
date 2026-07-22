@@ -74,8 +74,11 @@ describe('RealTimeStatsStream', () => {
 
       await new Promise<void>(resolve => stream.once('end', resolve))
 
-      expect(outputs).toHaveLength(2)
-      expect(Object.keys(outputs[1].stats.heroStats)).not.toHaveLength(0)
+      // Session end clears the previous live values, then the seated deal
+      // clears/reinitializes before emitting current stats.
+      expect(outputs).toHaveLength(3)
+      expect(outputs[0].stats).toEqual({ heroStats: {}, playerStats: {} })
+      expect(Object.keys(outputs[2].stats.heroStats)).not.toHaveLength(0)
     })
   })
 
@@ -285,11 +288,11 @@ describe('RealTimeStatsStream', () => {
             SeatIndex: 0,
             BetStatus: 1,
             HoleCards: [16, 19],
-            Chip: 10000,
+            Chip: 9600,
             BetChip: 0
           },
           OtherPlayers: [
-            { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },
+            { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 9200, BetChip: 0 },
             { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },
             { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },
             { SeatIndex: 4, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },
@@ -317,6 +320,16 @@ describe('RealTimeStatsStream', () => {
         const flopStats = results[results.length - 1]
         expect(flopStats.stats.heroStats.communityCards).toEqual([49, 33, 21])
         expect(flopStats.stats.heroStats.holeCards).toEqual([16, 19])
+        // New-street snapshots reset every BetChip and carry the current
+        // stacks. No player should inherit a preflop call amount or SPR.
+        expect(flopStats.stats.playerStats[0]).toMatchObject({
+          spr: 32,
+          potOdds: { call: 0 }
+        })
+        expect(flopStats.stats.playerStats[1]).toMatchObject({
+          spr: 30.7,
+          potOdds: { call: 0 }
+        })
 
         done()
       })
@@ -649,12 +662,13 @@ describe('RealTimeStatsStream', () => {
         // 結果の確認
         // 1. 最初のハンドのクリア統計
         // 2. 最初のハンドの統計
-        // 3. 新しいハンドのクリア統計
-        // 4. 新しいハンドの統計
-        expect(results.length).toBe(4)
+        // 3. ハンド終了時のクリア統計
+        // 4. 新しいハンドのクリア統計
+        // 5. 新しいハンドの統計
+        expect(results.length).toBe(5)
 
         // 新しいハンド開始時のクリア統計
-        const clearStats = results[2]
+        const clearStats = results[3]
         expect(clearStats.handId).toBeUndefined()
         expect(clearStats.stats).toEqual({
           heroStats: {},
@@ -662,7 +676,7 @@ describe('RealTimeStatsStream', () => {
         })
 
         // 新しいハンドの統計
-        const newHandStats = results[3]
+        const newHandStats = results[4]
         expect(newHandStats.stats.heroStats.holeCards).toEqual([44, 45])
 
         done()
@@ -1149,6 +1163,10 @@ describe('SPR (Stack to Pot Ratio) Tracking', () => {
       // SPR should be 5000 / 900 = 5.6
       expect(potOddsData.spr).toBe(5.6)
 
+      // Player 3's EVT_ACTION reports the post-raise stack (4400), which must
+      // replace the deal-time stack (5000): 4400 / 900 = 4.9.
+      expect(lastStats.stats.playerStats[3].spr).toBe(4.9)
+
       done()
     })
 
@@ -1381,6 +1399,12 @@ describe('SPR (Stack to Pot Ratio) Tracking', () => {
 
     stream.on('end', () => {
       expect(handCount).toBe(2)
+      const clearOutputs = results.filter(result => (
+        Object.keys(result.stats.heroStats).length === 0
+        && Object.keys(result.stats.playerStats).length === 0
+      ))
+      // One clear per deal plus immediate invalidation at hand completion.
+      expect(clearOutputs).toHaveLength(3)
       done()
     })
 
