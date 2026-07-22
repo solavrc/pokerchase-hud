@@ -199,6 +199,9 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           total: lines.length,
           duplicates: duplicateCount,
           imported: successCount
+        }).catch(() => {
+          // Popup may close while import continues; progress delivery is
+          // best-effort and must not become an unhandled SW rejection.
         })
 
         // Log progress every 10%
@@ -361,6 +364,9 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
               if (tab.id) {
                 chrome.tabs.sendMessage(tab.id, {
                   action: 'refreshStats'
+                }).catch(() => {
+                  // A matching tab can be navigating or awaiting content
+                  // script reinjection. The durable import already succeeded.
                 })
               }
             })
