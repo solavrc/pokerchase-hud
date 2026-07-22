@@ -1,234 +1,223 @@
 # Firebase Setup & Cloud Sync Guide
 
-> Detailed setup instructions and implementation details for Firebase integration.
+Firebase認証、Firestoreバックアップ、BigQueryミラーの現行構成と、forkで別projectを使う場合の設定手順をまとめる。
 
-## Architecture
+> [!CAUTION]
+> このrepositoryはproduction project `pokerchase-hud` のFirebase config、OAuth client、
+> manifest key、`.firebaserc`を既定値として持つ。`npm run firebase:deploy*`も既定では同projectを
+> 対象にする。fork / self-host環境では、後述の3箇所を差し替え、CLIのtargetを確認するまで
+> deployしないこと。本書の監査ではlive auth設定・rules deploy状態・Extension稼働状態を変更も
+> 再デプロイもしていない。
 
-### Service Worker Compatible Design
-- Firebase SDK v12+ is fully compatible with Service Workers
-- Direct Firestore SDK usage without XMLHttpRequest issues
-- Authentication via `chrome.identity` API with Firebase credential exchange
+## 現行アーキテクチャ
 
-### Data Structure
+MV3 bundleにはFirebase JavaScript SDKを含めていない。Chrome Web Storeのremote-code scannerに
+誤検出され得るloaderを避けるため、次のREST経路を使う。
+
+- Google OAuth: `chrome.identity.getAuthToken()`
+- Firebase sign-in / token refresh: Identity Toolkit REST / Secure Token REST
+- Firestore read / write: Firestore v1 REST（`:runQuery`, `:runAggregationQuery`, `:commit`）
+- 認証状態: Firebase ID token / refresh tokenを`chrome.storage.local`へ保存
+- local正本: IndexedDB `PokerChaseDB.apiEvents`（Raw Event Lake）
+
+実装は `src/services/firebase-auth-service.ts`、`firebase-config.ts`、
+`firestore-backup-service.ts`、`auto-sync-service.ts` を参照する。
+
+### Firestore data model
+
+```text
+/users/{firebaseUid}
+  lastSyncTimestamp: number | null
+  lastSyncTime: string | null
+  /apiEvents/{eventId}
+    timestamp: number
+    ApiTypeId: number
+    sequence: number
+    ...wire payload fields
+
+/config/client
+  minSupportedVersion: string  # read by min-version-gate.ts
 ```
-Firestore:
-/users/{userId}/
-  /apiEvents/{eventId}  // sequence 0: timestamp_ApiTypeId; sequence > 0: timestamp_ApiTypeId_sequence
-    - timestamp: number
-    - ApiTypeId: number
-    - sequence: number
-    - [event data...]
+
+`eventId`は`sequence=0`ならlegacy互換の`timestamp_ApiTypeId`、1以上なら
+`timestamp_ApiTypeId_sequence`。`/users/{uid}`とsubcollectionは本人だけがread/writeできる。
+`/config/client`は未認証clientにもread-onlyで、client writeは拒否する。正確なruleは
+[`firestore.rules`](../firestore.rules)を正本とする。
+
+## Fork / self-host projectの設定
+
+既存production構成を使う通常buildではこの節の変更は不要である。別Firebase projectを使う場合は
+必ず次を一組として変更する。
+
+1. Firebase projectを作成し、Google providerのAuthenticationとFirestore `(default)` databaseを有効化する。
+2. Web app configを`src/services/firebase-config.ts`へ設定する。
+3. Chrome Extension用OAuth clientを作成し、`manifest.json`の`oauth2.client_id`を差し替える。
+4. `.firebaserc`の`projects.default`をfork側projectへ変更する。
+5. `npm run build`後、unpacked extensionのIDとOAuth clientの対象IDが一致することを確認する。
+6. rules / indexesをdeployする場合は、Firebase CLIが別途install・login済みであることと、
+   `firebase use` / `.firebaserc`のtargetがfork側であることを確認する。
+
+```bash
+# rulesだけ
+npm run firebase:deploy:rules
+
+# rulesとindexes
+npm run firebase:deploy
+
+# local Firestore emulator
+npm run firebase:emulators
 ```
 
-## Setup Requirements
+`firebase-tools`はこのrepositoryのdependencyではない。上記scriptは環境にあるFirebase CLIを呼ぶ。
 
-### 1. Firebase Project Setup
+### Extension IDとOAuth client
 
-1. **Create Firebase Project**:
-   - Go to [Firebase Console](https://console.firebase.google.com)
-   - Create a new project or select existing
-   - Enable Authentication with Google provider
-   - Create Firestore database (asia-northeast1 recommended for Asia)
+現行`manifest.json`は公開鍵`key`を含むため、同じmanifestをunpackedで読み込む場合もextension IDを
+安定させる構成である。productionはchecked-in OAuth clientを1つ使い、環境別manifestや
+dev/staging/prod自動切替は実装していない。forkでkeyまたはChrome Web Store listingが変わり
+extension IDが別になる場合、そのID用のOAuth clientを用意する。
 
-2. **Configure Firebase**:
-   - Get your Firebase configuration from Project Settings
-   - Update `src/services/firebase-config.ts` with your configuration:
-   ```typescript
-   export const firebaseConfig = {
-     apiKey: "your-api-key",
-     authDomain: "your-auth-domain",
-     projectId: "your-project-id",
-     storageBucket: "your-storage-bucket",
-     messagingSenderId: "your-messaging-sender-id",
-     appId: "your-app-id"
-   };
-   ```
+必要なmanifest設定:
 
-3. **Deploy Security Rules**:
-   ```bash
-   npm run firebase:deploy:rules
-   ```
+```json
+{
+  "permissions": ["identity"],
+  "host_permissions": ["https://*.googleapis.com/*"],
+  "oauth2": {
+    "client_id": "your-client-id.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile"
+    ]
+  }
+}
+```
 
-### 2. OAuth Configuration
+## Cloud sync contract
 
-1. **Google Cloud Console Setup**:
-   - Go to [Google Cloud Console](https://console.cloud.google.com)
-   - Select your Firebase project
-   - Navigate to APIs & Services > Credentials
-   - Create OAuth 2.0 Client ID (Chrome Extension type)
-   - Copy the Client ID
+### Upload
 
-2. **Update Extension Manifest**:
-   - Add OAuth client ID to `manifest.json`:
-   ```json
-   "oauth2": {
-     "client_id": "your-oauth-client-id.apps.googleusercontent.com",
-     "scopes": [
-       "https://www.googleapis.com/auth/userinfo.email",
-       "https://www.googleapis.com/auth/userinfo.profile"
-     ]
-   }
-   ```
+1. Firestoreの最大`timestamp`をqueryし、基本watermarkにする。
+2. local Raw Event Lakeを`[timestamp+ApiTypeId+sequence]`のcompound cursorで5,000行ずつscanする。
+3. 9種のschema-valid application eventだけをupload候補にする。非application / unknown eventは
+   localには残るがcloudへ送らない。application typeなのに現schemaでparseできない行は
+   `unparseable floor`を永続化して保留し、後のschema修正後に再提示できるようscanを巻き戻す。
+4. 300 writes/batch、最大3 batch並列でFirestore `:commit`へupsertする。document IDが決定的なので、
+   watermark巻き戻しによる再送は同じdocumentを更新する。
+5. Firestoreが全writeをacknowledgeした後だけfloorと同期完了時刻を進める。
 
-### 3. Extension ID Management
+ログの母集団を混同しないこと。`raw events` / `scan snapshot`はlocal Lakeで走査する全行、
+`valid application`はvalidation通過行、`acknowledged Firestore writes`は実際にcommitされた行である。
+例えば「1,023 raw rowsをscanし695 writesをacknowledge」は、それだけで308件の欠損を意味しない。
+残りには同期対象外noise、unknown、schema修正待ちの保留行、watermark巻き戻しで再確認した既存行が
+含まれ得る。pass終端の分類別summaryを確認する。
 
-**Important**: Chrome Extension IDs differ between environments
+### Download
 
-- **Development**: Generated based on your local key
-- **Production**: Assigned by Chrome Web Store
-- **Consequence**: Need separate OAuth clients for each environment
+1. signed-in userの`apiEvents`全documentを`timestamp, __name__`順に1,000件ずつ取得する。
+2. payload全体（top-level `sequence`を除く）のcanonical contentでlocal Lakeへmergeする。
+   旧documentのmissing sequenceは0として扱い、新形式のsequenceは空きslotなら保持する。
+3. local-only行は削除しない。cloudはdownload対象だがlocal Lakeを置換する「唯一の正本」ではない。
+4. merge後、同じ`EntityConverter` instanceの`convertEventChunk()`でderived tablesを再構築し、
+   session/player stateと統計を復元する。途中pageでdownloadが失敗しても、既に保存したraw rowsに
+   対してrebuildを試みたうえでsync全体はerrorにする。
 
-**Setup for Multiple Environments**:
-1. Create separate OAuth clients for dev/staging/production
-2. Use environment-specific manifest files
-3. Configure CI/CD to use correct OAuth client per environment
+### Trigger
 
-## Implementation Details
+- accountごとの初回sign-in: uid-scopedの完了時刻がない場合にbidirectional sync
+- `EVT_SESSION_RESULTS`（309）: primary upload trigger
+- `EVT_ENTRY_QUEUED`（201）/ `EVT_SESSION_DETAILS`（308）: 309欠落時の次session fallback trigger
+- popup: upload / downloadを明示実行
 
-### Firebase SDK Integration
-- Uses Firebase SDK v12.0.0 (Service Worker compatible)
-- Direct Firestore SDK methods (collection, doc, writeBatch, etc.)
-- No REST API wrapper needed - modern Firebase SDK works in Service Workers
-- Authentication handled via Chrome identity API token exchange
+自動triggerは「前回の完了時刻より後のraw rowsが100件以上」を同期実行のheuristicに使う。
+この件数にはcloudへ送らないnoiseも含まれ、実upload cursorや請求対象件数ではない。定期pollingは行わない。
 
-### Authentication Flow
-1. User clicks "Sign in with Google" in popup
-2. Chrome identity API requests OAuth token
-3. Token exchanged for Firebase credential
-4. Firebase Auth session established
-5. Firestore operations authenticated with user context
+## BigQuery mirror
 
-## Cloud Data Flow
+productionのFirestore→BigQuery経路は、Firebase Extension
+[`firestore-bigquery-export`](https://github.com/firebase/extensions/tree/next/firestore-bigquery-export)による
+realtime incremental mirrorである。Firebase Consoleの標準daily exportではない。
 
-### Upload Sync Strategy
-1. Query cloud for latest timestamp (single document)
-2. Filter local events newer than cloud's latest timestamp
-3. Batch process in chunks of 300 events
-4. Use deterministic document IDs: legacy-compatible `timestamp_ApiTypeId` for sequence 0, and `timestamp_ApiTypeId_sequence` for additional same-ms/same-type events
-5. Update user metadata with sync timestamp
+- collection path: `users/{userId}/apiEvents`
+- dataset: `firestore_export`
+- change history table: `apiEvents_raw_changelog`
+- latest-state view: `apiEvents_raw_latest`
+- dbt staging: `stg_pokerchase.events`ほか（`poker-warehouse`が日次構築）
 
-### Download Sync Strategy
-1. Get all events from cloud (cloud is source of truth)
-2. Merge into IndexedDB by canonical payload content; old documents without `sequence` receive 0 and new documents preserve their sequence
-3. Restore service state from downloaded events:
-   - Latest EVT_DEAL → playerId, latestEvtDeal
-   - Session events → session.id, battleType, name, players
-4. Rebuild entities using EntityConverter
-5. Trigger statistics recalculation
+Extensionの`timestamp`はFirestore変更のingestion時刻であり、PokerChase event受信時刻は
+JSON `data.timestamp`である。latest-state viewの行identityは`document_name`。
 
-### Auto Sync Triggers
-- Initial login (first sync only - bidirectional)
-- Game session end (100+ new events threshold - upload only)
-- Manual sync via popup UI (direction selectable)
-
-## BigQuery Integration
-
-### Export Configuration
-1. Enable BigQuery export in Firebase Console
-2. Configure export settings:
-   - Dataset location: Same region as Firestore
-   - Export schedule: Daily
-   - Collections: `users`
-
-### Table Structure
-- Daily snapshots: `users_raw_latest`
-- Change history: `users_raw_changelog`
-
-### Analysis Views
 ```sql
--- User event statistics
-CREATE VIEW user_event_stats AS
-SELECT 
-  user_id,
-  COUNT(*) as total_events,
-  MIN(TIMESTAMP_MILLIS(timestamp)) as first_event,
-  MAX(TIMESTAMP_MILLIS(timestamp)) as last_event,
-  COUNT(DISTINCT DATE(TIMESTAMP_MILLIS(timestamp))) as active_days
-FROM (
-  SELECT 
-    SPLIT(document_name, '/')[OFFSET(1)] as user_id,
-    CAST(JSON_EXTRACT_SCALAR(data, '$.timestamp') AS INT64) as timestamp
-  FROM `your-project.firestore_export.users_raw_latest`
-  WHERE collection_id = 'apiEvents'
-)
-GROUP BY user_id;
+SELECT
+  SAFE_CAST(JSON_VALUE(data, '$.ApiTypeId') AS INT64) AS api_type_id,
+  COUNT(*) AS latest_documents,
+  COUNT(DISTINCT REGEXP_EXTRACT(
+    document_name, r'(?:^|/)users/([^/]+)/apiEvents(?:/|$)'
+  )) AS observer_count,
+  MIN(TIMESTAMP_MILLIS(SAFE_CAST(JSON_VALUE(data, '$.timestamp') AS INT64))) AS first_event,
+  MAX(TIMESTAMP_MILLIS(SAFE_CAST(JSON_VALUE(data, '$.timestamp') AS INT64))) AS last_event
+FROM `pokerchase-hud.firestore_export.apiEvents_raw_latest`
+WHERE SAFE_CAST(JSON_VALUE(data, '$.timestamp') AS INT64) IS NOT NULL
+GROUP BY api_type_id
+ORDER BY api_type_id;
 ```
 
-## Cost Optimization
+### Firebase Extensions廃止への対応
 
-### Firestore Optimization
-- Smart incremental sync (cloud timestamp for uploads, full for downloads)
-- No periodic sync (event-driven only)
-- Batch operations to reduce API calls
-- 100-event threshold for game-end sync
-- Single query for cloud max timestamp during upload
+現行production経路はまだ上記Extensionで、自己管理Functionsへの移行は完了していない。
+追跡は[Issue #206](https://github.com/solavrc/pokerchase-hud/issues/206)を正本とする。issueには
+2026年9月に移行資料・tool公開予定、2027-03-31以降はinstall/redeploy/config変更/patchが不可に
+なる旨が記録されている。`firebase.json`と`npm run firebase:deploy*`はrules / indexesだけを扱い、
+Extensionをdeployしない。
 
-### Free Tier Limits
-- Authentication: 10,000/month
-- Firestore: 50k reads/day, 20k writes/day, 1GB storage
-- BigQuery: 1TB queries/month, 10GB storage
+Issue本文にある`GEN_2, ACTIVE`は2026-07-21時点の観測記録であり、この文書監査ではlive cloudを
+再照合していない。現在のversionや稼働状態をrepository configから推定しないこと。
 
-### Data Size Estimates
-- 1 event ≈ 200 bytes
-- 1000 hands ≈ 10,000 events ≈ 2MB
-- Typical user stays within free tier
+## Cost and quota
+
+固定の「典型ユーザーはfree tier内」やpayload bytesだけの容量見積もりは使わない。Firestoreは
+document field名、metadata、single/composite indexもstorageへ計上し、syncの巻き戻しはidempotentでも
+write課金になり得る。ConsoleのUsage / Billingで実測する。
+
+- [Cloud Firestore pricing](https://firebase.google.com/docs/firestore/pricing) — document reads/writes/deletes、index reads、storage、network。free quotaはproject内の1 databaseだけ
+- [BigQuery pricing](https://cloud.google.com/bigquery/pricing) — query bytes、storage、streaming等。dry-runでquery bytesを事前確認する
+- [Firebase pricing plans](https://firebase.google.com/docs/projects/billing/firebase-pricing-plans) — Authを含むplan条件
 
 ## Troubleshooting
 
-### Common Issues
+### Authentication
 
-#### Authentication Errors
-- **Symptom**: "Failed to authenticate" error
-- **Solutions**:
-  - Ensure OAuth client ID matches the extension ID
-  - Verify Firebase project configuration
-  - Check chrome.identity permissions in manifest.json
-  - Confirm authorized domains in Firebase Auth settings
+- OAuth clientが現在のextension IDを許可しているか確認する。
+- `identity` permission、Google profile/email scopes、`*.googleapis.com` host permissionを確認する。
+- Service Worker consoleの`[FirebaseAuth]`ログとHTTP statusを確認する。
+- token refresh後も401が続く場合はsign out/inし、project / OAuth clientの組合せを再確認する。
 
-#### Write Stream Exhausted
-- **Symptom**: "Write stream exhausted" error during sync
-- **Cause**: Firestore rate limiting
-- **Solutions**:
-  - Reduce batch size in `firestore-backup-service.ts`
-  - Add delays between batches
-  - Implement exponential backoff
+### Firestore REST timeout / 429 / 5xx
 
-#### Login UI Not Updating
-- **Symptom**: Sign-in button doesn't reflect auth state
-- **Debug Steps**:
-  1. Open Service Worker console
-  2. Check for auth errors
-  3. Verify message passing between popup and background
-  4. Ensure Firebase Auth domains are authorized
+全REST requestは30秒timeout、network/timeout/429/5xxに最大2回（500ms、1,000ms）のbackoff retry、
+401にtoken force-refresh 1回を持つ。既定retry後も`Firestore REST request failed`が続く場合に限り、
+quota、rules、network、batch/parallel設定を調査する。permission denied等の非retryable 4xxは即時errorになる。
 
-### Debug Commands
+### Popupと同期状態が一致しない
 
-```javascript
-// Check auth state (in Service Worker console)
-firebaseAuthService.getCurrentUser()
-firebaseAuthService.isSignedIn()
+1. popupとService Worker consoleで同じpassの`[AutoSync]`、`[Firestore]`ログを追う。
+2. `scanned raw`、`valid application`、`acknowledged Firestore writes`、
+   `filtered non-application/unknown`、`deferred unparseable application`を分類ごとに確認する。
+3. popupのpending数はraw-row heuristicであり、実upload件数と一致する契約ではない。
+4. partial download / rebuild errorではRaw Event Lakeは残るため、原因解消後にmanual downloadまたは
+   「データ再構築」を実行する。
 
-// Test Chrome identity
-chrome.identity.getAuthToken({ interactive: true }, console.log)
+### Repository-side checks
 
-// Check Firestore connection
-const testDoc = await firestore.collection('test').add({ test: true })
-console.log('Test doc created:', testDoc.id)
+module内部の`firebaseAuthService`や`firestore`はconsole globalではない。存在しないSDK APIを
+DevToolsから直接呼ぶ代わりに、実装とtestを使う。
+
+```bash
+npm test -- src/services/firebase-auth-service.test.ts
+npm test -- src/services/firestore-backup-service.test.ts
+npm test -- src/services/auto-sync-service.test.ts
+npm run typecheck
+npm run build
 ```
 
-### Monitoring
-
-1. **Firebase Console**:
-   - Monitor Authentication usage
-   - Check Firestore reads/writes
-   - Review error logs
-
-2. **Chrome DevTools**:
-   - Service Worker console for background errors
-   - Network tab for API calls
-   - Application tab for IndexedDB state
-
-3. **BigQuery**:
-   - Query costs and data usage
-   - Export job status
-   - Data freshness monitoring
+rulesを変更した場合はemulator testを追加し、deploy前に差分とtarget projectを再確認する。

@@ -8,8 +8,8 @@
   `EVT_ENTRY_QUEUED`（201）にも6種類すべてが実在した。schema検証前のRawで
   `null`、値3、その他のenum外値は0件だった。
 - ランク戦SNG（0）以外もパース・保存・フィルター対象に含まれる。監査後の追補で
-  1のMTTテーブル移動、2のinterleave、4の買い直しにはlifecycle fixtureが追加された。
-  一方、private MTT固有のfixtureは未追加であり、5はisolated stats testだけ、6は
+  1のMTTテーブル移動、private MTTのrebuy/移動、2のinterleave、4の買い直しには
+  lifecycle fixtureが追加された。一方、5はisolated stats testだけ、6は
   lifecycle testなしである。特に5は1セッション78ハンドしかなく、正常性を一般化できない。
 - MTT（1）はテーブル移動ごとに同じトーナメントIDの201/308が再発行され、313の
   座席スナップショットと次の306へ続く。テーブル間の並行進行により、受信順の
@@ -26,18 +26,22 @@
   知っている非アプリイベント（例: 319「参加申込結果」）や未知イベントはローカルには保存されても、
   このクラウド監査の母集団には含まれない。
 
-ランタイム不具合として確定した項目はない。MTT移動、Ring買い直し、Friend SNGの主要な
-lifecycle fixtureは追補済みだが、private MTT固有、Friend Ring、Club SNGのfixture不足は
+ランタイム不具合として確定した項目はない。MTT移動（private MTTのrebuyを含む）、Ring買い直し、Friend SNGの主要な
+lifecycle fixtureは追補済みだが、Friend Ring、Club SNGのfixture不足は
 将来変更に対する回帰リスクである。
 
 ## 対象・粒度・鮮度
+
+以下の件数・最終時刻は**2026-07-22の監査cutoffで固定した履歴スナップショット**であり、
+常に最新であることを表す運用メトリクスではない。2026-07-22の再実行ではQ0〜Q2が同じ値を
+再現した。将来再監査する場合も、結論を比較可能にするためcutoffとquery versionを併記する。
 
 データソースは `pokerchase-hud` BigQuery project の次のテーブルである。
 
 | レイヤー | 粒度 | 主キー相当 | 監査時点の行数 | 最終イベント時刻 |
 |---|---|---|---:|---|
 | `firestore_export.apiEvents_raw_latest` | Firestore documentの最新像 | document name | 532,236 | 2026-07-22 01:34:00 UTC（10:34:00 JST） |
-| `stg_pokerchase.events` | 有効なアプリイベント | observer + timestamp + ApiTypeId + sequence | 528,995 | 2026-07-21 20:08:48 UTC（05:08:48 JST） |
+| `stg_pokerchase.events` | warehouseが採用する9種のアプリイベント | Firestore `document_name` | 528,995 | 2026-07-21 20:08:48 UTC（05:08:48 JST） |
 | `stg_pokerchase.sessions` | 観測者ごとの推定セッション | observer + session_seq | 1,276 | 上記staging由来 |
 | `stg_pokerchase.hands` | 完走し採用されたハンド | observer + hand_seq | 43,762 | 上記staging由来 |
 
@@ -51,7 +55,7 @@ cutoffとする。
 | 値 | enum名 | 宣言 | staging観測 | 既存docs | unit test | lifecycle fixture / E2E | 判定 |
 |---:|---|:---:|:---:|:---:|:---:|:---:|---|
 | 0 | `SIT_AND_GO` | yes | yes | yes | yes | yes | 基準モード。量は十分 |
-| 1 | `TOURNAMENT` | yes | yes | yes | yes | yes | テーブル移動fixtureあり。private MTT固有fixtureは未追加 |
+| 1 | `TOURNAMENT` | yes | yes | yes | yes | yes | テーブル移動とprivate MTT rebuy lifecycle fixtureあり |
 | 2 | `FRIEND_SIT_AND_GO` | yes | yes | yes | yes | yes | interleave lifecycle fixtureあり |
 | 4 | `RING_GAME` | yes | yes | yes | yes | yes | 買い直し遷移fixtureあり |
 | 5 | `FRIEND_RING_GAME` | yes | yes | yes | isolated statsのみ | no | 1セッションのみ。未検証領域が大きい |
@@ -234,7 +238,7 @@ club identifier=[redacted]
 | leave/rejoin | この4例では新201なし | 別区間パターンは追加captureが必要 |
 | aggregation | sessionは継続、hero participationは不連続 | 二つの境界を別々に持つ |
 
-### Friend MTT
+### Private MTT
 
 観測した2例では201の `BattleType=1` と、短い完走・rebuy・テーブル移動・最終順位までを
 確認できた。残るcapture gapは次のとおりである。
@@ -245,8 +249,9 @@ club identifier=[redacted]
    以後にevent shapeやenumが変化していないことを確認する。
 4. クラウド対象外の319やunknown eventもローカルで保全し、201/308/313/303/306/309と
    相対順序だけを匿名化して比較する。
-5. private MTT固有のruntime fixture化は、追加captureとsanitized payload reviewが揃うまで
-   明示的に延期する。今回の訂正ではfixtureやランタイムコードを変更しない。
+5. 追加済みのsanitized private MTT fixture
+   (`src/streams/private-mtt-lifecycle.test.ts`)を維持し、`BattleType=1`、中間309の
+   `IsRebuy=true`、table move後のseat再anchor、最終`Ranking=3`を回帰検証する。
 
 ## ハンド整合性チェック
 
@@ -266,7 +271,7 @@ club identifier=[redacted]
 |---|---|---|---|---|
 | P1 | MTT移動で旧303と新306が融合 | `chimera_results` 16件 | high | 追加済みtable-move fixture/chimera rejectを維持 |
 | P1 | Ring買い直し途中の観戦handをhero hand化 | 実例4件 | high | 追加済みrebuy/spectator fixtureを維持 |
-| P1 | private MTTを2または6として誤分類 | 観測2例の201はすべて1 | high（観測例） | 実値1を尊重。追加主催者で継続監査 |
+| P1 | private MTTを2または6として誤分類 | 観測2例の201はすべて1 | high（観測例） | 追加済みprivate MTT fixtureを維持し、追加主催者で継続監査 |
 | P2 | Friend SNGの201単独境界が複数試合を融合 | 201×1に309×10の区間 | medium（複数タブ仮説） | 追加済みinterleave fixtureを維持 |
 | P2 | Friend Ringの仕様を1区間から一般化 | 1 session/78 hands | high（標本不足） | leave/rejoin/rebuy/endの実機capture |
 | P2 | Club SNGの308/309欠落 | 308なし1、309なし8 | high | 各イベント欠落fixture |
@@ -277,3 +282,7 @@ club identifier=[redacted]
 匿名化済み集計SQLは [`battle-type-coverage-audit.sql`](./battle-type-coverage-audit.sql) に置く。
 クエリはplayer名、User/Player/observer ID、private room IDを結果へ出力しない。出力される
 `audit_ref` は短縮hash、対戦相関には `HandId` を使う。
+
+構文・参照schemaだけを確認する場合は `bq query --location=asia-northeast1
+--use_legacy_sql=false --dry_run < docs/battle-type-coverage-audit.sql` を使う。実行時も本番datasetへは
+`SELECT`のみとし、Q0〜Q5は独立した結果セットとして読む。
