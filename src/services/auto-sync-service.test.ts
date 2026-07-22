@@ -230,6 +230,104 @@ describe('AutoSyncService cloud downloads', () => {
     expect(service.getSyncState().status).toBe('success')
   }, 15000)
 
+  test('upload: reports raw, valid, filtered, deferred, and acknowledged counts without implying data loss', async () => {
+    const validEvents = [100, 500].map(timestamp => ({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: `stage-${timestamp}`,
+      IsRetire: false,
+      timestamp
+    } as ApiEvent))
+    const nonApplicationNoise = [
+      { ApiTypeId: 202, Code: 0, timestamp: 200 },
+      { ApiTypeId: 311, NotifyCode: 1, timestamp: 300 }
+    ]
+    const unparseableApplicationEvent = {
+      ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+      timestamp: 400
+    }
+    await db.apiEvents.bulkAdd([
+      validEvents[0],
+      nonApplicationNoise[0],
+      nonApplicationNoise[1],
+      unparseableApplicationEvent,
+      validEvents[1]
+    ] as any)
+
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+    jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockResolvedValue({ totalEvents: 2, syncedEvents: 2, lastSyncTime: new Date() })
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {})
+
+    const service = new AutoSyncService(db)
+    await service.performSync('upload')
+
+    expect(logSpy).toHaveBeenCalledWith(
+      '[AutoSync] Upload scan snapshot has 5 raw events; application-event validation runs per chunk'
+    )
+    expect(logSpy).toHaveBeenCalledWith(
+      '[AutoSync] Upload pass complete: scanned raw=5; valid application=2; ' +
+      'acknowledged Firestore writes=2; filtered non-application/unknown=2; ' +
+      'deferred unparseable application=1'
+    )
+    expect(service.getSyncState().progress).toEqual({
+      current: 5,
+      total: 5,
+      direction: 'upload'
+    })
+    expect((await db.meta.get('syncUnparseableFloor'))?.value).toBe(400)
+  })
+
+  test('upload: distinguishes the trigger snapshot from raw events arriving during the cloud watermark read', async () => {
+    const initialEvents = [100, 200, 300].map(timestamp => ({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: `stage-${timestamp}`,
+      IsRetire: false,
+      timestamp
+    } as ApiEvent))
+    await db.apiEvents.bulkAdd(initialEvents)
+
+    jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue({ uid: 'test-user' } as any)
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp')
+      .mockImplementationOnce(async () => {
+        // Mirrors the reported runtime ordering: the trigger count is logged,
+        // then more raw WebSocket events land while Firestore's watermark is
+        // being fetched. The later upload scan correctly sees both snapshots.
+        await db.apiEvents.bulkAdd([
+          { ApiTypeId: 202, Code: 0, timestamp: 400 },
+          { ApiTypeId: 311, NotifyCode: 1, timestamp: 500 }
+        ] as any)
+        return null
+      })
+      .mockResolvedValue(null)
+    jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockImplementation(async (events: ApiEvent[]) => ({
+        totalEvents: events.length,
+        syncedEvents: events.length,
+        lastSyncTime: new Date()
+      }))
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {})
+
+    const service = new AutoSyncService(db)
+    ;(service as any).EVENTS_THRESHOLD = 3
+    await service.onGameSessionEnd()
+
+    expect(logSpy).toHaveBeenCalledWith(
+      '[AutoSync] Game ended with 3 raw events since the last completed sync, performing upload sync...'
+    )
+    expect(logSpy).toHaveBeenCalledWith(
+      '[AutoSync] Upload scan snapshot has 5 raw events; application-event validation runs per chunk'
+    )
+    expect(logSpy).toHaveBeenCalledWith(
+      '[AutoSync] Upload pass complete: scanned raw=5; valid application=3; ' +
+      'acknowledged Firestore writes=3; filtered non-application/unknown=2; ' +
+      'deferred unparseable application=0'
+    )
+  })
+
   test('upload: a normal chunk of only valid application events uploads and advances the cloud watermark past every event (unaffected by the unparseable-row guard)', async () => {
     const firstEntry = {
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,

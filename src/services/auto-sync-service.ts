@@ -927,7 +927,7 @@ export class AutoSyncService {
       : await this.db.apiEvents.count()
 
     if (totalCount === 0) {
-      console.log('[AutoSync] No new events to sync')
+      console.log('[AutoSync] Upload scan snapshot has no raw events')
       // Nothing at all above the floor -- if a marker was pending, its row no
       // longer exists locally (e.g. local data was cleared). Nothing left to
       // recover, so clear the stale marker rather than rewinding forever.
@@ -937,12 +937,15 @@ export class AutoSyncService {
       return
     }
 
-    console.log(`[AutoSync] Found ${totalCount} new events to sync`)
+    console.log(`[AutoSync] Upload scan snapshot has ${totalCount} raw events; application-event validation runs per chunk`)
 
     // Process in chunks to avoid memory issues
     const CHUNK_SIZE = DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
     let processed = 0
     let synced = 0
+    let validApplicationEvents = 0
+    let filteredNonApplicationEvents = 0
+    let deferredUnparseableApplicationEvents = 0
     // Compound cursor: all THREE components must track the actual last-processed
     // row between chunks (see fix (a) above). Starts at `scanFloor`'s own
     // millisecond with the sentinel ApiTypeId (see fix (b) above).
@@ -993,17 +996,22 @@ export class AutoSyncService {
       // noise, otherwise a chunk containing only non-application events would never
       // advance the cursor and the loop would refetch it forever.
       const chunk = rawChunk.filter(isApplicationApiEvent)
+      validApplicationEvents += chunk.length
 
       // Find any application-typed rows in THIS raw chunk that still can't
       // parse (see watermark guard above).
       let earliestUnparseableThisChunk: number | null = null
+      let unparseableApplicationEventsInChunk = 0
       for (const raw of rawChunk) {
         if (isUnparseableApplicationEvent(raw) && typeof raw.timestamp === 'number') {
+          unparseableApplicationEventsInChunk++
           earliestUnparseableThisChunk = earliestUnparseableThisChunk === null
             ? raw.timestamp
             : Math.min(earliestUnparseableThisChunk, raw.timestamp)
         }
       }
+      deferredUnparseableApplicationEvents += unparseableApplicationEventsInChunk
+      filteredNonApplicationEvents += rawChunk.length - chunk.length - unparseableApplicationEventsInChunk
 
       if (earliestUnparseableThisChunk !== null) {
         earliestUnparseableThisPass = earliestUnparseableThisPass === null
@@ -1081,6 +1089,26 @@ export class AutoSyncService {
       }
 
       processed += rawChunk.length
+      // Upload progress is measured against raw scan rows, because `totalCount`
+      // is a raw-Lake count. The Firestore callback above reports progress only
+      // within the valid application subset, so a mixed chunk would otherwise
+      // leave the popup at e.g. 695/1023 even after all 1023 raw rows had been
+      // examined. Publishing the raw chunk boundary makes the numerator and
+      // denominator use the same population and reaches 100% without implying
+      // that filtered noise was uploaded.
+      this.updateSyncState({
+        progress: {
+          current: processed,
+          // `totalCount` is a snapshot. Rows can continue arriving while a
+          // sync is in flight and a later page can therefore contain more
+          // rows than that snapshot. Grow the display total with the actual
+          // processed boundary so progress remains truthful and never exceeds
+          // 100%; rows beyond the last page reached stay pending for the next
+          // sync pass as before.
+          total: Math.max(totalCount, processed),
+          direction: 'upload'
+        }
+      })
 
       // Update the compound cursor for next chunk (based on the raw chunk's
       // actual last row's FULL [timestamp, ApiTypeId, sequence] key. Tracking
@@ -1104,7 +1132,12 @@ export class AutoSyncService {
     // ACCOUNT-SCOPING INVARIANTS spec's invariant (2).)
     await this.persistUnparseableSyncFloor(earliestUnparseableThisPass, identity)
 
-    console.log(`[AutoSync] Uploaded ${synced} new events to cloud`)
+    console.log(
+      `[AutoSync] Upload pass complete: scanned raw=${processed}; ` +
+      `valid application=${validApplicationEvents}; acknowledged Firestore writes=${synced}; ` +
+      `filtered non-application/unknown=${filteredNonApplicationEvents}; ` +
+      `deferred unparseable application=${deferredUnparseableApplicationEvents}`
+    )
   }
 
   /**
@@ -1622,10 +1655,10 @@ export class AutoSyncService {
         .count()
 
       if (newEventsCount >= this.EVENTS_THRESHOLD) {
-        console.log(`[AutoSync] ${trigger} with ${newEventsCount} new events, performing upload sync...`)
+        console.log(`[AutoSync] ${trigger} with ${newEventsCount} raw events since the last completed sync, performing upload sync...`)
         await this.performSync('upload')
       } else {
-        console.log(`[AutoSync] ${trigger} with only ${newEventsCount} new events, skipping sync (threshold: ${this.EVENTS_THRESHOLD})`)
+        console.log(`[AutoSync] ${trigger} with only ${newEventsCount} raw events since the last completed sync, skipping sync (threshold: ${this.EVENTS_THRESHOLD})`)
       }
     } catch (error) {
       console.error(`[AutoSync] Error checking event count (${trigger}):`, error)
