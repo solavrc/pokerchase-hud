@@ -273,16 +273,24 @@ export const ImportExportSection = ({
       requireSuccessfulResponse(initResponse, 'インポートを開始できませんでした')
 
       // Read and send file in chunks
+      // Keep one decoder alive across Blob boundaries. `Blob.slice()` uses byte
+      // offsets, so decoding every 5 MiB slice independently can split a UTF-8
+      // code point (for example, a Japanese player name) and silently replace
+      // both halves with U+FFFD before the background joins the chunks.
+      const decoder = new TextDecoder()
       for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
         const start = chunkIndex * FILE_CHUNK_SIZE
         const end = Math.min(start + FILE_CHUNK_SIZE, file.size)
         const chunk = file.slice(start, end)
         
-        const chunkContent = await new Promise<string>((resolve, reject) => {
+        const chunkBytes = await new Promise<ArrayBuffer>((resolve, reject) => {
           const reader = new FileReader()
-          reader.onload = (e) => resolve(e.target?.result as string)
+          reader.onload = (e) => resolve(e.target?.result as ArrayBuffer)
           reader.onerror = reject
-          reader.readAsText(chunk)
+          reader.readAsArrayBuffer(chunk)
+        })
+        const chunkContent = decoder.decode(new Uint8Array(chunkBytes), {
+          stream: chunkIndex < totalChunks - 1
         })
 
         // Send chunk to background
