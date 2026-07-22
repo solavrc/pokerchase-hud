@@ -80,9 +80,11 @@ export class FirebaseAuthService {
   private restorePromise: Promise<void>
   /**
    * Monotonic counter, incremented on every auth-state TRANSITION (sign-in,
-   * sign-out, or the initial restore-from-storage on startup) -- never on a
-   * same-account token refresh (`getIdToken(forceRefresh)`'s `currentState`
-   * reassignment preserves the same `uid`, so it does NOT bump this).
+   * sign-out, or the initial restore-from-storage on startup) -- and reserved
+   * before a durable sign-out commit so in-flight refreshes are invalidated
+   * even when storage removal ultimately fails. Never decremented, and never
+   * bumped by a same-account token refresh (`getIdToken(forceRefresh)`'s
+   * `currentState` reassignment preserves the same `uid`).
    *
    * WHY (codex post-merge review on #192, r3615389112, P1, "Detect ABA
    * account switches before committing bookkeeping"): callers used to
@@ -182,9 +184,21 @@ export class FirebaseAuthService {
    */
   async signOut(): Promise<void> {
     const previousToken = await this.getChromeAuthToken(false).catch(() => null)
-    this.currentState = null
-    this.authGeneration++ // sign-out transition -- see authGeneration's doc comment
+
+    // Reserve the sign-out generation BEFORE the durable storage commit.
+    // This invalidates any token refresh that started under the old
+    // generation so it cannot race the remove() below and persist the auth
+    // record again. Keep currentState intact until remove() succeeds: if the
+    // durable commit fails, exposing `null` only in this Service Worker would
+    // create a phantom logout that reverses on the next restart when the
+    // still-persisted record is restored.
+    this.authGeneration++
     await chrome.storage.local.remove(FirebaseAuthService.STORAGE_KEY)
+
+    // Publish the transition only after its durable half committed. There is
+    // intentionally no await between currentState=null and listener
+    // notification, so all in-memory readers observe the same transition.
+    this.currentState = null
     this.notifyAuthStateListeners(null, 'sign-out')
 
     if (previousToken) {

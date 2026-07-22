@@ -252,3 +252,100 @@ describe('FirebaseAuthService.getIdToken -- stale refresh handling', () => {
     expect((service as any).authGeneration).toBe(generationAfterRoundTrip)
   })
 })
+
+describe('FirebaseAuthService.signOut -- durable state removal', () => {
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  test('does not publish an in-memory sign-out when removing the persisted auth state fails', async () => {
+    const storedState = {
+      uid: 'user-a',
+      email: 'a@example.com',
+      displayName: null,
+      photoURL: null,
+      idToken: 'a-token',
+      refreshToken: 'a-refresh-token',
+      expiresAt: Date.now() + 60 * 60 * 1000
+    }
+    await chrome.storage.local.set({ firebaseRestAuthState: storedState })
+
+    const service = new FirebaseAuthService()
+    await service.ready()
+    expect(service.getCurrentUser()?.uid).toBe('user-a')
+
+    jest.spyOn(chrome.identity, 'getAuthToken').mockImplementation(((_options: unknown, callback: (result: { token: string }) => void) => {
+      callback({ token: 'chrome-token' })
+    }) as typeof chrome.identity.getAuthToken)
+    ;(jest.spyOn(chrome.storage.local, 'remove') as jest.SpyInstance)
+      .mockRejectedValueOnce(new Error('chrome.storage.local.remove failed'))
+
+    await expect(service.signOut()).rejects.toThrow('chrome.storage.local.remove failed')
+
+    // A failed durable commit must not expose a transient signed-out state
+    // that reverses on the next Service Worker startup. The persisted token
+    // is still present, so the current instance must remain consistently
+    // signed in and let the popup report the sign-out failure.
+    expect(service.getCurrentUser()?.uid).toBe('user-a')
+
+    const restartedService = new FirebaseAuthService()
+    await restartedService.ready()
+    expect(restartedService.getCurrentUser()?.uid).toBe('user-a')
+  })
+
+  test('invalidates in-flight work before durable removal, but publishes sign-out only after removal commits', async () => {
+    const storedState = {
+      uid: 'user-a',
+      email: 'a@example.com',
+      displayName: null,
+      photoURL: null,
+      idToken: 'a-token',
+      refreshToken: 'a-refresh-token',
+      expiresAt: Date.now() + 60 * 60 * 1000
+    }
+    await chrome.storage.local.set({ firebaseRestAuthState: storedState })
+
+    const service = new FirebaseAuthService()
+    await service.ready()
+    const generationBeforeSignOut = service.getAuthGeneration()
+    const listener = jest.fn()
+    service.onAuthStateChange(listener)
+    await new Promise(resolve => setTimeout(resolve, 0)) // consume the listener's initial restore callback
+    listener.mockClear()
+
+    // No Chrome identity token means there is no external-revocation leg to
+    // exercise here; this test isolates the local durable commit boundary.
+    jest.spyOn(chrome.identity, 'getAuthToken').mockImplementation(((_options: unknown, callback: (result?: { token: string }) => void) => {
+      callback(undefined)
+    }) as typeof chrome.identity.getAuthToken)
+
+    const originalRemove = (chrome.storage.local.remove as jest.Mock).getMockImplementation()!
+    let removeStarted = false
+    let releaseRemove: (() => void) | undefined
+    jest.spyOn(chrome.storage.local, 'remove').mockImplementation(async (keys: string | string[]) => {
+      removeStarted = true
+      await new Promise<void>(resolve => { releaseRemove = resolve })
+      return originalRemove(keys)
+    })
+
+    const signOut = service.signOut()
+    while (!removeStarted) await Promise.resolve()
+
+    // The generation reservation is visible immediately, invalidating work
+    // that snapshotted the old session, while user-facing auth state and
+    // listeners remain unchanged until the durable delete succeeds.
+    expect(service.getAuthGeneration()).toBe(generationBeforeSignOut + 1)
+    expect(service.getCurrentUser()?.uid).toBe('user-a')
+    expect(listener).not.toHaveBeenCalled()
+
+    releaseRemove?.()
+    await signOut
+
+    expect(service.getCurrentUser()).toBeNull()
+    expect(listener).toHaveBeenCalledWith(null, 'sign-out')
+
+    const restartedService = new FirebaseAuthService()
+    await restartedService.ready()
+    expect(restartedService.getCurrentUser()).toBeNull()
+  })
+})
