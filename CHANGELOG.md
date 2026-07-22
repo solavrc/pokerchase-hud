@@ -330,5 +330,3 @@
 ### Performance Improvements
 
 * Optimize bundle size by 75%+ through build improvements ([dd14e43](https://github.com/solavrc/pokerchase-hud/commit/dd14e4346aa3a1f32c2a6f6abf174368febee71d))
-
-## Changelog
