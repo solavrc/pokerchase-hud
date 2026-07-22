@@ -13,22 +13,76 @@ import {
   SYNC_RESCAN_BACKFILL_DONE_META_KEY,
   SYNC_RESCAN_FLOOR_META_KEY
 } from '../constants/sync'
+import { EntityConverter } from '../entity-converter'
+import { ApiType } from '../types'
+import type { ApiEvent } from '../types'
+import { HandLogExporter } from '../utils/hand-log-exporter'
+
+const rank = {
+  RankId: 'rank-id',
+  RankName: '',
+  RankLvId: 'rank-lv-id',
+  RankLvName: ''
+}
+
+const tableUser = (userId: number, userName: string) => ({
+  UserId: userId,
+  UserName: userName,
+  FavoriteCharaId: '',
+  CostumeId: '',
+  EmblemId: '',
+  IsCpu: false,
+  IsOfficial: false,
+  SettingDecoIds: ['', '', '', '', '', '', ''],
+  Rank: rank
+})
+
+const olderNameEventCases: Array<[string, ApiEvent, number]> = [
+  ['EVT_PLAYER_SEAT_ASSIGNED (313)', {
+    ApiTypeId: ApiType.EVT_PLAYER_SEAT_ASSIGNED,
+    timestamp: 100,
+    IsLeave: false,
+    IsRetire: false,
+    ProcessType: 0,
+    SeatUserIds: [1001, 1002, 1003, 1004],
+    TableUsers: [
+      tableUser(1001, 'backfilled-seat-name'),
+      tableUser(1002, 'seat-2'),
+      tableUser(1003, 'seat-3'),
+      tableUser(1004, 'seat-4')
+    ]
+  } as ApiEvent, 1001],
+  ['EVT_PLAYER_JOIN (301)', {
+    ApiTypeId: ApiType.EVT_PLAYER_JOIN,
+    timestamp: 100,
+    JoinUser: tableUser(2001, 'backfilled-join-name'),
+    JoinPlayer: {
+      BetChip: 0,
+      BetStatus: 0,
+      Chip: 10_000,
+      SeatIndex: 0,
+      Status: 0
+    }
+  } as ApiEvent, 2001]
+]
 
 describe('importData() legacy sequence assignment and content dedup', () => {
   let db: PokerChaseDB
   let service: PokerChaseService
 
   beforeEach(async () => {
+    HandLogExporter.clearCache()
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
     service = new PokerChaseService({ db })
     await service.ready
     setOperationState({ type: 'idle' })
-    ;(chrome.runtime.sendMessage as jest.Mock).mockReturnValue(undefined)
+    ;(chrome.runtime.sendMessage as jest.Mock).mockResolvedValue(undefined)
   })
 
   afterEach(async () => {
     jest.restoreAllMocks()
+    HandLogExporter.clearCache()
     db.close()
     await db.delete()
   })
@@ -94,5 +148,40 @@ describe('importData() legacy sequence assignment and content dedup', () => {
     expect((await db.meta.get(`${SYNC_RESCAN_FLOOR_META_KEY}:user-a`))?.value).toBe(100)
     // Never raise an already-earlier protection floor.
     expect((await db.meta.get(`${SYNC_RESCAN_FLOOR_META_KEY}:user-b`))?.value).toBe(50)
+  })
+
+  test.each(olderNameEventCases)('rebuilds the hand-log name cache when import backfills an older %s', async (_label, importedEvent, expectedUserId) => {
+    // Warm the incremental cache past the event that will be imported. Before
+    // this regression fix, the next lookup resumed above timestamp 200 and
+    // could never discover the newly inserted timestamp-100 name event.
+    await db.apiEvents.put({ timestamp: 200, ApiTypeId: 9999, sequence: 0 } as unknown as ApiEvent)
+    const buildPlayerNamesMap = (HandLogExporter as any).buildPlayerNamesMap.bind(HandLogExporter) as
+      (targetDb: PokerChaseDB) => Promise<Map<number, { name: string, rank: string }>>
+    expect(await buildPlayerNamesMap(db)).toEqual(new Map())
+
+    const clearCache = jest.spyOn(HandLogExporter, 'clearCache')
+    const handlers = createImportExportHandlers(service, db, 'https://example.com/*')
+    await expect(handlers.importData(JSON.stringify(importedEvent))).resolves.toMatchObject({ successCount: 1 })
+
+    expect(clearCache).toHaveBeenCalledTimes(1)
+    const names = await buildPlayerNamesMap(db)
+    expect(names.get(expectedUserId)?.name).toMatch(/^backfilled-/)
+
+    clearCache.mockClear()
+    await expect(handlers.importData(JSON.stringify(importedEvent))).resolves.toMatchObject({ successCount: 0 })
+    expect(clearCache).not.toHaveBeenCalled()
+  })
+
+  test('does not clear the hand-log name cache when a post-import rebuild fails', async () => {
+    await db.apiEvents.put({ timestamp: 200, ApiTypeId: 9999, sequence: 0 } as unknown as ApiEvent)
+    const clearCache = jest.spyOn(HandLogExporter, 'clearCache')
+    jest.spyOn(EntityConverter.prototype, 'convertEventChunk').mockImplementation(() => {
+      throw new Error('synthetic rebuild failure')
+    })
+    const handlers = createImportExportHandlers(service, db, 'https://example.com/*')
+
+    await expect(handlers.importData(JSON.stringify(olderNameEventCases[0]![1])))
+      .rejects.toThrow('synthetic rebuild failure')
+    expect(clearCache).not.toHaveBeenCalled()
   })
 })
