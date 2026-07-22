@@ -42,8 +42,10 @@ ORDER BY observer_ref, event_idx;
 ```
 
 309はハンド境界外なので、終端306と同じ`observer_ref`で、その受信時刻以降の最初の309を
-`stg_pokerchase.events`から取得する。複数観測者に同じ`HandId`がある場合も、
-`observer_ref`を跨いで結合しない。
+`stg_pokerchase.events`から**再照合候補**として取得する。複数観測者に同じ`HandId`がある場合も、
+`observer_ref`を跨いで結合しない。ただし、同一observerには複数tab/試合がinterleaveし得るため、
+「最初の後続309」だけでは同一セッションを証明できない。周辺の201/308、hand時系列、
+利用可能ならtab/source attribution、306と309の順位・終了状態の整合を手動確認してから採用する。
 
 ```sql
 -- LOCAL ONLY: event_json may contain identifiers; never paste or share query output.
@@ -55,7 +57,7 @@ WITH terminal AS (
   WHERE api_type_id = 306
     AND SAFE_CAST(JSON_VALUE(event_json, '$.HandId') AS INT64) = target_hand_id
 ),
-next_309 AS (
+next_309_candidate AS (
   SELECT t.observer_ref, e.event_ts_ms, e.event_json
   FROM terminal AS t
   JOIN `pokerchase-hud.stg_pokerchase.events` AS e
@@ -68,9 +70,13 @@ next_309 AS (
 )
 SELECT observer_ref, results_ts AS event_ts_ms, event_json FROM terminal
 UNION ALL
-SELECT observer_ref, event_ts_ms, event_json FROM next_309
+SELECT observer_ref, event_ts_ms, event_json FROM next_309_candidate
 ORDER BY observer_ref, event_ts_ms;
 ```
+
+本例では終端306の前後1秒を追加確認し、`304 (-920 ms) → 306 (0 ms) → 309 (+209 ms)`の
+3イベントだけが連続し、途中に201/308/別306はなく、306の`Results[].Ranking=1`と
+309の`Ranking=1`も一致した。この周辺stream照合を含めて、同じ終了遷移の309と判断した。
 
 ## 303→304→306: 強制投稿オールインとサイドポット
 
@@ -115,7 +121,7 @@ ORDER BY observer_ref, event_ts_ms;
 直接観測できるのは、SBのseat 0が`BetStatus=3 (ALL_IN)`、`Chip=0`、
 `BetChip=84`であることまで。開始スタック1,484は
 `Game.Ante + BetChip + Chip = 1,400 + 84 + 0`から一意に復元する。
-この式は303の会計内訳を表し、アンテとBBを実時間でどちらから先に投稿したかは示さない。
+この式は303の会計内訳を表し、アンテとSBを実時間でどちらから先に投稿したかは示さない。
 
 ### EVT_ACTION（304）— BBは追加投入なしでcheck
 
