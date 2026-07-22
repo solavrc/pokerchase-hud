@@ -135,4 +135,13 @@ describe('raw event replay order', () => {
     // distinguish those histories, so the resolver must not invent an edge.
     expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([201, 306, 308, 309])
   })
+
+  test('keeps a proven local pair canonical when a lifecycle event shares the timestamp', () => {
+    const events = [
+      ...makeCollisionHand().filter(event => event.timestamp === COLLISION_TIMESTAMP),
+      { timestamp: COLLISION_TIMESTAMP, ApiTypeId: 306, HandId: 1 }
+    ]
+
+    expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([304, 305, 306])
+  })
 })

@@ -172,7 +172,7 @@ EVT_HAND_RESULTS.Results[].UserId             ──► UserId 直接参照（Se
 
 ### 主要な制約
 
-- **HandId**: `EVT_HAND_RESULTS` でのみ取得可能。ハンド中のイベントは `EVT_DEAL` → `EVT_HAND_RESULTS` 境界内で相関させる。local Lakeの保存・page順は `[timestamp+ApiTypeId+sequence]` であり、同一millisecondのcross-type eventについて受信順を表さない。再構築などのstateful readでは同一timestamp groupをpage境界で分断せず、phase・actor・stack・Potの完全一致で証明できるsnapshot→action遷移だけを補正する。session/hand lifecycleは前状態なしに推論せず、strict edgeのないeventは主キー順をcanonicalとして維持する（詳細は「Raw Event Lake の順序・重複・拡張性」参照）。
+- **HandId**: `EVT_HAND_RESULTS` でのみ取得可能。ハンド中のイベントは `EVT_DEAL` → `EVT_HAND_RESULTS` 境界内で相関させる。local Lakeの保存・page順は `[timestamp+ApiTypeId+sequence]` であり、同一millisecondのcross-type eventについて受信順を表さない。再構築などのstateful readでは同一timestamp groupをpage境界で分断せず、phase・actor・stack・Potの完全一致で証明できる2-eventのsnapshot/action組だけを補正する。3件以上の複合groupとsession/hand lifecycleは推論せず、主キー順をcanonicalとして維持する（詳細は「Raw Event Lake の順序・重複・拡張性」参照）。
 - **SeatUserIds**: 配列インデックス = 論理席番号。値 = UserId（`-1` = 空席）。配列長 = テーブルサイズ（4 または 6）。
 - **プレイヤー名**: `EVT_PLAYER_SEAT_ASSIGNED` または `EVT_PLAYER_JOIN` から解決する必要がある。ハンドイベントからは取得できない。
 - **SeatUserIds の一貫性**: `EVT_DEAL` と `EVT_PLAYER_SEAT_ASSIGNED` に同じ `SeatUserIds` が存在する。途中参加（`EVT_PLAYER_JOIN`）でプレイヤーが追加されるが、更新された `SeatUserIds` は次の `EVT_DEAL` で初めて反映される。
@@ -610,10 +610,11 @@ STAGEごとの基準値（着順1〜6位）:
   `timestamp` だけ、または `[timestamp+ApiTypeId]` だけで `above()` を行うと burst の
   途中を飛ばすため禁止。
 - cross-type同一timestampは主キーのApiTypeId順で保存されるため、stateful readerは
-  303/305/313のstate snapshot→直後の304について、phase、NextActionSeat、actor stack、
-  Potの差分が全て一致するときだけstable topological sortする。それ以外は主キー順を
-  canonicalとして維持する。特に201/308や306/309を含むsession/hand lifecycleは、MTTの
-  table moveやtable間interleaveを同時刻groupだけでは区別できないため推論しない。
+  2-event groupが303/305/313のstate snapshotと304だけで構成され、phase、
+  NextActionSeat、actor stack、Potの差分が全て一致するときだけsnapshotを先へ戻す。
+  3件以上の複合groupは、局所的に証明できる組があっても無関係なeventを跨いで動かさず、
+  group全体を主キー順に維持する。特に201/308や306/309を含むsession/hand lifecycleは、
+  MTTのtable moveやtable間interleaveを同時刻groupだけでは区別できないため推論しない。
 - 実raw 393,830 eventsのcross-type同時刻210 groupを監査し、このstrict predicateが変更する
   groupは313→304が2件と305→304が1件だけだった。後者のhand
   418790443では、TURN 305（Pot=4179, NextActionSeat=4）の直後にseat 4の304

@@ -79,47 +79,13 @@ const isProvenSnapshotBeforeAction = (snapshot: RawApiEvent, action: RawApiEvent
     actorBeforeAction?.Chip === action.Chip + additionalBet
 }
 
-// A snapshot carrying the exact pre-action actor/stack/pot state precedes the
-// action that advances all three fields by the same chip delta. Session/hand
-// lifecycle boundaries are deliberately excluded: an isolated equal-ms group
-// cannot distinguish a new session from an MTT table move or interleaved table.
-const hasCausalEdge = (before: RawApiEvent, after: RawApiEvent): boolean =>
-  isProvenSnapshotBeforeAction(before, after)
-
-const stableTopologicalOrder = <T extends RawApiEvent>(group: T[]): T[] => {
-  const outgoing = group.map(() => new Set<number>())
-  const indegree = group.map(() => 0)
-
-  for (let before = 0; before < group.length; before++) {
-    for (let after = 0; after < group.length; after++) {
-      if (before === after || !hasCausalEdge(group[before]!, group[after]!)) continue
-      if (!outgoing[before]!.has(after)) {
-        outgoing[before]!.add(after)
-        indegree[after] = indegree[after]! + 1
-      }
-    }
-  }
-
-  const available = group.map((_, index) => index).filter(index => indegree[index] === 0)
-  const ordered: T[] = []
-  while (available.length > 0) {
-    // `group` is already in primary-key order, so the smallest index is the
-    // deterministic canonical tie-breaker for events without a strict edge.
-    const index = available.shift()!
-    ordered.push(group[index]!)
-    for (const next of outgoing[index]!) {
-      const nextIndegree = indegree[next]! - 1
-      indegree[next] = nextIndegree
-      if (nextIndegree === 0) {
-        const insertionIndex = available.findIndex(candidate => candidate > next)
-        if (insertionIndex === -1) available.push(next)
-        else available.splice(insertionIndex, 0, next)
-      }
-    }
-  }
-
-  // Contradictory evidence must not produce an arbitrary partial result.
-  return ordered.length === group.length ? ordered : group
+const resolveStrictSnapshotActionPair = <T extends RawApiEvent>(group: T[]): T[] => {
+  // The production inversions are isolated two-event groups. With a third row,
+  // even a proven local edge could move an unrelated lifecycle event across the
+  // pair, so compound groups stay entirely in canonical primary-key order.
+  if (group.length !== 2) return group
+  const [first, second] = group as [T, T]
+  return isProvenSnapshotBeforeAction(second, first) ? [second, first] : group
 }
 
 /**
@@ -127,15 +93,14 @@ const stableTopologicalOrder = <T extends RawApiEvent>(group: T[]): T[] => {
  *
  * IndexedDB and raw export use `[timestamp+ApiTypeId+sequence]`, so cross-type
  * events sharing a millisecond are stored in ApiTypeId order rather than wire
- * order. Reconstruct only the strict snapshot-to-action transition proven by
- * exact phase, actor, stack and pot deltas. All other events retain primary-key
- * order as a stable, fail-closed representation; this function does not infer
- * session/hand lifecycle order from an isolated timestamp group.
+ * order. Reverse only an isolated two-event snapshot/action pair proven by
+ * exact phase, actor, stack and pot deltas. Compound groups and all other events
+ * retain primary-key order as a stable, fail-closed representation; this
+ * function does not infer lifecycle order from an isolated timestamp group.
  *
  * The 393,830-event production corpus contained 210 cross-type equal-ms
  * groups. The strict predicate changes only three proven inversions (two
- * 313→304 groups and one 305→304 group). This group/topological operation also
- * avoids the non-transitivity of a pairwise causal comparator.
+ * 313→304 groups and one 305→304 group), all isolated two-event groups.
  */
 export const orderApiEventsForReplay = <T extends RawApiEvent>(events: T[]): T[] => {
   const primaryOrder = [...events].sort(compareApiEventKeys)
@@ -145,7 +110,7 @@ export const orderApiEventsForReplay = <T extends RawApiEvent>(events: T[]): T[]
     let end = start + 1
     while (end < primaryOrder.length && primaryOrder[end]!.timestamp === primaryOrder[start]!.timestamp) end++
     const group = primaryOrder.slice(start, end)
-    ordered.push(...stableTopologicalOrder(group))
+    ordered.push(...resolveStrictSnapshotActionPair(group))
     start = end
   }
 

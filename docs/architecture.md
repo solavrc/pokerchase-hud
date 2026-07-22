@@ -53,11 +53,12 @@ canonical payload全体の一致であり、時刻と種別だけでは重複と
 
 `timestamp`はWebSocket message decode直後の`Date.now()`なので、異なるevent typeが
 同一millisecondになる。主キー・exportはApiTypeId順へ並べるため、stateful readerは
-同時刻groupをpage境界で分断せず、303/305/313のstate snapshotからphase、
-NextActionSeat、actor stack、Potの差分が全て一致する304への遷移だけをstable
-topological sortする。それ以外は主キー順をcanonicalとして維持する。201/308や306/309を
-含むsession/hand lifecycleは、MTT table moveやtable間interleaveを前状態なしに区別できない
-ため推論しない。このstrict resolverはlegacy/futureの双方に同じ規則を適用し、
+同時刻groupをpage境界で分断しない。groupが303/305/313のstate snapshotと304だけの
+2-event pairで、phase、NextActionSeat、actor stack、Potの差分が全て一致するときだけ
+snapshotを先へ戻す。3件以上の複合groupは、局所的に証明できるpairがあっても無関係なeventを
+跨いで動かさず、group全体を主キー順に維持する。201/308や306/309を含むsession/hand
+lifecycleは、MTT table moveやtable間interleaveを前状態なしに区別できないため推論しない。
+このstrict resolverはlegacy/futureの双方に同じ規則を適用し、
 IndexedDB/Firestore schemaやdedup identityへ一時的な受信順metadataを追加しない。
 
 実raw 393,830 eventsにあるcross-type同時刻210 groupを監査し、このpredicateが変更するのは
