@@ -30,10 +30,10 @@ WITH target AS (
   WHERE api_type_id = 306
     AND SAFE_CAST(JSON_VALUE(event_json, '$.HandId') AS INT64) = target_hand_id
 )
-SELECT event_idx, event_ts_ms, api_type_id, event_json
+SELECT observer_ref, event_idx, event_ts_ms, api_type_id, event_json
 FROM `pokerchase-hud.stg_pokerchase.hand_events`
 JOIN target USING (observer_ref, hand_seq)
-ORDER BY event_idx;
+ORDER BY observer_ref, event_idx;
 ```
 
 309はハンド境界外なので、終端306と同じ`observer_ref`で、その受信時刻以降の最初の309を
@@ -50,7 +50,7 @@ WITH terminal AS (
     AND SAFE_CAST(JSON_VALUE(event_json, '$.HandId') AS INT64) = target_hand_id
 ),
 next_309 AS (
-  SELECT e.event_ts_ms, e.event_json
+  SELECT t.observer_ref, e.event_ts_ms, e.event_json
   FROM terminal AS t
   JOIN `pokerchase-hud.stg_pokerchase.events` AS e
     ON e.observer_ref = t.observer_ref
@@ -60,10 +60,10 @@ next_309 AS (
     PARTITION BY t.observer_ref, t.results_ts ORDER BY e.event_ts_ms
   ) = 1
 )
-SELECT results_ts AS event_ts_ms, event_json FROM terminal
+SELECT observer_ref, results_ts AS event_ts_ms, event_json FROM terminal
 UNION ALL
-SELECT event_ts_ms, event_json FROM next_309
-ORDER BY event_ts_ms;
+SELECT observer_ref, event_ts_ms, event_json FROM next_309
+ORDER BY observer_ref, event_ts_ms;
 ```
 
 ## 303→304→306: 強制投稿オールインとサイドポット
