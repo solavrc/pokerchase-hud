@@ -39,6 +39,7 @@ export const RecentHandsPanelTrigger = memo(({ playerName, playerId, isOpen, onT
     title="直近ハンド"
     aria-label={`${playerName || `Player ${playerId}`}の直近ハンドを${isOpen ? '閉じる' : '開く'}`}
     aria-expanded={isOpen ?? false}
+    aria-controls={`recent-hands-panel-${playerId}`}
     onMouseDown={(e) => e.stopPropagation()}
     onClick={(e) => {
       e.stopPropagation()

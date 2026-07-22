@@ -82,11 +82,15 @@ const App = memo(() => {
     dimmedSeatIndicesRef.current = next
     setDimmedSeatIndices(next)
   }, [])
-  // ドリルダウンパネル（ポジション別 / 直近ハンド）: 開いているのは常にどちらか
-  // 一方、高々1プレイヤー分（HUDツリーにローカルなReact state。グローバル設定
-  // への永続化はv1では不要）。#128のポジション別ドリルダウンの単一state管理を
-  // 拡張し、パネル種別を持たせることで両パネルを互いに排他にしている。
-  const [openPanel, setOpenPanel] = useState<{ playerId: number, kind: 'positional' | 'recentHands' } | null>(null)
+  // ドリルダウンパネルはHUDツリーにローカルな一時状態（グローバル設定への
+  // 永続化は不要）。ポジション別は従来どおり高々1プレイヤー、直近ハンドは
+  // playerIdの集合で管理して複数プレイヤーを独立に開閉できる。
+  //
+  // パネル種別間の従来の排他は維持する: ポジション別を開けば直近ハンド群を
+  // 閉じ、直近ハンドを1つでも開けばポジション別を閉じる。今回外すのは
+  // 「直近ハンドAを開くと直近ハンドBが閉じる」という同種パネル間の排他だけ。
+  const [openPositionalPanelPlayerId, setOpenPositionalPanelPlayerId] = useState<number | null>(null)
+  const [openRecentHandsPanelPlayerIds, setOpenRecentHandsPanelPlayerIds] = useState<ReadonlySet<number>>(() => new Set())
   // 監査指摘11（P2）対応: 生きたハンドが1件完了するたびに増える「hand epoch」
   // （ports.tsの`liveBroadcastSequence`をそのまま反映、上のStatsDataWithHandEpoch
   // 参照）。Hud経由でドリルダウンパネルへpropとして渡し、そのフェッチeffectの
@@ -96,12 +100,47 @@ const App = memo(() => {
   const [handEpoch, setHandEpoch] = useState(0)
 
   const handleTogglePositionalPanel = useCallback((playerId: number) => {
-    setOpenPanel(prev => (prev?.kind === 'positional' && prev.playerId === playerId) ? null : { playerId, kind: 'positional' })
+    setOpenPositionalPanelPlayerId(prev => prev === playerId ? null : playerId)
+    setOpenRecentHandsPanelPlayerIds(new Set())
   }, [])
 
   const handleToggleRecentHandsPanel = useCallback((playerId: number) => {
-    setOpenPanel(prev => (prev?.kind === 'recentHands' && prev.playerId === playerId) ? null : { playerId, kind: 'recentHands' })
+    setOpenPositionalPanelPlayerId(null)
+    setOpenRecentHandsPanelPlayerIds(prev => {
+      const next = new Set(prev)
+      if (next.has(playerId)) next.delete(playerId)
+      else next.add(playerId)
+      return next
+    })
   }, [])
+
+  const closeAllDrillDownPanels = useCallback(() => {
+    setOpenPositionalPanelPlayerId(null)
+    setOpenRecentHandsPanelPlayerIds(new Set())
+  }, [])
+
+  // 表示中のラインナップからplayerIdが消える境界（席交代、非heroの
+  // セッション終了処理、batch refreshなど）で、その開状態もpruneする。
+  // これにより古いplayerIdが別席・別セッションで再登場しても勝手に
+  // 再オープンしない。bust済みプレイヤーはdimCache経由でstatsに残るため、
+  // 通常のセッション/テーブルリセットまでは開状態を維持する。
+  useEffect(() => {
+    const displayedPlayerIds = new Set(
+      stats.filter(isExistPlayerStats).map(stat => stat.playerId)
+    )
+    setOpenPositionalPanelPlayerId(prev => (
+      prev !== null && !displayedPlayerIds.has(prev) ? null : prev
+    ))
+    setOpenRecentHandsPanelPlayerIds(prev => {
+      let changed = false
+      const next = new Set<number>()
+      for (const playerId of prev) {
+        if (displayedPlayerIds.has(playerId)) next.add(playerId)
+        else changed = true
+      }
+      return changed ? next : prev
+    })
+  }, [stats])
 
   // 仕様（PR #191、オーナー承認の縮小スコープ、2026-07-20。sola:
   // 「それほど重要な機能ではないので、bで十分です」）:
@@ -292,6 +331,7 @@ const App = memo(() => {
       const isTableChange = conflictSeatCount >= 2 && !hasContinuitySeat
       if (isTableChange) {
         dimCache.clear()
+        closeAllDrillDownPanels()
       }
 
       const nextDimmedSeatIndices = new Set<number>()
@@ -315,7 +355,7 @@ const App = memo(() => {
       applyDimmedSeatIndices(nextDimmedSeatIndices)
       setStats(dimmedStats)
     },
-    [applyDimmedSeatIndices]
+    [applyDimmedSeatIndices, closeAllDrillDownPanels]
   )
 
   useEffect(() => {
@@ -350,6 +390,7 @@ const App = memo(() => {
   // 表示であり、セッションをまたいで残す理由が無いため。heroパネル(座席0)は#158の
   // 通りここでは一切触らない(pregameでのキャリア統計復元は別経路)。
   const handleSessionEnd = useCallback(() => {
+    closeAllDrillDownPanels()
     const dimCache = dimCacheRef.current
     // #179 post-merge review P2「Preserve the hero by player id at session
     // end」指摘: 直前の更新が観戦モードdeal（上のisSpectatorDeal分岐）だった
@@ -371,7 +412,7 @@ const App = memo(() => {
     setStats(prev => prev.map((stat, seatIndex) => (
       seatIndex === HERO_SEAT_INDEX ? (heroStat ?? stat) : { playerId: -1 }
     )))
-  }, [applyDimmedSeatIndices])
+  }, [applyDimmedSeatIndices, closeAllDrillDownPanels])
 
   useEffect(() => {
     window.addEventListener(POKER_CHASE_SESSION_END_EVENT, handleSessionEnd)
@@ -691,9 +732,9 @@ const App = memo(() => {
               statDisplayConfigs={statDisplayConfigs}
               realTimeStats={position.actualSeatIndex === 0 ? allPlayersRealTimeStats?.heroStats : undefined}
               playerPotOdds={allPlayersRealTimeStats?.playerStats[position.originalSeatIndex]}
-              isPositionalPanelOpen={openPanel?.kind === 'positional' && openPanel.playerId === position.stat.playerId}
+              isPositionalPanelOpen={openPositionalPanelPlayerId === position.stat.playerId}
               onTogglePositionalPanel={() => handleTogglePositionalPanel(position.stat.playerId)}
-              isRecentHandsPanelOpen={openPanel?.kind === 'recentHands' && openPanel.playerId === position.stat.playerId}
+              isRecentHandsPanelOpen={openRecentHandsPanelPlayerIds.has(position.stat.playerId)}
               onToggleRecentHandsPanel={() => handleToggleRecentHandsPanel(position.stat.playerId)}
               handEpoch={handEpoch}
               hudDisplayMode={uiConfig.hudDisplayMode}

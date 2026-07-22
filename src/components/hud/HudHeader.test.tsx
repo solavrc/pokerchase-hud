@@ -182,7 +182,7 @@ describe('HudHeader', () => {
       expect(handleToggle).toHaveBeenCalledTimes(1)
     })
 
-    it('isRecentHandsPanelOpenに応じてaria-expandedが変わる', () => {
+    it('isRecentHandsPanelOpenに応じてaria-expandedが変わり、対応パネルをaria-controlsで示す', () => {
       const { rerender } = render(
         <HudHeader
           playerName="TestPlayer"
@@ -194,6 +194,7 @@ describe('HudHeader', () => {
 
       const trigger = screen.getByTitle('直近ハンド')
       expect(trigger).toHaveAttribute('aria-expanded', 'false')
+      expect(trigger).toHaveAttribute('aria-controls', 'recent-hands-panel-123')
 
       rerender(
         <HudHeader
@@ -205,6 +206,23 @@ describe('HudHeader', () => {
       )
 
       expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    })
+
+    it('native buttonとしてキーボードのEnterで開閉できる', async () => {
+      const handleToggle = jest.fn()
+      render(
+        <HudHeader
+          playerName="TestPlayer"
+          playerId={123}
+          onToggleRecentHandsPanel={handleToggle}
+        />
+      )
+
+      const trigger = screen.getByTitle('直近ハンド')
+      trigger.focus()
+      await userEvent.keyboard('{Enter}')
+
+      expect(handleToggle).toHaveBeenCalledTimes(1)
     })
 
     it('両トリガーが同時に表示されても独立している', async () => {
