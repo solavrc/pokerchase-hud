@@ -161,6 +161,24 @@ describe('message-router operation exclusivity', () => {
     expect(getOperationState()).toEqual({ type: 'delete' })
   })
 
+  test('waits for the live transform pipeline before deleting the database', async () => {
+    let releasePipeline!: () => void
+    const pipelineIdle = new Promise<void>(resolve => { releasePipeline = resolve })
+    jest.spyOn(service.handAggregateStream, 'whenIdle').mockReturnValue(pipelineIdle)
+    const deleteSpy = jest.spyOn(db, 'delete')
+    const response = new Promise<MessageResponse>(resolve => {
+      listener({ action: 'deleteAllData' }, {}, resolve)
+    })
+
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(deleteSpy).not.toHaveBeenCalled()
+
+    releasePipeline()
+    await expect(response).resolves.toEqual({ success: true })
+    expect(deleteSpy).toHaveBeenCalledTimes(1)
+  })
+
   test('reloads after database deletion even when advisory cleanup fails', async () => {
     ;(chrome.storage.local.set as jest.Mock).mockRejectedValueOnce(new Error('simulated advisory storage failure'))
     const reload = chrome.runtime.reload as jest.Mock

@@ -784,6 +784,11 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
       // delete() and runtime.reload().
       await awaitIngestionDrain()
 
+      // processEvent() only enqueues work into the live transform pipeline.
+      // Its promise can settle before WriteEntityStream's async Dexie writes
+      // have completed, so drain the full piped chain before deleting the DB.
+      await service.handAggregateStream.whenIdle()
+
       // データベースを完全に削除
       await db.delete()
 
