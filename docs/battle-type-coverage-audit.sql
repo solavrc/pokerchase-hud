@@ -1,5 +1,8 @@
 -- BattleType cross-mode audit (read-only, redacted output)
 -- Project: pokerchase-hud / Location: asia-northeast1
+-- Snapshot contract: the published counts in battle-type-coverage-audit.md
+-- are frozen at the 2026-07-22 cutoff. Re-runs must record a new cutoff
+-- instead of silently replacing the historical snapshot.
 --
 -- Privacy contract:
 --   * Do not emit observer_ref, user/player IDs, names, entry IDs, room IDs,

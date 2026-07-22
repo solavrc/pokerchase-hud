@@ -65,7 +65,10 @@ next_309_candidate AS (
    AND e.api_type_id = 309
    AND e.event_ts_ms >= t.results_ts
   QUALIFY ROW_NUMBER() OVER (
-    PARTITION BY t.observer_ref, t.results_ts ORDER BY e.event_ts_ms
+    PARTITION BY t.observer_ref, t.results_ts
+    ORDER BY e.event_ts_ms,
+      COALESCE(SAFE_CAST(JSON_VALUE(e.event_json, '$.sequence') AS INT64), 0),
+      e.document_name
   ) = 1
 )
 SELECT observer_ref, results_ts AS event_ts_ms, event_json FROM terminal
@@ -179,6 +182,124 @@ ORDER BY observer_ref, event_ts_ms;
 
 この例は、強制投稿オールインを自発的なall-in actionとして統計計上しないこと、
 追加投入0でも304が届く場合があること、306で`Pot`と全`SidePot`を合算することのfixtureになる。
+
+## 303→304→306→309: 終端BBブラインドオールイン
+
+調査キー: `HandId=530473403`、後続309の受信`timestamp=1784560697458`
+
+これは[`api-events.md`の連続セッション調査](api-events.md#終盤ヘッズアップの強制投稿オールイン2026-07-21-jst-観測)で
+扱った最終#59の実イベント部分抜粋である。seat 3の開始スタック2,398は、前handの306と
+`950 + 1,448 + 0`の両方から確定した。
+
+```json
+{
+  "ApiTypeId": 303,
+  "Game": {
+    "Ante": 950,
+    "SmallBlind": 1900,
+    "BigBlind": 3800,
+    "SmallBlindSeat": 5,
+    "BigBlindSeat": 3
+  },
+  "Player": {
+    "SeatIndex": 5,
+    "BetStatus": 1,
+    "Chip": 114752,
+    "BetChip": 1900
+  },
+  "OtherPlayers": [
+    {
+      "SeatIndex": 3,
+      "Status": 1,
+      "BetStatus": 3,
+      "Chip": 0,
+      "BetChip": 1448
+    }
+  ],
+  "Progress": {
+    "Phase": 0,
+    "NextActionSeat": 5,
+    "Pot": 4796,
+    "SidePot": [452]
+  }
+}
+```
+
+303で直接分かるのは、seat 3がBB席で`Chip=0, BetChip=1448`になったことまでである。
+`Ante=950`と合わせた会計は前hand終了スタック2,398と一致するが、アンテとBBの実際の投稿順を
+表す個別イベントはない。
+
+```json
+{
+  "ApiTypeId": 304,
+  "SeatIndex": 5,
+  "ActionType": 3,
+  "Chip": 112852,
+  "BetChip": 3800,
+  "Progress": {
+    "Phase": 3,
+    "NextActionSeat": -2,
+    "Pot": 4796,
+    "SidePot": [2352]
+  }
+}
+```
+
+seat 5の`ActionType=3`（CALL）後の`BetChip=3800`は累計値であり、追加額は
+`3,800 - 1,900 = 1,900`。BBオールイン本人seat 3の304は存在しない。
+
+```json
+{
+  "ApiTypeId": 306,
+  "HandId": 530473403,
+  "Pot": 4796,
+  "SidePot": [2352],
+  "ResultType": 1,
+  "Player": {
+    "SeatIndex": 5,
+    "BetStatus": -1,
+    "Chip": 120000,
+    "BetChip": 0
+  },
+  "OtherPlayers": [
+    {
+      "SeatIndex": 3,
+      "Status": 5,
+      "BetStatus": -1,
+      "Chip": 0,
+      "BetChip": 0
+    }
+  ],
+  "Results": [
+    {
+      "HandRanking": 1,
+      "RankType": 7,
+      "Ranking": 1,
+      "RewardChip": 7148
+    },
+    {
+      "HandRanking": -1,
+      "RankType": 7,
+      "Ranking": 2,
+      "RewardChip": 0
+    }
+  ]
+}
+```
+
+```json
+{
+  "ApiTypeId": 309,
+  "Ranking": 1,
+  "IsLeave": false,
+  "IsRebuy": false
+}
+```
+
+`4,796 + 2,352 = 7,148`、seat 5の終了スタック120,000、seat 3の`Ranking=2`、
+後続309の`Ranking=1`はすべて直接観測値で、前後handのスタック連続性とも一致する。
+一方、main/side potの受取人という名称付けは拠出額・役・報酬の整合からの復元であり、
+独立したrawフィールドではない。
 
 ## 303→304→305→306: 累計BetChipとCommunityCardsの結合
 
