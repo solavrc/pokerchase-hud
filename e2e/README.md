@@ -427,7 +427,7 @@ e2e/
     build-e2e.ts               orchestrates the full e2e build
     extract-fixture.ts         CLI to regenerate fixtures from a raw capture
     anonymize.ts / .test.ts    pure UserId/UserName remapping (jest-tested)
-    capture-store-imagery.ts  regenerates README.png + docs/store-assets/store-{1,2,5}-*.png
+    capture-store-imagery.ts  regenerates docs/store-assets/store-{1,2,5}-*.png
     capture-popup-themes.ts   regenerates docs/store-assets/store-{3,4}-popup-*.png
   .build/    gitignored -- generated manifest + built e2e extension + session.json
   out/       gitignored -- default screenshot/DOM-output directory
