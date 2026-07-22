@@ -33,4 +33,22 @@ describe('importData cleanup', () => {
     expect(setBatchMode.mock.calls).toEqual([[true], [false]])
     expect(getOperationState()).toEqual({ type: 'idle' })
   })
+
+  test('keeps import successful when no popup receives best-effort progress', async () => {
+    ;(chrome.runtime.sendMessage as jest.Mock).mockRejectedValue(
+      new Error('Could not establish connection. Receiving end does not exist.')
+    )
+    const handlers = createImportExportHandlers(service, db, 'https://example.com/*')
+
+    await expect(handlers.importData(JSON.stringify({
+      timestamp: 1_000,
+      ApiTypeId: 9_999,
+      marker: 'raw-only'
+    }))).resolves.toMatchObject({ successCount: 1, totalLines: 1 })
+
+    // Flush the rejection handler. Without `.catch()`, Jest observes the
+    // same unhandled Promise rejection printed by the Service Worker.
+    await Promise.resolve()
+    expect(getOperationState()).toEqual({ type: 'idle' })
+  })
 })

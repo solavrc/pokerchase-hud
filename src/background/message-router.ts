@@ -91,7 +91,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
           chrome.runtime.sendMessage<ImportStatusMessage>({
             action: 'importStatus',
             status: `インポートが完了しました (${result.successCount.toLocaleString()}件のログ${result.duplicateCount > 0 ? `, ${result.duplicateCount.toLocaleString()}件の重複をスキップ` : ''})`
-          })
+          }).catch(() => {})
           sendResponse({ success: true })
         })
         .catch(error => {
@@ -99,7 +99,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
           chrome.runtime.sendMessage<ImportStatusMessage>({
             action: 'importStatus',
             status: 'インポートに失敗しました: ' + error.message
-          })
+          }).catch(() => {})
           sendResponse({ success: false, error: error.message })
         })
       return true // 非同期レスポンスを示す
@@ -152,7 +152,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
           chrome.runtime.sendMessage<ImportStatusMessage>({
             action: 'importStatus',
             status: `インポートが完了しました (${result.successCount.toLocaleString()}件のログ${result.duplicateCount > 0 ? `, ${result.duplicateCount.toLocaleString()}件の重複をスキップ` : ''})`
-          })
+          }).catch(() => {})
           sendResponse({ success: true })
         })
         .catch(error => {
@@ -160,7 +160,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
           chrome.runtime.sendMessage<ImportStatusMessage>({
             action: 'importStatus',
             status: 'インポートに失敗しました: ' + error.message
-          })
+          }).catch(() => {})
           sendResponse({ success: false, error: error.message })
         })
       return true
