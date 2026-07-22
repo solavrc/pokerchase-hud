@@ -13,7 +13,7 @@ describe('HudHeader', () => {
     expect(screen.getByText('Player 123')).toBeInTheDocument()
   })
 
-  it('ポットオッズを表示', () => {
+  it('ポットオッズをSPRより先に表示し、各値の対応を維持する', () => {
     const playerPotOdds = {
       spr: 10.5,
       potOdds: {
@@ -33,8 +33,12 @@ describe('HudHeader', () => {
       />
     )
 
-    expect(screen.getByText('100/20 (17%)')).toBeInTheDocument()
-    expect(screen.getByText('SPR:10.5')).toBeInTheDocument()
+    const potOdds = screen.getByText('100/20 (17%)')
+    const spr = screen.getByText('SPR:10.5')
+
+    expect(potOdds).toBeInTheDocument()
+    expect(spr).toBeInTheDocument()
+    expect(potOdds.compareDocumentPosition(spr) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('プレイヤーのターンの場合はポットオッズがハイライトされる', () => {

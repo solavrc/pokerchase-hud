@@ -88,11 +88,6 @@ export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPosition
               離席
             </span>
           )}
-          {hasSpr && (
-            <span style={{ color: '#ffcc00', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
-              SPR:{playerPotOdds.spr}
-            </span>
-          )}
           {hasPotOdds && (
             <span style={{ 
               color: playerPotOdds.potOdds!.isPlayerTurn ? '#00ff00' : HUD_MUTED_TEXT_COLOR,
@@ -100,6 +95,11 @@ export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPosition
               whiteSpace: 'nowrap'
             }}>
               {playerPotOdds.potOdds!.pot}/{playerPotOdds.potOdds!.call} ({playerPotOdds.potOdds!.percentage.toFixed(0)}%)
+            </span>
+          )}
+          {hasSpr && (
+            <span style={{ color: '#ffcc00', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
+              SPR:{playerPotOdds.spr}
             </span>
           )}
           {onTogglePositionalPanel && (
