@@ -1,7 +1,6 @@
 /**
- * Regenerates every piece of committed imagery derived from the fixture-page
- * table backdrop: `README.png` (1920x1080 hero image) and the Chrome Web
- * Store screenshots `docs/store-assets/store-1-hud.png`,
+ * Regenerates the committed Chrome Web Store imagery derived from the
+ * fixture-page table backdrop: `docs/store-assets/store-1-hud.png`,
  * `store-2-drilldown.png`, `store-5-handlog.png` (exactly 1280x800 each --
  * the Web Store requirement). `store-3`/`store-4` are popup-only composites
  * with no table backdrop and are NOT produced here (see
@@ -593,17 +592,6 @@ const main = async (): Promise<void> => {
           await h.gamePage.mouse.move(50, 50) // un-hover the hand log from the previous shot
           await togglePositional(h, 3) // grid stays expanded from the previous shot; only add the drill-down
         },
-      },
-    ],
-  })
-
-  // README hero image: 1920x1080 (game-realistic viewport).
-  await runPlan(fixturePath, totalEvents, {
-    viewport: { width: 1920, height: 1080 },
-    shots: [
-      {
-        path: join(REPO_ROOT, 'README.png'),
-        compose: async (h) => { await expandPanelGrid(h, 3); await togglePositional(h, 3) },
       },
     ],
   })

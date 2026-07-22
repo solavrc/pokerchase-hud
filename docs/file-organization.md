@@ -23,7 +23,6 @@
 ├── renovate.json              # Dependency update config
 ├── CLAUDE.md                  # AI agent documentation
 ├── README.md                  # Project overview
-├── README.png                 # README hero screenshot (real gameplay + HUD, anonymized)
 ├── README.drawio.png          # Architecture diagram
 ├── CONTRIBUTING.md            # Contribution guidelines
 ├── CHANGELOG.md               # Version history (auto-generated)
@@ -52,7 +51,7 @@
 │   ├── scenarios/             # Automated checks (smoke, playerid, ...)
 │   ├── fixtures/              # Anonymized NDJSON replay fixtures
 │   ├── public/                # Fixture pages + assets (incl. anonymized real-table backdrop, opt-in via ?backdrop=1)
-│   └── tools/                 # capture-store-imagery.ts / capture-promo-tiles.ts (store & README imagery)
+│   └── tools/                 # capture-store-imagery.ts / capture-promo-tiles.ts (store imagery)
 ├── icons/                     # Extension icons
 │   ├── icon_16px.png
 │   ├── icon_48px.png
