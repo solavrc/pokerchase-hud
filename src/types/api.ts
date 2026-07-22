@@ -308,7 +308,7 @@ export const apiEventSchemas = {
     ApiTypeId: z.literal(ApiType.EVT_HAND_RESULTS),
     CommunityCards: communityCardsSchema.describe('EVT_DEAL_ROUNDで未配信のカードのみ。全ストリート配信済みなら空配列[]。蓄積したEVT_DEAL_ROUNDのカードとマージしてフルボードを構築する'),
     DefeatStatus: z.union([z.literal(0), z.literal(1)]).describe('0=継続(96.1%), 1=誰かが脱落(3.9%)。SNG(79%), MTT(17%), Ring(2%)で発生。Player.Chip=0ならヒーロー脱落、no_playerなら観戦中の他プレイヤー脱落'),
-    HandId: z.int().nonnegative().describe('ハンドの一意識別子。ここでのみ取得可能。セッション全体で単調増加。SNG/Ringのセッション識別やマルチプレイヤーハンド突合に使用可能'),
+    HandId: z.int().nonnegative().describe('ハンドの一意識別子。ここでのみ取得可能。個々のテーブルでは概ね増加するが、MTTテーブル移動では並行テーブルの結果受信によりセッション受信順で局所逆転するため、単調性を前提にしない。SNG/Ringのセッション識別やマルチプレイヤーハンド突合に使用可能'),
     HandLog: z.string().optional().describe('常に空文字列（全25,322ハンドで確認済み）。PokerChase内部で未使用の予約フィールドと推測'),
     OtherPlayers: z.array(z.object({
       BetChip: z.literal(0).describe('ハンド終了時は常に0（ベットはポットに回収済み）'),

@@ -97,13 +97,16 @@ WITH annotated AS (
     event_ts_ms,
     api_type_id,
     event_json,
+    COALESCE(SAFE_CAST(JSON_VALUE(event_json, '$.sequence') AS INT64), 0)
+      AS event_sequence,
     LAST_VALUE(IF(
       api_type_id = 201,
       SAFE_CAST(JSON_VALUE(event_json, '$.BattleType') AS INT64),
       NULL
     ) IGNORE NULLS) OVER (
       PARTITION BY observer_ref
-      ORDER BY event_ts_ms, api_type_id
+      ORDER BY event_ts_ms, api_type_id,
+        COALESCE(SAFE_CAST(JSON_VALUE(event_json, '$.sequence') AS INT64), 0)
       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
     ) AS battle_type,
     LAST_VALUE(IF(
@@ -112,7 +115,8 @@ WITH annotated AS (
       NULL
     ) IGNORE NULLS) OVER (
       PARTITION BY observer_ref
-      ORDER BY event_ts_ms, api_type_id
+      ORDER BY event_ts_ms, api_type_id,
+        COALESCE(SAFE_CAST(JSON_VALUE(event_json, '$.sequence') AS INT64), 0)
       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
     ) AS entry_id
   FROM `pokerchase-hud.stg_pokerchase.events`
@@ -131,7 +135,7 @@ WITH annotated AS (
     ARRAY_AGG(
       IF(api_type_id = 306,
         SAFE_CAST(JSON_VALUE(event_json, '$.HandId') AS INT64), NULL)
-      IGNORE NULLS ORDER BY event_ts LIMIT 3
+      IGNORE NULLS ORDER BY event_ts_ms, api_type_id, event_sequence LIMIT 3
     ) AS sample_hand_ids
   FROM mtt
   GROUP BY observer_ref, entry_id
@@ -160,8 +164,12 @@ WITH base AS (
     event_ts_ms,
     api_type_id,
     event_json,
+    COALESCE(SAFE_CAST(JSON_VALUE(event_json, '$.sequence') AS INT64), 0)
+      AS event_sequence,
     COUNTIF(api_type_id = 201) OVER (
-      PARTITION BY observer_ref ORDER BY event_ts_ms, api_type_id
+      PARTITION BY observer_ref
+      ORDER BY event_ts_ms, api_type_id,
+        COALESCE(SAFE_CAST(JSON_VALUE(event_json, '$.sequence') AS INT64), 0)
     ) AS entry_seq,
     LAST_VALUE(IF(
       api_type_id = 201,
@@ -169,50 +177,65 @@ WITH base AS (
       NULL
     ) IGNORE NULLS) OVER (
       PARTITION BY observer_ref
-      ORDER BY event_ts_ms, api_type_id
+      ORDER BY event_ts_ms, api_type_id,
+        COALESCE(SAFE_CAST(JSON_VALUE(event_json, '$.sequence') AS INT64), 0)
       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
     ) AS battle_type
   FROM `pokerchase-hud.stg_pokerchase.events`
+), ordered AS (
+  SELECT
+    *,
+    ROW_NUMBER() OVER (
+      PARTITION BY observer_ref, entry_seq
+      ORDER BY event_ts_ms, api_type_id, event_sequence
+    ) AS event_ordinal
+  FROM base
 ), ring AS (
   SELECT
     *,
     SAFE_CAST(JSON_VALUE(event_json, '$.Player.Chip') AS INT64) AS player_chip,
     SAFE_CAST(JSON_VALUE(event_json, '$.Player.SeatIndex') AS INT64) AS player_seat,
     SAFE_CAST(JSON_VALUE(event_json, '$.HandId') AS INT64) AS hand_id
-  FROM base
+  FROM ordered
   WHERE battle_type IN (4, 5)
 ), busts AS (
   SELECT
     observer_ref,
     entry_seq,
     battle_type,
-    MIN(event_ts) AS bust_at,
-    ARRAY_AGG(hand_id IGNORE NULLS ORDER BY event_ts LIMIT 1)[SAFE_OFFSET(0)]
-      AS bust_hand_id
+    event_ordinal AS bust_ordinal,
+    event_ts AS bust_at,
+    hand_id AS bust_hand_id
   FROM ring
   WHERE api_type_id = 306 AND player_chip = 0
-  GROUP BY observer_ref, entry_seq, battle_type
 ), spectator AS (
   SELECT
     busts.*,
-    MIN(ring.event_ts) AS spectator_at
+    ring.event_ordinal AS spectator_ordinal,
+    ring.event_ts AS spectator_at
   FROM busts
   JOIN ring USING (observer_ref, entry_seq, battle_type)
-  WHERE ring.event_ts > bust_at
+  WHERE ring.event_ordinal > bust_ordinal
     AND ring.api_type_id = 303
     AND ring.player_seat IS NULL
-  GROUP BY observer_ref, entry_seq, battle_type, bust_at, bust_hand_id
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY observer_ref, entry_seq, bust_ordinal
+    ORDER BY ring.event_ordinal
+  ) = 1
 ), rebuy AS (
   SELECT
     spectator.*,
-    MIN(ring.event_ts) AS rebuy_at
+    ring.event_ts AS rebuy_at
   FROM spectator
-  LEFT JOIN ring USING (observer_ref, entry_seq, battle_type)
-  WHERE ring.event_ts > spectator_at
+  JOIN ring USING (observer_ref, entry_seq, battle_type)
+  WHERE ring.event_ordinal > spectator_ordinal
     AND ring.api_type_id = 303
     AND ring.player_seat IS NOT NULL
     AND ring.player_chip > 0
-  GROUP BY observer_ref, entry_seq, battle_type, bust_at, bust_hand_id, spectator_at
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY observer_ref, entry_seq, bust_ordinal
+    ORDER BY ring.event_ordinal
+  ) = 1
 )
 SELECT
   SUBSTR(TO_HEX(SHA256(CONCAT(
@@ -243,9 +266,9 @@ WITH per_hand AS (
       AS distinct_occupied_users
   FROM `pokerchase-hud.stg_pokerchase.hands`
 ), duplicate_hand_keys AS (
-  SELECT battle_type, observer_ref, hand_id
+  SELECT observer_ref, hand_id
   FROM per_hand
-  GROUP BY battle_type, observer_ref, hand_id
+  GROUP BY observer_ref, hand_id
   HAVING COUNT(*) > 1
 )
 SELECT
@@ -260,8 +283,7 @@ SELECT
     SELECT 1 FROM UNNEST(actions) AS action
     WHERE action.user_id NOT IN UNNEST(seat_user_ids)
   )) AS actions_outside_dealt_lineup,
-  (SELECT COUNT(*) FROM duplicate_hand_keys AS duplicate
-   WHERE duplicate.battle_type = per_hand.battle_type) AS duplicate_hand_keys
+  (SELECT COUNT(*) FROM duplicate_hand_keys) AS duplicate_hand_keys_global
 FROM per_hand
 GROUP BY battle_type
 ORDER BY battle_type;
