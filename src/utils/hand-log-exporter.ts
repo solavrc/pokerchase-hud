@@ -13,8 +13,8 @@ import { DATABASE_CONSTANTS } from '../constants/database'
 import { processInChunks, filterValidApplicationEvents } from '../utils/database-utils'
 import {
   API_EVENT_PRIMARY_KEY,
-  compareApiEventKeys,
   getApiEventKey,
+  orderApiEventsForReplay,
   type ApiEventKey
 } from './api-event-key'
 import { compareHandsNewestFirst } from './hand-order'
@@ -243,10 +243,9 @@ export class HandLogExporter {
     // that fail the current schema. HandLogProcessor's switch on ApiTypeId
     // reads required fields (e.g. EVT_DEAL.Game) without guards, so only
     // validated application events may reach it.
-    const allEvents = await filterValidApplicationEvents(rawEvents)
-
-    // Sort once for all hands
-    allEvents.sort((a, b) => compareApiEventKeys(a as any, b as any))
+    const allEvents = orderApiEventsForReplay(
+      await filterValidApplicationEvents(rawEvents) as any
+    ) as ApiEvent[]
     console.log(`[HandLogExporter] Prefetched ${allEvents.length} events (${rawEvents.length} raw)`)
 
     // 5. Process each hand using the prefetched events
@@ -430,7 +429,9 @@ export class HandLogExporter {
     // apiEvents is the raw Lake (see docs/architecture.md): filter to validated
     // application events before this feeds HandLogProcessor, same reasoning as
     // exportMultipleHands's prefetch above.
-    const allEvents = await filterValidApplicationEvents(rawEvents)
+    const allEvents = orderApiEventsForReplay(
+      await filterValidApplicationEvents(rawEvents) as any
+    ) as ApiEvent[]
 
     // Time range for hand events
     // Found total events in time range
@@ -445,9 +446,6 @@ export class HandLogExporter {
     // Get all events from EVT_DEAL to EVT_HAND_RESULTS for this hand
     const handEvents: ApiEvent[] = []
     let foundDeal = false
-
-    // Sort events by timestamp to ensure correct order
-    allEvents.sort((a, b) => compareApiEventKeys(a as any, b as any))
 
     for (const event of allEvents) {
       // Start collecting from EVT_DEAL that matches our seat configuration

@@ -234,8 +234,8 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
       .equals([400, ApiType.EVT_ENTRY_QUEUED])
       .sortBy('sequence') as any[]
     expect(stored).toEqual([
-      { ...first, sequence: 0 },
-      { ...second, sequence: 1 }
+      { ...first, arrivalOrder: 0, sequence: 0 },
+      { ...second, arrivalOrder: 1, sequence: 1 }
     ])
 
     // No Raw Lake gap was created, so the drop-visibility counter stays clear.

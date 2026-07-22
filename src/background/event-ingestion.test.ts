@@ -66,7 +66,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     await onMessageHandler(validEvent)
 
     const stored = await db.apiEvents.get([111, 201, 0])
-    expect(stored).toEqual({ ...validEvent, sequence: 0 })
+    expect(stored).toEqual({ ...validEvent, arrivalOrder: 0, sequence: 0 })
 
     expect(handLogSpy).toHaveBeenCalledTimes(1)
     expect(aggregateSpy).toHaveBeenCalledTimes(1)
@@ -85,7 +85,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     await onMessageHandler(brokenDealEvent)
 
     const stored = await db.apiEvents.get([222, 303, 0])
-    expect(stored).toEqual({ ...brokenDealEvent, sequence: 0 })
+    expect(stored).toEqual({ ...brokenDealEvent, arrivalOrder: 0, sequence: 0 })
 
     expect(handLogSpy).not.toHaveBeenCalled()
     expect(aggregateSpy).not.toHaveBeenCalled()
@@ -99,7 +99,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     await onMessageHandler(nonAppEvent)
 
     const stored = await db.apiEvents.get([333, 202, 0])
-    expect(stored).toEqual({ ...nonAppEvent, sequence: 0 })
+    expect(stored).toEqual({ ...nonAppEvent, arrivalOrder: 0, sequence: 0 })
     expect(handLogSpy).not.toHaveBeenCalled()
   })
 
@@ -108,7 +108,18 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     await onMessageHandler(unknownEvent)
 
     const stored = await db.apiEvents.get([444, 9999, 0])
-    expect(stored).toEqual({ ...unknownEvent, sequence: 0 })
+    expect(stored).toEqual({ ...unknownEvent, arrivalOrder: 0, sequence: 0 })
+  })
+
+  test('persists cross-type equal-millisecond events in Service Worker receipt order', async () => {
+    const round = { ApiTypeId: 305, timestamp: 555 }
+    const action = { ApiTypeId: 304, timestamp: 555 }
+
+    await onMessageHandler(round)
+    await onMessageHandler(action)
+
+    expect(await db.apiEvents.get([555, 305, 0])).toEqual({ ...round, arrivalOrder: 0, sequence: 0 })
+    expect(await db.apiEvents.get([555, 304, 0])).toEqual({ ...action, arrivalOrder: 1, sequence: 0 })
   })
 
   test('drop visibility: an app-type parse failure is counted in the dangerous appTypeParseFailed class', async () => {

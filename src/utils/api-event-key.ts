@@ -15,6 +15,7 @@ export type RawApiEvent = Record<string, unknown> & {
   timestamp: number
   ApiTypeId: number
   sequence?: number
+  arrivalOrder?: number
 }
 
 export interface MergeApiEventsResult {
@@ -47,13 +48,91 @@ export const compareApiEventKeys = (a: RawApiEvent, b: RawApiEvent): number =>
   a.ApiTypeId - b.ApiTypeId ||
   getApiEventSequence(a) - getApiEventSequence(b)
 
+export const getApiEventArrivalOrder = (event: { arrivalOrder?: unknown }): number | undefined =>
+  typeof event.arrivalOrder === 'number' && Number.isSafeInteger(event.arrivalOrder) && event.arrivalOrder >= 0
+    ? event.arrivalOrder
+    : undefined
+
+const isLegacyRoundBeforeAction = (round: RawApiEvent, action: RawApiEvent): boolean => {
+  const roundProgress = round.Progress as Record<string, unknown> | undefined
+  const actionProgress = action.Progress as Record<string, unknown> | undefined
+  const players = [
+    round.Player,
+    ...Array.isArray(round.OtherPlayers) ? round.OtherPlayers : []
+  ] as Array<Record<string, unknown> | undefined>
+  const actorBeforeAction = players.find(player => player?.SeatIndex === action.SeatIndex)
+
+  return round.ApiTypeId === 305 &&
+    action.ApiTypeId === 304 &&
+    typeof roundProgress?.Phase === 'number' &&
+    roundProgress.Phase === actionProgress?.Phase &&
+    roundProgress.NextActionSeat === action.SeatIndex &&
+    typeof roundProgress.Pot === 'number' &&
+    typeof action.BetChip === 'number' &&
+    action.BetChip > 0 &&
+    typeof action.Chip === 'number' &&
+    typeof actionProgress.Pot === 'number' &&
+    actionProgress.Pot === roundProgress.Pot + action.BetChip &&
+    actorBeforeAction?.BetChip === 0 &&
+    actorBeforeAction.Chip === action.Chip + action.BetChip
+}
+
+/**
+ * Replay order for stateful consumers.
+ *
+ * Live rows carry the exact background-port arrival order. Legacy exports do
+ * not, because raw export itself used primary-key order. For a legacy group,
+ * repair only the observed replay-batching signature: one EVT_DEAL_ROUND and
+ * one first action whose actor stack and pot both advance exactly by BetChip.
+ * Everything else retains the historical primary-key order.
+ *
+ * This is deliberately a group operation instead of a pairwise comparator.
+ * A comparator that moves 305 before one matching 304 but leaves another 304
+ * before 305 can become non-transitive and produce engine-dependent results.
+ */
+export const orderApiEventsForReplay = <T extends RawApiEvent>(events: T[]): T[] => {
+  const primaryOrder = [...events].sort(compareApiEventKeys)
+  const ordered: T[] = []
+
+  for (let start = 0; start < primaryOrder.length;) {
+    let end = start + 1
+    while (end < primaryOrder.length && primaryOrder[end]!.timestamp === primaryOrder[start]!.timestamp) end++
+    const group = primaryOrder.slice(start, end)
+
+    if (group.every(event => getApiEventArrivalOrder(event) !== undefined)) {
+      group.sort((a, b) =>
+        getApiEventArrivalOrder(a)! - getApiEventArrivalOrder(b)! || compareApiEventKeys(a, b)
+      )
+    } else {
+      const rounds = group.filter(event => event.ApiTypeId === 305)
+      if (rounds.length === 1) {
+        const round = rounds[0]!
+        const matchingActions = group.filter(event => isLegacyRoundBeforeAction(round, event))
+        if (matchingActions.length === 1) {
+          const actionIndex = group.indexOf(matchingActions[0]!)
+          const roundIndex = group.indexOf(round)
+          if (actionIndex < roundIndex) {
+            group.splice(roundIndex, 1)
+            group.splice(actionIndex, 0, round)
+          }
+        }
+      }
+    }
+
+    ordered.push(...group)
+    start = end
+  }
+
+  return ordered
+}
+
 /**
  * Stable content identity for reconnect/import/cloud deduplication.
  *
- * `sequence` is storage metadata, not part of the wire payload. Two rows that
- * differ only by sequence are therefore the same event. Object keys are sorted
- * recursively so a Firestore decode or legacy export with a different property
- * order still compares equal to the original WebSocket object.
+ * `sequence` and `arrivalOrder` are storage metadata, not part of the wire
+ * payload. Two rows that differ only by them are therefore the same event.
+ * Object keys are sorted recursively so a Firestore decode or legacy export
+ * with a different property order still compares equal to the WebSocket object.
  */
 export const getApiEventContentIdentity = (event: RawApiEvent): string => {
   const canonicalize = (value: unknown, omitSequence: boolean): unknown => {
@@ -62,7 +141,7 @@ export const getApiEventContentIdentity = (event: RawApiEvent): string => {
       const record = value as Record<string, unknown>
       const result: Record<string, unknown> = {}
       for (const key of Object.keys(record).sort()) {
-        if (omitSequence && key === 'sequence') continue
+        if (omitSequence && (key === 'sequence' || key === 'arrivalOrder')) continue
         result[key] = canonicalize(record[key], false)
       }
       return result

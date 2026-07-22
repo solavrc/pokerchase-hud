@@ -99,6 +99,11 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   // operation completion/SW startupと同じ安全性機構へ統一されている。
   ingestionQueue = Promise.resolve()
   setIngestionDrainProvider(() => ingestionQueue)
+  // Exact service-worker receipt order across every connected tab/port.
+  // This is assigned synchronously before any IndexedDB await can interleave
+  // later messages. It is storage metadata and is only used to break equal-ms
+  // replay ties; the existing primary/cloud identity remains unchanged.
+  let nextArrivalOrder = 0
 
   chrome.runtime.onConnect.addListener(port => {
     if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
@@ -110,11 +115,16 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           return
         }
 
+        const orderedMessage = typeof message === 'object' &&
+          'ApiTypeId' in message && typeof message.ApiTypeId === 'number'
+          ? { ...message, arrivalOrder: nextArrivalOrder++ }
+          : message
+
         // このイベントの処理を、直前のイベントの処理（add()の決着含む）の
         // 後ろに連結する。`processEvent`は内部で全エラーを捕捉して素通し
         // させない設計だが、想定外のバグでqueueが壊れて以降のイベントが
         // 永久に詰まることのないよう、キューの継続用チェーンは別途catchする。
-        const task = ingestionQueue.then(() => processEvent(service, message))
+        const task = ingestionQueue.then(() => processEvent(service, orderedMessage))
         ingestionQueue = task.catch(err => {
           console.error('[background] Unhandled ingestion queue error (fail-safe, queue continues):', err)
         })
