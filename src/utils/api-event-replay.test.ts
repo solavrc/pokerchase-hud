@@ -10,11 +10,6 @@ const COLLISION_TIMESTAMP = 1_758_881_253_530
 
 const makeCollisionHand = (): RawApiEvent[] => [
   {
-    timestamp: COLLISION_TIMESTAMP - 30,
-    ApiTypeId: 308,
-    IsReplay: true
-  },
-  {
     timestamp: COLLISION_TIMESTAMP - 20,
     ApiTypeId: 303,
     SeatUserIds: [1, 2],
@@ -76,7 +71,6 @@ const convert = (events: RawApiEvent[]) => new EntityConverter({
 describe('raw event replay order', () => {
   test('repairs the observed legacy 304/305 collision and keeps the TURN bet on TURN', () => {
     const primaryOrder = makeCollisionHand()
-    expect(primaryOrder.some(event => event.ApiTypeId === 308 && event.IsReplay === true)).toBe(true)
     const primaryAction = convert(primaryOrder).actions.find(action => action.actionType === ActionType.BET)
     expect(primaryAction?.phase).toBe(PhaseType.FLOP)
 

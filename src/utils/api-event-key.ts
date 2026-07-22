@@ -82,7 +82,7 @@ const isLegacyRoundBeforeAction = (round: RawApiEvent, action: RawApiEvent): boo
  *
  * Live rows carry the exact background-port arrival order. Legacy exports do
  * not, because raw export itself used primary-key order. For a legacy group,
- * repair only the observed replay-batching signature: one EVT_DEAL_ROUND and
+ * repair only the observed equal-millisecond collision signature: one EVT_DEAL_ROUND and
  * one first action whose actor stack and pot both advance exactly by BetChip.
  * Everything else retains the historical primary-key order.
  *
