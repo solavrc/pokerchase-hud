@@ -193,27 +193,30 @@ export class FirestoreBackupService {
 
       console.log(`[Firestore] Processing batch of ${apiEvents.length} upload candidates...`)
 
-      const newEvents = cloudMaxTimestamp
+      const newEvents = (cloudMaxTimestamp
         ? apiEvents.filter(event => (event.timestamp || 0) > cloudMaxTimestamp)
-        : apiEvents
+        : [...apiEvents])
+        // This is upload-coverage order, not wire/causal replay order. A
+        // monotonic timestamp prefix is required because the next pass uses
+        // Firestore's maximum timestamp as its scan watermark.
+        .sort((a, b) =>
+          (a.timestamp || 0) - (b.timestamp || 0) ||
+          a.ApiTypeId - b.ApiTypeId ||
+          getApiEventSequence(a) - getApiEventSequence(b)
+        )
 
       console.log(`[Firestore] ${newEvents.length} events remain after the upload watermark filter`)
 
-      const PARALLEL_BATCHES = DATABASE_CONSTANTS.FIRESTORE_PARALLEL_BATCHES
-      for (let i = 0; i < newEvents.length; i += this.BATCH_SIZE * PARALLEL_BATCHES) {
-        const batchPromises = []
-
-        for (let j = 0; j < PARALLEL_BATCHES && i + j * this.BATCH_SIZE < newEvents.length; j++) {
-          const startIndex = i + j * this.BATCH_SIZE
-          const chunk = newEvents.slice(startIndex, startIndex + this.BATCH_SIZE)
-          if (chunk.length === 0) break
-
-          batchPromises.push(this.writeBatch(user.uid, chunk))
-          synced += chunk.length
-        }
-
-        await Promise.all(batchPromises)
-        processed = Math.min(i + this.BATCH_SIZE * PARALLEL_BATCHES, newEvents.length)
+      // Commit strictly in coverage order. Parallel commits can acknowledge a
+      // newer batch while an older one fails; that advances the real cloud max
+      // past the missing batch and makes every later watermark-based retry skip
+      // it permanently. Sequential acknowledgement keeps Firestore a proven
+      // timestamp prefix: after a failure, no later timestamp has been offered.
+      for (let i = 0; i < newEvents.length; i += this.BATCH_SIZE) {
+        const chunk = newEvents.slice(i, i + this.BATCH_SIZE)
+        await this.writeBatch(user.uid, chunk)
+        synced += chunk.length
+        processed += chunk.length
 
         if (onProgress) {
           onProgress({ current: processed, total: newEvents.length })
