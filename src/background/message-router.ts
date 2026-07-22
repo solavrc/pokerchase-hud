@@ -166,7 +166,18 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
 
       // コンテンツスクリプトにメッセージを転送
       chrome.tabs.query({ url: gameUrlPattern }, tabs => {
-        tabs.forEach(tab => tab.id && chrome.tabs.sendMessage(tab.id, request))
+        tabs.forEach(tab => {
+          if (!tab.id) return
+          chrome.tabs.sendMessage(tab.id, request).catch(error => {
+            // This is a one-way update: the content script intentionally does
+            // not respond, and it can also disappear during navigation.
+            const message = error instanceof Error ? error.message : ''
+            if (!message.includes('Receiving end does not exist') &&
+                !message.includes('message port closed before a response was received')) {
+              console.warn(`[background] Failed to forward filter update to tab ${tab.id}:`, error)
+            }
+          })
+        })
       })
 
       // 新しいフィルターに基づいてHUD表示を強制更新
