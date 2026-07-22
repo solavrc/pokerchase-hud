@@ -448,6 +448,12 @@ const Hud = memo((props: HudProps) => {
   if (prevProps.hudDisplayMode !== nextProps.hudDisplayMode) return false
   if (prevProps.hudColorCoding !== nextProps.hudColorCoding) return false
   if (prevProps.isDimmed !== nextProps.isDimmed) return false
+  if (prevProps.playerPotOdds?.spr !== nextProps.playerPotOdds?.spr) return false
+  if (prevProps.playerPotOdds?.potOdds?.pot !== nextProps.playerPotOdds?.potOdds?.pot) return false
+  if (prevProps.playerPotOdds?.potOdds?.call !== nextProps.playerPotOdds?.potOdds?.call) return false
+  if (prevProps.playerPotOdds?.potOdds?.percentage !== nextProps.playerPotOdds?.potOdds?.percentage) return false
+  if (prevProps.playerPotOdds?.potOdds?.ratio !== nextProps.playerPotOdds?.potOdds?.ratio) return false
+  if (prevProps.playerPotOdds?.potOdds?.isPlayerTurn !== nextProps.playerPotOdds?.potOdds?.isPlayerTurn) return false
   // handEpoch (audit finding 11, P2): only forces a re-render while one of this
   // seat's drill-down panels is actually open -- an open panel needs the fresh
   // handEpoch prop to reach its fetch effect's deps so it refetches once per

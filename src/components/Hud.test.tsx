@@ -162,6 +162,43 @@ describe('Hud', () => {
     expect(potOdds.compareDocumentPosition(spr) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it('non-heroのポットオッズとSPRをリアルタイムに更新', () => {
+    const { rerender } = render(
+      <Hud
+        actualSeatIndex={1}
+        stat={mockPlayerStats}
+        scale={1}
+        statDisplayConfigs={mockStatDisplayConfigs}
+        playerPotOdds={mockPlayerPotOdds}
+      />
+    )
+
+    expect(screen.getByText('100/20 (17%)')).toBeInTheDocument()
+    expect(screen.getByText('SPR:10.5')).toBeInTheDocument()
+
+    rerender(
+      <Hud
+        actualSeatIndex={1}
+        stat={mockPlayerStats}
+        scale={1}
+        statDisplayConfigs={mockStatDisplayConfigs}
+        playerPotOdds={{
+          spr: 6.25,
+          potOdds: {
+            pot: 140,
+            call: 40,
+            percentage: 22.2,
+            ratio: '3.5:1',
+            isPlayerTurn: false,
+          },
+        }}
+      />
+    )
+
+    expect(screen.getByText('140/40 (22%)')).toBeInTheDocument()
+    expect(screen.getByText('SPR:6.25')).toBeInTheDocument()
+  })
+
   it('ヒーロー（席0）の場合はリアルタイム統計を表示', () => {
     render(
       <Hud
