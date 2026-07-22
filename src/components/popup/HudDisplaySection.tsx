@@ -4,6 +4,7 @@ import FormControlLabel from '@mui/material/FormControlLabel'
 import RadioGroup from '@mui/material/RadioGroup'
 import Typography from '@mui/material/Typography'
 import type { UIConfig } from '../../types/hand-log'
+import { broadcastUIConfig } from './broadcast-ui-config'
 import { SegmentRadio } from './SegmentRadio'
 
 interface HudDisplaySectionProps {
@@ -23,16 +24,7 @@ export const HudDisplaySection = ({
   const updateUIConfig = (newConfig: UIConfig) => {
     setUIConfig(newConfig)
     chrome.storage.sync.set({ uiConfig: newConfig })
-    chrome.tabs.query({}, (tabs) => {
-      tabs.forEach(tab => {
-        if (tab.id) {
-          chrome.tabs.sendMessage(tab.id, {
-            action: 'updateUIConfig',
-            config: newConfig
-          })
-        }
-      })
-    })
+    broadcastUIConfig(newConfig)
   }
 
   // DEFAULT_UI_CONFIGとのマージ済みuiConfigが渡ってくる前提だが、念のため

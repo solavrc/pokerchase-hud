@@ -4,6 +4,7 @@ import ToggleButton from '@mui/material/ToggleButton'
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
 import Typography from '@mui/material/Typography'
 import type { UIConfig } from '../../types/hand-log'
+import { broadcastUIConfig } from './broadcast-ui-config'
 
 interface UIScaleSectionProps {
   uiConfig: UIConfig
@@ -17,16 +18,7 @@ export const UIScaleSection = ({
   const updateUIConfig = (newConfig: UIConfig) => {
     setUIConfig(newConfig)
     chrome.storage.sync.set({ uiConfig: newConfig })
-    chrome.tabs.query({}, (tabs) => {
-      tabs.forEach(tab => {
-        if (tab.id) {
-          chrome.tabs.sendMessage(tab.id, {
-            action: 'updateUIConfig',
-            config: newConfig
-          })
-        }
-      })
-    })
+    broadcastUIConfig(newConfig)
   }
 
   return (

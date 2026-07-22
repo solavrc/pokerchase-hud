@@ -31,6 +31,7 @@ describe('UIScaleSection', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
+    mockTabsSendMessage.mockResolvedValue(undefined)
     mockTabsQuery.mockImplementation((_, callback) => {
       callback([{ id: 1 }, { id: 2 }])
     })
@@ -90,6 +91,24 @@ describe('UIScaleSection', () => {
       action: 'updateUIConfig',
       config: expectedConfig,
     })
+  })
+
+  it('ゲームタブだけに通知し、偶発的なreceiver消失を消費する', async () => {
+    const missingReceiver = Promise.reject(
+      new Error('Could not establish connection. Receiving end does not exist.')
+    )
+    await missingReceiver.catch(() => {})
+    const catchSpy = jest.spyOn(missingReceiver, 'catch')
+    mockTabsSendMessage.mockReturnValue(missingReceiver)
+
+    render(<UIScaleSection {...defaultProps} />)
+    await userEvent.click(screen.getByText('+'))
+
+    expect(mockTabsQuery).toHaveBeenCalledWith(
+      { url: 'https://game.poker-chase.com/*' },
+      expect.any(Function)
+    )
+    expect(catchSpy).toHaveBeenCalledWith(expect.any(Function))
   })
 
   it('スケールの最小値と最大値を制限', () => {
