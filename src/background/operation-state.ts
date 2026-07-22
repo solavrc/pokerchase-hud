@@ -46,13 +46,16 @@ export const setOperationState = (state: OperationState): void => {
   const wasIdle = currentOperationState.type === 'idle'
   currentOperationState = state
   if (!wasIdle && state.type === 'idle') {
-    idleListeners.forEach(listener => {
+    // Listeners such as waitForOperationIdle() unsubscribe themselves while
+    // handling this transition. Iterate over a snapshot so splicing the live
+    // registry cannot skip the next waiter.
+    for (const listener of [...idleListeners]) {
       try {
         listener()
       } catch (error) {
         console.error('[operation-state] onOperationBecameIdle listener failed:', error)
       }
-    })
+    }
   }
 }
 

@@ -1,4 +1,4 @@
-import { getOperationState, setOperationState, isOperationIdle, onOperationBecameIdle } from './operation-state'
+import { getOperationState, setOperationState, isOperationIdle, onOperationBecameIdle, waitForOperationIdle } from './operation-state'
 
 describe('operation-state', () => {
   afterEach(() => {
@@ -89,6 +89,20 @@ describe('operation-state', () => {
 
       unsubscribe1()
       unsubscribe2()
+    })
+
+    it('resolves every concurrent idle waiter even though each removes itself', async () => {
+      setOperationState({ type: 'import' })
+      const first = waitForOperationIdle()
+      const second = waitForOperationIdle()
+      const settled: string[] = []
+      void first.then(() => settled.push('first'))
+      void second.then(() => settled.push('second'))
+
+      setOperationState({ type: 'idle' })
+      await Promise.all([first, second])
+
+      expect(settled).toEqual(['first', 'second'])
     })
   })
 })
