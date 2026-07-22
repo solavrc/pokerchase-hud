@@ -561,9 +561,10 @@ export class AutoSyncService {
     // Check if already syncing
     if (this._isSyncing) {
       console.log('[AutoSync] Sync already in progress')
-      // Not a failure -- a concurrent pass owns this sync; its own outcome
-      // (success or failure) is what will actually land in syncState.
-      return { success: true }
+      // This call did not run its requested direction. Returning success here
+      // made a concurrent manual download/upload claim completion even when
+      // only the other pass ran (and that owner could still fail afterward).
+      return { success: false, error: '別のクラウド同期が実行中です。完了後にもう一度お試しください。' }
     }
 
     // Latch BEFORE the awaited gate check below (codex#3612092798): if we set
