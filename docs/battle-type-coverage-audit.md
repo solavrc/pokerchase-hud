@@ -56,6 +56,12 @@ cutoffとする。
 再評価しても本書の公表値は変わらなかった。再実行SQLは、必要な境界だけを
 `canonical_boundary_order`で正規化する。これは任意イベントのwire順を復元するものではない。
 
+本監査では、ポーカーを強整合性のある状態機械として扱う。イベント順は任意ではなく、
+stack、pot、phase、seat、およびhand/session境界の各invariantを同時に満たす必要がある。
+同一timestampで保存主キー順しか残っていない場合も`api_type_id`順を受信順とはみなさず、
+これらのinvariantから一意に決まる境界だけをcanonicalizeする。一意に決まらない因果関係は
+推測せず、その関係に依存する判定をfail-closedにする。
+
 ## 4方向カバレッジマトリクス
 
 | 値 | enum名 | 宣言 | staging観測 | 既存docs | unit test | lifecycle fixture / E2E | 判定 |

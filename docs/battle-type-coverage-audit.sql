@@ -91,6 +91,8 @@ LEFT JOIN hand_census USING (battle_type)
 ORDER BY battle_type;
 
 -- Ordering contract for Q3-Q4:
+--   Poker is treated as a strongly consistent state machine: stack, pot,
+--   phase, seat, and hand/session-boundary invariants constrain causal order.
 --   [event_ts_ms, api_type_id, event_sequence] is the persisted primary-key
 --   order, not proof of WebSocket receive order. Different ApiTypeIds can share
 --   a Date.now() millisecond, and primary-key order then sorts by ApiTypeId.
@@ -99,8 +101,10 @@ ORDER BY battle_type;
 --     306 hand close -> 309 session close -> 201 next entry
 --       -> 308 details -> 313 seat snapshot -> 303 next deal.
 --   Other event types retain a deterministic middle rank plus primary-key
---   tie-breakers. This is deliberately NOT a general reconstruction of wire
---   order; it only makes the Q3/Q4 boundary windows safe. Repeat the CTE in an
+--   tie-breakers, but Q3/Q4 do not infer a causal edge from their placement.
+--   This is deliberately NOT a general reconstruction of wire order. If the
+--   listed invariants do not determine a causal relation needed by an audit,
+--   that audit must fail closed instead of guessing. Repeat the CTE in an
 --   interactive query because BigQuery CTE scope ends at each semicolon.
 
 -- Q3. MTT table-move profile. entry_id is used for grouping but never emitted.
