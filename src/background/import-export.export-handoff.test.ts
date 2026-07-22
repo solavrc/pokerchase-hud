@@ -33,6 +33,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { DATABASE_CONSTANTS } from '../constants/database'
 import { createImportExportHandlers } from './import-export'
 import { getOperationState, setOperationState } from './operation-state'
 
@@ -122,6 +123,82 @@ describe('export download-handoff completion', () => {
       .filter(Boolean)
       .map(line => JSON.parse(line))
     expect(exported.map(event => event.ApiTypeId)).toEqual([305, 304])
+  })
+
+  test('NDJSON export excludes rows inserted after its first snapshot chunk is read', async () => {
+    const writerDb = new PokerChaseDB(indexedDB, IDBKeyRange)
+    await writerDb.open()
+    const originalChunkSize = DATABASE_CONSTANTS.EXPORT_CHUNK_SIZE
+    Object.defineProperty(DATABASE_CONSTANTS, 'EXPORT_CHUNK_SIZE', {
+      value: 1,
+      configurable: true,
+      enumerable: true,
+      writable: true
+    })
+
+    const initialEvents = [
+      { timestamp: 100, ApiTypeId: 301, sequence: 0, marker: 'first' },
+      { timestamp: 100, ApiTypeId: 304, sequence: 0, marker: 'second' }
+    ]
+    // This later row shares both timestamp and type with the first row. Its
+    // sequence keeps the key unique, while its complete compound key still
+    // sorts below the second row that was already present at export start.
+    // This is the case an upper-bound-only snapshot cannot exclude.
+    const lateEvent = { timestamp: 100, ApiTypeId: 301, sequence: 1, marker: 'late' }
+    await db.apiEvents.bulkAdd(initialEvents as any)
+
+    let lateInsert: Promise<unknown> | undefined
+    const originalBulkGet = db.apiEvents.bulkGet.bind(db.apiEvents)
+    jest.spyOn(db.apiEvents, 'bulkGet').mockImplementation(((keys) =>
+      originalBulkGet(keys).then(rows => {
+        if (!lateInsert) {
+          // Open the live write after the first snapshot page has been read but
+          // before the exporter requests its next page. The fixed key list must
+          // exclude it without keeping a read transaction open across the scan.
+          lateInsert = writerDb.apiEvents.add(lateEvent as any)
+        }
+        return rows
+      })
+    ) as typeof db.apiEvents.bulkGet)
+
+    ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => callback([{ id: 42 }]))
+    ;(chrome.tabs.sendMessage as jest.Mock).mockImplementation((_tabId, _message, callback) => callback?.())
+
+    try {
+      const handlers = createImportExportHandlers(service, db, 'https://example.com/*')
+      await handlers.exportData('json')
+      expect(lateInsert).toBeDefined()
+      await lateInsert
+
+      const downloadCall = (chrome.tabs.sendMessage as jest.Mock).mock.calls.find(([, message]) =>
+        message.action === 'downloadFile'
+      )
+      const exported = String(downloadCall?.[1].content)
+        .split('\n')
+        .filter(Boolean)
+        .map(line => JSON.parse(line))
+
+      expect(exported.map(event => event.marker)).toEqual(['first', 'second'])
+      expect(await db.apiEvents.count()).toBe(3)
+      const progressMessages = (chrome.runtime.sendMessage as jest.Mock).mock.calls
+        .map(([message]) => message)
+        .filter(message => message.action === 'exportProgress' && message.format === 'json')
+      expect(progressMessages.filter(message => message.state === 'processing')).toEqual([
+        expect.objectContaining({ processed: 2, total: 2, progress: 100 })
+      ])
+      expect(progressMessages.find(message => message.state === 'completed')).toEqual(
+        expect.objectContaining({ processed: 2, total: 2, progress: 100 })
+      )
+      expect(getOperationState()).toEqual({ type: 'idle' })
+    } finally {
+      Object.defineProperty(DATABASE_CONSTANTS, 'EXPORT_CHUNK_SIZE', {
+        value: originalChunkSize,
+        configurable: true,
+        enumerable: true,
+        writable: true
+      })
+      writerDb.close()
+    }
   })
 
   test('PokerStars export dispatches the tabs.sendMessage handoff before returning to idle', async () => {
