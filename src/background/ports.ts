@@ -4,6 +4,7 @@ import type { ApiEvent, ApiType, PlayerStats } from '../app'
 import type { AllPlayersRealTimeStats } from '../realtime-stats/realtime-stats-service'
 import type { HandLogEvent } from '../types/hand-log'
 import type { HandLogEventMessage } from '../types/messages'
+import { formatHandLogEntries } from '../utils/hand-log-text'
 
 const PING_INTERVAL_MS = 10 * 1000
 
@@ -65,6 +66,13 @@ export const getLatestRealTimeStats = (): AllPlayersRealTimeStats | undefined =>
  * ストリームイベントをブロードキャストする際の送信先として利用する
  */
 export const connectedPorts = new Set<chrome.runtime.Port>()
+
+/** 完了済みハンドだけをHUDと同じPokerStars形式でService Worker consoleへ出す。 */
+export const logCompletedHandToConsole = (event: HandLogEvent): void => {
+  if (event.type === 'update' && event.entries && event.entries.length > 0) {
+    console.info(formatHandLogEntries(event.entries))
+  }
+}
 
 /**
  * 接続中の全ポートにメッセージをブロードキャストする
@@ -177,6 +185,10 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
 
   // Handle hand log events
   service.handLogStream.on('data', (event: HandLogEvent) => {
+    // 進行中のaddイベントは出さず、1ハンドを1ログにまとめることで、
+    // イベント単位の既存rawログから完成形を探す手間を省く。
+    logCompletedHandToConsole(event)
+
     // Send to all tabs with the game
     chrome.tabs.query({ url: gameUrlPattern }, tabs => {
       tabs.forEach(tab => {

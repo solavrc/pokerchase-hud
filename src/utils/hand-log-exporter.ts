@@ -7,6 +7,7 @@ import type { PokerChaseDB } from '../app'
 import type { ApiEvent, Hand, Session } from '../types'
 import { ApiType, isApiEventType } from '../types/api'
 import { HandLogProcessor, HandLogContext } from './hand-log-processor'
+import { formatHandLogEntries } from './hand-log-text'
 import { DEFAULT_HAND_LOG_CONFIG } from '../types/hand-log'
 import { DATABASE_CONSTANTS } from '../constants/database'
 import { processInChunks, filterValidApplicationEvents } from '../utils/database-utils'
@@ -172,7 +173,7 @@ export class HandLogExporter {
     const entries = processor.processEvents(events)
 
     // Convert entries to text format
-    const handText = entries.map(entry => entry.text).join('\n')
+    const handText = formatHandLogEntries(entries)
 
     // Generated log entries for hand
     return handText
@@ -380,7 +381,7 @@ export class HandLogExporter {
 
     const processor = new HandLogProcessor(context)
     const entries = processor.processEvents(events)
-    return entries.map(entry => entry.text).join('\n')
+    return formatHandLogEntries(entries)
   }
 
   /**
