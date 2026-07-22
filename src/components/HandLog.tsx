@@ -11,6 +11,7 @@ import {
   HandLogConfig,
   DEFAULT_HAND_LOG_CONFIG
 } from '../types/hand-log'
+import { formatHandLogEntries } from '../utils/hand-log-text'
 
 interface HandLogProps {
   entries: HandLogEntry[]
@@ -230,7 +231,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
         return
       }
 
-      const logText = handEntries.map(e => e.text).join('\n')
+      const logText = formatHandLogEntries(handEntries)
 
       await navigator.clipboard.writeText(logText)
       setCopiedHandId(handId)
