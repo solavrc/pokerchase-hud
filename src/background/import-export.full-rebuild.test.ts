@@ -358,7 +358,7 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         // rows into a non-empty DB, triggering importData()'s rebuild path.
         await db.apiEvents.bulkAdd([ENTRY_QUEUED, HAND1_DEAL, HAND1_RESULTS] as never[])
 
-        // Hook the FIRST call to filterValidApplicationEvents -- this is
+        // Hook the FIRST call to orderAndFilterApplicationEventsForReplay -- this is
         // performFullRebuild's snapshot-processing call (the empty-DB
         // import path above never calls it; a possible second call, if the
         // fix's merge-and-redo path fires, is left untouched below). Right
@@ -375,10 +375,10 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         // mutates the shared module-namespace object in place, so calling
         // through via jest.requireActual() here would return that SAME
         // (already-mutated) object and recurse into the mock forever.
-        const originalFilterValidApplicationEvents = databaseUtils.filterValidApplicationEvents
-        const filterSpy = jest.spyOn(databaseUtils, 'filterValidApplicationEvents')
+        const originalOrderAndFilter = databaseUtils.orderAndFilterApplicationEventsForReplay
+        const filterSpy = jest.spyOn(databaseUtils, 'orderAndFilterApplicationEventsForReplay')
           .mockImplementation(async (rawEvents) => {
-            const result = await originalFilterValidApplicationEvents(rawEvents)
+            const result = await originalOrderAndFilter(rawEvents)
             if (!hooked) {
               hooked = true
               await db.apiEvents.bulkAdd(HAND2_EVENTS as never[])
@@ -428,18 +428,18 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         // Damaged DB, same setup as the parity test.
         await db.apiEvents.bulkAdd([ENTRY_QUEUED, HAND1_DEAL, HAND1_RESULTS] as never[])
 
-        // Hook the first filterValidApplicationEvents call (the snapshot
+        // Hook the first orderAndFilterApplicationEventsForReplay call (the snapshot
         // processing step) to inject HAND0 -- whose [timestamp+ApiTypeId]
         // keys sort BELOW every row already in the snapshot (HAND0_EVENTS
         // is timestamped 2,000,000ms before HAND1). A boundary-comparison
         // recheck (`.where(...).above(snapshotUpperBound)`) would miss
         // this entirely, since it only looks for keys greater than the
         // snapshot's own max key -- exactly the bug this test targets.
-        const originalFilterValidApplicationEvents = databaseUtils.filterValidApplicationEvents
+        const originalOrderAndFilter = databaseUtils.orderAndFilterApplicationEventsForReplay
         let hooked = false
-        const filterSpy = jest.spyOn(databaseUtils, 'filterValidApplicationEvents')
+        const filterSpy = jest.spyOn(databaseUtils, 'orderAndFilterApplicationEventsForReplay')
           .mockImplementation(async (rawEvents) => {
-            const result = await originalFilterValidApplicationEvents(rawEvents)
+            const result = await originalOrderAndFilter(rawEvents)
             if (!hooked) {
               hooked = true
               await db.apiEvents.bulkAdd(HAND0_EVENTS as never[])

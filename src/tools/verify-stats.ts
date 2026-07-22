@@ -37,8 +37,8 @@ import { createInterface } from 'readline'
 import { runPipeline } from './verify-stats/pipeline'
 import { runOracle } from './verify-stats/oracle'
 import { compareResults, formatReport } from './verify-stats/compare'
-import { filterValidApplicationEvents } from '../utils/database-utils'
-import { getApiEventContentIdentity, orderApiEventsForReplay, type RawApiEvent } from '../utils/api-event-key'
+import { orderAndFilterApplicationEventsForReplay } from '../utils/database-utils'
+import { getApiEventContentIdentity, type RawApiEvent } from '../utils/api-event-key'
 import type { ApiEvent } from '../types'
 
 interface CliOptions {
@@ -96,22 +96,14 @@ async function readNdjson(filePath: string): Promise<ApiEvent[]> {
   if (duplicateCount > 0) {
     console.log(`Skipped ${duplicateCount} content-identical duplicate event(s) (mirroring the import path)`)
   }
-  // ファイルは Raw Event Lake の生ダンプたり得る（docs/architecture.md）: 202/205
-  // keepalive、未知の ApiTypeId、スキーマ検証に失敗したアプリケーションイベントを
-  // 含み得る。EntityConverter は EVT_DEAL.Game 等を無防備に参照するため、rebuild
-  // 経路（import-export.ts, auto-sync-service.ts, hand-log-exporter.ts）と同じく
-  // filterValidApplicationEvents() で再検証してから渡す。
-  const validEvents = await filterValidApplicationEvents(rawEvents)
+  // Preserve complete raw equal-ms groups through fail-closed ordering before
+  // validation removes Raw Lake noise or currently-unparseable rows.
+  const validEvents = await orderAndFilterApplicationEventsForReplay(rawEvents as RawApiEvent[])
   const skippedCount = rawEvents.length - validEvents.length
   if (skippedCount > 0) {
     console.log(`Filtered out ${skippedCount} non-application/invalid event(s) (raw Lake noise — see filterValidApplicationEvents)`)
   }
-  // Old raw exports are stored in primary-key order, which can invert two
-  // different event types that share a millisecond. Feed both the production
-  // pipeline and independent oracle the same causal order used by import and
-  // rebuild; otherwise the verification harness can validate the artifact of
-  // an export tie instead of the hand itself.
-  return orderApiEventsForReplay(validEvents as unknown as RawApiEvent[]) as ApiEvent[]
+  return validEvents as ApiEvent[]
 }
 
 async function main() {

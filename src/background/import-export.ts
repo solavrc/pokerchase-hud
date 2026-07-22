@@ -2,17 +2,20 @@
 import PokerChaseService, {
   ApiType,
   PokerChaseDB,
-  ApiEvent,
   PlayerStats,
   isApiEventType,
   parseApiEvent,
   validateApiEvent,
   validateMessage,
-  getValidationError,
-  isApplicationApiEvent
+  getValidationError
 } from '../app'
 import { EntityConverter, type EntityBundle } from '../entity-converter'
-import { saveEntities, findLatestPlayerDealEvent, filterValidApplicationEvents, processInReplayChunks } from '../utils/database-utils'
+import {
+  saveEntities,
+  findLatestPlayerDealEvent,
+  orderAndFilterApplicationEventsForReplay,
+  processInReplayChunks
+} from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
 import type {
   ExportProgressMessage,
@@ -24,7 +27,6 @@ import { resolveAdvisory, markAdvisoryPending } from './rebuild-advisory'
 import {
   API_EVENT_PRIMARY_KEY,
   mergeApiEvents,
-  orderApiEventsForReplay,
   type RawApiEvent
 } from '../utils/api-event-key'
 import { HandLogExporter } from '../utils/hand-log-exporter'
@@ -97,8 +99,9 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
       service.setBatchMode(true)
       batchModeEnabled = true
 
-      // 直接エンティティ生成用のイベントを収集
-      const allNewEvents: ApiEvent[] = []
+      // 直接エンティティ生成でも、validation前の同一timestamp group全体を
+      // resolverへ渡せるよう、実際に追加されたraw rowをそのまま収集する。
+      const allNewEvents: RawApiEvent[] = []
 
       // メモリ問題を避けるためチャンク単位で処理
       let processed = 0
@@ -160,12 +163,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           successCount += merge.added.length
           duplicateCount += merge.duplicates
 
-          // エンティティ生成には、実際に保存が確認できた検証済み
-          // アプリケーションイベントのみを渡す。
-          for (const raw of merge.added) {
-            const event = parseApiEvent(raw)
-            if (event && isApplicationApiEvent(event)) allNewEvents.push(event)
-          }
+          allNewEvents.push(...merge.added)
         }
 
         processed += chunkLines.length
@@ -316,9 +314,8 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         try {
           // EntityConverterを使用してエンティティを生成
           const converter = new EntityConverter(service.session)
-          const entities = converter.convertEventsToEntities(
-            orderApiEventsForReplay(allNewEvents as unknown as RawApiEvent[]) as ApiEvent[]
-          )
+          const validEvents = await orderAndFilterApplicationEventsForReplay(allNewEvents)
+          const entities = converter.convertEventsToEntities(validEvents)
 
           console.log(`[importData] Generated entities - Hands: ${entities.hands.length}, Phases: ${entities.phases.length}, Actions: ${entities.actions.length}`)
 
@@ -952,16 +949,14 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
 
       onProgress(10, 'イベント読み込み中...')
 
-      let rawEvents: ApiEvent[] = []
+      let rawEvents: RawApiEvent[] = []
       let entities: EntityBundle = { hands: [], phases: [], actions: [] }
 
       if (totalCountEstimate > 0) {
         // Load all raw events and convert in one pass
         // (EntityConverter tracks hand state internally, so chunked conversion loses cross-chunk hands)
         console.log(`[performFullRebuild] Loading all events...`)
-        rawEvents = orderApiEventsForReplay(
-          await db.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).toArray() as unknown as RawApiEvent[]
-        ) as ApiEvent[]
+        rawEvents = await db.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).toArray() as unknown as RawApiEvent[]
 
         // apiEvents is the raw Lake: it may contain non-application noise (202/205
         // keepalive/timer events), ApiTypeIds unknown to the current schema, or
@@ -973,7 +968,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         // "Raw Event Lake"). It's also what keeps EntityConverter (which reads
         // required fields like EVT_DEAL.Game.SmallBlind without guards) from
         // throwing on a still-malformed row.
-        const allEvents = await filterValidApplicationEvents(rawEvents)
+        const allEvents = await orderAndFilterApplicationEventsForReplay(rawEvents)
         const skippedCount = rawEvents.length - allEvents.length
         console.log(`[performFullRebuild] Loaded ${rawEvents.length} raw events, ${allEvents.length} valid application events after re-validation${skippedCount > 0 ? ` (${skippedCount} non-application/unparseable rows skipped)` : ''}`)
 
@@ -1005,10 +1000,8 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           // 誰も追加できない）。キーの大小に依存しないよう、差分合流ではなく
           // フルスキャンをやり直して完全な結果を作り直す。
           console.log(`[performFullRebuild] apiEvents changed since the snapshot (${rawEvents.length} -> ${currentCount} rows; live play or another writer during rebuild) -- re-deriving from a fresh read`)
-          const freshRaw = orderApiEventsForReplay(
-            await db.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).toArray() as unknown as RawApiEvent[]
-          ) as ApiEvent[]
-          const freshValidEvents = await filterValidApplicationEvents(freshRaw)
+          const freshRaw = await db.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).toArray() as unknown as RawApiEvent[]
+          const freshValidEvents = await orderAndFilterApplicationEventsForReplay(freshRaw)
           finalEntities = new EntityConverter(defaultSession).convertEventsToEntities(freshValidEvents)
           finalTotalEvents = freshRaw.length
         }

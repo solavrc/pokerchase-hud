@@ -60,6 +60,8 @@ snapshotを先へ戻す。3件以上の複合groupは、局所的に証明でき
 lifecycleは、MTT table moveやtable間interleaveを前状態なしに区別できないため推論しない。
 このstrict resolverはlegacy/futureの双方に同じ規則を適用し、
 IndexedDB/Firestore schemaやdedup identityへ一時的な受信順metadataを追加しない。
+resolverはvalidation前のraw group全体へ適用し、その後でapplication/schema filterを行う。
+filterを先に行うとnoise除去で複合groupが偽の2-event pairへ縮むため、順序を逆転してはならない。
 
 実raw 393,830 eventsにあるcross-type同時刻210 groupを監査し、このpredicateが変更するのは
 313→304が2件と305→304が1件だけだった。別rawの18 groupに変更対象はなかった。

@@ -615,6 +615,8 @@ STAGEごとの基準値（着順1〜6位）:
   3件以上の複合groupは、局所的に証明できる組があっても無関係なeventを跨いで動かさず、
   group全体を主キー順に維持する。特に201/308や306/309を含むsession/hand lifecycleは、
   MTTのtable moveやtable間interleaveを同時刻groupだけでは区別できないため推論しない。
+- 判定にはvalidation前のraw group全体を渡し、その後でapplication/schema filterを行う。
+  先に202/205やunparseable rowを除くと3件以上のgroupが偽の2-event pairへ縮むため禁止。
 - 実raw 393,830 eventsのcross-type同時刻210 groupを監査し、このstrict predicateが変更する
   groupは313→304が2件と305→304が1件だけだった。後者のhand
   418790443では、TURN 305（Pot=4179, NextActionSeat=4）の直後にseat 4の304

@@ -6,7 +6,10 @@
  * its own unit tests. This function's entire job is re-running real
  * validation over raw apiEvents rows, so a real schema is the point.
  */
-import { filterValidApplicationEvents } from './database-utils'
+import {
+  filterValidApplicationEvents,
+  orderAndFilterApplicationEventsForReplay
+} from './database-utils'
 
 describe('filterValidApplicationEvents', () => {
   it('passes through a valid application event unchanged', async () => {
@@ -66,5 +69,46 @@ describe('filterValidApplicationEvents', () => {
     const result = await filterValidApplicationEvents([null, undefined, 'garbage', 42, validEntry])
 
     expect(result).toEqual([validEntry])
+  })
+
+  it('keeps raw compound timestamp groups fail-closed before filtering noise', async () => {
+    const action = {
+      timestamp: 700,
+      ApiTypeId: 304,
+      ActionType: 1,
+      BetChip: 1_379,
+      Chip: 8_621,
+      Progress: {
+        MinRaise: 0,
+        NextActionSeat: -1,
+        NextActionTypes: [],
+        NextExtraLimitSeconds: 0,
+        Phase: 2,
+        Pot: 5_558,
+        SidePot: []
+      },
+      SeatIndex: 0
+    }
+    const round = {
+      timestamp: 700,
+      ApiTypeId: 305,
+      CommunityCards: [6],
+      OtherPlayers: [{ BetChip: 0, BetStatus: 1, Chip: 5_000, SeatIndex: 1, Status: 0 }],
+      Player: { BetChip: 0, BetStatus: 1, Chip: 10_000, HoleCards: [1, 2], SeatIndex: 0 },
+      Progress: {
+        MinRaise: 0,
+        NextActionSeat: 0,
+        NextActionTypes: [0, 1],
+        NextExtraLimitSeconds: 0,
+        Phase: 2,
+        Pot: 4_179,
+        SidePot: []
+      }
+    }
+    const noise = { timestamp: 700, ApiTypeId: 202, Code: 0 }
+
+    const result = await orderAndFilterApplicationEventsForReplay([action, round, noise])
+
+    expect(result.map(event => event.ApiTypeId)).toEqual([304, 305])
   })
 })

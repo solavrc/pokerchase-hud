@@ -273,6 +273,18 @@ export async function filterValidApplicationEvents(rawEvents: unknown[]): Promis
 }
 
 /**
+ * Preserve the complete raw equal-timestamp group for fail-closed replay
+ * ordering, then remove rows that cannot safely reach stateful consumers.
+ * Filtering first can shrink a compound raw group into an apparent two-event
+ * pair and incorrectly make it eligible for strict snapshot/action reversal.
+ */
+export async function orderAndFilterApplicationEventsForReplay(
+  rawEvents: RawApiEvent[]
+): Promise<ApiEvent[]> {
+  return filterValidApplicationEvents(orderApiEventsForReplay(rawEvents))
+}
+
+/**
  * Execute a database transaction with proper error handling
  * Wraps common transaction patterns with consistent error handling
  */
