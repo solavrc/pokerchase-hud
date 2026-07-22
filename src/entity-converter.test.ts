@@ -1409,6 +1409,96 @@ describe('EntityConverter', () => {
    * `hand.session.id`/`battleType`の欠落として表面化する。
    */
   describe('SessionState seeding (regression, #104)', () => {
+    it('clears a seeded session name on a new 201 when 308 is absent', () => {
+      const previousSession = new SessionState(() => { })
+      previousSession.setId('previous-session')
+      previousSession.setBattleType(BattleType.TOURNAMENT)
+      previousSession.setName('Previous Tournament')
+
+      const events: ApiEvent[] = [
+        createEvent(ApiType.EVT_ENTRY_QUEUED, {
+          timestamp: 1000,
+          Id: 'next-session',
+          BattleType: BattleType.SIT_AND_GO,
+          Code: 0,
+          IsRetire: false
+        }),
+        createEvent(ApiType.EVT_DEAL, {
+          timestamp: 1001,
+          SeatUserIds: [100, 101],
+          Game: {
+            SmallBlind: 10,
+            BigBlind: 20,
+            ButtonSeat: 0,
+            SmallBlindSeat: 0,
+            BigBlindSeat: 1
+          },
+          Progress: { Phase: PhaseType.PREFLOP }
+        } as any, { skipValidation: true }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
+          timestamp: 1002,
+          HandId: 12346,
+          CommunityCards: [],
+          Results: []
+        } as any, { skipValidation: true })
+      ]
+
+      const result = new EntityConverter(previousSession).convertEventsToEntities(events)
+
+      expect(result.hands).toEqual([
+        expect.objectContaining({
+          session: {
+            id: 'next-session',
+            battleType: BattleType.SIT_AND_GO,
+            name: undefined
+          }
+        })
+      ])
+    })
+
+    it('preserves the tournament name for a same-id MTT table move without 308', () => {
+      const tournamentSession = new SessionState(() => { })
+      tournamentSession.setId('tournament-123')
+      tournamentSession.setBattleType(BattleType.TOURNAMENT)
+      tournamentSession.setName('Current Tournament')
+
+      const events: ApiEvent[] = [
+        createEvent(ApiType.EVT_ENTRY_QUEUED, {
+          timestamp: 2000,
+          Id: 'tournament-123',
+          BattleType: BattleType.TOURNAMENT,
+          Code: 0,
+          IsRetire: false
+        }),
+        createEvent(ApiType.EVT_DEAL, {
+          timestamp: 2001,
+          SeatUserIds: [100, 101],
+          Game: {
+            SmallBlind: 10,
+            BigBlind: 20,
+            ButtonSeat: 0,
+            SmallBlindSeat: 0,
+            BigBlindSeat: 1
+          },
+          Progress: { Phase: PhaseType.PREFLOP }
+        } as any, { skipValidation: true }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
+          timestamp: 2002,
+          HandId: 12347,
+          CommunityCards: [],
+          Results: []
+        } as any, { skipValidation: true })
+      ]
+
+      const result = new EntityConverter(tournamentSession).convertEventsToEntities(events)
+
+      expect(result.hands[0]?.session).toEqual({
+        id: 'tournament-123',
+        battleType: BattleType.TOURNAMENT,
+        name: 'Current Tournament'
+      })
+    })
+
     it('carries over session id/battleType/name from a real SessionState instance even without a leading EVT_ENTRY_QUEUED', () => {
       // 実際のSessionStateインスタンスを構築し、setter経由でフィールドを設定する
       // （#104で導入されたクラス。id/battleType/nameはprototypeのgetterで公開される）

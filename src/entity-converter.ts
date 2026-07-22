@@ -9,6 +9,7 @@ import {
   ActionDetail,
   ActionType,
   ApiType,
+  BattleType,
   BetStatusType,
   PhaseType,
   Position,
@@ -89,8 +90,15 @@ export class EntityConverter {
     for (const event of events) {
       // セッション開始イベントの処理
       if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
+        const isSameMtt = this.currentSession.battleType === BattleType.TOURNAMENT &&
+          event.BattleType === BattleType.TOURNAMENT &&
+          this.currentSession.id === event.Id
         this.currentSession.id = event.Id
         this.currentSession.battleType = event.BattleType
+        // 308 (EVT_SESSION_DETAILS) may be absent. Clear a previous session's
+        // display name at a true boundary, but preserve it for an MTT table
+        // move: MTT reissues 201 with the same tournament Id at each move.
+        if (!isSameMtt) this.currentSession.name = undefined
         // 新しいセッション開始時はプレイヤー情報をクリア
         this.currentSession.players = new Map()
       } else if (isApiEventType(event, ApiType.EVT_SESSION_DETAILS)) {
