@@ -155,6 +155,21 @@ const run = async (): Promise<void> => {
     check('popup renders content', popupHasContent)
     check('popup has no uncaught render error', !popupError, popupError?.message)
 
+    // Chromeのextension popupは約600pxで高さが頭打ちになる。更新情報が長くても、
+    // 最初のHUD設定カードがその初期viewport内に入り、設定操作を始めるために
+    // 更新履歴全体をスクロールしなくてよいことを実レイアウトで確認する。
+    const firstConfigTop = await popup.evaluate(() => {
+      const displayMode = document.querySelector('[aria-label="HUD表示モード"]')
+      return displayMode?.closest('.MuiPaper-root')?.getBoundingClientRect().top
+    })
+    check(
+      'first HUD config stays within the initial popup viewport',
+      // 600pxぎりぎりでは操作部が数pxしか見えないため、少なくとも50pxの
+      // 余裕を確保する。
+      typeof firstConfigTop === 'number' && firstConfigTop < 550,
+      `top = ${String(firstConfigTop)}px`
+    )
+
     const failures = checks.filter((c) => !c.pass)
     if (failures.length > 0) {
       await dumpFailureEvidence(harness, screenshotDir, 'summary')
