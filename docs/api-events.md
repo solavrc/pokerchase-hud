@@ -172,7 +172,7 @@ EVT_HAND_RESULTS.Results[].UserId             ──► UserId 直接参照（Se
 
 ### 主要な制約
 
-- **HandId**: `EVT_HAND_RESULTS` でのみ取得可能。ハンド中のイベントは `EVT_DEAL` → `EVT_HAND_RESULTS` 境界内の受信順で相関させる。local Lakeでは同一millisecondを含め `[timestamp+ApiTypeId+sequence]` 順で扱い、timestampだけでpageしない。
+- **HandId**: `EVT_HAND_RESULTS` でのみ取得可能。ハンド中のイベントは `EVT_DEAL` → `EVT_HAND_RESULTS` 境界内で相関させる。local Lakeの保存・page順は `[timestamp+ApiTypeId+sequence]` であり、同一millisecondのcross-type eventについて受信順を表さない。再構築などのstateful readでは同一timestamp groupをpage境界で分断せず、payloadから証明できる因果順へ解決する。因果edgeのないeventは主キー順をcanonicalとして維持する（詳細は「Raw Event Lake の順序・重複・拡張性」参照）。
 - **SeatUserIds**: 配列インデックス = 論理席番号。値 = UserId（`-1` = 空席）。配列長 = テーブルサイズ（4 または 6）。
 - **プレイヤー名**: `EVT_PLAYER_SEAT_ASSIGNED` または `EVT_PLAYER_JOIN` から解決する必要がある。ハンドイベントからは取得できない。
 - **SeatUserIds の一貫性**: `EVT_DEAL` と `EVT_PLAYER_SEAT_ASSIGNED` に同じ `SeatUserIds` が存在する。途中参加（`EVT_PLAYER_JOIN`）でプレイヤーが追加されるが、更新された `SeatUserIds` は次の `EVT_DEAL` で初めて反映される。
