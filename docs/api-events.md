@@ -172,7 +172,7 @@ EVT_HAND_RESULTS.Results[].UserId             ──► UserId 直接参照（Se
 
 ### 主要な制約
 
-- **HandId**: `EVT_HAND_RESULTS` でのみ取得可能。ハンド中のイベントは `EVT_DEAL` → `EVT_HAND_RESULTS` 境界内の受信順で相関させる。local Lakeでは同一millisecondを含め `[timestamp+ApiTypeId+sequence]` 順で扱い、timestampだけでpageしない。
+- **HandId**: `EVT_HAND_RESULTS` でのみ取得可能。ハンド中のイベントは `EVT_DEAL` → `EVT_HAND_RESULTS` 境界内の因果順で相関させる。local Lakeの`[timestamp+ApiTypeId+sequence]`は欠損なくpageするための保存主キーであり、異なるApiTypeIdが同一millisecondに並ぶ場合の受信順を表さない。
 - **SeatUserIds**: 配列インデックス = 論理席番号。値 = UserId（`-1` = 空席）。配列長 = テーブルサイズ（4 または 6）。
 - **プレイヤー名**: `EVT_PLAYER_SEAT_ASSIGNED` または `EVT_PLAYER_JOIN` から解決する必要がある。ハンドイベントからは取得できない。
 - **SeatUserIds の一貫性**: `EVT_DEAL` と `EVT_PLAYER_SEAT_ASSIGNED` に同じ `SeatUserIds` が存在する。途中参加（`EVT_PLAYER_JOIN`）でプレイヤーが追加されるが、更新された `SeatUserIds` は次の `EVT_DEAL` で初めて反映される。
@@ -598,15 +598,17 @@ STAGEごとの基準値（着順1〜6位）:
   `sequence` を除外してオブジェクトキーを安定ソートした payload 全体の同一性で
   行う。`timestamp+ApiTypeId` が同じというだけでは重複にしない。
 - 取り込みは content dedup、sequence 採番、raw 追加を同一 Dexie transaction で
-  行い、追加成功後にだけライブパイプラインへ渡す。異なる二行は sequence 順に
-  `EntityConverter`（EC）と `WriteEntityStream`（WES）の双方へ到達し、同一 payload
-  の resend は双方から除外されるため、EC↔WES parity を維持する。
+  行い、追加成功後にだけライブパイプラインへ渡す。ライブパイプラインは接続からの
+  到着順を直列キューで保持する。同じtimestamp・同じApiTypeId内の別行はsequenceで
+  区別できるが、異なるApiTypeId間のsequenceは存在しないため、保存主キー順をそのまま
+  受信順と解釈してはならない。
 - 新しい NDJSON export は `sequence` を含む。旧 export には存在しないため、import
   時に空き sequence を割り当てる。同一ファイル内および既存 Lake にある同一 payload
-  は content dedup される。
+  は content dedup される。行順は保存主キー順であり、異種同一msの受信順を表さない。
 - upload、再構築、hand-log export のページングは主キー三要素をカーソルとして保持する。
   `timestamp` だけ、または `[timestamp+ApiTypeId]` だけで `above()` を行うと burst の
-  途中を飛ばすため禁止。
+  途中を飛ばすため禁止。ただし三要素カーソルが保証するのは全行走査であり、異種同一msの
+  因果順ではない。状態を再生・分析するconsumerは、必要なsession/hand境界を別途検証する。
 
 | 制約 | 詳細 |
 |---|---|
