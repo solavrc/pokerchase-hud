@@ -662,6 +662,16 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
     // Send to content script for Blob-based download (avoids data URL size limits)
     return new Promise<void>((resolve, reject) => {
       chrome.tabs.query({ url: gameUrlPattern }, async tabs => {
+        const queryError = chrome.runtime.lastError
+        if (queryError) {
+          reject(new Error(queryError.message || 'Failed to query game tabs'))
+          return
+        }
+        if (!Array.isArray(tabs)) {
+          reject(new Error('Failed to query game tabs: no result returned'))
+          return
+        }
+
         const tab = tabs.find(t => t.id)
         if (tab?.id) {
           const tabId = tab.id

@@ -238,6 +238,30 @@ describe('export download-handoff completion', () => {
     expect(getOperationState()).toEqual({ type: 'idle' })
   })
 
+  test('a tabs.query lastError rejects the export instead of leaving it pending', async () => {
+    ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => {
+      ;(chrome.runtime as any).lastError = { message: 'Tabs permission unavailable' }
+      callback(undefined)
+      delete (chrome.runtime as any).lastError
+    })
+
+    const handlers = createImportExportHandlers(service, db, 'https://example.com/*')
+
+    await expect(handlers.exportData('json')).rejects.toThrow(/Tabs permission unavailable/)
+    expect(chrome.downloads.download).not.toHaveBeenCalled()
+    expect(getOperationState()).toEqual({ type: 'idle' })
+  })
+
+  test('an undefined tabs.query result rejects the export instead of throwing outside its promise', async () => {
+    ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => callback(undefined))
+
+    const handlers = createImportExportHandlers(service, db, 'https://example.com/*')
+
+    await expect(handlers.exportData('json')).rejects.toThrow(/no result returned/)
+    expect(chrome.downloads.download).not.toHaveBeenCalled()
+    expect(getOperationState()).toEqual({ type: 'idle' })
+  })
+
   // --- Independent release-audit finding #10 --------------------------------
 
   test('a deferred tabs.sendMessage keeps the operation state as "export" until it is acknowledged', async () => {
