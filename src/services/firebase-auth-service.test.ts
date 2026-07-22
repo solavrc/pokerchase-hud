@@ -399,6 +399,85 @@ describe('FirebaseAuthService.signOut -- durable state removal', () => {
     expect(restartedService.getCurrentUser()?.uid).toBe('user-a')
   })
 
+  test('a sign-out started during a slow sign-in storage commit waits and remains authoritative', async () => {
+    const stateA = {
+      uid: 'user-a',
+      email: 'a@example.com',
+      displayName: null,
+      photoURL: null,
+      idToken: 'a-token',
+      refreshToken: 'a-refresh-token',
+      expiresAt: Date.now() + 60 * 60 * 1000
+    }
+    await chrome.storage.local.set({ firebaseRestAuthState: stateA })
+
+    const service = new FirebaseAuthService()
+    await service.ready()
+    const listener = jest.fn()
+    service.onAuthStateChange(listener)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    listener.mockClear()
+
+    jest.spyOn(chrome.identity, 'getAuthToken').mockImplementation(((options: { interactive?: boolean }, callback: (result?: { token: string }) => void) => {
+      callback(options.interactive ? { token: 'new-chrome-token' } : undefined)
+    }) as typeof chrome.identity.getAuthToken)
+
+    const originalSet = (chrome.storage.local.set as jest.Mock).getMockImplementation()!
+    let signInSetStarted = false
+    let releaseSignInSet: (() => void) | undefined
+    jest.spyOn(chrome.storage.local, 'set').mockImplementation(async (items: Record<string, any>) => {
+      if (items.firebaseRestAuthState?.uid === 'user-b') {
+        signInSetStarted = true
+        await new Promise<void>(resolve => { releaseSignInSet = resolve })
+      }
+      return originalSet(items)
+    })
+    const removeSpy = jest.spyOn(chrome.storage.local, 'remove')
+
+    const originalFetch = global.fetch
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        idToken: 'b-token',
+        refreshToken: 'b-refresh-token',
+        expiresIn: '3600',
+        localId: 'user-b',
+        email: 'b@example.com'
+      })
+    }) as any
+
+    try {
+      const signIn = service.signInWithGoogle()
+      while (!signInSetStarted) await Promise.resolve()
+
+      const signOut = service.signOut()
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      // The later sign-out owns the final state, but cannot remove first and
+      // allow the delayed sign-in write to resurrect B afterward.
+      expect(removeSpy).not.toHaveBeenCalled()
+      expect(service.getCurrentUser()?.uid).toBe('user-a')
+
+      releaseSignInSet?.()
+      expect((await signIn).uid).toBe('user-b')
+      await signOut
+
+      expect(service.getCurrentUser()).toBeNull()
+      expect(listener.mock.calls.map(([user, source]) => [user?.uid ?? null, source])).toEqual([
+        ['user-b', 'sign-in'],
+        [null, 'sign-out']
+      ])
+      const stored = await chrome.storage.local.get('firebaseRestAuthState')
+      expect(stored.firebaseRestAuthState).toBeUndefined()
+
+      const restartedService = new FirebaseAuthService()
+      await restartedService.ready()
+      expect(restartedService.getCurrentUser()).toBeNull()
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+
   test('invalidates in-flight work before durable removal, but publishes sign-out only after removal commits', async () => {
     const storedState = {
       uid: 'user-a',
