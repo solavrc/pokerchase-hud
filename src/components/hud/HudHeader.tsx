@@ -5,6 +5,7 @@ import { PlayerTypeIcons } from './PlayerTypeIcons'
 import { PositionalPanelTrigger } from './PositionalPanelTrigger'
 import { RecentHandsPanelTrigger } from './RecentHandsPanelTrigger'
 import { HUD_MUTED_TEXT_COLOR } from './hudColors'
+import { HudMetric } from './HudTooltip'
 
 interface PlayerPotOdds {
   spr?: number
@@ -91,26 +92,26 @@ export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPosition
             </span>
           )}
           {hasPotOdds && (
-            <span
-              title={potOddsTooltip}
-              aria-label={`ポットオッズ ${playerPotOdds.potOdds!.percentage.toFixed(0)}%。${potOddsTooltip}`}
+            <HudMetric
+              tooltip={potOddsTooltip}
+              ariaLabel={`Odds ${playerPotOdds.potOdds!.percentage.toFixed(0)}%。${potOddsTooltip}`}
               style={{
                 color: playerPotOdds.potOdds!.isPlayerTurn ? '#00ff00' : HUD_MUTED_TEXT_COLOR,
                 fontWeight: playerPotOdds.potOdds!.isPlayerTurn ? 'bold' : 'normal',
                 whiteSpace: 'nowrap'
               }}
             >
-              {playerPotOdds.potOdds!.percentage.toFixed(0)}%
-            </span>
+              Odds {playerPotOdds.potOdds!.percentage.toFixed(0)}%
+            </HudMetric>
           )}
           {hasSpr && (
-            <span
-              title={sprTooltip}
-              aria-label={`SPR ${playerPotOdds.spr}。${sprTooltip}`}
+            <HudMetric
+              tooltip={sprTooltip}
+              ariaLabel={`SPR ${playerPotOdds.spr}。${sprTooltip}`}
               style={{ color: '#ffcc00', fontWeight: 'bold', whiteSpace: 'nowrap' }}
             >
-              {playerPotOdds.spr}
-            </span>
+              SPR {playerPotOdds.spr}
+            </HudMetric>
           )}
           {onTogglePositionalPanel && (
             <PositionalPanelTrigger
