@@ -17,6 +17,7 @@ import {
   getApiEventKey,
   type ApiEventKey
 } from './api-event-key'
+import { compareHandsNewestFirst } from './hand-order'
 
 export class HandLogExporter {
   // Cache for player names across all exports
@@ -236,15 +237,16 @@ export class HandLogExporter {
     console.log(`[HandLogExporter] Prefetched ${allEvents.length} events (${rawEvents.length} raw)`)
 
     // 5. Process each hand using the prefetched events
-    // プリパス: セッションごとの最小ハンドIDを確定（トーナメントID用）
-    const sessionFirstHandId = new Map<string | undefined, number>()
+    // プリパス: セッションごとの最小ハンドIDを確定（トーナメントID用の
+    // deterministic valueであり、受信順の「先頭」を意味しない）。
+    const sessionMinHandId = new Map<string | undefined, number>()
     for (const handId of handIds) {
       const hand = handMap.get(handId)
       if (!hand) continue
       const sessionId = hand.session.id
-      const currentMin = sessionFirstHandId.get(sessionId)
+      const currentMin = sessionMinHandId.get(sessionId)
       if (currentMin === undefined || handId < currentMin) {
-        sessionFirstHandId.set(sessionId, handId)
+        sessionMinHandId.set(sessionId, handId)
       }
     }
     
@@ -268,8 +270,8 @@ export class HandLogExporter {
         }
 
         // Build hand text using already-cached player map
-        const firstHandId = sessionFirstHandId.get(hand.session.id)
-        const handText = this.processHandToText(hand, handEvents, globalPlayerMap, firstHandId)
+        const minHandId = sessionMinHandId.get(hand.session.id)
+        const handText = this.processHandToText(hand, handEvents, globalPlayerMap, minHandId)
         results.push(handText)
       } catch (error) {
         console.warn(`[HandLogExporter] Skipped hand ${handId}:`, error instanceof Error ? error.message : error)
@@ -343,7 +345,7 @@ export class HandLogExporter {
     hand: Hand,
     events: ApiEvent[],
     globalPlayerMap: Map<number, { name: string, rank: string }>,
-    firstHandId?: number
+    sessionMinHandId?: number
   ): string {
     // Built as a plain, mutable Map first since Session.players is exposed
     // as a ReadonlyMap once assigned below.
@@ -376,7 +378,7 @@ export class HandLogExporter {
       session,
       handLogConfig: DEFAULT_HAND_LOG_CONFIG,
       handTimestamp: hand.approxTimestamp,
-      firstHandId
+      firstHandId: sessionMinHandId
     }
 
     const processor = new HandLogProcessor(context)
@@ -477,13 +479,25 @@ export class HandLogExporter {
         .toArray()
         .then((allHands: Hand[]) =>
           allHands.filter((h: Hand) => h.session.id === sessionId)
-            .sort((a, b) => b.id - a.id)
+            .sort(compareHandsNewestFirst)
             .slice(0, limit)
         )
     } else {
-      // Get all hands (or limited if specified)
-      const query = db.hands.orderBy('id').reverse()
-      hands = limit ? await query.limit(limit).toArray() : await query.toArray()
+      // HandId can locally invert after an MTT table move. Prefer the existing
+      // timestamp index for the common limited export, while retaining a full
+      // scan fallback when legacy rows without approxTimestamp must be filled.
+      if (limit) {
+        const timestampedHands = await db.hands
+          .orderBy('approxTimestamp')
+          .reverse()
+          .limit(limit)
+          .toArray()
+        hands = timestampedHands.length === limit
+          ? timestampedHands.sort(compareHandsNewestFirst)
+          : (await db.hands.toArray()).sort(compareHandsNewestFirst).slice(0, limit)
+      } else {
+        hands = (await db.hands.toArray()).sort(compareHandsNewestFirst)
+      }
     }
 
     if (hands.length === 0) {

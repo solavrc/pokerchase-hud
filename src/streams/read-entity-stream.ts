@@ -13,6 +13,7 @@ import { ErrorHandler } from '../utils/error-handler'
 import { defaultRegistry, defaultStatDisplayConfigs } from '../stats'
 import { COMPACT_REQUIRED_STAT_IDS, CLASSIFIER_REQUIRED_STAT_IDS } from '../stats/compactStats'
 import { matchesTableSizeFilter } from '../utils/table-size'
+import { compareHandsNewestFirst } from '../utils/hand-order'
 import type { ErrorContext } from '../types/errors'
 
 /**
@@ -220,8 +221,8 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
 
       // 最後にハンド制限フィルターを適用（フィルタ後にlimit、既存の順序を維持）
       if (this.service.handLimitFilter !== undefined && this.service.handLimitFilter > 0) {
-        // 最新のハンドを取得するためハンドIDでソート（降順）
-        allPlayerHands.sort((a, b) => b.id - a.id)
+        // MTTのテーブル移動ではHandIdが局所逆転するため、受信時刻で最新順にする。
+        allPlayerHands.sort(compareHandsNewestFirst)
         allPlayerHands = allPlayerHands.slice(0, this.service.handLimitFilter)
       }
 

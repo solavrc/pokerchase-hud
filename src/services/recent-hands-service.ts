@@ -28,6 +28,7 @@ import type { PokerChaseDB } from '../db/poker-chase-db'
 import type PokerChaseService from './poker-chase-service'
 import { matchesTableSizeFilter } from '../utils/table-size'
 import { formatCardsArray } from '../utils/card-utils'
+import { compareHandsNewestFirst } from '../utils/hand-order'
 
 /** デフォルトの取得件数（「直近10ハンド」）。 */
 export const DEFAULT_RECENT_HANDS_LIMIT = 10
@@ -256,7 +257,7 @@ export async function getRecentHands(
   // handLimitFilterは意図的に適用しない（このパネル自体の「直近N件」が
   // 独立したlimitのため、仕様通り）。新しいハンドから優先して上位limit件を選ぶ。
   const recentHands = [...allPlayerHands]
-    .sort((a, b) => b.id - a.id)
+    .sort(compareHandsNewestFirst)
     .slice(0, effectiveLimit)
 
   if (recentHands.length === 0) {
