@@ -208,6 +208,38 @@ await db.actions.where('[playerId+phase]')
 ### ストレージ影響
 インデックス追加で約 10-15% 増加。クエリ性能向上がコストを上回る。
 
+## 6. 試験機能: セッション終了後リプレイ取込
+
+`experimentalReplayImportEnabled` を `chrome.storage.local` で `true` にした
+開発ビルドだけが有効化する、既定OFFの検証機能。ゲーム中の
+`EVT_HAND_RESULTS` (306) から HandId をローカルキューへ保存し、
+`EVT_SESSION_RESULTS` (309) の後に同一ゲームタブから `/replay/detail` を
+1件ずつ取得する。309欠落時は次の `EVT_ENTRY_QUEUED` (201) を境界に使うが、
+同一トーナメントIDのMTTテーブル移動は継続セッションとして扱う。
+
+レスポンスは `experimentalReplayHands` object store に保存する。現段階では
+`hands` / `phases` / `actions` へ変換せず、エクスポート・Firestore同期・統計計算の
+対象にも含めない。これにより、リプレイとWebSocketでアクション意味論が一致するかを
+実データで評価する前に既存統計を汚さない。
+
+ページ自身の通常API通信（fetch / XMLHttpRequest）から得た `session` とバージョン情報はmain world内だけに保持し、
+content scriptへ渡す前にレスポンスから `session` / `requestKey` を再帰的に除去する。
+新しいhost permissionは追加しない。未課金アカウントではサーバーが返した公開情報だけを
+保存し、フォールド済み相手の `HoleCardList` は空のままである。
+
+開発時の有効化手順:
+
+```javascript
+await chrome.storage.local.set({ experimentalReplayImportEnabled: true })
+```
+
+有効化後はゲームタブを再読み込みし、通常API通信から認証エンベロープを取得させる。
+保存結果は拡張機能Service WorkerのDevToolsで
+`await db.experimentalReplayHands.toArray()` として確認できる。無効化は同じキーを
+`false` に戻す。既定OFF、権限追加なし、ユーザー操作中のゲーム通信を起点とする設計は
+Chrome Web Store審査上の説明可能性を高めるが、提出前にはプライバシーポリシーと
+データ利用開示へこの試験機能を明記し、実際の審査結果を別途確認する必要がある。
+
 ## 将来の検討事項
 1. 30-90 日後の古いデータを Cloud Storage にアーカイブ
 2. 頻繁にアクセスされる統計のサマリーテーブル
