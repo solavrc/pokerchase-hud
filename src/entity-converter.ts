@@ -440,8 +440,6 @@ export class EntityConverter {
             ?.filter(result => result.RewardChip > 0)
             .map(result => result.UserId) || []
           handState.hand.results = event.Results || []
-          handState.hand.approxTimestamp = event.timestamp
-
           // RIVER_CALLで勝利したアクションにRIVER_CALL_WONを付与する
           // （WriteEntityStreamと同一ロジック。River Call Accuracy統計が参照する）
           handState.actions.forEach(action => {

@@ -135,6 +135,22 @@ describe('rebuild-advisory', () => {
     })
   })
 
+  describe('hand start timestamp backfill', () => {
+    it('re-surfaces the advisory for users who acknowledged version 3', async () => {
+      await chrome.storage.local.set({
+        [REBUILD_ADVISORY_STORAGE_KEY]: { acknowledgedVersion: 3 }
+      })
+      ;(mockDb.apiEvents.count as jest.Mock).mockResolvedValue(1)
+
+      await checkOnUpdate(mockDb)
+
+      const state = await getRebuildAdvisoryState()
+      expect(REBUILD_ADVISORY_VERSION).toBeGreaterThan(3)
+      expect(state.pendingVersion).toBe(REBUILD_ADVISORY_VERSION)
+      expect(chrome.notifications.create).toHaveBeenCalledTimes(1)
+    })
+  })
+
   describe('resolveAdvisory', () => {
     it('clears pendingVersion, sets acknowledgedVersion, and clears the badge', async () => {
       await chrome.storage.local.set({
