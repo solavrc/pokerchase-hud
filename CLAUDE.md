@@ -2,7 +2,7 @@
 
 > 🎯 **Purpose**: Technical reference for AI coding agents working on the PokerChase HUD Chrome extension.
 >
-> 📅 **Last Updated**: 2026-07-21
+> 📅 **Last Updated**: 2026-07-22
 
 ## 📋 Table of Contents
 
@@ -67,7 +67,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 ### Technical Stack
 
 - **Extension**: Chrome Manifest V3
-- **Frontend**: React 18 + TypeScript
+- **Frontend**: React 19 + TypeScript
 - **UI Library**: Material-UI (modular imports)
 - **Storage**: IndexedDB (Dexie) + Cloud (Firestore)
 - **Cloud Services**: Firebase (Auth, Firestore)
@@ -78,7 +78,8 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   - Co-located test files with source code
 - **Validation**: Zod (runtime schema validation)
 - **Release Management**: Release-Please with GitHub Actions
-  - Manual trigger via GitHub Actions → "Release Please"
+  - Runs from pushes to `main`; `workflow_dispatch` can also rerun the workflow
+  - A created release builds and uploads both ZIP and signed CRX artifacts
   - Protected main branch with CODEOWNERS
   - Workflow details: `.github/workflows/build.yml` (the `release-please` job)
 
@@ -118,9 +119,9 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 #### Testing & Build
 
 - **Test Organization**:
-  - Test files are co-located with source files (e.g., `foo.ts` → `foo.test.ts`, `foo.tsx` → `foo.test.tsx`)
+  - Jest unit/component tests are co-located with source files (e.g., `foo.ts` → `foo.test.ts`, `foo.tsx` → `foo.test.tsx`)
   - Test files use `.test.ts` or `.test.tsx` extension
-  - No separate test directories; improves visibility and reduces cognitive load
+  - Jest roots are `src/` and `e2e/`; live-browser scenarios under `e2e/scenarios/` are separate from Jest and CI
   - All new statistics require unit tests
   - Component tests use React Testing Library
 - **Testing Requirements**:
@@ -130,9 +131,14 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   - All tests must pass; run `npm run test` to verify the current suite/test counts (grows over time — don't hardcode numbers here)
 - **Build Commands**:
   - `npm run build` - Production build
+  - `npm run pack:crx` - Package a signed CRX (requires a signing key)
+  - `npm run mockup` - Serve deterministic UI mockups
   - `npm run typecheck` - TypeScript validation
   - `npm run test` - Run test suite
-  - `npm run postbuild` - Create extension.zip
+  - `npm run postbuild` - Create `extension.zip` (also runs automatically after `npm run build`)
+  - `npm run build:e2e` - Build the gitignored localhost E2E extension variant
+  - `npm run e2e:smoke` / `npm run e2e:playerid` - Run local real-browser scenarios (not CI jobs)
+  - `npm run e2e -- <command>` - Drive the persistent E2E browser CLI; see `e2e/README.md`
   - `npm run validate-schema` - Validate API events in NDJSON files
   - `npm run schema-diff` - Detect API schema changes (additions/removals) in NDJSON files
   - `npm run verify-stats -- <file.ndjson>` - Cross-check stats pipeline output against an independent oracle (regression check for entity-converter/write-entity-stream/stats changes; see CONTRIBUTING.md)
@@ -264,7 +270,7 @@ data storage (Dexie.js), normalized entities, Firestore strategy, and v3 index o
 10. **State Persistence**: Maintain critical state across Service Worker lifecycle
 11. **Cloud Sync**: Smart incremental sync with Firestore
     - No periodic sync (cost optimization)
-    - Auto sync after 100+ new events at game end (upload only)
+    - Auto sync after a 100+ new-event backlog at session end, with session start as the fallback trigger (upload only)
     - Upload: Only events newer than cloud's latest timestamp
     - Download: Cloud as complete source of truth
     - Manual sync controls for user-initiated operations
@@ -657,7 +663,7 @@ Dynamic statistics for all players, with hero having additional hand improvement
 - **Breaking changes**: Use `ApiEvent` (removed: `ApiEventType`, `ApiEventUnion`, `ApiEventSubset`, `ApiEventMap`)
 - **Validation gates the pipeline, never storage** (Raw Event Lake — see Design Principles #16 and `docs/architecture.md`): the content-deduplicating raw merge in `src/background/event-ingestion.ts` runs before `parseApiEvent`/`isApplicationApiEvent` and stores anything with a numeric `timestamp`+`ApiTypeId` — non-application events (202/205 keepalive/timer), ApiTypeIds unknown to `apiEventSchemas`, and app-type events that currently fail to parse are all persisted. The same event is only forwarded to `eventLogger`/`handLogStream`/`handAggregateStream`/`realTimeStatsStream` when it *does* parse as a known application event. Any code path that reads raw `apiEvents` rows and feeds them into `EntityConverter` or `HandLogProcessor` (which read required fields like `EVT_DEAL.Game.SmallBlind` without guards) must first re-validate with `filterValidApplicationEvents()` (`src/utils/database-utils.ts`) — see `performFullRebuild` (shared by `rebuildAllData` and `importData`'s non-empty-DB rebuild path), `AutoSyncService.rebuildLocalEntities`, and `HandLogExporter`'s two prefetch sites for the pattern.
 - **Cloud sync is application-type-only** (cost decision): `AutoSyncService.syncToCloud()` filters each raw chunk to `isApplicationApiEvent` before upload — non-application noise (202/205 keepalive/timer, or any ApiTypeId outside `ApiTypeValues`) never leaves the device. The upload cursor still advances on the *raw* chunk boundary (not the filtered subset) for these rows, otherwise a chunk that's 100% noise would never advance and the sync loop would refetch it forever.
-- **Watermark never advances past a recoverable unparseable row** (PR #142 review r3611258695, fixed in `fix/sync-watermark-unparseable`): an application-typed row that currently fails Zod validation (e.g. a 309 broken by a PokerChase payload change, see `docs/postmortems/2026-07-session-results-drop.md`) is *not* treated like noise for watermark purposes — `isUnparseableApplicationEvent()` (`src/types/api.ts`) tells them apart by ApiTypeId membership in `ApiTypeValues` alone (not full schema success), since `isApplicationApiEvent` collapses both to `false`. Naively advancing the raw-chunk cursor past such a row is a **permanent loss**, not a delay: once a *later* valid event uploads, Firestore's own max timestamp (`getCloudMaxTimestamp()`) moves past the unparseable row, and every future `.where('timestamp').above(cloudMaxTimestamp)` query excludes it forever — even after a future schema fix makes it parseable, since the raw Lake copy is never re-offered to the query. `AutoSyncService` persists the earliest such row's timestamp in `meta` (`syncUnparseableFloor`) and rewinds each sync's scan floor to just before it until it resolves, re-offering it to `isApplicationApiEvent` (and therefore to upload) on every sync. This can't starve the loop (only rows that structurally *should* eventually parse hold the floor back — known noise still advances immediately) and can't silently lose data (the marker persists across Service Worker restarts and is only cleared once a full scan finds nothing pending). See the tradeoff comment at the top of `AutoSyncService.syncToCloud()` for alternatives considered (never-advance-at-all reintroduces the SPOF-era starvation; uploading unparsed rows as opaque blobs pollutes Firestore's document shape; rebuild-triggered-only re-scan misses the ship-then-sync-before-rebuild race).
+- **Watermark never advances past a recoverable unparseable row** (PR #142 review r3611258695, fixed in `fix/sync-watermark-unparseable`): an application-typed row that currently fails Zod validation (e.g. a 309 broken by a PokerChase payload change; see the season-3 incident under "Incident Diagnosis Practices") is *not* treated like noise for watermark purposes — `isUnparseableApplicationEvent()` (`src/types/api.ts`) tells them apart by ApiTypeId membership in `ApiTypeValues` alone (not full schema success), since `isApplicationApiEvent` collapses both to `false`. Naively advancing the raw-chunk cursor past such a row is a **permanent loss**, not a delay: once a *later* valid event uploads, Firestore's own max timestamp (`getCloudMaxTimestamp()`) moves past the unparseable row, and every future `.where('timestamp').above(cloudMaxTimestamp)` query excludes it forever — even after a future schema fix makes it parseable, since the raw Lake copy is never re-offered to the query. `AutoSyncService` persists the earliest such row's timestamp in `meta` (`syncUnparseableFloor`) and rewinds each sync's scan floor to just before it until it resolves, re-offering it to `isApplicationApiEvent` (and therefore to upload) on every sync. This can't starve the loop (only rows that structurally *should* eventually parse hold the floor back — known noise still advances immediately) and can't silently lose data (the marker persists across Service Worker restarts and is only cleared once a full scan finds nothing pending). See the tradeoff comment at the top of `AutoSyncService.syncToCloud()` for alternatives considered (never-advance-at-all reintroduces the SPOF-era starvation; uploading unparsed rows as opaque blobs pollutes Firestore's document shape; rebuild-triggered-only re-scan misses the ship-then-sync-before-rebuild race).
 
 ### Database Schema
 
@@ -725,9 +731,9 @@ Key `pokerChaseServiceState` in `storage.local`. Auto-saved with 500ms debounce 
 - **BigQuery Export**: Automatic daily snapshots for analysis
 - **Free Tier Friendly**: Typical usage stays within limits
 
-**Important**: Update `src/services/firebase-config.ts` with your Firebase configuration.
-
-For detailed setup instructions, see [docs/firebase-setup.md](docs/firebase-setup.md).
+Firebase project configuration and deployment prerequisites are documented in
+[docs/firebase-setup.md](docs/firebase-setup.md); keep this overview focused on the
+runtime contract and use that guide as the setup source of truth.
 
 ### Forced Update (auto-apply + remote kill switch)
 
