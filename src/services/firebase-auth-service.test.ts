@@ -450,6 +450,7 @@ describe('FirebaseAuthService.signOut -- durable state removal', () => {
       const signIn = service.signInWithGoogle()
       while (!signInSetStarted) await Promise.resolve()
 
+      const capturedOldUser = service.getCurrentUser()!
       const signOut = service.signOut()
       await new Promise(resolve => setTimeout(resolve, 0))
 
@@ -457,6 +458,7 @@ describe('FirebaseAuthService.signOut -- durable state removal', () => {
       // allow the delayed sign-in write to resurrect B afterward.
       expect(removeSpy).not.toHaveBeenCalled()
       expect(service.getCurrentUser()?.uid).toBe('user-a')
+      await expect(capturedOldUser.getIdToken()).rejects.toThrow('Sign-out is in progress')
 
       releaseSignInSet?.()
       expect((await signIn).uid).toBe('user-b')

@@ -209,19 +209,24 @@ export class FirebaseAuthService {
       // slow storage write.
       const precedingSignInCommit = this.pendingSignInCommit?.completion
       const operation = this.commitSignIn(nextState, precedingSignInCommit)
-      const pendingSignInCommit = {
-        operation,
+      let pendingSignInCommit!: { operation: Promise<void>, completion: Promise<void> }
+      const completion = operation
         // Sign-out must continue even when the candidate write failed: in
         // that case it removes whichever older account remains authoritative.
-        completion: operation.then(() => {}, () => {})
+        .then(() => {}, () => {})
+        .then(() => {
+          // Clear as part of the completion barrier itself. A sign-out that
+          // drains this promise must not spin on a resolved-but-still-marked
+          // tail while the original sign-in caller resumes separately.
+          if (this.pendingSignInCommit === pendingSignInCommit) this.pendingSignInCommit = null
+        })
+      pendingSignInCommit = {
+        operation,
+        completion
       }
       this.pendingSignInCommit = pendingSignInCommit
 
-      try {
-        await operation
-      } finally {
-        if (this.pendingSignInCommit === pendingSignInCommit) this.pendingSignInCommit = null
-      }
+      await operation
       console.log('[FirebaseAuth] Firebase sign in successful:', nextState.email)
       return this.getCurrentUser()!
     } catch (error) {
@@ -243,23 +248,10 @@ export class FirebaseAuthService {
       return
     }
 
-    // Once a sign-in's storage write has started, let it publish (or fail)
-    // before this later user action removes state. Otherwise the delayed set
-    // can finish after removal and resurrect the account. Re-check the
-    // sign-out owner after waiting because duplicate sign-outs can queue on
-    // the same commit concurrently.
-    if (this.pendingSignInCommit) {
-      await this.pendingSignInCommit.completion
-      const signOutStartedWhileWaiting = this.pendingSignOut
-      if (signOutStartedWhileWaiting) {
-        await signOutStartedWhileWaiting.operation
-        return
-      }
-    }
-
     // performSignOut() runs synchronously through its generation reservation
-    // and first token lookup before returning this promise. The marker is
-    // therefore installed before signOut() yields to any later sign-in.
+    // before returning this promise. The marker is therefore installed before
+    // signOut() yields to token work or any later sign-in, even when the
+    // operation must first drain a slow durable sign-in commit.
     const operation = this.performSignOut()
     const pendingSignOut = {
       operation,
@@ -283,6 +275,13 @@ export class FirebaseAuthService {
     // This is also before the first await (the Chrome token lookup), so a
     // sign-in started while that lookup is slow must wait for this operation.
     this.authGeneration++
+
+    // Once a sign-in's storage write has started, let every already-queued
+    // commit publish (or fail) before this later user action removes state.
+    // `pendingSignOut` is installed by signOut() immediately after this method
+    // returns its promise, so no later sign-in can extend the tail while this
+    // drain is in progress, and getIdToken() rejects throughout the wait.
+    if (this.pendingSignInCommit) await this.waitForPendingSignInCommits()
 
     const previousToken = await this.getChromeAuthToken(false).catch(() => null)
     await chrome.storage.local.remove(FirebaseAuthService.STORAGE_KEY)
@@ -521,6 +520,12 @@ export class FirebaseAuthService {
     // access, and firebaseAuthStatus reflect the recovered account.
     this.restorePromise = Promise.resolve()
     this.notifyAuthStateListeners(this.getCurrentUser(), 'sign-in')
+  }
+
+  private async waitForPendingSignInCommits(): Promise<void> {
+    while (this.pendingSignInCommit) {
+      await this.pendingSignInCommit.completion
+    }
   }
 
   /** Wait until the current sign-out and all of its side effects settle. */
