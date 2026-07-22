@@ -13,6 +13,7 @@ import { connectedPorts, startPortPing, setLastKnownStats } from './ports'
 import { recordUndecodedEvent } from './undecoded-event-tracker'
 import { markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
+import { getOperationState } from './operation-state'
 
 /**
  * 参加取消申込（ApiTypeId 203）。`ApiType` enum（アプリケーションで使用する
@@ -108,6 +109,16 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // 保存・処理しないため、耐久性バリアの対象になる副作用が無い）
         if (typeof message === 'object' && 'type' in message && message.type === 'keepalive') {
           return
+        }
+
+        // Local deletion owns the database through runtime.reload(). Events
+        // arriving after that synchronous claim must not enter the queue:
+        // Dexie would otherwise auto-open and recreate the just-deleted DB in
+        // the narrow window before reload. Tasks queued before the claim are
+        // drained by deleteAllData() and then removed with the database.
+        if (getOperationState().type === 'delete') {
+          console.warn('[background] Dropping event while local data deletion is committing:', message)
+          return Promise.resolve()
         }
 
         // このイベントの処理を、直前のイベントの処理（add()の決着含む）の

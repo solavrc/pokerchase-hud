@@ -160,4 +160,16 @@ describe('message-router operation exclusivity', () => {
 
     expect(getOperationState()).toEqual({ type: 'delete' })
   })
+
+  test('reloads after database deletion even when advisory cleanup fails', async () => {
+    ;(chrome.storage.local.set as jest.Mock).mockRejectedValueOnce(new Error('simulated advisory storage failure'))
+    const reload = chrome.runtime.reload as jest.Mock
+    const response = new Promise<MessageResponse>(resolve => {
+      listener({ action: 'deleteAllData' }, {}, resolve)
+    })
+
+    await expect(response).resolves.toEqual({ success: true })
+    expect(reload).toHaveBeenCalled()
+    expect(getOperationState()).toEqual({ type: 'delete' })
+  })
 })

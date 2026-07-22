@@ -31,6 +31,7 @@ import {
   type RawApiEvent
 } from '../utils/api-event-key'
 import { HandLogExporter } from '../utils/hand-log-exporter'
+import { awaitIngestionDrain } from './update-manager'
 
 const IMPORT_CHUNK_SIZE = DATABASE_CONSTANTS.IMPORT_CHUNK_SIZE
 
@@ -777,11 +778,23 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
     // Keep the slot claimed until runtime.reload() replaces this worker.
     setOperationState({ type: 'delete' })
     try {
+      // Events already queued before the synchronous claim above must finish
+      // first. event-ingestion rejects later arrivals while type=delete, so
+      // once this drain stabilizes nothing can recreate the database between
+      // delete() and runtime.reload().
+      await awaitIngestionDrain()
+
       // データベースを完全に削除
       await db.delete()
 
-      // データが無くなったので再構築アドバイザリも解消する（reloadより前に行う）
-      await resolveAdvisory()
+      // The database deletion is the commit point. Advisory cleanup is
+      // best-effort after it: a chrome.storage failure must not strand this
+      // worker with a closed database and advertise idle to later callers.
+      try {
+        await resolveAdvisory()
+      } catch (advisoryError) {
+        console.warn('[deleteAllData] Database deleted, but rebuild advisory cleanup failed; reloading anyway:', advisoryError)
+      }
 
       // データベースの新しいインスタンスを確保するために拡張機能をリロード
       chrome.runtime.reload()
