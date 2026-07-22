@@ -5,6 +5,11 @@
 
 import { firestoreBackupService } from './firestore-backup-service'
 import { firebaseAuthService } from './firebase-auth-service'
+import { getOperationState, isOperationIdle, setOperationState, waitForOperationIdle } from '../background/operation-state'
+import {
+  SYNC_RESCAN_BACKFILL_DONE_META_KEY,
+  SYNC_RESCAN_FLOOR_META_KEY
+} from '../constants/sync'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
 import { ApiType, ApiTypeValues, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent } from '../types'
@@ -274,7 +279,7 @@ export class AutoSyncService {
    * 直前までスキャン開始点を巻き戻す。実際のキーは`scopedMetaKey()`でサインイン中の
    * uidにスコープされる（上記 ACCOUNT-SCOPING INVARIANTS 参照）。
    */
-  private readonly SYNC_UNPARSEABLE_FLOOR_KEY = 'syncUnparseableFloor'
+  private readonly SYNC_UNPARSEABLE_FLOOR_KEY = SYNC_RESCAN_FLOOR_META_KEY
   /**
    * `meta`テーブルのキー。一度だけ実行するバックフィルスキャン
    * （`backfillUnparseableFloorIfNeeded`、下記の invariant spec 参照）が
@@ -286,7 +291,7 @@ export class AutoSyncService {
    * `backfillUnparseableFloorIfNeeded`参照）とuidスコープを確実に一度だけ
    * 適用させるため。
    */
-  private readonly SYNC_UNPARSEABLE_BACKFILL_DONE_KEY = 'syncUnparseableFloorBackfillDoneV2'
+  private readonly SYNC_UNPARSEABLE_BACKFILL_DONE_KEY = SYNC_RESCAN_BACKFILL_DONE_META_KEY
 
   constructor(db?: PokerChaseDB) {
     this.db = db ?? new PokerChaseDB(self.indexedDB, self.IDBKeyRange)
@@ -523,6 +528,9 @@ export class AutoSyncService {
           if (this.isSyncing && this.inFlightSyncPromise) {
             console.warn('[AutoSync] initialize(): first sync did not run because a different pass is still in flight, waiting for it to settle before retrying')
             await this.inFlightSyncPromise
+          } else if (!isOperationIdle()) {
+            console.warn(`[AutoSync] initialize(): first sync is waiting for the active ${getOperationState().type} operation to finish`)
+            await waitForOperationIdle()
           } else {
             console.warn('[AutoSync] initialize(): first sync did not complete, retrying')
           }
@@ -567,6 +575,14 @@ export class AutoSyncService {
       return { success: false, error: '別のクラウド同期が実行中です。完了後にもう一度お試しください。' }
     }
 
+    // Importing older history while an upload cursor is in flight can insert
+    // a row behind that cursor and below the Firestore max watermark. Claim
+    // the shared long-operation slot synchronously before the first await so
+    // import/export/rebuild and cloud sync cannot overlap in either order.
+    if (!isOperationIdle()) {
+      return { success: false, error: '別のデータ処理が実行中です。完了後にもう一度お試しください。' }
+    }
+
     // Latch BEFORE the awaited gate check below (codex#3612092798): if we set
     // this after awaiting, two performSync() calls arriving close together can
     // both pass the `this._isSyncing` check above, both await the gate, and
@@ -574,6 +590,7 @@ export class AutoSyncService {
     // race this flag exists to prevent. Reset in `finally` so every return
     // path (gate-blocked or sync completed/failed) releases the latch.
     this._isSyncing = true
+    setOperationState({ type: 'sync' })
     let resolveInFlightSyncPromise: (() => void) | undefined
     this.inFlightSyncPromise = new Promise<void>(resolve => { resolveInFlightSyncPromise = resolve })
 
@@ -711,6 +728,7 @@ export class AutoSyncService {
       this._isSyncing = false
       this.inFlightSyncPromise = null
       resolveInFlightSyncPromise?.()
+      if (getOperationState().type === 'sync') setOperationState({ type: 'idle' })
     }
   }
 

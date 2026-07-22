@@ -47,6 +47,18 @@ describe('message-router import operation exclusivity', () => {
     expect(setBatchMode).not.toHaveBeenCalled()
   })
 
+  test('rejects a direct import while cloud sync owns the shared operation slot', () => {
+    const setBatchMode = jest.spyOn(service, 'setBatchMode')
+    const sendResponse = jest.fn()
+    setOperationState({ type: 'sync' })
+
+    const handled = listener({ action: 'importData', data: '{}' }, {}, sendResponse)
+
+    expect(handled).toBe(true)
+    expect(sendResponse).toHaveBeenCalledWith({ success: false, error: '別の処理が実行中です' })
+    expect(setBatchMode).not.toHaveBeenCalled()
+  })
+
   test('rejects chunk-session initialization while another operation is active', () => {
     const sendResponse = jest.fn()
     setOperationState({ type: 'rebuild' })

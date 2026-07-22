@@ -349,7 +349,7 @@ export interface SyncInfoResponse extends SuccessResponse {
 
 export interface OperationStateResponse extends SuccessResponse {
   operationState: {
-    type: 'idle' | 'export' | 'import' | 'rebuild'
+    type: 'idle' | 'export' | 'import' | 'rebuild' | 'sync'
     format?: 'json' | 'pokerstars'
     progress?: number
     processed?: number

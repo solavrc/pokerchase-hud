@@ -2,14 +2,14 @@
 /**
  * Popup ↔ Background の排他制御用の状態管理。
  *
- * `export`/`import`/`rebuild` のような長時間実行される操作は同時に1つしか
+ * `export`/`import`/`rebuild`/`sync` のような長時間実行される操作は同時に1つしか
  * 実行できない（CLAUDE.md「Operation Exclusivity」参照）。Popup側は楽観的に
  * ボタンを無効化するが、Background側でも`currentOperationState`を見て
  * 二重実行を拒否することでサーバーサイドの保証とする。
  */
 
 export interface OperationState {
-  type: 'idle' | 'export' | 'import' | 'rebuild'
+  type: 'idle' | 'export' | 'import' | 'rebuild' | 'sync'
   format?: 'json' | 'pokerstars'
   progress?: number
   processed?: number
@@ -58,3 +58,22 @@ export const setOperationState = (state: OperationState): void => {
 
 /** アイドル状態かどうか（同時実行不可な操作の開始可否判定用） */
 export const isOperationIdle = (): boolean => currentOperationState.type === 'idle'
+
+/** 現在の長時間処理が終わるまで待つ。既にidleなら即座に解決する。 */
+export const waitForOperationIdle = async (): Promise<void> => {
+  if (isOperationIdle()) return
+
+  await new Promise<void>(resolve => {
+    const unsubscribe = onOperationBecameIdle(() => {
+      unsubscribe()
+      resolve()
+    })
+
+    // Check again after subscription so an idle transition between the
+    // initial check and listener registration cannot leave this hung.
+    if (isOperationIdle()) {
+      unsubscribe()
+      resolve()
+    }
+  })
+}
