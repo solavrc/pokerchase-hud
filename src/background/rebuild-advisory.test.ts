@@ -102,6 +102,22 @@ describe('rebuild-advisory', () => {
       const state = await getRebuildAdvisoryState()
       expect(state.pendingVersion).toBe(REBUILD_ADVISORY_VERSION)
     })
+
+    it('keeps the advisory durable when callback-free badge and notification APIs reject', async () => {
+      const uiError = new Error('extension UI unavailable')
+      ;(chrome.action.setBadgeText as jest.Mock).mockRejectedValue(uiError)
+      ;(chrome.action.setBadgeBackgroundColor as jest.Mock).mockRejectedValue(uiError)
+      ;(chrome.notifications.create as jest.Mock).mockRejectedValue(uiError)
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+      ;(mockDb.apiEvents.count as jest.Mock).mockResolvedValue(42)
+
+      await expect(checkOnUpdate(mockDb)).resolves.toBeUndefined()
+      await Promise.resolve()
+
+      expect((await getRebuildAdvisoryState()).pendingVersion).toBe(REBUILD_ADVISORY_VERSION)
+      expect(warnSpy).toHaveBeenCalledTimes(3)
+      warnSpy.mockRestore()
+    })
   })
 
   describe('PR #207 backfill (audit finding #7, codex review pass-3 P2 "Prompt rebuilds for already-stored overlap repairs")', () => {

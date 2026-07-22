@@ -31,6 +31,7 @@ import {
 } from '../utils/api-event-key'
 import { HandLogExporter } from '../utils/hand-log-exporter'
 import { awaitIngestionDrain } from './update-manager'
+import { runBestEffortChromeUi } from './best-effort-chrome-api'
 
 const IMPORT_CHUNK_SIZE = DATABASE_CONSTANTS.IMPORT_CHUNK_SIZE
 
@@ -531,12 +532,15 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           message: 'エクスポートするハンドが見つかりませんでした'
         }).catch(() => {})
         // Show notification to user
-        chrome.notifications.create({
-          type: 'basic',
-          iconUrl: chrome.runtime.getURL('icons/icon_48px.png'),
-          title: 'エクスポートエラー',
-          message: 'エクスポートするハンドが見つかりませんでした。ゲームをプレイしてから再度お試しください。'
-        })
+        if (chrome.notifications?.create) {
+          runBestEffortChromeUi('export-pokerstars/no-hands-notification', () =>
+            chrome.notifications.create({
+              type: 'basic',
+              iconUrl: chrome.runtime.getURL('icons/icon_48px.png'),
+              title: 'エクスポートエラー',
+              message: 'エクスポートするハンドが見つかりませんでした。ゲームをプレイしてから再度お試しください。'
+            }))
+        }
         return
       }
 
@@ -567,12 +571,15 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         message: `PokerStarsエクスポート失敗: ${error}`
       }).catch(() => {})
       // Show error notification
-      chrome.notifications.create({
-        type: 'basic',
-        iconUrl: chrome.runtime.getURL('icons/icon_48px.png'),
-        title: 'エクスポートエラー',
-        message: 'ハンドヒストリーのエクスポート中にエラーが発生しました。'
-      })
+      if (chrome.notifications?.create) {
+        runBestEffortChromeUi('export-pokerstars/error-notification', () =>
+          chrome.notifications.create({
+            type: 'basic',
+            iconUrl: chrome.runtime.getURL('icons/icon_48px.png'),
+            title: 'エクスポートエラー',
+            message: 'ハンドヒストリーのエクスポート中にエラーが発生しました。'
+          }))
+      }
       throw error
     }
   }
