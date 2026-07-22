@@ -91,6 +91,9 @@ export class EntityConverter {
       if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
         this.currentSession.id = event.Id
         this.currentSession.battleType = event.BattleType
+        // 308 (EVT_SESSION_DETAILS) may be absent. Do not let the previous
+        // session's display name leak into hands from the new 201 segment.
+        this.currentSession.name = undefined
         // 新しいセッション開始時はプレイヤー情報をクリア
         this.currentSession.players = new Map()
       } else if (isApiEventType(event, ApiType.EVT_SESSION_DETAILS)) {
