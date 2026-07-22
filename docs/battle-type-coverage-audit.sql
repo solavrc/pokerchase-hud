@@ -171,6 +171,7 @@ WITH base AS (
       PARTITION BY observer_ref
       ORDER BY event_ts_ms, api_type_id,
         COALESCE(SAFE_CAST(JSON_VALUE(event_json, '$.sequence') AS INT64), 0)
+      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
     ) AS entry_seq,
     LAST_VALUE(IF(
       api_type_id = 201,
