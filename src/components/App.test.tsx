@@ -727,7 +727,29 @@ describe('App', () => {
 
     it('セッション終了(EVT_SESSION_RESULTS)でhero以外の全パネル（ミュート中含む）がクリアされ、heroパネルはそのまま残る', async () => {
       render(<App />)
-      await dispatchStats(mockStatsData.stats)
+      await act(async () => {
+        window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
+          detail: {
+            stats: mockStatsData.stats,
+            realTimeStats: {
+              heroStats: {},
+              playerStats: {
+                0: {
+                  spr: 10,
+                  potOdds: {
+                    pot: 300,
+                    call: 100,
+                    percentage: 25,
+                    ratio: '3:1',
+                    isPlayerTurn: true
+                  }
+                }
+              }
+            }
+          }
+        }))
+      })
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('PotOdds: yes')
 
       // 席1をbustさせてミュート状態にする
       const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
@@ -741,6 +763,7 @@ describe('App', () => {
 
       // hero(席0)はそのまま残る
       expect(screen.getByTestId('hud-0')).toHaveTextContent('Player: 1')
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('PotOdds: no')
       // hero以外は空席へクリアされ、ミュートも解除される
       for (let i = 1; i < 6; i++) {
         expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Player: -1')

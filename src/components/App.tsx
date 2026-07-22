@@ -391,6 +391,10 @@ const App = memo(() => {
   // 通りここでは一切触らない(pregameでのキャリア統計復元は別経路)。
   const handleSessionEnd = useCallback(() => {
     closeAllDrillDownPanels()
+    // The background clears lastKnownStats before the realtime stream handles
+    // EVT_SESSION_RESULTS, so that stream's empty update is not broadcast.
+    // Clear the local realtime state on the session event itself instead.
+    setAllPlayersRealTimeStats(undefined)
     const dimCache = dimCacheRef.current
     // #179 post-merge review P2「Preserve the hero by player id at session
     // end」指摘: 直前の更新が観戦モードdeal（上のisSpectatorDeal分岐）だった
