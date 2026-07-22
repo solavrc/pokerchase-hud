@@ -75,6 +75,9 @@ interface FirebaseRefreshResponse {
 
 export class FirebaseAuthService {
   private static readonly STORAGE_KEY = 'firebaseRestAuthState'
+  // Match the existing 30s bounded-network convention used by Firestore
+  // without coupling auth cleanup to a database-specific constant.
+  private static readonly GOOGLE_REVOKE_TIMEOUT_MS = 30_000
   private currentState: StoredAuthState | null = null
   private authStateListeners: ((user: AuthUser | null, source: AuthChangeSource) => void)[] = []
   private restorePromise: Promise<void>
@@ -257,7 +260,25 @@ export class FirebaseAuthService {
       await new Promise<void>((resolve) => {
         chrome.identity.removeCachedAuthToken({ token: previousToken }, () => resolve())
       })
-      await fetch(`https://accounts.google.com/o/oauth2/revoke?token=${previousToken}`).catch(() => {})
+      // Revocation is best-effort after Chrome's local token cache has already
+      // been cleared. Bound the network leg so a stalled/offline endpoint
+      // cannot keep pendingSignOut alive forever and permanently block the
+      // next interactive sign-in in this Service Worker.
+      const revokeController = new AbortController()
+      const revokeTimeout = setTimeout(
+        () => revokeController.abort(),
+        FirebaseAuthService.GOOGLE_REVOKE_TIMEOUT_MS
+      )
+      try {
+        await fetch(
+          `https://accounts.google.com/o/oauth2/revoke?token=${previousToken}`,
+          { signal: revokeController.signal }
+        )
+      } catch {
+        // Local removal is authoritative; network revoke remains best-effort.
+      } finally {
+        clearTimeout(revokeTimeout)
+      }
     }
   }
 

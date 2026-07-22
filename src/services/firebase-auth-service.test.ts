@@ -567,4 +567,75 @@ describe('FirebaseAuthService.signOut -- durable state removal', () => {
       }
     }
   })
+
+  test('releases sign-in after a stalled Google revoke request times out', async () => {
+    jest.useFakeTimers()
+    const storedState = {
+      uid: 'user-a',
+      email: 'a@example.com',
+      displayName: null,
+      photoURL: null,
+      idToken: 'a-token',
+      refreshToken: 'a-refresh-token',
+      expiresAt: Date.now() + 60 * 60 * 1000
+    }
+    await chrome.storage.local.set({ firebaseRestAuthState: storedState })
+
+    const service = new FirebaseAuthService()
+    await service.ready()
+
+    let interactiveLookupCount = 0
+    jest.spyOn(chrome.identity, 'getAuthToken').mockImplementation(((options: { interactive?: boolean }, callback: (result?: { token: string }) => void) => {
+      if (options.interactive) interactiveLookupCount++
+      callback({ token: options.interactive ? 'new-chrome-token' : 'old-chrome-token' })
+    }) as typeof chrome.identity.getAuthToken)
+    const originalRemoveCachedAuthToken = chrome.identity.removeCachedAuthToken
+    ;(chrome.identity as any).removeCachedAuthToken = jest.fn(((_details: unknown, callback?: () => void) => {
+      callback?.()
+    }) as any)
+
+    let revokeStarted = false
+    const originalFetch = global.fetch
+    global.fetch = jest.fn().mockImplementation((input: string, init?: RequestInit) => {
+      if (input.includes('accounts.google.com/o/oauth2/revoke')) {
+        revokeStarted = true
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          idToken: 'b-token',
+          refreshToken: 'b-refresh-token',
+          expiresIn: '3600',
+          localId: 'user-b',
+          email: 'b@example.com'
+        })
+      })
+    }) as any
+
+    try {
+      const signOut = service.signOut()
+      while (!revokeStarted) await Promise.resolve()
+
+      const signIn = service.signInWithGoogle()
+      await Promise.resolve()
+      expect(interactiveLookupCount).toBe(0)
+
+      await jest.advanceTimersByTimeAsync(30_000)
+      await signOut
+      expect((await signIn).uid).toBe('user-b')
+      expect(interactiveLookupCount).toBe(1)
+      expect(service.getCurrentUser()?.uid).toBe('user-b')
+    } finally {
+      jest.useRealTimers()
+      global.fetch = originalFetch
+      if (originalRemoveCachedAuthToken) {
+        ;(chrome.identity as any).removeCachedAuthToken = originalRemoveCachedAuthToken
+      } else {
+        delete (chrome.identity as Partial<typeof chrome.identity>).removeCachedAuthToken
+      }
+    }
+  })
 })
