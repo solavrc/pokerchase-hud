@@ -273,6 +273,7 @@ describe('FirebaseAuthService.signOut -- durable state removal', () => {
     const service = new FirebaseAuthService()
     await service.ready()
     expect(service.getCurrentUser()?.uid).toBe('user-a')
+    const generationBeforeSignOut = service.getAuthGeneration()
 
     jest.spyOn(chrome.identity, 'getAuthToken').mockImplementation(((_options: unknown, callback: (result: { token: string }) => void) => {
       callback({ token: 'chrome-token' })
@@ -287,6 +288,10 @@ describe('FirebaseAuthService.signOut -- durable state removal', () => {
     // is still present, so the current instance must remain consistently
     // signed in and let the popup report the sign-out failure.
     expect(service.getCurrentUser()?.uid).toBe('user-a')
+    // The reservation is deliberately retained: work that started before
+    // the failed attempt must still see that an auth-sensitive operation
+    // intervened, even though no signed-out state was published.
+    expect(service.getAuthGeneration()).toBe(generationBeforeSignOut + 1)
 
     const restartedService = new FirebaseAuthService()
     await restartedService.ready()
@@ -333,8 +338,10 @@ describe('FirebaseAuthService.signOut -- durable state removal', () => {
 
     // The generation reservation is visible immediately, invalidating work
     // that snapshotted the old session, while user-facing auth state and
-    // listeners remain unchanged until the durable delete succeeds.
+    // listeners remain unchanged until the durable delete succeeds. Capture
+    // it as if a sync started inside this pending-removal window.
     expect(service.getAuthGeneration()).toBe(generationBeforeSignOut + 1)
+    const generationSnapshottedWhileRemovePending = service.getAuthGeneration()
     expect(service.getCurrentUser()?.uid).toBe('user-a')
     expect(listener).not.toHaveBeenCalled()
 
@@ -342,6 +349,10 @@ describe('FirebaseAuthService.signOut -- durable state removal', () => {
     await signOut
 
     expect(service.getCurrentUser()).toBeNull()
+    // A second increment at publication invalidates work that began during
+    // the remove() window with user A plus the reservation generation.
+    expect(service.getAuthGeneration()).toBe(generationBeforeSignOut + 2)
+    expect(service.getAuthGeneration()).toBeGreaterThan(generationSnapshottedWhileRemovePending)
     expect(listener).toHaveBeenCalledWith(null, 'sign-out')
 
     const restartedService = new FirebaseAuthService()

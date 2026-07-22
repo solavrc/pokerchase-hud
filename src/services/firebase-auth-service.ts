@@ -80,11 +80,13 @@ export class FirebaseAuthService {
   private restorePromise: Promise<void>
   /**
    * Monotonic counter, incremented on every auth-state TRANSITION (sign-in,
-   * sign-out, or the initial restore-from-storage on startup) -- and reserved
-   * before a durable sign-out commit so in-flight refreshes are invalidated
-   * even when storage removal ultimately fails. Never decremented, and never
-   * bumped by a same-account token refresh (`getIdToken(forceRefresh)`'s
-   * `currentState` reassignment preserves the same `uid`).
+   * sign-out, or the initial restore-from-storage on startup). Sign-out uses
+   * two increments: one reservation before its durable storage commit, then
+   * one when `null` is actually published. This invalidates work started
+   * both before and during a slow removal; if removal fails, only the
+   * reservation remains. Never decremented, and never bumped by a
+   * same-account token refresh (`getIdToken(forceRefresh)`'s `currentState`
+   * reassignment preserves the same `uid`).
    *
    * WHY (codex post-merge review on #192, r3615389112, P1, "Detect ABA
    * account switches before committing bookkeeping"): callers used to
@@ -195,10 +197,13 @@ export class FirebaseAuthService {
     this.authGeneration++
     await chrome.storage.local.remove(FirebaseAuthService.STORAGE_KEY)
 
-    // Publish the transition only after its durable half committed. There is
-    // intentionally no await between currentState=null and listener
-    // notification, so all in-memory readers observe the same transition.
+    // Publish the transition only after its durable half committed. Advance
+    // the generation AGAIN so work that started during the slow remove()
+    // window (and therefore snapshotted the reservation generation together
+    // with the still-live old user) is invalidated too. There is intentionally
+    // no await across this state/generation/listener commit.
     this.currentState = null
+    this.authGeneration++
     this.notifyAuthStateListeners(null, 'sign-out')
 
     if (previousToken) {
