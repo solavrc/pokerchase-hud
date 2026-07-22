@@ -362,7 +362,7 @@ describe('FirebaseAuthService.signOut -- durable state removal', () => {
     expect(restartedService.getCurrentUser()).toBeNull()
   })
 
-  test('reserves sign-out before a slow Chrome token lookup so an in-flight newer sign-in cannot publish early', async () => {
+  test('waits for a slow sign-out before requesting a new Chrome token', async () => {
     const storedState = {
       uid: 'user-a',
       email: 'a@example.com',
@@ -379,8 +379,10 @@ describe('FirebaseAuthService.signOut -- durable state removal', () => {
     const generationBeforeSignOut = service.getAuthGeneration()
 
     let finishNonInteractiveLookup: (() => void) | undefined
+    let interactiveLookupCount = 0
     jest.spyOn(chrome.identity, 'getAuthToken').mockImplementation(((options: { interactive?: boolean }, callback: (result?: { token: string }) => void) => {
       if (options.interactive) {
+        interactiveLookupCount++
         callback({ token: 'new-chrome-token' })
       } else {
         finishNonInteractiveLookup = () => callback(undefined)
@@ -409,12 +411,16 @@ describe('FirebaseAuthService.signOut -- durable state removal', () => {
       expect(finishNonInteractiveLookup).toBeDefined()
 
       const signIn = service.signInWithGoogle()
-      while (signInFetch.mock.calls.length === 0) await Promise.resolve()
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(interactiveLookupCount).toBe(0)
+      expect(signInFetch).not.toHaveBeenCalled()
       expect(service.getCurrentUser()?.uid).toBe('user-a')
 
       finishNonInteractiveLookup?.()
       await signOut
       expect((await signIn).uid).toBe('user-b')
+      expect(interactiveLookupCount).toBe(1)
+      expect(signInFetch).toHaveBeenCalledTimes(1)
       expect(service.getCurrentUser()?.uid).toBe('user-b')
     } finally {
       global.fetch = originalFetch

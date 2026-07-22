@@ -134,6 +134,15 @@ export class FirebaseAuthService {
    * Sign in with Google using chrome.identity API.
    */
   async signInWithGoogle(): Promise<AuthUser> {
+    // A pending sign-out still owns the Chrome identity token: it may remove
+    // and revoke that token after its durable local-state removal. Waiting
+    // only before publishing the Firebase result is too late because an
+    // interactive lookup can otherwise reuse and exchange the old cached
+    // token while that cleanup is still in flight.
+    // Keep the no-sign-out path synchronous through starting the Chrome token
+    // request. The conditional also makes the ordering explicit: only an
+    // operation that already owns the token forces this sign-in to queue.
+    if (this.pendingSignOut) await this.waitForPendingSignOut()
     const token = await this.getChromeAuthToken(true)
     console.log('[FirebaseAuth] Got Chrome auth token')
 
