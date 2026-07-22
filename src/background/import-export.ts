@@ -11,7 +11,6 @@ import PokerChaseService, {
 } from '../app'
 import { EntityConverter, type EntityBundle } from '../entity-converter'
 import {
-  saveEntities,
   findLatestPlayerDealEvent,
   orderAndFilterApplicationEventsForReplay,
   processInReplayChunks
@@ -83,14 +82,8 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
     let batchModeEnabled = false
     try {
       setOperationState({ type: 'import', progress: 0 })
-      console.log('[importData] Starting optimized import process with direct entity generation')
+      console.log('[importData] Starting import process with canonical entity rebuild')
       const startTime = performance.now()
-
-      // インポート開始時点でDBが空だったか（このインポートより前に保存
-      // されていた行があったか）。既存データがある状態への追加インポートは
-      // 「オーバーラップ」の可能性があるため、下の分岐で経路を変える
-      // （監査finding #7、plan C — 詳細は下のコメント参照）
-      const hadExistingDataBeforeImport = (await db.apiEvents.count()) > 0
 
       // 行で分割し、空行をフィルタリング
       const lines = jsonlData.split('\n').filter(line => line.trim())
@@ -99,10 +92,6 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
       // バッチモードを有効化
       service.setBatchMode(true)
       batchModeEnabled = true
-
-      // 直接エンティティ生成でも、validation前の同一timestamp group全体を
-      // resolverへ渡せるよう、実際に追加されたraw rowをそのまま収集する。
-      const allNewEvents: RawApiEvent[] = []
 
       // メモリ問題を避けるためチャンク単位で処理
       let processed = 0
@@ -163,8 +152,6 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           })
           successCount += merge.added.length
           duplicateCount += merge.duplicates
-
-          allNewEvents.push(...merge.added)
         }
 
         processed += chunkLines.length
@@ -202,10 +189,10 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
       const importTime = ((performance.now() - startTime) / 1000).toFixed(2)
       console.log(`[importData] Import completed in ${importTime}s - Success: ${successCount}, Duplicates: ${duplicateCount}`)
 
-      if (hadExistingDataBeforeImport) {
-        // 既存データがある状態への追加インポート（監査finding #7 / plan C）:
+      if (successCount > 0) {
+        // 新規raw rowを1件以上保存したインポート（監査finding #7 / plan C）:
         //
-        // 既存Lakeと新規行にハンドがまたがるケース（例: 既存にDEAL/RESULTSは
+        // Lakeと新規行にハンドがまたがるケース（例: 既存にDEAL/RESULTSは
         // あるが中間のACTIONsが欠けている「キメラ」状態で保存されており、
         // 今回のインポートで欠けていたACTIONsが到着する）では、新規イベント
         // だけをEntityConverterに渡す増分変換では対応できない
@@ -220,146 +207,93 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         // 修復で解決しようとしたが、11巡のレビューでも収束せず
         // （結局フルリビルドと同等の意味論を部分的に再実装することになる）、
         // オーナー判断でこの経路自体を廃止した（plan C）。代わりに、新規行が
-        // 1件でも実際に保存された場合は、「データ再構築」ボタンが使っている
-        // のと同じフルリビルド（`performFullRebuild`）をapiEvents Lake全体に
-        // 対して実行する ―― ユーザーから見て「インポート後にデータ再構築を
-        // 押したのと同じ結果」になることを保証する、単純で
+        // 1件でも実際に保存された場合は、インポート開始時のDB空判定に依存せず、
+        // 「データ再構築」ボタンと同じフルリビルド（`performFullRebuild`）を
+        // apiEvents Lake全体に対して実行する。ユーザーから見て
+        // 「インポート後にデータ再構築を押したのと同じ結果」になることを
+        // 保証する、単純で
         // レビューしやすいコード。
-        if (successCount > 0) {
-          console.log(`[importData] Non-empty DB received ${successCount} new raw row(s) - running full rebuild instead of incremental entity generation`)
+        //
+        // 「開始時に0件なら直接変換」という旧分岐はlive ingestionとの競合に
+        // 弱い。count()が0を返した直後、既にqueue済みのlive rowがcommitして
+        // import tailと同じLakeへ入ると、直接変換にはimport側の新規rowしか渡らず、
+        // 完全なLakeから生成できるhand/actionが欠落する。performFullRebuildは
+        // snapshot後の追記もtransaction内で再確認するため、この競合も含めて
+        // canonicalな派生データへ収束する。
+        console.log(`[importData] Stored ${successCount} new raw row(s) - running canonical full rebuild`)
 
-          // 再構築フェーズの進捗は、rebuildAllData（データ再構築ボタン）と
-          // 同じ`rebuildProgress`メッセージ経路で報告する。popup
-          // （ImportExportSection.tsx）は既にこのメッセージ種別を購読して
-          // 専用の再構築プログレスバーを表示するため、ここから流すだけで
-          // 「今どのフェーズか」がそのままpopupに反映される
-          // （読み手向けメモ: importProgressの0-100%は生ログ保存フェーズの
-          // 進捗で完結しており、この後に続くrebuildProgressの0-100%は
-          // 別フェーズとして独立に表示される）
-          chrome.runtime.sendMessage<RebuildProgressMessage>({
-            action: 'rebuildProgress',
-            state: 'started',
-            message: 'インポートにより新規データを検出、データを再構築中...'
-          }).catch(() => {})
-
-          try {
-            const rebuildResult = await performFullRebuild((progress, message) => {
-              setOperationState({ type: 'rebuild', progress, message })
-              chrome.runtime.sendMessage<RebuildProgressMessage>({
-                action: 'rebuildProgress',
-                state: 'processing',
-                progress,
-                message
-              }).catch(() => {})
-            })
-
-            console.log(`[importData] Post-import rebuild completed - Hands: ${rebuildResult.totalHands}, Phases: ${rebuildResult.totalPhases}, Actions: ${rebuildResult.totalActions}`)
-
-            chrome.runtime.sendMessage<RebuildProgressMessage>({
-              action: 'rebuildProgress',
-              state: 'completed',
-              progress: 100,
-              message: `インポート後の再構築完了 - ハンド: ${rebuildResult.totalHands.toLocaleString()}, フェーズ: ${rebuildResult.totalPhases.toLocaleString()}, アクション: ${rebuildResult.totalActions.toLocaleString()}`
-            }).catch(() => {})
-          } catch (rebuildError) {
-            // ここに来た時点で、生イベントは既にapiEvents（Lake）へ確定
-            // 保存済み（上のraw保存ループ参照）―― 失敗したのは派生データ
-            // （hands/phases/actions）の再構築のみ。#202が確立した
-            // 「再構築失敗はサイレントな成功にしない」契約を、インポートに
-            // 統合したこの経路でも維持する: ここでthrowし、下のouter
-            // catchブロック経由でインポート全体をエラー状態として呼び出し元
-            // （message-router.ts）へ伝播させる。raw dataはロールバックせず
-            // 保存されたまま残す。
-            console.error('[importData] Post-import rebuild failed:', rebuildError)
-            chrome.runtime.sendMessage<RebuildProgressMessage>({
-              action: 'rebuildProgress',
-              state: 'error',
-              message: `インポート後の再構築に失敗しました: ${rebuildError}`
-            }).catch(() => {})
-
-            // 再構築アドバイザリを保留にする（codexレビュー指摘, PR #207
-            // pass-4 finding 3「Retry rebuild after failed import instead
-            // of skipping duplicates」）: このまま何もしないと、生イベント
-            // は既に確定保存済みのため、同じファイルを再インポートしても
-            // 今度は全行重複となり（successCount === 0）、下の「純粋な
-            // 重複インポート」分岐に入って再構築が二度と走らなくなる ――
-            // 派生データは古いまま永久に取り残される。アドバイザリを保留
-            // にしておけば、popupのバナー/バッジが「データ再構築」ボタンの
-            // 実行を促し続け、それが唯一かつ確実な復旧手段として常に
-            // 提示される（成功時にresolveAdvisory()で自動的に解消する）。
-            // rebuildAllData自身の失敗（ボタン経由）はこのマーキングをしない
-            // ――失敗はrebuildProgressのerror状態で既にユーザーへ即座に
-            // 見えており、ボタンを再度押すだけで再試行できるため、
-            // インポートのように「再試行が別経路(重複判定)に吸収されて
-            // 再構築が起動しなくなる」問題が構造的に起きない。
-            await markAdvisoryPending()
-
-            const errorMessage = rebuildError instanceof Error ? rebuildError.message : String(rebuildError)
-            throw new Error(`Post-import rebuild failed (raw data was stored successfully): ${errorMessage}`)
-          }
-        } else {
-          // 純粋な重複インポート（新規行0件）: apiEvents Lakeに変化がない
-          // ため、既存の派生データも既に整合が取れている。監査finding #7の
-          // シナリオ（新規行がハンド境界をまたぐことで派生データが古くなる）
-          // は新規行が保存された場合にのみ起こり得るため、再構築は不要
-          console.log('[importData] Pure duplicate import (no new rows stored) - skipping rebuild, derived data already consistent')
-        }
-      } else if (allNewEvents.length > 0) {
-        // 空DBへの初回インポート（既存の挙動を変更しない）:
-        // 全イベントが新規のため「既存データとのオーバーラップ」は原理的に
-        // 起こり得ず、新規イベントのみを渡す直接変換で完全かつ正しい
-        // （増分/フルリビルドを区別する必要がない）
-        console.log(`[importData] Generating entities from ${allNewEvents.length} new events...`)
-        const entityStartTime = performance.now()
+        // 再構築フェーズの進捗は、rebuildAllData（データ再構築ボタン）と
+        // 同じ`rebuildProgress`メッセージ経路で報告する。popup
+        // （ImportExportSection.tsx）は既にこのメッセージ種別を購読して
+        // 専用の再構築プログレスバーを表示するため、ここから流すだけで
+        // 「今どのフェーズか」がそのままpopupに反映される
+        // （読み手向けメモ: importProgressの0-100%は生ログ保存フェーズの
+        // 進捗で完結しており、この後に続くrebuildProgressの0-100%は
+        // 別フェーズとして独立に表示される）
+        chrome.runtime.sendMessage<RebuildProgressMessage>({
+          action: 'rebuildProgress',
+          state: 'started',
+          message: 'インポートにより新規データを検出、データを再構築中...'
+        }).catch(() => {})
 
         try {
-          // EntityConverterを使用してエンティティを生成
-          const converter = new EntityConverter(service.session)
-          const validEvents = await orderAndFilterApplicationEventsForReplay(allNewEvents)
-          const entities = converter.convertEventsToEntities(validEvents)
-
-          console.log(`[importData] Generated entities - Hands: ${entities.hands.length}, Phases: ${entities.phases.length}, Actions: ${entities.actions.length}`)
-
-          // Save entities using common utility
-          await saveEntities(db, entities, {
-            onProgress: (counts) => {
-              console.log(`[importData] Saved/updated ${counts.hands} hands, ${counts.phases} phases, ${counts.actions} actions`)
-            }
+          const rebuildResult = await performFullRebuild((progress, message) => {
+            setOperationState({ type: 'rebuild', progress, message })
+            chrome.runtime.sendMessage<RebuildProgressMessage>({
+              action: 'rebuildProgress',
+              state: 'processing',
+              progress,
+              message
+            }).catch(() => {})
           })
 
-          // Update metadata separately
-          // Math.maxでスプレッド演算子を使うとスタックオーバーフローになるため、reduceを使用
-          const lastTimestamp = allNewEvents.reduce((max, event) => {
-            const timestamp = event.timestamp || 0
-            return timestamp > max ? timestamp : max
-          }, 0)
+          console.log(`[importData] Post-import rebuild completed - Hands: ${rebuildResult.totalHands}, Phases: ${rebuildResult.totalPhases}, Actions: ${rebuildResult.totalActions}`)
 
-          await db.meta.put({
-            id: 'importStatus',
-            value: {
-              lastProcessedTimestamp: lastTimestamp,
-              lastProcessedEventCount: allNewEvents.length,
-              lastImportDate: new Date().toISOString()
-            },
-            updatedAt: Date.now()
-          })
-          console.log(`[importData] Updated metadata - lastTimestamp: ${lastTimestamp}`)
+          chrome.runtime.sendMessage<RebuildProgressMessage>({
+            action: 'rebuildProgress',
+            state: 'completed',
+            progress: 100,
+            message: `インポート後の再構築完了 - ハンド: ${rebuildResult.totalHands.toLocaleString()}, フェーズ: ${rebuildResult.totalPhases.toLocaleString()}, アクション: ${rebuildResult.totalActions.toLocaleString()}`
+          }).catch(() => {})
+        } catch (rebuildError) {
+          // ここに来た時点で、生イベントは既にapiEvents（Lake）へ確定
+          // 保存済み（上のraw保存ループ参照）―― 失敗したのは派生データ
+          // （hands/phases/actions）の再構築のみ。#202が確立した
+          // 「再構築失敗はサイレントな成功にしない」契約を、インポートに
+          // 統合したこの経路でも維持する: ここでthrowし、下のouter
+          // catchブロック経由でインポート全体をエラー状態として呼び出し元
+          // （message-router.ts）へ伝播させる。raw dataはロールバックせず
+          // 保存されたまま残す。
+          console.error('[importData] Post-import rebuild failed:', rebuildError)
+          chrome.runtime.sendMessage<RebuildProgressMessage>({
+            action: 'rebuildProgress',
+            state: 'error',
+            message: `インポート後の再構築に失敗しました: ${rebuildError}`
+          }).catch(() => {})
 
-          const entityTime = ((performance.now() - entityStartTime) / 1000).toFixed(2)
-          console.log(`[importData] Entity generation completed in ${entityTime}s`)
-
-        } catch (entityError) {
-          console.error('[importData] Entity generation error:', entityError)
-          // raw event は既に永続化されている。ここで保留印を残さないと、
-          // 同じファイルの再インポートは全件重複となり、派生データ生成を
-          // 再試行できないまま成功扱いになってしまう。
+          // 再構築アドバイザリを保留にする（codexレビュー指摘, PR #207
+          // pass-4 finding 3「Retry rebuild after failed import instead
+          // of skipping duplicates」）: このまま何もしないと、生イベント
+          // は既に確定保存済みのため、同じファイルを再インポートしても
+          // 今度は全行重複となり（successCount === 0）、下の「純粋な
+          // 重複インポート」分岐に入って再構築が二度と走らなくなる ――
+          // 派生データは古いまま永久に取り残される。アドバイザリを保留
+          // にしておけば、popupのバナー/バッジが「データ再構築」ボタンの
+          // 実行を促し続け、それが唯一かつ確実な復旧手段として常に
+          // 提示される（成功時にresolveAdvisory()で自動的に解消する）。
+          // rebuildAllData自身の失敗（ボタン経由）はこのマーキングをしない
+          // ――失敗はrebuildProgressのerror状態で既にユーザーへ即座に
+          // 見えており、ボタンを再度押すだけで再試行できるため、
+          // インポートのように「再試行が別経路(重複判定)に吸収されて
+          // 再構築が起動しなくなる」問題が構造的に起きない。
           await markAdvisoryPending()
-          const errorMessage = entityError instanceof Error ? entityError.message : String(entityError)
-          throw new Error(`Entity generation failed: ${errorMessage}`)
+
+          const errorMessage = rebuildError instanceof Error ? rebuildError.message : String(rebuildError)
+          throw new Error(`Post-import rebuild failed (raw data was stored successfully): ${errorMessage}`)
         }
       } else {
-        // 新規イベントがない場合は増分処理も不要
-        console.log('[importData] No new events to process')
+        // 純粋な重複/保存対象なし: Lakeに変化がないため再構築不要
+        console.log('[importData] No new raw rows stored - skipping rebuild')
       }
 
       // インポート後に統計を強制的に更新
