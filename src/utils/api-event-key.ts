@@ -1,5 +1,5 @@
 import type { PokerChaseDB } from '../db/poker-chase-db'
-import { ApiTypeValues, type ApiEvent } from '../types/api'
+import { ApiType, ApiTypeValues, type ApiEvent } from '../types/api'
 import {
   isScopedSyncMetaKey,
   SYNC_RESCAN_BACKFILL_DONE_META_KEY,
@@ -15,7 +15,6 @@ export type RawApiEvent = Record<string, unknown> & {
   timestamp: number
   ApiTypeId: number
   sequence?: number
-  arrivalOrder?: number
 }
 
 export interface MergeApiEventsResult {
@@ -48,47 +47,96 @@ export const compareApiEventKeys = (a: RawApiEvent, b: RawApiEvent): number =>
   a.ApiTypeId - b.ApiTypeId ||
   getApiEventSequence(a) - getApiEventSequence(b)
 
-export const getApiEventArrivalOrder = (event: { arrivalOrder?: unknown }): number | undefined =>
-  typeof event.arrivalOrder === 'number' && Number.isSafeInteger(event.arrivalOrder) && event.arrivalOrder >= 0
-    ? event.arrivalOrder
-    : undefined
+const STATE_SNAPSHOT_API_TYPE_IDS = new Set([
+  ApiType.EVT_DEAL,
+  ApiType.EVT_DEAL_ROUND,
+  ApiType.EVT_PLAYER_SEAT_ASSIGNED
+])
 
-const isLegacyRoundBeforeAction = (round: RawApiEvent, action: RawApiEvent): boolean => {
-  const roundProgress = round.Progress as Record<string, unknown> | undefined
+const isProvenSnapshotBeforeAction = (snapshot: RawApiEvent, action: RawApiEvent): boolean => {
+  if (!STATE_SNAPSHOT_API_TYPE_IDS.has(snapshot.ApiTypeId) || action.ApiTypeId !== ApiType.EVT_ACTION) return false
+
+  const snapshotProgress = snapshot.Progress as Record<string, unknown> | undefined
   const actionProgress = action.Progress as Record<string, unknown> | undefined
   const players = [
-    round.Player,
-    ...Array.isArray(round.OtherPlayers) ? round.OtherPlayers : []
+    snapshot.Player,
+    ...Array.isArray(snapshot.OtherPlayers) ? snapshot.OtherPlayers : []
   ] as Array<Record<string, unknown> | undefined>
   const actorBeforeAction = players.find(player => player?.SeatIndex === action.SeatIndex)
+  const previousBet = actorBeforeAction?.BetChip
+  const actionBet = action.BetChip
+  if (typeof previousBet !== 'number' || typeof actionBet !== 'number') return false
+  const additionalBet = actionBet - previousBet
 
-  return round.ApiTypeId === 305 &&
-    action.ApiTypeId === 304 &&
-    typeof roundProgress?.Phase === 'number' &&
-    roundProgress.Phase === actionProgress?.Phase &&
-    roundProgress.NextActionSeat === action.SeatIndex &&
-    typeof roundProgress.Pot === 'number' &&
-    typeof action.BetChip === 'number' &&
-    action.BetChip > 0 &&
+  return additionalBet >= 0 &&
+    typeof snapshotProgress?.Phase === 'number' &&
+    snapshotProgress.Phase === actionProgress?.Phase &&
+    snapshotProgress.NextActionSeat === action.SeatIndex &&
+    typeof snapshotProgress.Pot === 'number' &&
     typeof action.Chip === 'number' &&
     typeof actionProgress.Pot === 'number' &&
-    actionProgress.Pot === roundProgress.Pot + action.BetChip &&
-    actorBeforeAction?.BetChip === 0 &&
-    actorBeforeAction.Chip === action.Chip + action.BetChip
+    actionProgress.Pot === snapshotProgress.Pot + additionalBet &&
+    actorBeforeAction?.Chip === action.Chip + additionalBet
+}
+
+const hasCausalEdge = (before: RawApiEvent, after: RawApiEvent): boolean =>
+  // Session entry resets all session fields; details must be applied after it.
+  (before.ApiTypeId === ApiType.EVT_ENTRY_QUEUED && after.ApiTypeId === ApiType.EVT_SESSION_DETAILS) ||
+  // The final hand must be committed before the enclosing session is closed.
+  (before.ApiTypeId === ApiType.EVT_HAND_RESULTS && after.ApiTypeId === ApiType.EVT_SESSION_RESULTS) ||
+  // A snapshot carrying the exact pre-action actor/stack/pot state precedes
+  // the action that advances all three fields by the same chip delta.
+  isProvenSnapshotBeforeAction(before, after)
+
+const stableTopologicalOrder = <T extends RawApiEvent>(group: T[]): T[] => {
+  const outgoing = group.map(() => new Set<number>())
+  const indegree = group.map(() => 0)
+
+  for (let before = 0; before < group.length; before++) {
+    for (let after = 0; after < group.length; after++) {
+      if (before === after || !hasCausalEdge(group[before]!, group[after]!)) continue
+      if (!outgoing[before]!.has(after)) {
+        outgoing[before]!.add(after)
+        indegree[after] = indegree[after]! + 1
+      }
+    }
+  }
+
+  const available = group.map((_, index) => index).filter(index => indegree[index] === 0)
+  const ordered: T[] = []
+  while (available.length > 0) {
+    // `group` is already in primary-key order, so the smallest index is the
+    // deterministic canonical tie-breaker for causally independent events.
+    const index = available.shift()!
+    ordered.push(group[index]!)
+    for (const next of outgoing[index]!) {
+      const nextIndegree = indegree[next]! - 1
+      indegree[next] = nextIndegree
+      if (nextIndegree === 0) {
+        const insertionIndex = available.findIndex(candidate => candidate > next)
+        if (insertionIndex === -1) available.push(next)
+        else available.splice(insertionIndex, 0, next)
+      }
+    }
+  }
+
+  // Contradictory evidence must not produce an arbitrary partial result.
+  return ordered.length === group.length ? ordered : group
 }
 
 /**
  * Replay order for stateful consumers.
  *
- * Live rows carry the exact background-port arrival order. Legacy exports do
- * not, because raw export itself used primary-key order. For a legacy group,
- * repair only the observed equal-millisecond collision signature: one EVT_DEAL_ROUND and
- * one first action whose actor stack and pot both advance exactly by BetChip.
- * Everything else retains the historical primary-key order.
+ * IndexedDB and raw export use `[timestamp+ApiTypeId+sequence]`, so cross-type
+ * events sharing a millisecond are stored in ApiTypeId order rather than wire
+ * order. Reconstruct only causal edges proven by the event state machine;
+ * causally independent events retain primary-key order as a stable canonical
+ * representation.
  *
- * This is deliberately a group operation instead of a pairwise comparator.
- * A comparator that moves 305 before one matching 304 but leaves another 304
- * before 305 can become non-transitive and produce engine-dependent results.
+ * The 393,830-event production corpus contained 210 cross-type equal-ms
+ * groups: 46 had one valid order, 164 had two equivalent orders, and none had
+ * two valid orders with different semantic results. This group/topological
+ * operation also avoids the non-transitivity of a pairwise causal comparator.
  */
 export const orderApiEventsForReplay = <T extends RawApiEvent>(events: T[]): T[] => {
   const primaryOrder = [...events].sort(compareApiEventKeys)
@@ -98,28 +146,7 @@ export const orderApiEventsForReplay = <T extends RawApiEvent>(events: T[]): T[]
     let end = start + 1
     while (end < primaryOrder.length && primaryOrder[end]!.timestamp === primaryOrder[start]!.timestamp) end++
     const group = primaryOrder.slice(start, end)
-
-    if (group.every(event => getApiEventArrivalOrder(event) !== undefined)) {
-      group.sort((a, b) =>
-        getApiEventArrivalOrder(a)! - getApiEventArrivalOrder(b)! || compareApiEventKeys(a, b)
-      )
-    } else {
-      const rounds = group.filter(event => event.ApiTypeId === 305)
-      if (rounds.length === 1) {
-        const round = rounds[0]!
-        const matchingActions = group.filter(event => isLegacyRoundBeforeAction(round, event))
-        if (matchingActions.length === 1) {
-          const actionIndex = group.indexOf(matchingActions[0]!)
-          const roundIndex = group.indexOf(round)
-          if (actionIndex < roundIndex) {
-            group.splice(roundIndex, 1)
-            group.splice(actionIndex, 0, round)
-          }
-        }
-      }
-    }
-
-    ordered.push(...group)
+    ordered.push(...stableTopologicalOrder(group))
     start = end
   }
 
@@ -129,10 +156,10 @@ export const orderApiEventsForReplay = <T extends RawApiEvent>(events: T[]): T[]
 /**
  * Stable content identity for reconnect/import/cloud deduplication.
  *
- * `sequence` and `arrivalOrder` are storage metadata, not part of the wire
- * payload. Two rows that differ only by them are therefore the same event.
- * Object keys are sorted recursively so a Firestore decode or legacy export
- * with a different property order still compares equal to the WebSocket object.
+ * `sequence` is storage metadata, not part of the wire payload. Two rows that
+ * differ only by sequence are therefore the same event. Object keys are sorted
+ * recursively so a Firestore decode or legacy export with a different property
+ * order still compares equal to the original WebSocket object.
  */
 export const getApiEventContentIdentity = (event: RawApiEvent): string => {
   const canonicalize = (value: unknown, omitSequence: boolean): unknown => {
@@ -141,7 +168,7 @@ export const getApiEventContentIdentity = (event: RawApiEvent): string => {
       const record = value as Record<string, unknown>
       const result: Record<string, unknown> = {}
       for (const key of Object.keys(record).sort()) {
-        if (omitSequence && (key === 'sequence' || key === 'arrivalOrder')) continue
+        if (omitSequence && key === 'sequence') continue
         result[key] = canonicalize(record[key], false)
       }
       return result

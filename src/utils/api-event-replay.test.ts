@@ -1,7 +1,6 @@
 import { EntityConverter } from '../entity-converter'
 import { ActionType, PhaseType } from '../types'
 import {
-  getApiEventContentIdentity,
   orderApiEventsForReplay,
   type RawApiEvent
 } from './api-event-key'
@@ -82,15 +81,30 @@ describe('raw event replay order', () => {
     expect(replayAction?.phase).toBe(PhaseType.TURN)
   })
 
-  test('exact future arrivalOrder takes precedence over the legacy causal fallback', () => {
-    const events = makeCollisionHand().filter(event => event.timestamp === COLLISION_TIMESTAMP)
-    events[0]!.arrivalOrder = 10
-    events[1]!.arrivalOrder = 11
+  test('orders an exact EVT_PLAYER_SEAT_ASSIGNED snapshot before its next action', () => {
+    const events: RawApiEvent[] = [
+      {
+        timestamp: 200,
+        ApiTypeId: 304,
+        SeatIndex: 4,
+        ActionType: ActionType.RAISE,
+        BetChip: 2_338,
+        Chip: 2_980,
+        Progress: { Phase: 3, Pot: 4_951 }
+      },
+      {
+        timestamp: 200,
+        ApiTypeId: 313,
+        ProcessType: 2,
+        Progress: { Phase: 3, Pot: 2_613, NextActionSeat: 4 },
+        OtherPlayers: [{ SeatIndex: 4, BetChip: 0, Chip: 5_318 }]
+      }
+    ]
 
-    expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([304, 305])
+    expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([313, 304])
   })
 
-  test('does not guess legacy order when actor stack does not prove causality', () => {
+  test('keeps canonical order when snapshot state does not prove causality', () => {
     const events = makeCollisionHand().filter(event => event.timestamp === COLLISION_TIMESTAMP)
     const round = events.find(event => event.ApiTypeId === 305)!
     const otherPlayers = round.OtherPlayers as Array<Record<string, unknown>>
@@ -99,9 +113,23 @@ describe('raw event replay order', () => {
     expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([304, 305])
   })
 
-  test('storage ordering metadata does not change reconnect/import content identity', () => {
-    const event = makeCollisionHand()[2]!
-    expect(getApiEventContentIdentity({ ...event, sequence: 0, arrivalOrder: 10 }))
-      .toBe(getApiEventContentIdentity({ ...event, sequence: 4, arrivalOrder: 99 }))
+  test('keeps state-independent session details and player roster in canonical order', () => {
+    const events: RawApiEvent[] = [
+      { timestamp: 300, ApiTypeId: 313, ProcessType: 0 },
+      { timestamp: 300, ApiTypeId: 308, Name: 'table' }
+    ]
+
+    expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([308, 313])
+  })
+
+  test('keeps session and hand boundaries in their only valid canonical order', () => {
+    const events: RawApiEvent[] = [
+      { timestamp: 400, ApiTypeId: 309, Ranking: 1 },
+      { timestamp: 400, ApiTypeId: 308, Name: 'table' },
+      { timestamp: 400, ApiTypeId: 306, HandId: 1 },
+      { timestamp: 400, ApiTypeId: 201, Id: 'room', BattleType: 0 }
+    ]
+
+    expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([201, 306, 308, 309])
   })
 })

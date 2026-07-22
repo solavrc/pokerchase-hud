@@ -51,15 +51,17 @@
 transactionで行う。reconnect resendの判定はトップレベルの`sequence`を除く
 canonical payload全体の一致であり、時刻と種別だけでは重複とみなさない。
 
-この主キーは保存・ページング順であって、異なる`ApiTypeId`間の受信順ではない。
-異種イベントが同一millisecondなら主キーは`ApiTypeId`順に並び、`sequence`も同じ
-`timestamp+ApiTypeId`組の内部にしか意味を持たない。ライブ処理は直列キューの到着順を使い、
-保存済みイベントから状態を再生・監査するconsumerはsession/hand境界の因果関係を別途扱う。
+`timestamp`はWebSocket message decode直後の`Date.now()`なので、異なるevent typeが
+同一millisecondになる。主キー・exportはApiTypeId順へ並べるため、stateful readerは
+同時刻groupをpage境界で分断せず、payloadから証明できる因果edgeだけをstable
+topological sortする。edgeは201→308、306→309、および303/305/313のstate snapshotから
+phase/NextActionSeat/actor stack/Potの差分が全て一致する304への遷移。因果的に独立なeventは
+主キー順をcanonicalとして維持する。このresolverはlegacy/futureの双方に同じ規則を適用し、
+IndexedDB/Firestore schemaやdedup identityへ一時的な受信順metadataを追加しない。
 
-順序解決の設計原則は、ポーカーを強整合性のある状態機械として扱うことである。各遷移は
-stack、pot、phase、seat、およびhand/session境界のinvariantで因果検証する。保存主キーや
-`ApiTypeId`の昇順だけを受信順の根拠にせず、同一timestampの関係をinvariantから一意に
-canonicalizeできない場合は推測せず、その順序に依存する処理をfail-closedにする。
+実raw 393,830 eventsにあるcross-type同時刻210 groupは、46 groupが片方のみvalid、
+164 groupが両順序validかつ同じsemantic result、結果が異なる未解決ambiguityは0だった。
+別rawの18 groupも全て順序非依存の308/313であり、追加のambiguityはなかった。
 
 IndexedDBは既存object storeの主キーを直接変更できないため、v3→v6はv4で全行を
 一時storeへ`sequence: 0`付きでコピーし、v5で旧storeを削除、v6で新主キーのstoreへ

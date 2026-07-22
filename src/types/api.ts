@@ -43,8 +43,7 @@ const messageSchema = z.object({
 /** 各APIイベントの基底スキーマ */
 const baseSchema = z.object({
   timestamp: z.number().int().optional().describe('Unix Milliseconds - WebSocket受信時に付与'),
-  sequence: z.number().int().nonnegative().optional().describe('同一timestamp+ApiTypeId内の0始まり保存順序'),
-  arrivalOrder: z.number().int().nonnegative().optional().describe('Service Worker受信時の単調増加順序（保存メタデータ）')
+  sequence: z.number().int().nonnegative().optional().describe('同一timestamp+ApiTypeId内の0始まり保存順序')
 }).passthrough().describe('基底スキーマ: 未知プロパティは保持して後続処理に流す')
 
 // ===============================
