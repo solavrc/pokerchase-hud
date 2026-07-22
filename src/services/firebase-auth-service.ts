@@ -82,6 +82,13 @@ export class FirebaseAuthService {
   private authStateListeners: ((user: AuthUser | null, source: AuthChangeSource) => void)[] = []
   private restorePromise: Promise<void>
   /**
+   * Tail of durable sign-in commits currently in flight or queued. A later
+   * sign-out waits for this tail (success or failure) before removing auth
+   * state, so no delayed storage.set can publish or persist a user again
+   * after sign-out won.
+   */
+  private pendingSignInCommit: { operation: Promise<void>, completion: Promise<void> } | null = null
+  /**
    * Sign-out operation currently owning every local and external side effect.
    * New token work must not start while this exists, a concurrent sign-in
    * waits for `completion` (which always resolves), and duplicate sign-outs
@@ -146,6 +153,12 @@ export class FirebaseAuthService {
     // request. The conditional also makes the ordering explicit: only an
     // operation that already owns the token forces this sign-in to queue.
     if (this.pendingSignOut) await this.waitForPendingSignOut()
+    // A failed startup restore must not permanently poison interactive auth:
+    // sign-in is the explicit recovery path. Also let an in-flight restore
+    // settle before starting so it cannot publish an older stored account
+    // after this newer sign-in succeeds.
+    await this.restorePromise.catch(() => {})
+    if (this.pendingSignOut) await this.waitForPendingSignOut()
     const token = await this.getChromeAuthToken(true)
     console.log('[FirebaseAuth] Got Chrome auth token')
 
@@ -176,7 +189,7 @@ export class FirebaseAuthService {
       // the sign-out cannot delete or overwrite the newly authenticated
       // account when it resumes.
       await this.waitForPendingSignOut()
-      this.currentState = {
+      const nextState: StoredAuthState = {
         uid: result.localId,
         email: result.email ?? null,
         displayName: result.displayName ?? null,
@@ -185,21 +198,36 @@ export class FirebaseAuthService {
         refreshToken: result.refreshToken,
         expiresAt: Date.now() + Number(result.expiresIn) * 1000
       }
-      this.authGeneration++ // sign-in transition -- see authGeneration's doc comment
-      // Notify listeners SYNCHRONOUSLY, in the same step as the currentState/
-      // authGeneration mutation above -- BEFORE the persistAuthState() await
-      // (codex review r3615952256, P2, "Clear stale sync state when
-      // exposing the new user"). Moving this earlier closes the window
-      // where getCurrentUser()/getAuthGeneration() already report the NEW
-      // account but registered listeners (e.g. AutoSyncService clearing its
-      // own stale in-memory state, see its constructor) hadn't been told
-      // yet -- during a direct A->B sign-in, anything reading auth state in
-      // that gap used to see B live while dependent state still reflected
-      // A. persistAuthState() below is a fire-and-forget durability step
-      // from listeners' perspective; it doesn't need to precede them.
-      this.notifyAuthStateListeners(this.getCurrentUser(), 'sign-in')
-      await this.persistAuthState()
-      console.log('[FirebaseAuth] Firebase sign in successful:', this.currentState.email)
+      // Commit the durable state BEFORE exposing it in memory. If storage.set
+      // fails, the old account remains authoritative in currentState,
+      // authGeneration, listeners, and persisted storage alike. Publishing B
+      // first used to leave a split brain (live B, persisted A) that silently
+      // reverted after the next Service Worker restart.
+      // Chain behind an earlier interactive sign-in, if any. The shared
+      // marker always points at the tail, so a later sign-out waits for every
+      // candidate already queued before it and cannot be bypassed by an older
+      // slow storage write.
+      const precedingSignInCommit = this.pendingSignInCommit?.completion
+      const operation = this.commitSignIn(nextState, precedingSignInCommit)
+      let pendingSignInCommit!: { operation: Promise<void>, completion: Promise<void> }
+      const completion = operation
+        // Sign-out must continue even when the candidate write failed: in
+        // that case it removes whichever older account remains authoritative.
+        .then(() => {}, () => {})
+        .then(() => {
+          // Clear as part of the completion barrier itself. A sign-out that
+          // drains this promise must not spin on a resolved-but-still-marked
+          // tail while the original sign-in caller resumes separately.
+          if (this.pendingSignInCommit === pendingSignInCommit) this.pendingSignInCommit = null
+        })
+      pendingSignInCommit = {
+        operation,
+        completion
+      }
+      this.pendingSignInCommit = pendingSignInCommit
+
+      await operation
+      console.log('[FirebaseAuth] Firebase sign in successful:', nextState.email)
       return this.getCurrentUser()!
     } catch (error) {
       console.error('[FirebaseAuth] Firebase sign in error:', error)
@@ -221,8 +249,9 @@ export class FirebaseAuthService {
     }
 
     // performSignOut() runs synchronously through its generation reservation
-    // and first token lookup before returning this promise. The marker is
-    // therefore installed before signOut() yields to any later sign-in.
+    // before returning this promise. The marker is therefore installed before
+    // signOut() yields to token work or any later sign-in, even when the
+    // operation must first drain a slow durable sign-in commit.
     const operation = this.performSignOut()
     const pendingSignOut = {
       operation,
@@ -246,6 +275,13 @@ export class FirebaseAuthService {
     // This is also before the first await (the Chrome token lookup), so a
     // sign-in started while that lookup is slow must wait for this operation.
     this.authGeneration++
+
+    // Once a sign-in's storage write has started, let every already-queued
+    // commit publish (or fail) before this later user action removes state.
+    // `pendingSignOut` is installed by signOut() immediately after this method
+    // returns its promise, so no later sign-in can extend the tail while this
+    // drain is in progress, and getIdToken() rejects throughout the wait.
+    if (this.pendingSignInCommit) await this.waitForPendingSignInCommits()
 
     const previousToken = await this.getChromeAuthToken(false).catch(() => null)
     await chrome.storage.local.remove(FirebaseAuthService.STORAGE_KEY)
@@ -463,9 +499,32 @@ export class FirebaseAuthService {
     this.notifyAuthStateListeners(this.getCurrentUser(), 'restore')
   }
 
-  private async persistAuthState(): Promise<void> {
-    if (this.currentState) {
-      await chrome.storage.local.set({ [FirebaseAuthService.STORAGE_KEY]: this.currentState })
+  private async persistAuthState(state: StoredAuthState | null = this.currentState): Promise<void> {
+    if (state) {
+      await chrome.storage.local.set({ [FirebaseAuthService.STORAGE_KEY]: state })
+    }
+  }
+
+  private async commitSignIn(nextState: StoredAuthState, precedingCommit?: Promise<void>): Promise<void> {
+    if (precedingCommit) await precedingCommit
+    await this.persistAuthState(nextState)
+
+    // These publications are deliberately synchronous and adjacent. This
+    // preserves the dependent-state invariant from r3615952256: once any
+    // caller can observe the new account/generation, listeners such as
+    // AutoSyncService are notified before the event loop can advance.
+    this.currentState = nextState
+    this.authGeneration++ // sign-in transition -- see authGeneration's doc comment
+    // A successful durable sign-in is also recovery from a failed startup
+    // storage read. Replace the rejected restore barrier so ready(), token
+    // access, and firebaseAuthStatus reflect the recovered account.
+    this.restorePromise = Promise.resolve()
+    this.notifyAuthStateListeners(this.getCurrentUser(), 'sign-in')
+  }
+
+  private async waitForPendingSignInCommits(): Promise<void> {
+    while (this.pendingSignInCommit) {
+      await this.pendingSignInCommit.completion
     }
   }
 
