@@ -31,6 +31,7 @@ describe('UIScaleSection', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
+    mockTabsSendMessage.mockResolvedValue(undefined)
     mockTabsQuery.mockImplementation((_, callback) => {
       callback([{ id: 1 }, { id: 2 }])
     })
@@ -90,6 +91,30 @@ describe('UIScaleSection', () => {
       action: 'updateUIConfig',
       config: expectedConfig,
     })
+  })
+
+  it.each([
+    'Could not establish connection. Receiving end does not exist.',
+    'The message port closed before a response was received.',
+  ])('ゲームタブだけに通知し、想定済みのone-way送信エラーを消費する: %s', async (errorMessage) => {
+    const missingReceiver = Promise.reject(
+      new Error(errorMessage)
+    )
+    await missingReceiver.catch(() => {})
+    const catchSpy = jest.spyOn(missingReceiver, 'catch')
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    mockTabsSendMessage.mockReturnValue(missingReceiver)
+
+    render(<UIScaleSection {...defaultProps} />)
+    await userEvent.click(screen.getByText('+'))
+
+    expect(mockTabsQuery).toHaveBeenCalledWith(
+      { url: ['https://game.poker-chase.com/*'] },
+      expect.any(Function)
+    )
+    expect(catchSpy).toHaveBeenCalledWith(expect.any(Function))
+    await Promise.resolve()
+    expect(warnSpy).not.toHaveBeenCalled()
   })
 
   it('スケールの最小値と最大値を制限', () => {

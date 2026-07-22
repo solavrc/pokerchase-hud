@@ -31,6 +31,7 @@ describe('HudDisplaySection', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
+    mockTabsSendMessage.mockResolvedValue(undefined)
     mockTabsQuery.mockImplementation((_, callback) => {
       callback([{ id: 1 }, { id: 2 }])
     })
