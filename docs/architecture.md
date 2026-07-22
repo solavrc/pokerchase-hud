@@ -74,8 +74,8 @@ IndexedDBは既存object storeの主キーを直接変更できないため、v3
 
 ### リビルド = 復旧経路
 `rebuildAllData`（`src/background/import-export.ts`）は`apiEvents`の全行を
-`filterValidApplicationEvents()`（`src/utils/database-utils.ts`）で**再検証**して
-から`EntityConverter`に渡す。これにより、PokerChase側のペイロード変更で
+`orderAndFilterApplicationEventsForReplay()`（`src/utils/database-utils.ts`）でraw groupの
+順序判定後に**再検証**してから`EntityConverter`へ渡す。これにより、PokerChase側のペイロード変更で
 一時的にパースできなくなったイベント種別も、後日スキーマ側を修正して
 データ再構築を実行するだけで自動的に復旧する。dead-letterテーブルや
 プロモーション処理のような別機構は不要——同じ生の行を、直近のスキーマで
