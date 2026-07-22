@@ -145,8 +145,8 @@ export async function* processInChunks<T extends { timestamp?: number; ApiTypeId
  * Primary-key cursor pagination with equal-timestamp groups replayed together.
  *
  * A raw page may end between two event types sharing a millisecond. Holding its
- * trailing timestamp until the following page is what makes arrivalOrder (or
- * the narrow legacy causal repair) effective even at a chunk boundary.
+ * trailing timestamp until the following page lets the causal resolver inspect
+ * the complete group even at a chunk boundary.
  */
 export async function* processInReplayChunks<T extends { timestamp?: number; ApiTypeId: number; sequence?: number }>(
   table: Dexie.Table<T, any>,

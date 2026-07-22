@@ -437,9 +437,8 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
       const totalCount = await db.apiEvents.count()
       console.log(`[Export] Exporting ${totalCount} events...`)
 
-      // Cursor by stable primary key, but hold/sort each equal-timestamp group
-      // before emitting it so the NDJSON preserves exact future arrivalOrder
-      // and the narrow causal repair for legacy captures.
+      // Cursor by stable primary key, but hold/resolve each equal-timestamp group
+      // before emitting it so the NDJSON preserves the proven causal order.
       // Dumps the full apiEvents Lake verbatim (raw fidelity, "a line is a line") — no
       // filtering by validity or application-type here; this is what feeds the warehouse
       // and offline schema-diff tooling (see docs/architecture.md "Raw Event Lake").
