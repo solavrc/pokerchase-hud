@@ -43,8 +43,7 @@ describe('HudHeader', () => {
     expect(potOdds.compareDocumentPosition(spr) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('ポットオッズとSPRの意味・式をhoverとkeyboard focusで説明できる', async () => {
-    const user = userEvent.setup()
+  it('ポットオッズとSPRの意味・式をhoverとscreen readerで説明できる', () => {
     render(
       <HudHeader
         playerName="TestPlayer"
@@ -69,11 +68,6 @@ describe('HudHeader', () => {
 
     expect(potOdds).toHaveAttribute('aria-label', `ポットオッズ 17%。${potOddsTooltip}`)
     expect(spr).toHaveAttribute('aria-label', `SPR 10.5。${sprTooltip}`)
-
-    await user.tab()
-    expect(potOdds).toHaveFocus()
-    await user.tab()
-    expect(spr).toHaveFocus()
   })
 
   it('プレイヤーのターンの場合はポットオッズがハイライトされる', () => {

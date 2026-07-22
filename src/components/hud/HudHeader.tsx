@@ -94,7 +94,6 @@ export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPosition
             <span
               title={potOddsTooltip}
               aria-label={`ポットオッズ ${playerPotOdds.potOdds!.percentage.toFixed(0)}%。${potOddsTooltip}`}
-              tabIndex={0}
               style={{
                 color: playerPotOdds.potOdds!.isPlayerTurn ? '#00ff00' : HUD_MUTED_TEXT_COLOR,
                 fontWeight: playerPotOdds.potOdds!.isPlayerTurn ? 'bold' : 'normal',
@@ -108,7 +107,6 @@ export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPosition
             <span
               title={sprTooltip}
               aria-label={`SPR ${playerPotOdds.spr}。${sprTooltip}`}
-              tabIndex={0}
               style={{ color: '#ffcc00', fontWeight: 'bold', whiteSpace: 'nowrap' }}
             >
               {playerPotOdds.spr}
