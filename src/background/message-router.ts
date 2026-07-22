@@ -45,8 +45,13 @@ const handleFirebaseSignOut = async (): Promise<void> => {
     await firebaseAuthService.signOut()
     console.log('[Firebase] User signed out')
 
-    // Update sync state
-    await autoSyncService.onAuthStateChanged(null)
+    // A newer sign-in may have waited for this sign-out and published its
+    // account as soon as the auth operation settled. Do not let this older
+    // message continuation overwrite that account's freshly initialized sync
+    // state with a stale signed-out reset.
+    if (!firebaseAuthService.getCurrentUser()) {
+      await autoSyncService.onAuthStateChanged(null)
+    }
   } catch (error) {
     console.error('[Firebase] Sign out error:', error)
     throw error
