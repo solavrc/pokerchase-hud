@@ -44,7 +44,10 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
       // Handle session events separately due to TypeScript limitations
       const eventType = (event as any).ApiTypeId
 
-      if (eventType === ApiType.EVT_SESSION_DETAILS) {
+      // EVT_SESSION_DETAILS (308) is not guaranteed to arrive. Mirror the
+      // ingestion/session-activity fallbacks so a completed session cannot
+      // leave realtime stats disabled throughout the next one.
+      if (eventType === ApiType.EVT_ENTRY_QUEUED || eventType === ApiType.EVT_SESSION_DETAILS) {
         this.isSessionActive = true
       }
 
@@ -55,6 +58,12 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
       switch (event.ApiTypeId) {
 
         case ApiType.EVT_DEAL:
+          // Player is absent for spectator deals. Only a hero-present deal is
+          // strong enough to reactivate calculations when 201/308 were missed.
+          if (event.Player != null) {
+            this.isSessionActive = true
+          }
+
           // Reset for new hand
           this.currentHandId = undefined
           this.communityCards = []

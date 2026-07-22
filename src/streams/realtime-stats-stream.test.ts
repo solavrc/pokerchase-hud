@@ -18,6 +18,67 @@ describe('RealTimeStatsStream', () => {
     stream.reset()
   })
 
+  describe('セッション再開', () => {
+    const heroDeal = {
+      ApiTypeId: ApiType.EVT_DEAL,
+      timestamp: 300,
+      SeatUserIds: [101, 102, -1, -1, -1, -1],
+      Player: {
+        SeatIndex: 0,
+        BetStatus: 1,
+        HoleCards: [48, 49],
+        Chip: 1000,
+        BetChip: 10
+      },
+      OtherPlayers: [
+        { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1000, BetChip: 20 }
+      ],
+      Game: {
+        CurrentBlindLv: 1,
+        NextBlindUnixSeconds: 0,
+        Ante: 0,
+        SmallBlind: 10,
+        BigBlind: 20,
+        ButtonSeat: 0,
+        SmallBlindSeat: 0,
+        BigBlindSeat: 1
+      },
+      Progress: {
+        Phase: PhaseType.PREFLOP,
+        NextActionSeat: 0,
+        NextActionTypes: [2, 3, 4, 5],
+        NextExtraLimitSeconds: 30,
+        MinRaise: 40,
+        Pot: 30,
+        SidePot: []
+      }
+    } as ApiHandEvent
+
+    test('308が欠落しても201でinactive状態を解除する', async () => {
+      stream.write({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 100 } as any)
+      stream.write({ ApiTypeId: ApiType.EVT_ENTRY_QUEUED, timestamp: 200 } as any)
+      stream.end()
+
+      await new Promise<void>(resolve => stream.once('end', resolve))
+
+      expect((stream as unknown as { isSessionActive: boolean }).isSessionActive).toBe(true)
+    })
+
+    test('201/308がともに欠落してもHero在席の303で統計を再開する', async () => {
+      const outputs: any[] = []
+      stream.on('data', data => outputs.push(data))
+
+      stream.write({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 100 } as any)
+      stream.write(heroDeal)
+      stream.end()
+
+      await new Promise<void>(resolve => stream.once('end', resolve))
+
+      expect(outputs).toHaveLength(2)
+      expect(Object.keys(outputs[1].stats.heroStats)).not.toHaveLength(0)
+    })
+  })
+
   describe('プリフロップ表示', () => {
     test('ホールカードを受け取った時点で統計を計算する', (done) => {
       /**
