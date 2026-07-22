@@ -228,6 +228,80 @@ describe('ExperimentalReplayImporter', () => {
     importer.detachPort(replacementPort)
   })
 
+  test('restores active session metadata after a service-worker restart', async () => {
+    await observe({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Id: 'ring-restart',
+      BattleType: BattleType.RING_GAME,
+      timestamp: 100
+    })
+    await observe({ ApiTypeId: ApiType.EVT_SESSION_DETAILS, Name: 'Ring', timestamp: 110 })
+    await observe({ ApiTypeId: ApiType.EVT_HAND_RESULTS, HandId: 331, timestamp: 120 })
+    importer.detachPort(port)
+
+    importer = new ExperimentalReplayImporter(db, service)
+    await importer.ready
+    port = {
+      postMessage: jest.fn(),
+      sender: { tab: { id: 10 }, frameId: 0 }
+    } as unknown as chrome.runtime.Port
+    importer.attachPort(port)
+    observe = message => importer.observePortEvent(message, port)
+
+    // The restored detailsSeen flag makes this the repeated-308 fallback
+    // boundary instead of fusing both ring sessions.
+    await observe({ ApiTypeId: ApiType.EVT_SESSION_DETAILS, Name: 'Ring', timestamp: 200 })
+    expect((await db.experimentalReplayHands.get(331))?.status).toBe('ready')
+    expect(port.postMessage).toHaveBeenCalledWith(expect.objectContaining({ handIds: [331] }))
+  })
+
+  test('uses a replacement same-source port when the boundary port is stale', async () => {
+    await observe({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Id: 'stale-port',
+      BattleType: BattleType.SIT_AND_GO,
+      timestamp: 100
+    })
+    await observe({ ApiTypeId: ApiType.EVT_HAND_RESULTS, HandId: 341, timestamp: 200 })
+
+    const boundary = observe({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 300 })
+    importer.detachPort(port)
+    const replacementPort = {
+      postMessage: jest.fn(),
+      sender: { tab: { id: 10 }, frameId: 0 }
+    } as unknown as chrome.runtime.Port
+    importer.attachPort(replacementPort)
+    await boundary
+    await importer.whenIdle()
+
+    expect(replacementPort.postMessage).toHaveBeenCalledWith(expect.objectContaining({ handIds: [341] }))
+    importer.detachPort(replacementPort)
+  })
+
+  test('retries a success item that omits replay detail', async () => {
+    await observe({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Id: 'missing-detail',
+      BattleType: BattleType.SIT_AND_GO,
+      timestamp: 100
+    })
+    await observe({ ApiTypeId: ApiType.EVT_HAND_RESULTS, HandId: 351, timestamp: 200 })
+    await observe({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 300 })
+    const request = (port.postMessage as jest.Mock).mock.calls[0][0]
+
+    expect(importer.handlePortMessage({
+      type: REPLAY_PORT_RESULT,
+      requestId: request.requestId,
+      results: [{ handId: 351, ok: true }]
+    }, port)).toBe(true)
+    await importer.whenIdle()
+
+    expect(await db.experimentalReplayHands.get(351)).toEqual(expect.objectContaining({
+      status: 'ready',
+      lastError: 'missing-result'
+    }))
+  })
+
   test('retries an all-retryable batch with backoff while the tab stays open', async () => {
     await observe({
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
