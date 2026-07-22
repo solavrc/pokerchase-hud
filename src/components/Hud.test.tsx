@@ -144,7 +144,7 @@ describe('Hud', () => {
     expect(screen.getByText('20.0% (20/100)')).toBeInTheDocument()
   })
 
-  it('ポットオッズとSPRを表示', () => {
+  it.each(['full', 'compact'] as const)('%s HUDでポットオッズをSPRより先に表示', (hudDisplayMode) => {
     render(
       <Hud
         actualSeatIndex={0}
@@ -152,11 +152,14 @@ describe('Hud', () => {
         scale={1}
         statDisplayConfigs={mockStatDisplayConfigs}
         playerPotOdds={mockPlayerPotOdds}
+        hudDisplayMode={hudDisplayMode}
       />
     )
 
-    expect(screen.getByText('100/20 (17%)')).toBeInTheDocument()
-    expect(screen.getByText('SPR:10.5')).toBeInTheDocument()
+    const potOdds = screen.getByText('100/20 (17%)')
+    const spr = screen.getByText('SPR:10.5')
+
+    expect(potOdds.compareDocumentPosition(spr) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('ヒーロー（席0）の場合はリアルタイム統計を表示', () => {
