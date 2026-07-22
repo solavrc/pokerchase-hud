@@ -641,6 +641,47 @@ describe('Popup', () => {
       jest.useRealTimers()
     })
 
+    it('認証後の初回同期が長引いて応答がタイムアウトしても、認証済みなら失敗扱いにしない', async () => {
+      jest.useFakeTimers()
+      let signedIn = false
+      mockSignedOutPopupMessages(() => {
+        // Authentication commits, but the original callback remains pending
+        // behind a long first auto-sync in the background.
+      }, () => signedIn
+        ? {
+            isSignedIn: true,
+            userInfo: { email: 'test@example.com', uid: 'test-uid' },
+          }
+        : { isSignedIn: false, userInfo: null }
+      )
+
+      render(<Popup />)
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: '自動バックアップを有効にする' }))
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(screen.getByRole('button', { name: '有効化しています...' })).toBeDisabled()
+
+      signedIn = true
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(120_000)
+      })
+
+      expect(screen.getByText('test@example.com')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'ログアウト' })).toBeEnabled()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+      jest.useRealTimers()
+    })
+
     it('素早い二重クリックでも認証要求を1件だけ送る', async () => {
       let respondToSignIn: ((response?: unknown) => void) | undefined
       mockSignedOutPopupMessages((callback) => {

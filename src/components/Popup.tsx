@@ -115,11 +115,11 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   const [firebaseAuthError, setFirebaseAuthError] = useState('')
   const firebaseAuthRequestInFlightRef = useRef(false)
 
-  const refreshFirebaseAuthStatus = async (): Promise<boolean> => {
+  const refreshFirebaseAuthStatus = async (): Promise<AuthStatusResponse | undefined> => {
     const response = await sendMessageWithTimeout<AuthStatusResponse>({
       action: 'firebaseAuthStatus'
     })
-    if (!response) return false
+    if (!response) return undefined
 
     setIsFirebaseSignedIn(response.isSignedIn)
     setFirebaseUserInfo(
@@ -127,7 +127,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
         ? { email: response.userInfo.email, uid: response.userInfo.uid }
         : null
     )
-    return true
+    return response
   }
 
   // Fetch sync state
@@ -456,7 +456,15 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
       const response = await sendMessageWithTimeout<MessageResponse>(message, timeoutMs)
 
       if (!response) {
-        setFirebaseAuthError(FIREBASE_AUTH_COMMUNICATION_ERROR)
+        // The auth request can outlive this popup wait because sign-in's
+        // background handler also keeps the first cloud sync alive. Check the
+        // authoritative auth state before calling that a failure: auth may
+        // already have committed while only the sync tail is still running.
+        const authStatus = await refreshFirebaseAuthStatus()
+        const reachedRequestedState = authStatus?.isSignedIn === (message.action === 'firebaseSignIn')
+        if (!reachedRequestedState) {
+          setFirebaseAuthError(FIREBASE_AUTH_COMMUNICATION_ERROR)
+        }
       } else if (!response.success) {
         setFirebaseAuthError(response.error)
       } else if (!await refreshFirebaseAuthStatus()) {
