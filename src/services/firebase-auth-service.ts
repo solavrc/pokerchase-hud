@@ -79,6 +79,13 @@ export class FirebaseAuthService {
   private authStateListeners: ((user: AuthUser | null, source: AuthChangeSource) => void)[] = []
   private restorePromise: Promise<void>
   /**
+   * Durable sign-out commit currently removing STORAGE_KEY. New token work
+   * must not start while this exists, and a concurrently completing sign-in
+   * waits for it so the newer sign-in is published after the older removal.
+   * The completion promise always resolves, including when removal fails.
+   */
+  private pendingSignOut: { completion: Promise<void>, complete: () => void } | null = null
+  /**
    * Monotonic counter, incremented on every auth-state TRANSITION (sign-in,
    * sign-out, or the initial restore-from-storage on startup). Sign-out uses
    * two increments: one reservation before its durable storage commit, then
@@ -150,6 +157,12 @@ export class FirebaseAuthService {
       }
 
       const result = await response.json() as FirebaseSignInResponse
+      // A sign-out that started while the Google/Firebase network exchange
+      // above was in flight owns the durable auth-storage commit. Publish and
+      // persist this newer sign-in only AFTER that older removal settles, so
+      // the sign-out cannot delete or overwrite the newly authenticated
+      // account when it resumes.
+      await this.waitForPendingSignOut()
       this.currentState = {
         uid: result.localId,
         email: result.email ?? null,
@@ -187,6 +200,17 @@ export class FirebaseAuthService {
   async signOut(): Promise<void> {
     const previousToken = await this.getChromeAuthToken(false).catch(() => null)
 
+    // Serialize duplicate sign-out requests. More importantly, this keeps a
+    // single pending marker authoritative for getIdToken()/sign-in waiters.
+    await this.waitForPendingSignOut()
+
+    let completePendingSignOut: (() => void) | undefined
+    const pendingSignOut = {
+      completion: new Promise<void>(resolve => { completePendingSignOut = resolve }),
+      complete: () => completePendingSignOut?.()
+    }
+    this.pendingSignOut = pendingSignOut
+
     // Reserve the sign-out generation BEFORE the durable storage commit.
     // This invalidates any token refresh that started under the old
     // generation so it cannot race the remove() below and persist the auth
@@ -195,16 +219,23 @@ export class FirebaseAuthService {
     // create a phantom logout that reverses on the next restart when the
     // still-persisted record is restored.
     this.authGeneration++
-    await chrome.storage.local.remove(FirebaseAuthService.STORAGE_KEY)
+    try {
+      await chrome.storage.local.remove(FirebaseAuthService.STORAGE_KEY)
 
-    // Publish the transition only after its durable half committed. Advance
-    // the generation AGAIN so work that started during the slow remove()
-    // window (and therefore snapshotted the reservation generation together
-    // with the still-live old user) is invalidated too. There is intentionally
-    // no await across this state/generation/listener commit.
-    this.currentState = null
-    this.authGeneration++
-    this.notifyAuthStateListeners(null, 'sign-out')
+      // Publish the transition only after its durable half committed.
+      // Advance the generation AGAIN so work that began before the pending
+      // marker was observed is invalidated too. There is intentionally no
+      // await across this state/generation/listener commit.
+      this.currentState = null
+      this.authGeneration++
+      this.notifyAuthStateListeners(null, 'sign-out')
+    } finally {
+      // Always release sign-in waiters and make a failed sign-out retryable.
+      // Identity comparison prevents an older finally block from clearing a
+      // future attempt should this method ever gain additional concurrency.
+      if (this.pendingSignOut === pendingSignOut) this.pendingSignOut = null
+      pendingSignOut.complete()
+    }
 
     if (previousToken) {
       await new Promise<void>((resolve) => {
@@ -236,6 +267,14 @@ export class FirebaseAuthService {
    */
   async getIdToken(forceRefresh = false): Promise<string> {
     await this.ready()
+    // A captured AuthUser object can outlive the moment sign-out starts, so
+    // checking only getCurrentUser() at the Firestore call site is not
+    // sufficient. Fail before using or refreshing any token while the
+    // durable removal is pending; callers surface/retry this like any other
+    // auth failure.
+    if (this.pendingSignOut) {
+      throw new Error('Sign-out is in progress')
+    }
     if (!this.currentState) {
       throw new Error('User not authenticated')
     }
@@ -390,6 +429,15 @@ export class FirebaseAuthService {
   private async persistAuthState(): Promise<void> {
     if (this.currentState) {
       await chrome.storage.local.set({ [FirebaseAuthService.STORAGE_KEY]: this.currentState })
+    }
+  }
+
+  /** Wait until every currently pending durable sign-out commit settles. */
+  private async waitForPendingSignOut(): Promise<void> {
+    // Loop so a queued duplicate sign-out that claims the marker immediately
+    // after the previous one completes is also observed by a waiting sign-in.
+    while (this.pendingSignOut) {
+      await this.pendingSignOut.completion
     }
   }
 

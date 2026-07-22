@@ -313,6 +313,7 @@ describe('FirebaseAuthService.signOut -- durable state removal', () => {
     const service = new FirebaseAuthService()
     await service.ready()
     const generationBeforeSignOut = service.getAuthGeneration()
+    const capturedUser = service.getCurrentUser()!
     const listener = jest.fn()
     service.onAuthStateChange(listener)
     await new Promise(resolve => setTimeout(resolve, 0)) // consume the listener's initial restore callback
@@ -344,6 +345,7 @@ describe('FirebaseAuthService.signOut -- durable state removal', () => {
     const generationSnapshottedWhileRemovePending = service.getAuthGeneration()
     expect(service.getCurrentUser()?.uid).toBe('user-a')
     expect(listener).not.toHaveBeenCalled()
+    await expect(capturedUser.getIdToken(true)).rejects.toThrow('Sign-out is in progress')
 
     releaseRemove?.()
     await signOut
@@ -358,5 +360,70 @@ describe('FirebaseAuthService.signOut -- durable state removal', () => {
     const restartedService = new FirebaseAuthService()
     await restartedService.ready()
     expect(restartedService.getCurrentUser()).toBeNull()
+  })
+
+  test('lets a newer sign-in publish after an older pending sign-out finishes instead of clobbering it', async () => {
+    const storedState = {
+      uid: 'user-a',
+      email: 'a@example.com',
+      displayName: null,
+      photoURL: null,
+      idToken: 'a-token',
+      refreshToken: 'a-refresh-token',
+      expiresAt: Date.now() + 60 * 60 * 1000
+    }
+    await chrome.storage.local.set({ firebaseRestAuthState: storedState })
+
+    const service = new FirebaseAuthService()
+    await service.ready()
+
+    jest.spyOn(chrome.identity, 'getAuthToken').mockImplementation(((options: { interactive?: boolean }, callback: (result?: { token: string }) => void) => {
+      callback(options.interactive ? { token: 'new-chrome-token' } : undefined)
+    }) as typeof chrome.identity.getAuthToken)
+
+    const originalRemove = (chrome.storage.local.remove as jest.Mock).getMockImplementation()!
+    let removeStarted = false
+    let releaseRemove: (() => void) | undefined
+    jest.spyOn(chrome.storage.local, 'remove').mockImplementation(async (keys: string | string[]) => {
+      removeStarted = true
+      await new Promise<void>(resolve => { releaseRemove = resolve })
+      return originalRemove(keys)
+    })
+
+    const originalFetch = global.fetch
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        idToken: 'b-token',
+        refreshToken: 'b-refresh-token',
+        expiresIn: '3600',
+        localId: 'user-b',
+        email: 'b@example.com'
+      })
+    }) as any
+
+    try {
+      const signOut = service.signOut()
+      while (!removeStarted) await Promise.resolve()
+
+      // The newer sign-in may complete its network exchange, but must wait
+      // behind the older durable removal before publishing or persisting B.
+      const signIn = service.signInWithGoogle()
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(service.getCurrentUser()?.uid).toBe('user-a')
+
+      releaseRemove?.()
+      await signOut
+      const userB = await signIn
+
+      expect(userB.uid).toBe('user-b')
+      expect(service.getCurrentUser()?.uid).toBe('user-b')
+
+      const restartedService = new FirebaseAuthService()
+      await restartedService.ready()
+      expect(restartedService.getCurrentUser()?.uid).toBe('user-b')
+    } finally {
+      global.fetch = originalFetch
+    }
   })
 })
