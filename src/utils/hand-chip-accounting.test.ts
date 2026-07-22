@@ -1,6 +1,6 @@
 import type { ApiEvent } from '../types/api'
 import { ApiType } from '../types/api'
-import { BetStatusType } from '../types/game'
+import { BattleType, BetStatusType } from '../types/game'
 import { derivePlayerHandChipAccounting, deriveStartingStack } from './hand-chip-accounting'
 
 const uncalledReturnDeal = {
@@ -58,7 +58,7 @@ const uncalledReturnResult = {
 
 describe('derivePlayerHandChipAccounting', () => {
   test('real Hand #517982965: an uncalled return remains a signed loss for hero and all seats reconcile', () => {
-    const result = derivePlayerHandChipAccounting(uncalledReturnDeal, uncalledReturnResult)
+    const result = derivePlayerHandChipAccounting(uncalledReturnDeal, uncalledReturnResult, BattleType.SIT_AND_GO)
 
     expect(result['561384657']).toEqual({
       grossPayout: 2132,
@@ -96,7 +96,7 @@ describe('derivePlayerHandChipAccounting', () => {
       OtherPlayers: [{ SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 1000, BetChip: 0 }],
     } as unknown as ApiEvent<ApiType.EVT_HAND_RESULTS>
 
-    expect(derivePlayerHandChipAccounting(deal, handResult)).toEqual({
+    expect(derivePlayerHandChipAccounting(deal, handResult, BattleType.SIT_AND_GO)).toEqual({
       '1': { grossPayout: 100, totalContribution: 100, netChips: 0 },
       '2': { grossPayout: 100, totalContribution: 100, netChips: 0 },
     })
@@ -120,12 +120,74 @@ describe('derivePlayerHandChipAccounting', () => {
       OtherPlayers: [{ SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 900, BetChip: 0 }],
     } as unknown as ApiEvent<ApiType.EVT_HAND_RESULTS>
 
-    const result = derivePlayerHandChipAccounting(deal, handResult)
+    const result = derivePlayerHandChipAccounting(deal, handResult, BattleType.RING_GAME)
     expect(result).toEqual({
       '1': { grossPayout: 190, totalContribution: 100, netChips: 90 },
       '2': { grossPayout: 0, totalContribution: 100, netChips: -100 },
     })
     expect(Object.values(result).reduce((sum, entry) => sum + (entry?.netChips ?? 0), 0)).toBe(-10)
+  })
+
+  test.each([
+    ['SIT_AND_GO', BattleType.SIT_AND_GO],
+    ['TOURNAMENT', BattleType.TOURNAMENT],
+    ['FRIEND_SIT_AND_GO', BattleType.FRIEND_SIT_AND_GO],
+    ['CLUB_MATCH', BattleType.CLUB_MATCH],
+  ] as const)('%s settlement with table chip loss or creation fails closed', (_name, battleType) => {
+    const deal = {
+      ...uncalledReturnDeal,
+      SeatUserIds: [1, 2],
+      Game: { ...uncalledReturnDeal.Game, Ante: 0, SmallBlind: 100, BigBlind: 100, SmallBlindSeat: 0, BigBlindSeat: 1 },
+      Player: { SeatIndex: 0, BetStatus: 1, Chip: 900, BetChip: 100, HoleCards: [0, 1] },
+      OtherPlayers: [{ SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 900, BetChip: 100 }],
+      Progress: { ...uncalledReturnDeal.Progress, Pot: 200, SidePot: [] },
+    } as unknown as ApiEvent<ApiType.EVT_DEAL>
+    const settlement = (winnerFinal: number, loserFinal: number) => ({
+      ...uncalledReturnResult,
+      Pot: 200,
+      SidePot: [],
+      Results: [{ ...uncalledReturnResult.Results[0], UserId: 1, RewardChip: 200 }],
+      Player: { SeatIndex: 0, BetStatus: -1, Chip: winnerFinal, BetChip: 0 },
+      OtherPlayers: [{ SeatIndex: 1, Status: 0, BetStatus: -1, Chip: loserFinal, BetChip: 0 }],
+    }) as unknown as ApiEvent<ApiType.EVT_HAND_RESULTS>
+
+    expect(Object.values(derivePlayerHandChipAccounting(deal, settlement(1090, 900), battleType)))
+      .toEqual([null, null])
+    expect(Object.values(derivePlayerHandChipAccounting(deal, settlement(1100, 910), battleType)))
+      .toEqual([null, null])
+  })
+
+  test.each([
+    ['RING_GAME', BattleType.RING_GAME],
+    ['FRIEND_RING_GAME', BattleType.FRIEND_RING_GAME],
+  ] as const)('%s settlement may lose rake but rejects table chip creation', (_name, battleType) => {
+    const deal = {
+      ...uncalledReturnDeal,
+      SeatUserIds: [1, 2],
+      Game: { ...uncalledReturnDeal.Game, Ante: 0, SmallBlind: 100, BigBlind: 100, SmallBlindSeat: 0, BigBlindSeat: 1 },
+      Player: { SeatIndex: 0, BetStatus: 1, Chip: 900, BetChip: 100, HoleCards: [0, 1] },
+      OtherPlayers: [{ SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 900, BetChip: 100 }],
+      Progress: { ...uncalledReturnDeal.Progress, Pot: 200, SidePot: [] },
+    } as unknown as ApiEvent<ApiType.EVT_DEAL>
+    const corruptResult = {
+      ...uncalledReturnResult,
+      Pot: 200,
+      SidePot: [],
+      Results: [{ ...uncalledReturnResult.Results[0], UserId: 1, RewardChip: 200 }],
+      Player: { SeatIndex: 0, BetStatus: -1, Chip: 1100, BetChip: 0 },
+      OtherPlayers: [{ SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 910, BetChip: 0 }],
+    } as unknown as ApiEvent<ApiType.EVT_HAND_RESULTS>
+
+    expect(Object.values(derivePlayerHandChipAccounting(deal, corruptResult, battleType)))
+      .toEqual([null, null])
+  })
+
+  test('unknown BattleType fails closed', () => {
+    expect(Object.values(derivePlayerHandChipAccounting(
+      uncalledReturnDeal,
+      uncalledReturnResult,
+      undefined
+    ))).toEqual([null, null, null, null])
   })
 
   test('multiple short ante all-ins with side-pot tiers stay unknown when the seat-to-tier assignment is ambiguous', () => {
@@ -152,7 +214,7 @@ describe('derivePlayerHandChipAccounting', () => {
       Pot: 4756,
       SidePot: [],
     } as unknown as ApiEvent<ApiType.EVT_HAND_RESULTS>
-    expect(Object.values(derivePlayerHandChipAccounting(uncalledReturnDeal, foreignResult))).toEqual([
+    expect(Object.values(derivePlayerHandChipAccounting(uncalledReturnDeal, foreignResult, BattleType.SIT_AND_GO))).toEqual([
       null, null, null, null,
     ])
 
@@ -160,7 +222,7 @@ describe('derivePlayerHandChipAccounting', () => {
       ...uncalledReturnResult,
       Pot: uncalledReturnResult.Pot + 1,
     } as ApiEvent<ApiType.EVT_HAND_RESULTS>
-    expect(Object.values(derivePlayerHandChipAccounting(uncalledReturnDeal, badPot))).toEqual([
+    expect(Object.values(derivePlayerHandChipAccounting(uncalledReturnDeal, badPot, BattleType.SIT_AND_GO))).toEqual([
       null, null, null, null,
     ])
   })
@@ -170,7 +232,7 @@ describe('derivePlayerHandChipAccounting', () => {
       ...uncalledReturnResult,
       OtherPlayers: uncalledReturnResult.OtherPlayers.filter(player => player.SeatIndex !== 4),
     } as ApiEvent<ApiType.EVT_HAND_RESULTS>
-    const result = derivePlayerHandChipAccounting(uncalledReturnDeal, incomplete)
+    const result = derivePlayerHandChipAccounting(uncalledReturnDeal, incomplete, BattleType.SIT_AND_GO)
 
     expect(result['578444683']).toBeNull()
     expect(result['561384657']?.netChips).toBe(-1558)

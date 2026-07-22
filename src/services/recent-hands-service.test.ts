@@ -96,6 +96,14 @@ function makeMinimalHandEvents(handId: number, seatUserIds: [number, number, num
   ]
 }
 
+function makeTournamentChipLossEvents(handId: number): ApiHandEvent[] {
+  return makeMinimalHandEvents(handId, [1, 2, 3]).map(event =>
+    event.ApiTypeId === ApiType.EVT_HAND_RESULTS && event.Player
+      ? { ...event, Player: { ...event.Player, Chip: event.Player.Chip - 10 } }
+      : event
+  )
+}
+
 describe('RecentHandsService', () => {
   let db: PokerChaseDB
   let service: PokerChaseService
@@ -114,6 +122,7 @@ describe('RecentHandsService', () => {
   })
 
   test('Raw Event Lake rebuild persists the same signed accounting as the live writer', () => {
+    service.session.setBattleType(BattleType.TOURNAMENT)
     const rebuilt = new EntityConverter(service.session).convertEventsToEntities(
       makeMinimalHandEvents(99, [1, 2, 3])
     )
@@ -123,6 +132,24 @@ describe('RecentHandsService', () => {
       '2': { grossPayout: 0, totalContribution: 100, netChips: -100 },
       '3': { grossPayout: 0, totalContribution: 200, netChips: -200 },
     })
+
+    const corruptTournament = new EntityConverter(service.session).convertEventsToEntities(
+      makeTournamentChipLossEvents(100)
+    )
+    expect(Object.values(corruptTournament.hands[0]!.playerChipAccounting!)).toEqual([
+      null, null, null,
+    ])
+  })
+
+  test('live writer propagates Tournament BattleType to the chip-conservation guard', async () => {
+    service.session.setBattleType(BattleType.TOURNAMENT)
+    await new Promise<void>(resolve => {
+      service.writeEntityStream.once('data', () => resolve())
+      service.writeEntityStream.write(makeTournamentChipLossEvents(101))
+    })
+
+    const hand = await db.hands.get(101)
+    expect(Object.values(hand!.playerChipAccounting!)).toEqual([null, null, null])
   })
 
   describe('getRecentHands: ordering, limit, filters', () => {
@@ -480,6 +507,7 @@ describe('RecentHandsService', () => {
       // (subscribeToHandCompletion, module-level above) the first time it's called
       // for a given service instance, independent of the front-end hand-epoch
       // plumbing (App.tsx/Hud.tsx/ports.ts).
+      service.session.setBattleType(BattleType.TOURNAMENT)
       await new Promise<void>(resolve => {
         service.writeEntityStream.once('data', () => resolve())
         service.writeEntityStream.write(makeMinimalHandEvents(5, [1, 2, 3]))

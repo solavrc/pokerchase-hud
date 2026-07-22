@@ -1,6 +1,6 @@
 import type { ApiEvent } from '../types/api'
 import { ApiType } from '../types/api'
-import { BetStatusType } from '../types/game'
+import { BattleType, BetStatusType } from '../types/game'
 
 type DealEvent = ApiEvent<ApiType.EVT_DEAL>
 type HandResultsEvent = ApiEvent<ApiType.EVT_HAND_RESULTS>
@@ -112,16 +112,26 @@ const emptyAccounting = (event: DealEvent): PlayerHandChipAccountingMap =>
  * summed: it is cumulative within each street, so replaying it as incremental
  * amounts would double-count calls/raises. Endpoint stacks also remain exact
  * when a redundant action was not captured. Any ambiguous or inconsistent
- * player remains null rather than receiving an estimated loss. Table-wide
- * starting/final totals are deliberately not required to match: Ring rake is
- * a legitimate chip outflow, so exact per-seat net can sum to `-rake`.
+ * player remains null rather than receiving an estimated loss. Complete table
+ * snapshots must also obey the game type's chip-conservation rule: tournament
+ * chips are zero-sum, while Ring rake may remove chips but can never create
+ * them. An unknown BattleType cannot select either rule and therefore fails
+ * closed.
  */
 export const derivePlayerHandChipAccounting = (
   deal: DealEvent,
-  results: HandResultsEvent
+  results: HandResultsEvent,
+  battleType: BattleType | undefined
 ): PlayerHandChipAccountingMap => {
   const accounting = emptyAccounting(deal)
   const dealtUserIds = new Set(deal.SeatUserIds.filter(userId => userId !== -1))
+  const isRing = battleType === BattleType.RING_GAME || battleType === BattleType.FRIEND_RING_GAME
+  const isTournament = battleType === BattleType.SIT_AND_GO ||
+    battleType === BattleType.TOURNAMENT ||
+    battleType === BattleType.FRIEND_SIT_AND_GO ||
+    battleType === BattleType.CLUB_MATCH
+
+  if (!isRing && !isTournament) return accounting
 
   // Imported legacy/test rows can bypass the current API parser. Missing
   // settlement fields are an unknown result, never a reason to throw or infer.
@@ -153,6 +163,30 @@ export const derivePlayerHandChipAccounting = (
     starts.set(seatIndex, startingStack)
   }
 
+  const finalStacks = new Map<number, number>()
+  for (const snapshot of finalSeats) {
+    const finalStack = snapshot.Chip + snapshot.BetChip
+    if (!Number.isSafeInteger(finalStack) || finalStack < 0) return accounting
+    finalStacks.set(snapshot.SeatIndex, finalStack)
+  }
+
+  const occupiedSeatIndexes = deal.SeatUserIds
+    .map((userId, seatIndex) => ({ userId, seatIndex }))
+    .filter(({ userId }) => userId !== -1)
+    .map(({ seatIndex }) => seatIndex)
+  const hasCompleteTableSnapshots = occupiedSeatIndexes.every(seatIndex =>
+    starts.has(seatIndex) && finalStacks.has(seatIndex))
+
+  if (hasCompleteTableSnapshots) {
+    const totalStartingStack = occupiedSeatIndexes.reduce((sum, seatIndex) => sum + starts.get(seatIndex)!, 0)
+    const totalFinalStack = occupiedSeatIndexes.reduce((sum, seatIndex) => sum + finalStacks.get(seatIndex)!, 0)
+    if (!Number.isSafeInteger(totalStartingStack) || !Number.isSafeInteger(totalFinalStack)) return accounting
+
+    const chipDelta = totalFinalStack - totalStartingStack
+    if ((isTournament && chipDelta !== 0) ||
+        (isRing && chipDelta > 0)) return accounting
+  }
+
   for (let seatIndex = 0; seatIndex < deal.SeatUserIds.length; seatIndex++) {
     const userId = deal.SeatUserIds[seatIndex]
     if (userId === undefined || userId === -1) continue
@@ -162,7 +196,7 @@ export const derivePlayerHandChipAccounting = (
     if (startingStack === undefined || !finalSnapshot) continue
 
     const payout = results.Results.find(result => result.UserId === userId)?.RewardChip ?? 0
-    const finalStack = finalSnapshot.Chip + finalSnapshot.BetChip
+    const finalStack = finalStacks.get(seatIndex)!
     const totalContribution = startingStack + payout - finalStack
     if (!Number.isSafeInteger(totalContribution) || totalContribution < 0 || totalContribution > startingStack) continue
 

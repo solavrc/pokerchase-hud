@@ -324,7 +324,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           handState.hand.winningPlayerIds = event.Results.filter(({ RewardChip }) => RewardChip > 0).map(({ UserId }) => UserId)
           handState.hand.results = event.Results
           handState.hand.playerChipAccounting = dealEvent
-            ? derivePlayerHandChipAccounting(dealEvent, event)
+            ? derivePlayerHandChipAccounting(dealEvent, event, handState.hand.session.battleType)
             : Object.fromEntries(handState.hand.seatUserIds.filter(userId => userId !== -1).map(userId => [String(userId), null]))
 
           // Update actions with handId and add RIVER_CALL_WON for winning river calls

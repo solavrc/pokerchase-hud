@@ -444,7 +444,7 @@ export class EntityConverter {
             .map(result => result.UserId) || []
           handState.hand.results = event.Results || []
           handState.hand.playerChipAccounting = dealEvent
-            ? derivePlayerHandChipAccounting(dealEvent, event)
+            ? derivePlayerHandChipAccounting(dealEvent, event, handState.hand.session.battleType)
             : Object.fromEntries(handState.hand.seatUserIds.filter(userId => userId !== -1).map(userId => [String(userId), null]))
           // RIVER_CALLで勝利したアクションにRIVER_CALL_WONを付与する
           // （WriteEntityStreamと同一ロジック。River Call Accuracy統計が参照する）
