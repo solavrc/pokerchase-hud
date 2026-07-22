@@ -1027,6 +1027,33 @@ describe('AutoSyncService cloud downloads', () => {
     expect((service as any)._isSyncing).toBe(false)
   })
 
+  test('does not report a concurrent manual download as successful when an upload owns the sync latch and no download runs', async () => {
+    const service = new AutoSyncService(db)
+
+    let resolveGate: ((blocked: boolean) => void) | undefined
+    jest.spyOn(minVersionGate, 'isCloudSyncBlockedByMinVersionGate')
+      .mockImplementation(() => new Promise<boolean>(resolve => { resolveGate = resolve }))
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+    const downloadSpy = jest.spyOn(firestoreBackupService, 'syncFromCloud').mockResolvedValue(0)
+
+    const upload = service.performSync('upload')
+    const concurrentDownload = service.performSync('download')
+
+    // The second call currently short-circuits immediately while the upload
+    // owns the latch. Let the real owner finish so this test leaves no
+    // unresolved work behind, then verify the second call's truthful outcome.
+    const downloadOutcome = await concurrentDownload
+    while (!resolveGate) await Promise.resolve()
+    resolveGate(false)
+    await upload
+
+    expect(downloadSpy).not.toHaveBeenCalled()
+    expect(downloadOutcome).toEqual({
+      success: false,
+      error: expect.stringContaining('実行中')
+    })
+  })
+
   test('releases the _isSyncing latch (via finally) even when the min-version gate blocks the sync', async () => {
     const service = new AutoSyncService(db)
     jest.spyOn(minVersionGate, 'isCloudSyncBlockedByMinVersionGate').mockResolvedValue(true)
