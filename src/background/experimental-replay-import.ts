@@ -20,6 +20,13 @@ interface ActiveReplaySession {
   id?: string
   battleType?: BattleType
   name?: string
+  detailsSeen: boolean
+}
+
+interface InFlightReplayRequest {
+  handIds: Set<number>
+  port: chrome.runtime.Port
+  sourceKey: string
 }
 
 /**
@@ -31,10 +38,14 @@ interface ActiveReplaySession {
  */
 export class ExperimentalReplayImporter {
   private enabled = false
-  private readonly activeSessions = new Map<object, ActiveReplaySession>()
-  private readonly defaultSource = {}
+  private readonly activeSessions = new Map<string, ActiveReplaySession>()
+  private readonly defaultSource = 'default'
   private readonly ports = new Set<chrome.runtime.Port>()
-  private readonly inFlight = new Map<string, Set<number>>()
+  private readonly portSources = new WeakMap<chrome.runtime.Port, string>()
+  private readonly ephemeralPortSources = new WeakMap<chrome.runtime.Port, string>()
+  private ephemeralPortSequence = 0
+  private readonly inFlight = new Map<string, InFlightReplayRequest>()
+  private readonly retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private operationQueue: Promise<void> = Promise.resolve()
   private flushQueue: Promise<void> = Promise.resolve()
   readonly ready: Promise<void>
@@ -46,11 +57,17 @@ export class ExperimentalReplayImporter {
       if (areaName !== 'local' || !change) return
       this.enabled = change.newValue === true
       if (this.enabled) this.flushReady().catch(this.logError('flush after enable'))
+      else {
+        this.inFlight.clear()
+        for (const timer of this.retryTimers.values()) clearTimeout(timer)
+        this.retryTimers.clear()
+      }
     })
   }
 
   attachPort(port: chrome.runtime.Port): void {
     this.ports.add(port)
+    this.portSources.set(port, this.sourceKeyForPort(port))
     this.ready
       .then(() => this.flushReady(port))
       .catch(this.logError('flush after port connect'))
@@ -58,6 +75,15 @@ export class ExperimentalReplayImporter {
 
   detachPort(port: chrome.runtime.Port): void {
     this.ports.delete(port)
+    const sourceKey = this.portSources.get(port)
+    for (const [requestId, request] of this.inFlight) {
+      if (request.port === port) this.inFlight.delete(requestId)
+    }
+    if (sourceKey) {
+      const timer = this.retryTimers.get(sourceKey)
+      if (timer) clearTimeout(timer)
+      this.retryTimers.delete(sourceKey)
+    }
   }
 
   /** Test/diagnostic drain point for the importer's own serialized queue. */
@@ -67,23 +93,31 @@ export class ExperimentalReplayImporter {
   }
 
   /** Enqueue lifecycle work immediately so event arrival order is preserved. */
-  observeApiEvent(message: ApiLikeMessage, source: object = this.defaultSource): Promise<void> {
+  observePortEvent(message: ApiLikeMessage, port: chrome.runtime.Port): Promise<void> {
+    return this.observeApiEvent(message, this.sourceKeyForPort(port), port)
+  }
+
+  observeApiEvent(
+    message: ApiLikeMessage,
+    sourceKey: string = this.defaultSource,
+    preferredPort?: chrome.runtime.Port
+  ): Promise<void> {
     const task = this.operationQueue.then(async () => {
       await this.ready
       if (!this.enabled) return
 
       switch (message.ApiTypeId) {
         case ApiType.EVT_ENTRY_QUEUED:
-          await this.startSession(message, source)
+          await this.startSession(message, sourceKey, preferredPort)
           break
         case ApiType.EVT_HAND_RESULTS:
-          await this.queueHand(message, source)
+          await this.queueHand(message, sourceKey)
           break
         case ApiType.EVT_SESSION_DETAILS:
-          this.updateSessionName(message, source)
+          await this.updateSessionDetails(message, sourceKey, preferredPort)
           break
         case ApiType.EVT_SESSION_RESULTS:
-          await this.finishActiveSession(source, source as chrome.runtime.Port)
+          await this.finishActiveSession(sourceKey, preferredPort)
           break
       }
     })
@@ -92,12 +126,12 @@ export class ExperimentalReplayImporter {
   }
 
   /** Returns true when the message belongs to this experimental protocol. */
-  handlePortMessage(message: unknown): boolean {
+  handlePortMessage(message: unknown, port: chrome.runtime.Port): boolean {
     if (!this.isReplayResult(message)) return false
     const task = this.operationQueue.then(async () => {
       await this.ready
       if (!this.enabled) return
-      await this.storeResults(message)
+      await this.storeResults(message, port)
     })
     this.operationQueue = task.catch(this.logError('replay result'))
     return true
@@ -113,54 +147,82 @@ export class ExperimentalReplayImporter {
     }
   }
 
-  private async startSession(message: ApiLikeMessage, source: object): Promise<void> {
+  private async startSession(
+    message: ApiLikeMessage,
+    sourceKey: string,
+    preferredPort?: chrome.runtime.Port
+  ): Promise<void> {
     const id = typeof message.Id === 'string' ? message.Id : undefined
     const battleType = typeof message.BattleType === 'number' ? message.BattleType as BattleType : undefined
 
     // MTT table moves issue another 201 with the same tournament id. They do
     // not end the tournament session and must not release a partial batch.
-    const activeSession = this.activeSessions.get(source)
+    const activeSession = this.activeSessions.get(sourceKey)
     const sameMtt = activeSession?.battleType === BattleType.TOURNAMENT &&
       battleType === BattleType.TOURNAMENT && activeSession.id === id
     if (sameMtt) return
 
-    if (activeSession) await this.finishActiveSession(source, source as chrome.runtime.Port)
+    if (activeSession) await this.finishActiveSession(sourceKey, preferredPort)
     const timestamp = typeof message.timestamp === 'number' ? message.timestamp : Date.now()
-    this.activeSessions.set(source, {
-      key: `${timestamp}:${id ?? 'unknown'}`,
+    this.activeSessions.set(sourceKey, {
+      key: `${sourceKey}:${timestamp}:${id ?? 'unknown'}`,
       id,
-      battleType
+      battleType,
+      detailsSeen: false
     })
   }
 
-  private updateSessionName(message: ApiLikeMessage, source: object): void {
-    const session = this.activeSessions.get(source)
-    if (session && typeof message.Name === 'string') session.name = message.Name
+  private async updateSessionDetails(
+    message: ApiLikeMessage,
+    sourceKey: string,
+    preferredPort?: chrome.runtime.Port
+  ): Promise<void> {
+    let session = this.activeSessions.get(sourceKey)
+    const name = typeof message.Name === 'string' ? message.Name : undefined
+    if (session?.detailsSeen && session.battleType !== BattleType.TOURNAMENT) {
+      await this.finishActiveSession(sourceKey, preferredPort)
+      session = undefined
+    }
+    if (!session) {
+      const timestamp = typeof message.timestamp === 'number' ? message.timestamp : Date.now()
+      session = {
+        key: `${sourceKey}:${timestamp}:${this.service.session.id ?? 'recovered'}`,
+        id: this.service.session.id,
+        battleType: this.service.session.battleType,
+        detailsSeen: true
+      }
+      this.activeSessions.set(sourceKey, session)
+    } else {
+      session.detailsSeen = true
+    }
+    if (name) session.name = name
   }
 
-  private ensureActiveSession(message: ApiLikeMessage, source: object): ActiveReplaySession {
-    const activeSession = this.activeSessions.get(source)
+  private ensureActiveSession(message: ApiLikeMessage, sourceKey: string): ActiveReplaySession {
+    const activeSession = this.activeSessions.get(sourceKey)
     if (activeSession) return activeSession
     const timestamp = typeof message.timestamp === 'number' ? message.timestamp : Date.now()
     const recovered = {
-      key: `${timestamp}:${this.service.session.id ?? 'recovered'}`,
+      key: `${sourceKey}:${timestamp}:${this.service.session.id ?? 'recovered'}`,
       id: this.service.session.id,
       battleType: this.service.session.battleType,
-      name: this.service.session.name
+      name: this.service.session.name,
+      detailsSeen: false
     }
-    this.activeSessions.set(source, recovered)
+    this.activeSessions.set(sourceKey, recovered)
     return recovered
   }
 
-  private async queueHand(message: ApiLikeMessage, source: object): Promise<void> {
+  private async queueHand(message: ApiLikeMessage, sourceKey: string): Promise<void> {
     if (!isPositiveHandId(message.HandId)) return
-    const session = this.ensureActiveSession(message, source)
+    const session = this.ensureActiveSession(message, sourceKey)
     const now = Date.now()
     const existing = await this.db.experimentalReplayHands.get(message.HandId)
     if (existing?.status === 'complete') return
 
     const record: ExperimentalReplayRecord = {
       handId: message.HandId,
+      sourceKey,
       sessionKey: session.key,
       sessionId: session.id,
       battleType: session.battleType,
@@ -175,34 +237,41 @@ export class ExperimentalReplayImporter {
     await this.db.experimentalReplayHands.put(record)
   }
 
-  private async finishActiveSession(source: object, preferredPort?: chrome.runtime.Port): Promise<void> {
-    const session = this.activeSessions.get(source)
+  private async finishActiveSession(sourceKey: string, preferredPort?: chrome.runtime.Port): Promise<void> {
+    const session = this.activeSessions.get(sourceKey)
     if (!session) return
     const rows = await this.db.experimentalReplayHands.where('sessionKey').equals(session.key).toArray()
     const now = Date.now()
     await this.db.experimentalReplayHands.bulkPut(rows
       .filter(row => row.status === 'pending')
       .map(row => ({ ...row, status: 'ready' as const, updatedAt: now })))
-    this.activeSessions.delete(source)
-    await this.flushReady(this.ports.has(preferredPort!) ? preferredPort : undefined)
+    this.activeSessions.delete(sourceKey)
+    await this.flushReady(preferredPort ?? this.connectedPortForSource(sourceKey))
   }
 
   private flushReady(preferredPort?: chrome.runtime.Port, excludedHandIds = new Set<number>()): Promise<void> {
-    const task = this.flushQueue.then(() => this.performFlush(preferredPort, excludedHandIds))
+    const task = this.flushQueue.then(async () => {
+      if (preferredPort) {
+        await this.performFlush(preferredPort, excludedHandIds)
+        return
+      }
+      for (const port of this.ports) await this.performFlush(port, excludedHandIds)
+    })
     this.flushQueue = task.catch(this.logError('ready queue flush'))
     return task
   }
 
   private async performFlush(preferredPort?: chrome.runtime.Port, excludedHandIds = new Set<number>()): Promise<void> {
     await this.ready
-    if (!this.enabled || this.ports.size === 0) return
-    const port = preferredPort && this.ports.has(preferredPort)
-      ? preferredPort
-      : this.ports.values().next().value as chrome.runtime.Port | undefined
-    if (!port) return
+    if (!this.enabled || !preferredPort || !this.ports.has(preferredPort)) return
+    const port = preferredPort
+    const sourceKey = this.sourceKeyForPort(port)
 
-    const alreadyInFlight = new Set(Array.from(this.inFlight.values()).flatMap(ids => Array.from(ids)))
-    const readyRows = await this.db.experimentalReplayHands.where('status').equals('ready').toArray()
+    const alreadyInFlight = new Set(Array.from(this.inFlight.values()).flatMap(request => Array.from(request.handIds)))
+    const readyRows = await this.db.experimentalReplayHands
+      .where('[status+sourceKey]')
+      .equals(['ready', sourceKey])
+      .toArray()
     const handIds = readyRows
       .map(row => row.handId)
       .filter(id => !alreadyInFlight.has(id) && !excludedHandIds.has(id))
@@ -210,7 +279,7 @@ export class ExperimentalReplayImporter {
     if (handIds.length === 0) return
 
     const requestId = crypto.randomUUID()
-    this.inFlight.set(requestId, new Set(handIds))
+    this.inFlight.set(requestId, { handIds: new Set(handIds), port, sourceKey })
     const now = Date.now()
     await this.db.experimentalReplayHands.bulkPut(readyRows
       .filter(row => handIds.includes(row.handId))
@@ -223,16 +292,19 @@ export class ExperimentalReplayImporter {
     }
   }
 
-  private async storeResults(message: ReplayFetchResult): Promise<void> {
+  private async storeResults(message: ReplayFetchResult, port: chrome.runtime.Port): Promise<void> {
     const expected = this.inFlight.get(message.requestId)
-    if (!expected) return
+    if (!expected || expected.port !== port) return
     this.inFlight.delete(message.requestId)
     const now = Date.now()
     let successes = 0
     const failedHandIds = new Set<number>()
+    const retryableHandIds = new Set<number>()
+    const seenHandIds = new Set<number>()
 
     for (const result of message.results) {
-      if (!expected.has(result.handId)) continue
+      if (!expected.handIds.has(result.handId)) continue
+      seenHandIds.add(result.handId)
       const row = await this.db.experimentalReplayHands.get(result.handId)
       if (!row || row.status === 'complete') continue
       if (result.ok) {
@@ -247,6 +319,7 @@ export class ExperimentalReplayImporter {
         })
       } else {
         failedHandIds.add(result.handId)
+        if (result.retryable) retryableHandIds.add(result.handId)
         await this.db.experimentalReplayHands.put({
           ...row,
           status: result.retryable ? 'ready' : 'failed',
@@ -255,9 +328,64 @@ export class ExperimentalReplayImporter {
         })
       }
     }
+    for (const handId of expected.handIds) {
+      if (seenHandIds.has(handId)) continue
+      const row = await this.db.experimentalReplayHands.get(handId)
+      if (!row || row.status === 'complete') continue
+      failedHandIds.add(handId)
+      retryableHandIds.add(handId)
+      await this.db.experimentalReplayHands.put({
+        ...row,
+        status: 'ready',
+        updatedAt: now,
+        lastError: 'missing-result'
+      })
+    }
     // Continue draining sessions larger than one batch, but do not create a
     // tight loop when the page lacks an auth envelope or the server is down.
-    if (successes > 0) await this.flushReady(undefined, failedHandIds)
+    if (successes > 0) await this.flushReady(expected.port, failedHandIds)
+    if (retryableHandIds.size > 0) await this.scheduleRetry(expected.sourceKey, expected.port, retryableHandIds)
+  }
+
+  private async scheduleRetry(
+    sourceKey: string,
+    port: chrome.runtime.Port,
+    handIds: Set<number>
+  ): Promise<void> {
+    if (this.retryTimers.has(sourceKey) || !this.ports.has(port)) return
+    const rows = await this.db.experimentalReplayHands.bulkGet(Array.from(handIds))
+    const maxAttempts = Math.max(1, ...rows.map(row => row?.attempts ?? 1))
+    const delayMs = Math.min(60_000, 1000 * (2 ** Math.min(maxAttempts, 6)))
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(sourceKey)
+      this.flushReady(port).catch(this.logError('retry flush'))
+    }, delayMs)
+    this.retryTimers.set(sourceKey, timer)
+  }
+
+  private connectedPortForSource(sourceKey: string): chrome.runtime.Port | undefined {
+    for (const port of this.ports) {
+      if (this.sourceKeyForPort(port) === sourceKey) return port
+    }
+    return undefined
+  }
+
+  private sourceKeyForPort(port: chrome.runtime.Port): string {
+    const cached = this.portSources.get(port)
+    if (cached) return cached
+    const tabId = port.sender?.tab?.id
+    if (typeof tabId === 'number') {
+      const sourceKey = `tab:${tabId}:frame:${port.sender?.frameId ?? 0}`
+      this.portSources.set(port, sourceKey)
+      return sourceKey
+    }
+    let sourceKey = this.ephemeralPortSources.get(port)
+    if (!sourceKey) {
+      sourceKey = `ephemeral:${++this.ephemeralPortSequence}`
+      this.ephemeralPortSources.set(port, sourceKey)
+    }
+    this.portSources.set(port, sourceKey)
+    return sourceKey
   }
 
   private isReplayResult(message: unknown): message is ReplayFetchResult {

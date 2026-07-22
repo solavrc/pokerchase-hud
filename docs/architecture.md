@@ -215,7 +215,10 @@ await db.actions.where('[playerId+phase]')
 `EVT_HAND_RESULTS` (306) から HandId をローカルキューへ保存し、
 `EVT_SESSION_RESULTS` (309) の後に同一ゲームタブから `/replay/detail` を
 1件ずつ取得する。309欠落時は次の `EVT_ENTRY_QUEUED` (201) を境界に使うが、
-同一トーナメントIDのMTTテーブル移動は継続セッションとして扱う。
+同一トーナメントIDのMTTテーブル移動は継続セッションとして扱う。201も欠落した
+非MTTでは2回目の `EVT_SESSION_DETAILS` (308) を境界にし、MTTの反復308は吸収する。
+タブIDとframe IDの安定キーでキューを分離するため、content scriptのport再接続後も
+元タブのセッションへ復帰し、別タブの認証エンベロープへリプレイを渡さない。
 
 レスポンスは `experimentalReplayHands` object store に保存する。現段階では
 `hands` / `phases` / `actions` へ変換せず、エクスポート・Firestore同期・統計計算の
@@ -226,6 +229,9 @@ await db.actions.where('[playerId+phase]')
 content scriptへ渡す前にレスポンスから `session` / `requestKey` を再帰的に除去する。
 新しいhost permissionは追加しない。未課金アカウントではサーバーが返した公開情報だけを
 保存し、フォールド済み相手の `HoleCardList` は空のままである。
+取得前にportが切れた行は再接続時に再送し、認証未取得・一時的HTTP失敗は最大60秒の
+指数backoffで再試行する。セッション終了境界の `pending` → `ready` 更新はイベント取込
+キュー内で完了を待ち、更新・Service Worker再起動より先にIndexedDBへ確定させる。
 
 開発時の有効化手順:
 
