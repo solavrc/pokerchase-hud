@@ -69,6 +69,45 @@ describe('message-router operation exclusivity', () => {
     expect(getCurrentImportSession()).toBeNull()
   })
 
+  test('chunk-session initialization claims the slot until processing starts', () => {
+    const initResponse = jest.fn()
+    listener({ action: 'importDataInit', totalChunks: 2, fileName: 'data.ndjson' }, {}, initResponse)
+
+    expect(initResponse).toHaveBeenCalledWith({ success: true })
+    expect(getOperationState()).toMatchObject({ type: 'import', processed: 0, total: 2 })
+
+    const exportResponse = jest.fn()
+    listener({ action: 'exportData', format: 'json' }, {}, exportResponse)
+    expect(exportResponse).toHaveBeenCalledWith({ success: false, error: '別の処理が実行中です' })
+  })
+
+  test('does not mistake a sparse final-index chunk for a complete import', () => {
+    listener({ action: 'importDataInit', totalChunks: 2, fileName: 'data.ndjson' }, {}, jest.fn())
+    listener({ action: 'importDataChunk', chunkIndex: 1, chunkData: 'second' }, {}, jest.fn())
+    const processResponse = jest.fn()
+
+    listener({ action: 'importDataProcess' }, {}, processResponse)
+
+    expect(processResponse).toHaveBeenCalledWith({ success: false, error: 'Import session incomplete' })
+    expect(getCurrentImportSession()).toMatchObject({ receivedChunks: 1, chunks: [undefined, 'second'] })
+    expect(getOperationState().type).toBe('import')
+  })
+
+  test('releases an abandoned chunk-session slot after inactivity', () => {
+    jest.useFakeTimers()
+    try {
+      listener({ action: 'importDataInit', totalChunks: 2, fileName: 'data.ndjson' }, {}, jest.fn())
+      expect(getOperationState().type).toBe('import')
+
+      jest.advanceTimersByTime(5 * 60 * 1000)
+
+      expect(getCurrentImportSession()).toBeNull()
+      expect(getOperationState().type).toBe('idle')
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
   test('preserves a completed chunk session when processing is blocked', () => {
     listener(
       { action: 'importDataInit', totalChunks: 1, fileName: 'data.ndjson' },

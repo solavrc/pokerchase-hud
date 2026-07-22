@@ -22,7 +22,7 @@ import type {
   ImportProgressMessage,
   RebuildProgressMessage
 } from '../types/messages'
-import { setOperationState } from './operation-state'
+import { getOperationState, setOperationState } from './operation-state'
 import { resolveAdvisory, markAdvisoryPending } from './rebuild-advisory'
 import {
   API_EVENT_PRIMARY_KEY,
@@ -36,28 +36,60 @@ const IMPORT_CHUNK_SIZE = DATABASE_CONSTANTS.IMPORT_CHUNK_SIZE
 
 interface ImportSession {
   chunks: string[]
+  receivedChunks: number
   totalChunks: number
   fileName: string
 }
 let currentImportSession: ImportSession | null = null
+let importSessionTimeout: ReturnType<typeof setTimeout> | undefined
+const IMPORT_SESSION_TIMEOUT_MS = 5 * 60 * 1000
+
+const armImportSessionTimeout = (): void => {
+  clearTimeout(importSessionTimeout)
+  importSessionTimeout = setTimeout(() => {
+    console.warn('[importData] Abandoned chunk transfer timed out; releasing operation slot')
+    clearImportSession()
+  }, IMPORT_SESSION_TIMEOUT_MS)
+}
 
 export const getCurrentImportSession = (): ImportSession | null => currentImportSession
 
 export const startImportSession = (totalChunks: number, fileName: string): void => {
   currentImportSession = {
     chunks: [],
+    receivedChunks: 0,
     totalChunks,
     fileName
   }
+  // Own the shared operation slot for the whole file transfer, not only the
+  // later parse/rebuild phase. A pending extension update or another data
+  // operation must not reload/delete the worker while chunks live in memory.
+  setOperationState({ type: 'import', progress: 0, processed: 0, total: totalChunks, message: 'インポートファイル転送中...' })
+  armImportSessionTimeout()
 }
 
-export const addImportChunk = (chunkIndex: number, chunkData: string): void => {
-  if (!currentImportSession) return
+export const addImportChunk = (chunkIndex: number, chunkData: string): boolean => {
+  if (!currentImportSession || !Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= currentImportSession.totalChunks) return false
+  if (currentImportSession.chunks[chunkIndex] === undefined) currentImportSession.receivedChunks++
   currentImportSession.chunks[chunkIndex] = chunkData
+  setOperationState({
+    type: 'import',
+    progress: Math.round((currentImportSession.receivedChunks / currentImportSession.totalChunks) * 100),
+    processed: currentImportSession.receivedChunks,
+    total: currentImportSession.totalChunks,
+    message: 'インポートファイル転送中...'
+  })
+  armImportSessionTimeout()
+  return true
 }
 
-export const clearImportSession = (): void => {
+export const clearImportSession = (releaseOperation = true): void => {
+  clearTimeout(importSessionTimeout)
+  importSessionTimeout = undefined
   currentImportSession = null
+  if (releaseOperation && getOperationState().type === 'import') {
+    setOperationState({ type: 'idle' })
+  }
 }
 
 /**
