@@ -258,12 +258,21 @@ import { launchHarness } from './e2e/harness.ts'
 const h = await launchHarness({ headed: false }) // or true to watch it
 await h.waitForHudMount()
 await h.waitForReplayDone()
-const maxHandCount = await h.evaluate(() => Math.max(
-  0,
-  ...Array.from(document.querySelectorAll('[data-stat-id="hands"]'), (cell) =>
-    Number((cell.textContent || '').match(/\d+/)?.[0] || 0)
-  )
-))
+const handDeadline = Date.now() + 10_000
+let maxHandCount = 0
+while (Date.now() < handDeadline && maxHandCount === 0) {
+  maxHandCount = await h.evaluate(() => Math.max(
+    0,
+    ...Array.from(document.querySelectorAll('[data-stat-id="hands"]'), (cell) =>
+      Number((cell.textContent || '').match(/\d+/)?.[0] || 0)
+    )
+  ))
+  if (maxHandCount === 0) await new Promise((resolve) => setTimeout(resolve, 100))
+}
+if (maxHandCount === 0) {
+  await h.screenshot('e2e/out/hand-timeout.png')
+  throw new Error('HAND remained 0 for 10s after replay; see e2e/out/hand-timeout.png')
+}
 await h.screenshot('e2e/out/hud.png')
 const popup = await h.openPopup()
 await popup.screenshot({ path: 'e2e/out/popup.png' })
@@ -311,6 +320,7 @@ npx tsx e2e/run.ts wait-hud                       # block until the HUD mounts
 npx tsx e2e/run.ts screenshot e2e/out/step1.png
 npx tsx e2e/run.ts dom-text                       # plain-text render of the page
 npx tsx e2e/run.ts dom-html                       # <body> outerHTML
+sleep 2                                           # let the worker process and broadcast replayed events
 npx tsx e2e/run.ts eval "Math.max(0,...[...document.querySelectorAll('[data-stat-id=\"hands\"]')].map(e=>Number((e.textContent||'').match(/\\d+/)?.[0]||0)))"
 npx tsx e2e/run.ts popup-screenshot e2e/out/popup.png
 
