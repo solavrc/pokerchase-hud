@@ -77,10 +77,16 @@ const handResultSchema = z.object({
   UserId: z.number(),
   HandRanking: z.union([z.literal(-1), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6)]),
   Ranking: z.union([z.literal(-2), z.literal(-1), z.number().nonnegative()]),
-  RewardChip: z.number(),
+  RewardChip: z.number().nonnegative(),
   RankType: z.enum(RankType),
   Hands: z.array(z.number()).max(5),      // 5枚または空配列
   HoleCards: z.array(z.number()).max(2)   // 2枚、[-1,-1]、または空配列
+})
+
+const playerHandChipAccountingSchema = z.object({
+  grossPayout: z.number().nonnegative(),
+  totalContribution: z.number().nonnegative(),
+  netChips: z.number()
 })
 
 // Hand schema
@@ -105,7 +111,14 @@ export const handSchema = z.object({
     battleType: z.enum(BattleType).optional(),
     name: z.string().optional()
   }),
-  results: z.array(handResultSchema)
+  results: z.array(handResultSchema),
+  /**
+   * Exact signed chip result derived from the causal EVT_DEAL ->
+   * EVT_HAND_RESULTS pair. A null player entry means the source snapshots did
+   * not determine a unique contribution; absence means this hand predates the
+   * derived field and needs a Raw Event Lake rebuild.
+   */
+  playerChipAccounting: z.record(z.string(), playerHandChipAccountingSchema.nullable()).optional()
 })
 
 export type Hand = z.infer<typeof handSchema>

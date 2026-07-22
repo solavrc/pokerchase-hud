@@ -51,9 +51,13 @@ export function formatRelativeTime(timestamp: number | null, now: number = Date.
   return `${Math.floor(diffMs / DAY)}d`
 }
 
-/** '+1,240'（勝利時、桁区切り）または'-'（非勝利時）を返す。 */
+/** Signed chip result with grouping; unknown source accounting stays '-'. */
 const formatNetChips = (entry: RecentHandEntry): string =>
-  entry.won && entry.netChips !== null ? `+${entry.netChips.toLocaleString()}` : '-'
+  entry.netChips === null
+    ? '-'
+    : entry.netChips > 0
+      ? `+${entry.netChips.toLocaleString()}`
+      : entry.netChips.toLocaleString()
 
 const styles = {
   panel: {
@@ -100,6 +104,11 @@ const styles = {
 
   won: {
     color: '#00ff00',
+    fontWeight: 'bold',
+  } as CSSProperties,
+
+  lost: {
+    color: '#ff6b6b',
     fontWeight: 'bold',
   } as CSSProperties,
 
@@ -205,7 +214,7 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
             <th style={styles.headerCell}>Pos</th>
             <th style={{ ...styles.headerCell, ...styles.headerCellLeft }}>カード</th>
             <th style={{ ...styles.headerCell, ...styles.headerCellLeft }}>ライン</th>
-            <th style={styles.headerCell}>結果</th>
+            <th style={styles.headerCell}>損益</th>
           </tr>
         </thead>
         <tbody>
@@ -226,7 +235,11 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
               </td>
               <td style={{ ...styles.cell, ...styles.cellLeft }}>{entry.preflopLine ?? '—'}</td>
               <td style={styles.cell}>
-                <span style={entry.won ? styles.won : styles.notWon}>{formatNetChips(entry)}</span>
+                <span style={entry.netChips === null || entry.netChips === 0
+                  ? styles.notWon
+                  : entry.netChips > 0
+                    ? styles.won
+                    : styles.lost}>{formatNetChips(entry)}</span>
                 {entry.wentToShowdown && <span style={styles.showdownMarker} title="ショーダウン">●</span>}
               </td>
             </tr>

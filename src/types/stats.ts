@@ -223,14 +223,14 @@ export interface RecentHandEntry {
   sawFlop: boolean
   /** `isShowdownParticipant(result)` for this player's result row -- true for any real comparison or a showdown muck, false for uncontested wins/folds. */
   wentToShowdown: boolean
-  /** `result.RewardChip > 0` for this player. */
+  /** True when the exact signed chip result is positive. */
   won: boolean
   /**
-   * `result.RewardChip` when `won`, else `null`. This is the gross amount
-   * awarded back (winnings), NOT a true net profit/loss for the hand --
-   * reconstructing "chips contributed this hand" would require replaying
-   * every street's pot/side-pot accounting, which isn't worth it for a
-   * glanceable recent-hands row (see the feature's task brief).
+   * Exact signed result: gross payout (including uncalled returns) minus all
+   * chips contributed during the hand. Positive, negative, and zero are all
+   * displayable. `null` means the causal DEAL/RESULTS snapshots could not
+   * determine a unique result, or the derived hand predates the accounting
+   * field and needs a Raw Event Lake rebuild.
    */
   netChips: number | null
 }

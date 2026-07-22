@@ -87,9 +87,14 @@ export type DbOperationType = 'import' | 'export' | 'sync' | 'rebuild'
  * おり、PokerStars形式エクスポートの開始時刻にもその値が使われるため、
  * Raw Event Lakeからの再構築で既存行を修復する。
  *
+ * version 5: Recent Handsの結果を`RewardChip`（gross payout）から、
+ * DEAL/RESULTSの開始・終了スタックで検証したsigned net chipsへ変更。
+ * `Hand.playerChipAccounting`は書き込み時に導出するため、既存handにも
+ * Raw Event Lakeからの再構築が必要。
+ *
  * インクリメントすると、拡張機能の更新後に既存ユーザーへ一度だけ
  * 「データ再構築」の実行を促すアドバイソリーが表示される
  * （`src/background/rebuild-advisory.ts`参照）。単なるUI変更やバグ修正でも
  * 書き込み時の導出結果に影響しないものはバンプ不要。
  */
-export const REBUILD_ADVISORY_VERSION = 4
+export const REBUILD_ADVISORY_VERSION = 5

@@ -31,6 +31,7 @@ import type {
 
 import { defaultRegistry } from './stats'
 import { getPositionMap, getBigBlindUserId } from './utils/position-utils'
+import { derivePlayerHandChipAccounting } from './utils/hand-chip-accounting'
 
 /**
  * エンティティバンドル（一括保存用）
@@ -179,10 +180,12 @@ export class EntityConverter {
     let positionMap: Map<number, Position> = new Map()
 
     let progress: any = undefined
+    let dealEvent: ApiEvent<ApiType.EVT_DEAL> | undefined
 
     for (const event of events) {
       switch (event.ApiTypeId) {
         case ApiType.EVT_DEAL: {
+          dealEvent = event
           // ハンドの作成（IDは一時的に0を設定、EVT_HAND_RESULTSで更新）
           handState.hand = {
             id: 0, // EVT_HAND_RESULTSのHandIdで更新される
@@ -440,6 +443,9 @@ export class EntityConverter {
             ?.filter(result => result.RewardChip > 0)
             .map(result => result.UserId) || []
           handState.hand.results = event.Results || []
+          handState.hand.playerChipAccounting = dealEvent
+            ? derivePlayerHandChipAccounting(dealEvent, event, handState.hand.session.battleType)
+            : Object.fromEntries(handState.hand.seatUserIds.filter(userId => userId !== -1).map(userId => [String(userId), null]))
           // RIVER_CALLで勝利したアクションにRIVER_CALL_WONを付与する
           // （WriteEntityStreamと同一ロジック。River Call Accuracy統計が参照する）
           handState.actions.forEach(action => {

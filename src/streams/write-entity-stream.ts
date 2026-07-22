@@ -11,6 +11,7 @@ import {
   Position
 } from '../types'
 import type {
+  ApiEvent,
   ApiHandEvent,
   HandState,
   Progress
@@ -20,6 +21,7 @@ import { ErrorHandler } from '../utils/error-handler'
 import { getPositionMap, getBigBlindUserId } from '../utils/position-utils'
 import { defaultRegistry } from '../stats'
 import type { ErrorContext } from '../types/errors'
+import { derivePlayerHandChipAccounting } from '../utils/hand-chip-accounting'
 
 /**
  * エンティティ書き込みStream（パイプライン第2段階）
@@ -99,6 +101,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
       statStates: {}
     }
     let progress: Progress | undefined
+    let dealEvent: ApiEvent<ApiType.EVT_DEAL> | undefined
     // 同一フェーズのEVT_DEAL_ROUND重複検出用（テーブル移動キメラのシグネチャ）。
     // 実データ検証: 同一ハンドバッファ内でフェーズが重複した12件は、12件全てで
     // ハンド内にEVT_ENTRY_QUEUED/EVT_PLAYER_SEAT_ASSIGNEDが割り込んでおり、
@@ -111,6 +114,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
     for (const event of events) {
       switch (event.ApiTypeId) {
         case ApiType.EVT_DEAL:
+          dealEvent = event
           handState.hand.seatUserIds = event.SeatUserIds
           // Receive chronology and exported hand-log timestamps are anchored
           // at the start of the hand, not when EVT_HAND_RESULTS arrives.
@@ -319,6 +323,9 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           // RewardChip基準がこれらの統計と整合する。
           handState.hand.winningPlayerIds = event.Results.filter(({ RewardChip }) => RewardChip > 0).map(({ UserId }) => UserId)
           handState.hand.results = event.Results
+          handState.hand.playerChipAccounting = dealEvent
+            ? derivePlayerHandChipAccounting(dealEvent, event, handState.hand.session.battleType)
+            : Object.fromEntries(handState.hand.seatUserIds.filter(userId => userId !== -1).map(userId => [String(userId), null]))
 
           // Update actions with handId and add RIVER_CALL_WON for winning river calls
           handState.actions = handState.actions.map(action => {

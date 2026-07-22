@@ -28,6 +28,7 @@ import { ActionType, BattleType, PhaseType, Position, RankType } from '../types/
 import { ApiType } from '../types'
 import type { ApiHandEvent } from '../types'
 import type { Action, Hand } from '../types/entities'
+import { EntityConverter } from '../entity-converter'
 
 const PLAYER_ID = 1
 
@@ -85,7 +86,7 @@ function makeMinimalHandEvents(handId: number, seatUserIds: [number, number, num
       HandId: handId,
       HandLog: '',
       Results: [{ UserId: seatUserIds[0], HoleCards: [], RankType: 10, Hands: [], HandRanking: 1, Ranking: -2, RewardChip: 300 }],
-      Player: { SeatIndex: 0, BetStatus: -1, Chip: 5000, BetChip: 0 },
+      Player: { SeatIndex: 0, BetStatus: -1, Chip: 5300, BetChip: 0 },
       OtherPlayers: [
         { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 5000, BetChip: 0, IsSafeLeave: false },
         { SeatIndex: 2, Status: 0, BetStatus: -1, Chip: 5000, BetChip: 0, IsSafeLeave: false },
@@ -93,6 +94,14 @@ function makeMinimalHandEvents(handId: number, seatUserIds: [number, number, num
       timestamp: handId * 1000 + 1,
     },
   ]
+}
+
+function makeTournamentChipLossEvents(handId: number): ApiHandEvent[] {
+  return makeMinimalHandEvents(handId, [1, 2, 3]).map(event =>
+    event.ApiTypeId === ApiType.EVT_HAND_RESULTS && event.Player
+      ? { ...event, Player: { ...event.Player, Chip: event.Player.Chip - 10 } }
+      : event
+  )
 }
 
 describe('RecentHandsService', () => {
@@ -110,6 +119,37 @@ describe('RecentHandsService', () => {
   afterEach(async () => {
     db.close()
     await db.delete()
+  })
+
+  test('Raw Event Lake rebuild persists the same signed accounting as the live writer', () => {
+    service.session.setBattleType(BattleType.TOURNAMENT)
+    const rebuilt = new EntityConverter(service.session).convertEventsToEntities(
+      makeMinimalHandEvents(99, [1, 2, 3])
+    )
+
+    expect(rebuilt.hands[0]!.playerChipAccounting).toEqual({
+      '1': { grossPayout: 300, totalContribution: 0, netChips: 300 },
+      '2': { grossPayout: 0, totalContribution: 100, netChips: -100 },
+      '3': { grossPayout: 0, totalContribution: 200, netChips: -200 },
+    })
+
+    const corruptTournament = new EntityConverter(service.session).convertEventsToEntities(
+      makeTournamentChipLossEvents(100)
+    )
+    expect(Object.values(corruptTournament.hands[0]!.playerChipAccounting!)).toEqual([
+      null, null, null,
+    ])
+  })
+
+  test('live writer propagates Tournament BattleType to the chip-conservation guard', async () => {
+    service.session.setBattleType(BattleType.TOURNAMENT)
+    await new Promise<void>(resolve => {
+      service.writeEntityStream.once('data', () => resolve())
+      service.writeEntityStream.write(makeTournamentChipLossEvents(101))
+    })
+
+    const hand = await db.hands.get(101)
+    expect(Object.values(hand!.playerChipAccounting!)).toEqual([null, null, null])
   })
 
   describe('getRecentHands: ordering, limit, filters', () => {
@@ -297,28 +337,50 @@ describe('RecentHandsService', () => {
   })
 
   describe('won / netChips / wentToShowdown / sawFlop', () => {
-    test('won hand: RewardChip>0 -> won=true, netChips=RewardChip', async () => {
+    test('profitable hand uses exact signed accounting rather than gross RewardChip', async () => {
       const hand = makeHand({
         id: 1,
-        results: [{ UserId: PLAYER_ID, HandRanking: 1, Ranking: -2, RewardChip: 1240, RankType: RankType.NO_CALL, Hands: [], HoleCards: [] }]
+        results: [{ UserId: PLAYER_ID, HandRanking: 1, Ranking: -2, RewardChip: 1240, RankType: RankType.NO_CALL, Hands: [], HoleCards: [] }],
+        playerChipAccounting: {
+          [String(PLAYER_ID)]: { grossPayout: 1240, totalContribution: 240, netChips: 1000 }
+        }
       })
       await db.hands.add(hand)
       const result = await getRecentHands(db, service, PLAYER_ID, 10)
       expect(result.hands[0]!.won).toBe(true)
-      expect(result.hands[0]!.netChips).toBe(1240)
+      expect(result.hands[0]!.netChips).toBe(1000)
       expect(result.hands[0]!.wentToShowdown).toBe(false) // NO_CALL is not a showdown
     })
 
-    test('lost hand: RewardChip=0 -> won=false, netChips=null', async () => {
+    test('lost hand preserves a negative signed result', async () => {
       const hand = makeHand({
         id: 1,
-        results: [{ UserId: PLAYER_ID, HandRanking: -1, Ranking: -2, RewardChip: 0, RankType: RankType.ONE_PAIR, Hands: [], HoleCards: [48, 49] }]
+        results: [{ UserId: PLAYER_ID, HandRanking: -1, Ranking: -2, RewardChip: 0, RankType: RankType.ONE_PAIR, Hands: [], HoleCards: [48, 49] }],
+        playerChipAccounting: {
+          [String(PLAYER_ID)]: { grossPayout: 0, totalContribution: 200, netChips: -200 }
+        }
       })
       await db.hands.add(hand)
       const result = await getRecentHands(db, service, PLAYER_ID, 10)
       expect(result.hands[0]!.won).toBe(false)
-      expect(result.hands[0]!.netChips).toBeNull()
+      expect(result.hands[0]!.netChips).toBe(-200)
       expect(result.hands[0]!.wentToShowdown).toBe(true) // real comparison RankType
+    })
+
+    test('break-even hand preserves zero while an ambiguous accounting entry stays null', async () => {
+      await db.hands.bulkAdd([
+        makeHand({
+          id: 2,
+          playerChipAccounting: {
+            [String(PLAYER_ID)]: { grossPayout: 200, totalContribution: 200, netChips: 0 }
+          }
+        }),
+        makeHand({ id: 1, playerChipAccounting: { [String(PLAYER_ID)]: null } }),
+      ])
+
+      const result = await getRecentHands(db, service, PLAYER_ID, 10)
+      expect(result.hands.map(hand => hand.netChips)).toEqual([0, null])
+      expect(result.hands.map(hand => hand.won)).toEqual([false, false])
     })
 
     test('sawFlop: true when the FLOP phase entry includes the player', async () => {
@@ -445,6 +507,7 @@ describe('RecentHandsService', () => {
       // (subscribeToHandCompletion, module-level above) the first time it's called
       // for a given service instance, independent of the front-end hand-epoch
       // plumbing (App.tsx/Hud.tsx/ports.ts).
+      service.session.setBattleType(BattleType.TOURNAMENT)
       await new Promise<void>(resolve => {
         service.writeEntityStream.once('data', () => resolve())
         service.writeEntityStream.write(makeMinimalHandEvents(5, [1, 2, 3]))
@@ -455,6 +518,7 @@ describe('RecentHandsService', () => {
       // hand 4 (seeded directly above) AND hand 5 (persisted by writeEntityStream
       // itself, from makeMinimalHandEvents) are both now reflected.
       expect(afterHandCompletion.hands.map(h => h.handId)).toEqual([5, 4, 3, 2, 1])
+      expect(afterHandCompletion.hands[0]!.netChips).toBe(300)
     })
 
     // 監査finding 11フォローアップ・pass-3（P2、codexレビュー指摘）: 進行中フェッチが

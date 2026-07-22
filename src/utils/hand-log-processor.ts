@@ -6,9 +6,14 @@
 import type { Session } from '../types'
 import type { ApiEvent } from '../types/api'
 import { ApiType } from '../types/api'
-import { ActionType, BetStatusType, RankType, PhaseType, isShowdownParticipant } from '../types/game'
+import { ActionType, RankType, PhaseType, isShowdownParticipant } from '../types/game'
 import { HandLogConfig, HandLogEntry, HandLogEntryType, HandLogState } from '../types/hand-log'
 import { formatCards } from './card-utils'
+import {
+  deriveStartingStack as deriveSharedStartingStack,
+  getPlayerChipsAfterAnte as getSharedPlayerChipsAfterAnte,
+  isAnteContributor as isSharedAnteContributor,
+} from './hand-chip-accounting'
 
 // 定数定義
 const MAX_SEATS = 6 // PokerChaseの6人テーブル
@@ -971,18 +976,7 @@ export class HandLogProcessor {
    * ブラインド分を戻してアンテのみ支払い後の状態を計算する
    */
   private getPlayerChipsAfterAnte(event: ApiEvent<ApiType.EVT_DEAL>, seatIndex: number): number {
-    if (event.Player?.SeatIndex === seatIndex) {
-      // Player.Chip はアンテ+ブラインド支払い後の値
-      // BetChip にブラインド額が入っている → Chip + BetChip がアンテ支払い後
-      return event.Player.Chip + event.Player.BetChip
-    }
-
-    const otherPlayer = event.OtherPlayers.find(p => p.SeatIndex === seatIndex)
-    if (otherPlayer) {
-      // OtherPlayers.Chip + BetChip がアンテ支払い後
-      return otherPlayer.Chip + otherPlayer.BetChip
-    }
-    return 0
+    return getSharedPlayerChipsAfterAnte(event, seatIndex) ?? 0
   }
 
   /**
@@ -992,12 +986,7 @@ export class HandLogProcessor {
    * プレイヤー状態が見つからない場合は従来通り拠出者として扱う（フォールバック）。
    */
   private isAnteContributor(event: ApiEvent<ApiType.EVT_DEAL>, seatIndex: number): boolean {
-    const betStatus = event.Player?.SeatIndex === seatIndex
-      ? event.Player.BetStatus
-      : event.OtherPlayers.find(p => p.SeatIndex === seatIndex)?.BetStatus
-    return betStatus === undefined ||
-      betStatus === BetStatusType.BET_ABLE ||
-      betStatus === BetStatusType.ALL_IN
+    return isSharedAnteContributor(event, seatIndex)
   }
 
   /** アンテ拠出者数をカウント */
@@ -1174,6 +1163,9 @@ export class HandLogProcessor {
   }
 
   private getPlayerChips(event: ApiEvent<ApiType.EVT_DEAL>, seatIndex: number): number {
+    const exactStartingStack = deriveSharedStartingStack(event, seatIndex)
+    if (exactStartingStack !== null) return exactStartingStack
+
     const ante = event.Game.Ante || 0
 
     // Chip + BetChip はアンテ(+ブラインド)支払い後の値

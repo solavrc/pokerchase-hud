@@ -9,8 +9,8 @@ const buildResult = (overrides: Partial<RecentHandsResult> = {}): RecentHandsRes
   computedAt: NOW,
   hands: [
     { handId: 3, approxTimestamp: NOW - 3 * 60_000, position: Position.BTN, holeCards: ['As', 'Ah'], preflopLine: 'Open', sawFlop: true, wentToShowdown: true, won: true, netChips: 1240 },
-    { handId: 2, approxTimestamp: NOW - 2 * 3600_000, position: Position.BB, holeCards: null, preflopLine: 'Check', sawFlop: true, wentToShowdown: false, won: false, netChips: null },
-    { handId: 1, approxTimestamp: NOW - 26 * 3600_000, position: null, holeCards: null, preflopLine: 'Fold', sawFlop: false, wentToShowdown: false, won: false, netChips: null },
+    { handId: 2, approxTimestamp: NOW - 2 * 3600_000, position: Position.BB, holeCards: null, preflopLine: 'Check', sawFlop: true, wentToShowdown: false, won: false, netChips: -640 },
+    { handId: 1, approxTimestamp: NOW - 26 * 3600_000, position: null, holeCards: null, preflopLine: 'Fold', sawFlop: false, wentToShowdown: false, won: false, netChips: 0 },
   ],
   ...overrides,
 })
@@ -103,7 +103,7 @@ describe('RecentHandsPanel', () => {
     expect(rows[2]!.querySelector('[data-testid="recent-hands-cards"]')).toHaveTextContent('—')
   })
 
-  it('勝利ハンドは緑の"+netChips"、ショーダウンは●マーカーを表示する', async () => {
+  it('signed netを +N / -N / 0 で表示し、正負を色分けする', async () => {
     mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
       callback({ success: true, recentHands: buildResult() })
     })
@@ -114,8 +114,25 @@ describe('RecentHandsPanel', () => {
     expect(rows[0]).toHaveTextContent('+1,240')
     expect(rows[0]).toHaveTextContent('●')
     expect(rows[1]).not.toHaveTextContent('●')
-    expect(rows[1]).toHaveTextContent('-')
-    expect(rows[1]!.querySelector('td:last-child span')).toHaveStyle({ color: '#b8b8b8' })
+    expect(rows[1]).toHaveTextContent('-640')
+    expect(rows[1]!.querySelector('td:last-child span')).toHaveStyle({ color: '#ff6b6b' })
+    expect(rows[2]).toHaveTextContent('0')
+    expect(rows[2]!.querySelector('td:last-child span')).toHaveStyle({ color: '#b8b8b8' })
+  })
+
+  it('source accountingが不明なら推測せず"-"を表示する', async () => {
+    mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
+      callback({
+        success: true,
+        recentHands: buildResult({ hands: [{ ...buildResult().hands[0]!, won: false, netChips: null }] })
+      })
+    })
+
+    render(<RecentHandsPanel playerId={123} />)
+
+    const row = await screen.findByTestId('recent-hands-row')
+    expect(row.querySelector('td:last-child')).toHaveTextContent('-')
+    expect(row.querySelector('td:last-child span')).toHaveStyle({ color: '#b8b8b8' })
   })
 
   it('プリフロップ・ラインとポジションを表示する（nullは"—"）', async () => {

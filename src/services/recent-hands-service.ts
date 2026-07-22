@@ -178,10 +178,10 @@ function deriveHoleCards(result: Result | undefined): string[] | null {
   return formatted.length > 0 ? formatted : null
 }
 
-function deriveWonAndNetChips(result: Result | undefined): { won: boolean, netChips: number | null } {
-  if (!result) return { won: false, netChips: null }
-  const won = result.RewardChip > 0
-  return { won, netChips: won ? result.RewardChip : null }
+function deriveWonAndNetChips(hand: Hand, playerId: number): { won: boolean, netChips: number | null } {
+  const accounting = hand.playerChipAccounting?.[String(playerId)]
+  if (!accounting) return { won: false, netChips: null }
+  return { won: accounting.netChips > 0, netChips: accounting.netChips }
 }
 
 /**
@@ -300,7 +300,7 @@ export async function getRecentHands(
   const hands: RecentHandEntry[] = recentHands.map(hand => {
     const result = hand.results.find((r: Result) => r.UserId === playerId)
     const wentToShowdown = result ? isShowdownParticipant(result) : false
-    const { won, netChips } = deriveWonAndNetChips(result)
+    const { won, netChips } = deriveWonAndNetChips(hand, playerId)
 
     return {
       handId: hand.id,
