@@ -217,7 +217,7 @@ export const apiEventSchemas = {
   [ApiType.EVT_DEAL]: baseSchema.extend({
     ApiTypeId: z.literal(ApiType.EVT_DEAL),
     Game: z.object({
-      Ante: z.int().nonnegative().describe('アンテ額。アンテ優先モデル: ショートスタックはアンテに先に充当'),
+      Ante: z.int().nonnegative().describe('アンテ額。ショートスタック時のEVT_DEAL会計では、ante相当額を控除した残額がBetChipへ割り当てられる。実際の投稿時系列は非観測'),
       BigBlind: z.int().nonnegative().describe('BB額'),
       BigBlindSeat: seatIndexSchema.describe('BBプレイヤーの席インデックス。WriteEntityStreamがポジション計算の基準に使用'),
       ButtonSeat: seatIndexSchema.describe('ボタン（ディーラー）の席インデックス。PS形式エクスポートで使用'),
