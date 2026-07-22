@@ -575,5 +575,36 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         expect((await getRebuildAdvisoryState()).pendingVersion).toBeUndefined()
       })
     })
+
+    test('a failed first import marks the rebuild advisory pending because retrying the same file only sees duplicates', async () => {
+      const fullExport = [ENTRY_QUEUED, ...HAND1_EVENTS]
+
+      await runWithFreshDb(async ({ db, handlers }) => {
+        expect(await db.apiEvents.count()).toBe(0)
+        expect((await getRebuildAdvisoryState()).pendingVersion).toBeUndefined()
+
+        const convertSpy = jest.spyOn(EntityConverter.prototype, 'convertEventsToEntities')
+          .mockImplementation(() => { throw new Error('synthetic initial entity-generation failure') })
+
+        await expect(handlers.importData(toJsonl(fullExport))).rejects.toThrow(/entity generation failed/i)
+        convertSpy.mockRestore()
+
+        // Raw rows landed before entity generation failed, so the next import
+        // is no longer an "empty DB" import even though no derived rows exist.
+        expect(await db.apiEvents.count()).toBe(fullExport.length)
+        expect(await db.hands.count()).toBe(0)
+        expect(await db.actions.count()).toBe(0)
+
+        // Required recovery invariant: the user must keep seeing the manual
+        // rebuild prompt, because retrying this exact file cannot trigger the
+        // non-empty/new-row rebuild branch (all rows are now duplicates).
+        expect((await getRebuildAdvisoryState()).pendingVersion).toBe(REBUILD_ADVISORY_VERSION)
+
+        const retryResult = await handlers.importData(toJsonl(fullExport))
+        expect(retryResult.successCount).toBe(0)
+        expect(retryResult.duplicateCount).toBe(fullExport.length)
+        expect(await db.hands.count()).toBe(0)
+      })
+    })
   })
 })
