@@ -78,11 +78,15 @@ describe('Popup', () => {
   }
 
   const mockSignedOutPopupMessages = (
-    handleSignIn: (callback: (response?: unknown) => void) => void
+    handleSignIn: (callback: (response?: unknown) => void) => void,
+    getAuthStatus: () => { isSignedIn: boolean; userInfo: { email: string; uid: string } | null } = () => ({
+      isSignedIn: false,
+      userInfo: null,
+    })
   ) => {
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       if (message.action === 'firebaseAuthStatus') {
-        callback({ success: true, isSignedIn: false, userInfo: null })
+        callback({ success: true, ...getAuthStatus() })
       } else if (message.action === 'getSyncState') {
         callback({ success: true, syncState: null })
       } else if (message.action === 'acknowledgeWhatsNew') {
@@ -512,10 +516,17 @@ describe('Popup', () => {
   })
 
   describe('Firebase認証操作のフィードバック', () => {
-    it('成功応答までボタンを無効化し、成功後はlistenerによる認証状態更新を待つ', async () => {
+    it('成功応答までボタンを無効化し、成功後はbackgroundの認証状態を再取得する', async () => {
       let respondToSignIn: ((response?: unknown) => void) | undefined
+      let signedIn = false
       mockSignedOutPopupMessages((callback) => {
         respondToSignIn = callback
+      }, () => {
+        if (!signedIn) return { isSignedIn: false, userInfo: null }
+        return {
+          isSignedIn: true,
+          userInfo: { email: 'test@example.com', uid: 'test-uid' },
+        }
       })
 
       render(<Popup />)
@@ -529,16 +540,21 @@ describe('Popup', () => {
       })
 
       act(() => {
+        signedIn = true
         respondToSignIn?.({ success: true })
       })
 
       await waitFor(() => {
-        expect(screen.getByRole('button', { name: '自動バックアップを有効にする' })).toBeEnabled()
+        expect(screen.getByText('test@example.com')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'ログアウト' })).toBeEnabled()
       })
       expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-      // A successful response does not optimistically change auth state;
-      // the existing firebaseAuthStatus listener remains authoritative.
-      expect(screen.queryByText('ログアウト')).not.toBeInTheDocument()
+      // The action response itself carries no user details. Success therefore
+      // refetches the background's authoritative auth state instead of
+      // optimistically inventing one in the popup.
+      expect(
+        mockChromeRuntimeSendMessage.mock.calls.filter(([message]) => message.action === 'firebaseAuthStatus')
+      ).toHaveLength(2)
     })
 
     it('backgroundのエラー応答を表示し、再試行開始時に古いエラーを消す', async () => {
@@ -592,7 +608,7 @@ describe('Popup', () => {
       expect(screen.getByRole('button', { name: '自動バックアップを有効にする' })).toBeEnabled()
     })
 
-    it('backgroundが応答しない場合は8秒でタイムアウトして再試行可能にする', async () => {
+    it('対話型サインインが応答しない場合は2分でタイムアウトして再試行可能にする', async () => {
       jest.useFakeTimers()
       mockSignedOutPopupMessages(() => {
         // Deliberately leave the callback unresolved.
@@ -614,7 +630,7 @@ describe('Popup', () => {
       expect(screen.getByRole('button', { name: '有効化しています...' })).toBeDisabled()
 
       await act(async () => {
-        await jest.advanceTimersByTimeAsync(8000)
+        await jest.advanceTimersByTimeAsync(120_000)
       })
 
       expect(screen.getByRole('alert')).toHaveTextContent(

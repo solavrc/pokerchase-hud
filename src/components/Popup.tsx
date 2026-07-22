@@ -11,6 +11,7 @@ import type { UIConfig } from '../types/hand-log'
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import type {
   ChromeMessage,
+  AuthStatusResponse,
   MessageResponse,
   UpdateBattleTypeFilterMessage,
   FirebaseSignInMessage,
@@ -47,6 +48,8 @@ import {
 export type { Options }
 
 const FIREBASE_AUTH_COMMUNICATION_ERROR = 'バックグラウンドとの通信に失敗しました。もう一度お試しください。'
+const FIREBASE_SIGN_IN_TIMEOUT_MS = 120_000
+const FIREBASE_SIGN_OUT_TIMEOUT_MS = 30_000
 
 export interface PopupProps {
   /**
@@ -111,6 +114,21 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   const [isFirebaseAuthPending, setIsFirebaseAuthPending] = useState(false)
   const [firebaseAuthError, setFirebaseAuthError] = useState('')
   const firebaseAuthRequestInFlightRef = useRef(false)
+
+  const refreshFirebaseAuthStatus = async (): Promise<boolean> => {
+    const response = await sendMessageWithTimeout<AuthStatusResponse>({
+      action: 'firebaseAuthStatus'
+    })
+    if (!response) return false
+
+    setIsFirebaseSignedIn(response.isSignedIn)
+    setFirebaseUserInfo(
+      response.userInfo?.email && response.userInfo.uid
+        ? { email: response.userInfo.email, uid: response.userInfo.uid }
+        : null
+    )
+    return true
+  }
 
   // Fetch sync state
   useEffect(() => {
@@ -424,6 +442,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   // Firebase handlers
   const performFirebaseAuthAction = async (
     message: FirebaseSignInMessage | FirebaseSignOutMessage,
+    timeoutMs: number,
     beforeSend?: () => Promise<void>
   ) => {
     if (firebaseAuthRequestInFlightRef.current) return
@@ -434,12 +453,14 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
 
     try {
       await beforeSend?.()
-      const response = await sendMessageWithTimeout<MessageResponse>(message)
+      const response = await sendMessageWithTimeout<MessageResponse>(message, timeoutMs)
 
       if (!response) {
         setFirebaseAuthError(FIREBASE_AUTH_COMMUNICATION_ERROR)
       } else if (!response.success) {
         setFirebaseAuthError(response.error)
+      } else if (!await refreshFirebaseAuthStatus()) {
+        setFirebaseAuthError(FIREBASE_AUTH_COMMUNICATION_ERROR)
       }
     } catch {
       setFirebaseAuthError(FIREBASE_AUTH_COMMUNICATION_ERROR)
@@ -451,10 +472,14 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
 
   const handleFirebaseSignIn = () => performFirebaseAuthAction(
     { action: 'firebaseSignIn' },
+    FIREBASE_SIGN_IN_TIMEOUT_MS,
     openGameTab
   )
 
-  const handleFirebaseSignOut = () => performFirebaseAuthAction({ action: 'firebaseSignOut' })
+  const handleFirebaseSignOut = () => performFirebaseAuthAction(
+    { action: 'firebaseSignOut' },
+    FIREBASE_SIGN_OUT_TIMEOUT_MS
+  )
 
   const handleManualSyncUpload = () => {
     chrome.runtime.sendMessage<ManualSyncUploadMessage>({ action: 'manualSyncUpload' })
