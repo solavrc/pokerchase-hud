@@ -6,7 +6,7 @@ import { autoSyncService } from '../services/auto-sync-service'
 import type { ChromeMessage, MessageResponse } from '../types/messages'
 import { registerMessageRouter } from './message-router'
 
-describe('message-router firebaseSignOut auth-transition ordering', () => {
+describe('message-router auth ordering', () => {
   let db: PokerChaseDB
   let service: PokerChaseService
   let listener: (
@@ -63,5 +63,48 @@ describe('message-router firebaseSignOut auth-transition ordering', () => {
 
     expect(authStateChanged).toHaveBeenCalledWith(null)
     expect(sendResponse).toHaveBeenCalledWith({ success: true })
+  })
+
+  test('waits for persisted auth restore before answering firebaseAuthStatus', async () => {
+    let releaseRestore: (() => void) | undefined
+    const ready = jest.spyOn(firebaseAuthService, 'ready').mockImplementation(() => (
+      new Promise<void>(resolve => { releaseRestore = resolve })
+    ))
+    jest.spyOn(firebaseAuthService, 'isSignedIn').mockReturnValue(true)
+    jest.spyOn(firebaseAuthService, 'getUserInfo').mockReturnValue({
+      email: 'restored@example.com',
+      displayName: null,
+      photoURL: null,
+      uid: 'restored-user'
+    })
+    const sendResponse = jest.fn()
+
+    expect(listener({ action: 'firebaseAuthStatus' }, {}, sendResponse)).toBe(true)
+    expect(ready).toHaveBeenCalledTimes(1)
+    expect(sendResponse).not.toHaveBeenCalled()
+
+    releaseRestore?.()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(sendResponse).toHaveBeenCalledWith({
+      success: true,
+      isSignedIn: true,
+      userInfo: {
+        email: 'restored@example.com',
+        displayName: null,
+        photoURL: null,
+        uid: 'restored-user'
+      }
+    })
+  })
+
+  test('returns an error when persisted auth restore fails', async () => {
+    jest.spyOn(firebaseAuthService, 'ready').mockRejectedValue(new Error('auth restore failed'))
+    const sendResponse = jest.fn()
+
+    expect(listener({ action: 'firebaseAuthStatus' }, {}, sendResponse)).toBe(true)
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(sendResponse).toHaveBeenCalledWith({ success: false, error: 'auth restore failed' })
   })
 })

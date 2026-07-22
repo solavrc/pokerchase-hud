@@ -301,11 +301,19 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         })
       return true
     } else if (request.action === 'firebaseAuthStatus') {
-      // Check current auth status
-      const isSignedIn = firebaseAuthService.isSignedIn()
-      const userInfo = firebaseAuthService.getUserInfo()
-
-      sendResponse({ success: true, isSignedIn, userInfo })
+      // Auth restore starts independently when the Service Worker module is
+      // loaded. Do not answer from the initial in-memory `null` before the
+      // persisted state has finished restoring.
+      firebaseAuthService.ready()
+        .then(() => {
+          const isSignedIn = firebaseAuthService.isSignedIn()
+          const userInfo = firebaseAuthService.getUserInfo()
+          sendResponse({ success: true, isSignedIn, userInfo })
+        })
+        .catch(error => {
+          console.error('Firebase auth status error:', error)
+          sendResponse({ success: false, error: error instanceof Error ? error.message : String(error) })
+        })
       return true
     } else if (request.action === 'firebaseSignIn') {
       // Firebase sign in

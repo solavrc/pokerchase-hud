@@ -116,10 +116,10 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   const firebaseAuthRequestInFlightRef = useRef(false)
 
   const refreshFirebaseAuthStatus = async (): Promise<AuthStatusResponse | undefined> => {
-    const response = await sendMessageWithTimeout<AuthStatusResponse>({
+    const response = await sendMessageWithTimeout<MessageResponse>({
       action: 'firebaseAuthStatus'
     })
-    if (!response) return undefined
+    if (!response?.success || !('isSignedIn' in response)) return undefined
 
     setIsFirebaseSignedIn(response.isSignedIn)
     setFirebaseUserInfo(
@@ -255,20 +255,15 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
       // Then verify with background (authoritative source).
       // Fails open: on timeout/error, keep whatever was already set from
       // the chrome.storage.local cache above instead of blocking the UI.
-      sendMessageWithTimeout<{ isSignedIn?: boolean; userInfo?: { email: string; uid: string } | null }>({
-        action: 'firebaseAuthStatus'
-      }).then((response) => {
-        if (response) {
-          setIsFirebaseSignedIn(response.isSignedIn || false)
-          setFirebaseUserInfo(response.userInfo || null)
+      refreshFirebaseAuthStatus().then((response) => {
+        if (!response?.isSignedIn) return
 
-          // Also get sync state if signed in
-          sendMessageWithTimeout<{ syncState?: SyncState }>({ action: 'getSyncState' }).then((syncResponse) => {
-            if (syncResponse?.syncState) {
-              setSyncState(syncResponse.syncState)
-            }
-          })
-        }
+        // Also get sync state if signed in
+        sendMessageWithTimeout<{ syncState?: SyncState }>({ action: 'getSyncState' }).then((syncResponse) => {
+          if (syncResponse?.syncState) {
+            setSyncState(syncResponse.syncState)
+          }
+        })
       })
     })
   }, [])
@@ -293,7 +288,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
         if (message.imported !== undefined) {
           setImportSuccess(message.imported)
         }
-      } else if (message.action === 'firebaseAuthStatus') {
+      } else if (message.action === 'firebaseAuthStatus' && typeof message.isSignedIn === 'boolean') {
         setIsFirebaseSignedIn(message.isSignedIn)
         if (message.userInfo && message.userInfo.email && message.userInfo.uid) {
           setFirebaseUserInfo({

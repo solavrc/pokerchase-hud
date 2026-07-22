@@ -131,10 +131,14 @@ describe('Popup', () => {
       if (typeof callback === 'function') callback()
     })
 
+    ;(chrome.storage.local.get as jest.Mock).mockImplementation(
+      (_key: string, callback: (result: Record<string, unknown>) => void) => callback({})
+    )
+
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       // Execute callback immediately - tests will use waitFor
       if (message.action === 'firebaseAuthStatus') {
-        callback({ isSignedIn: false, userInfo: null })
+        callback({ success: true, isSignedIn: false, userInfo: null })
       } else if (message.action === 'getSyncState') {
         callback({ syncState: null })
       } else if (message.action === 'acknowledgeWhatsNew') {
@@ -758,6 +762,7 @@ describe('Popup', () => {
       // Execute callback immediately - tests will use waitFor
       if (message.action === 'firebaseAuthStatus') {
         callback({
+          success: true,
           isSignedIn: true,
           userInfo: { email: 'test@example.com', uid: 'test-uid' },
         })
@@ -900,7 +905,7 @@ describe('Popup', () => {
       // syncStateのレスポンス形式をテスト
       mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
         if (message.action === 'firebaseAuthStatus') {
-          callback({ isSignedIn: false })
+          callback({ success: true, isSignedIn: false })
         } else if (message.action === 'getSyncState') {
           // 修正後の正しい形式
           callback({
@@ -933,7 +938,7 @@ describe('Popup', () => {
       // getSyncStateのモックを設定
       mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
         if (message.action === 'firebaseAuthStatus') {
-          callback({ isSignedIn: false })
+          callback({ success: true, isSignedIn: false })
         } else if (message.action === 'getSyncState') {
           callback({
             success: true,
@@ -974,6 +979,31 @@ describe('Popup', () => {
   })
 
   describe('Service Worker無応答時のフェイルオープン', () => {
+    it('auth restoreエラー応答ではstorage cacheのサインイン表示を維持する', async () => {
+      ;(chrome.storage.local.get as jest.Mock).mockImplementation(
+        (_key: string, callback: (result: Record<string, unknown>) => void) => callback({
+          firebaseAuthCache: {
+            isSignedIn: true,
+            userInfo: { email: 'cached@example.com', uid: 'cached-user' },
+          },
+        })
+      )
+      mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+        if (message.action === 'firebaseAuthStatus') {
+          callback({ success: false, error: 'auth restore failed' })
+        } else if (message.action === 'getSyncState') {
+          callback({ success: true, syncState: null })
+        } else if (message.action === 'acknowledgeWhatsNew') {
+          callback({ success: true })
+        }
+      })
+
+      render(<Popup />)
+
+      expect(await screen.findByText('cached@example.com')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'ログアウト' })).toBeEnabled()
+    })
+
     it('firebaseAuthStatus/getSyncStateがタイムアウトしてもUIはブロックされず既定状態で使用可能', async () => {
       jest.useFakeTimers()
 
