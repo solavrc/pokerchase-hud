@@ -78,7 +78,7 @@ describe('CompactStatDisplay', () => {
     )
 
     const vpipSegment = screen.getByText('50')
-    expect(vpipSegment).toHaveStyle({ color: '#888888' })
+    expect(vpipSegment).toHaveStyle({ color: '#b8b8b8' })
   })
 
   it('各セグメントに統計名+値+一言説明を含むtitleが付与される', () => {

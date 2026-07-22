@@ -4,6 +4,7 @@ import { Position } from '../../types/game'
 import type { PositionalStatId, PositionalStatsBucketId, PositionalStatsResult } from '../../types/stats'
 import type { GetPositionalStatsMessage, PositionalStatsResponse, ErrorResponse } from '../../types/messages'
 import { sendMessageWithTimeout } from '../popup/send-message'
+import { HUD_MUTED_TEXT_COLOR } from './hudColors'
 
 interface PositionalStatsPanelProps {
   playerId: number
@@ -54,7 +55,7 @@ const styles = {
   placeholder: {
     padding: '6px 0',
     textAlign: 'center' as const,
-    color: '#888888',
+    color: HUD_MUTED_TEXT_COLOR,
     fontSize: '9px',
   } as CSSProperties,
 
@@ -91,7 +92,7 @@ const styles = {
   } as CSSProperties,
 
   lowSample: {
-    color: '#666666',
+    color: HUD_MUTED_TEXT_COLOR,
   } as CSSProperties,
 }
 

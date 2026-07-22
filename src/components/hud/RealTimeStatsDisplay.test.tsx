@@ -65,7 +65,7 @@ describe('RealTimeStatsDisplay', () => {
 
     // Three of a Kindは0%でも表示される
     expect(screen.getByText('Three of a Kind')).toBeInTheDocument()
-    expect(screen.getByText('0.0%')).toBeInTheDocument()
+    expect(screen.getByText('0.0%')).toHaveStyle({ color: '#b8b8b8' })
   })
 
   it('手札改善情報がない場合は表示しない', () => {

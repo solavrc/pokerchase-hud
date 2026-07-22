@@ -4,6 +4,7 @@ import type { RealTimeStats } from '../../realtime-stats/realtime-stats-service'
 import { getStartingHandRanking } from '../../utils/starting-hand-rankings'
 import { useDraggable } from './hooks/useDraggable'
 import { DragHandle } from './DragHandle'
+import { HUD_MUTED_TEXT_COLOR } from './hudColors'
 
 interface RealTimeStatsDisplayProps {
   stats: RealTimeStats
@@ -138,7 +139,7 @@ export const RealTimeStatsDisplay = memo(({ stats, seatIndex }: RealTimeStatsDis
               const probabilityColor = isComplete ? '#00ff00' : 
                                      isWaitingForAction ? '#cccccc' :  // Neutral color when waiting
                                      hasGoodOdds ? '#00ff00' : 
-                                     probability > 0 ? '#ff6666' : '#666'
+                                     probability > 0 ? '#ff6666' : HUD_MUTED_TEXT_COLOR
               
               return (
                 <tr key={improvement.rank} style={rowStyle}>

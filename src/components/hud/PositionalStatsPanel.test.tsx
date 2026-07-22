@@ -99,7 +99,7 @@ describe('PositionalStatsPanel', () => {
     const lowSampleCells = hjRow.querySelectorAll('[data-low-sample="true"]')
     expect(lowSampleCells.length).toBeGreaterThan(0)
     lowSampleCells.forEach(cell => {
-      expect(cell).toHaveStyle({ color: '#666666' })
+      expect(cell).toHaveStyle({ color: '#b8b8b8' })
     })
 
     // BTN行: vpip is [10,42] -> den=42 >= 10, not dimmed

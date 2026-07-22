@@ -40,7 +40,7 @@ describe('RecentHandsPanel', () => {
 
     render(<RecentHandsPanel playerId={123} />)
 
-    expect(screen.getByText('Loading hands…')).toBeInTheDocument()
+    expect(screen.getByText('Loading hands…')).toHaveStyle({ color: '#b8b8b8' })
 
     await waitFor(() => {
       expect(screen.getAllByTestId('recent-hands-row')).toHaveLength(3)
@@ -105,6 +105,7 @@ describe('RecentHandsPanel', () => {
     expect(rows[0]).toHaveTextContent('●')
     expect(rows[1]).not.toHaveTextContent('●')
     expect(rows[1]).toHaveTextContent('-')
+    expect(rows[1]!.querySelector('td:last-child span')).toHaveStyle({ color: '#b8b8b8' })
   })
 
   it('プリフロップ・ラインとポジションを表示する（nullは"—"）', async () => {
