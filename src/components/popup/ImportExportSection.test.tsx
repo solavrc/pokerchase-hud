@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { TextDecoder as NodeTextDecoder } from 'util'
 import { useRef, useState } from 'react'
 import userEvent from '@testing-library/user-event'
 import { ImportExportSection } from './ImportExportSection'
@@ -44,6 +45,7 @@ describe('ImportExportSection - rebuild advisory banner', () => {
   let mockSendMessage: jest.Mock
 
   beforeEach(() => {
+    ;(globalThis as any).TextDecoder = NodeTextDecoder
     storageChangeListeners = []
     storageLocalData = {}
     // Default: respond synchronously with no operationState (mirrors "nothing in
@@ -178,5 +180,32 @@ describe('ImportExportSection - rebuild advisory banner', () => {
     expect(actions).toContain('importDataInit')
     expect(actions).not.toContain('importDataChunk')
     expect(actions).not.toContain('importDataProcess')
+  })
+
+  it('preserves a UTF-8 character split across file chunk boundaries', async () => {
+    const uploadedChunks: string[] = []
+    mockSendMessage.mockImplementation((message: { action?: string, chunkData?: string }, callback?: (response: unknown) => void) => {
+      if (typeof callback === 'function') {
+        callback({})
+        return undefined
+      }
+      if (message.action === 'importDataChunk') uploadedChunks.push(message.chunkData ?? '')
+      return Promise.resolve({ success: true })
+    })
+
+    const chunkSize = 5 * 1024 * 1024
+    const content = `${'x'.repeat(chunkSize - 1)}あ\n`
+    const { container } = render(<ImportStatusHarness />)
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File([content], 'utf8-boundary.ndjson', { type: 'application/x-ndjson' })
+
+    fireEvent.change(input, { target: { files: [file] } })
+
+    await waitFor(() => {
+      expect(mockSendMessage).toHaveBeenCalledWith(expect.objectContaining({ action: 'importDataProcess' }))
+    })
+    expect(uploadedChunks).toHaveLength(2)
+    expect(uploadedChunks.join('')).toBe(content)
+    expect(uploadedChunks.join('')).not.toContain('\uFFFD')
   })
 })
