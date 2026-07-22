@@ -33,12 +33,47 @@ describe('HudHeader', () => {
       />
     )
 
-    const potOdds = screen.getByText('100/20 (17%)')
-    const spr = screen.getByText('SPR:10.5')
+    const potOdds = screen.getByText('17%')
+    const spr = screen.getByText('10.5')
 
     expect(potOdds).toBeInTheDocument()
     expect(spr).toBeInTheDocument()
+    expect(screen.queryByText('100/20', { exact: false })).not.toBeInTheDocument()
+    expect(screen.queryByText(/SPR:/)).not.toBeInTheDocument()
     expect(potOdds.compareDocumentPosition(spr) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('ポットオッズとSPRの意味・式をhoverとkeyboard focusで説明できる', async () => {
+    const user = userEvent.setup()
+    render(
+      <HudHeader
+        playerName="TestPlayer"
+        playerId={123}
+        playerPotOdds={{
+          spr: 10.5,
+          potOdds: {
+            pot: 100,
+            call: 20,
+            percentage: 16.7,
+            ratio: '5:1',
+            isPlayerTurn: true,
+          },
+        }}
+      />
+    )
+
+    const potOddsTooltip = 'ポットオッズ: コールに必要な最低勝率。式: コール額 ÷（メインポット＋全サイドポット＋コール額）'
+    const sprTooltip = 'SPR: このプレイヤーの残りスタックと現在のポット総額の比。式: 残りスタック ÷（メインポット＋全サイドポット）'
+    const potOdds = screen.getByTitle(potOddsTooltip)
+    const spr = screen.getByTitle(sprTooltip)
+
+    expect(potOdds).toHaveAttribute('aria-label', `ポットオッズ 17%。${potOddsTooltip}`)
+    expect(spr).toHaveAttribute('aria-label', `SPR 10.5。${sprTooltip}`)
+
+    await user.tab()
+    expect(potOdds).toHaveFocus()
+    await user.tab()
+    expect(spr).toHaveFocus()
   })
 
   it('プレイヤーのターンの場合はポットオッズがハイライトされる', () => {
@@ -61,7 +96,7 @@ describe('HudHeader', () => {
       />
     )
 
-    const potOddsElement = screen.getByText('100/20 (17%)')
+    const potOddsElement = screen.getByText('17%')
     expect(potOddsElement).toHaveStyle({ color: '#00ff00' })
   })
 
@@ -85,7 +120,7 @@ describe('HudHeader', () => {
       />
     )
 
-    const potOddsElement = screen.getByText('100/20 (17%)')
+    const potOddsElement = screen.getByText('17%')
     expect(potOddsElement).toHaveStyle({ color: '#b8b8b8' })
   })
 

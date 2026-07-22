@@ -156,8 +156,8 @@ describe('Hud', () => {
       />
     )
 
-    const potOdds = screen.getByText('100/20 (17%)')
-    const spr = screen.getByText('SPR:10.5')
+    const potOdds = screen.getByText('17%')
+    const spr = screen.getByText('10.5')
 
     expect(potOdds.compareDocumentPosition(spr) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
@@ -173,8 +173,8 @@ describe('Hud', () => {
       />
     )
 
-    expect(screen.getByText('100/20 (17%)')).toBeInTheDocument()
-    expect(screen.getByText('SPR:10.5')).toBeInTheDocument()
+    expect(screen.getByText('17%')).toBeInTheDocument()
+    expect(screen.getByText('10.5')).toBeInTheDocument()
 
     rerender(
       <Hud
@@ -195,8 +195,8 @@ describe('Hud', () => {
       />
     )
 
-    expect(screen.getByText('140/40 (22%)')).toBeInTheDocument()
-    expect(screen.getByText('SPR:6.25')).toBeInTheDocument()
+    expect(screen.getByText('22%')).toBeInTheDocument()
+    expect(screen.getByText('6.25')).toBeInTheDocument()
   })
 
   it('ヒーロー（席0）の場合はリアルタイム統計を表示', () => {
@@ -344,7 +344,7 @@ describe('Hud', () => {
       />
     )
 
-    const potOddsElement = screen.getByText('100/20 (17%)')
+    const potOddsElement = screen.getByText('17%')
     expect(potOddsElement).toHaveStyle({ color: '#00ff00' })
   })
 

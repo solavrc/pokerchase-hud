@@ -75,6 +75,8 @@ const styles = {
 export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, isRecentHandsPanelOpen, onToggleRecentHandsPanel, statResults, isDimmed }: HudHeaderProps) => {
   const hasPotOdds = playerPotOdds?.potOdds && playerPotOdds.potOdds.call > 0
   const hasSpr = playerPotOdds?.spr !== undefined
+  const potOddsTooltip = 'ポットオッズ: コールに必要な最低勝率。式: コール額 ÷（メインポット＋全サイドポット＋コール額）'
+  const sprTooltip = 'SPR: このプレイヤーの残りスタックと現在のポット総額の比。式: 残りスタック ÷（メインポット＋全サイドポット）'
   
   return (
     <div style={styles.header}>
@@ -89,17 +91,27 @@ export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPosition
             </span>
           )}
           {hasPotOdds && (
-            <span style={{ 
-              color: playerPotOdds.potOdds!.isPlayerTurn ? '#00ff00' : HUD_MUTED_TEXT_COLOR,
-              fontWeight: playerPotOdds.potOdds!.isPlayerTurn ? 'bold' : 'normal',
-              whiteSpace: 'nowrap'
-            }}>
-              {playerPotOdds.potOdds!.pot}/{playerPotOdds.potOdds!.call} ({playerPotOdds.potOdds!.percentage.toFixed(0)}%)
+            <span
+              title={potOddsTooltip}
+              aria-label={`ポットオッズ ${playerPotOdds.potOdds!.percentage.toFixed(0)}%。${potOddsTooltip}`}
+              tabIndex={0}
+              style={{
+                color: playerPotOdds.potOdds!.isPlayerTurn ? '#00ff00' : HUD_MUTED_TEXT_COLOR,
+                fontWeight: playerPotOdds.potOdds!.isPlayerTurn ? 'bold' : 'normal',
+                whiteSpace: 'nowrap'
+              }}
+            >
+              {playerPotOdds.potOdds!.percentage.toFixed(0)}%
             </span>
           )}
           {hasSpr && (
-            <span style={{ color: '#ffcc00', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
-              SPR:{playerPotOdds.spr}
+            <span
+              title={sprTooltip}
+              aria-label={`SPR ${playerPotOdds.spr}。${sprTooltip}`}
+              tabIndex={0}
+              style={{ color: '#ffcc00', fontWeight: 'bold', whiteSpace: 'nowrap' }}
+            >
+              {playerPotOdds.spr}
             </span>
           )}
           {onTogglePositionalPanel && (
