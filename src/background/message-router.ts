@@ -255,6 +255,13 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
             chrome.tabs.sendMessage<LatestStatsMessage>(sender.tab.id, {
               action: 'latestStats',
               stats: stats
+            }).catch(error => {
+              // The requesting content script can disappear while the DB-backed
+              // fallback is being calculated (navigation, reload, or extension
+              // update). Delivery is best-effort once that receiver is gone.
+              if (!(error instanceof Error) || !error.message.includes('Receiving end does not exist')) {
+                console.warn(`[background] Failed to deliver latest stats to tab ${sender.tab?.id}:`, error)
+              }
             })
           }
           sendResponse({ success: true })
