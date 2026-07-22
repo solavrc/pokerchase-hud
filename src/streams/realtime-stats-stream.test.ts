@@ -281,6 +281,23 @@ describe('RealTimeStatsStream', () => {
           }
         },
         {
+          ApiTypeId: ApiType.EVT_ACTION,
+          timestamp: 150,
+          SeatIndex: 5,
+          ActionType: 2,
+          Chip: 10000,
+          BetChip: 100,
+          Progress: {
+            Phase: PhaseType.PREFLOP,
+            NextActionSeat: 1,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 30,
+            MinRaise: 400,
+            Pot: 300,
+            SidePot: []
+          }
+        },
+        {
           ApiTypeId: ApiType.EVT_DEAL_ROUND,
           timestamp: 200,
           CommunityCards: [49, 33, 21], // A♥ 9♥ 6♥
@@ -295,12 +312,11 @@ describe('RealTimeStatsStream', () => {
             { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 9200, BetChip: 0 },
             { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },
             { SeatIndex: 3, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },
-            { SeatIndex: 4, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 },
-            { SeatIndex: 5, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 }
+            { SeatIndex: 4, Status: 0, BetStatus: 1, Chip: 10000, BetChip: 0 }
           ],
           Progress: {
             Phase: PhaseType.FLOP,
-            NextActionSeat: 5,
+            NextActionSeat: 1,
             NextActionTypes: [0, 1, 5],
             NextExtraLimitSeconds: 30,
             MinRaise: 0,
@@ -330,6 +346,9 @@ describe('RealTimeStatsStream', () => {
           spr: 30.7,
           potOdds: { call: 0 }
         })
+        // Seat 5 folded preflop and is omitted from EVT_DEAL_ROUND. Its old
+        // small blind must still be cleared at the street boundary.
+        expect(flopStats.stats.playerStats[5].potOdds.call).toBe(0)
 
         done()
       })
