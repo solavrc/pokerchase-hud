@@ -61,6 +61,7 @@
  * 詳細はwhats-new-badge.ts冒頭のコメント・CLAUDE.md参照。
  */
 import { getRebuildAdvisoryState } from './rebuild-advisory'
+import { runBestEffortChromeUi } from './best-effort-chrome-api'
 import { isOperationIdle, onOperationBecameIdle } from './operation-state'
 import { autoSyncService } from '../services/auto-sync-service'
 import { PENDING_UPDATE_STORAGE_KEY, type PendingUpdateState } from '../constants/update'
@@ -234,11 +235,11 @@ const setBadge = async (): Promise<void> => {
   if (!chrome.action?.setBadgeText) return
   const advisory = await getRebuildAdvisoryState()
   if (advisory.pendingVersion) return
-  try {
-    chrome.action.setBadgeText({ text: BADGE_TEXT })
-    chrome.action.setBadgeBackgroundColor?.({ color: BADGE_BACKGROUND_COLOR })
-  } catch (error) {
-    console.warn('[update-manager] Failed to set badge:', error)
+  runBestEffortChromeUi('update-manager/setBadgeText', () =>
+    chrome.action.setBadgeText({ text: BADGE_TEXT }))
+  if (chrome.action.setBadgeBackgroundColor) {
+    runBestEffortChromeUi('update-manager/setBadgeBackgroundColor', () =>
+      chrome.action.setBadgeBackgroundColor({ color: BADGE_BACKGROUND_COLOR }))
   }
 }
 
@@ -247,11 +248,8 @@ const clearBadge = async (): Promise<void> => {
   if (!chrome.action?.setBadgeText) return
   const advisory = await getRebuildAdvisoryState()
   if (advisory.pendingVersion) return
-  try {
-    chrome.action.setBadgeText({ text: '' })
-  } catch (error) {
-    console.warn('[update-manager] Failed to clear badge:', error)
-  }
+  runBestEffortChromeUi('update-manager/clearBadgeText', () =>
+    chrome.action.setBadgeText({ text: '' }))
 }
 
 /**

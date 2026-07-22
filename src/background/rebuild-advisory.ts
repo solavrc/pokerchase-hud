@@ -17,6 +17,7 @@
  */
 import type { PokerChaseDB } from '../db/poker-chase-db'
 import { REBUILD_ADVISORY_VERSION } from '../constants/database'
+import { runBestEffortChromeUi } from './best-effort-chrome-api'
 
 export const REBUILD_ADVISORY_STORAGE_KEY = 'rebuildAdvisory'
 
@@ -43,37 +44,31 @@ const setRebuildAdvisoryState = async (state: RebuildAdvisoryState): Promise<voi
 /** バッジ表示（API未対応環境ではno-op） */
 const setBadge = (): void => {
   if (!chrome.action?.setBadgeText) return
-  try {
-    chrome.action.setBadgeText({ text: BADGE_TEXT })
-    chrome.action.setBadgeBackgroundColor?.({ color: BADGE_BACKGROUND_COLOR })
-  } catch (error) {
-    console.warn('[rebuild-advisory] Failed to set badge:', error)
+  runBestEffortChromeUi('rebuild-advisory/setBadgeText', () =>
+    chrome.action.setBadgeText({ text: BADGE_TEXT }))
+  if (chrome.action.setBadgeBackgroundColor) {
+    runBestEffortChromeUi('rebuild-advisory/setBadgeBackgroundColor', () =>
+      chrome.action.setBadgeBackgroundColor({ color: BADGE_BACKGROUND_COLOR }))
   }
 }
 
 /** バッジ解除（API未対応環境ではno-op） */
 const clearBadge = (): void => {
   if (!chrome.action?.setBadgeText) return
-  try {
-    chrome.action.setBadgeText({ text: '' })
-  } catch (error) {
-    console.warn('[rebuild-advisory] Failed to clear badge:', error)
-  }
+  runBestEffortChromeUi('rebuild-advisory/clearBadgeText', () =>
+    chrome.action.setBadgeText({ text: '' }))
 }
 
 /** ユーザーへの通知（API未対応環境ではno-op） */
 const notifyUser = (): void => {
   if (!chrome.notifications?.create) return
-  try {
+  runBestEffortChromeUi('rebuild-advisory/notification', () =>
     chrome.notifications.create({
       type: 'basic',
       iconUrl: chrome.runtime.getURL('icons/icon_128px.png'),
       title: '統計ロジックが更新されました',
       message: '拡張機能の更新により統計ロジックが改善されました。ポップアップから「データ再構築」を実行して、既存データに正しい統計を反映してください。'
-    })
-  } catch (error) {
-    console.warn('[rebuild-advisory] Failed to create notification:', error)
-  }
+    }))
 }
 
 /**

@@ -68,6 +68,20 @@ describe('whats-new-badge', () => {
       expect(chrome.action.setBadgeBackgroundColor).toHaveBeenCalled()
     })
 
+    it('keeps the unseen version durable when callback-free badge APIs reject', async () => {
+      const uiError = new Error('extension action unavailable')
+      ;(chrome.action.setBadgeText as jest.Mock).mockRejectedValue(uiError)
+      ;(chrome.action.setBadgeBackgroundColor as jest.Mock).mockRejectedValue(uiError)
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+
+      await expect(markWhatsNewOnUpdate(CURRENT_ENTRY_VERSION)).resolves.toBeUndefined()
+      await Promise.resolve()
+
+      expect(await getUnseenWhatsNewVersion()).toBe(CURRENT_ENTRY_VERSION)
+      expect(warnSpy).toHaveBeenCalledTimes(2)
+      warnSpy.mockRestore()
+    })
+
     it('does not record anything when the version has no curated WHATS_NEW_ENTRIES entry (e.g. an unreleased/unrecognized version)', async () => {
       await markWhatsNewOnUpdate('0.0.1-not-a-real-release')
 

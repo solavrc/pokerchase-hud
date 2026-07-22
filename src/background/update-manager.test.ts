@@ -158,6 +158,21 @@ describe('update-manager', () => {
       expect(chrome.action.setBadgeText).toHaveBeenCalledWith({ text: 'UPD' })
     })
 
+    it('keeps the pending update durable when callback-free badge APIs reject', async () => {
+      const uiError = new Error('extension action unavailable')
+      ;(chrome.action.setBadgeText as jest.Mock).mockRejectedValue(uiError)
+      ;(chrome.action.setBadgeBackgroundColor as jest.Mock).mockRejectedValue(uiError)
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+      markSessionActive()
+
+      await expect(handleUpdateAvailable({ version: '5.2.0' })).resolves.toBeUndefined()
+      await Promise.resolve()
+
+      expect(await getPendingUpdateState()).toMatchObject({ pending: true, version: '5.2.0' })
+      expect(warnSpy).toHaveBeenCalledTimes(2)
+      warnSpy.mockRestore()
+    })
+
     it('does not set its badge when a rebuild-advisory badge is already pending (precedence)', async () => {
       await chrome.storage.local.set({
         [REBUILD_ADVISORY_STORAGE_KEY]: { pendingVersion: REBUILD_ADVISORY_VERSION },

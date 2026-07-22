@@ -225,6 +225,40 @@ describe('export download-handoff completion', () => {
     expect(getOperationState()).toEqual({ type: 'idle' })
   })
 
+  test('a rejected no-hands notification stays best-effort and does not reject the export', async () => {
+    jest.spyOn(service, 'exportHandHistory').mockResolvedValue('')
+    ;(chrome.notifications.create as jest.Mock).mockRejectedValue(new Error('notifications unavailable'))
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const handlers = createImportExportHandlers(service, db, 'https://example.com/*')
+
+    await expect(handlers.exportData('pokerstars')).resolves.toBeUndefined()
+    await Promise.resolve()
+
+    expect(getOperationState()).toEqual({ type: 'idle' })
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[export-pokerstars/no-hands-notification] Best-effort Chrome UI call failed:',
+      expect.any(Error),
+    )
+    warnSpy.mockRestore()
+  })
+
+  test('a rejected error notification does not replace the original export failure', async () => {
+    jest.spyOn(service, 'exportHandHistory').mockRejectedValue(new Error('conversion failed'))
+    ;(chrome.notifications.create as jest.Mock).mockRejectedValue(new Error('notifications unavailable'))
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const handlers = createImportExportHandlers(service, db, 'https://example.com/*')
+
+    await expect(handlers.exportData('pokerstars')).rejects.toThrow('conversion failed')
+    await Promise.resolve()
+
+    expect(getOperationState()).toEqual({ type: 'idle' })
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[export-pokerstars/error-notification] Best-effort Chrome UI call failed:',
+      expect.any(Error),
+    )
+    warnSpy.mockRestore()
+  })
+
   test('falls back to a data-URL download (and still awaits it) when no game tab is open', async () => {
     ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => {
       setTimeout(() => callback([]), 0) // no matching tabs

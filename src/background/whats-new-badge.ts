@@ -37,6 +37,7 @@
  */
 import { getRebuildAdvisoryState } from './rebuild-advisory'
 import { getPendingUpdateState } from './update-manager'
+import { runBestEffortChromeUi } from './best-effort-chrome-api'
 import { WHATS_NEW_STORAGE_KEY, WHATS_NEW_ENTRIES } from '../constants/whats-new'
 
 const BADGE_TEXT = 'N'
@@ -99,17 +100,18 @@ const syncBadge = async (): Promise<void> => {
     whatsNewUnseen: !!unseen,
   })
 
-  try {
-    if (active === 'whats-new') {
-      chrome.action.setBadgeText({ text: BADGE_TEXT })
-      chrome.action.setBadgeBackgroundColor?.({ color: BADGE_BACKGROUND_COLOR })
-    } else if (active === null) {
-      chrome.action.setBadgeText({ text: '' })
+  if (active === 'whats-new') {
+    runBestEffortChromeUi('whats-new-badge/setBadgeText', () =>
+      chrome.action.setBadgeText({ text: BADGE_TEXT }))
+    if (chrome.action.setBadgeBackgroundColor) {
+      runBestEffortChromeUi('whats-new-badge/setBadgeBackgroundColor', () =>
+        chrome.action.setBadgeBackgroundColor({ color: BADGE_BACKGROUND_COLOR }))
     }
-    // active === 'rebuild' | 'update': 他モジュールの管轄なので何もしない
-  } catch (error) {
-    console.warn('[whats-new-badge] Failed to sync badge:', error)
+  } else if (active === null) {
+    runBestEffortChromeUi('whats-new-badge/clearBadgeText', () =>
+      chrome.action.setBadgeText({ text: '' }))
   }
+  // active === 'rebuild' | 'update': 他モジュールの管轄なので何もしない
 }
 
 /**
