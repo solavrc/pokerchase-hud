@@ -40,6 +40,7 @@ interface InFlightReplayRequest {
  */
 export class ExperimentalReplayImporter {
   private enabled = false
+  private deleting = false
   private readonly activeSessions = new Map<string, ActiveReplaySession>()
   private readonly defaultSource = 'default'
   private readonly ports = new Set<chrome.runtime.Port>()
@@ -94,6 +95,22 @@ export class ExperimentalReplayImporter {
     await this.flushQueue
   }
 
+  /** Stop every replay writer before Delete All Data removes IndexedDB. */
+  async prepareForDataDeletion(): Promise<void> {
+    this.deleting = true
+    this.inFlight.clear()
+    for (const timer of this.retryTimers.values()) clearTimeout(timer)
+    this.retryTimers.clear()
+    await this.whenIdle()
+  }
+
+  /** Re-enable capture if IndexedDB deletion fails and the worker survives. */
+  resumeAfterDataDeletionFailure(): void {
+    if (!this.deleting) return
+    this.deleting = false
+    if (this.enabled) this.flushReady().catch(this.logError('flush after failed deletion'))
+  }
+
   /** Enqueue lifecycle work immediately so event arrival order is preserved. */
   observePortEvent(message: ApiLikeMessage, port: chrome.runtime.Port): Promise<void> {
     return this.observeApiEvent(message, this.sourceKeyForPort(port), port)
@@ -106,7 +123,7 @@ export class ExperimentalReplayImporter {
   ): Promise<void> {
     const task = this.operationQueue.then(async () => {
       await this.ready
-      if (!this.enabled) return
+      if (!this.enabled || this.deleting) return
 
       switch (message.ApiTypeId) {
         case ApiType.EVT_ENTRY_QUEUED:
@@ -132,7 +149,7 @@ export class ExperimentalReplayImporter {
     if (!this.isReplayResult(message)) return false
     const task = this.operationQueue.then(async () => {
       await this.ready
-      if (!this.enabled) return
+      if (!this.enabled || this.deleting) return
       await this.storeResults(message, port)
     })
     this.operationQueue = task.catch(this.logError('replay result'))
@@ -308,7 +325,7 @@ export class ExperimentalReplayImporter {
 
   private async performFlush(preferredPort?: chrome.runtime.Port, excludedHandIds = new Set<number>()): Promise<void> {
     await this.ready
-    if (!this.enabled || !preferredPort || !this.ports.has(preferredPort)) return
+    if (!this.enabled || this.deleting || !preferredPort || !this.ports.has(preferredPort)) return
     const port = preferredPort
     const sourceKey = this.sourceKeyForPort(port)
 
@@ -344,6 +361,7 @@ export class ExperimentalReplayImporter {
     const now = Date.now()
     let successes = 0
     const failedHandIds = new Set<number>()
+    const terminalFailureHandIds = new Set<number>()
     const retryableHandIds = new Set<number>()
     const seenHandIds = new Set<number>()
 
@@ -368,6 +386,7 @@ export class ExperimentalReplayImporter {
       } else {
         failedHandIds.add(result.handId)
         if (result.retryable) retryableHandIds.add(result.handId)
+        else terminalFailureHandIds.add(result.handId)
         await this.db.experimentalReplayHands.put({
           ...row,
           status: result.retryable ? 'ready' : 'failed',
@@ -391,7 +410,9 @@ export class ExperimentalReplayImporter {
     }
     // Continue draining sessions larger than one batch, but do not create a
     // tight loop when the page lacks an auth envelope or the server is down.
-    if (successes > 0) await this.flushReady(expected.port, failedHandIds)
+    if (successes > 0 || terminalFailureHandIds.size > 0) {
+      await this.flushReady(expected.port, failedHandIds)
+    }
     if (retryableHandIds.size > 0) await this.scheduleRetry(expected.sourceKey, expected.port, retryableHandIds)
   }
 
@@ -400,7 +421,7 @@ export class ExperimentalReplayImporter {
     port: chrome.runtime.Port,
     handIds: Set<number>
   ): Promise<void> {
-    if (this.retryTimers.has(sourceKey) || !this.ports.has(port)) return
+    if (this.deleting || this.retryTimers.has(sourceKey) || !this.ports.has(port)) return
     const rows = await this.db.experimentalReplayHands.bulkGet(Array.from(handIds))
     const maxAttempts = Math.max(1, ...rows.map(row => row?.attempts ?? 1))
     const delayMs = Math.min(60_000, 1000 * (2 ** Math.min(maxAttempts, 6)))

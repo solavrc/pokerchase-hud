@@ -115,8 +115,6 @@ export const registerEventIngestion = (
         if (typeof message === 'object' && 'type' in message && message.type === 'keepalive') {
           return
         }
-        if (experimentalReplayImporter?.handlePortMessage(message, port)) return
-
         // Local deletion owns the database through runtime.reload(). Events
         // arriving after that synchronous claim must not enter the queue:
         // Dexie would otherwise auto-open and recreate the just-deleted DB in
@@ -125,6 +123,18 @@ export const registerEventIngestion = (
         if (getOperationState().type === 'delete') {
           console.warn('[background] Dropping event while local data deletion is committing:', message)
           return Promise.resolve()
+        }
+
+        if (experimentalReplayImporter?.handlePortMessage(message, port)) {
+          // Replay results serialize on the importer's own queue. Mirror its
+          // drain into ingestionQueue so Delete All Data's stabilization
+          // barrier also waits for replay Dexie writes accepted before the
+          // synchronous delete claim.
+          const task = ingestionQueue.then(() => experimentalReplayImporter.whenIdle())
+          ingestionQueue = task.catch(err => {
+            console.error('[background] Experimental replay drain failed (fail-safe, queue continues):', err)
+          })
+          return task
         }
 
         // このイベントの処理を、直前のイベントの処理（add()の決着含む）の

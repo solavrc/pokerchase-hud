@@ -175,7 +175,7 @@ loadOptions().then((options) => {
 /**
  * データエクスポート機能
  */
-registerMessageRouter(service, db, gameUrlPattern)
+registerMessageRouter(service, db, gameUrlPattern, experimentalReplayImporter)
 
 registerStreamSubscriptions(service, gameUrlPattern)
 

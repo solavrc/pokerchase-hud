@@ -14,6 +14,7 @@ import { ApiType } from '../types'
 import { registerEventIngestion } from './event-ingestion'
 import { connectedPorts } from './ports'
 import { getUndecodedEventStats, resetUndecodedEventStats, UNDECODED_EVENT_STATS_KEY } from './undecoded-event-tracker'
+import { setOperationState } from './operation-state'
 
 describe('registerEventIngestion (Raw Event Lake)', () => {
   let db: PokerChaseDB
@@ -39,6 +40,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       attachPort: jest.fn(),
       detachPort: jest.fn(),
       handlePortMessage: jest.fn(() => false),
+      whenIdle: jest.fn(() => Promise.resolve()),
       observePortEvent: jest.fn(() => Promise.resolve())
     }
     registerEventIngestion(service, replayImporter)
@@ -56,6 +58,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
   })
 
   afterEach(async () => {
+    setOperationState({ type: 'idle' })
     disconnectHandlers.forEach(fn => fn())
     connectedPorts.clear()
     db.close()
@@ -193,5 +196,28 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     releaseReplay()
     await ingestion
     expect(settled).toBe(true)
+  })
+
+  test('drains accepted replay results and rejects later results during data deletion', async () => {
+    let releaseReplay!: () => void
+    const replayWrite = new Promise<void>(resolve => { releaseReplay = resolve })
+    replayImporter.handlePortMessage.mockReturnValueOnce(true)
+    replayImporter.whenIdle.mockReturnValueOnce(replayWrite)
+
+    let settled = false
+    const accepted = onMessageHandler({ type: 'experimental-replay-result', requestId: 'before-delete', results: [] })
+      .then(() => { settled = true })
+    await Promise.resolve()
+    setOperationState({ type: 'delete' })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    releaseReplay()
+    await accepted
+    expect(settled).toBe(true)
+
+    replayImporter.handlePortMessage.mockClear()
+    await onMessageHandler({ type: 'experimental-replay-result', requestId: 'after-delete', results: [] })
+    expect(replayImporter.handlePortMessage).not.toHaveBeenCalled()
   })
 })
