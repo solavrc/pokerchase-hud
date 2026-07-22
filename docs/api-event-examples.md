@@ -21,7 +21,12 @@
 303〜306は、306の`HandId`から同じ`observer_ref + hand_seq`を逆引きする。
 以下は本番BigQueryに対する`SELECT`のみの例である。
 
+> [!CAUTION]
+> 以下2つのSQLは、個人情報を含み得るraw `event_json`を返す**ローカル調査専用**のqueryである。
+> query結果をissue、PR、chat、共有ログへ貼らない。共有時は本文の匿名化済み部分抜粋だけを使う。
+
 ```sql
+-- LOCAL ONLY: event_json may contain identifiers; never paste or share query output.
 DECLARE target_hand_id INT64 DEFAULT 529819815;
 
 WITH target AS (
@@ -41,6 +46,7 @@ ORDER BY observer_ref, event_idx;
 `observer_ref`を跨いで結合しない。
 
 ```sql
+-- LOCAL ONLY: event_json may contain identifiers; never paste or share query output.
 DECLARE target_hand_id INT64 DEFAULT 530853194;
 
 WITH terminal AS (
