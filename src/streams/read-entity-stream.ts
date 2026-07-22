@@ -54,9 +54,14 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     this.service = service
   }
 
+  /** Drop results derived from an older hands/phases/actions snapshot. */
+  public invalidateCache(): void {
+    this.statsCache.clear()
+  }
+
   public async recalculateStats(): Promise<void> {
     // 新しい計算を保証するためキャッシュをクリア
-    this.statsCache.clear()
+    this.invalidateCache()
 
     // 必要なデータの存在チェック
     if (!this.service.playerId || !this.service.latestEvtDeal) {
