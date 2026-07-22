@@ -153,7 +153,9 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         // assigns one atomically. New-format rows preserve their sequence
         // when free, and a conflicting slot is safely reallocated.
         if (rawEventsToStore.length > 0) {
-          const merge = await mergeApiEvents(db, rawEventsToStore)
+          const merge = await mergeApiEvents(db, rawEventsToStore, {
+            protectAddedApplicationEventsFromCloudWatermark: true
+          })
           successCount += merge.added.length
           duplicateCount += merge.duplicates
 

@@ -1,5 +1,10 @@
 import type { PokerChaseDB } from '../db/poker-chase-db'
-import type { ApiEvent } from '../types/api'
+import { ApiTypeValues, type ApiEvent } from '../types/api'
+import {
+  isScopedSyncMetaKey,
+  SYNC_RESCAN_BACKFILL_DONE_META_KEY,
+  SYNC_RESCAN_FLOOR_META_KEY
+} from '../constants/sync'
 
 export const API_EVENT_PRIMARY_KEY = '[timestamp+ApiTypeId+sequence]'
 export const API_EVENT_TIMESTAMP_TYPE_INDEX = '[timestamp+ApiTypeId]'
@@ -15,6 +20,15 @@ export type RawApiEvent = Record<string, unknown> & {
 export interface MergeApiEventsResult {
   added: RawApiEvent[]
   duplicates: number
+}
+
+export interface MergeApiEventsOptions {
+  /**
+   * Imported history may sort below an account's Firestore max timestamp.
+   * Lower every previously-reconciled account's scan floor in the same
+   * transaction as the new raw rows so the watermark cannot hide them.
+   */
+  protectAddedApplicationEventsFromCloudWatermark?: boolean
 }
 
 export const getApiEventSequence = (event: { sequence?: unknown }): number =>
@@ -72,11 +86,16 @@ export const getApiEventContentIdentity = (event: RawApiEvent): string => {
  */
 export async function mergeApiEvents(
   db: PokerChaseDB,
-  inputEvents: RawApiEvent[]
+  inputEvents: RawApiEvent[],
+  options: MergeApiEventsOptions = {}
 ): Promise<MergeApiEventsResult> {
   if (inputEvents.length === 0) return { added: [], duplicates: 0 }
 
-  return await db.transaction('rw', db.apiEvents, async () => {
+  const transactionTables = options.protectAddedApplicationEventsFromCloudWatermark
+    ? [db.apiEvents, db.meta]
+    : [db.apiEvents]
+
+  return await db.transaction('rw', transactionTables, async () => {
     const groupKeys = [...new Map(
       inputEvents.map(event => [`${event.timestamp}\u0000${event.ApiTypeId}`, [event.timestamp, event.ApiTypeId] as [number, number]])
     ).values()]
@@ -124,6 +143,34 @@ export async function mergeApiEvents(
 
     if (added.length > 0) {
       await db.apiEvents.bulkAdd(added as unknown as ApiEvent[])
+
+      if (options.protectAddedApplicationEventsFromCloudWatermark) {
+        const importedApplicationTimestamps = added
+          .filter(event => ApiTypeValues.includes(event.ApiTypeId as any))
+          .map(event => event.timestamp)
+        const earliestImportedTimestamp = importedApplicationTimestamps.length > 0
+          ? Math.min(...importedApplicationTimestamps)
+          : null
+
+        if (earliestImportedTimestamp !== null) {
+          const reconciledAccounts = await db.meta
+            .filter(record => isScopedSyncMetaKey(record.id, SYNC_RESCAN_BACKFILL_DONE_META_KEY))
+            .toArray()
+
+          for (const marker of reconciledAccounts) {
+            const accountSuffix = marker.id.slice(SYNC_RESCAN_BACKFILL_DONE_META_KEY.length)
+            const floorKey = `${SYNC_RESCAN_FLOOR_META_KEY}${accountSuffix}`
+            const existingFloor = await db.meta.get(floorKey)
+            if (typeof existingFloor?.value !== 'number' || existingFloor.value > earliestImportedTimestamp) {
+              await db.meta.put({
+                id: floorKey,
+                value: earliestImportedTimestamp,
+                updatedAt: Date.now()
+              })
+            }
+          }
+        }
+      }
     }
 
     return { added, duplicates }

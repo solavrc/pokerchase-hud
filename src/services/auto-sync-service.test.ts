@@ -8,6 +8,8 @@ import { AutoSyncService, REBUILD_AFTER_DOWNLOAD_FAILED_MESSAGE } from './auto-s
 import { firestoreBackupService } from './firestore-backup-service'
 import { firebaseAuthService } from './firebase-auth-service'
 import * as minVersionGate from './min-version-gate'
+import { mergeApiEvents } from '../utils/api-event-key'
+import { getOperationState, setOperationState } from '../background/operation-state'
 
 describe('AutoSyncService cloud downloads', () => {
   let db: PokerChaseDB
@@ -17,9 +19,11 @@ describe('AutoSyncService cloud downloads', () => {
     sendMessageMock.mockResolvedValue(undefined)
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
+    setOperationState({ type: 'idle' })
   })
 
   afterEach(async () => {
+    setOperationState({ type: 'idle' })
     jest.restoreAllMocks()
     db.close()
     await db.delete()
@@ -326,6 +330,46 @@ describe('AutoSyncService cloud downloads', () => {
       'acknowledged Firestore writes=3; filtered non-application/unknown=2; ' +
       'deferred unparseable application=0'
     )
+  })
+
+  test('queues a session-boundary automatic upload while import owns the operation slot, then runs it after import finishes', async () => {
+    const event = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'queued-after-import',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
+    await db.apiEvents.add(event)
+
+    jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue({ uid: 'test-user' } as any)
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockReturnValue(1)
+    jest.spyOn(minVersionGate, 'isCloudSyncBlockedByMinVersionGate').mockResolvedValue(false)
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+    const syncBatchSpy = jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockResolvedValue({ totalEvents: 1, syncedEvents: 1, lastSyncTime: new Date() })
+
+    const service = new AutoSyncService(db)
+    ;(service as any).EVENTS_THRESHOLD = 1
+    setOperationState({ type: 'import' })
+
+    const automaticUpload = service.onGameSessionEnd()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // The trigger is pending rather than falsely completing or overlapping
+    // the import. Releasing the shared slot must run that same upload without
+    // requiring another session event or a manual sync.
+    expect(syncBatchSpy).not.toHaveBeenCalled()
+    expect(getOperationState().type).toBe('import')
+
+    setOperationState({ type: 'idle' })
+    await automaticUpload
+
+    expect(syncBatchSpy).toHaveBeenCalledTimes(1)
+    expect(syncBatchSpy.mock.calls[0]?.[0]).toEqual([event])
+    expect(service.getSyncState().status).toBe('success')
+    expect(getOperationState().type).toBe('idle')
   })
 
   test('upload: a normal chunk of only valid application events uploads and advances the cloud watermark past every event (unaffected by the unparseable-row guard)', async () => {
@@ -1054,6 +1098,86 @@ describe('AutoSyncService cloud downloads', () => {
     })
   })
 
+  test('re-offers an older application row imported after the cloud watermark has advanced', async () => {
+    const originalChunkSize = DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
+    ;(DATABASE_CONSTANTS as any).SYNC_CHUNK_SIZE = 2
+
+    try {
+      const initialEvents = [100, 300, 400].map(timestamp => ({
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        Code: 0,
+        BattleType: BattleType.SIT_AND_GO,
+        Id: `initial-${timestamp}`,
+        IsRetire: false,
+        timestamp
+      } as ApiEvent))
+      const importedOlderEvent = {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        Code: 0,
+        BattleType: BattleType.SIT_AND_GO,
+        Id: 'imported-200',
+        IsRetire: false,
+        timestamp: 200
+      } as ApiEvent
+      await db.apiEvents.bulkAdd(initialEvents)
+
+      jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue({ uid: 'test-user' } as any)
+      jest.spyOn(minVersionGate, 'isCloudSyncBlockedByMinVersionGate').mockResolvedValue(false)
+      jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp')
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(400)
+
+      const uploadedIds: string[] = []
+      jest.spyOn(firestoreBackupService, 'syncToCloudBatch').mockImplementation(async events => {
+        uploadedIds.push(...events.map(event => event.Id as string))
+        return { totalEvents: events.length, syncedEvents: events.length, lastSyncTime: new Date() }
+      })
+
+      const service = new AutoSyncService(db)
+      await service.performSync('upload')
+
+      // The first proven-empty pass records the one-time reconciliation as
+      // done. A later import must lower that account's durable scan floor in
+      // the same transaction as this new row, or the 400 watermark hides it.
+      await mergeApiEvents(db, [importedOlderEvent as any], {
+        protectAddedApplicationEventsFromCloudWatermark: true
+      })
+
+      // A later cloud watermark now sits at 400. A correct concurrency
+      // contract must still offer the imported row on this retry rather than
+      // trusting a watermark that the overlapping pass advanced past it.
+      await service.performSync('upload')
+
+      expect(uploadedIds).toContain(importedOlderEvent.Id)
+    } finally {
+      ;(DATABASE_CONSTANTS as any).SYNC_CHUNK_SIZE = originalChunkSize
+    }
+  })
+
+  test('claims the shared operation slot for the entire sync and refuses to start while import owns it', async () => {
+    const service = new AutoSyncService(db)
+    let resolveGate: ((blocked: boolean) => void) | undefined
+    jest.spyOn(minVersionGate, 'isCloudSyncBlockedByMinVersionGate')
+      .mockImplementation(() => new Promise<boolean>(resolve => { resolveGate = resolve }))
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+
+    const sync = service.performSync('upload')
+    expect(getOperationState().type).toBe('sync')
+    while (!resolveGate) await Promise.resolve()
+    resolveGate(false)
+    await sync
+    expect(getOperationState().type).toBe('idle')
+
+    setOperationState({ type: 'import' })
+    const blocked = await service.performSync('upload')
+    expect(blocked).toEqual({
+      success: false,
+      error: expect.stringContaining('実行中'),
+      reason: 'operation-busy'
+    })
+    expect(getOperationState().type).toBe('import')
+  })
+
   test('releases the _isSyncing latch (via finally) even when the min-version gate blocks the sync', async () => {
     const service = new AutoSyncService(db)
     jest.spyOn(minVersionGate, 'isCloudSyncBlockedByMinVersionGate').mockResolvedValue(true)
@@ -1566,6 +1690,27 @@ describe('AutoSyncService cloud downloads', () => {
     // B's own first sync succeeded once the latch was actually free -- not
     // abandoned after 3 immediate, doomed retries that all short-circuited
     // on the same still-held latch.
+    expect((await chrome.storage.local.get('autoSyncLastTime:user-b'))['autoSyncLastTime:user-b']).toBeDefined()
+  })
+
+  test('waits for an active import operation before retrying a first-account sync', async () => {
+    await chrome.storage.local.remove(['autoSyncLastTime:user-b'])
+    jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue({ uid: 'user-b' } as any)
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockReturnValue(1)
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+    jest.spyOn(firestoreBackupService, 'syncFromCloud').mockResolvedValue(0)
+    jest.spyOn(minVersionGate, 'isCloudSyncBlockedByMinVersionGate').mockResolvedValue(false)
+
+    const service = new AutoSyncService(db)
+    setOperationState({ type: 'import' })
+    const initialize = service.initialize()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect((await chrome.storage.local.get('autoSyncLastTime:user-b'))['autoSyncLastTime:user-b']).toBeUndefined()
+
+    setOperationState({ type: 'idle' })
+    await initialize
+
     expect((await chrome.storage.local.get('autoSyncLastTime:user-b'))['autoSyncLastTime:user-b']).toBeDefined()
   })
 

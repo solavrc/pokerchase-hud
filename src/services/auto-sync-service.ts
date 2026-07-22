@@ -5,6 +5,11 @@
 
 import { firestoreBackupService } from './firestore-backup-service'
 import { firebaseAuthService } from './firebase-auth-service'
+import { getOperationState, isOperationIdle, setOperationState, waitForOperationIdle } from '../background/operation-state'
+import {
+  SYNC_RESCAN_BACKFILL_DONE_META_KEY,
+  SYNC_RESCAN_FLOOR_META_KEY
+} from '../constants/sync'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
 import { ApiType, ApiTypeValues, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent } from '../types'
@@ -72,11 +77,11 @@ export type SyncDirection = 'upload' | 'download' | 'both'
  *
  * `performSync()` itself must keep its long-standing NEVER-THROW contract on
  * its own internal failure paths (the remote min-version gate blocking sync,
- * or `syncToCloud()`/`syncFromCloud()` throwing) -- `initialize()` and
- * `syncIfBacklogExceedsThreshold()` both call it fire-and-forget-style
- * (`await this.performSync()` / `await this.performSync('upload')`, ignoring
- * the resolved value entirely) and rely on that resolving cleanly so their
- * own retry/backoff logic runs on every path, not just the happy one. Before
+ * or `syncToCloud()`/`syncFromCloud()` throwing) -- `initialize()` ignores
+ * the resolved outcome, while `syncIfBacklogExceedsThreshold()` only
+ * inspects the structured operation-busy reason to queue an automatic
+ * retry. Both rely on internal failures resolving cleanly so their own
+ * control flow runs on every path, not just the happy one. Before
  * this fix, `Promise<void>` gave callers no way to distinguish "sync ran and
  * succeeded" from "sync ran and failed internally" other than re-reading
  * `getSyncState()` afterward -- `message-router.ts`'s manual-sync handlers
@@ -95,7 +100,7 @@ export type SyncDirection = 'upload' | 'download' | 'both'
  */
 export type SyncOutcome =
   | { success: true }
-  | { success: false, error: string }
+  | { success: false, error: string, reason?: 'operation-busy' }
 
 export interface SyncState {
   status: SyncStatus
@@ -274,7 +279,7 @@ export class AutoSyncService {
    * 直前までスキャン開始点を巻き戻す。実際のキーは`scopedMetaKey()`でサインイン中の
    * uidにスコープされる（上記 ACCOUNT-SCOPING INVARIANTS 参照）。
    */
-  private readonly SYNC_UNPARSEABLE_FLOOR_KEY = 'syncUnparseableFloor'
+  private readonly SYNC_UNPARSEABLE_FLOOR_KEY = SYNC_RESCAN_FLOOR_META_KEY
   /**
    * `meta`テーブルのキー。一度だけ実行するバックフィルスキャン
    * （`backfillUnparseableFloorIfNeeded`、下記の invariant spec 参照）が
@@ -286,7 +291,7 @@ export class AutoSyncService {
    * `backfillUnparseableFloorIfNeeded`参照）とuidスコープを確実に一度だけ
    * 適用させるため。
    */
-  private readonly SYNC_UNPARSEABLE_BACKFILL_DONE_KEY = 'syncUnparseableFloorBackfillDoneV2'
+  private readonly SYNC_UNPARSEABLE_BACKFILL_DONE_KEY = SYNC_RESCAN_BACKFILL_DONE_META_KEY
 
   constructor(db?: PokerChaseDB) {
     this.db = db ?? new PokerChaseDB(self.indexedDB, self.IDBKeyRange)
@@ -523,6 +528,9 @@ export class AutoSyncService {
           if (this.isSyncing && this.inFlightSyncPromise) {
             console.warn('[AutoSync] initialize(): first sync did not run because a different pass is still in flight, waiting for it to settle before retrying')
             await this.inFlightSyncPromise
+          } else if (!isOperationIdle()) {
+            console.warn(`[AutoSync] initialize(): first sync is waiting for the active ${getOperationState().type} operation to finish`)
+            await waitForOperationIdle()
           } else {
             console.warn('[AutoSync] initialize(): first sync did not complete, retrying')
           }
@@ -567,6 +575,18 @@ export class AutoSyncService {
       return { success: false, error: '別のクラウド同期が実行中です。完了後にもう一度お試しください。' }
     }
 
+    // Importing older history while an upload cursor is in flight can insert
+    // a row behind that cursor and below the Firestore max watermark. Claim
+    // the shared long-operation slot synchronously before the first await so
+    // import/export/rebuild and cloud sync cannot overlap in either order.
+    if (!isOperationIdle()) {
+      return {
+        success: false,
+        error: '別のデータ処理が実行中です。完了後にもう一度お試しください。',
+        reason: 'operation-busy'
+      }
+    }
+
     // Latch BEFORE the awaited gate check below (codex#3612092798): if we set
     // this after awaiting, two performSync() calls arriving close together can
     // both pass the `this._isSyncing` check above, both await the gate, and
@@ -574,6 +594,7 @@ export class AutoSyncService {
     // race this flag exists to prevent. Reset in `finally` so every return
     // path (gate-blocked or sync completed/failed) releases the latch.
     this._isSyncing = true
+    setOperationState({ type: 'sync' })
     let resolveInFlightSyncPromise: (() => void) | undefined
     this.inFlightSyncPromise = new Promise<void>(resolve => { resolveInFlightSyncPromise = resolve })
 
@@ -697,9 +718,10 @@ export class AutoSyncService {
         // `message-router.ts`'s manual-sync handlers, which only checked
         // resolve-vs-reject, reported `{ success: true }` to the popup even
         // though the sync (e.g. a Firestore write) actually failed. Keeping
-        // this never-throw for internal callers (`initialize()`,
-        // `syncIfBacklogExceedsThreshold()`, both of which ignore the
-        // resolved value) -- only the resolved SHAPE now tells the truth.
+        // this never-throw for internal callers (`initialize()` and the
+        // automatic threshold path) -- only the resolved SHAPE now tells
+        // the truth, and the automatic path selectively handles the
+        // operation-busy reason above.
         const errorMessage = error instanceof Error ? error.message : 'Unknown error'
         this.updateSyncState({
           status: 'error',
@@ -711,6 +733,7 @@ export class AutoSyncService {
       this._isSyncing = false
       this.inFlightSyncPromise = null
       resolveInFlightSyncPromise?.()
+      if (getOperationState().type === 'sync') setOperationState({ type: 'idle' })
     }
   }
 
@@ -1657,7 +1680,34 @@ export class AutoSyncService {
 
       if (newEventsCount >= this.EVENTS_THRESHOLD) {
         console.log(`[AutoSync] ${trigger} with ${newEventsCount} raw events since the last completed sync, performing upload sync...`)
-        await this.performSync('upload')
+        // Session-boundary auto sync is a durability trigger, so do not drop
+        // it merely because import/export/rebuild currently owns the shared
+        // operation slot. Manual sync still receives the immediate busy
+        // outcome from performSync(); only this automatic path waits and
+        // retries. A structured reason avoids coupling this decision to the
+        // localized user-facing error text.
+        const triggerGeneration = firebaseAuthService.getAuthGeneration()
+        let outcome = await this.performSync('upload')
+        while (!outcome.success && outcome.reason === 'operation-busy') {
+          console.warn(`[AutoSync] ${trigger} upload is waiting for the active ${getOperationState().type} operation to finish`)
+          await waitForOperationIdle()
+
+          // The queued trigger belongs to the account that was live when the
+          // upload was first attempted. Generation (rather than uid) catches
+          // A -> B -> A transitions as well; the newly-live account's own
+          // initialize/session trigger is responsible for its sync.
+          if (firebaseAuthService.getAuthGeneration() !== triggerGeneration ||
+            !firebaseAuthService.getCurrentUser()) {
+            console.warn(`[AutoSync] ${trigger} upload retry cancelled because the signed-in account changed while waiting`)
+            return
+          }
+
+          // Another non-sync operation may win the slot between the idle
+          // notification and this retry. Loop until an upload starts, while
+          // a concurrent sync-busy outcome can safely stop here because that
+          // owning sync will cover the same shared local backlog.
+          outcome = await this.performSync('upload')
+        }
       } else {
         console.log(`[AutoSync] ${trigger} with only ${newEventsCount} raw events since the last completed sync, skipping sync (threshold: ${this.EVENTS_THRESHOLD})`)
       }
