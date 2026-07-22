@@ -146,6 +146,12 @@ export class FirebaseAuthService {
     // request. The conditional also makes the ordering explicit: only an
     // operation that already owns the token forces this sign-in to queue.
     if (this.pendingSignOut) await this.waitForPendingSignOut()
+    // A failed startup restore must not permanently poison interactive auth:
+    // sign-in is the explicit recovery path. Also let an in-flight restore
+    // settle before starting so it cannot publish an older stored account
+    // after this newer sign-in succeeds.
+    await this.restorePromise.catch(() => {})
+    if (this.pendingSignOut) await this.waitForPendingSignOut()
     const token = await this.getChromeAuthToken(true)
     console.log('[FirebaseAuth] Got Chrome auth token')
 
@@ -176,7 +182,7 @@ export class FirebaseAuthService {
       // the sign-out cannot delete or overwrite the newly authenticated
       // account when it resumes.
       await this.waitForPendingSignOut()
-      this.currentState = {
+      const nextState: StoredAuthState = {
         uid: result.localId,
         email: result.email ?? null,
         displayName: result.displayName ?? null,
@@ -185,20 +191,24 @@ export class FirebaseAuthService {
         refreshToken: result.refreshToken,
         expiresAt: Date.now() + Number(result.expiresIn) * 1000
       }
+      // Commit the durable state BEFORE exposing it in memory. If storage.set
+      // fails, the old account remains authoritative in currentState,
+      // authGeneration, listeners, and persisted storage alike. Publishing B
+      // first used to leave a split brain (live B, persisted A) that silently
+      // reverted after the next Service Worker restart.
+      await this.persistAuthState(nextState)
+
+      // These publications are deliberately synchronous and adjacent. This
+      // preserves the dependent-state invariant from r3615952256: once any
+      // caller can observe the new account/generation, listeners such as
+      // AutoSyncService are notified before the event loop can advance.
+      this.currentState = nextState
       this.authGeneration++ // sign-in transition -- see authGeneration's doc comment
-      // Notify listeners SYNCHRONOUSLY, in the same step as the currentState/
-      // authGeneration mutation above -- BEFORE the persistAuthState() await
-      // (codex review r3615952256, P2, "Clear stale sync state when
-      // exposing the new user"). Moving this earlier closes the window
-      // where getCurrentUser()/getAuthGeneration() already report the NEW
-      // account but registered listeners (e.g. AutoSyncService clearing its
-      // own stale in-memory state, see its constructor) hadn't been told
-      // yet -- during a direct A->B sign-in, anything reading auth state in
-      // that gap used to see B live while dependent state still reflected
-      // A. persistAuthState() below is a fire-and-forget durability step
-      // from listeners' perspective; it doesn't need to precede them.
+      // A successful durable sign-in is also recovery from a failed startup
+      // storage read. Replace the rejected restore barrier so ready(), token
+      // access, and firebaseAuthStatus reflect the recovered account.
+      this.restorePromise = Promise.resolve()
       this.notifyAuthStateListeners(this.getCurrentUser(), 'sign-in')
-      await this.persistAuthState()
       console.log('[FirebaseAuth] Firebase sign in successful:', this.currentState.email)
       return this.getCurrentUser()!
     } catch (error) {
@@ -463,9 +473,9 @@ export class FirebaseAuthService {
     this.notifyAuthStateListeners(this.getCurrentUser(), 'restore')
   }
 
-  private async persistAuthState(): Promise<void> {
-    if (this.currentState) {
-      await chrome.storage.local.set({ [FirebaseAuthService.STORAGE_KEY]: this.currentState })
+  private async persistAuthState(state: StoredAuthState | null = this.currentState): Promise<void> {
+    if (state) {
+      await chrome.storage.local.set({ [FirebaseAuthService.STORAGE_KEY]: state })
     }
   }
 
