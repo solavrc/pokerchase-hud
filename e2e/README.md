@@ -13,6 +13,8 @@ for Testing cache) -- run it locally.
 
 ```sh
 npm run e2e:smoke
+# Session-end persistence regression:
+npm run e2e:playerid
 ```
 
 This builds the e2e extension variant, launches Chrome for Testing headless,
@@ -256,7 +258,7 @@ import { launchHarness } from './e2e/harness.ts'
 const h = await launchHarness({ headed: false }) // or true to watch it
 await h.waitForHudMount()
 await h.waitForReplayDone()
-const handCount = await h.evaluate(() => document.querySelectorAll('span[title="HAND"]').length)
+const handCount = await h.evaluate(() => document.querySelectorAll('[data-stat-id="hands"]').length)
 await h.screenshot('e2e/out/hud.png')
 const popup = await h.openPopup()
 await popup.screenshot({ path: 'e2e/out/popup.png' })
@@ -304,7 +306,7 @@ npx tsx e2e/run.ts wait-hud                       # block until the HUD mounts
 npx tsx e2e/run.ts screenshot e2e/out/step1.png
 npx tsx e2e/run.ts dom-text                       # plain-text render of the page
 npx tsx e2e/run.ts dom-html                       # <body> outerHTML
-npx tsx e2e/run.ts eval "document.querySelectorAll('span[title=\"HAND\"]').length"
+npx tsx e2e/run.ts eval "document.querySelectorAll('[data-stat-id=\"hands\"]').length"
 npx tsx e2e/run.ts popup-screenshot e2e/out/popup.png
 
 npx tsx e2e/run.ts close                          # tears down the browser + fixture server
@@ -328,16 +330,17 @@ run can be cleaned up with `kill <pid>` (the pid is in
 
 `e2e/scenarios/smoke.ts` (`npm run e2e:smoke`) is the scripted, CI-shaped
 check: build -> launch -> replay -> assert, non-zero exit + a screenshot
-and DOM dump on any failure. Checks:
+and DOM dump on any failure. It covers fixture replay completion, HUD mounting
+and non-zero hand data, positional drill-down availability, popup rendering
+without uncaught errors, and the initial popup configuration viewport. On
+success it writes `smoke-hud.png` and `smoke-popup.png` under `e2e/out/` (or
+the directory selected with `--screenshot-dir`).
 
-1. HUD mounts at least one player panel.
-2. At least one player panel's `HAND` stat is `> 0`.
-3. The positional drill-down chevron (`button[title="ポジション別スタッツ"]`,
-   `src/components/hud/PositionalPanelTrigger.tsx`) exists.
-4. The popup (`dist/index.html`) renders real content into `#popup-root`
-   with no uncaught page error (there's no dedicated `ErrorBoundary`
-   component in this codebase, so "no error boundary" is verified as "no
-   uncaught render error and non-empty rendered content").
+`e2e/scenarios/playerid-session-persistence.ts` (`npm run e2e:playerid`)
+replays the spectator/session-end fixture, navigates the same browser to the
+zero-event page, and verifies that the persisted hero identity still drives
+pre-game stats. It writes `playerid-before-reload.png`,
+`playerid-no-replay-hud.png`, and `playerid-no-replay-hud.txt` on success.
 
 ## Flaky bits / timing waits
 
@@ -399,8 +402,11 @@ e2e/
   public/table-backdrop.js  shared real-gameplay table backdrop for both pages above (off by default; ?backdrop=1 to enable)
   public/assets/table-backdrop.jpg   the backdrop's real, anonymized PokerChase screenshot (committed)
   fixtures/session-3hands.ndjson   anonymized fixture (committed)
+  fixtures/session-3hands-spectator-end.ndjson   session-end/playerId regression fixture (committed)
   fixtures/session-bust.ndjson     anonymized SNG fixture w/ mid-session busts + session end (committed)
+  fixtures/session-recent-hands.ndjson   anonymized recent-hands fixture (committed)
   scenarios/smoke.ts        scripted pass/fail smoke test
+  scenarios/playerid-session-persistence.ts   persisted hero identity regression scenario
   tools/
     generate-e2e-manifest.ts   writes e2e/.build/manifest.e2e.json
     build-e2e.ts               orchestrates the full e2e build
@@ -409,7 +415,7 @@ e2e/
     capture-store-imagery.ts  regenerates README.png + docs/store-assets/store-{1,2,5}-*.png
     capture-popup-themes.ts   regenerates docs/store-assets/store-{3,4}-popup-*.png
   .build/    gitignored -- generated manifest + built e2e extension + session.json
-  out/       gitignored -- default screenshot/output directory
+  out/       gitignored -- default screenshot/DOM-output directory
 ```
 
 Chrome for Testing downloads are *not* under `e2e/`: they live in

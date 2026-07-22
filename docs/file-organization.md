@@ -14,7 +14,6 @@
 ├── esbuild.config.ts          # Build configuration
 ├── mockup.config.ts           # UI visual mockup server (npm run mockup)
 ├── jest.config.cjs            # Test configuration (jsdom environment)
-├── offscreen.html             # Chrome offscreen document
 ├── firebase.json              # Firebase project configuration
 ├── .firebaserc                # Firebase project settings
 ├── firestore.rules            # Firestore security rules (incl. public-read config/client)
@@ -30,12 +29,13 @@
 ├── CHANGELOG.md               # Version history (auto-generated)
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml             # CI pipeline (test, typecheck)
+│       ├── ci.yml             # PR CI: typecheck, Jest, build, signed-CRX packaging smoke
 │       └── build.yml          # Build, release-please job, signed CRX upload to the GitHub Release
 │                              #   (Chrome Web Store submission itself is manual — docs/chrome-web-store-release.md)
 ├── docs/                      # Technical documentation (flat)
 │   ├── api-events.md          # WebSocket API event reference (canonical event semantics)
 │   ├── architecture.md        # Design decisions & rationale (ADR)
+│   ├── battle-type-coverage-audit.md / .sql # BattleType evidence and reproducible query
 │   ├── chrome-web-store-release.md # Store submission procedure
 │   ├── file-organization.md   # This file
 │   ├── firebase-setup.md      # Firebase setup guide
@@ -57,6 +57,7 @@
 │   ├── icon_16px.png
 │   ├── icon_48px.png
 │   └── icon_128px.png
+├── scripts/                   # Signed-CRX packager and hand verification helper
 └── src/                       # Source code
     ├── app.ts                 # Re-export layer (type guards)
     ├── background.ts          # Service worker entry (wires modules below)
@@ -64,6 +65,7 @@
     ├── web_accessible_resource.ts  # WebSocket interception
     ├── entity-converter.ts    # Direct event-to-entity conversion (rebuild/import)
     ├── popup.ts               # Extension popup entry point
+    ├── popup-boot.ts          # Synchronous pre-paint popup theme bootstrap
     ├── index.html             # Extension HTML
     ├── test-setup.ts          # Jest setup for React Testing Library
     │
@@ -172,6 +174,8 @@
     │
     ├── mockup/                # UI visual mockup entry (npm run mockup, deterministic data)
     │
+    ├── test-fixtures/         # Shared typed lifecycle fixtures used by Jest tests
+    │
     ├── tools/                 # Development & debugging tools
     │   ├── detect-schema-diff.ts  # API schema change detection
     │   ├── trace-hands.ts         # Hand event tracing
@@ -197,6 +201,8 @@
         ├── error-handler.ts   # Error handling utilities
         ├── hand-log-exporter.ts       # Multi-hand export (batch optimized)
         ├── hand-log-processor.ts      # PokerStars format generation
+        ├── hand-log-text.ts           # Shared PokerStars hand-text formatting
+        ├── hand-order.ts              # Stable hand ordering helpers
         ├── logger.ts          # Structured logging
         ├── options-storage.ts # chrome.storage helpers
         ├── pending-stats-cache.ts
@@ -209,3 +215,13 @@
         ├── test-utils.tsx     # Shared test helpers
         └── version-compare.ts # Numeric-dotted version comparator
 ```
+
+## Generated artifacts
+
+- `dist/` and `extension.zip`: produced by `npm run build` (`postbuild` is an npm lifecycle hook).
+- `extension.crx`: produced by `npm run pack:crx` when a signing key is available.
+- `e2e/.build/`: generated localhost manifest, unpacked E2E extension, and persistent CLI session metadata.
+- `e2e/out/`: screenshots, DOM dumps, and other E2E evidence.
+
+All of these paths are gitignored. Chrome for Testing itself is cached outside the
+repository; see [e2e/README.md](../e2e/README.md).

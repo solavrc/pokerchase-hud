@@ -1,6 +1,31 @@
 # Contributing to PokerChase HUD
 
-Thank you for your interest in contributing to PokerChase HUD! This guide will help you add new statistics to the HUD.
+Thank you for your interest in contributing to PokerChase HUD! This guide covers the
+repository workflow and then walks through adding a statistic to the HUD.
+
+## Development setup
+
+CI runs on the current Node.js LTS release with npm. The repository does not pin an
+exact Node/npm version, so use a supported Node.js LTS release and treat
+`.github/workflows/ci.yml` as the source of truth.
+
+```bash
+npm ci
+npm run typecheck
+npm test
+npm run build
+```
+
+`npm run build` bundles the Manifest V3 extension into `dist/` and then runs the
+`postbuild` lifecycle script to create `extension.zip`. Use `npm run pack:crx` only
+when you have a signing key and need a signed CRX. Generated outputs (`dist/`,
+`extension.zip`, `extension.crx`, `e2e/.build/`, and `e2e/out/`) are gitignored and
+must not be committed.
+
+Jest unit/component tests are co-located with their source files. The real-browser
+E2E harness is separate and is not run by CI; see [e2e/README.md](e2e/README.md) for
+`npm run e2e:smoke`, `npm run e2e:playerid`, and the interactive `npm run e2e -- …`
+workflow.
 
 ## 📊 Adding New Statistics
 
@@ -357,17 +382,23 @@ Note: The system uses TypeScript enums for type safety, so new flags must be add
 
 ## 🧪 Submitting Your Contribution
 
-1. Fork the repository
-2. Create a feature branch: `feature/stat-[name]`
-3. Add your statistic following the guide above
-4. **Write unit tests** in `src/stats/core/[stat-name].test.ts`
-5. Ensure all tests pass: `npm test`
-6. Test manually with real gameplay
-7. Submit a pull request with:
-   - Description of the statistic
-   - Example scenarios where it applies
-   - Test coverage for all edge cases
-   - Any special considerations
+1. Fork the repository and branch from the latest `main`; do not commit directly to
+   `main`.
+2. Keep each branch and pull request focused on one change.
+3. Use Conventional Commit-style commit messages and PR titles (for example,
+   `feat: add four-bet statistic` or `fix: preserve session state`). Release Please
+   uses these titles when preparing releases and the changelog.
+4. Add or update tests with the implementation. Statistics tests belong beside the
+   implementation in `src/stats/core/`.
+5. Before opening a ready-for-review PR, run `npm run typecheck`, `npm test`, and
+   `npm run build`; run the relevant E2E scenario for browser-visible changes.
+6. In the PR body, describe the scope and intent, list the commands actually run,
+   and call out manual verification or known limitations. Keep the branch current
+   with `main` while it is under review.
+
+CI, mergeability, and review approval are separate gates: a green, conflict-free PR
+is not necessarily approved. Address findings against the current head commit and
+keep the validation section current after each push.
 
 ### PR Checklist
 - [ ] Statistic implementation in `src/stats/core/[stat-name].ts`
