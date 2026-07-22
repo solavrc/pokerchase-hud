@@ -184,6 +184,15 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
           chrome.tabs.sendMessage<HandLogEventMessage>(tab.id, {
             action: 'handLogEvent',
             event: event
+          }).catch(error => {
+            // A matching game tab can temporarily have no content-script
+            // receiver (for example after an extension update until the tab
+            // is reloaded, or while the tab is navigating). Hand-log delivery
+            // is best-effort, so consume that expected Promise rejection
+            // instead of surfacing one unhandled error for every log event.
+            if (!(error instanceof Error) || !error.message.includes('Receiving end does not exist')) {
+              console.warn(`[background] Failed to deliver hand log event to tab ${tab.id}:`, error)
+            }
           })
         }
       })
