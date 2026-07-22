@@ -3,9 +3,9 @@ import PokerChaseService, { PokerChaseDB } from '../app'
 import type { ChromeMessage, MessageResponse } from '../types/messages'
 import { clearImportSession, getCurrentImportSession } from './import-export'
 import { registerMessageRouter } from './message-router'
-import { setOperationState } from './operation-state'
+import { getOperationState, setOperationState } from './operation-state'
 
-describe('message-router import operation exclusivity', () => {
+describe('message-router operation exclusivity', () => {
   let db: PokerChaseDB
   let service: PokerChaseService
   let listener: (
@@ -87,5 +87,38 @@ describe('message-router import operation exclusivity', () => {
 
     expect(sendResponse).toHaveBeenCalledWith({ success: false, error: '別の処理が実行中です' })
     expect(getCurrentImportSession()?.chunks).toEqual(['{}'])
+  })
+
+  test('claims the operation slot synchronously when export starts', async () => {
+    ;(chrome.runtime.sendMessage as jest.Mock).mockResolvedValue(undefined)
+    ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => callback([{ id: 1 }]))
+    ;(chrome.tabs.sendMessage as jest.Mock).mockImplementation((_tabId, _message, callback) => {
+      callback({ success: true })
+    })
+    const completion = new Promise<MessageResponse>(resolve => {
+      listener({ action: 'exportData', format: 'json' }, {}, resolve)
+    })
+
+    expect(getOperationState()).toMatchObject({ type: 'export', format: 'json' })
+    await expect(completion).resolves.toEqual({ success: true })
+  })
+
+  test('rejects local deletion while another operation is active', () => {
+    const deleteSpy = jest.spyOn(db, 'delete')
+    const sendResponse = jest.fn()
+    setOperationState({ type: 'sync' })
+
+    listener({ action: 'deleteAllData' }, {}, sendResponse)
+
+    expect(sendResponse).toHaveBeenCalledWith({ success: false, error: '別の処理が実行中です' })
+    expect(deleteSpy).not.toHaveBeenCalled()
+  })
+
+  test('claims the operation slot synchronously when local deletion starts', () => {
+    jest.spyOn(db, 'delete').mockImplementation(() => new Promise<void>(() => {}) as any)
+
+    listener({ action: 'deleteAllData' }, {}, jest.fn())
+
+    expect(getOperationState()).toEqual({ type: 'delete' })
   })
 })

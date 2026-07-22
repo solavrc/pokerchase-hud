@@ -9,7 +9,7 @@
  */
 
 export interface OperationState {
-  type: 'idle' | 'export' | 'import' | 'rebuild' | 'sync'
+  type: 'idle' | 'export' | 'import' | 'rebuild' | 'sync' | 'delete'
   format?: 'json' | 'pokerstars'
   progress?: number
   processed?: number

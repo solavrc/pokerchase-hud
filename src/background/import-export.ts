@@ -422,9 +422,12 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
   }
 
   const exportJsonData = async (db: PokerChaseDB) => {
-    const stopKeepAlive = await startKeepAlive()
+    // Claim the shared slot before the first await. Otherwise two messages in
+    // the same task can both observe idle while startKeepAlive() yields.
+    setOperationState({ type: 'export', format: 'json', progress: 0 })
+    let stopKeepAlive = () => {}
     try {
-      setOperationState({ type: 'export', format: 'json', progress: 0 })
+      stopKeepAlive = await startKeepAlive()
       chrome.runtime.sendMessage<ExportProgressMessage>({
         action: 'exportProgress',
         state: 'started',
@@ -517,9 +520,11 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
   }
 
   const exportPokerStarsData = async () => {
-    const stopKeepAlive = await startKeepAlive()
+    // Claim the shared slot before the first await; see exportJsonData().
+    setOperationState({ type: 'export', format: 'pokerstars', progress: 0 })
+    let stopKeepAlive = () => {}
     try {
-      setOperationState({ type: 'export', format: 'pokerstars', progress: 0 })
+      stopKeepAlive = await startKeepAlive()
       chrome.runtime.sendMessage<ExportProgressMessage>({
         action: 'exportProgress',
         state: 'started',
@@ -736,6 +741,9 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
    * Delete all data (logs only, not configuration)
    */
   const deleteAllData = async (): Promise<void> => {
+    // Deleting the database is mutually exclusive with every reader/writer.
+    // Keep the slot claimed until runtime.reload() replaces this worker.
+    setOperationState({ type: 'delete' })
     try {
       // データベースを完全に削除
       await db.delete()
@@ -747,6 +755,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
       chrome.runtime.reload()
     } catch (error) {
       console.error('Error deleting data:', error)
+      setOperationState({ type: 'idle' })
       throw error
     }
   }

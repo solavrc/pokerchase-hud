@@ -289,6 +289,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       return true
     } else if (request.action === 'deleteAllData') {
       // ログと設定を含むすべてのデータを削除
+      if (rejectIfOperationBusy('deleteAllData', sendResponse)) return true
       deleteAllData()
         .then(() => {
           sendResponse({ success: true })
