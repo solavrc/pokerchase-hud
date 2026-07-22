@@ -113,23 +113,38 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         sendResponse({ success: false, error: 'No import session active' })
         return true
       }
+      if (getOperationState().type !== 'import') {
+        console.warn(`[importDataChunk] Blocked: operation already in progress (${getOperationState().type})`)
+        sendResponse({ success: false, error: '別の処理が実行中です' })
+        return true
+      }
 
-      addImportChunk(request.chunkIndex, request.chunkData)
+      if (!addImportChunk(request.chunkIndex, request.chunkData)) {
+        sendResponse({ success: false, error: 'Invalid import chunk index' })
+        return true
+      }
 
       sendResponse({ success: true })
       return true
     } else if (request.action === 'importDataProcess') {
       const currentImportSession = getCurrentImportSession()
-      if (!currentImportSession || currentImportSession.chunks.length !== currentImportSession.totalChunks) {
+      if (!currentImportSession || currentImportSession.receivedChunks !== currentImportSession.totalChunks) {
         sendResponse({ success: false, error: 'Import session incomplete' })
         return true
       }
 
-      if (rejectIfOperationBusy('importDataProcess', sendResponse)) return true
+      // importDataInit already owns this slot. Any other type here means
+      // state was externally replaced; preserve the complete session so it
+      // can be retried after that operation finishes.
+      if (getOperationState().type !== 'import') {
+        console.warn(`[importDataProcess] Blocked: operation already in progress (${getOperationState().type})`)
+        sendResponse({ success: false, error: '別の処理が実行中です' })
+        return true
+      }
 
       // すべてのチャンクを結合
       const completeData = currentImportSession.chunks.join('')
-      clearImportSession() // セッションをクリア
+      clearImportSession(false) // importData()が同じslotを引き継ぐ
 
       // データを処理
       importData(completeData)
@@ -289,6 +304,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       return true
     } else if (request.action === 'deleteAllData') {
       // ログと設定を含むすべてのデータを削除
+      if (rejectIfOperationBusy('deleteAllData', sendResponse)) return true
       deleteAllData()
         .then(() => {
           sendResponse({ success: true })

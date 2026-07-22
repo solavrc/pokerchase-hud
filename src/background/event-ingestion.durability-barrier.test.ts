@@ -39,6 +39,7 @@ import * as updateManager from './update-manager'
 import { autoSyncService } from '../services/auto-sync-service'
 import { getUndecodedEventStats, resetUndecodedEventStats, UNDECODED_EVENT_STATS_KEY } from './undecoded-event-tracker'
 import * as apiEventKey from '../utils/api-event-key'
+import { setOperationState } from './operation-state'
 
 describe('registerEventIngestion (raw-write durability barrier)', () => {
   let db: PokerChaseDB
@@ -71,6 +72,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
   })
 
   afterEach(async () => {
+    setOperationState({ type: 'idle' })
     jest.restoreAllMocks()
     disconnectHandlers.forEach(fn => fn())
     connectedPorts.clear()
@@ -104,6 +106,16 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     Items: [],
     Money: { FreeMoney: -1, PaidMoney: -1 },
     Emblems: []
+  })
+
+  test('drops new events while local database deletion owns the commit slot', async () => {
+    const mergeSpy = jest.spyOn(apiEventKey, 'mergeApiEvents')
+    setOperationState({ type: 'delete' })
+
+    await onMessageHandler(entryQueued(1_000))
+
+    expect(mergeSpy).not.toHaveBeenCalled()
+    expect(await db.apiEvents.count()).toBe(0)
   })
 
   test('streams / auto-sync trigger / session-activity tracking all wait behind the raw merge, and all run after it resolves', async () => {

@@ -21,7 +21,7 @@ import type {
   ImportProgressMessage,
   RebuildProgressMessage
 } from '../types/messages'
-import { setOperationState } from './operation-state'
+import { getOperationState, setOperationState } from './operation-state'
 import { resolveAdvisory, markAdvisoryPending } from './rebuild-advisory'
 import {
   API_EVENT_PRIMARY_KEY,
@@ -30,33 +30,66 @@ import {
   type RawApiEvent
 } from '../utils/api-event-key'
 import { HandLogExporter } from '../utils/hand-log-exporter'
+import { awaitIngestionDrain } from './update-manager'
 
 const IMPORT_CHUNK_SIZE = DATABASE_CONSTANTS.IMPORT_CHUNK_SIZE
 
 interface ImportSession {
   chunks: string[]
+  receivedChunks: number
   totalChunks: number
   fileName: string
 }
 let currentImportSession: ImportSession | null = null
+let importSessionTimeout: ReturnType<typeof setTimeout> | undefined
+const IMPORT_SESSION_TIMEOUT_MS = 5 * 60 * 1000
+
+const armImportSessionTimeout = (): void => {
+  clearTimeout(importSessionTimeout)
+  importSessionTimeout = setTimeout(() => {
+    console.warn('[importData] Abandoned chunk transfer timed out; releasing operation slot')
+    clearImportSession()
+  }, IMPORT_SESSION_TIMEOUT_MS)
+}
 
 export const getCurrentImportSession = (): ImportSession | null => currentImportSession
 
 export const startImportSession = (totalChunks: number, fileName: string): void => {
   currentImportSession = {
     chunks: [],
+    receivedChunks: 0,
     totalChunks,
     fileName
   }
+  // Own the shared operation slot for the whole file transfer, not only the
+  // later parse/rebuild phase. A pending extension update or another data
+  // operation must not reload/delete the worker while chunks live in memory.
+  setOperationState({ type: 'import', progress: 0, processed: 0, total: totalChunks, message: 'インポートファイル転送中...' })
+  armImportSessionTimeout()
 }
 
-export const addImportChunk = (chunkIndex: number, chunkData: string): void => {
-  if (!currentImportSession) return
+export const addImportChunk = (chunkIndex: number, chunkData: string): boolean => {
+  if (!currentImportSession || !Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= currentImportSession.totalChunks) return false
+  if (currentImportSession.chunks[chunkIndex] === undefined) currentImportSession.receivedChunks++
   currentImportSession.chunks[chunkIndex] = chunkData
+  setOperationState({
+    type: 'import',
+    progress: Math.round((currentImportSession.receivedChunks / currentImportSession.totalChunks) * 100),
+    processed: currentImportSession.receivedChunks,
+    total: currentImportSession.totalChunks,
+    message: 'インポートファイル転送中...'
+  })
+  armImportSessionTimeout()
+  return true
 }
 
-export const clearImportSession = (): void => {
+export const clearImportSession = (releaseOperation = true): void => {
+  clearTimeout(importSessionTimeout)
+  importSessionTimeout = undefined
   currentImportSession = null
+  if (releaseOperation && getOperationState().type === 'import') {
+    setOperationState({ type: 'idle' })
+  }
 }
 
 /**
@@ -356,9 +389,12 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
   }
 
   const exportJsonData = async (db: PokerChaseDB) => {
-    const stopKeepAlive = await startKeepAlive()
+    // Claim the shared slot before the first await. Otherwise two messages in
+    // the same task can both observe idle while startKeepAlive() yields.
+    setOperationState({ type: 'export', format: 'json', progress: 0 })
+    let stopKeepAlive = () => {}
     try {
-      setOperationState({ type: 'export', format: 'json', progress: 0 })
+      stopKeepAlive = await startKeepAlive()
       chrome.runtime.sendMessage<ExportProgressMessage>({
         action: 'exportProgress',
         state: 'started',
@@ -451,9 +487,11 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
   }
 
   const exportPokerStarsData = async () => {
-    const stopKeepAlive = await startKeepAlive()
+    // Claim the shared slot before the first await; see exportJsonData().
+    setOperationState({ type: 'export', format: 'pokerstars', progress: 0 })
+    let stopKeepAlive = () => {}
     try {
-      setOperationState({ type: 'export', format: 'pokerstars', progress: 0 })
+      stopKeepAlive = await startKeepAlive()
       chrome.runtime.sendMessage<ExportProgressMessage>({
         action: 'exportProgress',
         state: 'started',
@@ -670,17 +708,38 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
    * Delete all data (logs only, not configuration)
    */
   const deleteAllData = async (): Promise<void> => {
+    // Deleting the database is mutually exclusive with every reader/writer.
+    // Keep the slot claimed until runtime.reload() replaces this worker.
+    setOperationState({ type: 'delete' })
     try {
+      // Events already queued before the synchronous claim above must finish
+      // first. event-ingestion rejects later arrivals while type=delete, so
+      // once this drain stabilizes nothing can recreate the database between
+      // delete() and runtime.reload().
+      await awaitIngestionDrain()
+
+      // processEvent() only enqueues work into the live transform pipeline.
+      // Its promise can settle before WriteEntityStream's async Dexie writes
+      // have completed, so drain the full piped chain before deleting the DB.
+      await service.handAggregateStream.whenIdle()
+
       // データベースを完全に削除
       await db.delete()
 
-      // データが無くなったので再構築アドバイザリも解消する（reloadより前に行う）
-      await resolveAdvisory()
+      // The database deletion is the commit point. Advisory cleanup is
+      // best-effort after it: a chrome.storage failure must not strand this
+      // worker with a closed database and advertise idle to later callers.
+      try {
+        await resolveAdvisory()
+      } catch (advisoryError) {
+        console.warn('[deleteAllData] Database deleted, but rebuild advisory cleanup failed; reloading anyway:', advisoryError)
+      }
 
       // データベースの新しいインスタンスを確保するために拡張機能をリロード
       chrome.runtime.reload()
     } catch (error) {
       console.error('Error deleting data:', error)
+      setOperationState({ type: 'idle' })
       throw error
     }
   }
