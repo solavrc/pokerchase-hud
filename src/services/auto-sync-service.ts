@@ -930,20 +930,15 @@ export class AutoSyncService {
     // anything newer.
     //
     // `firestoreBackupService.syncToCloudBatch()`'s OWN internal dedup filter
-    // (`event.timestamp > <threshold>`, see its doc comment) is bare-
-    // timestamp-only -- it has no ApiTypeId to compare against, so it can't
-    // be made compound-aware the way the cursor above just was. Shifting the
-    // threshold VALUE passed to it one millisecond earlier than `scanFloor`
-    // makes its `>` check inclusive of `scanFloor`'s own millisecond too,
-    // consistent with the cursor above -- reusing the exact same "pass a
-    // deliberately lowered threshold, rely on idempotent upserts" pattern
-    // this file already established for the unparseable-floor rewind (see
-    // the big comment block above this one). Pre-existing floor-rewind
-    // tests' asserted `floor` values shift down by 1 accordingly (see
-    // auto-sync-service.test.ts).
+    // is intentionally inclusive (`event.timestamp >= threshold`): it must
+    // re-offer the entire maximum-timestamp tie group when a Firestore batch
+    // boundary splits that millisecond and the later commit fails. Passing
+    // `scanFloor` unchanged therefore keeps this compound cursor and the
+    // downstream bare-timestamp filter aligned; deterministic document IDs
+    // make the tied re-upserts idempotent.
     const ApiTypeIdFloorSentinel = 0
     const SequenceFloorSentinel = -1
-    const uploadDedupThreshold = scanFloor !== null ? scanFloor - 1 : null
+    const uploadDedupThreshold = scanFloor
 
     // Count events at-or-newer than the (possibly rewound) scan floor,
     // inclusive of ties at `scanFloor`'s own millisecond (see fix (b) above).
@@ -1085,14 +1080,10 @@ export class AutoSyncService {
           // just extra write cost, bounded to however much happened since the
           // break, and it stops once the row resolves.
           //
-          // `uploadDedupThreshold` (== `scanFloor - 1` when a floor exists;
-          // see P1 fix doc comment above) rather than `scanFloor` itself:
-          // syncToCloudBatch's own filter is `event.timestamp > threshold`,
-          // bare-timestamp-only. Passing `scanFloor` unchanged would make
-          // that filter re-exclude the exact same-millisecond row the
-          // compound-key cursor above was just fixed to include (its
-          // timestamp equals `scanFloor`, not greater than it) -- silently
-          // undoing the fix one layer downstream.
+          // The inclusive downstream filter re-offers rows exactly at this
+          // threshold, matching the compound-key cursor above and closing
+          // both same-millisecond pass-start and Firestore batch-boundary
+          // gaps without inventing an arrival-order field.
           uploadDedupThreshold,
           (progress) => {
             this.updateSyncState({

@@ -102,8 +102,10 @@ extension IDが別になる場合、そのID用のOAuth clientを用意する。
 3. 9種のschema-valid application eventだけをupload候補にする。非application / unknown eventは
    localには残るがcloudへ送らない。application typeなのに現schemaでparseできない行は
    `unparseable floor`を永続化して保留し、後のschema修正後に再提示できるようscanを巻き戻す。
-4. 300 writes/batch、最大3 batch並列でFirestore `:commit`へupsertする。document IDが決定的なので、
-   watermark巻き戻しによる再送は同じdocumentを更新する。
+4. 300 writes/batchをtimestamp coverage順に直列でFirestore `:commit`へupsertする。後続batchは
+   直前batchのacknowledge後だけ開始し、古いbatch失敗時に新しいtimestampだけが先にwatermarkを
+   進めない。同一millisecondがbatch境界を跨ぐ場合は、次回その最大timestamp群をまとめて再提示する。
+   document IDが決定的なので、acknowledge済み行の再送は同じdocumentを更新する。
 5. Firestoreが全writeをacknowledgeした後だけfloorと同期完了時刻を進める。
 
 ログの母集団を混同しないこと。`raw events` / `scan snapshot`はlocal Lakeで走査する全行、
@@ -196,7 +198,7 @@ write課金になり得る。ConsoleのUsage / Billingで実測する。
 
 全REST requestは30秒timeout、network/timeout/429/5xxに最大2回（500ms、1,000ms）のbackoff retry、
 401にtoken force-refresh 1回を持つ。既定retry後も`Firestore REST request failed`が続く場合に限り、
-quota、rules、network、batch/parallel設定を調査する。permission denied等の非retryable 4xxは即時errorになる。
+quota、rules、network、batch size / retry設定を調査する。permission denied等の非retryable 4xxは即時errorになる。
 
 ### Popupと同期状態が一致しない
 

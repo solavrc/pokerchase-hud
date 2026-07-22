@@ -16,7 +16,6 @@ export const DATABASE_CONSTANTS = {
   // Firestore sync
   FIRESTORE_BATCH_SIZE: 300,     // Firestore write batch size
   FIRESTORE_DELETE_BATCH: 500,   // Firestore delete batch size
-  FIRESTORE_PARALLEL_BATCHES: 3, // Number of parallel Firestore batches
   FIRESTORE_BATCH_DELAY_MS: 500, // Delay between batch groups
   FIRESTORE_DOWNLOAD_PAGE_SIZE: 1000, // Maximum documents per Firestore download response
   FIRESTORE_REQUEST_TIMEOUT_MS: 30000,   // Per-request AbortController timeout (a stalled fetch must not hold isSyncing forever)
