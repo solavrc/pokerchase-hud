@@ -55,7 +55,7 @@ describe('message-router requestLatestStats -- pre-game vs. live lineup race gua
     await service.ready
     service.playerId = HERO_ID
 
-    sendMessageMock = jest.fn()
+    sendMessageMock = jest.fn().mockResolvedValue(undefined)
     ;(global as any).chrome.tabs = {
       sendMessage: sendMessageMock,
       query: jest.fn((_query, callback) => callback([])),
@@ -133,5 +133,27 @@ describe('message-router requestLatestStats -- pre-game vs. live lineup race gua
     expect(tabId).toBe(TAB_ID)
     expect(message.action).toBe('latestStats')
     expect(message.stats[0].playerId).toBe(HERO_ID)
+  })
+
+  test('consumes a missing-receiver rejection when the requesting tab navigates away', async () => {
+    const missingReceiver = Promise.reject(
+      new Error('Could not establish connection. Receiving end does not exist.')
+    )
+    await missingReceiver.catch(() => {})
+    const catchSpy = jest.spyOn(missingReceiver, 'catch')
+    sendMessageMock.mockReturnValue(missingReceiver)
+
+    const sendResponse = jest.fn()
+    const handled = listener(
+      { action: 'requestLatestStats', preGame: true } as unknown as ChromeMessage,
+      { tab: { id: TAB_ID } } as chrome.runtime.MessageSender,
+      sendResponse
+    )
+    expect(handled).toBe(true)
+
+    await waitUntil(() => sendResponse.mock.calls.length > 0)
+
+    expect(sendMessageMock).toHaveBeenCalledTimes(1)
+    expect(catchSpy).toHaveBeenCalledWith(expect.any(Function))
   })
 })
