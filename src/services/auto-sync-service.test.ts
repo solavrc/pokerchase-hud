@@ -332,6 +332,46 @@ describe('AutoSyncService cloud downloads', () => {
     )
   })
 
+  test('queues a session-boundary automatic upload while import owns the operation slot, then runs it after import finishes', async () => {
+    const event = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'queued-after-import',
+      IsRetire: false,
+      timestamp: 100
+    } as ApiEvent
+    await db.apiEvents.add(event)
+
+    jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue({ uid: 'test-user' } as any)
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockReturnValue(1)
+    jest.spyOn(minVersionGate, 'isCloudSyncBlockedByMinVersionGate').mockResolvedValue(false)
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+    const syncBatchSpy = jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockResolvedValue({ totalEvents: 1, syncedEvents: 1, lastSyncTime: new Date() })
+
+    const service = new AutoSyncService(db)
+    ;(service as any).EVENTS_THRESHOLD = 1
+    setOperationState({ type: 'import' })
+
+    const automaticUpload = service.onGameSessionEnd()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // The trigger is pending rather than falsely completing or overlapping
+    // the import. Releasing the shared slot must run that same upload without
+    // requiring another session event or a manual sync.
+    expect(syncBatchSpy).not.toHaveBeenCalled()
+    expect(getOperationState().type).toBe('import')
+
+    setOperationState({ type: 'idle' })
+    await automaticUpload
+
+    expect(syncBatchSpy).toHaveBeenCalledTimes(1)
+    expect(syncBatchSpy.mock.calls[0]?.[0]).toEqual([event])
+    expect(service.getSyncState().status).toBe('success')
+    expect(getOperationState().type).toBe('idle')
+  })
+
   test('upload: a normal chunk of only valid application events uploads and advances the cloud watermark past every event (unaffected by the unparseable-row guard)', async () => {
     const firstEntry = {
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
@@ -1130,7 +1170,11 @@ describe('AutoSyncService cloud downloads', () => {
 
     setOperationState({ type: 'import' })
     const blocked = await service.performSync('upload')
-    expect(blocked).toEqual({ success: false, error: expect.stringContaining('実行中') })
+    expect(blocked).toEqual({
+      success: false,
+      error: expect.stringContaining('実行中'),
+      reason: 'operation-busy'
+    })
     expect(getOperationState().type).toBe('import')
   })
 

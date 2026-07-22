@@ -77,11 +77,11 @@ export type SyncDirection = 'upload' | 'download' | 'both'
  *
  * `performSync()` itself must keep its long-standing NEVER-THROW contract on
  * its own internal failure paths (the remote min-version gate blocking sync,
- * or `syncToCloud()`/`syncFromCloud()` throwing) -- `initialize()` and
- * `syncIfBacklogExceedsThreshold()` both call it fire-and-forget-style
- * (`await this.performSync()` / `await this.performSync('upload')`, ignoring
- * the resolved value entirely) and rely on that resolving cleanly so their
- * own retry/backoff logic runs on every path, not just the happy one. Before
+ * or `syncToCloud()`/`syncFromCloud()` throwing) -- `initialize()` ignores
+ * the resolved outcome, while `syncIfBacklogExceedsThreshold()` only
+ * inspects the structured operation-busy reason to queue an automatic
+ * retry. Both rely on internal failures resolving cleanly so their own
+ * control flow runs on every path, not just the happy one. Before
  * this fix, `Promise<void>` gave callers no way to distinguish "sync ran and
  * succeeded" from "sync ran and failed internally" other than re-reading
  * `getSyncState()` afterward -- `message-router.ts`'s manual-sync handlers
@@ -100,7 +100,7 @@ export type SyncDirection = 'upload' | 'download' | 'both'
  */
 export type SyncOutcome =
   | { success: true }
-  | { success: false, error: string }
+  | { success: false, error: string, reason?: 'operation-busy' }
 
 export interface SyncState {
   status: SyncStatus
@@ -580,7 +580,11 @@ export class AutoSyncService {
     // the shared long-operation slot synchronously before the first await so
     // import/export/rebuild and cloud sync cannot overlap in either order.
     if (!isOperationIdle()) {
-      return { success: false, error: '別のデータ処理が実行中です。完了後にもう一度お試しください。' }
+      return {
+        success: false,
+        error: '別のデータ処理が実行中です。完了後にもう一度お試しください。',
+        reason: 'operation-busy'
+      }
     }
 
     // Latch BEFORE the awaited gate check below (codex#3612092798): if we set
@@ -714,9 +718,10 @@ export class AutoSyncService {
         // `message-router.ts`'s manual-sync handlers, which only checked
         // resolve-vs-reject, reported `{ success: true }` to the popup even
         // though the sync (e.g. a Firestore write) actually failed. Keeping
-        // this never-throw for internal callers (`initialize()`,
-        // `syncIfBacklogExceedsThreshold()`, both of which ignore the
-        // resolved value) -- only the resolved SHAPE now tells the truth.
+        // this never-throw for internal callers (`initialize()` and the
+        // automatic threshold path) -- only the resolved SHAPE now tells
+        // the truth, and the automatic path selectively handles the
+        // operation-busy reason above.
         const errorMessage = error instanceof Error ? error.message : 'Unknown error'
         this.updateSyncState({
           status: 'error',
@@ -1675,7 +1680,34 @@ export class AutoSyncService {
 
       if (newEventsCount >= this.EVENTS_THRESHOLD) {
         console.log(`[AutoSync] ${trigger} with ${newEventsCount} raw events since the last completed sync, performing upload sync...`)
-        await this.performSync('upload')
+        // Session-boundary auto sync is a durability trigger, so do not drop
+        // it merely because import/export/rebuild currently owns the shared
+        // operation slot. Manual sync still receives the immediate busy
+        // outcome from performSync(); only this automatic path waits and
+        // retries. A structured reason avoids coupling this decision to the
+        // localized user-facing error text.
+        const triggerGeneration = firebaseAuthService.getAuthGeneration()
+        let outcome = await this.performSync('upload')
+        while (!outcome.success && outcome.reason === 'operation-busy') {
+          console.warn(`[AutoSync] ${trigger} upload is waiting for the active ${getOperationState().type} operation to finish`)
+          await waitForOperationIdle()
+
+          // The queued trigger belongs to the account that was live when the
+          // upload was first attempted. Generation (rather than uid) catches
+          // A -> B -> A transitions as well; the newly-live account's own
+          // initialize/session trigger is responsible for its sync.
+          if (firebaseAuthService.getAuthGeneration() !== triggerGeneration ||
+            !firebaseAuthService.getCurrentUser()) {
+            console.warn(`[AutoSync] ${trigger} upload retry cancelled because the signed-in account changed while waiting`)
+            return
+          }
+
+          // Another non-sync operation may win the slot between the idle
+          // notification and this retry. Loop until an upload starts, while
+          // a concurrent sync-busy outcome can safely stop here because that
+          // owning sync will cover the same shared local backlog.
+          outcome = await this.performSync('upload')
+        }
       } else {
         console.log(`[AutoSync] ${trigger} with only ${newEventsCount} raw events since the last completed sync, skipping sync (threshold: ${this.EVENTS_THRESHOLD})`)
       }
