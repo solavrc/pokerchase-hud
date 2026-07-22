@@ -14,6 +14,8 @@ describe('FirebaseAuthSection', () => {
     isFirebaseSignedIn: false,
     firebaseUserInfo: null,
     syncState: null,
+    isAuthPending: false,
+    authError: '',
     setImportStatus: mockSetImportStatus,
     handleFirebaseSignIn: mockHandleFirebaseSignIn,
     handleFirebaseSignOut: mockHandleFirebaseSignOut,
@@ -43,6 +45,33 @@ describe('FirebaseAuthSection', () => {
 
     expect(screen.getByText('自動バックアップを有効にする')).toBeInTheDocument()
     expect(screen.queryByText('ログアウト')).not.toBeInTheDocument()
+  })
+
+  it('認証処理中は表示中の認証ボタンを無効化する', () => {
+    const { rerender } = render(
+      <FirebaseAuthSection {...defaultProps} isAuthPending={true} />
+    )
+
+    expect(screen.getByRole('button', { name: '有効化しています...' })).toBeDisabled()
+
+    rerender(
+      <FirebaseAuthSection
+        {...defaultProps}
+        isFirebaseSignedIn={true}
+        firebaseUserInfo={{ email: 'test@example.com', uid: 'test-uid' }}
+        isAuthPending={true}
+      />
+    )
+
+    expect(screen.getByRole('button', { name: 'ログアウトしています...' })).toBeDisabled()
+  })
+
+  it('認証エラーを表示する', () => {
+    render(
+      <FirebaseAuthSection {...defaultProps} authError="認証に失敗しました" />
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent('認証に失敗しました')
   })
 
   it('サインイン時はユーザー情報と同期ボタンを表示', async () => {

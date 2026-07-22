@@ -11,6 +11,8 @@ import type { UIConfig } from '../types/hand-log'
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import type {
   ChromeMessage,
+  AuthStatusResponse,
+  MessageResponse,
   UpdateBattleTypeFilterMessage,
   FirebaseSignInMessage,
   FirebaseSignOutMessage,
@@ -44,6 +46,10 @@ import {
 } from './popup/popup-theme-storage'
 
 export type { Options }
+
+const FIREBASE_AUTH_COMMUNICATION_ERROR = 'バックグラウンドとの通信に失敗しました。もう一度お試しください。'
+const FIREBASE_SIGN_IN_TIMEOUT_MS = 120_000
+const FIREBASE_SIGN_OUT_TIMEOUT_MS = 30_000
 
 export interface PopupProps {
   /**
@@ -105,6 +111,24 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   const [isFirebaseSignedIn, setIsFirebaseSignedIn] = useState<boolean>(false)
   const [firebaseUserInfo, setFirebaseUserInfo] = useState<{ email: string; uid: string } | null>(null)
   const [syncState, setSyncState] = useState<SyncState | null>(null)
+  const [isFirebaseAuthPending, setIsFirebaseAuthPending] = useState(false)
+  const [firebaseAuthError, setFirebaseAuthError] = useState('')
+  const firebaseAuthRequestInFlightRef = useRef(false)
+
+  const refreshFirebaseAuthStatus = async (): Promise<AuthStatusResponse | undefined> => {
+    const response = await sendMessageWithTimeout<MessageResponse>({
+      action: 'firebaseAuthStatus'
+    })
+    if (!response?.success || !('isSignedIn' in response)) return undefined
+
+    setIsFirebaseSignedIn(response.isSignedIn)
+    setFirebaseUserInfo(
+      response.userInfo?.email && response.userInfo.uid
+        ? { email: response.userInfo.email, uid: response.userInfo.uid }
+        : null
+    )
+    return response
+  }
 
   // Fetch sync state
   useEffect(() => {
@@ -231,20 +255,15 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
       // Then verify with background (authoritative source).
       // Fails open: on timeout/error, keep whatever was already set from
       // the chrome.storage.local cache above instead of blocking the UI.
-      sendMessageWithTimeout<{ isSignedIn?: boolean; userInfo?: { email: string; uid: string } | null }>({
-        action: 'firebaseAuthStatus'
-      }).then((response) => {
-        if (response) {
-          setIsFirebaseSignedIn(response.isSignedIn || false)
-          setFirebaseUserInfo(response.userInfo || null)
+      refreshFirebaseAuthStatus().then((response) => {
+        if (!response?.isSignedIn) return
 
-          // Also get sync state if signed in
-          sendMessageWithTimeout<{ syncState?: SyncState }>({ action: 'getSyncState' }).then((syncResponse) => {
-            if (syncResponse?.syncState) {
-              setSyncState(syncResponse.syncState)
-            }
-          })
-        }
+        // Also get sync state if signed in
+        sendMessageWithTimeout<{ syncState?: SyncState }>({ action: 'getSyncState' }).then((syncResponse) => {
+          if (syncResponse?.syncState) {
+            setSyncState(syncResponse.syncState)
+          }
+        })
       })
     })
   }, [])
@@ -269,7 +288,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
         if (message.imported !== undefined) {
           setImportSuccess(message.imported)
         }
-      } else if (message.action === 'firebaseAuthStatus') {
+      } else if (message.action === 'firebaseAuthStatus' && typeof message.isSignedIn === 'boolean') {
         setIsFirebaseSignedIn(message.isSignedIn)
         if (message.userInfo && message.userInfo.email && message.userInfo.uid) {
           setFirebaseUserInfo({
@@ -416,14 +435,54 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   }
 
   // Firebase handlers
-  const handleFirebaseSignIn = async () => {
-    await openGameTab()
-    chrome.runtime.sendMessage<FirebaseSignInMessage>({ action: 'firebaseSignIn' })
+  const performFirebaseAuthAction = async (
+    message: FirebaseSignInMessage | FirebaseSignOutMessage,
+    timeoutMs: number,
+    beforeSend?: () => Promise<void>
+  ) => {
+    if (firebaseAuthRequestInFlightRef.current) return
+
+    firebaseAuthRequestInFlightRef.current = true
+    setIsFirebaseAuthPending(true)
+    setFirebaseAuthError('')
+
+    try {
+      await beforeSend?.()
+      const response = await sendMessageWithTimeout<MessageResponse>(message, timeoutMs)
+
+      if (!response) {
+        // The auth request can outlive this popup wait because sign-in's
+        // background handler also keeps the first cloud sync alive. Check the
+        // authoritative auth state before calling that a failure: auth may
+        // already have committed while only the sync tail is still running.
+        const authStatus = await refreshFirebaseAuthStatus()
+        const reachedRequestedState = authStatus?.isSignedIn === (message.action === 'firebaseSignIn')
+        if (!reachedRequestedState) {
+          setFirebaseAuthError(FIREBASE_AUTH_COMMUNICATION_ERROR)
+        }
+      } else if (!response.success) {
+        setFirebaseAuthError(response.error)
+      } else if (!await refreshFirebaseAuthStatus()) {
+        setFirebaseAuthError(FIREBASE_AUTH_COMMUNICATION_ERROR)
+      }
+    } catch {
+      setFirebaseAuthError(FIREBASE_AUTH_COMMUNICATION_ERROR)
+    } finally {
+      firebaseAuthRequestInFlightRef.current = false
+      setIsFirebaseAuthPending(false)
+    }
   }
 
-  const handleFirebaseSignOut = () => {
-    chrome.runtime.sendMessage<FirebaseSignOutMessage>({ action: 'firebaseSignOut' })
-  }
+  const handleFirebaseSignIn = () => performFirebaseAuthAction(
+    { action: 'firebaseSignIn' },
+    FIREBASE_SIGN_IN_TIMEOUT_MS,
+    openGameTab
+  )
+
+  const handleFirebaseSignOut = () => performFirebaseAuthAction(
+    { action: 'firebaseSignOut' },
+    FIREBASE_SIGN_OUT_TIMEOUT_MS
+  )
 
   const handleManualSyncUpload = () => {
     chrome.runtime.sendMessage<ManualSyncUploadMessage>({ action: 'manualSyncUpload' })
@@ -524,6 +583,8 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           isFirebaseSignedIn={isFirebaseSignedIn}
           firebaseUserInfo={firebaseUserInfo}
           syncState={syncState}
+          isAuthPending={isFirebaseAuthPending}
+          authError={firebaseAuthError}
           setImportStatus={setImportStatus}
           handleFirebaseSignIn={handleFirebaseSignIn}
           handleFirebaseSignOut={handleFirebaseSignOut}

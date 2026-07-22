@@ -181,7 +181,8 @@ export interface UpdateUIConfigMessage {
 // Firebase backup messages
 export interface FirebaseAuthStatusMessage {
   action: 'firebaseAuthStatus'
-  isSignedIn: boolean
+  /** Present on background-to-popup status updates; omitted on status requests. */
+  isSignedIn?: boolean
   userInfo?: {
     email: string | null
     displayName: string | null
