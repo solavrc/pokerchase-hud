@@ -108,7 +108,7 @@ export const apiEventSchemas = {
       - FRIEND_RING_GAME (BattleType=5): 空文字列。
       - CLUB_MATCH (BattleType=6): "club_bt_2501_1_1" 等。クラブマッチ固有ID。`),
     IsRetire: z.boolean().describe('リタイア（途中退出）フラグ'),
-  }).describe('参加申込 - テーブル着席時に発行。SNG/Ringでは1セッション1回。MTTではテーブル移動ごとに再発行。BattleTypeとIdを抽出してセッション管理に使用'),
+  }).describe('参加申込 - テーブル着席時に発行。SNG/Ringでは通常1セッション1回だが、共有IndexedDBの複数タブinterleaveやcapture欠落では201だけを絶対境界にできない（BattleType=2で201×1の区間に309×10と継続handを観測）。MTTではテーブル移動ごとに再発行。BattleTypeとIdを抽出してセッション管理に使用'),
 
   [202]: baseSchema.extend({
     ApiTypeId: z.literal(202),
@@ -308,7 +308,7 @@ export const apiEventSchemas = {
     ApiTypeId: z.literal(ApiType.EVT_HAND_RESULTS),
     CommunityCards: communityCardsSchema.describe('EVT_DEAL_ROUNDで未配信のカードのみ。全ストリート配信済みなら空配列[]。蓄積したEVT_DEAL_ROUNDのカードとマージしてフルボードを構築する'),
     DefeatStatus: z.union([z.literal(0), z.literal(1)]).describe('0=継続(96.1%), 1=誰かが脱落(3.9%)。SNG(79%), MTT(17%), Ring(2%)で発生。Player.Chip=0ならヒーロー脱落、no_playerなら観戦中の他プレイヤー脱落'),
-    HandId: z.int().nonnegative().describe('ハンドの一意識別子。ここでのみ取得可能。セッション全体で単調増加。SNG/Ringのセッション識別やマルチプレイヤーハンド突合に使用可能'),
+    HandId: z.int().nonnegative().describe('ハンドの一意識別子。ここでのみ取得可能。個々のテーブルでは概ね増加するが、MTTテーブル移動では並行テーブルの結果受信によりセッション受信順で局所逆転するため、単調性を前提にしない。SNG/Ringのセッション識別やマルチプレイヤーハンド突合に使用可能'),
     HandLog: z.string().optional().describe('常に空文字列（全25,322ハンドで確認済み）。PokerChase内部で未使用の予約フィールドと推測'),
     OtherPlayers: z.array(z.object({
       BetChip: z.literal(0).describe('ハンド終了時は常に0（ベットはポットに回収済み）'),
@@ -408,7 +408,7 @@ export const apiEventSchemas = {
       RebuyFinishUnixSeconds: z.int().describe('リバイ受付終了時刻（Unix Seconds）'),
       RebuyLimit: z.int().nonnegative().describe('リバイ回数上限'),
     }).optional().describe('トーナメント固有ルール。MTT（BattleType=1）の場合のみ。存在する場合は全フィールドが揃う'),
-  }).describe('セッション詳細 - 1セッション1回発行。セッション名(Name)はAggregateEventsStreamがsession.nameに保存。BlindStructuresでブラインドレベル構造を提供'),
+  }).describe('セッション詳細 - 通常1セッション1回発行するがcapture欠落を許容し、BattleType=2では未観測。セッション名(Name)はAggregateEventsStreamがsession.nameに保存。BlindStructuresでブラインドレベル構造を提供'),
 
   // --------------------------------------------------------------
   // メタルール（EVT_SESSION_RESULTS 以下、報酬/コスメ/シーズン系の
@@ -512,7 +512,7 @@ export const apiEventSchemas = {
     TournamentRatePoint: z.int().optional().describe('トーナメントレートポイント。season3/legend match 2026で新規観測（例: 0）。用途未確定のため防御的にoptional'),
     TournamentRatePointDiff: z.int().optional().describe('トーナメントレートポイント変動。season3/legend match 2026で新規観測（例: 0）。用途未確定のため防御的にoptional'),
     TournamentRateRanking: z.int().optional().describe('トーナメントレートランキング。season3/legend match 2026で新規観測（例: 0）。用途未確定のため防御的にoptional'),
-  }).describe('セッション終了 - 1セッション1回発行。最終順位(Ranking)、ランク変動(RankReward)を含む。background.tsはこのイベントでautoSyncService.onGameSessionEnd()をトリガー'),
+  }).describe('セッション終了 - 通常1セッション1回発行。共有IndexedDBの複数タブinterleaveでは同一201区間に複数試合の309が混在しうる。最終順位(Ranking)、ランク変動(RankReward)を含む。background.tsはこのイベントでautoSyncService.onGameSessionEnd()をトリガー'),
 
   [310]: baseSchema.extend({
     ApiTypeId: z.literal(310),
@@ -583,7 +583,7 @@ export const apiEventSchemas = {
       Pot: z.int().nonnegative(),
       SidePot: z.array(z.int()).max(4),
     }).optional().describe('途中参加時のみ。存在する場合は全フィールドが揃う'),
-  }).describe('プレイヤー着席 - テーブルの全プレイヤー名・ランクを提供。SNGでは1回、MTTではテーブル移動ごとに再発行。TableUsers[]からUserId→名前のマッピングを構築'),
+  }).describe('プレイヤー着席 - テーブルの全プレイヤー名・ランクを提供。SNGでは0または1回（capture欠落を許容。2026-07-21 stagingの0/2/6 session coverageは733/971、1/10、7/19で、BattleType=2の1件は完走handなし）、MTTではテーブル移動ごとに再発行。TableUsers[]からUserId→名前のマッピングを構築'),
 
   [314]: baseSchema.extend({
     ApiTypeId: z.literal(314),
