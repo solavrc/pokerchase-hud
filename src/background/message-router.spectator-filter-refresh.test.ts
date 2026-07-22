@@ -187,4 +187,28 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
 
     expect(writeSpy).toHaveBeenCalledWith([10, 20])
   })
+
+  test('consumes the expected one-way delivery rejection when forwarding the filter update', async () => {
+    const noResponse = Promise.reject(
+      new Error('The message port closed before a response was received.')
+    )
+    await noResponse.catch(() => {})
+    const catchSpy = jest.spyOn(noResponse, 'catch')
+    const sendMessageMock = jest.fn().mockReturnValue(noResponse)
+    ;(global as any).chrome.tabs = {
+      sendMessage: sendMessageMock,
+      query: jest.fn((_query, callback) => callback([{ id: 42 }])),
+    }
+
+    messageListener(
+      { action: 'updateBattleTypeFilter', filterOptions: FILTER_OPTIONS } as unknown as ChromeMessage,
+      {} as chrome.runtime.MessageSender,
+      jest.fn()
+    )
+
+    expect(sendMessageMock).toHaveBeenCalledWith(42, expect.objectContaining({
+      action: 'updateBattleTypeFilter',
+    }))
+    expect(catchSpy).toHaveBeenCalledWith(expect.any(Function))
+  })
 })
