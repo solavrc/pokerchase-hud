@@ -172,7 +172,7 @@ EVT_HAND_RESULTS.Results[].UserId             ──► UserId 直接参照（Se
 
 ### 主要な制約
 
-- **HandId**: `EVT_HAND_RESULTS` でのみ取得可能。ハンド中のイベントは `EVT_DEAL` → `EVT_HAND_RESULTS` 境界内で相関させる。local Lakeの保存・page順は `[timestamp+ApiTypeId+sequence]` であり、同一millisecondのcross-type eventについて受信順を表さない。再構築などのstateful readでは同一timestamp groupをpage境界で分断せず、payloadから証明できる因果順へ解決する。因果edgeのないeventは主キー順をcanonicalとして維持する（詳細は「Raw Event Lake の順序・重複・拡張性」参照）。
+- **HandId**: `EVT_HAND_RESULTS` でのみ取得可能。ハンド中のイベントは `EVT_DEAL` → `EVT_HAND_RESULTS` 境界内で相関させる。local Lakeの保存・page順は `[timestamp+ApiTypeId+sequence]` であり、同一millisecondのcross-type eventについて受信順を表さない。再構築などのstateful readでは同一timestamp groupをpage境界で分断せず、phase・actor・stack・Potの完全一致で証明できるsnapshot→action遷移だけを補正する。session/hand lifecycleは前状態なしに推論せず、strict edgeのないeventは主キー順をcanonicalとして維持する（詳細は「Raw Event Lake の順序・重複・拡張性」参照）。
 - **SeatUserIds**: 配列インデックス = 論理席番号。値 = UserId（`-1` = 空席）。配列長 = テーブルサイズ（4 または 6）。
 - **プレイヤー名**: `EVT_PLAYER_SEAT_ASSIGNED` または `EVT_PLAYER_JOIN` から解決する必要がある。ハンドイベントからは取得できない。
 - **SeatUserIds の一貫性**: `EVT_DEAL` と `EVT_PLAYER_SEAT_ASSIGNED` に同じ `SeatUserIds` が存在する。途中参加（`EVT_PLAYER_JOIN`）でプレイヤーが追加されるが、更新された `SeatUserIds` は次の `EVT_DEAL` で初めて反映される。
@@ -605,17 +605,17 @@ STAGEごとの基準値（着順1〜6位）:
   時に空き sequence を割り当てる。同一ファイル内および既存 Lake にある同一 payload
   は content dedup される。
 - uploadは主キー三要素をカーソルとして保持する。再構築とraw/hand-log exportも主キーで
-  pageするが、各page末尾の同一timestamp groupを次pageまでholdしてから因果順へ直す。
+  pageするが、各page末尾の同一timestamp groupを次pageまでholdしてからstrictな
+  snapshot→action遷移だけを補正する。
   `timestamp` だけ、または `[timestamp+ApiTypeId]` だけで `above()` を行うと burst の
   途中を飛ばすため禁止。
 - cross-type同一timestampは主キーのApiTypeId順で保存されるため、stateful readerは
-  payloadから証明できる因果edgeだけをstable topological sortする。現在のedgeは
-  session開始201→詳細308、hand結果306→session結果309、および303/305/313のstate
-  snapshot→直後の304（phase、NextActionSeat、actor stack、Potの差分が全て一致）である。
-  edgeのないeventは主キー順をcanonicalとして維持する。
-- 実raw 393,830 eventsのcross-type同時刻210 groupを両順列で検証した結果、46 groupは
-  片方だけがvalid、164 groupは両方validかつ同じsemantic result、異なる結果を生む真の
-  ambiguityは0だった。観測された逆転は313→304が2件と305→304が1件。後者のhand
+  303/305/313のstate snapshot→直後の304について、phase、NextActionSeat、actor stack、
+  Potの差分が全て一致するときだけstable topological sortする。それ以外は主キー順を
+  canonicalとして維持する。特に201/308や306/309を含むsession/hand lifecycleは、MTTの
+  table moveやtable間interleaveを同時刻groupだけでは区別できないため推論しない。
+- 実raw 393,830 eventsのcross-type同時刻210 groupを監査し、このstrict predicateが変更する
+  groupは313→304が2件と305→304が1件だけだった。後者のhand
   418790443では、TURN 305（Pot=4179, NextActionSeat=4）の直後にseat 4の304
   （BET 1379, Pot=5558）が続く因果順がstack/Pot双方から一意に決まる。
 

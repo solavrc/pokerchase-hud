@@ -79,13 +79,11 @@ const isProvenSnapshotBeforeAction = (snapshot: RawApiEvent, action: RawApiEvent
     actorBeforeAction?.Chip === action.Chip + additionalBet
 }
 
+// A snapshot carrying the exact pre-action actor/stack/pot state precedes the
+// action that advances all three fields by the same chip delta. Session/hand
+// lifecycle boundaries are deliberately excluded: an isolated equal-ms group
+// cannot distinguish a new session from an MTT table move or interleaved table.
 const hasCausalEdge = (before: RawApiEvent, after: RawApiEvent): boolean =>
-  // Session entry resets all session fields; details must be applied after it.
-  (before.ApiTypeId === ApiType.EVT_ENTRY_QUEUED && after.ApiTypeId === ApiType.EVT_SESSION_DETAILS) ||
-  // The final hand must be committed before the enclosing session is closed.
-  (before.ApiTypeId === ApiType.EVT_HAND_RESULTS && after.ApiTypeId === ApiType.EVT_SESSION_RESULTS) ||
-  // A snapshot carrying the exact pre-action actor/stack/pot state precedes
-  // the action that advances all three fields by the same chip delta.
   isProvenSnapshotBeforeAction(before, after)
 
 const stableTopologicalOrder = <T extends RawApiEvent>(group: T[]): T[] => {
@@ -106,7 +104,7 @@ const stableTopologicalOrder = <T extends RawApiEvent>(group: T[]): T[] => {
   const ordered: T[] = []
   while (available.length > 0) {
     // `group` is already in primary-key order, so the smallest index is the
-    // deterministic canonical tie-breaker for causally independent events.
+    // deterministic canonical tie-breaker for events without a strict edge.
     const index = available.shift()!
     ordered.push(group[index]!)
     for (const next of outgoing[index]!) {
@@ -129,14 +127,15 @@ const stableTopologicalOrder = <T extends RawApiEvent>(group: T[]): T[] => {
  *
  * IndexedDB and raw export use `[timestamp+ApiTypeId+sequence]`, so cross-type
  * events sharing a millisecond are stored in ApiTypeId order rather than wire
- * order. Reconstruct only causal edges proven by the event state machine;
- * causally independent events retain primary-key order as a stable canonical
- * representation.
+ * order. Reconstruct only the strict snapshot-to-action transition proven by
+ * exact phase, actor, stack and pot deltas. All other events retain primary-key
+ * order as a stable, fail-closed representation; this function does not infer
+ * session/hand lifecycle order from an isolated timestamp group.
  *
  * The 393,830-event production corpus contained 210 cross-type equal-ms
- * groups: 46 had one valid order, 164 had two equivalent orders, and none had
- * two valid orders with different semantic results. This group/topological
- * operation also avoids the non-transitivity of a pairwise causal comparator.
+ * groups. The strict predicate changes only three proven inversions (two
+ * 313→304 groups and one 305→304 group). This group/topological operation also
+ * avoids the non-transitivity of a pairwise causal comparator.
  */
 export const orderApiEventsForReplay = <T extends RawApiEvent>(events: T[]): T[] => {
   const primaryOrder = [...events].sort(compareApiEventKeys)

@@ -225,7 +225,7 @@ club identifier=[redacted]
 | HandId continuity | 重複0、ただし局所逆転あり | 一意性には使えるが単調性には使えない |
 | stale old-table tail | chimera reject 16 | rejectを維持しfixture化する |
 | stats/HUD cleanup | 実データはあるがE2Eなし | old lineupを新テーブルへ持ち越さないtestが必要 |
-| interleaving | テーブル間でHandId順が交差 | 保存はtimestamp+ApiTypeId+sequenceのcanonical順、stateful readは同一timestamp groupを因果順へ解決する |
+| interleaving | テーブル間でHandId順が交差 | 保存はtimestamp+ApiTypeId+sequenceのcanonical順。stateful readもsession lifecycleを同時刻groupだけで推論しない |
 
 ### Ringバスト → 観戦 → 買い直し
 

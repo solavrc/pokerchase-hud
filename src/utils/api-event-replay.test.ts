@@ -122,7 +122,7 @@ describe('raw event replay order', () => {
     expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([308, 313])
   })
 
-  test('keeps session and hand boundaries in their only valid canonical order', () => {
+  test('fails closed for a compound lifecycle collision without prior state', () => {
     const events: RawApiEvent[] = [
       { timestamp: 400, ApiTypeId: 309, Ranking: 1 },
       { timestamp: 400, ApiTypeId: 308, Name: 'table' },
@@ -130,6 +130,9 @@ describe('raw event replay order', () => {
       { timestamp: 400, ApiTypeId: 201, Id: 'room', BattleType: 0 }
     ]
 
+    // An active old hand would require 306→309→201→308, while an MTT table move
+    // can legitimately interleave 201 with a hand. The isolated group cannot
+    // distinguish those histories, so the resolver must not invent an edge.
     expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([201, 306, 308, 309])
   })
 })

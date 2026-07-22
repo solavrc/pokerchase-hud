@@ -53,15 +53,15 @@ canonical payload全体の一致であり、時刻と種別だけでは重複と
 
 `timestamp`はWebSocket message decode直後の`Date.now()`なので、異なるevent typeが
 同一millisecondになる。主キー・exportはApiTypeId順へ並べるため、stateful readerは
-同時刻groupをpage境界で分断せず、payloadから証明できる因果edgeだけをstable
-topological sortする。edgeは201→308、306→309、および303/305/313のstate snapshotから
-phase/NextActionSeat/actor stack/Potの差分が全て一致する304への遷移。因果的に独立なeventは
-主キー順をcanonicalとして維持する。このresolverはlegacy/futureの双方に同じ規則を適用し、
+同時刻groupをpage境界で分断せず、303/305/313のstate snapshotからphase、
+NextActionSeat、actor stack、Potの差分が全て一致する304への遷移だけをstable
+topological sortする。それ以外は主キー順をcanonicalとして維持する。201/308や306/309を
+含むsession/hand lifecycleは、MTT table moveやtable間interleaveを前状態なしに区別できない
+ため推論しない。このstrict resolverはlegacy/futureの双方に同じ規則を適用し、
 IndexedDB/Firestore schemaやdedup identityへ一時的な受信順metadataを追加しない。
 
-実raw 393,830 eventsにあるcross-type同時刻210 groupは、46 groupが片方のみvalid、
-164 groupが両順序validかつ同じsemantic result、結果が異なる未解決ambiguityは0だった。
-別rawの18 groupも全て順序非依存の308/313であり、追加のambiguityはなかった。
+実raw 393,830 eventsにあるcross-type同時刻210 groupを監査し、このpredicateが変更するのは
+313→304が2件と305→304が1件だけだった。別rawの18 groupに変更対象はなかった。
 
 IndexedDBは既存object storeの主キーを直接変更できないため、v3→v6はv4で全行を
 一時storeへ`sequence: 0`付きでコピーし、v5で旧storeを削除、v6で新主キーのstoreへ
