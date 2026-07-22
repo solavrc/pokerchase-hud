@@ -64,6 +64,16 @@ describe('RecentHandsPanel', () => {
     })
   })
 
+  it('triggerから参照できるplayer固有regionとして公開する', () => {
+    mockSendMessage.mockImplementation(() => {})
+
+    render(<RecentHandsPanel playerId={999} />)
+
+    const panel = screen.getByRole('region', { name: 'Player 999の直近ハンド' })
+    expect(panel).toHaveAttribute('id', 'recent-hands-panel-999')
+    expect(panel).toHaveAttribute('data-player-id', '999')
+  })
+
   it('新しい順（ハンドID降順）に表示する', async () => {
     mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
       callback({ success: true, recentHands: buildResult() })

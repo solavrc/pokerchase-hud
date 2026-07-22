@@ -134,6 +134,13 @@ const styles = {
 export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelProps) => {
   const [status, setStatus] = useState<FetchStatus>('loading')
   const [data, setData] = useState<RecentHandsResult | undefined>(undefined)
+  const panelProps = {
+    id: `recent-hands-panel-${playerId}`,
+    role: 'region',
+    'aria-label': `Player ${playerId}の直近ハンド`,
+    'data-testid': 'recent-hands-panel',
+    'data-player-id': playerId,
+  } as const
 
   useEffect(() => {
     let cancelled = false
@@ -165,7 +172,7 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
 
   if (status === 'loading') {
     return (
-      <div style={styles.panel} data-testid="recent-hands-panel">
+      <div style={styles.panel} {...panelProps}>
         <div style={styles.placeholder}>Loading hands…</div>
       </div>
     )
@@ -173,7 +180,7 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
 
   if (status === 'error' || !data) {
     return (
-      <div style={styles.panel} data-testid="recent-hands-panel">
+      <div style={styles.panel} {...panelProps}>
         <div style={styles.placeholder}>—</div>
       </div>
     )
@@ -181,7 +188,7 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
 
   if (data.hands.length === 0) {
     return (
-      <div style={styles.panel} data-testid="recent-hands-panel">
+      <div style={styles.panel} {...panelProps}>
         <div style={styles.placeholder}>No hands yet</div>
       </div>
     )
@@ -190,7 +197,7 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
   const now = Date.now()
 
   return (
-    <div style={styles.panel} data-testid="recent-hands-panel">
+    <div style={styles.panel} {...panelProps}>
       <table style={styles.table}>
         <thead>
           <tr>

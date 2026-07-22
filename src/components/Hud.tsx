@@ -35,11 +35,11 @@ interface HudProps {
   statDisplayConfigs: StatDisplayConfig[]
   realTimeStats?: RealTimeStats
   playerPotOdds?: PlayerPotOdds
-  /** ポジション別ドリルダウンパネルが開いているか（Appが単一のopenPlayerIdで管理） */
+  /** ポジション別ドリルダウンパネルが開いているか（Appが単一playerIdで管理） */
   isPositionalPanelOpen?: boolean
   /** ドリルダウンパネルの開閉トグル。渡された時のみヘッダーにトリガーを表示する */
   onTogglePositionalPanel?: () => void
-  /** 直近ハンド・ドリルダウンパネルが開いているか（Appが単一のopenPanelで管理、ポジション別と排他） */
+  /** 直近ハンド・ドリルダウンパネルが開いているか（AppがplayerId集合で管理） */
   isRecentHandsPanelOpen?: boolean
   /** 直近ハンド・ドリルダウンパネルの開閉トグル。渡された時のみヘッダーにトリガーを表示する */
   onToggleRecentHandsPanel?: () => void

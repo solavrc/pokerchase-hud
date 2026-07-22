@@ -10,7 +10,7 @@ import type { ApiEvent } from '../types'
 // Mock components
 jest.mock('./Hud', () => ({
   __esModule: true,
-  default: ({ actualSeatIndex, stat, scale, statDisplayConfigs, realTimeStats, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, isRecentHandsPanelOpen, onToggleRecentHandsPanel, hudDisplayMode, hudColorCoding, isDimmed }: any) => (
+  default: ({ actualSeatIndex, stat, scale, statDisplayConfigs, realTimeStats, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, isRecentHandsPanelOpen, onToggleRecentHandsPanel, handEpoch, hudDisplayMode, hudColorCoding, isDimmed }: any) => (
     <div data-testid={`hud-${actualSeatIndex}`}>
       Player: {stat.playerId}
       Scale: {scale}
@@ -19,6 +19,7 @@ jest.mock('./Hud', () => ({
       PotOdds: {playerPotOdds ? 'yes' : 'no'}
       PositionalPanelOpen: {isPositionalPanelOpen ? 'yes' : 'no'}
       RecentHandsPanelOpen: {isRecentHandsPanelOpen ? 'yes' : 'no'}
+      HandEpoch: {handEpoch ?? 0}
       DisplayMode: {hudDisplayMode ?? 'undefined'}
       ColorCoding: {hudColorCoding === undefined ? 'undefined' : hudColorCoding ? 'yes' : 'no'}
       Dimmed: {isDimmed ? 'yes' : 'no'}
@@ -494,7 +495,7 @@ describe('App', () => {
       expect(screen.getByTestId('hud-1')).toHaveTextContent('PositionalPanelOpen: no')
     })
 
-    it('ポジション別パネルと直近ハンドパネルは互いに排他（同一プレイヤーでも別プレイヤーでも）', async () => {
+    it('直近ハンドは複数プレイヤーを同時に開け、同じトリガーはそのプレイヤーだけを閉じる', async () => {
       const user = userEvent.setup()
 
       render(<App />)
@@ -508,24 +509,159 @@ describe('App', () => {
       expect(screen.getByTestId('hud-0')).toHaveTextContent('PositionalPanelOpen: no')
       expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: no')
 
-      // 席0のポジション別を開く
-      await user.click(screen.getByText('toggle-1'))
-      expect(screen.getByTestId('hud-0')).toHaveTextContent('PositionalPanelOpen: yes')
-      expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: no')
-
-      // 同じプレイヤーの直近ハンドを開くと、ポジション別は自動的に閉じる
+      // 席0と席1の直近ハンドを順に開いても、先に開いた席0は閉じない。
       await user.click(screen.getByText('toggle-recent-1'))
-      expect(screen.getByTestId('hud-0')).toHaveTextContent('PositionalPanelOpen: no')
       expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: yes')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: no')
 
-      // 別プレイヤーのポジション別を開くと、席0の直近ハンドも自動的に閉じる
+      await user.click(screen.getByText('toggle-recent-2'))
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: yes')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: yes')
+
+      // 同じプレイヤーをもう一度押すと、そのパネルだけ閉じる。
+      await user.click(screen.getByText('toggle-recent-1'))
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: no')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: yes')
+    })
+
+    it('複数の直近ハンドパネルが開いたまま同じhandEpoch更新を受け取る', async () => {
+      const user = userEvent.setup()
+
+      render(<App />)
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', { detail: mockStatsData })
+        )
+      })
+
+      await user.click(screen.getByText('toggle-recent-1'))
+      await user.click(screen.getByText('toggle-recent-2'))
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', {
+            detail: { ...mockStatsData, handEpoch: 7 },
+          })
+        )
+      })
+
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: yes')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: yes')
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('HandEpoch: 7')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('HandEpoch: 7')
+    })
+
+    it('ポジション別パネルとの従来の種別間排他は維持する', async () => {
+      const user = userEvent.setup()
+
+      render(<App />)
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', { detail: mockStatsData })
+        )
+      })
+
+      await user.click(screen.getByText('toggle-recent-1'))
+      await user.click(screen.getByText('toggle-recent-2'))
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: yes')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: yes')
+
+      // ポジション別を開くと、開いていた直近ハンド群は全て閉じる。
       await user.click(screen.getByText('toggle-2'))
       expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: no')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: no')
       expect(screen.getByTestId('hud-1')).toHaveTextContent('PositionalPanelOpen: yes')
 
-      // 同じトリガーをもう一度クリックすると閉じる
-      await user.click(screen.getByText('toggle-2'))
+      // 直近ハンドを開けばポジション別は閉じる。
+      await user.click(screen.getByText('toggle-recent-1'))
       expect(screen.getByTestId('hud-1')).toHaveTextContent('PositionalPanelOpen: no')
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: yes')
+    })
+
+    it('セッション終了でheroを含む全ての開状態をリセットする', async () => {
+      const user = userEvent.setup()
+
+      render(<App />)
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', { detail: mockStatsData })
+        )
+      })
+      await user.click(screen.getByText('toggle-recent-1'))
+      await user.click(screen.getByText('toggle-recent-2'))
+
+      await act(async () => {
+        window.dispatchEvent(new CustomEvent('PokerChaseSessionEndEvent'))
+      })
+
+      // heroのstats自体は残るが、パネルの一時UI状態はセッションをまたがない。
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('Player: 1')
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: no')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: no')
+    })
+
+    it('テーブル切替を検出したら、同じhero playerIdのパネルも含めてリセットする', async () => {
+      const user = userEvent.setup()
+
+      render(<App />)
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', { detail: mockStatsData })
+        )
+      })
+      await user.click(screen.getByText('toggle-recent-1'))
+      await user.click(screen.getByText('toggle-recent-2'))
+
+      const nextTableStats: StatsData['stats'] = mockStatsData.stats.map((stat, index) => (
+        index === 0 ? stat : { playerId: 100 + index, statResults: [] }
+      ))
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', { detail: { stats: nextTableStats } })
+        )
+      })
+
+      // hero(1)は新テーブルにも残るため単なる「非表示playerIdのprune」では
+      // 閉じない。table-change境界で全開状態を明示リセットすることを確認する。
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('Player: 1')
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: no')
+    })
+
+    it('席交代で消えたplayerIdの開状態をpruneし、別席へ再登場しても勝手に再オープンしない', async () => {
+      const user = userEvent.setup()
+
+      render(<App />)
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', { detail: mockStatsData })
+        )
+      })
+      await user.click(screen.getByText('toggle-recent-2'))
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: yes')
+
+      const afterTakeover: StatsData['stats'] = mockStatsData.stats.map((stat, index) => (
+        index === 1 ? { playerId: 99, statResults: [] } : stat
+      ))
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', { detail: { stats: afterTakeover } })
+        )
+      })
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 99')
+
+      const reappearedElsewhere: StatsData['stats'] = afterTakeover.map((stat, index) => (
+        index === 5 ? { playerId: 2, statResults: [] } : stat
+      ))
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', { detail: { stats: reappearedElsewhere } })
+        )
+      })
+
+      expect(screen.getByTestId('hud-5')).toHaveTextContent('Player: 2')
+      expect(screen.getByTestId('hud-5')).toHaveTextContent('RecentHandsPanelOpen: no')
     })
   })
 

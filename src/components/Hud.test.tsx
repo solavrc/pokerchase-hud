@@ -562,6 +562,65 @@ describe('Hud', () => {
       })
     })
 
+    it('複数プレイヤーのパネルを同時表示し、handEpoch更新時にそれぞれ再フェッチする', async () => {
+      (chrome.runtime.sendMessage as jest.Mock).mockImplementation(
+        (_message: unknown, callback: (response: unknown) => void) => {
+          callback({
+            success: true,
+            recentHands: { computedAt: Date.now(), hands: [] },
+          })
+        }
+      )
+      const secondPlayerStats: PlayerStats = {
+        playerId: 456,
+        statResults: [
+          { id: 'playerName', name: 'Name', value: 'SecondPlayer', formatted: 'SecondPlayer' },
+        ],
+      }
+      const renderBoth = (handEpoch: number) => (
+        <>
+          <Hud
+            actualSeatIndex={0}
+            stat={mockPlayerStats}
+            scale={1}
+            statDisplayConfigs={mockStatDisplayConfigs}
+            onToggleRecentHandsPanel={jest.fn()}
+            isRecentHandsPanelOpen={true}
+            handEpoch={handEpoch}
+          />
+          <Hud
+            actualSeatIndex={1}
+            stat={secondPlayerStats}
+            scale={1}
+            statDisplayConfigs={mockStatDisplayConfigs}
+            onToggleRecentHandsPanel={jest.fn()}
+            isRecentHandsPanelOpen={true}
+            handEpoch={handEpoch}
+          />
+        </>
+      )
+
+      const { rerender } = render(renderBoth(1))
+
+      await waitFor(() => {
+        expect(screen.getAllByTestId('recent-hands-panel')).toHaveLength(2)
+      })
+      expect(screen.getAllByTestId('recent-hands-panel').map(panel => panel.dataset.playerId)).toEqual(['123', '456'])
+      expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+        { action: 'getRecentHands', playerId: 123 },
+        expect.any(Function)
+      )
+      expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+        { action: 'getRecentHands', playerId: 456 },
+        expect.any(Function)
+      )
+
+      rerender(renderBoth(2))
+      await waitFor(() => {
+        expect(chrome.runtime.sendMessage).toHaveBeenCalledTimes(4)
+      })
+    })
+
     it('ポジション別トリガーと同時に表示しても両方独立してクリックできる', async () => {
       const handleTogglePositional = jest.fn()
       const handleToggleRecentHands = jest.fn()
