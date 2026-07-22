@@ -10,7 +10,9 @@ import type Dexie from 'dexie'
 import {
   API_EVENT_PRIMARY_KEY,
   type ApiEventKey,
-  getApiEventSequence
+  getApiEventSequence,
+  orderApiEventsForReplay,
+  type RawApiEvent
 } from './api-event-key'
 
 /**
@@ -140,6 +142,71 @@ export async function* processInChunks<T extends { timestamp?: number; ApiTypeId
 }
 
 /**
+ * Primary-key cursor pagination with equal-timestamp groups replayed together.
+ *
+ * A raw page may end between two event types sharing a millisecond. Holding its
+ * trailing timestamp until the following page lets the causal resolver inspect
+ * the complete group even at a chunk boundary.
+ */
+export async function* processInReplayChunks<T extends { timestamp?: number; ApiTypeId: number; sequence?: number }>(
+  table: Dexie.Table<T, any>,
+  chunkSize: number,
+  options?: {
+    onProgress?: (current: number, total: number) => void
+  }
+): AsyncGenerator<T[], void, unknown> {
+  const total = await table.count()
+  if (total === 0) return
+
+  let cursor: ApiEventKey | undefined
+  let carry: T[] = []
+  let processed = 0
+
+  while (true) {
+    const rawChunk = await (cursor
+      ? table.where(API_EVENT_PRIMARY_KEY).above(cursor)
+      : table.orderBy(API_EVENT_PRIMARY_KEY))
+      .limit(chunkSize)
+      .toArray()
+
+    if (rawChunk.length === 0) {
+      if (carry.length > 0) {
+        const ordered = orderApiEventsForReplay(carry as unknown as RawApiEvent[]) as unknown as T[]
+        yield ordered
+        processed += ordered.length
+        options?.onProgress?.(processed, total)
+      }
+      break
+    }
+
+    const last = rawChunk[rawChunk.length - 1]!
+    cursor = [last.timestamp!, last.ApiTypeId, getApiEventSequence(last)]
+    const combined = [...carry, ...rawChunk]
+
+    if (rawChunk.length < chunkSize) {
+      const ordered = orderApiEventsForReplay(combined as unknown as RawApiEvent[]) as unknown as T[]
+      yield ordered
+      processed += ordered.length
+      options?.onProgress?.(processed, total)
+      break
+    }
+
+    const trailingTimestamp = combined[combined.length - 1]!.timestamp
+    let splitIndex = combined.length - 1
+    while (splitIndex > 0 && combined[splitIndex - 1]!.timestamp === trailingTimestamp) splitIndex--
+
+    const ready = combined.slice(0, splitIndex)
+    carry = combined.slice(splitIndex)
+    if (ready.length > 0) {
+      const ordered = orderApiEventsForReplay(ready as unknown as RawApiEvent[]) as unknown as T[]
+      yield ordered
+      processed += ordered.length
+      options?.onProgress?.(processed, total)
+    }
+  }
+}
+
+/**
  * Find the latest EVT_DEAL event with Player.SeatIndex
  * Consolidates the repeated pattern across services
  */
@@ -203,6 +270,18 @@ export async function filterValidApplicationEvents(rawEvents: unknown[]): Promis
     if (parsed && isApplicationApiEvent(parsed)) valid.push(parsed)
   }
   return valid
+}
+
+/**
+ * Preserve the complete raw equal-timestamp group for fail-closed replay
+ * ordering, then remove rows that cannot safely reach stateful consumers.
+ * Filtering first can shrink a compound raw group into an apparent two-event
+ * pair and incorrectly make it eligible for strict snapshot/action reversal.
+ */
+export async function orderAndFilterApplicationEventsForReplay(
+  rawEvents: RawApiEvent[]
+): Promise<ApiEvent[]> {
+  return filterValidApplicationEvents(orderApiEventsForReplay(rawEvents))
 }
 
 /**

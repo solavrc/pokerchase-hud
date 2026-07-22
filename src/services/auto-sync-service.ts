@@ -14,7 +14,7 @@ import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
 import { ApiType, ApiTypeValues, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent } from '../types'
 import type { ApiEvent } from '../types'
-import { processInChunks, saveEntities, filterValidApplicationEvents } from '../utils/database-utils'
+import { processInReplayChunks, saveEntities, filterValidApplicationEvents } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
 import { isCloudSyncBlockedByMinVersionGate } from './min-version-gate'
 import {
@@ -1479,7 +1479,7 @@ export class AutoSyncService {
 
       if (service?.session) service.session.reset()
 
-      for await (const events of processInChunks(
+      for await (const events of processInReplayChunks(
         this.db.apiEvents,
         DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
       )) {

@@ -91,6 +91,39 @@ describe('export download-handoff completion', () => {
     expect(getOperationState()).toEqual({ type: 'idle' })
   })
 
+  test('NDJSON export emits an equal-ms legacy street transition in causal replay order', async () => {
+    await db.apiEvents.bulkAdd([
+      {
+        timestamp: 100,
+        ApiTypeId: 304,
+        SeatIndex: 4,
+        BetChip: 1_379,
+        Chip: 28_428,
+        Progress: { Phase: 2, Pot: 5_558 }
+      },
+      {
+        timestamp: 100,
+        ApiTypeId: 305,
+        Progress: { Phase: 2, Pot: 4_179, NextActionSeat: 4 },
+        OtherPlayers: [{ SeatIndex: 4, BetChip: 0, Chip: 29_807 }]
+      }
+    ] as any)
+    ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => callback([{ id: 42 }]))
+    ;(chrome.tabs.sendMessage as jest.Mock).mockImplementation((_tabId, _message, callback) => callback?.())
+
+    const handlers = createImportExportHandlers(service, db, 'https://example.com/*')
+    await handlers.exportData('json')
+
+    const downloadCall = (chrome.tabs.sendMessage as jest.Mock).mock.calls.find(([, message]) =>
+      message.action === 'downloadFile'
+    )
+    const exported = String(downloadCall?.[1].content)
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line))
+    expect(exported.map(event => event.ApiTypeId)).toEqual([305, 304])
+  })
+
   test('PokerStars export dispatches the tabs.sendMessage handoff before returning to idle', async () => {
     jest.spyOn(service, 'exportHandHistory').mockResolvedValue('PokerStars Hand #1: ...')
 

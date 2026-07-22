@@ -51,15 +51,20 @@
 transactionで行う。reconnect resendの判定はトップレベルの`sequence`を除く
 canonical payload全体の一致であり、時刻と種別だけでは重複とみなさない。
 
-この主キーは保存・ページング順であって、異なる`ApiTypeId`間の受信順ではない。
-異種イベントが同一millisecondなら主キーは`ApiTypeId`順に並び、`sequence`も同じ
-`timestamp+ApiTypeId`組の内部にしか意味を持たない。ライブ処理は直列キューの到着順を使い、
-保存済みイベントから状態を再生・監査するconsumerはsession/hand境界の因果関係を別途扱う。
+`timestamp`はWebSocket message decode直後の`Date.now()`なので、異なるevent typeが
+同一millisecondになる。主キー・exportはApiTypeId順へ並べるため、stateful readerは
+同時刻groupをpage境界で分断しない。groupが303/305/313のstate snapshotと304だけの
+2-event pairで、phase、NextActionSeat、actor stack、Potの差分が全て一致するときだけ
+snapshotを先へ戻す。3件以上の複合groupは、局所的に証明できるpairがあっても無関係なeventを
+跨いで動かさず、group全体を主キー順に維持する。201/308や306/309を含むsession/hand
+lifecycleは、MTT table moveやtable間interleaveを前状態なしに区別できないため推論しない。
+このstrict resolverはlegacy/futureの双方に同じ規則を適用し、
+IndexedDB/Firestore schemaやdedup identityへ一時的な受信順metadataを追加しない。
+resolverはvalidation前のraw group全体へ適用し、その後でapplication/schema filterを行う。
+filterを先に行うとnoise除去で複合groupが偽の2-event pairへ縮むため、順序を逆転してはならない。
 
-順序解決の設計原則は、ポーカーを強整合性のある状態機械として扱うことである。各遷移は
-stack、pot、phase、seat、およびhand/session境界のinvariantで因果検証する。保存主キーや
-`ApiTypeId`の昇順だけを受信順の根拠にせず、同一timestampの関係をinvariantから一意に
-canonicalizeできない場合は推測せず、その順序に依存する処理をfail-closedにする。
+実raw 393,830 eventsにあるcross-type同時刻210 groupを監査し、このpredicateが変更するのは
+313→304が2件と305→304が1件だけだった。別rawの18 groupに変更対象はなかった。
 
 IndexedDBは既存object storeの主キーを直接変更できないため、v3→v6はv4で全行を
 一時storeへ`sequence: 0`付きでコピーし、v5で旧storeを削除、v6で新主キーのstoreへ
@@ -69,8 +74,8 @@ IndexedDBは既存object storeの主キーを直接変更できないため、v3
 
 ### リビルド = 復旧経路
 `rebuildAllData`（`src/background/import-export.ts`）は`apiEvents`の全行を
-`filterValidApplicationEvents()`（`src/utils/database-utils.ts`）で**再検証**して
-から`EntityConverter`に渡す。これにより、PokerChase側のペイロード変更で
+`orderAndFilterApplicationEventsForReplay()`（`src/utils/database-utils.ts`）でraw groupの
+順序判定後に**再検証**してから`EntityConverter`へ渡す。これにより、PokerChase側のペイロード変更で
 一時的にパースできなくなったイベント種別も、後日スキーマ側を修正して
 データ再構築を実行するだけで自動的に復旧する。dead-letterテーブルや
 プロモーション処理のような別機構は不要——同じ生の行を、直近のスキーマで

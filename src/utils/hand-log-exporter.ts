@@ -10,12 +10,15 @@ import { HandLogProcessor, HandLogContext } from './hand-log-processor'
 import { formatHandLogEntries } from './hand-log-text'
 import { DEFAULT_HAND_LOG_CONFIG } from '../types/hand-log'
 import { DATABASE_CONSTANTS } from '../constants/database'
-import { processInChunks, filterValidApplicationEvents } from '../utils/database-utils'
+import {
+  processInChunks,
+  orderAndFilterApplicationEventsForReplay
+} from '../utils/database-utils'
 import {
   API_EVENT_PRIMARY_KEY,
-  compareApiEventKeys,
   getApiEventKey,
-  type ApiEventKey
+  type ApiEventKey,
+  type RawApiEvent
 } from './api-event-key'
 import { compareHandsNewestFirst } from './hand-order'
 
@@ -238,15 +241,11 @@ export class HandLogExporter {
       .between(minTime, maxTime, true, true)
       .toArray()
 
-    // apiEvents is the raw Lake (see docs/architecture.md): the time window may
-    // include non-application noise, unknown ApiTypeIds, or app-type payloads
-    // that fail the current schema. HandLogProcessor's switch on ApiTypeId
-    // reads required fields (e.g. EVT_DEAL.Game) without guards, so only
-    // validated application events may reach it.
-    const allEvents = await filterValidApplicationEvents(rawEvents)
-
-    // Sort once for all hands
-    allEvents.sort((a, b) => compareApiEventKeys(a as any, b as any))
+    // Keep the complete raw equal-ms group through fail-closed ordering before
+    // validation removes noise or currently-unparseable rows.
+    const allEvents = await orderAndFilterApplicationEventsForReplay(
+      rawEvents as unknown as RawApiEvent[]
+    )
     console.log(`[HandLogExporter] Prefetched ${allEvents.length} events (${rawEvents.length} raw)`)
 
     // 5. Process each hand using the prefetched events
@@ -427,10 +426,11 @@ export class HandLogExporter {
       .between(startTime, endTime, true, true)
       .toArray()
 
-    // apiEvents is the raw Lake (see docs/architecture.md): filter to validated
-    // application events before this feeds HandLogProcessor, same reasoning as
-    // exportMultipleHands's prefetch above.
-    const allEvents = await filterValidApplicationEvents(rawEvents)
+    // Preserve raw group size for fail-closed ordering, then validate before
+    // feeding HandLogProcessor, matching the multi-hand path above.
+    const allEvents = await orderAndFilterApplicationEventsForReplay(
+      rawEvents as unknown as RawApiEvent[]
+    )
 
     // Time range for hand events
     // Found total events in time range
@@ -445,9 +445,6 @@ export class HandLogExporter {
     // Get all events from EVT_DEAL to EVT_HAND_RESULTS for this hand
     const handEvents: ApiEvent[] = []
     let foundDeal = false
-
-    // Sort events by timestamp to ensure correct order
-    allEvents.sort((a, b) => compareApiEventKeys(a as any, b as any))
 
     for (const event of allEvents) {
       // Start collecting from EVT_DEAL that matches our seat configuration

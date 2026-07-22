@@ -172,7 +172,7 @@ EVT_HAND_RESULTS.Results[].UserId             ──► UserId 直接参照（Se
 
 ### 主要な制約
 
-- **HandId**: `EVT_HAND_RESULTS` でのみ取得可能。ハンド中のイベントは `EVT_DEAL` → `EVT_HAND_RESULTS` 境界内の因果順で相関させる。local Lakeの`[timestamp+ApiTypeId+sequence]`は欠損なくpageするための保存主キーであり、異なるApiTypeIdが同一millisecondに並ぶ場合の受信順を表さない。
+- **HandId**: `EVT_HAND_RESULTS` でのみ取得可能。ハンド中のイベントは `EVT_DEAL` → `EVT_HAND_RESULTS` 境界内で相関させる。local Lakeの保存・page順は `[timestamp+ApiTypeId+sequence]` であり、同一millisecondのcross-type eventについて受信順を表さない。再構築などのstateful readでは同一timestamp groupをpage境界で分断せず、phase・actor・stack・Potの完全一致で証明できる2-eventのsnapshot/action組だけを補正する。3件以上の複合groupとsession/hand lifecycleは推論せず、主キー順をcanonicalとして維持する（詳細は「Raw Event Lake の順序・重複・拡張性」参照）。
 - **SeatUserIds**: 配列インデックス = 論理席番号。値 = UserId（`-1` = 空席）。配列長 = テーブルサイズ（4 または 6）。
 - **プレイヤー名**: `EVT_PLAYER_SEAT_ASSIGNED` または `EVT_PLAYER_JOIN` から解決する必要がある。ハンドイベントからは取得できない。
 - **SeatUserIds の一貫性**: `EVT_DEAL` と `EVT_PLAYER_SEAT_ASSIGNED` に同じ `SeatUserIds` が存在する。途中参加（`EVT_PLAYER_JOIN`）でプレイヤーが追加されるが、更新された `SeatUserIds` は次の `EVT_DEAL` で初めて反映される。
@@ -598,17 +598,29 @@ STAGEごとの基準値（着順1〜6位）:
   `sequence` を除外してオブジェクトキーを安定ソートした payload 全体の同一性で
   行う。`timestamp+ApiTypeId` が同じというだけでは重複にしない。
 - 取り込みは content dedup、sequence 採番、raw 追加を同一 Dexie transaction で
-  行い、追加成功後にだけライブパイプラインへ渡す。ライブパイプラインは接続からの
-  到着順を直列キューで保持する。同じtimestamp・同じApiTypeId内の別行はsequenceで
-  区別できるが、異なるApiTypeId間のsequenceは存在しないため、保存主キー順をそのまま
-  受信順と解釈してはならない。
+  行い、追加成功後にだけライブパイプラインへ渡す。異なる二行は sequence 順に
+  `EntityConverter`（EC）と `WriteEntityStream`（WES）の双方へ到達し、同一 payload
+  の resend は双方から除外されるため、EC↔WES parity を維持する。
 - 新しい NDJSON export は `sequence` を含む。旧 export には存在しないため、import
   時に空き sequence を割り当てる。同一ファイル内および既存 Lake にある同一 payload
-  は content dedup される。行順は保存主キー順であり、異種同一msの受信順を表さない。
-- upload、再構築、hand-log export のページングは主キー三要素をカーソルとして保持する。
+  は content dedup される。
+- uploadは主キー三要素をカーソルとして保持する。再構築とraw/hand-log exportも主キーで
+  pageするが、各page末尾の同一timestamp groupを次pageまでholdしてからstrictな
+  snapshot→action遷移だけを補正する。
   `timestamp` だけ、または `[timestamp+ApiTypeId]` だけで `above()` を行うと burst の
-  途中を飛ばすため禁止。ただし三要素カーソルが保証するのは全行走査であり、異種同一msの
-  因果順ではない。状態を再生・分析するconsumerは、必要なsession/hand境界を別途検証する。
+  途中を飛ばすため禁止。
+- cross-type同一timestampは主キーのApiTypeId順で保存されるため、stateful readerは
+  2-event groupが303/305/313のstate snapshotと304だけで構成され、phase、
+  NextActionSeat、actor stack、Potの差分が全て一致するときだけsnapshotを先へ戻す。
+  3件以上の複合groupは、局所的に証明できる組があっても無関係なeventを跨いで動かさず、
+  group全体を主キー順に維持する。特に201/308や306/309を含むsession/hand lifecycleは、
+  MTTのtable moveやtable間interleaveを同時刻groupだけでは区別できないため推論しない。
+- 判定にはvalidation前のraw group全体を渡し、その後でapplication/schema filterを行う。
+  先に202/205やunparseable rowを除くと3件以上のgroupが偽の2-event pairへ縮むため禁止。
+- 実raw 393,830 eventsのcross-type同時刻210 groupを監査し、このstrict predicateが変更する
+  groupは313→304が2件と305→304が1件だけだった。後者のhand
+  418790443では、TURN 305（Pot=4179, NextActionSeat=4）の直後にseat 4の304
+  （BET 1379, Pot=5558）が続く因果順がstack/Pot双方から一意に決まる。
 
 | 制約 | 詳細 |
 |---|---|

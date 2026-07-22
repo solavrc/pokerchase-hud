@@ -28,7 +28,7 @@
  * unnoticed. See CLAUDE.md "Dexie Collection reuse".
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
-import { processInChunks, filterValidApplicationEvents, saveEntities } from './database-utils'
+import { processInChunks, processInReplayChunks, filterValidApplicationEvents, saveEntities } from './database-utils'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
 import type { Session } from '../types/entities'
@@ -171,6 +171,33 @@ describe('processInChunks (cursor-based pagination over a real Dexie table)', ()
     })) chunks.push(chunk)
 
     expect(chunks.map(chunk => chunk[0].marker)).toEqual(['burst-1', 'next-type', 'next-ms'])
+  })
+
+  test('replay chunks hold an equal-ms group across a primary-key page boundary', async () => {
+    await db.apiEvents.bulkAdd([
+      {
+        timestamp: 100,
+        ApiTypeId: 304,
+        SeatIndex: 4,
+        BetChip: 1_379,
+        Chip: 28_428,
+        Progress: { Phase: 2, Pot: 5_558 },
+        marker: 'turn-action'
+      },
+      {
+        timestamp: 100,
+        ApiTypeId: 305,
+        Progress: { Phase: 2, Pot: 4_179, NextActionSeat: 4 },
+        OtherPlayers: [{ SeatIndex: 4, BetChip: 0, Chip: 29_807 }],
+        marker: 'turn-card'
+      },
+      { timestamp: 101, ApiTypeId: 306, marker: 'result' }
+    ] as any)
+
+    const chunks: any[][] = []
+    for await (const chunk of processInReplayChunks(db.apiEvents as any, 1)) chunks.push(chunk)
+
+    expect(chunks.flat().map(row => row.marker)).toEqual(['turn-card', 'turn-action', 'result'])
   })
 
   test('same-millisecond same-type events both survive storage and entity derivation', async () => {

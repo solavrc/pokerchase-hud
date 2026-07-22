@@ -1,5 +1,5 @@
 import type { PokerChaseDB } from '../db/poker-chase-db'
-import { ApiTypeValues, type ApiEvent } from '../types/api'
+import { ApiType, ApiTypeValues, type ApiEvent } from '../types/api'
 import {
   isScopedSyncMetaKey,
   SYNC_RESCAN_BACKFILL_DONE_META_KEY,
@@ -46,6 +46,76 @@ export const compareApiEventKeys = (a: RawApiEvent, b: RawApiEvent): number =>
   a.timestamp - b.timestamp ||
   a.ApiTypeId - b.ApiTypeId ||
   getApiEventSequence(a) - getApiEventSequence(b)
+
+const STATE_SNAPSHOT_API_TYPE_IDS = new Set([
+  ApiType.EVT_DEAL,
+  ApiType.EVT_DEAL_ROUND,
+  ApiType.EVT_PLAYER_SEAT_ASSIGNED
+])
+
+const isProvenSnapshotBeforeAction = (snapshot: RawApiEvent, action: RawApiEvent): boolean => {
+  if (!STATE_SNAPSHOT_API_TYPE_IDS.has(snapshot.ApiTypeId) || action.ApiTypeId !== ApiType.EVT_ACTION) return false
+
+  const snapshotProgress = snapshot.Progress as Record<string, unknown> | undefined
+  const actionProgress = action.Progress as Record<string, unknown> | undefined
+  const players = [
+    snapshot.Player,
+    ...Array.isArray(snapshot.OtherPlayers) ? snapshot.OtherPlayers : []
+  ] as Array<Record<string, unknown> | undefined>
+  const actorBeforeAction = players.find(player => player?.SeatIndex === action.SeatIndex)
+  const previousBet = actorBeforeAction?.BetChip
+  const actionBet = action.BetChip
+  if (typeof previousBet !== 'number' || typeof actionBet !== 'number') return false
+  const additionalBet = actionBet - previousBet
+
+  return additionalBet >= 0 &&
+    typeof snapshotProgress?.Phase === 'number' &&
+    snapshotProgress.Phase === actionProgress?.Phase &&
+    snapshotProgress.NextActionSeat === action.SeatIndex &&
+    typeof snapshotProgress.Pot === 'number' &&
+    typeof action.Chip === 'number' &&
+    typeof actionProgress.Pot === 'number' &&
+    actionProgress.Pot === snapshotProgress.Pot + additionalBet &&
+    actorBeforeAction?.Chip === action.Chip + additionalBet
+}
+
+const resolveStrictSnapshotActionPair = <T extends RawApiEvent>(group: T[]): T[] => {
+  // The production inversions are isolated two-event groups. With a third row,
+  // even a proven local edge could move an unrelated lifecycle event across the
+  // pair, so compound groups stay entirely in canonical primary-key order.
+  if (group.length !== 2) return group
+  const [first, second] = group as [T, T]
+  return isProvenSnapshotBeforeAction(second, first) ? [second, first] : group
+}
+
+/**
+ * Replay order for stateful consumers.
+ *
+ * IndexedDB and raw export use `[timestamp+ApiTypeId+sequence]`, so cross-type
+ * events sharing a millisecond are stored in ApiTypeId order rather than wire
+ * order. Reverse only an isolated two-event snapshot/action pair proven by
+ * exact phase, actor, stack and pot deltas. Compound groups and all other events
+ * retain primary-key order as a stable, fail-closed representation; this
+ * function does not infer lifecycle order from an isolated timestamp group.
+ *
+ * The 393,830-event production corpus contained 210 cross-type equal-ms
+ * groups. The strict predicate changes only three proven inversions (two
+ * 313→304 groups and one 305→304 group), all isolated two-event groups.
+ */
+export const orderApiEventsForReplay = <T extends RawApiEvent>(events: T[]): T[] => {
+  const primaryOrder = [...events].sort(compareApiEventKeys)
+  const ordered: T[] = []
+
+  for (let start = 0; start < primaryOrder.length;) {
+    let end = start + 1
+    while (end < primaryOrder.length && primaryOrder[end]!.timestamp === primaryOrder[start]!.timestamp) end++
+    const group = primaryOrder.slice(start, end)
+    ordered.push(...resolveStrictSnapshotActionPair(group))
+    start = end
+  }
+
+  return ordered
+}
 
 /**
  * Stable content identity for reconnect/import/cloud deduplication.
