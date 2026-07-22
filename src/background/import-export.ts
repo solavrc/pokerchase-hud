@@ -347,8 +347,10 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
 
         } catch (entityError) {
           console.error('[importData] Entity generation error:', entityError)
-          // エラーの詳細をログに記録するが、処理は継続
-          // refreshDatabaseへのフォールバックは削除（トランザクション競合を避けるため）
+          // raw event は既に永続化されている。ここで保留印を残さないと、
+          // 同じファイルの再インポートは全件重複となり、派生データ生成を
+          // 再試行できないまま成功扱いになってしまう。
+          await markAdvisoryPending()
           const errorMessage = entityError instanceof Error ? entityError.message : String(entityError)
           throw new Error(`Entity generation failed: ${errorMessage}`)
         }
