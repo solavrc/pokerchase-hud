@@ -52,8 +52,9 @@ cutoffとする。
 
 `[event_ts_ms, api_type_id, sequence]` は保存主キー順であり、受信順そのものではない。
 異なるイベント種別が同一millisecondに届くと、保存・raw exportでは`api_type_id`順になる。
-監査対象393,830イベントでは異種同一msが210組あり、Q3/Q4をsession/hand境界の因果順で
-再評価しても本書の公表値は変わらなかった。再実行SQLは、必要な境界だけを
+BigQuery監査母集団とは別に検証したextension raw export（393,830イベント）では異種同一msが
+210組あり、その結果を踏まえてQ3/Q4をsession/hand境界の因果順で再評価しても本書の公表値は
+変わらなかった。再実行SQLは、必要な境界だけを
 `canonical_boundary_order`で正規化する。これは任意イベントのwire順を復元するものではない。
 
 本監査では、ポーカーを強整合性のある状態機械として扱う。イベント順は任意ではなく、
