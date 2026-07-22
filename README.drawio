@@ -1,0 +1,116 @@
+<mxfile scale='1' border='10'>
+  <diagram id='oDgnH6ngFVHAeh1SUdOu' name='Architecture'>
+    <mxGraphModel dx='1200' dy='650' grid='1' gridSize='10' guides='1' tooltips='1' connect='1' arrows='1' fold='1' page='1' pageScale='1' pageWidth='1200' pageHeight='650' background='#FFFFFF' math='0' shadow='0'>
+      <root>
+        <mxCell id='0'/>
+        <mxCell id='1' parent='0'/>
+        <mxCell id='title' value='&lt;b&gt;PokerChase HUD · Data Flow&lt;/b&gt;' style='text;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fontSize=24;fontColor=#172B4D;' vertex='1' parent='1'>
+          <mxGeometry x='20' y='10' width='1160' height='35' as='geometry'/>
+        </mxCell>
+        <mxCell id='browser-column' value='' style='rounded=1;arcSize=4;whiteSpace=wrap;html=1;strokeWidth=2;verticalAlign=top;spacingTop=48;fillColor=#F8FBFF;strokeColor=#4F86C6;' vertex='1' parent='1'>
+          <mxGeometry x='20' y='60' width='360' height='565' as='geometry'/>
+        </mxCell>
+        <mxCell id='runtime-column' value='' style='rounded=1;arcSize=4;whiteSpace=wrap;html=1;strokeWidth=2;verticalAlign=top;spacingTop=48;fillColor=#F6FBF7;strokeColor=#3D8B5D;' vertex='1' parent='1'>
+          <mxGeometry x='420' y='60' width='360' height='565' as='geometry'/>
+        </mxCell>
+        <mxCell id='cloud-column' value='' style='rounded=1;arcSize=4;whiteSpace=wrap;html=1;strokeWidth=2;verticalAlign=top;spacingTop=48;fillColor=#FBF8FE;strokeColor=#8256A5;' vertex='1' parent='1'>
+          <mxGeometry x='820' y='60' width='360' height='565' as='geometry'/>
+        </mxCell>
+        <mxCell id='browser-header' value='Browser Page' style='rounded=1;arcSize=8;whiteSpace=wrap;html=1;strokeWidth=2;fontStyle=1;fontSize=18;align=left;spacingLeft=16;fillColor=#DCEBFA;strokeColor=#4F86C6;fontColor=#1D4E89;' vertex='1' parent='1'>
+          <mxGeometry x='20' y='60' width='360' height='42' as='geometry'/>
+        </mxCell>
+        <mxCell id='runtime-header' value='Extension Runtime + IndexedDB' style='rounded=1;arcSize=8;whiteSpace=wrap;html=1;strokeWidth=2;fontStyle=1;fontSize=18;align=left;spacingLeft=16;fillColor=#DDF1E4;strokeColor=#3D8B5D;fontColor=#24593B;' vertex='1' parent='1'>
+          <mxGeometry x='420' y='60' width='360' height='42' as='geometry'/>
+        </mxCell>
+        <mxCell id='cloud-header' value='Cloud' style='rounded=1;arcSize=8;whiteSpace=wrap;html=1;strokeWidth=2;fontStyle=1;fontSize=18;align=left;spacingLeft=16;fillColor=#EADFF3;strokeColor=#8256A5;fontColor=#593777;' vertex='1' parent='1'>
+          <mxGeometry x='820' y='60' width='360' height='42' as='geometry'/>
+        </mxCell>
+        <mxCell id='game-server' value='&lt;b&gt;PokerChase game server&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;remote&lt;/font&gt;' style='rounded=1;arcSize=10;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=15;fontFamily=Helvetica;fontColor=#172B4D;fillColor=#EEF5FC;strokeColor=#4F86C6;dashed=1;' vertex='1' parent='1'>
+          <mxGeometry x='60' y='120' width='280' height='55' as='geometry'/>
+        </mxCell>
+        <mxCell id='webgl-client' value='&lt;b&gt;PokerChase WebGL client&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;game.poker-chase.com&lt;/font&gt;' style='rounded=1;arcSize=10;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=15;fontFamily=Helvetica;fontColor=#172B4D;fillColor=#FFFFFF;strokeColor=#4F86C6;' vertex='1' parent='1'>
+          <mxGeometry x='60' y='205' width='280' height='62' as='geometry'/>
+        </mxCell>
+        <mxCell id='websocket-hook' value='&lt;b&gt;WebSocket hook · MAIN world&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;web_accessible_resource.ts&lt;/font&gt;' style='rounded=1;arcSize=10;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=15;fontFamily=Helvetica;fontColor=#172B4D;fillColor=#FFFFFF;strokeColor=#4F86C6;' vertex='1' parent='1'>
+          <mxGeometry x='60' y='305' width='280' height='68' as='geometry'/>
+        </mxCell>
+        <mxCell id='content-hud' value='&lt;b&gt;Content script + React HUD&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;content_script.ts · components/App.tsx&lt;/font&gt;' style='rounded=1;arcSize=10;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=15;fontFamily=Helvetica;fontColor=#172B4D;fillColor=#FFFFFF;strokeColor=#4F86C6;' vertex='1' parent='1'>
+          <mxGeometry x='60' y='390' width='280' height='78' as='geometry'/>
+        </mxCell>
+        <mxCell id='browser-note' value='Receives decoded API events and renders&lt;br&gt;the in-game HUD overlay.' style='text;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fontSize=12;fontColor=#5E6C84;' vertex='1' parent='1'>
+          <mxGeometry x='55' y='515' width='290' height='45' as='geometry'/>
+        </mxCell>
+        <mxCell id='popup' value='&lt;b&gt;Popup · configuration UI&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;popup.ts · components/Popup.tsx&lt;/font&gt;' style='rounded=1;arcSize=10;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=15;fontFamily=Helvetica;fontColor=#172B4D;fillColor=#FFFFFF;strokeColor=#3D8B5D;' vertex='1' parent='1'>
+          <mxGeometry x='460' y='120' width='280' height='65' as='geometry'/>
+        </mxCell>
+        <mxCell id='extension-storage' value='&lt;b&gt;WebExtension Storage&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;chrome.storage.sync / local&lt;br&gt;HUD options · auth cache&lt;/font&gt;' style='rounded=1;arcSize=10;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=15;fontFamily=Helvetica;fontColor=#172B4D;fillColor=#EEF8F1;strokeColor=#3D8B5D;' vertex='1' parent='1'>
+          <mxGeometry x='460' y='215' width='280' height='75' as='geometry'/>
+        </mxCell>
+        <mxCell id='service-worker' value='&lt;b&gt;MV3 Service Worker&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;background.ts&lt;br&gt;ingestion · stats · auto-sync&lt;/font&gt;' style='rounded=1;arcSize=10;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=15;fontFamily=Helvetica;fontColor=#172B4D;fillColor=#FFFFFF;strokeColor=#3D8B5D;' vertex='1' parent='1'>
+          <mxGeometry x='460' y='385' width='280' height='88' as='geometry'/>
+        </mxCell>
+        <mxCell id='indexeddb' value='&lt;b&gt;IndexedDB · Dexie&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;PokerChaseDB&lt;br&gt;raw event lake · hands · phases · actions · meta&lt;/font&gt;' style='shape=cylinder3;boundedLbl=1;backgroundOutline=1;size=10;verticalAlign=middle;spacingTop=8;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=15;fontFamily=Helvetica;fontColor=#172B4D;fillColor=#EEF8F1;strokeColor=#3D8B5D;' vertex='1' parent='1'>
+          <mxGeometry x='460' y='515' width='280' height='88' as='geometry'/>
+        </mxCell>
+        <mxCell id='firebase-auth' value='&lt;b&gt;Firebase Auth&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;Google sign-in · ID token&lt;/font&gt;' style='rounded=1;arcSize=10;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=15;fontFamily=Helvetica;fontColor=#172B4D;fillColor=#FFFFFF;strokeColor=#8256A5;' vertex='1' parent='1'>
+          <mxGeometry x='860' y='120' width='280' height='62' as='geometry'/>
+        </mxCell>
+        <mxCell id='firestore' value='&lt;b&gt;Cloud Firestore · REST&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;users/{uid}/apiEvents&lt;br&gt;config/client&lt;/font&gt;' style='shape=cylinder3;boundedLbl=1;backgroundOutline=1;size=10;verticalAlign=middle;spacingTop=8;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=15;fontFamily=Helvetica;fontColor=#172B4D;fillColor=#F5EFFA;strokeColor=#8256A5;' vertex='1' parent='1'>
+          <mxGeometry x='860' y='245' width='280' height='85' as='geometry'/>
+        </mxCell>
+        <mxCell id='firebase-extension' value='&lt;b&gt;Firebase Extension&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;Stream Firestore to BigQuery&lt;/font&gt;' style='rounded=1;arcSize=10;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=15;fontFamily=Helvetica;fontColor=#172B4D;fillColor=#FFFFFF;strokeColor=#8256A5;' vertex='1' parent='1'>
+          <mxGeometry x='860' y='390' width='280' height='65' as='geometry'/>
+        </mxCell>
+        <mxCell id='bigquery' value='&lt;b&gt;BigQuery&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;raw event export&lt;br&gt;poker-warehouse · dbt&lt;/font&gt;' style='shape=cylinder3;boundedLbl=1;backgroundOutline=1;size=10;verticalAlign=middle;spacingTop=8;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=15;fontFamily=Helvetica;fontColor=#172B4D;fillColor=#F5EFFA;strokeColor=#8256A5;' vertex='1' parent='1'>
+          <mxGeometry x='860' y='505' width='280' height='75' as='geometry'/>
+        </mxCell>
+        <mxCell id='server-client' value='wss://' style='edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#42526E;labelBackgroundColor=#FFFFFF;strokeColor=#4F86C6;exitX=0.5;exitY=1;entryX=0.5;entryY=0;' edge='1' parent='1' source='game-server' target='webgl-client'>
+          <mxGeometry relative='1' as='geometry'/>
+        </mxCell>
+        <mxCell id='client-hook' value='inbound ArrayBuffer' style='edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#42526E;labelBackgroundColor=#FFFFFF;strokeColor=#4F86C6;exitX=0.5;exitY=1;entryX=0.5;entryY=0;' edge='1' parent='1' source='webgl-client' target='websocket-hook'>
+          <mxGeometry relative='1' as='geometry'/>
+        </mxCell>
+        <mxCell id='hook-content' value='decoded event · window.postMessage' style='edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#42526E;labelBackgroundColor=#FFFFFF;strokeColor=#4F86C6;exitX=0.5;exitY=1;entryX=0.5;entryY=0;' edge='1' parent='1' source='websocket-hook' target='content-hud'>
+          <mxGeometry relative='1' as='geometry'/>
+        </mxCell>
+        <mxCell id='popup-worker' value='' style='edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#42526E;labelBackgroundColor=#FFFFFF;startArrow=block;startFill=1;strokeColor=#3D8B5D;exitX=0;exitY=0.5;entryX=0;entryY=0.35;' edge='1' parent='1' source='popup' target='service-worker'>
+          <mxGeometry relative='1' as='geometry'>
+            <Array as='points'>
+              <mxPoint x='438' y='152'/>
+              <mxPoint x='438' y='416'/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id='popup-storage' value='options' style='edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#42526E;labelBackgroundColor=#FFFFFF;startArrow=block;startFill=1;strokeColor=#3D8B5D;exitX=0.75;exitY=1;entryX=0.75;entryY=0;' edge='1' parent='1' source='popup' target='extension-storage'>
+          <mxGeometry relative='1' as='geometry'/>
+        </mxCell>
+        <mxCell id='storage-worker' value='settings · auth cache' style='edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#42526E;labelBackgroundColor=#FFFFFF;startArrow=block;startFill=1;strokeColor=#3D8B5D;exitX=0.75;exitY=1;entryX=0.75;entryY=0;' edge='1' parent='1' source='extension-storage' target='service-worker'>
+          <mxGeometry relative='1' as='geometry'/>
+        </mxCell>
+        <mxCell id='worker-indexeddb' value='raw + derived data · queries' style='edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#42526E;labelBackgroundColor=#FFFFFF;startArrow=block;startFill=1;strokeColor=#3D8B5D;exitX=0.5;exitY=1;entryX=0.5;entryY=0;' edge='1' parent='1' source='service-worker' target='indexeddb'>
+          <mxGeometry relative='1' as='geometry'/>
+        </mxCell>
+        <mxCell id='hud-worker' value='events → · stats ←&lt;br&gt;long-lived Port' style='edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#42526E;labelBackgroundColor=#FFFFFF;startArrow=block;startFill=1;strokeColor=#315F83;fontSize=10;exitX=1;exitY=0.5;entryX=0;entryY=0.5;' edge='1' parent='1' source='content-hud' target='service-worker'>
+          <mxGeometry relative='1' as='geometry'/>
+        </mxCell>
+        <mxCell id='worker-auth' value='' style='edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#42526E;labelBackgroundColor=#FFFFFF;startArrow=block;startFill=1;strokeColor=#8256A5;exitX=1;exitY=0.2;entryX=0;entryY=0.5;' edge='1' parent='1' source='service-worker' target='firebase-auth'>
+          <mxGeometry relative='1' as='geometry'>
+            <Array as='points'>
+              <mxPoint x='795' y='403'/>
+              <mxPoint x='795' y='151'/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id='worker-firestore' value='' style='edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#42526E;labelBackgroundColor=#FFFFFF;startArrow=block;startFill=1;strokeColor=#8256A5;exitX=1;exitY=0.55;entryX=0;entryY=0.7;' edge='1' parent='1' source='service-worker' target='firestore'>
+          <mxGeometry relative='1' as='geometry'/>
+        </mxCell>
+        <mxCell id='firestore-extension' value='document stream' style='edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#42526E;labelBackgroundColor=#FFFFFF;strokeColor=#8256A5;exitX=0.5;exitY=1;entryX=0.5;entryY=0;' edge='1' parent='1' source='firestore' target='firebase-extension'>
+          <mxGeometry relative='1' as='geometry'/>
+        </mxCell>
+        <mxCell id='extension-bigquery' value='append-only export' style='edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;fontColor=#42526E;labelBackgroundColor=#FFFFFF;strokeColor=#8256A5;exitX=0.5;exitY=1;entryX=0.5;entryY=0;' edge='1' parent='1' source='firebase-extension' target='bigquery'>
+          <mxGeometry relative='1' as='geometry'/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
