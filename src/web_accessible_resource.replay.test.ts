@@ -43,12 +43,8 @@ describe('main-world experimental replay bridge', () => {
       require('./web_accessible_resource')
     })
 
-    window.dispatchEvent(new MessageEvent('message', {
-      source: window,
-      origin: POKER_CHASE_ORIGIN,
-      data: { type: REPLAY_BRIDGE_CONFIG, enabled: true }
-    }))
-
+    // Unity can issue its first API request before the content script's
+    // asynchronous storage lookup supplies the initial enabled config.
     const xhr = new XMLHttpRequest()
     xhr.open('POST', 'https://production.api-poker-chase.com/user/status')
     xhr.send(encode({
@@ -61,6 +57,12 @@ describe('main-world experimental replay bridge', () => {
       requestKey: 'original-key'
     }))
     await Promise.resolve()
+
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window,
+      origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled: true }
+    }))
 
     window.dispatchEvent(new MessageEvent('message', {
       source: window,

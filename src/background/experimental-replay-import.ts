@@ -15,6 +15,8 @@ import {
 
 type ApiLikeMessage = Record<string, unknown> & { ApiTypeId?: unknown, timestamp?: unknown }
 
+const ACTIVE_REPLAY_SESSION_META_PREFIX = 'experimentalReplayActiveSession:'
+
 interface ActiveReplaySession {
   key: string
   id?: string
@@ -157,14 +159,16 @@ export class ExperimentalReplayImporter {
 
     // MTT table moves issue another 201 with the same tournament id. They do
     // not end the tournament session and must not release a partial batch.
-    const activeSession = this.activeSessions.get(sourceKey)
+    const activeSession = await this.activeSessionFor(sourceKey)
     const sameMtt = activeSession?.battleType === BattleType.TOURNAMENT &&
       battleType === BattleType.TOURNAMENT && activeSession.id === id
     if (sameMtt) return
 
-    if (activeSession) await this.finishActiveSession(sourceKey, preferredPort)
+    // A new non-MTT 201 is also the fallback boundary for durable pending rows
+    // left behind by a service-worker restart.
+    await this.finishActiveSession(sourceKey, preferredPort)
     const timestamp = typeof message.timestamp === 'number' ? message.timestamp : Date.now()
-    this.activeSessions.set(sourceKey, {
+    await this.persistActiveSession(sourceKey, {
       key: `${sourceKey}:${timestamp}:${id ?? 'unknown'}`,
       id,
       battleType,
@@ -177,7 +181,7 @@ export class ExperimentalReplayImporter {
     sourceKey: string,
     preferredPort?: chrome.runtime.Port
   ): Promise<void> {
-    let session = this.activeSessions.get(sourceKey)
+    let session = await this.activeSessionFor(sourceKey)
     const name = typeof message.Name === 'string' ? message.Name : undefined
     if (session?.detailsSeen && session.battleType !== BattleType.TOURNAMENT) {
       await this.finishActiveSession(sourceKey, preferredPort)
@@ -189,17 +193,19 @@ export class ExperimentalReplayImporter {
         key: `${sourceKey}:${timestamp}:${this.service.session.id ?? 'recovered'}`,
         id: this.service.session.id,
         battleType: this.service.session.battleType,
+        name,
         detailsSeen: true
       }
-      this.activeSessions.set(sourceKey, session)
+      await this.persistActiveSession(sourceKey, session)
     } else {
-      session.detailsSeen = true
+      session = { ...session, detailsSeen: true }
+      if (name) session.name = name
+      await this.persistActiveSession(sourceKey, session)
     }
-    if (name) session.name = name
   }
 
-  private ensureActiveSession(message: ApiLikeMessage, sourceKey: string): ActiveReplaySession {
-    const activeSession = this.activeSessions.get(sourceKey)
+  private async ensureActiveSession(message: ApiLikeMessage, sourceKey: string): Promise<ActiveReplaySession> {
+    const activeSession = await this.activeSessionFor(sourceKey)
     if (activeSession) return activeSession
     const timestamp = typeof message.timestamp === 'number' ? message.timestamp : Date.now()
     const recovered = {
@@ -209,13 +215,13 @@ export class ExperimentalReplayImporter {
       name: this.service.session.name,
       detailsSeen: false
     }
-    this.activeSessions.set(sourceKey, recovered)
+    await this.persistActiveSession(sourceKey, recovered)
     return recovered
   }
 
   private async queueHand(message: ApiLikeMessage, sourceKey: string): Promise<void> {
     if (!isPositiveHandId(message.HandId)) return
-    const session = this.ensureActiveSession(message, sourceKey)
+    const session = await this.ensureActiveSession(message, sourceKey)
     const now = Date.now()
     const existing = await this.db.experimentalReplayHands.get(message.HandId)
     if (existing?.status === 'complete') return
@@ -238,15 +244,54 @@ export class ExperimentalReplayImporter {
   }
 
   private async finishActiveSession(sourceKey: string, preferredPort?: chrome.runtime.Port): Promise<void> {
-    const session = this.activeSessions.get(sourceKey)
-    if (!session) return
-    const rows = await this.db.experimentalReplayHands.where('sessionKey').equals(session.key).toArray()
+    // Pending rows are the durable source of truth. Querying by source also
+    // recovers a session whose in-memory coordinator was lost in an MV3
+    // service-worker restart before its boundary arrived.
+    const rows = await this.db.experimentalReplayHands
+      .where('[status+sourceKey]')
+      .equals(['pending', sourceKey])
+      .toArray()
     const now = Date.now()
     await this.db.experimentalReplayHands.bulkPut(rows
-      .filter(row => row.status === 'pending')
       .map(row => ({ ...row, status: 'ready' as const, updatedAt: now })))
     this.activeSessions.delete(sourceKey)
-    await this.flushReady(preferredPort ?? this.connectedPortForSource(sourceKey))
+    await this.db.meta.delete(this.activeSessionMetaKey(sourceKey))
+    const connectedPort = preferredPort && this.ports.has(preferredPort) &&
+      this.sourceKeyForPort(preferredPort) === sourceKey
+      ? preferredPort
+      : this.connectedPortForSource(sourceKey)
+    await this.flushReady(connectedPort)
+  }
+
+  private activeSessionMetaKey(sourceKey: string): string {
+    return `${ACTIVE_REPLAY_SESSION_META_PREFIX}${sourceKey}`
+  }
+
+  private async activeSessionFor(sourceKey: string): Promise<ActiveReplaySession | undefined> {
+    const cached = this.activeSessions.get(sourceKey)
+    if (cached) return cached
+    const value = (await this.db.meta.get(this.activeSessionMetaKey(sourceKey)))?.value
+    if (typeof value !== 'object' || value === null) return undefined
+    const candidate = value as Partial<ActiveReplaySession>
+    if (typeof candidate.key !== 'string' || typeof candidate.detailsSeen !== 'boolean') return undefined
+    const session: ActiveReplaySession = {
+      key: candidate.key,
+      detailsSeen: candidate.detailsSeen,
+      ...(typeof candidate.id === 'string' ? { id: candidate.id } : {}),
+      ...(typeof candidate.battleType === 'number' ? { battleType: candidate.battleType } : {}),
+      ...(typeof candidate.name === 'string' ? { name: candidate.name } : {})
+    }
+    this.activeSessions.set(sourceKey, session)
+    return session
+  }
+
+  private async persistActiveSession(sourceKey: string, session: ActiveReplaySession): Promise<void> {
+    await this.db.meta.put({
+      id: this.activeSessionMetaKey(sourceKey),
+      value: session,
+      updatedAt: Date.now()
+    })
+    this.activeSessions.set(sourceKey, session)
   }
 
   private flushReady(preferredPort?: chrome.runtime.Port, excludedHandIds = new Set<number>()): Promise<void> {
@@ -304,6 +349,9 @@ export class ExperimentalReplayImporter {
 
     for (const result of message.results) {
       if (!expected.handIds.has(result.handId)) continue
+      // A successful item without a payload is not a success. Leave it unseen
+      // so the missing-result recovery below returns the durable row to ready.
+      if (result.ok && (!('detail' in result) || result.detail === undefined)) continue
       seenHandIds.add(result.handId)
       const row = await this.db.experimentalReplayHands.get(result.handId)
       if (!row || row.status === 'complete') continue

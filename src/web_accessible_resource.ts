@@ -328,6 +328,7 @@ interface ReplayAuthEnvelope {
 
 const OriginalFetch = window.fetch.bind(window)
 let replayImportEnabled = false
+let replayConfigReceived = false
 let replayAuth: ReplayAuthEnvelope | undefined
 let replayFetchQueue: Promise<void> = Promise.resolve()
 
@@ -388,7 +389,7 @@ const refreshSessionFromResponse = async (response: Response): Promise<void> => 
 // the extension context or IndexedDB.
 window.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = requestUrl(input)
-  if (!replayImportEnabled || url?.origin !== REPLAY_API_ORIGIN) {
+  if (url?.origin !== REPLAY_API_ORIGIN || (replayConfigReceived && !replayImportEnabled)) {
     return OriginalFetch(input, init)
   }
 
@@ -442,7 +443,7 @@ const refreshSessionFromXhr = async (xhr: XMLHttpRequest): Promise<void> => {
 
 XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyInit | null): void {
   const url = xhrUrls.get(this)
-  if (replayImportEnabled && url?.origin === REPLAY_API_ORIGIN) {
+  if (url?.origin === REPLAY_API_ORIGIN && (!replayConfigReceived || replayImportEnabled)) {
     if (!(body instanceof Document)) {
       decodeBody(body)
         .then(decoded => { replayAuth = readAuthEnvelope(decoded) ?? replayAuth })
@@ -508,6 +509,7 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
 
   if (event.data.type === REPLAY_BRIDGE_CONFIG) {
     const message = event.data as ReplayBridgeConfigMessage
+    replayConfigReceived = true
     replayImportEnabled = message.enabled === true
     if (!replayImportEnabled) replayAuth = undefined
     return
