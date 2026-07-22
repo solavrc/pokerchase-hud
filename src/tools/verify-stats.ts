@@ -38,7 +38,7 @@ import { runPipeline } from './verify-stats/pipeline'
 import { runOracle } from './verify-stats/oracle'
 import { compareResults, formatReport } from './verify-stats/compare'
 import { filterValidApplicationEvents } from '../utils/database-utils'
-import { getApiEventContentIdentity, type RawApiEvent } from '../utils/api-event-key'
+import { getApiEventContentIdentity, orderApiEventsForReplay, type RawApiEvent } from '../utils/api-event-key'
 import type { ApiEvent } from '../types'
 
 interface CliOptions {
@@ -106,7 +106,12 @@ async function readNdjson(filePath: string): Promise<ApiEvent[]> {
   if (skippedCount > 0) {
     console.log(`Filtered out ${skippedCount} non-application/invalid event(s) (raw Lake noise — see filterValidApplicationEvents)`)
   }
-  return validEvents
+  // Old raw exports are stored in primary-key order, which can invert two
+  // different event types that share a millisecond. Feed both the production
+  // pipeline and independent oracle the same causal order used by import and
+  // rebuild; otherwise the verification harness can validate the artifact of
+  // an export tie instead of the hand itself.
+  return orderApiEventsForReplay(validEvents as unknown as RawApiEvent[]) as ApiEvent[]
 }
 
 async function main() {
