@@ -115,7 +115,7 @@ export const registerEventIngestion = (
         if (typeof message === 'object' && 'type' in message && message.type === 'keepalive') {
           return
         }
-        if (experimentalReplayImporter?.handlePortMessage(message)) return
+        if (experimentalReplayImporter?.handlePortMessage(message, port)) return
 
         // Local deletion owns the database through runtime.reload(). Events
         // arriving after that synchronous claim must not enter the queue:
@@ -278,19 +278,24 @@ const processEvent = async (
   // 無かった場合のみ到達する。真の重複と書き込み失敗は上でreturn済み。
 
   // Experimental replay capture follows the same raw-first durability gate.
-  // HandId registration is awaited so a following 309 cannot overtake it;
-  // all other lifecycle work is internally serialized and remains off the
-  // latency-sensitive ingestion path.
-  const replayTask = experimentalReplayImporter?.observeApiEvent(
-    message as Record<string, unknown>,
-    sourcePort ?? experimentalReplayImporter
-  )
-  if (rawApiTypeId === ApiType.EVT_HAND_RESULTS) {
+  // HandId registration and the 201/308/309 boundaries are awaited so reload
+  // safety drains cannot complete while replay rows are still only in the
+  // importer's memory. Other event types remain off the latency-sensitive
+  // ingestion path.
+  const replayTask = sourcePort
+    ? experimentalReplayImporter?.observePortEvent(message as Record<string, unknown>, sourcePort)
+    : experimentalReplayImporter?.observeApiEvent(message as Record<string, unknown>)
+  if (
+    rawApiTypeId === ApiType.EVT_ENTRY_QUEUED ||
+    rawApiTypeId === ApiType.EVT_SESSION_DETAILS ||
+    rawApiTypeId === ApiType.EVT_HAND_RESULTS ||
+    rawApiTypeId === ApiType.EVT_SESSION_RESULTS
+  ) {
     try {
       await replayTask
     } catch (err) {
       // Experimental storage must never suppress the canonical WS pipeline.
-      console.error('[background] Experimental replay HandId queue failed; continuing core ingestion:', err)
+      console.error('[background] Experimental replay lifecycle persistence failed; continuing core ingestion:', err)
     }
   } else {
     replayTask?.catch(err => console.error('[background] Experimental replay lifecycle failed:', err))

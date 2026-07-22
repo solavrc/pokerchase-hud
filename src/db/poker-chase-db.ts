@@ -148,7 +148,7 @@ export class PokerChaseDB extends Dexie {
       phases: '[handId+phase],handId,*seatUserIds,phase',
       actions: '[handId+index],handId,playerId,phase,actionType,*actionDetails,[playerId+phase],[playerId+actionType]',
       meta: 'id,updatedAt',
-      experimentalReplayHands: 'handId,sessionKey,sessionId,status,[status+sessionKey],queuedAt,updatedAt'
+      experimentalReplayHands: 'handId,sourceKey,sessionKey,sessionId,status,[status+sourceKey],[status+sessionKey],queuedAt,updatedAt'
     })
 
     // Backward-compatible default for existing internal/test callers that

@@ -37,6 +37,7 @@ export type ExperimentalReplayStatus = 'pending' | 'ready' | 'complete' | 'faile
 
 export interface ExperimentalReplayRecord {
   handId: number
+  sourceKey: string
   sessionKey: string
   sessionId?: string
   battleType?: BattleType

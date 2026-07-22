@@ -21,6 +21,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
   let onMessageHandler: (message: any) => Promise<void>
   let disconnectHandlers: Array<() => void>
   let mockPort: any
+  let replayImporter: any
 
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
@@ -34,7 +35,13 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     await service.ready
 
     ;(chrome.runtime as any).onConnect = { addListener: jest.fn() }
-    registerEventIngestion(service)
+    replayImporter = {
+      attachPort: jest.fn(),
+      detachPort: jest.fn(),
+      handlePortMessage: jest.fn(() => false),
+      observePortEvent: jest.fn(() => Promise.resolve())
+    }
+    registerEventIngestion(service, replayImporter)
     const connectListener = (chrome.runtime as any).onConnect.addListener.mock.calls[0][0]
 
     disconnectHandlers = []
@@ -168,5 +175,23 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
   test('keepalive messages are ignored entirely (not stored, not forwarded)', async () => {
     await onMessageHandler({ type: 'keepalive' })
     expect(await db.apiEvents.count()).toBe(0)
+  })
+
+  test('awaits experimental replay boundary persistence before completing 309 ingestion', async () => {
+    let releaseReplay!: () => void
+    const replayBoundary = new Promise<void>(resolve => { releaseReplay = resolve })
+    replayImporter.observePortEvent.mockReturnValueOnce(replayBoundary)
+
+    let settled = false
+    const ingestion = onMessageHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 999 })
+      .then(() => { settled = true })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(await db.apiEvents.get([999, ApiType.EVT_SESSION_RESULTS, 0])).toBeDefined()
+    expect(settled).toBe(false)
+
+    releaseReplay()
+    await ingestion
+    expect(settled).toBe(true)
   })
 })
