@@ -14,8 +14,8 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import PokerChaseService from '../services/poker-chase-service'
-import { BattleType } from '../types/game'
-import type { Hand } from '../types/entities'
+import { ApiType, BattleType, PhaseType } from '../types'
+import type { ApiHandEvent, Hand } from '../types'
 import type { PlayerStats, StatResult } from '../types'
 
 const PLAYER_ID = 1
@@ -129,6 +129,72 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     const stats = await runCalcStats(service, SEAT_USER_IDS)
     // full+4p = hands {1,2,3}; battleType=TOURNAMENT excludes hand 1 -> hands {2,3} remain.
     expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(2)
+  })
+
+  test('a completed hand invalidates a same-lineup production cache warmed at deal time', async () => {
+    const previousNodeEnv = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+
+    try {
+      const warmed = await runCalcStats(service, SEAT_USER_IDS)
+      expect(handsStatOf(warmed, PLAYER_ID)?.value).toBe(6)
+
+      const completedStats = new Promise<PlayerStats[]>((resolve, reject) => {
+        const onData = (stats: PlayerStats[]) => {
+          service.statsOutputStream.off('data', onData)
+          resolve(stats)
+        }
+        service.statsOutputStream.on('data', onData)
+        service.statsOutputStream.on('error', reject)
+      })
+
+      const completedHand: ApiHandEvent[] = [
+        {
+          ApiTypeId: ApiType.EVT_DEAL,
+          timestamp: 7_000,
+          SeatUserIds: SEAT_USER_IDS,
+          Game: {
+            CurrentBlindLv: 1,
+            NextBlindUnixSeconds: 0,
+            Ante: 0,
+            SmallBlind: 100,
+            BigBlind: 200,
+            ButtonSeat: 5,
+            SmallBlindSeat: 0,
+            BigBlindSeat: 1
+          },
+          Progress: {
+            Phase: PhaseType.PREFLOP,
+            NextActionSeat: 2,
+            NextActionTypes: [],
+            NextExtraLimitSeconds: 0,
+            MinRaise: 0,
+            Pot: 300,
+            SidePot: []
+          },
+          OtherPlayers: []
+        },
+        {
+          ApiTypeId: ApiType.EVT_HAND_RESULTS,
+          timestamp: 7_001,
+          HandId: 7,
+          CommunityCards: [],
+          Pot: 300,
+          SidePot: [],
+          ResultType: 0,
+          DefeatStatus: 0,
+          Results: [],
+          OtherPlayers: []
+        }
+      ]
+
+      service.writeEntityStream.write(completedHand)
+      await service.writeEntityStream.whenIdle()
+
+      expect(handsStatOf(await completedStats, PLAYER_ID)?.value).toBe(7)
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv
+    }
   })
 })
 

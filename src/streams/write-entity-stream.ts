@@ -60,6 +60,10 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           this.service.db.phases.bulkPut(phases)
         ])
       })
+      // EVT_DEAL may have warmed this exact lineup into the 5-second HUD
+      // cache. The completed hand changes every aggregate, so invalidate only
+      // after its entity transaction commits and before downstream recalculates.
+      this.service.statsOutputStream.invalidateCache()
       this.push(hand.seatUserIds)
     } catch (error: unknown) {
       const context: ErrorContext = {
