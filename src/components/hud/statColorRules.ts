@@ -13,12 +13,13 @@
  * dimmed gray used for low-confidence stats.
  */
 import type { StatValue } from '../../types/stats'
+import { HUD_MUTED_TEXT_COLOR } from './hudColors'
 
 /** Minimum opportunities (StatValue denominator) before a stat gets colored instead of dimmed gray. */
 export const MIN_DENOMINATOR_FOR_COLOR = 20
 
 /** Dimmed color shown for stats below {@link MIN_DENOMINATOR_FOR_COLOR}, matching StatDisplay's existing low-confidence style. */
-export const LOW_SAMPLE_COLOR = '#888888'
+export const LOW_SAMPLE_COLOR = HUD_MUTED_TEXT_COLOR
 
 /** One color band: values at or below `upTo` (inclusive) get `color`; `null` means "leave the default text color". A boundary value belongs to the band whose `upTo` it matches, not the next band up. */
 interface ColorBand {

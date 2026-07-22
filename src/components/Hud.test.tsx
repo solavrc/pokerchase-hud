@@ -106,7 +106,7 @@ describe('Hud', () => {
       />
     )
 
-    expect(screen.getByText('Waiting for Hand...')).toBeInTheDocument()
+    expect(screen.getByText('Waiting for Hand...')).toHaveStyle({ color: '#b8b8b8' })
   })
 
   it('プレイヤーがいるがデータがない場合は"No Data"を表示', () => {
@@ -124,7 +124,7 @@ describe('Hud', () => {
       />
     )
 
-    expect(screen.getByText('No Data')).toBeInTheDocument()
+    expect(screen.getByText('No Data')).toHaveStyle({ color: '#b8b8b8' })
   })
 
   it('プレイヤー名と統計を表示', () => {

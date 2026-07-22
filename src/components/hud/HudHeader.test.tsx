@@ -82,7 +82,7 @@ describe('HudHeader', () => {
     )
 
     const potOddsElement = screen.getByText('100/20 (17%)')
-    expect(potOddsElement).toHaveStyle({ color: '#888' })
+    expect(potOddsElement).toHaveStyle({ color: '#b8b8b8' })
   })
 
   it('ポットオッズがない場合は表示しない', () => {

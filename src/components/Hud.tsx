@@ -14,6 +14,7 @@ import { PositionalStatsPanel } from './hud/PositionalStatsPanel'
 import { PositionalPanelTrigger } from './hud/PositionalPanelTrigger'
 import { RecentHandsPanel } from './hud/RecentHandsPanel'
 import { RecentHandsPanelTrigger } from './hud/RecentHandsPanelTrigger'
+import { HUD_MUTED_TEXT_COLOR } from './hud/hudColors'
 
 // Types
 interface PlayerPotOdds {
@@ -317,7 +318,7 @@ const Hud = memo((props: HudProps) => {
         >
           <DragHandle isHovering={isHovering} onMouseDown={handleMouseDown} />
           <div style={styles.header}>
-            <span style={{ ...styles.playerName, color: '#888888', fontStyle: 'italic' }}>
+            <span style={{ ...styles.playerName, color: HUD_MUTED_TEXT_COLOR, fontStyle: 'italic' }}>
               Waiting for Hand...
             </span>
             <PlayerTypeIcons />
@@ -340,7 +341,7 @@ const Hud = memo((props: HudProps) => {
         >
           <DragHandle isHovering={isHovering} onMouseDown={handleMouseDown} />
           <div style={styles.header}>
-            <span style={{ ...styles.playerName, color: '#888888' }}>
+            <span style={{ ...styles.playerName, color: HUD_MUTED_TEXT_COLOR }}>
               {playerName || `Player ${props.stat.playerId}`}
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -369,7 +370,7 @@ const Hud = memo((props: HudProps) => {
             textAlign: 'center',
             minHeight: '20px',
           }}>
-            <span style={{ color: '#888888', fontSize: '9px' }}>No Data</span>
+            <span style={{ color: HUD_MUTED_TEXT_COLOR, fontSize: '9px' }}>No Data</span>
           </div>
           {props.isPositionalPanelOpen && (
             <PositionalStatsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />

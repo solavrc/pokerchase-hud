@@ -4,6 +4,7 @@ import type { StatResult } from '../../types/stats'
 import { PlayerTypeIcons } from './PlayerTypeIcons'
 import { PositionalPanelTrigger } from './PositionalPanelTrigger'
 import { RecentHandsPanelTrigger } from './RecentHandsPanelTrigger'
+import { HUD_MUTED_TEXT_COLOR } from './hudColors'
 
 interface PlayerPotOdds {
   spr?: number
@@ -94,7 +95,7 @@ export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPosition
           )}
           {hasPotOdds && (
             <span style={{ 
-              color: playerPotOdds.potOdds!.isPlayerTurn ? '#00ff00' : '#888',
+              color: playerPotOdds.potOdds!.isPlayerTurn ? '#00ff00' : HUD_MUTED_TEXT_COLOR,
               fontWeight: playerPotOdds.potOdds!.isPlayerTurn ? 'bold' : 'normal',
               whiteSpace: 'nowrap'
             }}>

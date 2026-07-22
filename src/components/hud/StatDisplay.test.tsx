@@ -112,7 +112,7 @@ describe('StatDisplay', () => {
 
       render(<StatDisplay displayStats={lowSample} formatValue={mockFormatValue} colorCoding />)
 
-      expect(screen.getByText('50.0% (5/10)')).toHaveStyle({ color: '#888888' })
+      expect(screen.getByText('50.0% (5/10)')).toHaveStyle({ color: '#b8b8b8' })
     })
 
     it('しきい値ルールのない統計はcolorCoding有効でも既定色のまま', () => {
