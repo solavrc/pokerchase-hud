@@ -108,6 +108,9 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
       switch (event.ApiTypeId) {
         case ApiType.EVT_DEAL:
           handState.hand.seatUserIds = event.SeatUserIds
+          // Receive chronology and exported hand-log timestamps are anchored
+          // at the start of the hand, not when EVT_HAND_RESULTS arrives.
+          handState.hand.approxTimestamp = event.timestamp
           positionMap = getPositionMap(event.SeatUserIds, event.Game)
           handState.phases.push({
             phase: event.Progress.Phase,
@@ -311,7 +314,6 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           // WWSF/W$SDはPT4の定義上「ポットの一部でも獲得したか」を問うため、
           // RewardChip基準がこれらの統計と整合する。
           handState.hand.winningPlayerIds = event.Results.filter(({ RewardChip }) => RewardChip > 0).map(({ UserId }) => UserId)
-          handState.hand.approxTimestamp = event.timestamp
           handState.hand.results = event.Results
 
           // Update actions with handId and add RIVER_CALL_WON for winning river calls

@@ -83,9 +83,14 @@ export type DbOperationType = 'import' | 'export' | 'sync' | 'rebuild'
  * 機械的な主キー移行で、hands/phases/actionsのキー・導出ロジック・内容を
  * 変更しないため、このアドバイザリはバンプしない。
  *
+ * version 4: `Hand.approxTimestamp`をEVT_HAND_RESULTSの到着時刻から
+ * EVT_DEALの到着時刻へ修正。既存の派生handには終了時刻が保存されて
+ * おり、PokerStars形式エクスポートの開始時刻にもその値が使われるため、
+ * Raw Event Lakeからの再構築で既存行を修復する。
+ *
  * インクリメントすると、拡張機能の更新後に既存ユーザーへ一度だけ
  * 「データ再構築」の実行を促すアドバイソリーが表示される
  * （`src/background/rebuild-advisory.ts`参照）。単なるUI変更やバグ修正でも
  * 書き込み時の導出結果に影響しないものはバンプ不要。
  */
-export const REBUILD_ADVISORY_VERSION = 3
+export const REBUILD_ADVISORY_VERSION = 4
