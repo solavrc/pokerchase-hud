@@ -159,6 +159,53 @@ describe('FirestoreBackupService', () => {
     expect(commitCalls).toBe(2)
   })
 
+  test('retry re-offers the cloud-max tie group when a batch boundary splits one millisecond', async () => {
+    const service = new FirestoreBackupService({ maxTransientRetries: 0, retryBaseDelayMs: 1 })
+    const events = [
+      ...Array.from({ length: 299 }, (_, index) => ({
+        timestamp: index + 1,
+        ApiTypeId: 304,
+        sequence: 0
+      })),
+      { timestamp: 300, ApiTypeId: 304, sequence: 0 },
+      { timestamp: 300, ApiTypeId: 304, sequence: 1 }
+    ] as ApiEvent[]
+
+    let commitCalls = 0
+    global.fetch = jest.fn().mockImplementation(async (url: string) => {
+      if (!String(url).endsWith(':commit')) return { ok: true, text: async () => '{}' } as Response
+      commitCalls++
+      if (commitCalls === 2) {
+        return { ok: false, status: 500, text: async () => 'failed second batch' } as Response
+      }
+      return {
+        ok: true,
+        text: async () => JSON.stringify({ writeResults: [{}], commitTime: '2026-07-22T00:00:00Z' })
+      } as Response
+    })
+
+    await expect(service.syncToCloudBatch(events, null)).rejects.toThrow('failed second batch')
+    expect(commitCalls).toBe(2)
+
+    const retryCommitBodies: any[] = []
+    global.fetch = jest.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith(':commit')) retryCommitBodies.push(JSON.parse(String(init?.body)))
+      return {
+        ok: true,
+        text: async () => String(url).endsWith(':commit')
+          ? JSON.stringify({ writeResults: [{}], commitTime: '2026-07-22T00:00:01Z' })
+          : '{}'
+      } as Response
+    })
+
+    await expect(service.syncToCloudBatch(events, 300)).resolves.toMatchObject({ syncedEvents: 2 })
+    expect(retryCommitBodies).toHaveLength(1)
+    expect(retryCommitBodies[0].writes.map((write: any) => write.update.name.split('/').pop())).toEqual([
+      '300_304',
+      '300_304_1'
+    ])
+  })
+
   test('syncFromCloud downloads matching events in bounded, cursor-based pages', async () => {
     const uid = 'XK00mmVIZdg8J52OlfyKvN467SK2'
     const documentName = (timestamp: number) =>

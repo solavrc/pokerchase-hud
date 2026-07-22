@@ -568,11 +568,9 @@ describe('AutoSyncService cloud downloads', () => {
     // Still can't upload the broken row (schema hasn't been fixed), but the
     // scan floor was rewound to just below the pending marker (200 - 1 = 199)
     // instead of trusting the real cloud max (300) -- proving the row is
-    // still being re-scanned, not skipped. 198, not 199: the P1 fix
-    // (auto-sync-service.ts) shifts the threshold syncToCloudBatch actually
-    // receives one further millisecond earlier -- see the threshold-shift
-    // comment in the backfill test below.
-    expect(secondFloor).toBe(198)
+    // still being re-scanned, not skipped. syncToCloudBatch's inclusive
+    // watermark filter receives the scan floor itself.
+    expect(secondFloor).toBe(199)
     // firstEntry (timestamp 100) sits below the rewound floor (199), so it's
     // not re-scanned -- only rows from the broken row's timestamp onward are.
     expect(secondChunk).toEqual([nextSessionEntry])
@@ -688,14 +686,9 @@ describe('AutoSyncService cloud downloads', () => {
     // specific orphan.
     expect(syncBatchSpy).toHaveBeenCalledTimes(1)
     const [uploadedChunk, floor] = syncBatchSpy.mock.calls[0]!
-    // 98, not 99: syncToCloudBatch's own dedup filter is bare-timestamp-only
-    // (`event.timestamp > threshold`), so the P1 compound-key-pagination fix
-    // (auto-sync-service.ts) shifts the threshold it receives one
-    // millisecond earlier than the scan floor itself -- makes that filter
-    // INCLUSIVE of the scan floor's own millisecond, closing the gap where a
-    // not-yet-uploaded row could share that exact millisecond with a
-    // different ApiTypeId than whatever pushed the cloud watermark there.
-    expect(floor).toBe(98)
+    // The downstream watermark filter is inclusive, so it receives the scan
+    // floor itself and re-offers ties at that exact millisecond.
+    expect(floor).toBe(99)
     expect(uploadedChunk).toEqual([oldValidEntry, newEntryAboveCloudMax])
 
     // --- Second sync: the backfill must not run again (one-time, idempotent) ---
@@ -707,7 +700,7 @@ describe('AutoSyncService cloud downloads', () => {
     // re-uploading the already-reconciled history.
     expect(syncBatchSpy).toHaveBeenCalledTimes(2)
     const [secondChunk, secondFloor] = syncBatchSpy.mock.calls[1]!
-    expect(secondFloor).toBe(198) // 199 - 1, same P1 threshold shift as above
+    expect(secondFloor).toBe(199)
     expect(secondChunk).toEqual([newEntryAboveCloudMax])
   })
 
@@ -764,9 +757,7 @@ describe('AutoSyncService cloud downloads', () => {
     // one (there is none) -- and the pass rewound to re-offer it.
     expect(syncBatchSpy).toHaveBeenCalledTimes(1)
     const [uploadedChunk, floor] = syncBatchSpy.mock.calls[0]!
-    // 148, not 149: see the P1 threshold-shift comment in the backfill test
-    // above.
-    expect(floor).toBe(148)
+    expect(floor).toBe(149)
     // recoveredRow is actually included in the upload -- this is the
     // concrete "rows below watermark, parseable, absent from cloud -> floored
     // -> uploaded on next sync" regression the finding calls for.
@@ -891,11 +882,9 @@ describe('AutoSyncService cloud downloads', () => {
     // matching the scenario precondition, and the later row still uploaded.
     const syncBatchSpy = firestoreBackupService.syncToCloudBatch as jest.Mock
     const [uploadedChunk, floor] = syncBatchSpy.mock.calls[0]!
-    // 299, not 300: see the P1 threshold-shift comment in the backfill test
-    // above -- this pass's scanFloor happens to land exactly on
-    // cloudMaxTimestamp (300) here, which is precisely the case the shift
-    // protects.
-    expect(floor).toBe(299)
+    // This pass's scanFloor lands exactly on cloudMaxTimestamp; the inclusive
+    // downstream filter protects every row tied at that millisecond.
+    expect(floor).toBe(300)
     expect(uploadedChunk).toEqual([laterValidRow])
   })
 
@@ -1021,11 +1010,9 @@ describe('AutoSyncService cloud downloads', () => {
     expect(syncBatchSpy).toHaveBeenCalledTimes(1)
     const [firstAttemptChunk, firstAttemptFloor] = syncBatchSpy.mock.calls[0]!
     // Scan floor rewound to just below the OLD pending marker (100 - 1 =
-    // 99), re-offering row@100 despite the newer cloud max (500). 98, not
-    // 99: the P1 fix (auto-sync-service.ts) shifts the threshold
-    // syncToCloudBatch actually receives one further millisecond earlier --
-    // see the threshold-shift comment in the backfill test below.
-    expect(firstAttemptFloor).toBe(98)
+    // 99), re-offering row@100 despite the newer cloud max (500). The
+    // downstream watermark filter is inclusive, so it receives 99 directly.
+    expect(firstAttemptFloor).toBe(99)
     expect(firstAttemptChunk).toEqual([recoveredRow, laterValidRow])
 
     // The critical assertion (P1 #2): even though this chunk's raw scan
@@ -1044,9 +1031,8 @@ describe('AutoSyncService cloud downloads', () => {
     expect(syncBatchSpy).toHaveBeenCalledTimes(2)
     const [secondAttemptChunk, secondAttemptFloor] = syncBatchSpy.mock.calls[1]!
     // Still rewound the same way -- row@100 is re-offered again (proving it
-    // was never dropped after the failed attempt). 98, not 99: same P1
-    // threshold shift as the first attempt above.
-    expect(secondAttemptFloor).toBe(98)
+    // was never dropped after the failed attempt).
+    expect(secondAttemptFloor).toBe(99)
     expect(secondAttemptChunk).toEqual([recoveredRow, laterValidRow])
 
     // Only now -- after this upload was awaited and confirmed -- is it safe

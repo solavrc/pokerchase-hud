@@ -193,8 +193,14 @@ export class FirestoreBackupService {
 
       console.log(`[Firestore] Processing batch of ${apiEvents.length} upload candidates...`)
 
-      const newEvents = (cloudMaxTimestamp
-        ? apiEvents.filter(event => (event.timestamp || 0) > cloudMaxTimestamp)
+      const newEvents = (cloudMaxTimestamp !== null
+        // Re-offer the whole maximum-timestamp tie group. A 300-write batch
+        // boundary can split two events from the same millisecond; if the
+        // first commit succeeds and the second fails, a strict `>` retry
+        // would skip the uncommitted tied event forever. Firestore document
+        // IDs are deterministic, so re-upserting the already-acknowledged
+        // members of the tie group is idempotent.
+        ? apiEvents.filter(event => (event.timestamp || 0) >= cloudMaxTimestamp)
         : [...apiEvents])
         // This is upload-coverage order, not wire/causal replay order. A
         // monotonic timestamp prefix is required because the next pass uses
@@ -212,6 +218,8 @@ export class FirestoreBackupService {
       // past the missing batch and makes every later watermark-based retry skip
       // it permanently. Sequential acknowledgement keeps Firestore a proven
       // timestamp prefix: after a failure, no later timestamp has been offered.
+      // If the boundary split the failing timestamp itself, the inclusive
+      // watermark filter above re-offers that whole tie group on retry.
       for (let i = 0; i < newEvents.length; i += this.BATCH_SIZE) {
         const chunk = newEvents.slice(i, i + this.BATCH_SIZE)
         await this.writeBatch(user.uid, chunk)
