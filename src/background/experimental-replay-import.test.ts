@@ -302,6 +302,69 @@ describe('ExperimentalReplayImporter', () => {
     }))
   })
 
+  test('continues past a full batch of terminal failures', async () => {
+    await observe({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Id: 'large-terminal-failure',
+      BattleType: BattleType.SIT_AND_GO,
+      timestamp: 100
+    })
+    const handIds = Array.from({ length: 101 }, (_, index) => 1_000 + index)
+    for (const handId of handIds) {
+      await observe({ ApiTypeId: ApiType.EVT_HAND_RESULTS, HandId: handId, timestamp: handId })
+    }
+    await observe({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 2_000 })
+    const firstRequest = (port.postMessage as jest.Mock).mock.calls[0][0]
+    expect(firstRequest.handIds).toHaveLength(100)
+
+    expect(importer.handlePortMessage({
+      type: REPLAY_PORT_RESULT,
+      requestId: firstRequest.requestId,
+      results: firstRequest.handIds.map((handId: number) => ({
+        handId,
+        ok: false,
+        error: 'API Code 1',
+        retryable: false
+      }))
+    }, port)).toBe(true)
+    await importer.whenIdle()
+
+    expect(port.postMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({ handIds: [1_100] }))
+  })
+
+  test('cancels retry work and rejects later writes when data deletion starts', async () => {
+    await observe({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Id: 'delete-race',
+      BattleType: BattleType.SIT_AND_GO,
+      timestamp: 100
+    })
+    await observe({ ApiTypeId: ApiType.EVT_HAND_RESULTS, HandId: 1_201, timestamp: 200 })
+    await observe({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 300 })
+    const request = (port.postMessage as jest.Mock).mock.calls[0][0]
+
+    jest.useFakeTimers()
+    try {
+      expect(importer.handlePortMessage({
+        type: REPLAY_PORT_RESULT,
+        requestId: request.requestId,
+        results: [{ handId: 1_201, ok: false, error: 'HTTP 503', retryable: true }]
+      }, port)).toBe(true)
+      await importer.whenIdle()
+      await importer.prepareForDataDeletion()
+      ;(port.postMessage as jest.Mock).mockClear()
+
+      await jest.advanceTimersByTimeAsync(60_000)
+      await importer.observePortEvent({ ApiTypeId: ApiType.EVT_HAND_RESULTS, HandId: 1_202, timestamp: 400 }, port)
+      await importer.whenIdle()
+
+      expect(port.postMessage).not.toHaveBeenCalled()
+      expect(await db.experimentalReplayHands.get(1_202)).toBeUndefined()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
   test('retries an all-retryable batch with backoff while the tab stays open', async () => {
     await observe({
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
