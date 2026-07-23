@@ -50,6 +50,7 @@ global.chrome = {
       addListener: jest.fn(),
     },
     requestUpdateCheck: jest.fn().mockResolvedValue({ status: 'no_update' }),
+    getPlatformInfo: jest.fn().mockResolvedValue({ os: 'mac', arch: 'arm', nacl_arch: 'arm' }),
     getManifest: jest.fn(() => ({ version: '5.1.0' })),
     getURL: jest.fn((path: string) => `chrome-extension://mock-extension-id/${path}`),
     reload: jest.fn(),

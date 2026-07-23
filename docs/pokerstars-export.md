@@ -150,6 +150,8 @@ PlayerA collected 200 from main pot
 
 `EVT_HAND_RESULTS` はポット単位の内訳（どのポットを誰が獲得したか）を直接は提供しない
 （`Pot` / `SidePot[]` の金額列と、プレイヤーごとの `HandRanking` / `RewardChip` 合計のみ）。
+さらに`RewardChip`は争われたポットの獲得額だけでなくuncalled returnも含むため、
+`RewardChip > 0`を勝者判定には使えない。
 collected 行の帰属は以下の前提から復元する:
 
 - **参加資格は入れ子構造**: メインポット ⊇ side pot-1 ⊇ side pot-2 …（早くオールインした
@@ -160,12 +162,15 @@ collected 行の帰属は以下の前提から復元する:
   メイン+side1 を獲得し、side2 は HandRanking=2 が獲得するケース。実データ
   Hand #296039758 で確認済み）
 
-実装（`buildCollectedEntries`）: 勝者（`RewardChip > 0`、NO_CALL 勝者は先頭扱い）を
+実装（`buildCollectedEntries`）: まず検出したuncalled betを最上位の`SidePot`から差し引き、
+争われたポットだけを分配対象にする。次にpayout候補（`RewardChip > 0`、NO_CALLは先頭扱い）を
 `HandRanking` 昇順に並べ、メインポットから順に、残 `RewardChip` を持つ最強グループへ
-ポットを割り当てて残額を消費していく貪欲法。同点スプリット時の端数（オッドチップ）は
-残額が最小のメンバーに寄せることで、後続ポットの資格判定（残額 > 0）が壊れないように
-している。検算の不変条件は `Pot + sum(SidePot) == sum(RewardChip)`（実データで 100% 成立、
-docs/api-events.md 参照）。
+ポットを割り当てて残額を消費していく。ここで`RewardChip > 0`は候補の列挙条件であり、
+勝者の定義ではない。uncalled returnしかないプレイヤーには`collected`行を出力しない。
+同点スプリット時の端数（オッドチップ）は残額が最小のメンバーに寄せ、後続ポットの
+資格判定（残額 > 0）が壊れないようにしている。raw全体の検算では
+`Pot + sum(SidePot) == sum(RewardChip)`（uncalled returnを含む。実データで100%成立）を使い、
+勝者依存統計では別途`contestedAward > 0`を使う（docs/api-events.md参照）。
 
 ### Summary 行
 

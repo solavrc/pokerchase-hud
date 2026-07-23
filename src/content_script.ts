@@ -18,6 +18,7 @@ import { RuntimePortManager } from './utils/runtime-port-manager'
 /** !!! BACKGROUND、WEB_ACCESSIBLE_RESOURCES からインポートしないこと !!! */
 
 const RECONNECT_DELAY_MS = 500
+const PORT_EVENT_QUEUE_LIMIT = 1000
 const KEEPALIVE_INTERVAL_MS = 25000 // 25秒（30秒タイムアウトより少し短く）
 
 // ゲーム状態の管理
@@ -68,6 +69,7 @@ const stopKeepalive = () => {
 const portManager = new RuntimePortManager({
   connect: () => chrome.runtime.connect({ name: POKER_CHASE_SERVICE_EVENT }),
   reconnectDelayMs: RECONNECT_DELAY_MS,
+  maxQueueSize: PORT_EVENT_QUEUE_LIMIT,
   onConnected: port => {
     if (isGameActive) startKeepalive(port)
   },
@@ -87,10 +89,9 @@ const portManager = new RuntimePortManager({
       }
     }
   },
-  onSendError: error => {
-    if (error instanceof Error && error.message === 'Extension context invalidated.') {
-      window.location.reload()
-    }
+  onFatalError: error => {
+    console.error('[content_script] Runtime Port can no longer preserve event delivery; reloading:', error)
+    window.location.reload()
   }
 })
 
@@ -187,7 +188,12 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       break
   }
 
-  portManager.send(event.data)
+  // false means the bounded queue can no longer preserve at-least-once
+  // delivery. The fatal callback above reloads the page to establish a fresh
+  // extension context rather than silently dropping this and later events.
+  if (!portManager.send(event.data)) {
+    stopKeepalive()
+  }
 })
 
 // Cleanup on window unload

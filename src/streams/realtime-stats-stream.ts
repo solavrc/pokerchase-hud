@@ -7,7 +7,7 @@
 
 import { SimpleTransform } from './simple-transform'
 import type { ApiEvent, ApiHandEvent } from '../types'
-import { ApiType, PhaseType } from '../types'
+import { ActionType, ApiType, BetStatusType, PhaseType } from '../types'
 import { RealTimeStatsService } from '../realtime-stats/realtime-stats-service'
 import type { RealTimeStats, AllPlayersRealTimeStats } from '../realtime-stats/realtime-stats-service'
 import { setHandImprovementHeroHoleCards } from '../realtime-stats'
@@ -33,6 +33,7 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
   private heroSeatIndex?: number  // Store hero's seat index
   private seatBetAmounts: number[] = []  // Track bet amounts for each seat
   private seatChips: number[] = []  // Track chip stacks for each seat
+  private seatBetStatuses: Array<BetStatusType | undefined> = []  // Track whether each seat can still act
   private seatUserIds: number[] = []  // Track user IDs for each seat
 
   constructor() {
@@ -77,6 +78,7 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
           this.heroSeatIndex = undefined
           this.seatBetAmounts = [0, 0, 0, 0, 0, 0]  // Reset bet amounts
           this.seatChips = [0, 0, 0, 0, 0, 0]  // Reset chip stacks
+          this.seatBetStatuses = [undefined, undefined, undefined, undefined, undefined, undefined]
           this.seatUserIds = [-1, -1, -1, -1, -1, -1]  // Reset user IDs
 
           // Emit empty stats to clear previous hand's display
@@ -116,10 +118,12 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
             // Hero's bet and chips
             this.seatBetAmounts[event.Player.SeatIndex] = event.Player.BetChip || 0
             this.seatChips[event.Player.SeatIndex] = event.Player.Chip || 0
+            this.seatBetStatuses[event.Player.SeatIndex] = event.Player.BetStatus
             // Other players' bets and chips
             for (const player of event.OtherPlayers) {
               this.seatBetAmounts[player.SeatIndex] = player.BetChip || 0
               this.seatChips[player.SeatIndex] = player.Chip || 0
+              this.seatBetStatuses[player.SeatIndex] = player.BetStatus
             }
           }
 
@@ -137,8 +141,11 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
           if (event.CommunityCards && event.CommunityCards.length > 0) {
             // A new street resets every seat's cumulative street bet. Folded
             // players can be omitted from the round snapshot, so reset the
-            // full array before applying the seats that are present.
+            // full arrays before applying the seats that are present. A
+            // timeout/disconnect fold can also omit EVT_ACTION, making absence
+            // from this authoritative snapshot the only eligibility signal.
             this.seatBetAmounts = this.seatBetAmounts.map(() => 0)
+            this.seatBetStatuses = this.seatBetStatuses.map(() => BetStatusType.FOLDED)
 
             // EVT_DEAL_ROUND may send only new cards, not all community cards
             // Append new cards to existing community cards
@@ -177,6 +184,7 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
               // odds and SPR look cached until each seat acts again.
               this.seatBetAmounts[event.Player.SeatIndex] = event.Player.BetChip ?? 0
               this.seatChips[event.Player.SeatIndex] = event.Player.Chip ?? 0
+              this.seatBetStatuses[event.Player.SeatIndex] = event.Player.BetStatus
 
               // Check hero's status
               if (event.Player.BetStatus === 1 || event.Player.BetStatus === 3) {
@@ -187,6 +195,7 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
               for (const player of event.OtherPlayers) {
                 this.seatBetAmounts[player.SeatIndex] = player.BetChip ?? 0
                 this.seatChips[player.SeatIndex] = player.Chip ?? 0
+                this.seatBetStatuses[player.SeatIndex] = player.BetStatus
                 if (player.BetStatus === 1 || player.BetStatus === 3) {
                   activeCount++
                 }
@@ -249,9 +258,16 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
             this.seatChips[event.SeatIndex] = event.Chip
           }
 
+          if (event.ActionType === ActionType.FOLD) {
+            this.seatBetStatuses[event.SeatIndex] = BetStatusType.FOLDED
+          } else if (event.ActionType === ActionType.ALL_IN || event.Chip === 0) {
+            this.seatBetStatuses[event.SeatIndex] = BetStatusType.ALL_IN
+          } else {
+            this.seatBetStatuses[event.SeatIndex] = BetStatusType.BET_ABLE
+          }
 
           // Update active player count on fold
-          if (event.ActionType === 2) { // FOLD
+          if (event.ActionType === ActionType.FOLD) {
             this.activePlayerCount = Math.max(1, this.activePlayerCount - 1)
           }
 
@@ -312,7 +328,8 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
       this.currentProgress,
       this.heroSeatIndex,
       this.seatBetAmounts,
-      this.seatChips
+      this.seatChips,
+      this.seatBetStatuses
     )
 
 
@@ -323,7 +340,8 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
         this.currentProgress,
         this.seatBetAmounts,
         this.seatChips,
-        stats  // Hero stats
+        stats,  // Hero stats
+        this.seatBetStatuses
       )
 
       const output: { handId?: number; stats: AllPlayersRealTimeStats; timestamp: number } = {
@@ -400,6 +418,7 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
     this.heroSeatIndex = undefined
     this.seatBetAmounts = []
     this.seatChips = []
+    this.seatBetStatuses = []
     this.seatUserIds = []
   }
 }
