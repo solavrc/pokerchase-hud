@@ -141,8 +141,11 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
           if (event.CommunityCards && event.CommunityCards.length > 0) {
             // A new street resets every seat's cumulative street bet. Folded
             // players can be omitted from the round snapshot, so reset the
-            // full array before applying the seats that are present.
+            // full arrays before applying the seats that are present. A
+            // timeout/disconnect fold can also omit EVT_ACTION, making absence
+            // from this authoritative snapshot the only eligibility signal.
             this.seatBetAmounts = this.seatBetAmounts.map(() => 0)
+            this.seatBetStatuses = this.seatBetStatuses.map(() => BetStatusType.FOLDED)
 
             // EVT_DEAL_ROUND may send only new cards, not all community cards
             // Append new cards to existing community cards

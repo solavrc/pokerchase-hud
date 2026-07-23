@@ -281,23 +281,6 @@ describe('RealTimeStatsStream', () => {
           }
         },
         {
-          ApiTypeId: ApiType.EVT_ACTION,
-          timestamp: 150,
-          SeatIndex: 5,
-          ActionType: 2,
-          Chip: 10000,
-          BetChip: 100,
-          Progress: {
-            Phase: PhaseType.PREFLOP,
-            NextActionSeat: 1,
-            NextActionTypes: [2, 3, 4, 5],
-            NextExtraLimitSeconds: 30,
-            MinRaise: 400,
-            Pot: 300,
-            SidePot: []
-          }
-        },
-        {
           ApiTypeId: ApiType.EVT_DEAL_ROUND,
           timestamp: 200,
           CommunityCards: [49, 33, 21], // A♥ 9♥ 6♥
@@ -323,6 +306,23 @@ describe('RealTimeStatsStream', () => {
             Pot: 300,
             SidePot: []
           }
+        },
+        {
+          ApiTypeId: ApiType.EVT_ACTION,
+          timestamp: 250,
+          SeatIndex: 1,
+          ActionType: 1,
+          Chip: 9100,
+          BetChip: 100,
+          Progress: {
+            Phase: PhaseType.FLOP,
+            NextActionSeat: 0,
+            NextActionTypes: [2, 3, 4, 5],
+            NextExtraLimitSeconds: 30,
+            MinRaise: 200,
+            Pot: 400,
+            SidePot: []
+          }
         }
       ]
 
@@ -333,7 +333,7 @@ describe('RealTimeStatsStream', () => {
 
       stream.on('end', () => {
         // フロップ時の統計
-        const flopStats = results[results.length - 1]
+        const flopStats = results[2]
         expect(flopStats.stats.heroStats.communityCards).toEqual([49, 33, 21])
         expect(flopStats.stats.heroStats.holeCards).toEqual([16, 19])
         // New-street snapshots reset every BetChip and carry the current
@@ -346,9 +346,13 @@ describe('RealTimeStatsStream', () => {
           spr: 30.7,
           potOdds: { call: 0 }
         })
-        // Seat 5 folded preflop and is omitted from EVT_DEAL_ROUND. Its old
-        // small blind must still be cleared at the street boundary.
+        // Seat 5's timeout/disconnect fold has no EVT_ACTION and the seat is
+        // omitted from EVT_DEAL_ROUND. Its old small blind must be cleared and
+        // its BET_ABLE state must not survive into the new street.
         expect(flopStats.stats.playerStats[5].potOdds.call).toBe(0)
+        const afterFlopBet = results[results.length - 1]
+        expect(afterFlopBet.stats.playerStats[0].potOdds.call).toBe(100)
+        expect(afterFlopBet.stats.playerStats[5].potOdds.call).toBe(0)
 
         done()
       })
