@@ -2464,6 +2464,7 @@ describe('EntityConverter', () => {
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
       const service = new PokerChaseService({ db: dbMock })
       await service.ready
+      service.session.setBattleType(BattleType.SIT_AND_GO)
       for (const event of events) service.handAggregateStream.write(event)
       await service.handAggregateStream.whenIdle()
 
@@ -2906,23 +2907,23 @@ describe('EntityConverter', () => {
     })
 
     /**
-     * サイドポット勝者の不一致（scenario b）。
+     * uncalled returnを勝利と誤認する不一致（scenario b）。
      *
      * 実データ（pokerchase_raw_data_2026-07-04T18-31-12-252Z.ndjson、HandId=269804225）
      * から抽出したハンドを匿名化したもの。ヘッズアップでプリフロップオールイン、
-     * アンテ差によるサイドポットが発生し、メインポット勝者（HandRanking=1、
-     * RewardChip=3576）とサイドポット勝者（HandRanking=2、RewardChip=14412）が
-     * 異なるプレイヤーになる。
+     * アンテオールインにより、メインポット勝者（HandRanking=1、
+     * RewardChip=3576）とは別の敗者に、コールされなかった超過分14412が
+     * RewardChipとして返る。後者はcontested potを獲得していない。
      *
      * `Pot(3576) + SidePot(14412) === sum(RewardChip)(3576+14412)` の不変条件を維持。
      */
-    it('unifies main-pot and side-pot winners under RewardChip>0 in BOTH pipelines (scenario b)', async () => {
+    it('excludes an uncalled-only payout from winners in BOTH pipelines (scenario b)', async () => {
       const WINNER_MAIN = 850121266 // メインポット勝者（HandRanking=1）
-      const WINNER_SIDE = 561384657 // サイドポットのみの勝者（HandRanking=2、RewardChip>0）
+      const UNCALLED_LOSER = 561384657 // 超過分のみ返却された敗者（HandRanking=2、RewardChip>0）
       const events: ApiEvent[] = [
         createEvent(ApiType.EVT_DEAL, {
           timestamp: 50000,
-          SeatUserIds: [WINNER_SIDE, -1, -1, WINNER_MAIN, -1, -1],
+          SeatUserIds: [UNCALLED_LOSER, -1, -1, WINNER_MAIN, -1, -1],
           Game: {
             CurrentBlindLv: 12,
             NextBlindUnixSeconds: 1729100631,
@@ -2953,7 +2954,7 @@ describe('EntityConverter', () => {
             { SeatIndex: 3, Status: 0, BetStatus: 3, Chip: 0, BetChip: 0 }
           ]
         }, { skipValidation: true }),
-        // ヒーロー(seat0, WINNER_SIDE)がオールイン後のチェック扱い（進行イベント）
+        // ヒーロー(seat0, UNCALLED_LOSER)がオールイン後のチェック扱い（進行イベント）
         createEvent(ApiType.EVT_ACTION, {
           timestamp: 50001,
           SeatIndex: 0,
@@ -2989,7 +2990,7 @@ describe('EntityConverter', () => {
               RewardChip: 3576
             },
             {
-              UserId: WINNER_SIDE,
+              UserId: UNCALLED_LOSER,
               HoleCards: [49, 8],
               RankType: RankType.TWO_PAIR,
               Hands: [49, 40, 39, 33, 8],
@@ -3013,6 +3014,7 @@ describe('EntityConverter', () => {
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
       const service = new PokerChaseService({ db: dbMock })
       await service.ready
+      service.session.setBattleType(BattleType.SIT_AND_GO)
 
       // --- インポート/リビルドパイプライン: EntityConverter経由 ---
       const importResult = converter.convertEventsToEntities(events)
@@ -3029,19 +3031,209 @@ describe('EntityConverter', () => {
         { description: 'dbMock.hands row 269804225 with winningPlayerIds populated' }
       )
 
-      // 修正前のWES（HandRanking===1）ではWINNER_SIDEを見逃していたが、
-      // 修正後はRewardChip>0に統一されているため、両者ともサイドポット勝者を含む
+      // RewardChip>0だけではUNCALLED_LOSERを勝者に含めるが、settlement resolverは
+      // contribution tier 14412を対戦相手のいないuncalled returnとして除外する。
       expect(liveHand).toBeDefined()
       expect(importHand).toBeDefined()
-      expect(new Set(liveHand!.winningPlayerIds)).toEqual(new Set([WINNER_MAIN, WINNER_SIDE]))
-      expect(new Set(importHand!.winningPlayerIds)).toEqual(new Set([WINNER_MAIN, WINNER_SIDE]))
+      expect(new Set(liveHand!.winningPlayerIds)).toEqual(new Set([WINNER_MAIN]))
+      expect(new Set(importHand!.winningPlayerIds)).toEqual(new Set([WINNER_MAIN]))
       expect(new Set(importHand!.winningPlayerIds)).toEqual(new Set(liveHand!.winningPlayerIds))
 
-      // 旧HandRanking===1定義ではWINNER_SIDEが漏れることの確認（回帰防止のドキュメント）
-      const oldDefinitionWinners = new Set(
-        resultsEvt.Results!.filter(r => r.HandRanking === 1).map(r => r.UserId)
+      const rewardOnlyWinners = new Set(
+        resultsEvt.Results!.filter(r => r.RewardChip > 0).map(r => r.UserId)
       )
-      expect(oldDefinitionWinners.has(WINNER_SIDE)).toBe(false)
+      expect(rewardOnlyWinners.has(UNCALLED_LOSER)).toBe(true)
+    })
+
+    it('does not tag an uncalled-only river caller as RIVER_CALL_WON in either pipeline', async () => {
+      const WINNER = 7001
+      const UNCALLED_LOSER = 7002
+      const HAND_ID = 999040
+      const events: ApiEvent[] = [
+        createEvent(ApiType.EVT_DEAL, {
+          timestamp: 55000,
+          SeatUserIds: [WINNER, UNCALLED_LOSER, -1, -1],
+          Game: {
+            CurrentBlindLv: 1,
+            NextBlindUnixSeconds: 0,
+            Ante: 0,
+            SmallBlind: 1,
+            BigBlind: 2,
+            ButtonSeat: 0,
+            SmallBlindSeat: 0,
+            BigBlindSeat: 1
+          },
+          Player: {
+            SeatIndex: 0,
+            BetStatus: BetStatusType.BET_ABLE,
+            HoleCards: [0, 1],
+            Chip: 100,
+            BetChip: 0
+          },
+          OtherPlayers: [
+            { SeatIndex: 1, Status: 0, BetStatus: BetStatusType.BET_ABLE, Chip: 100, BetChip: 0 }
+          ],
+          Progress: {
+            Phase: PhaseType.PREFLOP,
+            NextActionSeat: 0,
+            NextActionTypes: [ActionType.CHECK, ActionType.BET],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 2,
+            Pot: 0,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_DEAL_ROUND, {
+          timestamp: 55001,
+          CommunityCards: [0, 4, 8],
+          Player: {
+            SeatIndex: 0,
+            BetStatus: BetStatusType.BET_ABLE,
+            HoleCards: [0, 1],
+            Chip: 100,
+            BetChip: 0
+          },
+          OtherPlayers: [
+            { SeatIndex: 1, Status: 0, BetStatus: BetStatusType.BET_ABLE, Chip: 100, BetChip: 0 }
+          ],
+          Progress: {
+            Phase: PhaseType.RIVER,
+            NextActionSeat: 0,
+            NextActionTypes: [ActionType.CHECK, ActionType.BET],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 0,
+            Pot: 0,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 55002,
+          SeatIndex: 0,
+          ActionType: ActionType.BET,
+          Chip: 90,
+          BetChip: 10,
+          Progress: {
+            Phase: PhaseType.RIVER,
+            NextActionSeat: 1,
+            NextActionTypes: [ActionType.CALL, ActionType.FOLD, ActionType.RAISE],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 20,
+            Pot: 10,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 55003,
+          SeatIndex: 1,
+          ActionType: ActionType.CALL,
+          Chip: 90,
+          BetChip: 10,
+          Progress: {
+            Phase: PhaseType.RIVER,
+            NextActionSeat: 0,
+            NextActionTypes: [ActionType.CHECK, ActionType.BET],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 20,
+            Pot: 20,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 55004,
+          SeatIndex: 0,
+          ActionType: ActionType.RAISE,
+          Chip: 70,
+          BetChip: 30,
+          Progress: {
+            Phase: PhaseType.RIVER,
+            NextActionSeat: 1,
+            NextActionTypes: [ActionType.CALL, ActionType.FOLD, ActionType.RAISE],
+            NextExtraLimitSeconds: 15,
+            MinRaise: 50,
+            Pot: 40,
+            SidePot: []
+          }
+        }),
+        createEvent(ApiType.EVT_ACTION, {
+          timestamp: 55005,
+          SeatIndex: 1,
+          ActionType: ActionType.RAISE,
+          Chip: 50,
+          BetChip: 50,
+          Progress: {
+            Phase: PhaseType.RIVER,
+            NextActionSeat: -2,
+            NextActionTypes: [],
+            NextExtraLimitSeconds: 0,
+            MinRaise: 0,
+            Pot: 60,
+            SidePot: [20]
+          }
+        }),
+        createEvent(ApiType.EVT_HAND_RESULTS, {
+          timestamp: 55006,
+          HandId: HAND_ID,
+          CommunityCards: [12, 16],
+          Pot: 60,
+          SidePot: [20],
+          ResultType: 0,
+          DefeatStatus: 0,
+          Results: [
+            {
+              UserId: WINNER,
+              HoleCards: [0, 1],
+              RankType: RankType.ONE_PAIR,
+              Hands: [0, 1, 4, 8, 12],
+              HandRanking: 1,
+              Ranking: -2,
+              RewardChip: 60
+            },
+            {
+              UserId: UNCALLED_LOSER,
+              HoleCards: [2, 3],
+              RankType: RankType.HIGH_CARD,
+              Hands: [2, 3, 4, 8, 12],
+              HandRanking: 2,
+              Ranking: -2,
+              RewardChip: 20
+            }
+          ],
+          Player: { SeatIndex: 0, BetStatus: -1, Chip: 130, BetChip: 0 },
+          OtherPlayers: [
+            { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 70, BetChip: 0 }
+          ]
+        })
+      ]
+
+      const importResult = converter.convertEventsToEntities(events)
+      const importHand = importResult.hands.find(hand => hand.id === HAND_ID)
+      const importRiverCall = importResult.actions.find(action =>
+        action.handId === HAND_ID &&
+        action.playerId === UNCALLED_LOSER &&
+        action.phase === PhaseType.RIVER &&
+        action.actionType === ActionType.CALL)
+      expect(importHand?.winningPlayerIds).toEqual([WINNER])
+      expect(importRiverCall?.actionDetails).toContain(ActionDetail.RIVER_CALL)
+      expect(importRiverCall?.actionDetails).not.toContain(ActionDetail.RIVER_CALL_WON)
+
+      const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
+      const service = new PokerChaseService({ db: dbMock })
+      await service.ready
+      service.session.setBattleType(BattleType.SIT_AND_GO)
+      const liveActions = await pipeEventsAndWaitForActions(service, dbMock, events, {
+        handId: HAND_ID,
+        minCount: importResult.actions.filter(action => action.handId === HAND_ID).length
+      })
+      const liveHand = await dbMock.hands.get(HAND_ID)
+      const liveRiverCall = liveActions.find(action =>
+        action.playerId === UNCALLED_LOSER &&
+        action.phase === PhaseType.RIVER &&
+        action.actionType === ActionType.CALL)
+
+      expect(liveHand?.winningPlayerIds).toEqual([WINNER])
+      expect(liveRiverCall?.actionDetails).toContain(ActionDetail.RIVER_CALL)
+      expect(liveRiverCall?.actionDetails).not.toContain(ActionDetail.RIVER_CALL_WON)
+      expect(liveRiverCall?.actionDetails).toEqual(importRiverCall?.actionDetails)
     })
 
     /**
@@ -3346,6 +3538,7 @@ describe('EntityConverter', () => {
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
       const service = new PokerChaseService({ db: dbMock })
       await service.ready
+      service.session.setBattleType(BattleType.SIT_AND_GO)
       const liveHandActions = await pipeEventsAndWaitForActions(service, dbMock, events, {
         handId: 271929009,
         minCount: importResult.actions.filter(a => a.handId === 271929009).length

@@ -91,15 +91,18 @@
  *  (c) Showdown participation is gated on RankType: NO_CALL and FOLD_OPEN
  *      are excluded, everything else (0-9 real ranks, SHOWDOWN_MUCK)
  *      counts as a showdown.
- *  (d) Winners are players with RewardChip > 0 in EVT_HAND_RESULTS.Results.
+ *  (d) Winners are players with a positive contested award. RewardChip also
+ *      includes uncalled excess returns, so the oracle independently rebuilds
+ *      contribution tiers from DEAL/RESULTS stack snapshots and removes every
+ *      tier reached by only one contributor.
  *  (e) River Call Accuracy (RCA): numerator is river CALL actions by a player
- *      in hands where that player ends up with RewardChip > 0; denominator is
+ *      in hands where that player wins a contested award; denominator is
  *      all river CALL actions by that player -- mirroring
  *      src/stats/core/river-call-accuracy.ts's RIVER_CALL/RIVER_CALL_WON
  *      ActionDetail tagging (RIVER_CALL is set when a CALL action occurs on
  *      the river; RIVER_CALL_WON is added post-hoc, in EVT_HAND_RESULTS, to
- *      any RIVER_CALL action taken by a player who ends up with
- *      RewardChip > 0 for that hand -- see entity-converter.ts /
+ *      any RIVER_CALL action taken by a player who wins a contested award
+ *      for that hand -- see entity-converter.ts /
  *      write-entity-stream.ts).
  *  (f) VPIP·F (vpipF, opt-in HUD-original stat, see hand-over
  *      workspace/reports/pokerchase-hud-vpip-f-handover.md): same VPIP
@@ -112,7 +115,7 @@
  *      imported, per this file's independence contract.
  */
 import { ApiType } from '../../types/api'
-import { ActionType, BetStatusType, PhaseType, RankType } from '../../types/game'
+import { ActionType, BattleType, BetStatusType, PhaseType, RankType } from '../../types/game'
 
 type ActionTypeNum = Exclude<ActionType, ActionType.ALL_IN>
 
@@ -120,21 +123,28 @@ type ActionTypeNum = Exclude<ActionType, ActionType.ALL_IN>
 interface RawSeatPlayer {
   SeatIndex: number
   BetStatus: BetStatusType
+  Chip?: number
+  BetChip?: number
 }
 interface RawGame {
   ButtonSeat: number
   SmallBlindSeat: number
   BigBlindSeat: number
+  Ante?: number
 }
 interface RawDealEvent {
   ApiTypeId: ApiType.EVT_DEAL
   SeatUserIds: number[]
   Game: RawGame
   Progress: RawProgress
+  Player?: RawSeatPlayer
+  OtherPlayers?: RawSeatPlayer[]
 }
 interface RawProgress {
   NextActionTypes: number[]
   Phase?: number
+  Pot?: number
+  SidePot?: number[]
 }
 interface RawActionEvent {
   ApiTypeId: ApiType.EVT_ACTION
@@ -153,6 +163,7 @@ interface RawDealRoundEvent {
 interface RawResultEntry {
   UserId: number
   RankType: RankType
+  HandRanking?: number
   RewardChip: number
 }
 interface RawHandResultsEvent {
@@ -160,8 +171,169 @@ interface RawHandResultsEvent {
   HandId: number
   Results: RawResultEntry[]
   CommunityCards?: number[]
+  Pot?: number
+  SidePot?: number[]
+  Player?: RawSeatPlayer
+  OtherPlayers?: RawSeatPlayer[]
 }
-type RawEvent = RawDealEvent | RawActionEvent | RawDealRoundEvent | RawHandResultsEvent | { ApiTypeId: number }
+interface RawSessionStartEvent {
+  ApiTypeId: ApiType.EVT_ENTRY_QUEUED
+  BattleType: BattleType
+}
+type RawEvent = RawDealEvent | RawActionEvent | RawDealRoundEvent | RawHandResultsEvent | RawSessionStartEvent | { ApiTypeId: number }
+
+const rawSeatSnapshot = (
+  event: { Player?: RawSeatPlayer, OtherPlayers?: RawSeatPlayer[] },
+  seatIndex: number
+): RawSeatPlayer | undefined => {
+  if (event.Player?.SeatIndex === seatIndex) return event.Player
+  return event.OtherPlayers?.find(player => player.SeatIndex === seatIndex)
+}
+
+const rawPaysAnte = (deal: RawDealEvent, seatIndex: number): boolean => {
+  const betStatus = rawSeatSnapshot(deal, seatIndex)?.BetStatus
+  return betStatus === undefined ||
+    betStatus === BetStatusType.BET_ABLE ||
+    betStatus === BetStatusType.ALL_IN
+}
+
+const rawStartingStack = (deal: RawDealEvent, seatIndex: number): number | null => {
+  const snapshot = rawSeatSnapshot(deal, seatIndex)
+  if (snapshot?.Chip === undefined || snapshot.BetChip === undefined) return null
+
+  const chipsAfterAnte = snapshot.Chip + snapshot.BetChip
+  if (!rawPaysAnte(deal, seatIndex)) return chipsAfterAnte
+
+  const ante = deal.Game.Ante ?? 0
+  if (chipsAfterAnte > 0 || ante === 0) return chipsAfterAnte + ante
+
+  const anteAllInSeats = deal.SeatUserIds
+    .map((userId, index) => ({ userId, index }))
+    .filter(({ userId, index }) =>
+      userId !== -1 &&
+      rawPaysAnte(deal, index) &&
+      (rawSeatSnapshot(deal, index)?.Chip ?? 0) +
+        (rawSeatSnapshot(deal, index)?.BetChip ?? 0) === 0)
+  if (anteAllInSeats.length > 1 && (deal.Progress.SidePot?.length ?? 0) > 0) return null
+
+  const contributorCount = deal.SeatUserIds.reduce((count, userId, index) =>
+    userId !== -1 && rawPaysAnte(deal, index) ? count + 1 : count, 0)
+  const pot = deal.Progress.Pot
+  if (pot === undefined || contributorCount <= 0 || pot % contributorCount !== 0) return null
+
+  const inferredStack = pot / contributorCount
+  return Number.isSafeInteger(inferredStack) && inferredStack > 0 && inferredStack <= ante
+    ? inferredStack
+    : null
+}
+
+/**
+ * Independent winner resolution for the verification oracle.
+ *
+ * This deliberately does not import the production settlement helper. Exact
+ * endpoint contributions are `start + payout - final`; contribution levels
+ * reached by one player are uncalled returns, while levels reached by two or
+ * more players are contested. Abbreviated legacy rows retain only an explicit
+ * main-pot/NO_CALL winner signal.
+ */
+const resolveContestedWinners = (
+  deal: RawDealEvent,
+  results: RawHandResultsEvent,
+  battleType: BattleType | undefined
+): Set<number> => {
+  const fallback = () => new Set(
+    results.Results
+      .filter(result =>
+        result.RewardChip > 0 &&
+        (result.HandRanking === 1 || result.RankType === RankType.NO_CALL))
+      .map(result => result.UserId)
+  )
+  if (!Array.isArray(results.Results) ||
+      !Array.isArray(results.SidePot) ||
+      !Number.isSafeInteger(results.Pot)) return fallback()
+
+  const userIds = deal.SeatUserIds.filter(userId => userId !== -1)
+  const resultByUserId = new Map(results.Results.map(result => [result.UserId, result]))
+  const starts = new Map<number, number>()
+  const finalStacks = new Map<number, number>()
+  for (let seatIndex = 0; seatIndex < deal.SeatUserIds.length; seatIndex++) {
+    const userId = deal.SeatUserIds[seatIndex]
+    if (userId === undefined || userId === -1) continue
+    const startingStack = rawStartingStack(deal, seatIndex)
+    if (startingStack !== null) starts.set(seatIndex, startingStack)
+
+    const final = rawSeatSnapshot(results, seatIndex)
+    if (final?.Chip !== undefined && final.BetChip !== undefined) {
+      finalStacks.set(seatIndex, final.Chip + final.BetChip)
+    }
+  }
+
+  const occupiedSeatIndexes = deal.SeatUserIds
+    .map((userId, seatIndex) => ({ userId, seatIndex }))
+    .filter(({ userId }) => userId !== -1)
+    .map(({ seatIndex }) => seatIndex)
+  const isTournament = battleType === BattleType.SIT_AND_GO ||
+    battleType === BattleType.TOURNAMENT ||
+    battleType === BattleType.FRIEND_SIT_AND_GO ||
+    battleType === BattleType.CLUB_MATCH
+  const missingFinalSeatIndexes = occupiedSeatIndexes.filter(seatIndex => !finalStacks.has(seatIndex))
+  if (isTournament &&
+      missingFinalSeatIndexes.length === 1 &&
+      occupiedSeatIndexes.every(seatIndex => starts.has(seatIndex))) {
+    const missingSeatIndex = missingFinalSeatIndexes[0]!
+    const missingUserId = deal.SeatUserIds[missingSeatIndex]
+    if (missingUserId !== undefined && results.Results.some(result => result.UserId === missingUserId)) {
+      const totalStartingStack = occupiedSeatIndexes.reduce((sum, seatIndex) => sum + starts.get(seatIndex)!, 0)
+      const knownFinalStack = occupiedSeatIndexes.reduce((sum, seatIndex) => sum + (finalStacks.get(seatIndex) ?? 0), 0)
+      const inferredFinalStack = totalStartingStack - knownFinalStack
+      if (!Number.isSafeInteger(inferredFinalStack) || inferredFinalStack < 0) return fallback()
+      finalStacks.set(missingSeatIndex, inferredFinalStack)
+    }
+  }
+
+  const contributions = new Map<number, number>()
+  for (let seatIndex = 0; seatIndex < deal.SeatUserIds.length; seatIndex++) {
+    const userId = deal.SeatUserIds[seatIndex]
+    if (userId === undefined || userId === -1) continue
+    const startingStack = starts.get(seatIndex)
+    const finalStack = finalStacks.get(seatIndex)
+    if (startingStack === undefined || finalStack === undefined) return fallback()
+
+    const payout = resultByUserId.get(userId)?.RewardChip ?? 0
+    const contribution = startingStack + payout - finalStack
+    if (!Number.isSafeInteger(contribution) || contribution < 0 || contribution > startingStack) return fallback()
+    contributions.set(userId, contribution)
+  }
+
+  const grossPot = results.Pot! + results.SidePot!.reduce((sum, pot) => sum + pot, 0)
+  const grossPayout = results.Results.reduce((sum, result) => sum + result.RewardChip, 0)
+  const totalContribution = [...contributions.values()].reduce((sum, contribution) => sum + contribution, 0)
+  if (!Number.isSafeInteger(grossPot) ||
+      grossPot !== grossPayout ||
+      totalContribution < grossPayout) return fallback()
+
+  const uncalledReturns = new Map<number, number>(userIds.map(userId => [userId, 0]))
+  const levels = [...new Set(contributions.values())]
+    .filter(contribution => contribution > 0)
+    .sort((a, b) => a - b)
+  let previousLevel = 0
+  for (const level of levels) {
+    const contributors = userIds.filter(userId => contributions.get(userId)! >= level)
+    if (contributors.length === 1) {
+      const userId = contributors[0]!
+      uncalledReturns.set(userId, uncalledReturns.get(userId)! + (level - previousLevel))
+    }
+    previousLevel = level
+  }
+
+  const winners = new Set<number>()
+  for (const result of results.Results) {
+    const contestedAward = result.RewardChip - (uncalledReturns.get(result.UserId) ?? 0)
+    if (!Number.isSafeInteger(contestedAward) || contestedAward < 0) return fallback()
+    if (contestedAward > 0) winners.add(result.UserId)
+  }
+  return winners
+}
 
 /** Fraction-valued stat: [numerator, denominator]. */
 export type OracleFraction = [number, number]
@@ -344,8 +516,10 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
   const traceHandIds = options.traceHandIds ?? new Set<number>()
 
   let currentHand: RawEvent[] = []
+  let currentBattleType: BattleType | undefined
+  let currentHandBattleType: BattleType | undefined
 
-  function processHand(handEvents: RawEvent[]): void {
+  function processHand(handEvents: RawEvent[], battleType: BattleType | undefined): void {
     const dealEvt = handEvents.find((e): e is RawDealEvent => e.ApiTypeId === ApiType.EVT_DEAL)
     const resultsEvt = handEvents.find((e): e is RawHandResultsEvent => e.ApiTypeId === ApiType.EVT_HAND_RESULTS)
     // Incomplete hand (session boundary / dropped event) -- excluded, same as the
@@ -600,11 +774,11 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
 
     // Showdown / WTSD / WSD / WWSF determination from Results.
     const results = resultsEvt.Results || []
-    // Semantic-sync (d): winners are players with RewardChip > 0.
-    const winners = new Set(results.filter(r => r.RewardChip > 0).map(r => r.UserId))
+    // Semantic-sync (d): independently remove uncalled-only contribution tiers.
+    const winners = resolveContestedWinners(dealEvt, resultsEvt, battleType)
 
     // Semantic-sync (e): RIVER_CALL_WON is added to every RIVER_CALL action
-    // taken by a player who ends up with RewardChip > 0 for this hand.
+    // taken by a player who wins a contested award in this hand.
     for (const [pid, count] of riverCallsThisHand) {
       if (winners.has(pid)) acc(pid).riverCallWon += count
     }
@@ -671,18 +845,22 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
 
   for (const raw of events) {
     const e = raw as RawEvent
+    if (e.ApiTypeId === ApiType.EVT_ENTRY_QUEUED) {
+      currentBattleType = (e as RawSessionStartEvent).BattleType
+    }
     if (e.ApiTypeId === ApiType.EVT_DEAL) {
-      if (currentHand.length > 0) processHand(currentHand)
+      if (currentHand.length > 0) processHand(currentHand, currentHandBattleType)
       currentHand = [e]
+      currentHandBattleType = currentBattleType
     } else if (currentHand.length > 0) {
       currentHand.push(e)
       if (e.ApiTypeId === ApiType.EVT_HAND_RESULTS) {
-        processHand(currentHand)
+        processHand(currentHand, currentHandBattleType)
         currentHand = []
       }
     }
   }
-  if (currentHand.length > 0) processHand(currentHand)
+  if (currentHand.length > 0) processHand(currentHand, currentHandBattleType)
 
   const result: OracleResult = new Map()
   for (const [pid, a] of players.entries()) {

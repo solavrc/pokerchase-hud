@@ -53,6 +53,224 @@ function getLines(processor: HandLogProcessor, events: ApiEvent[]): string[] {
   return entries.map(e => e.text)
 }
 
+type SettlementResult = {
+  userId: number
+  handRanking: number
+  rewardChip: number
+}
+
+function buildSettlementEvent(
+  pot: number,
+  sidePots: number[],
+  results: SettlementResult[]
+): ApiEvent<ApiType.EVT_HAND_RESULTS> {
+  return {
+    ApiTypeId: ApiType.EVT_HAND_RESULTS,
+    timestamp: 1700000000000,
+    CommunityCards: [0, 4, 8, 12, 16],
+    Pot: pot,
+    SidePot: sidePots,
+    ResultType: 0,
+    DefeatStatus: 0,
+    HandId: 999900,
+    HandLog: '',
+    Results: results.map(result => ({
+      UserId: result.userId,
+      HoleCards: [0, 1],
+      RankType: 9,
+      Hands: [0, 1, 4, 8, 12],
+      HandRanking: result.handRanking,
+      Ranking: -2,
+      RewardChip: result.rewardChip,
+    })),
+    Player: { SeatIndex: 0, BetStatus: -1, Chip: 0, BetChip: 0 },
+    OtherPlayers: [],
+  } as ApiEvent<ApiType.EVT_HAND_RESULTS>
+}
+
+function buildCollectedLines(
+  event: ApiEvent<ApiType.EVT_HAND_RESULTS>,
+  uncalledBetAmount = 0,
+  uncalledBetUserId?: number
+): string[] {
+  const players = event.Results.map(result => ({
+    userId: result.UserId,
+    name: `Player${result.UserId}`,
+  }))
+  const processor = new HandLogProcessor(createContext(createSession(players)))
+  const collectedEntries = (processor as unknown as {
+    buildCollectedEntries: (
+      resultEvent: ApiEvent<ApiType.EVT_HAND_RESULTS>,
+      uncalledAmount?: number,
+      uncalledUserId?: number
+    ) => HandLogEntry[]
+  }).buildCollectedEntries(event, uncalledBetAmount, uncalledBetUserId)
+  return collectedEntries.map(entry => entry.text)
+}
+
+function sumCollected(lines: string[]): number {
+  return lines.reduce((sum, line) => {
+    const amount = line.match(/ collected (\d+) from /)?.[1]
+    return sum + (amount ? Number(amount) : 0)
+  }, 0)
+}
+
+function expectCollectedToReconcile(
+  event: ApiEvent<ApiType.EVT_HAND_RESULTS>,
+  lines: string[],
+  uncalledBetAmount = 0
+): void {
+  const totalReward = event.Results.reduce((sum, result) => sum + result.RewardChip, 0)
+  expect(sumCollected(lines) + uncalledBetAmount).toBe(totalReward)
+}
+
+describe('split-pot collected allocation invariants', () => {
+  test('main-pot odd chip follows the API RewardChip recipient', () => {
+    // PokerStars awards an indivisible chip by position. PokerChase has already
+    // applied that seat rule in RewardChip: Player100 receives 3, Player200 2.
+    const event = buildSettlementEvent(5, [], [
+      { userId: 100, handRanking: 1, rewardChip: 3 },
+      { userId: 200, handRanking: 1, rewardChip: 2 },
+    ])
+
+    const lines = buildCollectedLines(event)
+
+    expect(lines).toEqual([
+      'Player100 collected 3 from pot',
+      'Player200 collected 2 from pot',
+    ])
+    expectCollectedToReconcile(event, lines)
+  })
+
+  test('main pot 5 split 3/2 plus side pot 3 emits all 8 chips', () => {
+    const event = buildSettlementEvent(5, [3], [
+      { userId: 100, handRanking: 1, rewardChip: 3 },
+      { userId: 200, handRanking: 1, rewardChip: 2 },
+      { userId: 300, handRanking: 2, rewardChip: 3 },
+    ])
+
+    const lines = buildCollectedLines(event)
+
+    expect(lines).toEqual([
+      'Player300 collected 3 from side pot',
+      'Player100 collected 3 from main pot',
+      'Player200 collected 2 from main pot',
+    ])
+    expectCollectedToReconcile(event, lines)
+  })
+
+  test('side-pot odd chip follows the API RewardChip recipient', () => {
+    const event = buildSettlementEvent(4, [5], [
+      { userId: 100, handRanking: 1, rewardChip: 4 },
+      { userId: 200, handRanking: 2, rewardChip: 3 },
+      { userId: 300, handRanking: 2, rewardChip: 2 },
+    ])
+
+    const lines = buildCollectedLines(event)
+
+    expect(lines).toEqual([
+      'Player200 collected 3 from side pot',
+      'Player300 collected 2 from side pot',
+      'Player100 collected 4 from main pot',
+    ])
+    expectCollectedToReconcile(event, lines)
+  })
+
+  test('multiple tied pots preserve every per-pot odd-chip allocation', () => {
+    const event = buildSettlementEvent(5, [5, 3], [
+      { userId: 100, handRanking: 1, rewardChip: 3 },
+      { userId: 200, handRanking: 1, rewardChip: 2 },
+      { userId: 300, handRanking: 2, rewardChip: 3 },
+      { userId: 400, handRanking: 2, rewardChip: 2 },
+      { userId: 500, handRanking: 3, rewardChip: 3 },
+    ])
+
+    const lines = buildCollectedLines(event)
+
+    expect(lines).toEqual([
+      'Player500 collected 3 from side pot-2',
+      'Player300 collected 3 from side pot-1',
+      'Player400 collected 2 from side pot-1',
+      'Player100 collected 3 from main pot',
+      'Player200 collected 2 from main pot',
+    ])
+    expectCollectedToReconcile(event, lines)
+  })
+
+  test('tied winners continuing into a side pot keep their RewardChip totals', () => {
+    const event = buildSettlementEvent(5, [8], [
+      { userId: 100, handRanking: 1, rewardChip: 7 },
+      { userId: 200, handRanking: 1, rewardChip: 6 },
+    ])
+
+    const lines = buildCollectedLines(event)
+
+    expect(lines).toEqual([
+      'Player100 collected 4 from side pot',
+      'Player200 collected 4 from side pot',
+      'Player100 collected 3 from main pot',
+      'Player200 collected 2 from main pot',
+    ])
+    expectCollectedToReconcile(event, lines)
+  })
+
+  test('odd-chip allocation looks ahead across pot-tier eligibility boundaries', () => {
+    const event = buildSettlementEvent(15, [21, 2, 18], [
+      { userId: 100, handRanking: 2, rewardChip: 19 },
+      { userId: 200, handRanking: 2, rewardChip: 37 },
+    ])
+
+    const lines = buildCollectedLines(event)
+
+    expect(lines).toEqual([
+      'Player200 collected 18 from side pot-3',
+      'Player200 collected 2 from side pot-2',
+      'Player100 collected 11 from side pot-1',
+      'Player200 collected 10 from side pot-1',
+      'Player100 collected 8 from main pot',
+      'Player200 collected 7 from main pot',
+    ])
+    expectCollectedToReconcile(event, lines)
+  })
+
+  test('uncalled return plus collected payouts equals RewardChip total', () => {
+    // Ring settlement amounts are net of rake. RewardChip still includes the
+    // uncalled return, so the exported conservation boundary is:
+    // collected + uncalled == sum(RewardChip).
+    const uncalledBetAmount = 1
+    const event = buildSettlementEvent(5, [4], [
+      { userId: 100, handRanking: 1, rewardChip: 3 },
+      { userId: 200, handRanking: 1, rewardChip: 2 },
+      { userId: 300, handRanking: 2, rewardChip: 4 },
+    ])
+
+    const lines = buildCollectedLines(event, uncalledBetAmount, 300)
+
+    expect(lines).toEqual([
+      'Player300 collected 3 from side pot',
+      'Player100 collected 3 from main pot',
+      'Player200 collected 2 from main pot',
+    ])
+    expectCollectedToReconcile(event, lines, uncalledBetAmount)
+  })
+
+  test('uncalled return stays reserved for the named tied winner', () => {
+    const uncalledBetAmount = 1
+    const event = buildSettlementEvent(5, [1], [
+      { userId: 100, handRanking: 1, rewardChip: 3 },
+      { userId: 200, handRanking: 1, rewardChip: 3 },
+    ])
+
+    const lines = buildCollectedLines(event, uncalledBetAmount, 100)
+
+    expect(lines).toEqual([
+      'Player100 collected 2 from main pot',
+      'Player200 collected 3 from main pot',
+    ])
+    expectCollectedToReconcile(event, lines, uncalledBetAmount)
+  })
+})
+
 // ============================================================
 // Test 1: Hero not participating (table move, empty HoleCards)
 // Hand #435351195 — Hero has empty HoleCards after MTT table move
