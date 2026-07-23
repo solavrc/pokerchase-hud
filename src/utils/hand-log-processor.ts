@@ -407,6 +407,8 @@ export class HandLogProcessor {
 
     // Handle uncalled bets BEFORE showdown
     const wentToShowdown = showdownParticipants.length > 0
+    let showdownUncalledBetAmount = 0
+    let showdownUncalledBetUserId: number | undefined
     
     if (!wentToShowdown) {
       // For non-showdown wins, handle uncalled bets first
@@ -465,6 +467,11 @@ export class HandLogProcessor {
               uncalledAmount = lastSidePot
             }
             if (uncalledAmount > 0) {
+              showdownUncalledBetAmount = uncalledAmount
+              showdownUncalledBetUserId = event.Results
+                .filter(result => result.RewardChip > 0)
+                .find(result => this.getPlayerName(result.UserId) === betterName)
+                ?.UserId
               const uncalledEntry = this.createEntry(
                 `Uncalled bet (${uncalledAmount}) returned to ${betterName}`,
                 HandLogEntryType.SHOWDOWN
@@ -514,16 +521,11 @@ export class HandLogProcessor {
 
     // Handle pot collection for showdown winners and tournament finish positions
     if (wentToShowdown) {
-      // ショウダウン前のuncalled betを検出（サイドポット計算に必要）
-      const uncalledBetEntry = entries.find(e =>
-        e.text.includes('Uncalled bet (') && e.text.includes(') returned to')
-      )
-      let uncalledBetAmount = 0
-      if (uncalledBetEntry) {
-        const m = uncalledBetEntry.text.match(/Uncalled bet \((\d+)\)/)
-        if (m?.[1]) uncalledBetAmount = parseInt(m[1])
-      }
-      entries.push(...this.buildCollectedEntries(event, uncalledBetAmount))
+      entries.push(...this.buildCollectedEntries(
+        event,
+        showdownUncalledBetAmount,
+        showdownUncalledBetUserId
+      ))
     }
 
     event.Results.forEach(result => {
@@ -549,7 +551,11 @@ export class HandLogProcessor {
   /**
    * サイドポット対応の collected 行を構築
    */
-  private buildCollectedEntries(event: ApiEvent<ApiType.EVT_HAND_RESULTS>, uncalledBetAmount: number = 0): HandLogEntry[] {
+  private buildCollectedEntries(
+    event: ApiEvent<ApiType.EVT_HAND_RESULTS>,
+    uncalledBetAmount: number = 0,
+    uncalledBetUserId?: number
+  ): HandLogEntry[] {
     const entries: HandLogEntry[] = []
     const hasSidePots = event.SidePot.length > 0
 
@@ -597,36 +603,80 @@ export class HandLogProcessor {
       }))
       .sort((a, b) => a.handRanking - b.handRanking)
 
-    const potWinners: Map<number, { userIds: number[], amount: number }> = new Map()
+    if (uncalledBetAmount > 0) {
+      const recipient = winners.find(w => w.userId === uncalledBetUserId)
+      if (!recipient || recipient.remaining < uncalledBetAmount) return entries
+      // RewardChipは返却分込み。pot allocationから先に予約し、同点の別winnerへ
+      // terminal residualを誤帰属しないようにする。
+      recipient.remaining -= uncalledBetAmount
+    }
 
-    for (let potIdx = 0; potIdx < potAmounts.length; potIdx++) {
+    const potWinners: Map<number, {
+      allocations: Array<{ userId: number, amount: number }>
+      amount: number
+    }> = new Map()
+
+    const allocatePots = (potIdx: number): boolean => {
+      if (potIdx === potAmounts.length) {
+        return winners.every(w => w.remaining === 0)
+      }
+
       const potAmount = potAmounts[potIdx]!
-      if (potAmount <= 0) continue
+      if (potAmount <= 0) return allocatePots(potIdx + 1)
 
       // 残RewardChipを持つ最強HandRankingグループが現在のポットの勝者（同点はスプリット）
       const active = winners.filter(w => w.remaining > 0)
-      if (active.length === 0) break
+      if (active.length === 0) return false
       const bestRanking = active[0]!.handRanking
       const group = active.filter(w => w.handRanking === bestRanking)
 
-      potWinners.set(potIdx, {
-        userIds: group.map(w => w.userId),
-        amount: potAmount
-      })
-
-      // 割当分を残RewardChipから消費。端数（オッドチップ）は残額が最小の
-      // メンバーに寄せる: オッドチップを受け取って退場するメンバーを
-      // ちょうど0にし、後続ポットの勝者判定を狂わせないため
       const perPlayer = Math.floor(potAmount / group.length)
+      if (group.some(w => w.remaining < perPlayer)) return false
       for (const w of group) w.remaining -= perPlayer
-      let leftover = potAmount - perPlayer * group.length
-      while (leftover > 0) {
-        const candidates = group.filter(w => w.remaining > 0)
-        if (candidates.length === 0) break
-        candidates.reduce((min, w) => w.remaining < min.remaining ? w : min).remaining -= 1
-        leftover -= 1
+
+      const leftover = potAmount - perPlayer * group.length
+      const candidates = group.filter(w => w.remaining > 0)
+
+      // 同じ同点グループが後続side potにも残る場合、現在のpotだけを見た
+      // greedy選択ではRewardChip合計を反転させうる。端数は最大5個のpot・
+      // 最大6人の候補だけを探索し、全pot後のAPI残額に一致する割当を選ぶ。
+      const tryOddChipRecipients = (
+        startIndex: number,
+        needed: number,
+        selected: typeof candidates
+      ): boolean => {
+        if (needed === 0) {
+          for (const winner of selected) winner.remaining -= 1
+          const allocations = group.map(w => ({
+            userId: w.userId,
+            amount: perPlayer + (selected.includes(w) ? 1 : 0)
+          }))
+          potWinners.set(potIdx, { allocations, amount: potAmount })
+
+          if (allocatePots(potIdx + 1)) return true
+
+          potWinners.delete(potIdx)
+          for (const winner of selected) winner.remaining += 1
+          return false
+        }
+
+        if (candidates.length - startIndex < needed) return false
+        for (let i = startIndex; i < candidates.length; i++) {
+          const winner = candidates[i]!
+          selected.push(winner)
+          if (tryOddChipRecipients(i + 1, needed - 1, selected)) return true
+          selected.pop()
+        }
+        return false
       }
+
+      if (tryOddChipRecipients(0, leftover, [])) return true
+
+      for (const w of group) w.remaining += perPlayer
+      return false
     }
+
+    allocatePots(0)
 
     for (let potIdx = potAmounts.length - 1; potIdx >= 0; potIdx--) {
       const potInfo = potWinners.get(potIdx)
@@ -634,21 +684,12 @@ export class HandLogProcessor {
 
       const potLabel = this.getPotLabel(potIdx, event.SidePot.length)
       
-      if (potInfo.userIds.length === 1) {
-        const playerName = this.getPlayerName(potInfo.userIds[0]!)
+      for (const allocation of potInfo.allocations) {
+        const playerName = this.getPlayerName(allocation.userId)
         entries.push(this.createEntry(
-          `${playerName} collected ${potInfo.amount} from ${potLabel}`,
+          `${playerName} collected ${allocation.amount} from ${potLabel}`,
           HandLogEntryType.SHOWDOWN
         ))
-      } else {
-        const splitAmount = Math.floor(potInfo.amount / potInfo.userIds.length)
-        for (const userId of potInfo.userIds) {
-          const playerName = this.getPlayerName(userId)
-          entries.push(this.createEntry(
-            `${playerName} collected ${splitAmount} from ${potLabel}`,
-            HandLogEntryType.SHOWDOWN
-          ))
-        }
       }
     }
 
