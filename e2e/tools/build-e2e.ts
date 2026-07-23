@@ -33,6 +33,10 @@ export const buildE2E = (): string => {
 
   mkdirSync(EXTENSION_DIR, { recursive: true })
   copyFileSync(E2E_MANIFEST_PATH, join(EXTENSION_DIR, 'manifest.json'))
+  copyFileSync(
+    join(REPO_ROOT, 'e2e/public/trusted-context.html'),
+    join(EXTENSION_DIR, 'trusted-context.html')
+  )
   cpSync(join(REPO_ROOT, 'icons'), join(EXTENSION_DIR, 'icons'), { recursive: true })
 
   return EXTENSION_DIR

@@ -99,6 +99,7 @@ global.chrome = {
       }),
     },
     local: {
+      setAccessLevel: jest.fn().mockResolvedValue(undefined),
       get: jest.fn((keys, callback?) => {
         const result = keys ?
           (Array.isArray(keys) ?

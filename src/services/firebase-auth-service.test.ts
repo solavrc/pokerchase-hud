@@ -12,6 +12,73 @@
  */
 import { FirebaseAuthService } from './firebase-auth-service'
 
+describe('FirebaseAuthService storage access boundary', () => {
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  test('restricts local storage to trusted contexts before restoring persisted auth', async () => {
+    const stateA = {
+      uid: 'user-a',
+      email: 'a@example.com',
+      displayName: null,
+      photoURL: null,
+      idToken: 'token-a',
+      refreshToken: 'refresh-a',
+      expiresAt: Date.now() + 60 * 60 * 1000
+    }
+    await chrome.storage.local.set({ firebaseRestAuthState: stateA })
+
+    let releaseAccessRestriction!: () => void
+    const accessRestriction = new Promise<void>((resolve) => {
+      releaseAccessRestriction = resolve
+    })
+    const setAccessLevelSpy = (jest.spyOn(chrome.storage.local, 'setAccessLevel') as jest.SpyInstance)
+      .mockReturnValueOnce(accessRestriction)
+    const getSpy = jest.spyOn(chrome.storage.local, 'get')
+
+    const service = new FirebaseAuthService()
+    await Promise.resolve()
+
+    expect(setAccessLevelSpy).toHaveBeenCalledWith({ accessLevel: 'TRUSTED_CONTEXTS' })
+    expect(getSpy).not.toHaveBeenCalled()
+
+    releaseAccessRestriction()
+    await service.ready()
+
+    expect(service.getCurrentUser()?.uid).toBe('user-a')
+    expect(await service.getCurrentUser()?.getIdToken()).toBe('token-a')
+  })
+
+  test('fails closed when trusted-context storage restriction is rejected', async () => {
+    ;(jest.spyOn(chrome.storage.local, 'setAccessLevel') as jest.SpyInstance)
+      .mockRejectedValueOnce(new Error('setAccessLevel failed'))
+    const getSpy = jest.spyOn(chrome.storage.local, 'get')
+
+    const service = new FirebaseAuthService()
+
+    await expect(service.ready()).rejects.toThrow('setAccessLevel failed')
+    expect(getSpy).not.toHaveBeenCalled()
+    expect(service.getCurrentUser()).toBeNull()
+  })
+
+  test('does not let interactive sign-in bypass a failed storage restriction', async () => {
+    ;(jest.spyOn(chrome.storage.local, 'setAccessLevel') as jest.SpyInstance)
+      .mockRejectedValue(new Error('setAccessLevel failed'))
+    const identitySpy = jest.spyOn(chrome.identity, 'getAuthToken')
+    const setSpy = jest.spyOn(chrome.storage.local, 'set')
+
+    const service = new FirebaseAuthService()
+
+    await expect(service.ready()).rejects.toThrow('setAccessLevel failed')
+    await expect(service.signInWithGoogle()).rejects.toThrow('setAccessLevel failed')
+    await expect(service.signOut()).rejects.toThrow('setAccessLevel failed')
+    expect(identitySpy).not.toHaveBeenCalled()
+    expect(setSpy).not.toHaveBeenCalled()
+    expect(chrome.storage.local.remove).not.toHaveBeenCalled()
+  })
+})
+
 describe('FirebaseAuthService.getIdToken -- stale refresh handling', () => {
   afterEach(() => {
     jest.restoreAllMocks()

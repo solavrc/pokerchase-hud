@@ -29,6 +29,8 @@ import { FIXTURE_PORT, EXTENSION_DIR, BROWSER_CACHE_DIR, CHROME_BUILD_ID, DEFAUL
 export interface LaunchOptions {
   /** Path to the built e2e extension directory (must contain manifest.json + dist/). */
   extensionDir?: string
+  /** Reuse a Chrome profile across launches (used by restart-persistence scenarios). */
+  userDataDir?: string
   fixturePath?: string
   replayDelayMs?: number
   port?: number
@@ -233,6 +235,7 @@ export const launchHarness = async (options: LaunchOptions = {}): Promise<Harnes
     browser = await puppeteer.launch({
       executablePath,
       headless: !headed,
+      ...(options.userDataDir ? { userDataDir: options.userDataDir } : {}),
       args: [
         `--disable-extensions-except=${extensionDir}`,
         `--load-extension=${extensionDir}`,
