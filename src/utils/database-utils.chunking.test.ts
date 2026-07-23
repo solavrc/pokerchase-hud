@@ -32,6 +32,13 @@ import { processInChunks, processInReplayChunks, filterValidApplicationEvents, s
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
 import type { Session } from '../types/entities'
+import {
+  API_EVENT_PRIMARY_KEY,
+  getApiEventKey,
+  mergeApiEvents,
+  type ApiEventKey,
+  type RawApiEvent
+} from './api-event-key'
 
 // A known-good hand (EVT_DEAL -> 3x EVT_ACTION -> EVT_HAND_RESULTS), copied
 // verbatim from src/app.test.ts's event_timeline fixture (also reused by
@@ -90,6 +97,71 @@ describe('processInChunks (cursor-based pagination over a real Dexie table)', ()
     const seenIds = chunks.flat().map((r: any) => r.id as number)
     expect(seenIds.slice().sort((a, b) => a - b)).toEqual(rows.map(r => r.id))
     expect(new Set(seenIds).size).toBe(12) // every id exactly once, no dupes
+  })
+
+  test('durable checkpoint resumes after a mid-scan transaction abort without omissions or duplicates across four real pages', async () => {
+    const uniqueRows: RawApiEvent[] = [
+      { timestamp: 100, ApiTypeId: 201, marker: 'a' },
+      { timestamp: 101, ApiTypeId: 201, marker: 'b' },
+      { timestamp: 102, ApiTypeId: 201, marker: 'c' },
+      // A same-millisecond, same-type burst crosses the 3-row page boundary.
+      // All callers must cursor on the complete primary key, including sequence.
+      { timestamp: 103, ApiTypeId: 304, marker: 'burst-0' },
+      { timestamp: 103, ApiTypeId: 304, marker: 'burst-1' },
+      { timestamp: 103, ApiTypeId: 304, marker: 'burst-2' },
+      { timestamp: 104, ApiTypeId: 306, marker: 'd' },
+      { timestamp: 105, ApiTypeId: 201, marker: 'e' },
+      { timestamp: 106, ApiTypeId: 306, marker: 'f' },
+      { timestamp: 107, ApiTypeId: 201, marker: 'g' },
+      { timestamp: 108, ApiTypeId: 306, marker: 'h' },
+      { timestamp: 109, ApiTypeId: 201, marker: 'i' }
+    ]
+    const duplicate = structuredClone(uniqueRows[4]!)
+    const merged = await mergeApiEvents(db, [...uniqueRows, duplicate])
+    expect(merged.added).toHaveLength(uniqueRows.length)
+    expect(merged.duplicates).toBe(1)
+
+    const checkpointId = 'cursorInvariantConsumer'
+    let failOnce = true
+    const consumeFrom = async (afterKey?: ApiEventKey): Promise<void> => {
+      for await (const chunk of processInChunks(db.apiEvents, 3, { afterKey })) {
+        await db.transaction('rw', db.meta, async () => {
+          const previous = await db.meta.get(checkpointId)
+          const durableKeys = (previous?.value?.keys ?? []) as ApiEventKey[]
+          const chunkKeys = (chunk as unknown as RawApiEvent[]).map(getApiEventKey)
+          await db.meta.put({
+            id: checkpointId,
+            value: {
+              keys: [...durableKeys, ...chunkKeys],
+              afterKey: chunkKeys[chunkKeys.length - 1]
+            },
+            updatedAt: Date.now()
+          })
+
+          // Fail after the second page's writes have been issued. The real
+          // fake-indexeddb transaction must roll back both the processed-key
+          // record and its cursor, so the retry starts from the last durable
+          // page rather than skipping the aborted page.
+          if (failOnce && chunk.some(row => (row as RawApiEvent).marker === 'burst-2')) {
+            failOnce = false
+            throw new Error('synthetic consumer transaction abort')
+          }
+        })
+      }
+    }
+
+    await expect(consumeFrom()).rejects.toThrow('synthetic consumer transaction abort')
+    const afterAbort = await db.meta.get(checkpointId)
+    expect(afterAbort?.value.keys).toHaveLength(3)
+
+    await consumeFrom(afterAbort?.value.afterKey as ApiEventKey)
+
+    const durable = await db.meta.get(checkpointId)
+    const durableKeys = durable?.value.keys as ApiEventKey[]
+    const expectedKeys = (await db.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).toArray() as unknown as RawApiEvent[])
+      .map(getApiEventKey)
+    expect(durableKeys).toEqual(expectedKeys)
+    expect(new Set(durableKeys.map(key => key.join(':'))).size).toBe(expectedKeys.length)
   })
 
   test('yields nothing for an empty table', async () => {
@@ -198,6 +270,73 @@ describe('processInChunks (cursor-based pagination over a real Dexie table)', ()
     for await (const chunk of processInReplayChunks(db.apiEvents as any, 1)) chunks.push(chunk)
 
     expect(chunks.flat().map(row => row.marker)).toEqual(['turn-card', 'turn-action', 'result'])
+  })
+
+  test('snapshot replay keeps a causal equal-ms group whole across three pages and excludes rows inserted mid-scan', async () => {
+    await db.apiEvents.bulkAdd([
+      { timestamp: 100, ApiTypeId: 201, marker: 'before-1' },
+      { timestamp: 101, ApiTypeId: 201, marker: 'before-2' },
+      {
+        timestamp: 200,
+        ApiTypeId: 304,
+        SeatIndex: 4,
+        BetChip: 1_379,
+        Chip: 28_428,
+        Progress: { Phase: 2, Pot: 5_558 },
+        marker: 'turn-action'
+      },
+      {
+        timestamp: 200,
+        ApiTypeId: 305,
+        Progress: { Phase: 2, Pot: 4_179, NextActionSeat: 4 },
+        OtherPlayers: [{ SeatIndex: 4, BetChip: 0, Chip: 29_807 }],
+        marker: 'turn-card'
+      },
+      { timestamp: 201, ApiTypeId: 306, marker: 'result' },
+      { timestamp: 202, ApiTypeId: 201, marker: 'after-1' },
+      { timestamp: 203, ApiTypeId: 306, marker: 'after-2' }
+    ] as any)
+
+    const snapshotKeys = await db.apiEvents
+      .orderBy(API_EVENT_PRIMARY_KEY)
+      .primaryKeys() as ApiEventKey[]
+    const iterator = processInReplayChunks(db.apiEvents as any, 3, { snapshotKeys })
+    const first = await iterator.next()
+    expect(first.done).toBe(false)
+    const firstPage = first.value as RawApiEvent[]
+    expect(firstPage.map(row => row.marker)).toEqual(['before-1', 'before-2'])
+
+    // One row sorts behind the current cursor and one ahead. Neither belongs
+    // to the export/replay snapshot captured above, so neither may leak into
+    // the current pass or perturb its page/group boundaries.
+    await mergeApiEvents(db, [
+      { timestamp: 99, ApiTypeId: 201, marker: 'concurrent-low' },
+      { timestamp: 204, ApiTypeId: 201, marker: 'concurrent-high' }
+    ])
+
+    const remaining: RawApiEvent[] = []
+    while (true) {
+      const next = await iterator.next()
+      if (next.done) break
+      remaining.push(...next.value as RawApiEvent[])
+    }
+
+    const replayed = [...firstPage, ...remaining]
+    expect(replayed.map(row => row.marker)).toEqual([
+      'before-1',
+      'before-2',
+      // The pair was split between raw pages 1 and 2, then resolved only
+      // after the complete timestamp group was available.
+      'turn-card',
+      'turn-action',
+      'result',
+      'after-1',
+      'after-2'
+    ])
+    const replayedKeySet = new Set(replayed.map(row => getApiEventKey(row).join(':')))
+    expect(replayedKeySet).toEqual(new Set(snapshotKeys.map(key => key.join(':'))))
+    expect(replayedKeySet.size).toBe(snapshotKeys.length)
+    expect(await db.apiEvents.count()).toBe(snapshotKeys.length + 2)
   })
 
   test('same-millisecond same-type events both survive storage and entity derivation', async () => {

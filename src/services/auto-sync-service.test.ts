@@ -2115,5 +2115,76 @@ describe('AutoSyncService cloud downloads', () => {
       // cloud watermark.
       expect((await db.meta.get('syncUnparseableFloor'))?.value).toBe(200)
     })
+
+    test('four-page upload retries from the durable watermark after a middle-page failure without omitting a same-ms boundary row', async () => {
+      (DATABASE_CONSTANTS as any).SYNC_CHUNK_SIZE = 2
+
+      const rows = [
+        { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'p1-a', IsRetire: false, timestamp: 100, sequence: 0 },
+        { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'p1-b', IsRetire: false, timestamp: 101, sequence: 0 },
+        // Three rows in one exact (timestamp, ApiTypeId) group span pages 2
+        // and 3. A timestamp-only cursor loses sequence=2 after page 2.
+        { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'tie-0', IsRetire: false, timestamp: 102, sequence: 0 },
+        { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'tie-1', IsRetire: false, timestamp: 102, sequence: 1 },
+        { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'tie-2', IsRetire: false, timestamp: 102, sequence: 2 },
+        { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'p3-b', IsRetire: false, timestamp: 103, sequence: 0 },
+        { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'p4-a', IsRetire: false, timestamp: 104, sequence: 0 },
+        { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, Code: 0, BattleType: BattleType.SIT_AND_GO, Id: 'p4-b', IsRetire: false, timestamp: 105, sequence: 0 }
+      ] as ApiEvent[]
+      await db.apiEvents.bulkAdd(rows)
+
+      const oldCompletion = '2026-01-01T00:00:00.000Z'
+      await chrome.storage.local.set({ autoSyncLastTime: oldCompletion })
+
+      let cloudMax: number | null = null
+      jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp')
+        .mockImplementation(async () => cloudMax)
+
+      const acknowledged = new Set<string>()
+      const attempts: string[][] = []
+      let failThirdPage = true
+      const syncBatchSpy = jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+        .mockImplementation(async (chunk: ApiEvent[]) => {
+          const ids = chunk.map(event => event.Id as string)
+          attempts.push(ids)
+          expect(new Set(ids).size).toBe(ids.length)
+
+          if (failThirdPage && attempts.length === 3) {
+            failThirdPage = false
+            throw new Error('synthetic Firestore page-3 failure')
+          }
+
+          for (const event of chunk) acknowledged.add(event.Id as string)
+          cloudMax = Math.max(
+            cloudMax ?? Number.MIN_SAFE_INTEGER,
+            ...chunk.map(event => event.timestamp!)
+          )
+          return { totalEvents: chunk.length, syncedEvents: chunk.length, lastSyncTime: new Date() }
+        })
+
+      const service = new AutoSyncService(db)
+      await service.performSync('upload')
+
+      expect(service.getSyncState().status).toBe('error')
+      expect(service.getSyncState().error).toContain('synthetic Firestore page-3 failure')
+      expect(acknowledged).toEqual(new Set(['p1-a', 'p1-b', 'tie-0', 'tie-1']))
+      expect(cloudMax).toBe(102)
+      expect((await chrome.storage.local.get('autoSyncLastTime')).autoSyncLastTime).toBe(oldCompletion)
+
+      await service.performSync('upload')
+
+      expect(service.getSyncState().status).toBe('success')
+      expect(acknowledged).toEqual(new Set(rows.map(event => event.Id as string)))
+      expect(syncBatchSpy).toHaveBeenCalledTimes(6)
+      // The retry starts inclusively at the durable timestamp watermark.
+      // Already-acknowledged tie rows may be re-offered idempotently, but the
+      // unacknowledged sequence=2 row and every later page must be present.
+      expect(attempts.slice(3).flat()).toEqual([
+        'tie-0', 'tie-1',
+        'tie-2', 'p3-b',
+        'p4-a', 'p4-b'
+      ])
+      expect((await chrome.storage.local.get('autoSyncLastTime')).autoSyncLastTime).not.toBe(oldCompletion)
+    })
   })
 })
