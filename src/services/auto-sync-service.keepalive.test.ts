@@ -33,6 +33,7 @@ describe('AutoSyncService cloud-rebuild MV3 keepalive', () => {
     ;(chrome.runtime.sendMessage as jest.Mock).mockResolvedValue(undefined)
     ;(chrome.runtime as any).getPlatformInfo = jest.fn().mockResolvedValue({})
     jest.spyOn(minVersionGate, 'isCloudSyncBlockedByMinVersionGate').mockResolvedValue(false)
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
   })
 
   afterEach(async () => {
@@ -54,10 +55,14 @@ describe('AutoSyncService cloud-rebuild MV3 keepalive', () => {
       await new Promise<void>(resolve => { releaseReplay = resolve })
       return realFilter(events)
     })
+    jest.spyOn(firestoreBackupService, 'syncFromCloud').mockImplementation(async options => {
+      await options.onBatch([CLOUD_EVENT])
+      return 1
+    })
     const clearIntervalSpy = jest.spyOn(global, 'clearInterval')
 
     const service = new AutoSyncService(db)
-    const rebuild = (service as any).rebuildLocalEntities() as Promise<void>
+    const rebuild = service.performSync('download')
     await waitUntil(() => releaseReplay !== undefined)
 
     expect(chrome.runtime.getPlatformInfo).toHaveBeenCalledTimes(1)
@@ -66,7 +71,7 @@ describe('AutoSyncService cloud-rebuild MV3 keepalive', () => {
     await jest.advanceTimersByTimeAsync(6_000)
 
     releaseReplay!()
-    await rebuild
+    await expect(rebuild).resolves.toEqual({ success: true })
 
     expect(clearIntervalSpy).toHaveBeenCalledTimes(1)
     await jest.advanceTimersByTimeAsync(50_000)
@@ -78,12 +83,17 @@ describe('AutoSyncService cloud-rebuild MV3 keepalive', () => {
     await db.apiEvents.add(CLOUD_EVENT)
     jest.spyOn(databaseUtils, 'filterValidApplicationEvents')
       .mockRejectedValueOnce(new DOMException('replay cancelled', 'AbortError'))
+    jest.spyOn(firestoreBackupService, 'syncFromCloud').mockImplementation(async options => {
+      await options.onBatch([CLOUD_EVENT])
+      return 1
+    })
     const clearIntervalSpy = jest.spyOn(global, 'clearInterval')
 
     const service = new AutoSyncService(db)
-    await expect((service as any).rebuildLocalEntities()).rejects.toThrow(
-      `${REBUILD_AFTER_DOWNLOAD_FAILED_MESSAGE} (replay cancelled)`
-    )
+    await expect(service.performSync('download')).resolves.toEqual({
+      success: false,
+      error: `${REBUILD_AFTER_DOWNLOAD_FAILED_MESSAGE} (replay cancelled)`
+    })
 
     expect(clearIntervalSpy).toHaveBeenCalledTimes(1)
     await jest.advanceTimersByTimeAsync(50_000)

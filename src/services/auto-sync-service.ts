@@ -1374,6 +1374,19 @@ export class AutoSyncService {
    * above -- deliberately not gated here.
    */
   private async syncFromCloud(): Promise<void> {
+    // Arm before the first Firestore await: a cold worker can already be near
+    // its idle deadline after a slow count/page request. One scoped keepalive
+    // protects the complete download + Raw Lake merge + derived replay, and
+    // its finally covers both the normal and partial-download recovery paths.
+    const stopKeepAlive = await startKeepAlive()
+    try {
+      await this.downloadAndRebuildFromCloud()
+    } finally {
+      stopKeepAlive()
+    }
+  }
+
+  private async downloadAndRebuildFromCloud(): Promise<void> {
     console.log('[AutoSync] Starting complete download from cloud...')
 
     let downloadedEvents = 0
@@ -1453,12 +1466,6 @@ export class AutoSyncService {
    *   an error always leaves the previous `importStatus` untouched.
    */
   private async rebuildLocalEntities(): Promise<void> {
-    // A cloud restore can replay the entire Raw Event Lake and repeatedly
-    // commit derived chunks. On a cold MV3 worker with no game Port, popup,
-    // or DevTools attached, that work can exceed Chrome's 30-second idle
-    // timeout. Reuse the manual rebuild/export keepalive for the complete
-    // replay, including recovery after a partially downloaded cloud page.
-    const stopKeepAlive = await startKeepAlive()
     try {
       console.log('[AutoSync] Triggering chunked data rebuild after download...')
 
@@ -1564,11 +1571,6 @@ export class AutoSyncService {
       throw new Error(
         `${REBUILD_AFTER_DOWNLOAD_FAILED_MESSAGE} (${error instanceof Error ? error.message : 'Unknown error'})`
       )
-    } finally {
-      // Every settled path (success, replay/write failure, or an abort-like
-      // rejection) owns exactly one cleanup and cannot leak the interval
-      // into the next sync attempt.
-      stopKeepAlive()
     }
   }
 
