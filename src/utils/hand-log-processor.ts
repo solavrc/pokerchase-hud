@@ -1596,11 +1596,6 @@ export class HandLogProcessor {
         }
       }
 
-      // PokerChase settlement amounts are payouts after rake. Attribute the
-      // table-level deduction to the main pot so the PokerStars gross pot
-      // breakdown remains additive without inventing a side-pot split.
-      if (rake !== null) mainPot += rake
-      
       let breakdown = `Total pot ${totalPot} Main pot ${mainPot}.`
       if (sidePots.length === 1) {
         breakdown += ` Side pot ${sidePots[0]}.`
