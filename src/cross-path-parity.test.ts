@@ -58,9 +58,9 @@ const FIXTURE_SESSION_SEED: SessionSeed = {
 }
 
 // A realistic incremental window: no 201/308/313 session prelude is present,
-// so EntityConverter/rebuild/import must retain the SessionState seed supplied
-// by the currently-running service. This is the exact shape that caught the
-// prototype-getter spread regression fixed in PR #109.
+// so the incremental EntityConverter entry point must retain the SessionState
+// seed supplied by the currently-running service. This is the exact shape that
+// caught the prototype-getter spread regression fixed in PR #109.
 const SEEDED_HAND_WINDOW = FIXTURE_EVENTS.slice(firstDealIndex)
 
 const applySessionSeed = (service: PokerChaseService, seed?: SessionSeed): void => {
@@ -136,8 +136,18 @@ const replay = async (path: ReplayPath, events: ApiEvent[], seed?: SessionSeed) 
 
   try {
     if (path === 'live') {
-      for (const event of events) service.handAggregateStream.write(event)
-      await service.handAggregateStream.whenIdle()
+      // EVT_DEAL also launches an intentionally unawaited hand-count warmup
+      // outside the SimpleTransform queue. It is irrelevant to persisted
+      // parity (stats are calculated directly below), and must not outlive
+      // this fresh fixed-name DB into the next replay.
+      const warmupCount = jest.spyOn(db.hands, 'count').mockResolvedValue(0)
+      try {
+        for (const event of events) service.handAggregateStream.write(event)
+        await service.handAggregateStream.whenIdle()
+        expect(warmupCount).toHaveBeenCalled()
+      } finally {
+        warmupCount.mockRestore()
+      }
     } else if (path === 'entity-converter') {
       const bundle = new EntityConverter(service.session).convertEventsToEntities(events)
       await saveBundle(db, bundle)
@@ -237,7 +247,41 @@ describe('cross-path canonical parity', () => {
       { playerId: 1004, position: -1 },
       { playerId: 1001, position: -2 }
     ])
-    expect(canonical.stats).not.toHaveLength(0)
+    const selectedStatValues = (playerId: number, ids: string[]) => Object.fromEntries(
+      canonical.stats
+        .find(player => player.playerId === playerId)!
+        .statResults
+        .filter(stat => ids.includes(stat.id))
+        .map(stat => [stat.id, stat.value])
+    )
+    expect(selectedStatValues(1001, ['hands', 'vpip', 'pfr', 'foldToSteal'])).toEqual({
+      foldToSteal: [1, 1],
+      hands: 3,
+      pfr: [0, 3],
+      vpip: [0, 3]
+    })
+    expect(selectedStatValues(1002, ['hands', 'vpip', 'pfr', 'cbet', 'wtsd', 'wwsf'])).toEqual({
+      cbet: [1, 1],
+      hands: 3,
+      pfr: [1, 2],
+      vpip: [1, 2],
+      wtsd: [0, 1],
+      wwsf: [0, 1]
+    })
+    expect(selectedStatValues(1003, ['hands', 'vpip', 'cbetFold', 'wtsd', 'wwsf'])).toEqual({
+      cbetFold: [0, 1],
+      hands: 3,
+      vpip: [1, 2],
+      wtsd: [0, 1],
+      wwsf: [1, 1]
+    })
+    expect(selectedStatValues(1004, ['hands', 'vpip', 'pfr', 'wtsd', 'wwsf'])).toEqual({
+      hands: 3,
+      pfr: [0, 3],
+      vpip: [1, 3],
+      wtsd: [0, 1],
+      wwsf: [0, 1]
+    })
   })
 
   test('EntityConverter preserves the live SessionState seed for a prelude-free incremental window', async () => {
