@@ -91,15 +91,18 @@
  *  (c) Showdown participation is gated on RankType: NO_CALL and FOLD_OPEN
  *      are excluded, everything else (0-9 real ranks, SHOWDOWN_MUCK)
  *      counts as a showdown.
- *  (d) Winners are players with RewardChip > 0 in EVT_HAND_RESULTS.Results.
+ *  (d) Winners are players with a positive contested award. RewardChip also
+ *      includes uncalled excess returns, so the oracle independently rebuilds
+ *      contribution tiers from DEAL/RESULTS stack snapshots and removes every
+ *      tier reached by only one contributor.
  *  (e) River Call Accuracy (RCA): numerator is river CALL actions by a player
- *      in hands where that player ends up with RewardChip > 0; denominator is
+ *      in hands where that player wins a contested award; denominator is
  *      all river CALL actions by that player -- mirroring
  *      src/stats/core/river-call-accuracy.ts's RIVER_CALL/RIVER_CALL_WON
  *      ActionDetail tagging (RIVER_CALL is set when a CALL action occurs on
  *      the river; RIVER_CALL_WON is added post-hoc, in EVT_HAND_RESULTS, to
- *      any RIVER_CALL action taken by a player who ends up with
- *      RewardChip > 0 for that hand -- see entity-converter.ts /
+ *      any RIVER_CALL action taken by a player who wins a contested award
+ *      for that hand -- see entity-converter.ts /
  *      write-entity-stream.ts).
  *  (f) VPIP·F (vpipF, opt-in HUD-original stat, see hand-over
  *      workspace/reports/pokerchase-hud-vpip-f-handover.md): same VPIP
@@ -120,17 +123,22 @@ type ActionTypeNum = Exclude<ActionType, ActionType.ALL_IN>
 interface RawSeatPlayer {
   SeatIndex: number
   BetStatus: BetStatusType
+  Chip?: number
+  BetChip?: number
 }
 interface RawGame {
   ButtonSeat: number
   SmallBlindSeat: number
   BigBlindSeat: number
+  Ante?: number
 }
 interface RawDealEvent {
   ApiTypeId: ApiType.EVT_DEAL
   SeatUserIds: number[]
   Game: RawGame
   Progress: RawProgress
+  Player?: RawSeatPlayer
+  OtherPlayers?: RawSeatPlayer[]
 }
 interface RawProgress {
   NextActionTypes: number[]
@@ -153,6 +161,7 @@ interface RawDealRoundEvent {
 interface RawResultEntry {
   UserId: number
   RankType: RankType
+  HandRanking?: number
   RewardChip: number
 }
 interface RawHandResultsEvent {
@@ -160,8 +169,95 @@ interface RawHandResultsEvent {
   HandId: number
   Results: RawResultEntry[]
   CommunityCards?: number[]
+  Pot?: number
+  SidePot?: number[]
+  Player?: RawSeatPlayer
+  OtherPlayers?: RawSeatPlayer[]
 }
 type RawEvent = RawDealEvent | RawActionEvent | RawDealRoundEvent | RawHandResultsEvent | { ApiTypeId: number }
+
+const rawSeatSnapshot = (
+  event: { Player?: RawSeatPlayer, OtherPlayers?: RawSeatPlayer[] },
+  seatIndex: number
+): RawSeatPlayer | undefined => {
+  if (event.Player?.SeatIndex === seatIndex) return event.Player
+  return event.OtherPlayers?.find(player => player.SeatIndex === seatIndex)
+}
+
+/**
+ * Independent winner resolution for the verification oracle.
+ *
+ * This deliberately does not import the production settlement helper. Exact
+ * endpoint contributions are `start + payout - final`; contribution levels
+ * reached by one player are uncalled returns, while levels reached by two or
+ * more players are contested. Abbreviated legacy rows retain only an explicit
+ * main-pot/NO_CALL winner signal.
+ */
+const resolveContestedWinners = (
+  deal: RawDealEvent,
+  results: RawHandResultsEvent
+): Set<number> => {
+  const fallback = () => new Set(
+    results.Results
+      .filter(result =>
+        result.RewardChip > 0 &&
+        (result.HandRanking === 1 || result.RankType === RankType.NO_CALL))
+      .map(result => result.UserId)
+  )
+  if (!Array.isArray(results.Results) ||
+      !Array.isArray(results.SidePot) ||
+      !Number.isSafeInteger(results.Pot)) return fallback()
+
+  const userIds = deal.SeatUserIds.filter(userId => userId !== -1)
+  const resultByUserId = new Map(results.Results.map(result => [result.UserId, result]))
+  const contributions = new Map<number, number>()
+  for (let seatIndex = 0; seatIndex < deal.SeatUserIds.length; seatIndex++) {
+    const userId = deal.SeatUserIds[seatIndex]
+    if (userId === undefined || userId === -1) continue
+    const start = rawSeatSnapshot(deal, seatIndex)
+    const final = rawSeatSnapshot(results, seatIndex)
+    if (start?.Chip === undefined || start.BetChip === undefined ||
+        final?.Chip === undefined || final.BetChip === undefined) return fallback()
+
+    const paysAnte = start.BetStatus === BetStatusType.BET_ABLE ||
+      start.BetStatus === BetStatusType.ALL_IN
+    const startingStack = start.Chip + start.BetChip + (paysAnte ? (deal.Game.Ante ?? 0) : 0)
+    const finalStack = final.Chip + final.BetChip
+    const payout = resultByUserId.get(userId)?.RewardChip ?? 0
+    const contribution = startingStack + payout - finalStack
+    if (!Number.isSafeInteger(contribution) || contribution < 0 || contribution > startingStack) return fallback()
+    contributions.set(userId, contribution)
+  }
+
+  const grossPot = results.Pot! + results.SidePot!.reduce((sum, pot) => sum + pot, 0)
+  const grossPayout = results.Results.reduce((sum, result) => sum + result.RewardChip, 0)
+  const totalContribution = [...contributions.values()].reduce((sum, contribution) => sum + contribution, 0)
+  if (!Number.isSafeInteger(grossPot) ||
+      grossPot !== grossPayout ||
+      totalContribution < grossPayout) return fallback()
+
+  const uncalledReturns = new Map<number, number>(userIds.map(userId => [userId, 0]))
+  const levels = [...new Set(contributions.values())]
+    .filter(contribution => contribution > 0)
+    .sort((a, b) => a - b)
+  let previousLevel = 0
+  for (const level of levels) {
+    const contributors = userIds.filter(userId => contributions.get(userId)! >= level)
+    if (contributors.length === 1) {
+      const userId = contributors[0]!
+      uncalledReturns.set(userId, uncalledReturns.get(userId)! + (level - previousLevel))
+    }
+    previousLevel = level
+  }
+
+  const winners = new Set<number>()
+  for (const result of results.Results) {
+    const contestedAward = result.RewardChip - (uncalledReturns.get(result.UserId) ?? 0)
+    if (!Number.isSafeInteger(contestedAward) || contestedAward < 0) return fallback()
+    if (contestedAward > 0) winners.add(result.UserId)
+  }
+  return winners
+}
 
 /** Fraction-valued stat: [numerator, denominator]. */
 export type OracleFraction = [number, number]
@@ -600,11 +696,11 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
 
     // Showdown / WTSD / WSD / WWSF determination from Results.
     const results = resultsEvt.Results || []
-    // Semantic-sync (d): winners are players with RewardChip > 0.
-    const winners = new Set(results.filter(r => r.RewardChip > 0).map(r => r.UserId))
+    // Semantic-sync (d): independently remove uncalled-only contribution tiers.
+    const winners = resolveContestedWinners(dealEvt, resultsEvt)
 
     // Semantic-sync (e): RIVER_CALL_WON is added to every RIVER_CALL action
-    // taken by a player who ends up with RewardChip > 0 for this hand.
+    // taken by a player who wins a contested award in this hand.
     for (const [pid, count] of riverCallsThisHand) {
       if (winners.has(pid)) acc(pid).riverCallWon += count
     }

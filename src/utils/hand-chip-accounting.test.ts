@@ -1,7 +1,7 @@
 import type { ApiEvent } from '../types/api'
 import { ApiType } from '../types/api'
 import { BattleType, BetStatusType } from '../types/game'
-import { derivePlayerHandChipAccounting, deriveStartingStack } from './hand-chip-accounting'
+import { deriveHandSettlement, derivePlayerHandChipAccounting, deriveStartingStack } from './hand-chip-accounting'
 
 const uncalledReturnDeal = {
   ApiTypeId: ApiType.EVT_DEAL,
@@ -182,12 +182,17 @@ describe('derivePlayerHandChipAccounting', () => {
       .toEqual([null, null])
   })
 
-  test('unknown BattleType fails closed', () => {
-    expect(Object.values(derivePlayerHandChipAccounting(
+  test('unknown BattleType accepts a complete zero-sum settlement valid under either game rule', () => {
+    expect(derivePlayerHandChipAccounting(
       uncalledReturnDeal,
       uncalledReturnResult,
       undefined
-    ))).toEqual([null, null, null, null])
+    )).toEqual({
+      '156012369': { grossPayout: 4756, totalContribution: 1558, netChips: 3198 },
+      '561384657': { grossPayout: 2132, totalContribution: 3690, netChips: -1558 },
+      '578444683': { grossPayout: 0, totalContribution: 410, netChips: -410 },
+      '805494763': { grossPayout: 0, totalContribution: 1230, netChips: -1230 },
+    })
   })
 
   test('multiple short ante all-ins with side-pot tiers stay unknown when the seat-to-tier assignment is ambiguous', () => {
@@ -236,5 +241,197 @@ describe('derivePlayerHandChipAccounting', () => {
 
     expect(result['578444683']).toBeNull()
     expect(result['561384657']?.netChips).toBe(-1558)
+  })
+})
+
+describe('deriveHandSettlement', () => {
+  const buildSettlementEvents = ({
+    contributions,
+    rewards,
+    handRankings,
+    battleType = BattleType.SIT_AND_GO,
+  }: {
+    contributions: number[]
+    rewards: number[]
+    handRankings: number[]
+    battleType?: BattleType
+  }) => {
+    const userIds = contributions.map((_, index) => index + 1)
+    const startingStack = 100
+    const deal = {
+      ApiTypeId: ApiType.EVT_DEAL,
+      timestamp: 1,
+      SeatUserIds: userIds,
+      Game: {
+        CurrentBlindLv: 1,
+        NextBlindUnixSeconds: 0,
+        Ante: 0,
+        SmallBlind: 1,
+        BigBlind: 2,
+        ButtonSeat: 0,
+        SmallBlindSeat: 0,
+        BigBlindSeat: 1,
+      },
+      Player: {
+        SeatIndex: 0,
+        BetStatus: BetStatusType.BET_ABLE,
+        Chip: startingStack,
+        BetChip: 0,
+        HoleCards: [0, 1],
+      },
+      OtherPlayers: userIds.slice(1).map((_, index) => ({
+        SeatIndex: index + 1,
+        Status: 0,
+        BetStatus: BetStatusType.BET_ABLE,
+        Chip: startingStack,
+        BetChip: 0,
+      })),
+      Progress: {
+        Phase: 0,
+        NextActionSeat: 0,
+        NextActionTypes: [],
+        NextExtraLimitSeconds: 0,
+        MinRaise: 0,
+        Pot: 0,
+        SidePot: [],
+      },
+    } as unknown as ApiEvent<ApiType.EVT_DEAL>
+    const results = {
+      ApiTypeId: ApiType.EVT_HAND_RESULTS,
+      timestamp: 2,
+      HandId: 1,
+      CommunityCards: [0, 4, 8, 12, 16],
+      Pot: rewards.reduce((sum, reward) => sum + reward, 0),
+      SidePot: [],
+      ResultType: 0,
+      DefeatStatus: 0,
+      Results: userIds.map((userId, index) => ({
+        UserId: userId,
+        HoleCards: [index * 2, index * 2 + 1],
+        RankType: 1,
+        Hands: [0, 4, 8, 12, 16],
+        HandRanking: handRankings[index]!,
+        Ranking: -2,
+        RewardChip: rewards[index]!,
+      })),
+      Player: {
+        SeatIndex: 0,
+        BetStatus: -1,
+        Chip: startingStack - contributions[0]! + rewards[0]!,
+        BetChip: 0,
+      },
+      OtherPlayers: userIds.slice(1).map((_, index) => ({
+        SeatIndex: index + 1,
+        Status: 0,
+        BetStatus: -1,
+        Chip: startingStack - contributions[index + 1]! + rewards[index + 1]!,
+        BetChip: 0,
+      })),
+    } as unknown as ApiEvent<ApiType.EVT_HAND_RESULTS>
+
+    return { deal, results, battleType }
+  }
+
+  test('excludes a loser whose only payout is an uncalled excess return', () => {
+    const fixture = buildSettlementEvents({
+      contributions: [30, 50],
+      rewards: [60, 20],
+      handRankings: [1, 2],
+    })
+
+    const settlement = deriveHandSettlement(fixture.deal, fixture.results, fixture.battleType)
+
+    expect(settlement.playerChipAccounting).toEqual({
+      '1': { grossPayout: 60, totalContribution: 30, netChips: 30 },
+      '2': { grossPayout: 20, totalContribution: 50, netChips: -30 },
+    })
+    expect(settlement.playerSettlements).toEqual({
+      '1': { contestedAward: 60, uncalledReturn: 0 },
+      '2': { contestedAward: 0, uncalledReturn: 20 },
+    })
+    expect(settlement.winningPlayerIds).toEqual([1])
+  })
+
+  test('keeps a side-pot winner even when the hand is a net loss', () => {
+    const fixture = buildSettlementEvents({
+      contributions: [90, 100, 100],
+      rewards: [270, 20, 0],
+      handRankings: [1, 2, -1],
+    })
+
+    const settlement = deriveHandSettlement(fixture.deal, fixture.results, fixture.battleType)
+
+    expect(settlement.playerChipAccounting['2']?.netChips).toBe(-80)
+    expect(settlement.playerSettlements['2']).toEqual({ contestedAward: 20, uncalledReturn: 0 })
+    expect(settlement.winningPlayerIds).toEqual([1, 2])
+  })
+
+  test('preserves tied split-pot winners when an odd chip makes payouts unequal', () => {
+    const fixture = buildSettlementEvents({
+      contributions: [5, 5, 5],
+      rewards: [8, 7, 0],
+      handRankings: [1, 1, -1],
+    })
+
+    const settlement = deriveHandSettlement(fixture.deal, fixture.results, fixture.battleType)
+
+    expect(settlement.playerSettlements['1']).toEqual({ contestedAward: 8, uncalledReturn: 0 })
+    expect(settlement.playerSettlements['2']).toEqual({ contestedAward: 7, uncalledReturn: 0 })
+    expect(settlement.winningPlayerIds).toEqual([1, 2])
+  })
+
+  test('allows Ring rake while retaining the contested winner', () => {
+    const fixture = buildSettlementEvents({
+      contributions: [50, 50],
+      rewards: [95, 0],
+      handRankings: [1, -1],
+      battleType: BattleType.RING_GAME,
+    })
+
+    const settlement = deriveHandSettlement(fixture.deal, fixture.results, fixture.battleType)
+
+    expect(settlement.playerChipAccounting['1']?.netChips).toBe(45)
+    expect(settlement.playerChipAccounting['2']?.netChips).toBe(-50)
+    expect(settlement.playerSettlements['1']).toEqual({ contestedAward: 95, uncalledReturn: 0 })
+    expect(settlement.winningPlayerIds).toEqual([1])
+  })
+
+  test('real ante all-in settlement separates the returned top tier from the contested main pot', () => {
+    const settlement = deriveHandSettlement(
+      uncalledReturnDeal,
+      uncalledReturnResult,
+      BattleType.SIT_AND_GO
+    )
+
+    expect(settlement.playerSettlements['156012369']).toEqual({
+      contestedAward: 4756,
+      uncalledReturn: 0,
+    })
+    expect(settlement.playerSettlements['561384657']).toEqual({
+      contestedAward: 0,
+      uncalledReturn: 2132,
+    })
+    expect(settlement.winningPlayerIds).toEqual([156012369])
+    expect(
+      Object.values(settlement.playerSettlements)
+        .reduce((sum, entry) => sum + (entry?.contestedAward ?? 0) + (entry?.uncalledReturn ?? 0), 0)
+    ).toBe(uncalledReturnResult.Pot + uncalledReturnResult.SidePot.reduce((sum, pot) => sum + pot, 0))
+  })
+
+  test('fails winner resolution closed when settlement conservation is invalid', () => {
+    const fixture = buildSettlementEvents({
+      contributions: [30, 30],
+      rewards: [60, 0],
+      handRankings: [1, -1],
+    })
+    const corrupt = {
+      ...fixture.results,
+      Player: { ...fixture.results.Player!, Chip: fixture.results.Player!.Chip + 1 },
+    } as ApiEvent<ApiType.EVT_HAND_RESULTS>
+
+    const settlement = deriveHandSettlement(fixture.deal, corrupt, fixture.battleType)
+
+    expect(settlement.winningPlayerIds).toEqual([])
+    expect(Object.values(settlement.playerSettlements)).toEqual([null, null])
   })
 })

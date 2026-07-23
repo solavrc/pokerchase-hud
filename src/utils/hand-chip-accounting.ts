@@ -1,6 +1,6 @@
 import type { ApiEvent } from '../types/api'
 import { ApiType } from '../types/api'
-import { BattleType, BetStatusType } from '../types/game'
+import { BattleType, BetStatusType, RankType } from '../types/game'
 
 type DealEvent = ApiEvent<ApiType.EVT_DEAL>
 type HandResultsEvent = ApiEvent<ApiType.EVT_HAND_RESULTS>
@@ -23,14 +23,30 @@ export interface PlayerHandChipAccounting {
 
 export type PlayerHandChipAccountingMap = Record<string, PlayerHandChipAccounting | null>
 
+export interface PlayerHandSettlement {
+  /** Chips won from tiers contested by at least two contributors. */
+  contestedAward: number
+  /** Chips returned from a contribution tier with no opposing contribution. */
+  uncalledReturn: number
+}
+
+export type PlayerHandSettlementMap = Record<string, PlayerHandSettlement | null>
+
+export interface HandSettlement {
+  playerChipAccounting: PlayerHandChipAccountingMap
+  playerSettlements: PlayerHandSettlementMap
+  /** Players who received a positive contested award. */
+  winningPlayerIds: number[]
+}
+
 const getDealSnapshot = (event: DealEvent, seatIndex: number): ChipSnapshot | undefined => {
   if (event.Player?.SeatIndex === seatIndex) return event.Player
-  return event.OtherPlayers.find(player => player.SeatIndex === seatIndex)
+  return event.OtherPlayers?.find(player => player.SeatIndex === seatIndex)
 }
 
 const getResultSnapshot = (event: HandResultsEvent, seatIndex: number): ChipSnapshot | undefined => {
   if (event.Player?.SeatIndex === seatIndex) return event.Player
-  return event.OtherPlayers.find(player => player.SeatIndex === seatIndex)
+  return event.OtherPlayers?.find(player => player.SeatIndex === seatIndex)
 }
 
 /**
@@ -100,6 +116,9 @@ export const deriveStartingStack = (event: DealEvent, seatIndex: number): number
 const emptyAccounting = (event: DealEvent): PlayerHandChipAccountingMap =>
   Object.fromEntries(event.SeatUserIds.filter(userId => userId !== -1).map(userId => [String(userId), null]))
 
+const emptySettlements = (event: DealEvent): PlayerHandSettlementMap =>
+  Object.fromEntries(event.SeatUserIds.filter(userId => userId !== -1).map(userId => [String(userId), null]))
+
 /**
  * Derive exact signed per-player chip results from one causal DEAL -> RESULTS
  * pair. `RewardChip` is gross payout (and can be an uncalled return), so:
@@ -115,8 +134,8 @@ const emptyAccounting = (event: DealEvent): PlayerHandChipAccountingMap =>
  * player remains null rather than receiving an estimated loss. Complete table
  * snapshots must also obey the game type's chip-conservation rule: tournament
  * chips are zero-sum, while Ring rake may remove chips but can never create
- * them. An unknown BattleType cannot select either rule and therefore fails
- * closed.
+ * them. An unknown BattleType is accepted only when complete snapshots prove
+ * a zero-sum settlement, which is valid under either rule.
  */
 export const derivePlayerHandChipAccounting = (
   deal: DealEvent,
@@ -130,8 +149,6 @@ export const derivePlayerHandChipAccounting = (
     battleType === BattleType.TOURNAMENT ||
     battleType === BattleType.FRIEND_SIT_AND_GO ||
     battleType === BattleType.CLUB_MATCH
-
-  if (!isRing && !isTournament) return accounting
 
   // Imported legacy/test rows can bypass the current API parser. Missing
   // settlement fields are an unknown result, never a reason to throw or infer.
@@ -174,8 +191,30 @@ export const derivePlayerHandChipAccounting = (
     .map((userId, seatIndex) => ({ userId, seatIndex }))
     .filter(({ userId }) => userId !== -1)
     .map(({ seatIndex }) => seatIndex)
+
+  // Tournament RESULTS commonly omits the local player's final snapshot even
+  // when that player appears in Results[]. With complete starts and exactly
+  // one such missing result seat, zero-sum conservation determines that final
+  // stack exactly. Do not apply this to Ring (rake is unknown) or to a missing
+  // folded seat whose contribution cannot be tied to a result row.
+  const missingFinalSeatIndexes = occupiedSeatIndexes.filter(seatIndex => !finalStacks.has(seatIndex))
+  if (isTournament &&
+      missingFinalSeatIndexes.length === 1 &&
+      occupiedSeatIndexes.every(seatIndex => starts.has(seatIndex))) {
+    const missingSeatIndex = missingFinalSeatIndexes[0]!
+    const missingUserId = deal.SeatUserIds[missingSeatIndex]
+    if (missingUserId !== undefined && results.Results.some(result => result.UserId === missingUserId)) {
+      const totalStartingStack = occupiedSeatIndexes.reduce((sum, seatIndex) => sum + starts.get(seatIndex)!, 0)
+      const knownFinalStack = occupiedSeatIndexes.reduce((sum, seatIndex) => sum + (finalStacks.get(seatIndex) ?? 0), 0)
+      const inferredFinalStack = totalStartingStack - knownFinalStack
+      if (!Number.isSafeInteger(inferredFinalStack) || inferredFinalStack < 0) return accounting
+      finalStacks.set(missingSeatIndex, inferredFinalStack)
+    }
+  }
+
   const hasCompleteTableSnapshots = occupiedSeatIndexes.every(seatIndex =>
     starts.has(seatIndex) && finalStacks.has(seatIndex))
+  if (!isRing && !isTournament && !hasCompleteTableSnapshots) return accounting
 
   if (hasCompleteTableSnapshots) {
     const totalStartingStack = occupiedSeatIndexes.reduce((sum, seatIndex) => sum + starts.get(seatIndex)!, 0)
@@ -184,7 +223,8 @@ export const derivePlayerHandChipAccounting = (
 
     const chipDelta = totalFinalStack - totalStartingStack
     if ((isTournament && chipDelta !== 0) ||
-        (isRing && chipDelta > 0)) return accounting
+        (isRing && chipDelta > 0) ||
+        (!isTournament && !isRing && chipDelta !== 0)) return accounting
   }
 
   for (let seatIndex = 0; seatIndex < deal.SeatUserIds.length; seatIndex++) {
@@ -192,11 +232,10 @@ export const derivePlayerHandChipAccounting = (
     if (userId === undefined || userId === -1) continue
 
     const startingStack = starts.get(seatIndex)
-    const finalSnapshot = getResultSnapshot(results, seatIndex)
-    if (startingStack === undefined || !finalSnapshot) continue
+    const finalStack = finalStacks.get(seatIndex)
+    if (startingStack === undefined || finalStack === undefined) continue
 
     const payout = results.Results.find(result => result.UserId === userId)?.RewardChip ?? 0
-    const finalStack = finalStacks.get(seatIndex)!
     const totalContribution = startingStack + payout - finalStack
     if (!Number.isSafeInteger(totalContribution) || totalContribution < 0 || totalContribution > startingStack) continue
 
@@ -211,4 +250,123 @@ export const derivePlayerHandChipAccounting = (
   }
 
   return accounting
+}
+
+/**
+ * Resolve gross payouts into contested awards and uncalled returns.
+ *
+ * A positive RewardChip is not sufficient to identify a winner: PokerChase
+ * includes an unmatched excess contribution in RewardChip. Contribution tiers
+ * make that distinction explicit. A tier reached by one contributor is an
+ * uncalled return; a tier reached by two or more contributors is a contested
+ * pot, whose eligible players are the result rows that reached that tier.
+ *
+ * The exact accounting gate intentionally runs first. If any contribution is
+ * unknown, abbreviated legacy rows retain only their HandRanking=1 main-pot
+ * winner signal; complete but inconsistent rows fail closed. Neither path
+ * guesses from RewardChip alone. The gate also shares the tournament zero-sum
+ * / Ring rake validation with Recent Hands. Exact winners are players with a
+ * positive payout after their uncalled return is removed. The HandRanking
+ * eligibility check prevents a payout from being attributed to a tier the
+ * player could not have won, while still allowing a lower-ranked player to win
+ * a side pot after the main-pot winner is no longer eligible.
+ */
+export const deriveHandSettlement = (
+  deal: DealEvent,
+  results: HandResultsEvent,
+  battleType: BattleType | undefined
+): HandSettlement => {
+  const playerChipAccounting = derivePlayerHandChipAccounting(deal, results, battleType)
+  const dealtSeatIndexes = deal.SeatUserIds
+    .map((userId, seatIndex) => ({ userId, seatIndex }))
+    .filter(({ userId }) => userId !== -1)
+    .map(({ seatIndex }) => seatIndex)
+  const hasIncompleteSnapshots = dealtSeatIndexes.some(seatIndex =>
+    getDealSnapshot(deal, seatIndex) === undefined ||
+    getResultSnapshot(results, seatIndex) === undefined)
+  const unresolved = (): HandSettlement => ({
+    playerChipAccounting,
+    playerSettlements: emptySettlements(deal),
+    // Imported legacy rows and intentionally abbreviated tests may omit seat
+    // snapshots needed for exact tiers. Preserve only the unambiguous main-pot
+    // winner signal in that compatibility case; never fall back to
+    // RewardChip>0, which is the bug this resolver exists to prevent. Complete
+    // but inconsistent settlements fail closed with no winners.
+    winningPlayerIds: hasIncompleteSnapshots
+      ? results.Results
+          .filter(result =>
+            result.RewardChip > 0 &&
+            (result.HandRanking === 1 || result.RankType === RankType.NO_CALL))
+          .map(result => result.UserId)
+      : [],
+  })
+
+  const dealtUserIds = deal.SeatUserIds.filter(userId => userId !== -1)
+  if (dealtUserIds.some(userId => playerChipAccounting[String(userId)] === null)) return unresolved()
+
+  const contributions = new Map<number, number>(
+    dealtUserIds.map(userId => [
+      userId,
+      playerChipAccounting[String(userId)]!.totalContribution,
+    ])
+  )
+  const resultByUserId = new Map(results.Results.map(result => [result.UserId, result]))
+  const uncalledReturns = new Map<number, number>(dealtUserIds.map(userId => [userId, 0]))
+  const eligibleContestedWinners = new Set<number>()
+
+  const contributionLevels = [...new Set(contributions.values())]
+    .filter(contribution => contribution > 0)
+    .sort((a, b) => a - b)
+  let previousLevel = 0
+
+  for (const level of contributionLevels) {
+    const contributors = dealtUserIds.filter(userId => contributions.get(userId)! >= level)
+    const tierAmount = (level - previousLevel) * contributors.length
+    if (!Number.isSafeInteger(tierAmount) || tierAmount <= 0) return unresolved()
+
+    if (contributors.length === 1) {
+      const userId = contributors[0]!
+      uncalledReturns.set(userId, uncalledReturns.get(userId)! + tierAmount)
+    } else {
+      const eligibleResults = contributors
+        .map(userId => resultByUserId.get(userId))
+        .filter((result): result is NonNullable<typeof result> =>
+          result !== undefined &&
+          (result.HandRanking > 0 ||
+            (result.RankType === RankType.NO_CALL && result.RewardChip > 0)))
+      if (eligibleResults.length === 0) return unresolved()
+
+      const bestHandRanking = Math.min(...eligibleResults.map(result =>
+        result.HandRanking > 0 ? result.HandRanking : 1))
+      for (const result of eligibleResults) {
+        const handRanking = result.HandRanking > 0 ? result.HandRanking : 1
+        if (handRanking === bestHandRanking) eligibleContestedWinners.add(result.UserId)
+      }
+    }
+
+    previousLevel = level
+  }
+
+  const playerSettlements: PlayerHandSettlementMap = {}
+  let componentPayout = 0
+  for (const userId of dealtUserIds) {
+    const grossPayout = playerChipAccounting[String(userId)]!.grossPayout
+    const uncalledReturn = uncalledReturns.get(userId)!
+    const contestedAward = grossPayout - uncalledReturn
+    if (!Number.isSafeInteger(contestedAward) || contestedAward < 0) return unresolved()
+    if (contestedAward > 0 && !eligibleContestedWinners.has(userId)) return unresolved()
+
+    playerSettlements[String(userId)] = { contestedAward, uncalledReturn }
+    componentPayout += contestedAward + uncalledReturn
+  }
+
+  const grossPayout = results.Results.reduce((sum, result) => sum + result.RewardChip, 0)
+  if (!Number.isSafeInteger(componentPayout) || componentPayout !== grossPayout) return unresolved()
+
+  return {
+    playerChipAccounting,
+    playerSettlements,
+    winningPlayerIds: dealtUserIds.filter(userId =>
+      (playerSettlements[String(userId)]?.contestedAward ?? 0) > 0),
+  }
 }

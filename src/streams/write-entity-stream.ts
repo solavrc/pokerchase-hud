@@ -21,7 +21,7 @@ import { ErrorHandler } from '../utils/error-handler'
 import { getPositionMap, getBigBlindUserId } from '../utils/position-utils'
 import { defaultRegistry } from '../stats'
 import type { ErrorContext } from '../types/errors'
-import { derivePlayerHandChipAccounting } from '../utils/hand-chip-accounting'
+import { deriveHandSettlement } from '../utils/hand-chip-accounting'
 
 /**
  * エンティティ書き込みStream（パイプライン第2段階）
@@ -316,16 +316,13 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
             })
           }
           handState.hand.id = event.HandId
-          // 勝者定義: RewardChip > 0（獲得チップがあるプレイヤー）。
-          // HandRanking === 1（最強役）ではサイドポットのみを獲得したプレイヤーを
-          // 見逃す（メインポット勝者の役が最強でも、サイドポット勝者は別役の場合がある）。
-          // WWSF/W$SDはPT4の定義上「ポットの一部でも獲得したか」を問うため、
-          // RewardChip基準がこれらの統計と整合する。
-          handState.hand.winningPlayerIds = event.Results.filter(({ RewardChip }) => RewardChip > 0).map(({ UserId }) => UserId)
           handState.hand.results = event.Results
-          handState.hand.playerChipAccounting = dealEvent
-            ? derivePlayerHandChipAccounting(dealEvent, event, handState.hand.session.battleType)
-            : Object.fromEntries(handState.hand.seatUserIds.filter(userId => userId !== -1).map(userId => [String(userId), null]))
+          const settlement = dealEvent
+            ? deriveHandSettlement(dealEvent, event, handState.hand.session.battleType)
+            : null
+          handState.hand.winningPlayerIds = settlement?.winningPlayerIds ?? []
+          handState.hand.playerChipAccounting = settlement?.playerChipAccounting ??
+            Object.fromEntries(handState.hand.seatUserIds.filter(userId => userId !== -1).map(userId => [String(userId), null]))
 
           // Update actions with handId and add RIVER_CALL_WON for winning river calls
           handState.actions = handState.actions.map(action => {
