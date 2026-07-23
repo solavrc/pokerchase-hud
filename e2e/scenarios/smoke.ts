@@ -147,7 +147,10 @@ const run = async (): Promise<void> => {
       page.on('pageerror', (err) => { popupError = err })
     })
     await new Promise((resolve) => setTimeout(resolve, 1000))
-    await popup.screenshot({ path: join(screenshotDir, 'smoke-popup.png') as `${string}.png` })
+    // Route through the harness so its just-in-time compositor keepalive is
+    // reasserted immediately before capture. A direct popup.screenshot() can
+    // stall under hosted-runner Xvfb even though the page remains responsive.
+    await harness.screenshot(join(screenshotDir, 'smoke-popup.png'), popup)
     const popupHasContent = await popup.evaluate(() => {
       const root = document.getElementById('popup-root')
       return !!root && root.children.length > 0 && (root.textContent?.trim().length ?? 0) > 0
