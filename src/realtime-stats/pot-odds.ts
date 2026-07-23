@@ -104,9 +104,22 @@ export function calculatePlayerPotOdds(
   const callAmount = canAct
     ? Math.min(fullCallAmount, effectiveStack ?? fullCallAmount)
     : 0
+
+  // Progress already contains every current-street contribution. When this
+  // seat cannot cover the highest bet, chips above its reachable contribution
+  // belong to a deeper side-pot tier (or become an uncalled return) and cannot
+  // be won by this seat. Remove that excess from every contributor before
+  // adding the effective call.
+  const reachableBet = playerBet + callAmount
+  const unmatchedExcess = canAct
+    ? seatBetAmounts.reduce((sum, betAmount) => (
+      sum + Math.max(0, (betAmount || 0) - reachableBet)
+    ), 0)
+    : 0
+  const eligiblePot = Math.max(0, totalPot - unmatchedExcess)
   
   // Calculate the total pot that player would be playing for
-  const playablePot = totalPot + callAmount
+  const playablePot = eligiblePot + callAmount
   
   const result: PlayerPotOddsResult = {
     pot: playablePot,
@@ -126,7 +139,7 @@ export function calculatePlayerPotOdds(
   
   // Calculate pot odds if there's a call amount
   if (callAmount > 0) {
-    const odds = calculatePotOdds(callAmount, totalPot)
+    const odds = calculatePotOdds(callAmount, eligiblePot)
     result.percentage = odds.percentage
     result.ratio = odds.ratio
   }

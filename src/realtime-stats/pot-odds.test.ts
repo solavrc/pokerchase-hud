@@ -76,9 +76,9 @@ describe('Pot Odds Calculation', () => {
 
     expect(odds).toHaveLength(2)
     expect(odds[0]).toMatchObject({
-      pot: 350,
+      pot: 300,
       call: 50,
-      percentage: 50 / 350 * 100
+      percentage: 50 / 300 * 100
     })
     expect(odds[1]).toMatchObject({
       pot: 400,
