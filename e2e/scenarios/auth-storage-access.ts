@@ -173,6 +173,19 @@ const run = async (): Promise<void> => {
     const extensionId = await extensionIdFor(harness.browser)
     const trustedPage = await openTrustedContext(harness.browser, extensionId)
 
+    // The synthetic fixture write below bypasses FirebaseAuthService's normal
+    // sign-in path, which itself awaits the storage-access restriction. Wait
+    // for that real startup barrier first so a fast hosted runner cannot place
+    // credentials into the brief default-untrusted window created by the test.
+    const initialAuthStatus = await trustedPage.evaluate(
+      async () => await chrome.runtime.sendMessage({ action: 'firebaseAuthStatus' })
+    ) as { success?: boolean, isSignedIn?: boolean, error?: string }
+    if (!initialAuthStatus.success || initialAuthStatus.isSignedIn) {
+      throw new Error(
+        `fresh profile auth boundary did not initialize: ${JSON.stringify(initialAuthStatus)}`
+      )
+    }
+
     await trustedPage.evaluate(
       async (authKey, authState, syncProbeKey) => {
         await chrome.storage.local.set({
