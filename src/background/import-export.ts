@@ -1207,7 +1207,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
  * Chrome MV3 では 30 秒のアイドル後に Worker が停止されるため、
  * 長時間のバッチ処理中は30秒未満の間隔でExtension APIを呼び出す。
  * Chrome 110以降はExtension API呼び出しがService Workerのアイドル
- * タイマーをリセットする。manifestのminimum_chrome_versionは120。
+ * タイマーをリセットする。manifestのminimum_chrome_versionは140。
  * @returns クリーンアップ関数
  */
 export const startKeepAlive = async (): Promise<() => void> => {

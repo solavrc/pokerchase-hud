@@ -52,7 +52,8 @@ npm run build
 
 ### Requirements and data
 
-- Chrome 120 or later is required.
+- Chrome 140 or later is required so persisted authentication data can be
+  restricted to trusted extension contexts.
 - The in-game script runs only on `https://game.poker-chase.com/*`.
 - Hand history and HUD data are stored in the browser. JSON and PokerStars exports are saved through Chrome's download function.
 - Google sign-in is optional. When enabled, Cloud Backup synchronizes game data through the configured Firebase / Google APIs; the extension requests the Google account email and profile scopes for authentication.

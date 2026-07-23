@@ -15,6 +15,7 @@
     "ccusage": "npx ccusage@latest",
     "build:e2e": "tsx e2e/tools/build-e2e.ts",
     "e2e:smoke": "tsx e2e/scenarios/smoke.ts",
+    "e2e:auth-storage": "tsx e2e/scenarios/auth-storage-access.ts",
     "e2e:playerid": "tsx e2e/scenarios/playerid-session-persistence.ts",
     "e2e": "tsx e2e/run.ts",
     "firebase:deploy": "firebase deploy --only firestore:rules,firestore:indexes",
