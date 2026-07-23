@@ -313,6 +313,49 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
     })
   })
 
+  test('a write-phase transaction abort rolls back derived rows and rebuildStatus together', async () => {
+    await runWithFreshDb(async ({ db, handlers }) => {
+      await db.apiEvents.bulkAdd([ENTRY_QUEUED, ...HAND1_EVENTS] as never[])
+      await handlers.rebuildAllData()
+
+      const beforeDerived = await snapshotDerived(db)
+      const beforeStatus = await db.meta.get('rebuildStatus')
+      expect(beforeDerived.hands.map(hand => hand.id)).toEqual([HAND1_ID])
+      expect(beforeStatus?.value).toMatchObject({ totalHands: 1 })
+
+      // A second complete hand makes the next canonical rebuild materially
+      // different. Fail only after the transaction has issued every derived
+      // write and the new completion marker write: fake-indexeddb must abort
+      // the complete transaction, not expose new rows with an old marker (or
+      // a new marker over partially durable rows).
+      await db.apiEvents.bulkAdd(HAND2_EVENTS as never[])
+      const realMetaPut = db.meta.put.bind(db.meta)
+      const putSpy = jest.spyOn(db.meta, 'put').mockImplementation(record =>
+        realMetaPut(record).then(key => {
+          if (record.id === 'rebuildStatus') {
+            throw new Error('synthetic rebuild transaction abort after completion write')
+          }
+          return key
+        })
+      )
+
+      await expect(handlers.rebuildAllData()).rejects.toThrow(
+        'synthetic rebuild transaction abort after completion write'
+      )
+      putSpy.mockRestore()
+
+      expect(await snapshotDerived(db)).toEqual(beforeDerived)
+      expect(await db.meta.get('rebuildStatus')).toEqual(beforeStatus)
+      expect(await db.apiEvents.count()).toBe(1 + HAND1_EVENTS.length + HAND2_EVENTS.length)
+
+      const messages = (chrome.runtime.sendMessage as jest.Mock).mock.calls
+        .map(([message]) => message as { action?: string, state?: string })
+        .filter(message => message.action === 'rebuildProgress')
+      expect(messages.some(message => message.state === 'error')).toBe(true)
+      expect(messages.at(-1)?.state).toBe('error')
+    })
+  })
+
   describe('service-worker keepalive during an import-triggered rebuild (codex PR #207 P2 pass-3, "Keep the worker alive during import-triggered rebuilds")', () => {
     afterEach(() => {
       jest.restoreAllMocks()
