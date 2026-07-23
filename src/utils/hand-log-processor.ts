@@ -10,6 +10,7 @@ import { ActionType, RankType, PhaseType, isShowdownParticipant } from '../types
 import { HandLogConfig, HandLogEntry, HandLogEntryType, HandLogState } from '../types/hand-log'
 import { formatCards } from './card-utils'
 import {
+  deriveHandRakeAccounting,
   deriveStartingStack as deriveSharedStartingStack,
   getPlayerChipsAfterAnte as getSharedPlayerChipsAfterAnte,
   isAnteContributor as isSharedAnteContributor,
@@ -33,6 +34,7 @@ export interface HandLogContext {
 
 export class HandLogProcessor {
   private currentHand: HandLogState | null = null
+  private currentDealEvent: ApiEvent<ApiType.EVT_DEAL> | null = null
   private communityCards: number[] = []
   private context: HandLogContext
   private firstHandId: number | null = null
@@ -113,6 +115,7 @@ export class HandLogProcessor {
    */
   resetHandState(): void {
     this.currentHand = null
+    this.currentDealEvent = null
     this.communityCards = []
     this._anteAllInChipsMap = null
     this._anteAllInContribTiers = null
@@ -135,6 +138,7 @@ export class HandLogProcessor {
     }
 
     this.communityCards = []
+    this.currentDealEvent = event
 
     this.currentHand = {
       entries: [],
@@ -1581,28 +1585,37 @@ export class HandLogProcessor {
     const summaryEntry = this.createEntry('*** SUMMARY ***', HandLogEntryType.SUMMARY)
     entries.push(summaryEntry)
 
-    // Calculate total pot, accounting for uncalled bets
-    let totalPot = event.Pot + event.SidePot.reduce((sum, pot) => sum + pot, 0)
-    
     // Check if there was an uncalled bet in the hand result entries
     const uncalledBetEntry = handResultEntries.find(e => 
       e.text.includes('Uncalled bet (') && e.text.includes(') returned to')
     )
-    
+    let uncalledAmount = 0
     if (uncalledBetEntry) {
-      // Extract uncalled amount and subtract from total pot
       const uncalledMatch = uncalledBetEntry.text.match(/Uncalled bet \((\d+)\)/)
       if (uncalledMatch?.[1]) {
-        const uncalledAmount = parseInt(uncalledMatch[1])
-        totalPot -= uncalledAmount
+        uncalledAmount = parseInt(uncalledMatch[1])
       }
     }
     
     const isCashGame = this.context.session.battleType !== undefined && [4, 5].includes(this.context.session.battleType)
+    const rakeAccounting = isCashGame && this.currentDealEvent
+      ? deriveHandRakeAccounting(this.currentDealEvent, event, this.context.session.battleType)
+      : null
+    const rake = isCashGame ? rakeAccounting?.rake ?? null : 0
+
+    // PokerStars Total pot is the gross contested pot: uncalled returns are
+    // excluded and Ring rake is included even though it is absent from payout.
+    const netPayoutPot = event.Pot + event.SidePot.reduce((sum, pot) => sum + pot, 0) - uncalledAmount
+    const totalPot = netPayoutPot + (rake ?? 0)
     const hasSidePots = event.SidePot.length > 0
     
     let potText: string
-    if (hasSidePots) {
+    if (isCashGame && rake === null) {
+      // Without a complete endpoint snapshot the observed settlement is only
+      // the net payout pot. Do not mislabel it as a PokerStars gross total or
+      // assert zero rake.
+      potText = `Total pot unknown (net payout ${netPayoutPot}) | Rake unknown`
+    } else if (hasSidePots) {
       // サイドポットあり: "Total pot X Main pot Y. Side pot Z." 形式
       // uncalled betがある場合、最も大きいインデックスのサイドポットから差し引く
       let mainPot = event.Pot
@@ -1623,7 +1636,7 @@ export class HandLogProcessor {
           }
         }
       }
-      
+
       let breakdown = `Total pot ${totalPot} Main pot ${mainPot}.`
       if (sidePots.length === 1) {
         breakdown += ` Side pot ${sidePots[0]}.`
@@ -1632,9 +1645,11 @@ export class HandLogProcessor {
           breakdown += ` Side pot-${i + 1} ${sidePots[i]}.`
         }
       }
-      potText = `${breakdown} | Rake 0`
+      potText = `${breakdown} | Rake ${rake ?? 'unknown'}`
     } else {
-      potText = isCashGame ? `Total pot ${totalPot} | Rake 0` : `Total pot ${totalPot}`
+      potText = isCashGame
+        ? `Total pot ${totalPot} | Rake ${rake ?? 'unknown'}`
+        : `Total pot ${totalPot}`
     }
     const potEntry = this.createEntry(potText, HandLogEntryType.SUMMARY)
     entries.push(potEntry)
