@@ -38,6 +38,12 @@ interface DbSnapshot {
   handCount: number
 }
 
+interface PersistedServiceState {
+  playerId?: number
+  latestEvtDeal?: { SeatUserIds?: number[] }
+  lastUpdated?: number
+}
+
 const parseArgs = (argv: string[]) => ({
   headed: argv.includes('--headed'),
   screenshotDir: argv.includes('--screenshot-dir')
@@ -166,6 +172,36 @@ const waitForHandCount = async (
   return latest
 }
 
+const waitForPersistedServiceState = async (
+  page: Page,
+  expectedPlayerId: number,
+  minimumUpdatedAt: number,
+  timeoutMs: number
+): Promise<PersistedServiceState> => {
+  const deadline = Date.now() + timeoutMs
+  let state: PersistedServiceState | undefined
+
+  while (Date.now() < deadline) {
+    state = await page.evaluate(async () => {
+      const result = await chrome.storage.local.get('pokerChaseServiceState')
+      return result.pokerChaseServiceState as PersistedServiceState | undefined
+    })
+    if (
+      state?.playerId === expectedPlayerId &&
+      state.latestEvtDeal?.SeatUserIds?.includes(expectedPlayerId) &&
+      typeof state.lastUpdated === 'number' &&
+      state.lastUpdated >= minimumUpdatedAt
+    ) {
+      return state
+    }
+    await sleep(50)
+  }
+
+  throw new Error(
+    `rebuilt service state was not durably persisted before eviction: ${JSON.stringify(state)}`
+  )
+}
+
 const canonicalize = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(canonicalize)
   if (value && typeof value === 'object') {
@@ -220,6 +256,19 @@ const run = async (): Promise<void> => {
     .filter((line) => line.trim().length > 0)
     .map((line) => JSON.parse(line) as Record<string, unknown>)
   const expectedCanonical = expectedEvents.map(canonicalEvent).sort()
+  const playerDeal = expectedEvents.find(
+    (event) => event.ApiTypeId === 303 && event.Player
+  ) as {
+    Player?: { SeatIndex?: number }
+    SeatUserIds?: number[]
+  } | undefined
+  const playerSeatIndex = playerDeal?.Player?.SeatIndex
+  const expectedPlayerId = typeof playerSeatIndex === 'number'
+    ? playerDeal?.SeatUserIds?.[playerSeatIndex]
+    : undefined
+  if (typeof expectedPlayerId !== 'number' || expectedPlayerId < 0) {
+    throw new Error('fixture does not identify a valid hero player')
+  }
 
   console.log('[mv3-lifecycle] building e2e extension...')
   const extensionDir = buildE2E()
@@ -251,8 +300,11 @@ const run = async (): Promise<void> => {
       throw new Error('fixture completed before the mid-replay failure injection')
     }
 
-    const sentBeforeStop = harness.fixtureServer.sentEventCount()
     const firstStop = await stopExtensionServiceWorker(harness.browser)
+    // Capture only after CDP has confirmed `runningStatus: stopped`; frames
+    // sent while Chrome was still locating/stopping the worker do not prove
+    // the reconnect queue crossed an actual stopped-worker interval.
+    const sentBeforeStop = harness.fixtureServer.sentEventCount()
     console.log(
       `[mv3-lifecycle] stopped worker ${firstStop.versionId} after ` +
       `${beforeStop.rawEvents.length}/${expectedEvents.length} durable raw rows`
@@ -290,6 +342,7 @@ const run = async (): Promise<void> => {
     // AggregateEventsStream state is not expected to survive. Raw Event Lake
     // is the recovery boundary: a canonical rebuild must deterministically
     // restore every derived hand from the exact raw multiset.
+    const persistenceFloor = Date.now()
     const rebuildResponse = await withTimeout(
       trustedPage.evaluate(
         async () => await chrome.runtime.sendMessage({ action: 'rebuildData' })
@@ -313,15 +366,21 @@ const run = async (): Promise<void> => {
         `operation did not return to idle after rebuild: ${JSON.stringify(operationResponse)}`
       )
     }
+    await waitForPersistedServiceState(
+      trustedPage,
+      expectedPlayerId,
+      persistenceFloor,
+      10_000
+    )
     console.log(
       `[mv3-lifecycle] PASS - ${actualCanonical.length} raw events survived exactly once; ` +
       `${sentWhileStopped} frame(s) crossed the stopped-worker window; ` +
       `${rebuilt.handCount} hands recovered canonically`
     )
 
-    // Let PokerChaseService's 500ms-debounced state persistence settle, then
-    // evict the now-idle worker and demand a cold restore from a fresh mount.
-    await sleep(750)
+    // The poll above proves PokerChaseService's debounced, fire-and-forget
+    // storage write completed. Now evict the idle worker and demand a cold
+    // restore from a fresh mount.
     const secondStop = await stopExtensionServiceWorker(harness.browser)
     console.log(`[mv3-lifecycle] stopped idle worker ${secondStop.versionId}`)
 
@@ -331,8 +390,11 @@ const run = async (): Promise<void> => {
     await harness.waitForHudMount(20_000)
     await sleep(1_000)
     const restoredHandCount = await maxHandCount(harness)
-    if (restoredHandCount <= 0) {
-      throw new Error(`cold-restored pre-game HUD has no persisted hands: ${restoredHandCount}`)
+    if (restoredHandCount !== rebuilt.handCount) {
+      throw new Error(
+        `cold-restored pre-game HUD is incomplete: expected ${rebuilt.handCount}, ` +
+        `got ${restoredHandCount}`
+      )
     }
 
     const afterRestore = await readDatabase(trustedPage)
