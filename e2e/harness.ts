@@ -88,6 +88,14 @@ export interface StoppedExtensionServiceWorker {
   targetId?: string
 }
 
+export interface StoppedExtensionServiceWorkerMonitor {
+  /** Latest CDP runningStatus observed for the stopped version. */
+  runningStatus: () => string | undefined
+  /** Re-enables the CDP domain to force a fresh version inventory. */
+  refreshRunningStatus: () => Promise<string | undefined>
+  close: () => Promise<void>
+}
+
 interface ServiceWorkerVersion {
   versionId: string
   scriptURL: string
@@ -203,6 +211,90 @@ export const stopExtensionServiceWorker = async (
   } finally {
     session.off('ServiceWorker.workerVersionUpdated', onVersionUpdate)
     await session.detach().catch(() => {})
+  }
+}
+
+/**
+ * Keeps a ServiceWorker-domain session open after a stop and tracks the exact
+ * version's runningStatus. Callers can surround browser-side evidence with
+ * this monitor and reject it if Chrome restarted the worker in the meantime.
+ *
+ * Attaching after {@link stopExtensionServiceWorker} is deliberate: if the
+ * worker already restarted during that handoff, the initial inventory is no
+ * longer `stopped` and this fails closed instead of accepting a stale stop.
+ */
+export const monitorStoppedExtensionServiceWorker = async (
+  browser: Browser,
+  stoppedWorker: StoppedExtensionServiceWorker,
+  timeoutMs = 5_000
+): Promise<StoppedExtensionServiceWorkerMonitor> => {
+  const pages = await browser.pages()
+  const controlPage = pages[0]
+  if (!controlPage) throw new Error('Could not find a page target for ServiceWorker CDP monitoring')
+  const session = await controlPage.createCDPSession()
+  const versions = new Map<string, ServiceWorkerVersion>()
+  let notifyVersionUpdate: (() => void) | undefined
+
+  const onVersionUpdate = (event: { versions: ServiceWorkerVersion[] }): void => {
+    for (const version of event.versions) versions.set(version.versionId, version)
+    notifyVersionUpdate?.()
+  }
+  session.on('ServiceWorker.workerVersionUpdated', onVersionUpdate)
+
+  const waitForVersion = async (label: string): Promise<ServiceWorkerVersion> =>
+    versions.get(stoppedWorker.versionId) ?? await withTimeout(
+      new Promise<ServiceWorkerVersion>((resolveVersion) => {
+        const check = (): void => {
+          const version = versions.get(stoppedWorker.versionId)
+          if (version) {
+            notifyVersionUpdate = undefined
+            resolveVersion(version)
+          }
+        }
+        notifyVersionUpdate = check
+        check()
+      }),
+      timeoutMs,
+      label
+    )
+
+  const close = async (): Promise<void> => {
+    session.off('ServiceWorker.workerVersionUpdated', onVersionUpdate)
+    await session.detach().catch(() => {})
+  }
+
+  try {
+    await session.send('ServiceWorker.enable')
+    const initial = await waitForVersion('stopped extension Service Worker inventory')
+
+    if (
+      initial.scriptURL !== stoppedWorker.scriptURL ||
+      initial.runningStatus !== 'stopped'
+    ) {
+      throw new Error(
+        `extension Service Worker restarted before stopped-window monitoring: ` +
+        `${initial.versionId} is ${initial.runningStatus}`
+      )
+    }
+
+    return {
+      runningStatus: () => versions.get(stoppedWorker.versionId)?.runningStatus,
+      refreshRunningStatus: async () => {
+        // The page-receipt and ServiceWorker events arrive over separate CDP
+        // sessions, so do not assume their delivery order reflects browser
+        // time. Re-enabling forces Chrome to emit a fresh inventory after the
+        // page-side evidence has resolved.
+        versions.delete(stoppedWorker.versionId)
+        await session.send('ServiceWorker.disable')
+        await session.send('ServiceWorker.enable')
+        return (await waitForVersion('refreshed extension Service Worker inventory'))
+          .runningStatus
+      },
+      close
+    }
+  } catch (error) {
+    await close()
+    throw error
   }
 }
 

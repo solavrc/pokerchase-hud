@@ -19,6 +19,7 @@ import type { Browser, Page } from 'puppeteer-core'
 import { buildE2E } from '../tools/build-e2e.ts'
 import {
   launchHarness,
+  monitorStoppedExtensionServiceWorker,
   stopExtensionServiceWorker,
   type Harness
 } from '../harness.ts'
@@ -372,20 +373,44 @@ const run = async (): Promise<void> => {
     // Capture only after CDP has confirmed `runningStatus: stopped`; frames
     // sent while Chrome was still locating/stopping the worker do not prove
     // the reconnect queue crossed an actual stopped-worker interval.
-    const receivedBeforeStop = await receivedReplayEventCount(harness)
+    const stoppedWorkerMonitor = await monitorStoppedExtensionServiceWorker(
+      harness.browser,
+      firstStop
+    )
     console.log(
       `[mv3-lifecycle] stopped worker ${firstStop.versionId} after ` +
       `${beforeStop.rawEvents.length}/${expectedEvents.length} durable raw rows`
     )
 
-    // RuntimePortManager waits 500ms before reconnecting. The fixture delay
-    // guarantees at least one real WebSocket frame arrives inside this
-    // stopped-worker window instead of merely testing a stop between events.
-    await sleep(350)
-    const receivedWhileStopped =
-      await receivedReplayEventCount(harness) - receivedBeforeStop
-    if (receivedWhileStopped < 1) {
-      throw new Error('no page-received fixture frame crossed the stopped-worker window')
+    let receivedWhileStopped: number
+    try {
+      const receivedBeforeStop = await receivedReplayEventCount(harness)
+      // RuntimePortManager waits 500ms before reconnecting. Stop waiting as
+      // soon as the renderer receives the next fixture frame, then consult
+      // the still-open CDP monitor. This proves the frame arrived while the
+      // exact worker version remained stopped instead of merely sometime
+      // before this block's fixed timeout elapsed.
+      await harness.gamePage.waitForFunction(
+        (baseline) =>
+          ((window as typeof window & { __e2eReplayEvents?: number })
+            .__e2eReplayEvents ?? 0) > baseline,
+        { timeout: REPLAY_DELAY_MS * 3, polling: 10 },
+        receivedBeforeStop
+      )
+      receivedWhileStopped =
+        await receivedReplayEventCount(harness) - receivedBeforeStop
+      const statusAfterReceipt =
+        await stoppedWorkerMonitor.refreshRunningStatus()
+      if (statusAfterReceipt !== 'stopped') {
+        throw new Error(
+          `fixture frame arrived after Service Worker restart (${String(statusAfterReceipt)})`
+        )
+      }
+      if (receivedWhileStopped < 1) {
+        throw new Error('no page-received fixture frame crossed the stopped-worker window')
+      }
+    } finally {
+      await stoppedWorkerMonitor.close()
     }
 
     await withTimeout(harness.waitForReplayDone(), 20_000, 'fixture replay')
