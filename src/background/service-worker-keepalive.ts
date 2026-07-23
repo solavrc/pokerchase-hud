@@ -9,8 +9,13 @@
  * @returns クリーンアップ関数
  */
 export const startKeepAlive = async (): Promise<() => void> => {
-  const id = setInterval(() => {
+  const ping = () => {
     chrome.runtime.getPlatformInfo().catch(() => {})
-  }, 25000)
+  }
+  // Scheduling an interval does not reset Chrome's idle timer. The caller may
+  // arrive here after a slow network/IDB step with little of the original
+  // 30-second budget left, so reset it before waiting for the first tick.
+  ping()
+  const id = setInterval(ping, 25000)
   return () => clearInterval(id)
 }

@@ -60,8 +60,9 @@ describe('AutoSyncService cloud-rebuild MV3 keepalive', () => {
     const rebuild = (service as any).rebuildLocalEntities() as Promise<void>
     await waitUntil(() => releaseReplay !== undefined)
 
-    await jest.advanceTimersByTimeAsync(25_000)
     expect(chrome.runtime.getPlatformInfo).toHaveBeenCalledTimes(1)
+    await jest.advanceTimersByTimeAsync(25_000)
+    expect(chrome.runtime.getPlatformInfo).toHaveBeenCalledTimes(2)
     await jest.advanceTimersByTimeAsync(6_000)
 
     releaseReplay!()
@@ -69,7 +70,7 @@ describe('AutoSyncService cloud-rebuild MV3 keepalive', () => {
 
     expect(clearIntervalSpy).toHaveBeenCalledTimes(1)
     await jest.advanceTimersByTimeAsync(50_000)
-    expect(chrome.runtime.getPlatformInfo).toHaveBeenCalledTimes(1)
+    expect(chrome.runtime.getPlatformInfo).toHaveBeenCalledTimes(2)
   })
 
   test('clears the timer when replay rejects with an abort-like cancellation', async () => {
@@ -86,7 +87,7 @@ describe('AutoSyncService cloud-rebuild MV3 keepalive', () => {
 
     expect(clearIntervalSpy).toHaveBeenCalledTimes(1)
     await jest.advanceTimersByTimeAsync(50_000)
-    expect(chrome.runtime.getPlatformInfo).not.toHaveBeenCalled()
+    expect(chrome.runtime.getPlatformInfo).toHaveBeenCalledTimes(1)
   })
 
   test('preserves a partial download failure as the primary error and still clears the recovery-rebuild timer', async () => {
