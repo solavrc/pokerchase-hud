@@ -17,6 +17,141 @@ describe('Pot Odds Calculation', () => {
     stream.reset()
   })
 
+  test('short-stack call cap is cleared through a ring spectator hand before rebuy', async () => {
+    const deal = (timestamp: number, heroChip: number): ApiHandEvent => ({
+      ApiTypeId: ApiType.EVT_DEAL,
+      timestamp,
+      SeatUserIds: [101, 102, -1, -1, -1, -1],
+      Player: {
+        SeatIndex: 0,
+        BetStatus: 1,
+        HoleCards: [48, 49],
+        Chip: heroChip,
+        BetChip: 0
+      },
+      OtherPlayers: [
+        { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 900, BetChip: 100 }
+      ],
+      Game: {
+        CurrentBlindLv: 1,
+        NextBlindUnixSeconds: 0,
+        Ante: 0,
+        SmallBlind: 50,
+        BigBlind: 100,
+        ButtonSeat: 0,
+        SmallBlindSeat: 0,
+        BigBlindSeat: 1
+      },
+      Progress: {
+        Phase: PhaseType.PREFLOP,
+        NextActionSeat: 0,
+        NextActionTypes: [2, 3, 4, 5],
+        NextExtraLimitSeconds: 30,
+        MinRaise: 200,
+        Pot: 300,
+        SidePot: []
+      }
+    })
+
+    const outputs: any[] = []
+    stream.on('data', data => outputs.push(data))
+
+    stream.write(deal(100, 50))
+    stream.write({
+      ...deal(150, 0),
+      SeatUserIds: [201, 202, -1, -1, -1, -1],
+      Player: undefined,
+      OtherPlayers: [
+        { SeatIndex: 0, Status: 0, BetStatus: 1, Chip: 900, BetChip: 0 },
+        { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 900, BetChip: 100 }
+      ]
+    } as ApiHandEvent)
+    stream.write(deal(200, 1_000))
+    stream.end()
+    await new Promise<void>(resolve => stream.once('end', resolve))
+
+    const odds = outputs
+      .map(output => output.stats.heroStats.potOdds?.value)
+      .filter(Boolean)
+
+    expect(odds).toHaveLength(2)
+    expect(odds[0]).toMatchObject({
+      pot: 350,
+      call: 50,
+      percentage: 50 / 350 * 100
+    })
+    expect(odds[1]).toMatchObject({
+      pot: 400,
+      call: 100,
+      percentage: 25
+    })
+  })
+
+  test('fold action suppresses odds while preserving the contributed pot snapshot', async () => {
+    const outputs: any[] = []
+    stream.on('data', data => outputs.push(data))
+
+    stream.write({
+      ApiTypeId: ApiType.EVT_DEAL,
+      timestamp: 100,
+      SeatUserIds: [101, 102, -1, -1, -1, -1],
+      Player: {
+        SeatIndex: 0,
+        BetStatus: 1,
+        HoleCards: [48, 49],
+        Chip: 500,
+        BetChip: 0
+      },
+      OtherPlayers: [
+        { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 900, BetChip: 100 }
+      ],
+      Game: {
+        CurrentBlindLv: 1,
+        NextBlindUnixSeconds: 0,
+        Ante: 0,
+        SmallBlind: 50,
+        BigBlind: 100,
+        ButtonSeat: 0,
+        SmallBlindSeat: 0,
+        BigBlindSeat: 1
+      },
+      Progress: {
+        Phase: PhaseType.PREFLOP,
+        NextActionSeat: 0,
+        NextActionTypes: [2, 3, 4, 5],
+        NextExtraLimitSeconds: 30,
+        MinRaise: 200,
+        Pot: 300,
+        SidePot: []
+      }
+    } as ApiHandEvent)
+    stream.write({
+      ApiTypeId: ApiType.EVT_ACTION,
+      timestamp: 110,
+      SeatIndex: 0,
+      ActionType: 2,
+      Chip: 500,
+      BetChip: 0,
+      Progress: {
+        Phase: PhaseType.PREFLOP,
+        NextActionSeat: 1,
+        NextActionTypes: [0, 1, 5],
+        NextExtraLimitSeconds: 30,
+        MinRaise: 0,
+        Pot: 300,
+        SidePot: []
+      }
+    } as ApiHandEvent)
+    stream.end()
+    await new Promise<void>(resolve => stream.once('end', resolve))
+
+    const beforeFold = outputs[1].stats.heroStats.potOdds.value
+    const afterFold = outputs[2].stats.heroStats.potOdds.value
+    expect(beforeFold).toMatchObject({ pot: 400, call: 100, percentage: 25 })
+    expect(afterFold).toMatchObject({ pot: 300, call: 0, percentage: 0, ratio: '' })
+    expect(outputs[2].stats.playerStats[0].potOdds.call).toBe(0)
+  })
+
   test('ヒーローがベットに直面した時にポットオッズを計算する', (done) => {
     /**
      * シナリオ: プリフロップでBBのヒーローがUTGのレイズに直面

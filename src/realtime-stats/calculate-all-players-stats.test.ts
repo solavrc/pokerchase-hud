@@ -118,15 +118,17 @@ describe('calculateAllPlayersStats', () => {
 
     // Player 1 (current turn, limited stack)
     expect(result.playerStats[1]?.spr).toBe(0.1)
-    expect(result.playerStats[1]?.potOdds?.pot).toBe(1800)
-    expect(result.playerStats[1]?.potOdds?.call).toBe(300)
-    expect(result.playerStats[1]?.potOdds?.percentage).toBeCloseTo(16.7, 1)
-    expect(result.playerStats[1]?.potOdds?.ratio).toBe('5:1')
+    expect(result.playerStats[1]?.potOdds?.pot).toBe(1700)
+    expect(result.playerStats[1]?.potOdds?.call).toBe(200)
+    expect(result.playerStats[1]?.potOdds?.percentage).toBeCloseTo(11.8, 1)
+    expect(result.playerStats[1]?.potOdds?.ratio).toBe('15:2')
     expect(result.playerStats[1]?.potOdds?.isPlayerTurn).toBe(true)
 
-    // All-in players should have SPR 0
+    // All-in players should have SPR 0 and no impossible call amount.
     expect(result.playerStats[0]?.spr).toBe(0)
     expect(result.playerStats[2]?.spr).toBe(0)
+    expect(result.playerStats[0]?.potOdds?.call).toBe(0)
+    expect(result.playerStats[2]?.potOdds?.call).toBe(0)
   })
 
   it('should handle empty seatUserIds array', () => {
