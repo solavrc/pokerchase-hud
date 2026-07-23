@@ -342,10 +342,10 @@ export const apiEventSchemas = {
         ※[-1,-1]パターンは未観測（0件）`),
       Ranking: z.union([z.literal(-2), z.literal(-1), z.int().nonnegative()]).describe('-2=In-Play（継続中）, -1=Multiway敗退（複数人脱落時）, 正の数=このプレイヤーの**トーナメント最終着順**（脱落したこのハンドで確定、以降のハンドに再登場しない — poker-warehouse SNG継続性監査 I3 で全数検証: BQ本番839-857セッション+2キャプチャ全てゼロ違反）。優勝者はトーナメント最終ハンドでRanking=1になる（監査対象の全終端セッションで278/278）。同着（同一ハンドでの複数バスト）もサーバー側が個別の着順に割り振る場合があり、スタック残量など公開フィールドからは再現できないタイブレークが働いている'),
       RankType: z.enum(RankType).describe('成立役。0-9=ポーカーハンド（0=ロイヤルフラッシュ〜9=ハイカード）。10=NO_CALL（無競争勝利）, 11=SHOWDOWN_MUCK（ショーダウンで敗北しマック）, 12=FOLD_OPEN（フォールド後に自発的にカード公開）'),
-      RewardChip: z.int().nonnegative().describe('このプレイヤーが獲得したチップ量。0=敗北。サイドポットがある場合は各ポットからの獲得合計'),
+      RewardChip: z.int().nonnegative().describe('このプレイヤーへのgross payout。争われたポットの獲得額に加え、相手にコールされなかった超過拠出の返却（uncalled return）も含む。したがってRewardChip>0だけでは勝者と判定できず、0は獲得・返却ともにないことを示す。勝者判定は開始/終了stackから拠出tierを復元し、contested awardが正のプレイヤーを使う'),
       UserId: z.int().nonnegative().describe('プレイヤーID。EVT_DEAL.SeatUserIdsの値と一致。タイムアウト/切断プレイヤーはResults[]に含まれない場合がある'),
     })).min(1).max(6).describe(`ハンド結果の配列。フォールドしなかったプレイヤーのみ（FOLD_OPEN除く）。最大6人（6-handed全員ショーダウン時）。
-      並び順: 通常はHandRanking昇順（1=最強が先頭）。サイドポット発生時はポット単位でグルーピング（メインポット勝者→その敗者→サイドポット勝者→…）となり、HandRanking昇順が崩れる場合がある（25,322ハンド中12ハンドで観測）。
+      並び順: 通常はHandRanking昇順（1=最強が先頭）。サイドポット発生時はポット単位でグルーピング（メインポット勝者→その敗者→サイドポット勝者→…）となり、HandRanking昇順が崩れる場合がある（25,322ハンド中12ハンドで観測）。uncalled returnだけを受け取った敗者もRewardChip>0で含まれうるため、RewardChipの正値を勝者集合として扱わない。
       RankTypeによる結果パターン:
       - ShowDown (RankType 0-9): Hands=5枚, HoleCards=2枚 or [-1,-1]（マック時）
       - NoCall (RankType 10): Hands=空配列, HoleCards=空配列 or [-1,-1]
@@ -354,7 +354,7 @@ export const apiEventSchemas = {
       ※フォールド済みプレイヤーはFOLD_OPENしない限りResults[]に含まれない`),
     ResultType: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).describe('0=通常結果(98.5%、早期脱落を含む), 1=トーナメント終了遷移の観測値(0.8%、優勝/敗退の双方で出現するが全脱落を網羅しない), 2=テーブル移動(0.4%、MTT), 3=休憩開始(0.1%、MTT), 4=テーブル離脱/対戦相手不在(0.2%、Ring退出時など)。ヒーロー脱落/最終順位はResultType単独で判定せずResults[].RankingとDefeatStatusを使う'),
     SidePot: z.array(z.int().nonnegative()).max(4).describe('サイドポット額の配列（最終値）。Pot=メインポット、SidePot[0]=第1サイドポット、SidePot[1]=第2サイドポット。不変条件: Pot + sum(SidePot) == sum(Results[].RewardChip)（100%成立）。ハンドの7.5%で発生（1サイドポット:95%, 2:5%, 3:<0.1%）'),
-  }).describe('ハンド結果 - ハンド集約の終端。HandIdはここでのみ取得可能（EVT_DEAL→EVT_HAND_RESULTSが1ハンドの境界）。Results[]はHandRanking昇順で勝者→敗者の順。フォールド済みプレイヤーはResults[]に含まれない（FOLD_OPEN除く）'),
+  }).describe('ハンド結果 - ハンド集約の終端。HandIdはここでのみ取得可能（EVT_DEAL→EVT_HAND_RESULTSが1ハンドの境界）。Results[]は原則HandRanking順だが、RewardChipにはuncalled returnも含まれる。フォールド済みプレイヤーはResults[]に含まれない（FOLD_OPEN除く）'),
 
   [307]: baseSchema.extend({
     ApiTypeId: z.literal(307),
