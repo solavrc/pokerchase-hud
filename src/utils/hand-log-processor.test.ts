@@ -1007,6 +1007,48 @@ describe('キャッシュゲーム + サイドポット', () => {
     const totalPotLine = lines.find(l => l.includes('Total pot'))
     expect(totalPotLine).toBe('Total pot 300 | Rake 0')
   })
+
+  test('complete Ring endpoint snapshotからgross potと実rakeを出力する', () => {
+    const rakeEvents = events.map(event => {
+      if (event.ApiTypeId !== ApiType.EVT_HAND_RESULTS) return event
+      return {
+        ...event,
+        Pot: 290,
+        Results: event.Results.map(result =>
+          result.UserId === 200 ? { ...result, RewardChip: 290 } : result),
+        Player: { ...event.Player, Chip: 1190 },
+      } as ApiEvent
+    })
+    const processor = new HandLogProcessor(createContext(
+      createSession(players, { battleType: BattleType.RING_GAME })
+    ))
+    const lines = getLines(processor, rakeEvents)
+
+    expect(lines).toContain('Hero collected 290 from pot')
+    expect(lines).toContain('Total pot 300 | Rake 10')
+  })
+
+  test('Ring endpoint snapshot欠損時はrake 0やgross potを断定しない', () => {
+    const incompleteEvents = events.map(event => {
+      if (event.ApiTypeId !== ApiType.EVT_HAND_RESULTS) return event
+      return {
+        ...event,
+        Pot: 290,
+        Results: event.Results.map(result =>
+          result.UserId === 200 ? { ...result, RewardChip: 290 } : result),
+        Player: { ...event.Player, Chip: 1190 },
+        OtherPlayers: event.OtherPlayers.filter(player => player.SeatIndex !== 2),
+      } as ApiEvent
+    })
+    const processor = new HandLogProcessor(createContext(
+      createSession(players, { battleType: BattleType.RING_GAME })
+    ))
+    const totalPotLine = getLines(processor, incompleteEvents)
+      .find(line => line.includes('Total pot'))
+
+    expect(totalPotLine).toBe('Total pot unknown (net payout 290) | Rake unknown')
+    expect(totalPotLine).not.toContain('Rake 0')
+  })
 })
 
 // ============================================================

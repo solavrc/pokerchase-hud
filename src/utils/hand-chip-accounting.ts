@@ -23,6 +23,15 @@ export interface PlayerHandChipAccounting {
 
 export type PlayerHandChipAccountingMap = Record<string, PlayerHandChipAccounting | null>
 
+export interface HandRakeAccounting {
+  /** Every chip committed during the hand, including an uncalled return. */
+  totalContribution: number
+  /** EVT_HAND_RESULTS gross payouts, including an uncalled return. */
+  totalPayout: number
+  /** Chips removed from the table: totalContribution - totalPayout. */
+  rake: number
+}
+
 const getDealSnapshot = (event: DealEvent, seatIndex: number): ChipSnapshot | undefined => {
   if (event.Player?.SeatIndex === seatIndex) return event.Player
   return event.OtherPlayers.find(player => player.SeatIndex === seatIndex)
@@ -211,4 +220,61 @@ export const derivePlayerHandChipAccounting = (
   }
 
   return accounting
+}
+
+/**
+ * Derive an exact Ring-game rake from the same complete endpoint snapshots
+ * used for signed player results. A partial snapshot is deliberately unknown:
+ * treating an unobserved seat as zero contribution would falsely report
+ * `Rake 0` in exported hand histories.
+ *
+ * This helper is intentionally Ring-only. Tournament rake is paid outside the
+ * table chip economy and HandLogProcessor preserves its existing `Rake 0`
+ * summary behavior separately.
+ */
+export const deriveHandRakeAccounting = (
+  deal: DealEvent,
+  results: HandResultsEvent,
+  battleType: BattleType | undefined
+): HandRakeAccounting | null => {
+  const isRing = battleType === BattleType.RING_GAME || battleType === BattleType.FRIEND_RING_GAME
+  if (!isRing) return null
+
+  const occupiedSeatIndexes = deal.SeatUserIds
+    .map((userId, seatIndex) => ({ userId, seatIndex }))
+    .filter(({ userId }) => userId !== -1)
+    .map(({ seatIndex }) => seatIndex)
+  const occupiedSeatSet = new Set(occupiedSeatIndexes)
+  const dealtUserIds = deal.SeatUserIds.filter(userId => userId !== -1)
+  const dealSeats = [
+    ...(deal.Player ? [deal.Player] : []),
+    ...deal.OtherPlayers,
+  ]
+  const resultSeats = [
+    ...(results.Player ? [results.Player] : []),
+    ...results.OtherPlayers,
+  ]
+  const isExactSnapshot = (snapshots: ChipSnapshot[]): boolean =>
+    snapshots.length === occupiedSeatIndexes.length &&
+    new Set(snapshots.map(snapshot => snapshot.SeatIndex)).size === snapshots.length &&
+    snapshots.every(snapshot => occupiedSeatSet.has(snapshot.SeatIndex))
+
+  if (new Set(dealtUserIds).size !== dealtUserIds.length ||
+      !isExactSnapshot(dealSeats) ||
+      !isExactSnapshot(resultSeats)) return null
+
+  const accounting = derivePlayerHandChipAccounting(deal, results, battleType)
+  const entries = Object.values(accounting)
+  if (entries.length === 0 || entries.some(entry => entry === null)) return null
+
+  const totalContribution = entries.reduce((sum, entry) => sum + entry!.totalContribution, 0)
+  const totalPayout = entries.reduce((sum, entry) => sum + entry!.grossPayout, 0)
+  const rake = totalContribution - totalPayout
+
+  if (!Number.isSafeInteger(totalContribution) ||
+      !Number.isSafeInteger(totalPayout) ||
+      !Number.isSafeInteger(rake) ||
+      rake < 0) return null
+
+  return { totalContribution, totalPayout, rake }
 }

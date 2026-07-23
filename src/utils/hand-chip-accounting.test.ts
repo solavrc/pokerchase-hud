@@ -1,7 +1,11 @@
 import type { ApiEvent } from '../types/api'
 import { ApiType } from '../types/api'
 import { BattleType, BetStatusType } from '../types/game'
-import { derivePlayerHandChipAccounting, deriveStartingStack } from './hand-chip-accounting'
+import {
+  deriveHandRakeAccounting,
+  derivePlayerHandChipAccounting,
+  deriveStartingStack,
+} from './hand-chip-accounting'
 
 const uncalledReturnDeal = {
   ApiTypeId: ApiType.EVT_DEAL,
@@ -126,6 +130,81 @@ describe('derivePlayerHandChipAccounting', () => {
       '2': { grossPayout: 0, totalContribution: 100, netChips: -100 },
     })
     expect(Object.values(result).reduce((sum, entry) => sum + (entry?.netChips ?? 0), 0)).toBe(-10)
+    expect(deriveHandRakeAccounting(deal, handResult, BattleType.RING_GAME)).toEqual({
+      totalContribution: 200,
+      totalPayout: 190,
+      rake: 10,
+    })
+    expect(
+      Object.values(result).reduce((sum, entry) => sum + entry!.netChips, 0) +
+      deriveHandRakeAccounting(deal, handResult, BattleType.RING_GAME)!.rake
+    ).toBe(0)
+  })
+
+  test('Ring rake stays unknown when any endpoint seat snapshot is missing', () => {
+    const incompleteResult = {
+      ...uncalledReturnResult,
+      OtherPlayers: uncalledReturnResult.OtherPlayers.slice(0, -1),
+    } as ApiEvent<ApiType.EVT_HAND_RESULTS>
+
+    expect(deriveHandRakeAccounting(
+      uncalledReturnDeal,
+      incompleteResult,
+      BattleType.RING_GAME
+    )).toBeNull()
+  })
+
+  test('Ring side-pot settlement preserves rake across uncalled return, split, and odd chip payouts', () => {
+    // Real-equivalent endpoint shape:
+    // contributions 101 + 301 + 501 = 903
+    // uncalled return 200, contested gross pot 703
+    // contested payouts 151 + 150 + 367 = 668 (odd chip included)
+    // rake 703 - 668 = 35
+    const deal = {
+      ...uncalledReturnDeal,
+      SeatUserIds: [1, 2, 3],
+      Game: {
+        ...uncalledReturnDeal.Game,
+        Ante: 0,
+        SmallBlind: 50,
+        BigBlind: 100,
+        SmallBlindSeat: 0,
+        BigBlindSeat: 1,
+      },
+      Player: { SeatIndex: 0, BetStatus: 1, Chip: 899, BetChip: 101, HoleCards: [0, 1] },
+      OtherPlayers: [
+        { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 899, BetChip: 101 },
+        { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 699, BetChip: 301 },
+      ],
+      Progress: { ...uncalledReturnDeal.Progress, Pot: 303, SidePot: [400] },
+    } as unknown as ApiEvent<ApiType.EVT_DEAL>
+    const handResult = {
+      ...uncalledReturnResult,
+      Pot: 301,
+      SidePot: [367, 200],
+      Results: [
+        { ...uncalledReturnResult.Results[0], UserId: 1, RewardChip: 151 },
+        { ...uncalledReturnResult.Results[1], UserId: 2, RewardChip: 150 },
+        { ...uncalledReturnResult.Results[1], UserId: 3, RewardChip: 567 },
+      ],
+      Player: { SeatIndex: 0, BetStatus: -1, Chip: 1050, BetChip: 0 },
+      OtherPlayers: [
+        { SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 849, BetChip: 0 },
+        { SeatIndex: 2, Status: 0, BetStatus: -1, Chip: 1066, BetChip: 0 },
+      ],
+    } as unknown as ApiEvent<ApiType.EVT_HAND_RESULTS>
+
+    const players = derivePlayerHandChipAccounting(deal, handResult, BattleType.RING_GAME)
+    const rake = deriveHandRakeAccounting(deal, handResult, BattleType.RING_GAME)
+
+    expect(players).toEqual({
+      '1': { grossPayout: 151, totalContribution: 101, netChips: 50 },
+      '2': { grossPayout: 150, totalContribution: 301, netChips: -151 },
+      '3': { grossPayout: 567, totalContribution: 501, netChips: 66 },
+    })
+    expect(rake).toEqual({ totalContribution: 903, totalPayout: 868, rake: 35 })
+    expect(Object.values(players).reduce((sum, entry) => sum + entry!.netChips, 0) + rake!.rake).toBe(0)
+    expect(rake!.totalContribution - 200).toBe((rake!.totalPayout - 200) + rake!.rake)
   })
 
   test.each([
