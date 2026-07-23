@@ -212,6 +212,25 @@ describe('split-pot collected allocation invariants', () => {
     expectCollectedToReconcile(event, lines)
   })
 
+  test('odd-chip allocation looks ahead across pot-tier eligibility boundaries', () => {
+    const event = buildSettlementEvent(15, [21, 2, 18], [
+      { userId: 100, handRanking: 2, rewardChip: 19 },
+      { userId: 200, handRanking: 2, rewardChip: 37 },
+    ])
+
+    const lines = buildCollectedLines(event)
+
+    expect(lines).toEqual([
+      'Player200 collected 18 from side pot-3',
+      'Player200 collected 2 from side pot-2',
+      'Player100 collected 11 from side pot-1',
+      'Player200 collected 10 from side pot-1',
+      'Player100 collected 8 from main pot',
+      'Player200 collected 7 from main pot',
+    ])
+    expectCollectedToReconcile(event, lines)
+  })
+
   test('uncalled return plus collected payouts equals RewardChip total', () => {
     // Ring settlement amounts are net of rake. RewardChip still includes the
     // uncalled return, so the exported conservation boundary is:

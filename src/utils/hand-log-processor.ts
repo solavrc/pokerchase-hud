@@ -602,36 +602,69 @@ export class HandLogProcessor {
       amount: number
     }> = new Map()
 
-    for (let potIdx = 0; potIdx < potAmounts.length; potIdx++) {
+    const allocatePots = (potIdx: number): boolean => {
+      if (potIdx === potAmounts.length) {
+        const remaining = winners.filter(w => w.remaining > 0)
+        return remaining.reduce((sum, w) => sum + w.remaining, 0) === uncalledBetAmount &&
+          remaining.length <= (uncalledBetAmount > 0 ? 1 : 0)
+      }
+
       const potAmount = potAmounts[potIdx]!
-      if (potAmount <= 0) continue
+      if (potAmount <= 0) return allocatePots(potIdx + 1)
 
       // 残RewardChipを持つ最強HandRankingグループが現在のポットの勝者（同点はスプリット）
       const active = winners.filter(w => w.remaining > 0)
-      if (active.length === 0) break
+      if (active.length === 0) return false
       const bestRanking = active[0]!.handRanking
       const group = active.filter(w => w.handRanking === bestRanking)
 
-      // 割当分を残RewardChipから消費。端数（オッドチップ）は残額が最大の
-      // メンバーに寄せる。後続ポットにも同じ同点勝者が残る場合は残額を
-      // 均す必要があり、ここを最小側へ寄せると最終RewardChipが反転する。
       const perPlayer = Math.floor(potAmount / group.length)
-      const allocations = group.map(w => ({ userId: w.userId, amount: perPlayer }))
+      if (group.some(w => w.remaining < perPlayer)) return false
       for (const w of group) w.remaining -= perPlayer
-      let leftover = potAmount - perPlayer * group.length
-      while (leftover > 0) {
-        const candidates = group.filter(w => w.remaining > 0)
-        if (candidates.length === 0) break
-        const recipient = candidates.reduce((max, w) => w.remaining > max.remaining ? w : max)
-        recipient.remaining -= 1
-        allocations.find(allocation => allocation.userId === recipient.userId)!.amount += 1
-        leftover -= 1
+
+      const leftover = potAmount - perPlayer * group.length
+      const candidates = group.filter(w => w.remaining > 0)
+
+      // 同じ同点グループが後続side potにも残る場合、現在のpotだけを見た
+      // greedy選択ではRewardChip合計を反転させうる。端数は最大5個のpot・
+      // 最大6人の候補だけを探索し、全pot後のAPI残額に一致する割当を選ぶ。
+      const tryOddChipRecipients = (
+        startIndex: number,
+        needed: number,
+        selected: typeof candidates
+      ): boolean => {
+        if (needed === 0) {
+          for (const winner of selected) winner.remaining -= 1
+          const allocations = group.map(w => ({
+            userId: w.userId,
+            amount: perPlayer + (selected.includes(w) ? 1 : 0)
+          }))
+          potWinners.set(potIdx, { allocations, amount: potAmount })
+
+          if (allocatePots(potIdx + 1)) return true
+
+          potWinners.delete(potIdx)
+          for (const winner of selected) winner.remaining += 1
+          return false
+        }
+
+        if (candidates.length - startIndex < needed) return false
+        for (let i = startIndex; i < candidates.length; i++) {
+          const winner = candidates[i]!
+          selected.push(winner)
+          if (tryOddChipRecipients(i + 1, needed - 1, selected)) return true
+          selected.pop()
+        }
+        return false
       }
 
-      // RewardChipが確定しているオッドチップ受取人を出力時まで保持する。
-      // ここで受取人を捨てて均等額を再計算すると、端数がログから消失する。
-      potWinners.set(potIdx, { allocations, amount: potAmount })
+      if (tryOddChipRecipients(0, leftover, [])) return true
+
+      for (const w of group) w.remaining += perPlayer
+      return false
     }
+
+    allocatePots(0)
 
     for (let potIdx = potAmounts.length - 1; potIdx >= 0; potIdx--) {
       const potInfo = potWinners.get(potIdx)
