@@ -163,12 +163,13 @@ const stageLegacyUntrustedAccess = async (
 }
 
 const run = async (): Promise<void> => {
+  const headed = process.argv.slice(2).includes('--headed')
   const extensionDir = buildE2E()
   const profileDir = mkdtempSync(join(tmpdir(), 'pokerchase-hud-auth-storage-'))
   let harness: Harness | undefined
 
   try {
-    harness = await launchHarness({ extensionDir, userDataDir: profileDir })
+    harness = await launchHarness({ extensionDir, userDataDir: profileDir, headed })
     const extensionId = await extensionIdFor(harness.browser)
     const trustedPage = await openTrustedContext(harness.browser, extensionId)
 
@@ -205,7 +206,7 @@ const run = async (): Promise<void> => {
     await harness.close()
     harness = undefined
 
-    harness = await launchHarness({ extensionDir, userDataDir: profileDir })
+    harness = await launchHarness({ extensionDir, userDataDir: profileDir, headed })
     // Assert the upgraded profile's boundary before an explicit auth-status
     // message or popup navigation deliberately wakes/uses the Service Worker.
     await assertContentBoundary(harness, extensionId)

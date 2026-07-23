@@ -38,3 +38,40 @@ jobs:
         openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$key_file" 2>/dev/null
         xvfb-run -a npm run pack:crx -- "$key_file" "$crx_file"
         test -s "$crx_file"
+
+  browser-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      E2E_BROWSER_CACHE_DIR: ${{ github.workspace }}/.cache/puppeteer
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v7
+      with:
+        node-version: 'lts/*'
+        cache: 'npm'
+
+    - name: Cache pinned Chrome for Testing
+      uses: actions/cache@v4
+      with:
+        path: .cache/puppeteer
+        key: e2e-chrome-${{ runner.os }}-${{ hashFiles('e2e/config.ts') }}
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run bounded real-browser gate
+      run: xvfb-run -a npm run e2e:browser-gate
+
+    - name: Upload browser failure evidence
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: browser-e2e-failure-${{ github.run_id }}
+        path: e2e/out/
+        if-no-files-found: ignore
+        retention-days: 7

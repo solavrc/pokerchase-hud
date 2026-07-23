@@ -29,6 +29,8 @@ export interface FixtureServerHandle {
   origin: string
   /** Resolves once every event in the fixture has been sent to at least one connected client. */
   replayDone: Promise<void>
+  /** Number of fixture frames sent to the connected client so far. */
+  sentEventCount: () => number
   close: () => Promise<void>
 }
 
@@ -59,6 +61,7 @@ export const startFixtureServer = async (options: FixtureServerOptions = {}): Pr
 
   let resolveReplayDone!: () => void
   const replayDone = new Promise<void>((resolve) => { resolveReplayDone = resolve })
+  let sentEventCount = 0
 
   const publicDirResolved = resolve(PUBLIC_DIR)
 
@@ -115,6 +118,7 @@ export const startFixtureServer = async (options: FixtureServerOptions = {}): Pr
       for (const event of events) {
         if (socket.readyState !== socket.OPEN) return
         socket.send(encode(event))
+        sentEventCount++
         if (replayDelayMs > 0) await sleep(replayDelayMs)
       }
       resolveReplayDone()
@@ -153,7 +157,13 @@ export const startFixtureServer = async (options: FixtureServerOptions = {}): Pr
       })
     })
 
-  return { port, origin: `http://localhost:${port}`, replayDone, close }
+  return {
+    port,
+    origin: `http://localhost:${port}`,
+    replayDone,
+    sentEventCount: () => sentEventCount,
+    close
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

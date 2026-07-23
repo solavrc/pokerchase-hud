@@ -81,6 +81,131 @@ export interface Harness extends HarnessHelpers {
   close: () => Promise<void>
 }
 
+export interface StoppedExtensionServiceWorker {
+  extensionId: string
+  scriptURL: string
+  versionId: string
+  targetId?: string
+}
+
+interface ServiceWorkerVersion {
+  versionId: string
+  scriptURL: string
+  runningStatus: string
+  targetId?: string
+}
+
+const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> =>
+  new Promise<T>((resolvePromise, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+      timeoutMs
+    )
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolvePromise(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error)
+      }
+    )
+  })
+
+/**
+ * Stops the currently-running extension Service Worker through CDP and waits
+ * until Chrome confirms that exact worker version reached `stopped`.
+ *
+ * This is intentionally a browser-level failure injection: it does not add a
+ * production-only message or test hook to the extension. A live content-script
+ * Port will observe the real disconnect and must wake/reconnect to the worker
+ * through the same path used after an MV3 idle eviction.
+ */
+export const stopExtensionServiceWorker = async (
+  browser: Browser,
+  timeoutMs = 10_000
+): Promise<StoppedExtensionServiceWorker> => {
+  const extensionTarget = await browser.waitForTarget(
+    (candidate) =>
+      candidate.type() === 'service_worker' &&
+      candidate.url().startsWith('chrome-extension://'),
+    { timeout: timeoutMs }
+  )
+  const extensionId = new URL(extensionTarget.url()).host
+  // The ServiceWorker domain is exposed on renderer/page CDP sessions in
+  // Chrome for Testing 151, not on Puppeteer's browser-target session.
+  const pages = await browser.pages()
+  const controlPage = pages[0]
+  if (!controlPage) throw new Error('Could not find a page target for ServiceWorker CDP control')
+  const session = await controlPage.createCDPSession()
+  const versions = new Map<string, ServiceWorkerVersion>()
+  let notifyVersionUpdate: (() => void) | undefined
+
+  const onVersionUpdate = (event: { versions: ServiceWorkerVersion[] }): void => {
+    for (const version of event.versions) versions.set(version.versionId, version)
+    notifyVersionUpdate?.()
+  }
+  session.on('ServiceWorker.workerVersionUpdated', onVersionUpdate)
+
+  const waitForVersion = async (
+    predicate: (version: ServiceWorkerVersion) => boolean,
+    label: string
+  ): Promise<ServiceWorkerVersion> => {
+    const findMatch = (): ServiceWorkerVersion | undefined =>
+      Array.from(versions.values()).find(predicate)
+
+    const existing = findMatch()
+    if (existing) return existing
+
+    return await withTimeout(
+      new Promise<ServiceWorkerVersion>((resolveVersion) => {
+        const check = (): void => {
+          const match = findMatch()
+          if (match) {
+            notifyVersionUpdate = undefined
+            resolveVersion(match)
+          }
+        }
+        notifyVersionUpdate = check
+        check()
+      }),
+      timeoutMs,
+      label
+    )
+  }
+
+  try {
+    // Enabling the domain emits the current registration/version inventory.
+    await session.send('ServiceWorker.enable')
+    const running = await waitForVersion(
+      (version) =>
+        version.scriptURL.startsWith(`chrome-extension://${extensionId}/`) &&
+        version.runningStatus === 'running',
+      'extension Service Worker inventory'
+    )
+
+    const stoppedPromise = waitForVersion(
+      (version) =>
+        version.versionId === running.versionId &&
+        version.runningStatus === 'stopped',
+      'extension Service Worker stop'
+    )
+    await session.send('ServiceWorker.stopWorker', { versionId: running.versionId })
+    await stoppedPromise
+
+    return {
+      extensionId,
+      scriptURL: running.scriptURL,
+      versionId: running.versionId,
+      targetId: running.targetId
+    }
+  } finally {
+    session.off('ServiceWorker.workerVersionUpdated', onVersionUpdate)
+    await session.detach().catch(() => {})
+  }
+}
+
 /** Downloads (if not already cached) and returns the path to the pinned Chrome for Testing binary. */
 export const ensureChromeForTesting = async (): Promise<string> => {
   const platform = detectBrowserPlatform()
@@ -241,6 +366,7 @@ export const launchHarness = async (options: LaunchOptions = {}): Promise<Harnes
         `--load-extension=${extensionDir}`,
         '--no-first-run',
         '--no-default-browser-check',
+        ...(process.env.CI ? ['--disable-dev-shm-usage'] : []),
         // Window size in *headed* mode only affects the outer OS window
         // (Chrome adds its own title/tab/toolbar chrome on top of this);
         // it has no effect headless, where there's no window chrome to

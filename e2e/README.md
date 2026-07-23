@@ -4,10 +4,9 @@ A permanent, deterministic end-to-end harness that loads the *real, built*
 extension into a *real* Chromium and drives *real* gameplay data through the
 extension's actual WebSocket interception path -- so both scripted
 assertions (`e2e:smoke`) and step-by-step AI-agent exploratory QA can run
-against a live HUD.
-
-Nothing here is wired into CI yet (the CI runner doesn't have the Chrome
-for Testing cache) -- run it locally.
+against a live HUD. CI runs a bounded real-browser gate (smoke, persisted
+player identity, auth-storage isolation, and MV3 Service Worker lifecycle)
+under Xvfb; the wider exploratory tooling remains local-only.
 
 ## Quick start
 
@@ -15,6 +14,10 @@ for Testing cache) -- run it locally.
 npm run e2e:smoke
 # Session-end persistence regression:
 npm run e2e:playerid
+# Real Service Worker stop/restart failure injection:
+npm run e2e:mv3-lifecycle
+# The exact bounded set used by CI (requires an X display):
+xvfb-run -a npm run e2e:browser-gate
 ```
 
 This builds the e2e extension variant, launches Chrome for Testing headless,
@@ -357,6 +360,19 @@ zero-event page, and verifies that the persisted hero identity still drives
 pre-game stats. It writes `playerid-before-reload.png`,
 `playerid-no-replay-hud.png`, and `playerid-no-replay-hud.txt` on success.
 
+`e2e/scenarios/mv3-service-worker-lifecycle.ts`
+(`npm run e2e:mv3-lifecycle`) is the browser-level durability gate. It uses
+CDP's `ServiceWorker.stopWorker` against the real extension worker while the
+fixture WebSocket is still sending events, verifies at least one frame crossed
+the stopped-worker interval, and compares the final IndexedDB Raw Event Lake
+against the fixture as an exact multiset. Because the first stop deliberately
+lands inside a hand, it also runs the normal canonical rebuild recovery path,
+verifies all three hands are reconstructed, and verifies the shared operation
+state returns to idle. It then stops the idle worker again, navigates to
+`no-replay.html`, and verifies the cold-restored HUD serves persisted hand
+statistics without replaying or duplicating raw rows. The stop is performed
+entirely by Chrome; there is no production test-only message.
+
 ## Flaky bits / timing waits
 
 - **Idle-compositor screenshot stall (headless Chrome for Testing 151)**:
@@ -422,6 +438,7 @@ e2e/
   fixtures/session-recent-hands.ndjson   anonymized recent-hands fixture (committed)
   scenarios/smoke.ts        scripted pass/fail smoke test
   scenarios/playerid-session-persistence.ts   persisted hero identity regression scenario
+  scenarios/mv3-service-worker-lifecycle.ts   real Service Worker stop/restart durability gate
   tools/
     generate-e2e-manifest.ts   writes e2e/.build/manifest.e2e.json
     build-e2e.ts               orchestrates the full e2e build
