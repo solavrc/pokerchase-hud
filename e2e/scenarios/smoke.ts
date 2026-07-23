@@ -108,7 +108,13 @@ const run = async (): Promise<void> => {
     // last hand's events and push updated stats down to the content script.
     await new Promise((resolve) => setTimeout(resolve, 1500))
 
-    await harness.screenshot(join(screenshotDir, 'smoke-hud.png'))
+    // Success screenshots are exploratory evidence, not gate assertions.
+    // Hosted-runner Xvfb can leave a fully responsive page unable to produce
+    // a compositor frame until Puppeteer's 3-minute protocol timeout, so CI
+    // keeps only best-effort failure captures while local QA retains both.
+    if (!process.env.CI) {
+      await harness.screenshot(join(screenshotDir, 'smoke-hud.png'))
+    }
 
     // 2. At least one player panel shows a HAND count > 0. Selects on the
     // stable `data-stat-id="hands"` marker (StatDisplay.tsx / #143's
@@ -147,10 +153,11 @@ const run = async (): Promise<void> => {
       page.on('pageerror', (err) => { popupError = err })
     })
     await new Promise((resolve) => setTimeout(resolve, 1000))
-    // Route through the harness so its just-in-time compositor keepalive is
-    // reasserted immediately before capture. A direct popup.screenshot() can
-    // stall under hosted-runner Xvfb even though the page remains responsive.
-    await harness.screenshot(join(screenshotDir, 'smoke-popup.png'), popup)
+    if (!process.env.CI) {
+      // Route through the harness so its just-in-time compositor keepalive is
+      // reasserted immediately before capture.
+      await harness.screenshot(join(screenshotDir, 'smoke-popup.png'), popup)
+    }
     const popupHasContent = await popup.evaluate(() => {
       const root = document.getElementById('popup-root')
       return !!root && root.children.length > 0 && (root.textContent?.trim().length ?? 0) > 0
@@ -183,10 +190,14 @@ const run = async (): Promise<void> => {
     }
 
     console.log(`\n[smoke] PASSED: all ${checks.length} checks passed`)
-    console.log(
-      `[smoke] screenshots (viewport ${viewport.width}x${viewport.height}): ` +
-      `${join(screenshotDir, 'smoke-hud.png')}, ${join(screenshotDir, 'smoke-popup.png')}`
-    )
+    if (process.env.CI) {
+      console.log('[smoke] success screenshots skipped in CI; failure evidence remains enabled')
+    } else {
+      console.log(
+        `[smoke] screenshots (viewport ${viewport.width}x${viewport.height}): ` +
+        `${join(screenshotDir, 'smoke-hud.png')}, ${join(screenshotDir, 'smoke-popup.png')}`
+      )
+    }
   } catch (err) {
     console.error('[smoke] unexpected error:', err)
     if (harness) await dumpFailureEvidence(harness, screenshotDir, 'unexpected')
