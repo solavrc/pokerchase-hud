@@ -597,7 +597,10 @@ export class HandLogProcessor {
       }))
       .sort((a, b) => a.handRanking - b.handRanking)
 
-    const potWinners: Map<number, { userIds: number[], amount: number }> = new Map()
+    const potWinners: Map<number, {
+      allocations: Array<{ userId: number, amount: number }>
+      amount: number
+    }> = new Map()
 
     for (let potIdx = 0; potIdx < potAmounts.length; potIdx++) {
       const potAmount = potAmounts[potIdx]!
@@ -609,23 +612,25 @@ export class HandLogProcessor {
       const bestRanking = active[0]!.handRanking
       const group = active.filter(w => w.handRanking === bestRanking)
 
-      potWinners.set(potIdx, {
-        userIds: group.map(w => w.userId),
-        amount: potAmount
-      })
-
       // 割当分を残RewardChipから消費。端数（オッドチップ）は残額が最小の
       // メンバーに寄せる: オッドチップを受け取って退場するメンバーを
       // ちょうど0にし、後続ポットの勝者判定を狂わせないため
       const perPlayer = Math.floor(potAmount / group.length)
+      const allocations = group.map(w => ({ userId: w.userId, amount: perPlayer }))
       for (const w of group) w.remaining -= perPlayer
       let leftover = potAmount - perPlayer * group.length
       while (leftover > 0) {
         const candidates = group.filter(w => w.remaining > 0)
         if (candidates.length === 0) break
-        candidates.reduce((min, w) => w.remaining < min.remaining ? w : min).remaining -= 1
+        const recipient = candidates.reduce((min, w) => w.remaining < min.remaining ? w : min)
+        recipient.remaining -= 1
+        allocations.find(allocation => allocation.userId === recipient.userId)!.amount += 1
         leftover -= 1
       }
+
+      // RewardChipが確定しているオッドチップ受取人を出力時まで保持する。
+      // ここで受取人を捨てて均等額を再計算すると、端数がログから消失する。
+      potWinners.set(potIdx, { allocations, amount: potAmount })
     }
 
     for (let potIdx = potAmounts.length - 1; potIdx >= 0; potIdx--) {
@@ -634,21 +639,12 @@ export class HandLogProcessor {
 
       const potLabel = this.getPotLabel(potIdx, event.SidePot.length)
       
-      if (potInfo.userIds.length === 1) {
-        const playerName = this.getPlayerName(potInfo.userIds[0]!)
+      for (const allocation of potInfo.allocations) {
+        const playerName = this.getPlayerName(allocation.userId)
         entries.push(this.createEntry(
-          `${playerName} collected ${potInfo.amount} from ${potLabel}`,
+          `${playerName} collected ${allocation.amount} from ${potLabel}`,
           HandLogEntryType.SHOWDOWN
         ))
-      } else {
-        const splitAmount = Math.floor(potInfo.amount / potInfo.userIds.length)
-        for (const userId of potInfo.userIds) {
-          const playerName = this.getPlayerName(userId)
-          entries.push(this.createEntry(
-            `${playerName} collected ${splitAmount} from ${potLabel}`,
-            HandLogEntryType.SHOWDOWN
-          ))
-        }
       }
     }
 
