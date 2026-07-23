@@ -400,6 +400,10 @@ describe('deriveHandSettlement', () => {
       contestedAward: 95,
       uncalledReturn: 0,
     })
+    expect(beforeSessionMetadata.playerChipAccounting).toEqual({
+      '1': { grossPayout: 95, totalContribution: 50, netChips: 45 },
+      '2': { grossPayout: 0, totalContribution: 50, netChips: -50 },
+    })
     expect(beforeSessionMetadata.winningPlayerIds).toEqual([1])
   })
 
