@@ -4,9 +4,9 @@ A permanent, deterministic end-to-end harness that loads the *real, built*
 extension into a *real* Chromium and drives *real* gameplay data through the
 extension's actual WebSocket interception path -- so both scripted
 assertions (`e2e:smoke`) and step-by-step AI-agent exploratory QA can run
-against a live HUD. CI runs a bounded real-browser gate (smoke, persisted
-player identity, auth-storage isolation, and MV3 Service Worker lifecycle)
-under Xvfb; the wider exploratory tooling remains local-only.
+against a live HUD. CI runs a bounded real-browser gate (smoke, auth-storage
+isolation, and MV3 Service Worker lifecycle including persisted-player cold
+restore) under Xvfb; the wider exploratory tooling remains local-only.
 
 ## Quick start
 
@@ -16,8 +16,8 @@ npm run e2e:smoke
 npm run e2e:playerid
 # Real Service Worker stop/restart failure injection:
 npm run e2e:mv3-lifecycle
-# The exact bounded set used by CI (requires an X display):
-xvfb-run -a npm run e2e:browser-gate
+# The exact bounded headless set used by CI:
+npm run e2e:browser-gate
 ```
 
 This builds the e2e extension variant, launches Chrome for Testing headless,
