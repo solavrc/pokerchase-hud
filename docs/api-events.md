@@ -215,6 +215,29 @@ EVT_DEAL 時点の `Chip` / `BetChip` は **アンテおよびブラインドが
 
 **強制投稿オールイン時の Pot/SidePot キャップ（例外）**: アンテまたはブラインドの強制投稿で `Chip=0` となるプレイヤーがいる場合、deal 時点の `Pot`/`SidePot` は既にオールイン上限を反映したティア別スナップショットになる。最短オールイン総額までの各プレイヤーの拠出は `Pot` に残るため、ブラインドオールイン本人の短縮ブラインドと相手の同額までのブラインドも `Pot` に含まれ、上限を超える分だけが `SidePot` に入る。これは `BetChip=0` のアンテのみオールインに限らず、`BetChip>0` のブラインドオールインでも発生する（下記 #55・#56・#59 は deal 時点から `SidePot` が非空）。アンテのみオールインでは、`Pot` は最短オールインスタック s1 でキャップされ（`Pot = s1 × アンテ拠出者数` が厳密成立 — 2026-07-04 キャプチャの全アンテオールイン51ハンド中、追跡可能な50ハンドすべてで検証）、各 `SidePot[k]` も上位ティアでキャップされる。この場合のブラインドは**最上位（キャップなし）のサイドポットにのみ**積まれる。実例: hand 260147134 は `SidePot[1]=5000` = アンテ超過分 1,200 + BB 3,800、hand 296039468 は `SidePot[1]=1,877,752` = アンテ超過分 377,752 + ブラインド 1,500,000。したがって上記の `Progress.Pot / アンテ拠出者数` によるアンテ推定はブラインドで水増しされない正確な値であり、ここから `Σ BetChip` を差し引く「修正」を加えてはならない（poker-warehouse `marts__fct_player_hand_results` のティア推定はこの性質に依存し、DuckDB 実測でグラウンドトゥルース一致を確認済み）。なお保存則そのもの（`Σ Chip + Pot + Σ SidePot` が Pot と**全** SidePot を合算する形）はキャップの有無に関わらず成立する。
 
+### EVT_HAND_RESULTS: RewardChip と uncalled return
+
+`Results[].RewardChip` は**勝利額ではなくgross payout**であり、争われたポットの獲得額に加えて、
+相手にコールされなかった超過拠出の返却（uncalled return）も含む。そのため
+`RewardChip > 0` は勝者であることを意味しない。敗者が争われたポットを一切獲得せず、
+自分だけが拠出した最上位ティアを返されて `RewardChip > 0` になる実例がある。
+
+rawにはuncalled return専用フィールドがないため、`Pot`、`SidePot[]`、`HandRanking`、
+`RewardChip`のいずれか単独から勝者を決めてはならない。ポーカーのチップ会計は強整合性を
+持つため、完全な因果関係を持つ`EVT_DEAL`→`EVT_HAND_RESULTS`の開始・終了スタックから
+各プレイヤーの総拠出額を復元し、拠出ティアを次の2種類へ分離する。
+
+- 2人以上が拠出したティア: `contestedAward`（勝敗判定の対象）
+- 1人だけが拠出した最上位ティア: `uncalledReturn`（本人への返却であり勝利ではない）
+
+完全なseat snapshotでは、各プレイヤーについて
+`totalContribution = startingStack + RewardChip - finalStack`、
+`netChips = RewardChip - totalContribution`が成立する。勝者依存統計は
+`RewardChip > 0`ではなく`contestedAward > 0`を使う。snapshotが欠けて拠出額を一意に
+復元できない場合は、推測せず未解決として扱う。
+
+実イベントと計算過程は[HandId=269804225の実例](api-event-examples.md#rewardchip-uncalled-return-example)を参照。
+
 ### EVT_DEAL: Player フィールドの欠落
 
 - **観戦モード**: Player フィールド自体が undefined
