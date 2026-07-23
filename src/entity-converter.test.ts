@@ -3245,7 +3245,7 @@ describe('EntityConverter', () => {
      * に至る。リバーでコールしたseat0のプレイヤー(WINNER_CALLER)は
      * RIVER_CALL_WONが付与されるべき。
      */
-    it('tags RIVER_CALL_WON on the import path for a winning river call (scenario c)', async () => {
+    it('keeps cumulative three-street boards and RIVER_CALL_WON in parity across live and rebuild replays (scenario c)', async () => {
       const WINNER_CALLER = 111222333 // seat0, リバーでコールして勝利
       const OPPONENT = 444555666 // seat3, リバーでベットして勝利（スプリット）
       const events: ApiEvent[] = [
@@ -3548,8 +3548,46 @@ describe('EntityConverter', () => {
       expect(liveRiverCallAction).toBeDefined()
       expect(liveRiverCallAction!.actionDetails).toContain(ActionDetail.RIVER_CALL_WON)
 
-      // 両パイプラインが完全一致
+      // アクション詳細が両パイプラインで完全一致
       expect(riverCallAction!.actionDetails.slice().sort()).toEqual(liveRiverCallAction!.actionDetails.slice().sort())
+
+      // EVT_DEAL_ROUND.CommunityCardsは各ストリートのdeltaだが、Phaseには
+      // ライブ経路と同じ累積ボードを保存する。RESULTSのCommunityCards=[]でも
+      // SHOWDOWNはRIVERまでの5枚を維持しなければならない。
+      const pickComparablePhase = (phase: typeof importResult.phases[0]) => ({
+        phase: phase.phase,
+        seatUserIds: [...phase.seatUserIds].sort((a, b) => a - b),
+        communityCards: phase.communityCards
+      })
+      const importPhases = importResult.phases
+        .slice()
+        .sort((a, b) => a.phase - b.phase)
+        .map(pickComparablePhase)
+      const livePhases = (await dbMock.phases.where('handId').equals(271929009).toArray())
+        .sort((a, b) => a.phase - b.phase)
+        .map(pickComparablePhase)
+
+      expect(importPhases.map(({ phase, communityCards }) => ({ phase, communityCards }))).toEqual([
+        { phase: PhaseType.PREFLOP, communityCards: [] },
+        { phase: PhaseType.FLOP, communityCards: [15, 30, 25] },
+        { phase: PhaseType.TURN, communityCards: [15, 30, 25, 23] },
+        { phase: PhaseType.RIVER, communityCards: [15, 30, 25, 23, 39] },
+        { phase: PhaseType.SHOWDOWN, communityCards: [15, 30, 25, 23, 39] }
+      ])
+      expect(importPhases).toEqual(livePhases)
+
+      // 同じraw event列を再構築して同じ複合キーへ複数回upsertしても、
+      // Phase行やボードが増殖しない（rebuild/duplicate idempotency）。
+      const replay = new EntityConverter(mockSession).convertEventsToEntities(events)
+      expect(
+        replay.phases.slice().sort((a, b) => a.phase - b.phase).map(pickComparablePhase)
+      ).toEqual(importPhases)
+      await dbMock.phases.bulkPut(replay.phases)
+      await dbMock.phases.bulkPut(replay.phases)
+      const replayedPhases = (await dbMock.phases.where('handId').equals(271929009).toArray())
+        .sort((a, b) => a.phase - b.phase)
+        .map(pickComparablePhase)
+      expect(replayedPhases).toEqual(importPhases)
     })
 
     /**
