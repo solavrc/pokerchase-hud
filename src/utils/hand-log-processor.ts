@@ -407,6 +407,8 @@ export class HandLogProcessor {
 
     // Handle uncalled bets BEFORE showdown
     const wentToShowdown = showdownParticipants.length > 0
+    let showdownUncalledBetAmount = 0
+    let showdownUncalledBetUserId: number | undefined
     
     if (!wentToShowdown) {
       // For non-showdown wins, handle uncalled bets first
@@ -465,6 +467,11 @@ export class HandLogProcessor {
               uncalledAmount = lastSidePot
             }
             if (uncalledAmount > 0) {
+              showdownUncalledBetAmount = uncalledAmount
+              showdownUncalledBetUserId = event.Results
+                .filter(result => result.RewardChip > 0)
+                .find(result => this.getPlayerName(result.UserId) === betterName)
+                ?.UserId
               const uncalledEntry = this.createEntry(
                 `Uncalled bet (${uncalledAmount}) returned to ${betterName}`,
                 HandLogEntryType.SHOWDOWN
@@ -514,16 +521,11 @@ export class HandLogProcessor {
 
     // Handle pot collection for showdown winners and tournament finish positions
     if (wentToShowdown) {
-      // ショウダウン前のuncalled betを検出（サイドポット計算に必要）
-      const uncalledBetEntry = entries.find(e =>
-        e.text.includes('Uncalled bet (') && e.text.includes(') returned to')
-      )
-      let uncalledBetAmount = 0
-      if (uncalledBetEntry) {
-        const m = uncalledBetEntry.text.match(/Uncalled bet \((\d+)\)/)
-        if (m?.[1]) uncalledBetAmount = parseInt(m[1])
-      }
-      entries.push(...this.buildCollectedEntries(event, uncalledBetAmount))
+      entries.push(...this.buildCollectedEntries(
+        event,
+        showdownUncalledBetAmount,
+        showdownUncalledBetUserId
+      ))
     }
 
     event.Results.forEach(result => {
@@ -549,7 +551,11 @@ export class HandLogProcessor {
   /**
    * サイドポット対応の collected 行を構築
    */
-  private buildCollectedEntries(event: ApiEvent<ApiType.EVT_HAND_RESULTS>, uncalledBetAmount: number = 0): HandLogEntry[] {
+  private buildCollectedEntries(
+    event: ApiEvent<ApiType.EVT_HAND_RESULTS>,
+    uncalledBetAmount: number = 0,
+    uncalledBetUserId?: number
+  ): HandLogEntry[] {
     const entries: HandLogEntry[] = []
     const hasSidePots = event.SidePot.length > 0
 
@@ -597,6 +603,14 @@ export class HandLogProcessor {
       }))
       .sort((a, b) => a.handRanking - b.handRanking)
 
+    if (uncalledBetAmount > 0) {
+      const recipient = winners.find(w => w.userId === uncalledBetUserId)
+      if (!recipient || recipient.remaining < uncalledBetAmount) return entries
+      // RewardChipは返却分込み。pot allocationから先に予約し、同点の別winnerへ
+      // terminal residualを誤帰属しないようにする。
+      recipient.remaining -= uncalledBetAmount
+    }
+
     const potWinners: Map<number, {
       allocations: Array<{ userId: number, amount: number }>
       amount: number
@@ -604,9 +618,7 @@ export class HandLogProcessor {
 
     const allocatePots = (potIdx: number): boolean => {
       if (potIdx === potAmounts.length) {
-        const remaining = winners.filter(w => w.remaining > 0)
-        return remaining.reduce((sum, w) => sum + w.remaining, 0) === uncalledBetAmount &&
-          remaining.length <= (uncalledBetAmount > 0 ? 1 : 0)
+        return winners.every(w => w.remaining === 0)
       }
 
       const potAmount = potAmounts[potIdx]!

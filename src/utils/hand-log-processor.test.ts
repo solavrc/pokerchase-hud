@@ -90,7 +90,8 @@ function buildSettlementEvent(
 
 function buildCollectedLines(
   event: ApiEvent<ApiType.EVT_HAND_RESULTS>,
-  uncalledBetAmount = 0
+  uncalledBetAmount = 0,
+  uncalledBetUserId?: number
 ): string[] {
   const players = event.Results.map(result => ({
     userId: result.UserId,
@@ -100,9 +101,10 @@ function buildCollectedLines(
   const collectedEntries = (processor as unknown as {
     buildCollectedEntries: (
       resultEvent: ApiEvent<ApiType.EVT_HAND_RESULTS>,
-      uncalledAmount?: number
+      uncalledAmount?: number,
+      uncalledUserId?: number
     ) => HandLogEntry[]
-  }).buildCollectedEntries(event, uncalledBetAmount)
+  }).buildCollectedEntries(event, uncalledBetAmount, uncalledBetUserId)
   return collectedEntries.map(entry => entry.text)
 }
 
@@ -242,12 +244,28 @@ describe('split-pot collected allocation invariants', () => {
       { userId: 300, handRanking: 2, rewardChip: 4 },
     ])
 
-    const lines = buildCollectedLines(event, uncalledBetAmount)
+    const lines = buildCollectedLines(event, uncalledBetAmount, 300)
 
     expect(lines).toEqual([
       'Player300 collected 3 from side pot',
       'Player100 collected 3 from main pot',
       'Player200 collected 2 from main pot',
+    ])
+    expectCollectedToReconcile(event, lines, uncalledBetAmount)
+  })
+
+  test('uncalled return stays reserved for the named tied winner', () => {
+    const uncalledBetAmount = 1
+    const event = buildSettlementEvent(5, [1], [
+      { userId: 100, handRanking: 1, rewardChip: 3 },
+      { userId: 200, handRanking: 1, rewardChip: 3 },
+    ])
+
+    const lines = buildCollectedLines(event, uncalledBetAmount, 100)
+
+    expect(lines).toEqual([
+      'Player100 collected 2 from main pot',
+      'Player200 collected 3 from main pot',
     ])
     expectCollectedToReconcile(event, lines, uncalledBetAmount)
   })
