@@ -612,9 +612,9 @@ export class HandLogProcessor {
       const bestRanking = active[0]!.handRanking
       const group = active.filter(w => w.handRanking === bestRanking)
 
-      // 割当分を残RewardChipから消費。端数（オッドチップ）は残額が最小の
-      // メンバーに寄せる: オッドチップを受け取って退場するメンバーを
-      // ちょうど0にし、後続ポットの勝者判定を狂わせないため
+      // 割当分を残RewardChipから消費。端数（オッドチップ）は残額が最大の
+      // メンバーに寄せる。後続ポットにも同じ同点勝者が残る場合は残額を
+      // 均す必要があり、ここを最小側へ寄せると最終RewardChipが反転する。
       const perPlayer = Math.floor(potAmount / group.length)
       const allocations = group.map(w => ({ userId: w.userId, amount: perPlayer }))
       for (const w of group) w.remaining -= perPlayer
@@ -622,7 +622,7 @@ export class HandLogProcessor {
       while (leftover > 0) {
         const candidates = group.filter(w => w.remaining > 0)
         if (candidates.length === 0) break
-        const recipient = candidates.reduce((min, w) => w.remaining < min.remaining ? w : min)
+        const recipient = candidates.reduce((max, w) => w.remaining > max.remaining ? w : max)
         recipient.remaining -= 1
         allocations.find(allocation => allocation.userId === recipient.userId)!.amount += 1
         leftover -= 1

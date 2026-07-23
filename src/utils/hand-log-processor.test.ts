@@ -195,6 +195,23 @@ describe('split-pot collected allocation invariants', () => {
     expectCollectedToReconcile(event, lines)
   })
 
+  test('tied winners continuing into a side pot keep their RewardChip totals', () => {
+    const event = buildSettlementEvent(5, [8], [
+      { userId: 100, handRanking: 1, rewardChip: 7 },
+      { userId: 200, handRanking: 1, rewardChip: 6 },
+    ])
+
+    const lines = buildCollectedLines(event)
+
+    expect(lines).toEqual([
+      'Player100 collected 4 from side pot',
+      'Player200 collected 4 from side pot',
+      'Player100 collected 3 from main pot',
+      'Player200 collected 2 from main pot',
+    ])
+    expectCollectedToReconcile(event, lines)
+  })
+
   test('uncalled return plus collected payouts equals RewardChip total', () => {
     // Ring settlement amounts are net of rake. RewardChip still includes the
     // uncalled return, so the exported conservation boundary is:
