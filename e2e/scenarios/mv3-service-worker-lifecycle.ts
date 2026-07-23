@@ -44,6 +44,12 @@ interface PersistedServiceState {
   lastUpdated?: number
 }
 
+interface RestoredWorkerState {
+  isReady: boolean
+  playerId?: number
+  latestEvtDeal?: { SeatUserIds?: number[] }
+}
+
 const parseArgs = (argv: string[]) => ({
   headed: argv.includes('--headed'),
   screenshotDir: argv.includes('--screenshot-dir')
@@ -202,6 +208,68 @@ const waitForPersistedServiceState = async (
   )
 }
 
+const receivedReplayEventCount = async (harness: Harness): Promise<number> =>
+  await harness.evaluate(() =>
+    (window as typeof window & { __e2eReplayEvents?: number }).__e2eReplayEvents ?? 0
+  )
+
+/**
+ * Wakes the evicted worker with a message that does not inspect the database,
+ * then reads PokerChaseService after its normal `ready` restoration finishes.
+ *
+ * This intentionally runs before the no-replay HUD mount. `requestLatestStats`
+ * can infer playerId from IndexedDB when service state is absent, so the HUD
+ * alone cannot distinguish a successful chrome.storage restore from that
+ * fallback. Directly observing the fresh worker here closes that false pass.
+ */
+const readColdRestoredWorkerState = async (
+  browser: Browser,
+  trustedPage: Page,
+  extensionId: string
+): Promise<RestoredWorkerState> => {
+  const wakeResponse = await trustedPage.evaluate(
+    async () => await chrome.runtime.sendMessage({ action: 'getOperationState' })
+  ) as { success?: boolean }
+  if (!wakeResponse.success) {
+    throw new Error(`failed to wake cold Service Worker: ${JSON.stringify(wakeResponse)}`)
+  }
+
+  const target = await browser.waitForTarget(
+    async (candidate) => {
+      if (
+        candidate.type() !== 'service_worker' ||
+        !candidate.url().startsWith(`chrome-extension://${extensionId}/`)
+      ) {
+        return false
+      }
+      return await candidate.worker() !== null
+    },
+    { timeout: 15_000 }
+  )
+  const worker = await target.worker()
+  if (!worker) throw new Error('cold Service Worker target has no execution context')
+
+  return await worker.evaluate(async () => {
+    const scope = self as typeof self & {
+      service?: {
+        ready: Promise<void>
+        isReady: boolean
+        playerId?: number
+        latestEvtDeal?: { SeatUserIds?: number[] }
+      }
+    }
+    if (!scope.service) throw new Error('PokerChaseService is not exposed on the worker')
+    await scope.service.ready
+    return {
+      isReady: scope.service.isReady,
+      playerId: scope.service.playerId,
+      latestEvtDeal: scope.service.latestEvtDeal
+        ? { SeatUserIds: scope.service.latestEvtDeal.SeatUserIds }
+        : undefined
+    }
+  })
+}
+
 const canonicalize = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(canonicalize)
   if (value && typeof value === 'object') {
@@ -304,7 +372,7 @@ const run = async (): Promise<void> => {
     // Capture only after CDP has confirmed `runningStatus: stopped`; frames
     // sent while Chrome was still locating/stopping the worker do not prove
     // the reconnect queue crossed an actual stopped-worker interval.
-    const sentBeforeStop = harness.fixtureServer.sentEventCount()
+    const receivedBeforeStop = await receivedReplayEventCount(harness)
     console.log(
       `[mv3-lifecycle] stopped worker ${firstStop.versionId} after ` +
       `${beforeStop.rawEvents.length}/${expectedEvents.length} durable raw rows`
@@ -314,9 +382,10 @@ const run = async (): Promise<void> => {
     // guarantees at least one real WebSocket frame arrives inside this
     // stopped-worker window instead of merely testing a stop between events.
     await sleep(350)
-    const sentWhileStopped = harness.fixtureServer.sentEventCount() - sentBeforeStop
-    if (sentWhileStopped < 1) {
-      throw new Error('no fixture frame crossed the stopped-worker window')
+    const receivedWhileStopped =
+      await receivedReplayEventCount(harness) - receivedBeforeStop
+    if (receivedWhileStopped < 1) {
+      throw new Error('no page-received fixture frame crossed the stopped-worker window')
     }
 
     await withTimeout(harness.waitForReplayDone(), 20_000, 'fixture replay')
@@ -374,7 +443,7 @@ const run = async (): Promise<void> => {
     )
     console.log(
       `[mv3-lifecycle] PASS - ${actualCanonical.length} raw events survived exactly once; ` +
-      `${sentWhileStopped} frame(s) crossed the stopped-worker window; ` +
+      `${receivedWhileStopped} page-received frame(s) crossed the stopped-worker window; ` +
       `${rebuilt.handCount} hands recovered canonically`
     )
 
@@ -383,6 +452,22 @@ const run = async (): Promise<void> => {
     // restore from a fresh mount.
     const secondStop = await stopExtensionServiceWorker(harness.browser)
     console.log(`[mv3-lifecycle] stopped idle worker ${secondStop.versionId}`)
+
+    const restoredWorkerState = await readColdRestoredWorkerState(
+      harness.browser,
+      trustedPage,
+      extensionId
+    )
+    if (
+      !restoredWorkerState.isReady ||
+      restoredWorkerState.playerId !== expectedPlayerId ||
+      !restoredWorkerState.latestEvtDeal?.SeatUserIds?.includes(expectedPlayerId)
+    ) {
+      throw new Error(
+        'cold worker did not restore persisted hero/deal state before DB fallback: ' +
+        JSON.stringify(restoredWorkerState)
+      )
+    }
 
     await harness.gamePage.goto(`${harness.fixtureServer.origin}/no-replay.html`, {
       waitUntil: 'domcontentloaded'
