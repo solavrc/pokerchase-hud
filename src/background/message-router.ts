@@ -16,6 +16,7 @@ import { resolveAdvisory } from './rebuild-advisory'
 import { getUndecodedEventStats, resetUndecodedEventStats } from './undecoded-event-tracker'
 import { applyUpdateNow } from './update-manager'
 import { acknowledgeWhatsNew } from './whats-new-badge'
+import type { ExperimentalReplayImporter } from './experimental-replay-import'
 import {
   createImportExportHandlers,
   getCurrentImportSession,
@@ -62,8 +63,19 @@ const handleFirebaseSignOut = async (): Promise<void> => {
  * データエクスポート機能
  * `chrome.runtime.onMessage`のディスパッチを登録する。
  */
-export const registerMessageRouter = (service: PokerChaseService, db: PokerChaseDB, gameUrlPattern: string): void => {
-  const { exportData, importData, deleteAllData, getLatestSessionStats, rebuildAllData } = createImportExportHandlers(service, db, gameUrlPattern)
+export const registerMessageRouter = (
+  service: PokerChaseService,
+  db: PokerChaseDB,
+  gameUrlPattern: string,
+  experimentalReplayImporter?: ExperimentalReplayImporter
+): void => {
+  const { exportData, importData, deleteAllData, getLatestSessionStats, rebuildAllData } = createImportExportHandlers(
+    service,
+    db,
+    gameUrlPattern,
+    experimentalReplayImporter ? () => experimentalReplayImporter.prepareForDataDeletion() : undefined,
+    experimentalReplayImporter ? () => experimentalReplayImporter.resumeAfterDataDeletionFailure() : undefined
+  )
 
   const rejectIfOperationBusy = (action: string, sendResponse: (response: MessageResponse) => void): boolean => {
     if (isOperationIdle()) return false

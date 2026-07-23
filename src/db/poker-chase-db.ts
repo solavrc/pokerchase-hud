@@ -7,6 +7,7 @@ import type {
   MetaRecord
 } from '../types'
 import { API_EVENT_PRIMARY_KEY } from '../utils/api-event-key'
+import type { ExperimentalReplayRecord } from '../replay/protocol'
 
 const API_EVENT_MIGRATION_TABLE = '_apiEventsSequenceMigration'
 const API_EVENT_MIGRATION_CHUNK_SIZE = 5000
@@ -37,6 +38,7 @@ export class PokerChaseDB extends Dexie {
   phases!: Table<Phase, number>
   actions!: Table<Action, number>
   meta!: Table<MetaRecord, string>
+  experimentalReplayHands!: Table<ExperimentalReplayRecord, number>
   constructor(indexedDB: IDBFactory, iDBKeyRange: typeof IDBKeyRange) {
     super('PokerChaseDB', { indexedDB, IDBKeyRange: iDBKeyRange })
     this.version(1).stores({
@@ -135,6 +137,18 @@ export class PokerChaseDB extends Dexie {
         const last = stagedRows[stagedRows.length - 1]!
         cursor = [last.timestamp, last.ApiTypeId, last.sequence]
       }
+    })
+
+    // Experimental, opt-in session-end replay capture. This store is kept
+    // separate from the derived hands/actions tables until replay semantics
+    // have been validated against enough live sessions.
+    this.version(7).stores({
+      apiEvents: `${API_EVENT_PRIMARY_KEY},timestamp,ApiTypeId,[timestamp+ApiTypeId],[ApiTypeId+timestamp]`,
+      hands: 'id,*seatUserIds,*winningPlayerIds,approxTimestamp',
+      phases: '[handId+phase],handId,*seatUserIds,phase',
+      actions: '[handId+index],handId,playerId,phase,actionType,*actionDetails,[playerId+phase],[playerId+actionType]',
+      meta: 'id,updatedAt',
+      experimentalReplayHands: 'handId,sourceKey,sessionKey,sessionId,status,[status+sourceKey],[status+sessionKey],queuedAt,updatedAt'
     })
 
     // Backward-compatible default for existing internal/test callers that

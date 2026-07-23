@@ -101,7 +101,13 @@ export const clearImportSession = (releaseOperation = true): void => {
  * `service`/`db`/`gameUrlPattern`をクロージャで捕捉し、message-router.tsから
  * 呼び出せる関数群を返す。
  */
-export const createImportExportHandlers = (service: PokerChaseService, db: PokerChaseDB, gameUrlPattern: string) => {
+export const createImportExportHandlers = (
+  service: PokerChaseService,
+  db: PokerChaseDB,
+  gameUrlPattern: string,
+  prepareExperimentalReplayDeletion?: () => Promise<void>,
+  resumeExperimentalReplayAfterDeleteFailure?: () => void
+) => {
   const exportData = async (format: string) => {
     if (format === 'json') {
       await exportJsonData(db)
@@ -738,6 +744,10 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
     // Keep the slot claimed until runtime.reload() replaces this worker.
     setOperationState({ type: 'delete' })
     try {
+      // Stop retry timers and drain replay writes that were accepted before
+      // the synchronous operation-state claim above.
+      await prepareExperimentalReplayDeletion?.()
+
       // Events already queued before the synchronous claim above must finish
       // first. event-ingestion rejects later arrivals while type=delete, so
       // once this drain stabilizes nothing can recreate the database between
@@ -765,6 +775,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
       chrome.runtime.reload()
     } catch (error) {
       console.error('Error deleting data:', error)
+      resumeExperimentalReplayAfterDeleteFailure?.()
       setOperationState({ type: 'idle' })
       throw error
     }

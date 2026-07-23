@@ -14,6 +14,7 @@ import { recordUndecodedEvent } from './undecoded-event-tracker'
 import { markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
 import { getOperationState } from './operation-state'
+import type { ExperimentalReplayImporter } from './experimental-replay-import'
 
 /**
  * 参加取消申込（ApiTypeId 203）。`ApiType` enum（アプリケーションで使用する
@@ -46,7 +47,10 @@ let ingestionQueue: Promise<void> = Promise.resolve()
  * content_scriptからのポート接続を受け取り、APIイベントの検証・DB保存・
  * 各ストリームへの書き込み・自動同期トリガーを行う。
  */
-export const registerEventIngestion = (service: PokerChaseService): void => {
+export const registerEventIngestion = (
+  service: PokerChaseService,
+  experimentalReplayImporter?: ExperimentalReplayImporter
+): void => {
   // Raw Event Lakeの耐久性バリア（release-blocker監査 finding A）:
   // `db.apiEvents.add()`を待たずにストリーム書き込みやセッションフックの副作用
   // （自動同期トリガー、`chrome.runtime.reload()`を呼びうる保留アップデート
@@ -104,13 +108,13 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   chrome.runtime.onConnect.addListener(port => {
     if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
       connectedPorts.add(port)
+      experimentalReplayImporter?.attachPort(port)
       port.onMessage.addListener((message: ApiMessage | { type: string }) => {
         // キープアライブメッセージの処理（キュー直列化の対象外 -- 何も
         // 保存・処理しないため、耐久性バリアの対象になる副作用が無い）
         if (typeof message === 'object' && 'type' in message && message.type === 'keepalive') {
           return
         }
-
         // Local deletion owns the database through runtime.reload(). Events
         // arriving after that synchronous claim must not enter the queue:
         // Dexie would otherwise auto-open and recreate the just-deleted DB in
@@ -121,11 +125,23 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           return Promise.resolve()
         }
 
+        if (experimentalReplayImporter?.handlePortMessage(message, port)) {
+          // Replay results serialize on the importer's own queue. Mirror its
+          // drain into ingestionQueue so Delete All Data's stabilization
+          // barrier also waits for replay Dexie writes accepted before the
+          // synchronous delete claim.
+          const task = ingestionQueue.then(() => experimentalReplayImporter.whenIdle())
+          ingestionQueue = task.catch(err => {
+            console.error('[background] Experimental replay drain failed (fail-safe, queue continues):', err)
+          })
+          return task
+        }
+
         // このイベントの処理を、直前のイベントの処理（add()の決着含む）の
         // 後ろに連結する。`processEvent`は内部で全エラーを捕捉して素通し
         // させない設計だが、想定外のバグでqueueが壊れて以降のイベントが
         // 永久に詰まることのないよう、キューの継続用チェーンは別途catchする。
-        const task = ingestionQueue.then(() => processEvent(service, message))
+        const task = ingestionQueue.then(() => processEvent(service, message, experimentalReplayImporter, port))
         ingestionQueue = task.catch(err => {
           console.error('[background] Unhandled ingestion queue error (fail-safe, queue continues):', err)
         })
@@ -138,6 +154,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // Keep lastKnownStats for page reloads - only clear interval
         stopPing()
         connectedPorts.delete(port)
+        experimentalReplayImporter?.detachPort(port)
       })
     }
   })
@@ -211,7 +228,9 @@ const applySessionActivity = (rawApiTypeId: unknown, message: ApiMessage | { typ
  */
 const processEvent = async (
   service: PokerChaseService,
-  message: ApiMessage | { type: string }
+  message: ApiMessage | { type: string },
+  experimentalReplayImporter?: ExperimentalReplayImporter,
+  sourcePort?: chrome.runtime.Port
 ): Promise<void> => {
   // Ensure service is ready before processing messages
   try {
@@ -267,6 +286,30 @@ const processEvent = async (
 
   // ここから先はraw書き込みが成功したか、保存不可能で待つべきI/Oが
   // 無かった場合のみ到達する。真の重複と書き込み失敗は上でreturn済み。
+
+  // Experimental replay capture follows the same raw-first durability gate.
+  // HandId registration and the 201/308/309 boundaries are awaited so reload
+  // safety drains cannot complete while replay rows are still only in the
+  // importer's memory. Other event types remain off the latency-sensitive
+  // ingestion path.
+  const replayTask = sourcePort
+    ? experimentalReplayImporter?.observePortEvent(message as Record<string, unknown>, sourcePort)
+    : experimentalReplayImporter?.observeApiEvent(message as Record<string, unknown>)
+  if (
+    rawApiTypeId === ApiType.EVT_ENTRY_QUEUED ||
+    rawApiTypeId === ApiType.EVT_SESSION_DETAILS ||
+    rawApiTypeId === ApiType.EVT_HAND_RESULTS ||
+    rawApiTypeId === ApiType.EVT_SESSION_RESULTS
+  ) {
+    try {
+      await replayTask
+    } catch (err) {
+      // Experimental storage must never suppress the canonical WS pipeline.
+      console.error('[background] Experimental replay lifecycle persistence failed; continuing core ingestion:', err)
+    }
+  } else {
+    replayTask?.catch(err => console.error('[background] Experimental replay lifecycle failed:', err))
+  }
 
   // Forced-update安全性述語（update-manager.ts）のセッション状態追跡。
   // 意図的にパース成功後のdata.ApiTypeIdではなく、生メッセージの数値

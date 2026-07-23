@@ -28,8 +28,8 @@ describe('PokerChaseDB Raw Event Lake', () => {
     await db.delete()
   })
 
-  it('uses database version 6 for the staged primary-key migration', () => {
-    expect(db.verno).toBe(6)
+  it('uses database version 7 after adding the experimental replay store', () => {
+    expect(db.verno).toBe(7)
   })
 
   it('stores and reads back a known non-application event (202) unfiltered', async () => {
@@ -77,7 +77,7 @@ describe('PokerChaseDB Raw Event Lake', () => {
   })
 })
 
-describe('PokerChaseDB v3 -> v6 apiEvents sequence-key migration', () => {
+describe('PokerChaseDB v3 -> v7 apiEvents sequence-key migration', () => {
   afterEach(async () => {
     const cleanup = new PokerChaseDB(indexedDB, IDBKeyRange)
     await cleanup.delete()
@@ -107,7 +107,7 @@ describe('PokerChaseDB v3 -> v6 apiEvents sequence-key migration', () => {
     const migrated = new PokerChaseDB(indexedDB, IDBKeyRange)
     await migrated.open()
 
-    expect(migrated.verno).toBe(6)
+    expect(migrated.verno).toBe(7)
     const stored = await migrated.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).toArray() as any[]
     expect(stored).toEqual(oldRows.map(row => ({ ...row, sequence: 0 })))
 

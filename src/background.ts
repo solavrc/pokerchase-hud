@@ -21,6 +21,7 @@ import { initUpdateManager } from './background/update-manager'
 import { markWhatsNewOnUpdate, reassertWhatsNewBadgeOnStartup } from './background/whats-new-badge'
 import { needsConfigPersist } from './background/hud-config-sync'
 import { initializeAutoSyncOnReady, createSignInTransitionHandler } from './background/auto-sync-boot'
+import { ExperimentalReplayImporter } from './background/experimental-replay-import'
 import { loadOptions, saveOptions, type Options } from './utils/options-storage'
 import { DEFAULT_TABLE_SIZE_FILTER, selectedTableSizeLayers } from './utils/table-size'
 import { checkMinVersionGate } from './services/min-version-gate'
@@ -39,6 +40,7 @@ declare global {
 
 const db = new PokerChaseDB(self.indexedDB, self.IDBKeyRange)
 const service = new PokerChaseService({ db })
+const experimentalReplayImporter = new ExperimentalReplayImporter(db, service)
 self.db = db
 self.service = service
 self.statsRegistry = defaultRegistry
@@ -173,11 +175,11 @@ loadOptions().then((options) => {
 /**
  * データエクスポート機能
  */
-registerMessageRouter(service, db, gameUrlPattern)
+registerMessageRouter(service, db, gameUrlPattern, experimentalReplayImporter)
 
 registerStreamSubscriptions(service, gameUrlPattern)
 
-registerEventIngestion(service)
+registerEventIngestion(service, experimentalReplayImporter)
 
 /**
  * Forced update（sola承認）: 安全な瞬間にダウンロード済み更新を自動適用する。
