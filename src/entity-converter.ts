@@ -335,7 +335,13 @@ export class EntityConverter {
               handId: 0, // EVT_HAND_RESULTSで更新される
               phase: newPhase,
               seatUserIds,
-              communityCards: event.CommunityCards || []
+              // EVT_DEAL_ROUND.CommunityCards is a street delta. Persist the
+              // cumulative board, matching WriteEntityStream and allowing
+              // EVT_HAND_RESULTS to append only its still-undelivered tail.
+              communityCards: [
+                ...(handState.phases.at(-1)?.communityCards || []),
+                ...(event.CommunityCards || [])
+              ]
             })
           }
 
