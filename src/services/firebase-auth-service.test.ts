@@ -72,8 +72,10 @@ describe('FirebaseAuthService storage access boundary', () => {
 
     await expect(service.ready()).rejects.toThrow('setAccessLevel failed')
     await expect(service.signInWithGoogle()).rejects.toThrow('setAccessLevel failed')
+    await expect(service.signOut()).rejects.toThrow('setAccessLevel failed')
     expect(identitySpy).not.toHaveBeenCalled()
     expect(setSpy).not.toHaveBeenCalled()
+    expect(chrome.storage.local.remove).not.toHaveBeenCalled()
   })
 })
 

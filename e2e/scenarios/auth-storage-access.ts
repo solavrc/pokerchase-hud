@@ -206,6 +206,9 @@ const run = async (): Promise<void> => {
     harness = undefined
 
     harness = await launchHarness({ extensionDir, userDataDir: profileDir })
+    // Assert the upgraded profile's boundary before an explicit auth-status
+    // message or popup navigation deliberately wakes/uses the Service Worker.
+    await assertContentBoundary(harness, extensionId)
     const restartedExtensionId = await extensionIdFor(harness.browser)
     if (restartedExtensionId !== extensionId) {
       throw new Error(`extension id changed across restart: ${extensionId} -> ${restartedExtensionId}`)
@@ -235,7 +238,6 @@ const run = async (): Promise<void> => {
       { timeout: 15_000 },
       SYNTHETIC_STATE.email
     )
-    await assertContentBoundary(harness, restartedExtensionId)
 
     console.log('[auth-storage] PASS - Service Worker and popup restored auth after browser restart')
     console.log('[auth-storage] PASSED: all real-Chrome storage boundary checks passed')

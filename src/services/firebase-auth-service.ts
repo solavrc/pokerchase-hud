@@ -80,6 +80,7 @@ export class FirebaseAuthService {
   private static readonly GOOGLE_REVOKE_TIMEOUT_MS = 30_000
   private currentState: StoredAuthState | null = null
   private authStateListeners: ((user: AuthUser | null, source: AuthChangeSource) => void)[] = []
+  private storageAccessEstablished = false
   private storageAccessPromise: Promise<void>
   private restorePromise: Promise<void>
   /**
@@ -146,6 +147,7 @@ export class FirebaseAuthService {
       throw new Error('chrome.storage.local.setAccessLevel is required for secure auth storage')
     }
     await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
+    this.storageAccessEstablished = true
   }
 
   /**
@@ -180,7 +182,7 @@ export class FirebaseAuthService {
     // must never ignore failure to establish the credential boundary itself.
     // Otherwise interactive sign-in could persist fresh tokens in a
     // content-script-readable area after startup restriction failed.
-    await this.storageAccessPromise
+    if (!this.storageAccessEstablished) await this.storageAccessPromise
     // A failed startup restore must not permanently poison interactive auth:
     // sign-in is the explicit recovery path. Also let an in-flight restore
     // settle before starting so it cannot publish an older stored account
@@ -303,6 +305,12 @@ export class FirebaseAuthService {
     // This is also before the first await (the Chrome token lookup), so a
     // sign-in started while that lookup is slow must wait for this operation.
     this.authGeneration++
+
+    // Removing an auth record from an unrestricted local area can disclose
+    // its oldValue through storage.onChanged. Establish the same trusted-only
+    // boundary before destructive cleanup as before every credential read or
+    // write.
+    if (!this.storageAccessEstablished) await this.storageAccessPromise
 
     // Once a sign-in's storage write has started, let every already-queued
     // commit publish (or fail) before this later user action removes state.
