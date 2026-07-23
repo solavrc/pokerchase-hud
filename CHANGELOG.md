@@ -1,5 +1,19 @@
 # Changelog
 
+## [5.3.1](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v5.3.0...pokerchase-hud-v5.3.1) (2026-07-23)
+
+
+### Bug Fixes
+
+* **content:** retry disconnected port events ([#271](https://github.com/solavrc/pokerchase-hud/issues/271)) ([28c1dd2](https://github.com/solavrc/pokerchase-hud/commit/28c1dd238cfecd333a2d72eb0346146fb256c5b9))
+* **export:** preserve split-pot odd chips ([#276](https://github.com/solavrc/pokerchase-hud/issues/276)) ([9149d62](https://github.com/solavrc/pokerchase-hud/commit/9149d6283b22c40bf18b2c065f003a7b0777c8d7))
+* **export:** report ring hand rake from settlement ([#275](https://github.com/solavrc/pokerchase-hud/issues/275)) ([2a3b70d](https://github.com/solavrc/pokerchase-hud/commit/2a3b70d1a1f03ed38ee5a5798d69359483e46642))
+* **hud:** cap pot odds at effective call ([#273](https://github.com/solavrc/pokerchase-hud/issues/273)) ([40a03b1](https://github.com/solavrc/pokerchase-hud/commit/40a03b1c119f847d821de6b343562a56f9329a0e))
+* keep cloud rebuild worker alive ([#277](https://github.com/solavrc/pokerchase-hud/issues/277)) ([adb1936](https://github.com/solavrc/pokerchase-hud/commit/adb19363c328bd766893793ed82923537c8eb602))
+* restrict auth storage to trusted contexts ([#274](https://github.com/solavrc/pokerchase-hud/issues/274)) ([4feb4ad](https://github.com/solavrc/pokerchase-hud/commit/4feb4ad51fd67c55ee362f3b9dcfeb2c66e52dcb))
+* **stats:** accumulate rebuild board cards ([#270](https://github.com/solavrc/pokerchase-hud/issues/270)) ([451016a](https://github.com/solavrc/pokerchase-hud/commit/451016a66961c206d5d519ec3e2c85da8b8ceacf))
+* **stats:** exclude uncalled returns from winners ([#272](https://github.com/solavrc/pokerchase-hud/issues/272)) ([b0d0448](https://github.com/solavrc/pokerchase-hud/commit/b0d04487f4f3fc5063da244e88673c0586448121))
+
 ## [5.3.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v5.2.0...pokerchase-hud-v5.3.0) (2026-07-22)
 
 
