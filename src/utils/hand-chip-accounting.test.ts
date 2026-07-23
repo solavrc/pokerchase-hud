@@ -154,6 +154,24 @@ describe('derivePlayerHandChipAccounting', () => {
     )).toBeNull()
   })
 
+  test('malformed legacy Ring snapshot stays unknown instead of throwing', () => {
+    const malformedResult = {
+      ...uncalledReturnResult,
+      OtherPlayers: undefined,
+    } as unknown as ApiEvent<ApiType.EVT_HAND_RESULTS>
+
+    expect(() => deriveHandRakeAccounting(
+      uncalledReturnDeal,
+      malformedResult,
+      BattleType.RING_GAME
+    )).not.toThrow()
+    expect(deriveHandRakeAccounting(
+      uncalledReturnDeal,
+      malformedResult,
+      BattleType.RING_GAME
+    )).toBeNull()
+  })
+
   test('Ring side-pot settlement preserves rake across uncalled return, split, and odd chip payouts', () => {
     // Real-equivalent endpoint shape:
     // contributions 101 + 301 + 501 = 903

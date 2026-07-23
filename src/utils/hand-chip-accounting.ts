@@ -240,6 +240,13 @@ export const deriveHandRakeAccounting = (
   const isRing = battleType === BattleType.RING_GAME || battleType === BattleType.FRIEND_RING_GAME
   if (!isRing) return null
 
+  // Imported legacy/test rows can bypass the current API parser. Guard every
+  // collection before iterating or spreading so malformed snapshots remain an
+  // unknown rake rather than aborting hand-log generation.
+  if (!Array.isArray(deal.SeatUserIds) ||
+      !Array.isArray(deal.OtherPlayers) ||
+      !Array.isArray(results.OtherPlayers)) return null
+
   const occupiedSeatIndexes = deal.SeatUserIds
     .map((userId, seatIndex) => ({ userId, seatIndex }))
     .filter(({ userId }) => userId !== -1)
