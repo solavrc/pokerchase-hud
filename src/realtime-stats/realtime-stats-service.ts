@@ -7,6 +7,7 @@
 
 import type { StatResult } from '../types/stats'
 import type { Action, Phase, Hand } from '../types/entities'
+import type { BetStatusType } from '../types/game'
 import { potOddsStat, handImprovementStat } from './index'
 import { calculatePlayerPotOdds } from './pot-odds'
 
@@ -54,7 +55,8 @@ export class RealTimeStatsService {
     progress?: any,
     heroSeatIndex?: number,
     seatBetAmounts?: number[],
-    seatChips?: number[]
+    seatChips?: number[],
+    seatBetStatuses?: Array<BetStatusType | undefined>
   ): RealTimeStats {
     const context = {
       playerId,
@@ -75,7 +77,8 @@ export class RealTimeStatsService {
       progress,  // Progress data from WebSocket events
       heroSeatIndex,  // Hero's seat index
       seatBetAmounts,  // Bet amounts for each seat
-      seatChips  // Chip stacks for each seat
+      seatChips,  // Chip stacks for each seat
+      seatBetStatuses  // Whether each seat is still eligible to act
     }
 
     const stats: RealTimeStats = {}
@@ -134,7 +137,8 @@ export class RealTimeStatsService {
     progress: any,
     seatBetAmounts: number[],
     seatChips: number[],
-    heroStats: RealTimeStats
+    heroStats: RealTimeStats,
+    seatBetStatuses?: Array<BetStatusType | undefined>
   ): AllPlayersRealTimeStats {
     const result: AllPlayersRealTimeStats = {
       heroStats,
@@ -152,7 +156,8 @@ export class RealTimeStatsService {
         seatIndex,
         progress,
         seatBetAmounts,
-        seatChips
+        seatChips,
+        seatBetStatuses
       )
       
       if (playerPotOdds) {
