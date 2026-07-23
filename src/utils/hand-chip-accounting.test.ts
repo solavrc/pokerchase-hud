@@ -394,6 +394,13 @@ describe('deriveHandSettlement', () => {
     expect(settlement.playerChipAccounting['2']?.netChips).toBe(-50)
     expect(settlement.playerSettlements['1']).toEqual({ contestedAward: 95, uncalledReturn: 0 })
     expect(settlement.winningPlayerIds).toEqual([1])
+
+    const beforeSessionMetadata = deriveHandSettlement(fixture.deal, fixture.results, undefined)
+    expect(beforeSessionMetadata.playerSettlements['1']).toEqual({
+      contestedAward: 95,
+      uncalledReturn: 0,
+    })
+    expect(beforeSessionMetadata.winningPlayerIds).toEqual([1])
   })
 
   test('real ante all-in settlement separates the returned top tier from the contested main pot', () => {

@@ -20,7 +20,7 @@ import { runPipeline } from './verify-stats/pipeline'
 import { runOracle } from './verify-stats/oracle'
 import { compareResults, formatReport } from './verify-stats/compare'
 import { ApiType, apiEventSchemas } from '../types/api'
-import { ActionType } from '../types/game'
+import { ActionType, BattleType, BetStatusType, PhaseType, RankType } from '../types/game'
 import type { ApiEvent } from '../types'
 
 // Mirrors the createEvent() helper in entity-converter.test.ts: parses through
@@ -256,6 +256,110 @@ describe('verify-stats harness', () => {
     const rendered = formatReport(report)
     expect(rendered).toContain('Mismatches for vpip')
     expect(rendered).toContain(`player ${PLAYER_A}`)
+  })
+
+  it('oracle infers one omitted tournament result snapshot and keeps a net-loss side-pot winner', async () => {
+    const events = [
+      { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, timestamp: 2000, BattleType: BattleType.SIT_AND_GO, Code: 0, Id: 'test', IsRetire: false },
+      {
+        ApiTypeId: ApiType.EVT_DEAL,
+        timestamp: 2001,
+        SeatUserIds: [201, 202, 203, -1],
+        Game: { Ante: 0, SmallBlind: 1, BigBlind: 2, ButtonSeat: 0, SmallBlindSeat: 1, BigBlindSeat: 2 },
+        Player: { SeatIndex: 0, BetStatus: BetStatusType.BET_ABLE, Chip: 100, BetChip: 0 },
+        OtherPlayers: [
+          { SeatIndex: 1, BetStatus: BetStatusType.BET_ABLE, Chip: 100, BetChip: 0 },
+          { SeatIndex: 2, BetStatus: BetStatusType.BET_ABLE, Chip: 100, BetChip: 0 },
+        ],
+        Progress: { Phase: PhaseType.PREFLOP, NextActionTypes: [], Pot: 0, SidePot: [] },
+      },
+      {
+        ApiTypeId: ApiType.EVT_DEAL_ROUND,
+        timestamp: 2002,
+        CommunityCards: [0, 4, 8],
+        Player: { SeatIndex: 0, BetStatus: BetStatusType.ALL_IN, Chip: 10, BetChip: 0 },
+        OtherPlayers: [
+          { SeatIndex: 1, BetStatus: BetStatusType.ALL_IN, Chip: 0, BetChip: 0 },
+          { SeatIndex: 2, BetStatus: BetStatusType.ALL_IN, Chip: 0, BetChip: 0 },
+        ],
+        Progress: { Phase: PhaseType.FLOP, NextActionTypes: [], Pot: 270, SidePot: [20] },
+      },
+      {
+        ApiTypeId: ApiType.EVT_HAND_RESULTS,
+        timestamp: 2003,
+        HandId: 999002,
+        CommunityCards: [12, 16],
+        Pot: 270,
+        SidePot: [20],
+        Results: [
+          { UserId: 201, RankType: RankType.ONE_PAIR, HandRanking: 1, RewardChip: 270 },
+          { UserId: 202, RankType: RankType.HIGH_CARD, HandRanking: 2, RewardChip: 20 },
+          { UserId: 203, RankType: RankType.HIGH_CARD, HandRanking: -1, RewardChip: 0 },
+        ],
+        Player: { SeatIndex: 0, BetStatus: BetStatusType.HAND_ENDED, Chip: 280, BetChip: 0 },
+        // seat 1 (the side-pot winner) is intentionally omitted.
+        OtherPlayers: [
+          { SeatIndex: 2, BetStatus: BetStatusType.HAND_ENDED, Chip: 0, BetChip: 0 },
+        ],
+      },
+    ] as unknown as ApiEvent[]
+
+    const pipeline = await runPipeline(events)
+    const oracle = runOracle(events)
+
+    expect(pipeline.get(202)?.stats.wwsf).toEqual([1, 1])
+    expect(oracle.get(202)?.stats.wwsf).toEqual([1, 1])
+  })
+
+  it('oracle re-derives a short ante all-in tier instead of treating the returned excess as a win', async () => {
+    const events = [
+      { ApiTypeId: ApiType.EVT_ENTRY_QUEUED, timestamp: 3000, BattleType: BattleType.SIT_AND_GO, Code: 0, Id: 'test', IsRetire: false },
+      {
+        ApiTypeId: ApiType.EVT_DEAL,
+        timestamp: 3001,
+        SeatUserIds: [301, 302, -1, -1],
+        Game: { Ante: 100, SmallBlind: 1, BigBlind: 2, ButtonSeat: 0, SmallBlindSeat: 0, BigBlindSeat: 1 },
+        Player: { SeatIndex: 0, BetStatus: BetStatusType.ALL_IN, Chip: 0, BetChip: 0 },
+        OtherPlayers: [
+          { SeatIndex: 1, BetStatus: BetStatusType.BET_ABLE, Chip: 100, BetChip: 0 },
+        ],
+        Progress: { Phase: PhaseType.PREFLOP, NextActionTypes: [], Pot: 60, SidePot: [70] },
+      },
+      {
+        ApiTypeId: ApiType.EVT_DEAL_ROUND,
+        timestamp: 3002,
+        CommunityCards: [0, 4, 8],
+        Player: { SeatIndex: 0, BetStatus: BetStatusType.ALL_IN, Chip: 0, BetChip: 0 },
+        OtherPlayers: [
+          { SeatIndex: 1, BetStatus: BetStatusType.BET_ABLE, Chip: 80, BetChip: 20 },
+        ],
+        Progress: { Phase: PhaseType.FLOP, NextActionTypes: [], Pot: 60, SidePot: [90] },
+      },
+      {
+        ApiTypeId: ApiType.EVT_HAND_RESULTS,
+        timestamp: 3003,
+        HandId: 999003,
+        CommunityCards: [12, 16],
+        Pot: 60,
+        SidePot: [90],
+        Results: [
+          { UserId: 301, RankType: RankType.ONE_PAIR, HandRanking: 1, RewardChip: 60 },
+          { UserId: 302, RankType: RankType.HIGH_CARD, HandRanking: 2, RewardChip: 90 },
+        ],
+        Player: { SeatIndex: 0, BetStatus: BetStatusType.HAND_ENDED, Chip: 60, BetChip: 0 },
+        OtherPlayers: [
+          { SeatIndex: 1, BetStatus: BetStatusType.HAND_ENDED, Chip: 170, BetChip: 0 },
+        ],
+      },
+    ] as unknown as ApiEvent[]
+
+    const pipeline = await runPipeline(events)
+    const oracle = runOracle(events)
+
+    expect(pipeline.get(301)?.stats.wwsf).toEqual([1, 1])
+    expect(oracle.get(301)?.stats.wwsf).toEqual([1, 1])
+    expect(pipeline.get(302)?.stats.wwsf).toEqual([0, 1])
+    expect(oracle.get(302)?.stats.wwsf).toEqual([0, 1])
   })
 
   it('counts a missing/non-fraction stat as a mismatch, not a silent skip', () => {

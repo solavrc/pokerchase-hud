@@ -134,8 +134,9 @@ const emptySettlements = (event: DealEvent): PlayerHandSettlementMap =>
  * player remains null rather than receiving an estimated loss. Complete table
  * snapshots must also obey the game type's chip-conservation rule: tournament
  * chips are zero-sum, while Ring rake may remove chips but can never create
- * them. An unknown BattleType is accepted only when complete snapshots prove
- * a zero-sum settlement, which is valid under either rule.
+ * them. An unknown BattleType uses the Ring-safe rule (outflow is allowed,
+ * chip creation is not) so a capture that starts before session metadata does
+ * not erase legitimate raked winners.
  */
 export const derivePlayerHandChipAccounting = (
   deal: DealEvent,
@@ -224,7 +225,7 @@ export const derivePlayerHandChipAccounting = (
     const chipDelta = totalFinalStack - totalStartingStack
     if ((isTournament && chipDelta !== 0) ||
         (isRing && chipDelta > 0) ||
-        (!isTournament && !isRing && chipDelta !== 0)) return accounting
+        (!isTournament && !isRing && chipDelta > 0)) return accounting
   }
 
   for (let seatIndex = 0; seatIndex < deal.SeatUserIds.length; seatIndex++) {
