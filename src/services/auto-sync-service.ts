@@ -25,6 +25,7 @@ import {
   type RawApiEvent
 } from '../utils/api-event-key'
 import { HandLogExporter } from '../utils/hand-log-exporter'
+import { startKeepAlive } from '../background/service-worker-keepalive'
 
 /** Shown in the popup and logged when the min-version gate stops cloud sync (#forced-update). */
 export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます'
@@ -1452,6 +1453,12 @@ export class AutoSyncService {
    *   an error always leaves the previous `importStatus` untouched.
    */
   private async rebuildLocalEntities(): Promise<void> {
+    // A cloud restore can replay the entire Raw Event Lake and repeatedly
+    // commit derived chunks. On a cold MV3 worker with no game Port, popup,
+    // or DevTools attached, that work can exceed Chrome's 30-second idle
+    // timeout. Reuse the manual rebuild/export keepalive for the complete
+    // replay, including recovery after a partially downloaded cloud page.
+    const stopKeepAlive = await startKeepAlive()
     try {
       console.log('[AutoSync] Triggering chunked data rebuild after download...')
 
@@ -1557,6 +1564,11 @@ export class AutoSyncService {
       throw new Error(
         `${REBUILD_AFTER_DOWNLOAD_FAILED_MESSAGE} (${error instanceof Error ? error.message : 'Unknown error'})`
       )
+    } finally {
+      // Every settled path (success, replay/write failure, or an abort-like
+      // rejection) owns exactly one cleanup and cannot leak the interval
+      // into the next sync attempt.
+      stopKeepAlive()
     }
   }
 
