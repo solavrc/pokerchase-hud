@@ -366,7 +366,11 @@ export const launchHarness = async (options: LaunchOptions = {}): Promise<Harnes
         `--load-extension=${extensionDir}`,
         '--no-first-run',
         '--no-default-browser-check',
-        ...(process.env.CI ? ['--disable-dev-shm-usage'] : []),
+        // GitHub-hosted Ubuntu disables the unprivileged-user-namespace
+        // sandbox Chrome for Testing expects. The runner is disposable and
+        // only opens our localhost fixture, so disable Chrome's sandbox in CI
+        // while retaining the normal sandbox for every local/browser run.
+        ...(process.env.CI ? ['--disable-dev-shm-usage', '--no-sandbox'] : []),
         // Window size in *headed* mode only affects the outer OS window
         // (Chrome adds its own title/tab/toolbar chrome on top of this);
         // it has no effect headless, where there's no window chrome to
