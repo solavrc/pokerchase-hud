@@ -163,14 +163,28 @@ const stageLegacyUntrustedAccess = async (
 }
 
 const run = async (): Promise<void> => {
+  const headed = process.argv.slice(2).includes('--headed')
   const extensionDir = buildE2E()
   const profileDir = mkdtempSync(join(tmpdir(), 'pokerchase-hud-auth-storage-'))
   let harness: Harness | undefined
 
   try {
-    harness = await launchHarness({ extensionDir, userDataDir: profileDir })
+    harness = await launchHarness({ extensionDir, userDataDir: profileDir, headed })
     const extensionId = await extensionIdFor(harness.browser)
     const trustedPage = await openTrustedContext(harness.browser, extensionId)
+
+    // The synthetic fixture write below bypasses FirebaseAuthService's normal
+    // sign-in path, which itself awaits the storage-access restriction. Wait
+    // for that real startup barrier first so a fast hosted runner cannot place
+    // credentials into the brief default-untrusted window created by the test.
+    const initialAuthStatus = await trustedPage.evaluate(
+      async () => await chrome.runtime.sendMessage({ action: 'firebaseAuthStatus' })
+    ) as { success?: boolean, isSignedIn?: boolean, error?: string }
+    if (!initialAuthStatus.success || initialAuthStatus.isSignedIn) {
+      throw new Error(
+        `fresh profile auth boundary did not initialize: ${JSON.stringify(initialAuthStatus)}`
+      )
+    }
 
     await trustedPage.evaluate(
       async (authKey, authState, syncProbeKey) => {
@@ -205,7 +219,7 @@ const run = async (): Promise<void> => {
     await harness.close()
     harness = undefined
 
-    harness = await launchHarness({ extensionDir, userDataDir: profileDir })
+    harness = await launchHarness({ extensionDir, userDataDir: profileDir, headed })
     // Assert the upgraded profile's boundary before an explicit auth-status
     // message or popup navigation deliberately wakes/uses the Service Worker.
     await assertContentBoundary(harness, extensionId)

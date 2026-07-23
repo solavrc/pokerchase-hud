@@ -153,7 +153,12 @@ export const startFixtureServer = async (options: FixtureServerOptions = {}): Pr
       })
     })
 
-  return { port, origin: `http://localhost:${port}`, replayDone, close }
+  return {
+    port,
+    origin: `http://localhost:${port}`,
+    replayDone,
+    close
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

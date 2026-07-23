@@ -17,6 +17,8 @@
     "e2e:smoke": "tsx e2e/scenarios/smoke.ts",
     "e2e:auth-storage": "tsx e2e/scenarios/auth-storage-access.ts",
     "e2e:playerid": "tsx e2e/scenarios/playerid-session-persistence.ts",
+    "e2e:mv3-lifecycle": "tsx e2e/scenarios/mv3-service-worker-lifecycle.ts",
+    "e2e:browser-gate": "npm run e2e:smoke && npm run e2e:auth-storage && npm run e2e:mv3-lifecycle",
     "e2e": "tsx e2e/run.ts",
     "firebase:deploy": "firebase deploy --only firestore:rules,firestore:indexes",
     "firebase:deploy:rules": "firebase deploy --only firestore:rules",
