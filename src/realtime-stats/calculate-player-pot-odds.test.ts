@@ -3,6 +3,7 @@
  */
 
 import { calculatePlayerPotOdds } from './pot-odds'
+import { BetStatusType } from '../types/game'
 
 describe('calculatePlayerPotOdds', () => {
   it('should calculate pot odds for any player when it is their turn', () => {
@@ -49,7 +50,7 @@ describe('calculatePlayerPotOdds', () => {
     })
   })
 
-  it('should calculate pot odds even when player has no chips', () => {
+  it('should not offer a call to a player who is already all-in', () => {
     const playerSeatIndex = 4
     const progress = {
       NextActionSeat: 3,
@@ -60,14 +61,229 @@ describe('calculatePlayerPotOdds', () => {
     const seatBetAmounts = [10, 10, 5, 0, 0, 0]
     const seatChips = [100, 150, 200, 300, 0, 0]
 
-    const result = calculatePlayerPotOdds(playerSeatIndex, progress, seatBetAmounts, seatChips)
+    const result = calculatePlayerPotOdds(
+      playerSeatIndex,
+      progress,
+      seatBetAmounts,
+      seatChips,
+      [
+        BetStatusType.BET_ABLE,
+        BetStatusType.BET_ABLE,
+        BetStatusType.BET_ABLE,
+        BetStatusType.BET_ABLE,
+        BetStatusType.ALL_IN,
+        BetStatusType.NOT_IN_PLAY
+      ]
+    )
 
-    expect(result?.pot).toBe(60)
-    expect(result?.call).toBe(10)
-    expect(result?.percentage).toBeCloseTo(16.7, 1)
-    expect(result?.ratio).toBe('5:1')
+    expect(result?.pot).toBe(50)
+    expect(result?.call).toBe(0)
+    expect(result?.percentage).toBe(0)
+    expect(result?.ratio).toBe('')
     expect(result?.isPlayerTurn).toBe(false)
     expect(result?.spr).toBe(0)
+  })
+
+  it('caps a short-stack call at the remaining stack', () => {
+    const result = calculatePlayerPotOdds(
+      0,
+      {
+        NextActionSeat: 0,
+        Pot: 300,
+        SidePot: [],
+        Phase: 1
+      },
+      [0, 100],
+      [50, 900],
+      [BetStatusType.BET_ABLE, BetStatusType.BET_ABLE]
+    )
+
+    expect(result).toEqual({
+      pot: 300,
+      call: 50,
+      percentage: 50 / 300 * 100,
+      ratio: '5:1',
+      isPlayerTurn: true,
+      spr: 0.2
+    })
+  })
+
+  it('excludes an unmatched overbet already included in Progress.Pot', () => {
+    const result = calculatePlayerPotOdds(
+      0,
+      {
+        NextActionSeat: 0,
+        Pot: 1_300,
+        SidePot: [],
+        Phase: 1
+      },
+      [0, 1_000],
+      [50, 5_000],
+      [BetStatusType.BET_ABLE, BetStatusType.BET_ABLE]
+    )
+
+    // The event pot is 300 prior chips + the full 1000 bet. Hero can win only
+    // 50 of that bet and adds a 50 call: 1300 - 950 + 50 = 400.
+    expect(result).toMatchObject({
+      pot: 400,
+      call: 50,
+      percentage: 12.5,
+      ratio: '7:1'
+    })
+  })
+
+  it('keeps all existing pot tiers available to an active short stack', () => {
+    const result = calculatePlayerPotOdds(
+      0,
+      {
+        NextActionSeat: 0,
+        Pot: 300,
+        SidePot: [120, 80],
+        Phase: 2
+      },
+      [0, 100],
+      [50, 900],
+      [BetStatusType.BET_ABLE, BetStatusType.BET_ABLE]
+    )
+
+    // Existing tiers stay available, while the unmatched 50 from the current
+    // street belongs above this player's all-in cap and is excluded.
+    expect(result).toMatchObject({
+      pot: 500,
+      call: 50,
+      percentage: 10,
+      ratio: '9:1'
+    })
+  })
+
+  it('removes every opponent contribution above the short stack cap in a multiway pot', () => {
+    const result = calculatePlayerPotOdds(
+      0,
+      {
+        NextActionSeat: 0,
+        Pot: 800,
+        SidePot: [200],
+        Phase: 2
+      },
+      [0, 100, 100],
+      [50, 900, 700],
+      [BetStatusType.BET_ABLE, BetStatusType.BET_ABLE, BetStatusType.BET_ABLE]
+    )
+
+    // Both opponents have 50 chips in the deeper current-street tier:
+    // 1000 total - 100 unmatched + 50 effective call = 950 playable.
+    expect(result).toMatchObject({
+      pot: 950,
+      call: 50,
+      percentage: 50 / 950 * 100,
+      ratio: '18:1'
+    })
+  })
+
+  it.each([
+    BetStatusType.NOT_IN_PLAY,
+    BetStatusType.FOLDED,
+    BetStatusType.ALL_IN,
+    BetStatusType.ELIMINATED
+  ])('does not display pot odds for non-acting BetStatus %s', (betStatus) => {
+    const result = calculatePlayerPotOdds(
+      0,
+      {
+        NextActionSeat: 1,
+        Pot: 300,
+        SidePot: [],
+        Phase: 1
+      },
+      [0, 100],
+      [500, 900],
+      [betStatus, BetStatusType.BET_ABLE]
+    )
+
+    expect(result).toMatchObject({
+      pot: 300,
+      call: 0,
+      percentage: 0,
+      ratio: '',
+      isPlayerTurn: false
+    })
+  })
+
+  it('does not offer odds to an ante all-in seat when forced posts already created side pots', () => {
+    const result = calculatePlayerPotOdds(
+      0,
+      {
+        NextActionSeat: 1,
+        Pot: 250,
+        SidePot: [50],
+        Phase: 0
+      },
+      [0, 100],
+      [0, 900],
+      [BetStatusType.ALL_IN, BetStatusType.BET_ABLE]
+    )
+
+    expect(result).toMatchObject({
+      pot: 300,
+      call: 0,
+      percentage: 0,
+      ratio: '',
+      isPlayerTurn: false,
+      spr: 0
+    })
+  })
+
+  it('preserves hypothetical odds for a BET_ABLE player waiting on another seat', () => {
+    const result = calculatePlayerPotOdds(
+      0,
+      {
+        NextActionSeat: 1,
+        Pot: 300,
+        SidePot: [],
+        Phase: 1
+      },
+      [0, 100],
+      [500, 900],
+      [BetStatusType.BET_ABLE, BetStatusType.BET_ABLE]
+    )
+
+    expect(result).toMatchObject({
+      pot: 400,
+      call: 100,
+      percentage: 25,
+      ratio: '3:1',
+      isPlayerTurn: false
+    })
+  })
+
+  it('maintains 0 <= call <= remainingStack across stack and bet boundaries', () => {
+    const stacks = [0, 1, 49, 50, 99, 100, 101, 500, 10_000]
+    const playerBets = [0, 50, 100, 500]
+    const opposingBets = [0, 25, 100, 1_000, 20_000]
+
+    for (const remainingStack of stacks) {
+      for (const playerBet of playerBets) {
+        for (const opposingBet of opposingBets) {
+          const result = calculatePlayerPotOdds(
+            0,
+            {
+              NextActionSeat: 0,
+              Pot: 300,
+              SidePot: [100],
+              Phase: 1
+            },
+            [playerBet, opposingBet],
+            [remainingStack, 100_000],
+            [BetStatusType.BET_ABLE, BetStatusType.BET_ABLE]
+          )
+
+          expect(result).not.toBeNull()
+          expect(result!.call).toBeGreaterThanOrEqual(0)
+          expect(result!.call).toBeLessThanOrEqual(remainingStack)
+          expect(result!.pot).toBeGreaterThanOrEqual(result!.call)
+          expect(result!.pot).toBeLessThanOrEqual(400 + result!.call)
+        }
+      }
+    }
   })
 
   it('should handle when call amount is 0', () => {

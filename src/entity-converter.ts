@@ -31,7 +31,7 @@ import type {
 
 import { defaultRegistry } from './stats'
 import { getPositionMap, getBigBlindUserId } from './utils/position-utils'
-import { derivePlayerHandChipAccounting } from './utils/hand-chip-accounting'
+import { deriveHandSettlement } from './utils/hand-chip-accounting'
 
 /**
  * エンティティバンドル（一括保存用）
@@ -444,14 +444,13 @@ export class EntityConverter {
             }
           }
 
-          // ハンド結果の更新
-          handState.hand.winningPlayerIds = event.Results
-            ?.filter(result => result.RewardChip > 0)
-            .map(result => result.UserId) || []
           handState.hand.results = event.Results || []
-          handState.hand.playerChipAccounting = dealEvent
-            ? derivePlayerHandChipAccounting(dealEvent, event, handState.hand.session.battleType)
-            : Object.fromEntries(handState.hand.seatUserIds.filter(userId => userId !== -1).map(userId => [String(userId), null]))
+          const settlement = dealEvent
+            ? deriveHandSettlement(dealEvent, event, handState.hand.session.battleType)
+            : null
+          handState.hand.winningPlayerIds = settlement?.winningPlayerIds ?? []
+          handState.hand.playerChipAccounting = settlement?.playerChipAccounting ??
+            Object.fromEntries(handState.hand.seatUserIds.filter(userId => userId !== -1).map(userId => [String(userId), null]))
           // RIVER_CALLで勝利したアクションにRIVER_CALL_WONを付与する
           // （WriteEntityStreamと同一ロジック。River Call Accuracy統計が参照する）
           handState.actions.forEach(action => {

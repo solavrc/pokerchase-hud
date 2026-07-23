@@ -183,6 +183,107 @@ ORDER BY observer_ref, event_ts_ms;
 この例は、強制投稿オールインを自発的なall-in actionとして統計計上しないこと、
 追加投入0でも304が届く場合があること、306で`Pot`と全`SidePot`を合算することのfixtureになる。
 
+<a id="rewardchip-uncalled-return-example"></a>
+
+### RewardChip > 0でも敗者となるuncalled return（HandId=269804225）
+
+出典は`pokerchase_raw_data_2026-07-04T18-31-12-252Z.ndjson`。UserIdとtimestampだけを
+匿名化し、会計に使うチップ値、seat、ブラインド、アンテ、Pot、SidePot、HandRanking、
+RewardChipは実イベント値を保持した抜粋である。
+
+```json
+{
+  "ApiTypeId": 303,
+  "SeatUserIds": [1001, -1, -1, 1002, -1, -1],
+  "Game": {
+    "Ante": 3200,
+    "SmallBlind": 6500,
+    "BigBlind": 13000,
+    "ButtonSeat": 3,
+    "SmallBlindSeat": 3,
+    "BigBlindSeat": 0
+  },
+  "Player": {
+    "SeatIndex": 0,
+    "BetStatus": 1,
+    "Chip": 162012,
+    "BetChip": 13000
+  },
+  "OtherPlayers": [
+    {
+      "SeatIndex": 3,
+      "BetStatus": 3,
+      "Chip": 0,
+      "BetChip": 0
+    }
+  ],
+  "Progress": {
+    "Phase": 0,
+    "Pot": 3576,
+    "SidePot": [14412]
+  }
+}
+```
+
+```json
+{
+  "ApiTypeId": 306,
+  "HandId": 269804225,
+  "Pot": 3576,
+  "SidePot": [14412],
+  "Results": [
+    {
+      "UserId": 1002,
+      "HandRanking": 1,
+      "RewardChip": 3576
+    },
+    {
+      "UserId": 1001,
+      "HandRanking": 2,
+      "RewardChip": 14412
+    }
+  ],
+  "OtherPlayers": [
+    {
+      "SeatIndex": 3,
+      "Chip": 3576,
+      "BetChip": 0
+    }
+  ]
+}
+```
+
+rawから直接観測できる値:
+
+- seat 0（UserId 1001）は`Chip=162,012`、`BetChip=13,000`
+- seat 3（UserId 1002）は`Chip=0`、`BetChip=0`の強制投稿オールイン
+- `Ante=3,200`、`Pot=3,576`、`SidePot=[14,412]`
+- seat 3の終了スタックは3,576
+- payout総額は`3,576 + 14,412 = 17,988`で、
+  `Pot + SidePot = 3,576 + 14,412 = 17,988`と一致
+
+上記の直接値とチップ保存則から一意に復元できる値:
+
+- seat 0の開始スタックは
+  `Chip 162,012 + BetChip 13,000 + Ante 3,200 = 178,212`
+- seat 3はアンテでショートオールインしているため、メインティア
+  `Pot 3,576 / 2人 = 1,788`が開始スタック
+
+seat 0の終了snapshotは306から欠落している。ただしトーナメントで開始総額が
+`178,212 + 1,788 = 180,000`、既知のseat 3終了額が3,576、欠落seatが1つだけなので、
+強整合なゼロサム会計からseat 0の終了額は`180,000 - 3,576 = 176,424`と一意に復元できる。
+ここから拠出額を計算する。
+
+| seat | startingStack | RewardChip | finalStack | totalContribution | netChips |
+|---|---:|---:|---:|---:|---:|
+| 0（UserId 1001） | 178,212 | 14,412 | 176,424 | 16,200 | -1,788 |
+| 3（UserId 1002） | 1,788 | 3,576 | 3,576 | 1,788 | +1,788 |
+
+最初の1,788ずつ、合計3,576だけが2人で争われたメインティアである。seat 0の残り
+`16,200 - 1,788 = 14,412`は対戦相手のいない単独拠出ティアであり、そのままseat 0へ
+返されたuncalled returnとなる。したがってseat 0は`RewardChip=14,412 > 0`でも敗者で、
+勝者は`contestedAward=3,576`を得たseat 3だけである。
+
 ## 303→304→306→309: 終端BBブラインドオールイン
 
 調査キー: `HandId=530473403`、後続309の受信`timestamp=1784560697458`

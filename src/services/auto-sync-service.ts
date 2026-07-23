@@ -25,6 +25,7 @@ import {
   type RawApiEvent
 } from '../utils/api-event-key'
 import { HandLogExporter } from '../utils/hand-log-exporter'
+import { startKeepAlive } from '../background/service-worker-keepalive'
 
 /** Shown in the popup and logged when the min-version gate stops cloud sync (#forced-update). */
 export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます'
@@ -1373,6 +1374,19 @@ export class AutoSyncService {
    * above -- deliberately not gated here.
    */
   private async syncFromCloud(): Promise<void> {
+    // Arm before the first Firestore await: a cold worker can already be near
+    // its idle deadline after a slow count/page request. One scoped keepalive
+    // protects the complete download + Raw Lake merge + derived replay, and
+    // its finally covers both the normal and partial-download recovery paths.
+    const stopKeepAlive = await startKeepAlive()
+    try {
+      await this.downloadAndRebuildFromCloud()
+    } finally {
+      stopKeepAlive()
+    }
+  }
+
+  private async downloadAndRebuildFromCloud(): Promise<void> {
     console.log('[AutoSync] Starting complete download from cloud...')
 
     let downloadedEvents = 0
