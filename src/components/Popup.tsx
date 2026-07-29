@@ -81,6 +81,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   const [pendingStatDisplayConfigs, setPendingStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
   const [hasUnsavedStatChanges, setHasUnsavedStatChanges] = useState<boolean>(false)
   const [uiConfig, setUIConfig] = useState<UIConfig>(DEFAULT_UI_CONFIG)
+  const [uiConfigLoaded, setUIConfigLoaded] = useState(false)
   const [popupThemeMode, setPopupThemeMode] = useState<PopupThemeMode>(
     initialPopupThemeMode ?? DEFAULT_POPUP_THEME_MODE
   )
@@ -90,6 +91,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   const prefersDarkScheme = useMediaQuery('(prefers-color-scheme: dark)')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const popupThemeChangedByUserRef = useRef(false)
+  const uiConfigChangedAfterMountRef = useRef(false)
 
   // Reconcile the synchronous startup hint with chrome.storage.sync after the
   // first commit. Avoid setting an identical primitive so the common cached
@@ -105,6 +107,28 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
     return () => {
       cancelled = true
     }
+  }, [])
+
+  // ゲームタブのショートカットなど、Popup以外から同期設定が更新された
+  // 場合も開いたままのオプション画面へ反映する。起動時get()より後に届いた
+  // 変更を、遅延したget()が古い値で巻き戻さないようにもする。
+  useEffect(() => {
+    const handleUIConfigStorageChange = (
+      changes: { [key: string]: chrome.storage.StorageChange },
+      areaName: string
+    ) => {
+      if (areaName !== 'sync') return
+      const nextUIConfig = changes.uiConfig?.newValue as UIConfig | undefined
+      if (!nextUIConfig) return
+      uiConfigChangedAfterMountRef.current = true
+      setUIConfig({
+        ...DEFAULT_UI_CONFIG,
+        ...nextUIConfig,
+      })
+      setUIConfigLoaded(true)
+    }
+    chrome.storage.onChanged.addListener(handleUIConfigStorageChange)
+    return () => chrome.storage.onChanged.removeListener(handleUIConfigStorageChange)
   }, [])
 
   // Firebase states
@@ -236,12 +260,13 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
       // そのまま使うとポップアップのHUD表示設定セクションが未定義値を表示して
       // しまう（App.tsx側の読み込みは既にこのマージを行っている）。
       chrome.storage.sync.get('uiConfig', (result: Record<string, any>) => {
-        if (result.uiConfig) {
+        if (result.uiConfig && !uiConfigChangedAfterMountRef.current) {
           setUIConfig({
             ...DEFAULT_UI_CONFIG,
             ...result.uiConfig,
           })
         }
+        setUIConfigLoaded(true)
       })
 
       // Load cached Firebase auth state first for instant rendering
@@ -528,15 +553,17 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
 
       {/* UI Display Controls */}
       <SectionCard>
-        <UIScaleSection
-          uiConfig={uiConfig}
-          setUIConfig={setUIConfig}
-        />
+        {uiConfigLoaded && <>
+          <UIScaleSection
+            uiConfig={uiConfig}
+            setUIConfig={setUIConfig}
+          />
 
-        <HudDisplaySection
-          uiConfig={uiConfig}
-          setUIConfig={setUIConfig}
-        />
+          <HudDisplaySection
+            uiConfig={uiConfig}
+            setUIConfig={setUIConfig}
+          />
+        </>}
       </SectionCard>
 
       <SectionCard>

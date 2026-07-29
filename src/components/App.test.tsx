@@ -1,4 +1,4 @@
-import { render, screen, waitFor, act } from '@testing-library/react'
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ApiType } from '../app'
 import App from './App'
@@ -104,6 +104,86 @@ describe('App', () => {
     await waitFor(() => {
       expect(container.firstChild).toBeNull()
     })
+  })
+
+  it('ユーザー指定ショートカットでHUDとハンドログを非表示・再表示できる', async () => {
+    const shortcut = {
+      code: 'KeyH',
+      key: 'h',
+      ctrl: false,
+      alt: false,
+      shift: true,
+      meta: false,
+    }
+    ;(global.chrome.storage.sync.get as jest.Mock).mockImplementation((_, callback) => {
+      callback({
+        handLogConfig: DEFAULT_HAND_LOG_CONFIG,
+        uiConfig: { ...DEFAULT_UI_CONFIG, toggleShortcut: shortcut },
+      })
+    })
+
+    render(<App />)
+    await waitFor(() => expect(screen.getByTestId('hud-0')).toBeInTheDocument())
+
+    fireEvent.keyDown(window, { code: 'KeyH', key: 'h', shiftKey: true })
+    await waitFor(() => expect(screen.queryByTestId('hud-0')).not.toBeInTheDocument())
+
+    fireEvent.keyDown(window, { code: 'KeyH', key: 'h', shiftKey: true })
+    await waitFor(() => expect(screen.getByTestId('hud-0')).toBeInTheDocument())
+  })
+
+  it('設定読込前は既定ショートカットを登録しない', async () => {
+    let storageCallback!: (result: Record<string, any>) => void
+    ;(global.chrome.storage.sync.get as jest.Mock).mockImplementation((_, callback) => {
+      storageCallback = callback
+    })
+
+    render(<App />)
+    fireEvent.keyDown(window, { code: 'KeyH', key: 'h', shiftKey: true })
+    expect(global.chrome.storage.sync.set).not.toHaveBeenCalled()
+
+    act(() => {
+      storageCallback({
+        handLogConfig: DEFAULT_HAND_LOG_CONFIG,
+        uiConfig: { ...DEFAULT_UI_CONFIG, toggleShortcut: null },
+      })
+    })
+    await waitFor(() => expect(screen.getByTestId('hud-0')).toBeInTheDocument())
+
+    fireEvent.keyDown(window, { code: 'KeyH', key: 'h', shiftKey: true })
+    expect(global.chrome.storage.sync.set).not.toHaveBeenCalled()
+    expect(screen.getByTestId('hud-0')).toBeInTheDocument()
+  })
+
+  it('起動時getより新しいstorage変更を古い結果で巻き戻さない', async () => {
+    let storageCallback!: (result: Record<string, any>) => void
+    ;(global.chrome.storage.sync.get as jest.Mock).mockImplementation((_, callback) => {
+      storageCallback = callback
+    })
+
+    const { container } = render(<App />)
+    const storageListener = (chrome.storage.onChanged.addListener as jest.Mock).mock.calls
+      .map(([listener]) => listener as (
+        changes: { [key: string]: chrome.storage.StorageChange },
+        areaName: string
+      ) => void)
+      .at(-1)!
+
+    act(() => {
+      storageListener({
+        uiConfig: {
+          newValue: { ...DEFAULT_UI_CONFIG, displayEnabled: false, toggleShortcut: null },
+        },
+      }, 'sync')
+      storageCallback({
+        handLogConfig: DEFAULT_HAND_LOG_CONFIG,
+        uiConfig: { ...DEFAULT_UI_CONFIG, displayEnabled: true },
+      })
+    })
+
+    await waitFor(() => expect(container.firstChild).toBeNull())
+    fireEvent.keyDown(window, { code: 'KeyH', key: 'h', shiftKey: true })
+    expect(global.chrome.storage.sync.set).not.toHaveBeenCalled()
   })
 
   it('uiConfigにhudDisplayMode/hudColorCodingが渡された場合、そのままHudへ伝播する', async () => {
