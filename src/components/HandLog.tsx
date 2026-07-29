@@ -231,6 +231,10 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
         savedLayout &&
         layoutEditGenerationRef.current === loadGeneration
       ) {
+        const pendingInteraction = interactionRef.current
+        if (pendingInteraction && !pendingInteraction.moved) {
+          pendingInteraction.startLayout = savedLayout
+        }
         applyLayout(savedLayout)
       }
     })
@@ -321,7 +325,6 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
 
-    layoutEditGenerationRef.current += 1
     const currentLayout = layoutRef.current
     interactionRef.current = {
       mode,
@@ -387,17 +390,24 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
         }
       }
 
-      interaction.moved = true
+      if (!interaction.moved) {
+        layoutEditGenerationRef.current += 1
+        interaction.moved = true
+      }
       applyLayout(nextLayout)
     }
 
-    const finishInteraction = () => {
+    const finalizeInteraction = () => {
       const interaction = interactionRef.current
       const finalLayout = layoutRef.current
       if (interaction?.moved && finalLayout) {
         saveHandLogLayout(finalLayout)
       }
       interactionRef.current = null
+    }
+
+    const finishInteraction = () => {
+      finalizeInteraction()
       setInteractionMode(null)
     }
 
@@ -410,6 +420,10 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       document.removeEventListener('mouseup', finishInteraction)
       document.removeEventListener('mouseleave', finishInteraction)
       window.removeEventListener('blur', finishInteraction)
+      // Cleanup also runs when the HUD shortcut unmounts HandLog while the
+      // mouse is still held. Persist the last visible layout before refs and
+      // listeners disappear.
+      finalizeInteraction()
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
     }

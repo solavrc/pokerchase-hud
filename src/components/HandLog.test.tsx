@@ -241,6 +241,51 @@ describe('HandLog', () => {
     fireEvent.mouseUp(document)
   })
 
+  it('移動しないgrip操作では遅れて届いた保存layoutを無効化しない', () => {
+    let resolveInitialLoad!: (response: unknown) => void
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceHandLogLayout') {
+        resolveInitialLoad = callback
+      } else {
+        callback?.({ success: true })
+      }
+    })
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+    logContainer.getBoundingClientRect = jest.fn(() => ({
+      left: 500,
+      top: 400,
+      width: 400,
+      height: 100,
+      right: 900,
+      bottom: 500,
+      x: 500,
+      y: 400,
+      toJSON: () => {},
+    }))
+
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
+      button: 0,
+      clientX: 880,
+      clientY: 480,
+    })
+    fireEvent.mouseUp(document)
+    act(() => {
+      resolveInitialLoad({
+        success: true,
+        layout: { left: 120, top: 80, width: 520, height: 240 },
+      })
+    })
+
+    expect(logContainer.style.left).toBe('120px')
+    expect(logContainer.style.top).toBe('80px')
+    expect(logContainer.style.width).toBe('520px')
+    expect(mockChromeRuntimeSendMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'setDeviceHandLogLayout' }),
+      expect.any(Function)
+    )
+  })
+
   it('移動中だけ右下グリップが画面外へ消えないようにする', () => {
     const { container } = render(<HandLog entries={mockEntries} />)
     const logContainer = container.firstChild as HTMLElement
@@ -349,6 +394,43 @@ describe('HandLog', () => {
     })
     expect(logContainer.style.left).toBe('450px')
     expect(logContainer.style.top).toBe('370px')
+  })
+
+  it('HUD切替で操作中にunmountしても最後の位置を保存する', () => {
+    const { container, unmount } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+    logContainer.getBoundingClientRect = jest.fn(() => ({
+      left: 500,
+      top: 400,
+      width: 400,
+      height: 100,
+      right: 900,
+      bottom: 500,
+      x: 500,
+      y: 400,
+      toJSON: () => {},
+    }))
+
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
+      button: 0,
+      clientX: 880,
+      clientY: 480,
+    })
+    fireEvent.mouseMove(document, {
+      clientX: 830,
+      clientY: 450,
+    })
+    unmount()
+
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      {
+        action: 'setDeviceHandLogLayout',
+        layout: { left: 450, top: 370, width: 400, height: 100 },
+      },
+      expect.any(Function)
+    )
+    expect(document.body.style.cursor).toBe('')
+    expect(document.body.style.userSelect).toBe('')
   })
 
   it('ポップアップからのリセットで既定の位置とサイズへ即時に戻す', () => {

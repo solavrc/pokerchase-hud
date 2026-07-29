@@ -150,25 +150,31 @@ const sendDeviceLayoutWriteMessage = (
   message: ChromeMessage,
   callback: (success: boolean) => void
 ): void => {
-  let settled = false
-  const finish = (success: boolean) => {
-    if (settled) return
-    settled = true
-    clearTimeout(timeoutId)
-    callback(success)
-  }
+  let responseReceived = false
+  let timeoutReported = false
   const timeoutId = setTimeout(
-    () => finish(false),
+    () => {
+      if (responseReceived) return
+      timeoutReported = true
+      callback(false)
+    },
     DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS
   )
 
   try {
     chrome.runtime.sendMessage(message, (response: { success?: boolean } | undefined) => {
       const runtimeError = chrome.runtime.lastError
-      finish(!runtimeError && response?.success === true)
+      responseReceived = true
+      clearTimeout(timeoutId)
+      const success = !runtimeError && response?.success === true
+      // A timeout is only provisional: a late confirmed reset still needs to
+      // update the mounted game tab. Avoid repeating the same failure result.
+      if (!timeoutReported || success) callback(success)
     })
   } catch {
-    finish(false)
+    responseReceived = true
+    clearTimeout(timeoutId)
+    callback(false)
   }
 }
 
@@ -185,10 +191,14 @@ export const saveLocalUIScale = (
   scale: number,
   callback?: () => void
 ): void => {
+  let callbackCalled = false
   sendDeviceLayoutWriteMessage(
     { action: 'setDeviceUIScale', scale: resolveLocalUIScale(scale) },
     (_success) => {
-      callback?.()
+      if (!callbackCalled) {
+        callbackCalled = true
+        callback?.()
+      }
     }
   )
 }

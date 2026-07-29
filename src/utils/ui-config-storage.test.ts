@@ -203,6 +203,28 @@ describe('ui-config-storage', () => {
     expect(callback).not.toHaveBeenCalled()
   })
 
+  it('timeout後にreset成功応答が届いた場合も成功callbackを呼ぶ', () => {
+    jest.useFakeTimers()
+    try {
+      let respond!: (response: unknown) => void
+      ;(chrome.runtime.sendMessage as jest.Mock).mockImplementationOnce(
+        (_message, callback) => {
+          respond = callback
+        }
+      )
+      const callback = jest.fn()
+
+      resetHandLogLayout(callback)
+      jest.advanceTimersByTime(DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS)
+      expect(callback).not.toHaveBeenCalled()
+
+      respond({ success: true })
+      expect(callback).toHaveBeenCalledTimes(1)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
   it('timeoutで描画を進め、遅れたbackground応答もscaleへ反映する', () => {
     jest.useFakeTimers()
     try {
