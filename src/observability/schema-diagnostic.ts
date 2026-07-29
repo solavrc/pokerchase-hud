@@ -1,3 +1,6 @@
+import * as z from 'zod'
+import { apiEventSchemas } from '../types/api'
+
 export interface SchemaIssueLike {
   path: readonly PropertyKey[]
   code: string
@@ -30,45 +33,50 @@ const MAX_PAYLOAD_ARRAY_ENTRIES = 50
 const MAX_PAYLOAD_STRING_LENGTH = 2000
 const SAFE_SCHEMA_KEY = /^[A-Za-z][A-Za-z0-9_]{0,63}$/
 const MAP_VALUE_CONTAINER = '[map-value]'
-// Child keys are retained only inside object shapes already defined by the
-// current protocol. An unknown object container may instead be a
-// user-controlled keyed map (for example Players.{displayName}), so its keys
-// are aliases by default. MAP_VALUE_CONTAINER preserves the immediate fixed
-// fields inside an already-aliased map value.
-const FIXED_SCHEMA_KEY_CONTAINERS = new Set([
-  MAP_VALUE_CONTAINER,
-  'BlindStructures',
-  'Charas',
-  'ClassPointBreakdownList',
-  'Decos',
-  'Error',
-  'Game',
-  'Ic',
-  'Items',
-  'JoinPlayer',
-  'JoinUser',
-  'Message',
-  'Money',
-  'MoneyList',
-  'MyRanking',
-  'OtherPlayers',
-  'Player',
-  'PrevMessage',
-  'Progress',
-  'Rank',
-  'RankReward',
-  'RankingRewards',
-  'RebuyCostTicket',
-  'Results',
-  'Rewards',
-  'RingReward',
-  'RingRule',
-  'Stamps',
-  'TableUsers',
-  'TournamentReward',
-  'TournamentRule',
-  'Us'
-])
+// Build the allow-list from the current Zod protocol itself. A known
+// container name is not enough: if a future payload changes Player from its
+// fixed object shape to { Alice: ... }, Alice must still be treated as a
+// user-controlled map key. ZodRecord is deliberately not traversed.
+const buildKnownSchemaFields = (): Map<string, Set<string>> => {
+  const byContainer = new Map<string, Set<string>>()
+
+  const visit = (schema: unknown, container?: string): void => {
+    if (
+      schema instanceof z.ZodOptional ||
+      schema instanceof z.ZodNullable ||
+      schema instanceof z.ZodDefault
+    ) {
+      visit(schema.unwrap(), container)
+      return
+    }
+    if (schema instanceof z.ZodArray) {
+      visit(schema.element, container)
+      return
+    }
+    if (schema instanceof z.ZodUnion) {
+      for (const option of schema.options) visit(option, container)
+      return
+    }
+    if (!(schema instanceof z.ZodObject)) return
+
+    const fields = Object.keys(schema.shape)
+    if (container) {
+      const known = byContainer.get(container) ?? new Set<string>()
+      for (const field of fields) known.add(field)
+      byContainer.set(container, known)
+    }
+    for (const [field, child] of Object.entries(schema.shape)) {
+      visit(child, field)
+    }
+  }
+
+  for (const schema of Object.values(apiEventSchemas)) {
+    visit(schema)
+  }
+  return byContainer
+}
+
+const KNOWN_SCHEMA_FIELDS = buildKnownSchemaFields()
 const USER_IDENTIFIER_KEY =
   /(?:user|friend|player|account|member|owner|device)[A-Za-z0-9_]*Ids?$/i
 const USER_NAME_KEY =
@@ -98,12 +106,25 @@ const safeSchemaKey = (
   key: PropertyKey,
   parentKey?: string
 ): string => {
-  if (parentKey && !FIXED_SCHEMA_KEY_CONTAINERS.has(parentKey)) {
-    return '[dynamic-key]'
-  }
   if (typeof key !== 'string' || !SAFE_SCHEMA_KEY.test(key)) {
     return '[dynamic-key]'
   }
+  if (parentKey === MAP_VALUE_CONTAINER) {
+    // The map key itself was already replaced with [dynamic-key]. Preserve
+    // ordinary field names inside that anonymized value so the diagnostic
+    // remains useful for reconstructing a changed payload shape.
+    return key
+  }
+  if (
+    parentKey &&
+    !KNOWN_SCHEMA_FIELDS.get(parentKey)?.has(key)
+  ) {
+    return '[dynamic-key]'
+  }
+  // `parentKey === undefined` is the API event root: its property names are
+  // server protocol fields needed to define a new event schema, not entries
+  // in a user-keyed map. Their values still pass through the independent
+  // identifier/free-text/secret sanitizer below.
   return key
 }
 

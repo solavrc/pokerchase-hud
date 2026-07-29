@@ -27,6 +27,7 @@ runs in the game page's main world and handles raw WebSocket payloads.
 - Auto-sync failures, Raw Event Lake write failures, and fatal runtime-port
   delivery failures
 - Destructive PokerChase API schema mismatches, grouped by `ApiTypeId`
+  (`ApiTypeId` itself being invalid uses one dedicated bounded bucket)
 
 Schema mismatch events contain:
 
@@ -58,17 +59,25 @@ direct identifiers are replaced with stable per-event aliases (`user#1`,
 `user#2`, ...). User/player/friend names, chat and other free text,
 credentials and authentication/session tokens, email/IP fields, URL query
 strings, dynamic map keys, and unknown string values are redacted client-side.
-For an object container not defined by the current protocol, child keys are
-treated as potentially user-controlled map keys and replaced with stable
-structural aliases; the value shape remains available for schema repair.
+Top-level property names are retained as server-owned protocol field names so
+a new event schema can be reconstructed; their values remain subject to the
+same identifier, free-text, secret, string, and large-number sanitizers.
+For an object container not defined by the current protocol, or an unexpected
+child inside a known fixed-shape container, child keys are treated as
+potentially user-controlled map keys and replaced with stable structural
+aliases; the value shape remains available for schema repair.
 Only an explicit allow-list of machine-readable protocol IDs (for example
 `CharaId`, `RankId`, and `ItemId`) retains string values. Numeric and boolean
 poker state remains available for semantic interpretation; identifier-sized
 unknown numbers are redacted unless their field is an explicit continuity or
 poker-state key such as `HandId`, `timestamp`, `Chip`, `Pot`, or `Blind`.
 
-The exact original event remains available in the local Raw Event Lake and may
-follow the separately documented, user-controlled Firestore cloud-sync path.
+When numeric `timestamp` and `ApiTypeId` storage keys exist, the exact original
+event remains available in the local Raw Event Lake and may follow the
+separately documented, user-controlled Firestore cloud-sync path. If either
+storage key is invalid, the raw row cannot be keyed; Sentry's sanitized
+diagnostic and the Popup's persistent invalid-ID counter preserve the failure
+signal instead.
 Sentry receives only the pseudonymized semantic snapshot, never the
 byte-for-byte raw event. The Sentry project also has default data scrubbing and
 IP-address scrubbing enabled as a second privacy layer. Server-side scrubbing

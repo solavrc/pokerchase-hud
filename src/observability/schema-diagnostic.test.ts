@@ -219,6 +219,36 @@ describe('schema repair diagnostics', () => {
     expect(serialized).not.toContain('99887766')
   })
 
+  it('redacts unexpected map keys even inside a known container', () => {
+    const diagnostic = buildSchemaDiagnostic(
+      {
+        Player: {
+          Alice: {
+            UserId: 129532369,
+            Chip: 1200
+          }
+        }
+      },
+      [{
+        path: ['Player', 'Alice', 'Chip'],
+        code: 'unrecognized_keys'
+      }]
+    )
+
+    expect(diagnostic.issues[0]?.path).toBe(
+      'Player.[dynamic-key].Chip'
+    )
+    expect(diagnostic.payloadShape).toEqual(expect.arrayContaining([
+      'Player: object',
+      'Player.[dynamic-key]: object',
+      'Player.[dynamic-key].UserId: integer',
+      'Player.[dynamic-key].Chip: integer'
+    ]))
+    const serialized = JSON.stringify(diagnostic)
+    expect(serialized).not.toContain('Alice')
+    expect(serialized).not.toContain('129532369')
+  })
+
   it('redacts unknown strings by default while retaining allow-listed protocol IDs', () => {
     const diagnostic = buildSchemaDiagnostic({
       ApiTypeId: 9999,

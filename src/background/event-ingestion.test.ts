@@ -13,7 +13,12 @@ import PokerChaseService, { PokerChaseDB } from '../app'
 import { ApiType } from '../types'
 import { registerEventIngestion } from './event-ingestion'
 import { connectedPorts } from './ports'
-import { getUndecodedEventStats, resetUndecodedEventStats, UNDECODED_EVENT_STATS_KEY } from './undecoded-event-tracker'
+import {
+  getUndecodedEventStats,
+  INVALID_API_TYPE_ID_BUCKET,
+  resetUndecodedEventStats,
+  UNDECODED_EVENT_STATS_KEY
+} from './undecoded-event-tracker'
 import { captureSchemaValidationFailure } from '../observability/sentry'
 
 jest.mock('../observability/sentry', () => ({
@@ -269,6 +274,41 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     await onMessageHandler({ timestamp: 555 }) // missing ApiTypeId
 
     expect(await db.apiEvents.count()).toBe(0)
+  })
+
+  test('an invalid ApiTypeId is still reported and counted in a bounded bucket', async () => {
+    await onMessageHandler({ ApiTypeId: '303', timestamp: 555 })
+    await onMessageHandler({ timestamp: 556 })
+
+    expect(await db.apiEvents.count()).toBe(0)
+    expect(captureSchemaValidationFailure).toHaveBeenCalledTimes(2)
+    expect(captureSchemaValidationFailure).toHaveBeenNthCalledWith(
+      1,
+      INVALID_API_TYPE_ID_BUCKET,
+      expect.any(Function)
+    )
+    expect(captureSchemaValidationFailure).toHaveBeenNthCalledWith(
+      2,
+      INVALID_API_TYPE_ID_BUCKET,
+      expect.any(Function)
+    )
+
+    const firstDiagnostic =
+      jest.mocked(captureSchemaValidationFailure).mock.calls[0]?.[1]()
+    expect(firstDiagnostic).toEqual(expect.objectContaining({
+      payloadShape: expect.arrayContaining([
+        'ApiTypeId: string',
+        'timestamp: integer'
+      ])
+    }))
+    expect(JSON.stringify(firstDiagnostic)).not.toContain('"303"')
+
+    const stats = await getUndecodedEventStats(db)
+    expect(stats.total).toBe(2)
+    expect(stats.perApiTypeId[INVALID_API_TYPE_ID_BUCKET]).toEqual({
+      count: 2,
+      lastSeen: 556
+    })
   })
 
   test('keepalive messages are ignored entirely (not stored, not forwarded)', async () => {
