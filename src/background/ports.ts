@@ -5,6 +5,7 @@ import type { AllPlayersRealTimeStats } from '../realtime-stats/realtime-stats-s
 import type { HandLogEvent } from '../types/hand-log'
 import type { HandLogEventMessage } from '../types/messages'
 import { formatHandLogEntries } from '../utils/hand-log-text'
+import { AUTO_BATTLE_TYPE_FILTER_REVISION_MESSAGE } from '../constants/runtime'
 
 const PING_INTERVAL_MS = 10 * 1000
 
@@ -78,7 +79,21 @@ export const logCompletedHandToConsole = (event: HandLogEvent): void => {
  * 接続中の全ポートにメッセージをブロードキャストする
  * 切断済みポートを検出した場合は`connectedPorts`から取り除く
  */
-export const broadcastMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats, handEpoch?: number, autoBattleTypeFilterRevision?: number } | string) => {
+type PortBroadcastMessage =
+  | {
+      stats: PlayerStats[]
+      evtDeal?: ApiEvent<ApiType.EVT_DEAL>
+      realTimeStats?: AllPlayersRealTimeStats
+      handEpoch?: number
+      autoBattleTypeFilterRevision?: number
+    }
+  | {
+      type: typeof AUTO_BATTLE_TYPE_FILTER_REVISION_MESSAGE
+      autoBattleTypeFilterRevision: number
+    }
+  | string
+
+export const broadcastMessage = (data: PortBroadcastMessage) => {
   connectedPorts.forEach(port => {
     try {
       port.postMessage(data)
@@ -130,6 +145,13 @@ export const startPortPing = (port: chrome.runtime.Port): () => void => {
 // （`onConnect`のたびに登録すると、ページリロード/再接続のたびにリスナーが積み重なり、
 // 特に`handLogStream`のハンドラーはNタブ分`chrome.tabs.sendMessage`を重複送信してしまう）
 export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlPattern: string): void => {
+  service.onAutoBattleTypeFilterRevision?.(autoBattleTypeFilterRevision => {
+    broadcastMessage({
+      type: AUTO_BATTLE_TYPE_FILTER_REVISION_MESSAGE,
+      autoBattleTypeFilterRevision,
+    })
+  })
+
   // Listen for real-time stats from dedicated stream
   service.realTimeStatsStream.on('data', (data: { handId?: number, stats: AllPlayersRealTimeStats, timestamp: number }) => {
     latestRealTimeStats = data.stats

@@ -32,3 +32,11 @@ export const POKER_CHASE_SESSION_END_EVENT = 'PokerChaseSessionEndEvent'
  */
 export const POKER_CHASE_SESSION_END_SETTLED_MESSAGE =
   'PokerChaseSessionEndSettled'
+
+/**
+ * Revision-only background -> content port message. Unlike a stats payload,
+ * this must not carry an old lineup merely to notify open drill-down panels
+ * that the automatic battle-type category changed before the first DEAL.
+ */
+export const AUTO_BATTLE_TYPE_FILTER_REVISION_MESSAGE =
+  'autoBattleTypeFilterRevision'

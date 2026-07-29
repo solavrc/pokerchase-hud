@@ -32,7 +32,8 @@ import {
   POKER_CHASE_INVALID_API_EVENT,
   POKER_CHASE_ORIGIN,
   POKER_CHASE_SESSION_END_EVENT,
-  POKER_CHASE_SESSION_END_SETTLED_MESSAGE
+  POKER_CHASE_SESSION_END_SETTLED_MESSAGE,
+  AUTO_BATTLE_TYPE_FILTER_REVISION_MESSAGE
 } from './constants/runtime'
 
 const KEEPALIVE_INTERVAL_MS = 25000
@@ -78,6 +79,26 @@ describe('content_script keepalive (session-activity triggers)', () => {
     jest.advanceTimersByTime(KEEPALIVE_INTERVAL_MS)
 
     expect(mockPort.postMessage).toHaveBeenCalledWith({ type: 'keepalive' })
+  })
+
+  test('revision-only port control dispatches a filter update without a stats payload', () => {
+    const onFilterUpdate = jest.fn()
+    window.addEventListener('updateBattleTypeFilter', onFilterUpdate)
+    const portMessageHandler = mockPort.onMessage.addListener.mock.calls[0][0]
+
+    try {
+      portMessageHandler({
+        type: AUTO_BATTLE_TYPE_FILTER_REVISION_MESSAGE,
+        autoBattleTypeFilterRevision: 7,
+      })
+
+      expect(onFilterUpdate).toHaveBeenCalledTimes(1)
+      expect((onFilterUpdate.mock.calls[0]![0] as CustomEvent).detail).toEqual({
+        autoBattleTypeFilterRevision: 7,
+      })
+    } finally {
+      window.removeEventListener('updateBattleTypeFilter', onFilterUpdate)
+    }
   })
 
   test('an explicit EVT_ENTRY_QUEUED error response does not start keepalive', () => {

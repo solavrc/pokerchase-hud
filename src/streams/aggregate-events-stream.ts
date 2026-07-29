@@ -55,7 +55,7 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
             this.service.autoBattleTypeFilter &&
             previousAutoFilter !== this.service.getEffectiveBattleTypeFilter()?.join(',')
           ) {
-            this.service.autoBattleTypeFilterRevision++
+            this.service.advanceAutoBattleTypeFilterRevision()
             // 新セッション最初のEVT_DEALまではlatestEvtDealが前セッションの
             // lineupを指す。ここで再計算すると新カテゴリの統計を古い座席へ
             // broadcastしてしまうため、revisionだけ進め、統計broadcastは

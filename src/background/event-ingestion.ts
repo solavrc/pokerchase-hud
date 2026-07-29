@@ -99,7 +99,7 @@ const applySessionContext = (
     service.autoBattleTypeFilter &&
     previousAutoFilter !== service.getEffectiveBattleTypeFilter()?.join(',')
   ) {
-    service.autoBattleTypeFilterRevision++
+    service.advanceAutoBattleTypeFilterRevision()
   }
 }
 
@@ -203,10 +203,25 @@ const enqueueApplicationForwarding = (
     // the content script observes this boundary.
     if (isSessionEndSignal(rawApiTypeId)) {
       await awaitDerivedProcessingIdle(service)
-      if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+      const shouldClearStats =
+        rawApiTypeId === ApiType.EVT_SESSION_RESULTS ||
+        (
+          rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID &&
+          service.autoBattleTypeFilter
+        )
+      if (shouldClearStats) {
         setLastKnownStats([])
       }
       await clearEndedSession(service)
+      if (
+        rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID &&
+        service.autoBattleTypeFilter
+      ) {
+        // 203 has no content-script session-end event. In automatic mode the
+        // accepted cancellation changes the effective category to no-session,
+        // so serialize an explicit empty result behind older calculations.
+        await service.statsOutputStream.clearStats()
+      }
       if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
         broadcastMessage(POKER_CHASE_SESSION_END_SETTLED_MESSAGE)
       }

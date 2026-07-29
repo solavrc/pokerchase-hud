@@ -117,6 +117,34 @@ describe('App', () => {
     expect(screen.getByTestId('hud-0')).toHaveTextContent('FilterRevision: 1')
   })
 
+  it('statsを伴わない自動カテゴリcontrolでも表示を変えずrevisionだけを一度進める', async () => {
+    render(<App />)
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
+        detail: mockStatsData,
+      }))
+    })
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('Player: 1')
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('FilterRevision: 0')
+
+    const control = new CustomEvent('updateBattleTypeFilter', {
+      detail: { autoBattleTypeFilterRevision: 1 },
+    })
+    await act(async () => {
+      window.dispatchEvent(control)
+    })
+
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('Player: 1')
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('FilterRevision: 1')
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('updateBattleTypeFilter', {
+        detail: { autoBattleTypeFilterRevision: 1 },
+      }))
+    })
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('FilterRevision: 1')
+  })
+
   it('端末ローカルのUI倍率をlegacy sync値より優先する', async () => {
     ;(global.chrome.storage.sync.get as jest.Mock).mockImplementation((_, callback) => {
       callback({

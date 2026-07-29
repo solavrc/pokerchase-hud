@@ -203,6 +203,27 @@ describe('session end (309) invalidates background lastKnownStats', () => {
     expect(getLastKnownStats()).toEqual([])
   })
 
+  test('accepted entry cancellation clears cached and visible stats in automatic mode', async () => {
+    service.autoBattleTypeFilter = true
+    service.session.setId('queued-session')
+    service.session.setBattleType(BattleType.SIT_AND_GO)
+    setLastKnownStats([{ playerId: 2, statResults: [] } as any])
+    mockPort.postMessage.mockClear()
+
+    await onMessageHandler({
+      ApiTypeId: 203,
+      timestamp: 999,
+      Code: 0,
+    })
+
+    expect(service.session.id).toBeUndefined()
+    expect(service.session.battleType).toBeUndefined()
+    expect(getLastKnownStats()).toEqual([])
+    expect(mockPort.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      stats: [],
+    }))
+  })
+
   test('a pending pre-end stats calculation cannot repopulate the HUD after the 309 clear', async () => {
     writeSpy.mockRestore()
     service.session.setId('ending-session')

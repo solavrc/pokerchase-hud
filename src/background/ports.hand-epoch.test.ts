@@ -27,9 +27,10 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
-import { ApiType } from '../types'
+import { ApiType, BattleType } from '../types'
 import type { ApiEvent } from '../app'
 import { registerStreamSubscriptions, connectedPorts, setLastKnownStats } from './ports'
+import { AUTO_BATTLE_TYPE_FILTER_REVISION_MESSAGE } from '../constants/runtime'
 
 const GAME_URL_PATTERN = 'https://example.com/*'
 
@@ -111,6 +112,29 @@ describe('ports.ts handCompletionEpoch (audit finding 11 follow-up, P2)', () => 
     const lastCall = fakePort.postMessage.mock.calls.at(-1)
     return lastCall?.[0]?.handEpoch
   }
+
+  test('automatic category changes broadcast revision-only control before the first DEAL', async () => {
+    service.autoBattleTypeFilter = true
+    service.session.setBattleType(BattleType.SIT_AND_GO)
+    fakePort.postMessage.mockClear()
+
+    service.handAggregateStream.write({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'new-ring',
+      IsRetire: false,
+      timestamp: 999,
+    })
+    await service.handAggregateStream.whenIdle()
+
+    expect(fakePort.postMessage).toHaveBeenCalledWith({
+      type: AUTO_BATTLE_TYPE_FILTER_REVISION_MESSAGE,
+      autoBattleTypeFilterRevision: 1,
+    })
+    expect(fakePort.postMessage.mock.calls.map(([message]) => message))
+      .not.toContainEqual(expect.objectContaining({ stats: expect.anything() }))
+  })
 
   test('a direct statsOutputStream broadcast (hand-start warmup / filter-change / import rebroadcast shape) does NOT bump handEpoch', async () => {
     // handCompletionEpoch is module-scoped in ports.ts (shared across this file's

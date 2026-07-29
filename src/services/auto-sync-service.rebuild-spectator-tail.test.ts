@@ -214,6 +214,58 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     expect(service.autoBattleTypeFilterRevision).toBe(initialRevision + 1)
   })
 
+  test('download sync does not release its operation before the replay session snapshot is durable', async () => {
+    service.autoBattleTypeFilter = true
+    service.session.setId('stale-active-session')
+    service.session.setBattleType(BattleType.SIT_AND_GO)
+
+    jest.spyOn(firestoreBackupService, 'syncFromCloud').mockImplementation(async options => {
+      await options.onBatch([
+        {
+          ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+          Code: 0,
+          BattleType: BattleType.RING_GAME,
+          Id: 'downloaded-ring',
+          IsRetire: false,
+          timestamp: 500,
+        },
+        {
+          ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+          timestamp: 600,
+        },
+      ] as any)
+      return 2
+    })
+
+    let releaseFlush!: () => void
+    let signalFlushStarted!: () => void
+    const flushBlocked = new Promise<void>(resolve => { releaseFlush = resolve })
+    const flushStarted = new Promise<void>(resolve => { signalFlushStarted = resolve })
+    const originalFlush = service.flushStatePersistence.bind(service)
+    jest.spyOn(service, 'flushStatePersistence').mockImplementation(async () => {
+      signalFlushStarted()
+      await flushBlocked
+      await originalFlush()
+    })
+
+    const autoSyncService = new AutoSyncService(db)
+    let settled = false
+    const sync = autoSyncService.performSync('download')
+      .then(result => {
+        settled = true
+        return result
+      })
+
+    await flushStarted
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    expect(service.session.id).toBeUndefined()
+    expect(service.session.battleType).toBeUndefined()
+
+    releaseFlush()
+    await expect(sync).resolves.toEqual({ success: true })
+  })
+
   test('cloud replay does not overwrite a newer live session at its final commit point', async () => {
     service.autoBattleTypeFilter = true
     service.session.setId('initial-sng')

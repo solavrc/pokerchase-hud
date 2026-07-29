@@ -11,7 +11,8 @@ import {
   POKER_CHASE_SERVICE_EVENT,
   POKER_CHASE_ORIGIN,
   POKER_CHASE_SESSION_END_EVENT,
-  POKER_CHASE_SESSION_END_SETTLED_MESSAGE
+  POKER_CHASE_SESSION_END_SETTLED_MESSAGE,
+  AUTO_BATTLE_TYPE_FILTER_REVISION_MESSAGE
 } from './constants/runtime'
 import { ApiType } from './types'
 import type { ApiEvent, PlayerStats } from './types'
@@ -86,6 +87,22 @@ const portManager = new RuntimePortManager({
   onMessage: message => {
     if (message === POKER_CHASE_SESSION_END_SETTLED_MESSAGE) {
       window.dispatchEvent(new CustomEvent(POKER_CHASE_SESSION_END_EVENT))
+      return
+    }
+    if (
+      typeof message === 'object' &&
+      message !== null &&
+      'type' in message &&
+      message.type === AUTO_BATTLE_TYPE_FILTER_REVISION_MESSAGE &&
+      'autoBattleTypeFilterRevision' in message &&
+      typeof message.autoBattleTypeFilterRevision === 'number'
+    ) {
+      window.dispatchEvent(new CustomEvent(EVENTS.UPDATE_BATTLE_TYPE_FILTER, {
+        detail: {
+          autoBattleTypeFilterRevision:
+            message.autoBattleTypeFilterRevision
+        }
+      }))
       return
     }
     if (typeof message === 'object' && message !== null && 'stats' in message) {

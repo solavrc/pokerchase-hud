@@ -149,6 +149,8 @@ class PokerChaseService {
   private _initializationError?: Error
   private _persistStateTimer?: ReturnType<typeof setTimeout>
   private _persistStateQueue: Promise<void> = Promise.resolve()
+  private readonly autoBattleTypeFilterRevisionListeners =
+    new Set<(revision: number) => void>()
 
   // Initialization promise
   public readonly ready: Promise<void>
@@ -183,6 +185,31 @@ class PokerChaseService {
   static readonly POKER_CHASE_SERVICE_EVENT = POKER_CHASE_SERVICE_EVENT
   static readonly POKER_CHASE_ORIGIN = POKER_CHASE_ORIGIN
   static readonly STORAGE_KEY = STORAGE_KEY
+
+  /**
+   * Advance the automatic category epoch and synchronously notify the
+   * background transport. The notification is revision-only: callers must
+   * not rebroadcast a previous session's lineup before the next DEAL.
+   */
+  readonly advanceAutoBattleTypeFilterRevision = (): void => {
+    this.autoBattleTypeFilterRevision++
+    for (const listener of this.autoBattleTypeFilterRevisionListeners) {
+      try {
+        listener(this.autoBattleTypeFilterRevision)
+      } catch (error) {
+        console.error('[PokerChaseService] Auto battle-type revision listener failed:', error)
+      }
+    }
+  }
+
+  readonly onAutoBattleTypeFilterRevision = (
+    listener: (revision: number) => void
+  ): (() => void) => {
+    this.autoBattleTypeFilterRevisionListeners.add(listener)
+    return () => {
+      this.autoBattleTypeFilterRevisionListeners.delete(listener)
+    }
+  }
 
   // Getter/Setter for automatic persistence.
   // どちらも同じ persistState()（500msデバウンス）を呼ぶ一本道。

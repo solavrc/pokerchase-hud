@@ -1569,7 +1569,7 @@ export class AutoSyncService {
           service.autoBattleTypeFilter &&
           previousAutoFilter !== nextAutoFilter
         ) {
-          service.autoBattleTypeFilterRevision++
+          service.advanceAutoBattleTypeFilterRevision()
         }
       }
 
@@ -1592,6 +1592,13 @@ export class AutoSyncService {
         // live session/deal, but serialize one fresh calculation after the
         // canonical entity replacement is complete.
         await service.statsOutputStream?.recalculateStats?.()
+      }
+      if (canCommitReplay) {
+        // SessionState/latestEvtDeal setters debounce persistence. Keep the
+        // sync operation claimed until the complete replay snapshot is
+        // durable so an operation-completion update reload cannot restore the
+        // pre-replay category/session from chrome.storage.local.
+        await service.flushStatePersistence()
       }
       console.log(`[AutoSync] Chunked data rebuild completed (${totalEventCount} events)`)
     } catch (error) {

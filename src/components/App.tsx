@@ -579,7 +579,18 @@ const App = memo(() => {
   // ライブ更新で必ず解消する"という順序非依存性がここでのポイント）。
   // sola「それほど重要な機能ではないので、bで十分です」の縮小スコープの
   // 精神に沿って、この1回限りのギャップは直さずに受け入れる。
-  const handleBattleTypeFilterUpdate = useCallback(() => {
+  const handleBattleTypeFilterUpdate = useCallback((event?: CustomEvent<unknown>) => {
+    const autoRevision =
+      event?.detail &&
+      typeof event.detail === 'object' &&
+      'autoBattleTypeFilterRevision' in event.detail &&
+      typeof event.detail.autoBattleTypeFilterRevision === 'number'
+        ? event.detail.autoBattleTypeFilterRevision
+        : undefined
+    if (autoRevision !== undefined) {
+      if (autoRevision === lastAutoBattleTypeFilterRevisionRef.current) return
+      lastAutoBattleTypeFilterRevisionRef.current = autoRevision
+    }
     setFilterRevision(current => current + 1)
     const dimCache = dimCacheRef.current
     const nonHeroCachedSeats = Array.from(dimCache.keys()).filter(seatIndex => seatIndex !== HERO_SEAT_INDEX)
