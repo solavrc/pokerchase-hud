@@ -98,6 +98,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const popupThemeChangedByUserRef = useRef(false)
   const uiConfigChangedAfterMountRef = useRef(false)
+  const uiScaleChangedAfterMountRef = useRef(false)
 
   // Reconcile the synchronous startup hint with chrome.storage.sync after the
   // first commit. Avoid setting an identical primitive so the common cached
@@ -126,6 +127,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
       if (areaName === 'local') {
         const scaleChange = changes[UI_SCALE_STORAGE_KEY]
         if (!scaleChange) return
+        uiScaleChangedAfterMountRef.current = true
         setUIConfig(current => ({
           ...current,
           scale: resolveLocalUIScale(scaleChange.newValue),
@@ -279,11 +281,22 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
       // しまう（App.tsx側の読み込みは既にこのマージを行っている）。
       chrome.storage.sync.get('uiConfig', (result: Record<string, any>) => {
         loadLocalUIScale(localScale => {
-          if (uiConfigChangedAfterMountRef.current) {
-            setUIConfig(current => ({
-              ...current,
-              scale: localScale,
-            }))
+          if (
+            uiConfigChangedAfterMountRef.current ||
+            uiScaleChangedAfterMountRef.current
+          ) {
+            setUIConfig(current => {
+              const latestConfig = uiConfigChangedAfterMountRef.current
+                ? current
+                : {
+                    ...DEFAULT_UI_CONFIG,
+                    ...result.uiConfig,
+                    scale: current.scale,
+                  }
+              return uiScaleChangedAfterMountRef.current
+                ? latestConfig
+                : { ...latestConfig, scale: localScale }
+            })
           } else {
             setUIConfig(mergeUIConfigWithLocalScale(result.uiConfig, localScale))
           }

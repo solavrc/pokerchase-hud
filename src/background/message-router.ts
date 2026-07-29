@@ -73,6 +73,7 @@ const handleFirebaseSignOut = async (): Promise<void> => {
  */
 export const registerMessageRouter = (service: PokerChaseService, db: PokerChaseDB, gameUrlPattern: string): void => {
   const { exportData, importData, deleteAllData, getLatestSessionStats, rebuildAllData } = createImportExportHandlers(service, db, gameUrlPattern)
+  let deviceScaleWriteGeneration = 0
 
   const rejectIfOperationBusy = (action: string, sendResponse: (response: MessageResponse) => void): boolean => {
     if (isOperationIdle()) return false
@@ -99,6 +100,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
             ? localResult[positionKey]
             : undefined
           const needsScaleMigration = !isValidUIScale(localScale)
+          const migrationGeneration = deviceScaleWriteGeneration
 
           const respond = (
             scale: number,
@@ -137,6 +139,19 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
                 return
               }
 
+              if (deviceScaleWriteGeneration !== migrationGeneration) {
+                chrome.storage.local.get(
+                  UI_SCALE_STORAGE_KEY,
+                  (latestResult: Record<string, unknown>) => {
+                    respond(
+                      resolveLocalUIScale(latestResult[UI_SCALE_STORAGE_KEY]),
+                      localPosition
+                    )
+                  }
+                )
+                return
+              }
+
               // Preserve the pre-local-storage value outside uiConfig before
               // future synchronized preference saves omit its scale field.
               // This is a migration bridge only; new local scale edits never
@@ -165,6 +180,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         sendResponse({ success: false, error: 'Invalid UI scale' })
         return true
       }
+      deviceScaleWriteGeneration += 1
       chrome.storage.local.set({ [UI_SCALE_STORAGE_KEY]: request.scale }, () => {
         const error = chrome.runtime.lastError
         sendResponse(error

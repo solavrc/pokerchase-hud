@@ -64,6 +64,7 @@ const App = memo(() => {
   const [statDisplayConfigs, setStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
   const [configLoaded, setConfigLoaded] = useState(false)
   const uiConfigChangedAfterMountRef = useRef(false)
+  const uiScaleChangedAfterMountRef = useRef(false)
   const [shouldScrollToLatest, setShouldScrollToLatest] = useState(false)
   const [allPlayersRealTimeStats, setAllPlayersRealTimeStats] = useState<AllPlayersRealTimeStats | undefined>()
   const [heroOriginalSeatIndex, setHeroOriginalSeatIndex] = useState<number | undefined>()
@@ -486,6 +487,7 @@ const App = memo(() => {
       }
     } else if (message.action === "updateUIConfig" && message.config) {
       uiConfigChangedAfterMountRef.current = true
+      uiScaleChangedAfterMountRef.current = true
       setUIConfig(message.config)
     }
   }, [applyDimmedSeatIndices])
@@ -641,6 +643,7 @@ const App = memo(() => {
   const handleUIConfigUpdate = useCallback(
     (event: CustomEvent<UIConfig>) => {
       uiConfigChangedAfterMountRef.current = true
+      uiScaleChangedAfterMountRef.current = true
       setUIConfig(event.detail)
     },
     []
@@ -681,10 +684,9 @@ const App = memo(() => {
           })
         }
         if (uiConfigChangedAfterMountRef.current) {
-          setUIConfig(current => ({
-            ...current,
-            scale: localScale,
-          }))
+          setUIConfig(current => uiScaleChangedAfterMountRef.current
+            ? current
+            : { ...current, scale: localScale })
         } else {
           setUIConfig(mergeUIConfigWithLocalScale(result.uiConfig, localScale))
         }

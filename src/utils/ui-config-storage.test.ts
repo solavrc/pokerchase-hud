@@ -103,10 +103,15 @@ describe('ui-config-storage', () => {
     expect(callback).toHaveBeenCalledWith(1.6)
   })
 
-  it('backgroundが応答しなくてもscale読込を既定値で完了する', () => {
+  it('timeoutで描画を進め、遅れたbackground応答もscaleへ反映する', () => {
     jest.useFakeTimers()
     try {
-      ;(chrome.runtime.sendMessage as jest.Mock).mockImplementationOnce(() => {})
+      let respond!: (response: unknown) => void
+      ;(chrome.runtime.sendMessage as jest.Mock).mockImplementationOnce(
+        (_message, callback) => {
+          respond = callback
+        }
+      )
       const callback = jest.fn()
 
       loadLocalUIScale(callback)
@@ -114,6 +119,10 @@ describe('ui-config-storage', () => {
 
       jest.advanceTimersByTime(DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS)
       expect(callback).toHaveBeenCalledWith(DEFAULT_UI_CONFIG.scale)
+
+      respond({ success: true, scale: 1.6 })
+      expect(callback).toHaveBeenLastCalledWith(1.6)
+      expect(callback).toHaveBeenCalledTimes(2)
     } finally {
       jest.useRealTimers()
     }

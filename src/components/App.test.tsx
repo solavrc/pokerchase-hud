@@ -120,6 +120,37 @@ describe('App', () => {
     })
   })
 
+  it('起動時layout応答より新しいscale更新を遅い応答で巻き戻さない', async () => {
+    let respondToInitialLayout!: (response: unknown) => void
+    ;(global.chrome.runtime.sendMessage as jest.Mock).mockImplementation(
+      (message, callback) => {
+        if (message.action === 'getDeviceUILayout') {
+          respondToInitialLayout = callback
+        }
+      }
+    )
+
+    render(<App />)
+    await waitFor(() => {
+      expect(respondToInitialLayout).toBeDefined()
+      expect(chrome.runtime.onMessage.addListener).toHaveBeenCalled()
+    })
+    const messageHandler = (chrome.runtime.onMessage.addListener as jest.Mock).mock.calls[0][0]
+
+    act(() => {
+      messageHandler({
+        action: 'updateUIConfig',
+        config: { ...DEFAULT_UI_CONFIG, scale: 1.8 },
+      })
+      respondToInitialLayout({ success: true, scale: 1.2 })
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('Scale: 1.8')
+      expect(screen.getByTestId('hand-log')).toHaveTextContent('Scale: 1.8')
+    })
+  })
+
   it('uiConfig.displayEnabledがfalseの場合、何も表示されない', async () => {
     (global.chrome.storage.sync.get as jest.Mock).mockImplementation((_, callback) => {
       callback({

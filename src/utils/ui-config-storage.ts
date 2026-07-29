@@ -78,34 +78,63 @@ const consumeRuntimeError = (): void => {
   void chrome.runtime.lastError
 }
 
-const sendDeviceLayoutMessage = <TResponse,>(
+const sendDeviceLayoutReadMessage = <TResponse,>(
   message: ChromeMessage,
   callback: (response: TResponse | undefined) => void
 ): void => {
-  let settled = false
-  const finish = (response: TResponse | undefined) => {
-    if (settled) return
-    settled = true
-    clearTimeout(timeoutId)
-    callback(response)
-  }
+  let completed = false
   const timeoutId = setTimeout(
-    () => finish(undefined),
+    () => {
+      if (!completed) callback(undefined)
+    },
     DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS
   )
 
   try {
     chrome.runtime.sendMessage(message, (response: TResponse | undefined) => {
       consumeRuntimeError()
-      finish(response)
+      if (completed) return
+      completed = true
+      clearTimeout(timeoutId)
+      // A timeout may already have unblocked rendering. Reconcile once more
+      // when the authoritative background response eventually arrives.
+      callback(response)
     })
   } catch {
-    finish(undefined)
+    completed = true
+    clearTimeout(timeoutId)
+    callback(undefined)
+  }
+}
+
+const sendDeviceLayoutWriteMessage = (
+  message: ChromeMessage,
+  callback: () => void
+): void => {
+  let settled = false
+  const finish = () => {
+    if (settled) return
+    settled = true
+    clearTimeout(timeoutId)
+    callback()
+  }
+  const timeoutId = setTimeout(
+    finish,
+    DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS
+  )
+
+  try {
+    chrome.runtime.sendMessage(message, () => {
+      consumeRuntimeError()
+      finish()
+    })
+  } catch {
+    finish()
   }
 }
 
 export const loadLocalUIScale = (callback: (scale: number) => void): void => {
-  sendDeviceLayoutMessage<DeviceUILayoutResponse>(
+  sendDeviceLayoutReadMessage<DeviceUILayoutResponse>(
     { action: 'getDeviceUILayout' },
     (response: DeviceUILayoutResponse | undefined) => {
       callback(resolveLocalUIScale(response?.scale))
@@ -117,7 +146,7 @@ export const saveLocalUIScale = (
   scale: number,
   callback?: () => void
 ): void => {
-  sendDeviceLayoutMessage(
+  sendDeviceLayoutWriteMessage(
     { action: 'setDeviceUIScale', scale: resolveLocalUIScale(scale) },
     () => {
       callback?.()
@@ -129,7 +158,7 @@ export const loadHudPosition = (
   seatIndex: number,
   callback: (position: HudPosition | undefined) => void
 ): void => {
-  sendDeviceLayoutMessage<DeviceUILayoutResponse>(
+  sendDeviceLayoutReadMessage<DeviceUILayoutResponse>(
     { action: 'getDeviceUILayout', seatIndex },
     (response: DeviceUILayoutResponse | undefined) => {
       callback(isValidHudPosition(response?.position) ? response.position : undefined)
@@ -141,7 +170,7 @@ export const saveHudPosition = (
   seatIndex: number,
   position: HudPosition
 ): void => {
-  sendDeviceLayoutMessage(
+  sendDeviceLayoutWriteMessage(
     { action: 'setDeviceHudPosition', seatIndex, position },
     () => {}
   )
