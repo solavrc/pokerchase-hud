@@ -184,6 +184,13 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       Id: 'mtt-6078',
       IsRetire: false,
     })
+    expect(chrome.storage.local.set).toHaveBeenCalledWith({
+      activeSessionOriginsV1: expect.objectContaining({
+        scopes: expect.arrayContaining([
+          [101, expect.objectContaining({ id: 'mtt-6078', startedAt: 1000 })],
+        ]),
+      }),
+    })
 
     registerEventIngestion(service)
     const restoredConnectListener =

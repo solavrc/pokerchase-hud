@@ -70,8 +70,11 @@ class SessionOriginTracker {
     this.ready = this.restore()
   }
 
-  private storageArea = (): chrome.storage.StorageArea =>
-    chrome.storage.session ?? chrome.storage.local
+  // Match PokerChaseService's persisted global session durability. Session
+  // storage is cleared by browser/extension restarts while an active global
+  // scope in local storage survives, which would otherwise lose per-tab
+  // attribution exactly when it is still needed.
+  private storageArea = (): chrome.storage.StorageArea => chrome.storage.local
 
   private async restore(): Promise<void> {
     try {

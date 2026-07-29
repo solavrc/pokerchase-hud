@@ -35,7 +35,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
-import { ApiType } from '../types'
+import { ApiType, BattleType } from '../types'
 import type { ApiEvent } from '../types'
 import { AutoSyncService } from './auto-sync-service'
 import { firestoreBackupService } from './firestore-backup-service'
@@ -135,5 +135,41 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     expect(service.playerId).toBe(HERO_ID)
     expect(service.latestEvtDeal).toEqual({ ...laterSeatedDeal, sequence: 0 })
     expect(service.liveEvtDeal).toEqual({ ...laterSeatedDeal, sequence: 0 })
+  })
+
+  test('canonical replay closes a canceled entry and restores the preceding scope', () => {
+    const autoSyncService = new AutoSyncService(db)
+    const replaySessions: Array<{
+      id: string
+      battleType: BattleType
+      startedAt: number
+    }> = []
+
+    ;(autoSyncService as any).restoreSessionEvent(service, {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'tab-a',
+      IsRetire: false,
+      timestamp: 1000,
+    }, replaySessions)
+    ;(autoSyncService as any).restoreSessionEvent(service, {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'tab-b',
+      IsRetire: false,
+      timestamp: 2000,
+    }, replaySessions)
+    ;(autoSyncService as any).restoreSessionEvent(service, {
+      ApiTypeId: 203,
+      Code: 0,
+      timestamp: 3000,
+    }, replaySessions)
+
+    expect(service.getCurrentSessionScope()).toEqual({
+      id: 'tab-a',
+      startedAt: 1000,
+    })
   })
 })

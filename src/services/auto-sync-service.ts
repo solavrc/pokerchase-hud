@@ -1607,7 +1607,8 @@ export class AutoSyncService {
   ): void {
     if (!service?.session) return
 
-    if (event.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+    const rawApiTypeId = (event as { ApiTypeId: number }).ApiTypeId
+    if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS || rawApiTypeId === 203) {
       replaySessions.pop()
       const previous = replaySessions.at(-1)
       if (previous && typeof service.startSession === 'function') {
