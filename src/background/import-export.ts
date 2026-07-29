@@ -843,6 +843,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
 
     await service.ready // guards the SW-just-woke-up race: playerId/session are only valid after restoreState() resolves
     await service.filtersRestored // guards the same race for battleType/tableSize/handLimit filters (see background.ts)
+    await service.sessionOriginsReady // persisted per-tab origin may be newer than the debounced service snapshot
 
     if (service.batchMode) return []
 

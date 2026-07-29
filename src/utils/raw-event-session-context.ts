@@ -12,6 +12,7 @@ export type RawEventSessionContext = Readonly<{
   id: string
   battleType: BattleType
   startedAt: number
+  name?: string
 }>
 
 export const getRawEventSessionContext = (event: unknown): RawEventSessionContext | undefined => {
@@ -33,6 +34,7 @@ export const getRawEventSessionContext = (event: unknown): RawEventSessionContex
     id: candidate.id,
     battleType: candidate.battleType as BattleType,
     startedAt: candidate.startedAt,
+    name: typeof candidate.name === 'string' ? candidate.name : undefined,
   }
 }
 

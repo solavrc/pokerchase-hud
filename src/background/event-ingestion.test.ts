@@ -10,7 +10,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
-import { ApiType, BattleType } from '../types'
+import { ApiType, BattleType, type ApiEvent } from '../types'
 import { registerEventIngestion } from './event-ingestion'
 import { connectedPorts } from './ports'
 import { getUndecodedEventStats, resetUndecodedEventStats, UNDECODED_EVENT_STATS_KEY } from './undecoded-event-tracker'
@@ -39,6 +39,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     ;(chrome.runtime as any).onConnect = { addListener: jest.fn() }
     ;(chrome.tabs as any).onRemoved = { addListener: jest.fn() }
     registerEventIngestion(service)
+    await service.sessionOriginsReady
     connectListener = (chrome.runtime as any).onConnect.addListener.mock.calls[0][0]
     tabRemovedHandler = (chrome.tabs as any).onRemoved.addListener.mock.calls[0][0]
 
@@ -206,6 +207,8 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
 
     // Simulate a worker stop after the immediate origin snapshot committed
     // but before PokerChaseService's debounced local snapshot caught up.
+    service.session.setName('Hydrated MTT')
+    service.session.setPlayer(1006, { name: 'Hero', rank: 'gold' })
     service.endSession()
     registerEventIngestion(service)
     const restoredConnectListener =
@@ -226,6 +229,8 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       Code: 0,
     })
     expect(service.getCurrentSessionScope()).toEqual({ id: 'mtt-6078', startedAt: 1000 })
+    expect(service.session.name).toBe('Hydrated MTT')
+    expect(service.session.players.get(1006)).toEqual({ name: 'Hero', rank: 'gold' })
 
     await restoredHandlerA({
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
@@ -279,6 +284,74 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(service.getCurrentSessionScope()).toBeUndefined()
   })
 
+  test('tab close rebroadcasts the restored origin lineup immediately', async () => {
+    const secondPort = {
+      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      sender: { tab: { id: 202 } },
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn(),
+    }
+    mockPort.sender = { tab: { id: 101 } }
+    connectListener(secondPort)
+    const secondHandler = secondPort.onMessage.addListener.mock.calls[0][0]
+    const firstDeal = structuredClone(
+      MTT_TABLE_MOVE_FIXTURE.events[3]!
+    ) as ApiEvent<ApiType.EVT_DEAL>
+    const secondDeal = structuredClone(
+      MTT_TABLE_MOVE_FIXTURE.events[3]!
+    ) as ApiEvent<ApiType.EVT_DEAL>
+    firstDeal.timestamp = 3000
+    secondDeal.timestamp = 4000
+    secondDeal.SeatUserIds = secondDeal.SeatUserIds.map(id => id + 10_000)
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'tab-a',
+      IsRetire: false,
+    })
+    await onMessageHandler(firstDeal)
+    await secondHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 2000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'tab-b',
+      IsRetire: false,
+    })
+    await secondHandler(secondDeal)
+    const statsWriteSpy = jest.spyOn(service.statsOutputStream, 'write')
+
+    await tabRemovedHandler(202)
+
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-a', startedAt: 1000 })
+    expect(statsWriteSpy).toHaveBeenCalledWith(firstDeal.SeatUserIds)
+    expect(service.liveEvtDeal).toEqual(firstDeal)
+  })
+
+  test('origin restore failure invalidates a stale durable session snapshot', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    ;(chrome.storage.session.get as jest.Mock).mockRejectedValueOnce(new Error('session storage unavailable'))
+    const failedRestoreService = new PokerChaseService({
+      db: new PokerChaseDB(indexedDB, IDBKeyRange),
+    })
+    await failedRestoreService.ready
+    failedRestoreService.startSession('stale-global', BattleType.RING_GAME, 1000)
+
+    registerEventIngestion(failedRestoreService)
+    await failedRestoreService.sessionOriginsReady
+
+    expect(failedRestoreService.getCurrentSessionScope()).toBeUndefined()
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[background] Failed to restore active session origins:',
+      expect.any(Error)
+    )
+    failedRestoreService.db.close()
+  })
+
   test('a completed hand keeps the session scope of its originating tab', async () => {
     const secondPort = {
       name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
@@ -329,6 +402,62 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
         scope: expect.objectContaining({ id: 'tab-a', startedAt: 1000 }),
       })
     )
+  })
+
+  test('a completed hand keeps the session name of its originating tab', async () => {
+    const sessionDetails = (timestamp: number, name: string) => ({
+      ApiTypeId: ApiType.EVT_SESSION_DETAILS,
+      timestamp,
+      BlindStructures: [{ ActiveMinutes: 4, Ante: 50, BigBlind: 200, Lv: 1 }],
+      CoinNum: -1,
+      DefaultChip: 20000,
+      IsReplay: false,
+      Items: [],
+      LimitSeconds: 8,
+      MoneyList: [],
+      Name: name,
+      Name2: '',
+    })
+    const secondPort = {
+      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      sender: { tab: { id: 202 } },
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn(),
+    }
+    mockPort.sender = { tab: { id: 101 } }
+    connectListener(secondPort)
+    const secondHandler = secondPort.onMessage.addListener.mock.calls[0][0]
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'tab-a',
+      IsRetire: false,
+    })
+    await onMessageHandler(sessionDetails(1100, 'Table A'))
+    await secondHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 2000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'tab-b',
+      IsRetire: false,
+    })
+    await secondHandler(sessionDetails(2100, 'Table B'))
+
+    for (const event of MTT_TABLE_MOVE_FIXTURE.events.slice(3, 6)) {
+      await onMessageHandler(structuredClone(event))
+    }
+    await service.handAggregateStream.whenIdle()
+
+    const hand = await db.hands.get(MTT_TABLE_MOVE_FIXTURE.handIds.oldAccepted)
+    expect(hand?.session).toMatchObject({
+      id: 'tab-a',
+      name: 'Table A',
+    })
   })
 
   test('origin persistence failure does not drop a durable event from live streams', async () => {

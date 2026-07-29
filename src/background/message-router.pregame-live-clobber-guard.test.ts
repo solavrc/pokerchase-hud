@@ -93,8 +93,10 @@ describe('message-router requestLatestStats -- pre-game vs. live lineup race gua
     )
     expect(handled).toBe(true)
 
-    // The mocked calcStats call above should already be in flight (consumed the
-    // "once" mock) -- confirm nothing has been sent yet.
+    // Startup readiness gates may add resolved-promise microtasks before
+    // calcStats starts. Wait until the pre-game call has consumed the
+    // one-shot stall so the live write below cannot consume it instead.
+    await waitUntil(() => releasePreGameCalc !== undefined)
     expect(sendMessageMock).not.toHaveBeenCalled()
 
     // A real hand gets dealt and processed through the live pipeline while the

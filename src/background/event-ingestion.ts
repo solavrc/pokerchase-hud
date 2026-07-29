@@ -1,5 +1,6 @@
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
 import PokerChaseService, {
+  type ApiEvent,
   ApiType,
   ApiMessage,
   BattleType,
@@ -10,7 +11,7 @@ import PokerChaseService, {
   isApplicationApiEvent
 } from '../app'
 import { autoSyncService } from '../services/auto-sync-service'
-import { connectedPorts, startPortPing, setLastKnownStats } from './ports'
+import { broadcastMessage, connectedPorts, startPortPing, setLastKnownStats } from './ports'
 import { recordUndecodedEvent } from './undecoded-event-tracker'
 import { markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
@@ -55,6 +56,8 @@ type TrackedSessionScope = {
   battleType: BattleType
   startedAt: number
   sequence: number
+  name?: string
+  latestDeal?: ApiEvent<ApiType.EVT_DEAL>
 }
 
 /**
@@ -121,6 +124,10 @@ class SessionOriginTracker {
       this.service.reconcileSessionOrigin()
     } catch (error) {
       console.warn('[background] Failed to restore active session origins:', error)
+      this.scopes.clear()
+      this.currentKey = undefined
+      this.canReconcileReplay = true
+      this.service.endSession()
     }
   }
 
@@ -172,9 +179,13 @@ class SessionOriginTracker {
   async start(key: SessionOriginKey, context: RawEventSessionContext): Promise<void> {
     await this.ready
     this.canReconcileReplay = true
+    const previous = this.scopes.get(key)
+    const continuesSameScope = previous?.scopeKey === context.scopeKey
     const scope = {
       ...context,
-      sequence: ++this.sequence
+      sequence: ++this.sequence,
+      name: continuesSameScope ? previous.name : context.name,
+      latestDeal: continuesSameScope ? previous.latestDeal : undefined,
     }
     this.scopes.set(key, scope)
     this.currentKey = key
@@ -189,8 +200,29 @@ class SessionOriginTracker {
       scopeKey: scope.scopeKey,
       id: scope.id,
       battleType: scope.battleType,
-      startedAt: scope.startedAt
+      startedAt: scope.startedAt,
+      name: scope.name,
     }
+  }
+
+  async setName(key: SessionOriginKey, name: string): Promise<void> {
+    await this.ready
+    const scope = this.scopes.get(key)
+    if (!scope) return
+    scope.name = name
+    if (this.currentKey === key) this.service.session.setName(name)
+    await this.persist()
+  }
+
+  async setLatestDeal(
+    key: SessionOriginKey,
+    deal: ApiEvent<ApiType.EVT_DEAL>
+  ): Promise<void> {
+    await this.ready
+    const scope = this.scopes.get(key)
+    if (!scope) return
+    scope.latestDeal = deal
+    await this.persist()
   }
 
   get(key: SessionOriginKey): EventSessionScope | undefined {
@@ -205,7 +237,10 @@ class SessionOriginTracker {
     return context ?? null
   }
 
-  async end(key: SessionOriginKey): Promise<void> {
+  async end(key: SessionOriginKey): Promise<{
+    selectionChanged: boolean
+    scope?: TrackedSessionScope
+  }> {
     await this.ready
     const endedScope = this.scopes.get(key)
     this.scopes.delete(key)
@@ -215,11 +250,11 @@ class SessionOriginTracker {
     if (!endedScope) {
       if (this.scopes.size === 0) this.service.endSession()
       await this.persist()
-      return
+      return { selectionChanged: this.scopes.size === 0 }
     }
     if (this.currentKey !== key) {
       await this.persist()
-      return
+      return { selectionChanged: false }
     }
 
     let nextEntry: [SessionOriginKey, TrackedSessionScope] | undefined
@@ -230,13 +265,14 @@ class SessionOriginTracker {
       this.currentKey = undefined
       this.service.endSession()
       await this.persist()
-      return
+      return { selectionChanged: true }
     }
 
     this.currentKey = nextEntry[0]
     const next = nextEntry[1]
-    this.service.startSession(next.id, next.battleType, next.startedAt)
+    this.service.reconcileSessionOrigin()
     await this.persist()
+    return { selectionChanged: true, scope: next }
   }
 }
 
@@ -303,6 +339,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   ingestionQueue = Promise.resolve()
   setIngestionDrainProvider(() => ingestionQueue)
   const sessionOrigins = new SessionOriginTracker(service)
+  service.setSessionOriginsReady(sessionOrigins.ready)
 
   // A content-script port also disconnects during an ordinary page reload.
   // Keep its tab-id keyed scope across that reconnect, and release it only
@@ -311,7 +348,19 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
     const task = ingestionQueue.then(async () => {
       await sessionOrigins.ready
       await service.handAggregateStream.whenIdle()
-      await sessionOrigins.end(tabId)
+      const restored = await sessionOrigins.end(tabId)
+      if (restored.selectionChanged) {
+        if (restored.scope?.latestDeal) {
+          service.liveEvtDeal = restored.scope.latestDeal
+          service.statsOutputStream.write(restored.scope.latestDeal.SeatUserIds)
+        } else {
+          setLastKnownStats([])
+          broadcastMessage({
+            stats: [],
+            sessionScopeRevision: service.sessionScopeRevision,
+          })
+        }
+      }
     })
     ingestionQueue = task.catch(err => {
       console.error('[background] Failed to close removed-tab session scope:', err)
@@ -725,10 +774,16 @@ const processEvent = async (
     )
   }
 
+  if (data.ApiTypeId === ApiType.EVT_SESSION_DETAILS) {
+    await sessionOrigins.setName(originKey, data.Name)
+  } else if (data.ApiTypeId === ApiType.EVT_DEAL) {
+    await sessionOrigins.setLatestDeal(originKey, data)
+  }
+
   // Capture the origin before any later tab can change service.session. The
   // same parsed object flows through AggregateEventsStream into
   // WriteEntityStream, where the completed hand reads this immutable scope.
-  setEventSessionScope(data, eventContext ?? sessionOrigins.get(originKey))
+  setEventSessionScope(data, sessionOrigins.get(originKey) ?? eventContext)
 
   // ここでdataはApiEvent型（isApplicationApiEventで保証済み）
   service.eventLogger(data, 'info')

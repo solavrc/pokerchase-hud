@@ -86,6 +86,27 @@ describe('PokerChaseService - explicit session persistence', () => {
     ])
   })
 
+  test('origin reconciliation reactivates the same boundary without clearing hydrated metadata', async () => {
+    const service = newService()
+    await service.ready
+    service.startSession('session-1', BattleType.SIT_AND_GO, 1000)
+    service.session.setName('Hydrated Table')
+    service.session.setPlayer(1, { name: 'Alice', rank: 'gold' })
+    service.endSession()
+    service.setSessionOriginReconciler(() => ({
+      scopeKey: 'run:0:session-1:1000',
+      id: 'session-1',
+      battleType: BattleType.SIT_AND_GO,
+      startedAt: 1000,
+    }))
+
+    service.reconcileSessionOrigin()
+
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'session-1', startedAt: 1000 })
+    expect(service.session.name).toBe('Hydrated Table')
+    expect(service.session.players.get(1)).toEqual({ name: 'Alice', rank: 'gold' })
+  })
+
   test('restoreState()はストレージへの書き戻し（persist）をトリガーしない', async () => {
     // Pre-seed storage as if a previous session had persisted state
     await chrome.storage.local.set({

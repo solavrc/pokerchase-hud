@@ -107,6 +107,23 @@ export class SessionState implements Session {
     this.notifyChange()
   }
 
+  /**
+   * Reactivate a boundary restored from the browser-session origin tracker.
+   * Metadata is retained only when it belongs to that exact boundary.
+   */
+  reconcile(id: string, battleType: BattleType, startedAt: number): void {
+    const sameBoundary =
+      this._id === id &&
+      this._startedAt === startedAt
+    if (!sameBoundary) {
+      this.start(id, battleType, startedAt)
+      return
+    }
+    this._battleType = battleType
+    this._active = true
+    this.notifyChange()
+  }
+
   end(): void {
     this._active = false
     this.notifyChange()
@@ -208,6 +225,7 @@ class PokerChaseService {
   // this stays a no-op for them -- there is nothing for those call sites to wait on.
   public filtersRestored: Promise<void> = Promise.resolve()
   private resolveFiltersRestored: (() => void) | undefined
+  public sessionOriginsReady: Promise<void> = Promise.resolve()
 
   // 永続化不要なプロパティ
   battleTypeFilter?: number[] = undefined // undefined = all, array = specific battleTypes
@@ -341,9 +359,21 @@ class PokerChaseService {
     if (context === null) {
       this.endSession()
     } else if (context) {
-      this.startSession(context.id, context.battleType, context.startedAt)
+      const previous = this.getCurrentSessionScope()
+      this._sessionData.reconcile(context.id, context.battleType, context.startedAt)
+      if (context.name !== undefined && this._sessionData.name !== context.name) {
+        this._sessionData.setName(context.name)
+      }
+      const next = this.getCurrentSessionScope()
+      if (previous?.id !== next?.id || previous?.startedAt !== next?.startedAt) {
+        this.sessionScopeRevision++
+      }
     }
     return context
+  }
+
+  readonly setSessionOriginsReady = (ready: Promise<void>): void => {
+    this.sessionOriginsReady = ready
   }
 
   readonly getCurrentSessionScope = (): { id: string, startedAt: number } | undefined => {

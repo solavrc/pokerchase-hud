@@ -100,7 +100,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
         session: {
           id: eventSessionScope?.id ?? this.service.session.id,
           battleType: eventSessionScope?.battleType ?? this.service.session.battleType,
-          name: this.service.session.name
+          name: eventSessionScope ? eventSessionScope.name : this.service.session.name
         },
         id: NaN,
         approxTimestamp: NaN,

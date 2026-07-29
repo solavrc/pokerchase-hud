@@ -188,6 +188,7 @@ export async function mergeApiEvents(
     }
 
     const added: RawApiEvent[] = []
+    const enrichedApplicationTimestamps: number[] = []
     let duplicates = 0
 
     for (const input of inputEvents) {
@@ -207,6 +208,9 @@ export async function mergeApiEvents(
           await db.apiEvents.put(upgraded as unknown as ApiEvent)
           const duplicateIndex = group.indexOf(duplicate)
           group[duplicateIndex] = upgraded
+          if (ApiTypeValues.includes(upgraded.ApiTypeId as any)) {
+            enrichedApplicationTimestamps.push(upgraded.timestamp)
+          }
         }
         duplicates++
         continue
@@ -229,31 +233,34 @@ export async function mergeApiEvents(
 
     if (added.length > 0) {
       await db.apiEvents.bulkAdd(added as unknown as ApiEvent[])
+    }
 
-      if (options.protectAddedApplicationEventsFromCloudWatermark) {
-        const importedApplicationTimestamps = added
+    if (options.protectAddedApplicationEventsFromCloudWatermark) {
+      const importedApplicationTimestamps = [
+        ...added
           .filter(event => ApiTypeValues.includes(event.ApiTypeId as any))
-          .map(event => event.timestamp)
-        const earliestImportedTimestamp = importedApplicationTimestamps.length > 0
-          ? Math.min(...importedApplicationTimestamps)
-          : null
+          .map(event => event.timestamp),
+        ...enrichedApplicationTimestamps,
+      ]
+      const earliestImportedTimestamp = importedApplicationTimestamps.length > 0
+        ? Math.min(...importedApplicationTimestamps)
+        : null
 
-        if (earliestImportedTimestamp !== null) {
-          const reconciledAccounts = await db.meta
-            .filter(record => isScopedSyncMetaKey(record.id, SYNC_RESCAN_BACKFILL_DONE_META_KEY))
-            .toArray()
+      if (earliestImportedTimestamp !== null) {
+        const reconciledAccounts = await db.meta
+          .filter(record => isScopedSyncMetaKey(record.id, SYNC_RESCAN_BACKFILL_DONE_META_KEY))
+          .toArray()
 
-          for (const marker of reconciledAccounts) {
-            const accountSuffix = marker.id.slice(SYNC_RESCAN_BACKFILL_DONE_META_KEY.length)
-            const floorKey = `${SYNC_RESCAN_FLOOR_META_KEY}${accountSuffix}`
-            const existingFloor = await db.meta.get(floorKey)
-            if (typeof existingFloor?.value !== 'number' || existingFloor.value > earliestImportedTimestamp) {
-              await db.meta.put({
-                id: floorKey,
-                value: earliestImportedTimestamp,
-                updatedAt: Date.now()
-              })
-            }
+        for (const marker of reconciledAccounts) {
+          const accountSuffix = marker.id.slice(SYNC_RESCAN_BACKFILL_DONE_META_KEY.length)
+          const floorKey = `${SYNC_RESCAN_FLOOR_META_KEY}${accountSuffix}`
+          const existingFloor = await db.meta.get(floorKey)
+          if (typeof existingFloor?.value !== 'number' || existingFloor.value > earliestImportedTimestamp) {
+            await db.meta.put({
+              id: floorKey,
+              value: earliestImportedTimestamp,
+              updatedAt: Date.now()
+            })
           }
         }
       }

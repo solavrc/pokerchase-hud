@@ -182,6 +182,28 @@ describe('getLatestSessionStats -- pre-game hero stats fallback', () => {
     const handsResult = stats[0].statResults.find((r: any) => r.id === 'hands')
     expect(handsResult?.value).toBe(1)
   })
+
+  test('cold SW start: waits for per-tab origin restoration before capturing the latest-session scope', async () => {
+    service.playerId = HERO_ID
+    let releaseOrigins!: () => void
+    service.setSessionOriginsReady(new Promise<void>(resolve => {
+      releaseOrigins = resolve
+    }))
+    const calcStatsSpy = jest.spyOn(service.statsOutputStream, 'calcStats')
+
+    const statsPromise = getLatestSessionStats(true)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(calcStatsSpy).not.toHaveBeenCalled()
+
+    service.startSession('restored-origin', BattleType.TOURNAMENT, 1000)
+    service.sessionOnlyFilter = true
+    const scopeSpy = jest.spyOn(service, 'getCurrentSessionScope')
+    releaseOrigins()
+    await statsPromise
+
+    expect(calcStatsSpy).toHaveBeenCalled()
+    expect(scopeSpy).toHaveBeenCalled()
+  })
 })
 
 /**
