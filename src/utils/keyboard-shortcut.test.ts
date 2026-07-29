@@ -20,16 +20,16 @@ describe('keyboard shortcuts', () => {
     const shortcut = shortcutFromKeyboardEvent({
       code: 'KeyH',
       key: 'h',
-      ctrlKey: true,
+      ctrlKey: false,
       altKey: false,
       shiftKey: true,
       metaKey: false,
     })
     expect(shortcut).not.toBeNull()
-    expect(formatShortcut(shortcut!)).toBe('Ctrl + Shift + H')
+    expect(formatShortcut(shortcut!)).toBe('Shift + H')
     expect(matchesShortcut({
       code: 'KeyH',
-      ctrlKey: true,
+      ctrlKey: false,
       altKey: false,
       shiftKey: true,
       metaKey: false,
@@ -50,7 +50,24 @@ describe('keyboard shortcuts', () => {
     expect(formatShortcut(shortcut!)).toBe('Shift + H')
   })
 
-  test('allows function keys without modifiers', () => {
+  test('does not activate an unsupported shortcut restored from storage', () => {
+    expect(matchesShortcut({
+      code: 'KeyH',
+      ctrlKey: true,
+      altKey: false,
+      shiftKey: true,
+      metaKey: false,
+    }, {
+      code: 'KeyH',
+      key: 'h',
+      ctrl: true,
+      alt: false,
+      shift: true,
+      meta: false,
+    })).toBe(false)
+  })
+
+  test('rejects function keys without modifiers', () => {
     expect(shortcutFromKeyboardEvent({
       code: 'F8',
       key: 'F8',
@@ -58,7 +75,7 @@ describe('keyboard shortcuts', () => {
       altKey: false,
       shiftKey: false,
       metaKey: false,
-    })).toEqual(expect.objectContaining({ code: 'F8' }))
+    })).toBeNull()
   })
 
   test('formats the recorded logical key instead of the physical US-layout code', () => {
@@ -79,6 +96,8 @@ describe('keyboard shortcuts', () => {
     { code: 'F4', key: 'F4', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false },
     { code: 'F4', key: 'F4', ctrlKey: true, altKey: false, shiftKey: false, metaKey: false },
     { code: 'F5', key: 'F5', ctrlKey: false, altKey: false, shiftKey: false, metaKey: false },
+    { code: 'KeyJ', key: 'J', ctrlKey: true, altKey: false, shiftKey: true, metaKey: false },
+    { code: 'KeyI', key: 'i', ctrlKey: false, altKey: true, shiftKey: false, metaKey: true },
   ])('rejects browser or OS reserved combinations: $code', event => {
     expect(shortcutFromKeyboardEvent(event)).toBeNull()
   })

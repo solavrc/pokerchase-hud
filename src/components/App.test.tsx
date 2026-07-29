@@ -110,7 +110,7 @@ describe('App', () => {
     const shortcut = {
       code: 'KeyH',
       key: 'h',
-      ctrl: true,
+      ctrl: false,
       alt: false,
       shift: true,
       meta: false,
@@ -125,10 +125,10 @@ describe('App', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByTestId('hud-0')).toBeInTheDocument())
 
-    fireEvent.keyDown(window, { code: 'KeyH', key: 'h', ctrlKey: true, shiftKey: true })
+    fireEvent.keyDown(window, { code: 'KeyH', key: 'h', shiftKey: true })
     await waitFor(() => expect(screen.queryByTestId('hud-0')).not.toBeInTheDocument())
 
-    fireEvent.keyDown(window, { code: 'KeyH', key: 'h', ctrlKey: true, shiftKey: true })
+    fireEvent.keyDown(window, { code: 'KeyH', key: 'h', shiftKey: true })
     await waitFor(() => expect(screen.getByTestId('hud-0')).toBeInTheDocument())
   })
 

@@ -83,7 +83,6 @@ describe('UIScaleSection', () => {
     fireEvent.keyDown(input, {
       key: 'y',
       code: 'KeyY',
-      ctrlKey: true,
       shiftKey: true,
     })
 
@@ -92,7 +91,7 @@ describe('UIScaleSection', () => {
         toggleShortcut: {
           code: 'KeyY',
           key: 'y',
-          ctrl: true,
+          ctrl: false,
           alt: false,
           shift: true,
           meta: false,

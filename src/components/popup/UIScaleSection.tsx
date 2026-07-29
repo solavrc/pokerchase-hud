@@ -141,7 +141,7 @@ export const UIScaleSection = ({
               readOnly: true,
               'aria-label': 'HUD表示切り替えショートカット',
               title: shortcutError
-                ? '利用できません（修飾キーを含め、ブラウザの予約キーを避けてください）'
+                ? '利用できません（Shiftと文字キーを同時に押してください）'
                 : shortcutLabel
                   ? `${shortcutLabel}（クリックして変更・右クリックで解除）`
                   : 'クリックして入力・右クリックで解除',
