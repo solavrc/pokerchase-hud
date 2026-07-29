@@ -326,6 +326,16 @@ const messageHandlers: Record<string, (message: ChromeMessage) => void> = {
       }))
     }
   },
+  resetHandLogLayout: () => {
+    window.dispatchEvent(new CustomEvent(EVENTS.RESET_HAND_LOG_LAYOUT))
+  },
+  updateHandLogLayout: (message) => {
+    if ('layout' in message) {
+      window.dispatchEvent(new CustomEvent(EVENTS.UPDATE_HAND_LOG_LAYOUT, {
+        detail: message.layout
+      }))
+    }
+  },
   refreshStats: () => {
     // インポート後の統計更新をリクエスト
     // 最新の統計をバックグラウンドサービスから取得

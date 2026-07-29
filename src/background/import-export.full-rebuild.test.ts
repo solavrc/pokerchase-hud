@@ -29,7 +29,7 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
 import { createImportExportHandlers } from './import-export'
-import { setOperationState } from './operation-state'
+import { getOperationState, setOperationState, type OperationState } from './operation-state'
 import { EntityConverter } from '../entity-converter'
 import { SessionScopedEntityConverter } from '../utils/session-scoped-entity-converter'
 import * as databaseUtils from '../utils/database-utils'
@@ -297,6 +297,32 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
 
       const after = await snapshotDerived(db)
       expect(after).toEqual(before)
+    })
+  })
+
+  test('marks the post-import rebuild as import-origin before publishing its started message', async () => {
+    await runWithFreshDb(async ({ handlers }) => {
+      let stateAtRebuildStart: OperationState | undefined
+      ;(chrome.runtime.sendMessage as jest.Mock).mockImplementation((message: { action?: string, state?: string }) => {
+        if (message.action === 'rebuildProgress' && message.state === 'started') {
+          stateAtRebuildStart = getOperationState()
+        }
+        return Promise.resolve()
+      })
+
+      await handlers.importData(JSON.stringify({
+        timestamp: 1_000,
+        ApiTypeId: 9_999,
+        marker: 'raw-only',
+      }))
+
+      expect(stateAtRebuildStart).toMatchObject({
+        type: 'rebuild',
+        origin: 'import',
+        phase: 'rebuild',
+        progress: 0,
+      })
+      expect(getOperationState()).toEqual({ type: 'idle' })
     })
   })
 

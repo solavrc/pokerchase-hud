@@ -22,6 +22,13 @@ import type {
 import type { SyncState } from '../services/auto-sync-service'
 import { content_scripts } from '../../manifest.json'
 import { sendMessageWithTimeout } from './popup/send-message'
+import {
+  isValidUIScale,
+  loadLocalUIScale,
+  mergeUIConfigWithLocalScale,
+  resolveLocalUIScale,
+  UI_SCALE_STORAGE_KEY,
+} from '../utils/ui-config-storage'
 
 // Import sub-components
 import { UIScaleSection } from './popup/UIScaleSection'
@@ -84,6 +91,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   const [hasUnsavedStatChanges, setHasUnsavedStatChanges] = useState<boolean>(false)
   const [uiConfig, setUIConfig] = useState<UIConfig>(DEFAULT_UI_CONFIG)
   const [uiConfigLoaded, setUIConfigLoaded] = useState(false)
+  const [uiScaleAuthoritative, setUIScaleAuthoritative] = useState(false)
   const [popupThemeMode, setPopupThemeMode] = useState<PopupThemeMode>(
     initialPopupThemeMode ?? DEFAULT_POPUP_THEME_MODE
   )
@@ -91,9 +99,9 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   // back to `false` (no crash) in environments without `window.matchMedia`
   // (e.g. jsdom under Jest).
   const prefersDarkScheme = useMediaQuery('(prefers-color-scheme: dark)')
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const popupThemeChangedByUserRef = useRef(false)
   const uiConfigChangedAfterMountRef = useRef(false)
+  const uiScaleChangedAfterMountRef = useRef(false)
 
   // Reconcile the synchronous startup hint with chrome.storage.sync after the
   // first commit. Avoid setting an identical primitive so the common cached
@@ -119,15 +127,28 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
       changes: { [key: string]: chrome.storage.StorageChange },
       areaName: string
     ) => {
+      if (areaName === 'local') {
+        const scaleChange = changes[UI_SCALE_STORAGE_KEY]
+        if (!scaleChange) return
+        uiScaleChangedAfterMountRef.current = true
+        setUIScaleAuthoritative(isValidUIScale(scaleChange.newValue))
+        setUIConfig(current => ({
+          ...current,
+          scale: resolveLocalUIScale(scaleChange.newValue),
+        }))
+        return
+      }
       if (areaName !== 'sync') return
       const nextUIConfig = changes.uiConfig?.newValue as UIConfig | undefined
       if (!nextUIConfig) return
       uiConfigChangedAfterMountRef.current = true
-      setUIConfig({
+      setUIConfig(current => ({
         ...DEFAULT_UI_CONFIG,
         ...nextUIConfig,
-      })
-      setUIConfigLoaded(true)
+        // Keep the scale loaded for this device even if a legacy synchronized
+        // uiConfig object still contains its own scale field.
+        scale: current.scale,
+      }))
     }
     chrome.storage.onChanged.addListener(handleUIConfigStorageChange)
     return () => chrome.storage.onChanged.removeListener(handleUIConfigStorageChange)
@@ -257,19 +278,37 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
         }
       }
 
-      // Load UI config from chrome.storage.sync
+      // Load synchronized UI preferences and the device-local scale.
       // DEFAULT_UI_CONFIGとマージする: 新フィールド追加前（#143以前）に保存された
       // uiConfigにはhudDisplayMode/hudColorCodingが存在しないため、マージせず
       // そのまま使うとポップアップのHUD表示設定セクションが未定義値を表示して
       // しまう（App.tsx側の読み込みは既にこのマージを行っている）。
       chrome.storage.sync.get('uiConfig', (result: Record<string, any>) => {
-        if (result.uiConfig && !uiConfigChangedAfterMountRef.current) {
-          setUIConfig({
-            ...DEFAULT_UI_CONFIG,
-            ...result.uiConfig,
-          })
-        }
-        setUIConfigLoaded(true)
+        loadLocalUIScale((localScale, authoritative) => {
+          if (authoritative) {
+            setUIScaleAuthoritative(true)
+          }
+          if (
+            uiConfigChangedAfterMountRef.current ||
+            uiScaleChangedAfterMountRef.current
+          ) {
+            setUIConfig(current => {
+              const latestConfig = uiConfigChangedAfterMountRef.current
+                ? current
+                : {
+                    ...DEFAULT_UI_CONFIG,
+                    ...result.uiConfig,
+                    scale: current.scale,
+                  }
+              return uiScaleChangedAfterMountRef.current
+                ? latestConfig
+                : { ...latestConfig, scale: localScale }
+            })
+          } else {
+            setUIConfig(mergeUIConfigWithLocalScale(result.uiConfig, localScale))
+          }
+          setUIConfigLoaded(true)
+        })
       })
 
       // Load cached Firebase auth state first for instant rendering
@@ -569,6 +608,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           <UIScaleSection
             uiConfig={uiConfig}
             setUIConfig={setUIConfig}
+            scaleControlsDisabled={!uiScaleAuthoritative}
           />
 
           <HudDisplaySection
@@ -642,7 +682,6 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           importDuplicates={importDuplicates}
           importSuccess={importSuccess}
           importStartTime={importStartTime}
-          fileInputRef={fileInputRef}
           setImportStatus={setImportStatus}
           setImportProgress={setImportProgress}
           setImportProcessed={setImportProcessed}

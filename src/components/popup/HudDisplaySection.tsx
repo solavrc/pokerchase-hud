@@ -4,6 +4,7 @@ import FormControlLabel from '@mui/material/FormControlLabel'
 import RadioGroup from '@mui/material/RadioGroup'
 import Typography from '@mui/material/Typography'
 import type { UIConfig } from '../../types/hand-log'
+import { saveSyncedUIConfig } from '../../utils/ui-config-storage'
 import { broadcastUIConfig } from './broadcast-ui-config'
 import { SegmentRadio } from './SegmentRadio'
 
@@ -16,6 +17,7 @@ interface HudDisplaySectionProps {
  * HUD表示スタイル設定（#143）: 表示モード（コンパクト/フル）と統計カラー表示の
  * ON/OFF。UIScaleSection と同じ保存パス（setUIConfig → chrome.storage.sync →
  * 開いている全ゲームタブへ updateUIConfig メッセージ送信）に従う。
+ * ただし端末固有のscaleは同期payloadから除外する。
  */
 export const HudDisplaySection = ({
   uiConfig,
@@ -23,7 +25,7 @@ export const HudDisplaySection = ({
 }: HudDisplaySectionProps) => {
   const updateUIConfig = (newConfig: UIConfig) => {
     setUIConfig(newConfig)
-    chrome.storage.sync.set({ uiConfig: newConfig })
+    saveSyncedUIConfig(newConfig)
     broadcastUIConfig(newConfig)
   }
 

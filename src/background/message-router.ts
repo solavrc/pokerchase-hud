@@ -17,12 +17,34 @@ import { getUndecodedEventStats, resetUndecodedEventStats } from './undecoded-ev
 import { applyUpdateNow } from './update-manager'
 import { acknowledgeWhatsNew } from './whats-new-badge'
 import {
+  HAND_LOG_LAYOUT_STORAGE_KEY,
+  hudPositionStorageKey,
+  isValidHandLogLayout,
+  isValidHudPosition,
+  isValidHudPositionId,
+  isValidUIScale,
+  LEGACY_SYNC_UI_SCALE_KEY,
+  persistSyncedUIConfig,
+  persistSyncedUIConfigPatch,
+  resolveLocalUIScale,
+  UI_SCALE_STORAGE_KEY,
+} from '../utils/ui-config-storage'
+import {
+  IMPORT_RESULT_STORAGE_KEY,
+  type ImportResultRecord,
+} from '../constants/import-page'
+import {
   createImportExportHandlers,
   getCurrentImportSession,
   startImportSession,
   addImportChunk,
   clearImportSession
 } from './import-export'
+import {
+  enqueuePendingStorageWrite,
+  getPendingStorageWriteTail,
+  hasPendingStorageWrites,
+} from './pending-storage-writes'
 
 /**
  * Firebase Auth Handlers
@@ -58,12 +80,145 @@ const handleFirebaseSignOut = async (): Promise<void> => {
   }
 }
 
+const publishImportResult = async (
+  status: ImportResultRecord['status'],
+  message: string
+): Promise<void> => {
+  const result: ImportResultRecord = {
+    status,
+    message,
+    completedAt: Date.now(),
+  }
+  try {
+    await chrome.storage.local.set({ [IMPORT_RESULT_STORAGE_KEY]: result })
+  } catch (error) {
+    console.warn('[importData] Failed to persist import result:', error)
+  }
+  chrome.runtime.sendMessage<ImportStatusMessage>({
+    action: 'importStatus',
+    status: message,
+  }).catch(() => {})
+}
+
 /**
  * データエクスポート機能
  * `chrome.runtime.onMessage`のディスパッチを登録する。
  */
 export const registerMessageRouter = (service: PokerChaseService, db: PokerChaseDB, gameUrlPattern: string): void => {
   const { exportData, importData, deleteAllData, getLatestSessionStats, rebuildAllData } = createImportExportHandlers(service, db, gameUrlPattern)
+  let deviceScaleWriteGeneration = 0
+  let handLogLayoutWriteGeneration = 0
+  let pendingHandLogLayoutWriteCount = 0
+  const pendingHandLogLayoutReads: Array<() => void> = []
+
+  const broadcastToGameTabs = (
+    message: ChromeMessage,
+    complete: () => void
+  ): void => {
+    chrome.tabs.query({ url: gameUrlPattern }, tabs => {
+      void chrome.runtime.lastError
+      const deliveries: Array<Promise<unknown>> = []
+      for (const tab of tabs ?? []) {
+        if (!tab.id) continue
+        deliveries.push(
+          chrome.tabs.sendMessage(tab.id, message).catch(() => {
+            // Matching tabs can navigate between query and delivery. Persisted
+            // layout remains authoritative for the next mount.
+          })
+        )
+      }
+      void Promise.all(deliveries).then(complete)
+    })
+  }
+
+  const flushPendingHandLogLayoutReads = (): void => {
+    if (pendingHandLogLayoutWriteCount > 0) return
+    const pendingReads = pendingHandLogLayoutReads.splice(0)
+    pendingReads.forEach(read => read())
+  }
+
+  const enqueueHandLogLayoutWrite = (
+    operation: (callback: () => void) => void,
+    sendResponse: (response: MessageResponse) => void,
+    failureMessage: string,
+    afterSuccessfulWrite?: (complete: () => void) => void
+  ): void => {
+    handLogLayoutWriteGeneration += 1
+    const generation = handLogLayoutWriteGeneration
+    pendingHandLogLayoutWriteCount += 1
+
+    void enqueuePendingStorageWrite(() =>
+      new Promise<chrome.runtime.LastError | undefined>((resolve) => {
+        operation(() => {
+          const error = chrome.runtime.lastError
+          if (error || !afterSuccessfulWrite) {
+            resolve(error)
+            return
+          }
+          // Publish every successfully persisted state in FIFO order. A newer
+          // success will overwrite this delivery, while a newer failure leaves
+          // the last durable state visible instead of stranding the HUD on a
+          // value that was never saved.
+          afterSuccessfulWrite(() => resolve(undefined))
+        })
+      })
+    ).then(error => {
+      const superseded = generation !== handLogLayoutWriteGeneration
+      sendResponse(
+        error
+          ? { success: false, error: error.message ?? failureMessage }
+          : superseded
+            ? { success: false, error: 'Superseded by newer hand log layout' }
+            : { success: true }
+      )
+    }, error => {
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : failureMessage,
+      })
+    }).finally(() => {
+      pendingHandLogLayoutWriteCount -= 1
+      flushPendingHandLogLayoutReads()
+    })
+  }
+
+  const enqueueHandLogLayoutRead = (read: () => void): void => {
+    if (pendingHandLogLayoutWriteCount > 0) {
+      pendingHandLogLayoutReads.push(read)
+      return
+    }
+    read()
+  }
+
+  const enqueueDeviceScaleWrite = (
+    scale: number,
+    complete: (error: chrome.runtime.LastError | undefined) => void
+  ): void => {
+    void enqueuePendingStorageWrite(() =>
+      new Promise<chrome.runtime.LastError | undefined>((resolve) => {
+        chrome.storage.local.set({ [UI_SCALE_STORAGE_KEY]: scale }, () => {
+          const error = chrome.runtime.lastError
+          if (error) {
+            resolve(error)
+            return
+          }
+          // Dispatch from the persistent background before this queue entry
+          // settles; popup teardown cannot suppress the live HUD update, and
+          // forced reload cannot overtake the tabs.query handoff.
+          broadcastToGameTabs({
+            action: 'updateDeviceUIScale',
+            scale,
+          }, () => resolve(undefined))
+        })
+      })
+    ).then(complete, error => {
+      complete({
+        message: error instanceof Error
+          ? error.message
+          : 'Failed to save UI scale',
+      })
+    })
+  }
 
   const rejectIfOperationBusy = (action: string, sendResponse: (response: MessageResponse) => void): boolean => {
     if (isOperationIdle()) return false
@@ -74,7 +229,256 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
   }
 
   chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.runtime.MessageSender, sendResponse: (response: MessageResponse) => void) => {
-    if (request.action === 'exportData') {
+    if (request.action === 'setSyncedUIConfig') {
+      const persist = (complete: (success: boolean) => void) => {
+        if (request.patch) {
+          persistSyncedUIConfigPatch(request.patch, complete)
+        } else {
+          persistSyncedUIConfig(request.config, complete)
+        }
+      }
+      void enqueuePendingStorageWrite(() =>
+        new Promise<boolean>(resolve => persist(resolve))
+      ).then(success => {
+        sendResponse(success
+          ? { success: true }
+          : { success: false, error: 'Failed to save synchronized UI config' })
+      }, () => {
+        sendResponse({ success: false, error: 'Failed to save synchronized UI config' })
+      })
+      return true
+    } else if (request.action === 'getDeviceUILayout') {
+      if (request.seatIndex !== undefined && !isValidHudPositionId(request.seatIndex)) {
+        sendResponse({ success: false, error: 'Invalid HUD seat index' })
+        return true
+      }
+      const positionKey = request.seatIndex === undefined
+        ? undefined
+        : hudPositionStorageKey(request.seatIndex)
+      // A write queued before this read may not have reached chrome.storage
+      // yet. Capture the generation before waiting so later user writes still
+      // invalidate migration, while earlier writes become visible to the read.
+      const scaleMigrationGeneration = deviceScaleWriteGeneration
+      const readDeviceLayout = () => {
+        chrome.storage.local.get(
+          positionKey ? [UI_SCALE_STORAGE_KEY, positionKey] : UI_SCALE_STORAGE_KEY,
+          (localResult: Record<string, unknown>) => {
+          const localReadError = chrome.runtime.lastError
+          if (localReadError) {
+            sendResponse({
+              success: false,
+              error: localReadError.message ?? 'Failed to read device layout',
+            })
+            return
+          }
+          const localScale = localResult[UI_SCALE_STORAGE_KEY]
+          const localPosition = positionKey && isValidHudPosition(localResult[positionKey])
+            ? localResult[positionKey]
+            : undefined
+          const needsScaleMigration = !isValidUIScale(localScale)
+
+          const respond = (
+            scale: number,
+            position: typeof localPosition
+          ) => {
+            sendResponse({
+              success: true,
+              scale,
+              ...(position ? { position } : {}),
+            })
+          }
+
+          if (!needsScaleMigration) {
+            respond(resolveLocalUIScale(localScale), localPosition)
+            return
+          }
+
+          chrome.storage.sync.get(
+            [LEGACY_SYNC_UI_SCALE_KEY, 'uiConfig'],
+            (syncResult: Record<string, unknown>) => {
+              const syncReadError = chrome.runtime.lastError
+              if (syncReadError) {
+                sendResponse({
+                  success: false,
+                  error: syncReadError.message ?? 'Failed to migrate device layout',
+                })
+                return
+              }
+              const legacyUIConfig = syncResult.uiConfig as
+                | { scale?: unknown }
+                | undefined
+              const preservedLegacyScale = syncResult[LEGACY_SYNC_UI_SCALE_KEY]
+              const liveLegacyScale = isValidUIScale(legacyUIConfig?.scale)
+                ? legacyUIConfig.scale
+                : undefined
+              const migratedScale = liveLegacyScale
+                ?? (isValidUIScale(preservedLegacyScale)
+                  ? preservedLegacyScale
+                  : undefined
+                )
+              const scale = resolveLocalUIScale(
+                isValidUIScale(localScale) ? localScale : migratedScale
+              )
+
+              // Keep the pre-local-storage value in the migration snapshot as
+              // well as the mixed-version compatibility field in uiConfig.
+              // New local scale edits never update either synchronized value.
+              if (
+                needsScaleMigration &&
+                migratedScale !== undefined &&
+                preservedLegacyScale !== migratedScale
+              ) {
+                chrome.storage.sync.set({
+                  [LEGACY_SYNC_UI_SCALE_KEY]: migratedScale,
+                }, () => {
+                  void chrome.runtime.lastError
+                })
+              }
+
+              const scaleWriteIsCurrent =
+                deviceScaleWriteGeneration === scaleMigrationGeneration
+
+              const respondWithLatestLayout = () => {
+                chrome.storage.local.get(
+                  positionKey
+                    ? [UI_SCALE_STORAGE_KEY, positionKey]
+                    : UI_SCALE_STORAGE_KEY,
+                  (latestResult: Record<string, unknown>) => {
+                    void chrome.runtime.lastError
+                    const latestPosition = positionKey &&
+                      isValidHudPosition(latestResult[positionKey])
+                      ? latestResult[positionKey]
+                      : localPosition
+                    const latestScale = latestResult[UI_SCALE_STORAGE_KEY]
+                    respond(
+                      isValidUIScale(latestScale) ? latestScale : scale,
+                      latestPosition
+                    )
+                  }
+                )
+              }
+
+              if (!scaleWriteIsCurrent) {
+                // A newer user-selected scale is already represented by the
+                // shared FIFO tail, but may not have reached chrome.storage
+                // yet. Read only after it settles so this older migration
+                // response cannot briefly publish the stale legacy value.
+                void getPendingStorageWriteTail().then(respondWithLatestLayout)
+                return
+              }
+
+              if (migratedScale === undefined) {
+                respondWithLatestLayout()
+                return
+              }
+
+              enqueueDeviceScaleWrite(migratedScale, () => {
+                // Migration is best-effort for persistence. Returning the
+                // valid legacy values still preserves this session's layout.
+                respondWithLatestLayout()
+              })
+            }
+          )
+          }
+        )
+      }
+      if (hasPendingStorageWrites()) {
+        void getPendingStorageWriteTail().then(readDeviceLayout)
+      } else {
+        readDeviceLayout()
+      }
+      return true
+    } else if (request.action === 'setDeviceUIScale') {
+      if (!isValidUIScale(request.scale)) {
+        sendResponse({ success: false, error: 'Invalid UI scale' })
+        return true
+      }
+      deviceScaleWriteGeneration += 1
+      enqueueDeviceScaleWrite(request.scale, error => {
+        sendResponse(error
+          ? { success: false, error: error.message ?? 'Failed to save UI scale' }
+          : { success: true })
+      })
+      return true
+    } else if (request.action === 'setDeviceHudPosition') {
+      if (!isValidHudPositionId(request.seatIndex) || !isValidHudPosition(request.position)) {
+        sendResponse({ success: false, error: 'Invalid HUD position' })
+        return true
+      }
+      void enqueuePendingStorageWrite(() =>
+        new Promise<chrome.runtime.LastError | undefined>(resolve => {
+          chrome.storage.local.set({
+            [hudPositionStorageKey(request.seatIndex)]: request.position,
+          }, () => resolve(chrome.runtime.lastError))
+        })
+      ).then(error => {
+        sendResponse(error
+          ? { success: false, error: error.message ?? 'Failed to save HUD position' }
+          : { success: true })
+      }, error => {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to save HUD position',
+        })
+      })
+      return true
+    } else if (request.action === 'getDeviceHandLogLayout') {
+      enqueueHandLogLayoutRead(() => {
+        chrome.storage.local.get(
+          HAND_LOG_LAYOUT_STORAGE_KEY,
+          (result: Record<string, unknown>) => {
+            const error = chrome.runtime.lastError
+            if (error) {
+              sendResponse({
+                success: false,
+                error: error.message ?? 'Failed to read hand log layout',
+              })
+              return
+            }
+            const layout = result[HAND_LOG_LAYOUT_STORAGE_KEY]
+            sendResponse({
+              success: true,
+              ...(isValidHandLogLayout(layout) ? { layout } : {}),
+            })
+          }
+        )
+      })
+      return true
+    } else if (request.action === 'setDeviceHandLogLayout') {
+      if (!isValidHandLogLayout(request.layout)) {
+        sendResponse({ success: false, error: 'Invalid hand log layout' })
+        return true
+      }
+      enqueueHandLogLayoutWrite(
+        callback => chrome.storage.local.set({
+          [HAND_LOG_LAYOUT_STORAGE_KEY]: request.layout,
+        }, callback),
+        sendResponse,
+        'Failed to save hand log layout',
+        complete => broadcastToGameTabs(
+          {
+            action: 'updateHandLogLayout',
+            layout: request.layout,
+          },
+          complete
+        )
+      )
+      return true
+    } else if (request.action === 'resetDeviceHandLogLayout') {
+      enqueueHandLogLayoutWrite(
+        callback => chrome.storage.local.remove(
+          HAND_LOG_LAYOUT_STORAGE_KEY,
+          callback
+        ),
+        sendResponse,
+        'Failed to reset hand log layout',
+        complete => broadcastToGameTabs(
+          { action: 'resetHandLogLayout' },
+          complete
+        )
+      )
+      return true
+    } else if (request.action === 'exportData') {
       // Block concurrent operations
       if (rejectIfOperationBusy('exportData', sendResponse)) return true
       exportData(request.format)
@@ -87,19 +491,16 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
     } else if (request.action === 'importData') {
       if (rejectIfOperationBusy('importData', sendResponse)) return true
       importData(request.data)
-        .then((result) => {
-          chrome.runtime.sendMessage<ImportStatusMessage>({
-            action: 'importStatus',
-            status: `インポートが完了しました (${result.successCount.toLocaleString()}件のログ${result.duplicateCount > 0 ? `, ${result.duplicateCount.toLocaleString()}件の重複をスキップ` : ''})`
-          }).catch(() => {})
+        .then(async (result) => {
+          await publishImportResult(
+            'completed',
+            `インポートが完了しました (${result.successCount.toLocaleString()}件のログ${result.duplicateCount > 0 ? `, ${result.duplicateCount.toLocaleString()}件の重複をスキップ` : ''})`
+          )
           sendResponse({ success: true })
         })
-        .catch(error => {
+        .catch(async error => {
           console.error('Import error:', error)
-          chrome.runtime.sendMessage<ImportStatusMessage>({
-            action: 'importStatus',
-            status: 'インポートに失敗しました: ' + error.message
-          }).catch(() => {})
+          await publishImportResult('error', 'インポートに失敗しました: ' + error.message)
           sendResponse({ success: false, error: error.message })
         })
       return true // 非同期レスポンスを示す
@@ -126,6 +527,13 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
 
       sendResponse({ success: true })
       return true
+    } else if (request.action === 'importDataCancel') {
+      // Idempotent transfer cleanup. Once processing begins,
+      // importDataProcess has already detached the complete session, so a
+      // late cancel cannot interrupt raw storage or its follow-up rebuild.
+      if (getCurrentImportSession()) clearImportSession()
+      sendResponse({ success: true })
+      return true
     } else if (request.action === 'importDataProcess') {
       const currentImportSession = getCurrentImportSession()
       if (!currentImportSession || currentImportSession.receivedChunks !== currentImportSession.totalChunks) {
@@ -148,19 +556,16 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
 
       // データを処理
       importData(completeData)
-        .then((result) => {
-          chrome.runtime.sendMessage<ImportStatusMessage>({
-            action: 'importStatus',
-            status: `インポートが完了しました (${result.successCount.toLocaleString()}件のログ${result.duplicateCount > 0 ? `, ${result.duplicateCount.toLocaleString()}件の重複をスキップ` : ''})`
-          }).catch(() => {})
+        .then(async (result) => {
+          await publishImportResult(
+            'completed',
+            `インポートが完了しました (${result.successCount.toLocaleString()}件のログ${result.duplicateCount > 0 ? `, ${result.duplicateCount.toLocaleString()}件の重複をスキップ` : ''})`
+          )
           sendResponse({ success: true })
         })
-        .catch(error => {
+        .catch(async error => {
           console.error('Import error:', error)
-          chrome.runtime.sendMessage<ImportStatusMessage>({
-            action: 'importStatus',
-            status: 'インポートに失敗しました: ' + error.message
-          }).catch(() => {})
+          await publishImportResult('error', 'インポートに失敗しました: ' + error.message)
           sendResponse({ success: false, error: error.message })
         })
       return true

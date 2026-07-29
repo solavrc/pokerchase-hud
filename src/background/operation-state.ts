@@ -10,6 +10,8 @@
 
 export interface OperationState {
   type: 'idle' | 'export' | 'import' | 'rebuild' | 'sync' | 'delete'
+  origin?: 'import'
+  phase?: 'transfer' | 'processing' | 'rebuild'
   format?: 'json' | 'pokerstars'
   progress?: number
   processed?: number

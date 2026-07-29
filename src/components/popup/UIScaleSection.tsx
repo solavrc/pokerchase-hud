@@ -1,4 +1,5 @@
 import Box from '@mui/material/Box'
+import Button from '@mui/material/Button'
 import IconButton from '@mui/material/IconButton'
 import TextField from '@mui/material/TextField'
 import ToggleButton from '@mui/material/ToggleButton'
@@ -7,42 +8,112 @@ import Typography from '@mui/material/Typography'
 import { useCallback, useRef, useState } from 'react'
 import { DEFAULT_UI_CONFIG, type UIConfig } from '../../types/hand-log'
 import { formatShortcut, shortcutFromKeyboardEvent } from '../../utils/keyboard-shortcut'
+import {
+  saveLocalUIScale,
+  resetHandLogLayout,
+  saveSyncedUIConfig,
+  saveSyncedUIConfigPatch,
+} from '../../utils/ui-config-storage'
 import { broadcastUIConfig } from './broadcast-ui-config'
 
 interface UIScaleSectionProps {
   uiConfig: UIConfig
   setUIConfig: (config: UIConfig) => void
+  scaleControlsDisabled?: boolean
 }
 
 export const UIScaleSection = ({
   uiConfig,
   setUIConfig,
+  scaleControlsDisabled = false,
 }: UIScaleSectionProps) => {
   const [recordingShortcut, setRecordingShortcut] = useState(false)
   const [shortcutError, setShortcutError] = useState(false)
   const shortcutInputRef = useRef<HTMLInputElement>(null)
+  const latestUIConfigRef = useRef(uiConfig)
+  const pendingScaleRef = useRef(uiConfig.scale)
+  const latestAppliedScaleRef = useRef(uiConfig.scale)
+  const pendingScaleWriteCountRef = useRef(0)
+  const nextScaleRequestIdRef = useRef(0)
+  const latestAppliedScaleRequestIdRef = useRef(0)
+  latestUIConfigRef.current = uiConfig
+  if (pendingScaleWriteCountRef.current === 0) {
+    pendingScaleRef.current = uiConfig.scale
+    latestAppliedScaleRef.current = uiConfig.scale
+  }
   const shortcutLabel = uiConfig.toggleShortcut
     ? formatShortcut(uiConfig.toggleShortcut)
     : null
 
-  const updateUIConfig = (newConfig: UIConfig) => {
+  const updateSyncedUIConfig = (newConfig: UIConfig) => {
     setUIConfig(newConfig)
-    chrome.storage.sync.set({ uiConfig: newConfig })
+    saveSyncedUIConfig(newConfig)
     broadcastUIConfig(newConfig)
   }
 
-  const saveShortcut = useCallback((shortcut: UIConfig['toggleShortcut']) => {
-    // 別タブやHUD側が更新したdisplayEnabled等を、Popupの古いstateで巻き戻さない。
-    chrome.storage.sync.get('uiConfig', (result: Record<string, UIConfig | undefined>) => {
-      const nextConfig = {
-        ...DEFAULT_UI_CONFIG,
-        ...(result.uiConfig ?? uiConfig),
-        toggleShortcut: shortcut,
+  const updateLocalScale = (scale: number) => {
+    const requestId = ++nextScaleRequestIdRef.current
+    let callbackReceived = false
+    pendingScaleWriteCountRef.current += 1
+    pendingScaleRef.current = scale
+    saveLocalUIScale(scale, status => {
+      if (status === 'timeout') {
+        // The background write is still live and can finish later. Keep this
+        // requested value as the base for another click while it is unsettled.
+        return
       }
-      setUIConfig(nextConfig)
-      chrome.storage.sync.set({ uiConfig: nextConfig })
-      broadcastUIConfig(nextConfig)
+      if (!callbackReceived) {
+        callbackReceived = true
+        pendingScaleWriteCountRef.current -= 1
+      }
+      if (status === 'failure') {
+        if (pendingScaleWriteCountRef.current === 0) {
+          pendingScaleRef.current = latestAppliedScaleRef.current
+        }
+        return
+      }
+      if (requestId < latestAppliedScaleRequestIdRef.current) return
+      latestAppliedScaleRequestIdRef.current = requestId
+      latestAppliedScaleRef.current = scale
+      // The write can succeed after the timeout. Reconcile only its scale
+      // onto the latest synchronized settings instead of replaying the
+      // full config captured when the button was clicked.
+      const reconciledConfig = {
+        ...latestUIConfigRef.current,
+        scale,
+      }
+      if (pendingScaleWriteCountRef.current === 0) {
+        pendingScaleRef.current = scale
+      }
+      setUIConfig(reconciledConfig)
+      // The trusted background broadcasts this saved scale to game tabs.
+      // Keeping delivery there lets it finish even if the action popup closes
+      // immediately after dispatching the write.
     })
+  }
+
+  const requestScaleChange = (delta: number) => {
+    const scale = Math.min(
+      2,
+      Math.max(0.5, Math.round((pendingScaleRef.current + delta) * 10) / 10)
+    )
+    updateLocalScale(scale)
+  }
+
+  const saveShortcut = useCallback((shortcut: UIConfig['toggleShortcut']) => {
+    // Popup subscribes to synchronized changes while open, so its state is the
+    // latest available full config. Queue persistence immediately before the
+    // action-popup context can be destroyed.
+    const nextConfig = {
+      ...DEFAULT_UI_CONFIG,
+      ...uiConfig,
+      toggleShortcut: shortcut,
+    }
+    setUIConfig(nextConfig)
+    // Persist only the edited field against the background's latest sync
+    // snapshot. The resulting storage event updates open game tabs without
+    // broadcasting this popup's potentially stale full config.
+    saveSyncedUIConfigPatch({ toggleShortcut: shortcut })
   }, [setUIConfig, uiConfig])
 
   const handleShortcutKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -89,11 +160,8 @@ export const UIScaleSection = ({
         <Typography variant="body2" sx={{ color: 'text.secondary' }}>サイズ:</Typography>
         <IconButton
           size="small"
-          onClick={() => {
-            const newScale = Math.max(0.5, uiConfig.scale - 0.1)
-            updateUIConfig({ ...uiConfig, scale: newScale })
-          }}
-          disabled={uiConfig.scale <= 0.5}
+          onClick={() => requestScaleChange(-0.1)}
+          disabled={scaleControlsDisabled || uiConfig.scale <= 0.5}
         >
           -
         </IconButton>
@@ -102,14 +170,30 @@ export const UIScaleSection = ({
         </Typography>
         <IconButton
           size="small"
-          onClick={() => {
-            const newScale = Math.min(2.0, uiConfig.scale + 0.1)
-            updateUIConfig({ ...uiConfig, scale: newScale })
-          }}
-          disabled={uiConfig.scale >= 2.0}
+          onClick={() => requestScaleChange(0.1)}
+          disabled={scaleControlsDisabled || uiConfig.scale >= 2.0}
         >
           +
         </IconButton>
+        <Button
+          size="small"
+          variant="text"
+          title="ハンドログの位置とサイズをリセット"
+          onClick={() => {
+            // Persistence and live-tab delivery both run in the background so
+            // closing the action popup cannot interrupt the reset.
+            resetHandLogLayout()
+          }}
+          sx={{
+            ml: 'auto',
+            px: 0.5,
+            minWidth: 0,
+            fontSize: '11px',
+            textTransform: 'none',
+          }}
+        >
+          位置とサイズをリセット
+        </Button>
       </Box>
 
       <Box sx={{ display: 'flex', width: '100%', justifyContent: 'flex-end', alignItems: 'center', gap: 0.75 }}>
@@ -164,7 +248,7 @@ export const UIScaleSection = ({
           exclusive
           onChange={(_event, newValue: string | null) => {
             if (newValue !== null) {
-              updateUIConfig({ ...uiConfig, displayEnabled: newValue === 'on' })
+              updateSyncedUIConfig({ ...uiConfig, displayEnabled: newValue === 'on' })
             }
           }}
           size="small"

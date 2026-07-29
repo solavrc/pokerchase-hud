@@ -4,18 +4,15 @@ import { UIScaleSection } from './UIScaleSection'
 import type { UIConfig } from '../../types/hand-log'
 import { DEFAULT_UI_CONFIG } from '../../types/hand-log'
 
-// Mock chrome storage and tabs
-const mockChromeStorageSet = jest.fn()
-const mockChromeStorageGet = jest.fn()
+// Mock chrome runtime and tabs
+const mockChromeRuntimeSendMessage = jest.fn()
 const mockTabsQuery = jest.fn()
 const mockTabsSendMessage = jest.fn()
 global.chrome = {
   ...global.chrome,
-  storage: {
-    sync: {
-      get: mockChromeStorageGet,
-      set: mockChromeStorageSet,
-    },
+  runtime: {
+    ...global.chrome.runtime,
+    sendMessage: mockChromeRuntimeSendMessage,
   },
   tabs: {
     query: mockTabsQuery,
@@ -34,8 +31,8 @@ describe('UIScaleSection', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     mockTabsSendMessage.mockResolvedValue(undefined)
-    mockChromeStorageGet.mockImplementation((_key, callback) => {
-      callback({ uiConfig: DEFAULT_UI_CONFIG })
+    mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
+      callback({ success: true })
     })
     mockTabsQuery.mockImplementation((_, callback) => {
       callback([{ id: 1 }, { id: 2 }])
@@ -49,8 +46,56 @@ describe('UIScaleSection', () => {
     expect(screen.getByText('100%')).toBeInTheDocument()
     expect(screen.getByText('表示')).toBeInTheDocument()
     expect(screen.getByText('非表示')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '位置とサイズをリセット' })).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'HUD表示切り替えショートカット' }))
       .toHaveValue('Shift + H')
+  })
+
+  it('ハンドログの位置とサイズのリセットを永続backgroundへ委譲する', async () => {
+    const user = userEvent.setup()
+    render(<UIScaleSection {...defaultProps} />)
+
+    await user.click(screen.getByRole('button', { name: '位置とサイズをリセット' }))
+
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      { action: 'resetDeviceHandLogLayout' },
+      expect.any(Function)
+    )
+    expect(mockTabsQuery).not.toHaveBeenCalled()
+    expect(mockTabsSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('ハンドログlayoutの永続削除に失敗した場合は表示だけをリセットしない', async () => {
+    const user = userEvent.setup()
+    mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
+      callback({ success: false, error: 'remove failed' })
+    })
+    render(<UIScaleSection {...defaultProps} />)
+
+    await user.click(screen.getByRole('button', { name: '位置とサイズをリセット' }))
+
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      { action: 'resetDeviceHandLogLayout' },
+      expect.any(Function)
+    )
+    expect(mockTabsSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('端末倍率が未確定の間は倍率操作だけを無効化する', () => {
+    render(
+      <UIScaleSection
+        {...defaultProps}
+        scaleControlsDisabled
+      />
+    )
+
+    expect(screen.getByRole('button', { name: '+' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '-' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '表示' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '非表示' })).toBeEnabled()
+    expect(screen.getByRole('button', {
+      name: '位置とサイズをリセット',
+    })).toBeEnabled()
   })
 
   it('省略される長いショートカットもtitleで完全表示する', () => {
@@ -86,8 +131,9 @@ describe('UIScaleSection', () => {
       shiftKey: true,
     })
 
-    expect(mockChromeStorageSet).toHaveBeenCalledWith({
-      uiConfig: expect.objectContaining({
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith({
+      action: 'setSyncedUIConfig',
+      patch: {
         toggleShortcut: {
           code: 'KeyY',
           key: 'y',
@@ -96,8 +142,9 @@ describe('UIScaleSection', () => {
           shift: true,
           meta: false,
         },
-      }),
-    })
+      },
+    }, expect.any(Function))
+    expect(mockTabsSendMessage).not.toHaveBeenCalled()
   })
 
   it('ショートカット入力欄の右クリックで明示的な解除状態を保存する', () => {
@@ -106,9 +153,10 @@ describe('UIScaleSection', () => {
 
     fireEvent.contextMenu(input)
 
-    expect(mockChromeStorageSet).toHaveBeenCalledWith({
-      uiConfig: expect.objectContaining({ toggleShortcut: null }),
-    })
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith({
+      action: 'setSyncedUIConfig',
+      patch: { toggleShortcut: null },
+    }, expect.any(Function))
   })
 
   it('TabとShift+Tabは通常のフォーカス移動として通す', () => {
@@ -120,14 +168,15 @@ describe('UIScaleSection', () => {
     fireEvent.focus(input)
     expect(fireEvent.keyDown(input, { key: 'Tab', code: 'Tab', shiftKey: true })).toBe(true)
 
-    expect(mockChromeStorageSet).not.toHaveBeenCalled()
+    expect(mockChromeRuntimeSendMessage).not.toHaveBeenCalled()
   })
 
-  it('旧形式の部分設定へ既定値を補ってからショートカットを保存する', () => {
-    mockChromeStorageGet.mockImplementation((_key, callback) => {
-      callback({ uiConfig: { displayEnabled: false, scale: 1.2 } })
-    })
-    render(<UIScaleSection {...defaultProps} />)
+  it('ショートカットだけをpatchとして保存する', () => {
+    const legacyConfig = { displayEnabled: false, scale: 1.2 } as UIConfig
+    render(<UIScaleSection
+      {...defaultProps}
+      uiConfig={legacyConfig}
+    />)
     const input = screen.getByRole('textbox', { name: 'HUD表示切り替えショートカット' })
 
     fireEvent.focus(input)
@@ -137,14 +186,14 @@ describe('UIScaleSection', () => {
       shiftKey: true,
     })
 
-    expect(mockChromeStorageSet).toHaveBeenCalledWith({
-      uiConfig: expect.objectContaining({
-        displayEnabled: false,
-        scale: 1.2,
-        hudDisplayMode: DEFAULT_UI_CONFIG.hudDisplayMode,
-        hudColorCoding: DEFAULT_UI_CONFIG.hudColorCoding,
-      }),
-    })
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith({
+      action: 'setSyncedUIConfig',
+      patch: {
+        toggleShortcut: expect.objectContaining({
+          code: 'KeyH',
+        }),
+      },
+    }, expect.any(Function))
   })
 
   it('UI表示のON/OFFを切り替え', async () => {
@@ -161,7 +210,10 @@ describe('UIScaleSection', () => {
     }
 
     expect(mockSetUIConfig).toHaveBeenCalledWith(expectedConfig)
-    expect(mockChromeStorageSet).toHaveBeenCalledWith({ uiConfig: expectedConfig })
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      { action: 'setSyncedUIConfig', config: expectedConfig },
+      expect.any(Function)
+    )
     expect(mockTabsQuery).toHaveBeenCalled()
     expect(mockTabsSendMessage).toHaveBeenCalledWith(1, {
       action: 'updateUIConfig',
@@ -187,11 +239,152 @@ describe('UIScaleSection', () => {
     }
 
     expect(mockSetUIConfig).toHaveBeenCalledWith(expectedConfig)
-    expect(mockChromeStorageSet).toHaveBeenCalledWith({ uiConfig: expectedConfig })
-    expect(mockTabsSendMessage).toHaveBeenCalledWith(1, {
-      action: 'updateUIConfig',
-      config: expectedConfig,
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      { action: 'setDeviceUIScale', scale: 1.1 },
+      expect.any(Function)
+    )
+    expect(mockChromeRuntimeSendMessage.mock.calls).not.toContainEqual([
+      expect.objectContaining({ action: 'setSyncedUIConfig' }),
+      expect.any(Function),
+    ])
+    expect(mockTabsQuery).not.toHaveBeenCalled()
+    expect(mockTabsSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('保存応答待ちの連続クリックを累積して保存する', () => {
+    const responses: Array<(response: unknown) => void> = []
+    mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
+      responses.push(callback)
     })
+    render(<UIScaleSection {...defaultProps} />)
+
+    fireEvent.click(screen.getByText('+'))
+    fireEvent.click(screen.getByText('+'))
+
+    expect(mockChromeRuntimeSendMessage.mock.calls.map(([message]) => message))
+      .toEqual([
+        { action: 'setDeviceUIScale', scale: 1.1 },
+        { action: 'setDeviceUIScale', scale: 1.2 },
+      ])
+
+    responses[0]!({ success: true })
+    responses[1]!({ success: true })
+    expect(mockSetUIConfig).toHaveBeenLastCalledWith({
+      ...DEFAULT_UI_CONFIG,
+      scale: 1.2,
+    })
+  })
+
+  it('新しいscale成功後に届く古い成功応答では巻き戻さない', () => {
+    const responses: Array<(response: unknown) => void> = []
+    mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
+      responses.push(callback)
+    })
+    render(<UIScaleSection {...defaultProps} />)
+
+    fireEvent.click(screen.getByText('+'))
+    fireEvent.click(screen.getByText('+'))
+    responses[1]!({ success: true })
+    responses[0]!({ success: true })
+
+    expect(mockSetUIConfig).toHaveBeenCalledTimes(1)
+    expect(mockSetUIConfig).toHaveBeenCalledWith({
+      ...DEFAULT_UI_CONFIG,
+      scale: 1.2,
+    })
+  })
+
+  it('scale保存失敗時は表示を更新せずbroadcastしない', async () => {
+    mockChromeRuntimeSendMessage.mockImplementationOnce((_message, callback) => {
+      callback({ success: false, error: 'quota' })
+    })
+    render(<UIScaleSection {...defaultProps} />)
+
+    await userEvent.click(screen.getByText('+'))
+
+    expect(mockSetUIConfig).not.toHaveBeenCalled()
+    expect(mockTabsQuery).not.toHaveBeenCalled()
+    expect(mockTabsSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('scale保存失敗後の次操作は最後の確定値から計算する', () => {
+    mockChromeRuntimeSendMessage.mockImplementationOnce((_message, callback) => {
+      callback({ success: false, error: 'quota' })
+    })
+    render(<UIScaleSection {...defaultProps} />)
+
+    fireEvent.click(screen.getByText('+'))
+    fireEvent.click(screen.getByText('+'))
+
+    expect(mockChromeRuntimeSendMessage.mock.calls.map(([message]) => message))
+      .toEqual([
+        { action: 'setDeviceUIScale', scale: 1.1 },
+        { action: 'setDeviceUIScale', scale: 1.1 },
+      ])
+  })
+
+  it('scale保存timeout後の遅いsuccessは最新設定へscaleだけを反映する', () => {
+    jest.useFakeTimers()
+    try {
+      let respond!: (response: unknown) => void
+      mockChromeRuntimeSendMessage.mockImplementationOnce((_message, callback) => {
+        respond = callback
+      })
+      const { rerender } = render(<UIScaleSection {...defaultProps} />)
+
+      fireEvent.click(screen.getByText('+'))
+      jest.advanceTimersByTime(1_000)
+
+      expect(mockSetUIConfig).not.toHaveBeenCalled()
+      expect(mockTabsQuery).not.toHaveBeenCalled()
+
+      const newerConfig = {
+        ...DEFAULT_UI_CONFIG,
+        displayEnabled: false,
+      }
+      rerender(<UIScaleSection {...defaultProps} uiConfig={newerConfig} />)
+      respond({ success: true })
+
+      const reconciledConfig = {
+        ...newerConfig,
+        scale: 1.1,
+      }
+      expect(mockSetUIConfig).toHaveBeenCalledWith(reconciledConfig)
+      expect(mockTabsQuery).not.toHaveBeenCalled()
+      expect(mockTabsSendMessage).not.toHaveBeenCalled()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('scale保存timeout中の次操作は未確定の倍率から累積する', () => {
+    jest.useFakeTimers()
+    try {
+      const responses: Array<(response: unknown) => void> = []
+      mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
+        responses.push(callback)
+      })
+      render(<UIScaleSection {...defaultProps} />)
+
+      fireEvent.click(screen.getByText('+'))
+      jest.advanceTimersByTime(1_000)
+      fireEvent.click(screen.getByText('+'))
+
+      expect(mockChromeRuntimeSendMessage.mock.calls.map(([message]) => message))
+        .toEqual([
+          { action: 'setDeviceUIScale', scale: 1.1 },
+          { action: 'setDeviceUIScale', scale: 1.2 },
+        ])
+
+      responses[0]!({ success: true })
+      responses[1]!({ success: true })
+      expect(mockSetUIConfig).toHaveBeenLastCalledWith({
+        ...DEFAULT_UI_CONFIG,
+        scale: 1.2,
+      })
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   it.each([
@@ -207,7 +400,7 @@ describe('UIScaleSection', () => {
     mockTabsSendMessage.mockReturnValue(missingReceiver)
 
     render(<UIScaleSection {...defaultProps} />)
-    await userEvent.click(screen.getByText('+'))
+    await userEvent.click(screen.getByText('非表示'))
 
     expect(mockTabsQuery).toHaveBeenCalledWith(
       { url: ['https://game.poker-chase.com/*'] },

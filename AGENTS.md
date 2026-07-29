@@ -295,6 +295,18 @@ on large DBs (bounded, local work; import is a rare operation).
 **Import Optimizations:**
 
 - Designed for processing tens of thousands of records
+- **Popup-safe import UI**: the action popup never reads or transfers the
+  selected file. Its import button opens (or focuses, without duplicating) the
+  extension-owned `dist/index.html?mode=import` tab, and that long-lived page
+  owns file selection plus the 5 MiB chunk transfer. Closing the action popup
+  therefore cannot abandon an import. `getOperationState` distinguishes file
+  transfer, raw-row processing, and an import-origin post-import rebuild; the
+  terminal success/error summary is also stored in
+  `chrome.storage.local.lastImportResult` so either UI can restore the result
+  after being closed or reloaded. A transfer error sends an idempotent
+  `importDataCancel` message so the in-memory chunk session releases its
+  operation slot immediately; once `importDataProcess` detaches the complete
+  session, the same message is a no-op and cannot interrupt storage/rebuild.
 - Batch mode disables real-time updates during import
 - Direct entity conversion (empty-DB path) bypasses stream overhead
 - Legacy exports without `sequence` are assigned a per-timestamp/type sequence during import; re-importing the same payload is content-deduplicated against both existing and earlier rows in the same chunk
@@ -599,22 +611,38 @@ v3 added composite indexes for player-specific queries. v6 changes the Raw Lake 
 
 #### Chrome Storage
 
-- **`storage.sync`**: User preferences (`options`, `uiConfig`, `handLogConfig`, `popupTheme`) and HUD positions (`hudPosition_0`–`hudPosition_5`, `hudPosition_100`)
-- **`storage.local`**: Service state persistence (`pokerChaseServiceState` — playerId, latestEvtDeal, session)
+- **`storage.sync`**: Cross-device preferences (`options`, `uiConfig` excluding
+  the device-local `scale`, `handLogConfig`, `popupTheme`). Legacy
+  `uiConfig.scale` and `hudPosition_*` values may remain for mixed-version
+  compatibility, but current clients do not use synchronized positions.
+- **`storage.local`**: Device-local layout (`uiScale`,
+  `hudPosition_0`–`hudPosition_5`, and real-time HUD positions
+  `hudPosition_100`–`hudPosition_105`, plus `handLogLayout` for the hand-log
+  window's pixel `left`/`top`/`width`/`height`) plus service state
+  (`pokerChaseServiceState` — playerId, latestEvtDeal, session). Layout access
+  is routed through the trusted background via `getDeviceUILayout`,
+  `setDeviceUIScale`, `setDeviceHudPosition`, `getDeviceHandLogLayout`,
+  `setDeviceHandLogLayout`, and `resetDeviceHandLogLayout`; content scripts do
+  not access the restricted local area directly.
 
 #### Config Interfaces
 
 | Interface | Location | Key Fields |
 |---|---|---|
-| `UIConfig` | `src/types/hand-log.ts` | `displayEnabled`, `scale` (0.5–2.0) |
+| `UIConfig` | `src/types/hand-log.ts` | `displayEnabled`; `scale` (0.5–2.0) is runtime state persisted separately as device-local `uiScale` |
 | `HandLogConfig` | `src/types/hand-log.ts` | `enabled`, `maxHands`, `position`, `width`, `height`, `fontSize`, `opacity` |
+| `HandLogLayout` | `src/types/hand-log.ts` | Device-local pixel `left`, `top`, `width`, and `height`, persisted as `handLogLayout` |
 | `FilterOptions` | `src/types/filters.ts` | `gameTypes` (sng/mtt/ring), `tableSize` (full/4p/3p/hu players-dealt layer, `src/utils/table-size.ts`, opt-out multiselect, missing key = all layers/no filter; popup label "テーブル人数"), `handLimit`, `statDisplayConfigs` |
 | `PopupThemeMode` | `src/components/popup/theme.ts` | `'auto' \| 'dark' \| 'light'` (default `'auto'`), persisted standalone as `popupTheme` (`popup-theme-storage.ts`) — popup-only, not part of `UIConfig`/its all-tabs broadcast |
 | `HudPosition` | `src/components/Hud.tsx` | `top`, `left` (percentage) |
 
 #### Data Flow
 
-Popup → `chrome.runtime.sendMessage` → Background → forwarded to game tabs → React re-render.
+Synchronized preference edits go from Popup → background →
+`chrome.storage.sync`; open extension contexts reconcile from storage changes
+or scoped broadcasts. Device-layout reads/writes go from Popup/content script
+→ fixed `chrome.runtime` messages → trusted background →
+`chrome.storage.local`.
 
 #### Service State Persistence
 
