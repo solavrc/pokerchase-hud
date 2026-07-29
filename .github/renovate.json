@@ -25,6 +25,17 @@
       "labels": ["dependencies", "major"]
     },
     {
+      "description": "Keep Babel 7 while Jest 30 depends on Babel 7-only syntax plugins",
+      "matchPackageNames": [
+        "@babel/core",
+        "@babel/plugin-transform-dynamic-import",
+        "@babel/plugin-transform-modules-commonjs",
+        "@babel/preset-react",
+        "@babel/preset-typescript"
+      ],
+      "allowedVersions": "<8"
+    },
+    {
       "description": "Jest ecosystem (jest + @types/jest + ts-jest + jest-environment-jsdom)",
       "matchPackageNames": ["jest", "@types/jest", "ts-jest", "jest-environment-jsdom"],
       "groupName": "jest ecosystem"
