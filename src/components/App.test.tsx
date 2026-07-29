@@ -10,7 +10,7 @@ import type { ApiEvent } from '../types'
 // Mock components
 jest.mock('./Hud', () => ({
   __esModule: true,
-  default: ({ actualSeatIndex, stat, scale, statDisplayConfigs, realTimeStats, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, isRecentHandsPanelOpen, onToggleRecentHandsPanel, handEpoch, hudDisplayMode, hudColorCoding, isDimmed }: any) => (
+  default: ({ actualSeatIndex, stat, scale, statDisplayConfigs, realTimeStats, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, isRecentHandsPanelOpen, onToggleRecentHandsPanel, handEpoch, filterRevision, hudDisplayMode, hudColorCoding, isDimmed }: any) => (
     <div data-testid={`hud-${actualSeatIndex}`}>
       Player: {stat.playerId}
       Scale: {scale}
@@ -20,6 +20,7 @@ jest.mock('./Hud', () => ({
       PositionalPanelOpen: {isPositionalPanelOpen ? 'yes' : 'no'}
       RecentHandsPanelOpen: {isRecentHandsPanelOpen ? 'yes' : 'no'}
       HandEpoch: {handEpoch ?? 0}
+      FilterRevision: {filterRevision ?? 0}
       DisplayMode: {hudDisplayMode ?? 'undefined'}
       ColorCoding: {hudColorCoding === undefined ? 'undefined' : hudColorCoding ? 'yes' : 'no'}
       Dimmed: {isDimmed ? 'yes' : 'no'}
@@ -90,6 +91,21 @@ describe('App', () => {
 
     // HandLogも表示される
     expect(screen.getByTestId('hand-log')).toBeInTheDocument()
+  })
+
+  it('自動選択のセッション種別revisionを受信するとドリルダウン更新世代を進める', async () => {
+    render(<App />)
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
+        detail: {
+          ...mockStatsData,
+          autoBattleTypeFilterRevision: 1,
+        },
+      }))
+    })
+
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('FilterRevision: 1')
   })
 
   it('uiConfig.displayEnabledがfalseの場合、何も表示されない', async () => {

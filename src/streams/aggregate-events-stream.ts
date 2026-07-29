@@ -55,6 +55,7 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
             this.service.autoBattleTypeFilter &&
             previousAutoFilter !== this.service.getEffectiveBattleTypeFilter()?.join(',')
           ) {
+            this.service.autoBattleTypeFilterRevision++
             await this.service.statsOutputStream.recalculateStats()
           }
           break

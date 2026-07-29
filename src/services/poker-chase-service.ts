@@ -170,6 +170,7 @@ class PokerChaseService {
   // 永続化不要なプロパティ
   battleTypeFilter?: number[] = undefined // undefined = all, array = specific battleTypes
   autoBattleTypeFilter: boolean = false // true = current session's SNG/MTT/Ring category
+  autoBattleTypeFilterRevision: number = 0 // automatic category changes propagated to open drill-down panels
   tableSizeFilter?: TableSizeLayer[] = undefined // undefined = all layers (no filtering), array = selected layers (C案)
   handLimitFilter?: number = undefined // undefined = all hands, number = limit to recent N hands
   statDisplayConfigs?: StatDisplayConfig[] = undefined // Custom stat display configuration

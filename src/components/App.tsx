@@ -32,7 +32,10 @@ const EMPTY_SEATS: PlayerStats[] = Array.from({ length: 6 }, () => ({ playerId: 
 // content_script.tsの転送コード自体は型アサーションを経由するだけで実行時の
 // フィールドを一切削らないため、実行時には確実に載ってくる -- ここでは
 // content_script.tsを変更せず、ローカルに型を拡張して読み取るだけにする。
-type StatsDataWithHandEpoch = StatsData & { handEpoch?: number }
+type StatsDataWithMetadata = StatsData & {
+  handEpoch?: number
+  autoBattleTypeFilterRevision?: number
+}
 
 // PlayerStats = ExistPlayerStats | { playerId: -1, statResults?: never[] }（zod union）。
 // ExistPlayerStats.playerId は z.number()（リテラルでない）なので、TSの標準的な
@@ -99,6 +102,7 @@ const App = memo(() => {
   // ストームは起きない）。
   const [handEpoch, setHandEpoch] = useState(0)
   const [filterRevision, setFilterRevision] = useState(0)
+  const lastAutoBattleTypeFilterRevisionRef = useRef(0)
 
   const handleTogglePositionalPanel = useCallback((playerId: number) => {
     setOpenPositionalPanelPlayerId(prev => prev === playerId ? null : playerId)
@@ -175,9 +179,20 @@ const App = memo(() => {
       // 値が据え置かれるため、setStateはされても値としては変化せず、開いた
       // パネルの再フェッチeffectは発火しない -- 生きたハンドが1件完了した
       // ときだけports.tsがこの値をインクリメントする。
-      const incomingHandEpoch = (detail as StatsDataWithHandEpoch).handEpoch
+      const metadata = detail as StatsDataWithMetadata
+      const incomingHandEpoch = metadata.handEpoch
       if (incomingHandEpoch !== undefined) {
         setHandEpoch(incomingHandEpoch)
+      }
+      // 自動選択中のセッション種別変更はPopup経由のwindowイベントを通らない。
+      // backgroundの単調カウンタが変わったとき、ローカルの統合revisionを1回
+      // 進めて、開いたドリルダウンを即座に再フェッチさせる。
+      if (
+        metadata.autoBattleTypeFilterRevision !== undefined &&
+        metadata.autoBattleTypeFilterRevision !== lastAutoBattleTypeFilterRevisionRef.current
+      ) {
+        lastAutoBattleTypeFilterRevisionRef.current = metadata.autoBattleTypeFilterRevision
+        setFilterRevision(current => current + 1)
       }
 
       // Update real-time stats if available

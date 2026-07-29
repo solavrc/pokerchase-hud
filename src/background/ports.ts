@@ -78,7 +78,7 @@ export const logCompletedHandToConsole = (event: HandLogEvent): void => {
  * 接続中の全ポートにメッセージをブロードキャストする
  * 切断済みポートを検出した場合は`connectedPorts`から取り除く
  */
-export const broadcastMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats, handEpoch?: number } | string) => {
+export const broadcastMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats, handEpoch?: number, autoBattleTypeFilterRevision?: number } | string) => {
   connectedPorts.forEach(port => {
     try {
       port.postMessage(data)
@@ -157,7 +157,8 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
         // is a realtime-only, per-action update, and handCompletionEpoch is only
         // bumped by the writeEntityStream subscription below) -- see
         // handCompletionEpoch's doc comment above.
-        handEpoch: handCompletionEpoch
+        handEpoch: handCompletionEpoch,
+        autoBattleTypeFilterRevision: service.autoBattleTypeFilterRevision,
       })
     }
   })
@@ -174,7 +175,8 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
       // filter/import/auto-sync rebroadcasts (see handCompletionEpoch's doc comment),
       // so it just stamps whatever handCompletionEpoch currently holds. Only a real
       // completion (the writeEntityStream subscription below) advances it.
-      handEpoch: handCompletionEpoch
+      handEpoch: handCompletionEpoch,
+      autoBattleTypeFilterRevision: service.autoBattleTypeFilterRevision,
     })
   })
   // The one true "hand completed" signal -- see handCompletionEpoch's doc comment

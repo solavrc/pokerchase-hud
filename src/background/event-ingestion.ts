@@ -436,6 +436,12 @@ const processEvent = async (
     return
   }
 
+  // Raw Event Lakeへの保存とraw-firstの安全性副作用は上で先に確定させる一方、
+  // フィルター依存のライブ統計パイプラインは起動時設定の復元完了を待つ。
+  // これによりMV3 cold start中の201/303がデフォルトの全件フィルターでHUDを
+  // 一度ブロードキャストし、そのまま次イベントまで残る競合を防ぐ。
+  await service.filtersRestored
+
   // ここでdataはApiEvent型（isApplicationApiEventで保証済み）
   service.eventLogger(data, 'info')
 

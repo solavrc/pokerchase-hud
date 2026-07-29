@@ -80,6 +80,8 @@ const portManager = new RuntimePortManager({
         stats: PlayerStats[]
         evtDeal?: ApiEvent<ApiType.EVT_DEAL>
         realTimeStats?: AllPlayersRealTimeStats
+        handEpoch?: number
+        autoBattleTypeFilterRevision?: number
       }
       console.time('[content_script] Dispatching stats event')
       window.dispatchEvent(new CustomEvent(POKER_CHASE_SERVICE_EVENT, { detail: statsMessage }))

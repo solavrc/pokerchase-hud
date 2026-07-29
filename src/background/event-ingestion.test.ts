@@ -73,6 +73,29 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(realTimeSpy).toHaveBeenCalledTimes(1)
   })
 
+  test('stores raw immediately but waits for restored filters before forwarding live events', async () => {
+    service.beginFiltersRestore()
+    const handLogSpy = jest.spyOn(service.handLogStream, 'write')
+    const aggregateSpy = jest.spyOn(service.handAggregateStream, 'write')
+    const validEvent = {
+      ApiTypeId: 201, timestamp: 112, Code: 0, BattleType: 0, Id: 'stage000_004', IsRetire: false
+    }
+
+    const pending = onMessageHandler(validEvent)
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    expect(await db.apiEvents.get([112, 201, 0])).toEqual({ ...validEvent, sequence: 0 })
+    expect(handLogSpy).not.toHaveBeenCalled()
+    expect(aggregateSpy).not.toHaveBeenCalled()
+
+    service.autoBattleTypeFilter = true
+    service.markFiltersRestored()
+    await pending
+
+    expect(handLogSpy).toHaveBeenCalledTimes(1)
+    expect(aggregateSpy).toHaveBeenCalledTimes(1)
+  })
+
   test('an application-type event that fails Zod validation is stored raw but NOT forwarded to streams', async () => {
     const handLogSpy = jest.spyOn(service.handLogStream, 'write')
     const aggregateSpy = jest.spyOn(service.handAggregateStream, 'write')

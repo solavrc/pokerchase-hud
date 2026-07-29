@@ -38,6 +38,7 @@ describe('AggregateEventsStream', () => {
     await service.handAggregateStream.whenIdle()
 
     expect(recalculate).toHaveBeenCalledTimes(1)
+    expect(service.autoBattleTypeFilterRevision).toBe(1)
   })
 
   test('EVT_ENTRY_QUEUEDがハンド途中（テーブル移動）に割り込んでも、そのハンドは欠損なく出力される', async () => {
