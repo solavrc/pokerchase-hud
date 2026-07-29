@@ -78,7 +78,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
   let deviceScaleWriteGeneration = 0
   const pendingDeviceScaleWrites: Array<{
     scale: number
-    sendResponse: (response: MessageResponse) => void
+    complete: (error: chrome.runtime.LastError | undefined) => void
   }> = []
   let deviceScaleWriteInProgress = false
   const processNextDeviceScaleWrite = (): void => {
@@ -89,12 +89,20 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
     deviceScaleWriteInProgress = true
     chrome.storage.local.set({ [UI_SCALE_STORAGE_KEY]: pendingWrite.scale }, () => {
       const error = chrome.runtime.lastError
-      pendingWrite.sendResponse(error
-        ? { success: false, error: error.message ?? 'Failed to save UI scale' }
-        : { success: true })
       deviceScaleWriteInProgress = false
-      processNextDeviceScaleWrite()
+      try {
+        pendingWrite.complete(error)
+      } finally {
+        processNextDeviceScaleWrite()
+      }
     })
+  }
+  const enqueueDeviceScaleWrite = (
+    scale: number,
+    complete: (error: chrome.runtime.LastError | undefined) => void
+  ): void => {
+    pendingDeviceScaleWrites.push({ scale, complete })
+    processNextDeviceScaleWrite()
   }
 
   const rejectIfOperationBusy = (action: string, sendResponse: (response: MessageResponse) => void): boolean => {
@@ -230,12 +238,9 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
                 return
               }
 
-              chrome.storage.local.set({
-                [UI_SCALE_STORAGE_KEY]: migratedScale,
-              }, () => {
+              enqueueDeviceScaleWrite(migratedScale, () => {
                 // Migration is best-effort for persistence. Returning the
                 // valid legacy values still preserves this session's layout.
-                void chrome.runtime.lastError
                 respondWithLatestLayout()
               })
             }
@@ -249,8 +254,11 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         return true
       }
       deviceScaleWriteGeneration += 1
-      pendingDeviceScaleWrites.push({ scale: request.scale, sendResponse })
-      processNextDeviceScaleWrite()
+      enqueueDeviceScaleWrite(request.scale, error => {
+        sendResponse(error
+          ? { success: false, error: error.message ?? 'Failed to save UI scale' }
+          : { success: true })
+      })
       return true
     } else if (request.action === 'setDeviceHudPosition') {
       if (!isValidHudPositionId(request.seatIndex) || !isValidHudPosition(request.position)) {

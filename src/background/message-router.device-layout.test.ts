@@ -383,6 +383,49 @@ describe('message-router device-local UI layout', () => {
     })
   })
 
+  it('開始済みのlegacy移行write後にユーザーscaleを直列保存する', async () => {
+    await chrome.storage.sync.set({
+      [LEGACY_SYNC_UI_SCALE_KEY]: 1.3,
+      uiConfig: { displayEnabled: true },
+    })
+    const storageSet = chrome.storage.local.set as jest.Mock
+    const defaultSet = storageSet.getMockImplementation()!
+    const pendingWrites: Array<() => void> = []
+    storageSet
+      .mockImplementationOnce((items, callback) => {
+        pendingWrites.push(() => defaultSet(items, callback))
+      })
+      .mockImplementationOnce((items, callback) => {
+        pendingWrites.push(() => defaultSet(items, callback))
+      })
+    const migrationResponse = jest.fn()
+    const userResponse = jest.fn()
+
+    listener({ action: 'getDeviceUILayout' }, {}, migrationResponse)
+    listener({
+      action: 'setDeviceUIScale',
+      scale: 1.8,
+    }, {}, userResponse)
+
+    expect(pendingWrites).toHaveLength(1)
+    expect(migrationResponse).not.toHaveBeenCalled()
+    expect(userResponse).not.toHaveBeenCalled()
+
+    pendingWrites[0]!()
+    expect(migrationResponse).toHaveBeenCalledWith({
+      success: true,
+      scale: 1.3,
+    })
+    expect(pendingWrites).toHaveLength(2)
+    expect(userResponse).not.toHaveBeenCalled()
+
+    pendingWrites[1]!()
+    expect(userResponse).toHaveBeenCalledWith({ success: true })
+    expect(await chrome.storage.local.get(UI_SCALE_STORAGE_KEY)).toEqual({
+      [UI_SCALE_STORAGE_KEY]: 1.8,
+    })
+  })
+
   it.each([
     { action: 'setDeviceUIScale', scale: 1.4 },
     {
