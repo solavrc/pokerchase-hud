@@ -30,6 +30,50 @@ describe('filterValidApplicationEvents', () => {
     expect(result).toEqual([])
   })
 
+  it('drops a schema-valid 1305 friend notification from application-event replay', async () => {
+    const friendMessageEvent = {
+      ApiTypeId: 1305,
+      FriendId: 123456789,
+      timestamp: 1785008587942,
+      sequence: 0
+    }
+
+    const result = await filterValidApplicationEvents([friendMessageEvent])
+
+    expect(result).toEqual([])
+  })
+
+  it('drops a schema-valid 201 error response while preserving successful 201 entries', async () => {
+    const failedEntry = {
+      ApiTypeId: 201,
+      Code: 5205,
+      Error: {
+        Status: 1,
+        Message: 'text_sync_error_message_code_5205',
+        AddParam: '',
+        Replaces: []
+      },
+      BattleType: 0,
+      Id: '',
+      IsRetire: false,
+      timestamp: 1784797779887,
+      sequence: 0
+    }
+    const successfulEntry = {
+      ApiTypeId: 201,
+      Code: 0,
+      BattleType: 0,
+      Id: 'stage000_003',
+      IsRetire: false,
+      timestamp: 1784797779888,
+      sequence: 0
+    }
+
+    const result = await filterValidApplicationEvents([failedEntry, successfulEntry])
+
+    expect(result).toEqual([successfulEntry])
+  })
+
   it('drops an application-type event whose payload fails the current schema', async () => {
     // EVT_DEAL (303) missing every required field
     const brokenAppEvent = { ApiTypeId: 303, timestamp: 300 }

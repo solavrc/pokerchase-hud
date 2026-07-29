@@ -144,7 +144,17 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
 
   switch (event.data.ApiTypeId) {
-    case ApiType.EVT_ENTRY_QUEUED:
+    case ApiType.EVT_ENTRY_QUEUED: {
+      // 201は参加失敗応答にも再利用される。Codeが明示的に非0なら
+      // セッションは始まっていない。Code欠落は未知schema変更として
+      // fail-closedで従来通りkeepaliveを開始する。
+      const entryCode = (event.data as { Code?: unknown }).Code
+      if (typeof entryCode !== 'number' || entryCode === 0) {
+        armSession()
+      }
+      break
+    }
+
     case ApiType.EVT_SESSION_DETAILS:
       armSession()
       break
