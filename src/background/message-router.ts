@@ -36,6 +36,10 @@ import {
   addImportChunk,
   clearImportSession
 } from './import-export'
+import {
+  enqueuePendingStorageWrite,
+  getPendingStorageWriteTail,
+} from './pending-storage-writes'
 
 /**
  * Firebase Auth Handlers
@@ -79,50 +83,13 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
   const { exportData, importData, deleteAllData, getLatestSessionStats, rebuildAllData } = createImportExportHandlers(service, db, gameUrlPattern)
   let deviceScaleWriteGeneration = 0
   let handLogLayoutWriteGeneration = 0
-  let handLogLayoutWriteInProgress = false
-  const pendingHandLogLayoutWrites: Array<{
-    generation: number
-    operation: (callback: () => void) => void
-    sendResponse: (response: MessageResponse) => void
-    failureMessage: string
-  }> = []
+  let pendingHandLogLayoutWriteCount = 0
   const pendingHandLogLayoutReads: Array<() => void> = []
 
-  const processNextHandLogLayoutWrite = (): void => {
-    if (handLogLayoutWriteInProgress) return
-    const pendingWrite = pendingHandLogLayoutWrites.shift()
-    if (!pendingWrite) {
-      const pendingReads = pendingHandLogLayoutReads.splice(0)
-      pendingReads.forEach(read => read())
-      return
-    }
-
-    handLogLayoutWriteInProgress = true
-    let completed = false
-    const finish = (errorMessage?: string): void => {
-      if (completed) return
-      completed = true
-      const superseded =
-        pendingWrite.generation !== handLogLayoutWriteGeneration
-      pendingWrite.sendResponse(
-        errorMessage
-          ? { success: false, error: errorMessage }
-          : superseded
-            ? { success: false, error: 'Superseded by newer hand log layout' }
-            : { success: true }
-      )
-      handLogLayoutWriteInProgress = false
-      processNextHandLogLayoutWrite()
-    }
-
-    try {
-      pendingWrite.operation(() => {
-        const error = chrome.runtime.lastError
-        finish(error?.message ?? (error ? pendingWrite.failureMessage : undefined))
-      })
-    } catch (error) {
-      finish(error instanceof Error ? error.message : pendingWrite.failureMessage)
-    }
+  const flushPendingHandLogLayoutReads = (): void => {
+    if (pendingHandLogLayoutWriteCount > 0) return
+    const pendingReads = pendingHandLogLayoutReads.splice(0)
+    pendingReads.forEach(read => read())
   }
 
   const enqueueHandLogLayoutWrite = (
@@ -131,44 +98,57 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
     failureMessage: string
   ): void => {
     handLogLayoutWriteGeneration += 1
-    pendingHandLogLayoutWrites.push({
-      generation: handLogLayoutWriteGeneration,
-      operation,
-      sendResponse,
-      failureMessage,
+    const generation = handLogLayoutWriteGeneration
+    pendingHandLogLayoutWriteCount += 1
+
+    void enqueuePendingStorageWrite(() =>
+      new Promise<chrome.runtime.LastError | undefined>((resolve) => {
+        operation(() => resolve(chrome.runtime.lastError))
+      })
+    ).then(error => {
+      const superseded = generation !== handLogLayoutWriteGeneration
+      sendResponse(
+        error
+          ? { success: false, error: error.message ?? failureMessage }
+          : superseded
+            ? { success: false, error: 'Superseded by newer hand log layout' }
+            : { success: true }
+      )
+    }, error => {
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : failureMessage,
+      })
+    }).finally(() => {
+      pendingHandLogLayoutWriteCount -= 1
+      flushPendingHandLogLayoutReads()
     })
-    processNextHandLogLayoutWrite()
   }
 
   const enqueueHandLogLayoutRead = (read: () => void): void => {
-    if (
-      handLogLayoutWriteInProgress ||
-      pendingHandLogLayoutWrites.length > 0
-    ) {
+    if (pendingHandLogLayoutWriteCount > 0) {
       pendingHandLogLayoutReads.push(read)
       return
     }
     read()
   }
 
-  const pendingDeviceScaleWrites: Array<{
-    scale: number
-    sendResponse: (response: MessageResponse) => void
-  }> = []
-  let deviceScaleWriteInProgress = false
-  const processNextDeviceScaleWrite = (): void => {
-    if (deviceScaleWriteInProgress) return
-    const pendingWrite = pendingDeviceScaleWrites.shift()
-    if (!pendingWrite) return
-
-    deviceScaleWriteInProgress = true
-    chrome.storage.local.set({ [UI_SCALE_STORAGE_KEY]: pendingWrite.scale }, () => {
-      const error = chrome.runtime.lastError
-      pendingWrite.sendResponse(error
-        ? { success: false, error: error.message ?? 'Failed to save UI scale' }
-        : { success: true })
-      deviceScaleWriteInProgress = false
-      processNextDeviceScaleWrite()
+  const enqueueDeviceScaleWrite = (
+    scale: number,
+    complete: (error: chrome.runtime.LastError | undefined) => void
+  ): void => {
+    void enqueuePendingStorageWrite(() =>
+      new Promise<chrome.runtime.LastError | undefined>((resolve) => {
+        chrome.storage.local.set({ [UI_SCALE_STORAGE_KEY]: scale }, () => {
+          resolve(chrome.runtime.lastError)
+        })
+      })
+    ).then(complete, error => {
+      complete({
+        message: error instanceof Error
+          ? error.message
+          : 'Failed to save UI scale',
+      })
     })
   }
 
@@ -300,17 +280,23 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
                 )
               }
 
-              if (migratedScale === undefined || !scaleWriteIsCurrent) {
+              if (!scaleWriteIsCurrent) {
+                // A newer user-selected scale is already represented by the
+                // shared FIFO tail, but may not have reached chrome.storage
+                // yet. Read only after it settles so this older migration
+                // response cannot briefly publish the stale legacy value.
+                void getPendingStorageWriteTail().then(respondWithLatestLayout)
+                return
+              }
+
+              if (migratedScale === undefined) {
                 respondWithLatestLayout()
                 return
               }
 
-              chrome.storage.local.set({
-                [UI_SCALE_STORAGE_KEY]: migratedScale,
-              }, () => {
+              enqueueDeviceScaleWrite(migratedScale, () => {
                 // Migration is best-effort for persistence. Returning the
                 // valid legacy values still preserves this session's layout.
-                void chrome.runtime.lastError
                 respondWithLatestLayout()
               })
             }
@@ -324,8 +310,11 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         return true
       }
       deviceScaleWriteGeneration += 1
-      pendingDeviceScaleWrites.push({ scale: request.scale, sendResponse })
-      processNextDeviceScaleWrite()
+      enqueueDeviceScaleWrite(request.scale, error => {
+        sendResponse(error
+          ? { success: false, error: error.message ?? 'Failed to save UI scale' }
+          : { success: true })
+      })
       return true
     } else if (request.action === 'setDeviceHudPosition') {
       if (!isValidHudPositionId(request.seatIndex) || !isValidHudPosition(request.position)) {
