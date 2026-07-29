@@ -1,4 +1,4 @@
-import { render, screen, waitFor, act } from '@testing-library/react'
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ApiType } from '../app'
 import App from './App'
@@ -104,6 +104,32 @@ describe('App', () => {
     await waitFor(() => {
       expect(container.firstChild).toBeNull()
     })
+  })
+
+  it('ユーザー指定ショートカットでHUDとハンドログを非表示・再表示できる', async () => {
+    const shortcut = {
+      code: 'KeyH',
+      key: 'h',
+      ctrl: true,
+      alt: false,
+      shift: true,
+      meta: false,
+    }
+    ;(global.chrome.storage.sync.get as jest.Mock).mockImplementation((_, callback) => {
+      callback({
+        handLogConfig: DEFAULT_HAND_LOG_CONFIG,
+        uiConfig: { ...DEFAULT_UI_CONFIG, toggleShortcut: shortcut },
+      })
+    })
+
+    render(<App />)
+    await waitFor(() => expect(screen.getByTestId('hud-0')).toBeInTheDocument())
+
+    fireEvent.keyDown(window, { code: 'KeyH', key: 'h', ctrlKey: true, shiftKey: true })
+    await waitFor(() => expect(screen.queryByTestId('hud-0')).not.toBeInTheDocument())
+
+    fireEvent.keyDown(window, { code: 'KeyH', key: 'h', ctrlKey: true, shiftKey: true })
+    await waitFor(() => expect(screen.getByTestId('hud-0')).toBeInTheDocument())
   })
 
   it('uiConfigにhudDisplayMode/hudColorCodingが渡された場合、そのままHudへ伝播する', async () => {

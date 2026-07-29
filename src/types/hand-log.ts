@@ -56,6 +56,15 @@ export interface HandLogConfig {
   showTimestamps: boolean    // Show timestamps in log
 }
 
+export interface KeyboardShortcut {
+  code: string
+  key: string
+  ctrl: boolean
+  alt: boolean
+  shift: boolean
+  meta: boolean
+}
+
 /**
  * Global UI configuration for HUD and Log display
  */
@@ -83,6 +92,8 @@ export interface UIConfig {
    * key resolves to `true`, not `undefined`.
    */
   hudColorCoding?: boolean
+  /** HUD + hand logの表示/非表示を切り替える、ユーザー指定ショートカット。 */
+  toggleShortcut?: KeyboardShortcut
 }
 
 /**

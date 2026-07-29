@@ -18,6 +18,7 @@ import type {
 } from "../types/messages"
 import { rotateArrayFromIndex } from "../utils/array-utils"
 import { consumePendingStats } from "../utils/pending-stats-cache"
+import { isEditableShortcutTarget, matchesShortcut } from "../utils/keyboard-shortcut"
 import HandLog from "./HandLog"
 import Hud from "./Hud"
 import type { AllPlayersRealTimeStats } from "../realtime-stats/realtime-stats-service"
@@ -98,6 +99,30 @@ const App = memo(() => {
   // するようにする（実況の1アクションごとの更新では変化しないため再フェッチ
   // ストームは起きない）。
   const [handEpoch, setHandEpoch] = useState(0)
+
+  // ユーザー指定キーでHUD + hand logを切り替える。App自体は非表示時も
+  // マウントされたままなので、同じキーで必ず再表示できる。
+  useEffect(() => {
+    const shortcut = uiConfig.toggleShortcut
+    if (!shortcut) return
+
+    const handleShortcut = (event: KeyboardEvent) => {
+      if (event.repeat || isEditableShortcutTarget(event.target) || !matchesShortcut(event, shortcut)) {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+      setUIConfig(current => {
+        const next = { ...current, displayEnabled: !current.displayEnabled }
+        chrome.storage.sync.set({ uiConfig: next })
+        return next
+      })
+    }
+
+    window.addEventListener('keydown', handleShortcut, true)
+    return () => window.removeEventListener('keydown', handleShortcut, true)
+  }, [uiConfig.toggleShortcut])
 
   const handleTogglePositionalPanel = useCallback((playerId: number) => {
     setOpenPositionalPanelPlayerId(prev => prev === playerId ? null : playerId)
@@ -671,6 +696,13 @@ const App = memo(() => {
       const nextOptions = changes['options']?.newValue as Options | undefined
       if (nextOptions?.filterOptions?.statDisplayConfigs) {
         setStatDisplayConfigs(nextOptions.filterOptions.statDisplayConfigs)
+      }
+      const nextUIConfig = changes['uiConfig']?.newValue as UIConfig | undefined
+      if (nextUIConfig) {
+        setUIConfig({
+          ...DEFAULT_UI_CONFIG,
+          ...nextUIConfig,
+        })
       }
     }
     chrome.storage.onChanged?.addListener(handleOptionsStorageChange)
