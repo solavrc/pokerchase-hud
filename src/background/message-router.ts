@@ -125,11 +125,14 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
                 | { scale?: unknown }
                 | undefined
               const preservedLegacyScale = syncResult[LEGACY_SYNC_UI_SCALE_KEY]
-              const migratedScale = isValidUIScale(preservedLegacyScale)
-                ? preservedLegacyScale
-                : isValidUIScale(legacyUIConfig?.scale)
-                  ? legacyUIConfig.scale
+              const liveLegacyScale = isValidUIScale(legacyUIConfig?.scale)
+                ? legacyUIConfig.scale
+                : undefined
+              const migratedScale = liveLegacyScale
+                ?? (isValidUIScale(preservedLegacyScale)
+                  ? preservedLegacyScale
                   : undefined
+                )
               const scale = resolveLocalUIScale(
                 isValidUIScale(localScale) ? localScale : migratedScale
               )
@@ -156,7 +159,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
               // future synchronized preference saves omit its scale field.
               // This is a migration bridge only; new local scale edits never
               // update the synchronized legacy value.
-              if (!isValidUIScale(preservedLegacyScale)) {
+              if (preservedLegacyScale !== migratedScale) {
                 chrome.storage.sync.set({
                   [LEGACY_SYNC_UI_SCALE_KEY]: migratedScale,
                 })

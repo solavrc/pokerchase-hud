@@ -165,6 +165,27 @@ describe('message-router device-local UI layout', () => {
     })
   })
 
+  it('旧版端末が後から更新したuiConfig.scaleを移行用snapshotより優先する', async () => {
+    await chrome.storage.sync.set({
+      [LEGACY_SYNC_UI_SCALE_KEY]: 1.3,
+      uiConfig: { scale: 1.8, displayEnabled: true },
+    })
+    const sendResponse = jest.fn()
+
+    listener({ action: 'getDeviceUILayout' }, {}, sendResponse)
+
+    expect(sendResponse).toHaveBeenCalledWith({
+      success: true,
+      scale: 1.8,
+    })
+    expect(await chrome.storage.local.get(UI_SCALE_STORAGE_KEY)).toEqual({
+      [UI_SCALE_STORAGE_KEY]: 1.8,
+    })
+    expect(await chrome.storage.sync.get(LEGACY_SYNC_UI_SCALE_KEY)).toEqual({
+      [LEGACY_SYNC_UI_SCALE_KEY]: 1.8,
+    })
+  })
+
   it('legacy移行待ちの間に選ばれた新しいscaleを上書きしない', async () => {
     let resolveMigration!: (result: Record<string, unknown>) => void
     ;(chrome.storage.sync.get as jest.Mock).mockImplementationOnce(
