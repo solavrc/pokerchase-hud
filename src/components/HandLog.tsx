@@ -448,12 +448,10 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
 
     document.addEventListener('mousemove', handleMouseMove)
     document.addEventListener('mouseup', finishInteraction)
-    document.addEventListener('mouseleave', finishInteraction)
     window.addEventListener('blur', finishInteraction)
     return () => {
       document.removeEventListener('mousemove', handleMouseMove)
       document.removeEventListener('mouseup', finishInteraction)
-      document.removeEventListener('mouseleave', finishInteraction)
       window.removeEventListener('blur', finishInteraction)
       // Cleanup also runs when the HUD shortcut unmounts HandLog while the
       // mouse is still held. Persist the last visible layout before refs and

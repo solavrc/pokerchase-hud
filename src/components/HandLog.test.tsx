@@ -375,6 +375,48 @@ describe('HandLog', () => {
     fireEvent.mouseUp(document)
   })
 
+  it('画面端を越えてもmouseupまではリサイズを継続する', () => {
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+    logContainer.getBoundingClientRect = jest.fn(() => ({
+      left: 500,
+      top: 400,
+      width: 400,
+      height: 100,
+      right: 900,
+      bottom: 500,
+      x: 500,
+      y: 400,
+      toJSON: () => {},
+    }))
+
+    fireEvent.mouseDown(screen.getByTestId('hand-log-resize-corner'), {
+      button: 0,
+      clientX: 900,
+      clientY: 500,
+    })
+    fireEvent.mouseMove(document, { clientX: 910, clientY: 510 })
+    fireEvent.mouseLeave(document)
+    fireEvent.mouseMove(document, { clientX: 1900, clientY: 1500 })
+
+    expect(logContainer.style.width).toBe('1400px')
+    expect(logContainer.style.height).toBe('1100px')
+    expect(mockChromeRuntimeSendMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'setDeviceHandLogLayout' }),
+      expect.any(Function)
+    )
+
+    fireEvent.mouseUp(document)
+
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      {
+        action: 'setDeviceHandLogLayout',
+        layout: { left: 500, top: 400, width: 1400, height: 1100 },
+      },
+      expect.any(Function)
+    )
+  })
+
   it('window外で操作が中断されても最後の位置を保存してdrag状態を解除する', () => {
     const { container } = render(<HandLog entries={mockEntries} />)
     const logContainer = container.firstChild as HTMLElement
