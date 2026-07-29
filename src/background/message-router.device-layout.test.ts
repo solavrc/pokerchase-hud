@@ -3,6 +3,7 @@ import PokerChaseService, { PokerChaseDB } from '../app'
 import type { ChromeMessage, MessageResponse } from '../types/messages'
 import {
   hudPositionStorageKey,
+  hudPositionMigrationStorageKey,
   LEGACY_SYNC_UI_SCALE_KEY,
   UI_SCALE_STORAGE_KEY,
 } from '../utils/ui-config-storage'
@@ -52,6 +53,11 @@ describe('message-router device-local UI layout', () => {
       scale: 1.4,
       position,
     })
+    expect(await chrome.storage.local.get(
+      hudPositionMigrationStorageKey(2)
+    )).toEqual({
+      [hudPositionMigrationStorageKey(2)]: true,
+    })
   })
 
   it('scaleとHUD位置を検証して端末ローカルへ保存する', async () => {
@@ -100,7 +106,7 @@ describe('message-router device-local UI layout', () => {
     })
   })
 
-  it('local値がない初回だけlegacy syncのscaleを移行用キーへ保持してlocalへ移す', async () => {
+  it('local値がない初回だけlegacy syncのscaleとHUD位置をlocalへ移す', async () => {
     const legacyPosition = { top: '28%', left: '73%' }
     await chrome.storage.sync.set({
       uiConfig: { scale: 1.7, displayEnabled: true },
@@ -116,35 +122,158 @@ describe('message-router device-local UI layout', () => {
     expect(sendResponse).toHaveBeenCalledWith({
       success: true,
       scale: 1.7,
+      position: legacyPosition,
     })
     expect(await chrome.storage.local.get([
       UI_SCALE_STORAGE_KEY,
       hudPositionStorageKey(3),
+      hudPositionMigrationStorageKey(3),
     ])).toEqual({
       [UI_SCALE_STORAGE_KEY]: 1.7,
+      [hudPositionStorageKey(3)]: legacyPosition,
+      [hudPositionMigrationStorageKey(3)]: true,
     })
     expect(await chrome.storage.sync.get(LEGACY_SYNC_UI_SCALE_KEY)).toEqual({
       [LEGACY_SYNC_UI_SCALE_KEY]: 1.7,
     })
   })
 
-  it('別端末由来か判別できないlegacy syncのHUD位置は移行しない', async () => {
-    const legacyPosition = { top: '28%', left: '73%' }
-    await chrome.storage.sync.set({
-      [hudPositionStorageKey(3)]: legacyPosition,
-    })
-    const sendResponse = jest.fn()
+  it.each([3, 102])(
+    'scale移行済みでもlegacy syncのHUD位置 %p を独立して移行する',
+    async (seatIndex) => {
+      const legacyPosition = { top: '28%', left: '73%' }
+      await chrome.storage.local.set({
+        [UI_SCALE_STORAGE_KEY]: 1.4,
+      })
+      await chrome.storage.sync.set({
+        [hudPositionStorageKey(seatIndex)]: legacyPosition,
+      })
+      const sendResponse = jest.fn()
 
-    listener({
-      action: 'getDeviceUILayout',
-      seatIndex: 3,
-    }, {}, sendResponse)
+      listener({
+        action: 'getDeviceUILayout',
+        seatIndex,
+      }, {}, sendResponse)
 
-    expect(sendResponse).toHaveBeenCalledWith({
+      expect(sendResponse).toHaveBeenCalledWith({
+        success: true,
+        scale: 1.4,
+        position: legacyPosition,
+      })
+      expect(await chrome.storage.local.get([
+        hudPositionStorageKey(seatIndex),
+        hudPositionMigrationStorageKey(seatIndex),
+      ])).toEqual({
+        [hudPositionStorageKey(seatIndex)]: legacyPosition,
+        [hudPositionMigrationStorageKey(seatIndex)]: true,
+      })
+    }
+  )
+
+  it('legacy位置がない初回readもmarkerを残し、その後のsync値を取り込まない', async () => {
+    const firstResponse = jest.fn()
+    listener({ action: 'getDeviceUILayout', seatIndex: 2 }, {}, firstResponse)
+
+    expect(firstResponse).toHaveBeenCalledWith({
       success: true,
       scale: 1,
     })
-    expect(await chrome.storage.local.get(hudPositionStorageKey(3))).toEqual({})
+    expect(await chrome.storage.local.get(
+      hudPositionMigrationStorageKey(2)
+    )).toEqual({
+      [hudPositionMigrationStorageKey(2)]: true,
+    })
+
+    await chrome.storage.sync.set({
+      [hudPositionStorageKey(2)]: { top: '20%', left: '30%' },
+    })
+    const secondResponse = jest.fn()
+    listener({ action: 'getDeviceUILayout', seatIndex: 2 }, {}, secondResponse)
+
+    expect(secondResponse).toHaveBeenCalledWith({
+      success: true,
+      scale: 1,
+    })
+    expect(await chrome.storage.local.get(hudPositionStorageKey(2))).toEqual({})
+  })
+
+  it('legacy位置read待ちの間に保存した現在位置を上書きしない', async () => {
+    let resolveMigration!: (result: Record<string, unknown>) => void
+    ;(chrome.storage.sync.get as jest.Mock).mockImplementationOnce(
+      (_keys, callback) => {
+        resolveMigration = callback
+      }
+    )
+    const loadResponse = jest.fn()
+    const saveResponse = jest.fn()
+    const currentPosition = { top: '44%', left: '55%' }
+
+    listener({ action: 'getDeviceUILayout', seatIndex: 4 }, {}, loadResponse)
+    listener({
+      action: 'setDeviceHudPosition',
+      seatIndex: 4,
+      position: currentPosition,
+    }, {}, saveResponse)
+    resolveMigration({
+      [hudPositionStorageKey(4)]: { top: '10%', left: '20%' },
+    })
+
+    expect(saveResponse).toHaveBeenCalledWith({ success: true })
+    expect(loadResponse).toHaveBeenCalledWith({
+      success: true,
+      scale: 1,
+      position: currentPosition,
+    })
+    expect(await chrome.storage.local.get([
+      hudPositionStorageKey(4),
+      hudPositionMigrationStorageKey(4),
+    ])).toEqual({
+      [hudPositionStorageKey(4)]: currentPosition,
+      [hudPositionMigrationStorageKey(4)]: true,
+    })
+  })
+
+  it('local layout read失敗時は移行せず呼出元へ失敗を返す', async () => {
+    ;(chrome.storage.local.get as jest.Mock).mockImplementationOnce(
+      (_keys, callback) => {
+        ;(chrome.runtime as any).lastError = { message: 'local unavailable' }
+        callback({})
+        delete (chrome.runtime as any).lastError
+      }
+    )
+    const sendResponse = jest.fn()
+
+    listener({ action: 'getDeviceUILayout', seatIndex: 2 }, {}, sendResponse)
+
+    expect(sendResponse).toHaveBeenCalledWith({
+      success: false,
+      error: 'local unavailable',
+    })
+    expect(chrome.storage.sync.get).not.toHaveBeenCalled()
+    expect(await chrome.storage.local.get(
+      hudPositionMigrationStorageKey(2)
+    )).toEqual({})
+  })
+
+  it('legacy sync read失敗時はmarkerを確定せず再試行可能にする', async () => {
+    ;(chrome.storage.sync.get as jest.Mock).mockImplementationOnce(
+      (_keys, callback) => {
+        ;(chrome.runtime as any).lastError = { message: 'sync unavailable' }
+        callback({})
+        delete (chrome.runtime as any).lastError
+      }
+    )
+    const sendResponse = jest.fn()
+
+    listener({ action: 'getDeviceUILayout', seatIndex: 2 }, {}, sendResponse)
+
+    expect(sendResponse).toHaveBeenCalledWith({
+      success: false,
+      error: 'sync unavailable',
+    })
+    expect(await chrome.storage.local.get(
+      hudPositionMigrationStorageKey(2)
+    )).toEqual({})
   })
 
   it('uiConfigからscaleが除かれた後も移行用scaleをlocalへコピーできる', async () => {
@@ -213,6 +342,31 @@ describe('message-router device-local UI layout', () => {
     })
     expect(await chrome.storage.local.get(UI_SCALE_STORAGE_KEY)).toEqual({
       [UI_SCALE_STORAGE_KEY]: 1.8,
+    })
+  })
+
+  it.each([
+    { action: 'setDeviceUIScale', scale: 1.4 },
+    {
+      action: 'setDeviceHudPosition',
+      seatIndex: 2,
+      position: { top: '20%', left: '30%' },
+    },
+  ] as ChromeMessage[])('local storage failureを呼出元へ返す: %p', (message) => {
+    ;(chrome.storage.local.set as jest.Mock).mockImplementationOnce(
+      (_items, callback) => {
+        ;(chrome.runtime as any).lastError = { message: 'quota' }
+        callback()
+        delete (chrome.runtime as any).lastError
+      }
+    )
+    const sendResponse = jest.fn()
+
+    listener(message, {}, sendResponse)
+
+    expect(sendResponse).toHaveBeenCalledWith({
+      success: false,
+      error: 'quota',
     })
   })
 

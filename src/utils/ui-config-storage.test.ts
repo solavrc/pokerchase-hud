@@ -7,6 +7,7 @@ import {
   LEGACY_SYNC_UI_SCALE_KEY,
   resolveLocalUIScale,
   saveLocalUIScale,
+  saveHudPosition,
   saveSyncedUIConfig,
   toSyncedUIConfig,
 } from './ui-config-storage'
@@ -55,7 +56,7 @@ describe('ui-config-storage', () => {
     }
   )
 
-  it('同期payloadからscaleだけを除外する', () => {
+  it('新規同期payloadから端末ローカルscaleを除外する', () => {
     const config = {
       ...DEFAULT_UI_CONFIG,
       scale: 1.5,
@@ -96,8 +97,67 @@ describe('ui-config-storage', () => {
     saveSyncedUIConfig(config)
 
     expect(chrome.storage.sync.set).toHaveBeenCalledWith({
-      uiConfig: toSyncedUIConfig(config),
+      uiConfig: {
+        ...toSyncedUIConfig(config),
+        scale: 1.8,
+      },
       [LEGACY_SYNC_UI_SCALE_KEY]: 1.8,
+    })
+  })
+
+  it('旧版互換scaleをuiConfigとsnapshotの両方に保持する', () => {
+    ;(chrome.storage.sync.get as jest.Mock).mockImplementationOnce(
+      (_keys, callback) => {
+        callback({
+          uiConfig: toSyncedUIConfig(DEFAULT_UI_CONFIG),
+          [LEGACY_SYNC_UI_SCALE_KEY]: 1.6,
+        })
+      }
+    )
+
+    saveSyncedUIConfig({ ...DEFAULT_UI_CONFIG, displayEnabled: false })
+
+    expect(chrome.storage.sync.set).toHaveBeenCalledWith({
+      uiConfig: {
+        ...toSyncedUIConfig({ ...DEFAULT_UI_CONFIG, displayEnabled: false }),
+        scale: 1.6,
+      },
+      [LEGACY_SYNC_UI_SCALE_KEY]: 1.6,
+    })
+  })
+
+  it('遅れて完了した古い同期readで新しい設定を巻き戻さない', () => {
+    const pendingReads: Array<(result: Record<string, unknown>) => void> = []
+    ;(chrome.storage.sync.get as jest.Mock).mockImplementation(
+      (_keys, callback) => {
+        pendingReads.push(callback)
+      }
+    )
+    const olderConfig = {
+      ...DEFAULT_UI_CONFIG,
+      displayEnabled: false,
+    }
+    const newerConfig = {
+      ...DEFAULT_UI_CONFIG,
+      hudDisplayMode: 'full' as const,
+    }
+
+    saveSyncedUIConfig(olderConfig)
+    saveSyncedUIConfig(newerConfig)
+    pendingReads[1]!({
+      uiConfig: { ...DEFAULT_UI_CONFIG, scale: 1.7 },
+    })
+    pendingReads[0]!({
+      uiConfig: { ...DEFAULT_UI_CONFIG, scale: 1.7 },
+    })
+
+    expect(chrome.storage.sync.set).toHaveBeenCalledTimes(1)
+    expect(chrome.storage.sync.set).toHaveBeenCalledWith({
+      uiConfig: {
+        ...toSyncedUIConfig(newerConfig),
+        scale: 1.7,
+      },
+      [LEGACY_SYNC_UI_SCALE_KEY]: 1.7,
     })
   })
 
@@ -112,7 +172,67 @@ describe('ui-config-storage', () => {
       { action: 'setDeviceUIScale', scale: 1.3 },
       expect.any(Function)
     )
-    expect(callback).toHaveBeenCalled()
+    expect(callback).toHaveBeenCalledWith(true)
+  })
+
+  it('backgroundがscale保存を拒否した場合は失敗を返す', () => {
+    ;(chrome.runtime.sendMessage as jest.Mock).mockImplementationOnce((_message, callback) => {
+      callback({ success: false, error: 'quota' })
+    })
+    const callback = jest.fn()
+
+    saveLocalUIScale(1.3, callback)
+
+    expect(callback).toHaveBeenCalledWith(false)
+  })
+
+  it('runtime.lastErrorがあるscale保存responseは失敗として扱う', () => {
+    ;(chrome.runtime.sendMessage as jest.Mock).mockImplementationOnce((_message, callback) => {
+      ;(chrome.runtime as any).lastError = { message: 'service worker unavailable' }
+      callback({ success: true })
+      delete (chrome.runtime as any).lastError
+    })
+    const callback = jest.fn()
+
+    saveLocalUIScale(1.3, callback)
+
+    expect(callback).toHaveBeenCalledWith(false)
+  })
+
+  it('scale保存timeoutは失敗で確定し、遅い成功responseを再通知しない', () => {
+    jest.useFakeTimers()
+    try {
+      let respond!: (response: unknown) => void
+      ;(chrome.runtime.sendMessage as jest.Mock).mockImplementationOnce(
+        (_message, callback) => {
+          respond = callback
+        }
+      )
+      const callback = jest.fn()
+
+      saveLocalUIScale(1.3, callback)
+      jest.advanceTimersByTime(DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS)
+      expect(callback).toHaveBeenCalledWith(false)
+
+      respond({ success: true })
+      expect(callback).toHaveBeenCalledTimes(1)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('HUD位置保存失敗は永続化不能をwarnする', () => {
+    ;(chrome.runtime.sendMessage as jest.Mock).mockImplementationOnce((_message, callback) => {
+      callback({ success: false, error: 'quota' })
+    })
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+
+    saveHudPosition(2, { top: '20%', left: '30%' })
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[HUD layout] Failed to save device-local position'
+    )
+    warnSpy.mockRestore()
   })
 
   it('scaleはbackground経由で読み込む', () => {

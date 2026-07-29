@@ -36,8 +36,11 @@ export const UIScaleSection = ({
   }
 
   const updateLocalScale = (newConfig: UIConfig) => {
-    setUIConfig(newConfig)
-    saveLocalUIScale(newConfig.scale, () => broadcastUIConfig(newConfig))
+    saveLocalUIScale(newConfig.scale, success => {
+      if (!success) return
+      setUIConfig(newConfig)
+      broadcastUIConfig(newConfig)
+    })
   }
 
   const saveShortcut = useCallback((shortcut: UIConfig['toggleShortcut']) => {

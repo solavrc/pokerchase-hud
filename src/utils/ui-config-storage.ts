@@ -14,8 +14,11 @@ export const REAL_TIME_HUD_POSITION_OFFSET = 100
 export const DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS = 1_000
 export const hudPositionStorageKey = (seatIndex: number): string =>
   `hudPosition_${seatIndex}`
+export const hudPositionMigrationStorageKey = (seatIndex: number): string =>
+  `hudPositionMigrated_${seatIndex}`
 
 type SyncedUIConfig = Omit<UIConfig, 'scale'>
+let syncedUIConfigWriteGeneration = 0
 
 export const isValidUIScale = (value: unknown): value is number =>
   typeof value === 'number' &&
@@ -69,20 +72,32 @@ export const toSyncedUIConfig = (config: UIConfig): SyncedUIConfig => {
 }
 
 export const saveSyncedUIConfig = (config: UIConfig): void => {
+  const writeGeneration = ++syncedUIConfigWriteGeneration
   const syncedConfig = toSyncedUIConfig(config)
   chrome.storage.sync.get(
     ['uiConfig', LEGACY_SYNC_UI_SCALE_KEY],
     (result: Record<string, unknown>) => {
+      if (writeGeneration !== syncedUIConfigWriteGeneration) return
+
       const currentConfig = result.uiConfig as { scale?: unknown } | undefined
       const liveLegacyScale = currentConfig?.scale
+      const preservedLegacyScale = result[LEGACY_SYNC_UI_SCALE_KEY]
+      const compatibilityScale = isValidUIScale(liveLegacyScale)
+        ? liveLegacyScale
+        : isValidUIScale(preservedLegacyScale)
+          ? preservedLegacyScale
+          : undefined
       chrome.storage.sync.set({
-        uiConfig: syncedConfig,
-        // An older device may have written a newer scale after the first
-        // upgraded device created the migration snapshot. Preserve that live
-        // value atomically with stripping it from uiConfig so the older device
-        // can still migrate its latest choice when it upgrades.
-        ...(isValidUIScale(liveLegacyScale)
-          ? { [LEGACY_SYNC_UI_SCALE_KEY]: liveLegacyScale }
+        // New versions ignore this compatibility field in favor of local
+        // storage. Keep it while mixed-version devices may still read it.
+        uiConfig: {
+          ...syncedConfig,
+          ...(compatibilityScale !== undefined
+            ? { scale: compatibilityScale }
+            : {}),
+        },
+        ...(compatibilityScale !== undefined
+          ? { [LEGACY_SYNC_UI_SCALE_KEY]: compatibilityScale }
           : {}),
       })
     }
@@ -126,27 +141,27 @@ const sendDeviceLayoutReadMessage = <TResponse,>(
 
 const sendDeviceLayoutWriteMessage = (
   message: ChromeMessage,
-  callback: () => void
+  callback: (success: boolean) => void
 ): void => {
   let settled = false
-  const finish = () => {
+  const finish = (success: boolean) => {
     if (settled) return
     settled = true
     clearTimeout(timeoutId)
-    callback()
+    callback(success)
   }
   const timeoutId = setTimeout(
-    finish,
+    () => finish(false),
     DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS
   )
 
   try {
-    chrome.runtime.sendMessage(message, () => {
-      consumeRuntimeError()
-      finish()
+    chrome.runtime.sendMessage(message, (response: { success?: boolean } | undefined) => {
+      const runtimeError = chrome.runtime.lastError
+      finish(!runtimeError && response?.success === true)
     })
   } catch {
-    finish()
+    finish(false)
   }
 }
 
@@ -161,12 +176,12 @@ export const loadLocalUIScale = (callback: (scale: number) => void): void => {
 
 export const saveLocalUIScale = (
   scale: number,
-  callback?: () => void
+  callback?: (success: boolean) => void
 ): void => {
   sendDeviceLayoutWriteMessage(
     { action: 'setDeviceUIScale', scale: resolveLocalUIScale(scale) },
-    () => {
-      callback?.()
+    success => {
+      callback?.(success)
     }
   )
 }
@@ -189,6 +204,10 @@ export const saveHudPosition = (
 ): void => {
   sendDeviceLayoutWriteMessage(
     { action: 'setDeviceHudPosition', seatIndex, position },
-    () => {}
+    success => {
+      if (!success) {
+        console.warn('[HUD layout] Failed to save device-local position')
+      }
+    }
   )
 }

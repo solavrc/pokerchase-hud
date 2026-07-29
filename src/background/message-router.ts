@@ -18,6 +18,7 @@ import { applyUpdateNow } from './update-manager'
 import { acknowledgeWhatsNew } from './whats-new-badge'
 import {
   hudPositionStorageKey,
+  hudPositionMigrationStorageKey,
   isValidHudPosition,
   isValidHudPositionId,
   isValidUIScale,
@@ -74,6 +75,7 @@ const handleFirebaseSignOut = async (): Promise<void> => {
 export const registerMessageRouter = (service: PokerChaseService, db: PokerChaseDB, gameUrlPattern: string): void => {
   const { exportData, importData, deleteAllData, getLatestSessionStats, rebuildAllData } = createImportExportHandlers(service, db, gameUrlPattern)
   let deviceScaleWriteGeneration = 0
+  const devicePositionWriteGenerations = new Map<string, number>()
 
   const rejectIfOperationBusy = (action: string, sendResponse: (response: MessageResponse) => void): boolean => {
     if (isOperationIdle()) return false
@@ -92,15 +94,37 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       const positionKey = request.seatIndex === undefined
         ? undefined
         : hudPositionStorageKey(request.seatIndex)
+      const positionMigrationKey = request.seatIndex === undefined
+        ? undefined
+        : hudPositionMigrationStorageKey(request.seatIndex)
       chrome.storage.local.get(
-        positionKey ? [UI_SCALE_STORAGE_KEY, positionKey] : UI_SCALE_STORAGE_KEY,
+        positionKey && positionMigrationKey
+          ? [UI_SCALE_STORAGE_KEY, positionKey, positionMigrationKey]
+          : UI_SCALE_STORAGE_KEY,
         (localResult: Record<string, unknown>) => {
+          const localReadError = chrome.runtime.lastError
+          if (localReadError) {
+            sendResponse({
+              success: false,
+              error: localReadError.message ?? 'Failed to read device layout',
+            })
+            return
+          }
           const localScale = localResult[UI_SCALE_STORAGE_KEY]
           const localPosition = positionKey && isValidHudPosition(localResult[positionKey])
             ? localResult[positionKey]
             : undefined
           const needsScaleMigration = !isValidUIScale(localScale)
-          const migrationGeneration = deviceScaleWriteGeneration
+          const needsPositionMigration = Boolean(
+            positionKey &&
+            positionMigrationKey &&
+            !localPosition &&
+            localResult[positionMigrationKey] !== true
+          )
+          const scaleMigrationGeneration = deviceScaleWriteGeneration
+          const positionMigrationGeneration = positionKey
+            ? devicePositionWriteGenerations.get(positionKey) ?? 0
+            : 0
 
           const respond = (
             scale: number,
@@ -113,14 +137,34 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
             })
           }
 
-          if (!needsScaleMigration) {
+          if (!needsScaleMigration && !needsPositionMigration) {
+            if (
+              positionKey &&
+              positionMigrationKey &&
+              localPosition &&
+              localResult[positionMigrationKey] !== true
+            ) {
+              chrome.storage.local.set({ [positionMigrationKey]: true }, () => {
+                void chrome.runtime.lastError
+              })
+            }
             respond(resolveLocalUIScale(localScale), localPosition)
             return
           }
 
+          const syncKeys = [LEGACY_SYNC_UI_SCALE_KEY, 'uiConfig']
+          if (needsPositionMigration && positionKey) syncKeys.push(positionKey)
           chrome.storage.sync.get(
-            [LEGACY_SYNC_UI_SCALE_KEY, 'uiConfig'],
+            syncKeys,
             (syncResult: Record<string, unknown>) => {
+              const syncReadError = chrome.runtime.lastError
+              if (syncReadError) {
+                sendResponse({
+                  success: false,
+                  error: syncReadError.message ?? 'Failed to migrate device layout',
+                })
+                return
+              }
               const legacyUIConfig = syncResult.uiConfig as
                 | { scale?: unknown }
                 | undefined
@@ -136,42 +180,82 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
               const scale = resolveLocalUIScale(
                 isValidUIScale(localScale) ? localScale : migratedScale
               )
+              const migratedPosition = needsPositionMigration &&
+                positionKey &&
+                isValidHudPosition(syncResult[positionKey])
+                ? syncResult[positionKey]
+                : undefined
 
-              if (migratedScale === undefined) {
-                respond(scale, localPosition)
-                return
-              }
-
-              if (deviceScaleWriteGeneration !== migrationGeneration) {
-                chrome.storage.local.get(
-                  UI_SCALE_STORAGE_KEY,
-                  (latestResult: Record<string, unknown>) => {
-                    respond(
-                      resolveLocalUIScale(latestResult[UI_SCALE_STORAGE_KEY]),
-                      localPosition
-                    )
-                  }
-                )
-                return
-              }
-
-              // Preserve the pre-local-storage value outside uiConfig before
-              // future synchronized preference saves omit its scale field.
-              // This is a migration bridge only; new local scale edits never
-              // update the synchronized legacy value.
-              if (preservedLegacyScale !== migratedScale) {
+              // Keep the pre-local-storage value in the migration snapshot as
+              // well as the mixed-version compatibility field in uiConfig.
+              // New local scale edits never update either synchronized value.
+              if (
+                needsScaleMigration &&
+                migratedScale !== undefined &&
+                preservedLegacyScale !== migratedScale
+              ) {
                 chrome.storage.sync.set({
                   [LEGACY_SYNC_UI_SCALE_KEY]: migratedScale,
+                }, () => {
+                  void chrome.runtime.lastError
                 })
               }
 
-              chrome.storage.local.set({
-                [UI_SCALE_STORAGE_KEY]: migratedScale,
-              }, () => {
+              const scaleWriteIsCurrent =
+                deviceScaleWriteGeneration === scaleMigrationGeneration
+              const positionWriteIsCurrent = Boolean(
+                positionKey &&
+                (devicePositionWriteGenerations.get(positionKey) ?? 0) ===
+                  positionMigrationGeneration
+              )
+              const migratedValues: Record<string, unknown> = {}
+              if (
+                needsScaleMigration &&
+                migratedScale !== undefined &&
+                scaleWriteIsCurrent
+              ) {
+                migratedValues[UI_SCALE_STORAGE_KEY] = migratedScale
+              }
+              if (needsPositionMigration && positionMigrationKey) {
+                migratedValues[positionMigrationKey] = true
+                if (migratedPosition && positionWriteIsCurrent && positionKey) {
+                  migratedValues[positionKey] = migratedPosition
+                }
+              }
+
+              const respondWithLatestLayout = () => {
+                chrome.storage.local.get(
+                  positionKey
+                    ? [UI_SCALE_STORAGE_KEY, positionKey]
+                    : UI_SCALE_STORAGE_KEY,
+                  (latestResult: Record<string, unknown>) => {
+                    void chrome.runtime.lastError
+                    const fallbackPosition = positionWriteIsCurrent
+                      ? migratedPosition ?? localPosition
+                      : localPosition
+                    const latestPosition = positionKey &&
+                      isValidHudPosition(latestResult[positionKey])
+                      ? latestResult[positionKey]
+                      : fallbackPosition
+                    const latestScale = latestResult[UI_SCALE_STORAGE_KEY]
+                    respond(
+                      isValidUIScale(latestScale) ? latestScale : scale,
+                      latestPosition
+                    )
+                  }
+                )
+              }
+
+              if (Object.keys(migratedValues).length === 0) {
+                respondWithLatestLayout()
+                return
+              }
+
+              chrome.storage.local.set(migratedValues, () => {
                 // Migration is best-effort for persistence. Returning the
                 // valid legacy values still preserves this session's layout.
                 void chrome.runtime.lastError
-                respond(scale, localPosition)
+                respondWithLatestLayout()
               })
             }
           )
@@ -196,8 +280,14 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         sendResponse({ success: false, error: 'Invalid HUD position' })
         return true
       }
+      const positionKey = hudPositionStorageKey(request.seatIndex)
+      devicePositionWriteGenerations.set(
+        positionKey,
+        (devicePositionWriteGenerations.get(positionKey) ?? 0) + 1
+      )
       chrome.storage.local.set({
-        [hudPositionStorageKey(request.seatIndex)]: request.position,
+        [positionKey]: request.position,
+        [hudPositionMigrationStorageKey(request.seatIndex)]: true,
       }, () => {
         const error = chrome.runtime.lastError
         sendResponse(error

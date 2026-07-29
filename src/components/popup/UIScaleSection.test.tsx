@@ -156,10 +156,11 @@ describe('UIScaleSection', () => {
         displayEnabled: false,
         hudDisplayMode: DEFAULT_UI_CONFIG.hudDisplayMode,
         hudColorCoding: DEFAULT_UI_CONFIG.hudColorCoding,
+        scale: 1.2,
       }),
     })
     expect(mockChromeStorageSet.mock.calls.at(-1)?.[0].uiConfig)
-      .not.toHaveProperty('scale')
+      .toHaveProperty('scale', 1.2)
   })
 
   it('UI表示のON/OFFを切り替え', async () => {
@@ -213,6 +214,42 @@ describe('UIScaleSection', () => {
       action: 'updateUIConfig',
       config: expectedConfig,
     })
+  })
+
+  it('scale保存失敗時は表示を更新せずbroadcastしない', async () => {
+    mockChromeRuntimeSendMessage.mockImplementationOnce((_message, callback) => {
+      callback({ success: false, error: 'quota' })
+    })
+    render(<UIScaleSection {...defaultProps} />)
+
+    await userEvent.click(screen.getByText('+'))
+
+    expect(mockSetUIConfig).not.toHaveBeenCalled()
+    expect(mockTabsQuery).not.toHaveBeenCalled()
+    expect(mockTabsSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('scale保存timeout後の遅いsuccessは表示更新やbroadcastを再開しない', () => {
+    jest.useFakeTimers()
+    try {
+      let respond!: (response: unknown) => void
+      mockChromeRuntimeSendMessage.mockImplementationOnce((_message, callback) => {
+        respond = callback
+      })
+      render(<UIScaleSection {...defaultProps} />)
+
+      fireEvent.click(screen.getByText('+'))
+      jest.advanceTimersByTime(1_000)
+
+      expect(mockSetUIConfig).not.toHaveBeenCalled()
+      expect(mockTabsQuery).not.toHaveBeenCalled()
+
+      respond({ success: true })
+      expect(mockSetUIConfig).not.toHaveBeenCalled()
+      expect(mockTabsQuery).not.toHaveBeenCalled()
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   it.each([
