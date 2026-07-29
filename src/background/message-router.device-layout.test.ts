@@ -145,6 +145,43 @@ describe('message-router device-local UI layout', () => {
     })
   })
 
+  it('遅延resetより新しいlayout保存を優先する', async () => {
+    const oldLayout = { left: 10, top: 20, width: 400, height: 100 }
+    const newLayout = { left: 80, top: 60, width: 520, height: 240 }
+    await chrome.storage.local.set({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: oldLayout,
+    })
+    let finishDelayedReset!: () => void
+    ;(chrome.storage.local.remove as jest.Mock).mockImplementationOnce(
+      (_key, callback) => {
+        finishDelayedReset = callback
+      }
+    )
+    const resetResponse = jest.fn()
+    const saveResponse = jest.fn()
+
+    listener({ action: 'resetDeviceHandLogLayout' }, {}, resetResponse)
+    listener({
+      action: 'setDeviceHandLogLayout',
+      layout: newLayout,
+    }, {}, saveResponse)
+
+    expect(resetResponse).not.toHaveBeenCalled()
+    expect(saveResponse).not.toHaveBeenCalled()
+
+    finishDelayedReset()
+    await Promise.resolve()
+
+    expect(resetResponse).toHaveBeenCalledWith({
+      success: false,
+      error: 'Superseded by newer hand log layout',
+    })
+    expect(saveResponse).toHaveBeenCalledWith({ success: true })
+    expect(await chrome.storage.local.get(HAND_LOG_LAYOUT_STORAGE_KEY)).toEqual({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: newLayout,
+    })
+  })
+
   it('同期UI設定をbackgroundで保存し旧版互換scaleも保持する', async () => {
     await chrome.storage.sync.set({
       uiConfig: { ...DEFAULT_UI_CONFIG, scale: 1.6 },

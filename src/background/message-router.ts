@@ -77,6 +77,62 @@ const handleFirebaseSignOut = async (): Promise<void> => {
 export const registerMessageRouter = (service: PokerChaseService, db: PokerChaseDB, gameUrlPattern: string): void => {
   const { exportData, importData, deleteAllData, getLatestSessionStats, rebuildAllData } = createImportExportHandlers(service, db, gameUrlPattern)
   let deviceScaleWriteGeneration = 0
+  let handLogLayoutWriteGeneration = 0
+  let handLogLayoutWriteInProgress = false
+  const pendingHandLogLayoutWrites: Array<{
+    generation: number
+    operation: (callback: () => void) => void
+    sendResponse: (response: MessageResponse) => void
+    failureMessage: string
+  }> = []
+
+  const processNextHandLogLayoutWrite = (): void => {
+    if (handLogLayoutWriteInProgress) return
+    const pendingWrite = pendingHandLogLayoutWrites.shift()
+    if (!pendingWrite) return
+
+    handLogLayoutWriteInProgress = true
+    let completed = false
+    const finish = (errorMessage?: string): void => {
+      if (completed) return
+      completed = true
+      const superseded =
+        pendingWrite.generation !== handLogLayoutWriteGeneration
+      pendingWrite.sendResponse(
+        errorMessage
+          ? { success: false, error: errorMessage }
+          : superseded
+            ? { success: false, error: 'Superseded by newer hand log layout' }
+            : { success: true }
+      )
+      handLogLayoutWriteInProgress = false
+      processNextHandLogLayoutWrite()
+    }
+
+    try {
+      pendingWrite.operation(() => {
+        const error = chrome.runtime.lastError
+        finish(error?.message ?? (error ? pendingWrite.failureMessage : undefined))
+      })
+    } catch (error) {
+      finish(error instanceof Error ? error.message : pendingWrite.failureMessage)
+    }
+  }
+
+  const enqueueHandLogLayoutWrite = (
+    operation: (callback: () => void) => void,
+    sendResponse: (response: MessageResponse) => void,
+    failureMessage: string
+  ): void => {
+    handLogLayoutWriteGeneration += 1
+    pendingHandLogLayoutWrites.push({
+      generation: handLogLayoutWriteGeneration,
+      operation,
+      sendResponse,
+      failureMessage,
+    })
+    processNextHandLogLayoutWrite()
+  }
 
   const rejectIfOperationBusy = (action: string, sendResponse: (response: MessageResponse) => void): boolean => {
     if (isOperationIdle()) return false
@@ -263,22 +319,23 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         sendResponse({ success: false, error: 'Invalid hand log layout' })
         return true
       }
-      chrome.storage.local.set({
-        [HAND_LOG_LAYOUT_STORAGE_KEY]: request.layout,
-      }, () => {
-        const error = chrome.runtime.lastError
-        sendResponse(error
-          ? { success: false, error: error.message ?? 'Failed to save hand log layout' }
-          : { success: true })
-      })
+      enqueueHandLogLayoutWrite(
+        callback => chrome.storage.local.set({
+          [HAND_LOG_LAYOUT_STORAGE_KEY]: request.layout,
+        }, callback),
+        sendResponse,
+        'Failed to save hand log layout'
+      )
       return true
     } else if (request.action === 'resetDeviceHandLogLayout') {
-      chrome.storage.local.remove(HAND_LOG_LAYOUT_STORAGE_KEY, () => {
-        const error = chrome.runtime.lastError
-        sendResponse(error
-          ? { success: false, error: error.message ?? 'Failed to reset hand log layout' }
-          : { success: true })
-      })
+      enqueueHandLogLayoutWrite(
+        callback => chrome.storage.local.remove(
+          HAND_LOG_LAYOUT_STORAGE_KEY,
+          callback
+        ),
+        sendResponse,
+        'Failed to reset hand log layout'
+      )
       return true
     } else if (request.action === 'exportData') {
       // Block concurrent operations
