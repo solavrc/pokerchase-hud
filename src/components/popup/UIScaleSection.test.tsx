@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { UIScaleSection } from './UIScaleSection'
 import type { UIConfig } from '../../types/hand-log'
@@ -6,12 +6,14 @@ import { DEFAULT_UI_CONFIG } from '../../types/hand-log'
 
 // Mock chrome storage and tabs
 const mockChromeStorageSet = jest.fn()
+const mockChromeStorageGet = jest.fn()
 const mockTabsQuery = jest.fn()
 const mockTabsSendMessage = jest.fn()
 global.chrome = {
   ...global.chrome,
   storage: {
     sync: {
+      get: mockChromeStorageGet,
       set: mockChromeStorageSet,
     },
   },
@@ -32,6 +34,9 @@ describe('UIScaleSection', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     mockTabsSendMessage.mockResolvedValue(undefined)
+    mockChromeStorageGet.mockImplementation((_key, callback) => {
+      callback({ uiConfig: DEFAULT_UI_CONFIG })
+    })
     mockTabsQuery.mockImplementation((_, callback) => {
       callback([{ id: 1 }, { id: 2 }])
     })
@@ -44,6 +49,45 @@ describe('UIScaleSection', () => {
     expect(screen.getByText('100%')).toBeInTheDocument()
     expect(screen.getByText('表示')).toBeInTheDocument()
     expect(screen.getByText('非表示')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'HUD表示切り替えショートカット' }))
+      .toHaveValue('Ctrl + Shift + H')
+  })
+
+  it('小型入力欄でショートカットを記録する', () => {
+    render(<UIScaleSection {...defaultProps} />)
+    const input = screen.getByRole('textbox', { name: 'HUD表示切り替えショートカット' })
+
+    fireEvent.focus(input)
+    fireEvent.keyDown(input, {
+      key: 'y',
+      code: 'KeyY',
+      ctrlKey: true,
+      shiftKey: true,
+    })
+
+    expect(mockChromeStorageSet).toHaveBeenCalledWith({
+      uiConfig: expect.objectContaining({
+        toggleShortcut: {
+          code: 'KeyY',
+          key: 'y',
+          ctrl: true,
+          alt: false,
+          shift: true,
+          meta: false,
+        },
+      }),
+    })
+  })
+
+  it('ショートカット入力欄の右クリックで明示的な解除状態を保存する', () => {
+    render(<UIScaleSection {...defaultProps} />)
+    const input = screen.getByRole('textbox', { name: 'HUD表示切り替えショートカット' })
+
+    fireEvent.contextMenu(input)
+
+    expect(mockChromeStorageSet).toHaveBeenCalledWith({
+      uiConfig: expect.objectContaining({ toggleShortcut: null }),
+    })
   })
 
   it('UI表示のON/OFFを切り替え', async () => {

@@ -26,7 +26,6 @@ import { sendMessageWithTimeout } from './popup/send-message'
 // Import sub-components
 import { UIScaleSection } from './popup/UIScaleSection'
 import { HudDisplaySection } from './popup/HudDisplaySection'
-import { KeyboardShortcutSection } from './popup/KeyboardShortcutSection'
 import { ImportExportSection } from './popup/ImportExportSection'
 import { FirebaseAuthSection } from './popup/FirebaseAuthSection'
 import { GameTypeFilterSection } from './popup/GameTypeFilterSection'
@@ -561,10 +560,6 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           setUIConfig={setUIConfig}
         />
 
-        <KeyboardShortcutSection
-          uiConfig={uiConfig}
-          setUIConfig={setUIConfig}
-        />
       </SectionCard>
 
       <SectionCard>
