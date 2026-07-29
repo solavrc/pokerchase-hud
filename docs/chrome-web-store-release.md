@@ -15,7 +15,8 @@ Chrome Web Store の「検証済み CRX アップロード」を有効にした�
 Sentry error monitoring is an external data transfer. General errors send
 sanitized crash metadata. API schema failures additionally send a bounded
 poker-semantic event snapshot after the extension pseudonymizes direct player
-identifiers and removes names, free text, credentials, and session data.
+identifiers and removes names, free text, credentials, and authentication or
+session tokens.
 Before submitting a telemetry-enabled release:
 
 1. Chrome Web Store の説明と Privacy practices で、匿名化したクラッシュ情報

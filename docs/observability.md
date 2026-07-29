@@ -45,14 +45,16 @@ The semantic snapshot keeps values needed to interpret poker behavior, such as
 rankings, and rewards. Relationships between players remain inspectable, but
 direct identifiers are replaced with stable per-event aliases (`user#1`,
 `user#2`, ...). User/player/friend names, chat and other free text,
-credentials, session identifiers, email/IP fields, URL query strings, and
-dynamic map keys are redacted client-side.
+credentials and authentication/session tokens, email/IP fields, URL query
+strings, and dynamic map keys are redacted client-side.
 
-The exact original event remains only in the local Raw Event Lake. Sentry
-receives the pseudonymized semantic snapshot, never the byte-for-byte raw
-event. The Sentry project also has default data scrubbing and IP-address
-scrubbing enabled as a second privacy layer. Server-side scrubbing is not the
-primary protection because a newly introduced field name may be unknown.
+The exact original event remains available in the local Raw Event Lake and may
+follow the separately documented, user-controlled Firestore cloud-sync path.
+Sentry receives only the pseudonymized semantic snapshot, never the
+byte-for-byte raw event. The Sentry project also has default data scrubbing and
+IP-address scrubbing enabled as a second privacy layer. Server-side scrubbing
+is not the primary protection because a newly introduced field name may be
+unknown.
 
 ## Privacy boundary
 
