@@ -18,6 +18,7 @@ import type {
 } from "../types/messages"
 import { rotateArrayFromIndex } from "../utils/array-utils"
 import { consumePendingStats } from "../utils/pending-stats-cache"
+import { isEditableShortcutTarget, matchesShortcut } from "../utils/keyboard-shortcut"
 import HandLog from "./HandLog"
 import Hud from "./Hud"
 import type { AllPlayersRealTimeStats } from "../realtime-stats/realtime-stats-service"
@@ -60,6 +61,7 @@ const App = memo(() => {
   const [uiConfig, setUIConfig] = useState<UIConfig>(DEFAULT_UI_CONFIG)
   const [statDisplayConfigs, setStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
   const [configLoaded, setConfigLoaded] = useState(false)
+  const uiConfigChangedAfterMountRef = useRef(false)
   const [shouldScrollToLatest, setShouldScrollToLatest] = useState(false)
   const [allPlayersRealTimeStats, setAllPlayersRealTimeStats] = useState<AllPlayersRealTimeStats | undefined>()
   const [heroOriginalSeatIndex, setHeroOriginalSeatIndex] = useState<number | undefined>()
@@ -103,6 +105,31 @@ const App = memo(() => {
   const [handEpoch, setHandEpoch] = useState(0)
   const [filterRevision, setFilterRevision] = useState(0)
   const lastAutoBattleTypeFilterRevisionRef = useRef(0)
+
+  // ユーザー指定キーでHUD + hand logを切り替える。App自体は非表示時も
+  // マウントされたままなので、同じキーで必ず再表示できる。
+  useEffect(() => {
+    if (!configLoaded) return
+    const shortcut = uiConfig.toggleShortcut
+    if (!shortcut) return
+
+    const handleShortcut = (event: KeyboardEvent) => {
+      if (event.repeat || isEditableShortcutTarget(event.target) || !matchesShortcut(event, shortcut)) {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+      setUIConfig(current => {
+        const next = { ...current, displayEnabled: !current.displayEnabled }
+        chrome.storage.sync.set({ uiConfig: next })
+        return next
+      })
+    }
+
+    window.addEventListener('keydown', handleShortcut, true)
+    return () => window.removeEventListener('keydown', handleShortcut, true)
+  }, [configLoaded, uiConfig.toggleShortcut])
 
   const handleTogglePositionalPanel = useCallback((playerId: number) => {
     setOpenPositionalPanelPlayerId(prev => prev === playerId ? null : playerId)
@@ -469,6 +496,7 @@ const App = memo(() => {
         dimCacheRef.current.set(HERO_SEAT_INDEX, heroEntry)
       }
     } else if (message.action === "updateUIConfig" && message.config) {
+      uiConfigChangedAfterMountRef.current = true
       setUIConfig(message.config)
     }
   }, [applyDimmedSeatIndices])
@@ -624,6 +652,7 @@ const App = memo(() => {
 
   const handleUIConfigUpdate = useCallback(
     (event: CustomEvent<UIConfig>) => {
+      uiConfigChangedAfterMountRef.current = true
       setUIConfig(event.detail)
     },
     []
@@ -662,7 +691,7 @@ const App = memo(() => {
           ...result.handLogConfig,
         })
       }
-      if (result.uiConfig) {
+      if (result.uiConfig && !uiConfigChangedAfterMountRef.current) {
         setUIConfig({
           ...DEFAULT_UI_CONFIG,
           ...result.uiConfig,
@@ -688,6 +717,14 @@ const App = memo(() => {
       const nextOptions = changes['options']?.newValue as Options | undefined
       if (nextOptions?.filterOptions?.statDisplayConfigs) {
         setStatDisplayConfigs(nextOptions.filterOptions.statDisplayConfigs)
+      }
+      const nextUIConfig = changes['uiConfig']?.newValue as UIConfig | undefined
+      if (nextUIConfig) {
+        uiConfigChangedAfterMountRef.current = true
+        setUIConfig({
+          ...DEFAULT_UI_CONFIG,
+          ...nextUIConfig,
+        })
       }
     }
     chrome.storage.onChanged?.addListener(handleOptionsStorageChange)

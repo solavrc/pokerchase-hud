@@ -24,7 +24,10 @@ import { initializeAutoSyncOnReady, createSignInTransitionHandler } from './back
 import { loadOptions, saveOptions, type Options } from './utils/options-storage'
 import { DEFAULT_TABLE_SIZE_FILTER, selectedTableSizeLayers } from './utils/table-size'
 import { checkMinVersionGate } from './services/min-version-gate'
+import { captureHandledException, initSentry } from './observability/sentry'
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
+
+initSentry('background')
 
 // Get game URL pattern from manifest
 const gameUrlPattern = content_scripts[0]!.matches[0]!
@@ -62,9 +65,15 @@ service.ready.then(async () => {
     await initializeAutoSyncOnReady(firebaseAuthService, autoSyncService, service.filtersRestored)
   } catch (error) {
     console.error('[background] Auto sync initialization failed:', error)
+    captureHandledException(error, {
+      operation: 'auto_sync.initialize'
+    })
   }
 }).catch(err => {
   console.error('[background] PokerChaseService initialization failed:', err)
+  captureHandledException(err, {
+    operation: 'poker_chase_service.initialize'
+  })
 })
 
 /** 拡張更新時の処理 */

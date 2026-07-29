@@ -1,0 +1,440 @@
+import { buildSchemaDiagnostic } from './schema-diagnostic'
+import { getEventFields } from '../types/api'
+
+describe('schema repair diagnostics', () => {
+  it('bounds structural traversal even when dynamic paths deduplicate', () => {
+    let getterReads = 0
+    let fanout: Record<string, unknown> = { Leaf: 1 }
+
+    for (let depth = 0; depth < 6; depth += 1) {
+      const child = fanout
+      fanout = {}
+      for (let index = 0; index < 8; index += 1) {
+        Object.defineProperty(fanout, `dynamic-${depth}-${index}`, {
+          enumerable: true,
+          get: () => {
+            getterReads += 1
+            if (getterReads > 30_000) {
+              throw new Error('structural traversal exceeded its node budget')
+            }
+            return child
+          }
+        })
+      }
+    }
+
+    const diagnostic = buildSchemaDiagnostic(fanout, [{
+      path: [],
+      code: 'custom'
+    }], {
+      redactUnknownRootKeys: true
+    })
+
+    expect(diagnostic.shapeTruncated).toBe(true)
+    expect(getterReads).toBeLessThanOrEqual(30_000)
+    expect(diagnostic.payloadShape.length).toBeLessThanOrEqual(100)
+  })
+
+  it('preserves poker semantics while pseudonymizing direct identifiers', () => {
+    const payload = {
+      ApiTypeId: 303,
+      FriendId: 129532369,
+      PlayerName: 'sensitive-player-name',
+      SeatUserIds: [129532369, 99887766, -1],
+      Enabled: true,
+      BattleType: 4,
+      HandId: 531064322,
+      Game: {
+        Ante: 100,
+        SmallBlind: 200,
+        BigBlind: 400
+      },
+      Progress: {
+        Pot: 1800,
+        NextActionTypes: [2, 3, 4, 5]
+      },
+      Results: [{
+        UserId: 129532369,
+        HoleCards: [8, 24],
+        Ranking: 2,
+        RewardChip: 0
+      }],
+      Nested: {
+        Items: [
+          { Amount: 100, Label: 'private-value' },
+          { Amount: 2.5, Extra: null }
+        ]
+      },
+      Message: {
+        Ms: 'private chat text',
+        Us: {
+          Id: 99887766,
+          Na: 'another sensitive player'
+        }
+      },
+      AccessToken: 'secret-token',
+      Class: {
+        'user@example.com': 'dynamic-private-value'
+      }
+    }
+
+    const diagnostic = buildSchemaDiagnostic(payload, [{
+      path: ['ApiTypeId'],
+      code: 'invalid_union'
+    }])
+
+    expect(diagnostic.payloadShape).toEqual(expect.arrayContaining([
+      '$: object',
+      'ApiTypeId: integer',
+      'FriendId: integer',
+      'PlayerName: string',
+      'SeatUserIds: array',
+      'Enabled: boolean',
+      'Nested.[dynamic-key]: array',
+      'Nested.[dynamic-key][]: object',
+      'Nested.[dynamic-key][].[dynamic-key]: integer',
+      'Nested.[dynamic-key][].[dynamic-key]: number',
+      'Nested.[dynamic-key][].[dynamic-key]: null',
+      'Class.[dynamic-key]: string'
+    ]))
+    expect(diagnostic.issues).toEqual([{
+      path: 'ApiTypeId',
+      code: 'invalid_union',
+      expected: undefined,
+      actualType: 'integer'
+    }])
+
+    expect(diagnostic.sanitizedPayload).toMatchObject({
+      ApiTypeId: 303,
+      FriendId: 'user#1',
+      PlayerName: 'player-name#1',
+      SeatUserIds: ['user#1', 'user#2', -1],
+      BattleType: 4,
+      HandId: 531064322,
+      Game: {
+        Ante: 100,
+        SmallBlind: 200,
+        BigBlind: 400
+      },
+      Progress: {
+        Pot: 1800,
+        NextActionTypes: [2, 3, 4, 5]
+      },
+      Results: [{
+        UserId: 'user#1',
+        HoleCards: [8, 24],
+        Ranking: 2,
+        RewardChip: 0
+      }],
+      Nested: {
+        '[dynamic-key-1]': [
+          {
+            '[dynamic-key-1]': 100,
+            '[dynamic-key-2]': '[redacted-string:length=13]'
+          },
+          {
+            '[dynamic-key-1]': 2.5,
+            '[dynamic-key-2]': null
+          }
+        ]
+      },
+      Message: '[redacted-text]',
+      AccessToken: '[redacted]'
+    })
+    const serialized = JSON.stringify(diagnostic)
+    expect(serialized).not.toContain('129532369')
+    expect(serialized).not.toContain('99887766')
+    expect(serialized).not.toContain('sensitive-player-name')
+    expect(serialized).not.toContain('private-value')
+    expect(serialized).not.toContain('private chat text')
+    expect(serialized).not.toContain('another sensitive player')
+    expect(serialized).not.toContain('secret-token')
+    expect(serialized).not.toContain('user@example.com')
+    expect(serialized).not.toContain('dynamic-private-value')
+  })
+
+  it('reports expected and actual types at a broken existing path', () => {
+    const diagnostic = buildSchemaDiagnostic(
+      {
+        ApiTypeId: 1305,
+        FriendId: 'redacted-at-source'
+      },
+      [{
+        path: ['FriendId'],
+        code: 'invalid_type',
+        expected: 'number'
+      }]
+    )
+
+    expect(diagnostic.issues).toEqual([{
+      path: 'FriendId',
+      code: 'invalid_type',
+      expected: 'number',
+      actualType: 'string'
+    }])
+    expect(diagnostic.sanitizedPayload).toEqual({
+      ApiTypeId: 1305,
+      FriendId: 'user#1'
+    })
+    expect(JSON.stringify(diagnostic)).not.toContain('redacted-at-source')
+  })
+
+  it('redacts dynamic map keys in validation issue paths', () => {
+    const diagnostic = buildSchemaDiagnostic(
+      {
+        RingReward: {
+          Class: {
+            Alice: 'unexpected'
+          }
+        }
+      },
+      [{
+        path: ['RingReward', 'Class', 'Alice'],
+        code: 'invalid_type',
+        expected: 'number'
+      }]
+    )
+
+    expect(diagnostic.issues).toEqual([{
+      path: 'RingReward.Class.[dynamic-key]',
+      code: 'invalid_type',
+      expected: 'number',
+      actualType: 'string'
+    }])
+    expect(JSON.stringify(diagnostic)).not.toContain('Alice')
+  })
+
+  it('redacts keys in previously unknown map containers', () => {
+    const diagnostic = buildSchemaDiagnostic(
+      {
+        Players: {
+          Alice: {
+            UserId: 129532369,
+            Chip: 1200
+          },
+          Bob: {
+            UserId: 99887766,
+            Chip: 800
+          }
+        }
+      },
+      [{
+        path: ['Players', 'Alice', 'UserId'],
+        code: 'invalid_type',
+        expected: 'string'
+      }]
+    )
+
+    expect(diagnostic.issues[0]?.path).toBe(
+      'Players.[dynamic-key].UserId'
+    )
+    expect(diagnostic.payloadShape).toEqual(expect.arrayContaining([
+      'Players: object',
+      'Players.[dynamic-key]: object',
+      'Players.[dynamic-key].UserId: integer',
+      'Players.[dynamic-key].Chip: integer'
+    ]))
+    expect(diagnostic.sanitizedPayload).toEqual({
+      Players: {
+        '[dynamic-key-1]': {
+          UserId: 'user#1',
+          Chip: 1200
+        },
+        '[dynamic-key-2]': {
+          UserId: 'user#2',
+          Chip: 800
+        }
+      }
+    })
+    const serialized = JSON.stringify(diagnostic)
+    expect(serialized).not.toContain('Alice')
+    expect(serialized).not.toContain('Bob')
+    expect(serialized).not.toContain('129532369')
+    expect(serialized).not.toContain('99887766')
+  })
+
+  it('redacts unexpected map keys even inside a known container', () => {
+    const diagnostic = buildSchemaDiagnostic(
+      {
+        Player: {
+          Alice: {
+            UserId: 129532369,
+            Chip: 1200
+          }
+        }
+      },
+      [{
+        path: ['Player', 'Alice', 'Chip'],
+        code: 'unrecognized_keys'
+      }]
+    )
+
+    expect(diagnostic.issues[0]?.path).toBe(
+      'Player.[dynamic-key].Chip'
+    )
+    expect(diagnostic.payloadShape).toEqual(expect.arrayContaining([
+      'Player: object',
+      'Player.[dynamic-key]: object',
+      'Player.[dynamic-key].UserId: integer',
+      'Player.[dynamic-key].Chip: integer'
+    ]))
+    const serialized = JSON.stringify(diagnostic)
+    expect(serialized).not.toContain('Alice')
+    expect(serialized).not.toContain('129532369')
+  })
+
+  it('redacts user-controlled keys in nested dynamic maps', () => {
+    const diagnostic = buildSchemaDiagnostic(
+      {
+        Players: {
+          Alice: {
+            Bob: 1,
+            Chip: 1200
+          }
+        }
+      },
+      [{
+        path: ['Players', 'Alice', 'Bob'],
+        code: 'unrecognized_keys'
+      }]
+    )
+
+    expect(diagnostic.issues[0]?.path).toBe(
+      'Players.[dynamic-key].[dynamic-key]'
+    )
+    expect(diagnostic.payloadShape).toEqual(expect.arrayContaining([
+      'Players.[dynamic-key].[dynamic-key]: integer',
+      'Players.[dynamic-key].Chip: integer'
+    ]))
+    const serialized = JSON.stringify(diagnostic)
+    expect(serialized).not.toContain('Alice')
+    expect(serialized).not.toContain('Bob')
+  })
+
+  it('redacts unknown root keys for invalid-ID diagnostics', () => {
+    const diagnostic = buildSchemaDiagnostic(
+      {
+        Alice: {
+          UserId: 129532369,
+          Chip: 1200
+        },
+        timestamp: 1785008587942
+      },
+      [{
+        path: ['Alice', 'UserId'],
+        code: 'unrecognized_keys'
+      }],
+      { redactUnknownRootKeys: true }
+    )
+
+    expect(diagnostic.issues[0]?.path).toBe('[dynamic-key].UserId')
+    expect(diagnostic.payloadShape).toEqual(expect.arrayContaining([
+      '[dynamic-key]: object',
+      '[dynamic-key].UserId: integer',
+      '[dynamic-key].Chip: integer',
+      'timestamp: integer'
+    ]))
+    const serialized = JSON.stringify(diagnostic)
+    expect(serialized).not.toContain('Alice')
+    expect(serialized).not.toContain('129532369')
+  })
+
+  it('redacts unexpected root keys while retaining fields from a known event schema', () => {
+    const diagnostic = buildSchemaDiagnostic(
+      {
+        ApiTypeId: 309,
+        timestamp: 1785008587942,
+        Alice: {
+          UserId: 129532369,
+          Ranking: 1
+        }
+      },
+      [{
+        path: ['Alice', 'UserId'],
+        code: 'unrecognized_keys'
+      }],
+      {
+        redactUnknownRootKeys: true,
+        knownRootKeys: getEventFields(309)
+      }
+    )
+
+    expect(diagnostic.issues[0]?.path).toBe('[dynamic-key].UserId')
+    expect(diagnostic.payloadShape).toEqual(expect.arrayContaining([
+      'ApiTypeId: integer',
+      'timestamp: integer',
+      '[dynamic-key]: object'
+    ]))
+    expect(diagnostic.sanitizedPayload).toMatchObject({
+      ApiTypeId: 309,
+      timestamp: 1785008587942
+    })
+    expect(JSON.stringify(diagnostic)).not.toContain('Alice')
+    expect(JSON.stringify(diagnostic)).not.toContain('129532369')
+  })
+
+  it('bounds issue formatting while preserving the original issue count', () => {
+    const rawIssues = Array.from({ length: 10_000 }, (_, index) => ({
+      path: ['Results', index, 'Ranking'],
+      code: 'invalid_type',
+      expected: 'number'
+    }))
+
+    const diagnostic = buildSchemaDiagnostic(
+      { Results: [] },
+      rawIssues
+    )
+
+    expect(diagnostic.issueCount).toBe(10_000)
+    expect(diagnostic.issues).toHaveLength(10)
+    expect(diagnostic.issues[0]?.path).toBe('Results[].Ranking')
+  })
+
+  it('redacts unknown strings by default while retaining allow-listed protocol IDs', () => {
+    const diagnostic = buildSchemaDiagnostic({
+      ApiTypeId: 9999,
+      Name: 'new player name',
+      Biography: 'new free-form field',
+      NewEnum: 'unexpected-private-value',
+      ItemId: 'item0028',
+      SettingDecoIds: ['deco0001', 'deco0002']
+    }, [])
+
+    expect(diagnostic.sanitizedPayload).toEqual({
+      ApiTypeId: 9999,
+      Name: 'player-name#1',
+      Biography: '[redacted-text]',
+      NewEnum: '[redacted-string:length=24]',
+      ItemId: 'item0028',
+      SettingDecoIds: ['deco0001', 'deco0002']
+    })
+    expect(JSON.stringify(diagnostic)).not.toContain('unexpected-private-value')
+  })
+
+  it('redacts identifier-sized unknown numbers while keeping poker state and event continuity', () => {
+    const diagnostic = buildSchemaDiagnostic({
+      ApiTypeId: 303,
+      ProfileNo: 129532369,
+      HandId: 531064322,
+      RoomId: 123456789,
+      timestamp: 1784560697458,
+      NextBlindUnixSeconds: 1784560697,
+      Chip: 25_000_000,
+      SidePot: [12_000_000],
+      SmallCounter: 1234567
+    }, [])
+
+    expect(diagnostic.sanitizedPayload).toEqual({
+      ApiTypeId: 303,
+      ProfileNo: '[redacted-number:digits=9]',
+      HandId: 531064322,
+      RoomId: 123456789,
+      timestamp: 1784560697458,
+      NextBlindUnixSeconds: 1784560697,
+      Chip: 25_000_000,
+      SidePot: [12_000_000],
+      SmallCounter: 1234567
+    })
+    expect(JSON.stringify(diagnostic)).not.toContain('129532369')
+  })
+})

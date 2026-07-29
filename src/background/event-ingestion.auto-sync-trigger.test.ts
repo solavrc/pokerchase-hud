@@ -108,6 +108,27 @@ describe('registerEventIngestion (auto-sync triggers)', () => {
     expect(onGameSessionEndSpy).not.toHaveBeenCalled()
   })
 
+  test('an explicit EVT_ENTRY_QUEUED error response does not trigger new-session sync', async () => {
+    const entryError = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 2100,
+      Code: 5205,
+      Error: {
+        Status: 1,
+        Message: 'text_sync_error_message_code_5205',
+        AddParam: '',
+        Replaces: []
+      },
+      BattleType: 0,
+      Id: '',
+      IsRetire: false
+    }
+    await onMessageHandler(entryError)
+
+    expect(onNewSessionStartSpy).not.toHaveBeenCalled()
+    expect(onGameSessionEndSpy).not.toHaveBeenCalled()
+  })
+
   test('EVT_SESSION_DETAILS (308, session start) triggers onNewSessionStart, not onGameSessionEnd', async () => {
     const sessionDetailsEvent = {
       ApiTypeId: ApiType.EVT_SESSION_DETAILS,

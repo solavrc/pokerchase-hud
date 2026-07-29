@@ -9,6 +9,8 @@ import { content_scripts } from '../../manifest.json'
 
 export const POKER_CHASE_SERVICE_EVENT = 'PokerChaseServiceEvent'
 export const POKER_CHASE_ORIGIN = new URL(content_scripts[0]!.matches[0]!).origin
+/** Page-world bridge envelope used only when an API payload lacks a numeric ID. */
+export const POKER_CHASE_INVALID_API_EVENT = 'PokerChaseInvalidApiEvent'
 export const STORAGE_KEY = 'pokerChaseServiceState'
 /**
  * content_script.ts が生の EVT_SESSION_RESULTS（309）をページの window.postMessage

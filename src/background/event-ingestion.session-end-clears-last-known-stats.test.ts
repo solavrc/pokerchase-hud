@@ -265,7 +265,7 @@ describe('session end (309) invalidates background lastKnownStats', () => {
     const sourceRestoreBlocked = new Promise<void>(resolve => {
       releaseSourceRestore = resolve
     })
-    jest.spyOn(chrome.storage.session, 'get').mockImplementationOnce(async key => {
+    jest.spyOn(chrome.storage.local, 'get').mockImplementationOnce(async key => {
       await sourceRestoreBlocked
       return { [key as string]: 1 }
     })

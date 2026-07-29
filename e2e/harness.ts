@@ -411,6 +411,10 @@ const buildHelpers = (browser: Browser, gamePage: Page): HarnessHelpers => {
   }
 
   const waitForHudMount = async (timeoutMs = 15000): Promise<void> => {
+    // A caller may navigate the fixture page after launchHarness(), which
+    // removes the keepalive injected at initial load. Restore it before
+    // waitForFunction's animation-frame polling and later screenshots can run.
+    await ensureCompositorKeepalive(gamePage)
     await gamePage.waitForFunction(
       () => {
         const container = document.querySelector('#unity-container')

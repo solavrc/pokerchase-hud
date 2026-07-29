@@ -26,6 +26,7 @@ import {
 } from '../utils/api-event-key'
 import { startKeepAlive } from '../background/service-worker-keepalive'
 import { HandLogExporter } from '../utils/hand-log-exporter'
+import { captureHandledException } from '../observability/sentry'
 
 // Raw-only entry cancellation. Deliberately not part of ApiType/application
 // streams; replay still needs it to retire a queued session.
@@ -761,6 +762,9 @@ export class AutoSyncService {
         return { success: true }
       } catch (error) {
         console.error('[AutoSync] Sync error:', error)
+        captureHandledException(error, {
+          operation: `auto_sync.${direction}`
+        })
         // Independent release-audit finding #12, "manual sync reports
         // success on internal failure": this catch block used to only
         // update `syncState` and fall off the end of the function (implicit
