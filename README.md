@@ -81,7 +81,7 @@ so visual changes are shared with the extension rather than duplicated.
 
 ## Documentation
 
-📖 **[Technical Documentation](CLAUDE.md)** - Complete technical reference including:
+📖 **[Technical Documentation](AGENTS.md)** - Complete technical reference including:
 
 - Architecture overview and design principles
 - Stream processing pipeline details

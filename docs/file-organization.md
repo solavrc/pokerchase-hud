@@ -21,7 +21,8 @@
 ├── release-please-config.json # Release automation config
 ├── .release-please-manifest.json # Release version tracking
 ├── renovate.json              # Dependency update config
-├── CLAUDE.md                  # AI agent documentation
+├── AGENTS.md                  # Canonical agent instructions + code review rules (all agents)
+├── CLAUDE.md                  # Symlink → AGENTS.md (Claude Code loads it via this name)
 ├── README.md                  # Project overview
 ├── README.drawio.png          # Architecture diagram
 ├── CONTRIBUTING.md            # Contribution guidelines
@@ -70,7 +71,8 @@
     │
     ├── background/            # Service worker modules
     │   ├── auto-sync-boot.ts        # Auth-ready auto-sync initialization (init race guard)
-    │   ├── event-ingestion.ts       # Raw Event Lake ingestion: serialized queue, durability
+    │   ├── AGENTS.md                # Nested review rules (SW concurrency invariants)
+│   ├── event-ingestion.ts       # Raw Event Lake ingestion: serialized queue, durability
     │   │                            #   barrier, content dedup + sequence assignment,
     │   │                            #   session-activity transitions (201/303/308 → 309/203)
     │   ├── hud-config-sync.ts       # UIConfig broadcast to game tabs
@@ -131,6 +133,7 @@
     │   └── poker-chase-db.ts  # Dexie database definition (v6 schema: sequence-key Lake)
     │
     ├── services/
+    │   ├── AGENTS.md                   # Nested review rules (sync cursor / auth-generation invariants)
     │   ├── poker-chase-service.ts      # Central state management + persistence
     │   ├── firebase-auth-service.ts    # Chrome identity → Firebase auth (authGeneration)
     │   ├── firebase-config.ts          # Firebase project config
