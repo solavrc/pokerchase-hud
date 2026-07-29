@@ -145,6 +145,30 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(service.getEffectiveBattleTypeFilter()).toEqual([])
   })
 
+  test('entry cancellation clears an auto-selected queued session in application order', async () => {
+    service.beginFiltersRestore()
+    service.autoBattleTypeFilter = true
+    const entry = {
+      ApiTypeId: 201, timestamp: 117, Code: 0, BattleType: 2, Id: 'stage000_008', IsRetire: false
+    }
+    const cancellation = { ApiTypeId: 203, timestamp: 118, Code: 0 }
+
+    const entryPending = onMessageHandler(entry)
+    const cancellationPending = onMessageHandler(cancellation)
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    expect(await db.apiEvents.get([117, 201, 0])).toEqual({ ...entry, sequence: 0 })
+    expect(await db.apiEvents.get([118, 203, 0])).toEqual({ ...cancellation, sequence: 0 })
+
+    service.markFiltersRestored()
+    await Promise.all([entryPending, cancellationPending])
+    await service.handAggregateStream.whenIdle()
+
+    expect(service.session.id).toBeUndefined()
+    expect(service.session.battleType).toBeUndefined()
+    expect(service.getEffectiveBattleTypeFilter()).toEqual([])
+  })
+
   test('an application-type event that fails Zod validation is stored raw but NOT forwarded to streams', async () => {
     const handLogSpy = jest.spyOn(service.handLogStream, 'write')
     const aggregateSpy = jest.spyOn(service.handAggregateStream, 'write')

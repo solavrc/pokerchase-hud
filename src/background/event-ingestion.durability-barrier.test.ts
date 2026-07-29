@@ -204,6 +204,35 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     expect(updateManager.isSafeToUpdate()).toBe(false)
   })
 
+  test('reload drain waits for filter-gated application forwarding after raw persistence finishes', async () => {
+    service.beginFiltersRestore()
+    const handLogSpy = jest.spyOn(service.handLogStream, 'write')
+    let releaseAggregate!: () => void
+    const aggregateBlocked = new Promise<void>(resolve => { releaseAggregate = resolve })
+    jest.spyOn(service.handAggregateStream, 'whenIdle').mockReturnValue(aggregateBlocked)
+
+    const pending = onMessageHandler(entryQueued(110))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(await db.apiEvents.get([110, ApiType.EVT_ENTRY_QUEUED, 0])).toBeDefined()
+
+    let drained = false
+    const drain = updateManager.awaitIngestionDrain().then(() => { drained = true })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(drained).toBe(false)
+    expect(handLogSpy).not.toHaveBeenCalled()
+
+    service.markFiltersRestored()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(handLogSpy).toHaveBeenCalledTimes(1)
+    expect(drained).toBe(false)
+
+    releaseAggregate()
+    await pending
+    await drain
+
+    expect(drained).toBe(true)
+  })
+
   test('on duplicate-key rejection (event already in the Raw Event Lake), ALL downstream processing is skipped, including session-activity tracking -- duplicates never re-arm', async () => {
     const event = entryQueued(200)
     await onMessageHandler(event) // first arrival: stored + processed normally

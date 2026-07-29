@@ -41,6 +41,7 @@ const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
  */
 let ingestionQueue: Promise<void> = Promise.resolve()
 let applicationForwardingQueue: Promise<void> = Promise.resolve()
+let ingestionDrainQueue: Promise<void> = Promise.resolve()
 
 type DurableProcessingResult = {
   forwarding?: Promise<void>
@@ -57,12 +58,20 @@ const clearEndedSession = (service: PokerChaseService): void => {
   }
 }
 
+const isSessionEndSignal = (rawApiTypeId: unknown): boolean =>
+  rawApiTypeId === ApiType.EVT_SESSION_RESULTS ||
+  rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID
+
 const enqueueApplicationForwarding = (
   service: PokerChaseService,
   rawApiTypeId: unknown,
   data?: ReturnType<typeof parseApiEvent>
 ): Promise<void> => {
   const forwarding = applicationForwardingQueue.then(async () => {
+    // Local deletion must not wait for a startup filter gate merely to discard
+    // work whose raw rows are being deleted. Recheck after the gate too, since
+    // deletion can claim ownership while this task is waiting.
+    if (getOperationState().type === 'delete') return
     await Promise.all([service.ready, service.filtersRestored])
 
     // Raw保存後にlocal deletionがcommit slotを取得した場合、待機していた
@@ -73,7 +82,7 @@ const enqueueApplicationForwarding = (
     // raw段階で終了状態を即座に反映した後も、先行して待っていた201/303が
     // filtersRestored後にsessionを復元し得る。309自身の順番でもう一度resetし、
     // application queueの最終状態も到着順に一致させる。
-    if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+    if (isSessionEndSignal(rawApiTypeId)) {
       clearEndedSession(service)
     }
 
@@ -87,7 +96,19 @@ const enqueueApplicationForwarding = (
   applicationForwardingQueue = forwarding.catch(err => {
     console.error('[background] Unhandled application forwarding error (fail-safe, queue continues):', err)
   })
-  return forwarding
+  // application queue自体はwrite()後すぐ次イベントへ進めてライブ処理を詰まらせない。
+  // 一方、reload drain/callerへ返すPromiseは、このイベントまでに各streamへ積まれた
+  // 非同期変換と下流DB派生まで待つ。特にEVT_HAND_RESULTSはAggregate→WriteEntity
+  // →ReadEntityの順にqueueが追加されるため、上流から順にidleを確認する。
+  return forwarding.then(async () => {
+    await Promise.all([
+      service.handLogStream.whenIdle(),
+      service.handAggregateStream.whenIdle(),
+      service.realTimeStatsStream.whenIdle(),
+    ])
+    await service.writeEntityStream.whenIdle()
+    await service.statsOutputStream.whenIdle()
+  })
 }
 
 /**
@@ -149,7 +170,8 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   // operation completion/SW startupと同じ安全性機構へ統一されている。
   ingestionQueue = Promise.resolve()
   applicationForwardingQueue = Promise.resolve()
-  setIngestionDrainProvider(() => ingestionQueue)
+  ingestionDrainQueue = Promise.resolve()
+  setIngestionDrainProvider(() => ingestionDrainQueue)
 
   chrome.runtime.onConnect.addListener(port => {
     if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
@@ -180,7 +202,16 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         })
         // 呼び出し元には従来通り、このイベント固有のstream転送完了まで待てる
         // Promiseを返す。ただしそれをraw ingestionQueueのtailにはしない。
-        return durableTask.then(result => result?.forwarding)
+        const completion = durableTask.then(result => result?.forwarding)
+        // reloadだけはrawとapplicationの両方が決着するまで待つ。前のdrain tailも
+        // 明示的につなぐことで、後続のnon-application eventが古いforwardingを
+        // providerから脱落させない。
+        ingestionDrainQueue = Promise.all([ingestionDrainQueue, completion])
+          .then(() => undefined)
+          .catch(err => {
+            console.error('[background] Unhandled ingestion drain error (fail-safe, drain continues):', err)
+          })
+        return completion
       })
       const stopPing = startPortPing(port)
 
@@ -327,13 +358,16 @@ const processEvent = async (
   // 詳細は`applySessionActivity`のコメント参照。
   applySessionActivity(rawApiTypeId, message)
 
-  if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
-    // 309は現在セッションの終了を表す。auto選択が前セッションのbattleTypeを
+  if (isSessionEndSignal(rawApiTypeId)) {
+    // 309/203は現在セッション（または参加待ち）の終了を表す。auto選択が
+    // 前セッションのbattleTypeを
     // 永続状態から拾い続けないよう、raw保存成功・重複排除後にセッションを
-    // fail closedへ戻す。raw ApiTypeIdだけを見るため、309のpayloadが将来
+    // fail closedへ戻す。raw ApiTypeIdだけを見るため、payloadが将来
     // Zod parseに失敗しても終了状態は保持される。
     clearEndedSession(service)
+  }
 
+  if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
     // #179 round3指摘: セッション終了(EVT_SESSION_RESULTS)によるHUDクリアは
     // App.tsx側のReact stateだけで完結しており、background(ports.ts)の
     // `lastKnownStats`はセッションをまたいで残り続ける。この状態で
@@ -482,7 +516,7 @@ const processEvent = async (
         console.error('[background] Failed to record undecoded event stats:', err)
       )
     }
-    if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+    if (isSessionEndSignal(rawApiTypeId)) {
       return { forwarding: enqueueApplicationForwarding(service, rawApiTypeId) }
     }
     return
@@ -493,6 +527,9 @@ const processEvent = async (
     // アプリケーションで使用しないApiTypeIdのイベントはパイプラインに投入しないが
     // 内容は記録（生ログとしては上で既に保存済み）
     console.info(`[background] Non-application event (${data.ApiTypeId}): ${JSON.stringify(data)}`)
+    if (isSessionEndSignal(rawApiTypeId)) {
+      return { forwarding: enqueueApplicationForwarding(service, rawApiTypeId) }
+    }
     return
   }
 

@@ -13,6 +13,7 @@ import { ErrorHandler } from '../utils/error-handler'
 import { defaultRegistry, defaultStatDisplayConfigs } from '../stats'
 import { COMPACT_REQUIRED_STAT_IDS, CLASSIFIER_REQUIRED_STAT_IDS } from '../stats/compactStats'
 import { matchesTableSizeFilter } from '../utils/table-size'
+import type { TableSizeLayer } from '../utils/table-size'
 import { compareHandsNewestFirst } from '../utils/hand-order'
 import type { ErrorContext } from '../types/errors'
 
@@ -43,6 +44,12 @@ const FORCED_ENABLED_STAT_IDS: ReadonlySet<string> = new Set([
   ...CLASSIFIER_REQUIRED_STAT_IDS,
 ])
 
+type StatsFilterSnapshot = {
+  battleTypeFilter?: number[]
+  tableSizeFilter?: TableSizeLayer[]
+  handLimitFilter?: number
+}
+
 export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
   private service: PokerChaseService
   private statsCache: Map<string, { stats: PlayerStats[], timestamp: number }> = new Map()
@@ -57,6 +64,23 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
   /** Drop results derived from an older hands/phases/actions snapshot. */
   public invalidateCache(): void {
     this.statsCache.clear()
+  }
+
+  private captureFilterSnapshot(): StatsFilterSnapshot {
+    const battleTypeFilter = this.service.getEffectiveBattleTypeFilter()
+    return {
+      battleTypeFilter: battleTypeFilter ? [...battleTypeFilter] : undefined,
+      tableSizeFilter: this.service.tableSizeFilter ? [...this.service.tableSizeFilter] : undefined,
+      handLimitFilter: this.service.handLimitFilter,
+    }
+  }
+
+  private filterSnapshotKey(snapshot: StatsFilterSnapshot): string {
+    return [
+      snapshot.battleTypeFilter?.join(',') ?? 'all',
+      snapshot.tableSizeFilter?.join(',') ?? 'all',
+      snapshot.handLimitFilter ?? 'all',
+    ].join('_')
   }
 
   public async recalculateStats(): Promise<void> {
@@ -87,7 +111,12 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     // broadcastされる。反対にキュー待ち中の新しいlive dealをそのまま使うと、
     // この再計算結果が別lineupでbroadcastされる。push直前に捕捉値へ再アンカーする。
     const evtDeal = this.service.latestEvtDeal
-    const sessionRevision = this.service.sessionRevision
+    const sessionId = this.service.session.id
+    const filterSnapshot = this.captureFilterSnapshot()
+    const statsContextKey = `${sessionId ?? 'no-session'}_${this.filterSnapshotKey(filterSnapshot)}`
+    const isCurrentStatsContext = () =>
+      this.service.latestEvtDeal === evtDeal &&
+      `${this.service.session.id ?? 'no-session'}_${this.filterSnapshotKey(this.captureFilterSnapshot())}` === statsContextKey
 
     // 直接calcStats()すると、既に走っている旧フィルターのtransformより先に
     // 完了し、その後に旧結果がHUDを上書きし得る。通常writeと同じ直列キューの
@@ -97,17 +126,11 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
         // 待機中に新しいヒーロー在籍dealが到着した場合、この項目のseatUserIdsと
         // evtDealは既に古い。ここでliveEvtDealを巻き戻したり結果をpushせず、
         // 後ろに積まれた新dealの通常transformへ最終表示を任せる。
-        if (
-          this.service.latestEvtDeal !== evtDeal ||
-          this.service.sessionRevision !== sessionRevision
-        ) {
+        if (!isCurrentStatsContext()) {
           return
         }
-        const stats = await this.calcStats(seatUserIds)
-        if (
-          this.service.latestEvtDeal !== evtDeal ||
-          this.service.sessionRevision !== sessionRevision
-        ) {
+        const stats = await this.calcStats(seatUserIds, filterSnapshot)
+        if (!isCurrentStatsContext()) {
           return
         }
         this.service.liveEvtDeal = evtDeal
@@ -136,8 +159,14 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       }
 
       // seatUserIdsとフィルター設定に基づいてキャッシュキーを作成
-      const effectiveBattleTypeFilter = this.service.getEffectiveBattleTypeFilter()
-      const cacheKey = `${seatUserIds.join(',')}_${effectiveBattleTypeFilter?.join(',') ?? 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}`
+      const filterSnapshot = this.captureFilterSnapshot()
+      const cacheKey = `${seatUserIds.join(',')}_${this.filterSnapshotKey(filterSnapshot)}`
+      const sessionId = this.service.session.id
+      const liveEvtDeal = this.service.liveEvtDeal
+      const statsContextKey = `${sessionId ?? 'no-session'}_${this.filterSnapshotKey(filterSnapshot)}`
+      const isCurrentStatsContext = () =>
+        this.service.liveEvtDeal === liveEvtDeal &&
+        `${this.service.session.id ?? 'no-session'}_${this.filterSnapshotKey(this.captureFilterSnapshot())}` === statsContextKey
       const now = Date.now()
 
       // テスト環境（NODE_ENV=test）またはデバッグモードではキャッシュを無効化
@@ -158,8 +187,12 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
        */
       const stats = await this.service.db.transaction('r', [this.service.db.hands, this.service.db.phases, this.service.db.actions], async () => {
         // 生のseatUserIds順序で統計を計算（フロントエンドで表示位置を調整）
-        return await this.calcStats(seatUserIds)
+        return await this.calcStats(seatUserIds, filterSnapshot)
       })
+
+      // 計算中にsession/filter/deal文脈が変わった結果は、古いcache keyへ保存せず
+      // broadcastもしない。新しいdeal/filter側の後続writeが現行文脈を計算する。
+      if (!isCurrentStatsContext()) return
 
       // キャッシュを更新
       this.statsCache.set(cacheKey, { stats, timestamp: now })
@@ -201,8 +234,15 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
    * -- ただし`push()`しないため、`statsOutputStream`の'data'購読（ports.ts）を
    * 経由したブロードキャストは発生しない（呼び出し元が結果を自分で届ける）。
    */
-  calcStats = async (seatUserIds: number[]): Promise<PlayerStats[]> => {
-    const effectiveBattleTypeFilter = this.service.getEffectiveBattleTypeFilter()
+  calcStats = async (
+    seatUserIds: number[],
+    filterSnapshot: StatsFilterSnapshot = this.captureFilterSnapshot()
+  ): Promise<PlayerStats[]> => {
+    const {
+      battleTypeFilter: effectiveBattleTypeFilter,
+      tableSizeFilter,
+      handLimitFilter,
+    } = filterSnapshot
 
     return await Promise.all(seatUserIds.map(async playerId => {
       if (playerId === -1)
@@ -236,10 +276,10 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
 
       // 次に指定されていれば卓人数（配られた人数）フィルターを適用（C案）。
       // battleTypeフィルターと同じ適用点・同じ早期returnの考え方。
-      if (this.service.tableSizeFilter) {
+      if (tableSizeFilter) {
         const originalHandsCount = allPlayerHands.length
         allPlayerHands = allPlayerHands.filter((hand: Hand) =>
-          matchesTableSizeFilter(hand, this.service.tableSizeFilter)
+          matchesTableSizeFilter(hand, tableSizeFilter)
         )
 
         if (allPlayerHands.length === 0 && originalHandsCount > 0) {
@@ -251,14 +291,14 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       }
 
       // 最後にハンド制限フィルターを適用（フィルタ後にlimit、既存の順序を維持）
-      if (this.service.handLimitFilter !== undefined && this.service.handLimitFilter > 0) {
+      if (handLimitFilter !== undefined && handLimitFilter > 0) {
         // MTTのテーブル移動ではHandIdが局所逆転するため、受信時刻で最新順にする。
         allPlayerHands.sort(compareHandsNewestFirst)
-        allPlayerHands = allPlayerHands.slice(0, this.service.handLimitFilter)
+        allPlayerHands = allPlayerHands.slice(0, handLimitFilter)
       }
 
       // アクションフィルタリング用のフィルタリングされたハンドIDを作成
-      if (effectiveBattleTypeFilter || this.service.tableSizeFilter || this.service.handLimitFilter !== undefined) {
+      if (effectiveBattleTypeFilter || tableSizeFilter || handLimitFilter !== undefined) {
         filteredHandIds = allPlayerHands.map((h: Hand) => h.id)
         filteredHandIdSet = new Set(filteredHandIds)
       }

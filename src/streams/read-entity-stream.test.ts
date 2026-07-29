@@ -190,11 +190,10 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     await refresh
 
     expect(calcSpy).toHaveBeenCalledTimes(2)
-    expect(emitted).toEqual([oldStats, newStats])
-    expect(emittedDealSeatIds).toEqual([
-      spectatorDeal.SeatUserIds,
-      SEAT_USER_IDS,
-    ])
+    // The older transform lost its deal context while blocked, so it is
+    // suppressed; the queued refresh is the only broadcast.
+    expect(emitted).toEqual([newStats])
+    expect(emittedDealSeatIds).toEqual([SEAT_USER_IDS])
   })
 
   test('automatic recalculation does not overwrite a newer deal that arrives while it is calculating', async () => {
@@ -243,6 +242,86 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     expect(calcSpy).toHaveBeenCalledTimes(2)
     expect(emitted).toEqual([freshStats])
     expect(service.liveEvtDeal).toBe(newDeal)
+  })
+
+  test('player and session metadata changes do not cancel a valid queued recalculation', async () => {
+    const deal = {
+      ApiTypeId: ApiType.EVT_DEAL,
+      SeatUserIds: SEAT_USER_IDS,
+      Game: { CurrentBlindLv: 1, NextBlindUnixSeconds: 0, Ante: 0, SmallBlind: 100, BigBlind: 200, ButtonSeat: 0, SmallBlindSeat: 1, BigBlindSeat: 2 },
+      Player: { SeatIndex: 0, BetStatus: 1, HoleCards: [0, 1], Chip: 5000, BetChip: 0 },
+      OtherPlayers: [],
+      Progress: { Phase: 0, NextActionSeat: 0, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 300, SidePot: [] },
+      timestamp: 4000,
+    } as ApiEvent<ApiType.EVT_DEAL>
+    service.playerId = PLAYER_ID
+    service.session.setId('same-session')
+    service.session.setBattleType(BattleType.TOURNAMENT)
+    service.autoBattleTypeFilter = true
+    service.latestEvtDeal = deal
+
+    let releaseCalculation!: () => void
+    let signalCalculationStarted!: () => void
+    const blocked = new Promise<void>(resolve => { releaseCalculation = resolve })
+    const started = new Promise<void>(resolve => { signalCalculationStarted = resolve })
+    const expectedStats = [{ playerId: PLAYER_ID, statResults: [] }] as PlayerStats[]
+    jest.spyOn(service.statsOutputStream, 'calcStats').mockImplementationOnce(async () => {
+      signalCalculationStarted()
+      await blocked
+      return expectedStats
+    })
+    const emitted: PlayerStats[][] = []
+    service.statsOutputStream.on('data', stats => emitted.push(stats))
+
+    const refresh = service.statsOutputStream.recalculateStats()
+    await started
+    const revisionBeforeMetadata = service.sessionRevision
+    service.session.setName('renamed table')
+    service.session.setPlayer(7, { name: 'player 7', rank: 'gold' })
+    expect(service.sessionRevision).toBeGreaterThan(revisionBeforeMetadata)
+    releaseCalculation()
+    await refresh
+
+    expect(emitted).toEqual([expectedStats])
+    expect(service.liveEvtDeal).toBe(deal)
+  })
+
+  test('a transform reuses one filter snapshot and never caches a result under another category', async () => {
+    const previousNodeEnv = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    try {
+      await db.hands.update(5, { session: { battleType: BattleType.RING_GAME } })
+      await db.hands.update(6, { session: { battleType: BattleType.RING_GAME } })
+      service.session.setId('snapshot-session')
+      service.session.setBattleType(BattleType.TOURNAMENT)
+      service.autoBattleTypeFilter = true
+
+      const realCalcStats = service.statsOutputStream.calcStats
+      let firstCall = true
+      const calcSpy = jest.spyOn(service.statsOutputStream, 'calcStats')
+        .mockImplementation(async (...args) => {
+          if (firstCall) {
+            firstCall = false
+            // Change category after transform captured its key/snapshot.
+            service.session.setBattleType(BattleType.RING_GAME)
+          }
+          return await realCalcStats(...args)
+        })
+      const emitted: PlayerStats[][] = []
+      service.statsOutputStream.on('data', stats => emitted.push(stats))
+
+      service.statsOutputStream.write(SEAT_USER_IDS)
+      await service.statsOutputStream.whenIdle()
+      // The old-context result is neither broadcast nor cached.
+      expect(emitted).toEqual([])
+
+      service.session.setBattleType(BattleType.TOURNAMENT)
+      const tournamentStats = await runCalcStats(service, SEAT_USER_IDS)
+      expect(handsStatOf(tournamentStats, PLAYER_ID)?.value).toBe(4)
+      expect(calcSpy).toHaveBeenCalledTimes(2)
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv
+    }
   })
 
   test('a completed hand invalidates a same-lineup production cache warmed at deal time', async () => {
