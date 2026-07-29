@@ -494,7 +494,6 @@ const App = memo(() => {
         scale: current.scale,
       }))
     } else if (message.action === "updateDeviceUIScale") {
-      uiConfigChangedAfterMountRef.current = true
       uiScaleChangedAfterMountRef.current = true
       setUIConfig(current => ({
         ...current,
@@ -694,13 +693,13 @@ const App = memo(() => {
             ...result.handLogConfig,
           })
         }
-        if (uiConfigChangedAfterMountRef.current) {
-          setUIConfig(current => uiScaleChangedAfterMountRef.current
-            ? current
-            : { ...current, scale: localScale })
-        } else {
-          setUIConfig(mergeUIConfigWithLocalScale(result.uiConfig, localScale))
-        }
+        const loadedUIConfig = mergeUIConfigWithLocalScale(result.uiConfig, localScale)
+        setUIConfig(current => ({
+          ...(uiConfigChangedAfterMountRef.current ? current : loadedUIConfig),
+          scale: uiScaleChangedAfterMountRef.current
+            ? current.scale
+            : loadedUIConfig.scale,
+        }))
         if (result.options?.filterOptions?.statDisplayConfigs) {
           setStatDisplayConfigs(result.options.filterOptions.statDisplayConfigs)
         }

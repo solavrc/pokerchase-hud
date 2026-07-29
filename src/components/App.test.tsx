@@ -121,8 +121,16 @@ describe('App', () => {
     })
   })
 
-  it('起動時layout応答より新しいscale更新を遅い応答で巻き戻さない', async () => {
+  it('起動時の端末scale更新を保持しながら同期UI設定も初期化する', async () => {
     let respondToInitialLayout!: (response: unknown) => void
+    ;(global.chrome.storage.sync.get as jest.Mock).mockImplementation((_, callback) => {
+      callback({
+        uiConfig: {
+          ...DEFAULT_UI_CONFIG,
+          hudColorCoding: false,
+        },
+      })
+    })
     ;(global.chrome.runtime.sendMessage as jest.Mock).mockImplementation(
       (message, callback) => {
         if (message.action === 'getDeviceUILayout') {
@@ -148,6 +156,7 @@ describe('App', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('hud-0')).toHaveTextContent('Scale: 1.8')
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('ColorCoding: no')
       expect(screen.getByTestId('hand-log')).toHaveTextContent('Scale: 1.8')
     })
   })
