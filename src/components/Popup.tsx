@@ -37,6 +37,7 @@ import { UpdateSection } from './popup/UpdateSection'
 import { WhatsNewSection } from './popup/WhatsNewSection'
 import { PopupHeader } from './popup/PopupHeader'
 import { SectionCard } from './popup/SectionCard'
+import { TelemetrySection } from './popup/TelemetrySection'
 import type { PopupThemeMode } from './popup/theme'
 import { DEFAULT_POPUP_THEME_MODE, getPopupTheme, resolvePopupThemeVariant } from './popup/theme'
 import {
@@ -650,6 +651,10 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           setImportSuccess={setImportSuccess}
           setImportStartTime={setImportStartTime}
         />
+      </SectionCard>
+
+      <SectionCard>
+        <TelemetrySection />
       </SectionCard>
 
       <UndecodedEventSection />

@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { UndecodedEventSection } from './UndecodedEventSection'
 import { ApiType } from '../../types'
+import { INVALID_API_TYPE_ID_BUCKET } from '../../background/undecoded-event-tracker'
 
 describe('UndecodedEventSection', () => {
   let mockSendMessage: jest.Mock
@@ -82,6 +83,31 @@ describe('UndecodedEventSection', () => {
 
     const alert = screen.getByRole('alert')
     expect(alert.className).toMatch(/colorInfo|standardInfo/)
+  })
+
+  it('ApiTypeId自体が不正な場合は専用ラベルで警告表示する', async () => {
+    mockSendMessage.mockImplementation((_message, callback) => {
+      callback({
+        undecodedEventStats: {
+          total: 2,
+          perApiTypeId: {
+            [INVALID_API_TYPE_ID_BUCKET]: {
+              count: 2,
+              lastSeen: new Date('2026-07-29T05:00:00').getTime()
+            }
+          }
+        }
+      })
+    })
+
+    render(<UndecodedEventSection />)
+
+    await waitFor(() => {
+      expect(screen.getByText(/ApiTypeId不正×2/)).toBeInTheDocument()
+    })
+    expect(screen.getByRole('alert').className).toMatch(
+      /colorWarning|standardWarning/
+    )
   })
 
   it('確認済みにするボタンでリセットメッセージを送り、表示を消す', async () => {

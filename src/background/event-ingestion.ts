@@ -12,7 +12,10 @@ import PokerChaseService, {
 } from '../app'
 import { autoSyncService } from '../services/auto-sync-service'
 import { broadcastMessage, connectedPorts, startPortPing, setLastKnownStats } from './ports'
-import { recordUndecodedEvent } from './undecoded-event-tracker'
+import {
+  INVALID_API_TYPE_ID_BUCKET,
+  recordUndecodedEvent
+} from './undecoded-event-tracker'
 import { markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
 import { getOperationState } from './operation-state'
@@ -25,6 +28,12 @@ import {
   withRawEventSessionContext,
   type RawEventSessionContext,
 } from '../utils/raw-event-session-context'
+import {
+  captureHandledException,
+  captureSchemaValidationFailure
+} from '../observability/sentry'
+import { buildSchemaDiagnostic } from '../observability/schema-diagnostic'
+import { getEventFields, getEventSchema } from '../types/api'
 
 /**
  * 参加取消申込（ApiTypeId 203）。`ApiType` enum（アプリケーションで使用する
@@ -43,6 +52,7 @@ import {
  */
 const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
 const SESSION_ORIGIN_STORAGE_KEY = 'activeSessionOriginsV1'
+export const SESSION_ORIGIN_TOKEN_KEY = 'activeSessionOriginsV1Token'
 
 /**
  * Raw Event Lakeの耐久性バリア（release-blocker監査 finding A）を実現する
@@ -106,6 +116,7 @@ class SessionOriginTracker {
   private readonly scopes = new Map<SessionOriginKey, TrackedSessionScope>()
   private currentKey?: SessionOriginKey
   private sequence = 0
+  private browserSessionToken?: string
   private canReconcileReplay = false
   readonly ready: Promise<void>
 
@@ -114,30 +125,44 @@ class SessionOriginTracker {
     this.ready = this.restore()
   }
 
-  // Tab ids are unique only within one browser session. storage.session
-  // survives MV3 worker suspension/restart but clears with the browser,
-  // preventing a future tab from inheriting an old numeric id's scope.
-  private storageArea = (): chrome.storage.StorageArea | undefined =>
-    chrome.storage.session
-
+  // Sentry consent intentionally makes storage.session readable from the
+  // content-script world, so it may contain only an opaque browser-lifetime
+  // token. The player/DEAL snapshot stays in trusted-only storage.local and
+  // is accepted only when its token matches. A browser restart clears the
+  // session token and therefore invalidates stale numeric tab ids.
   private async restore(): Promise<void> {
     try {
       await this.service.ready
-      const storageArea = this.storageArea()
-      if (!storageArea) {
+      const sessionStorage = chrome.storage.session
+      const localStorage = chrome.storage.local
+      if (!sessionStorage || !localStorage) {
         this.service.endSession()
         return
       }
-      const result = await storageArea.get(SESSION_ORIGIN_STORAGE_KEY)
+      const tokenResult = await sessionStorage.get(SESSION_ORIGIN_TOKEN_KEY)
+      const browserSessionToken = tokenResult[SESSION_ORIGIN_TOKEN_KEY]
+      if (typeof browserSessionToken !== 'string') {
+        await localStorage.remove(SESSION_ORIGIN_STORAGE_KEY)
+        this.service.endSession()
+        return
+      }
+      const result = await localStorage.get(SESSION_ORIGIN_STORAGE_KEY)
       const persisted = result[SESSION_ORIGIN_STORAGE_KEY] as {
+        browserSessionToken?: string
         scopes?: Array<[number, TrackedSessionScope]>
         currentTabId?: number
         sequence?: number
       } | undefined
-      if (!persisted?.scopes || !Array.isArray(persisted.scopes)) {
+      if (
+        persisted?.browserSessionToken !== browserSessionToken ||
+        !persisted.scopes ||
+        !Array.isArray(persisted.scopes)
+      ) {
+        await localStorage.remove(SESSION_ORIGIN_STORAGE_KEY)
         this.service.endSession()
         return
       }
+      this.browserSessionToken = browserSessionToken
       this.canReconcileReplay = true
       for (const [tabId, scope] of persisted.scopes) {
         if (typeof tabId === 'number' && scope && typeof scope.id === 'string') {
@@ -167,13 +192,23 @@ class SessionOriginTracker {
 
   private async persist(): Promise<void> {
     try {
-      const storageArea = this.storageArea()
-      if (!storageArea) return
+      const sessionStorage = chrome.storage.session
+      const localStorage = chrome.storage.local
+      if (!sessionStorage || !localStorage) return
+      const browserSessionToken =
+        this.browserSessionToken ?? createOriginId()
+      if (this.browserSessionToken === undefined) {
+        await sessionStorage.set({
+          [SESSION_ORIGIN_TOKEN_KEY]: browserSessionToken,
+        })
+        this.browserSessionToken = browserSessionToken
+      }
       const scopes = [...this.scopes.entries()]
         .filter((entry): entry is [number, TrackedSessionScope] => typeof entry[0] === 'number')
       const currentTabId = typeof this.currentKey === 'number' ? this.currentKey : undefined
-      await storageArea.set({
+      await localStorage.set({
         [SESSION_ORIGIN_STORAGE_KEY]: {
+          browserSessionToken,
           scopes,
           currentTabId,
           sequence: this.sequence,
@@ -494,6 +529,9 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         ))
         ingestionQueue = task.catch(err => {
           console.error('[background] Unhandled ingestion queue error (fail-safe, queue continues):', err)
+          captureHandledException(err, {
+            operation: 'event_ingestion.queue'
+          })
         })
         return task
       })
@@ -632,7 +670,8 @@ const processEvent = async (
   // PokerChase側のペイロード変更でスキーマ検証が壊れても、修正後のデータ
   // 再構築で復旧可能になる（2026年シーズン3のEVT_SESSION_RESULTS破壊的変更で
   // 実際にデータが失われた反省による）。
-  if (validateMessage(message).success) {
+  const hasUsableRawKey = validateMessage(message).success
+  if (hasUsableRawKey) {
     // Content-based dedup runs before sequence allocation. This retains the
     // reconnect-resend contract without making `(timestamp, ApiTypeId)`
     // unique: a genuinely different same-ms/same-type burst row receives the
@@ -654,6 +693,9 @@ const processEvent = async (
       // Preserve the invariant by dropping it from streams/sync hooks while
       // still applying only fail-closed ACTIVE transitions.
       console.error('[background] Raw Event Lake write failed -- dropping from pipeline to preserve the Lake invariant (derived stats require a raw row):', err, message)
+      captureHandledException(err, {
+        operation: 'raw_event_lake.write'
+      })
       if (typeof rawApiTypeId === 'number') {
         const eventTimestamp = typeof rawTimestamp === 'number' ? rawTimestamp : Date.now()
         recordUndecodedEvent(service.db, rawApiTypeId, eventTimestamp).catch(recordErr =>
@@ -831,22 +873,54 @@ const processEvent = async (
   const data = parseApiEvent(message as ApiMessage)
 
   if (!data) {
-    // パース失敗 = 必須プロパティ欠損など破壊的変更の可能性。生ログは上で
-    // 既に保存済みなので、ここではリアルタイムパイプラインへの投入のみ諦める
+    // パース失敗 = 必須プロパティ欠損など破壊的変更の可能性。保存キーが
+    // 有効なら生ログは上で保存済みなので、リアルタイムパイプラインへの
+    // 投入のみ諦める。キー自体が不正ならraw保存不能だが、下の診断と
+    // 永続カウンタには残す。
     const validationResult = validateApiEvent(message as ApiMessage)
     const errorDetails = validationResult.error ? getValidationError(validationResult.error) : null
-    console.warn(`[background] Schema validation failed (stored raw, pipeline skipped):\n  Errors: ${JSON.stringify(errorDetails, null, 2)}\n  Event: ${JSON.stringify(message, null, 2)}`)
+    const rawStatus = hasUsableRawKey
+      ? 'stored raw, pipeline skipped'
+      : 'raw not stored: invalid storage key, pipeline skipped'
+    console.warn(`[background] Schema validation failed (${rawStatus}):\n  Errors: ${JSON.stringify(errorDetails, null, 2)}\n  Event: ${JSON.stringify(message, null, 2)}`)
 
     // drop可視化（docs/postmortems/2026-07-session-results-drop.md 再発防止#2）:
     // 検証失敗イベントの件数をApiTypeIdごとに集計してmetaテーブルへ永続化し、
     // Popupから可視化できるようにする。309インシデントは半年間これが
     // console.warnの中にしか無かったために気づけなかった
-    if (typeof rawApiTypeId === 'number') {
-      const eventTimestamp = typeof rawTimestamp === 'number' ? rawTimestamp : Date.now()
-      recordUndecodedEvent(service.db, rawApiTypeId, eventTimestamp).catch(err =>
-        console.error('[background] Failed to record undecoded event stats:', err)
+    // ApiTypeId itself may be the field whose schema changed. Keep those
+    // failures visible under one bounded sentinel instead of silently losing
+    // both Sentry telemetry and the persistent Popup counter. The raw row
+    // remains unstorable when its timestamp/ApiTypeId key is invalid.
+    const diagnosticApiTypeId =
+      typeof rawApiTypeId === 'number' &&
+      Number.isSafeInteger(rawApiTypeId)
+        ? rawApiTypeId
+        : INVALID_API_TYPE_ID_BUCKET
+    captureSchemaValidationFailure(
+      diagnosticApiTypeId,
+      () => buildSchemaDiagnostic(
+        message,
+        validationResult.error?.issues ?? [],
+        {
+          redactUnknownRootKeys: true,
+          knownRootKeys: getEventSchema(diagnosticApiTypeId)
+            ? getEventFields(diagnosticApiTypeId)
+            : undefined
+        }
       )
-    }
+    )
+    const eventTimestamp =
+      typeof rawTimestamp === 'number' && Number.isFinite(rawTimestamp)
+        ? rawTimestamp
+        : Date.now()
+    recordUndecodedEvent(
+      service.db,
+      diagnosticApiTypeId,
+      eventTimestamp
+    ).catch(err =>
+      console.error('[background] Failed to record undecoded event stats:', err)
+    )
     return
   }
 

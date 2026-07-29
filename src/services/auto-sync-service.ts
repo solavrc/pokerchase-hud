@@ -30,6 +30,7 @@ import {
   getRawEventSessionContext,
 } from '../utils/raw-event-session-context'
 import { SessionScopedEntityConverter } from '../utils/session-scoped-entity-converter'
+import { captureHandledException } from '../observability/sentry'
 
 /** Shown in the popup and logged when the min-version gate stops cloud sync (#forced-update). */
 export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます'
@@ -733,6 +734,9 @@ export class AutoSyncService {
         return { success: true }
       } catch (error) {
         console.error('[AutoSync] Sync error:', error)
+        captureHandledException(error, {
+          operation: `auto_sync.${direction}`
+        })
         // Independent release-audit finding #12, "manual sync reports
         // success on internal failure": this catch block used to only
         // update `syncState` and fall off the end of the function (implicit

@@ -28,7 +28,10 @@
  * entry -- and the keepalive it armed -- is moot.
  */
 import { ApiType } from './types'
-import { POKER_CHASE_ORIGIN } from './constants/runtime'
+import {
+  POKER_CHASE_INVALID_API_EVENT,
+  POKER_CHASE_ORIGIN
+} from './constants/runtime'
 
 const KEEPALIVE_INTERVAL_MS = 25000
 
@@ -91,6 +94,69 @@ describe('content_script keepalive (session-activity triggers)', () => {
     jest.advanceTimersByTime(KEEPALIVE_INTERVAL_MS)
 
     expect(mockPort.postMessage).not.toHaveBeenCalledWith({ type: 'keepalive' })
+  })
+
+  test('an intercepted payload with an invalid ApiTypeId reaches background diagnostics', () => {
+    const payload = { ApiTypeId: '303', timestamp: 10 }
+    dispatchGameMessage({
+      type: POKER_CHASE_INVALID_API_EVENT,
+      payload
+    })
+
+    expect(mockPort.postMessage).toHaveBeenCalledWith(payload)
+  })
+
+  test('an envelope cannot bypass session handling for a numeric ApiTypeId', () => {
+    const payload = {
+      ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+      timestamp: 11
+    }
+    dispatchGameMessage({
+      type: POKER_CHASE_INVALID_API_EVENT,
+      payload
+    })
+
+    expect(mockPort.postMessage).not.toHaveBeenCalledWith(payload)
+  })
+
+  test.each([
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    1.5,
+    Number.MAX_SAFE_INTEGER + 1,
+    Number.MIN_SAFE_INTEGER - 1
+  ])('an envelope preserves non-safe numeric ApiTypeId %p for diagnostics', invalidApiTypeId => {
+    const payload = {
+      ApiTypeId: invalidApiTypeId,
+      timestamp: 12
+    }
+    dispatchGameMessage({
+      type: POKER_CHASE_INVALID_API_EVENT,
+      payload
+    })
+
+    expect(mockPort.postMessage).toHaveBeenCalledWith(payload)
+  })
+
+  test('an envelope without ApiTypeId reaches background diagnostics', () => {
+    const payload = { timestamp: 14, UnexpectedRoot: true }
+    dispatchGameMessage({
+      type: POKER_CHASE_INVALID_API_EVENT,
+      payload
+    })
+
+    expect(mockPort.postMessage).toHaveBeenCalledWith(payload)
+  })
+
+  test('a flat event with a non-safe numeric ApiTypeId is ignored', () => {
+    const payload = {
+      ApiTypeId: Number.POSITIVE_INFINITY,
+      timestamp: 13
+    }
+    dispatchGameMessage(payload)
+
+    expect(mockPort.postMessage).not.toHaveBeenCalledWith(payload)
   })
 
   test('EVT_DEAL (303) with Player present alone starts keepalive without a prior 308', () => {

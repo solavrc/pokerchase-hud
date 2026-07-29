@@ -97,9 +97,13 @@ export type DbOperationType = 'import' | 'export' | 'sync' | 'rebuild'
  * WWSF/W$SD/RIVER_CALL_WONなど既存handの勝者依存統計を修復するため、
  * Raw Event Lakeからの再構築が必要。
  *
+ * version 7: 各Handへorigin別の一意な`session.scopeKey`を保存し、
+ * 同じPokerChase session IDを再利用する同時進行runを「最新」フィルターで
+ * 区別する。既存handにもRaw Event Lakeのorigin contextからの再導出が必要。
+ *
  * インクリメントすると、拡張機能の更新後に既存ユーザーへ一度だけ
  * 「データ再構築」の実行を促すアドバイソリーが表示される
  * （`src/background/rebuild-advisory.ts`参照）。単なるUI変更やバグ修正でも
  * 書き込み時の導出結果に影響しないものはバンプ不要。
  */
-export const REBUILD_ADVISORY_VERSION = 6
+export const REBUILD_ADVISORY_VERSION = 7

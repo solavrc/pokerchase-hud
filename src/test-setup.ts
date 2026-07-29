@@ -29,10 +29,14 @@ const storageChangeListeners: Array<(changes: Record<string, { oldValue?: any, n
 // in the beforeEach at the bottom of this file, alongside the chrome-mock
 // implementation restore.
 
-const fireStorageChange = (areaName: 'sync' | 'local' | 'session', items: Record<string, any>) => {
+const fireStorageChange = (
+  areaName: 'sync' | 'local' | 'session',
+  items: Record<string, any>,
+  previous: Record<string, any>
+) => {
   const changes: Record<string, { oldValue?: any, newValue?: any }> = {}
   for (const key of Object.keys(items)) {
-    changes[key] = { oldValue: chromeStorageMockData[areaName][key], newValue: items[key] }
+    changes[key] = { oldValue: previous[key], newValue: items[key] }
   }
   storageChangeListeners.forEach(listener => listener(changes, areaName))
 }
@@ -81,8 +85,9 @@ global.chrome = {
         return Promise.resolve(result)
       }),
       set: jest.fn((items, callback?) => {
-        fireStorageChange('sync', items)
+        const previous = { ...chromeStorageMockData.sync }
         Object.assign(chromeStorageMockData.sync, items)
+        fireStorageChange('sync', items, previous)
         if (typeof callback === 'function') {
           callback()
           return undefined
@@ -116,8 +121,9 @@ global.chrome = {
         return Promise.resolve(result)
       }),
       set: jest.fn((items, callback?) => {
-        fireStorageChange('local', items)
+        const previous = { ...chromeStorageMockData.local }
         Object.assign(chromeStorageMockData.local, items)
+        fireStorageChange('local', items, previous)
         if (typeof callback === 'function') {
           callback()
           return undefined
@@ -135,6 +141,7 @@ global.chrome = {
       }),
     },
     session: {
+      setAccessLevel: jest.fn().mockResolvedValue(undefined),
       get: jest.fn((keys, callback?) => {
         const result = keys ?
           (Array.isArray(keys) ?
@@ -149,8 +156,9 @@ global.chrome = {
         return Promise.resolve(result)
       }),
       set: jest.fn((items, callback?) => {
-        fireStorageChange('session', items)
+        const previous = { ...chromeStorageMockData.session }
         Object.assign(chromeStorageMockData.session, items)
+        fireStorageChange('session', items, previous)
         if (typeof callback === 'function') {
           callback()
           return undefined
@@ -178,7 +186,7 @@ global.chrome = {
     },
   },
   tabs: {
-    query: jest.fn(),
+    query: jest.fn().mockResolvedValue([]),
     create: jest.fn(),
     update: jest.fn(),
     sendMessage: jest.fn(),
@@ -207,6 +215,19 @@ global.chrome = {
       }
       return Promise.resolve('mock-notification-id')
     }),
+  },
+  permissions: {
+    contains: jest.fn().mockResolvedValue(false),
+    request: jest.fn().mockResolvedValue(false),
+    remove: jest.fn().mockResolvedValue(true),
+    onAdded: {
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
+    },
+    onRemoved: {
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
+    },
   },
   action: {
     setBadgeText: jest.fn((_details, callback?) => {

@@ -10,6 +10,35 @@ Chrome Web Store の「検証済み CRX アップロード」を有効にした�
 2. GitHub Actions が GitHub Release と `extension.zip` / `extension.crx` を作成する
 3. Chrome Web Store Developer Dashboard で `extension.crx` を手動提出し、審査・公開する
 
+## Sentry disclosure
+
+Sentry error monitoring is an external data transfer. General errors send
+sanitized crash metadata. API schema failures additionally send a bounded
+poker-semantic event snapshot after the extension pseudonymizes direct player
+identifiers and removes names, free text, credentials, and authentication or
+session tokens.
+Before submitting a telemetry-enabled release:
+
+1. Chrome Web Store の説明と Privacy practices で、匿名化したクラッシュ情報
+   （拡張バージョン、実行コンテキスト、スタック、スキーマ失敗箇所、
+   個人識別子を仮名化した対局イベント値）を、信頼性改善とAPI変更への追従目的で
+   Sentry へ送信することを明示する。
+2. 既存ユーザーにも更新情報でデータ取扱いの変更を明示する。実際の送信は
+   Popup の **Sentryへエラー診断を送信** をユーザーが有効にし、Chrome の
+   optional host permissionを許可した後だけ開始する。
+3. 公開中の privacy policy に収集項目、用途、Sentry への送信、保持・削除方針を
+   反映し、Developer Dashboard の専用 URL 欄から到達できることを確認する。
+4. repository secret `SENTRY_AUTH_TOKEN` が、個人 OAuth token ではなく
+   最小権限の Sentry organization token（CI/source-map upload 用）であることを
+   確認する。
+
+詳細なクライアント側の除外項目と検証手順は
+[`docs/observability.md`](observability.md) を参照する。
+
+Sentry ingest originは`optional_host_permissions`で宣言する。requiredの
+`host_permissions`へ移すと、権限警告を伴う更新で既存インストールが無効化され、
+ユーザーの再承認までHUD全体が停止し得るため禁止する。
+
 ## Signing key
 
 - 秘密鍵はリポジトリや Google アカウントに保存しない。

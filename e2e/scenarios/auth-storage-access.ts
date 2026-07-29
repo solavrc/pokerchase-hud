@@ -5,7 +5,10 @@
  *   1. the injected content-script world cannot read chrome.storage.local;
  *   2. the same content-script world can still read chrome.storage.sync,
  *      where its HUD settings live;
- *   3. a persisted legacy/untrusted access level is re-restricted on browser
+ *   3. chrome.storage.session exposes only the non-secret Sentry consent
+ *      mirror and an opaque browser-session token; origin snapshots remain
+ *      in trusted-only chrome.storage.local;
+ *   4. a persisted legacy/untrusted access level is re-restricted on browser
  *      restart while trusted pages and the Service Worker restore auth.
  */
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -27,6 +30,8 @@ interface StorageRead {
 
 const AUTH_KEY = 'firebaseRestAuthState'
 const SYNC_PROBE_KEY = 'authStorageSyncProbe'
+const SENTRY_CONSENT_KEY = 'sentryTelemetryConsent'
+const SESSION_ORIGIN_TOKEN_KEY = 'activeSessionOriginsV1Token'
 const SYNTHETIC_STATE = {
   uid: 'e2e-auth-storage-user',
   email: 'synthetic-auth-storage@example.com',
@@ -138,6 +143,39 @@ const assertContentBoundary = async (harness: Harness, extensionId: string): Pro
       `content script lost required chrome.storage.sync access: ${JSON.stringify(syncRead)}`
     )
   }
+
+  const sessionRead = await evaluateInContentScript<StorageRead>(
+    harness.gamePage,
+    extensionId,
+    `(async () => {
+      try {
+        for (let attempt = 0; attempt < 50; attempt += 1) {
+          const value = await chrome.storage.session.get(null)
+          if (Object.prototype.hasOwnProperty.call(value, ${JSON.stringify(SENTRY_CONSENT_KEY)})) {
+            return { value }
+          }
+          await new Promise(resolve => setTimeout(resolve, 100))
+        }
+        return { value: await chrome.storage.session.get(null) }
+      } catch (error) {
+        return { error: String(error) }
+      }
+    })()`
+  )
+  if (
+    sessionRead.value?.[SENTRY_CONSENT_KEY] !== false ||
+    (
+      sessionRead.value?.[SESSION_ORIGIN_TOKEN_KEY] !== undefined &&
+      typeof sessionRead.value[SESSION_ORIGIN_TOKEN_KEY] !== 'string'
+    ) ||
+    Object.keys(sessionRead.value).some(key =>
+      key !== SENTRY_CONSENT_KEY && key !== SESSION_ORIGIN_TOKEN_KEY
+    )
+  ) {
+    throw new Error(
+      `content script received sensitive or unexpected session state: ${JSON.stringify(sessionRead)}`
+    )
+  }
 }
 
 const stageLegacyUntrustedAccess = async (
@@ -208,7 +246,9 @@ const run = async (): Promise<void> => {
     }
 
     await assertContentBoundary(harness, extensionId)
-    console.log('[auth-storage] PASS - content script denied local auth and retained sync settings')
+    console.log(
+      '[auth-storage] PASS - content script denied local auth and origin snapshots, while retaining sync settings and non-secret session mirrors'
+    )
 
     // Simulate a profile left by the vulnerable version: both credentials and
     // the default untrusted local-area access level persist across restart.

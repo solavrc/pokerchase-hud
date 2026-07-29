@@ -81,13 +81,14 @@ so visual changes are shared with the extension rather than duplicated.
 
 ## Documentation
 
-📖 **[Technical Documentation](CLAUDE.md)** - Complete technical reference including:
+📖 **[Technical Documentation](AGENTS.md)** - Complete technical reference including:
 
 - Architecture overview and design principles
 - Stream processing pipeline details
 - Database schema and API reference
 - Development guidelines and best practices
 - Cloud sync setup and troubleshooting
+- [Production error monitoring and privacy boundary](docs/observability.md)
 
 ## Contributing
 
