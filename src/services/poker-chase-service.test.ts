@@ -130,8 +130,7 @@ describe('PokerChaseService - explicit session persistence', () => {
     expect(chrome.storage.local.set).toHaveBeenCalledTimes(1)
 
     service.resetSession()
-    jest.advanceTimersByTime(500)
-    await Promise.resolve()
+    await service.flushStatePersistence()
 
     expect(chrome.storage.local.set).toHaveBeenCalledTimes(2)
     const [payload] = (chrome.storage.local.set as jest.Mock).mock.calls[1]

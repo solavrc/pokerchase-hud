@@ -230,4 +230,53 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     expect(service.latestEvtDeal).toBe(liveDeal)
     expect(recalculateSpy).toHaveBeenCalledTimes(1)
   })
+
+  test('an ended replay does not restore or broadcast its historical seated deal', async () => {
+    await db.apiEvents.bulkPut([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        Code: 0,
+        BattleType: BattleType.SIT_AND_GO,
+        Id: 'ended-sng',
+        IsRetire: false,
+        timestamp: 400,
+        sequence: 0,
+      },
+      { ...SEATED_DEAL, timestamp: 500, sequence: 0 },
+      // Raw replay state must recognize the boundary even when a future 309
+      // schema change makes the application payload unparseable.
+      { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 600, sequence: 0 },
+    ] as any)
+    const writeSpy = jest.spyOn(service.statsOutputStream, 'write')
+
+    const autoSyncService = new AutoSyncService(db)
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.session.id).toBeUndefined()
+    expect(service.session.battleType).toBeUndefined()
+    expect(service.latestEvtDeal).toBeUndefined()
+    expect(writeSpy).not.toHaveBeenCalled()
+  })
+
+  test('raw entry cancellation retires the queued replay session before commit', async () => {
+    await db.apiEvents.bulkPut([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        Code: 0,
+        BattleType: BattleType.RING_GAME,
+        Id: 'cancelled-ring',
+        IsRetire: false,
+        timestamp: 700,
+        sequence: 0,
+      },
+      { ApiTypeId: 203, Code: 0, timestamp: 800, sequence: 0 },
+    ] as any)
+
+    const autoSyncService = new AutoSyncService(db)
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.session.id).toBeUndefined()
+    expect(service.session.battleType).toBeUndefined()
+    expect(service.getEffectiveBattleTypeFilter()).toBeUndefined()
+  })
 })

@@ -148,6 +148,7 @@ class PokerChaseService {
   private _isInitialized: boolean = false
   private _initializationError?: Error
   private _persistStateTimer?: ReturnType<typeof setTimeout>
+  private _persistStateQueue: Promise<void> = Promise.resolve()
 
   // Initialization promise
   public readonly ready: Promise<void>
@@ -304,12 +305,13 @@ class PokerChaseService {
 
     // Debounce persistence to avoid frequent writes
     this._persistStateTimer = setTimeout(() => {
-      this.actualPersistState()
+      this._persistStateTimer = undefined
+      void this.actualPersistState()
     }, 500) // 500ms debounce
   }
 
   /** Actual persistence logic */
-  private actualPersistState = () => {
+  private actualPersistState = (): Promise<void> => {
     const state = {
       playerId: this._playerId,
       latestEvtDeal: this._latestEvtDeal,
@@ -317,16 +319,38 @@ class PokerChaseService {
       lastUpdated: Date.now()
     }
 
-    chrome.storage.local.set({ [PokerChaseService.STORAGE_KEY]: state })
-      .catch(err => {
+    // Serialize snapshots so an older, slower write can never land after a
+    // newer session boundary. Keep the caught tail usable for subsequent
+    // writes, while returning the uncaught write to callers that need a
+    // durability barrier (flushStatePersistence()).
+    const write = this._persistStateQueue.then(() =>
+      chrome.storage.local.set({ [PokerChaseService.STORAGE_KEY]: state })
+    )
+    this._persistStateQueue = write.catch(err => {
         if (err.message?.includes('QUOTA_BYTES')) {
           console.error('[PokerChaseService] Storage quota exceeded, attempting cleanup')
           // Try to clear some old data
-          this.cleanupOldStorageData()
+          void this.cleanupOldStorageData()
         } else {
           console.error('[PokerChaseService] Failed to persist state:', err)
         }
       })
+    return write
+  }
+
+  /**
+   * Persist the latest service state before a lifecycle commit such as an
+   * extension reload. This cancels the debounce and joins all older writes.
+   */
+  readonly flushStatePersistence = async (): Promise<void> => {
+    if (!this._isInitialized || typeof chrome === 'undefined' || !chrome.storage) {
+      return
+    }
+    if (this._persistStateTimer) {
+      clearTimeout(this._persistStateTimer)
+      this._persistStateTimer = undefined
+    }
+    await this.actualPersistState()
   }
 
   /** Clean up old storage data when quota is exceeded */

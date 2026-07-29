@@ -125,7 +125,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     service.autoBattleTypeFilter = true
     service.session.setBattleType(0)
     const entry = {
-      ApiTypeId: 201, timestamp: 115, Code: 0, BattleType: 2, Id: 'stage000_007', IsRetire: false
+      ApiTypeId: 201, timestamp: 115, Code: 0, BattleType: 0, Id: 'stage000_007', IsRetire: false
     }
     // Deliberately malformed 309: the raw ApiTypeId must still end the session.
     const sessionEnd = { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 116 }
@@ -143,6 +143,28 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
 
     expect(service.session.battleType).toBeUndefined()
     expect(service.getEffectiveBattleTypeFilter()).toEqual([])
+  })
+
+  test('an interleaved Friend SNG 309 preserves the only automatic category context', async () => {
+    service.autoBattleTypeFilter = true
+    const entry = {
+      ApiTypeId: 201,
+      timestamp: 1161,
+      Code: 0,
+      BattleType: 2,
+      Id: 'friend-sng-redacted',
+      IsRetire: false,
+    }
+    // The payload may belong to another interleaved Friend SNG; there is no
+    // session/source identity on 309 that can prove it ends this 201.
+    const sessionEnd = { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 1162 }
+
+    await onMessageHandler(entry)
+    await onMessageHandler(sessionEnd)
+
+    expect(service.session.id).toBe('friend-sng-redacted')
+    expect(service.session.battleType).toBe(2)
+    expect(service.getEffectiveBattleTypeFilter()).toEqual([0, 2, 6])
   })
 
   test('entry cancellation clears an auto-selected queued session in application order', async () => {
@@ -167,6 +189,48 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(service.session.id).toBeUndefined()
     expect(service.session.battleType).toBeUndefined()
     expect(service.getEffectiveBattleTypeFilter()).toEqual([])
+  })
+
+  test('entry cancellation does not finish ingestion until the cleared session is persisted', async () => {
+    service.autoBattleTypeFilter = true
+    service.session.setId('queued-session')
+    service.session.setBattleType(0)
+
+    const originalSet = (chrome.storage.local.set as jest.Mock).getMockImplementation()!
+    let releaseWrite!: () => void
+    let signalWriteStarted!: () => void
+    const writeBlocked = new Promise<void>(resolve => { releaseWrite = resolve })
+    const writeStarted = new Promise<void>(resolve => { signalWriteStarted = resolve })
+    const setSpy = jest.spyOn(chrome.storage.local, 'set').mockImplementation((items: any) => {
+      const state = (items as Record<string, any>)[PokerChaseService.STORAGE_KEY]
+      if (state?.session?.id === undefined) {
+        signalWriteStarted()
+        return writeBlocked.then(() => originalSet(items))
+      }
+      return originalSet(items)
+    })
+
+    try {
+      let settled = false
+      const cancellation = onMessageHandler({ ApiTypeId: 203, timestamp: 1181, Code: 0 })
+        .then(() => { settled = true })
+
+      await writeStarted
+      await Promise.resolve()
+      expect(settled).toBe(false)
+      expect(service.session.id).toBeUndefined()
+      expect(service.session.battleType).toBeUndefined()
+
+      releaseWrite()
+      await cancellation
+
+      const persisted = setSpy.mock.calls
+        .map(([items]) => (items as Record<string, any>)[PokerChaseService.STORAGE_KEY])
+        .find(state => state?.session?.id === undefined)
+      expect(persisted.session.battleType).toBeUndefined()
+    } finally {
+      setSpy.mockRestore()
+    }
   })
 
   test('an application-type event that fails Zod validation is stored raw but NOT forwarded to streams', async () => {

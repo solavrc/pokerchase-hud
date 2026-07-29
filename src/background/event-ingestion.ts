@@ -1,6 +1,7 @@
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
 import PokerChaseService, {
   ApiType,
+  BattleType,
   ApiMessage,
   validateMessage,
   validateApiEvent,
@@ -47,7 +48,27 @@ type DurableProcessingResult = {
   forwarding?: Promise<void>
 }
 
-const clearEndedSession = (service: PokerChaseService): void => {
+const shouldPreserveFriendSngSession = (
+  service: PokerChaseService,
+  rawApiTypeId: unknown
+): boolean =>
+  rawApiTypeId === ApiType.EVT_SESSION_RESULTS &&
+  service.session.battleType === BattleType.FRIEND_SIT_AND_GO
+
+const clearEndedSession = async (
+  service: PokerChaseService,
+  rawApiTypeId: unknown
+): Promise<void> => {
+  // Friend SNG captures can interleave a 309 from another table/session and
+  // then continue dealing without another 201. Since 309 has no source/session
+  // identity, it cannot safely erase the only category context. Conservatively
+  // keep the session and forced-update activity active until a stronger
+  // boundary (a later 201/203 or worker restart) is observed.
+  if (shouldPreserveFriendSngSession(service, rawApiTypeId)) {
+    markSessionActive()
+    return
+  }
+
   const previousAutoFilter = service.getEffectiveBattleTypeFilter()?.join(',')
   service.resetSession()
   if (
@@ -55,6 +76,18 @@ const clearEndedSession = (service: PokerChaseService): void => {
     previousAutoFilter !== service.getEffectiveBattleTypeFilter()?.join(',')
   ) {
     service.autoBattleTypeFilterRevision++
+  }
+  // resetSession() normally persists on a 500 ms debounce. A pending update
+  // may reload the worker as soon as ingestion drains, so make the cleared
+  // snapshot part of that drain barrier.
+  try {
+    await service.flushStatePersistence()
+  } catch (error) {
+    // The in-memory session is clear, but a worker restart could restore the
+    // stale persisted one. Keep forced updates fail-closed until a later
+    // successful lifecycle write proves that reload is safe.
+    markSessionActive()
+    throw error
   }
 }
 
@@ -83,7 +116,7 @@ const enqueueApplicationForwarding = (
     // filtersRestored後にsessionを復元し得る。309自身の順番でもう一度resetし、
     // application queueの最終状態も到着順に一致させる。
     if (isSessionEndSignal(rawApiTypeId)) {
-      clearEndedSession(service)
+      await clearEndedSession(service, rawApiTypeId)
     }
 
     if (!data || !isApplicationApiEvent(data)) return
@@ -357,15 +390,6 @@ const processEvent = async (
   // 誤った値のまま詰まらないようにするため（codexレビュー指摘）。
   // 詳細は`applySessionActivity`のコメント参照。
   applySessionActivity(rawApiTypeId, message)
-
-  if (isSessionEndSignal(rawApiTypeId)) {
-    // 309/203は現在セッション（または参加待ち）の終了を表す。auto選択が
-    // 前セッションのbattleTypeを
-    // 永続状態から拾い続けないよう、raw保存成功・重複排除後にセッションを
-    // fail closedへ戻す。raw ApiTypeIdだけを見るため、payloadが将来
-    // Zod parseに失敗しても終了状態は保持される。
-    clearEndedSession(service)
-  }
 
   if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
     // #179 round3指摘: セッション終了(EVT_SESSION_RESULTS)によるHUDクリアは

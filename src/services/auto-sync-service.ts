@@ -12,8 +12,7 @@ import {
 } from '../constants/sync'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
-import { ApiType, ApiTypeValues, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent } from '../types'
-import type { BattleType } from '../types'
+import { ApiType, ApiTypeValues, BattleType, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent } from '../types'
 import type { ApiEvent } from '../types'
 import { processInReplayChunks, filterValidApplicationEvents } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
@@ -25,8 +24,12 @@ import {
   mergeApiEvents,
   type RawApiEvent
 } from '../utils/api-event-key'
-import { HandLogExporter } from '../utils/hand-log-exporter'
 import { startKeepAlive } from '../background/service-worker-keepalive'
+import { HandLogExporter } from '../utils/hand-log-exporter'
+
+// Raw-only entry cancellation. Deliberately not part of ApiType/application
+// streams; replay still needs it to retire a queued session.
+const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
 
 /** Shown in the popup and logged when the min-version gate stops cloud sync (#forced-update). */
 export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます'
@@ -1490,6 +1493,7 @@ export class AutoSyncService {
       const rebuiltHandIds = new Set<number>()
       let lastProcessedTimestamp = 0
       let latestDealEvent: ApiEvent | undefined
+      let replayEnded = false
 
       // Replay state is isolated from the live service. A cloud rebuild can span
       // many awaited chunks; mutating service.session during that window makes
@@ -1534,7 +1538,18 @@ export class AutoSyncService {
 
         for (const event of events) {
           lastProcessedTimestamp = Math.max(lastProcessedTimestamp, event.timestamp || 0)
+          const replayEventEndsSession =
+            (event as { ApiTypeId?: number }).ApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID ||
+            (
+              event.ApiTypeId === ApiType.EVT_SESSION_RESULTS &&
+              replaySession.battleType !== BattleType.FRIEND_SIT_AND_GO
+            )
           this.restoreSessionEvent(replayService, event)
+          if (replayEventEndsSession) {
+            replayEnded = true
+          } else if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
+            replayEnded = false
+          }
           // 席着席時のみ latestDealEvent を更新する（findLatestPlayerDealEvent()
           // ／aggregate-events-stream.tsのEVT_DEALケースと同じ判別: event.Player?.
           // SeatIndex !== undefined）。ダウンロード履歴の末尾が観戦モードのdeal
@@ -1621,8 +1636,14 @@ export class AutoSyncService {
         }
       }
 
-      if (canCommitReplay) {
+      if (canCommitReplay && !replayEnded) {
         this.restoreLatestDeal(service, latestDealEvent)
+      } else if (canCommitReplay) {
+        // The replay ended outside an active session (309/203). Keep the
+        // persisted hero identity/deal available for pre-game recovery, but
+        // do not pair that historical table with an empty automatic filter
+        // and broadcast "No Data" rows into the cleared HUD.
+        console.info('[AutoSync] Replay ended without an active session; skipping deal restore broadcast')
       } else if (service?.session) {
         console.info('[AutoSync] Preserving newer live session state instead of committing replay snapshot')
         // The rebuild replaced derived entities while live ingestion could
@@ -1665,7 +1686,12 @@ export class AutoSyncService {
   private restoreSessionEvent(service: any, event: ApiEvent): void {
     if (!service?.session) return
 
-    if (event.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+    if (
+      event.ApiTypeId === ApiType.EVT_SESSION_RESULTS &&
+      service.session.battleType !== BattleType.FRIEND_SIT_AND_GO
+    ) {
+      service.session.reset()
+    } else if ((event as { ApiTypeId?: number }).ApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID) {
       service.session.reset()
     } else if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
       service.session.setId(event.Id)
