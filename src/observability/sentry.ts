@@ -360,7 +360,11 @@ export const captureSchemaValidationFailure = (
   apiTypeId: number,
   buildDiagnostic: () => SchemaDiagnostic
 ): void => {
-  if (!initialized || reportedSchemaApiTypes.has(apiTypeId)) return
+  if (
+    !initialized ||
+    sentEventCount >= MAX_EVENTS_PER_RUNTIME ||
+    reportedSchemaApiTypes.has(apiTypeId)
+  ) return
   const diagnostic = buildDiagnostic()
   reportedSchemaApiTypes.add(apiTypeId)
 

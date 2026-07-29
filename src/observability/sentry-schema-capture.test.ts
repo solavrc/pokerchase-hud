@@ -40,6 +40,16 @@ describe('Sentry schema capture gating', () => {
 
     expect(buildDiagnostic).toHaveBeenCalledTimes(1)
     expect(Sentry.withScope).toHaveBeenCalledTimes(1)
+
+    const beforeSend = (Sentry.init as jest.Mock).mock.calls[0]?.[0]
+      ?.beforeSend as ((event: object) => object | null)
+    for (let index = 0; index < 20; index += 1) {
+      expect(beforeSend({})).not.toBeNull()
+    }
+
+    captureSchemaValidationFailure(304, buildDiagnostic)
+    expect(buildDiagnostic).toHaveBeenCalledTimes(1)
+    expect(Sentry.withScope).toHaveBeenCalledTimes(1)
     delete process.env.SENTRY_ENABLED
   })
 })
