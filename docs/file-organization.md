@@ -22,7 +22,7 @@
 ├── .release-please-manifest.json # Release version tracking
 ├── renovate.json              # Dependency update config
 ├── AGENTS.md                  # Canonical agent instructions + code review rules (all agents)
-├── CLAUDE.md                  # Symlink → AGENTS.md (Claude Code loads it via this name)
+├── CLAUDE.md                  # Imports AGENTS.md via @AGENTS.md (Claude Code loads it under this name)
 ├── README.md                  # Project overview
 ├── README.drawio.png          # Architecture diagram
 ├── CONTRIBUTING.md            # Contribution guidelines
