@@ -377,9 +377,31 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     document.body.style.cursor = cursor
     document.body.style.userSelect = 'none'
 
+    const finalizeInteraction = () => {
+      const interaction = interactionRef.current
+      const finalLayout = layoutRef.current
+      if (interaction?.moved && finalLayout) {
+        saveHandLogLayout(finalLayout)
+      }
+      interactionRef.current = null
+    }
+
+    const finishInteraction = () => {
+      finalizeInteraction()
+      setInteractionMode(null)
+    }
+
     const handleMouseMove = (event: MouseEvent) => {
       const interaction = interactionRef.current
       if (!interaction) return
+
+      // A mouseup released outside the browser may never reach the document.
+      // The first move after re-entry exposes the released primary button, so
+      // finish without applying that stale pointer position.
+      if ((event.buttons & 1) === 0) {
+        finishInteraction()
+        return
+      }
 
       const deltaX = event.clientX - interaction.startX
       const deltaY = event.clientY - interaction.startY
@@ -430,20 +452,6 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
         interaction.moved = true
       }
       applyLayout(nextLayout)
-    }
-
-    const finalizeInteraction = () => {
-      const interaction = interactionRef.current
-      const finalLayout = layoutRef.current
-      if (interaction?.moved && finalLayout) {
-        saveHandLogLayout(finalLayout)
-      }
-      interactionRef.current = null
-    }
-
-    const finishInteraction = () => {
-      finalizeInteraction()
-      setInteractionMode(null)
     }
 
     document.addEventListener('mousemove', handleMouseMove)
