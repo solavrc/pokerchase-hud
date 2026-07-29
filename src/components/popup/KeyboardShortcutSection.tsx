@@ -1,7 +1,7 @@
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Typography from '@mui/material/Typography'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { UIConfig } from '../../types/hand-log'
 import { formatShortcut, shortcutFromKeyboardEvent } from '../../utils/keyboard-shortcut'
 import { broadcastUIConfig } from './broadcast-ui-config'
@@ -20,12 +20,16 @@ export const KeyboardShortcutSection = ({
   const [validationMessage, setValidationMessage] = useState('')
   const recordButtonRef = useRef<HTMLButtonElement>(null)
 
-  const saveShortcut = (shortcut: UIConfig['toggleShortcut']) => {
-    const nextConfig = { ...uiConfig, toggleShortcut: shortcut }
-    setUIConfig(nextConfig)
-    chrome.storage.sync.set({ uiConfig: nextConfig })
-    broadcastUIConfig(nextConfig)
-  }
+  const saveShortcut = useCallback((shortcut: UIConfig['toggleShortcut']) => {
+    // ゲームタブ等が変更した最新値へショートカットだけをマージし、
+    // staleなPopup stateでdisplayEnabledなどを巻き戻さない。
+    chrome.storage.sync.get('uiConfig', (result: Record<string, UIConfig | undefined>) => {
+      const nextConfig = { ...(result.uiConfig ?? uiConfig), toggleShortcut: shortcut }
+      setUIConfig(nextConfig)
+      chrome.storage.sync.set({ uiConfig: nextConfig })
+      broadcastUIConfig(nextConfig)
+    })
+  }, [setUIConfig, uiConfig])
 
   useEffect(() => {
     if (!recording) return
@@ -63,7 +67,7 @@ export const KeyboardShortcutSection = ({
 
     window.addEventListener('keydown', handleKeyDown, true)
     return () => window.removeEventListener('keydown', handleKeyDown, true)
-  }, [recording, uiConfig])
+  }, [recording, saveShortcut])
 
   return (
     <Box sx={{ mt: 1.5, pt: 1.5, borderTop: '1px solid', borderColor: 'divider' }}>

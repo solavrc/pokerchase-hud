@@ -38,8 +38,6 @@ export const matchesShortcut = (
   event.metaKey === shortcut.meta
 
 const displayKey = (shortcut: KeyboardShortcut): string => {
-  if (/^Key[A-Z]$/.test(shortcut.code)) return shortcut.code.slice(3)
-  if (/^Digit[0-9]$/.test(shortcut.code)) return shortcut.code.slice(5)
   if (/^F([1-9]|1[0-2])$/.test(shortcut.code)) return shortcut.code
 
   const labels: Record<string, string> = {
@@ -47,20 +45,10 @@ const displayKey = (shortcut: KeyboardShortcut): string => {
     ArrowDown: '↓',
     ArrowLeft: '←',
     ArrowRight: '→',
-    Backquote: '`',
-    BracketLeft: '[',
-    BracketRight: ']',
-    Semicolon: ';',
-    Quote: "'",
-    Comma: ',',
-    Period: '.',
-    Slash: '/',
-    Backslash: '\\',
-    Minus: '-',
-    Equal: '=',
     Space: 'Space',
   }
-  return labels[shortcut.code] ?? shortcut.key
+  const recordedKey = shortcut.key.length === 1 ? shortcut.key.toUpperCase() : shortcut.key
+  return labels[shortcut.code] ?? recordedKey
 }
 
 export const formatShortcut = (shortcut: KeyboardShortcut): string => {

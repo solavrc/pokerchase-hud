@@ -46,4 +46,15 @@ describe('keyboard shortcuts', () => {
       metaKey: false,
     })).toEqual(expect.objectContaining({ code: 'F8' }))
   })
+
+  test('formats the recorded logical key instead of the physical US-layout code', () => {
+    expect(formatShortcut({
+      code: 'KeyY',
+      key: 'z',
+      ctrl: true,
+      alt: false,
+      shift: false,
+      meta: false,
+    })).toBe('Ctrl + Z')
+  })
 })
