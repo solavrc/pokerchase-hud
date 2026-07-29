@@ -9,7 +9,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
-import { PhaseType, type ApiEvent } from '../types'
+import { ApiType, BattleType, PhaseType, type ApiEvent } from '../types'
 import { AutoSyncService } from './auto-sync-service'
 
 const FIRST_HAND_ID = 384370064
@@ -84,6 +84,32 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
     expect(await db.hands.get(FIRST_HAND_ID)).toBeUndefined()
     expect(await db.phases.where('handId').equals(FIRST_HAND_ID).count()).toBe(0)
     expect(await db.actions.where('handId').equals(FIRST_HAND_ID).count()).toBe(0)
+  })
+
+  test('restores active latest-session boundaries and closes them on replayed results', async () => {
+    const entry = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 5000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'cloud-active-ring',
+      IsRetire: false,
+    } as ApiEvent
+    await db.apiEvents.add(entry)
+
+    await (autoSyncService as any).rebuildLocalEntities()
+    expect(service.getCurrentSessionScope()).toEqual({
+      id: 'cloud-active-ring',
+      startedAt: 5000,
+    })
+
+    await db.apiEvents.add({
+      ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+      timestamp: 6000,
+    } as ApiEvent)
+    await (autoSyncService as any).rebuildLocalEntities()
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(service.session.active).toBe(false)
   })
 
   test('replaces child rows for a regenerated hand instead of leaving obsolete keys', async () => {

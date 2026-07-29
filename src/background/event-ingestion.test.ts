@@ -10,7 +10,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
-import { ApiType } from '../types'
+import { ApiType, BattleType } from '../types'
 import { registerEventIngestion } from './event-ingestion'
 import { connectedPorts } from './ports'
 import { getUndecodedEventStats, resetUndecodedEventStats, UNDECODED_EVENT_STATS_KEY } from './undecoded-event-tracker'
@@ -19,6 +19,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
   let db: PokerChaseDB
   let service: PokerChaseService
   let onMessageHandler: (message: any) => Promise<void>
+  let connectListener: (port: any) => void
   let disconnectHandlers: Array<() => void>
   let mockPort: any
 
@@ -35,7 +36,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
 
     ;(chrome.runtime as any).onConnect = { addListener: jest.fn() }
     registerEventIngestion(service)
-    const connectListener = (chrome.runtime as any).onConnect.addListener.mock.calls[0][0]
+    connectListener = (chrome.runtime as any).onConnect.addListener.mock.calls[0][0]
 
     disconnectHandlers = []
     mockPort = {
@@ -71,6 +72,45 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(handLogSpy).toHaveBeenCalledTimes(1)
     expect(aggregateSpy).toHaveBeenCalledTimes(1)
     expect(realTimeSpy).toHaveBeenCalledTimes(1)
+  })
+
+  test('a results event only closes its originating tab session', async () => {
+    const secondPort = {
+      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      sender: { tab: { id: 202 } },
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn(),
+    }
+    mockPort.sender = { tab: { id: 101 } }
+    connectListener(secondPort)
+    const secondHandler = secondPort.onMessage.addListener.mock.calls[0][0]
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'tab-a',
+      IsRetire: false,
+    })
+    await secondHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 2000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'tab-b',
+      IsRetire: false,
+    })
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-b', startedAt: 2000 })
+
+    // 309の詳細が将来壊れてparseできない場合でも、raw ApiTypeIdとoriginで
+    // tab Bだけを閉じ、進行中のtab Aへscopeを戻す。
+    await secondHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 3000 })
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-a', startedAt: 1000 })
+
+    await onMessageHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 4000 })
+    expect(service.getCurrentSessionScope()).toBeUndefined()
   })
 
   test('an application-type event that fails Zod validation is stored raw but NOT forwarded to streams', async () => {

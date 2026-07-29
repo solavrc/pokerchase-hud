@@ -1597,10 +1597,15 @@ export class AutoSyncService {
     if (!service?.session) return
 
     if (event.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
-      service.session.reset()
+      if (typeof service.endSession === 'function') service.endSession()
+      else service.session.reset()
     } else if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
-      service.session.setId(event.Id)
-      service.session.setBattleType(event.BattleType)
+      if (typeof service.startSession === 'function') {
+        service.startSession(event.Id, event.BattleType, event.timestamp ?? Date.now())
+      } else {
+        service.session.setId(event.Id)
+        service.session.setBattleType(event.BattleType)
+      }
     } else if (isApiEventType(event, ApiType.EVT_SESSION_DETAILS)) {
       service.session.setName(event.Name)
     } else if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED)) {

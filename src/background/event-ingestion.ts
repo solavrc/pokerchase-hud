@@ -2,6 +2,7 @@
 import PokerChaseService, {
   ApiType,
   ApiMessage,
+  BattleType,
   validateMessage,
   validateApiEvent,
   parseApiEvent,
@@ -40,6 +41,66 @@ const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
  * （`registerEventIngestion()`のコメント参照）。
  */
 let ingestionQueue: Promise<void> = Promise.resolve()
+
+type SessionOriginKey = number | chrome.runtime.Port
+type TrackedSessionScope = {
+  id: string
+  battleType: BattleType
+  startedAt: number
+  sequence: number
+}
+
+/**
+ * MV3 service workerへ複数ゲームタブのイベントが合流しても、あるタブの309が
+ * 別タブの進行中「最新」スコープを閉じないためのorigin別追跡。
+ *
+ * tab idはリロード後も同じなので優先し、テスト等でsenderが無い場合だけPort
+ * オブジェクトをキーにする。表示対象は最後に201を観測したoriginとし、その
+ * originが終了したら残る中で最新のoriginへ戻す。
+ */
+class SessionOriginTracker {
+  private readonly scopes = new Map<SessionOriginKey, TrackedSessionScope>()
+  private currentKey?: SessionOriginKey
+  private sequence = 0
+
+  constructor(private readonly service: PokerChaseService) {}
+
+  start(key: SessionOriginKey, id: string, battleType: BattleType, startedAt: number): void {
+    const scope = { id, battleType, startedAt, sequence: ++this.sequence }
+    this.scopes.set(key, scope)
+    this.currentKey = key
+    this.service.startSession(id, battleType, startedAt)
+  }
+
+  end(key: SessionOriginKey): void {
+    const endedScope = this.scopes.get(key)
+    this.scopes.delete(key)
+
+    // このworkerで201を見ていないcold-resume時は従来どおり単独309で閉じる。
+    if (!endedScope) {
+      if (this.scopes.size === 0) this.service.endSession()
+      return
+    }
+    if (this.currentKey !== key) return
+
+    let nextEntry: [SessionOriginKey, TrackedSessionScope] | undefined
+    for (const entry of this.scopes) {
+      if (!nextEntry || entry[1].sequence > nextEntry[1].sequence) nextEntry = entry
+    }
+    if (!nextEntry) {
+      this.currentKey = undefined
+      this.service.endSession()
+      return
+    }
+
+    this.currentKey = nextEntry[0]
+    const next = nextEntry[1]
+    this.service.startSession(next.id, next.battleType, next.startedAt)
+  }
+}
+
+const sessionOriginKey = (port: chrome.runtime.Port): SessionOriginKey =>
+  port.sender?.tab?.id ?? port
 
 /**
  * `chrome.runtime.onConnect`のハンドラーを登録する。
@@ -100,6 +161,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   // operation completion/SW startupと同じ安全性機構へ統一されている。
   ingestionQueue = Promise.resolve()
   setIngestionDrainProvider(() => ingestionQueue)
+  const sessionOrigins = new SessionOriginTracker(service)
 
   chrome.runtime.onConnect.addListener(port => {
     if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
@@ -125,7 +187,12 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // 後ろに連結する。`processEvent`は内部で全エラーを捕捉して素通し
         // させない設計だが、想定外のバグでqueueが壊れて以降のイベントが
         // 永久に詰まることのないよう、キューの継続用チェーンは別途catchする。
-        const task = ingestionQueue.then(() => processEvent(service, message))
+        const task = ingestionQueue.then(() => processEvent(
+          service,
+          message,
+          sessionOrigins,
+          sessionOriginKey(port)
+        ))
         ingestionQueue = task.catch(err => {
           console.error('[background] Unhandled ingestion queue error (fail-safe, queue continues):', err)
         })
@@ -211,7 +278,9 @@ const applySessionActivity = (rawApiTypeId: unknown, message: ApiMessage | { typ
  */
 const processEvent = async (
   service: PokerChaseService,
-  message: ApiMessage | { type: string }
+  message: ApiMessage | { type: string },
+  sessionOrigins: SessionOriginTracker,
+  originKey: SessionOriginKey
 ): Promise<void> => {
   // Ensure service is ready before processing messages
   try {
@@ -279,7 +348,10 @@ const processEvent = async (
   if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
     // 「最新」フィルターの対局境界もraw-firstで閉じる。309の詳細スキーマが
     // 将来変わってparseに失敗しても、終了後に完了済み対局を再表示しない。
-    service.endSession()
+    // 先行201のAggregate処理を完了させてからorigin trackerの選択を適用し、
+    // 遅れて走るstartSessionが復元した別タブのscopeを再度上書きしない。
+    await service.handAggregateStream.whenIdle()
+    sessionOrigins.end(originKey)
 
     // #179 round3指摘: セッション終了(EVT_SESSION_RESULTS)によるHUDクリアは
     // App.tsx側のReact stateだけで完結しており、background(ports.ts)の
@@ -438,6 +510,15 @@ const processEvent = async (
     // 内容は記録（生ログとしては上で既に保存済み）
     console.info(`[background] Non-application event (${data.ApiTypeId}): ${JSON.stringify(data)}`)
     return
+  }
+
+  if (data.ApiTypeId === ApiType.EVT_ENTRY_QUEUED) {
+    sessionOrigins.start(
+      originKey,
+      data.Id,
+      data.BattleType,
+      data.timestamp ?? Date.now()
+    )
   }
 
   // ここでdataはApiEvent型（isApplicationApiEventで保証済み）
