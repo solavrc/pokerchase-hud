@@ -10,6 +10,12 @@ Enabling it grants the Sentry ingest origin as an optional host permission;
 existing installations are not disabled during an extension update.
 Revoking that permission in Chrome settings clears the shared consent bit and
 stops already-open extension runtimes through `storage.onChanged`.
+Firebase credentials keep the entire `chrome.storage.local` area restricted to
+trusted extension contexts. The background service worker therefore exposes
+only the non-secret, permission-validated consent boolean through
+`chrome.storage.session`; content scripts never read local auth storage. The
+session area is reserved for this mirror while it is visible to content
+scripts.
 It is deliberately **not** initialized in `web_accessible_resource.ts`, which
 runs in the game page's main world and handles raw WebSocket payloads.
 
@@ -84,7 +90,9 @@ The Sentry project also has default data scrubbing and IP-address scrubbing
 enabled. Each background/content/popup runtime sends at most 20 events before
 it is restarted, limiting the effect of an error loop. The schema-validation
 snapshot is the only permitted API-event context and must be produced by
-`buildSchemaDiagnostic`. Do not attach the exact raw event, player names,
+`buildSchemaDiagnostic`. Its construction is gated lazily after consent,
+runtime budget, and per-`ApiTypeId` deduplication so opted-out users do not pay
+the traversal cost. Do not attach the exact raw event, player names,
 account IDs, chat text, Firebase document paths, auth objects, or tokens
 directly to Sentry.
 

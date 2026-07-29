@@ -145,6 +145,31 @@ describe('schema repair diagnostics', () => {
     expect(JSON.stringify(diagnostic)).not.toContain('redacted-at-source')
   })
 
+  it('redacts dynamic map keys in validation issue paths', () => {
+    const diagnostic = buildSchemaDiagnostic(
+      {
+        RingReward: {
+          Class: {
+            Alice: 'unexpected'
+          }
+        }
+      },
+      [{
+        path: ['RingReward', 'Class', 'Alice'],
+        code: 'invalid_type',
+        expected: 'number'
+      }]
+    )
+
+    expect(diagnostic.issues).toEqual([{
+      path: 'RingReward.Class.[dynamic-key]',
+      code: 'invalid_type',
+      expected: 'number',
+      actualType: 'string'
+    }])
+    expect(JSON.stringify(diagnostic)).not.toContain('Alice')
+  })
+
   it('redacts unknown strings by default while retaining allow-listed protocol IDs', () => {
     const diagnostic = buildSchemaDiagnostic({
       ApiTypeId: 9999,

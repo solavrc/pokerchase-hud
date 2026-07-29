@@ -450,7 +450,7 @@ const processEvent = async (
     if (typeof rawApiTypeId === 'number') {
       captureSchemaValidationFailure(
         rawApiTypeId,
-        buildSchemaDiagnostic(
+        () => buildSchemaDiagnostic(
           message,
           validationResult.error?.issues ?? []
         )

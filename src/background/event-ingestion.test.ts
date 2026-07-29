@@ -99,6 +99,12 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(realTimeSpy).not.toHaveBeenCalled()
     expect(captureSchemaValidationFailure).toHaveBeenCalledWith(
       ApiType.EVT_DEAL,
+      expect.any(Function)
+    )
+    const telemetryArgs = jest.mocked(captureSchemaValidationFailure).mock.calls[0]
+    expect(telemetryArgs).toHaveLength(2)
+    const diagnostic = telemetryArgs?.[1]()
+    expect(diagnostic).toEqual(
       expect.objectContaining({
         issues: expect.arrayContaining([
           expect.objectContaining({
@@ -115,9 +121,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
         sanitizedPayload: brokenDealEvent
       })
     )
-    const telemetryArgs = jest.mocked(captureSchemaValidationFailure).mock.calls[0]
-    expect(telemetryArgs).toHaveLength(2)
-    expect(telemetryArgs?.[1]).toEqual(
+    expect(diagnostic).toEqual(
       expect.objectContaining({
         issues: expect.arrayContaining([
           expect.objectContaining({
@@ -132,7 +136,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
         payloadTruncated: expect.any(Boolean)
       })
     )
-    expect(telemetryArgs?.[1].issues).toEqual(
+    expect(diagnostic?.issues).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           path: expect.any(String),

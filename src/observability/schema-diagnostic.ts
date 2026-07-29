@@ -77,13 +77,15 @@ const formatIssuePath = (path: readonly PropertyKey[]): string => {
   if (path.length === 0) return '$'
 
   let result = ''
+  let parentKey: string | undefined
   for (const part of path) {
     if (typeof part === 'number') {
       result = `${result}[]`
       continue
     }
-    const key = safeSchemaKey(part)
+    const key = safeSchemaKey(part, parentKey)
     result = result ? `${result}.${key}` : key
+    parentKey = typeof part === 'string' ? part : undefined
   }
   return result
 }

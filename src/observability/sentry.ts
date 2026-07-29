@@ -6,6 +6,7 @@ import {
   SENTRY_TELEMETRY_CONSENT_STORAGE_KEY,
   clearSentryTelemetryConsent,
   hasSentryHostPermission,
+  initializeSentryTelemetryConsentBridge,
   readSentryTelemetryConsent,
   registerSentryPermissionRevocationSync
 } from './telemetry-consent'
@@ -32,12 +33,18 @@ const MAX_TEXT_LENGTH = 500
 const MAX_EVENTS_PER_RUNTIME = 20
 const reportedSchemaApiTypes = new Set<number>()
 const reportedErrors = new WeakSet<Error>()
+const MAX_BUFFERED_BOOTSTRAP_ERRORS = 5
 
 let initialized = false
 let configuredRuntime: SentryRuntime | undefined
 let consentListenerRegistered = false
 let initializationPromise: Promise<void> | undefined
 let sentEventCount = 0
+
+interface BootstrapErrorBuffer {
+  errors: unknown[]
+  dispose: () => void
+}
 
 const telemetryEnabled = (): boolean =>
   process.env.SENTRY_ENABLED === 'true'
@@ -164,17 +171,62 @@ const closeSentry = async (): Promise<void> => {
   await Sentry.close(0)
 }
 
+const createBootstrapErrorBuffer = (
+  runtime: SentryRuntime
+): BootstrapErrorBuffer | undefined => {
+  if (runtime !== 'popup' || typeof globalThis.addEventListener !== 'function') {
+    return undefined
+  }
+
+  const errors: unknown[] = []
+  const remember = (error: unknown): void => {
+    if (!initialized && errors.length < MAX_BUFFERED_BOOTSTRAP_ERRORS) {
+      errors.push(error)
+    }
+  }
+  const onError = (event: Event): void => {
+    const errorEvent = event as globalThis.ErrorEvent
+    remember(errorEvent.error ?? new Error('Popup bootstrap error'))
+  }
+  const onUnhandledRejection = (event: Event): void => {
+    const rejectionEvent = event as PromiseRejectionEvent
+    remember(rejectionEvent.reason)
+  }
+
+  globalThis.addEventListener('error', onError)
+  globalThis.addEventListener('unhandledrejection', onUnhandledRejection)
+
+  return {
+    errors,
+    dispose: () => {
+      globalThis.removeEventListener('error', onError)
+      globalThis.removeEventListener('unhandledrejection', onUnhandledRejection)
+    }
+  }
+}
+
+const flushBootstrapErrors = (buffer: BootstrapErrorBuffer | undefined): void => {
+  buffer?.dispose()
+  if (!initialized || !buffer) return
+
+  for (const error of buffer.errors) {
+    captureHandledException(error, {
+      operation: 'popup.bootstrap'
+    })
+  }
+}
+
 const startSentry = async (runtime: SentryRuntime): Promise<void> => {
   if (!telemetryEnabled() || initialized) return
-  if (!await readSentryTelemetryConsent()) return
-  if (!await hasSentryHostPermission()) {
+  if (!await readSentryTelemetryConsent(runtime)) return
+  if (!await hasSentryHostPermission(runtime)) {
     await clearSentryTelemetryConsent()
     return
   }
   // Consent may be revoked while the async permission check is in flight.
   // Re-read immediately before the synchronous SDK initialization so a stale
   // startup cannot resurrect telemetry after storage.onChanged closed it.
-  if (!await readSentryTelemetryConsent()) return
+  if (!await readSentryTelemetryConsent(runtime)) return
 
   Sentry.init({
     dsn: SENTRY_DSN,
@@ -240,12 +292,18 @@ const startSentry = async (runtime: SentryRuntime): Promise<void> => {
 export const initSentry = (runtime: SentryRuntime): Promise<void> => {
   configuredRuntime = runtime
   registerSentryPermissionRevocationSync()
+  if (runtime === 'background') {
+    void initializeSentryTelemetryConsentBridge().catch(() => {
+      console.warn('[Sentry] Failed to initialize the consent mirror')
+    })
+  }
 
   if (!consentListenerRegistered) {
     consentListenerRegistered = true
     chrome.storage.onChanged.addListener((changes, areaName) => {
+      const consentArea = runtime === 'content_script' ? 'session' : 'local'
       if (
-        areaName !== 'local' ||
+        areaName !== consentArea ||
         !(SENTRY_TELEMETRY_CONSENT_STORAGE_KEY in changes)
       ) {
         return
@@ -260,8 +318,10 @@ export const initSentry = (runtime: SentryRuntime): Promise<void> => {
   }
 
   if (initializationPromise) return initializationPromise
+  const bootstrapErrors = createBootstrapErrorBuffer(runtime)
   initializationPromise = startSentry(runtime).finally(() => {
     initializationPromise = undefined
+    flushBootstrapErrors(bootstrapErrors)
   })
   return initializationPromise
 }
@@ -296,9 +356,10 @@ export const captureHandledException = (
  */
 export const captureSchemaValidationFailure = (
   apiTypeId: number,
-  diagnostic: SchemaDiagnostic
+  buildDiagnostic: () => SchemaDiagnostic
 ): void => {
   if (!initialized || reportedSchemaApiTypes.has(apiTypeId)) return
+  const diagnostic = buildDiagnostic()
   reportedSchemaApiTypes.add(apiTypeId)
 
   const safeIssues = diagnostic.issues.slice(0, 10).map(issue => ({

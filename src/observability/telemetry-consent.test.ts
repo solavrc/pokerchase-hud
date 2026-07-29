@@ -1,6 +1,8 @@
 import {
   SENTRY_HOST_PERMISSION,
   SENTRY_TELEMETRY_CONSENT_STORAGE_KEY,
+  initializeSentryTelemetryConsentBridge,
+  readSentryTelemetryConsent,
   readSentryTelemetryEnabled,
   registerSentryPermissionRevocationSync,
   requestSentryTelemetry,
@@ -40,6 +42,27 @@ describe('Sentry telemetry consent', () => {
       [SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]: true
     })
     await expect(readSentryTelemetryEnabled()).resolves.toBe(true)
+  })
+
+  it('exposes only a permission-validated session mirror to content scripts', async () => {
+    ;(chrome.permissions.request as jest.Mock).mockResolvedValue(true)
+    ;(chrome.permissions.contains as jest.Mock).mockResolvedValue(true)
+    await requestSentryTelemetry()
+
+    await initializeSentryTelemetryConsentBridge()
+
+    expect(chrome.storage.session.setAccessLevel).toHaveBeenCalledWith({
+      accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS'
+    })
+    await expect(
+      readSentryTelemetryConsent('content_script')
+    ).resolves.toBe(true)
+
+    await revokeSentryTelemetry()
+    await Promise.resolve()
+    await expect(
+      readSentryTelemetryConsent('content_script')
+    ).resolves.toBe(false)
   })
 
   it('does not persist consent when the optional host is denied', async () => {
