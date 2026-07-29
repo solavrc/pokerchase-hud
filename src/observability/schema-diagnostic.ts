@@ -41,6 +41,9 @@ const FREE_TEXT_KEY =
 const COMPACT_FREE_TEXT_KEYS = new Set(['Ms'])
 const SAFE_SEMANTIC_STRING_KEY =
   /^(?:CharaId|ClassLvId|Co|CostumeId|DecoId|EmblemId|FavoriteCharaId|Fr|ItemId|RankId|RankLvId|SettingDecoIds|StampId)$/i
+const SAFE_LARGE_NUMERIC_KEY =
+  /^(?:ApiTypeId|HandId|RoomId|TableId|timestamp|.*(?:BetChip|Blind|BlindLv|Chip|Pot|UnixSeconds))$/i
+const IDENTIFIER_SIZED_NUMBER_MIN = 10_000_000
 
 const jsonType = (value: unknown): string => {
   if (value === null) return 'null'
@@ -247,10 +250,18 @@ const buildSanitizedPayload = (
     }
     if (
       value === null ||
-      typeof value === 'number' ||
       typeof value === 'boolean'
     ) {
       return value
+    }
+    if (typeof value === 'number') {
+      const identifierSized =
+        Number.isInteger(value) &&
+        Math.abs(value) >= IDENTIFIER_SIZED_NUMBER_MIN
+      return identifierSized &&
+        !(rawKey && SAFE_LARGE_NUMERIC_KEY.test(rawKey))
+        ? `[redacted-number:digits=${String(Math.abs(value)).length}]`
+        : value
     }
 
     return `[${jsonType(value)}]`

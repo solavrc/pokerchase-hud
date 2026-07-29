@@ -54,7 +54,9 @@ credentials and authentication/session tokens, email/IP fields, URL query
 strings, dynamic map keys, and unknown string values are redacted client-side.
 Only an explicit allow-list of machine-readable protocol IDs (for example
 `CharaId`, `RankId`, and `ItemId`) retains string values. Numeric and boolean
-poker state remains available for semantic interpretation.
+poker state remains available for semantic interpretation; identifier-sized
+unknown numbers are redacted unless their field is an explicit continuity or
+poker-state key such as `HandId`, `timestamp`, `Chip`, `Pot`, or `Blind`.
 
 The exact original event remains available in the local Raw Event Lake and may
 follow the separately documented, user-controlled Firestore cloud-sync path.

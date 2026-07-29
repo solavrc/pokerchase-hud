@@ -171,6 +171,10 @@ const startSentry = async (runtime: SentryRuntime): Promise<void> => {
     await clearSentryTelemetryConsent()
     return
   }
+  // Consent may be revoked while the async permission check is in flight.
+  // Re-read immediately before the synchronous SDK initialization so a stale
+  // startup cannot resurrect telemetry after storage.onChanged closed it.
+  if (!await readSentryTelemetryConsent()) return
 
   Sentry.init({
     dsn: SENTRY_DSN,

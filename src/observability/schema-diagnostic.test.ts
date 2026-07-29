@@ -165,4 +165,31 @@ describe('schema repair diagnostics', () => {
     })
     expect(JSON.stringify(diagnostic)).not.toContain('unexpected-private-value')
   })
+
+  it('redacts identifier-sized unknown numbers while keeping poker state and event continuity', () => {
+    const diagnostic = buildSchemaDiagnostic({
+      ApiTypeId: 303,
+      ProfileNo: 129532369,
+      HandId: 531064322,
+      RoomId: 123456789,
+      timestamp: 1784560697458,
+      NextBlindUnixSeconds: 1784560697,
+      Chip: 25_000_000,
+      SidePot: [12_000_000],
+      SmallCounter: 1234567
+    }, [])
+
+    expect(diagnostic.sanitizedPayload).toEqual({
+      ApiTypeId: 303,
+      ProfileNo: '[redacted-number:digits=9]',
+      HandId: 531064322,
+      RoomId: 123456789,
+      timestamp: 1784560697458,
+      NextBlindUnixSeconds: 1784560697,
+      Chip: 25_000_000,
+      SidePot: [12_000_000],
+      SmallCounter: 1234567
+    })
+    expect(JSON.stringify(diagnostic)).not.toContain('129532369')
+  })
 })

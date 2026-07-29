@@ -21,8 +21,27 @@ describe('Sentry opt-in initialization', () => {
   it('initializes only after consent and leaves keepalive sizing to the SDK', async () => {
     process.env.SENTRY_ENABLED = 'true'
     ;(chrome.permissions.request as jest.Mock).mockResolvedValue(true)
-    ;(chrome.permissions.contains as jest.Mock).mockResolvedValue(true)
+    await expect(requestSentryTelemetry()).resolves.toBe(true)
 
+    let resolvePermission: ((granted: boolean) => void) | undefined
+    ;(chrome.permissions.contains as jest.Mock).mockReturnValue(
+      new Promise<boolean>(resolve => {
+        resolvePermission = resolve
+      })
+    )
+    const staleInitialization = initSentry('background')
+    await waitForPermissionCheck()
+    await new Promise<void>(resolve => {
+      chrome.storage.local.set(
+        { sentryTelemetryConsent: false },
+        resolve
+      )
+    })
+    resolvePermission?.(true)
+    await staleInitialization
+    expect(Sentry.init).not.toHaveBeenCalled()
+
+    ;(chrome.permissions.contains as jest.Mock).mockResolvedValue(true)
     await expect(requestSentryTelemetry()).resolves.toBe(true)
     await initSentry('background')
 
@@ -34,3 +53,11 @@ describe('Sentry opt-in initialization', () => {
     expect(options.transportOptions).toBeUndefined()
   })
 })
+
+const waitForPermissionCheck = async (): Promise<void> => {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if ((chrome.permissions.contains as jest.Mock).mock.calls.length > 0) return
+    await Promise.resolve()
+  }
+  throw new Error('permission check did not start')
+}
