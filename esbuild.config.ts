@@ -1,4 +1,5 @@
 import { build, BuildOptions, Plugin } from 'esbuild'
+import { sentryEsbuildPlugin } from '@sentry/esbuild-plugin'
 import { copyFileSync, mkdirSync } from 'fs'
 import { parse } from 'path'
 import { resolve } from 'path'
@@ -22,6 +23,18 @@ const {
 //                  to the e2e fixture origin in the e2e build only.
 const outdir = process.env.E2E_OUTDIR || 'dist'
 const e2eManifestOverride = process.env.E2E_MANIFEST
+const sentryEnabled =
+  !e2eManifestOverride && process.env.SENTRY_ENABLED === 'true'
+const sentryUploadEnabled =
+  sentryEnabled && Boolean(process.env.SENTRY_AUTH_TOKEN)
+const sentryRelease = `pokerchase-hud@${manifest.version}`
+
+if (sentryEnabled && !sentryUploadEnabled) {
+  console.warn(
+    '[Sentry] Telemetry is enabled, but SENTRY_AUTH_TOKEN is missing; ' +
+    'building without source-map upload.'
+  )
+}
 const e2eManifestPlugin: Plugin | undefined = e2eManifestOverride ? {
   name: 'e2e-manifest-override',
   setup(build) {
@@ -51,10 +64,14 @@ const options: BuildOptions = {
   platform: 'browser',
   target: ['chrome123'],
   minify: true,
+  sourcemap: sentryUploadEnabled ? 'external' : false,
   treeShaking: true,
   legalComments: 'none',
   define: {
     'process.env.NODE_ENV': '"production"',
+    'process.env.SENTRY_ENABLED': JSON.stringify(
+      sentryEnabled ? 'true' : 'false'
+    ),
     // ReadEntityStreamのキャッシュ無効化フラグ。ブラウザ（Service Worker）実行時には
     // 環境変数を設定する手段がそもそも無いため、ビルド時にfalseへ畳み込むことで
     // `process`オブジェクトへのランタイム依存を無くす（Node上のjestではテスト変換経由の
@@ -72,7 +89,35 @@ const options: BuildOptions = {
       }))
     }
   },
-  ...(e2eManifestPlugin ? [e2eManifestPlugin] : [])]
+  ...(e2eManifestPlugin ? [e2eManifestPlugin] : []),
+  ...(sentryUploadEnabled
+    ? [sentryEsbuildPlugin({
+        org: 'sola-works',
+        project: 'pokerchase-hud',
+        authToken: process.env.SENTRY_AUTH_TOKEN,
+        telemetry: false,
+        release: {
+          name: sentryRelease,
+          inject: true,
+          create: true,
+          finalize: true
+        },
+        sourcemaps: {
+          assets: [
+            `${outdir}/**/*.js`,
+            `${outdir}/**/*.js.map`
+          ],
+          filesToDeleteAfterUpload: `${outdir}/**/*.js.map`
+        },
+        bundleSizeOptimizations: {
+          excludeDebugStatements: true,
+          excludeTracing: true,
+          excludeReplayShadowDom: true,
+          excludeReplayIframe: true,
+          excludeReplayWorker: true
+        }
+      })]
+    : [])]
 }
 
 try {

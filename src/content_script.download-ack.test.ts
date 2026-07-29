@@ -47,7 +47,12 @@ describe('content_script.ts download message handlers send an explicit ack', () 
       require('./content_script')
     })
 
-    listener = (chrome.runtime.onMessage.addListener as jest.Mock).mock.calls[0]![0]
+    // Sentry also owns a runtime message listener for immediate telemetry
+    // revocation. The download dispatcher is registered later by the content
+    // script entrypoint, so select it explicitly instead of assuming there is
+    // only one listener.
+    listener = (chrome.runtime.onMessage.addListener as jest.Mock)
+      .mock.calls.at(-1)![0]
   })
 
   afterEach(() => {

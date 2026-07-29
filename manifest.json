@@ -14,6 +14,9 @@
   "host_permissions": [
     "https://*.googleapis.com/*"
   ],
+  "optional_host_permissions": [
+    "https://o4507260715794432.ingest.us.sentry.io/*"
+  ],
   "minimum_chrome_version": "140",
   "icons": {
     "16": "icons/icon_16px.png",
