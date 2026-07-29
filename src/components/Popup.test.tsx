@@ -11,6 +11,7 @@ const mockChromeRuntimeSendMessage = jest.fn()
 const mockChromeTabsQuery = jest.fn()
 const mockChromeTabsCreate = jest.fn()
 const mockChromeTabsUpdate = jest.fn()
+const mockChromeTabsSendMessage = jest.fn()
 const mockChromeWindowsUpdate = jest.fn()
 const mockChromeStorageGet = jest.fn()
 const mockChromeStorageSet = jest.fn()
@@ -34,6 +35,7 @@ global.chrome = {
     query: mockChromeTabsQuery,
     create: mockChromeTabsCreate,
     update: mockChromeTabsUpdate,
+    sendMessage: mockChromeTabsSendMessage,
   },
   windows: {
     update: mockChromeWindowsUpdate,
@@ -452,6 +454,45 @@ describe('Popup', () => {
       )
     })
     expect(mockChromeStorageSet).not.toHaveBeenCalled()
+  })
+
+  it('別の設定画面で変更された端末ローカルのscaleを反映し、後続のbroadcastで巻き戻さない', async () => {
+    localData[UI_SCALE_STORAGE_KEY] = 1.4
+    render(<Popup />)
+    await waitForAsyncOperations()
+
+    const storageListeners = (chrome.storage.onChanged.addListener as jest.Mock).mock.calls
+      .map(([listener]) => listener as (
+        changes: { [key: string]: chrome.storage.StorageChange },
+        areaName: string
+      ) => void)
+
+    act(() => {
+      for (const listener of storageListeners) {
+        listener({
+          [UI_SCALE_STORAGE_KEY]: {
+            oldValue: 1.4,
+            newValue: 1.6,
+          },
+        }, 'local')
+      }
+    })
+
+    expect(screen.getByText('160%')).toBeInTheDocument()
+
+    mockChromeTabsQuery.mockImplementationOnce((_query, callback) => {
+      callback([{ id: 123 }])
+    })
+    mockChromeTabsSendMessage.mockResolvedValue(undefined)
+    await userEvent.click(screen.getByRole('radio', { name: 'フル' }))
+
+    expect(mockChromeTabsSendMessage).toHaveBeenCalledWith(123, {
+      action: 'updateUIConfig',
+      config: expect.objectContaining({
+        scale: 1.6,
+        hudDisplayMode: 'full',
+      }),
+    })
   })
 
   it('ゲームタイプフィルターを表示・変更できる', async () => {

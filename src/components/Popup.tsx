@@ -25,6 +25,8 @@ import { sendMessageWithTimeout } from './popup/send-message'
 import {
   loadLocalUIScale,
   mergeUIConfigWithLocalScale,
+  resolveLocalUIScale,
+  UI_SCALE_STORAGE_KEY,
 } from '../utils/ui-config-storage'
 
 // Import sub-components
@@ -121,6 +123,17 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
       changes: { [key: string]: chrome.storage.StorageChange },
       areaName: string
     ) => {
+      if (areaName === 'local') {
+        const scaleChange = changes[UI_SCALE_STORAGE_KEY]
+        if (!scaleChange) return
+        uiConfigChangedAfterMountRef.current = true
+        setUIConfig(current => ({
+          ...current,
+          scale: resolveLocalUIScale(scaleChange.newValue),
+        }))
+        setUIConfigLoaded(true)
+        return
+      }
       if (areaName !== 'sync') return
       const nextUIConfig = changes.uiConfig?.newValue as UIConfig | undefined
       if (!nextUIConfig) return
