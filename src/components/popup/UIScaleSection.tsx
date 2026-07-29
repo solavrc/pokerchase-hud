@@ -21,6 +21,9 @@ export const UIScaleSection = ({
   const [recordingShortcut, setRecordingShortcut] = useState(false)
   const [shortcutError, setShortcutError] = useState(false)
   const shortcutInputRef = useRef<HTMLInputElement>(null)
+  const shortcutLabel = uiConfig.toggleShortcut
+    ? formatShortcut(uiConfig.toggleShortcut)
+    : null
 
   const updateUIConfig = (newConfig: UIConfig) => {
     setUIConfig(newConfig)
@@ -115,9 +118,7 @@ export const UIScaleSection = ({
           size="small"
           value={recordingShortcut
             ? 'キーを入力…'
-            : uiConfig.toggleShortcut
-              ? formatShortcut(uiConfig.toggleShortcut)
-              : '未設定'}
+            : shortcutLabel ?? '未設定'}
           error={shortcutError}
           onFocus={() => {
             setRecordingShortcut(true)
@@ -135,13 +136,15 @@ export const UIScaleSection = ({
             setShortcutError(false)
             shortcutInputRef.current?.blur()
           }}
-          title={shortcutError
-            ? '利用できません（修飾キーを含め、ブラウザの予約キーを避けてください）'
-            : 'クリックして入力・右クリックで解除'}
           slotProps={{
             htmlInput: {
               readOnly: true,
               'aria-label': 'HUD表示切り替えショートカット',
+              title: shortcutError
+                ? '利用できません（修飾キーを含め、ブラウザの予約キーを避けてください）'
+                : shortcutLabel
+                  ? `${shortcutLabel}（クリックして変更・右クリックで解除）`
+                  : 'クリックして入力・右クリックで解除',
             },
           }}
           sx={{

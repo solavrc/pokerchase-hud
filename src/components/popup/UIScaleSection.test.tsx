@@ -53,6 +53,28 @@ describe('UIScaleSection', () => {
       .toHaveValue('Shift + H')
   })
 
+  it('省略される長いショートカットもtitleで完全表示する', () => {
+    const longShortcutConfig: UIConfig = {
+      ...DEFAULT_UI_CONFIG,
+      toggleShortcut: {
+        code: 'NumpadEnter',
+        key: 'Enter',
+        ctrl: true,
+        alt: true,
+        shift: true,
+        meta: false,
+      },
+    }
+
+    render(<UIScaleSection {...defaultProps} uiConfig={longShortcutConfig} />)
+
+    expect(screen.getByRole('textbox', { name: 'HUD表示切り替えショートカット' }))
+      .toHaveAttribute(
+        'title',
+        'Ctrl + Alt + Shift + Numpad Enter（クリックして変更・右クリックで解除）'
+      )
+  })
+
   it('小型入力欄でショートカットを記録する', () => {
     render(<UIScaleSection {...defaultProps} />)
     const input = screen.getByRole('textbox', { name: 'HUD表示切り替えショートカット' })

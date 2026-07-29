@@ -8,25 +8,28 @@ const MODIFIER_CODES = new Set([
 ])
 
 const isBrowserReservedShortcut = (
-  event: Pick<KeyboardEvent, 'code' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey'>
+  event: Pick<KeyboardEvent, 'code' | 'key' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey'>
 ): boolean => {
   const { code, ctrlKey, altKey, shiftKey, metaKey } = event
+  const logicalKey = event.key.toLowerCase()
+  const isLogicalKey = (...keys: string[]) => keys.includes(logicalKey)
 
   // Browser/OS commands that page-level preventDefault cannot reliably
-  // replace. Keep this deliberately code-based so it is layout-independent.
+  // replace. Letter commands use the logical key so non-US layouts cannot
+  // bypass them; physical codes remain appropriate for non-character keys.
   if (altKey && (code === 'F4' || code === 'ArrowLeft' || code === 'ArrowRight' || code === 'Home')) {
     return true
   }
   if (metaKey && !ctrlKey && !altKey) {
-    if (['KeyQ', 'KeyW'].includes(code)) return true
-    if (!shiftKey && ['KeyH', 'KeyM', 'Comma'].includes(code)) return true
+    if (isLogicalKey('q', 'w')) return true
+    if (!shiftKey && (isLogicalKey('h', 'm') || code === 'Comma')) return true
   }
 
   const primaryKey = ctrlKey || metaKey
   if (primaryKey && !altKey) {
     if (ctrlKey && code === 'F4') return true
-    if (['KeyW', 'KeyQ', 'KeyT', 'KeyN', 'KeyR', 'KeyL', 'Tab'].includes(code)) return true
-    if (!shiftKey && ['KeyP', 'KeyS', 'KeyO', 'KeyD', 'KeyF', 'KeyH', 'KeyJ', 'KeyU'].includes(code)) {
+    if (isLogicalKey('w', 'q', 't', 'n', 'r', 'l') || code === 'Tab') return true
+    if (!shiftKey && isLogicalKey('p', 's', 'o', 'd', 'f', 'h', 'j', 'u')) {
       return true
     }
     if (shiftKey && code === 'Delete') return true
