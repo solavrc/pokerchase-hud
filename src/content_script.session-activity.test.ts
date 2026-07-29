@@ -30,8 +30,10 @@
 import { ApiType } from './types'
 import {
   POKER_CHASE_INVALID_API_EVENT,
-  POKER_CHASE_ORIGIN
+  POKER_CHASE_ORIGIN,
+  POKER_CHASE_SESSION_END_EVENT,
 } from './constants/runtime'
+import { MESSAGE_ACTIONS } from './types/messages'
 
 const KEEPALIVE_INTERVAL_MS = 25000
 
@@ -197,6 +199,28 @@ describe('content_script keepalive (session-activity triggers)', () => {
     jest.advanceTimersByTime(KEEPALIVE_INTERVAL_MS * 2)
 
     expect(mockPort.postMessage).not.toHaveBeenCalled()
+  })
+
+  test('only a background-confirmed authoritative session end clears the HUD', () => {
+    const sessionEndHandler = jest.fn()
+    window.addEventListener(POKER_CHASE_SESSION_END_EVENT, sessionEndHandler)
+    try {
+      dispatchGameMessage({
+        ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+        timestamp: 7,
+      })
+      expect(sessionEndHandler).not.toHaveBeenCalled()
+
+      const backgroundMessageHandler =
+        mockPort.onMessage.addListener.mock.calls[0][0]
+      backgroundMessageHandler({ action: MESSAGE_ACTIONS.SESSION_ENDED })
+      expect(sessionEndHandler).toHaveBeenCalledTimes(1)
+    } finally {
+      window.removeEventListener(
+        POKER_CHASE_SESSION_END_EVENT,
+        sessionEndHandler
+      )
+    }
   })
 
   test('ApiTypeId 203 (参加取消申込, entry cancellation) stops keepalive when no hand ever started (P2, codex review 2026-07-20 pass-3)', () => {

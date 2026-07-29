@@ -3,7 +3,7 @@ import type PokerChaseService from '../services/poker-chase-service'
 import type { ApiEvent, ApiType, PlayerStats } from '../app'
 import type { AllPlayersRealTimeStats } from '../realtime-stats/realtime-stats-service'
 import type { HandLogEvent } from '../types/hand-log'
-import type { HandLogEventMessage } from '../types/messages'
+import type { HandLogEventMessage, SessionEndedMessage } from '../types/messages'
 import { formatHandLogEntries } from '../utils/hand-log-text'
 import {
   getStatsOriginatingDeal,
@@ -93,7 +93,7 @@ export const broadcastMessage = (data: {
   handEpoch?: number
   sessionScopeRevision?: number
   sessionScopeKey?: string
-} | string) => {
+} | SessionEndedMessage | string) => {
   connectedPorts.forEach(port => {
     try {
       port.postMessage(data)

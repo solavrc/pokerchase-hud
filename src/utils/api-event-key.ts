@@ -36,12 +36,14 @@ export interface MergeApiEventsOptions {
    */
   protectAddedApplicationEventsFromCloudWatermark?: boolean
   /**
-   * Live capture timestamps come from Date.now(). If the device clock moves
-   * backward, a newly-arrived row can sort below a previously-uploaded
-   * watermark. Detect that regression against the pre-merge Lake maximum and
-   * lower the scan floor atomically with the raw row.
+   * A row observed locally may sort below another device's already-uploaded
+   * Firestore watermark even when it is newer than every row in this device's
+   * Lake. Lower every previously-reconciled account's scan floor in the same
+   * transaction as the local raw row. Cloud downloads must not set this flag:
+   * those rows are already durable remotely and re-protecting them would
+   * create needless upload scans.
    */
-  protectOutOfOrderApplicationEventsFromCloudWatermark?: boolean
+  protectLocallyObservedApplicationEventsFromCloudWatermark?: boolean
 }
 
 const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
@@ -201,16 +203,12 @@ export async function mergeApiEvents(
 
   const protectsCloudWatermark =
     options.protectAddedApplicationEventsFromCloudWatermark ||
-    options.protectOutOfOrderApplicationEventsFromCloudWatermark
+    options.protectLocallyObservedApplicationEventsFromCloudWatermark
   const transactionTables = protectsCloudWatermark
     ? [db.apiEvents, db.meta]
     : [db.apiEvents]
 
   return await db.transaction('rw', transactionTables, async () => {
-    const preMergeMaxTimestamp =
-      options.protectOutOfOrderApplicationEventsFromCloudWatermark
-        ? (await db.apiEvents.orderBy('timestamp').last())?.timestamp
-        : undefined
     const groupKeys = [...new Map(
       inputEvents.map(event => [`${event.timestamp}\u0000${event.ApiTypeId}`, [event.timestamp, event.ApiTypeId] as [number, number]])
     ).values()]
@@ -294,13 +292,7 @@ export async function mergeApiEvents(
           .map(event => event.timestamp),
         ...enrichedApplicationTimestamps,
       ]
-      const protectedApplicationTimestamps =
-        options.protectAddedApplicationEventsFromCloudWatermark
-          ? applicationTimestamps
-          : applicationTimestamps.filter(timestamp =>
-            typeof preMergeMaxTimestamp === 'number' &&
-            timestamp < preMergeMaxTimestamp
-          )
+      const protectedApplicationTimestamps = applicationTimestamps
       const earliestProtectedTimestamp = protectedApplicationTimestamps.length > 0
         ? Math.min(...protectedApplicationTimestamps)
         : null
@@ -314,13 +306,20 @@ export async function mergeApiEvents(
           const accountSuffix = marker.id.slice(SYNC_RESCAN_BACKFILL_DONE_META_KEY.length)
           const floorKey = `${SYNC_RESCAN_FLOOR_META_KEY}${accountSuffix}`
           const existingFloor = await db.meta.get(floorKey)
-          if (typeof existingFloor?.value !== 'number' || existingFloor.value > earliestProtectedTimestamp) {
-            await db.meta.put({
-              id: floorKey,
-              value: earliestProtectedTimestamp,
-              updatedAt: Date.now()
-            })
-          }
+          // Always touch the version token, even when an older floor already
+          // protects this timestamp. An upload pass may currently be scanning
+          // from that floor; changing the token prevents its final commit from
+          // clearing protection for this newly inserted, not-yet-scanned row.
+          await db.meta.put({
+            id: floorKey,
+            value: typeof existingFloor?.value === 'number'
+              ? Math.min(existingFloor.value, earliestProtectedTimestamp)
+              : earliestProtectedTimestamp,
+            updatedAt: Math.max(
+              Date.now(),
+              (existingFloor?.updatedAt ?? 0) + 1
+            )
+          })
         }
       }
     }

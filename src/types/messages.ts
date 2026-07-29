@@ -38,6 +38,7 @@ export const MESSAGE_ACTIONS = {
   // Stats
   REQUEST_LATEST_STATS: 'requestLatestStats',
   LATEST_STATS: 'latestStats',
+  SESSION_ENDED: 'sessionEnded',
   // Data management
   DELETE_ALL_DATA: 'deleteAllData',
   REBUILD_DATA: 'rebuildData',
@@ -148,6 +149,11 @@ export interface RequestLatestStatsMessage {
 export interface LatestStatsMessage {
   action: 'latestStats'
   stats: PlayerStats[]
+}
+
+/** Background-confirmed end of the currently authoritative game session. */
+export interface SessionEndedMessage {
+  action: 'sessionEnded'
 }
 
 // Data management messages
@@ -479,6 +485,7 @@ export type ChromeMessage =
   | UpdateBattleTypeFilterMessage
   | RequestLatestStatsMessage
   | LatestStatsMessage
+  | SessionEndedMessage
   | DeleteAllDataMessage
   | RebuildDataMessage
   | ExportProgressMessage

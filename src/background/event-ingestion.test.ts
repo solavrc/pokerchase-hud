@@ -32,6 +32,7 @@ import {
   SYNC_RESCAN_FLOOR_META_KEY,
 } from '../constants/sync'
 import { getEventSessionScope } from '../utils/session-event-scope'
+import { MESSAGE_ACTIONS } from '../types/messages'
 
 jest.mock('../observability/sentry', () => ({
   captureHandledException: jest.fn(),
@@ -301,6 +302,8 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     await waitForPresentationStreams()
     handLogOutput.mockClear()
     realtimeOutput.mockClear()
+    mockPort.postMessage.mockClear()
+    secondPort.postMessage.mockClear()
 
     // 309の詳細が将来壊れてparseできない場合でも、raw ApiTypeIdとoriginで
     // tab Bだけを閉じる。古いtab Aは保持済みhandの帰属先に留まり、
@@ -312,10 +315,22 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(realtimeOutput).toHaveBeenCalledWith(expect.objectContaining({
       stats: { heroStats: {}, playerStats: {} },
     }))
+    expect(mockPort.postMessage.mock.calls.filter(([message]: [any]) =>
+      message?.action === MESSAGE_ACTIONS.SESSION_ENDED
+    )).toHaveLength(1)
+    expect(secondPort.postMessage.mock.calls.filter(([message]: [any]) =>
+      message?.action === MESSAGE_ACTIONS.SESSION_ENDED
+    )).toHaveLength(1)
 
     await onMessageHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 4000 })
     expect(service.getCurrentSessionScope()).toBeUndefined()
     expect(isSafeToUpdate()).toBe(true)
+    expect(mockPort.postMessage.mock.calls.filter(([message]: [any]) =>
+      message?.action === MESSAGE_ACTIONS.SESSION_ENDED
+    )).toHaveLength(1)
+    expect(secondPort.postMessage.mock.calls.filter(([message]: [any]) =>
+      message?.action === MESSAGE_ACTIONS.SESSION_ENDED
+    )).toHaveLength(1)
   })
 
   test('ending a non-selected origin preserves the selected tab live-stat cache', async () => {
@@ -677,7 +692,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     })
   })
 
-  test('a later clock-backward live row atomically rewinds cloud scan floors past a synthetic closure', async () => {
+  test('locally observed replay rows atomically rewind cloud scan floors past a synthetic closure', async () => {
     const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(500)
     try {
       mockPort.sender = { tab: { id: 101 } }
@@ -708,9 +723,9 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
           ApiType.EVT_ENTRY_QUEUED,
           203,
         ])
-      expect(await db.meta.get(
+      expect((await db.meta.get(
         `${SYNC_RESCAN_FLOOR_META_KEY}:user-a`
-      )).toBeUndefined()
+      ))?.value).toBe(1001)
 
       // A sync may now upload the synthetic 1001 tombstone. If the device
       // clock remains behind, the next real event still lands below that
@@ -731,7 +746,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     }
   })
 
-  test('a failed clock-backward floor write rolls back the raw row before live processing', async () => {
+  test('a failed local-observation floor write rolls back the raw row before live processing', async () => {
     await db.apiEvents.put({
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
       timestamp: 1000,

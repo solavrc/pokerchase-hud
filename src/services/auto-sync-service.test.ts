@@ -11,6 +11,10 @@ import * as minVersionGate from './min-version-gate'
 import { mergeApiEvents } from '../utils/api-event-key'
 import { getOperationState, setOperationState } from '../background/operation-state'
 import { HandLogExporter } from '../utils/hand-log-exporter'
+import {
+  SYNC_RESCAN_BACKFILL_DONE_META_KEY,
+  SYNC_RESCAN_FLOOR_META_KEY,
+} from '../constants/sync'
 
 describe('AutoSyncService cloud downloads', () => {
   let db: PokerChaseDB
@@ -1269,6 +1273,148 @@ describe('AutoSyncService cloud downloads', () => {
     } finally {
       ;(DATABASE_CONSTANTS as any).SYNC_CHUNK_SIZE = originalChunkSize
     }
+  })
+
+  test('re-offers a new local row below another device future watermark without re-offering cloud downloads', async () => {
+    const cloudDownloadedEvent = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'cloud-downloaded-150',
+      IsRetire: false,
+      timestamp: 150,
+    } as ApiEvent
+    const localEvent = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'device-b-local-200',
+      IsRetire: false,
+      timestamp: 200,
+    } as ApiEvent
+
+    // Device B has already completed the one-time reconciliation. Device A
+    // then advances Firestore to 10000 with a future-dated synthetic closure.
+    await db.meta.put({
+      id: `${SYNC_RESCAN_BACKFILL_DONE_META_KEY}:test-user`,
+      value: true,
+      updatedAt: 1,
+    })
+    await mergeApiEvents(db, [cloudDownloadedEvent as any])
+    expect(await db.meta.get(
+      `${SYNC_RESCAN_FLOOR_META_KEY}:test-user`
+    )).toBeUndefined()
+
+    // Device B's next normal event is locally monotonic but still below the
+    // remote-only watermark. Its raw row and rewind floor must commit
+    // together; comparing only with B's local maximum cannot detect this.
+    await mergeApiEvents(db, [localEvent as any], {
+      protectLocallyObservedApplicationEventsFromCloudWatermark: true,
+    })
+    expect((await db.meta.get(
+      `${SYNC_RESCAN_FLOOR_META_KEY}:test-user`
+    ))?.value).toBe(200)
+
+    jest.spyOn(firebaseAuthService, 'getCurrentUser')
+      .mockReturnValue({ uid: 'test-user' } as any)
+    jest.spyOn(minVersionGate, 'isCloudSyncBlockedByMinVersionGate')
+      .mockResolvedValue(false)
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp')
+      .mockResolvedValue(10000)
+    const offeredIds: string[] = []
+    jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockImplementation(async events => {
+        offeredIds.push(...events.map(event => event.Id as string))
+        return {
+          totalEvents: events.length,
+          syncedEvents: events.length,
+          lastSyncTime: new Date(),
+        }
+      })
+
+    await new AutoSyncService(db).performSync('upload')
+
+    expect(offeredIds).toEqual(['device-b-local-200'])
+  })
+
+  test('keeps the floor when a local row arrives after an upload pass snapshots its cursor', async () => {
+    const eventAt = (timestamp: number, id: string) => ({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: id,
+      IsRetire: false,
+      timestamp,
+    } as ApiEvent)
+    await db.meta.put({
+      id: `${SYNC_RESCAN_BACKFILL_DONE_META_KEY}:test-user`,
+      value: true,
+      updatedAt: 1,
+    })
+    await mergeApiEvents(db, [eventAt(100, 'initial-100') as any], {
+      protectLocallyObservedApplicationEventsFromCloudWatermark: true,
+    })
+
+    jest.spyOn(firebaseAuthService, 'getCurrentUser')
+      .mockReturnValue({ uid: 'test-user' } as any)
+    jest.spyOn(minVersionGate, 'isCloudSyncBlockedByMinVersionGate')
+      .mockResolvedValue(false)
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp')
+      .mockResolvedValue(10000)
+
+    let announceFirstBatch!: () => void
+    const firstBatchStarted = new Promise<void>(resolve => {
+      announceFirstBatch = resolve
+    })
+    let releaseFirstBatch!: () => void
+    const firstBatchRelease = new Promise<void>(resolve => {
+      releaseFirstBatch = resolve
+    })
+    let blockFirstBatch = true
+    const offeredIds: string[] = []
+    jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockImplementation(async events => {
+        offeredIds.push(...events.map(event => event.Id as string))
+        if (blockFirstBatch) {
+          blockFirstBatch = false
+          announceFirstBatch()
+          await firstBatchRelease
+        }
+        return {
+          totalEvents: events.length,
+          syncedEvents: events.length,
+          lastSyncTime: new Date(),
+        }
+      })
+
+    const service = new AutoSyncService(db)
+    const firstUpload = service.performSync('upload')
+    await firstBatchStarted
+
+    // The pass already counted/fetched only timestamp 100. The new row keeps
+    // the same earlier floor value, so correctness depends on its version
+    // token changing; a value-only final clear would lose timestamp 200.
+    const before = await db.meta.get(
+      `${SYNC_RESCAN_FLOOR_META_KEY}:test-user`
+    )
+    await mergeApiEvents(db, [eventAt(200, 'late-local-200') as any], {
+      protectLocallyObservedApplicationEventsFromCloudWatermark: true,
+    })
+    const after = await db.meta.get(
+      `${SYNC_RESCAN_FLOOR_META_KEY}:test-user`
+    )
+    expect(after?.value).toBe(100)
+    expect(after?.updatedAt).toBeGreaterThan(before?.updatedAt ?? 0)
+
+    releaseFirstBatch()
+    await firstUpload
+    expect((await db.meta.get(
+      `${SYNC_RESCAN_FLOOR_META_KEY}:test-user`
+    ))?.value).toBe(100)
+
+    offeredIds.length = 0
+    await service.performSync('upload')
+    expect(offeredIds).toContain('late-local-200')
   })
 
   test('claims the shared operation slot for the entire sync and refuses to start while import owns it', async () => {

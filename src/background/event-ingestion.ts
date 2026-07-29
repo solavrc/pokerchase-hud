@@ -33,6 +33,7 @@ import {
 } from '../observability/sentry'
 import { buildSchemaDiagnostic } from '../observability/schema-diagnostic'
 import { getEventFields, getEventSchema } from '../types/api'
+import { MESSAGE_ACTIONS } from '../types/messages'
 
 /**
  * 参加取消申込（ApiTypeId 203）。`ApiType` enum（アプリケーションで使用する
@@ -704,7 +705,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
               __pokerChaseHudClosureReason: closureReason,
             }, closingContext),
           ], {
-            protectOutOfOrderApplicationEventsFromCloudWatermark: true,
+            protectLocallyObservedApplicationEventsFromCloudWatermark: true,
           })
         } catch (error) {
           // Chrome has authoritatively confirmed the tab is gone. Keep the
@@ -943,7 +944,7 @@ const processEvent = async (
         eventContext
       )
       const merge = await mergeApiEvents(service.db, [storedMessage], {
-        protectOutOfOrderApplicationEventsFromCloudWatermark: true,
+        protectLocallyObservedApplicationEventsFromCloudWatermark: true,
       })
       if (merge.duplicates === 1) {
         console.warn('[background] Duplicate event (identical payload already in Raw Event Lake), skipping re-processing:', message)
@@ -1089,6 +1090,9 @@ const processEvent = async (
     // ライブlineupが存在しない。
       if (restored.selectionChanged) {
         setLastKnownStats([])
+      }
+      if (restored.wasAuthoritative === true) {
+        broadcastMessage({ action: MESSAGE_ACTIONS.SESSION_ENDED })
       }
     }
   }

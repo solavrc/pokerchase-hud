@@ -12,6 +12,10 @@ import PokerChaseService, { PokerChaseDB } from '../app'
 import { ApiType, BattleType, PhaseType, type ApiEvent } from '../types'
 import { AutoSyncService } from './auto-sync-service'
 import { MTT_TABLE_MOVE_FIXTURE } from '../test-fixtures/mtt-table-move-lifecycle'
+import {
+  getLineupOriginatingDeal,
+  getLineupSessionScope,
+} from '../utils/session-event-scope'
 
 const FIRST_HAND_ID = 384370064
 const FIRST_HAND_EVENTS = [
@@ -111,6 +115,47 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
     await (autoSyncService as any).rebuildLocalEntities()
     expect(service.getCurrentSessionScope()).toBeUndefined()
     expect(service.session.active).toBe(false)
+  })
+
+  test('restored DEAL lineup carries authority scope and originating deal into stats', async () => {
+    const context = {
+      scopeKey: 'run:4:cloud-active-ring:5000:origin-b',
+      id: 'cloud-active-ring',
+      battleType: BattleType.RING_GAME,
+      startedAt: 5000,
+      originId: 'origin-b',
+      authorityGeneration: 2,
+    }
+    const restoredDeal = {
+      ...structuredClone(FIRST_HAND_EVENTS[0] as ApiEvent<ApiType.EVT_DEAL>),
+      timestamp: 5100,
+      __pokerChaseHudSessionContext: context,
+    } as ApiEvent<ApiType.EVT_DEAL>
+    await db.apiEvents.bulkAdd([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 5000,
+        Code: 0,
+        BattleType: BattleType.RING_GAME,
+        Id: 'cloud-active-ring',
+        IsRetire: false,
+        __pokerChaseHudSessionContext: context,
+      },
+      restoredDeal,
+    ] as ApiEvent[])
+    service.setSessionOriginReconciler(() => context)
+    const writeSpy = jest.spyOn(service.statsOutputStream, 'write')
+    const calcStatsSpy = jest.spyOn(service.statsOutputStream, 'calcStats')
+      .mockResolvedValue([])
+
+    await (autoSyncService as any).rebuildLocalEntities()
+    await service.statsOutputStream.whenIdle()
+
+    expect(writeSpy).toHaveBeenCalledTimes(1)
+    const lineup = writeSpy.mock.calls[0]![0]
+    expect(getLineupSessionScope(lineup)).toMatchObject(context)
+    expect(getLineupOriginatingDeal(lineup)).toBe(service.latestEvtDeal)
+    expect(calcStatsSpy).toHaveBeenCalledTimes(1)
   })
 
   test('keeps the persisted hero anchor when the restored active scope has no DEAL', async () => {

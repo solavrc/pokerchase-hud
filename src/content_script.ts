@@ -86,6 +86,15 @@ const portManager = new RuntimePortManager({
   },
   onDisconnected: stopKeepalive,
   onMessage: message => {
+    if (
+      typeof message === 'object' &&
+      message !== null &&
+      'action' in message &&
+      message.action === EVENTS.SESSION_ENDED
+    ) {
+      window.dispatchEvent(new CustomEvent(POKER_CHASE_SESSION_END_EVENT))
+      return
+    }
     if (typeof message === 'object' && message !== null && 'stats' in message) {
       const statsMessage = message as {
         stats: PlayerStats[]
@@ -221,10 +230,9 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
         isGameActive = false
         stopKeepalive()
       }
-      // App.tsx へセッション終了を通知（bustしたプレイヤーの薄暗い表示を含む、
-      // hero以外の全HUDパネルをクリアするため）。309はここで生イベントとして
-      // 既に観測済みなので、background往復の新チャネルを追加せずその場でdispatchする。
-      window.dispatchEvent(new CustomEvent(POKER_CHASE_SESSION_END_EVENT))
+      // HUDのクリアは、このタブの309がbackground側で現在のauthoritative
+      // session終端と確認された後、SESSION_ENDEDの全game-tab broadcastを
+      // 受けた時だけ行う。並行中の古いタブの309で新しいHUDを消さない。
       break
 
     case EVT_ENTRY_CANCELLED_API_TYPE_ID:

@@ -31,6 +31,10 @@ import {
 } from '../utils/raw-event-session-context'
 import { SessionScopedEntityConverter } from '../utils/session-scoped-entity-converter'
 import { captureHandledException } from '../observability/sentry'
+import {
+  getEventSessionScope,
+  setLineupSessionScope,
+} from '../utils/session-event-scope'
 
 /** Shown in the popup and logged when the min-version gate stops cloud sync (#forced-update). */
 export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます'
@@ -74,6 +78,11 @@ export class SyncAccountChangedError extends Error {
 interface SyncPassIdentity {
   uid: string | undefined
   generation: number
+}
+
+interface SyncFloorState {
+  timestamp: number
+  updatedAt?: number
 }
 
 type ReplaySessionScope = {
@@ -202,9 +211,11 @@ export interface SyncState {
  *     (`SyncPassIdentity`) once at sync start; `uid` is used for bookkeeping
  *     KEY DERIVATION (`scopedMetaKey()`) throughout the pass, while
  *     `generation` is the VALIDITY TOKEN every commit point re-checks.
- *     `persistUnparseableSyncFloor()` and `markUnparseableFloorBackfillDone()`
- *     -- the ONLY two methods that ever write floor/backfill-done `meta`
- *     bookkeeping -- each re-check the CURRENT generation against the one
+ *     `lowerUnparseableSyncFloor()`,
+ *     `commitUnparseableSyncFloorIfUnchanged()`, and
+ *     `markUnparseableFloorBackfillDone()` -- the only methods in this
+ *     service that write floor/backfill-done `meta` bookkeeping -- each
+ *     re-check the CURRENT generation against the one
  *     they were called with, immediately before their own `db.meta` write,
  *     and throw `SyncAccountChangedError` instead of writing if it no
  *     longer matches. `performSync()`'s own final `autoSyncLastTime` write,
@@ -383,7 +394,8 @@ export class AutoSyncService {
    * comparison, so an A -> B -> A round trip is still caught even though the
    * live uid is back to matching the snapshot by the time this runs (see
    * invariant (2)'s "ABA" rationale above). Called ONLY from the bookkeeping
-   * write choke points (`persistUnparseableSyncFloor`,
+   * write choke points (`lowerUnparseableSyncFloor`,
+   * `commitUnparseableSyncFloorIfUnchanged`,
    * `markUnparseableFloorBackfillDone`, `performSync()`'s final
    * `autoSyncLastTime` write, `initialize()`'s legacy-migration/legacy-clear
    * write and result-application step) -- never around the Firestore
@@ -897,12 +909,13 @@ export class AutoSyncService {
     //   one-time migration) versus the near-O(1) local lookup this fix uses.
     await this.backfillUnparseableFloorIfNeeded(cloudMaxTimestamp, identity)
 
-    const pendingUnparseableTimestamp = await this.getUnparseableSyncFloor(identity.uid)
+    const pendingFloorState = await this.getUnparseableSyncFloorState(identity.uid)
+    const pendingUnparseableTimestamp = pendingFloorState?.timestamp ?? null
     const scanFloor = pendingUnparseableTimestamp !== null && cloudMaxTimestamp !== null
       ? Math.min(cloudMaxTimestamp, pendingUnparseableTimestamp - 1)
       : cloudMaxTimestamp
     if (scanFloor !== cloudMaxTimestamp) {
-      console.log(`[AutoSync] Rewinding upload scan to ${scanFloor} to re-offer a previously unparseable row at ${pendingUnparseableTimestamp}`)
+      console.log(`[AutoSync] Rewinding upload scan to ${scanFloor} to re-offer a protected local row at ${pendingUnparseableTimestamp}`)
     }
 
     // ==========================================================================
@@ -987,7 +1000,13 @@ export class AutoSyncService {
       // recover, so clear the stale marker rather than rewinding forever.
       // (No upload happened in this branch, so there's nothing for the floor
       // to have advanced past -- clearing here is always safe.)
-      if (pendingUnparseableTimestamp !== null) await this.persistUnparseableSyncFloor(null, identity)
+      if (pendingUnparseableTimestamp !== null) {
+        await this.commitUnparseableSyncFloorIfUnchanged(
+          null,
+          pendingFloorState,
+          identity
+        )
+      }
       return
     }
 
@@ -1020,6 +1039,7 @@ export class AutoSyncService {
     // even when a LATER floor from a previous pass is already durable (see
     // invariant spec above).
     let persistedFloorValue = pendingUnparseableTimestamp
+    let expectedFloorState = pendingFloorState
 
     while (processed < totalCount) {
       // Get chunk of raw events newer than the compound
@@ -1095,8 +1115,24 @@ export class AutoSyncService {
         // after confirmed upload" rule applies to RAISING/clearing, not to
         // lowering).
         if (persistedFloorValue === null || earliestUnparseableThisPass < persistedFloorValue) {
-          await this.persistUnparseableSyncFloor(earliestUnparseableThisPass, identity)
-          persistedFloorValue = earliestUnparseableThisPass
+          const commit = await this.commitUnparseableSyncFloorIfUnchanged(
+            earliestUnparseableThisPass,
+            expectedFloorState,
+            identity
+          )
+          if (commit.applied) {
+            expectedFloorState = commit.state
+            persistedFloorValue = commit.state?.timestamp ?? null
+          } else {
+            // A live/import writer changed the floor after this pass captured
+            // it. Still lower atomically if this unparseable row is earlier,
+            // but retain the stale expected token so the final commit cannot
+            // release the concurrent writer's unscanned row.
+            await this.lowerUnparseableSyncFloor(
+              earliestUnparseableThisPass,
+              identity
+            )
+          }
         }
         // else: the durable floor is already <= earliestUnparseableThisPass
         // -- it already protects this timestamp. Raising it further must
@@ -1184,9 +1220,13 @@ export class AutoSyncService {
     // re-persists the same value (see invariant spec above) -- not a
     // correctness gap, just a redundant re-scan/re-upload. (No explicit
     // account-switch assert needed at this specific call site -- it's
-    // built into `persistUnparseableSyncFloor()` itself, see the
+    // built into `commitUnparseableSyncFloorIfUnchanged()` itself, see the
     // ACCOUNT-SCOPING INVARIANTS spec's invariant (2).)
-    await this.persistUnparseableSyncFloor(earliestUnparseableThisPass, identity)
+    await this.commitUnparseableSyncFloorIfUnchanged(
+      earliestUnparseableThisPass,
+      expectedFloorState,
+      identity
+    )
 
     console.log(
       `[AutoSync] Upload pass complete: scanned raw=${processed}; ` +
@@ -1347,7 +1387,7 @@ export class AutoSyncService {
       const existing = await this.getUnparseableSyncFloor(identity.uid)
       if (existing === null || existing > earliestAppRow.timestamp) {
         console.log(`[AutoSync] Backfill: earliest local application row (${earliestAppRow.timestamp}) is at or below the cloud watermark (${cloudMaxTimestamp}); seeding sync floor to force a one-time full reconciliation re-offer`)
-        await this.persistUnparseableSyncFloor(earliestAppRow.timestamp, identity)
+        await this.lowerUnparseableSyncFloor(earliestAppRow.timestamp, identity)
       }
     }
 
@@ -1374,32 +1414,88 @@ export class AutoSyncService {
     })
   }
 
-  /** Read the persisted unparseable-row sync floor for `uid` (see `syncToCloud()`). Read-only -- no generation check needed. */
-  private async getUnparseableSyncFloor(uid: string | undefined): Promise<number | null> {
+  /** Read the persisted sync floor and its concurrent-writer token. */
+  private async getUnparseableSyncFloorState(
+    uid: string | undefined
+  ): Promise<SyncFloorState | null> {
     const record = await this.db.meta.get(this.scopedMetaKey(this.SYNC_UNPARSEABLE_FLOOR_KEY, uid))
     const value = record?.value
-    return typeof value === 'number' ? value : null
+    return typeof value === 'number'
+      ? { timestamp: value, updatedAt: record?.updatedAt }
+      : null
+  }
+
+  /** Read only the floor timestamp for callers that do not mutate it. */
+  private async getUnparseableSyncFloor(uid: string | undefined): Promise<number | null> {
+    return (await this.getUnparseableSyncFloorState(uid))?.timestamp ?? null
   }
 
   /**
-   * Persist (or clear, when `timestamp` is `null`) the unparseable-row sync
-   * floor for `identity.uid`. The OTHER bookkeeping WRITE CHOKE POINT
-   * (invariant (2) above, alongside `markUnparseableFloorBackfillDone()`) --
-   * same assert-before-write guarantee, for every floor set/lower/raise/
-   * clear in this file (there is no other place that writes
-   * `SYNC_UNPARSEABLE_FLOOR_KEY`).
+   * Lower the floor without ever releasing existing protection. Used by
+   * backfill and eager unparseable discovery; safe against concurrent live
+   * writers because the read and write share one Dexie transaction.
    */
-  private async persistUnparseableSyncFloor(timestamp: number | null, identity: SyncPassIdentity): Promise<void> {
+  private async lowerUnparseableSyncFloor(
+    timestamp: number,
+    identity: SyncPassIdentity
+  ): Promise<void> {
     this.assertGenerationUnchanged(identity.generation, 'before sync-floor commit')
     const key = this.scopedMetaKey(this.SYNC_UNPARSEABLE_FLOOR_KEY, identity.uid)
-    if (timestamp === null) {
-      await this.db.meta.delete(key)
-      return
-    }
-    await this.db.meta.put({
-      id: key,
-      value: timestamp,
-      updatedAt: Date.now()
+    await this.db.transaction('rw', this.db.meta, async () => {
+      const current = await this.db.meta.get(key)
+      this.assertGenerationUnchanged(identity.generation, 'before sync-floor lower')
+      await this.db.meta.put({
+        id: key,
+        value: typeof current?.value === 'number'
+          ? Math.min(current.value, timestamp)
+          : timestamp,
+        updatedAt: Math.max(Date.now(), (current?.updatedAt ?? 0) + 1)
+      })
+    })
+  }
+
+  /**
+   * Advance or clear a floor only if no local/import writer changed it since
+   * this upload pass captured the scan boundary. This compare-and-set closes
+   * the race where a new row arrives after the pass's count/cursor snapshot:
+   * that writer's atomically updated token survives for the next upload.
+   */
+  private async commitUnparseableSyncFloorIfUnchanged(
+    timestamp: number | null,
+    expected: SyncFloorState | null,
+    identity: SyncPassIdentity
+  ): Promise<{ applied: boolean, state: SyncFloorState | null }> {
+    this.assertGenerationUnchanged(identity.generation, 'before sync-floor commit')
+    const key = this.scopedMetaKey(this.SYNC_UNPARSEABLE_FLOOR_KEY, identity.uid)
+    return await this.db.transaction('rw', this.db.meta, async () => {
+      const currentRecord = await this.db.meta.get(key)
+      const current = typeof currentRecord?.value === 'number'
+        ? {
+          timestamp: currentRecord.value as number,
+          updatedAt: currentRecord.updatedAt,
+        }
+        : null
+      if (
+        current?.timestamp !== expected?.timestamp ||
+        current?.updatedAt !== expected?.updatedAt
+      ) {
+        return { applied: false, state: current }
+      }
+      this.assertGenerationUnchanged(identity.generation, 'before sync-floor compare-and-set')
+      if (timestamp === null) {
+        await this.db.meta.delete(key)
+        return { applied: true, state: null }
+      }
+      const state = {
+        timestamp,
+        updatedAt: Math.max(Date.now(), (currentRecord?.updatedAt ?? 0) + 1),
+      }
+      await this.db.meta.put({
+        id: key,
+        value: state.timestamp,
+        updatedAt: state.updatedAt,
+      })
+      return { applied: true, state }
     })
   }
 
@@ -1892,7 +1988,14 @@ export class AutoSyncService {
 
     if (service.latestEvtDeal?.SeatUserIds) {
       const playerIds = service.latestEvtDeal.SeatUserIds.filter((id: number) => id !== -1)
-      if (playerIds.length > 0) service.statsOutputStream.write(playerIds)
+      if (playerIds.length > 0) {
+        setLineupSessionScope(
+          playerIds,
+          getEventSessionScope(service.latestEvtDeal),
+          service.latestEvtDeal
+        )
+        service.statsOutputStream.write(playerIds)
+      }
     }
   }
 
