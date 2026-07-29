@@ -3,20 +3,16 @@ import userEvent from '@testing-library/user-event'
 import { HudDisplaySection } from './HudDisplaySection'
 import type { UIConfig } from '../../types/hand-log'
 import { DEFAULT_UI_CONFIG } from '../../types/hand-log'
-import { toSyncedUIConfig } from '../../utils/ui-config-storage'
 
-// Mock chrome storage and tabs
-const mockChromeStorageSet = jest.fn()
-const mockChromeStorageGet = jest.fn()
+// Mock chrome runtime and tabs
+const mockChromeRuntimeSendMessage = jest.fn()
 const mockTabsQuery = jest.fn()
 const mockTabsSendMessage = jest.fn()
 global.chrome = {
   ...global.chrome,
-  storage: {
-    sync: {
-      get: mockChromeStorageGet,
-      set: mockChromeStorageSet,
-    },
+  runtime: {
+    ...global.chrome.runtime,
+    sendMessage: mockChromeRuntimeSendMessage,
   },
   tabs: {
     query: mockTabsQuery,
@@ -35,8 +31,8 @@ describe('HudDisplaySection', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     mockTabsSendMessage.mockResolvedValue(undefined)
-    mockChromeStorageGet.mockImplementation((_key, callback) => {
-      callback({ uiConfig: toSyncedUIConfig(DEFAULT_UI_CONFIG) })
+    mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
+      callback({ success: true })
     })
     mockTabsQuery.mockImplementation((_, callback) => {
       callback([{ id: 1 }, { id: 2 }])
@@ -71,9 +67,10 @@ describe('HudDisplaySection', () => {
     }
 
     expect(mockSetUIConfig).toHaveBeenCalledWith(expectedConfig)
-    expect(mockChromeStorageSet).toHaveBeenCalledWith({
-      uiConfig: toSyncedUIConfig(expectedConfig),
-    })
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      { action: 'setSyncedUIConfig', config: expectedConfig },
+      expect.any(Function)
+    )
     expect(mockTabsSendMessage).toHaveBeenCalledWith(1, {
       action: 'updateUIConfig',
       config: expectedConfig,
@@ -95,9 +92,10 @@ describe('HudDisplaySection', () => {
     }
 
     expect(mockSetUIConfig).toHaveBeenCalledWith(expectedConfig)
-    expect(mockChromeStorageSet).toHaveBeenCalledWith({
-      uiConfig: toSyncedUIConfig(expectedConfig),
-    })
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      { action: 'setSyncedUIConfig', config: expectedConfig },
+      expect.any(Function)
+    )
     expect(mockTabsSendMessage).toHaveBeenCalledWith(1, {
       action: 'updateUIConfig',
       config: expectedConfig,

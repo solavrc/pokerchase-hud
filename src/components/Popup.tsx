@@ -145,7 +145,6 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
         // uiConfig object still contains its own scale field.
         scale: current.scale,
       }))
-      setUIConfigLoaded(true)
     }
     chrome.storage.onChanged.addListener(handleUIConfigStorageChange)
     return () => chrome.storage.onChanged.removeListener(handleUIConfigStorageChange)

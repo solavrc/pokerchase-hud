@@ -87,6 +87,29 @@ describe('Popup', () => {
     return false
   }
 
+  const respondToSyncedUIConfigMessage = (
+    message: { action?: string, config?: typeof DEFAULT_UI_CONFIG },
+    callback?: (response: unknown) => void
+  ): boolean => {
+    if (message.action !== 'setSyncedUIConfig' || !message.config) return false
+    const liveLegacyScale = syncData.uiConfig?.scale
+    const preservedLegacyScale = syncData.legacyUIScale
+    const compatibilityScale = typeof liveLegacyScale === 'number'
+      ? liveLegacyScale
+      : typeof preservedLegacyScale === 'number'
+        ? preservedLegacyScale
+        : undefined
+    syncData.uiConfig = {
+      ...message.config,
+      ...(compatibilityScale !== undefined ? { scale: compatibilityScale } : {}),
+    }
+    if (compatibilityScale !== undefined) {
+      syncData.legacyUIScale = compatibilityScale
+    }
+    callback?.({ success: true })
+    return true
+  }
+
   // Helper to wait for all initial async operations
   const waitForAsyncOperations = async () => {
     await waitFor(() => {
@@ -170,6 +193,7 @@ describe('Popup', () => {
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       // Execute callback immediately - tests will use waitFor
       if (respondToDeviceLayoutMessage(message, callback)) return
+      if (respondToSyncedUIConfigMessage(message, callback)) return
       if (message.action === 'firebaseAuthStatus') {
         callback({ success: true, isSignedIn: false, userInfo: null })
       } else if (message.action === 'getSyncState') {
@@ -471,6 +495,60 @@ describe('Popup', () => {
       expect(screen.getByRole('button', { name: '非表示' })).toHaveAttribute('aria-pressed', 'true')
       expect(screen.getByRole('radio', { name: 'フル' })).toBeChecked()
       expect(screen.getByRole('checkbox', { name: '統計カラー表示' })).not.toBeChecked()
+    })
+  })
+
+  it('初期local scale未解決中のsync変更では設定UIを有効にしない', async () => {
+    let respondToInitialLayout!: (response: unknown) => void
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceUILayout') {
+        respondToInitialLayout = callback
+        return
+      }
+      if (respondToSyncedUIConfigMessage(message, callback)) return
+      if (message.action === 'firebaseAuthStatus') {
+        callback({ success: true, isSignedIn: false, userInfo: null })
+      } else if (message.action === 'getSyncState') {
+        callback({ syncState: null })
+      } else if (message.action === 'acknowledgeWhatsNew') {
+        callback({ success: true })
+      }
+    })
+
+    render(<Popup />)
+    await waitFor(() => {
+      expect(respondToInitialLayout).toBeDefined()
+      expect(chrome.storage.onChanged.addListener).toHaveBeenCalled()
+    })
+
+    const storageListeners = (chrome.storage.onChanged.addListener as jest.Mock).mock.calls
+      .map(([listener]) => listener as (
+        changes: { [key: string]: chrome.storage.StorageChange },
+        areaName: string
+      ) => void)
+    act(() => {
+      for (const listener of storageListeners) {
+        listener({
+          uiConfig: {
+            newValue: {
+              ...DEFAULT_UI_CONFIG,
+              displayEnabled: false,
+              hudDisplayMode: 'full',
+            },
+          },
+        }, 'sync')
+      }
+    })
+
+    expect(screen.queryByText('サイズ:')).not.toBeInTheDocument()
+
+    act(() => respondToInitialLayout({ success: true, scale: 1.6 }))
+
+    await waitFor(() => {
+      expect(screen.getByText('160%')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '非表示' }))
+        .toHaveAttribute('aria-pressed', 'true')
+      expect(screen.getByRole('radio', { name: 'フル' })).toBeChecked()
     })
   })
 

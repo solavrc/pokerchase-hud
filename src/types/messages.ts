@@ -55,6 +55,7 @@ export const MESSAGE_ACTIONS = {
   SET_DEVICE_HAND_LOG_LAYOUT: 'setDeviceHandLogLayout',
   RESET_DEVICE_HAND_LOG_LAYOUT: 'resetDeviceHandLogLayout',
   RESET_HAND_LOG_LAYOUT: 'resetHandLogLayout',
+  SET_SYNCED_UI_CONFIG: 'setSyncedUIConfig',
   // Operation state
   GET_OPERATION_STATE: 'getOperationState',
   // Rebuild advisory
@@ -221,6 +222,11 @@ export interface ResetDeviceHandLogLayoutMessage {
 
 export interface ResetHandLogLayoutMessage {
   action: 'resetHandLogLayout'
+}
+
+export interface SetSyncedUIConfigMessage {
+  action: 'setSyncedUIConfig'
+  config: UIConfig
 }
 
 // Firebase backup messages
@@ -458,6 +464,7 @@ export type ChromeMessage =
   | SetDeviceHandLogLayoutMessage
   | ResetDeviceHandLogLayoutMessage
   | ResetHandLogLayoutMessage
+  | SetSyncedUIConfigMessage
   | FirebaseAuthStatusMessage
   | FirebaseSignInMessage
   | FirebaseSignOutMessage

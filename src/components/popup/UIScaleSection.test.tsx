@@ -3,11 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { UIScaleSection } from './UIScaleSection'
 import type { UIConfig } from '../../types/hand-log'
 import { DEFAULT_UI_CONFIG } from '../../types/hand-log'
-import { toSyncedUIConfig } from '../../utils/ui-config-storage'
 
-// Mock chrome storage and tabs
-const mockChromeStorageSet = jest.fn()
-const mockChromeStorageGet = jest.fn()
+// Mock chrome runtime and tabs
 const mockChromeRuntimeSendMessage = jest.fn()
 const mockTabsQuery = jest.fn()
 const mockTabsSendMessage = jest.fn()
@@ -16,12 +13,6 @@ global.chrome = {
   runtime: {
     ...global.chrome.runtime,
     sendMessage: mockChromeRuntimeSendMessage,
-  },
-  storage: {
-    sync: {
-      get: mockChromeStorageGet,
-      set: mockChromeStorageSet,
-    },
   },
   tabs: {
     query: mockTabsQuery,
@@ -40,9 +31,6 @@ describe('UIScaleSection', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     mockTabsSendMessage.mockResolvedValue(undefined)
-    mockChromeStorageGet.mockImplementation((_key, callback) => {
-      callback({ uiConfig: toSyncedUIConfig(DEFAULT_UI_CONFIG) })
-    })
     mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
       callback({ success: true })
     })
@@ -128,8 +116,9 @@ describe('UIScaleSection', () => {
       shiftKey: true,
     })
 
-    expect(mockChromeStorageSet).toHaveBeenCalledWith({
-      uiConfig: expect.objectContaining({
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith({
+      action: 'setSyncedUIConfig',
+      config: expect.objectContaining({
         toggleShortcut: {
           code: 'KeyY',
           key: 'y',
@@ -139,9 +128,7 @@ describe('UIScaleSection', () => {
           meta: false,
         },
       }),
-    })
-    expect(mockChromeStorageSet.mock.calls.at(-1)?.[0].uiConfig)
-      .not.toHaveProperty('scale')
+    }, expect.any(Function))
   })
 
   it('ショートカット入力欄の右クリックで明示的な解除状態を保存する', () => {
@@ -150,11 +137,10 @@ describe('UIScaleSection', () => {
 
     fireEvent.contextMenu(input)
 
-    expect(mockChromeStorageSet).toHaveBeenCalledWith({
-      uiConfig: expect.objectContaining({ toggleShortcut: null }),
-    })
-    expect(mockChromeStorageSet.mock.calls.at(-1)?.[0].uiConfig)
-      .not.toHaveProperty('scale')
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith({
+      action: 'setSyncedUIConfig',
+      config: expect.objectContaining({ toggleShortcut: null }),
+    }, expect.any(Function))
   })
 
   it('TabとShift+Tabは通常のフォーカス移動として通す', () => {
@@ -166,14 +152,15 @@ describe('UIScaleSection', () => {
     fireEvent.focus(input)
     expect(fireEvent.keyDown(input, { key: 'Tab', code: 'Tab', shiftKey: true })).toBe(true)
 
-    expect(mockChromeStorageSet).not.toHaveBeenCalled()
+    expect(mockChromeRuntimeSendMessage).not.toHaveBeenCalled()
   })
 
   it('旧形式の部分設定へ既定値を補ってからショートカットを保存する', () => {
-    mockChromeStorageGet.mockImplementation((_key, callback) => {
-      callback({ uiConfig: { displayEnabled: false, scale: 1.2 } })
-    })
-    render(<UIScaleSection {...defaultProps} />)
+    const legacyConfig = { displayEnabled: false, scale: 1.2 } as UIConfig
+    render(<UIScaleSection
+      {...defaultProps}
+      uiConfig={legacyConfig}
+    />)
     const input = screen.getByRole('textbox', { name: 'HUD表示切り替えショートカット' })
 
     fireEvent.focus(input)
@@ -183,16 +170,15 @@ describe('UIScaleSection', () => {
       shiftKey: true,
     })
 
-    expect(mockChromeStorageSet).toHaveBeenCalledWith({
-      legacyUIScale: 1.2,
-      uiConfig: expect.objectContaining({
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith({
+      action: 'setSyncedUIConfig',
+      config: expect.objectContaining({
         displayEnabled: false,
         hudDisplayMode: DEFAULT_UI_CONFIG.hudDisplayMode,
         hudColorCoding: DEFAULT_UI_CONFIG.hudColorCoding,
+        scale: 1.2,
       }),
-    })
-    expect(mockChromeStorageSet.mock.calls.at(-1)?.[0].uiConfig)
-      .not.toHaveProperty('scale')
+    }, expect.any(Function))
   })
 
   it('UI表示のON/OFFを切り替え', async () => {
@@ -209,9 +195,10 @@ describe('UIScaleSection', () => {
     }
 
     expect(mockSetUIConfig).toHaveBeenCalledWith(expectedConfig)
-    expect(mockChromeStorageSet).toHaveBeenCalledWith({
-      uiConfig: toSyncedUIConfig(expectedConfig),
-    })
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      { action: 'setSyncedUIConfig', config: expectedConfig },
+      expect.any(Function)
+    )
     expect(mockTabsQuery).toHaveBeenCalled()
     expect(mockTabsSendMessage).toHaveBeenCalledWith(1, {
       action: 'updateUIConfig',
@@ -241,11 +228,63 @@ describe('UIScaleSection', () => {
       { action: 'setDeviceUIScale', scale: 1.1 },
       expect.any(Function)
     )
-    expect(mockChromeStorageSet).not.toHaveBeenCalled()
+    expect(mockChromeRuntimeSendMessage.mock.calls).not.toContainEqual([
+      expect.objectContaining({ action: 'setSyncedUIConfig' }),
+      expect.any(Function),
+    ])
     expect(mockTabsSendMessage).toHaveBeenCalledWith(1, {
       action: 'updateUIConfig',
       config: expectedConfig,
     })
+  })
+
+  it('scale保存失敗時は表示を更新せずbroadcastしない', async () => {
+    mockChromeRuntimeSendMessage.mockImplementationOnce((_message, callback) => {
+      callback({ success: false, error: 'quota' })
+    })
+    render(<UIScaleSection {...defaultProps} />)
+
+    await userEvent.click(screen.getByText('+'))
+
+    expect(mockSetUIConfig).not.toHaveBeenCalled()
+    expect(mockTabsQuery).not.toHaveBeenCalled()
+    expect(mockTabsSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('scale保存timeout後の遅いsuccessは最新設定へscaleだけを反映する', () => {
+    jest.useFakeTimers()
+    try {
+      let respond!: (response: unknown) => void
+      mockChromeRuntimeSendMessage.mockImplementationOnce((_message, callback) => {
+        respond = callback
+      })
+      const { rerender } = render(<UIScaleSection {...defaultProps} />)
+
+      fireEvent.click(screen.getByText('+'))
+      jest.advanceTimersByTime(1_000)
+
+      expect(mockSetUIConfig).not.toHaveBeenCalled()
+      expect(mockTabsQuery).not.toHaveBeenCalled()
+
+      const newerConfig = {
+        ...DEFAULT_UI_CONFIG,
+        displayEnabled: false,
+      }
+      rerender(<UIScaleSection {...defaultProps} uiConfig={newerConfig} />)
+      respond({ success: true })
+
+      const reconciledConfig = {
+        ...newerConfig,
+        scale: 1.1,
+      }
+      expect(mockSetUIConfig).toHaveBeenCalledWith(reconciledConfig)
+      expect(mockTabsSendMessage).toHaveBeenCalledWith(1, {
+        action: 'updateUIConfig',
+        config: reconciledConfig,
+      })
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   it.each([

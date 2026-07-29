@@ -24,6 +24,7 @@ import {
   isValidHudPositionId,
   isValidUIScale,
   LEGACY_SYNC_UI_SCALE_KEY,
+  persistSyncedUIConfig,
   resolveLocalUIScale,
   UI_SCALE_STORAGE_KEY,
 } from '../utils/ui-config-storage'
@@ -86,7 +87,14 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
   }
 
   chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.runtime.MessageSender, sendResponse: (response: MessageResponse) => void) => {
-    if (request.action === 'getDeviceUILayout') {
+    if (request.action === 'setSyncedUIConfig') {
+      persistSyncedUIConfig(request.config, success => {
+        sendResponse(success
+          ? { success: true }
+          : { success: false, error: 'Failed to save synchronized UI config' })
+      })
+      return true
+    } else if (request.action === 'getDeviceUILayout') {
       if (request.seatIndex !== undefined && !isValidHudPositionId(request.seatIndex)) {
         sendResponse({ success: false, error: 'Invalid HUD seat index' })
         return true
@@ -97,12 +105,20 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       chrome.storage.local.get(
         positionKey ? [UI_SCALE_STORAGE_KEY, positionKey] : UI_SCALE_STORAGE_KEY,
         (localResult: Record<string, unknown>) => {
+          const localReadError = chrome.runtime.lastError
+          if (localReadError) {
+            sendResponse({
+              success: false,
+              error: localReadError.message ?? 'Failed to read device layout',
+            })
+            return
+          }
           const localScale = localResult[UI_SCALE_STORAGE_KEY]
           const localPosition = positionKey && isValidHudPosition(localResult[positionKey])
             ? localResult[positionKey]
             : undefined
           const needsScaleMigration = !isValidUIScale(localScale)
-          const migrationGeneration = deviceScaleWriteGeneration
+          const scaleMigrationGeneration = deviceScaleWriteGeneration
 
           const respond = (
             scale: number,
@@ -123,6 +139,14 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
           chrome.storage.sync.get(
             [LEGACY_SYNC_UI_SCALE_KEY, 'uiConfig'],
             (syncResult: Record<string, unknown>) => {
+              const syncReadError = chrome.runtime.lastError
+              if (syncReadError) {
+                sendResponse({
+                  success: false,
+                  error: syncReadError.message ?? 'Failed to migrate device layout',
+                })
+                return
+              }
               const legacyUIConfig = syncResult.uiConfig as
                 | { scale?: unknown }
                 | undefined
@@ -139,32 +163,47 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
                 isValidUIScale(localScale) ? localScale : migratedScale
               )
 
-              if (migratedScale === undefined) {
-                respond(scale, localPosition)
-                return
+              // Keep the pre-local-storage value in the migration snapshot as
+              // well as the mixed-version compatibility field in uiConfig.
+              // New local scale edits never update either synchronized value.
+              if (
+                needsScaleMigration &&
+                migratedScale !== undefined &&
+                preservedLegacyScale !== migratedScale
+              ) {
+                chrome.storage.sync.set({
+                  [LEGACY_SYNC_UI_SCALE_KEY]: migratedScale,
+                }, () => {
+                  void chrome.runtime.lastError
+                })
               }
 
-              if (deviceScaleWriteGeneration !== migrationGeneration) {
+              const scaleWriteIsCurrent =
+                deviceScaleWriteGeneration === scaleMigrationGeneration
+
+              const respondWithLatestLayout = () => {
                 chrome.storage.local.get(
-                  UI_SCALE_STORAGE_KEY,
+                  positionKey
+                    ? [UI_SCALE_STORAGE_KEY, positionKey]
+                    : UI_SCALE_STORAGE_KEY,
                   (latestResult: Record<string, unknown>) => {
+                    void chrome.runtime.lastError
+                    const latestPosition = positionKey &&
+                      isValidHudPosition(latestResult[positionKey])
+                      ? latestResult[positionKey]
+                      : localPosition
+                    const latestScale = latestResult[UI_SCALE_STORAGE_KEY]
                     respond(
-                      resolveLocalUIScale(latestResult[UI_SCALE_STORAGE_KEY]),
-                      localPosition
+                      isValidUIScale(latestScale) ? latestScale : scale,
+                      latestPosition
                     )
                   }
                 )
-                return
               }
 
-              // Preserve the pre-local-storage value outside uiConfig before
-              // future synchronized preference saves omit its scale field.
-              // This is a migration bridge only; new local scale edits never
-              // update the synchronized legacy value.
-              if (preservedLegacyScale !== migratedScale) {
-                chrome.storage.sync.set({
-                  [LEGACY_SYNC_UI_SCALE_KEY]: migratedScale,
-                })
+              if (migratedScale === undefined || !scaleWriteIsCurrent) {
+                respondWithLatestLayout()
+                return
               }
 
               chrome.storage.local.set({
@@ -173,7 +212,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
                 // Migration is best-effort for persistence. Returning the
                 // valid legacy values still preserves this session's layout.
                 void chrome.runtime.lastError
-                respond(scale, localPosition)
+                respondWithLatestLayout()
               })
             }
           )
