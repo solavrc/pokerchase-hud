@@ -351,7 +351,7 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     expect(writeSpy).not.toHaveBeenCalled()
   })
 
-  test('a later seated deal proves an intermediate Friend SNG result was interleaved', async () => {
+  test('a later seated deal without a captured start boundary keeps Friend SNG attribution fail-closed', async () => {
     const continuationDeal = {
       ...SEATED_DEAL,
       timestamp: 1300,
@@ -375,8 +375,8 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     const autoSyncService = new AutoSyncService(db)
     await (autoSyncService as any).rebuildLocalEntities()
 
-    expect(service.session.id).toBe('continuing-friend')
-    expect(service.session.battleType).toBe(BattleType.FRIEND_SIT_AND_GO)
+    expect(service.session.id).toBeUndefined()
+    expect(service.session.battleType).toBeUndefined()
     expect(service.latestEvtDeal).toEqual({ ...continuationDeal, sequence: 0 })
   })
 
@@ -558,7 +558,7 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     })
   })
 
-  test('a seated continuation restores Friend SNG context before converting its hand', async () => {
+  test('a seated deal alone does not restore ended Friend SNG context before converting its hand', async () => {
     const continuationDeal = {
       ...SEATED_DEAL,
       timestamp: 2220,
@@ -582,14 +582,10 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     const autoSyncService = new AutoSyncService(db)
     await (autoSyncService as any).rebuildLocalEntities()
 
-    expect((await db.hands.get(995))?.session).toEqual({
-      id: 'continuing-friend-hand',
-      battleType: BattleType.FRIEND_SIT_AND_GO,
-      name: undefined,
-    })
+    expect((await db.hands.get(995))?.session).toEqual({})
   })
 
-  test('Friend SNG replay keeps provisional context until a later DEAL proves continuation or spectating', async () => {
+  test('Friend SNG replay keeps a pre-terminal hand context but leaves later deals unclassified without a start boundary', async () => {
     const spectatorDeal = {
       ...SEATED_DEAL,
       Player: undefined,
@@ -634,10 +630,6 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
       battleType: undefined,
       name: undefined,
     })
-    expect((await db.hands.get(998))?.session).toEqual({
-      id: 'interleaved-friend',
-      battleType: BattleType.FRIEND_SIT_AND_GO,
-      name: undefined,
-    })
+    expect((await db.hands.get(998))?.session).toEqual({})
   })
 })

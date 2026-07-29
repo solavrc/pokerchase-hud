@@ -98,9 +98,11 @@ export type DbOperationType = 'import' | 'export' | 'sync' | 'rebuild'
  * Raw Event Lakeからの再構築が必要。
  *
  * version 7: parseに失敗した成功201、raw-only 203、309/Friend SNG境界を
- * live・cloud・手動/import再構築で同じraw順に適用する。既存handの
- * `session.id` / `session.battleType`が欠落または前セッション由来になって
- * いる場合があるため、Raw Event Lakeからの再構築で分類を修復する。
+ * live・cloud・手動/import再構築で同じraw順に適用する。Raw Lakeに
+ * tab/source帰属がない309後のDEAL単独はFriend継続と推測せずfail closedに
+ * する。既存handの`session.id` / `session.battleType`が欠落または前
+ * セッション由来になっている場合があるため、Raw Event Lakeからの
+ * 再構築で分類を修復する。
  *
  * インクリメントすると、拡張機能の更新後に既存ユーザーへ一度だけ
  * 「データ再構築」の実行を促すアドバイソリーが表示される

@@ -47,12 +47,19 @@ import {
 /**
  * Firebase Auth Handlers
  */
-const handleFirebaseSignIn = async (): Promise<void> => {
+const handleFirebaseSignIn = async (
+  filtersRestored: Promise<void>
+): Promise<void> => {
   try {
     const user = await firebaseAuthService.signInWithGoogle()
     console.log('[Firebase] User signed in:', user.email)
 
-    // Initialize auto sync after sign in
+    // A popup sign-in can be the request that cold-starts the worker. Do not
+    // let the initial cloud download/rebuild calculate with default filters
+    // while background.ts is still restoring the persisted selection.
+    await filtersRestored
+
+    // Initialize auto sync after sign in and filter restoration.
     await autoSyncService.onAuthStateChanged(user)
   } catch (error) {
     console.error('[Firebase] Sign in error:', error)
@@ -616,7 +623,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       return true
     } else if (request.action === 'firebaseSignIn') {
       // Firebase sign in
-      handleFirebaseSignIn()
+      handleFirebaseSignIn(service.filtersRestored)
         .then(() => sendResponse({ success: true }))
         .catch(error => {
           console.error('Firebase sign in error:', error)

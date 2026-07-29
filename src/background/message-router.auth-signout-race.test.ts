@@ -65,6 +65,32 @@ describe('message-router auth ordering', () => {
     expect(sendResponse).toHaveBeenCalledWith({ success: true })
   })
 
+  test('waits for filter restoration before initializing auto sync after sign-in', async () => {
+    const user: AuthUser = {
+      uid: 'user-a',
+      email: 'a@example.com',
+      displayName: null,
+      photoURL: null,
+      getIdToken: async () => 'a-token'
+    }
+    service.beginFiltersRestore()
+    jest.spyOn(firebaseAuthService, 'signInWithGoogle').mockResolvedValue(user)
+    const authStateChanged = jest.spyOn(autoSyncService, 'onAuthStateChanged').mockResolvedValue()
+    const sendResponse = jest.fn()
+
+    expect(listener({ action: 'firebaseSignIn' }, {}, sendResponse)).toBe(true)
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(authStateChanged).not.toHaveBeenCalled()
+    expect(sendResponse).not.toHaveBeenCalled()
+
+    service.markFiltersRestored()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(authStateChanged).toHaveBeenCalledWith(user)
+    expect(sendResponse).toHaveBeenCalledWith({ success: true })
+  })
+
   test('waits for persisted auth restore before answering firebaseAuthStatus', async () => {
     let releaseRestore: (() => void) | undefined
     const ready = jest.spyOn(firebaseAuthService, 'ready').mockImplementation(() => (

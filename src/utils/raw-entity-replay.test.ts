@@ -159,7 +159,7 @@ describe('RawEntityReplay', () => {
     expect(replay.snapshot().replayEnded).toBe(true)
   })
 
-  test('restores a provisional Friend SNG across replay chunks on a seated deal', () => {
+  test('does not restore an ended Friend SNG from a seated deal alone across replay chunks', () => {
     const replay = new RawEntityReplay(EMPTY_SESSION)
     const result: EntityBundle = { hands: [], phases: [], actions: [] }
     append(result, replay.convertChunk([
@@ -176,12 +176,12 @@ describe('RawEntityReplay', () => {
 
     expect(result.hands.map(hand => hand.session.battleType)).toEqual([
       BattleType.FRIEND_SIT_AND_GO,
-      BattleType.FRIEND_SIT_AND_GO,
+      undefined,
     ])
     expect(replay.snapshot().replayEnded).toBe(false)
   })
 
-  test('classifies a spectator deal after Friend SNG terminal as empty before a later seated continuation', () => {
+  test('keeps spectator and later seated deals fail-closed after a Friend SNG terminal', () => {
     const replay = new RawEntityReplay(EMPTY_SESSION)
     const spectatorDeal = {
       ...makeDeal(460),
@@ -198,7 +198,7 @@ describe('RawEntityReplay', () => {
 
     expect(result.hands.map(hand => hand.session.battleType)).toEqual([
       undefined,
-      BattleType.FRIEND_SIT_AND_GO,
+      undefined,
     ])
     expect(replay.snapshot().replayEnded).toBe(false)
   })

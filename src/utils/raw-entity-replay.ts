@@ -94,7 +94,7 @@ export class RawEntityReplay {
     name: undefined as string | undefined,
     players: new Map<number, { name: string, rank: string }>(),
   }
-  private pendingFriendSngSession?: ReplaySessionSnapshot
+  private pendingFriendSngTerminal = false
   private replayEnded = false
   private latestDealEvent?: ApiEvent<ApiType.EVT_DEAL>
   private validApplicationEventCount = 0
@@ -146,7 +146,7 @@ export class RawEntityReplay {
 
       if (isEntry) {
         this.latestDealEvent = undefined
-        this.pendingFriendSngSession = undefined
+        this.pendingFriendSngTerminal = false
         this.resetSession()
         if (entryBoundary.id !== undefined && entryBoundary.battleType !== undefined) {
           this.session.id = entryBoundary.id
@@ -158,21 +158,23 @@ export class RawEntityReplay {
         isSessionResult &&
         this.session.battleType === BattleType.FRIEND_SIT_AND_GO
       ) {
-        // A Friend SNG 309 is provisional: the shared raw Lake can interleave
-        // another private match's result. Keep the converter context until the
-        // next DEAL decides whether this hand stream continued.
-        this.pendingFriendSngSession = this.captureSession()
+        // A Friend SNG 309 is provisional because the shared raw Lake can
+        // interleave another private match's result. Keep the converter
+        // context only until the next captured lifecycle/DEAL boundary; the
+        // Lake has no tab/source attribution, so a DEAL alone cannot prove
+        // that the ended match continued.
+        this.pendingFriendSngTerminal = true
         this.latestDealEvent = undefined
         this.resetSession()
         this.replayEnded = true
       } else if (isSessionResult || isEntryCancellation) {
-        this.pendingFriendSngSession = undefined
+        this.pendingFriendSngTerminal = false
         this.latestDealEvent = undefined
         this.resetSession()
         this.converter.applySessionSnapshot(this.session)
         this.replayEnded = true
       } else {
-        if (isSessionDetails && this.pendingFriendSngSession) {
+        if (isSessionDetails && this.pendingFriendSngTerminal) {
           // 308 is an additional instance boundary when 201/309 capture is
           // incomplete. Once a new 308 appears after a provisional Friend SNG
           // terminal, a later seated DEAL must not resurrect the ended match.
@@ -180,7 +182,7 @@ export class RawEntityReplay {
           // itself is replayed so its new metadata cannot inherit the old id
           // or battle type.
           convertValidSegment()
-          this.pendingFriendSngSession = undefined
+          this.pendingFriendSngTerminal = false
           this.converter.applySessionSnapshot(this.session)
           this.replayEnded = false
         }
@@ -188,23 +190,19 @@ export class RawEntityReplay {
       }
 
       if (
-        this.pendingFriendSngSession &&
+        this.pendingFriendSngTerminal &&
         this.session.battleType === undefined &&
         isApiEventType(event, ApiType.EVT_DEAL)
       ) {
         // Settle events between the provisional terminal and this DEAL under
-        // their original context. A seated deal proves continuation. A
-        // spectator deal instead switches the converter to the terminal empty
-        // context before that new hand is buffered.
+        // their original context, then fail closed before buffering the new
+        // hand. A seated DEAL is not sufficient continuation evidence: both a
+        // genuinely continued Friend SNG and a new session whose 201/308 were
+        // missed have the same raw shape without tab/source attribution.
         convertValidSegment()
-        if (event.Player?.SeatIndex !== undefined) {
-          this.applySessionSnapshot(this.pendingFriendSngSession)
-          this.converter.applySessionSnapshot(this.session)
-          this.pendingFriendSngSession = undefined
-          this.replayEnded = false
-        } else {
-          this.converter.applySessionSnapshot(this.session)
-        }
+        this.pendingFriendSngTerminal = false
+        this.converter.applySessionSnapshot(this.session)
+        this.replayEnded = false
       }
 
       if (validApplicationEvent) {
