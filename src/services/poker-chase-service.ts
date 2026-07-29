@@ -171,6 +171,7 @@ class PokerChaseService {
   battleTypeFilter?: number[] = undefined // undefined = all, array = specific battleTypes
   autoBattleTypeFilter: boolean = false // true = current session's SNG/MTT/Ring category
   autoBattleTypeFilterRevision: number = 0 // automatic category changes propagated to open drill-down panels
+  sessionRevision: number = 0 // guards replay commits against newer live session/deal state
   tableSizeFilter?: TableSizeLayer[] = undefined // undefined = all layers (no filtering), array = selected layers (C案)
   handLimitFilter?: number = undefined // undefined = all hands, number = limit to recent N hands
   statDisplayConfigs?: StatDisplayConfig[] = undefined // Custom stat display configuration
@@ -203,6 +204,7 @@ class PokerChaseService {
 
   set latestEvtDeal(value: ApiEvent<ApiType.EVT_DEAL> | undefined) {
     this._latestEvtDeal = value
+    this.sessionRevision++
     // ヒーロー在籍dealへの再アンカーは、ライブ配信文脈（liveEvtDeal）も同時に
     // 同期する（codex #177 3巡目レビューP2「Use restored deal context for
     // batch broadcasts」で判明）。理由: import/rebuild/auto-sync復元の各経路
@@ -410,7 +412,10 @@ class PokerChaseService {
   readonly realTimeStatsStream: RealTimeStatsStream        // Real-time stats for hero only
   constructor({ db, playerId }: { db: PokerChaseDB, playerId?: number }) {
     this._playerId = playerId
-    this._sessionData = new SessionState(this.persistState)
+    this._sessionData = new SessionState(() => {
+      this.sessionRevision++
+      this.persistState()
+    })
     this.db = db
 
     // Initialize the ready promise

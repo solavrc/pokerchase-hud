@@ -74,9 +74,10 @@ export interface AutoSyncBootSyncService {
  */
 export async function initializeAutoSyncOnReady(
   authService: AutoSyncBootAuthGate,
-  syncService: AutoSyncBootSyncService
+  syncService: AutoSyncBootSyncService,
+  filtersRestored: Promise<void> = Promise.resolve()
 ): Promise<void> {
-  await authService.ready()
+  await Promise.all([authService.ready(), filtersRestored])
   const user = authService.getCurrentUser()
   if (user) {
     await syncService.initialize()

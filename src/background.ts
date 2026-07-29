@@ -59,7 +59,7 @@ service.ready.then(async () => {
   // initial sync is no longer skipped whenever IndexedDB init happens to
   // resolve first.
   try {
-    await initializeAutoSyncOnReady(firebaseAuthService, autoSyncService)
+    await initializeAutoSyncOnReady(firebaseAuthService, autoSyncService, service.filtersRestored)
   } catch (error) {
     console.error('[background] Auto sync initialization failed:', error)
   }

@@ -181,4 +181,50 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     expect(service.session.battleType).toBe(BattleType.RING_GAME)
     expect(service.autoBattleTypeFilterRevision).toBe(initialRevision + 1)
   })
+
+  test('cloud replay does not overwrite a newer live session at its final commit point', async () => {
+    service.autoBattleTypeFilter = true
+    service.session.setId('initial-sng')
+    service.session.setBattleType(BattleType.SIT_AND_GO)
+
+    await db.apiEvents.put({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'rebuilt-ring',
+      IsRetire: false,
+      timestamp: 500,
+      sequence: 0,
+    } as ApiEvent)
+
+    const autoSyncService = new AutoSyncService(db)
+    const originalPut = db.meta.put.bind(db.meta)
+    let releaseMetadata!: () => void
+    let signalMetadataStarted!: () => void
+    const metadataBlocked = new Promise<void>(resolve => { releaseMetadata = resolve })
+    const metadataStarted = new Promise<void>(resolve => { signalMetadataStarted = resolve })
+    jest.spyOn(db.meta, 'put').mockImplementation((async (...args: Parameters<typeof db.meta.put>) => {
+      const record = args[0]
+      if (record.id === 'importStatus') {
+        signalMetadataStarted()
+        await metadataBlocked
+      }
+      return originalPut(...args)
+    }) as any)
+
+    const rebuild = (autoSyncService as any).rebuildLocalEntities()
+    await metadataStarted
+
+    service.session.setId('new-live-mtt')
+    service.session.setBattleType(BattleType.TOURNAMENT)
+    service.latestEvtDeal = SEATED_DEAL as any
+    const liveDeal = service.latestEvtDeal
+
+    releaseMetadata()
+    await rebuild
+
+    expect(service.session.id).toBe('new-live-mtt')
+    expect(service.session.battleType).toBe(BattleType.TOURNAMENT)
+    expect(service.latestEvtDeal).toBe(liveDeal)
+  })
 })

@@ -1479,6 +1479,7 @@ export class AutoSyncService {
       }
       const converter = new EntityConverter(defaultSession)
       const service = (self as any).service
+      const liveSessionRevision = service?.sessionRevision
       const totalEventCount = await this.db.apiEvents.count()
       // Keep the pre-rebuild key set so a successful canonical replay can
       // remove hands that were derived from an incomplete local Lake but are
@@ -1586,7 +1587,14 @@ export class AutoSyncService {
         updatedAt: Date.now()
       })
 
-      if (service?.session) {
+      // A live 201/deal processed after replay began is newer than this
+      // historical snapshot. Do not overwrite that session or its deal at the
+      // final commit point; the rebuilt entities themselves remain valid.
+      const canCommitReplay =
+        service?.session &&
+        service.sessionRevision === liveSessionRevision
+
+      if (canCommitReplay) {
         const previousAutoFilter = service.autoBattleTypeFilter
           ? service.getEffectiveBattleTypeFilter?.()?.join(',')
           : undefined
@@ -1613,7 +1621,11 @@ export class AutoSyncService {
         }
       }
 
-      this.restoreLatestDeal(service, latestDealEvent)
+      if (canCommitReplay) {
+        this.restoreLatestDeal(service, latestDealEvent)
+      } else if (service?.session) {
+        console.info('[AutoSync] Preserving newer live session state instead of committing replay snapshot')
+      }
       console.log(`[AutoSync] Chunked data rebuild completed (${totalEventCount} events)`)
     } catch (error) {
       console.error('[AutoSync] Data rebuild error:', error)

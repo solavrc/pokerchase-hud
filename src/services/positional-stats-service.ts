@@ -129,11 +129,27 @@ function subscribeToHandCompletion(service: PokerChaseService): void {
   })
 }
 
+type PositionalFilterSnapshot = {
+  battleTypes?: number[]
+  tableSizes?: NonNullable<PokerChaseService['tableSizeFilter']>
+  handLimit?: number
+}
+
+const captureFilterSnapshot = (service: PokerChaseService): PositionalFilterSnapshot => ({
+  battleTypes: service.getEffectiveBattleTypeFilter()?.slice(),
+  tableSizes: service.tableSizeFilter?.slice(),
+  handLimit: service.handLimitFilter,
+})
+
 /** Exported for direct unit testing (see positional-stats-service.test.ts) -- caching itself
  * is disabled under NODE_ENV=test (see `useCache` below), so key-differs-when-filter-differs
  * can't be observed behaviorally in tests and is instead pinned down against this function directly. */
-export const buildCacheKey = (playerId: number, service: PokerChaseService): string =>
-  `${playerId}_${service.getEffectiveBattleTypeFilter()?.join(',') ?? 'all'}_${service.tableSizeFilter?.join(',') ?? 'all'}_${service.handLimitFilter ?? 'all'}`
+export const buildCacheKey = (
+  playerId: number,
+  service: PokerChaseService,
+  snapshot: PositionalFilterSnapshot = captureFilterSnapshot(service)
+): string =>
+  `${playerId}_${snapshot.battleTypes?.join(',') ?? 'all'}_${snapshot.tableSizes?.join(',') ?? 'all'}_${snapshot.handLimit ?? 'all'}`
 
 const emptyStats = (): Record<PositionalStatId, [number, number]> => ({
   vpip: [0, 0],
@@ -190,7 +206,8 @@ export async function getPositionalStats(
   // ハンド完了(cacheGeneration++)が割り込んでいないか照合する（上のコメント参照）。
   const fetchGeneration = cacheGeneration
 
-  const cacheKey = buildCacheKey(playerId, service)
+  const filterSnapshot = captureFilterSnapshot(service)
+  const cacheKey = buildCacheKey(playerId, service, filterSnapshot)
   const useCache = process.env.NODE_ENV !== 'test' && !process.env.DEBUG_NO_CACHE
   const now = Date.now()
 
@@ -211,23 +228,23 @@ export async function getPositionalStats(
     .where('seatUserIds').equals(playerId)
     .toArray()
 
-  const effectiveBattleTypeFilter = service.getEffectiveBattleTypeFilter()
+  const effectiveBattleTypeFilter = filterSnapshot.battleTypes
   if (effectiveBattleTypeFilter) {
     allPlayerHands = allPlayerHands.filter((hand: Hand) =>
       effectiveBattleTypeFilter.includes(hand.session.battleType!)
     )
   }
 
-  if (service.tableSizeFilter) {
+  if (filterSnapshot.tableSizes) {
     allPlayerHands = allPlayerHands.filter((hand: Hand) =>
-      matchesTableSizeFilter(hand, service.tableSizeFilter)
+      matchesTableSizeFilter(hand, filterSnapshot.tableSizes)
     )
   }
 
-  if (service.handLimitFilter !== undefined && service.handLimitFilter > 0) {
+  if (filterSnapshot.handLimit !== undefined && filterSnapshot.handLimit > 0) {
     allPlayerHands = [...allPlayerHands]
       .sort(compareHandsNewestFirst)
-      .slice(0, service.handLimitFilter)
+      .slice(0, filterSnapshot.handLimit)
   }
 
   // battleType/tableSize/handLimitフィルターの結果、対象ハンドが0件なら

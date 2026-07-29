@@ -61,6 +61,29 @@ describe('initializeAutoSyncOnReady', () => {
 
     expect(initialize).not.toHaveBeenCalled()
   })
+
+  test('waits for startup filter restoration before the first sync can broadcast rebuilt stats', async () => {
+    let releaseFilters!: () => void
+    const filtersRestored = new Promise<void>(resolve => { releaseFilters = resolve })
+    const authService = {
+      ready: jest.fn().mockResolvedValue(undefined),
+      getCurrentUser: jest.fn().mockReturnValue({ uid: 'user-a' })
+    }
+    const initialize = jest.fn().mockResolvedValue(undefined)
+
+    const pending = initializeAutoSyncOnReady(authService, { initialize }, filtersRestored)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(authService.getCurrentUser).not.toHaveBeenCalled()
+    expect(initialize).not.toHaveBeenCalled()
+
+    releaseFilters()
+    await pending
+
+    expect(authService.getCurrentUser).toHaveBeenCalledTimes(1)
+    expect(initialize).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('createSignInTransitionHandler', () => {

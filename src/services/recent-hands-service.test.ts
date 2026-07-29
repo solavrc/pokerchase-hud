@@ -190,6 +190,18 @@ describe('RecentHandsService', () => {
       expect(result.hands.map(h => h.handId)).toEqual([5, 4])
     })
 
+    test('one request uses one automatic category snapshot for both cache key and filtering', async () => {
+      service.autoBattleTypeFilter = true
+      const effectiveFilter = jest.spyOn(service, 'getEffectiveBattleTypeFilter')
+        .mockReturnValueOnce([BattleType.RING_GAME])
+        .mockReturnValue([BattleType.TOURNAMENT])
+
+      const result = await getRecentHands(db, service, PLAYER_ID, 10)
+
+      expect(effectiveFilter).toHaveBeenCalledTimes(1)
+      expect(result.hands.map(h => h.handId)).toEqual([5, 4])
+    })
+
     test('brand-new player with zero hands returns an empty list, not an error', async () => {
       const result = await getRecentHands(db, service, 999)
       expect(result.hands).toEqual([])

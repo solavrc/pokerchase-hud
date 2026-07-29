@@ -271,6 +271,19 @@ describe('PositionalStatsService', () => {
     expect(result.positions.reduce((sum, bucket) => sum + bucket.handsN, 0)).toBe(2)
   })
 
+  test('one request uses one automatic category snapshot for both cache key and filtering', async () => {
+    service.autoBattleTypeFilter = true
+    const effectiveFilter = jest.spyOn(service, 'getEffectiveBattleTypeFilter')
+      .mockReturnValueOnce([BattleType.RING_GAME])
+      .mockReturnValue([BattleType.TOURNAMENT])
+
+    const result = await getPositionalStats(db, service, PLAYER_ID)
+
+    expect(effectiveFilter).toHaveBeenCalledTimes(1)
+    expect(bucketOf(result, Position.BTN).handsN).toBe(2)
+    expect(result.positions.reduce((sum, bucket) => sum + bucket.handsN, 0)).toBe(2)
+  })
+
   test('handLimitFilter keeps the most recent N legacy hands with deterministic HandId fallback', async () => {
     service.handLimitFilter = 3
     const result = await getPositionalStats(db, service, PLAYER_ID)

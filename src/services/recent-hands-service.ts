@@ -75,11 +75,26 @@ function subscribeToHandCompletion(service: PokerChaseService): void {
   })
 }
 
+type RecentHandsFilterSnapshot = {
+  battleTypes?: number[]
+  tableSizes?: NonNullable<PokerChaseService['tableSizeFilter']>
+}
+
+const captureFilterSnapshot = (service: PokerChaseService): RecentHandsFilterSnapshot => ({
+  battleTypes: service.getEffectiveBattleTypeFilter()?.slice(),
+  tableSizes: service.tableSizeFilter?.slice(),
+})
+
 /** Exported for direct unit testing -- caching itself is disabled under NODE_ENV=test
  * (see `useCache` below), so key-differs-when-filter-or-limit-differs can't be observed
  * behaviorally in tests and is instead pinned down against this function directly. */
-export const buildRecentHandsCacheKey = (playerId: number, service: PokerChaseService, limit: number): string =>
-  `${playerId}_${service.getEffectiveBattleTypeFilter()?.join(',') ?? 'all'}_${service.tableSizeFilter?.join(',') ?? 'all'}_${limit}`
+export const buildRecentHandsCacheKey = (
+  playerId: number,
+  service: PokerChaseService,
+  limit: number,
+  snapshot: RecentHandsFilterSnapshot = captureFilterSnapshot(service)
+): string =>
+  `${playerId}_${snapshot.battleTypes?.join(',') ?? 'all'}_${snapshot.tableSizes?.join(',') ?? 'all'}_${limit}`
 
 /**
  * あるアクションの`phasePrevBetCount`をローカルに再計算する。
@@ -227,7 +242,8 @@ export async function getRecentHands(
   const fetchGeneration = cacheGeneration
 
   const effectiveLimit = limit > 0 ? limit : DEFAULT_RECENT_HANDS_LIMIT
-  const cacheKey = buildRecentHandsCacheKey(playerId, service, effectiveLimit)
+  const filterSnapshot = captureFilterSnapshot(service)
+  const cacheKey = buildRecentHandsCacheKey(playerId, service, effectiveLimit, filterSnapshot)
   const useCache = process.env.NODE_ENV !== 'test' && !process.env.DEBUG_NO_CACHE
   const now = Date.now()
 
@@ -243,16 +259,16 @@ export async function getRecentHands(
     .where('seatUserIds').equals(playerId)
     .toArray()
 
-  const effectiveBattleTypeFilter = service.getEffectiveBattleTypeFilter()
+  const effectiveBattleTypeFilter = filterSnapshot.battleTypes
   if (effectiveBattleTypeFilter) {
     allPlayerHands = allPlayerHands.filter((hand: Hand) =>
       effectiveBattleTypeFilter.includes(hand.session.battleType!)
     )
   }
 
-  if (service.tableSizeFilter) {
+  if (filterSnapshot.tableSizes) {
     allPlayerHands = allPlayerHands.filter((hand: Hand) =>
-      matchesTableSizeFilter(hand, service.tableSizeFilter)
+      matchesTableSizeFilter(hand, filterSnapshot.tableSizes)
     )
   }
 
