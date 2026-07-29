@@ -14,18 +14,18 @@ import {
   saveSyncedUIConfig,
   saveSyncedUIConfigPatch,
 } from '../../utils/ui-config-storage'
-import {
-  broadcastUIConfig,
-} from './broadcast-ui-config'
+import { broadcastUIConfig } from './broadcast-ui-config'
 
 interface UIScaleSectionProps {
   uiConfig: UIConfig
   setUIConfig: (config: UIConfig) => void
+  scaleControlsDisabled?: boolean
 }
 
 export const UIScaleSection = ({
   uiConfig,
   setUIConfig,
+  scaleControlsDisabled = false,
 }: UIScaleSectionProps) => {
   const [recordingShortcut, setRecordingShortcut] = useState(false)
   const [shortcutError, setShortcutError] = useState(false)
@@ -56,12 +56,17 @@ export const UIScaleSection = ({
     let callbackReceived = false
     pendingScaleWriteCountRef.current += 1
     pendingScaleRef.current = scale
-    saveLocalUIScale(scale, success => {
+    saveLocalUIScale(scale, status => {
+      if (status === 'timeout') {
+        // The background write is still live and can finish later. Keep this
+        // requested value as the base for another click while it is unsettled.
+        return
+      }
       if (!callbackReceived) {
         callbackReceived = true
         pendingScaleWriteCountRef.current -= 1
       }
-      if (!success) {
+      if (status === 'failure') {
         if (pendingScaleWriteCountRef.current === 0) {
           pendingScaleRef.current = latestAppliedScaleRef.current
         }
@@ -156,7 +161,7 @@ export const UIScaleSection = ({
         <IconButton
           size="small"
           onClick={() => requestScaleChange(-0.1)}
-          disabled={uiConfig.scale <= 0.5}
+          disabled={scaleControlsDisabled || uiConfig.scale <= 0.5}
         >
           -
         </IconButton>
@@ -166,7 +171,7 @@ export const UIScaleSection = ({
         <IconButton
           size="small"
           onClick={() => requestScaleChange(0.1)}
-          disabled={uiConfig.scale >= 2.0}
+          disabled={scaleControlsDisabled || uiConfig.scale >= 2.0}
         >
           +
         </IconButton>

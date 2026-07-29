@@ -23,6 +23,7 @@ import type { SyncState } from '../services/auto-sync-service'
 import { content_scripts } from '../../manifest.json'
 import { sendMessageWithTimeout } from './popup/send-message'
 import {
+  isValidUIScale,
   loadLocalUIScale,
   mergeUIConfigWithLocalScale,
   resolveLocalUIScale,
@@ -43,6 +44,7 @@ import { UpdateSection } from './popup/UpdateSection'
 import { WhatsNewSection } from './popup/WhatsNewSection'
 import { PopupHeader } from './popup/PopupHeader'
 import { SectionCard } from './popup/SectionCard'
+import { TelemetrySection } from './popup/TelemetrySection'
 import type { PopupThemeMode } from './popup/theme'
 import { DEFAULT_POPUP_THEME_MODE, getPopupTheme, resolvePopupThemeVariant } from './popup/theme'
 import {
@@ -88,6 +90,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   const [hasUnsavedStatChanges, setHasUnsavedStatChanges] = useState<boolean>(false)
   const [uiConfig, setUIConfig] = useState<UIConfig>(DEFAULT_UI_CONFIG)
   const [uiConfigLoaded, setUIConfigLoaded] = useState(false)
+  const [uiScaleAuthoritative, setUIScaleAuthoritative] = useState(false)
   const [popupThemeMode, setPopupThemeMode] = useState<PopupThemeMode>(
     initialPopupThemeMode ?? DEFAULT_POPUP_THEME_MODE
   )
@@ -95,7 +98,6 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   // back to `false` (no crash) in environments without `window.matchMedia`
   // (e.g. jsdom under Jest).
   const prefersDarkScheme = useMediaQuery('(prefers-color-scheme: dark)')
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const popupThemeChangedByUserRef = useRef(false)
   const uiConfigChangedAfterMountRef = useRef(false)
   const uiScaleChangedAfterMountRef = useRef(false)
@@ -128,6 +130,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
         const scaleChange = changes[UI_SCALE_STORAGE_KEY]
         if (!scaleChange) return
         uiScaleChangedAfterMountRef.current = true
+        setUIScaleAuthoritative(isValidUIScale(scaleChange.newValue))
         setUIConfig(current => ({
           ...current,
           scale: resolveLocalUIScale(scaleChange.newValue),
@@ -279,7 +282,10 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
       // そのまま使うとポップアップのHUD表示設定セクションが未定義値を表示して
       // しまう（App.tsx側の読み込みは既にこのマージを行っている）。
       chrome.storage.sync.get('uiConfig', (result: Record<string, any>) => {
-        loadLocalUIScale(localScale => {
+        loadLocalUIScale((localScale, authoritative) => {
+          if (authoritative) {
+            setUIScaleAuthoritative(true)
+          }
           if (
             uiConfigChangedAfterMountRef.current ||
             uiScaleChangedAfterMountRef.current
@@ -591,6 +597,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           <UIScaleSection
             uiConfig={uiConfig}
             setUIConfig={setUIConfig}
+            scaleControlsDisabled={!uiScaleAuthoritative}
           />
 
           <HudDisplaySection
@@ -663,7 +670,6 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           importDuplicates={importDuplicates}
           importSuccess={importSuccess}
           importStartTime={importStartTime}
-          fileInputRef={fileInputRef}
           setImportStatus={setImportStatus}
           setImportProgress={setImportProgress}
           setImportProcessed={setImportProcessed}
@@ -672,6 +678,10 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           setImportSuccess={setImportSuccess}
           setImportStartTime={setImportStartTime}
         />
+      </SectionCard>
+
+      <SectionCard>
+        <TelemetrySection />
       </SectionCard>
 
       <UndecodedEventSection />

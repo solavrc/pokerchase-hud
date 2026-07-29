@@ -12,14 +12,24 @@ describe('operation-state', () => {
   })
 
   it('reflects updates made via setOperationState', () => {
-    setOperationState({ type: 'import', progress: 0 })
-    expect(getOperationState()).toEqual({ type: 'import', progress: 0 })
+    setOperationState({ type: 'import', phase: 'transfer', progress: 0 })
+    expect(getOperationState()).toEqual({ type: 'import', phase: 'transfer', progress: 0 })
     expect(isOperationIdle()).toBe(false)
   })
 
   it('supports progress updates carrying processed/total', () => {
-    setOperationState({ type: 'import', progress: 50, processed: 5, total: 10 })
-    expect(getOperationState()).toEqual({ type: 'import', progress: 50, processed: 5, total: 10 })
+    setOperationState({ type: 'import', phase: 'processing', progress: 50, processed: 5, total: 10 })
+    expect(getOperationState()).toEqual({ type: 'import', phase: 'processing', progress: 50, processed: 5, total: 10 })
+  })
+
+  it('identifies a rebuild that is the tail of an import', () => {
+    setOperationState({ type: 'rebuild', origin: 'import', phase: 'rebuild', progress: 25 })
+    expect(getOperationState()).toEqual({
+      type: 'rebuild',
+      origin: 'import',
+      phase: 'rebuild',
+      progress: 25,
+    })
   })
 
   it('supports export state with format', () => {

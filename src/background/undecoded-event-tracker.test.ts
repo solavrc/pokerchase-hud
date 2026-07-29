@@ -8,6 +8,7 @@ import { ApiType } from '../types'
 import {
   classifyUndecodedApiTypeId,
   getUndecodedEventStats,
+  INVALID_API_TYPE_ID_BUCKET,
   recordUndecodedEvent,
   resetUndecodedEventStats,
   UNDECODED_EVENT_STATS_KEY
@@ -50,6 +51,11 @@ describe('undecoded-event-tracker', () => {
       // shouldn't, since parseApiEvent succeeds for them), they'd read as
       // unknownApiType rather than the dangerous appTypeParseFailed class.
       expect(classifyUndecodedApiTypeId(202)).toBe('unknownApiType')
+    })
+
+    it('classifies the bounded invalid ApiTypeId bucket separately', () => {
+      expect(classifyUndecodedApiTypeId(INVALID_API_TYPE_ID_BUCKET))
+        .toBe('invalidApiTypeId')
     })
   })
 

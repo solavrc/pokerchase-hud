@@ -566,6 +566,51 @@ describe('Popup', () => {
     })
   })
 
+  it('local scale読込timeout後も権威的応答までは倍率ボタンを無効にする', async () => {
+    jest.useFakeTimers()
+    try {
+      let respondToInitialLayout!: (response: unknown) => void
+      mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+        if (message.action === 'getDeviceUILayout') {
+          respondToInitialLayout = callback
+          return
+        }
+        if (respondToSyncedUIConfigMessage(message, callback)) return
+        if (message.action === 'firebaseAuthStatus') {
+          callback({ success: true, isSignedIn: false, userInfo: null })
+        } else if (message.action === 'getSyncState') {
+          callback({ syncState: null })
+        } else if (message.action === 'acknowledgeWhatsNew') {
+          callback({ success: true })
+        }
+      })
+
+      render(<Popup />)
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(respondToInitialLayout).toBeDefined()
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1_000)
+      })
+
+      expect(screen.getByText('100%')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '+' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: '-' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: '表示' })).toBeEnabled()
+
+      act(() => respondToInitialLayout({ success: true, scale: 1.8 }))
+
+      expect(screen.getByText('180%')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '+' })).toBeEnabled()
+      expect(screen.getByRole('button', { name: '-' })).toBeEnabled()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
   it('外部のuiConfig変更を開いたまま反映し、後続の設定変更で巻き戻さない', async () => {
     localData[UI_SCALE_STORAGE_KEY] = 1.4
     render(<Popup />)

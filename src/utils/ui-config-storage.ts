@@ -231,57 +231,61 @@ const sendDeviceLayoutReadMessage = <TResponse,>(
   }
 }
 
+export type DeviceLayoutWriteStatus = 'success' | 'failure' | 'timeout'
+
 const sendDeviceLayoutWriteMessage = (
   message: ChromeMessage,
-  callback: (success: boolean) => void
+  callback: (status: DeviceLayoutWriteStatus) => void
 ): void => {
-  let completed = false
-  let timedOut = false
+  let responseReceived = false
   const timeoutId = setTimeout(() => {
-    if (completed) return
-    timedOut = true
-    callback(false)
+    if (!responseReceived) callback('timeout')
   }, DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS)
-  const finish = (success: boolean) => {
-    if (completed) return
-    completed = true
+  const finish = (status: Exclude<DeviceLayoutWriteStatus, 'timeout'>) => {
+    if (responseReceived) return
+    responseReceived = true
     clearTimeout(timeoutId)
-    // A timeout is not success, but the background write cannot be cancelled.
-    // Reconcile an authoritative late success once it eventually arrives.
-    if (!timedOut || success) callback(success)
+    // A timeout cannot cancel the background write. Always publish the later
+    // authoritative result so callers can distinguish an unsettled request
+    // from a definitive storage failure.
+    callback(status)
   }
 
   try {
     chrome.runtime.sendMessage(message, (response: { success?: boolean } | undefined) => {
       const runtimeError = chrome.runtime.lastError
-      finish(!runtimeError && response?.success === true)
+      finish(!runtimeError && response?.success === true ? 'success' : 'failure')
     })
   } catch {
     clearTimeout(timeoutId)
-    if (!completed) {
-      completed = true
-      callback(false)
+    if (!responseReceived) {
+      responseReceived = true
+      callback('failure')
     }
   }
 }
 
-export const loadLocalUIScale = (callback: (scale: number) => void): void => {
+export const loadLocalUIScale = (
+  callback: (scale: number, authoritative: boolean) => void
+): void => {
   sendDeviceLayoutReadMessage<DeviceUILayoutResponse>(
     { action: 'getDeviceUILayout' },
     (response: DeviceUILayoutResponse | undefined) => {
-      callback(resolveLocalUIScale(response?.scale))
+      const authoritative =
+        response?.success === true && isValidUIScale(response.scale)
+      callback(resolveLocalUIScale(response?.scale), authoritative)
     }
   )
 }
 
 export const saveLocalUIScale = (
   scale: number,
-  callback?: (success: boolean) => void
+  callback?: (status: DeviceLayoutWriteStatus) => void
 ): void => {
   sendDeviceLayoutWriteMessage(
     { action: 'setDeviceUIScale', scale: resolveLocalUIScale(scale) },
-    success => {
-      callback?.(success)
+    status => {
+      callback?.(status)
     }
   )
 }
@@ -302,10 +306,12 @@ export const saveHudPosition = (
   seatIndex: number,
   position: HudPosition
 ): void => {
+  let warned = false
   sendDeviceLayoutWriteMessage(
     { action: 'setDeviceHudPosition', seatIndex, position },
-    success => {
-      if (!success) {
+    status => {
+      if (status !== 'success' && !warned) {
+        warned = true
         console.warn('[HUD layout] Failed to save device-local position')
       }
     }
@@ -326,15 +332,15 @@ export const loadHandLogLayout = (
 export const saveHandLogLayout = (layout: HandLogLayout): void => {
   sendDeviceLayoutWriteMessage(
     { action: 'setDeviceHandLogLayout', layout },
-    (_success) => {}
+    (_status) => {}
   )
 }
 
 export const resetHandLogLayout = (callback?: () => void): void => {
   sendDeviceLayoutWriteMessage(
     { action: 'resetDeviceHandLogLayout' },
-    (success) => {
-      if (success) callback?.()
+    status => {
+      if (status === 'success') callback?.()
     }
   )
 }

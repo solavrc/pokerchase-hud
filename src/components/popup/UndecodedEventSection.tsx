@@ -5,7 +5,10 @@ import Typography from '@mui/material/Typography'
 import { Close } from '@mui/icons-material'
 import { useCallback, useEffect, useState } from 'react'
 import { ApiTypeValues, type ApiType } from '../../types'
-import type { UndecodedEventStats } from '../../background/undecoded-event-tracker'
+import {
+  INVALID_API_TYPE_ID_BUCKET,
+  type UndecodedEventStats
+} from '../../background/undecoded-event-tracker'
 import type { AcknowledgeUndecodedEventStatsMessage } from '../../types/messages'
 import { sendMessageWithTimeout } from './send-message'
 
@@ -48,7 +51,10 @@ export const UndecodedEventSection = () => {
     .map(([apiTypeIdStr, entry]) => ({ apiTypeId: Number(apiTypeIdStr), ...entry }))
     .sort((a, b) => b.count - a.count)
 
-  const isDangerous = entries.some(({ apiTypeId }) => ApiTypeValues.includes(apiTypeId as ApiType))
+  const isDangerous = entries.some(({ apiTypeId }) =>
+    apiTypeId === INVALID_API_TYPE_ID_BUCKET ||
+    ApiTypeValues.includes(apiTypeId as ApiType)
+  )
   const lastSeen = entries.reduce((max, e) => Math.max(max, e.lastSeen), 0)
 
   const formatTimestamp = (timestamp: number) => {
@@ -60,7 +66,9 @@ export const UndecodedEventSection = () => {
     return `${month}-${day} ${hours}:${minutes}`
   }
 
-  const breakdown = entries.map(({ apiTypeId, count }) => `${apiTypeId}×${count}`).join(', ')
+  const breakdown = entries.map(({ apiTypeId, count }) =>
+    `${apiTypeId === INVALID_API_TYPE_ID_BUCKET ? 'ApiTypeId不正' : apiTypeId}×${count}`
+  ).join(', ')
 
   return (
     <Box sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: 'divider' }}>

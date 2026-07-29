@@ -13,7 +13,18 @@ import PokerChaseService, { PokerChaseDB } from '../app'
 import { ApiType } from '../types'
 import { registerEventIngestion } from './event-ingestion'
 import { connectedPorts } from './ports'
-import { getUndecodedEventStats, resetUndecodedEventStats, UNDECODED_EVENT_STATS_KEY } from './undecoded-event-tracker'
+import {
+  getUndecodedEventStats,
+  INVALID_API_TYPE_ID_BUCKET,
+  resetUndecodedEventStats,
+  UNDECODED_EVENT_STATS_KEY
+} from './undecoded-event-tracker'
+import { captureSchemaValidationFailure } from '../observability/sentry'
+
+jest.mock('../observability/sentry', () => ({
+  captureHandledException: jest.fn(),
+  captureSchemaValidationFailure: jest.fn()
+}))
 
 describe('registerEventIngestion (Raw Event Lake)', () => {
   let db: PokerChaseDB
@@ -23,6 +34,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
   let mockPort: any
 
   beforeEach(async () => {
+    jest.mocked(captureSchemaValidationFailure).mockClear()
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
     // undecoded-event-tracker caches its in-memory state at module scope
@@ -81,7 +93,13 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     // EVT_DEAL (303) missing every required field — simulates a PokerChase
     // payload shape change breaking the schema (the season-3 EVT_SESSION_RESULTS
     // incident this whole redesign is fixing).
-    const brokenDealEvent = { ApiTypeId: 303, timestamp: 222 }
+    const brokenDealEvent = {
+      ApiTypeId: 303,
+      timestamp: 222,
+      Alice: {
+        UserId: 129532369
+      }
+    }
     await onMessageHandler(brokenDealEvent)
 
     const stored = await db.apiEvents.get([222, 303, 0])
@@ -90,6 +108,62 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(handLogSpy).not.toHaveBeenCalled()
     expect(aggregateSpy).not.toHaveBeenCalled()
     expect(realTimeSpy).not.toHaveBeenCalled()
+    expect(captureSchemaValidationFailure).toHaveBeenCalledWith(
+      ApiType.EVT_DEAL,
+      expect.any(Function)
+    )
+    const telemetryArgs = jest.mocked(captureSchemaValidationFailure).mock.calls[0]
+    expect(telemetryArgs).toHaveLength(2)
+    const diagnostic = telemetryArgs?.[1]()
+    expect(diagnostic).toEqual(
+      expect.objectContaining({
+        issues: expect.arrayContaining([
+          expect.objectContaining({
+            path: expect.any(String),
+            code: expect.any(String),
+            actualType: expect.any(String)
+          })
+        ]),
+        payloadShape: expect.arrayContaining([
+          '$: object',
+          'ApiTypeId: integer',
+          'timestamp: integer'
+        ]),
+        sanitizedPayload: expect.objectContaining({
+          ApiTypeId: 303,
+          timestamp: 222
+        })
+      })
+    )
+    expect(diagnostic).toEqual(
+      expect.objectContaining({
+        issues: expect.arrayContaining([
+          expect.objectContaining({
+            path: expect.any(String),
+            code: expect.any(String),
+            actualType: expect.any(String)
+          })
+        ]),
+        payloadShape: expect.any(Array),
+        sanitizedPayload: expect.objectContaining({
+          ApiTypeId: 303,
+          timestamp: 222
+        }),
+        shapeTruncated: expect.any(Boolean),
+        payloadTruncated: expect.any(Boolean)
+      })
+    )
+    expect(diagnostic?.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: expect.any(String),
+          code: expect.any(String),
+          actualType: expect.any(String)
+        })
+      ])
+    )
+    expect(JSON.stringify(diagnostic)).not.toContain('Alice')
+    expect(JSON.stringify(diagnostic)).not.toContain('129532369')
   })
 
   test('a known non-application event (202 keepalive/ack) is stored raw but NOT forwarded to streams', async () => {
@@ -176,13 +250,32 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
   })
 
   test('drop visibility: an ApiTypeId unknown to the ApiType enum is counted in the unknownApiType class', async () => {
-    const unknownEvent = { ApiTypeId: 9999, timestamp: 444, SomeFutureField: 'x' }
+    const unknownEvent = {
+      ApiTypeId: 9999,
+      timestamp: 444,
+      Alice: {
+        UserId: 129532369,
+        Chip: 1200
+      }
+    }
     await onMessageHandler(unknownEvent)
     await new Promise(resolve => setTimeout(resolve, 550))
 
     const stats = await getUndecodedEventStats(db)
     expect(stats.total).toBe(1)
     expect(stats.perApiTypeId[9999]).toEqual({ count: 1, lastSeen: 444 })
+
+    const diagnostic =
+      jest.mocked(captureSchemaValidationFailure).mock.calls[0]?.[1]()
+    expect(diagnostic).toBeDefined()
+    if (!diagnostic) throw new Error('expected unknown-event diagnostic')
+    expect(diagnostic.payloadShape).toEqual(expect.arrayContaining([
+      '[dynamic-key]: object',
+      '[dynamic-key].UserId: integer',
+      '[dynamic-key].Chip: integer'
+    ]))
+    expect(JSON.stringify(diagnostic)).not.toContain('Alice')
+    expect(JSON.stringify(diagnostic)).not.toContain('129532369')
   })
 
   test('drop visibility: a known non-application event (202) is NOT counted (by-design, not a drop)', async () => {
@@ -214,6 +307,41 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     await onMessageHandler({ timestamp: 555 }) // missing ApiTypeId
 
     expect(await db.apiEvents.count()).toBe(0)
+  })
+
+  test('an invalid ApiTypeId is still reported and counted in a bounded bucket', async () => {
+    await onMessageHandler({ ApiTypeId: '303', timestamp: 555 })
+    await onMessageHandler({ timestamp: 556 })
+
+    expect(await db.apiEvents.count()).toBe(0)
+    expect(captureSchemaValidationFailure).toHaveBeenCalledTimes(2)
+    expect(captureSchemaValidationFailure).toHaveBeenNthCalledWith(
+      1,
+      INVALID_API_TYPE_ID_BUCKET,
+      expect.any(Function)
+    )
+    expect(captureSchemaValidationFailure).toHaveBeenNthCalledWith(
+      2,
+      INVALID_API_TYPE_ID_BUCKET,
+      expect.any(Function)
+    )
+
+    const firstDiagnostic =
+      jest.mocked(captureSchemaValidationFailure).mock.calls[0]?.[1]()
+    expect(firstDiagnostic).toEqual(expect.objectContaining({
+      payloadShape: expect.arrayContaining([
+        'ApiTypeId: string',
+        'timestamp: integer'
+      ])
+    }))
+    expect(JSON.stringify(firstDiagnostic)).not.toContain('"303"')
+
+    const stats = await getUndecodedEventStats(db)
+    expect(stats.total).toBe(2)
+    expect(stats.perApiTypeId[INVALID_API_TYPE_ID_BUCKET]).toEqual({
+      count: 2,
+      lastSeen: 556
+    })
   })
 
   test('keepalive messages are ignored entirely (not stored, not forwarded)', async () => {
