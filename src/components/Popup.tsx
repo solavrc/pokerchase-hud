@@ -23,9 +23,8 @@ import type { SyncState } from '../services/auto-sync-service'
 import { content_scripts } from '../../manifest.json'
 import { sendMessageWithTimeout } from './popup/send-message'
 import {
+  loadLocalUIScale,
   mergeUIConfigWithLocalScale,
-  resolveLocalUIScale,
-  UI_SCALE_STORAGE_KEY,
 } from '../utils/ui-config-storage'
 
 // Import sub-components
@@ -268,17 +267,14 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
       // そのまま使うとポップアップのHUD表示設定セクションが未定義値を表示して
       // しまう（App.tsx側の読み込みは既にこのマージを行っている）。
       chrome.storage.sync.get('uiConfig', (result: Record<string, any>) => {
-        chrome.storage.local.get(UI_SCALE_STORAGE_KEY, (localResult: Record<string, unknown>) => {
+        loadLocalUIScale(localScale => {
           if (uiConfigChangedAfterMountRef.current) {
             setUIConfig(current => ({
               ...current,
-              scale: resolveLocalUIScale(localResult[UI_SCALE_STORAGE_KEY]),
+              scale: localScale,
             }))
           } else {
-            setUIConfig(mergeUIConfigWithLocalScale(
-              result.uiConfig,
-              localResult[UI_SCALE_STORAGE_KEY]
-            ))
+            setUIConfig(mergeUIConfigWithLocalScale(result.uiConfig, localScale))
           }
           setUIConfigLoaded(true)
         })

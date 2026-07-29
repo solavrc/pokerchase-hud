@@ -69,6 +69,22 @@ describe('Popup', () => {
   let syncData: Record<string, any>
   let localData: Record<string, any>
 
+  const respondToDeviceLayoutMessage = (
+    message: { action?: string, scale?: number },
+    callback?: (response: unknown) => void
+  ): boolean => {
+    if (message.action === 'getDeviceUILayout') {
+      callback?.({ success: true, scale: localData[UI_SCALE_STORAGE_KEY] ?? 1 })
+      return true
+    }
+    if (message.action === 'setDeviceUIScale') {
+      localData[UI_SCALE_STORAGE_KEY] = message.scale
+      callback?.({ success: true })
+      return true
+    }
+    return false
+  }
+
   // Helper to wait for all initial async operations
   const waitForAsyncOperations = async () => {
     await waitFor(() => {
@@ -89,6 +105,7 @@ describe('Popup', () => {
     })
   ) => {
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (respondToDeviceLayoutMessage(message, callback)) return
       if (message.action === 'firebaseAuthStatus') {
         callback({ success: true, ...getAuthStatus() })
       } else if (message.action === 'getSyncState') {
@@ -150,6 +167,7 @@ describe('Popup', () => {
 
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       // Execute callback immediately - tests will use waitFor
+      if (respondToDeviceLayoutMessage(message, callback)) return
       if (message.action === 'firebaseAuthStatus') {
         callback({ success: true, isSignedIn: false, userInfo: null })
       } else if (message.action === 'getSyncState') {
@@ -428,8 +446,8 @@ describe('Popup', () => {
     fireEvent.click(screen.getByRole('button', { name: '+' }))
 
     await waitFor(() => {
-      expect(mockChromeLocalStorageSet).toHaveBeenLastCalledWith(
-        { [UI_SCALE_STORAGE_KEY]: 1.5 },
+      expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+        { action: 'setDeviceUIScale', scale: 1.5 },
         expect.any(Function)
       )
     })
@@ -853,6 +871,7 @@ describe('Popup', () => {
     // サインイン済みの状態をモック
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       // Execute callback immediately - tests will use waitFor
+      if (respondToDeviceLayoutMessage(message, callback)) return
       if (message.action === 'firebaseAuthStatus') {
         callback({
           success: true,
@@ -997,6 +1016,7 @@ describe('Popup', () => {
     it('getSyncStateレスポンスが正しい形式で処理される', async () => {
       // syncStateのレスポンス形式をテスト
       mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+        if (respondToDeviceLayoutMessage(message, callback)) return
         if (message.action === 'firebaseAuthStatus') {
           callback({ success: true, isSignedIn: false })
         } else if (message.action === 'getSyncState') {
@@ -1030,6 +1050,7 @@ describe('Popup', () => {
 
       // getSyncStateのモックを設定
       mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+        if (respondToDeviceLayoutMessage(message, callback)) return
         if (message.action === 'firebaseAuthStatus') {
           callback({ success: true, isSignedIn: false })
         } else if (message.action === 'getSyncState') {
@@ -1082,6 +1103,7 @@ describe('Popup', () => {
         })
       )
       mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+        if (respondToDeviceLayoutMessage(message, callback)) return
         if (message.action === 'firebaseAuthStatus') {
           callback({ success: false, error: 'auth restore failed' })
         } else if (message.action === 'getSyncState') {
@@ -1101,7 +1123,8 @@ describe('Popup', () => {
       jest.useFakeTimers()
 
       // Simulate a busy/unresponsive service worker: sendMessage never calls its callback
-      mockChromeRuntimeSendMessage.mockImplementation(() => {
+      mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+        if (respondToDeviceLayoutMessage(message, callback)) return
         // no-op: never invokes the callback
       })
 

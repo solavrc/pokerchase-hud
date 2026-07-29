@@ -5,17 +5,12 @@ import type { PlayerStats } from '../types/entities'
 import type { StatDisplayConfig } from '../types/filters'
 import type { RealTimeStats } from '../realtime-stats/realtime-stats-service'
 
-// Mock chrome storage
-const mockChromeStorageGet = jest.fn()
-const mockChromeStorageSet = jest.fn()
+const mockChromeRuntimeSendMessage = jest.fn()
 global.chrome = {
   ...global.chrome,
-  storage: {
-    ...global.chrome.storage,
-    local: {
-      get: mockChromeStorageGet,
-      set: mockChromeStorageSet,
-    },
+  runtime: {
+    ...global.chrome.runtime,
+    sendMessage: mockChromeRuntimeSendMessage,
   },
 } as any
 
@@ -27,6 +22,11 @@ Object.assign(navigator, {
 })
 
 describe('Hud', () => {
+  const getRuntimeActionCallCount = (action: string): number =>
+    (chrome.runtime.sendMessage as jest.Mock).mock.calls.filter(
+      ([message]) => message?.action === action
+    ).length
+
   const mockStatDisplayConfigs: StatDisplayConfig[] = [
     { id: 'vpip', enabled: true, order: 0 },
     { id: 'pfr', enabled: true, order: 1 },
@@ -84,14 +84,22 @@ describe('Hud', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
-    mockChromeStorageGet.mockImplementation((_, callback) => {
-      callback({ [`hudPosition_0`]: { top: '50%', left: '50%' } })
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceUILayout') {
+        callback({
+          success: true,
+          scale: 1,
+          position: { top: '50%', left: '50%' },
+        })
+      } else {
+        callback({ success: true })
+      }
     })
     global.chrome = {
       ...global.chrome,
       runtime: {
         ...global.chrome.runtime,
-        sendMessage: jest.fn(),
+        sendMessage: mockChromeRuntimeSendMessage,
       },
     } as any
   })
@@ -312,13 +320,16 @@ describe('Hud', () => {
 
     // 端末ローカルstorageに位置が保存される
     await waitFor(() => {
-      expect(mockChromeStorageSet).toHaveBeenCalledWith(
+      expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
         expect.objectContaining({
-          hudPosition_0: expect.objectContaining({
+          action: 'setDeviceHudPosition',
+          seatIndex: 0,
+          position: expect.objectContaining({
             top: expect.any(String),
             left: expect.any(String),
           }),
-        })
+        }),
+        expect.any(Function)
       )
     })
   })
@@ -393,8 +404,12 @@ describe('Hud', () => {
 
   it('各席の初期位置が正しく設定される', () => {
     // Mock Chrome storage to return empty so default positions are used
-    mockChromeStorageGet.mockImplementation((_, callback) => {
-      callback({})
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      callback({
+        success: true,
+        scale: 1,
+        ...(message.action === 'getDeviceUILayout' ? {} : {}),
+      })
     })
 
     const positions = [
@@ -700,7 +715,7 @@ describe('Hud', () => {
 
       rerender(renderBoth(2))
       await waitFor(() => {
-        expect(chrome.runtime.sendMessage).toHaveBeenCalledTimes(4)
+        expect(getRuntimeActionCallCount('getRecentHands')).toBe(4)
       })
     })
 
@@ -759,7 +774,7 @@ describe('Hud', () => {
       )
 
       await waitFor(() => {
-        expect(chrome.runtime.sendMessage).toHaveBeenCalledTimes(1)
+        expect(getRuntimeActionCallCount('getPositionalStats')).toBe(1)
       })
 
       // 実況の1アクションごとの更新はhandEpochを変えない想定 -- 同じepochでの
@@ -775,7 +790,7 @@ describe('Hud', () => {
           handEpoch={1}
         />
       )
-      expect(chrome.runtime.sendMessage).toHaveBeenCalledTimes(1)
+      expect(getRuntimeActionCallCount('getPositionalStats')).toBe(1)
 
       // ハンドが1件完了してhandEpochが増える(statは不変)
       rerender(
@@ -791,7 +806,7 @@ describe('Hud', () => {
       )
 
       await waitFor(() => {
-        expect(chrome.runtime.sendMessage).toHaveBeenCalledTimes(2)
+        expect(getRuntimeActionCallCount('getPositionalStats')).toBe(2)
       })
     })
 
@@ -824,7 +839,7 @@ describe('Hud', () => {
       )
 
       expect(screen.queryByTestId('positional-stats-panel')).not.toBeInTheDocument()
-      expect(chrome.runtime.sendMessage).not.toHaveBeenCalled()
+      expect(getRuntimeActionCallCount('getPositionalStats')).toBe(0)
     })
   })
 

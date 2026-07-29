@@ -48,6 +48,9 @@ export const MESSAGE_ACTIONS = {
   UPDATE_HAND_LOG_CONFIG: 'updateHandLogConfig',
   // UI
   UPDATE_UI_CONFIG: 'updateUIConfig',
+  GET_DEVICE_UI_LAYOUT: 'getDeviceUILayout',
+  SET_DEVICE_UI_SCALE: 'setDeviceUIScale',
+  SET_DEVICE_HUD_POSITION: 'setDeviceHudPosition',
   // Operation state
   GET_OPERATION_STATE: 'getOperationState',
   // Rebuild advisory
@@ -176,6 +179,27 @@ export interface UpdateHandLogConfigMessage {
 export interface UpdateUIConfigMessage {
   action: 'updateUIConfig'
   config: UIConfig
+}
+
+export interface HudPosition {
+  top: string
+  left: string
+}
+
+export interface GetDeviceUILayoutMessage {
+  action: 'getDeviceUILayout'
+  seatIndex?: number
+}
+
+export interface SetDeviceUIScaleMessage {
+  action: 'setDeviceUIScale'
+  scale: number
+}
+
+export interface SetDeviceHudPositionMessage {
+  action: 'setDeviceHudPosition'
+  seatIndex: number
+  position: HudPosition
 }
 
 // Firebase backup messages
@@ -376,7 +400,12 @@ export interface ApplyUpdateResponse extends SuccessResponse {
   reason?: string
 }
 
-export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse | RecentHandsResponse | UndecodedEventStatsResponse | ApplyUpdateResponse
+export interface DeviceUILayoutResponse extends SuccessResponse {
+  scale: number
+  position?: HudPosition
+}
+
+export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse | RecentHandsResponse | UndecodedEventStatsResponse | ApplyUpdateResponse | DeviceUILayoutResponse
 
 // Union type of all possible messages
 export type ChromeMessage =
@@ -397,6 +426,9 @@ export type ChromeMessage =
   | HandLogEventMessage
   | UpdateHandLogConfigMessage
   | UpdateUIConfigMessage
+  | GetDeviceUILayoutMessage
+  | SetDeviceUIScaleMessage
+  | SetDeviceHudPositionMessage
   | FirebaseAuthStatusMessage
   | FirebaseSignInMessage
   | FirebaseSignOutMessage

@@ -73,6 +73,11 @@ describe('App', () => {
     ;(global.chrome.storage.local.get as jest.Mock).mockImplementation((_key, callback) => {
       callback({})
     })
+    ;(global.chrome.runtime.sendMessage as jest.Mock).mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceUILayout' && typeof callback === 'function') {
+        callback({ success: true, scale: 1 })
+      }
+    })
   })
 
   afterEach(() => {
@@ -101,8 +106,10 @@ describe('App', () => {
         uiConfig: { ...DEFAULT_UI_CONFIG, scale: 0.7 },
       })
     })
-    ;(global.chrome.storage.local.get as jest.Mock).mockImplementation((_key, callback) => {
-      callback({ uiScale: 1.4 })
+    ;(global.chrome.runtime.sendMessage as jest.Mock).mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceUILayout') {
+        callback({ success: true, scale: 1.4 })
+      }
     })
 
     render(<App />)

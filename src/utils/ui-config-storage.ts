@@ -2,12 +2,18 @@ import {
   DEFAULT_UI_CONFIG,
   type UIConfig,
 } from '../types/hand-log'
+import type {
+  DeviceUILayoutResponse,
+  HudPosition,
+} from '../types/messages'
 
 export const UI_SCALE_STORAGE_KEY = 'uiScale'
+export const hudPositionStorageKey = (seatIndex: number): string =>
+  `hudPosition_${seatIndex}`
 
 type SyncedUIConfig = Omit<UIConfig, 'scale'>
 
-const isValidUIScale = (value: unknown): value is number =>
+export const isValidUIScale = (value: unknown): value is number =>
   typeof value === 'number' &&
   Number.isFinite(value) &&
   value >= 0.5 &&
@@ -15,6 +21,21 @@ const isValidUIScale = (value: unknown): value is number =>
 
 export const resolveLocalUIScale = (value: unknown): number =>
   isValidUIScale(value) ? value : DEFAULT_UI_CONFIG.scale
+
+export const isValidHudSeatIndex = (value: unknown): value is number =>
+  Number.isInteger(value) && Number(value) >= 0 && Number(value) < 6
+
+const isValidPercentPosition = (value: unknown): value is string => {
+  if (typeof value !== 'string' || !/^\d+(?:\.\d+)?%$/.test(value)) return false
+  const percent = Number.parseFloat(value)
+  return Number.isFinite(percent) && percent >= 0 && percent <= 90
+}
+
+export const isValidHudPosition = (value: unknown): value is HudPosition => {
+  if (typeof value !== 'object' || value === null) return false
+  const position = value as Partial<HudPosition>
+  return isValidPercentPosition(position.top) && isValidPercentPosition(position.left)
+}
 
 export const mergeUIConfigWithLocalScale = (
   syncedConfig: Partial<UIConfig> | undefined,
@@ -36,14 +57,54 @@ export const saveSyncedUIConfig = (config: UIConfig): void => {
   chrome.storage.sync.set({ uiConfig: toSyncedUIConfig(config) })
 }
 
+const consumeRuntimeError = (): void => {
+  // Reading lastError inside the callback prevents Chrome from reporting an
+  // unchecked error when the service worker is temporarily unavailable.
+  void chrome.runtime.lastError
+}
+
+export const loadLocalUIScale = (callback: (scale: number) => void): void => {
+  chrome.runtime.sendMessage(
+    { action: 'getDeviceUILayout' },
+    (response: DeviceUILayoutResponse | undefined) => {
+      consumeRuntimeError()
+      callback(resolveLocalUIScale(response?.scale))
+    }
+  )
+}
+
 export const saveLocalUIScale = (
   scale: number,
   callback?: () => void
 ): void => {
-  const value = { [UI_SCALE_STORAGE_KEY]: resolveLocalUIScale(scale) }
-  if (callback) {
-    chrome.storage.local.set(value, callback)
-  } else {
-    chrome.storage.local.set(value)
-  }
+  chrome.runtime.sendMessage(
+    { action: 'setDeviceUIScale', scale: resolveLocalUIScale(scale) },
+    () => {
+      consumeRuntimeError()
+      callback?.()
+    }
+  )
+}
+
+export const loadHudPosition = (
+  seatIndex: number,
+  callback: (position: HudPosition | undefined) => void
+): void => {
+  chrome.runtime.sendMessage(
+    { action: 'getDeviceUILayout', seatIndex },
+    (response: DeviceUILayoutResponse | undefined) => {
+      consumeRuntimeError()
+      callback(isValidHudPosition(response?.position) ? response.position : undefined)
+    }
+  )
+}
+
+export const saveHudPosition = (
+  seatIndex: number,
+  position: HudPosition
+): void => {
+  chrome.runtime.sendMessage(
+    { action: 'setDeviceHudPosition', seatIndex, position },
+    consumeRuntimeError
+  )
 }

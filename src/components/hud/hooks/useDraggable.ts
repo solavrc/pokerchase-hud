@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import type { CSSProperties } from 'react'
-
-interface HudPosition {
-  top: string
-  left: string
-}
+import type { HudPosition } from '../../../types/messages'
+import {
+  loadHudPosition,
+  saveHudPosition,
+} from '../../../utils/ui-config-storage'
 
 interface DragState {
   startX: number
@@ -22,8 +22,7 @@ export const useDraggable = (seatIndex: number, defaultPosition: CSSProperties) 
 
   // Layout is device-local because each device can have a different viewport.
   useEffect(() => {
-    chrome.storage.local.get(`hudPosition_${seatIndex}`, (result: Record<string, any>) => {
-      const savedPosition = result[`hudPosition_${seatIndex}`]
+    loadHudPosition(seatIndex, savedPosition => {
       if (savedPosition) {
         setPosition(savedPosition)
       }
@@ -34,9 +33,7 @@ export const useDraggable = (seatIndex: number, defaultPosition: CSSProperties) 
   useEffect(() => {
     if (position && !isDragging && shouldPersistPositionRef.current) {
       shouldPersistPositionRef.current = false
-      chrome.storage.local.set({
-        [`hudPosition_${seatIndex}`]: position
-      })
+      saveHudPosition(seatIndex, position)
     }
   }, [position, seatIndex, isDragging])
 

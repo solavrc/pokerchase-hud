@@ -1,0 +1,101 @@
+import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
+import PokerChaseService, { PokerChaseDB } from '../app'
+import type { ChromeMessage, MessageResponse } from '../types/messages'
+import {
+  hudPositionStorageKey,
+  UI_SCALE_STORAGE_KEY,
+} from '../utils/ui-config-storage'
+import { registerMessageRouter } from './message-router'
+
+describe('message-router device-local UI layout', () => {
+  let db: PokerChaseDB
+  let service: PokerChaseService
+  let listener: (
+    request: ChromeMessage,
+    sender: chrome.runtime.MessageSender,
+    sendResponse: (response: MessageResponse) => void
+  ) => boolean | void
+
+  beforeEach(async () => {
+    db = new PokerChaseDB(indexedDB, IDBKeyRange)
+    await db.open()
+    service = new PokerChaseService({ db })
+    await service.ready
+
+    ;(chrome.runtime.onMessage.addListener as jest.Mock).mockClear()
+    registerMessageRouter(service, db, 'https://example.com/*')
+    listener = (chrome.runtime.onMessage.addListener as jest.Mock).mock.calls[0][0]
+  })
+
+  afterEach(async () => {
+    db.close()
+    await db.delete()
+  })
+
+  it('端末ローカルのscaleと指定席位置だけを返す', async () => {
+    const position = { top: '42.5%', left: '18%' }
+    await chrome.storage.local.set({
+      [UI_SCALE_STORAGE_KEY]: 1.4,
+      [hudPositionStorageKey(2)]: position,
+    })
+    const sendResponse = jest.fn()
+
+    expect(listener(
+      { action: 'getDeviceUILayout', seatIndex: 2 },
+      {},
+      sendResponse
+    )).toBe(true)
+
+    expect(sendResponse).toHaveBeenCalledWith({
+      success: true,
+      scale: 1.4,
+      position,
+    })
+  })
+
+  it('scaleとHUD位置を検証して端末ローカルへ保存する', async () => {
+    const scaleResponse = jest.fn()
+    const positionResponse = jest.fn()
+    const position = { top: '12%', left: '67.5%' }
+
+    listener({ action: 'setDeviceUIScale', scale: 1.3 }, {}, scaleResponse)
+    listener({
+      action: 'setDeviceHudPosition',
+      seatIndex: 4,
+      position,
+    }, {}, positionResponse)
+
+    expect(scaleResponse).toHaveBeenCalledWith({ success: true })
+    expect(positionResponse).toHaveBeenCalledWith({ success: true })
+    expect(await chrome.storage.local.get([
+      UI_SCALE_STORAGE_KEY,
+      hudPositionStorageKey(4),
+    ])).toEqual({
+      [UI_SCALE_STORAGE_KEY]: 1.3,
+      [hudPositionStorageKey(4)]: position,
+    })
+  })
+
+  it.each([
+    { action: 'setDeviceUIScale', scale: 3 },
+    {
+      action: 'setDeviceHudPosition',
+      seatIndex: 9,
+      position: { top: '10%', left: '10%' },
+    },
+    {
+      action: 'setDeviceHudPosition',
+      seatIndex: 1,
+      position: { top: '-1%', left: '10%' },
+    },
+  ] as ChromeMessage[])('不正なlayout書き込みを拒否する: %p', (message) => {
+    const sendResponse = jest.fn()
+    ;(chrome.storage.local.set as jest.Mock).mockClear()
+
+    expect(listener(message, {}, sendResponse)).toBe(true)
+    expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({
+      success: false,
+    }))
+    expect(chrome.storage.local.set).not.toHaveBeenCalled()
+  })
+})

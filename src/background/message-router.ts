@@ -17,6 +17,14 @@ import { getUndecodedEventStats, resetUndecodedEventStats } from './undecoded-ev
 import { applyUpdateNow } from './update-manager'
 import { acknowledgeWhatsNew } from './whats-new-badge'
 import {
+  hudPositionStorageKey,
+  isValidHudPosition,
+  isValidHudSeatIndex,
+  isValidUIScale,
+  resolveLocalUIScale,
+  UI_SCALE_STORAGE_KEY,
+} from '../utils/ui-config-storage'
+import {
   createImportExportHandlers,
   getCurrentImportSession,
   startImportSession,
@@ -74,7 +82,55 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
   }
 
   chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.runtime.MessageSender, sendResponse: (response: MessageResponse) => void) => {
-    if (request.action === 'exportData') {
+    if (request.action === 'getDeviceUILayout') {
+      if (request.seatIndex !== undefined && !isValidHudSeatIndex(request.seatIndex)) {
+        sendResponse({ success: false, error: 'Invalid HUD seat index' })
+        return true
+      }
+      const positionKey = request.seatIndex === undefined
+        ? undefined
+        : hudPositionStorageKey(request.seatIndex)
+      chrome.storage.local.get(
+        positionKey ? [UI_SCALE_STORAGE_KEY, positionKey] : UI_SCALE_STORAGE_KEY,
+        (result: Record<string, unknown>) => {
+          const position = positionKey && isValidHudPosition(result[positionKey])
+            ? result[positionKey]
+            : undefined
+          sendResponse({
+            success: true,
+            scale: resolveLocalUIScale(result[UI_SCALE_STORAGE_KEY]),
+            ...(position ? { position } : {}),
+          })
+        }
+      )
+      return true
+    } else if (request.action === 'setDeviceUIScale') {
+      if (!isValidUIScale(request.scale)) {
+        sendResponse({ success: false, error: 'Invalid UI scale' })
+        return true
+      }
+      chrome.storage.local.set({ [UI_SCALE_STORAGE_KEY]: request.scale }, () => {
+        const error = chrome.runtime.lastError
+        sendResponse(error
+          ? { success: false, error: error.message ?? 'Failed to save UI scale' }
+          : { success: true })
+      })
+      return true
+    } else if (request.action === 'setDeviceHudPosition') {
+      if (!isValidHudSeatIndex(request.seatIndex) || !isValidHudPosition(request.position)) {
+        sendResponse({ success: false, error: 'Invalid HUD position' })
+        return true
+      }
+      chrome.storage.local.set({
+        [hudPositionStorageKey(request.seatIndex)]: request.position,
+      }, () => {
+        const error = chrome.runtime.lastError
+        sendResponse(error
+          ? { success: false, error: error.message ?? 'Failed to save HUD position' }
+          : { success: true })
+      })
+      return true
+    } else if (request.action === 'exportData') {
       // Block concurrent operations
       if (rejectIfOperationBusy('exportData', sendResponse)) return true
       exportData(request.format)

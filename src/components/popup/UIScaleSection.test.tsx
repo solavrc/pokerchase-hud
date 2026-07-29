@@ -3,26 +3,24 @@ import userEvent from '@testing-library/user-event'
 import { UIScaleSection } from './UIScaleSection'
 import type { UIConfig } from '../../types/hand-log'
 import { DEFAULT_UI_CONFIG } from '../../types/hand-log'
-import {
-  toSyncedUIConfig,
-  UI_SCALE_STORAGE_KEY,
-} from '../../utils/ui-config-storage'
+import { toSyncedUIConfig } from '../../utils/ui-config-storage'
 
 // Mock chrome storage and tabs
 const mockChromeStorageSet = jest.fn()
 const mockChromeStorageGet = jest.fn()
-const mockChromeLocalStorageSet = jest.fn()
+const mockChromeRuntimeSendMessage = jest.fn()
 const mockTabsQuery = jest.fn()
 const mockTabsSendMessage = jest.fn()
 global.chrome = {
   ...global.chrome,
+  runtime: {
+    ...global.chrome.runtime,
+    sendMessage: mockChromeRuntimeSendMessage,
+  },
   storage: {
     sync: {
       get: mockChromeStorageGet,
       set: mockChromeStorageSet,
-    },
-    local: {
-      set: mockChromeLocalStorageSet,
     },
   },
   tabs: {
@@ -45,8 +43,8 @@ describe('UIScaleSection', () => {
     mockChromeStorageGet.mockImplementation((_key, callback) => {
       callback({ uiConfig: DEFAULT_UI_CONFIG })
     })
-    mockChromeLocalStorageSet.mockImplementation((_items, callback?) => {
-      if (typeof callback === 'function') callback()
+    mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
+      callback({ success: true })
     })
     mockTabsQuery.mockImplementation((_, callback) => {
       callback([{ id: 1 }, { id: 2 }])
@@ -205,8 +203,8 @@ describe('UIScaleSection', () => {
     }
 
     expect(mockSetUIConfig).toHaveBeenCalledWith(expectedConfig)
-    expect(mockChromeLocalStorageSet).toHaveBeenCalledWith(
-      { [UI_SCALE_STORAGE_KEY]: 1.1 },
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      { action: 'setDeviceUIScale', scale: 1.1 },
       expect.any(Function)
     )
     expect(mockChromeStorageSet).not.toHaveBeenCalled()

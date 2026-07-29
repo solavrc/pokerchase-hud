@@ -20,10 +20,9 @@ import { rotateArrayFromIndex } from "../utils/array-utils"
 import { consumePendingStats } from "../utils/pending-stats-cache"
 import { isEditableShortcutTarget, matchesShortcut } from "../utils/keyboard-shortcut"
 import {
+  loadLocalUIScale,
   mergeUIConfigWithLocalScale,
-  resolveLocalUIScale,
   saveSyncedUIConfig,
-  UI_SCALE_STORAGE_KEY,
 } from "../utils/ui-config-storage"
 import HandLog from "./HandLog"
 import Hud from "./Hud"
@@ -674,7 +673,7 @@ const App = memo(() => {
   // ストレージから設定を読み込み
   useEffect(() => {
     chrome.storage.sync.get(["handLogConfig", "uiConfig", "options"], (result: Record<string, any>) => {
-      chrome.storage.local.get(UI_SCALE_STORAGE_KEY, (localResult: Record<string, unknown>) => {
+      loadLocalUIScale(localScale => {
         if (result.handLogConfig) {
           setHandLogConfig({
             ...DEFAULT_HAND_LOG_CONFIG,
@@ -684,13 +683,10 @@ const App = memo(() => {
         if (uiConfigChangedAfterMountRef.current) {
           setUIConfig(current => ({
             ...current,
-            scale: resolveLocalUIScale(localResult[UI_SCALE_STORAGE_KEY]),
+            scale: localScale,
           }))
         } else {
-          setUIConfig(mergeUIConfigWithLocalScale(
-            result.uiConfig,
-            localResult[UI_SCALE_STORAGE_KEY]
-          ))
+          setUIConfig(mergeUIConfigWithLocalScale(result.uiConfig, localScale))
         }
         if (result.options?.filterOptions?.statDisplayConfigs) {
           setStatDisplayConfigs(result.options.filterOptions.statDisplayConfigs)

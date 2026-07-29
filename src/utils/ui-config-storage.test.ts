@@ -1,11 +1,11 @@
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import {
   mergeUIConfigWithLocalScale,
+  loadLocalUIScale,
   resolveLocalUIScale,
   saveLocalUIScale,
   saveSyncedUIConfig,
   toSyncedUIConfig,
-  UI_SCALE_STORAGE_KEY,
 } from './ui-config-storage'
 
 describe('ui-config-storage', () => {
@@ -55,9 +55,24 @@ describe('ui-config-storage', () => {
     const callback = jest.fn()
     saveLocalUIScale(1.3, callback)
 
-    expect(chrome.storage.local.set).toHaveBeenCalledWith(
-      { [UI_SCALE_STORAGE_KEY]: 1.3 },
-      callback
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+      { action: 'setDeviceUIScale', scale: 1.3 },
+      expect.any(Function)
     )
+  })
+
+  it('scaleはbackground経由で読み込む', () => {
+    ;(chrome.runtime.sendMessage as jest.Mock).mockImplementationOnce((_message, callback) => {
+      callback({ success: true, scale: 1.6 })
+    })
+    const callback = jest.fn()
+
+    loadLocalUIScale(callback)
+
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+      { action: 'getDeviceUILayout' },
+      expect.any(Function)
+    )
+    expect(callback).toHaveBeenCalledWith(1.6)
   })
 })
