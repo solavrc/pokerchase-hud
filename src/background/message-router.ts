@@ -85,11 +85,16 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
     sendResponse: (response: MessageResponse) => void
     failureMessage: string
   }> = []
+  const pendingHandLogLayoutReads: Array<() => void> = []
 
   const processNextHandLogLayoutWrite = (): void => {
     if (handLogLayoutWriteInProgress) return
     const pendingWrite = pendingHandLogLayoutWrites.shift()
-    if (!pendingWrite) return
+    if (!pendingWrite) {
+      const pendingReads = pendingHandLogLayoutReads.splice(0)
+      pendingReads.forEach(read => read())
+      return
+    }
 
     handLogLayoutWriteInProgress = true
     let completed = false
@@ -132,6 +137,17 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       failureMessage,
     })
     processNextHandLogLayoutWrite()
+  }
+
+  const enqueueHandLogLayoutRead = (read: () => void): void => {
+    if (
+      handLogLayoutWriteInProgress ||
+      pendingHandLogLayoutWrites.length > 0
+    ) {
+      pendingHandLogLayoutReads.push(read)
+      return
+    }
+    read()
   }
 
   const rejectIfOperationBusy = (action: string, sendResponse: (response: MessageResponse) => void): boolean => {
@@ -303,16 +319,26 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       })
       return true
     } else if (request.action === 'getDeviceHandLogLayout') {
-      chrome.storage.local.get(
-        HAND_LOG_LAYOUT_STORAGE_KEY,
-        (result: Record<string, unknown>) => {
-          const layout = result[HAND_LOG_LAYOUT_STORAGE_KEY]
-          sendResponse({
-            success: true,
-            ...(isValidHandLogLayout(layout) ? { layout } : {}),
-          })
-        }
-      )
+      enqueueHandLogLayoutRead(() => {
+        chrome.storage.local.get(
+          HAND_LOG_LAYOUT_STORAGE_KEY,
+          (result: Record<string, unknown>) => {
+            const error = chrome.runtime.lastError
+            if (error) {
+              sendResponse({
+                success: false,
+                error: error.message ?? 'Failed to read hand log layout',
+              })
+              return
+            }
+            const layout = result[HAND_LOG_LAYOUT_STORAGE_KEY]
+            sendResponse({
+              success: true,
+              ...(isValidHandLogLayout(layout) ? { layout } : {}),
+            })
+          }
+        )
+      })
       return true
     } else if (request.action === 'setDeviceHandLogLayout') {
       if (!isValidHandLogLayout(request.layout)) {

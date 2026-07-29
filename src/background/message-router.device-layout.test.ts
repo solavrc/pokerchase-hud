@@ -182,6 +182,43 @@ describe('message-router device-local UI layout', () => {
     })
   })
 
+  it('pending layout保存後の最新値をreadへ返す', async () => {
+    const oldLayout = { left: 10, top: 20, width: 400, height: 100 }
+    const newLayout = { left: 80, top: 60, width: 520, height: 240 }
+    await chrome.storage.local.set({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: oldLayout,
+    })
+    let delayedItems!: Record<string, unknown>
+    let finishDelayedSet!: () => void
+    ;(chrome.storage.local.set as jest.Mock).mockImplementationOnce(
+      (items, callback) => {
+        delayedItems = items
+        finishDelayedSet = callback
+      }
+    )
+    const saveResponse = jest.fn()
+    const loadResponse = jest.fn()
+
+    listener({
+      action: 'setDeviceHandLogLayout',
+      layout: newLayout,
+    }, {}, saveResponse)
+    listener({ action: 'getDeviceHandLogLayout' }, {}, loadResponse)
+
+    expect(saveResponse).not.toHaveBeenCalled()
+    expect(loadResponse).not.toHaveBeenCalled()
+
+    await chrome.storage.local.set(delayedItems)
+    finishDelayedSet()
+    await Promise.resolve()
+
+    expect(saveResponse).toHaveBeenCalledWith({ success: true })
+    expect(loadResponse).toHaveBeenCalledWith({
+      success: true,
+      layout: newLayout,
+    })
+  })
+
   it('同期UI設定をbackgroundで保存し旧版互換scaleも保持する', async () => {
     await chrome.storage.sync.set({
       uiConfig: { ...DEFAULT_UI_CONFIG, scale: 1.6 },
