@@ -31,7 +31,16 @@ export const UIScaleSection = ({
   const [shortcutError, setShortcutError] = useState(false)
   const shortcutInputRef = useRef<HTMLInputElement>(null)
   const latestUIConfigRef = useRef(uiConfig)
+  const pendingScaleRef = useRef(uiConfig.scale)
+  const latestAppliedScaleRef = useRef(uiConfig.scale)
+  const pendingScaleWriteCountRef = useRef(0)
+  const nextScaleRequestIdRef = useRef(0)
+  const latestAppliedScaleRequestIdRef = useRef(0)
   latestUIConfigRef.current = uiConfig
+  if (pendingScaleWriteCountRef.current === 0) {
+    pendingScaleRef.current = uiConfig.scale
+    latestAppliedScaleRef.current = uiConfig.scale
+  }
   const shortcutLabel = uiConfig.toggleShortcut
     ? formatShortcut(uiConfig.toggleShortcut)
     : null
@@ -42,19 +51,46 @@ export const UIScaleSection = ({
     broadcastUIConfig(newConfig)
   }
 
-  const updateLocalScale = (newConfig: UIConfig) => {
-    saveLocalUIScale(newConfig.scale, success => {
-      if (!success) return
+  const updateLocalScale = (scale: number) => {
+    const requestId = ++nextScaleRequestIdRef.current
+    let callbackReceived = false
+    pendingScaleWriteCountRef.current += 1
+    pendingScaleRef.current = scale
+    saveLocalUIScale(scale, success => {
+      if (!callbackReceived) {
+        callbackReceived = true
+        pendingScaleWriteCountRef.current -= 1
+      }
+      if (!success) {
+        if (pendingScaleWriteCountRef.current === 0) {
+          pendingScaleRef.current = latestAppliedScaleRef.current
+        }
+        return
+      }
+      if (requestId < latestAppliedScaleRequestIdRef.current) return
+      latestAppliedScaleRequestIdRef.current = requestId
+      latestAppliedScaleRef.current = scale
       // The write can succeed after the timeout. Reconcile only its scale
       // onto the latest synchronized settings instead of replaying the
       // full config captured when the button was clicked.
       const reconciledConfig = {
         ...latestUIConfigRef.current,
-        scale: newConfig.scale,
+        scale,
+      }
+      if (pendingScaleWriteCountRef.current === 0) {
+        pendingScaleRef.current = scale
       }
       setUIConfig(reconciledConfig)
       broadcastUIConfig(reconciledConfig)
     })
+  }
+
+  const requestScaleChange = (delta: number) => {
+    const scale = Math.min(
+      2,
+      Math.max(0.5, Math.round((pendingScaleRef.current + delta) * 10) / 10)
+    )
+    updateLocalScale(scale)
   }
 
   const saveShortcut = useCallback((shortcut: UIConfig['toggleShortcut']) => {
@@ -115,10 +151,7 @@ export const UIScaleSection = ({
         <Typography variant="body2" sx={{ color: 'text.secondary' }}>サイズ:</Typography>
         <IconButton
           size="small"
-          onClick={() => {
-            const newScale = Math.max(0.5, uiConfig.scale - 0.1)
-            updateLocalScale({ ...uiConfig, scale: newScale })
-          }}
+          onClick={() => requestScaleChange(-0.1)}
           disabled={uiConfig.scale <= 0.5}
         >
           -
@@ -128,10 +161,7 @@ export const UIScaleSection = ({
         </Typography>
         <IconButton
           size="small"
-          onClick={() => {
-            const newScale = Math.min(2.0, uiConfig.scale + 0.1)
-            updateLocalScale({ ...uiConfig, scale: newScale })
-          }}
+          onClick={() => requestScaleChange(0.1)}
           disabled={uiConfig.scale >= 2.0}
         >
           +
