@@ -68,8 +68,17 @@ const rankSchema = z.object({
 const myRankingSchema = z.object({
   ActiveNum: z.int().nonnegative().describe('残りアクティブプレイヤー数'),
   AverageChip: z.int().nonnegative().describe('平均チップ量'),
+  IsResetTable: z.boolean().optional().describe('MTTのテーブル再編成フラグ。2026-07実ログではfalseのみ観測'),
   JoinNum: z.int().nonnegative().describe('トーナメント参加人数'),
   Ranking: z.int().nonnegative().describe('現在の順位'),
+})
+
+/** APIエラー応答の共通情報 */
+const apiErrorSchema = z.object({
+  Status: z.int().nonnegative(),
+  Message: z.string(),
+  AddParam: z.string(),
+  Replaces: z.array(z.unknown()),
 })
 
 /** ユーザー情報スキーマ */
@@ -99,7 +108,8 @@ export const apiEventSchemas = {
   [ApiType.EVT_ENTRY_QUEUED]: baseSchema.extend({
     ApiTypeId: z.literal(ApiType.EVT_ENTRY_QUEUED),
     BattleType: z.enum(BattleType),
-    Code: z.literal(0),
+    Code: z.int().nonnegative().describe('0=成功、非0=参加申込エラー'),
+    Error: apiErrorSchema.optional().describe('Codeが非0の場合のエラー情報'),
     Id: z.string().describe(`ゲームタイプ別のセッション識別子:
       - SNG (BattleType=0): "stage006_002" 等。ルーム種別を表し、セッション一意ではない。セッション識別には最初の HandId を使用。
       - MTT (BattleType=1): "6078" 等（数値文字列）。トーナメントIDで同一トーナメント内のプレイヤーに共通。テーブル移動ごとに EVT_ENTRY_QUEUED が再発行されるため、1トーナメントで複数回出現する。
@@ -112,7 +122,8 @@ export const apiEventSchemas = {
 
   [202]: baseSchema.extend({
     ApiTypeId: z.literal(202),
-    Code: z.literal(0),
+    Code: z.int().nonnegative().describe('0=成功、非0=アクションエラー'),
+    Error: apiErrorSchema.optional().describe('Codeが非0の場合のエラー情報'),
   }).describe('アクション完了'),
 
   [203]: baseSchema.extend({
@@ -156,6 +167,7 @@ export const apiEventSchemas = {
     Error: z.object({
       AddParam: z.string(),
       Message: z.string().describe('例: ネットワークエラーが発生しました'),
+      Replaces: z.array(z.unknown()).optional(),
       Status: z.int().nonnegative(),
     }).optional(),
   }).describe('参加取消申込結果'),
@@ -407,6 +419,7 @@ export const apiEventSchemas = {
       }).describe('リバイのチケット費用'),
       RebuyFinishUnixSeconds: z.int().describe('リバイ受付終了時刻（Unix Seconds）'),
       RebuyLimit: z.int().nonnegative().describe('リバイ回数上限'),
+      TableMaxPlayerNum: z.int().positive().optional().describe('1テーブルの最大人数。2026-07実ログでは6'),
     }).optional().describe('トーナメント固有ルール。MTT（BattleType=1）の場合のみ。存在する場合は全フィールドが揃う'),
   }).describe('セッション詳細 - 通常1セッション1回発行するがcapture欠落を許容し、BattleType=2では未観測。セッション名(Name)はAggregateEventsStreamがsession.nameに保存。BlindStructuresでブラインドレベル構造を提供'),
 
@@ -659,6 +672,7 @@ export const apiEventSchemas = {
     Error: z.object({
       AddParam: z.string().optional(),
       Message: z.string().optional().describe('すでに退席しています'),
+      Replaces: z.array(z.unknown()).optional(),
       Status: z.literal(1).optional(),
     }).optional(),
   }),
@@ -897,7 +911,12 @@ export const isApiEventType = <T extends ApiType>(
 /** アプリケーションで使用するイベントかチェック */
 export const isApplicationApiEvent = (event: unknown): event is ApiEvent<ApiType> => {
   const result = validateApiEvent(event)
-  return result.success && ApiTypeValues.includes(result.data.ApiTypeId as ApiType)
+  if (!result.success || !ApiTypeValues.includes(result.data.ApiTypeId as ApiType)) return false
+
+  // 201は参加成功と参加失敗で同じApiTypeIdを共有する。Code!=0の
+  // エラー応答は既知イベントとしてRaw Event Lakeへ保存するが、
+  // セッション/統計パイプラインへは投入しない。
+  return result.data.ApiTypeId !== ApiType.EVT_ENTRY_QUEUED || result.data.Code === 0
 }
 
 /**
@@ -917,7 +936,9 @@ export const isApplicationApiEvent = (event: unknown): event is ApiEvent<ApiType
  * ならず、クラウドバックアップだけが永久に欠落する）。
  */
 export const isUnparseableApplicationEvent = (event: unknown): boolean => {
-  if (isApplicationApiEvent(event)) return false
+  // スキーマ検証に成功する既知の非対局イベント（201のエラー応答を含む）は、
+  // ApiTypeIdがapplication enumと重なっていても「未解釈」ではない。
+  if (validateApiEvent(event).success) return false
   const rawApiTypeId = (event as { ApiTypeId?: unknown } | null)?.ApiTypeId
   return typeof rawApiTypeId === 'number' && ApiTypeValues.includes(rawApiTypeId as ApiType)
 }

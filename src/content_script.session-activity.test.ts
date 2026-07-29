@@ -75,6 +75,24 @@ describe('content_script keepalive (session-activity triggers)', () => {
     expect(mockPort.postMessage).toHaveBeenCalledWith({ type: 'keepalive' })
   })
 
+  test('an explicit EVT_ENTRY_QUEUED error response does not start keepalive', () => {
+    dispatchGameMessage({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1,
+      Code: 5205,
+      Error: {
+        Status: 1,
+        Message: 'text_sync_error_message_code_5205',
+        AddParam: '',
+        Replaces: []
+      }
+    })
+
+    jest.advanceTimersByTime(KEEPALIVE_INTERVAL_MS)
+
+    expect(mockPort.postMessage).not.toHaveBeenCalledWith({ type: 'keepalive' })
+  })
+
   test('EVT_DEAL (303) with Player present alone starts keepalive without a prior 308', () => {
     dispatchGameMessage({ ApiTypeId: ApiType.EVT_DEAL, timestamp: 2, Player: { SeatIndex: 0 } })
 

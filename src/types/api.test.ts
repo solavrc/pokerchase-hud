@@ -68,6 +68,138 @@ describe('API Validation Functions', () => {
       }
     })
 
+    it('accepts observed 201/202 error responses without treating them as application events', () => {
+      const entryError = {
+        ApiTypeId: 201,
+        Code: 5205,
+        Error: {
+          Status: 1,
+          Message: 'text_sync_error_message_code_5205',
+          AddParam: '',
+          Replaces: []
+        },
+        BattleType: 0,
+        Id: '',
+        IsRetire: false,
+        timestamp: 1784797779887,
+        sequence: 0
+      }
+      const actionError = {
+        ApiTypeId: 202,
+        Code: 5402,
+        Error: {
+          Status: 0,
+          Message: 'text_sync_error_message_code_5402',
+          AddParam: '',
+          Replaces: []
+        },
+        timestamp: 1784962607665,
+        sequence: 0
+      }
+
+      expect(validateApiEvent(entryError).success).toBe(true)
+      expect(validateApiEvent(actionError).success).toBe(true)
+      expect(isApplicationApiEvent(entryError)).toBe(false)
+      expect(isApplicationApiEvent(actionError)).toBe(false)
+      expect(isUnparseableApplicationEvent(entryError)).toBe(false)
+      expect(isUnparseableApplicationEvent(actionError)).toBe(false)
+    })
+
+    it('retains newly observed nested MTT and error-envelope fields', () => {
+      const deal = {
+        ApiTypeId: 303,
+        timestamp: 1,
+        SeatUserIds: [1, 2, 3, 4],
+        Game: {
+          CurrentBlindLv: 1,
+          NextBlindUnixSeconds: 123456,
+          Ante: 50,
+          SmallBlind: 100,
+          BigBlind: 200,
+          ButtonSeat: 0,
+          SmallBlindSeat: 1,
+          BigBlindSeat: 2
+        },
+        Player: {
+          SeatIndex: 0,
+          BetStatus: 1,
+          HoleCards: [1, 2],
+          Chip: 1000,
+          BetChip: 0
+        },
+        OtherPlayers: [
+          { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 1000, BetChip: 0 }
+        ],
+        Progress: {
+          Phase: 0,
+          NextActionSeat: 0,
+          NextActionTypes: [0],
+          NextExtraLimitSeconds: 1,
+          MinRaise: 200,
+          Pot: 300,
+          SidePot: []
+        },
+        MyRanking: {
+          ActiveNum: 24,
+          AverageChip: 20000,
+          IsResetTable: false,
+          JoinNum: 30,
+          Ranking: 12
+        }
+      }
+      const sessionDetails = {
+        ApiTypeId: 308,
+        timestamp: 2,
+        BlindStructures: [{ ActiveMinutes: 4, Ante: 50, BigBlind: 200, Lv: 1 }],
+        CoinNum: -1,
+        DefaultChip: 20000,
+        IsReplay: false,
+        Items: [],
+        LimitSeconds: 8,
+        MoneyList: [],
+        Name: 'MTT',
+        Name2: '',
+        TournamentRule: {
+          NextBreakUnixSeconds: 1785000000,
+          RebuyChip: 20000,
+          RebuyCostCoinNum: 0,
+          RebuyCostTicket: { ItemId: 'ticket', Num: 1 },
+          RebuyFinishUnixSeconds: 1785003600,
+          RebuyLimit: 1,
+          TableMaxPlayerNum: 6
+        }
+      }
+      const cancelResult = {
+        ApiTypeId: 213,
+        Code: 1,
+        IsCancel: false,
+        Error: { AddParam: '', Message: 'error', Replaces: [], Status: 1 }
+      }
+      const chatError = {
+        ApiTypeId: 1202,
+        Code: 1,
+        Error: { AddParam: '', Message: 'error', Replaces: [], Status: 1 }
+      }
+
+      const dealResult = validateApiEvent(deal)
+      const detailsResult = validateApiEvent(sessionDetails)
+      const cancelResultParsed = validateApiEvent(cancelResult)
+      const chatErrorParsed = validateApiEvent(chatError)
+
+      expect(dealResult.success && dealResult.data.ApiTypeId === 303
+        ? dealResult.data.MyRanking?.IsResetTable
+        : undefined).toBe(false)
+      expect(detailsResult.success && detailsResult.data.ApiTypeId === 308
+        ? detailsResult.data.TournamentRule?.TableMaxPlayerNum
+        : undefined).toBe(6)
+      expect(cancelResultParsed.success && cancelResultParsed.data.ApiTypeId === 213
+        ? cancelResultParsed.data.Error?.Replaces
+        : undefined).toEqual([])
+      expect(chatErrorParsed.success && chatErrorParsed.data.ApiTypeId === 1202
+        ? chatErrorParsed.data.Error?.Replaces
+        : undefined).toEqual([])
+    })
+
     it('should return false for unknown event types', () => {
       expect(validateApiEvent({ ApiTypeId: 9999 }).success).toBe(false)
       expect(validateApiEvent({ ApiTypeId: 0 }).success).toBe(false)
