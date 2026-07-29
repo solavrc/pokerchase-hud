@@ -1,6 +1,39 @@
 import { buildSchemaDiagnostic } from './schema-diagnostic'
 
 describe('schema repair diagnostics', () => {
+  it('bounds structural traversal even when dynamic paths deduplicate', () => {
+    let getterReads = 0
+    let fanout: Record<string, unknown> = { Leaf: 1 }
+
+    for (let depth = 0; depth < 6; depth += 1) {
+      const child = fanout
+      fanout = {}
+      for (let index = 0; index < 8; index += 1) {
+        Object.defineProperty(fanout, `dynamic-${depth}-${index}`, {
+          enumerable: true,
+          get: () => {
+            getterReads += 1
+            if (getterReads > 30_000) {
+              throw new Error('structural traversal exceeded its node budget')
+            }
+            return child
+          }
+        })
+      }
+    }
+
+    const diagnostic = buildSchemaDiagnostic(fanout, [{
+      path: [],
+      code: 'custom'
+    }], {
+      redactUnknownRootKeys: true
+    })
+
+    expect(diagnostic.shapeTruncated).toBe(true)
+    expect(getterReads).toBeLessThanOrEqual(30_000)
+    expect(diagnostic.payloadShape.length).toBeLessThanOrEqual(100)
+  })
+
   it('preserves poker semantics while pseudonymizing direct identifiers', () => {
     const payload = {
       ApiTypeId: 303,

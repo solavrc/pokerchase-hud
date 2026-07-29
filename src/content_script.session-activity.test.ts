@@ -119,6 +119,46 @@ describe('content_script keepalive (session-activity triggers)', () => {
     expect(mockPort.postMessage).not.toHaveBeenCalledWith(payload)
   })
 
+  test.each([
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    1.5,
+    Number.MAX_SAFE_INTEGER + 1,
+    Number.MIN_SAFE_INTEGER - 1
+  ])('an envelope preserves non-safe numeric ApiTypeId %p for diagnostics', invalidApiTypeId => {
+    const payload = {
+      ApiTypeId: invalidApiTypeId,
+      timestamp: 12
+    }
+    dispatchGameMessage({
+      type: POKER_CHASE_INVALID_API_EVENT,
+      payload
+    })
+
+    expect(mockPort.postMessage).toHaveBeenCalledWith(payload)
+  })
+
+  test('an envelope without ApiTypeId reaches background diagnostics', () => {
+    const payload = { timestamp: 14, UnexpectedRoot: true }
+    dispatchGameMessage({
+      type: POKER_CHASE_INVALID_API_EVENT,
+      payload
+    })
+
+    expect(mockPort.postMessage).toHaveBeenCalledWith(payload)
+  })
+
+  test('a flat event with a non-safe numeric ApiTypeId is ignored', () => {
+    const payload = {
+      ApiTypeId: Number.POSITIVE_INFINITY,
+      timestamp: 13
+    }
+    dispatchGameMessage(payload)
+
+    expect(mockPort.postMessage).not.toHaveBeenCalledWith(payload)
+  })
+
   test('EVT_DEAL (303) with Player present alone starts keepalive without a prior 308', () => {
     dispatchGameMessage({ ApiTypeId: ApiType.EVT_DEAL, timestamp: 2, Player: { SeatIndex: 0 } })
 

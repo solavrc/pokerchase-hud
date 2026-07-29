@@ -130,7 +130,7 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
     typeof event.data.payload === 'object' &&
     (
       !('ApiTypeId' in event.data.payload) ||
-      typeof event.data.payload.ApiTypeId !== 'number'
+      !Number.isSafeInteger(event.data.payload.ApiTypeId)
     )
   ) {
     if (!portManager.send(event.data.payload)) {
@@ -143,7 +143,7 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   // can affect session activity or the live HUD streams.
   if (
     !('ApiTypeId' in event.data) ||
-    typeof event.data.ApiTypeId !== 'number'
+    !Number.isSafeInteger(event.data.ApiTypeId)
   ) {
     return
   }

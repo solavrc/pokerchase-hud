@@ -24,6 +24,14 @@ const emitFrame = (
   }))
 }
 
+const strongDealAnchor = {
+  ApiTypeId: 303,
+  Game: { BigBlind: 200 },
+  OtherPlayers: [{}],
+  Progress: { Phase: 0, Pot: 300 },
+  SeatUserIds: [1, 2, 3, 4]
+}
+
 describe('page-world WebSocket classification', () => {
   const originalWebSocket = window.WebSocket
 
@@ -45,6 +53,7 @@ describe('page-world WebSocket classification', () => {
 
   it('forwards invalid objects only after the same socket proves it is the API', () => {
     const unrelatedSocket = new window.WebSocket('wss://example.test/aux')
+    emitFrame(unrelatedSocket, { ApiTypeId: 308, BattleType: 1 })
     emitFrame(unrelatedSocket, { Message: 'auxiliary payload' })
     expect(window.postMessage).not.toHaveBeenCalled()
 
@@ -52,7 +61,7 @@ describe('page-world WebSocket classification', () => {
     emitFrame(apiSocket, { ApiTypeId: '303', Player: {} })
     expect(window.postMessage).not.toHaveBeenCalled()
 
-    emitFrame(apiSocket, { ApiTypeId: 308, BattleType: 1 })
+    emitFrame(apiSocket, strongDealAnchor)
 
     expect(window.postMessage).toHaveBeenNthCalledWith(1, {
       type: POKER_CHASE_INVALID_API_EVENT,
@@ -63,8 +72,7 @@ describe('page-world WebSocket classification', () => {
       }
     }, POKER_CHASE_ORIGIN)
     expect(window.postMessage).toHaveBeenNthCalledWith(2, {
-      ApiTypeId: 308,
-      BattleType: 1,
+      ...strongDealAnchor,
       timestamp: 123
     }, POKER_CHASE_ORIGIN)
 
@@ -84,7 +92,7 @@ describe('page-world WebSocket classification', () => {
     for (let index = 0; index < 6; index += 1) {
       emitFrame(apiSocket, { ApiTypeId: `invalid-${index}` })
     }
-    emitFrame(apiSocket, { ApiTypeId: 308 })
+    emitFrame(apiSocket, strongDealAnchor)
 
     expect(window.postMessage).toHaveBeenCalledTimes(6)
     expect(window.postMessage).not.toHaveBeenCalledWith(
@@ -96,10 +104,34 @@ describe('page-world WebSocket classification', () => {
   })
 
   it.each([
+    { ApiTypeId: 1305, FriendId: 123 },
+    { ApiTypeId: 1304, Status: 0, UserId: 123 },
+    { ApiTypeId: 1301, Message: {} },
+    {
+      ApiTypeId: 308,
+      DefaultChip: -1,
+      BlindStructures: [],
+      CoinNum: -1,
+      IsReplay: false,
+      Name: '',
+      Name2: '',
+      LimitSeconds: 8
+    }
+  ])('does not trust a socket from a weak near-match %#', nearMatch => {
+    const unrelatedSocket = new window.WebSocket('wss://example.test/aux')
+    emitFrame(unrelatedSocket, nearMatch)
+    emitFrame(unrelatedSocket, { PrivateAuxiliaryPayload: true })
+
+    expect(window.postMessage).not.toHaveBeenCalled()
+  })
+
+  it.each([
     Number.NaN,
     Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
     1.5,
-    Number.MAX_SAFE_INTEGER + 1
+    Number.MAX_SAFE_INTEGER + 1,
+    Number.MIN_SAFE_INTEGER - 1
   ])('does not trust a socket from non-safe ApiTypeId %p', invalidApiTypeId => {
     const unrelatedSocket = new window.WebSocket('wss://example.test/aux')
     emitFrame(unrelatedSocket, { ApiTypeId: invalidApiTypeId })

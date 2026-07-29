@@ -29,6 +29,7 @@ export interface SchemaDiagnosticOptions {
 
 const MAX_DEPTH = 6
 const MAX_SHAPE_ENTRIES = 100
+const MAX_SHAPE_NODES = 1000
 const MAX_OBJECT_KEYS = 40
 const MAX_ARRAY_SAMPLES = 3
 const MAX_PAYLOAD_DEPTH = 10
@@ -102,6 +103,21 @@ const SAFE_SEMANTIC_STRING_KEY =
 const SAFE_LARGE_NUMERIC_KEY =
   /^(?:ApiTypeId|HandId|RoomId|TableId|timestamp|.*(?:BetChip|Blind|BlindLv|Chip|Pot|UnixSeconds))$/i
 const IDENTIFIER_SIZED_NUMBER_MIN = 10_000_000
+
+const boundedOwnEntries = (
+  value: Record<string, unknown>,
+  limit: number
+): { entries: Array<[string, unknown]>, truncated: boolean } => {
+  const entries: Array<[string, unknown]> = []
+  for (const key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue
+    if (entries.length >= limit) {
+      return { entries, truncated: true }
+    }
+    entries.push([key, value[key]])
+  }
+  return { entries, truncated: false }
+}
 
 const jsonType = (value: unknown): string => {
   if (value === null) return 'null'
@@ -308,12 +324,14 @@ const buildSanitizedPayload = (
     }
 
     if (value !== null && typeof value === 'object') {
-      const entries = Object.entries(value as Record<string, unknown>)
-      if (entries.length > MAX_PAYLOAD_OBJECT_KEYS) truncated = true
+      const boundedEntries = boundedOwnEntries(
+        value as Record<string, unknown>,
+        MAX_PAYLOAD_OBJECT_KEYS
+      )
+      if (boundedEntries.truncated) truncated = true
 
       return Object.fromEntries(
-        entries
-          .slice(0, MAX_PAYLOAD_OBJECT_KEYS)
+        boundedEntries.entries
           .map(([childKey, child], index) => {
             const schemaKey = safeSchemaKey(childKey, rawKey)
             const safeKey = schemaKey === '[dynamic-key]'
@@ -383,6 +401,7 @@ export const buildSchemaDiagnostic = (
   const redactUnknownRootKeys = options.redactUnknownRootKeys === true
   const shape = new Set<string>()
   let truncated = false
+  let shapeNodes = 0
 
   const addShape = (entry: string): boolean => {
     if (shape.has(entry)) return true
@@ -400,6 +419,12 @@ export const buildSchemaDiagnostic = (
     depth: number,
     parentKey?: string
   ): void => {
+    if (shapeNodes >= MAX_SHAPE_NODES) {
+      truncated = true
+      return
+    }
+    shapeNodes += 1
+
     const type = jsonType(value)
     if (!addShape(`${path}: ${type}`)) return
     if (depth >= MAX_DEPTH) {
@@ -430,11 +455,16 @@ export const buildSchemaDiagnostic = (
     }
 
     if (value !== null && typeof value === 'object') {
-      const entries = Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-      if (entries.length > MAX_OBJECT_KEYS) truncated = true
+      const boundedEntries = boundedOwnEntries(
+        value as Record<string, unknown>,
+        MAX_OBJECT_KEYS
+      )
+      if (boundedEntries.truncated) truncated = true
+      boundedEntries.entries.sort(
+        ([left], [right]) => left.localeCompare(right)
+      )
 
-      for (const [rawKey, child] of entries.slice(0, MAX_OBJECT_KEYS)) {
+      for (const [rawKey, child] of boundedEntries.entries) {
         const key = safeSchemaKey(rawKey, parentKey)
         visit(
           child,

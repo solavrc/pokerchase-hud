@@ -78,12 +78,14 @@ separately documented, user-controlled Firestore cloud-sync path. If either
 storage key is invalid, the raw row cannot be keyed; Sentry's sanitized
 diagnostic and the Popup's persistent invalid-ID counter preserve the failure
 signal instead. The page-world interceptor forwards such decoded objects in a
-dedicated envelope only after that WebSocket has produced a safe-integer
-`ApiTypeId`, preventing unrelated MessagePack sockets from entering the
-diagnostic path. Up to five pre-identification objects are retained and
-forwarded only if that same socket is subsequently identified as the
-PokerChase API. The content script strips the envelope and sends the payload
-through the same bounded runtime-port queue as normal events.
+dedicated envelope only after that WebSocket has produced a distinctive
+required-field fingerprint from a known PokerChase event, preventing unrelated
+MessagePack sockets from entering the diagnostic path without injecting the
+full schema bundle into the game page. Up to five pre-identification objects
+are retained and forwarded in arrival order only if that same socket is
+subsequently identified as the PokerChase API. The content script strips the
+envelope and sends the payload through the same bounded runtime-port queue as
+normal events.
 Sentry receives only the pseudonymized semantic snapshot, never the
 byte-for-byte raw event. The Sentry project also has default data scrubbing and
 IP-address scrubbing enabled as a second privacy layer. Server-side scrubbing
