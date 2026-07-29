@@ -11,6 +11,7 @@ if (typeof global.structuredClone === 'undefined') {
 const chromeStorageMockData = {
   sync: {} as Record<string, any>,
   local: {} as Record<string, any>,
+  session: {} as Record<string, any>,
 }
 
 // chrome.storage.onChanged listeners (fired by the local/sync `set` mocks below)
@@ -28,7 +29,7 @@ const storageChangeListeners: Array<(changes: Record<string, { oldValue?: any, n
 // in the beforeEach at the bottom of this file, alongside the chrome-mock
 // implementation restore.
 
-const fireStorageChange = (areaName: 'sync' | 'local', items: Record<string, any>) => {
+const fireStorageChange = (areaName: 'sync' | 'local' | 'session', items: Record<string, any>) => {
   const changes: Record<string, { oldValue?: any, newValue?: any }> = {}
   for (const key of Object.keys(items)) {
     changes[key] = { oldValue: chromeStorageMockData[areaName][key], newValue: items[key] }
@@ -133,6 +134,39 @@ global.chrome = {
         return Promise.resolve()
       }),
     },
+    session: {
+      get: jest.fn((keys, callback?) => {
+        const result = keys ?
+          (Array.isArray(keys) ?
+            keys.reduce((acc, key) => ({ ...acc, [key]: chromeStorageMockData.session[key] }), {}) :
+            typeof keys === 'string' ? { [keys]: chromeStorageMockData.session[keys] } :
+            chromeStorageMockData.session) :
+          chromeStorageMockData.session
+        if (typeof callback === 'function') {
+          callback(result)
+          return undefined
+        }
+        return Promise.resolve(result)
+      }),
+      set: jest.fn((items, callback?) => {
+        fireStorageChange('session', items)
+        Object.assign(chromeStorageMockData.session, items)
+        if (typeof callback === 'function') {
+          callback()
+          return undefined
+        }
+        return Promise.resolve()
+      }),
+      remove: jest.fn((keys, callback?) => {
+        const keyList = Array.isArray(keys) ? keys : [keys]
+        keyList.forEach((key: string) => { delete chromeStorageMockData.session[key] })
+        if (typeof callback === 'function') {
+          callback()
+          return undefined
+        }
+        return Promise.resolve()
+      }),
+    },
     onChanged: {
       addListener: jest.fn((listener: (changes: Record<string, any>, areaName: string) => void) => {
         storageChangeListeners.push(listener)
@@ -217,6 +251,7 @@ collectMockDefaults(global.chrome)
 beforeEach(() => {
   chromeStorageMockData.sync = {}
   chromeStorageMockData.local = {}
+  chromeStorageMockData.session = {}
   // Some test files replace global.chrome wholesale with a minimal stub
   // (e.g. useDraggable.test.ts) — guard, and only clean lastError when the
   // runtime namespace actually exists.

@@ -32,7 +32,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
-import { ApiType } from '../types'
+import { ApiType, BattleType } from '../types'
 import { registerEventIngestion } from './event-ingestion'
 import { connectedPorts } from './ports'
 import * as updateManager from './update-manager'
@@ -246,8 +246,26 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
       .equals([400, ApiType.EVT_ENTRY_QUEUED])
       .sortBy('sequence') as any[]
     expect(stored).toEqual([
-      { ...first, sequence: 0 },
-      { ...second, sequence: 1 }
+      {
+        ...first,
+        sequence: 0,
+        __pokerChaseHudSessionContext: {
+          scopeKey: 'run:0:stage000_003:400',
+          id: 'stage000_003',
+          battleType: BattleType.SIT_AND_GO,
+          startedAt: 400,
+        },
+      },
+      {
+        ...second,
+        sequence: 1,
+        __pokerChaseHudSessionContext: {
+          scopeKey: 'run:0:stage000_099:400',
+          id: 'stage000_099',
+          battleType: BattleType.SIT_AND_GO,
+          startedAt: 400,
+        },
+      }
     ])
 
     // No Raw Lake gap was created, so the drop-visibility counter stays clear.

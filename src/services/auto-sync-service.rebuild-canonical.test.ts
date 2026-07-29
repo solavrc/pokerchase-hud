@@ -142,6 +142,98 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
     expect(service.session.battleType).toBe(BattleType.SIT_AND_GO)
   })
 
+  test('uses persisted origin context when an earlier concurrent scope ends first', async () => {
+    const contextA = {
+      scopeKey: 'run:0:tab-a:1000',
+      id: 'tab-a',
+      battleType: BattleType.SIT_AND_GO,
+      startedAt: 1000,
+    }
+    const contextB = {
+      scopeKey: 'run:4:tab-b:2000',
+      id: 'tab-b',
+      battleType: BattleType.RING_GAME,
+      startedAt: 2000,
+    }
+    await db.apiEvents.bulkAdd([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 1000,
+        Code: 0,
+        BattleType: BattleType.SIT_AND_GO,
+        Id: 'tab-a',
+        IsRetire: false,
+        __pokerChaseHudSessionContext: contextA,
+      },
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 2000,
+        Code: 0,
+        BattleType: BattleType.RING_GAME,
+        Id: 'tab-b',
+        IsRetire: false,
+        __pokerChaseHudSessionContext: contextB,
+      },
+      {
+        ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+        timestamp: 3000,
+        __pokerChaseHudSessionContext: contextA,
+      },
+    ] as ApiEvent[])
+
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-b', startedAt: 2000 })
+    expect(service.session.battleType).toBe(BattleType.RING_GAME)
+  })
+
+  test('canonical rebuild preserves a completed hand origin across concurrent sessions', async () => {
+    const contextA = {
+      scopeKey: 'run:0:tab-a:100',
+      id: 'tab-a',
+      battleType: BattleType.SIT_AND_GO,
+      startedAt: 100,
+    }
+    const contextB = {
+      scopeKey: 'run:4:tab-b:200',
+      id: 'tab-b',
+      battleType: BattleType.RING_GAME,
+      startedAt: 200,
+    }
+    const scopedHand = structuredClone(FIRST_HAND_EVENTS).map(event => ({
+      ...event,
+      __pokerChaseHudSessionContext: contextA,
+    }))
+    await db.apiEvents.bulkAdd([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 100,
+        Code: 0,
+        BattleType: BattleType.SIT_AND_GO,
+        Id: 'tab-a',
+        IsRetire: false,
+        __pokerChaseHudSessionContext: contextA,
+      },
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 200,
+        Code: 0,
+        BattleType: BattleType.RING_GAME,
+        Id: 'tab-b',
+        IsRetire: false,
+        __pokerChaseHudSessionContext: contextB,
+      },
+      ...scopedHand,
+    ] as ApiEvent[])
+
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect((await db.hands.get(FIRST_HAND_ID))?.session).toMatchObject({
+      id: 'tab-a',
+      battleType: BattleType.SIT_AND_GO,
+    })
+  })
+
   test('replaces child rows for a regenerated hand instead of leaving obsolete keys', async () => {
     await db.apiEvents.bulkAdd(structuredClone(FIRST_HAND_EVENTS))
     await (autoSyncService as any).rebuildLocalEntities()

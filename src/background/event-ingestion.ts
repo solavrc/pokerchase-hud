@@ -16,6 +16,10 @@ import { markSessionActive, markSessionInactive, recheckPendingUpdate, setIngest
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
 import { getOperationState } from './operation-state'
 import { setEventSessionScope, type EventSessionScope } from '../utils/session-event-scope'
+import {
+  withRawEventSessionContext,
+  type RawEventSessionContext,
+} from '../utils/raw-event-session-context'
 
 /**
  * 参加取消申込（ApiTypeId 203）。`ApiType` enum（アプリケーションで使用する
@@ -46,6 +50,7 @@ let ingestionQueue: Promise<void> = Promise.resolve()
 
 type SessionOriginKey = number | chrome.runtime.Port
 type TrackedSessionScope = {
+  scopeKey: string
   id: string
   battleType: BattleType
   startedAt: number
@@ -70,21 +75,30 @@ class SessionOriginTracker {
     this.ready = this.restore()
   }
 
-  // Match PokerChaseService's persisted global session durability. Session
-  // storage is cleared by browser/extension restarts while an active global
-  // scope in local storage survives, which would otherwise lose per-tab
-  // attribution exactly when it is still needed.
-  private storageArea = (): chrome.storage.StorageArea => chrome.storage.local
+  // Tab ids are unique only within one browser session. storage.session
+  // survives MV3 worker suspension/restart but clears with the browser,
+  // preventing a future tab from inheriting an old numeric id's scope.
+  private storageArea = (): chrome.storage.StorageArea | undefined =>
+    chrome.storage.session
 
   private async restore(): Promise<void> {
     try {
-      const result = await this.storageArea().get(SESSION_ORIGIN_STORAGE_KEY)
+      await this.service.ready
+      const storageArea = this.storageArea()
+      if (!storageArea) {
+        this.service.endSession()
+        return
+      }
+      const result = await storageArea.get(SESSION_ORIGIN_STORAGE_KEY)
       const persisted = result[SESSION_ORIGIN_STORAGE_KEY] as {
         scopes?: Array<[number, TrackedSessionScope]>
         currentTabId?: number
         sequence?: number
       } | undefined
-      if (!persisted?.scopes || !Array.isArray(persisted.scopes)) return
+      if (!persisted?.scopes || !Array.isArray(persisted.scopes)) {
+        this.service.endSession()
+        return
+      }
       for (const [tabId, scope] of persisted.scopes) {
         if (typeof tabId === 'number' && scope && typeof scope.id === 'string') {
           this.scopes.set(tabId, scope)
@@ -94,51 +108,87 @@ class SessionOriginTracker {
       if (persisted.currentTabId !== undefined && this.scopes.has(persisted.currentTabId)) {
         this.currentKey = persisted.currentTabId
       }
+      if (this.scopes.size === 0) {
+        // PokerChaseService's older local snapshot can outlive the browser
+        // session. Without a reconcilable origin, fail closed until a fresh
+        // entry event establishes the current run.
+        this.service.endSession()
+      }
     } catch (error) {
       console.warn('[background] Failed to restore active session origins:', error)
     }
   }
 
   private async persist(): Promise<void> {
-    const scopes = [...this.scopes.entries()]
-      .filter((entry): entry is [number, TrackedSessionScope] => typeof entry[0] === 'number')
-    const currentTabId = typeof this.currentKey === 'number' ? this.currentKey : undefined
-    await this.storageArea().set({
-      [SESSION_ORIGIN_STORAGE_KEY]: {
-        scopes,
-        currentTabId,
-        sequence: this.sequence,
-      },
-    })
+    try {
+      const storageArea = this.storageArea()
+      if (!storageArea) return
+      const scopes = [...this.scopes.entries()]
+        .filter((entry): entry is [number, TrackedSessionScope] => typeof entry[0] === 'number')
+      const currentTabId = typeof this.currentKey === 'number' ? this.currentKey : undefined
+      await storageArea.set({
+        [SESSION_ORIGIN_STORAGE_KEY]: {
+          scopes,
+          currentTabId,
+          sequence: this.sequence,
+        },
+      })
+    } catch (error) {
+      // The Raw Event Lake write already succeeded before start()/end() is
+      // reached. Origin persistence is a recovery aid and must never abort
+      // the live aggregate/log/realtime pipeline.
+      console.warn('[background] Failed to persist active session origins:', error)
+    }
   }
 
-  async start(key: SessionOriginKey, id: string, battleType: BattleType, startedAt: number): Promise<void> {
-    await this.ready
+  previewStart(
+    key: SessionOriginKey,
+    id: string,
+    battleType: BattleType,
+    startedAt: number
+  ): RawEventSessionContext {
     const previous = this.scopes.get(key)
     const continuesCurrentMtt =
       previous?.battleType === BattleType.TOURNAMENT &&
       battleType === BattleType.TOURNAMENT &&
       previous.id === id
-    const scope = {
+    return {
+      scopeKey: continuesCurrentMtt
+        ? previous.scopeKey
+        : battleType === BattleType.TOURNAMENT
+          ? `mtt:${id}`
+          : `run:${battleType}:${id}:${startedAt}`,
       id,
       battleType,
       startedAt: continuesCurrentMtt ? previous.startedAt : startedAt,
+    }
+  }
+
+  async start(key: SessionOriginKey, context: RawEventSessionContext): Promise<void> {
+    await this.ready
+    const scope = {
+      ...context,
       sequence: ++this.sequence
     }
     this.scopes.set(key, scope)
     this.currentKey = key
-    this.service.startSession(id, battleType, scope.startedAt)
+    this.service.startSession(scope.id, scope.battleType, scope.startedAt)
     await this.persist()
   }
 
-  get(key: SessionOriginKey): EventSessionScope | undefined {
+  getContext(key: SessionOriginKey): RawEventSessionContext | undefined {
     const scope = this.scopes.get(key)
     if (!scope) return undefined
     return {
+      scopeKey: scope.scopeKey,
       id: scope.id,
       battleType: scope.battleType,
       startedAt: scope.startedAt
     }
+  }
+
+  get(key: SessionOriginKey): EventSessionScope | undefined {
+    return this.getContext(key)
   }
 
   async end(key: SessionOriginKey): Promise<void> {
@@ -397,6 +447,25 @@ const processEvent = async (
 
   const rawApiTypeId = (message as { ApiTypeId?: unknown }).ApiTypeId
   const rawTimestamp = (message as { timestamp?: unknown }).timestamp
+  const rawId = (message as { Id?: unknown }).Id
+  const rawBattleType = (message as { BattleType?: unknown }).BattleType
+  const startContext =
+    rawApiTypeId === ApiType.EVT_ENTRY_QUEUED &&
+    (message as { Code?: unknown }).Code === 0 &&
+    typeof rawTimestamp === 'number' &&
+    typeof rawId === 'string' &&
+    typeof rawBattleType === 'number'
+      ? sessionOrigins.previewStart(
+        originKey,
+        rawId,
+        rawBattleType as BattleType,
+        rawTimestamp
+      )
+      : undefined
+  // Capture before an ending event removes the origin. This context is
+  // stored beside the raw payload and later lets canonical replay identify
+  // the exact concurrent session being closed.
+  const eventContext = startContext ?? sessionOrigins.getContext(originKey)
 
   // Raw Event Lake（docs/architecture.md参照）: timestamp/ApiTypeIdが数値である
   // 限り、Zodパースの成否・アプリケーションイベントか否かに関わらず生のまま
@@ -413,7 +482,11 @@ const processEvent = async (
     // duplicate. The indexed lookup + add are one transaction, while the
     // outer ingestionQueue preserves WebSocket arrival order.
     try {
-      const merge = await mergeApiEvents(service.db, [message as unknown as RawApiEvent])
+      const storedMessage = withRawEventSessionContext(
+        message as unknown as RawApiEvent,
+        eventContext
+      )
+      const merge = await mergeApiEvents(service.db, [storedMessage])
       if (merge.duplicates === 1) {
         console.warn('[background] Duplicate event (identical payload already in Raw Event Lake), skipping re-processing:', message)
         return
@@ -628,16 +701,19 @@ const processEvent = async (
   if (data.ApiTypeId === ApiType.EVT_ENTRY_QUEUED && data.Code === 0) {
     await sessionOrigins.start(
       originKey,
-      data.Id,
-      data.BattleType,
-      data.timestamp ?? Date.now()
+      startContext ?? sessionOrigins.previewStart(
+        originKey,
+        data.Id,
+        data.BattleType,
+        data.timestamp ?? Date.now()
+      )
     )
   }
 
   // Capture the origin before any later tab can change service.session. The
   // same parsed object flows through AggregateEventsStream into
   // WriteEntityStream, where the completed hand reads this immutable scope.
-  setEventSessionScope(data, sessionOrigins.get(originKey))
+  setEventSessionScope(data, eventContext ?? sessionOrigins.get(originKey))
 
   // ここでdataはApiEvent型（isApplicationApiEventで保証済み）
   service.eventLogger(data, 'info')

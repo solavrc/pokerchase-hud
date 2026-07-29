@@ -15,6 +15,10 @@ import { COMPACT_REQUIRED_STAT_IDS, CLASSIFIER_REQUIRED_STAT_IDS } from '../stat
 import { matchesTableSizeFilter } from '../utils/table-size'
 import { compareHandsNewestFirst } from '../utils/hand-order'
 import type { ErrorContext } from '../types/errors'
+import {
+  getLineupSessionScope,
+  type EventSessionScope,
+} from '../utils/session-event-scope'
 
 /**
  * 統計計算Stream（パイプライン第3段階）
@@ -110,6 +114,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
   }
 
   protected async transform(seatUserIds: number[]): Promise<void> {
+    const originatingScope = getLineupSessionScope(seatUserIds)
     try {
       // バッチモード中は統計計算をスキップ
       if (this.service.batchMode) {
@@ -117,7 +122,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       }
 
       // seatUserIdsとフィルター設定に基づいてキャッシュキーを作成
-      const sessionFilter = this.captureSessionFilter()
+      const sessionFilter = this.captureSessionFilter(originatingScope)
       const sessionFilterKey = sessionFilter.enabled
         ? `session:${sessionFilter.scope ? `${sessionFilter.scope.id}@${sessionFilter.scope.startedAt}` : 'inactive'}`
         : 'all-sessions'
@@ -164,7 +169,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       const context: ErrorContext = {
         streamName: 'ReadEntityStream',
         playerIds: seatUserIds,
-        cacheKey: `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}_${this.service.handLimitFilter ?? 'all'}_${this.service.sessionOnlyFilter ? this.service.currentSessionFilterKey() : 'all-sessions'}`,
+        cacheKey: `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}_${this.service.handLimitFilter ?? 'all'}_${this.service.sessionOnlyFilter ? (originatingScope ? `${originatingScope.id}@${originatingScope.startedAt}` : this.service.currentSessionFilterKey()) : 'all-sessions'}`,
         battleTypeFilter: this.service.battleTypeFilter,
         tableSizeFilter: this.service.tableSizeFilter,
         handLimitFilter: this.service.handLimitFilter
@@ -185,9 +190,9 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
    * -- ただし`push()`しないため、`statsOutputStream`の'data'購読（ports.ts）を
    * 経由したブロードキャストは発生しない（呼び出し元が結果を自分で届ける）。
    */
-  private captureSessionFilter = (): SessionFilterSnapshot =>
+  private captureSessionFilter = (originatingScope?: EventSessionScope): SessionFilterSnapshot =>
     this.service.sessionOnlyFilter
-      ? { enabled: true, scope: this.service.getCurrentSessionScope() }
+      ? { enabled: true, scope: originatingScope ?? this.service.getCurrentSessionScope() }
       : { enabled: false }
 
   calcStats = async (

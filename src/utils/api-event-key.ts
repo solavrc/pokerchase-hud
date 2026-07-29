@@ -5,6 +5,10 @@ import {
   SYNC_RESCAN_BACKFILL_DONE_META_KEY,
   SYNC_RESCAN_FLOOR_META_KEY
 } from '../constants/sync'
+import {
+  getRawEventSessionContext,
+  RAW_EVENT_SESSION_CONTEXT_FIELD,
+} from './raw-event-session-context'
 
 export const API_EVENT_PRIMARY_KEY = '[timestamp+ApiTypeId+sequence]'
 export const API_EVENT_TIMESTAMP_TYPE_INDEX = '[timestamp+ApiTypeId]'
@@ -132,7 +136,7 @@ export const getApiEventContentIdentity = (event: RawApiEvent): string => {
       const record = value as Record<string, unknown>
       const result: Record<string, unknown> = {}
       for (const key of Object.keys(record).sort()) {
-        if (omitSequence && key === 'sequence') continue
+        if (omitSequence && (key === 'sequence' || key === RAW_EVENT_SESSION_CONTEXT_FIELD)) continue
         result[key] = canonicalize(record[key], false)
       }
       return result
@@ -191,7 +195,19 @@ export async function mergeApiEvents(
       const group = groups.get(groupKey) ?? []
       const identity = getApiEventContentIdentity(input)
 
-      if (group.some(event => getApiEventContentIdentity(event) === identity)) {
+      const duplicate = group.find(event => getApiEventContentIdentity(event) === identity)
+      if (duplicate) {
+        const incomingContext = getRawEventSessionContext(input)
+        const existingContext = getRawEventSessionContext(duplicate)
+        if (incomingContext && !existingContext) {
+          const upgraded = {
+            ...duplicate,
+            [RAW_EVENT_SESSION_CONTEXT_FIELD]: { ...incomingContext },
+          }
+          await db.apiEvents.put(upgraded as unknown as ApiEvent)
+          const duplicateIndex = group.indexOf(duplicate)
+          group[duplicateIndex] = upgraded
+        }
         duplicates++
         continue
       }

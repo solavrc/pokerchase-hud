@@ -139,11 +139,10 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
 
   test('canonical replay closes a canceled entry and restores the preceding scope', () => {
     const autoSyncService = new AutoSyncService(db)
-    const replaySessions: Array<{
-      id: string
-      battleType: BattleType
-      startedAt: number
-    }> = []
+    const replaySessions = {
+      scopes: new Map(),
+      sequence: 0,
+    }
 
     ;(autoSyncService as any).restoreSessionEvent(service, {
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,

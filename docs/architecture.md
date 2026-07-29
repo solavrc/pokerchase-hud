@@ -51,6 +51,15 @@
 transactionで行う。reconnect resendの判定はトップレベルの`sequence`を除く
 canonical payload全体の一致であり、時刻と種別だけでは重複とみなさない。
 
+複数ゲームタブが同時進行する場合に、各ハンドと終了イベントを元のセッションへ
+戻せるよう、保存行には予約フィールド`__pokerChaseHudSessionContext`を付与する。
+これはwire payloadを書き換えるものではなく、HUDが受信時に確定した
+`scopeKey`/セッションID/ゲーム種別/開始境界だけを保持するアプリケーション
+metadataである（tab ID、プレイヤー情報、カード情報は含めない）。クラウド側の
+canonical rebuildでも同じoriginを再現するためアプリケーションイベントと共に
+同期するが、content identityからは除外する。同一payloadの既存行にcontextが
+無い場合だけ不足分を補い、新しいイベントとしては数えない。
+
 `timestamp`はWebSocket message decode直後の`Date.now()`なので、異なるevent typeが
 同一millisecondになる。主キー・exportはApiTypeId順へ並べるため、stateful readerは
 同時刻groupをpage境界で分断しない。groupが303/305/313のstate snapshotと304だけの
@@ -59,7 +68,8 @@ snapshotを先へ戻す。3件以上の複合groupは、局所的に証明でき
 跨いで動かさず、group全体を主キー順に維持する。201/308や306/309を含むsession/hand
 lifecycleは、MTT table moveやtable間interleaveを前状態なしに区別できないため推論しない。
 このstrict resolverはlegacy/futureの双方に同じ規則を適用し、
-IndexedDB/Firestore schemaやdedup identityへ一時的な受信順metadataを追加しない。
+一時的な受信順metadataはIndexedDB/Firestore schemaやdedup identityへ追加しない。
+上記のsession contextは順序推定ではなく、受信時にoriginから直接観測した境界である。
 resolverはvalidation前のraw group全体へ適用し、その後でapplication/schema filterを行う。
 filterを先に行うとnoise除去で複合groupが偽の2-event pairへ縮むため、順序を逆転してはならない。
 

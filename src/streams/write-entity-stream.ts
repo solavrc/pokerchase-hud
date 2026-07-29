@@ -22,7 +22,10 @@ import { getPositionMap, getBigBlindUserId } from '../utils/position-utils'
 import { defaultRegistry } from '../stats'
 import type { ErrorContext } from '../types/errors'
 import { deriveHandSettlement } from '../utils/hand-chip-accounting'
-import { getEventSessionScope } from '../utils/session-event-scope'
+import {
+  getEventSessionScope,
+  setLineupSessionScope,
+} from '../utils/session-event-scope'
 
 /**
  * エンティティ書き込みStream（パイプライン第2段階）
@@ -67,6 +70,11 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
       // cache. The completed hand changes every aggregate, so invalidate only
       // after its entity transaction commits and before downstream recalculates.
       this.service.statsOutputStream.invalidateCache()
+      const originatingDeal = events.find(event => event.ApiTypeId === ApiType.EVT_DEAL)
+      setLineupSessionScope(
+        hand.seatUserIds,
+        originatingDeal ? getEventSessionScope(originatingDeal) : undefined
+      )
       this.push(hand.seatUserIds)
     } catch (error: unknown) {
       const context: ErrorContext = {

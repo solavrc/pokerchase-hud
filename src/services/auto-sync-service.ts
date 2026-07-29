@@ -26,6 +26,9 @@ import {
 } from '../utils/api-event-key'
 import { HandLogExporter } from '../utils/hand-log-exporter'
 import { startKeepAlive } from '../background/service-worker-keepalive'
+import {
+  getRawEventSessionContext,
+} from '../utils/raw-event-session-context'
 
 /** Shown in the popup and logged when the min-version gate stops cloud sync (#forced-update). */
 export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます'
@@ -71,9 +74,17 @@ interface SyncPassIdentity {
 }
 
 type ReplaySessionScope = {
+  scopeKey: string
   id: string
   battleType: BattleType
   startedAt: number
+  sequence: number
+}
+
+type ReplaySessionState = {
+  scopes: Map<string, ReplaySessionScope>
+  sequence: number
+  currentKey?: string
 }
 
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'success'
@@ -1482,7 +1493,24 @@ export class AutoSyncService {
         players: new Map(),
         reset: () => { }
       }
-      const converter = new EntityConverter(defaultSession)
+      const legacyConverter = new EntityConverter(defaultSession)
+      const scopedConverters = new Map<string, EntityConverter>()
+      const converterFor = (event: ApiEvent): EntityConverter => {
+        const context = getRawEventSessionContext(event)
+        if (!context) return legacyConverter
+        let converter = scopedConverters.get(context.scopeKey)
+        if (!converter) {
+          converter = new EntityConverter({
+            id: context.id,
+            battleType: context.battleType,
+            name: undefined,
+            players: new Map(),
+            reset: () => { },
+          })
+          scopedConverters.set(context.scopeKey, converter)
+        }
+        return converter
+      }
       const service = (self as any).service
       const totalEventCount = await this.db.apiEvents.count()
       // Keep the pre-rebuild key set so a successful canonical replay can
@@ -1494,7 +1522,10 @@ export class AutoSyncService {
       const rebuiltHandIds = new Set<number>()
       let lastProcessedTimestamp = 0
       let latestDealEvent: ApiEvent | undefined
-      const replaySessions: ReplaySessionScope[] = []
+      const replaySessions: ReplaySessionState = {
+        scopes: new Map(),
+        sequence: 0,
+      }
 
       if (service?.session) service.session.reset()
 
@@ -1509,7 +1540,24 @@ export class AutoSyncService {
         // application events; isApiEventType()/restoreSessionEvent() below
         // already re-validate internally so they're safe on the raw chunk as-is.
         const validEvents = await filterValidApplicationEvents(events)
-        const entities = converter.convertEventChunk(validEvents)
+        const entities: ReturnType<EntityConverter['flush']> = {
+          hands: [],
+          phases: [],
+          actions: [],
+        }
+        const eventsByConverter = new Map<EntityConverter, ApiEvent[]>()
+        for (const event of validEvents) {
+          const target = converterFor(event)
+          const targetEvents = eventsByConverter.get(target) ?? []
+          targetEvents.push(event)
+          eventsByConverter.set(target, targetEvents)
+        }
+        for (const [target, targetEvents] of eventsByConverter) {
+          const converted = target.convertEventChunk(targetEvents)
+          entities.hands.push(...converted.hands)
+          entities.phases.push(...converted.phases)
+          entities.actions.push(...converted.actions)
+        }
         entities.hands.forEach(hand => rebuiltHandIds.add(hand.id))
         await this.saveRebuiltEntities(entities)
 
@@ -1536,7 +1584,17 @@ export class AutoSyncService {
         }
       }
 
-      const remainingEntities = converter.flush()
+      const remainingEntities: ReturnType<EntityConverter['flush']> = {
+        hands: [],
+        phases: [],
+        actions: [],
+      }
+      for (const target of [legacyConverter, ...scopedConverters.values()]) {
+        const flushed = target.flush()
+        remainingEntities.hands.push(...flushed.hands)
+        remainingEntities.phases.push(...flushed.phases)
+        remainingEntities.actions.push(...flushed.actions)
+      }
       remainingEntities.hands.forEach(hand => rebuiltHandIds.add(hand.id))
       await this.saveRebuiltEntities(remainingEntities)
 
@@ -1603,52 +1661,73 @@ export class AutoSyncService {
   private restoreSessionEvent(
     service: any,
     event: ApiEvent,
-    replaySessions: ReplaySessionScope[]
+    replaySessions: ReplaySessionState
   ): void {
     if (!service?.session) return
 
     const rawApiTypeId = (event as { ApiTypeId: number }).ApiTypeId
+    const context = getRawEventSessionContext(event)
     if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS || rawApiTypeId === 203) {
-      replaySessions.pop()
-      const previous = replaySessions.at(-1)
+      if (context) {
+        replaySessions.scopes.delete(context.scopeKey)
+      } else if (replaySessions.currentKey) {
+        // Legacy rows have no origin metadata. Retain the historical
+        // most-recent-scope fallback without applying it to context-aware
+        // rows, whose ending identity is explicit.
+        replaySessions.scopes.delete(replaySessions.currentKey)
+      }
+      const previous = [...replaySessions.scopes.values()]
+        .sort((a, b) => b.sequence - a.sequence)[0]
       if (previous && typeof service.startSession === 'function') {
+        replaySessions.currentKey = previous.scopeKey
         service.startSession(previous.id, previous.battleType, previous.startedAt)
       } else if (typeof service.endSession === 'function') {
+        replaySessions.currentKey = undefined
         service.endSession()
       } else {
         service.session.reset()
       }
     } else if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED) && event.Code === 0) {
-      const previous = replaySessions.at(-1)
-      const continuesCurrentMtt =
-        previous?.battleType === BattleType.TOURNAMENT &&
-        event.BattleType === BattleType.TOURNAMENT &&
-        previous.id === event.Id
+      const scopeKey = context?.scopeKey ??
+        (event.BattleType === BattleType.TOURNAMENT
+          ? `legacy-mtt:${event.Id}`
+          : `legacy-run:${event.BattleType}:${event.Id}:${event.timestamp ?? Date.now()}`)
+      const previous = replaySessions.scopes.get(scopeKey)
       const scope: ReplaySessionScope = {
-        id: event.Id,
-        battleType: event.BattleType,
-        startedAt: continuesCurrentMtt
-          ? previous.startedAt
-          : event.timestamp ?? Date.now()
+        scopeKey,
+        id: context?.id ?? event.Id,
+        battleType: context?.battleType ?? event.BattleType,
+        startedAt: context?.startedAt ?? previous?.startedAt ?? event.timestamp ?? Date.now(),
+        sequence: ++replaySessions.sequence,
       }
-      if (continuesCurrentMtt) replaySessions[replaySessions.length - 1] = scope
-      else replaySessions.push(scope)
+      replaySessions.scopes.set(scopeKey, scope)
+      replaySessions.currentKey = scopeKey
       if (typeof service.startSession === 'function') {
         service.startSession(scope.id, scope.battleType, scope.startedAt)
       } else {
         service.session.setId(event.Id)
         service.session.setBattleType(event.BattleType)
       }
-    } else if (isApiEventType(event, ApiType.EVT_SESSION_DETAILS)) {
+    } else if (
+      isApiEventType(event, ApiType.EVT_SESSION_DETAILS) &&
+      (!context || context.scopeKey === replaySessions.currentKey)
+    ) {
       service.session.setName(event.Name)
-    } else if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED)) {
+    } else if (
+      isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED) &&
+      (!context || context.scopeKey === replaySessions.currentKey)
+    ) {
       event.TableUsers?.forEach(tableUser => {
         service.session.setPlayer(tableUser.UserId, {
           name: tableUser.UserName,
           rank: tableUser.Rank.RankId
         })
       })
-    } else if (isApiEventType(event, ApiType.EVT_PLAYER_JOIN) && event.JoinUser) {
+    } else if (
+      isApiEventType(event, ApiType.EVT_PLAYER_JOIN) &&
+      event.JoinUser &&
+      (!context || context.scopeKey === replaySessions.currentKey)
+    ) {
       service.session.setPlayer(event.JoinUser.UserId, {
         name: event.JoinUser.UserName,
         rank: event.JoinUser.Rank.RankId

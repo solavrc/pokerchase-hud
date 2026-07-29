@@ -71,7 +71,16 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     await onMessageHandler(validEvent)
 
     const stored = await db.apiEvents.get([111, 201, 0])
-    expect(stored).toEqual({ ...validEvent, sequence: 0 })
+    expect(stored).toEqual({
+      ...validEvent,
+      sequence: 0,
+      __pokerChaseHudSessionContext: {
+        scopeKey: 'run:0:stage000_003:111',
+        id: 'stage000_003',
+        battleType: BattleType.SIT_AND_GO,
+        startedAt: 111,
+      },
+    })
 
     expect(handLogSpy).toHaveBeenCalledTimes(1)
     expect(aggregateSpy).toHaveBeenCalledTimes(1)
@@ -184,13 +193,16 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       Id: 'mtt-6078',
       IsRetire: false,
     })
-    expect(chrome.storage.local.set).toHaveBeenCalledWith({
+    expect(chrome.storage.session.set).toHaveBeenCalledWith({
       activeSessionOriginsV1: expect.objectContaining({
         scopes: expect.arrayContaining([
           [101, expect.objectContaining({ id: 'mtt-6078', startedAt: 1000 })],
         ]),
       }),
     })
+    expect(chrome.storage.local.set).not.toHaveBeenCalledWith(
+      expect.objectContaining({ activeSessionOriginsV1: expect.anything() })
+    )
 
     registerEventIngestion(service)
     const restoredConnectListener =
@@ -286,6 +298,8 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       IsRetire: false,
     })
 
+    service.sessionOnlyFilter = true
+    const calcStatsSpy = jest.spyOn(service.statsOutputStream, 'calcStats')
     const firstCompletedHand = MTT_TABLE_MOVE_FIXTURE.events.slice(3, 6)
     for (const event of firstCompletedHand) {
       await onMessageHandler(structuredClone(event))
@@ -298,6 +312,40 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       battleType: BattleType.SIT_AND_GO,
     })
     expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-b', startedAt: 2000 })
+    expect(calcStatsSpy).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({
+        enabled: true,
+        scope: expect.objectContaining({ id: 'tab-a', startedAt: 1000 }),
+      })
+    )
+  })
+
+  test('origin persistence failure does not drop a durable event from live streams', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    ;(chrome.storage.session.set as jest.Mock).mockRejectedValueOnce(new Error('quota'))
+    const handLogSpy = jest.spyOn(service.handLogStream, 'write')
+    const aggregateSpy = jest.spyOn(service.handAggregateStream, 'write')
+    const realTimeSpy = jest.spyOn(service.realTimeStatsStream, 'write')
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'tab-a',
+      IsRetire: false,
+    })
+
+    expect(await db.apiEvents.get([1000, ApiType.EVT_ENTRY_QUEUED, 0])).toBeDefined()
+    expect(handLogSpy).toHaveBeenCalledTimes(1)
+    expect(aggregateSpy).toHaveBeenCalledTimes(1)
+    expect(realTimeSpy).toHaveBeenCalledTimes(1)
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-a', startedAt: 1000 })
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[background] Failed to persist active session origins:',
+      expect.any(Error)
+    )
   })
 
   test('an application-type event that fails Zod validation is stored raw but NOT forwarded to streams', async () => {
