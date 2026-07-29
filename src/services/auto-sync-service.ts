@@ -13,6 +13,7 @@ import {
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
 import { ApiType, ApiTypeValues, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent } from '../types'
+import type { BattleType } from '../types'
 import type { ApiEvent } from '../types'
 import { processInReplayChunks, filterValidApplicationEvents } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
@@ -1489,7 +1490,31 @@ export class AutoSyncService {
       let lastProcessedTimestamp = 0
       let latestDealEvent: ApiEvent | undefined
 
-      if (service?.session) service.session.reset()
+      // Replay state is isolated from the live service. A cloud rebuild can span
+      // many awaited chunks; mutating service.session during that window makes
+      // automatic filtering temporarily fail closed and lets live events/drilldowns
+      // observe a partial historical session. Commit the final replay snapshot only
+      // after every chunk and its bookkeeping write have succeeded.
+      const replayPlayers = new Map<number, { name: string, rank: string }>()
+      const replaySession = {
+        id: undefined as string | undefined,
+        battleType: undefined as BattleType | undefined,
+        name: undefined as string | undefined,
+        players: replayPlayers,
+        setId(value: string | undefined) { this.id = value },
+        setBattleType(value: BattleType | undefined) { this.battleType = value },
+        setName(value: string | undefined) { this.name = value },
+        setPlayer(userId: number, info: { name: string, rank: string }) {
+          replayPlayers.set(userId, info)
+        },
+        reset() {
+          this.id = undefined
+          this.battleType = undefined
+          this.name = undefined
+          replayPlayers.clear()
+        }
+      }
+      const replayService = { session: replaySession }
 
       for await (const events of processInReplayChunks(
         this.db.apiEvents,
@@ -1508,7 +1533,7 @@ export class AutoSyncService {
 
         for (const event of events) {
           lastProcessedTimestamp = Math.max(lastProcessedTimestamp, event.timestamp || 0)
-          this.restoreSessionEvent(service, event)
+          this.restoreSessionEvent(replayService, event)
           // 席着席時のみ latestDealEvent を更新する（findLatestPlayerDealEvent()
           // ／aggregate-events-stream.tsのEVT_DEALケースと同じ判別: event.Player?.
           // SeatIndex !== undefined）。ダウンロード履歴の末尾が観戦モードのdeal
@@ -1560,6 +1585,33 @@ export class AutoSyncService {
         },
         updatedAt: Date.now()
       })
+
+      if (service?.session) {
+        const previousAutoFilter = service.autoBattleTypeFilter
+          ? service.getEffectiveBattleTypeFilter?.()?.join(',')
+          : undefined
+
+        // Commit without an await between mutations so live ingestion cannot
+        // observe a partially restored session. SessionState setters retain the
+        // existing persisted-state notification behavior.
+        service.session.reset()
+        service.session.setId(replaySession.id)
+        service.session.setBattleType(replaySession.battleType)
+        service.session.setName(replaySession.name)
+        replaySession.players.forEach((info, userId) => {
+          service.session.setPlayer(userId, info)
+        })
+
+        const nextAutoFilter = service.autoBattleTypeFilter
+          ? service.getEffectiveBattleTypeFilter?.()?.join(',')
+          : undefined
+        if (
+          service.autoBattleTypeFilter &&
+          previousAutoFilter !== nextAutoFilter
+        ) {
+          service.autoBattleTypeFilterRevision++
+        }
+      }
 
       this.restoreLatestDeal(service, latestDealEvent)
       console.log(`[AutoSync] Chunked data rebuild completed (${totalEventCount} events)`)

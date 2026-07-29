@@ -73,17 +73,11 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     // ヒーロー在籍時点のSeatUserIds（永続化対象・latestEvtDealの意味論）。
     const seatUserIds = this.service.latestEvtDeal.SeatUserIds
 
-    // ここは latestEvtDeal を"読むだけ"で再代入しないパス（フィルター変更時の
-    // 明示的な再計算、setBattleTypeFilter()経由）なので、setterのliveEvtDeal
-    // 同期ロジックは効かない。もし直前に観戦モードdealが届いていて
-    // service.liveEvtDealがそちらを指したままだと、ここでpush()する
-    // ヒーロー在籍の統計が、ports.tsのブロードキャストではPlayer不在の
-    // （回転しない）evtDealとペアリングされ、App.tsxがヒーローパネルを
-    // 実際の生の席（seat 0でない場合はズレた位置）に表示してしまう
-    // （codex #177 3巡目レビューP2「Preserve hero deal when recalculating
-    // filters」）。ここで明示的に同期し、以降のブロードキャストがヒーロー
-    // 在籍dealの座席文脈（Player.SeatIndex含む）を使うようにする。
-    this.service.liveEvtDeal = this.service.latestEvtDeal
+    // 計算対象と同じヒーロー在籍dealを、このキュー項目固有の座席文脈として捕捉する。
+    // キュー投入前にliveEvtDealを変更すると、先行中の旧transformがその座標で
+    // broadcastされる。反対にキュー待ち中の新しいlive dealをそのまま使うと、
+    // この再計算結果が別lineupでbroadcastされる。push直前に捕捉値へ再アンカーする。
+    const evtDeal = this.service.latestEvtDeal
 
     // 直接calcStats()すると、既に走っている旧フィルターのtransformより先に
     // 完了し、その後に旧結果がHUDを上書きし得る。通常writeと同じ直列キューの
@@ -91,6 +85,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     await this.enqueueSerialized(async () => {
       try {
         const stats = await this.calcStats(seatUserIds)
+        this.service.liveEvtDeal = evtDeal
         this.push(stats)
       } catch (error) {
         const context: ErrorContext = {

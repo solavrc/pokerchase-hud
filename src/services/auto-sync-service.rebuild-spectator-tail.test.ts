@@ -35,7 +35,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
-import { ApiType } from '../types'
+import { ApiType, BattleType } from '../types'
 import type { ApiEvent } from '../types'
 import { AutoSyncService } from './auto-sync-service'
 import { firestoreBackupService } from './firestore-backup-service'
@@ -135,5 +135,50 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     expect(service.playerId).toBe(HERO_ID)
     expect(service.latestEvtDeal).toEqual({ ...laterSeatedDeal, sequence: 0 })
     expect(service.liveEvtDeal).toEqual({ ...laterSeatedDeal, sequence: 0 })
+  })
+
+  test('cloud replay preserves the live automatic category until atomically committing the rebuilt session', async () => {
+    service.autoBattleTypeFilter = true
+    service.session.setId('live-sng')
+    service.session.setBattleType(BattleType.SIT_AND_GO)
+    const initialRevision = service.autoBattleTypeFilterRevision
+
+    await db.apiEvents.put({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'rebuilt-ring',
+      IsRetire: false,
+      timestamp: 500,
+      sequence: 0,
+    } as ApiEvent)
+
+    const autoSyncService = new AutoSyncService(db)
+    const originalSave = (autoSyncService as any).saveRebuiltEntities.bind(autoSyncService)
+    let releaseSave!: () => void
+    let signalSaveStarted!: () => void
+    const saveBlocked = new Promise<void>(resolve => { releaseSave = resolve })
+    const saveStarted = new Promise<void>(resolve => { signalSaveStarted = resolve })
+    jest.spyOn(autoSyncService as any, 'saveRebuiltEntities')
+      .mockImplementationOnce(async (entities: unknown) => {
+        signalSaveStarted()
+        await saveBlocked
+        return originalSave(entities)
+      })
+
+    const rebuild = (autoSyncService as any).rebuildLocalEntities()
+    await saveStarted
+
+    // The service remains usable with its live category throughout awaited replay work.
+    expect(service.session.id).toBe('live-sng')
+    expect(service.session.battleType).toBe(BattleType.SIT_AND_GO)
+    expect(service.autoBattleTypeFilterRevision).toBe(initialRevision)
+
+    releaseSave()
+    await rebuild
+
+    expect(service.session.id).toBe('rebuilt-ring')
+    expect(service.session.battleType).toBe(BattleType.RING_GAME)
+    expect(service.autoBattleTypeFilterRevision).toBe(initialRevision + 1)
   })
 })

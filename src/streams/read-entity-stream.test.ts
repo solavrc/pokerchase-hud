@@ -15,7 +15,7 @@ import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import PokerChaseService from '../services/poker-chase-service'
 import { ApiType, BattleType, PhaseType } from '../types'
-import type { ApiHandEvent, Hand } from '../types'
+import type { ApiEvent, ApiHandEvent, Hand } from '../types'
 import type { PlayerStats, StatResult } from '../types'
 
 const PLAYER_ID = 1
@@ -167,18 +167,34 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
       })
       .mockResolvedValueOnce(newStats)
     const emitted: PlayerStats[][] = []
-    service.statsOutputStream.on('data', stats => emitted.push(stats))
+    const emittedDealSeatIds: number[][] = []
+    service.statsOutputStream.on('data', stats => {
+      emitted.push(stats)
+      emittedDealSeatIds.push(service.liveEvtDeal?.SeatUserIds ?? [])
+    })
 
     service.statsOutputStream.write(SEAT_USER_IDS)
     await firstStarted
+    const spectatorDeal = {
+      ...service.latestEvtDeal,
+      SeatUserIds: [10, 20, 30, 40, 50, 60],
+      Player: undefined,
+    } as ApiEvent<ApiType.EVT_DEAL>
+    service.liveEvtDeal = spectatorDeal
     const refresh = service.statsOutputStream.recalculateStats()
 
     expect(calcSpy).toHaveBeenCalledTimes(1)
+    // The queued refresh must not re-anchor the still-running older transform.
+    expect(service.liveEvtDeal?.SeatUserIds).toEqual(spectatorDeal.SeatUserIds)
     releaseFirst()
     await refresh
 
     expect(calcSpy).toHaveBeenCalledTimes(2)
     expect(emitted).toEqual([oldStats, newStats])
+    expect(emittedDealSeatIds).toEqual([
+      spectatorDeal.SeatUserIds,
+      SEAT_USER_IDS,
+    ])
   })
 
   test('a completed hand invalidates a same-lineup production cache warmed at deal time', async () => {
