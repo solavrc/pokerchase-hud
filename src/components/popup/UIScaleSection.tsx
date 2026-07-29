@@ -25,6 +25,8 @@ export const UIScaleSection = ({
   const [recordingShortcut, setRecordingShortcut] = useState(false)
   const [shortcutError, setShortcutError] = useState(false)
   const shortcutInputRef = useRef<HTMLInputElement>(null)
+  const latestUIConfigRef = useRef(uiConfig)
+  latestUIConfigRef.current = uiConfig
   const shortcutLabel = uiConfig.toggleShortcut
     ? formatShortcut(uiConfig.toggleShortcut)
     : null
@@ -38,8 +40,15 @@ export const UIScaleSection = ({
   const updateLocalScale = (newConfig: UIConfig) => {
     saveLocalUIScale(newConfig.scale, success => {
       if (!success) return
-      setUIConfig(newConfig)
-      broadcastUIConfig(newConfig)
+      // The write can succeed after the timeout. Reconcile only its scale
+      // onto the latest synchronized settings instead of replaying the
+      // full config captured when the button was clicked.
+      const reconciledConfig = {
+        ...latestUIConfigRef.current,
+        scale: newConfig.scale,
+      }
+      setUIConfig(reconciledConfig)
+      broadcastUIConfig(reconciledConfig)
     })
   }
 

@@ -218,14 +218,14 @@ describe('UIScaleSection', () => {
     expect(mockTabsSendMessage).not.toHaveBeenCalled()
   })
 
-  it('scale保存timeout後の遅いsuccessは表示更新やbroadcastを再開しない', () => {
+  it('scale保存timeout後の遅いsuccessは最新設定へscaleだけを反映する', () => {
     jest.useFakeTimers()
     try {
       let respond!: (response: unknown) => void
       mockChromeRuntimeSendMessage.mockImplementationOnce((_message, callback) => {
         respond = callback
       })
-      render(<UIScaleSection {...defaultProps} />)
+      const { rerender } = render(<UIScaleSection {...defaultProps} />)
 
       fireEvent.click(screen.getByText('+'))
       jest.advanceTimersByTime(1_000)
@@ -233,9 +233,22 @@ describe('UIScaleSection', () => {
       expect(mockSetUIConfig).not.toHaveBeenCalled()
       expect(mockTabsQuery).not.toHaveBeenCalled()
 
+      const newerConfig = {
+        ...DEFAULT_UI_CONFIG,
+        displayEnabled: false,
+      }
+      rerender(<UIScaleSection {...defaultProps} uiConfig={newerConfig} />)
       respond({ success: true })
-      expect(mockSetUIConfig).not.toHaveBeenCalled()
-      expect(mockTabsQuery).not.toHaveBeenCalled()
+
+      const reconciledConfig = {
+        ...newerConfig,
+        scale: 1.1,
+      }
+      expect(mockSetUIConfig).toHaveBeenCalledWith(reconciledConfig)
+      expect(mockTabsSendMessage).toHaveBeenCalledWith(1, {
+        action: 'updateUIConfig',
+        config: reconciledConfig,
+      })
     } finally {
       jest.useRealTimers()
     }

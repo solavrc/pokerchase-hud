@@ -228,7 +228,7 @@ describe('ui-config-storage', () => {
     expect(callback).toHaveBeenCalledWith(false)
   })
 
-  it('scale保存timeoutは失敗で確定し、遅い成功responseを再通知しない', () => {
+  it('scale保存timeoutは一度失敗を返し、遅い実保存成功を再通知する', () => {
     jest.useFakeTimers()
     try {
       let respond!: (response: unknown) => void
@@ -244,7 +244,7 @@ describe('ui-config-storage', () => {
       expect(callback).toHaveBeenCalledWith(false)
 
       respond({ success: true })
-      expect(callback).toHaveBeenCalledTimes(1)
+      expect(callback).toHaveBeenNthCalledWith(2, true)
     } finally {
       jest.useRealTimers()
     }

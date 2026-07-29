@@ -14,8 +14,6 @@ export const REAL_TIME_HUD_POSITION_OFFSET = 100
 export const DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS = 1_000
 export const hudPositionStorageKey = (seatIndex: number): string =>
   `hudPosition_${seatIndex}`
-export const hudPositionMigrationStorageKey = (seatIndex: number): string =>
-  `hudPositionMigrated_${seatIndex}`
 
 type SyncedUIConfig = Omit<UIConfig, 'scale'>
 type PendingSyncedUIConfigWrite = {
@@ -183,17 +181,21 @@ const sendDeviceLayoutWriteMessage = (
   message: ChromeMessage,
   callback: (success: boolean) => void
 ): void => {
-  let settled = false
+  let completed = false
+  let timedOut = false
+  const timeoutId = setTimeout(() => {
+    if (completed) return
+    timedOut = true
+    callback(false)
+  }, DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS)
   const finish = (success: boolean) => {
-    if (settled) return
-    settled = true
+    if (completed) return
+    completed = true
     clearTimeout(timeoutId)
-    callback(success)
+    // A timeout is not success, but the background write cannot be cancelled.
+    // Reconcile an authoritative late success once it eventually arrives.
+    if (!timedOut || success) callback(success)
   }
-  const timeoutId = setTimeout(
-    () => finish(false),
-    DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS
-  )
 
   try {
     chrome.runtime.sendMessage(message, (response: { success?: boolean } | undefined) => {
@@ -201,7 +203,11 @@ const sendDeviceLayoutWriteMessage = (
       finish(!runtimeError && response?.success === true)
     })
   } catch {
-    finish(false)
+    clearTimeout(timeoutId)
+    if (!completed) {
+      completed = true
+      callback(false)
+    }
   }
 }
 
