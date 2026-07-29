@@ -108,6 +108,32 @@ describe('message-router operation exclusivity', () => {
     }
   })
 
+  test('cancels an abandoned chunk transfer immediately and permits retry', () => {
+    listener({ action: 'importDataInit', totalChunks: 2, fileName: 'data.ndjson' }, {}, jest.fn())
+    listener({ action: 'importDataChunk', chunkIndex: 0, chunkData: 'first' }, {}, jest.fn())
+    const cancelResponse = jest.fn()
+
+    listener({ action: 'importDataCancel' }, {}, cancelResponse)
+
+    expect(cancelResponse).toHaveBeenCalledWith({ success: true })
+    expect(getCurrentImportSession()).toBeNull()
+    expect(getOperationState()).toEqual({ type: 'idle' })
+
+    const retryResponse = jest.fn()
+    listener({ action: 'importDataInit', totalChunks: 1, fileName: 'retry.ndjson' }, {}, retryResponse)
+    expect(retryResponse).toHaveBeenCalledWith({ success: true })
+    expect(getOperationState()).toMatchObject({ type: 'import', phase: 'transfer' })
+  })
+
+  test('treats a late transfer cancel as an idempotent no-op', () => {
+    const cancelResponse = jest.fn()
+
+    listener({ action: 'importDataCancel' }, {}, cancelResponse)
+
+    expect(cancelResponse).toHaveBeenCalledWith({ success: true })
+    expect(getOperationState()).toEqual({ type: 'idle' })
+  })
+
   test('preserves a completed chunk session when processing is blocked', () => {
     listener(
       { action: 'importDataInit', totalChunks: 1, fileName: 'data.ndjson' },

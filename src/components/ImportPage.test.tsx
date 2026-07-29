@@ -115,6 +115,31 @@ describe('ImportPage', () => {
     const actions = (chrome.runtime.sendMessage as jest.Mock).mock.calls.map(([message]) => message.action)
     expect(actions).not.toContain('importDataChunk')
     expect(actions).not.toContain('importDataProcess')
+    expect(actions).not.toContain('importDataCancel')
+  })
+
+  it('cancels an initialized transfer when a chunk upload fails', async () => {
+    ;(chrome.runtime.sendMessage as jest.Mock).mockImplementation(
+      (message: { action?: string }, callback?: (response: unknown) => void) => {
+        if (typeof callback === 'function') {
+          callback({ operationState: { type: 'idle' } })
+          return undefined
+        }
+        if (message.action === 'importDataChunk') {
+          return Promise.resolve({ success: false, error: 'simulated chunk failure' })
+        }
+        return Promise.resolve({ success: true })
+      }
+    )
+
+    const { container } = render(<ImportPage />)
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement
+    fireEvent.change(input, {
+      target: { files: [new File(['{}'], 'data.ndjson', { type: 'application/x-ndjson' })] },
+    })
+
+    expect(await screen.findByText('インポート失敗: simulated chunk failure')).toBeInTheDocument()
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ action: 'importDataCancel' })
   })
 
   it('preserves a UTF-8 character split across file chunk boundaries', async () => {

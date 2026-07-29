@@ -147,6 +147,13 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
 
       sendResponse({ success: true })
       return true
+    } else if (request.action === 'importDataCancel') {
+      // Idempotent transfer cleanup. Once processing begins,
+      // importDataProcess has already detached the complete session, so a
+      // late cancel cannot interrupt raw storage or its follow-up rebuild.
+      if (getCurrentImportSession()) clearImportSession()
+      sendResponse({ success: true })
+      return true
     } else if (request.action === 'importDataProcess') {
       const currentImportSession = getCurrentImportSession()
       if (!currentImportSession || currentImportSession.receivedChunks !== currentImportSession.totalChunks) {

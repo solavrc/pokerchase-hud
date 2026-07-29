@@ -17,6 +17,7 @@ import {
 } from '../constants/import-page'
 import type {
   ChromeMessage,
+  ImportDataCancelMessage,
   ImportDataChunkMessage,
   ImportDataInitMessage,
   ImportDataProcessMessage,
@@ -171,6 +172,7 @@ export const ImportPage = ({
     setDuplicates(0)
     setImported(0)
     setStatus('インポートファイル転送中...')
+    let sessionInitialized = false
     try {
       await chrome.storage.local.remove(IMPORT_RESULT_STORAGE_KEY)
     } catch (error) {
@@ -185,6 +187,7 @@ export const ImportPage = ({
         fileName: file.name,
       } satisfies ImportDataInitMessage) as MessageResponse | undefined
       requireSuccessfulResponse(initResponse, 'インポートを開始できませんでした')
+      sessionInitialized = true
 
       const decoder = new TextDecoder()
       for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
@@ -221,6 +224,15 @@ export const ImportPage = ({
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       importFlowActiveRef.current = false
+      if (sessionInitialized) {
+        try {
+          await chrome.runtime.sendMessage({
+            action: 'importDataCancel',
+          } satisfies ImportDataCancelMessage)
+        } catch (cancelError) {
+          console.warn('[ImportPage] Failed to cancel the abandoned import transfer:', cancelError)
+        }
+      }
       const result: ImportResultRecord = {
         status: 'error',
         message: `インポート失敗: ${message}`,

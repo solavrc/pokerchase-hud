@@ -302,7 +302,10 @@ on large DBs (bounded, local work; import is a rare operation).
   transfer, raw-row processing, and an import-origin post-import rebuild; the
   terminal success/error summary is also stored in
   `chrome.storage.local.lastImportResult` so either UI can restore the result
-  after being closed or reloaded.
+  after being closed or reloaded. A transfer error sends an idempotent
+  `importDataCancel` message so the in-memory chunk session releases its
+  operation slot immediately; once `importDataProcess` detaches the complete
+  session, the same message is a no-op and cannot interrupt storage/rebuild.
 - Batch mode disables real-time updates during import
 - Direct entity conversion (empty-DB path) bypasses stream overhead
 - Legacy exports without `sequence` are assigned a per-timestamp/type sequence during import; re-importing the same payload is content-deduplicated against both existing and earlier rows in the same chunk
