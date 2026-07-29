@@ -17,6 +17,10 @@ import { getUndecodedEventStats, resetUndecodedEventStats } from './undecoded-ev
 import { applyUpdateNow } from './update-manager'
 import { acknowledgeWhatsNew } from './whats-new-badge'
 import {
+  IMPORT_RESULT_STORAGE_KEY,
+  type ImportResultRecord,
+} from '../constants/import-page'
+import {
   createImportExportHandlers,
   getCurrentImportSession,
   startImportSession,
@@ -58,6 +62,26 @@ const handleFirebaseSignOut = async (): Promise<void> => {
   }
 }
 
+const publishImportResult = async (
+  status: ImportResultRecord['status'],
+  message: string
+): Promise<void> => {
+  const result: ImportResultRecord = {
+    status,
+    message,
+    completedAt: Date.now(),
+  }
+  try {
+    await chrome.storage.local.set({ [IMPORT_RESULT_STORAGE_KEY]: result })
+  } catch (error) {
+    console.warn('[importData] Failed to persist import result:', error)
+  }
+  chrome.runtime.sendMessage<ImportStatusMessage>({
+    action: 'importStatus',
+    status: message,
+  }).catch(() => {})
+}
+
 /**
  * データエクスポート機能
  * `chrome.runtime.onMessage`のディスパッチを登録する。
@@ -87,25 +111,23 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
     } else if (request.action === 'importData') {
       if (rejectIfOperationBusy('importData', sendResponse)) return true
       importData(request.data)
-        .then((result) => {
-          chrome.runtime.sendMessage<ImportStatusMessage>({
-            action: 'importStatus',
-            status: `インポートが完了しました (${result.successCount.toLocaleString()}件のログ${result.duplicateCount > 0 ? `, ${result.duplicateCount.toLocaleString()}件の重複をスキップ` : ''})`
-          }).catch(() => {})
+        .then(async (result) => {
+          await publishImportResult(
+            'completed',
+            `インポートが完了しました (${result.successCount.toLocaleString()}件のログ${result.duplicateCount > 0 ? `, ${result.duplicateCount.toLocaleString()}件の重複をスキップ` : ''})`
+          )
           sendResponse({ success: true })
         })
-        .catch(error => {
+        .catch(async error => {
           console.error('Import error:', error)
-          chrome.runtime.sendMessage<ImportStatusMessage>({
-            action: 'importStatus',
-            status: 'インポートに失敗しました: ' + error.message
-          }).catch(() => {})
+          await publishImportResult('error', 'インポートに失敗しました: ' + error.message)
           sendResponse({ success: false, error: error.message })
         })
       return true // 非同期レスポンスを示す
     } else if (request.action === 'importDataInit') {
       if (rejectIfOperationBusy('importDataInit', sendResponse)) return true
       startImportSession(request.totalChunks, request.fileName)
+      chrome.storage.local.remove(IMPORT_RESULT_STORAGE_KEY).catch(() => {})
       sendResponse({ success: true })
       return true
     } else if (request.action === 'importDataChunk') {
@@ -148,19 +170,16 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
 
       // データを処理
       importData(completeData)
-        .then((result) => {
-          chrome.runtime.sendMessage<ImportStatusMessage>({
-            action: 'importStatus',
-            status: `インポートが完了しました (${result.successCount.toLocaleString()}件のログ${result.duplicateCount > 0 ? `, ${result.duplicateCount.toLocaleString()}件の重複をスキップ` : ''})`
-          }).catch(() => {})
+        .then(async (result) => {
+          await publishImportResult(
+            'completed',
+            `インポートが完了しました (${result.successCount.toLocaleString()}件のログ${result.duplicateCount > 0 ? `, ${result.duplicateCount.toLocaleString()}件の重複をスキップ` : ''})`
+          )
           sendResponse({ success: true })
         })
-        .catch(error => {
+        .catch(async error => {
           console.error('Import error:', error)
-          chrome.runtime.sendMessage<ImportStatusMessage>({
-            action: 'importStatus',
-            status: 'インポートに失敗しました: ' + error.message
-          }).catch(() => {})
+          await publishImportResult('error', 'インポートに失敗しました: ' + error.message)
           sendResponse({ success: false, error: error.message })
         })
       return true

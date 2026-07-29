@@ -4,20 +4,27 @@ import Button from '@mui/material/Button'
 import CircularProgress from '@mui/material/CircularProgress'
 import LinearProgress from '@mui/material/LinearProgress'
 import Typography from '@mui/material/Typography'
-import React, { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { FileDownload, FileUpload } from '@mui/icons-material'
 import type {
   AcknowledgeRebuildAdvisoryMessage,
   ExportDataMessage,
   ExportProgressMessage,
-  ImportDataChunkMessage,
-  ImportDataInitMessage,
-  ImportDataProcessMessage,
-  MessageResponse,
   RebuildProgressMessage,
 } from '../../types/messages'
-import { isExportProgressMessage, isRebuildProgressMessage } from '../../types/messages'
+import {
+  isExportProgressMessage,
+  isImportProgressMessage,
+  isImportStatusMessage,
+  isRebuildProgressMessage,
+} from '../../types/messages'
+import type { OperationState } from '../../background/operation-state'
 import { REBUILD_ADVISORY_STORAGE_KEY, type RebuildAdvisoryState } from '../../background/rebuild-advisory'
+import {
+  getImportPageUrl,
+  IMPORT_RESULT_STORAGE_KEY,
+  type ImportResultRecord,
+} from '../../constants/import-page'
 import { sendMessageWithTimeout } from './send-message'
 
 interface ImportExportSectionProps {
@@ -28,7 +35,6 @@ interface ImportExportSectionProps {
   importDuplicates: number
   importSuccess: number
   importStartTime: number
-  fileInputRef: React.RefObject<HTMLInputElement | null>
   setImportStatus: (status: string) => void
   setImportProgress: (progress: number) => void
   setImportProcessed: (processed: number) => void
@@ -36,17 +42,6 @@ interface ImportExportSectionProps {
   setImportDuplicates: (duplicates: number) => void
   setImportSuccess: (success: number) => void
   setImportStartTime: (time: number) => void
-}
-
-const FILE_CHUNK_SIZE = 5 * 1024 * 1024 // 5MB chunks for file import
-
-const requireSuccessfulResponse = (
-  response: MessageResponse | undefined,
-  fallbackMessage: string
-): void => {
-  if (!response?.success) {
-    throw new Error(response?.error || fallbackMessage)
-  }
 }
 
 type ExportState = 'idle' | 'exporting'
@@ -60,7 +55,6 @@ export const ImportExportSection = ({
   importDuplicates,
   importSuccess,
   importStartTime,
-  fileInputRef,
   setImportStatus,
   setImportProgress,
   setImportProcessed,
@@ -78,16 +72,20 @@ export const ImportExportSection = ({
   const [rebuildProgress, setRebuildProgress] = useState(0)
   const [operationStatus, setOperationStatus] = useState('')
   const [rebuildAdvisoryPending, setRebuildAdvisoryPending] = useState(false)
+  const [importOperationActive, setImportOperationActive] = useState(false)
+  const importOperationActiveRef = useRef(false)
+  const [rebuildOrigin, setRebuildOrigin] = useState<'import' | 'manual' | null>(null)
 
-  const isImporting = importProgress > 0 && importProgress < 100
-  const isAnyOperationInProgress = isImporting || exportState !== 'idle' || rebuildState !== 'idle'
+  const isImporting = importOperationActive && rebuildOrigin !== 'import'
+  const isAnyOperationInProgress = importOperationActive || exportState !== 'idle' || rebuildState !== 'idle'
+  const isOtherOperationInProgress = exportState !== 'idle' || (rebuildState !== 'idle' && rebuildOrigin !== 'import')
 
   // Listen for export/rebuild progress messages and query state on mount
   useEffect(() => {
     // Query current operation state on mount (handles popup close/reopen).
     // Fails open: on timeout/error, leave export/rebuild state at their
     // 'idle' defaults instead of blocking the buttons or showing a spinner.
-    sendMessageWithTimeout<{ operationState?: any }>({ action: 'getOperationState' }).then((response) => {
+    sendMessageWithTimeout<{ operationState?: OperationState }>({ action: 'getOperationState' }).then((response) => {
       if (response?.operationState) {
         const state = response.operationState
         if (state.type === 'export') {
@@ -97,12 +95,25 @@ export const ImportExportSection = ({
           setExportProcessed(state.processed ?? 0)
           setExportTotal(state.total ?? 0)
           setOperationStatus(state.message ?? '')
+        } else if (state.type === 'import') {
+          importOperationActiveRef.current = true
+          setImportOperationActive(true)
+          setImportStatus('')
+          setImportProgress(state.progress ?? 0)
+          setImportProcessed(state.processed ?? 0)
+          setImportTotal(state.total ?? 0)
+          setImportStartTime(Date.now())
+          setOperationStatus(state.message ?? 'インポート中...')
         } else if (state.type === 'rebuild') {
           setRebuildState('rebuilding')
+          setRebuildOrigin(state.origin === 'import' ? 'import' : 'manual')
+          if (state.origin === 'import') {
+            importOperationActiveRef.current = true
+            setImportOperationActive(true)
+          }
           setRebuildProgress(state.progress ?? 0)
           setOperationStatus(state.message ?? '')
         }
-        // Import state is managed by parent Popup.tsx via importProgress messages
       }
     })
 
@@ -143,28 +154,57 @@ export const ImportExportSection = ({
 
       if (isRebuildProgressMessage(message)) {
         const msg = message as RebuildProgressMessage
+        const isImportRebuild = importOperationActiveRef.current || msg.message?.includes('インポート')
         switch (msg.state) {
           case 'started':
             setRebuildState('rebuilding')
+            setRebuildOrigin(isImportRebuild ? 'import' : 'manual')
+            if (isImportRebuild) {
+              importOperationActiveRef.current = true
+              setImportOperationActive(true)
+            }
             setRebuildProgress(0)
             setOperationStatus(msg.message ?? '')
             break
           case 'processing':
             setRebuildState('rebuilding')
+            setRebuildOrigin(isImportRebuild ? 'import' : 'manual')
             setRebuildProgress(msg.progress ?? 0)
             setOperationStatus(msg.message ?? '')
             break
           case 'completed':
             setRebuildState('idle')
+            setRebuildOrigin(null)
             setRebuildProgress(0)
             setOperationStatus(msg.message ?? 'データ再構築完了')
             break
           case 'error':
             setRebuildState('idle')
+            setRebuildOrigin(null)
             setRebuildProgress(0)
             setOperationStatus(msg.message ?? 'データ再構築失敗')
             break
         }
+      }
+
+      if (isImportProgressMessage(message)) {
+        importOperationActiveRef.current = true
+        setImportOperationActive(true)
+        setImportStatus('')
+        setImportProgress(message.progress)
+        setImportProcessed(message.processed)
+        setImportTotal(message.total)
+        setImportDuplicates(message.duplicates ?? 0)
+        setImportSuccess(message.imported ?? 0)
+        setOperationStatus('生データを保存中...')
+      }
+
+      if (isImportStatusMessage(message)) {
+        importOperationActiveRef.current = false
+        setImportOperationActive(false)
+        setRebuildOrigin(null)
+        setImportStatus(message.status)
+        setOperationStatus('')
       }
     }
 
@@ -177,19 +217,30 @@ export const ImportExportSection = ({
   // データ再構築アドバイザリ: マウント時に一度読み込み、以後はstorage変更を購読する
   // （rebuildAllData完了時のresolveAdvisory()によるstorage書き込みでバナーが自動的に消える）
   useEffect(() => {
-    chrome.storage.local.get(REBUILD_ADVISORY_STORAGE_KEY, (result: Record<string, any>) => {
-      if (chrome.runtime.lastError) return
-      const state = result?.[REBUILD_ADVISORY_STORAGE_KEY] as RebuildAdvisoryState | undefined
-      setRebuildAdvisoryPending(!!state?.pendingVersion)
-    })
+    chrome.storage.local.get(
+      [REBUILD_ADVISORY_STORAGE_KEY, IMPORT_RESULT_STORAGE_KEY],
+      (result: Record<string, any>) => {
+        if (chrome.runtime.lastError) return
+        const state = result?.[REBUILD_ADVISORY_STORAGE_KEY] as RebuildAdvisoryState | undefined
+        setRebuildAdvisoryPending(!!state?.pendingVersion)
+        const importResult = result?.[IMPORT_RESULT_STORAGE_KEY] as ImportResultRecord | undefined
+        if (importResult) setImportStatus(importResult.message)
+      }
+    )
 
     const handleStorageChange = (
       changes: { [key: string]: chrome.storage.StorageChange },
       areaName: string
     ) => {
-      if (areaName !== 'local' || !changes[REBUILD_ADVISORY_STORAGE_KEY]) return
-      const newState = changes[REBUILD_ADVISORY_STORAGE_KEY].newValue as RebuildAdvisoryState | undefined
-      setRebuildAdvisoryPending(!!newState?.pendingVersion)
+      if (areaName !== 'local') return
+      if (changes[REBUILD_ADVISORY_STORAGE_KEY]) {
+        const newState = changes[REBUILD_ADVISORY_STORAGE_KEY].newValue as RebuildAdvisoryState | undefined
+        setRebuildAdvisoryPending(!!newState?.pendingVersion)
+      }
+      if (changes[IMPORT_RESULT_STORAGE_KEY]?.newValue) {
+        const importResult = changes[IMPORT_RESULT_STORAGE_KEY].newValue as ImportResultRecord
+        setImportStatus(importResult.message)
+      }
     }
 
     chrome.storage.onChanged.addListener(handleStorageChange)
@@ -228,103 +279,24 @@ export const ImportExportSection = ({
     })
   }, [])
 
-  const handleImportClick = useCallback(() => {
-    fileInputRef.current?.click()
-  }, [fileInputRef])
-
-  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-
-    // Show file size warning for large files
-    const fileSizeMB = Math.round(file.size / 1024 / 1024)
-    if (fileSizeMB > 50) {
-      const confirmImport = window.confirm(
-        `ファイルサイズが${fileSizeMB}MBと大きいため、インポートに時間がかかる可能性があります。続行しますか？`
-      )
-      if (!confirmImport) {
-        if (fileInputRef.current) {
-          fileInputRef.current.value = ''
+  const handleImportClick = useCallback(async () => {
+    try {
+      const importPageUrl = getImportPageUrl()
+      const tabs = await chrome.tabs.query({})
+      const existingTab = tabs.find(tab => tab.url === importPageUrl)
+      if (existingTab?.id !== undefined) {
+        await chrome.tabs.update(existingTab.id, { active: true })
+        if (existingTab.windowId !== undefined) {
+          await chrome.windows.update(existingTab.windowId, { focused: true })
         }
         return
       }
-    }
-
-    try {
-      // Start import with progress tracking
-      setImportProgress(0)
-      setImportProcessed(0)
-      setImportTotal(0)
-      setImportDuplicates(0)
-      setImportSuccess(0)
-      setOperationStatus('')
-      setImportStatus('インポート開始...')
-      setImportStartTime(Date.now())
-
-      // For large files, we need to chunk the data before sending
-      const totalChunks = Math.ceil(file.size / FILE_CHUNK_SIZE)
-
-      // Initialize import session
-      const initResponse = await chrome.runtime.sendMessage({
-        action: 'importDataInit',
-        totalChunks: totalChunks,
-        fileName: file.name
-      } satisfies ImportDataInitMessage) as MessageResponse | undefined
-      requireSuccessfulResponse(initResponse, 'インポートを開始できませんでした')
-
-      // Read and send file in chunks
-      // Keep one decoder alive across Blob boundaries. `Blob.slice()` uses byte
-      // offsets, so decoding every 5 MiB slice independently can split a UTF-8
-      // code point (for example, a Japanese player name) and silently replace
-      // both halves with U+FFFD before the background joins the chunks.
-      const decoder = new TextDecoder()
-      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-        const start = chunkIndex * FILE_CHUNK_SIZE
-        const end = Math.min(start + FILE_CHUNK_SIZE, file.size)
-        const chunk = file.slice(start, end)
-        
-        const chunkBytes = await new Promise<ArrayBuffer>((resolve, reject) => {
-          const reader = new FileReader()
-          reader.onload = (e) => resolve(e.target?.result as ArrayBuffer)
-          reader.onerror = reject
-          reader.readAsArrayBuffer(chunk)
-        })
-        const chunkContent = decoder.decode(new Uint8Array(chunkBytes), {
-          stream: chunkIndex < totalChunks - 1
-        })
-
-        // Send chunk to background
-        const chunkResponse = await chrome.runtime.sendMessage({
-          action: 'importDataChunk',
-          chunkIndex: chunkIndex,
-          chunkData: chunkContent
-        } satisfies ImportDataChunkMessage) as MessageResponse | undefined
-        requireSuccessfulResponse(chunkResponse, 'インポートデータを送信できませんでした')
-
-        // Update progress
-        const fileProgress = Math.round(((chunkIndex + 1) / totalChunks) * 100)
-        setImportProgress(fileProgress)
-      }
-
-      // Process the complete data
-      const processResponse = await chrome.runtime.sendMessage({
-        action: 'importDataProcess'
-      } satisfies ImportDataProcessMessage) as MessageResponse | undefined
-      requireSuccessfulResponse(processResponse, 'インポートを処理できませんでした')
-
-      if (fileInputRef.current) {
-        fileInputRef.current.value = ''
-      }
+      await chrome.tabs.create({ url: importPageUrl })
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      setOperationStatus('')
-      setImportStatus(`インポート失敗: ${message}`)
-      setImportProgress(0)
-      if (fileInputRef.current) {
-        fileInputRef.current.value = ''
-      }
+      console.error('Failed to open the NDJSON import page:', error)
+      setImportStatus('インポートページを開けませんでした。もう一度お試しください。')
     }
-  }
+  }, [])
 
   const handleRebuildClick = useCallback(() => {
     if (window.confirm('データを再構築しますか？この処理には時間がかかる場合があります。')) {
@@ -345,7 +317,7 @@ export const ImportExportSection = ({
   }, [])
 
   // Determine status display
-  const displayStatus = operationStatus || importStatus
+  const displayStatus = isAnyOperationInProgress ? '' : operationStatus || importStatus
   const isStatusError = displayStatus.includes('失敗') || displayStatus.includes('エラー')
 
   return (
@@ -425,14 +397,6 @@ export const ImportExportSection = ({
         </Box>
       )}
 
-      <input
-        type="file"
-        accept=".ndjson"
-        style={{ display: 'none' }}
-        ref={fileInputRef}
-        onChange={handleFileChange}
-      />
-
       <Button
         variant="outlined"
         color="primary"
@@ -443,7 +407,7 @@ export const ImportExportSection = ({
             ? <CircularProgress size={20} color="inherit" />
             : <FileUpload />
         }
-        disabled={isAnyOperationInProgress}
+        disabled={isOtherOperationInProgress}
         sx={{
           marginBottom: '10px',
           '&.Mui-disabled': {
@@ -451,7 +415,7 @@ export const ImportExportSection = ({
           }
         }}
       >
-        {isImporting ? 'インポート中...' : '生データをインポート (NDJSON)'}
+        {importOperationActive ? 'インポートページを表示' : '生データをインポート (NDJSON)'}
       </Button>
 
       {isImporting && (
@@ -462,7 +426,7 @@ export const ImportExportSection = ({
             color="textSecondary"
             style={{ marginTop: '5px', textAlign: 'center' }}
           >
-            インポート中... {importProcessed.toLocaleString()}/{importTotal.toLocaleString()} ({importProgress}%)
+            {operationStatus || 'インポート中...'} {importProcessed.toLocaleString()}/{importTotal.toLocaleString()} ({importProgress}%)
           </Typography>
           {importSuccess > 0 && (
             <Typography

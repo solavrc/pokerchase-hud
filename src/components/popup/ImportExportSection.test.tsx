@@ -1,9 +1,8 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { TextDecoder as NodeTextDecoder } from 'util'
-import { useRef, useState } from 'react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ImportExportSection } from './ImportExportSection'
 import { REBUILD_ADVISORY_STORAGE_KEY } from '../../background/rebuild-advisory'
+import { IMPORT_RESULT_STORAGE_KEY } from '../../constants/import-page'
 
 const noop = () => {}
 
@@ -15,7 +14,6 @@ const defaultProps = {
   importDuplicates: 0,
   importSuccess: 0,
   importStartTime: 0,
-  fileInputRef: { current: null },
   setImportStatus: noop,
   setImportProgress: noop,
   setImportProcessed: noop,
@@ -25,27 +23,12 @@ const defaultProps = {
   setImportStartTime: noop,
 }
 
-const ImportStatusHarness = () => {
-  const [importStatus, setImportStatus] = useState('')
-  const fileInputRef = useRef<HTMLInputElement>(null)
-
-  return (
-    <ImportExportSection
-      {...defaultProps}
-      importStatus={importStatus}
-      fileInputRef={fileInputRef}
-      setImportStatus={setImportStatus}
-    />
-  )
-}
-
 describe('ImportExportSection - rebuild advisory banner', () => {
   let storageChangeListeners: Array<(changes: Record<string, any>, areaName: string) => void>
   let storageLocalData: Record<string, any>
   let mockSendMessage: jest.Mock
 
   beforeEach(() => {
-    ;(globalThis as any).TextDecoder = NodeTextDecoder
     storageChangeListeners = []
     storageLocalData = {}
     // Default: respond synchronously with no operationState (mirrors "nothing in
@@ -61,6 +44,7 @@ describe('ImportExportSection - rebuild advisory banner', () => {
       runtime: {
         ...global.chrome.runtime,
         sendMessage: mockSendMessage,
+        getURL: jest.fn(path => `chrome-extension://test/${path}`),
         onMessage: {
           addListener: jest.fn(),
           removeListener: jest.fn(),
@@ -70,9 +54,13 @@ describe('ImportExportSection - rebuild advisory banner', () => {
         ...global.chrome.storage,
         local: {
           get: jest.fn((_keys: any, callback: any) => {
-            callback({ [REBUILD_ADVISORY_STORAGE_KEY]: storageLocalData[REBUILD_ADVISORY_STORAGE_KEY] })
+            callback({
+              [REBUILD_ADVISORY_STORAGE_KEY]: storageLocalData[REBUILD_ADVISORY_STORAGE_KEY],
+              [IMPORT_RESULT_STORAGE_KEY]: storageLocalData[IMPORT_RESULT_STORAGE_KEY],
+            })
           }),
           set: jest.fn(),
+          remove: jest.fn(),
         },
         onChanged: {
           addListener: jest.fn((listener: any) => {
@@ -85,7 +73,12 @@ describe('ImportExportSection - rebuild advisory banner', () => {
         },
       },
       tabs: {
-        query: jest.fn(),
+        query: jest.fn().mockResolvedValue([]),
+        create: jest.fn().mockResolvedValue({}),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      windows: {
+        update: jest.fn().mockResolvedValue({}),
       },
     } as any
   })
@@ -145,67 +138,64 @@ describe('ImportExportSection - rebuild advisory banner', () => {
     })
   })
 
-  it('stops chunk upload and shows the background error when import initialization is rejected', async () => {
-    mockSendMessage.mockImplementation((message: { action?: string }, callback?: (response: unknown) => void) => {
-      if (typeof callback === 'function') {
-        callback({})
-        return undefined
-      }
-      if (message.action === 'importDataInit') {
-        return Promise.resolve({ success: false, error: '別の処理が実行中です' })
-      }
-      return Promise.resolve({ success: true })
+  it('opens the dedicated import page instead of reading a file in the popup', async () => {
+    render(<ImportExportSection {...defaultProps} />)
+
+    await userEvent.click(screen.getByRole('button', { name: '生データをインポート (NDJSON)' }))
+
+    expect(chrome.tabs.create).toHaveBeenCalledWith({
+      url: 'chrome-extension://test/dist/index.html?mode=import',
     })
-
-    const { container } = render(<ImportStatusHarness />)
-    const handleRuntimeMessage = (chrome.runtime.onMessage.addListener as jest.Mock).mock.calls[0][0]
-    act(() => {
-      handleRuntimeMessage({
-        action: 'exportProgress',
-        state: 'completed',
-        format: 'json',
-        message: 'エクスポート完了'
-      })
-    })
-    expect(screen.getByText('エクスポート完了')).toBeInTheDocument()
-
-    const input = container.querySelector('input[type="file"]') as HTMLInputElement
-    const file = new File(['{}'], 'data.ndjson', { type: 'application/x-ndjson' })
-
-    fireEvent.change(input, { target: { files: [file] } })
-
-    expect(await screen.findByText('インポート失敗: 別の処理が実行中です')).toBeInTheDocument()
-    expect(screen.queryByText('エクスポート完了')).not.toBeInTheDocument()
-    const actions = mockSendMessage.mock.calls.map(([message]) => message.action)
-    expect(actions).toContain('importDataInit')
-    expect(actions).not.toContain('importDataChunk')
-    expect(actions).not.toContain('importDataProcess')
   })
 
-  it('preserves a UTF-8 character split across file chunk boundaries', async () => {
-    const uploadedChunks: string[] = []
-    mockSendMessage.mockImplementation((message: { action?: string, chunkData?: string }, callback?: (response: unknown) => void) => {
+  it('focuses an existing import page instead of opening a duplicate tab', async () => {
+    ;(chrome.tabs.query as jest.Mock).mockResolvedValue([{
+      id: 42,
+      windowId: 7,
+      url: 'chrome-extension://test/dist/index.html?mode=import',
+    }])
+    render(<ImportExportSection {...defaultProps} />)
+
+    await userEvent.click(screen.getByRole('button', { name: '生データをインポート (NDJSON)' }))
+
+    expect(chrome.tabs.update).toHaveBeenCalledWith(42, { active: true })
+    expect(chrome.windows.update).toHaveBeenCalledWith(7, { focused: true })
+    expect(chrome.tabs.create).not.toHaveBeenCalled()
+  })
+
+  it('restores an active import transfer and keeps the import page reachable', async () => {
+    mockSendMessage.mockImplementation((message: { action?: string }, callback?: (response: unknown) => void) => {
       if (typeof callback === 'function') {
-        callback({})
-        return undefined
+        callback(message.action === 'getOperationState' ? {
+          operationState: {
+            type: 'import',
+            phase: 'transfer',
+            progress: 50,
+            processed: 1,
+            total: 2,
+            message: 'インポートファイル転送中...',
+          },
+        } : {})
       }
-      if (message.action === 'importDataChunk') uploadedChunks.push(message.chunkData ?? '')
-      return Promise.resolve({ success: true })
     })
+    render(<ImportExportSection {...defaultProps} />)
 
-    const chunkSize = 5 * 1024 * 1024
-    const content = `${'x'.repeat(chunkSize - 1)}あ\n`
-    const { container } = render(<ImportStatusHarness />)
-    const input = container.querySelector('input[type="file"]') as HTMLInputElement
-    const file = new File([content], 'utf8-boundary.ndjson', { type: 'application/x-ndjson' })
+    expect(await screen.findByRole('button', { name: 'インポートページを表示' })).toBeEnabled()
+    expect(screen.getByText(/インポートファイル転送中/)).toBeInTheDocument()
+  })
 
-    fireEvent.change(input, { target: { files: [file] } })
+  it('restores a persisted result after the popup was closed', async () => {
+    const setImportStatus = jest.fn()
+    storageLocalData[IMPORT_RESULT_STORAGE_KEY] = {
+      status: 'completed',
+      message: 'インポートが完了しました (10件のログ)',
+      completedAt: 123,
+    }
+
+    render(<ImportExportSection {...defaultProps} setImportStatus={setImportStatus} />)
 
     await waitFor(() => {
-      expect(mockSendMessage).toHaveBeenCalledWith(expect.objectContaining({ action: 'importDataProcess' }))
+      expect(setImportStatus).toHaveBeenCalledWith('インポートが完了しました (10件のログ)')
     })
-    expect(uploadedChunks).toHaveLength(2)
-    expect(uploadedChunks.join('')).toBe(content)
-    expect(uploadedChunks.join('')).not.toContain('\uFFFD')
   })
 })

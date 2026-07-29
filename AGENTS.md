@@ -294,6 +294,15 @@ on large DBs (bounded, local work; import is a rare operation).
 **Import Optimizations:**
 
 - Designed for processing tens of thousands of records
+- **Popup-safe import UI**: the action popup never reads or transfers the
+  selected file. Its import button opens (or focuses, without duplicating) the
+  extension-owned `dist/index.html?mode=import` tab, and that long-lived page
+  owns file selection plus the 5 MiB chunk transfer. Closing the action popup
+  therefore cannot abandon an import. `getOperationState` distinguishes file
+  transfer, raw-row processing, and an import-origin post-import rebuild; the
+  terminal success/error summary is also stored in
+  `chrome.storage.local.lastImportResult` so either UI can restore the result
+  after being closed or reloaded.
 - Batch mode disables real-time updates during import
 - Direct entity conversion (empty-DB path) bypasses stream overhead
 - Legacy exports without `sequence` are assigned a per-timestamp/type sequence during import; re-importing the same payload is content-deduplicated against both existing and earlier rows in the same chunk
