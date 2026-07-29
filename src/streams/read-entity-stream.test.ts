@@ -141,6 +141,46 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(2)
   })
 
+  test('automatic recalculation waits behind an in-flight stats transform', async () => {
+    service.playerId = PLAYER_ID
+    service.latestEvtDeal = {
+      ApiTypeId: ApiType.EVT_DEAL,
+      SeatUserIds: SEAT_USER_IDS,
+      Game: { CurrentBlindLv: 1, NextBlindUnixSeconds: 0, Ante: 0, SmallBlind: 100, BigBlind: 200, ButtonSeat: 0, SmallBlindSeat: 1, BigBlindSeat: 2 },
+      Player: { SeatIndex: 0, BetStatus: 1, HoleCards: [0, 1], Chip: 5000, BetChip: 0 },
+      OtherPlayers: [],
+      Progress: { Phase: 0, NextActionSeat: 0, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 300, SidePot: [] },
+      timestamp: 1000,
+    }
+
+    let releaseFirst!: () => void
+    let signalFirstStarted!: () => void
+    const firstBlocked = new Promise<void>(resolve => { releaseFirst = resolve })
+    const firstStarted = new Promise<void>(resolve => { signalFirstStarted = resolve })
+    const oldStats = [{ playerId: PLAYER_ID, statResults: [] }] as PlayerStats[]
+    const newStats = [{ playerId: PLAYER_ID, statResults: [{ id: 'hands', name: 'HAND', value: 1, formatted: '1' }] }] as PlayerStats[]
+    const calcSpy = jest.spyOn(service.statsOutputStream, 'calcStats')
+      .mockImplementationOnce(async () => {
+        signalFirstStarted()
+        await firstBlocked
+        return oldStats
+      })
+      .mockResolvedValueOnce(newStats)
+    const emitted: PlayerStats[][] = []
+    service.statsOutputStream.on('data', stats => emitted.push(stats))
+
+    service.statsOutputStream.write(SEAT_USER_IDS)
+    await firstStarted
+    const refresh = service.statsOutputStream.recalculateStats()
+
+    expect(calcSpy).toHaveBeenCalledTimes(1)
+    releaseFirst()
+    await refresh
+
+    expect(calcSpy).toHaveBeenCalledTimes(2)
+    expect(emitted).toEqual([oldStats, newStats])
+  })
+
   test('a completed hand invalidates a same-lineup production cache warmed at deal time', async () => {
     const previousNodeEnv = process.env.NODE_ENV
     process.env.NODE_ENV = 'production'

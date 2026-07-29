@@ -440,7 +440,9 @@ const processEvent = async (
   // フィルター依存のライブ統計パイプラインは起動時設定の復元完了を待つ。
   // これによりMV3 cold start中の201/303がデフォルトの全件フィルターでHUDを
   // 一度ブロードキャストし、そのまま次イベントまで残る競合を防ぐ。
-  await service.filtersRestored
+  // processEvent入口でもreadyを待っているが、統計転送のゲートとして必要な
+  // 2条件をここに明示して将来の順序変更でも片側だけ先行しないようにする。
+  await Promise.all([service.ready, service.filtersRestored])
 
   // ここでdataはApiEvent型（isApplicationApiEventで保証済み）
   service.eventLogger(data, 'info')

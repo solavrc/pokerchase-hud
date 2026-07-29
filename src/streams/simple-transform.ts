@@ -122,20 +122,30 @@ export abstract class SimpleTransform<In = any, Out = any> {
   protected abstract transform(chunk: In): Promise<void>
 
   /**
-   * チャンクをキューに積む。実際の変換は内部プロミスチェーン上で直列実行される。
-   * Node Transformの`.write()`と異なり、常に同期的にtrueを返す（背圧制御なし）。
+   * 通常のchunk変換と同じキューで、サブクラス固有の処理を直列化する。
+   * filter再計算など、write()とは異なる入力経路でも進行中transformを
+   * 追い越して古い結果に上書きされないための共通入口。
    */
-  write(chunk: In): void {
+  protected enqueueSerialized(task: () => Promise<void>): Promise<void> {
     this.pending++
     this.queue = this.queue.then(async () => {
       try {
-        await this.transform(chunk)
+        await task()
       } catch (error: unknown) {
         this.handleError(error)
       } finally {
         this.pending--
       }
     })
+    return this.queue
+  }
+
+  /**
+   * チャンクをキューに積む。実際の変換は内部プロミスチェーン上で直列実行される。
+   * Node Transformの`.write()`と異なり、常に同期的にtrueを返す（背圧制御なし）。
+   */
+  write(chunk: In): void {
+    void this.enqueueSerialized(() => this.transform(chunk))
   }
 
   /**

@@ -85,24 +85,27 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     // 在籍dealの座席文脈（Player.SeatIndex含む）を使うようにする。
     this.service.liveEvtDeal = this.service.latestEvtDeal
 
-    try {
-      // すべてのプレイヤーの統計を計算
-      const stats = await this.calcStats(seatUserIds)
-      this.push(stats)
-    } catch (error) {
-      const context: ErrorContext = {
-        streamName: 'ReadEntityStream',
-        operation: 'recalculateStats',
-        playerId: this.service.playerId
+    // 直接calcStats()すると、既に走っている旧フィルターのtransformより先に
+    // 完了し、その後に旧結果がHUDを上書きし得る。通常writeと同じ直列キューの
+    // 末尾へ載せ、最終ブロードキャストが必ず現在のフィルターになるようにする。
+    await this.enqueueSerialized(async () => {
+      try {
+        const stats = await this.calcStats(seatUserIds)
+        this.push(stats)
+      } catch (error) {
+        const context: ErrorContext = {
+          streamName: 'ReadEntityStream',
+          operation: 'recalculateStats',
+          playerId: this.service.playerId
+        }
+        const appError = ErrorHandler.handleStreamError(
+          error,
+          'ReadEntityStream',
+          context
+        )
+        ErrorHandler.logError(appError, 'ReadEntityStream')
       }
-      const appError = ErrorHandler.handleStreamError(
-        error,
-        'ReadEntityStream',
-        context
-      )
-      // バックグラウンド操作なのでエラーを投げずにログだけ
-      ErrorHandler.logError(appError, 'ReadEntityStream')
-    }
+    })
   }
 
   protected async transform(seatUserIds: number[]): Promise<void> {
