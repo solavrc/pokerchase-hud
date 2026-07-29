@@ -133,7 +133,7 @@ function subscribeToHandCompletion(service: PokerChaseService): void {
  * is disabled under NODE_ENV=test (see `useCache` below), so key-differs-when-filter-differs
  * can't be observed behaviorally in tests and is instead pinned down against this function directly. */
 export const buildCacheKey = (playerId: number, service: PokerChaseService): string =>
-  `${playerId}_${service.battleTypeFilter?.join(',') ?? 'all'}_${service.tableSizeFilter?.join(',') ?? 'all'}_${service.handLimitFilter ?? 'all'}`
+  `${playerId}_${service.getEffectiveBattleTypeFilter()?.join(',') ?? 'all'}_${service.tableSizeFilter?.join(',') ?? 'all'}_${service.handLimitFilter ?? 'all'}`
 
 const emptyStats = (): Record<PositionalStatId, [number, number]> => ({
   vpip: [0, 0],
@@ -210,9 +210,10 @@ export async function getPositionalStats(
     .where('seatUserIds').equals(playerId)
     .toArray()
 
-  if (service.battleTypeFilter) {
+  const effectiveBattleTypeFilter = service.getEffectiveBattleTypeFilter()
+  if (effectiveBattleTypeFilter) {
     allPlayerHands = allPlayerHands.filter((hand: Hand) =>
-      service.battleTypeFilter!.includes(hand.session.battleType!)
+      effectiveBattleTypeFilter.includes(hand.session.battleType!)
     )
   }
 

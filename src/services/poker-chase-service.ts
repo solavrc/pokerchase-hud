@@ -169,6 +169,7 @@ class PokerChaseService {
 
   // 永続化不要なプロパティ
   battleTypeFilter?: number[] = undefined // undefined = all, array = specific battleTypes
+  autoBattleTypeFilter: boolean = false // true = current session's SNG/MTT/Ring category
   tableSizeFilter?: TableSizeLayer[] = undefined // undefined = all layers (no filtering), array = selected layers (C案)
   handLimitFilter?: number = undefined // undefined = all hands, number = limit to recent N hands
   statDisplayConfigs?: StatDisplayConfig[] = undefined // Custom stat display configuration
@@ -440,7 +441,8 @@ class PokerChaseService {
     }
 
     // Remove duplicates and set filter
-    this.battleTypeFilter = selectedTypes.length > 0
+    this.autoBattleTypeFilter = filterOptions.gameTypes.auto === true
+    this.battleTypeFilter = !this.autoBattleTypeFilter && selectedTypes.length > 0
       ? [...new Set(selectedTypes)]
       : undefined // If nothing selected, show all game types
 
@@ -462,6 +464,22 @@ class PokerChaseService {
 
     // Trigger recalculation using the dedicated method
     await this.statsOutputStream.recalculateStats()
+  }
+
+  /**
+   * 自動選択時は「現在のセッション」と同じUIカテゴリへ絞る。
+   * session.battleType未確定時は空配列を返し、履歴全件を一瞬表示して
+   * しまわないようfail closedにする。
+   */
+  readonly getEffectiveBattleTypeFilter = (): number[] | undefined => {
+    if (!this.autoBattleTypeFilter) return this.battleTypeFilter
+
+    const currentType = this.session.battleType
+    if (currentType === undefined) return []
+    if (BATTLE_TYPE_FILTERS.SNG.includes(currentType)) return [...BATTLE_TYPE_FILTERS.SNG]
+    if (BATTLE_TYPE_FILTERS.MTT.includes(currentType)) return [...BATTLE_TYPE_FILTERS.MTT]
+    if (BATTLE_TYPE_FILTERS.RING.includes(currentType)) return [...BATTLE_TYPE_FILTERS.RING]
+    return []
   }
 
   /**

@@ -7,6 +7,11 @@ import type { TableSizeFilter } from '../utils/table-size'
 export type { TableSizeFilter }
 
 export interface GameTypeFilter {
+  /**
+   * 現在のセッションを SNG / MTT / リングのいずれかへ自動分類する。
+   * 旧storageとの互換性のためoptional（欠落時はfalse）。
+   */
+  auto?: boolean
   sng: boolean
   mtt: boolean
   ring: boolean

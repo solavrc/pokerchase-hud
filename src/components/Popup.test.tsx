@@ -368,7 +368,7 @@ describe('Popup', () => {
         expect.objectContaining({
           sendUserData: true,
           filterOptions: expect.objectContaining({
-            gameTypes: { sng: true, mtt: false, ring: true },
+            gameTypes: expect.objectContaining({ sng: true, mtt: false, ring: true }),
           }),
         })
       )
@@ -497,6 +497,32 @@ describe('Popup', () => {
 
     // Check that the hand limit section exists by looking for the value
     expect(screen.getByText('500')).toBeInTheDocument()
+  })
+
+  it('ゲームタイプの自動選択は手動3タイプと排他になる', async () => {
+    render(<Popup />)
+    await waitForAsyncOperations()
+
+    await userEvent.click(screen.getByRole('checkbox', { name: '自動選択' }))
+
+    await waitFor(() => {
+      expect(syncData.options.filterOptions.gameTypes).toEqual({
+        auto: true,
+        sng: false,
+        mtt: false,
+        ring: false,
+      })
+    })
+
+    await userEvent.click(screen.getByRole('checkbox', { name: 'MTT' }))
+    await waitFor(() => {
+      expect(syncData.options.filterOptions.gameTypes).toEqual({
+        auto: false,
+        sng: false,
+        mtt: true,
+        ring: false,
+      })
+    })
   })
 
   it('統計設定を表示・変更できる', async () => {

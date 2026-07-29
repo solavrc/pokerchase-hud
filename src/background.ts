@@ -101,9 +101,10 @@ chrome.runtime.onInstalled.addListener(async details => {
 service.beginFiltersRestore()
 loadOptions().then((options) => {
   if (options?.filterOptions) {
-    service.battleTypeFilter = options.filterOptions.gameTypes.sng ||
+    service.autoBattleTypeFilter = options.filterOptions.gameTypes.auto === true
+    service.battleTypeFilter = !service.autoBattleTypeFilter && (options.filterOptions.gameTypes.sng ||
       options.filterOptions.gameTypes.mtt ||
-      options.filterOptions.gameTypes.ring
+      options.filterOptions.gameTypes.ring)
       ? [...new Set([
         ...(options.filterOptions.gameTypes.sng ? BATTLE_TYPE_FILTERS.SNG : []),
         ...(options.filterOptions.gameTypes.mtt ? BATTLE_TYPE_FILTERS.MTT : []),
@@ -144,6 +145,7 @@ loadOptions().then((options) => {
   } else {
     // デフォルトフィルターを設定（再計算をトリガーせずに）
     service.battleTypeFilter = undefined  // デフォルトではすべてのゲームタイプを表示
+    service.autoBattleTypeFilter = false
     service.tableSizeFilter = undefined  // デフォルトではすべての卓人数層を表示
     service.handLimitFilter = 500
   }

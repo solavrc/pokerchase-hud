@@ -131,6 +131,16 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(2)
   })
 
+  test('auto game type follows the current session category', async () => {
+    await db.hands.update(5, { session: { battleType: BattleType.RING_GAME } })
+    await db.hands.update(6, { session: { battleType: BattleType.RING_GAME } })
+    service.session.setBattleType(BattleType.RING_GAME)
+    service.autoBattleTypeFilter = true
+
+    const stats = await runCalcStats(service, SEAT_USER_IDS)
+    expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(2)
+  })
+
   test('a completed hand invalidates a same-lineup production cache warmed at deal time', async () => {
     const previousNodeEnv = process.env.NODE_ENV
     process.env.NODE_ENV = 'production'

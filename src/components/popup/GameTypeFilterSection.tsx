@@ -27,6 +27,12 @@ export const GameTypeFilterSection = ({
       </Typography>
       <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
         <ToggleChip
+          checked={gameTypeFilter.auto === true}
+          onChange={handleGameTypeFilterChange('auto')}
+          label="自動選択"
+          title="現在のセッションと同じゲームタイプを自動で選びます"
+        />
+        <ToggleChip
           checked={gameTypeFilter.sng}
           onChange={handleGameTypeFilterChange('sng')}
           label="Sit & Go"

@@ -113,7 +113,8 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       }
 
       // seatUserIdsとフィルター設定に基づいてキャッシュキーを作成
-      const cacheKey = `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}`
+      const effectiveBattleTypeFilter = this.service.getEffectiveBattleTypeFilter()
+      const cacheKey = `${seatUserIds.join(',')}_${effectiveBattleTypeFilter?.join(',') ?? 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}`
       const now = Date.now()
 
       // テスト環境（NODE_ENV=test）またはデバッグモードではキャッシュを無効化
@@ -156,7 +157,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       const context: ErrorContext = {
         streamName: 'ReadEntityStream',
         playerIds: seatUserIds,
-        cacheKey: `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}`,
+        cacheKey: `${seatUserIds.join(',')}_${this.service.getEffectiveBattleTypeFilter()?.join(',') ?? 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}`,
         battleTypeFilter: this.service.battleTypeFilter,
         tableSizeFilter: this.service.tableSizeFilter,
         handLimitFilter: this.service.handLimitFilter
@@ -178,6 +179,8 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
    * 経由したブロードキャストは発生しない（呼び出し元が結果を自分で届ける）。
    */
   calcStats = async (seatUserIds: number[]): Promise<PlayerStats[]> => {
+    const effectiveBattleTypeFilter = this.service.getEffectiveBattleTypeFilter()
+
     return await Promise.all(seatUserIds.map(async playerId => {
       if (playerId === -1)
         return { playerId: -1 }
@@ -192,10 +195,10 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
         .toArray()
 
       // 指定されている場合、まずbattleTypeフィルターを適用
-      if (this.service.battleTypeFilter) {
+      if (effectiveBattleTypeFilter) {
         const originalHandsCount = allPlayerHands.length
         allPlayerHands = allPlayerHands.filter((hand: Hand) =>
-          this.service.battleTypeFilter!.includes(hand.session.battleType!)
+          effectiveBattleTypeFilter.includes(hand.session.battleType!)
         )
 
         // battleTypeフィルターに一致するハンドがない場合、このプレイヤーの空の統計を返す
@@ -232,7 +235,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       }
 
       // アクションフィルタリング用のフィルタリングされたハンドIDを作成
-      if (this.service.battleTypeFilter || this.service.tableSizeFilter || this.service.handLimitFilter !== undefined) {
+      if (effectiveBattleTypeFilter || this.service.tableSizeFilter || this.service.handLimitFilter !== undefined) {
         filteredHandIds = allPlayerHands.map((h: Hand) => h.id)
         filteredHandIdSet = new Set(filteredHandIds)
       }

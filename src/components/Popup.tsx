@@ -74,7 +74,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   const [importDuplicates, setImportDuplicates] = useState<number>(0)
   const [importSuccess, setImportSuccess] = useState<number>(0)
   const [importStartTime, setImportStartTime] = useState<number>(0)
-  const [gameTypeFilter, setGameTypeFilter] = useState<GameTypeFilter>({ sng: true, mtt: true, ring: true })
+  const [gameTypeFilter, setGameTypeFilter] = useState<GameTypeFilter>({ auto: false, sng: true, mtt: true, ring: true })
   const [tableSizeFilter, setTableSizeFilter] = useState<TableSizeFilter>(DEFAULT_TABLE_SIZE_FILTER)
   const [handLimit, setHandLimit] = useState<number | undefined>(500)
   const [statDisplayConfigs, setStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
@@ -224,7 +224,10 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
             })
           }
 
-          setGameTypeFilter(savedOptions.filterOptions.gameTypes || { sng: true, mtt: true, ring: true })
+          const savedGameTypes = savedOptions.filterOptions.gameTypes
+          setGameTypeFilter(savedGameTypes
+            ? { ...savedGameTypes, auto: savedGameTypes.auto ?? false }
+            : { auto: false, sng: true, mtt: true, ring: true })
           setTableSizeFilter(savedOptions.filterOptions.tableSize || DEFAULT_TABLE_SIZE_FILTER)
           setHandLimit(savedOptions.filterOptions.handLimit)
         }
@@ -312,10 +315,21 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
 
 
   const handleGameTypeFilterChange = (type: keyof GameTypeFilter) => (event: ChangeEvent<HTMLInputElement>) => {
-    const newFilter = {
-      ...gameTypeFilter,
-      [type]: event.target.checked
-    }
+    const checked = event.target.checked
+    const newFilter: GameTypeFilter = type === 'auto'
+      ? {
+        auto: checked,
+        // 自動を解除した直後に「何も選ばれていないが内部的には全件」という
+        // 曖昧な状態を作らず、手動側は明示的な全選択へ戻す。
+        sng: checked ? false : true,
+        mtt: checked ? false : true,
+        ring: checked ? false : true,
+      }
+      : {
+        ...gameTypeFilter,
+        auto: false,
+        [type]: checked,
+      }
 
     // Game type filter changed
     setGameTypeFilter(newFilter)
