@@ -51,6 +51,7 @@ export const MESSAGE_ACTIONS = {
   GET_DEVICE_UI_LAYOUT: 'getDeviceUILayout',
   SET_DEVICE_UI_SCALE: 'setDeviceUIScale',
   SET_DEVICE_HUD_POSITION: 'setDeviceHudPosition',
+  SET_SYNCED_UI_CONFIG: 'setSyncedUIConfig',
   // Operation state
   GET_OPERATION_STATE: 'getOperationState',
   // Rebuild advisory
@@ -200,6 +201,11 @@ export interface SetDeviceHudPositionMessage {
   action: 'setDeviceHudPosition'
   seatIndex: number
   position: HudPosition
+}
+
+export interface SetSyncedUIConfigMessage {
+  action: 'setSyncedUIConfig'
+  config: UIConfig
 }
 
 // Firebase backup messages
@@ -429,6 +435,7 @@ export type ChromeMessage =
   | GetDeviceUILayoutMessage
   | SetDeviceUIScaleMessage
   | SetDeviceHudPositionMessage
+  | SetSyncedUIConfigMessage
   | FirebaseAuthStatusMessage
   | FirebaseSignInMessage
   | FirebaseSignOutMessage

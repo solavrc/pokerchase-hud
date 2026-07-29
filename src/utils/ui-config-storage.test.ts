@@ -5,6 +5,7 @@ import {
   mergeUIConfigWithLocalScale,
   loadLocalUIScale,
   LEGACY_SYNC_UI_SCALE_KEY,
+  persistSyncedUIConfig,
   resolveLocalUIScale,
   saveLocalUIScale,
   saveHudPosition,
@@ -70,10 +71,10 @@ describe('ui-config-storage', () => {
       toggleShortcut: DEFAULT_UI_CONFIG.toggleShortcut,
     })
 
-    saveSyncedUIConfig(config)
+    persistSyncedUIConfig(config)
     expect(chrome.storage.sync.set).toHaveBeenCalledWith({
       uiConfig: toSyncedUIConfig(config),
-    })
+    }, expect.any(Function))
   })
 
   it('旧版端末のlive scaleを削除前に移行snapshotへ退避する', () => {
@@ -94,7 +95,7 @@ describe('ui-config-storage', () => {
       displayEnabled: false,
     }
 
-    saveSyncedUIConfig(config)
+    persistSyncedUIConfig(config)
 
     expect(chrome.storage.sync.set).toHaveBeenCalledWith({
       uiConfig: {
@@ -102,7 +103,7 @@ describe('ui-config-storage', () => {
         scale: 1.8,
       },
       [LEGACY_SYNC_UI_SCALE_KEY]: 1.8,
-    })
+    }, expect.any(Function))
   })
 
   it('旧版互換scaleをuiConfigとsnapshotの両方に保持する', () => {
@@ -115,7 +116,7 @@ describe('ui-config-storage', () => {
       }
     )
 
-    saveSyncedUIConfig({ ...DEFAULT_UI_CONFIG, displayEnabled: false })
+    persistSyncedUIConfig({ ...DEFAULT_UI_CONFIG, displayEnabled: false })
 
     expect(chrome.storage.sync.set).toHaveBeenCalledWith({
       uiConfig: {
@@ -123,14 +124,20 @@ describe('ui-config-storage', () => {
         scale: 1.6,
       },
       [LEGACY_SYNC_UI_SCALE_KEY]: 1.6,
-    })
+    }, expect.any(Function))
   })
 
-  it('遅れて完了した古い同期readで新しい設定を巻き戻さない', () => {
+  it('同期read/writeを直列化して新しい設定を古いwriteで巻き戻さない', () => {
     const pendingReads: Array<(result: Record<string, unknown>) => void> = []
+    const pendingWrites: Array<() => void> = []
     ;(chrome.storage.sync.get as jest.Mock).mockImplementation(
       (_keys, callback) => {
         pendingReads.push(callback)
+      }
+    )
+    ;(chrome.storage.sync.set as jest.Mock).mockImplementation(
+      (_items, callback) => {
+        pendingWrites.push(callback)
       }
     )
     const olderConfig = {
@@ -142,23 +149,45 @@ describe('ui-config-storage', () => {
       hudDisplayMode: 'full' as const,
     }
 
-    saveSyncedUIConfig(olderConfig)
-    saveSyncedUIConfig(newerConfig)
-    pendingReads[1]!({
-      uiConfig: { ...DEFAULT_UI_CONFIG, scale: 1.7 },
-    })
+    persistSyncedUIConfig(olderConfig)
+    persistSyncedUIConfig(newerConfig)
+    expect(pendingReads).toHaveLength(1)
+
     pendingReads[0]!({
       uiConfig: { ...DEFAULT_UI_CONFIG, scale: 1.7 },
     })
-
     expect(chrome.storage.sync.set).toHaveBeenCalledTimes(1)
-    expect(chrome.storage.sync.set).toHaveBeenCalledWith({
+    expect(pendingReads).toHaveLength(1)
+
+    pendingWrites[0]!()
+    expect(pendingReads).toHaveLength(2)
+    pendingReads[1]!({
+      uiConfig: { ...DEFAULT_UI_CONFIG, scale: 1.7 },
+    })
+    pendingWrites[1]!()
+
+    expect(chrome.storage.sync.set).toHaveBeenCalledTimes(2)
+    expect(chrome.storage.sync.set).toHaveBeenLastCalledWith({
       uiConfig: {
         ...toSyncedUIConfig(newerConfig),
         scale: 1.7,
       },
       [LEGACY_SYNC_UI_SCALE_KEY]: 1.7,
-    })
+    }, expect.any(Function))
+  })
+
+  it('同期設定保存をpersistent backgroundへ即時に委譲する', () => {
+    ;(chrome.runtime.sendMessage as jest.Mock).mockImplementationOnce(
+      (_message, callback) => callback({ success: true })
+    )
+    const config = { ...DEFAULT_UI_CONFIG, displayEnabled: false }
+
+    saveSyncedUIConfig(config)
+
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+      { action: 'setSyncedUIConfig', config },
+      expect.any(Function)
+    )
   })
 
   it('scaleはlocalへ保存する', () => {

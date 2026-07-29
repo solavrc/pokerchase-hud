@@ -23,6 +23,7 @@ import {
   isValidHudPositionId,
   isValidUIScale,
   LEGACY_SYNC_UI_SCALE_KEY,
+  persistSyncedUIConfig,
   resolveLocalUIScale,
   UI_SCALE_STORAGE_KEY,
 } from '../utils/ui-config-storage'
@@ -86,7 +87,14 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
   }
 
   chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.runtime.MessageSender, sendResponse: (response: MessageResponse) => void) => {
-    if (request.action === 'getDeviceUILayout') {
+    if (request.action === 'setSyncedUIConfig') {
+      persistSyncedUIConfig(request.config, success => {
+        sendResponse(success
+          ? { success: true }
+          : { success: false, error: 'Failed to save synchronized UI config' })
+      })
+      return true
+    } else if (request.action === 'getDeviceUILayout') {
       if (request.seatIndex !== undefined && !isValidHudPositionId(request.seatIndex)) {
         sendResponse({ success: false, error: 'Invalid HUD seat index' })
         return true

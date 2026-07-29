@@ -18,7 +18,12 @@ export const hudPositionMigrationStorageKey = (seatIndex: number): string =>
   `hudPositionMigrated_${seatIndex}`
 
 type SyncedUIConfig = Omit<UIConfig, 'scale'>
-let syncedUIConfigWriteGeneration = 0
+type PendingSyncedUIConfigWrite = {
+  config: UIConfig
+  callback?: (success: boolean) => void
+}
+const pendingSyncedUIConfigWrites: PendingSyncedUIConfigWrite[] = []
+let syncedUIConfigWriteInProgress = false
 
 export const isValidUIScale = (value: unknown): value is number =>
   typeof value === 'number' &&
@@ -71,13 +76,26 @@ export const toSyncedUIConfig = (config: UIConfig): SyncedUIConfig => {
   return syncedConfig
 }
 
-export const saveSyncedUIConfig = (config: UIConfig): void => {
-  const writeGeneration = ++syncedUIConfigWriteGeneration
-  const syncedConfig = toSyncedUIConfig(config)
+const processNextSyncedUIConfigWrite = (): void => {
+  if (syncedUIConfigWriteInProgress) return
+  const pendingWrite = pendingSyncedUIConfigWrites.shift()
+  if (!pendingWrite) return
+
+  syncedUIConfigWriteInProgress = true
+  const finish = (success: boolean): void => {
+    syncedUIConfigWriteInProgress = false
+    pendingWrite.callback?.(success)
+    processNextSyncedUIConfigWrite()
+  }
+  const syncedConfig = toSyncedUIConfig(pendingWrite.config)
   chrome.storage.sync.get(
     ['uiConfig', LEGACY_SYNC_UI_SCALE_KEY],
     (result: Record<string, unknown>) => {
-      if (writeGeneration !== syncedUIConfigWriteGeneration) return
+      const readError = chrome.runtime.lastError
+      if (readError) {
+        finish(false)
+        return
+      }
 
       const currentConfig = result.uiConfig as { scale?: unknown } | undefined
       const liveLegacyScale = currentConfig?.scale
@@ -99,9 +117,31 @@ export const saveSyncedUIConfig = (config: UIConfig): void => {
         ...(compatibilityScale !== undefined
           ? { [LEGACY_SYNC_UI_SCALE_KEY]: compatibilityScale }
           : {}),
+      }, () => {
+        finish(!chrome.runtime.lastError)
       })
     }
   )
+}
+
+export const persistSyncedUIConfig = (
+  config: UIConfig,
+  callback?: (success: boolean) => void
+): void => {
+  pendingSyncedUIConfigWrites.push({ config, callback })
+  processNextSyncedUIConfigWrite()
+}
+
+export const saveSyncedUIConfig = (config: UIConfig): void => {
+  try {
+    chrome.runtime.sendMessage(
+      { action: 'setSyncedUIConfig', config },
+      consumeRuntimeError
+    )
+  } catch {
+    // The UI already broadcasts optimistically. A future storage event or
+    // reload will reconcile if the persistent background cannot be reached.
+  }
 }
 
 const consumeRuntimeError = (): void => {

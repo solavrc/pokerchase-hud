@@ -44,20 +44,17 @@ export const UIScaleSection = ({
   }
 
   const saveShortcut = useCallback((shortcut: UIConfig['toggleShortcut']) => {
-    // 別タブやHUD側が更新したdisplayEnabled等を、Popupの古いstateで巻き戻さない。
-    chrome.storage.sync.get('uiConfig', (result: Record<string, UIConfig | undefined>) => {
-      const nextConfig = {
-        ...DEFAULT_UI_CONFIG,
-        ...(result.uiConfig ?? uiConfig),
-        // A legacy synchronized uiConfig may still contain scale. The current
-        // device's local value must remain authoritative.
-        scale: uiConfig.scale,
-        toggleShortcut: shortcut,
-      }
-      setUIConfig(nextConfig)
-      saveSyncedUIConfig(nextConfig)
-      broadcastUIConfig(nextConfig)
-    })
+    // Popup subscribes to synchronized changes while open, so its state is the
+    // latest available full config. Queue persistence immediately before the
+    // action-popup context can be destroyed.
+    const nextConfig = {
+      ...DEFAULT_UI_CONFIG,
+      ...uiConfig,
+      toggleShortcut: shortcut,
+    }
+    setUIConfig(nextConfig)
+    saveSyncedUIConfig(nextConfig)
+    broadcastUIConfig(nextConfig)
   }, [setUIConfig, uiConfig])
 
   const handleShortcutKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
