@@ -90,7 +90,7 @@ gitignored** build at `e2e/.build/extension/` that is never shipped:
    Prepending (not appending) matters: it becomes `matches[0]`, so
    `POKER_CHASE_ORIGIN` resolves to the fixture origin in this build. The
    production match is kept as a second entry (additive).
-2. `esbuild.config.ts` gained two env vars, both unset (and therefore
+2. `scripts/build-extension.ts` accepts two env vars, both unset (and therefore
    inert) during a normal `npm run build`:
    - `E2E_OUTDIR` -- build into this directory instead of `dist/`.
    - `E2E_MANIFEST` -- redirect every `manifest.json` import esbuild

@@ -1,7 +1,7 @@
 # AGENTS.md — PokerChase HUD
 
 Canonical instructions for all coding agents (Codex CLI, GitHub Codex review,
-Claude Code — which loads this via the `CLAUDE.md` symlink). This file is the
+Claude Code — which loads this through the `CLAUDE.md` import file). This file is the
 single source of truth for agent guidance; deep event semantics live in
 [docs/api-events.md](docs/api-events.md) and design rationale in
 [docs/architecture.md](docs/architecture.md).
@@ -690,13 +690,13 @@ sola-approved mechanism to get users onto a fixed/current version without waitin
 **2. Remote minimum-version gate / kill switch (`src/services/min-version-gate.ts`)**
 
 - **Fetch shape**: unauthenticated `GET https://firestore.googleapis.com/v1/projects/pokerchase-hud/databases/(default)/documents/config/client?key=<firebaseConfig.apiKey>` — same REST base URL shape as `firestore-backup-service.ts`'s `baseUrl`, but with the public API key in the query string instead of an `Authorization: Bearer` header (public-read doc, no signed-in user required).
-- **Firestore rule**: `firestore.rules` adds `match /config/client { allow read: if true; allow write: if false; }` — public read of exactly this one doc, nothing else loosened.
+- **Firestore rule**: `firebase/firestore.rules` adds `match /config/client { allow read: if true; allow write: if false; }` — public read of exactly this one doc, nothing else loosened.
 - **Fail-open matrix** (every path returns `{supported: true}` and logs one `console.warn`): network/fetch error, non-OK HTTP status (incl. 404 = doc not created yet), invalid JSON body, missing `minSupportedVersion` field, non-numeric-dotted version string (comparator returns `null` from `src/utils/version-compare.ts`'s `compareVersions()`, `isVersionBelow()` treats `null` as "not below"). The gate can only ever make the extension *more* restrictive when explicitly configured — never brick it by omission or misconfiguration.
 - **Cache**: 12h TTL in `chrome.storage.local` (`MIN_VERSION_GATE_STORAGE_KEY = 'minVersionGateState'`), checked once on SW startup (`background.ts`) so normal operation never re-fetches on every wake.
 - **Enforcement**: `AutoSyncService.performSync()` is the single choke point all sync entry points funnel through (manual sync, `onGameSessionEnd`/`onNewSessionStart` triggers, `initialize()`'s first-time sync) — it calls `isCloudSyncBlockedByMinVersionGate()` and, if blocked, sets `syncState.error` and returns without syncing. **The HUD keeps working** — stats are computed entirely from local IndexedDB, so this only ever stops the cloud round-trip, never the overlay.
 - **Popup UI**: same `UpdateSection.tsx`, an `error`-severity banner: 「このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます」 + a 「今すぐ適用」 button that reuses the exact same `applyPendingUpdate` → `applyUpdateNow()` reload path as the auto-apply feature above (best-effort: only actually reloads onto a newer version if Chrome has already downloaded one).
 
-**Owner follow-ups** (not automatable from an agent session): deploy `firestore.rules` (`npm run firebase:deploy:rules`) once the Firebase CLI is authenticated interactively, and create the `config/client` document (e.g. `minSupportedVersion: "5.0.0"` as a starting floor) via the Firebase Console or an authenticated Admin SDK script — client writes to this doc are rejected by rule (`allow write: if false`), so it cannot be seeded from the extension or an unauthenticated script. Until the doc exists, the gate fails open (everyone stays "supported") — this is safe by design, not a broken state.
+**Owner follow-ups** (not automatable from an agent session): deploy `firebase/firestore.rules` (`npm run firebase:deploy:rules`) once the Firebase CLI is authenticated interactively, and create the `config/client` document (e.g. `minSupportedVersion: "5.0.0"` as a starting floor) via the Firebase Console or an authenticated Admin SDK script — client writes to this doc are rejected by rule (`allow write: if false`), so it cannot be seeded from the extension or an unauthenticated script. Until the doc exists, the gate fails open (everyone stays "supported") — this is safe by design, not a broken state.
 
 ### What's New (per-version release notes)
 

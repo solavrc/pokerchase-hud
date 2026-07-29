@@ -76,7 +76,7 @@ so visual changes are shared with the extension rather than duplicated.
 
 ## Architecture
 
-<!-- Editable source: README.drawio (the PNG also embeds the draw.io XML). -->
+<!-- Editable draw.io XML is embedded directly in the PNG. -->
 ![Architecture Diagram](README.drawio.png)
 
 ## Documentation
