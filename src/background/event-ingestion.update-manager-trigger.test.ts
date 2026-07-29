@@ -78,6 +78,37 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     expect(markSessionInactiveSpy).not.toHaveBeenCalled()
   })
 
+  test('an explicit EVT_ENTRY_QUEUED error response does not mark the session active', async () => {
+    const entryError = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 2100,
+      Code: 5205,
+      Error: {
+        Status: 1,
+        Message: 'text_sync_error_message_code_5205',
+        AddParam: '',
+        Replaces: []
+      },
+      BattleType: 0,
+      Id: '',
+      IsRetire: false
+    }
+    await onMessageHandler(entryError)
+
+    expect(markSessionActiveSpy).not.toHaveBeenCalled()
+    expect(markSessionInactiveSpy).not.toHaveBeenCalled()
+  })
+
+  test('a malformed EVT_ENTRY_QUEUED without Code still marks active fail-closed', async () => {
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 2200
+    })
+
+    expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
+    expect(markSessionInactiveSpy).not.toHaveBeenCalled()
+  })
+
   test('EVT_SESSION_RESULTS (309) marks the session inactive and re-checks the pending update', async () => {
     const sessionResultsEvent = {
       ApiTypeId: ApiType.EVT_SESSION_RESULTS,

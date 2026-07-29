@@ -125,4 +125,38 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
 
     expect(await db.phases.get([FIRST_HAND_ID, PhaseType.FLOP])).toBeUndefined()
   })
+
+  test('does not let a failed 201 overwrite the last successful session during cloud rebuild', async () => {
+    await db.apiEvents.bulkAdd([
+      {
+        ApiTypeId: 201,
+        Code: 0,
+        BattleType: BattleType.TOURNAMENT,
+        Id: '6078',
+        IsRetire: false,
+        timestamp: 100,
+        sequence: 0
+      },
+      {
+        ApiTypeId: 201,
+        Code: 5205,
+        Error: {
+          Status: 1,
+          Message: 'text_sync_error_message_code_5205',
+          AddParam: '',
+          Replaces: []
+        },
+        BattleType: BattleType.SIT_AND_GO,
+        Id: '',
+        IsRetire: false,
+        timestamp: 200,
+        sequence: 0
+      }
+    ])
+
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.session.id).toBe('6078')
+    expect(service.session.battleType).toBe(BattleType.TOURNAMENT)
+  })
 })

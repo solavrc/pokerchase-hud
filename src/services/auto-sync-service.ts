@@ -1599,7 +1599,7 @@ export class AutoSyncService {
     if (event.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
       if (typeof service.endSession === 'function') service.endSession()
       else service.session.reset()
-    } else if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
+    } else if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED) && event.Code === 0) {
       if (typeof service.startSession === 'function') {
         service.startSession(event.Id, event.BattleType, event.timestamp ?? Date.now())
       } else {

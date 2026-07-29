@@ -211,6 +211,16 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
 }
 
 /**
+ * 201は参加成功/失敗でApiTypeIdを共有する。明示的な非0 Codeだけを
+ * 失敗として除外し、Code自体が欠落した未知payloadは従来通りfail-closedで
+ * ACTIVE扱いする（schema変更時にゲーム中reloadを許さないため）。
+ */
+const isExplicitEntryFailure = (message: ApiMessage | { type: string }): boolean => {
+  const code = (message as { Code?: unknown }).Code
+  return typeof code === 'number' && code !== 0
+}
+
+/**
  * 生メッセージの数値ApiTypeIdだけを見て、セッションのACTIVE/INACTIVE状態を
  * 判定し、該当すれば`markSessionActive()`/`markSessionInactive()`を呼ぶ。
  *
@@ -224,7 +234,8 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
  * 通り、308の欠落は正常系のバリアント（観測ギャップ）であり、
  * 「308が来ない試合開始」は普通に起こる。以下のいずれかを観測したら
  * 即active化する:
- *   - EVT_ENTRY_QUEUED(201): 着席（新セッション/新テーブルの入口）
+ *   - EVT_ENTRY_QUEUED(201): 着席（新セッション/新テーブルの入口）。
+ *     ただしCodeが明示的に非0の参加失敗応答は除外
  *   - EVT_DEAL(303, Player在席時のみ): ハンド進行中の最も強いシグナル
  *     （観戦モード=Playerフィールド自体が無い場合は除外——P2, codex
  *     レビュー指摘。docs/api-events.md「EVT_DEAL: Playerフィールドの
@@ -258,7 +269,10 @@ const applySessionActivity = (rawApiTypeId: unknown, message: ApiMessage | { typ
     markSessionInactive()
     return
   }
-  if (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED || rawApiTypeId === ApiType.EVT_SESSION_DETAILS) {
+  if (
+    (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED && !isExplicitEntryFailure(message)) ||
+    rawApiTypeId === ApiType.EVT_SESSION_DETAILS
+  ) {
     markSessionActive()
     return
   }
@@ -469,7 +483,10 @@ const processEvent = async (
     recheckPendingUpdate().catch(err =>
       console.error('[background] Pending update recheck on entry cancellation failed:', err)
     )
-  } else if (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED || rawApiTypeId === ApiType.EVT_SESSION_DETAILS) {
+  } else if (
+    (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED && !isExplicitEntryFailure(message)) ||
+    rawApiTypeId === ApiType.EVT_SESSION_DETAILS
+  ) {
     // フォールバックトリガー（docs/postmortems/2026-07-session-results-drop.md
     // 再発防止#3): 309単一トリガーのSPOF対策。新セッション開始時点は
     // 進行中ハンドが存在しない安全なタイミングなので、ここでも同じ閾値判定
@@ -512,7 +529,7 @@ const processEvent = async (
     return
   }
 
-  if (data.ApiTypeId === ApiType.EVT_ENTRY_QUEUED) {
+  if (data.ApiTypeId === ApiType.EVT_ENTRY_QUEUED && data.Code === 0) {
     sessionOrigins.start(
       originKey,
       data.Id,

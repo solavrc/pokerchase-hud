@@ -47,6 +47,34 @@ API イベントは HUD の主要データソース。WebSocket 経由で論理�
 | `EVT_DEAL_ROUND` | 305 | 新ストリート（フロップ/ターン/リバー） | `CommunityCards[]`, `Progress` |
 | `EVT_HAND_RESULTS` | 306 | ハンド完了、勝者決定 | `HandId`, `Results[]`, `Pot` |
 
+### フレンド・通知イベント
+
+対局統計には投入しないが、既知スキーマとして検証し Raw Event Lake に保存する補助イベント。
+
+| イベント | ID | 目的 | 主要フィールド |
+|---------|-----|------|--------------|
+| フレンド: オンラインステータス | 1304 | フレンドの接続状態通知 | `UserId`, `Status` |
+| フレンド: メッセージ受信（暫定分類） | 1305 | フレンドに関する受信通知 | `FriendId` |
+
+`1305` は2026-07-29にエクスポートした実ログで3件を観測し、3件とも
+`ApiTypeId`, `FriendId`, `timestamp`, `sequence` だけを持っていた。周辺イベントと
+`FriendId`の性質から「フレンド: メッセージ受信」と分類しているが、メッセージ本文や
+通知種別はpayloadに含まれず、名称は暫定である。HUDでは既知の非対局イベントとして
+保存するだけで、ハンド履歴・統計・セッション状態には流さない。
+
+### 成功イベントと同じApiTypeIdを使うエラー応答
+
+`201`（参加申込）と`202`（アクション完了）は、`Code=0`の成功応答だけでなく、
+非0の`Code`と`Error { Status, Message, AddParam, Replaces }`を持つエラー応答にも
+同じApiTypeIdが使われる。2026-07-29の実ログでは`201/Code=5205`と
+`202/Code=5402`を各1件観測した。
+
+これらは既知スキーマとしてRaw Event Lakeに保存する一方、非0 Codeの201を
+セッション開始とは解釈しない。ハンド履歴・統計への投入、keepalive開始、
+新セッション時の自動同期トリガーからも除外する。なお、201の`Code`自体が欠落する
+未知のschema変更時は、ゲーム中の誤reloadを避けるため従来通りfail-closedで
+セッション開始シグナルとして扱う。
+
 ## 典型的なセッションのイベントシーケンス
 
 セッション = 1ゲームの開始から終了まで（トーナメント1回分、リングゲーム1セッション分）。
@@ -169,6 +197,11 @@ EVT_HAND_RESULTS.Results[].UserId             ──► UserId 直接参照（Se
 | `EVT_DEAL` | `SeatUserIds`, `Game` | ハンドごとの席マッピングとブラインド情報 |
 | `EVT_HAND_RESULTS` | `HandId` | ユニークなハンド識別子（ここでのみ取得可能） |
 | `EVT_SESSION_RESULTS` | `Ranking`, `RankReward` | 最終順位とランク変動。`RankReward` はランク戦 SNG（BattleType=0）のみで、MTT 含む他の BattleType には出現しない（BQ実測: BattleType=0 は 643/661 セッションに存在、他タイプ 260 セッションで 0 件）。フィールドファミリーごとの出現条件は下記「RankReward フィールドの意味論」参照 |
+
+MTTでは、`EVT_DEAL.MyRanking.IsResetTable`（テーブル再編成フラグ）と
+`EVT_SESSION_DETAILS.TournamentRule.TableMaxPlayerNum`（1テーブルの最大人数）も
+観測される。2026-07-29の実ログでは前者は157件すべて`false`、後者は10件すべて`6`。
+現時点では表示・集計には使わず、将来のMTT解析で失われないよう型付きpayloadに保持する。
 
 ### 主要な制約
 

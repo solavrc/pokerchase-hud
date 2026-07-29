@@ -46,8 +46,10 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           // 無効なので、ここでリセットしないと直後のEVT_ACTIONが席不一致とみなされ、
           // 誤ってバッファがクリアされてしまう
           // （実データで933件中785件の不一致がこのケース、ハンド損失2.9%の主因）。
-          this.service.startSession(event.Id, event.BattleType, event.timestamp ?? Date.now())
-          this.progress = undefined
+          if (event.Code === 0) {
+            this.service.startSession(event.Id, event.BattleType, event.timestamp ?? Date.now())
+            this.progress = undefined
+          }
           break
         case ApiType.EVT_SESSION_DETAILS:
           this.service.session.setName(event.Name)
