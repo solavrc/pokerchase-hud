@@ -206,6 +206,13 @@ export interface SetDeviceHudPositionMessage {
 export interface SetSyncedUIConfigMessage {
   action: 'setSyncedUIConfig'
   config: UIConfig
+  patch?: never
+}
+
+export interface PatchSyncedUIConfigMessage {
+  action: 'setSyncedUIConfig'
+  config?: never
+  patch: Pick<UIConfig, 'toggleShortcut'>
 }
 
 // Firebase backup messages
@@ -436,6 +443,7 @@ export type ChromeMessage =
   | SetDeviceUIScaleMessage
   | SetDeviceHudPositionMessage
   | SetSyncedUIConfigMessage
+  | PatchSyncedUIConfigMessage
   | FirebaseAuthStatusMessage
   | FirebaseSignInMessage
   | FirebaseSignOutMessage

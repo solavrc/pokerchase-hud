@@ -78,6 +78,39 @@ describe('message-router device-local UI layout', () => {
     })
   })
 
+  it('重なったscale保存を受信順に直列化する', async () => {
+    const storageSet = chrome.storage.local.set as jest.Mock
+    const defaultSet = storageSet.getMockImplementation()!
+    const pendingWrites: Array<() => void> = []
+    storageSet
+      .mockImplementationOnce((items, callback) => {
+        pendingWrites.push(() => defaultSet(items, callback))
+      })
+      .mockImplementationOnce((items, callback) => {
+        pendingWrites.push(() => defaultSet(items, callback))
+      })
+    const firstResponse = jest.fn()
+    const secondResponse = jest.fn()
+
+    listener({ action: 'setDeviceUIScale', scale: 1.1 }, {}, firstResponse)
+    listener({ action: 'setDeviceUIScale', scale: 1.2 }, {}, secondResponse)
+
+    expect(pendingWrites).toHaveLength(1)
+    expect(firstResponse).not.toHaveBeenCalled()
+    expect(secondResponse).not.toHaveBeenCalled()
+
+    pendingWrites[0]!()
+    expect(firstResponse).toHaveBeenCalledWith({ success: true })
+    expect(pendingWrites).toHaveLength(2)
+    expect(secondResponse).not.toHaveBeenCalled()
+
+    pendingWrites[1]!()
+    expect(secondResponse).toHaveBeenCalledWith({ success: true })
+    expect(await chrome.storage.local.get(UI_SCALE_STORAGE_KEY)).toEqual({
+      [UI_SCALE_STORAGE_KEY]: 1.2,
+    })
+  })
+
   it('リアルタイムHUDの位置名前空間も保存・読込できる', async () => {
     const position = { top: '64%', left: '22%' }
     const positionResponse = jest.fn()
@@ -145,6 +178,42 @@ describe('message-router device-local UI layout', () => {
     expect(sendResponse).toHaveBeenCalledWith({
       success: false,
       error: 'Failed to save synchronized UI config',
+    })
+  })
+
+  it('ショートカットpatchを保存時点の最新同期設定へmergeする', async () => {
+    await chrome.storage.sync.set({
+      uiConfig: {
+        ...DEFAULT_UI_CONFIG,
+        scale: 1.6,
+        displayEnabled: false,
+        hudColorCoding: false,
+      },
+    })
+    const sendResponse = jest.fn()
+    const toggleShortcut = {
+      code: 'KeyY',
+      key: 'y',
+      ctrl: false,
+      alt: false,
+      shift: true,
+      meta: false,
+    }
+
+    listener({
+      action: 'setSyncedUIConfig',
+      patch: { toggleShortcut },
+    }, {}, sendResponse)
+
+    expect(sendResponse).toHaveBeenCalledWith({ success: true })
+    expect(await chrome.storage.sync.get('uiConfig')).toEqual({
+      uiConfig: {
+        ...DEFAULT_UI_CONFIG,
+        scale: 1.6,
+        displayEnabled: false,
+        hudColorCoding: false,
+        toggleShortcut,
+      },
     })
   })
 
