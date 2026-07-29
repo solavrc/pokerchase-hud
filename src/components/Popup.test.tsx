@@ -343,6 +343,43 @@ describe('Popup', () => {
     })
   })
 
+  it('保存済みuiConfigの初期読込が終わるまで設定操作を有効にしない', async () => {
+    syncData.uiConfig = {
+      ...DEFAULT_UI_CONFIG,
+      scale: 1.4,
+      toggleShortcut: null,
+    }
+    let resolveUIConfigRead!: (result: Record<string, any>) => void
+    mockChromeStorageGet.mockImplementation((keys, callback) => {
+      if (keys === 'uiConfig') {
+        resolveUIConfigRead = callback
+        return
+      }
+      const keyList = Array.isArray(keys) ? keys : [keys]
+      callback(keyList.reduce(
+        (acc: Record<string, any>, key: string) => ({ ...acc, [key]: syncData[key] }),
+        {}
+      ))
+    })
+
+    render(<Popup />)
+    await waitFor(() => expect(resolveUIConfigRead).toBeDefined())
+
+    expect(screen.queryByText('サイズ:')).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox', {
+      name: 'HUD表示切り替えショートカット',
+    })).not.toBeInTheDocument()
+
+    act(() => resolveUIConfigRead({ uiConfig: syncData.uiConfig }))
+
+    await waitFor(() => {
+      expect(screen.getByText('140%')).toBeInTheDocument()
+      expect(screen.getByRole('textbox', {
+        name: 'HUD表示切り替えショートカット',
+      })).toHaveValue('未設定')
+    })
+  })
+
   it('外部のuiConfig変更を開いたまま反映し、後続の設定変更で巻き戻さない', async () => {
     render(<Popup />)
     await waitForAsyncOperations()

@@ -71,4 +71,32 @@ describe('keyboard shortcuts', () => {
       meta: false,
     })).toBe('Ctrl + Z')
   })
+
+  test.each([
+    { code: 'KeyW', key: 'w', ctrlKey: true, altKey: false, shiftKey: false, metaKey: false },
+    { code: 'KeyQ', key: 'q', ctrlKey: false, altKey: false, shiftKey: false, metaKey: true },
+    { code: 'F4', key: 'F4', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false },
+    { code: 'F5', key: 'F5', ctrlKey: false, altKey: false, shiftKey: false, metaKey: false },
+  ])('rejects browser or OS reserved combinations: $code', event => {
+    expect(shortcutFromKeyboardEvent(event)).toBeNull()
+  })
+
+  test('uses an explicit numpad label for physical keypad keys', () => {
+    expect(formatShortcut({
+      code: 'Numpad1',
+      key: '1',
+      ctrl: true,
+      alt: false,
+      shift: false,
+      meta: false,
+    })).toBe('Ctrl + Numpad 1')
+    expect(formatShortcut({
+      code: 'NumpadEnter',
+      key: 'Enter',
+      ctrl: false,
+      alt: false,
+      shift: true,
+      meta: false,
+    })).toBe('Shift + Numpad Enter')
+  })
 })

@@ -7,6 +7,34 @@ const MODIFIER_CODES = new Set([
   'ShiftLeft', 'ShiftRight',
 ])
 
+const isBrowserReservedShortcut = (
+  event: Pick<KeyboardEvent, 'code' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey'>
+): boolean => {
+  const { code, ctrlKey, altKey, shiftKey, metaKey } = event
+
+  // Browser/OS commands that page-level preventDefault cannot reliably
+  // replace. Keep this deliberately code-based so it is layout-independent.
+  if (altKey && (code === 'F4' || code === 'ArrowLeft' || code === 'ArrowRight' || code === 'Home')) {
+    return true
+  }
+  if (metaKey && !ctrlKey && !altKey) {
+    if (['KeyQ', 'KeyW'].includes(code)) return true
+    if (!shiftKey && ['KeyH', 'KeyM', 'Comma'].includes(code)) return true
+  }
+
+  const primaryKey = ctrlKey || metaKey
+  if (primaryKey && !altKey) {
+    if (['KeyW', 'KeyQ', 'KeyT', 'KeyN', 'KeyR', 'KeyL', 'Tab'].includes(code)) return true
+    if (!shiftKey && ['KeyP', 'KeyS', 'KeyO', 'KeyD', 'KeyF', 'KeyH', 'KeyJ', 'KeyU'].includes(code)) {
+      return true
+    }
+    if (shiftKey && code === 'Delete') return true
+  }
+
+  return !ctrlKey && !altKey && !shiftKey && !metaKey &&
+    ['F1', 'F3', 'F5', 'F6', 'F10', 'F11', 'F12'].includes(code)
+}
+
 export const shortcutFromKeyboardEvent = (
   event: Pick<KeyboardEvent, 'code' | 'key' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey'>
 ): KeyboardShortcut | null => {
@@ -16,6 +44,7 @@ export const shortcutFromKeyboardEvent = (
   if (!isFunctionKey && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) {
     return null
   }
+  if (isBrowserReservedShortcut(event)) return null
 
   return {
     code: event.code,
@@ -39,6 +68,8 @@ export const matchesShortcut = (
 
 const displayKey = (shortcut: KeyboardShortcut): string => {
   if (/^F([1-9]|1[0-2])$/.test(shortcut.code)) return shortcut.code
+  const numpadDigit = shortcut.code.match(/^Numpad([0-9])$/)
+  if (numpadDigit) return `Numpad ${numpadDigit[1]}`
 
   const labels: Record<string, string> = {
     ArrowUp: '↑',
@@ -46,6 +77,14 @@ const displayKey = (shortcut: KeyboardShortcut): string => {
     ArrowLeft: '←',
     ArrowRight: '→',
     Space: 'Space',
+    NumpadEnter: 'Numpad Enter',
+    NumpadAdd: 'Numpad +',
+    NumpadSubtract: 'Numpad −',
+    NumpadMultiply: 'Numpad ×',
+    NumpadDivide: 'Numpad ÷',
+    NumpadDecimal: 'Numpad .',
+    NumpadEqual: 'Numpad =',
+    NumpadComma: 'Numpad ,',
   }
   const recordedKey = shortcut.key.length === 1 ? shortcut.key.toUpperCase() : shortcut.key
   return labels[shortcut.code] ?? recordedKey

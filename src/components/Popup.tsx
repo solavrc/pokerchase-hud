@@ -81,6 +81,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   const [pendingStatDisplayConfigs, setPendingStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
   const [hasUnsavedStatChanges, setHasUnsavedStatChanges] = useState<boolean>(false)
   const [uiConfig, setUIConfig] = useState<UIConfig>(DEFAULT_UI_CONFIG)
+  const [uiConfigLoaded, setUIConfigLoaded] = useState(false)
   const [popupThemeMode, setPopupThemeMode] = useState<PopupThemeMode>(
     initialPopupThemeMode ?? DEFAULT_POPUP_THEME_MODE
   )
@@ -124,6 +125,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
         ...DEFAULT_UI_CONFIG,
         ...nextUIConfig,
       })
+      setUIConfigLoaded(true)
     }
     chrome.storage.onChanged.addListener(handleUIConfigStorageChange)
     return () => chrome.storage.onChanged.removeListener(handleUIConfigStorageChange)
@@ -264,6 +266,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
             ...result.uiConfig,
           })
         }
+        setUIConfigLoaded(true)
       })
 
       // Load cached Firebase auth state first for instant rendering
@@ -550,16 +553,17 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
 
       {/* UI Display Controls */}
       <SectionCard>
-        <UIScaleSection
-          uiConfig={uiConfig}
-          setUIConfig={setUIConfig}
-        />
+        {uiConfigLoaded && <>
+          <UIScaleSection
+            uiConfig={uiConfig}
+            setUIConfig={setUIConfig}
+          />
 
-        <HudDisplaySection
-          uiConfig={uiConfig}
-          setUIConfig={setUIConfig}
-        />
-
+          <HudDisplaySection
+            uiConfig={uiConfig}
+            setUIConfig={setUIConfig}
+          />
+        </>}
       </SectionCard>
 
       <SectionCard>
