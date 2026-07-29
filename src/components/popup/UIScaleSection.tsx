@@ -1,4 +1,5 @@
 import Box from '@mui/material/Box'
+import Button from '@mui/material/Button'
 import IconButton from '@mui/material/IconButton'
 import TextField from '@mui/material/TextField'
 import ToggleButton from '@mui/material/ToggleButton'
@@ -9,9 +10,13 @@ import { DEFAULT_UI_CONFIG, type UIConfig } from '../../types/hand-log'
 import { formatShortcut, shortcutFromKeyboardEvent } from '../../utils/keyboard-shortcut'
 import {
   saveLocalUIScale,
+  resetHandLogLayout,
   saveSyncedUIConfig,
 } from '../../utils/ui-config-storage'
-import { broadcastUIConfig } from './broadcast-ui-config'
+import {
+  broadcastHandLogLayoutReset,
+  broadcastUIConfig,
+} from './broadcast-ui-config'
 
 interface UIScaleSectionProps {
   uiConfig: UIConfig
@@ -122,6 +127,23 @@ export const UIScaleSection = ({
         >
           +
         </IconButton>
+        <Button
+          size="small"
+          variant="text"
+          title="ハンドログの位置とサイズをリセット"
+          onClick={() => {
+            resetHandLogLayout(broadcastHandLogLayoutReset)
+          }}
+          sx={{
+            ml: 'auto',
+            px: 0.5,
+            minWidth: 0,
+            fontSize: '11px',
+            textTransform: 'none',
+          }}
+        >
+          位置とサイズをリセット
+        </Button>
       </Box>
 
       <Box sx={{ display: 'flex', width: '100%', justifyContent: 'flex-end', alignItems: 'center', gap: 0.75 }}>

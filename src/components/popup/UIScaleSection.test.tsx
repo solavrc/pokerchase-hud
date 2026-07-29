@@ -58,8 +58,25 @@ describe('UIScaleSection', () => {
     expect(screen.getByText('100%')).toBeInTheDocument()
     expect(screen.getByText('表示')).toBeInTheDocument()
     expect(screen.getByText('非表示')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '位置とサイズをリセット' })).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'HUD表示切り替えショートカット' }))
       .toHaveValue('Shift + H')
+  })
+
+  it('ハンドログの端末ローカル位置とサイズをリセットして開いているゲームへ反映する', async () => {
+    const user = userEvent.setup()
+    render(<UIScaleSection {...defaultProps} />)
+
+    await user.click(screen.getByRole('button', { name: '位置とサイズをリセット' }))
+
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      { action: 'resetDeviceHandLogLayout' },
+      expect.any(Function)
+    )
+    expect(mockTabsSendMessage).toHaveBeenCalledTimes(2)
+    expect(mockTabsSendMessage).toHaveBeenCalledWith(1, {
+      action: 'resetHandLogLayout',
+    })
   })
 
   it('省略される長いショートカットもtitleで完全表示する', () => {

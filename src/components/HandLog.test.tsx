@@ -35,6 +35,7 @@ jest.mock('react-window', () => {
 
 // Mock navigator.clipboard
 const mockWriteText = jest.fn()
+const mockChromeRuntimeSendMessage = chrome.runtime.sendMessage as jest.Mock
 
 describe('HandLog', () => {
   const mockEntries: HandLogEntry[] = [
@@ -72,6 +73,13 @@ describe('HandLog', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceHandLogLayout') {
+        callback({ success: true })
+      } else {
+        callback?.({ success: true })
+      }
+    })
     mockWriteText.mockResolvedValue(undefined)
     // Re-install the clipboard mock every test: `userEvent.setup()` (used by
     // the double-click test) unconditionally replaces `navigator.clipboard`
@@ -148,58 +156,194 @@ describe('HandLog', () => {
     expect(screen.getByText('Cleared!')).toBeInTheDocument()
   })
 
-  it('ホバー時に高さが拡張される', async () => {
+  it('ホバーしても高さを自動変更しない', () => {
     const { container } = render(<HandLog entries={mockEntries} />)
     const logContainer = container.firstChild as HTMLElement
-    
-    // 初期の高さを確認
-    expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
-    
-    // ホバー
+
     fireEvent.mouseEnter(logContainer)
-    
-    // 高さが拡張される（ウィンドウの高さの半分）
-    await waitFor(() => {
-      expect(logContainer.style.height).toBe(`${window.innerHeight / 2}px`)
-    })
-    
-    // ホバー解除
-    fireEvent.mouseLeave(logContainer)
-    
-    // 元の高さに戻る
-    await waitFor(() => {
-      expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
-    })
+
+    expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
   })
 
-  it('位置設定に基づいて配置される', () => {
-    const positions: Array<'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'> = [
-      'bottom-right',
-      'bottom-left',
-      'top-right',
-      'top-left',
-    ]
+  it('右下グリップの本体をドラッグして移動し端末ローカルへ保存する', () => {
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+    logContainer.getBoundingClientRect = jest.fn(() => ({
+      left: 500,
+      top: 400,
+      width: 400,
+      height: 100,
+      right: 900,
+      bottom: 500,
+      x: 500,
+      y: 400,
+      toJSON: () => {},
+    }))
 
-    positions.forEach((position) => {
-      const { container, unmount } = render(
-        <HandLog entries={mockEntries} config={{ position }} />
-      )
-      const logContainer = container.firstChild as HTMLElement
-      
-      if (position.includes('bottom')) {
-        expect(logContainer.style.bottom).toBeTruthy()
-      } else {
-        expect(logContainer.style.top).toBeTruthy()
-      }
-      
-      if (position.includes('right')) {
-        expect(logContainer.style.right).toBeTruthy()
-      } else {
-        expect(logContainer.style.left).toBeTruthy()
-      }
-      
-      unmount()
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
+      button: 0,
+      clientX: 880,
+      clientY: 480,
     })
+    fireEvent.mouseMove(document, { clientX: 830, clientY: 450 })
+
+    expect(logContainer.style.left).toBe('450px')
+    expect(logContainer.style.top).toBe('370px')
+
+    fireEvent.mouseUp(document)
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      {
+        action: 'setDeviceHandLogLayout',
+        layout: { left: 450, top: 370, width: 400, height: 100 },
+      },
+      expect.any(Function)
+    )
+  })
+
+  it('ドラッグ開始後に届いた古い保存layoutで移動を巻き戻さない', () => {
+    let resolveInitialLoad!: (response: unknown) => void
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceHandLogLayout') {
+        resolveInitialLoad = callback
+      } else {
+        callback?.({ success: true })
+      }
+    })
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+    logContainer.getBoundingClientRect = jest.fn(() => ({
+      left: 500,
+      top: 400,
+      width: 400,
+      height: 100,
+      right: 900,
+      bottom: 500,
+      x: 500,
+      y: 400,
+      toJSON: () => {},
+    }))
+
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
+      button: 0,
+      clientX: 880,
+      clientY: 480,
+    })
+    fireEvent.mouseMove(document, { clientX: 830, clientY: 450 })
+    resolveInitialLoad({
+      success: true,
+      layout: { left: 20, top: 30, width: 600, height: 300 },
+    })
+
+    expect(logContainer.style.left).toBe('450px')
+    expect(logContainer.style.top).toBe('370px')
+    fireEvent.mouseUp(document)
+  })
+
+  it('移動中だけ右下グリップが画面外へ消えないようにする', () => {
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+    logContainer.getBoundingClientRect = jest.fn(() => ({
+      left: 500,
+      top: 400,
+      width: 400,
+      height: 100,
+      right: 900,
+      bottom: 500,
+      x: 500,
+      y: 400,
+      toJSON: () => {},
+    }))
+
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
+      button: 0,
+      clientX: 880,
+      clientY: 480,
+    })
+    fireEvent.mouseMove(document, { clientX: -2000, clientY: -2000 })
+
+    expect(logContainer.style.left).toBe('-372px')
+    expect(logContainer.style.top).toBe('-72px')
+    fireEvent.mouseUp(document)
+  })
+
+  it('同じグリップの右下角で縦横をリサイズし最小値だけを適用する', () => {
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+    logContainer.getBoundingClientRect = jest.fn(() => ({
+      left: 500,
+      top: 400,
+      width: 400,
+      height: 100,
+      right: 900,
+      bottom: 500,
+      x: 500,
+      y: 400,
+      toJSON: () => {},
+    }))
+    const resizeCorner = screen.getByTestId('hand-log-resize-corner')
+
+    fireEvent.mouseDown(resizeCorner, {
+      button: 0,
+      clientX: 900,
+      clientY: 500,
+    })
+    fireEvent.mouseMove(document, { clientX: 1900, clientY: 1500 })
+
+    expect(logContainer.style.width).toBe('1400px')
+    expect(logContainer.style.height).toBe('1100px')
+    fireEvent.mouseUp(document)
+
+    fireEvent.mouseDown(resizeCorner, {
+      button: 0,
+      clientX: 1900,
+      clientY: 1500,
+    })
+    fireEvent.mouseMove(document, { clientX: 0, clientY: 0 })
+
+    expect(logContainer.style.width).toBe('200px')
+    expect(logContainer.style.height).toBe('80px')
+  })
+
+  it('ポップアップからのリセットで既定の位置とサイズへ即時に戻す', () => {
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceHandLogLayout') {
+        callback({
+          success: true,
+          layout: { left: 120, top: 80, width: 520, height: 240 },
+        })
+      } else {
+        callback?.({ success: true })
+      }
+    })
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+
+    expect(logContainer.style.left).toBe('120px')
+    expect(logContainer.style.width).toBe('520px')
+
+    fireEvent(window, new CustomEvent('resetHandLogLayout'))
+
+    expect(logContainer.style.left).toBe('')
+    expect(logContainer.style.right).toBeTruthy()
+    expect(logContainer.style.width).toBe(`${DEFAULT_HAND_LOG_CONFIG.width}px`)
+    expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
+  })
+
+  it('旧sync configの位置とサイズを端末レイアウトへ流用しない', () => {
+    const { container } = render(
+      <HandLog
+        entries={mockEntries}
+        config={{ position: 'top-left', width: 580, height: 260 }}
+      />
+    )
+    const logContainer = container.firstChild as HTMLElement
+
+    expect(logContainer.style.bottom).toBeTruthy()
+    expect(logContainer.style.right).toBeTruthy()
+    expect(logContainer.style.top).toBe('')
+    expect(logContainer.style.left).toBe('')
+    expect(logContainer.style.width).toBe(`${DEFAULT_HAND_LOG_CONFIG.width}px`)
+    expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
   })
 
   it('スケールが適用される', () => {

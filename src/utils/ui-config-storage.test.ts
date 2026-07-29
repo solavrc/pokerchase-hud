@@ -1,10 +1,14 @@
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import {
   DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS,
+  isValidHandLogLayout,
   isValidHudPositionId,
+  loadHandLogLayout,
   mergeUIConfigWithLocalScale,
   loadLocalUIScale,
   resolveLocalUIScale,
+  resetHandLogLayout,
+  saveHandLogLayout,
   saveLocalUIScale,
   saveSyncedUIConfig,
   toSyncedUIConfig,
@@ -54,6 +58,27 @@ describe('ui-config-storage', () => {
     }
   )
 
+  it('有限座標と最小サイズ以上のハンドログlayoutだけを許可する', () => {
+    expect(isValidHandLogLayout({
+      left: -100,
+      top: 50,
+      width: 200,
+      height: 80,
+    })).toBe(true)
+    expect(isValidHandLogLayout({
+      left: Number.NaN,
+      top: 50,
+      width: 400,
+      height: 100,
+    })).toBe(false)
+    expect(isValidHandLogLayout({
+      left: 0,
+      top: 0,
+      width: 199,
+      height: 79,
+    })).toBe(false)
+  })
+
   it('同期payloadからscaleだけを除外する', () => {
     const config = {
       ...DEFAULT_UI_CONFIG,
@@ -101,6 +126,41 @@ describe('ui-config-storage', () => {
       expect.any(Function)
     )
     expect(callback).toHaveBeenCalledWith(1.6)
+  })
+
+  it('ハンドログlayoutをbackground経由で読込・保存・リセットする', () => {
+    const layout = { left: 40, top: 60, width: 480, height: 220 }
+    ;(chrome.runtime.sendMessage as jest.Mock)
+      .mockImplementationOnce((_message, callback) => {
+        callback({ success: true, layout })
+      })
+      .mockImplementation((_message, callback) => {
+        callback({ success: true })
+      })
+    const loadCallback = jest.fn()
+    const resetCallback = jest.fn()
+
+    loadHandLogLayout(loadCallback)
+    saveHandLogLayout(layout)
+    resetHandLogLayout(resetCallback)
+
+    expect(loadCallback).toHaveBeenCalledWith(layout)
+    expect(chrome.runtime.sendMessage).toHaveBeenNthCalledWith(
+      1,
+      { action: 'getDeviceHandLogLayout' },
+      expect.any(Function)
+    )
+    expect(chrome.runtime.sendMessage).toHaveBeenNthCalledWith(
+      2,
+      { action: 'setDeviceHandLogLayout', layout },
+      expect.any(Function)
+    )
+    expect(chrome.runtime.sendMessage).toHaveBeenNthCalledWith(
+      3,
+      { action: 'resetDeviceHandLogLayout' },
+      expect.any(Function)
+    )
+    expect(resetCallback).toHaveBeenCalled()
   })
 
   it('timeoutで描画を進め、遅れたbackground応答もscaleへ反映する', () => {

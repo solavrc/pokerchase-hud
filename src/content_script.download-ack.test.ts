@@ -118,4 +118,18 @@ describe('content_script.ts download message handlers send an explicit ack', () 
     expect(sendResponse).toHaveBeenCalledTimes(1)
     expect(sendResponse).toHaveBeenCalledWith({ success: false, error: 'createObjectURL boom' })
   })
+
+  test('resetHandLogLayout forwards the popup reset into the page', () => {
+    const dispatchEvent = jest.spyOn(window, 'dispatchEvent')
+
+    listener(
+      { action: 'resetHandLogLayout' },
+      {},
+      jest.fn()
+    )
+
+    expect(dispatchEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'resetHandLogLayout' })
+    )
+  })
 })

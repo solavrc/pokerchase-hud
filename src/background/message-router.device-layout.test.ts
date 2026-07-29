@@ -2,6 +2,7 @@ import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
 import type { ChromeMessage, MessageResponse } from '../types/messages'
 import {
+  HAND_LOG_LAYOUT_STORAGE_KEY,
   hudPositionStorageKey,
   LEGACY_SYNC_UI_SCALE_KEY,
   UI_SCALE_STORAGE_KEY,
@@ -97,6 +98,49 @@ describe('message-router device-local UI layout', () => {
       success: true,
       scale: 1,
       position,
+    })
+  })
+
+  it('ハンドログの位置とサイズを端末ローカルへ保存・読込する', async () => {
+    const layout = { left: -120, top: 40, width: 640, height: 320 }
+    const saveResponse = jest.fn()
+    const loadResponse = jest.fn()
+
+    listener({ action: 'setDeviceHandLogLayout', layout }, {}, saveResponse)
+    listener({ action: 'getDeviceHandLogLayout' }, {}, loadResponse)
+
+    expect(saveResponse).toHaveBeenCalledWith({ success: true })
+    expect(loadResponse).toHaveBeenCalledWith({
+      success: true,
+      layout,
+    })
+    expect(await chrome.storage.local.get(HAND_LOG_LAYOUT_STORAGE_KEY)).toEqual({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: layout,
+    })
+  })
+
+  it('ハンドログの端末ローカルlayoutだけを削除する', async () => {
+    const position = { top: '12%', left: '20%' }
+    await chrome.storage.local.set({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: {
+        left: 10,
+        top: 20,
+        width: 400,
+        height: 100,
+      },
+      [hudPositionStorageKey(0)]: position,
+    })
+    const resetResponse = jest.fn()
+
+    listener({ action: 'resetDeviceHandLogLayout' }, {}, resetResponse)
+
+    expect(resetResponse).toHaveBeenCalledWith({ success: true })
+    expect(await chrome.storage.local.get([
+      HAND_LOG_LAYOUT_STORAGE_KEY,
+      hudPositionStorageKey(0),
+    ])).toEqual({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: undefined,
+      [hudPositionStorageKey(0)]: position,
     })
   })
 
@@ -227,6 +271,14 @@ describe('message-router device-local UI layout', () => {
       action: 'setDeviceHudPosition',
       seatIndex: 1,
       position: { top: '-1%', left: '10%' },
+    },
+    {
+      action: 'setDeviceHandLogLayout',
+      layout: { left: 0, top: 0, width: 199, height: 80 },
+    },
+    {
+      action: 'setDeviceHandLogLayout',
+      layout: { left: 0, top: 0, width: 400, height: Number.NaN },
     },
   ] as ChromeMessage[])('不正なlayout書き込みを拒否する: %p', (message) => {
     const sendResponse = jest.fn()

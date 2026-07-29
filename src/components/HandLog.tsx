@@ -9,9 +9,16 @@ import {
   HandLogEntry,
   HandLogEntryType,
   HandLogConfig,
+  HandLogLayout,
   DEFAULT_HAND_LOG_CONFIG
 } from '../types/hand-log'
 import { formatHandLogEntries } from '../utils/hand-log-text'
+import {
+  HAND_LOG_MIN_HEIGHT,
+  HAND_LOG_MIN_WIDTH,
+  loadHandLogLayout,
+  saveHandLogLayout,
+} from '../utils/ui-config-storage'
 
 interface HandLogProps {
   entries: HandLogEntry[]
@@ -39,6 +46,21 @@ const getPositionStyles = (position: string): CSSProperties => {
       return defaultPosition
   }
 }
+
+const HAND_LOG_GRIP_SIZE = 28
+
+type HandLogInteractionMode = 'move' | 'resize'
+
+interface HandLogInteraction {
+  mode: HandLogInteractionMode
+  startX: number
+  startY: number
+  startLayout: HandLogLayout
+  moved: boolean
+}
+
+const clamp = (value: number, min: number, max: number): number =>
+  Math.min(max, Math.max(min, value))
 
 const entryTypeColors: Record<HandLogEntryType, string> = {
   [HandLogEntryType.HEADER]: '#ffffff',
@@ -146,14 +168,20 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
   const config = useMemo(() => ({ ...DEFAULT_HAND_LOG_CONFIG, ...userConfig }), [userConfig])
   const listRef = useListRef(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const [isHovered, setIsHovered] = useState(false)
   const [copiedHandId, setCopiedHandId] = useState<number | null>(null)
-  const [width, setWidth] = useState(config.width)
-  const [isResizing, setIsResizing] = useState(false)
-  const [isResizeHovered, setIsResizeHovered] = useState(false)
+  const [layout, setLayout] = useState<HandLogLayout | null>(null)
+  const layoutRef = useRef<HandLogLayout | null>(null)
+  const layoutEditGenerationRef = useRef(0)
+  const interactionRef = useRef<HandLogInteraction | null>(null)
+  const [interactionMode, setInteractionMode] = useState<HandLogInteractionMode | null>(null)
   const [showCopied, setShowCopied] = useState(false)
   const [showCleared, setShowCleared] = useState(false)
   const lastClickTimeRef = useRef<number>(0)
+
+  const applyLayout = useCallback((nextLayout: HandLogLayout | null) => {
+    layoutRef.current = nextLayout
+    setLayout(nextLayout)
+  }, [])
 
   // セパレーターを追加するためエントリを処理
   const processedItems = useMemo(() => {
@@ -194,14 +222,30 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     return lines * (config.fontSize * 1.2) + 2
   }, [processedItems, config.fontSize])
 
-  // ストレージから保存された幅を読み込み
+  // Position and size are device-local. Read once on mount; another tab does
+  // not need live synchronization because PokerChase permits one active login.
   useEffect(() => {
-    chrome.storage.sync.get('handLogConfig', (result: Record<string, any>) => {
-      if (result.handLogConfig?.width) {
-        setWidth(result.handLogConfig.width)
+    const loadGeneration = layoutEditGenerationRef.current
+    loadHandLogLayout(savedLayout => {
+      if (
+        savedLayout &&
+        layoutEditGenerationRef.current === loadGeneration
+      ) {
+        applyLayout(savedLayout)
       }
     })
-  }, [])
+  }, [applyLayout])
+
+  // The popup reset is delivered to open game tabs after the local value is
+  // removed. A reload is not required for the visible panel to recover.
+  useEffect(() => {
+    const handleReset = () => {
+      layoutEditGenerationRef.current += 1
+      applyLayout(null)
+    }
+    window.addEventListener('resetHandLogLayout', handleReset)
+    return () => window.removeEventListener('resetHandLogLayout', handleReset)
+  }, [applyLayout])
 
   // 新しいエントリが到着したとき自動的に下にスクロール
   useEffect(() => {
@@ -253,7 +297,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
 
   // コンテナクリックを処理 - ダブルクリックでクリア
   const handleContainerClick = useCallback((_e: React.MouseEvent) => {
-    if (isResizing) return
+    if (interactionMode) return
 
     const currentTime = Date.now()
     const timeSinceLastClick = currentTime - lastClickTimeRef.current
@@ -264,87 +308,171 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       setShowCleared(true)
       setTimeout(() => setShowCleared(false), 1500)
     }
-  }, [isResizing, onClearLog])
+  }, [interactionMode, onClearLog])
 
-  // リサイズを処理
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+  const handleInteractionStart = useCallback((
+    mode: HandLogInteractionMode,
+    e: React.MouseEvent
+  ) => {
+    if (e.button !== 0) return
     e.preventDefault()
-    setIsResizing(true)
+    e.stopPropagation()
 
-    const startX = e.clientX
-    const startWidth = width
-    const isRightSide = config.position.includes('right')
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!rect) return
 
-    document.body.style.cursor = 'ew-resize'
+    layoutEditGenerationRef.current += 1
+    const currentLayout = layoutRef.current
+    interactionRef.current = {
+      mode,
+      startX: e.clientX,
+      startY: e.clientY,
+      startLayout: {
+        left: currentLayout?.left ?? rect.left,
+        top: currentLayout?.top ?? rect.top,
+        width: currentLayout?.width ?? DEFAULT_HAND_LOG_CONFIG.width,
+        height: currentLayout?.height ?? DEFAULT_HAND_LOG_CONFIG.height,
+      },
+      moved: false,
+    }
+    setInteractionMode(mode)
+  }, [])
 
-    const handleMouseMove = (e: MouseEvent) => {
-      const deltaX = e.clientX - startX
-      const newWidth = isRightSide
-        ? Math.max(200, Math.min(600, startWidth - deltaX))
-        : Math.max(200, Math.min(600, startWidth + deltaX))
-      setWidth(newWidth)
+  useEffect(() => {
+    if (!interactionMode) return
+
+    const cursor = interactionMode === 'move' ? 'grabbing' : 'nwse-resize'
+    document.body.style.cursor = cursor
+    document.body.style.userSelect = 'none'
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const interaction = interactionRef.current
+      if (!interaction) return
+
+      const deltaX = event.clientX - interaction.startX
+      const deltaY = event.clientY - interaction.startY
+      const { startLayout } = interaction
+      let nextLayout: HandLogLayout
+
+      if (interaction.mode === 'move') {
+        const renderedWidth = startLayout.width * scale
+        const renderedHeight = startLayout.height * scale
+        nextLayout = {
+          ...startLayout,
+          // Clamp only while the user is moving the panel. This keeps the
+          // lower-right grip reachable without reacting to later viewport
+          // changes or rewriting the saved coordinates on load.
+          left: clamp(
+            startLayout.left + deltaX,
+            HAND_LOG_GRIP_SIZE - renderedWidth,
+            window.innerWidth - renderedWidth
+          ),
+          top: clamp(
+            startLayout.top + deltaY,
+            HAND_LOG_GRIP_SIZE - renderedHeight,
+            window.innerHeight - renderedHeight
+          ),
+        }
+      } else {
+        nextLayout = {
+          ...startLayout,
+          width: Math.max(
+            HAND_LOG_MIN_WIDTH,
+            startLayout.width + deltaX / scale
+          ),
+          height: Math.max(
+            HAND_LOG_MIN_HEIGHT,
+            startLayout.height + deltaY / scale
+          ),
+        }
+      }
+
+      interaction.moved = true
+      applyLayout(nextLayout)
     }
 
     const handleMouseUp = () => {
-      setIsResizing(false)
-      document.body.style.cursor = ''
-      document.removeEventListener('mousemove', handleMouseMove)
-      document.removeEventListener('mouseup', handleMouseUp)
-
-      chrome.storage.sync.get('handLogConfig', (result: Record<string, any>) => {
-        const updatedConfig = { ...result.handLogConfig, width }
-        chrome.storage.sync.set({ handLogConfig: updatedConfig })
-      })
+      const interaction = interactionRef.current
+      const finalLayout = layoutRef.current
+      if (interaction?.moved && finalLayout) {
+        saveHandLogLayout(finalLayout)
+      }
+      interactionRef.current = null
+      setInteractionMode(null)
     }
 
     document.addEventListener('mousemove', handleMouseMove)
     document.addEventListener('mouseup', handleMouseUp)
-  }, [width, config.position])
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+  }, [applyLayout, interactionMode, scale])
 
   // 無効の場合はレンダリングしない
   if (!config.enabled) return null
 
-  const isRightSide = config.position.includes('right')
-  const expandedHeight = isHovered ? window.innerHeight / 2 : config.height
+  const width = layout?.width ?? DEFAULT_HAND_LOG_CONFIG.width
+  const height = layout?.height ?? DEFAULT_HAND_LOG_CONFIG.height
 
   // コンテナスタイル
   const containerStyle: CSSProperties = {
     position: 'fixed',
-    ...getPositionStyles(config.position),
+    ...(layout
+      ? { left: layout.left, top: layout.top }
+      : getPositionStyles(DEFAULT_HAND_LOG_CONFIG.position)),
     width: width,
-    height: expandedHeight,
-    backgroundColor: `rgba(0, 0, 0, ${isHovered ? config.opacity + 0.1 : config.opacity})`,
+    height,
+    backgroundColor: `rgba(0, 0, 0, ${config.opacity})`,
     backdropFilter: 'blur(4px)',
     border: '1px solid rgba(255, 255, 255, 0.2)',
     borderRadius: '4px',
     padding: '0',
     transform: `scale(${scale})`,
-    transformOrigin: config.position.replace('-', ' '),
+    transformOrigin: layout
+      ? 'top left'
+      : DEFAULT_HAND_LOG_CONFIG.position.replace('-', ' '),
     overflowY: 'hidden',
     overflowX: 'hidden',
     fontFamily: 'Consolas, Monaco, "Courier New", monospace',
     fontSize: config.fontSize,
     color: '#ffffff',
-    zIndex: isHovered ? 10000 : 9998,
-    transition: 'height 0.3s ease, background-color 0.2s ease, width 0.1s ease',
-    boxShadow: isHovered ? '0 4px 12px rgba(0, 0, 0, 0.5)' : '0 2px 4px rgba(0, 0, 0, 0.3)',
+    zIndex: 9998,
+    boxShadow: '0 2px 4px rgba(0, 0, 0, 0.3)',
     cursor: 'pointer'
   }
 
-  // リサイズハンドルスタイル
-  const resizeHandleStyle: CSSProperties = {
+  // One visible lower-right control owns both interactions: drag the main
+  // surface to move, or drag its triangular outer corner to resize.
+  const gripStyle: CSSProperties = {
     position: 'absolute',
-    [isRightSide ? 'left' : 'right']: 0,
-    top: 0,
+    right: 0,
     bottom: 0,
-    width: '4px',
-    cursor: 'ew-resize',
-    backgroundColor: isResizing
-      ? 'rgba(255, 255, 255, 0.4)'
-      : isResizeHovered
-        ? 'rgba(255, 255, 255, 0.2)'
-        : 'transparent',
-    transition: 'background-color 0.2s ease'
+    width: HAND_LOG_GRIP_SIZE,
+    height: HAND_LOG_GRIP_SIZE,
+    cursor: interactionMode === 'move' ? 'grabbing' : 'grab',
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    borderTopLeftRadius: 6,
+    color: 'rgba(255, 255, 255, 0.75)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 15,
+    lineHeight: 1,
+    userSelect: 'none',
+    zIndex: 2,
+  }
+
+  const resizeCornerStyle: CSSProperties = {
+    position: 'absolute',
+    right: 0,
+    bottom: 0,
+    width: 12,
+    height: 12,
+    cursor: 'nwse-resize',
+    background: 'linear-gradient(135deg, transparent 48%, rgba(255, 255, 255, 0.9) 50%)',
   }
 
   const rowProps: EntryRowData = {
@@ -359,8 +487,6 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     <div
       ref={containerRef}
       style={containerStyle}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
       onClick={handleContainerClick}
     >
       {processedItems.length > 0 ? (
@@ -370,7 +496,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
           rowHeight={getItemSize}
           rowComponent={EntryRow}
           rowProps={rowProps}
-          style={{ height: expandedHeight, width }}
+          style={{ height, width }}
         />
       ) : (
         <div style={{
@@ -384,16 +510,23 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
         </div>
       )}
 
-      {/* リサイズハンドル */}
+      {/* 右下の移動兼リサイズグリップ */}
       <div
-        style={resizeHandleStyle}
-        onMouseDown={handleResizeStart}
-        onMouseEnter={() => {
-          setIsHovered(true)
-          setIsResizeHovered(true)
-        }}
-        onMouseLeave={() => setIsResizeHovered(false)}
-      />
+        data-testid="hand-log-move-grip"
+        title="ドラッグしてハンドログを移動"
+        style={gripStyle}
+        onMouseDown={(event) => handleInteractionStart('move', event)}
+        onClick={(event) => event.stopPropagation()}
+      >
+        ⠿
+        <div
+          data-testid="hand-log-resize-corner"
+          title="ドラッグしてハンドログのサイズを変更"
+          style={resizeCornerStyle}
+          onMouseDown={(event) => handleInteractionStart('resize', event)}
+          onClick={(event) => event.stopPropagation()}
+        />
+      </div>
 
       {/* ステータスインジケーター */}
       {showCopied && (

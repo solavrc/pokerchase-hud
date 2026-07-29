@@ -56,6 +56,13 @@ export interface HandLogConfig {
   showTimestamps: boolean    // Show timestamps in log
 }
 
+export interface HandLogLayout {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
 export interface KeyboardShortcut {
   code: string
   key: string

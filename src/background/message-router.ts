@@ -17,7 +17,9 @@ import { getUndecodedEventStats, resetUndecodedEventStats } from './undecoded-ev
 import { applyUpdateNow } from './update-manager'
 import { acknowledgeWhatsNew } from './whats-new-badge'
 import {
+  HAND_LOG_LAYOUT_STORAGE_KEY,
   hudPositionStorageKey,
+  isValidHandLogLayout,
   isValidHudPosition,
   isValidHudPositionId,
   isValidUIScale,
@@ -202,6 +204,40 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         const error = chrome.runtime.lastError
         sendResponse(error
           ? { success: false, error: error.message ?? 'Failed to save HUD position' }
+          : { success: true })
+      })
+      return true
+    } else if (request.action === 'getDeviceHandLogLayout') {
+      chrome.storage.local.get(
+        HAND_LOG_LAYOUT_STORAGE_KEY,
+        (result: Record<string, unknown>) => {
+          const layout = result[HAND_LOG_LAYOUT_STORAGE_KEY]
+          sendResponse({
+            success: true,
+            ...(isValidHandLogLayout(layout) ? { layout } : {}),
+          })
+        }
+      )
+      return true
+    } else if (request.action === 'setDeviceHandLogLayout') {
+      if (!isValidHandLogLayout(request.layout)) {
+        sendResponse({ success: false, error: 'Invalid hand log layout' })
+        return true
+      }
+      chrome.storage.local.set({
+        [HAND_LOG_LAYOUT_STORAGE_KEY]: request.layout,
+      }, () => {
+        const error = chrome.runtime.lastError
+        sendResponse(error
+          ? { success: false, error: error.message ?? 'Failed to save hand log layout' }
+          : { success: true })
+      })
+      return true
+    } else if (request.action === 'resetDeviceHandLogLayout') {
+      chrome.storage.local.remove(HAND_LOG_LAYOUT_STORAGE_KEY, () => {
+        const error = chrome.runtime.lastError
+        sendResponse(error
+          ? { success: false, error: error.message ?? 'Failed to reset hand log layout' }
           : { success: true })
       })
       return true

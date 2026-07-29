@@ -285,6 +285,9 @@ const messageHandlers: Record<string, (message: ChromeMessage) => void> = {
       }))
     }
   },
+  resetHandLogLayout: () => {
+    window.dispatchEvent(new CustomEvent(EVENTS.RESET_HAND_LOG_LAYOUT))
+  },
   refreshStats: () => {
     // インポート後の統計更新をリクエスト
     // 最新の統計をバックグラウンドサービスから取得

@@ -28,3 +28,19 @@ export const broadcastUIConfig = (config: UIConfig): void => {
     })
   })
 }
+
+export const broadcastHandLogLayoutReset = (): void => {
+  chrome.tabs.query({ url: gameUrlPatterns }, (tabs) => {
+    tabs.forEach(tab => {
+      if (!tab.id) return
+
+      chrome.tabs.sendMessage(tab.id, {
+        action: 'resetHandLogLayout',
+      }).catch(error => {
+        if (!isExpectedOneWayDeliveryError(error)) {
+          console.warn(`[popup] Failed to reset hand log layout in tab ${tab.id}:`, error)
+        }
+      })
+    })
+  })
+}
