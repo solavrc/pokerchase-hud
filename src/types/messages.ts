@@ -227,6 +227,13 @@ export interface ResetHandLogLayoutMessage {
 export interface SetSyncedUIConfigMessage {
   action: 'setSyncedUIConfig'
   config: UIConfig
+  patch?: never
+}
+
+export interface PatchSyncedUIConfigMessage {
+  action: 'setSyncedUIConfig'
+  config?: never
+  patch: Pick<UIConfig, 'toggleShortcut'>
 }
 
 // Firebase backup messages
@@ -465,6 +472,7 @@ export type ChromeMessage =
   | ResetDeviceHandLogLayoutMessage
   | ResetHandLogLayoutMessage
   | SetSyncedUIConfigMessage
+  | PatchSyncedUIConfigMessage
   | FirebaseAuthStatusMessage
   | FirebaseSignInMessage
   | FirebaseSignOutMessage

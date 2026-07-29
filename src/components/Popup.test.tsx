@@ -88,10 +88,24 @@ describe('Popup', () => {
   }
 
   const respondToSyncedUIConfigMessage = (
-    message: { action?: string, config?: typeof DEFAULT_UI_CONFIG },
+    message: {
+      action?: string
+      config?: typeof DEFAULT_UI_CONFIG
+      patch?: Partial<typeof DEFAULT_UI_CONFIG>
+    },
     callback?: (response: unknown) => void
   ): boolean => {
-    if (message.action !== 'setSyncedUIConfig' || !message.config) return false
+    if (message.action !== 'setSyncedUIConfig') return false
+    if (message.patch) {
+      syncData.uiConfig = {
+        ...DEFAULT_UI_CONFIG,
+        ...syncData.uiConfig,
+        ...message.patch,
+      }
+      callback?.({ success: true })
+      return true
+    }
+    if (!message.config) return false
     const liveLegacyScale = syncData.uiConfig?.scale
     const preservedLegacyScale = syncData.legacyUIScale
     const compatibilityScale = typeof liveLegacyScale === 'number'

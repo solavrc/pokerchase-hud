@@ -12,6 +12,7 @@ import {
   saveLocalUIScale,
   resetHandLogLayout,
   saveSyncedUIConfig,
+  saveSyncedUIConfigPatch,
 } from '../../utils/ui-config-storage'
 import {
   broadcastHandLogLayoutReset,
@@ -103,8 +104,10 @@ export const UIScaleSection = ({
       toggleShortcut: shortcut,
     }
     setUIConfig(nextConfig)
-    saveSyncedUIConfig(nextConfig)
-    broadcastUIConfig(nextConfig)
+    // Persist only the edited field against the background's latest sync
+    // snapshot. The resulting storage event updates open game tabs without
+    // broadcasting this popup's potentially stale full config.
+    saveSyncedUIConfigPatch({ toggleShortcut: shortcut })
   }, [setUIConfig, uiConfig])
 
   const handleShortcutKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {

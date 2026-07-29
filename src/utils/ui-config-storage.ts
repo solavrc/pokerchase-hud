@@ -22,9 +22,11 @@ export const hudPositionStorageKey = (seatIndex: number): string =>
 
 type SyncedUIConfig = Omit<UIConfig, 'scale'>
 type PendingSyncedUIConfigWrite = {
-  config: UIConfig
   callback?: (success: boolean) => void
-}
+} & (
+  | { config: UIConfig, patch?: never }
+  | { config?: never, patch: Pick<UIConfig, 'toggleShortcut'> }
+)
 const pendingSyncedUIConfigWrites: PendingSyncedUIConfigWrite[] = []
 let syncedUIConfigWriteInProgress = false
 
@@ -107,7 +109,6 @@ const processNextSyncedUIConfigWrite = (): void => {
     pendingWrite.callback?.(success)
     processNextSyncedUIConfigWrite()
   }
-  const syncedConfig = toSyncedUIConfig(pendingWrite.config)
   chrome.storage.sync.get(
     ['uiConfig', LEGACY_SYNC_UI_SCALE_KEY],
     (result: Record<string, unknown>) => {
@@ -117,7 +118,17 @@ const processNextSyncedUIConfigWrite = (): void => {
         return
       }
 
-      const currentConfig = result.uiConfig as { scale?: unknown } | undefined
+      const currentConfig = result.uiConfig as Partial<UIConfig> | undefined
+      const syncedConfig = pendingWrite.patch
+        ? {
+            ...toSyncedUIConfig({
+              ...DEFAULT_UI_CONFIG,
+              ...currentConfig,
+              scale: DEFAULT_UI_CONFIG.scale,
+            }),
+            ...pendingWrite.patch,
+          }
+        : toSyncedUIConfig(pendingWrite.config)
       const liveLegacyScale = currentConfig?.scale
       const preservedLegacyScale = result[LEGACY_SYNC_UI_SCALE_KEY]
       const compatibilityScale = isValidUIScale(liveLegacyScale)
@@ -152,6 +163,14 @@ export const persistSyncedUIConfig = (
   processNextSyncedUIConfigWrite()
 }
 
+export const persistSyncedUIConfigPatch = (
+  patch: Pick<UIConfig, 'toggleShortcut'>,
+  callback?: (success: boolean) => void
+): void => {
+  pendingSyncedUIConfigWrites.push({ patch, callback })
+  processNextSyncedUIConfigWrite()
+}
+
 export const saveSyncedUIConfig = (config: UIConfig): void => {
   try {
     chrome.runtime.sendMessage(
@@ -161,6 +180,19 @@ export const saveSyncedUIConfig = (config: UIConfig): void => {
   } catch {
     // The UI already broadcasts optimistically. A future storage event or
     // reload will reconcile if the persistent background cannot be reached.
+  }
+}
+
+export const saveSyncedUIConfigPatch = (
+  patch: Pick<UIConfig, 'toggleShortcut'>
+): void => {
+  try {
+    chrome.runtime.sendMessage(
+      { action: 'setSyncedUIConfig', patch },
+      consumeRuntimeError
+    )
+  } catch {
+    // The background write may be unavailable while the popup is closing.
   }
 }
 

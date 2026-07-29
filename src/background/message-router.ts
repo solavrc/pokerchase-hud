@@ -25,6 +25,7 @@ import {
   isValidUIScale,
   LEGACY_SYNC_UI_SCALE_KEY,
   persistSyncedUIConfig,
+  persistSyncedUIConfigPatch,
   resolveLocalUIScale,
   UI_SCALE_STORAGE_KEY,
 } from '../utils/ui-config-storage'
@@ -150,6 +151,27 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
     read()
   }
 
+  const pendingDeviceScaleWrites: Array<{
+    scale: number
+    sendResponse: (response: MessageResponse) => void
+  }> = []
+  let deviceScaleWriteInProgress = false
+  const processNextDeviceScaleWrite = (): void => {
+    if (deviceScaleWriteInProgress) return
+    const pendingWrite = pendingDeviceScaleWrites.shift()
+    if (!pendingWrite) return
+
+    deviceScaleWriteInProgress = true
+    chrome.storage.local.set({ [UI_SCALE_STORAGE_KEY]: pendingWrite.scale }, () => {
+      const error = chrome.runtime.lastError
+      pendingWrite.sendResponse(error
+        ? { success: false, error: error.message ?? 'Failed to save UI scale' }
+        : { success: true })
+      deviceScaleWriteInProgress = false
+      processNextDeviceScaleWrite()
+    })
+  }
+
   const rejectIfOperationBusy = (action: string, sendResponse: (response: MessageResponse) => void): boolean => {
     if (isOperationIdle()) return false
 
@@ -160,11 +182,16 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
 
   chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.runtime.MessageSender, sendResponse: (response: MessageResponse) => void) => {
     if (request.action === 'setSyncedUIConfig') {
-      persistSyncedUIConfig(request.config, success => {
+      const respondToPersistence = (success: boolean) => {
         sendResponse(success
           ? { success: true }
           : { success: false, error: 'Failed to save synchronized UI config' })
-      })
+      }
+      if (request.patch) {
+        persistSyncedUIConfigPatch(request.patch, respondToPersistence)
+      } else {
+        persistSyncedUIConfig(request.config, respondToPersistence)
+      }
       return true
     } else if (request.action === 'getDeviceUILayout') {
       if (request.seatIndex !== undefined && !isValidHudPositionId(request.seatIndex)) {
@@ -297,12 +324,8 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         return true
       }
       deviceScaleWriteGeneration += 1
-      chrome.storage.local.set({ [UI_SCALE_STORAGE_KEY]: request.scale }, () => {
-        const error = chrome.runtime.lastError
-        sendResponse(error
-          ? { success: false, error: error.message ?? 'Failed to save UI scale' }
-          : { success: true })
-      })
+      pendingDeviceScaleWrites.push({ scale: request.scale, sendResponse })
+      processNextDeviceScaleWrite()
       return true
     } else if (request.action === 'setDeviceHudPosition') {
       if (!isValidHudPositionId(request.seatIndex) || !isValidHudPosition(request.position)) {

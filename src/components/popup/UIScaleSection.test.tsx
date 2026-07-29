@@ -118,7 +118,7 @@ describe('UIScaleSection', () => {
 
     expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith({
       action: 'setSyncedUIConfig',
-      config: expect.objectContaining({
+      patch: {
         toggleShortcut: {
           code: 'KeyY',
           key: 'y',
@@ -127,8 +127,9 @@ describe('UIScaleSection', () => {
           shift: true,
           meta: false,
         },
-      }),
+      },
     }, expect.any(Function))
+    expect(mockTabsSendMessage).not.toHaveBeenCalled()
   })
 
   it('ショートカット入力欄の右クリックで明示的な解除状態を保存する', () => {
@@ -139,7 +140,7 @@ describe('UIScaleSection', () => {
 
     expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith({
       action: 'setSyncedUIConfig',
-      config: expect.objectContaining({ toggleShortcut: null }),
+      patch: { toggleShortcut: null },
     }, expect.any(Function))
   })
 
@@ -155,7 +156,7 @@ describe('UIScaleSection', () => {
     expect(mockChromeRuntimeSendMessage).not.toHaveBeenCalled()
   })
 
-  it('旧形式の部分設定へ既定値を補ってからショートカットを保存する', () => {
+  it('ショートカットだけをpatchとして保存する', () => {
     const legacyConfig = { displayEnabled: false, scale: 1.2 } as UIConfig
     render(<UIScaleSection
       {...defaultProps}
@@ -172,12 +173,11 @@ describe('UIScaleSection', () => {
 
     expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith({
       action: 'setSyncedUIConfig',
-      config: expect.objectContaining({
-        displayEnabled: false,
-        hudDisplayMode: DEFAULT_UI_CONFIG.hudDisplayMode,
-        hudColorCoding: DEFAULT_UI_CONFIG.hudColorCoding,
-        scale: 1.2,
-      }),
+      patch: {
+        toggleShortcut: expect.objectContaining({
+          code: 'KeyH',
+        }),
+      },
     }, expect.any(Function))
   })
 
