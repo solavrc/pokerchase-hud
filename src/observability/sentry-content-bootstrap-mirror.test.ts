@@ -9,12 +9,14 @@ jest.mock('@sentry/browser', () => ({
   globalHandlersIntegration: jest.fn(() => ({ name: 'GlobalHandlers' })),
   linkedErrorsIntegration: jest.fn(() => ({ name: 'LinkedErrors' })),
   dedupeIntegration: jest.fn(() => ({ name: 'Dedupe' })),
-  withScope: jest.fn(callback => callback({
-    setTag: jest.fn()
-  })),
+  withScope: jest.fn(callback => callback(mockScope)),
   captureException: jest.fn(),
   captureMessage: jest.fn()
 }))
+
+const mockScope = {
+  setTag: jest.fn()
+}
 
 describe('Sentry content-script consent mirror bootstrap', () => {
   let consentState: boolean | undefined
@@ -66,13 +68,25 @@ describe('Sentry content-script consent mirror bootstrap', () => {
   })
 
   it('retains bootstrap errors when the session mirror is not yet accessible', async () => {
-    const { initSentry } = await import('./sentry')
+    const {
+      captureHandledException,
+      initSentry
+    } = await import('./sentry')
     const initialInitialization = initSentry('content_script')
 
     const bootstrapError = new Error('content construction failed')
     globalThis.dispatchEvent(new ErrorEvent('error', {
       error: bootstrapError
     }))
+    expect(Sentry.captureException).not.toHaveBeenCalled()
+
+    completeInitialRead?.()
+    await initialInitialization
+
+    const handledError = new Error('runtime port delivery failed')
+    captureHandledException(handledError, {
+      operation: 'runtime_port.delivery_failed'
+    })
     expect(Sentry.captureException).not.toHaveBeenCalled()
 
     consentState = true
@@ -82,13 +96,16 @@ describe('Sentry content-script consent mirror bootstrap', () => {
         newValue: true
       }
     }, 'session')
-    completeInitialRead?.()
-    await initialInitialization
     await waitForSentryInitialization()
 
     expect(Sentry.init).toHaveBeenCalledTimes(1)
-    expect(Sentry.captureException).toHaveBeenCalledTimes(1)
+    expect(Sentry.captureException).toHaveBeenCalledTimes(2)
     expect(Sentry.captureException).toHaveBeenCalledWith(bootstrapError)
+    expect(Sentry.captureException).toHaveBeenCalledWith(handledError)
+    expect(mockScope.setTag).toHaveBeenCalledWith(
+      'operation',
+      'runtime_port.delivery_failed'
+    )
   })
 })
 

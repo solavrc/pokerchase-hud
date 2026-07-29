@@ -1,4 +1,5 @@
 import { buildSchemaDiagnostic } from './schema-diagnostic'
+import { getEventFields } from '../types/api'
 
 describe('schema repair diagnostics', () => {
   it('bounds structural traversal even when dynamic paths deduplicate', () => {
@@ -336,6 +337,57 @@ describe('schema repair diagnostics', () => {
     const serialized = JSON.stringify(diagnostic)
     expect(serialized).not.toContain('Alice')
     expect(serialized).not.toContain('129532369')
+  })
+
+  it('redacts unexpected root keys while retaining fields from a known event schema', () => {
+    const diagnostic = buildSchemaDiagnostic(
+      {
+        ApiTypeId: 309,
+        timestamp: 1785008587942,
+        Alice: {
+          UserId: 129532369,
+          Ranking: 1
+        }
+      },
+      [{
+        path: ['Alice', 'UserId'],
+        code: 'unrecognized_keys'
+      }],
+      {
+        redactUnknownRootKeys: true,
+        knownRootKeys: getEventFields(309)
+      }
+    )
+
+    expect(diagnostic.issues[0]?.path).toBe('[dynamic-key].UserId')
+    expect(diagnostic.payloadShape).toEqual(expect.arrayContaining([
+      'ApiTypeId: integer',
+      'timestamp: integer',
+      '[dynamic-key]: object'
+    ]))
+    expect(diagnostic.sanitizedPayload).toMatchObject({
+      ApiTypeId: 309,
+      timestamp: 1785008587942
+    })
+    expect(JSON.stringify(diagnostic)).not.toContain('Alice')
+    expect(JSON.stringify(diagnostic)).not.toContain('129532369')
+  })
+
+  it('bounds issue formatting while preserving the original issue count', () => {
+    const rawIssues = Array.from({ length: 10_000 }, (_, index) => ({
+      path: ['Results', index, 'Ranking'],
+      code: 'invalid_type',
+      expected: 'number'
+    }))
+
+    const diagnostic = buildSchemaDiagnostic(
+      { Results: [] },
+      rawIssues
+    )
+
+    expect(diagnostic.issueCount).toBe(10_000)
+    expect(diagnostic.issues).toHaveLength(10)
+    expect(diagnostic.issues[0]?.path).toBe('Results[].Ranking')
   })
 
   it('redacts unknown strings by default while retaining allow-listed protocol IDs', () => {

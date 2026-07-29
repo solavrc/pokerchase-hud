@@ -15,6 +15,7 @@ jest.mock('../../observability/telemetry-consent', () => ({
 
 describe('TelemetrySection', () => {
   beforeEach(() => {
+    jest.clearAllMocks()
     jest.mocked(readSentryTelemetryEnabled).mockResolvedValue(false)
     jest.mocked(requestSentryTelemetry).mockResolvedValue(true)
     jest.mocked(revokeSentryTelemetry).mockResolvedValue()
@@ -64,5 +65,26 @@ describe('TelemetrySection', () => {
 
     await waitFor(() => expect(revokeSentryTelemetry).toHaveBeenCalledTimes(1))
     expect(toggle).not.toBeChecked()
+  })
+
+  it('reconciles the switch after a partially failed revocation', async () => {
+    jest.mocked(readSentryTelemetryEnabled)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false)
+    jest.mocked(revokeSentryTelemetry).mockRejectedValue(
+      new Error('mirror write failed')
+    )
+    const user = userEvent.setup()
+    render(<TelemetrySection />)
+
+    const toggle = await screen.findByRole('switch', {
+      name: 'Sentryへエラー診断を送信'
+    })
+    await waitFor(() => expect(toggle).toBeChecked())
+    await user.click(toggle)
+
+    await screen.findByText('エラー診断の設定を更新できませんでした。')
+    await waitFor(() => expect(toggle).not.toBeChecked())
+    expect(readSentryTelemetryEnabled).toHaveBeenCalledTimes(2)
   })
 })

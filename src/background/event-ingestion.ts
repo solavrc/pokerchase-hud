@@ -22,7 +22,7 @@ import {
   captureSchemaValidationFailure
 } from '../observability/sentry'
 import { buildSchemaDiagnostic } from '../observability/schema-diagnostic'
-import { getEventSchema } from '../types/api'
+import { getEventFields, getEventSchema } from '../types/api'
 
 /**
  * 参加取消申込（ApiTypeId 203）。`ApiType` enum（アプリケーションで使用する
@@ -472,9 +472,10 @@ const processEvent = async (
         message,
         validationResult.error?.issues ?? [],
         {
-          redactUnknownRootKeys:
-            diagnosticApiTypeId === INVALID_API_TYPE_ID_BUCKET ||
-            getEventSchema(diagnosticApiTypeId) === undefined
+          redactUnknownRootKeys: true,
+          knownRootKeys: getEventSchema(diagnosticApiTypeId)
+            ? getEventFields(diagnosticApiTypeId)
+            : undefined
         }
       )
     )

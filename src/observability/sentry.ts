@@ -54,7 +54,11 @@ let bootstrapErrorBuffer: BootstrapErrorBuffer | undefined
 
 interface BootstrapErrorBuffer {
   runtime: SentryRuntime
-  errors: unknown[]
+  errors: Array<{
+    error: unknown
+    options?: CaptureErrorOptions
+  }>
+  remember: (error: unknown, options?: CaptureErrorOptions) => void
   dispose: () => void
 }
 
@@ -202,10 +206,13 @@ const createBootstrapErrorBuffer = (
     return undefined
   }
 
-  const errors: unknown[] = []
-  const remember = (error: unknown): void => {
+  const errors: BootstrapErrorBuffer['errors'] = []
+  const remember = (
+    error: unknown,
+    options?: CaptureErrorOptions
+  ): void => {
     if (!initialized && errors.length < MAX_BUFFERED_BOOTSTRAP_ERRORS) {
-      errors.push(error)
+      errors.push({ error, options })
     }
   }
   const onError = (event: Event): void => {
@@ -223,6 +230,7 @@ const createBootstrapErrorBuffer = (
   return {
     runtime,
     errors,
+    remember,
     dispose: () => {
       globalThis.removeEventListener('error', onError)
       globalThis.removeEventListener('unhandledrejection', onUnhandledRejection)
@@ -234,10 +242,13 @@ const flushBootstrapErrors = (buffer: BootstrapErrorBuffer | undefined): void =>
   buffer?.dispose()
   if (!initialized || !buffer) return
 
-  for (const error of buffer.errors) {
-    captureHandledException(error, {
-      operation: `${buffer.runtime}.bootstrap`
-    })
+  for (const entry of buffer.errors) {
+    captureHandledException(
+      entry.error,
+      entry.options ?? {
+        operation: `${buffer.runtime}.bootstrap`
+      }
+    )
   }
 }
 
@@ -482,7 +493,10 @@ export const captureHandledException = (
   error: unknown,
   options: CaptureErrorOptions
 ): void => {
-  if (!initialized) return
+  if (!initialized) {
+    bootstrapErrorBuffer?.remember(error, options)
+    return
+  }
 
   const normalizedError = error instanceof Error
     ? error
@@ -539,7 +553,7 @@ export const captureSchemaValidationFailure = (
       api_type_id: String(apiTypeId)
     })
     scope.setContext('schema_validation', {
-      issue_count: diagnostic.issues.length,
+      issue_count: diagnostic.issueCount,
       paths: safeIssues.map(issue => issue.path).join(','),
       codes: [...new Set(safeIssues.map(issue => issue.code))].join(','),
       issues: safeIssues.map(issue =>

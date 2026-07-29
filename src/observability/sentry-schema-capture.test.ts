@@ -21,6 +21,7 @@ describe('Sentry schema capture gating', () => {
     process.env.SENTRY_ENABLED = 'true'
     const buildDiagnostic = jest.fn(() => ({
       issues: [],
+      issueCount: 0,
       payloadShape: [],
       sanitizedPayload: {},
       shapeTruncated: false,

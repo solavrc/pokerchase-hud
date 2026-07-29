@@ -93,7 +93,13 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     // EVT_DEAL (303) missing every required field — simulates a PokerChase
     // payload shape change breaking the schema (the season-3 EVT_SESSION_RESULTS
     // incident this whole redesign is fixing).
-    const brokenDealEvent = { ApiTypeId: 303, timestamp: 222 }
+    const brokenDealEvent = {
+      ApiTypeId: 303,
+      timestamp: 222,
+      Alice: {
+        UserId: 129532369
+      }
+    }
     await onMessageHandler(brokenDealEvent)
 
     const stored = await db.apiEvents.get([222, 303, 0])
@@ -123,7 +129,10 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
           'ApiTypeId: integer',
           'timestamp: integer'
         ]),
-        sanitizedPayload: brokenDealEvent
+        sanitizedPayload: expect.objectContaining({
+          ApiTypeId: 303,
+          timestamp: 222
+        })
       })
     )
     expect(diagnostic).toEqual(
@@ -136,7 +145,10 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
           })
         ]),
         payloadShape: expect.any(Array),
-        sanitizedPayload: brokenDealEvent,
+        sanitizedPayload: expect.objectContaining({
+          ApiTypeId: 303,
+          timestamp: 222
+        }),
         shapeTruncated: expect.any(Boolean),
         payloadTruncated: expect.any(Boolean)
       })
@@ -150,6 +162,8 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
         })
       ])
     )
+    expect(JSON.stringify(diagnostic)).not.toContain('Alice')
+    expect(JSON.stringify(diagnostic)).not.toContain('129532369')
   })
 
   test('a known non-application event (202 keepalive/ack) is stored raw but NOT forwarded to streams', async () => {

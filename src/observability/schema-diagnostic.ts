@@ -16,6 +16,7 @@ export interface SchemaValidationIssue {
 
 export interface SchemaDiagnostic {
   issues: SchemaValidationIssue[]
+  issueCount: number
   payloadShape: string[]
   sanitizedPayload: unknown
   shapeTruncated: boolean
@@ -23,10 +24,13 @@ export interface SchemaDiagnostic {
 }
 
 export interface SchemaDiagnosticOptions {
-  /** Invalid-ID payloads are not guaranteed to have a fixed event root. */
+  /** Alias root keys outside the selected event's protocol fields. */
   redactUnknownRootKeys?: boolean
+  /** Known top-level fields for one event schema. */
+  knownRootKeys?: readonly string[]
 }
 
+const MAX_DIAGNOSTIC_ISSUES = 10
 const MAX_DEPTH = 6
 const MAX_SHAPE_ENTRIES = 100
 const MAX_SHAPE_NODES = 1000
@@ -131,7 +135,8 @@ const jsonType = (value: unknown): string => {
 
 const safeSchemaKey = (
   key: PropertyKey,
-  parentKey?: string
+  parentKey?: string,
+  knownRootKeys: ReadonlySet<string> = KNOWN_SCHEMA_FIELDS.all
 ): string => {
   if (typeof key !== 'string' || !SAFE_SCHEMA_KEY.test(key)) {
     return '[dynamic-key]'
@@ -143,7 +148,7 @@ const safeSchemaKey = (
     return KNOWN_SCHEMA_FIELDS.all.has(key) ? key : '[dynamic-key]'
   }
   if (parentKey === ROOT_CONTAINER) {
-    return KNOWN_SCHEMA_FIELDS.all.has(key) ? key : '[dynamic-key]'
+    return knownRootKeys.has(key) ? key : '[dynamic-key]'
   }
   if (
     parentKey &&
@@ -165,7 +170,8 @@ const appendPath = (base: string, key: string): string => {
 
 const formatIssuePath = (
   path: readonly PropertyKey[],
-  redactUnknownRootKeys: boolean
+  redactUnknownRootKeys: boolean,
+  knownRootKeys: ReadonlySet<string>
 ): string => {
   if (path.length === 0) return '$'
 
@@ -178,7 +184,7 @@ const formatIssuePath = (
       result = `${result}[]`
       continue
     }
-    const key = safeSchemaKey(part, parentKey)
+    const key = safeSchemaKey(part, parentKey, knownRootKeys)
     result = result ? `${result}.${key}` : key
     parentKey = key === '[dynamic-key]'
       ? MAP_VALUE_CONTAINER
@@ -235,7 +241,8 @@ const sanitizeStringValue = (value: string): string => {
  */
 const buildSanitizedPayload = (
   payload: unknown,
-  redactUnknownRootKeys: boolean
+  redactUnknownRootKeys: boolean,
+  knownRootKeys: ReadonlySet<string>
 ): { value: unknown, truncated: boolean } => {
   const userAliases = new Map<string, string>()
   const nameAliases = new Map<string, string>()
@@ -333,7 +340,11 @@ const buildSanitizedPayload = (
       return Object.fromEntries(
         boundedEntries.entries
           .map(([childKey, child], index) => {
-            const schemaKey = safeSchemaKey(childKey, rawKey)
+            const schemaKey = safeSchemaKey(
+              childKey,
+              rawKey,
+              knownRootKeys
+            )
             const safeKey = schemaKey === '[dynamic-key]'
               ? `[dynamic-key-${index + 1}]`
               : schemaKey
@@ -399,6 +410,9 @@ export const buildSchemaDiagnostic = (
   options: SchemaDiagnosticOptions = {}
 ): SchemaDiagnostic => {
   const redactUnknownRootKeys = options.redactUnknownRootKeys === true
+  const knownRootKeys = options.knownRootKeys
+    ? new Set(options.knownRootKeys)
+    : KNOWN_SCHEMA_FIELDS.all
   const shape = new Set<string>()
   let truncated = false
   let shapeNodes = 0
@@ -465,7 +479,7 @@ export const buildSchemaDiagnostic = (
       )
 
       for (const [rawKey, child] of boundedEntries.entries) {
-        const key = safeSchemaKey(rawKey, parentKey)
+        const key = safeSchemaKey(rawKey, parentKey, knownRootKeys)
         visit(
           child,
           appendPath(path, key),
@@ -483,24 +497,32 @@ export const buildSchemaDiagnostic = (
     redactUnknownRootKeys ? ROOT_CONTAINER : undefined
   )
 
-  const issues = rawIssues.map(issue => {
-    const expected = typeof issue.expected === 'string'
-      ? issue.expected.slice(0, 80)
-      : undefined
-    return {
-      path: formatIssuePath(issue.path, redactUnknownRootKeys),
-      code: issue.code.slice(0, 80),
-      expected,
-      actualType: jsonType(valueAtPath(payload, issue.path))
-    }
-  })
+  const issues = rawIssues
+    .slice(0, MAX_DIAGNOSTIC_ISSUES)
+    .map(issue => {
+      const expected = typeof issue.expected === 'string'
+        ? issue.expected.slice(0, 80)
+        : undefined
+      return {
+        path: formatIssuePath(
+          issue.path,
+          redactUnknownRootKeys,
+          knownRootKeys
+        ),
+        code: issue.code.slice(0, 80),
+        expected,
+        actualType: jsonType(valueAtPath(payload, issue.path))
+      }
+    })
   const sanitizedPayload = buildSanitizedPayload(
     payload,
-    redactUnknownRootKeys
+    redactUnknownRootKeys,
+    knownRootKeys
   )
 
   return {
     issues,
+    issueCount: rawIssues.length,
     payloadShape: [...shape],
     sanitizedPayload: sanitizedPayload.value,
     shapeTruncated: truncated,

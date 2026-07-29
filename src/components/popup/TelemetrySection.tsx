@@ -50,6 +50,11 @@ export const TelemetrySection = () => {
         setEnabled(false)
       }
     } catch {
+      try {
+        setEnabled(await readSentryTelemetryEnabled())
+      } catch {
+        // Keep the last rendered state if even reconciliation is unavailable.
+      }
       setError('エラー診断の設定を更新できませんでした。')
     } finally {
       setPending(false)
