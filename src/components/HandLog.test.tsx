@@ -241,7 +241,14 @@ describe('HandLog', () => {
     fireEvent.mouseUp(document)
   })
 
-  it('移動しないgrip操作では遅れて届いた保存layoutを無効化しない', () => {
+  it.each([
+    { testId: 'hand-log-move-grip', startX: 880, startY: 480 },
+    { testId: 'hand-log-resize-corner', startX: 900, startY: 500 },
+  ])('gripの微小jitterでは遅れて届いた保存layoutを無効化しない', ({
+    testId,
+    startX,
+    startY,
+  }) => {
     let resolveInitialLoad!: (response: unknown) => void
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       if (message.action === 'getDeviceHandLogLayout') {
@@ -264,10 +271,18 @@ describe('HandLog', () => {
       toJSON: () => {},
     }))
 
-    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
+    fireEvent.mouseDown(screen.getByTestId(testId), {
       button: 0,
-      clientX: 880,
-      clientY: 480,
+      clientX: startX,
+      clientY: startY,
+    })
+    fireEvent.mouseMove(document, {
+      clientX: startX,
+      clientY: startY,
+    })
+    fireEvent.mouseMove(document, {
+      clientX: startX + 2,
+      clientY: startY + 2,
     })
     fireEvent.mouseUp(document)
     act(() => {

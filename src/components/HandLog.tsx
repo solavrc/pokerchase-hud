@@ -48,6 +48,7 @@ const getPositionStyles = (position: string): CSSProperties => {
 }
 
 const HAND_LOG_GRIP_SIZE = 28
+const HAND_LOG_DRAG_THRESHOLD = 4
 
 type HandLogInteractionMode = 'move' | 'resize'
 
@@ -354,6 +355,12 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
 
       const deltaX = event.clientX - interaction.startX
       const deltaY = event.clientY - interaction.startY
+      if (
+        !interaction.moved &&
+        Math.hypot(deltaX, deltaY) < HAND_LOG_DRAG_THRESHOLD
+      ) {
+        return
+      }
       const { startLayout } = interaction
       let nextLayout: HandLogLayout
 
