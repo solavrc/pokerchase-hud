@@ -56,7 +56,7 @@ jobs:
         cache: 'npm'
 
     - name: Cache pinned Chrome for Testing
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: .cache/puppeteer
         key: e2e-chrome-${{ runner.os }}-${{ hashFiles('e2e/config.ts') }}
@@ -69,7 +69,7 @@ jobs:
 
     - name: Upload browser failure evidence
       if: failure()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: browser-e2e-failure-${{ github.run_id }}
         path: e2e/out/
