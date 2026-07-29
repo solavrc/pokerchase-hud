@@ -2,6 +2,11 @@ import * as Sentry from '@sentry/browser'
 import type { ErrorEvent } from '@sentry/browser'
 import manifest from '../../manifest.json'
 import type { SchemaDiagnostic } from './schema-diagnostic'
+import {
+  SENTRY_TELEMETRY_CONSENT_STORAGE_KEY,
+  hasSentryHostPermission,
+  readSentryTelemetryConsent
+} from './telemetry-consent'
 
 export type SentryRuntime = 'background' | 'content_script' | 'popup'
 
@@ -27,6 +32,9 @@ const reportedSchemaApiTypes = new Set<number>()
 const reportedErrors = new WeakSet<Error>()
 
 let initialized = false
+let configuredRuntime: SentryRuntime | undefined
+let consentListenerRegistered = false
+let initializationPromise: Promise<void> | undefined
 let sentEventCount = 0
 
 const telemetryEnabled = (): boolean =>
@@ -146,8 +154,18 @@ export const sanitizeSentryEvent = (event: ErrorEvent): ErrorEvent => {
   return sanitized
 }
 
-export const initSentry = (runtime: SentryRuntime): void => {
+const closeSentry = async (): Promise<void> => {
+  if (!initialized) return
+  initialized = false
+  sentEventCount = 0
+  reportedSchemaApiTypes.clear()
+  await Sentry.close(0)
+}
+
+const startSentry = async (runtime: SentryRuntime): Promise<void> => {
   if (!telemetryEnabled() || initialized) return
+  if (!await readSentryTelemetryConsent()) return
+  if (!await hasSentryHostPermission()) return
 
   Sentry.init({
     dsn: SENTRY_DSN,
@@ -189,11 +207,6 @@ export const initSentry = (runtime: SentryRuntime): void => {
       stackFrameVariables: false,
       frameContextLines: 0
     },
-    transportOptions: {
-      fetchOptions: {
-        keepalive: true
-      }
-    },
     initialScope: {
       tags: {
         runtime,
@@ -208,6 +221,39 @@ export const initSentry = (runtime: SentryRuntime): void => {
   })
 
   initialized = true
+}
+
+/**
+ * Start telemetry only after an explicit, per-profile opt-in has granted the
+ * optional Sentry host permission. Adding that host as a required permission
+ * would disable existing Web Store installations during the update.
+ */
+export const initSentry = (runtime: SentryRuntime): Promise<void> => {
+  configuredRuntime = runtime
+
+  if (!consentListenerRegistered) {
+    consentListenerRegistered = true
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (
+        areaName !== 'local' ||
+        !(SENTRY_TELEMETRY_CONSENT_STORAGE_KEY in changes)
+      ) {
+        return
+      }
+
+      if (changes[SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]?.newValue === true) {
+        if (configuredRuntime) void initSentry(configuredRuntime)
+      } else {
+        void closeSentry()
+      }
+    })
+  }
+
+  if (initializationPromise) return initializationPromise
+  initializationPromise = startSentry(runtime).finally(() => {
+    initializationPromise = undefined
+  })
+  return initializationPromise
 }
 
 export const captureHandledException = (

@@ -174,6 +174,19 @@ global.chrome = {
       return Promise.resolve('mock-notification-id')
     }),
   },
+  permissions: {
+    contains: jest.fn().mockResolvedValue(false),
+    request: jest.fn().mockResolvedValue(false),
+    remove: jest.fn().mockResolvedValue(true),
+    onAdded: {
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
+    },
+    onRemoved: {
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
+    },
+  },
   action: {
     setBadgeText: jest.fn((_details, callback?) => {
       if (typeof callback === 'function') {

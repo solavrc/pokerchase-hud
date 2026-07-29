@@ -12,7 +12,9 @@
     "alarms"
   ],
   "host_permissions": [
-    "https://*.googleapis.com/*",
+    "https://*.googleapis.com/*"
+  ],
+  "optional_host_permissions": [
     "https://o4507260715794432.ingest.us.sentry.io/*"
   ],
   "minimum_chrome_version": "140",

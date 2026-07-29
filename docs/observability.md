@@ -5,8 +5,11 @@ PokerChase HUD uses the dedicated
 Sentry project for production error detection.
 
 Sentry is initialized in the background service worker, content script, and
-popup. It is deliberately **not** initialized in `web_accessible_resource.ts`,
-which runs in the game page's main world and handles raw WebSocket payloads.
+popup only after the user enables **Sentryへエラー診断を送信** in the popup.
+Enabling it grants the Sentry ingest origin as an optional host permission;
+existing installations are not disabled during an extension update.
+It is deliberately **not** initialized in `web_accessible_resource.ts`, which
+runs in the game page's main world and handles raw WebSocket payloads.
 
 ## What is reported
 
@@ -46,7 +49,10 @@ rankings, and rewards. Relationships between players remain inspectable, but
 direct identifiers are replaced with stable per-event aliases (`user#1`,
 `user#2`, ...). User/player/friend names, chat and other free text,
 credentials and authentication/session tokens, email/IP fields, URL query
-strings, and dynamic map keys are redacted client-side.
+strings, dynamic map keys, and unknown string values are redacted client-side.
+Only an explicit allow-list of machine-readable protocol IDs (for example
+`CharaId`, `RankId`, and `ItemId`) retains string values. Numeric and boolean
+poker state remains available for semantic interpretation.
 
 The exact original event remains available in the local Raw Event Lake and may
 follow the separately documented, user-controlled Firestore cloud-sync path.
@@ -81,8 +87,9 @@ directly to Sentry.
 ## Builds and source maps
 
 Normal local/CI/E2E builds keep telemetry disabled. The release workflow sets
-`SENTRY_ENABLED=true`; its `SENTRY_AUTH_TOKEN` repository secret enables the
-esbuild plugin to:
+`SENTRY_ENABLED=true`, but the runtime still requires the user's per-profile
+opt-in and optional host grant. Its `SENTRY_AUTH_TOKEN` repository secret
+enables the esbuild plugin to:
 
 1. build release `pokerchase-hud@<manifest version>`;
 2. upload minified JavaScript and source maps;

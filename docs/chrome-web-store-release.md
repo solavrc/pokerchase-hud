@@ -23,7 +23,9 @@ Before submitting a telemetry-enabled release:
    （拡張バージョン、実行コンテキスト、スタック、スキーマ失敗箇所、
    個人識別子を仮名化した対局イベント値）を、信頼性改善とAPI変更への追従目的で
    Sentry へ送信することを明示する。
-2. 既存ユーザーにも更新情報でデータ取扱いの変更を明示する。
+2. 既存ユーザーにも更新情報でデータ取扱いの変更を明示する。実際の送信は
+   Popup の **Sentryへエラー診断を送信** をユーザーが有効にし、Chrome の
+   optional host permissionを許可した後だけ開始する。
 3. 公開中の privacy policy に収集項目、用途、Sentry への送信、保持・削除方針を
    反映し、Developer Dashboard の専用 URL 欄から到達できることを確認する。
 4. repository secret `SENTRY_AUTH_TOKEN` が、個人 OAuth token ではなく
@@ -32,6 +34,10 @@ Before submitting a telemetry-enabled release:
 
 詳細なクライアント側の除外項目と検証手順は
 [`docs/observability.md`](observability.md) を参照する。
+
+Sentry ingest originは`optional_host_permissions`で宣言する。requiredの
+`host_permissions`へ移すと、権限警告を伴う更新で既存インストールが無効化され、
+ユーザーの再承認までHUD全体が停止し得るため禁止する。
 
 ## Signing key
 

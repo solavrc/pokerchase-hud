@@ -33,11 +33,14 @@ const DYNAMIC_KEY_CONTAINERS = new Set(['Class'])
 const USER_IDENTIFIER_KEY =
   /(?:user|friend|player|account|member|owner|device)[A-Za-z0-9_]*Ids?$/i
 const USER_NAME_KEY =
-  /(?:user|friend|player|display|nick)[A-Za-z0-9_]*Names?$/i
+  /(?:name|nickname)$/i
 const SECRET_KEY =
   /(?:token|secret|password|authorization|cookie|sessionId|email|ipAddress|accessKey|phone|address)/i
 const FREE_TEXT_KEY =
-  /^(?:body|chat|comment|content|description|handLog|message|messages|ms|text)$/i
+  /(?:biography|body|chat|comment|content|description|handLog|message|text)/i
+const COMPACT_FREE_TEXT_KEYS = new Set(['Ms'])
+const SAFE_SEMANTIC_STRING_KEY =
+  /^(?:CharaId|ClassLvId|Co|CostumeId|DecoId|EmblemId|FavoriteCharaId|Fr|ItemId|RankId|RankLvId|SettingDecoIds|StampId)$/i
 
 const jsonType = (value: unknown): string => {
   if (value === null) return 'null'
@@ -201,7 +204,10 @@ const buildSanitizedPayload = (
       return '[redacted]'
     }
 
-    if (rawKey && FREE_TEXT_KEY.test(rawKey)) {
+    if (
+      rawKey &&
+      (FREE_TEXT_KEY.test(rawKey) || COMPACT_FREE_TEXT_KEYS.has(rawKey))
+    ) {
       return Array.isArray(value)
         ? value.slice(0, MAX_PAYLOAD_ARRAY_ENTRIES).map(() => '[redacted-text]')
         : '[redacted-text]'
@@ -211,7 +217,7 @@ const buildSanitizedPayload = (
       if (value.length > MAX_PAYLOAD_ARRAY_ENTRIES) truncated = true
       return value
         .slice(0, MAX_PAYLOAD_ARRAY_ENTRIES)
-        .map(item => visit(item, depth + 1, undefined, rawKey))
+        .map(item => visit(item, depth + 1, rawKey, parentKey))
     }
 
     if (value !== null && typeof value === 'object') {
@@ -234,7 +240,11 @@ const buildSanitizedPayload = (
       )
     }
 
-    if (typeof value === 'string') return sanitizeStringValue(value)
+    if (typeof value === 'string') {
+      return rawKey && SAFE_SEMANTIC_STRING_KEY.test(rawKey)
+        ? sanitizeStringValue(value)
+        : `[redacted-string:length=${value.length}]`
+    }
     if (
       value === null ||
       typeof value === 'number' ||

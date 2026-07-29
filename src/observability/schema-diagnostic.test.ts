@@ -92,6 +92,18 @@ describe('schema repair diagnostics', () => {
         Ranking: 2,
         RewardChip: 0
       }],
+      Nested: {
+        Items: [
+          {
+            Amount: 100,
+            Label: '[redacted-string:length=13]'
+          },
+          {
+            Amount: 2.5,
+            Extra: null
+          }
+        ]
+      },
       Message: '[redacted-text]',
       AccessToken: '[redacted]'
     })
@@ -99,12 +111,12 @@ describe('schema repair diagnostics', () => {
     expect(serialized).not.toContain('129532369')
     expect(serialized).not.toContain('99887766')
     expect(serialized).not.toContain('sensitive-player-name')
-    expect(serialized).toContain('private-value')
+    expect(serialized).not.toContain('private-value')
     expect(serialized).not.toContain('private chat text')
     expect(serialized).not.toContain('another sensitive player')
     expect(serialized).not.toContain('secret-token')
     expect(serialized).not.toContain('user@example.com')
-    expect(serialized).toContain('dynamic-private-value')
+    expect(serialized).not.toContain('dynamic-private-value')
   })
 
   it('reports expected and actual types at a broken existing path', () => {
@@ -131,5 +143,26 @@ describe('schema repair diagnostics', () => {
       FriendId: 'user#1'
     })
     expect(JSON.stringify(diagnostic)).not.toContain('redacted-at-source')
+  })
+
+  it('redacts unknown strings by default while retaining allow-listed protocol IDs', () => {
+    const diagnostic = buildSchemaDiagnostic({
+      ApiTypeId: 9999,
+      Name: 'new player name',
+      Biography: 'new free-form field',
+      NewEnum: 'unexpected-private-value',
+      ItemId: 'item0028',
+      SettingDecoIds: ['deco0001', 'deco0002']
+    }, [])
+
+    expect(diagnostic.sanitizedPayload).toEqual({
+      ApiTypeId: 9999,
+      Name: 'player-name#1',
+      Biography: '[redacted-text]',
+      NewEnum: '[redacted-string:length=24]',
+      ItemId: 'item0028',
+      SettingDecoIds: ['deco0001', 'deco0002']
+    })
+    expect(JSON.stringify(diagnostic)).not.toContain('unexpected-private-value')
   })
 })
