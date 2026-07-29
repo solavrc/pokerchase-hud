@@ -38,7 +38,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 - **Storage**: IndexedDB (Dexie) + Cloud (Firestore)
 - **Cloud Services**: Firebase (Auth, Firestore)
 - **Build**: esbuild
-- **Testing**:
+- **Testing**: 
   - Jest with jsdom environment for browser API simulation
   - React Testing Library for component testing
   - Co-located test files with source code
@@ -294,6 +294,18 @@ on large DBs (bounded, local work; import is a rare operation).
 **Import Optimizations:**
 
 - Designed for processing tens of thousands of records
+- **Popup-safe import UI**: the action popup never reads or transfers the
+  selected file. Its import button opens (or focuses, without duplicating) the
+  extension-owned `dist/index.html?mode=import` tab, and that long-lived page
+  owns file selection plus the 5 MiB chunk transfer. Closing the action popup
+  therefore cannot abandon an import. `getOperationState` distinguishes file
+  transfer, raw-row processing, and an import-origin post-import rebuild; the
+  terminal success/error summary is also stored in
+  `chrome.storage.local.lastImportResult` so either UI can restore the result
+  after being closed or reloaded. A transfer error sends an idempotent
+  `importDataCancel` message so the in-memory chunk session releases its
+  operation slot immediately; once `importDataProcess` detaches the complete
+  session, the same message is a no-op and cannot interrupt storage/rebuild.
 - Batch mode disables real-time updates during import
 - Direct entity conversion (empty-DB path) bypasses stream overhead
 - Legacy exports without `sequence` are assigned a per-timestamp/type sequence during import; re-importing the same payload is content-deduplicated against both existing and earlier rows in the same chunk

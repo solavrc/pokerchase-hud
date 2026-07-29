@@ -68,7 +68,7 @@ export const startImportSession = (totalChunks: number, fileName: string): void 
   // Own the shared operation slot for the whole file transfer, not only the
   // later parse/rebuild phase. A pending extension update or another data
   // operation must not reload/delete the worker while chunks live in memory.
-  setOperationState({ type: 'import', progress: 0, processed: 0, total: totalChunks, message: 'インポートファイル転送中...' })
+  setOperationState({ type: 'import', phase: 'transfer', progress: 0, processed: 0, total: totalChunks, message: 'インポートファイル転送中...' })
   armImportSessionTimeout()
 }
 
@@ -78,6 +78,7 @@ export const addImportChunk = (chunkIndex: number, chunkData: string): boolean =
   currentImportSession.chunks[chunkIndex] = chunkData
   setOperationState({
     type: 'import',
+    phase: 'transfer',
     progress: Math.round((currentImportSession.receivedChunks / currentImportSession.totalChunks) * 100),
     processed: currentImportSession.receivedChunks,
     total: currentImportSession.totalChunks,
@@ -118,7 +119,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
   const importData = async (jsonlData: string): Promise<{ successCount: number, totalLines: number, duplicateCount: number }> => {
     let batchModeEnabled = false
     try {
-      setOperationState({ type: 'import', progress: 0 })
+      setOperationState({ type: 'import', phase: 'processing', progress: 0, message: '生データを処理中...' })
       console.log('[importData] Starting import process with canonical entity rebuild')
       const startTime = performance.now()
 
@@ -195,7 +196,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
 
         // Send progress update
         const progress = Math.round((processed / lines.length) * 100)
-        setOperationState({ type: 'import', progress, processed, total: lines.length })
+        setOperationState({ type: 'import', phase: 'processing', progress, processed, total: lines.length, message: '生データを保存中...' })
         chrome.runtime.sendMessage<ImportProgressMessage>({
           action: 'importProgress',
           progress: progress,
@@ -270,6 +271,13 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         // （読み手向けメモ: importProgressの0-100%は生ログ保存フェーズの
         // 進捗で完結しており、この後に続くrebuildProgressの0-100%は
         // 別フェーズとして独立に表示される）
+        setOperationState({
+          type: 'rebuild',
+          origin: 'import',
+          phase: 'rebuild',
+          progress: 0,
+          message: 'インポートにより新規データを検出、データを再構築中...'
+        })
         chrome.runtime.sendMessage<RebuildProgressMessage>({
           action: 'rebuildProgress',
           state: 'started',
@@ -278,7 +286,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
 
         try {
           const rebuildResult = await performFullRebuild((progress, message) => {
-            setOperationState({ type: 'rebuild', progress, message })
+            setOperationState({ type: 'rebuild', origin: 'import', phase: 'rebuild', progress, message })
             chrome.runtime.sendMessage<RebuildProgressMessage>({
               action: 'rebuildProgress',
               state: 'processing',

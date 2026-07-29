@@ -90,7 +90,6 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   // back to `false` (no crash) in environments without `window.matchMedia`
   // (e.g. jsdom under Jest).
   const prefersDarkScheme = useMediaQuery('(prefers-color-scheme: dark)')
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const popupThemeChangedByUserRef = useRef(false)
   const uiConfigChangedAfterMountRef = useRef(false)
 
@@ -644,7 +643,6 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           importDuplicates={importDuplicates}
           importSuccess={importSuccess}
           importStartTime={importStartTime}
-          fileInputRef={fileInputRef}
           setImportStatus={setImportStatus}
           setImportProgress={setImportProgress}
           setImportProcessed={setImportProcessed}
