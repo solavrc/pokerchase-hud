@@ -5,6 +5,8 @@ export const SENTRY_TELEMETRY_CONSENT_STORAGE_KEY =
 let permissionRevocationListenerRegistered = false
 let consentBridgeListenerRegistered = false
 let consentBridgeInitialization: Promise<void> | undefined
+let consentMirrorGeneration = 0
+let consentMirrorWriteQueue = Promise.resolve()
 
 const localGet = (
   key: string
@@ -102,14 +104,29 @@ export const hasSentryHostPermission = async (
   })
 }
 
-const updateSentryTelemetryConsentMirror = async (
-  localConsent?: boolean
-): Promise<void> => {
-  const consent = localConsent ?? await readSentryTelemetryConsent()
-  const enabled = consent && await hasSentryHostPermission()
-  await sessionSet({
-    [SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]: enabled
-  })
+const updateSentryTelemetryConsentMirror = async (): Promise<void> => {
+  const generation = ++consentMirrorGeneration
+  const consent = await readSentryTelemetryConsent()
+  if (consent) await hasSentryHostPermission()
+  if (generation !== consentMirrorGeneration) return
+
+  // Serialize only the storage commits, not the permission reads. A newer
+  // disable can therefore invalidate a slow older enable immediately; if an
+  // older write is already in flight, the newer generation commits after it.
+  const write = consentMirrorWriteQueue
+    .catch(() => undefined)
+    .then(async () => {
+      if (generation !== consentMirrorGeneration) return
+      const currentConsent = await readSentryTelemetryConsent()
+      const currentEnabled =
+        currentConsent && await hasSentryHostPermission()
+      if (generation !== consentMirrorGeneration) return
+      await sessionSet({
+        [SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]: currentEnabled
+      })
+    })
+  consentMirrorWriteQueue = write
+  await write
 }
 
 /**
@@ -130,9 +147,7 @@ export const initializeSentryTelemetryConsentBridge = (): Promise<void> => {
       ) {
         return
       }
-      const enabled =
-        changes[SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]?.newValue === true
-      void updateSentryTelemetryConsentMirror(enabled).catch(() => {
+      void updateSentryTelemetryConsentMirror().catch(() => {
         console.warn('[Sentry] Failed to update the consent mirror')
       })
     })
@@ -177,6 +192,7 @@ export const revokeSentryTelemetry = async (): Promise<void> => {
   // Stop all runtimes through storage.onChanged before removing the network
   // grant. This remains safe if permission removal itself fails.
   await clearSentryTelemetryConsent()
+  await updateSentryTelemetryConsentMirror()
   if (chrome.permissions?.remove) {
     await chrome.permissions.remove({
       origins: [SENTRY_HOST_PERMISSION]

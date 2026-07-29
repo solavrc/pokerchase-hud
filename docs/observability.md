@@ -58,6 +58,9 @@ direct identifiers are replaced with stable per-event aliases (`user#1`,
 `user#2`, ...). User/player/friend names, chat and other free text,
 credentials and authentication/session tokens, email/IP fields, URL query
 strings, dynamic map keys, and unknown string values are redacted client-side.
+For an object container not defined by the current protocol, child keys are
+treated as potentially user-controlled map keys and replaced with stable
+structural aliases; the value shape remains available for schema repair.
 Only an explicit allow-list of machine-readable protocol IDs (for example
 `CharaId`, `RankId`, and `ItemId`) retains string values. Numeric and boolean
 poker state remains available for semantic interpretation; identifier-sized

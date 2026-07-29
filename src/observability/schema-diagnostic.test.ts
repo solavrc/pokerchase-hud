@@ -56,11 +56,11 @@ describe('schema repair diagnostics', () => {
       'PlayerName: string',
       'SeatUserIds: array',
       'Enabled: boolean',
-      'Nested.Items: array',
-      'Nested.Items[]: object',
-      'Nested.Items[].Amount: integer',
-      'Nested.Items[].Amount: number',
-      'Nested.Items[].Extra: null',
+      'Nested.[dynamic-key]: array',
+      'Nested.[dynamic-key][]: object',
+      'Nested.[dynamic-key][].Amount: integer',
+      'Nested.[dynamic-key][].Amount: number',
+      'Nested.[dynamic-key][].Extra: null',
       'Class.[dynamic-key]: string'
     ]))
     expect(diagnostic.issues).toEqual([{
@@ -93,7 +93,7 @@ describe('schema repair diagnostics', () => {
         RewardChip: 0
       }],
       Nested: {
-        Items: [
+        '[dynamic-key-1]': [
           {
             Amount: 100,
             Label: '[redacted-string:length=13]'
@@ -168,6 +168,55 @@ describe('schema repair diagnostics', () => {
       actualType: 'string'
     }])
     expect(JSON.stringify(diagnostic)).not.toContain('Alice')
+  })
+
+  it('redacts keys in previously unknown map containers', () => {
+    const diagnostic = buildSchemaDiagnostic(
+      {
+        Players: {
+          Alice: {
+            UserId: 129532369,
+            Chip: 1200
+          },
+          Bob: {
+            UserId: 99887766,
+            Chip: 800
+          }
+        }
+      },
+      [{
+        path: ['Players', 'Alice', 'UserId'],
+        code: 'invalid_type',
+        expected: 'string'
+      }]
+    )
+
+    expect(diagnostic.issues[0]?.path).toBe(
+      'Players.[dynamic-key].UserId'
+    )
+    expect(diagnostic.payloadShape).toEqual(expect.arrayContaining([
+      'Players: object',
+      'Players.[dynamic-key]: object',
+      'Players.[dynamic-key].UserId: integer',
+      'Players.[dynamic-key].Chip: integer'
+    ]))
+    expect(diagnostic.sanitizedPayload).toEqual({
+      Players: {
+        '[dynamic-key-1]': {
+          UserId: 'user#1',
+          Chip: 1200
+        },
+        '[dynamic-key-2]': {
+          UserId: 'user#2',
+          Chip: 800
+        }
+      }
+    })
+    const serialized = JSON.stringify(diagnostic)
+    expect(serialized).not.toContain('Alice')
+    expect(serialized).not.toContain('Bob')
+    expect(serialized).not.toContain('129532369')
+    expect(serialized).not.toContain('99887766')
   })
 
   it('redacts unknown strings by default while retaining allow-listed protocol IDs', () => {

@@ -65,6 +65,28 @@ describe('Sentry telemetry consent', () => {
     ).resolves.toBe(false)
   })
 
+  it('does not let a stale enable permission check overwrite a later disable', async () => {
+    ;(chrome.permissions.request as jest.Mock).mockResolvedValue(true)
+    await requestSentryTelemetry()
+
+    let resolvePermission: ((granted: boolean) => void) | undefined
+    ;(chrome.permissions.contains as jest.Mock).mockReturnValueOnce(
+      new Promise<boolean>(resolve => {
+        resolvePermission = resolve
+      })
+    )
+    const staleEnable = initializeSentryTelemetryConsentBridge()
+    await waitForPermissionCheck()
+
+    await revokeSentryTelemetry()
+    resolvePermission?.(true)
+    await staleEnable
+
+    await expect(
+      readSentryTelemetryConsent('content_script')
+    ).resolves.toBe(false)
+  })
+
   it('does not persist consent when the optional host is denied', async () => {
     ;(chrome.permissions.request as jest.Mock).mockResolvedValue(false)
 
@@ -106,3 +128,11 @@ describe('Sentry telemetry consent', () => {
     })
   })
 })
+
+const waitForPermissionCheck = async (): Promise<void> => {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if ((chrome.permissions.contains as jest.Mock).mock.calls.length > 0) return
+    await Promise.resolve()
+  }
+  throw new Error('permission check did not start')
+}

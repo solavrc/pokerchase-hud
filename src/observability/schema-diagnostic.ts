@@ -29,7 +29,46 @@ const MAX_PAYLOAD_OBJECT_KEYS = 80
 const MAX_PAYLOAD_ARRAY_ENTRIES = 50
 const MAX_PAYLOAD_STRING_LENGTH = 2000
 const SAFE_SCHEMA_KEY = /^[A-Za-z][A-Za-z0-9_]{0,63}$/
-const DYNAMIC_KEY_CONTAINERS = new Set(['Class'])
+const MAP_VALUE_CONTAINER = '[map-value]'
+// Child keys are retained only inside object shapes already defined by the
+// current protocol. An unknown object container may instead be a
+// user-controlled keyed map (for example Players.{displayName}), so its keys
+// are aliases by default. MAP_VALUE_CONTAINER preserves the immediate fixed
+// fields inside an already-aliased map value.
+const FIXED_SCHEMA_KEY_CONTAINERS = new Set([
+  MAP_VALUE_CONTAINER,
+  'BlindStructures',
+  'Charas',
+  'ClassPointBreakdownList',
+  'Decos',
+  'Error',
+  'Game',
+  'Ic',
+  'Items',
+  'JoinPlayer',
+  'JoinUser',
+  'Message',
+  'Money',
+  'MoneyList',
+  'MyRanking',
+  'OtherPlayers',
+  'Player',
+  'PrevMessage',
+  'Progress',
+  'Rank',
+  'RankReward',
+  'RankingRewards',
+  'RebuyCostTicket',
+  'Results',
+  'Rewards',
+  'RingReward',
+  'RingRule',
+  'Stamps',
+  'TableUsers',
+  'TournamentReward',
+  'TournamentRule',
+  'Us'
+])
 const USER_IDENTIFIER_KEY =
   /(?:user|friend|player|account|member|owner|device)[A-Za-z0-9_]*Ids?$/i
 const USER_NAME_KEY =
@@ -59,7 +98,7 @@ const safeSchemaKey = (
   key: PropertyKey,
   parentKey?: string
 ): string => {
-  if (parentKey && DYNAMIC_KEY_CONTAINERS.has(parentKey)) {
+  if (parentKey && !FIXED_SCHEMA_KEY_CONTAINERS.has(parentKey)) {
     return '[dynamic-key]'
   }
   if (typeof key !== 'string' || !SAFE_SCHEMA_KEY.test(key)) {
@@ -85,7 +124,9 @@ const formatIssuePath = (path: readonly PropertyKey[]): string => {
     }
     const key = safeSchemaKey(part, parentKey)
     result = result ? `${result}.${key}` : key
-    parentKey = typeof part === 'string' ? part : undefined
+    parentKey = key === '[dynamic-key]'
+      ? MAP_VALUE_CONTAINER
+      : typeof part === 'string' ? part : undefined
   }
   return result
 }
@@ -233,13 +274,20 @@ const buildSanitizedPayload = (
         entries
           .slice(0, MAX_PAYLOAD_OBJECT_KEYS)
           .map(([childKey, child], index) => {
-            const safeKey =
-              rawKey && DYNAMIC_KEY_CONTAINERS.has(rawKey)
-                ? `[dynamic-key-${index + 1}]`
-                : safeSchemaKey(childKey)
+            const schemaKey = safeSchemaKey(childKey, rawKey)
+            const safeKey = schemaKey === '[dynamic-key]'
+              ? `[dynamic-key-${index + 1}]`
+              : schemaKey
             return [
               safeKey,
-              visit(child, depth + 1, childKey, rawKey)
+              visit(
+                child,
+                depth + 1,
+                schemaKey === '[dynamic-key]'
+                  ? MAP_VALUE_CONTAINER
+                  : childKey,
+                rawKey
+              )
             ]
           })
       )
@@ -322,7 +370,12 @@ export const buildSchemaDiagnostic = (
       )
       for (const sample of samples) {
         if (sample !== null && typeof sample === 'object') {
-          visit(sample, appendPath(path, '[]'), depth + 1)
+          visit(
+            sample,
+            appendPath(path, '[]'),
+            depth + 1,
+            parentKey
+          )
         }
       }
       if (value.length > MAX_ARRAY_SAMPLES) truncated = true
@@ -336,7 +389,12 @@ export const buildSchemaDiagnostic = (
 
       for (const [rawKey, child] of entries.slice(0, MAX_OBJECT_KEYS)) {
         const key = safeSchemaKey(rawKey, parentKey)
-        visit(child, appendPath(path, key), depth + 1, rawKey)
+        visit(
+          child,
+          appendPath(path, key),
+          depth + 1,
+          key === '[dynamic-key]' ? MAP_VALUE_CONTAINER : rawKey
+        )
       }
     }
   }
