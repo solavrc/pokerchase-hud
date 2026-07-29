@@ -1,4 +1,5 @@
 import {
+  HAND_LOG_LAYOUT_STORAGE_KEY,
   hudPositionStorageKey,
   resolveLocalUIScale,
   UI_SCALE_STORAGE_KEY,
@@ -69,6 +70,18 @@ export const installChromeMock = (): MockChromeController => {
       notify(changes, areaName)
       callback?.()
     },
+    remove: (keys: string | string[], callback?: () => void) => {
+      const changes: Record<string, chrome.storage.StorageChange> = {}
+
+      ;(Array.isArray(keys) ? keys : [keys]).forEach((key) => {
+        if (!values.has(key)) return
+        changes[key] = { oldValue: values.get(key), newValue: undefined }
+        values.delete(key)
+      })
+
+      if (Object.keys(changes).length > 0) notify(changes, areaName)
+      callback?.()
+    },
   })
 
   const syncStorage = createStorageArea(syncedValues, 'sync')
@@ -99,6 +112,7 @@ export const installChromeMock = (): MockChromeController => {
           scale?: number
           seatIndex?: number
           position?: unknown
+          layout?: unknown
         },
         callback?: (response: unknown) => void,
       ) => {
@@ -130,6 +144,32 @@ export const installChromeMock = (): MockChromeController => {
           localStorage.set({
             [hudPositionStorageKey(message.seatIndex)]: message.position,
           }, () => {
+            callback?.({ success: true })
+          })
+          return
+        }
+
+        if (message.action === 'getDeviceHandLogLayout') {
+          callback?.({
+            success: true,
+            ...(localValues.has(HAND_LOG_LAYOUT_STORAGE_KEY)
+              ? { layout: localValues.get(HAND_LOG_LAYOUT_STORAGE_KEY) }
+              : {}),
+          })
+          return
+        }
+
+        if (message.action === 'setDeviceHandLogLayout') {
+          localStorage.set({
+            [HAND_LOG_LAYOUT_STORAGE_KEY]: message.layout,
+          }, () => {
+            callback?.({ success: true })
+          })
+          return
+        }
+
+        if (message.action === 'resetDeviceHandLogLayout') {
+          localStorage.remove(HAND_LOG_LAYOUT_STORAGE_KEY, () => {
             callback?.({ success: true })
           })
           return

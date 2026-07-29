@@ -4,7 +4,7 @@
  */
 
 import type { FilterOptions, PlayerStats, PositionalStatsResult, RecentHandsResult } from './index'
-import { HandLogConfig, HandLogEvent, UIConfig } from './hand-log'
+import { HandLogConfig, HandLogEvent, HandLogLayout, UIConfig } from './hand-log'
 import type { SyncState } from '../services/auto-sync-service'
 import type { UndecodedEventStats } from '../background/undecoded-event-tracker'
 
@@ -53,6 +53,11 @@ export const MESSAGE_ACTIONS = {
   GET_DEVICE_UI_LAYOUT: 'getDeviceUILayout',
   SET_DEVICE_UI_SCALE: 'setDeviceUIScale',
   SET_DEVICE_HUD_POSITION: 'setDeviceHudPosition',
+  GET_DEVICE_HAND_LOG_LAYOUT: 'getDeviceHandLogLayout',
+  SET_DEVICE_HAND_LOG_LAYOUT: 'setDeviceHandLogLayout',
+  RESET_DEVICE_HAND_LOG_LAYOUT: 'resetDeviceHandLogLayout',
+  UPDATE_HAND_LOG_LAYOUT: 'updateHandLogLayout',
+  RESET_HAND_LOG_LAYOUT: 'resetHandLogLayout',
   SET_SYNCED_UI_CONFIG: 'setSyncedUIConfig',
   // Operation state
   GET_OPERATION_STATE: 'getOperationState',
@@ -212,6 +217,28 @@ export interface SetDeviceHudPositionMessage {
   action: 'setDeviceHudPosition'
   seatIndex: number
   position: HudPosition
+}
+
+export interface GetDeviceHandLogLayoutMessage {
+  action: 'getDeviceHandLogLayout'
+}
+
+export interface SetDeviceHandLogLayoutMessage {
+  action: 'setDeviceHandLogLayout'
+  layout: HandLogLayout
+}
+
+export interface ResetDeviceHandLogLayoutMessage {
+  action: 'resetDeviceHandLogLayout'
+}
+
+export interface UpdateHandLogLayoutMessage {
+  action: 'updateHandLogLayout'
+  layout: HandLogLayout
+}
+
+export interface ResetHandLogLayoutMessage {
+  action: 'resetHandLogLayout'
 }
 
 export interface SetSyncedUIConfigMessage {
@@ -429,7 +456,11 @@ export interface DeviceUILayoutResponse extends SuccessResponse {
   position?: HudPosition
 }
 
-export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse | RecentHandsResponse | UndecodedEventStatsResponse | ApplyUpdateResponse | DeviceUILayoutResponse
+export interface DeviceHandLogLayoutResponse extends SuccessResponse {
+  layout?: HandLogLayout
+}
+
+export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse | RecentHandsResponse | UndecodedEventStatsResponse | ApplyUpdateResponse | DeviceUILayoutResponse | DeviceHandLogLayoutResponse
 
 // Union type of all possible messages
 export type ChromeMessage =
@@ -455,6 +486,11 @@ export type ChromeMessage =
   | GetDeviceUILayoutMessage
   | SetDeviceUIScaleMessage
   | SetDeviceHudPositionMessage
+  | GetDeviceHandLogLayoutMessage
+  | SetDeviceHandLogLayoutMessage
+  | ResetDeviceHandLogLayoutMessage
+  | UpdateHandLogLayoutMessage
+  | ResetHandLogLayoutMessage
   | SetSyncedUIConfigMessage
   | PatchSyncedUIConfigMessage
   | FirebaseAuthStatusMessage

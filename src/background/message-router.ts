@@ -17,7 +17,9 @@ import { getUndecodedEventStats, resetUndecodedEventStats } from './undecoded-ev
 import { applyUpdateNow } from './update-manager'
 import { acknowledgeWhatsNew } from './whats-new-badge'
 import {
+  HAND_LOG_LAYOUT_STORAGE_KEY,
   hudPositionStorageKey,
+  isValidHandLogLayout,
   isValidHudPosition,
   isValidHudPositionId,
   isValidUIScale,
@@ -105,8 +107,12 @@ const publishImportResult = async (
 export const registerMessageRouter = (service: PokerChaseService, db: PokerChaseDB, gameUrlPattern: string): void => {
   const { exportData, importData, deleteAllData, getLatestSessionStats, rebuildAllData } = createImportExportHandlers(service, db, gameUrlPattern)
   let deviceScaleWriteGeneration = 0
-  const broadcastDeviceScale = (
-    scale: number,
+  let handLogLayoutWriteGeneration = 0
+  let pendingHandLogLayoutWriteCount = 0
+  const pendingHandLogLayoutReads: Array<() => void> = []
+
+  const broadcastToGameTabs = (
+    message: ChromeMessage,
     complete: () => void
   ): void => {
     chrome.tabs.query({ url: gameUrlPattern }, tabs => {
@@ -115,18 +121,75 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       for (const tab of tabs ?? []) {
         if (!tab.id) continue
         deliveries.push(
-          chrome.tabs.sendMessage(tab.id, {
-            action: 'updateDeviceUIScale',
-            scale,
-          }).catch(() => {
-            // Matching tabs can navigate between query and delivery. The
-            // local value remains authoritative for the next mount.
+          chrome.tabs.sendMessage(tab.id, message).catch(() => {
+            // Matching tabs can navigate between query and delivery. Persisted
+            // layout remains authoritative for the next mount.
           })
         )
       }
       void Promise.all(deliveries).then(complete)
     })
   }
+
+  const flushPendingHandLogLayoutReads = (): void => {
+    if (pendingHandLogLayoutWriteCount > 0) return
+    const pendingReads = pendingHandLogLayoutReads.splice(0)
+    pendingReads.forEach(read => read())
+  }
+
+  const enqueueHandLogLayoutWrite = (
+    operation: (callback: () => void) => void,
+    sendResponse: (response: MessageResponse) => void,
+    failureMessage: string,
+    afterSuccessfulWrite?: (complete: () => void) => void
+  ): void => {
+    handLogLayoutWriteGeneration += 1
+    const generation = handLogLayoutWriteGeneration
+    pendingHandLogLayoutWriteCount += 1
+
+    void enqueuePendingStorageWrite(() =>
+      new Promise<chrome.runtime.LastError | undefined>((resolve) => {
+        operation(() => {
+          const error = chrome.runtime.lastError
+          if (error || !afterSuccessfulWrite) {
+            resolve(error)
+            return
+          }
+          // Publish every successfully persisted state in FIFO order. A newer
+          // success will overwrite this delivery, while a newer failure leaves
+          // the last durable state visible instead of stranding the HUD on a
+          // value that was never saved.
+          afterSuccessfulWrite(() => resolve(undefined))
+        })
+      })
+    ).then(error => {
+      const superseded = generation !== handLogLayoutWriteGeneration
+      sendResponse(
+        error
+          ? { success: false, error: error.message ?? failureMessage }
+          : superseded
+            ? { success: false, error: 'Superseded by newer hand log layout' }
+            : { success: true }
+      )
+    }, error => {
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : failureMessage,
+      })
+    }).finally(() => {
+      pendingHandLogLayoutWriteCount -= 1
+      flushPendingHandLogLayoutReads()
+    })
+  }
+
+  const enqueueHandLogLayoutRead = (read: () => void): void => {
+    if (pendingHandLogLayoutWriteCount > 0) {
+      pendingHandLogLayoutReads.push(read)
+      return
+    }
+    read()
+  }
+
   const enqueueDeviceScaleWrite = (
     scale: number,
     complete: (error: chrome.runtime.LastError | undefined) => void
@@ -142,7 +205,10 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
           // Dispatch from the persistent background before this queue entry
           // settles; popup teardown cannot suppress the live HUD update, and
           // forced reload cannot overtake the tabs.query handoff.
-          broadcastDeviceScale(scale, () => resolve(undefined))
+          broadcastToGameTabs({
+            action: 'updateDeviceUIScale',
+            scale,
+          }, () => resolve(undefined))
         })
       })
     ).then(complete, error => {
@@ -355,6 +421,62 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
           error: error instanceof Error ? error.message : 'Failed to save HUD position',
         })
       })
+      return true
+    } else if (request.action === 'getDeviceHandLogLayout') {
+      enqueueHandLogLayoutRead(() => {
+        chrome.storage.local.get(
+          HAND_LOG_LAYOUT_STORAGE_KEY,
+          (result: Record<string, unknown>) => {
+            const error = chrome.runtime.lastError
+            if (error) {
+              sendResponse({
+                success: false,
+                error: error.message ?? 'Failed to read hand log layout',
+              })
+              return
+            }
+            const layout = result[HAND_LOG_LAYOUT_STORAGE_KEY]
+            sendResponse({
+              success: true,
+              ...(isValidHandLogLayout(layout) ? { layout } : {}),
+            })
+          }
+        )
+      })
+      return true
+    } else if (request.action === 'setDeviceHandLogLayout') {
+      if (!isValidHandLogLayout(request.layout)) {
+        sendResponse({ success: false, error: 'Invalid hand log layout' })
+        return true
+      }
+      enqueueHandLogLayoutWrite(
+        callback => chrome.storage.local.set({
+          [HAND_LOG_LAYOUT_STORAGE_KEY]: request.layout,
+        }, callback),
+        sendResponse,
+        'Failed to save hand log layout',
+        complete => broadcastToGameTabs(
+          {
+            action: 'updateHandLogLayout',
+            layout: request.layout,
+          },
+          complete
+        )
+      )
+      return true
+    } else if (request.action === 'resetDeviceHandLogLayout') {
+      enqueueHandLogLayoutWrite(
+        callback => chrome.storage.local.remove(
+          HAND_LOG_LAYOUT_STORAGE_KEY,
+          callback
+        ),
+        sendResponse,
+        'Failed to reset hand log layout',
+        complete => broadcastToGameTabs(
+          { action: 'resetHandLogLayout' },
+          complete
+        )
+      )
       return true
     } else if (request.action === 'exportData') {
       // Block concurrent operations

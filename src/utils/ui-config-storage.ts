@@ -1,9 +1,11 @@
 import {
   DEFAULT_UI_CONFIG,
+  type HandLogLayout,
   type UIConfig,
 } from '../types/hand-log'
 import type {
   ChromeMessage,
+  DeviceHandLogLayoutResponse,
   DeviceUILayoutResponse,
   HudPosition,
 } from '../types/messages'
@@ -12,6 +14,9 @@ export const UI_SCALE_STORAGE_KEY = 'uiScale'
 export const LEGACY_SYNC_UI_SCALE_KEY = 'legacyUIScale'
 export const REAL_TIME_HUD_POSITION_OFFSET = 100
 export const DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS = 1_000
+export const HAND_LOG_LAYOUT_STORAGE_KEY = 'handLogLayout'
+export const HAND_LOG_MIN_WIDTH = 200
+export const HAND_LOG_MIN_HEIGHT = 80
 export const hudPositionStorageKey = (seatIndex: number): string =>
   `hudPosition_${seatIndex}`
 
@@ -56,6 +61,23 @@ export const isValidHudPosition = (value: unknown): value is HudPosition => {
   if (typeof value !== 'object' || value === null) return false
   const position = value as Partial<HudPosition>
   return isValidPercentPosition(position.top) && isValidPercentPosition(position.left)
+}
+
+export const isValidHandLogLayout = (value: unknown): value is HandLogLayout => {
+  if (typeof value !== 'object' || value === null) return false
+  const layout = value as Partial<HandLogLayout>
+  return (
+    typeof layout.left === 'number' &&
+    Number.isFinite(layout.left) &&
+    typeof layout.top === 'number' &&
+    Number.isFinite(layout.top) &&
+    typeof layout.width === 'number' &&
+    Number.isFinite(layout.width) &&
+    layout.width >= HAND_LOG_MIN_WIDTH &&
+    typeof layout.height === 'number' &&
+    Number.isFinite(layout.height) &&
+    layout.height >= HAND_LOG_MIN_HEIGHT
+  )
 }
 
 export const mergeUIConfigWithLocalScale = (
@@ -292,6 +314,33 @@ export const saveHudPosition = (
         warned = true
         console.warn('[HUD layout] Failed to save device-local position')
       }
+    }
+  )
+}
+
+export const loadHandLogLayout = (
+  callback: (layout: HandLogLayout | undefined) => void
+): void => {
+  sendDeviceLayoutReadMessage<DeviceHandLogLayoutResponse>(
+    { action: 'getDeviceHandLogLayout' },
+    (response: DeviceHandLogLayoutResponse | undefined) => {
+      callback(isValidHandLogLayout(response?.layout) ? response.layout : undefined)
+    }
+  )
+}
+
+export const saveHandLogLayout = (layout: HandLogLayout): void => {
+  sendDeviceLayoutWriteMessage(
+    { action: 'setDeviceHandLogLayout', layout },
+    (_status) => {}
+  )
+}
+
+export const resetHandLogLayout = (callback?: () => void): void => {
+  sendDeviceLayoutWriteMessage(
+    { action: 'resetDeviceHandLogLayout' },
+    status => {
+      if (status === 'success') callback?.()
     }
   )
 }

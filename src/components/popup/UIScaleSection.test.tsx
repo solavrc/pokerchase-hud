@@ -46,8 +46,39 @@ describe('UIScaleSection', () => {
     expect(screen.getByText('100%')).toBeInTheDocument()
     expect(screen.getByText('表示')).toBeInTheDocument()
     expect(screen.getByText('非表示')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '位置とサイズをリセット' })).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'HUD表示切り替えショートカット' }))
       .toHaveValue('Shift + H')
+  })
+
+  it('ハンドログの位置とサイズのリセットを永続backgroundへ委譲する', async () => {
+    const user = userEvent.setup()
+    render(<UIScaleSection {...defaultProps} />)
+
+    await user.click(screen.getByRole('button', { name: '位置とサイズをリセット' }))
+
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      { action: 'resetDeviceHandLogLayout' },
+      expect.any(Function)
+    )
+    expect(mockTabsQuery).not.toHaveBeenCalled()
+    expect(mockTabsSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('ハンドログlayoutの永続削除に失敗した場合は表示だけをリセットしない', async () => {
+    const user = userEvent.setup()
+    mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
+      callback({ success: false, error: 'remove failed' })
+    })
+    render(<UIScaleSection {...defaultProps} />)
+
+    await user.click(screen.getByRole('button', { name: '位置とサイズをリセット' }))
+
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      { action: 'resetDeviceHandLogLayout' },
+      expect.any(Function)
+    )
+    expect(mockTabsSendMessage).not.toHaveBeenCalled()
   })
 
   it('端末倍率が未確定の間は倍率操作だけを無効化する', () => {
@@ -62,6 +93,9 @@ describe('UIScaleSection', () => {
     expect(screen.getByRole('button', { name: '-' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '表示' })).toBeEnabled()
     expect(screen.getByRole('button', { name: '非表示' })).toBeEnabled()
+    expect(screen.getByRole('button', {
+      name: '位置とサイズをリセット',
+    })).toBeEnabled()
   })
 
   it('省略される長いショートカットもtitleで完全表示する', () => {

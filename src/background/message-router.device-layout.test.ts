@@ -3,6 +3,7 @@ import PokerChaseService, { PokerChaseDB } from '../app'
 import type { ChromeMessage, MessageResponse } from '../types/messages'
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import {
+  HAND_LOG_LAYOUT_STORAGE_KEY,
   hudPositionStorageKey,
   LEGACY_SYNC_UI_SCALE_KEY,
   UI_SCALE_STORAGE_KEY,
@@ -203,6 +204,274 @@ describe('message-router device-local UI layout', () => {
       success: true,
       scale: 1,
       position,
+    })
+  })
+
+  it('ハンドログの位置とサイズを端末ローカルへ保存・読込する', async () => {
+    const layout = { left: -120, top: 40, width: 640, height: 320 }
+    const saveResponse = jest.fn()
+    const loadResponse = jest.fn()
+
+    listener({ action: 'setDeviceHandLogLayout', layout }, {}, saveResponse)
+    listener({ action: 'getDeviceHandLogLayout' }, {}, loadResponse)
+    await getPendingStorageWriteTail()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(saveResponse).toHaveBeenCalledWith({ success: true })
+    expect(loadResponse).toHaveBeenCalledWith({
+      success: true,
+      layout,
+    })
+    expect(await chrome.storage.local.get(HAND_LOG_LAYOUT_STORAGE_KEY)).toEqual({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: layout,
+    })
+  })
+
+  it('ハンドログの端末ローカルlayoutだけを削除する', async () => {
+    const position = { top: '12%', left: '20%' }
+    await chrome.storage.local.set({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: {
+        left: 10,
+        top: 20,
+        width: 400,
+        height: 100,
+      },
+      [hudPositionStorageKey(0)]: position,
+    })
+    const resetResponse = jest.fn()
+
+    listener({ action: 'resetDeviceHandLogLayout' }, {}, resetResponse)
+    await getPendingStorageWriteTail()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(resetResponse).toHaveBeenCalledWith({ success: true })
+    expect(await chrome.storage.local.get([
+      HAND_LOG_LAYOUT_STORAGE_KEY,
+      hudPositionStorageKey(0),
+    ])).toEqual({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: undefined,
+      [hudPositionStorageKey(0)]: position,
+    })
+  })
+
+  it('popupの応答を待たずbackgroundからresetを通知してからwriteを完了する', async () => {
+    const oldLayout = { left: 10, top: 20, width: 400, height: 100 }
+    await chrome.storage.local.set({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: oldLayout,
+    })
+    ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => {
+      callback([{ id: 42 }])
+    })
+    let finishDelivery!: () => void
+    ;(chrome.tabs.sendMessage as jest.Mock).mockReturnValueOnce(
+      new Promise<void>(resolve => {
+        finishDelivery = resolve
+      })
+    )
+    const resetResponse = jest.fn()
+
+    listener({ action: 'resetDeviceHandLogLayout' }, {}, resetResponse)
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      action: 'resetHandLogLayout',
+    })
+    expect(resetResponse).not.toHaveBeenCalled()
+    expect(await chrome.storage.local.get(HAND_LOG_LAYOUT_STORAGE_KEY)).toEqual({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: undefined,
+    })
+
+    finishDelivery()
+    await getPendingStorageWriteTail()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(resetResponse).toHaveBeenCalledWith({ success: true })
+  })
+
+  it('遅延resetより新しいlayout保存を優先する', async () => {
+    const oldLayout = { left: 10, top: 20, width: 400, height: 100 }
+    const newLayout = { left: 80, top: 60, width: 520, height: 240 }
+    await chrome.storage.local.set({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: oldLayout,
+    })
+    let finishDelayedReset!: () => void
+    ;(chrome.storage.local.remove as jest.Mock).mockImplementationOnce(
+      (_key, callback) => {
+        finishDelayedReset = callback
+      }
+    )
+    const resetResponse = jest.fn()
+    const saveResponse = jest.fn()
+    ;(chrome.tabs.query as jest.Mock).mockClear()
+
+    listener({ action: 'resetDeviceHandLogLayout' }, {}, resetResponse)
+    listener({
+      action: 'setDeviceHandLogLayout',
+      layout: newLayout,
+    }, {}, saveResponse)
+    await Promise.resolve()
+
+    expect(resetResponse).not.toHaveBeenCalled()
+    expect(saveResponse).not.toHaveBeenCalled()
+
+    finishDelayedReset()
+    await getPendingStorageWriteTail()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(resetResponse).toHaveBeenCalledWith({
+      success: false,
+      error: 'Superseded by newer hand log layout',
+    })
+    expect(chrome.tabs.query).toHaveBeenCalledTimes(2)
+    expect(saveResponse).toHaveBeenCalledWith({ success: true })
+    expect(await chrome.storage.local.get(HAND_LOG_LAYOUT_STORAGE_KEY)).toEqual({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: newLayout,
+    })
+  })
+
+  it('reset配信中の後発layout保存を全ゲームタブへ再配信する', async () => {
+    const oldLayout = { left: 10, top: 20, width: 400, height: 100 }
+    const newLayout = { left: 80, top: 60, width: 520, height: 240 }
+    await chrome.storage.local.set({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: oldLayout,
+    })
+    ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => {
+      callback([{ id: 42 }])
+    })
+    let finishResetDelivery!: () => void
+    ;(chrome.tabs.sendMessage as jest.Mock)
+      .mockReturnValueOnce(new Promise<void>(resolve => {
+        finishResetDelivery = resolve
+      }))
+      .mockResolvedValue(undefined)
+    const resetResponse = jest.fn()
+    const saveResponse = jest.fn()
+
+    listener({ action: 'resetDeviceHandLogLayout' }, {}, resetResponse)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      action: 'resetHandLogLayout',
+    })
+
+    listener({
+      action: 'setDeviceHandLogLayout',
+      layout: newLayout,
+    }, {}, saveResponse)
+    await Promise.resolve()
+    expect(saveResponse).not.toHaveBeenCalled()
+
+    finishResetDelivery()
+    await getPendingStorageWriteTail()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(resetResponse).toHaveBeenCalledWith({
+      success: false,
+      error: 'Superseded by newer hand log layout',
+    })
+    expect(chrome.tabs.sendMessage).toHaveBeenLastCalledWith(42, {
+      action: 'updateHandLogLayout',
+      layout: newLayout,
+    })
+    expect(saveResponse).toHaveBeenCalledWith({ success: true })
+    expect(await chrome.storage.local.get(HAND_LOG_LAYOUT_STORAGE_KEY)).toEqual({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: newLayout,
+    })
+  })
+
+  it('後発layout保存失敗時は直前に永続化したresetを配信する', async () => {
+    const oldLayout = { left: 10, top: 20, width: 400, height: 100 }
+    const newLayout = { left: 80, top: 60, width: 520, height: 240 }
+    await chrome.storage.local.set({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: oldLayout,
+    })
+    ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => {
+      callback([{ id: 42 }])
+    })
+    const storageRemove = chrome.storage.local.remove as jest.Mock
+    const defaultRemove = storageRemove.getMockImplementation()!
+    let finishDelayedReset!: () => void
+    storageRemove.mockImplementationOnce(
+      (key, callback) => {
+        finishDelayedReset = () => defaultRemove(key, callback)
+      }
+    )
+    ;(chrome.storage.local.set as jest.Mock).mockImplementationOnce(
+      (_items, callback) => {
+        ;(chrome.runtime as any).lastError = { message: 'quota' }
+        callback()
+        delete (chrome.runtime as any).lastError
+      }
+    )
+    const resetResponse = jest.fn()
+    const saveResponse = jest.fn()
+
+    listener({ action: 'resetDeviceHandLogLayout' }, {}, resetResponse)
+    listener({
+      action: 'setDeviceHandLogLayout',
+      layout: newLayout,
+    }, {}, saveResponse)
+    await Promise.resolve()
+
+    finishDelayedReset()
+    await getPendingStorageWriteTail()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      action: 'resetHandLogLayout',
+    })
+    expect(chrome.tabs.sendMessage).not.toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({ action: 'updateHandLogLayout' })
+    )
+    expect(resetResponse).toHaveBeenCalledWith({
+      success: false,
+      error: 'Superseded by newer hand log layout',
+    })
+    expect(saveResponse).toHaveBeenCalledWith({
+      success: false,
+      error: 'quota',
+    })
+    expect(await chrome.storage.local.get(HAND_LOG_LAYOUT_STORAGE_KEY)).toEqual({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: undefined,
+    })
+  })
+
+  it('pending layout保存後の最新値をreadへ返す', async () => {
+    const oldLayout = { left: 10, top: 20, width: 400, height: 100 }
+    const newLayout = { left: 80, top: 60, width: 520, height: 240 }
+    await chrome.storage.local.set({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: oldLayout,
+    })
+    let delayedItems!: Record<string, unknown>
+    let finishDelayedSet!: () => void
+    ;(chrome.storage.local.set as jest.Mock).mockImplementationOnce(
+      (items, callback) => {
+        delayedItems = items
+        finishDelayedSet = callback
+      }
+    )
+    const saveResponse = jest.fn()
+    const loadResponse = jest.fn()
+
+    listener({
+      action: 'setDeviceHandLogLayout',
+      layout: newLayout,
+    }, {}, saveResponse)
+    listener({ action: 'getDeviceHandLogLayout' }, {}, loadResponse)
+    await Promise.resolve()
+
+    expect(saveResponse).not.toHaveBeenCalled()
+    expect(loadResponse).not.toHaveBeenCalled()
+
+    await chrome.storage.local.set(delayedItems)
+    finishDelayedSet()
+    await getPendingStorageWriteTail()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(saveResponse).toHaveBeenCalledWith({ success: true })
+    expect(loadResponse).toHaveBeenCalledWith({
+      success: true,
+      layout: newLayout,
     })
   })
 
@@ -545,6 +814,14 @@ describe('message-router device-local UI layout', () => {
       action: 'setDeviceHudPosition',
       seatIndex: 1,
       position: { top: '-1%', left: '10%' },
+    },
+    {
+      action: 'setDeviceHandLogLayout',
+      layout: { left: 0, top: 0, width: 199, height: 80 },
+    },
+    {
+      action: 'setDeviceHandLogLayout',
+      layout: { left: 0, top: 0, width: 400, height: Number.NaN },
     },
   ] as ChromeMessage[])('不正なlayout書き込みを拒否する: %p', (message) => {
     const sendResponse = jest.fn()
