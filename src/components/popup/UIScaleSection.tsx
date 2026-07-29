@@ -81,8 +81,8 @@ export const UIScaleSection = ({
   }
 
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+    <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', rowGap: 1 }}>
+      <Box sx={{ display: 'flex', width: '100%', alignItems: 'center', gap: 1 }}>
         <Typography variant="body2" sx={{ color: 'text.secondary' }}>サイズ:</Typography>
         <IconButton
           size="small"
@@ -109,7 +109,7 @@ export const UIScaleSection = ({
         </IconButton>
       </Box>
 
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+      <Box sx={{ display: 'flex', width: '100%', justifyContent: 'flex-end', alignItems: 'center', gap: 0.75 }}>
         <TextField
           inputRef={shortcutInputRef}
           size="small"

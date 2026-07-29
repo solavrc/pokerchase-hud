@@ -76,6 +76,7 @@ describe('keyboard shortcuts', () => {
     { code: 'KeyW', key: 'w', ctrlKey: true, altKey: false, shiftKey: false, metaKey: false },
     { code: 'KeyQ', key: 'q', ctrlKey: false, altKey: false, shiftKey: false, metaKey: true },
     { code: 'F4', key: 'F4', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false },
+    { code: 'F4', key: 'F4', ctrlKey: true, altKey: false, shiftKey: false, metaKey: false },
     { code: 'F5', key: 'F5', ctrlKey: false, altKey: false, shiftKey: false, metaKey: false },
   ])('rejects browser or OS reserved combinations: $code', event => {
     expect(shortcutFromKeyboardEvent(event)).toBeNull()

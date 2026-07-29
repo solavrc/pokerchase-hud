@@ -24,6 +24,7 @@ const isBrowserReservedShortcut = (
 
   const primaryKey = ctrlKey || metaKey
   if (primaryKey && !altKey) {
+    if (ctrlKey && code === 'F4') return true
     if (['KeyW', 'KeyQ', 'KeyT', 'KeyN', 'KeyR', 'KeyL', 'Tab'].includes(code)) return true
     if (!shiftKey && ['KeyP', 'KeyS', 'KeyO', 'KeyD', 'KeyF', 'KeyH', 'KeyJ', 'KeyU'].includes(code)) {
       return true
