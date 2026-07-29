@@ -245,6 +245,13 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
   // removed. A reload is not required for the visible panel to recover.
   useEffect(() => {
     const handleReset = () => {
+      // A reset is authoritative over an in-progress move/resize. Clear the
+      // interaction before applying the default layout so the still-mounted
+      // document listeners cannot revive and persist the stale start layout.
+      interactionRef.current = null
+      setInteractionMode(null)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
       layoutEditGenerationRef.current += 1
       applyLayout(null)
     }

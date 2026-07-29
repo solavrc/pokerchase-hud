@@ -481,6 +481,84 @@ describe('HandLog', () => {
     expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
   })
 
+  it.each([
+    {
+      testId: 'hand-log-move-grip',
+      startX: 620,
+      startY: 300,
+      movedX: 650,
+      movedY: 330,
+    },
+    {
+      testId: 'hand-log-resize-corner',
+      startX: 640,
+      startY: 320,
+      movedX: 670,
+      movedY: 350,
+    },
+  ])('リセット通知は進行中の$testId操作を破棄して再保存させない', ({
+    testId,
+    startX,
+    startY,
+    movedX,
+    movedY,
+  }) => {
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceHandLogLayout') {
+        callback({
+          success: true,
+          layout: { left: 120, top: 80, width: 520, height: 240 },
+        })
+      } else {
+        callback?.({ success: true })
+      }
+    })
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+    logContainer.getBoundingClientRect = jest.fn(() => ({
+      left: 120,
+      top: 80,
+      width: 520,
+      height: 240,
+      right: 640,
+      bottom: 320,
+      x: 120,
+      y: 80,
+      toJSON: () => {},
+    }))
+
+    fireEvent.mouseDown(screen.getByTestId(testId), {
+      button: 0,
+      clientX: startX,
+      clientY: startY,
+    })
+    fireEvent.mouseMove(document, {
+      clientX: movedX,
+      clientY: movedY,
+    })
+    fireEvent(window, new CustomEvent('resetHandLogLayout'))
+
+    expect(logContainer.style.left).toBe('')
+    expect(logContainer.style.right).toBeTruthy()
+    expect(logContainer.style.width).toBe(`${DEFAULT_HAND_LOG_CONFIG.width}px`)
+    expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
+    expect(document.body.style.cursor).toBe('')
+    expect(document.body.style.userSelect).toBe('')
+
+    fireEvent.mouseMove(document, {
+      clientX: movedX + 100,
+      clientY: movedY + 100,
+    })
+    fireEvent.mouseUp(document)
+
+    expect(logContainer.style.left).toBe('')
+    expect(logContainer.style.right).toBeTruthy()
+    expect(mockChromeRuntimeSendMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'setDeviceHandLogLayout' }),
+      expect.any(Function)
+    )
+  })
+
   it('旧sync configの位置とサイズを端末レイアウトへ流用しない', () => {
     const { container } = render(
       <HandLog
