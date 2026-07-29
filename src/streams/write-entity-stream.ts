@@ -98,6 +98,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
     const handState: HandState = {
       hand: {
         session: {
+          scopeKey: eventSessionScope?.scopeKey,
           id: eventSessionScope?.id ?? this.service.session.id,
           battleType: eventSessionScope?.battleType ?? this.service.session.battleType,
           name: eventSessionScope ? eventSessionScope.name : this.service.session.name

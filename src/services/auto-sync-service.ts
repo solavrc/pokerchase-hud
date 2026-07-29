@@ -1661,7 +1661,12 @@ export class AutoSyncService {
         const selectionChanged = replaySessions.currentKey !== previous.scopeKey
         replaySessions.currentKey = previous.scopeKey
         if (selectionChanged) {
-          service.startSession(previous.id, previous.battleType, previous.startedAt)
+          service.startSession(
+            previous.id,
+            previous.battleType,
+            previous.startedAt,
+            previous.scopeKey
+          )
         }
       } else if (typeof service.endSession === 'function') {
         replaySessions.currentKey = undefined
@@ -1693,7 +1698,7 @@ export class AutoSyncService {
       replaySessions.scopes.set(scopeKey, scope)
       replaySessions.currentKey = scopeKey
       if (typeof service.startSession === 'function') {
-        service.startSession(scope.id, scope.battleType, scope.startedAt)
+        service.startSession(scope.id, scope.battleType, scope.startedAt, scope.scopeKey)
       } else {
         service.session.setId(event.Id)
         service.session.setBattleType(event.BattleType)

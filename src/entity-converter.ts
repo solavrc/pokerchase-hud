@@ -57,6 +57,7 @@ export class EntityConverter {
     // SessionState の id/battleType/name は prototype 上の getter のため、
     // オブジェクトスプレッドではなく各フィールドを明示的に読み出す。
     this.currentSession = {
+      scopeKey: session.scopeKey,
       id: session.id,
       battleType: session.battleType,
       name: session.name,
@@ -197,6 +198,7 @@ export class EntityConverter {
             // VPIP/PFRのウォーク除外（#115）判定用（WriteEntityStreamと同一ロジック）。
             bigBlindUserId: getBigBlindUserId(event.SeatUserIds, event.Game.BigBlindSeat),
             session: {
+              scopeKey: session.scopeKey,
               id: session.id,
               battleType: session.battleType,
               name: session.name

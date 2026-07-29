@@ -1,4 +1,4 @@
-import type { ApiEvent } from '../types'
+import type { ApiEvent, Hand } from '../types'
 import type { BattleType } from '../types'
 import {
   getRawEventSessionContext,
@@ -6,12 +6,32 @@ import {
 } from './raw-event-session-context'
 
 export type EventSessionScope = Readonly<{
+  scopeKey?: string
   id: string
   battleType: BattleType
   startedAt: number
   name?: string
   originId?: string
 }>
+
+export type ActiveSessionScope = Readonly<{
+  scopeKey?: string
+  id: string
+  startedAt: number
+}>
+
+export const isHandInSessionScope = (
+  hand: Pick<Hand, 'session' | 'approxTimestamp'>,
+  scope: ActiveSessionScope | undefined
+): boolean => {
+  if (!scope) return false
+  if (scope.scopeKey !== undefined) {
+    return hand.session.scopeKey === scope.scopeKey
+  }
+  return hand.session.id === scope.id &&
+    Number.isFinite(hand.approxTimestamp) &&
+    hand.approxTimestamp! >= scope.startedAt
+}
 
 /**
  * Parsed live events keep their originating tab's session boundary while
@@ -34,6 +54,7 @@ export const setLineupSessionScope = (
   scope: EventSessionScope | RawEventSessionContext | undefined
 ): void => {
   if (scope) lineupSessionScopes.set(seatUserIds, {
+    scopeKey: scope.scopeKey,
     id: scope.id,
     battleType: scope.battleType,
     startedAt: scope.startedAt,

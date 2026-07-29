@@ -16,7 +16,11 @@ import { recordUndecodedEvent } from './undecoded-event-tracker'
 import { markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
 import { getOperationState } from './operation-state'
-import { setEventSessionScope, type EventSessionScope } from '../utils/session-event-scope'
+import {
+  setEventSessionScope,
+  setLineupSessionScope,
+  type EventSessionScope,
+} from '../utils/session-event-scope'
 import {
   withRawEventSessionContext,
   type RawEventSessionContext,
@@ -50,6 +54,7 @@ const SESSION_ORIGIN_STORAGE_KEY = 'activeSessionOriginsV1'
 let ingestionQueue: Promise<void> = Promise.resolve()
 
 type SessionOriginKey = number | chrome.runtime.Port
+type SessionPlayerInfo = { name: string, rank: string }
 type TrackedSessionScope = {
   scopeKey: string
   id: string
@@ -59,6 +64,7 @@ type TrackedSessionScope = {
   name?: string
   originId?: string
   latestDeal?: ApiEvent<ApiType.EVT_DEAL>
+  players?: Array<[number, SessionPlayerInfo]>
 }
 
 type SessionSelectionResult = {
@@ -77,6 +83,7 @@ const broadcastSessionSelection = (
   if (!restored.selectionChanged) return
   if (restored.scope?.latestDeal) {
     service.liveEvtDeal = restored.scope.latestDeal
+    setLineupSessionScope(restored.scope.latestDeal.SeatUserIds, restored.scope)
     service.statsOutputStream.write(restored.scope.latestDeal.SeatUserIds)
     return
   }
@@ -148,7 +155,7 @@ class SessionOriginTracker {
         }
         this.currentKey = latest?.[0]
       }
-      this.service.reconcileSessionOrigin()
+      this.applySelectedScope()
     } catch (error) {
       console.warn('[background] Failed to restore active session origins:', error)
       this.scopes.clear()
@@ -214,10 +221,16 @@ class SessionOriginTracker {
       sequence: ++this.sequence,
       name: continuesSameScope ? previous.name : context.name,
       latestDeal: continuesSameScope ? previous.latestDeal : undefined,
+      players: continuesSameScope ? previous.players : undefined,
     }
     this.scopes.set(key, scope)
     this.currentKey = key
-    this.service.startSession(scope.id, scope.battleType, scope.startedAt)
+    this.service.startSession(
+      scope.id,
+      scope.battleType,
+      scope.startedAt,
+      scope.scopeKey
+    )
     await this.persist()
   }
 
@@ -254,6 +267,31 @@ class SessionOriginTracker {
     await this.persist()
   }
 
+  async setPlayers(
+    key: SessionOriginKey,
+    players: Array<[number, SessionPlayerInfo]>
+  ): Promise<void> {
+    await this.ready
+    const scope = this.scopes.get(key)
+    if (!scope) return
+    scope.players = players
+    await this.persist()
+  }
+
+  async setPlayer(
+    key: SessionOriginKey,
+    userId: number,
+    player: SessionPlayerInfo
+  ): Promise<void> {
+    await this.ready
+    const scope = this.scopes.get(key)
+    if (!scope) return
+    const players = new Map(scope.players ?? [])
+    players.set(userId, player)
+    scope.players = [...players.entries()]
+    await this.persist()
+  }
+
   get(key: SessionOriginKey): EventSessionScope | undefined {
     return this.getContext(key)
   }
@@ -264,6 +302,28 @@ class SessionOriginTracker {
       ? undefined
       : this.getContext(this.currentKey)
     return context ?? null
+  }
+
+  private applySelectedScope(): TrackedSessionScope | undefined {
+    this.service.reconcileSessionOrigin()
+    const scope = this.currentKey === undefined
+      ? undefined
+      : this.scopes.get(this.currentKey)
+    if (!scope) return undefined
+    for (const [userId, player] of scope.players ?? []) {
+      this.service.session.setPlayer(userId, player)
+    }
+    if (scope.latestDeal) {
+      if (scope.latestDeal.Player?.SeatIndex !== undefined) {
+        this.service.playerId =
+          scope.latestDeal.SeatUserIds[scope.latestDeal.Player.SeatIndex]
+        this.service.latestEvtDeal = scope.latestDeal
+      } else {
+        this.service.latestEvtDeal = undefined
+        this.service.liveEvtDeal = scope.latestDeal
+      }
+    }
+    return scope
   }
 
   async end(key: SessionOriginKey): Promise<SessionSelectionResult> {
@@ -295,8 +355,7 @@ class SessionOriginTracker {
     }
 
     this.currentKey = nextEntry[0]
-    const next = nextEntry[1]
-    this.service.reconcileSessionOrigin()
+    const next = this.applySelectedScope() ?? nextEntry[1]
     await this.persist()
     return { selectionChanged: true, scope: next }
   }
@@ -371,7 +430,11 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   // Keep its tab-id keyed scope across that reconnect, and release it only
   // when Chrome confirms that the tab itself was closed.
   chrome.tabs?.onRemoved?.addListener(tabId => {
+    if (getOperationState().type === 'delete') {
+      return Promise.resolve()
+    }
     const task = ingestionQueue.then(async () => {
+      if (getOperationState().type === 'delete') return
       await sessionOrigins.ready
       await service.handAggregateStream.whenIdle()
       const closingContext = sessionOrigins.getContext(tabId)
@@ -809,6 +872,26 @@ const processEvent = async (
 
   if (data.ApiTypeId === ApiType.EVT_SESSION_DETAILS) {
     await sessionOrigins.setName(originKey, data.Name)
+  } else if (data.ApiTypeId === ApiType.EVT_PLAYER_SEAT_ASSIGNED) {
+    await sessionOrigins.setPlayers(
+      originKey,
+      (data.TableUsers ?? []).map(tableUser => [
+        tableUser.UserId,
+        {
+          name: tableUser.UserName,
+          rank: tableUser.Rank.RankId,
+        },
+      ])
+    )
+  } else if (data.ApiTypeId === ApiType.EVT_PLAYER_JOIN && data.JoinUser) {
+    await sessionOrigins.setPlayer(
+      originKey,
+      data.JoinUser.UserId,
+      {
+        name: data.JoinUser.UserName,
+        rank: data.JoinUser.Rank.RankId,
+      }
+    )
   } else if (data.ApiTypeId === ApiType.EVT_DEAL) {
     await sessionOrigins.setLatestDeal(originKey, data)
   }

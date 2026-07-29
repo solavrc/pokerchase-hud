@@ -210,7 +210,15 @@ export async function mergeApiEvents(
             ...duplicate,
             [RAW_EVENT_SESSION_CONTEXT_FIELD]: { ...incomingContext },
           }
-          await db.apiEvents.put(upgraded as unknown as ApiEvent)
+          const stagedIndex = added.indexOf(duplicate)
+          if (stagedIndex >= 0) {
+            // The duplicate was introduced earlier in this same batch and is
+            // not in IndexedDB yet. Replace the staged row so the final
+            // bulkAdd inserts the enriched version exactly once.
+            added[stagedIndex] = upgraded
+          } else {
+            await db.apiEvents.put(upgraded as unknown as ApiEvent)
+          }
           const duplicateIndex = group.indexOf(duplicate)
           group[duplicateIndex] = upgraded
           if (isCloudReplayEvent(upgraded)) {

@@ -199,6 +199,31 @@ describe('RecentHandsService', () => {
       expect(result.hands.map(h => h.handId)).toEqual([5])
     })
 
+    test('sessionOnly isolates overlapping runs that reuse the same Ring id', async () => {
+      await db.hands.update(4, {
+        approxTimestamp: 5000,
+        session: {
+          scopeKey: 'run-a',
+          id: 'current',
+          battleType: BattleType.RING_GAME,
+        },
+      })
+      await db.hands.update(5, {
+        approxTimestamp: 5100,
+        session: {
+          scopeKey: 'run-b',
+          id: 'current',
+          battleType: BattleType.RING_GAME,
+        },
+      })
+      service.startSession('current', BattleType.RING_GAME, 4500, 'run-b')
+      service.sessionOnlyFilter = true
+
+      const result = await getRecentHands(db, service, PLAYER_ID, 10)
+
+      expect(result.hands.map(h => h.handId)).toEqual([5])
+    })
+
     test('sessionOnly snapshots its active boundary before the asynchronous DB read', async () => {
       await db.hands.update(4, {
         approxTimestamp: 4000,
@@ -209,7 +234,7 @@ describe('RecentHandsService', () => {
         session: { id: 'current', battleType: BattleType.RING_GAME },
       })
       service.sessionOnlyFilter = true
-      const scopeSpy = jest.spyOn(service, 'getCurrentSessionScope')
+      const scopeSpy = jest.spyOn(service, 'getCurrentSessionFilterScope')
         .mockReturnValueOnce({ id: 'current', startedAt: 4500 })
         .mockReturnValue({ id: 'other', startedAt: 0 })
 

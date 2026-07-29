@@ -17,6 +17,8 @@ import { compareHandsNewestFirst } from '../utils/hand-order'
 import type { ErrorContext } from '../types/errors'
 import {
   getLineupSessionScope,
+  isHandInSessionScope,
+  type ActiveSessionScope,
   type EventSessionScope,
 } from '../utils/session-event-scope'
 
@@ -49,7 +51,7 @@ const FORCED_ENABLED_STAT_IDS: ReadonlySet<string> = new Set([
 
 type SessionFilterSnapshot =
   | Readonly<{ enabled: false }>
-  | Readonly<{ enabled: true, scope?: Readonly<{ id: string, startedAt: number }> }>
+  | Readonly<{ enabled: true, scope?: ActiveSessionScope }>
 
 export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
   private service: PokerChaseService
@@ -124,7 +126,9 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       // seatUserIdsとフィルター設定に基づいてキャッシュキーを作成
       const sessionFilter = this.captureSessionFilter(originatingScope)
       const sessionFilterKey = sessionFilter.enabled
-        ? `session:${sessionFilter.scope ? `${sessionFilter.scope.id}@${sessionFilter.scope.startedAt}` : 'inactive'}`
+        ? `session:${sessionFilter.scope
+          ? sessionFilter.scope.scopeKey ?? `${sessionFilter.scope.id}@${sessionFilter.scope.startedAt}`
+          : 'inactive'}`
         : 'all-sessions'
       const cacheKey = `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}_${this.service.handLimitFilter ?? 'all'}_${sessionFilterKey}`
       const now = Date.now()
@@ -169,7 +173,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       const context: ErrorContext = {
         streamName: 'ReadEntityStream',
         playerIds: seatUserIds,
-        cacheKey: `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}_${this.service.handLimitFilter ?? 'all'}_${this.service.sessionOnlyFilter ? (originatingScope ? `${originatingScope.id}@${originatingScope.startedAt}` : this.service.currentSessionFilterKey()) : 'all-sessions'}`,
+        cacheKey: `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}_${this.service.handLimitFilter ?? 'all'}_${this.service.sessionOnlyFilter ? (originatingScope ? originatingScope.scopeKey ?? `${originatingScope.id}@${originatingScope.startedAt}` : this.service.currentSessionFilterKey()) : 'all-sessions'}`,
         battleTypeFilter: this.service.battleTypeFilter,
         tableSizeFilter: this.service.tableSizeFilter,
         handLimitFilter: this.service.handLimitFilter
@@ -192,7 +196,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
    */
   private captureSessionFilter = (originatingScope?: EventSessionScope): SessionFilterSnapshot =>
     this.service.sessionOnlyFilter
-      ? { enabled: true, scope: originatingScope ?? this.service.getCurrentSessionScope() }
+      ? { enabled: true, scope: originatingScope ?? this.service.getCurrentSessionFilterScope() }
       : { enabled: false }
 
   calcStats = async (
@@ -250,10 +254,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       if (sessionFilter.enabled) {
         const originalHandsCount = allPlayerHands.length
         allPlayerHands = allPlayerHands.filter((hand: Hand) =>
-          sessionFilter.scope !== undefined &&
-          hand.session.id === sessionFilter.scope.id &&
-          Number.isFinite(hand.approxTimestamp) &&
-          hand.approxTimestamp! >= sessionFilter.scope.startedAt
+          isHandInSessionScope(hand, sessionFilter.scope)
         )
 
         if (allPlayerHands.length === 0 && originalHandsCount > 0) {

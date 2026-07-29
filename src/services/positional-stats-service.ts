@@ -31,6 +31,10 @@ import type PokerChaseService from './poker-chase-service'
 import { defaultRegistry } from '../stats'
 import { matchesTableSizeFilter } from '../utils/table-size'
 import { compareHandsNewestFirst } from '../utils/hand-order'
+import {
+  isHandInSessionScope,
+  type ActiveSessionScope,
+} from '../utils/session-event-scope'
 
 /** Bucket display order: standard late→early preflop order, blinds, then unknown. */
 const POSITION_BUCKETS: PositionalStatsBucketId[] = [
@@ -138,7 +142,7 @@ type PositionalFilterSnapshot = {
   handLimit?: number
   session: {
     enabled: boolean
-    scope?: { id: string, startedAt: number }
+    scope?: ActiveSessionScope
   }
 }
 
@@ -147,7 +151,7 @@ const captureFilterSnapshot = (service: PokerChaseService): PositionalFilterSnap
   tableSizes: service.tableSizeFilter ? [...service.tableSizeFilter] : undefined,
   handLimit: service.handLimitFilter,
   session: service.sessionOnlyFilter
-    ? { enabled: true, scope: service.getCurrentSessionScope() }
+    ? { enabled: true, scope: service.getCurrentSessionFilterScope() }
     : { enabled: false },
 })
 
@@ -158,7 +162,8 @@ export const buildCacheKey = (
 ): string => {
   const sessionKey = snapshot.session.enabled
     ? snapshot.session.scope
-      ? `${snapshot.session.scope.id}@${snapshot.session.scope.startedAt}`
+      ? snapshot.session.scope.scopeKey ??
+        `${snapshot.session.scope.id}@${snapshot.session.scope.startedAt}`
       : 'inactive'
     : 'all-sessions'
   return `${playerId}_${snapshot.battleTypes?.join(',') ?? 'all'}_${snapshot.tableSizes?.join(',') ?? 'all'}_${snapshot.handLimit ?? 'all'}_${sessionKey}`
@@ -255,10 +260,7 @@ export async function getPositionalStats(
   if (filterSnapshot.session.enabled) {
     const scope = filterSnapshot.session.scope
     allPlayerHands = allPlayerHands.filter((hand: Hand) => (
-      scope !== undefined &&
-      hand.session.id === scope.id &&
-      Number.isFinite(hand.approxTimestamp) &&
-      hand.approxTimestamp! >= scope.startedAt
+      isHandInSessionScope(hand, scope)
     ))
   }
 

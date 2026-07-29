@@ -65,6 +65,7 @@ export type Item = SessionResultsEvent['Items'][0]
 // snapshot) are plain objects with a real Map underneath and are free to
 // build that Map however they like before handing it out as a Session.
 export interface Session {
+  scopeKey?: string
   id?: string
   battleType?: BattleType
   name?: string
@@ -107,6 +108,7 @@ export const handSchema = z.object({
    */
   bigBlindUserId: z.number().optional(),
   session: z.object({
+    scopeKey: z.string().optional(),
     id: z.string().optional(),
     battleType: z.enum(BattleType).optional(),
     name: z.string().optional()

@@ -29,6 +29,10 @@ import type PokerChaseService from './poker-chase-service'
 import { matchesTableSizeFilter } from '../utils/table-size'
 import { formatCardsArray } from '../utils/card-utils'
 import { compareHandsNewestFirst } from '../utils/hand-order'
+import {
+  isHandInSessionScope,
+  type ActiveSessionScope,
+} from '../utils/session-event-scope'
 
 /** デフォルトの取得件数（「直近10ハンド」）。 */
 export const DEFAULT_RECENT_HANDS_LIMIT = 10
@@ -83,7 +87,7 @@ type RecentHandsFilterSnapshot = {
   tableSizes?: NonNullable<PokerChaseService['tableSizeFilter']>
   session: {
     enabled: boolean
-    scope?: { id: string, startedAt: number }
+    scope?: ActiveSessionScope
   }
 }
 
@@ -91,7 +95,7 @@ const captureFilterSnapshot = (service: PokerChaseService): RecentHandsFilterSna
   battleTypes: service.battleTypeFilter ? [...service.battleTypeFilter] : undefined,
   tableSizes: service.tableSizeFilter ? [...service.tableSizeFilter] : undefined,
   session: service.sessionOnlyFilter
-    ? { enabled: true, scope: service.getCurrentSessionScope() }
+    ? { enabled: true, scope: service.getCurrentSessionFilterScope() }
     : { enabled: false },
 })
 
@@ -103,7 +107,8 @@ export const buildRecentHandsCacheKey = (
 ): string => {
   const sessionKey = snapshot.session.enabled
     ? snapshot.session.scope
-      ? `${snapshot.session.scope.id}@${snapshot.session.scope.startedAt}`
+      ? snapshot.session.scope.scopeKey ??
+        `${snapshot.session.scope.id}@${snapshot.session.scope.startedAt}`
       : 'inactive'
     : 'all-sessions'
   return `${playerId}_${snapshot.battleTypes?.join(',') ?? 'all'}_${snapshot.tableSizes?.join(',') ?? 'all'}_${sessionKey}_${limit}`
@@ -286,10 +291,7 @@ export async function getRecentHands(
   if (filterSnapshot.session.enabled) {
     const scope = filterSnapshot.session.scope
     allPlayerHands = allPlayerHands.filter((hand: Hand) => (
-      scope !== undefined &&
-      hand.session.id === scope.id &&
-      Number.isFinite(hand.approxTimestamp) &&
-      hand.approxTimestamp! >= scope.startedAt
+      isHandInSessionScope(hand, scope)
     ))
   }
 

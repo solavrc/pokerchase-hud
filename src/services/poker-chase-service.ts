@@ -27,6 +27,10 @@ import type {
   StatDisplayConfig
 } from '../types'
 import type { RawEventSessionContext } from '../utils/raw-event-session-context'
+import {
+  isHandInSessionScope,
+  type ActiveSessionScope,
+} from '../utils/session-event-scope'
 
 /** Serialized shape of a single session's player-info entry (persisted as an array tuple). */
 type SessionPlayerInfo = { name: string, rank: string }
@@ -202,6 +206,7 @@ class PokerChaseService {
   // （さもないと新しい観戦テーブルの統計が古いヒーロー席インデックスで誤回転
   // される）。この2つの要求は両立しないため、フィールドを分けた。
   private _liveEvtDeal?: ApiEvent<ApiType.EVT_DEAL>
+  private _currentSessionScopeKey?: string
   private readonly _sessionData: SessionState
   private sessionOriginReconciler?: () => RawEventSessionContext | null | undefined
   private _isInitialized: boolean = false
@@ -325,20 +330,39 @@ class PokerChaseService {
   /** Reset session and clear player data */
   readonly resetSession = () => {
     this._sessionData.reset()
+    this._currentSessionScopeKey = undefined
   }
 
-  readonly startSession = (id: string, battleType: BattleType, startedAt: number) => {
-    const previous = this.getCurrentSessionScope()
-    this._sessionData.start(id, battleType, startedAt)
-    const next = this.getCurrentSessionScope()
-    if (previous?.id !== next?.id || previous?.startedAt !== next?.startedAt) {
+  readonly startSession = (
+    id: string,
+    battleType: BattleType,
+    startedAt: number,
+    scopeKey?: string
+  ) => {
+    const previous = this.getCurrentSessionFilterScope()
+    if (
+      scopeKey !== undefined &&
+      previous?.scopeKey === scopeKey
+    ) {
+      this._sessionData.reconcile(id, battleType, startedAt)
+    } else {
+      this._sessionData.start(id, battleType, startedAt)
+    }
+    this._currentSessionScopeKey = scopeKey
+    const next = this.getCurrentSessionFilterScope()
+    if (
+      previous?.scopeKey !== next?.scopeKey ||
+      previous?.id !== next?.id ||
+      previous?.startedAt !== next?.startedAt
+    ) {
       this.sessionScopeRevision++
     }
   }
 
   readonly endSession = () => {
-    const wasActive = this.getCurrentSessionScope() !== undefined
+    const wasActive = this.getCurrentSessionFilterScope() !== undefined
     this._sessionData.end()
+    this._currentSessionScopeKey = undefined
     if (wasActive) this.sessionScopeRevision++
   }
 
@@ -359,13 +383,25 @@ class PokerChaseService {
     if (context === null) {
       this.endSession()
     } else if (context) {
-      const previous = this.getCurrentSessionScope()
-      this._sessionData.reconcile(context.id, context.battleType, context.startedAt)
+      const previous = this.getCurrentSessionFilterScope()
+      if (
+        previous?.scopeKey !== undefined &&
+        previous.scopeKey !== context.scopeKey
+      ) {
+        this._sessionData.start(context.id, context.battleType, context.startedAt)
+      } else {
+        this._sessionData.reconcile(context.id, context.battleType, context.startedAt)
+      }
+      this._currentSessionScopeKey = context.scopeKey
       if (context.name !== undefined && this._sessionData.name !== context.name) {
         this._sessionData.setName(context.name)
       }
-      const next = this.getCurrentSessionScope()
-      if (previous?.id !== next?.id || previous?.startedAt !== next?.startedAt) {
+      const next = this.getCurrentSessionFilterScope()
+      if (
+        previous?.scopeKey !== next?.scopeKey ||
+        previous?.id !== next?.id ||
+        previous?.startedAt !== next?.startedAt
+      ) {
         this.sessionScopeRevision++
       }
     }
@@ -376,23 +412,30 @@ class PokerChaseService {
     this.sessionOriginsReady = ready
   }
 
-  readonly getCurrentSessionScope = (): { id: string, startedAt: number } | undefined => {
+  readonly getCurrentSessionScope = (): Readonly<{ id: string, startedAt: number }> | undefined => {
     const { id, startedAt, active } = this._sessionData
     if (!active || id === undefined || !Number.isFinite(startedAt)) return undefined
     return { id, startedAt: startedAt! }
   }
 
-  readonly currentSessionFilterKey = (): string => {
+  readonly getCurrentSessionFilterScope = (): ActiveSessionScope | undefined => {
     const scope = this.getCurrentSessionScope()
-    return scope ? `${scope.id}@${scope.startedAt}` : 'inactive'
+    if (!scope) return undefined
+    return this._currentSessionScopeKey === undefined
+      ? scope
+      : { scopeKey: this._currentSessionScopeKey, ...scope }
+  }
+
+  readonly currentSessionFilterKey = (): string => {
+    const scope = this.getCurrentSessionFilterScope()
+    return scope
+      ? scope.scopeKey ?? `${scope.id}@${scope.startedAt}`
+      : 'inactive'
   }
 
   readonly isHandInCurrentSession = (hand: Pick<Hand, 'session' | 'approxTimestamp'>): boolean => {
-    const scope = this.getCurrentSessionScope()
-    return scope !== undefined &&
-      hand.session.id === scope.id &&
-      Number.isFinite(hand.approxTimestamp) &&
-      hand.approxTimestamp! >= scope.startedAt
+    const scope = this.getCurrentSessionFilterScope()
+    return isHandInSessionScope(hand, scope)
   }
 
   /**

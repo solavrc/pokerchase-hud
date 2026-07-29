@@ -33,6 +33,7 @@ export class SessionScopedEntityConverter {
     let converter = this.scopedConverters.get(context.scopeKey)
     if (!converter) {
       converter = new EntityConverter({
+        scopeKey: context.scopeKey,
         id: context.id,
         battleType: context.battleType,
         name: undefined,

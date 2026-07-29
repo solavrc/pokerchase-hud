@@ -151,6 +151,31 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     expect(handsStatOf(afterEnd, PLAYER_ID)?.value).toBeUndefined()
   })
 
+  test('sessionOnly isolates overlapping runs that reuse the same session id', async () => {
+    await db.hands.update(4, {
+      approxTimestamp: 5000,
+      session: {
+        scopeKey: 'run-a',
+        id: 'current',
+        battleType: BattleType.TOURNAMENT,
+      },
+    })
+    await db.hands.update(5, {
+      approxTimestamp: 5100,
+      session: {
+        scopeKey: 'run-b',
+        id: 'current',
+        battleType: BattleType.TOURNAMENT,
+      },
+    })
+    service.startSession('current', BattleType.TOURNAMENT, 4500, 'run-b')
+    service.sessionOnlyFilter = true
+
+    const stats = await runCalcStats(service, SEAT_USER_IDS)
+
+    expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(1)
+  })
+
   test('session cache uses the same immutable scope for its key and delayed calculation', async () => {
     const previousNodeEnv = process.env.NODE_ENV
     process.env.NODE_ENV = 'production'
