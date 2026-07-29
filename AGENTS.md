@@ -604,11 +604,13 @@ v3 added composite indexes for player-specific queries. v6 changes the Raw Lake 
   compatibility, but current clients do not use synchronized positions.
 - **`storage.local`**: Device-local layout (`uiScale`,
   `hudPosition_0`–`hudPosition_5`, and real-time HUD positions
-  `hudPosition_100`–`hudPosition_105`) plus service state
+  `hudPosition_100`–`hudPosition_105`, plus `handLogLayout` for the hand-log
+  window's pixel `left`/`top`/`width`/`height`) plus service state
   (`pokerChaseServiceState` — playerId, latestEvtDeal, session). Layout access
   is routed through the trusted background via `getDeviceUILayout`,
-  `setDeviceUIScale`, and `setDeviceHudPosition`; content scripts do not access
-  the restricted local area directly.
+  `setDeviceUIScale`, `setDeviceHudPosition`, `getDeviceHandLogLayout`,
+  `setDeviceHandLogLayout`, and `resetDeviceHandLogLayout`; content scripts do
+  not access the restricted local area directly.
 
 #### Config Interfaces
 
@@ -616,6 +618,7 @@ v3 added composite indexes for player-specific queries. v6 changes the Raw Lake 
 |---|---|---|
 | `UIConfig` | `src/types/hand-log.ts` | `displayEnabled`; `scale` (0.5–2.0) is runtime state persisted separately as device-local `uiScale` |
 | `HandLogConfig` | `src/types/hand-log.ts` | `enabled`, `maxHands`, `position`, `width`, `height`, `fontSize`, `opacity` |
+| `HandLogLayout` | `src/types/hand-log.ts` | Device-local pixel `left`, `top`, `width`, and `height`, persisted as `handLogLayout` |
 | `FilterOptions` | `src/types/filters.ts` | `gameTypes` (sng/mtt/ring), `tableSize` (full/4p/3p/hu players-dealt layer, `src/utils/table-size.ts`, opt-out multiselect, missing key = all layers/no filter; popup label "テーブル人数"), `handLimit`, `statDisplayConfigs` |
 | `PopupThemeMode` | `src/components/popup/theme.ts` | `'auto' \| 'dark' \| 'light'` (default `'auto'`), persisted standalone as `popupTheme` (`popup-theme-storage.ts`) — popup-only, not part of `UIConfig`/its all-tabs broadcast |
 | `HudPosition` | `src/components/Hud.tsx` | `top`, `left` (percentage) |

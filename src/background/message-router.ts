@@ -87,6 +87,26 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
   let pendingHandLogLayoutWriteCount = 0
   const pendingHandLogLayoutReads: Array<() => void> = []
 
+  const broadcastToGameTabs = (
+    message: ChromeMessage,
+    complete: () => void
+  ): void => {
+    chrome.tabs.query({ url: gameUrlPattern }, tabs => {
+      void chrome.runtime.lastError
+      const deliveries: Array<Promise<unknown>> = []
+      for (const tab of tabs ?? []) {
+        if (!tab.id) continue
+        deliveries.push(
+          chrome.tabs.sendMessage(tab.id, message).catch(() => {
+            // Matching tabs can navigate between query and delivery. Persisted
+            // layout remains authoritative for the next mount.
+          })
+        )
+      }
+      void Promise.all(deliveries).then(complete)
+    })
+  }
+
   const flushPendingHandLogLayoutReads = (): void => {
     if (pendingHandLogLayoutWriteCount > 0) return
     const pendingReads = pendingHandLogLayoutReads.splice(0)
@@ -96,7 +116,8 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
   const enqueueHandLogLayoutWrite = (
     operation: (callback: () => void) => void,
     sendResponse: (response: MessageResponse) => void,
-    failureMessage: string
+    failureMessage: string,
+    afterSuccessfulWrite?: (complete: () => void) => void
   ): void => {
     handLogLayoutWriteGeneration += 1
     const generation = handLogLayoutWriteGeneration
@@ -104,7 +125,20 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
 
     void enqueuePendingStorageWrite(() =>
       new Promise<chrome.runtime.LastError | undefined>((resolve) => {
-        operation(() => resolve(chrome.runtime.lastError))
+        operation(() => {
+          const error = chrome.runtime.lastError
+          if (
+            error ||
+            generation !== handLogLayoutWriteGeneration ||
+            !afterSuccessfulWrite
+          ) {
+            resolve(error)
+            return
+          }
+          // Keep the persistent background delivery inside the tracked write:
+          // popup teardown and a forced reload cannot overtake the reset.
+          afterSuccessfulWrite(() => resolve(undefined))
+        })
       })
     ).then(error => {
       const superseded = generation !== handLogLayoutWriteGeneration
@@ -134,29 +168,6 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
     read()
   }
 
-  const broadcastDeviceScale = (
-    scale: number,
-    complete: () => void
-  ): void => {
-    chrome.tabs.query({ url: gameUrlPattern }, tabs => {
-      void chrome.runtime.lastError
-      const deliveries: Array<Promise<unknown>> = []
-      for (const tab of tabs ?? []) {
-        if (!tab.id) continue
-        deliveries.push(
-          chrome.tabs.sendMessage(tab.id, {
-            action: 'updateDeviceUIScale',
-            scale,
-          }).catch(() => {
-            // Matching tabs can navigate between query and delivery. The
-            // local value remains authoritative for the next mount.
-          })
-        )
-      }
-      void Promise.all(deliveries).then(complete)
-    })
-  }
-
   const enqueueDeviceScaleWrite = (
     scale: number,
     complete: (error: chrome.runtime.LastError | undefined) => void
@@ -172,7 +183,10 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
           // Dispatch from the persistent background before this queue entry
           // settles; popup teardown cannot suppress the live HUD update, and
           // forced reload cannot overtake the tabs.query handoff.
-          broadcastDeviceScale(scale, () => resolve(undefined))
+          broadcastToGameTabs({
+            action: 'updateDeviceUIScale',
+            scale,
+          }, () => resolve(undefined))
         })
       })
     ).then(complete, error => {
@@ -428,7 +442,11 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
           callback
         ),
         sendResponse,
-        'Failed to reset hand log layout'
+        'Failed to reset hand log layout',
+        complete => broadcastToGameTabs(
+          { action: 'resetHandLogLayout' },
+          complete
+        )
       )
       return true
     } else if (request.action === 'exportData') {

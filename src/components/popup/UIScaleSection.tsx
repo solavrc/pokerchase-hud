@@ -15,7 +15,6 @@ import {
   saveSyncedUIConfigPatch,
 } from '../../utils/ui-config-storage'
 import {
-  broadcastHandLogLayoutReset,
   broadcastUIConfig,
 } from './broadcast-ui-config'
 
@@ -176,7 +175,9 @@ export const UIScaleSection = ({
           variant="text"
           title="ハンドログの位置とサイズをリセット"
           onClick={() => {
-            resetHandLogLayout(broadcastHandLogLayoutReset)
+            // Persistence and live-tab delivery both run in the background so
+            // closing the action popup cannot interrupt the reset.
+            resetHandLogLayout()
           }}
           sx={{
             ml: 'auto',

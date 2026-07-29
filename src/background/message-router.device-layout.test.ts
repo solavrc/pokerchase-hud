@@ -254,6 +254,40 @@ describe('message-router device-local UI layout', () => {
     })
   })
 
+  it('popupの応答を待たずbackgroundからresetを通知してからwriteを完了する', async () => {
+    const oldLayout = { left: 10, top: 20, width: 400, height: 100 }
+    await chrome.storage.local.set({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: oldLayout,
+    })
+    ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => {
+      callback([{ id: 42 }])
+    })
+    let finishDelivery!: () => void
+    ;(chrome.tabs.sendMessage as jest.Mock).mockReturnValueOnce(
+      new Promise<void>(resolve => {
+        finishDelivery = resolve
+      })
+    )
+    const resetResponse = jest.fn()
+
+    listener({ action: 'resetDeviceHandLogLayout' }, {}, resetResponse)
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      action: 'resetHandLogLayout',
+    })
+    expect(resetResponse).not.toHaveBeenCalled()
+    expect(await chrome.storage.local.get(HAND_LOG_LAYOUT_STORAGE_KEY)).toEqual({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: undefined,
+    })
+
+    finishDelivery()
+    await getPendingStorageWriteTail()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(resetResponse).toHaveBeenCalledWith({ success: true })
+  })
+
   it('遅延resetより新しいlayout保存を優先する', async () => {
     const oldLayout = { left: 10, top: 20, width: 400, height: 100 }
     const newLayout = { left: 80, top: 60, width: 520, height: 240 }
@@ -268,6 +302,7 @@ describe('message-router device-local UI layout', () => {
     )
     const resetResponse = jest.fn()
     const saveResponse = jest.fn()
+    ;(chrome.tabs.query as jest.Mock).mockClear()
 
     listener({ action: 'resetDeviceHandLogLayout' }, {}, resetResponse)
     listener({
@@ -287,6 +322,7 @@ describe('message-router device-local UI layout', () => {
       success: false,
       error: 'Superseded by newer hand log layout',
     })
+    expect(chrome.tabs.query).not.toHaveBeenCalled()
     expect(saveResponse).toHaveBeenCalledWith({ success: true })
     expect(await chrome.storage.local.get(HAND_LOG_LAYOUT_STORAGE_KEY)).toEqual({
       [HAND_LOG_LAYOUT_STORAGE_KEY]: newLayout,

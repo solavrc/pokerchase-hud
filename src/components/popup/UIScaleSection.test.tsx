@@ -51,7 +51,7 @@ describe('UIScaleSection', () => {
       .toHaveValue('Shift + H')
   })
 
-  it('ハンドログの端末ローカル位置とサイズをリセットして開いているゲームへ反映する', async () => {
+  it('ハンドログの位置とサイズのリセットを永続backgroundへ委譲する', async () => {
     const user = userEvent.setup()
     render(<UIScaleSection {...defaultProps} />)
 
@@ -61,10 +61,8 @@ describe('UIScaleSection', () => {
       { action: 'resetDeviceHandLogLayout' },
       expect.any(Function)
     )
-    expect(mockTabsSendMessage).toHaveBeenCalledTimes(2)
-    expect(mockTabsSendMessage).toHaveBeenCalledWith(1, {
-      action: 'resetHandLogLayout',
-    })
+    expect(mockTabsQuery).not.toHaveBeenCalled()
+    expect(mockTabsSendMessage).not.toHaveBeenCalled()
   })
 
   it('ハンドログlayoutの永続削除に失敗した場合は表示だけをリセットしない', async () => {
