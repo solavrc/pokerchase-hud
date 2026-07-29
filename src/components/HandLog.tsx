@@ -464,7 +464,10 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     fontFamily: 'Consolas, Monaco, "Courier New", monospace',
     fontSize: config.fontSize,
     color: '#ffffff',
-    zIndex: 9998,
+    // The lower-right grip is the only way to move or resize this window.
+    // Keep its stacking context above player HUD panels (z-index 9999) so an
+    // overlap can never make the grip unreachable.
+    zIndex: 10000,
     boxShadow: '0 2px 4px rgba(0, 0, 0, 0.3)',
     cursor: 'pointer'
   }

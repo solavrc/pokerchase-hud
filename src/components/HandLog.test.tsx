@@ -165,6 +165,14 @@ describe('HandLog', () => {
     expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
   })
 
+  it('HUDと重なっても右下gripを掴めるstacking順を維持する', () => {
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+
+    expect(Number(logContainer.style.zIndex)).toBeGreaterThan(9999)
+    expect(screen.getByTestId('hand-log-move-grip')).toBeInTheDocument()
+  })
+
   it('右下グリップの本体をドラッグして移動し端末ローカルへ保存する', () => {
     const { container } = render(<HandLog entries={mockEntries} />)
     const logContainer = container.firstChild as HTMLElement
