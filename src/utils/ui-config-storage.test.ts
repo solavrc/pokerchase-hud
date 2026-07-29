@@ -201,7 +201,7 @@ describe('ui-config-storage', () => {
       { action: 'setDeviceUIScale', scale: 1.3 },
       expect.any(Function)
     )
-    expect(callback).toHaveBeenCalledWith(true)
+    expect(callback).toHaveBeenCalledWith('success')
   })
 
   it('backgroundがscale保存を拒否した場合は失敗を返す', () => {
@@ -212,7 +212,7 @@ describe('ui-config-storage', () => {
 
     saveLocalUIScale(1.3, callback)
 
-    expect(callback).toHaveBeenCalledWith(false)
+    expect(callback).toHaveBeenCalledWith('failure')
   })
 
   it('runtime.lastErrorがあるscale保存responseは失敗として扱う', () => {
@@ -225,10 +225,10 @@ describe('ui-config-storage', () => {
 
     saveLocalUIScale(1.3, callback)
 
-    expect(callback).toHaveBeenCalledWith(false)
+    expect(callback).toHaveBeenCalledWith('failure')
   })
 
-  it('scale保存timeoutは一度失敗を返し、遅い実保存成功を再通知する', () => {
+  it('scale保存timeoutを未確定として返し、遅い実保存成功を再通知する', () => {
     jest.useFakeTimers()
     try {
       let respond!: (response: unknown) => void
@@ -241,10 +241,10 @@ describe('ui-config-storage', () => {
 
       saveLocalUIScale(1.3, callback)
       jest.advanceTimersByTime(DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS)
-      expect(callback).toHaveBeenCalledWith(false)
+      expect(callback).toHaveBeenCalledWith('timeout')
 
       respond({ success: true })
-      expect(callback).toHaveBeenNthCalledWith(2, true)
+      expect(callback).toHaveBeenNthCalledWith(2, 'success')
     } finally {
       jest.useRealTimers()
     }

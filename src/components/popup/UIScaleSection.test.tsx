@@ -309,6 +309,36 @@ describe('UIScaleSection', () => {
     }
   })
 
+  it('scale保存timeout中の次操作は未確定の倍率から累積する', () => {
+    jest.useFakeTimers()
+    try {
+      const responses: Array<(response: unknown) => void> = []
+      mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
+        responses.push(callback)
+      })
+      render(<UIScaleSection {...defaultProps} />)
+
+      fireEvent.click(screen.getByText('+'))
+      jest.advanceTimersByTime(1_000)
+      fireEvent.click(screen.getByText('+'))
+
+      expect(mockChromeRuntimeSendMessage.mock.calls.map(([message]) => message))
+        .toEqual([
+          { action: 'setDeviceUIScale', scale: 1.1 },
+          { action: 'setDeviceUIScale', scale: 1.2 },
+        ])
+
+      responses[0]!({ success: true })
+      responses[1]!({ success: true })
+      expect(mockSetUIConfig).toHaveBeenLastCalledWith({
+        ...DEFAULT_UI_CONFIG,
+        scale: 1.2,
+      })
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
   it.each([
     'Could not establish connection. Receiving end does not exist.',
     'The message port closed before a response was received.',

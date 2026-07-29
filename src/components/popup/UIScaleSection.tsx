@@ -52,12 +52,17 @@ export const UIScaleSection = ({
     let callbackReceived = false
     pendingScaleWriteCountRef.current += 1
     pendingScaleRef.current = scale
-    saveLocalUIScale(scale, success => {
+    saveLocalUIScale(scale, status => {
+      if (status === 'timeout') {
+        // The background write is still live and can finish later. Keep this
+        // requested value as the base for another click while it is unsettled.
+        return
+      }
       if (!callbackReceived) {
         callbackReceived = true
         pendingScaleWriteCountRef.current -= 1
       }
-      if (!success) {
+      if (status === 'failure') {
         if (pendingScaleWriteCountRef.current === 0) {
           pendingScaleRef.current = latestAppliedScaleRef.current
         }
