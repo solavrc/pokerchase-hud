@@ -294,7 +294,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     // became authoritative, then reached the worker late.
     await onMessageHandler({
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
-      timestamp: 1500,
+      timestamp: 2000,
       Code: 0,
       BattleType: BattleType.RING_GAME,
       Id: 'old-tab-delayed',
@@ -302,10 +302,45 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     })
 
     expect(service.getCurrentSessionScope()).toEqual({ id: 'new-tab', startedAt: 2000 })
-    const stored = await db.apiEvents.get([1500, ApiType.EVT_ENTRY_QUEUED, 0]) as any
+    const stored = await db.apiEvents.get([2000, ApiType.EVT_ENTRY_QUEUED, 1]) as any
     expect(stored.__pokerChaseHudSessionContext).toMatchObject({
       id: 'old-tab-delayed',
-      startedAt: 1500,
+      startedAt: 2000,
+    })
+  })
+
+  test('a later-arriving new origin wins an equal-millisecond entry tie', async () => {
+    const secondPort = {
+      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      sender: { tab: { id: 202 } },
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn(),
+    }
+    mockPort.sender = { tab: { id: 101 } }
+    connectListener(secondPort)
+    const secondHandler = secondPort.onMessage.addListener.mock.calls[0][0]
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'tab-a',
+      IsRetire: false,
+    })
+    await secondHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'tab-b',
+      IsRetire: false,
+    })
+
+    expect(service.getCurrentSessionScope()).toEqual({
+      id: 'tab-b',
+      startedAt: 1000,
     })
   })
 

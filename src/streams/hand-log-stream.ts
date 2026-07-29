@@ -60,6 +60,8 @@ export class HandLogStream extends SimpleTransform<ApiEvent, HandLogEvent> {
     }
     try {
       const scoped = this.scopedStateFor(event)
+      const isAuthoritative =
+        this.service.isAuthoritativeSessionScope(getEventSessionScope(event))
       const processor = scoped?.state.processor ?? this.processor
       const newEntries = processor.processSingleEvent(event)
       if (SESSION_END_EVENTS.includes(event.ApiTypeId as any)) {
@@ -70,19 +72,21 @@ export class HandLogStream extends SimpleTransform<ApiEvent, HandLogEvent> {
           case ApiType.EVT_DEAL:
           case ApiType.EVT_ACTION:
           case ApiType.EVT_DEAL_ROUND:
-            if (newEntries.length > 0) {
+            if (isAuthoritative && newEntries.length > 0) {
               this.emitHandLogEvent('add', newEntries)
             }
             break
           case ApiType.EVT_HAND_RESULTS: {
             if (processor.isHandComplete() && isApiEventType(event, ApiType.EVT_HAND_RESULTS)) {
               const allEntries = processor.getCurrentHandEntries()
-              this.completedHands.push(allEntries)
-              const maxHands = this.service.handLogConfig?.maxHands || DEFAULT_HAND_LOG_CONFIG.maxHands
-              if (this.completedHands.length > maxHands) {
-                this.completedHands = this.completedHands.slice(-maxHands)
+              if (isAuthoritative) {
+                this.completedHands.push(allEntries)
+                const maxHands = this.service.handLogConfig?.maxHands || DEFAULT_HAND_LOG_CONFIG.maxHands
+                if (this.completedHands.length > maxHands) {
+                  this.completedHands = this.completedHands.slice(-maxHands)
+                }
+                this.emitHandLogEvent('update', allEntries, event.HandId)
               }
-              this.emitHandLogEvent('update', allEntries, event.HandId)
               // Reset only hand-specific state, preserving session state
               processor.resetHandState()
             }

@@ -271,6 +271,8 @@ class SessionOriginTracker {
     await this.ready
     this.canReconcileReplay = true
     const previous = this.scopes.get(key)
+    const isFirstAcceptedStartForOrigin =
+      previous === undefined && !this.originIds.has(key)
     const continuesSameScope = previous?.scopeKey === context.scopeKey
     const scope = {
       ...context,
@@ -283,8 +285,16 @@ class SessionOriginTracker {
     if (scope.originId) this.originIds.set(key, scope.originId)
     const continuesAuthoritativeScope =
       this.currentKey === key && continuesSameScope
+    // Date.now()-based boundaries can legitimately tie. Arrival order breaks
+    // that tie only for a never-before-accepted origin; a known stale origin
+    // must not reclaim authority by replaying another equal-ms 201.
     const supersedesAuthoritativeScope =
-      scope.startedAt > this.authoritativeStartedAt
+      scope.startedAt > this.authoritativeStartedAt ||
+      (
+        scope.startedAt === this.authoritativeStartedAt &&
+        isFirstAcceptedStartForOrigin &&
+        this.currentKey !== key
+      )
     if (continuesAuthoritativeScope || supersedesAuthoritativeScope) {
       this.currentKey = key
       this.authoritativeStartedAt = Math.max(

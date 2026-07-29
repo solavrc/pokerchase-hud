@@ -763,3 +763,53 @@ test('interleaved origin scopes keep independent hand-log processors', async () 
   expect(stateA.processor.getCurrentHandEntries().length).toBeGreaterThan(entriesABefore)
   expect(stateB.processor.getCurrentHandEntries()).toHaveLength(entriesBBefore)
 })
+
+test('a non-authoritative scope completes silently without live hand-log output', async () => {
+  const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
+  const service = new PokerChaseService({ db: dbMock })
+  await service.ready
+  const contextA = {
+    scopeKey: 'run-a',
+    id: 'a',
+    battleType: BattleType.SIT_AND_GO,
+    startedAt: 100,
+    originId: 'origin-a',
+  }
+  const contextB = {
+    scopeKey: 'run-b',
+    id: 'b',
+    battleType: BattleType.SIT_AND_GO,
+    startedAt: 200,
+    originId: 'origin-b',
+  }
+  service.setSessionOriginReconciler(() => contextB)
+  const outputSpy = jest.fn()
+  service.handLogStream.on('data', outputSpy)
+
+  const dealIndex = event_timeline.findIndex(
+    event => event.ApiTypeId === ApiType.EVT_DEAL
+  )
+  const resultsIndex = event_timeline.findIndex(
+    (event, index) =>
+      index > dealIndex && event.ApiTypeId === ApiType.EVT_HAND_RESULTS
+  )
+  const oldHandEvents = event_timeline
+    .slice(dealIndex, resultsIndex + 1)
+    .map(event => {
+      const cloned = structuredClone(event)
+      setEventSessionScope(cloned, contextA)
+      return cloned
+    })
+
+  oldHandEvents.forEach(event => service.handLogStream.write(event))
+  await service.handLogStream.whenIdle()
+
+  expect(outputSpy).not.toHaveBeenCalled()
+
+  const currentDeal = structuredClone(event_timeline[dealIndex]!)
+  setEventSessionScope(currentDeal, contextB)
+  service.handLogStream.write(currentDeal)
+  await service.handLogStream.whenIdle()
+
+  expect(outputSpy).toHaveBeenCalled()
+})

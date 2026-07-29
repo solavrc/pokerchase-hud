@@ -418,6 +418,82 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     }
   })
 
+  test('filter recalculation drops an older result after authority changes', async () => {
+    const contextA = {
+      scopeKey: 'run-a',
+      id: 'tab-a',
+      battleType: BattleType.SIT_AND_GO,
+      startedAt: 1000,
+      originId: 'origin-a',
+    }
+    const contextB = {
+      scopeKey: 'run-b',
+      id: 'tab-b',
+      battleType: BattleType.RING_GAME,
+      startedAt: 2000,
+      originId: 'origin-b',
+    }
+    const dealA = {
+      ApiTypeId: ApiType.EVT_DEAL,
+      SeatUserIds: [...SEAT_USER_IDS],
+      Player: {
+        SeatIndex: 0,
+        BetStatus: 1,
+        HoleCards: [1, 2],
+        Chip: 5000,
+        BetChip: 0,
+      },
+      timestamp: 1100,
+    } as unknown as ApiEvent<ApiType.EVT_DEAL>
+    setEventSessionScope(dealA, contextA)
+    let authoritativeContext = contextA
+    service.setSessionOriginReconciler(() => authoritativeContext)
+    service.startSession(
+      contextA.id,
+      contextA.battleType,
+      contextA.startedAt,
+      contextA.scopeKey
+    )
+    service.playerId = PLAYER_ID
+    service.latestEvtDeal = dealA
+    service.sessionOnlyFilter = true
+
+    let releaseCalculation!: () => void
+    const calculationGate = new Promise<void>(resolve => { releaseCalculation = resolve })
+    let calculationStarted!: () => void
+    const started = new Promise<void>(resolve => { calculationStarted = resolve })
+    const originalCalcStats = service.statsOutputStream.calcStats
+    const dataSpy = jest.fn()
+    service.statsOutputStream.on('data', dataSpy)
+
+    try {
+      jest.spyOn(service.statsOutputStream, 'calcStats').mockImplementation(async (...args) => {
+        calculationStarted()
+        await calculationGate
+        return originalCalcStats(...args)
+      })
+      const pending = service.statsOutputStream.recalculateStats()
+      await started
+
+      authoritativeContext = contextB
+      service.startSession(
+        contextB.id,
+        contextB.battleType,
+        contextB.startedAt,
+        contextB.scopeKey
+      )
+      service.markSessionDisplayDealUnavailable()
+      releaseCalculation()
+      await pending
+
+      expect(dataSpy).not.toHaveBeenCalled()
+    } finally {
+      releaseCalculation()
+      service.statsOutputStream.off('data', dataSpy)
+      jest.restoreAllMocks()
+    }
+  })
+
   test('a completed hand invalidates a same-lineup production cache warmed at deal time', async () => {
     const previousNodeEnv = process.env.NODE_ENV
     process.env.NODE_ENV = 'production'

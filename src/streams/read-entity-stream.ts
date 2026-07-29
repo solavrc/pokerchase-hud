@@ -121,7 +121,10 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
 
     // latestEvtDealから直接seatUserIdsを取得（DBアクセス不要）。これは常に
     // ヒーロー在籍時点のSeatUserIds（永続化対象・latestEvtDealの意味論）。
-    const seatUserIds = this.service.latestEvtDeal.SeatUserIds
+    const originatingDeal = this.service.latestEvtDeal
+    const originatingScope = getEventSessionScope(originatingDeal)
+    const originatingRevision = this.service.sessionScopeRevision
+    const seatUserIds = originatingDeal.SeatUserIds
 
     // ここは latestEvtDeal を"読むだけ"で再代入しないパス（フィルター変更時の
     // 明示的な再計算、setBattleTypeFilter()経由）なので、setterのliveEvtDeal
@@ -133,14 +136,23 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     // （codex #177 3巡目レビューP2「Preserve hero deal when recalculating
     // filters」）。ここで明示的に同期し、以降のブロードキャストがヒーロー
     // 在籍dealの座席文脈（Player.SeatIndex含む）を使うようにする。
-    this.service.liveEvtDeal = this.service.latestEvtDeal
+    this.service.liveEvtDeal = originatingDeal
 
     try {
       // すべてのプレイヤーの統計を計算
-      const sessionFilter =
-        this.captureSessionFilter(getEventSessionScope(this.service.latestEvtDeal))
+      const sessionFilter = this.captureSessionFilter(originatingScope)
       const stats = await this.calcStats(seatUserIds, sessionFilter)
-      this.pushStats(stats, sessionFilter, this.service.latestEvtDeal)
+      // A newer origin may become authoritative during the DB reads above.
+      // Keep the persisted calculation result local to its captured scope;
+      // never re-publish an older lineup after the new session's clear.
+      if (
+        this.service.sessionScopeRevision !== originatingRevision ||
+        this.service.latestEvtDeal !== originatingDeal ||
+        !this.service.isAuthoritativeSessionScope(originatingScope)
+      ) {
+        return
+      }
+      this.pushStats(stats, sessionFilter, originatingDeal)
     } catch (error) {
       const context: ErrorContext = {
         streamName: 'ReadEntityStream',
