@@ -362,6 +362,62 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     expect(updateManager.isSafeToUpdate()).toBe(false)
   })
 
+  test('a failed newer session start stays ordered after an older durable end waiting on source restoration', async () => {
+    let releaseSourceRestore!: () => void
+    const sourceRestoreBlocked = new Promise<void>(resolve => {
+      releaseSourceRestore = resolve
+    })
+    jest.spyOn(chrome.storage.local, 'get').mockImplementationOnce(async () => {
+      await sourceRestoreBlocked
+      return {}
+    })
+
+    // Register a fresh queue whose source restoration is deliberately stuck.
+    registerEventIngestion(service)
+    const connectListener = (chrome.runtime as any).onConnect.addListener.mock.calls[1][0]
+    const orderedPort = {
+      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn((fn: () => void) => disconnectHandlers.push(fn)) },
+      postMessage: jest.fn()
+    }
+    connectListener(orderedPort)
+    const orderedOnMessage = orderedPort.onMessage.addListener.mock.calls[0][0]
+
+    const realMerge = apiEventKey.mergeApiEvents
+    jest.spyOn(apiEventKey, 'mergeApiEvents')
+      .mockImplementationOnce(realMerge)
+      .mockRejectedValueOnce(Object.assign(new Error('quota'), {
+        name: 'QuotaExceededError'
+      }))
+
+    const transitionOrder: string[] = []
+    const realMarkInactive = updateManager.markSessionInactive
+    const realMarkActive = updateManager.markSessionActive
+    jest.spyOn(updateManager, 'markSessionInactive').mockImplementation(() => {
+      transitionOrder.push('inactive')
+      realMarkInactive()
+    })
+    jest.spyOn(updateManager, 'markSessionActive').mockImplementation(() => {
+      transitionOrder.push('active')
+      realMarkActive()
+    })
+
+    const olderEnd = orderedOnMessage(sessionResults(380))
+    const newerFailedStart = orderedOnMessage(entryQueued(390))
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    expect(await db.apiEvents.get([380, ApiType.EVT_SESSION_RESULTS, 0])).toBeDefined()
+    expect(await db.apiEvents.get([390, ApiType.EVT_ENTRY_QUEUED, 0])).toBeUndefined()
+    expect(transitionOrder).toEqual([])
+
+    releaseSourceRestore()
+    await Promise.all([olderEnd, newerFailedStart])
+
+    expect(transitionOrder).toEqual(['inactive', 'active'])
+    expect(updateManager.isSafeToUpdate()).toBe(false)
+  })
+
   test('control: a non-duplicate raw-write failure on EVT_SESSION_RESULTS (309) does NOT fail open to INACTIVE', async () => {
     // Mirrors the existing quota-failure test above but asserts the
     // asymmetry explicitly: ACTIVE-direction failures fail closed (previous

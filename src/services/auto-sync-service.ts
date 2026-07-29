@@ -12,7 +12,7 @@ import {
 } from '../constants/sync'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
-import { ApiType, ApiTypeValues, BattleType, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent, parseApiEvent } from '../types'
+import { ApiType, ApiTypeValues, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent } from '../types'
 import type { ApiEvent } from '../types'
 import { processInReplayChunks } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
@@ -27,54 +27,7 @@ import {
 import { startKeepAlive } from '../background/service-worker-keepalive'
 import { HandLogExporter } from '../utils/hand-log-exporter'
 import { captureHandledException } from '../observability/sentry'
-
-// Raw-only entry cancellation. Deliberately not part of ApiType/application
-// streams; replay still needs it to retire a queued session.
-const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
-
-type ReplayEntryBoundary = {
-  id?: string
-  battleType?: BattleType
-}
-
-const REPLAY_BATTLE_TYPES = new Set<number>([
-  BattleType.SIT_AND_GO,
-  BattleType.TOURNAMENT,
-  BattleType.FRIEND_SIT_AND_GO,
-  BattleType.RING_GAME,
-  BattleType.FRIEND_RING_GAME,
-  BattleType.CLUB_MATCH,
-])
-
-/**
- * Raw 201 recovery mirrors live ingestion: explicit Code failures are not
- * boundaries; successful minimally usable Id/BattleType are restored; all
- * other non-failure 201 shapes clear prior context fail-closed.
- */
-const getReplayEntryBoundary = (
-  event: ApiEvent
-): ReplayEntryBoundary | undefined => {
-  const raw = event as {
-    ApiTypeId?: unknown
-    Code?: unknown
-    Id?: unknown
-    BattleType?: unknown
-  }
-  if (raw.ApiTypeId !== ApiType.EVT_ENTRY_QUEUED) return undefined
-  if (typeof raw.Code === 'number' && raw.Code !== 0) return undefined
-  if (
-    raw.Code === 0 &&
-    typeof raw.Id === 'string' &&
-    typeof raw.BattleType === 'number' &&
-    REPLAY_BATTLE_TYPES.has(raw.BattleType)
-  ) {
-    return {
-      id: raw.Id,
-      battleType: raw.BattleType as BattleType,
-    }
-  }
-  return {}
-}
+import { RawEntityReplay } from '../utils/raw-entity-replay'
 
 /** Shown in the popup and logged when the min-version gate stops cloud sync (#forced-update). */
 export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます'
@@ -1528,7 +1481,7 @@ export class AutoSyncService {
         players: new Map(),
         reset: () => { }
       }
-      const converter = new EntityConverter(defaultSession)
+      const replay = new RawEntityReplay(defaultSession)
       const service = (self as any).service
       const liveSessionRevision = service?.sessionRevision
       const totalEventCount = await this.db.apiEvents.count()
@@ -1540,178 +1493,23 @@ export class AutoSyncService {
       const previousHandIds = await this.db.hands.toCollection().primaryKeys() as number[]
       const rebuiltHandIds = new Set<number>()
       let lastProcessedTimestamp = 0
-      let latestDealEvent: ApiEvent | undefined
-      let replayEnded = false
-
-      // Replay state is isolated from the live service. A cloud rebuild can span
-      // many awaited chunks; mutating service.session during that window makes
-      // automatic filtering temporarily fail closed and lets live events/drilldowns
-      // observe a partial historical session. Commit the final replay snapshot only
-      // after every chunk and its bookkeeping write have succeeded.
-      const replayPlayers = new Map<number, { name: string, rank: string }>()
-      const replaySession = {
-        id: undefined as string | undefined,
-        battleType: undefined as BattleType | undefined,
-        name: undefined as string | undefined,
-        players: replayPlayers,
-        setId(value: string | undefined) { this.id = value },
-        setBattleType(value: BattleType | undefined) { this.battleType = value },
-        setName(value: string | undefined) { this.name = value },
-        setPlayer(userId: number, info: { name: string, rank: string }) {
-          replayPlayers.set(userId, info)
-        },
-        reset() {
-          this.id = undefined
-          this.battleType = undefined
-          this.name = undefined
-          replayPlayers.clear()
-        }
-      }
-      const replayService = { session: replaySession }
-      type ReplaySessionSnapshot = {
-        id?: string
-        battleType?: BattleType
-        name?: string
-        players: Array<[number, { name: string, rank: string }]>
-      }
-      const captureReplaySession = (): ReplaySessionSnapshot => ({
-        id: replaySession.id,
-        battleType: replaySession.battleType,
-        name: replaySession.name,
-        players: [...replayPlayers.entries()].map(([userId, info]) => [userId, { ...info }]),
-      })
-      const applyReplaySession = (snapshot: ReplaySessionSnapshot): void => {
-        replaySession.reset()
-        replaySession.setId(snapshot.id)
-        replaySession.setBattleType(snapshot.battleType)
-        replaySession.setName(snapshot.name)
-        snapshot.players.forEach(([userId, info]) => replaySession.setPlayer(userId, info))
-      }
-      let pendingFriendSngSession: ReplaySessionSnapshot | undefined
 
       for await (const events of processInReplayChunks(
         this.db.apiEvents,
         DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
       )) {
-        // Drive entity conversion and replay-session restoration from the same
-        // raw-order loop. Lifecycle rows can remain useful even when their
-        // application payload no longer parses, while unsafe payloads still
-        // never reach EntityConverter.
-        const entities: ReturnType<EntityConverter['flush']> = {
-          hands: [],
-          phases: [],
-          actions: []
-        }
-        let validSegment: ApiEvent[] = []
-        const convertValidSegment = (): void => {
-          if (validSegment.length === 0) return
-          const converted = converter.convertEventChunk(validSegment)
-          entities.hands.push(...converted.hands)
-          entities.phases.push(...converted.phases)
-          entities.actions.push(...converted.actions)
-          validSegment = []
-        }
         for (const event of events) {
           lastProcessedTimestamp = Math.max(lastProcessedTimestamp, event.timestamp || 0)
-          const parsed = parseApiEvent(event)
-          const validApplicationEvent =
-            parsed && isApplicationApiEvent(parsed) ? parsed : undefined
-          const entryBoundary = getReplayEntryBoundary(event)
-          const isEntry = entryBoundary !== undefined
-          const isSessionResult =
-            (event as { ApiTypeId?: number }).ApiTypeId === ApiType.EVT_SESSION_RESULTS
-          const isEntryCancellation =
-            (event as { ApiTypeId?: number }).ApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID
-
-          if (isEntry || isSessionResult || isEntryCancellation) {
-            convertValidSegment()
-          }
-          if (isEntry) {
-            // A deal candidate or Friend continuation from the previous entry
-            // must never cross a newly committed entry.
-            latestDealEvent = undefined
-            pendingFriendSngSession = undefined
-            converter.applyRawSessionBoundary(
-              entryBoundary?.id,
-              entryBoundary?.battleType
-            )
-          } else if (
-            isSessionResult &&
-            replaySession.battleType === BattleType.FRIEND_SIT_AND_GO
-          ) {
-            // Default to terminal. If a later seated deal proves this result
-            // was interleaved, restore the exact snapshot to both replay state
-            // and EntityConverter before that deal is converted. Keep the
-            // converter's context provisional until the next DEAL: events
-            // from the continuing Friend hand can follow this interleaved 309
-            // before that proof arrives.
-            pendingFriendSngSession = captureReplaySession()
-            latestDealEvent = undefined
-          } else if (isSessionResult || isEntryCancellation) {
-            pendingFriendSngSession = undefined
-            latestDealEvent = undefined
-            converter.applyRawSessionBoundary()
-          }
-
-          const replayEventEndsSession =
-            isEntryCancellation || isSessionResult
-          this.restoreSessionEvent(replayService, event)
-          if (replayEventEndsSession) {
-            replayEnded = true
-          } else if (isEntry) {
-            replayEnded = false
-          }
-          if (
-            pendingFriendSngSession &&
-            replaySession.battleType === undefined &&
-            isApiEventType(event, ApiType.EVT_DEAL)
-          ) {
-            // Settle all events between the provisional Friend terminal and
-            // this DEAL under their original context. A seated deal proves
-            // continuation; a spectator deal instead switches the converter
-            // to the terminal empty context before that new hand is buffered.
-            convertValidSegment()
-            if (event.Player?.SeatIndex !== undefined) {
-              applyReplaySession(pendingFriendSngSession)
-              converter.applySessionSnapshot({
-                id: pendingFriendSngSession.id,
-                battleType: pendingFriendSngSession.battleType,
-                name: pendingFriendSngSession.name,
-                players: new Map(pendingFriendSngSession.players),
-              })
-              pendingFriendSngSession = undefined
-              replayEnded = false
-            } else {
-              converter.applyRawSessionBoundary()
-            }
-          }
-          if (validApplicationEvent) validSegment.push(validApplicationEvent)
-          // 席着席時のみ latestDealEvent を更新する（findLatestPlayerDealEvent()
-          // ／aggregate-events-stream.tsのEVT_DEALケースと同じ判別: event.Player?.
-          // SeatIndex !== undefined）。ダウンロード履歴の末尾が観戦モードのdeal
-          // （ヒーロー敗退後もクライアントが他プレイヤーのテーブルを受信し続ける
-          // ケース）で終わっていた場合、ここで無条件に最後のEVT_DEALを採用すると、
-          // 下のrestoreLatestDeal()がそれを`service.latestEvtDeal`（ヒーロー在籍の
-          // 文脈・setterがliveEvtDealも同期する）に代入してしまい、クラウド復元
-          // 直後にヒーローのplayerIdを再導出できないばかりか、#177が塞いだはずの
-          // 「観戦テーブルの顔ぶれでヒーロー統計が上書きされる」混在状態を
-          // 復元パス（新規インストールでのクラウドDL）自体が再現してしまう
-          // （codex #177マージ後レビュー、2026-07-20指摘）。観戦モードのdealは
-          // ここで単純に無視する（意図的な選択: リビルドはライブ表示の瞬間では
-          // ないため、liveEvtDeal相当の非永続フィールドへ別途フィードする必要は
-          // ない -- 次の本物のライブdealが来ればliveEvtDealは正しく更新される）。
-          if (isApiEventType(event, ApiType.EVT_DEAL) && event.Player?.SeatIndex !== undefined) {
-            latestDealEvent = event
-          }
         }
-        convertValidSegment()
+        const entities = replay.convertChunk(events)
         entities.hands.forEach(hand => rebuiltHandIds.add(hand.id))
         await this.saveRebuiltEntities(entities)
       }
 
-      const remainingEntities = converter.flush()
+      const remainingEntities = replay.flush()
       remainingEntities.hands.forEach(hand => rebuiltHandIds.add(hand.id))
       await this.saveRebuiltEntities(remainingEntities)
+      const replaySnapshot = replay.snapshot()
 
       // bulkPut alone cannot remove a formerly-derived hand which canonical
       // replay now rejects (for example, a missing table-move EVT_DEAL arrives
@@ -1757,10 +1555,10 @@ export class AutoSyncService {
         // observe a partially restored session. SessionState setters retain the
         // existing persisted-state notification behavior.
         service.session.reset()
-        service.session.setId(replaySession.id)
-        service.session.setBattleType(replaySession.battleType)
-        service.session.setName(replaySession.name)
-        replaySession.players.forEach((info, userId) => {
+        service.session.setId(replaySnapshot.session.id)
+        service.session.setBattleType(replaySnapshot.session.battleType)
+        service.session.setName(replaySnapshot.session.name)
+        replaySnapshot.session.players.forEach(([userId, info]) => {
           service.session.setPlayer(userId, info)
         })
 
@@ -1775,8 +1573,12 @@ export class AutoSyncService {
         }
       }
 
-      if (canCommitReplay && !replayEnded && latestDealEvent) {
-        this.restoreLatestDeal(service, latestDealEvent)
+      if (
+        canCommitReplay &&
+        !replaySnapshot.replayEnded &&
+        replaySnapshot.latestDealEvent
+      ) {
+        this.restoreLatestDeal(service, replaySnapshot.latestDealEvent)
       } else if (canCommitReplay) {
         // An ended replay (309/203), or a newly queued final entry that has
         // not dealt yet, has no deal belonging to the committed session.
@@ -1820,37 +1622,6 @@ export class AutoSyncService {
     })
 
     console.log(`[AutoSync] Generated entities - Hands: ${entities.hands.length}, Phases: ${entities.phases.length}, Actions: ${entities.actions.length}`)
-  }
-
-  private restoreSessionEvent(service: any, event: ApiEvent): void {
-    if (!service?.session) return
-
-    if (event.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
-      service.session.reset()
-    } else if ((event as { ApiTypeId?: number }).ApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID) {
-      service.session.reset()
-    } else if (getReplayEntryBoundary(event) !== undefined) {
-      const entry = getReplayEntryBoundary(event)!
-      service.session.reset()
-      if (entry.id !== undefined && entry.battleType !== undefined) {
-        service.session.setId(entry.id)
-        service.session.setBattleType(entry.battleType)
-      }
-    } else if (isApiEventType(event, ApiType.EVT_SESSION_DETAILS)) {
-      service.session.setName(event.Name)
-    } else if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED)) {
-      event.TableUsers?.forEach(tableUser => {
-        service.session.setPlayer(tableUser.UserId, {
-          name: tableUser.UserName,
-          rank: tableUser.Rank.RankId
-        })
-      })
-    } else if (isApiEventType(event, ApiType.EVT_PLAYER_JOIN) && event.JoinUser) {
-      service.session.setPlayer(event.JoinUser.UserId, {
-        name: event.JoinUser.UserName,
-        rank: event.JoinUser.Rank.RankId
-      })
-    }
   }
 
   private restoreLatestDeal(service: any, latestDealEvent: ApiEvent): void {

@@ -9,10 +9,9 @@ import PokerChaseService, {
   validateMessage,
   getValidationError
 } from '../app'
-import { EntityConverter, type EntityBundle } from '../entity-converter'
+import type { EntityBundle } from '../entity-converter'
 import {
   findLatestPlayerDealEvent,
-  orderAndFilterApplicationEventsForReplay,
   processInReplayChunks
 } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
@@ -26,6 +25,7 @@ import { resolveAdvisory, markAdvisoryPending } from './rebuild-advisory'
 import {
   API_EVENT_PRIMARY_KEY,
   mergeApiEvents,
+  orderApiEventsForReplay,
   type ApiEventKey,
   type RawApiEvent
 } from '../utils/api-event-key'
@@ -33,6 +33,7 @@ import { HandLogExporter } from '../utils/hand-log-exporter'
 import { awaitIngestionDrain } from './update-manager'
 import { runBestEffortChromeUi } from './best-effort-chrome-api'
 import { startKeepAlive } from './service-worker-keepalive'
+import { convertRawEventsToEntities } from '../utils/raw-entity-replay'
 
 export { startKeepAlive } from './service-worker-keepalive'
 
@@ -1005,16 +1006,20 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         // "Raw Event Lake"). It's also what keeps EntityConverter (which reads
         // required fields like EVT_DEAL.Game.SmallBlind without guards) from
         // throwing on a still-malformed row.
-        const allEvents = await orderAndFilterApplicationEventsForReplay(rawEvents)
-        const skippedCount = rawEvents.length - allEvents.length
-        console.log(`[performFullRebuild] Loaded ${rawEvents.length} raw events, ${allEvents.length} valid application events after re-validation${skippedCount > 0 ? ` (${skippedCount} non-application/unparseable rows skipped)` : ''}`)
+        const replay = await convertRawEventsToEntities(
+          orderApiEventsForReplay(rawEvents),
+          defaultSession
+        )
+        entities = replay.entities
+        const validEventCount = replay.snapshot.validApplicationEventCount
+        const skippedCount = rawEvents.length - validEventCount
+        console.log(`[performFullRebuild] Loaded ${rawEvents.length} raw events, ${validEventCount} valid application events after re-validation${skippedCount > 0 ? ` (${skippedCount} non-application/unparseable rows skipped)` : ''}`)
 
-        onProgress(40, `${allEvents.length.toLocaleString()}件のイベントを変換中...`)
+        onProgress(40, `${validEventCount.toLocaleString()}件のイベントを変換中...`)
 
         // 変換はメモリ上のみの処理で、この時点ではまだテーブルに一切触れて
         // いない ―― ここで例外が起きても（例: 未知の形状での変換失敗）既存の
         // 派生データはそのまま残る
-        entities = new EntityConverter(defaultSession).convertEventsToEntities(allEvents)
       }
 
       onProgress(70, 'テーブルを更新中...')
@@ -1038,8 +1043,12 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           // フルスキャンをやり直して完全な結果を作り直す。
           console.log(`[performFullRebuild] apiEvents changed since the snapshot (${rawEvents.length} -> ${currentCount} rows; live play or another writer during rebuild) -- re-deriving from a fresh read`)
           const freshRaw = await db.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).toArray() as unknown as RawApiEvent[]
-          const freshValidEvents = await orderAndFilterApplicationEventsForReplay(freshRaw)
-          finalEntities = new EntityConverter(defaultSession).convertEventsToEntities(freshValidEvents)
+          finalEntities = (
+            await convertRawEventsToEntities(
+              orderApiEventsForReplay(freshRaw),
+              defaultSession
+            )
+          ).entities
           finalTotalEvents = freshRaw.length
         }
 

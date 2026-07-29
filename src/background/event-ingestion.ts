@@ -484,8 +484,26 @@ const processEvent = async (
           console.error('[background] Failed to record dropped-event stats:', recordErr)
         )
       }
-      applySessionActivity(rawApiTypeId, message, true, false, isEntryBoundary)
-      return
+      // This fail-closed ACTIVE transition still has to respect raw arrival
+      // order. An older durable 309/203 may already be waiting for startup
+      // restoration in postRawProcessingQueue; applying this newer start
+      // synchronously would let that older end overwrite it afterward.
+      const failedStartActivity = postRawProcessingQueue.then(() => {
+        applySessionActivity(
+          rawApiTypeId,
+          message,
+          true,
+          false,
+          isEntryBoundary
+        )
+      })
+      postRawProcessingQueue = failedStartActivity.catch(queueError => {
+        console.error('[background] Failed to apply ordered fail-closed activity:', queueError)
+        captureHandledException(queueError, {
+          operation: 'event_ingestion.failed_raw_activity'
+        })
+      })
+      return { forwarding: failedStartActivity }
     }
   } else {
     // timestamp/ApiTypeIdが数値でない = キーとして使えないため保存不可。

@@ -31,7 +31,8 @@ import PokerChaseService, { PokerChaseDB } from '../app'
 import { createImportExportHandlers } from './import-export'
 import { getOperationState, setOperationState, type OperationState } from './operation-state'
 import { EntityConverter } from '../entity-converter'
-import * as databaseUtils from '../utils/database-utils'
+import * as rawEntityReplay from '../utils/raw-entity-replay'
+import { BattleType } from '../types'
 import { getRebuildAdvisoryState, REBUILD_ADVISORY_STORAGE_KEY } from './rebuild-advisory'
 import { REBUILD_ADVISORY_VERSION } from '../constants/database'
 
@@ -181,6 +182,41 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
     })
   })
 
+  test.each([
+    ['manual rebuild', async (
+      db: PokerChaseDB,
+      handlers: ReturnType<typeof createImportExportHandlers>,
+      events: unknown[]
+    ) => {
+      await db.apiEvents.bulkAdd(events as never[])
+      await handlers.rebuildAllData()
+    }],
+    ['empty-DB import rebuild', async (
+      _db: PokerChaseDB,
+      handlers: ReturnType<typeof createImportExportHandlers>,
+      events: unknown[]
+    ) => {
+      await handlers.importData(toJsonl(events))
+    }],
+  ])('%s recovers a parse-failed raw entry before classifying its hand', async (_label, rebuild) => {
+    const rawEntry = {
+      ...ENTRY_QUEUED,
+      Id: 'raw-recovered-ring',
+      BattleType: BattleType.RING_GAME,
+    } as Record<string, unknown>
+    delete rawEntry.IsRetire
+
+    await runWithFreshDb(async ({ db, handlers }) => {
+      await rebuild(db, handlers, [rawEntry, ...HAND1_EVENTS])
+
+      expect((await db.hands.get(HAND1_ID))?.session).toEqual({
+        id: 'raw-recovered-ring',
+        battleType: BattleType.RING_GAME,
+        name: undefined,
+      })
+    })
+  })
+
   test('canonical rebuild includes a live hand prefix committed immediately after an empty-DB count snapshot', async () => {
     await runWithFreshDb(async ({ db, handlers }) => {
       const realCount = db.apiEvents.count.bind(db.apiEvents)
@@ -308,9 +344,8 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
       // is exercised implicitly: Dexie either commits the whole
       // clear+bulkPut+meta.put transaction or none of it.
       const converterError = new Error('synthetic rebuild failure')
-      const EntityConverterModule = await import('../entity-converter')
-      const convertSpy = jest.spyOn(EntityConverterModule.EntityConverter.prototype, 'convertEventsToEntities')
-        .mockImplementation(() => { throw converterError })
+      const convertSpy = jest.spyOn(rawEntityReplay, 'convertRawEventsToEntities')
+        .mockRejectedValue(converterError)
 
       await expect(handlers.importData(toJsonl(fullExport))).rejects.toThrow(/rebuild failed/i)
 
@@ -455,7 +490,7 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         // rows into a non-empty DB, triggering importData()'s rebuild path.
         await db.apiEvents.bulkAdd([ENTRY_QUEUED, HAND1_DEAL, HAND1_RESULTS] as never[])
 
-        // Hook the FIRST call to orderAndFilterApplicationEventsForReplay -- this is
+        // Hook the FIRST shared raw replay call -- this is
         // performFullRebuild's snapshot-processing call (a possible second
         // call, if the fix's merge-and-redo path fires, is left untouched
         // below). Right
@@ -472,10 +507,10 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         // mutates the shared module-namespace object in place, so calling
         // through via jest.requireActual() here would return that SAME
         // (already-mutated) object and recurse into the mock forever.
-        const originalOrderAndFilter = databaseUtils.orderAndFilterApplicationEventsForReplay
-        const filterSpy = jest.spyOn(databaseUtils, 'orderAndFilterApplicationEventsForReplay')
-          .mockImplementation(async (rawEvents) => {
-            const result = await originalOrderAndFilter(rawEvents)
+        const originalConvert = rawEntityReplay.convertRawEventsToEntities
+        const replaySpy = jest.spyOn(rawEntityReplay, 'convertRawEventsToEntities')
+          .mockImplementation(async (rawEvents, seed) => {
+            const result = await originalConvert(rawEvents, seed)
             if (!hooked) {
               hooked = true
               await db.apiEvents.bulkAdd(HAND2_EVENTS as never[])
@@ -492,7 +527,7 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         const result = await handlers.importData(toJsonl(fullExport))
         expect(result.successCount).toBe(3) // the 3 missing HAND1 ACTIONs
 
-        filterSpy.mockRestore()
+        replaySpy.mockRestore()
 
         // HAND2 (the "live" hand) must survive AND be correctly derived --
         // not merely present-but-stale, not lost to the clear() -- matching
@@ -525,18 +560,18 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         // Damaged DB, same setup as the parity test.
         await db.apiEvents.bulkAdd([ENTRY_QUEUED, HAND1_DEAL, HAND1_RESULTS] as never[])
 
-        // Hook the first orderAndFilterApplicationEventsForReplay call (the snapshot
+        // Hook the first shared raw replay call (the snapshot
         // processing step) to inject HAND0 -- whose [timestamp+ApiTypeId]
         // keys sort BELOW every row already in the snapshot (HAND0_EVENTS
         // is timestamped 2,000,000ms before HAND1). A boundary-comparison
         // recheck (`.where(...).above(snapshotUpperBound)`) would miss
         // this entirely, since it only looks for keys greater than the
         // snapshot's own max key -- exactly the bug this test targets.
-        const originalOrderAndFilter = databaseUtils.orderAndFilterApplicationEventsForReplay
+        const originalConvert = rawEntityReplay.convertRawEventsToEntities
         let hooked = false
-        const filterSpy = jest.spyOn(databaseUtils, 'orderAndFilterApplicationEventsForReplay')
-          .mockImplementation(async (rawEvents) => {
-            const result = await originalOrderAndFilter(rawEvents)
+        const replaySpy = jest.spyOn(rawEntityReplay, 'convertRawEventsToEntities')
+          .mockImplementation(async (rawEvents, seed) => {
+            const result = await originalConvert(rawEvents, seed)
             if (!hooked) {
               hooked = true
               await db.apiEvents.bulkAdd(HAND0_EVENTS as never[])
@@ -553,7 +588,7 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         const result = await handlers.importData(toJsonl(fullExport))
         expect(result.successCount).toBe(3) // the 3 missing HAND1 ACTIONs
 
-        filterSpy.mockRestore()
+        replaySpy.mockRestore()
 
         // HAND0 (the low-key "live" hand) must survive AND be correctly
         // derived -- matching the from-scratch control for both hands,
@@ -642,8 +677,8 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         expect((await getRebuildAdvisoryState()).pendingVersion).toBeUndefined()
 
         // Force the rebuild to fail.
-        const convertSpy = jest.spyOn(EntityConverter.prototype, 'convertEventsToEntities')
-          .mockImplementation(() => { throw new Error('synthetic rebuild failure') })
+        const convertSpy = jest.spyOn(rawEntityReplay, 'convertRawEventsToEntities')
+          .mockRejectedValue(new Error('synthetic rebuild failure'))
 
         await expect(handlers.importData(toJsonl(fullExport))).rejects.toThrow(/rebuild failed/i)
 
@@ -680,8 +715,8 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         expect(await db.apiEvents.count()).toBe(0)
         expect((await getRebuildAdvisoryState()).pendingVersion).toBeUndefined()
 
-        const convertSpy = jest.spyOn(EntityConverter.prototype, 'convertEventsToEntities')
-          .mockImplementation(() => { throw new Error('synthetic initial entity-generation failure') })
+        const convertSpy = jest.spyOn(rawEntityReplay, 'convertRawEventsToEntities')
+          .mockRejectedValue(new Error('synthetic initial entity-generation failure'))
 
         await expect(handlers.importData(toJsonl(fullExport))).rejects.toThrow(/post-import rebuild failed/i)
         convertSpy.mockRestore()
