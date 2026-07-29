@@ -205,6 +205,49 @@ describe('UIScaleSection', () => {
     })
   })
 
+  it('保存応答待ちの連続クリックを累積して保存する', () => {
+    const responses: Array<(response: unknown) => void> = []
+    mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
+      responses.push(callback)
+    })
+    render(<UIScaleSection {...defaultProps} />)
+
+    fireEvent.click(screen.getByText('+'))
+    fireEvent.click(screen.getByText('+'))
+
+    expect(mockChromeRuntimeSendMessage.mock.calls.map(([message]) => message))
+      .toEqual([
+        { action: 'setDeviceUIScale', scale: 1.1 },
+        { action: 'setDeviceUIScale', scale: 1.2 },
+      ])
+
+    responses[0]!({ success: true })
+    responses[1]!({ success: true })
+    expect(mockSetUIConfig).toHaveBeenLastCalledWith({
+      ...DEFAULT_UI_CONFIG,
+      scale: 1.2,
+    })
+  })
+
+  it('新しいscale成功後に届く古い成功応答では巻き戻さない', () => {
+    const responses: Array<(response: unknown) => void> = []
+    mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
+      responses.push(callback)
+    })
+    render(<UIScaleSection {...defaultProps} />)
+
+    fireEvent.click(screen.getByText('+'))
+    fireEvent.click(screen.getByText('+'))
+    responses[1]!({ success: true })
+    responses[0]!({ success: true })
+
+    expect(mockSetUIConfig).toHaveBeenCalledTimes(1)
+    expect(mockSetUIConfig).toHaveBeenCalledWith({
+      ...DEFAULT_UI_CONFIG,
+      scale: 1.2,
+    })
+  })
+
   it('scale保存失敗時は表示を更新せずbroadcastしない', async () => {
     mockChromeRuntimeSendMessage.mockImplementationOnce((_message, callback) => {
       callback({ success: false, error: 'quota' })
@@ -216,6 +259,22 @@ describe('UIScaleSection', () => {
     expect(mockSetUIConfig).not.toHaveBeenCalled()
     expect(mockTabsQuery).not.toHaveBeenCalled()
     expect(mockTabsSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('scale保存失敗後の次操作は最後の確定値から計算する', () => {
+    mockChromeRuntimeSendMessage.mockImplementationOnce((_message, callback) => {
+      callback({ success: false, error: 'quota' })
+    })
+    render(<UIScaleSection {...defaultProps} />)
+
+    fireEvent.click(screen.getByText('+'))
+    fireEvent.click(screen.getByText('+'))
+
+    expect(mockChromeRuntimeSendMessage.mock.calls.map(([message]) => message))
+      .toEqual([
+        { action: 'setDeviceUIScale', scale: 1.1 },
+        { action: 'setDeviceUIScale', scale: 1.1 },
+      ])
   })
 
   it('scale保存timeout後の遅いsuccessは最新設定へscaleだけを反映する', () => {
