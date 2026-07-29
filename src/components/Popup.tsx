@@ -43,6 +43,7 @@ import { UpdateSection } from './popup/UpdateSection'
 import { WhatsNewSection } from './popup/WhatsNewSection'
 import { PopupHeader } from './popup/PopupHeader'
 import { SectionCard } from './popup/SectionCard'
+import { TelemetrySection } from './popup/TelemetrySection'
 import type { PopupThemeMode } from './popup/theme'
 import { DEFAULT_POPUP_THEME_MODE, getPopupTheme, resolvePopupThemeVariant } from './popup/theme'
 import {
@@ -95,7 +96,6 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   // back to `false` (no crash) in environments without `window.matchMedia`
   // (e.g. jsdom under Jest).
   const prefersDarkScheme = useMediaQuery('(prefers-color-scheme: dark)')
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const popupThemeChangedByUserRef = useRef(false)
   const uiConfigChangedAfterMountRef = useRef(false)
   const uiScaleChangedAfterMountRef = useRef(false)
@@ -663,7 +663,6 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           importDuplicates={importDuplicates}
           importSuccess={importSuccess}
           importStartTime={importStartTime}
-          fileInputRef={fileInputRef}
           setImportStatus={setImportStatus}
           setImportProgress={setImportProgress}
           setImportProcessed={setImportProcessed}
@@ -672,6 +671,10 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           setImportSuccess={setImportSuccess}
           setImportStartTime={setImportStartTime}
         />
+      </SectionCard>
+
+      <SectionCard>
+        <TelemetrySection />
       </SectionCard>
 
       <UndecodedEventSection />

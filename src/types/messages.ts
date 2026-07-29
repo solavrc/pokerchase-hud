@@ -18,6 +18,7 @@ export const MESSAGE_ACTIONS = {
   IMPORT_DATA_INIT: 'importDataInit',
   IMPORT_DATA_CHUNK: 'importDataChunk',
   IMPORT_DATA_PROCESS: 'importDataProcess',
+  IMPORT_DATA_CANCEL: 'importDataCancel',
   // Firebase Backup
   FIREBASE_AUTH_STATUS: 'firebaseAuthStatus',
   FIREBASE_SIGN_IN: 'firebaseSignIn',
@@ -109,6 +110,10 @@ export interface ImportDataChunkMessage {
 
 export interface ImportDataProcessMessage {
   action: 'importDataProcess'
+}
+
+export interface ImportDataCancelMessage {
+  action: 'importDataCancel'
 }
 
 // Filter related messages
@@ -435,6 +440,7 @@ export type ChromeMessage =
   | ImportDataInitMessage
   | ImportDataChunkMessage
   | ImportDataProcessMessage
+  | ImportDataCancelMessage
   | UpdateBattleTypeFilterMessage
   | RequestLatestStatsMessage
   | LatestStatsMessage
@@ -501,6 +507,9 @@ export const isImportDataChunkMessage = (msg: unknown): msg is ImportDataChunkMe
 
 export const isImportDataProcessMessage = (msg: unknown): msg is ImportDataProcessMessage =>
   isMessageWithAction(msg, 'importDataProcess')
+
+export const isImportDataCancelMessage = (msg: unknown): msg is ImportDataCancelMessage =>
+  isMessageWithAction(msg, 'importDataCancel')
 
 export const isUpdateBattleTypeFilterMessage = (msg: unknown): msg is UpdateBattleTypeFilterMessage =>
   isMessageWithAction(msg, 'updateBattleTypeFilter')

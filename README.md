@@ -88,6 +88,7 @@ so visual changes are shared with the extension rather than duplicated.
 - Database schema and API reference
 - Development guidelines and best practices
 - Cloud sync setup and troubleshooting
+- [Production error monitoring and privacy boundary](docs/observability.md)
 
 ## Contributing
 

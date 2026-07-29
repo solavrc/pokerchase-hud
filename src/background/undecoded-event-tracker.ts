@@ -14,6 +14,8 @@
  *   含まれるのに検証に失敗した。309インシデントと同じ危険クラス
  * - `unknownApiType`: `ApiTypeId` が `ApiType` enum に含まれない（新種イベントの
  *   可能性、または既知の非アプリケーションスキーマ自体が変化した稀なケース）
+ * - `invalidApiTypeId`: `ApiTypeId` 自体が欠落・非数値などでraw保存キーを
+ *   構築できない。専用の有界バケットにまとめて異常の痕跡を保持する
  *
  * 202/205等の「検証は通るが非アプリケーション」イベント（`isApplicationApiEvent`
  * が false を返すが `parseApiEvent` 自体は成功する）は仕様通りの挙動であり、
@@ -23,8 +25,13 @@ import type { PokerChaseDB } from '../db/poker-chase-db'
 import { ApiTypeValues, type ApiType } from '../types'
 
 export const UNDECODED_EVENT_STATS_KEY = 'undecodedEventStats'
+/** Missing, non-numeric, or otherwise unusable ApiTypeId values share one bounded bucket. */
+export const INVALID_API_TYPE_ID_BUCKET = -1
 
-export type UndecodedEventClass = 'appTypeParseFailed' | 'unknownApiType'
+export type UndecodedEventClass =
+  | 'appTypeParseFailed'
+  | 'unknownApiType'
+  | 'invalidApiTypeId'
 
 export interface UndecodedEventTypeStat {
   count: number
@@ -45,7 +52,11 @@ const cloneStats = (stats: UndecodedEventStats): UndecodedEventStats => ({
 
 /** `ApiTypeId`からdropクラスを判定する（(c)非アプリケーションは呼び出し元でフィルタ済みの前提） */
 export const classifyUndecodedApiTypeId = (apiTypeId: number): UndecodedEventClass =>
-  ApiTypeValues.includes(apiTypeId as ApiType) ? 'appTypeParseFailed' : 'unknownApiType'
+  apiTypeId === INVALID_API_TYPE_ID_BUCKET
+    ? 'invalidApiTypeId'
+    : ApiTypeValues.includes(apiTypeId as ApiType)
+      ? 'appTypeParseFailed'
+      : 'unknownApiType'
 
 // モジュールスコープの状態。Service Workerのライフタイム内でのみ有効
 // （SW再起動時はmetaテーブルから再読込される）。
