@@ -722,6 +722,11 @@ export const apiEventSchemas = {
     Status: z.union([z.literal(0), z.literal(1), z.literal(2)]),
     UserId: z.int().nonnegative(),
   }).describe('フレンド: オンラインステータス'),
+
+  [1305]: baseSchema.extend({
+    ApiTypeId: z.literal(1305),
+    FriendId: z.int().nonnegative().describe('通知対象のフレンドID'),
+  }).describe('フレンド: メッセージ受信（暫定分類。2026-07実ログ3件はいずれもFriendIdのみ）'),
 }
 
 /** ApiEvent検証用schema: 全ApiTypeを含める */
@@ -766,6 +771,7 @@ export const ApiEventSchema = z.discriminatedUnion("ApiTypeId", [
   apiEventSchemas[1302],
   apiEventSchemas[1303],
   apiEventSchemas[1304],
+  apiEventSchemas[1305],
 ])
 
 // ===============================

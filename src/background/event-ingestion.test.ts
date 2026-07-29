@@ -103,6 +103,27 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(handLogSpy).not.toHaveBeenCalled()
   })
 
+  test('the known FriendId-only 1305 notification is stored without entering poker streams or undecoded counts', async () => {
+    const handLogSpy = jest.spyOn(service.handLogStream, 'write')
+    const aggregateSpy = jest.spyOn(service.handAggregateStream, 'write')
+    const realTimeSpy = jest.spyOn(service.realTimeStatsStream, 'write')
+    const friendMessageEvent = {
+      ApiTypeId: 1305,
+      FriendId: 123456789,
+      timestamp: 1785008587942,
+      sequence: 0
+    }
+
+    await onMessageHandler(friendMessageEvent)
+    await new Promise(resolve => setTimeout(resolve, 550))
+
+    expect(await db.apiEvents.get([1785008587942, 1305, 0])).toEqual(friendMessageEvent)
+    expect(handLogSpy).not.toHaveBeenCalled()
+    expect(aggregateSpy).not.toHaveBeenCalled()
+    expect(realTimeSpy).not.toHaveBeenCalled()
+    expect((await getUndecodedEventStats(db)).total).toBe(0)
+  })
+
   test('an ApiTypeId entirely unknown to apiEventSchemas is stored raw (future PokerChase payload type)', async () => {
     const unknownEvent = { ApiTypeId: 9999, timestamp: 444, SomeFutureField: 'x' }
     await onMessageHandler(unknownEvent)

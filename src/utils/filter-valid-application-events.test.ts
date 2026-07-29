@@ -30,6 +30,19 @@ describe('filterValidApplicationEvents', () => {
     expect(result).toEqual([])
   })
 
+  it('drops a schema-valid 1305 friend notification from application-event replay', async () => {
+    const friendMessageEvent = {
+      ApiTypeId: 1305,
+      FriendId: 123456789,
+      timestamp: 1785008587942,
+      sequence: 0
+    }
+
+    const result = await filterValidApplicationEvents([friendMessageEvent])
+
+    expect(result).toEqual([])
+  })
+
   it('drops an application-type event whose payload fails the current schema', async () => {
     // EVT_DEAL (303) missing every required field
     const brokenAppEvent = { ApiTypeId: 303, timestamp: 300 }

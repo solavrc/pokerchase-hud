@@ -53,6 +53,21 @@ describe('API Validation Functions', () => {
       expect(validateApiEvent(entryEvent).success).toBe(true)
     })
 
+    it('accepts the observed FriendId-only ApiTypeId 1305 payload', () => {
+      const friendMessageEvent = {
+        ApiTypeId: 1305,
+        FriendId: 123456789,
+        timestamp: 1785008587942,
+        sequence: 0
+      }
+
+      const result = validateApiEvent(friendMessageEvent)
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data).toEqual(friendMessageEvent)
+      }
+    })
+
     it('should return false for unknown event types', () => {
       expect(validateApiEvent({ ApiTypeId: 9999 }).success).toBe(false)
       expect(validateApiEvent({ ApiTypeId: 0 }).success).toBe(false)
@@ -144,8 +159,10 @@ describe('API Validation Functions', () => {
 
     it('should return false for non-application events', () => {
       const nonAppEvent1 = { ApiTypeId: 202, Code: 0 } as any // Known but not in ApiType enum
+      const friendMessageEvent = { ApiTypeId: 1305, FriendId: 123456789 } as any
 
       expect(isApplicationApiEvent(nonAppEvent1)).toBe(false)
+      expect(isApplicationApiEvent(friendMessageEvent)).toBe(false)
       // isApplicationApiEvent requires KnownApiEvent, so unknown events cannot be tested directly
     })
   })
@@ -159,11 +176,13 @@ describe('API Validation Functions', () => {
       // 202 is a known, validating schema, but not an application type --
       // this is "noise" and must NOT be flagged as recoverable/unparseable.
       const noiseEvent = { ApiTypeId: 202, Code: 0, timestamp: 200 }
+      const friendMessageEvent = { ApiTypeId: 1305, FriendId: 123456789, timestamp: 201 }
       // An ApiTypeId the schema has never heard of at all.
       const unknownTypeEvent = { ApiTypeId: 99999, timestamp: 200 }
 
       expect(isUnparseableApplicationEvent(brokenSessionResults)).toBe(true)
       expect(isUnparseableApplicationEvent(noiseEvent)).toBe(false)
+      expect(isUnparseableApplicationEvent(friendMessageEvent)).toBe(false)
       expect(isUnparseableApplicationEvent(unknownTypeEvent)).toBe(false)
     })
 
@@ -365,6 +384,7 @@ describe('API Validation Functions', () => {
       expect(types.length).toBeGreaterThan(0)
       expect(types).toContain(ApiType.EVT_DEAL)
       expect(types).toContain(ApiType.EVT_ACTION)
+      expect(types).toContain(1305)
       expect(types.every(t => typeof t === 'number')).toBe(true)
     })
   })
