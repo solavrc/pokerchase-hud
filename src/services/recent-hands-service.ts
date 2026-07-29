@@ -79,7 +79,7 @@ function subscribeToHandCompletion(service: PokerChaseService): void {
  * (see `useCache` below), so key-differs-when-filter-or-limit-differs can't be observed
  * behaviorally in tests and is instead pinned down against this function directly. */
 export const buildRecentHandsCacheKey = (playerId: number, service: PokerChaseService, limit: number): string =>
-  `${playerId}_${service.battleTypeFilter?.join(',') ?? 'all'}_${service.tableSizeFilter?.join(',') ?? 'all'}_${service.sessionOnlyFilter ? service.session.id ?? 'pending' : 'all-sessions'}_${limit}`
+  `${playerId}_${service.battleTypeFilter?.join(',') ?? 'all'}_${service.tableSizeFilter?.join(',') ?? 'all'}_${service.sessionOnlyFilter ? service.currentSessionFilterKey() : 'all-sessions'}_${limit}`
 
 /**
  * あるアクションの`phasePrevBetCount`をローカルに再計算する。
@@ -255,10 +255,9 @@ export async function getRecentHands(
   }
 
   if (service.sessionOnlyFilter) {
-    const currentSessionId = service.session.id
-    allPlayerHands = currentSessionId === undefined
-      ? []
-      : allPlayerHands.filter((hand: Hand) => hand.session.id === currentSessionId)
+    allPlayerHands = allPlayerHands.filter((hand: Hand) =>
+      service.isHandInCurrentSession(hand)
+    )
   }
 
   // handLimitFilterは意図的に適用しない（このパネル自体の「直近N件」が

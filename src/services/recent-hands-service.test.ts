@@ -183,10 +183,16 @@ describe('RecentHandsService', () => {
       expect(result.hands.map(h => h.handId)).toEqual([5, 4])
     })
 
-    test('sessionOnly keeps only the current session id', async () => {
-      await db.hands.update(4, { session: { id: 'old', battleType: BattleType.RING_GAME } })
-      await db.hands.update(5, { session: { id: 'current', battleType: BattleType.RING_GAME } })
-      service.session.setId('current')
+    test('sessionOnly uses the active run boundary when a Ring room id is reused', async () => {
+      await db.hands.update(4, {
+        approxTimestamp: 4000,
+        session: { id: 'current', battleType: BattleType.RING_GAME },
+      })
+      await db.hands.update(5, {
+        approxTimestamp: 5000,
+        session: { id: 'current', battleType: BattleType.RING_GAME },
+      })
+      service.startSession('current', BattleType.RING_GAME, 4500)
       service.sessionOnlyFilter = true
 
       const result = await getRecentHands(db, service, PLAYER_ID, 10)

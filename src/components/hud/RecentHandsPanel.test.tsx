@@ -258,6 +258,17 @@ describe('RecentHandsPanel', () => {
       expect(screen.getAllByTestId('recent-hands-row')).toHaveLength(4)
     })
   })
+
+  it('playerIdが同じでもfilterRevisionが変わると再フェッチする', async () => {
+    const { rerender } = render(
+      <RecentHandsPanel playerId={1} handEpoch={1} filterRevision={0} />
+    )
+    await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1))
+
+    rerender(<RecentHandsPanel playerId={1} handEpoch={1} filterRevision={1} />)
+
+    await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(2))
+  })
 })
 
 describe('formatRelativeTime', () => {

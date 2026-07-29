@@ -145,6 +145,25 @@ describe('PokerChaseService - explicit session persistence', () => {
     expect(service.session.players.size).toBe(0)
   })
 
+  test('対局境界は同じSNGルーム再入室で更新し、同じMTTのテーブル移動では維持する', async () => {
+    const service = newService()
+    await service.ready
+
+    service.startSession('stage006_002', BattleType.SIT_AND_GO, 1000)
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'stage006_002', startedAt: 1000 })
+
+    service.startSession('stage006_002', BattleType.SIT_AND_GO, 2000)
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'stage006_002', startedAt: 2000 })
+
+    service.startSession('6078', BattleType.TOURNAMENT, 3000)
+    service.startSession('6078', BattleType.TOURNAMENT, 4000)
+    expect(service.getCurrentSessionScope()).toEqual({ id: '6078', startedAt: 3000 })
+
+    service.endSession()
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(service.currentSessionFilterKey()).toBe('inactive')
+  })
+
   test('setPlayer()によるプレイヤー追加はpersistをトリガーする', async () => {
     const service = newService()
     await service.ready
@@ -490,6 +509,8 @@ describe('SessionState (standalone unit tests)', () => {
       id: 's1',
       battleType: BattleType.SIT_AND_GO,
       name: 'Table',
+      startedAt: undefined,
+      active: false,
       players: [[1, { name: 'Alice', rank: 'gold' }]],
     })
   })

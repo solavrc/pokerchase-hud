@@ -192,12 +192,15 @@ describe('session end (309) invalidates background lastKnownStats', () => {
   test('raw EVT_SESSION_RESULTS (309) clears lastKnownStats via the raw-ApiTypeId path', async () => {
     const setLastKnownStatsSpy = jest.spyOn(ports, 'setLastKnownStats')
     setLastKnownStats([{ playerId: 2, statResults: [] } as any])
+    service.startSession('stage006_002', BattleType.SIT_AND_GO, 500)
     expect(getLastKnownStats()).toHaveLength(1)
+    expect(service.getCurrentSessionScope()).toBeDefined()
 
     await onMessageHandler(sessionResultsEvent)
 
     expect(setLastKnownStatsSpy).toHaveBeenCalledWith([])
     expect(getLastKnownStats()).toEqual([])
+    expect(service.getCurrentSessionScope()).toBeUndefined()
   })
 
   test('a malformed EVT_SESSION_RESULTS still clears lastKnownStats (raw ApiTypeId, unaffected by Zod parse failures)', async () => {

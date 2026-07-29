@@ -10,7 +10,7 @@ import type { ApiEvent } from '../types'
 // Mock components
 jest.mock('./Hud', () => ({
   __esModule: true,
-  default: ({ actualSeatIndex, stat, scale, statDisplayConfigs, realTimeStats, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, isRecentHandsPanelOpen, onToggleRecentHandsPanel, handEpoch, hudDisplayMode, hudColorCoding, isDimmed }: any) => (
+  default: ({ actualSeatIndex, stat, scale, statDisplayConfigs, realTimeStats, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, isRecentHandsPanelOpen, onToggleRecentHandsPanel, handEpoch, filterRevision, hudDisplayMode, hudColorCoding, isDimmed }: any) => (
     <div data-testid={`hud-${actualSeatIndex}`}>
       Player: {stat.playerId}
       Scale: {scale}
@@ -20,6 +20,7 @@ jest.mock('./Hud', () => ({
       PositionalPanelOpen: {isPositionalPanelOpen ? 'yes' : 'no'}
       RecentHandsPanelOpen: {isRecentHandsPanelOpen ? 'yes' : 'no'}
       HandEpoch: {handEpoch ?? 0}
+      FilterRevision: {filterRevision ?? 0}
       DisplayMode: {hudDisplayMode ?? 'undefined'}
       ColorCoding: {hudColorCoding === undefined ? 'undefined' : hudColorCoding ? 'yes' : 'no'}
       Dimmed: {isDimmed ? 'yes' : 'no'}
@@ -550,6 +551,26 @@ describe('App', () => {
       expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: yes')
       expect(screen.getByTestId('hud-0')).toHaveTextContent('HandEpoch: 7')
       expect(screen.getByTestId('hud-1')).toHaveTextContent('HandEpoch: 7')
+    })
+
+    it('フィルター変更時に開いているドリルダウンへ新しいrevisionを渡す', async () => {
+      const user = userEvent.setup()
+      render(<App />)
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', { detail: mockStatsData })
+        )
+      })
+      await user.click(screen.getByText('toggle-recent-1'))
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('FilterRevision: 0')
+
+      await act(async () => {
+        window.dispatchEvent(new CustomEvent('updateBattleTypeFilter'))
+      })
+
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: yes')
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('FilterRevision: 1')
     })
 
     it('ポジション別パネルとの従来の種別間排他は維持する', async () => {

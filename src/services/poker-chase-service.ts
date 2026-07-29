@@ -14,13 +14,14 @@ import {
 } from '../constants/runtime'
 import {
   ApiType,
-  BATTLE_TYPE_FILTERS
+  BATTLE_TYPE_FILTERS,
+  BattleType,
 } from '../types'
 import { DEFAULT_TABLE_SIZE_FILTER, selectedTableSizeLayers, type TableSizeLayer } from '../utils/table-size'
 import type {
   ApiEvent,
-  BattleType,
   FilterOptions,
+  Hand,
   HandLogConfig,
   Session,
   StatDisplayConfig
@@ -47,6 +48,8 @@ export class SessionState implements Session {
   private _id?: string
   private _battleType?: BattleType
   private _name?: string
+  private _startedAt?: number
+  private _active = false
   private readonly _players = new Map<number, SessionPlayerInfo>()
 
   constructor(private readonly notifyChange: () => void) { }
@@ -54,6 +57,8 @@ export class SessionState implements Session {
   get id(): string | undefined { return this._id }
   get battleType(): BattleType | undefined { return this._battleType }
   get name(): string | undefined { return this._name }
+  get startedAt(): number | undefined { return this._startedAt }
+  get active(): boolean { return this._active }
   /** 読み取り専用ビュー。ミューテーションは setPlayer()/reset() 経由のみ許可される */
   get players(): ReadonlyMap<number, SessionPlayerInfo> { return this._players }
 
@@ -77,10 +82,41 @@ export class SessionState implements Session {
     this.notifyChange()
   }
 
+  /**
+   * 1回の対局を開始する。SNG/Ringの再入室では同じIdが再利用されるため
+   * timestampを新しい境界にする。一方、MTTの同一トーナメント内では
+   * テーブル移動ごとにENTRY_QUEUEDが再送されるので開始境界を維持する。
+   */
+  start(id: string, battleType: BattleType, startedAt: number): void {
+    const continuesCurrentMtt =
+      this._active &&
+      this._battleType === BattleType.TOURNAMENT &&
+      battleType === BattleType.TOURNAMENT &&
+      this._id === id &&
+      Number.isFinite(this._startedAt)
+
+    this._id = id
+    this._battleType = battleType
+    this._name = undefined
+    this._players.clear()
+    if (!continuesCurrentMtt) {
+      this._startedAt = startedAt
+    }
+    this._active = true
+    this.notifyChange()
+  }
+
+  end(): void {
+    this._active = false
+    this.notifyChange()
+  }
+
   reset(): void {
     this._id = undefined
     this._battleType = undefined
     this._name = undefined
+    this._startedAt = undefined
+    this._active = false
     this._players.clear()
     this.notifyChange()
   }
@@ -89,10 +125,12 @@ export class SessionState implements Session {
    * ストレージから復元した値を、永続化をトリガーせずに適用する。
    * restoreState() 専用。
    */
-  hydrate(data: { id?: string, battleType?: BattleType, name?: string, players?: [number, SessionPlayerInfo][] }): void {
+  hydrate(data: { id?: string, battleType?: BattleType, name?: string, startedAt?: number, active?: boolean, players?: [number, SessionPlayerInfo][] }): void {
     this._id = data.id
     this._battleType = data.battleType
     this._name = data.name
+    this._startedAt = Number.isFinite(data.startedAt) ? data.startedAt : undefined
+    this._active = data.active === true && this._startedAt !== undefined
     this._players.clear()
     if (data.players && Array.isArray(data.players)) {
       for (const [key, value] of data.players) {
@@ -107,6 +145,8 @@ export class SessionState implements Session {
       id: this._id,
       battleType: this._battleType,
       name: this._name,
+      startedAt: this._startedAt,
+      active: this._active,
       players: Array.from(this._players.entries())
     }
   }
@@ -171,7 +211,7 @@ class PokerChaseService {
   battleTypeFilter?: number[] = undefined // undefined = all, array = specific battleTypes
   tableSizeFilter?: TableSizeLayer[] = undefined // undefined = all layers (no filtering), array = selected layers (C案)
   handLimitFilter?: number = undefined // undefined = all hands, number = limit to recent N hands
-  sessionOnlyFilter: boolean = false // true = current session id only
+  sessionOnlyFilter: boolean = false // true = current active session boundary only
   statDisplayConfigs?: StatDisplayConfig[] = undefined // Custom stat display configuration
   handLogConfig?: HandLogConfig = undefined // Hand log display configuration
   batchMode: boolean = false // Batch mode flag for bulk operations
@@ -264,6 +304,33 @@ class PokerChaseService {
   /** Reset session and clear player data */
   readonly resetSession = () => {
     this._sessionData.reset()
+  }
+
+  readonly startSession = (id: string, battleType: BattleType, startedAt: number) => {
+    this._sessionData.start(id, battleType, startedAt)
+  }
+
+  readonly endSession = () => {
+    this._sessionData.end()
+  }
+
+  readonly getCurrentSessionScope = (): { id: string, startedAt: number } | undefined => {
+    const { id, startedAt, active } = this._sessionData
+    if (!active || id === undefined || !Number.isFinite(startedAt)) return undefined
+    return { id, startedAt: startedAt! }
+  }
+
+  readonly currentSessionFilterKey = (): string => {
+    const scope = this.getCurrentSessionScope()
+    return scope ? `${scope.id}@${scope.startedAt}` : 'inactive'
+  }
+
+  readonly isHandInCurrentSession = (hand: Pick<Hand, 'session' | 'approxTimestamp'>): boolean => {
+    const scope = this.getCurrentSessionScope()
+    return scope !== undefined &&
+      hand.session.id === scope.id &&
+      Number.isFinite(hand.approxTimestamp) &&
+      hand.approxTimestamp! >= scope.startedAt
   }
 
   /**

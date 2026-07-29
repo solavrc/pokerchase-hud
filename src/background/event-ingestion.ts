@@ -277,6 +277,10 @@ const processEvent = async (
   applySessionActivity(rawApiTypeId, message)
 
   if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+    // 「最新」フィルターの対局境界もraw-firstで閉じる。309の詳細スキーマが
+    // 将来変わってparseに失敗しても、終了後に完了済み対局を再表示しない。
+    service.endSession()
+
     // #179 round3指摘: セッション終了(EVT_SESSION_RESULTS)によるHUDクリアは
     // App.tsx側のReact stateだけで完結しており、background(ports.ts)の
     // `lastKnownStats`はセッションをまたいで残り続ける。この状態で

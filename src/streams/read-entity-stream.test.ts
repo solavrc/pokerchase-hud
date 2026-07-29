@@ -131,14 +131,24 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(2)
   })
 
-  test('sessionOnly keeps only hands from the current session id', async () => {
-    await db.hands.update(4, { session: { id: 'old', battleType: BattleType.TOURNAMENT } })
-    await db.hands.update(5, { session: { id: 'current', battleType: BattleType.TOURNAMENT } })
-    service.session.setId('current')
+  test('sessionOnly uses the active run boundary even when the session id is reused', async () => {
+    await db.hands.update(4, {
+      approxTimestamp: 4000,
+      session: { id: 'current', battleType: BattleType.TOURNAMENT },
+    })
+    await db.hands.update(5, {
+      approxTimestamp: 5000,
+      session: { id: 'current', battleType: BattleType.TOURNAMENT },
+    })
+    service.startSession('current', BattleType.TOURNAMENT, 4500)
     service.sessionOnlyFilter = true
 
     const stats = await runCalcStats(service, SEAT_USER_IDS)
     expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(1)
+
+    service.endSession()
+    const afterEnd = await runCalcStats(service, SEAT_USER_IDS)
+    expect(handsStatOf(afterEnd, PLAYER_ID)?.value).toBeUndefined()
   })
 
   test('a completed hand invalidates a same-lineup production cache warmed at deal time', async () => {

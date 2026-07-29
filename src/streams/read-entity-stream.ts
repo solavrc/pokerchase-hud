@@ -114,7 +114,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
 
       // seatUserIdsとフィルター設定に基づいてキャッシュキーを作成
       const sessionFilterKey = this.service.sessionOnlyFilter
-        ? `session:${this.service.session.id ?? 'pending'}`
+        ? `session:${this.service.currentSessionFilterKey()}`
         : 'all-sessions'
       const cacheKey = `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}_${this.service.handLimitFilter ?? 'all'}_${sessionFilterKey}`
       const now = Date.now()
@@ -159,7 +159,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       const context: ErrorContext = {
         streamName: 'ReadEntityStream',
         playerIds: seatUserIds,
-        cacheKey: `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}_${this.service.handLimitFilter ?? 'all'}_${this.service.sessionOnlyFilter ? this.service.session.id ?? 'pending' : 'all-sessions'}`,
+        cacheKey: `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}_${this.service.handLimitFilter ?? 'all'}_${this.service.sessionOnlyFilter ? this.service.currentSessionFilterKey() : 'all-sessions'}`,
         battleTypeFilter: this.service.battleTypeFilter,
         tableSizeFilter: this.service.tableSizeFilter,
         handLimitFilter: this.service.handLimitFilter
@@ -181,8 +181,6 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
    * 経由したブロードキャストは発生しない（呼び出し元が結果を自分で届ける）。
    */
   calcStats = async (seatUserIds: number[]): Promise<PlayerStats[]> => {
-    const currentSessionId = this.service.session.id
-
     return await Promise.all(seatUserIds.map(async playerId => {
       if (playerId === -1)
         return { playerId: -1 }
@@ -233,9 +231,9 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       // 空集合にする（別セッションの統計を現在値として見せない）。
       if (this.service.sessionOnlyFilter) {
         const originalHandsCount = allPlayerHands.length
-        allPlayerHands = currentSessionId === undefined
-          ? []
-          : allPlayerHands.filter((hand: Hand) => hand.session.id === currentSessionId)
+        allPlayerHands = allPlayerHands.filter((hand: Hand) =>
+          this.service.isHandInCurrentSession(hand)
+        )
 
         if (allPlayerHands.length === 0 && originalHandsCount > 0) {
           return {
