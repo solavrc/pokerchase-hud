@@ -1,7 +1,12 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { WhatsNewSection } from './WhatsNewSection'
-import { WHATS_NEW_ENTRIES, GITHUB_RELEASES_URL, type WhatsNewEntry } from '../../constants/whats-new'
+import {
+  WHATS_NEW_ENTRIES,
+  GITHUB_RELEASES_URL,
+  WHATS_NEW_EXPANDED_STORAGE_KEY,
+  type WhatsNewEntry,
+} from '../../constants/whats-new'
 
 const syntheticEntry = (version: string, pointCount: number): WhatsNewEntry => ({
   version,
@@ -42,6 +47,21 @@ describe('WhatsNewSection', () => {
 
     const history = screen.getByRole('button', { name: new RegExp(`過去の更新情報（${WHATS_NEW_ENTRIES.length - 2}件）`) })
     expect(history).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('collapses the entire section and persists the space-saving choice', async () => {
+    const user = userEvent.setup()
+    render(<WhatsNewSection />)
+
+    const collapse = screen.getByRole('button', { name: /折りたたむ/ })
+    const contentId = collapse.getAttribute('aria-controls')
+    await user.click(collapse)
+
+    expect(collapse).toHaveAttribute('aria-expanded', 'false')
+    expect(document.getElementById(contentId!)).toHaveAttribute('hidden')
+    expect(chrome.storage.sync.set).toHaveBeenCalledWith({
+      [WHATS_NEW_EXPANDED_STORAGE_KEY]: false,
+    })
   })
 
   it('shows a short newest release in full while truncating the long second release', () => {

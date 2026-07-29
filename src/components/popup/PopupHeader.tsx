@@ -2,6 +2,7 @@ import Box from '@mui/material/Box'
 import RadioGroup from '@mui/material/RadioGroup'
 import Typography from '@mui/material/Typography'
 import manifest from '../../../manifest.json'
+import { RELEASE_DATES_BY_VERSION } from '../../constants/release-dates'
 import type { PopupThemeMode } from './theme'
 import { SegmentRadio } from './SegmentRadio'
 
@@ -42,6 +43,7 @@ export const PopupHeader = ({ popupThemeMode, onPopupThemeModeChange }: PopupHea
           sx={{ color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}
         >
           v{manifest.version}
+          {RELEASE_DATES_BY_VERSION[manifest.version] && `（${RELEASE_DATES_BY_VERSION[manifest.version]}）`}
         </Typography>
       )}
     </Box>

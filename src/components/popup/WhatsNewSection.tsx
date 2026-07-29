@@ -5,6 +5,7 @@ import Typography from '@mui/material/Typography'
 import { useEffect, useId, useMemo, useState } from 'react'
 import {
   GITHUB_RELEASES_URL,
+  WHATS_NEW_EXPANDED_STORAGE_KEY,
   WHATS_NEW_ENTRIES,
   selectWhatsNewEntry,
   type WhatsNewEntry,
@@ -86,22 +87,30 @@ const FeaturedEntry = ({ entry, isFirst }: { entry: WhatsNewEntry, isFirst: bool
 }
 
 /**
- * 更新情報（What's New）セクション。実行中バージョン以下の最新2件を最初から
- * 表示し、長い本文だけをエントリ内の「続きを読む」で省略する。3件目以前は
- * 「過去の更新情報」にまとめ、設定操作へ早く到達できる初期高さを保つ。
+ * 更新情報（What's New）セクション。カード全体の開閉状態を保存し、開いて
+ * いるときは実行中バージョン以下の最新2件を表示する。長い本文はエントリ内の
+ * 「続きを読む」で省略し、3件目以前は「過去の更新情報」にまとめる。
  *
  * マウント時に`acknowledgeWhatsNew`メッセージ（`message-router.ts`→
  * `src/background/whats-new-badge.ts`）を送り、拡張機能アイコンのバッジ
  * （未読があれば）を解消する。未読が無い状態で送っても副作用は無い（冪等）。
  */
 export const WhatsNewSection = ({ entries = WHATS_NEW_ENTRIES }: WhatsNewSectionProps) => {
+  const [sectionExpanded, setSectionExpanded] = useState(true)
   const [historyExpanded, setHistoryExpanded] = useState(false)
+  const sectionId = useId()
   const historyId = useId()
 
   useEffect(() => {
     // Popupが開かれた = ユーザーが更新情報を目にする機会があった、という
     // ことなのでバッジを解消する。応答は使わないので待たない（fire-and-forget）。
     sendMessageWithTimeout<{ success: boolean }>({ action: 'acknowledgeWhatsNew' } as AcknowledgeWhatsNewMessage)
+
+    chrome.storage.sync.get(WHATS_NEW_EXPANDED_STORAGE_KEY, (result: Record<string, unknown>) => {
+      if (typeof result[WHATS_NEW_EXPANDED_STORAGE_KEY] === 'boolean') {
+        setSectionExpanded(result[WHATS_NEW_EXPANDED_STORAGE_KEY] as boolean)
+      }
+    })
   }, [])
 
   const currentVersion = useMemo(() => chrome.runtime.getManifest().version, [])
@@ -125,40 +134,58 @@ export const WhatsNewSection = ({ entries = WHATS_NEW_ENTRIES }: WhatsNewSection
 
   return (
     <SectionCard>
-      <SectionHeading>更新情報</SectionHeading>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <SectionHeading>更新情報</SectionHeading>
+        <Button
+          size="small"
+          variant="text"
+          aria-expanded={sectionExpanded}
+          aria-controls={sectionId}
+          onClick={() => {
+            const next = !sectionExpanded
+            setSectionExpanded(next)
+            chrome.storage.sync.set({ [WHATS_NEW_EXPANDED_STORAGE_KEY]: next })
+          }}
+          sx={{ ...disclosureButtonSx, mt: 0, mb: 1 }}
+        >
+          {sectionExpanded ? '折りたたむ ▲' : '表示する ▼'}
+        </Button>
+      </Box>
 
-      {featuredEntries.map((entry, index) => (
-        <FeaturedEntry key={entry.version} entry={entry} isFirst={index === 0} />
-      ))}
+      <Box id={sectionId} hidden={!sectionExpanded}>
+        {featuredEntries.map((entry, index) => (
+          <FeaturedEntry key={entry.version} entry={entry} isFirst={index === 0} />
+        ))}
 
-      {historyEntries.length > 0 && (
-        <Box sx={{ mt: 1.5 }}>
-          <Button
-            size="small"
-            variant="text"
-            aria-expanded={historyExpanded}
-            aria-controls={historyId}
-            onClick={() => setHistoryExpanded(currentExpanded => !currentExpanded)}
-            sx={{ ...disclosureButtonSx, mt: 0 }}
-          >
-            {historyExpanded ? '▼' : '▶'} 過去の更新情報（{historyEntries.length}件）
-          </Button>
-          <Box id={historyId} hidden={!historyExpanded}>
-            {historyEntries.map(entry => (
-              <Box component="article" key={entry.version} sx={{ mt: 1 }}>
-                <EntryHeader entry={entry} />
-                <EntryPoints points={entry.points} />
-              </Box>
-            ))}
+        {historyEntries.length > 0 && (
+          <Box sx={{ mt: 1.5 }}>
+            <Button
+              size="small"
+              variant="text"
+              aria-expanded={historyExpanded}
+              aria-controls={historyId}
+              onClick={() => setHistoryExpanded(currentExpanded => !currentExpanded)}
+              sx={{ ...disclosureButtonSx, mt: 0 }}
+            >
+              {historyExpanded ? '▼' : '▶'} 過去の更新情報（{historyEntries.length}件）
+            </Button>
+            <Box id={historyId} hidden={!historyExpanded}>
+              {historyEntries.map(entry => (
+                <Box component="article" key={entry.version} sx={{ mt: 1 }}>
+                  <EntryHeader entry={entry} />
+                  <EntryPoints points={entry.points} />
+                </Box>
+              ))}
+            </Box>
           </Box>
-        </Box>
-      )}
+        )}
 
-      <Typography variant="caption" sx={{ display: 'block', mt: 1.5 }}>
-        <Link href={GITHUB_RELEASES_URL} target="_blank" rel="noopener noreferrer" color="inherit">
-          すべての変更を見る (GitHub Releases)
-        </Link>
-      </Typography>
+        <Typography variant="caption" sx={{ display: 'block', mt: 1.5 }}>
+          <Link href={GITHUB_RELEASES_URL} target="_blank" rel="noopener noreferrer" color="inherit">
+            すべての変更を見る (GitHub Releases)
+          </Link>
+        </Typography>
+      </Box>
     </SectionCard>
   )
 }
