@@ -243,11 +243,15 @@ const sendDeviceLayoutWriteMessage = (
   }
 }
 
-export const loadLocalUIScale = (callback: (scale: number) => void): void => {
+export const loadLocalUIScale = (
+  callback: (scale: number, authoritative: boolean) => void
+): void => {
   sendDeviceLayoutReadMessage<DeviceUILayoutResponse>(
     { action: 'getDeviceUILayout' },
     (response: DeviceUILayoutResponse | undefined) => {
-      callback(resolveLocalUIScale(response?.scale))
+      const authoritative =
+        response?.success === true && isValidUIScale(response.scale)
+      callback(resolveLocalUIScale(response?.scale), authoritative)
     }
   )
 }

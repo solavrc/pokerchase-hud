@@ -23,6 +23,7 @@ import type { SyncState } from '../services/auto-sync-service'
 import { content_scripts } from '../../manifest.json'
 import { sendMessageWithTimeout } from './popup/send-message'
 import {
+  isValidUIScale,
   loadLocalUIScale,
   mergeUIConfigWithLocalScale,
   resolveLocalUIScale,
@@ -89,6 +90,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   const [hasUnsavedStatChanges, setHasUnsavedStatChanges] = useState<boolean>(false)
   const [uiConfig, setUIConfig] = useState<UIConfig>(DEFAULT_UI_CONFIG)
   const [uiConfigLoaded, setUIConfigLoaded] = useState(false)
+  const [uiScaleAuthoritative, setUIScaleAuthoritative] = useState(false)
   const [popupThemeMode, setPopupThemeMode] = useState<PopupThemeMode>(
     initialPopupThemeMode ?? DEFAULT_POPUP_THEME_MODE
   )
@@ -128,6 +130,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
         const scaleChange = changes[UI_SCALE_STORAGE_KEY]
         if (!scaleChange) return
         uiScaleChangedAfterMountRef.current = true
+        setUIScaleAuthoritative(isValidUIScale(scaleChange.newValue))
         setUIConfig(current => ({
           ...current,
           scale: resolveLocalUIScale(scaleChange.newValue),
@@ -279,7 +282,10 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
       // そのまま使うとポップアップのHUD表示設定セクションが未定義値を表示して
       // しまう（App.tsx側の読み込みは既にこのマージを行っている）。
       chrome.storage.sync.get('uiConfig', (result: Record<string, any>) => {
-        loadLocalUIScale(localScale => {
+        loadLocalUIScale((localScale, authoritative) => {
+          if (authoritative) {
+            setUIScaleAuthoritative(true)
+          }
           if (
             uiConfigChangedAfterMountRef.current ||
             uiScaleChangedAfterMountRef.current
@@ -591,6 +597,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           <UIScaleSection
             uiConfig={uiConfig}
             setUIConfig={setUIConfig}
+            scaleControlsDisabled={!uiScaleAuthoritative}
           />
 
           <HudDisplaySection

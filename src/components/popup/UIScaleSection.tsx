@@ -17,11 +17,13 @@ import { broadcastUIConfig } from './broadcast-ui-config'
 interface UIScaleSectionProps {
   uiConfig: UIConfig
   setUIConfig: (config: UIConfig) => void
+  scaleControlsDisabled?: boolean
 }
 
 export const UIScaleSection = ({
   uiConfig,
   setUIConfig,
+  scaleControlsDisabled = false,
 }: UIScaleSectionProps) => {
   const [recordingShortcut, setRecordingShortcut] = useState(false)
   const [shortcutError, setShortcutError] = useState(false)
@@ -157,7 +159,7 @@ export const UIScaleSection = ({
         <IconButton
           size="small"
           onClick={() => requestScaleChange(-0.1)}
-          disabled={uiConfig.scale <= 0.5}
+          disabled={scaleControlsDisabled || uiConfig.scale <= 0.5}
         >
           -
         </IconButton>
@@ -167,7 +169,7 @@ export const UIScaleSection = ({
         <IconButton
           size="small"
           onClick={() => requestScaleChange(0.1)}
-          disabled={uiConfig.scale >= 2.0}
+          disabled={scaleControlsDisabled || uiConfig.scale >= 2.0}
         >
           +
         </IconButton>

@@ -276,7 +276,7 @@ describe('ui-config-storage', () => {
       { action: 'getDeviceUILayout' },
       expect.any(Function)
     )
-    expect(callback).toHaveBeenCalledWith(1.6)
+    expect(callback).toHaveBeenCalledWith(1.6, true)
   })
 
   it('timeoutで描画を進め、遅れたbackground応答もscaleへ反映する', () => {
@@ -294,10 +294,10 @@ describe('ui-config-storage', () => {
       expect(callback).not.toHaveBeenCalled()
 
       jest.advanceTimersByTime(DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS)
-      expect(callback).toHaveBeenCalledWith(DEFAULT_UI_CONFIG.scale)
+      expect(callback).toHaveBeenCalledWith(DEFAULT_UI_CONFIG.scale, false)
 
       respond({ success: true, scale: 1.6 })
-      expect(callback).toHaveBeenLastCalledWith(1.6)
+      expect(callback).toHaveBeenLastCalledWith(1.6, true)
       expect(callback).toHaveBeenCalledTimes(2)
     } finally {
       jest.useRealTimers()

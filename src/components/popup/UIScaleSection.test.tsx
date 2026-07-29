@@ -50,6 +50,20 @@ describe('UIScaleSection', () => {
       .toHaveValue('Shift + H')
   })
 
+  it('端末倍率が未確定の間は倍率操作だけを無効化する', () => {
+    render(
+      <UIScaleSection
+        {...defaultProps}
+        scaleControlsDisabled
+      />
+    )
+
+    expect(screen.getByRole('button', { name: '+' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '-' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '表示' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '非表示' })).toBeEnabled()
+  })
+
   it('省略される長いショートカットもtitleで完全表示する', () => {
     const longShortcutConfig: UIConfig = {
       ...DEFAULT_UI_CONFIG,
