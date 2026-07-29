@@ -21,7 +21,7 @@
  *    percentage positions of the (stretched, `object-fit: fill`) backdrop.
  *    `SEAT_ANCHORS` below carries those percentages, measured once on the
  *    cropped asset. The HUD's per-seat panel positions are seeded through
- *    the extension's own persistence (`chrome.storage.sync`
+ *    the extension's own device-local persistence (`chrome.storage.local`
  *    `hudPosition_<displaySeat>` keys, the exact mechanism a user dragging
  *    a panel uses -- see src/components/hud/hooks/useDraggable.ts) so each
  *    stat panel lands just under its plate, then the fixture page is
@@ -416,7 +416,7 @@ const waitForReplayEvents = async (h: Harness, total: number): Promise<void> => 
 
 /**
  * Seeds the per-seat HUD panel positions (and the real-time panel's) through
- * the extension's own chrome.storage.sync persistence, sized against the
+ * the extension's own chrome.storage.local persistence, sized against the
  * panels' measured pixel heights so each panel's edge sits PLATE_GAP_PX from
  * its plate edge at the given viewport.
  */
@@ -452,7 +452,7 @@ const seedPositions = async (
 
   const popup = await h.openPopup()
   await popup.evaluate(
-    (s: Record<string, unknown>) => new Promise<void>((res) => chrome.storage.sync.set(s, () => res())),
+    (s: Record<string, unknown>) => new Promise<void>((res) => chrome.storage.local.set(s, () => res())),
     seed
   )
   await popup.close()

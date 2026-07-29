@@ -18,12 +18,17 @@ export const useDraggable = (seatIndex: number, defaultPosition: CSSProperties) 
   const [position, setPosition] = useState<HudPosition | null>(null)
   const dragRef = useRef<DragState | null>(null)
   const shouldPersistPositionRef = useRef(false)
+  const positionEditGenerationRef = useRef(0)
   const containerRef = useRef<HTMLDivElement>(null)
 
   // Layout is device-local because each device can have a different viewport.
   useEffect(() => {
+    const loadGeneration = positionEditGenerationRef.current
     loadHudPosition(seatIndex, savedPosition => {
-      if (savedPosition) {
+      if (
+        savedPosition &&
+        positionEditGenerationRef.current === loadGeneration
+      ) {
         setPosition(savedPosition)
       }
     })
@@ -43,6 +48,11 @@ export const useDraggable = (seatIndex: number, defaultPosition: CSSProperties) 
 
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
+
+    // A pointer interaction is newer than any in-flight startup read. Ignore
+    // a saved position that arrives after this point so it cannot snap the HUD
+    // back or be persisted over the user's drag.
+    positionEditGenerationRef.current += 1
 
     const currentLeft = position?.left ? parseFloat(position.left) : parseFloat((defaultPosition?.left as string) || '0')
     const currentTop = position?.top ? parseFloat(position.top) : parseFloat((defaultPosition?.top as string) || '0')

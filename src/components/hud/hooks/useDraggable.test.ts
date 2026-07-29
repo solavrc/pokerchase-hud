@@ -130,6 +130,73 @@ describe('useDraggable', () => {
     )
   })
 
+  it('ドラッグ開始後に届いた古い保存位置でユーザー操作を巻き戻さない', () => {
+    let resolveInitialLoad!: (response: unknown) => void
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceUILayout') {
+        resolveInitialLoad = callback
+      } else {
+        callback({ success: true })
+      }
+    })
+    const { result } = renderHook(() => useDraggable(0, defaultPosition))
+    const mockContainer = document.createElement('div')
+    mockContainer.getBoundingClientRect = jest.fn(() => ({
+      top: 0,
+      left: 0,
+      width: 100,
+      height: 100,
+      right: 100,
+      bottom: 100,
+      x: 0,
+      y: 0,
+      toJSON: () => {},
+    }))
+    Object.defineProperty(result.current.containerRef, 'current', {
+      value: mockContainer,
+      writable: true,
+    })
+
+    act(() => {
+      result.current.handleMouseDown({
+        preventDefault: jest.fn(),
+        stopPropagation: jest.fn(),
+        clientX: 100,
+        clientY: 100,
+      } as unknown as React.MouseEvent)
+    })
+    act(() => {
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        clientX: 150,
+        clientY: 120,
+        bubbles: true,
+      }))
+    })
+    const userPosition = result.current.position
+    expect(userPosition).not.toBeNull()
+
+    act(() => {
+      resolveInitialLoad({
+        success: true,
+        scale: 1,
+        position: { top: '10%', left: '20%' },
+      })
+    })
+    expect(result.current.position).toEqual(userPosition)
+
+    act(() => {
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    })
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      {
+        action: 'setDeviceHudPosition',
+        seatIndex: 0,
+        position: userPosition,
+      },
+      expect.any(Function)
+    )
+  })
+
   it('別の席番号では異なるストレージキーを使用', () => {
     renderHook(() => useDraggable(3, defaultPosition))
 
