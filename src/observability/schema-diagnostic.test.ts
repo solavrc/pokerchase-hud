@@ -277,6 +277,34 @@ describe('schema repair diagnostics', () => {
     expect(serialized).not.toContain('Bob')
   })
 
+  it('redacts unknown root keys for invalid-ID diagnostics', () => {
+    const diagnostic = buildSchemaDiagnostic(
+      {
+        Alice: {
+          UserId: 129532369,
+          Chip: 1200
+        },
+        timestamp: 1785008587942
+      },
+      [{
+        path: ['Alice', 'UserId'],
+        code: 'unrecognized_keys'
+      }],
+      { redactUnknownRootKeys: true }
+    )
+
+    expect(diagnostic.issues[0]?.path).toBe('[dynamic-key].UserId')
+    expect(diagnostic.payloadShape).toEqual(expect.arrayContaining([
+      '[dynamic-key]: object',
+      '[dynamic-key].UserId: integer',
+      '[dynamic-key].Chip: integer',
+      'timestamp: integer'
+    ]))
+    const serialized = JSON.stringify(diagnostic)
+    expect(serialized).not.toContain('Alice')
+    expect(serialized).not.toContain('129532369')
+  })
+
   it('redacts unknown strings by default while retaining allow-listed protocol IDs', () => {
     const diagnostic = buildSchemaDiagnostic({
       ApiTypeId: 9999,

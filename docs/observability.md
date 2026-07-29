@@ -102,7 +102,9 @@ that placeholder before storage.
 
 The Sentry project also has default data scrubbing and IP-address scrubbing
 enabled. Each background/content/popup runtime sends at most 20 events before
-it is restarted, limiting the effect of an error loop. The schema-validation
+it is restarted, limiting the effect of an error loop. Each monitored runtime
+also installs a bounded five-error bootstrap buffer synchronously while its
+asynchronous consent and permission checks are pending. The schema-validation
 snapshot is the only permitted API-event context and must be produced by
 `buildSchemaDiagnostic`. Its construction is gated lazily after consent,
 runtime budget, and per-`ApiTypeId` deduplication so opted-out users do not pay

@@ -15,8 +15,8 @@ jest.mock('@sentry/browser', () => ({
   captureMessage: jest.fn()
 }))
 
-describe('Sentry popup bootstrap buffer', () => {
-  it('reports an error raised while consent initialization is pending', async () => {
+describe('Sentry runtime bootstrap buffer', () => {
+  it('reports a background error raised while consent initialization is pending', async () => {
     process.env.SENTRY_ENABLED = 'true'
     ;(chrome.permissions.request as jest.Mock).mockResolvedValue(true)
     await requestSentryTelemetry()
@@ -28,8 +28,8 @@ describe('Sentry popup bootstrap buffer', () => {
       })
     )
 
-    const initialization = initSentry('popup')
-    const bootstrapError = new Error('popup render failed')
+    const initialization = initSentry('background')
+    const bootstrapError = new Error('background construction failed')
     globalThis.dispatchEvent(new ErrorEvent('error', {
       error: bootstrapError
     }))

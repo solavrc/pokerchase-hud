@@ -469,7 +469,11 @@ const processEvent = async (
       diagnosticApiTypeId,
       () => buildSchemaDiagnostic(
         message,
-        validationResult.error?.issues ?? []
+        validationResult.error?.issues ?? [],
+        {
+          redactUnknownRootKeys:
+            diagnosticApiTypeId === INVALID_API_TYPE_ID_BUCKET
+        }
       )
     )
     const eventTimestamp =

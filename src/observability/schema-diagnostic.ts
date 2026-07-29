@@ -22,6 +22,11 @@ export interface SchemaDiagnostic {
   payloadTruncated: boolean
 }
 
+export interface SchemaDiagnosticOptions {
+  /** Invalid-ID payloads are not guaranteed to have a fixed event root. */
+  redactUnknownRootKeys?: boolean
+}
+
 const MAX_DEPTH = 6
 const MAX_SHAPE_ENTRIES = 100
 const MAX_OBJECT_KEYS = 40
@@ -32,6 +37,7 @@ const MAX_PAYLOAD_OBJECT_KEYS = 80
 const MAX_PAYLOAD_ARRAY_ENTRIES = 50
 const MAX_PAYLOAD_STRING_LENGTH = 2000
 const SAFE_SCHEMA_KEY = /^[A-Za-z][A-Za-z0-9_]{0,63}$/
+const ROOT_CONTAINER = '[root]'
 const MAP_VALUE_CONTAINER = '[map-value]'
 // Build the allow-list from the current Zod protocol itself. A known
 // container name is not enough: if a future payload changes Player from its
@@ -120,6 +126,9 @@ const safeSchemaKey = (
     // field names already present somewhere in the bundled protocol.
     return KNOWN_SCHEMA_FIELDS.all.has(key) ? key : '[dynamic-key]'
   }
+  if (parentKey === ROOT_CONTAINER) {
+    return KNOWN_SCHEMA_FIELDS.all.has(key) ? key : '[dynamic-key]'
+  }
   if (
     parentKey &&
     !KNOWN_SCHEMA_FIELDS.byContainer.get(parentKey)?.has(key)
@@ -138,11 +147,16 @@ const appendPath = (base: string, key: string): string => {
   return base === '$' ? key : `${base}.${key}`
 }
 
-const formatIssuePath = (path: readonly PropertyKey[]): string => {
+const formatIssuePath = (
+  path: readonly PropertyKey[],
+  redactUnknownRootKeys: boolean
+): string => {
   if (path.length === 0) return '$'
 
   let result = ''
-  let parentKey: string | undefined
+  let parentKey: string | undefined = redactUnknownRootKeys
+    ? ROOT_CONTAINER
+    : undefined
   for (const part of path) {
     if (typeof part === 'number') {
       result = `${result}[]`
@@ -204,7 +218,8 @@ const sanitizeStringValue = (value: string): string => {
  * SeatUserIds -> Results[].UserId remain inspectable.
  */
 const buildSanitizedPayload = (
-  payload: unknown
+  payload: unknown,
+  redactUnknownRootKeys: boolean
 ): { value: unknown, truncated: boolean } => {
   const userAliases = new Map<string, string>()
   const nameAliases = new Map<string, string>()
@@ -344,7 +359,11 @@ const buildSanitizedPayload = (
   }
 
   return {
-    value: visit(payload, 0),
+    value: visit(
+      payload,
+      0,
+      redactUnknownRootKeys ? ROOT_CONTAINER : undefined
+    ),
     truncated
   }
 }
@@ -358,8 +377,10 @@ const buildSanitizedPayload = (
  */
 export const buildSchemaDiagnostic = (
   payload: unknown,
-  rawIssues: readonly SchemaIssueLike[]
+  rawIssues: readonly SchemaIssueLike[],
+  options: SchemaDiagnosticOptions = {}
 ): SchemaDiagnostic => {
+  const redactUnknownRootKeys = options.redactUnknownRootKeys === true
   const shape = new Set<string>()
   let truncated = false
 
@@ -425,20 +446,28 @@ export const buildSchemaDiagnostic = (
     }
   }
 
-  visit(payload, '$', 0)
+  visit(
+    payload,
+    '$',
+    0,
+    redactUnknownRootKeys ? ROOT_CONTAINER : undefined
+  )
 
   const issues = rawIssues.map(issue => {
     const expected = typeof issue.expected === 'string'
       ? issue.expected.slice(0, 80)
       : undefined
     return {
-      path: formatIssuePath(issue.path),
+      path: formatIssuePath(issue.path, redactUnknownRootKeys),
       code: issue.code.slice(0, 80),
       expected,
       actualType: jsonType(valueAtPath(payload, issue.path))
     }
   })
-  const sanitizedPayload = buildSanitizedPayload(payload)
+  const sanitizedPayload = buildSanitizedPayload(
+    payload,
+    redactUnknownRootKeys
+  )
 
   return {
     issues,

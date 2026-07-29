@@ -42,6 +42,7 @@ let initializationPromise: Promise<void> | undefined
 let sentEventCount = 0
 
 interface BootstrapErrorBuffer {
+  runtime: SentryRuntime
   errors: unknown[]
   dispose: () => void
 }
@@ -174,7 +175,7 @@ const closeSentry = async (): Promise<void> => {
 const createBootstrapErrorBuffer = (
   runtime: SentryRuntime
 ): BootstrapErrorBuffer | undefined => {
-  if (runtime !== 'popup' || typeof globalThis.addEventListener !== 'function') {
+  if (typeof globalThis.addEventListener !== 'function') {
     return undefined
   }
 
@@ -186,7 +187,7 @@ const createBootstrapErrorBuffer = (
   }
   const onError = (event: Event): void => {
     const errorEvent = event as globalThis.ErrorEvent
-    remember(errorEvent.error ?? new Error('Popup bootstrap error'))
+    remember(errorEvent.error ?? new Error(`${runtime} bootstrap error`))
   }
   const onUnhandledRejection = (event: Event): void => {
     const rejectionEvent = event as PromiseRejectionEvent
@@ -197,6 +198,7 @@ const createBootstrapErrorBuffer = (
   globalThis.addEventListener('unhandledrejection', onUnhandledRejection)
 
   return {
+    runtime,
     errors,
     dispose: () => {
       globalThis.removeEventListener('error', onError)
@@ -211,7 +213,7 @@ const flushBootstrapErrors = (buffer: BootstrapErrorBuffer | undefined): void =>
 
   for (const error of buffer.errors) {
     captureHandledException(error, {
-      operation: 'popup.bootstrap'
+      operation: `${buffer.runtime}.bootstrap`
     })
   }
 }
