@@ -126,12 +126,10 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
       if (areaName === 'local') {
         const scaleChange = changes[UI_SCALE_STORAGE_KEY]
         if (!scaleChange) return
-        uiConfigChangedAfterMountRef.current = true
         setUIConfig(current => ({
           ...current,
           scale: resolveLocalUIScale(scaleChange.newValue),
         }))
-        setUIConfigLoaded(true)
         return
       }
       if (areaName !== 'sync') return

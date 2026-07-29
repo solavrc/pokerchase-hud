@@ -8,6 +8,7 @@ import type {
 } from '../types/messages'
 
 export const UI_SCALE_STORAGE_KEY = 'uiScale'
+export const REAL_TIME_HUD_POSITION_OFFSET = 100
 export const hudPositionStorageKey = (seatIndex: number): string =>
   `hudPosition_${seatIndex}`
 
@@ -22,8 +23,17 @@ export const isValidUIScale = (value: unknown): value is number =>
 export const resolveLocalUIScale = (value: unknown): number =>
   isValidUIScale(value) ? value : DEFAULT_UI_CONFIG.scale
 
-export const isValidHudSeatIndex = (value: unknown): value is number =>
-  Number.isInteger(value) && Number(value) >= 0 && Number(value) < 6
+export const isValidHudPositionId = (value: unknown): value is number => {
+  if (!Number.isInteger(value)) return false
+  const positionId = Number(value)
+  return (
+    (positionId >= 0 && positionId < 6) ||
+    (
+      positionId >= REAL_TIME_HUD_POSITION_OFFSET &&
+      positionId < REAL_TIME_HUD_POSITION_OFFSET + 6
+    )
+  )
+}
 
 const isValidPercentPosition = (value: unknown): value is string => {
   if (typeof value !== 'string' || !/^\d+(?:\.\d+)?%$/.test(value)) return false

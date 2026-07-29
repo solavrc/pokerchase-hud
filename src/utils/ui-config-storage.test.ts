@@ -1,5 +1,6 @@
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import {
+  isValidHudPositionId,
   mergeUIConfigWithLocalScale,
   loadLocalUIScale,
   resolveLocalUIScale,
@@ -28,6 +29,20 @@ describe('ui-config-storage', () => {
     '不正な端末ローカルscale %p は既定値へ戻す',
     (value) => {
       expect(resolveLocalUIScale(value)).toBe(DEFAULT_UI_CONFIG.scale)
+    }
+  )
+
+  it.each([0, 5, 100, 105])(
+    '通常HUDとリアルタイムHUDの位置ID %p を許可する',
+    (value) => {
+      expect(isValidHudPositionId(value)).toBe(true)
+    }
+  )
+
+  it.each([-1, 6, 99, 106, 1.5, '100'])(
+    '位置保存に使わないID %p を拒否する',
+    (value) => {
+      expect(isValidHudPositionId(value)).toBe(false)
     }
   )
 

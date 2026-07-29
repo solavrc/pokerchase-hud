@@ -19,7 +19,7 @@ import { acknowledgeWhatsNew } from './whats-new-badge'
 import {
   hudPositionStorageKey,
   isValidHudPosition,
-  isValidHudSeatIndex,
+  isValidHudPositionId,
   isValidUIScale,
   resolveLocalUIScale,
   UI_SCALE_STORAGE_KEY,
@@ -83,7 +83,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
 
   chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.runtime.MessageSender, sendResponse: (response: MessageResponse) => void) => {
     if (request.action === 'getDeviceUILayout') {
-      if (request.seatIndex !== undefined && !isValidHudSeatIndex(request.seatIndex)) {
+      if (request.seatIndex !== undefined && !isValidHudPositionId(request.seatIndex)) {
         sendResponse({ success: false, error: 'Invalid HUD seat index' })
         return true
       }
@@ -117,7 +117,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       })
       return true
     } else if (request.action === 'setDeviceHudPosition') {
-      if (!isValidHudSeatIndex(request.seatIndex) || !isValidHudPosition(request.position)) {
+      if (!isValidHudPositionId(request.seatIndex) || !isValidHudPosition(request.position)) {
         sendResponse({ success: false, error: 'Invalid HUD position' })
         return true
       }

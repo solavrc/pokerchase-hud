@@ -415,6 +415,65 @@ describe('Popup', () => {
     })
   })
 
+  it('初期sync読込中のlocal scale変更でも保存済み表示設定を読み飛ばさない', async () => {
+    syncData.uiConfig = {
+      ...DEFAULT_UI_CONFIG,
+      displayEnabled: false,
+      hudDisplayMode: 'full',
+      hudColorCoding: false,
+    }
+    localData[UI_SCALE_STORAGE_KEY] = 1.4
+    let resolveUIConfigRead!: (result: Record<string, any>) => void
+    mockChromeStorageGet.mockImplementation((keys, callback) => {
+      if (keys === 'uiConfig') {
+        resolveUIConfigRead = callback
+        return
+      }
+      const keyList = Array.isArray(keys) ? keys : [keys]
+      callback(keyList.reduce(
+        (acc: Record<string, any>, key: string) => ({ ...acc, [key]: syncData[key] }),
+        {}
+      ))
+    })
+
+    render(<Popup />)
+    await waitFor(() => {
+      expect(resolveUIConfigRead).toBeDefined()
+      expect(chrome.storage.onChanged.addListener).toHaveBeenCalled()
+    })
+
+    const storageListeners = (chrome.storage.onChanged.addListener as jest.Mock).mock.calls
+      .map(([listener]) => listener as (
+        changes: { [key: string]: chrome.storage.StorageChange },
+        areaName: string
+      ) => void)
+
+    localData[UI_SCALE_STORAGE_KEY] = 1.6
+    act(() => {
+      for (const listener of storageListeners) {
+        listener({
+          [UI_SCALE_STORAGE_KEY]: {
+            oldValue: 1.4,
+            newValue: 1.6,
+          },
+        }, 'local')
+      }
+    })
+
+    // A scale-only event must not expose default settings while the
+    // authoritative synchronized config is still pending.
+    expect(screen.queryByText('サイズ:')).not.toBeInTheDocument()
+
+    act(() => resolveUIConfigRead({ uiConfig: syncData.uiConfig }))
+
+    await waitFor(() => {
+      expect(screen.getByText('160%')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '非表示' })).toHaveAttribute('aria-pressed', 'true')
+      expect(screen.getByRole('radio', { name: 'フル' })).toBeChecked()
+      expect(screen.getByRole('checkbox', { name: '統計カラー表示' })).not.toBeChecked()
+    })
+  })
+
   it('外部のuiConfig変更を開いたまま反映し、後続の設定変更で巻き戻さない', async () => {
     localData[UI_SCALE_STORAGE_KEY] = 1.4
     render(<Popup />)

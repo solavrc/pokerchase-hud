@@ -76,6 +76,29 @@ describe('message-router device-local UI layout', () => {
     })
   })
 
+  it('リアルタイムHUDの位置名前空間も保存・読込できる', async () => {
+    const position = { top: '64%', left: '22%' }
+    const positionResponse = jest.fn()
+    const loadResponse = jest.fn()
+
+    listener({
+      action: 'setDeviceHudPosition',
+      seatIndex: 102,
+      position,
+    }, {}, positionResponse)
+    listener({
+      action: 'getDeviceUILayout',
+      seatIndex: 102,
+    }, {}, loadResponse)
+
+    expect(positionResponse).toHaveBeenCalledWith({ success: true })
+    expect(loadResponse).toHaveBeenCalledWith({
+      success: true,
+      scale: 1,
+      position,
+    })
+  })
+
   it.each([
     { action: 'setDeviceUIScale', scale: 3 },
     {
