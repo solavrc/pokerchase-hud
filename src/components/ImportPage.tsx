@@ -83,16 +83,7 @@ export const ImportPage = ({
   const isActive = phase === 'uploading' || phase === 'processing' || phase === 'rebuilding'
 
   useEffect(() => {
-    chrome.storage.local.get(IMPORT_RESULT_STORAGE_KEY, (result: Record<string, unknown>) => {
-      if (chrome.runtime.lastError) return
-      const stored = result[IMPORT_RESULT_STORAGE_KEY] as ImportResultRecord | undefined
-      if (stored) {
-        setPhase(stored.status)
-        setStatus(stored.message)
-      }
-
-      // Read the active operation after the older persisted result so an
-      // in-flight import always wins if callbacks settle in either order.
+    const restoreActiveOperation = () => {
       chrome.runtime.sendMessage({ action: 'getOperationState' }, (response: {
         operationState?: OperationState
       }) => {
@@ -107,6 +98,21 @@ export const ImportPage = ({
         setTotal(state.total ?? 0)
         setStatus(state.message ?? '')
       })
+    }
+
+    chrome.storage.local.get(IMPORT_RESULT_STORAGE_KEY, (result: Record<string, unknown>) => {
+      if (!chrome.runtime.lastError) {
+        const stored = result[IMPORT_RESULT_STORAGE_KEY] as ImportResultRecord | undefined
+        if (stored) {
+          setPhase(stored.status)
+          setStatus(stored.message)
+        }
+      }
+
+      // Read the active operation after the older persisted result so an
+      // in-flight import always wins. A failure to read the optional terminal
+      // result must not suppress restoration of the authoritative operation.
+      restoreActiveOperation()
     })
 
     const handleMessage = (message: ChromeMessage) => {

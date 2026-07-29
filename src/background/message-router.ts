@@ -127,7 +127,6 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
     } else if (request.action === 'importDataInit') {
       if (rejectIfOperationBusy('importDataInit', sendResponse)) return true
       startImportSession(request.totalChunks, request.fileName)
-      chrome.storage.local.remove(IMPORT_RESULT_STORAGE_KEY).catch(() => {})
       sendResponse({ success: true })
       return true
     } else if (request.action === 'importDataChunk') {

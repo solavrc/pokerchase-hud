@@ -65,6 +65,32 @@ describe('ImportPage', () => {
     expect(await screen.findByText('インポートが完了しました (12件のログ)')).toBeInTheDocument()
   })
 
+  it('still restores the active operation when terminal-result storage cannot be read', async () => {
+    ;(chrome.runtime as any).lastError = { message: 'simulated storage failure' }
+    ;(chrome.runtime.sendMessage as jest.Mock).mockImplementation(
+      (_message: { action?: string }, callback?: (response: unknown) => void) => {
+        if (typeof callback === 'function') {
+          callback({
+            operationState: {
+              type: 'import',
+              phase: 'processing',
+              progress: 40,
+              processed: 4,
+              total: 10,
+              message: '生データを保存中...',
+            },
+          })
+          return undefined
+        }
+        return Promise.resolve({ success: true })
+      }
+    )
+
+    render(<ImportPage />)
+
+    expect(await screen.findByText('生データを保存中... 4/10 (40%)')).toBeInTheDocument()
+  })
+
   it('shows an initialization error and does not upload chunks', async () => {
     ;(chrome.runtime.sendMessage as jest.Mock).mockImplementation(
       (message: { action?: string }, callback?: (response: unknown) => void) => {
