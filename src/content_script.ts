@@ -15,7 +15,10 @@ import { MESSAGE_ACTIONS as EVENTS } from './types/messages'
 import type { AllPlayersRealTimeStats } from './realtime-stats/realtime-stats-service'
 import { setPendingStats } from './utils/pending-stats-cache'
 import { RuntimePortManager } from './utils/runtime-port-manager'
+import { captureHandledException, initSentry } from './observability/sentry'
 /** !!! BACKGROUND、WEB_ACCESSIBLE_RESOURCES からインポートしないこと !!! */
+
+initSentry('content_script')
 
 const RECONNECT_DELAY_MS = 500
 const PORT_EVENT_QUEUE_LIMIT = 1000
@@ -91,6 +94,9 @@ const portManager = new RuntimePortManager({
   },
   onFatalError: error => {
     console.error('[content_script] Runtime Port can no longer preserve event delivery; reloading:', error)
+    captureHandledException(error, {
+      operation: 'runtime_port.delivery_failed'
+    })
     window.location.reload()
   }
 })

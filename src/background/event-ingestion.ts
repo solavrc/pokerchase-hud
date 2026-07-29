@@ -14,6 +14,10 @@ import { recordUndecodedEvent } from './undecoded-event-tracker'
 import { markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
 import { getOperationState } from './operation-state'
+import {
+  captureHandledException,
+  captureSchemaValidationFailure
+} from '../observability/sentry'
 
 /**
  * 参加取消申込（ApiTypeId 203）。`ApiType` enum（アプリケーションで使用する
@@ -128,6 +132,9 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         const task = ingestionQueue.then(() => processEvent(service, message))
         ingestionQueue = task.catch(err => {
           console.error('[background] Unhandled ingestion queue error (fail-safe, queue continues):', err)
+          captureHandledException(err, {
+            operation: 'event_ingestion.queue'
+          })
         })
         return task
       })
@@ -263,6 +270,9 @@ const processEvent = async (
       // Preserve the invariant by dropping it from streams/sync hooks while
       // still applying only fail-closed ACTIVE transitions.
       console.error('[background] Raw Event Lake write failed -- dropping from pipeline to preserve the Lake invariant (derived stats require a raw row):', err, message)
+      captureHandledException(err, {
+        operation: 'raw_event_lake.write'
+      })
       if (typeof rawApiTypeId === 'number') {
         const eventTimestamp = typeof rawTimestamp === 'number' ? rawTimestamp : Date.now()
         recordUndecodedEvent(service.db, rawApiTypeId, eventTimestamp).catch(recordErr =>
@@ -437,6 +447,13 @@ const processEvent = async (
     // Popupから可視化できるようにする。309インシデントは半年間これが
     // console.warnの中にしか無かったために気づけなかった
     if (typeof rawApiTypeId === 'number') {
+      captureSchemaValidationFailure(
+        rawApiTypeId,
+        errorDetails?.map(issue => ({
+          path: issue.path,
+          code: issue.code
+        })) ?? []
+      )
       const eventTimestamp = typeof rawTimestamp === 'number' ? rawTimestamp : Date.now()
       recordUndecodedEvent(service.db, rawApiTypeId, eventTimestamp).catch(err =>
         console.error('[background] Failed to record undecoded event stats:', err)

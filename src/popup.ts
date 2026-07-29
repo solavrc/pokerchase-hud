@@ -2,6 +2,9 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import Popup, { type PopupProps } from './components/Popup'
 import { loadCachedPopupThemeMode } from './components/popup/popup-theme-storage'
+import { initSentry } from './observability/sentry'
+
+initSentry('popup')
 
 // Render synchronously from the local theme mirror. Waiting for
 // chrome.storage.sync here used to put an unbounded async callback directly

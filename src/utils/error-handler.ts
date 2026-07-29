@@ -4,6 +4,7 @@
 
 import Dexie from 'dexie'
 import { AppError, ErrorContext, ErrorSeverity, ErrorType } from '../types/errors'
+import { captureHandledException } from '../observability/sentry'
 
 /**
  * Error handler class for consistent error processing
@@ -61,6 +62,12 @@ export class ErrorHandler {
       case ErrorSeverity.ERROR:
       case ErrorSeverity.FATAL:
         console.error(logMessage, context)
+        captureHandledException(error, {
+          operation: streamName
+            ? `error_handler.${streamName}`
+            : 'error_handler',
+          errorType: isAppError ? String((error as AppError).type) : undefined
+        })
         break
     }
   }

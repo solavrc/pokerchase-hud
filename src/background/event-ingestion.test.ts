@@ -14,6 +14,12 @@ import { ApiType } from '../types'
 import { registerEventIngestion } from './event-ingestion'
 import { connectedPorts } from './ports'
 import { getUndecodedEventStats, resetUndecodedEventStats, UNDECODED_EVENT_STATS_KEY } from './undecoded-event-tracker'
+import { captureSchemaValidationFailure } from '../observability/sentry'
+
+jest.mock('../observability/sentry', () => ({
+  captureHandledException: jest.fn(),
+  captureSchemaValidationFailure: jest.fn()
+}))
 
 describe('registerEventIngestion (Raw Event Lake)', () => {
   let db: PokerChaseDB
@@ -23,6 +29,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
   let mockPort: any
 
   beforeEach(async () => {
+    jest.mocked(captureSchemaValidationFailure).mockClear()
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
     // undecoded-event-tracker caches its in-memory state at module scope
@@ -90,6 +97,28 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(handLogSpy).not.toHaveBeenCalled()
     expect(aggregateSpy).not.toHaveBeenCalled()
     expect(realTimeSpy).not.toHaveBeenCalled()
+    expect(captureSchemaValidationFailure).toHaveBeenCalledWith(
+      ApiType.EVT_DEAL,
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: expect.any(String),
+          code: expect.any(String)
+        })
+      ])
+    )
+    const telemetryArgs = jest.mocked(captureSchemaValidationFailure).mock.calls[0]
+    expect(telemetryArgs).toHaveLength(2)
+    expect(telemetryArgs?.[1]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: expect.any(String),
+          code: expect.any(String)
+        })
+      ])
+    )
+    expect(telemetryArgs?.[1].every(issue =>
+      Object.keys(issue).sort().join(',') === 'code,path'
+    )).toBe(true)
   })
 
   test('a known non-application event (202 keepalive/ack) is stored raw but NOT forwarded to streams', async () => {
