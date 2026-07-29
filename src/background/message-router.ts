@@ -34,6 +34,10 @@ import {
   addImportChunk,
   clearImportSession
 } from './import-export'
+import {
+  enqueuePendingStorageWrite,
+  getPendingStorageWriteTail,
+} from './pending-storage-writes'
 
 /**
  * Firebase Auth Handlers
@@ -76,33 +80,23 @@ const handleFirebaseSignOut = async (): Promise<void> => {
 export const registerMessageRouter = (service: PokerChaseService, db: PokerChaseDB, gameUrlPattern: string): void => {
   const { exportData, importData, deleteAllData, getLatestSessionStats, rebuildAllData } = createImportExportHandlers(service, db, gameUrlPattern)
   let deviceScaleWriteGeneration = 0
-  const pendingDeviceScaleWrites: Array<{
-    scale: number
-    complete: (error: chrome.runtime.LastError | undefined) => void
-  }> = []
-  let deviceScaleWriteInProgress = false
-  const processNextDeviceScaleWrite = (): void => {
-    if (deviceScaleWriteInProgress) return
-    const pendingWrite = pendingDeviceScaleWrites.shift()
-    if (!pendingWrite) return
-
-    deviceScaleWriteInProgress = true
-    chrome.storage.local.set({ [UI_SCALE_STORAGE_KEY]: pendingWrite.scale }, () => {
-      const error = chrome.runtime.lastError
-      deviceScaleWriteInProgress = false
-      try {
-        pendingWrite.complete(error)
-      } finally {
-        processNextDeviceScaleWrite()
-      }
-    })
-  }
   const enqueueDeviceScaleWrite = (
     scale: number,
     complete: (error: chrome.runtime.LastError | undefined) => void
   ): void => {
-    pendingDeviceScaleWrites.push({ scale, complete })
-    processNextDeviceScaleWrite()
+    void enqueuePendingStorageWrite(() =>
+      new Promise<chrome.runtime.LastError | undefined>((resolve) => {
+        chrome.storage.local.set({ [UI_SCALE_STORAGE_KEY]: scale }, () => {
+          resolve(chrome.runtime.lastError)
+        })
+      })
+    ).then(complete, error => {
+      complete({
+        message: error instanceof Error
+          ? error.message
+          : 'Failed to save UI scale',
+      })
+    })
   }
 
   const rejectIfOperationBusy = (action: string, sendResponse: (response: MessageResponse) => void): boolean => {
@@ -233,7 +227,16 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
                 )
               }
 
-              if (migratedScale === undefined || !scaleWriteIsCurrent) {
+              if (!scaleWriteIsCurrent) {
+                // A newer user-selected scale is already represented by the
+                // shared FIFO tail, but may not have reached chrome.storage
+                // yet. Read only after it settles so this older migration
+                // response cannot briefly publish the stale legacy value.
+                void getPendingStorageWriteTail().then(respondWithLatestLayout)
+                return
+              }
+
+              if (migratedScale === undefined) {
                 respondWithLatestLayout()
                 return
               }

@@ -8,6 +8,10 @@ import {
   UI_SCALE_STORAGE_KEY,
 } from '../utils/ui-config-storage'
 import { registerMessageRouter } from './message-router'
+import {
+  __resetPendingStorageWritesForTests,
+  getPendingStorageWriteTail,
+} from './pending-storage-writes'
 
 describe('message-router device-local UI layout', () => {
   let db: PokerChaseDB
@@ -19,6 +23,7 @@ describe('message-router device-local UI layout', () => {
   ) => boolean | void
 
   beforeEach(async () => {
+    __resetPendingStorageWritesForTests()
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
     service = new PokerChaseService({ db })
@@ -66,6 +71,7 @@ describe('message-router device-local UI layout', () => {
       seatIndex: 4,
       position,
     }, {}, positionResponse)
+    await getPendingStorageWriteTail()
 
     expect(scaleResponse).toHaveBeenCalledWith({ success: true })
     expect(positionResponse).toHaveBeenCalledWith({ success: true })
@@ -94,17 +100,20 @@ describe('message-router device-local UI layout', () => {
 
     listener({ action: 'setDeviceUIScale', scale: 1.1 }, {}, firstResponse)
     listener({ action: 'setDeviceUIScale', scale: 1.2 }, {}, secondResponse)
+    await Promise.resolve()
 
     expect(pendingWrites).toHaveLength(1)
     expect(firstResponse).not.toHaveBeenCalled()
     expect(secondResponse).not.toHaveBeenCalled()
 
     pendingWrites[0]!()
+    await new Promise(resolve => setTimeout(resolve, 0))
     expect(firstResponse).toHaveBeenCalledWith({ success: true })
     expect(pendingWrites).toHaveLength(2)
     expect(secondResponse).not.toHaveBeenCalled()
 
     pendingWrites[1]!()
+    await getPendingStorageWriteTail()
     expect(secondResponse).toHaveBeenCalledWith({ success: true })
     expect(await chrome.storage.local.get(UI_SCALE_STORAGE_KEY)).toEqual({
       [UI_SCALE_STORAGE_KEY]: 1.2,
@@ -229,6 +238,7 @@ describe('message-router device-local UI layout', () => {
       action: 'getDeviceUILayout',
       seatIndex: 3,
     }, {}, sendResponse)
+    await getPendingStorageWriteTail()
 
     expect(sendResponse).toHaveBeenCalledWith({
       success: true,
@@ -322,6 +332,7 @@ describe('message-router device-local UI layout', () => {
     const sendResponse = jest.fn()
 
     listener({ action: 'getDeviceUILayout' }, {}, sendResponse)
+    await getPendingStorageWriteTail()
 
     expect(sendResponse).toHaveBeenCalledWith({
       success: true,
@@ -340,6 +351,7 @@ describe('message-router device-local UI layout', () => {
     const sendResponse = jest.fn()
 
     listener({ action: 'getDeviceUILayout' }, {}, sendResponse)
+    await getPendingStorageWriteTail()
 
     expect(sendResponse).toHaveBeenCalledWith({
       success: true,
@@ -372,6 +384,7 @@ describe('message-router device-local UI layout', () => {
       [LEGACY_SYNC_UI_SCALE_KEY]: 1.3,
       uiConfig: { displayEnabled: true },
     })
+    await getPendingStorageWriteTail()
 
     expect(saveResponse).toHaveBeenCalledWith({ success: true })
     expect(loadResponse).toHaveBeenCalledWith({
@@ -406,12 +419,14 @@ describe('message-router device-local UI layout', () => {
       action: 'setDeviceUIScale',
       scale: 1.8,
     }, {}, userResponse)
+    await Promise.resolve()
 
     expect(pendingWrites).toHaveLength(1)
     expect(migrationResponse).not.toHaveBeenCalled()
     expect(userResponse).not.toHaveBeenCalled()
 
     pendingWrites[0]!()
+    await new Promise(resolve => setTimeout(resolve, 0))
     expect(migrationResponse).toHaveBeenCalledWith({
       success: true,
       scale: 1.3,
@@ -420,6 +435,7 @@ describe('message-router device-local UI layout', () => {
     expect(userResponse).not.toHaveBeenCalled()
 
     pendingWrites[1]!()
+    await getPendingStorageWriteTail()
     expect(userResponse).toHaveBeenCalledWith({ success: true })
     expect(await chrome.storage.local.get(UI_SCALE_STORAGE_KEY)).toEqual({
       [UI_SCALE_STORAGE_KEY]: 1.8,
@@ -433,7 +449,7 @@ describe('message-router device-local UI layout', () => {
       seatIndex: 2,
       position: { top: '20%', left: '30%' },
     },
-  ] as ChromeMessage[])('local storage failureを呼出元へ返す: %p', (message) => {
+  ] as ChromeMessage[])('local storage failureを呼出元へ返す: %p', async (message) => {
     ;(chrome.storage.local.set as jest.Mock).mockImplementationOnce(
       (_items, callback) => {
         ;(chrome.runtime as any).lastError = { message: 'quota' }
@@ -444,6 +460,7 @@ describe('message-router device-local UI layout', () => {
     const sendResponse = jest.fn()
 
     listener(message, {}, sendResponse)
+    await getPendingStorageWriteTail()
 
     expect(sendResponse).toHaveBeenCalledWith({
       success: false,
