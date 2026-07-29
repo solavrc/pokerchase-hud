@@ -137,7 +137,7 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     expect(service.liveEvtDeal).toEqual({ ...laterSeatedDeal, sequence: 0 })
   })
 
-  test('canonical replay closes a canceled entry and restores the preceding scope', () => {
+  test('canonical replay closes a canceled entry without restoring the preceding scope', () => {
     const autoSyncService = new AutoSyncService(db)
     const replaySessions = {
       scopes: new Map(),
@@ -166,9 +166,7 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
       timestamp: 3000,
     }, replaySessions)
 
-    expect(service.getCurrentSessionScope()).toEqual({
-      id: 'tab-a',
-      startedAt: 1000,
-    })
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(service.session.active).toBe(false)
   })
 })
