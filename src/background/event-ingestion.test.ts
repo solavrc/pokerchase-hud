@@ -99,7 +99,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       ...validEvent,
       sequence: 0,
       __pokerChaseHudSessionContext: {
-        scopeKey: 'run:0:stage000_003:111',
+        scopeKey: expect.stringMatching(/^run:0:stage000_003:111:/),
         id: 'stage000_003',
         battleType: BattleType.SIT_AND_GO,
         startedAt: 111,
@@ -110,6 +110,40 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(handLogSpy).toHaveBeenCalledTimes(1)
     expect(aggregateSpy).toHaveBeenCalledTimes(1)
     expect(realTimeSpy).toHaveBeenCalledTimes(1)
+  })
+
+  test('same-millisecond reused session ids receive origin-specific scope keys', async () => {
+    const secondPort = {
+      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      sender: { tab: { id: 202 } },
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn(),
+    }
+    mockPort.sender = { tab: { id: 101 } }
+    connectListener(secondPort)
+    const secondHandler = secondPort.onMessage.addListener.mock.calls[0][0]
+    const entry = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'shared-room',
+      IsRetire: false,
+    }
+
+    await onMessageHandler(structuredClone(entry))
+    await secondHandler(structuredClone(entry))
+
+    const contexts = (await db.apiEvents.toArray())
+      .filter(event =>
+        event.timestamp === entry.timestamp &&
+        event.ApiTypeId === entry.ApiTypeId
+      )
+      .map(event => (event as any).__pokerChaseHudSessionContext)
+    expect(contexts).toHaveLength(2)
+    expect(contexts[0].originId).not.toBe(contexts[1].originId)
+    expect(contexts[0].scopeKey).not.toBe(contexts[1].scopeKey)
   })
 
   test('a results event only closes its originating tab session', async () => {

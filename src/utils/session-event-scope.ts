@@ -25,7 +25,11 @@ export const isHandInSessionScope = (
   scope: ActiveSessionScope | undefined
 ): boolean => {
   if (!scope) return false
-  if (scope.scopeKey !== undefined) {
+  // Durable keys are authoritative whenever the Hand has one. Historical
+  // Hands created before scope metadata existed have no key, so they retain
+  // the legacy session-id/time boundary even when canonical replay restores
+  // an active legacy-run/legacy-mtt key for the current session.
+  if (hand.session.scopeKey !== undefined) {
     return hand.session.scopeKey === scope.scopeKey
   }
   return hand.session.id === scope.id &&

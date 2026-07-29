@@ -250,7 +250,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
         ...first,
         sequence: 0,
         __pokerChaseHudSessionContext: {
-          scopeKey: 'run:0:stage000_003:400',
+          scopeKey: expect.stringMatching(/^run:0:stage000_003:400:/),
           id: 'stage000_003',
           battleType: BattleType.SIT_AND_GO,
           startedAt: 400,
@@ -261,7 +261,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
         ...second,
         sequence: 1,
         __pokerChaseHudSessionContext: {
-          scopeKey: 'run:0:stage000_099:400',
+          scopeKey: expect.stringMatching(/^run:0:stage000_099:400:/),
           id: 'stage000_099',
           battleType: BattleType.SIT_AND_GO,
           startedAt: 400,

@@ -241,16 +241,18 @@ class SessionOriginTracker {
       previous?.battleType === BattleType.TOURNAMENT &&
       battleType === BattleType.TOURNAMENT &&
       previous.id === id
+    const originId =
+      previous?.originId ?? this.originIds.get(key) ?? createOriginId()
     return {
       scopeKey: continuesCurrentMtt
         ? previous.scopeKey
         : battleType === BattleType.TOURNAMENT
-          ? `mtt:${id}`
-          : `run:${battleType}:${id}:${startedAt}`,
+          ? `mtt:${id}:${originId}`
+          : `run:${battleType}:${id}:${startedAt}:${originId}`,
       id,
       battleType,
       startedAt: continuesCurrentMtt ? previous.startedAt : startedAt,
-      originId: previous?.originId ?? this.originIds.get(key) ?? createOriginId(),
+      originId,
     }
   }
 
