@@ -30,7 +30,10 @@ export class SessionScopedEntityConverter {
     const context = getRawEventSessionContext(event)
     if (!context) return this.legacyConverter
 
-    let converter = this.scopedConverters.get(context.scopeKey)
+    const converterKey = context.originId
+      ? `${context.originId}\u0000${context.scopeKey}`
+      : context.scopeKey
+    let converter = this.scopedConverters.get(converterKey)
     if (!converter) {
       converter = new EntityConverter({
         scopeKey: context.scopeKey,
@@ -40,7 +43,7 @@ export class SessionScopedEntityConverter {
         players: new Map(),
         reset: () => { },
       })
-      this.scopedConverters.set(context.scopeKey, converter)
+      this.scopedConverters.set(converterKey, converter)
     }
     return converter
   }

@@ -4,6 +4,8 @@ import {
   PhaseType
 } from '../types'
 import type {
+  ApiEvent,
+  ApiType,
   ExistPlayerStats,
   Hand,
   PlayerStats,
@@ -17,8 +19,10 @@ import { compareHandsNewestFirst } from '../utils/hand-order'
 import type { ErrorContext } from '../types/errors'
 import {
   getEventSessionScope,
+  getLineupOriginatingDeal,
   getLineupSessionScope,
   isHandInSessionScope,
+  setStatsOriginatingDeal,
   setStatsSessionFilterKey,
   type ActiveSessionScope,
   type EventSessionScope,
@@ -71,7 +75,11 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     this.statsCache.clear()
   }
 
-  private pushStats = (stats: PlayerStats[], sessionFilter: SessionFilterSnapshot): void => {
+  private pushStats = (
+    stats: PlayerStats[],
+    sessionFilter: SessionFilterSnapshot,
+    originatingDeal?: ApiEvent<ApiType.EVT_DEAL>
+  ): void => {
     if (sessionFilter.enabled) {
       setStatsSessionFilterKey(
         stats,
@@ -81,6 +89,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
           : 'inactive'
       )
     }
+    setStatsOriginatingDeal(stats, originatingDeal)
     this.push(stats)
   }
 
@@ -131,7 +140,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       const sessionFilter =
         this.captureSessionFilter(getEventSessionScope(this.service.latestEvtDeal))
       const stats = await this.calcStats(seatUserIds, sessionFilter)
-      this.pushStats(stats, sessionFilter)
+      this.pushStats(stats, sessionFilter, this.service.latestEvtDeal)
     } catch (error) {
       const context: ErrorContext = {
         streamName: 'ReadEntityStream',
@@ -150,6 +159,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
 
   protected async transform(seatUserIds: number[]): Promise<void> {
     const originatingScope = getLineupSessionScope(seatUserIds)
+    const originatingDeal = getLineupOriginatingDeal(seatUserIds)
     try {
       // バッチモード中は統計計算をスキップ
       if (this.service.batchMode) {
@@ -173,7 +183,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       if (useCache) {
         const cached = this.statsCache.get(cacheKey)
         if (cached && (now - cached.timestamp) < this.CACHE_DURATION_MS) {
-          this.pushStats(cached.stats, sessionFilter)
+          this.pushStats(cached.stats, sessionFilter, originatingDeal)
           return
         }
       }
@@ -201,7 +211,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
         entriesToDelete.forEach(key => this.statsCache.delete(key))
       }
 
-      this.pushStats(stats, sessionFilter)
+      this.pushStats(stats, sessionFilter, originatingDeal)
     } catch (error: unknown) {
       const context: ErrorContext = {
         streamName: 'ReadEntityStream',

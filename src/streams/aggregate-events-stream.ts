@@ -197,7 +197,11 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
             this.service.db.hands.count().then(count => {
               if (count > 0) {
                 // 全てのSeatUserIds（-1を含む）を渡して席の順序を保持
-                setLineupSessionScope(event.SeatUserIds, getEventSessionScope(event))
+                setLineupSessionScope(
+                  event.SeatUserIds,
+                  getEventSessionScope(event),
+                  event
+                )
                 this.service.statsOutputStream.write(event.SeatUserIds)
               }
             }).catch(err => {

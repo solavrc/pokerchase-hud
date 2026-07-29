@@ -1,4 +1,4 @@
-import type { ApiEvent, Hand, PlayerStats } from '../types'
+import type { ApiEvent, ApiType, Hand, PlayerStats } from '../types'
 import type { BattleType } from '../types'
 import {
   getRawEventSessionContext,
@@ -41,7 +41,9 @@ export const isHandInSessionScope = (
  */
 const eventSessionScopes = new WeakMap<ApiEvent, EventSessionScope>()
 const lineupSessionScopes = new WeakMap<number[], EventSessionScope>()
+const lineupOriginatingDeals = new WeakMap<number[], ApiEvent<ApiType.EVT_DEAL>>()
 const statsSessionFilterKeys = new WeakMap<PlayerStats[], string>()
+const statsOriginatingDeals = new WeakMap<PlayerStats[], ApiEvent<ApiType.EVT_DEAL>>()
 
 export const setEventSessionScope = (event: ApiEvent, scope: EventSessionScope | undefined): void => {
   if (scope) eventSessionScopes.set(event, { ...scope })
@@ -52,7 +54,8 @@ export const getEventSessionScope = (event: ApiEvent): EventSessionScope | undef
 
 export const setLineupSessionScope = (
   seatUserIds: number[],
-  scope: EventSessionScope | RawEventSessionContext | undefined
+  scope: EventSessionScope | RawEventSessionContext | undefined,
+  originatingDeal?: ApiEvent<ApiType.EVT_DEAL>
 ): void => {
   if (scope) lineupSessionScopes.set(seatUserIds, {
     scopeKey: scope.scopeKey,
@@ -62,10 +65,20 @@ export const setLineupSessionScope = (
     name: scope.name,
     originId: scope.originId,
   })
+  if (originatingDeal) {
+    lineupOriginatingDeals.set(seatUserIds, originatingDeal)
+  } else {
+    lineupOriginatingDeals.delete(seatUserIds)
+  }
 }
 
 export const getLineupSessionScope = (seatUserIds: number[]): EventSessionScope | undefined =>
   lineupSessionScopes.get(seatUserIds)
+
+export const getLineupOriginatingDeal = (
+  seatUserIds: number[]
+): ApiEvent<ApiType.EVT_DEAL> | undefined =>
+  lineupOriginatingDeals.get(seatUserIds)
 
 /**
  * A calculated stats array must keep the session boundary that was captured
@@ -81,3 +94,19 @@ export const setStatsSessionFilterKey = (
 
 export const getStatsSessionFilterKey = (stats: PlayerStats[]): string | undefined =>
   statsSessionFilterKeys.get(stats)
+
+export const setStatsOriginatingDeal = (
+  stats: PlayerStats[],
+  originatingDeal: ApiEvent<ApiType.EVT_DEAL> | undefined
+): void => {
+  if (originatingDeal) {
+    statsOriginatingDeals.set(stats, originatingDeal)
+  } else {
+    statsOriginatingDeals.delete(stats)
+  }
+}
+
+export const getStatsOriginatingDeal = (
+  stats: PlayerStats[]
+): ApiEvent<ApiType.EVT_DEAL> | undefined =>
+  statsOriginatingDeals.get(stats)

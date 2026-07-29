@@ -39,6 +39,48 @@ describe('raw event session context', () => {
     })
   })
 
+  test('canonical conversion isolates identical MTT scopes by origin', () => {
+    const contextA = {
+      scopeKey: 'mtt:shared',
+      id: 'shared',
+      battleType: BattleType.TOURNAMENT,
+      startedAt: 100,
+      originId: 'origin-a',
+    }
+    const contextB = {
+      ...contextA,
+      originId: 'origin-b',
+    }
+    const [dealTemplate, , resultsTemplate] = MTT_TABLE_MOVE_FIXTURE.events
+      .slice(3, 6)
+      .map(event => structuredClone(event))
+    const dealA = { ...dealTemplate!, timestamp: 1000 }
+    const dealB = { ...structuredClone(dealTemplate!), timestamp: 1001 }
+    const resultsA = {
+      ...resultsTemplate!,
+      timestamp: 1002,
+      HandId: 9001,
+    }
+    const resultsB = {
+      ...structuredClone(resultsTemplate!),
+      timestamp: 1003,
+      HandId: 9002,
+    }
+    const converter = new SessionScopedEntityConverter({
+      players: new Map(),
+      reset: () => {},
+    })
+
+    const entities = converter.convertEventsToEntities([
+      withRawEventSessionContext(dealA, contextA),
+      withRawEventSessionContext(dealB, contextB),
+      withRawEventSessionContext(resultsA, contextA),
+      withRawEventSessionContext(resultsB, contextB),
+    ])
+
+    expect(entities.hands.map(hand => hand.id).sort()).toEqual([9001, 9002])
+  })
+
   test('does not change the PokerChase payload identity', () => {
     const raw = { timestamp: 1000, ApiTypeId: 303, SeatUserIds: [1, 2] }
     const scoped = {

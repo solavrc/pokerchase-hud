@@ -686,7 +686,11 @@ class PokerChaseService {
       this.liveEvtDeal = this.latestEvtDeal
       const playerIds = this.latestEvtDeal.SeatUserIds.filter(id => id !== -1)
       if (playerIds.length > 0) {
-        setLineupSessionScope(playerIds, getEventSessionScope(this.latestEvtDeal))
+        setLineupSessionScope(
+          playerIds,
+          getEventSessionScope(this.latestEvtDeal),
+          this.latestEvtDeal
+        )
         this.statsOutputStream.write(playerIds)
       }
     } else {
@@ -703,7 +707,11 @@ class PokerChaseService {
 
         const playerIds = latestDealEvent.SeatUserIds.filter((id: number) => id !== -1)
         if (playerIds.length > 0) {
-          setLineupSessionScope(playerIds, getEventSessionScope(latestDealEvent))
+          setLineupSessionScope(
+            playerIds,
+            getEventSessionScope(latestDealEvent),
+            latestDealEvent
+          )
           this.statsOutputStream.write(playerIds)
         }
       }

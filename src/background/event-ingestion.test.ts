@@ -871,6 +871,48 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     })
   })
 
+  test('a session name arriving after DEAL is persisted on the completed hand', async () => {
+    const sessionDetails = (timestamp: number, name: string) => ({
+      ApiTypeId: ApiType.EVT_SESSION_DETAILS,
+      timestamp,
+      BlindStructures: [{ ActiveMinutes: 4, Ante: 50, BigBlind: 200, Lv: 1 }],
+      CoinNum: -1,
+      DefaultChip: 20000,
+      IsReplay: false,
+      Items: [],
+      LimitSeconds: 8,
+      MoneyList: [],
+      Name: name,
+      Name2: '',
+    })
+    const [deal, action, results] = MTT_TABLE_MOVE_FIXTURE.events
+      .slice(3, 6)
+      .map(event => structuredClone(event))
+    deal!.timestamp = 3000
+    action!.timestamp = 3200
+    results!.timestamp = 3300
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'tab-a',
+      IsRetire: false,
+    })
+    await onMessageHandler(deal)
+    await onMessageHandler(sessionDetails(3100, 'Late Table A'))
+    await onMessageHandler(action)
+    await onMessageHandler(results)
+    await service.handAggregateStream.whenIdle()
+
+    const hand = await db.hands.get(MTT_TABLE_MOVE_FIXTURE.handIds.oldAccepted)
+    expect(hand?.session).toMatchObject({
+      id: 'tab-a',
+      name: 'Late Table A',
+    })
+  })
+
   test('origin persistence failure does not drop a durable event from live streams', async () => {
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
     ;(chrome.storage.session.set as jest.Mock).mockRejectedValueOnce(new Error('quota'))

@@ -73,7 +73,8 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
       const originatingDeal = events.find(event => event.ApiTypeId === ApiType.EVT_DEAL)
       setLineupSessionScope(
         hand.seatUserIds,
-        originatingDeal ? getEventSessionScope(originatingDeal) : undefined
+        originatingDeal ? getEventSessionScope(originatingDeal) : undefined,
+        originatingDeal
       )
       this.push(hand.seatUserIds)
     } catch (error: unknown) {

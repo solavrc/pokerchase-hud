@@ -30,6 +30,7 @@ import PokerChaseService, { PokerChaseDB } from '../app'
 import { ApiType } from '../types'
 import type { ApiEvent } from '../app'
 import { registerStreamSubscriptions, connectedPorts, setLastKnownStats } from './ports'
+import { setLineupSessionScope } from '../utils/session-event-scope'
 
 const GAME_URL_PATTERN = 'https://example.com/*'
 
@@ -132,6 +133,29 @@ describe('ports.ts handCompletionEpoch (audit finding 11 follow-up, P2)', () => 
     service.statsOutputStream.write([1, 2, 3])
     await service.statsOutputStream.whenIdle()
     expect(lastBroadcastHandEpoch()).toBe(baseline)
+  })
+
+  test('a stats broadcast keeps the DEAL that produced it when liveEvtDeal changes', async () => {
+    const originatingDeal = makeHandEvents(600, [1, 2, 3])[0] as ApiEvent<ApiType.EVT_DEAL>
+    const newerDeal = makeHandEvents(601, [10, 20, 30])[0] as ApiEvent<ApiType.EVT_DEAL>
+    setLineupSessionScope(
+      originatingDeal.SeatUserIds,
+      undefined,
+      originatingDeal
+    )
+    service.liveEvtDeal = newerDeal
+
+    service.statsOutputStream.write(originatingDeal.SeatUserIds)
+    await service.statsOutputStream.whenIdle()
+
+    expect(fakePort.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        stats: originatingDeal.SeatUserIds.map(playerId =>
+          expect.objectContaining({ playerId })
+        ),
+        evtDeal: originatingDeal,
+      })
+    )
   })
 
   test('a genuine hand completion (through the live handAggregateStream -> writeEntityStream -> statsOutputStream pipeline) bumps handEpoch by exactly 1', async () => {

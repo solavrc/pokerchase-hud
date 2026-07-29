@@ -93,7 +93,11 @@ const broadcastSessionSelection = (
   if (!restored.selectionChanged) return
   if (restored.scope?.latestDeal) {
     service.liveEvtDeal = restored.scope.latestDeal
-    setLineupSessionScope(restored.scope.latestDeal.SeatUserIds, restored.scope)
+    setLineupSessionScope(
+      restored.scope.latestDeal.SeatUserIds,
+      restored.scope,
+      restored.scope.latestDeal
+    )
     service.statsOutputStream.write(restored.scope.latestDeal.SeatUserIds)
     return
   }
@@ -293,6 +297,13 @@ class SessionOriginTracker {
     const scope = this.scopes.get(key)
     if (!scope) return
     scope.name = name
+    // EVT_SESSION_DETAILS can arrive after EVT_DEAL while that DEAL is
+    // already buffered in AggregateEventsStream. Refresh the transport-only
+    // scope on the exact DEAL object so WriteEntityStream persists the same
+    // late metadata that canonical EntityConverter replay observes.
+    if (scope.latestDeal) {
+      setEventSessionScope(scope.latestDeal, this.getContext(key))
+    }
     if (this.currentKey === key) this.service.session.setName(name)
     await this.persist()
   }

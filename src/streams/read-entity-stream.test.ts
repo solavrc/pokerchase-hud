@@ -18,6 +18,7 @@ import { ApiType, BattleType, PhaseType } from '../types'
 import type { ApiEvent, ApiHandEvent, Hand } from '../types'
 import type { PlayerStats, StatResult } from '../types'
 import {
+  getStatsOriginatingDeal,
   getStatsSessionFilterKey,
   setEventSessionScope,
 } from '../utils/session-event-scope'
@@ -228,6 +229,7 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     const stats = await statsPromise
     expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(1)
     expect(getStatsSessionFilterKey(stats)).toBe('run-a')
+    expect(getStatsOriginatingDeal(stats)).toBe(deal)
   })
 
   test('batch-end recalculation carries the latest DEAL scope through its copied lineup', async () => {

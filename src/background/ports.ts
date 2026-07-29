@@ -5,7 +5,10 @@ import type { AllPlayersRealTimeStats } from '../realtime-stats/realtime-stats-s
 import type { HandLogEvent } from '../types/hand-log'
 import type { HandLogEventMessage } from '../types/messages'
 import { formatHandLogEntries } from '../utils/hand-log-text'
-import { getStatsSessionFilterKey } from '../utils/session-event-scope'
+import {
+  getStatsOriginatingDeal,
+  getStatsSessionFilterKey,
+} from '../utils/session-event-scope'
 
 const PING_INTERVAL_MS = 10 * 1000
 
@@ -186,7 +189,9 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
       // An empty stats array is the explicit "selected scope has no DEAL"
       // result. Do not pair it with a stale live/fallback DEAL from a previous
       // origin, or App may retain the wrong seat rotation context.
-      evtDeal: hand.length > 0 ? service.liveEvtDeal : undefined,
+      evtDeal: hand.length > 0
+        ? getStatsOriginatingDeal(hand) ?? service.liveEvtDeal
+        : undefined,
       realTimeStats: latestRealTimeStats,  // Include latest real-time stats from stream
       // NOT bumped here -- this handler also fires for the hand-start warmup and
       // filter/import/auto-sync rebroadcasts (see handCompletionEpoch's doc comment),
