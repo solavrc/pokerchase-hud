@@ -186,6 +186,8 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     service.autoBattleTypeFilter = true
     service.session.setId('initial-sng')
     service.session.setBattleType(BattleType.SIT_AND_GO)
+    const recalculateSpy = jest.spyOn(service.statsOutputStream, 'recalculateStats')
+      .mockResolvedValue()
 
     await db.apiEvents.put({
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
@@ -226,5 +228,6 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     expect(service.session.id).toBe('new-live-mtt')
     expect(service.session.battleType).toBe(BattleType.TOURNAMENT)
     expect(service.latestEvtDeal).toBe(liveDeal)
+    expect(recalculateSpy).toHaveBeenCalledTimes(1)
   })
 })

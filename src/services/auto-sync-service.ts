@@ -1625,6 +1625,11 @@ export class AutoSyncService {
         this.restoreLatestDeal(service, latestDealEvent)
       } else if (service?.session) {
         console.info('[AutoSync] Preserving newer live session state instead of committing replay snapshot')
+        // The rebuild replaced derived entities while live ingestion could
+        // have calculated against an intermediate snapshot. Keep the newer
+        // live session/deal, but serialize one fresh calculation after the
+        // canonical entity replacement is complete.
+        await service.statsOutputStream?.recalculateStats?.()
       }
       console.log(`[AutoSync] Chunked data rebuild completed (${totalEventCount} events)`)
     } catch (error) {
