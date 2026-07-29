@@ -37,8 +37,12 @@ const MAP_VALUE_CONTAINER = '[map-value]'
 // container name is not enough: if a future payload changes Player from its
 // fixed object shape to { Alice: ... }, Alice must still be treated as a
 // user-controlled map key. ZodRecord is deliberately not traversed.
-const buildKnownSchemaFields = (): Map<string, Set<string>> => {
+const buildKnownSchemaFields = (): {
+  byContainer: Map<string, Set<string>>
+  all: Set<string>
+} => {
   const byContainer = new Map<string, Set<string>>()
+  const all = new Set<string>()
 
   const visit = (schema: unknown, container?: string): void => {
     if (
@@ -66,6 +70,7 @@ const buildKnownSchemaFields = (): Map<string, Set<string>> => {
       byContainer.set(container, known)
     }
     for (const [field, child] of Object.entries(schema.shape)) {
+      all.add(field)
       visit(child, field)
     }
   }
@@ -73,7 +78,7 @@ const buildKnownSchemaFields = (): Map<string, Set<string>> => {
   for (const schema of Object.values(apiEventSchemas)) {
     visit(schema)
   }
-  return byContainer
+  return { byContainer, all }
 }
 
 const KNOWN_SCHEMA_FIELDS = buildKnownSchemaFields()
@@ -110,14 +115,14 @@ const safeSchemaKey = (
     return '[dynamic-key]'
   }
   if (parentKey === MAP_VALUE_CONTAINER) {
-    // The map key itself was already replaced with [dynamic-key]. Preserve
-    // ordinary field names inside that anonymized value so the diagnostic
-    // remains useful for reconstructing a changed payload shape.
-    return key
+    // The map key itself was already replaced with [dynamic-key]. Nested map
+    // values may themselves contain user-controlled keys, so retain only
+    // field names already present somewhere in the bundled protocol.
+    return KNOWN_SCHEMA_FIELDS.all.has(key) ? key : '[dynamic-key]'
   }
   if (
     parentKey &&
-    !KNOWN_SCHEMA_FIELDS.get(parentKey)?.has(key)
+    !KNOWN_SCHEMA_FIELDS.byContainer.get(parentKey)?.has(key)
   ) {
     return '[dynamic-key]'
   }

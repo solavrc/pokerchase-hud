@@ -4,7 +4,10 @@
  * @see https://developer.mozilla.org/ja/docs/Mozilla/Add-ons/WebExtensions/manifest.json/web_accessible_resources
  */
 import { decode } from '@msgpack/msgpack'
-import { POKER_CHASE_ORIGIN } from './constants/runtime'
+import {
+  POKER_CHASE_INVALID_API_EVENT,
+  POKER_CHASE_ORIGIN
+} from './constants/runtime'
 /** !!! BACKGROUND、CONTENT_SCRIPTSからインポートしないこと !!! */
 
 const OriginalWebSocket = window.WebSocket
@@ -17,16 +20,25 @@ function createWebSocket(...args: ConstructorParameters<typeof WebSocket>): WebS
       try {
         const decoded = decode(data)
 
-        // ApiTypeIdの存在と数値型であることを確認
-        if (decoded &&
-          typeof decoded === 'object' &&
-          'ApiTypeId' in decoded &&
-          typeof (decoded as { ApiTypeId: unknown }).ApiTypeId === 'number') {
-          // timestampを付与してメッセージ送信
-          window.postMessage({
+        if (decoded && typeof decoded === 'object') {
+          const payload = {
             ...decoded,
             timestamp: Date.now()
-          }, POKER_CHASE_ORIGIN)
+          }
+          if (
+            'ApiTypeId' in decoded &&
+            typeof (decoded as { ApiTypeId: unknown }).ApiTypeId === 'number'
+          ) {
+            window.postMessage(payload, POKER_CHASE_ORIGIN)
+          } else {
+            // Preserve a fundamental schema break long enough for the trusted
+            // content-script bridge to forward it into the bounded sentinel
+            // diagnostic path. Keep the normal flat event contract unchanged.
+            window.postMessage({
+              type: POKER_CHASE_INVALID_API_EVENT,
+              payload
+            }, POKER_CHASE_ORIGIN)
+          }
         }
       } catch (error) {
         // デコードエラーは静かに無視（ログも最小限に）

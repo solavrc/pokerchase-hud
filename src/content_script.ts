@@ -6,7 +6,12 @@
 import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { web_accessible_resources } from '../manifest.json'
-import { POKER_CHASE_SERVICE_EVENT, POKER_CHASE_ORIGIN, POKER_CHASE_SESSION_END_EVENT } from './constants/runtime'
+import {
+  POKER_CHASE_INVALID_API_EVENT,
+  POKER_CHASE_SERVICE_EVENT,
+  POKER_CHASE_ORIGIN,
+  POKER_CHASE_SESSION_END_EVENT
+} from './constants/runtime'
 import { ApiType } from './types'
 import type { ApiEvent, PlayerStats } from './types'
 import App from './components/App'
@@ -105,14 +110,34 @@ portManager.connect()
 
 // window.postMessageはさまざまなソースからのメッセージを受信する可能性がある
 window.addEventListener('message', (event: MessageEvent<unknown>) => {
-  // 全ての条件を統合してチェック
+  // Page-world bridge and the game share this origin. This is the same trust
+  // boundary as the existing flat numeric-ID event path; the envelope only
+  // distinguishes an intercepted decoded payload whose ApiTypeId is invalid.
   if (
-    // セキュリティチェック: ゲームのオリジンからのメッセージのみ受け付ける
     event.source !== window ||
     event.origin !== POKER_CHASE_ORIGIN ||
-    // PokerChase APIメッセージの型ガード: ApiTypeIdを持つことを確認
     !event.data ||
-    typeof event.data !== 'object' ||
+    typeof event.data !== 'object'
+  ) {
+    return
+  }
+
+  if (
+    'type' in event.data &&
+    event.data.type === POKER_CHASE_INVALID_API_EVENT &&
+    'payload' in event.data &&
+    event.data.payload &&
+    typeof event.data.payload === 'object'
+  ) {
+    if (!portManager.send(event.data.payload)) {
+      stopKeepalive()
+    }
+    return
+  }
+
+  // Normal PokerChase API message: require a numeric discriminator before it
+  // can affect session activity or the live HUD streams.
+  if (
     !('ApiTypeId' in event.data) ||
     typeof event.data.ApiTypeId !== 'number'
   ) {

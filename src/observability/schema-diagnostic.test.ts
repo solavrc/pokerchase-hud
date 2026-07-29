@@ -58,9 +58,9 @@ describe('schema repair diagnostics', () => {
       'Enabled: boolean',
       'Nested.[dynamic-key]: array',
       'Nested.[dynamic-key][]: object',
-      'Nested.[dynamic-key][].Amount: integer',
-      'Nested.[dynamic-key][].Amount: number',
-      'Nested.[dynamic-key][].Extra: null',
+      'Nested.[dynamic-key][].[dynamic-key]: integer',
+      'Nested.[dynamic-key][].[dynamic-key]: number',
+      'Nested.[dynamic-key][].[dynamic-key]: null',
       'Class.[dynamic-key]: string'
     ]))
     expect(diagnostic.issues).toEqual([{
@@ -95,12 +95,12 @@ describe('schema repair diagnostics', () => {
       Nested: {
         '[dynamic-key-1]': [
           {
-            Amount: 100,
-            Label: '[redacted-string:length=13]'
+            '[dynamic-key-1]': 100,
+            '[dynamic-key-2]': '[redacted-string:length=13]'
           },
           {
-            Amount: 2.5,
-            Extra: null
+            '[dynamic-key-1]': 2.5,
+            '[dynamic-key-2]': null
           }
         ]
       },
@@ -247,6 +247,34 @@ describe('schema repair diagnostics', () => {
     const serialized = JSON.stringify(diagnostic)
     expect(serialized).not.toContain('Alice')
     expect(serialized).not.toContain('129532369')
+  })
+
+  it('redacts user-controlled keys in nested dynamic maps', () => {
+    const diagnostic = buildSchemaDiagnostic(
+      {
+        Players: {
+          Alice: {
+            Bob: 1,
+            Chip: 1200
+          }
+        }
+      },
+      [{
+        path: ['Players', 'Alice', 'Bob'],
+        code: 'unrecognized_keys'
+      }]
+    )
+
+    expect(diagnostic.issues[0]?.path).toBe(
+      'Players.[dynamic-key].[dynamic-key]'
+    )
+    expect(diagnostic.payloadShape).toEqual(expect.arrayContaining([
+      'Players.[dynamic-key].[dynamic-key]: integer',
+      'Players.[dynamic-key].Chip: integer'
+    ]))
+    const serialized = JSON.stringify(diagnostic)
+    expect(serialized).not.toContain('Alice')
+    expect(serialized).not.toContain('Bob')
   })
 
   it('redacts unknown strings by default while retaining allow-listed protocol IDs', () => {

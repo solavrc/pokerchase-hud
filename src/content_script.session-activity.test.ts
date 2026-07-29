@@ -28,7 +28,10 @@
  * entry -- and the keepalive it armed -- is moot.
  */
 import { ApiType } from './types'
-import { POKER_CHASE_ORIGIN } from './constants/runtime'
+import {
+  POKER_CHASE_INVALID_API_EVENT,
+  POKER_CHASE_ORIGIN
+} from './constants/runtime'
 
 const KEEPALIVE_INTERVAL_MS = 25000
 
@@ -91,6 +94,16 @@ describe('content_script keepalive (session-activity triggers)', () => {
     jest.advanceTimersByTime(KEEPALIVE_INTERVAL_MS)
 
     expect(mockPort.postMessage).not.toHaveBeenCalledWith({ type: 'keepalive' })
+  })
+
+  test('an intercepted payload with an invalid ApiTypeId reaches background diagnostics', () => {
+    const payload = { ApiTypeId: '303', timestamp: 10 }
+    dispatchGameMessage({
+      type: POKER_CHASE_INVALID_API_EVENT,
+      payload
+    })
+
+    expect(mockPort.postMessage).toHaveBeenCalledWith(payload)
   })
 
   test('EVT_DEAL (303) with Player present alone starts keepalive without a prior 308', () => {
