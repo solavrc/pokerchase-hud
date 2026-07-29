@@ -6,6 +6,7 @@ import type { StatsData } from '../content_script'
 import type { HandLogConfig, HandLogEvent } from '../types/hand-log'
 import { DEFAULT_HAND_LOG_CONFIG, DEFAULT_UI_CONFIG, HandLogEntryType } from '../types/hand-log'
 import type { ApiEvent } from '../types'
+import { DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS } from '../utils/ui-config-storage'
 
 // Mock components
 jest.mock('./Hud', () => ({
@@ -139,8 +140,8 @@ describe('App', () => {
 
     act(() => {
       messageHandler({
-        action: 'updateUIConfig',
-        config: { ...DEFAULT_UI_CONFIG, scale: 1.8 },
+        action: 'updateDeviceUIScale',
+        scale: 1.8,
       })
       respondToInitialLayout({ success: true, scale: 1.2 })
     })
@@ -170,6 +171,50 @@ describe('App', () => {
       expect(screen.getByTestId('hud-0')).toHaveTextContent('Scale: 1.7')
       expect(screen.getByTestId('hand-log')).toHaveTextContent('Scale: 1.7')
     })
+  })
+
+  it('timeout後に届いた端末scaleを後続の同期UI更新で巻き戻さない', async () => {
+    jest.useFakeTimers()
+    let respondToInitialLayout!: (response: unknown) => void
+    ;(global.chrome.runtime.sendMessage as jest.Mock).mockImplementation(
+      (message, callback) => {
+        if (message.action === 'getDeviceUILayout') {
+          respondToInitialLayout = callback
+        }
+      }
+    )
+
+    try {
+      render(<App />)
+      const messageHandler = (chrome.runtime.onMessage.addListener as jest.Mock).mock.calls[0][0]
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS)
+      })
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('Scale: 1')
+
+      act(() => {
+        respondToInitialLayout({ success: true, scale: 1.6 })
+      })
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('Scale: 1.6')
+
+      act(() => {
+        messageHandler({
+          action: 'updateUIConfig',
+          config: {
+            ...DEFAULT_UI_CONFIG,
+            scale: 1,
+            hudColorCoding: false,
+          },
+        })
+      })
+
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('Scale: 1.6')
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('ColorCoding: no')
+      expect(screen.getByTestId('hand-log')).toHaveTextContent('Scale: 1.6')
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   it('uiConfig.displayEnabledがfalseの場合、何も表示されない', async () => {
@@ -501,7 +546,7 @@ describe('App', () => {
     })
   })
 
-  it('Chrome runtime messageでUIConfigが更新される', async () => {
+  it('Chrome runtime messageで同期UIConfigが更新されるが端末scaleは保持する', async () => {
     render(<App />)
     
     await waitFor(() => {
@@ -519,12 +564,17 @@ describe('App', () => {
     act(() => {
       messageHandler({
         action: 'updateUIConfig',
-        config: { ...DEFAULT_UI_CONFIG, scale: 1.5 },
+        config: {
+          ...DEFAULT_UI_CONFIG,
+          scale: 1.5,
+          hudColorCoding: false,
+        },
       })
     })
 
     await waitFor(() => {
-      expect(screen.getByTestId('hud-0')).toHaveTextContent('Scale: 1.5')
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('Scale: 1')
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('ColorCoding: no')
     })
   })
 

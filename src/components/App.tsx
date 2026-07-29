@@ -487,8 +487,12 @@ const App = memo(() => {
       }
     } else if (message.action === "updateUIConfig" && message.config) {
       uiConfigChangedAfterMountRef.current = true
-      uiScaleChangedAfterMountRef.current = true
-      setUIConfig(message.config)
+      setUIConfig(current => ({
+        ...message.config,
+        // Synchronized display/color updates must not replace the
+        // authoritative device-local scale.
+        scale: current.scale,
+      }))
     } else if (message.action === "updateDeviceUIScale") {
       uiConfigChangedAfterMountRef.current = true
       uiScaleChangedAfterMountRef.current = true
