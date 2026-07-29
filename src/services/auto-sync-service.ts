@@ -1598,7 +1598,7 @@ export class AutoSyncService {
 
     if (event.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
       service.session.reset()
-    } else if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
+    } else if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED) && event.Code === 0) {
       service.session.setId(event.Id)
       service.session.setBattleType(event.BattleType)
     } else if (isApiEventType(event, ApiType.EVT_SESSION_DETAILS)) {
