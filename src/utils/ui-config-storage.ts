@@ -69,7 +69,24 @@ export const toSyncedUIConfig = (config: UIConfig): SyncedUIConfig => {
 }
 
 export const saveSyncedUIConfig = (config: UIConfig): void => {
-  chrome.storage.sync.set({ uiConfig: toSyncedUIConfig(config) })
+  const syncedConfig = toSyncedUIConfig(config)
+  chrome.storage.sync.get(
+    ['uiConfig', LEGACY_SYNC_UI_SCALE_KEY],
+    (result: Record<string, unknown>) => {
+      const currentConfig = result.uiConfig as { scale?: unknown } | undefined
+      const liveLegacyScale = currentConfig?.scale
+      chrome.storage.sync.set({
+        uiConfig: syncedConfig,
+        // An older device may have written a newer scale after the first
+        // upgraded device created the migration snapshot. Preserve that live
+        // value atomically with stripping it from uiConfig so the older device
+        // can still migrate its latest choice when it upgrades.
+        ...(isValidUIScale(liveLegacyScale)
+          ? { [LEGACY_SYNC_UI_SCALE_KEY]: liveLegacyScale }
+          : {}),
+      })
+    }
+  )
 }
 
 const consumeRuntimeError = (): void => {

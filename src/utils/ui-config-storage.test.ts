@@ -4,6 +4,7 @@ import {
   isValidHudPositionId,
   mergeUIConfigWithLocalScale,
   loadLocalUIScale,
+  LEGACY_SYNC_UI_SCALE_KEY,
   resolveLocalUIScale,
   saveLocalUIScale,
   saveSyncedUIConfig,
@@ -71,6 +72,32 @@ describe('ui-config-storage', () => {
     saveSyncedUIConfig(config)
     expect(chrome.storage.sync.set).toHaveBeenCalledWith({
       uiConfig: toSyncedUIConfig(config),
+    })
+  })
+
+  it('旧版端末のlive scaleを削除前に移行snapshotへ退避する', () => {
+    ;(chrome.storage.sync.get as jest.Mock).mockImplementationOnce(
+      (_keys, callback) => {
+        callback({
+          uiConfig: {
+            ...DEFAULT_UI_CONFIG,
+            scale: 1.8,
+          },
+          [LEGACY_SYNC_UI_SCALE_KEY]: 1.3,
+        })
+      }
+    )
+    const config = {
+      ...DEFAULT_UI_CONFIG,
+      scale: 1.1,
+      displayEnabled: false,
+    }
+
+    saveSyncedUIConfig(config)
+
+    expect(chrome.storage.sync.set).toHaveBeenCalledWith({
+      uiConfig: toSyncedUIConfig(config),
+      [LEGACY_SYNC_UI_SCALE_KEY]: 1.8,
     })
   })
 

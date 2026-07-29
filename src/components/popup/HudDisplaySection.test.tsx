@@ -7,12 +7,14 @@ import { toSyncedUIConfig } from '../../utils/ui-config-storage'
 
 // Mock chrome storage and tabs
 const mockChromeStorageSet = jest.fn()
+const mockChromeStorageGet = jest.fn()
 const mockTabsQuery = jest.fn()
 const mockTabsSendMessage = jest.fn()
 global.chrome = {
   ...global.chrome,
   storage: {
     sync: {
+      get: mockChromeStorageGet,
       set: mockChromeStorageSet,
     },
   },
@@ -33,6 +35,9 @@ describe('HudDisplaySection', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     mockTabsSendMessage.mockResolvedValue(undefined)
+    mockChromeStorageGet.mockImplementation((_key, callback) => {
+      callback({ uiConfig: toSyncedUIConfig(DEFAULT_UI_CONFIG) })
+    })
     mockTabsQuery.mockImplementation((_, callback) => {
       callback([{ id: 1 }, { id: 2 }])
     })

@@ -41,7 +41,7 @@ describe('UIScaleSection', () => {
     jest.clearAllMocks()
     mockTabsSendMessage.mockResolvedValue(undefined)
     mockChromeStorageGet.mockImplementation((_key, callback) => {
-      callback({ uiConfig: DEFAULT_UI_CONFIG })
+      callback({ uiConfig: toSyncedUIConfig(DEFAULT_UI_CONFIG) })
     })
     mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
       callback({ success: true })
@@ -151,6 +151,7 @@ describe('UIScaleSection', () => {
     })
 
     expect(mockChromeStorageSet).toHaveBeenCalledWith({
+      legacyUIScale: 1.2,
       uiConfig: expect.objectContaining({
         displayEnabled: false,
         hudDisplayMode: DEFAULT_UI_CONFIG.hudDisplayMode,
