@@ -90,6 +90,42 @@ describe('UIScaleSection', () => {
     })
   })
 
+  it('TabとShift+Tabは通常のフォーカス移動として通す', () => {
+    render(<UIScaleSection {...defaultProps} />)
+    const input = screen.getByRole('textbox', { name: 'HUD表示切り替えショートカット' })
+
+    fireEvent.focus(input)
+    expect(fireEvent.keyDown(input, { key: 'Tab', code: 'Tab' })).toBe(true)
+    fireEvent.focus(input)
+    expect(fireEvent.keyDown(input, { key: 'Tab', code: 'Tab', shiftKey: true })).toBe(true)
+
+    expect(mockChromeStorageSet).not.toHaveBeenCalled()
+  })
+
+  it('旧形式の部分設定へ既定値を補ってからショートカットを保存する', () => {
+    mockChromeStorageGet.mockImplementation((_key, callback) => {
+      callback({ uiConfig: { displayEnabled: false, scale: 1.2 } })
+    })
+    render(<UIScaleSection {...defaultProps} />)
+    const input = screen.getByRole('textbox', { name: 'HUD表示切り替えショートカット' })
+
+    fireEvent.focus(input)
+    fireEvent.keyDown(input, {
+      key: 'h',
+      code: 'KeyH',
+      shiftKey: true,
+    })
+
+    expect(mockChromeStorageSet).toHaveBeenCalledWith({
+      uiConfig: expect.objectContaining({
+        displayEnabled: false,
+        scale: 1.2,
+        hudDisplayMode: DEFAULT_UI_CONFIG.hudDisplayMode,
+        hudColorCoding: DEFAULT_UI_CONFIG.hudColorCoding,
+      }),
+    })
+  })
+
   it('UI表示のON/OFFを切り替え', async () => {
     render(<UIScaleSection {...defaultProps} />)
 

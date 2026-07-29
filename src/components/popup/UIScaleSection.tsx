@@ -5,7 +5,7 @@ import ToggleButton from '@mui/material/ToggleButton'
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
 import Typography from '@mui/material/Typography'
 import { useCallback, useRef, useState } from 'react'
-import type { UIConfig } from '../../types/hand-log'
+import { DEFAULT_UI_CONFIG, type UIConfig } from '../../types/hand-log'
 import { formatShortcut, shortcutFromKeyboardEvent } from '../../utils/keyboard-shortcut'
 import { broadcastUIConfig } from './broadcast-ui-config'
 
@@ -31,7 +31,11 @@ export const UIScaleSection = ({
   const saveShortcut = useCallback((shortcut: UIConfig['toggleShortcut']) => {
     // 別タブやHUD側が更新したdisplayEnabled等を、Popupの古いstateで巻き戻さない。
     chrome.storage.sync.get('uiConfig', (result: Record<string, UIConfig | undefined>) => {
-      const nextConfig = { ...(result.uiConfig ?? uiConfig), toggleShortcut: shortcut }
+      const nextConfig = {
+        ...DEFAULT_UI_CONFIG,
+        ...(result.uiConfig ?? uiConfig),
+        toggleShortcut: shortcut,
+      }
       setUIConfig(nextConfig)
       chrome.storage.sync.set({ uiConfig: nextConfig })
       broadcastUIConfig(nextConfig)
@@ -39,6 +43,14 @@ export const UIScaleSection = ({
   }, [setUIConfig, uiConfig])
 
   const handleShortcutKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    // Keep standard keyboard focus traversal. Shift+Tab must not become a
+    // shortcut merely because Shift satisfies the modifier requirement.
+    if (event.key === 'Tab') {
+      setRecordingShortcut(false)
+      setShortcutError(false)
+      return
+    }
+
     event.preventDefault()
     event.stopPropagation()
 
