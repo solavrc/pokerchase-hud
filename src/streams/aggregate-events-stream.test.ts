@@ -15,10 +15,31 @@
  */
 import PokerChaseService, { PokerChaseDB } from '../app'
 import type { ApiEvent } from '../app'
-import { ApiType } from '../types'
+import { ApiType, BattleType } from '../types'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 
 describe('AggregateEventsStream', () => {
+  test('自動選択中にセッション種別が変わると即時再計算する', async () => {
+    const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
+    const service = new PokerChaseService({ db: dbMock })
+    await service.ready
+    service.autoBattleTypeFilter = true
+    service.session.setBattleType(BattleType.SIT_AND_GO)
+    const recalculate = jest.spyOn(service.statsOutputStream, 'recalculateStats').mockResolvedValue()
+
+    service.handAggregateStream.write({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: '50_100_0002',
+      IsRetire: false,
+      timestamp: 1000,
+    })
+    await service.handAggregateStream.whenIdle()
+
+    expect(recalculate).toHaveBeenCalledTimes(1)
+  })
+
   test('EVT_ENTRY_QUEUEDがハンド途中（テーブル移動）に割り込んでも、そのハンドは欠損なく出力される', async () => {
     const events: ApiEvent[] = [
       // --- Hand 1: 3人テーブルで開始 ---

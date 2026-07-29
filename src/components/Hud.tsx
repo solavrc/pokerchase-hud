@@ -51,6 +51,7 @@ interface HudProps {
    * そのまま渡し、開いている間の再フェッチトリガーに使う。
    */
   handEpoch?: number
+  filterRevision?: number
   /** HUD表示密度。'full'（デフォルト、既存の16統計グリッド）または'compact'（クラシックHUDライン）。UIConfig.hudDisplayMode参照 */
   hudDisplayMode?: 'full' | 'compact'
   /** しきい値ベースの値カラーリング（compact/full両モード共通）。UIConfig.hudColorCoding参照 */
@@ -395,10 +396,10 @@ const Hud = memo((props: HudProps) => {
             <span style={{ color: HUD_MUTED_TEXT_COLOR, fontSize: '9px' }}>No Data</span>
           </div>
           {props.isPositionalPanelOpen && (
-            <PositionalStatsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
+            <PositionalStatsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} filterRevision={props.filterRevision} />
           )}
           {props.isRecentHandsPanelOpen && (
-            <RecentHandsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
+            <RecentHandsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} filterRevision={props.filterRevision} />
           )}
         </div>
       </div>
@@ -452,10 +453,10 @@ const Hud = memo((props: HudProps) => {
             <StatDisplay displayStats={gridDisplayStats} formatValue={formatStatValue} colorCoding={hudColorCoding} />
           )}
           {props.isPositionalPanelOpen && (
-            <PositionalStatsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
+            <PositionalStatsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} filterRevision={props.filterRevision} />
           )}
           {props.isRecentHandsPanelOpen && (
-            <RecentHandsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
+            <RecentHandsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} filterRevision={props.filterRevision} />
           )}
           <HudTooltipPortal position={copyTooltipPosition}>{COPY_TOOLTIP}</HudTooltipPortal>
         </div>
@@ -483,6 +484,7 @@ const Hud = memo((props: HudProps) => {
   // completed hand, but bumping it on every hand would otherwise re-render all 6
   // closed-panel Huds for nothing.
   if ((nextProps.isPositionalPanelOpen || nextProps.isRecentHandsPanelOpen) && prevProps.handEpoch !== nextProps.handEpoch) return false
+  if ((nextProps.isPositionalPanelOpen || nextProps.isRecentHandsPanelOpen) && prevProps.filterRevision !== nextProps.filterRevision) return false
   // statDisplayConfigs governs which stats reach the full grid
   // (filterEnabledDisplayStats) -- a config change must re-render even if
   // statResults itself is unchanged.

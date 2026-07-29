@@ -37,6 +37,7 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
 
       switch (event.ApiTypeId) {
         case ApiType.EVT_ENTRY_QUEUED:
+          const previousAutoFilter = this.service.getEffectiveBattleTypeFilter()?.join(',')
           // セッション境界: MTTではテーブル移動ごとに再発行されるため、進行中のハンド
           // （EVT_DEAL〜EVT_HAND_RESULTSの間）に割り込むことがある。テーブル移動後も
           // 同じハンドの残りのアクションは新しい席番号で配信され続けるため、
@@ -50,6 +51,12 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           this.service.session.setId(event.Id)
           this.service.session.setBattleType(event.BattleType)
           this.progress = undefined
+          if (
+            this.service.autoBattleTypeFilter &&
+            previousAutoFilter !== this.service.getEffectiveBattleTypeFilter()?.join(',')
+          ) {
+            await this.service.statsOutputStream.recalculateStats()
+          }
           break
         case ApiType.EVT_SESSION_DETAILS:
           this.service.session.setName(event.Name)

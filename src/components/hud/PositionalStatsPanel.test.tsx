@@ -232,4 +232,11 @@ describe('PositionalStatsPanel', () => {
       expect(screen.getByText('BTN').closest('tr')).toHaveTextContent('99')
     })
   })
+
+  it('filterRevisionが変わると再フェッチする', async () => {
+    const { rerender } = render(<PositionalStatsPanel playerId={1} filterRevision={0} />)
+    await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1))
+    rerender(<PositionalStatsPanel playerId={1} filterRevision={1} />)
+    await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(2))
+  })
 })

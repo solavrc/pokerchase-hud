@@ -20,6 +20,7 @@ interface RecentHandsPanelProps {
    * ので、この再フェッチは古いキャッシュ結果を受け取らない。
    */
   handEpoch?: number
+  filterRevision?: number
 }
 
 type FetchStatus = 'loading' | 'ready' | 'error'
@@ -140,7 +141,7 @@ const styles = {
  * タイムアウト・chrome.runtime.lastError・success:falseのいずれも
  * フェイルオープンでエラープレースホルダーへ倒す。HUDをクラッシュさせない（#127踏襲）。
  */
-export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelProps) => {
+export const RecentHandsPanel = memo(({ playerId, handEpoch, filterRevision }: RecentHandsPanelProps) => {
   const [status, setStatus] = useState<FetchStatus>('loading')
   const [data, setData] = useState<RecentHandsResult | undefined>(undefined)
   const panelProps = {
@@ -177,7 +178,7 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
     // handEpoch: 監査指摘11(P2)対応。値が変わるのは生きたハンドが1件完了した
     // ときだけ（App.tsx/ports.ts参照）なので、このパネルを開いたままにしていても
     // 最新のハンドを反映して再フェッチする。
-  }, [playerId, handEpoch])
+  }, [playerId, handEpoch, filterRevision])
 
   if (status === 'loading') {
     return (

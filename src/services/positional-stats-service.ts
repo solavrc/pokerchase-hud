@@ -184,6 +184,7 @@ export async function getPositionalStats(
   service: PokerChaseService,
   playerId: number
 ): Promise<PositionalStatsResult> {
+  await Promise.all([service.ready, service.filtersRestored])
   subscribeToHandCompletion(service)
   // このフェッチ開始時点のgeneration -- 下の2箇所のcache.set()で、フェッチ中に
   // ハンド完了(cacheGeneration++)が割り込んでいないか照合する（上のコメント参照）。

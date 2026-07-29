@@ -98,6 +98,7 @@ const App = memo(() => {
   // するようにする（実況の1アクションごとの更新では変化しないため再フェッチ
   // ストームは起きない）。
   const [handEpoch, setHandEpoch] = useState(0)
+  const [filterRevision, setFilterRevision] = useState(0)
 
   const handleTogglePositionalPanel = useCallback((playerId: number) => {
     setOpenPositionalPanelPlayerId(prev => prev === playerId ? null : playerId)
@@ -519,6 +520,7 @@ const App = memo(() => {
   // sola「それほど重要な機能ではないので、bで十分です」の縮小スコープの
   // 精神に沿って、この1回限りのギャップは直さずに受け入れる。
   const handleBattleTypeFilterUpdate = useCallback(() => {
+    setFilterRevision(current => current + 1)
     const dimCache = dimCacheRef.current
     const nonHeroCachedSeats = Array.from(dimCache.keys()).filter(seatIndex => seatIndex !== HERO_SEAT_INDEX)
     if (nonHeroCachedSeats.length === 0) return
@@ -741,6 +743,7 @@ const App = memo(() => {
               isRecentHandsPanelOpen={openRecentHandsPanelPlayerIds.has(position.stat.playerId)}
               onToggleRecentHandsPanel={() => handleToggleRecentHandsPanel(position.stat.playerId)}
               handEpoch={handEpoch}
+              filterRevision={filterRevision}
               hudDisplayMode={uiConfig.hudDisplayMode}
               hudColorCoding={uiConfig.hudColorCoding}
               isDimmed={dimmedSeatIndices.has(position.actualSeatIndex)}
