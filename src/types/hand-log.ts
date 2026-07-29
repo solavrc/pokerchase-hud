@@ -70,7 +70,7 @@ export interface KeyboardShortcut {
  */
 export interface UIConfig {
   displayEnabled: boolean     // Master ON/OFF for all UI elements (HUD + Log)
-  scale: number              // UI scale factor (0.5 - 2.0)
+  scale: number              // Device-local UI scale factor (0.5 - 2.0)
   /**
    * HUD display density (#143).
    * 'compact' (default) = single classic-HUD line (VPIP/PFR/3B (HAND)) plus

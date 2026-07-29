@@ -42,8 +42,9 @@
  *     この直列化の裏で残る唯一の懸念——「rawの書き込みがキューに詰まって
  *     いる間、reload判定がまだ反映されていない古いsessionActivityを
  *     読んでしまう」——は書く側ではなく、全reload経路が通る
- *     `commitReloadIfStillSafe()`で解決する。同関数はキューを安定するまで
- *     drainしたうえで、drain後にtailが差し替わっていないことと
+ *     `commitReloadIfStillSafe()`で解決する。同関数はingestionキューと
+ *     `pending-storage-writes.ts`の耐久書き込みキューを安定するまでdrain
+ *     したうえで、drain後に両tailが差し替わっていないことと
  *     `isSafeToUpdate()`を、reloadとの間にawaitを挟まず最終確認する。
  *   - `AutoSyncService.isSyncing`がfalse（同期中でない）
  *   - `currentOperationState.type === 'idle'`（export/import/rebuild中でない）
@@ -65,6 +66,7 @@ import { runBestEffortChromeUi } from './best-effort-chrome-api'
 import { isOperationIdle, onOperationBecameIdle } from './operation-state'
 import { autoSyncService } from '../services/auto-sync-service'
 import { PENDING_UPDATE_STORAGE_KEY, type PendingUpdateState } from '../constants/update'
+import { getPendingStorageWriteTail } from './pending-storage-writes'
 
 // popup等の非backgroundコンシューマー向けに再エクスポート（codex#3612092812:
 // 実体は../constants/update.ts。popupはそちらから直接importし、この
@@ -174,6 +176,11 @@ interface IngestionDrainCheckpoint {
   tail: Promise<void> | undefined
 }
 
+interface PendingStorageWriteCheckpoint {
+  stable: boolean
+  tail: Promise<void>
+}
+
 const awaitStableIngestionCheckpoint = async (): Promise<IngestionDrainCheckpoint> => {
   let previous: Promise<void> | undefined
   let current = ingestionDrainProvider?.()
@@ -188,6 +195,24 @@ const awaitStableIngestionCheckpoint = async (): Promise<IngestionDrainCheckpoin
   const stable = current === previous
   if (!stable) {
     console.warn('[update-manager] awaitIngestionDrain: hit the iteration safety cap -- the ingestion queue may be receiving new work faster than it can settle')
+  }
+  return { stable, tail: current }
+}
+
+const awaitStablePendingStorageWriteCheckpoint = async (): Promise<PendingStorageWriteCheckpoint> => {
+  let previous: Promise<void> | undefined
+  let current = getPendingStorageWriteTail()
+  let iterations = 0
+  while (current !== previous && iterations < MAX_DRAIN_ITERATIONS) {
+    previous = current
+    await current
+    current = getPendingStorageWriteTail()
+    iterations++
+  }
+
+  const stable = current === previous
+  if (!stable) {
+    console.warn('[update-manager] pending storage write drain hit the iteration safety cap')
   }
   return { stable, tail: current }
 }
@@ -255,7 +280,8 @@ const clearBadge = async (): Promise<void> => {
 /**
  * 全ての`chrome.runtime.reload()`が通る唯一のcommit point。
  *
- * 1. 現在のingestion tailを「同じ参照が2回続く」までdrainする。
+ * 1. 現在のingestion tailとpending storage write tailを、それぞれ
+ *    「同じ参照が2回続く」までdrainする。
  * 2. async関数の復帰microtaskより先に新しいmessageがenqueueされてtailが
  *    差し替わった場合は、同期比較で検出して1へ戻る。
  * 3. 安定したtailの同一性・sessionActivity/同期/operationの安全性・
@@ -263,21 +289,25 @@ const clearBadge = async (): Promise<void> => {
  *    確認する。
  *
  * これにより、storage/badge await中だけでなく、drain自体が返した直後の
- * microtask境界で201/303/308等が積まれた場合も、未処理のACTIVE遷移を
- * 古いINACTIVE状態で追い越してreloadすることはない。drainの安全上限に
- * 達した場合も「安全」とはみなさず、保留したまま次の再チェックへ委ねる。
+ * microtask境界で201/303/308等やdevice-local storage writeが積まれた
+ * 場合も、未処理のACTIVE遷移や永続化要求を追い越してreloadすることはない。
+ * drainの安全上限に達した場合も「安全」とはみなさず、保留したまま次の
+ * 再チェックへ委ねる。
  */
 type ReloadCommitResult = 'committed' | 'already-committed' | 'unsafe'
 
 const commitReloadIfStillSafe = async (commitLog?: string): Promise<ReloadCommitResult> => {
   for (let attempt = 0; attempt < MAX_DRAIN_ITERATIONS; attempt++) {
-    const checkpoint = await awaitStableIngestionCheckpoint()
-    if (!checkpoint.stable) return 'unsafe'
+    const ingestionCheckpoint = await awaitStableIngestionCheckpoint()
+    if (!ingestionCheckpoint.stable) return 'unsafe'
+    const storageCheckpoint = await awaitStablePendingStorageWriteCheckpoint()
+    if (!storageCheckpoint.stable) return 'unsafe'
 
-    // `awaitStableIngestionCheckpoint()`のreturnからこの継続へ移る間にも
-    // microtaskが走りうる。現在tailを同期的に取り直し、変わっていれば
-    // その新tailもdrainする。ここからreloadまではawaitを一切挟まない。
-    if (ingestionDrainProvider?.() !== checkpoint.tail) continue
+    // 各drainのreturnからこの継続へ移る間や、もう一方のdrainを待つ間にも
+    // microtaskが走りうる。両tailを同期的に取り直し、どちらかが変わって
+    // いれば新tailもdrainする。ここからreloadまではawaitを一切挟まない。
+    if (ingestionDrainProvider?.() !== ingestionCheckpoint.tail) continue
+    if (getPendingStorageWriteTail() !== storageCheckpoint.tail) continue
     if (reloadCommitted) return 'already-committed'
     if (!isSafeToUpdate()) return 'unsafe'
 
@@ -291,7 +321,7 @@ const commitReloadIfStillSafe = async (commitLog?: string): Promise<ReloadCommit
     return 'committed'
   }
 
-  console.warn('[update-manager] Reload commit aborted -- ingestion tail never stayed stable at the commit point')
+  console.warn('[update-manager] Reload commit aborted -- reload-drain tails never stayed stable at the commit point')
   return 'unsafe'
 }
 

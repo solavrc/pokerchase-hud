@@ -5,6 +5,7 @@ import { getStartingHandRanking } from '../../utils/starting-hand-rankings'
 import { useDraggable } from './hooks/useDraggable'
 import { DragHandle } from './DragHandle'
 import { HUD_MUTED_TEXT_COLOR } from './hudColors'
+import { REAL_TIME_HUD_POSITION_OFFSET } from '../../utils/ui-config-storage'
 
 interface RealTimeStatsDisplayProps {
   stats: RealTimeStats
@@ -22,7 +23,10 @@ export const RealTimeStatsDisplay = memo(({ stats, seatIndex }: RealTimeStatsDis
     isDragging,
     position,
     handleMouseDown
-  } = useDraggable(seatIndex + 100, defaultPosition) // Use seatIndex + 100 to avoid collision with regular HUD positions
+  } = useDraggable(
+    seatIndex + REAL_TIME_HUD_POSITION_OFFSET,
+    defaultPosition
+  )
   
   const hasStats = Object.keys(stats).length > 0
   

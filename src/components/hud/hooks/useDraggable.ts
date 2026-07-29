@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import type { CSSProperties } from 'react'
-
-interface HudPosition {
-  top: string
-  left: string
-}
+import type { HudPosition } from '../../../types/messages'
+import {
+  loadHudPosition,
+  saveHudPosition,
+} from '../../../utils/ui-config-storage'
 
 interface DragState {
   startX: number
@@ -17,24 +17,28 @@ export const useDraggable = (seatIndex: number, defaultPosition: CSSProperties) 
   const [isDragging, setIsDragging] = useState(false)
   const [position, setPosition] = useState<HudPosition | null>(null)
   const dragRef = useRef<DragState | null>(null)
+  const shouldPersistPositionRef = useRef(false)
+  const positionEditGenerationRef = useRef(0)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  // Load saved position
+  // Layout is device-local because each device can have a different viewport.
   useEffect(() => {
-    chrome.storage.sync.get(`hudPosition_${seatIndex}`, (result: Record<string, any>) => {
-      const savedPosition = result[`hudPosition_${seatIndex}`]
-      if (savedPosition) {
+    const loadGeneration = positionEditGenerationRef.current
+    loadHudPosition(seatIndex, savedPosition => {
+      if (
+        savedPosition &&
+        positionEditGenerationRef.current === loadGeneration
+      ) {
         setPosition(savedPosition)
       }
     })
   }, [seatIndex])
 
-  // Save position
+  // Persist only after drag completion; inactive/stale tabs do not write.
   useEffect(() => {
-    if (position && !isDragging) {
-      chrome.storage.sync.set({
-        [`hudPosition_${seatIndex}`]: position
-      })
+    if (position && !isDragging && shouldPersistPositionRef.current) {
+      shouldPersistPositionRef.current = false
+      saveHudPosition(seatIndex, position)
     }
   }, [position, seatIndex, isDragging])
 
@@ -44,6 +48,11 @@ export const useDraggable = (seatIndex: number, defaultPosition: CSSProperties) 
 
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
+
+    // A pointer interaction is newer than any in-flight startup read. Ignore
+    // a saved position that arrives after this point so it cannot snap the HUD
+    // back or be persisted over the user's drag.
+    positionEditGenerationRef.current += 1
 
     const currentLeft = position?.left ? parseFloat(position.left) : parseFloat((defaultPosition?.left as string) || '0')
     const currentTop = position?.top ? parseFloat(position.top) : parseFloat((defaultPosition?.top as string) || '0')
@@ -73,6 +82,7 @@ export const useDraggable = (seatIndex: number, defaultPosition: CSSProperties) 
       const clampedLeft = Math.max(0, Math.min(90, newLeft))
       const clampedTop = Math.max(0, Math.min(90, newTop))
 
+      shouldPersistPositionRef.current = true
       setPosition({
         left: `${clampedLeft}%`,
         top: `${clampedTop}%`
