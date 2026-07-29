@@ -48,6 +48,7 @@ export const MESSAGE_ACTIONS = {
   UPDATE_HAND_LOG_CONFIG: 'updateHandLogConfig',
   // UI
   UPDATE_UI_CONFIG: 'updateUIConfig',
+  UPDATE_DEVICE_UI_SCALE: 'updateDeviceUIScale',
   GET_DEVICE_UI_LAYOUT: 'getDeviceUILayout',
   SET_DEVICE_UI_SCALE: 'setDeviceUIScale',
   SET_DEVICE_HUD_POSITION: 'setDeviceHudPosition',
@@ -184,6 +185,11 @@ export interface UpdateHandLogConfigMessage {
 export interface UpdateUIConfigMessage {
   action: 'updateUIConfig'
   config: UIConfig
+}
+
+export interface UpdateDeviceUIScaleMessage {
+  action: 'updateDeviceUIScale'
+  scale: number
 }
 
 export interface HudPosition {
@@ -464,6 +470,7 @@ export type ChromeMessage =
   | HandLogEventMessage
   | UpdateHandLogConfigMessage
   | UpdateUIConfigMessage
+  | UpdateDeviceUIScaleMessage
   | GetDeviceUILayoutMessage
   | SetDeviceUIScaleMessage
   | SetDeviceHudPositionMessage

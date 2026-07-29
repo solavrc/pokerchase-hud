@@ -25,6 +25,8 @@ describe('message-router device-local UI layout', () => {
 
   beforeEach(async () => {
     __resetPendingStorageWritesForTests()
+    ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => callback([]))
+    ;(chrome.tabs.sendMessage as jest.Mock).mockResolvedValue(undefined)
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
     service = new PokerChaseService({ db })
@@ -121,6 +123,65 @@ describe('message-router device-local UI layout', () => {
     })
   })
 
+  it('scale保存成功をbackgroundからゲームタブへ通知する', async () => {
+    ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => {
+      callback([{ id: 42 }])
+    })
+    const sendResponse = jest.fn()
+
+    listener({ action: 'setDeviceUIScale', scale: 1.6 }, {}, sendResponse)
+    await getPendingStorageWriteTail()
+
+    expect(chrome.tabs.query).toHaveBeenCalledWith(
+      { url: 'https://example.com/*' },
+      expect.any(Function)
+    )
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      action: 'updateDeviceUIScale',
+      scale: 1.6,
+    })
+    expect(sendResponse).toHaveBeenCalledWith({ success: true })
+    expect((chrome.tabs.sendMessage as jest.Mock).mock.invocationCallOrder[0])
+      .toBeLessThan(sendResponse.mock.invocationCallOrder[0]!)
+  })
+
+  it('先に待機中のユーザーscaleを後発legacy移行で上書きしない', async () => {
+    await chrome.storage.sync.set({
+      [LEGACY_SYNC_UI_SCALE_KEY]: 1.3,
+      uiConfig: { displayEnabled: true },
+    })
+    const storageSet = chrome.storage.local.set as jest.Mock
+    const defaultSet = storageSet.getMockImplementation()!
+    let finishUserWrite!: () => void
+    storageSet.mockImplementationOnce((items, callback) => {
+      finishUserWrite = () => defaultSet(items, callback)
+    })
+    const userResponse = jest.fn()
+    const layoutResponse = jest.fn()
+
+    listener({ action: 'setDeviceUIScale', scale: 1.8 }, {}, userResponse)
+    await Promise.resolve()
+    ;(chrome.storage.sync.get as jest.Mock).mockClear()
+
+    listener({ action: 'getDeviceUILayout' }, {}, layoutResponse)
+    expect(layoutResponse).not.toHaveBeenCalled()
+    expect(chrome.storage.sync.get).not.toHaveBeenCalled()
+
+    finishUserWrite()
+    await getPendingStorageWriteTail()
+    await Promise.resolve()
+
+    expect(userResponse).toHaveBeenCalledWith({ success: true })
+    expect(layoutResponse).toHaveBeenCalledWith({
+      success: true,
+      scale: 1.8,
+    })
+    expect(chrome.storage.sync.get).not.toHaveBeenCalled()
+    expect(await chrome.storage.local.get(UI_SCALE_STORAGE_KEY)).toEqual({
+      [UI_SCALE_STORAGE_KEY]: 1.8,
+    })
+  })
+
   it('リアルタイムHUDの位置名前空間も保存・読込できる', async () => {
     const position = { top: '64%', left: '22%' }
     const positionResponse = jest.fn()
@@ -135,6 +196,8 @@ describe('message-router device-local UI layout', () => {
       action: 'getDeviceUILayout',
       seatIndex: 102,
     }, {}, loadResponse)
+    await getPendingStorageWriteTail()
+    await Promise.resolve()
 
     expect(positionResponse).toHaveBeenCalledWith({ success: true })
     expect(loadResponse).toHaveBeenCalledWith({
@@ -281,6 +344,7 @@ describe('message-router device-local UI layout', () => {
     }
 
     listener({ action: 'setSyncedUIConfig', config }, {}, sendResponse)
+    await getPendingStorageWriteTail()
 
     expect(sendResponse).toHaveBeenCalledWith({ success: true })
     expect(await chrome.storage.sync.get([
@@ -295,7 +359,7 @@ describe('message-router device-local UI layout', () => {
     })
   })
 
-  it('同期UI設定のstorage failureを呼出元へ返す', () => {
+  it('同期UI設定のstorage failureを呼出元へ返す', async () => {
     ;(chrome.storage.sync.set as jest.Mock).mockImplementationOnce(
       (_items, callback) => {
         ;(chrome.runtime as any).lastError = { message: 'quota' }
@@ -309,6 +373,7 @@ describe('message-router device-local UI layout', () => {
       action: 'setSyncedUIConfig',
       config: DEFAULT_UI_CONFIG,
     }, {}, sendResponse)
+    await getPendingStorageWriteTail()
 
     expect(sendResponse).toHaveBeenCalledWith({
       success: false,
@@ -339,6 +404,7 @@ describe('message-router device-local UI layout', () => {
       action: 'setSyncedUIConfig',
       patch: { toggleShortcut },
     }, {}, sendResponse)
+    await getPendingStorageWriteTail()
 
     expect(sendResponse).toHaveBeenCalledWith({ success: true })
     expect(await chrome.storage.sync.get('uiConfig')).toEqual({

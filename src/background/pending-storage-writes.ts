@@ -9,12 +9,18 @@
  * 次のwriteを実行する。
  */
 let pendingStorageWriteTail: Promise<void> = Promise.resolve()
+let pendingStorageWriteCount = 0
 
 export function enqueuePendingStorageWrite<T>(write: () => Promise<T>): Promise<T> {
+  pendingStorageWriteCount += 1
   const result = pendingStorageWriteTail.then(write, write)
   pendingStorageWriteTail = result.then(
-    () => undefined,
-    () => undefined
+    () => {
+      pendingStorageWriteCount -= 1
+    },
+    () => {
+      pendingStorageWriteCount -= 1
+    }
   )
   return result
 }
@@ -22,7 +28,11 @@ export function enqueuePendingStorageWrite<T>(write: () => Promise<T>): Promise<
 /** reload commitが安定性と完了を確認するための現在のtail。 */
 export const getPendingStorageWriteTail = (): Promise<void> => pendingStorageWriteTail
 
+/** 読み取り側が未開始を含む先行writeの有無を判定する。 */
+export const hasPendingStorageWrites = (): boolean => pendingStorageWriteCount > 0
+
 /** テスト専用: モジュールスコープのtailを初期状態へ戻す。 */
 export const __resetPendingStorageWritesForTests = (): void => {
   pendingStorageWriteTail = Promise.resolve()
+  pendingStorageWriteCount = 0
 }

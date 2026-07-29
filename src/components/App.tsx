@@ -489,6 +489,13 @@ const App = memo(() => {
       uiConfigChangedAfterMountRef.current = true
       uiScaleChangedAfterMountRef.current = true
       setUIConfig(message.config)
+    } else if (message.action === "updateDeviceUIScale") {
+      uiConfigChangedAfterMountRef.current = true
+      uiScaleChangedAfterMountRef.current = true
+      setUIConfig(current => ({
+        ...current,
+        scale: message.scale,
+      }))
     }
   }, [applyDimmedSeatIndices])
 

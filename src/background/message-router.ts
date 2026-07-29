@@ -39,6 +39,7 @@ import {
 import {
   enqueuePendingStorageWrite,
   getPendingStorageWriteTail,
+  hasPendingStorageWrites,
 } from './pending-storage-writes'
 
 /**
@@ -133,6 +134,29 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
     read()
   }
 
+  const broadcastDeviceScale = (
+    scale: number,
+    complete: () => void
+  ): void => {
+    chrome.tabs.query({ url: gameUrlPattern }, tabs => {
+      void chrome.runtime.lastError
+      const deliveries: Array<Promise<unknown>> = []
+      for (const tab of tabs ?? []) {
+        if (!tab.id) continue
+        deliveries.push(
+          chrome.tabs.sendMessage(tab.id, {
+            action: 'updateDeviceUIScale',
+            scale,
+          }).catch(() => {
+            // Matching tabs can navigate between query and delivery. The
+            // local value remains authoritative for the next mount.
+          })
+        )
+      }
+      void Promise.all(deliveries).then(complete)
+    })
+  }
+
   const enqueueDeviceScaleWrite = (
     scale: number,
     complete: (error: chrome.runtime.LastError | undefined) => void
@@ -140,7 +164,15 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
     void enqueuePendingStorageWrite(() =>
       new Promise<chrome.runtime.LastError | undefined>((resolve) => {
         chrome.storage.local.set({ [UI_SCALE_STORAGE_KEY]: scale }, () => {
-          resolve(chrome.runtime.lastError)
+          const error = chrome.runtime.lastError
+          if (error) {
+            resolve(error)
+            return
+          }
+          // Dispatch from the persistent background before this queue entry
+          // settles; popup teardown cannot suppress the live HUD update, and
+          // forced reload cannot overtake the tabs.query handoff.
+          broadcastDeviceScale(scale, () => resolve(undefined))
         })
       })
     ).then(complete, error => {
@@ -162,16 +194,22 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
 
   chrome.runtime.onMessage.addListener((request: ChromeMessage, sender: chrome.runtime.MessageSender, sendResponse: (response: MessageResponse) => void) => {
     if (request.action === 'setSyncedUIConfig') {
-      const respondToPersistence = (success: boolean) => {
+      const persist = (complete: (success: boolean) => void) => {
+        if (request.patch) {
+          persistSyncedUIConfigPatch(request.patch, complete)
+        } else {
+          persistSyncedUIConfig(request.config, complete)
+        }
+      }
+      void enqueuePendingStorageWrite(() =>
+        new Promise<boolean>(resolve => persist(resolve))
+      ).then(success => {
         sendResponse(success
           ? { success: true }
           : { success: false, error: 'Failed to save synchronized UI config' })
-      }
-      if (request.patch) {
-        persistSyncedUIConfigPatch(request.patch, respondToPersistence)
-      } else {
-        persistSyncedUIConfig(request.config, respondToPersistence)
-      }
+      }, () => {
+        sendResponse({ success: false, error: 'Failed to save synchronized UI config' })
+      })
       return true
     } else if (request.action === 'getDeviceUILayout') {
       if (request.seatIndex !== undefined && !isValidHudPositionId(request.seatIndex)) {
@@ -181,9 +219,14 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       const positionKey = request.seatIndex === undefined
         ? undefined
         : hudPositionStorageKey(request.seatIndex)
-      chrome.storage.local.get(
-        positionKey ? [UI_SCALE_STORAGE_KEY, positionKey] : UI_SCALE_STORAGE_KEY,
-        (localResult: Record<string, unknown>) => {
+      // A write queued before this read may not have reached chrome.storage
+      // yet. Capture the generation before waiting so later user writes still
+      // invalidate migration, while earlier writes become visible to the read.
+      const scaleMigrationGeneration = deviceScaleWriteGeneration
+      const readDeviceLayout = () => {
+        chrome.storage.local.get(
+          positionKey ? [UI_SCALE_STORAGE_KEY, positionKey] : UI_SCALE_STORAGE_KEY,
+          (localResult: Record<string, unknown>) => {
           const localReadError = chrome.runtime.lastError
           if (localReadError) {
             sendResponse({
@@ -197,7 +240,6 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
             ? localResult[positionKey]
             : undefined
           const needsScaleMigration = !isValidUIScale(localScale)
-          const scaleMigrationGeneration = deviceScaleWriteGeneration
 
           const respond = (
             scale: number,
@@ -301,8 +343,14 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
               })
             }
           )
-        }
-      )
+          }
+        )
+      }
+      if (hasPendingStorageWrites()) {
+        void getPendingStorageWriteTail().then(readDeviceLayout)
+      } else {
+        readDeviceLayout()
+      }
       return true
     } else if (request.action === 'setDeviceUIScale') {
       if (!isValidUIScale(request.scale)) {
@@ -321,13 +369,21 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         sendResponse({ success: false, error: 'Invalid HUD position' })
         return true
       }
-      chrome.storage.local.set({
-        [hudPositionStorageKey(request.seatIndex)]: request.position,
-      }, () => {
-        const error = chrome.runtime.lastError
+      void enqueuePendingStorageWrite(() =>
+        new Promise<chrome.runtime.LastError | undefined>(resolve => {
+          chrome.storage.local.set({
+            [hudPositionStorageKey(request.seatIndex)]: request.position,
+          }, () => resolve(chrome.runtime.lastError))
+        })
+      ).then(error => {
         sendResponse(error
           ? { success: false, error: error.message ?? 'Failed to save HUD position' }
           : { success: true })
+      }, error => {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to save HUD position',
+        })
       })
       return true
     } else if (request.action === 'getDeviceHandLogLayout') {

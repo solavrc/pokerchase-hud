@@ -232,10 +232,8 @@ describe('UIScaleSection', () => {
       expect.objectContaining({ action: 'setSyncedUIConfig' }),
       expect.any(Function),
     ])
-    expect(mockTabsSendMessage).toHaveBeenCalledWith(1, {
-      action: 'updateUIConfig',
-      config: expectedConfig,
-    })
+    expect(mockTabsQuery).not.toHaveBeenCalled()
+    expect(mockTabsSendMessage).not.toHaveBeenCalled()
   })
 
   it('保存応答待ちの連続クリックを累積して保存する', () => {
@@ -337,10 +335,8 @@ describe('UIScaleSection', () => {
         scale: 1.1,
       }
       expect(mockSetUIConfig).toHaveBeenCalledWith(reconciledConfig)
-      expect(mockTabsSendMessage).toHaveBeenCalledWith(1, {
-        action: 'updateUIConfig',
-        config: reconciledConfig,
-      })
+      expect(mockTabsQuery).not.toHaveBeenCalled()
+      expect(mockTabsSendMessage).not.toHaveBeenCalled()
     } finally {
       jest.useRealTimers()
     }
@@ -359,7 +355,7 @@ describe('UIScaleSection', () => {
     mockTabsSendMessage.mockReturnValue(missingReceiver)
 
     render(<UIScaleSection {...defaultProps} />)
-    await userEvent.click(screen.getByText('+'))
+    await userEvent.click(screen.getByText('非表示'))
 
     expect(mockTabsQuery).toHaveBeenCalledWith(
       { url: ['https://game.poker-chase.com/*'] },
