@@ -21,6 +21,7 @@ interface RecentHandsPanelProps {
    */
   handEpoch?: number
   filterRevision?: number
+  sessionScopeKey?: string
 }
 
 type FetchStatus = 'loading' | 'ready' | 'error'
@@ -141,7 +142,7 @@ const styles = {
  * タイムアウト・chrome.runtime.lastError・success:falseのいずれも
  * フェイルオープンでエラープレースホルダーへ倒す。HUDをクラッシュさせない（#127踏襲）。
  */
-export const RecentHandsPanel = memo(({ playerId, handEpoch, filterRevision }: RecentHandsPanelProps) => {
+export const RecentHandsPanel = memo(({ playerId, handEpoch, filterRevision, sessionScopeKey }: RecentHandsPanelProps) => {
   const [status, setStatus] = useState<FetchStatus>('loading')
   const [data, setData] = useState<RecentHandsResult | undefined>(undefined)
   const panelProps = {
@@ -157,7 +158,11 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch, filterRevision }: R
     setStatus('loading')
     setData(undefined)
 
-    const message: GetRecentHandsMessage = { action: 'getRecentHands', playerId }
+    const message: GetRecentHandsMessage = {
+      action: 'getRecentHands',
+      playerId,
+      ...(sessionScopeKey !== undefined ? { sessionScopeKey } : {}),
+    }
     sendMessageWithTimeout<RecentHandsResponse | ErrorResponse>(message, RECENT_HANDS_TIMEOUT_MS)
       .then(response => {
         if (cancelled) return
@@ -178,7 +183,7 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch, filterRevision }: R
     // handEpoch: 監査指摘11(P2)対応。値が変わるのは生きたハンドが1件完了した
     // ときだけ（App.tsx/ports.ts参照）なので、このパネルを開いたままにしていても
     // 最新のハンドを反映して再フェッチする。
-  }, [playerId, handEpoch, filterRevision])
+  }, [playerId, handEpoch, filterRevision, sessionScopeKey])
 
   if (status === 'loading') {
     return (

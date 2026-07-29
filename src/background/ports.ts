@@ -5,6 +5,7 @@ import type { AllPlayersRealTimeStats } from '../realtime-stats/realtime-stats-s
 import type { HandLogEvent } from '../types/hand-log'
 import type { HandLogEventMessage } from '../types/messages'
 import { formatHandLogEntries } from '../utils/hand-log-text'
+import { getStatsSessionFilterKey } from '../utils/session-event-scope'
 
 const PING_INTERVAL_MS = 10 * 1000
 
@@ -18,6 +19,11 @@ export const getLastKnownStats = (): PlayerStats[] => lastKnownStats
 export const setLastKnownStats = (stats: PlayerStats[]): void => {
   lastKnownStats = stats
 }
+
+const sessionFilterKeyForStats = (
+  service: PokerChaseService,
+  stats: PlayerStats[]
+): string => getStatsSessionFilterKey(stats) ?? service.currentSessionFilterKey()
 
 // Monotonic counter bumped every time the live pipeline (statsOutputStream, driven by a
 // real EVT_DEAL) broadcasts a fresh lineup -- see registerStreamSubscriptions() below.
@@ -166,7 +172,7 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
         // handCompletionEpoch's doc comment above.
         handEpoch: handCompletionEpoch,
         sessionScopeRevision: service.sessionScopeRevision,
-        sessionScopeKey: service.currentSessionFilterKey(),
+        sessionScopeKey: sessionFilterKeyForStats(service, lastKnownStats),
       })
     }
   })
@@ -177,7 +183,10 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
     // Real-time stats are now handled by RealTimeStatsStream
     broadcastMessage({
       stats: hand,
-      evtDeal: service.liveEvtDeal,  // Include EVT_DEAL for seat mapping (live context, not the persisted hero-anchored one -- see above)
+      // An empty stats array is the explicit "selected scope has no DEAL"
+      // result. Do not pair it with a stale live/fallback DEAL from a previous
+      // origin, or App may retain the wrong seat rotation context.
+      evtDeal: hand.length > 0 ? service.liveEvtDeal : undefined,
       realTimeStats: latestRealTimeStats,  // Include latest real-time stats from stream
       // NOT bumped here -- this handler also fires for the hand-start warmup and
       // filter/import/auto-sync rebroadcasts (see handCompletionEpoch's doc comment),
@@ -185,7 +194,7 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
       // completion (the writeEntityStream subscription below) advances it.
       handEpoch: handCompletionEpoch,
       sessionScopeRevision: service.sessionScopeRevision,
-      sessionScopeKey: service.currentSessionFilterKey(),
+      sessionScopeKey: sessionFilterKeyForStats(service, hand),
     })
   })
   // The one true "hand completed" signal -- see handCompletionEpoch's doc comment

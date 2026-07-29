@@ -263,12 +263,16 @@ export interface AcknowledgeRebuildAdvisoryMessage {
 export interface GetPositionalStatsMessage {
   action: 'getPositionalStats'
   playerId: number
+  /** Session boundary of the HUD result that opened this panel. */
+  sessionScopeKey?: string
 }
 
 // Recent hands drill-down messages
 export interface GetRecentHandsMessage {
   action: 'getRecentHands'
   playerId: number
+  /** Session boundary of the HUD result that opened this panel. */
+  sessionScopeKey?: string
   /** Defaults to DEFAULT_RECENT_HANDS_LIMIT (10) in recent-hands-service.ts when omitted. */
   limit?: number
 }

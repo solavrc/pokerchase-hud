@@ -188,7 +188,11 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           const merge = await mergeApiEvents(db, rawEventsToStore, {
             protectAddedApplicationEventsFromCloudWatermark: true
           })
-          successCount += merge.added.length
+          // Context enrichment changes the canonical replay result even when
+          // the wire payload itself was already present. Count it as a dirty
+          // raw row so the same full rebuild runs and repairs existing Hand
+          // session attribution.
+          successCount += merge.added.length + merge.enriched.length
           duplicateCount += merge.duplicates
         }
 

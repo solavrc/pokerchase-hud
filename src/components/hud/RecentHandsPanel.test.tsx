@@ -64,6 +64,21 @@ describe('RecentHandsPanel', () => {
     })
   })
 
+  it('HUD統計のセッションスコープをドリルダウン要求へ引き継ぐ', async () => {
+    mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
+      callback({ success: true, recentHands: buildResult() })
+    })
+
+    render(<RecentHandsPanel playerId={999} sessionScopeKey="run-a" />)
+
+    await waitFor(() => {
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        { action: 'getRecentHands', playerId: 999, sessionScopeKey: 'run-a' },
+        expect.any(Function)
+      )
+    })
+  })
+
   it('triggerから参照できるplayer固有regionとして公開する', () => {
     mockSendMessage.mockImplementation(() => {})
 

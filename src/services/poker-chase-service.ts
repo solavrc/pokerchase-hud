@@ -28,7 +28,9 @@ import type {
 } from '../types'
 import type { RawEventSessionContext } from '../utils/raw-event-session-context'
 import {
+  getEventSessionScope,
   isHandInSessionScope,
+  setLineupSessionScope,
   type ActiveSessionScope,
 } from '../utils/session-event-scope'
 
@@ -190,6 +192,7 @@ export class SessionState implements Session {
 class PokerChaseService {
   private _playerId?: number
   private _latestEvtDeal?: ApiEvent<ApiType.EVT_DEAL>
+  private _sessionDisplayDealAvailable = true
   // ライブ配信専用の「今まさに配信中の席」文脈。Player有無に関わらず毎EVT_DEALで
   // 更新される（aggregate-events-stream.ts参照）が、意図的に永続化しない
   // （persistState()を呼ばない・actualPersistState()のstateに含めない）。
@@ -268,6 +271,7 @@ class PokerChaseService {
 
   set latestEvtDeal(value: ApiEvent<ApiType.EVT_DEAL> | undefined) {
     this._latestEvtDeal = value
+    this._sessionDisplayDealAvailable = value !== undefined
     // ヒーロー在籍dealへの再アンカーは、ライブ配信文脈（liveEvtDeal）も同時に
     // 同期する（codex #177 3巡目レビューP2「Use restored deal context for
     // batch broadcasts」で判明）。理由: import/rebuild/auto-sync復元の各経路
@@ -311,6 +315,19 @@ class PokerChaseService {
     // 意図的にpersistState()を呼ばない -- ライブ配信専用の一時的な文脈のため、
     // chrome.storage.localへの永続化対象（actualPersistState()のstate）にも含めない。
   }
+
+  /**
+   * An origin selection with no DEAL must not reuse the persisted hero DEAL
+   * from an older scope during filter recalculation. Keep that persisted DEAL
+   * for pre-game identity, but mark it unavailable as the current display
+   * anchor until a real/restored DEAL is selected.
+   */
+  readonly markSessionDisplayDealUnavailable = (): void => {
+    this._sessionDisplayDealAvailable = false
+  }
+
+  readonly isSessionDisplayDealAvailable = (): boolean =>
+    this._sessionDisplayDealAvailable
 
   /**
    * 現在のセッション。ミューテーションは SessionState の明示的なメソッド
@@ -669,6 +686,7 @@ class PokerChaseService {
       this.liveEvtDeal = this.latestEvtDeal
       const playerIds = this.latestEvtDeal.SeatUserIds.filter(id => id !== -1)
       if (playerIds.length > 0) {
+        setLineupSessionScope(playerIds, getEventSessionScope(this.latestEvtDeal))
         this.statsOutputStream.write(playerIds)
       }
     } else {
@@ -685,6 +703,7 @@ class PokerChaseService {
 
         const playerIds = latestDealEvent.SeatUserIds.filter((id: number) => id !== -1)
         if (playerIds.length > 0) {
+          setLineupSessionScope(playerIds, getEventSessionScope(latestDealEvent))
           this.statsOutputStream.write(playerIds)
         }
       }

@@ -53,6 +53,8 @@ interface HudProps {
   handEpoch?: number
   /** フィルター変更ごとに増え、開いているドリルダウンを再フェッチする。 */
   filterRevision?: number
+  /** このHUD統計を計算したセッション境界。ドリルダウンも同じ境界を使う。 */
+  sessionScopeKey?: string
   /** HUD表示密度。'full'（デフォルト、既存の16統計グリッド）または'compact'（クラシックHUDライン）。UIConfig.hudDisplayMode参照 */
   hudDisplayMode?: 'full' | 'compact'
   /** しきい値ベースの値カラーリング（compact/full両モード共通）。UIConfig.hudColorCoding参照 */
@@ -397,10 +399,10 @@ const Hud = memo((props: HudProps) => {
             <span style={{ color: HUD_MUTED_TEXT_COLOR, fontSize: '9px' }}>No Data</span>
           </div>
           {props.isPositionalPanelOpen && (
-            <PositionalStatsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} filterRevision={props.filterRevision} />
+            <PositionalStatsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} filterRevision={props.filterRevision} sessionScopeKey={props.sessionScopeKey} />
           )}
           {props.isRecentHandsPanelOpen && (
-            <RecentHandsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} filterRevision={props.filterRevision} />
+            <RecentHandsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} filterRevision={props.filterRevision} sessionScopeKey={props.sessionScopeKey} />
           )}
         </div>
       </div>
@@ -454,10 +456,10 @@ const Hud = memo((props: HudProps) => {
             <StatDisplay displayStats={gridDisplayStats} formatValue={formatStatValue} colorCoding={hudColorCoding} />
           )}
           {props.isPositionalPanelOpen && (
-            <PositionalStatsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} filterRevision={props.filterRevision} />
+            <PositionalStatsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} filterRevision={props.filterRevision} sessionScopeKey={props.sessionScopeKey} />
           )}
           {props.isRecentHandsPanelOpen && (
-            <RecentHandsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} filterRevision={props.filterRevision} />
+            <RecentHandsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} filterRevision={props.filterRevision} sessionScopeKey={props.sessionScopeKey} />
           )}
           <HudTooltipPortal position={copyTooltipPosition}>{COPY_TOOLTIP}</HudTooltipPortal>
         </div>
@@ -486,6 +488,7 @@ const Hud = memo((props: HudProps) => {
   // closed-panel Huds for nothing.
   if ((nextProps.isPositionalPanelOpen || nextProps.isRecentHandsPanelOpen) && prevProps.handEpoch !== nextProps.handEpoch) return false
   if ((nextProps.isPositionalPanelOpen || nextProps.isRecentHandsPanelOpen) && prevProps.filterRevision !== nextProps.filterRevision) return false
+  if ((nextProps.isPositionalPanelOpen || nextProps.isRecentHandsPanelOpen) && prevProps.sessionScopeKey !== nextProps.sessionScopeKey) return false
   // statDisplayConfigs governs which stats reach the full grid
   // (filterEnabledDisplayStats) -- a config change must re-render even if
   // statResults itself is unchanged.

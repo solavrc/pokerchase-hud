@@ -1,4 +1,4 @@
-import type { ApiEvent, Hand } from '../types'
+import type { ApiEvent, Hand, PlayerStats } from '../types'
 import type { BattleType } from '../types'
 import {
   getRawEventSessionContext,
@@ -41,6 +41,7 @@ export const isHandInSessionScope = (
  */
 const eventSessionScopes = new WeakMap<ApiEvent, EventSessionScope>()
 const lineupSessionScopes = new WeakMap<number[], EventSessionScope>()
+const statsSessionFilterKeys = new WeakMap<PlayerStats[], string>()
 
 export const setEventSessionScope = (event: ApiEvent, scope: EventSessionScope | undefined): void => {
   if (scope) eventSessionScopes.set(event, { ...scope })
@@ -65,3 +66,18 @@ export const setLineupSessionScope = (
 
 export const getLineupSessionScope = (seatUserIds: number[]): EventSessionScope | undefined =>
   lineupSessionScopes.get(seatUserIds)
+
+/**
+ * A calculated stats array must keep the session boundary that was captured
+ * before its asynchronous DB reads started. The service's globally selected
+ * scope may change before ports.ts broadcasts the result.
+ */
+export const setStatsSessionFilterKey = (
+  stats: PlayerStats[],
+  sessionFilterKey: string | undefined
+): void => {
+  if (sessionFilterKey !== undefined) statsSessionFilterKeys.set(stats, sessionFilterKey)
+}
+
+export const getStatsSessionFilterKey = (stats: PlayerStats[]): string | undefined =>
+  statsSessionFilterKeys.get(stats)

@@ -268,12 +268,13 @@ Chunk Processing
     ├─► YES: EntityConverter (direct generation, fed only the new
     │   valid-application events) → Bulk Database Insert (bulkPut) into
     │   hands/phases/actions → Statistics Refresh (batch mode)
-    └─► NO, and ≥1 new row was actually stored: full rebuild
+    └─► NO, and ≥1 new row was stored or an existing raw row gained session
+        context: full rebuild
         (`performFullRebuild`, the same path `rebuildAllData` / the
         popup's "データ再構築" button uses) over the entire apiEvents
         Lake — clears hands/phases/actions and regenerates them from
-        scratch. No new rows stored (pure-duplicate import) → nothing to
-        do, existing derived data is already consistent.
+        scratch. No raw mutation (pure duplicate, including no context
+        enrichment) → nothing to do; existing derived data is consistent.
 ```
 
 **Why a full rebuild on non-empty-DB imports:** an import into a non-empty

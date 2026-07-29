@@ -91,11 +91,26 @@ type RecentHandsFilterSnapshot = {
   }
 }
 
-const captureFilterSnapshot = (service: PokerChaseService): RecentHandsFilterSnapshot => ({
+const requestedSessionScope = (
+  service: PokerChaseService,
+  sessionScopeKey?: string
+): ActiveSessionScope | undefined => {
+  if (sessionScopeKey === undefined) return service.getCurrentSessionFilterScope()
+  if (sessionScopeKey === 'inactive') return undefined
+  if (sessionScopeKey === service.currentSessionFilterKey()) {
+    return service.getCurrentSessionFilterScope()
+  }
+  return { scopeKey: sessionScopeKey, id: '', startedAt: 0 }
+}
+
+const captureFilterSnapshot = (
+  service: PokerChaseService,
+  sessionScopeKey?: string
+): RecentHandsFilterSnapshot => ({
   battleTypes: service.battleTypeFilter ? [...service.battleTypeFilter] : undefined,
   tableSizes: service.tableSizeFilter ? [...service.tableSizeFilter] : undefined,
   session: service.sessionOnlyFilter
-    ? { enabled: true, scope: service.getCurrentSessionFilterScope() }
+    ? { enabled: true, scope: requestedSessionScope(service, sessionScopeKey) }
     : { enabled: false },
 })
 
@@ -251,7 +266,8 @@ export async function getRecentHands(
   db: PokerChaseDB,
   service: PokerChaseService,
   playerId: number,
-  limit: number = DEFAULT_RECENT_HANDS_LIMIT
+  limit: number = DEFAULT_RECENT_HANDS_LIMIT,
+  sessionScopeKey?: string
 ): Promise<RecentHandsResult> {
   subscribeToHandCompletion(service)
   // このフェッチ開始時点のgeneration -- 下の2箇所のcache.set()で、フェッチ中に
@@ -259,7 +275,7 @@ export async function getRecentHands(
   const fetchGeneration = cacheGeneration
 
   const effectiveLimit = limit > 0 ? limit : DEFAULT_RECENT_HANDS_LIMIT
-  const filterSnapshot = captureFilterSnapshot(service)
+  const filterSnapshot = captureFilterSnapshot(service, sessionScopeKey)
   const cacheKey = buildRecentHandsCacheKey(playerId, service, effectiveLimit, filterSnapshot)
   const useCache = process.env.NODE_ENV !== 'test' && !process.env.DEBUG_NO_CACHE
   const now = Date.now()

@@ -101,6 +101,7 @@ const App = memo(() => {
   // ストームは起きない）。
   const [handEpoch, setHandEpoch] = useState(0)
   const [filterRevision, setFilterRevision] = useState(0)
+  const [sessionScopeKey, setSessionScopeKey] = useState<string | undefined>(undefined)
   const lastSessionScopeRevisionRef = useRef<number | undefined>(undefined)
   const lastSessionScopeKeyRef = useRef<string | undefined>(undefined)
 
@@ -213,6 +214,7 @@ const App = memo(() => {
       const incomingSessionScopeKey =
         (detail as StatsDataWithHandEpoch).sessionScopeKey
       if (incomingSessionScopeKey !== undefined) {
+        setSessionScopeKey(incomingSessionScopeKey)
         const previousSessionScopeKey = lastSessionScopeKeyRef.current
         lastSessionScopeKeyRef.current = incomingSessionScopeKey
         if (
@@ -809,6 +811,7 @@ const App = memo(() => {
               onToggleRecentHandsPanel={() => handleToggleRecentHandsPanel(position.stat.playerId)}
               handEpoch={handEpoch}
               filterRevision={filterRevision}
+              sessionScopeKey={sessionScopeKey}
               hudDisplayMode={uiConfig.hudDisplayMode}
               hudColorCoding={uiConfig.hudColorCoding}
               isDimmed={dimmedSeatIndices.has(position.actualSeatIndex)}

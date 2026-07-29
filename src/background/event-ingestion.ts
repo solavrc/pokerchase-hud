@@ -267,6 +267,7 @@ class SessionOriginTracker {
       scope.startedAt,
       scope.scopeKey
     )
+    if (!scope.latestDeal) this.service.markSessionDisplayDealUnavailable()
     await this.persist()
   }
 
@@ -358,6 +359,8 @@ class SessionOriginTracker {
         this.service.latestEvtDeal = undefined
         this.service.liveEvtDeal = scope.latestDeal
       }
+    } else {
+      this.service.markSessionDisplayDealUnavailable()
     }
     return scope
   }
@@ -491,6 +494,16 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
       }
       const restored = await sessionOrigins.end(tabId)
       broadcastSessionSelection(service, restored)
+      if (restored.selectionChanged && restored.scope === undefined) {
+        markSessionInactive()
+        // This callback already runs inside ingestionQueue. Awaiting the
+        // shared reload check here would deadlock because its commit point
+        // drains that same queue; schedule it and let it observe this task
+        // after the queue tail settles.
+        recheckPendingUpdate().catch(error => {
+          console.error('[background] Pending update recheck after final tab close failed:', error)
+        })
+      }
     })
     ingestionQueue = task.catch(err => {
       console.error('[background] Failed to close removed-tab session scope:', err)

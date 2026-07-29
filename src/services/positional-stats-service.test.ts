@@ -304,6 +304,40 @@ describe('PositionalStatsService', () => {
     expect(result.positions.reduce((sum, bucket) => sum + bucket.handsN, 0)).toBe(1)
   })
 
+  test('an explicit HUD scope overrides a concurrently selected global scope', async () => {
+    await db.hands.update(9, {
+      approxTimestamp: 10_000,
+      session: {
+        scopeKey: 'run-a',
+        id: 'current',
+        battleType: BattleType.RING_GAME,
+      },
+    })
+    await db.hands.update(10, {
+      approxTimestamp: 10_100,
+      session: {
+        scopeKey: 'run-b',
+        id: 'current',
+        battleType: BattleType.RING_GAME,
+      },
+    })
+    service.startSession('current', BattleType.RING_GAME, 9500, 'run-b')
+    service.sessionOnlyFilter = true
+
+    const result = await getPositionalStats(db, service, PLAYER_ID, 'run-a')
+
+    expect(result.positions.reduce((sum, bucket) => sum + bucket.handsN, 0)).toBe(1)
+    expect(buildCacheKey(PLAYER_ID, service, {
+      battleTypes: undefined,
+      tableSizes: undefined,
+      handLimit: undefined,
+      session: {
+        enabled: true,
+        scope: { scopeKey: 'run-a', id: '', startedAt: 0 },
+      },
+    })).toContain('run-a')
+  })
+
   test('sessionOnly snapshots its active boundary before the asynchronous DB read', async () => {
     await db.hands.update(9, {
       approxTimestamp: 9000,

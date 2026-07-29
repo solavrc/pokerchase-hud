@@ -2,6 +2,10 @@ import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
 import { createImportExportHandlers } from './import-export'
 import { getOperationState, setOperationState } from './operation-state'
+import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
+import { withRawEventSessionContext } from '../utils/raw-event-session-context'
+import { MTT_TABLE_MOVE_FIXTURE } from '../test-fixtures/mtt-table-move-lifecycle'
+import { BattleType } from '../types'
 
 describe('importData cleanup', () => {
   let db: PokerChaseDB
@@ -50,5 +54,35 @@ describe('importData cleanup', () => {
     // same unhandled Promise rejection printed by the Service Worker.
     await Promise.resolve()
     expect(getOperationState()).toEqual({ type: 'idle' })
+  })
+
+  test('context enrichment counts as a dirty import and rebuilds stale hand attribution', async () => {
+    ;(chrome.runtime.sendMessage as jest.Mock).mockResolvedValue(undefined)
+    const rawEvents = MTT_TABLE_MOVE_FIXTURE.events
+      .slice(3, 6)
+      .map(event => structuredClone(event))
+    await mergeApiEvents(db, rawEvents as unknown as RawApiEvent[])
+    const context = {
+      scopeKey: 'run:4:shared-room:1000',
+      id: 'shared-room',
+      battleType: BattleType.RING_GAME,
+      startedAt: 1000,
+    }
+    const handlers = createImportExportHandlers(service, db, 'https://example.com/*')
+
+    const result = await handlers.importData(
+      rawEvents
+        .map(event => JSON.stringify(withRawEventSessionContext(event, context)))
+        .join('\n')
+    )
+    await service.statsOutputStream.whenIdle()
+
+    expect(result.successCount).toBe(rawEvents.length)
+    const rebuiltHand = await db.hands.get(MTT_TABLE_MOVE_FIXTURE.handIds.oldAccepted)
+    expect(rebuiltHand?.session).toMatchObject({
+      scopeKey: context.scopeKey,
+      id: context.id,
+      battleType: context.battleType,
+    })
   })
 })

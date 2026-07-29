@@ -58,7 +58,9 @@ canonical payload全体の一致であり、時刻と種別だけでは重複と
 metadataである（tab ID、プレイヤー情報、カード情報は含めない）。クラウド側の
 canonical rebuildでも同じoriginを再現するためアプリケーションイベントと共に
 同期するが、content identityからは除外する。同一payloadの既存行にcontextが
-無い場合だけ不足分を補い、新しいイベントとしては数えない。
+無い場合だけ不足分を補い、新しいイベントとしては数えない。ただしimport時の
+context補完はcanonical replayの結果を変えるRaw Lake更新として扱い、新規行の
+追加と同じfull rebuildを起動して既存Handのsession attributionも修復する。
 
 `timestamp`はWebSocket message decode直後の`Date.now()`なので、異なるevent typeが
 同一millisecondになる。主キー・exportはApiTypeId順へ並べるため、stateful readerは

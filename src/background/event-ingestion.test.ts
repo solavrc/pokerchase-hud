@@ -25,6 +25,7 @@ import {
 import { MTT_TABLE_MOVE_FIXTURE } from '../test-fixtures/mtt-table-move-lifecycle'
 import { setOperationState } from './operation-state'
 import { captureSchemaValidationFailure } from '../observability/sentry'
+import { isSafeToUpdate } from './update-manager'
 
 jest.mock('../observability/sentry', () => ({
   captureHandledException: jest.fn(),
@@ -344,6 +345,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
 
     await tabRemovedHandler(101)
     expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(isSafeToUpdate()).toBe(true)
     const closure = (await db.apiEvents.toArray()).find(event =>
       (event as any).__pokerChaseHudClosureReason === 'tab-removed'
     ) as any

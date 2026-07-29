@@ -20,6 +20,7 @@ interface PositionalStatsPanelProps {
    */
   handEpoch?: number
   filterRevision?: number
+  sessionScopeKey?: string
 }
 
 type FetchStatus = 'loading' | 'ready' | 'error'
@@ -108,7 +109,7 @@ const styles = {
  * タイムアウト・chrome.runtime.lastError・success:falseのいずれも
  * フェイルオープンでエラープレースホルダーへ倒す。HUDをクラッシュさせない（#127踏襲）。
  */
-export const PositionalStatsPanel = memo(({ playerId, handEpoch, filterRevision }: PositionalStatsPanelProps) => {
+export const PositionalStatsPanel = memo(({ playerId, handEpoch, filterRevision, sessionScopeKey }: PositionalStatsPanelProps) => {
   const [status, setStatus] = useState<FetchStatus>('loading')
   const [data, setData] = useState<PositionalStatsResult | undefined>(undefined)
 
@@ -117,7 +118,11 @@ export const PositionalStatsPanel = memo(({ playerId, handEpoch, filterRevision 
     setStatus('loading')
     setData(undefined)
 
-    const message: GetPositionalStatsMessage = { action: 'getPositionalStats', playerId }
+    const message: GetPositionalStatsMessage = {
+      action: 'getPositionalStats',
+      playerId,
+      ...(sessionScopeKey !== undefined ? { sessionScopeKey } : {}),
+    }
     sendMessageWithTimeout<PositionalStatsResponse | ErrorResponse>(message, POSITIONAL_STATS_TIMEOUT_MS)
       .then(response => {
         if (cancelled) return
@@ -138,7 +143,7 @@ export const PositionalStatsPanel = memo(({ playerId, handEpoch, filterRevision 
     // handEpoch: 監査指摘11(P2)対応。値が変わるのは生きたハンドが1件完了した
     // ときだけ（App.tsx/ports.ts参照）なので、このパネルを開いたままにしていても
     // 最新のハンドを反映して再フェッチする。
-  }, [playerId, handEpoch, filterRevision])
+  }, [playerId, handEpoch, filterRevision, sessionScopeKey])
 
   if (status === 'loading') {
     return (

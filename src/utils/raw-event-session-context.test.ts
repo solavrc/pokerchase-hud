@@ -72,7 +72,13 @@ describe('raw event session context', () => {
         __pokerChaseHudSessionContext: context,
       }])
 
-      expect(result).toEqual({ added: [], duplicates: 1 })
+      expect(result).toEqual({
+        added: [],
+        enriched: [expect.objectContaining({
+          __pokerChaseHudSessionContext: context,
+        })],
+        duplicates: 1,
+      })
       expect(await db.apiEvents.count()).toBe(1)
       expect(await db.apiEvents.get([1000, 303, 0])).toEqual(expect.objectContaining({
         __pokerChaseHudSessionContext: context,
@@ -105,6 +111,7 @@ describe('raw event session context', () => {
 
       expect(result.duplicates).toBe(1)
       expect(result.added).toHaveLength(1)
+      expect(result.enriched).toEqual([])
       expect(await db.apiEvents.count()).toBe(1)
       expect(await db.apiEvents.get([1000, 303, 0])).toEqual(expect.objectContaining({
         __pokerChaseHudSessionContext: context,

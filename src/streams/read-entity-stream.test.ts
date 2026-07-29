@@ -17,7 +17,10 @@ import PokerChaseService from '../services/poker-chase-service'
 import { ApiType, BattleType, PhaseType } from '../types'
 import type { ApiEvent, ApiHandEvent, Hand } from '../types'
 import type { PlayerStats, StatResult } from '../types'
-import { setEventSessionScope } from '../utils/session-event-scope'
+import {
+  getStatsSessionFilterKey,
+  setEventSessionScope,
+} from '../utils/session-event-scope'
 
 const PLAYER_ID = 1
 const SEAT_USER_IDS = [PLAYER_ID, 2, 3, 4, 5, 6]
@@ -222,7 +225,86 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     })
     await service.statsOutputStream.recalculateStats()
 
-    expect(handsStatOf(await statsPromise, PLAYER_ID)?.value).toBe(1)
+    const stats = await statsPromise
+    expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(1)
+    expect(getStatsSessionFilterKey(stats)).toBe('run-a')
+  })
+
+  test('batch-end recalculation carries the latest DEAL scope through its copied lineup', async () => {
+    const deal = {
+      ApiTypeId: ApiType.EVT_DEAL,
+      SeatUserIds: SEAT_USER_IDS,
+      Player: {
+        SeatIndex: 0,
+        BetStatus: 1,
+        HoleCards: [1, 2],
+        Chip: 5000,
+        BetChip: 0,
+      },
+      timestamp: 5200,
+    } as unknown as ApiEvent<ApiType.EVT_DEAL>
+    setEventSessionScope(deal, {
+      scopeKey: 'run-a',
+      id: 'shared-room',
+      battleType: BattleType.RING_GAME,
+      startedAt: 4900,
+    })
+    service.playerId = PLAYER_ID
+    service.latestEvtDeal = deal
+    service.startSession('shared-room', BattleType.RING_GAME, 5050, 'run-b')
+    service.sessionOnlyFilter = true
+    service.setBatchMode(true)
+
+    const calcStatsSpy = jest.spyOn(service.statsOutputStream, 'calcStats')
+    service.setBatchMode(false)
+    await Promise.resolve()
+    await service.statsOutputStream.whenIdle()
+
+    expect(calcStatsSpy).toHaveBeenCalledWith(
+      expect.any(Array),
+      {
+        enabled: true,
+        scope: expect.objectContaining({ scopeKey: 'run-a' }),
+      }
+    )
+  })
+
+  test('filter recalculation stays empty when the selected origin has no DEAL', async () => {
+    const deal = {
+      ApiTypeId: ApiType.EVT_DEAL,
+      SeatUserIds: SEAT_USER_IDS,
+      Player: {
+        SeatIndex: 0,
+        BetStatus: 1,
+        HoleCards: [1, 2],
+        Chip: 5000,
+        BetChip: 0,
+      },
+      timestamp: 5200,
+    } as unknown as ApiEvent<ApiType.EVT_DEAL>
+    setEventSessionScope(deal, {
+      scopeKey: 'run-a',
+      id: 'shared-room',
+      battleType: BattleType.RING_GAME,
+      startedAt: 4900,
+    })
+    service.playerId = PLAYER_ID
+    service.latestEvtDeal = deal
+    service.startSession('shared-room', BattleType.RING_GAME, 5300, 'run-b')
+    service.markSessionDisplayDealUnavailable()
+    service.sessionOnlyFilter = true
+
+    const statsPromise = new Promise<PlayerStats[]>(resolve => {
+      service.statsOutputStream.once('data', resolve)
+    })
+    await service.statsOutputStream.recalculateStats()
+
+    const stats = await statsPromise
+    expect(stats).toEqual([])
+    expect(getStatsSessionFilterKey(stats)).toBe('run-b')
+    // Hero identity remains persisted for pre-game stats outside 最新.
+    expect(service.latestEvtDeal).toBe(deal)
+    expect(service.playerId).toBe(PLAYER_ID)
   })
 
   test('session cache uses the same immutable scope for its key and delayed calculation', async () => {

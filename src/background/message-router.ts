@@ -447,7 +447,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       return true
     } else if (request.action === 'getPositionalStats') {
       // ポジション別スタッツ・ドリルダウン
-      getPositionalStats(db, service, request.playerId)
+      getPositionalStats(db, service, request.playerId, request.sessionScopeKey)
         .then(positionalStats => {
           sendResponse({ success: true, positionalStats })
         })
@@ -458,7 +458,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       return true
     } else if (request.action === 'getRecentHands') {
       // 直近ハンド・ドリルダウン
-      getRecentHands(db, service, request.playerId, request.limit)
+      getRecentHands(db, service, request.playerId, request.limit, request.sessionScopeKey)
         .then(recentHands => {
           sendResponse({ success: true, recentHands })
         })

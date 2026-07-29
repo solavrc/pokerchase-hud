@@ -67,6 +67,21 @@ describe('PositionalStatsPanel', () => {
     })
   })
 
+  it('HUD統計のセッションスコープをドリルダウン要求へ引き継ぐ', async () => {
+    mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
+      callback({ success: true, positionalStats: buildResult() })
+    })
+
+    render(<PositionalStatsPanel playerId={999} sessionScopeKey="run-a" />)
+
+    await waitFor(() => {
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        { action: 'getPositionalStats', playerId: 999, sessionScopeKey: 'run-a' },
+        expect.any(Function)
+      )
+    })
+  })
+
   it('パーセンテージを0桁で表示し、分母0は"-"にする', async () => {
     mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
       callback({ success: true, positionalStats: buildResult() })

@@ -23,6 +23,8 @@ export type RawApiEvent = Record<string, unknown> & {
 
 export interface MergeApiEventsResult {
   added: RawApiEvent[]
+  /** Existing rows whose transport-only session context was enriched. */
+  enriched: RawApiEvent[]
   duplicates: number
 }
 
@@ -168,7 +170,7 @@ export async function mergeApiEvents(
   inputEvents: RawApiEvent[],
   options: MergeApiEventsOptions = {}
 ): Promise<MergeApiEventsResult> {
-  if (inputEvents.length === 0) return { added: [], duplicates: 0 }
+  if (inputEvents.length === 0) return { added: [], enriched: [], duplicates: 0 }
 
   const transactionTables = options.protectAddedApplicationEventsFromCloudWatermark
     ? [db.apiEvents, db.meta]
@@ -193,6 +195,7 @@ export async function mergeApiEvents(
     }
 
     const added: RawApiEvent[] = []
+    const enriched: RawApiEvent[] = []
     const enrichedApplicationTimestamps: number[] = []
     let duplicates = 0
 
@@ -218,6 +221,7 @@ export async function mergeApiEvents(
             added[stagedIndex] = upgraded
           } else {
             await db.apiEvents.put(upgraded as unknown as ApiEvent)
+            enriched.push(upgraded)
           }
           const duplicateIndex = group.indexOf(duplicate)
           group[duplicateIndex] = upgraded
@@ -279,6 +283,6 @@ export async function mergeApiEvents(
       }
     }
 
-    return { added, duplicates }
+    return { added, enriched, duplicates }
   })
 }

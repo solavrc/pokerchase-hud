@@ -146,12 +146,31 @@ type PositionalFilterSnapshot = {
   }
 }
 
-const captureFilterSnapshot = (service: PokerChaseService): PositionalFilterSnapshot => ({
+const requestedSessionScope = (
+  service: PokerChaseService,
+  sessionScopeKey?: string
+): ActiveSessionScope | undefined => {
+  if (sessionScopeKey === undefined) return service.getCurrentSessionFilterScope()
+  if (sessionScopeKey === 'inactive') return undefined
+  // Legacy/restored scopes may have no durable scopeKey and use
+  // `${id}@${startedAt}` only as their wire key. If it still names the global
+  // selection, retain the full fallback tuple instead of treating the wire
+  // representation as a persisted Hand.session.scopeKey.
+  if (sessionScopeKey === service.currentSessionFilterKey()) {
+    return service.getCurrentSessionFilterScope()
+  }
+  return { scopeKey: sessionScopeKey, id: '', startedAt: 0 }
+}
+
+const captureFilterSnapshot = (
+  service: PokerChaseService,
+  sessionScopeKey?: string
+): PositionalFilterSnapshot => ({
   battleTypes: service.battleTypeFilter ? [...service.battleTypeFilter] : undefined,
   tableSizes: service.tableSizeFilter ? [...service.tableSizeFilter] : undefined,
   handLimit: service.handLimitFilter,
   session: service.sessionOnlyFilter
-    ? { enabled: true, scope: service.getCurrentSessionFilterScope() }
+    ? { enabled: true, scope: requestedSessionScope(service, sessionScopeKey) }
     : { enabled: false },
 })
 
@@ -216,14 +235,15 @@ function resolveHandBucket(
 export async function getPositionalStats(
   db: PokerChaseDB,
   service: PokerChaseService,
-  playerId: number
+  playerId: number,
+  sessionScopeKey?: string
 ): Promise<PositionalStatsResult> {
   subscribeToHandCompletion(service)
   // このフェッチ開始時点のgeneration -- 下の2箇所のcache.set()で、フェッチ中に
   // ハンド完了(cacheGeneration++)が割り込んでいないか照合する（上のコメント参照）。
   const fetchGeneration = cacheGeneration
 
-  const filterSnapshot = captureFilterSnapshot(service)
+  const filterSnapshot = captureFilterSnapshot(service, sessionScopeKey)
   const cacheKey = buildCacheKey(playerId, service, filterSnapshot)
   const useCache = process.env.NODE_ENV !== 'test' && !process.env.DEBUG_NO_CACHE
   const now = Date.now()

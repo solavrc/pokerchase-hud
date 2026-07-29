@@ -224,6 +224,31 @@ describe('RecentHandsService', () => {
       expect(result.hands.map(h => h.handId)).toEqual([5])
     })
 
+    test('an explicit HUD scope overrides a concurrently selected global scope', async () => {
+      await db.hands.update(4, {
+        approxTimestamp: 5000,
+        session: {
+          scopeKey: 'run-a',
+          id: 'current',
+          battleType: BattleType.RING_GAME,
+        },
+      })
+      await db.hands.update(5, {
+        approxTimestamp: 5100,
+        session: {
+          scopeKey: 'run-b',
+          id: 'current',
+          battleType: BattleType.RING_GAME,
+        },
+      })
+      service.startSession('current', BattleType.RING_GAME, 4500, 'run-b')
+      service.sessionOnlyFilter = true
+
+      const result = await getRecentHands(db, service, PLAYER_ID, 10, 'run-a')
+
+      expect(result.hands.map(h => h.handId)).toEqual([4])
+    })
+
     test('sessionOnly snapshots its active boundary before the asynchronous DB read', async () => {
       await db.hands.update(4, {
         approxTimestamp: 4000,

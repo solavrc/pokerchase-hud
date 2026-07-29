@@ -19,6 +19,7 @@ import {
   getEventSessionScope,
   getLineupSessionScope,
   isHandInSessionScope,
+  setStatsSessionFilterKey,
   type ActiveSessionScope,
   type EventSessionScope,
 } from '../utils/session-event-scope'
@@ -70,9 +71,38 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     this.statsCache.clear()
   }
 
+  private pushStats = (stats: PlayerStats[], sessionFilter: SessionFilterSnapshot): void => {
+    if (sessionFilter.enabled) {
+      setStatsSessionFilterKey(
+        stats,
+        sessionFilter.scope
+          ? sessionFilter.scope.scopeKey ??
+            `${sessionFilter.scope.id}@${sessionFilter.scope.startedAt}`
+          : 'inactive'
+      )
+    }
+    this.push(stats)
+  }
+
   public async recalculateStats(): Promise<void> {
     // 新しい計算を保証するためキャッシュをクリア
     this.invalidateCache()
+
+    // latestEvtDeal deliberately survives a session for pre-game hero identity.
+    // A newly selected/restored origin with no DEAL explicitly marks that
+    // persisted identity anchor unavailable for live display. Fail closed
+    // instead of reviving the preceding origin's lineup on filter changes.
+    if (
+      this.service.sessionOnlyFilter &&
+      !this.service.isSessionDisplayDealAvailable()
+    ) {
+      const sessionFilter: SessionFilterSnapshot = {
+        enabled: true,
+        scope: this.service.getCurrentSessionFilterScope(),
+      }
+      this.pushStats([], sessionFilter)
+      return
+    }
 
     // 必要なデータの存在チェック
     if (!this.service.playerId || !this.service.latestEvtDeal) {
@@ -98,11 +128,10 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
 
     try {
       // すべてのプレイヤーの統計を計算
-      const stats = await this.calcStats(
-        seatUserIds,
+      const sessionFilter =
         this.captureSessionFilter(getEventSessionScope(this.service.latestEvtDeal))
-      )
-      this.push(stats)
+      const stats = await this.calcStats(seatUserIds, sessionFilter)
+      this.pushStats(stats, sessionFilter)
     } catch (error) {
       const context: ErrorContext = {
         streamName: 'ReadEntityStream',
@@ -144,7 +173,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       if (useCache) {
         const cached = this.statsCache.get(cacheKey)
         if (cached && (now - cached.timestamp) < this.CACHE_DURATION_MS) {
-          this.push(cached.stats)
+          this.pushStats(cached.stats, sessionFilter)
           return
         }
       }
@@ -172,7 +201,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
         entriesToDelete.forEach(key => this.statsCache.delete(key))
       }
 
-      this.push(stats)
+      this.pushStats(stats, sessionFilter)
     } catch (error: unknown) {
       const context: ErrorContext = {
         streamName: 'ReadEntityStream',
