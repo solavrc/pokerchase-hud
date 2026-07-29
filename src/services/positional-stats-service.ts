@@ -127,7 +127,7 @@ const subscribedServices = new WeakSet<PokerChaseService>()
 function subscribeToHandCompletion(service: PokerChaseService): void {
   if (subscribedServices.has(service)) return
   subscribedServices.add(service)
-  service.writeEntityStream.on('data', () => {
+  service.writeEntityStream.onHandCommitted(() => {
     cacheGeneration++
     clearPositionalStatsCache()
   })

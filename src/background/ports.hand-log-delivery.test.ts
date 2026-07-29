@@ -12,7 +12,10 @@ describe('ports.ts hand-log delivery', () => {
     const stream = (name: string) => ({
       on: jest.fn((_event: 'data', listener: (value: unknown) => void) => {
         listeners[name] = listener
-      })
+      }),
+      onHandCommitted: jest.fn((listener: (value: unknown) => void) => {
+        listeners[`${name}:handCommitted`] = listener
+      }),
     })
     const service = {
       realTimeStatsStream: stream('realTimeStats'),
@@ -42,7 +45,10 @@ describe('ports.ts hand-log delivery', () => {
     const stream = (name: string) => ({
       on: jest.fn((_event: 'data', listener: (value: unknown) => void) => {
         listeners[name] = listener
-      })
+      }),
+      onHandCommitted: jest.fn((listener: (value: unknown) => void) => {
+        listeners[`${name}:handCommitted`] = listener
+      }),
     })
     const service = {
       realTimeStatsStream: stream('realTimeStats'),

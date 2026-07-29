@@ -16,7 +16,10 @@ import {
 } from '../types/hand-log'
 import { ErrorHandler } from '../utils/error-handler'
 import { HandLogContext, HandLogProcessor } from '../utils/hand-log-processor'
-import { getEventSessionScope } from '../utils/session-event-scope'
+import {
+  getEventSessionScope,
+  type EventSessionScope,
+} from '../utils/session-event-scope'
 
 type HandLogScopeState = {
   context: HandLogContext
@@ -53,6 +56,23 @@ export class HandLogStream extends SimpleTransform<ApiEvent, HandLogEvent> {
     this.processor = new HandLogProcessor(this.createContext())
   }
 
+  private scopeKey(scope: EventSessionScope): string {
+    return scope.originId
+      ? `${scope.originId}\u0000${scope.scopeKey ?? `${scope.id}@${scope.startedAt}`}`
+      : scope.scopeKey ?? `${scope.id}@${scope.startedAt}`
+  }
+
+  discardSessionScope(scope: EventSessionScope): void {
+    const key = this.scopeKey(scope)
+    const state = this.scopedStates.get(key)
+    if (!state) return
+    this.handleSessionEnd(
+      state,
+      this.service.isAuthoritativeSessionScope(scope)
+    )
+    this.scopedStates.delete(key)
+  }
+
   protected async transform(event: ApiEvent): Promise<void> {
     // バッチモード中はハンドログ処理をスキップ
     if (this.service.batchMode) {
@@ -65,7 +85,7 @@ export class HandLogStream extends SimpleTransform<ApiEvent, HandLogEvent> {
       const processor = scoped?.state.processor ?? this.processor
       const newEntries = processor.processSingleEvent(event)
       if (SESSION_END_EVENTS.includes(event.ApiTypeId as any)) {
-        this.handleSessionEnd(scoped?.state)
+        this.handleSessionEnd(scoped?.state, isAuthoritative)
         if (scoped) this.scopedStates.delete(scoped.key)
       } else {
         switch (event.ApiTypeId) {
@@ -104,9 +124,7 @@ export class HandLogStream extends SimpleTransform<ApiEvent, HandLogEvent> {
   ): { key: string; state: HandLogScopeState } | undefined {
     const scope = getEventSessionScope(event)
     if (!scope) return undefined
-    const key = scope.originId
-      ? `${scope.originId}\u0000${scope.scopeKey ?? `${scope.id}@${scope.startedAt}`}`
-      : scope.scopeKey ?? `${scope.id}@${scope.startedAt}`
+    const key = this.scopeKey(scope)
     let state = this.scopedStates.get(key)
     if (!state) {
       const players = new Map<number, { name: string; rank: string }>()
@@ -166,7 +184,10 @@ export class HandLogStream extends SimpleTransform<ApiEvent, HandLogEvent> {
   /**
    * セッション終了を処理
    */
-  private handleSessionEnd(state?: HandLogScopeState) {
+  private handleSessionEnd(
+    state: HandLogScopeState | undefined,
+    emitLive: boolean
+  ) {
     const processor = state?.processor ?? this.processor
     // セッションが終了した場合、未完了のハンドのみクリア
     if (!processor.isHandComplete()) {
@@ -183,7 +204,9 @@ export class HandLogStream extends SimpleTransform<ApiEvent, HandLogEvent> {
         
         // 未完了のハンドのみを削除するイベントを発行
         // handIdがundefinedのエントリを削除するように指示
-        this.emitHandLogEvent('removeIncomplete')
+        if (emitLive) {
+          this.emitHandLogEvent('removeIncomplete')
+        }
       }
     }
   }

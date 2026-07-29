@@ -494,6 +494,72 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     }
   })
 
+  test('the latest filter recalculation wins when same-session calculations finish out of order', async () => {
+    const context = {
+      scopeKey: 'run-a',
+      id: 'tab-a',
+      battleType: BattleType.SIT_AND_GO,
+      startedAt: 1000,
+      originId: 'origin-a',
+    }
+    const deal = {
+      ApiTypeId: ApiType.EVT_DEAL,
+      SeatUserIds: [...SEAT_USER_IDS],
+      Player: {
+        SeatIndex: 0,
+        BetStatus: 1,
+        HoleCards: [1, 2],
+        Chip: 5000,
+        BetChip: 0,
+      },
+      timestamp: 1100,
+    } as unknown as ApiEvent<ApiType.EVT_DEAL>
+    setEventSessionScope(deal, context)
+    service.setSessionOriginReconciler(() => context)
+    service.startSession(
+      context.id,
+      context.battleType,
+      context.startedAt,
+      context.scopeKey
+    )
+    service.playerId = PLAYER_ID
+    service.latestEvtDeal = deal
+    service.sessionOnlyFilter = true
+
+    const olderStats = [{ playerId: PLAYER_ID + 100, statResults: [] }] as PlayerStats[]
+    const latestStats = [{ playerId: PLAYER_ID + 200, statResults: [] }] as PlayerStats[]
+    let resolveOlder!: (stats: PlayerStats[]) => void
+    let resolveLatest!: (stats: PlayerStats[]) => void
+    const olderCalculation = new Promise<PlayerStats[]>(resolve => { resolveOlder = resolve })
+    const latestCalculation = new Promise<PlayerStats[]>(resolve => { resolveLatest = resolve })
+    const dataSpy = jest.fn()
+    service.statsOutputStream.on('data', dataSpy)
+
+    try {
+      jest.spyOn(service.statsOutputStream, 'calcStats')
+        .mockImplementationOnce(() => olderCalculation)
+        .mockImplementationOnce(() => latestCalculation)
+
+      service.handLimitFilter = 100
+      const olderPending = service.statsOutputStream.recalculateStats()
+      service.handLimitFilter = 10
+      const latestPending = service.statsOutputStream.recalculateStats()
+
+      resolveLatest(latestStats)
+      await latestPending
+      resolveOlder(olderStats)
+      await olderPending
+
+      expect(dataSpy).toHaveBeenCalledTimes(1)
+      expect(dataSpy).toHaveBeenCalledWith(latestStats)
+    } finally {
+      resolveOlder(olderStats)
+      resolveLatest(latestStats)
+      service.statsOutputStream.off('data', dataSpy)
+      jest.restoreAllMocks()
+    }
+  })
+
   test('a completed hand invalidates a same-lineup production cache warmed at deal time', async () => {
     const previousNodeEnv = process.env.NODE_ENV
     process.env.NODE_ENV = 'production'

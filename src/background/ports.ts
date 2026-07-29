@@ -57,12 +57,11 @@ export const getLiveBroadcastSequence = (): number => liveBroadcastSequence
 // (and would have caused premature cache invalidation, see positional-stats-service.ts/
 // recent-hands-service.ts's subscribeToHandCompletion) on an open drill-down panel.
 //
-// `service.writeEntityStream`'s 'data' event is the one true completion signal: it
-// only fires from `write-entity-stream.ts`'s `this.push(hand.seatUserIds)`, reached
-// exclusively via the live pipeline (`handAggregateStream.pipe(writeEntityStream)`,
+// `service.writeEntityStream`'s hand-commit event is the one true completion signal:
+// it fires exclusively via the live pipeline (`handAggregateStream.pipe(writeEntityStream)`,
 // itself only fed by the real-time port in event-ingestion.ts) after a hand's events
 // have actually been detected as complete (EVT_HAND_RESULTS) and successfully
-// persisted (chimera hands return early without pushing, see that file). The
+// persisted (chimera hands return early without notifying, see that file). The
 // hand-start warmup and filter/import/auto-sync rebroadcasts above all call
 // `statsOutputStream.write()` *directly*, bypassing `writeEntityStream` entirely, so
 // none of them touch this counter.
@@ -196,7 +195,7 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
       // NOT bumped here -- this handler also fires for the hand-start warmup and
       // filter/import/auto-sync rebroadcasts (see handCompletionEpoch's doc comment),
       // so it just stamps whatever handCompletionEpoch currently holds. Only a real
-      // completion (the writeEntityStream subscription below) advances it.
+      // completion (the writeEntityStream commit subscription below) advances it.
       handEpoch: handCompletionEpoch,
       sessionScopeRevision: service.sessionScopeRevision,
       sessionScopeKey: sessionFilterKeyForStats(service, hand),
@@ -204,7 +203,7 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
   })
   // The one true "hand completed" signal -- see handCompletionEpoch's doc comment
   // above for why this must be writeEntityStream, not statsOutputStream.
-  service.writeEntityStream.on('data', () => {
+  service.writeEntityStream.onHandCommitted(() => {
     handCompletionEpoch++
   })
 

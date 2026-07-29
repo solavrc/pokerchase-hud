@@ -86,17 +86,20 @@ const createOriginId = (): string =>
 
 const broadcastSessionSelection = (
   service: PokerChaseService,
-  restored: SessionSelectionResult
+  restored: SessionSelectionResult,
+  broadcastEmptyStats = true
 ): void => {
   if (!restored.selectionChanged) return
   service.liveEvtDeal = undefined
   service.markSessionDisplayDealUnavailable()
   setLastKnownStats([])
-  broadcastMessage({
-    stats: [],
-    sessionScopeRevision: service.sessionScopeRevision,
-    sessionScopeKey: service.currentSessionFilterKey(),
-  })
+  if (broadcastEmptyStats) {
+    broadcastMessage({
+      stats: [],
+      sessionScopeRevision: service.sessionScopeRevision,
+      sessionScopeKey: service.currentSessionFilterKey(),
+    })
+  }
 }
 
 /**
@@ -140,7 +143,26 @@ class SessionOriginTracker {
       const tokenResult = await sessionStorage.get(SESSION_ORIGIN_TOKEN_KEY)
       const browserSessionToken = tokenResult[SESSION_ORIGIN_TOKEN_KEY]
       if (typeof browserSessionToken !== 'string') {
-        await localStorage.remove(SESSION_ORIGIN_STORAGE_KEY)
+        // Establish the browser-lifetime identity before any event can pass
+        // `sessionOrigins.ready`: first durably replace the stale previous-
+        // browser snapshot with an empty snapshot for the new token, then
+        // publish that token in storage.session. A worker stop between the
+        // two writes cannot expose a token without its matching snapshot.
+        const newBrowserSessionToken = createOriginId()
+        await localStorage.set({
+          [SESSION_ORIGIN_STORAGE_KEY]: {
+            browserSessionToken: newBrowserSessionToken,
+            scopes: [],
+            currentTabId: null,
+            sequence: 0,
+            authoritativeStartedAt: undefined,
+          },
+        })
+        await sessionStorage.set({
+          [SESSION_ORIGIN_TOKEN_KEY]: newBrowserSessionToken,
+        })
+        this.browserSessionToken = newBrowserSessionToken
+        this.canReconcileReplay = true
         this.service.endSession()
         return
       }
@@ -213,12 +235,6 @@ class SessionOriginTracker {
       if (!sessionStorage || !localStorage) return
       const browserSessionToken =
         this.browserSessionToken ?? createOriginId()
-      if (this.browserSessionToken === undefined) {
-        await sessionStorage.set({
-          [SESSION_ORIGIN_TOKEN_KEY]: browserSessionToken,
-        })
-        this.browserSessionToken = browserSessionToken
-      }
       const scopes = [...this.scopes.entries()]
         .filter((entry): entry is [number, TrackedSessionScope] => typeof entry[0] === 'number')
       const currentTabId = typeof this.currentKey === 'number' ? this.currentKey : null
@@ -233,6 +249,14 @@ class SessionOriginTracker {
             : undefined,
         },
       })
+      if (this.browserSessionToken === undefined) {
+        // Recovery fallback for a transient startup-storage failure. Preserve
+        // the same snapshot-before-token commit order as restore().
+        await sessionStorage.set({
+          [SESSION_ORIGIN_TOKEN_KEY]: browserSessionToken,
+        })
+        this.browserSessionToken = browserSessionToken
+      }
     } catch (error) {
       // The Raw Event Lake write already succeeded before start()/end() is
       // reached. Origin persistence is a recovery aid and must never abort
@@ -289,6 +313,7 @@ class SessionOriginTracker {
     // that tie only for a never-before-accepted origin; a known stale origin
     // must not reclaim authority by replaying another equal-ms 201.
     const supersedesAuthoritativeScope =
+      this.currentKey === undefined ||
       scope.startedAt > this.authoritativeStartedAt ||
       (
         scope.startedAt === this.authoritativeStartedAt &&
@@ -297,10 +322,7 @@ class SessionOriginTracker {
       )
     if (continuesAuthoritativeScope || supersedesAuthoritativeScope) {
       this.currentKey = key
-      this.authoritativeStartedAt = Math.max(
-        this.authoritativeStartedAt,
-        scope.startedAt
-      )
+      this.authoritativeStartedAt = scope.startedAt
       this.service.startSession(
         scope.id,
         scope.battleType,
@@ -416,6 +438,10 @@ class SessionOriginTracker {
       this.service.session.setPlayer(userId, player)
     }
     if (scope.latestDeal) {
+      // chrome.storage serializes the DEAL value but not its WeakMap-backed
+      // transport metadata. Reattach the selected scope before any filter or
+      // batch-end recalculation reads latestEvtDeal after a worker restart.
+      setEventSessionScope(scope.latestDeal, this.getContext(this.currentKey!))
       if (scope.latestDeal.Player?.SeatIndex !== undefined) {
         this.service.playerId =
           scope.latestDeal.SeatUserIds[scope.latestDeal.Player.SeatIndex]
@@ -441,7 +467,10 @@ class SessionOriginTracker {
 
     // このworkerで201を見ていないcold-resume時は従来どおり単独309で閉じる。
     if (!endedScope) {
-      if (this.scopes.size === 0) this.service.endSession()
+      if (this.scopes.size === 0) {
+        this.authoritativeStartedAt = Number.NEGATIVE_INFINITY
+        this.service.endSession()
+      }
       await this.persist()
       return { selectionChanged: this.scopes.size === 0 }
     }
@@ -454,6 +483,7 @@ class SessionOriginTracker {
     // retained scopes may finish queued hands under their own scope, but they
     // are never promoted back into HUD/stat state after the authority ends.
     this.currentKey = undefined
+    this.authoritativeStartedAt = Number.NEGATIVE_INFINITY
     this.service.endSession()
     await this.persist()
     return { selectionChanged: true }
@@ -540,10 +570,16 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
     const task = ingestionQueue.then(async () => {
       if (getOperationState().type === 'delete') return
       await sessionOrigins.ready
-      await service.handAggregateStream.whenIdle()
+      await Promise.all([
+        service.handAggregateStream.whenIdle(),
+        service.handLogStream.whenIdle(),
+        service.realTimeStatsStream.whenIdle(),
+      ])
       const closingContext = sessionOrigins.getContext(tabId)
       if (closingContext) {
         service.handAggregateStream.discardSessionScope(closingContext)
+        service.handLogStream.discardSessionScope(closingContext)
+        service.realTimeStatsStream.discardSessionScope(closingContext)
         try {
           const latestRawEvent = await service.db.apiEvents
             .orderBy('timestamp')
@@ -560,7 +596,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
               __pokerChaseHudClosureReason: closureReason,
             }, closingContext),
           ], {
-            protectAddedApplicationEventsFromCloudWatermark: true,
+            protectOutOfOrderApplicationEventsFromCloudWatermark: true,
           })
         } catch (error) {
           // Chrome has authoritatively confirmed the tab is gone. Keep the
@@ -798,7 +834,9 @@ const processEvent = async (
         message as unknown as RawApiEvent,
         eventContext
       )
-      const merge = await mergeApiEvents(service.db, [storedMessage])
+      const merge = await mergeApiEvents(service.db, [storedMessage], {
+        protectOutOfOrderApplicationEventsFromCloudWatermark: true,
+      })
       if (merge.duplicates === 1) {
         console.warn('[background] Duplicate event (identical payload already in Raw Event Lake), skipping re-processing:', message)
         return
@@ -861,7 +899,11 @@ const processEvent = async (
       service.handAggregateStream.discardSessionScope(eventContext)
     }
     const restored = await sessionOrigins.end(originKey)
-    broadcastSessionSelection(service, restored)
+    broadcastSessionSelection(
+      service,
+      restored,
+      rawApiTypeId !== ApiType.EVT_SESSION_RESULTS
+    )
     if (sessionOrigins.hasAuthoritativeSession()) {
       markSessionActive()
     } else {

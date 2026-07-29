@@ -64,6 +64,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
   private statsCache: Map<string, { stats: PlayerStats[], timestamp: number }> = new Map()
   private readonly CACHE_DURATION_MS = 5000 // 5秒のキャッシュ
   private readonly MAX_CACHE_SIZE = 50 // キャッシュエントリの最大数
+  private recalculationGeneration = 0
 
   constructor(service: PokerChaseService) {
     super()
@@ -94,6 +95,8 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
   }
 
   public async recalculateStats(): Promise<void> {
+    const generation = ++this.recalculationGeneration
+
     // 新しい計算を保証するためキャッシュをクリア
     this.invalidateCache()
 
@@ -146,6 +149,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       // Keep the persisted calculation result local to its captured scope;
       // never re-publish an older lineup after the new session's clear.
       if (
+        generation !== this.recalculationGeneration ||
         this.service.sessionScopeRevision !== originatingRevision ||
         this.service.latestEvtDeal !== originatingDeal ||
         !this.service.isAuthoritativeSessionScope(originatingScope)

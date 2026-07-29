@@ -61,13 +61,30 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, RealTimeStats
     this.isScopedChild = isScopedChild
   }
 
+  private scopeKey(scope: EventSessionScope): string {
+    return scope.originId
+      ? `${scope.originId}\u0000${scope.scopeKey ?? `${scope.id}@${scope.startedAt}`}`
+      : scope.scopeKey ?? `${scope.id}@${scope.startedAt}`
+  }
+
+  discardSessionScope(scope: EventSessionScope): void {
+    if (this.isScopedChild) return
+    const key = this.scopeKey(scope)
+    const scopedStream = this.scopedStreams.get(key)
+    if (!scopedStream) return
+    if (this.isAuthoritativeScope(scope)) {
+      scopedStream.isSessionActive = false
+      scopedStream.emitClearStats()
+    }
+    scopedStream.reset()
+    this.scopedStreams.delete(key)
+  }
+
   protected async transform(event: ApiEvent): Promise<void> {
     if (!this.isScopedChild) {
       const scope = getEventSessionScope(event)
       if (scope) {
-        const scopeKey = scope.originId
-          ? `${scope.originId}\u0000${scope.scopeKey ?? `${scope.id}@${scope.startedAt}`}`
-          : scope.scopeKey ?? `${scope.id}@${scope.startedAt}`
+        const scopeKey = this.scopeKey(scope)
         let scopedStream = this.scopedStreams.get(scopeKey)
         if (!scopedStream) {
           scopedStream = new RealTimeStatsStream(() => true, true)

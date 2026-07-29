@@ -35,6 +35,13 @@ export interface MergeApiEventsOptions {
    * transaction as the new raw rows so the watermark cannot hide them.
    */
   protectAddedApplicationEventsFromCloudWatermark?: boolean
+  /**
+   * Live capture timestamps come from Date.now(). If the device clock moves
+   * backward, a newly-arrived row can sort below a previously-uploaded
+   * watermark. Detect that regression against the pre-merge Lake maximum and
+   * lower the scan floor atomically with the raw row.
+   */
+  protectOutOfOrderApplicationEventsFromCloudWatermark?: boolean
 }
 
 const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
@@ -192,11 +199,18 @@ export async function mergeApiEvents(
 ): Promise<MergeApiEventsResult> {
   if (inputEvents.length === 0) return { added: [], enriched: [], duplicates: 0 }
 
-  const transactionTables = options.protectAddedApplicationEventsFromCloudWatermark
+  const protectsCloudWatermark =
+    options.protectAddedApplicationEventsFromCloudWatermark ||
+    options.protectOutOfOrderApplicationEventsFromCloudWatermark
+  const transactionTables = protectsCloudWatermark
     ? [db.apiEvents, db.meta]
     : [db.apiEvents]
 
   return await db.transaction('rw', transactionTables, async () => {
+    const preMergeMaxTimestamp =
+      options.protectOutOfOrderApplicationEventsFromCloudWatermark
+        ? (await db.apiEvents.orderBy('timestamp').last())?.timestamp
+        : undefined
     const groupKeys = [...new Map(
       inputEvents.map(event => [`${event.timestamp}\u0000${event.ApiTypeId}`, [event.timestamp, event.ApiTypeId] as [number, number]])
     ).values()]
@@ -273,18 +287,25 @@ export async function mergeApiEvents(
       await db.apiEvents.bulkAdd(added as unknown as ApiEvent[])
     }
 
-    if (options.protectAddedApplicationEventsFromCloudWatermark) {
-      const importedApplicationTimestamps = [
+    if (protectsCloudWatermark) {
+      const applicationTimestamps = [
         ...added
           .filter(isCloudReplayEvent)
           .map(event => event.timestamp),
         ...enrichedApplicationTimestamps,
       ]
-      const earliestImportedTimestamp = importedApplicationTimestamps.length > 0
-        ? Math.min(...importedApplicationTimestamps)
+      const protectedApplicationTimestamps =
+        options.protectAddedApplicationEventsFromCloudWatermark
+          ? applicationTimestamps
+          : applicationTimestamps.filter(timestamp =>
+            typeof preMergeMaxTimestamp === 'number' &&
+            timestamp < preMergeMaxTimestamp
+          )
+      const earliestProtectedTimestamp = protectedApplicationTimestamps.length > 0
+        ? Math.min(...protectedApplicationTimestamps)
         : null
 
-      if (earliestImportedTimestamp !== null) {
+      if (earliestProtectedTimestamp !== null) {
         const reconciledAccounts = await db.meta
           .filter(record => isScopedSyncMetaKey(record.id, SYNC_RESCAN_BACKFILL_DONE_META_KEY))
           .toArray()
@@ -293,10 +314,10 @@ export async function mergeApiEvents(
           const accountSuffix = marker.id.slice(SYNC_RESCAN_BACKFILL_DONE_META_KEY.length)
           const floorKey = `${SYNC_RESCAN_FLOOR_META_KEY}${accountSuffix}`
           const existingFloor = await db.meta.get(floorKey)
-          if (typeof existingFloor?.value !== 'number' || existingFloor.value > earliestImportedTimestamp) {
+          if (typeof existingFloor?.value !== 'number' || existingFloor.value > earliestProtectedTimestamp) {
             await db.meta.put({
               id: floorKey,
-              value: earliestImportedTimestamp,
+              value: earliestProtectedTimestamp,
               updatedAt: Date.now()
             })
           }

@@ -59,7 +59,7 @@ let cacheGeneration = 0
 
 // 監査指摘11（P2）「開いたドリルダウンパネルが無期限に古くなる」対応。
 // positional-stats-service.tsの同名の仕組みと全く同じ理由・同じ実装パターン
-// （そちらのコメント参照）: `service.writeEntityStream`の'data'（生きたポート
+// （そちらのコメント参照）: `service.writeEntityStream`のhand-commit通知（生きたポート
 // 経由の取り込みだけがたどるパイプラインで、ハンドが実際にDBへ書き込まれた
 // 後にのみ発火する、ports.tsの`handCompletionEpoch`と同一の完了限定シグナル）
 // に購読して、この30秒キャッシュをbackground.ts/ports.ts/content_script.ts/
@@ -73,7 +73,7 @@ const subscribedServices = new WeakSet<PokerChaseService>()
 function subscribeToHandCompletion(service: PokerChaseService): void {
   if (subscribedServices.has(service)) return
   subscribedServices.add(service)
-  service.writeEntityStream.on('data', () => {
+  service.writeEntityStream.onHandCommitted(() => {
     cacheGeneration++
     clearRecentHandsCache()
   })

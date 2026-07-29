@@ -91,6 +91,7 @@ type ReplaySessionState = {
   scopes: Map<string, ReplaySessionScope>
   sequence: number
   currentKey?: string
+  authoritativeStartedAt: number
 }
 
 const getReplaySessionKey = (scopeKey: string, originId?: string): string =>
@@ -1527,6 +1528,7 @@ export class AutoSyncService {
       const replaySessions: ReplaySessionState = {
         scopes: new Map(),
         sequence: 0,
+        authoritativeStartedAt: Number.NEGATIVE_INFINITY,
       }
 
       if (service?.session) service.session.reset()
@@ -1682,6 +1684,7 @@ export class AutoSyncService {
       // queued hands. Ending the newest authoritative replay scope never
       // promotes an older origin back into live HUD/stat state.
       replaySessions.currentKey = undefined
+      replaySessions.authoritativeStartedAt = Number.NEGATIVE_INFINITY
       if (typeof service.endSession === 'function') {
         service.endSession()
       } else {
@@ -1704,6 +1707,7 @@ export class AutoSyncService {
         }
       }
       const previous = replaySessions.scopes.get(replayKey)
+      const isFirstAcceptedStartForOrigin = previous === undefined
       const scope: ReplaySessionScope = {
         scopeKey,
         id: context?.id ?? event.Id,
@@ -1715,12 +1719,26 @@ export class AutoSyncService {
         players: new Map(previous?.players),
       }
       replaySessions.scopes.set(replayKey, scope)
-      replaySessions.currentKey = replayKey
-      if (typeof service.startSession === 'function') {
-        service.startSession(scope.id, scope.battleType, scope.startedAt, scope.scopeKey)
-      } else {
-        service.session.setId(event.Id)
-        service.session.setBattleType(event.BattleType)
+      const continuesAuthoritativeScope =
+        replaySessions.currentKey === replayKey &&
+        previous?.scopeKey === scope.scopeKey
+      const supersedesAuthoritativeScope =
+        replaySessions.currentKey === undefined ||
+        scope.startedAt > replaySessions.authoritativeStartedAt ||
+        (
+          scope.startedAt === replaySessions.authoritativeStartedAt &&
+          isFirstAcceptedStartForOrigin &&
+          replaySessions.currentKey !== replayKey
+        )
+      if (continuesAuthoritativeScope || supersedesAuthoritativeScope) {
+        replaySessions.currentKey = replayKey
+        replaySessions.authoritativeStartedAt = scope.startedAt
+        if (typeof service.startSession === 'function') {
+          service.startSession(scope.id, scope.battleType, scope.startedAt, scope.scopeKey)
+        } else {
+          service.session.setId(event.Id)
+          service.session.setBattleType(event.BattleType)
+        }
       }
     } else if (isApiEventType(event, ApiType.EVT_SESSION_DETAILS)) {
       const scopeKey = context

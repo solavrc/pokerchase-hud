@@ -813,3 +813,71 @@ test('a non-authoritative scope completes silently without live hand-log output'
 
   expect(outputSpy).toHaveBeenCalled()
 })
+
+test('a stale session end resets only its own processor without removing the authoritative live log', async () => {
+  const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
+  const service = new PokerChaseService({ db: dbMock })
+  await service.ready
+  const contextA = {
+    scopeKey: 'run-a',
+    id: 'a',
+    battleType: BattleType.SIT_AND_GO,
+    startedAt: 100,
+    originId: 'origin-a',
+  }
+  const contextB = {
+    scopeKey: 'run-b',
+    id: 'b',
+    battleType: BattleType.SIT_AND_GO,
+    startedAt: 200,
+    originId: 'origin-b',
+  }
+  let authoritativeContext = contextA
+  service.setSessionOriginReconciler(() => authoritativeContext)
+  const outputSpy = jest.fn()
+  service.handLogStream.on('data', outputSpy)
+
+  const deal = event_timeline.find(
+    event => event.ApiTypeId === ApiType.EVT_DEAL
+  )!
+  const dealA = structuredClone(deal)
+  const dealB = structuredClone(deal)
+  setEventSessionScope(dealA, contextA)
+  setEventSessionScope(dealB, contextB)
+
+  service.handLogStream.write(dealA)
+  await service.handLogStream.whenIdle()
+  authoritativeContext = contextB
+  service.handLogStream.write(dealB)
+  await service.handLogStream.whenIdle()
+  outputSpy.mockClear()
+  const scopedStates = (service.handLogStream as any).scopedStates as Map<string, any>
+  const staleState = [...scopedStates.entries()]
+    .find(([key]) => key.startsWith('origin-a'))?.[1]
+  expect(staleState?.processor.getCurrentHandEntries().length).toBeGreaterThan(0)
+
+  const staleEnd = {
+    ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+    timestamp: 300,
+  } as any
+  setEventSessionScope(staleEnd, contextA)
+  service.handLogStream.write(staleEnd)
+  await service.handLogStream.whenIdle()
+
+  expect(outputSpy).not.toHaveBeenCalled()
+  expect(staleState?.processor.getCurrentHandEntries()).toHaveLength(0)
+  expect([...scopedStates.keys()].some(key => key.startsWith('origin-a'))).toBe(false)
+  const currentState = [...scopedStates.entries()]
+    .find(([key]) => key.startsWith('origin-b'))?.[1]
+  expect(currentState?.processor.getCurrentHandEntries().length).toBeGreaterThan(0)
+
+  const currentEnd = {
+    ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+    timestamp: 400,
+  } as any
+  setEventSessionScope(currentEnd, contextB)
+  service.handLogStream.write(currentEnd)
+  await service.handLogStream.whenIdle()
+
+  expect(outputSpy).toHaveBeenCalledWith({ type: 'removeIncomplete' })
+})

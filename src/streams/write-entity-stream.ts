@@ -27,6 +27,10 @@ import {
   setLineupSessionScope,
 } from '../utils/session-event-scope'
 
+export type HandCommitInfo = Readonly<{
+  authoritative: boolean
+}>
+
 /**
  * エンティティ書き込みStream（パイプライン第2段階）
  *
@@ -43,10 +47,28 @@ import {
  */
 export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]> {
   private service: PokerChaseService
+  private readonly handCommitListeners = new Set<(info: HandCommitInfo) => void>()
+
   constructor(service: PokerChaseService) {
     super()
     this.service = service
   }
+
+  onHandCommitted(listener: (info: HandCommitInfo) => void): this {
+    this.handCommitListeners.add(listener)
+    return this
+  }
+
+  private notifyHandCommitted(info: HandCommitInfo): void {
+    for (const listener of [...this.handCommitListeners]) {
+      try {
+        listener(info)
+      } catch (error) {
+        console.error('[WriteEntityStream] Hand commit listener failed:', error)
+      }
+    }
+  }
+
   protected async transform(events: ApiHandEvent[]): Promise<void> {
     try {
       const handState = this.toHandState(events)
@@ -79,8 +101,16 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
       const originatingScope = originatingDeal
         ? getEventSessionScope(originatingDeal)
         : undefined
-      if (this.service.isAuthoritativeSessionScope(originatingScope)) {
+      const authoritative =
+        this.service.isAuthoritativeSessionScope(originatingScope)
+      this.notifyHandCommitted({ authoritative })
+      if (authoritative) {
         this.push(hand.seatUserIds)
+      } else if (!this.service.sessionOnlyFilter) {
+        // The persisted hand still changes all-period aggregates. Recalculate
+        // from the selected origin's own DEAL; never publish this stale
+        // origin's lineup merely to signal that the DB commit completed.
+        void this.service.statsOutputStream.recalculateStats()
       }
     } catch (error: unknown) {
       const context: ErrorContext = {

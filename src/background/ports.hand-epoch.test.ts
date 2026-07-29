@@ -27,10 +27,13 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
-import { ApiType } from '../types'
+import { ApiType, BattleType } from '../types'
 import type { ApiEvent } from '../app'
 import { registerStreamSubscriptions, connectedPorts, setLastKnownStats } from './ports'
-import { setLineupSessionScope } from '../utils/session-event-scope'
+import {
+  setEventSessionScope,
+  setLineupSessionScope,
+} from '../utils/session-event-scope'
 
 const GAME_URL_PATTERN = 'https://example.com/*'
 
@@ -182,5 +185,62 @@ describe('ports.ts handCompletionEpoch (audit finding 11 follow-up, P2)', () => 
     }
     await service.handAggregateStream.whenIdle()
     expect(lastBroadcastHandEpoch()).toBe(baseline + 2)
+  })
+
+  test('a non-authoritative completion refreshes the authoritative all-period lineup and bumps handEpoch', async () => {
+    const contextA = {
+      scopeKey: 'run-a',
+      id: 'tab-a',
+      battleType: BattleType.SIT_AND_GO,
+      startedAt: 1000,
+      originId: 'origin-a',
+    }
+    const contextB = {
+      scopeKey: 'run-b',
+      id: 'tab-b',
+      battleType: BattleType.RING_GAME,
+      startedAt: 2000,
+      originId: 'origin-b',
+    }
+    const lineup: [number, number, number] = [1, 2, 3]
+    const authoritativeDeal =
+      structuredClone(makeHandEvents(600, lineup)[0]!) as ApiEvent<ApiType.EVT_DEAL>
+    setEventSessionScope(authoritativeDeal, contextB)
+    service.setSessionOriginReconciler(() => contextB)
+    service.startSession(
+      contextB.id,
+      contextB.battleType,
+      contextB.startedAt,
+      contextB.scopeKey
+    )
+    service.playerId = lineup[0]
+    service.latestEvtDeal = authoritativeDeal
+    service.sessionOnlyFilter = false
+    setLineupSessionScope(lineup, contextB, authoritativeDeal)
+    service.statsOutputStream.write(lineup)
+    await service.statsOutputStream.whenIdle()
+    const baseline = lastBroadcastHandEpoch()!
+    fakePort.postMessage.mockClear()
+
+    const refreshed = new Promise<any>(resolve =>
+      service.statsOutputStream.once('data', resolve)
+    )
+    for (const event of makeHandEvents(555, lineup)) {
+      setEventSessionScope(event, contextA)
+      service.handAggregateStream.write(event)
+    }
+    await service.handAggregateStream.whenIdle()
+    await service.writeEntityStream.whenIdle()
+    const stats = await refreshed
+
+    expect(await db.hands.get(555)).toBeDefined()
+    expect(stats.map((player: { playerId: number }) => player.playerId))
+      .toEqual(lineup)
+    expect(fakePort.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        evtDeal: authoritativeDeal,
+        handEpoch: baseline + 1,
+      })
+    )
   })
 })

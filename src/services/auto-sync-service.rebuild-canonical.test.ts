@@ -519,6 +519,59 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
     expect(service.latestEvtDeal?.SeatUserIds).toEqual(dealB.SeatUserIds)
   })
 
+  test('a later table-move entry from an older MTT origin does not reclaim replay authority', async () => {
+    const contextA = {
+      scopeKey: 'mtt:table-a:origin-a',
+      id: 'table-a',
+      battleType: BattleType.TOURNAMENT,
+      startedAt: 100,
+      originId: 'origin-a',
+    }
+    const contextB = {
+      scopeKey: 'mtt:table-b:origin-b',
+      id: 'table-b',
+      battleType: BattleType.TOURNAMENT,
+      startedAt: 200,
+      originId: 'origin-b',
+    }
+    await db.apiEvents.bulkAdd([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 100,
+        Code: 0,
+        BattleType: BattleType.TOURNAMENT,
+        Id: 'table-a',
+        IsRetire: false,
+        __pokerChaseHudSessionContext: contextA,
+      },
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 200,
+        Code: 0,
+        BattleType: BattleType.TOURNAMENT,
+        Id: 'table-b',
+        IsRetire: false,
+        __pokerChaseHudSessionContext: contextB,
+      },
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 300,
+        Code: 0,
+        BattleType: BattleType.TOURNAMENT,
+        Id: 'table-a-moved',
+        IsRetire: false,
+        __pokerChaseHudSessionContext: contextA,
+      },
+    ] as ApiEvent[])
+
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.getCurrentSessionScope()).toEqual({
+      id: 'table-b',
+      startedAt: 200,
+    })
+  })
+
   test('does not resurrect a replayed scope closed by the live tab tracker', async () => {
     const context = {
       scopeKey: 'run:0:closed-tab:100',

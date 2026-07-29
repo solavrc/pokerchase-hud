@@ -31,6 +31,7 @@ import {
   SYNC_RESCAN_BACKFILL_DONE_META_KEY,
   SYNC_RESCAN_FLOOR_META_KEY,
 } from '../constants/sync'
+import { getEventSessionScope } from '../utils/session-event-scope'
 
 jest.mock('../observability/sentry', () => ({
   captureHandledException: jest.fn(),
@@ -116,6 +117,29 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(handLogSpy).toHaveBeenCalledTimes(1)
     expect(aggregateSpy).toHaveBeenCalledTimes(1)
     expect(realTimeSpy).toHaveBeenCalledTimes(1)
+  })
+
+  test('publishes the browser-session token only after its empty local snapshot is durable', () => {
+    const localSet = chrome.storage.local.set as jest.Mock
+    const sessionSet = chrome.storage.session.set as jest.Mock
+    const snapshotCallIndex = localSet.mock.calls.findIndex(([value]) =>
+      value.activeSessionOriginsV1?.scopes?.length === 0
+    )
+    const tokenCallIndex = sessionSet.mock.calls.findIndex(([value]) =>
+      typeof value[SESSION_ORIGIN_TOKEN_KEY] === 'string'
+    )
+
+    expect(snapshotCallIndex).toBeGreaterThanOrEqual(0)
+    expect(tokenCallIndex).toBeGreaterThanOrEqual(0)
+    expect(localSet.mock.invocationCallOrder[snapshotCallIndex])
+      .toBeLessThan(sessionSet.mock.invocationCallOrder[tokenCallIndex]!)
+    expect(localSet.mock.calls[snapshotCallIndex]![0].activeSessionOriginsV1)
+      .toMatchObject({
+        browserSessionToken:
+          sessionSet.mock.calls[tokenCallIndex]![0][SESSION_ORIGIN_TOKEN_KEY],
+        scopes: [],
+        currentTabId: null,
+      })
   })
 
   test('a stored 201 with a widened raw shape starts the scope before schema validation', async () => {
@@ -555,7 +579,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     })
   })
 
-  test('tab-close closure stays after its entry boundary and rewinds cloud scan floors when the clock moves backward', async () => {
+  test('a later clock-backward live row atomically rewinds cloud scan floors past a synthetic closure', async () => {
     const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(500)
     try {
       mockPort.sender = { tab: { id: 101 } }
@@ -567,18 +591,11 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
         Id: 'tab-a',
         IsRetire: false,
       })
-      await db.meta.bulkPut([
-        {
-          id: `${SYNC_RESCAN_BACKFILL_DONE_META_KEY}:user-a`,
-          value: true,
-          updatedAt: 1,
-        },
-        {
-          id: `${SYNC_RESCAN_FLOOR_META_KEY}:user-a`,
-          value: 5000,
-          updatedAt: 1,
-        },
-      ])
+      await db.meta.put({
+        id: `${SYNC_RESCAN_BACKFILL_DONE_META_KEY}:user-a`,
+        value: true,
+        updatedAt: 1,
+      })
 
       await tabRemovedHandler(101)
 
@@ -593,12 +610,76 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
           ApiType.EVT_ENTRY_QUEUED,
           203,
         ])
+      expect(await db.meta.get(
+        `${SYNC_RESCAN_FLOOR_META_KEY}:user-a`
+      )).toBeUndefined()
+
+      // A sync may now upload the synthetic 1001 tombstone. If the device
+      // clock remains behind, the next real event still lands below that
+      // watermark. Its raw row and protective floor must commit atomically.
+      await onMessageHandler({
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 600,
+        Code: 0,
+        BattleType: BattleType.RING_GAME,
+        Id: 'clock-backward-tab',
+        IsRetire: false,
+      })
       expect((await db.meta.get(
         `${SYNC_RESCAN_FLOOR_META_KEY}:user-a`
-      ))?.value).toBe(1001)
+      ))?.value).toBe(600)
     } finally {
       nowSpy.mockRestore()
     }
+  })
+
+  test('a failed clock-backward floor write rolls back the raw row before live processing', async () => {
+    await db.apiEvents.put({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      sequence: 0,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'already-stored',
+      IsRetire: false,
+    })
+    await db.meta.put({
+      id: `${SYNC_RESCAN_BACKFILL_DONE_META_KEY}:user-a`,
+      value: true,
+      updatedAt: 1,
+    })
+    jest.spyOn(db.meta, 'put')
+      .mockRejectedValueOnce(new Error('floor write failed'))
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    const handLogSpy = jest.spyOn(service.handLogStream, 'write')
+    const aggregateSpy = jest.spyOn(service.handAggregateStream, 'write')
+    const realTimeSpy = jest.spyOn(service.realTimeStatsStream, 'write')
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 600,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'clock-backward-tab',
+      IsRetire: false,
+    })
+
+    expect(await db.apiEvents.get([
+      600,
+      ApiType.EVT_ENTRY_QUEUED,
+      0,
+    ])).toBeUndefined()
+    expect(await db.meta.get(
+      `${SYNC_RESCAN_FLOOR_META_KEY}:user-a`
+    )).toBeUndefined()
+    expect(handLogSpy).not.toHaveBeenCalled()
+    expect(aggregateSpy).not.toHaveBeenCalled()
+    expect(realTimeSpy).not.toHaveBeenCalled()
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Raw Event Lake write failed'),
+      expect.any(Error),
+      expect.objectContaining({ timestamp: 600 })
+    )
   })
 
   test('a tab-close transition still ends live state when its tombstone cannot be written', async () => {
@@ -842,6 +923,13 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     service.liveEvtDeal = undefined
     service.latestEvtDeal = undefined
     service.endSession()
+    const serializedSnapshot = structuredClone(
+      (await chrome.storage.local.get('activeSessionOriginsV1'))
+        .activeSessionOriginsV1
+    )
+    await chrome.storage.local.set({
+      activeSessionOriginsV1: serializedSnapshot,
+    })
 
     registerEventIngestion(service)
     await service.sessionOriginsReady
@@ -849,6 +937,98 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(service.liveEvtDeal).toEqual(deal)
     expect(service.latestEvtDeal).toEqual(deal)
     expect(service.playerId).toBe(deal.SeatUserIds[deal.Player!.SeatIndex])
+    expect(getEventSessionScope(service.latestEvtDeal!)).toMatchObject({
+      id: 'mtt-6078',
+      startedAt: 1000,
+    })
+  })
+
+  test('a new session start is accepted after the previous authority ended even if the device clock moved backward', async () => {
+    mockPort.sender = { tab: { id: 101 } }
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 2000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'newer-clock-session',
+      IsRetire: false,
+    })
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+      timestamp: 3000,
+    })
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'clock-reset-session',
+      IsRetire: false,
+    })
+
+    expect(service.getCurrentSessionScope()).toEqual({
+      id: 'clock-reset-session',
+      startedAt: 1000,
+    })
+    expect(service.session.active).toBe(true)
+    expect(isSafeToUpdate()).toBe(false)
+  })
+
+  test('authoritative session results clear cached stats without broadcasting an empty lineup over the local hero-preserving end event', async () => {
+    mockPort.sender = { tab: { id: 101 } }
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'hero-session',
+      IsRetire: false,
+    })
+    setLastKnownStats([{ playerId: 1 }] as any)
+    mockPort.postMessage.mockClear()
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+      timestamp: 2000,
+    })
+
+    expect(getLastKnownStats()).toEqual([])
+    expect(mockPort.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ stats: [] })
+    )
+  })
+
+  test('tab closure discards the scoped hand-log and realtime processors', async () => {
+    mockPort.sender = { tab: { id: 101 } }
+    const deal = structuredClone(
+      MTT_TABLE_MOVE_FIXTURE.events.find(
+        event => event.ApiTypeId === ApiType.EVT_DEAL
+      )!
+    ) as ApiEvent<ApiType.EVT_DEAL>
+    deal.timestamp = 1200
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'closing-tab',
+      IsRetire: false,
+    })
+    await onMessageHandler(deal)
+    await Promise.all([
+      service.handLogStream.whenIdle(),
+      service.realTimeStatsStream.whenIdle(),
+    ])
+
+    expect((service.handLogStream as any).scopedStates.size).toBe(1)
+    expect((service.realTimeStatsStream as any).scopedStreams.size).toBe(1)
+
+    await tabRemovedHandler(101)
+
+    expect((service.handLogStream as any).scopedStates.size).toBe(0)
+    expect((service.realTimeStatsStream as any).scopedStreams.size).toBe(0)
   })
 
   test('worker restart keeps the hero anchor when the selected origin latest deal is spectator-only', async () => {
@@ -1122,7 +1302,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
 
   test('origin persistence failure does not drop a durable event from live streams', async () => {
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
-    ;(chrome.storage.session.set as jest.Mock).mockRejectedValueOnce(new Error('quota'))
+    ;(chrome.storage.local.set as jest.Mock).mockRejectedValueOnce(new Error('quota'))
     const handLogSpy = jest.spyOn(service.handLogStream, 'write')
     const aggregateSpy = jest.spyOn(service.handAggregateStream, 'write')
     const realTimeSpy = jest.spyOn(service.realTimeStatsStream, 'write')
