@@ -77,6 +77,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   const [gameTypeFilter, setGameTypeFilter] = useState<GameTypeFilter>({ sng: true, mtt: true, ring: true })
   const [tableSizeFilter, setTableSizeFilter] = useState<TableSizeFilter>(DEFAULT_TABLE_SIZE_FILTER)
   const [handLimit, setHandLimit] = useState<number | undefined>(500)
+  const [sessionOnly, setSessionOnly] = useState(false)
   const [statDisplayConfigs, setStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
   const [pendingStatDisplayConfigs, setPendingStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
   const [hasUnsavedStatChanges, setHasUnsavedStatChanges] = useState<boolean>(false)
@@ -227,6 +228,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           setGameTypeFilter(savedOptions.filterOptions.gameTypes || { sng: true, mtt: true, ring: true })
           setTableSizeFilter(savedOptions.filterOptions.tableSize || DEFAULT_TABLE_SIZE_FILTER)
           setHandLimit(savedOptions.filterOptions.handLimit)
+          setSessionOnly(savedOptions.filterOptions.sessionOnly === true)
         }
       }
 
@@ -324,6 +326,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
       gameTypes: newFilter,
       tableSize: tableSizeFilter,
       handLimit,
+      sessionOnly,
       statDisplayConfigs  // Use current applied configs for immediate filters
     }
 
@@ -343,6 +346,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
       gameTypes: gameTypeFilter,
       tableSize: newFilter,
       handLimit,
+      sessionOnly,
       statDisplayConfigs  // Use current applied configs for immediate filters
     }
 
@@ -351,15 +355,21 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
 
   const handleHandLimitChange = (_event: Event, value: number | number[]) => {
     const handCounts = [20, 50, 100, 200, 500]
-    const newHandLimit = value === 6 ? undefined : handCounts[(value as number) - 1]
+    const numericValue = value as number
+    const newSessionOnly = numericValue === 0
+    const newHandLimit = numericValue === 0 || numericValue === 6
+      ? undefined
+      : handCounts[numericValue - 1]
 
     // Hand limit changed
     setHandLimit(newHandLimit)
+    setSessionOnly(newSessionOnly)
 
     const updatedOptions: FilterOptions = {
       gameTypes: gameTypeFilter,
       tableSize: tableSizeFilter,
       handLimit: newHandLimit,
+      sessionOnly: newSessionOnly,
       statDisplayConfigs  // Use current applied configs for immediate filters
     }
 
@@ -422,6 +432,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
       gameTypes: gameTypeFilter,
       tableSize: tableSizeFilter,
       handLimit,
+      sessionOnly,
       statDisplayConfigs: pendingStatDisplayConfigs
     }
 
@@ -556,6 +567,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
       <SectionCard>
         <HandLimitSection
           handLimit={handLimit}
+          sessionOnly={sessionOnly}
           handleHandLimitChange={handleHandLimitChange}
         />
       </SectionCard>

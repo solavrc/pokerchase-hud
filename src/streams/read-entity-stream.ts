@@ -113,7 +113,10 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       }
 
       // seatUserIdsとフィルター設定に基づいてキャッシュキーを作成
-      const cacheKey = `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}`
+      const sessionFilterKey = this.service.sessionOnlyFilter
+        ? `session:${this.service.session.id ?? 'pending'}`
+        : 'all-sessions'
+      const cacheKey = `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}_${this.service.handLimitFilter ?? 'all'}_${sessionFilterKey}`
       const now = Date.now()
 
       // テスト環境（NODE_ENV=test）またはデバッグモードではキャッシュを無効化
@@ -156,7 +159,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       const context: ErrorContext = {
         streamName: 'ReadEntityStream',
         playerIds: seatUserIds,
-        cacheKey: `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}`,
+        cacheKey: `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}_${this.service.handLimitFilter ?? 'all'}_${this.service.sessionOnlyFilter ? this.service.session.id ?? 'pending' : 'all-sessions'}`,
         battleTypeFilter: this.service.battleTypeFilter,
         tableSizeFilter: this.service.tableSizeFilter,
         handLimitFilter: this.service.handLimitFilter
@@ -178,6 +181,8 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
    * 経由したブロードキャストは発生しない（呼び出し元が結果を自分で届ける）。
    */
   calcStats = async (seatUserIds: number[]): Promise<PlayerStats[]> => {
+    const currentSessionId = this.service.session.id
+
     return await Promise.all(seatUserIds.map(async playerId => {
       if (playerId === -1)
         return { playerId: -1 }
@@ -224,6 +229,22 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
         }
       }
 
+      // 「最新」= 現在のセッション。ID未確定時は過去全件へfall backせず
+      // 空集合にする（別セッションの統計を現在値として見せない）。
+      if (this.service.sessionOnlyFilter) {
+        const originalHandsCount = allPlayerHands.length
+        allPlayerHands = currentSessionId === undefined
+          ? []
+          : allPlayerHands.filter((hand: Hand) => hand.session.id === currentSessionId)
+
+        if (allPlayerHands.length === 0 && originalHandsCount > 0) {
+          return {
+            playerId,
+            statResults: []
+          }
+        }
+      }
+
       // 最後にハンド制限フィルターを適用（フィルタ後にlimit、既存の順序を維持）
       if (this.service.handLimitFilter !== undefined && this.service.handLimitFilter > 0) {
         // MTTのテーブル移動ではHandIdが局所逆転するため、受信時刻で最新順にする。
@@ -232,7 +253,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       }
 
       // アクションフィルタリング用のフィルタリングされたハンドIDを作成
-      if (this.service.battleTypeFilter || this.service.tableSizeFilter || this.service.handLimitFilter !== undefined) {
+      if (this.service.battleTypeFilter || this.service.tableSizeFilter || this.service.sessionOnlyFilter || this.service.handLimitFilter !== undefined) {
         filteredHandIds = allPlayerHands.map((h: Hand) => h.id)
         filteredHandIdSet = new Set(filteredHandIds)
       }

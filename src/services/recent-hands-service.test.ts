@@ -183,6 +183,16 @@ describe('RecentHandsService', () => {
       expect(result.hands.map(h => h.handId)).toEqual([5, 4])
     })
 
+    test('sessionOnly keeps only the current session id', async () => {
+      await db.hands.update(4, { session: { id: 'old', battleType: BattleType.RING_GAME } })
+      await db.hands.update(5, { session: { id: 'current', battleType: BattleType.RING_GAME } })
+      service.session.setId('current')
+      service.sessionOnlyFilter = true
+
+      const result = await getRecentHands(db, service, PLAYER_ID, 10)
+      expect(result.hands.map(h => h.handId)).toEqual([5])
+    })
+
     test('brand-new player with zero hands returns an empty list, not an error', async () => {
       const result = await getRecentHands(db, service, 999)
       expect(result.hands).toEqual([])

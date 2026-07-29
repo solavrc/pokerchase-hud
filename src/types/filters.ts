@@ -34,5 +34,7 @@ export interface FilterOptions {
    */
   tableSize?: TableSizeFilter
   handLimit?: number  // undefined = all hands, otherwise limit to recent N hands
+  /** true = 現在のセッションIDに属するハンドだけを集計する */
+  sessionOnly?: boolean
   statDisplayConfigs?: StatDisplayConfig[]  // Custom stat display configuration
 }

@@ -262,6 +262,17 @@ describe('PositionalStatsService', () => {
     }
   })
 
+  test('sessionOnly keeps only the current session id', async () => {
+    await db.hands.update(9, { session: { id: 'old', battleType: BattleType.RING_GAME } })
+    await db.hands.update(10, { session: { id: 'current', battleType: BattleType.RING_GAME } })
+    service.session.setId('current')
+    service.sessionOnlyFilter = true
+    const result = await getPositionalStats(db, service, PLAYER_ID)
+
+    expect(bucketOf(result, Position.BTN).handsN).toBe(1)
+    expect(result.positions.reduce((sum, bucket) => sum + bucket.handsN, 0)).toBe(1)
+  })
+
   test('handLimitFilter keeps the most recent N legacy hands with deterministic HandId fallback', async () => {
     service.handLimitFilter = 3
     const result = await getPositionalStats(db, service, PLAYER_ID)

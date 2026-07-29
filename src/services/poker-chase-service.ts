@@ -171,6 +171,7 @@ class PokerChaseService {
   battleTypeFilter?: number[] = undefined // undefined = all, array = specific battleTypes
   tableSizeFilter?: TableSizeLayer[] = undefined // undefined = all layers (no filtering), array = selected layers (C案)
   handLimitFilter?: number = undefined // undefined = all hands, number = limit to recent N hands
+  sessionOnlyFilter: boolean = false // true = current session id only
   statDisplayConfigs?: StatDisplayConfig[] = undefined // Custom stat display configuration
   handLogConfig?: HandLogConfig = undefined // Hand log display configuration
   batchMode: boolean = false // Batch mode flag for bulk operations
@@ -450,6 +451,7 @@ class PokerChaseService {
 
     // Set hand limit filter
     this.handLimitFilter = filterOptions.handLimit
+    this.sessionOnlyFilter = filterOptions.sessionOnly === true
 
     // Set stat display configuration
     // 保存済みのstatDisplayConfigsをデフォルトとマージしてから設定する（background.tsの

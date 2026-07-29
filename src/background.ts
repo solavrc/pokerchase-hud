@@ -114,6 +114,7 @@ loadOptions().then((options) => {
     // （全層選択=フィルタなし）として扱う（グレースフルなマイグレーション）。
     service.tableSizeFilter = selectedTableSizeLayers(options.filterOptions.tableSize ?? DEFAULT_TABLE_SIZE_FILTER)
     service.handLimitFilter = options.filterOptions.handLimit
+    service.sessionOnlyFilter = options.filterOptions.sessionOnly === true
     // 保存済みのstatDisplayConfigsをデフォルトとマージしてから設定する。
     // マージしないと、リリースで新しい統計（例: #86のSTL/FTS）が追加されても、
     // ユーザーがポップアップを開いて再保存するまでHUDに一切表示されない
@@ -146,6 +147,7 @@ loadOptions().then((options) => {
     service.battleTypeFilter = undefined  // デフォルトではすべてのゲームタイプを表示
     service.tableSizeFilter = undefined  // デフォルトではすべての卓人数層を表示
     service.handLimitFilter = 500
+    service.sessionOnlyFilter = false
   }
 
   // テスト用にハンドログをデフォルトで有効化

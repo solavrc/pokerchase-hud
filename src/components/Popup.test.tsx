@@ -497,6 +497,21 @@ describe('Popup', () => {
 
     // Check that the hand limit section exists by looking for the value
     expect(screen.getByText('500')).toBeInTheDocument()
+    expect(screen.getByText('最新')).toBeInTheDocument()
+  })
+
+  it('ハンド数スライダーの左端は現在セッションだけを保存する', async () => {
+    render(<Popup />)
+    await waitForAsyncOperations()
+
+    fireEvent.keyDown(screen.getByRole('slider'), { key: 'Home' })
+
+    await waitFor(() => {
+      expect(syncData.options.filterOptions).toEqual(expect.objectContaining({
+        handLimit: undefined,
+        sessionOnly: true,
+      }))
+    })
   })
 
   it('統計設定を表示・変更できる', async () => {

@@ -5,11 +5,13 @@ import { SectionHeading } from './SectionHeading'
 
 interface HandLimitSectionProps {
   handLimit: number | undefined
+  sessionOnly: boolean
   handleHandLimitChange: (event: Event, value: number | number[]) => void
 }
 
 export const HandLimitSection = ({
   handLimit,
+  sessionOnly,
   handleHandLimitChange,
 }: HandLimitSectionProps) => {
   return (
@@ -22,6 +24,7 @@ export const HandLimitSection = ({
       <Box sx={{ px: 1, mt: 1, mb: 0.5 }}>
         <Slider
           value={(() => {
+            if (sessionOnly) return 0
             if (handLimit === undefined) return 6
             const handCounts = [20, 50, 100, 200, 500]
             const index = handCounts.indexOf(handLimit)
@@ -31,18 +34,20 @@ export const HandLimitSection = ({
           valueLabelDisplay="auto"
           valueLabelFormat={(value) => {
             const handCounts = [20, 50, 100, 200, 500, 'ALL']
+            if (value === 0) return 'このセッション'
             return value === 6 ? 'ALL' : `${handCounts[value - 1]}ハンド`
           }}
           step={1}
           marks={[
-            { value: 1, label: '最新20' },
+            { value: 0, label: '最新' },
+            { value: 1, label: '20' },
             { value: 2, label: '50' },
             { value: 3, label: '100' },
             { value: 4, label: '200' },
             { value: 5, label: '500' },
             { value: 6, label: 'ALL' }
           ]}
-          min={1}
+          min={0}
           max={6}
         />
       </Box>
