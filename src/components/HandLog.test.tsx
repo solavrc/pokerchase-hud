@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import HandLog from './HandLog'
 import { HandLogEntry, HandLogEntryType, HandLogConfig, DEFAULT_HAND_LOG_CONFIG } from '../types/hand-log'
@@ -229,9 +229,11 @@ describe('HandLog', () => {
       clientY: 480,
     })
     fireEvent.mouseMove(document, { clientX: 830, clientY: 450 })
-    resolveInitialLoad({
-      success: true,
-      layout: { left: 20, top: 30, width: 600, height: 300 },
+    act(() => {
+      resolveInitialLoad({
+        success: true,
+        layout: { left: 20, top: 30, width: 600, height: 300 },
+      })
     })
 
     expect(logContainer.style.left).toBe('450px')
@@ -302,6 +304,51 @@ describe('HandLog', () => {
 
     expect(logContainer.style.width).toBe('200px')
     expect(logContainer.style.height).toBe('80px')
+    fireEvent.mouseUp(document)
+  })
+
+  it('window外で操作が中断されても最後の位置を保存してdrag状態を解除する', () => {
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+    logContainer.getBoundingClientRect = jest.fn(() => ({
+      left: 500,
+      top: 400,
+      width: 400,
+      height: 100,
+      right: 900,
+      bottom: 500,
+      x: 500,
+      y: 400,
+      toJSON: () => {},
+    }))
+
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
+      button: 0,
+      clientX: 880,
+      clientY: 480,
+    })
+    fireEvent.mouseMove(document, {
+      clientX: 830,
+      clientY: 450,
+    })
+    fireEvent(window, new Event('blur'))
+
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      {
+        action: 'setDeviceHandLogLayout',
+        layout: { left: 450, top: 370, width: 400, height: 100 },
+      },
+      expect.any(Function)
+    )
+    expect(document.body.style.cursor).toBe('')
+    expect(document.body.style.userSelect).toBe('')
+
+    fireEvent.mouseMove(document, {
+      clientX: 700,
+      clientY: 700,
+    })
+    expect(logContainer.style.left).toBe('450px')
+    expect(logContainer.style.top).toBe('370px')
   })
 
   it('ポップアップからのリセットで既定の位置とサイズへ即時に戻す', () => {

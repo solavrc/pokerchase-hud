@@ -391,7 +391,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       applyLayout(nextLayout)
     }
 
-    const handleMouseUp = () => {
+    const finishInteraction = () => {
       const interaction = interactionRef.current
       const finalLayout = layoutRef.current
       if (interaction?.moved && finalLayout) {
@@ -402,10 +402,14 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     }
 
     document.addEventListener('mousemove', handleMouseMove)
-    document.addEventListener('mouseup', handleMouseUp)
+    document.addEventListener('mouseup', finishInteraction)
+    document.addEventListener('mouseleave', finishInteraction)
+    window.addEventListener('blur', finishInteraction)
     return () => {
       document.removeEventListener('mousemove', handleMouseMove)
-      document.removeEventListener('mouseup', handleMouseUp)
+      document.removeEventListener('mouseup', finishInteraction)
+      document.removeEventListener('mouseleave', finishInteraction)
+      window.removeEventListener('blur', finishInteraction)
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
     }

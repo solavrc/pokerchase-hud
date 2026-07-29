@@ -163,6 +163,19 @@ describe('ui-config-storage', () => {
     expect(resetCallback).toHaveBeenCalled()
   })
 
+  it('ハンドログlayoutのreset失敗時は成功callbackを呼ばない', () => {
+    ;(chrome.runtime.sendMessage as jest.Mock).mockImplementationOnce(
+      (_message, callback) => {
+        callback({ success: false, error: 'remove failed' })
+      }
+    )
+    const callback = jest.fn()
+
+    resetHandLogLayout(callback)
+
+    expect(callback).not.toHaveBeenCalled()
+  })
+
   it('timeoutで描画を進め、遅れたbackground応答もscaleへ反映する', () => {
     jest.useFakeTimers()
     try {

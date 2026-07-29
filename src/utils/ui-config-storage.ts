@@ -131,27 +131,27 @@ const sendDeviceLayoutReadMessage = <TResponse,>(
 
 const sendDeviceLayoutWriteMessage = (
   message: ChromeMessage,
-  callback: () => void
+  callback: (success: boolean) => void
 ): void => {
   let settled = false
-  const finish = () => {
+  const finish = (success: boolean) => {
     if (settled) return
     settled = true
     clearTimeout(timeoutId)
-    callback()
+    callback(success)
   }
   const timeoutId = setTimeout(
-    finish,
+    () => finish(false),
     DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS
   )
 
   try {
-    chrome.runtime.sendMessage(message, () => {
-      consumeRuntimeError()
-      finish()
+    chrome.runtime.sendMessage(message, (response: { success?: boolean } | undefined) => {
+      const runtimeError = chrome.runtime.lastError
+      finish(!runtimeError && response?.success === true)
     })
   } catch {
-    finish()
+    finish(false)
   }
 }
 
@@ -170,7 +170,7 @@ export const saveLocalUIScale = (
 ): void => {
   sendDeviceLayoutWriteMessage(
     { action: 'setDeviceUIScale', scale: resolveLocalUIScale(scale) },
-    () => {
+    (_success) => {
       callback?.()
     }
   )
@@ -194,7 +194,7 @@ export const saveHudPosition = (
 ): void => {
   sendDeviceLayoutWriteMessage(
     { action: 'setDeviceHudPosition', seatIndex, position },
-    () => {}
+    (_success) => {}
   )
 }
 
@@ -212,13 +212,15 @@ export const loadHandLogLayout = (
 export const saveHandLogLayout = (layout: HandLogLayout): void => {
   sendDeviceLayoutWriteMessage(
     { action: 'setDeviceHandLogLayout', layout },
-    () => {}
+    (_success) => {}
   )
 }
 
 export const resetHandLogLayout = (callback?: () => void): void => {
   sendDeviceLayoutWriteMessage(
     { action: 'resetDeviceHandLogLayout' },
-    () => callback?.()
+    (success) => {
+      if (success) callback?.()
+    }
   )
 }

@@ -79,6 +79,22 @@ describe('UIScaleSection', () => {
     })
   })
 
+  it('ハンドログlayoutの永続削除に失敗した場合は表示だけをリセットしない', async () => {
+    const user = userEvent.setup()
+    mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
+      callback({ success: false, error: 'remove failed' })
+    })
+    render(<UIScaleSection {...defaultProps} />)
+
+    await user.click(screen.getByRole('button', { name: '位置とサイズをリセット' }))
+
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      { action: 'resetDeviceHandLogLayout' },
+      expect.any(Function)
+    )
+    expect(mockTabsSendMessage).not.toHaveBeenCalled()
+  })
+
   it('省略される長いショートカットもtitleで完全表示する', () => {
     const longShortcutConfig: UIConfig = {
       ...DEFAULT_UI_CONFIG,
