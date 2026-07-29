@@ -8,6 +8,8 @@ Sentry is initialized in the background service worker, content script, and
 popup only after the user enables **Sentryへエラー診断を送信** in the popup.
 Enabling it grants the Sentry ingest origin as an optional host permission;
 existing installations are not disabled during an extension update.
+Revoking that permission in Chrome settings clears the shared consent bit and
+stops already-open extension runtimes through `storage.onChanged`.
 It is deliberately **not** initialized in `web_accessible_resource.ts`, which
 runs in the game page's main world and handles raw WebSocket payloads.
 

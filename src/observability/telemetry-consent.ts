@@ -2,6 +2,7 @@ export const SENTRY_HOST_PERMISSION =
   'https://o4507260715794432.ingest.us.sentry.io/*'
 export const SENTRY_TELEMETRY_CONSENT_STORAGE_KEY =
   'sentryTelemetryConsent'
+let permissionRevocationListenerRegistered = false
 
 const localGet = (
   key: string
@@ -27,6 +28,33 @@ const localSet = (
 export const readSentryTelemetryConsent = async (): Promise<boolean> => {
   const result = await localGet(SENTRY_TELEMETRY_CONSENT_STORAGE_KEY)
   return result[SENTRY_TELEMETRY_CONSENT_STORAGE_KEY] === true
+}
+
+export const clearSentryTelemetryConsent = (): Promise<void> =>
+  localSet({ [SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]: false })
+
+/**
+ * Keep content-script consent in sync when the user revokes the optional host
+ * from chrome://extensions instead of using the popup toggle. The background
+ * service worker registers this synchronously during startup, so Chrome can
+ * wake it for permissions.onRemoved and the resulting storage change reaches
+ * every already-open content script.
+ */
+export const registerSentryPermissionRevocationSync = (): void => {
+  if (
+    permissionRevocationListenerRegistered ||
+    !chrome.permissions?.onRemoved?.addListener
+  ) {
+    return
+  }
+  permissionRevocationListenerRegistered = true
+
+  chrome.permissions.onRemoved.addListener(permissions => {
+    if (!permissions.origins?.includes(SENTRY_HOST_PERMISSION)) return
+    void clearSentryTelemetryConsent().catch(() => {
+      console.warn('[Sentry] Failed to clear consent after permission removal')
+    })
+  })
 }
 
 /**
@@ -68,7 +96,7 @@ export const requestSentryTelemetry = async (): Promise<boolean> => {
 export const revokeSentryTelemetry = async (): Promise<void> => {
   // Stop all runtimes through storage.onChanged before removing the network
   // grant. This remains safe if permission removal itself fails.
-  await localSet({ [SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]: false })
+  await clearSentryTelemetryConsent()
   if (chrome.permissions?.remove) {
     await chrome.permissions.remove({
       origins: [SENTRY_HOST_PERMISSION]

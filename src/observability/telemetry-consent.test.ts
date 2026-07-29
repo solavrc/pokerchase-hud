@@ -2,6 +2,7 @@ import {
   SENTRY_HOST_PERMISSION,
   SENTRY_TELEMETRY_CONSENT_STORAGE_KEY,
   readSentryTelemetryEnabled,
+  registerSentryPermissionRevocationSync,
   requestSentryTelemetry,
   revokeSentryTelemetry
 } from './telemetry-consent'
@@ -61,6 +62,24 @@ describe('Sentry telemetry consent', () => {
     })
     expect(chrome.permissions.remove).toHaveBeenCalledWith({
       origins: [SENTRY_HOST_PERMISSION]
+    })
+  })
+
+  it('clears consent when Chrome settings revoke the optional host', async () => {
+    let onRemoved:
+      ((permissions: chrome.permissions.Permissions) => void) | undefined
+    ;(chrome.permissions.onRemoved.addListener as jest.Mock)
+      .mockImplementation(listener => {
+        onRemoved = listener
+      })
+    ;(chrome.permissions.request as jest.Mock).mockResolvedValue(true)
+    await requestSentryTelemetry()
+
+    registerSentryPermissionRevocationSync()
+    onRemoved?.({ origins: [SENTRY_HOST_PERMISSION] })
+
+    await expect(readLocal()).resolves.toEqual({
+      [SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]: false
     })
   })
 })

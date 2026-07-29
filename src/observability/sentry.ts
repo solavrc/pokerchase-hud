@@ -4,8 +4,10 @@ import manifest from '../../manifest.json'
 import type { SchemaDiagnostic } from './schema-diagnostic'
 import {
   SENTRY_TELEMETRY_CONSENT_STORAGE_KEY,
+  clearSentryTelemetryConsent,
   hasSentryHostPermission,
-  readSentryTelemetryConsent
+  readSentryTelemetryConsent,
+  registerSentryPermissionRevocationSync
 } from './telemetry-consent'
 
 export type SentryRuntime = 'background' | 'content_script' | 'popup'
@@ -165,7 +167,10 @@ const closeSentry = async (): Promise<void> => {
 const startSentry = async (runtime: SentryRuntime): Promise<void> => {
   if (!telemetryEnabled() || initialized) return
   if (!await readSentryTelemetryConsent()) return
-  if (!await hasSentryHostPermission()) return
+  if (!await hasSentryHostPermission()) {
+    await clearSentryTelemetryConsent()
+    return
+  }
 
   Sentry.init({
     dsn: SENTRY_DSN,
@@ -230,6 +235,7 @@ const startSentry = async (runtime: SentryRuntime): Promise<void> => {
  */
 export const initSentry = (runtime: SentryRuntime): Promise<void> => {
   configuredRuntime = runtime
+  registerSentryPermissionRevocationSync()
 
   if (!consentListenerRegistered) {
     consentListenerRegistered = true
