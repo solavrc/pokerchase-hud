@@ -187,6 +187,83 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
     expect(service.session.battleType).toBe(BattleType.RING_GAME)
   })
 
+  test('a durable tab-close tombstone keeps its scope closed after browser restart', async () => {
+    const context = {
+      scopeKey: 'run:0:closed-tab:1000',
+      id: 'closed-tab',
+      battleType: BattleType.SIT_AND_GO,
+      startedAt: 1000,
+      originId: 'origin-a',
+    }
+    await db.apiEvents.bulkAdd([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 1000,
+        Code: 0,
+        BattleType: BattleType.SIT_AND_GO,
+        Id: 'closed-tab',
+        IsRetire: false,
+        __pokerChaseHudSessionContext: context,
+      },
+      {
+        ApiTypeId: 203,
+        timestamp: 2000,
+        __pokerChaseHudClosureReason: 'tab-removed',
+        __pokerChaseHudSessionContext: context,
+      },
+    ] as ApiEvent[])
+
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(service.session.active).toBe(false)
+  })
+
+  test('a newer run supersedes an unmatched older run from the same origin', async () => {
+    const firstContext = {
+      scopeKey: 'run:4:shared-room:1000',
+      id: 'shared-room',
+      battleType: BattleType.RING_GAME,
+      startedAt: 1000,
+      originId: 'origin-a',
+    }
+    const secondContext = {
+      ...firstContext,
+      scopeKey: 'run:4:shared-room:2000',
+      startedAt: 2000,
+    }
+    await db.apiEvents.bulkAdd([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 1000,
+        Code: 0,
+        BattleType: BattleType.RING_GAME,
+        Id: 'shared-room',
+        IsRetire: false,
+        __pokerChaseHudSessionContext: firstContext,
+      },
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 2000,
+        Code: 0,
+        BattleType: BattleType.RING_GAME,
+        Id: 'shared-room',
+        IsRetire: false,
+        __pokerChaseHudSessionContext: secondContext,
+      },
+      {
+        ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+        timestamp: 3000,
+        __pokerChaseHudSessionContext: secondContext,
+      },
+    ] as ApiEvent[])
+
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(service.session.active).toBe(false)
+  })
+
   test('canonical rebuild preserves a completed hand origin across concurrent sessions', async () => {
     const contextA = {
       scopeKey: 'run:0:tab-a:100',

@@ -80,6 +80,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
         id: 'stage000_003',
         battleType: BattleType.SIT_AND_GO,
         startedAt: 111,
+        originId: expect.any(String),
       },
     })
 
@@ -282,6 +283,67 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
 
     await tabRemovedHandler(101)
     expect(service.getCurrentSessionScope()).toBeUndefined()
+    const closure = (await db.apiEvents.toArray()).find(event =>
+      (event as any).__pokerChaseHudClosureReason === 'tab-removed'
+    ) as any
+    const entry = await db.apiEvents.get([1000, ApiType.EVT_ENTRY_QUEUED, 0]) as any
+    expect(closure).toMatchObject({
+      ApiTypeId: 203,
+      __pokerChaseHudSessionContext: {
+        id: 'tab-a',
+        startedAt: 1000,
+        originId: entry.__pokerChaseHudSessionContext.originId,
+      },
+    })
+  })
+
+  test('a tab-close transition fails closed when its durable tombstone cannot be written', async () => {
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    mockPort.sender = { tab: { id: 101 } }
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'tab-a',
+      IsRetire: false,
+    })
+    jest.spyOn(db, 'transaction').mockRejectedValueOnce(new Error('quota'))
+
+    await expect(tabRemovedHandler(101)).rejects.toThrow('quota')
+
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-a', startedAt: 1000 })
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[background] Failed to close removed-tab session scope:',
+      expect.any(Error)
+    )
+  })
+
+  test('successive unmatched runs on one tab keep a shared durable origin identity', async () => {
+    mockPort.sender = { tab: { id: 101 } }
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'shared-room',
+      IsRetire: false,
+    })
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 2000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'shared-room',
+      IsRetire: false,
+    })
+
+    const first = await db.apiEvents.get([1000, ApiType.EVT_ENTRY_QUEUED, 0]) as any
+    const second = await db.apiEvents.get([2000, ApiType.EVT_ENTRY_QUEUED, 0]) as any
+    expect(first.__pokerChaseHudSessionContext.scopeKey)
+      .not.toBe(second.__pokerChaseHudSessionContext.scopeKey)
+    expect(first.__pokerChaseHudSessionContext.originId)
+      .toBe(second.__pokerChaseHudSessionContext.originId)
   })
 
   test('tab close rebroadcasts the restored origin lineup immediately', async () => {
@@ -326,6 +388,51 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     const statsWriteSpy = jest.spyOn(service.statsOutputStream, 'write')
 
     await tabRemovedHandler(202)
+
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-a', startedAt: 1000 })
+    expect(statsWriteSpy).toHaveBeenCalledWith(firstDeal.SeatUserIds)
+    expect(service.liveEvtDeal).toEqual(firstDeal)
+  })
+
+  test('session results rebroadcast the restored origin lineup immediately', async () => {
+    const secondPort = {
+      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      sender: { tab: { id: 202 } },
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn(),
+    }
+    mockPort.sender = { tab: { id: 101 } }
+    connectListener(secondPort)
+    const secondHandler = secondPort.onMessage.addListener.mock.calls[0][0]
+    const firstDeal = structuredClone(
+      MTT_TABLE_MOVE_FIXTURE.events[3]!
+    ) as ApiEvent<ApiType.EVT_DEAL>
+    firstDeal.timestamp = 3000
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'tab-a',
+      IsRetire: false,
+    })
+    await onMessageHandler(firstDeal)
+    await secondHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 2000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'tab-b',
+      IsRetire: false,
+    })
+    const statsWriteSpy = jest.spyOn(service.statsOutputStream, 'write')
+
+    await secondHandler({
+      ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+      timestamp: 4000,
+    })
 
     expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-a', startedAt: 1000 })
     expect(statsWriteSpy).toHaveBeenCalledWith(firstDeal.SeatUserIds)

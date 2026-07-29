@@ -93,4 +93,49 @@ describe('raw event session context', () => {
       await db.delete()
     }
   })
+
+  test.each([
+    ['new cancellation tombstone', false],
+    ['context-enriched cancellation tombstone', true],
+  ])('rewinds cloud scan floors for a %s', async (_label, seedDuplicate) => {
+    const db = new PokerChaseDB(indexedDB, IDBKeyRange)
+    await db.open()
+    try {
+      const cancellation: RawApiEvent = {
+        timestamp: 1000,
+        ApiTypeId: 203,
+        IsCancel: true,
+      }
+      if (seedDuplicate) await mergeApiEvents(db, [cancellation])
+      await db.meta.bulkPut([
+        {
+          id: `${SYNC_RESCAN_BACKFILL_DONE_META_KEY}:user-a`,
+          value: true,
+          updatedAt: 1,
+        },
+        {
+          id: `${SYNC_RESCAN_FLOOR_META_KEY}:user-a`,
+          value: 5000,
+          updatedAt: 1,
+        },
+      ])
+
+      await mergeApiEvents(db, [{
+        ...cancellation,
+        __pokerChaseHudSessionContext: {
+          scopeKey: 'run:4:ring:100',
+          id: 'ring',
+          battleType: BattleType.RING_GAME,
+          startedAt: 100,
+        },
+      }], {
+        protectAddedApplicationEventsFromCloudWatermark: true,
+      })
+
+      expect((await db.meta.get(`${SYNC_RESCAN_FLOOR_META_KEY}:user-a`))?.value).toBe(1000)
+    } finally {
+      db.close()
+      await db.delete()
+    }
+  })
 })

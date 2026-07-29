@@ -57,7 +57,34 @@ type TrackedSessionScope = {
   startedAt: number
   sequence: number
   name?: string
+  originId?: string
   latestDeal?: ApiEvent<ApiType.EVT_DEAL>
+}
+
+type SessionSelectionResult = {
+  selectionChanged: boolean
+  scope?: TrackedSessionScope
+}
+
+const createOriginId = (): string =>
+  globalThis.crypto?.randomUUID?.() ??
+  `origin-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+const broadcastSessionSelection = (
+  service: PokerChaseService,
+  restored: SessionSelectionResult
+): void => {
+  if (!restored.selectionChanged) return
+  if (restored.scope?.latestDeal) {
+    service.liveEvtDeal = restored.scope.latestDeal
+    service.statsOutputStream.write(restored.scope.latestDeal.SeatUserIds)
+    return
+  }
+  setLastKnownStats([])
+  broadcastMessage({
+    stats: [],
+    sessionScopeRevision: service.sessionScopeRevision,
+  })
 }
 
 /**
@@ -173,6 +200,7 @@ class SessionOriginTracker {
       id,
       battleType,
       startedAt: continuesCurrentMtt ? previous.startedAt : startedAt,
+      originId: previous?.originId ?? createOriginId(),
     }
   }
 
@@ -202,6 +230,7 @@ class SessionOriginTracker {
       battleType: scope.battleType,
       startedAt: scope.startedAt,
       name: scope.name,
+      originId: scope.originId,
     }
   }
 
@@ -237,10 +266,7 @@ class SessionOriginTracker {
     return context ?? null
   }
 
-  async end(key: SessionOriginKey): Promise<{
-    selectionChanged: boolean
-    scope?: TrackedSessionScope
-  }> {
+  async end(key: SessionOriginKey): Promise<SessionSelectionResult> {
     await this.ready
     const endedScope = this.scopes.get(key)
     this.scopes.delete(key)
@@ -348,19 +374,18 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
     const task = ingestionQueue.then(async () => {
       await sessionOrigins.ready
       await service.handAggregateStream.whenIdle()
-      const restored = await sessionOrigins.end(tabId)
-      if (restored.selectionChanged) {
-        if (restored.scope?.latestDeal) {
-          service.liveEvtDeal = restored.scope.latestDeal
-          service.statsOutputStream.write(restored.scope.latestDeal.SeatUserIds)
-        } else {
-          setLastKnownStats([])
-          broadcastMessage({
-            stats: [],
-            sessionScopeRevision: service.sessionScopeRevision,
-          })
-        }
+      const closingContext = sessionOrigins.getContext(tabId)
+      if (closingContext) {
+        await mergeApiEvents(service.db, [
+          withRawEventSessionContext({
+            ApiTypeId: EVT_ENTRY_CANCELLED_API_TYPE_ID,
+            timestamp: Date.now(),
+            __pokerChaseHudClosureReason: 'tab-removed',
+          }, closingContext),
+        ])
       }
+      const restored = await sessionOrigins.end(tabId)
+      broadcastSessionSelection(service, restored)
     })
     ingestionQueue = task.catch(err => {
       console.error('[background] Failed to close removed-tab session scope:', err)
@@ -596,7 +621,8 @@ const processEvent = async (
     // 先行201のAggregate処理を完了させてからorigin trackerの選択を適用し、
     // 遅れて走るstartSessionが復元した別タブのscopeを再度上書きしない。
     await service.handAggregateStream.whenIdle()
-    await sessionOrigins.end(originKey)
+    const restored = await sessionOrigins.end(originKey)
+    broadcastSessionSelection(service, restored)
 
     if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
     // #179 round3指摘: セッション終了(EVT_SESSION_RESULTS)によるHUDクリアは

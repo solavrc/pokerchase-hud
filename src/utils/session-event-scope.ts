@@ -10,6 +10,7 @@ export type EventSessionScope = Readonly<{
   battleType: BattleType
   startedAt: number
   name?: string
+  originId?: string
 }>
 
 /**
@@ -37,6 +38,7 @@ export const setLineupSessionScope = (
     battleType: scope.battleType,
     startedAt: scope.startedAt,
     name: scope.name,
+    originId: scope.originId,
   })
 }
 

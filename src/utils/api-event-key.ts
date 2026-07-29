@@ -35,6 +35,11 @@ export interface MergeApiEventsOptions {
   protectAddedApplicationEventsFromCloudWatermark?: boolean
 }
 
+const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
+const isCloudReplayEvent = (event: RawApiEvent): boolean =>
+  ApiTypeValues.includes(event.ApiTypeId as any) ||
+  event.ApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID
+
 export const getApiEventSequence = (event: { sequence?: unknown }): number =>
   typeof event.sequence === 'number' && Number.isSafeInteger(event.sequence) && event.sequence >= 0
     ? event.sequence
@@ -208,7 +213,7 @@ export async function mergeApiEvents(
           await db.apiEvents.put(upgraded as unknown as ApiEvent)
           const duplicateIndex = group.indexOf(duplicate)
           group[duplicateIndex] = upgraded
-          if (ApiTypeValues.includes(upgraded.ApiTypeId as any)) {
+          if (isCloudReplayEvent(upgraded)) {
             enrichedApplicationTimestamps.push(upgraded.timestamp)
           }
         }
@@ -238,7 +243,7 @@ export async function mergeApiEvents(
     if (options.protectAddedApplicationEventsFromCloudWatermark) {
       const importedApplicationTimestamps = [
         ...added
-          .filter(event => ApiTypeValues.includes(event.ApiTypeId as any))
+          .filter(isCloudReplayEvent)
           .map(event => event.timestamp),
         ...enrichedApplicationTimestamps,
       ]

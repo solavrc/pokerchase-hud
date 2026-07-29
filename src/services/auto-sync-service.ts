@@ -81,6 +81,7 @@ type ReplaySessionScope = {
   battleType: BattleType
   startedAt: number
   sequence: number
+  originId?: string
 }
 
 type ReplaySessionState = {
@@ -1670,6 +1671,13 @@ export class AutoSyncService {
         (event.BattleType === BattleType.TOURNAMENT
           ? `legacy-mtt:${event.Id}`
           : `legacy-run:${event.BattleType}:${event.Id}:${event.timestamp ?? Date.now()}`)
+      if (context?.originId) {
+        for (const [activeScopeKey, activeScope] of replaySessions.scopes) {
+          if (activeScope.originId === context.originId) {
+            replaySessions.scopes.delete(activeScopeKey)
+          }
+        }
+      }
       const previous = replaySessions.scopes.get(scopeKey)
       const scope: ReplaySessionScope = {
         scopeKey,
@@ -1677,6 +1685,7 @@ export class AutoSyncService {
         battleType: context?.battleType ?? event.BattleType,
         startedAt: context?.startedAt ?? previous?.startedAt ?? event.timestamp ?? Date.now(),
         sequence: ++replaySessions.sequence,
+        originId: context?.originId,
       }
       replaySessions.scopes.set(scopeKey, scope)
       replaySessions.currentKey = scopeKey
