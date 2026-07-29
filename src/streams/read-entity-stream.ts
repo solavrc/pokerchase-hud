@@ -16,6 +16,7 @@ import { matchesTableSizeFilter } from '../utils/table-size'
 import { compareHandsNewestFirst } from '../utils/hand-order'
 import type { ErrorContext } from '../types/errors'
 import {
+  getEventSessionScope,
   getLineupSessionScope,
   isHandInSessionScope,
   type ActiveSessionScope,
@@ -97,7 +98,10 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
 
     try {
       // すべてのプレイヤーの統計を計算
-      const stats = await this.calcStats(seatUserIds, this.captureSessionFilter())
+      const stats = await this.calcStats(
+        seatUserIds,
+        this.captureSessionFilter(getEventSessionScope(this.service.latestEvtDeal))
+      )
       this.push(stats)
     } catch (error) {
       const context: ErrorContext = {

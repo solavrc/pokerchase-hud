@@ -101,6 +101,7 @@ const broadcastSessionSelection = (
   broadcastMessage({
     stats: [],
     sessionScopeRevision: service.sessionScopeRevision,
+    sessionScopeKey: service.currentSessionFilterKey(),
   })
 }
 

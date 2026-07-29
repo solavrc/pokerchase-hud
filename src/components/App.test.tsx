@@ -679,6 +679,39 @@ describe('App', () => {
       expect(screen.getByTestId('hud-0')).toHaveTextContent('FilterRevision: 1')
     })
 
+    it('worker再起動でrevisionが衝突してもscope keyの変更で再取得する', async () => {
+      const user = userEvent.setup()
+      render(<App />)
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', {
+            detail: {
+              ...mockStatsData,
+              sessionScopeRevision: 1,
+              sessionScopeKey: 'run-a',
+            },
+          })
+        )
+      })
+      await user.click(screen.getByText('toggle-recent-1'))
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('FilterRevision: 0')
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', {
+            detail: {
+              ...mockStatsData,
+              sessionScopeRevision: 1,
+              sessionScopeKey: 'run-b',
+            },
+          })
+        )
+      })
+
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('FilterRevision: 1')
+    })
+
     it('ポジション別パネルとの従来の種別間排他は維持する', async () => {
       const user = userEvent.setup()
 

@@ -203,6 +203,67 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
     expect(service.session.players.size).toBeGreaterThan(0)
   })
 
+  test('restores metadata when the latest replay scope ends and an older scope survives', async () => {
+    const contextA = {
+      scopeKey: 'run:0:tab-a:1000',
+      id: 'tab-a',
+      battleType: BattleType.SIT_AND_GO,
+      startedAt: 1000,
+    }
+    const contextB = {
+      scopeKey: 'run:4:tab-b:2000',
+      id: 'tab-b',
+      battleType: BattleType.RING_GAME,
+      startedAt: 2000,
+    }
+    const detailsA = {
+      ...structuredClone(MTT_TABLE_MOVE_FIXTURE.events[1]!),
+      timestamp: 1100,
+      Name: 'Table A',
+      __pokerChaseHudSessionContext: contextA,
+    }
+    const seatsA = {
+      ...structuredClone(MTT_TABLE_MOVE_FIXTURE.events[2]!),
+      timestamp: 1200,
+      __pokerChaseHudSessionContext: contextA,
+    }
+    await db.apiEvents.bulkAdd([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 1000,
+        Code: 0,
+        BattleType: BattleType.SIT_AND_GO,
+        Id: 'tab-a',
+        IsRetire: false,
+        __pokerChaseHudSessionContext: contextA,
+      },
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 2000,
+        Code: 0,
+        BattleType: BattleType.RING_GAME,
+        Id: 'tab-b',
+        IsRetire: false,
+        __pokerChaseHudSessionContext: contextB,
+      },
+      // Shared raw history can interleave metadata from A after B became the
+      // selected scope. Replay must retain it under A instead of discarding it.
+      detailsA,
+      seatsA,
+      {
+        ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+        timestamp: 3000,
+        __pokerChaseHudSessionContext: contextB,
+      },
+    ] as ApiEvent[])
+
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-a', startedAt: 1000 })
+    expect(service.session.name).toBe('Table A')
+    expect([...service.session.players.values()]).not.toHaveLength(0)
+  })
+
   test('a durable tab-close tombstone keeps its scope closed after browser restart', async () => {
     const context = {
       scopeKey: 'run:0:closed-tab:1000',

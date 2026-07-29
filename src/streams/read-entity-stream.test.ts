@@ -15,8 +15,9 @@ import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import PokerChaseService from '../services/poker-chase-service'
 import { ApiType, BattleType, PhaseType } from '../types'
-import type { ApiHandEvent, Hand } from '../types'
+import type { ApiEvent, ApiHandEvent, Hand } from '../types'
 import type { PlayerStats, StatResult } from '../types'
+import { setEventSessionScope } from '../utils/session-event-scope'
 
 const PLAYER_ID = 1
 const SEAT_USER_IDS = [PLAYER_ID, 2, 3, 4, 5, 6]
@@ -174,6 +175,54 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     const stats = await runCalcStats(service, SEAT_USER_IDS)
 
     expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(1)
+  })
+
+  test('filter recalculation reuses the latest DEAL origin instead of the selected global scope', async () => {
+    await db.hands.update(4, {
+      approxTimestamp: 5000,
+      session: {
+        scopeKey: 'run-a',
+        id: 'shared-room',
+        battleType: BattleType.RING_GAME,
+      },
+    })
+    await db.hands.update(5, {
+      approxTimestamp: 5100,
+      session: {
+        scopeKey: 'run-b',
+        id: 'shared-room',
+        battleType: BattleType.RING_GAME,
+      },
+    })
+    const deal = {
+      ApiTypeId: ApiType.EVT_DEAL,
+      SeatUserIds: SEAT_USER_IDS,
+      Player: {
+        SeatIndex: 0,
+        BetStatus: 1,
+        HoleCards: [1, 2],
+        Chip: 5000,
+        BetChip: 0,
+      },
+      timestamp: 5200,
+    } as unknown as ApiEvent<ApiType.EVT_DEAL>
+    setEventSessionScope(deal, {
+      scopeKey: 'run-a',
+      id: 'shared-room',
+      battleType: BattleType.RING_GAME,
+      startedAt: 4900,
+    })
+    service.playerId = PLAYER_ID
+    service.latestEvtDeal = deal
+    service.startSession('shared-room', BattleType.RING_GAME, 5050, 'run-b')
+    service.sessionOnlyFilter = true
+
+    const statsPromise = new Promise<PlayerStats[]>(resolve => {
+      service.statsOutputStream.once('data', resolve)
+    })
+    await service.statsOutputStream.recalculateStats()
+
+    expect(handsStatOf(await statsPromise, PLAYER_ID)?.value).toBe(1)
   })
 
   test('session cache uses the same immutable scope for its key and delayed calculation', async () => {

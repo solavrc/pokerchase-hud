@@ -32,6 +32,7 @@ const EMPTY_SEATS: PlayerStats[] = Array.from({ length: 6 }, () => ({ playerId: 
 type StatsDataWithHandEpoch = StatsData & {
   handEpoch?: number
   sessionScopeRevision?: number
+  sessionScopeKey?: string
 }
 
 // PlayerStats = ExistPlayerStats | { playerId: -1, statResults?: never[] }（zod union）。
@@ -101,6 +102,7 @@ const App = memo(() => {
   const [handEpoch, setHandEpoch] = useState(0)
   const [filterRevision, setFilterRevision] = useState(0)
   const lastSessionScopeRevisionRef = useRef<number | undefined>(undefined)
+  const lastSessionScopeKeyRef = useRef<string | undefined>(undefined)
 
   // ユーザー指定キーでHUD + hand logを切り替える。App自体は非表示時も
   // マウントされたままなので、同じキーで必ず再表示できる。
@@ -208,7 +210,18 @@ const App = memo(() => {
       }
       const incomingSessionScopeRevision =
         (detail as StatsDataWithHandEpoch).sessionScopeRevision
-      if (incomingSessionScopeRevision !== undefined) {
+      const incomingSessionScopeKey =
+        (detail as StatsDataWithHandEpoch).sessionScopeKey
+      if (incomingSessionScopeKey !== undefined) {
+        const previousSessionScopeKey = lastSessionScopeKeyRef.current
+        lastSessionScopeKeyRef.current = incomingSessionScopeKey
+        if (
+          previousSessionScopeKey !== undefined &&
+          previousSessionScopeKey !== incomingSessionScopeKey
+        ) {
+          setFilterRevision(current => current + 1)
+        }
+      } else if (incomingSessionScopeRevision !== undefined) {
         const previousSessionScopeRevision = lastSessionScopeRevisionRef.current
         lastSessionScopeRevisionRef.current = incomingSessionScopeRevision
         if (

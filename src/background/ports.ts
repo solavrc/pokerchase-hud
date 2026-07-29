@@ -84,6 +84,7 @@ export const broadcastMessage = (data: {
   realTimeStats?: AllPlayersRealTimeStats
   handEpoch?: number
   sessionScopeRevision?: number
+  sessionScopeKey?: string
 } | string) => {
   connectedPorts.forEach(port => {
     try {
@@ -165,6 +166,7 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
         // handCompletionEpoch's doc comment above.
         handEpoch: handCompletionEpoch,
         sessionScopeRevision: service.sessionScopeRevision,
+        sessionScopeKey: service.currentSessionFilterKey(),
       })
     }
   })
@@ -183,6 +185,7 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
       // completion (the writeEntityStream subscription below) advances it.
       handEpoch: handCompletionEpoch,
       sessionScopeRevision: service.sessionScopeRevision,
+      sessionScopeKey: service.currentSessionFilterKey(),
     })
   })
   // The one true "hand completed" signal -- see handCompletionEpoch's doc comment

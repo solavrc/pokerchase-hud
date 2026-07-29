@@ -83,6 +83,8 @@ type ReplaySessionScope = {
   startedAt: number
   sequence: number
   originId?: string
+  name?: string
+  players: Map<number, { name: string, rank: string }>
 }
 
 type ReplaySessionState = {
@@ -1671,6 +1673,12 @@ export class AutoSyncService {
             previous.startedAt,
             previous.scopeKey
           )
+          if (previous.name !== undefined) {
+            service.session.setName(previous.name)
+          }
+          previous.players.forEach((player, playerId) => {
+            service.session.setPlayer(playerId, player)
+          })
         }
       } else if (typeof service.endSession === 'function') {
         replaySessions.currentKey = undefined
@@ -1685,7 +1693,10 @@ export class AutoSyncService {
           : `legacy-run:${event.BattleType}:${event.Id}:${event.timestamp ?? Date.now()}`)
       if (context?.originId) {
         for (const [activeScopeKey, activeScope] of replaySessions.scopes) {
-          if (activeScope.originId === context.originId) {
+          if (
+            activeScopeKey !== scopeKey &&
+            activeScope.originId === context.originId
+          ) {
             replaySessions.scopes.delete(activeScopeKey)
           }
         }
@@ -1698,6 +1709,8 @@ export class AutoSyncService {
         startedAt: context?.startedAt ?? previous?.startedAt ?? event.timestamp ?? Date.now(),
         sequence: ++replaySessions.sequence,
         originId: context?.originId,
+        name: previous?.name,
+        players: new Map(previous?.players),
       }
       replaySessions.scopes.set(scopeKey, scope)
       replaySessions.currentKey = scopeKey
@@ -1707,30 +1720,37 @@ export class AutoSyncService {
         service.session.setId(event.Id)
         service.session.setBattleType(event.BattleType)
       }
-    } else if (
-      isApiEventType(event, ApiType.EVT_SESSION_DETAILS) &&
-      (!context || context.scopeKey === replaySessions.currentKey)
-    ) {
-      service.session.setName(event.Name)
-    } else if (
-      isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED) &&
-      (!context || context.scopeKey === replaySessions.currentKey)
-    ) {
+    } else if (isApiEventType(event, ApiType.EVT_SESSION_DETAILS)) {
+      const scopeKey = context?.scopeKey ?? replaySessions.currentKey
+      const scope = scopeKey ? replaySessions.scopes.get(scopeKey) : undefined
+      if (scope) scope.name = event.Name
+      if (!context || context.scopeKey === replaySessions.currentKey) {
+        service.session.setName(event.Name)
+      }
+    } else if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED)) {
+      const scopeKey = context?.scopeKey ?? replaySessions.currentKey
+      const scope = scopeKey ? replaySessions.scopes.get(scopeKey) : undefined
       event.TableUsers?.forEach(tableUser => {
-        service.session.setPlayer(tableUser.UserId, {
+        const player = {
           name: tableUser.UserName,
           rank: tableUser.Rank.RankId
-        })
+        }
+        scope?.players.set(tableUser.UserId, player)
+        if (!context || context.scopeKey === replaySessions.currentKey) {
+          service.session.setPlayer(tableUser.UserId, player)
+        }
       })
-    } else if (
-      isApiEventType(event, ApiType.EVT_PLAYER_JOIN) &&
-      event.JoinUser &&
-      (!context || context.scopeKey === replaySessions.currentKey)
-    ) {
-      service.session.setPlayer(event.JoinUser.UserId, {
+    } else if (isApiEventType(event, ApiType.EVT_PLAYER_JOIN) && event.JoinUser) {
+      const scopeKey = context?.scopeKey ?? replaySessions.currentKey
+      const scope = scopeKey ? replaySessions.scopes.get(scopeKey) : undefined
+      const player = {
         name: event.JoinUser.UserName,
         rank: event.JoinUser.Rank.RankId
-      })
+      }
+      scope?.players.set(event.JoinUser.UserId, player)
+      if (!context || context.scopeKey === replaySessions.currentKey) {
+        service.session.setPlayer(event.JoinUser.UserId, player)
+      }
     }
   }
 

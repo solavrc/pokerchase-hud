@@ -39,6 +39,7 @@ export interface StatsData {
   realTimeStats?: AllPlayersRealTimeStats  // リアルタイム統計（全プレイヤー）
   handEpoch?: number
   sessionScopeRevision?: number
+  sessionScopeKey?: string
 }
 
 declare global {
@@ -92,6 +93,7 @@ const portManager = new RuntimePortManager({
         realTimeStats?: AllPlayersRealTimeStats
         handEpoch?: number
         sessionScopeRevision?: number
+        sessionScopeKey?: string
       }
       console.time('[content_script] Dispatching stats event')
       window.dispatchEvent(new CustomEvent(POKER_CHASE_SERVICE_EVENT, { detail: statsMessage }))
