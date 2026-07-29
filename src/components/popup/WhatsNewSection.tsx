@@ -96,7 +96,9 @@ const FeaturedEntry = ({ entry, isFirst }: { entry: WhatsNewEntry, isFirst: bool
  * 送り、拡張機能アイコンのバッジ（未読があれば）を解消する。
  */
 export const WhatsNewSection = ({ entries = WHATS_NEW_ENTRIES }: WhatsNewSectionProps) => {
-  const [sectionExpanded, setSectionExpanded] = useState(true)
+  // 保存状態が判明するまでは本文を閉じておき、折り畳み設定が false の
+  // ユーザーにリリースノート全体が一瞬表示されるのを防ぐ。
+  const [sectionExpanded, setSectionExpanded] = useState(false)
   const [sectionPreferenceRestored, setSectionPreferenceRestored] = useState(false)
   const [historyExpanded, setHistoryExpanded] = useState(false)
   const sectionChangedByUserRef = useRef(false)
@@ -112,6 +114,9 @@ export const WhatsNewSection = ({ entries = WHATS_NEW_ENTRIES }: WhatsNewSection
         typeof result[WHATS_NEW_EXPANDED_STORAGE_KEY] === 'boolean'
       ) {
         setSectionExpanded(result[WHATS_NEW_EXPANDED_STORAGE_KEY] as boolean)
+      } else if (!sectionChangedByUserRef.current) {
+        // 保存値がない既存ユーザーには従来どおり開いた状態を既定とする。
+        setSectionExpanded(true)
       }
       setSectionPreferenceRestored(true)
     })

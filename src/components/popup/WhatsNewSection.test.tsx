@@ -85,6 +85,24 @@ describe('WhatsNewSection', () => {
     })
   })
 
+  it('keeps release notes hidden until the collapsed preference is restored', () => {
+    let finishStorageRead: ((result: Record<string, unknown>) => void) | undefined
+    ;(chrome.storage.sync.get as jest.Mock).mockImplementation((_key, callback) => {
+      finishStorageRead = callback
+    })
+
+    render(<WhatsNewSection />)
+
+    expect(screen.getByText(new RegExp(`v${WHATS_NEW_ENTRIES[0]!.version.replace(/\./g, '\\.')}`))).not.toBeVisible()
+
+    act(() => {
+      finishStorageRead?.({ [WHATS_NEW_EXPANDED_STORAGE_KEY]: false })
+    })
+
+    expect(screen.getByText(new RegExp(`v${WHATS_NEW_ENTRIES[0]!.version.replace(/\./g, '\\.')}`))).not.toBeVisible()
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
   it('does not let a late storage read overwrite a newer user choice', async () => {
     const user = userEvent.setup()
     let finishStorageRead: ((result: Record<string, unknown>) => void) | undefined
@@ -93,15 +111,15 @@ describe('WhatsNewSection', () => {
     })
 
     render(<WhatsNewSection />)
-    await user.click(screen.getByRole('button', { name: /折りたたむ/ }))
+    await user.click(screen.getByRole('button', { name: /表示する/ }))
 
     act(() => {
-      finishStorageRead?.({ [WHATS_NEW_EXPANDED_STORAGE_KEY]: true })
+      finishStorageRead?.({ [WHATS_NEW_EXPANDED_STORAGE_KEY]: false })
     })
 
-    expect(screen.getByRole('button', { name: /表示する/ })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('button', { name: /折りたたむ/ })).toHaveAttribute('aria-expanded', 'true')
     expect(chrome.storage.sync.set).toHaveBeenCalledWith({
-      [WHATS_NEW_EXPANDED_STORAGE_KEY]: false,
+      [WHATS_NEW_EXPANDED_STORAGE_KEY]: true,
     })
   })
 
