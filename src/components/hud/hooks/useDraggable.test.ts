@@ -1,15 +1,10 @@
 import { renderHook, act } from '@testing-library/react'
 import { useDraggable } from './useDraggable'
 
-// Mock chrome storage
-const mockChromeStorageGet = jest.fn()
-const mockChromeStorageSet = jest.fn()
+const mockChromeRuntimeSendMessage = jest.fn()
 global.chrome = {
-  storage: {
-    sync: {
-      get: mockChromeStorageGet,
-      set: mockChromeStorageSet,
-    },
+  runtime: {
+    sendMessage: mockChromeRuntimeSendMessage,
   },
 } as any
 
@@ -18,8 +13,12 @@ describe('useDraggable', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
-    mockChromeStorageGet.mockImplementation((_, callback) => {
-      callback({})
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceUILayout') {
+        callback({ success: true, scale: 1 })
+      } else {
+        callback({ success: true })
+      }
     })
   })
 
@@ -30,21 +29,30 @@ describe('useDraggable', () => {
     expect(result.current.position).toBeNull()
     expect(result.current.isDragging).toBe(false)
     
-    // Chrome storageから読み込みを試みる
-    expect(mockChromeStorageGet).toHaveBeenCalledWith('hudPosition_0', expect.any(Function))
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      { action: 'getDeviceUILayout', seatIndex: 0 },
+      expect.any(Function)
+    )
   })
 
   it('保存された位置を読み込む', async () => {
     const savedPosition = { top: '30%', left: '70%' }
-    mockChromeStorageGet.mockImplementation((_, callback) => {
-      callback({ hudPosition_0: savedPosition })
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      callback({
+        success: true,
+        scale: 1,
+        ...(message.action === 'getDeviceUILayout' ? { position: savedPosition } : {}),
+      })
     })
 
     const { result } = renderHook(() => useDraggable(0, defaultPosition))
 
-    // Chrome storageから位置が読み込まれる
-    expect(mockChromeStorageGet).toHaveBeenCalledWith('hudPosition_0', expect.any(Function))
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      { action: 'getDeviceUILayout', seatIndex: 0 },
+      expect.any(Function)
+    )
     expect(result.current.position).toEqual(savedPosition)
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledTimes(1)
   })
 
   it('ドラッグ操作を処理', () => {
@@ -109,19 +117,93 @@ describe('useDraggable', () => {
 
     expect(result.current.isDragging).toBe(false)
     
-    // Chrome storageに位置が保存される
-    expect(mockChromeStorageSet).toHaveBeenCalledWith({
-      hudPosition_0: expect.objectContaining({
-        top: expect.any(String),
-        left: expect.any(String),
-      }),
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      {
+        action: 'setDeviceHudPosition',
+        seatIndex: 0,
+        position: expect.objectContaining({
+          top: expect.any(String),
+          left: expect.any(String),
+        }),
+      },
+      expect.any(Function)
+    )
+  })
+
+  it('ドラッグ開始後に届いた古い保存位置でユーザー操作を巻き戻さない', () => {
+    let resolveInitialLoad!: (response: unknown) => void
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceUILayout') {
+        resolveInitialLoad = callback
+      } else {
+        callback({ success: true })
+      }
     })
+    const { result } = renderHook(() => useDraggable(0, defaultPosition))
+    const mockContainer = document.createElement('div')
+    mockContainer.getBoundingClientRect = jest.fn(() => ({
+      top: 0,
+      left: 0,
+      width: 100,
+      height: 100,
+      right: 100,
+      bottom: 100,
+      x: 0,
+      y: 0,
+      toJSON: () => {},
+    }))
+    Object.defineProperty(result.current.containerRef, 'current', {
+      value: mockContainer,
+      writable: true,
+    })
+
+    act(() => {
+      result.current.handleMouseDown({
+        preventDefault: jest.fn(),
+        stopPropagation: jest.fn(),
+        clientX: 100,
+        clientY: 100,
+      } as unknown as React.MouseEvent)
+    })
+    act(() => {
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        clientX: 150,
+        clientY: 120,
+        bubbles: true,
+      }))
+    })
+    const userPosition = result.current.position
+    expect(userPosition).not.toBeNull()
+
+    act(() => {
+      resolveInitialLoad({
+        success: true,
+        scale: 1,
+        position: { top: '10%', left: '20%' },
+      })
+    })
+    expect(result.current.position).toEqual(userPosition)
+
+    act(() => {
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    })
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      {
+        action: 'setDeviceHudPosition',
+        seatIndex: 0,
+        position: userPosition,
+      },
+      expect.any(Function)
+    )
   })
 
   it('別の席番号では異なるストレージキーを使用', () => {
     renderHook(() => useDraggable(3, defaultPosition))
 
-    expect(mockChromeStorageGet).toHaveBeenCalledWith('hudPosition_3', expect.any(Function))
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      { action: 'getDeviceUILayout', seatIndex: 3 },
+      expect.any(Function)
+    )
   })
 
   it('ドラッグ中にコンポーネントがアンマウントされてもエラーにならない', () => {

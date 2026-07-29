@@ -4,16 +4,20 @@ import Popup from './Popup'
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import { defaultStatDisplayConfigs } from '../stats'
 import { POPUP_THEME_LOCAL_STORAGE_KEY } from './popup/popup-theme-storage'
+import { UI_SCALE_STORAGE_KEY } from '../utils/ui-config-storage'
 
 // Mock chrome APIs
 const mockChromeRuntimeSendMessage = jest.fn()
 const mockChromeTabsQuery = jest.fn()
 const mockChromeTabsCreate = jest.fn()
 const mockChromeTabsUpdate = jest.fn()
+const mockChromeTabsSendMessage = jest.fn()
 const mockChromeWindowsUpdate = jest.fn()
 const mockChromeStorageGet = jest.fn()
 const mockChromeStorageSet = jest.fn()
 const mockChromeStorageRemove = jest.fn()
+const mockChromeLocalStorageGet = jest.fn()
+const mockChromeLocalStorageSet = jest.fn()
 
 global.chrome = {
   runtime: {
@@ -31,6 +35,7 @@ global.chrome = {
     query: mockChromeTabsQuery,
     create: mockChromeTabsCreate,
     update: mockChromeTabsUpdate,
+    sendMessage: mockChromeTabsSendMessage,
   },
   windows: {
     update: mockChromeWindowsUpdate,
@@ -42,8 +47,8 @@ global.chrome = {
       remove: mockChromeStorageRemove,
     },
     local: {
-      get: jest.fn((_key: string, cb: (result: Record<string, unknown>) => void) => cb({})),
-      set: jest.fn(),
+      get: mockChromeLocalStorageGet,
+      set: mockChromeLocalStorageSet,
     },
     onChanged: {
       addListener: jest.fn(),
@@ -64,6 +69,60 @@ jest.mock('../../manifest.json', () => ({
 describe('Popup', () => {
   // chrome.storage.syncのバッキングストア（フラットな`options`キーを含む）
   let syncData: Record<string, any>
+  let localData: Record<string, any>
+
+  const respondToDeviceLayoutMessage = (
+    message: { action?: string, scale?: number },
+    callback?: (response: unknown) => void
+  ): boolean => {
+    if (message.action === 'getDeviceUILayout') {
+      callback?.({ success: true, scale: localData[UI_SCALE_STORAGE_KEY] ?? 1 })
+      return true
+    }
+    if (message.action === 'setDeviceUIScale') {
+      localData[UI_SCALE_STORAGE_KEY] = message.scale
+      callback?.({ success: true })
+      return true
+    }
+    return false
+  }
+
+  const respondToSyncedUIConfigMessage = (
+    message: {
+      action?: string
+      config?: typeof DEFAULT_UI_CONFIG
+      patch?: Partial<typeof DEFAULT_UI_CONFIG>
+    },
+    callback?: (response: unknown) => void
+  ): boolean => {
+    if (message.action !== 'setSyncedUIConfig') return false
+    if (message.patch) {
+      syncData.uiConfig = {
+        ...DEFAULT_UI_CONFIG,
+        ...syncData.uiConfig,
+        ...message.patch,
+      }
+      callback?.({ success: true })
+      return true
+    }
+    if (!message.config) return false
+    const liveLegacyScale = syncData.uiConfig?.scale
+    const preservedLegacyScale = syncData.legacyUIScale
+    const compatibilityScale = typeof liveLegacyScale === 'number'
+      ? liveLegacyScale
+      : typeof preservedLegacyScale === 'number'
+        ? preservedLegacyScale
+        : undefined
+    syncData.uiConfig = {
+      ...message.config,
+      ...(compatibilityScale !== undefined ? { scale: compatibilityScale } : {}),
+    }
+    if (compatibilityScale !== undefined) {
+      syncData.legacyUIScale = compatibilityScale
+    }
+    callback?.({ success: true })
+    return true
+  }
 
   // Helper to wait for all initial async operations
   const waitForAsyncOperations = async () => {
@@ -85,6 +144,7 @@ describe('Popup', () => {
     })
   ) => {
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (respondToDeviceLayoutMessage(message, callback)) return
       if (message.action === 'firebaseAuthStatus') {
         callback({ success: true, ...getAuthStatus() })
       } else if (message.action === 'getSyncState') {
@@ -113,6 +173,7 @@ describe('Popup', () => {
       },
       uiConfig: DEFAULT_UI_CONFIG,
     }
+    localData = {}
 
     mockChromeStorageGet.mockImplementation((keys, callback) => {
       // Execute callback immediately - tests will use waitFor
@@ -131,12 +192,22 @@ describe('Popup', () => {
       if (typeof callback === 'function') callback()
     })
 
-    ;(chrome.storage.local.get as jest.Mock).mockImplementation(
-      (_key: string, callback: (result: Record<string, unknown>) => void) => callback({})
-    )
+    mockChromeLocalStorageGet.mockImplementation((keys, callback) => {
+      const keyList = Array.isArray(keys) ? keys : [keys]
+      callback(keyList.reduce(
+        (acc: Record<string, any>, key: string) => ({ ...acc, [key]: localData[key] }),
+        {}
+      ))
+    })
+    mockChromeLocalStorageSet.mockImplementation((items, callback?) => {
+      Object.assign(localData, items)
+      if (typeof callback === 'function') callback()
+    })
 
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       // Execute callback immediately - tests will use waitFor
+      if (respondToDeviceLayoutMessage(message, callback)) return
+      if (respondToSyncedUIConfigMessage(message, callback)) return
       if (message.action === 'firebaseAuthStatus') {
         callback({ success: true, isSignedIn: false, userInfo: null })
       } else if (message.action === 'getSyncState') {
@@ -346,9 +417,11 @@ describe('Popup', () => {
   it('保存済みuiConfigの初期読込が終わるまで設定操作を有効にしない', async () => {
     syncData.uiConfig = {
       ...DEFAULT_UI_CONFIG,
-      scale: 1.4,
+      // Legacy/cross-device value must not override this device's scale.
+      scale: 0.8,
       toggleShortcut: null,
     }
+    localData[UI_SCALE_STORAGE_KEY] = 1.4
     let resolveUIConfigRead!: (result: Record<string, any>) => void
     mockChromeStorageGet.mockImplementation((keys, callback) => {
       if (keys === 'uiConfig') {
@@ -380,7 +453,207 @@ describe('Popup', () => {
     })
   })
 
+  it('初期sync読込中のlocal scale変更でも保存済み表示設定を読み飛ばさない', async () => {
+    syncData.uiConfig = {
+      ...DEFAULT_UI_CONFIG,
+      displayEnabled: false,
+      hudDisplayMode: 'full',
+      hudColorCoding: false,
+    }
+    localData[UI_SCALE_STORAGE_KEY] = 1.4
+    let resolveUIConfigRead!: (result: Record<string, any>) => void
+    mockChromeStorageGet.mockImplementation((keys, callback) => {
+      if (keys === 'uiConfig') {
+        resolveUIConfigRead = callback
+        return
+      }
+      const keyList = Array.isArray(keys) ? keys : [keys]
+      callback(keyList.reduce(
+        (acc: Record<string, any>, key: string) => ({ ...acc, [key]: syncData[key] }),
+        {}
+      ))
+    })
+
+    render(<Popup />)
+    await waitFor(() => {
+      expect(resolveUIConfigRead).toBeDefined()
+      expect(chrome.storage.onChanged.addListener).toHaveBeenCalled()
+    })
+
+    const storageListeners = (chrome.storage.onChanged.addListener as jest.Mock).mock.calls
+      .map(([listener]) => listener as (
+        changes: { [key: string]: chrome.storage.StorageChange },
+        areaName: string
+      ) => void)
+
+    localData[UI_SCALE_STORAGE_KEY] = 1.6
+    act(() => {
+      for (const listener of storageListeners) {
+        listener({
+          [UI_SCALE_STORAGE_KEY]: {
+            oldValue: 1.4,
+            newValue: 1.6,
+          },
+        }, 'local')
+      }
+    })
+
+    // A scale-only event must not expose default settings while the
+    // authoritative synchronized config is still pending.
+    expect(screen.queryByText('サイズ:')).not.toBeInTheDocument()
+
+    act(() => resolveUIConfigRead({ uiConfig: syncData.uiConfig }))
+
+    await waitFor(() => {
+      expect(screen.getByText('160%')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '非表示' })).toHaveAttribute('aria-pressed', 'true')
+      expect(screen.getByRole('radio', { name: 'フル' })).toBeChecked()
+      expect(screen.getByRole('checkbox', { name: '統計カラー表示' })).not.toBeChecked()
+    })
+  })
+
+  it('初期local scale未解決中のsync変更では設定UIを有効にしない', async () => {
+    let respondToInitialLayout!: (response: unknown) => void
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceUILayout') {
+        respondToInitialLayout = callback
+        return
+      }
+      if (respondToSyncedUIConfigMessage(message, callback)) return
+      if (message.action === 'firebaseAuthStatus') {
+        callback({ success: true, isSignedIn: false, userInfo: null })
+      } else if (message.action === 'getSyncState') {
+        callback({ syncState: null })
+      } else if (message.action === 'acknowledgeWhatsNew') {
+        callback({ success: true })
+      }
+    })
+
+    render(<Popup />)
+    await waitFor(() => {
+      expect(respondToInitialLayout).toBeDefined()
+      expect(chrome.storage.onChanged.addListener).toHaveBeenCalled()
+    })
+
+    const storageListeners = (chrome.storage.onChanged.addListener as jest.Mock).mock.calls
+      .map(([listener]) => listener as (
+        changes: { [key: string]: chrome.storage.StorageChange },
+        areaName: string
+      ) => void)
+    act(() => {
+      for (const listener of storageListeners) {
+        listener({
+          uiConfig: {
+            newValue: {
+              ...DEFAULT_UI_CONFIG,
+              displayEnabled: false,
+              hudDisplayMode: 'full',
+            },
+          },
+        }, 'sync')
+      }
+    })
+
+    expect(screen.queryByText('サイズ:')).not.toBeInTheDocument()
+
+    act(() => respondToInitialLayout({ success: true, scale: 1.6 }))
+
+    await waitFor(() => {
+      expect(screen.getByText('160%')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '非表示' }))
+        .toHaveAttribute('aria-pressed', 'true')
+      expect(screen.getByRole('radio', { name: 'フル' })).toBeChecked()
+    })
+  })
+
+  it('local scale読込timeout後も権威的応答までは倍率ボタンを無効にする', async () => {
+    jest.useFakeTimers()
+    try {
+      let respondToInitialLayout!: (response: unknown) => void
+      mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+        if (message.action === 'getDeviceUILayout') {
+          respondToInitialLayout = callback
+          return
+        }
+        if (respondToSyncedUIConfigMessage(message, callback)) return
+        if (message.action === 'firebaseAuthStatus') {
+          callback({ success: true, isSignedIn: false, userInfo: null })
+        } else if (message.action === 'getSyncState') {
+          callback({ syncState: null })
+        } else if (message.action === 'acknowledgeWhatsNew') {
+          callback({ success: true })
+        }
+      })
+
+      render(<Popup />)
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(respondToInitialLayout).toBeDefined()
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1_000)
+      })
+
+      expect(screen.getByText('100%')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '+' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: '-' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: '表示' })).toBeEnabled()
+
+      act(() => respondToInitialLayout({ success: true, scale: 1.8 }))
+
+      expect(screen.getByText('180%')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '+' })).toBeEnabled()
+      expect(screen.getByRole('button', { name: '-' })).toBeEnabled()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
   it('外部のuiConfig変更を開いたまま反映し、後続の設定変更で巻き戻さない', async () => {
+    localData[UI_SCALE_STORAGE_KEY] = 1.4
+    render(<Popup />)
+    await waitForAsyncOperations()
+    expect(screen.getByText('140%')).toBeInTheDocument()
+
+    const storageListeners = (chrome.storage.onChanged.addListener as jest.Mock).mock.calls
+      .map(([listener]) => listener as (
+        changes: { [key: string]: chrome.storage.StorageChange },
+        areaName: string
+      ) => void)
+
+    act(() => {
+      for (const listener of storageListeners) {
+        listener({
+          uiConfig: {
+            newValue: {
+              ...DEFAULT_UI_CONFIG,
+              displayEnabled: false,
+              // Legacy value from another device must be ignored.
+              scale: 0.6,
+            },
+          },
+        }, 'sync')
+      }
+    })
+
+    expect(screen.getByRole('button', { name: '非表示' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('140%')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '+' }))
+
+    await waitFor(() => {
+      expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+        { action: 'setDeviceUIScale', scale: 1.5 },
+        expect.any(Function)
+      )
+    })
+    expect(mockChromeStorageSet).not.toHaveBeenCalled()
+  })
+
+  it('別の設定画面で変更された端末ローカルのscaleを反映し、後続のbroadcastで巻き戻さない', async () => {
+    localData[UI_SCALE_STORAGE_KEY] = 1.4
     render(<Popup />)
     await waitForAsyncOperations()
 
@@ -393,24 +666,28 @@ describe('Popup', () => {
     act(() => {
       for (const listener of storageListeners) {
         listener({
-          uiConfig: {
-            newValue: { ...DEFAULT_UI_CONFIG, displayEnabled: false },
+          [UI_SCALE_STORAGE_KEY]: {
+            oldValue: 1.4,
+            newValue: 1.6,
           },
-        }, 'sync')
+        }, 'local')
       }
     })
 
-    expect(screen.getByRole('button', { name: '非表示' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('160%')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: '+' }))
+    mockChromeTabsQuery.mockImplementationOnce((_query, callback) => {
+      callback([{ id: 123 }])
+    })
+    mockChromeTabsSendMessage.mockResolvedValue(undefined)
+    await userEvent.click(screen.getByRole('radio', { name: 'フル' }))
 
-    await waitFor(() => {
-      expect(mockChromeStorageSet).toHaveBeenLastCalledWith({
-        uiConfig: expect.objectContaining({
-          displayEnabled: false,
-          scale: 1.1,
-        }),
-      })
+    expect(mockChromeTabsSendMessage).toHaveBeenCalledWith(123, {
+      action: 'updateUIConfig',
+      config: expect.objectContaining({
+        scale: 1.6,
+        hudDisplayMode: 'full',
+      }),
     })
   })
 
@@ -831,6 +1108,7 @@ describe('Popup', () => {
     // サインイン済みの状態をモック
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       // Execute callback immediately - tests will use waitFor
+      if (respondToDeviceLayoutMessage(message, callback)) return
       if (message.action === 'firebaseAuthStatus') {
         callback({
           success: true,
@@ -975,6 +1253,7 @@ describe('Popup', () => {
     it('getSyncStateレスポンスが正しい形式で処理される', async () => {
       // syncStateのレスポンス形式をテスト
       mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+        if (respondToDeviceLayoutMessage(message, callback)) return
         if (message.action === 'firebaseAuthStatus') {
           callback({ success: true, isSignedIn: false })
         } else if (message.action === 'getSyncState') {
@@ -1008,6 +1287,7 @@ describe('Popup', () => {
 
       // getSyncStateのモックを設定
       mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+        if (respondToDeviceLayoutMessage(message, callback)) return
         if (message.action === 'firebaseAuthStatus') {
           callback({ success: true, isSignedIn: false })
         } else if (message.action === 'getSyncState') {
@@ -1060,6 +1340,7 @@ describe('Popup', () => {
         })
       )
       mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+        if (respondToDeviceLayoutMessage(message, callback)) return
         if (message.action === 'firebaseAuthStatus') {
           callback({ success: false, error: 'auth restore failed' })
         } else if (message.action === 'getSyncState') {
@@ -1079,7 +1360,8 @@ describe('Popup', () => {
       jest.useFakeTimers()
 
       // Simulate a busy/unresponsive service worker: sendMessage never calls its callback
-      mockChromeRuntimeSendMessage.mockImplementation(() => {
+      mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+        if (respondToDeviceLayoutMessage(message, callback)) return
         // no-op: never invokes the callback
       })
 

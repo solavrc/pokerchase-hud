@@ -60,6 +60,13 @@ describe('App - pre-game hero stats takeover', () => {
         options: { filterOptions: { statDisplayConfigs: [] } },
       })
     })
+    ;(global.chrome.runtime.sendMessage as jest.Mock).mockImplementation(
+      (message, callback) => {
+        if (message.action === 'getDeviceUILayout') {
+          callback({ success: true, scale: DEFAULT_UI_CONFIG.scale })
+        }
+      }
+    )
   })
 
   afterEach(() => {

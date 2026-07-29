@@ -413,17 +413,28 @@ const buildHelpers = (browser: Browser, gamePage: Page): HarnessHelpers => {
   const waitForHudMount = async (timeoutMs = 15000): Promise<void> => {
     // A caller may navigate the fixture page after launchHarness(), which
     // removes the keepalive injected at initial load. Restore it before
-    // waitForFunction's animation-frame polling and later screenshots can run.
+    // polling and later screenshots can run.
     await ensureCompositorKeepalive(gamePage)
-    await gamePage.waitForFunction(
-      () => {
+
+    // Poll from Node/CDP instead of waitForFunction's default requestAnimationFrame
+    // poller. On hosted Chrome the renderer can stop scheduling that poller
+    // after the idle-worker eviction even with the compositor animation present:
+    // failure evidence then shows the HUD mounted as soon as screenshot/CDP work
+    // resumes the page. A fresh evaluate per attempt observes the real DOM without
+    // depending on an in-page animation frame or throttled timer.
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const mounted = await gamePage.evaluate(() => {
         const container = document.querySelector('#unity-container')
         // App.tsx mounts a <div> child into #unity-container, then renders
         // Hud.tsx panels inside it once stats arrive.
         return !!container && container.children.length > 0 && !!container.querySelector('[style*="position: fixed"]')
-      },
-      { timeout: timeoutMs }
-    )
+      })
+      if (mounted) return
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+
+    throw new Error(`HUD did not mount within ${timeoutMs}ms`)
   }
 
   return { gamePage, openPopup, evaluate, screenshot, domSnapshotText, domSnapshotHtml, waitForHudMount }
