@@ -4,7 +4,7 @@
  * Reads a single public-read Firestore document (`config/client`, field
  * `minSupportedVersion`) via the same REST API `firestore-backup-service.ts`
  * uses, but WITHOUT authentication — this doc is deliberately readable by
- * anyone (`firestore.rules`: `match /config/client { allow read: if true;
+ * anyone (`firebase/firestore.rules`: `match /config/client { allow read: if true;
  * allow write: if false }`), since the extension must be able to check it
  * before/without a signed-in user.
  *

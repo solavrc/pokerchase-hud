@@ -6,7 +6,7 @@
  *      `http://localhost:<port>/*` match; production manifest.json is only
  *      ever read, never modified -- see that file for why this makes
  *      POKER_CHASE_ORIGIN resolve to the fixture origin).
- *   2. esbuild.config.ts is invoked with E2E_MANIFEST/E2E_OUTDIR so it
+ *   2. scripts/build-extension.ts is invoked with E2E_MANIFEST/E2E_OUTDIR so it
  *      bundles src/ against the e2e manifest into e2e/.build/extension/dist
  *      (dist/ at the repo root, used by `npm run build`, is untouched).
  *   3. The generated manifest and icons/ are copied alongside dist/ so the
@@ -21,7 +21,7 @@ import { REPO_ROOT, E2E_MANIFEST_PATH, EXTENSION_DIR, EXTENSION_DIST_DIR } from 
 export const buildE2E = (): string => {
   generateE2EManifest()
 
-  execFileSync('npx', ['tsx', 'esbuild.config.ts'], {
+  execFileSync('npx', ['tsx', 'scripts/build-extension.ts'], {
     cwd: REPO_ROOT,
     stdio: 'inherit',
     env: {

@@ -12,7 +12,6 @@ coverage/
 .mcp.json
 *.ndjson
 *.txt
-*.ndjson
 
 # E2E QA harness (see e2e/README.md)
 # Chrome for Testing downloads live in ~/.cache/puppeteer/ (see BROWSER_CACHE_DIR

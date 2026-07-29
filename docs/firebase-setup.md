@@ -42,7 +42,7 @@ MV3 bundleにはFirebase JavaScript SDKを含めていない。Chrome Web Store�
 `eventId`は`sequence=0`ならlegacy互換の`timestamp_ApiTypeId`、1以上なら
 `timestamp_ApiTypeId_sequence`。`/users/{uid}`とsubcollectionは本人だけがread/writeできる。
 `/config/client`は未認証clientにもread-onlyで、client writeは拒否する。正確なruleは
-[`firestore.rules`](../firestore.rules)を正本とする。
+[`firebase/firestore.rules`](../firebase/firestore.rules)を正本とする。
 
 ## Fork / self-host projectの設定
 

@@ -2,10 +2,10 @@
   "name": "pokerchase-hud",
   "version": "5.3.1",
   "scripts": {
-    "build": "tsx esbuild.config.ts",
+    "build": "tsx scripts/build-extension.ts",
     "pack:crx": "bash scripts/pack-crx.sh",
-    "mockup": "tsx mockup.config.ts --serve",
-    "mockup:build": "tsx mockup.config.ts",
+    "mockup": "tsx scripts/build-mockup.ts --serve",
+    "mockup:build": "tsx scripts/build-mockup.ts",
     "postbuild": "zip -r extension.zip dist/ icons/ manifest.json",
     "test": "jest",
     "typecheck": "tsc --noEmit",

@@ -11,16 +11,11 @@
 ├── package.json               # Dependencies and scripts
 ├── package-lock.json          # Lockfile
 ├── tsconfig.json              # TypeScript configuration
-├── esbuild.config.ts          # Build configuration
-├── mockup.config.ts           # UI visual mockup server (npm run mockup)
 ├── jest.config.cjs            # Test configuration (jsdom environment)
 ├── firebase.json              # Firebase project configuration
 ├── .firebaserc                # Firebase project settings
-├── firestore.rules            # Firestore security rules (incl. public-read config/client)
-├── firestore.indexes.json     # Firestore index definitions
 ├── release-please-config.json # Release automation config
 ├── .release-please-manifest.json # Release version tracking
-├── renovate.json              # Dependency update config
 ├── AGENTS.md                  # Canonical agent instructions + code review rules (all agents)
 ├── CLAUDE.md                  # Imports AGENTS.md via @AGENTS.md (Claude Code loads it under this name)
 ├── README.md                  # Project overview
@@ -28,10 +23,14 @@
 ├── CONTRIBUTING.md            # Contribution guidelines
 ├── CHANGELOG.md               # Version history (auto-generated)
 ├── .github/
+│   ├── renovate.json          # Dependency update config
 │   └── workflows/
 │       ├── ci.yml             # PR CI: typecheck, Jest, build, signed-CRX packaging smoke
 │       └── build.yml          # Build, release-please job, signed CRX upload to the GitHub Release
 │                              #   (Chrome Web Store submission itself is manual — docs/chrome-web-store-release.md)
+├── firebase/                  # Firestore deploy inputs
+│   ├── firestore.rules        # Security rules (incl. public-read config/client)
+│   └── firestore.indexes.json # Index definitions
 ├── docs/                      # Technical documentation (flat)
 │   ├── api-events.md          # WebSocket API event reference (canonical event semantics)
 │   ├── architecture.md        # Design decisions & rationale (ADR)
@@ -57,7 +56,11 @@
 │   ├── icon_16px.png
 │   ├── icon_48px.png
 │   └── icon_128px.png
-├── scripts/                   # Signed-CRX packager and hand verification helper
+├── scripts/                   # Build, packaging, and hand verification helpers
+│   ├── build-extension.ts     # Production/E2E esbuild entry point
+│   ├── build-mockup.ts        # UI visual mockup builder/server
+│   ├── pack-crx.sh            # Signed CRX packager
+│   └── verify-hands.ts        # Manual hand verification helper
 └── src/                       # Source code
     ├── app.ts                 # Re-export layer (type guards)
     ├── background.ts          # Service worker entry (wires modules below)
@@ -217,6 +220,23 @@
         ├── test-utils.tsx     # Shared test helpers
         └── version-compare.ts # Numeric-dotted version comparator
 ```
+
+## Root placement policy
+
+Keep files at the repository root only when a tool or hosting surface discovers
+them there by convention (for example npm, TypeScript, Jest, Firebase CLI,
+Release Please, Chrome, GitHub, or coding agents). Put repository-specific
+executables under `scripts/`, dependency automation under `.github/`, and
+Firebase deploy inputs under `firebase/`.
+
+`README.drawio.png` is both the rendered architecture diagram and its editable
+source: diagrams.net XML is embedded in the PNG metadata. Do not add a duplicate
+standalone `.drawio` file.
+
+The extension and mockup continue to use esbuild. The extension build depends on
+its multi-entry IIFE output, E2E manifest substitution, compile-time flags, and
+Sentry source-map lifecycle; replacing the bundler would add configuration
+without simplifying the repository.
 
 ## Generated artifacts
 

@@ -3,7 +3,7 @@ import { sentryEsbuildPlugin } from '@sentry/esbuild-plugin'
 import { copyFileSync, mkdirSync } from 'fs'
 import { parse } from 'path'
 import { resolve } from 'path'
-import manifest from './manifest.json'
+import manifest from '../manifest.json'
 
 const {
   background: { service_worker },
