@@ -21,6 +21,7 @@ describe('Sentry opt-in initialization', () => {
   it('initializes only after consent and leaves keepalive sizing to the SDK', async () => {
     process.env.SENTRY_ENABLED = 'true'
     ;(chrome.permissions.request as jest.Mock).mockResolvedValue(true)
+    ;(chrome.permissions.contains as jest.Mock).mockResolvedValue(true)
     await expect(requestSentryTelemetry()).resolves.toBe(true)
 
     let resolvePermission: ((granted: boolean) => void) | undefined

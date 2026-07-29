@@ -19,6 +19,13 @@ const readLocal = (): Promise<Record<string, unknown>> =>
   })
 
 describe('Sentry telemetry consent', () => {
+  beforeEach(() => {
+    ;(chrome.permissions.contains as jest.Mock).mockResolvedValue(true)
+    ;(chrome.runtime.sendMessage as jest.Mock).mockResolvedValue({
+      sentryTelemetryEnabled: true
+    })
+  })
+
   it('keeps the Sentry host optional so updates do not disable existing installs', () => {
     expect(manifest.host_permissions).not.toContain(SENTRY_HOST_PERMISSION)
     expect(manifest.optional_host_permissions).toContain(SENTRY_HOST_PERMISSION)
@@ -96,6 +103,30 @@ describe('Sentry telemetry consent', () => {
     })
   })
 
+  it('rolls back opt-in when a live content script does not acknowledge enablement', async () => {
+    ;(chrome.permissions.request as jest.Mock).mockResolvedValue(true)
+    ;(chrome.tabs.query as jest.Mock).mockResolvedValue([{ id: 11 }])
+    ;(chrome.tabs.sendMessage as jest.Mock).mockImplementation(
+      (_tabId, message, callback) => {
+        if (message.type === 'pokerchase:sentry-telemetry-revoked') {
+          callback({ sentryTelemetryStateApplied: message.type })
+          return
+        }
+        callback()
+      }
+    )
+
+    await expect(requestSentryTelemetry()).rejects.toThrow(
+      'Content script did not acknowledge telemetry state'
+    )
+    await expect(readLocal()).resolves.toEqual({
+      [SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]: false
+    })
+    expect(chrome.permissions.remove).toHaveBeenCalledWith({
+      origins: [SENTRY_HOST_PERMISSION]
+    })
+  })
+
   it('disables telemetry before removing the optional host', async () => {
     ;(chrome.permissions.request as jest.Mock).mockResolvedValue(true)
     await requestSentryTelemetry()
@@ -110,7 +141,129 @@ describe('Sentry telemetry consent', () => {
     })
   })
 
-  it('clears consent when Chrome settings revoke the optional host', async () => {
+  it('runs direct and permission shutdown but rejects when the durable mirror write fails', async () => {
+    ;(chrome.permissions.request as jest.Mock).mockResolvedValue(true)
+    await requestSentryTelemetry()
+    ;(chrome.tabs.query as jest.Mock).mockResolvedValue([{ id: 17 }])
+    ;(chrome.tabs.sendMessage as jest.Mock).mockImplementation(
+      (_tabId, message, callback) => callback({
+        sentryTelemetryStateApplied: message.type
+      })
+    )
+    ;(chrome.storage.session.set as jest.Mock).mockImplementation(
+      (_items, callback) => {
+        ;(chrome.runtime as unknown as {
+          lastError?: { message: string }
+        }).lastError = { message: 'session write failed' }
+        callback()
+        delete (chrome.runtime as unknown as {
+          lastError?: { message: string }
+        }).lastError
+      }
+    )
+
+    await expect(revokeSentryTelemetry()).rejects.toThrow(
+      'Failed to fully revoke Sentry telemetry'
+    )
+
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(
+      17,
+      { type: 'pokerchase:sentry-telemetry-revoked' },
+      expect.any(Function)
+    )
+    expect(chrome.permissions.remove).toHaveBeenCalledWith({
+      origins: [SENTRY_HOST_PERMISSION]
+    })
+  })
+
+  it('removes the host permission without waiting for content shutdown ACK', async () => {
+    ;(chrome.permissions.request as jest.Mock).mockResolvedValue(true)
+    await requestSentryTelemetry()
+    ;(chrome.tabs.query as jest.Mock).mockResolvedValue([{ id: 18 }])
+    let acknowledgeShutdown: (() => void) | undefined
+    ;(chrome.tabs.sendMessage as jest.Mock).mockImplementation(
+      (_tabId, message, callback) => {
+        acknowledgeShutdown = () => callback({
+          sentryTelemetryStateApplied: message.type
+        })
+      }
+    )
+
+    const revocation = revokeSentryTelemetry()
+    await waitForPendingTabMessage()
+    expect(chrome.permissions.remove).toHaveBeenCalledWith({
+      origins: [SENTRY_HOST_PERMISSION]
+    })
+
+    acknowledgeShutdown?.()
+    await expect(revocation).resolves.toBeUndefined()
+  })
+
+  it('fails revocation when Chrome keeps the optional host permission', async () => {
+    ;(chrome.permissions.request as jest.Mock).mockResolvedValue(true)
+    await requestSentryTelemetry()
+    ;(chrome.permissions.remove as jest.Mock).mockResolvedValue(false)
+    ;(chrome.permissions.contains as jest.Mock).mockResolvedValue(true)
+
+    await expect(revokeSentryTelemetry()).rejects.toThrow(
+      'Failed to fully revoke Sentry telemetry'
+    )
+  })
+
+  it('fails revocation when persisted consent cannot be cleared', async () => {
+    ;(chrome.permissions.request as jest.Mock).mockResolvedValue(true)
+    await requestSentryTelemetry()
+    ;(chrome.storage.local.set as jest.Mock).mockImplementation(
+      (_items, callback) => {
+        ;(chrome.runtime as unknown as {
+          lastError?: { message: string }
+        }).lastError = { message: 'local write failed' }
+        callback()
+        delete (chrome.runtime as unknown as {
+          lastError?: { message: string }
+        }).lastError
+      }
+    )
+
+    await expect(revokeSentryTelemetry()).rejects.toThrow(
+      'Failed to fully revoke Sentry telemetry'
+    )
+  })
+
+  it('fails revocation when neither direct shutdown nor mirror shutdown completes', async () => {
+    ;(chrome.permissions.request as jest.Mock).mockResolvedValue(true)
+    await requestSentryTelemetry()
+    ;(chrome.tabs.query as jest.Mock).mockResolvedValue([{ id: 19 }])
+    ;(chrome.tabs.sendMessage as jest.Mock).mockImplementation(
+      (_tabId, _message, callback) => {
+        ;(chrome.runtime as unknown as {
+          lastError?: { message: string }
+        }).lastError = { message: 'unexpected tab messaging failure' }
+        callback()
+        delete (chrome.runtime as unknown as {
+          lastError?: { message: string }
+        }).lastError
+      }
+    )
+    ;(chrome.storage.session.set as jest.Mock).mockImplementation(
+      (_items, callback) => {
+        ;(chrome.runtime as unknown as {
+          lastError?: { message: string }
+        }).lastError = { message: 'session write failed' }
+        callback()
+        delete (chrome.runtime as unknown as {
+          lastError?: { message: string }
+        }).lastError
+      }
+    )
+
+    await expect(revokeSentryTelemetry()).rejects.toThrow(
+      'Failed to fully revoke Sentry telemetry'
+    )
+  })
+
+  it('directly stops content scripts when Chrome settings revoke the optional host', async () => {
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined)
     let onRemoved:
       ((permissions: chrome.permissions.Permissions) => void) | undefined
     ;(chrome.permissions.onRemoved.addListener as jest.Mock)
@@ -119,10 +272,30 @@ describe('Sentry telemetry consent', () => {
       })
     ;(chrome.permissions.request as jest.Mock).mockResolvedValue(true)
     await requestSentryTelemetry()
+    ;(chrome.tabs.query as jest.Mock).mockResolvedValue([{ id: 23 }])
+    ;(chrome.tabs.sendMessage as jest.Mock).mockImplementation(
+      (_tabId, message, callback) => callback({
+        sentryTelemetryStateApplied: message.type
+      })
+    )
+    ;(chrome.permissions.remove as jest.Mock).mockResolvedValue(false)
+    ;(chrome.permissions.contains as jest.Mock).mockResolvedValue(false)
+    ;(chrome.storage.session.set as jest.Mock).mockImplementation(
+      (_items, callback) => {
+        ;(chrome.runtime as unknown as {
+          lastError?: { message: string }
+        }).lastError = { message: 'session write failed' }
+        callback()
+        delete (chrome.runtime as unknown as {
+          lastError?: { message: string }
+        }).lastError
+      }
+    )
 
     registerSentryPermissionRevocationSync()
     onRemoved?.({ origins: [SENTRY_HOST_PERMISSION] })
 
+    await waitForTabMessage('pokerchase:sentry-telemetry-revoked')
     await expect(readLocal()).resolves.toEqual({
       [SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]: false
     })
@@ -135,4 +308,26 @@ const waitForPermissionCheck = async (): Promise<void> => {
     await Promise.resolve()
   }
   throw new Error('permission check did not start')
+}
+
+const waitForTabMessage = async (type: string): Promise<void> => {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (
+      (chrome.tabs.sendMessage as jest.Mock).mock.calls.some(
+        ([, message]) => message?.type === type
+      )
+    ) {
+      return
+    }
+    await Promise.resolve()
+  }
+  throw new Error(`Tab message ${type} was not sent`)
+}
+
+const waitForPendingTabMessage = async (): Promise<void> => {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if ((chrome.tabs.sendMessage as jest.Mock).mock.calls.length > 0) return
+    await Promise.resolve()
+  }
+  throw new Error('Tab message did not start')
 }

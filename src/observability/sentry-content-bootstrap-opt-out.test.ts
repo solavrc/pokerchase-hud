@@ -19,6 +19,9 @@ jest.mock('@sentry/browser', () => ({
 describe('Sentry content-script explicit opt-out bootstrap', () => {
   it('discards buffered errors when the session mirror becomes false', async () => {
     process.env.SENTRY_ENABLED = 'true'
+    ;(chrome.runtime.sendMessage as jest.Mock).mockResolvedValue({
+      sentryTelemetryEnabled: true
+    })
     let consentState: boolean | undefined
     let onStorageChanged:
       ((changes: Record<string, chrome.storage.StorageChange>, areaName: string) => void)

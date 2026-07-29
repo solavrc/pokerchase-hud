@@ -19,6 +19,7 @@ describe('Sentry runtime bootstrap buffer', () => {
   it('reports a background error raised while consent initialization is pending', async () => {
     process.env.SENTRY_ENABLED = 'true'
     ;(chrome.permissions.request as jest.Mock).mockResolvedValue(true)
+    ;(chrome.permissions.contains as jest.Mock).mockResolvedValue(true)
     await requestSentryTelemetry()
 
     let resolvePermission: ((granted: boolean) => void) | undefined

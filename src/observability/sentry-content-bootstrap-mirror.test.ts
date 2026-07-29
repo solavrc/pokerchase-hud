@@ -30,11 +30,25 @@ describe('Sentry content-script consent mirror bootstrap', () => {
     onStorageChanged = undefined
     completeInitialRead = undefined
     sessionReadCount = 0
+    ;(chrome.runtime.sendMessage as jest.Mock).mockResolvedValue({
+      sentryTelemetryEnabled: true
+    })
 
     ;(chrome.storage.session.get as jest.Mock).mockImplementation(
-      (key: string, callback: (items: Record<string, unknown>) => void) => {
+      (
+        key: string,
+        callback: (items?: Record<string, unknown>) => void
+      ) => {
         if (sessionReadCount++ === 0) {
-          completeInitialRead = () => callback({ [key]: undefined })
+          completeInitialRead = () => {
+            ;(chrome.runtime as unknown as {
+              lastError?: { message: string }
+            }).lastError = { message: 'session storage is not accessible' }
+            callback()
+            delete (chrome.runtime as unknown as {
+              lastError?: { message: string }
+            }).lastError
+          }
           return
         }
         callback({ [key]: consentState })
@@ -51,7 +65,7 @@ describe('Sentry content-script consent mirror bootstrap', () => {
     delete process.env.SENTRY_ENABLED
   })
 
-  it('retains bootstrap errors while the background creates the session mirror', async () => {
+  it('retains bootstrap errors when the session mirror is not yet accessible', async () => {
     const { initSentry } = await import('./sentry')
     const initialInitialization = initSentry('content_script')
 

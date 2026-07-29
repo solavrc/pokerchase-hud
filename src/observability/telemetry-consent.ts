@@ -2,11 +2,18 @@ export const SENTRY_HOST_PERMISSION =
   'https://o4507260715794432.ingest.us.sentry.io/*'
 export const SENTRY_TELEMETRY_CONSENT_STORAGE_KEY =
   'sentryTelemetryConsent'
+export const SENTRY_TELEMETRY_REVOKED_MESSAGE =
+  'pokerchase:sentry-telemetry-revoked'
+export const SENTRY_TELEMETRY_ENABLED_MESSAGE =
+  'pokerchase:sentry-telemetry-enabled'
+export const SENTRY_TELEMETRY_STATUS_MESSAGE =
+  'pokerchase:sentry-telemetry-status'
 let permissionRevocationListenerRegistered = false
 let consentBridgeListenerRegistered = false
 let consentBridgeInitialization: Promise<void> | undefined
 let consentMirrorGeneration = 0
-let consentMirrorWriteQueue = Promise.resolve()
+let consentMirrorWriteQueue: Promise<boolean | undefined> =
+  Promise.resolve(undefined)
 
 const localGet = (
   key: string
@@ -33,7 +40,14 @@ const sessionGet = (
   key: string
 ): Promise<Record<string, unknown>> =>
   new Promise(resolve => {
-    chrome.storage.session.get(key, items => resolve(items))
+    chrome.storage.session.get(key, items => {
+      // A content script can race the background worker's setAccessLevel().
+      // Chrome then reports lastError and may omit the items argument. Treat
+      // that state like a not-yet-created mirror so initSentry retains its
+      // bounded bootstrap buffer until storage.onChanged supplies the value.
+      const error = chrome.runtime.lastError
+      resolve(error || !items ? {} : items)
+    })
   })
 
 const sessionSet = (
@@ -62,7 +76,34 @@ export const readSentryTelemetryConsentState = async (
     ? await sessionGet(SENTRY_TELEMETRY_CONSENT_STORAGE_KEY)
     : await localGet(SENTRY_TELEMETRY_CONSENT_STORAGE_KEY)
   const value = result[SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]
-  return typeof value === 'boolean' ? value : undefined
+  const storedState = typeof value === 'boolean' ? value : undefined
+  if (runtime !== 'content_script' || storedState !== true) {
+    return storedState
+  }
+
+  // storage.session is a wake-up mirror, not the final authorization source:
+  // a failed revoke write can leave stale true for a content script injected
+  // after the direct tab snapshot. Wake the background and require its current
+  // local-consent + optional-permission decision before enabling transport.
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: SENTRY_TELEMETRY_STATUS_MESSAGE
+    })
+    if (
+      response &&
+      typeof response === 'object' &&
+      typeof (response as {
+        sentryTelemetryEnabled?: unknown
+      }).sentryTelemetryEnabled === 'boolean'
+    ) {
+      return (response as {
+        sentryTelemetryEnabled: boolean
+      }).sentryTelemetryEnabled
+    }
+  } catch {
+    // Fail closed. A later content reload or mirror transition can retry.
+  }
+  return undefined
 }
 
 export const clearSentryTelemetryConsent = (): Promise<void> =>
@@ -86,8 +127,8 @@ export const registerSentryPermissionRevocationSync = (): void => {
 
   chrome.permissions.onRemoved.addListener(permissions => {
     if (!permissions.origins?.includes(SENTRY_HOST_PERMISSION)) return
-    void clearSentryTelemetryConsent().catch(() => {
-      console.warn('[Sentry] Failed to clear consent after permission removal')
+    void revokeSentryTelemetry().catch(() => {
+      console.warn('[Sentry] Failed to synchronize permission removal')
     })
   })
 }
@@ -110,7 +151,8 @@ export const hasSentryHostPermission = async (
   })
 }
 
-const updateSentryTelemetryConsentMirror = async (): Promise<void> => {
+const updateSentryTelemetryConsentMirror = async (
+): Promise<boolean | undefined> => {
   const generation = ++consentMirrorGeneration
   const consent = await readSentryTelemetryConsent()
   if (consent) await hasSentryHostPermission()
@@ -130,9 +172,33 @@ const updateSentryTelemetryConsentMirror = async (): Promise<void> => {
       await sessionSet({
         [SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]: currentEnabled
       })
+      return currentEnabled
     })
   consentMirrorWriteQueue = write
-  await write
+  return await write
+}
+
+const commitSentryTelemetryConsentMirror = async (
+  expectedEnabled: boolean
+): Promise<void> => {
+  // Another same-context refresh can supersede a generation before it reaches
+  // the serialized storage commit. Retry from current local+permission truth;
+  // each successful return is backed by either our commit or the superseding
+  // commit already visible in storage.session.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const committed = await updateSentryTelemetryConsentMirror()
+    if (committed === expectedEnabled) return
+    await consentMirrorWriteQueue.catch(() => undefined)
+    const mirror = await sessionGet(SENTRY_TELEMETRY_CONSENT_STORAGE_KEY)
+    if (
+      mirror[SENTRY_TELEMETRY_CONSENT_STORAGE_KEY] === expectedEnabled
+    ) {
+      return
+    }
+  }
+  throw new Error(
+    `Failed to commit Sentry telemetry mirror=${expectedEnabled}`
+  )
 }
 
 /**
@@ -163,7 +229,9 @@ export const initializeSentryTelemetryConsentBridge = (): Promise<void> => {
   consentBridgeInitialization = chrome.storage.session.setAccessLevel({
     accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS'
   })
-    .then(() => updateSentryTelemetryConsentMirror())
+    .then(async () => {
+      await updateSentryTelemetryConsentMirror()
+    })
     .finally(() => {
       consentBridgeInitialization = undefined
     })
@@ -185,23 +253,149 @@ export const requestSentryTelemetry = async (): Promise<boolean> => {
 
   try {
     await localSet({ [SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]: true })
+    await commitSentryTelemetryConsentMirror(true)
+    await notifyContentScriptsTelemetryState(
+      SENTRY_TELEMETRY_ENABLED_MESSAGE
+    )
     return true
   } catch (error) {
-    await chrome.permissions.remove({
-      origins: [SENTRY_HOST_PERMISSION]
-    })
+    try {
+      await revokeSentryTelemetry()
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        'Failed to enable Sentry telemetry and fully roll it back'
+      )
+    }
     throw error
   }
 }
 
+const EXPECTED_MISSING_RECEIVER =
+  /(?:Receiving end does not exist|No tab with id)/i
+
+const notifyContentScriptsTelemetryState = async (
+  type: typeof SENTRY_TELEMETRY_REVOKED_MESSAGE |
+    typeof SENTRY_TELEMETRY_ENABLED_MESSAGE
+): Promise<void> => {
+  if (!chrome.tabs?.query || !chrome.tabs?.sendMessage) {
+    throw new Error('tabs messaging is unavailable')
+  }
+  const tabs = await chrome.tabs.query({
+    url: 'https://game.poker-chase.com/*'
+  })
+  if (!Array.isArray(tabs)) {
+    throw new Error('tabs query did not return an array')
+  }
+
+  await Promise.all(tabs.flatMap(tab => {
+    if (tab.id === undefined) return []
+    return [new Promise<void>((resolve, reject) => {
+      chrome.tabs.sendMessage(tab.id as number, {
+        type
+      }, response => {
+        const error = chrome.runtime.lastError
+        if (error) {
+          const message = error.message ?? 'Unknown tab messaging failure'
+          if (EXPECTED_MISSING_RECEIVER.test(message)) {
+            // With no receiving content script there is no live Sentry client
+            // in this tab to transition.
+            resolve()
+          } else {
+            reject(new Error(message))
+          }
+          return
+        }
+        if (
+          !response ||
+          typeof response !== 'object' ||
+          (response as {
+            sentryTelemetryStateApplied?: unknown
+          }).sentryTelemetryStateApplied !== type
+        ) {
+          reject(new Error('Content script did not acknowledge telemetry state'))
+          return
+        }
+        resolve()
+      })
+    })]
+  }))
+}
+
+const removeSentryHostPermission = async (): Promise<boolean> => {
+  if (!chrome.permissions?.remove) return false
+  const removed = await chrome.permissions.remove({
+    origins: [SENTRY_HOST_PERMISSION]
+  })
+  if (removed) return true
+  if (!chrome.permissions.contains) return false
+  return !await chrome.permissions.contains({
+    origins: [SENTRY_HOST_PERMISSION]
+  })
+}
+
 export const revokeSentryTelemetry = async (): Promise<void> => {
-  // Stop all runtimes through storage.onChanged before removing the network
-  // grant. This remains safe if permission removal itself fails.
-  await clearSentryTelemetryConsent()
-  await updateSentryTelemetryConsentMirror()
-  if (chrome.permissions?.remove) {
-    await chrome.permissions.remove({
-      origins: [SENTRY_HOST_PERMISSION]
-    })
+  const failures: unknown[] = []
+  const attempt = async <T>(
+    operation: () => Promise<T>
+  ): Promise<{ ok: true, value: T } | { ok: false }> => {
+    try {
+      return { ok: true, value: await operation() }
+    } catch (error) {
+      failures.push(error)
+      return { ok: false }
+    }
+  }
+
+  // Initiate every independent fail-closed path before the first await. This
+  // matters for permissions.onRemoved in an MV3 worker: tab shutdown and host
+  // removal must not wait behind a storage callback before Chrome can observe
+  // their extension API operations. The mirror refresh waits only for local
+  // consent and permission truth, never for a slow content-script close.
+  const localClearPromise = attempt(clearSentryTelemetryConsent)
+  const directShutdownPromise = attempt(async () =>
+    await notifyContentScriptsTelemetryState(
+      SENTRY_TELEMETRY_REVOKED_MESSAGE
+    )
+  )
+  const permissionRemovalPromise = attempt(removeSentryHostPermission)
+  const mirrorShutdownPromise = Promise.all([
+    localClearPromise,
+    permissionRemovalPromise
+  ]).then(async () =>
+    await attempt(async () =>
+      await commitSentryTelemetryConsentMirror(false)
+    )
+  )
+  const [
+    localClear,
+    directShutdown,
+    permissionRemoval,
+    mirrorShutdown
+  ] = await Promise.all([
+    localClearPromise,
+    directShutdownPromise,
+    permissionRemovalPromise,
+    mirrorShutdownPromise
+  ])
+  const permissionRemovalCompleted =
+    permissionRemoval.ok && permissionRemoval.value
+  const mirrorShutdownCompleted = mirrorShutdown.ok
+
+  if (
+    !localClear.ok ||
+    !permissionRemovalCompleted ||
+    !directShutdown.ok ||
+    !mirrorShutdownCompleted
+  ) {
+    throw new AggregateError(
+      failures,
+      'Failed to fully revoke Sentry telemetry'
+    )
+  }
+  if (failures.length > 0) {
+    console.warn(
+      '[Sentry] Telemetry revoked with a degraded shutdown path'
+    )
   }
 }
