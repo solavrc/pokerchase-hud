@@ -47,7 +47,10 @@ describe('Sentry opt-in initialization', () => {
 
     expect(Sentry.init).toHaveBeenCalledTimes(1)
     expect(Sentry.init).toHaveBeenCalledWith(
-      expect.objectContaining({ defaultIntegrations: false })
+      expect.objectContaining({
+        defaultIntegrations: false,
+        sendClientReports: false
+      })
     )
     const options = (Sentry.init as jest.Mock).mock.calls[0]?.[0]
     expect(options.transportOptions).toBeUndefined()

@@ -8,6 +8,7 @@ import {
   hasSentryHostPermission,
   initializeSentryTelemetryConsentBridge,
   readSentryTelemetryConsent,
+  readSentryTelemetryConsentState,
   registerSentryPermissionRevocationSync
 } from './telemetry-consent'
 
@@ -40,6 +41,7 @@ let configuredRuntime: SentryRuntime | undefined
 let consentListenerRegistered = false
 let initializationPromise: Promise<void> | undefined
 let sentEventCount = 0
+let bootstrapErrorBuffer: BootstrapErrorBuffer | undefined
 
 interface BootstrapErrorBuffer {
   runtime: SentryRuntime
@@ -218,17 +220,31 @@ const flushBootstrapErrors = (buffer: BootstrapErrorBuffer | undefined): void =>
   }
 }
 
-const startSentry = async (runtime: SentryRuntime): Promise<void> => {
-  if (!telemetryEnabled() || initialized) return
-  if (!await readSentryTelemetryConsent(runtime)) return
+const discardBootstrapErrors = (): void => {
+  bootstrapErrorBuffer?.dispose()
+  bootstrapErrorBuffer = undefined
+}
+
+type SentryStartResult = 'started' | 'disabled' | 'waiting_for_consent_mirror'
+
+const startSentry = async (
+  runtime: SentryRuntime
+): Promise<SentryStartResult> => {
+  if (!telemetryEnabled() || initialized) return 'disabled'
+  const consentState = await readSentryTelemetryConsentState(runtime)
+  if (consentState !== true) {
+    return runtime === 'content_script' && consentState === undefined
+      ? 'waiting_for_consent_mirror'
+      : 'disabled'
+  }
   if (!await hasSentryHostPermission(runtime)) {
     await clearSentryTelemetryConsent()
-    return
+    return 'disabled'
   }
   // Consent may be revoked while the async permission check is in flight.
   // Re-read immediately before the synchronous SDK initialization so a stale
   // startup cannot resurrect telemetry after storage.onChanged closed it.
-  if (!await readSentryTelemetryConsent(runtime)) return
+  if (!await readSentryTelemetryConsent(runtime)) return 'disabled'
 
   Sentry.init({
     dsn: SENTRY_DSN,
@@ -249,6 +265,9 @@ const startSentry = async (runtime: SentryRuntime): Promise<void> => {
     sampleRate: 1,
     tracesSampleRate: 0,
     sendDefaultPii: false,
+    // Client-report envelopes bypass beforeSend. Disable them so the privacy
+    // sanitizer and hard per-runtime event budget cover every SDK envelope.
+    sendClientReports: false,
     dataCollection: {
       userInfo: false,
       cookies: false,
@@ -284,6 +303,7 @@ const startSentry = async (runtime: SentryRuntime): Promise<void> => {
   })
 
   initialized = true
+  return 'started'
 }
 
 /**
@@ -312,19 +332,40 @@ export const initSentry = (runtime: SentryRuntime): Promise<void> => {
       }
 
       if (changes[SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]?.newValue === true) {
-        if (configuredRuntime) void initSentry(configuredRuntime)
+        const pendingInitialization = initializationPromise
+        void (pendingInitialization ?? Promise.resolve())
+          .catch(() => undefined)
+          .then(() => {
+            // storage.onChanged normally follows the commit. Deferring also
+            // makes the ordering explicit for callback-style implementations
+            // and prevents a concurrent initial read from consuming the wake.
+            if (configuredRuntime && !initialized) {
+              void initSentry(configuredRuntime)
+            }
+          })
       } else {
+        discardBootstrapErrors()
         void closeSentry()
       }
     })
   }
 
   if (initializationPromise) return initializationPromise
-  const bootstrapErrors = createBootstrapErrorBuffer(runtime)
-  initializationPromise = startSentry(runtime).finally(() => {
-    initializationPromise = undefined
-    flushBootstrapErrors(bootstrapErrors)
-  })
+  bootstrapErrorBuffer ??= createBootstrapErrorBuffer(runtime)
+  initializationPromise = startSentry(runtime)
+    .then(result => {
+      if (result === 'waiting_for_consent_mirror') return
+      const completedBuffer = bootstrapErrorBuffer
+      bootstrapErrorBuffer = undefined
+      flushBootstrapErrors(completedBuffer)
+    })
+    .catch(error => {
+      discardBootstrapErrors()
+      throw error
+    })
+    .finally(() => {
+      initializationPromise = undefined
+    })
   return initializationPromise
 }
 

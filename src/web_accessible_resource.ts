@@ -11,9 +11,19 @@ import {
 /** !!! BACKGROUND、CONTENT_SCRIPTSからインポートしないこと !!! */
 
 const OriginalWebSocket = window.WebSocket
+const MAX_PENDING_UNCLASSIFIED_PAYLOADS = 5
 
 function createWebSocket(...args: ConstructorParameters<typeof WebSocket>): WebSocket {
   const instance: WebSocket = new OriginalWebSocket(...args)
+  let isPokerChaseApiSocket = false
+  const pendingUnclassifiedPayloads: Record<string, unknown>[] = []
+
+  const forwardInvalidPayload = (payload: Record<string, unknown>): void => {
+    window.postMessage({
+      type: POKER_CHASE_INVALID_API_EVENT,
+      payload
+    }, POKER_CHASE_ORIGIN)
+  }
 
   instance.addEventListener('message', ({ data }) => {
     if (data instanceof ArrayBuffer) {
@@ -27,17 +37,31 @@ function createWebSocket(...args: ConstructorParameters<typeof WebSocket>): WebS
           }
           if (
             'ApiTypeId' in decoded &&
-            typeof (decoded as { ApiTypeId: unknown }).ApiTypeId === 'number'
+            Number.isSafeInteger(
+              (decoded as { ApiTypeId: unknown }).ApiTypeId
+            )
           ) {
+            if (!isPokerChaseApiSocket) {
+              isPokerChaseApiSocket = true
+              for (const pendingPayload of pendingUnclassifiedPayloads) {
+                forwardInvalidPayload(pendingPayload)
+              }
+              pendingUnclassifiedPayloads.length = 0
+            }
             window.postMessage(payload, POKER_CHASE_ORIGIN)
-          } else {
+          } else if (isPokerChaseApiSocket) {
             // Preserve a fundamental schema break long enough for the trusted
             // content-script bridge to forward it into the bounded sentinel
             // diagnostic path. Keep the normal flat event contract unchanged.
-            window.postMessage({
-              type: POKER_CHASE_INVALID_API_EVENT,
-              payload
-            }, POKER_CHASE_ORIGIN)
+            forwardInvalidPayload(payload)
+          } else if (
+            pendingUnclassifiedPayloads.length <
+              MAX_PENDING_UNCLASSIFIED_PAYLOADS
+          ) {
+            // The page can own unrelated MessagePack WebSockets. Do not
+            // diagnose their payloads unless this same connection later proves
+            // it is the PokerChase API by producing a numeric ApiTypeId.
+            pendingUnclassifiedPayloads.push(payload)
           }
         }
       } catch (error) {

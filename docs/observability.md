@@ -78,8 +78,12 @@ separately documented, user-controlled Firestore cloud-sync path. If either
 storage key is invalid, the raw row cannot be keyed; Sentry's sanitized
 diagnostic and the Popup's persistent invalid-ID counter preserve the failure
 signal instead. The page-world interceptor forwards such decoded objects in a
-dedicated envelope; the content script strips the envelope and sends the
-payload through the same bounded runtime-port queue as normal events.
+dedicated envelope only after that WebSocket has produced a safe-integer
+`ApiTypeId`, preventing unrelated MessagePack sockets from entering the
+diagnostic path. Up to five pre-identification objects are retained and
+forwarded only if that same socket is subsequently identified as the
+PokerChase API. The content script strips the envelope and sends the payload
+through the same bounded runtime-port queue as normal events.
 Sentry receives only the pseudonymized semantic snapshot, never the
 byte-for-byte raw event. The Sentry project also has default data scrubbing and
 IP-address scrubbing enabled as a second privacy layer. Server-side scrubbing
@@ -98,13 +102,18 @@ Arbitrary exception messages are discarded entirely; stack frames, exception
 type, runtime, and the allow-listed operation tag remain for diagnosis.
 It also sends a non-routable placeholder IP so Sentry cannot derive city or
 region metadata from the network request; the server-side IP scrubber removes
-that placeholder before storage.
+that placeholder before storage. Sentry client-report envelopes are disabled
+because they bypass `beforeSend`; every emitted envelope therefore remains
+inside the same sanitizer and per-runtime budget.
 
 The Sentry project also has default data scrubbing and IP-address scrubbing
 enabled. Each background/content/popup runtime sends at most 20 events before
 it is restarted, limiting the effect of an error loop. Each monitored runtime
 also installs a bounded five-error bootstrap buffer synchronously while its
-asynchronous consent and permission checks are pending. The schema-validation
+asynchronous consent and permission checks are pending. A content script keeps
+that buffer while the background worker is still creating the session consent
+mirror after browser startup, flushes it if the mirror becomes `true`, and
+discards it if the mirror explicitly becomes `false`. The schema-validation
 snapshot is the only permitted API-event context and must be produced by
 `buildSchemaDiagnostic`. Its construction is gated lazily after consent,
 runtime budget, and per-`ApiTypeId` deduplication so opted-out users do not pay

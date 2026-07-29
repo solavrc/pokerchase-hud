@@ -52,11 +52,17 @@ const sessionSet = (
 
 export const readSentryTelemetryConsent = async (
   runtime: 'background' | 'content_script' | 'popup' = 'background'
-): Promise<boolean> => {
+): Promise<boolean> =>
+  await readSentryTelemetryConsentState(runtime) === true
+
+export const readSentryTelemetryConsentState = async (
+  runtime: 'background' | 'content_script' | 'popup' = 'background'
+): Promise<boolean | undefined> => {
   const result = runtime === 'content_script'
     ? await sessionGet(SENTRY_TELEMETRY_CONSENT_STORAGE_KEY)
     : await localGet(SENTRY_TELEMETRY_CONSENT_STORAGE_KEY)
-  return result[SENTRY_TELEMETRY_CONSENT_STORAGE_KEY] === true
+  const value = result[SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]
+  return typeof value === 'boolean' ? value : undefined
 }
 
 export const clearSentryTelemetryConsent = (): Promise<void> =>
