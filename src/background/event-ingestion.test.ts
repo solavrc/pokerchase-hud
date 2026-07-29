@@ -404,6 +404,74 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(service.getEffectiveBattleTypeFilter()).toEqual([0, 2, 6])
   })
 
+  test('a parse-failed entry drains older derived writes before replacing their session context', async () => {
+    service.autoBattleTypeFilter = true
+    service.session.setId('older-friend-room')
+    service.session.setBattleType(2)
+
+    let releaseDerivedWrite!: () => void
+    let signalDerivedWait!: () => void
+    const derivedWriteBlocked = new Promise<void>(resolve => {
+      releaseDerivedWrite = resolve
+    })
+    const derivedWaitStarted = new Promise<void>(resolve => {
+      signalDerivedWait = resolve
+    })
+    jest.spyOn(service.writeEntityStream, 'whenIdle')
+      .mockImplementationOnce(async () => {
+        signalDerivedWait()
+        await derivedWriteBlocked
+      })
+    const entry = onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 11645,
+      Code: 0,
+      Id: 'new-ring-room',
+      BattleType: 4,
+      // Missing IsRetire deliberately selects the raw recovery path.
+    })
+    await derivedWaitStarted
+
+    expect(service.session.id).toBe('older-friend-room')
+    expect(service.session.battleType).toBe(2)
+
+    releaseDerivedWrite()
+    await entry
+
+    expect(service.session.id).toBe('new-ring-room')
+    expect(service.session.battleType).toBe(4)
+  })
+
+  test('a reused raw entry id still advances the stats output epoch', async () => {
+    service.session.setId('reused-ranked-room')
+    service.session.setBattleType(0)
+    const previousOutputEpoch = service.statsOutputContextRevision
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 116455,
+      Code: 0,
+      Id: 'reused-ranked-room',
+      BattleType: 0,
+      // Missing IsRetire deliberately selects the raw recovery path.
+    })
+
+    expect(service.statsOutputContextRevision).toBeGreaterThan(previousOutputEpoch)
+  })
+
+  test('every raw deal advances the stats output epoch before application parsing', async () => {
+    const previousOutputEpoch = service.statsOutputContextRevision
+
+    // Deliberately incomplete: the raw DEAL boundary must invalidate stale
+    // output even when a payload change prevents application parsing.
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_DEAL,
+      timestamp: 11646,
+    })
+
+    expect(service.statsOutputContextRevision).toBeGreaterThan(previousOutputEpoch)
+  })
+
   test('a parse-failed Friend Ring entry accepts its specified empty Id', async () => {
     service.autoBattleTypeFilter = true
 

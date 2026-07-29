@@ -133,6 +133,8 @@ export class RawEntityReplay {
       const isEntry = entryBoundary !== undefined
       const isSessionResult =
         event.ApiTypeId === ApiType.EVT_SESSION_RESULTS
+      const isSessionDetails =
+        event.ApiTypeId === ApiType.EVT_SESSION_DETAILS
       const isEntryCancellation =
         event.ApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID
 
@@ -170,6 +172,18 @@ export class RawEntityReplay {
         this.converter.applySessionSnapshot(this.session)
         this.replayEnded = true
       } else {
+        if (isSessionDetails && this.pendingFriendSngSession) {
+          // 308 is an additional instance boundary when 201/309 capture is
+          // incomplete. Once a new 308 appears after a provisional Friend SNG
+          // terminal, a later seated DEAL must not resurrect the ended match.
+          // Switch EntityConverter to the fail-closed context before the 308
+          // itself is replayed so its new metadata cannot inherit the old id
+          // or battle type.
+          convertValidSegment()
+          this.pendingFriendSngSession = undefined
+          this.converter.applySessionSnapshot(this.session)
+          this.replayEnded = false
+        }
         this.restoreSessionMetadata(event)
       }
 

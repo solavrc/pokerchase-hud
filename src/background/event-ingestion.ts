@@ -157,8 +157,29 @@ const enqueueApplicationForwarding = (
     // ownershipを持つ間は派生streamを破棄する（raw行も削除対象なので再送不要）。
     if (getOperationState().type === 'delete') return
 
-    if (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED && rawEntryRecovery) {
-      applySessionContext(service, rawEntryRecovery)
+    if (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED) {
+      const applicationEntry =
+        data && isApplicationApiEvent(data) ? data : undefined
+      if (applicationEntry) {
+        // Hand-log/realtime streams are independent of entity derivation.
+        // Preserve their non-blocking delivery contract while the aggregate
+        // pipeline below waits for the previous session's entity write.
+        service.eventLogger(applicationEntry, 'info')
+        service.handLogStream.write(applicationEntry)
+        service.realTimeStatsStream.write(applicationEntry)
+      }
+      // A completed hand can already have left AggregateEventsStream while its
+      // WriteEntityStream work is still queued. Both schema-valid and raw-only
+      // 201 boundaries must preserve that older hand's session classification
+      // before AggregateEventsStream/applySessionContext installs the new one.
+      await awaitDerivedProcessingIdle(service)
+      if (rawEntryRecovery) {
+        applySessionContext(service, rawEntryRecovery)
+      }
+      if (applicationEntry) {
+        service.handAggregateStream.write(applicationEntry)
+        return
+      }
     }
     if (resetReboundSession) {
       // A new source began play without a captured 201, so its game type is
@@ -569,18 +590,24 @@ const processEvent = async (
       console.error('[background] Failed to persist active session source:', error)
     }
   }
-  if (sourceReboundWithoutEntry) {
-    // Suppress stale stats immediately, but defer resetSession() until the
-    // application queue has drained older derived hand writes. Those writes
-    // read service.session at execution time and must retain the old source's
-    // category.
-    service.invalidateStatsOutputContext()
-  }
   const foreignSessionEnd =
     isSessionEndSignal(rawApiTypeId) &&
     boundaryState.rawSessionSourceTabId !== undefined &&
     sourceTabId !== undefined &&
     boundaryState.rawSessionSourceTabId !== sourceTabId
+  if (
+    isEntryBoundary ||
+    rawApiTypeId === ApiType.EVT_DEAL ||
+    sourceReboundWithoutEntry ||
+    (isSessionEndSignal(rawApiTypeId) && !foreignSessionEnd)
+  ) {
+    // Session ids are not unique (ranked SNG/Ring reuse room ids), and the
+    // application queue can lag raw arrival. Advance a dedicated output epoch
+    // on every lifecycle/deal boundary before any queued calculation can
+    // publish under a deceptively identical id/filter/deal context. Metadata
+    // updates such as 308 on the same source intentionally do not advance it.
+    service.invalidateStatsOutputContext()
+  }
   applySessionActivity(
     rawApiTypeId,
     message,
@@ -589,12 +616,6 @@ const processEvent = async (
     isEntryBoundary
   )
 
-  if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS && !foreignSessionEnd) {
-    // Invalidate before the independently advancing application queue waits:
-    // any older stats transform that has not pushed yet must not repopulate
-    // the HUD after the raw session-end clear.
-    service.invalidateStatsOutputContext()
-  }
   if (isSessionEndSignal(rawApiTypeId) && !foreignSessionEnd) {
     boundaryState.rawSessionSourceTabId = undefined
     try {

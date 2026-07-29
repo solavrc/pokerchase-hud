@@ -203,6 +203,32 @@ describe('RawEntityReplay', () => {
     expect(replay.snapshot().replayEnded).toBe(false)
   })
 
+  test('does not restore an ended Friend SNG after a new 308 boundary', () => {
+    const replay = new RawEntityReplay(EMPTY_SESSION)
+    const result = replay.convertEvents([
+      makeEntry(500, BattleType.FRIEND_SIT_AND_GO, 'ended-friend-sng'),
+      makeDeal(510),
+      makeResult(520, 10),
+      { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 530 },
+      // A new 308 can be the only captured start boundary for the next
+      // instance. The minimal raw shape is enough to prove the lifecycle
+      // boundary even though it intentionally fails application parsing.
+      { ApiTypeId: ApiType.EVT_SESSION_DETAILS, timestamp: 540, Name: 'next match' },
+      makeDeal(550),
+      makeResult(560, 11),
+    ])
+
+    expect(result.hands.map(hand => hand.session.battleType)).toEqual([
+      BattleType.FRIEND_SIT_AND_GO,
+      undefined,
+    ])
+    expect(result.hands[1]?.session.id).toBeUndefined()
+    expect(replay.snapshot()).toEqual(expect.objectContaining({
+      replayEnded: false,
+      latestDealEvent: expect.objectContaining({ timestamp: 550 }),
+    }))
+  })
+
   test('does not let an explicit failed entry replace the active category', () => {
     const replay = new RawEntityReplay(EMPTY_SESSION)
     const result = replay.convertEvents([
