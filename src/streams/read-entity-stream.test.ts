@@ -21,6 +21,7 @@ import {
   getStatsOriginatingDeal,
   getStatsSessionFilterKey,
   setEventSessionScope,
+  setLineupSessionScope,
 } from '../utils/session-event-scope'
 
 const PLAYER_ID = 1
@@ -351,6 +352,69 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
       releaseCalculation()
       jest.restoreAllMocks()
       process.env.NODE_ENV = previousNodeEnv
+    }
+  })
+
+  test('a newer authoritative origin drops an older pending calculation', async () => {
+    const contextA = {
+      scopeKey: 'run-a',
+      id: 'tab-a',
+      battleType: BattleType.SIT_AND_GO,
+      startedAt: 1000,
+      originId: 'origin-a',
+    }
+    const contextB = {
+      scopeKey: 'run-b',
+      id: 'tab-b',
+      battleType: BattleType.RING_GAME,
+      startedAt: 2000,
+      originId: 'origin-b',
+    }
+    let authoritativeContext = contextA
+    service.setSessionOriginReconciler(() => authoritativeContext)
+    service.startSession(
+      contextA.id,
+      contextA.battleType,
+      contextA.startedAt,
+      contextA.scopeKey
+    )
+    service.sessionOnlyFilter = true
+
+    let releaseCalculation!: () => void
+    const calculationGate = new Promise<void>(resolve => { releaseCalculation = resolve })
+    let calculationStarted!: () => void
+    const started = new Promise<void>(resolve => { calculationStarted = resolve })
+    const originalCalcStats = service.statsOutputStream.calcStats
+    const dataSpy = jest.fn()
+    service.statsOutputStream.on('data', dataSpy)
+
+    try {
+      jest.spyOn(service.statsOutputStream, 'calcStats').mockImplementation(async (...args) => {
+        calculationStarted()
+        await calculationGate
+        return originalCalcStats(...args)
+      })
+      const lineup = [...SEAT_USER_IDS]
+      setLineupSessionScope(lineup, contextA)
+      service.statsOutputStream.write(lineup)
+      await started
+
+      authoritativeContext = contextB
+      service.startSession(
+        contextB.id,
+        contextB.battleType,
+        contextB.startedAt,
+        contextB.scopeKey
+      )
+      releaseCalculation()
+      await service.statsOutputStream.whenIdle()
+
+      expect(dataSpy).not.toHaveBeenCalled()
+      expect((service.statsOutputStream as any).statsCache.size).toBe(0)
+    } finally {
+      releaseCalculation()
+      service.statsOutputStream.off('data', dataSpy)
+      jest.restoreAllMocks()
     }
   })
 

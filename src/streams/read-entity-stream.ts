@@ -161,6 +161,9 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     const originatingScope = getLineupSessionScope(seatUserIds)
     const originatingDeal = getLineupOriginatingDeal(seatUserIds)
     try {
+      if (!this.service.isAuthoritativeSessionScope(originatingScope)) {
+        return
+      }
       // バッチモード中は統計計算をスキップ
       if (this.service.batchMode) {
         return
@@ -183,6 +186,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       if (useCache) {
         const cached = this.statsCache.get(cacheKey)
         if (cached && (now - cached.timestamp) < this.CACHE_DURATION_MS) {
+          if (!this.service.isAuthoritativeSessionScope(originatingScope)) return
           this.pushStats(cached.stats, sessionFilter, originatingDeal)
           return
         }
@@ -196,6 +200,11 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
         // 生のseatUserIds順序で統計を計算（フロントエンドで表示位置を調整）
         return await this.calcStats(seatUserIds, sessionFilter)
       })
+
+      // A newer login may become authoritative while the DB transaction is
+      // pending. The result is valid for its captured scope but stale for the
+      // live HUD, so do not cache or publish it.
+      if (!this.service.isAuthoritativeSessionScope(originatingScope)) return
 
       // キャッシュを更新
       this.statsCache.set(cacheKey, { stats, timestamp: now })

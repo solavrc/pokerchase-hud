@@ -8,6 +8,7 @@ import { ApiType } from '../types/api'
 import { BattleType } from '../types/game'
 import PokerChaseService, { PokerChaseDB } from '../app'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
+import { setEventSessionScope } from '../utils/session-event-scope'
 
 const expected: string = [
   // hand 1
@@ -716,4 +717,49 @@ test('ApiEventsからPokerStars形式のログを生成できる', async () => {
   await service.handLogStream.whenIdle()
   const actual = actualHandLogs
   expect(actual.join('\n')).toEqual(expected)
+})
+
+test('interleaved origin scopes keep independent hand-log processors', async () => {
+  const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
+  const service = new PokerChaseService({ db: dbMock })
+  const dealA = structuredClone(event_timeline.find(e => e.ApiTypeId === ApiType.EVT_DEAL)!)
+  const dealB = structuredClone(dealA)
+  dealB.SeatUserIds = dealB.SeatUserIds.map(id => id === -1 ? id : id + 10_000)
+  const actionA = structuredClone(event_timeline.find(e => e.ApiTypeId === ApiType.EVT_ACTION)!)
+  setEventSessionScope(dealA, {
+    scopeKey: 'run-a',
+    id: 'a',
+    battleType: BattleType.SIT_AND_GO,
+    startedAt: 100,
+    originId: 'origin-a',
+  })
+  setEventSessionScope(actionA, {
+    scopeKey: 'run-a',
+    id: 'a',
+    battleType: BattleType.SIT_AND_GO,
+    startedAt: 100,
+    originId: 'origin-a',
+  })
+  setEventSessionScope(dealB, {
+    scopeKey: 'run-b',
+    id: 'b',
+    battleType: BattleType.SIT_AND_GO,
+    startedAt: 200,
+    originId: 'origin-b',
+  })
+
+  service.handLogStream.write(dealA)
+  service.handLogStream.write(dealB)
+  await service.handLogStream.whenIdle()
+  const scopedStates = (service.handLogStream as any).scopedStates as Map<string, any>
+  const stateA = [...scopedStates.entries()].find(([key]) => key.startsWith('origin-a'))![1]
+  const stateB = [...scopedStates.entries()].find(([key]) => key.startsWith('origin-b'))![1]
+  const entriesABefore = stateA.processor.getCurrentHandEntries().length
+  const entriesBBefore = stateB.processor.getCurrentHandEntries().length
+
+  service.handLogStream.write(actionA)
+  await service.handLogStream.whenIdle()
+
+  expect(stateA.processor.getCurrentHandEntries().length).toBeGreaterThan(entriesABefore)
+  expect(stateB.processor.getCurrentHandEntries()).toHaveLength(entriesBBefore)
 })

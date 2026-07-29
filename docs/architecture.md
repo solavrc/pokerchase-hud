@@ -51,8 +51,9 @@
 transactionで行う。reconnect resendの判定はトップレベルの`sequence`を除く
 canonical payload全体の一致であり、時刻と種別だけでは重複とみなさない。
 
-複数ゲームタブが同時進行する場合に、各ハンドと終了イベントを元のセッションへ
-戻せるよう、保存行には予約フィールド`__pokerChaseHudSessionContext`を付与する。
+ゲームログインの切替前後に新旧タブのイベントが短時間交差しても、各ハンドと
+終了イベントを元のセッションへ戻せるよう、保存行には予約フィールド
+`__pokerChaseHudSessionContext`を付与する。
 これはwire payloadを書き換えるものではなく、HUDが受信時に確定した
 `scopeKey`/セッションID/ゲーム種別/開始境界/opaqueなbrowser-lifetime
 `originId`だけを保持するアプリケーションmetadataである（tab ID、プレイヤー情報、
@@ -68,7 +69,9 @@ context補完はcanonical replayの結果を変えるRaw Lake更新として扱�
 ライブの`AggregateEventsStream`も`originId`と`scopeKey`の組ごとに独立した
 DEAL〜HAND_RESULTSバッファを持つ。失効前後のタブからイベントが短時間交差しても、
 別originのDEALが進行中ハンドを上書きせず、ライブ導出とcanonical rebuildの
-session attributionを一致させる。
+session attributionを一致させる。新しいoriginを受理した時点で、それだけが
+HUD/statのauthoritative live sessionになる。古いoriginは既にbufferされたhandを
+元scopeで完結・保存できるだけで、新origin終了後もactiveへ復帰しない。
 
 `timestamp`はWebSocket message decode直後の`Date.now()`なので、異なるevent typeが
 同一millisecondになる。主キー・exportはApiTypeId順へ並べるため、stateful readerは

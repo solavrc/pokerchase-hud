@@ -6,6 +6,7 @@ import { RealTimeStatsStream } from './realtime-stats-stream'
 import { setHandImprovementHeroHoleCards } from '../realtime-stats/hand-improvement'
 import { ApiType, PhaseType, RankType } from '../types'
 import type { ApiHandEvent } from '../types'
+import { setEventSessionScope } from '../utils/session-event-scope'
 
 describe('RealTimeStatsStream', () => {
   let stream: RealTimeStatsStream
@@ -79,6 +80,71 @@ describe('RealTimeStatsStream', () => {
       expect(outputs).toHaveLength(3)
       expect(outputs[0].stats).toEqual({ heroStats: {}, playerStats: {} })
       expect(Object.keys(outputs[2].stats.heroStats)).not.toHaveLength(0)
+    })
+
+    test('interleaved origin scopes keep independent current-hand state', async () => {
+      const dealA = structuredClone(heroDeal)
+      const dealB = structuredClone(heroDeal)
+      dealB.SeatUserIds = [201, 202, -1, -1, -1, -1]
+      setEventSessionScope(dealA, {
+        scopeKey: 'run-a',
+        id: 'a',
+        battleType: 0,
+        startedAt: 100,
+        originId: 'origin-a',
+      })
+      setEventSessionScope(dealB, {
+        scopeKey: 'run-b',
+        id: 'b',
+        battleType: 0,
+        startedAt: 200,
+        originId: 'origin-b',
+      })
+
+      stream.write(dealA)
+      stream.write(dealB)
+      await stream.whenIdle()
+
+      const scopedStreams = (stream as unknown as {
+        scopedStreams: Map<string, { heroPlayerId?: number }>
+      }).scopedStreams
+      expect([...scopedStreams.values()].map(child => child.heroPlayerId).sort())
+        .toEqual([101, 201])
+    })
+
+    test('only the authoritative scope can publish realtime HUD output', async () => {
+      const authoritativeStream = new RealTimeStatsStream(
+        scope => scope?.originId === 'origin-b'
+      )
+      const outputs: any[] = []
+      authoritativeStream.on('data', data => outputs.push(data))
+      const dealA = structuredClone(heroDeal)
+      const dealB = structuredClone(heroDeal)
+      dealB.SeatUserIds = [201, 202, -1, -1, -1, -1]
+      setEventSessionScope(dealA, {
+        scopeKey: 'run-a',
+        id: 'a',
+        battleType: 0,
+        startedAt: 100,
+        originId: 'origin-a',
+      })
+      setEventSessionScope(dealB, {
+        scopeKey: 'run-b',
+        id: 'b',
+        battleType: 0,
+        startedAt: 200,
+        originId: 'origin-b',
+      })
+
+      authoritativeStream.write(dealA)
+      authoritativeStream.write(dealB)
+      await authoritativeStream.whenIdle()
+
+      // The authoritative DEAL emits its normal clear + populated update.
+      // The older scope would add another pair if it leaked through.
+      expect(outputs).toHaveLength(2)
+      expect(Object.keys(outputs[1].stats.heroStats)).not.toHaveLength(0)
+      authoritativeStream.reset()
     })
   })
 

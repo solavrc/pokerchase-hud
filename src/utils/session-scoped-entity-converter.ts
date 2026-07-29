@@ -40,7 +40,7 @@ export class SessionScopedEntityConverter {
         scopeKey: context.scopeKey,
         id: context.id,
         battleType: context.battleType,
-        name: undefined,
+        name: context.name,
         players: new Map(),
         reset: () => { },
       })

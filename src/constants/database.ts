@@ -98,8 +98,8 @@ export type DbOperationType = 'import' | 'export' | 'sync' | 'rebuild'
  * Raw Event Lakeからの再構築が必要。
  *
  * version 7: 各Handへorigin別の一意な`session.scopeKey`を保存し、
- * 同じPokerChase session IDを再利用する同時進行runを「最新」フィルターで
- * 区別する。既存handにもRaw Event Lakeのorigin contextからの再導出が必要。
+ * ログイン切替前後に交差する新旧タブのイベントを「最新」フィルターで
+ * 混同しない。既存handにもRaw Event Lakeのorigin contextからの再導出が必要。
  *
  * インクリメントすると、拡張機能の更新後に既存ユーザーへ一度だけ
  * 「データ再構築」の実行を促すアドバイソリーが表示される

@@ -43,6 +43,10 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
   let onMessageHandler: (message: any) => Promise<void>
   let connectListener: (port: any) => void
   let tabRemovedHandler: (tabId: number) => Promise<void>
+  let tabUpdatedHandler: (
+    tabId: number,
+    changeInfo: { url?: string }
+  ) => Promise<void> | void
   let disconnectHandlers: Array<() => void>
   let mockPort: any
 
@@ -61,10 +65,12 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
 
     ;(chrome.runtime as any).onConnect = { addListener: jest.fn() }
     ;(chrome.tabs as any).onRemoved = { addListener: jest.fn() }
+    ;(chrome.tabs as any).onUpdated = { addListener: jest.fn() }
     registerEventIngestion(service)
     await service.sessionOriginsReady
     connectListener = (chrome.runtime as any).onConnect.addListener.mock.calls[0][0]
     tabRemovedHandler = (chrome.tabs as any).onRemoved.addListener.mock.calls[0][0]
+    tabUpdatedHandler = (chrome.tabs as any).onUpdated.addListener.mock.calls[0][0]
 
     disconnectHandlers = []
     mockPort = {
@@ -110,6 +116,32 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(handLogSpy).toHaveBeenCalledTimes(1)
     expect(aggregateSpy).toHaveBeenCalledTimes(1)
     expect(realTimeSpy).toHaveBeenCalledTimes(1)
+  })
+
+  test('a stored 201 with a widened raw shape starts the scope before schema validation', async () => {
+    const invalidEntry = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 211,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'raw-first-session',
+      // IsRetire is deliberately absent so the current Zod schema rejects it.
+    }
+    await onMessageHandler(invalidEntry)
+
+    const deal = structuredClone(MTT_TABLE_MOVE_FIXTURE.events[3]!)
+    deal.timestamp = 212
+    await onMessageHandler(deal)
+
+    const storedEntry = await db.apiEvents.get([211, ApiType.EVT_ENTRY_QUEUED, 0]) as any
+    const storedDeal = await db.apiEvents.get([212, ApiType.EVT_DEAL, 0]) as any
+    expect(storedEntry.__pokerChaseHudSessionContext).toMatchObject({
+      id: 'raw-first-session',
+      startedAt: 211,
+    })
+    expect(storedDeal.__pokerChaseHudSessionContext).toEqual(
+      storedEntry.__pokerChaseHudSessionContext
+    )
   })
 
   test('same-millisecond reused session ids receive origin-specific scope keys', async () => {
@@ -177,10 +209,11 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-b', startedAt: 2000 })
 
     // 309の詳細が将来壊れてparseできない場合でも、raw ApiTypeIdとoriginで
-    // tab Bだけを閉じ、進行中のtab Aへscopeを戻す。
+    // tab Bだけを閉じる。古いtab Aは保持済みhandの帰属先に留まり、
+    // authoritative sessionへは戻さない。
     await secondHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 3000 })
-    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-a', startedAt: 1000 })
-    expect(isSafeToUpdate()).toBe(false)
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(isSafeToUpdate()).toBe(true)
 
     await onMessageHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 4000 })
     expect(service.getCurrentSessionScope()).toBeUndefined()
@@ -228,6 +261,54 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     setLastKnownStats([])
   })
 
+  test('a delayed older-origin entry cannot reclaim authority from the newest origin', async () => {
+    const secondPort = {
+      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      sender: { tab: { id: 202 } },
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn(),
+    }
+    mockPort.sender = { tab: { id: 101 } }
+    connectListener(secondPort)
+    const secondHandler = secondPort.onMessage.addListener.mock.calls[0][0]
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'old-tab',
+      IsRetire: false,
+    })
+    await secondHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 2000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'new-tab',
+      IsRetire: false,
+    })
+
+    // This frame was queued by the old logged-out tab before the newer login
+    // became authoritative, then reached the worker late.
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1500,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'old-tab-delayed',
+      IsRetire: false,
+    })
+
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'new-tab', startedAt: 2000 })
+    const stored = await db.apiEvents.get([1500, ApiType.EVT_ENTRY_QUEUED, 0]) as any
+    expect(stored.__pokerChaseHudSessionContext).toMatchObject({
+      id: 'old-tab-delayed',
+      startedAt: 1500,
+    })
+  })
+
   test('an entry cancellation only closes its originating tab session', async () => {
     const secondPort = {
       name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
@@ -260,8 +341,8 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
 
     await onMessageHandler({ ApiTypeId: 203, timestamp: 3000 })
 
-    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-b', startedAt: 1000 })
-    expect(isSafeToUpdate()).toBe(false)
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(isSafeToUpdate()).toBe(true)
   })
 
   test('same-origin MTT table moves preserve the original session boundary', async () => {
@@ -368,7 +449,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       timestamp: 4000,
     })
 
-    expect(service.getCurrentSessionScope()).toEqual({ id: 'mtt-6078', startedAt: 1000 })
+    expect(service.getCurrentSessionScope()).toBeUndefined()
   })
 
   test('tab close releases its scope while a port disconnect alone preserves it', async () => {
@@ -399,6 +480,43 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
         startedAt: 1000,
         originId: entry.__pokerChaseHudSessionContext.originId,
       },
+    })
+  })
+
+  test('cross-origin tab navigation closes the scope while same-origin navigation preserves it', async () => {
+    const gamePort = {
+      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      sender: {
+        url: 'https://game.poker-chase.com/play/index.html',
+        tab: { id: 202, url: 'https://game.poker-chase.com/play/index.html' },
+      },
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn(),
+    }
+    connectListener(gamePort)
+    const gameHandler = gamePort.onMessage.addListener.mock.calls[0][0]
+    await gameHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'navigating-tab',
+      IsRetire: false,
+    })
+
+    tabUpdatedHandler(202, {
+      url: 'https://game.poker-chase.com/play/another-table',
+    })
+    expect(isSafeToUpdate()).toBe(false)
+
+    await tabUpdatedHandler(202, { url: 'https://example.com/' })
+    expect(isSafeToUpdate()).toBe(true)
+    const closure = (await db.apiEvents.toArray()).find(event =>
+      (event as any).__pokerChaseHudClosureReason === 'tab-navigated'
+    ) as any
+    expect(closure.__pokerChaseHudSessionContext).toMatchObject({
+      id: 'navigating-tab',
     })
   })
 
@@ -518,7 +636,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       .toBe(second.__pokerChaseHudSessionContext.originId)
   })
 
-  test('tab close rebroadcasts the restored origin lineup immediately', async () => {
+  test('closing the newest tab does not restore an older origin lineup', async () => {
     const secondPort = {
       name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
       sender: { tab: { id: 202 } },
@@ -561,12 +679,21 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
 
     await tabRemovedHandler(202)
 
-    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-a', startedAt: 1000 })
-    expect(statsWriteSpy).toHaveBeenCalledWith(firstDeal.SeatUserIds)
-    expect(service.liveEvtDeal).toEqual(firstDeal)
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(statsWriteSpy).not.toHaveBeenCalled()
+    expect(service.isSessionDisplayDealAvailable()).toBe(false)
+
+    const delayedOldDeal = structuredClone(firstDeal)
+    delayedOldDeal.timestamp = 5000
+    await onMessageHandler(delayedOldDeal)
+
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(isSafeToUpdate()).toBe(true)
+    expect(statsWriteSpy).not.toHaveBeenCalled()
+    expect(service.isSessionDisplayDealAvailable()).toBe(false)
   })
 
-  test('session results rebroadcast the restored origin lineup immediately', async () => {
+  test('newest session results do not restore an older origin lineup', async () => {
     const secondPort = {
       name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
       sender: { tab: { id: 202 } },
@@ -606,12 +733,12 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       timestamp: 4000,
     })
 
-    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-a', startedAt: 1000 })
-    expect(statsWriteSpy).toHaveBeenCalledWith(firstDeal.SeatUserIds)
-    expect(service.liveEvtDeal).toEqual(firstDeal)
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(statsWriteSpy).not.toHaveBeenCalled()
+    expect(service.isSessionDisplayDealAvailable()).toBe(false)
   })
 
-  test('restoring an older origin also restores its player metadata', async () => {
+  test('ending the newest origin does not restore older player metadata', async () => {
     const secondPort = {
       name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
       sender: { tab: { id: 202 } },
@@ -655,10 +782,8 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       timestamp: 3000,
     })
 
-    expect(service.session.players.get(restoredUser.UserId)).toEqual({
-      name: 'Restored Player',
-      rank: restoredUser.Rank.RankId,
-    })
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(service.session.players.get(restoredUser.UserId)).toBeUndefined()
   })
 
   test('worker restart restores the selected origin deal before a new event arrives', async () => {
@@ -744,7 +869,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     failedRestoreService.db.close()
   })
 
-  test('a DEAL warm-up calculates with its originating scope', async () => {
+  test('an older origin DEAL does not warm the authoritative HUD', async () => {
     const secondPort = {
       name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
       sender: { tab: { id: 202 } },
@@ -784,11 +909,6 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       Id: 'shared-room',
       IsRetire: false,
     })
-    const originAContext = (await db.apiEvents.get([
-      1000,
-      ApiType.EVT_ENTRY_QUEUED,
-      0,
-    ]) as any).__pokerChaseHudSessionContext
     await secondHandler({
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
       timestamp: 2000,
@@ -805,17 +925,8 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
     await service.statsOutputStream.whenIdle()
 
-    expect(calcStatsSpy).toHaveBeenCalledWith(
-      deal.SeatUserIds,
-      {
-        enabled: true,
-        scope: expect.objectContaining({
-          scopeKey: originAContext.scopeKey,
-          id: 'shared-room',
-          startedAt: 1000,
-        }),
-      }
-    )
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'shared-room', startedAt: 2000 })
+    expect(calcStatsSpy).not.toHaveBeenCalled()
   })
 
   test('a completed hand keeps the session scope of its originating tab', async () => {
@@ -873,13 +984,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       battleType: BattleType.SIT_AND_GO,
     })
     expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-b', startedAt: 2000 })
-    expect(calcStatsSpy).toHaveBeenCalledWith(
-      expect.any(Array),
-      expect.objectContaining({
-        enabled: true,
-        scope: expect.objectContaining({ id: 'tab-a', startedAt: 1000 }),
-      })
-    )
+    expect(calcStatsSpy).not.toHaveBeenCalled()
   })
 
   test('a completed hand keeps the session name of its originating tab', async () => {

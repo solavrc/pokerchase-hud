@@ -39,6 +39,31 @@ describe('raw event session context', () => {
     })
   })
 
+  test('canonical conversion applies a later raw-context name without a 308 event', () => {
+    const context = {
+      scopeKey: 'run:4:ring:100',
+      id: 'ring',
+      battleType: BattleType.RING_GAME,
+      startedAt: 100,
+    }
+    const [deal, action, results] = MTT_TABLE_MOVE_FIXTURE.events
+      .slice(3, 6)
+      .map(event => structuredClone(event))
+    const converter = new SessionScopedEntityConverter({
+      players: new Map(),
+      reset: () => {},
+    })
+
+    const entities = converter.convertEventsToEntities([
+      withRawEventSessionContext(deal!, context),
+      withRawEventSessionContext(action!, { ...context, name: 'Recovered Table' }),
+      withRawEventSessionContext(results!, { ...context, name: 'Recovered Table' }),
+    ])
+
+    expect(entities.hands).toHaveLength(1)
+    expect(entities.hands[0]!.session.name).toBe('Recovered Table')
+  })
+
   test('canonical conversion isolates identical MTT scopes by origin', () => {
     const contextA = {
       scopeKey: 'mtt:shared',

@@ -113,7 +113,27 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
     expect(service.session.active).toBe(false)
   })
 
-  test('restores the previous active scope when interleaved replay results close the latest one', async () => {
+  test('keeps the persisted hero anchor when the restored active scope has no DEAL', async () => {
+    const previousDeal = structuredClone(FIRST_HAND_EVENTS[0]) as ApiEvent<ApiType.EVT_DEAL>
+    service.latestEvtDeal = previousDeal
+    const writeSpy = jest.spyOn(service.statsOutputStream, 'write')
+    await db.apiEvents.add({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 5000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'new-scope-without-deal',
+      IsRetire: false,
+    } as ApiEvent)
+
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.latestEvtDeal).toBe(previousDeal)
+    expect(service.isSessionDisplayDealAvailable()).toBe(false)
+    expect(writeSpy).not.toHaveBeenCalled()
+  })
+
+  test('does not restore an older scope when replay closes the latest one', async () => {
     await db.apiEvents.bulkAdd([
       {
         ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
@@ -139,8 +159,8 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
 
     await (autoSyncService as any).rebuildLocalEntities()
 
-    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-a', startedAt: 1000 })
-    expect(service.session.battleType).toBe(BattleType.SIT_AND_GO)
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(service.session.active).toBe(false)
   })
 
   test('uses persisted origin context when an earlier concurrent scope ends first', async () => {
@@ -203,7 +223,7 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
     expect(service.session.players.size).toBeGreaterThan(0)
   })
 
-  test('restores metadata when the latest replay scope ends and an older scope survives', async () => {
+  test('does not restore older metadata when the latest replay scope ends', async () => {
     const contextA = {
       scopeKey: 'run:0:tab-a:1000',
       id: 'tab-a',
@@ -259,9 +279,9 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
 
     await (autoSyncService as any).rebuildLocalEntities()
 
-    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-a', startedAt: 1000 })
-    expect(service.session.name).toBe('Table A')
-    expect([...service.session.players.values()]).not.toHaveLength(0)
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(service.session.name).toBeUndefined()
+    expect(service.session.players.size).toBe(0)
   })
 
   test('a durable tab-close tombstone keeps its scope closed after browser restart', async () => {

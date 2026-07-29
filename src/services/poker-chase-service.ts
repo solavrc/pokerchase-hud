@@ -32,6 +32,7 @@ import {
   isHandInSessionScope,
   setLineupSessionScope,
   type ActiveSessionScope,
+  type EventSessionScope,
 } from '../utils/session-event-scope'
 
 /** Serialized shape of a single session's player-info entry (persisted as an array tuple). */
@@ -450,6 +451,26 @@ class PokerChaseService {
       : 'inactive'
   }
 
+  /**
+   * Live origin tracking is authoritative for UI/stat commits. Historical
+   * scopes may still complete and persist queued hands, but must not mutate
+   * the selected session or publish HUD output after a newer login wins.
+   */
+  readonly isAuthoritativeSessionScope = (
+    scope: EventSessionScope | undefined
+  ): boolean => {
+    const liveContext = this.sessionOriginReconciler?.()
+    if (liveContext === null) return false
+    if (liveContext === undefined) return true
+    if (!scope) return false
+    if (liveContext.scopeKey !== undefined || scope.scopeKey !== undefined) {
+      return liveContext.scopeKey === scope.scopeKey &&
+        liveContext.originId === scope.originId
+    }
+    return liveContext.id === scope.id &&
+      liveContext.startedAt === scope.startedAt
+  }
+
   readonly isHandInCurrentSession = (hand: Pick<Hand, 'session' | 'approxTimestamp'>): boolean => {
     const scope = this.getCurrentSessionFilterScope()
     return isHandInSessionScope(hand, scope)
@@ -608,7 +629,9 @@ class PokerChaseService {
     this.handAggregateStream = new AggregateEventsStream(this)
     this.statsOutputStream = new ReadEntityStream(this)
     this.handLogStream = new HandLogStream(this)
-    this.realTimeStatsStream = new RealTimeStatsStream()
+    this.realTimeStatsStream = new RealTimeStatsStream(
+      scope => this.isAuthoritativeSessionScope(scope)
+    )
 
     // Main pipeline for stats calculation
     this.writeEntityStream = new WriteEntityStream(this)

@@ -16,6 +16,13 @@ import {
 } from '../types/hand-log'
 import { ErrorHandler } from '../utils/error-handler'
 import { HandLogContext, HandLogProcessor } from '../utils/hand-log-processor'
+import { getEventSessionScope } from '../utils/session-event-scope'
+
+type HandLogScopeState = {
+  context: HandLogContext
+  players: Map<number, { name: string; rank: string }>
+  processor: HandLogProcessor
+}
 
 // セッション終了をトリガーするイベントタイプ
 const SESSION_END_EVENTS = [ApiType.EVT_SESSION_RESULTS] as const
@@ -37,6 +44,7 @@ export class HandLogStream extends SimpleTransform<ApiEvent, HandLogEvent> {
   private service: PokerChaseService
   private processor: HandLogProcessor
   private completedHands: HandLogEntry[][] = []
+  private readonly scopedStates = new Map<string, HandLogScopeState>()
 
   constructor(service: PokerChaseService) {
     super()
@@ -51,9 +59,12 @@ export class HandLogStream extends SimpleTransform<ApiEvent, HandLogEvent> {
       return
     }
     try {
-      const newEntries = this.processor.processSingleEvent(event)
+      const scoped = this.scopedStateFor(event)
+      const processor = scoped?.state.processor ?? this.processor
+      const newEntries = processor.processSingleEvent(event)
       if (SESSION_END_EVENTS.includes(event.ApiTypeId as any)) {
-        this.handleSessionEnd()
+        this.handleSessionEnd(scoped?.state)
+        if (scoped) this.scopedStates.delete(scoped.key)
       } else {
         switch (event.ApiTypeId) {
           case ApiType.EVT_DEAL:
@@ -64,8 +75,8 @@ export class HandLogStream extends SimpleTransform<ApiEvent, HandLogEvent> {
             }
             break
           case ApiType.EVT_HAND_RESULTS: {
-            if (this.processor.isHandComplete() && isApiEventType(event, ApiType.EVT_HAND_RESULTS)) {
-              const allEntries = this.processor.getCurrentHandEntries()
+            if (processor.isHandComplete() && isApiEventType(event, ApiType.EVT_HAND_RESULTS)) {
+              const allEntries = processor.getCurrentHandEntries()
               this.completedHands.push(allEntries)
               const maxHands = this.service.handLogConfig?.maxHands || DEFAULT_HAND_LOG_CONFIG.maxHands
               if (this.completedHands.length > maxHands) {
@@ -73,7 +84,7 @@ export class HandLogStream extends SimpleTransform<ApiEvent, HandLogEvent> {
               }
               this.emitHandLogEvent('update', allEntries, event.HandId)
               // Reset only hand-specific state, preserving session state
-              this.processor.resetHandState()
+              processor.resetHandState()
             }
             break
           }
@@ -82,6 +93,58 @@ export class HandLogStream extends SimpleTransform<ApiEvent, HandLogEvent> {
     } catch (error: unknown) {
       this.handleError(error)
     }
+  }
+
+  private scopedStateFor(
+    event: ApiEvent
+  ): { key: string; state: HandLogScopeState } | undefined {
+    const scope = getEventSessionScope(event)
+    if (!scope) return undefined
+    const key = scope.originId
+      ? `${scope.originId}\u0000${scope.scopeKey ?? `${scope.id}@${scope.startedAt}`}`
+      : scope.scopeKey ?? `${scope.id}@${scope.startedAt}`
+    let state = this.scopedStates.get(key)
+    if (!state) {
+      const players = new Map<number, { name: string; rank: string }>()
+      const context: HandLogContext = {
+        session: {
+          scopeKey: scope.scopeKey,
+          id: scope.id,
+          battleType: scope.battleType,
+          name: scope.name,
+          players,
+          reset: () => players.clear(),
+        },
+        handLogConfig: this.service.handLogConfig,
+        playerId: this.service.playerId,
+      }
+      state = {
+        context,
+        players,
+        processor: new HandLogProcessor(context),
+      }
+      this.scopedStates.set(key, state)
+    }
+
+    if (scope.name !== undefined) state.context.session.name = scope.name
+    if (event.ApiTypeId === ApiType.EVT_SESSION_DETAILS) {
+      state.context.session.name = event.Name
+    } else if (event.ApiTypeId === ApiType.EVT_PLAYER_SEAT_ASSIGNED) {
+      for (const player of event.TableUsers ?? []) {
+        state.players.set(player.UserId, {
+          name: player.UserName,
+          rank: player.Rank.RankId,
+        })
+      }
+    } else if (event.ApiTypeId === ApiType.EVT_PLAYER_JOIN && event.JoinUser) {
+      state.players.set(event.JoinUser.UserId, {
+        name: event.JoinUser.UserName,
+        rank: event.JoinUser.Rank.RankId,
+      })
+    } else if (event.ApiTypeId === ApiType.EVT_DEAL && event.Player) {
+      state.context.playerId = event.SeatUserIds[event.Player.SeatIndex]
+    }
+    return { key, state }
   }
 
   /**
@@ -99,15 +162,20 @@ export class HandLogStream extends SimpleTransform<ApiEvent, HandLogEvent> {
   /**
    * セッション終了を処理
    */
-  private handleSessionEnd() {
+  private handleSessionEnd(state?: HandLogScopeState) {
+    const processor = state?.processor ?? this.processor
     // セッションが終了した場合、未完了のハンドのみクリア
-    if (!this.processor.isHandComplete()) {
-      const incompleteEntries = this.processor.getCurrentHandEntries()
+    if (!processor.isHandComplete()) {
+      const incompleteEntries = processor.getCurrentHandEntries()
       
       // 未完了のハンドがある場合
       if (incompleteEntries.length > 0) {
         // プロセッサーをリセット
-        this.processor = new HandLogProcessor(this.createContext())
+        if (state) {
+          state.processor = new HandLogProcessor(state.context)
+        } else {
+          this.processor = new HandLogProcessor(this.createContext())
+        }
         
         // 未完了のハンドのみを削除するイベントを発行
         // handIdがundefinedのエントリを削除するように指示

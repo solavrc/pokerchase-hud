@@ -1615,7 +1615,12 @@ export class AutoSyncService {
       const dealForCurrentScope = currentScopeKey
         ? latestDealByScope.get(currentScopeKey)
         : latestDealEvent
-      this.restoreLatestDeal(service, dealForCurrentScope, currentScopeKey !== undefined)
+      this.restoreLatestDeal(
+        service,
+        dealForCurrentScope,
+        currentScopeKey !== undefined,
+        currentScopeKey !== undefined
+      )
       console.log(`[AutoSync] Chunked data rebuild completed (${totalEventCount} events)`)
     } catch (error) {
       console.error('[AutoSync] Data rebuild error:', error)
@@ -1660,38 +1665,24 @@ export class AutoSyncService {
       rawApiTypeId === ApiType.EVT_SESSION_RESULTS ||
       rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID
     ) {
+      const endedKey = context
+        ? getReplaySessionKey(context.scopeKey, context.originId)
+        : replaySessions.currentKey
       if (context) {
-        replaySessions.scopes.delete(
-          getReplaySessionKey(context.scopeKey, context.originId)
-        )
+        replaySessions.scopes.delete(endedKey!)
       } else if (replaySessions.currentKey) {
         // Legacy rows have no origin metadata. Retain the historical
         // most-recent-scope fallback without applying it to context-aware
         // rows, whose ending identity is explicit.
         replaySessions.scopes.delete(replaySessions.currentKey)
       }
-      const previous = [...replaySessions.scopes.values()]
-        .sort((a, b) => b.sequence - a.sequence)[0]
-      if (previous && typeof service.startSession === 'function') {
-        const previousKey = getReplaySessionKey(previous.scopeKey, previous.originId)
-        const selectionChanged = replaySessions.currentKey !== previousKey
-        replaySessions.currentKey = previousKey
-        if (selectionChanged) {
-          service.startSession(
-            previous.id,
-            previous.battleType,
-            previous.startedAt,
-            previous.scopeKey
-          )
-          if (previous.name !== undefined) {
-            service.session.setName(previous.name)
-          }
-          previous.players.forEach((player, playerId) => {
-            service.session.setPlayer(playerId, player)
-          })
-        }
-      } else if (typeof service.endSession === 'function') {
-        replaySessions.currentKey = undefined
+      if (endedKey !== replaySessions.currentKey) return
+
+      // Historical origins remain available only to attribute/finish their
+      // queued hands. Ending the newest authoritative replay scope never
+      // promotes an older origin back into live HUD/stat state.
+      replaySessions.currentKey = undefined
+      if (typeof service.endSession === 'function') {
         service.endSession()
       } else {
         service.session.reset()
@@ -1774,7 +1765,8 @@ export class AutoSyncService {
   private restoreLatestDeal(
     service: any,
     latestDealEvent?: ApiEvent,
-    clearWhenMissing = false
+    clearWhenMissing = false,
+    displayScopeActive = true
   ): void {
     if (!service) return
 
@@ -1798,10 +1790,20 @@ export class AutoSyncService {
         const playerId = latestDealEvent.SeatUserIds?.[playerSeatIndex]
         if (playerId && playerId !== -1) service.playerId = playerId
       }
-    } else if (clearWhenMissing) {
-      // Do not retain another concurrent scope's seated lineup when the
-      // surviving active scope has not dealt a hand yet.
-      service.latestEvtDeal = undefined
+    }
+
+    if (!displayScopeActive) {
+      service.markSessionDisplayDealUnavailable()
+      return
+    }
+
+    if (!latestDealEvent && clearWhenMissing) {
+      // Keep the persistent hero anchor for pre-game identity, but do not
+      // reuse it as the selected scope's display context when that scope has
+      // not dealt yet. Clearing latestEvtDeal here permanently discarded the
+      // only persisted hero identity across a rebuild.
+      service.markSessionDisplayDealUnavailable()
+      return
     }
 
     if (service.latestEvtDeal?.SeatUserIds) {

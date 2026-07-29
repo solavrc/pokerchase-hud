@@ -247,7 +247,7 @@ WebSocket Events (from content_script)
 
 **Event Order Handling:**
 
-- **AggregateEventsStream**: Buffers events until hand boundaries (EVT_HAND_RESULTS), independently per `(originId, scopeKey)` so stale/new tab handoffs cannot fuse concurrent live hands
+- **AggregateEventsStream**: Buffers events until hand boundaries (EVT_HAND_RESULTS), independently per `(originId, scopeKey)` so stale/new tab handoffs cannot fuse queued old-origin events into the new live hand. The newest accepted origin is the sole authoritative HUD/stat session; an older origin may only finish its already-buffered hand under its original scope and is never restored as active after the newer origin ends.
 - **Incomplete Data**: Streams handle missing player info gracefully
 - **Late Arrivals**: Session info updates retroactively when received
 - **Duplicate Prevention**: reconnect resends are identified by canonical payload content (ignoring storage-only `sequence`), not by timestamp+ApiTypeId alone. Distinct payloads sharing the same millisecond and type are both retained; identical payloads with context from different origins are also retained as separate observations, while contextless legacy rows can still be enriched in place.

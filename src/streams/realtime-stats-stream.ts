@@ -11,7 +11,16 @@ import { ActionType, ApiType, BetStatusType, PhaseType } from '../types'
 import { RealTimeStatsService } from '../realtime-stats/realtime-stats-service'
 import type { RealTimeStats, AllPlayersRealTimeStats } from '../realtime-stats/realtime-stats-service'
 import { setHandImprovementHeroHoleCards } from '../realtime-stats'
+import {
+  getEventSessionScope,
+  type EventSessionScope,
+} from '../utils/session-event-scope'
 
+type RealTimeStatsOutput = {
+  handId?: number
+  stats: AllPlayersRealTimeStats
+  timestamp: number
+}
 
 /**
  * Stream that processes hand events and outputs real-time statistics
@@ -20,7 +29,7 @@ import { setHandImprovementHeroHoleCards } from '../realtime-stats'
  * 2. Community cards are present (flop or later)
  * 3. Session is active (not ended)
  */
-export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: number; stats: AllPlayersRealTimeStats; timestamp: number }> {
+export class RealTimeStatsStream extends SimpleTransform<ApiEvent, RealTimeStatsOutput> {
   private heroPlayerId?: number
   private heroHoleCards?: number[]
   private currentHandId?: number
@@ -35,12 +44,48 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
   private seatChips: number[] = []  // Track chip stacks for each seat
   private seatBetStatuses: Array<BetStatusType | undefined> = []  // Track whether each seat can still act
   private seatUserIds: number[] = []  // Track user IDs for each seat
+  private readonly scopedStreams = new Map<string, RealTimeStatsStream>()
+  private readonly isScopedChild: boolean
+  private readonly isAuthoritativeScope: (
+    scope: EventSessionScope | undefined
+  ) => boolean
 
-  constructor() {
+  constructor(
+    isAuthoritativeScope: (
+      scope: EventSessionScope | undefined
+    ) => boolean = () => true,
+    isScopedChild = false
+  ) {
     super()
+    this.isAuthoritativeScope = isAuthoritativeScope
+    this.isScopedChild = isScopedChild
   }
 
   protected async transform(event: ApiEvent): Promise<void> {
+    if (!this.isScopedChild) {
+      const scope = getEventSessionScope(event)
+      if (scope) {
+        const scopeKey = scope.originId
+          ? `${scope.originId}\u0000${scope.scopeKey ?? `${scope.id}@${scope.startedAt}`}`
+          : scope.scopeKey ?? `${scope.id}@${scope.startedAt}`
+        let scopedStream = this.scopedStreams.get(scopeKey)
+        if (!scopedStream) {
+          scopedStream = new RealTimeStatsStream(() => true, true)
+          scopedStream.on('data', output => {
+            if (this.isAuthoritativeScope(scope)) this.push(output)
+          })
+          scopedStream.on('error', error => this.handleError(error))
+          this.scopedStreams.set(scopeKey, scopedStream)
+        }
+        scopedStream.write(event)
+        await scopedStream.whenIdle()
+        if (event.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+          this.scopedStreams.delete(scopeKey)
+        }
+        return
+      }
+    }
+
     try {
       // Handle session events separately due to TypeScript limitations
       const eventType = (event as any).ApiTypeId
@@ -344,7 +389,7 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
         this.seatBetStatuses
       )
 
-      const output: { handId?: number; stats: AllPlayersRealTimeStats; timestamp: number } = {
+      const output: RealTimeStatsOutput = {
         handId: this.currentHandId,
         stats: allPlayersStats,
         timestamp: Date.now()
@@ -407,6 +452,10 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
   }
 
   reset() {
+    for (const scopedStream of this.scopedStreams.values()) {
+      scopedStream.reset()
+    }
+    this.scopedStreams.clear()
     this.heroPlayerId = undefined
     this.heroHoleCards = undefined
     this.currentHandId = undefined

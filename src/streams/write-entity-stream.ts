@@ -76,7 +76,12 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
         originatingDeal ? getEventSessionScope(originatingDeal) : undefined,
         originatingDeal
       )
-      this.push(hand.seatUserIds)
+      const originatingScope = originatingDeal
+        ? getEventSessionScope(originatingDeal)
+        : undefined
+      if (this.service.isAuthoritativeSessionScope(originatingScope)) {
+        this.push(hand.seatUserIds)
+      }
     } catch (error: unknown) {
       const context: ErrorContext = {
         streamName: 'WriteEntityStream',

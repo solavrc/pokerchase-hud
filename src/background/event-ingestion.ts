@@ -21,7 +21,6 @@ import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
 import { getOperationState } from './operation-state'
 import {
   setEventSessionScope,
-  setLineupSessionScope,
   type EventSessionScope,
 } from '../utils/session-event-scope'
 import {
@@ -79,7 +78,6 @@ type TrackedSessionScope = {
 
 type SessionSelectionResult = {
   selectionChanged: boolean
-  scope?: TrackedSessionScope
 }
 
 const createOriginId = (): string =>
@@ -91,16 +89,8 @@ const broadcastSessionSelection = (
   restored: SessionSelectionResult
 ): void => {
   if (!restored.selectionChanged) return
-  if (restored.scope?.latestDeal) {
-    service.liveEvtDeal = restored.scope.latestDeal
-    setLineupSessionScope(
-      restored.scope.latestDeal.SeatUserIds,
-      restored.scope,
-      restored.scope.latestDeal
-    )
-    service.statsOutputStream.write(restored.scope.latestDeal.SeatUserIds)
-    return
-  }
+  service.liveEvtDeal = undefined
+  service.markSessionDisplayDealUnavailable()
   setLastKnownStats([])
   broadcastMessage({
     stats: [],
@@ -110,18 +100,20 @@ const broadcastSessionSelection = (
 }
 
 /**
- * MV3 service workerへ複数ゲームタブのイベントが合流しても、あるタブの309が
- * 別タブの進行中「最新」スコープを閉じないためのorigin別追跡。
+ * MV3 service workerへ旧/新ゲームタブのイベントが合流しても、旧タブの
+ * queued eventを新しいauthoritative sessionへ混入させないためのorigin別追跡。
  *
  * tab idはリロード後も同じなので優先し、テスト等でsenderが無い場合だけPort
- * オブジェクトをキーにする。表示対象は最後に201を観測したoriginとし、その
- * originが終了したら残る中で最新のoriginへ戻す。
+ * オブジェクトをキーにする。より新しい201を受理したoriginだけを表示対象とし、
+ * それが終了しても古いoriginへは戻さない。古いscopeは遅着したhandを元scopeで
+ * 完結・保存するためだけに保持する。
  */
 class SessionOriginTracker {
   private readonly scopes = new Map<SessionOriginKey, TrackedSessionScope>()
   private readonly originIds = new Map<SessionOriginKey, string>()
   private currentKey?: SessionOriginKey
   private sequence = 0
+  private authoritativeStartedAt = Number.NEGATIVE_INFINITY
   private browserSessionToken?: string
   private canReconcileReplay = false
   readonly ready: Promise<void>
@@ -156,8 +148,9 @@ class SessionOriginTracker {
       const persisted = result[SESSION_ORIGIN_STORAGE_KEY] as {
         browserSessionToken?: string
         scopes?: Array<[number, TrackedSessionScope]>
-        currentTabId?: number
+        currentTabId?: number | null
         sequence?: number
+        authoritativeStartedAt?: number
       } | undefined
       if (
         persisted?.browserSessionToken !== browserSessionToken ||
@@ -177,15 +170,30 @@ class SessionOriginTracker {
         }
       }
       this.sequence = Number.isFinite(persisted.sequence) ? persisted.sequence! : 0
-      if (persisted.currentTabId !== undefined && this.scopes.has(persisted.currentTabId)) {
+      this.authoritativeStartedAt = Number.isFinite(persisted.authoritativeStartedAt)
+        ? persisted.authoritativeStartedAt!
+        : Number.NEGATIVE_INFINITY
+      if (typeof persisted.currentTabId === 'number' && this.scopes.has(persisted.currentTabId)) {
         this.currentKey = persisted.currentTabId
       }
-      if (this.currentKey === undefined) {
+      // Backward compatibility for snapshots written before `null` explicitly
+      // represented "the newest authoritative origin ended". New snapshots
+      // must never fall back to an older retained scope.
+      if (persisted.currentTabId === undefined && this.currentKey === undefined) {
         let latest: [SessionOriginKey, TrackedSessionScope] | undefined
         for (const entry of this.scopes) {
           if (!latest || entry[1].sequence > latest[1].sequence) latest = entry
         }
         this.currentKey = latest?.[0]
+      }
+      const currentScope = this.currentKey === undefined
+        ? undefined
+        : this.scopes.get(this.currentKey)
+      if (currentScope) {
+        this.authoritativeStartedAt = Math.max(
+          this.authoritativeStartedAt,
+          currentScope.startedAt
+        )
       }
       this.applySelectedScope()
     } catch (error) {
@@ -213,13 +221,16 @@ class SessionOriginTracker {
       }
       const scopes = [...this.scopes.entries()]
         .filter((entry): entry is [number, TrackedSessionScope] => typeof entry[0] === 'number')
-      const currentTabId = typeof this.currentKey === 'number' ? this.currentKey : undefined
+      const currentTabId = typeof this.currentKey === 'number' ? this.currentKey : null
       await localStorage.set({
         [SESSION_ORIGIN_STORAGE_KEY]: {
           browserSessionToken,
           scopes,
           currentTabId,
           sequence: this.sequence,
+          authoritativeStartedAt: Number.isFinite(this.authoritativeStartedAt)
+            ? this.authoritativeStartedAt
+            : undefined,
         },
       })
     } catch (error) {
@@ -270,14 +281,24 @@ class SessionOriginTracker {
     }
     this.scopes.set(key, scope)
     if (scope.originId) this.originIds.set(key, scope.originId)
-    this.currentKey = key
-    this.service.startSession(
-      scope.id,
-      scope.battleType,
-      scope.startedAt,
-      scope.scopeKey
-    )
-    if (!scope.latestDeal) this.service.markSessionDisplayDealUnavailable()
+    const continuesAuthoritativeScope =
+      this.currentKey === key && continuesSameScope
+    const supersedesAuthoritativeScope =
+      scope.startedAt > this.authoritativeStartedAt
+    if (continuesAuthoritativeScope || supersedesAuthoritativeScope) {
+      this.currentKey = key
+      this.authoritativeStartedAt = Math.max(
+        this.authoritativeStartedAt,
+        scope.startedAt
+      )
+      this.service.startSession(
+        scope.id,
+        scope.battleType,
+        scope.startedAt,
+        scope.scopeKey
+      )
+      if (!scope.latestDeal) this.service.markSessionDisplayDealUnavailable()
+    }
     await this.persist()
   }
 
@@ -350,6 +371,19 @@ class SessionOriginTracker {
     return this.getContext(key)
   }
 
+  hasAuthoritativeSession(): boolean {
+    return this.currentKey !== undefined && this.scopes.has(this.currentKey)
+  }
+
+  shouldAffectSessionActivity(key: SessionOriginKey): boolean {
+    // Once another origin has become authoritative, queued activity from an
+    // older retained scope must not make the forced-update guard look like
+    // that logged-out tab became live again. With no tracked scope at all,
+    // retain the legacy fail-closed behavior for an isolated DEAL/DETAILS.
+    return this.currentKey === key ||
+      (this.currentKey === undefined && this.scopes.size === 0)
+  }
+
   forgetOrigin(key: SessionOriginKey): void {
     this.originIds.delete(key)
   }
@@ -399,34 +433,20 @@ class SessionOriginTracker {
     if (!endedScope) {
       if (this.scopes.size === 0) this.service.endSession()
       await this.persist()
-      const scope = this.currentKey === undefined
-        ? undefined
-        : this.scopes.get(this.currentKey)
-      return { selectionChanged: this.scopes.size === 0, scope }
+      return { selectionChanged: this.scopes.size === 0 }
     }
     if (this.currentKey !== key) {
       await this.persist()
-      const scope = this.currentKey === undefined
-        ? undefined
-        : this.scopes.get(this.currentKey)
-      return { selectionChanged: false, scope }
+      return { selectionChanged: false }
     }
 
-    let nextEntry: [SessionOriginKey, TrackedSessionScope] | undefined
-    for (const entry of this.scopes) {
-      if (!nextEntry || entry[1].sequence > nextEntry[1].sequence) nextEntry = entry
-    }
-    if (!nextEntry) {
-      this.currentKey = undefined
-      this.service.endSession()
-      await this.persist()
-      return { selectionChanged: true }
-    }
-
-    this.currentKey = nextEntry[0]
-    const next = this.applySelectedScope() ?? nextEntry[1]
+    // The newest valid login is the sole authoritative live session. Older
+    // retained scopes may finish queued hands under their own scope, but they
+    // are never promoted back into HUD/stat state after the authority ends.
+    this.currentKey = undefined
+    this.service.endSession()
     await this.persist()
-    return { selectionChanged: true, scope: next }
+    return { selectionChanged: true }
   }
 }
 
@@ -494,11 +514,16 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   setIngestionDrainProvider(() => ingestionQueue)
   const sessionOrigins = new SessionOriginTracker(service)
   service.setSessionOriginsReady(sessionOrigins.ready)
+  const gameOriginsByTab = new Map<number, string>()
 
   // A content-script port also disconnects during an ordinary page reload.
   // Keep its tab-id keyed scope across that reconnect, and release it only
-  // when Chrome confirms that the tab itself was closed.
-  chrome.tabs?.onRemoved?.addListener(tabId => {
+  // when Chrome confirms that the tab itself was closed or navigated away
+  // from the origin that owned the content-script port.
+  const closeTabOrigin = (
+    tabId: number,
+    closureReason: 'tab-removed' | 'tab-navigated'
+  ): Promise<void> => {
     if (getOperationState().type === 'delete') {
       return Promise.resolve()
     }
@@ -522,7 +547,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
             withRawEventSessionContext({
               ApiTypeId: EVT_ENTRY_CANCELLED_API_TYPE_ID,
               timestamp: closureTimestamp,
-              __pokerChaseHudClosureReason: 'tab-removed',
+              __pokerChaseHudClosureReason: closureReason,
             }, closingContext),
           ], {
             protectAddedApplicationEventsFromCloudWatermark: true,
@@ -535,8 +560,9 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
       }
       const restored = await sessionOrigins.end(tabId)
       sessionOrigins.forgetOrigin(tabId)
+      gameOriginsByTab.delete(tabId)
       broadcastSessionSelection(service, restored)
-      if (restored.scope) {
+      if (sessionOrigins.hasAuthoritativeSession()) {
         markSessionActive()
       } else {
         markSessionInactive()
@@ -550,13 +576,40 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
       }
     })
     ingestionQueue = task.catch(err => {
-      console.error('[background] Failed to close removed-tab session scope:', err)
+      console.error(`[background] Failed to close ${closureReason} session scope:`, err)
     })
     return task
+  }
+
+  chrome.tabs?.onRemoved?.addListener(tabId => {
+    return closeTabOrigin(tabId, 'tab-removed')
+  })
+  chrome.tabs?.onUpdated?.addListener((tabId, changeInfo) => {
+    if (!changeInfo.url) return
+    const gameOrigin = gameOriginsByTab.get(tabId)
+    if (!gameOrigin) return
+    let nextOrigin: string | undefined
+    try {
+      nextOrigin = new URL(changeInfo.url).origin
+    } catch {
+      nextOrigin = undefined
+    }
+    if (nextOrigin === gameOrigin) return
+    return closeTabOrigin(tabId, 'tab-navigated')
   })
 
   chrome.runtime.onConnect.addListener(port => {
     if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
+      const tabId = port.sender?.tab?.id
+      const senderUrl = port.sender?.url ?? port.sender?.tab?.url
+      if (tabId !== undefined && senderUrl) {
+        try {
+          gameOriginsByTab.set(tabId, new URL(senderUrl).origin)
+        } catch {
+          // Ignore malformed sender metadata; event ingestion itself remains
+          // functional and onRemoved still provides the authoritative cleanup.
+        }
+      }
       connectedPorts.add(port)
       port.onMessage.addListener((message: ApiMessage | { type: string }) => {
         // キープアライブメッセージの処理（キュー直列化の対象外 -- 何も
@@ -767,13 +820,23 @@ const processEvent = async (
   // ここから先はraw書き込みが成功したか、保存不可能で待つべきI/Oが
   // 無かった場合のみ到達する。真の重複と書き込み失敗は上でreturn済み。
 
+  // A schema change may make an otherwise usable 201 fail Zod validation.
+  // Start the origin from the raw fields after the durable-write barrier so
+  // following events still inherit the same replay scope. The parsed stream
+  // remains gated below; this only advances raw/session boundary tracking.
+  if (startContext) {
+    await sessionOrigins.start(originKey, startContext)
+  }
+
   // Forced-update安全性述語（update-manager.ts）のセッション状態追跡。
   // 意図的にパース成功後のdata.ApiTypeIdではなく、生メッセージの数値
   // ApiTypeIdだけを見て判定する: PokerChase側のペイロード破壊的変更で
   // parseApiEvent()がnullを返すようになっても、セッション状態が永久に
   // 誤った値のまま詰まらないようにするため（codexレビュー指摘）。
   // 詳細は`applySessionActivity`のコメント参照。
-  applySessionActivity(rawApiTypeId, message)
+  if (sessionOrigins.shouldAffectSessionActivity(originKey)) {
+    applySessionActivity(rawApiTypeId, message)
+  }
 
   if (
     rawApiTypeId === ApiType.EVT_SESSION_RESULTS ||
@@ -789,7 +852,7 @@ const processEvent = async (
     }
     const restored = await sessionOrigins.end(originKey)
     broadcastSessionSelection(service, restored)
-    if (restored.scope) {
+    if (sessionOrigins.hasAuthoritativeSession()) {
       markSessionActive()
     } else {
       markSessionInactive()
@@ -847,7 +910,7 @@ const processEvent = async (
     // 203(参加取消申込)はここに含めない: 303/308が一度も届いていない
     // （ハンドが一度も始まっていない）ため、そもそもクリアすべき
     // ライブlineupが存在しない。
-      if (restored.selectionChanged && !restored.scope?.latestDeal) {
+      if (restored.selectionChanged) {
         setLastKnownStats([])
       }
     }
@@ -990,18 +1053,6 @@ const processEvent = async (
     // 内容は記録（生ログとしては上で既に保存済み）
     console.info(`[background] Non-application event (${data.ApiTypeId}): ${JSON.stringify(data)}`)
     return
-  }
-
-  if (data.ApiTypeId === ApiType.EVT_ENTRY_QUEUED && data.Code === 0) {
-    await sessionOrigins.start(
-      originKey,
-      startContext ?? sessionOrigins.previewStart(
-        originKey,
-        data.Id,
-        data.BattleType,
-        data.timestamp ?? Date.now()
-      )
-    )
   }
 
   if (data.ApiTypeId === ApiType.EVT_SESSION_DETAILS) {

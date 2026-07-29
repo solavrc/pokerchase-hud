@@ -47,6 +47,7 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
 
   protected async transform(event: ApiEvent): Promise<void> {
     const eventScope = getEventSessionScope(event)
+    const isAuthoritative = this.service.isAuthoritativeSessionScope(eventScope)
     const stateKey = getAggregateStateKey(eventScope)
     const state = this.states.get(stateKey) ?? {
       events: [],
@@ -71,32 +72,36 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           // 誤ってバッファがクリアされてしまう
           // （実データで933件中785件の不一致がこのケース、ハンド損失2.9%の主因）。
           if (event.Code === 0) {
-            this.service.startSession(
-              event.Id,
-              event.BattleType,
-              event.timestamp ?? Date.now(),
-              getEventSessionScope(event)?.scopeKey
-            )
+            if (isAuthoritative) {
+              this.service.startSession(
+                event.Id,
+                event.BattleType,
+                event.timestamp ?? Date.now(),
+                eventScope?.scopeKey
+              )
+            }
             state.progress = undefined
           }
           break
         case ApiType.EVT_SESSION_DETAILS:
-          this.service.session.setName(event.Name)
+          if (isAuthoritative) this.service.session.setName(event.Name)
           break
         case ApiType.EVT_PLAYER_SEAT_ASSIGNED:
           // プレイヤー名とランクをセッションに保存
           if (event.TableUsers) {
-            event.TableUsers.forEach(tableUser => {
-              this.service.session.setPlayer(tableUser.UserId, {
-                name: tableUser.UserName,
-                rank: tableUser.Rank.RankId
+            if (isAuthoritative) {
+              event.TableUsers.forEach(tableUser => {
+                this.service.session.setPlayer(tableUser.UserId, {
+                  name: tableUser.UserName,
+                  rank: tableUser.Rank.RankId
+                })
               })
-            })
+            }
           }
           break
         case ApiType.EVT_PLAYER_JOIN:
           // 途中参加者のプレイヤー名とランクをセッションに保存
-          if (event.JoinUser) {
+          if (isAuthoritative && event.JoinUser) {
             this.service.session.setPlayer(event.JoinUser.UserId, {
               name: event.JoinUser.UserName,
               rank: event.JoinUser.Rank.RankId
@@ -104,6 +109,11 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           }
           break
         case ApiType.EVT_DEAL:
+          if (!isAuthoritative) {
+            state.progress = event.Progress
+            state.events = [event]
+            break
+          }
           // プレイヤーIDの割り当て。
           //
           // 【根本原因メモ】event.Player は「観戦モード」（ヒーローが着席していない
@@ -195,7 +205,10 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           if (!this.service.batchMode && this.service.session.id && event.SeatUserIds) {
             // 非同期でDBチェックを行うが、結果を待たずに処理を続行
             this.service.db.hands.count().then(count => {
-              if (count > 0) {
+              if (
+                count > 0 &&
+                this.service.isAuthoritativeSessionScope(eventScope)
+              ) {
                 // 全てのSeatUserIds（-1を含む）を渡して席の順序を保持
                 setLineupSessionScope(
                   event.SeatUserIds,

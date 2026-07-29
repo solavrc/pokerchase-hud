@@ -32,6 +32,7 @@ import type {
 import { defaultRegistry } from './stats'
 import { getPositionMap, getBigBlindUserId } from './utils/position-utils'
 import { deriveHandSettlement } from './utils/hand-chip-accounting'
+import { getRawEventSessionContext } from './utils/raw-event-session-context'
 
 /**
  * エンティティバンドル（一括保存用）
@@ -123,6 +124,15 @@ export class EntityConverter {
             rank: event.JoinUser.Rank.RankId
           })
         }
+      }
+
+      // Canonical replay slices may omit EVT_SESSION_DETAILS while every raw
+      // hand event still carries the durable session context captured live.
+      // Apply it after 201 boundary handling (which intentionally clears a
+      // previous run's name) so the current hand keeps its known table name.
+      const rawContext = getRawEventSessionContext(event)
+      if (rawContext?.name !== undefined) {
+        this.currentSession.name = rawContext.name
       }
 
       // EVT_DEALでハンド開始

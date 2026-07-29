@@ -26,16 +26,11 @@
  * broadcast the spectator lineup paired with the hero-anchored `evtDeal`
  * (or vice versa), causing App.tsx to rotate/display the wrong seats.
  *
- * Fix: gate the extra `lastKnownStats` refresh on a lineup-identity check
- * against `service.latestEvtDeal.SeatUserIds` -- skip it outright when the
- * two are known to disagree (spectating a different table than the hero's
- * own last deal). `setBattleTypeFilter()`'s own `recalculateStats()` call
- * already recomputes and (re)broadcasts the hero-anchored stats correctly,
- * so nothing is lost by skipping the redundant, racy refresh in that case.
- * When `service.latestEvtDeal` is unset (never yet known -- a state that
- * doesn't actually arise once a hero deal has ever landed, but is a
- * possible synthetic/test state), the mismatch can't be established, so
- * the refresh still runs as before (safe default: unchanged behavior).
+ * Fix: when the authoritative recalculateStats() path can emit, do not issue
+ * the redundant `lastKnownStats.map(...); write()` at all. This removes both
+ * the race and the loss of WeakMap-bound scope/originating-DEAL metadata.
+ * Keep the historical write only for incomplete restored states where
+ * playerId or latestEvtDeal is absent and recalculateStats() cannot emit.
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
@@ -106,7 +101,7 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
     await db.delete()
   })
 
-  test('spectating a different table than the hero\'s last deal: the extra refresh is skipped (lineup mismatch)', async () => {
+  test('spectating a different table than the hero\'s last deal: the redundant refresh is skipped', async () => {
     // Hero's own last seated deal is known...
     service.latestEvtDeal = HERO_DEAL
     // ...but the last LIVE broadcast (ports.ts's lastKnownStats) is a
@@ -132,7 +127,7 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
     expect(writeSpy).not.toHaveBeenCalled()
   })
 
-  test('hero still seated (lineup matches latestEvtDeal): the extra refresh still fires as before', async () => {
+  test('hero still seated: authoritative recalculateStats runs without a redundant write', async () => {
     service.latestEvtDeal = HERO_DEAL
     setLastKnownStats(HERO_DEAL.SeatUserIds.map(playerId => ({ playerId, statResults: [] } as any)))
 
@@ -144,10 +139,10 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
     )
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(writeSpy).toHaveBeenCalledWith(HERO_DEAL.SeatUserIds)
+    expect(writeSpy).not.toHaveBeenCalled()
   })
 
-  test('control: latestEvtDeal not yet known -- mismatch cannot be established, refresh still fires (unchanged default behavior)', async () => {
+  test('control: latestEvtDeal not yet known -- fallback refresh still fires', async () => {
     // service.latestEvtDeal deliberately left unset.
     setLastKnownStats([{ playerId: 2, statResults: [] } as any])
 
