@@ -236,13 +236,32 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
   })
 
   test('drop visibility: an ApiTypeId unknown to the ApiType enum is counted in the unknownApiType class', async () => {
-    const unknownEvent = { ApiTypeId: 9999, timestamp: 444, SomeFutureField: 'x' }
+    const unknownEvent = {
+      ApiTypeId: 9999,
+      timestamp: 444,
+      Alice: {
+        UserId: 129532369,
+        Chip: 1200
+      }
+    }
     await onMessageHandler(unknownEvent)
     await new Promise(resolve => setTimeout(resolve, 550))
 
     const stats = await getUndecodedEventStats(db)
     expect(stats.total).toBe(1)
     expect(stats.perApiTypeId[9999]).toEqual({ count: 1, lastSeen: 444 })
+
+    const diagnostic =
+      jest.mocked(captureSchemaValidationFailure).mock.calls[0]?.[1]()
+    expect(diagnostic).toBeDefined()
+    if (!diagnostic) throw new Error('expected unknown-event diagnostic')
+    expect(diagnostic.payloadShape).toEqual(expect.arrayContaining([
+      '[dynamic-key]: object',
+      '[dynamic-key].UserId: integer',
+      '[dynamic-key].Chip: integer'
+    ]))
+    expect(JSON.stringify(diagnostic)).not.toContain('Alice')
+    expect(JSON.stringify(diagnostic)).not.toContain('129532369')
   })
 
   test('drop visibility: a known non-application event (202) is NOT counted (by-design, not a drop)', async () => {

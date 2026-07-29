@@ -87,6 +87,34 @@ describe('page-world WebSocket classification', () => {
     }, POKER_CHASE_ORIGIN)
   })
 
+  it('trusts the official API endpoint before inspecting ApiTypeId', () => {
+    const apiSocket = new window.WebSocket(
+      'wss://production.api-poker-chase.com/sync'
+    )
+
+    for (let index = 0; index < 7; index += 1) {
+      emitFrame(apiSocket, { RenamedApiTypeId: `broken-${index}` })
+    }
+
+    expect(window.postMessage).toHaveBeenCalledTimes(7)
+    expect(window.postMessage).toHaveBeenNthCalledWith(7, {
+      type: POKER_CHASE_INVALID_API_EVENT,
+      payload: {
+        RenamedApiTypeId: 'broken-6',
+        timestamp: 123
+      }
+    }, POKER_CHASE_ORIGIN)
+  })
+
+  it('does not trust a lookalike API hostname', () => {
+    const unrelatedSocket = new window.WebSocket(
+      'wss://production.api-poker-chase.com.evil.test/sync'
+    )
+    emitFrame(unrelatedSocket, { RenamedApiTypeId: 'private-auxiliary' })
+
+    expect(window.postMessage).not.toHaveBeenCalled()
+  })
+
   it('bounds pre-identification buffering to five objects', () => {
     const apiSocket = new window.WebSocket('wss://example.test/api')
     for (let index = 0; index < 6; index += 1) {

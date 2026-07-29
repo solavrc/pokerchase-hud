@@ -77,15 +77,17 @@ event remains available in the local Raw Event Lake and may follow the
 separately documented, user-controlled Firestore cloud-sync path. If either
 storage key is invalid, the raw row cannot be keyed; Sentry's sanitized
 diagnostic and the Popup's persistent invalid-ID counter preserve the failure
-signal instead. The page-world interceptor forwards such decoded objects in a
-dedicated envelope only after that WebSocket has produced a distinctive
-required-field fingerprint from a known PokerChase event, preventing unrelated
-MessagePack sockets from entering the diagnostic path without injecting the
-full schema bundle into the game page. Up to five pre-identification objects
-are retained and forwarded in arrival order only if that same socket is
-subsequently identified as the PokerChase API. The content script strips the
-envelope and sends the payload through the same bounded runtime-port queue as
-normal events.
+signal instead. The page-world interceptor identifies the current official
+`*.api-poker-chase.com` WebSocket independently of the event body, so a global
+removal or rename of `ApiTypeId` remains observable from the first decoded
+object. A distinctive required-field fingerprint from a known PokerChase event
+is retained only as a fallback for a future endpoint migration, preventing
+unrelated MessagePack sockets from entering the diagnostic path without
+injecting the full schema bundle into the game page. Up to five objects from an
+unknown endpoint are retained and forwarded in arrival order only if that same
+socket subsequently matches the protocol fallback. The content script strips
+the envelope and sends the payload through the same bounded runtime-port queue
+as normal events.
 Sentry receives only the pseudonymized semantic snapshot, never the
 byte-for-byte raw event. The Sentry project also has default data scrubbing and
 IP-address scrubbing enabled as a second privacy layer. Server-side scrubbing

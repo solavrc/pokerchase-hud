@@ -12,6 +12,7 @@ import {
 
 const OriginalWebSocket = window.WebSocket
 const MAX_PENDING_UNCLASSIFIED_PAYLOADS = 5
+const POKER_CHASE_API_DOMAIN = 'api-poker-chase.com'
 
 interface PendingPayload {
   payload: Record<string, unknown>
@@ -20,6 +21,21 @@ interface PendingPayload {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
+
+const isPokerChaseApiSocketUrl = (url: string): boolean => {
+  try {
+    const parsed = new URL(url, window.location.href)
+    return (
+      (parsed.protocol === 'wss:' || parsed.protocol === 'ws:') &&
+      (
+        parsed.hostname === POKER_CHASE_API_DOMAIN ||
+        parsed.hostname.endsWith(`.${POKER_CHASE_API_DOMAIN}`)
+      )
+    )
+  } catch {
+    return false
+  }
+}
 
 const hasIntegerInRange = (
   payload: Record<string, unknown>,
@@ -207,7 +223,12 @@ const isPokerChaseProtocolAnchor = (
 
 function createWebSocket(...args: ConstructorParameters<typeof WebSocket>): WebSocket {
   const instance: WebSocket = new OriginalWebSocket(...args)
-  let isPokerChaseApiSocket = false
+  // The production client currently connects through the official
+  // *.api-poker-chase.com family. Trusting that endpoint independently of the
+  // decoded body is what keeps a global ApiTypeId removal/rename observable
+  // from the very first event. Protocol fingerprints below remain a fallback
+  // if PokerChase moves the WebSocket endpoint in a future client release.
+  let isPokerChaseApiSocket = isPokerChaseApiSocketUrl(instance.url)
   const pendingUnclassifiedPayloads: PendingPayload[] = []
 
   const forwardInvalidPayload = (payload: Record<string, unknown>): void => {
