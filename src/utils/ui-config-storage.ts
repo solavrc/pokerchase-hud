@@ -3,12 +3,14 @@ import {
   type UIConfig,
 } from '../types/hand-log'
 import type {
+  ChromeMessage,
   DeviceUILayoutResponse,
   HudPosition,
 } from '../types/messages'
 
 export const UI_SCALE_STORAGE_KEY = 'uiScale'
 export const REAL_TIME_HUD_POSITION_OFFSET = 100
+export const DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS = 1_000
 export const hudPositionStorageKey = (seatIndex: number): string =>
   `hudPosition_${seatIndex}`
 
@@ -53,9 +55,11 @@ export const mergeUIConfigWithLocalScale = (
 ): UIConfig => ({
   ...DEFAULT_UI_CONFIG,
   ...syncedConfig,
-  // Scale is deliberately device-local. Ignore a legacy scale field that may
-  // still exist inside the synchronized uiConfig object.
-  scale: resolveLocalUIScale(localScale),
+  // Prefer the device-local value, but preserve the synchronized scale from
+  // pre-migration installs until the background has copied it locally.
+  scale: resolveLocalUIScale(
+    isValidUIScale(localScale) ? localScale : syncedConfig?.scale
+  ),
 })
 
 export const toSyncedUIConfig = (config: UIConfig): SyncedUIConfig => {
@@ -73,11 +77,36 @@ const consumeRuntimeError = (): void => {
   void chrome.runtime.lastError
 }
 
+const sendDeviceLayoutMessage = <TResponse,>(
+  message: ChromeMessage,
+  callback: (response: TResponse | undefined) => void
+): void => {
+  let settled = false
+  const finish = (response: TResponse | undefined) => {
+    if (settled) return
+    settled = true
+    clearTimeout(timeoutId)
+    callback(response)
+  }
+  const timeoutId = setTimeout(
+    () => finish(undefined),
+    DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS
+  )
+
+  try {
+    chrome.runtime.sendMessage(message, (response: TResponse | undefined) => {
+      consumeRuntimeError()
+      finish(response)
+    })
+  } catch {
+    finish(undefined)
+  }
+}
+
 export const loadLocalUIScale = (callback: (scale: number) => void): void => {
-  chrome.runtime.sendMessage(
+  sendDeviceLayoutMessage<DeviceUILayoutResponse>(
     { action: 'getDeviceUILayout' },
     (response: DeviceUILayoutResponse | undefined) => {
-      consumeRuntimeError()
       callback(resolveLocalUIScale(response?.scale))
     }
   )
@@ -87,10 +116,9 @@ export const saveLocalUIScale = (
   scale: number,
   callback?: () => void
 ): void => {
-  chrome.runtime.sendMessage(
+  sendDeviceLayoutMessage(
     { action: 'setDeviceUIScale', scale: resolveLocalUIScale(scale) },
     () => {
-      consumeRuntimeError()
       callback?.()
     }
   )
@@ -100,10 +128,9 @@ export const loadHudPosition = (
   seatIndex: number,
   callback: (position: HudPosition | undefined) => void
 ): void => {
-  chrome.runtime.sendMessage(
+  sendDeviceLayoutMessage<DeviceUILayoutResponse>(
     { action: 'getDeviceUILayout', seatIndex },
     (response: DeviceUILayoutResponse | undefined) => {
-      consumeRuntimeError()
       callback(isValidHudPosition(response?.position) ? response.position : undefined)
     }
   )
@@ -113,8 +140,8 @@ export const saveHudPosition = (
   seatIndex: number,
   position: HudPosition
 ): void => {
-  chrome.runtime.sendMessage(
+  sendDeviceLayoutMessage(
     { action: 'setDeviceHudPosition', seatIndex, position },
-    consumeRuntimeError
+    () => {}
   )
 }

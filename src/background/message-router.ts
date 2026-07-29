@@ -92,15 +92,71 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         : hudPositionStorageKey(request.seatIndex)
       chrome.storage.local.get(
         positionKey ? [UI_SCALE_STORAGE_KEY, positionKey] : UI_SCALE_STORAGE_KEY,
-        (result: Record<string, unknown>) => {
-          const position = positionKey && isValidHudPosition(result[positionKey])
-            ? result[positionKey]
+        (localResult: Record<string, unknown>) => {
+          const localScale = localResult[UI_SCALE_STORAGE_KEY]
+          const localPosition = positionKey && isValidHudPosition(localResult[positionKey])
+            ? localResult[positionKey]
             : undefined
-          sendResponse({
-            success: true,
-            scale: resolveLocalUIScale(result[UI_SCALE_STORAGE_KEY]),
-            ...(position ? { position } : {}),
-          })
+          const needsScaleMigration = !isValidUIScale(localScale)
+          const needsPositionMigration = Boolean(positionKey && !localPosition)
+
+          const respond = (
+            scale: number,
+            position: typeof localPosition
+          ) => {
+            sendResponse({
+              success: true,
+              scale,
+              ...(position ? { position } : {}),
+            })
+          }
+
+          if (!needsScaleMigration && !needsPositionMigration) {
+            respond(resolveLocalUIScale(localScale), localPosition)
+            return
+          }
+
+          chrome.storage.sync.get(
+            positionKey ? ['uiConfig', positionKey] : 'uiConfig',
+            (syncResult: Record<string, unknown>) => {
+              const legacyUIConfig = syncResult.uiConfig as
+                | { scale?: unknown }
+                | undefined
+              const migratedScale = needsScaleMigration &&
+                isValidUIScale(legacyUIConfig?.scale)
+                ? legacyUIConfig.scale
+                : undefined
+              const migratedPosition = needsPositionMigration &&
+                positionKey &&
+                isValidHudPosition(syncResult[positionKey])
+                ? syncResult[positionKey]
+                : undefined
+              const scale = resolveLocalUIScale(
+                isValidUIScale(localScale) ? localScale : migratedScale
+              )
+              const position = localPosition ?? migratedPosition
+              const migratedValues: Record<string, unknown> = {}
+
+              if (migratedScale !== undefined) {
+                migratedValues[UI_SCALE_STORAGE_KEY] = migratedScale
+              }
+              if (positionKey && migratedPosition) {
+                migratedValues[positionKey] = migratedPosition
+              }
+
+              if (Object.keys(migratedValues).length === 0) {
+                respond(scale, position)
+                return
+              }
+
+              chrome.storage.local.set(migratedValues, () => {
+                // Migration is best-effort for persistence. Returning the
+                // valid legacy values still preserves this session's layout.
+                void chrome.runtime.lastError
+                respond(scale, position)
+              })
+            }
+          )
         }
       )
       return true

@@ -1,5 +1,6 @@
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import {
+  DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS,
   isValidHudPositionId,
   mergeUIConfigWithLocalScale,
   loadLocalUIScale,
@@ -23,6 +24,13 @@ describe('ui-config-storage', () => {
       displayEnabled: false,
       scale: 1.4,
     })
+  })
+
+  it('端末ローカル値がない移行前はlegacy sync scaleを保持する', () => {
+    expect(mergeUIConfigWithLocalScale(
+      { ...DEFAULT_UI_CONFIG, scale: 1.6 },
+      undefined
+    ).scale).toBe(1.6)
   })
 
   it.each([undefined, null, '1.2', 0.4, 2.1, Number.NaN])(
@@ -67,6 +75,9 @@ describe('ui-config-storage', () => {
   })
 
   it('scaleはlocalへ保存する', () => {
+    ;(chrome.runtime.sendMessage as jest.Mock).mockImplementationOnce((_message, callback) => {
+      callback({ success: true })
+    })
     const callback = jest.fn()
     saveLocalUIScale(1.3, callback)
 
@@ -74,6 +85,7 @@ describe('ui-config-storage', () => {
       { action: 'setDeviceUIScale', scale: 1.3 },
       expect.any(Function)
     )
+    expect(callback).toHaveBeenCalled()
   })
 
   it('scaleはbackground経由で読み込む', () => {
@@ -89,5 +101,21 @@ describe('ui-config-storage', () => {
       expect.any(Function)
     )
     expect(callback).toHaveBeenCalledWith(1.6)
+  })
+
+  it('backgroundが応答しなくてもscale読込を既定値で完了する', () => {
+    jest.useFakeTimers()
+    try {
+      ;(chrome.runtime.sendMessage as jest.Mock).mockImplementationOnce(() => {})
+      const callback = jest.fn()
+
+      loadLocalUIScale(callback)
+      expect(callback).not.toHaveBeenCalled()
+
+      jest.advanceTimersByTime(DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS)
+      expect(callback).toHaveBeenCalledWith(DEFAULT_UI_CONFIG.scale)
+    } finally {
+      jest.useRealTimers()
+    }
   })
 })

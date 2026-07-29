@@ -99,6 +99,33 @@ describe('message-router device-local UI layout', () => {
     })
   })
 
+  it('local値がない初回だけlegacy syncのscaleとHUD位置を移行する', async () => {
+    const legacyPosition = { top: '28%', left: '73%' }
+    await chrome.storage.sync.set({
+      uiConfig: { scale: 1.7, displayEnabled: true },
+      [hudPositionStorageKey(3)]: legacyPosition,
+    })
+    const sendResponse = jest.fn()
+
+    listener({
+      action: 'getDeviceUILayout',
+      seatIndex: 3,
+    }, {}, sendResponse)
+
+    expect(sendResponse).toHaveBeenCalledWith({
+      success: true,
+      scale: 1.7,
+      position: legacyPosition,
+    })
+    expect(await chrome.storage.local.get([
+      UI_SCALE_STORAGE_KEY,
+      hudPositionStorageKey(3),
+    ])).toEqual({
+      [UI_SCALE_STORAGE_KEY]: 1.7,
+      [hudPositionStorageKey(3)]: legacyPosition,
+    })
+  })
+
   it.each([
     { action: 'setDeviceUIScale', scale: 3 },
     {
