@@ -179,6 +179,8 @@ export const GITHUB_RELEASES_URL = 'https://github.com/solavrc/pokerchase-hud/re
 
 /** `chrome.storage.local`のキー: 未読の更新情報が対応するバージョン（未設定なら未読なし） */
 export const WHATS_NEW_STORAGE_KEY = 'whatsNewUnseenVersion'
+/** 更新情報カード全体の開閉状態（省スペース設定）。 */
+export const WHATS_NEW_EXPANDED_STORAGE_KEY = 'whatsNewExpanded'
 
 /**
  * `currentVersion`に一致するエントリを`entries`（新しい順を前提）から選ぶ。
