@@ -151,16 +151,14 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       new Promise<chrome.runtime.LastError | undefined>((resolve) => {
         operation(() => {
           const error = chrome.runtime.lastError
-          if (
-            error ||
-            generation !== handLogLayoutWriteGeneration ||
-            !afterSuccessfulWrite
-          ) {
+          if (error || !afterSuccessfulWrite) {
             resolve(error)
             return
           }
-          // Keep the persistent background delivery inside the tracked write:
-          // popup teardown and a forced reload cannot overtake the reset.
+          // Publish every successfully persisted state in FIFO order. A newer
+          // success will overwrite this delivery, while a newer failure leaves
+          // the last durable state visible instead of stranding the HUD on a
+          // value that was never saved.
           afterSuccessfulWrite(() => resolve(undefined))
         })
       })

@@ -322,11 +322,7 @@ describe('message-router device-local UI layout', () => {
       success: false,
       error: 'Superseded by newer hand log layout',
     })
-    expect(chrome.tabs.sendMessage).not.toHaveBeenCalledWith(
-      expect.anything(),
-      { action: 'resetHandLogLayout' }
-    )
-    expect(chrome.tabs.query).toHaveBeenCalledTimes(1)
+    expect(chrome.tabs.query).toHaveBeenCalledTimes(2)
     expect(saveResponse).toHaveBeenCalledWith({ success: true })
     expect(await chrome.storage.local.get(HAND_LOG_LAYOUT_STORAGE_KEY)).toEqual({
       [HAND_LOG_LAYOUT_STORAGE_KEY]: newLayout,
@@ -379,6 +375,64 @@ describe('message-router device-local UI layout', () => {
     expect(saveResponse).toHaveBeenCalledWith({ success: true })
     expect(await chrome.storage.local.get(HAND_LOG_LAYOUT_STORAGE_KEY)).toEqual({
       [HAND_LOG_LAYOUT_STORAGE_KEY]: newLayout,
+    })
+  })
+
+  it('後発layout保存失敗時は直前に永続化したresetを配信する', async () => {
+    const oldLayout = { left: 10, top: 20, width: 400, height: 100 }
+    const newLayout = { left: 80, top: 60, width: 520, height: 240 }
+    await chrome.storage.local.set({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: oldLayout,
+    })
+    ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => {
+      callback([{ id: 42 }])
+    })
+    const storageRemove = chrome.storage.local.remove as jest.Mock
+    const defaultRemove = storageRemove.getMockImplementation()!
+    let finishDelayedReset!: () => void
+    storageRemove.mockImplementationOnce(
+      (key, callback) => {
+        finishDelayedReset = () => defaultRemove(key, callback)
+      }
+    )
+    ;(chrome.storage.local.set as jest.Mock).mockImplementationOnce(
+      (_items, callback) => {
+        ;(chrome.runtime as any).lastError = { message: 'quota' }
+        callback()
+        delete (chrome.runtime as any).lastError
+      }
+    )
+    const resetResponse = jest.fn()
+    const saveResponse = jest.fn()
+
+    listener({ action: 'resetDeviceHandLogLayout' }, {}, resetResponse)
+    listener({
+      action: 'setDeviceHandLogLayout',
+      layout: newLayout,
+    }, {}, saveResponse)
+    await Promise.resolve()
+
+    finishDelayedReset()
+    await getPendingStorageWriteTail()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      action: 'resetHandLogLayout',
+    })
+    expect(chrome.tabs.sendMessage).not.toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({ action: 'updateHandLogLayout' })
+    )
+    expect(resetResponse).toHaveBeenCalledWith({
+      success: false,
+      error: 'Superseded by newer hand log layout',
+    })
+    expect(saveResponse).toHaveBeenCalledWith({
+      success: false,
+      error: 'quota',
+    })
+    expect(await chrome.storage.local.get(HAND_LOG_LAYOUT_STORAGE_KEY)).toEqual({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: undefined,
     })
   })
 
