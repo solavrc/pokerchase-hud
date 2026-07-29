@@ -50,7 +50,7 @@ describe('UIScaleSection', () => {
     expect(screen.getByText('表示')).toBeInTheDocument()
     expect(screen.getByText('非表示')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'HUD表示切り替えショートカット' }))
-      .toHaveValue('Ctrl + Shift + H')
+      .toHaveValue('Shift + H')
   })
 
   it('小型入力欄でショートカットを記録する', () => {

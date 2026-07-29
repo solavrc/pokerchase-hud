@@ -13,7 +13,7 @@ export const shortcutFromKeyboardEvent = (
   if (!event.code || MODIFIER_CODES.has(event.code)) return null
 
   const isFunctionKey = /^F([1-9]|1[0-2])$/.test(event.code)
-  if (!isFunctionKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+  if (!isFunctionKey && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) {
     return null
   }
 

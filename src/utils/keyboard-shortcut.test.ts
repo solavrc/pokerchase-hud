@@ -36,6 +36,20 @@ describe('keyboard shortcuts', () => {
     }, shortcut!)).toBe(true)
   })
 
+  test('allows Shift + letter while still rejecting an unmodified chat character', () => {
+    const shortcut = shortcutFromKeyboardEvent({
+      code: 'KeyH',
+      key: 'H',
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: true,
+      metaKey: false,
+    })
+
+    expect(shortcut).not.toBeNull()
+    expect(formatShortcut(shortcut!)).toBe('Shift + H')
+  })
+
   test('allows function keys without modifiers', () => {
     expect(shortcutFromKeyboardEvent({
       code: 'F8',

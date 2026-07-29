@@ -124,7 +124,7 @@ export const UIScaleSection = ({
             shortcutInputRef.current?.blur()
           }}
           title={shortcutError
-            ? 'Ctrl・Alt・⌘のいずれかを含めてください（F1〜F12は単独可）'
+            ? 'Shift・Ctrl・Alt・⌘のいずれかを含めてください（F1〜F12は単独可）'
             : 'クリックして入力・右クリックで解除'}
           slotProps={{
             htmlInput: {

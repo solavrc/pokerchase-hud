@@ -136,7 +136,7 @@ export const DEFAULT_UI_CONFIG: UIConfig = {
   toggleShortcut: {
     code: 'KeyH',
     key: 'h',
-    ctrl: true,
+    ctrl: false,
     alt: false,
     shift: true,
     meta: false,
