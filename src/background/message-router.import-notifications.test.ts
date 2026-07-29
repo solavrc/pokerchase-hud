@@ -3,6 +3,7 @@ import PokerChaseService, { PokerChaseDB } from '../app'
 import type { ChromeMessage, MessageResponse } from '../types/messages'
 import { registerMessageRouter } from './message-router'
 import { setOperationState } from './operation-state'
+import { IMPORT_RESULT_STORAGE_KEY } from '../constants/import-page'
 
 describe('message-router import notifications', () => {
   let db: PokerChaseDB
@@ -45,5 +46,11 @@ describe('message-router import notifications', () => {
     await expect(response).resolves.toEqual({ success: true })
     await Promise.resolve()
     expect(await db.apiEvents.count()).toBe(1)
+    expect(chrome.storage.local.set).toHaveBeenCalledWith({
+      [IMPORT_RESULT_STORAGE_KEY]: expect.objectContaining({
+        status: 'completed',
+        message: expect.stringContaining('インポートが完了しました'),
+      }),
+    })
   })
 })
