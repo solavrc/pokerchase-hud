@@ -9,8 +9,11 @@ Applies to the MV3 service worker modules in this directory. Root
 
 - Flag changes that move session-activity (ACTIVE/INACTIVE) transitions out of
   `event-ingestion.ts`'s serialized queue, apply them before the raw-write
-  durability barrier and content dedup, or let a deduplicated resend /
-  same-millisecond collision move the state.
+  durability barrier and content dedup, or let a deduplicated resend (canonical
+  payload identical, storage-only `sequence` excluded) move the state. Distinct
+  events that merely share a millisecond and ApiTypeId are NOT duplicates —
+  each gets its own sequence and is processed normally, including its activity
+  transition.
 - Why it matters here: this ordering was converged over eight review rounds of
   real races (optimistic marking, arrival-order inversion, duplicate resends
   re-arming activity). The settled invariants: queue order = arrival order;

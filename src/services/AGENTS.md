@@ -27,7 +27,11 @@ watermark rule).
 - Flag authenticated flows (token acquisition, refresh, 401 retry, sync
   bookkeeping writes) that await without snapshotting `authGeneration`
   beforehand and re-verifying it at the commit point, or that add an unbounded
-  await on token acquisition/refresh inside the request funnel.
+  await on token acquisition/refresh inside the request funnel. Ordering: the
+  SW-startup auth restore (`firebaseAuthService.ready()`) itself bumps the
+  generation, so the snapshot is taken *after* awaiting `ready()` and *before*
+  the first token acquisition — a rule-following change must not treat the
+  initial restore as an account switch.
 - Why it matters here: users switch Google accounts mid-session. A uid-only
   comparison is blind to A→B→A round trips (a stale refresh response from the
   first A session overwrote the fresh session's tokens), and per-account sync
