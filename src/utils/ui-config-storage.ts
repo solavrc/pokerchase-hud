@@ -9,6 +9,7 @@ import type {
 } from '../types/messages'
 
 export const UI_SCALE_STORAGE_KEY = 'uiScale'
+export const LEGACY_SYNC_UI_SCALE_KEY = 'legacyUIScale'
 export const REAL_TIME_HUD_POSITION_OFFSET = 100
 export const DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS = 1_000
 export const hudPositionStorageKey = (seatIndex: number): string =>

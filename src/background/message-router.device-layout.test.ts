@@ -3,6 +3,7 @@ import PokerChaseService, { PokerChaseDB } from '../app'
 import type { ChromeMessage, MessageResponse } from '../types/messages'
 import {
   hudPositionStorageKey,
+  LEGACY_SYNC_UI_SCALE_KEY,
   UI_SCALE_STORAGE_KEY,
 } from '../utils/ui-config-storage'
 import { registerMessageRouter } from './message-router'
@@ -99,7 +100,7 @@ describe('message-router device-local UI layout', () => {
     })
   })
 
-  it('local値がない初回だけlegacy syncのscaleとHUD位置を移行する', async () => {
+  it('local値がない初回だけlegacy syncのscaleを移行用キーへ保持してlocalへ移す', async () => {
     const legacyPosition = { top: '28%', left: '73%' }
     await chrome.storage.sync.set({
       uiConfig: { scale: 1.7, displayEnabled: true },
@@ -115,14 +116,52 @@ describe('message-router device-local UI layout', () => {
     expect(sendResponse).toHaveBeenCalledWith({
       success: true,
       scale: 1.7,
-      position: legacyPosition,
     })
     expect(await chrome.storage.local.get([
       UI_SCALE_STORAGE_KEY,
       hudPositionStorageKey(3),
     ])).toEqual({
       [UI_SCALE_STORAGE_KEY]: 1.7,
+    })
+    expect(await chrome.storage.sync.get(LEGACY_SYNC_UI_SCALE_KEY)).toEqual({
+      [LEGACY_SYNC_UI_SCALE_KEY]: 1.7,
+    })
+  })
+
+  it('別端末由来か判別できないlegacy syncのHUD位置は移行しない', async () => {
+    const legacyPosition = { top: '28%', left: '73%' }
+    await chrome.storage.sync.set({
       [hudPositionStorageKey(3)]: legacyPosition,
+    })
+    const sendResponse = jest.fn()
+
+    listener({
+      action: 'getDeviceUILayout',
+      seatIndex: 3,
+    }, {}, sendResponse)
+
+    expect(sendResponse).toHaveBeenCalledWith({
+      success: true,
+      scale: 1,
+    })
+    expect(await chrome.storage.local.get(hudPositionStorageKey(3))).toEqual({})
+  })
+
+  it('uiConfigからscaleが除かれた後も移行用scaleをlocalへコピーできる', async () => {
+    await chrome.storage.sync.set({
+      [LEGACY_SYNC_UI_SCALE_KEY]: 1.5,
+      uiConfig: { displayEnabled: false },
+    })
+    const sendResponse = jest.fn()
+
+    listener({ action: 'getDeviceUILayout' }, {}, sendResponse)
+
+    expect(sendResponse).toHaveBeenCalledWith({
+      success: true,
+      scale: 1.5,
+    })
+    expect(await chrome.storage.local.get(UI_SCALE_STORAGE_KEY)).toEqual({
+      [UI_SCALE_STORAGE_KEY]: 1.5,
     })
   })
 
