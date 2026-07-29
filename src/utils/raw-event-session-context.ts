@@ -14,6 +14,7 @@ export type RawEventSessionContext = Readonly<{
   startedAt: number
   name?: string
   originId?: string
+  authorityGeneration?: number
 }>
 
 export const getRawEventSessionContext = (event: unknown): RawEventSessionContext | undefined => {
@@ -37,6 +38,12 @@ export const getRawEventSessionContext = (event: unknown): RawEventSessionContex
     startedAt: candidate.startedAt,
     name: typeof candidate.name === 'string' ? candidate.name : undefined,
     originId: typeof candidate.originId === 'string' ? candidate.originId : undefined,
+    authorityGeneration:
+      typeof candidate.authorityGeneration === 'number' &&
+      Number.isSafeInteger(candidate.authorityGeneration) &&
+      candidate.authorityGeneration > 0
+        ? candidate.authorityGeneration
+        : undefined,
   }
 }
 

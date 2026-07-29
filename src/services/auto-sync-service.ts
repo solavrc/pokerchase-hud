@@ -82,6 +82,7 @@ type ReplaySessionScope = {
   battleType: BattleType
   startedAt: number
   sequence: number
+  authorityGeneration?: number
   originId?: string
   name?: string
   players: Map<number, { name: string, rank: string }>
@@ -92,6 +93,8 @@ type ReplaySessionState = {
   sequence: number
   currentKey?: string
   authoritativeStartedAt: number
+  maxAuthorityGeneration: number
+  closedAuthorityGenerations: Set<number>
 }
 
 const getReplaySessionKey = (scopeKey: string, originId?: string): string =>
@@ -1529,6 +1532,8 @@ export class AutoSyncService {
         scopes: new Map(),
         sequence: 0,
         authoritativeStartedAt: Number.NEGATIVE_INFINITY,
+        maxAuthorityGeneration: 0,
+        closedAuthorityGenerations: new Set(),
       }
 
       if (service?.session) service.session.reset()
@@ -1670,6 +1675,24 @@ export class AutoSyncService {
       const endedKey = context
         ? getReplaySessionKey(context.scopeKey, context.originId)
         : replaySessions.currentKey
+      const endedGeneration = context?.authorityGeneration
+      if (endedGeneration !== undefined) {
+        replaySessions.maxAuthorityGeneration = Math.max(
+          replaySessions.maxAuthorityGeneration,
+          endedGeneration
+        )
+        replaySessions.closedAuthorityGenerations.add(endedGeneration)
+        if (endedKey) replaySessions.scopes.delete(endedKey)
+        if (endedKey !== replaySessions.currentKey) return
+
+        replaySessions.currentKey = undefined
+        if (typeof service.endSession === 'function') {
+          service.endSession()
+        } else {
+          service.session.reset()
+        }
+        return
+      }
       if (context) {
         replaySessions.scopes.delete(endedKey!)
       } else if (replaySessions.currentKey) {
@@ -1678,6 +1701,7 @@ export class AutoSyncService {
         // rows, whose ending identity is explicit.
         replaySessions.scopes.delete(replaySessions.currentKey)
       }
+      if (replaySessions.maxAuthorityGeneration > 0) return
       if (endedKey !== replaySessions.currentKey) return
 
       // Historical origins remain available only to attribute/finish their
@@ -1696,11 +1720,17 @@ export class AutoSyncService {
           ? `legacy-mtt:${event.Id}`
           : `legacy-run:${event.BattleType}:${event.Id}:${event.timestamp ?? Date.now()}`)
       const replayKey = getReplaySessionKey(scopeKey, context?.originId)
+      const authorityGeneration = context?.authorityGeneration
       if (context?.originId) {
         for (const [activeScopeKey, activeScope] of replaySessions.scopes) {
           if (
             activeScopeKey !== replayKey &&
-            activeScope.originId === context.originId
+            activeScope.originId === context.originId &&
+            (
+              authorityGeneration === undefined ||
+              activeScope.authorityGeneration === undefined ||
+              activeScope.authorityGeneration <= authorityGeneration
+            )
           ) {
             replaySessions.scopes.delete(activeScopeKey)
           }
@@ -1714,11 +1744,47 @@ export class AutoSyncService {
         battleType: context?.battleType ?? event.BattleType,
         startedAt: context?.startedAt ?? previous?.startedAt ?? event.timestamp ?? Date.now(),
         sequence: ++replaySessions.sequence,
+        authorityGeneration,
         originId: context?.originId,
         name: previous?.name,
         players: new Map(previous?.players),
       }
       replaySessions.scopes.set(replayKey, scope)
+
+      if (authorityGeneration !== undefined) {
+        const previousHighWater = replaySessions.maxAuthorityGeneration
+        replaySessions.maxAuthorityGeneration = Math.max(
+          previousHighWater,
+          authorityGeneration
+        )
+        if (
+          replaySessions.closedAuthorityGenerations.has(authorityGeneration)
+        ) {
+          return
+        }
+        const currentScope = replaySessions.currentKey
+          ? replaySessions.scopes.get(replaySessions.currentKey)
+          : undefined
+        const continuesAuthoritativeScope =
+          replaySessions.currentKey === replayKey &&
+          currentScope?.authorityGeneration === authorityGeneration
+        const supersedesAuthoritativeScope =
+          authorityGeneration > previousHighWater
+        if (!continuesAuthoritativeScope && !supersedesAuthoritativeScope) {
+          return
+        }
+
+        replaySessions.currentKey = replayKey
+        if (typeof service.startSession === 'function') {
+          service.startSession(scope.id, scope.battleType, scope.startedAt, scope.scopeKey)
+        } else {
+          service.session.setId(event.Id)
+          service.session.setBattleType(event.BattleType)
+        }
+        return
+      }
+      if (replaySessions.maxAuthorityGeneration > 0) return
+
       const continuesAuthoritativeScope =
         replaySessions.currentKey === replayKey &&
         previous?.scopeKey === scope.scopeKey

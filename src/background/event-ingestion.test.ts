@@ -51,6 +51,50 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
   let disconnectHandlers: Array<() => void>
   let mockPort: any
 
+  const entry = (
+    timestamp: number,
+    id: string,
+    battleType = BattleType.RING_GAME
+  ) => ({
+    ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+    timestamp,
+    Code: 0,
+    BattleType: battleType,
+    Id: id,
+    IsRetire: false,
+  })
+  const sessionResults = (timestamp: number) => ({
+    ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+    timestamp,
+  })
+  const connectTab = (tabId: number) => {
+    const port = {
+      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      sender: { tab: { id: tabId } },
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn(),
+    }
+    connectListener(port)
+    return port.onMessage.addListener.mock.calls[0][0] as (
+      message: any
+    ) => Promise<void>
+  }
+  const dealAt = (timestamp: number, playerIdOffset = 0) => {
+    const deal = structuredClone(
+      MTT_TABLE_MOVE_FIXTURE.events[3]!
+    ) as ApiEvent<ApiType.EVT_DEAL>
+    deal.timestamp = timestamp
+    if (playerIdOffset !== 0) {
+      deal.SeatUserIds = deal.SeatUserIds.map(id => id + playerIdOffset)
+    }
+    return deal
+  }
+  const waitForPresentationStreams = () => Promise.all([
+    service.handLogStream.whenIdle(),
+    service.realTimeStatsStream.whenIdle(),
+  ])
+
   beforeEach(async () => {
     setOperationState({ type: 'idle' })
     jest.mocked(captureSchemaValidationFailure).mockClear()
@@ -111,6 +155,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
         battleType: BattleType.SIT_AND_GO,
         startedAt: 111,
         originId: expect.any(String),
+        authorityGeneration: 1,
       },
     })
 
@@ -222,6 +267,15 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       Id: 'tab-a',
       IsRetire: false,
     })
+    const firstCompletedHand = MTT_TABLE_MOVE_FIXTURE.events
+      .slice(3, 6)
+      .map(event => structuredClone(event))
+    await onMessageHandler(firstCompletedHand[0])
+    await waitForPresentationStreams()
+    const handLogOutput = jest.fn()
+    const realtimeOutput = jest.fn()
+    service.handLogStream.on('data', handLogOutput)
+    service.realTimeStatsStream.on('data', realtimeOutput)
     await secondHandler({
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
       timestamp: 2000,
@@ -231,6 +285,22 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       IsRetire: false,
     })
     expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-b', startedAt: 2000 })
+    expect(handLogOutput).toHaveBeenCalledWith({ type: 'removeIncomplete' })
+    expect(realtimeOutput).toHaveBeenCalledWith(expect.objectContaining({
+      stats: { heroStats: {}, playerStats: {} },
+    }))
+
+    for (const event of firstCompletedHand.slice(1)) {
+      await onMessageHandler(event)
+    }
+    await service.handAggregateStream.whenIdle()
+    expect(await db.hands.get(MTT_TABLE_MOVE_FIXTURE.handIds.oldAccepted))
+      .toBeDefined()
+
+    await secondHandler(dealAt(2100, 10_000))
+    await waitForPresentationStreams()
+    handLogOutput.mockClear()
+    realtimeOutput.mockClear()
 
     // 309の詳細が将来壊れてparseできない場合でも、raw ApiTypeIdとoriginで
     // tab Bだけを閉じる。古いtab Aは保持済みhandの帰属先に留まり、
@@ -238,6 +308,10 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     await secondHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 3000 })
     expect(service.getCurrentSessionScope()).toBeUndefined()
     expect(isSafeToUpdate()).toBe(true)
+    expect(handLogOutput).toHaveBeenCalledWith({ type: 'removeIncomplete' })
+    expect(realtimeOutput).toHaveBeenCalledWith(expect.objectContaining({
+      stats: { heroStats: {}, playerStats: {} },
+    }))
 
     await onMessageHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 4000 })
     expect(service.getCurrentSessionScope()).toBeUndefined()
@@ -272,7 +346,13 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       Id: 'tab-b',
       IsRetire: false,
     })
+    await secondHandler(dealAt(2100, 10_000))
+    await waitForPresentationStreams()
     const tabBStats = [{ playerId: 202, statResults: [] }]
+    const handLogOutput = jest.fn()
+    const realtimeOutput = jest.fn()
+    service.handLogStream.on('data', handLogOutput)
+    service.realTimeStatsStream.on('data', realtimeOutput)
     setLastKnownStats(tabBStats)
 
     await onMessageHandler({
@@ -282,55 +362,34 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
 
     expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-b', startedAt: 2000 })
     expect(getLastKnownStats()).toEqual(tabBStats)
+    expect(handLogOutput).not.toHaveBeenCalled()
+    expect(realtimeOutput).not.toHaveBeenCalled()
+    expect((service.handLogStream as any).scopedStates.size).toBe(1)
+    expect((service.realTimeStatsStream as any).scopedStreams.size).toBe(1)
     setLastKnownStats([])
   })
 
   test('a delayed older-origin entry cannot reclaim authority from the newest origin', async () => {
-    const secondPort = {
-      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
-      sender: { tab: { id: 202 } },
-      onMessage: { addListener: jest.fn() },
-      onDisconnect: { addListener: jest.fn() },
-      postMessage: jest.fn(),
-    }
-    mockPort.sender = { tab: { id: 101 } }
-    connectListener(secondPort)
-    const secondHandler = secondPort.onMessage.addListener.mock.calls[0][0]
-
-    await onMessageHandler({
-      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
-      timestamp: 1000,
-      Code: 0,
-      BattleType: BattleType.RING_GAME,
-      Id: 'old-tab',
-      IsRetire: false,
-    })
-    await secondHandler({
-      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
-      timestamp: 2000,
-      Code: 0,
-      BattleType: BattleType.RING_GAME,
-      Id: 'new-tab',
-      IsRetire: false,
-    })
+    const tabA = connectTab(101)
+    const tabB = connectTab(202)
+    await tabA(entry(2000, 'old-tab'))
+    await tabB(entry(1000, 'new-tab'))
 
     // This frame was queued by the old logged-out tab before the newer login
     // became authoritative, then reached the worker late.
-    await onMessageHandler({
-      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
-      timestamp: 2000,
-      Code: 0,
-      BattleType: BattleType.RING_GAME,
-      Id: 'old-tab-delayed',
-      IsRetire: false,
-    })
+    await tabA(entry(2500, 'old-tab-delayed'))
 
-    expect(service.getCurrentSessionScope()).toEqual({ id: 'new-tab', startedAt: 2000 })
-    const stored = await db.apiEvents.get([2000, ApiType.EVT_ENTRY_QUEUED, 1]) as any
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'new-tab', startedAt: 1000 })
+    const first = await db.apiEvents.get([2000, ApiType.EVT_ENTRY_QUEUED, 0]) as any
+    const current = await db.apiEvents.get([1000, ApiType.EVT_ENTRY_QUEUED, 0]) as any
+    const stored = await db.apiEvents.get([2500, ApiType.EVT_ENTRY_QUEUED, 0]) as any
     expect(stored.__pokerChaseHudSessionContext).toMatchObject({
       id: 'old-tab-delayed',
-      startedAt: 2000,
+      startedAt: 2500,
+      authorityGeneration: 1,
     })
+    expect(first.__pokerChaseHudSessionContext.authorityGeneration).toBe(1)
+    expect(current.__pokerChaseHudSessionContext.authorityGeneration).toBe(2)
   })
 
   test('a later-arriving new origin wins an equal-millisecond entry tie', async () => {
@@ -507,6 +566,45 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       ApiTypeId: ApiType.EVT_SESSION_RESULTS,
       timestamp: 4000,
     })
+
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+  })
+
+  test('legacy worker snapshots migrate the selected origin above retained scopes', async () => {
+    const tabA = connectTab(101)
+    const tabB = connectTab(202)
+    await tabA(entry(2000, 'table-a', BattleType.TOURNAMENT))
+    await tabB(entry(1000, 'table-b'))
+
+    const legacySnapshot = structuredClone(
+      (await chrome.storage.local.get('activeSessionOriginsV1'))
+        .activeSessionOriginsV1
+    ) as any
+    delete legacySnapshot.authorityGeneration
+    delete legacySnapshot.lastAuthoritativeOriginId
+    legacySnapshot.authoritativeStartedAt = 1000
+    for (const [, scope] of legacySnapshot.scopes) {
+      delete scope.authorityGeneration
+    }
+    await chrome.storage.local.set({
+      activeSessionOriginsV1: legacySnapshot,
+    })
+    service.endSession()
+
+    registerEventIngestion(service)
+    await service.sessionOriginsReady
+    expect(service.getCurrentSessionScope()).toEqual({
+      id: 'table-b',
+      startedAt: 1000,
+    })
+
+    const restoredConnectListener =
+      (chrome.runtime as any).onConnect.addListener.mock.calls[1][0]
+    connectListener = restoredConnectListener
+    const restoredTabA = connectTab(101)
+    const restoredTabB = connectTab(202)
+    await restoredTabB(sessionResults(1100))
+    await restoredTabA(entry(3000, 'table-a', BattleType.TOURNAMENT))
 
     expect(service.getCurrentSessionScope()).toBeUndefined()
   })
@@ -852,6 +950,9 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(service.getCurrentSessionScope()).toBeUndefined()
     expect(statsWriteSpy).not.toHaveBeenCalled()
     expect(service.isSessionDisplayDealAvailable()).toBe(false)
+
+    await onMessageHandler(entry(5000, 'tab-a-delayed'))
+    expect(service.getCurrentSessionScope()).toBeUndefined()
   })
 
   test('ending the newest origin does not restore older player metadata', async () => {

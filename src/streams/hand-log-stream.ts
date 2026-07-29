@@ -62,14 +62,14 @@ export class HandLogStream extends SimpleTransform<ApiEvent, HandLogEvent> {
       : scope.scopeKey ?? `${scope.id}@${scope.startedAt}`
   }
 
-  discardSessionScope(scope: EventSessionScope): void {
+  discardSessionScope(
+    scope: EventSessionScope,
+    emitLiveCleanup = this.service.isAuthoritativeSessionScope(scope)
+  ): void {
     const key = this.scopeKey(scope)
     const state = this.scopedStates.get(key)
     if (!state) return
-    this.handleSessionEnd(
-      state,
-      this.service.isAuthoritativeSessionScope(scope)
-    )
+    this.handleSessionEnd(state, emitLiveCleanup)
     this.scopedStates.delete(key)
   }
 

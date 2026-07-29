@@ -526,6 +526,7 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
       battleType: BattleType.TOURNAMENT,
       startedAt: 100,
       originId: 'origin-a',
+      authorityGeneration: 1,
     }
     const contextB = {
       scopeKey: 'mtt:table-b:origin-b',
@@ -533,6 +534,7 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
       battleType: BattleType.TOURNAMENT,
       startedAt: 200,
       originId: 'origin-b',
+      authorityGeneration: 2,
     }
     await db.apiEvents.bulkAdd([
       {
@@ -554,6 +556,11 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
         __pokerChaseHudSessionContext: contextB,
       },
       {
+        ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+        timestamp: 250,
+        __pokerChaseHudSessionContext: contextB,
+      },
+      {
         ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
         timestamp: 300,
         Code: 0,
@@ -566,10 +573,37 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
 
     await (autoSyncService as any).rebuildLocalEntities()
 
+    // B's closed generation remains the high-water mark. A cannot revive
+    // merely because its delayed table-move entry sorts after B's 309.
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(service.session.active).toBe(false)
+
+    // C was captured later under generation 3, but its wall clock rolled back
+    // far enough that canonical replay reads it first. Durable generation,
+    // rather than row order or timestamp, must still make C authoritative.
+    await db.apiEvents.add({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 50,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'table-c',
+      IsRetire: false,
+      __pokerChaseHudSessionContext: {
+        scopeKey: 'run:0:table-c:50:origin-c',
+        id: 'table-c',
+        battleType: BattleType.SIT_AND_GO,
+        startedAt: 50,
+        originId: 'origin-c',
+        authorityGeneration: 3,
+      },
+    } as ApiEvent)
+    await (autoSyncService as any).rebuildLocalEntities()
+
     expect(service.getCurrentSessionScope()).toEqual({
-      id: 'table-b',
-      startedAt: 200,
+      id: 'table-c',
+      startedAt: 50,
     })
+    expect(service.session.active).toBe(true)
   })
 
   test('does not resurrect a replayed scope closed by the live tab tracker', async () => {

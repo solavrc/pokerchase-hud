@@ -67,14 +67,20 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, RealTimeStats
       : scope.scopeKey ?? `${scope.id}@${scope.startedAt}`
   }
 
-  discardSessionScope(scope: EventSessionScope): void {
+  discardSessionScope(
+    scope: EventSessionScope,
+    emitLiveCleanup = this.isAuthoritativeScope(scope)
+  ): void {
     if (this.isScopedChild) return
     const key = this.scopeKey(scope)
     const scopedStream = this.scopedStreams.get(key)
     if (!scopedStream) return
-    if (this.isAuthoritativeScope(scope)) {
+    if (emitLiveCleanup) {
       scopedStream.isSessionActive = false
-      scopedStream.emitClearStats()
+      // Emit from the parent so an immutable was-authoritative decision can
+      // clear the live UI even after the tracker has already selected a new
+      // origin or ended the current one.
+      this.emitClearStats()
     }
     scopedStream.reset()
     this.scopedStreams.delete(key)

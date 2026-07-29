@@ -70,19 +70,33 @@ type TrackedSessionScope = {
   battleType: BattleType
   startedAt: number
   sequence: number
+  authorityGeneration: number
   name?: string
   originId?: string
   latestDeal?: ApiEvent<ApiType.EVT_DEAL>
   players?: Array<[number, SessionPlayerInfo]>
 }
 
+type PersistedTrackedSessionScope =
+  Omit<TrackedSessionScope, 'authorityGeneration'> & {
+    authorityGeneration?: number
+  }
+
 type SessionSelectionResult = {
   selectionChanged: boolean
+  previousScope?: EventSessionScope
+  endedScope?: EventSessionScope
+  wasAuthoritative?: boolean
 }
 
 const createOriginId = (): string =>
   globalThis.crypto?.randomUUID?.() ??
   `origin-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+const isAuthorityGeneration = (value: unknown): value is number =>
+  typeof value === 'number' &&
+  Number.isSafeInteger(value) &&
+  value > 0
 
 const broadcastSessionSelection = (
   service: PokerChaseService,
@@ -102,6 +116,25 @@ const broadcastSessionSelection = (
   }
 }
 
+const cleanupSupersededSessionPresentation = async (
+  service: PokerChaseService,
+  selection: SessionSelectionResult
+): Promise<void> => {
+  const previousScope = selection.previousScope
+  if (!selection.selectionChanged || !previousScope) return
+
+  // The aggregate scope is deliberately retained: an old origin may finish
+  // and persist the hand that was already in flight. Only presentation-local
+  // processors are drained and discarded at the authority boundary.
+  await Promise.all([
+    service.handLogStream.whenIdle(),
+    service.realTimeStatsStream.whenIdle(),
+  ])
+  service.handLogStream.discardSessionScope(previousScope, true)
+  service.realTimeStatsStream.discardSessionScope(previousScope, true)
+  broadcastSessionSelection(service, selection)
+}
+
 /**
  * MV3 service workerへ旧/新ゲームタブのイベントが合流しても、旧タブの
  * queued eventを新しいauthoritative sessionへ混入させないためのorigin別追跡。
@@ -116,7 +149,8 @@ class SessionOriginTracker {
   private readonly originIds = new Map<SessionOriginKey, string>()
   private currentKey?: SessionOriginKey
   private sequence = 0
-  private authoritativeStartedAt = Number.NEGATIVE_INFINITY
+  private authorityGeneration = 0
+  private lastAuthoritativeOriginId?: string
   private browserSessionToken?: string
   private canReconcileReplay = false
   readonly ready: Promise<void>
@@ -155,7 +189,7 @@ class SessionOriginTracker {
             scopes: [],
             currentTabId: null,
             sequence: 0,
-            authoritativeStartedAt: undefined,
+            authorityGeneration: 0,
           },
         })
         await sessionStorage.set({
@@ -169,10 +203,11 @@ class SessionOriginTracker {
       const result = await localStorage.get(SESSION_ORIGIN_STORAGE_KEY)
       const persisted = result[SESSION_ORIGIN_STORAGE_KEY] as {
         browserSessionToken?: string
-        scopes?: Array<[number, TrackedSessionScope]>
+        scopes?: Array<[number, PersistedTrackedSessionScope]>
         currentTabId?: number | null
         sequence?: number
-        authoritativeStartedAt?: number
+        authorityGeneration?: number
+        lastAuthoritativeOriginId?: string
       } | undefined
       if (
         persisted?.browserSessionToken !== browserSessionToken ||
@@ -185,38 +220,71 @@ class SessionOriginTracker {
       }
       this.browserSessionToken = browserSessionToken
       this.canReconcileReplay = true
-      for (const [tabId, scope] of persisted.scopes) {
-        if (typeof tabId === 'number' && scope && typeof scope.id === 'string') {
-          this.scopes.set(tabId, scope)
-          if (scope.originId) this.originIds.set(tabId, scope.originId)
-        }
-      }
       this.sequence = Number.isFinite(persisted.sequence) ? persisted.sequence! : 0
-      this.authoritativeStartedAt = Number.isFinite(persisted.authoritativeStartedAt)
-        ? persisted.authoritativeStartedAt!
-        : Number.NEGATIVE_INFINITY
-      if (typeof persisted.currentTabId === 'number' && this.scopes.has(persisted.currentTabId)) {
+      const restoredScopes = persisted.scopes.filter(
+        (entry): entry is [number, PersistedTrackedSessionScope] =>
+          typeof entry[0] === 'number' &&
+          entry[1] !== null &&
+          typeof entry[1] === 'object' &&
+          typeof entry[1].id === 'string'
+      )
+      const restoredScopeByTab = new Map(restoredScopes)
+      if (
+        typeof persisted.currentTabId === 'number' &&
+        restoredScopeByTab.has(persisted.currentTabId)
+      ) {
         this.currentKey = persisted.currentTabId
       }
       // Backward compatibility for snapshots written before `null` explicitly
       // represented "the newest authoritative origin ended". New snapshots
       // must never fall back to an older retained scope.
       if (persisted.currentTabId === undefined && this.currentKey === undefined) {
-        let latest: [SessionOriginKey, TrackedSessionScope] | undefined
-        for (const entry of this.scopes) {
+        let latest: [SessionOriginKey, PersistedTrackedSessionScope] | undefined
+        for (const entry of restoredScopes) {
           if (!latest || entry[1].sequence > latest[1].sequence) latest = entry
         }
         this.currentKey = latest?.[0]
       }
+
+      // Upgrade a pre-generation snapshot without allowing a retained scope
+      // to outrank its explicitly selected currentTabId.
+      const needsMigration =
+        !Number.isSafeInteger(persisted.authorityGeneration) ||
+        restoredScopes.some(([, scope]) =>
+          !isAuthorityGeneration(scope.authorityGeneration)
+        )
+      const recordedHighWater = Math.max(
+        0,
+        needsMigration ? this.sequence : 0,
+        Number(persisted.authorityGeneration) || 0,
+        ...restoredScopes.map(([, scope]) =>
+          isAuthorityGeneration(scope.authorityGeneration)
+            ? scope.authorityGeneration
+            : 0
+        )
+      )
+      for (const [tabId, rawScope] of restoredScopes) {
+        const authorityGeneration =
+          needsMigration
+            ? tabId === this.currentKey
+              ? recordedHighWater + 1
+              : Math.max(1, rawScope.sequence)
+            : rawScope.authorityGeneration!
+        const scope = { ...rawScope, authorityGeneration }
+        this.scopes.set(tabId, scope)
+        if (scope.originId) this.originIds.set(tabId, scope.originId)
+      }
+      this.authorityGeneration = Math.max(
+        recordedHighWater,
+        ...[...this.scopes.values()].map(scope => scope.authorityGeneration)
+      )
       const currentScope = this.currentKey === undefined
         ? undefined
         : this.scopes.get(this.currentKey)
-      if (currentScope) {
-        this.authoritativeStartedAt = Math.max(
-          this.authoritativeStartedAt,
-          currentScope.startedAt
-        )
-      }
+      this.lastAuthoritativeOriginId =
+        typeof persisted.lastAuthoritativeOriginId === 'string'
+          ? persisted.lastAuthoritativeOriginId
+          : currentScope?.originId
       this.applySelectedScope()
     } catch (error) {
       console.warn('[background] Failed to restore active session origins:', error)
@@ -244,9 +312,8 @@ class SessionOriginTracker {
           scopes,
           currentTabId,
           sequence: this.sequence,
-          authoritativeStartedAt: Number.isFinite(this.authoritativeStartedAt)
-            ? this.authoritativeStartedAt
-            : undefined,
+          authorityGeneration: this.authorityGeneration,
+          lastAuthoritativeOriginId: this.lastAuthoritativeOriginId,
         },
       })
       if (this.browserSessionToken === undefined) {
@@ -278,6 +345,20 @@ class SessionOriginTracker {
       previous.id === id
     const originId =
       previous?.originId ?? this.originIds.get(key) ?? createOriginId()
+    const isKnownOrigin = previous !== undefined || this.originIds.has(key)
+    const canBecomeAuthoritative =
+      this.currentKey === key ||
+      !isKnownOrigin ||
+      (
+        this.currentKey === undefined &&
+        originId === this.lastAuthoritativeOriginId
+      )
+    const authorityGeneration =
+      continuesCurrentMtt && previous
+        ? previous.authorityGeneration
+        : canBecomeAuthoritative
+          ? this.authorityGeneration + 1
+          : previous?.authorityGeneration ?? this.authorityGeneration
     return {
       scopeKey: continuesCurrentMtt
         ? previous.scopeKey
@@ -288,41 +369,51 @@ class SessionOriginTracker {
       battleType,
       startedAt: continuesCurrentMtt ? previous.startedAt : startedAt,
       originId,
+      authorityGeneration,
     }
   }
 
-  async start(key: SessionOriginKey, context: RawEventSessionContext): Promise<void> {
+  async start(
+    key: SessionOriginKey,
+    context: RawEventSessionContext
+  ): Promise<SessionSelectionResult> {
     await this.ready
     this.canReconcileReplay = true
     const previous = this.scopes.get(key)
-    const isFirstAcceptedStartForOrigin =
-      previous === undefined && !this.originIds.has(key)
     const continuesSameScope = previous?.scopeKey === context.scopeKey
+    const contextGeneration =
+      context.authorityGeneration ?? previous?.authorityGeneration ?? 0
+    const previousScope =
+      this.currentKey === undefined ? undefined : this.getContext(this.currentKey)
     const scope = {
       ...context,
       sequence: ++this.sequence,
+      authorityGeneration: contextGeneration,
       name: continuesSameScope ? previous.name : context.name,
       latestDeal: continuesSameScope ? previous.latestDeal : undefined,
       players: continuesSameScope ? previous.players : undefined,
     }
     this.scopes.set(key, scope)
     if (scope.originId) this.originIds.set(key, scope.originId)
-    const continuesAuthoritativeScope =
-      this.currentKey === key && continuesSameScope
-    // Date.now()-based boundaries can legitimately tie. Arrival order breaks
-    // that tie only for a never-before-accepted origin; a known stale origin
-    // must not reclaim authority by replaying another equal-ms 201.
-    const supersedesAuthoritativeScope =
-      this.currentKey === undefined ||
-      scope.startedAt > this.authoritativeStartedAt ||
+    const selectsAuthority =
       (
-        scope.startedAt === this.authoritativeStartedAt &&
-        isFirstAcceptedStartForOrigin &&
-        this.currentKey !== key
+        this.currentKey === key &&
+        scope.authorityGeneration === this.authorityGeneration
+      ) ||
+      scope.authorityGeneration > this.authorityGeneration
+    const selectionChanged =
+      selectsAuthority &&
+      (
+        this.currentKey !== key ||
+        previous?.scopeKey !== scope.scopeKey
       )
-    if (continuesAuthoritativeScope || supersedesAuthoritativeScope) {
+    if (selectsAuthority) {
       this.currentKey = key
-      this.authoritativeStartedAt = scope.startedAt
+      this.authorityGeneration = Math.max(
+        this.authorityGeneration,
+        scope.authorityGeneration
+      )
+      this.lastAuthoritativeOriginId = scope.originId
       this.service.startSession(
         scope.id,
         scope.battleType,
@@ -332,6 +423,10 @@ class SessionOriginTracker {
       if (!scope.latestDeal) this.service.markSessionDisplayDealUnavailable()
     }
     await this.persist()
+    return {
+      selectionChanged,
+      previousScope: selectionChanged ? previousScope : undefined,
+    }
   }
 
   getContext(key: SessionOriginKey): RawEventSessionContext | undefined {
@@ -344,6 +439,7 @@ class SessionOriginTracker {
       startedAt: scope.startedAt,
       name: scope.name,
       originId: scope.originId,
+      authorityGeneration: scope.authorityGeneration,
     }
   }
 
@@ -462,31 +558,43 @@ class SessionOriginTracker {
   async end(key: SessionOriginKey): Promise<SessionSelectionResult> {
     await this.ready
     const endedScope = this.scopes.get(key)
+    const endedContext = endedScope ? this.getContext(key) : undefined
+    const wasAuthoritative =
+      endedScope !== undefined && this.currentKey === key
     this.scopes.delete(key)
     if (endedScope) this.canReconcileReplay = true
 
     // このworkerで201を見ていないcold-resume時は従来どおり単独309で閉じる。
     if (!endedScope) {
       if (this.scopes.size === 0) {
-        this.authoritativeStartedAt = Number.NEGATIVE_INFINITY
         this.service.endSession()
       }
       await this.persist()
-      return { selectionChanged: this.scopes.size === 0 }
+      return {
+        selectionChanged: this.scopes.size === 0,
+        wasAuthoritative: false,
+      }
     }
     if (this.currentKey !== key) {
       await this.persist()
-      return { selectionChanged: false }
+      return {
+        selectionChanged: false,
+        endedScope: endedContext,
+        wasAuthoritative: false,
+      }
     }
 
     // The newest valid login is the sole authoritative live session. Older
     // retained scopes may finish queued hands under their own scope, but they
     // are never promoted back into HUD/stat state after the authority ends.
     this.currentKey = undefined
-    this.authoritativeStartedAt = Number.NEGATIVE_INFINITY
     this.service.endSession()
     await this.persist()
-    return { selectionChanged: true }
+    return {
+      selectionChanged: true,
+      endedScope: endedContext,
+      wasAuthoritative,
+    }
   }
 }
 
@@ -873,7 +981,8 @@ const processEvent = async (
   // following events still inherit the same replay scope. The parsed stream
   // remains gated below; this only advances raw/session boundary tracking.
   if (startContext) {
-    await sessionOrigins.start(originKey, startContext)
+    const selection = await sessionOrigins.start(originKey, startContext)
+    await cleanupSupersededSessionPresentation(service, selection)
   }
 
   // Forced-update安全性述語（update-manager.ts）のセッション状態追跡。
@@ -894,11 +1003,27 @@ const processEvent = async (
     // 将来変わってparseに失敗しても、終了後に完了済み対局を再表示しない。
     // 先行201のAggregate処理を完了させてからorigin trackerの選択を適用し、
     // 遅れて走るstartSessionが復元した別タブのscopeを再度上書きしない。
-    await service.handAggregateStream.whenIdle()
-    if (eventContext) {
+    await Promise.all([
+      service.handAggregateStream.whenIdle(),
+      service.handLogStream.whenIdle(),
+      service.realTimeStatsStream.whenIdle(),
+    ])
+    const restored = await sessionOrigins.end(originKey)
+    if (restored.endedScope) {
+      service.handAggregateStream.discardSessionScope(restored.endedScope)
+      service.handLogStream.discardSessionScope(
+        restored.endedScope,
+        restored.wasAuthoritative === true
+      )
+      service.realTimeStatsStream.discardSessionScope(
+        restored.endedScope,
+        restored.wasAuthoritative === true
+      )
+    } else if (eventContext) {
+      // Cold-resume fallback: no tracked origin existed, but any context
+      // captured before restore still identifies the persistence buffer.
       service.handAggregateStream.discardSessionScope(eventContext)
     }
-    const restored = await sessionOrigins.end(originKey)
     broadcastSessionSelection(
       service,
       restored,

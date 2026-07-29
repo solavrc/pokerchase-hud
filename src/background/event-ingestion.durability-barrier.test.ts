@@ -255,6 +255,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
           battleType: BattleType.SIT_AND_GO,
           startedAt: 400,
           originId: expect.any(String),
+          authorityGeneration: 1,
         },
       },
       {
@@ -266,6 +267,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
           battleType: BattleType.SIT_AND_GO,
           startedAt: 400,
           originId: expect.any(String),
+          authorityGeneration: 2,
         },
       }
     ])

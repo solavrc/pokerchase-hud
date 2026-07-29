@@ -12,6 +12,7 @@ export type EventSessionScope = Readonly<{
   startedAt: number
   name?: string
   originId?: string
+  authorityGeneration?: number
 }>
 
 export type ActiveSessionScope = Readonly<{
@@ -68,6 +69,7 @@ export const setLineupSessionScope = (
     startedAt: scope.startedAt,
     name: scope.name,
     originId: scope.originId,
+    authorityGeneration: scope.authorityGeneration,
   })
   if (originatingDeal) {
     lineupOriginatingDeals.set(seatUserIds, originatingDeal)
