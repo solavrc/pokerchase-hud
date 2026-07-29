@@ -573,6 +573,32 @@ describe('App', () => {
       expect(screen.getByTestId('hud-0')).toHaveTextContent('FilterRevision: 1')
     })
 
+    it('セッション境界が変わると開いているドリルダウンを再取得する', async () => {
+      const user = userEvent.setup()
+      render(<App />)
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', {
+            detail: { ...mockStatsData, sessionScopeRevision: 1 },
+          })
+        )
+      })
+      await user.click(screen.getByText('toggle-recent-1'))
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('FilterRevision: 0')
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', {
+            detail: { ...mockStatsData, sessionScopeRevision: 2 },
+          })
+        )
+      })
+
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: yes')
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('FilterRevision: 1')
+    })
+
     it('ポジション別パネルとの従来の種別間排他は維持する', async () => {
       const user = userEvent.setup()
 

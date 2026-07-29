@@ -27,12 +27,11 @@ const EMPTY_SEATS: PlayerStats[] = Array.from({ length: 6 }, () => ({ playerId: 
 // 監査指摘11（P2）「開いたドリルダウンパネルが無期限に古くなる」対応:
 // ports.tsのbroadcastMessage()は既にPOKER_CHASE_SERVICE_EVENTの生payloadへ
 // `handEpoch`（`liveBroadcastSequence`をそのまま積んだもの、詳細はports.ts参照）
-// を積んでいるが、content_script.ts側の`StatsData`型（同ファイル定義）は
-// 別ワークストリームが所有しておりこのフィールドをまだ宣言していない。
-// content_script.tsの転送コード自体は型アサーションを経由するだけで実行時の
-// フィールドを一切削らないため、実行時には確実に載ってくる -- ここでは
-// content_script.tsを変更せず、ローカルに型を拡張して読み取るだけにする。
-type StatsDataWithHandEpoch = StatsData & { handEpoch?: number }
+// と、セッション境界更新用の`sessionScopeRevision`を積んでいる。
+type StatsDataWithHandEpoch = StatsData & {
+  handEpoch?: number
+  sessionScopeRevision?: number
+}
 
 // PlayerStats = ExistPlayerStats | { playerId: -1, statResults?: never[] }（zod union）。
 // ExistPlayerStats.playerId は z.number()（リテラルでない）なので、TSの標準的な
@@ -99,6 +98,7 @@ const App = memo(() => {
   // ストームは起きない）。
   const [handEpoch, setHandEpoch] = useState(0)
   const [filterRevision, setFilterRevision] = useState(0)
+  const lastSessionScopeRevisionRef = useRef<number | undefined>(undefined)
 
   const handleTogglePositionalPanel = useCallback((playerId: number) => {
     setOpenPositionalPanelPlayerId(prev => prev === playerId ? null : playerId)
@@ -178,6 +178,18 @@ const App = memo(() => {
       const incomingHandEpoch = (detail as StatsDataWithHandEpoch).handEpoch
       if (incomingHandEpoch !== undefined) {
         setHandEpoch(incomingHandEpoch)
+      }
+      const incomingSessionScopeRevision =
+        (detail as StatsDataWithHandEpoch).sessionScopeRevision
+      if (incomingSessionScopeRevision !== undefined) {
+        const previousSessionScopeRevision = lastSessionScopeRevisionRef.current
+        lastSessionScopeRevisionRef.current = incomingSessionScopeRevision
+        if (
+          previousSessionScopeRevision !== undefined &&
+          previousSessionScopeRevision !== incomingSessionScopeRevision
+        ) {
+          setFilterRevision(current => current + 1)
+        }
       }
 
       // Update real-time stats if available

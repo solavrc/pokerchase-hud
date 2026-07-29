@@ -151,17 +151,21 @@ describe('PokerChaseService - explicit session persistence', () => {
 
     service.startSession('stage006_002', BattleType.SIT_AND_GO, 1000)
     expect(service.getCurrentSessionScope()).toEqual({ id: 'stage006_002', startedAt: 1000 })
+    expect(service.sessionScopeRevision).toBe(1)
 
     service.startSession('stage006_002', BattleType.SIT_AND_GO, 2000)
     expect(service.getCurrentSessionScope()).toEqual({ id: 'stage006_002', startedAt: 2000 })
+    expect(service.sessionScopeRevision).toBe(2)
 
     service.startSession('6078', BattleType.TOURNAMENT, 3000)
     service.startSession('6078', BattleType.TOURNAMENT, 4000)
     expect(service.getCurrentSessionScope()).toEqual({ id: '6078', startedAt: 3000 })
+    expect(service.sessionScopeRevision).toBe(3)
 
     service.endSession()
     expect(service.getCurrentSessionScope()).toBeUndefined()
     expect(service.currentSessionFilterKey()).toBe('inactive')
+    expect(service.sessionScopeRevision).toBe(4)
   })
 
   test('setPlayer()によるプレイヤー追加はpersistをトリガーする', async () => {

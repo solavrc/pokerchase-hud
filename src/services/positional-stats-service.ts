@@ -132,8 +132,37 @@ function subscribeToHandCompletion(service: PokerChaseService): void {
 /** Exported for direct unit testing (see positional-stats-service.test.ts) -- caching itself
  * is disabled under NODE_ENV=test (see `useCache` below), so key-differs-when-filter-differs
  * can't be observed behaviorally in tests and is instead pinned down against this function directly. */
-export const buildCacheKey = (playerId: number, service: PokerChaseService): string =>
-  `${playerId}_${service.battleTypeFilter?.join(',') ?? 'all'}_${service.tableSizeFilter?.join(',') ?? 'all'}_${service.handLimitFilter ?? 'all'}_${service.sessionOnlyFilter ? service.currentSessionFilterKey() : 'all-sessions'}`
+type PositionalFilterSnapshot = {
+  battleTypes?: number[]
+  tableSizes?: NonNullable<PokerChaseService['tableSizeFilter']>
+  handLimit?: number
+  session: {
+    enabled: boolean
+    scope?: { id: string, startedAt: number }
+  }
+}
+
+const captureFilterSnapshot = (service: PokerChaseService): PositionalFilterSnapshot => ({
+  battleTypes: service.battleTypeFilter ? [...service.battleTypeFilter] : undefined,
+  tableSizes: service.tableSizeFilter ? [...service.tableSizeFilter] : undefined,
+  handLimit: service.handLimitFilter,
+  session: service.sessionOnlyFilter
+    ? { enabled: true, scope: service.getCurrentSessionScope() }
+    : { enabled: false },
+})
+
+export const buildCacheKey = (
+  playerId: number,
+  service: PokerChaseService,
+  snapshot: PositionalFilterSnapshot = captureFilterSnapshot(service)
+): string => {
+  const sessionKey = snapshot.session.enabled
+    ? snapshot.session.scope
+      ? `${snapshot.session.scope.id}@${snapshot.session.scope.startedAt}`
+      : 'inactive'
+    : 'all-sessions'
+  return `${playerId}_${snapshot.battleTypes?.join(',') ?? 'all'}_${snapshot.tableSizes?.join(',') ?? 'all'}_${snapshot.handLimit ?? 'all'}_${sessionKey}`
+}
 
 const emptyStats = (): Record<PositionalStatId, [number, number]> => ({
   vpip: [0, 0],
@@ -189,7 +218,8 @@ export async function getPositionalStats(
   // ハンド完了(cacheGeneration++)が割り込んでいないか照合する（上のコメント参照）。
   const fetchGeneration = cacheGeneration
 
-  const cacheKey = buildCacheKey(playerId, service)
+  const filterSnapshot = captureFilterSnapshot(service)
+  const cacheKey = buildCacheKey(playerId, service, filterSnapshot)
   const useCache = process.env.NODE_ENV !== 'test' && !process.env.DEBUG_NO_CACHE
   const now = Date.now()
 
@@ -210,28 +240,32 @@ export async function getPositionalStats(
     .where('seatUserIds').equals(playerId)
     .toArray()
 
-  if (service.battleTypeFilter) {
+  if (filterSnapshot.battleTypes) {
     allPlayerHands = allPlayerHands.filter((hand: Hand) =>
-      service.battleTypeFilter!.includes(hand.session.battleType!)
+      filterSnapshot.battleTypes!.includes(hand.session.battleType!)
     )
   }
 
-  if (service.tableSizeFilter) {
+  if (filterSnapshot.tableSizes) {
     allPlayerHands = allPlayerHands.filter((hand: Hand) =>
-      matchesTableSizeFilter(hand, service.tableSizeFilter)
+      matchesTableSizeFilter(hand, filterSnapshot.tableSizes)
     )
   }
 
-  if (service.sessionOnlyFilter) {
-    allPlayerHands = allPlayerHands.filter((hand: Hand) =>
-      service.isHandInCurrentSession(hand)
-    )
+  if (filterSnapshot.session.enabled) {
+    const scope = filterSnapshot.session.scope
+    allPlayerHands = allPlayerHands.filter((hand: Hand) => (
+      scope !== undefined &&
+      hand.session.id === scope.id &&
+      Number.isFinite(hand.approxTimestamp) &&
+      hand.approxTimestamp! >= scope.startedAt
+    ))
   }
 
-  if (service.handLimitFilter !== undefined && service.handLimitFilter > 0) {
+  if (filterSnapshot.handLimit !== undefined && filterSnapshot.handLimit > 0) {
     allPlayerHands = [...allPlayerHands]
       .sort(compareHandsNewestFirst)
-      .slice(0, service.handLimitFilter)
+      .slice(0, filterSnapshot.handLimit)
   }
 
   // battleType/tableSize/handLimitフィルターの結果、対象ハンドが0件なら

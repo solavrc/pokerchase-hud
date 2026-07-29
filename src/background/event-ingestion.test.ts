@@ -117,6 +117,41 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(service.getCurrentSessionScope()).toBeUndefined()
   })
 
+  test('an entry cancellation only closes its originating tab session', async () => {
+    const secondPort = {
+      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      sender: { tab: { id: 202 } },
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn(),
+    }
+    mockPort.sender = { tab: { id: 101 } }
+    connectListener(secondPort)
+    const secondHandler = secondPort.onMessage.addListener.mock.calls[0][0]
+
+    await secondHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'tab-b',
+      IsRetire: false,
+    })
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 2000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'tab-a',
+      IsRetire: false,
+    })
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-a', startedAt: 2000 })
+
+    await onMessageHandler({ ApiTypeId: 203, timestamp: 3000 })
+
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-b', startedAt: 1000 })
+  })
+
   test('same-origin MTT table moves preserve the original session boundary', async () => {
     mockPort.sender = { tab: { id: 101 } }
     await onMessageHandler({
@@ -134,6 +169,64 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       BattleType: BattleType.TOURNAMENT,
       Id: 'mtt-6078',
       IsRetire: false,
+    })
+
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'mtt-6078', startedAt: 1000 })
+  })
+
+  test('active origin scopes survive a service worker listener restart', async () => {
+    mockPort.sender = { tab: { id: 101 } }
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.TOURNAMENT,
+      Id: 'mtt-6078',
+      IsRetire: false,
+    })
+
+    registerEventIngestion(service)
+    const restoredConnectListener =
+      (chrome.runtime as any).onConnect.addListener.mock.calls[1][0]
+    const restoredPortA = {
+      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      sender: { tab: { id: 101 } },
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn(),
+    }
+    restoredConnectListener(restoredPortA)
+    const restoredHandlerA = restoredPortA.onMessage.addListener.mock.calls[0][0]
+
+    await restoredHandlerA({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 2000,
+      Code: 0,
+      BattleType: BattleType.TOURNAMENT,
+      Id: 'mtt-6078',
+      IsRetire: false,
+    })
+
+    const restoredPortB = {
+      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      sender: { tab: { id: 202 } },
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn(),
+    }
+    restoredConnectListener(restoredPortB)
+    const restoredHandlerB = restoredPortB.onMessage.addListener.mock.calls[0][0]
+    await restoredHandlerB({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 3000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'tab-b',
+      IsRetire: false,
+    })
+    await restoredHandlerB({
+      ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+      timestamp: 4000,
     })
 
     expect(service.getCurrentSessionScope()).toEqual({ id: 'mtt-6078', startedAt: 1000 })

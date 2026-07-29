@@ -33,6 +33,7 @@ import { setEventSessionScope, type EventSessionScope } from '../utils/session-e
  * ミラーする。
  */
 const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
+const SESSION_ORIGIN_STORAGE_KEY = 'activeSessionOriginsV1'
 
 /**
  * Raw Event Lakeの耐久性バリア（release-blocker監査 finding A）を実現する
@@ -63,10 +64,53 @@ class SessionOriginTracker {
   private readonly scopes = new Map<SessionOriginKey, TrackedSessionScope>()
   private currentKey?: SessionOriginKey
   private sequence = 0
+  readonly ready: Promise<void>
 
-  constructor(private readonly service: PokerChaseService) {}
+  constructor(private readonly service: PokerChaseService) {
+    this.ready = this.restore()
+  }
 
-  start(key: SessionOriginKey, id: string, battleType: BattleType, startedAt: number): void {
+  private storageArea = (): chrome.storage.StorageArea =>
+    chrome.storage.session ?? chrome.storage.local
+
+  private async restore(): Promise<void> {
+    try {
+      const result = await this.storageArea().get(SESSION_ORIGIN_STORAGE_KEY)
+      const persisted = result[SESSION_ORIGIN_STORAGE_KEY] as {
+        scopes?: Array<[number, TrackedSessionScope]>
+        currentTabId?: number
+        sequence?: number
+      } | undefined
+      if (!persisted?.scopes || !Array.isArray(persisted.scopes)) return
+      for (const [tabId, scope] of persisted.scopes) {
+        if (typeof tabId === 'number' && scope && typeof scope.id === 'string') {
+          this.scopes.set(tabId, scope)
+        }
+      }
+      this.sequence = Number.isFinite(persisted.sequence) ? persisted.sequence! : 0
+      if (persisted.currentTabId !== undefined && this.scopes.has(persisted.currentTabId)) {
+        this.currentKey = persisted.currentTabId
+      }
+    } catch (error) {
+      console.warn('[background] Failed to restore active session origins:', error)
+    }
+  }
+
+  private async persist(): Promise<void> {
+    const scopes = [...this.scopes.entries()]
+      .filter((entry): entry is [number, TrackedSessionScope] => typeof entry[0] === 'number')
+    const currentTabId = typeof this.currentKey === 'number' ? this.currentKey : undefined
+    await this.storageArea().set({
+      [SESSION_ORIGIN_STORAGE_KEY]: {
+        scopes,
+        currentTabId,
+        sequence: this.sequence,
+      },
+    })
+  }
+
+  async start(key: SessionOriginKey, id: string, battleType: BattleType, startedAt: number): Promise<void> {
+    await this.ready
     const previous = this.scopes.get(key)
     const continuesCurrentMtt =
       previous?.battleType === BattleType.TOURNAMENT &&
@@ -81,6 +125,7 @@ class SessionOriginTracker {
     this.scopes.set(key, scope)
     this.currentKey = key
     this.service.startSession(id, battleType, scope.startedAt)
+    await this.persist()
   }
 
   get(key: SessionOriginKey): EventSessionScope | undefined {
@@ -93,16 +138,21 @@ class SessionOriginTracker {
     }
   }
 
-  end(key: SessionOriginKey): void {
+  async end(key: SessionOriginKey): Promise<void> {
+    await this.ready
     const endedScope = this.scopes.get(key)
     this.scopes.delete(key)
 
     // このworkerで201を見ていないcold-resume時は従来どおり単独309で閉じる。
     if (!endedScope) {
       if (this.scopes.size === 0) this.service.endSession()
+      await this.persist()
       return
     }
-    if (this.currentKey !== key) return
+    if (this.currentKey !== key) {
+      await this.persist()
+      return
+    }
 
     let nextEntry: [SessionOriginKey, TrackedSessionScope] | undefined
     for (const entry of this.scopes) {
@@ -111,12 +161,14 @@ class SessionOriginTracker {
     if (!nextEntry) {
       this.currentKey = undefined
       this.service.endSession()
+      await this.persist()
       return
     }
 
     this.currentKey = nextEntry[0]
     const next = nextEntry[1]
     this.service.startSession(next.id, next.battleType, next.startedAt)
+    await this.persist()
   }
 }
 
@@ -189,8 +241,9 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   // when Chrome confirms that the tab itself was closed.
   chrome.tabs?.onRemoved?.addListener(tabId => {
     const task = ingestionQueue.then(async () => {
+      await sessionOrigins.ready
       await service.handAggregateStream.whenIdle()
-      sessionOrigins.end(tabId)
+      await sessionOrigins.end(tabId)
     })
     ingestionQueue = task.catch(err => {
       console.error('[background] Failed to close removed-tab session scope:', err)
@@ -333,7 +386,7 @@ const processEvent = async (
 ): Promise<void> => {
   // Ensure service is ready before processing messages
   try {
-    await service.ready
+    await Promise.all([service.ready, sessionOrigins.ready])
   } catch (err) {
     console.error('[background] Service not ready:', err)
     return
@@ -394,14 +447,18 @@ const processEvent = async (
   // 詳細は`applySessionActivity`のコメント参照。
   applySessionActivity(rawApiTypeId, message)
 
-  if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+  if (
+    rawApiTypeId === ApiType.EVT_SESSION_RESULTS ||
+    rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID
+  ) {
     // 「最新」フィルターの対局境界もraw-firstで閉じる。309の詳細スキーマが
     // 将来変わってparseに失敗しても、終了後に完了済み対局を再表示しない。
     // 先行201のAggregate処理を完了させてからorigin trackerの選択を適用し、
     // 遅れて走るstartSessionが復元した別タブのscopeを再度上書きしない。
     await service.handAggregateStream.whenIdle()
-    sessionOrigins.end(originKey)
+    await sessionOrigins.end(originKey)
 
+    if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
     // #179 round3指摘: セッション終了(EVT_SESSION_RESULTS)によるHUDクリアは
     // App.tsx側のReact stateだけで完結しており、background(ports.ts)の
     // `lastKnownStats`はセッションをまたいで残り続ける。この状態で
@@ -454,7 +511,8 @@ const processEvent = async (
     // 203(参加取消申込)はここに含めない: 303/308が一度も届いていない
     // （ハンドが一度も始まっていない）ため、そもそもクリアすべき
     // ライブlineupが存在しない。
-    setLastKnownStats([])
+      setLastKnownStats([])
+    }
   }
 
   // Auto-sync起動・保留中アップデートの安全性再チェックも、上のセッション状態
@@ -565,7 +623,7 @@ const processEvent = async (
   }
 
   if (data.ApiTypeId === ApiType.EVT_ENTRY_QUEUED && data.Code === 0) {
-    sessionOrigins.start(
+    await sessionOrigins.start(
       originKey,
       data.Id,
       data.BattleType,

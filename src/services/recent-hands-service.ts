@@ -78,8 +78,36 @@ function subscribeToHandCompletion(service: PokerChaseService): void {
 /** Exported for direct unit testing -- caching itself is disabled under NODE_ENV=test
  * (see `useCache` below), so key-differs-when-filter-or-limit-differs can't be observed
  * behaviorally in tests and is instead pinned down against this function directly. */
-export const buildRecentHandsCacheKey = (playerId: number, service: PokerChaseService, limit: number): string =>
-  `${playerId}_${service.battleTypeFilter?.join(',') ?? 'all'}_${service.tableSizeFilter?.join(',') ?? 'all'}_${service.sessionOnlyFilter ? service.currentSessionFilterKey() : 'all-sessions'}_${limit}`
+type RecentHandsFilterSnapshot = {
+  battleTypes?: number[]
+  tableSizes?: NonNullable<PokerChaseService['tableSizeFilter']>
+  session: {
+    enabled: boolean
+    scope?: { id: string, startedAt: number }
+  }
+}
+
+const captureFilterSnapshot = (service: PokerChaseService): RecentHandsFilterSnapshot => ({
+  battleTypes: service.battleTypeFilter ? [...service.battleTypeFilter] : undefined,
+  tableSizes: service.tableSizeFilter ? [...service.tableSizeFilter] : undefined,
+  session: service.sessionOnlyFilter
+    ? { enabled: true, scope: service.getCurrentSessionScope() }
+    : { enabled: false },
+})
+
+export const buildRecentHandsCacheKey = (
+  playerId: number,
+  service: PokerChaseService,
+  limit: number,
+  snapshot: RecentHandsFilterSnapshot = captureFilterSnapshot(service)
+): string => {
+  const sessionKey = snapshot.session.enabled
+    ? snapshot.session.scope
+      ? `${snapshot.session.scope.id}@${snapshot.session.scope.startedAt}`
+      : 'inactive'
+    : 'all-sessions'
+  return `${playerId}_${snapshot.battleTypes?.join(',') ?? 'all'}_${snapshot.tableSizes?.join(',') ?? 'all'}_${sessionKey}_${limit}`
+}
 
 /**
  * あるアクションの`phasePrevBetCount`をローカルに再計算する。
@@ -226,7 +254,8 @@ export async function getRecentHands(
   const fetchGeneration = cacheGeneration
 
   const effectiveLimit = limit > 0 ? limit : DEFAULT_RECENT_HANDS_LIMIT
-  const cacheKey = buildRecentHandsCacheKey(playerId, service, effectiveLimit)
+  const filterSnapshot = captureFilterSnapshot(service)
+  const cacheKey = buildRecentHandsCacheKey(playerId, service, effectiveLimit, filterSnapshot)
   const useCache = process.env.NODE_ENV !== 'test' && !process.env.DEBUG_NO_CACHE
   const now = Date.now()
 
@@ -242,22 +271,26 @@ export async function getRecentHands(
     .where('seatUserIds').equals(playerId)
     .toArray()
 
-  if (service.battleTypeFilter) {
+  if (filterSnapshot.battleTypes) {
     allPlayerHands = allPlayerHands.filter((hand: Hand) =>
-      service.battleTypeFilter!.includes(hand.session.battleType!)
+      filterSnapshot.battleTypes!.includes(hand.session.battleType!)
     )
   }
 
-  if (service.tableSizeFilter) {
+  if (filterSnapshot.tableSizes) {
     allPlayerHands = allPlayerHands.filter((hand: Hand) =>
-      matchesTableSizeFilter(hand, service.tableSizeFilter)
+      matchesTableSizeFilter(hand, filterSnapshot.tableSizes)
     )
   }
 
-  if (service.sessionOnlyFilter) {
-    allPlayerHands = allPlayerHands.filter((hand: Hand) =>
-      service.isHandInCurrentSession(hand)
-    )
+  if (filterSnapshot.session.enabled) {
+    const scope = filterSnapshot.session.scope
+    allPlayerHands = allPlayerHands.filter((hand: Hand) => (
+      scope !== undefined &&
+      hand.session.id === scope.id &&
+      Number.isFinite(hand.approxTimestamp) &&
+      hand.approxTimestamp! >= scope.startedAt
+    ))
   }
 
   // handLimitFilterは意図的に適用しない（このパネル自体の「直近N件」が

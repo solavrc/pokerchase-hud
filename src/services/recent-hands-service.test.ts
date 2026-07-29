@@ -199,6 +199,26 @@ describe('RecentHandsService', () => {
       expect(result.hands.map(h => h.handId)).toEqual([5])
     })
 
+    test('sessionOnly snapshots its active boundary before the asynchronous DB read', async () => {
+      await db.hands.update(4, {
+        approxTimestamp: 4000,
+        session: { id: 'current', battleType: BattleType.RING_GAME },
+      })
+      await db.hands.update(5, {
+        approxTimestamp: 5000,
+        session: { id: 'current', battleType: BattleType.RING_GAME },
+      })
+      service.sessionOnlyFilter = true
+      const scopeSpy = jest.spyOn(service, 'getCurrentSessionScope')
+        .mockReturnValueOnce({ id: 'current', startedAt: 4500 })
+        .mockReturnValue({ id: 'other', startedAt: 0 })
+
+      const result = await getRecentHands(db, service, PLAYER_ID, 10)
+
+      expect(scopeSpy).toHaveBeenCalledTimes(1)
+      expect(result.hands.map(h => h.handId)).toEqual([5])
+    })
+
     test('brand-new player with zero hands returns an empty list, not an error', async () => {
       const result = await getRecentHands(db, service, 999)
       expect(result.hands).toEqual([])

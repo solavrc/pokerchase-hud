@@ -212,6 +212,7 @@ class PokerChaseService {
   tableSizeFilter?: TableSizeLayer[] = undefined // undefined = all layers (no filtering), array = selected layers (C案)
   handLimitFilter?: number = undefined // undefined = all hands, number = limit to recent N hands
   sessionOnlyFilter: boolean = false // true = current active session boundary only
+  sessionScopeRevision: number = 0 // increments whenever the active session boundary changes
   statDisplayConfigs?: StatDisplayConfig[] = undefined // Custom stat display configuration
   handLogConfig?: HandLogConfig = undefined // Hand log display configuration
   batchMode: boolean = false // Batch mode flag for bulk operations
@@ -307,11 +308,18 @@ class PokerChaseService {
   }
 
   readonly startSession = (id: string, battleType: BattleType, startedAt: number) => {
+    const previous = this.getCurrentSessionScope()
     this._sessionData.start(id, battleType, startedAt)
+    const next = this.getCurrentSessionScope()
+    if (previous?.id !== next?.id || previous?.startedAt !== next?.startedAt) {
+      this.sessionScopeRevision++
+    }
   }
 
   readonly endSession = () => {
+    const wasActive = this.getCurrentSessionScope() !== undefined
     this._sessionData.end()
+    if (wasActive) this.sessionScopeRevision++
   }
 
   readonly getCurrentSessionScope = (): { id: string, startedAt: number } | undefined => {

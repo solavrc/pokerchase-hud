@@ -279,6 +279,27 @@ describe('PositionalStatsService', () => {
     expect(result.positions.reduce((sum, bucket) => sum + bucket.handsN, 0)).toBe(1)
   })
 
+  test('sessionOnly snapshots its active boundary before the asynchronous DB read', async () => {
+    await db.hands.update(9, {
+      approxTimestamp: 9000,
+      session: { id: 'current', battleType: BattleType.RING_GAME },
+    })
+    await db.hands.update(10, {
+      approxTimestamp: 10000,
+      session: { id: 'current', battleType: BattleType.RING_GAME },
+    })
+    service.sessionOnlyFilter = true
+    const scopeSpy = jest.spyOn(service, 'getCurrentSessionScope')
+      .mockReturnValueOnce({ id: 'current', startedAt: 9500 })
+      .mockReturnValue({ id: 'other', startedAt: 0 })
+
+    const result = await getPositionalStats(db, service, PLAYER_ID)
+
+    expect(scopeSpy).toHaveBeenCalledTimes(1)
+    expect(bucketOf(result, Position.BTN).handsN).toBe(1)
+    expect(result.positions.reduce((sum, bucket) => sum + bucket.handsN, 0)).toBe(1)
+  })
+
   test('handLimitFilter keeps the most recent N legacy hands with deterministic HandId fallback', async () => {
     service.handLimitFilter = 3
     const result = await getPositionalStats(db, service, PLAYER_ID)
