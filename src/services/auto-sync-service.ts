@@ -12,9 +12,9 @@ import {
 } from '../constants/sync'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
-import { ApiType, ApiTypeValues, BattleType, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent } from '../types'
+import { ApiType, ApiTypeValues, BattleType, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent, parseApiEvent } from '../types'
 import type { ApiEvent } from '../types'
-import { processInReplayChunks, filterValidApplicationEvents } from '../utils/database-utils'
+import { processInReplayChunks } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
 import { isCloudSyncBlockedByMinVersionGate } from './min-version-gate'
 import {
@@ -1593,41 +1593,66 @@ export class AutoSyncService {
         this.db.apiEvents,
         DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
       )) {
-        // events is a raw Lake chunk (see docs/architecture.md) — it may contain
-        // non-application noise, unknown ApiTypeIds, or app-type payloads that
-        // fail the current schema. EntityConverter reads required fields (e.g.
-        // EVT_DEAL.Game.SmallBlind) without guards, so only hand it validated
-        // application events; isApiEventType()/restoreSessionEvent() below
-        // already re-validate internally so they're safe on the raw chunk as-is.
-        const validEvents = await filterValidApplicationEvents(events)
-        const entities = converter.convertEventChunk(validEvents)
-        entities.hands.forEach(hand => rebuiltHandIds.add(hand.id))
-        await this.saveRebuiltEntities(entities)
-
+        // Drive entity conversion and replay-session restoration from the same
+        // raw-order loop. Lifecycle rows can remain useful even when their
+        // application payload no longer parses, while unsafe payloads still
+        // never reach EntityConverter.
+        const entities: ReturnType<EntityConverter['flush']> = {
+          hands: [],
+          phases: [],
+          actions: []
+        }
+        let validSegment: ApiEvent[] = []
+        const convertValidSegment = (): void => {
+          if (validSegment.length === 0) return
+          const converted = converter.convertEventChunk(validSegment)
+          entities.hands.push(...converted.hands)
+          entities.phases.push(...converted.phases)
+          entities.actions.push(...converted.actions)
+          validSegment = []
+        }
         for (const event of events) {
           lastProcessedTimestamp = Math.max(lastProcessedTimestamp, event.timestamp || 0)
+          const parsed = parseApiEvent(event)
+          const validApplicationEvent =
+            parsed && isApplicationApiEvent(parsed) ? parsed : undefined
           const entryBoundary = getReplayEntryBoundary(event)
           const isEntry = entryBoundary !== undefined
-          const isSessionResult = event.ApiTypeId === ApiType.EVT_SESSION_RESULTS
+          const isSessionResult =
+            (event as { ApiTypeId?: number }).ApiTypeId === ApiType.EVT_SESSION_RESULTS
           const isEntryCancellation =
             (event as { ApiTypeId?: number }).ApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID
+
+          if (isEntry || isSessionResult || isEntryCancellation) {
+            convertValidSegment()
+          }
           if (isEntry) {
-            // A deal candidate from the previous entry must never be paired
-            // with a newly committed entry that has not dealt yet.
+            // A deal candidate or Friend continuation from the previous entry
+            // must never cross a newly committed entry.
             latestDealEvent = undefined
             pendingFriendSngSession = undefined
+            converter.applyRawSessionBoundary(
+              entryBoundary?.id,
+              entryBoundary?.battleType
+            )
           } else if (
             isSessionResult &&
             replaySession.battleType === BattleType.FRIEND_SIT_AND_GO
           ) {
-            // Default to terminal, but retain enough context to recover if a
-            // later seated deal proves the raw history was interleaved.
+            // Default to terminal. If a later seated deal proves this result
+            // was interleaved, restore the exact snapshot to both replay state
+            // and EntityConverter before that deal is converted. Keep the
+            // converter's context provisional until the next DEAL: events
+            // from the continuing Friend hand can follow this interleaved 309
+            // before that proof arrives.
             pendingFriendSngSession = captureReplaySession()
             latestDealEvent = undefined
-          } else if (isEntryCancellation) {
+          } else if (isSessionResult || isEntryCancellation) {
             pendingFriendSngSession = undefined
             latestDealEvent = undefined
+            converter.applyRawSessionBoundary()
           }
+
           const replayEventEndsSession =
             isEntryCancellation || isSessionResult
           this.restoreSessionEvent(replayService, event)
@@ -1639,13 +1664,28 @@ export class AutoSyncService {
           if (
             pendingFriendSngSession &&
             replaySession.battleType === undefined &&
-            isApiEventType(event, ApiType.EVT_DEAL) &&
-            event.Player?.SeatIndex !== undefined
+            isApiEventType(event, ApiType.EVT_DEAL)
           ) {
-            applyReplaySession(pendingFriendSngSession)
-            pendingFriendSngSession = undefined
-            replayEnded = false
+            // Settle all events between the provisional Friend terminal and
+            // this DEAL under their original context. A seated deal proves
+            // continuation; a spectator deal instead switches the converter
+            // to the terminal empty context before that new hand is buffered.
+            convertValidSegment()
+            if (event.Player?.SeatIndex !== undefined) {
+              applyReplaySession(pendingFriendSngSession)
+              converter.applySessionSnapshot({
+                id: pendingFriendSngSession.id,
+                battleType: pendingFriendSngSession.battleType,
+                name: pendingFriendSngSession.name,
+                players: new Map(pendingFriendSngSession.players),
+              })
+              pendingFriendSngSession = undefined
+              replayEnded = false
+            } else {
+              converter.applyRawSessionBoundary()
+            }
           }
+          if (validApplicationEvent) validSegment.push(validApplicationEvent)
           // 席着席時のみ latestDealEvent を更新する（findLatestPlayerDealEvent()
           // ／aggregate-events-stream.tsのEVT_DEALケースと同じ判別: event.Player?.
           // SeatIndex !== undefined）。ダウンロード履歴の末尾が観戦モードのdeal
@@ -1664,6 +1704,9 @@ export class AutoSyncService {
             latestDealEvent = event
           }
         }
+        convertValidSegment()
+        entities.hands.forEach(hand => rebuiltHandIds.add(hand.id))
+        await this.saveRebuiltEntities(entities)
       }
 
       const remainingEntities = converter.flush()

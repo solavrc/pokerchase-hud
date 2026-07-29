@@ -58,6 +58,38 @@ const SEATED_DEAL = {
   timestamp: 1000,
 } as unknown as ApiEvent
 
+const makeHandResult = (handId: number, timestamp: number) => ({
+  ApiTypeId: ApiType.EVT_HAND_RESULTS,
+  CommunityCards: [],
+  Pot: 500,
+  SidePot: [],
+  ResultType: 0,
+  DefeatStatus: 0,
+  HandId: handId,
+  HandLog: '',
+  Results: [{
+    UserId: HERO_ID,
+    HoleCards: [],
+    RankType: 10,
+    Hands: [],
+    HandRanking: 1,
+    Ranking: -2,
+    RewardChip: 500,
+  }],
+  Player: {
+    SeatIndex: 1,
+    BetStatus: -1,
+    Chip: 6000,
+    BetChip: 0,
+  },
+  OtherPlayers: [
+    { SeatIndex: 0, Status: 0, BetStatus: -1, Chip: 5800, BetChip: 0, IsSafeLeave: false },
+    { SeatIndex: 2, Status: 0, BetStatus: -1, Chip: 5900, BetChip: 0, IsSafeLeave: false },
+    { SeatIndex: 3, Status: 0, BetStatus: -1, Chip: 5900, BetChip: 0, IsSafeLeave: false },
+  ],
+  timestamp,
+})
+
 // Tail of the downloaded history: hero busted, client kept receiving deals
 // for a different table it's now only spectating -- Player is absent.
 const SPECTATOR_DEAL = {
@@ -417,6 +449,32 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     expect(service.latestEvtDeal).toEqual({ ...ringDeal, sequence: 0 })
   })
 
+  test('a minimally valid raw entry classifies subsequently rebuilt hands', async () => {
+    await db.apiEvents.bulkPut([
+      // Missing IsRetire deliberately makes this boundary unparseable while
+      // retaining the raw identity/category recovered by live ingestion.
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        Code: 0,
+        BattleType: BattleType.RING_GAME,
+        Id: 'raw-ring-hand',
+        timestamp: 1900,
+        sequence: 0,
+      },
+      { ...SEATED_DEAL, timestamp: 1910, sequence: 0 },
+      { ...makeHandResult(991, 1920), sequence: 0 },
+    ] as any)
+
+    const autoSyncService = new AutoSyncService(db)
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect((await db.hands.get(991))?.session).toEqual({
+      id: 'raw-ring-hand',
+      battleType: BattleType.RING_GAME,
+      name: undefined,
+    })
+  })
+
   test('raw entry cancellation retires the queued replay session before commit', async () => {
     await db.apiEvents.bulkPut([
       {
@@ -437,5 +495,149 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     expect(service.session.id).toBeUndefined()
     expect(service.session.battleType).toBeUndefined()
     expect(service.getEffectiveBattleTypeFilter()).toBeUndefined()
+  })
+
+  test('raw entry cancellation clears converter category before a later hand', async () => {
+    await db.apiEvents.bulkPut([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        Code: 0,
+        BattleType: BattleType.RING_GAME,
+        Id: 'cancelled-before-hand',
+        IsRetire: false,
+        timestamp: 2000,
+        sequence: 0,
+      },
+      { ApiTypeId: 203, Code: 0, timestamp: 2010, sequence: 0 },
+      { ...SEATED_DEAL, timestamp: 2020, sequence: 0 },
+      { ...makeHandResult(992, 2030), sequence: 0 },
+    ] as any)
+
+    const autoSyncService = new AutoSyncService(db)
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect((await db.hands.get(992))?.session).toEqual({
+      id: undefined,
+      battleType: undefined,
+      name: undefined,
+    })
+  })
+
+  test('a raw session result clears converter category before a later hand', async () => {
+    await db.apiEvents.bulkPut([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        Code: 0,
+        BattleType: BattleType.SIT_AND_GO,
+        Id: 'finished-before-hand',
+        IsRetire: false,
+        timestamp: 2100,
+        sequence: 0,
+      },
+      { ...SEATED_DEAL, timestamp: 2110, sequence: 0 },
+      { ...makeHandResult(993, 2120), sequence: 0 },
+      // Deliberately unparseable: raw lifecycle recovery must still retire
+      // the preceding converter context.
+      { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 2130, sequence: 0 },
+      { ...SEATED_DEAL, timestamp: 2140, sequence: 0 },
+      { ...makeHandResult(994, 2150), sequence: 0 },
+    ] as any)
+
+    const autoSyncService = new AutoSyncService(db)
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect((await db.hands.get(993))?.session).toEqual({
+      id: 'finished-before-hand',
+      battleType: BattleType.SIT_AND_GO,
+      name: undefined,
+    })
+    expect((await db.hands.get(994))?.session).toEqual({
+      id: undefined,
+      battleType: undefined,
+      name: undefined,
+    })
+  })
+
+  test('a seated continuation restores Friend SNG context before converting its hand', async () => {
+    const continuationDeal = {
+      ...SEATED_DEAL,
+      timestamp: 2220,
+      SeatUserIds: [8, HERO_ID, 9, 10],
+    } as ApiEvent
+    await db.apiEvents.bulkPut([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        Code: 0,
+        BattleType: BattleType.FRIEND_SIT_AND_GO,
+        Id: 'continuing-friend-hand',
+        IsRetire: false,
+        timestamp: 2200,
+        sequence: 0,
+      },
+      { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 2210, sequence: 0 },
+      { ...continuationDeal, sequence: 0 },
+      { ...makeHandResult(995, 2230), sequence: 0 },
+    ] as any)
+
+    const autoSyncService = new AutoSyncService(db)
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect((await db.hands.get(995))?.session).toEqual({
+      id: 'continuing-friend-hand',
+      battleType: BattleType.FRIEND_SIT_AND_GO,
+      name: undefined,
+    })
+  })
+
+  test('Friend SNG replay keeps provisional context until a later DEAL proves continuation or spectating', async () => {
+    const spectatorDeal = {
+      ...SEATED_DEAL,
+      Player: undefined,
+      timestamp: 2340,
+    } as unknown as ApiEvent
+    const continuationDeal = {
+      ...SEATED_DEAL,
+      timestamp: 2360,
+      SeatUserIds: [8, HERO_ID, 9, 10],
+    } as ApiEvent
+    await db.apiEvents.bulkPut([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        Code: 0,
+        BattleType: BattleType.FRIEND_SIT_AND_GO,
+        Id: 'interleaved-friend',
+        IsRetire: false,
+        timestamp: 2300,
+        sequence: 0,
+      },
+      { ...SEATED_DEAL, timestamp: 2310, sequence: 0 },
+      { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 2320, sequence: 0 },
+      // This result completes the Friend hand that began before the
+      // interleaved 309, so it must retain the provisional Friend context.
+      { ...makeHandResult(996, 2330), sequence: 0 },
+      { ...spectatorDeal, sequence: 0 },
+      { ...makeHandResult(997, 2350), sequence: 0 },
+      { ...continuationDeal, sequence: 0 },
+      { ...makeHandResult(998, 2370), sequence: 0 },
+    ] as any)
+
+    const autoSyncService = new AutoSyncService(db)
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect((await db.hands.get(996))?.session).toEqual({
+      id: 'interleaved-friend',
+      battleType: BattleType.FRIEND_SIT_AND_GO,
+      name: undefined,
+    })
+    expect((await db.hands.get(997))?.session).toEqual({
+      id: undefined,
+      battleType: undefined,
+      name: undefined,
+    })
+    expect((await db.hands.get(998))?.session).toEqual({
+      id: 'interleaved-friend',
+      battleType: BattleType.FRIEND_SIT_AND_GO,
+      name: undefined,
+    })
   })
 })

@@ -2,7 +2,6 @@ import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { setImmediate as nodeSetImmediate } from 'node:timers'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { BattleType, ApiType, type ApiEvent } from '../types'
-import * as databaseUtils from '../utils/database-utils'
 import { setOperationState } from '../background/operation-state'
 import { firestoreBackupService } from './firestore-backup-service'
 import * as minVersionGate from './min-version-gate'
@@ -49,11 +48,11 @@ describe('AutoSyncService cloud-rebuild MV3 keepalive', () => {
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] })
     await db.apiEvents.add(CLOUD_EVENT)
 
-    const realFilter = databaseUtils.filterValidApplicationEvents
+    const realSave = (AutoSyncService.prototype as any).saveRebuiltEntities
     let releaseReplay: (() => void) | undefined
-    jest.spyOn(databaseUtils, 'filterValidApplicationEvents').mockImplementationOnce(async events => {
+    jest.spyOn(AutoSyncService.prototype as any, 'saveRebuiltEntities').mockImplementationOnce(async function (this: AutoSyncService, entities: unknown) {
       await new Promise<void>(resolve => { releaseReplay = resolve })
-      return realFilter(events)
+      return realSave.call(this, entities)
     })
     jest.spyOn(firestoreBackupService, 'syncFromCloud').mockImplementation(async options => {
       await options.onBatch([CLOUD_EVENT])
@@ -81,7 +80,7 @@ describe('AutoSyncService cloud-rebuild MV3 keepalive', () => {
   test('clears the timer when replay rejects with an abort-like cancellation', async () => {
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] })
     await db.apiEvents.add(CLOUD_EVENT)
-    jest.spyOn(databaseUtils, 'filterValidApplicationEvents')
+    jest.spyOn(AutoSyncService.prototype as any, 'saveRebuiltEntities')
       .mockRejectedValueOnce(new DOMException('replay cancelled', 'AbortError'))
     jest.spyOn(firestoreBackupService, 'syncFromCloud').mockImplementation(async options => {
       await options.onBatch([CLOUD_EVENT])
@@ -105,7 +104,7 @@ describe('AutoSyncService cloud-rebuild MV3 keepalive', () => {
       await options.onBatch([CLOUD_EVENT])
       throw new Error('Cloud sync failed: Firestore REST request failed: 503')
     })
-    jest.spyOn(databaseUtils, 'filterValidApplicationEvents')
+    jest.spyOn(AutoSyncService.prototype as any, 'saveRebuiltEntities')
       .mockRejectedValueOnce(new Error('derived-table save failed'))
     const setIntervalSpy = jest.spyOn(global, 'setInterval')
     const clearIntervalSpy = jest.spyOn(global, 'clearInterval')
@@ -138,10 +137,10 @@ describe('AutoSyncService cloud-rebuild MV3 keepalive', () => {
     setOperationState({ type: 'idle' })
     await db.apiEvents.add(CLOUD_EVENT)
     let releaseReplay: (() => void) | undefined
-    const realFilter = databaseUtils.filterValidApplicationEvents
-    jest.spyOn(databaseUtils, 'filterValidApplicationEvents').mockImplementationOnce(async events => {
+    const realSave = (AutoSyncService.prototype as any).saveRebuiltEntities
+    jest.spyOn(AutoSyncService.prototype as any, 'saveRebuiltEntities').mockImplementationOnce(async function (this: AutoSyncService, entities: unknown) {
       await new Promise<void>(resolve => { releaseReplay = resolve })
-      return realFilter(events)
+      return realSave.call(this, entities)
     })
     jest.spyOn(firestoreBackupService, 'syncFromCloud').mockImplementation(async options => {
       await options.onBatch([CLOUD_EVENT])

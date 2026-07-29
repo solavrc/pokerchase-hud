@@ -79,6 +79,40 @@ export class EntityConverter {
   }
 
   /**
+   * Apply a minimally recovered raw session boundary that could not pass the
+   * application schema. Rebuild callers invoke this in raw arrival order so
+   * subsequent validated hand events use the same session classification as
+   * live ingestion. Keep an incomplete hand buffered: MTT table moves and
+   * interleaved Friend SNG results can place lifecycle rows inside the event
+   * span, and a later DEAL/RESULTS pair will safely reject a truly incomplete
+   * hand through the converter's existing HandId checks.
+   */
+  applyRawSessionBoundary(
+    id?: string,
+    battleType?: BattleType
+  ): void {
+    this.applySessionSnapshot({
+      id,
+      battleType,
+      name: undefined,
+      players: new Map()
+    })
+  }
+
+  /**
+   * Restore a replay session snapshot after a raw terminal event was proven
+   * to be an interleaved Friend SNG result by a later seated deal.
+   */
+  applySessionSnapshot(
+    session: Pick<Session, 'id' | 'battleType' | 'name' | 'players'>
+  ): void {
+    this.currentSession.id = session.id
+    this.currentSession.battleType = session.battleType
+    this.currentSession.name = session.name
+    this.currentSession.players = new Map(session.players)
+  }
+
+  /**
    * イベントの一部分を変換する。未完了ハンドとセッション状態は次の呼び出しへ引き継ぐ。
    */
   convertEventChunk(events: ApiEvent[]): EntityBundle {

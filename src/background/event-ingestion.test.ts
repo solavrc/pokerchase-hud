@@ -55,6 +55,19 @@ const validSessionResult = (timestamp: number) => ({
   Emblems: [],
 })
 
+const waitUntil = async (
+  condition: () => boolean | Promise<boolean>,
+  timeoutMs = 2000
+): Promise<void> => {
+  const startedAt = Date.now()
+  while (!(await condition())) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error(`waitUntil timed out after ${timeoutMs}ms`)
+    }
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+}
+
 describe('registerEventIngestion (Raw Event Lake)', () => {
   let db: PokerChaseDB
   let service: PokerChaseService
@@ -247,6 +260,55 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(service.session.battleType).toBe(2)
   })
 
+  test('delayed source restoration never blocks a cold-start raw burst', async () => {
+    let releaseSourceRestore!: () => void
+    const sourceRestoreBlocked = new Promise<void>(resolve => {
+      releaseSourceRestore = resolve
+    })
+    jest.spyOn(chrome.storage.local, 'get').mockImplementationOnce(async key => {
+      await sourceRestoreBlocked
+      return { [key as string]: 1 }
+    })
+
+    registerEventIngestion(service)
+    connectListener = (chrome.runtime as any).onConnect.addListener.mock.calls[1][0]
+    const restartedSource = connectSource(1)
+    const events = [
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 1180,
+        Code: 0,
+        BattleType: 0,
+        Id: 'cold-start-sng',
+        IsRetire: false,
+      },
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 1181,
+        Code: 1,
+        BattleType: 3,
+        Id: 'rejected-entry',
+      },
+      { ApiTypeId: 202, timestamp: 1182 },
+    ]
+
+    const pending = events.map(event => restartedSource.onMessage(event))
+    await waitUntil(async () =>
+      (await db.apiEvents.bulkGet([
+        [1180, ApiType.EVT_ENTRY_QUEUED, 0],
+        [1181, ApiType.EVT_ENTRY_QUEUED, 0],
+        [1182, 202, 0],
+      ])).every(Boolean)
+    )
+
+    expect(service.session.id).toBeUndefined()
+    releaseSourceRestore()
+    await Promise.all(pending)
+
+    expect(service.session.id).toBe('cold-start-sng')
+    expect(service.session.battleType).toBe(0)
+  })
+
   test('a seated deal rebinds ownership when the new tab has no captured 201', async () => {
     service.autoBattleTypeFilter = true
     const newSource = connectSource(2)
@@ -279,6 +341,49 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(service.session.id).toBeUndefined()
     expect(service.session.battleType).toBeUndefined()
     expect(service.getEffectiveBattleTypeFilter()).toEqual([])
+  })
+
+  test('source rebind waits for older derived writes before clearing session context', async () => {
+    service.autoBattleTypeFilter = true
+    const newSource = connectSource(2)
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1183,
+      Code: 0,
+      BattleType: 2,
+      Id: 'old-source-friend',
+      IsRetire: false,
+    })
+
+    let releaseDerivedWrite!: () => void
+    let signalDerivedWait!: () => void
+    const derivedWriteBlocked = new Promise<void>(resolve => {
+      releaseDerivedWrite = resolve
+    })
+    const derivedWaitStarted = new Promise<void>(resolve => {
+      signalDerivedWait = resolve
+    })
+    jest.spyOn(service.writeEntityStream, 'whenIdle')
+      .mockImplementationOnce(async () => {
+        signalDerivedWait()
+        await derivedWriteBlocked
+      })
+
+    const rebound = newSource.onMessage({
+      ApiTypeId: ApiType.EVT_DEAL,
+      timestamp: 1184,
+      Player: { SeatIndex: 0 },
+    })
+    await derivedWaitStarted
+
+    expect(service.session.id).toBe('old-source-friend')
+    expect(service.session.battleType).toBe(2)
+
+    releaseDerivedWrite()
+    await rebound
+
+    expect(service.session.id).toBeUndefined()
+    expect(service.session.battleType).toBeUndefined()
   })
 
   test('a parse-failed successful entry recovers a minimally valid category', async () => {

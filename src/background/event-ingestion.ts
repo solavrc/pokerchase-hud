@@ -56,6 +56,7 @@ const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
  * （`registerEventIngestion()`のコメント参照）。
  */
 let ingestionQueue: Promise<void> = Promise.resolve()
+let postRawProcessingQueue: Promise<void> = Promise.resolve()
 let applicationForwardingQueue: Promise<void> = Promise.resolve()
 let ingestionDrainQueue: Promise<void> = Promise.resolve()
 
@@ -124,6 +125,18 @@ const isSessionEndSignal = (rawApiTypeId: unknown): boolean =>
   rawApiTypeId === ApiType.EVT_SESSION_RESULTS ||
   rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID
 
+const awaitDerivedProcessingIdle = async (
+  service: PokerChaseService
+): Promise<void> => {
+  await Promise.all([
+    service.handLogStream.whenIdle(),
+    service.handAggregateStream.whenIdle(),
+    service.realTimeStatsStream.whenIdle(),
+  ])
+  await service.writeEntityStream.whenIdle()
+  await service.statsOutputStream.whenIdle()
+}
+
 const enqueueApplicationForwarding = (
   service: PokerChaseService,
   rawApiTypeId: unknown,
@@ -149,9 +162,10 @@ const enqueueApplicationForwarding = (
     }
     if (resetReboundSession) {
       // A new source began play without a captured 201, so its game type is
-      // unknowable. Repeat the raw fail-closed reset in application order,
-      // after older source events, durably persist it, then publish an empty
-      // HUD state before forwarding any event from the new source.
+      // unknowable. Wait until every older source event has finished deriving
+      // its hand/session metadata, then durably persist the fail-closed reset
+      // and publish an empty HUD state.
+      await awaitDerivedProcessingIdle(service)
       await clearEndedSession(service)
       setLastKnownStats([])
       await service.statsOutputStream.clearStats()
@@ -167,13 +181,7 @@ const enqueueApplicationForwarding = (
     // clear so no pre-end result can repopulate lastKnownStats/the HUD after
     // the content script observes this boundary.
     if (isSessionEndSignal(rawApiTypeId)) {
-      await Promise.all([
-        service.handLogStream.whenIdle(),
-        service.handAggregateStream.whenIdle(),
-        service.realTimeStatsStream.whenIdle(),
-      ])
-      await service.writeEntityStream.whenIdle()
-      await service.statsOutputStream.whenIdle()
+      await awaitDerivedProcessingIdle(service)
       if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
         setLastKnownStats([])
       }
@@ -266,6 +274,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   // このため呼び出し元固有のactivity generation plumbingは不要であり、
   // operation completion/SW startupと同じ安全性機構へ統一されている。
   ingestionQueue = Promise.resolve()
+  postRawProcessingQueue = Promise.resolve()
   applicationForwardingQueue = Promise.resolve()
   ingestionDrainQueue = Promise.resolve()
   const sessionBoundaryState = {
@@ -429,14 +438,6 @@ const processEvent = async (
   boundaryState: SessionBoundaryState,
   sourceTabId: number | undefined
 ): Promise<DurableProcessingResult | undefined> => {
-  // Ensure service is ready before processing messages
-  try {
-    await Promise.all([service.ready, boundaryState.sourceRestore])
-  } catch (err) {
-    console.error('[background] Service not ready:', err)
-    return
-  }
-
   const rawApiTypeId = (message as { ApiTypeId?: unknown }).ApiTypeId
   const rawTimestamp = (message as { timestamp?: unknown }).timestamp
   const rawEntryCode = (message as { Code?: unknown }).Code
@@ -495,6 +496,19 @@ const processEvent = async (
 
   // ここから先はraw書き込みが成功したか、保存不可能で待つべきI/Oが
   // 無かった場合のみ到達する。真の重複と書き込み失敗は上でreturn済み。
+  //
+  // Service/session restoration is deliberately outside ingestionQueue:
+  // every event reaches the Raw Lake first, then this separate ordered queue
+  // waits for the MV3-restored service state and owner before applying
+  // lifecycle side effects. Slow chrome.storage.local reads therefore cannot
+  // strand a raw burst in memory behind the first event.
+  const postRawTask = postRawProcessingQueue.then(async (): Promise<DurableProcessingResult | undefined> => {
+    try {
+      await Promise.all([service.ready, boundaryState.sourceRestore])
+    } catch (err) {
+      console.error('[background] Service not ready:', err)
+      return
+    }
 
   // Forced-update安全性述語（update-manager.ts）のセッション状態追跡。
   // 意図的にパース成功後のdata.ApiTypeIdではなく、生メッセージの数値
@@ -538,7 +552,10 @@ const processEvent = async (
     }
   }
   if (sourceReboundWithoutEntry) {
-    applySessionContext(service)
+    // Suppress stale stats immediately, but defer resetSession() until the
+    // application queue has drained older derived hand writes. Those writes
+    // read service.session at execution time and must retain the old source's
+    // category.
     service.invalidateStatsOutputContext()
   }
   const foreignSessionEnd =
@@ -775,5 +792,17 @@ const processEvent = async (
       sourceReboundWithoutEntry,
       data
     )
+  }
+  })
+  postRawProcessingQueue = postRawTask.then(() => undefined).catch(err => {
+    console.error('[background] Unhandled post-raw processing error (fail-safe, queue continues):', err)
+    captureHandledException(err, {
+      operation: 'event_ingestion.post_raw'
+    })
+  })
+  return {
+    forwarding: postRawTask
+      .then(result => result?.forwarding)
+      .then(() => undefined)
   }
 }
