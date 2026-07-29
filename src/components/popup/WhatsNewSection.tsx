@@ -2,7 +2,7 @@ import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Link from '@mui/material/Link'
 import Typography from '@mui/material/Typography'
-import { useEffect, useId, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
   GITHUB_RELEASES_URL,
   WHATS_NEW_EXPANDED_STORAGE_KEY,
@@ -91,27 +91,41 @@ const FeaturedEntry = ({ entry, isFirst }: { entry: WhatsNewEntry, isFirst: bool
  * いるときは実行中バージョン以下の最新2件を表示する。長い本文はエントリ内の
  * 「続きを読む」で省略し、3件目以前は「過去の更新情報」にまとめる。
  *
- * マウント時に`acknowledgeWhatsNew`メッセージ（`message-router.ts`→
- * `src/background/whats-new-badge.ts`）を送り、拡張機能アイコンのバッジ
- * （未読があれば）を解消する。未読が無い状態で送っても副作用は無い（冪等）。
+ * 保存状態の復元後、カードが開いている場合だけ`acknowledgeWhatsNew`
+ * メッセージ（`message-router.ts`→`src/background/whats-new-badge.ts`）を
+ * 送り、拡張機能アイコンのバッジ（未読があれば）を解消する。
  */
 export const WhatsNewSection = ({ entries = WHATS_NEW_ENTRIES }: WhatsNewSectionProps) => {
   const [sectionExpanded, setSectionExpanded] = useState(true)
+  const [sectionPreferenceRestored, setSectionPreferenceRestored] = useState(false)
   const [historyExpanded, setHistoryExpanded] = useState(false)
+  const sectionChangedByUserRef = useRef(false)
   const sectionId = useId()
   const historyId = useId()
 
   useEffect(() => {
-    // Popupが開かれた = ユーザーが更新情報を目にする機会があった、という
-    // ことなのでバッジを解消する。応答は使わないので待たない（fire-and-forget）。
-    sendMessageWithTimeout<{ success: boolean }>({ action: 'acknowledgeWhatsNew' } as AcknowledgeWhatsNewMessage)
-
+    let mounted = true
     chrome.storage.sync.get(WHATS_NEW_EXPANDED_STORAGE_KEY, (result: Record<string, unknown>) => {
-      if (typeof result[WHATS_NEW_EXPANDED_STORAGE_KEY] === 'boolean') {
+      if (!mounted) return
+      if (
+        !sectionChangedByUserRef.current &&
+        typeof result[WHATS_NEW_EXPANDED_STORAGE_KEY] === 'boolean'
+      ) {
         setSectionExpanded(result[WHATS_NEW_EXPANDED_STORAGE_KEY] as boolean)
       }
+      setSectionPreferenceRestored(true)
     })
+    return () => {
+      mounted = false
+    }
   }, [])
+
+  useEffect(() => {
+    // 折り畳まれた更新情報は「読んだ」と見なさない。保存状態を復元済みで、
+    // 実際に本文が見えるときだけバッジを解消する（メッセージは冪等）。
+    if (!sectionPreferenceRestored || !sectionExpanded) return
+    sendMessageWithTimeout<{ success: boolean }>({ action: 'acknowledgeWhatsNew' } as AcknowledgeWhatsNewMessage)
+  }, [sectionExpanded, sectionPreferenceRestored])
 
   const currentVersion = useMemo(() => chrome.runtime.getManifest().version, [])
   const current = useMemo(() => selectWhatsNewEntry(currentVersion, entries), [currentVersion, entries])
@@ -142,6 +156,7 @@ export const WhatsNewSection = ({ entries = WHATS_NEW_ENTRIES }: WhatsNewSection
           aria-expanded={sectionExpanded}
           aria-controls={sectionId}
           onClick={() => {
+            sectionChangedByUserRef.current = true
             const next = !sectionExpanded
             setSectionExpanded(next)
             chrome.storage.sync.set({ [WHATS_NEW_EXPANDED_STORAGE_KEY]: next })

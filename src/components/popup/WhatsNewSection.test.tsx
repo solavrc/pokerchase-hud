@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { WhatsNewSection } from './WhatsNewSection'
 import {
@@ -59,6 +59,47 @@ describe('WhatsNewSection', () => {
 
     expect(collapse).toHaveAttribute('aria-expanded', 'false')
     expect(document.getElementById(contentId!)).toHaveAttribute('hidden')
+    expect(chrome.storage.sync.set).toHaveBeenCalledWith({
+      [WHATS_NEW_EXPANDED_STORAGE_KEY]: false,
+    })
+  })
+
+  it('keeps the update badge unread while the restored section is hidden', async () => {
+    const user = userEvent.setup()
+    ;(chrome.storage.sync.get as jest.Mock).mockImplementation((_key, callback) => {
+      callback({ [WHATS_NEW_EXPANDED_STORAGE_KEY]: false })
+    })
+
+    render(<WhatsNewSection />)
+
+    const show = await screen.findByRole('button', { name: /表示する/ })
+    expect(mockSendMessage).not.toHaveBeenCalled()
+
+    await user.click(show)
+
+    await waitFor(() => {
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        { action: 'acknowledgeWhatsNew' },
+        expect.any(Function)
+      )
+    })
+  })
+
+  it('does not let a late storage read overwrite a newer user choice', async () => {
+    const user = userEvent.setup()
+    let finishStorageRead: ((result: Record<string, unknown>) => void) | undefined
+    ;(chrome.storage.sync.get as jest.Mock).mockImplementation((_key, callback) => {
+      finishStorageRead = callback
+    })
+
+    render(<WhatsNewSection />)
+    await user.click(screen.getByRole('button', { name: /折りたたむ/ }))
+
+    act(() => {
+      finishStorageRead?.({ [WHATS_NEW_EXPANDED_STORAGE_KEY]: true })
+    })
+
+    expect(screen.getByRole('button', { name: /表示する/ })).toHaveAttribute('aria-expanded', 'false')
     expect(chrome.storage.sync.set).toHaveBeenCalledWith({
       [WHATS_NEW_EXPANDED_STORAGE_KEY]: false,
     })
