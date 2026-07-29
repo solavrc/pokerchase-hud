@@ -330,6 +330,41 @@ describe('AutoSyncService cloud downloads', () => {
     expect(service.getSyncState().status).toBe('success')
   }, 15000)
 
+  test('upload: includes entry-cancellation tombstones required by canonical replay', async () => {
+    const entry = {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'cancelled-entry',
+      IsRetire: false,
+      timestamp: 100,
+    } as ApiEvent
+    const cancellation = {
+      ApiTypeId: 203,
+      timestamp: 200,
+      __pokerChaseHudSessionContext: {
+        scopeKey: 'run:0:cancelled-entry:100',
+        id: 'cancelled-entry',
+        battleType: BattleType.SIT_AND_GO,
+        startedAt: 100,
+      },
+    }
+    await db.apiEvents.bulkAdd([
+      entry,
+      { ApiTypeId: 202, Code: 0, timestamp: 150 },
+      cancellation,
+    ] as any)
+
+    jest.spyOn(firestoreBackupService, 'getCloudMaxTimestamp').mockResolvedValue(null)
+    const syncBatchSpy = jest.spyOn(firestoreBackupService, 'syncToCloudBatch')
+      .mockResolvedValue({ totalEvents: 2, syncedEvents: 2, lastSyncTime: new Date() })
+
+    await new AutoSyncService(db).performSync('upload')
+
+    expect(syncBatchSpy).toHaveBeenCalledTimes(1)
+    expect(syncBatchSpy.mock.calls[0]![0]).toEqual([entry, cancellation])
+  })
+
   test('upload: reports raw, valid, filtered, deferred, and acknowledged counts without implying data loss', async () => {
     const validEvents = [100, 500].map(timestamp => ({
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
@@ -367,7 +402,7 @@ describe('AutoSyncService cloud downloads', () => {
       '[AutoSync] Upload scan snapshot has 5 raw events; application-event validation runs per chunk'
     )
     expect(logSpy).toHaveBeenCalledWith(
-      '[AutoSync] Upload pass complete: scanned raw=5; valid application=2; ' +
+      '[AutoSync] Upload pass complete: scanned raw=5; replayable application/closure=2; ' +
       'acknowledged Firestore writes=2; filtered non-application/unknown=2; ' +
       'deferred unparseable application=1'
     )
@@ -422,7 +457,7 @@ describe('AutoSyncService cloud downloads', () => {
       '[AutoSync] Upload scan snapshot has 5 raw events; application-event validation runs per chunk'
     )
     expect(logSpy).toHaveBeenCalledWith(
-      '[AutoSync] Upload pass complete: scanned raw=5; valid application=3; ' +
+      '[AutoSync] Upload pass complete: scanned raw=5; replayable application/closure=3; ' +
       'acknowledged Firestore writes=3; filtered non-application/unknown=2; ' +
       'deferred unparseable application=0'
     )

@@ -204,6 +204,9 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       expect.objectContaining({ activeSessionOriginsV1: expect.anything() })
     )
 
+    // Simulate a worker stop after the immediate origin snapshot committed
+    // but before PokerChaseService's debounced local snapshot caught up.
+    service.endSession()
     registerEventIngestion(service)
     const restoredConnectListener =
       (chrome.runtime as any).onConnect.addListener.mock.calls[1][0]
@@ -216,6 +219,13 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     }
     restoredConnectListener(restoredPortA)
     const restoredHandlerA = restoredPortA.onMessage.addListener.mock.calls[0][0]
+
+    await restoredHandlerA({
+      ApiTypeId: 202,
+      timestamp: 1500,
+      Code: 0,
+    })
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'mtt-6078', startedAt: 1000 })
 
     await restoredHandlerA({
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,

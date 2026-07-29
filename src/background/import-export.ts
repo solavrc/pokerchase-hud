@@ -9,7 +9,8 @@ import PokerChaseService, {
   validateMessage,
   getValidationError
 } from '../app'
-import { EntityConverter, type EntityBundle } from '../entity-converter'
+import type { EntityBundle } from '../entity-converter'
+import { SessionScopedEntityConverter } from '../utils/session-scoped-entity-converter'
 import {
   findLatestPlayerDealEvent,
   orderAndFilterApplicationEventsForReplay,
@@ -1006,7 +1007,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         // 変換はメモリ上のみの処理で、この時点ではまだテーブルに一切触れて
         // いない ―― ここで例外が起きても（例: 未知の形状での変換失敗）既存の
         // 派生データはそのまま残る
-        entities = new EntityConverter(defaultSession).convertEventsToEntities(allEvents)
+        entities = new SessionScopedEntityConverter(defaultSession).convertEventsToEntities(allEvents)
       }
 
       onProgress(70, 'テーブルを更新中...')
@@ -1031,7 +1032,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           console.log(`[performFullRebuild] apiEvents changed since the snapshot (${rawEvents.length} -> ${currentCount} rows; live play or another writer during rebuild) -- re-deriving from a fresh read`)
           const freshRaw = await db.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).toArray() as unknown as RawApiEvent[]
           const freshValidEvents = await orderAndFilterApplicationEventsForReplay(freshRaw)
-          finalEntities = new EntityConverter(defaultSession).convertEventsToEntities(freshValidEvents)
+          finalEntities = new SessionScopedEntityConverter(defaultSession).convertEventsToEntities(freshValidEvents)
           finalTotalEvents = freshRaw.length
         }
 

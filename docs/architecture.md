@@ -96,10 +96,13 @@ IndexedDBは既存object storeの主キーを直接変更できないため、v3
 未検証の生の行を直接渡すとクラッシュしうる。
 
 ### クラウド同期は対象外
-Firestoreへのアップロードはアプリケーションイベントのみに限定する
+Firestoreへのアップロードは原則としてアプリケーションイベントのみに限定する
 （`AutoSyncService.syncToCloud()`の`isApplicationApiEvent`フィルタ）。
+ただし参加取消のraw `ApiTypeId: 203`だけは、先行201が作ったセッションを
+canonical replayで閉じるtombstoneとして同期する。203は`ApiType`へ追加せず、
+ライブのhand streamには投入しない。
 これはコスト上の判断（Firestore書き込み/ストレージ課金）であり、データ損失の
-懸念ではない——非アプリケーションイベントや未検証イベントはローカルの
+懸念ではない——その他の非アプリケーションイベントや未検証イベントはローカルの
 Raw Event Lakeに既に生のまま残っている。
 
 ### ストレージ増加とプルーニング

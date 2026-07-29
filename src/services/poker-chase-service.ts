@@ -26,6 +26,7 @@ import type {
   Session,
   StatDisplayConfig
 } from '../types'
+import type { RawEventSessionContext } from '../utils/raw-event-session-context'
 
 /** Serialized shape of a single session's player-info entry (persisted as an array tuple). */
 type SessionPlayerInfo = { name: string, rank: string }
@@ -185,6 +186,7 @@ class PokerChaseService {
   // される）。この2つの要求は両立しないため、フィールドを分けた。
   private _liveEvtDeal?: ApiEvent<ApiType.EVT_DEAL>
   private readonly _sessionData: SessionState
+  private sessionOriginReconciler?: () => RawEventSessionContext | null | undefined
   private _isInitialized: boolean = false
   private _initializationError?: Error
   private _persistStateTimer?: ReturnType<typeof setTimeout>
@@ -320,6 +322,28 @@ class PokerChaseService {
     const wasActive = this.getCurrentSessionScope() !== undefined
     this._sessionData.end()
     if (wasActive) this.sessionScopeRevision++
+  }
+
+  /**
+   * Canonical replay can reconstruct historical scopes, but the live
+   * per-tab tracker is authoritative when it has observed a start/end in the
+   * current browser session. `undefined` means no live authority is available;
+   * `null` means the live browser has no active session.
+   */
+  readonly setSessionOriginReconciler = (
+    reconciler: () => RawEventSessionContext | null | undefined
+  ): void => {
+    this.sessionOriginReconciler = reconciler
+  }
+
+  readonly reconcileSessionOrigin = (): RawEventSessionContext | null | undefined => {
+    const context = this.sessionOriginReconciler?.()
+    if (context === null) {
+      this.endSession()
+    } else if (context) {
+      this.startSession(context.id, context.battleType, context.startedAt)
+    }
+    return context
   }
 
   readonly getCurrentSessionScope = (): { id: string, startedAt: number } | undefined => {

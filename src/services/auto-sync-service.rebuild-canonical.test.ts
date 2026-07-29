@@ -234,6 +234,89 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
     })
   })
 
+  test('restores the latest seated deal from the surviving concurrent scope', async () => {
+    const contextA = {
+      scopeKey: 'run:0:tab-a:100',
+      id: 'tab-a',
+      battleType: BattleType.SIT_AND_GO,
+      startedAt: 100,
+    }
+    const contextB = {
+      scopeKey: 'run:4:tab-b:200',
+      id: 'tab-b',
+      battleType: BattleType.RING_GAME,
+      startedAt: 200,
+    }
+    const dealB = {
+      ...structuredClone(FIRST_HAND_EVENTS[0]),
+      timestamp: 300,
+      SeatUserIds: [10, 20, 30, 40],
+      __pokerChaseHudSessionContext: contextB,
+    }
+    const dealA = {
+      ...structuredClone(FIRST_HAND_EVENTS[0]),
+      timestamp: 400,
+      SeatUserIds: [1, 2, 3, 4],
+      __pokerChaseHudSessionContext: contextA,
+    }
+    await db.apiEvents.bulkAdd([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 100,
+        Code: 0,
+        BattleType: BattleType.SIT_AND_GO,
+        Id: 'tab-a',
+        IsRetire: false,
+        __pokerChaseHudSessionContext: contextA,
+      },
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 200,
+        Code: 0,
+        BattleType: BattleType.RING_GAME,
+        Id: 'tab-b',
+        IsRetire: false,
+        __pokerChaseHudSessionContext: contextB,
+      },
+      dealB,
+      dealA,
+      {
+        ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+        timestamp: 500,
+        __pokerChaseHudSessionContext: contextA,
+      },
+    ] as ApiEvent[])
+
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-b', startedAt: 200 })
+    expect(service.latestEvtDeal?.SeatUserIds).toEqual(dealB.SeatUserIds)
+  })
+
+  test('does not resurrect a replayed scope closed by the live tab tracker', async () => {
+    const context = {
+      scopeKey: 'run:0:closed-tab:100',
+      id: 'closed-tab',
+      battleType: BattleType.SIT_AND_GO,
+      startedAt: 100,
+    }
+    await db.apiEvents.add({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 100,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'closed-tab',
+      IsRetire: false,
+      __pokerChaseHudSessionContext: context,
+    } as ApiEvent)
+    service.setSessionOriginReconciler(() => null)
+
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(service.session.active).toBe(false)
+  })
+
   test('replaces child rows for a regenerated hand instead of leaving obsolete keys', async () => {
     await db.apiEvents.bulkAdd(structuredClone(FIRST_HAND_EVENTS))
     await (autoSyncService as any).rebuildLocalEntities()

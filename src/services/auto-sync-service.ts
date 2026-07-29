@@ -11,7 +11,7 @@ import {
   SYNC_RESCAN_FLOOR_META_KEY
 } from '../constants/sync'
 import { PokerChaseDB } from '../db/poker-chase-db'
-import { EntityConverter } from '../entity-converter'
+import type { EntityConverter } from '../entity-converter'
 import { ApiType, ApiTypeValues, BattleType, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent } from '../types'
 import type { ApiEvent } from '../types'
 import { processInReplayChunks, filterValidApplicationEvents } from '../utils/database-utils'
@@ -29,6 +29,7 @@ import { startKeepAlive } from '../background/service-worker-keepalive'
 import {
   getRawEventSessionContext,
 } from '../utils/raw-event-session-context'
+import { SessionScopedEntityConverter } from '../utils/session-scoped-entity-converter'
 
 /** Shown in the popup and logged when the min-version gate stops cloud sync (#forced-update). */
 export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます'
@@ -41,6 +42,7 @@ export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポ�
  */
 export const REBUILD_AFTER_DOWNLOAD_FAILED_MESSAGE =
   'クラウドデータの保存は完了しましたが、統計データの再構築に失敗しました。ポップアップの「データ再構築」を実行してください'
+const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
 
 /**
  * Thrown internally whenever a bookkeeping write is about to happen under an
@@ -981,7 +983,7 @@ export class AutoSyncService {
     const CHUNK_SIZE = DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
     let processed = 0
     let synced = 0
-    let validApplicationEvents = 0
+    let replayableEvents = 0
     let filteredNonApplicationEvents = 0
     let deferredUnparseableApplicationEvents = 0
     // Compound cursor: all THREE components must track the actual last-processed
@@ -1028,13 +1030,19 @@ export class AutoSyncService {
       // deterministically ordered regardless of index internals.
       rawChunk.sort((a, b) => compareApiEventKeys(a as unknown as RawApiEvent, b as unknown as RawApiEvent))
 
-      // Application-type-only filter for cloud upload. Deliberately filtered AFTER
+      // Upload application events plus the raw 203 cancellation tombstone
+      // canonical replay uses to close a queued session. 203 intentionally
+      // remains outside ApiType so it never enters live hand streams.
+      // Deliberately filtered AFTER
       // sorting/tracking the raw chunk's boundary, not before: lastProcessedTimestamp
       // must advance based on the raw chunk regardless of how many rows in it are
       // noise, otherwise a chunk containing only non-application events would never
       // advance the cursor and the loop would refetch it forever.
-      const chunk = rawChunk.filter(isApplicationApiEvent)
-      validApplicationEvents += chunk.length
+      const chunk = rawChunk.filter(event =>
+        isApplicationApiEvent(event) ||
+        (event as unknown as { ApiTypeId: number }).ApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID
+      )
+      replayableEvents += chunk.length
 
       // Find any application-typed rows in THIS raw chunk that still can't
       // parse (see watermark guard above).
@@ -1168,7 +1176,7 @@ export class AutoSyncService {
 
     console.log(
       `[AutoSync] Upload pass complete: scanned raw=${processed}; ` +
-      `valid application=${validApplicationEvents}; acknowledged Firestore writes=${synced}; ` +
+      `replayable application/closure=${replayableEvents}; acknowledged Firestore writes=${synced}; ` +
       `filtered non-application/unknown=${filteredNonApplicationEvents}; ` +
       `deferred unparseable application=${deferredUnparseableApplicationEvents}`
     )
@@ -1493,24 +1501,7 @@ export class AutoSyncService {
         players: new Map(),
         reset: () => { }
       }
-      const legacyConverter = new EntityConverter(defaultSession)
-      const scopedConverters = new Map<string, EntityConverter>()
-      const converterFor = (event: ApiEvent): EntityConverter => {
-        const context = getRawEventSessionContext(event)
-        if (!context) return legacyConverter
-        let converter = scopedConverters.get(context.scopeKey)
-        if (!converter) {
-          converter = new EntityConverter({
-            id: context.id,
-            battleType: context.battleType,
-            name: undefined,
-            players: new Map(),
-            reset: () => { },
-          })
-          scopedConverters.set(context.scopeKey, converter)
-        }
-        return converter
-      }
+      const converter = new SessionScopedEntityConverter(defaultSession)
       const service = (self as any).service
       const totalEventCount = await this.db.apiEvents.count()
       // Keep the pre-rebuild key set so a successful canonical replay can
@@ -1522,6 +1513,7 @@ export class AutoSyncService {
       const rebuiltHandIds = new Set<number>()
       let lastProcessedTimestamp = 0
       let latestDealEvent: ApiEvent | undefined
+      const latestDealByScope = new Map<string, ApiEvent>()
       const replaySessions: ReplaySessionState = {
         scopes: new Map(),
         sequence: 0,
@@ -1540,24 +1532,7 @@ export class AutoSyncService {
         // application events; isApiEventType()/restoreSessionEvent() below
         // already re-validate internally so they're safe on the raw chunk as-is.
         const validEvents = await filterValidApplicationEvents(events)
-        const entities: ReturnType<EntityConverter['flush']> = {
-          hands: [],
-          phases: [],
-          actions: [],
-        }
-        const eventsByConverter = new Map<EntityConverter, ApiEvent[]>()
-        for (const event of validEvents) {
-          const target = converterFor(event)
-          const targetEvents = eventsByConverter.get(target) ?? []
-          targetEvents.push(event)
-          eventsByConverter.set(target, targetEvents)
-        }
-        for (const [target, targetEvents] of eventsByConverter) {
-          const converted = target.convertEventChunk(targetEvents)
-          entities.hands.push(...converted.hands)
-          entities.phases.push(...converted.phases)
-          entities.actions.push(...converted.actions)
-        }
+        const entities = converter.convertEventChunk(validEvents)
         entities.hands.forEach(hand => rebuiltHandIds.add(hand.id))
         await this.saveRebuiltEntities(entities)
 
@@ -1580,21 +1555,14 @@ export class AutoSyncService {
           // ない -- 次の本物のライブdealが来ればliveEvtDealは正しく更新される）。
           if (isApiEventType(event, ApiType.EVT_DEAL) && event.Player?.SeatIndex !== undefined) {
             latestDealEvent = event
+            const dealScopeKey =
+              getRawEventSessionContext(event)?.scopeKey ?? replaySessions.currentKey
+            if (dealScopeKey) latestDealByScope.set(dealScopeKey, event)
           }
         }
       }
 
-      const remainingEntities: ReturnType<EntityConverter['flush']> = {
-        hands: [],
-        phases: [],
-        actions: [],
-      }
-      for (const target of [legacyConverter, ...scopedConverters.values()]) {
-        const flushed = target.flush()
-        remainingEntities.hands.push(...flushed.hands)
-        remainingEntities.phases.push(...flushed.phases)
-        remainingEntities.actions.push(...flushed.actions)
-      }
+      const remainingEntities = converter.flush()
       remainingEntities.hands.forEach(hand => rebuiltHandIds.add(hand.id))
       await this.saveRebuiltEntities(remainingEntities)
 
@@ -1626,7 +1594,14 @@ export class AutoSyncService {
         updatedAt: Date.now()
       })
 
-      this.restoreLatestDeal(service, latestDealEvent)
+      const reconciledOrigin = service?.reconcileSessionOrigin?.()
+      const currentScopeKey = reconciledOrigin === undefined
+        ? replaySessions.currentKey
+        : reconciledOrigin?.scopeKey
+      const dealForCurrentScope = currentScopeKey
+        ? latestDealByScope.get(currentScopeKey)
+        : latestDealEvent
+      this.restoreLatestDeal(service, dealForCurrentScope, currentScopeKey !== undefined)
       console.log(`[AutoSync] Chunked data rebuild completed (${totalEventCount} events)`)
     } catch (error) {
       console.error('[AutoSync] Data rebuild error:', error)
@@ -1667,7 +1642,10 @@ export class AutoSyncService {
 
     const rawApiTypeId = (event as { ApiTypeId: number }).ApiTypeId
     const context = getRawEventSessionContext(event)
-    if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS || rawApiTypeId === 203) {
+    if (
+      rawApiTypeId === ApiType.EVT_SESSION_RESULTS ||
+      rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID
+    ) {
       if (context) {
         replaySessions.scopes.delete(context.scopeKey)
       } else if (replaySessions.currentKey) {
@@ -1735,7 +1713,11 @@ export class AutoSyncService {
     }
   }
 
-  private restoreLatestDeal(service: any, latestDealEvent?: ApiEvent): void {
+  private restoreLatestDeal(
+    service: any,
+    latestDealEvent?: ApiEvent,
+    clearWhenMissing = false
+  ): void {
     if (!service) return
 
     if (service.session?.id) {
@@ -1758,6 +1740,10 @@ export class AutoSyncService {
         const playerId = latestDealEvent.SeatUserIds?.[playerSeatIndex]
         if (playerId && playerId !== -1) service.playerId = playerId
       }
+    } else if (clearWhenMissing) {
+      // Do not retain another concurrent scope's seated lineup when the
+      // surviving active scope has not dealt a hand yet.
+      service.latestEvtDeal = undefined
     }
 
     if (service.latestEvtDeal?.SeatUserIds) {

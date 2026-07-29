@@ -31,6 +31,7 @@ import PokerChaseService, { PokerChaseDB } from '../app'
 import { createImportExportHandlers } from './import-export'
 import { setOperationState } from './operation-state'
 import { EntityConverter } from '../entity-converter'
+import { SessionScopedEntityConverter } from '../utils/session-scoped-entity-converter'
 import * as databaseUtils from '../utils/database-utils'
 import { getRebuildAdvisoryState, REBUILD_ADVISORY_STORAGE_KEY } from './rebuild-advisory'
 import { REBUILD_ADVISORY_VERSION } from '../constants/database'
@@ -137,6 +138,55 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
 
   afterEach(() => {
     jest.restoreAllMocks()
+  })
+
+  test('manual rebuild preserves a completed hand from its concurrent origin', async () => {
+    await runWithFreshDb(async ({ db, handlers }) => {
+      const contextA = {
+        scopeKey: 'run:0:tab-a:100',
+        id: 'tab-a',
+        battleType: 0,
+        startedAt: 100,
+      }
+      const contextB = {
+        scopeKey: 'run:4:tab-b:200',
+        id: 'tab-b',
+        battleType: 4,
+        startedAt: 200,
+      }
+      const scopedHand = HAND1_EVENTS.map(event => ({
+        ...structuredClone(event),
+        __pokerChaseHudSessionContext: contextA,
+      }))
+      await db.apiEvents.bulkAdd([
+        {
+          ApiTypeId: 201,
+          timestamp: 100,
+          Code: 0,
+          BattleType: 0,
+          Id: 'tab-a',
+          IsRetire: false,
+          __pokerChaseHudSessionContext: contextA,
+        },
+        {
+          ApiTypeId: 201,
+          timestamp: 200,
+          Code: 0,
+          BattleType: 4,
+          Id: 'tab-b',
+          IsRetire: false,
+          __pokerChaseHudSessionContext: contextB,
+        },
+        ...scopedHand,
+      ] as never[])
+
+      await handlers.rebuildAllData()
+
+      expect((await db.hands.get(HAND1_ID))?.session).toMatchObject({
+        id: 'tab-a',
+        battleType: 0,
+      })
+    })
   })
 
   test('re-importing a complete export into a DB missing a hand\'s middle ACTIONs rebuilds derived state to match a from-scratch import (rebuild-parity property)', async () => {
@@ -282,8 +332,7 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
       // is exercised implicitly: Dexie either commits the whole
       // clear+bulkPut+meta.put transaction or none of it.
       const converterError = new Error('synthetic rebuild failure')
-      const EntityConverterModule = await import('../entity-converter')
-      const convertSpy = jest.spyOn(EntityConverterModule.EntityConverter.prototype, 'convertEventsToEntities')
+      const convertSpy = jest.spyOn(SessionScopedEntityConverter.prototype, 'convertEventsToEntities')
         .mockImplementation(() => { throw converterError })
 
       await expect(handlers.importData(toJsonl(fullExport))).rejects.toThrow(/rebuild failed/i)
@@ -616,7 +665,7 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         expect((await getRebuildAdvisoryState()).pendingVersion).toBeUndefined()
 
         // Force the rebuild to fail.
-        const convertSpy = jest.spyOn(EntityConverter.prototype, 'convertEventsToEntities')
+        const convertSpy = jest.spyOn(SessionScopedEntityConverter.prototype, 'convertEventsToEntities')
           .mockImplementation(() => { throw new Error('synthetic rebuild failure') })
 
         await expect(handlers.importData(toJsonl(fullExport))).rejects.toThrow(/rebuild failed/i)
@@ -654,7 +703,7 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         expect(await db.apiEvents.count()).toBe(0)
         expect((await getRebuildAdvisoryState()).pendingVersion).toBeUndefined()
 
-        const convertSpy = jest.spyOn(EntityConverter.prototype, 'convertEventsToEntities')
+        const convertSpy = jest.spyOn(SessionScopedEntityConverter.prototype, 'convertEventsToEntities')
           .mockImplementation(() => { throw new Error('synthetic initial entity-generation failure') })
 
         await expect(handlers.importData(toJsonl(fullExport))).rejects.toThrow(/post-import rebuild failed/i)

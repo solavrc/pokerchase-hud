@@ -69,9 +69,11 @@ class SessionOriginTracker {
   private readonly scopes = new Map<SessionOriginKey, TrackedSessionScope>()
   private currentKey?: SessionOriginKey
   private sequence = 0
+  private canReconcileReplay = false
   readonly ready: Promise<void>
 
   constructor(private readonly service: PokerChaseService) {
+    this.service.setSessionOriginReconciler(() => this.getReconciledContext())
     this.ready = this.restore()
   }
 
@@ -99,6 +101,7 @@ class SessionOriginTracker {
         this.service.endSession()
         return
       }
+      this.canReconcileReplay = true
       for (const [tabId, scope] of persisted.scopes) {
         if (typeof tabId === 'number' && scope && typeof scope.id === 'string') {
           this.scopes.set(tabId, scope)
@@ -108,12 +111,14 @@ class SessionOriginTracker {
       if (persisted.currentTabId !== undefined && this.scopes.has(persisted.currentTabId)) {
         this.currentKey = persisted.currentTabId
       }
-      if (this.scopes.size === 0) {
-        // PokerChaseService's older local snapshot can outlive the browser
-        // session. Without a reconcilable origin, fail closed until a fresh
-        // entry event establishes the current run.
-        this.service.endSession()
+      if (this.currentKey === undefined) {
+        let latest: [SessionOriginKey, TrackedSessionScope] | undefined
+        for (const entry of this.scopes) {
+          if (!latest || entry[1].sequence > latest[1].sequence) latest = entry
+        }
+        this.currentKey = latest?.[0]
       }
+      this.service.reconcileSessionOrigin()
     } catch (error) {
       console.warn('[background] Failed to restore active session origins:', error)
     }
@@ -166,6 +171,7 @@ class SessionOriginTracker {
 
   async start(key: SessionOriginKey, context: RawEventSessionContext): Promise<void> {
     await this.ready
+    this.canReconcileReplay = true
     const scope = {
       ...context,
       sequence: ++this.sequence
@@ -191,10 +197,19 @@ class SessionOriginTracker {
     return this.getContext(key)
   }
 
+  private getReconciledContext(): RawEventSessionContext | null | undefined {
+    if (!this.canReconcileReplay) return undefined
+    const context = this.currentKey === undefined
+      ? undefined
+      : this.getContext(this.currentKey)
+    return context ?? null
+  }
+
   async end(key: SessionOriginKey): Promise<void> {
     await this.ready
     const endedScope = this.scopes.get(key)
     this.scopes.delete(key)
+    if (endedScope) this.canReconcileReplay = true
 
     // このworkerで201を見ていないcold-resume時は従来どおり単独309で閉じる。
     if (!endedScope) {
