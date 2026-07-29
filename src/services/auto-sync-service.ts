@@ -12,7 +12,7 @@ import {
 } from '../constants/sync'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
-import { ApiType, ApiTypeValues, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent } from '../types'
+import { ApiType, ApiTypeValues, BattleType, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent } from '../types'
 import type { ApiEvent } from '../types'
 import { processInReplayChunks, filterValidApplicationEvents } from '../utils/database-utils'
 import { DATABASE_CONSTANTS } from '../constants/database'
@@ -68,6 +68,12 @@ export class SyncAccountChangedError extends Error {
 interface SyncPassIdentity {
   uid: string | undefined
   generation: number
+}
+
+type ReplaySessionScope = {
+  id: string
+  battleType: BattleType
+  startedAt: number
 }
 
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'success'
@@ -1488,6 +1494,7 @@ export class AutoSyncService {
       const rebuiltHandIds = new Set<number>()
       let lastProcessedTimestamp = 0
       let latestDealEvent: ApiEvent | undefined
+      const replaySessions: ReplaySessionScope[] = []
 
       if (service?.session) service.session.reset()
 
@@ -1508,7 +1515,7 @@ export class AutoSyncService {
 
         for (const event of events) {
           lastProcessedTimestamp = Math.max(lastProcessedTimestamp, event.timestamp || 0)
-          this.restoreSessionEvent(service, event)
+          this.restoreSessionEvent(service, event, replaySessions)
           // 席着席時のみ latestDealEvent を更新する（findLatestPlayerDealEvent()
           // ／aggregate-events-stream.tsのEVT_DEALケースと同じ判別: event.Player?.
           // SeatIndex !== undefined）。ダウンロード履歴の末尾が観戦モードのdeal
@@ -1593,15 +1600,40 @@ export class AutoSyncService {
     console.log(`[AutoSync] Generated entities - Hands: ${entities.hands.length}, Phases: ${entities.phases.length}, Actions: ${entities.actions.length}`)
   }
 
-  private restoreSessionEvent(service: any, event: ApiEvent): void {
+  private restoreSessionEvent(
+    service: any,
+    event: ApiEvent,
+    replaySessions: ReplaySessionScope[]
+  ): void {
     if (!service?.session) return
 
     if (event.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
-      if (typeof service.endSession === 'function') service.endSession()
-      else service.session.reset()
+      replaySessions.pop()
+      const previous = replaySessions.at(-1)
+      if (previous && typeof service.startSession === 'function') {
+        service.startSession(previous.id, previous.battleType, previous.startedAt)
+      } else if (typeof service.endSession === 'function') {
+        service.endSession()
+      } else {
+        service.session.reset()
+      }
     } else if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED) && event.Code === 0) {
+      const previous = replaySessions.at(-1)
+      const continuesCurrentMtt =
+        previous?.battleType === BattleType.TOURNAMENT &&
+        event.BattleType === BattleType.TOURNAMENT &&
+        previous.id === event.Id
+      const scope: ReplaySessionScope = {
+        id: event.Id,
+        battleType: event.BattleType,
+        startedAt: continuesCurrentMtt
+          ? previous.startedAt
+          : event.timestamp ?? Date.now()
+      }
+      if (continuesCurrentMtt) replaySessions[replaySessions.length - 1] = scope
+      else replaySessions.push(scope)
       if (typeof service.startSession === 'function') {
-        service.startSession(event.Id, event.BattleType, event.timestamp ?? Date.now())
+        service.startSession(scope.id, scope.battleType, scope.startedAt)
       } else {
         service.session.setId(event.Id)
         service.session.setBattleType(event.BattleType)

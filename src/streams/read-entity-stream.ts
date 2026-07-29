@@ -43,6 +43,10 @@ const FORCED_ENABLED_STAT_IDS: ReadonlySet<string> = new Set([
   ...CLASSIFIER_REQUIRED_STAT_IDS,
 ])
 
+type SessionFilterSnapshot =
+  | Readonly<{ enabled: false }>
+  | Readonly<{ enabled: true, scope?: Readonly<{ id: string, startedAt: number }> }>
+
 export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
   private service: PokerChaseService
   private statsCache: Map<string, { stats: PlayerStats[], timestamp: number }> = new Map()
@@ -87,7 +91,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
 
     try {
       // すべてのプレイヤーの統計を計算
-      const stats = await this.calcStats(seatUserIds)
+      const stats = await this.calcStats(seatUserIds, this.captureSessionFilter())
       this.push(stats)
     } catch (error) {
       const context: ErrorContext = {
@@ -113,8 +117,9 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       }
 
       // seatUserIdsとフィルター設定に基づいてキャッシュキーを作成
-      const sessionFilterKey = this.service.sessionOnlyFilter
-        ? `session:${this.service.currentSessionFilterKey()}`
+      const sessionFilter = this.captureSessionFilter()
+      const sessionFilterKey = sessionFilter.enabled
+        ? `session:${sessionFilter.scope ? `${sessionFilter.scope.id}@${sessionFilter.scope.startedAt}` : 'inactive'}`
         : 'all-sessions'
       const cacheKey = `${seatUserIds.join(',')}_${this.service.battleTypeFilter?.join(',') || 'all'}_${this.service.tableSizeFilter?.join(',') || 'all'}_${this.service.handLimitFilter ?? 'all'}_${sessionFilterKey}`
       const now = Date.now()
@@ -137,7 +142,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
        */
       const stats = await this.service.db.transaction('r', [this.service.db.hands, this.service.db.phases, this.service.db.actions], async () => {
         // 生のseatUserIds順序で統計を計算（フロントエンドで表示位置を調整）
-        return await this.calcStats(seatUserIds)
+        return await this.calcStats(seatUserIds, sessionFilter)
       })
 
       // キャッシュを更新
@@ -180,7 +185,15 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
    * -- ただし`push()`しないため、`statsOutputStream`の'data'購読（ports.ts）を
    * 経由したブロードキャストは発生しない（呼び出し元が結果を自分で届ける）。
    */
-  calcStats = async (seatUserIds: number[]): Promise<PlayerStats[]> => {
+  private captureSessionFilter = (): SessionFilterSnapshot =>
+    this.service.sessionOnlyFilter
+      ? { enabled: true, scope: this.service.getCurrentSessionScope() }
+      : { enabled: false }
+
+  calcStats = async (
+    seatUserIds: number[],
+    sessionFilter: SessionFilterSnapshot = this.captureSessionFilter()
+  ): Promise<PlayerStats[]> => {
     return await Promise.all(seatUserIds.map(async playerId => {
       if (playerId === -1)
         return { playerId: -1 }
@@ -229,10 +242,13 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
 
       // 「最新」= 現在のセッション。ID未確定時は過去全件へfall backせず
       // 空集合にする（別セッションの統計を現在値として見せない）。
-      if (this.service.sessionOnlyFilter) {
+      if (sessionFilter.enabled) {
         const originalHandsCount = allPlayerHands.length
         allPlayerHands = allPlayerHands.filter((hand: Hand) =>
-          this.service.isHandInCurrentSession(hand)
+          sessionFilter.scope !== undefined &&
+          hand.session.id === sessionFilter.scope.id &&
+          Number.isFinite(hand.approxTimestamp) &&
+          hand.approxTimestamp! >= sessionFilter.scope.startedAt
         )
 
         if (allPlayerHands.length === 0 && originalHandsCount > 0) {
@@ -251,7 +267,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       }
 
       // アクションフィルタリング用のフィルタリングされたハンドIDを作成
-      if (this.service.battleTypeFilter || this.service.tableSizeFilter || this.service.sessionOnlyFilter || this.service.handLimitFilter !== undefined) {
+      if (this.service.battleTypeFilter || this.service.tableSizeFilter || sessionFilter.enabled || this.service.handLimitFilter !== undefined) {
         filteredHandIds = allPlayerHands.map((h: Hand) => h.id)
         filteredHandIdSet = new Set(filteredHandIds)
       }

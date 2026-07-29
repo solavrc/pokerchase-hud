@@ -15,6 +15,7 @@ import { recordUndecodedEvent } from './undecoded-event-tracker'
 import { markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
 import { getOperationState } from './operation-state'
+import { setEventSessionScope, type EventSessionScope } from '../utils/session-event-scope'
 
 /**
  * 参加取消申込（ApiTypeId 203）。`ApiType` enum（アプリケーションで使用する
@@ -66,10 +67,30 @@ class SessionOriginTracker {
   constructor(private readonly service: PokerChaseService) {}
 
   start(key: SessionOriginKey, id: string, battleType: BattleType, startedAt: number): void {
-    const scope = { id, battleType, startedAt, sequence: ++this.sequence }
+    const previous = this.scopes.get(key)
+    const continuesCurrentMtt =
+      previous?.battleType === BattleType.TOURNAMENT &&
+      battleType === BattleType.TOURNAMENT &&
+      previous.id === id
+    const scope = {
+      id,
+      battleType,
+      startedAt: continuesCurrentMtt ? previous.startedAt : startedAt,
+      sequence: ++this.sequence
+    }
     this.scopes.set(key, scope)
     this.currentKey = key
-    this.service.startSession(id, battleType, startedAt)
+    this.service.startSession(id, battleType, scope.startedAt)
+  }
+
+  get(key: SessionOriginKey): EventSessionScope | undefined {
+    const scope = this.scopes.get(key)
+    if (!scope) return undefined
+    return {
+      id: scope.id,
+      battleType: scope.battleType,
+      startedAt: scope.startedAt
+    }
   }
 
   end(key: SessionOriginKey): void {
@@ -162,6 +183,20 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   ingestionQueue = Promise.resolve()
   setIngestionDrainProvider(() => ingestionQueue)
   const sessionOrigins = new SessionOriginTracker(service)
+
+  // A content-script port also disconnects during an ordinary page reload.
+  // Keep its tab-id keyed scope across that reconnect, and release it only
+  // when Chrome confirms that the tab itself was closed.
+  chrome.tabs?.onRemoved?.addListener(tabId => {
+    const task = ingestionQueue.then(async () => {
+      await service.handAggregateStream.whenIdle()
+      sessionOrigins.end(tabId)
+    })
+    ingestionQueue = task.catch(err => {
+      console.error('[background] Failed to close removed-tab session scope:', err)
+    })
+    return task
+  })
 
   chrome.runtime.onConnect.addListener(port => {
     if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
@@ -537,6 +572,11 @@ const processEvent = async (
       data.timestamp ?? Date.now()
     )
   }
+
+  // Capture the origin before any later tab can change service.session. The
+  // same parsed object flows through AggregateEventsStream into
+  // WriteEntityStream, where the completed hand reads this immutable scope.
+  setEventSessionScope(data, sessionOrigins.get(originKey))
 
   // ここでdataはApiEvent型（isApplicationApiEventで保証済み）
   service.eventLogger(data, 'info')

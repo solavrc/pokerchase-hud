@@ -14,12 +14,14 @@ import { ApiType, BattleType } from '../types'
 import { registerEventIngestion } from './event-ingestion'
 import { connectedPorts } from './ports'
 import { getUndecodedEventStats, resetUndecodedEventStats, UNDECODED_EVENT_STATS_KEY } from './undecoded-event-tracker'
+import { MTT_TABLE_MOVE_FIXTURE } from '../test-fixtures/mtt-table-move-lifecycle'
 
 describe('registerEventIngestion (Raw Event Lake)', () => {
   let db: PokerChaseDB
   let service: PokerChaseService
   let onMessageHandler: (message: any) => Promise<void>
   let connectListener: (port: any) => void
+  let tabRemovedHandler: (tabId: number) => Promise<void>
   let disconnectHandlers: Array<() => void>
   let mockPort: any
 
@@ -35,8 +37,10 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     await service.ready
 
     ;(chrome.runtime as any).onConnect = { addListener: jest.fn() }
+    ;(chrome.tabs as any).onRemoved = { addListener: jest.fn() }
     registerEventIngestion(service)
     connectListener = (chrome.runtime as any).onConnect.addListener.mock.calls[0][0]
+    tabRemovedHandler = (chrome.tabs as any).onRemoved.addListener.mock.calls[0][0]
 
     disconnectHandlers = []
     mockPort = {
@@ -111,6 +115,89 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
 
     await onMessageHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 4000 })
     expect(service.getCurrentSessionScope()).toBeUndefined()
+  })
+
+  test('same-origin MTT table moves preserve the original session boundary', async () => {
+    mockPort.sender = { tab: { id: 101 } }
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.TOURNAMENT,
+      Id: 'mtt-6078',
+      IsRetire: false,
+    })
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 2000,
+      Code: 0,
+      BattleType: BattleType.TOURNAMENT,
+      Id: 'mtt-6078',
+      IsRetire: false,
+    })
+
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'mtt-6078', startedAt: 1000 })
+  })
+
+  test('tab close releases its scope while a port disconnect alone preserves it', async () => {
+    mockPort.sender = { tab: { id: 101 } }
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'tab-a',
+      IsRetire: false,
+    })
+
+    disconnectHandlers.forEach(fn => fn())
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-a', startedAt: 1000 })
+
+    await tabRemovedHandler(101)
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+  })
+
+  test('a completed hand keeps the session scope of its originating tab', async () => {
+    const secondPort = {
+      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      sender: { tab: { id: 202 } },
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn(),
+    }
+    mockPort.sender = { tab: { id: 101 } }
+    connectListener(secondPort)
+    const secondHandler = secondPort.onMessage.addListener.mock.calls[0][0]
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'tab-a',
+      IsRetire: false,
+    })
+    await secondHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 2000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'tab-b',
+      IsRetire: false,
+    })
+
+    const firstCompletedHand = MTT_TABLE_MOVE_FIXTURE.events.slice(3, 6)
+    for (const event of firstCompletedHand) {
+      await onMessageHandler(structuredClone(event))
+    }
+    await service.handAggregateStream.whenIdle()
+
+    const hand = await db.hands.get(MTT_TABLE_MOVE_FIXTURE.handIds.oldAccepted)
+    expect(hand?.session).toMatchObject({
+      id: 'tab-a',
+      battleType: BattleType.SIT_AND_GO,
+    })
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-b', startedAt: 2000 })
   })
 
   test('an application-type event that fails Zod validation is stored raw but NOT forwarded to streams', async () => {

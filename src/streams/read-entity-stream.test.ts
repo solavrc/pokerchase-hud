@@ -151,6 +151,51 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     expect(handsStatOf(afterEnd, PLAYER_ID)?.value).toBeUndefined()
   })
 
+  test('session cache uses the same immutable scope for its key and delayed calculation', async () => {
+    const previousNodeEnv = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    let releaseCalculation!: () => void
+    const calculationGate = new Promise<void>(resolve => { releaseCalculation = resolve })
+    let calculationStarted!: () => void
+    const started = new Promise<void>(resolve => { calculationStarted = resolve })
+    const originalCalcStats = service.statsOutputStream.calcStats
+
+    try {
+      await db.hands.update(4, {
+        approxTimestamp: 4000,
+        session: { id: 'tab-a', battleType: BattleType.TOURNAMENT },
+      })
+      await db.hands.update(5, {
+        approxTimestamp: 5000,
+        session: { id: 'tab-b', battleType: BattleType.RING_GAME },
+      })
+      service.startSession('tab-a', BattleType.TOURNAMENT, 3500)
+      service.sessionOnlyFilter = true
+
+      jest.spyOn(service.statsOutputStream, 'calcStats').mockImplementation(async (...args) => {
+        calculationStarted()
+        await calculationGate
+        return originalCalcStats(...args)
+      })
+
+      const pendingStats = runCalcStats(service, SEAT_USER_IDS)
+      await started
+      service.startSession('tab-b', BattleType.RING_GAME, 4500)
+      releaseCalculation()
+
+      expect(handsStatOf(await pendingStats, PLAYER_ID)?.value).toBe(1)
+      const cacheKeys = [...(service.statsOutputStream as any).statsCache.keys()] as string[]
+      expect(cacheKeys).toEqual(expect.arrayContaining([
+        expect.stringContaining('session:tab-a@3500')
+      ]))
+      expect(cacheKeys.some(key => key.includes('session:tab-b@4500'))).toBe(false)
+    } finally {
+      releaseCalculation()
+      jest.restoreAllMocks()
+      process.env.NODE_ENV = previousNodeEnv
+    }
+  })
+
   test('a completed hand invalidates a same-lineup production cache warmed at deal time', async () => {
     const previousNodeEnv = process.env.NODE_ENV
     process.env.NODE_ENV = 'production'

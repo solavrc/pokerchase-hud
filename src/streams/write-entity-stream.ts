@@ -22,6 +22,7 @@ import { getPositionMap, getBigBlindUserId } from '../utils/position-utils'
 import { defaultRegistry } from '../stats'
 import type { ErrorContext } from '../types/errors'
 import { deriveHandSettlement } from '../utils/hand-chip-accounting'
+import { getEventSessionScope } from '../utils/session-event-scope'
 
 /**
  * エンティティ書き込みStream（パイプライン第2段階）
@@ -81,11 +82,16 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
   }
   private toHandState = (events: ApiHandEvent[]): HandState | null => {
     let positionMap: Map<number, Position> = new Map()
+    const originatingScope = events
+      .find(event => event.ApiTypeId === ApiType.EVT_DEAL)
+    const eventSessionScope = originatingScope
+      ? getEventSessionScope(originatingScope)
+      : undefined
     const handState: HandState = {
       hand: {
         session: {
-          id: this.service.session.id,
-          battleType: this.service.session.battleType,
+          id: eventSessionScope?.id ?? this.service.session.id,
+          battleType: eventSessionScope?.battleType ?? this.service.session.battleType,
           name: this.service.session.name
         },
         id: NaN,

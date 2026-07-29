@@ -112,6 +112,36 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
     expect(service.session.active).toBe(false)
   })
 
+  test('restores the previous active scope when interleaved replay results close the latest one', async () => {
+    await db.apiEvents.bulkAdd([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 1000,
+        Code: 0,
+        BattleType: BattleType.SIT_AND_GO,
+        Id: 'tab-a',
+        IsRetire: false,
+      },
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 2000,
+        Code: 0,
+        BattleType: BattleType.RING_GAME,
+        Id: 'tab-b',
+        IsRetire: false,
+      },
+      {
+        ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+        timestamp: 3000,
+      },
+    ] as ApiEvent[])
+
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-a', startedAt: 1000 })
+    expect(service.session.battleType).toBe(BattleType.SIT_AND_GO)
+  })
+
   test('replaces child rows for a regenerated hand instead of leaving obsolete keys', async () => {
     await db.apiEvents.bulkAdd(structuredClone(FIRST_HAND_EVENTS))
     await (autoSyncService as any).rebuildLocalEntities()
