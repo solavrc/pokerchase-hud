@@ -322,7 +322,60 @@ describe('message-router device-local UI layout', () => {
       success: false,
       error: 'Superseded by newer hand log layout',
     })
-    expect(chrome.tabs.query).not.toHaveBeenCalled()
+    expect(chrome.tabs.sendMessage).not.toHaveBeenCalledWith(
+      expect.anything(),
+      { action: 'resetHandLogLayout' }
+    )
+    expect(chrome.tabs.query).toHaveBeenCalledTimes(1)
+    expect(saveResponse).toHaveBeenCalledWith({ success: true })
+    expect(await chrome.storage.local.get(HAND_LOG_LAYOUT_STORAGE_KEY)).toEqual({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: newLayout,
+    })
+  })
+
+  it('reset配信中の後発layout保存を全ゲームタブへ再配信する', async () => {
+    const oldLayout = { left: 10, top: 20, width: 400, height: 100 }
+    const newLayout = { left: 80, top: 60, width: 520, height: 240 }
+    await chrome.storage.local.set({
+      [HAND_LOG_LAYOUT_STORAGE_KEY]: oldLayout,
+    })
+    ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => {
+      callback([{ id: 42 }])
+    })
+    let finishResetDelivery!: () => void
+    ;(chrome.tabs.sendMessage as jest.Mock)
+      .mockReturnValueOnce(new Promise<void>(resolve => {
+        finishResetDelivery = resolve
+      }))
+      .mockResolvedValue(undefined)
+    const resetResponse = jest.fn()
+    const saveResponse = jest.fn()
+
+    listener({ action: 'resetDeviceHandLogLayout' }, {}, resetResponse)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      action: 'resetHandLogLayout',
+    })
+
+    listener({
+      action: 'setDeviceHandLogLayout',
+      layout: newLayout,
+    }, {}, saveResponse)
+    await Promise.resolve()
+    expect(saveResponse).not.toHaveBeenCalled()
+
+    finishResetDelivery()
+    await getPendingStorageWriteTail()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(resetResponse).toHaveBeenCalledWith({
+      success: false,
+      error: 'Superseded by newer hand log layout',
+    })
+    expect(chrome.tabs.sendMessage).toHaveBeenLastCalledWith(42, {
+      action: 'updateHandLogLayout',
+      layout: newLayout,
+    })
     expect(saveResponse).toHaveBeenCalledWith({ success: true })
     expect(await chrome.storage.local.get(HAND_LOG_LAYOUT_STORAGE_KEY)).toEqual({
       [HAND_LOG_LAYOUT_STORAGE_KEY]: newLayout,

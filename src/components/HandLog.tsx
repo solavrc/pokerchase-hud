@@ -16,6 +16,7 @@ import { formatHandLogEntries } from '../utils/hand-log-text'
 import {
   HAND_LOG_MIN_HEIGHT,
   HAND_LOG_MIN_WIDTH,
+  isValidHandLogLayout,
   loadHandLogLayout,
   saveHandLogLayout,
 } from '../utils/ui-config-storage'
@@ -255,8 +256,28 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       layoutEditGenerationRef.current += 1
       applyLayout(null)
     }
+    const handleUpdate = (event: Event) => {
+      const nextLayout = (event as CustomEvent<unknown>).detail
+      if (!isValidHandLogLayout(nextLayout)) return
+
+      const pendingInteraction = interactionRef.current
+      if (pendingInteraction?.moved) {
+        // The visible drag/resize is newer than this persisted broadcast. Its
+        // eventual save will publish the next authoritative layout.
+        return
+      }
+      if (pendingInteraction) {
+        pendingInteraction.startLayout = nextLayout
+      }
+      layoutEditGenerationRef.current += 1
+      applyLayout(nextLayout)
+    }
     window.addEventListener('resetHandLogLayout', handleReset)
-    return () => window.removeEventListener('resetHandLogLayout', handleReset)
+    window.addEventListener('updateHandLogLayout', handleUpdate)
+    return () => {
+      window.removeEventListener('resetHandLogLayout', handleReset)
+      window.removeEventListener('updateHandLogLayout', handleUpdate)
+    }
   }, [applyLayout])
 
   // 新しいエントリが到着したとき自動的に下にスクロール

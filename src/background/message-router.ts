@@ -456,7 +456,14 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
           [HAND_LOG_LAYOUT_STORAGE_KEY]: request.layout,
         }, callback),
         sendResponse,
-        'Failed to save hand log layout'
+        'Failed to save hand log layout',
+        complete => broadcastToGameTabs(
+          {
+            action: 'updateHandLogLayout',
+            layout: request.layout,
+          },
+          complete
+        )
       )
       return true
     } else if (request.action === 'resetDeviceHandLogLayout') {

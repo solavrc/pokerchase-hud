@@ -137,4 +137,22 @@ describe('content_script.ts download message handlers send an explicit ack', () 
       expect.objectContaining({ type: 'resetHandLogLayout' })
     )
   })
+
+  test('updateHandLogLayout forwards the persisted layout into the page', () => {
+    const dispatchEvent = jest.spyOn(window, 'dispatchEvent')
+    const layout = { left: 80, top: 60, width: 520, height: 240 }
+
+    listener(
+      { action: 'updateHandLogLayout', layout },
+      {},
+      jest.fn()
+    )
+
+    expect(dispatchEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'updateHandLogLayout',
+        detail: layout,
+      })
+    )
+  })
 })

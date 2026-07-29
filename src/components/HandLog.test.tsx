@@ -481,6 +481,57 @@ describe('HandLog', () => {
     expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
   })
 
+  it('遅延reset後の保存済みlayout配信で表示を最新値へ戻す', () => {
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+    const latestLayout = { left: 80, top: 60, width: 520, height: 240 }
+
+    fireEvent(window, new CustomEvent('resetHandLogLayout'))
+    expect(logContainer.style.left).toBe('')
+
+    fireEvent(window, new CustomEvent('updateHandLogLayout', {
+      detail: latestLayout,
+    }))
+
+    expect(logContainer.style.left).toBe('80px')
+    expect(logContainer.style.top).toBe('60px')
+    expect(logContainer.style.width).toBe('520px')
+    expect(logContainer.style.height).toBe('240px')
+  })
+
+  it('進行中の新しいドラッグを古い保存済みlayout配信で上書きしない', () => {
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+    logContainer.getBoundingClientRect = jest.fn(() => ({
+      left: 500,
+      top: 400,
+      width: 400,
+      height: 100,
+      right: 900,
+      bottom: 500,
+      x: 500,
+      y: 400,
+      toJSON: () => {},
+    }))
+
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
+      button: 0,
+      clientX: 880,
+      clientY: 480,
+    })
+    fireEvent.mouseMove(document, { clientX: 830, clientY: 450 })
+    expect(logContainer.style.left).toBe('450px')
+    expect(logContainer.style.top).toBe('370px')
+
+    fireEvent(window, new CustomEvent('updateHandLogLayout', {
+      detail: { left: 80, top: 60, width: 520, height: 240 },
+    }))
+
+    expect(logContainer.style.left).toBe('450px')
+    expect(logContainer.style.top).toBe('370px')
+    fireEvent.mouseUp(document)
+  })
+
   it.each([
     {
       testId: 'hand-log-move-grip',

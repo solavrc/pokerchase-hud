@@ -56,6 +56,7 @@ export const MESSAGE_ACTIONS = {
   GET_DEVICE_HAND_LOG_LAYOUT: 'getDeviceHandLogLayout',
   SET_DEVICE_HAND_LOG_LAYOUT: 'setDeviceHandLogLayout',
   RESET_DEVICE_HAND_LOG_LAYOUT: 'resetDeviceHandLogLayout',
+  UPDATE_HAND_LOG_LAYOUT: 'updateHandLogLayout',
   RESET_HAND_LOG_LAYOUT: 'resetHandLogLayout',
   SET_SYNCED_UI_CONFIG: 'setSyncedUIConfig',
   // Operation state
@@ -229,6 +230,11 @@ export interface SetDeviceHandLogLayoutMessage {
 
 export interface ResetDeviceHandLogLayoutMessage {
   action: 'resetDeviceHandLogLayout'
+}
+
+export interface UpdateHandLogLayoutMessage {
+  action: 'updateHandLogLayout'
+  layout: HandLogLayout
 }
 
 export interface ResetHandLogLayoutMessage {
@@ -483,6 +489,7 @@ export type ChromeMessage =
   | GetDeviceHandLogLayoutMessage
   | SetDeviceHandLogLayoutMessage
   | ResetDeviceHandLogLayoutMessage
+  | UpdateHandLogLayoutMessage
   | ResetHandLogLayoutMessage
   | SetSyncedUIConfigMessage
   | PatchSyncedUIConfigMessage
