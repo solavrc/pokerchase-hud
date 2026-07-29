@@ -657,6 +657,39 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(service.playerId).toBe(deal.SeatUserIds[deal.Player!.SeatIndex])
   })
 
+  test('worker restart keeps the hero anchor when the selected origin latest deal is spectator-only', async () => {
+    mockPort.sender = { tab: { id: 101 } }
+    const heroDeal = structuredClone(
+      MTT_TABLE_MOVE_FIXTURE.events.find(
+        event => event.ApiTypeId === ApiType.EVT_DEAL
+      )!
+    ) as ApiEvent<ApiType.EVT_DEAL>
+    heroDeal.timestamp = 1200
+    const spectatorDeal = structuredClone(heroDeal) as any
+    spectatorDeal.timestamp = 1300
+    delete spectatorDeal.Player
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.TOURNAMENT,
+      Id: 'mtt-6078',
+      IsRetire: false,
+    })
+    await onMessageHandler(heroDeal)
+    await onMessageHandler(spectatorDeal)
+    expect(service.latestEvtDeal).toEqual(heroDeal)
+
+    service.liveEvtDeal = undefined
+    service.endSession()
+    registerEventIngestion(service)
+    await service.sessionOriginsReady
+
+    expect(service.liveEvtDeal).toEqual(spectatorDeal)
+    expect(service.latestEvtDeal).toEqual(heroDeal)
+  })
+
   test('origin restore failure invalidates a stale durable session snapshot', async () => {
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
     ;(chrome.storage.session.get as jest.Mock).mockRejectedValueOnce(new Error('session storage unavailable'))

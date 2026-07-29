@@ -1,5 +1,5 @@
 import { EntityConverter, type EntityBundle } from '../entity-converter'
-import type { ApiEvent, Session } from '../types'
+import { ApiType, type ApiEvent, type Session } from '../types'
 import { getRawEventSessionContext } from './raw-event-session-context'
 
 const emptyBundle = (): EntityBundle => ({
@@ -21,6 +21,7 @@ const appendBundle = (target: EntityBundle, source: EntityBundle): void => {
 export class SessionScopedEntityConverter {
   private readonly legacyConverter: EntityConverter
   private readonly scopedConverters = new Map<string, EntityConverter>()
+  private readonly activeHandConverters = new Set<EntityConverter>()
 
   constructor(defaultSession: Session) {
     this.legacyConverter = new EntityConverter(defaultSession)
@@ -48,12 +49,52 @@ export class SessionScopedEntityConverter {
     return converter
   }
 
+  private converterForReplay(event: ApiEvent): EntityConverter {
+    const naturalConverter = this.converterFor(event)
+    if (event.ApiTypeId === ApiType.EVT_DEAL) {
+      this.activeHandConverters.add(naturalConverter)
+      return naturalConverter
+    }
+
+    const isHandContinuation =
+      event.ApiTypeId === ApiType.EVT_ACTION ||
+      event.ApiTypeId === ApiType.EVT_DEAL_ROUND ||
+      event.ApiTypeId === ApiType.EVT_HAND_RESULTS
+    if (!isHandContinuation) return naturalConverter
+
+    let converter = naturalConverter
+    if (!this.activeHandConverters.has(converter)) {
+      if (
+        converter !== this.legacyConverter &&
+        this.activeHandConverters.has(this.legacyConverter)
+      ) {
+        // A partial new-format import can add a context-bearing ACTION between
+        // legacy DEAL/RESULTS rows. Keep that one hand on its already-open
+        // legacy converter instead of permanently dropping the new action.
+        converter = this.legacyConverter
+      } else if (converter === this.legacyConverter) {
+        const activeScoped = [...this.activeHandConverters]
+          .filter(candidate => candidate !== this.legacyConverter)
+        if (activeScoped.length === 1) {
+          // The inverse partial export (context-bearing DEAL with legacy
+          // continuation rows) is unambiguous only with one active scope.
+          converter = activeScoped[0]!
+        }
+      }
+    }
+
+    if (event.ApiTypeId === ApiType.EVT_HAND_RESULTS) {
+      this.activeHandConverters.delete(converter)
+    }
+    return converter
+  }
+
   convertEventChunk(events: ApiEvent[]): EntityBundle {
     const result = emptyBundle()
     const eventsByConverter = new Map<EntityConverter, ApiEvent[]>()
 
     for (const event of events) {
-      const converter = this.converterFor(event)
+      const converter = this.converterForReplay(event)
       const scopedEvents = eventsByConverter.get(converter) ?? []
       scopedEvents.push(event)
       eventsByConverter.set(converter, scopedEvents)
@@ -66,6 +107,7 @@ export class SessionScopedEntityConverter {
 
   flush(): EntityBundle {
     const result = emptyBundle()
+    this.activeHandConverters.clear()
     for (const converter of [this.legacyConverter, ...this.scopedConverters.values()]) {
       appendBundle(result, converter.flush())
     }

@@ -375,7 +375,10 @@ class SessionOriginTracker {
           scope.latestDeal.SeatUserIds[scope.latestDeal.Player.SeatIndex]
         this.service.latestEvtDeal = scope.latestDeal
       } else {
-        this.service.latestEvtDeal = undefined
+        // Spectator DEALs update only the live seat context. Preserve the
+        // latest hero-seated DEAL exactly as live ingestion does so a worker
+        // restart cannot erase the persisted hero anchor used by filter
+        // recalculation.
         this.service.liveEvtDeal = scope.latestDeal
       }
     } else {

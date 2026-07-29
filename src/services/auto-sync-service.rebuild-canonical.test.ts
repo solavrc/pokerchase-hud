@@ -447,6 +447,58 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
     expect(service.latestEvtDeal?.SeatUserIds).toEqual(dealB.SeatUserIds)
   })
 
+  test('keeps identical MTT scopes isolated by origin during replay restoration', async () => {
+    const contextA = {
+      scopeKey: 'mtt:shared',
+      id: 'shared',
+      battleType: BattleType.TOURNAMENT,
+      startedAt: 100,
+      originId: 'origin-a',
+    }
+    const contextB = {
+      ...contextA,
+      originId: 'origin-b',
+    }
+    const dealB = {
+      ...structuredClone(FIRST_HAND_EVENTS[0]),
+      timestamp: 300,
+      SeatUserIds: [10, 20, 30, 40],
+      __pokerChaseHudSessionContext: contextB,
+    }
+    await db.apiEvents.bulkAdd([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 100,
+        Code: 0,
+        BattleType: BattleType.TOURNAMENT,
+        Id: 'shared',
+        IsRetire: false,
+        __pokerChaseHudSessionContext: contextA,
+      },
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 200,
+        Code: 0,
+        BattleType: BattleType.TOURNAMENT,
+        Id: 'shared',
+        IsRetire: false,
+        __pokerChaseHudSessionContext: contextB,
+      },
+      dealB,
+      {
+        ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+        timestamp: 400,
+        __pokerChaseHudSessionContext: contextA,
+      },
+    ] as ApiEvent[])
+
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'shared', startedAt: 100 })
+    expect(service.session.active).toBe(true)
+    expect(service.latestEvtDeal?.SeatUserIds).toEqual(dealB.SeatUserIds)
+  })
+
   test('does not resurrect a replayed scope closed by the live tab tracker', async () => {
     const context = {
       scopeKey: 'run:0:closed-tab:100',

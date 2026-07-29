@@ -81,6 +81,41 @@ describe('raw event session context', () => {
     expect(entities.hands.map(hand => hand.id).sort()).toEqual([9001, 9002])
   })
 
+  test('canonical conversion keeps a context-bearing partial action with legacy hand boundaries', () => {
+    const context = {
+      scopeKey: 'run:4:ring:100',
+      id: 'ring',
+      battleType: BattleType.RING_GAME,
+      startedAt: 100,
+      originId: 'origin-a',
+    }
+    const [deal, action, results] = MTT_TABLE_MOVE_FIXTURE.events
+      .slice(3, 6)
+      .map(event => structuredClone(event))
+    const converter = new SessionScopedEntityConverter({
+      players: new Map(),
+      reset: () => {},
+    })
+
+    const bundles = [
+      converter.convertEventChunk([deal!]),
+      converter.convertEventChunk([withRawEventSessionContext(action!, context)]),
+      converter.convertEventChunk([results!]),
+      converter.flush(),
+    ]
+    const entities = {
+      hands: bundles.flatMap(bundle => bundle.hands),
+      phases: bundles.flatMap(bundle => bundle.phases),
+      actions: bundles.flatMap(bundle => bundle.actions),
+    }
+
+    expect(entities.hands).toHaveLength(1)
+    expect(entities.actions).toHaveLength(1)
+    expect(entities.actions[0]).toMatchObject({
+      handId: entities.hands[0]!.id,
+    })
+  })
+
   test('does not change the PokerChase payload identity', () => {
     const raw = { timestamp: 1000, ApiTypeId: 303, SeatUserIds: [1, 2] }
     const scoped = {
