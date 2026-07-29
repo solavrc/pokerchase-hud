@@ -66,6 +66,14 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     this.statsCache.clear()
   }
 
+  /** Serialize an explicit empty HUD state behind all older calculations. */
+  public async clearStats(): Promise<void> {
+    this.invalidateCache()
+    await this.enqueueSerialized(async () => {
+      this.push([])
+    })
+  }
+
   private captureFilterSnapshot(): StatsFilterSnapshot {
     const battleTypeFilter = this.service.getEffectiveBattleTypeFilter()
     return {
@@ -93,6 +101,17 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       this.service.autoBattleTypeFilter &&
       this.service.session.battleType === undefined
     ) {
+      await this.enqueueSerialized(async () => {
+        // A new session may have started while this clear waited behind an
+        // older calculation. A newer terminal boundary still needs the same
+        // clear, so the final auto/no-session state is the complete guard.
+        if (
+          this.service.autoBattleTypeFilter &&
+          this.service.session.battleType === undefined
+        ) {
+          this.push([])
+        }
+      })
       return
     }
 
@@ -112,10 +131,12 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     // この再計算結果が別lineupでbroadcastされる。push直前に捕捉値へ再アンカーする。
     const evtDeal = this.service.latestEvtDeal
     const sessionId = this.service.session.id
+    const statsOutputContextRevision = this.service.statsOutputContextRevision
     const filterSnapshot = this.captureFilterSnapshot()
     const statsContextKey = `${sessionId ?? 'no-session'}_${this.filterSnapshotKey(filterSnapshot)}`
     const isCurrentStatsContext = () =>
       this.service.latestEvtDeal === evtDeal &&
+      this.service.statsOutputContextRevision === statsOutputContextRevision &&
       `${this.service.session.id ?? 'no-session'}_${this.filterSnapshotKey(this.captureFilterSnapshot())}` === statsContextKey
 
     // 直接calcStats()すると、既に走っている旧フィルターのtransformより先に
@@ -151,10 +172,45 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     })
   }
 
+  /**
+   * Capture the session-output epoch when the chunk enters the serialized
+   * queue, not when transform execution eventually begins. A 309 can advance
+   * the epoch while this write waits behind an older calculation.
+   */
+  override write(seatUserIds: number[]): void {
+    const statsOutputContextRevision = this.service.statsOutputContextRevision
+    void this.enqueueSerialized(() =>
+      this.transformForContext(seatUserIds, statsOutputContextRevision)
+    )
+  }
+
   protected async transform(seatUserIds: number[]): Promise<void> {
+    await this.transformForContext(
+      seatUserIds,
+      this.service.statsOutputContextRevision
+    )
+  }
+
+  private async transformForContext(
+    seatUserIds: number[],
+    statsOutputContextRevision: number
+  ): Promise<void> {
     try {
       // バッチモード中は統計計算をスキップ
       if (this.service.batchMode) {
+        return
+      }
+      if (
+        this.service.statsOutputContextRevision !==
+        statsOutputContextRevision
+      ) {
+        return
+      }
+      if (
+        this.service.autoBattleTypeFilter &&
+        this.service.session.battleType === undefined
+      ) {
+        this.push([])
         return
       }
 
@@ -166,6 +222,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       const statsContextKey = `${sessionId ?? 'no-session'}_${this.filterSnapshotKey(filterSnapshot)}`
       const isCurrentStatsContext = () =>
         this.service.liveEvtDeal === liveEvtDeal &&
+        this.service.statsOutputContextRevision === statsOutputContextRevision &&
         `${this.service.session.id ?? 'no-session'}_${this.filterSnapshotKey(this.captureFilterSnapshot())}` === statsContextKey
       const now = Date.now()
 

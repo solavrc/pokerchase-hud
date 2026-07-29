@@ -161,6 +161,19 @@ describe('registerEventIngestion (auto-sync triggers)', () => {
     expect(onGameSessionEndSpy).not.toHaveBeenCalled()
   })
 
+  test('an explicit failed EVT_ENTRY_QUEUED response does not trigger session-start sync', async () => {
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 5500,
+      Code: 1,
+      Id: 'rejected-entry',
+      BattleType: 3,
+    })
+
+    expect(onNewSessionStartSpy).not.toHaveBeenCalled()
+    expect(onGameSessionEndSpy).not.toHaveBeenCalled()
+  })
+
   test('a parse-failed EVT_SESSION_RESULTS (309) still triggers onGameSessionEnd -> recheckPendingUpdate via the raw ApiTypeId (codex review, PR #150 audit finding #1)', async () => {
     // Simulates the season-3 postmortem scenario: PokerChase changes the 309
     // payload shape so parseApiEvent() returns null. The raw event is still

@@ -173,6 +173,7 @@ class PokerChaseService {
   autoBattleTypeFilter: boolean = false // true = current session's SNG/MTT/Ring category
   autoBattleTypeFilterRevision: number = 0 // automatic category changes propagated to open drill-down panels
   sessionRevision: number = 0 // guards replay commits against newer live session/deal state
+  statsOutputContextRevision: number = 0 // invalidates calculations that began before a raw session boundary
   tableSizeFilter?: TableSizeLayer[] = undefined // undefined = all layers (no filtering), array = selected layers (C案)
   handLimitFilter?: number = undefined // undefined = all hands, number = limit to recent N hands
   statDisplayConfigs?: StatDisplayConfig[] = undefined // Custom stat display configuration
@@ -268,6 +269,11 @@ class PokerChaseService {
   /** Reset session and clear player data */
   readonly resetSession = () => {
     this._sessionData.reset()
+  }
+
+  /** Prevent an in-flight pre-boundary stats calculation from broadcasting. */
+  readonly invalidateStatsOutputContext = () => {
+    this.statsOutputContextRevision++
   }
 
   /**

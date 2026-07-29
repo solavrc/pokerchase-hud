@@ -15,12 +15,56 @@ import { registerEventIngestion } from './event-ingestion'
 import { connectedPorts } from './ports'
 import { getUndecodedEventStats, resetUndecodedEventStats, UNDECODED_EVENT_STATS_KEY } from './undecoded-event-tracker'
 
+const validSessionResult = (timestamp: number) => ({
+  ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+  timestamp,
+  Ranking: 3,
+  IsLeave: false,
+  IsRebuy: false,
+  TotalMatch: 100,
+  RankReward: {
+    IsSeasonal: true,
+    RankPoint: 10,
+    RankPointDiff: 1,
+    Rank: {
+      RankId: 'gold',
+      RankName: 'ゴールド',
+      RankLvId: 'gold',
+      RankLvName: 'ゴールド',
+    },
+    SeasonalRanking: 0,
+  },
+  Rewards: [],
+  EventRewards: [],
+  Charas: [],
+  Costumes: [],
+  Decos: [],
+  Items: [],
+  Money: { FreeMoney: -1, PaidMoney: -1 },
+  Emblems: [],
+})
+
 describe('registerEventIngestion (Raw Event Lake)', () => {
   let db: PokerChaseDB
   let service: PokerChaseService
   let onMessageHandler: (message: any) => Promise<void>
   let disconnectHandlers: Array<() => void>
-  let mockPort: any
+  let connectListener: (port: any) => void
+
+  const connectSource = (tabId: number) => {
+    const port = {
+      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      sender: { tab: { id: tabId } },
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn((fn: () => void) => disconnectHandlers.push(fn)) },
+      postMessage: jest.fn()
+    }
+    connectListener(port)
+    return {
+      port,
+      onMessage: port.onMessage.addListener.mock.calls[0][0] as (message: any) => Promise<void>
+    }
+  }
 
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
@@ -35,17 +79,11 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
 
     ;(chrome.runtime as any).onConnect = { addListener: jest.fn() }
     registerEventIngestion(service)
-    const connectListener = (chrome.runtime as any).onConnect.addListener.mock.calls[0][0]
+    connectListener = (chrome.runtime as any).onConnect.addListener.mock.calls[0][0]
 
     disconnectHandlers = []
-    mockPort = {
-      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
-      onMessage: { addListener: jest.fn() },
-      onDisconnect: { addListener: jest.fn((fn: () => void) => disconnectHandlers.push(fn)) },
-      postMessage: jest.fn()
-    }
-    connectListener(mockPort)
-    onMessageHandler = mockPort.onMessage.addListener.mock.calls[0][0]
+    const source = connectSource(1)
+    onMessageHandler = source.onMessage
   })
 
   afterEach(async () => {
@@ -145,8 +183,9 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(service.getEffectiveBattleTypeFilter()).toEqual([])
   })
 
-  test('an interleaved Friend SNG 309 preserves the only automatic category context', async () => {
+  test('only a different tab can make a Friend SNG 309 non-terminal', async () => {
     service.autoBattleTypeFilter = true
+    const foreignSource = connectSource(2)
     const entry = {
       ApiTypeId: 201,
       timestamp: 1161,
@@ -155,16 +194,165 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       Id: 'friend-sng-redacted',
       IsRetire: false,
     }
-    // The payload may belong to another interleaved Friend SNG; there is no
-    // session/source identity on 309 that can prove it ends this 201.
-    const sessionEnd = { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 1162 }
+    const foreignSessionEnd = validSessionResult(1162)
 
     await onMessageHandler(entry)
-    await onMessageHandler(sessionEnd)
+    await foreignSource.onMessage(foreignSessionEnd)
 
     expect(service.session.id).toBe('friend-sng-redacted')
     expect(service.session.battleType).toBe(2)
     expect(service.getEffectiveBattleTypeFilter()).toEqual([0, 2, 6])
+
+    // A result from the owning source is the ordinary terminal case.
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+      timestamp: 1163,
+    })
+    expect(service.session.id).toBeUndefined()
+    expect(service.session.battleType).toBeUndefined()
+    expect(service.getEffectiveBattleTypeFilter()).toEqual([])
+  })
+
+  test('session source ownership survives a service-worker registration restart', async () => {
+    service.autoBattleTypeFilter = true
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1170,
+      Code: 0,
+      BattleType: 2,
+      Id: 'persisted-source-friend',
+      IsRetire: false,
+    })
+
+    // Re-registering creates fresh module-local boundary state, matching an
+    // MV3 worker restart; chrome.storage.session remains available.
+    registerEventIngestion(service)
+    connectListener = (chrome.runtime as any).onConnect.addListener.mock.calls[1][0]
+    const foreignSource = connectSource(2)
+    await foreignSource.onMessage(validSessionResult(1171))
+
+    expect(service.session.id).toBe('persisted-source-friend')
+    expect(service.session.battleType).toBe(2)
+  })
+
+  test('a seated deal rebinds ownership when the new tab has no captured 201', async () => {
+    service.autoBattleTypeFilter = true
+    const newSource = connectSource(2)
+    const emittedStats: unknown[] = []
+    service.statsOutputStream.on('data', stats => emittedStats.push(stats))
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1173,
+      Code: 0,
+      BattleType: 2,
+      Id: 'old-tab-friend',
+      IsRetire: false,
+    })
+
+    // Missing the rest of the deal schema is intentional: raw Player
+    // presence is the same fail-closed ownership signal used for activity.
+    await newSource.onMessage({
+      ApiTypeId: ApiType.EVT_DEAL,
+      timestamp: 1174,
+      Player: { SeatIndex: 0 },
+    })
+
+    expect(service.session.id).toBeUndefined()
+    expect(service.session.battleType).toBeUndefined()
+    expect(service.getEffectiveBattleTypeFilter()).toEqual([])
+    expect(emittedStats.at(-1)).toEqual([])
+
+    await newSource.onMessage(validSessionResult(1175))
+
+    expect(service.session.id).toBeUndefined()
+    expect(service.session.battleType).toBeUndefined()
+    expect(service.getEffectiveBattleTypeFilter()).toEqual([])
+  })
+
+  test('a parse-failed successful entry recovers a minimally valid category', async () => {
+    service.autoBattleTypeFilter = true
+
+    // Missing IsRetire deliberately breaks the application schema while the
+    // raw session identity/category remain usable.
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1164,
+      Code: 0,
+      Id: 'raw-friend-entry',
+      BattleType: 2,
+    })
+
+    expect(service.session.id).toBe('raw-friend-entry')
+    expect(service.session.battleType).toBe(2)
+    expect(service.getEffectiveBattleTypeFilter()).toEqual([0, 2, 6])
+  })
+
+  test('a parse-failed Friend Ring entry accepts its specified empty Id', async () => {
+    service.autoBattleTypeFilter = true
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1172,
+      Code: 0,
+      Id: '',
+      BattleType: 5,
+    })
+
+    expect(service.session.id).toBe('')
+    expect(service.session.battleType).toBe(5)
+    expect(service.getEffectiveBattleTypeFilter()).toEqual([4, 5])
+  })
+
+  test('a parse-failed entry with unusable identity clears the previous automatic category', async () => {
+    service.autoBattleTypeFilter = true
+    service.session.setId('previous-ring')
+    service.session.setBattleType(4)
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1165,
+      Code: 0,
+      Id: '',
+      BattleType: 99,
+    })
+
+    expect(service.session.id).toBeUndefined()
+    expect(service.session.battleType).toBeUndefined()
+    expect(service.getEffectiveBattleTypeFilter()).toEqual([])
+  })
+
+  test('an explicit failed entry response neither replaces category nor transfers source ownership', async () => {
+    service.autoBattleTypeFilter = true
+    const foreignSource = connectSource(2)
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1166,
+      Code: 0,
+      BattleType: 2,
+      Id: 'owned-friend',
+      IsRetire: false,
+    })
+
+    await foreignSource.onMessage({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1167,
+      Code: 1,
+      BattleType: 3,
+      Id: 'failed-ring',
+    })
+    await foreignSource.onMessage({
+      ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+      timestamp: 1168,
+    })
+
+    expect(service.session.id).toBe('owned-friend')
+    expect(service.session.battleType).toBe(2)
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+      timestamp: 1169,
+    })
+    expect(service.session.id).toBeUndefined()
   })
 
   test('entry cancellation clears an auto-selected queued session in application order', async () => {

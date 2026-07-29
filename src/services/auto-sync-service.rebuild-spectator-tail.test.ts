@@ -258,6 +258,165 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     expect(writeSpy).not.toHaveBeenCalled()
   })
 
+  test('a final entry without a deal never reuses the preceding session deal', async () => {
+    service.latestEvtDeal = SEATED_DEAL as any
+    const preservedLiveDeal = service.latestEvtDeal
+    await db.apiEvents.bulkPut([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        Code: 0,
+        BattleType: BattleType.SIT_AND_GO,
+        Id: 'old-sng',
+        IsRetire: false,
+        timestamp: 400,
+        sequence: 0,
+      },
+      { ...SEATED_DEAL, timestamp: 500, sequence: 0 },
+      { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 600, sequence: 0 },
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        Code: 0,
+        BattleType: BattleType.RING_GAME,
+        Id: 'new-ring-without-deal',
+        IsRetire: false,
+        timestamp: 700,
+        sequence: 0,
+      },
+    ] as any)
+    const writeSpy = jest.spyOn(service.statsOutputStream, 'write')
+
+    const autoSyncService = new AutoSyncService(db)
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.session.id).toBe('new-ring-without-deal')
+    expect(service.session.battleType).toBe(BattleType.RING_GAME)
+    expect(service.latestEvtDeal).toBe(preservedLiveDeal)
+    expect(writeSpy).not.toHaveBeenCalled()
+  })
+
+  test('a terminal Friend SNG result clears replay state at end of history', async () => {
+    await db.apiEvents.bulkPut([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        Code: 0,
+        BattleType: BattleType.FRIEND_SIT_AND_GO,
+        Id: 'finished-friend',
+        IsRetire: false,
+        timestamp: 800,
+        sequence: 0,
+      },
+      { ...SEATED_DEAL, timestamp: 900, sequence: 0 },
+      { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 1000, sequence: 0 },
+    ] as any)
+    const writeSpy = jest.spyOn(service.statsOutputStream, 'write')
+
+    const autoSyncService = new AutoSyncService(db)
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.session.id).toBeUndefined()
+    expect(service.session.battleType).toBeUndefined()
+    expect(service.latestEvtDeal).toBeUndefined()
+    expect(writeSpy).not.toHaveBeenCalled()
+  })
+
+  test('a later seated deal proves an intermediate Friend SNG result was interleaved', async () => {
+    const continuationDeal = {
+      ...SEATED_DEAL,
+      timestamp: 1300,
+      SeatUserIds: [8, HERO_ID, 9, 10],
+    } as ApiEvent
+    await db.apiEvents.bulkPut([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        Code: 0,
+        BattleType: BattleType.FRIEND_SIT_AND_GO,
+        Id: 'continuing-friend',
+        IsRetire: false,
+        timestamp: 1100,
+        sequence: 0,
+      },
+      { ...SEATED_DEAL, timestamp: 1150, sequence: 0 },
+      { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 1200, sequence: 0 },
+      { ...continuationDeal, sequence: 0 },
+    ] as any)
+
+    const autoSyncService = new AutoSyncService(db)
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.session.id).toBe('continuing-friend')
+    expect(service.session.battleType).toBe(BattleType.FRIEND_SIT_AND_GO)
+    expect(service.latestEvtDeal).toEqual({ ...continuationDeal, sequence: 0 })
+  })
+
+  test('an explicit failed replay entry does not replace the active session', async () => {
+    await db.apiEvents.bulkPut([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        Code: 0,
+        BattleType: BattleType.SIT_AND_GO,
+        Id: 'active-sng',
+        IsRetire: false,
+        timestamp: 1400,
+        sequence: 0,
+      },
+      { ...SEATED_DEAL, timestamp: 1450, sequence: 0 },
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        Code: 5205,
+        BattleType: BattleType.RING_GAME,
+        Id: 'rejected-ring',
+        IsRetire: false,
+        timestamp: 1500,
+        sequence: 0,
+      },
+    ] as any)
+
+    const autoSyncService = new AutoSyncService(db)
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.session.id).toBe('active-sng')
+    expect(service.session.battleType).toBe(BattleType.SIT_AND_GO)
+    expect(service.latestEvtDeal).toEqual({ ...SEATED_DEAL, timestamp: 1450, sequence: 0 })
+  })
+
+  test('a minimally valid raw entry prevents a prior Friend snapshot from crossing categories', async () => {
+    const ringDeal = {
+      ...SEATED_DEAL,
+      timestamp: 1800,
+      SeatUserIds: [11, HERO_ID, 12, 13],
+    } as ApiEvent
+    await db.apiEvents.bulkPut([
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        Code: 0,
+        BattleType: BattleType.FRIEND_SIT_AND_GO,
+        Id: 'old-friend',
+        IsRetire: false,
+        timestamp: 1600,
+        sequence: 0,
+      },
+      { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 1650, sequence: 0 },
+      // Missing IsRetire: application parsing fails, but the raw boundary is
+      // sufficient to install the new category.
+      {
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        Code: 0,
+        BattleType: BattleType.RING_GAME,
+        Id: 'raw-ring',
+        timestamp: 1700,
+        sequence: 0,
+      },
+      { ...ringDeal, sequence: 0 },
+    ] as any)
+
+    const autoSyncService = new AutoSyncService(db)
+    await (autoSyncService as any).rebuildLocalEntities()
+
+    expect(service.session.id).toBe('raw-ring')
+    expect(service.session.battleType).toBe(BattleType.RING_GAME)
+    expect(service.latestEvtDeal).toEqual({ ...ringDeal, sequence: 0 })
+  })
+
   test('raw entry cancellation retires the queued replay session before commit', async () => {
     await db.apiEvents.bulkPut([
       {

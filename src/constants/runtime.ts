@@ -16,9 +16,17 @@ export const STORAGE_KEY = 'pokerChaseServiceState'
  * hero（席0）以外の HUD パネル（bust後の薄暗い表示を含む）をクリアする（sola仕様、
  * 「セッション終了後はhero以外のstatsはクリアしてOK」）。
  *
- * 新しいchrome runtimeメッセージチャネルは追加しない -- content_script.ts は
- * background へ転送する前に既に309を生イベントとして見ているので、その場で
- * ローカルにdispatchするだけで background 側（poker-chase-service.ts /
- * event-ingestion.ts）に一切手を入れずに済む。
+ * content_script.ts はbackgroundへ転送する前に309を見て、まず即時dispatch
+ * する。backgroundは旧統計計算をdrainした後、下のsettlementメッセージで
+ * 同じイベントを再dispatchさせ、永続化待ち中の旧broadcastを最終的に消す。
  */
 export const POKER_CHASE_SESSION_END_EVENT = 'PokerChaseSessionEndEvent'
+
+/**
+ * Background sends this port control message after every accepted terminal
+ * 309 has drained older stats work. Content dispatches the same local
+ * session-end event again so a calculation that finished during raw
+ * durability/source checks cannot remain visible after settlement.
+ */
+export const POKER_CHASE_SESSION_END_SETTLED_MESSAGE =
+  'PokerChaseSessionEndSettled'

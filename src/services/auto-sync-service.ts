@@ -31,6 +31,50 @@ import { HandLogExporter } from '../utils/hand-log-exporter'
 // streams; replay still needs it to retire a queued session.
 const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
 
+type ReplayEntryBoundary = {
+  id?: string
+  battleType?: BattleType
+}
+
+const REPLAY_BATTLE_TYPES = new Set<number>([
+  BattleType.SIT_AND_GO,
+  BattleType.TOURNAMENT,
+  BattleType.FRIEND_SIT_AND_GO,
+  BattleType.RING_GAME,
+  BattleType.FRIEND_RING_GAME,
+  BattleType.CLUB_MATCH,
+])
+
+/**
+ * Raw 201 recovery mirrors live ingestion: explicit Code failures are not
+ * boundaries; successful minimally usable Id/BattleType are restored; all
+ * other non-failure 201 shapes clear prior context fail-closed.
+ */
+const getReplayEntryBoundary = (
+  event: ApiEvent
+): ReplayEntryBoundary | undefined => {
+  const raw = event as {
+    ApiTypeId?: unknown
+    Code?: unknown
+    Id?: unknown
+    BattleType?: unknown
+  }
+  if (raw.ApiTypeId !== ApiType.EVT_ENTRY_QUEUED) return undefined
+  if (typeof raw.Code === 'number' && raw.Code !== 0) return undefined
+  if (
+    raw.Code === 0 &&
+    typeof raw.Id === 'string' &&
+    typeof raw.BattleType === 'number' &&
+    REPLAY_BATTLE_TYPES.has(raw.BattleType)
+  ) {
+    return {
+      id: raw.Id,
+      battleType: raw.BattleType as BattleType,
+    }
+  }
+  return {}
+}
+
 /** Shown in the popup and logged when the min-version gate stops cloud sync (#forced-update). */
 export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます'
 
@@ -1520,6 +1564,26 @@ export class AutoSyncService {
         }
       }
       const replayService = { session: replaySession }
+      type ReplaySessionSnapshot = {
+        id?: string
+        battleType?: BattleType
+        name?: string
+        players: Array<[number, { name: string, rank: string }]>
+      }
+      const captureReplaySession = (): ReplaySessionSnapshot => ({
+        id: replaySession.id,
+        battleType: replaySession.battleType,
+        name: replaySession.name,
+        players: [...replayPlayers.entries()].map(([userId, info]) => [userId, { ...info }]),
+      })
+      const applyReplaySession = (snapshot: ReplaySessionSnapshot): void => {
+        replaySession.reset()
+        replaySession.setId(snapshot.id)
+        replaySession.setBattleType(snapshot.battleType)
+        replaySession.setName(snapshot.name)
+        snapshot.players.forEach(([userId, info]) => replaySession.setPlayer(userId, info))
+      }
+      let pendingFriendSngSession: ReplaySessionSnapshot | undefined
 
       for await (const events of processInReplayChunks(
         this.db.apiEvents,
@@ -1538,16 +1602,44 @@ export class AutoSyncService {
 
         for (const event of events) {
           lastProcessedTimestamp = Math.max(lastProcessedTimestamp, event.timestamp || 0)
+          const entryBoundary = getReplayEntryBoundary(event)
+          const isEntry = entryBoundary !== undefined
+          const isSessionResult = event.ApiTypeId === ApiType.EVT_SESSION_RESULTS
+          const isEntryCancellation =
+            (event as { ApiTypeId?: number }).ApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID
+          if (isEntry) {
+            // A deal candidate from the previous entry must never be paired
+            // with a newly committed entry that has not dealt yet.
+            latestDealEvent = undefined
+            pendingFriendSngSession = undefined
+          } else if (
+            isSessionResult &&
+            replaySession.battleType === BattleType.FRIEND_SIT_AND_GO
+          ) {
+            // Default to terminal, but retain enough context to recover if a
+            // later seated deal proves the raw history was interleaved.
+            pendingFriendSngSession = captureReplaySession()
+            latestDealEvent = undefined
+          } else if (isEntryCancellation) {
+            pendingFriendSngSession = undefined
+            latestDealEvent = undefined
+          }
           const replayEventEndsSession =
-            (event as { ApiTypeId?: number }).ApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID ||
-            (
-              event.ApiTypeId === ApiType.EVT_SESSION_RESULTS &&
-              replaySession.battleType !== BattleType.FRIEND_SIT_AND_GO
-            )
+            isEntryCancellation || isSessionResult
           this.restoreSessionEvent(replayService, event)
           if (replayEventEndsSession) {
             replayEnded = true
-          } else if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
+          } else if (isEntry) {
+            replayEnded = false
+          }
+          if (
+            pendingFriendSngSession &&
+            replaySession.battleType === undefined &&
+            isApiEventType(event, ApiType.EVT_DEAL) &&
+            event.Player?.SeatIndex !== undefined
+          ) {
+            applyReplaySession(pendingFriendSngSession)
+            pendingFriendSngSession = undefined
             replayEnded = false
           }
           // 席着席時のみ latestDealEvent を更新する（findLatestPlayerDealEvent()
@@ -1636,14 +1728,14 @@ export class AutoSyncService {
         }
       }
 
-      if (canCommitReplay && !replayEnded) {
+      if (canCommitReplay && !replayEnded && latestDealEvent) {
         this.restoreLatestDeal(service, latestDealEvent)
       } else if (canCommitReplay) {
-        // The replay ended outside an active session (309/203). Keep the
-        // persisted hero identity/deal available for pre-game recovery, but
-        // do not pair that historical table with an empty automatic filter
-        // and broadcast "No Data" rows into the cleared HUD.
-        console.info('[AutoSync] Replay ended without an active session; skipping deal restore broadcast')
+        // An ended replay (309/203), or a newly queued final entry that has
+        // not dealt yet, has no deal belonging to the committed session.
+        // Preserve any pre-existing hero recovery context without pairing it
+        // with this replay session or broadcasting an old lineup.
+        console.info('[AutoSync] Replay has no active-session deal; skipping deal restore broadcast')
       } else if (service?.session) {
         console.info('[AutoSync] Preserving newer live session state instead of committing replay snapshot')
         // The rebuild replaced derived entities while live ingestion could
@@ -1686,16 +1778,17 @@ export class AutoSyncService {
   private restoreSessionEvent(service: any, event: ApiEvent): void {
     if (!service?.session) return
 
-    if (
-      event.ApiTypeId === ApiType.EVT_SESSION_RESULTS &&
-      service.session.battleType !== BattleType.FRIEND_SIT_AND_GO
-    ) {
+    if (event.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
       service.session.reset()
     } else if ((event as { ApiTypeId?: number }).ApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID) {
       service.session.reset()
-    } else if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
-      service.session.setId(event.Id)
-      service.session.setBattleType(event.BattleType)
+    } else if (getReplayEntryBoundary(event) !== undefined) {
+      const entry = getReplayEntryBoundary(event)!
+      service.session.reset()
+      if (entry.id !== undefined && entry.battleType !== undefined) {
+        service.session.setId(entry.id)
+        service.session.setBattleType(entry.battleType)
+      }
     } else if (isApiEventType(event, ApiType.EVT_SESSION_DETAILS)) {
       service.session.setName(event.Name)
     } else if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED)) {
@@ -1713,14 +1806,14 @@ export class AutoSyncService {
     }
   }
 
-  private restoreLatestDeal(service: any, latestDealEvent?: ApiEvent): void {
+  private restoreLatestDeal(service: any, latestDealEvent: ApiEvent): void {
     if (!service) return
 
     if (service.session?.id) {
       console.log(`[AutoSync] Restored session: ${service.session.id} - ${service.session.name || 'Unknown'}`)
     }
 
-    if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
+    if (isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
       // This setter also syncs service.liveEvtDeal (see poker-chase-service.ts),
       // so the statsOutputStream.write() below (and any earlier stale
       // spectator-mode liveEvtDeal from before this cloud-sync restore ran)

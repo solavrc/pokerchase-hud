@@ -141,6 +141,75 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(2)
   })
 
+  test('automatic mode with no active session serializes an explicit HUD clear', async () => {
+    let releaseOldCalculation!: () => void
+    let signalOldCalculationStarted!: () => void
+    const oldCalculationBlocked = new Promise<void>(resolve => {
+      releaseOldCalculation = resolve
+    })
+    const oldCalculationStarted = new Promise<void>(resolve => {
+      signalOldCalculationStarted = resolve
+    })
+    const oldStats = [{ playerId: PLAYER_ID, statResults: [] }] as PlayerStats[]
+    const calcSpy = jest.spyOn(service.statsOutputStream, 'calcStats')
+      .mockImplementationOnce(async () => {
+        signalOldCalculationStarted()
+        await oldCalculationBlocked
+        return oldStats
+      })
+    const emitted: PlayerStats[][] = []
+    service.statsOutputStream.on('data', stats => emitted.push(stats))
+
+    service.statsOutputStream.write(SEAT_USER_IDS)
+    await oldCalculationStarted
+
+    // This is the lobby transition from a previously displayed fallback:
+    // automatic mode intentionally has no effective category until 201.
+    service.autoBattleTypeFilter = true
+    const clear = service.statsOutputStream.recalculateStats()
+    // A later terminal boundary still has the same required final state and
+    // must not cancel the already queued explicit clear.
+    service.invalidateStatsOutputContext()
+    releaseOldCalculation()
+    await clear
+
+    expect(calcSpy).toHaveBeenCalledTimes(1)
+    expect(emitted).toEqual([[]])
+  })
+
+  test('a pre-end write queued but not yet started is suppressed by the session boundary', async () => {
+    let releaseFirstCalculation!: () => void
+    let signalFirstCalculationStarted!: () => void
+    const firstCalculationBlocked = new Promise<void>(resolve => {
+      releaseFirstCalculation = resolve
+    })
+    const firstCalculationStarted = new Promise<void>(resolve => {
+      signalFirstCalculationStarted = resolve
+    })
+    const staleStats = [{ playerId: PLAYER_ID, statResults: [] }] as PlayerStats[]
+    const calcSpy = jest.spyOn(service.statsOutputStream, 'calcStats')
+      .mockImplementationOnce(async () => {
+        signalFirstCalculationStarted()
+        await firstCalculationBlocked
+        return staleStats
+      })
+      .mockResolvedValueOnce(staleStats)
+    const emitted: PlayerStats[][] = []
+    service.statsOutputStream.on('data', stats => emitted.push(stats))
+
+    service.statsOutputStream.write(SEAT_USER_IDS)
+    await firstCalculationStarted
+    // This second pre-end write captures the old epoch now but cannot start
+    // until the first calculation releases.
+    service.statsOutputStream.write(SEAT_USER_IDS)
+    service.invalidateStatsOutputContext()
+    releaseFirstCalculation()
+    await service.statsOutputStream.whenIdle()
+
+    expect(calcSpy).toHaveBeenCalledTimes(1)
+    expect(emitted).toEqual([])
+  })
+
   test('automatic recalculation waits behind an in-flight stats transform', async () => {
     service.playerId = PLAYER_ID
     service.latestEvtDeal = {

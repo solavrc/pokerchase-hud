@@ -6,7 +6,12 @@
 import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { web_accessible_resources } from '../manifest.json'
-import { POKER_CHASE_SERVICE_EVENT, POKER_CHASE_ORIGIN, POKER_CHASE_SESSION_END_EVENT } from './constants/runtime'
+import {
+  POKER_CHASE_SERVICE_EVENT,
+  POKER_CHASE_ORIGIN,
+  POKER_CHASE_SESSION_END_EVENT,
+  POKER_CHASE_SESSION_END_SETTLED_MESSAGE,
+} from './constants/runtime'
 import { ApiType } from './types'
 import type { ApiEvent, PlayerStats } from './types'
 import App from './components/App'
@@ -75,6 +80,10 @@ const portManager = new RuntimePortManager({
   },
   onDisconnected: stopKeepalive,
   onMessage: message => {
+    if (message === POKER_CHASE_SESSION_END_SETTLED_MESSAGE) {
+      window.dispatchEvent(new CustomEvent(POKER_CHASE_SESSION_END_EVENT))
+      return
+    }
     if (typeof message === 'object' && message !== null && 'stats' in message) {
       const statsMessage = message as {
         stats: PlayerStats[]
@@ -173,8 +182,9 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
         stopKeepalive()
       }
       // App.tsx へセッション終了を通知（bustしたプレイヤーの薄暗い表示を含む、
-      // hero以外の全HUDパネルをクリアするため）。309はここで生イベントとして
-      // 既に観測済みなので、background往復の新チャネルを追加せずその場でdispatchする。
+      // hero以外の全HUDパネルをクリアするため）。まず生イベント到着時に
+      // 即時dispatchし、backgroundのdrain完了後にもsettlementを受けて
+      // 再dispatchする（永続化待ち中の旧stats broadcastを最終的に消す）。
       window.dispatchEvent(new CustomEvent(POKER_CHASE_SESSION_END_EVENT))
       break
 

@@ -64,6 +64,7 @@
  * isolation and is untouched by this change.
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
+import Dexie from 'dexie'
 import PokerChaseService, { PokerChaseDB } from '../app'
 import { ApiType } from '../types'
 import { registerEventIngestion } from './event-ingestion'
@@ -73,6 +74,7 @@ import * as ports from './ports'
 import { BattleType } from '../types/game'
 import type { ChromeMessage, MessageResponse } from '../types/messages'
 import type { Hand } from '../types/entities'
+import { POKER_CHASE_SESSION_END_SETTLED_MESSAGE } from '../constants/runtime'
 
 const HERO_ID = 1
 
@@ -143,6 +145,7 @@ describe('session end (309) invalidates background lastKnownStats', () => {
     disconnectHandlers = []
     mockPort = {
       name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      sender: { tab: { id: 1 } },
       onMessage: { addListener: jest.fn() },
       onDisconnect: { addListener: jest.fn((fn: () => void) => disconnectHandlers.push(fn)) },
       postMessage: jest.fn()
@@ -198,6 +201,132 @@ describe('session end (309) invalidates background lastKnownStats', () => {
 
     expect(setLastKnownStatsSpy).toHaveBeenCalledWith([])
     expect(getLastKnownStats()).toEqual([])
+  })
+
+  test('a pending pre-end stats calculation cannot repopulate the HUD after the 309 clear', async () => {
+    writeSpy.mockRestore()
+    service.session.setId('ending-session')
+    service.session.setBattleType(BattleType.SIT_AND_GO)
+    setLastKnownStats([{ playerId: 2, statResults: [] } as any])
+
+    let releaseCalculation!: () => void
+    let signalCalculationStarted!: () => void
+    const calculationBlocked = new Promise<void>(resolve => {
+      releaseCalculation = resolve
+    })
+    const calculationStarted = new Promise<void>(resolve => {
+      signalCalculationStarted = resolve
+    })
+    const staleStats = [{ playerId: 2, statResults: [] }] as any
+    jest.spyOn(service.statsOutputStream, 'calcStats')
+      .mockImplementationOnce(async () => {
+        signalCalculationStarted()
+        await Dexie.waitFor(calculationBlocked)
+        return staleStats
+      })
+    const emitted: any[] = []
+    service.statsOutputStream.on('data', stats => emitted.push(stats))
+
+    service.statsOutputStream.write([2])
+    await calculationStarted
+    const statsRevisionBeforeEnd = service.statsOutputContextRevision
+    // Leave Dexie's read-only transaction zone before starting the raw write;
+    // production WebSocket delivery arrives in its own task in the same way.
+    let ending!: Promise<void>
+    await new Promise<void>(resolve => {
+      setTimeout(() => {
+        ending = onMessageHandler(sessionResultsEvent)
+        resolve()
+      }, 0)
+    })
+    await waitUntil(
+      () => service.statsOutputContextRevision > statsRevisionBeforeEnd
+    )
+    releaseCalculation()
+    await ending
+
+    expect(emitted).toEqual([])
+    expect(getLastKnownStats()).toEqual([])
+    expect(service.session.id).toBeUndefined()
+  })
+
+  test('the final settlement clears a stale broadcast that wins before raw 309 classification', async () => {
+    writeSpy.mockRestore()
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 900,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'ending-session',
+      IsRetire: false,
+    })
+
+    let releaseSourceRestore!: () => void
+    const sourceRestoreBlocked = new Promise<void>(resolve => {
+      releaseSourceRestore = resolve
+    })
+    jest.spyOn(chrome.storage.session, 'get').mockImplementationOnce(async key => {
+      await sourceRestoreBlocked
+      return { [key as string]: 1 }
+    })
+
+    // Fresh registration models the next MV3 worker instance. Its first 309
+    // cannot be classified until session-source restoration settles.
+    registerEventIngestion(service)
+    const connectListener =
+      (chrome.runtime as any).onConnect.addListener.mock.calls[1][0]
+    const restartedPort = {
+      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      sender: { tab: { id: 1 } },
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn((fn: () => void) => disconnectHandlers.push(fn)) },
+      postMessage: jest.fn(),
+    }
+    connectListener(restartedPort)
+    const restartedHandler =
+      restartedPort.onMessage.addListener.mock.calls[0][0] as
+        (message: any) => Promise<void>
+
+    let releaseCalculation!: () => void
+    let signalCalculationStarted!: () => void
+    const calculationBlocked = new Promise<void>(resolve => {
+      releaseCalculation = resolve
+    })
+    const calculationStarted = new Promise<void>(resolve => {
+      signalCalculationStarted = resolve
+    })
+    const staleStats = [{ playerId: 2, statResults: [] }] as any
+    jest.spyOn(service.statsOutputStream, 'calcStats')
+      .mockImplementationOnce(async () => {
+        signalCalculationStarted()
+        await Dexie.waitFor(calculationBlocked)
+        return staleStats
+      })
+    const emitted: any[] = []
+    service.statsOutputStream.on('data', stats => emitted.push(stats))
+
+    service.statsOutputStream.write([2])
+    await calculationStarted
+    let ending!: Promise<void>
+    await new Promise<void>(resolve => {
+      setTimeout(() => {
+        ending = restartedHandler(sessionResultsEvent)
+        resolve()
+      }, 0)
+    })
+
+    // The old calculation wins during source restoration, after the content
+    // script's immediate raw-309 clear but before background invalidation.
+    releaseCalculation()
+    await waitUntil(() => emitted.length === 1)
+    expect(emitted).toEqual([staleStats])
+
+    releaseSourceRestore()
+    await ending
+
+    expect(getLastKnownStats()).toEqual([])
+    expect(restartedPort.postMessage.mock.calls.at(-1)?.[0])
+      .toBe(POKER_CHASE_SESSION_END_SETTLED_MESSAGE)
   })
 
   test('raw EVT_SESSION_RESULTS clears the current auto-selected session category', async () => {

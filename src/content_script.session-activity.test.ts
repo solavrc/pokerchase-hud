@@ -28,7 +28,11 @@
  * entry -- and the keepalive it armed -- is moot.
  */
 import { ApiType } from './types'
-import { POKER_CHASE_ORIGIN } from './constants/runtime'
+import {
+  POKER_CHASE_ORIGIN,
+  POKER_CHASE_SESSION_END_EVENT,
+  POKER_CHASE_SESSION_END_SETTLED_MESSAGE,
+} from './constants/runtime'
 
 const KEEPALIVE_INTERVAL_MS = 25000
 
@@ -113,6 +117,20 @@ describe('content_script keepalive (session-activity triggers)', () => {
     jest.advanceTimersByTime(KEEPALIVE_INTERVAL_MS * 2)
 
     expect(mockPort.postMessage).not.toHaveBeenCalled()
+  })
+
+  test('background settlement re-dispatches the hero-preserving session-end event', () => {
+    const settled = jest.fn()
+    window.addEventListener(POKER_CHASE_SESSION_END_EVENT, settled)
+    try {
+      const backgroundMessageHandler =
+        mockPort.onMessage.addListener.mock.calls[0][0]
+      backgroundMessageHandler(POKER_CHASE_SESSION_END_SETTLED_MESSAGE)
+
+      expect(settled).toHaveBeenCalledTimes(1)
+    } finally {
+      window.removeEventListener(POKER_CHASE_SESSION_END_EVENT, settled)
+    }
   })
 
   test('ApiTypeId 203 (参加取消申込, entry cancellation) stops keepalive when no hand ever started (P2, codex review 2026-07-20 pass-3)', () => {

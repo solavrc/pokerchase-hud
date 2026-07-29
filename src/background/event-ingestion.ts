@@ -10,11 +10,17 @@ import PokerChaseService, {
   isApplicationApiEvent
 } from '../app'
 import { autoSyncService } from '../services/auto-sync-service'
-import { connectedPorts, startPortPing, setLastKnownStats } from './ports'
+import {
+  broadcastMessage,
+  connectedPorts,
+  startPortPing,
+  setLastKnownStats,
+} from './ports'
 import { recordUndecodedEvent } from './undecoded-event-tracker'
 import { markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
 import { getOperationState } from './operation-state'
+import { POKER_CHASE_SESSION_END_SETTLED_MESSAGE } from '../constants/runtime'
 
 /**
  * 参加取消申込（ApiTypeId 203）。`ApiType` enum（アプリケーションで使用する
@@ -48,35 +54,49 @@ type DurableProcessingResult = {
   forwarding?: Promise<void>
 }
 
-const shouldPreserveFriendSngSession = (
-  service: PokerChaseService,
-  rawApiTypeId: unknown
-): boolean =>
-  rawApiTypeId === ApiType.EVT_SESSION_RESULTS &&
-  service.session.battleType === BattleType.FRIEND_SIT_AND_GO
+type SessionBoundaryState = {
+  rawSessionSourceTabId?: number
+  sourceRestore: Promise<void>
+}
 
-const clearEndedSession = async (
-  service: PokerChaseService,
-  rawApiTypeId: unknown
-): Promise<void> => {
-  // Friend SNG captures can interleave a 309 from another table/session and
-  // then continue dealing without another 201. Since 309 has no source/session
-  // identity, it cannot safely erase the only category context. Conservatively
-  // keep the session and forced-update activity active until a stronger
-  // boundary (a later 201/203 or worker restart) is observed.
-  if (shouldPreserveFriendSngSession(service, rawApiTypeId)) {
-    markSessionActive()
-    return
-  }
+type RawEntryRecovery = {
+  id?: string
+  battleType?: BattleType
+}
 
+const SESSION_SOURCE_TAB_STORAGE_KEY = 'pokerChaseActiveSessionSourceTabId'
+
+const KNOWN_BATTLE_TYPES = new Set<number>([
+  BattleType.SIT_AND_GO,
+  BattleType.TOURNAMENT,
+  BattleType.FRIEND_SIT_AND_GO,
+  BattleType.RING_GAME,
+  BattleType.FRIEND_RING_GAME,
+  BattleType.CLUB_MATCH,
+])
+
+const applySessionContext = (
+  service: PokerChaseService,
+  context?: RawEntryRecovery
+): void => {
   const previousAutoFilter = service.getEffectiveBattleTypeFilter()?.join(',')
   service.resetSession()
+  if (context?.id !== undefined && context.battleType !== undefined) {
+    service.session.setId(context.id)
+    service.session.setBattleType(context.battleType)
+  }
   if (
     service.autoBattleTypeFilter &&
     previousAutoFilter !== service.getEffectiveBattleTypeFilter()?.join(',')
   ) {
     service.autoBattleTypeFilterRevision++
   }
+}
+
+const clearEndedSession = async (
+  service: PokerChaseService
+): Promise<void> => {
+  applySessionContext(service)
   // resetSession() normally persists on a 500 ms debounce. A pending update
   // may reload the worker as soon as ingestion drains, so make the cleared
   // snapshot part of that drain barrier.
@@ -98,7 +118,10 @@ const isSessionEndSignal = (rawApiTypeId: unknown): boolean =>
 const enqueueApplicationForwarding = (
   service: PokerChaseService,
   rawApiTypeId: unknown,
-  data?: ReturnType<typeof parseApiEvent>
+  foreignSessionEnd: boolean,
+  resetReboundSession: boolean,
+  data?: ReturnType<typeof parseApiEvent>,
+  rawEntryRecovery?: RawEntryRecovery
 ): Promise<void> => {
   const forwarding = applicationForwardingQueue.then(async () => {
     // Local deletion must not wait for a startup filter gate merely to discard
@@ -112,11 +135,43 @@ const enqueueApplicationForwarding = (
     // ownershipを持つ間は派生streamを破棄する（raw行も削除対象なので再送不要）。
     if (getOperationState().type === 'delete') return
 
-    // raw段階で終了状態を即座に反映した後も、先行して待っていた201/303が
-    // filtersRestored後にsessionを復元し得る。309自身の順番でもう一度resetし、
-    // application queueの最終状態も到着順に一致させる。
+    if (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED && rawEntryRecovery) {
+      applySessionContext(service, rawEntryRecovery)
+    }
+    if (resetReboundSession) {
+      // A new source began play without a captured 201, so its game type is
+      // unknowable. Repeat the raw fail-closed reset in application order,
+      // after older source events, durably persist it, then publish an empty
+      // HUD state before forwarding any event from the new source.
+      await clearEndedSession(service)
+      setLastKnownStats([])
+      await service.statsOutputStream.clearStats()
+    }
+
+    // A different tab/source is direct evidence that this boundary does not
+    // end the session installed by the current source. Keep it in the Raw
+    // Lake, but do not let it clear or enter the live application streams.
+    if (foreignSessionEnd) return
+
+    // The raw queue can advance while older application transforms are still
+    // calculating. Drain those transforms before publishing the terminal
+    // clear so no pre-end result can repopulate lastKnownStats/the HUD after
+    // the content script observes this boundary.
     if (isSessionEndSignal(rawApiTypeId)) {
-      await clearEndedSession(service, rawApiTypeId)
+      await Promise.all([
+        service.handLogStream.whenIdle(),
+        service.handAggregateStream.whenIdle(),
+        service.realTimeStatsStream.whenIdle(),
+      ])
+      await service.writeEntityStream.whenIdle()
+      await service.statsOutputStream.whenIdle()
+      if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+        setLastKnownStats([])
+      }
+      await clearEndedSession(service)
+      if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+        broadcastMessage(POKER_CHASE_SESSION_END_SETTLED_MESSAGE)
+      }
     }
 
     if (!data || !isApplicationApiEvent(data)) return
@@ -204,6 +259,20 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   ingestionQueue = Promise.resolve()
   applicationForwardingQueue = Promise.resolve()
   ingestionDrainQueue = Promise.resolve()
+  const sessionBoundaryState = {
+    rawSessionSourceTabId: undefined,
+  } as SessionBoundaryState
+  sessionBoundaryState.sourceRestore = chrome.storage.session
+    .get(SESSION_SOURCE_TAB_STORAGE_KEY)
+    .then(result => {
+      const restored = result[SESSION_SOURCE_TAB_STORAGE_KEY]
+      if (typeof restored === 'number') {
+        sessionBoundaryState.rawSessionSourceTabId = restored
+      }
+    })
+    .catch(error => {
+      console.error('[background] Failed to restore active session source:', error)
+    })
   setIngestionDrainProvider(() => ingestionDrainQueue)
 
   chrome.runtime.onConnect.addListener(port => {
@@ -229,7 +298,10 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // Raw Event Lakeへの保存とraw-first副作用だけを直列化する。フィルター
         // 復元待ちを含むアプリケーションstream転送はprocessEvent()が別キューへ
         // 積むため、cold start中でも後続イベントは各自のraw mergeまで進める。
-        const durableTask = ingestionQueue.then(() => processEvent(service, message))
+        const sourceTabId = port.sender?.tab?.id
+        const durableTask = ingestionQueue.then(() =>
+          processEvent(service, message, sessionBoundaryState, sourceTabId)
+        )
         ingestionQueue = durableTask.then(() => undefined).catch(err => {
           console.error('[background] Unhandled ingestion queue error (fail-safe, queue continues):', err)
         })
@@ -301,12 +373,22 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
  * 始まっているのに（201/303/308の生書き込みがたまたま失敗しただけで）
  * reloadが「安全」と誤判定されうる。
  */
-const applySessionActivity = (rawApiTypeId: unknown, message: ApiMessage | { type: string }, activeOnly = false): void => {
-  if (!activeOnly && (rawApiTypeId === ApiType.EVT_SESSION_RESULTS || rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID)) {
+const applySessionActivity = (
+  rawApiTypeId: unknown,
+  message: ApiMessage | { type: string },
+  activeOnly = false,
+  preserveActiveSession = false,
+  isEntryBoundary = rawApiTypeId === ApiType.EVT_ENTRY_QUEUED
+): void => {
+  if (
+    !activeOnly &&
+    !preserveActiveSession &&
+    (rawApiTypeId === ApiType.EVT_SESSION_RESULTS || rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID)
+  ) {
     markSessionInactive()
     return
   }
-  if (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED || rawApiTypeId === ApiType.EVT_SESSION_DETAILS) {
+  if (isEntryBoundary || rawApiTypeId === ApiType.EVT_SESSION_DETAILS) {
     markSessionActive()
     return
   }
@@ -326,11 +408,13 @@ const applySessionActivity = (rawApiTypeId: unknown, message: ApiMessage | { typ
  */
 const processEvent = async (
   service: PokerChaseService,
-  message: ApiMessage | { type: string }
+  message: ApiMessage | { type: string },
+  boundaryState: SessionBoundaryState,
+  sourceTabId: number | undefined
 ): Promise<DurableProcessingResult | undefined> => {
   // Ensure service is ready before processing messages
   try {
-    await service.ready
+    await Promise.all([service.ready, boundaryState.sourceRestore])
   } catch (err) {
     console.error('[background] Service not ready:', err)
     return
@@ -338,6 +422,14 @@ const processEvent = async (
 
   const rawApiTypeId = (message as { ApiTypeId?: unknown }).ApiTypeId
   const rawTimestamp = (message as { timestamp?: unknown }).timestamp
+  const rawEntryCode = (message as { Code?: unknown }).Code
+  const isExplicitEntryFailure =
+    rawApiTypeId === ApiType.EVT_ENTRY_QUEUED &&
+    typeof rawEntryCode === 'number' &&
+    rawEntryCode !== 0
+  const isEntryBoundary =
+    rawApiTypeId === ApiType.EVT_ENTRY_QUEUED &&
+    !isExplicitEntryFailure
 
   // Raw Event Lake（docs/architecture.md参照）: timestamp/ApiTypeIdが数値である
   // 限り、Zodパースの成否・アプリケーションイベントか否かに関わらず生のまま
@@ -370,7 +462,7 @@ const processEvent = async (
           console.error('[background] Failed to record dropped-event stats:', recordErr)
         )
       }
-      applySessionActivity(rawApiTypeId, message, true)
+      applySessionActivity(rawApiTypeId, message, true, false, isEntryBoundary)
       return
     }
   } else {
@@ -389,62 +481,71 @@ const processEvent = async (
   // parseApiEvent()がnullを返すようになっても、セッション状態が永久に
   // 誤った値のまま詰まらないようにするため（codexレビュー指摘）。
   // 詳細は`applySessionActivity`のコメント参照。
-  applySessionActivity(rawApiTypeId, message)
+  const isSeatedDeal =
+    rawApiTypeId === ApiType.EVT_DEAL &&
+    (message as { Player?: unknown }).Player != null
+  const isSessionSourceSignal =
+    isEntryBoundary ||
+    rawApiTypeId === ApiType.EVT_SESSION_DETAILS ||
+    isSeatedDeal
+  const previousSessionSourceTabId =
+    boundaryState.rawSessionSourceTabId
+  const sourceReboundWithoutEntry =
+    !isEntryBoundary &&
+    isSessionSourceSignal &&
+    previousSessionSourceTabId !== undefined &&
+    sourceTabId !== undefined &&
+    previousSessionSourceTabId !== sourceTabId
+  if (
+    isSessionSourceSignal &&
+    boundaryState.rawSessionSourceTabId !== sourceTabId
+  ) {
+    // 201 can be absent in valid captures. A seated 303 or session-details
+    // 308 from a new tab is direct evidence that the only active login moved,
+    // so rebind ownership before classifying that tab's eventual 309.
+    boundaryState.rawSessionSourceTabId = sourceTabId
+    try {
+      if (sourceTabId === undefined) {
+        await chrome.storage.session.remove(SESSION_SOURCE_TAB_STORAGE_KEY)
+      } else {
+        await chrome.storage.session.set({
+          [SESSION_SOURCE_TAB_STORAGE_KEY]: sourceTabId,
+        })
+      }
+    } catch (error) {
+      console.error('[background] Failed to persist active session source:', error)
+    }
+  }
+  if (sourceReboundWithoutEntry) {
+    applySessionContext(service)
+    service.invalidateStatsOutputContext()
+  }
+  const foreignSessionEnd =
+    isSessionEndSignal(rawApiTypeId) &&
+    boundaryState.rawSessionSourceTabId !== undefined &&
+    sourceTabId !== undefined &&
+    boundaryState.rawSessionSourceTabId !== sourceTabId
+  applySessionActivity(
+    rawApiTypeId,
+    message,
+    false,
+    foreignSessionEnd,
+    isEntryBoundary
+  )
 
-  if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
-    // #179 round3指摘: セッション終了(EVT_SESSION_RESULTS)によるHUDクリアは
-    // App.tsx側のReact stateだけで完結しており、background(ports.ts)の
-    // `lastKnownStats`はセッションをまたいで残り続ける。この状態で
-    // Popupのバトルタイプフィルターが変更されると、message-router.tsの
-    // `updateBattleTypeFilter`ハンドラーが`getLastKnownStats()`（終了済み
-    // lineupのまま）を使って`service.statsOutputStream.write(...)`を
-    // 再トリガーし、ブロードキャストで終了済みlineupが復活してApp.tsxの
-    // クリア済みパネルへ再度流し込まれてしまう。上と同じ「パース成功後の
-    // data.ApiTypeIdではなく生メッセージの数値ApiTypeIdだけを見る」
-    // raw-firstパターンで（309のペイロード破壊的変更に影響されないよう）
-    // ここでlastKnownStatsを空にしておけば、以降のフィルター変更は
-    // `lastKnownStats.length > 0`のガードに引っかからずセッション開始前と
-    // 同じ「何もブロードキャストしない」挙動になる。プリゲーム・ヒーロー
-    // スタッツの復元（#158, `requestLatestStats`→`getLatestSessionStats`）
-    // はDBを読む別経路でありlastKnownStatsを参照しないため、この変更の
-    // 影響を受けない。
-    //
-    // post-merge reviewでは一時ここにhero単独lineupを合成する修正
-    // （round4/round5）や、App.tsx側にセッション状態・ヒーロー身元の
-    // 検証機構を足す修正（round6の「相互作用マトリクス」設計）を
-    // 積んだが、いずれもオーナー判断で撤回されている（PR #191,
-    // 2026-07-20, sola「それほど重要な機能ではないので、bで十分です」）。
-    // 理由: `service.setBattleTypeFilter()`は内部で無条件に
-    // `ReadEntityStream.recalculateStats()`を呼び、`lastKnownStats`の
-    // 中身に関係なく`service.latestEvtDeal.SeatUserIds`（ヒーローの
-    // 直近の実在席時点のフルの顔ぶれ。セッション終了後もクリアされ
-    // ない）を再計算・再ブロードキャストしてしまう。つまりこのファイル
-    // 側で`lastKnownStats`をどう作っても、その再ブロードキャストは
-    // 止められない別経路であり、追いかけるだけ複雑化する一方だった。
-    //
-    // 採用した方針（保守的な縮小スコープ）: bust後のミュート表示・
-    // hero身元の保持は「連続したライブシーケンス内」でのみ保証する
-    // （#158のセッション終了時hero保持は例外的にApp.tsx側で維持）。
-    // セッション終了後にフィルターを変更すると、`recalculateStats()`
-    // がヒーロー在籍時点の最後の実テーブル（対戦相手を含む）を新
-    // フィルターで再表示することがあるが、これは「不正確なデータ」
-    // ではなく「文脈的に古い可能性のある正確なデータ」であり、この
-    // 機能の重要度に見合わないため許容する。ここは元のround3の
-    // 意図通り単純な`[]`のままにする -- `updateBattleTypeFilter`の
-    // 明示的な`getLastKnownStats()`ベースの再write()を単にno-opに
-    // するだけで、他には何もしない。
-    //
-    // なお#188（read-entity-stream.tsのrecalculateStats()を呼ぶ
-    // message-router.tsのupdateBattleTypeFilterハンドラー自身）で、
-    // このwrite()と`recalculateStats()`の競合（観戦中のlineupが
-    // ヒーロー在籍dealのevtDealとペアリングされてしまうケース）に
-    // 対する`lineup-identity`ガードが別途入っており、この単純な
-    // `[]`のままでも競合は起きない。
-    //
-    // 203(参加取消申込)はここに含めない: 303/308が一度も届いていない
-    // （ハンドが一度も始まっていない）ため、そもそもクリアすべき
-    // ライブlineupが存在しない。
-    setLastKnownStats([])
+  if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS && !foreignSessionEnd) {
+    // Invalidate before the independently advancing application queue waits:
+    // any older stats transform that has not pushed yet must not repopulate
+    // the HUD after the raw session-end clear.
+    service.invalidateStatsOutputContext()
+  }
+  if (isSessionEndSignal(rawApiTypeId) && !foreignSessionEnd) {
+    boundaryState.rawSessionSourceTabId = undefined
+    try {
+      await chrome.storage.session.remove(SESSION_SOURCE_TAB_STORAGE_KEY)
+    } catch (error) {
+      console.error('[background] Failed to clear active session source:', error)
+    }
   }
 
   // Auto-sync起動・保留中アップデートの安全性再チェックも、上のセッション状態
@@ -508,7 +609,7 @@ const processEvent = async (
     recheckPendingUpdate().catch(err =>
       console.error('[background] Pending update recheck on entry cancellation failed:', err)
     )
-  } else if (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED || rawApiTypeId === ApiType.EVT_SESSION_DETAILS) {
+  } else if (isEntryBoundary || rawApiTypeId === ApiType.EVT_SESSION_DETAILS) {
     // フォールバックトリガー（docs/postmortems/2026-07-session-results-drop.md
     // 再発防止#3): 309単一トリガーのSPOF対策。新セッション開始時点は
     // 進行中ハンドが存在しない安全なタイミングなので、ここでも同じ閾値判定
@@ -522,6 +623,11 @@ const processEvent = async (
   // 通常のAPIメッセージ処理
   // Zodスキーマでパース（passthrough: 未知プロパティは保持）
   const data = parseApiEvent(message as ApiMessage)
+
+  // An explicit failed entry response is durable diagnostic data, not a
+  // session boundary. It must not replace the current owner/category or
+  // enter application streams even if a future schema accepts its shape.
+  if (isExplicitEntryFailure) return
 
   if (!data) {
     // パース失敗 = 必須プロパティ欠損など破壊的変更の可能性。生ログは上で
@@ -541,7 +647,47 @@ const processEvent = async (
       )
     }
     if (isSessionEndSignal(rawApiTypeId)) {
-      return { forwarding: enqueueApplicationForwarding(service, rawApiTypeId) }
+      return {
+        forwarding: enqueueApplicationForwarding(
+          service,
+          rawApiTypeId,
+          foreignSessionEnd,
+          false
+        )
+      }
+    }
+    if (isEntryBoundary) {
+      const raw = message as { Id?: unknown, BattleType?: unknown, Code?: unknown }
+      const rawEntryRecovery: RawEntryRecovery = {
+        id: raw.Code === 0 && typeof raw.Id === 'string'
+          ? raw.Id
+          : undefined,
+        battleType: raw.Code === 0 &&
+          typeof raw.BattleType === 'number' &&
+          KNOWN_BATTLE_TYPES.has(raw.BattleType)
+          ? raw.BattleType as BattleType
+          : undefined,
+      }
+      return {
+        forwarding: enqueueApplicationForwarding(
+          service,
+          rawApiTypeId,
+          false,
+          false,
+          undefined,
+          rawEntryRecovery
+        )
+      }
+    }
+    if (sourceReboundWithoutEntry) {
+      return {
+        forwarding: enqueueApplicationForwarding(
+          service,
+          rawApiTypeId,
+          false,
+          true
+        )
+      }
     }
     return
   }
@@ -552,7 +698,14 @@ const processEvent = async (
     // 内容は記録（生ログとしては上で既に保存済み）
     console.info(`[background] Non-application event (${data.ApiTypeId}): ${JSON.stringify(data)}`)
     if (isSessionEndSignal(rawApiTypeId)) {
-      return { forwarding: enqueueApplicationForwarding(service, rawApiTypeId) }
+      return {
+        forwarding: enqueueApplicationForwarding(
+          service,
+          rawApiTypeId,
+          foreignSessionEnd,
+          false
+        )
+      }
     }
     return
   }
@@ -561,5 +714,13 @@ const processEvent = async (
   // raw ingestionQueueを保持しないため、後続イベントは先にRaw Lakeへ永続化できる。
   // applicationForwardingQueueはraw側での到着順に積まれるので、復元後のstream順序は
   // これまで通り保たれる。
-  return { forwarding: enqueueApplicationForwarding(service, rawApiTypeId, data) }
+  return {
+    forwarding: enqueueApplicationForwarding(
+      service,
+      rawApiTypeId,
+      foreignSessionEnd,
+      sourceReboundWithoutEntry,
+      data
+    )
+  }
 }
