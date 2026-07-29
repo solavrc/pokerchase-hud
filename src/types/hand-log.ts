@@ -56,6 +56,15 @@ export interface HandLogConfig {
   showTimestamps: boolean    // Show timestamps in log
 }
 
+export interface KeyboardShortcut {
+  code: string
+  key: string
+  ctrl: boolean
+  alt: boolean
+  shift: boolean
+  meta: boolean
+}
+
 /**
  * Global UI configuration for HUD and Log display
  */
@@ -83,6 +92,11 @@ export interface UIConfig {
    * key resolves to `true`, not `undefined`.
    */
   hudColorCoding?: boolean
+  /**
+   * HUD + hand logの表示/非表示を切り替える、ユーザー指定ショートカット。
+   * nullはユーザーが明示的に解除した状態（undefinedは旧設定からの移行対象）。
+   */
+  toggleShortcut?: KeyboardShortcut | null
 }
 
 /**
@@ -117,5 +131,14 @@ export const DEFAULT_UI_CONFIG: UIConfig = {
   displayEnabled: true,   // UI is visible by default
   scale: 1.0,             // Normal size
   hudDisplayMode: 'compact', // Compact classic-HUD line by default (#143)
-  hudColorCoding: true    // Threshold-based value coloring on by default (#143)
+  hudColorCoding: true,   // Threshold-based value coloring on by default (#143)
+  // PokerChase既定（C/B/R/Q/Space/2〜5/矢印）とChrome標準の双方を避ける。
+  toggleShortcut: {
+    code: 'KeyH',
+    key: 'h',
+    ctrl: false,
+    alt: false,
+    shift: true,
+    meta: false,
+  },
 }
