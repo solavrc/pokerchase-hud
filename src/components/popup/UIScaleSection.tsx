@@ -77,7 +77,9 @@ export const UIScaleSection = ({
         pendingScaleRef.current = scale
       }
       setUIConfig(reconciledConfig)
-      broadcastUIConfig(reconciledConfig)
+      // The trusted background broadcasts this saved scale to game tabs.
+      // Keeping delivery there lets it finish even if the action popup closes
+      // immediately after dispatching the write.
     })
   }
 

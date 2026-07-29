@@ -151,6 +151,27 @@ describe('App', () => {
     })
   })
 
+  it('backgroundの端末scale通知は他のUI設定を保持して反映する', async () => {
+    render(<App />)
+    await waitFor(() => {
+      expect(screen.getByTestId('hud-0')).toBeInTheDocument()
+      expect(chrome.runtime.onMessage.addListener).toHaveBeenCalled()
+    })
+    const messageHandler = (chrome.runtime.onMessage.addListener as jest.Mock).mock.calls[0][0]
+
+    act(() => {
+      messageHandler({
+        action: 'updateDeviceUIScale',
+        scale: 1.7,
+      })
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('Scale: 1.7')
+      expect(screen.getByTestId('hand-log')).toHaveTextContent('Scale: 1.7')
+    })
+  })
+
   it('uiConfig.displayEnabledがfalseの場合、何も表示されない', async () => {
     (global.chrome.storage.sync.get as jest.Mock).mockImplementation((_, callback) => {
       callback({
