@@ -99,26 +99,48 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(realTimeSpy).not.toHaveBeenCalled()
     expect(captureSchemaValidationFailure).toHaveBeenCalledWith(
       ApiType.EVT_DEAL,
-      expect.arrayContaining([
-        expect.objectContaining({
-          path: expect.any(String),
-          code: expect.any(String)
-        })
-      ])
+      expect.objectContaining({
+        issues: expect.arrayContaining([
+          expect.objectContaining({
+            path: expect.any(String),
+            code: expect.any(String),
+            actualType: expect.any(String)
+          })
+        ]),
+        payloadShape: expect.arrayContaining([
+          '$: object',
+          'ApiTypeId: integer',
+          'timestamp: integer'
+        ]),
+        sanitizedPayload: brokenDealEvent
+      })
     )
     const telemetryArgs = jest.mocked(captureSchemaValidationFailure).mock.calls[0]
     expect(telemetryArgs).toHaveLength(2)
     expect(telemetryArgs?.[1]).toEqual(
+      expect.objectContaining({
+        issues: expect.arrayContaining([
+          expect.objectContaining({
+            path: expect.any(String),
+            code: expect.any(String),
+            actualType: expect.any(String)
+          })
+        ]),
+        payloadShape: expect.any(Array),
+        sanitizedPayload: brokenDealEvent,
+        shapeTruncated: expect.any(Boolean),
+        payloadTruncated: expect.any(Boolean)
+      })
+    )
+    expect(telemetryArgs?.[1].issues).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           path: expect.any(String),
-          code: expect.any(String)
+          code: expect.any(String),
+          actualType: expect.any(String)
         })
       ])
     )
-    expect(telemetryArgs?.[1].every(issue =>
-      Object.keys(issue).sort().join(',') === 'code,path'
-    )).toBe(true)
   })
 
   test('a known non-application event (202 keepalive/ack) is stored raw but NOT forwarded to streams', async () => {

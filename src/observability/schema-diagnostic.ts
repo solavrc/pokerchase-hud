@@ -1,0 +1,343 @@
+export interface SchemaIssueLike {
+  path: readonly PropertyKey[]
+  code: string
+  expected?: unknown
+}
+
+export interface SchemaValidationIssue {
+  path: string
+  code: string
+  expected?: string
+  actualType: string
+}
+
+export interface SchemaDiagnostic {
+  issues: SchemaValidationIssue[]
+  payloadShape: string[]
+  sanitizedPayload: unknown
+  shapeTruncated: boolean
+  payloadTruncated: boolean
+}
+
+const MAX_DEPTH = 6
+const MAX_SHAPE_ENTRIES = 100
+const MAX_OBJECT_KEYS = 40
+const MAX_ARRAY_SAMPLES = 3
+const MAX_PAYLOAD_DEPTH = 10
+const MAX_PAYLOAD_NODES = 2000
+const MAX_PAYLOAD_OBJECT_KEYS = 80
+const MAX_PAYLOAD_ARRAY_ENTRIES = 50
+const MAX_PAYLOAD_STRING_LENGTH = 2000
+const SAFE_SCHEMA_KEY = /^[A-Za-z][A-Za-z0-9_]{0,63}$/
+const DYNAMIC_KEY_CONTAINERS = new Set(['Class'])
+const USER_IDENTIFIER_KEY =
+  /(?:user|friend|player|account|member|owner|device)[A-Za-z0-9_]*Ids?$/i
+const USER_NAME_KEY =
+  /(?:user|friend|player|display|nick)[A-Za-z0-9_]*Names?$/i
+const SECRET_KEY =
+  /(?:token|secret|password|authorization|cookie|sessionId|email|ipAddress|accessKey|phone|address)/i
+const FREE_TEXT_KEY =
+  /^(?:body|chat|comment|content|description|handLog|message|messages|ms|text)$/i
+
+const jsonType = (value: unknown): string => {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'array'
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return 'number(non-finite)'
+    return Number.isInteger(value) ? 'integer' : 'number'
+  }
+  return typeof value
+}
+
+const safeSchemaKey = (
+  key: PropertyKey,
+  parentKey?: string
+): string => {
+  if (parentKey && DYNAMIC_KEY_CONTAINERS.has(parentKey)) {
+    return '[dynamic-key]'
+  }
+  if (typeof key !== 'string' || !SAFE_SCHEMA_KEY.test(key)) {
+    return '[dynamic-key]'
+  }
+  return key
+}
+
+const appendPath = (base: string, key: string): string => {
+  if (key === '[]') return `${base}[]`
+  return base === '$' ? key : `${base}.${key}`
+}
+
+const formatIssuePath = (path: readonly PropertyKey[]): string => {
+  if (path.length === 0) return '$'
+
+  let result = ''
+  for (const part of path) {
+    if (typeof part === 'number') {
+      result = `${result}[]`
+      continue
+    }
+    const key = safeSchemaKey(part)
+    result = result ? `${result}.${key}` : key
+  }
+  return result
+}
+
+const valueAtPath = (
+  payload: unknown,
+  path: readonly PropertyKey[]
+): unknown => {
+  let current = payload
+  for (const part of path) {
+    if (
+      current === null ||
+      (typeof current !== 'object' && typeof current !== 'function')
+    ) {
+      return undefined
+    }
+    current = (current as Record<PropertyKey, unknown>)[part]
+  }
+  return current
+}
+
+const sanitizeStringValue = (value: string): string => {
+  const sanitized = value
+    .replace(
+      /(https?:\/\/[^\s?#"'<>]+)(?:[?#][^\s"'<>]*)?/gi,
+      '$1?[redacted]'
+    )
+    .replace(
+      /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi,
+      '[redacted-email]'
+    )
+    .replace(
+      /\bBearer\s+[A-Z0-9._~+/=-]+\b/gi,
+      'Bearer [redacted]'
+    )
+    .replace(
+      /\beyJ[A-Z0-9_-]+\.[A-Z0-9_-]+\.[A-Z0-9_-]+\b/gi,
+      '[redacted-token]'
+    )
+
+  return sanitized.length > MAX_PAYLOAD_STRING_LENGTH
+    ? `${sanitized.slice(0, MAX_PAYLOAD_STRING_LENGTH)}…`
+    : sanitized
+}
+
+/**
+ * Keep poker semantics while removing direct identifiers before Sentry sees
+ * the event. Aliases are stable within one event so relationships such as
+ * SeatUserIds -> Results[].UserId remain inspectable.
+ */
+const buildSanitizedPayload = (
+  payload: unknown
+): { value: unknown, truncated: boolean } => {
+  const userAliases = new Map<string, string>()
+  const nameAliases = new Map<string, string>()
+  let nodeCount = 0
+  let truncated = false
+
+  const alias = (
+    value: unknown,
+    aliases: Map<string, string>,
+    prefix: string
+  ): unknown => {
+    // Negative/zero values are protocol sentinels (for example an empty seat),
+    // not PokerChase account identifiers.
+    if (typeof value === 'number' && value <= 0) return value
+    if (value === null || value === undefined) return value
+
+    const key = `${typeof value}:${String(value)}`
+    const existing = aliases.get(key)
+    if (existing) return existing
+    const next = `${prefix}#${aliases.size + 1}`
+    aliases.set(key, next)
+    return next
+  }
+
+  const visit = (
+    value: unknown,
+    depth: number,
+    rawKey?: string,
+    parentKey?: string
+  ): unknown => {
+    nodeCount += 1
+    if (nodeCount > MAX_PAYLOAD_NODES) {
+      truncated = true
+      return '[truncated]'
+    }
+    if (depth > MAX_PAYLOAD_DEPTH) {
+      truncated = true
+      return '[truncated]'
+    }
+
+    const isCompactUserId =
+      (rawKey === 'Id' && parentKey === 'Us') ||
+      rawKey === 'Uid' ||
+      rawKey === 'UID'
+    const isCompactUserName =
+      rawKey === 'Na' && parentKey === 'Us'
+    const isUserIdentifier =
+      Boolean(rawKey && USER_IDENTIFIER_KEY.test(rawKey)) ||
+      isCompactUserId
+    const isUserName =
+      Boolean(rawKey && USER_NAME_KEY.test(rawKey)) ||
+      isCompactUserName
+
+    if (isUserIdentifier) {
+      if (Array.isArray(value)) {
+        if (value.length > MAX_PAYLOAD_ARRAY_ENTRIES) truncated = true
+        return value
+          .slice(0, MAX_PAYLOAD_ARRAY_ENTRIES)
+          .map(item => alias(item, userAliases, 'user'))
+      }
+      return alias(value, userAliases, 'user')
+    }
+
+    if (isUserName) {
+      return alias(value, nameAliases, 'player-name')
+    }
+
+    if (rawKey && SECRET_KEY.test(rawKey)) {
+      return '[redacted]'
+    }
+
+    if (rawKey && FREE_TEXT_KEY.test(rawKey)) {
+      return Array.isArray(value)
+        ? value.slice(0, MAX_PAYLOAD_ARRAY_ENTRIES).map(() => '[redacted-text]')
+        : '[redacted-text]'
+    }
+
+    if (Array.isArray(value)) {
+      if (value.length > MAX_PAYLOAD_ARRAY_ENTRIES) truncated = true
+      return value
+        .slice(0, MAX_PAYLOAD_ARRAY_ENTRIES)
+        .map(item => visit(item, depth + 1, undefined, rawKey))
+    }
+
+    if (value !== null && typeof value === 'object') {
+      const entries = Object.entries(value as Record<string, unknown>)
+      if (entries.length > MAX_PAYLOAD_OBJECT_KEYS) truncated = true
+
+      return Object.fromEntries(
+        entries
+          .slice(0, MAX_PAYLOAD_OBJECT_KEYS)
+          .map(([childKey, child], index) => {
+            const safeKey =
+              rawKey && DYNAMIC_KEY_CONTAINERS.has(rawKey)
+                ? `[dynamic-key-${index + 1}]`
+                : safeSchemaKey(childKey)
+            return [
+              safeKey,
+              visit(child, depth + 1, childKey, rawKey)
+            ]
+          })
+      )
+    }
+
+    if (typeof value === 'string') return sanitizeStringValue(value)
+    if (
+      value === null ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
+    ) {
+      return value
+    }
+
+    return `[${jsonType(value)}]`
+  }
+
+  return {
+    value: visit(payload, 0),
+    truncated
+  }
+}
+
+/**
+ * Produce a schema-repair artifact with a privacy-preserving semantic snapshot.
+ *
+ * The structural view proves the received JSON types. The sanitized payload
+ * additionally preserves poker-relevant values while aliasing direct account
+ * identifiers and removing names, free text, credentials, and dynamic keys.
+ */
+export const buildSchemaDiagnostic = (
+  payload: unknown,
+  rawIssues: readonly SchemaIssueLike[]
+): SchemaDiagnostic => {
+  const shape = new Set<string>()
+  let truncated = false
+
+  const addShape = (entry: string): boolean => {
+    if (shape.has(entry)) return true
+    if (shape.size >= MAX_SHAPE_ENTRIES) {
+      truncated = true
+      return false
+    }
+    shape.add(entry)
+    return true
+  }
+
+  const visit = (
+    value: unknown,
+    path: string,
+    depth: number,
+    parentKey?: string
+  ): void => {
+    const type = jsonType(value)
+    if (!addShape(`${path}: ${type}`)) return
+    if (depth >= MAX_DEPTH) {
+      if (type === 'array' || type === 'object') truncated = true
+      return
+    }
+
+    if (Array.isArray(value)) {
+      const samples = value.slice(0, MAX_ARRAY_SAMPLES)
+      const elementTypes = [...new Set(samples.map(jsonType))].sort()
+      addShape(
+        `${path}[]: ${elementTypes.length > 0
+          ? elementTypes.join('|')
+          : 'empty'}`
+      )
+      for (const sample of samples) {
+        if (sample !== null && typeof sample === 'object') {
+          visit(sample, appendPath(path, '[]'), depth + 1)
+        }
+      }
+      if (value.length > MAX_ARRAY_SAMPLES) truncated = true
+      return
+    }
+
+    if (value !== null && typeof value === 'object') {
+      const entries = Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+      if (entries.length > MAX_OBJECT_KEYS) truncated = true
+
+      for (const [rawKey, child] of entries.slice(0, MAX_OBJECT_KEYS)) {
+        const key = safeSchemaKey(rawKey, parentKey)
+        visit(child, appendPath(path, key), depth + 1, rawKey)
+      }
+    }
+  }
+
+  visit(payload, '$', 0)
+
+  const issues = rawIssues.map(issue => {
+    const expected = typeof issue.expected === 'string'
+      ? issue.expected.slice(0, 80)
+      : undefined
+    return {
+      path: formatIssuePath(issue.path),
+      code: issue.code.slice(0, 80),
+      expected,
+      actualType: jsonType(valueAtPath(payload, issue.path))
+    }
+  })
+  const sanitizedPayload = buildSanitizedPayload(payload)
+
+  return {
+    issues,
+    payloadShape: [...shape],
+    sanitizedPayload: sanitizedPayload.value,
+    shapeTruncated: truncated,
+    payloadTruncated: sanitizedPayload.truncated
+  }
+}

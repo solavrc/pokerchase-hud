@@ -1,13 +1,9 @@
 import * as Sentry from '@sentry/browser'
 import type { ErrorEvent } from '@sentry/browser'
 import manifest from '../../manifest.json'
+import type { SchemaDiagnostic } from './schema-diagnostic'
 
 export type SentryRuntime = 'background' | 'content_script' | 'popup'
-
-export interface SchemaValidationIssue {
-  path: string
-  code: string
-}
 
 export interface CaptureErrorOptions {
   operation: string
@@ -64,9 +60,11 @@ const sanitizeFrameUrl = (value: string | undefined): string | undefined => {
  * Final privacy boundary for every Sentry event.
  *
  * PokerChase payloads can contain player names, user IDs, auth state, and
- * complete hand histories. Those values are useful in the local Raw Event
- * Lake, but must never leave the extension as telemetry. Keep only the stack,
- * a small allow-list of developer-controlled tags, and schema paths/codes.
+ * complete hand histories. General error telemetry keeps only the stack and a
+ * small allow-list of developer-controlled tags. Schema-validation telemetry
+ * may additionally contain a client-sanitized semantic event snapshot built by
+ * schema-diagnostic.ts; direct identifiers and free text have already been
+ * removed before this final boundary runs.
  */
 export const sanitizeSentryEvent = (event: ErrorEvent): ErrorEvent => {
   const sanitized: ErrorEvent = {
@@ -236,20 +234,29 @@ export const captureHandledException = (
 
 /**
  * Report a destructive API schema mismatch once per ApiTypeId for the current
- * extension runtime. Raw event JSON and validation values are intentionally
- * excluded; only Zod issue paths and codes are sent.
+ * extension runtime. The attached event is not the exact raw event: the
+ * extension pseudonymizes account identifiers and removes names, chat text,
+ * credentials, and dynamic keys before it reaches the Sentry SDK.
  */
 export const captureSchemaValidationFailure = (
   apiTypeId: number,
-  issues: readonly SchemaValidationIssue[]
+  diagnostic: SchemaDiagnostic
 ): void => {
   if (!initialized || reportedSchemaApiTypes.has(apiTypeId)) return
   reportedSchemaApiTypes.add(apiTypeId)
 
-  const safeIssues = issues.slice(0, 10).map(issue => ({
+  const safeIssues = diagnostic.issues.slice(0, 10).map(issue => ({
     path: sanitizeTelemetryText(issue.path),
-    code: sanitizeTelemetryText(issue.code)
+    code: sanitizeTelemetryText(issue.code),
+    expected: issue.expected
+      ? sanitizeTelemetryText(issue.expected)
+      : 'unknown',
+    actualType: sanitizeTelemetryText(issue.actualType)
   }))
+  const safeShape = diagnostic.payloadShape
+    .slice(0, 100)
+    .map(sanitizeTelemetryText)
+  const sanitizedEventJson = JSON.stringify(diagnostic.sanitizedPayload)
 
   Sentry.withScope(scope => {
     scope.setLevel('error')
@@ -259,9 +266,17 @@ export const captureSchemaValidationFailure = (
       api_type_id: String(apiTypeId)
     })
     scope.setContext('schema_validation', {
-      issue_count: issues.length,
+      issue_count: diagnostic.issues.length,
       paths: safeIssues.map(issue => issue.path).join(','),
-      codes: [...new Set(safeIssues.map(issue => issue.code))].join(',')
+      codes: [...new Set(safeIssues.map(issue => issue.code))].join(','),
+      issues: safeIssues.map(issue =>
+        `${issue.path} | ${issue.code} | expected=${issue.expected} | actual=${issue.actualType}`
+      ).join('\n'),
+      payload_shape: safeShape.join('\n'),
+      shape_truncated:
+        diagnostic.shapeTruncated || diagnostic.payloadShape.length > 100,
+      sanitized_event_json: sanitizedEventJson,
+      payload_truncated: diagnostic.payloadTruncated
     })
     Sentry.captureMessage('PokerChase API schema validation failed')
   })

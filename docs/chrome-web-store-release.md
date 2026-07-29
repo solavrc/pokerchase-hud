@@ -12,13 +12,16 @@ Chrome Web Store の「検証済み CRX アップロード」を有効にした�
 
 ## Sentry disclosure
 
-Sentry error monitoring is an external data transfer even though the extension
-removes player/session data and sends only sanitized crash metadata. Before
-submitting a telemetry-enabled release:
+Sentry error monitoring is an external data transfer. General errors send
+sanitized crash metadata. API schema failures additionally send a bounded
+poker-semantic event snapshot after the extension pseudonymizes direct player
+identifiers and removes names, free text, credentials, and session data.
+Before submitting a telemetry-enabled release:
 
 1. Chrome Web Store の説明と Privacy practices で、匿名化したクラッシュ情報
-   （拡張バージョン、実行コンテキスト、スタック、スキーマ失敗箇所）を
-   信頼性改善目的で Sentry へ送信することを明示する。
+   （拡張バージョン、実行コンテキスト、スタック、スキーマ失敗箇所、
+   個人識別子を仮名化した対局イベント値）を、信頼性改善とAPI変更への追従目的で
+   Sentry へ送信することを明示する。
 2. 既存ユーザーにも更新情報でデータ取扱いの変更を明示する。
 3. 公開中の privacy policy に収集項目、用途、Sentry への送信、保持・削除方針を
    反映し、Developer Dashboard の専用 URL 欄から到達できることを確認する。

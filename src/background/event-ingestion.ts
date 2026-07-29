@@ -18,6 +18,7 @@ import {
   captureHandledException,
   captureSchemaValidationFailure
 } from '../observability/sentry'
+import { buildSchemaDiagnostic } from '../observability/schema-diagnostic'
 
 /**
  * 参加取消申込（ApiTypeId 203）。`ApiType` enum（アプリケーションで使用する
@@ -449,10 +450,10 @@ const processEvent = async (
     if (typeof rawApiTypeId === 'number') {
       captureSchemaValidationFailure(
         rawApiTypeId,
-        errorDetails?.map(issue => ({
-          path: issue.path,
-          code: issue.code
-        })) ?? []
+        buildSchemaDiagnostic(
+          message,
+          validationResult.error?.issues ?? []
+        )
       )
       const eventTimestamp = typeof rawTimestamp === 'number' ? rawTimestamp : Date.now()
       recordUndecodedEvent(service.db, rawApiTypeId, eventTimestamp).catch(err =>

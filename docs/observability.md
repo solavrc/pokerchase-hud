@@ -17,15 +17,42 @@ which runs in the game page's main world and handles raw WebSocket payloads.
   delivery failures
 - Destructive PokerChase API schema mismatches, grouped by `ApiTypeId`
 
-Schema mismatch events contain only:
+Schema mismatch events contain:
 
 - `ApiTypeId`
-- Zod issue paths (for example `Results.0.Ranking`)
+- Zod issue paths (for example `Results[].Ranking`)
 - Zod issue codes (for example `invalid_type`)
+- Zod's expected type and the received JSON type
+- a bounded structural payload shape: field names, nesting, array element
+  shapes, and JSON types
+- a bounded semantic event snapshot, with direct identifiers pseudonymized
+  before the Sentry SDK receives it
 - extension version and runtime
 
-The original event JSON remains in the local Raw Event Lake and is never
-attached to Sentry.
+The structural shape proves the received types independently of the sanitized
+values. For example:
+
+```text
+$: object
+ApiTypeId: integer
+Results: array
+Results[]: object
+Results[].Ranking: integer
+```
+
+The semantic snapshot keeps values needed to interpret poker behavior, such as
+`BattleType`, `HandId`, stacks, bets, pots, action types, hole cards, boards,
+rankings, and rewards. Relationships between players remain inspectable, but
+direct identifiers are replaced with stable per-event aliases (`user#1`,
+`user#2`, ...). User/player/friend names, chat and other free text,
+credentials, session identifiers, email/IP fields, URL query strings, and
+dynamic map keys are redacted client-side.
+
+The exact original event remains only in the local Raw Event Lake. Sentry
+receives the pseudonymized semantic snapshot, never the byte-for-byte raw
+event. The Sentry project also has default data scrubbing and IP-address
+scrubbing enabled as a second privacy layer. Server-side scrubbing is not the
+primary protection because a newly introduced field name may be unknown.
 
 ## Privacy boundary
 
@@ -43,9 +70,11 @@ that placeholder before storage.
 
 The Sentry project also has default data scrubbing and IP-address scrubbing
 enabled. Each background/content/popup runtime sends at most 20 events before
-it is restarted, limiting the effect of an error loop. Do not add raw API
-events, player names, user IDs, hand histories,
-Firebase document paths, auth objects, or tokens to telemetry.
+it is restarted, limiting the effect of an error loop. The schema-validation
+snapshot is the only permitted API-event context and must be produced by
+`buildSchemaDiagnostic`. Do not attach the exact raw event, player names,
+account IDs, chat text, Firebase document paths, auth objects, or tokens
+directly to Sentry.
 
 ## Builds and source maps
 
