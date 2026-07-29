@@ -127,7 +127,11 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
     event.data.type === POKER_CHASE_INVALID_API_EVENT &&
     'payload' in event.data &&
     event.data.payload &&
-    typeof event.data.payload === 'object'
+    typeof event.data.payload === 'object' &&
+    (
+      !('ApiTypeId' in event.data.payload) ||
+      typeof event.data.payload.ApiTypeId !== 'number'
+    )
   ) {
     if (!portManager.send(event.data.payload)) {
       stopKeepalive()

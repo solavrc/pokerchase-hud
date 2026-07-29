@@ -106,6 +106,19 @@ describe('content_script keepalive (session-activity triggers)', () => {
     expect(mockPort.postMessage).toHaveBeenCalledWith(payload)
   })
 
+  test('an envelope cannot bypass session handling for a numeric ApiTypeId', () => {
+    const payload = {
+      ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+      timestamp: 11
+    }
+    dispatchGameMessage({
+      type: POKER_CHASE_INVALID_API_EVENT,
+      payload
+    })
+
+    expect(mockPort.postMessage).not.toHaveBeenCalledWith(payload)
+  })
+
   test('EVT_DEAL (303) with Player present alone starts keepalive without a prior 308', () => {
     dispatchGameMessage({ ApiTypeId: ApiType.EVT_DEAL, timestamp: 2, Player: { SeatIndex: 0 } })
 
