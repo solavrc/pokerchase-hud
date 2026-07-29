@@ -12,7 +12,7 @@ global.chrome = {
   ...global.chrome,
   storage: {
     ...global.chrome.storage,
-    sync: {
+    local: {
       get: mockChromeStorageGet,
       set: mockChromeStorageSet,
     },
@@ -305,12 +305,12 @@ describe('Hud', () => {
     fireEvent.mouseDown(dragHandle!, { clientX: 100, clientY: 100 })
 
     // ドラッグ中の状態
-    fireEvent.mouseMove(window, { clientX: 150, clientY: 150 })
+    fireEvent.mouseMove(document, { clientX: 150, clientY: 150 })
 
     // マウスアップでドラッグ終了
-    fireEvent.mouseUp(window)
+    fireEvent.mouseUp(document)
 
-    // Chrome storageに位置が保存される
+    // 端末ローカルstorageに位置が保存される
     await waitFor(() => {
       expect(mockChromeStorageSet).toHaveBeenCalledWith(
         expect.objectContaining({

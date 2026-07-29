@@ -7,6 +7,10 @@ import Typography from '@mui/material/Typography'
 import { useCallback, useRef, useState } from 'react'
 import { DEFAULT_UI_CONFIG, type UIConfig } from '../../types/hand-log'
 import { formatShortcut, shortcutFromKeyboardEvent } from '../../utils/keyboard-shortcut'
+import {
+  saveLocalUIScale,
+  saveSyncedUIConfig,
+} from '../../utils/ui-config-storage'
 import { broadcastUIConfig } from './broadcast-ui-config'
 
 interface UIScaleSectionProps {
@@ -25,10 +29,15 @@ export const UIScaleSection = ({
     ? formatShortcut(uiConfig.toggleShortcut)
     : null
 
-  const updateUIConfig = (newConfig: UIConfig) => {
+  const updateSyncedUIConfig = (newConfig: UIConfig) => {
     setUIConfig(newConfig)
-    chrome.storage.sync.set({ uiConfig: newConfig })
+    saveSyncedUIConfig(newConfig)
     broadcastUIConfig(newConfig)
+  }
+
+  const updateLocalScale = (newConfig: UIConfig) => {
+    setUIConfig(newConfig)
+    saveLocalUIScale(newConfig.scale, () => broadcastUIConfig(newConfig))
   }
 
   const saveShortcut = useCallback((shortcut: UIConfig['toggleShortcut']) => {
@@ -37,10 +46,13 @@ export const UIScaleSection = ({
       const nextConfig = {
         ...DEFAULT_UI_CONFIG,
         ...(result.uiConfig ?? uiConfig),
+        // A legacy synchronized uiConfig may still contain scale. The current
+        // device's local value must remain authoritative.
+        scale: uiConfig.scale,
         toggleShortcut: shortcut,
       }
       setUIConfig(nextConfig)
-      chrome.storage.sync.set({ uiConfig: nextConfig })
+      saveSyncedUIConfig(nextConfig)
       broadcastUIConfig(nextConfig)
     })
   }, [setUIConfig, uiConfig])
@@ -91,7 +103,7 @@ export const UIScaleSection = ({
           size="small"
           onClick={() => {
             const newScale = Math.max(0.5, uiConfig.scale - 0.1)
-            updateUIConfig({ ...uiConfig, scale: newScale })
+            updateLocalScale({ ...uiConfig, scale: newScale })
           }}
           disabled={uiConfig.scale <= 0.5}
         >
@@ -104,7 +116,7 @@ export const UIScaleSection = ({
           size="small"
           onClick={() => {
             const newScale = Math.min(2.0, uiConfig.scale + 0.1)
-            updateUIConfig({ ...uiConfig, scale: newScale })
+            updateLocalScale({ ...uiConfig, scale: newScale })
           }}
           disabled={uiConfig.scale >= 2.0}
         >
@@ -164,7 +176,7 @@ export const UIScaleSection = ({
           exclusive
           onChange={(_event, newValue: string | null) => {
             if (newValue !== null) {
-              updateUIConfig({ ...uiConfig, displayEnabled: newValue === 'on' })
+              updateSyncedUIConfig({ ...uiConfig, displayEnabled: newValue === 'on' })
             }
           }}
           size="small"

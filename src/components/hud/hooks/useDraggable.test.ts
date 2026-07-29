@@ -6,7 +6,7 @@ const mockChromeStorageGet = jest.fn()
 const mockChromeStorageSet = jest.fn()
 global.chrome = {
   storage: {
-    sync: {
+    local: {
       get: mockChromeStorageGet,
       set: mockChromeStorageSet,
     },
@@ -45,6 +45,7 @@ describe('useDraggable', () => {
     // Chrome storageから位置が読み込まれる
     expect(mockChromeStorageGet).toHaveBeenCalledWith('hudPosition_0', expect.any(Function))
     expect(result.current.position).toEqual(savedPosition)
+    expect(mockChromeStorageSet).not.toHaveBeenCalled()
   })
 
   it('ドラッグ操作を処理', () => {

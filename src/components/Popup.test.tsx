@@ -4,6 +4,7 @@ import Popup from './Popup'
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import { defaultStatDisplayConfigs } from '../stats'
 import { POPUP_THEME_LOCAL_STORAGE_KEY } from './popup/popup-theme-storage'
+import { UI_SCALE_STORAGE_KEY } from '../utils/ui-config-storage'
 
 // Mock chrome APIs
 const mockChromeRuntimeSendMessage = jest.fn()
@@ -14,6 +15,8 @@ const mockChromeWindowsUpdate = jest.fn()
 const mockChromeStorageGet = jest.fn()
 const mockChromeStorageSet = jest.fn()
 const mockChromeStorageRemove = jest.fn()
+const mockChromeLocalStorageGet = jest.fn()
+const mockChromeLocalStorageSet = jest.fn()
 
 global.chrome = {
   runtime: {
@@ -42,8 +45,8 @@ global.chrome = {
       remove: mockChromeStorageRemove,
     },
     local: {
-      get: jest.fn((_key: string, cb: (result: Record<string, unknown>) => void) => cb({})),
-      set: jest.fn(),
+      get: mockChromeLocalStorageGet,
+      set: mockChromeLocalStorageSet,
     },
     onChanged: {
       addListener: jest.fn(),
@@ -64,6 +67,7 @@ jest.mock('../../manifest.json', () => ({
 describe('Popup', () => {
   // chrome.storage.syncのバッキングストア（フラットな`options`キーを含む）
   let syncData: Record<string, any>
+  let localData: Record<string, any>
 
   // Helper to wait for all initial async operations
   const waitForAsyncOperations = async () => {
@@ -113,6 +117,7 @@ describe('Popup', () => {
       },
       uiConfig: DEFAULT_UI_CONFIG,
     }
+    localData = {}
 
     mockChromeStorageGet.mockImplementation((keys, callback) => {
       // Execute callback immediately - tests will use waitFor
@@ -131,9 +136,17 @@ describe('Popup', () => {
       if (typeof callback === 'function') callback()
     })
 
-    ;(chrome.storage.local.get as jest.Mock).mockImplementation(
-      (_key: string, callback: (result: Record<string, unknown>) => void) => callback({})
-    )
+    mockChromeLocalStorageGet.mockImplementation((keys, callback) => {
+      const keyList = Array.isArray(keys) ? keys : [keys]
+      callback(keyList.reduce(
+        (acc: Record<string, any>, key: string) => ({ ...acc, [key]: localData[key] }),
+        {}
+      ))
+    })
+    mockChromeLocalStorageSet.mockImplementation((items, callback?) => {
+      Object.assign(localData, items)
+      if (typeof callback === 'function') callback()
+    })
 
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       // Execute callback immediately - tests will use waitFor
@@ -346,9 +359,11 @@ describe('Popup', () => {
   it('保存済みuiConfigの初期読込が終わるまで設定操作を有効にしない', async () => {
     syncData.uiConfig = {
       ...DEFAULT_UI_CONFIG,
-      scale: 1.4,
+      // Legacy/cross-device value must not override this device's scale.
+      scale: 0.8,
       toggleShortcut: null,
     }
+    localData[UI_SCALE_STORAGE_KEY] = 1.4
     let resolveUIConfigRead!: (result: Record<string, any>) => void
     mockChromeStorageGet.mockImplementation((keys, callback) => {
       if (keys === 'uiConfig') {
@@ -381,8 +396,10 @@ describe('Popup', () => {
   })
 
   it('外部のuiConfig変更を開いたまま反映し、後続の設定変更で巻き戻さない', async () => {
+    localData[UI_SCALE_STORAGE_KEY] = 1.4
     render(<Popup />)
     await waitForAsyncOperations()
+    expect(screen.getByText('140%')).toBeInTheDocument()
 
     const storageListeners = (chrome.storage.onChanged.addListener as jest.Mock).mock.calls
       .map(([listener]) => listener as (
@@ -394,24 +411,29 @@ describe('Popup', () => {
       for (const listener of storageListeners) {
         listener({
           uiConfig: {
-            newValue: { ...DEFAULT_UI_CONFIG, displayEnabled: false },
+            newValue: {
+              ...DEFAULT_UI_CONFIG,
+              displayEnabled: false,
+              // Legacy value from another device must be ignored.
+              scale: 0.6,
+            },
           },
         }, 'sync')
       }
     })
 
     expect(screen.getByRole('button', { name: '非表示' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('140%')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '+' }))
 
     await waitFor(() => {
-      expect(mockChromeStorageSet).toHaveBeenLastCalledWith({
-        uiConfig: expect.objectContaining({
-          displayEnabled: false,
-          scale: 1.1,
-        }),
-      })
+      expect(mockChromeLocalStorageSet).toHaveBeenLastCalledWith(
+        { [UI_SCALE_STORAGE_KEY]: 1.5 },
+        expect.any(Function)
+      )
     })
+    expect(mockChromeStorageSet).not.toHaveBeenCalled()
   })
 
   it('ゲームタイプフィルターを表示・変更できる', async () => {

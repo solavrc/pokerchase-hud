@@ -19,6 +19,12 @@ import type {
 import { rotateArrayFromIndex } from "../utils/array-utils"
 import { consumePendingStats } from "../utils/pending-stats-cache"
 import { isEditableShortcutTarget, matchesShortcut } from "../utils/keyboard-shortcut"
+import {
+  mergeUIConfigWithLocalScale,
+  resolveLocalUIScale,
+  saveSyncedUIConfig,
+  UI_SCALE_STORAGE_KEY,
+} from "../utils/ui-config-storage"
 import HandLog from "./HandLog"
 import Hud from "./Hud"
 import type { AllPlayersRealTimeStats } from "../realtime-stats/realtime-stats-service"
@@ -117,7 +123,7 @@ const App = memo(() => {
       event.stopPropagation()
       setUIConfig(current => {
         const next = { ...current, displayEnabled: !current.displayEnabled }
-        chrome.storage.sync.set({ uiConfig: next })
+        saveSyncedUIConfig(next)
         return next
       })
     }
@@ -668,22 +674,29 @@ const App = memo(() => {
   // ストレージから設定を読み込み
   useEffect(() => {
     chrome.storage.sync.get(["handLogConfig", "uiConfig", "options"], (result: Record<string, any>) => {
-      if (result.handLogConfig) {
-        setHandLogConfig({
-          ...DEFAULT_HAND_LOG_CONFIG,
-          ...result.handLogConfig,
-        })
-      }
-      if (result.uiConfig && !uiConfigChangedAfterMountRef.current) {
-        setUIConfig({
-          ...DEFAULT_UI_CONFIG,
-          ...result.uiConfig,
-        })
-      }
-      if (result.options?.filterOptions?.statDisplayConfigs) {
-        setStatDisplayConfigs(result.options.filterOptions.statDisplayConfigs)
-      }
-      setConfigLoaded(true)
+      chrome.storage.local.get(UI_SCALE_STORAGE_KEY, (localResult: Record<string, unknown>) => {
+        if (result.handLogConfig) {
+          setHandLogConfig({
+            ...DEFAULT_HAND_LOG_CONFIG,
+            ...result.handLogConfig,
+          })
+        }
+        if (uiConfigChangedAfterMountRef.current) {
+          setUIConfig(current => ({
+            ...current,
+            scale: resolveLocalUIScale(localResult[UI_SCALE_STORAGE_KEY]),
+          }))
+        } else {
+          setUIConfig(mergeUIConfigWithLocalScale(
+            result.uiConfig,
+            localResult[UI_SCALE_STORAGE_KEY]
+          ))
+        }
+        if (result.options?.filterOptions?.statDisplayConfigs) {
+          setStatDisplayConfigs(result.options.filterOptions.statDisplayConfigs)
+        }
+        setConfigLoaded(true)
+      })
     })
 
     // 平坦'options'キーの変更を購読する。マウント時の一括get()は一度きりのため、
@@ -704,10 +717,12 @@ const App = memo(() => {
       const nextUIConfig = changes['uiConfig']?.newValue as UIConfig | undefined
       if (nextUIConfig) {
         uiConfigChangedAfterMountRef.current = true
-        setUIConfig({
+        setUIConfig(current => ({
           ...DEFAULT_UI_CONFIG,
           ...nextUIConfig,
-        })
+          // Ignore legacy/cross-device scale values in the sync payload.
+          scale: current.scale,
+        }))
       }
     }
     chrome.storage.onChanged?.addListener(handleOptionsStorageChange)

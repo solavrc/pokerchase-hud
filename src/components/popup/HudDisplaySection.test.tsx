@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { HudDisplaySection } from './HudDisplaySection'
 import type { UIConfig } from '../../types/hand-log'
 import { DEFAULT_UI_CONFIG } from '../../types/hand-log'
+import { toSyncedUIConfig } from '../../utils/ui-config-storage'
 
 // Mock chrome storage and tabs
 const mockChromeStorageSet = jest.fn()
@@ -65,7 +66,9 @@ describe('HudDisplaySection', () => {
     }
 
     expect(mockSetUIConfig).toHaveBeenCalledWith(expectedConfig)
-    expect(mockChromeStorageSet).toHaveBeenCalledWith({ uiConfig: expectedConfig })
+    expect(mockChromeStorageSet).toHaveBeenCalledWith({
+      uiConfig: toSyncedUIConfig(expectedConfig),
+    })
     expect(mockTabsSendMessage).toHaveBeenCalledWith(1, {
       action: 'updateUIConfig',
       config: expectedConfig,
@@ -87,7 +90,9 @@ describe('HudDisplaySection', () => {
     }
 
     expect(mockSetUIConfig).toHaveBeenCalledWith(expectedConfig)
-    expect(mockChromeStorageSet).toHaveBeenCalledWith({ uiConfig: expectedConfig })
+    expect(mockChromeStorageSet).toHaveBeenCalledWith({
+      uiConfig: toSyncedUIConfig(expectedConfig),
+    })
     expect(mockTabsSendMessage).toHaveBeenCalledWith(1, {
       action: 'updateUIConfig',
       config: expectedConfig,

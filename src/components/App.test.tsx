@@ -70,6 +70,9 @@ describe('App', () => {
         },
       })
     })
+    ;(global.chrome.storage.local.get as jest.Mock).mockImplementation((_key, callback) => {
+      callback({})
+    })
   })
 
   afterEach(() => {
@@ -90,6 +93,24 @@ describe('App', () => {
 
     // HandLogも表示される
     expect(screen.getByTestId('hand-log')).toBeInTheDocument()
+  })
+
+  it('端末ローカルのUI倍率をlegacy sync値より優先する', async () => {
+    ;(global.chrome.storage.sync.get as jest.Mock).mockImplementation((_, callback) => {
+      callback({
+        uiConfig: { ...DEFAULT_UI_CONFIG, scale: 0.7 },
+      })
+    })
+    ;(global.chrome.storage.local.get as jest.Mock).mockImplementation((_key, callback) => {
+      callback({ uiScale: 1.4 })
+    })
+
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('Scale: 1.4')
+      expect(screen.getByTestId('hand-log')).toHaveTextContent('Scale: 1.4')
+    })
   })
 
   it('uiConfig.displayEnabledがfalseの場合、何も表示されない', async () => {

@@ -3,10 +3,15 @@ import userEvent from '@testing-library/user-event'
 import { UIScaleSection } from './UIScaleSection'
 import type { UIConfig } from '../../types/hand-log'
 import { DEFAULT_UI_CONFIG } from '../../types/hand-log'
+import {
+  toSyncedUIConfig,
+  UI_SCALE_STORAGE_KEY,
+} from '../../utils/ui-config-storage'
 
 // Mock chrome storage and tabs
 const mockChromeStorageSet = jest.fn()
 const mockChromeStorageGet = jest.fn()
+const mockChromeLocalStorageSet = jest.fn()
 const mockTabsQuery = jest.fn()
 const mockTabsSendMessage = jest.fn()
 global.chrome = {
@@ -15,6 +20,9 @@ global.chrome = {
     sync: {
       get: mockChromeStorageGet,
       set: mockChromeStorageSet,
+    },
+    local: {
+      set: mockChromeLocalStorageSet,
     },
   },
   tabs: {
@@ -36,6 +44,9 @@ describe('UIScaleSection', () => {
     mockTabsSendMessage.mockResolvedValue(undefined)
     mockChromeStorageGet.mockImplementation((_key, callback) => {
       callback({ uiConfig: DEFAULT_UI_CONFIG })
+    })
+    mockChromeLocalStorageSet.mockImplementation((_items, callback?) => {
+      if (typeof callback === 'function') callback()
     })
     mockTabsQuery.mockImplementation((_, callback) => {
       callback([{ id: 1 }, { id: 2 }])
@@ -98,6 +109,8 @@ describe('UIScaleSection', () => {
         },
       }),
     })
+    expect(mockChromeStorageSet.mock.calls.at(-1)?.[0].uiConfig)
+      .not.toHaveProperty('scale')
   })
 
   it('ショートカット入力欄の右クリックで明示的な解除状態を保存する', () => {
@@ -109,6 +122,8 @@ describe('UIScaleSection', () => {
     expect(mockChromeStorageSet).toHaveBeenCalledWith({
       uiConfig: expect.objectContaining({ toggleShortcut: null }),
     })
+    expect(mockChromeStorageSet.mock.calls.at(-1)?.[0].uiConfig)
+      .not.toHaveProperty('scale')
   })
 
   it('TabとShift+Tabは通常のフォーカス移動として通す', () => {
@@ -140,11 +155,12 @@ describe('UIScaleSection', () => {
     expect(mockChromeStorageSet).toHaveBeenCalledWith({
       uiConfig: expect.objectContaining({
         displayEnabled: false,
-        scale: 1.2,
         hudDisplayMode: DEFAULT_UI_CONFIG.hudDisplayMode,
         hudColorCoding: DEFAULT_UI_CONFIG.hudColorCoding,
       }),
     })
+    expect(mockChromeStorageSet.mock.calls.at(-1)?.[0].uiConfig)
+      .not.toHaveProperty('scale')
   })
 
   it('UI表示のON/OFFを切り替え', async () => {
@@ -161,7 +177,9 @@ describe('UIScaleSection', () => {
     }
 
     expect(mockSetUIConfig).toHaveBeenCalledWith(expectedConfig)
-    expect(mockChromeStorageSet).toHaveBeenCalledWith({ uiConfig: expectedConfig })
+    expect(mockChromeStorageSet).toHaveBeenCalledWith({
+      uiConfig: toSyncedUIConfig(expectedConfig),
+    })
     expect(mockTabsQuery).toHaveBeenCalled()
     expect(mockTabsSendMessage).toHaveBeenCalledWith(1, {
       action: 'updateUIConfig',
@@ -187,7 +205,11 @@ describe('UIScaleSection', () => {
     }
 
     expect(mockSetUIConfig).toHaveBeenCalledWith(expectedConfig)
-    expect(mockChromeStorageSet).toHaveBeenCalledWith({ uiConfig: expectedConfig })
+    expect(mockChromeLocalStorageSet).toHaveBeenCalledWith(
+      { [UI_SCALE_STORAGE_KEY]: 1.1 },
+      expect.any(Function)
+    )
+    expect(mockChromeStorageSet).not.toHaveBeenCalled()
     expect(mockTabsSendMessage).toHaveBeenCalledWith(1, {
       action: 'updateUIConfig',
       config: expectedConfig,

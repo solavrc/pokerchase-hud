@@ -17,11 +17,12 @@ export const useDraggable = (seatIndex: number, defaultPosition: CSSProperties) 
   const [isDragging, setIsDragging] = useState(false)
   const [position, setPosition] = useState<HudPosition | null>(null)
   const dragRef = useRef<DragState | null>(null)
+  const shouldPersistPositionRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  // Load saved position
+  // Layout is device-local because each device can have a different viewport.
   useEffect(() => {
-    chrome.storage.sync.get(`hudPosition_${seatIndex}`, (result: Record<string, any>) => {
+    chrome.storage.local.get(`hudPosition_${seatIndex}`, (result: Record<string, any>) => {
       const savedPosition = result[`hudPosition_${seatIndex}`]
       if (savedPosition) {
         setPosition(savedPosition)
@@ -29,10 +30,11 @@ export const useDraggable = (seatIndex: number, defaultPosition: CSSProperties) 
     })
   }, [seatIndex])
 
-  // Save position
+  // Persist only after drag completion; inactive/stale tabs do not write.
   useEffect(() => {
-    if (position && !isDragging) {
-      chrome.storage.sync.set({
+    if (position && !isDragging && shouldPersistPositionRef.current) {
+      shouldPersistPositionRef.current = false
+      chrome.storage.local.set({
         [`hudPosition_${seatIndex}`]: position
       })
     }
@@ -73,6 +75,7 @@ export const useDraggable = (seatIndex: number, defaultPosition: CSSProperties) 
       const clampedLeft = Math.max(0, Math.min(90, newLeft))
       const clampedTop = Math.max(0, Math.min(90, newTop))
 
+      shouldPersistPositionRef.current = true
       setPosition({
         left: `${clampedLeft}%`,
         top: `${clampedTop}%`

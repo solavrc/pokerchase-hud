@@ -22,6 +22,11 @@ import type {
 import type { SyncState } from '../services/auto-sync-service'
 import { content_scripts } from '../../manifest.json'
 import { sendMessageWithTimeout } from './popup/send-message'
+import {
+  mergeUIConfigWithLocalScale,
+  resolveLocalUIScale,
+  UI_SCALE_STORAGE_KEY,
+} from '../utils/ui-config-storage'
 
 // Import sub-components
 import { UIScaleSection } from './popup/UIScaleSection'
@@ -121,10 +126,13 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
       const nextUIConfig = changes.uiConfig?.newValue as UIConfig | undefined
       if (!nextUIConfig) return
       uiConfigChangedAfterMountRef.current = true
-      setUIConfig({
+      setUIConfig(current => ({
         ...DEFAULT_UI_CONFIG,
         ...nextUIConfig,
-      })
+        // Keep the scale loaded for this device even if a legacy synchronized
+        // uiConfig object still contains its own scale field.
+        scale: current.scale,
+      }))
       setUIConfigLoaded(true)
     }
     chrome.storage.onChanged.addListener(handleUIConfigStorageChange)
@@ -254,19 +262,26 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
         }
       }
 
-      // Load UI config from chrome.storage.sync
+      // Load synchronized UI preferences and the device-local scale.
       // DEFAULT_UI_CONFIGとマージする: 新フィールド追加前（#143以前）に保存された
       // uiConfigにはhudDisplayMode/hudColorCodingが存在しないため、マージせず
       // そのまま使うとポップアップのHUD表示設定セクションが未定義値を表示して
       // しまう（App.tsx側の読み込みは既にこのマージを行っている）。
       chrome.storage.sync.get('uiConfig', (result: Record<string, any>) => {
-        if (result.uiConfig && !uiConfigChangedAfterMountRef.current) {
-          setUIConfig({
-            ...DEFAULT_UI_CONFIG,
-            ...result.uiConfig,
-          })
-        }
-        setUIConfigLoaded(true)
+        chrome.storage.local.get(UI_SCALE_STORAGE_KEY, (localResult: Record<string, unknown>) => {
+          if (uiConfigChangedAfterMountRef.current) {
+            setUIConfig(current => ({
+              ...current,
+              scale: resolveLocalUIScale(localResult[UI_SCALE_STORAGE_KEY]),
+            }))
+          } else {
+            setUIConfig(mergeUIConfigWithLocalScale(
+              result.uiConfig,
+              localResult[UI_SCALE_STORAGE_KEY]
+            ))
+          }
+          setUIConfigLoaded(true)
+        })
       })
 
       // Load cached Firebase auth state first for instant rendering
