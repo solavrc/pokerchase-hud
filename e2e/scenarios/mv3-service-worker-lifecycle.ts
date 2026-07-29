@@ -29,6 +29,7 @@ import {
   E2E_DIR,
   parseViewport
 } from '../config.ts'
+import { RAW_EVENT_SESSION_CONTEXT_FIELD } from '../../src/utils/raw-event-session-context.ts'
 
 const FIXTURE_PATH = join(E2E_DIR, 'fixtures', 'session-3hands.ndjson')
 const MID_REPLAY_RAW_COUNT = 8
@@ -291,6 +292,7 @@ const canonicalEvent = (value: Record<string, unknown>): string => {
   const {
     sequence: _sequence,
     timestamp: _receiptTimestamp,
+    [RAW_EVENT_SESSION_CONTEXT_FIELD]: _sessionContext,
     ...event
   } = value
   return JSON.stringify(canonicalize(event))
