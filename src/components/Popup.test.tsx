@@ -343,6 +343,40 @@ describe('Popup', () => {
     })
   })
 
+  it('外部のuiConfig変更を開いたまま反映し、後続の設定変更で巻き戻さない', async () => {
+    render(<Popup />)
+    await waitForAsyncOperations()
+
+    const storageListeners = (chrome.storage.onChanged.addListener as jest.Mock).mock.calls
+      .map(([listener]) => listener as (
+        changes: { [key: string]: chrome.storage.StorageChange },
+        areaName: string
+      ) => void)
+
+    act(() => {
+      for (const listener of storageListeners) {
+        listener({
+          uiConfig: {
+            newValue: { ...DEFAULT_UI_CONFIG, displayEnabled: false },
+          },
+        }, 'sync')
+      }
+    })
+
+    expect(screen.getByRole('button', { name: '非表示' })).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: '+' }))
+
+    await waitFor(() => {
+      expect(mockChromeStorageSet).toHaveBeenLastCalledWith({
+        uiConfig: expect.objectContaining({
+          displayEnabled: false,
+          scale: 1.1,
+        }),
+      })
+    })
+  })
+
   it('ゲームタイプフィルターを表示・変更できる', async () => {
     render(<Popup />)
 
