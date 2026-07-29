@@ -122,6 +122,89 @@ describe('raw event session context', () => {
     }
   })
 
+  test.each([
+    ['separate merges', false],
+    ['one merge batch', true],
+  ])('keeps identical wire payloads from different origins (%s)', async (_label, sameBatch) => {
+    const db = new PokerChaseDB(indexedDB, IDBKeyRange)
+    await db.open()
+    try {
+      const raw: RawApiEvent = {
+        timestamp: 1000,
+        ApiTypeId: 303,
+        SeatUserIds: [1, 2],
+      }
+      const contextA = {
+        scopeKey: 'mtt:shared',
+        id: 'shared',
+        battleType: BattleType.TOURNAMENT,
+        startedAt: 100,
+        originId: 'origin-a',
+      }
+      const contextB = {
+        ...contextA,
+        originId: 'origin-b',
+      }
+      const eventA = withRawEventSessionContext(raw, contextA)
+      const eventB = withRawEventSessionContext(raw, contextB)
+
+      const result = sameBatch
+        ? await mergeApiEvents(db, [eventA, eventB])
+        : await (async () => {
+          await mergeApiEvents(db, [eventA])
+          return await mergeApiEvents(db, [eventB])
+        })()
+
+      expect(result.duplicates).toBe(0)
+      expect(await db.apiEvents.count()).toBe(2)
+      expect(await db.apiEvents
+        .orderBy('[timestamp+ApiTypeId+sequence]')
+        .toArray()).toEqual([
+          expect.objectContaining({
+            sequence: 0,
+            __pokerChaseHudSessionContext: expect.objectContaining({
+              originId: 'origin-a',
+            }),
+          }),
+          expect.objectContaining({
+            sequence: 1,
+            __pokerChaseHudSessionContext: expect.objectContaining({
+              originId: 'origin-b',
+            }),
+          }),
+        ])
+    } finally {
+      db.close()
+      await db.delete()
+    }
+  })
+
+  test('deduplicates an identical resend from the same origin', async () => {
+    const db = new PokerChaseDB(indexedDB, IDBKeyRange)
+    await db.open()
+    try {
+      const event = withRawEventSessionContext({
+        timestamp: 1000,
+        ApiTypeId: 303,
+        SeatUserIds: [1, 2],
+      }, {
+        scopeKey: 'run:4:ring:100',
+        id: 'ring',
+        battleType: BattleType.RING_GAME,
+        startedAt: 100,
+        originId: 'origin-a',
+      })
+
+      const result = await mergeApiEvents(db, [event, structuredClone(event)])
+
+      expect(result.duplicates).toBe(1)
+      expect(await db.apiEvents.count()).toBe(1)
+    } finally {
+      db.close()
+      await db.delete()
+    }
+  })
+
   test('context enrichment rewinds reconciled cloud scan floors', async () => {
     const db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()

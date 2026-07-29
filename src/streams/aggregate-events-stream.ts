@@ -7,7 +7,13 @@ import { setHandImprovementHeroHoleCards } from '../realtime-stats'
 import {
   getEventSessionScope,
   setLineupSessionScope,
+  type EventSessionScope,
 } from '../utils/session-event-scope'
+
+const getAggregateStateKey = (scope: EventSessionScope | undefined): string =>
+  scope?.originId
+    ? `${scope.originId}\u0000${scope.scopeKey ?? ''}`
+    : scope?.scopeKey ?? '__unscoped__'
 
 /**
  * APIイベント集約処理Stream（パイプライン第1段階）
@@ -24,20 +30,34 @@ import {
  */
 export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]> {
   private service: PokerChaseService
-  private events: ApiHandEvent[] = []
-  private progress?: Progress
-  private lastTimestamp = 0
+  private readonly states = new Map<string, {
+    events: ApiHandEvent[]
+    progress?: Progress
+    lastTimestamp: number
+  }>()
 
   constructor(service: PokerChaseService) {
     super()
     this.service = service
   }
+
+  discardSessionScope(scope: EventSessionScope): void {
+    this.states.delete(getAggregateStateKey(scope))
+  }
+
   protected async transform(event: ApiEvent): Promise<void> {
+    const eventScope = getEventSessionScope(event)
+    const stateKey = getAggregateStateKey(eventScope)
+    const state = this.states.get(stateKey) ?? {
+      events: [],
+      lastTimestamp: 0,
+    }
+    this.states.set(stateKey, state)
     try {
       /** 順序整合性チェック */
-      if (this.lastTimestamp > event.timestamp!)
-        this.events = []
-      this.lastTimestamp = event.timestamp!
+      if (state.lastTimestamp > event.timestamp!)
+        state.events = []
+      state.lastTimestamp = event.timestamp!
 
       switch (event.ApiTypeId) {
         case ApiType.EVT_ENTRY_QUEUED:
@@ -57,7 +77,7 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
               event.timestamp ?? Date.now(),
               getEventSessionScope(event)?.scopeKey
             )
-            this.progress = undefined
+            state.progress = undefined
           }
           break
         case ApiType.EVT_SESSION_DETAILS:
@@ -186,13 +206,12 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           }
 
           // ハンドの集約
-          this.progress = event.Progress
-          this.events = []
-          this.events.push(event)
+          state.progress = event.Progress
+          state.events = [event]
           break
         case ApiType.EVT_DEAL_ROUND:
-          this.progress = event.Progress
-          this.events.push(event)
+          state.progress = event.Progress
+          state.events.push(event)
           break
         case ApiType.EVT_ACTION:
           // 【注意: このチェックを「安全のため」復活させないこと】
@@ -213,19 +232,19 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           // SeatIndex未解決アクションのスキップ）、#106（hasResultsOutsideDealtLineupに
           // よるキメラハンド棄却、EC/WES双方に実装）で既に別レイヤーとしてカバー済み。
           // 観測用にログのみ残し、バッファはクリアしない。
-          if (this.progress && this.progress.NextActionSeat !== event.SeatIndex) {
+          if (state.progress && state.progress.NextActionSeat !== event.SeatIndex) {
             console.debug(
-              `[AggregateEventsStream] NextActionSeat mismatch (expected=${this.progress.NextActionSeat}, actual=${event.SeatIndex}); ` +
+              `[AggregateEventsStream] NextActionSeat mismatch (expected=${state.progress.NextActionSeat}, actual=${event.SeatIndex}); ` +
               'buffer retained — see docs/api-events.md "EVT_ACTION: 送信されないケース"'
             )
           }
-          this.progress = event.Progress
-          this.events.push(event)
+          state.progress = event.Progress
+          state.events.push(event)
           break
         case ApiType.EVT_HAND_RESULTS:
-          this.events.push(event)
-          if (this.events.length > 0 && this.events[0]?.ApiTypeId === ApiType.EVT_DEAL) {
-            this.push(this.events)
+          state.events.push(event)
+          if (state.events.length > 0 && state.events[0]?.ApiTypeId === ApiType.EVT_DEAL) {
+            this.push(state.events)
           }
           // ハンド確定後はバッファを必ず空にする。以前はこの明示的なクリアが無く、
           // 直後に本来来るはずのEVT_DEALが（生データの欠落等により）来なかった場合、
@@ -234,19 +253,28 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           // （上のNextActionSeat不一致チェックがバッファを丸ごとクリアする副作用で
           // 偶然隠蔽されていた）。実データで1件、EVT_DEALが欠落しHandId=259403865の
           // バッファが26回・長さ156まで肥大化して再送出される事例を確認した。
-          this.events = []
+          state.events = []
+          this.states.delete(stateKey)
+          break
+        case ApiType.EVT_SESSION_RESULTS:
+          this.states.delete(stateKey)
           break
       }
     } catch (error: unknown) {
-      this.handleError(error)
+      this.handleError(error, stateKey)
     }
   }
 
-  protected override handleError(error: unknown): void {
+  protected override handleError(error: unknown, stateKey = '__unscoped__'): void {
+    const state = this.states.get(stateKey)
     const appError = ErrorHandler.handleStreamError(
       error,
       'AggregateEventsStream',
-      { lastTimestamp: this.lastTimestamp, eventsCount: this.events.length }
+      {
+        stateKey,
+        lastTimestamp: state?.lastTimestamp ?? 0,
+        eventsCount: state?.events.length ?? 0,
+      }
     )
     if (this.listenerCount('error') > 0) {
       this.emit('error', appError)

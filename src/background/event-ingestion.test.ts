@@ -26,6 +26,11 @@ import { MTT_TABLE_MOVE_FIXTURE } from '../test-fixtures/mtt-table-move-lifecycl
 import { setOperationState } from './operation-state'
 import { captureSchemaValidationFailure } from '../observability/sentry'
 import { isSafeToUpdate } from './update-manager'
+import { orderApiEventsForReplay } from '../utils/api-event-key'
+import {
+  SYNC_RESCAN_BACKFILL_DONE_META_KEY,
+  SYNC_RESCAN_FLOOR_META_KEY,
+} from '../constants/sync'
 
 jest.mock('../observability/sentry', () => ({
   captureHandledException: jest.fn(),
@@ -141,9 +146,11 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     // tab Bだけを閉じ、進行中のtab Aへscopeを戻す。
     await secondHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 3000 })
     expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-a', startedAt: 1000 })
+    expect(isSafeToUpdate()).toBe(false)
 
     await onMessageHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 4000 })
     expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(isSafeToUpdate()).toBe(true)
   })
 
   test('ending a non-selected origin preserves the selected tab live-stat cache', async () => {
@@ -220,6 +227,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     await onMessageHandler({ ApiTypeId: 203, timestamp: 3000 })
 
     expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-b', startedAt: 1000 })
+    expect(isSafeToUpdate()).toBe(false)
   })
 
   test('same-origin MTT table moves preserve the original session boundary', async () => {
@@ -358,6 +366,52 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
         originId: entry.__pokerChaseHudSessionContext.originId,
       },
     })
+  })
+
+  test('tab-close closure stays after its entry boundary and rewinds cloud scan floors when the clock moves backward', async () => {
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(500)
+    try {
+      mockPort.sender = { tab: { id: 101 } }
+      await onMessageHandler({
+        ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+        timestamp: 1000,
+        Code: 0,
+        BattleType: BattleType.RING_GAME,
+        Id: 'tab-a',
+        IsRetire: false,
+      })
+      await db.meta.bulkPut([
+        {
+          id: `${SYNC_RESCAN_BACKFILL_DONE_META_KEY}:user-a`,
+          value: true,
+          updatedAt: 1,
+        },
+        {
+          id: `${SYNC_RESCAN_FLOOR_META_KEY}:user-a`,
+          value: 5000,
+          updatedAt: 1,
+        },
+      ])
+
+      await tabRemovedHandler(101)
+
+      const rawEvents = await db.apiEvents.toArray() as any[]
+      const closure = rawEvents.find(event =>
+        event.__pokerChaseHudClosureReason === 'tab-removed'
+      )
+      expect(closure.timestamp).toBe(1001)
+      expect(orderApiEventsForReplay(rawEvents)
+        .filter(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED || event.ApiTypeId === 203)
+        .map(event => event.ApiTypeId)).toEqual([
+          ApiType.EVT_ENTRY_QUEUED,
+          203,
+        ])
+      expect((await db.meta.get(
+        `${SYNC_RESCAN_FLOOR_META_KEY}:user-a`
+      ))?.value).toBe(1001)
+    } finally {
+      nowSpy.mockRestore()
+    }
   })
 
   test('a tab-close transition still ends live state when its tombstone cannot be written', async () => {
@@ -728,8 +782,19 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
 
     service.sessionOnlyFilter = true
     const calcStatsSpy = jest.spyOn(service.statsOutputStream, 'calcStats')
-    const firstCompletedHand = MTT_TABLE_MOVE_FIXTURE.events.slice(3, 6)
-    for (const event of firstCompletedHand) {
+    const firstCompletedHand = MTT_TABLE_MOVE_FIXTURE.events
+      .slice(3, 6)
+      .map(event => structuredClone(event))
+    const competingDeal = structuredClone(firstCompletedHand[0]!) as ApiEvent<ApiType.EVT_DEAL>
+    competingDeal.timestamp = (firstCompletedHand[0]!.timestamp ?? 0) + 1
+    competingDeal.SeatUserIds = competingDeal.SeatUserIds.map(id => id + 10_000)
+
+    // A and B can both have durable origin scopes during a stale-tab handoff.
+    // The aggregate buffer must remain isolated even when their DEAL frames
+    // interleave before A's ACTION/RESULTS complete.
+    await onMessageHandler(firstCompletedHand[0])
+    await secondHandler(competingDeal)
+    for (const event of firstCompletedHand.slice(1)) {
       await onMessageHandler(structuredClone(event))
     }
     await service.handAggregateStream.whenIdle()

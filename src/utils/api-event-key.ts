@@ -154,6 +154,26 @@ export const getApiEventContentIdentity = (event: RawApiEvent): string => {
   return JSON.stringify(canonicalize(event, true))
 }
 
+export const areApiEventsContentDuplicates = (
+  existing: RawApiEvent,
+  incoming: RawApiEvent
+): boolean => {
+  if (getApiEventContentIdentity(existing) !== getApiEventContentIdentity(incoming)) {
+    return false
+  }
+  const existingContext = getRawEventSessionContext(existing)
+  const incomingContext = getRawEventSessionContext(incoming)
+  // A contextless historical row is still the same wire event and may be
+  // enriched in place below. Once both rows carry context, however, distinct
+  // origins are distinct observations even when PokerChase emitted the exact
+  // same payload in the same millisecond.
+  if (!existingContext || !incomingContext) return true
+  if (existingContext.originId && incomingContext.originId) {
+    return existingContext.originId === incomingContext.originId
+  }
+  return existingContext.scopeKey === incomingContext.scopeKey
+}
+
 /**
  * Merge raw events into the Lake without conflating key collisions with true
  * duplicates.
@@ -202,9 +222,10 @@ export async function mergeApiEvents(
     for (const input of inputEvents) {
       const groupKey = `${input.timestamp}\u0000${input.ApiTypeId}`
       const group = groups.get(groupKey) ?? []
-      const identity = getApiEventContentIdentity(input)
 
-      const duplicate = group.find(event => getApiEventContentIdentity(event) === identity)
+      const duplicate = group.find(event =>
+        areApiEventsContentDuplicates(event, input)
+      )
       if (duplicate) {
         const incomingContext = getRawEventSessionContext(input)
         const existingContext = getRawEventSessionContext(duplicate)

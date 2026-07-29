@@ -46,9 +46,9 @@ import { getEventFields, getEventSchema } from '../types/api'
  * 参加申込(201)後、着席（303/308）に至る前にユーザーが参加をキャンセル
  * すると、ハンドが一度も始まらないため309も届かない
  * （P2, codexレビュー指摘 2026-07-21, pass-3）。この203を観測したら309と
- * 同様にsessionActivityをINACTIVEへ戻す（詳細は`applySessionActivity()`
- * コメント参照）。content_script.tsのkeepalive解除条件も同じ判定を
- * ミラーする。
+ * 同様にorigin trackerからscopeを閉じ、他の進行中scopeが無い場合だけ
+ * sessionActivityをINACTIVEへ戻す。content_script.ts側はタブごとの
+ * keepalive解除条件として同じ生イベントを扱う。
  */
 const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
 const SESSION_ORIGIN_STORAGE_KEY = 'activeSessionOriginsV1'
@@ -115,6 +115,7 @@ const broadcastSessionSelection = (
  */
 class SessionOriginTracker {
   private readonly scopes = new Map<SessionOriginKey, TrackedSessionScope>()
+  private readonly originIds = new Map<SessionOriginKey, string>()
   private currentKey?: SessionOriginKey
   private sequence = 0
   private browserSessionToken?: string
@@ -168,6 +169,7 @@ class SessionOriginTracker {
       for (const [tabId, scope] of persisted.scopes) {
         if (typeof tabId === 'number' && scope && typeof scope.id === 'string') {
           this.scopes.set(tabId, scope)
+          if (scope.originId) this.originIds.set(tabId, scope.originId)
         }
       }
       this.sequence = Number.isFinite(persisted.sequence) ? persisted.sequence! : 0
@@ -185,6 +187,7 @@ class SessionOriginTracker {
     } catch (error) {
       console.warn('[background] Failed to restore active session origins:', error)
       this.scopes.clear()
+      this.originIds.clear()
       this.currentKey = undefined
       this.canReconcileReplay = true
       this.service.endSession()
@@ -243,7 +246,7 @@ class SessionOriginTracker {
       id,
       battleType,
       startedAt: continuesCurrentMtt ? previous.startedAt : startedAt,
-      originId: previous?.originId ?? createOriginId(),
+      originId: previous?.originId ?? this.originIds.get(key) ?? createOriginId(),
     }
   }
 
@@ -260,6 +263,7 @@ class SessionOriginTracker {
       players: continuesSameScope ? previous.players : undefined,
     }
     this.scopes.set(key, scope)
+    if (scope.originId) this.originIds.set(key, scope.originId)
     this.currentKey = key
     this.service.startSession(
       scope.id,
@@ -333,6 +337,10 @@ class SessionOriginTracker {
     return this.getContext(key)
   }
 
+  forgetOrigin(key: SessionOriginKey): void {
+    this.originIds.delete(key)
+  }
+
   private getReconciledContext(): RawEventSessionContext | null | undefined {
     if (!this.canReconcileReplay) return undefined
     const context = this.currentKey === undefined
@@ -375,11 +383,17 @@ class SessionOriginTracker {
     if (!endedScope) {
       if (this.scopes.size === 0) this.service.endSession()
       await this.persist()
-      return { selectionChanged: this.scopes.size === 0 }
+      const scope = this.currentKey === undefined
+        ? undefined
+        : this.scopes.get(this.currentKey)
+      return { selectionChanged: this.scopes.size === 0, scope }
     }
     if (this.currentKey !== key) {
       await this.persist()
-      return { selectionChanged: false }
+      const scope = this.currentKey === undefined
+        ? undefined
+        : this.scopes.get(this.currentKey)
+      return { selectionChanged: false, scope }
     }
 
     let nextEntry: [SessionOriginKey, TrackedSessionScope] | undefined
@@ -478,14 +492,25 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
       await service.handAggregateStream.whenIdle()
       const closingContext = sessionOrigins.getContext(tabId)
       if (closingContext) {
+        service.handAggregateStream.discardSessionScope(closingContext)
         try {
+          const latestRawEvent = await service.db.apiEvents
+            .orderBy('timestamp')
+            .last()
+          const closureTimestamp = Math.max(
+            Date.now(),
+            closingContext.startedAt + 1,
+            (latestRawEvent?.timestamp ?? 0) + 1
+          )
           await mergeApiEvents(service.db, [
             withRawEventSessionContext({
               ApiTypeId: EVT_ENTRY_CANCELLED_API_TYPE_ID,
-              timestamp: Date.now(),
+              timestamp: closureTimestamp,
               __pokerChaseHudClosureReason: 'tab-removed',
             }, closingContext),
-          ])
+          ], {
+            protectAddedApplicationEventsFromCloudWatermark: true,
+          })
         } catch (error) {
           // Chrome has authoritatively confirmed the tab is gone. Keep the
           // live tracker correct even if the replay aid cannot be persisted.
@@ -493,8 +518,11 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         }
       }
       const restored = await sessionOrigins.end(tabId)
+      sessionOrigins.forgetOrigin(tabId)
       broadcastSessionSelection(service, restored)
-      if (restored.selectionChanged && restored.scope === undefined) {
+      if (restored.scope) {
+        markSessionActive()
+      } else {
         markSessionInactive()
         // This callback already runs inside ingestionQueue. Awaiting the
         // shared reload check here would deadlock because its commit point
@@ -593,31 +621,25 @@ const isExplicitEntryFailure = (message: ApiMessage | { type: string }): boolean
  *     欠落」参照）
  *   - EVT_SESSION_DETAILS(308): 従来からのシグナル（来れば最速）
  *
- * INACTIVEへ戻すトリガーはEVT_SESSION_RESULTS(309)と
- * EVT_ENTRY_CANCELLED(203, 本ファイル冒頭の定数コメント参照)の2つ
- * （tri-stateのunknown=unsafeデフォルトは変更しない）。
+ * EVT_SESSION_RESULTS(309)とEVT_ENTRY_CANCELLED(203)のINACTIVE判定は、
+ * origin trackerから他の進行中scopeが無いと確認した後に呼び出し元で行う。
+ * 生ApiTypeIdだけで先にINACTIVEへ倒すと、別originのハンド途中でも保留更新を
+ * 適用できてしまうためである。
  *
  * 同じトリガー集合をcontent_script.tsのkeepalive起動/解除条件にも
  * ミラーする必要がある（背景・コンテンツスクリプト間でimport不可のため
  * 手動同期。変更時は両ファイルを揃えること）。
  *
- * `activeOnly`（P2, codexレビュー指摘 2026-07-21, pass-4, "Fail closed
- * on dropped ACTIVE writes"）: `true`の場合、INACTIVE化（309/203）を
- * 一切行わない。raw書き込み自体が失敗した（quota超過等、真の重複でも
- * 衝突でもない）イベントに対する`processEvent`のfail-closed処理から
- * 呼ばれる場合に使う。理由: 309/203の永続化に失敗したという事実は
- * 「本当にセッションが終わった/キャンセルされた」ことの確証にならない
- * ため、INACTIVE化（＝reload許可という「危険側」の遷移）は生書き込みの
- * 成功を要求する。一方ACTIVE化（＝reload禁止という「安全側」の遷移）は
- * 生メッセージから読み取れる限り、書き込みが失敗していても即座に反映
- * してよい——「不明ならunsafe」という保守的デフォルトの単純な延長。
+ * raw書き込み失敗時にもこの関数を呼ぶが、終了イベントは常にno-opである。
+ * 309/203の永続化に失敗したという事実だけでは「本当に終了した」ことの
+ * 確証にならない一方、ACTIVE化はreload禁止という安全側の遷移なので
+ * 生メッセージから読み取れる限り即座に反映してよい。
  * これを怠ると、直前が309でinactiveのまま、実際には新しいハンドが
  * 始まっているのに（201/303/308の生書き込みがたまたま失敗しただけで）
  * reloadが「安全」と誤判定されうる。
  */
-const applySessionActivity = (rawApiTypeId: unknown, message: ApiMessage | { type: string }, activeOnly = false): void => {
-  if (!activeOnly && (rawApiTypeId === ApiType.EVT_SESSION_RESULTS || rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID)) {
-    markSessionInactive()
+const applySessionActivity = (rawApiTypeId: unknown, message: ApiMessage | { type: string }): void => {
+  if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS || rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID) {
     return
   }
   if (
@@ -716,7 +738,7 @@ const processEvent = async (
           console.error('[background] Failed to record dropped-event stats:', recordErr)
         )
       }
-      applySessionActivity(rawApiTypeId, message, true)
+      applySessionActivity(rawApiTypeId, message)
       return
     }
   } else {
@@ -746,8 +768,16 @@ const processEvent = async (
     // 先行201のAggregate処理を完了させてからorigin trackerの選択を適用し、
     // 遅れて走るstartSessionが復元した別タブのscopeを再度上書きしない。
     await service.handAggregateStream.whenIdle()
+    if (eventContext) {
+      service.handAggregateStream.discardSessionScope(eventContext)
+    }
     const restored = await sessionOrigins.end(originKey)
     broadcastSessionSelection(service, restored)
+    if (restored.scope) {
+      markSessionActive()
+    } else {
+      markSessionInactive()
+    }
 
     if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
     // #179 round3指摘: セッション終了(EVT_SESSION_RESULTS)によるHUDクリアは
@@ -857,11 +887,11 @@ const processEvent = async (
   } else if (rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID) {
     // 参加取消申込(203)も保留中アップデートの安全性再チェック地点の1つに
     // 加える（P2, codexレビュー指摘 2026-07-21, pass-4, "Recheck updates
-    // after entry cancellation"）: `applySessionActivity()`は203を309と
-    // 同様にINACTIVE化トリガーとして扱う（本ファイル冒頭の定数コメント
-    // 参照）が、この再チェック地点が309専用のままだと、参加キャンセルで
-    // ちょうど安全になったケースでも別の契機（次のセッション終了・操作
-    // 完了・SW起動）が来るまで保留され続けてしまう。203はauto-syncの
+    // after entry cancellation"）: origin trackerのend処理は、他に進行中
+    // scopeが無い場合だけINACTIVEへ移す。この再チェック地点が309専用の
+    // ままだと、参加キャンセルでちょうど安全になったケースでも別の契機
+    // （次のセッション終了・操作完了・SW起動）が来るまで保留され続けて
+    // しまう。203はauto-syncの
     // トリガー対象ではない（バックアップすべきセッションデータが無い）
     // ため`onGameSessionEnd()`は呼ばず、共有commit pointを持つ
     // `recheckPendingUpdate()`だけを呼ぶ。

@@ -38,7 +38,11 @@ import { runPipeline } from './verify-stats/pipeline'
 import { runOracle } from './verify-stats/oracle'
 import { compareResults, formatReport } from './verify-stats/compare'
 import { orderAndFilterApplicationEventsForReplay } from '../utils/database-utils'
-import { getApiEventContentIdentity, type RawApiEvent } from '../utils/api-event-key'
+import {
+  areApiEventsContentDuplicates,
+  getApiEventContentIdentity,
+  type RawApiEvent,
+} from '../utils/api-event-key'
 import type { ApiEvent } from '../types'
 
 interface CliOptions {
@@ -79,18 +83,23 @@ async function readNdjson(filePath: string): Promise<ApiEvent[]> {
   // timestamp+ApiTypeId でも payload が異なるイベントは、sequence を割り当てて
   // 両方を保存する。ハーネスも同じ前処理を行わないと、キャプチャ内の真の重複
   // （例: 同一 EVT_ACTION の二重記録）が製品では起こらない統計差分を生む。
-  const seenContent = new Set<string>()
+  const seenContent = new Map<string, RawApiEvent[]>()
   let duplicateCount = 0
   const rl = createInterface({ input: createReadStream(filePath), crlfDelay: Infinity })
   for await (const line of rl) {
     if (!line.trim()) continue
     const event = JSON.parse(line)
-    const identity = getApiEventContentIdentity(event as RawApiEvent)
-    if (seenContent.has(identity)) {
+    const rawEvent = event as RawApiEvent
+    const identity = getApiEventContentIdentity(rawEvent)
+    const sameContent = seenContent.get(identity) ?? []
+    if (sameContent.some(existing =>
+      areApiEventsContentDuplicates(existing, rawEvent)
+    )) {
       duplicateCount++
       continue
     }
-    seenContent.add(identity)
+    sameContent.push(rawEvent)
+    seenContent.set(identity, sameContent)
     rawEvents.push(event)
   }
   if (duplicateCount > 0) {
