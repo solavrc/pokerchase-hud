@@ -11,6 +11,7 @@ import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
 import { ApiType, BattleType, PhaseType, type ApiEvent } from '../types'
 import { AutoSyncService } from './auto-sync-service'
+import { MTT_TABLE_MOVE_FIXTURE } from '../test-fixtures/mtt-table-move-lifecycle'
 
 const FIRST_HAND_ID = 384370064
 const FIRST_HAND_EVENTS = [
@@ -155,6 +156,17 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
       battleType: BattleType.RING_GAME,
       startedAt: 2000,
     }
+    const detailsB = {
+      ...structuredClone(MTT_TABLE_MOVE_FIXTURE.events[1]!),
+      timestamp: 2100,
+      Name: 'Table B',
+      __pokerChaseHudSessionContext: contextB,
+    }
+    const seatsB = {
+      ...structuredClone(MTT_TABLE_MOVE_FIXTURE.events[2]!),
+      timestamp: 2200,
+      __pokerChaseHudSessionContext: contextB,
+    }
     await db.apiEvents.bulkAdd([
       {
         ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
@@ -174,6 +186,8 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
         IsRetire: false,
         __pokerChaseHudSessionContext: contextB,
       },
+      detailsB,
+      seatsB,
       {
         ApiTypeId: ApiType.EVT_SESSION_RESULTS,
         timestamp: 3000,
@@ -185,6 +199,8 @@ describe('AutoSyncService.rebuildLocalEntities() canonical replacement', () => {
 
     expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-b', startedAt: 2000 })
     expect(service.session.battleType).toBe(BattleType.RING_GAME)
+    expect(service.session.name).toBe('Table B')
+    expect(service.session.players.size).toBeGreaterThan(0)
   })
 
   test('a durable tab-close tombstone keeps its scope closed after browser restart', async () => {

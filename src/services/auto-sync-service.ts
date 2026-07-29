@@ -1658,8 +1658,11 @@ export class AutoSyncService {
       const previous = [...replaySessions.scopes.values()]
         .sort((a, b) => b.sequence - a.sequence)[0]
       if (previous && typeof service.startSession === 'function') {
+        const selectionChanged = replaySessions.currentKey !== previous.scopeKey
         replaySessions.currentKey = previous.scopeKey
-        service.startSession(previous.id, previous.battleType, previous.startedAt)
+        if (selectionChanged) {
+          service.startSession(previous.id, previous.battleType, previous.startedAt)
+        }
       } else if (typeof service.endSession === 'function') {
         replaySessions.currentKey = undefined
         service.endSession()

@@ -376,13 +376,19 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
       await service.handAggregateStream.whenIdle()
       const closingContext = sessionOrigins.getContext(tabId)
       if (closingContext) {
-        await mergeApiEvents(service.db, [
-          withRawEventSessionContext({
-            ApiTypeId: EVT_ENTRY_CANCELLED_API_TYPE_ID,
-            timestamp: Date.now(),
-            __pokerChaseHudClosureReason: 'tab-removed',
-          }, closingContext),
-        ])
+        try {
+          await mergeApiEvents(service.db, [
+            withRawEventSessionContext({
+              ApiTypeId: EVT_ENTRY_CANCELLED_API_TYPE_ID,
+              timestamp: Date.now(),
+              __pokerChaseHudClosureReason: 'tab-removed',
+            }, closingContext),
+          ])
+        } catch (error) {
+          // Chrome has authoritatively confirmed the tab is gone. Keep the
+          // live tracker correct even if the replay aid cannot be persisted.
+          console.warn('[background] Failed to persist removed-tab session closure:', error)
+        }
       }
       const restored = await sessionOrigins.end(tabId)
       broadcastSessionSelection(service, restored)
@@ -662,10 +668,9 @@ const processEvent = async (
     // がヒーロー在籍時点の最後の実テーブル（対戦相手を含む）を新
     // フィルターで再表示することがあるが、これは「不正確なデータ」
     // ではなく「文脈的に古い可能性のある正確なデータ」であり、この
-    // 機能の重要度に見合わないため許容する。ここは元のround3の
-    // 意図通り単純な`[]`のままにする -- `updateBattleTypeFilter`の
-    // 明示的な`getLastKnownStats()`ベースの再write()を単にno-opに
-    // するだけで、他には何もしない。
+    // 機能の重要度に見合わないため許容する。終了したoriginが現在選択中で、
+    // かつ復元できる別lineupが無い場合だけ`[]`へ落とす。非選択originの
+    // 終了では、進行中の選択タブがrealtime配信に使うcacheを維持する。
     //
     // なお#188（read-entity-stream.tsのrecalculateStats()を呼ぶ
     // message-router.tsのupdateBattleTypeFilterハンドラー自身）で、
@@ -677,7 +682,9 @@ const processEvent = async (
     // 203(参加取消申込)はここに含めない: 303/308が一度も届いていない
     // （ハンドが一度も始まっていない）ため、そもそもクリアすべき
     // ライブlineupが存在しない。
-      setLastKnownStats([])
+      if (restored.selectionChanged && !restored.scope?.latestDeal) {
+        setLastKnownStats([])
+      }
     }
   }
 

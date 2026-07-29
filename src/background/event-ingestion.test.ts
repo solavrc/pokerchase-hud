@@ -12,7 +12,7 @@ import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
 import { ApiType, BattleType, type ApiEvent } from '../types'
 import { registerEventIngestion } from './event-ingestion'
-import { connectedPorts } from './ports'
+import { connectedPorts, getLastKnownStats, setLastKnownStats } from './ports'
 import { getUndecodedEventStats, resetUndecodedEventStats, UNDECODED_EVENT_STATS_KEY } from './undecoded-event-tracker'
 import { MTT_TABLE_MOVE_FIXTURE } from '../test-fixtures/mtt-table-move-lifecycle'
 
@@ -126,6 +126,47 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
 
     await onMessageHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 4000 })
     expect(service.getCurrentSessionScope()).toBeUndefined()
+  })
+
+  test('ending a non-selected origin preserves the selected tab live-stat cache', async () => {
+    const secondPort = {
+      name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
+      sender: { tab: { id: 202 } },
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn(),
+    }
+    mockPort.sender = { tab: { id: 101 } }
+    connectListener(secondPort)
+    const secondHandler = secondPort.onMessage.addListener.mock.calls[0][0]
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 1000,
+      Code: 0,
+      BattleType: BattleType.SIT_AND_GO,
+      Id: 'tab-a',
+      IsRetire: false,
+    })
+    await secondHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 2000,
+      Code: 0,
+      BattleType: BattleType.RING_GAME,
+      Id: 'tab-b',
+      IsRetire: false,
+    })
+    const tabBStats = [{ playerId: 202, statResults: [] }]
+    setLastKnownStats(tabBStats)
+
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_SESSION_RESULTS,
+      timestamp: 3000,
+    })
+
+    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-b', startedAt: 2000 })
+    expect(getLastKnownStats()).toEqual(tabBStats)
+    setLastKnownStats([])
   })
 
   test('an entry cancellation only closes its originating tab session', async () => {
@@ -297,8 +338,8 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     })
   })
 
-  test('a tab-close transition fails closed when its durable tombstone cannot be written', async () => {
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
+  test('a tab-close transition still ends live state when its tombstone cannot be written', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
     mockPort.sender = { tab: { id: 101 } }
     await onMessageHandler({
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
@@ -310,11 +351,11 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     })
     jest.spyOn(db, 'transaction').mockRejectedValueOnce(new Error('quota'))
 
-    await expect(tabRemovedHandler(101)).rejects.toThrow('quota')
+    await expect(tabRemovedHandler(101)).resolves.toBeUndefined()
 
-    expect(service.getCurrentSessionScope()).toEqual({ id: 'tab-a', startedAt: 1000 })
-    expect(errorSpy).toHaveBeenCalledWith(
-      '[background] Failed to close removed-tab session scope:',
+    expect(service.getCurrentSessionScope()).toBeUndefined()
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[background] Failed to persist removed-tab session closure:',
       expect.any(Error)
     )
   })
