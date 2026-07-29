@@ -19,7 +19,7 @@ import { ApiType, BattleType } from '../types'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 
 describe('AggregateEventsStream', () => {
-  test('自動選択中にセッション種別が変わると即時再計算する', async () => {
+  test('自動選択中のセッション種別変更はrevisionだけ進め、古いdealでは再計算しない', async () => {
     const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
     const service = new PokerChaseService({ db: dbMock })
     await service.ready
@@ -37,7 +37,7 @@ describe('AggregateEventsStream', () => {
     })
     await service.handAggregateStream.whenIdle()
 
-    expect(recalculate).toHaveBeenCalledTimes(1)
+    expect(recalculate).not.toHaveBeenCalled()
     expect(service.autoBattleTypeFilterRevision).toBe(1)
   })
 

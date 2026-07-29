@@ -200,14 +200,32 @@ describe('session end (309) invalidates background lastKnownStats', () => {
     expect(getLastKnownStats()).toEqual([])
   })
 
+  test('raw EVT_SESSION_RESULTS clears the current auto-selected session category', async () => {
+    service.autoBattleTypeFilter = true
+    service.session.setId('ended-session')
+    service.session.setBattleType(BattleType.SIT_AND_GO)
+    const revisionBeforeEnd = service.autoBattleTypeFilterRevision
+
+    await onMessageHandler(sessionResultsEvent)
+
+    expect(service.session.id).toBeUndefined()
+    expect(service.session.battleType).toBeUndefined()
+    expect(service.getEffectiveBattleTypeFilter()).toEqual([])
+    expect(service.autoBattleTypeFilterRevision).toBe(revisionBeforeEnd + 1)
+  })
+
   test('a malformed EVT_SESSION_RESULTS still clears lastKnownStats (raw ApiTypeId, unaffected by Zod parse failures)', async () => {
     setLastKnownStats([{ playerId: 2, statResults: [] } as any])
+    service.autoBattleTypeFilter = true
+    service.session.setBattleType(BattleType.RING_GAME)
 
     // Missing every required field -- fails Zod validation, same shape as
     // event-ingestion.update-manager-trigger.test.ts's malformed-309 case.
     await onMessageHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 1000 })
 
     expect(getLastKnownStats()).toEqual([])
+    expect(service.session.battleType).toBeUndefined()
+    expect(service.getEffectiveBattleTypeFilter()).toEqual([])
   })
 
   test('filter change after session end does not rebroadcast the ended lineup via the explicit getLastKnownStats() write path (309 -> filter change -> no repopulation from this path)', async () => {

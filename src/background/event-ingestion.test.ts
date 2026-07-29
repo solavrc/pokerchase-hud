@@ -96,6 +96,55 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(aggregateSpy).toHaveBeenCalledTimes(1)
   })
 
+  test('delayed filter restoration does not block later events from reaching the Raw Event Lake', async () => {
+    service.beginFiltersRestore()
+    const aggregateSpy = jest.spyOn(service.handAggregateStream, 'write')
+    const first = {
+      ApiTypeId: 201, timestamp: 113, Code: 0, BattleType: 0, Id: 'stage000_005', IsRetire: false
+    }
+    const second = {
+      ApiTypeId: 201, timestamp: 114, Code: 0, BattleType: 2, Id: 'stage000_006', IsRetire: false
+    }
+
+    const firstPending = onMessageHandler(first)
+    const secondPending = onMessageHandler(second)
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    expect(await db.apiEvents.get([113, 201, 0])).toEqual({ ...first, sequence: 0 })
+    expect(await db.apiEvents.get([114, 201, 0])).toEqual({ ...second, sequence: 0 })
+    expect(aggregateSpy).not.toHaveBeenCalled()
+
+    service.markFiltersRestored()
+    await Promise.all([firstPending, secondPending])
+
+    expect(aggregateSpy.mock.calls.map(([event]) => event.timestamp)).toEqual([113, 114])
+  })
+
+  test('a session end queued during filter restoration wins over earlier session-start forwarding', async () => {
+    service.beginFiltersRestore()
+    service.autoBattleTypeFilter = true
+    service.session.setBattleType(0)
+    const entry = {
+      ApiTypeId: 201, timestamp: 115, Code: 0, BattleType: 2, Id: 'stage000_007', IsRetire: false
+    }
+    // Deliberately malformed 309: the raw ApiTypeId must still end the session.
+    const sessionEnd = { ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 116 }
+
+    const entryPending = onMessageHandler(entry)
+    const endPending = onMessageHandler(sessionEnd)
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    expect(await db.apiEvents.get([115, 201, 0])).toEqual({ ...entry, sequence: 0 })
+    expect(await db.apiEvents.get([116, ApiType.EVT_SESSION_RESULTS, 0])).toEqual({ ...sessionEnd, sequence: 0 })
+
+    service.markFiltersRestored()
+    await Promise.all([entryPending, endPending])
+    await service.handAggregateStream.whenIdle()
+
+    expect(service.session.battleType).toBeUndefined()
+    expect(service.getEffectiveBattleTypeFilter()).toEqual([])
+  })
+
   test('an application-type event that fails Zod validation is stored raw but NOT forwarded to streams', async () => {
     const handLogSpy = jest.spyOn(service.handLogStream, 'write')
     const aggregateSpy = jest.spyOn(service.handAggregateStream, 'write')

@@ -63,6 +63,15 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     // 新しい計算を保証するためキャッシュをクリア
     this.invalidateCache()
 
+    // 自動選択中に現在セッションが終了済みなら、永続化された前セッションの
+    // latestEvtDealを使って古いlineupを再表示しない。
+    if (
+      this.service.autoBattleTypeFilter &&
+      this.service.session.battleType === undefined
+    ) {
+      return
+    }
+
     // 必要なデータの存在チェック
     if (!this.service.playerId || !this.service.latestEvtDeal) {
       console.warn('[ReadEntityStream] playerId or latestEvtDeal not available, skipping stats calculation')
@@ -78,13 +87,29 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     // broadcastされる。反対にキュー待ち中の新しいlive dealをそのまま使うと、
     // この再計算結果が別lineupでbroadcastされる。push直前に捕捉値へ再アンカーする。
     const evtDeal = this.service.latestEvtDeal
+    const sessionRevision = this.service.sessionRevision
 
     // 直接calcStats()すると、既に走っている旧フィルターのtransformより先に
     // 完了し、その後に旧結果がHUDを上書きし得る。通常writeと同じ直列キューの
     // 末尾へ載せ、最終ブロードキャストが必ず現在のフィルターになるようにする。
     await this.enqueueSerialized(async () => {
       try {
+        // 待機中に新しいヒーロー在籍dealが到着した場合、この項目のseatUserIdsと
+        // evtDealは既に古い。ここでliveEvtDealを巻き戻したり結果をpushせず、
+        // 後ろに積まれた新dealの通常transformへ最終表示を任せる。
+        if (
+          this.service.latestEvtDeal !== evtDeal ||
+          this.service.sessionRevision !== sessionRevision
+        ) {
+          return
+        }
         const stats = await this.calcStats(seatUserIds)
+        if (
+          this.service.latestEvtDeal !== evtDeal ||
+          this.service.sessionRevision !== sessionRevision
+        ) {
+          return
+        }
         this.service.liveEvtDeal = evtDeal
         this.push(stats)
       } catch (error) {

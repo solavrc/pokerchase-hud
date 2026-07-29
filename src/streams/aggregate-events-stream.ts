@@ -56,7 +56,10 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
             previousAutoFilter !== this.service.getEffectiveBattleTypeFilter()?.join(',')
           ) {
             this.service.autoBattleTypeFilterRevision++
-            await this.service.statsOutputStream.recalculateStats()
+            // 新セッション最初のEVT_DEALまではlatestEvtDealが前セッションの
+            // lineupを指す。ここで再計算すると新カテゴリの統計を古い座席へ
+            // broadcastしてしまうため、revisionだけ進め、統計broadcastは
+            // EVT_DEAL側の通常writeに委ねる。
           }
           break
         case ApiType.EVT_SESSION_DETAILS:

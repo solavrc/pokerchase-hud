@@ -118,6 +118,22 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     expect(await db.apiEvents.count()).toBe(0)
   })
 
+  test('drops application forwarding if deletion claims ownership after the raw write', async () => {
+    service.beginFiltersRestore()
+    const handLogSpy = jest.spyOn(service.handLogStream, 'write')
+
+    const pending = onMessageHandler(entryQueued(1_050))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(await db.apiEvents.get([1_050, ApiType.EVT_ENTRY_QUEUED, 0])).toBeDefined()
+    expect(handLogSpy).not.toHaveBeenCalled()
+
+    setOperationState({ type: 'delete' })
+    service.markFiltersRestored()
+    await pending
+
+    expect(handLogSpy).not.toHaveBeenCalled()
+  })
+
   test('streams / auto-sync trigger / session-activity tracking all wait behind the raw merge, and all run after it resolves', async () => {
     const handLogSpy = jest.spyOn(service.handLogStream, 'write')
     const markSessionActiveSpy = jest.spyOn(updateManager, 'markSessionActive')

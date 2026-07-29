@@ -40,6 +40,55 @@ const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
  * （`registerEventIngestion()`のコメント参照）。
  */
 let ingestionQueue: Promise<void> = Promise.resolve()
+let applicationForwardingQueue: Promise<void> = Promise.resolve()
+
+type DurableProcessingResult = {
+  forwarding?: Promise<void>
+}
+
+const clearEndedSession = (service: PokerChaseService): void => {
+  const previousAutoFilter = service.getEffectiveBattleTypeFilter()?.join(',')
+  service.resetSession()
+  if (
+    service.autoBattleTypeFilter &&
+    previousAutoFilter !== service.getEffectiveBattleTypeFilter()?.join(',')
+  ) {
+    service.autoBattleTypeFilterRevision++
+  }
+}
+
+const enqueueApplicationForwarding = (
+  service: PokerChaseService,
+  rawApiTypeId: unknown,
+  data?: ReturnType<typeof parseApiEvent>
+): Promise<void> => {
+  const forwarding = applicationForwardingQueue.then(async () => {
+    await Promise.all([service.ready, service.filtersRestored])
+
+    // Raw保存後にlocal deletionがcommit slotを取得した場合、待機していた
+    // application転送を再開するとDexieが削除済みDBを再作成し得る。deleteが
+    // ownershipを持つ間は派生streamを破棄する（raw行も削除対象なので再送不要）。
+    if (getOperationState().type === 'delete') return
+
+    // raw段階で終了状態を即座に反映した後も、先行して待っていた201/303が
+    // filtersRestored後にsessionを復元し得る。309自身の順番でもう一度resetし、
+    // application queueの最終状態も到着順に一致させる。
+    if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+      clearEndedSession(service)
+    }
+
+    if (!data || !isApplicationApiEvent(data)) return
+
+    service.eventLogger(data, 'info')
+    service.handLogStream.write(data)
+    service.handAggregateStream.write(data)
+    service.realTimeStatsStream.write(data)
+  })
+  applicationForwardingQueue = forwarding.catch(err => {
+    console.error('[background] Unhandled application forwarding error (fail-safe, queue continues):', err)
+  })
+  return forwarding
+}
 
 /**
  * `chrome.runtime.onConnect`のハンドラーを登録する。
@@ -99,6 +148,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   // このため呼び出し元固有のactivity generation plumbingは不要であり、
   // operation completion/SW startupと同じ安全性機構へ統一されている。
   ingestionQueue = Promise.resolve()
+  applicationForwardingQueue = Promise.resolve()
   setIngestionDrainProvider(() => ingestionQueue)
 
   chrome.runtime.onConnect.addListener(port => {
@@ -121,15 +171,16 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           return Promise.resolve()
         }
 
-        // このイベントの処理を、直前のイベントの処理（add()の決着含む）の
-        // 後ろに連結する。`processEvent`は内部で全エラーを捕捉して素通し
-        // させない設計だが、想定外のバグでqueueが壊れて以降のイベントが
-        // 永久に詰まることのないよう、キューの継続用チェーンは別途catchする。
-        const task = ingestionQueue.then(() => processEvent(service, message))
-        ingestionQueue = task.catch(err => {
+        // Raw Event Lakeへの保存とraw-first副作用だけを直列化する。フィルター
+        // 復元待ちを含むアプリケーションstream転送はprocessEvent()が別キューへ
+        // 積むため、cold start中でも後続イベントは各自のraw mergeまで進める。
+        const durableTask = ingestionQueue.then(() => processEvent(service, message))
+        ingestionQueue = durableTask.then(() => undefined).catch(err => {
           console.error('[background] Unhandled ingestion queue error (fail-safe, queue continues):', err)
         })
-        return task
+        // 呼び出し元には従来通り、このイベント固有のstream転送完了まで待てる
+        // Promiseを返す。ただしそれをraw ingestionQueueのtailにはしない。
+        return durableTask.then(result => result?.forwarding)
       })
       const stopPing = startPortPing(port)
 
@@ -212,7 +263,7 @@ const applySessionActivity = (rawApiTypeId: unknown, message: ApiMessage | { typ
 const processEvent = async (
   service: PokerChaseService,
   message: ApiMessage | { type: string }
-): Promise<void> => {
+): Promise<DurableProcessingResult | undefined> => {
   // Ensure service is ready before processing messages
   try {
     await service.ready
@@ -277,6 +328,12 @@ const processEvent = async (
   applySessionActivity(rawApiTypeId, message)
 
   if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+    // 309は現在セッションの終了を表す。auto選択が前セッションのbattleTypeを
+    // 永続状態から拾い続けないよう、raw保存成功・重複排除後にセッションを
+    // fail closedへ戻す。raw ApiTypeIdだけを見るため、309のpayloadが将来
+    // Zod parseに失敗しても終了状態は保持される。
+    clearEndedSession(service)
+
     // #179 round3指摘: セッション終了(EVT_SESSION_RESULTS)によるHUDクリアは
     // App.tsx側のReact stateだけで完結しており、background(ports.ts)の
     // `lastKnownStats`はセッションをまたいで残り続ける。この状態で
@@ -425,6 +482,9 @@ const processEvent = async (
         console.error('[background] Failed to record undecoded event stats:', err)
       )
     }
+    if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
+      return { forwarding: enqueueApplicationForwarding(service, rawApiTypeId) }
+    }
     return
   }
 
@@ -436,22 +496,9 @@ const processEvent = async (
     return
   }
 
-  // Raw Event Lakeへの保存とraw-firstの安全性副作用は上で先に確定させる一方、
-  // フィルター依存のライブ統計パイプラインは起動時設定の復元完了を待つ。
-  // これによりMV3 cold start中の201/303がデフォルトの全件フィルターでHUDを
-  // 一度ブロードキャストし、そのまま次イベントまで残る競合を防ぐ。
-  // processEvent入口でもreadyを待っているが、統計転送のゲートとして必要な
-  // 2条件をここに明示して将来の順序変更でも片側だけ先行しないようにする。
-  await Promise.all([service.ready, service.filtersRestored])
-
-  // ここでdataはApiEvent型（isApplicationApiEventで保証済み）
-  service.eventLogger(data, 'info')
-
-  // ストリーム処理（DB保存は上で完了済み・耐久性確定済み）
-  service.handLogStream.write(data)
-  service.handAggregateStream.write(data)
-  service.realTimeStatsStream.write(data)
-  // Auto-sync起動・pending update再チェック（309/201/308）は上のRaw
-  // Event Lake保存直後に生ApiTypeIdベースで既にトリガー済み（本ブロックの
-  // パース成功はストリーム投入のみが目的）
+  // フィルター依存のstream転送だけを別の直列キューへ積む。復元待ちが長引いても
+  // raw ingestionQueueを保持しないため、後続イベントは先にRaw Lakeへ永続化できる。
+  // applicationForwardingQueueはraw側での到着順に積まれるので、復元後のstream順序は
+  // これまで通り保たれる。
+  return { forwarding: enqueueApplicationForwarding(service, rawApiTypeId, data) }
 }

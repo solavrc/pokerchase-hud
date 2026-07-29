@@ -197,6 +197,54 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     ])
   })
 
+  test('automatic recalculation does not overwrite a newer deal that arrives while it is calculating', async () => {
+    const oldDeal = {
+      ApiTypeId: ApiType.EVT_DEAL,
+      SeatUserIds: SEAT_USER_IDS,
+      Game: { CurrentBlindLv: 1, NextBlindUnixSeconds: 0, Ante: 0, SmallBlind: 100, BigBlind: 200, ButtonSeat: 0, SmallBlindSeat: 1, BigBlindSeat: 2 },
+      Player: { SeatIndex: 0, BetStatus: 1, HoleCards: [0, 1], Chip: 5000, BetChip: 0 },
+      OtherPlayers: [],
+      Progress: { Phase: 0, NextActionSeat: 0, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 300, SidePot: [] },
+      timestamp: 2000,
+    } as ApiEvent<ApiType.EVT_DEAL>
+    const newSeatUserIds = [PLAYER_ID, 7, 8, 9, 10, 11]
+    const newDeal = {
+      ...oldDeal,
+      SeatUserIds: newSeatUserIds,
+      timestamp: 3000,
+    } as ApiEvent<ApiType.EVT_DEAL>
+    service.playerId = PLAYER_ID
+    service.latestEvtDeal = oldDeal
+
+    let releaseStaleCalculation!: () => void
+    let signalStaleCalculationStarted!: () => void
+    const staleCalculationBlocked = new Promise<void>(resolve => { releaseStaleCalculation = resolve })
+    const staleCalculationStarted = new Promise<void>(resolve => { signalStaleCalculationStarted = resolve })
+    const staleStats = [{ playerId: PLAYER_ID, statResults: [] }] as PlayerStats[]
+    const freshStats = [{ playerId: PLAYER_ID, statResults: [{ id: 'hands', name: 'HAND', value: 2, formatted: '2' }] }] as PlayerStats[]
+    const calcSpy = jest.spyOn(service.statsOutputStream, 'calcStats')
+      .mockImplementationOnce(async () => {
+        signalStaleCalculationStarted()
+        await staleCalculationBlocked
+        return staleStats
+      })
+      .mockResolvedValueOnce(freshStats)
+    const emitted: PlayerStats[][] = []
+    service.statsOutputStream.on('data', stats => emitted.push(stats))
+
+    const staleRefresh = service.statsOutputStream.recalculateStats()
+    await staleCalculationStarted
+    service.latestEvtDeal = newDeal
+    service.statsOutputStream.write(newSeatUserIds)
+    releaseStaleCalculation()
+    await staleRefresh
+    await service.statsOutputStream.whenIdle()
+
+    expect(calcSpy).toHaveBeenCalledTimes(2)
+    expect(emitted).toEqual([freshStats])
+    expect(service.liveEvtDeal).toBe(newDeal)
+  })
+
   test('a completed hand invalidates a same-lineup production cache warmed at deal time', async () => {
     const previousNodeEnv = process.env.NODE_ENV
     process.env.NODE_ENV = 'production'
