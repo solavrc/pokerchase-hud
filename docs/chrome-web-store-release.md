@@ -24,7 +24,7 @@ Before submitting a telemetry-enabled release:
    個人識別子を仮名化した対局イベント値）を、信頼性改善とAPI変更への追従目的で
    Sentry へ送信することを明示する。
 2. 既存ユーザーにも更新情報でデータ取扱いの変更を明示する。実際の送信は
-   Popup の **Sentryへエラー診断を送信** をユーザーが有効にし、Chrome の
+   Popup の **診断情報を送信** をユーザーが有効にし、Chrome の
    optional host permissionを許可した後だけ開始する。
 3. 公開中の privacy policy に収集項目、用途、Sentry への送信、保持・削除方針を
    反映し、Developer Dashboard の専用 URL 欄から到達できることを確認する。

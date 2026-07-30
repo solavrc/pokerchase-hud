@@ -23,12 +23,17 @@ describe('TelemetrySection', () => {
 
   it('does not enable telemetry until the user grants the optional host permission', async () => {
     const user = userEvent.setup()
-    render(<TelemetrySection />)
+    const { container } = render(<TelemetrySection />)
 
     const toggle = await screen.findByRole('switch', {
-      name: 'Sentryへエラー診断を送信'
+      name: '診断情報を送信'
     })
     await waitFor(() => expect(toggle).toBeEnabled())
+    expect(screen.getByText('診断情報')).toBeInTheDocument()
+    expect(container).toHaveTextContent(
+      /不具合の調査に必要な情報を送信します。APIの変更を検知した場合は、\s*プレイヤー識別子・名前・チャットを除いた対局イベントも含まれます。/
+    )
+    expect(container).not.toHaveTextContent(/Sentry/i)
     expect(toggle).not.toBeChecked()
 
     await user.click(toggle)
@@ -40,16 +45,27 @@ describe('TelemetrySection', () => {
   it('keeps telemetry disabled when Chrome denies the permission request', async () => {
     jest.mocked(requestSentryTelemetry).mockResolvedValue(false)
     const user = userEvent.setup()
-    render(<TelemetrySection />)
+    const { container } = render(<TelemetrySection />)
 
     const toggle = await screen.findByRole('switch', {
-      name: 'Sentryへエラー診断を送信'
+      name: '診断情報を送信'
     })
     await waitFor(() => expect(toggle).toBeEnabled())
     await user.click(toggle)
 
-    await screen.findByText('Sentryへの送信権限が許可されませんでした。')
+    await screen.findByText('診断情報の送信が許可されませんでした。')
+    expect(container).not.toHaveTextContent(/Sentry/i)
     expect(toggle).not.toBeChecked()
+  })
+
+  it('reports a generic error when the diagnostic setting cannot be loaded', async () => {
+    jest.mocked(readSentryTelemetryEnabled).mockRejectedValue(
+      new Error('storage unavailable')
+    )
+    const { container } = render(<TelemetrySection />)
+
+    await screen.findByText('診断情報の設定を読み込めませんでした。')
+    expect(container).not.toHaveTextContent(/Sentry/i)
   })
 
   it('revokes telemetry when an enabled user switches it off', async () => {
@@ -58,7 +74,7 @@ describe('TelemetrySection', () => {
     render(<TelemetrySection />)
 
     const toggle = await screen.findByRole('switch', {
-      name: 'Sentryへエラー診断を送信'
+      name: '診断情報を送信'
     })
     await waitFor(() => expect(toggle).toBeChecked())
     await user.click(toggle)
@@ -75,15 +91,16 @@ describe('TelemetrySection', () => {
       new Error('mirror write failed')
     )
     const user = userEvent.setup()
-    render(<TelemetrySection />)
+    const { container } = render(<TelemetrySection />)
 
     const toggle = await screen.findByRole('switch', {
-      name: 'Sentryへエラー診断を送信'
+      name: '診断情報を送信'
     })
     await waitFor(() => expect(toggle).toBeChecked())
     await user.click(toggle)
 
-    await screen.findByText('エラー診断の設定を更新できませんでした。')
+    await screen.findByText('診断情報の設定を更新できませんでした。')
+    expect(container).not.toHaveTextContent(/Sentry/i)
     await waitFor(() => expect(toggle).not.toBeChecked())
     expect(readSentryTelemetryEnabled).toHaveBeenCalledTimes(2)
   })

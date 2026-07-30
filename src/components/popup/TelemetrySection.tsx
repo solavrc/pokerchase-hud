@@ -21,7 +21,7 @@ export const TelemetrySection = () => {
         if (!cancelled) setEnabled(value)
       })
       .catch(() => {
-        if (!cancelled) setError('エラー診断の設定を読み込めませんでした。')
+        if (!cancelled) setError('診断情報の設定を読み込めませんでした。')
       })
       .finally(() => {
         if (!cancelled) setPending(false)
@@ -43,7 +43,7 @@ export const TelemetrySection = () => {
         const granted = await requestSentryTelemetry()
         setEnabled(granted)
         if (!granted) {
-          setError('Sentryへの送信権限が許可されませんでした。')
+          setError('診断情報の送信が許可されませんでした。')
         }
       } else {
         await revokeSentryTelemetry()
@@ -55,7 +55,7 @@ export const TelemetrySection = () => {
       } catch {
         // Keep the last rendered state if even reconciliation is unavailable.
       }
-      setError('エラー診断の設定を更新できませんでした。')
+      setError('診断情報の設定を更新できませんでした。')
     } finally {
       setPending(false)
     }
@@ -64,7 +64,7 @@ export const TelemetrySection = () => {
   return (
     <>
       <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-        エラー診断
+        診断情報
       </Typography>
       <FormControlLabel
         control={
@@ -74,15 +74,15 @@ export const TelemetrySection = () => {
             onChange={handleChange}
           />
         }
-        label="Sentryへエラー診断を送信"
+        label="診断情報を送信"
       />
       <Typography
         variant="caption"
         color="text.secondary"
         sx={{ display: 'block' }}
       >
-        クラッシュ情報を送信します。API変更を検知した場合は、
-        プレイヤー識別子・名前・チャットを除いた対局イベントも送信します。
+        不具合の調査に必要な情報を送信します。APIの変更を検知した場合は、
+        プレイヤー識別子・名前・チャットを除いた対局イベントも含まれます。
       </Typography>
       {error && (
         <Alert severity="error" sx={{ mt: 1 }}>
