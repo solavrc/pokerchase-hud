@@ -694,6 +694,36 @@ describe('HandLog', () => {
     )
   })
 
+  it('未保存の既定配置もviewport縮小時に具体化して回収する', () => {
+    const { container } = render(<HandLog entries={mockEntries} scale={2} />)
+    const logContainer = container.firstChild as HTMLElement
+    logContainer.getBoundingClientRect = jest.fn(() => ({
+      left: 80,
+      top: -96,
+      width: 800,
+      height: 200,
+      right: 880,
+      bottom: 104,
+      x: 80,
+      y: -96,
+      toJSON: () => {},
+    }))
+
+    expect(logContainer.style.top).toBe('')
+    expect(logContainer.style.bottom).toBeTruthy()
+
+    Object.defineProperty(window, 'innerHeight', {
+      configurable: true,
+      value: 239,
+    })
+    fireEvent(window, new Event('resize'))
+
+    expect(logContainer.style.left).toBe('80px')
+    expect(logContainer.style.top).toBe('0px')
+    expect(logContainer.style.height).toBe('100px')
+    expect(logContainer.style.transformOrigin).toBe('top left')
+  })
+
   it('遅延reset後の保存済みlayout配信で表示を最新値へ戻す', () => {
     const { container } = render(<HandLog entries={mockEntries} />)
     const logContainer = container.firstChild as HTMLElement

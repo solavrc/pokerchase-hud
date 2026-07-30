@@ -319,10 +319,19 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
   // happens exclusively after a user move/resize.
   useEffect(() => {
     const handleViewportResize = () => {
-      const currentLayout = layoutRef.current
-      if (!currentLayout || interactionRef.current) return
+      if (interactionRef.current) return
 
-      applyLayout(keepLayoutControlsReachable(currentLayout, scale))
+      const currentLayout = layoutRef.current
+      const rect = containerRef.current?.getBoundingClientRect()
+      if (!currentLayout && !rect) return
+
+      const visibleLayout = currentLayout ?? {
+        left: rect!.left,
+        top: rect!.top,
+        width: DEFAULT_HAND_LOG_CONFIG.width,
+        height: DEFAULT_HAND_LOG_CONFIG.height,
+      }
+      applyLayout(keepLayoutControlsReachable(visibleLayout, scale))
     }
 
     window.addEventListener('resize', handleViewportResize)
