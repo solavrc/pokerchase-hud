@@ -29,28 +29,11 @@ interface HandLogProps {
   scrollToLatest?: boolean
 }
 
-const getPositionStyles = (position: string): CSSProperties => {
-  const offset = 10
-  const bottomOffset = 135  // 125px持ち上げるため、10 + 125 = 135
-  const defaultPosition: CSSProperties = { bottom: bottomOffset, right: offset }
-
-  switch (position) {
-    case 'bottom-right':
-      return { bottom: bottomOffset, right: offset }
-    case 'bottom-left':
-      return { bottom: bottomOffset, left: offset }
-    case 'top-right':
-      return { top: offset, right: offset }
-    case 'top-left':
-      return { top: offset, left: offset }
-    default:
-      return defaultPosition
-  }
-}
-
 const HAND_LOG_HEADER_HEIGHT = 28
 const HAND_LOG_HEADER_REACHABLE_WIDTH = 80
 const HAND_LOG_DRAG_THRESHOLD = 4
+const HAND_LOG_EDGE_OFFSET = 10
+const HAND_LOG_BOTTOM_OFFSET = 135
 
 type HandLogInteractionMode = 'move' | 'resize'
 
@@ -93,6 +76,24 @@ const keepLayoutControlsReachable = (
     ),
     height,
   }
+}
+
+const getDefaultHandLogLayout = (scale: number): HandLogLayout => {
+  const width = DEFAULT_HAND_LOG_CONFIG.width
+  const height = DEFAULT_HAND_LOG_CONFIG.height
+  const renderedWidth = width * scale
+  const renderedHeight = height * scale
+
+  let left = HAND_LOG_EDGE_OFFSET
+  let top = HAND_LOG_EDGE_OFFSET
+  if (DEFAULT_HAND_LOG_CONFIG.position.includes('right')) {
+    left = window.innerWidth - HAND_LOG_EDGE_OFFSET - renderedWidth
+  }
+  if (DEFAULT_HAND_LOG_CONFIG.position.includes('bottom')) {
+    top = window.innerHeight - HAND_LOG_BOTTOM_OFFSET - renderedHeight
+  }
+
+  return keepLayoutControlsReachable({ left, top, width, height }, scale)
 }
 
 const entryTypeColors: Record<HandLogEntryType, string> = {
@@ -202,8 +203,10 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
   const listRef = useListRef(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [copiedHandId, setCopiedHandId] = useState<number | null>(null)
-  const [layout, setLayout] = useState<HandLogLayout | null>(null)
-  const layoutRef = useRef<HandLogLayout | null>(null)
+  const [layout, setLayout] = useState<HandLogLayout>(() =>
+    getDefaultHandLogLayout(scale)
+  )
+  const layoutRef = useRef<HandLogLayout>(layout)
   const layoutEditGenerationRef = useRef(0)
   const interactionRef = useRef<HandLogInteraction | null>(null)
   const [interactionMode, setInteractionMode] = useState<HandLogInteractionMode | null>(null)
@@ -211,7 +214,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
   const [showCleared, setShowCleared] = useState(false)
   const lastClickTimeRef = useRef<number>(0)
 
-  const applyLayout = useCallback((nextLayout: HandLogLayout | null) => {
+  const applyLayout = useCallback((nextLayout: HandLogLayout) => {
     layoutRef.current = nextLayout
     setLayout(nextLayout)
   }, [])
@@ -286,7 +289,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
       layoutEditGenerationRef.current += 1
-      applyLayout(null)
+      applyLayout(getDefaultHandLogLayout(scale))
     }
     const handleUpdate = (event: Event) => {
       const nextLayout = (event as CustomEvent<unknown>).detail
@@ -322,18 +325,10 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       if (interactionRef.current) return
 
       const currentLayout = layoutRef.current
-      const rect = containerRef.current?.getBoundingClientRect()
-      if (!currentLayout && !rect) return
-
-      const visibleLayout = currentLayout ?? {
-        left: rect!.left,
-        top: rect!.top,
-        width: DEFAULT_HAND_LOG_CONFIG.width,
-        height: DEFAULT_HAND_LOG_CONFIG.height,
-      }
-      applyLayout(keepLayoutControlsReachable(visibleLayout, scale))
+      applyLayout(keepLayoutControlsReachable(currentLayout, scale))
     }
 
+    handleViewportResize()
     window.addEventListener('resize', handleViewportResize)
     return () => window.removeEventListener('resize', handleViewportResize)
   }, [applyLayout, scale])
@@ -418,10 +413,10 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       startX: e.clientX,
       startY: e.clientY,
       startLayout: {
-        left: currentLayout?.left ?? rect.left,
-        top: currentLayout?.top ?? rect.top,
-        width: currentLayout?.width ?? DEFAULT_HAND_LOG_CONFIG.width,
-        height: currentLayout?.height ?? DEFAULT_HAND_LOG_CONFIG.height,
+        left: rect.left,
+        top: rect.top,
+        width: currentLayout.width,
+        height: currentLayout.height,
       },
       moved: false,
     }
@@ -438,7 +433,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     const finalizeInteraction = () => {
       const interaction = interactionRef.current
       const finalLayout = layoutRef.current
-      if (interaction?.moved && finalLayout) {
+      if (interaction?.moved) {
         saveHandLogLayout(finalLayout)
       }
       interactionRef.current = null
@@ -540,16 +535,15 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
   // 無効の場合はレンダリングしない
   if (!config.enabled) return null
 
-  const width = layout?.width ?? DEFAULT_HAND_LOG_CONFIG.width
-  const height = layout?.height ?? DEFAULT_HAND_LOG_CONFIG.height
+  const width = layout.width
+  const height = layout.height
   const bodyHeight = Math.max(0, height - HAND_LOG_HEADER_HEIGHT)
 
   // コンテナスタイル
   const containerStyle: CSSProperties = {
     position: 'fixed',
-    ...(layout
-      ? { left: layout.left, top: layout.top }
-      : getPositionStyles(DEFAULT_HAND_LOG_CONFIG.position)),
+    left: layout.left,
+    top: layout.top,
     width: width,
     height,
     backgroundColor: `rgba(0, 0, 0, ${config.opacity})`,
@@ -558,9 +552,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     borderRadius: '4px',
     padding: '0',
     transform: `scale(${scale})`,
-    transformOrigin: layout
-      ? 'top left'
-      : DEFAULT_HAND_LOG_CONFIG.position.replace('-', ' '),
+    transformOrigin: 'top left',
     overflowY: 'hidden',
     overflowX: 'hidden',
     fontFamily: 'Consolas, Monaco, "Courier New", monospace',

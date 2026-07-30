@@ -239,8 +239,8 @@ describe('HandLog', () => {
     moveMouseWithPrimaryButton(550, 420)
     fireEvent.mouseUp(document)
 
-    expect(logContainer.style.left).toBe('')
-    expect(logContainer.style.top).toBe('')
+    expect(logContainer.style.left).toBe('614px')
+    expect(logContainer.style.top).toBe('533px')
     expect(mockChromeRuntimeSendMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ action: 'setDeviceHandLogLayout' }),
       expect.any(Function)
@@ -618,8 +618,8 @@ describe('HandLog', () => {
 
     fireEvent(window, new CustomEvent('resetHandLogLayout'))
 
-    expect(logContainer.style.left).toBe('')
-    expect(logContainer.style.right).toBeTruthy()
+    expect(logContainer.style.left).toBe('614px')
+    expect(logContainer.style.top).toBe('533px')
     expect(logContainer.style.width).toBe(`${DEFAULT_HAND_LOG_CONFIG.width}px`)
     expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
   })
@@ -694,31 +694,15 @@ describe('HandLog', () => {
     )
   })
 
-  it('未保存の既定配置もviewport縮小時に具体化して回収する', () => {
-    const { container } = render(<HandLog entries={mockEntries} scale={2} />)
-    const logContainer = container.firstChild as HTMLElement
-    logContainer.getBoundingClientRect = jest.fn(() => ({
-      left: 80,
-      top: -96,
-      width: 800,
-      height: 200,
-      right: 880,
-      bottom: 104,
-      x: 80,
-      y: -96,
-      toJSON: () => {},
-    }))
-
-    expect(logContainer.style.top).toBe('')
-    expect(logContainer.style.bottom).toBeTruthy()
-
+  it('未保存の既定配置も狭い初期viewportで即時に回収する', () => {
     Object.defineProperty(window, 'innerHeight', {
       configurable: true,
       value: 239,
     })
-    fireEvent(window, new Event('resize'))
+    const { container } = render(<HandLog entries={mockEntries} scale={2} />)
+    const logContainer = container.firstChild as HTMLElement
 
-    expect(logContainer.style.left).toBe('80px')
+    expect(logContainer.style.left).toBe('214px')
     expect(logContainer.style.top).toBe('0px')
     expect(logContainer.style.height).toBe('100px')
     expect(logContainer.style.transformOrigin).toBe('top left')
@@ -730,7 +714,7 @@ describe('HandLog', () => {
     const latestLayout = { left: 80, top: 60, width: 520, height: 240 }
 
     fireEvent(window, new CustomEvent('resetHandLogLayout'))
-    expect(logContainer.style.left).toBe('')
+    expect(logContainer.style.left).toBe('614px')
 
     fireEvent(window, new CustomEvent('updateHandLogLayout', {
       detail: latestLayout,
@@ -829,8 +813,8 @@ describe('HandLog', () => {
     moveMouseWithPrimaryButton(movedX, movedY)
     fireEvent(window, new CustomEvent('resetHandLogLayout'))
 
-    expect(logContainer.style.left).toBe('')
-    expect(logContainer.style.right).toBeTruthy()
+    expect(logContainer.style.left).toBe('614px')
+    expect(logContainer.style.top).toBe('533px')
     expect(logContainer.style.width).toBe(`${DEFAULT_HAND_LOG_CONFIG.width}px`)
     expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
     expect(document.body.style.cursor).toBe('')
@@ -842,8 +826,8 @@ describe('HandLog', () => {
     })
     fireEvent.mouseUp(document)
 
-    expect(logContainer.style.left).toBe('')
-    expect(logContainer.style.right).toBeTruthy()
+    expect(logContainer.style.left).toBe('614px')
+    expect(logContainer.style.top).toBe('533px')
     expect(mockChromeRuntimeSendMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ action: 'setDeviceHandLogLayout' }),
       expect.any(Function)
@@ -859,10 +843,8 @@ describe('HandLog', () => {
     )
     const logContainer = container.firstChild as HTMLElement
 
-    expect(logContainer.style.bottom).toBeTruthy()
-    expect(logContainer.style.right).toBeTruthy()
-    expect(logContainer.style.top).toBe('')
-    expect(logContainer.style.left).toBe('')
+    expect(logContainer.style.top).toBe('533px')
+    expect(logContainer.style.left).toBe('614px')
     expect(logContainer.style.width).toBe(`${DEFAULT_HAND_LOG_CONFIG.width}px`)
     expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
   })

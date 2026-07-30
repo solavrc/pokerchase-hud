@@ -371,11 +371,12 @@ on large DBs (bounded, local work; import is a rare operation).
   resize-only. Persisted `HandLogLayout.height`/`width` remain the panel's
   outer dimensions for compatibility, so the virtualized body height is the
   outer height minus the header. One scale-aware reachability rule is applied
-  when restoring or updating a layout and whenever the mounted viewport
-  changes; an unsaved default position is first materialized from its rendered
-  bounds, then the rule clamps position and shrinks an over-height panel when
-  necessary. Move-time and resize-time clamping follows the same invariant so
-  both controls remain recoverable. The device-local persistence,
+  at initial mount, when restoring or updating a layout, after reset, and
+  whenever the mounted viewport changes. The unsaved default is a concrete
+  layout from the start, so every lifecycle boundary passes through the same
+  rule that clamps position and shrinks an over-height panel when necessary.
+  Move-time and resize-time clamping follows the same invariant so both
+  controls remain recoverable. The device-local persistence,
   reset/update generation guards, drag threshold, missed-mouseup recovery,
   blur/unmount save, scale handling, unbounded maximum width,
   viewport-bounded height, and 200x80 minimum remain shared by header moves
