@@ -5,7 +5,7 @@ PokerChase HUD uses the dedicated
 Sentry project for production error detection.
 
 Sentry is initialized in the background service worker, content script, and
-popup only after the user enables **Sentryへエラー診断を送信** in the popup.
+popup only after the user enables **診断情報を送信** in the popup.
 Enabling it grants the Sentry ingest origin as an optional host permission;
 existing installations are not disabled during an extension update.
 Revoking that permission in Chrome settings clears the shared consent bit and
