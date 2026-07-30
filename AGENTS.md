@@ -461,6 +461,20 @@ See individual files in `src/utils/` for implementation details.
 
 Components are modularized with feature-specific sub-components in `hud/` and `popup/` directories.
 
+**Hand-log layout lifecycle**: `HandLog.tsx` owns movement, resizing, scale,
+viewport dimensions, async device-layout loading, normalization, and
+persistence in one component-local state machine. The machine's concrete
+`HandLogLayout` is the only rendered layout source. Every input enters through
+`transitionHandLogLayout()`, which keeps a new viewport/scale pending during an
+active pointer interaction, rejects layout-load callbacks bound to an older
+request or scale, and emits at most one persistence effect from the common
+interaction exit. Do not add another effect/ref that mutates or saves hand-log
+coordinates outside that transition outlet. The header is the move handle; the
+lower-right corner is resize-only. Normalization keeps the full vertical panel
+and a usable horizontal portion of the header reachable, caps height to the
+scaled viewport, and applies to loaded, default, reset, external, pointer, and
+viewport/scale-driven layouts.
+
 **Popup theming**: `src/components/popup/theme.ts` defines two MUI themes -- `dark-felt` (default look, shares the HUD overlay's dark/gold palette) and `modern-light`. Which one renders is controlled by the `popupTheme` setting (`'auto' | 'dark' | 'light'`, default `'auto'`; テーマ control in `PopupHeader.tsx`, a 自動/ダーク/ライト 3-way `SegmentRadio`). `'auto'` resolves against the live OS `prefers-color-scheme` via `useMediaQuery` in `Popup.tsx` (`resolvePopupThemeVariant()` in `theme.ts` is the pure resolver, unit-tested independent of the DOM). Persisted to its own `chrome.storage.sync` key (`popupTheme`, see `popup-theme-storage.ts`) -- deliberately **not** a field on `UIConfig`, because `UIScaleSection`/`HudDisplaySection` broadcast every `uiConfig` write to all open game tabs (`chrome.tabs.sendMessage(..., 'updateUIConfig')`) to trigger a HUD re-render; the popup's own chrome has nothing to do with the HUD overlay, so nesting it there would fire that broadcast on every theme change for no reason. `popup.ts` pre-fetches the persisted mode before the first `render()` call so the popup never paints with the wrong theme and then swaps.
 
 ## Statistics System

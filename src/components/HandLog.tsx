@@ -3,7 +3,7 @@
  * バーチャル化を使用したリアルタイムハンド履歴ログオーバーレイ
  */
 
-import React, { useState, useEffect, useRef, CSSProperties, useCallback, useMemo, memo } from 'react'
+import React, { useState, useEffect, useLayoutEffect, useRef, CSSProperties, useCallback, useMemo, memo } from 'react'
 import { List, useListRef } from 'react-window'
 import {
   HandLogEntry,
@@ -29,40 +29,332 @@ interface HandLogProps {
   scrollToLatest?: boolean
 }
 
-const getPositionStyles = (position: string): CSSProperties => {
-  const offset = 10
-  const bottomOffset = 135  // 125px持ち上げるため、10 + 125 = 135
-  const defaultPosition: CSSProperties = { bottom: bottomOffset, right: offset }
-
-  switch (position) {
-    case 'bottom-right':
-      return { bottom: bottomOffset, right: offset }
-    case 'bottom-left':
-      return { bottom: bottomOffset, left: offset }
-    case 'top-right':
-      return { top: offset, right: offset }
-    case 'top-left':
-      return { top: offset, left: offset }
-    default:
-      return defaultPosition
-  }
-}
-
-const HAND_LOG_GRIP_SIZE = 28
+const HAND_LOG_HEADER_HEIGHT = 28
+const HAND_LOG_HEADER_REACHABLE_WIDTH = 80
 const HAND_LOG_DRAG_THRESHOLD = 4
+const HAND_LOG_DEFAULT_RIGHT = 10
+const HAND_LOG_DEFAULT_BOTTOM = 135
 
 type HandLogInteractionMode = 'move' | 'resize'
 
-interface HandLogInteraction {
+interface HandLogEnvironment {
+  scale: number
+  viewportWidth: number
+  viewportHeight: number
+}
+
+interface ActiveHandLogInteraction {
+  phase: 'interacting'
   mode: HandLogInteractionMode
   startX: number
   startY: number
   startLayout: HandLogLayout
+  startEnvironment: HandLogEnvironment
   moved: boolean
+}
+
+interface IdleHandLogInteraction {
+  phase: 'idle'
+}
+
+type HandLogInteraction =
+  | IdleHandLogInteraction
+  | ActiveHandLogInteraction
+
+interface HandLogLoad {
+  id: number
+  scale: number
+}
+
+interface HandLogLayoutMachine {
+  layout: HandLogLayout
+  environment: HandLogEnvironment
+  interaction: HandLogInteraction
+  pendingEnvironment: HandLogEnvironment | null
+  activeLoad: HandLogLoad | null
+}
+
+type HandLogMachineAction =
+  | { type: 'environmentChanged', environment: HandLogEnvironment }
+  | { type: 'loadStarted', load: HandLogLoad }
+  | { type: 'loadResolved', load: HandLogLoad, layout: HandLogLayout | undefined }
+  | { type: 'externalLayout', layout: HandLogLayout }
+  | { type: 'reset' }
+  | { type: 'interactionStarted', mode: HandLogInteractionMode, x: number, y: number }
+  | { type: 'pointerMoved', x: number, y: number }
+  | { type: 'interactionFinished' }
+
+interface HandLogTransition {
+  state: HandLogLayoutMachine
+  persist?: HandLogLayout
 }
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value))
+
+const sameEnvironment = (
+  left: HandLogEnvironment,
+  right: HandLogEnvironment
+): boolean =>
+  left.scale === right.scale &&
+  left.viewportWidth === right.viewportWidth &&
+  left.viewportHeight === right.viewportHeight
+
+const readHandLogEnvironment = (scale: number): HandLogEnvironment => ({
+  scale,
+  viewportWidth: window.innerWidth,
+  viewportHeight: window.innerHeight,
+})
+
+const normalizeHandLogLayout = (
+  layout: HandLogLayout,
+  environment: HandLogEnvironment
+): HandLogLayout => {
+  const { scale, viewportWidth, viewportHeight } = environment
+  const height = Math.min(
+    layout.height,
+    Math.max(HAND_LOG_MIN_HEIGHT, viewportHeight / scale)
+  )
+  const renderedWidth = layout.width * scale
+  const renderedHeight = height * scale
+  const reachableWidth = Math.min(
+    HAND_LOG_HEADER_REACHABLE_WIDTH * scale,
+    viewportWidth
+  )
+
+  return {
+    ...layout,
+    left: clamp(
+      layout.left,
+      reachableWidth - renderedWidth,
+      viewportWidth - reachableWidth
+    ),
+    top: clamp(
+      layout.top,
+      0,
+      Math.max(0, viewportHeight - renderedHeight)
+    ),
+    height,
+  }
+}
+
+const createDefaultHandLogLayout = (
+  environment: HandLogEnvironment
+): HandLogLayout =>
+  normalizeHandLogLayout({
+    left:
+      environment.viewportWidth -
+      HAND_LOG_DEFAULT_RIGHT -
+      DEFAULT_HAND_LOG_CONFIG.width * environment.scale,
+    top:
+      environment.viewportHeight -
+      HAND_LOG_DEFAULT_BOTTOM -
+      DEFAULT_HAND_LOG_CONFIG.height * environment.scale,
+    width: DEFAULT_HAND_LOG_CONFIG.width,
+    height: DEFAULT_HAND_LOG_CONFIG.height,
+  }, environment)
+
+const createHandLogLayoutMachine = (
+  environment: HandLogEnvironment
+): HandLogLayoutMachine => ({
+  layout: createDefaultHandLogLayout(environment),
+  environment,
+  interaction: { phase: 'idle' },
+  pendingEnvironment: null,
+  activeLoad: null,
+})
+
+const transitionHandLogLayout = (
+  state: HandLogLayoutMachine,
+  action: HandLogMachineAction
+): HandLogTransition => {
+  switch (action.type) {
+    case 'environmentChanged': {
+      if (sameEnvironment(state.environment, action.environment)) {
+        return { state }
+      }
+      const scaleChanged = state.environment.scale !== action.environment.scale
+      if (state.interaction.phase === 'interacting') {
+        return {
+          state: {
+            ...state,
+            environment: action.environment,
+            pendingEnvironment: action.environment,
+            activeLoad: scaleChanged ? null : state.activeLoad,
+          },
+        }
+      }
+      return {
+        state: {
+          ...state,
+          layout: normalizeHandLogLayout(state.layout, action.environment),
+          environment: action.environment,
+          pendingEnvironment: null,
+          activeLoad: scaleChanged ? null : state.activeLoad,
+        },
+      }
+    }
+
+    case 'loadStarted':
+      if (state.interaction.phase === 'interacting') return { state }
+      return {
+        state: {
+          ...state,
+          activeLoad: action.load,
+        },
+      }
+
+    case 'loadResolved': {
+      if (
+        state.activeLoad?.id !== action.load.id ||
+        state.activeLoad.scale !== action.load.scale ||
+        state.environment.scale !== action.load.scale
+      ) {
+        return { state }
+      }
+      if (!action.layout) {
+        return { state: { ...state, activeLoad: null } }
+      }
+      if (
+        state.interaction.phase === 'interacting' &&
+        state.interaction.moved
+      ) {
+        return { state: { ...state, activeLoad: null } }
+      }
+      const layout = normalizeHandLogLayout(
+        action.layout,
+        state.environment
+      )
+      return {
+        state: {
+          ...state,
+          layout,
+          interaction:
+            state.interaction.phase === 'interacting'
+              ? { ...state.interaction, startLayout: layout }
+              : state.interaction,
+          activeLoad: null,
+        },
+      }
+    }
+
+    case 'externalLayout': {
+      if (
+        state.interaction.phase === 'interacting' &&
+        state.interaction.moved
+      ) {
+        return { state }
+      }
+      const layout = normalizeHandLogLayout(
+        action.layout,
+        state.environment
+      )
+      return {
+        state: {
+          ...state,
+          layout,
+          interaction:
+            state.interaction.phase === 'interacting'
+              ? { ...state.interaction, startLayout: layout }
+              : state.interaction,
+          activeLoad: null,
+        },
+      }
+    }
+
+    case 'reset':
+      return {
+        state: {
+          ...state,
+          layout: createDefaultHandLogLayout(state.environment),
+          interaction: { phase: 'idle' },
+          pendingEnvironment: null,
+          activeLoad: null,
+        },
+      }
+
+    case 'interactionStarted':
+      if (state.interaction.phase === 'interacting') return { state }
+      return {
+        state: {
+          ...state,
+          interaction: {
+            phase: 'interacting',
+            mode: action.mode,
+            startX: action.x,
+            startY: action.y,
+            startLayout: state.layout,
+            startEnvironment: state.environment,
+            moved: false,
+          },
+        },
+      }
+
+    case 'pointerMoved': {
+      if (state.interaction.phase !== 'interacting') return { state }
+      const deltaX = action.x - state.interaction.startX
+      const deltaY = action.y - state.interaction.startY
+      if (
+        !state.interaction.moved &&
+        Math.hypot(deltaX, deltaY) < HAND_LOG_DRAG_THRESHOLD
+      ) {
+        return { state }
+      }
+      const { startLayout, startEnvironment } = state.interaction
+      const proposedLayout =
+        state.interaction.mode === 'move'
+          ? {
+              ...startLayout,
+              left: startLayout.left + deltaX,
+              top: startLayout.top + deltaY,
+            }
+          : {
+              ...startLayout,
+              width: Math.max(
+                HAND_LOG_MIN_WIDTH,
+                startLayout.width + deltaX / startEnvironment.scale
+              ),
+              height: Math.max(
+                HAND_LOG_MIN_HEIGHT,
+                startLayout.height + deltaY / startEnvironment.scale
+              ),
+            }
+      return {
+        state: {
+          ...state,
+          layout: normalizeHandLogLayout(
+            proposedLayout,
+            state.environment
+          ),
+          interaction: {
+            ...state.interaction,
+            moved: true,
+          },
+        },
+      }
+    }
+
+    case 'interactionFinished': {
+      if (state.interaction.phase !== 'interacting') return { state }
+      const layout = normalizeHandLogLayout(
+        state.layout,
+        state.environment
+      )
+      const shouldPersist =
+        state.interaction.moved || state.pendingEnvironment !== null
+      return {
+        state: {
+          ...state,
+          layout,
+          interaction: { phase: 'idle' },
+          pendingEnvironment: null,
+          activeLoad: shouldPersist ? null : state.activeLoad,
+        },
+        persist: shouldPersist ? layout : undefined,
+      }
+    }
+  }
+}
 
 const entryTypeColors: Record<HandLogEntryType, string> = {
   [HandLogEntryType.HEADER]: '#ffffff',
@@ -169,20 +461,34 @@ const EntryRow = ({ index, style, items, showTimestamps, copiedHandId, onEntryCl
 const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, scale = 1, scrollToLatest }) => {
   const config = useMemo(() => ({ ...DEFAULT_HAND_LOG_CONFIG, ...userConfig }), [userConfig])
   const listRef = useListRef(null)
-  const containerRef = useRef<HTMLDivElement>(null)
   const [copiedHandId, setCopiedHandId] = useState<number | null>(null)
-  const [layout, setLayout] = useState<HandLogLayout | null>(null)
-  const layoutRef = useRef<HandLogLayout | null>(null)
-  const layoutEditGenerationRef = useRef(0)
-  const interactionRef = useRef<HandLogInteraction | null>(null)
-  const [interactionMode, setInteractionMode] = useState<HandLogInteractionMode | null>(null)
+  const [layoutMachine, setLayoutMachine] =
+    useState<HandLogLayoutMachine>(() =>
+      createHandLogLayoutMachine(readHandLogEnvironment(scale))
+    )
+  const layoutMachineRef = useRef(layoutMachine)
+  const loadSequenceRef = useRef(0)
   const [showCopied, setShowCopied] = useState(false)
   const [showCleared, setShowCleared] = useState(false)
   const lastClickTimeRef = useRef<number>(0)
 
-  const applyLayout = useCallback((nextLayout: HandLogLayout | null) => {
-    layoutRef.current = nextLayout
-    setLayout(nextLayout)
+  const commitLayoutAction = useCallback((
+    action: HandLogMachineAction,
+    render = true
+  ) => {
+    const transition = transitionHandLogLayout(
+      layoutMachineRef.current,
+      action
+    )
+    if (transition.state !== layoutMachineRef.current) {
+      layoutMachineRef.current = transition.state
+      if (render) {
+        setLayoutMachine(transition.state)
+      }
+    }
+    if (transition.persist) {
+      saveHandLogLayout(transition.persist)
+    }
   }, [])
 
   // セパレーターを追加するためエントリを処理
@@ -224,61 +530,55 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     return lines * (config.fontSize * 1.2) + 2
   }, [processedItems, config.fontSize])
 
-  // Position and size are device-local. Read once on mount; another tab does
-  // not need live synchronization because PokerChase permits one active login.
-  useEffect(() => {
-    const loadGeneration = layoutEditGenerationRef.current
-    loadHandLogLayout(savedLayout => {
-      if (
-        savedLayout &&
-        layoutEditGenerationRef.current === loadGeneration
-      ) {
-        const pendingInteraction = interactionRef.current
-        if (pendingInteraction && !pendingInteraction.moved) {
-          pendingInteraction.startLayout = savedLayout
-        }
-        applyLayout(savedLayout)
-      }
+  // Prop scale and viewport dimensions are inputs to the same layout machine
+  // as pointer interaction. useLayoutEffect updates scale before paint so the
+  // rendered transform and the reachability normalization cannot diverge.
+  useLayoutEffect(() => {
+    commitLayoutAction({
+      type: 'environmentChanged',
+      environment: readHandLogEnvironment(scale),
     })
-  }, [applyLayout])
+  }, [scale, commitLayoutAction])
 
-  // The popup reset is delivered to open game tabs after the local value is
-  // removed. A reload is not required for the visible panel to recover.
   useEffect(() => {
+    const load = {
+      id: ++loadSequenceRef.current,
+      scale,
+    }
+    commitLayoutAction({ type: 'loadStarted', load })
+    loadHandLogLayout(savedLayout => {
+      commitLayoutAction({
+        type: 'loadResolved',
+        load,
+        layout: savedLayout,
+      })
+    })
+  }, [scale, commitLayoutAction])
+
+  useEffect(() => {
+    const handleViewportResize = () => {
+      commitLayoutAction({
+        type: 'environmentChanged',
+        environment: readHandLogEnvironment(scale),
+      })
+    }
     const handleReset = () => {
-      // A reset is authoritative over an in-progress move/resize. Clear the
-      // interaction before applying the default layout so the still-mounted
-      // document listeners cannot revive and persist the stale start layout.
-      interactionRef.current = null
-      setInteractionMode(null)
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-      layoutEditGenerationRef.current += 1
-      applyLayout(null)
+      commitLayoutAction({ type: 'reset' })
     }
     const handleUpdate = (event: Event) => {
       const nextLayout = (event as CustomEvent<unknown>).detail
       if (!isValidHandLogLayout(nextLayout)) return
-
-      const pendingInteraction = interactionRef.current
-      if (pendingInteraction?.moved) {
-        // The visible drag/resize is newer than this persisted broadcast. Its
-        // eventual save will publish the next authoritative layout.
-        return
-      }
-      if (pendingInteraction) {
-        pendingInteraction.startLayout = nextLayout
-      }
-      layoutEditGenerationRef.current += 1
-      applyLayout(nextLayout)
+      commitLayoutAction({ type: 'externalLayout', layout: nextLayout })
     }
+    window.addEventListener('resize', handleViewportResize)
     window.addEventListener('resetHandLogLayout', handleReset)
     window.addEventListener('updateHandLogLayout', handleUpdate)
     return () => {
+      window.removeEventListener('resize', handleViewportResize)
       window.removeEventListener('resetHandLogLayout', handleReset)
       window.removeEventListener('updateHandLogLayout', handleUpdate)
     }
-  }, [applyLayout])
+  }, [scale, commitLayoutAction])
 
   // 新しいエントリが到着したとき自動的に下にスクロール
   useEffect(() => {
@@ -330,7 +630,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
 
   // コンテナクリックを処理 - ダブルクリックでクリア
   const handleContainerClick = useCallback((_e: React.MouseEvent) => {
-    if (interactionMode) return
+    if (layoutMachineRef.current.interaction.phase === 'interacting') return
 
     const currentTime = Date.now()
     const timeSinceLastClick = currentTime - lastClickTimeRef.current
@@ -341,7 +641,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       setShowCleared(true)
       setTimeout(() => setShowCleared(false), 1500)
     }
-  }, [interactionMode, onClearLog])
+  }, [onClearLog])
 
   const handleInteractionStart = useCallback((
     mode: HandLogInteractionMode,
@@ -351,50 +651,29 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     e.preventDefault()
     e.stopPropagation()
 
-    const rect = containerRef.current?.getBoundingClientRect()
-    if (!rect) return
-
-    const currentLayout = layoutRef.current
-    interactionRef.current = {
+    commitLayoutAction({
+      type: 'interactionStarted',
       mode,
-      startX: e.clientX,
-      startY: e.clientY,
-      startLayout: {
-        left: currentLayout?.left ?? rect.left,
-        top: currentLayout?.top ?? rect.top,
-        width: currentLayout?.width ?? DEFAULT_HAND_LOG_CONFIG.width,
-        height: currentLayout?.height ?? DEFAULT_HAND_LOG_CONFIG.height,
-      },
-      moved: false,
-    }
-    setInteractionMode(mode)
-  }, [])
+      x: e.clientX,
+      y: e.clientY,
+    })
+  }, [commitLayoutAction])
 
   useEffect(() => {
+    const interaction = layoutMachine.interaction
+    const interactionMode =
+      interaction.phase === 'interacting' ? interaction.mode : null
     if (!interactionMode) return
 
     const cursor = interactionMode === 'move' ? 'grabbing' : 'nwse-resize'
     document.body.style.cursor = cursor
     document.body.style.userSelect = 'none'
 
-    const finalizeInteraction = () => {
-      const interaction = interactionRef.current
-      const finalLayout = layoutRef.current
-      if (interaction?.moved && finalLayout) {
-        saveHandLogLayout(finalLayout)
-      }
-      interactionRef.current = null
-    }
-
     const finishInteraction = () => {
-      finalizeInteraction()
-      setInteractionMode(null)
+      commitLayoutAction({ type: 'interactionFinished' })
     }
 
     const handleMouseMove = (event: MouseEvent) => {
-      const interaction = interactionRef.current
-      if (!interaction) return
-
       // A mouseup released outside the browser may never reach the document.
       // The first move after re-entry exposes the released primary button, so
       // finish without applying that stale pointer position.
@@ -402,56 +681,11 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
         finishInteraction()
         return
       }
-
-      const deltaX = event.clientX - interaction.startX
-      const deltaY = event.clientY - interaction.startY
-      if (
-        !interaction.moved &&
-        Math.hypot(deltaX, deltaY) < HAND_LOG_DRAG_THRESHOLD
-      ) {
-        return
-      }
-      const { startLayout } = interaction
-      let nextLayout: HandLogLayout
-
-      if (interaction.mode === 'move') {
-        const renderedWidth = startLayout.width * scale
-        const renderedHeight = startLayout.height * scale
-        nextLayout = {
-          ...startLayout,
-          // Clamp only while the user is moving the panel. This keeps the
-          // lower-right grip reachable without reacting to later viewport
-          // changes or rewriting the saved coordinates on load.
-          left: clamp(
-            startLayout.left + deltaX,
-            HAND_LOG_GRIP_SIZE - renderedWidth,
-            window.innerWidth - renderedWidth
-          ),
-          top: clamp(
-            startLayout.top + deltaY,
-            HAND_LOG_GRIP_SIZE - renderedHeight,
-            window.innerHeight - renderedHeight
-          ),
-        }
-      } else {
-        nextLayout = {
-          ...startLayout,
-          width: Math.max(
-            HAND_LOG_MIN_WIDTH,
-            startLayout.width + deltaX / scale
-          ),
-          height: Math.max(
-            HAND_LOG_MIN_HEIGHT,
-            startLayout.height + deltaY / scale
-          ),
-        }
-      }
-
-      if (!interaction.moved) {
-        layoutEditGenerationRef.current += 1
-        interaction.moved = true
-      }
-      applyLayout(nextLayout)
+      commitLayoutAction({
+        type: 'pointerMoved',
+        x: event.clientX,
+        y: event.clientY,
+      })
     }
 
     document.addEventListener('mousemove', handleMouseMove)
@@ -461,27 +695,39 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       document.removeEventListener('mousemove', handleMouseMove)
       document.removeEventListener('mouseup', finishInteraction)
       window.removeEventListener('blur', finishInteraction)
-      // Cleanup also runs when the HUD shortcut unmounts HandLog while the
-      // mouse is still held. Persist the last visible layout before refs and
-      // listeners disappear.
-      finalizeInteraction()
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
     }
-  }, [applyLayout, interactionMode, scale])
+  }, [
+    layoutMachine.interaction.phase,
+    layoutMachine.interaction.phase === 'interacting'
+      ? layoutMachine.interaction.mode
+      : null,
+    commitLayoutAction,
+  ])
+
+  // Unmount uses the exact same transition/persistence outlet as
+  // mouseup/blur, but skips the render after the component is gone.
+  useEffect(() => () => {
+    commitLayoutAction({ type: 'interactionFinished' }, false)
+  }, [commitLayoutAction])
 
   // 無効の場合はレンダリングしない
   if (!config.enabled) return null
 
-  const width = layout?.width ?? DEFAULT_HAND_LOG_CONFIG.width
-  const height = layout?.height ?? DEFAULT_HAND_LOG_CONFIG.height
+  const { layout, environment } = layoutMachine
+  const { width, height } = layout
+  const interactionMode =
+    layoutMachine.interaction.phase === 'interacting'
+      ? layoutMachine.interaction.mode
+      : null
+  const bodyHeight = Math.max(0, height - HAND_LOG_HEADER_HEIGHT)
 
   // コンテナスタイル
   const containerStyle: CSSProperties = {
     position: 'fixed',
-    ...(layout
-      ? { left: layout.left, top: layout.top }
-      : getPositionStyles(DEFAULT_HAND_LOG_CONFIG.position)),
+    left: layout.left,
+    top: layout.top,
     width: width,
     height,
     backgroundColor: `rgba(0, 0, 0, ${config.opacity})`,
@@ -489,42 +735,42 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     border: '1px solid rgba(255, 255, 255, 0.2)',
     borderRadius: '4px',
     padding: '0',
-    transform: `scale(${scale})`,
-    transformOrigin: layout
-      ? 'top left'
-      : DEFAULT_HAND_LOG_CONFIG.position.replace('-', ' '),
+    transform: `scale(${environment.scale})`,
+    transformOrigin: 'top left',
     overflowY: 'hidden',
     overflowX: 'hidden',
     fontFamily: 'Consolas, Monaco, "Courier New", monospace',
     fontSize: config.fontSize,
     color: '#ffffff',
-    // The lower-right grip is the only way to move or resize this window.
-    // Keep its stacking context above player HUD panels (z-index 9999) so an
-    // overlap can never make the grip unreachable.
+    // Keep the header and resize corner above player HUD panels (z-index
+    // 9999) so an overlap cannot make either interaction unreachable.
     zIndex: 10000,
     boxShadow: '0 2px 4px rgba(0, 0, 0, 0.3)',
-    cursor: 'pointer'
+    cursor: 'default'
   }
 
-  // One visible lower-right control owns both interactions: drag the main
-  // surface to move, or drag its triangular outer corner to resize.
-  const gripStyle: CSSProperties = {
-    position: 'absolute',
-    right: 0,
-    bottom: 0,
-    width: HAND_LOG_GRIP_SIZE,
-    height: HAND_LOG_GRIP_SIZE,
+  const headerStyle: CSSProperties = {
+    boxSizing: 'border-box',
+    width: '100%',
+    height: HAND_LOG_HEADER_HEIGHT,
+    padding: '0 8px',
     cursor: interactionMode === 'move' ? 'grabbing' : 'grab',
-    backgroundColor: 'rgba(255, 255, 255, 0.14)',
-    borderTopLeftRadius: 6,
-    color: 'rgba(255, 255, 255, 0.75)',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderBottom: '1px solid rgba(255, 255, 255, 0.2)',
+    color: 'rgba(255, 255, 255, 0.9)',
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: 15,
+    gap: 7,
+    fontSize: Math.max(11, config.fontSize - 1),
+    fontWeight: 600,
     lineHeight: 1,
     userSelect: 'none',
-    zIndex: 2,
+  }
+
+  const headerGripIconStyle: CSSProperties = {
+    color: 'rgba(255, 255, 255, 0.65)',
+    fontSize: 14,
+    letterSpacing: -2,
   }
 
   const resizeCornerStyle: CSSProperties = {
@@ -535,6 +781,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     height: 12,
     cursor: 'nwse-resize',
     background: 'linear-gradient(135deg, transparent 48%, rgba(255, 255, 255, 0.9) 50%)',
+    zIndex: 2,
   }
 
   const rowProps: EntryRowData = {
@@ -547,10 +794,20 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
 
   return (
     <div
-      ref={containerRef}
       style={containerStyle}
       onClick={handleContainerClick}
     >
+      <div
+        data-testid="hand-log-header"
+        title="ドラッグしてハンドログを移動"
+        style={headerStyle}
+        onMouseDown={(event) => handleInteractionStart('move', event)}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <span aria-hidden="true" style={headerGripIconStyle}>⠿</span>
+        <span>ハンドログ</span>
+      </div>
+
       {processedItems.length > 0 ? (
         <List
           listRef={listRef}
@@ -558,37 +815,31 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
           rowHeight={getItemSize}
           rowComponent={EntryRow}
           rowProps={rowProps}
-          style={{ height, width }}
+          style={{ height: bodyHeight, width }}
         />
       ) : (
         <div style={{
+          height: bodyHeight,
+          boxSizing: 'border-box',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
           color: '#666666',
           textAlign: 'center',
-          marginTop: '40%',
-          transform: 'translateY(-50%)',
           fontSize: config.fontSize - 1
         }}>
           Waiting for hand...
         </div>
       )}
 
-      {/* 右下の移動兼リサイズグリップ */}
+      {/* 右下はリサイズ専用。移動は上部ヘッダーだけが開始する。 */}
       <div
-        data-testid="hand-log-move-grip"
-        title="ドラッグしてハンドログを移動"
-        style={gripStyle}
-        onMouseDown={(event) => handleInteractionStart('move', event)}
+        data-testid="hand-log-resize-corner"
+        title="ドラッグしてハンドログのサイズを変更"
+        style={resizeCornerStyle}
+        onMouseDown={(event) => handleInteractionStart('resize', event)}
         onClick={(event) => event.stopPropagation()}
-      >
-        ⠿
-        <div
-          data-testid="hand-log-resize-corner"
-          title="ドラッグしてハンドログのサイズを変更"
-          style={resizeCornerStyle}
-          onMouseDown={(event) => handleInteractionStart('resize', event)}
-          onClick={(event) => event.stopPropagation()}
-        />
-      </div>
+      />
 
       {/* ステータスインジケーター */}
       {showCopied && (
