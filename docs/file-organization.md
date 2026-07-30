@@ -122,7 +122,6 @@
     │       ├── UIScaleSection.tsx
     │       ├── UndecodedEventSection.tsx  # Dropped-event alert
     │       ├── UpdateSection.tsx          # Forced-update / min-version banners
-    │       ├── WhatsNewSection.tsx        # 更新情報 (whats-new entries)
     │       ├── popup-boot-theme.ts / popup-theme-storage.ts / theme.ts  # Dark/light theming
     │       └── send-message.ts
     │
@@ -130,7 +129,7 @@
     │   ├── database.ts        # DATABASE_CONSTANTS, REBUILD_ADVISORY_VERSION
     │   ├── runtime.ts         # Runtime constants
     │   ├── update.ts          # Forced-update constants (side-effect-free)
-    │   └── whats-new.ts       # WHATS_NEW_ENTRIES (curated per-version release notes)
+    │   └── release-info.ts    # Running-version GitHub Release URL + unread storage key
     │
     ├── db/
     │   └── poker-chase-db.ts  # Dexie database definition (v6 schema: sequence-key Lake)

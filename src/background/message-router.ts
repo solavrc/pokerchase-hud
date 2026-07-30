@@ -902,7 +902,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         })
       return true
     } else if (request.action === 'acknowledgeWhatsNew') {
-      // Popupの更新情報セクション（WhatsNewSection）マウント時の既読化
+      // Popupヘッダーに実行中バージョンとReleaseリンクが表示された時点の既読化
       acknowledgeWhatsNew()
         .then(() => sendResponse({ success: true }))
         .catch(error => {

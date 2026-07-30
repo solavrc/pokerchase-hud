@@ -362,7 +362,7 @@ export interface ApplyPendingUpdateMessage {
   action: 'applyPendingUpdate'
 }
 
-// What's New (per-version release notes) messages
+// Update-information unread badge message
 export interface AcknowledgeWhatsNewMessage {
   action: 'acknowledgeWhatsNew'
 }

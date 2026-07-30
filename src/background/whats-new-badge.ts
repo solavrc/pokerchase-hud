@@ -3,19 +3,19 @@
  * 更新情報（What's New）バッジ。
  *
  * `chrome.runtime.onInstalled`（`details.reason === 'update'`）で拡張機能が
- * バージョンアップし、かつ`WHATS_NEW_ENTRIES`（`src/constants/whats-new.ts`）
- * にそのバージョンのキュレーション済みエントリが存在するとき、一度だけ
- * 「バッジ + Popup内の更新情報セクション」でユーザーに知らせる。新規
+ * バージョンアップしたとき、実行中バージョンを一度だけ未読として記録し、
+ * 「N」バッジでユーザーに知らせる。新規
  * インストール（`reason === 'install'`）ではバッジを出さない（バッジ churn
  * 防止 -- 初回インストール時点では「更新」ではなく「その版が最初から
  * 入っている」だけなので、通知する意味がない。呼び出し側の`background.ts`が
  * `reason === 'update'`のときだけ`markWhatsNewOnUpdate()`を呼ぶことで保証する）。
  *
  * 状態は`chrome.storage.local`の`whatsNewUnseenVersion`キー
- * （`WHATS_NEW_STORAGE_KEY`、`src/constants/whats-new.ts`）に文字列
+ * （`UPDATE_INFO_UNSEEN_VERSION_STORAGE_KEY`）に文字列
  * （未読の更新情報が対応するバージョン）として保持する。Popupが
- * `WhatsNewSection`をマウントした時点で`acknowledgeWhatsNew`メッセージ
- * （`message-router.ts`）を送り、これを解消する。
+ * Popupヘッダーに実行中バージョンと対応するGitHub Releaseリンクが表示
+ * された時点で`acknowledgeWhatsNew`メッセージ（`message-router.ts`）を
+ * 送り、これを解消する。
  *
  * **バッジ優先順位（3-way）**: rebuild-advisory > update-manager > whats-new。
  * - `rebuild-advisory.ts`（データ再構築の提要）は無条件・一方的にバッジを
@@ -38,7 +38,7 @@
 import { getRebuildAdvisoryState } from './rebuild-advisory'
 import { getPendingUpdateState } from './update-manager'
 import { runBestEffortChromeUi } from './best-effort-chrome-api'
-import { WHATS_NEW_STORAGE_KEY, WHATS_NEW_ENTRIES } from '../constants/whats-new'
+import { UPDATE_INFO_UNSEEN_VERSION_STORAGE_KEY } from '../constants/release-info'
 
 const BADGE_TEXT = 'N'
 const BADGE_BACKGROUND_COLOR = '#2e7d32'
@@ -65,15 +65,15 @@ export const resolveActiveBadge = (state: {
 
 /** `chrome.storage.local`から未読バージョンを取得する（未読なしなら`undefined`） */
 export const getUnseenWhatsNewVersion = async (): Promise<string | undefined> => {
-  const result = await chrome.storage.local.get(WHATS_NEW_STORAGE_KEY)
-  return (result?.[WHATS_NEW_STORAGE_KEY] as string | undefined) ?? undefined
+  const result = await chrome.storage.local.get(UPDATE_INFO_UNSEEN_VERSION_STORAGE_KEY)
+  return (result?.[UPDATE_INFO_UNSEEN_VERSION_STORAGE_KEY] as string | undefined) ?? undefined
 }
 
 const setUnseenWhatsNewVersion = async (version: string | undefined): Promise<void> => {
   if (version === undefined) {
-    await chrome.storage.local.remove(WHATS_NEW_STORAGE_KEY)
+    await chrome.storage.local.remove(UPDATE_INFO_UNSEEN_VERSION_STORAGE_KEY)
   } else {
-    await chrome.storage.local.set({ [WHATS_NEW_STORAGE_KEY]: version })
+    await chrome.storage.local.set({ [UPDATE_INFO_UNSEEN_VERSION_STORAGE_KEY]: version })
   }
 }
 
@@ -116,22 +116,18 @@ const syncBadge = async (): Promise<void> => {
 
 /**
  * `chrome.runtime.onInstalled`（`details.reason === 'update'`）から呼ぶ。
- * `currentVersion`（`chrome.runtime.getManifest().version`）に一致する
- * キュレーション済みエントリが`WHATS_NEW_ENTRIES`に存在する場合のみ、
- * それを未読として記録しバッジを同期する（優先順位が上のバッジが
- * 使用中ならバッジ自体はno-op、ただし未読の記録は残るので、Popupを
- * 開けば更新情報セクションには表示される）。
+ * `currentVersion`（`chrome.runtime.getManifest().version`）を
+ * エントリの有無に関係なく未読として記録し、バッジを同期する（優先順位が上のバッジが
+ * 使用中ならバッジ自体はno-op、ただし未読の記録は残るので、後のSW起動時に
+ * 優先順位を再評価できる）。
  */
 export const markWhatsNewOnUpdate = async (currentVersion: string): Promise<void> => {
-  const hasEntry = WHATS_NEW_ENTRIES.some(entry => entry.version === currentVersion)
-  if (!hasEntry) return
-
   await setUnseenWhatsNewVersion(currentVersion)
   await syncBadge()
 }
 
 /**
- * Popupの更新情報セクション（`WhatsNewSection`）がマウントされた時点で呼ぶ
+ * Popupヘッダーに実行中バージョンとGitHub Releaseリンクが表示された時点で呼ぶ
  * （`acknowledgeWhatsNew`メッセージ経由、`message-router.ts`参照）。
  * 未読が無い状態で呼んでも安全（冪等）。
  */

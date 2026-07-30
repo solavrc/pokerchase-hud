@@ -26,9 +26,7 @@ global.chrome = {
       addListener: jest.fn(),
       removeListener: jest.fn(),
     },
-    // WhatsNewSection reads this to pick the entry matching the running
-    // version; kept in sync with test-setup.ts's default so this file's
-    // full-chrome-object override doesn't diverge from the global mock.
+    // PopupHeader uses the running version to build the exact Release link.
     getManifest: jest.fn(() => ({ version: '5.1.0' })),
   },
   tabs: {
@@ -213,9 +211,9 @@ describe('Popup', () => {
       } else if (message.action === 'getSyncState') {
         callback({ syncState: null })
       } else if (message.action === 'acknowledgeWhatsNew') {
-        // WhatsNewSection (rendered inside every <Popup />) fires this on
-        // mount; answer it so sendMessageWithTimeout's real 8s timer never
-        // arms (codex review, PR #172 — otherwise this stalls the suite).
+        // PopupHeader fires this once its version/Release link is visible;
+        // answer it so sendMessageWithTimeout's real 8s timer never remains
+        // armed and stalls the suite.
         callback({ success: true })
       }
     })
@@ -240,12 +238,11 @@ describe('Popup', () => {
     )
   })
 
-  it('WhatsNewSectionのマウント時acknowledgeWhatsNewメッセージが共有sendMessageモックで処理される（codex review, PR #172）', async () => {
-    // WhatsNewSection is mounted unconditionally inside every <Popup />
-    // render and fires this message on mount (fire-and-forget, via
-    // sendMessageWithTimeout). Before this fix the shared mock only
-    // answered 'firebaseAuthStatus'/'getSyncState', so this call never
-    // settled and left an unanswered real 8s timer armed per render
+  it('バージョンとReleaseリンクの表示時acknowledgeWhatsNewメッセージが共有sendMessageモックで処理される', async () => {
+    // PopupHeader is mounted unconditionally inside every <Popup /> render
+    // and fires this message after rendering (fire-and-forget, via
+    // sendMessageWithTimeout). The shared mock must answer it; otherwise the
+    // call never settles and leaves a real 8s timer armed per render
     // (28 renders in this suite) -- stalling `npx jest` for minutes.
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
