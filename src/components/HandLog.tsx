@@ -48,7 +48,8 @@ const getPositionStyles = (position: string): CSSProperties => {
   }
 }
 
-const HAND_LOG_GRIP_SIZE = 28
+const HAND_LOG_HEADER_HEIGHT = 28
+const HAND_LOG_HEADER_REACHABLE_WIDTH = 80
 const HAND_LOG_DRAG_THRESHOLD = 4
 
 type HandLogInteractionMode = 'move' | 'resize'
@@ -416,21 +417,25 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
 
       if (interaction.mode === 'move') {
         const renderedWidth = startLayout.width * scale
-        const renderedHeight = startLayout.height * scale
+        const renderedHeaderHeight = HAND_LOG_HEADER_HEIGHT * scale
+        const renderedReachableWidth = Math.min(
+          HAND_LOG_HEADER_REACHABLE_WIDTH * scale,
+          window.innerWidth
+        )
         nextLayout = {
           ...startLayout,
           // Clamp only while the user is moving the panel. This keeps the
-          // lower-right grip reachable without reacting to later viewport
-          // changes or rewriting the saved coordinates on load.
+          // header reachable without reacting to later viewport changes or
+          // rewriting the saved coordinates on load.
           left: clamp(
             startLayout.left + deltaX,
-            HAND_LOG_GRIP_SIZE - renderedWidth,
-            window.innerWidth - renderedWidth
+            renderedReachableWidth - renderedWidth,
+            window.innerWidth - renderedReachableWidth
           ),
           top: clamp(
             startLayout.top + deltaY,
-            HAND_LOG_GRIP_SIZE - renderedHeight,
-            window.innerHeight - renderedHeight
+            0,
+            Math.max(0, window.innerHeight - renderedHeaderHeight)
           ),
         }
       } else {
@@ -475,6 +480,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
 
   const width = layout?.width ?? DEFAULT_HAND_LOG_CONFIG.width
   const height = layout?.height ?? DEFAULT_HAND_LOG_CONFIG.height
+  const bodyHeight = Math.max(0, height - HAND_LOG_HEADER_HEIGHT)
 
   // コンテナスタイル
   const containerStyle: CSSProperties = {
@@ -498,33 +504,35 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     fontFamily: 'Consolas, Monaco, "Courier New", monospace',
     fontSize: config.fontSize,
     color: '#ffffff',
-    // The lower-right grip is the only way to move or resize this window.
-    // Keep its stacking context above player HUD panels (z-index 9999) so an
-    // overlap can never make the grip unreachable.
+    // Keep the header and resize corner above player HUD panels (z-index
+    // 9999) so an overlap cannot make either interaction unreachable.
     zIndex: 10000,
     boxShadow: '0 2px 4px rgba(0, 0, 0, 0.3)',
-    cursor: 'pointer'
+    cursor: 'default'
   }
 
-  // One visible lower-right control owns both interactions: drag the main
-  // surface to move, or drag its triangular outer corner to resize.
-  const gripStyle: CSSProperties = {
-    position: 'absolute',
-    right: 0,
-    bottom: 0,
-    width: HAND_LOG_GRIP_SIZE,
-    height: HAND_LOG_GRIP_SIZE,
+  const headerStyle: CSSProperties = {
+    boxSizing: 'border-box',
+    width: '100%',
+    height: HAND_LOG_HEADER_HEIGHT,
+    padding: '0 8px',
     cursor: interactionMode === 'move' ? 'grabbing' : 'grab',
-    backgroundColor: 'rgba(255, 255, 255, 0.14)',
-    borderTopLeftRadius: 6,
-    color: 'rgba(255, 255, 255, 0.75)',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderBottom: '1px solid rgba(255, 255, 255, 0.2)',
+    color: 'rgba(255, 255, 255, 0.9)',
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: 15,
+    gap: 7,
+    fontSize: Math.max(11, config.fontSize - 1),
+    fontWeight: 600,
     lineHeight: 1,
     userSelect: 'none',
-    zIndex: 2,
+  }
+
+  const headerGripIconStyle: CSSProperties = {
+    color: 'rgba(255, 255, 255, 0.65)',
+    fontSize: 14,
+    letterSpacing: -2,
   }
 
   const resizeCornerStyle: CSSProperties = {
@@ -535,6 +543,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     height: 12,
     cursor: 'nwse-resize',
     background: 'linear-gradient(135deg, transparent 48%, rgba(255, 255, 255, 0.9) 50%)',
+    zIndex: 2,
   }
 
   const rowProps: EntryRowData = {
@@ -551,6 +560,17 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       style={containerStyle}
       onClick={handleContainerClick}
     >
+      <div
+        data-testid="hand-log-header"
+        title="ドラッグしてハンドログを移動"
+        style={headerStyle}
+        onMouseDown={(event) => handleInteractionStart('move', event)}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <span aria-hidden="true" style={headerGripIconStyle}>⠿</span>
+        <span>ハンドログ</span>
+      </div>
+
       {processedItems.length > 0 ? (
         <List
           listRef={listRef}
@@ -558,37 +578,31 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
           rowHeight={getItemSize}
           rowComponent={EntryRow}
           rowProps={rowProps}
-          style={{ height, width }}
+          style={{ height: bodyHeight, width }}
         />
       ) : (
         <div style={{
+          height: bodyHeight,
+          boxSizing: 'border-box',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
           color: '#666666',
           textAlign: 'center',
-          marginTop: '40%',
-          transform: 'translateY(-50%)',
           fontSize: config.fontSize - 1
         }}>
           Waiting for hand...
         </div>
       )}
 
-      {/* 右下の移動兼リサイズグリップ */}
+      {/* 右下はリサイズ専用。移動は上部ヘッダーだけが開始する。 */}
       <div
-        data-testid="hand-log-move-grip"
-        title="ドラッグしてハンドログを移動"
-        style={gripStyle}
-        onMouseDown={(event) => handleInteractionStart('move', event)}
+        data-testid="hand-log-resize-corner"
+        title="ドラッグしてハンドログのサイズを変更"
+        style={resizeCornerStyle}
+        onMouseDown={(event) => handleInteractionStart('resize', event)}
         onClick={(event) => event.stopPropagation()}
-      >
-        ⠿
-        <div
-          data-testid="hand-log-resize-corner"
-          title="ドラッグしてハンドログのサイズを変更"
-          style={resizeCornerStyle}
-          onMouseDown={(event) => handleInteractionStart('resize', event)}
-          onClick={(event) => event.stopPropagation()}
-        />
-      </div>
+      />
 
       {/* ステータスインジケーター */}
       {showCopied && (
