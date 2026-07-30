@@ -370,12 +370,13 @@ on large DBs (bounded, local work; import is a rare operation).
   「ハンドログ」 header as the only move handle; the lower-right corner is
   resize-only. Persisted `HandLogLayout.height`/`width` remain the panel's
   outer dimensions for compatibility, so the virtualized body height is the
-  outer height minus the header. Move-time clamping keeps a usable strip of
-  the header inside the viewport, while load and viewport-resize paths leave
-  saved coordinates untouched. The device-local persistence, reset/update
-  generation guards, drag threshold, missed-mouseup recovery, blur/unmount
-  save, scale handling, unbounded maximum size, and 200x80 minimum established
-  by PR #284 remain shared by header moves and corner resizes.
+  outer height minus the header. Restoring a saved layout clamps its top into
+  the viewport and shrinks a legacy over-height panel when necessary.
+  Move-time and resize-time vertical clamping keep both the header and resize
+  corner reachable. The device-local persistence, reset/update generation
+  guards, drag threshold, missed-mouseup recovery, blur/unmount save, scale
+  handling, unbounded maximum width, viewport-bounded height, and 200x80
+  minimum remain shared by header moves and corner resizes.
 - **HUD display modes** (#143, `UIConfig.hudDisplayMode: 'full' | 'compact'`, default `'compact'`): `'compact'` (`CompactStatDisplay.tsx`) shows one classic-HUD line (`VPIP/PFR/3B (HAND)`, rounded integers) plus a secondary AF/CB/STL line, suppressing zero-opportunity secondary stats instead of rendering `'-'`. `'full'` (`StatDisplay.tsx`) is the existing 16-stat grid, unchanged. Clicking the compact stat body toggles the full grid inline for that player (local per-`Hud`-instance state, so multiple panels can be expanded independently); the click handler `stopPropagation()`s so it doesn't trigger the HUD's click-to-copy or the `#128` positional drill-down chevron. Existing `uiConfig` missing these keys (pre-#143) resolve to the new defaults via the `{...DEFAULT_UI_CONFIG, ...stored}` merge in both `App.tsx` and `Popup.tsx`.
 - **HUD color coding** (#143, `UIConfig.hudColorCoding: boolean`, default `true`): threshold-based value coloring for VPIP/PFR/3bet/AF in both display modes, data-driven in `src/components/hud/statColorRules.ts` (`STAT_COLOR_RULES`). n-gated: a stat is only colored once its own `[numerator, denominator]` has `denominator >= 20`; below that it keeps the existing dimmed low-confidence gray (`#888888`).
 - **Stat tooltips** (#143, `src/components/hud/statTooltip.ts`): every stat cell (compact segments and full-grid rows) gets a native `title` composed of a base line — the stat's dynamic `StatDefinition.tooltip(context)` (#130, e.g. `vpipF`'s per-layer breakdown) if defined, else `"{name}: {value (num/den)}"` — followed by `StatDefinition.helpText`, a static one-line Japanese explanation defined per stat in `src/stats/core/*.ts`.

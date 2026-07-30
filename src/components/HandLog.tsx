@@ -65,6 +65,36 @@ interface HandLogInteraction {
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value))
 
+const clampRestoredLayout = (
+  savedLayout: HandLogLayout,
+  scale: number
+): HandLogLayout => {
+  const height = Math.min(
+    savedLayout.height,
+    Math.max(HAND_LOG_MIN_HEIGHT, window.innerHeight / scale)
+  )
+  const renderedWidth = savedLayout.width * scale
+  const renderedReachableWidth = Math.min(
+    HAND_LOG_HEADER_REACHABLE_WIDTH * scale,
+    window.innerWidth
+  )
+
+  return {
+    ...savedLayout,
+    left: clamp(
+      savedLayout.left,
+      renderedReachableWidth - renderedWidth,
+      window.innerWidth - renderedReachableWidth
+    ),
+    top: clamp(
+      savedLayout.top,
+      0,
+      Math.max(0, window.innerHeight - height * scale)
+    ),
+    height,
+  }
+}
+
 const entryTypeColors: Record<HandLogEntryType, string> = {
   [HandLogEntryType.HEADER]: '#ffffff',
   [HandLogEntryType.SEAT]: '#aaaaaa',
@@ -234,14 +264,15 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
         savedLayout &&
         layoutEditGenerationRef.current === loadGeneration
       ) {
+        const reachableLayout = clampRestoredLayout(savedLayout, scale)
         const pendingInteraction = interactionRef.current
         if (pendingInteraction && !pendingInteraction.moved) {
-          pendingInteraction.startLayout = savedLayout
+          pendingInteraction.startLayout = reachableLayout
         }
-        applyLayout(savedLayout)
+        applyLayout(reachableLayout)
       }
     })
-  }, [applyLayout])
+  }, [applyLayout, scale])
 
   // The popup reset is delivered to open game tabs after the local value is
   // removed. A reload is not required for the visible panel to recover.
@@ -267,11 +298,12 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
         // eventual save will publish the next authoritative layout.
         return
       }
+      const reachableLayout = clampRestoredLayout(nextLayout, scale)
       if (pendingInteraction) {
-        pendingInteraction.startLayout = nextLayout
+        pendingInteraction.startLayout = reachableLayout
       }
       layoutEditGenerationRef.current += 1
-      applyLayout(nextLayout)
+      applyLayout(reachableLayout)
     }
     window.addEventListener('resetHandLogLayout', handleReset)
     window.addEventListener('updateHandLogLayout', handleUpdate)
@@ -279,7 +311,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       window.removeEventListener('resetHandLogLayout', handleReset)
       window.removeEventListener('updateHandLogLayout', handleUpdate)
     }
-  }, [applyLayout])
+  }, [applyLayout, scale])
 
   // 新しいエントリが到着したとき自動的に下にスクロール
   useEffect(() => {
@@ -417,7 +449,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
 
       if (interaction.mode === 'move') {
         const renderedWidth = startLayout.width * scale
-        const renderedHeaderHeight = HAND_LOG_HEADER_HEIGHT * scale
+        const renderedHeight = startLayout.height * scale
         const renderedReachableWidth = Math.min(
           HAND_LOG_HEADER_REACHABLE_WIDTH * scale,
           window.innerWidth
@@ -435,19 +467,24 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
           top: clamp(
             startLayout.top + deltaY,
             0,
-            Math.max(0, window.innerHeight - renderedHeaderHeight)
+            Math.max(0, window.innerHeight - renderedHeight)
           ),
         }
       } else {
+        const maxHeight = Math.max(
+          HAND_LOG_MIN_HEIGHT,
+          (window.innerHeight - startLayout.top) / scale
+        )
         nextLayout = {
           ...startLayout,
           width: Math.max(
             HAND_LOG_MIN_WIDTH,
             startLayout.width + deltaX / scale
           ),
-          height: Math.max(
+          height: clamp(
+            startLayout.height + deltaY / scale,
             HAND_LOG_MIN_HEIGHT,
-            startLayout.height + deltaY / scale
+            maxHeight
           ),
         }
       }
