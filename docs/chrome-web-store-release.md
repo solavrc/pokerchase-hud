@@ -26,8 +26,10 @@ Before submitting a telemetry-enabled release:
 2. 既存ユーザーにも更新情報でデータ取扱いの変更を明示する。実際の送信は
    Popup の **診断情報を送信** をユーザーが有効にし、Chrome の
    optional host permissionを許可した後だけ開始する。
-3. 公開中の privacy policy に収集項目、用途、Sentry への送信、保持・削除方針を
-   反映し、Developer Dashboard の専用 URL 欄から到達できることを確認する。
+3. 公開中の [privacy policy](../PRIVACY.md) に収集項目、用途、Sentry への送信、
+   保持・削除方針を反映し、Developer Dashboard の専用 URL 欄と Popup の
+   診断情報セクションから到達できることを確認する。公開 URL は
+   `https://github.com/solavrc/pokerchase-hud/blob/main/PRIVACY.md` とする。
 4. repository secret `SENTRY_AUTH_TOKEN` が、個人 OAuth token ではなく
    最小権限の Sentry organization token（CI/source-map upload 用）であることを
    確認する。

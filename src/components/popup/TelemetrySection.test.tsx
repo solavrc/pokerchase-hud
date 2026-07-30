@@ -31,7 +31,13 @@ describe('TelemetrySection', () => {
     await waitFor(() => expect(toggle).toBeEnabled())
     expect(screen.getByText('診断情報')).toBeInTheDocument()
     expect(container).toHaveTextContent(
-      /不具合の調査に必要な情報を送信します。APIの変更を検知した場合は、\s*プレイヤー識別子・名前・チャットを除いた対局イベントも含まれます。/
+      /不具合の調査に必要な診断情報は、外部のエラー監視サービスへ送信されます。\s*APIの変更を検知した場合は、プレイヤー識別子・名前・チャットを除いた\s*対局イベントも含まれます。/
+    )
+    expect(
+      screen.getByRole('link', { name: 'プライバシーポリシー' })
+    ).toHaveAttribute(
+      'href',
+      'https://github.com/solavrc/pokerchase-hud/blob/main/PRIVACY.md'
     )
     expect(container).not.toHaveTextContent(/Sentry/i)
     expect(toggle).not.toBeChecked()

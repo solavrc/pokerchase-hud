@@ -1,5 +1,6 @@
 import Alert from '@mui/material/Alert'
 import FormControlLabel from '@mui/material/FormControlLabel'
+import Link from '@mui/material/Link'
 import Switch from '@mui/material/Switch'
 import Typography from '@mui/material/Typography'
 import { useEffect, useState, type ChangeEvent } from 'react'
@@ -8,6 +9,9 @@ import {
   requestSentryTelemetry,
   revokeSentryTelemetry
 } from '../../observability/telemetry-consent'
+
+const PRIVACY_POLICY_URL =
+  'https://github.com/solavrc/pokerchase-hud/blob/main/PRIVACY.md'
 
 export const TelemetrySection = () => {
   const [enabled, setEnabled] = useState(false)
@@ -81,8 +85,16 @@ export const TelemetrySection = () => {
         color="text.secondary"
         sx={{ display: 'block' }}
       >
-        不具合の調査に必要な情報を送信します。APIの変更を検知した場合は、
-        プレイヤー識別子・名前・チャットを除いた対局イベントも含まれます。
+        不具合の調査に必要な診断情報は、外部のエラー監視サービスへ送信されます。
+        APIの変更を検知した場合は、プレイヤー識別子・名前・チャットを除いた
+        対局イベントも含まれます。{' '}
+        <Link
+          href={PRIVACY_POLICY_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          プライバシーポリシー
+        </Link>
       </Typography>
       {error && (
         <Alert severity="error" sx={{ mt: 1 }}>
