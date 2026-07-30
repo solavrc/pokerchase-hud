@@ -65,29 +65,29 @@ interface HandLogInteraction {
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value))
 
-const clampRestoredLayout = (
-  savedLayout: HandLogLayout,
+const keepLayoutControlsReachable = (
+  candidateLayout: HandLogLayout,
   scale: number
 ): HandLogLayout => {
   const height = Math.min(
-    savedLayout.height,
+    candidateLayout.height,
     Math.max(HAND_LOG_MIN_HEIGHT, window.innerHeight / scale)
   )
-  const renderedWidth = savedLayout.width * scale
+  const renderedWidth = candidateLayout.width * scale
   const renderedReachableWidth = Math.min(
     HAND_LOG_HEADER_REACHABLE_WIDTH * scale,
     window.innerWidth
   )
 
   return {
-    ...savedLayout,
+    ...candidateLayout,
     left: clamp(
-      savedLayout.left,
+      candidateLayout.left,
       renderedReachableWidth - renderedWidth,
       window.innerWidth - renderedReachableWidth
     ),
     top: clamp(
-      savedLayout.top,
+      candidateLayout.top,
       0,
       Math.max(0, window.innerHeight - height * scale)
     ),
@@ -264,7 +264,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
         savedLayout &&
         layoutEditGenerationRef.current === loadGeneration
       ) {
-        const reachableLayout = clampRestoredLayout(savedLayout, scale)
+        const reachableLayout = keepLayoutControlsReachable(savedLayout, scale)
         const pendingInteraction = interactionRef.current
         if (pendingInteraction && !pendingInteraction.moved) {
           pendingInteraction.startLayout = reachableLayout
@@ -298,7 +298,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
         // eventual save will publish the next authoritative layout.
         return
       }
-      const reachableLayout = clampRestoredLayout(nextLayout, scale)
+      const reachableLayout = keepLayoutControlsReachable(nextLayout, scale)
       if (pendingInteraction) {
         pendingInteraction.startLayout = reachableLayout
       }
@@ -311,6 +311,22 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       window.removeEventListener('resetHandLogLayout', handleReset)
       window.removeEventListener('updateHandLogLayout', handleUpdate)
     }
+  }, [applyLayout, scale])
+
+  // The viewport can shrink while the HUD stays mounted. Re-apply the same
+  // reachability rule used for restore/update so neither control requires a
+  // reset to recover. This changes only the visible layout; persistence still
+  // happens exclusively after a user move/resize.
+  useEffect(() => {
+    const handleViewportResize = () => {
+      const currentLayout = layoutRef.current
+      if (!currentLayout || interactionRef.current) return
+
+      applyLayout(keepLayoutControlsReachable(currentLayout, scale))
+    }
+
+    window.addEventListener('resize', handleViewportResize)
+    return () => window.removeEventListener('resize', handleViewportResize)
   }, [applyLayout, scale])
 
   // 新しいエントリが到着したとき自動的に下にスクロール

@@ -76,6 +76,10 @@ describe('HandLog', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
+    Object.defineProperties(window, {
+      innerWidth: { configurable: true, value: 1024 },
+      innerHeight: { configurable: true, value: 768 },
+    })
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       if (message.action === 'getDeviceHandLogLayout') {
         callback({ success: true })
@@ -657,6 +661,37 @@ describe('HandLog', () => {
     expect(logContainer.style.top).toBe('0px')
     expect(logContainer.style.height).toBe(`${window.innerHeight}px`)
     expect(screen.getByTestId('hand-log-resize-corner')).toBeInTheDocument()
+  })
+
+  it('表示中にviewportが縮んでもheaderとresize cornerを画面内へ戻す', () => {
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceHandLogLayout') {
+        callback({
+          success: true,
+          layout: { left: 120, top: 300, width: 520, height: 400 },
+        })
+      } else {
+        callback?.({ success: true })
+      }
+    })
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+
+    expect(logContainer.style.top).toBe('300px')
+    expect(logContainer.style.height).toBe('400px')
+
+    Object.defineProperty(window, 'innerHeight', {
+      configurable: true,
+      value: 360,
+    })
+    fireEvent(window, new Event('resize'))
+
+    expect(logContainer.style.top).toBe('0px')
+    expect(logContainer.style.height).toBe('360px')
+    expect(mockChromeRuntimeSendMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'setDeviceHandLogLayout' }),
+      expect.any(Function)
+    )
   })
 
   it('遅延reset後の保存済みlayout配信で表示を最新値へ戻す', () => {
