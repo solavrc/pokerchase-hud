@@ -170,20 +170,38 @@ const transitionHandLogLayout = (
 ): HandLogTransition => {
   switch (action.type) {
     case 'environmentChanged': {
+      if (state.interaction.phase === 'interacting') {
+        const pendingEnvironment = sameEnvironment(
+          state.environment,
+          action.environment
+        )
+          ? null
+          : action.environment
+        if (
+          (state.pendingEnvironment === null && pendingEnvironment === null) ||
+          (
+            state.pendingEnvironment !== null &&
+            pendingEnvironment !== null &&
+            sameEnvironment(state.pendingEnvironment, pendingEnvironment)
+          )
+        ) {
+          return { state }
+        }
+        return {
+          state: {
+            ...state,
+            pendingEnvironment,
+            activeLoad:
+              state.environment.scale !== action.environment.scale
+                ? null
+                : state.activeLoad,
+          },
+        }
+      }
       if (sameEnvironment(state.environment, action.environment)) {
         return { state }
       }
       const scaleChanged = state.environment.scale !== action.environment.scale
-      if (state.interaction.phase === 'interacting') {
-        return {
-          state: {
-            ...state,
-            environment: action.environment,
-            pendingEnvironment: action.environment,
-            activeLoad: scaleChanged ? null : state.activeLoad,
-          },
-        }
-      }
       return {
         state: {
           ...state,
@@ -336,9 +354,10 @@ const transitionHandLogLayout = (
 
     case 'interactionFinished': {
       if (state.interaction.phase !== 'interacting') return { state }
+      const environment = state.pendingEnvironment ?? state.environment
       const layout = normalizeHandLogLayout(
         state.layout,
-        state.environment
+        environment
       )
       const shouldPersist =
         state.interaction.moved || state.pendingEnvironment !== null
@@ -346,6 +365,7 @@ const transitionHandLogLayout = (
         state: {
           ...state,
           layout,
+          environment,
           interaction: { phase: 'idle' },
           pendingEnvironment: null,
           activeLoad: shouldPersist ? null : state.activeLoad,
@@ -531,8 +551,9 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
   }, [processedItems, config.fontSize])
 
   // Prop scale and viewport dimensions are inputs to the same layout machine
-  // as pointer interaction. useLayoutEffect updates scale before paint so the
-  // rendered transform and the reachability normalization cannot diverge.
+  // as pointer interaction. useLayoutEffect updates scale before paint while
+  // idle; an active interaction keeps rendering its start environment and
+  // applies the pending environment through the common finish transition.
   useLayoutEffect(() => {
     commitLayoutAction({
       type: 'environmentChanged',

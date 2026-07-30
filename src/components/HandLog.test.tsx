@@ -465,6 +465,8 @@ describe('HandLog', () => {
     fireEvent(window, new Event('resize'))
 
     expect(logContainer.style.top).toBe('500px')
+    moveMouseWithPrimaryButton(210, 524)
+    expect(logContainer.style.top).toBe('510px')
     fireEvent.mouseUp(document)
 
     expect(logContainer.style.top).toBe('280px')
@@ -472,7 +474,7 @@ describe('HandLog', () => {
       [
         {
           action: 'setDeviceHandLogLayout',
-          layout: { left: 100, top: 280, width: 400, height: 200 },
+          layout: { left: 110, top: 280, width: 400, height: 200 },
         },
         expect.any(Function),
       ],
@@ -503,10 +505,12 @@ describe('HandLog', () => {
     rerender(<HandLog entries={mockEntries} scale={2} />)
 
     expect(logContainer.style.top).toBe('500px')
+    expect(logContainer.style.transform).toContain('scale(1)')
     fireEvent.mouseUp(document)
 
     expect(logContainer.style.top).toBe('368px')
     expect(logContainer.style.height).toBe('200px')
+    expect(logContainer.style.transform).toContain('scale(2)')
     expect(savedLayoutCalls()).toHaveLength(1)
     expect(savedLayoutCalls()[0]![0].layout).toEqual({
       left: 100,
