@@ -1,99 +1,101 @@
 # PokerChase HUD
 
-An unofficial Chrome extension providing real-time poker statistics and hand history tracking.
+PokerChaseの対戦画面に、プレイヤー統計とハンド履歴をリアルタイム表示する非公式Chrome拡張機能です。
 
-![PokerChase HUD marquee promotional tile](./docs/store-assets/promo-marquee-1400x560.png)
+![PokerChase HUDのプロモーション画像](docs/store-assets/promo-marquee-1400x560.png)
 
-> **Note**: This codebase was primarily written by [Claude Code](https://claude.ai/code), demonstrating AI-assisted software development capabilities.
+## 概要
 
-## Disclaimer
+PokerChase HUDは、ゲーム中に受信したイベントから各プレイヤーの傾向、ポットオッズ、SPRなどを計算し、Unity WebGLの対戦画面上へ重ねて表示します。ハンド履歴の記録、PokerStars形式での出力、ローカルデータのバックアップ、任意のクラウド同期にも対応しています。
 
-This is an **unofficial** Chrome extension not affiliated with PokerChase. Use at your own risk. The developers assume no responsibility or liability for any consequences arising from the use of this tool.
+## 主な機能
 
-## Features
+- **リアルタイムHUD**: 17種類のポーカー統計（初期状態では14種類）を表示します。標準のコンパクト表示から詳細グリッドへ展開でき、サンプル数に応じた色分けとツールチップも利用できます。
+- **プレイヤータイプ判定**: 対戦相手を統計に基づいて🦈 TAG、💣 LAG、🪨 ニット、🐟 フィッシュ、🐳 ホエールに分類します。
+- **プレイヤー別の詳細表示**: ポジション別統計と、ショーダウンで公開されたホールカードを含む最近のハンドをHUDから確認できます。
+- **ゲーム開始前の自分の統計**: プレイヤー情報が保存済みなら、最初のハンドが配られる前から自分の通算統計を表示します。
+- **離席プレイヤーの表示保持**: バストやテーブル移動で席を離れたプレイヤーの統計を、席が交代するかセッションが終わるまで薄く表示します。
+- **リアルタイム計算**: 全プレイヤーのポットオッズとSPR、自分のハンド改善確率をアクションごとに更新します。
+- **ハンド履歴**: PokerStars形式のハンドログをリアルタイムに表示・出力します。表示位置や大きさも調整できます。
+- **フィルター**: ゲーム種別、テーブル人数、直近ハンド数で集計対象を切り替えられます。
+- **データ管理**: JSONのインポート・エクスポート、データ再構築、全データ削除に対応しています。
+- **クラウドバックアップ**: Googleアカウントでログインすると、Firebaseを通じてゲームデータをバックアップ・同期できます。
+- **表示設定**: HUDの位置・拡大率・表示項目と、ポップアップのダーク／ライトテーマを変更できます。
+- **更新**: Chromeから配信済みの更新は、ゲームや同期などを妨げないタイミングで適用されます。変更内容は[GitHub Releases](https://github.com/solavrc/pokerchase-hud/releases)で確認できます。
 
-- **Real-time HUD**: Player statistics overlay with 17 poker metrics (14 enabled by default) — compact classic-style display by default (click to expand the full grid), threshold-based color coding, and per-stat tooltips
-- **Player-type icons**: Automatic HM-style classification per opponent (🦈 TAG / 💣 LAG / 🪨 nit / 🐟 fish, with a 🐳 whale override)
-- **Drill-down panels**: Per-player positional stats and recent hands (with showdown hole cards), straight from the HUD
-- **Pre-game hero stats**: Your own career stats render before the first hand is dealt
-- **Hand History**: Live PokerStars-format hand log with export
-- **Flexible Filtering**: Game type, table size, and hand count filters
-- **Drag & Drop UI**: Customizable HUD positioning
-- **Data Export**: JSON and PokerStars formats
-- **Cloud Backup**: Automatic backups with cloud sync
-- **Self-updating**: Chrome-delivered updates (Web Store / managed installs) auto-apply between games, with in-popup release notes (dark/light themed popup). Unpacked (Developer-mode) installs update by re-downloading the release ZIP
+## 利用上の注意
 
-## Quick Start
+- 本プロジェクトはPokerChaseの運営元とは関係のない**非公式**ツールです。利用によって生じた結果について、開発者は責任を負いません。
+- PokerChase側の仕様変更により、表示やデータ処理が一時的に動作しなくなる可能性があります。
+- 対戦中のHUDや統計は判断材料の一つです。表示値の正確性や将来の動作を保証するものではありません。
+- クラウドバックアップを使わない場合、データは利用中のChromeプロファイル内にのみ保存されます。必要に応じてJSONエクスポートを保管してください。
 
-### Installation
+## 動作環境とデータ
 
-#### Option 1: From Release (Recommended)
+- **ブラウザ**: Chrome 140以降が必要です。認証データを信頼済みの拡張機能コンテキストだけに制限するため、[Chromium 140で追加された`storage.local`のアクセス制御](https://chromium.googlesource.com/chromium/src/+/a8f1f337c692360aaec9470a0a91f965011d37a3)を使用しています。
+- **対象サイト**: ゲーム内スクリプトが動作するのは `https://game.poker-chase.com/*` だけです。
+- **ローカル保存**: 受信したゲームイベント、導出した統計、ハンド履歴はChromeのIndexedDBに保存されます。JSONとPokerStars形式の出力はChromeのダウンロード機能で保存されます。
+- **Googleログイン**: 任意です。ログイン時は認証のためにGoogleアカウントのメールアドレスとプロフィールの権限を使用します。
+- **クラウドバックアップ**: Googleログインを有効にすると、設定済みのFirebase／Google APIを通じて対象のゲームイベントを同期します。HUD自体の統計計算はローカルで行うため、クラウド同期が利用できない場合でもローカルデータから動作します。
 
-1. Download the latest `extension.zip` from [Releases](https://github.com/solavrc/pokerchase-hud/releases)
-2. Extract the ZIP file
-3. Open `chrome://extensions/`
-4. Enable "Developer mode"
-5. Click "Load unpacked" and select the extracted folder
+## アーキテクチャ
 
-#### Option 2: From Source
+Chrome Manifest V3のService Workerを中心に、受信したWebSocketイベントの保存と表示用データの生成を分離しています。
 
-1. Build from source
+1. ページへ挿入したスクリプトがPokerChaseのWebSocketイベントを取得します。
+2. Content ScriptがイベントをService Workerへ転送します。
+3. Service Workerが生イベントをIndexedDBへ保存し、独立したストリームでHUD統計、リアルタイム統計、ハンドログを生成します。
+4. Content ScriptがReact UIをUnity WebGLの対戦画面へ重ねて表示します。
+5. Googleログインを有効にした場合だけ、対象データをFirestoreと同期します。
+
+<!-- 編集可能なdraw.io XMLはPNG内に埋め込まれています。 -->
+![PokerChase HUDのアーキテクチャ図](README.drawio.png)
+
+## 開発
+
+現在のNode.js LTSとnpmを使用してください。CIの実行環境は[`.github/workflows/ci.yml`](.github/workflows/ci.yml)が正本です。
 
 ```sh
-git clone https://github.com/solavrc/pokerchase-hud.git
-cd pokerchase-hud
 npm ci
+npm run typecheck
+npm run test
 npm run build
 ```
 
-2. Open `chrome://extensions/`
-3. Enable "Developer mode"
-4. Click "Load unpacked" and select the project folder
+主なコマンド:
 
-### Requirements and data
+| コマンド | 用途 |
+| --- | --- |
+| `npm run build` | 本番用の拡張機能を`dist/`へビルドし、`extension.zip`を作成 |
+| `npm run typecheck` | TypeScriptの型検査 |
+| `npm run test` | Jestのユニット／コンポーネントテスト |
+| `npm run validate-schema -- <file.ndjson>` | NDJSONのAPIイベントをスキーマ検証 |
+| `npm run schema-diff -- <file.ndjson>` | APIイベントのフィールド差分を検出 |
+| `npm run verify-stats -- <file.ndjson>` | 統計パイプラインを独立したoracleと照合 |
 
-- Chrome 140 or later is required so persisted authentication data can be
-  restricted to trusted extension contexts. Support for restricting
-  `storage.local` was added in
-  [Chromium 140](https://chromium.googlesource.com/chromium/src/+/a8f1f337c692360aaec9470a0a91f965011d37a3).
-- The in-game script runs only on `https://game.poker-chase.com/*`.
-- Hand history and HUD data are stored in the browser. JSON and PokerStars exports are saved through Chrome's download function.
-- Google sign-in is optional. When enabled, Cloud Backup synchronizes game data through the configured Firebase / Google APIs; the extension requests the Google account email and profile scopes for authentication.
+### UIモックアップ
 
-### UI visual mockup
-
-Run the HUD against deterministic mock data without loading the extension or
-opening PokerChase:
+拡張機能を読み込んだりPokerChaseを開いたりせず、決定論的なモックデータでHUDを確認できます。
 
 ```sh
 npm run mockup
 ```
 
-Open `http://127.0.0.1:4173`. The control panel switches between representative
-table states, changes the HUD scale, toggles the hand log, and resets dragged
-HUD positions. The mockup renders the production `Hud` and `HandLog` components,
-so visual changes are shared with the extension rather than duplicated.
+`http://127.0.0.1:4173`を開くと、代表的なテーブル状態の切り替え、HUDの拡大率変更、ハンドログの表示切り替え、移動したHUD位置のリセットを試せます。モックアップは本番と同じ`Hud`／`HandLog`コンポーネントを使用します。
 
-## Architecture
+実ブラウザを使うE2Eテストについては[`e2e/README.md`](e2e/README.md)を参照してください。
 
-<!-- Editable draw.io XML is embedded directly in the PNG. -->
-![Architecture Diagram](README.drawio.png)
+## 関連ドキュメント
 
-## Documentation
+- [開発エージェント向け技術リファレンス](AGENTS.md)
+- [アーキテクチャの設計判断](docs/architecture.md)
+- [PokerChase APIイベント仕様](docs/api-events.md)
+- [PokerStars形式のエクスポート仕様](docs/pokerstars-export.md)
+- [Firebaseのセットアップ](docs/firebase-setup.md)
+- [本番エラー監視とプライバシー境界](docs/observability.md)
+- [ファイル構成](docs/file-organization.md)
+- [Chrome Web Storeのリリース手順](docs/chrome-web-store-release.md)
 
-📖 **[Technical Documentation](AGENTS.md)** - Complete technical reference including:
+## コントリビューション
 
-- Architecture overview and design principles
-- Stream processing pipeline details
-- Database schema and API reference
-- Development guidelines and best practices
-- Cloud sync setup and troubleshooting
-- [Production error monitoring and privacy boundary](docs/observability.md)
-
-## Contributing
-
-Contributions are welcome! The codebase uses a modular architecture for easy extension.
-
-📖 **[Contributing Guide](CONTRIBUTING.md)** - Complete guide for adding new statistics with examples and testing requirements
-
-📁 **[Project Structure](docs/file-organization.md)** - Detailed directory layout and file organization
+IssueやPull Requestを歓迎します。統計の追加方法、テスト要件、リポジトリの作業手順は[コントリビューションガイド](CONTRIBUTING.md)を参照してください。
