@@ -1,7 +1,7 @@
 /**
  * Unit tests for the What's New badge (src/background/whats-new-badge.ts).
  *
- * Covers: the 3-way badge-precedence resolver (all 8 states), entry-gated
+ * Covers: the 3-way badge-precedence resolver (all 8 states), all-version
  * onInstalled('update') marking (background.ts only calls markWhatsNewOnUpdate
  * for reason === 'update', never 'install' -- this file tests that function
  * directly, matching the existing convention in rebuild-advisory.test.ts of
@@ -18,16 +18,16 @@ import {
 } from './whats-new-badge'
 import { REBUILD_ADVISORY_STORAGE_KEY } from './rebuild-advisory'
 import { PENDING_UPDATE_STORAGE_KEY } from './update-manager'
-import { WHATS_NEW_STORAGE_KEY, WHATS_NEW_ENTRIES } from '../constants/whats-new'
+import { UPDATE_INFO_UNSEEN_VERSION_STORAGE_KEY } from '../constants/release-info'
 
-const CURRENT_ENTRY_VERSION = WHATS_NEW_ENTRIES[0]!.version
+const CURRENT_VERSION = '99.123.456'
 
 describe('whats-new-badge', () => {
   beforeEach(async () => {
     await chrome.storage.local.set({
       [REBUILD_ADVISORY_STORAGE_KEY]: undefined,
       [PENDING_UPDATE_STORAGE_KEY]: undefined,
-      [WHATS_NEW_STORAGE_KEY]: undefined,
+      [UPDATE_INFO_UNSEEN_VERSION_STORAGE_KEY]: undefined,
     })
     jest.clearAllMocks()
   })
@@ -60,10 +60,10 @@ describe('whats-new-badge', () => {
   })
 
   describe('markWhatsNewOnUpdate (onInstalled reason === \'update\' only)', () => {
-    it('records the unseen version and sets the badge when a curated entry exists and no higher-priority badge is active', async () => {
-      await markWhatsNewOnUpdate(CURRENT_ENTRY_VERSION)
+    it('records any updated version and sets the badge when no higher-priority badge is active', async () => {
+      await markWhatsNewOnUpdate(CURRENT_VERSION)
 
-      expect(await getUnseenWhatsNewVersion()).toBe(CURRENT_ENTRY_VERSION)
+      expect(await getUnseenWhatsNewVersion()).toBe(CURRENT_VERSION)
       expect(chrome.action.setBadgeText).toHaveBeenCalledWith({ text: 'N' })
       expect(chrome.action.setBadgeBackgroundColor).toHaveBeenCalled()
     })
@@ -74,19 +74,12 @@ describe('whats-new-badge', () => {
       ;(chrome.action.setBadgeBackgroundColor as jest.Mock).mockRejectedValue(uiError)
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
 
-      await expect(markWhatsNewOnUpdate(CURRENT_ENTRY_VERSION)).resolves.toBeUndefined()
+      await expect(markWhatsNewOnUpdate(CURRENT_VERSION)).resolves.toBeUndefined()
       await Promise.resolve()
 
-      expect(await getUnseenWhatsNewVersion()).toBe(CURRENT_ENTRY_VERSION)
+      expect(await getUnseenWhatsNewVersion()).toBe(CURRENT_VERSION)
       expect(warnSpy).toHaveBeenCalledTimes(2)
       warnSpy.mockRestore()
-    })
-
-    it('does not record anything when the version has no curated WHATS_NEW_ENTRIES entry (e.g. an unreleased/unrecognized version)', async () => {
-      await markWhatsNewOnUpdate('0.0.1-not-a-real-release')
-
-      expect(await getUnseenWhatsNewVersion()).toBeUndefined()
-      expect(chrome.action.setBadgeText).not.toHaveBeenCalled()
     })
 
     it('records the unseen version but suppresses the badge when rebuild-advisory is pending (precedence)', async () => {
@@ -94,9 +87,9 @@ describe('whats-new-badge', () => {
         [REBUILD_ADVISORY_STORAGE_KEY]: { pendingVersion: 1 },
       })
 
-      await markWhatsNewOnUpdate(CURRENT_ENTRY_VERSION)
+      await markWhatsNewOnUpdate(CURRENT_VERSION)
 
-      expect(await getUnseenWhatsNewVersion()).toBe(CURRENT_ENTRY_VERSION)
+      expect(await getUnseenWhatsNewVersion()).toBe(CURRENT_VERSION)
       expect(chrome.action.setBadgeText).not.toHaveBeenCalled()
     })
 
@@ -105,9 +98,9 @@ describe('whats-new-badge', () => {
         [PENDING_UPDATE_STORAGE_KEY]: { pending: true, version: '9.9.9' },
       })
 
-      await markWhatsNewOnUpdate(CURRENT_ENTRY_VERSION)
+      await markWhatsNewOnUpdate(CURRENT_VERSION)
 
-      expect(await getUnseenWhatsNewVersion()).toBe(CURRENT_ENTRY_VERSION)
+      expect(await getUnseenWhatsNewVersion()).toBe(CURRENT_VERSION)
       expect(chrome.action.setBadgeText).not.toHaveBeenCalled()
     })
 
@@ -115,17 +108,17 @@ describe('whats-new-badge', () => {
       const original = (chrome as any).action
       delete (chrome as any).action
 
-      await expect(markWhatsNewOnUpdate(CURRENT_ENTRY_VERSION)).resolves.not.toThrow()
-      expect(await getUnseenWhatsNewVersion()).toBe(CURRENT_ENTRY_VERSION)
+      await expect(markWhatsNewOnUpdate(CURRENT_VERSION)).resolves.not.toThrow()
+      expect(await getUnseenWhatsNewVersion()).toBe(CURRENT_VERSION)
 
       ;(chrome as any).action = original
     })
   })
 
-  describe('acknowledgeWhatsNew (Popup WhatsNewSection mount)', () => {
+  describe('acknowledgeWhatsNew (Popup version/Release link visible)', () => {
     it('clears the unseen version and the badge', async () => {
-      await markWhatsNewOnUpdate(CURRENT_ENTRY_VERSION)
-      expect(await getUnseenWhatsNewVersion()).toBe(CURRENT_ENTRY_VERSION)
+      await markWhatsNewOnUpdate(CURRENT_VERSION)
+      expect(await getUnseenWhatsNewVersion()).toBe(CURRENT_VERSION)
       jest.clearAllMocks()
 
       await acknowledgeWhatsNew()
@@ -146,7 +139,7 @@ describe('whats-new-badge', () => {
     })
 
     it('does not clobber the rebuild-advisory badge when it is active', async () => {
-      await markWhatsNewOnUpdate(CURRENT_ENTRY_VERSION) // suppressed (no rebuild yet)
+      await markWhatsNewOnUpdate(CURRENT_VERSION) // suppressed (no rebuild yet)
       await chrome.storage.local.set({
         [REBUILD_ADVISORY_STORAGE_KEY]: { pendingVersion: 1 },
       })
@@ -158,7 +151,7 @@ describe('whats-new-badge', () => {
     })
 
     it('does not clobber the update-manager badge when it is active', async () => {
-      await markWhatsNewOnUpdate(CURRENT_ENTRY_VERSION) // suppressed (no update yet)
+      await markWhatsNewOnUpdate(CURRENT_VERSION) // suppressed (no update yet)
       await chrome.storage.local.set({
         [PENDING_UPDATE_STORAGE_KEY]: { pending: true, version: '9.9.9' },
       })
@@ -183,7 +176,7 @@ describe('whats-new-badge', () => {
       await chrome.storage.local.set({
         [REBUILD_ADVISORY_STORAGE_KEY]: { pendingVersion: 1 },
       })
-      await markWhatsNewOnUpdate(CURRENT_ENTRY_VERSION)
+      await markWhatsNewOnUpdate(CURRENT_VERSION)
       expect(chrome.action.setBadgeText).not.toHaveBeenCalled()
 
       // User rebuilds; rebuild-advisory resolves (acknowledgedVersion set,
@@ -203,7 +196,7 @@ describe('whats-new-badge', () => {
       await chrome.storage.local.set({
         [PENDING_UPDATE_STORAGE_KEY]: { pending: true, version: '9.9.9' },
       })
-      await markWhatsNewOnUpdate(CURRENT_ENTRY_VERSION)
+      await markWhatsNewOnUpdate(CURRENT_VERSION)
       jest.clearAllMocks()
 
       await reassertWhatsNewBadgeOnStartup()

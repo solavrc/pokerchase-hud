@@ -41,7 +41,6 @@ import { HandLimitSection } from './popup/HandLimitSection'
 import { StatisticsConfigSection } from './popup/StatisticsConfigSection'
 import { UndecodedEventSection } from './popup/UndecodedEventSection'
 import { UpdateSection } from './popup/UpdateSection'
-import { WhatsNewSection } from './popup/WhatsNewSection'
 import { PopupHeader } from './popup/PopupHeader'
 import { SectionCard } from './popup/SectionCard'
 import { TelemetrySection } from './popup/TelemetrySection'
@@ -583,13 +582,6 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
         (どちらも該当時のみ描画。他セクションより先に表示し、ユーザーの
         目に触れやすくする) */}
       <UpdateSection />
-
-      {/* 更新情報（What's New）: 上のUpdateSection（保留中アップデート/
-        サポート終了警告 -- 実際に行動が必要な緊急度の高いバナー）の直後、
-        設定系セクション群より前に置く。「そのバージョンで何が変わったか」を
-        知るのはアクション不要の付随情報だが、他の全設定より先に目に入る
-        位置にしておくことで、ポップアップを開くたびに探させずに済む */}
-      <WhatsNewSection />
 
       {/* UI Display Controls */}
       <SectionCard>

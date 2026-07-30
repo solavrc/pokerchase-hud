@@ -449,7 +449,7 @@ const setupUpdateCheckAlarm = async (): Promise<void> => {
  *
  * 戻り値はSW起動時の`recheckPendingUpdate()`呼び出しのpromise（常にresolve
  * する -- 内部でcatch済み）。呼び出し側（background.ts）はこれを使って
- * 「pendingUpdateのSW起動時クリーンアップが終わってから」whats-newバッジの
+ * 「pendingUpdateのSW起動時クリーンアップが終わってから」更新情報バッジの
  * 再評価を行うよう順序付けできる（codex review, PR #172:
  * `reassertWhatsNewBadgeOnStartup()`がこのクリーンアップの完了前に
  * `pendingUpdate`の中間状態を読んでしまうレースの防止）。この関数自体は
