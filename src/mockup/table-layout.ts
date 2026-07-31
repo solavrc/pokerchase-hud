@@ -208,14 +208,28 @@ export const ACTION_BAR = {
   ] as Array<Rect & { label: string; wordLabel?: boolean }>,
   plus: { h: 11.2, l: 85.6, t: 84.7, w: 6.6 } as Rect,
   preAction: { h: 15.5, l: 1.7, t: 83.3, w: 8 } as Rect,
-  slider: { h: 1.5, l: 50.3, t: 93.9, w: 43.6 } as Rect,
+  /**
+   * Bet-size track. Its right edge stops at the オールイン preset's right edge
+   * (77.2 + 8.1 = 85.3%), not at the reference's own measured 93.9% -- that
+   * measurement ran the track out past both the ＋ button (right edge 92.2%)
+   * and the bar frame (93%), which reads as a bar poking out of the chrome
+   * rather than as part of it (sola). `betSliderInvariants` in
+   * `table-layout.test.ts` pins the relationship so a later edit to the
+   * presets cannot silently reintroduce the overhang.
+   */
+  slider: { h: 1.5, l: 50.3, t: 93.9, w: 35 } as Rect,
   /**
    * Centre of the slider's diamond handle. A centre, not a Rect: the handle is
    * a 45°-rotated square and so must be square in PIXELS, which a Rect cannot
    * express (its width and height are percentages of different axes). Its side
    * lives with the other diamonds in `styles.css`.
+   *
+   * `t` is the track's own vertical centre (93.9 + 1.5/2), not the reference's
+   * measured 95.08 -- the client draws the handle centred on the track, so the
+   * 0.43pt offset was measurement error, and at any real window height it
+   * renders as a handle sitting visibly below the bar it rides on.
    */
-  sliderKnob: { l: 83.52, t: 95.08 } as Point,
+  sliderKnob: { l: 83.52, t: 94.65 } as Point,
 } as const
 
 /** CSS positioning for a {@link Rect}, in percent-of-viewport units. */
