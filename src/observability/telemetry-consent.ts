@@ -69,14 +69,33 @@ export const readSentryTelemetryConsent = async (
 ): Promise<boolean> =>
   await readSentryTelemetryConsentState(runtime) === true
 
+/**
+ * The content-readable session mirror exactly as stored, before the background
+ * re-verifies it. `undefined` means the mirror does not exist yet — typically a
+ * content script that raced the background's setAccessLevel() during startup.
+ *
+ * Callers must not treat `true` as authorization on its own; it only separates
+ * "no mirror yet" from "mirror present but unverified" when
+ * readSentryTelemetryConsentState() reports `undefined`.
+ */
+export const readSentryTelemetryConsentMirror = async (
+): Promise<boolean | undefined> => {
+  const result = await sessionGet(SENTRY_TELEMETRY_CONSENT_STORAGE_KEY)
+  const value = result[SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]
+  return typeof value === 'boolean' ? value : undefined
+}
+
 export const readSentryTelemetryConsentState = async (
   runtime: 'background' | 'content_script' | 'popup' = 'background'
 ): Promise<boolean | undefined> => {
-  const result = runtime === 'content_script'
-    ? await sessionGet(SENTRY_TELEMETRY_CONSENT_STORAGE_KEY)
-    : await localGet(SENTRY_TELEMETRY_CONSENT_STORAGE_KEY)
-  const value = result[SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]
-  const storedState = typeof value === 'boolean' ? value : undefined
+  let storedState: boolean | undefined
+  if (runtime === 'content_script') {
+    storedState = await readSentryTelemetryConsentMirror()
+  } else {
+    const result = await localGet(SENTRY_TELEMETRY_CONSENT_STORAGE_KEY)
+    const value = result[SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]
+    storedState = typeof value === 'boolean' ? value : undefined
+  }
   if (runtime !== 'content_script' || storedState !== true) {
     return storedState
   }

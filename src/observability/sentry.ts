@@ -12,6 +12,7 @@ import {
   initializeSentryTelemetryConsentBridge,
   readSentryTelemetryEnabled,
   readSentryTelemetryConsent,
+  readSentryTelemetryConsentMirror,
   readSentryTelemetryConsentState,
   registerSentryPermissionRevocationSync
 } from './telemetry-consent'
@@ -261,6 +262,7 @@ type SentryStartResult =
   | 'started'
   | 'build_disabled'
   | 'disabled'
+  | 'consent_unverified'
   | 'waiting_for_consent_mirror'
 
 /**
@@ -268,12 +270,23 @@ type SentryStartResult =
  *
  * 'build_disabled' has no transport to start in any runtime, and
  * 'waiting_for_consent_mirror' self-heals through the storage.onChanged
- * listener this runtime already holds. Reporting either as a failed transition
- * would make requestSentryTelemetry() roll the opt-in back and revoke the
- * optional host permission the user just granted.
+ * listener this runtime already holds — the mirror does not exist yet, so
+ * creating it necessarily delivers a change event. Reporting either as a
+ * failed transition would make requestSentryTelemetry() roll the opt-in back
+ * and revoke the optional host permission the user just granted.
+ *
+ * 'consent_unverified' is deliberately excluded: the mirror already reads
+ * `true`, so no further change event is guaranteed, and the background never
+ * confirmed the current local-consent + permission decision. Acknowledging it
+ * would leave a tab whose transport can never start while the popup reports
+ * success.
  */
 const isTelemetryStateHonored = (result: SentryStartResult): boolean =>
-  result !== 'disabled'
+  result !== 'disabled' && result !== 'consent_unverified'
+
+/** Outcomes that may still start later, so buffered bootstrap errors stand. */
+const isTelemetryStartPending = (result: SentryStartResult): boolean =>
+  result === 'waiting_for_consent_mirror' || result === 'consent_unverified'
 
 const startSentry = async (
   runtime: SentryRuntime,
@@ -286,9 +299,16 @@ const startSentry = async (
   if (initialized) return 'started'
   const consentState = await readSentryTelemetryConsentState(runtime)
   if (consentState !== true) {
-    return runtime === 'content_script' && consentState === undefined
-      ? 'waiting_for_consent_mirror'
-      : 'disabled'
+    if (runtime !== 'content_script' || consentState === false) {
+      return 'disabled'
+    }
+    // A content script reports `undefined` for two different situations: the
+    // background has not created the session mirror yet, or the mirror reads
+    // `true` but its background re-verification could not be completed. Only
+    // the former is guaranteed to be retried by a later change event.
+    return await readSentryTelemetryConsentMirror() === true
+      ? 'consent_unverified'
+      : 'waiting_for_consent_mirror'
   }
   if (!await hasSentryHostPermission(runtime)) {
     await clearSentryTelemetryConsent()
@@ -435,6 +455,17 @@ export const initSentry = (
               !directRevocationPending
             ) {
               result = await initSentry(configuredRuntime)
+              // The background status probe can fail transiently while the
+              // service worker is still waking. Retry once before refusing:
+              // the popup is driving this transition, so the worker is
+              // reachable, and the first probe itself requests the wake.
+              if (
+                result === 'consent_unverified' &&
+                !initialized &&
+                !directRevocationPending
+              ) {
+                result = await initSentry(configuredRuntime)
+              }
             }
             sendResponse?.(initialized || isTelemetryStateHonored(result)
               ? { sentryTelemetryStateApplied: type }
@@ -496,7 +527,7 @@ export const initSentry = (
   const generation = initializationGeneration
   initializationPromise = startSentry(runtime, generation)
     .then(result => {
-      if (result === 'waiting_for_consent_mirror') return result
+      if (isTelemetryStartPending(result)) return result
       const completedBuffer = bootstrapErrorBuffer
       bootstrapErrorBuffer = undefined
       flushBootstrapErrors(completedBuffer)

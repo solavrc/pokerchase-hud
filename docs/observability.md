@@ -23,11 +23,20 @@ Enabling waits for every live game tab to acknowledge the transition and rolls
 the opt-in back — including the optional host grant just given — when a content
 script refuses. Only a genuine refusal may count. A build with telemetry
 compiled out (see "Builds and source maps" below) has no transport to start in
-any runtime, and a content script whose session consent mirror is not readable
-yet self-heals through `storage.onChanged`; both acknowledge the opt-in rather
-than failing it. Reporting either as a failure made **診断情報を送信**
-impossible to turn on while a game tab was open, surfacing only as
-「診断情報の設定を更新できませんでした。」. Revocation stays strictly
+any runtime, and a content script whose session consent mirror does not exist
+yet self-heals through `storage.onChanged`, because creating that mirror
+necessarily delivers a change event; both acknowledge the opt-in rather than
+failing it. Reporting either as a failure made **診断情報を送信** impossible to
+turn on while a game tab was open, surfacing only as
+「診断情報の設定を更新できませんでした。」.
+
+A mirror that already reads `true` but whose background re-verification could
+not be completed is **not** acknowledged. No further change event is guaranteed
+in that state, so acknowledging it would leave that tab's transport permanently
+dark until a reload while the popup reported success. The acknowledgement path
+retries the status probe once — the popup is driving the transition, so the
+service worker is reachable and the first probe itself requests the wake — and
+refuses if the retry is still unconfirmed. Revocation stays strictly
 fail-closed.
 
 ## What is reported

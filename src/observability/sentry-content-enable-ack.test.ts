@@ -30,6 +30,11 @@ interface Scenario {
   consentMirrorReadable?: boolean
   /** What the background reports for the content script's status probe. */
   backgroundReportsEnabled?: boolean
+  /**
+   * How many leading status probes reject before the background answers.
+   * `Infinity` reproduces a background that never confirms the mirror.
+   */
+  statusProbeFailures?: number
 }
 
 /**
@@ -41,7 +46,8 @@ const optInFromPopupWithLiveGameTab = async (scenario: Scenario) => {
   const {
     telemetryCompiledIn,
     consentMirrorReadable = true,
-    backgroundReportsEnabled = true
+    backgroundReportsEnabled = true,
+    statusProbeFailures = 0
   } = scenario
   const contentListeners: MessageListener[] = []
   ;(chrome.runtime.onMessage.addListener as jest.Mock).mockImplementation(
@@ -60,8 +66,13 @@ const optInFromPopupWithLiveGameTab = async (scenario: Scenario) => {
     await initSentry('content_script')
   })
 
-  ;(chrome.runtime.sendMessage as jest.Mock).mockResolvedValue({
-    sentryTelemetryEnabled: backgroundReportsEnabled
+  let probeCount = 0
+  ;(chrome.runtime.sendMessage as jest.Mock).mockImplementation(async () => {
+    probeCount += 1
+    if (probeCount <= statusProbeFailures) {
+      throw new Error('Could not establish connection.')
+    }
+    return { sentryTelemetryEnabled: backgroundReportsEnabled }
   })
   if (!consentMirrorReadable) {
     ;(chrome.storage.session.get as jest.Mock).mockImplementation(
@@ -162,5 +173,101 @@ describe('Sentry content-script enablement acknowledgement', () => {
         message: 'Content script did not acknowledge telemetry state'
       })
     )
+  })
+
+  // A mirror that already reads `true` produces no further change event, so an
+  // unconfirmed probe must not be acknowledged like a missing mirror: the tab
+  // would stay dark until a reload while the popup reported success.
+  it('refuses when the background never confirms the consent mirror', async () => {
+    const { optedIn, error, contentSentryInit } =
+      await optInFromPopupWithLiveGameTab({
+        telemetryCompiledIn: true,
+        statusProbeFailures: Infinity
+      })
+
+    expect(contentSentryInit).not.toHaveBeenCalled()
+    expect(optedIn).toBeUndefined()
+    expect(error).toEqual(
+      expect.objectContaining({
+        message: 'Content script did not acknowledge telemetry state'
+      })
+    )
+    expect(chrome.permissions.remove).toHaveBeenCalled()
+  })
+})
+
+/**
+ * Drive the acknowledgement handler on its own, with the mirror already stored
+ * before the content script starts, so the handler cannot borrow a start
+ * attempt from an incidental storage.onChanged wake.
+ *
+ * The probe budget is scoped to the dispatch, not counted from the beginning:
+ * src/test-setup.ts never clears its storage.onChanged registry, so content
+ * script instances from earlier tests in this file stay subscribed and would
+ * otherwise consume probes and shift the numbering. Nothing writes to storage
+ * during the dispatch, so only the instance under test probes in that window.
+ */
+const acknowledgeEnableDirectly = async (failuresDuringDispatch: number) => {
+  const contentListeners: MessageListener[] = []
+  ;(chrome.runtime.onMessage.addListener as jest.Mock).mockImplementation(
+    (listener: MessageListener) => { contentListeners.push(listener) }
+  )
+  process.env.SENTRY_ENABLED = 'true'
+
+  let failingProbes = Infinity
+  ;(chrome.runtime.sendMessage as jest.Mock).mockImplementation(async () => {
+    if (failingProbes > 0) {
+      failingProbes -= 1
+      throw new Error('Could not establish connection.')
+    }
+    return { sentryTelemetryEnabled: true }
+  })
+  await chrome.storage.session.set({ sentryTelemetryConsent: true })
+
+  // Starts unverified: every probe fails while the instance boots.
+  let contentSentryInit: jest.Mock | undefined
+  await jest.isolateModulesAsync(async () => {
+    contentSentryInit = require('@sentry/browser').init
+    const { initSentry } = require('./sentry')
+    await initSentry('content_script')
+  })
+  expect(contentSentryInit).not.toHaveBeenCalled()
+
+  failingProbes = failuresDuringDispatch
+  const response = await new Promise<unknown>(resolve => {
+    const handled = contentListeners
+      .map(listener => listener(
+        { type: 'pokerchase:sentry-telemetry-enabled' },
+        { id: 'ext' },
+        resolve
+      ))
+      .some(Boolean)
+    if (!handled) resolve(undefined)
+  })
+  return { response, contentSentryInit }
+}
+
+describe('Sentry content-script status-probe retry', () => {
+  afterEach(() => { delete process.env.SENTRY_ENABLED })
+
+  it('retries once past a transient probe failure', async () => {
+    // The acknowledgement path's first attempt spends the one failing probe;
+    // only the retry can still reach a confirming one.
+    const { response, contentSentryInit } = await acknowledgeEnableDirectly(1)
+
+    expect(response).toEqual({
+      sentryTelemetryStateApplied: 'pokerchase:sentry-telemetry-enabled'
+    })
+    expect(contentSentryInit).toHaveBeenCalled()
+  })
+
+  it('refuses once the retry is also unconfirmed', async () => {
+    const { response, contentSentryInit } =
+      await acknowledgeEnableDirectly(Infinity)
+
+    expect(response).toEqual({
+      sentryTelemetryStateFailed: 'pokerchase:sentry-telemetry-enabled'
+    })
+    expect(contentSentryInit).not.toHaveBeenCalled()
   })
 })
