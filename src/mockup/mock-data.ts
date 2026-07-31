@@ -17,38 +17,25 @@ interface PlayerPotOdds {
 }
 
 /**
- * A seat as the mock table draws it. Deliberately only seat OCCUPANCY, not
- * per-hand progress: no bets, blind markers, fold state or aggressor
- * highlight. See the scope note in `table-layout.ts`.
+ * A seat as the mock table draws it. Occupancy only -- no name, no stack, no
+ * per-hand progress. The table is a shell: it shows WHERE the client puts
+ * things, never WHAT any particular hand contains. See the scope note in
+ * `table-layout.ts`.
  */
 export interface TableSeat {
-  /** Seat nobody has taken yet. */
+  /** Seat nobody has taken yet -- the plate renders as an empty slot. */
   empty?: boolean
   isHero?: boolean
-  name: string
-  stack: string
 }
 
 export interface MockScenario {
-  /** Ante shown in the top-left game panel ("—" when the format has none). */
-  ante: string
-  board: string[]
-  /** Hand clock shown next to the blind level. */
-  clock: string
   handLogEntries: HandLogEntry[]
-  /** Made-hand caption under hero's hole cards. */
-  heroHandLabel?: string
-  heroCards: string[]
   id: MockScenarioId
   label: string
-  /** Street name as the game prints it (プリフロップ / ターン / …). */
-  phase: string
   playerPotOdds: Array<PlayerPotOdds | undefined>
-  pot: string
   realTimeStats?: RealTimeStats
+  /** Seat occupancy only; see {@link TableSeat}. */
   seats: TableSeat[]
-  /** Blind level as the game prints it, e.g. "25/50". */
-  stakes: string
   stats: PlayerStats[]
 }
 
@@ -204,15 +191,9 @@ const densePlayer = (
 
 export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
   'turn-decision': {
-    ante: '—',
-    board: ['J♦', '7♠', '2♣', '9♠'],
-    clock: '00:12',
     handLogEntries: turnHandLog,
-    heroCards: ['A♠', 'J♠'],
-    heroHandLabel: 'ワンペア',
     id: 'turn-decision',
     label: 'ターンの判断',
-    phase: 'ターン',
     playerPotOdds: [
       { spr: 2.7, potOdds: { call: 640, isPlayerTurn: true, percentage: 26.9, pot: 1740, ratio: '2.7:1' } },
       { spr: 3.1 },
@@ -221,17 +202,15 @@ export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
       { spr: 8.2 },
       { spr: 5.9 },
     ],
-    pot: '1,740',
     realTimeStats,
     seats: [
-      { isHero: true, name: 'Hero', stack: '6,240' },
-      { name: 'プレイヤーA', stack: '4,980' },
-      { name: 'プレイヤーB', stack: '9,410' },
-      { name: 'プレイヤーC', stack: '5,220' },
-      { name: 'プレイヤーD', stack: '5,850' },
-      { name: 'プレイヤーE', stack: '7,190' },
+      { isHero: true },
+      {},
+      {},
+      {},
+      {},
+      {},
     ],
-    stakes: '25/50',
     stats: [
       standardStats(HERO_PLAYER_ID, 'Hero', 642, 'balanced'),
       standardStats(2108, 'プレイヤーA', 214, 'tight'),
@@ -242,25 +221,18 @@ export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
     ],
   },
   'new-table': {
-    ante: '—',
-    board: [],
-    clock: '—',
     handLogEntries: [],
-    heroCards: [],
     id: 'new-table',
     label: '新しい卓・データなし',
-    phase: '待機中',
     playerPotOdds: [],
-    pot: '—',
     seats: [
-      { isHero: true, name: 'Hero', stack: '5,000' },
-      { name: 'joining…', stack: '—' },
-      { empty: true, name: 'empty', stack: '—' },
-      { name: 'プレイヤーC', stack: '5,000' },
-      { empty: true, name: 'empty', stack: '—' },
-      { name: 'プレイヤーE', stack: '5,000' },
+      { isHero: true },
+      {},
+      { empty: true },
+      {},
+      { empty: true },
+      {},
     ],
-    stakes: '50/100',
     stats: [
       { playerId: HERO_PLAYER_ID, statResults: [] },
       { playerId: -1 },
@@ -271,28 +243,20 @@ export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
     ],
   },
   'dense-history': {
-    ante: '50',
-    board: ['A♣', 'K♦', 'T♥', '4♣', '4♦'],
-    clock: '00:04',
     handLogEntries: turnHandLog,
-    heroCards: ['Q♣', 'J♣'],
-    heroHandLabel: 'ストレート',
     id: 'dense-history',
     label: '長い名前・全統計',
-    phase: 'リバー',
     playerPotOdds: [
       { spr: 0.4, potOdds: { call: 2380, isPlayerTurn: true, percentage: 38.5, pot: 3800, ratio: '1.6:1' } },
     ],
-    pot: '3,800',
     seats: [
-      { isHero: true, name: 'Hero', stack: '2,380' },
-      { name: LONG_NAME, stack: '12,400' },
-      { name: 'プレイヤーB', stack: '8,775' },
-      { name: 'プレイヤーC', stack: '1,020' },
-      { name: 'プレイヤーD', stack: '14,950' },
-      { name: 'プレイヤーE', stack: '6,660' },
+      { isHero: true },
+      {},
+      {},
+      {},
+      {},
+      {},
     ],
-    stakes: '200/400',
     stats: [
       densePlayer(HERO_PLAYER_ID, 'Hero', 12_840),
       densePlayer(7321, LONG_NAME, 987),

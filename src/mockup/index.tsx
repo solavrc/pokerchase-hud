@@ -2,11 +2,15 @@ import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import HandLog from '../components/HandLog'
 import Hud from '../components/Hud'
+import Popup from '../components/Popup'
+import {
+  POPUP_BOOT_LOCAL_STORAGE_KEY,
+  resolveBootBackgroundColor,
+} from '../components/popup/popup-boot-theme'
 import type { StatDisplayConfig } from '../types'
 import { installChromeMock } from './mock-chrome'
 import {
   MOCK_SCENARIOS,
-  type MockScenario,
   type MockScenarioId,
   type TableSeat,
 } from './mock-data'
@@ -30,34 +34,13 @@ import {
 const chromeMock = installChromeMock()
 const STAT_DISPLAY_CONFIGS: StatDisplayConfig[] = []
 
-const CARD_COLORS: Record<string, string> = {
-  '♣': 'card--black',
-  '♦': 'card--red',
-  '♥': 'card--red',
-  '♠': 'card--black',
-}
-
-const cardClassName = (card: string): string => {
-  const suit = card.slice(-1)
-  return `pc-card ${CARD_COLORS[suit] ?? 'card--black'}`
-}
-
-const Card = ({ card, style }: { card: string; style?: React.CSSProperties }) => (
-  <span className={cardClassName(card)} style={style}>
-    <span className="pc-card__index">
-      <b>{card.slice(0, -1)}</b>
-      <i>{card.slice(-1)}</i>
-    </span>
-    <i aria-hidden="true" className="pc-card__pip">{card.slice(-1)}</i>
-  </span>
-)
-
 /**
- * One seat: a character portrait behind a name plate (stack over name), with
- * face-down cards above the plate once a hand is dealt. Coordinates come from
- * `table-layout.ts`. Per-hand state is out of scope -- see the note there.
+ * One seat: a character portrait behind a name plate, with face-down cards
+ * above it. The plate keeps its two-line shape but shows placeholders -- the
+ * table is a shell (see the scope note in `table-layout.ts`), so it never
+ * asserts a stack or a name. The HUD panel above it is where real values live.
  */
-const Seat = ({ dealt, index, seat }: { dealt: boolean; index: number; seat: TableSeat }) => {
+const Seat = ({ index, seat }: { index: number; seat: TableSeat }) => {
   const layout = SEATS[index]!
   const plateClass = [
     'pc-plate',
@@ -69,7 +52,7 @@ const Seat = ({ dealt, index, seat }: { dealt: boolean; index: number; seat: Tab
     <>
       {!seat.empty && <div aria-hidden="true" className="pc-portrait" style={rectStyle(layout.portrait)} />}
 
-      {dealt && !seat.empty && !seat.isHero && (
+      {!seat.empty && !seat.isHero && (
         <div aria-hidden="true" className="pc-holecards" style={rectStyle(layout.cards)}>
           <span />
           <span />
@@ -81,8 +64,8 @@ const Seat = ({ dealt, index, seat }: { dealt: boolean; index: number; seat: Tab
           ? <span className="pc-plate__empty">空席</span>
           : (
             <>
-              <span className="pc-plate__stack">{seat.stack}</span>
-              <span className="pc-plate__name">{seat.name}</span>
+              <span className="pc-plate__stack">—</span>
+              <span className="pc-plate__name">—</span>
             </>
           )}
       </div>
@@ -91,21 +74,21 @@ const Seat = ({ dealt, index, seat }: { dealt: boolean; index: number; seat: Tab
 }
 
 /** Fixed client chrome: menu, blind panel, clock, help and the promo rail. */
-const GameChrome = ({ scenario }: { scenario: MockScenario }) => (
+const GameChrome = () => (
   <>
     <div className="pc-menu" style={rectStyle(CHROME.menu)}><span>メニュー</span></div>
 
     <div className="pc-info" style={rectStyle(CHROME.stakes)}>
       <span>SB/BB</span>
-      <strong>{scenario.stakes}</strong>
+      <strong>—</strong>
     </div>
     <div className="pc-info" style={rectStyle(CHROME.ante)}>
       <span>アンティ</span>
-      <strong>{scenario.ante}</strong>
+      <strong>—</strong>
     </div>
 
-    <div className="pc-pill" style={rectStyle(CHROME.clock)}>{scenario.clock}</div>
-    <div className="pc-pill" style={rectStyle(CHROME.street)}>{scenario.phase}</div>
+    <div className="pc-pill" style={rectStyle(CHROME.clock)}>—</div>
+    <div className="pc-pill" style={rectStyle(CHROME.street)}>—</div>
 
     <div className="pc-help" style={rectStyle(CHROME.help)}>ヘルプ</div>
     <div className="pc-emoji" style={rectStyle(CHROME.emoji)} />
@@ -148,10 +131,16 @@ const Mockup = () => {
   const [scenarioId, setScenarioId] = useState<MockScenarioId>('turn-decision')
   const [scale, setScale] = useState(1)
   const [showHandLog, setShowHandLog] = useState(true)
+  const [showPopup, setShowPopup] = useState(false)
   const [dimTable, setDimTable] = useState(false)
   const [panelOpen, setPanelOpen] = useState(false)
   const [hudRevision, setHudRevision] = useState(0)
   const scenario = MOCK_SCENARIOS[scenarioId]
+
+  const popupBackground = resolveBootBackgroundColor(
+    window.localStorage.getItem(POPUP_BOOT_LOCAL_STORAGE_KEY),
+    window.matchMedia('(prefers-color-scheme: dark)').matches,
+  )
 
   const resetHudPositions = () => {
     chromeMock.clearHudPositions()
@@ -170,58 +159,32 @@ const Mockup = () => {
           <div className="pc-felt__ring" />
         </div>
 
-        <div className="pc-pot" style={rectStyle(POT)}>Pot : {scenario.pot}</div>
+        <div className="pc-pot" style={rectStyle(POT)}>Pot : —</div>
 
         <div
+          aria-hidden="true"
           className="pc-board"
-          aria-label={`Board: ${scenario.board.join(' ') || 'none'}`}
           style={{ left: `${BOARD_CENTER.l}%`, top: `${BOARD_CENTER.t}%` }}
         >
-          {Array.from({ length: BOARD_SLOTS }, (_, slot) => {
-            const card = scenario.board[slot]
-            return card
-              ? <Card card={card} key={card} />
-              : <span aria-hidden="true" className="pc-card pc-card--slot" key={`slot-${slot}`} />
-          })}
+          {Array.from({ length: BOARD_SLOTS }, (_, slot) => (
+            <span className="pc-card pc-card--slot" key={`board-${slot}`} />
+          ))}
         </div>
 
-        {/* Nobody holds cards until the hand is dealt -- hero's own hole cards
-            are the tell, since the client only shows them from EVT_DEAL on. */}
         {scenario.seats.map((seat, index) => (
-          <Seat
-            dealt={scenario.heroCards.length > 0}
-            index={index}
-            key={`${scenario.id}-${index}`}
-            seat={seat}
-          />
+          <Seat index={index} key={`${scenario.id}-${index}`} seat={seat} />
         ))}
 
-        {scenario.heroCards.length > 0 && (
-          <>
-            <div
-              className="pc-herocards"
-              aria-label={`Hero cards: ${scenario.heroCards.join(' ')}`}
-              style={rectStyle(HERO_CARDS)}
-            >
-              {scenario.heroCards.map((card, index) => (
-                <Card
-                  card={card}
-                  key={card}
-                  style={index > 0
-                    ? { transform: `translateY(calc(var(--u) * ${HERO_CARD_STAGGER}))` }
-                    : undefined}
-                />
-              ))}
-            </div>
-            {scenario.heroHandLabel && (
-              <div className="pc-handlabel" style={pointStyle(HERO_HAND_LABEL)}>
-                {scenario.heroHandLabel}
-              </div>
-            )}
-          </>
-        )}
+        <div aria-hidden="true" className="pc-herocards" style={rectStyle(HERO_CARDS)}>
+          <span className="pc-card pc-card--slot" />
+          <span
+            className="pc-card pc-card--slot"
+            style={{ transform: `translateY(calc(var(--u) * ${HERO_CARD_STAGGER}))` }}
+          />
+        </div>
+        <div className="pc-handlabel" style={pointStyle(HERO_HAND_LABEL)}>—</div>
 
-        <GameChrome scenario={scenario} />
+        <GameChrome />
         <ActionBar />
       </section>
 
@@ -281,6 +244,15 @@ const Mockup = () => {
 
           <label className="control-toggle">
             <input
+              checked={showPopup}
+              onChange={(event) => setShowPopup(event.target.checked)}
+              type="checkbox"
+            />
+            <span>ポップアップを表示</span>
+          </label>
+
+          <label className="control-toggle">
+            <input
               checked={dimTable}
               onChange={(event) => setDimTable(event.target.checked)}
               type="checkbox"
@@ -314,6 +286,23 @@ const Mockup = () => {
           statDisplayConfigs={STAT_DISPLAY_CONFIGS}
         />
       ))}
+
+      {/* The action popup. Chrome hangs it off the toolbar button, i.e. the
+          top-right corner above the page -- so that is where the mock puts it,
+          at the real 380px body width (src/index.html). That page paints the
+          theme ground colour on `html` and leaves `body` transparent, so the
+          frame has to supply it here or the table shows through the gaps
+          between the popup's cards. Colour comes from the popup's own boot
+          resolver rather than a fourth hand-copy of the hex. */}
+      {showPopup && (
+        <aside
+          className="mock-popup"
+          aria-label="拡張機能のポップアップ"
+          style={{ background: popupBackground }}
+        >
+          <Popup />
+        </aside>
+      )}
 
       {showHandLog && (
         <HandLog

@@ -14,6 +14,13 @@ export interface MockChromeController {
   clearHudPositions: () => void
 }
 
+/**
+ * Version the mocked `chrome.runtime.getManifest()` reports. Deliberately not
+ * read from package.json: the popup turns this into a GitHub release link, and
+ * a mock should not point at a real release tag.
+ */
+const MOCK_MANIFEST_VERSION = '0.0.0-mock'
+
 const selectValues = (
   values: Map<string, unknown>,
   keys?: string | string[] | Record<string, unknown> | null,
@@ -42,6 +49,7 @@ export const installChromeMock = (): MockChromeController => {
   const syncedValues = new Map<string, unknown>()
   const localValues = new Map<string, unknown>()
   const listeners = new Set<StorageChangeListener>()
+  const runtimeMessageListeners = new Set<unknown>()
 
   const notify = (
     changes: Record<string, chrome.storage.StorageChange>,
@@ -175,8 +183,38 @@ export const installChromeMock = (): MockChromeController => {
           return
         }
 
+        // Everything else -- the popup's read actions (`getOperationState`,
+        // `firebaseAuthStatus`, `getSyncState`, `getSyncInfo`,
+        // `getUndecodedEventStats` …) and its write actions alike. Every popup
+        // reader is written to fail open on an unrecognised response
+        // (`if (response?.x)`), so a bare success lands them all on their
+        // idle/empty state, which is what a mock should show. Do NOT fake
+        // richer payloads here: the popup would then render states that no
+        // real background ever produced.
         callback?.({ success: true })
       },
+      onMessage: {
+        addListener: (listener: unknown) => runtimeMessageListeners.add(listener),
+        removeListener: (listener: unknown) => runtimeMessageListeners.delete(listener),
+      },
+      // The popup prints this next to its 更新情報 link.
+      getManifest: () => ({ version: MOCK_MANIFEST_VERSION }),
+      getURL: (path: string) => path,
+      lastError: undefined,
+      reload: () => {},
+    },
+  })
+
+  // The popup queries the active tab to decide whether it can talk to a game
+  // page. There is no such tab here, so every query comes back empty and the
+  // popup settles on its "not on the game page" branch.
+  Object.defineProperty(chromeHost, 'tabs', {
+    configurable: true,
+    value: {
+      create: async () => ({}),
+      query: async () => [],
+      sendMessage: async () => undefined,
+      update: async () => ({}),
     },
   })
 

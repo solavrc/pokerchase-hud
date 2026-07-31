@@ -747,6 +747,18 @@ input[type="range"] {
   margin-top: 10px;
 }
 
+.mock-popup {
+  border-radius: 10px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  position: fixed;
+  right: 12px;
+  top: 12px;
+  width: 380px;
+  z-index: 11020;
+}
+
 .mock-badge {
   align-items: center;
   backdrop-filter: blur(12px);
