@@ -33,11 +33,11 @@ interface UIScaleSectionProps {
 /**
  * ポップアップ最上部の設定ブロック。2行だけで構成する（sola指定）。
  *   1行目: 位置とサイズをリセット ......... サイズ - 100% +
- *   2行目: ....... 簡易/詳細  Shift+H  非表示/表示
+ *   2行目: 簡易/詳細 ................. Shift+H  非表示/表示
  *
  * 指標選択より上はHUDの本質ではないので、見出しラベル（「表示モード:」等）を
- * 足さず、収まる限り横に並べて縦の専有量を抑える。2行目の3つは右揃えで
- * 1行目の右端に合わせる。
+ * 足さず、収まる限り横に並べて縦の専有量を抑える。2行目でショートカットを
+ * 非表示/表示の隣へ寄せているのは、それが切り替える対象だから。
  */
 export const UIScaleSection = ({
   uiConfig,
@@ -228,12 +228,18 @@ export const UIScaleSection = ({
         </Box>
       </Box>
 
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 0.75 }}>
+      {/*
+        ショートカットは「非表示/表示」を切り替えるキーなので、その2つを右側で
+        1グループにまとめ、無関係な 簡易/詳細 は左端へ離す。等間隔に3つ並べると
+        ショートカットがどちらに属するか判断できない（sola指摘）。
+      */}
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         {children}
 
-        <TextField
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          <TextField
           inputRef={shortcutInputRef}
-          size="small"
+            size="small"
           value={recordingShortcut
             ? 'キーを入力…'
             : shortcutLabel ?? '未設定'}
@@ -277,15 +283,15 @@ export const UIScaleSection = ({
           }}
         />
 
-        <ToggleButtonGroup
-          value={uiConfig.displayEnabled ? 'on' : 'off'}
-          exclusive
-          onChange={(_event, newValue: string | null) => {
+          <ToggleButtonGroup
+            value={uiConfig.displayEnabled ? 'on' : 'off'}
+            exclusive
+            onChange={(_event, newValue: string | null) => {
             if (newValue !== null) {
               updateSyncedUIConfig({ ...uiConfig, displayEnabled: newValue === 'on' })
             }
           }}
-          size="small"
+            size="small"
           sx={[
             popupToggleGroupSx,
             (theme) => ({
@@ -314,7 +320,8 @@ export const UIScaleSection = ({
           <ToggleButton value="on">
             表示
           </ToggleButton>
-        </ToggleButtonGroup>
+          </ToggleButtonGroup>
+        </Box>
       </Box>
     </Box>
   )
