@@ -519,6 +519,31 @@ describe('HandLog', () => {
     expect(logContainer.style.height).toBe('60px')
   })
 
+  it('最小サイズを収容できないviewportではリサイズしても保存サイズを縮めない', () => {
+    // 表示はviewport上限(160x60)に貼り付いていて1pxも動かせない。ここで保存値
+    // だけ最小値へ落ちると、見えない縮小になってしまう。
+    setViewport(320, 120)
+    const { container } = render(<HandLog entries={mockEntries} scale={2} />)
+    const logContainer = container.firstChild as HTMLElement
+
+    fireEvent.mouseDown(screen.getByTestId('hand-log-resize-corner'), {
+      button: 0,
+      clientX: 320,
+      clientY: 120,
+    })
+    moveMouseWithPrimaryButton(280, 100)
+    fireEvent.mouseUp(document)
+
+    expect(logContainer.style.width).toBe('160px')
+    expect(logContainer.style.height).toBe('60px')
+    expect(savedLayoutCalls()[0]![0].layout).toEqual({
+      left: 0,
+      top: 0,
+      width: 400,
+      height: 100,
+    })
+  })
+
   it('layout読込timeout後も同じloadの権威的応答を適用する', () => {
     jest.useFakeTimers()
     const loadCallbacks: Array<(response: unknown) => void> = []

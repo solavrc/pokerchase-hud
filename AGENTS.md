@@ -482,6 +482,9 @@ user's size intact and restores it when the window grows back. A *resize*
 gesture is the one path that does rewrite the stored size — it deliberately
 starts from the rendered size and is capped at the scaled viewport, so the
 result is WYSIWYG on both axes and can never store a size the user cannot see.
+An axis whose scaled viewport cannot even fit the minimum is exempt from that
+rewrite: clamping there would pin the stored value to the minimum while the
+rendered size stays put, i.e. a shrink the user never sees.
 Position is always clamped (there is no "display-only" position), and a
 viewport dimension that reads as `0` — observed transiently right after a
 navigation — suspends only that axis' *upper* bound, never the `0` lower bound,

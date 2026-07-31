@@ -180,10 +180,27 @@ const normalizeHandLogLayout = (
 }
 
 /**
- * リサイズは見えているサイズを起点にviewport実寸までで頭打ちにする。
- * 画面外へあふれた分を掴んで引き延ばす操作にはならず、ユーザー操作が
- * 画面に映らない巨大サイズを新たに作ることもない。
+ * リサイズ1軸ぶん。見えているサイズを起点にviewport実寸までで頭打ちにする
+ * ので、画面外へあふれた分を掴んで引き延ばす操作にはならず、画面に映らない
+ * 巨大サイズも作らない。
+ *
+ * viewportが最小サイズすら収容できない軸だけは保存値へ触れない。その状態で
+ * clampすると上下限がともに最小値になり、表示は縮んだまま1pxも変わらないの
+ * にユーザーの指定サイズだけが最小値へ落ちる（見えない縮小）ため。
  */
+const resizeHandLogAxis = (
+  startSize: number,
+  startDisplaySize: number,
+  delta: number,
+  minimum: number,
+  scale: number,
+  viewportSize: number
+): number => {
+  const limit = getHandLogViewportLimit(viewportSize, scale)
+  if (limit < minimum) return startSize
+  return clamp(startDisplaySize + delta / scale, minimum, limit)
+}
+
 const resizeHandLogLayout = (
   startLayout: HandLogLayout,
   startEnvironment: HandLogEnvironment,
@@ -195,21 +212,21 @@ const resizeHandLogLayout = (
 
   return {
     ...startLayout,
-    width: clamp(
-      startDisplaySize.width + deltaX / scale,
+    width: resizeHandLogAxis(
+      startLayout.width,
+      startDisplaySize.width,
+      deltaX,
       HAND_LOG_MIN_WIDTH,
-      Math.max(
-        HAND_LOG_MIN_WIDTH,
-        getHandLogViewportLimit(viewportWidth, scale)
-      )
+      scale,
+      viewportWidth
     ),
-    height: clamp(
-      startDisplaySize.height + deltaY / scale,
+    height: resizeHandLogAxis(
+      startLayout.height,
+      startDisplaySize.height,
+      deltaY,
       HAND_LOG_MIN_HEIGHT,
-      Math.max(
-        HAND_LOG_MIN_HEIGHT,
-        getHandLogViewportLimit(viewportHeight, scale)
-      )
+      scale,
+      viewportHeight
     ),
   }
 }
