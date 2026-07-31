@@ -498,6 +498,43 @@ describe('HandLog', () => {
     expect(logContainer.style.transform).toContain('scale(2)')
   })
 
+  it('旧effectのresize listenerも最新scaleでviewportを更新する', () => {
+    const addEventListenerSpy = jest.spyOn(window, 'addEventListener')
+    const loadCallbacks: Array<(response: unknown) => void> = []
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceHandLogLayout') {
+        loadCallbacks.push(callback)
+      } else {
+        callback?.({ success: true })
+      }
+    })
+
+    try {
+      const { container, rerender } = render(
+        <HandLog entries={mockEntries} scale={1} />
+      )
+      const logContainer = container.firstChild as HTMLElement
+      const staleResizeListener = addEventListenerSpy.mock.calls.find(
+        ([type]) => type === 'resize'
+      )?.[1] as EventListener
+
+      rerender(<HandLog entries={mockEntries} scale={2} />)
+      act(() => {
+        staleResizeListener(new Event('resize'))
+        loadCallbacks[1]!({
+          success: true,
+          layout: { left: 40, top: 30, width: 500, height: 200 },
+        })
+      })
+
+      expect(logContainer.style.left).toBe('40px')
+      expect(logContainer.style.top).toBe('30px')
+      expect(logContainer.style.transform).toContain('scale(2)')
+    } finally {
+      addEventListenerSpy.mockRestore()
+    }
+  })
+
   it('操作中に保留した新scaleのlayout読込を終了後に再開する', () => {
     const loadCallbacks: Array<(response: unknown) => void> = []
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {

@@ -605,9 +605,10 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
 
   useEffect(() => {
     const handleViewportResize = () => {
+      // A stale passive-effect listener may fire after a new scale render.
       commitLayoutAction({
         type: 'environmentChanged',
-        environment: readHandLogEnvironment(scale),
+        environment: readHandLogEnvironment(latestScaleRef.current),
       })
     }
     const handleReset = () => {
