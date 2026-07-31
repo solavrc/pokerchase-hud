@@ -3,7 +3,8 @@ import { ThemeProvider } from '@mui/material/styles'
 import useMediaQuery from '@mui/material/useMediaQuery'
 import { ChangeEvent, useEffect, useRef, useState } from 'react'
 import type { FilterOptions, GameTypeFilter, TableSizeFilter } from '../types'
-import { DEFAULT_TABLE_SIZE_FILTER } from '../types'
+import { ALL_TABLE_SIZE_LAYERS, DEFAULT_TABLE_SIZE_FILTER } from '../types'
+import { rangeToTableSizeFilter, tableSizeFilterToRange } from '../utils/table-size-range'
 import { loadOptions, saveOptions, type Options } from '../utils/options-storage'
 import { defaultStatDisplayConfigs, mergeStatDisplayConfigs } from '../stats'
 import type { StatDisplayConfig } from '../types/filters'
@@ -259,19 +260,47 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           setStatDisplayConfigs(mergedConfigs)
           setPendingStatDisplayConfigs(mergedConfigs)
 
+          // 旧チェックボックスUIでのみ作れた「連続していない」テーブル人数の
+          // 選択（例: フルとHUだけ）は、スライダーでは表現できないので最小区間へ
+          // 丸める。表示だけを丸めると、ポップアップは全層選択に見えるのに実際の
+          // フィルタは3人/4人を除外したまま、という不一致が編集するまで残る。
+          // ここで状態・storage・ゲームタブの3者を揃えてしまう。
+          const storedTableSize = savedOptions.filterOptions.tableSize || DEFAULT_TABLE_SIZE_FILTER
+          const normalizedTableSize = rangeToTableSizeFilter(
+            tableSizeFilterToRange(storedTableSize)
+          )
+          const tableSizeNeedsNormalizing = ALL_TABLE_SIZE_LAYERS.some(
+            layer => storedTableSize[layer] !== normalizedTableSize[layer]
+          )
+          const statConfigsGrew = Boolean(
+            savedOptions.filterOptions.statDisplayConfigs &&
+            mergedConfigs.length > savedOptions.filterOptions.statDisplayConfigs.length
+          )
+
           // Save merged configurations back to storage if new stats were added
-          if (savedOptions.filterOptions.statDisplayConfigs && mergedConfigs.length > savedOptions.filterOptions.statDisplayConfigs.length) {
-            saveOptions({
+          if (statConfigsGrew || tableSizeNeedsNormalizing) {
+            const migratedOptions = {
               ...savedOptions,
               filterOptions: {
                 ...savedOptions.filterOptions,
-                statDisplayConfigs: mergedConfigs
+                ...(statConfigsGrew ? { statDisplayConfigs: mergedConfigs } : {}),
+                ...(tableSizeNeedsNormalizing ? { tableSize: normalizedTableSize } : {}),
               }
-            })
+            }
+            saveOptions(migratedOptions)
+            // 丸めはフィルタの対象範囲を実際に変えるので、開いているゲームタブへも
+            // 伝える必要がある（statDisplayConfigsだけの移行は表示順の話なので
+            // 従来どおり保存だけでよい）。
+            if (tableSizeNeedsNormalizing) {
+              chrome.runtime.sendMessage<UpdateBattleTypeFilterMessage>({
+                action: 'updateBattleTypeFilter',
+                filterOptions: migratedOptions.filterOptions,
+              })
+            }
           }
 
           setGameTypeFilter(savedOptions.filterOptions.gameTypes || { sng: true, mtt: true, ring: true })
-          setTableSizeFilter(savedOptions.filterOptions.tableSize || DEFAULT_TABLE_SIZE_FILTER)
+          setTableSizeFilter(normalizedTableSize)
           setHandLimit(savedOptions.filterOptions.handLimit)
         }
       }
@@ -395,11 +424,11 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
     saveAndBroadcastOptions(updatedOptions)
   }
 
-  const handleTableSizeFilterChange = (layer: keyof TableSizeFilter) => (event: ChangeEvent<HTMLInputElement>) => {
-    const newFilter = {
-      ...tableSizeFilter,
-      [layer]: event.target.checked
-    }
+  const handleTableSizeFilterChange = (_event: Event, value: number | number[]) => {
+    // レンジスライダーなので常に [下限, 上限]。単一値で来ることはないが、
+    // MUIの型は number | number[] なので念のため弾く。
+    if (!Array.isArray(value) || value.length !== 2) return
+    const newFilter = rangeToTableSizeFilter([value[0]!, value[1]!])
 
     // Table-size filter changed (C案)
     setTableSizeFilter(newFilter)

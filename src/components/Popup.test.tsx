@@ -732,16 +732,17 @@ describe('Popup', () => {
     // 明示する（ホバーtitleだけに頼らない。codex review, PR #145）
     expect(screen.getByText('「フル」は6maxで5〜6人、4maxで4人(満席)を対象とします')).toBeInTheDocument()
 
-    const fullCheckbox = screen.getByRole('checkbox', { name: 'フル' }) as HTMLInputElement
-    const fourPCheckbox = screen.getByRole('checkbox', { name: '4人 (ショート)' }) as HTMLInputElement
-    const threePCheckbox = screen.getByRole('checkbox', { name: '3人' }) as HTMLInputElement
-    const huCheckbox = screen.getByRole('checkbox', { name: 'HU (2人)' }) as HTMLInputElement
+    // デフォルト（新規ユーザー/tableSizeキー欠落時）は全層 = フィルタなし。
+    // レンジスライダーなので「両端が最小と最大」で表現される。
+    const [lower, upper] = screen.getAllByRole('slider').slice(0, 2) as HTMLInputElement[]
+    expect(lower).toHaveAttribute('aria-label', 'テーブル人数の下限')
+    expect(upper).toHaveAttribute('aria-label', 'テーブル人数の上限')
+    expect(lower).toHaveValue('1')
+    expect(upper).toHaveValue('4')
 
-    // デフォルト（新規ユーザー/tableSizeキー欠落時）は全層選択 = フィルタなし
-    expect(fullCheckbox.checked).toBe(true)
-    expect(fourPCheckbox.checked).toBe(true)
-    expect(threePCheckbox.checked).toBe(true)
-    expect(huCheckbox.checked).toBe(true)
+    // 層ごとのチェックボックスは廃止（連続しない選択を作れてしまうため）
+    expect(screen.queryByRole('checkbox', { name: 'フル' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: 'HU (2人)' })).not.toBeInTheDocument()
   })
 
   it('テーブル人数フィルター変更時はフラットなoptionsキーへ保存しupdateBattleTypeFilterメッセージを送る', async () => {
@@ -749,7 +750,9 @@ describe('Popup', () => {
 
     await waitForAsyncOperations()
 
-    await userEvent.click(screen.getByRole('checkbox', { name: 'HU (2人)' }))
+    // 下限つまみを HU(1) から 3人(2) へ動かす = HUだけ対象外
+    const lower = screen.getAllByRole('slider')[0]!
+    fireEvent.change(lower, { target: { value: '2' } })
 
     await waitFor(() => {
       expect(syncData.options).toEqual(
@@ -763,6 +766,89 @@ describe('Popup', () => {
     })
 
     expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'updateBattleTypeFilter' })
+    )
+  })
+
+  it('旧UIで作れた連続しないtableSizeは起動時に丸めて保存・配信する', async () => {
+    // 旧チェックボックスUIでのみ作れた状態（フルとHUだけ）。表示だけを丸めると
+    // 「ポップアップは全層選択に見えるのに、実際のフィルタは3人/4人を除外した
+    // まま」という不一致が、ユーザーがスライダーを触るまで残ってしまう。
+    syncData = {
+      options: {
+        sendUserData: true,
+        filterOptions: {
+          gameTypes: { sng: true, mtt: true, ring: true },
+          tableSize: { full: true, '4p': false, '3p': false, hu: true },
+          handLimit: 500,
+          statDisplayConfigs: defaultStatDisplayConfigs,
+        },
+      },
+      uiConfig: DEFAULT_UI_CONFIG,
+    }
+
+    render(<Popup />)
+
+    await waitForAsyncOperations()
+
+    const [lower, upper] = screen.getAllByRole('slider').slice(0, 2) as HTMLInputElement[]
+    expect(lower).toHaveValue('1')
+    expect(upper).toHaveValue('4')
+
+    // storageも同じ全層へ揃う（表示だけが広がることはない）
+    await waitFor(() => {
+      expect(syncData.options.filterOptions.tableSize).toEqual({
+        full: true, '4p': true, '3p': true, hu: true,
+      })
+    })
+    // 対象範囲が実際に変わるので、開いているゲームタブへも伝える
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'updateBattleTypeFilter',
+        filterOptions: expect.objectContaining({
+          tableSize: { full: true, '4p': true, '3p': true, hu: true },
+        }),
+      })
+    )
+
+    // 丸めた値がstateにも入っていること。表示だけ丸めてstateに古い値を残すと、
+    // 次に別のフィルタを変えた瞬間に連続しない値がstorageへ書き戻り、
+    // 起動時の移行が取り消される。
+    await userEvent.click(screen.getByRole('checkbox', { name: 'MTT' }))
+
+    await waitFor(() => {
+      expect(syncData.options.filterOptions.gameTypes.mtt).toBe(false)
+    })
+    expect(syncData.options.filterOptions.tableSize).toEqual({
+      full: true, '4p': true, '3p': true, hu: true,
+    })
+  })
+
+  it('連続したtableSizeは起動時に書き換えない', async () => {
+    syncData = {
+      options: {
+        sendUserData: true,
+        filterOptions: {
+          gameTypes: { sng: true, mtt: true, ring: true },
+          tableSize: { full: true, '4p': true, '3p': false, hu: false },
+          handLimit: 500,
+          statDisplayConfigs: defaultStatDisplayConfigs,
+        },
+      },
+      uiConfig: DEFAULT_UI_CONFIG,
+    }
+
+    render(<Popup />)
+
+    await waitForAsyncOperations()
+
+    const [lower, upper] = screen.getAllByRole('slider').slice(0, 2) as HTMLInputElement[]
+    expect(lower).toHaveValue('3')
+    expect(upper).toHaveValue('4')
+    expect(syncData.options.filterOptions.tableSize).toEqual({
+      full: true, '4p': true, '3p': false, hu: false,
+    })
+    expect(mockChromeRuntimeSendMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ action: 'updateBattleTypeFilter' })
     )
   })
@@ -785,10 +871,9 @@ describe('Popup', () => {
 
     await waitForAsyncOperations()
 
-    const fullCheckbox = screen.getByRole('checkbox', { name: 'フル' }) as HTMLInputElement
-    const huCheckbox = screen.getByRole('checkbox', { name: 'HU (2人)' }) as HTMLInputElement
-    expect(fullCheckbox.checked).toBe(true)
-    expect(huCheckbox.checked).toBe(true)
+    const [lower, upper] = screen.getAllByRole('slider').slice(0, 2) as HTMLInputElement[]
+    expect(lower).toHaveValue('1')
+    expect(upper).toHaveValue('4')
   })
 
   it('旧@extend-chrome/storage bucketキーのみのユーザーはフラットキーへ移行される', async () => {
