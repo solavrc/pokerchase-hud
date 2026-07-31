@@ -499,19 +499,26 @@ width/height exactly; the log body is that minus `HAND_LOG_BORDER_WIDTH*2`.
 
 **Hand-log row height**: the virtual list positions rows from `getItemSize()`,
 so that estimate has to predict CSS wrapping or rows overlap. The whole
-calculation runs in **pixels, per character** — never in character counts.
-`canvas.measureText()` is called for each distinct character at the actual
-font/size (cached per `fontSize|char`), which is what makes mixed-width text
-correct: the monospace stack has no Japanese glyphs, so a CJK player name falls
-back to a ~1 em Japanese font while ASCII stays ~0.6 em (measured at 8px: `0` =
-4.8px, `あ` = 8px). A single ASCII-derived width under-counts such a line by up
-to ~1.7×, which is a row overlap, not a rounding error. Where canvas is
-unavailable (jsdom) the fallback is per-character too: 0.6 em narrow / 1 em
-wide, both deliberately the widest plausible value. Wrapping follows the same
-rules the CSS does — word boundaries, `break-word` only for words that cannot
-fit a line by themselves, hanging trailing spaces, and a break opportunity
-between CJK characters — plus the timestamp prefix's width charged to the first
-line.
+calculation runs in **pixels, per grapheme cluster** — never in character
+counts, and never per code point. `canvas.measureText()` is called for each
+distinct cluster at the actual font/size (cached per `fontSize|cluster`), which
+is what makes mixed-width text correct in both directions: the monospace stack
+has no Japanese glyphs, so a CJK player name falls back to a ~1 em Japanese font
+while ASCII stays ~0.6 em (measured at 8px: `0` = 4.8px, `あ` = 8px) — an
+ASCII-derived width under-counts such a line by up to ~1.7×, a row overlap; and
+a decomposed cluster (`は` + U+3099) is one rendered glyph, so measuring its
+code points separately over-counts it and leaves phantom blank rows. Where
+canvas is unavailable (jsdom) the fallback is per cluster too: 0.6 em narrow /
+1 em wide / 0 for combining-only clusters, each deliberately the widest
+plausible value. Wrapping follows the same rules the CSS does — word
+boundaries, `break-word` only for tokens that cannot fit a line by themselves,
+hanging trailing spaces, a break opportunity between CJK characters, and
+kinsoku (no break after an opening bracket, none before closing brackets or
+ideographic punctuation) — plus the timestamp prefix's width charged to the
+first line. The kinsoku sets were derived by measuring Chrome's default
+`line-break: auto`, which notably *does* allow breaking before small kana and
+`ー`; adding those would over-count instead. Re-measure against the browser
+before changing either set.
 
 The available width is the log body width, minus `getScrollbarSize()`, minus
 `EntryRow`'s horizontal padding. Both subtractions are load-bearing: `EntryRow`

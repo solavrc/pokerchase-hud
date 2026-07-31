@@ -526,11 +526,37 @@ const WIDE_CHAR_RANGES =
   'ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿' +
   'ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦'
 const WIDE_CHAR_PATTERN = new RegExp(`[${WIDE_CHAR_RANGES}]`)
-// 空白の連なり / 全角1文字 / それ以外の連なり、が折り返しの最小単位
-const TOKEN_PATTERN = new RegExp(
-  `\\s+|[${WIDE_CHAR_RANGES}]|[^\\s${WIDE_CHAR_RANGES}]+`,
-  'g'
-)
+
+/**
+ * 禁則処理。CJKは文字間で改行できるが、どこでもよいわけではない。
+ * 集合はChromeの既定（`line-break: auto`）を実測して確定したもの。
+ * 小書き仮名（ぁっゃゅょヵヶ）と長音符（ー）は既定では改行可能なので
+ * 含めない（含めると逆に行数を過大評価する）。
+ */
+/** 行頭禁則: 行の先頭に来られない文字 */
+const NO_BREAK_BEFORE_PATTERN =
+  /[\u3001\u3002\uFF0C\uFF0E\u30FB\uFF1A\uFF1B\uFF1F\uFF01\uFF09\uFF3D\uFF5D\u3009\u300B\u300D\u300F\u3011\u3015\u2026\u2025\u3005\u309D\u309E\uFF61\uFF63\uFF64\uFF65\uFF9E\uFF9F%\u00B0\u2032\u2033\u2103\u00A2]/
+/** 行末禁則: 直後で改行できない文字（開き括弧・前置記号） */
+const NO_BREAK_AFTER_PATTERN =
+  /[\uFF08\uFF3B\uFF5B\u3008\u300A\u300C\u300E\u3010\u3014\u2018\u201C\uFFE5\uFF04\u00A3]/
+
+const graphemeSegmenter =
+  typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
+    ? new Intl.Segmenter('ja', { granularity: 'grapheme' })
+    : null
+
+/**
+ * 書記素クラスタ単位に分割する。コードポイント単位で測ると、結合文字を含む
+ * 名前（分解形の`ば`など）を基底文字＋結合文字の2文字分として数えてしまい、
+ * DOMが1グリフとして描く実幅と合わない。
+ */
+const splitGraphemes = (text: string): string[] =>
+  graphemeSegmenter
+    ? Array.from(graphemeSegmenter.segment(text), segment => segment.segment)
+    : Array.from(text)
+
+/** 結合文字・ゼロ幅文字だけのクラスタ（送り幅0が正しい） */
+const ZERO_WIDTH_CLUSTER_PATTERN = /^[\p{M}\u200B-\u200D\u2060\uFEFF]+$/u
 
 const charWidthCache = new Map<string, number>()
 
@@ -549,52 +575,94 @@ const getMeasurementContext = (): CanvasRenderingContext2D | null => {
 }
 
 /**
- * 実フォント・実フォントサイズでの1文字ぶんの送り幅(px)をcanvasで実測する。
+ * 実フォント・実フォントサイズでの書記素クラスタ1つぶんの送り幅(px)を
+ * canvasで実測する。
  *
- * 文字ごとに測るのが要点。等幅フォント指定でも、日本語のように指定フォントに
- * 収録されていない文字は約1emの日本語フォントへフォールバックして描画される
- * ため、ASCII基準の一律幅で数えると行数を最大1.7倍ほど過小評価する。
- * measureTextはレイアウトと同じフォント解決を通るので、フォールバック後の
- * 実幅がそのまま得られる（実測: 8pxで`0`=4.8px / `あ`=8px）。
+ * クラスタごとに測るのが要点。等幅フォント指定でも、日本語のように指定フォント
+ * に収録されていない文字は約1emの日本語フォントへフォールバックして描画される
+ * ため、ASCII基準の一律幅で数えると行数を最大1.7倍ほど過小評価する。逆に結合
+ * 文字を基底文字と別々に測ると、DOMが1グリフに整形する名前を2文字分として
+ * 数えて過大評価する。measureTextはレイアウトと同じフォント解決・整形を通るので
+ * クラスタ単位ならどちらも実幅どおりになる（実測: 8pxで`0`=4.8px / `あ`=8px）。
  * canvasが無い環境（jsdom等）は半角/全角の保守的な比率で代替する。
  */
-const measureCharWidth = (char: string, fontSize: number): number => {
-  const key = `${fontSize}|${char}`
+const measureClusterWidth = (cluster: string, fontSize: number): number => {
+  const key = `${fontSize}|${cluster}`
   const cached = charWidthCache.get(key)
   if (cached !== undefined) return cached
 
-  const fallbackRatio = WIDE_CHAR_PATTERN.test(char)
-    ? FALLBACK_WIDE_CHAR_WIDTH_RATIO
-    : FALLBACK_NARROW_CHAR_WIDTH_RATIO
-  let charWidth = fontSize * fallbackRatio
+  // 結合文字・ゼロ幅文字だけのクラスタは送り幅0が正しい。canvasが0を返しても
+  // 「壊れた計測」とみなさず、そのまま採用する
+  const zeroWidth = ZERO_WIDTH_CLUSTER_PATTERN.test(cluster)
+  const fallbackRatio = zeroWidth
+    ? 0
+    : WIDE_CHAR_PATTERN.test(cluster)
+      ? FALLBACK_WIDE_CHAR_WIDTH_RATIO
+      : FALLBACK_NARROW_CHAR_WIDTH_RATIO
+  let clusterWidth = fontSize * fallbackRatio
   const context = getMeasurementContext()
   if (context) {
     context.font = `${fontSize}px ${HAND_LOG_FONT_FAMILY}`
-    const measured = context.measureText(char).width
+    const measured = context.measureText(cluster).width
     const ratio = measured / fontSize
+    // 妥当性の下限は、全文字0pxを返すような壊れた計測環境で1行あたりの文字数が
+    // 無限になるのを防ぐためのもの。0が正しいクラスタには適用しない
     if (
       Number.isFinite(ratio) &&
-      ratio >= MIN_PLAUSIBLE_CHAR_WIDTH_RATIO &&
-      ratio <= MAX_PLAUSIBLE_CHAR_WIDTH_RATIO
+      ratio <= MAX_PLAUSIBLE_CHAR_WIDTH_RATIO &&
+      (zeroWidth ? ratio >= 0 : ratio >= MIN_PLAUSIBLE_CHAR_WIDTH_RATIO)
     ) {
-      charWidth = measured
+      clusterWidth = measured
     }
   }
-  charWidthCache.set(key, charWidth)
-  return charWidth
+  charWidthCache.set(key, clusterWidth)
+  return clusterWidth
 }
 
 export type MeasureHandLogText = (text: string, fontSize: number) => number
 
 /**
  * 文字列の描画幅(px)。等幅フォントにもCJKフォールバックにも字詰めは無いので、
- * 文字ごとの送り幅の総和で足りる。キャッシュは文字単位なので、名前や
- * アクション語が繰り返されるログでは実質すべてキャッシュヒットする。
+ * 書記素クラスタごとの送り幅の総和で足りる。キャッシュはクラスタ単位なので、
+ * 名前やアクション語が繰り返されるログでは実質すべてキャッシュヒットする。
  */
 export const measureHandLogTextWidth: MeasureHandLogText = (text, fontSize) => {
   let width = 0
-  for (const char of text) width += measureCharWidth(char, fontSize)
+  for (const cluster of splitGraphemes(text)) {
+    width += measureClusterWidth(cluster, fontSize)
+  }
   return width
+}
+
+/**
+ * 折り返しの最小単位（トークン）へ分割する。トークン境界＝CSSが改行しうる位置。
+ * - 空白の連なりは1トークン（行末でぶら下がる）
+ * - 半角の連なりは1語
+ * - CJKは1文字ずつが改行機会。ただし禁則位置では隣とくっつけて1トークンにする
+ */
+const tokenizeForWrap = (line: string): string[] => {
+  const tokens: string[] = []
+  let previous: string | undefined
+  for (const cluster of splitGraphemes(line)) {
+    const breaks = previous === undefined
+      ? true
+      : breakAllowedBetween(previous, cluster)
+    if (breaks || tokens.length === 0) tokens.push(cluster)
+    else tokens[tokens.length - 1] += cluster
+    previous = cluster
+  }
+  return tokens
+}
+
+const breakAllowedBetween = (previous: string, next: string): boolean => {
+  const previousIsSpace = /^\s/.test(previous)
+  const nextIsSpace = /^\s/.test(next)
+  // 空白の連なりは1トークン。空白とそれ以外の境目は必ず改行機会
+  if (previousIsSpace || nextIsSpace) return previousIsSpace !== nextIsSpace
+  if (NO_BREAK_AFTER_PATTERN.test(previous)) return false
+  if (NO_BREAK_BEFORE_PATTERN.test(next)) return false
+  // CJKは空白が無くても文字間で改行できる。半角どうしは1語として繋がる
+  return WIDE_CHAR_PATTERN.test(previous) || WIDE_CHAR_PATTERN.test(next)
 }
 
 /**
@@ -605,9 +673,8 @@ export const measureHandLogTextWidth: MeasureHandLogText = (text, fontSize) => {
  * 文字幅の総和を1行の幅で割るだけでも、単語境界での折り返しを無視して行数を
  * 過小評価する（"aaaaaa bbbbbb cccccc"は幅10文字ぶんなら実際は3行）。
  * - 空白は行末でぶら下がるので、収まらない場合はその行を埋めるだけ
- * - 単語は現在行に収まらなければ次行へ送る
- * - 1行にも収まらない長い単語だけをbreak-wordとして文字単位で分割する
- * - CJKは空白が無くても文字間で改行できるので、1文字ずつが折り返し単位
+ * - トークン（tokenizeForWrap参照）は現在行に収まらなければ次行へ送る
+ * - 1行にも収まらない長いトークンだけをbreak-wordとしてクラスタ単位で分割する
  *
  * @param measureToken トークンの描画幅(px)。フォントサイズは呼び出し側で束縛する
  * @param initialUsedWidth 先頭に既に置かれている内容（タイムスタンプ）の幅(px)
@@ -629,7 +696,7 @@ export const countWrappedLines = (
       lines += 1
       used = 0
     }
-    for (const token of hardLine.match(TOKEN_PATTERN) ?? []) {
+    for (const token of tokenizeForWrap(hardLine)) {
       const width = measureToken(token)
       if (/^\s/.test(token)) {
         used = used + width <= limit ? used + width : limit
@@ -648,13 +715,13 @@ export const countWrappedLines = (
         continue
       }
       // 1行に収まらない語だけをbreak-wordとして割る
-      for (const char of token) {
-        const charWidth = measureToken(char)
-        if (used > 0 && used + charWidth > limit) {
+      for (const cluster of splitGraphemes(token)) {
+        const clusterWidth = measureToken(cluster)
+        if (used > 0 && used + clusterWidth > limit) {
           lines += 1
           used = 0
         }
-        used += charWidth
+        used += clusterWidth
       }
     }
   })

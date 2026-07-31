@@ -1557,6 +1557,29 @@ describe('HandLogの行高推定', () => {
       expect(countWrappedLines('あいうえおかきくけこ', 100, measureToken)).toBe(2)
     })
 
+    // 以下の期待値はChromeの既定（line-break: auto）を実測して確定したもの。
+    // 1行=全角2文字ぶん(40px)で、'あいうえ'は2行が基準
+    it('行末禁則: 開き括弧の直後では改行しない', () => {
+      expect(countWrappedLines('あいうえ', 40, measureToken)).toBe(2)
+      // あ / （い / あ の3行になる
+      expect(countWrappedLines('あ（いあ', 40, measureToken)).toBe(3)
+    })
+
+    it('行頭禁則: 句読点・閉じ括弧を行頭に置かない', () => {
+      // あ / い、 / う の3行になる
+      expect(countWrappedLines('あい、う', 40, measureToken)).toBe(3)
+      expect(countWrappedLines('あい）う', 40, measureToken)).toBe(3)
+      expect(countWrappedLines('あい」う', 40, measureToken)).toBe(3)
+      expect(countWrappedLines('あい・う', 40, measureToken)).toBe(3)
+    })
+
+    it('Chrome既定で改行できる小書き仮名・長音符は禁則にしない', () => {
+      // 禁則に含めると逆に行数を過大評価して余白が空く
+      expect(countWrappedLines('あいっう', 40, measureToken)).toBe(2)
+      expect(countWrappedLines('あいーう', 40, measureToken)).toBe(2)
+      expect(countWrappedLines('あいぁう', 40, measureToken)).toBe(2)
+    })
+
     it('半角と全角が混在する行を実幅で数える', () => {
       // 'Seat 1: '(80px) + 全角3文字(60px) = 140px → 2行
       expect(countWrappedLines('Seat 1: 日本語', 100, measureToken)).toBe(2)
@@ -1599,9 +1622,41 @@ describe('HandLogの行高推定', () => {
     it('本文幅が0以下でも1文字ずつ折り返して破綻しない', () => {
       expect(estimateEntryRowHeight('abc', metrics(0))).toBeCloseTo(3 * 9.6 + 2)
     })
+
+    it('分解形の結合文字を余分な1文字として数えない', () => {
+      // 見た目が同じ合成形と分解形は同じ行高になる。コードポイント単位で
+      // 数えると分解形だけ2倍の幅になり、存在しない行ぶんの余白が空く
+      const composed = '\u3070'.repeat(30)
+      const decomposed = '\u306F\u3099'.repeat(30)
+      const rowMetrics = {
+        textWidth: 184,
+        fontSize: 8,
+        showTimestamps: false,
+      }
+      expect(estimateEntryRowHeight(decomposed, rowMetrics))
+        .toBeCloseTo(estimateEntryRowHeight(composed, rowMetrics))
+      // 全角30文字=240px → 184pxでは2行
+      expect(estimateEntryRowHeight(decomposed, rowMetrics)).toBeCloseTo(21.2)
+    })
   })
 
   describe('measureHandLogTextWidth', () => {
+    it('結合文字を含むクラスタを1グリフとして測る', () => {
+      // 合成形'ば'(U+3070)と分解形'は'+結合濁点(U+306F U+3099)は同じ1グリフ
+      expect(measureHandLogTextWidth('\u3070', 8)).toBeCloseTo(8)
+      expect(measureHandLogTextWidth('\u306F\u3099', 8)).toBeCloseTo(8)
+      // 結合文字単体は送り幅0。妥当性の下限で1emへ丸めない
+      expect(measureHandLogTextWidth('\u3099', 8)).toBe(0)
+    })
+
+    it('結合文字を含むクラスタを1グリフとして測る', () => {
+      // 合成形'ば'(U+3070)と分解形'は'+濁点(U+306F U+3099)は同じ1グリフ
+      expect(measureHandLogTextWidth('\u3070', 8)).toBeCloseTo(8)
+      expect(measureHandLogTextWidth('\u306F\u3099', 8)).toBeCloseTo(8)
+      // 結合文字単体は送り幅0（妥当性の下限で1emへ丸めない）
+      expect(measureHandLogTextWidth('\u3099', 8)).toBe(0)
+    })
+
     it('canvasが無い環境では保守的な半角/全角比へフォールバックする', () => {
       expect(measureHandLogTextWidth('00000', 8))
         .toBeCloseTo(5 * 8 * FALLBACK_NARROW_CHAR_WIDTH_RATIO)
