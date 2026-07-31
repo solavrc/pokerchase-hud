@@ -291,7 +291,7 @@ describe('HandLog', () => {
     fireEvent.mouseUp(document)
 
     expect(logContainer.style.left).toBe('10px')
-    expect(logContainer.style.top).toBe('75px')
+    expect(logContainer.style.top).toBe('10px')
     expect(savedLayoutCalls()).toHaveLength(0)
   })
 
@@ -334,7 +334,7 @@ describe('HandLog', () => {
     })
 
     expect(logContainer.style.left).toBe('60px')
-    expect(logContainer.style.top).toBe('105px')
+    expect(logContainer.style.top).toBe('40px')
     fireEvent.mouseUp(document)
   })
 
@@ -479,50 +479,20 @@ describe('HandLog', () => {
     expect(savedLayoutCalls()).toHaveLength(0)
   })
 
-  it('既定位置は0で頭打ちなのでviewportを0で読んでも画面内に残る', () => {
-    // 上端はネームプレートを避けるためviewport比で決まるが、必ず[0, 400]で
-    // 頭打ちにする。右下寄せ（viewportWidth - 余白 - 幅）だった頃はこの天井が
-    // 無く、viewportが実ウィンドウより大きい値で読めた瞬間に既定座標が画面外へ
-    // 落ちた（実機: ウィンドウを画面半分にした状態でリセットするとログが消え、
-    // 最大化すると現れた）。
+  it('既定位置はviewportに依存しないので0で読んでも画面内に残る', () => {
+    // 既定位置は左上からの固定オフセット。右下寄せ
+    // （viewportWidth - 余白 - 幅）だった頃はviewportの読み値がそのまま座標に
+    // なり、実ウィンドウより大きい値で読めた瞬間に画面外へ落ちた（実機:
+    // ウィンドウを画面半分にした状態でリセットするとログが消え、最大化すると
+    // 現れた）。定数ならその経路自体が存在しない。
     setViewport(0, 0)
     const { container } = render(<HandLog entries={mockEntries} />)
     const logContainer = container.firstChild as HTMLElement
 
     expect(logContainer.style.left).toBe('10px')
-    expect(logContainer.style.top).toBe('0px')
+    expect(logContainer.style.top).toBe('10px')
     expect(logContainer.style.width).toBe('400px')
     expect(logContainer.style.height).toBe('100px')
-  })
-
-  it('既定位置は左上のネームプレートより上に収まる', () => {
-    // プレートにはチップスタックが出るので、一部でも覆うと残りスタックが
-    // 読めなくなる（sola指定、最優先の制約）。幅400pxのパネルは左端に置くと
-    // 左列のプレートと横方向で必ず重なるため、縦で外すしかない。
-    // 実測値は src/mockup/table-layout.ts の SEATS[].plate（viewport比）:
-    // 上段プレイヤーB = 上端23.6%。
-    const TOP_ROW_PLATE_TOP = 0.236
-
-    for (const viewportHeight of [640, 720, 860, 900, 1080, 1440]) {
-      setViewport(1280, viewportHeight)
-      const { container, unmount } = render(<HandLog entries={mockEntries} />)
-      const style = (container.firstChild as HTMLElement).style
-      const bottom = parseFloat(style.top) + parseFloat(style.height)
-
-      expect(bottom).toBeLessThanOrEqual(viewportHeight * TOP_ROW_PLATE_TOP)
-      unmount()
-    }
-  })
-
-  it('既定の上端は天井で頭打ちになりviewport高に比例し続けない', () => {
-    // 天井が今回の修正の安全性質そのもの。これが無いと既定の上端は
-    // viewportの読み値にそのまま比例し、実ウィンドウより大きい値を掴んだ
-    // 瞬間に既定座標が画面外へ落ちる（＝直した不具合の入力が復活する）。
-    setViewport(1280, 3000)
-    const { container } = render(<HandLog entries={mockEntries} />)
-
-    // 天井が無ければ 3000*0.236 - 100 - 6 = 602px になる
-    expect((container.firstChild as HTMLElement).style.top).toBe('400px')
   })
 
   it('viewportが0のときは負へ動かしたドラッグ結果を画面内へ寄せる', () => {
@@ -544,23 +514,6 @@ describe('HandLog', () => {
     fireEvent.mouseUp(document)
   })
 
-  it('既定位置はプレイヤーBのHUDパネルの帯へ入らない', () => {
-    // BとAのプレートの間（32%〜57.8%）は一見あいているが、そこには
-    // Hud.tsx の SEAT_POSITIONS[2] = top 35% がある。ログを差し込むと
-    // HUDパネルそのものを潰す。
-    const B_HUD_TOP_RATIO = 0.35
-
-    for (const viewportHeight of [640, 860, 1080, 1440]) {
-      setViewport(1280, viewportHeight)
-      const { container, unmount } = render(<HandLog entries={mockEntries} />)
-      const style = (container.firstChild as HTMLElement).style
-      const bottom = parseFloat(style.top) + parseFloat(style.height)
-
-      expect(bottom).toBeLessThanOrEqual(viewportHeight * B_HUD_TOP_RATIO)
-      unmount()
-    }
-  })
-
   it('実ウィンドウより大きいviewportを保持していてもリセットは画面内へ戻す', () => {
     // 最大化時のviewportで環境をつかんだまま、ウィンドウが画面半分になり
     // resizeを取りこぼした状況。リセットはenvironmentを読み直すので、
@@ -574,8 +527,7 @@ describe('HandLog', () => {
     fireEvent(window, new CustomEvent('resetHandLogLayout'))
 
     expect(logContainer.style.left).toBe('10px')
-    // 400高ではプレート上端(94px)の上に100pxを積む余地が無く0へ張り付く
-    expect(logContainer.style.top).toBe('0px')
+    expect(logContainer.style.top).toBe('10px')
     // 幅400は500幅のviewportに収まるので表示は縮まない
     expect(logContainer.style.width).toBe('400px')
     expect(logContainer.style.height).toBe('100px')
@@ -608,9 +560,9 @@ describe('HandLog', () => {
     const logContainer = container.firstChild as HTMLElement
 
     // 幅は表示上限（viewport実寸）まで縮み、左端の既定オフセット10pxは
-    // 収まる余地が無いので0へ寄る。
+    // 収まる余地が無いので0へ寄る。高さ側にはまだ余地があるので10pxのまま。
     expect(logContainer.style.left).toBe('0px')
-    expect(logContainer.style.top).toBe('0px')
+    expect(logContainer.style.top).toBe('10px')
     expect(logContainer.style.width).toBe('320px')
     expect(logContainer.style.height).toBe('100px')
   })
@@ -1221,7 +1173,7 @@ describe('HandLog', () => {
     fireEvent(window, new CustomEvent('resetHandLogLayout'))
 
     expect(logContainer.style.left).toBe('10px')
-    expect(logContainer.style.top).toBe('75px')
+    expect(logContainer.style.top).toBe('10px')
     expect(logContainer.style.width).toBe(`${DEFAULT_HAND_LOG_CONFIG.width}px`)
     expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
   })
@@ -1256,9 +1208,7 @@ describe('HandLog', () => {
     fireEvent(window, new CustomEvent('resetHandLogLayout'))
 
     expect(logContainer.style.left).toBe('10px')
-    // scale2では実寸200pxがプレート上端(181px)の上に収まらず0へ張り付く。
-    // プレートを守る側に倒し、上のクライアントUIへ食い込ませる。
-    expect(logContainer.style.top).toBe('0px')
+    expect(logContainer.style.top).toBe('10px')
     expect(logContainer.style.width).toBe(`${DEFAULT_HAND_LOG_CONFIG.width}px`)
     expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
     // 操作中に届いた新しいscaleは、resetの時点で確定して表示にも反映される
@@ -1328,7 +1278,7 @@ describe('HandLog', () => {
     fireEvent(window, new CustomEvent('resetHandLogLayout'))
 
     expect(logContainer.style.left).toBe('10px')
-    expect(logContainer.style.top).toBe('75px')
+    expect(logContainer.style.top).toBe('10px')
     expect(logContainer.style.width).toBe(`${DEFAULT_HAND_LOG_CONFIG.width}px`)
     expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
     expect(document.body.style.cursor).toBe('')
@@ -1352,7 +1302,7 @@ describe('HandLog', () => {
     const logContainer = container.firstChild as HTMLElement
 
     expect(logContainer.style.left).toBe('10px')
-    expect(logContainer.style.top).toBe('75px')
+    expect(logContainer.style.top).toBe('10px')
     expect(logContainer.style.width).toBe(`${DEFAULT_HAND_LOG_CONFIG.width}px`)
     expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
   })
