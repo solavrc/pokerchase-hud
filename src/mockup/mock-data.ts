@@ -52,6 +52,13 @@ export interface MockScenario {
   stats: PlayerStats[]
 }
 
+/**
+ * ヒーロー席の実playerId。DeveloperBadge.tsxの`DEVELOPER_PLAYER_IDS`と一致させて
+ * あるので、モックアップでも「DEV」バッジ付きの実際の見え方を確認できる
+ * （合成IDのままだとバッジが一切出ず、レイアウト崩れに気づけない）。
+ */
+const HERO_PLAYER_ID = 561384657
+
 const result = (
   id: string,
   name: string,
@@ -88,7 +95,10 @@ const standardStats = (
       ['pfr', 'PFR', [38, 214], '17.8% (38/214)'],
       ['cbet', 'CB', [19, 31], '61.3% (19/31)'],
       ['3bet', '3B', [11, 74], '14.9% (11/74)'],
-      ['af', 'AF', 2.4, '2.4'],
+      // AFの実際のStatResult.valueは[BET+RAISE, CALL]のペア（src/stats/core/af.ts）。
+      // プレイヤータイプ分類（playerTypeRules.ts）はこのペアの分母を見るので、
+      // スカラーのままだとモックアップでアイコンが一切出ない。
+      ['af', 'AF', [60, 25], '2.4'],
       ['wtsd', 'WTSD', [17, 52], '32.7% (17/52)'],
     ],
     loose: [
@@ -96,7 +106,7 @@ const standardStats = (
       ['pfr', 'PFR', [61, 168], '36.3% (61/168)'],
       ['cbet', 'CB', [24, 30], '80.0% (24/30)'],
       ['3bet', '3B', [17, 62], '27.4% (17/62)'],
-      ['af', 'AF', 4.8, '4.8'],
+      ['af', 'AF', [120, 25], '4.8'],
       ['wtsd', 'WTSD', [31, 88], '35.2% (31/88)'],
     ],
     tight: [
@@ -104,7 +114,7 @@ const standardStats = (
       ['pfr', 'PFR', [18, 192], '9.4% (18/192)'],
       ['cbet', 'CB', [8, 17], '47.1% (8/17)'],
       ['3bet', '3B', [4, 66], '6.1% (4/66)'],
-      ['af', 'AF', 1.3, '1.3'],
+      ['af', 'AF', [26, 20], '1.3'],
       ['wtsd', 'WTSD', [5, 24], '20.8% (5/24)'],
     ],
   }
@@ -177,7 +187,7 @@ const densePlayer = (
   ['3betfold', '3BF', [41, 86], '47.7% (41/86)'],
   ['steal', 'STL', [96, 173], '55.5% (96/173)'],
   ['foldToSteal', 'FTS', [51, 104], '49.0% (51/104)'],
-  ['af', 'AF', 3.7, '3.7'],
+  ['af', 'AF', [370, 100], '3.7'],
   ['afq', 'AFq', [311, 684], '45.5% (311/684)'],
   ['wtsd', 'WTSD', [98, 401], '24.4% (98/401)'],
   ['wwsf', 'WWSF', [221, 401], '55.1% (221/401)'],
@@ -216,7 +226,7 @@ export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
     ],
     stakes: '25/50',
     stats: [
-      standardStats(1024, 'sola', 642, 'balanced'),
+      standardStats(HERO_PLAYER_ID, 'sola', 642, 'balanced'),
       standardStats(2108, 'orbit_99', 214, 'tight'),
       standardStats(3440, 'north_star', 168, 'loose'),
       standardStats(4611, 'kiwi_tea', 192, 'tight'),
@@ -245,7 +255,7 @@ export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
     ],
     stakes: '50/100',
     stats: [
-      { playerId: 1024, statResults: [] },
+      { playerId: HERO_PLAYER_ID, statResults: [] },
       { playerId: -1 },
       { playerId: -1 },
       { playerId: 8801, statResults: [] },
@@ -277,7 +287,7 @@ export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
     ],
     stakes: '200/400',
     stats: [
-      densePlayer(1024, 'sola', 12_840),
+      densePlayer(HERO_PLAYER_ID, 'sola', 12_840),
       densePlayer(7321, 'player_with_a_very_long_name', 987),
       densePlayer(7322, 'three_bet_machine', 2_411),
       densePlayer(7323, 'quiet-observer', 104),

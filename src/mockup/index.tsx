@@ -18,7 +18,6 @@ import {
   HERO_CARDS,
   HERO_CARD_STAGGER,
   HERO_HAND_LABEL,
-  HERO_TIMER,
   POT,
   RAIL,
   RAIL_STUDS,
@@ -212,10 +211,6 @@ const Mockup = () => {
                 {scenario.heroHandLabel}
               </div>
             )}
-            <div className="pc-herotimer" style={rectStyle(HERO_TIMER)}>
-              <span aria-hidden="true" />
-              10
-            </div>
           </>
         )}
 
@@ -298,7 +293,7 @@ const Mockup = () => {
 
       <div className="mock-badge">
         <span />
-        MOCK DATA · {scenario.label}
+        {scenario.label}
       </div>
 
       {scenario.stats.map((stat, index) => (

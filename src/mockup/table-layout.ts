@@ -144,8 +144,6 @@ export const HERO_CARD_STAGGER = 3.5
  * width (ワンペア vs ストレートフラッシュ).
  */
 export const HERO_HAND_LABEL: Point = { l: 46.5, t: 78.9 }
-/** Hero's remaining-decision-time badge. */
-export const HERO_TIMER: Rect = { h: 3.9, l: 31.25, t: 57.4, w: 6.25 }
 
 /** Fixed game chrome outside the table. */
 export const CHROME = {

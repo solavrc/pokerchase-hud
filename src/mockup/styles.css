@@ -364,37 +364,6 @@ input[type="range"] {
 .pc-plate--hero .pc-plate__stack { font-size: calc(var(--u) * 4.3); }
 .pc-plate--hero .pc-plate__name { font-size: calc(var(--u) * 2.7); }
 
-.pc-herotimer {
-  align-items: center;
-  background: linear-gradient(180deg, #ffcf3d, #f0921c);
-  border-radius: calc(var(--u) * 0.8);
-  box-shadow: 0 calc(var(--u) * 0.6) calc(var(--u) * 1.4) rgba(0, 0, 0, 0.45);
-  color: #d4232b;
-  display: flex;
-  font-size: calc(var(--u) * 3);
-  gap: calc(var(--u) * 0.6);
-  justify-content: center;
-}
-
-.pc-herotimer span {
-  background: #14100a;
-  border-radius: 50%;
-  height: calc(var(--u) * 2.4);
-  position: relative;
-  width: calc(var(--u) * 2.4);
-}
-
-.pc-herotimer span::after {
-  border-left: calc(var(--u) * 0.25) solid #ffcf3d;
-  border-top: calc(var(--u) * 0.25) solid #ffcf3d;
-  content: "";
-  height: calc(var(--u) * 0.7);
-  left: 45%;
-  position: absolute;
-  top: 22%;
-  width: calc(var(--u) * 0.6);
-}
-
 /* --------------------------------------------------------------- chrome */
 
 .pc-menu,
@@ -629,6 +598,14 @@ input[type="range"] {
 
 /* --------------------------------------------------------- mock controls */
 
+/*
+ * Dev affordances. They sit in the one band of the recreated screen that is
+ * empty in the reference -- x 63-74.4%, y 0-8.5%, between プレイヤーC's cards
+ * (right edge 63%) and the ヘルプ button (left edge 74.4%). Anywhere else in
+ * the top row would permanently cover a piece of chrome we just measured and
+ * rebuilt, which is exactly what these are meant to let you look at. Keep them
+ * in viewport percentages so the band tracks the scene at any window size.
+ */
 .control-trigger,
 .control-panel,
 .mock-badge {
@@ -647,9 +624,9 @@ input[type="range"] {
   font-size: 11px;
   font-weight: 700;
   gap: 7px;
+  left: 63.5%;
   padding: 8px 12px;
-  right: 14px;
-  top: 14px;
+  top: 1%;
 }
 
 .control-trigger span {
@@ -663,9 +640,9 @@ input[type="range"] {
   border: 1px solid rgba(155, 181, 232, 0.24);
   border-radius: 14px;
   box-shadow: 0 22px 70px rgba(0, 0, 0, 0.5);
+  left: 63.5%;
   padding: 18px;
-  right: 14px;
-  top: 92px;
+  top: 9.5%;
   width: 300px;
 }
 
@@ -782,10 +759,10 @@ input[type="range"] {
   font-size: 8px;
   font-weight: 900;
   gap: 7px;
+  left: 63.5%;
   letter-spacing: 0.13em;
   padding: 7px 11px;
-  right: 14px;
-  top: 52px;
+  top: 5.4%;
 }
 
 .mock-badge span {
