@@ -3,12 +3,73 @@
 Chrome Web Store の「検証済み CRX アップロード」を有効にした後は、すべての
 パッケージ更新を登録済みの RSA 秘密鍵で署名した CRX として提出する。
 
-リリース状態は次の3段階を分けて確認する。前段階が完了しても、後段階が自動的に
+リリース状態は次の4段階を分けて確認する。前段階が完了しても、後段階が自動的に
 完了したことにはならない。
 
 1. Release Please の release PR が main にマージされる
 2. GitHub Actions が GitHub Release と `extension.zip` / `extension.crx` を作成する
-3. Chrome Web Store Developer Dashboard で `extension.crx` を手動提出し、審査・公開する
+3. GitHub Release の本文をユーザー向けに書き換える（**手動**、下記
+   [Release notes](#release-notes) を参照）
+4. Chrome Web Store Developer Dashboard で `extension.crx` を手動提出し、審査・公開する
+
+## Release notes
+
+拡張機能はリリース文言を一切埋め込まない。Popup ヘッダーの「更新情報」リンクは
+GitHub Releases 一覧（`GITHUB_RELEASES_URL`, `src/constants/release-info.ts`）へ
+固定で飛ぶだけなので、**GitHub Release の本文がユーザー向け更新情報の唯一の
+供給源**になる。手順2で Release Please が作る本文は commit 一覧だけの技術的な
+内容なので、手順3の書き換えを飛ばすとユーザーには技術ログしか届かない。
+
+### タイミング
+
+手順2（workflow が Release を作成）の直後、手順4（Chrome Web Store 提出）より前。
+Release は作成時点で公開されるため、書き換えは遅らせない。
+
+### 本文の構成
+
+先頭にユーザー向けの `## 概要` と `## 主な更新` を置き、Release Please が生成した
+本文は消さずに `技術的な変更一覧` の `<details>` へそのまま格納する（PR/commit への
+リンクは変更履歴として保持する）。
+
+```markdown
+## 概要
+
+<このリリースで何が良くなったかを1〜2文で>
+
+## 主な更新
+
+- <ユーザーが体感できる変化を、実装ではなく結果で書く>
+- <内部名称（ストリーム名・関数名・PR番号）は持ち込まない>
+
+<details>
+<summary>技術的な変更一覧</summary>
+
+<Release Please が生成した本文をそのまま貼る>
+
+</details>
+```
+
+### 書き換え手順
+
+生成された本文を取り出してから編集し、ファイル指定で差し替える。先に取り出すのは、
+`--notes` に直接書くと生成済みの変更履歴を上書きで失うため。
+
+```sh
+gh release view pokerchase-hud-vX.Y.Z --json body -q .body > /tmp/release-body.md
+```
+
+`/tmp/release-body.md` の先頭に `## 概要` / `## 主な更新` を追記し、既存の本文を
+`<details>` で囲んでから反映する。
+
+```sh
+gh release edit pokerchase-hud-vX.Y.Z --notes-file /tmp/release-body.md
+```
+
+反映後、実際に公開されている本文で確認する。
+
+```sh
+gh release view pokerchase-hud-vX.Y.Z --json body -q .body
+```
 
 ## Sentry disclosure
 

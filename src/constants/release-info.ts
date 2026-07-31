@@ -1,14 +1,15 @@
 /**
- * GitHub Release links and the persisted unread-update marker.
+ * GitHub Releases link and the persisted unread-update marker.
  *
- * Keep this module side-effect free so popup code can build the running
- * version's Release URL without importing background-only badge code.
+ * Keep this module side-effect free so popup code can reference the Releases
+ * URL without importing background-only badge code.
+ *
+ * The link is deliberately the Releases *index*, not a per-version tag URL:
+ * a tag URL 404s whenever the running version has no matching Release (a
+ * locally built / unpacked extension, or a Release not published yet), and
+ * the index always resolves while still showing the latest notes first.
  */
-const GITHUB_RELEASE_TAG_BASE_URL =
-  'https://github.com/solavrc/pokerchase-hud/releases/tag/pokerchase-hud-v'
-
-export const getGitHubReleaseUrl = (version: string): string =>
-  `${GITHUB_RELEASE_TAG_BASE_URL}${encodeURIComponent(version)}`
+export const GITHUB_RELEASES_URL = 'https://github.com/solavrc/pokerchase-hud/releases'
 
 /**
  * Legacy key retained so users upgrading from the in-popup release-notes

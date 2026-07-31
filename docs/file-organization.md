@@ -130,7 +130,7 @@
     │   ├── database.ts        # DATABASE_CONSTANTS, REBUILD_ADVISORY_VERSION
     │   ├── runtime.ts         # Runtime constants
     │   ├── update.ts          # Forced-update constants (side-effect-free)
-    │   └── release-info.ts    # Running-version GitHub Release URL + unread storage key
+    │   └── release-info.ts    # Fixed GitHub Releases URL + unread storage key
     │
     ├── db/
     │   └── poker-chase-db.ts  # Dexie database definition (v6 schema: sequence-key Lake)
