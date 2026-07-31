@@ -32,8 +32,26 @@ interface HandLogProps {
 const HAND_LOG_MOVE_GRIP_SIZE = 16
 const HAND_LOG_BORDER_WIDTH = 1
 const HAND_LOG_DRAG_THRESHOLD = 4
-const HAND_LOG_DEFAULT_RIGHT = 10
-const HAND_LOG_DEFAULT_BOTTOM = 135
+/**
+ * 既定位置は画面左上からの固定オフセット。右下基準
+ * （viewportWidth - 余白 - 幅*scale）をやめた理由は2つある:
+ *
+ * 1. 右下基準は「viewportを正しく読めている」ことがそのまま位置の正しさに
+ *    なる。environmentが実ウィンドウより大きいと左端が実ウィンドウの外へ
+ *    落ちる ―― 実機で「ウィンドウを画面半分にした状態でリセットしたら
+ *    ログが消え、最大化したら現れた」として観測された。左上固定なら
+ *    viewportに一切依存しないので、この経路自体が存在しない。
+ * 2. 右下隅は座標系の最も外側の点でもある。ユーザーが自分でドラッグして
+ *    置く内側の位置と違い、参照フレームが少しでもずれると真っ先に画面外へ
+ *    出る。加えて席のHUDパネル（Hud.tsxのSEAT_POSITIONS、下段70%）と
+ *    アクションボタン帯に挟まれ、既定サイズ400x100が必ず何かに重なる。
+ *
+ * 左上ではゲーム側のメニュー/SB・BB/アンティと重なるが、そこは許容する
+ * （sola指定: 「どのみちユーザーが動かせる」）。既定倍率ならネームプレート
+ * には届かない。
+ */
+const HAND_LOG_DEFAULT_LEFT = 10
+const HAND_LOG_DEFAULT_TOP = 10
 const HAND_LOG_FONT_FAMILY = 'Consolas, Monaco, "Courier New", monospace'
 const HAND_LOG_SEPARATOR_HEIGHT = 10
 const HAND_LOG_ENTRY_PADDING_X = 8
@@ -87,7 +105,7 @@ type HandLogMachineAction =
   | { type: 'loadStarted', load: HandLogLoad }
   | { type: 'loadResolved', load: HandLogLoad, layout: HandLogLayout | undefined }
   | { type: 'externalLayout', layout: HandLogLayout }
-  | { type: 'reset' }
+  | { type: 'reset', environment: HandLogEnvironment }
   | { type: 'interactionStarted', mode: HandLogInteractionMode, x: number, y: number }
   | { type: 'pointerMoved', x: number, y: number }
   | { type: 'interactionFinished', deferPersistenceForLoad?: boolean }
@@ -247,14 +265,8 @@ const createDefaultHandLogLayout = (
   environment: HandLogEnvironment
 ): HandLogLayout =>
   normalizeHandLogLayout({
-    left:
-      environment.viewportWidth -
-      HAND_LOG_DEFAULT_RIGHT -
-      DEFAULT_HAND_LOG_CONFIG.width * environment.scale,
-    top:
-      environment.viewportHeight -
-      HAND_LOG_DEFAULT_BOTTOM -
-      DEFAULT_HAND_LOG_CONFIG.height * environment.scale,
+    left: HAND_LOG_DEFAULT_LEFT,
+    top: HAND_LOG_DEFAULT_TOP,
     width: DEFAULT_HAND_LOG_CONFIG.width,
     height: DEFAULT_HAND_LOG_CONFIG.height,
   }, environment)
@@ -384,7 +396,13 @@ const transitionHandLogLayout = (
     }
 
     case 'reset': {
-      const environment = state.pendingEnvironment ?? state.environment
+      // 保持している environment ではなく、呼び出し側が読み直した実寸を採用する。
+      // resizeイベントの取りこぼしなどで environment が実ウィンドウとずれていると、
+      // 既定位置の算出も画面内クランプも同じ古い値を使うためズレを検出できず、
+      // パネルが画面外に置かれても誰も気付けない（実機で発生した）。
+      // リセットはユーザーが「今の画面で見える状態へ戻す」操作なので、
+      // ここで環境を確定させ直すのが正しい。
+      const environment = action.environment
       return {
         state: {
           ...state,
@@ -1059,7 +1077,10 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       })
     }
     const handleReset = () => {
-      commitLayoutAction({ type: 'reset' })
+      commitLayoutAction({
+        type: 'reset',
+        environment: readHandLogEnvironment(latestScaleRef.current),
+      })
     }
     const handleUpdate = (event: Event) => {
       const nextLayout = (event as CustomEvent<unknown>).detail

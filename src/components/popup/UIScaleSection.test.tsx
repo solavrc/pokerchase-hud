@@ -51,21 +51,58 @@ describe('UIScaleSection', () => {
       .toHaveValue('Shift + H')
   })
 
-  it('ハンドログの位置とサイズのリセットを永続backgroundへ委譲する', async () => {
+  it('HUDとハンドログの位置とサイズのリセットを永続backgroundへ委譲する', async () => {
     const user = userEvent.setup()
     render(<UIScaleSection {...defaultProps} />)
 
     await user.click(screen.getByRole('button', { name: '位置とサイズをリセット' }))
 
     expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
-      { action: 'resetDeviceHandLogLayout' },
+      { action: 'resetDeviceUILayout' },
       expect.any(Function)
     )
     expect(mockTabsQuery).not.toHaveBeenCalled()
     expect(mockTabsSendMessage).not.toHaveBeenCalled()
   })
 
-  it('ハンドログlayoutの永続削除に失敗した場合は表示だけをリセットしない', async () => {
+  it('リセット成功後は倍率表示も既定へ戻す', async () => {
+    // 倍率のstorage削除とゲームタブへの配信はbackgroundが行うが、ポップアップ
+    // 自身は配信を購読していないので、成功応答を受けて自前で戻す必要がある。
+    const user = userEvent.setup()
+    render(
+      <UIScaleSection
+        {...defaultProps}
+        uiConfig={{ ...DEFAULT_UI_CONFIG, scale: 1.6 }}
+      />
+    )
+    expect(screen.getByText('160%')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '位置とサイズをリセット' }))
+
+    expect(mockSetUIConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ scale: DEFAULT_UI_CONFIG.scale })
+    )
+  })
+
+  it('リセットが失敗した場合は倍率表示を戻さない', async () => {
+    const user = userEvent.setup()
+    mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
+      callback({ success: false, error: 'remove failed' })
+    })
+    render(
+      <UIScaleSection
+        {...defaultProps}
+        uiConfig={{ ...DEFAULT_UI_CONFIG, scale: 1.6 }}
+      />
+    )
+
+    await user.click(screen.getByRole('button', { name: '位置とサイズをリセット' }))
+
+    expect(mockSetUIConfig).not.toHaveBeenCalled()
+    expect(screen.getByText('160%')).toBeInTheDocument()
+  })
+
+  it('UI配置の永続削除に失敗した場合は表示だけをリセットしない', async () => {
     const user = userEvent.setup()
     mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
       callback({ success: false, error: 'remove failed' })
@@ -75,7 +112,7 @@ describe('UIScaleSection', () => {
     await user.click(screen.getByRole('button', { name: '位置とサイズをリセット' }))
 
     expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
-      { action: 'resetDeviceHandLogLayout' },
+      { action: 'resetDeviceUILayout' },
       expect.any(Function)
     )
     expect(mockTabsSendMessage).not.toHaveBeenCalled()

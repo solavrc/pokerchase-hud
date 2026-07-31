@@ -124,17 +124,23 @@ describe('content_script.ts download message handlers send an explicit ack', () 
     expect(sendResponse).toHaveBeenCalledWith({ success: false, error: 'createObjectURL boom' })
   })
 
-  test('resetHandLogLayout forwards the popup reset into the page', () => {
+  test('resetUILayout fans the popup reset out to both the hand log and the HUD panels', () => {
     const dispatchEvent = jest.spyOn(window, 'dispatchEvent')
 
     listener(
-      { action: 'resetHandLogLayout' },
+      { action: 'resetUILayout' },
       {},
       jest.fn()
     )
 
+    // Two independent subscribers: HandLog.tsx's layout machine and
+    // useDraggable.ts. A single delivery that only reached one of them would
+    // leave half the panels where the user dragged them.
     expect(dispatchEvent).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'resetHandLogLayout' })
+    )
+    expect(dispatchEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'resetHudPositions' })
     )
   })
 

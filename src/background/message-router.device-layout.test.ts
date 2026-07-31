@@ -4,7 +4,10 @@ import type { ChromeMessage, MessageResponse } from '../types/messages'
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import {
   HAND_LOG_LAYOUT_STORAGE_KEY,
+  HUD_POSITION_STORAGE_KEYS,
   hudPositionStorageKey,
+  isValidHudPositionId,
+  REAL_TIME_HUD_POSITION_OFFSET,
   LEGACY_SYNC_UI_SCALE_KEY,
   UI_SCALE_STORAGE_KEY,
 } from '../utils/ui-config-storage'
@@ -227,7 +230,40 @@ describe('message-router device-local UI layout', () => {
     })
   })
 
-  it('ハンドログの端末ローカルlayoutだけを削除する', async () => {
+  // 実装が削除に使う定数から期待値を組み立てると、定数が狭まったとき期待値も
+  // 同時に狭まって「全席」という性質が検出できなくなる（自己参照）。
+  // 席IDの集合はここにリテラルで固定し、実装側の定数と突き合わせる。
+  const ALL_HUD_POSITION_KEYS = [
+    'hudPosition_0',
+    'hudPosition_1',
+    'hudPosition_2',
+    'hudPosition_3',
+    'hudPosition_4',
+    'hudPosition_5',
+    // リアルタイムHUD（100番台）も同じ操作で戻る対象
+    'hudPosition_100',
+    'hudPosition_101',
+    'hudPosition_102',
+    'hudPosition_103',
+    'hudPosition_104',
+    'hudPosition_105',
+  ]
+
+  it('削除対象キーがisValidHudPositionIdの受理範囲と一致する', () => {
+    // ここがずれると、setDeviceHudPositionは書けるのにresetでは消えない
+    // 「消し残るキー」が生まれる。
+    expect([...HUD_POSITION_STORAGE_KEYS].sort()).toEqual(
+      [...ALL_HUD_POSITION_KEYS].sort()
+    )
+    for (const key of ALL_HUD_POSITION_KEYS) {
+      const seatIndex = Number(key.replace('hudPosition_', ''))
+      expect(isValidHudPositionId(seatIndex)).toBe(true)
+    }
+    expect(isValidHudPositionId(6)).toBe(false)
+    expect(isValidHudPositionId(REAL_TIME_HUD_POSITION_OFFSET + 6)).toBe(false)
+  })
+
+  it('ハンドログlayoutと全席のHUD位置をまとめて削除する', async () => {
     const position = { top: '12%', left: '20%' }
     await chrome.storage.local.set({
       [HAND_LOG_LAYOUT_STORAGE_KEY]: {
@@ -236,21 +272,89 @@ describe('message-router device-local UI layout', () => {
         width: 400,
         height: 100,
       },
-      [hudPositionStorageKey(0)]: position,
+      ...Object.fromEntries(ALL_HUD_POSITION_KEYS.map(key => [key, position])),
+      [UI_SCALE_STORAGE_KEY]: 1.4,
     })
     const resetResponse = jest.fn()
 
-    listener({ action: 'resetDeviceHandLogLayout' }, {}, resetResponse)
+    listener({ action: 'resetDeviceUILayout' }, {}, resetResponse)
     await getPendingStorageWriteTail()
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(resetResponse).toHaveBeenCalledWith({ success: true })
     expect(await chrome.storage.local.get([
       HAND_LOG_LAYOUT_STORAGE_KEY,
-      hudPositionStorageKey(0),
+      ...ALL_HUD_POSITION_KEYS,
     ])).toEqual({
       [HAND_LOG_LAYOUT_STORAGE_KEY]: undefined,
-      [hudPositionStorageKey(0)]: position,
+      ...Object.fromEntries(
+        ALL_HUD_POSITION_KEYS.map(key => [key, undefined])
+      ),
+    })
+  })
+
+  it('端末ローカルの倍率も消して既定倍率を全ゲームタブへ配信する', async () => {
+    // 「既定の見た目へ戻す」操作なので倍率も対象（sola指定）。倍率を残すと
+    // 大きい倍率のままパネルが既定位置へ戻り、既定位置が前提とする余白に
+    // 収まらない状態が残る。
+    ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => {
+      callback([{ id: 42 }])
+    })
+    await chrome.storage.local.set({
+      [UI_SCALE_STORAGE_KEY]: 1.4,
+      [hudPositionStorageKey(0)]: { top: '12%', left: '20%' },
+    })
+    const resetResponse = jest.fn()
+
+    listener({ action: 'resetDeviceUILayout' }, {}, resetResponse)
+    await getPendingStorageWriteTail()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(resetResponse).toHaveBeenCalledWith({ success: true })
+    // removeではなく既定値を明示的に書く。キー欠落は「端末ローカルへ未移行」を
+    // 意味するので、消すと次の読み込みでsyncの旧倍率から復活してしまう。
+    expect(await chrome.storage.local.get(UI_SCALE_STORAGE_KEY)).toEqual({
+      [UI_SCALE_STORAGE_KEY]: DEFAULT_UI_CONFIG.scale,
+    })
+    // ストレージを消すだけでは開いているタブのHUDは縮まない。倍率の配信経路は
+    // 既存のupdateDeviceUIScaleを使う（resetUILayoutへ相乗りさせない）。
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      action: 'resetUILayout',
+    })
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      action: 'updateDeviceUIScale',
+      scale: DEFAULT_UI_CONFIG.scale,
+    })
+  })
+
+  it.each<[string, Record<string, unknown>]>([
+    ['uiConfig.scale', { uiConfig: { ...DEFAULT_UI_CONFIG, scale: 1.6 } }],
+    ['legacyUIScale', { [LEGACY_SYNC_UI_SCALE_KEY]: 1.8 }],
+  ])('リセットした倍率がsyncの旧倍率(%s)で復活しない', async (_label, syncSeed) => {
+    // 5.4.0(#290)より前から使っている端末はsyncに互換用の旧倍率を持ち続ける
+    // （persistSyncedUIConfigが毎回書き戻すので消えない）。localのuiScaleを
+    // removeすると、次のgetDeviceUILayoutが「未移行」と判定してその旧倍率を
+    // 書き戻し、倍率だけリセット前へ戻ってしまう。
+    await chrome.storage.sync.set(syncSeed)
+    await chrome.storage.local.set({ [UI_SCALE_STORAGE_KEY]: 1.6 })
+    const resetResponse = jest.fn()
+    const layoutResponse = jest.fn()
+
+    listener({ action: 'resetDeviceUILayout' }, {}, resetResponse)
+    await getPendingStorageWriteTail()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(resetResponse).toHaveBeenCalledWith({ success: true })
+
+    // リセット後にポップアップを開き直す/ゲームタブを再読み込みする経路
+    listener({ action: 'getDeviceUILayout' }, {}, layoutResponse)
+    await getPendingStorageWriteTail()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(layoutResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ success: true, scale: DEFAULT_UI_CONFIG.scale })
+    )
+    expect(await chrome.storage.local.get(UI_SCALE_STORAGE_KEY)).toEqual({
+      [UI_SCALE_STORAGE_KEY]: DEFAULT_UI_CONFIG.scale,
     })
   })
 
@@ -270,11 +374,11 @@ describe('message-router device-local UI layout', () => {
     )
     const resetResponse = jest.fn()
 
-    listener({ action: 'resetDeviceHandLogLayout' }, {}, resetResponse)
+    listener({ action: 'resetDeviceUILayout' }, {}, resetResponse)
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
-      action: 'resetHandLogLayout',
+      action: 'resetUILayout',
     })
     expect(resetResponse).not.toHaveBeenCalled()
     expect(await chrome.storage.local.get(HAND_LOG_LAYOUT_STORAGE_KEY)).toEqual({
@@ -304,7 +408,7 @@ describe('message-router device-local UI layout', () => {
     const saveResponse = jest.fn()
     ;(chrome.tabs.query as jest.Mock).mockClear()
 
-    listener({ action: 'resetDeviceHandLogLayout' }, {}, resetResponse)
+    listener({ action: 'resetDeviceUILayout' }, {}, resetResponse)
     listener({
       action: 'setDeviceHandLogLayout',
       layout: newLayout,
@@ -322,7 +426,8 @@ describe('message-router device-local UI layout', () => {
       success: false,
       error: 'Superseded by newer hand log layout',
     })
-    expect(chrome.tabs.query).toHaveBeenCalledTimes(2)
+    // reset は resetUILayout と updateDeviceUIScale の2配信、layout保存が1配信
+    expect(chrome.tabs.query).toHaveBeenCalledTimes(3)
     expect(saveResponse).toHaveBeenCalledWith({ success: true })
     expect(await chrome.storage.local.get(HAND_LOG_LAYOUT_STORAGE_KEY)).toEqual({
       [HAND_LOG_LAYOUT_STORAGE_KEY]: newLayout,
@@ -347,10 +452,10 @@ describe('message-router device-local UI layout', () => {
     const resetResponse = jest.fn()
     const saveResponse = jest.fn()
 
-    listener({ action: 'resetDeviceHandLogLayout' }, {}, resetResponse)
+    listener({ action: 'resetDeviceUILayout' }, {}, resetResponse)
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
-      action: 'resetHandLogLayout',
+      action: 'resetUILayout',
     })
 
     listener({
@@ -395,17 +500,23 @@ describe('message-router device-local UI layout', () => {
         finishDelayedReset = () => defaultRemove(key, callback)
       }
     )
-    ;(chrome.storage.local.set as jest.Mock).mockImplementationOnce(
-      (_items, callback) => {
+    // resetも倍率の既定値をsetで書くので、失敗させたいのはlayout保存側だけ。
+    // itemsの中身で見分ける（呼び出し順に依存させない）。
+    const storageSet = chrome.storage.local.set as jest.Mock
+    const defaultSet = storageSet.getMockImplementation()!
+    storageSet.mockImplementation((items, callback) => {
+      if (HAND_LOG_LAYOUT_STORAGE_KEY in items) {
         ;(chrome.runtime as any).lastError = { message: 'quota' }
         callback()
         delete (chrome.runtime as any).lastError
+        return
       }
-    )
+      defaultSet(items, callback)
+    })
     const resetResponse = jest.fn()
     const saveResponse = jest.fn()
 
-    listener({ action: 'resetDeviceHandLogLayout' }, {}, resetResponse)
+    listener({ action: 'resetDeviceUILayout' }, {}, resetResponse)
     listener({
       action: 'setDeviceHandLogLayout',
       layout: newLayout,
@@ -417,7 +528,7 @@ describe('message-router device-local UI layout', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
-      action: 'resetHandLogLayout',
+      action: 'resetUILayout',
     })
     expect(chrome.tabs.sendMessage).not.toHaveBeenCalledWith(
       42,

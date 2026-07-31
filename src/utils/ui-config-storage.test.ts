@@ -9,7 +9,7 @@ import {
   LEGACY_SYNC_UI_SCALE_KEY,
   persistSyncedUIConfig,
   resolveLocalUIScale,
-  resetHandLogLayout,
+  resetUILayout,
   saveHandLogLayout,
   saveLocalUIScale,
   saveHudPosition,
@@ -318,7 +318,7 @@ describe('ui-config-storage', () => {
 
     loadHandLogLayout(loadCallback)
     saveHandLogLayout(layout)
-    resetHandLogLayout(resetCallback)
+    resetUILayout(resetCallback)
 
     expect(loadCallback).toHaveBeenCalledWith(layout)
     expect(chrome.runtime.sendMessage).toHaveBeenNthCalledWith(
@@ -333,13 +333,13 @@ describe('ui-config-storage', () => {
     )
     expect(chrome.runtime.sendMessage).toHaveBeenNthCalledWith(
       3,
-      { action: 'resetDeviceHandLogLayout' },
+      { action: 'resetDeviceUILayout' },
       expect.any(Function)
     )
     expect(resetCallback).toHaveBeenCalled()
   })
 
-  it('ハンドログlayoutのreset失敗時は成功callbackを呼ばない', () => {
+  it('UI配置resetの失敗時は成功callbackを呼ばない', () => {
     ;(chrome.runtime.sendMessage as jest.Mock).mockImplementationOnce(
       (_message, callback) => {
         callback({ success: false, error: 'remove failed' })
@@ -347,7 +347,7 @@ describe('ui-config-storage', () => {
     )
     const callback = jest.fn()
 
-    resetHandLogLayout(callback)
+    resetUILayout(callback)
 
     expect(callback).not.toHaveBeenCalled()
   })
@@ -363,7 +363,7 @@ describe('ui-config-storage', () => {
       )
       const callback = jest.fn()
 
-      resetHandLogLayout(callback)
+      resetUILayout(callback)
       jest.advanceTimersByTime(DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS)
       expect(callback).not.toHaveBeenCalled()
 

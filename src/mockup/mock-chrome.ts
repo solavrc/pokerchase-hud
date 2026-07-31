@@ -6,6 +6,7 @@ import {
 } from '../components/popup/popup-theme-storage'
 import {
   HAND_LOG_LAYOUT_STORAGE_KEY,
+  HUD_POSITION_STORAGE_KEYS,
   hudPositionStorageKey,
   persistSyncedUIConfig,
   persistSyncedUIConfigPatch,
@@ -206,16 +207,21 @@ export const installChromeMock = (): MockChromeController => {
           return
         }
 
-        if (message.action === 'resetDeviceHandLogLayout') {
-          localStorage.remove(HAND_LOG_LAYOUT_STORAGE_KEY, () => {
-            // Clearing storage is not enough: `HandLog` does not watch
-            // storage, it resets on this window event. The real background
-            // sends it to the game tab, where `content_script.ts` re-dispatches
-            // it -- without this the popup's 位置とサイズをリセット button would
-            // do nothing visible.
-            window.dispatchEvent(new CustomEvent(MESSAGE_ACTIONS.RESET_HAND_LOG_LAYOUT))
-            callback?.({ success: true })
-          })
+        if (message.action === 'resetDeviceUILayout') {
+          localStorage.remove(
+            [HAND_LOG_LAYOUT_STORAGE_KEY, ...HUD_POSITION_STORAGE_KEYS],
+            () => {
+              // Clearing storage is not enough: neither `HandLog` nor
+              // `useDraggable` watches storage -- they reset on these window
+              // events. The real background sends one `resetUILayout` message
+              // to the game tab, where `content_script.ts` fans it out into
+              // exactly these two -- without them the popup's
+              // 位置とサイズをリセット button would do nothing visible.
+              window.dispatchEvent(new CustomEvent(MESSAGE_ACTIONS.RESET_HAND_LOG_LAYOUT))
+              window.dispatchEvent(new CustomEvent(MESSAGE_ACTIONS.RESET_HUD_POSITIONS))
+              callback?.({ success: true })
+            }
+          )
           return
         }
 

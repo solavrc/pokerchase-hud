@@ -20,6 +20,24 @@ export const HAND_LOG_MIN_HEIGHT = 80
 export const hudPositionStorageKey = (seatIndex: number): string =>
   `hudPosition_${seatIndex}`
 
+/** 通常HUD(0-5)とリアルタイムHUD(100-105)の全席。`isValidHudPositionId`と同じ範囲。 */
+export const HUD_POSITION_IDS: readonly number[] = [
+  ...Array.from({ length: 6 }, (_, seatIndex) => seatIndex),
+  ...Array.from(
+    { length: 6 },
+    (_, seatIndex) => REAL_TIME_HUD_POSITION_OFFSET + seatIndex
+  ),
+]
+
+/**
+ * 消すキーは前方一致で走査せず、有効な席IDから組み立てる。
+ * `storage.local`にはサービス状態など無関係のキーも同居しており、
+ * `get(null)`で全件読んで前方一致で消す実装は、将来別用途の
+ * `hudPosition_`付きキーが増えたときに巻き込む。
+ */
+export const HUD_POSITION_STORAGE_KEYS: readonly string[] =
+  HUD_POSITION_IDS.map(hudPositionStorageKey)
+
 type SyncedUIConfig = Omit<UIConfig, 'scale'>
 type PendingSyncedUIConfigWrite = {
   callback?: (success: boolean) => void
@@ -336,9 +354,14 @@ export const saveHandLogLayout = (layout: HandLogLayout): void => {
   )
 }
 
-export const resetHandLogLayout = (callback?: () => void): void => {
+/**
+ * HUDパネル位置とハンドログのレイアウトをまとめて既定へ戻す。
+ * 永続化も開いているタブへの配信もバックグラウンドが行うので、
+ * 呼び出し直後にポップアップが閉じてもリセットは中断されない。
+ */
+export const resetUILayout = (callback?: () => void): void => {
   sendDeviceLayoutWriteMessage(
-    { action: 'resetDeviceHandLogLayout' },
+    { action: 'resetDeviceUILayout' },
     status => {
       if (status === 'success') callback?.()
     }

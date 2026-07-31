@@ -10,7 +10,7 @@ import { DEFAULT_UI_CONFIG, type UIConfig } from '../../types/hand-log'
 import { formatShortcut, shortcutFromKeyboardEvent } from '../../utils/keyboard-shortcut'
 import {
   saveLocalUIScale,
-  resetHandLogLayout,
+  resetUILayout,
   saveSyncedUIConfig,
   saveSyncedUIConfigPatch,
 } from '../../utils/ui-config-storage'
@@ -178,11 +178,23 @@ export const UIScaleSection = ({
         <Button
           size="small"
           variant="text"
-          title="ハンドログの位置とサイズをリセット"
+          title="HUDパネルとハンドログの位置・サイズ・倍率を既定へ戻す"
           onClick={() => {
             // Persistence and live-tab delivery both run in the background so
             // closing the action popup cannot interrupt the reset.
-            resetHandLogLayout()
+            resetUILayout(() => {
+              // 倍率はbackgroundがstorageから消し、ゲームタブへは
+              // updateDeviceUIScaleで配信される。ポップアップ自身は購読して
+              // いないので、成功応答を受けてここで既定へ戻す。
+              // 進行中のscale書き込みがあれば、その基準もここへ寄せる。
+              latestAppliedScaleRequestIdRef.current = ++nextScaleRequestIdRef.current
+              latestAppliedScaleRef.current = DEFAULT_UI_CONFIG.scale
+              pendingScaleRef.current = DEFAULT_UI_CONFIG.scale
+              setUIConfig({
+                ...latestUIConfigRef.current,
+                scale: DEFAULT_UI_CONFIG.scale,
+              })
+            })
           }}
           sx={{
             ml: 'auto',

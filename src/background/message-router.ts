@@ -1,5 +1,6 @@
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import type {
   ChromeMessage,
   ImportStatusMessage,
@@ -18,6 +19,7 @@ import { applyUpdateNow } from './update-manager'
 import { acknowledgeWhatsNew } from './whats-new-badge'
 import {
   HAND_LOG_LAYOUT_STORAGE_KEY,
+  HUD_POSITION_STORAGE_KEYS,
   hudPositionStorageKey,
   isValidHandLogLayout,
   isValidHudPosition,
@@ -464,18 +466,53 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         )
       )
       return true
-    } else if (request.action === 'resetDeviceHandLogLayout') {
+    } else if (request.action === 'resetDeviceUILayout') {
+      // ハンドログ・HUDパネル位置・倍率を1回のremoveでまとめて消す。片方だけ
+      // 成功して片方が残る中間状態を作らないため、キーを分けて複数回呼ばない。
+      // 倍率も対象なのは、このボタンが「既定の見た目へ戻す」操作だから（sola）。
+      // 倍率を残すと、大きい倍率のままパネルが既定位置へ戻り、既定位置が前提と
+      // する余白（ネームプレートの上など）に収まらない状態が残ってしまう。
+      // ハンドログ用のキューに載せるのは、同時に走りうる
+      // set/getDeviceHandLogLayoutと順序を保つため。
+      // 倍率だけは remove ではなく既定値を明示的に書く。localのuiScale欠落は
+      // 「端末ローカルへ未移行」を意味していて（getDeviceUILayoutの
+      // needsScaleMigration）、消すと次の読み込みがsyncに残る互換用の旧倍率
+      // から移行し直し、倍率だけリセット前へ復活してしまう。sync側の旧倍率は
+      // 版が混在する端末のために残す必要があり、消して解決はできない。
+      // 世代を上げるのは、この時点で読み込み中の移行（古い世代を掴んでいる）に
+      // 書き戻させないため。
+      deviceScaleWriteGeneration += 1
       enqueueHandLogLayoutWrite(
         callback => chrome.storage.local.remove(
-          HAND_LOG_LAYOUT_STORAGE_KEY,
-          callback
+          [HAND_LOG_LAYOUT_STORAGE_KEY, ...HUD_POSITION_STORAGE_KEYS],
+          () => {
+            // removeが失敗したらlastErrorが立っている間に抜ける。
+            // 続けてsetを呼ぶとlastErrorが上書きされ、失敗が成功に見える。
+            if (chrome.runtime.lastError) {
+              callback()
+              return
+            }
+            chrome.storage.local.set(
+              { [UI_SCALE_STORAGE_KEY]: DEFAULT_UI_CONFIG.scale },
+              callback
+            )
+          }
         ),
         sendResponse,
-        'Failed to reset hand log layout',
-        complete => broadcastToGameTabs(
-          { action: 'resetHandLogLayout' },
-          complete
-        )
+        'Failed to reset UI layout',
+        complete => {
+          // 倍率はresetUILayoutとは別経路で反映する。ゲームタブ側の倍率は
+          // App.tsxがuiConfig.scaleとして持っており、既存のscale配信
+          // （updateDeviceUIScale）がその唯一の更新経路だから。
+          // resetUILayoutにscaleを相乗りさせると、HandLog/useDraggableの
+          // リセットとscale更新が1つのメッセージに同居して責務が混ざる。
+          broadcastToGameTabs({ action: 'resetUILayout' }, () => {
+            broadcastToGameTabs({
+              action: 'updateDeviceUIScale',
+              scale: DEFAULT_UI_CONFIG.scale,
+            }, complete)
+          })
+        }
       )
       return true
     } else if (request.action === 'exportData') {

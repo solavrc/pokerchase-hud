@@ -481,7 +481,24 @@ persistence in one component-local state machine. The machine's concrete
 active pointer interaction, rejects layout-load callbacks bound to an older
 request or scale, and emits at most one persistence effect from the common
 interaction exit. Do not add another effect/ref that mutates or saves hand-log
-coordinates outside that transition outlet. There is no header bar: the
+coordinates outside that transition outlet. **The `reset` action is the one
+input that must not trust the machine's own `environment`**: it carries a
+freshly read `readHandLogEnvironment()` and adopts it. Reset exists to rescue a
+panel the user cannot find, and a stale cached viewport is one of the ways a
+panel gets lost — computing the default *and* the in-viewport clamp from the
+same stale value cannot detect the mismatch, so the rescue silently reproduces
+it. For the same reason the default position moved to a fixed top-left offset
+(`HAND_LOG_DEFAULT_LEFT`/`TOP`) from the former right/bottom-anchored
+`viewportWidth - margin - width*scale`: that formula is only ever as correct as
+the viewport reading behind it, and a too-large reading put the panel outside
+the window (real report: window at half the display, reset made the log vanish,
+maximizing revealed it). A constant has no such failure mode at all. It also
+landed on the *outermost* point of the coordinate box — the first place to fall
+out of view if the reference frame is off — wedged between the bottom seat HUD
+panels and the action-button strip. The top-left default does overlap the
+game's own menu / SB·BB / ante chrome; that is accepted (sola: the user can
+just move it), and at the default scale it still stops short of the seat name
+plates, which carry the chip stacks. There is no header bar: the
 upper-right grip (16px, `hand-log-move-grip`) is the move handle and the
 lower-right corner is resize-only, so the whole panel height belongs to the log
 body. The grip is deliberately upper-*right*: it overlays the log body, and a
@@ -723,8 +740,27 @@ v3 added composite indexes for player-specific queries. v6 changes the Raw Lake 
   (`pokerChaseServiceState` — playerId, latestEvtDeal, session). Layout access
   is routed through the trusted background via `getDeviceUILayout`,
   `setDeviceUIScale`, `setDeviceHudPosition`, `getDeviceHandLogLayout`,
-  `setDeviceHandLogLayout`, and `resetDeviceHandLogLayout`; content scripts do
+  `setDeviceHandLogLayout`, and `resetDeviceUILayout`; content scripts do
   not access the restricted local area directly.
+- **Layout reset is one operation over every device-local appearance key**:
+  the popup's 「位置とサイズをリセット」 (`UIScaleSection.tsx`) sends a single
+  `resetDeviceUILayout`, and the background removes `handLogLayout`, every
+  `hudPosition_*` key, *and* `uiScale` in one `chrome.storage.local.remove`
+  call so they cannot diverge. Scale is in scope because the button means
+  "back to the default look" (sola): leaving a large scale behind returns the
+  panels to default positions computed for a size they no longer are, so the
+  hand log's default slot above the seat plate stops fitting. Keys come from `HUD_POSITION_STORAGE_KEYS`
+  (`ui-config-storage.ts`), built from the valid position ids rather than by
+  prefix-scanning `storage.local`, which also holds unrelated keys. Clearing
+  storage alone does not move anything on an open tab — neither `HandLog` nor
+  `useDraggable` watches storage — so the background also broadcasts one
+  `resetUILayout` message that `content_script.ts` fans out into the
+  `resetHandLogLayout` and `resetHudPositions` window events those two
+  subscribe to. Scale rides its own existing channel
+  (`updateDeviceUIScale`) rather than being folded into `resetUILayout`:
+  `App.tsx` already owns scale as `uiConfig.scale` and that broadcast is its
+  only update path. The popup does not subscribe to either broadcast, so
+  `UIScaleSection` resets its own displayed scale from the success response.
 
 #### Config Interfaces
 

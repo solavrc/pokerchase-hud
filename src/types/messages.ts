@@ -55,9 +55,11 @@ export const MESSAGE_ACTIONS = {
   SET_DEVICE_HUD_POSITION: 'setDeviceHudPosition',
   GET_DEVICE_HAND_LOG_LAYOUT: 'getDeviceHandLogLayout',
   SET_DEVICE_HAND_LOG_LAYOUT: 'setDeviceHandLogLayout',
-  RESET_DEVICE_HAND_LOG_LAYOUT: 'resetDeviceHandLogLayout',
+  RESET_DEVICE_UI_LAYOUT: 'resetDeviceUILayout',
   UPDATE_HAND_LOG_LAYOUT: 'updateHandLogLayout',
+  RESET_UI_LAYOUT: 'resetUILayout',
   RESET_HAND_LOG_LAYOUT: 'resetHandLogLayout',
+  RESET_HUD_POSITIONS: 'resetHudPositions',
   SET_SYNCED_UI_CONFIG: 'setSyncedUIConfig',
   // Operation state
   GET_OPERATION_STATE: 'getOperationState',
@@ -228,8 +230,14 @@ export interface SetDeviceHandLogLayoutMessage {
   layout: HandLogLayout
 }
 
-export interface ResetDeviceHandLogLayoutMessage {
-  action: 'resetDeviceHandLogLayout'
+/**
+ * ポップアップ→バックグラウンド。端末内に保存されたHUDパネル位置と
+ * ハンドログのレイアウトを、まとめて既定へ戻す。
+ * 個別リセットに分けていないのは、ユーザーから見て「配置を元に戻す」は
+ * ひとつの操作であり、片方だけ消えて片方が残る中間状態を作らないため。
+ */
+export interface ResetDeviceUILayoutMessage {
+  action: 'resetDeviceUILayout'
 }
 
 export interface UpdateHandLogLayoutMessage {
@@ -237,8 +245,14 @@ export interface UpdateHandLogLayoutMessage {
   layout: HandLogLayout
 }
 
-export interface ResetHandLogLayoutMessage {
-  action: 'resetHandLogLayout'
+/**
+ * バックグラウンド→ゲームタブ。`content_script.ts`が
+ * `resetHandLogLayout`と`resetHudPositions`のwindowイベントへ展開する。
+ * ストレージを消すだけでは開いているタブの表示は戻らない
+ * （`useDraggable`はマウント時にしか読まない）ため、この配信が必要。
+ */
+export interface ResetUILayoutMessage {
+  action: 'resetUILayout'
 }
 
 export interface SetSyncedUIConfigMessage {
@@ -488,9 +502,9 @@ export type ChromeMessage =
   | SetDeviceHudPositionMessage
   | GetDeviceHandLogLayoutMessage
   | SetDeviceHandLogLayoutMessage
-  | ResetDeviceHandLogLayoutMessage
+  | ResetDeviceUILayoutMessage
   | UpdateHandLogLayoutMessage
-  | ResetHandLogLayoutMessage
+  | ResetUILayoutMessage
   | SetSyncedUIConfigMessage
   | PatchSyncedUIConfigMessage
   | FirebaseAuthStatusMessage

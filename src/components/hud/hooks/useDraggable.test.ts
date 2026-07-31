@@ -197,6 +197,119 @@ describe('useDraggable', () => {
     )
   })
 
+  describe('ポップアップからの配置リセット', () => {
+    const startDrag = (result: { current: ReturnType<typeof useDraggable> }) => {
+      const mockContainer = document.createElement('div')
+      mockContainer.getBoundingClientRect = jest.fn(() => ({
+        top: 0, left: 0, width: 100, height: 100,
+        right: 100, bottom: 100, x: 0, y: 0, toJSON: () => {},
+      }))
+      Object.defineProperty(result.current.containerRef, 'current', {
+        value: mockContainer,
+        writable: true,
+      })
+      act(() => {
+        result.current.handleMouseDown({
+          preventDefault: jest.fn(),
+          stopPropagation: jest.fn(),
+          clientX: 100,
+          clientY: 100,
+        } as unknown as React.MouseEvent)
+      })
+    }
+
+    it('保存済み位置を捨ててdefaultPositionの描画へ戻す', () => {
+      const savedPosition = { top: '30%', left: '70%' }
+      mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+        callback({
+          success: true,
+          scale: 1,
+          ...(message.action === 'getDeviceUILayout' ? { position: savedPosition } : {}),
+        })
+      })
+      const { result } = renderHook(() => useDraggable(0, defaultPosition))
+      expect(result.current.position).toEqual(savedPosition)
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('resetHudPositions'))
+      })
+
+      // positionがnull＝Hud.tsxがdefaultPosition（SEAT_POSITIONS）を描く状態。
+      expect(result.current.position).toBeNull()
+      // storageはbackground側で既に空。ここから書き戻してはならない。
+      expect(mockChromeRuntimeSendMessage).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'setDeviceHudPosition' }),
+        expect.any(Function)
+      )
+    })
+
+    it('リセット後に届いた古い保存位置で復活させない', () => {
+      let resolveInitialLoad!: (response: unknown) => void
+      mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+        if (message.action === 'getDeviceUILayout') {
+          resolveInitialLoad = callback
+        } else {
+          callback({ success: true })
+        }
+      })
+      const { result } = renderHook(() => useDraggable(0, defaultPosition))
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('resetHudPositions'))
+      })
+      act(() => {
+        resolveInitialLoad({
+          success: true,
+          scale: 1,
+          position: { top: '30%', left: '70%' },
+        })
+      })
+
+      expect(result.current.position).toBeNull()
+    })
+
+    it('進行中のドラッグを破棄して消した位置を書き戻させない', () => {
+      const { result } = renderHook(() => useDraggable(0, defaultPosition))
+      startDrag(result)
+      act(() => {
+        document.dispatchEvent(new MouseEvent('mousemove', {
+          clientX: 150, clientY: 120, bubbles: true,
+        }))
+      })
+      expect(result.current.position).not.toBeNull()
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('resetHudPositions'))
+      })
+
+      expect(result.current.isDragging).toBe(false)
+      expect(result.current.position).toBeNull()
+
+      // 掴んだままのmousemove/mouseupが残っていても再保存されない
+      act(() => {
+        document.dispatchEvent(new MouseEvent('mousemove', {
+          clientX: 300, clientY: 300, bubbles: true,
+        }))
+        document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+      })
+
+      expect(result.current.position).toBeNull()
+      expect(mockChromeRuntimeSendMessage).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'setDeviceHudPosition' }),
+        expect.any(Function)
+      )
+    })
+
+    it('アンマウント後のリセット通知でstate更新しない', () => {
+      const { unmount } = renderHook(() => useDraggable(0, defaultPosition))
+      unmount()
+
+      expect(() => {
+        window.dispatchEvent(new CustomEvent('resetHudPositions'))
+      }).not.toThrow()
+    })
+  })
+
   it('別の席番号では異なるストレージキーを使用', () => {
     renderHook(() => useDraggable(3, defaultPosition))
 
