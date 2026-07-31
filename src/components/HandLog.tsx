@@ -511,6 +511,9 @@ const formatTimestamp = (timestamp: number): string => {
  */
 export const FALLBACK_NARROW_CHAR_WIDTH_RATIO = 0.6
 export const FALLBACK_WIDE_CHAR_WIDTH_RATIO = 1
+/** 絵文字は全角より広い（実測: 8pxで`🐟`=10px） */
+export const FALLBACK_EMOJI_CHAR_WIDTH_RATIO = 1.25
+const EMOJI_PRESENTATION_PATTERN = /\p{Emoji_Presentation}/u
 const MIN_PLAUSIBLE_CHAR_WIDTH_RATIO = 0.1
 const MAX_PLAUSIBLE_CHAR_WIDTH_RATIO = 3
 
@@ -528,17 +531,32 @@ const WIDE_CHAR_RANGES =
 const WIDE_CHAR_PATTERN = new RegExp(`[${WIDE_CHAR_RANGES}]`)
 
 /**
- * 禁則処理。CJKは文字間で改行できるが、どこでもよいわけではない。
+ * 改行機会。CJKは空白が無くても文字間で改行できるが、全角＝改行機会では
+ * ない。Chromeの実測では、半角カナ（4px）と絵文字（10px）は全角幅でなくても
+ * 改行機会を持つ一方、トランプのスート`♠♥♦♣`や`★→✓①`は持たない。
+ * 幅の判定（WIDE_CHAR_PATTERN）とは別の集合として扱う。
+ * 絵文字は`\p{Emoji_Presentation}`で判定する。`\p{Extended_Pictographic}`は
+ * `♠`まで含んでしまい、カード表記の行を余計に折り返す。
+ */
+const BREAK_OPPORTUNITY_PATTERN = new RegExp(
+  `[${WIDE_CHAR_RANGES}\\uFF61-\\uFF9F]|\\p{Emoji_Presentation}`,
+  'u'
+)
+
+/**
+ * 禁則処理。改行機会があっても、そこで改行してよいとは限らない。
  * 集合はChromeの既定（`line-break: auto`）を実測して確定したもの。
- * 小書き仮名（ぁっゃゅょヵヶ）と長音符（ー）は既定では改行可能なので
- * 含めない（含めると逆に行数を過大評価する）。
+ * - 小書き仮名（ぁっゃゅょヵヶ）と長音符（ー）は既定では改行可能なので
+ *   含めない（含めると逆に行数を過大評価する）
+ * - ASCIIの`:`や`,`も対象。`{日本語名}: raises`のように全角の直後へASCII
+ *   句読点が続く行がハンドログの主要な形なので、抜けると行が重なる
  */
 /** 行頭禁則: 行の先頭に来られない文字 */
 const NO_BREAK_BEFORE_PATTERN =
-  /[\u3001\u3002\uFF0C\uFF0E\u30FB\uFF1A\uFF1B\uFF1F\uFF01\uFF09\uFF3D\uFF5D\u3009\u300B\u300D\u300F\u3011\u3015\u2026\u2025\u3005\u309D\u309E\uFF61\uFF63\uFF64\uFF65\uFF9E\uFF9F%\u00B0\u2032\u2033\u2103\u00A2]/
+  /[\u3001\u3002\uFF0C\uFF0E\u30FB\uFF1A\uFF1B\uFF1F\uFF01\uFF09\uFF3D\uFF5D\u3009\u300B\u300D\u300F\u3011\u3015\u2026\u2025\u3005\u309D\u309E\uFF61\uFF63\uFF64\uFF65\uFF9E\uFF9F\u00B0\u2032\u2033\u2103\u00A2\u002C\u002E\u003A\u003B\u0021\u003F\u0029\u005D\u007D\u002F\u0025\u0027\u0022\u007C]/
 /** 行末禁則: 直後で改行できない文字（開き括弧・前置記号） */
 const NO_BREAK_AFTER_PATTERN =
-  /[\uFF08\uFF3B\uFF5B\u3008\u300A\u300C\u300E\u3010\u3014\u2018\u201C\uFFE5\uFF04\u00A3]/
+  /[\uFF08\uFF3B\uFF5B\u3008\u300A\u300C\u300E\u3010\u3014\u2018\u201C\uFFE5\uFF04\u00A3\uFF62\u0028\u005B\u007B\u0024\u002B]/
 
 const graphemeSegmenter =
   typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
@@ -596,9 +614,11 @@ const measureClusterWidth = (cluster: string, fontSize: number): number => {
   const zeroWidth = ZERO_WIDTH_CLUSTER_PATTERN.test(cluster)
   const fallbackRatio = zeroWidth
     ? 0
-    : WIDE_CHAR_PATTERN.test(cluster)
-      ? FALLBACK_WIDE_CHAR_WIDTH_RATIO
-      : FALLBACK_NARROW_CHAR_WIDTH_RATIO
+    : EMOJI_PRESENTATION_PATTERN.test(cluster)
+      ? FALLBACK_EMOJI_CHAR_WIDTH_RATIO
+      : WIDE_CHAR_PATTERN.test(cluster)
+        ? FALLBACK_WIDE_CHAR_WIDTH_RATIO
+        : FALLBACK_NARROW_CHAR_WIDTH_RATIO
   let clusterWidth = fontSize * fallbackRatio
   const context = getMeasurementContext()
   if (context) {
@@ -661,8 +681,12 @@ const breakAllowedBetween = (previous: string, next: string): boolean => {
   if (previousIsSpace || nextIsSpace) return previousIsSpace !== nextIsSpace
   if (NO_BREAK_AFTER_PATTERN.test(previous)) return false
   if (NO_BREAK_BEFORE_PATTERN.test(next)) return false
-  // CJKは空白が無くても文字間で改行できる。半角どうしは1語として繋がる
-  return WIDE_CHAR_PATTERN.test(previous) || WIDE_CHAR_PATTERN.test(next)
+  // CJK・半角カナ・絵文字は空白が無くても文字間で改行できる。
+  // 半角英数どうしは1語として繋がる
+  return (
+    BREAK_OPPORTUNITY_PATTERN.test(previous) ||
+    BREAK_OPPORTUNITY_PATTERN.test(next)
+  )
 }
 
 /**

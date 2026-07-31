@@ -512,13 +512,22 @@ canvas is unavailable (jsdom) the fallback is per cluster too: 0.6 em narrow /
 1 em wide / 0 for combining-only clusters, each deliberately the widest
 plausible value. Wrapping follows the same rules the CSS does — word
 boundaries, `break-word` only for tokens that cannot fit a line by themselves,
-hanging trailing spaces, a break opportunity between CJK characters, and
-kinsoku (no break after an opening bracket, none before closing brackets or
-ideographic punctuation) — plus the timestamp prefix's width charged to the
-first line. The kinsoku sets were derived by measuring Chrome's default
-`line-break: auto`, which notably *does* allow breaking before small kana and
-`ー`; adding those would over-count instead. Re-measure against the browser
-before changing either set.
+hanging trailing spaces, break opportunities between ideographic characters,
+and kinsoku (no break after an opening bracket, none before closing brackets or
+punctuation) — plus the timestamp prefix's width charged to the first line.
+
+Break opportunity is its own class, **not** "is full width": Chrome breaks
+between halfwidth kana (4px) and between emoji (10px), but not around `♠♥♦♣`,
+`★`, `→` or `①`. Emoji are matched with `\p{Emoji_Presentation}` —
+`\p{Extended_Pictographic}` also matches `♠`, which would shred every card
+line. The kinsoku sets likewise include ASCII (`:` `,` `)` `(` …), because
+`{Japanese name}: raises` — the shape of every action line — puts an ASCII
+colon straight after a wide character. All three sets (break opportunities,
+line-start kinsoku, line-end kinsoku) were derived by measuring Chrome's
+default `line-break: auto`, which notably *does* allow breaking before small
+kana and `ー`; adding those would over-count instead. Re-measure against the
+browser before changing any of them — the tests encode the measured
+expectations, not a specification.
 
 The available width is the log body width, minus `getScrollbarSize()`, minus
 `EntryRow`'s horizontal padding. Both subtractions are load-bearing: `EntryRow`

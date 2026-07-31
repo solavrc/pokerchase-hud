@@ -1573,6 +1573,18 @@ describe('HandLogの行高推定', () => {
       expect(countWrappedLines('あい・う', 40, measureToken)).toBe(3)
     })
 
+    it('ASCII句読点も行頭禁則として扱う', () => {
+      // '{日本語名}: raises' のように全角の直後へASCII句読点が続く行は
+      // ハンドログの主要な形。あ / い: / う の3行になる
+      expect(countWrappedLines('あい:う', 40, measureToken)).toBe(3)
+      expect(countWrappedLines('あい,う', 40, measureToken)).toBe(3)
+      expect(countWrappedLines('あい)う', 40, measureToken)).toBe(3)
+    })
+
+    it('ASCII開き括弧の直後も行末禁則として扱う', () => {
+      expect(countWrappedLines('あ(いあ', 40, measureToken)).toBe(3)
+    })
+
     it('Chrome既定で改行できる小書き仮名・長音符は禁則にしない', () => {
       // 禁則に含めると逆に行数を過大評価して余白が空く
       expect(countWrappedLines('あいっう', 40, measureToken)).toBe(2)
@@ -1583,6 +1595,29 @@ describe('HandLogの行高推定', () => {
     it('半角と全角が混在する行を実幅で数える', () => {
       // 'Seat 1: '(80px) + 全角3文字(60px) = 140px → 2行
       expect(countWrappedLines('Seat 1: 日本語', 100, measureToken)).toBe(2)
+    })
+
+    it('半角カナ・絵文字は全角幅でなくても改行機会を持つ', () => {
+      // Chrome実測: 半角カナ(4px)と絵文字(10px)は文字間で改行できるので、
+      // 前置きの残り幅を使い切ってから折り返す。1語として扱うと語ごと次行へ
+      // 送ってから割ることになり、行を1つ余計に確保してしまう
+      const width = (token: string) =>
+        [...token].reduce((total, char) => {
+          if (/\p{Emoji_Presentation}/u.test(char)) return total + 25
+          if (/[\uFF61-\uFF9F]/.test(char)) return total + 10
+          return total + (isWide(char) ? 20 : 10)
+        }, 0)
+      expect(countWrappedLines(`a ${'\uFF71'.repeat(16)}`, 60, width)).toBe(3)
+      expect(countWrappedLines(`a ${'\uD83D\uDC1F'.repeat(7)}`, 60, width)).toBe(4)
+    })
+
+    it('トランプのスートや記号は改行機会にしない', () => {
+      // Chrome実測: ♠★→①は改行機会を持たない（半角英字と同じ扱い）。
+      // 改行機会にするとカード表記の行を余計に折り返して詰めてしまう
+      expect(countWrappedLines(`a ${'\u2660'.repeat(13)}`, 60, measureToken)).toBe(4)
+      expect(countWrappedLines(`a ${'x'.repeat(13)}`, 60, measureToken)).toBe(4)
+      expect(countWrappedLines(`a ${'\u2605'.repeat(13)}`, 60, measureToken)).toBe(4)
+      expect(countWrappedLines(`a ${'\u2460'.repeat(13)}`, 60, measureToken)).toBe(4)
     })
 
     it('60文字固定の旧推定が過小評価していた幅を正しく数える', () => {
