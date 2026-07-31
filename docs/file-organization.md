@@ -75,7 +75,7 @@
     ├── background/            # Service worker modules
     │   ├── auto-sync-boot.ts        # Auth-ready auto-sync initialization (init race guard)
     │   ├── AGENTS.md                # Nested review rules (SW concurrency invariants)
-│   ├── event-ingestion.ts       # Raw Event Lake ingestion: serialized queue, durability
+    │   ├── event-ingestion.ts       # Raw Event Lake ingestion: serialized queue, durability
     │   │                            #   barrier, content dedup + sequence assignment,
     │   │                            #   session-activity transitions (201/303/308 → 309/203)
     │   ├── hud-config-sync.ts       # UIConfig broadcast to game tabs
