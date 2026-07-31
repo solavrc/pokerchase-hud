@@ -155,14 +155,14 @@ export const HERO_HAND_LABEL: Point = { l: 46.5, t: 78.9 }
 
 /** Fixed game chrome outside the table. */
 export const CHROME = {
-  /** Yellow emoji/sticker button, top right. */
-  emoji: { h: 11, l: 91.6, t: 2.5, w: 8.2 } as Rect,
+  /** Yellow emoji/sticker button, top right. A 45°-rotated square. */
+  emoji: { h: 12.5, l: 91.68, t: 3.41, w: 7.24 } as Rect,
   /** "Ctrl ガイド表示/非表示" hint. */
   guide: { h: 4, l: 84.5, t: 74.8, w: 14.5 } as Rect,
   /** ヘルプ bracket button, top right. */
   help: { h: 8.3, l: 74.4, t: 1.2, w: 14.5 } as Rect,
   /** Rotated-square menu button, top left. */
-  menu: { h: 14, l: 1.2, t: 1, w: 7.3 } as Rect,
+  menu: { h: 13.5, l: 0.5, t: 2.51, w: 7.79 } as Rect,
   /** Promo banner on the right rail. */
   promo: { h: 14, l: 92, t: 19, w: 7.5 } as Rect,
   /** Blind level row, and the ante row directly under it. */
@@ -197,7 +197,13 @@ export const ACTION_BAR = {
   plus: { h: 11.2, l: 85.6, t: 84.7, w: 6.6 } as Rect,
   preAction: { h: 15.5, l: 1.7, t: 83.3, w: 8 } as Rect,
   slider: { h: 1.5, l: 50.3, t: 93.9, w: 43.6 } as Rect,
-  sliderKnob: { h: 4.3, l: 80.5, t: 92, w: 4.5 } as Rect,
+  /**
+   * Centre of the slider's diamond handle. A centre, not a Rect: the handle is
+   * a 45°-rotated square and so must be square in PIXELS, which a Rect cannot
+   * express (its width and height are percentages of different axes). Its side
+   * lives with the other diamonds in `styles.css`.
+   */
+  sliderKnob: { l: 83.52, t: 95.08 } as Point,
 } as const
 
 /** CSS positioning for a {@link Rect}, in percent-of-viewport units. */

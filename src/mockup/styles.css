@@ -378,14 +378,30 @@ input[type="range"] {
   place-items: center;
 }
 
+/*
+ * Diamonds (menu button, emoji button, slider handle). These are squares
+ * rotated 45° in the client, so they must be square in PIXELS -- sizing them
+ * from their box's own percentages would mix two different axes and render a
+ * squashed rhombus at every window aspect. Hence `aspect-ratio: 1` plus a side
+ * in `--u`; `table-layout.ts` supplies only the centre.
+ *
+ * Sides are derived from the measured bounding boxes (a square of side s
+ * rotated 45° has an s√2 box): emoji 250x249px, menu ~269px, handle ~138px in
+ * the 2x asset = 125 / 134.5 / 69 logical px across, so s = box / √2.
+ */
 .pc-menu::before,
 .pc-emoji::before {
+  aspect-ratio: 1;
   border-radius: calc(var(--u) * 0.6);
   content: "";
-  inset: 17% 15%;
+  left: 50%;
   position: absolute;
-  transform: rotate(45deg);
+  top: 50%;
+  transform: translate(-50%, -50%) rotate(45deg);
 }
+
+.pc-menu::before { width: calc(var(--u) * 9.51); }
+.pc-emoji::before { width: calc(var(--u) * 8.84); }
 
 .pc-menu::before {
   background: linear-gradient(150deg, #454a78, #171b35 58%, #2c3157);
@@ -589,10 +605,13 @@ input[type="range"] {
 }
 
 .pc-slider__knob {
+  aspect-ratio: 1;
   background: linear-gradient(150deg, #fff0a8, #e8b62c);
   border: calc(var(--u) * 0.25) solid #fff;
+  border-radius: calc(var(--u) * 0.4);
   box-shadow: 0 0 calc(var(--u) * 1.4) rgba(255, 210, 90, 0.6);
-  transform: rotate(45deg);
+  transform: translate(-50%, -50%) rotate(45deg);
+  width: calc(var(--u) * 4.88);
 }
 
 /* --------------------------------------------------------- mock controls */

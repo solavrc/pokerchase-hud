@@ -122,7 +122,7 @@ const ActionBar = () => (
       <div className="pc-multiplier" key={label} style={rectStyle(rect)}>{label}</div>
     ))}
     <div className="pc-slider" style={rectStyle(ACTION_BAR.slider)} />
-    <div className="pc-slider__knob" style={rectStyle(ACTION_BAR.sliderKnob)} />
+    <div className="pc-slider__knob" style={pointStyle(ACTION_BAR.sliderKnob)} />
     <div className="pc-stepper pc-stepper--plus" style={rectStyle(ACTION_BAR.plus)}><span /></div>
   </div>
 )
