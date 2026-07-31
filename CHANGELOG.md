@@ -1,5 +1,18 @@
 # Changelog
 
+## [5.5.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v5.4.0...pokerchase-hud-v5.5.0) (2026-07-31)
+
+
+### Features
+
+* **ui:** テーブル人数フィルタをレンジスライダーへ ([#321](https://github.com/solavrc/pokerchase-hud/issues/321)) ([c3a7923](https://github.com/solavrc/pokerchase-hud/commit/c3a792395595cfeb817181b9304d7f260f334dfd))
+* **ui:** ポップアップ上部を簡素化する ([#320](https://github.com/solavrc/pokerchase-hud/issues/320)) ([603cd27](https://github.com/solavrc/pokerchase-hud/commit/603cd278baec6578a533c9e6617cacc44a3cc8c7))
+
+
+### Bug Fixes
+
+* **ui:** モックのベット額スライダーのはみ出しと◆のずれを直す ([#322](https://github.com/solavrc/pokerchase-hud/issues/322)) ([21521aa](https://github.com/solavrc/pokerchase-hud/commit/21521aa8a699ad354c68f60e6c7ec619cadd60bf))
+
 ## [5.4.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v5.3.1...pokerchase-hud-v5.4.0) (2026-07-31)
 
 
