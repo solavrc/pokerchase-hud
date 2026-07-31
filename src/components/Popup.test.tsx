@@ -1462,11 +1462,32 @@ describe('Popup', () => {
       )
     })
 
-    it('既定構成（module-levelのdefaultStatDisplayConfigs）を汚染しない', async () => {
-      // mergeStatDisplayConfigsは「保存済み設定に無い新規統計」について
-      // defaultStatDisplayConfigsの要素をそのまま返す（コピーしない）。
-      // ここではpfrを保存済み設定から抜いて、その共有参照が
-      // pendingStatDisplayConfigsに入る状態を作る。
+    it('既定構成（module-levelのdefaultStatDisplayConfigs）を汚染しない（保存済みoptionsが無い初回表示）', async () => {
+      // pendingStatDisplayConfigsにdefaultStatDisplayConfigsの要素が
+      // そのまま入る現存唯一の経路: 保存済みoptionsが無いとstateの初期値が
+      // module-levelの定数そのものになる。その場書き換え実装では、
+      // 「適用」していない並べ替えが定数に残り、同一JSコンテキスト内で
+      // 以降に呼ばれるmergeStatDisplayConfigs等が汚れた既定値でマージする。
+      syncData = { uiConfig: DEFAULT_UI_CONFIG }
+      const before = defaultStatDisplayConfigs.map(config => ({ ...config }))
+
+      render(<Popup />)
+      await waitForAsyncOperations()
+
+      // 往復させるとその場書き換え実装でもorderが元に戻ってしまうため片道で検証する
+      await userEvent.click(orderButtonsFor('HAND').down)
+
+      // 並べ替えは保留中のstateにのみ反映される
+      expect(displayedStatNames().slice(0, 3)).toEqual(['VPIP', 'HAND', 'VPIP·F'])
+      expect(screen.getByText('(未適用の変更があります)')).toBeInTheDocument()
+      expect(defaultStatDisplayConfigs).toEqual(before)
+    })
+
+    it('既定構成（module-levelのdefaultStatDisplayConfigs）を汚染しない（保存済み設定に欠けがある場合）', async () => {
+      // 保存済み設定に無い項目（pfr）をmergeStatDisplayConfigsが補う経路。
+      // mergeStatDisplayConfigs自体も複製を返すようになったため現在この経路で
+      // 共有参照は入らないが、二重の防御（マージ側の複製・並べ替え側の複製）の
+      // どちらか一方が外れても定数が汚れないことをUI側から独立に保証する。
       syncData.options.filterOptions.statDisplayConfigs =
         defaultStatDisplayConfigs.filter(config => config.id !== 'pfr')
       const before = defaultStatDisplayConfigs.map(config => ({ ...config }))
@@ -1474,8 +1495,6 @@ describe('Popup', () => {
       render(<Popup />)
       await waitForAsyncOperations()
 
-      // 共有参照であるpfrを巻き込む並べ替え（往復させると
-      // その場書き換え実装でもorderが元に戻ってしまうため片道で検証する）
       await userEvent.click(orderButtonsFor('PFR').up)
 
       expect(defaultStatDisplayConfigs).toEqual(before)
