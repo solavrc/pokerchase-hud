@@ -2,6 +2,7 @@ import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import HandLog from './HandLog'
 import { HandLogEntry, HandLogEntryType, HandLogConfig, DEFAULT_HAND_LOG_CONFIG } from '../types/hand-log'
+import { DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS } from '../utils/ui-config-storage'
 
 // Mock react-window v2 API
 jest.mock('react-window', () => {
@@ -407,6 +408,49 @@ describe('HandLog', () => {
     expect(logContainer.style.height).toBe('100px')
   })
 
+  it('最小高さより狭いviewportでは正規化時だけ高さを画面内へ収める', () => {
+    setViewport(320, 120)
+    const { container } = render(<HandLog entries={mockEntries} scale={2} />)
+    const logContainer = container.firstChild as HTMLElement
+
+    expect(logContainer.style.top).toBe('0px')
+    expect(logContainer.style.height).toBe('60px')
+    expect(logContainer.style.transform).toContain('scale(2)')
+    expect(screen.getByTestId('hand-log-resize-corner')).toBeInTheDocument()
+  })
+
+  it('layout読込timeout後も同じloadの権威的応答を適用する', () => {
+    jest.useFakeTimers()
+    const loadCallbacks: Array<(response: unknown) => void> = []
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceHandLogLayout') {
+        loadCallbacks.push(callback)
+      } else {
+        callback?.({ success: true })
+      }
+    })
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+
+    act(() => {
+      jest.advanceTimersByTime(DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS)
+    })
+    expect(logContainer.style.left).toBe('614px')
+
+    act(() => {
+      loadCallbacks[0]!({
+        success: true,
+        layout: { left: 40, top: 30, width: 500, height: 200 },
+      })
+    })
+
+    expect(logContainer.style.left).toBe('40px')
+    expect(logContainer.style.top).toBe('30px')
+    expect(logContainer.style.width).toBe('500px')
+    expect(logContainer.style.height).toBe('200px')
+    jest.useRealTimers()
+  })
+
   it('旧scaleに束縛された非同期load結果を新scaleのlayoutへ適用しない', () => {
     const loadCallbacks: Array<(response: unknown) => void> = []
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
@@ -697,6 +741,30 @@ describe('HandLog', () => {
     expect(logContainer.style.top).toBe('60px')
     expect(logContainer.style.width).toBe('520px')
     expect(logContainer.style.height).toBe('240px')
+  })
+
+  it('操作中のresetはpending scaleを採用して既定layoutを正規化する', () => {
+    const { container, rerender } = render(
+      <HandLog entries={mockEntries} scale={1} />
+    )
+    const logContainer = container.firstChild as HTMLElement
+
+    fireEvent.mouseDown(screen.getByTestId('hand-log-header'), {
+      button: 0,
+      clientX: 700,
+      clientY: 550,
+    })
+    rerender(<HandLog entries={mockEntries} scale={2} />)
+    expect(logContainer.style.transform).toContain('scale(1)')
+
+    fireEvent(window, new CustomEvent('resetHandLogLayout'))
+
+    expect(logContainer.style.left).toBe('214px')
+    expect(logContainer.style.top).toBe('433px')
+    expect(logContainer.style.width).toBe(`${DEFAULT_HAND_LOG_CONFIG.width}px`)
+    expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
+    expect(logContainer.style.transform).toContain('scale(2)')
+    expect(savedLayoutCalls()).toHaveLength(0)
   })
 
   it('進行中のドラッグを古い保存済みlayout配信で上書きしない', () => {

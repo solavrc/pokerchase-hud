@@ -111,9 +111,11 @@ const normalizeHandLogLayout = (
   environment: HandLogEnvironment
 ): HandLogLayout => {
   const { scale, viewportWidth, viewportHeight } = environment
-  const height = Math.min(
+  const maximumHeight = viewportHeight / scale
+  const height = clamp(
     layout.height,
-    Math.max(HAND_LOG_MIN_HEIGHT, viewportHeight / scale)
+    Math.min(HAND_LOG_MIN_HEIGHT, maximumHeight),
+    maximumHeight
   )
   const renderedWidth = layout.width * scale
   const renderedHeight = height * scale
@@ -231,7 +233,7 @@ const transitionHandLogLayout = (
         return { state }
       }
       if (!action.layout) {
-        return { state: { ...state, activeLoad: null } }
+        return { state }
       }
       if (
         state.interaction.phase === 'interacting' &&
@@ -280,16 +282,19 @@ const transitionHandLogLayout = (
       }
     }
 
-    case 'reset':
+    case 'reset': {
+      const environment = state.pendingEnvironment ?? state.environment
       return {
         state: {
           ...state,
-          layout: createDefaultHandLogLayout(state.environment),
+          layout: createDefaultHandLogLayout(environment),
+          environment,
           interaction: { phase: 'idle' },
           pendingEnvironment: null,
           activeLoad: null,
         },
       }
+    }
 
     case 'interactionStarted':
       if (state.interaction.phase === 'interacting') return { state }
