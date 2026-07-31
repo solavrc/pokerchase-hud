@@ -293,7 +293,13 @@ describe('message-router device-local UI layout', () => {
     })
   })
 
-  it('倍率など配置以外の端末ローカル設定は消さない', async () => {
+  it('端末ローカルの倍率も消して既定倍率を全ゲームタブへ配信する', async () => {
+    // 「既定の見た目へ戻す」操作なので倍率も対象（sola指定）。倍率を残すと
+    // 大きい倍率のままパネルが既定位置へ戻り、既定位置が前提とする余白に
+    // 収まらない状態が残る。
+    ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => {
+      callback([{ id: 42 }])
+    })
     await chrome.storage.local.set({
       [UI_SCALE_STORAGE_KEY]: 1.4,
       [hudPositionStorageKey(0)]: { top: '12%', left: '20%' },
@@ -306,7 +312,16 @@ describe('message-router device-local UI layout', () => {
 
     expect(resetResponse).toHaveBeenCalledWith({ success: true })
     expect(await chrome.storage.local.get(UI_SCALE_STORAGE_KEY)).toEqual({
-      [UI_SCALE_STORAGE_KEY]: 1.4,
+      [UI_SCALE_STORAGE_KEY]: undefined,
+    })
+    // ストレージを消すだけでは開いているタブのHUDは縮まない。倍率の配信経路は
+    // 既存のupdateDeviceUIScaleを使う（resetUILayoutへ相乗りさせない）。
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      action: 'resetUILayout',
+    })
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      action: 'updateDeviceUIScale',
+      scale: DEFAULT_UI_CONFIG.scale,
     })
   })
 
@@ -378,7 +393,8 @@ describe('message-router device-local UI layout', () => {
       success: false,
       error: 'Superseded by newer hand log layout',
     })
-    expect(chrome.tabs.query).toHaveBeenCalledTimes(2)
+    // reset は resetUILayout と updateDeviceUIScale の2配信、layout保存が1配信
+    expect(chrome.tabs.query).toHaveBeenCalledTimes(3)
     expect(saveResponse).toHaveBeenCalledWith({ success: true })
     expect(await chrome.storage.local.get(HAND_LOG_LAYOUT_STORAGE_KEY)).toEqual({
       [HAND_LOG_LAYOUT_STORAGE_KEY]: newLayout,

@@ -1,5 +1,6 @@
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import type {
   ChromeMessage,
   ImportStatusMessage,
@@ -466,21 +467,37 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       )
       return true
     } else if (request.action === 'resetDeviceUILayout') {
-      // HUDパネル位置とハンドログを1回のremoveでまとめて消す。片方だけ成功して
-      // 片方が残る中間状態を作らないため、キーを分けて2回呼ばない。
+      // ハンドログ・HUDパネル位置・倍率を1回のremoveでまとめて消す。片方だけ
+      // 成功して片方が残る中間状態を作らないため、キーを分けて複数回呼ばない。
+      // 倍率も対象なのは、このボタンが「既定の見た目へ戻す」操作だから（sola）。
+      // 倍率を残すと、大きい倍率のままパネルが既定位置へ戻り、既定位置が前提と
+      // する余白（ネームプレートの上など）に収まらない状態が残ってしまう。
       // ハンドログ用のキューに載せるのは、同時に走りうる
       // set/getDeviceHandLogLayoutと順序を保つため。
       enqueueHandLogLayoutWrite(
         callback => chrome.storage.local.remove(
-          [HAND_LOG_LAYOUT_STORAGE_KEY, ...HUD_POSITION_STORAGE_KEYS],
+          [
+            HAND_LOG_LAYOUT_STORAGE_KEY,
+            ...HUD_POSITION_STORAGE_KEYS,
+            UI_SCALE_STORAGE_KEY,
+          ],
           callback
         ),
         sendResponse,
         'Failed to reset UI layout',
-        complete => broadcastToGameTabs(
-          { action: 'resetUILayout' },
-          complete
-        )
+        complete => {
+          // 倍率はresetUILayoutとは別経路で反映する。ゲームタブ側の倍率は
+          // App.tsxがuiConfig.scaleとして持っており、既存のscale配信
+          // （updateDeviceUIScale）がその唯一の更新経路だから。
+          // resetUILayoutにscaleを相乗りさせると、HandLog/useDraggableの
+          // リセットとscale更新が1つのメッセージに同居して責務が混ざる。
+          broadcastToGameTabs({ action: 'resetUILayout' }, () => {
+            broadcastToGameTabs({
+              action: 'updateDeviceUIScale',
+              scale: DEFAULT_UI_CONFIG.scale,
+            }, complete)
+          })
+        }
       )
       return true
     } else if (request.action === 'exportData') {

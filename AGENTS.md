@@ -751,19 +751,25 @@ v3 added composite indexes for player-specific queries. v6 changes the Raw Lake 
   `setDeviceUIScale`, `setDeviceHudPosition`, `getDeviceHandLogLayout`,
   `setDeviceHandLogLayout`, and `resetDeviceUILayout`; content scripts do
   not access the restricted local area directly.
-- **Layout reset is one operation over both surfaces**: the popup's
-  「位置とサイズをリセット」 (`UIScaleSection.tsx`) sends a single
-  `resetDeviceUILayout`, and the background removes `handLogLayout` *and*
-  every `hudPosition_*` key in one `chrome.storage.local.remove` call so the
-  two cannot diverge. Keys come from `HUD_POSITION_STORAGE_KEYS`
+- **Layout reset is one operation over every device-local appearance key**:
+  the popup's 「位置とサイズをリセット」 (`UIScaleSection.tsx`) sends a single
+  `resetDeviceUILayout`, and the background removes `handLogLayout`, every
+  `hudPosition_*` key, *and* `uiScale` in one `chrome.storage.local.remove`
+  call so they cannot diverge. Scale is in scope because the button means
+  "back to the default look" (sola): leaving a large scale behind returns the
+  panels to default positions computed for a size they no longer are, so the
+  hand log's default slot above the seat plate stops fitting. Keys come from `HUD_POSITION_STORAGE_KEYS`
   (`ui-config-storage.ts`), built from the valid position ids rather than by
   prefix-scanning `storage.local`, which also holds unrelated keys. Clearing
   storage alone does not move anything on an open tab — neither `HandLog` nor
   `useDraggable` watches storage — so the background also broadcasts one
   `resetUILayout` message that `content_script.ts` fans out into the
   `resetHandLogLayout` and `resetHudPositions` window events those two
-  subscribe to. Device-local *scale* (`uiScale`) is deliberately not cleared:
-  it is a readability preference, not a placement.
+  subscribe to. Scale rides its own existing channel
+  (`updateDeviceUIScale`) rather than being folded into `resetUILayout`:
+  `App.tsx` already owns scale as `uiConfig.scale` and that broadcast is its
+  only update path. The popup does not subscribe to either broadcast, so
+  `UIScaleSection` resets its own displayed scale from the success response.
 
 #### Config Interfaces
 
