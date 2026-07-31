@@ -10,7 +10,7 @@ import { DEFAULT_UI_CONFIG, type UIConfig } from '../../types/hand-log'
 import { formatShortcut, shortcutFromKeyboardEvent } from '../../utils/keyboard-shortcut'
 import {
   saveLocalUIScale,
-  resetHandLogLayout,
+  resetUILayout,
   saveSyncedUIConfig,
   saveSyncedUIConfigPatch,
 } from '../../utils/ui-config-storage'
@@ -178,11 +178,11 @@ export const UIScaleSection = ({
         <Button
           size="small"
           variant="text"
-          title="ハンドログの位置とサイズをリセット"
+          title="HUDパネルとハンドログの位置とサイズを既定へ戻す"
           onClick={() => {
             // Persistence and live-tab delivery both run in the background so
             // closing the action popup cannot interrupt the reset.
-            resetHandLogLayout()
+            resetUILayout()
           }}
           sx={{
             ml: 'auto',

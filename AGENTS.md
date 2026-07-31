@@ -481,7 +481,33 @@ persistence in one component-local state machine. The machine's concrete
 active pointer interaction, rejects layout-load callbacks bound to an older
 request or scale, and emits at most one persistence effect from the common
 interaction exit. Do not add another effect/ref that mutates or saves hand-log
-coordinates outside that transition outlet. There is no header bar: the
+coordinates outside that transition outlet. **The `reset` action is the one
+input that must not trust the machine's own `environment`**: it carries a
+freshly read `readHandLogEnvironment()` and adopts it. Reset exists to rescue a
+panel the user cannot find, and a stale cached viewport is one of the ways a
+panel gets lost — computing the default *and* the in-viewport clamp from the
+same stale value cannot detect the mismatch, so the rescue silently reproduces
+it. For the same reason the default position moved to the top-left area from
+the former right/bottom-anchored `viewportWidth - margin - width*scale`: that
+formula is only ever as correct as the viewport reading behind it, and a
+too-large reading put the panel outside the window (real report: window at half
+the display, reset made the log vanish, maximizing revealed it). It also landed
+on the *outermost* point of the coordinate box — the first place to fall out of
+view if the reference frame is off at all — wedged between the bottom seat HUD
+panels and the action-button strip. `left` is now a fixed 10px; `top` stacks the
+panel *upward* from the top-left seat plate
+(`viewportHeight * HAND_LOG_SEAT_PLATE_TOP_ROW_TOP_RATIO`, measured percentages
+in `src/mockup/table-layout.ts`'s `SEATS[].plate`), clamped to
+`[0, HAND_LOG_DEFAULT_TOP_MAX]`. Two constraints fix that placement (sola):
+**never cover a name plate** — they carry the chip stacks, so even a partial
+overlap hides how much a player has left — and never take the apparently-free
+band *below* that plate, which is where `Hud.tsx`'s `SEAT_POSITIONS[2]`
+(top 35%) puts player B's own HUD panel. Overlapping the menu is fine.
+Anchoring the panel's bottom to the plate rather than its top to a fixed offset
+is what fixes the concession order as the panel grows with `scale`:
+plate > SB·BB/ante > menu. The `[0, MAX]` clamp is the safety property, not a
+detail: it caps how far a wrong viewport reading can displace the default.
+There is no header bar: the
 upper-right grip (16px, `hand-log-move-grip`) is the move handle and the
 lower-right corner is resize-only, so the whole panel height belongs to the log
 body. The grip is deliberately upper-*right*: it overlays the log body, and a
@@ -723,8 +749,21 @@ v3 added composite indexes for player-specific queries. v6 changes the Raw Lake 
   (`pokerChaseServiceState` — playerId, latestEvtDeal, session). Layout access
   is routed through the trusted background via `getDeviceUILayout`,
   `setDeviceUIScale`, `setDeviceHudPosition`, `getDeviceHandLogLayout`,
-  `setDeviceHandLogLayout`, and `resetDeviceHandLogLayout`; content scripts do
+  `setDeviceHandLogLayout`, and `resetDeviceUILayout`; content scripts do
   not access the restricted local area directly.
+- **Layout reset is one operation over both surfaces**: the popup's
+  「位置とサイズをリセット」 (`UIScaleSection.tsx`) sends a single
+  `resetDeviceUILayout`, and the background removes `handLogLayout` *and*
+  every `hudPosition_*` key in one `chrome.storage.local.remove` call so the
+  two cannot diverge. Keys come from `HUD_POSITION_STORAGE_KEYS`
+  (`ui-config-storage.ts`), built from the valid position ids rather than by
+  prefix-scanning `storage.local`, which also holds unrelated keys. Clearing
+  storage alone does not move anything on an open tab — neither `HandLog` nor
+  `useDraggable` watches storage — so the background also broadcasts one
+  `resetUILayout` message that `content_script.ts` fans out into the
+  `resetHandLogLayout` and `resetHudPositions` window events those two
+  subscribe to. Device-local *scale* (`uiScale`) is deliberately not cleared:
+  it is a readability preference, not a placement.
 
 #### Config Interfaces
 

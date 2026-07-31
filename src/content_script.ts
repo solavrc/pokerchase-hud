@@ -320,8 +320,12 @@ const messageHandlers: Record<string, (message: ChromeMessage) => void> = {
       }))
     }
   },
-  resetHandLogLayout: () => {
+  // 配信は1メッセージ、購読は2コンポーネント。HandLogとuseDraggableは
+  // 互いに独立した状態機械なので、片方だけを再マウントさせずに
+  // それぞれのイベントで既定へ戻させる。
+  resetUILayout: () => {
     window.dispatchEvent(new CustomEvent(EVENTS.RESET_HAND_LOG_LAYOUT))
+    window.dispatchEvent(new CustomEvent(EVENTS.RESET_HUD_POSITIONS))
   },
   updateHandLogLayout: (message) => {
     if ('layout' in message) {

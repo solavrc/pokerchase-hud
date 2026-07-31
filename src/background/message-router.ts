@@ -18,6 +18,7 @@ import { applyUpdateNow } from './update-manager'
 import { acknowledgeWhatsNew } from './whats-new-badge'
 import {
   HAND_LOG_LAYOUT_STORAGE_KEY,
+  HUD_POSITION_STORAGE_KEYS,
   hudPositionStorageKey,
   isValidHandLogLayout,
   isValidHudPosition,
@@ -464,16 +465,20 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         )
       )
       return true
-    } else if (request.action === 'resetDeviceHandLogLayout') {
+    } else if (request.action === 'resetDeviceUILayout') {
+      // HUDパネル位置とハンドログを1回のremoveでまとめて消す。片方だけ成功して
+      // 片方が残る中間状態を作らないため、キーを分けて2回呼ばない。
+      // ハンドログ用のキューに載せるのは、同時に走りうる
+      // set/getDeviceHandLogLayoutと順序を保つため。
       enqueueHandLogLayoutWrite(
         callback => chrome.storage.local.remove(
-          HAND_LOG_LAYOUT_STORAGE_KEY,
+          [HAND_LOG_LAYOUT_STORAGE_KEY, ...HUD_POSITION_STORAGE_KEYS],
           callback
         ),
         sendResponse,
-        'Failed to reset hand log layout',
+        'Failed to reset UI layout',
         complete => broadcastToGameTabs(
-          { action: 'resetHandLogLayout' },
+          { action: 'resetUILayout' },
           complete
         )
       )

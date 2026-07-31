@@ -51,21 +51,21 @@ describe('UIScaleSection', () => {
       .toHaveValue('Shift + H')
   })
 
-  it('ハンドログの位置とサイズのリセットを永続backgroundへ委譲する', async () => {
+  it('HUDとハンドログの位置とサイズのリセットを永続backgroundへ委譲する', async () => {
     const user = userEvent.setup()
     render(<UIScaleSection {...defaultProps} />)
 
     await user.click(screen.getByRole('button', { name: '位置とサイズをリセット' }))
 
     expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
-      { action: 'resetDeviceHandLogLayout' },
+      { action: 'resetDeviceUILayout' },
       expect.any(Function)
     )
     expect(mockTabsQuery).not.toHaveBeenCalled()
     expect(mockTabsSendMessage).not.toHaveBeenCalled()
   })
 
-  it('ハンドログlayoutの永続削除に失敗した場合は表示だけをリセットしない', async () => {
+  it('UI配置の永続削除に失敗した場合は表示だけをリセットしない', async () => {
     const user = userEvent.setup()
     mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
       callback({ success: false, error: 'remove failed' })
@@ -75,7 +75,7 @@ describe('UIScaleSection', () => {
     await user.click(screen.getByRole('button', { name: '位置とサイズをリセット' }))
 
     expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
-      { action: 'resetDeviceHandLogLayout' },
+      { action: 'resetDeviceUILayout' },
       expect.any(Function)
     )
     expect(mockTabsSendMessage).not.toHaveBeenCalled()
