@@ -158,8 +158,17 @@ const Mockup = () => {
    * would look applied while the HUD under review never moved.
    */
   const [uiConfig, setUIConfig] = useState<UIConfig>(DEFAULT_UI_CONFIG)
-  const [statDisplayConfigs, setStatDisplayConfigs] =
-    useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
+  /*
+   * Cloned, never the shared array. `Popup` seeds its own state from the same
+   * exported `defaultStatDisplayConfigs` and its reorder handler swaps
+   * `config.order` IN PLACE, so holding those objects here would let a
+   * not-yet-applied reorder reach the HUD the next time `orderedStats`
+   * recomputes. Production cannot hit this -- popup and content script are
+   * separate JS contexts -- but the mock runs both in one page.
+   */
+  const [statDisplayConfigs, setStatDisplayConfigs] = useState<StatDisplayConfig[]>(
+    () => defaultStatDisplayConfigs.map((config) => ({ ...config })),
+  )
 
   useEffect(() => {
     const readConfig = () => {
@@ -167,7 +176,11 @@ const Mockup = () => {
         chrome.storage.local.get(UI_SCALE_STORAGE_KEY, (local: Record<string, any>) => {
           setUIConfig(mergeUIConfigWithLocalScale(synced.uiConfig, local[UI_SCALE_STORAGE_KEY]))
           const configs = synced.options?.filterOptions?.statDisplayConfigs
-          if (configs) setStatDisplayConfigs(configs)
+          // Cloned for the same reason as the initial state above: the mock's
+          // storage hands back the very objects the popup put in.
+          if (configs) {
+            setStatDisplayConfigs(configs.map((config: StatDisplayConfig) => ({ ...config })))
+          }
         })
       })
     }
