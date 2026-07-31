@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useLayoutEffect, useRef, CSSProperties, useCallback, useMemo, memo } from 'react'
-import { List, useListRef } from 'react-window'
+import { List, useListRef, getScrollbarSize } from 'react-window'
 import {
   HandLogEntry,
   HandLogEntryType,
@@ -41,7 +41,7 @@ const HAND_LOG_ENTRY_PADDING_Y = 1
 const HAND_LOG_ENTRY_LINE_HEIGHT = 1.2
 const HAND_LOG_TIMESTAMP_FONT_SIZE_OFFSET = 2
 const HAND_LOG_TIMESTAMP_MARGIN_RIGHT = 8
-const HAND_LOG_TIMESTAMP_TEXT_LENGTH = '[00:00:00]'.length
+const HAND_LOG_TIMESTAMP_TEXT = '[00:00:00]'
 
 type HandLogInteractionMode = 'move' | 'resize'
 
@@ -504,114 +504,263 @@ const formatTimestamp = (timestamp: number): string => {
 
 /**
  * canvas計測が使えない環境（jsdom等）で使う1文字送り幅のem比。
- * 想定フォントはMonaco / Courier New / 汎用monospaceが約0.6、Consolasが約0.55。
- * その中で最も広い値を既定にして、行数を過小評価しない側へ倒す
- * （過大評価は行間が空くだけだが、過小評価は行の重なり＝欠落になる）。
+ * 半角: 想定フォントはMonaco / Courier New / 汎用monospaceが約0.6、
+ * Consolasが約0.55。その中で最も広い値を既定にして、行数を過小評価しない側へ
+ * 倒す（過大評価は行間が空くだけだが、過小評価は行の重なり＝欠落になる）。
+ * 全角: 日本語フォントは等幅1em。
  */
-export const FALLBACK_MONOSPACE_CHAR_WIDTH_RATIO = 0.6
-const CHAR_WIDTH_MEASUREMENT_SAMPLE = '0'.repeat(32)
-const MIN_PLAUSIBLE_CHAR_WIDTH_RATIO = 0.3
-const MAX_PLAUSIBLE_CHAR_WIDTH_RATIO = 1
-const charWidthCache = new Map<string, number>()
+export const FALLBACK_NARROW_CHAR_WIDTH_RATIO = 0.6
+export const FALLBACK_WIDE_CHAR_WIDTH_RATIO = 1
+/** 絵文字は全角より広い（実測: 8pxで`🐟`=10px） */
+export const FALLBACK_EMOJI_CHAR_WIDTH_RATIO = 1.25
+const EMOJI_PRESENTATION_PATTERN = /\p{Emoji_Presentation}/u
+const MIN_PLAUSIBLE_CHAR_WIDTH_RATIO = 0.1
+const MAX_PLAUSIBLE_CHAR_WIDTH_RATIO = 3
 
 /**
- * 実フォント・実フォントサイズでの1文字送り幅(px)をcanvasで実測する。
- *
- * 折り返し幅の推定はDOMと同じフォント指定で測らないと、等幅フォントでも
- * フォントごとの文字幅比の違い（Consolas 0.55 / Monaco・Courier New 0.6）が
- * そのまま行数の誤差になる。measureTextはレイアウトと同じフォント解決を通り、
- * 小さいフォントサイズ特有のラスタライズ差も込みで測れる。
- * canvasが無い環境（jsdom等）は保守的な比率へフォールバックする。
+ * 全角として扱うコードポイント（East Asian Wide / Fullwidth 相当）。
+ * 2つの用途がある:
+ * 1. canvasが無い環境での幅フォールバック（半角0.6em / 全角1em）
+ * 2. 折り返し機会の判定。CJKは空白が無くても文字間で改行できる
+ * トランプのスート（♠♥♦♣）は等幅フォント側に収録されていて半角送りなので、
+ * ここには含めない（実測でConsolas/Monaco系はASCIIと同じ送り幅）。
  */
-export const measureMonospaceCharWidth = (
-  fontSize: number,
-  fontFamily: string = HAND_LOG_FONT_FAMILY
-): number => {
-  const font = `${fontSize}px ${fontFamily}`
-  const cached = charWidthCache.get(font)
-  if (cached !== undefined) return cached
+const WIDE_CHAR_RANGES =
+  'ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿' +
+  'ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦'
+// `\p{Ideographic}`で補助平面（CJK拡張B以降。`\u{20BB7}`など人名に出る）も
+// 拾う。BMPの範囲指定だけでは半角扱いになり、幅も改行機会も取りこぼす。
+const WIDE_CHAR_PATTERN = new RegExp(
+  `[${WIDE_CHAR_RANGES}]|\\p{Ideographic}`,
+  'u'
+)
 
-  let charWidth = fontSize * FALLBACK_MONOSPACE_CHAR_WIDTH_RATIO
+/**
+ * 改行機会。CJKは空白が無くても文字間で改行できるが、全角＝改行機会では
+ * ない。Chromeの実測では、半角カナ（4px）と絵文字（10px）は全角幅でなくても
+ * 改行機会を持つ一方、トランプのスート`♠♥♦♣`や`★→✓①`は持たない。
+ * 幅の判定（WIDE_CHAR_PATTERN）とは別の集合として扱う。
+ * 絵文字は`\p{Emoji_Presentation}`で判定する。`\p{Extended_Pictographic}`は
+ * `♠`まで含んでしまい、カード表記の行を余計に折り返す。
+ */
+const BREAK_OPPORTUNITY_PATTERN = new RegExp(
+  `[${WIDE_CHAR_RANGES}\\uFF61-\\uFF9F]|\\p{Ideographic}|\\p{Emoji_Presentation}`,
+  'u'
+)
+
+/**
+ * 禁則処理。改行機会があっても、そこで改行してよいとは限らない。
+ * 集合はChromeの既定（`line-break: auto`）を実測して確定したもの。
+ * - 小書き仮名（ぁっゃゅょヵヶ）と長音符（ー）は既定では改行可能なので
+ *   含めない（含めると逆に行数を過大評価する）
+ * - ASCIIの`:`や`,`も対象。`{日本語名}: raises`のように全角の直後へASCII
+ *   句読点が続く行がハンドログの主要な形なので、抜けると行が重なる
+ */
+/** 行頭禁則: 行の先頭に来られない文字 */
+const NO_BREAK_BEFORE_PATTERN =
+  /[\u3001\u3002\uFF0C\uFF0E\u30FB\uFF1A\uFF1B\uFF1F\uFF01\uFF09\uFF3D\uFF5D\u3009\u300B\u300D\u300F\u3011\u3015\u2026\u2025\u3005\u309D\u309E\uFF61\uFF63\uFF64\uFF65\uFF9E\uFF9F\u00B0\u2032\u2033\u2103\u00A2\u002C\u002E\u003A\u003B\u0021\u003F\u0029\u005D\u007D\u002F\u0025\u0027\u0022\u007C]/
+/** 行末禁則: 直後で改行できない文字（開き括弧・前置記号） */
+const NO_BREAK_AFTER_PATTERN =
+  /[\uFF08\uFF3B\uFF5B\u3008\u300A\u300C\u300E\u3010\u3014\u2018\u201C\uFFE5\uFF04\u00A3\uFF62\u0028\u005B\u007B\u0024\u002B]/
+
+/**
+ * CSSが改行機会として扱う空白。`\s`はNBSP(U+00A0)・NARROW NBSP(U+202F)・
+ * FIGURE SPACE(U+2007)まで真になるが、これらはUAX #14のGL（改行禁止）で、
+ * CSSは前後で改行しない。空白扱いすると存在しない改行機会を作るうえ、
+ * 行末でぶら下げて幅も落としてしまう。
+ */
+const BREAKABLE_SPACE_PATTERN =
+  /^[ \t\n\r\f\v\u1680\u2000-\u2006\u2008-\u200A\u2028\u2029\u205F\u3000]/
+
+const graphemeSegmenter =
+  typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
+    ? new Intl.Segmenter('ja', { granularity: 'grapheme' })
+    : null
+
+/**
+ * 書記素クラスタ単位に分割する。コードポイント単位で測ると、結合文字を含む
+ * 名前（分解形の`ば`など）を基底文字＋結合文字の2文字分として数えてしまい、
+ * DOMが1グリフとして描く実幅と合わない。
+ */
+const splitGraphemes = (text: string): string[] =>
+  graphemeSegmenter
+    ? Array.from(graphemeSegmenter.segment(text), segment => segment.segment)
+    : Array.from(text)
+
+/** 結合文字・ゼロ幅文字だけのクラスタ（送り幅0が正しい） */
+const ZERO_WIDTH_CLUSTER_PATTERN = /^[\p{M}\u200B-\u200D\u2060\uFEFF]+$/u
+
+const charWidthCache = new Map<string, number>()
+
+const getMeasurementContext = (): CanvasRenderingContext2D | null => {
   try {
     // jsdomはCanvasRenderingContext2D自体を定義しない。getContextを呼ぶと
     // "Not implemented"を吐くので、型の有無で先に判定して呼ばない。
     if (
-      typeof document !== 'undefined' &&
-      typeof CanvasRenderingContext2D !== 'undefined'
-    ) {
-      const context = document.createElement('canvas').getContext('2d')
-      if (context) {
-        context.font = font
-        const measured =
-          context.measureText(CHAR_WIDTH_MEASUREMENT_SAMPLE).width /
-          CHAR_WIDTH_MEASUREMENT_SAMPLE.length
-        const ratio = measured / fontSize
-        if (
-          Number.isFinite(ratio) &&
-          ratio >= MIN_PLAUSIBLE_CHAR_WIDTH_RATIO &&
-          ratio <= MAX_PLAUSIBLE_CHAR_WIDTH_RATIO
-        ) {
-          charWidth = measured
-        }
-      }
-    }
+      typeof document === 'undefined' ||
+      typeof CanvasRenderingContext2D === 'undefined'
+    ) return null
+    return document.createElement('canvas').getContext('2d')
   } catch {
-    // 計測不能ならフォールバック比率のまま
+    return null
   }
-  charWidthCache.set(font, charWidth)
-  return charWidth
+}
+
+/**
+ * 実フォント・実フォントサイズでの書記素クラスタ1つぶんの送り幅(px)を
+ * canvasで実測する。
+ *
+ * クラスタごとに測るのが要点。等幅フォント指定でも、日本語のように指定フォント
+ * に収録されていない文字は約1emの日本語フォントへフォールバックして描画される
+ * ため、ASCII基準の一律幅で数えると行数を最大1.7倍ほど過小評価する。逆に結合
+ * 文字を基底文字と別々に測ると、DOMが1グリフに整形する名前を2文字分として
+ * 数えて過大評価する。measureTextはレイアウトと同じフォント解決・整形を通るので
+ * クラスタ単位ならどちらも実幅どおりになる（実測: 8pxで`0`=4.8px / `あ`=8px）。
+ * canvasが無い環境（jsdom等）は半角/全角の保守的な比率で代替する。
+ */
+const measureClusterWidth = (cluster: string, fontSize: number): number => {
+  const key = `${fontSize}|${cluster}`
+  const cached = charWidthCache.get(key)
+  if (cached !== undefined) return cached
+
+  // 結合文字・ゼロ幅文字だけのクラスタは送り幅0が正しい。canvasが0を返しても
+  // 「壊れた計測」とみなさず、そのまま採用する
+  const zeroWidth = ZERO_WIDTH_CLUSTER_PATTERN.test(cluster)
+  const fallbackRatio = zeroWidth
+    ? 0
+    : EMOJI_PRESENTATION_PATTERN.test(cluster)
+      ? FALLBACK_EMOJI_CHAR_WIDTH_RATIO
+      : WIDE_CHAR_PATTERN.test(cluster)
+        ? FALLBACK_WIDE_CHAR_WIDTH_RATIO
+        : FALLBACK_NARROW_CHAR_WIDTH_RATIO
+  let clusterWidth = fontSize * fallbackRatio
+  const context = getMeasurementContext()
+  if (context) {
+    context.font = `${fontSize}px ${HAND_LOG_FONT_FAMILY}`
+    const measured = context.measureText(cluster).width
+    const ratio = measured / fontSize
+    // 妥当性の下限は、全文字0pxを返すような壊れた計測環境で1行あたりの文字数が
+    // 無限になるのを防ぐためのもの。0が正しいクラスタには適用しない
+    if (
+      Number.isFinite(ratio) &&
+      ratio <= MAX_PLAUSIBLE_CHAR_WIDTH_RATIO &&
+      (zeroWidth ? ratio >= 0 : ratio >= MIN_PLAUSIBLE_CHAR_WIDTH_RATIO)
+    ) {
+      clusterWidth = measured
+    }
+  }
+  charWidthCache.set(key, clusterWidth)
+  return clusterWidth
+}
+
+export type MeasureHandLogText = (text: string, fontSize: number) => number
+
+/**
+ * 文字列の描画幅(px)。等幅フォントにもCJKフォールバックにも字詰めは無いので、
+ * 書記素クラスタごとの送り幅の総和で足りる。キャッシュはクラスタ単位なので、
+ * 名前やアクション語が繰り返されるログでは実質すべてキャッシュヒットする。
+ */
+export const measureHandLogTextWidth: MeasureHandLogText = (text, fontSize) => {
+  let width = 0
+  for (const cluster of splitGraphemes(text)) {
+    width += measureClusterWidth(cluster, fontSize)
+  }
+  return width
+}
+
+/**
+ * 折り返しの最小単位（トークン）へ分割する。トークン境界＝CSSが改行しうる位置。
+ * - 空白の連なりは1トークン（行末でぶら下がる）
+ * - 半角の連なりは1語
+ * - CJKは1文字ずつが改行機会。ただし禁則位置では隣とくっつけて1トークンにする
+ */
+const tokenizeForWrap = (line: string): string[] => {
+  const tokens: string[] = []
+  let previous: string | undefined
+  for (const cluster of splitGraphemes(line)) {
+    const breaks = previous === undefined
+      ? true
+      : breakAllowedBetween(previous, cluster)
+    if (breaks || tokens.length === 0) tokens.push(cluster)
+    else tokens[tokens.length - 1] += cluster
+    previous = cluster
+  }
+  return tokens
+}
+
+const breakAllowedBetween = (previous: string, next: string): boolean => {
+  const previousIsSpace = BREAKABLE_SPACE_PATTERN.test(previous)
+  const nextIsSpace = BREAKABLE_SPACE_PATTERN.test(next)
+  // 空白の連なりは1トークン。空白とそれ以外の境目は必ず改行機会
+  if (previousIsSpace || nextIsSpace) return previousIsSpace !== nextIsSpace
+  if (NO_BREAK_AFTER_PATTERN.test(previous)) return false
+  if (NO_BREAK_BEFORE_PATTERN.test(next)) return false
+  // CJK・半角カナ・絵文字は空白が無くても文字間で改行できる。
+  // 半角英数どうしは1語として繋がる
+  return (
+    BREAK_OPPORTUNITY_PATTERN.test(previous) ||
+    BREAK_OPPORTUNITY_PATTERN.test(next)
+  )
 }
 
 /**
  * EntryRowの`white-space: pre-wrap` + `word-break: break-word`に合わせて
- * 折り返し後の行数を数える。
+ * 折り返し後の行数を数える。幅はすべてpxで扱う: 文字数で数えると半角と全角
+ * （日本語のプレイヤー名など）が混ざった行を数えられない。
  *
- * 文字数を1行あたり文字数で割るだけでは、単語境界での折り返しを無視して
- * 行数を過小評価する（"aaaaaa bbbbbb cccccc"は20文字なので幅10文字では
- * 単純除算だと2行だが、実際は3行になる）。
+ * 文字幅の総和を1行の幅で割るだけでも、単語境界での折り返しを無視して行数を
+ * 過小評価する（"aaaaaa bbbbbb cccccc"は幅10文字ぶんなら実際は3行）。
  * - 空白は行末でぶら下がるので、収まらない場合はその行を埋めるだけ
- * - 単語は現在行に収まらなければ次行へ送る
- * - 1行にも収まらない長い単語だけをbreak-wordとして分割する
+ * - トークン（tokenizeForWrap参照）は現在行に収まらなければ次行へ送る
+ * - 1行にも収まらない長いトークンだけをbreak-wordとしてクラスタ単位で分割する
  *
- * @param initialUsedChars 先頭に既に置かれている内容（タイムスタンプ）の文字数換算
+ * @param measureToken トークンの描画幅(px)。フォントサイズは呼び出し側で束縛する
+ * @param initialUsedWidth 先頭に既に置かれている内容（タイムスタンプ）の幅(px)
  */
 export const countWrappedLines = (
   text: string,
-  charsPerLine: number,
-  initialUsedChars = 0
+  availableWidth: number,
+  measureToken: (token: string) => number,
+  initialUsedWidth = 0
 ): number => {
-  if (text.length === 0 && initialUsedChars === 0) return 0
+  if (text.length === 0 && initialUsedWidth === 0) return 0
 
-  const maxChars = Math.max(1, Math.floor(charsPerLine))
+  const limit = Math.max(0, availableWidth)
   let lines = 1
-  let used = Math.max(0, initialUsedChars)
+  let used = Math.max(0, initialUsedWidth)
 
   text.split('\n').forEach((hardLine, hardLineIndex) => {
     if (hardLineIndex > 0) {
       lines += 1
       used = 0
     }
-    for (const token of hardLine.match(/\s+|\S+/g) ?? []) {
-      const length = token.length
-      if (/^\s/.test(token)) {
-        used = used + length <= maxChars ? used + length : maxChars
+    for (const token of tokenizeForWrap(hardLine)) {
+      const width = measureToken(token)
+      if (BREAKABLE_SPACE_PATTERN.test(token)) {
+        used = used + width <= limit ? used + width : limit
         continue
       }
-      if (used + length <= maxChars) {
-        used += length
+      if (used + width <= limit) {
+        used += width
         continue
       }
       if (used > 0) {
         lines += 1
         used = 0
       }
-      if (length <= maxChars) {
-        used = length
+      if (width <= limit) {
+        used = width
         continue
       }
-      const chunks = Math.ceil(length / maxChars)
-      lines += chunks - 1
-      used = length - (chunks - 1) * maxChars
+      // 1行に収まらない語だけをbreak-wordとして割る
+      for (const cluster of splitGraphemes(token)) {
+        const clusterWidth = measureToken(cluster)
+        if (used > 0 && used + clusterWidth > limit) {
+          lines += 1
+          used = 0
+        }
+        used += clusterWidth
+      }
     }
   })
 
@@ -619,12 +768,15 @@ export const countWrappedLines = (
 }
 
 export interface HandLogRowMetrics {
-  /** 折り返しに使える本文幅(px)。= 行の幅 - 左右padding */
+  /**
+   * 折り返しに使える本文幅(px)。
+   * = リスト幅 - スクロールバー幅 - EntryRowの左右padding
+   */
   textWidth: number
   fontSize: number
   showTimestamps: boolean
-  /** フォントサイズ→1文字幅(px)。既定はcanvas実測（テストからの差し替え口） */
-  measureCharWidth?: (fontSize: number) => number
+  /** 文字列→描画幅(px)。既定はcanvas実測（テストからの差し替え口） */
+  measureText?: MeasureHandLogText
 }
 
 /**
@@ -637,23 +789,22 @@ export const estimateEntryRowHeight = (
     textWidth,
     fontSize,
     showTimestamps,
-    measureCharWidth = measureMonospaceCharWidth
+    measureText = measureHandLogTextWidth
   }: HandLogRowMetrics
 ): number => {
-  const charWidth = Math.max(measureCharWidth(fontSize), Number.EPSILON)
-  const charsPerLine = Math.max(1, Math.floor(textWidth / charWidth))
-  // タイムスタンプは本文より小さいフォントの別spanなので、幅を本文の文字数へ換算する
-  const timestampChars = showTimestamps
-    ? Math.ceil(
-      (
-        measureCharWidth(
-          Math.max(fontSize - HAND_LOG_TIMESTAMP_FONT_SIZE_OFFSET, 1)
-        ) * HAND_LOG_TIMESTAMP_TEXT_LENGTH +
-        HAND_LOG_TIMESTAMP_MARGIN_RIGHT
-      ) / charWidth
-    )
+  // タイムスタンプは本文より小さいフォントの別spanなので、そのフォントで測る
+  const timestampWidth = showTimestamps
+    ? measureText(
+      HAND_LOG_TIMESTAMP_TEXT,
+      Math.max(fontSize - HAND_LOG_TIMESTAMP_FONT_SIZE_OFFSET, 1)
+    ) + HAND_LOG_TIMESTAMP_MARGIN_RIGHT
     : 0
-  const lines = countWrappedLines(text, charsPerLine, timestampChars)
+  const lines = countWrappedLines(
+    text,
+    textWidth,
+    token => measureText(token, fontSize),
+    timestampWidth
+  )
   return lines * fontSize * HAND_LOG_ENTRY_LINE_HEIGHT + HAND_LOG_ENTRY_PADDING_Y * 2
 }
 
@@ -757,6 +908,9 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
   const requestedLoadScaleRef = useRef<number | null>(null)
   const latestScaleRef = useRef(scale)
   latestScaleRef.current = scale
+  const measuredScrollbarRatioRef = useRef(
+    typeof window === 'undefined' ? 1 : window.devicePixelRatio
+  )
   const [showCopied, setShowCopied] = useState(false)
   const [showCleared, setShowCleared] = useState(false)
   const lastClickTimeRef = useRef<number>(0)
@@ -823,13 +977,20 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     displaySize.height - HAND_LOG_BORDER_WIDTH * 2
   )
 
+  // Listは`overflow: auto`なので、Windows/Linuxのような非オーバーレイ
+  // スクロールバー環境では行の包含ブロックがその幅だけ狭くなる。
+  // `scrollbarGutter: 'stable'`でスクロール有無に関わらず同じ幅を確保し、
+  // 推定と実描画のどちらの状態でも一致させる（オーバーレイ環境では0）。
+  const [scrollbarWidth, setScrollbarWidth] = useState(() => getScrollbarSize())
+
   // 折り返しに使える本文幅。行はリスト幅いっぱい（width:100%）なので、
-  // 行の包含ブロックはbody幅そのもので、そこからEntryRow自身の左右padding
-  // だけがテキスト幅を狭める。保存幅ではなく表示幅から引くのが要点:
-  // viewportが保存幅より狭いときは表示だけが縮み、折り返しは縮んだ側で起きる。
+  // 行の包含ブロックはbody幅からスクロールバー幅を除いた分で、そこから
+  // EntryRow自身の左右paddingだけがテキスト幅を狭める。保存幅ではなく
+  // 表示幅から引くのが要点: viewportが保存幅より狭いときは表示だけが縮み、
+  // 折り返しは縮んだ側で起きる。
   const entryTextWidth = Math.max(
     0,
-    bodyWidth - HAND_LOG_ENTRY_PADDING_X * 2
+    bodyWidth - scrollbarWidth - HAND_LOG_ENTRY_PADDING_X * 2
   )
 
   // アイテムの高さを計算
@@ -882,6 +1043,15 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
 
   useEffect(() => {
     const handleViewportResize = () => {
+      // ページズーム（やモニタ間移動）はスクロールバーのCSSピクセル幅を変える。
+      // 物理幅は変わらないので、ズームアウトすると実際のgutterは広がる。
+      // getScrollbarSize()は初回値をモジュール内にキャッシュするため、
+      // devicePixelRatioが変わったときだけ強制的に測り直す
+      // （毎resizeでプローブを挿すと余計な強制レイアウトになる）。
+      if (window.devicePixelRatio !== measuredScrollbarRatioRef.current) {
+        measuredScrollbarRatioRef.current = window.devicePixelRatio
+        setScrollbarWidth(getScrollbarSize(true))
+      }
       // A stale passive-effect listener may fire after a new scale render.
       commitLayoutAction({
         type: 'environmentChanged',
@@ -1173,7 +1343,13 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
           rowHeight={getItemSize}
           rowComponent={EntryRow}
           rowProps={rowProps}
-          style={{ height: bodyHeight, width: bodyWidth }}
+          style={{
+            height: bodyHeight,
+            width: bodyWidth,
+            // 行高の推定がスクロールバー幅を常に差し引くので、実際の行幅も
+            // スクロール有無で変わらないよう固定する（entryTextWidth参照）。
+            scrollbarGutter: 'stable',
+          }}
         />
       ) : (
         <div style={{

@@ -1389,4 +1389,115 @@ describe('Popup', () => {
       jest.useRealTimers()
     }, 15000)
   })
+
+  describe('統計の並べ替え（未適用の変更）', () => {
+    // 一覧に出ている統計名のみ（playerNameはHUDヘッダー常時表示のため非表示）
+    const displayedStatNames = () =>
+      screen.getAllByRole('listitem')
+        .map(item => item.querySelector('.MuiListItemText-primary')?.textContent)
+
+    const orderButtonsFor = (statName: string) => {
+      const listItem = screen.getByText(statName).closest('li')!
+      const [up, down] = Array.from(listItem.querySelectorAll('button'))
+      return { up: up!, down: down! }
+    }
+
+    it('一覧はplayerNameを除外して表示する', async () => {
+      render(<Popup />)
+      await waitForAsyncOperations()
+
+      expect(displayedStatNames().slice(0, 3)).toEqual(['HAND', 'VPIP', 'VPIP·F'])
+      expect(screen.queryByText('Name')).not.toBeInTheDocument()
+    })
+
+    it('↑1回で表示順が1つ動く（非表示のplayerNameを跨ぐケース）', async () => {
+      // 回帰テスト: 生配列インデックスでorderを交換していた頃は、
+      // VPIP（表示2番目）の↑1回目が非表示のplayerName（order 1）と
+      // 入れ替わるだけで、表示順が全く変化しないデッドクリックだった。
+      render(<Popup />)
+      await waitForAsyncOperations()
+
+      await userEvent.click(orderButtonsFor('VPIP').up)
+
+      expect(displayedStatNames().slice(0, 3)).toEqual(['VPIP', 'HAND', 'VPIP·F'])
+      expect(screen.getByText('(未適用の変更があります)')).toBeInTheDocument()
+    })
+
+    it('↓1回でも表示順が1つ動く（非表示のplayerNameを跨ぐケース）', async () => {
+      render(<Popup />)
+      await waitForAsyncOperations()
+
+      await userEvent.click(orderButtonsFor('HAND').down)
+
+      expect(displayedStatNames().slice(0, 3)).toEqual(['VPIP', 'HAND', 'VPIP·F'])
+    })
+
+    it('適用すると並べ替え後のstatDisplayConfigsが保存・配信される', async () => {
+      render(<Popup />)
+      await waitForAsyncOperations()
+
+      await userEvent.click(orderButtonsFor('VPIP').up)
+      await userEvent.click(screen.getByRole('button', { name: '適用' }))
+
+      await waitFor(() => {
+        expect(syncData.options.filterOptions.statDisplayConfigs[0]).toEqual(
+          expect.objectContaining({ id: 'vpip', order: 0 })
+        )
+      })
+      // playerNameは自身のスロット（order 1）に据え置かれ、HANDが後ろへ
+      const savedOrder = (syncData.options.filterOptions.statDisplayConfigs as { id: string }[])
+        .slice(0, 3)
+        .map(config => config.id)
+      expect(savedOrder).toEqual(['vpip', 'playerName', 'hands'])
+
+      expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'updateBattleTypeFilter',
+          filterOptions: expect.objectContaining({
+            statDisplayConfigs: expect.arrayContaining([
+              expect.objectContaining({ id: 'vpip', order: 0 })
+            ])
+          })
+        })
+      )
+    })
+
+    it('既定構成（module-levelのdefaultStatDisplayConfigs）を汚染しない（保存済みoptionsが無い初回表示）', async () => {
+      // pendingStatDisplayConfigsにdefaultStatDisplayConfigsの要素が
+      // そのまま入る現存唯一の経路: 保存済みoptionsが無いとstateの初期値が
+      // module-levelの定数そのものになる。その場書き換え実装では、
+      // 「適用」していない並べ替えが定数に残り、同一JSコンテキスト内で
+      // 以降に呼ばれるmergeStatDisplayConfigs等が汚れた既定値でマージする。
+      syncData = { uiConfig: DEFAULT_UI_CONFIG }
+      const before = defaultStatDisplayConfigs.map(config => ({ ...config }))
+
+      render(<Popup />)
+      await waitForAsyncOperations()
+
+      // 往復させるとその場書き換え実装でもorderが元に戻ってしまうため片道で検証する
+      await userEvent.click(orderButtonsFor('HAND').down)
+
+      // 並べ替えは保留中のstateにのみ反映される
+      expect(displayedStatNames().slice(0, 3)).toEqual(['VPIP', 'HAND', 'VPIP·F'])
+      expect(screen.getByText('(未適用の変更があります)')).toBeInTheDocument()
+      expect(defaultStatDisplayConfigs).toEqual(before)
+    })
+
+    it('既定構成（module-levelのdefaultStatDisplayConfigs）を汚染しない（保存済み設定に欠けがある場合）', async () => {
+      // 保存済み設定に無い項目（pfr）をmergeStatDisplayConfigsが補う経路。
+      // mergeStatDisplayConfigs自体も複製を返すようになったため現在この経路で
+      // 共有参照は入らないが、二重の防御（マージ側の複製・並べ替え側の複製）の
+      // どちらか一方が外れても定数が汚れないことをUI側から独立に保証する。
+      syncData.options.filterOptions.statDisplayConfigs =
+        defaultStatDisplayConfigs.filter(config => config.id !== 'pfr')
+      const before = defaultStatDisplayConfigs.map(config => ({ ...config }))
+
+      render(<Popup />)
+      await waitForAsyncOperations()
+
+      await userEvent.click(orderButtonsFor('PFR').up)
+
+      expect(defaultStatDisplayConfigs).toEqual(before)
+    })
+  })
 })

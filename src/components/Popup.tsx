@@ -39,6 +39,7 @@ import { GameTypeFilterSection } from './popup/GameTypeFilterSection'
 import { TableSizeFilterSection } from './popup/TableSizeFilterSection'
 import { HandLimitSection } from './popup/HandLimitSection'
 import { StatisticsConfigSection } from './popup/StatisticsConfigSection'
+import { moveStatInDisplayOrder } from './popup/stat-display-order'
 import { UndecodedEventSection } from './popup/UndecodedEventSection'
 import { UpdateSection } from './popup/UpdateSection'
 import { PopupHeader } from './popup/PopupHeader'
@@ -441,24 +442,12 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   }
 
   const handleStatOrderChange = (statId: string, direction: 'up' | 'down') => {
-    const newConfigs = [...pendingStatDisplayConfigs]
-    const index = newConfigs.findIndex(config => config.id === statId)
-    
-    if (index === -1) return
-
-    const targetIndex = direction === 'up' ? index - 1 : index + 1
-    
-    // Swap order values
-    const currentConfig = newConfigs[index]
-    const targetConfig = newConfigs[targetIndex]
-    if (currentConfig && targetConfig) {
-      const tempOrder = currentConfig.order
-      currentConfig.order = targetConfig.order
-      targetConfig.order = tempOrder
-    }
-
-    // Sort by order
-    newConfigs.sort((a, b) => a.order - b.order)
+    // 移動単位はStatisticsConfigSectionの「表示リスト」基準
+    // （playerNameを除外しorderでソートしたもの）。
+    // 生配列インデックスで隣接要素とorderを交換すると、表示されていない
+    // playerNameと入れ替わるだけのデッドクリックが発生する。
+    const newConfigs = moveStatInDisplayOrder(pendingStatDisplayConfigs, statId, direction)
+    if (!newConfigs) return
 
     // Stat order changed (pending)
     setPendingStatDisplayConfigs(newConfigs)

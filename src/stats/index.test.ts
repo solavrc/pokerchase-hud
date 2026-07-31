@@ -79,6 +79,23 @@ describe('mergeStatDisplayConfigs', () => {
     expect(merged.every(c => c.enabled === false)).toBe(true)
     expect(merged).toHaveLength(defaults.length)
   })
+
+  it('戻り値はdefaultConfigsの要素と同一オブジェクトを含まない（呼び出し側の変更がデフォルトへ漏れない）', () => {
+    // 新規統計（保存済み設定に無い項目）についてデフォルト設定のオブジェクトを
+    // 参照ごと返していると、呼び出し側がマージ結果を書き換えた際に
+    // `defaultStatDisplayConfigs`（モジュールレベル定数）まで汚染される。
+    // 実際にPopupの並べ替えハンドラで発生した（PR #312で発覚）。
+    const saved: StatDisplayConfig[] = [{ id: 'hands', enabled: true, order: 0 }]
+    const snapshot = defaults.map(c => ({ ...c }))
+
+    const merged = mergeStatDisplayConfigs(saved, defaults)
+
+    expect(merged.every(config => !defaults.includes(config))).toBe(true)
+
+    // マージ結果を書き換えてもdefaultsは不変
+    merged.forEach(config => { config.order = -1; config.enabled = false })
+    expect(defaults).toEqual(snapshot)
+  })
 })
 
 /**

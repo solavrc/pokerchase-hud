@@ -10,6 +10,7 @@ import Typography from '@mui/material/Typography'
 import { defaultRegistry } from '../../stats'
 import type { StatDisplayConfig } from '../../types/filters'
 import { SectionHeading } from './SectionHeading'
+import { getStatConfigsInDisplayOrder } from './stat-display-order'
 
 interface StatisticsConfigSectionProps {
   pendingStatDisplayConfigs: StatDisplayConfig[]
@@ -39,10 +40,11 @@ export const StatisticsConfigSection = ({
         )}
       </SectionHeading>
       <List dense style={{ maxHeight: 200, overflow: 'auto' }}>
-        {pendingStatDisplayConfigs
-          .filter(config => config.id !== 'playerName') // playerNameはヘッダーに常に表示されるため除外
-          .sort((a, b) => a.order - b.order)
-          .map((config, index) => {
+        {/* 一覧・↑↓のdisabled判定・handleStatOrderChangeの移動単位は、
+            すべてこの同じ表示リスト基準（playerNameを除外しorderでソート）で
+            なければならない。ズレるとデッドクリックになる。 */}
+        {getStatConfigsInDisplayOrder(pendingStatDisplayConfigs)
+          .map((config, index, displayedConfigs) => {
             const statDef = defaultRegistry.get(config.id)
             return (
               <ListItem key={config.id} style={{ paddingLeft: 0, paddingRight: 0 }}>
@@ -55,7 +57,7 @@ export const StatisticsConfigSection = ({
                 </IconButton>
                 <IconButton
                   size="small"
-                  disabled={index === pendingStatDisplayConfigs.filter(c => c.id !== 'playerName').length - 1}
+                  disabled={index === displayedConfigs.length - 1}
                   onClick={() => handleStatOrderChange(config.id, 'down')}
                 >
                   ↓
