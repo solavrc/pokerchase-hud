@@ -9,7 +9,6 @@ import { DragHandle } from './hud/DragHandle'
 import { HudHeader } from './hud/HudHeader'
 import { StatDisplay } from './hud/StatDisplay'
 import { CompactStatDisplay } from './hud/CompactStatDisplay'
-import { PlayerTypeIcons } from './hud/PlayerTypeIcons'
 import { RealTimeStatsDisplay } from './hud/RealTimeStatsDisplay'
 import { PositionalStatsPanel } from './hud/PositionalStatsPanel'
 import { PositionalPanelTrigger } from './hud/PositionalPanelTrigger'
@@ -343,7 +342,6 @@ const Hud = memo((props: HudProps) => {
             <span style={{ ...styles.playerName, color: HUD_MUTED_TEXT_COLOR, fontStyle: 'italic' }}>
               Waiting for Hand...
             </span>
-            <PlayerTypeIcons />
           </div>
           <div style={{ padding: '4px 6px', minHeight: '20px' }} />
         </div>
@@ -384,7 +382,6 @@ const Hud = memo((props: HudProps) => {
                   onToggle={props.onToggleRecentHandsPanel}
                 />
               )}
-              <PlayerTypeIcons />
             </div>
           </div>
           <div style={{
