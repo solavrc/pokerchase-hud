@@ -408,7 +408,7 @@ describe('HandLog', () => {
     expect(logContainer.style.height).toBe('100px')
   })
 
-  it('最小高さより狭いviewportでは正規化時だけ高さを画面内へ収める', () => {
+  it('最小高さより狭いviewportでは表示だけ縮め保存heightを有効値に保つ', () => {
     setViewport(320, 120)
     const { container } = render(<HandLog entries={mockEntries} scale={2} />)
     const logContainer = container.firstChild as HTMLElement
@@ -417,6 +417,18 @@ describe('HandLog', () => {
     expect(logContainer.style.height).toBe('60px')
     expect(logContainer.style.transform).toContain('scale(2)')
     expect(screen.getByTestId('hand-log-resize-corner')).toBeInTheDocument()
+
+    fireEvent.mouseDown(screen.getByTestId('hand-log-header'), {
+      button: 0,
+      clientX: 100,
+      clientY: 20,
+    })
+    moveMouseWithPrimaryButton(110, 30)
+    fireEvent.mouseUp(document)
+
+    expect(savedLayoutCalls()).toHaveLength(1)
+    expect(savedLayoutCalls()[0]![0].layout.height).toBe(80)
+    expect(logContainer.style.height).toBe('60px')
   })
 
   it('layout読込timeout後も同じloadの権威的応答を適用する', () => {
@@ -486,6 +498,51 @@ describe('HandLog', () => {
     expect(logContainer.style.transform).toContain('scale(2)')
   })
 
+  it('操作中に保留した新scaleのlayout読込を終了後に再開する', () => {
+    const loadCallbacks: Array<(response: unknown) => void> = []
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceHandLogLayout') {
+        loadCallbacks.push(callback)
+      } else {
+        callback?.({ success: true })
+      }
+    })
+    const { container, rerender } = render(
+      <HandLog entries={mockEntries} scale={1} />
+    )
+    const logContainer = container.firstChild as HTMLElement
+
+    expect(loadCallbacks).toHaveLength(1)
+    fireEvent.mouseDown(screen.getByTestId('hand-log-header'), {
+      button: 0,
+      clientX: 700,
+      clientY: 550,
+    })
+    rerender(<HandLog entries={mockEntries} scale={2} />)
+    expect(loadCallbacks).toHaveLength(1)
+
+    fireEvent.mouseUp(document)
+    expect(loadCallbacks).toHaveLength(2)
+    expect(savedLayoutCalls()).toHaveLength(0)
+
+    act(() => {
+      loadCallbacks[1]!({
+        success: true,
+        layout: { left: 40, top: 30, width: 500, height: 200 },
+      })
+      loadCallbacks[0]!({
+        success: true,
+        layout: { left: 300, top: 200, width: 500, height: 600 },
+      })
+    })
+
+    expect(logContainer.style.left).toBe('40px')
+    expect(logContainer.style.top).toBe('30px')
+    expect(logContainer.style.width).toBe('500px')
+    expect(logContainer.style.height).toBe('200px')
+    expect(logContainer.style.transform).toContain('scale(2)')
+  })
+
   it('操作中のviewport変更をmouseupまで保持し正規化後layoutを一度だけ保存する', () => {
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       if (message.action === 'getDeviceHandLogLayout') {
@@ -525,9 +582,11 @@ describe('HandLog', () => {
     ])
   })
 
-  it('操作中のscale変更をmouseupまで保持しpointer移動なしでも一度だけ保存する', () => {
+  it('操作中のscale変更をmouseupまで保持しpointer移動なしなら再読込する', () => {
+    let loadCount = 0
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       if (message.action === 'getDeviceHandLogLayout') {
+        loadCount += 1
         callback({
           success: true,
           layout: { left: 100, top: 500, width: 400, height: 200 },
@@ -555,13 +614,8 @@ describe('HandLog', () => {
     expect(logContainer.style.top).toBe('368px')
     expect(logContainer.style.height).toBe('200px')
     expect(logContainer.style.transform).toContain('scale(2)')
-    expect(savedLayoutCalls()).toHaveLength(1)
-    expect(savedLayoutCalls()[0]![0].layout).toEqual({
-      left: 100,
-      top: 368,
-      width: 400,
-      height: 200,
-    })
+    expect(loadCount).toBe(2)
+    expect(savedLayoutCalls()).toHaveLength(0)
   })
 
   it('移動中もヘッダーの一部と縦方向全体を画面内へ保つ', () => {

@@ -82,7 +82,7 @@ type HandLogMachineAction =
   | { type: 'reset' }
   | { type: 'interactionStarted', mode: HandLogInteractionMode, x: number, y: number }
   | { type: 'pointerMoved', x: number, y: number }
-  | { type: 'interactionFinished' }
+  | { type: 'interactionFinished', deferPersistenceForLoad?: boolean }
 
 interface HandLogTransition {
   state: HandLogLayoutMachine
@@ -106,19 +106,30 @@ const readHandLogEnvironment = (scale: number): HandLogEnvironment => ({
   viewportHeight: window.innerHeight,
 })
 
+const getHandLogDisplayHeight = (
+  layout: HandLogLayout,
+  environment: HandLogEnvironment
+): number =>
+  Math.min(layout.height, environment.viewportHeight / environment.scale)
+
 const normalizeHandLogLayout = (
   layout: HandLogLayout,
   environment: HandLogEnvironment
 ): HandLogLayout => {
   const { scale, viewportWidth, viewportHeight } = environment
   const maximumHeight = viewportHeight / scale
+  // A sub-minimum viewport temporarily shrinks only the rendered panel.
+  // Keep state/persistence at HAND_LOG_MIN_HEIGHT or above; see PR #304.
   const height = clamp(
     layout.height,
-    Math.min(HAND_LOG_MIN_HEIGHT, maximumHeight),
-    maximumHeight
+    HAND_LOG_MIN_HEIGHT,
+    Math.max(HAND_LOG_MIN_HEIGHT, maximumHeight)
   )
   const renderedWidth = layout.width * scale
-  const renderedHeight = height * scale
+  const renderedHeight = getHandLogDisplayHeight(
+    { ...layout, height },
+    environment
+  ) * scale
   const reachableWidth = Math.min(
     HAND_LOG_HEADER_REACHABLE_WIDTH * scale,
     viewportWidth
@@ -189,14 +200,12 @@ const transitionHandLogLayout = (
         ) {
           return { state }
         }
+        // The active environment is intentionally unchanged until finish, so
+        // its in-flight load remains valid during the interaction.
         return {
           state: {
             ...state,
             pendingEnvironment,
-            activeLoad:
-              state.environment.scale !== action.environment.scale
-                ? null
-                : state.activeLoad,
           },
         }
       }
@@ -365,7 +374,11 @@ const transitionHandLogLayout = (
         environment
       )
       const shouldPersist =
-        state.interaction.moved || state.pendingEnvironment !== null
+        (
+          state.interaction.moved ||
+          state.pendingEnvironment !== null
+        ) &&
+        !action.deferPersistenceForLoad
       return {
         state: {
           ...state,
@@ -493,6 +506,9 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     )
   const layoutMachineRef = useRef(layoutMachine)
   const loadSequenceRef = useRef(0)
+  const requestedLoadScaleRef = useRef<number | null>(null)
+  const latestScaleRef = useRef(scale)
+  latestScaleRef.current = scale
   const [showCopied, setShowCopied] = useState(false)
   const [showCleared, setShowCleared] = useState(false)
   const lastClickTimeRef = useRef<number>(0)
@@ -567,6 +583,12 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
   }, [scale, commitLayoutAction])
 
   useEffect(() => {
+    // A scale change during pointer interaction is loaded only after the
+    // interaction ends. This avoids adding another layout-machine lifecycle
+    // branch while ensuring the latest scale still gets an authoritative load.
+    if (layoutMachine.interaction.phase === 'interacting') return
+    if (requestedLoadScaleRef.current === scale) return
+    requestedLoadScaleRef.current = scale
     const load = {
       id: ++loadSequenceRef.current,
       scale,
@@ -579,7 +601,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
         layout: savedLayout,
       })
     })
-  }, [scale, commitLayoutAction])
+  }, [scale, layoutMachine.interaction.phase, commitLayoutAction])
 
   useEffect(() => {
     const handleViewportResize = () => {
@@ -685,6 +707,34 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     })
   }, [commitLayoutAction])
 
+  const finishLayoutInteraction = useCallback((render = true) => {
+    const current = layoutMachineRef.current
+    if (current.interaction.phase !== 'interacting') return
+
+    const deferredScaleLoad =
+      requestedLoadScaleRef.current !== latestScaleRef.current
+    const deferPersistenceForLoad =
+      !current.interaction.moved &&
+      (
+        deferredScaleLoad ||
+        (
+          current.pendingEnvironment !== null &&
+          current.activeLoad !== null
+        )
+      )
+
+    if (current.interaction.moved && deferredScaleLoad) {
+      // An intentional move/resize wins over the deferred saved layout.
+      // Mark the new scale handled so the post-finish effect cannot rewind it.
+      requestedLoadScaleRef.current = latestScaleRef.current
+    }
+
+    commitLayoutAction({
+      type: 'interactionFinished',
+      deferPersistenceForLoad,
+    }, render)
+  }, [commitLayoutAction])
+
   useEffect(() => {
     const interaction = layoutMachine.interaction
     const interactionMode =
@@ -696,7 +746,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     document.body.style.userSelect = 'none'
 
     const finishInteraction = () => {
-      commitLayoutAction({ type: 'interactionFinished' })
+      finishLayoutInteraction()
     }
 
     const handleMouseMove = (event: MouseEvent) => {
@@ -729,20 +779,22 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     layoutMachine.interaction.phase === 'interacting'
       ? layoutMachine.interaction.mode
       : null,
-    commitLayoutAction,
+    finishLayoutInteraction,
   ])
 
   // Unmount uses the exact same transition/persistence outlet as
   // mouseup/blur, but skips the render after the component is gone.
   useEffect(() => () => {
-    commitLayoutAction({ type: 'interactionFinished' }, false)
-  }, [commitLayoutAction])
+    finishLayoutInteraction(false)
+  }, [finishLayoutInteraction])
 
   // 無効の場合はレンダリングしない
   if (!config.enabled) return null
 
   const { layout, environment } = layoutMachine
-  const { width, height } = layout
+  const { width } = layout
+  // Display-only shrink: the layout kept by the machine remains persistable.
+  const height = getHandLogDisplayHeight(layout, environment)
   const interactionMode =
     layoutMachine.interaction.phase === 'interacting'
       ? layoutMachine.interaction.mode
