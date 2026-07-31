@@ -119,8 +119,14 @@ const ActionBar = () => (
     <div className="pc-action" style={rectStyle(ACTION_BAR.buttons[2]!)}>レイズ</div>
 
     <div className="pc-stepper pc-stepper--minus" style={rectStyle(ACTION_BAR.minus)}><span /></div>
-    {ACTION_BAR.multipliers.map(({ label, ...rect }) => (
-      <div className="pc-multiplier" key={label} style={rectStyle(rect)}>{label}</div>
+    {ACTION_BAR.multipliers.map(({ label, wordLabel, ...rect }) => (
+      <div
+        className={`pc-multiplier${wordLabel ? ' pc-multiplier--word' : ''}`}
+        key={label}
+        style={rectStyle(rect)}
+      >
+        {label}
+      </div>
     ))}
     <div className="pc-slider" style={rectStyle(ACTION_BAR.slider)} />
     <div className="pc-slider__knob" style={pointStyle(ACTION_BAR.sliderKnob)} />

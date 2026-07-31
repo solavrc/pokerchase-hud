@@ -596,8 +596,10 @@ input[type="range"] {
   white-space: nowrap;
 }
 
-/* オールイン is the one preset with a word instead of a multiplier. */
-.pc-multiplier:last-child { font-size: calc(var(--u) * 2.4); }
+/* The preset whose label is a word, not a multiplier: it needs smaller type to
+   fit the same box. Keyed off the layout data rather than `:last-child` --
+   the presets are not the last children of the action bar. */
+.pc-multiplier--word { font-size: calc(var(--u) * 2.4); }
 
 .pc-slider {
   background: linear-gradient(180deg, #e7ecff, #9aa5c8);
@@ -769,7 +771,10 @@ input[type="range"] {
 .mock-popup {
   border-radius: 10px;
   box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
-  max-height: calc(100vh - 24px);
+  /* Chrome caps the real extension popup near 600px tall -- see the height
+     assertion in e2e/scenarios/smoke.ts. Without this the mock would show
+     sections that only appear after scrolling in production. */
+  max-height: min(600px, calc(100vh - 24px));
   overflow: auto;
   position: fixed;
   right: 12px;

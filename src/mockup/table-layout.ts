@@ -192,8 +192,10 @@ export const ACTION_BAR = {
     { h: 6.3, l: 50.8, t: 84.3, w: 8.1, label: 'x2.5' },
     { h: 6.3, l: 59.6, t: 84.3, w: 8.1, label: 'x3' },
     { h: 6.3, l: 68.4, t: 84.3, w: 8.1, label: 'x4' },
-    { h: 6.3, l: 77.2, t: 84.3, w: 8.1, label: 'オールイン' },
-  ] as Array<Rect & { label: string }>,
+    // The only preset whose label is a word rather than a multiplier, so it
+    // needs the smaller type to fit the same box.
+    { h: 6.3, l: 77.2, t: 84.3, w: 8.1, label: 'オールイン', wordLabel: true },
+  ] as Array<Rect & { label: string; wordLabel?: boolean }>,
   plus: { h: 11.2, l: 85.6, t: 84.7, w: 6.6 } as Rect,
   preAction: { h: 15.5, l: 1.7, t: 83.3, w: 8 } as Rect,
   slider: { h: 1.5, l: 50.3, t: 93.9, w: 43.6 } as Rect,
