@@ -5,6 +5,7 @@ import type { StatDisplayConfig } from '../types'
 import type { StatResult } from '../types/stats'
 import type { RealTimeStats } from '../realtime-stats/realtime-stats-service'
 import { useDraggable } from './hud/hooks/useDraggable'
+import { DeveloperBadge } from './hud/DeveloperBadge'
 import { DragHandle } from './hud/DragHandle'
 import { HudHeader } from './hud/HudHeader'
 import { StatDisplay } from './hud/StatDisplay'
@@ -361,9 +362,15 @@ const Hud = memo((props: HudProps) => {
         >
           <DragHandle isHovering={isHovering} onMouseDown={handleMouseDown} />
           <div style={styles.header}>
-            <span style={{ ...styles.playerName, color: HUD_MUTED_TEXT_COLOR }}>
-              {playerName || `Player ${props.stat.playerId}`}
-            </span>
+            {/* 統計がまだ無い席でもDEVバッジは出す（開発者かどうかはplayerId
+                固有の属性で、統計の有無とは無関係）。HudHeader側と同じく
+                名前と同じ左グループに束ねて名前の直後に置く。 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flex: '0 1 auto', minWidth: 0 }}>
+              <span style={{ ...styles.playerName, color: HUD_MUTED_TEXT_COLOR }}>
+                {playerName || `Player ${props.stat.playerId}`}
+              </span>
+              <DeveloperBadge playerId={props.stat.playerId} />
+            </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
               {props.isDimmed && <DimmedBadge />}
               {props.onTogglePositionalPanel && (

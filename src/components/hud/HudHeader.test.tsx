@@ -140,6 +140,72 @@ describe('HudHeader', () => {
     expect(screen.queryByText(/%/)).not.toBeInTheDocument()
   })
 
+  describe('プレイヤータイプ・アイコン', () => {
+    // classifyPlayerTypeのn-gate（vpip n>=30, af n>=20）を満たす最小データ。
+    // VPIP 20% (<25) / AF 3.0 (>=1.5) なのでTAG(🦈)に分類される。
+    const tagStatResults = [
+      { id: 'vpip', name: 'VPIP', value: [8, 40] as [number, number] },
+      { id: 'af', name: 'AF', value: [60, 20] as [number, number] },
+    ]
+
+    it('プレイヤー名の左（ヘッダー左端）に表示する', () => {
+      render(<HudHeader playerName="TestPlayer" playerId={123} statResults={tagStatResults} />)
+
+      const icon = screen.getByText('🦈')
+      const name = screen.getByText('TestPlayer')
+      expect(icon).toHaveAttribute('data-player-type', 'tag')
+      expect(icon.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
+
+    it('分類できないサンプル数ではアイコン自体を表示しない', () => {
+      render(<HudHeader playerName="TestPlayer" playerId={123} />)
+      expect(screen.queryByText('🦈')).not.toBeInTheDocument()
+    })
+  })
+
+  describe('HUD開発者バッジ', () => {
+    const DEVELOPER_PLAYER_ID = 561384657
+
+    it('開発者アカウントではプレイヤー名の右に表示する', () => {
+      render(<HudHeader playerName="sola" playerId={DEVELOPER_PLAYER_ID} />)
+
+      const name = screen.getByText('sola')
+      const badge = screen.getByText('DEV')
+      expect(badge).toHaveAttribute('title', 'PokerChase HUD 開発者')
+      expect(name.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      // 名前と同じ左グループに束ねる（space-betweenで中央へ飛ばさない）
+      expect(badge.parentElement).toBe(name.parentElement)
+    })
+
+    it('開発者以外のプレイヤーには表示しない', () => {
+      render(<HudHeader playerName="TestPlayer" playerId={123} />)
+      expect(screen.queryByText('DEV')).not.toBeInTheDocument()
+    })
+
+    it('分類アイコン・DEVバッジ・右側メトリクスの並び順を維持する', () => {
+      render(
+        <HudHeader
+          playerName="sola"
+          playerId={DEVELOPER_PLAYER_ID}
+          statResults={[
+            { id: 'vpip', name: 'VPIP', value: [8, 40] as [number, number] },
+            { id: 'af', name: 'AF', value: [60, 20] as [number, number] },
+          ]}
+          playerPotOdds={{ spr: 2.7 }}
+        />
+      )
+
+      const icon = screen.getByText('🦈')
+      const name = screen.getByText('sola')
+      const badge = screen.getByText('DEV')
+      const spr = screen.getByText('SPR 2.7')
+
+      expect(icon.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(name.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(badge.compareDocumentPosition(spr) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
+  })
+
   describe('ポジション別ドリルダウン・トリガー', () => {
     it('onTogglePositionalPanelが渡されない場合はトリガーを表示しない', () => {
       render(<HudHeader playerName="TestPlayer" playerId={123} />)

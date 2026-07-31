@@ -96,9 +96,10 @@
     │   ├── Popup.tsx          # Extension popup interface
     │   ├── hud/               # HUD-specific components
     │   │   ├── CompactStatDisplay.tsx   # Compact display mode (default): classic 1-line stats
+    │   │   ├── DeveloperBadge.tsx       # DEV chip right of the name (playerId-keyed)
     │   │   ├── DragHandle.tsx
     │   │   ├── HudHeader.tsx            # Player name, rank, pot odds, 離席 badge
-    │   │   ├── PlayerTypeIcons.tsx      # 🦈💣🪨🐟 + 🐳 classification icon
+    │   │   ├── PlayerTypeIcons.tsx      # 🦈💣🪨🐟 + 🐳 classification icon (left of name)
     │   │   ├── playerTypeRules.ts       # Quadrant/whale thresholds + n-gates
     │   │   ├── PositionalPanelTrigger.tsx / PositionalStatsPanel.tsx  # Positional drill-down
     │   │   ├── RecentHandsPanelTrigger.tsx / RecentHandsPanel.tsx     # Recent-hands drill-down
