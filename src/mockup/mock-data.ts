@@ -17,34 +17,49 @@ interface PlayerPotOdds {
 }
 
 export interface TableSeat {
+  /** Bubble above the seat: フォールド / レイズ / ベット … */
   action?: string
+  /** Chips committed on the felt this street. */
+  bet?: string
+  /** Blind / button marker beside the plate. */
+  blind?: 'BB' | 'BTN' | 'SB'
+  /** Seat nobody has taken yet. */
+  empty?: boolean
+  /** Out of the hand: plate dims and the face-down cards disappear. */
+  folded?: boolean
+  /** Last aggressor -- the game paints their plate gold. */
+  highlight?: boolean
   isHero?: boolean
   name: string
   stack: string
 }
 
 export interface MockScenario {
+  /** Ante shown in the top-left game panel ("—" when the format has none). */
+  ante: string
   board: string[]
-  eyebrow: string
+  /** Call amount printed on the action bar. */
+  callAmount?: string
+  /** Hand clock shown next to the blind level. */
+  clock: string
   handLogEntries: HandLogEntry[]
+  /** Made-hand caption under hero's hole cards. */
+  heroHandLabel?: string
   heroCards: string[]
   id: MockScenarioId
   label: string
+  /** Street name as the game prints it (プリフロップ / ターン / …). */
   phase: string
   playerPotOdds: Array<PlayerPotOdds | undefined>
   pot: string
+  /** Raise amount printed on the action bar. */
+  raiseAmount?: string
   realTimeStats?: RealTimeStats
   seats: TableSeat[]
+  /** Blind level as the game prints it, e.g. "25/50". */
   stakes: string
   stats: PlayerStats[]
 }
-
-/**
- * ヒーロー席の実playerId。DeveloperBadge.tsxの`DEVELOPER_PLAYER_IDS`と一致させて
- * あるので、モックアップでも「DEV」バッジ付きの実際の見え方を確認できる
- * （合成IDのままだとバッジが一切出ず、レイアウト崩れに気づけない）。
- */
-const HERO_PLAYER_ID = 561384657
 
 const result = (
   id: string,
@@ -82,10 +97,7 @@ const standardStats = (
       ['pfr', 'PFR', [38, 214], '17.8% (38/214)'],
       ['cbet', 'CB', [19, 31], '61.3% (19/31)'],
       ['3bet', '3B', [11, 74], '14.9% (11/74)'],
-      // AFの実際のStatResult.valueは[BET+RAISE, CALL]のペア（src/stats/core/af.ts）。
-      // プレイヤータイプ分類（playerTypeRules.ts）はこのペアの分母を見るので、
-      // スカラーのままだとモックアップでアイコンが一切出ない。
-      ['af', 'AF', [60, 25], '2.4'],
+      ['af', 'AF', 2.4, '2.4'],
       ['wtsd', 'WTSD', [17, 52], '32.7% (17/52)'],
     ],
     loose: [
@@ -93,7 +105,7 @@ const standardStats = (
       ['pfr', 'PFR', [61, 168], '36.3% (61/168)'],
       ['cbet', 'CB', [24, 30], '80.0% (24/30)'],
       ['3bet', '3B', [17, 62], '27.4% (17/62)'],
-      ['af', 'AF', [120, 25], '4.8'],
+      ['af', 'AF', 4.8, '4.8'],
       ['wtsd', 'WTSD', [31, 88], '35.2% (31/88)'],
     ],
     tight: [
@@ -101,7 +113,7 @@ const standardStats = (
       ['pfr', 'PFR', [18, 192], '9.4% (18/192)'],
       ['cbet', 'CB', [8, 17], '47.1% (8/17)'],
       ['3bet', '3B', [4, 66], '6.1% (4/66)'],
-      ['af', 'AF', [26, 20], '1.3'],
+      ['af', 'AF', 1.3, '1.3'],
       ['wtsd', 'WTSD', [5, 24], '20.8% (5/24)'],
     ],
   }
@@ -174,7 +186,7 @@ const densePlayer = (
   ['3betfold', '3BF', [41, 86], '47.7% (41/86)'],
   ['steal', 'STL', [96, 173], '55.5% (96/173)'],
   ['foldToSteal', 'FTS', [51, 104], '49.0% (51/104)'],
-  ['af', 'AF', [370, 100], '3.7'],
+  ['af', 'AF', 3.7, '3.7'],
   ['afq', 'AFq', [311, 684], '45.5% (311/684)'],
   ['wtsd', 'WTSD', [98, 401], '24.4% (98/401)'],
   ['wwsf', 'WWSF', [221, 401], '55.1% (221/401)'],
@@ -184,13 +196,16 @@ const densePlayer = (
 
 export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
   'turn-decision': {
+    ante: '—',
     board: ['J♦', '7♠', '2♣', '9♠'],
-    eyebrow: 'LIVE DECISION',
+    callAmount: '640',
+    clock: '00:12',
     handLogEntries: turnHandLog,
     heroCards: ['A♠', 'J♠'],
+    heroHandLabel: 'ワンペア',
     id: 'turn-decision',
     label: 'ターンの判断',
-    phase: 'TURN',
+    phase: 'ターン',
     playerPotOdds: [
       { spr: 2.7, potOdds: { call: 640, isPlayerTurn: true, percentage: 26.9, pot: 1740, ratio: '2.7:1' } },
       { spr: 3.1 },
@@ -200,18 +215,22 @@ export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
       { spr: 5.9 },
     ],
     pot: '1,740',
+    raiseAmount: '1,920',
     realTimeStats,
+    // Seat order is the game's own action order: hero(0) is BB, so the SB sits
+    // at 5 and the button at 4 -- the same arrangement as the hand captured in
+    // the reference screenshot, which is why the badge anchors line up.
     seats: [
-      { action: 'TO CALL 640', isHero: true, name: 'sola', stack: '6,240' },
-      { action: 'FOLD', name: 'orbit_99', stack: '4,980' },
-      { name: 'north_star', stack: '9,410' },
-      { action: 'FOLD', name: 'kiwi_tea', stack: '5,220' },
-      { name: 'river_rat', stack: '5,850' },
-      { action: 'BET 640', name: 'maverick', stack: '7,190' },
+      { blind: 'BB', isHero: true, name: 'sola', stack: '6,240' },
+      { action: 'フォールド', folded: true, name: 'orbit_99', stack: '4,980' },
+      { action: 'チェック', name: 'north_star', stack: '9,410' },
+      { action: 'フォールド', folded: true, name: 'kiwi_tea', stack: '5,220' },
+      { action: 'ベット', bet: '640', blind: 'BTN', highlight: true, name: 'river_rat', stack: '5,850' },
+      { action: 'フォールド', blind: 'SB', folded: true, name: 'maverick', stack: '7,190' },
     ],
-    stakes: 'RING · 25 / 50',
+    stakes: '25/50',
     stats: [
-      standardStats(HERO_PLAYER_ID, 'sola', 642, 'balanced'),
+      standardStats(1024, 'sola', 642, 'balanced'),
       standardStats(2108, 'orbit_99', 214, 'tight'),
       standardStats(3440, 'north_star', 168, 'loose'),
       standardStats(4611, 'kiwi_tea', 192, 'tight'),
@@ -220,26 +239,27 @@ export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
     ],
   },
   'new-table': {
+    ante: '—',
     board: [],
-    eyebrow: 'EDGE STATES',
+    clock: '—',
     handLogEntries: [],
     heroCards: [],
     id: 'new-table',
     label: '新しい卓・データなし',
-    phase: 'WAITING',
+    phase: '待機中',
     playerPotOdds: [],
     pot: '—',
     seats: [
       { isHero: true, name: 'sola', stack: '5,000' },
       { name: 'joining…', stack: '—' },
-      { name: 'empty', stack: '—' },
+      { empty: true, name: 'empty', stack: '—' },
       { name: 'new_player', stack: '5,000' },
-      { name: 'empty', stack: '—' },
+      { empty: true, name: 'empty', stack: '—' },
       { name: 'guest_802', stack: '5,000' },
     ],
-    stakes: 'SIT & GO · 50 / 100',
+    stakes: '50/100',
     stats: [
-      { playerId: HERO_PLAYER_ID, statResults: [] },
+      { playerId: 1024, statResults: [] },
       { playerId: -1 },
       { playerId: -1 },
       { playerId: 8801, statResults: [] },
@@ -248,28 +268,32 @@ export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
     ],
   },
   'dense-history': {
+    ante: '50',
     board: ['A♣', 'K♦', 'T♥', '4♣', '4♦'],
-    eyebrow: 'STRESS TEST',
+    callAmount: '2,380',
+    clock: '00:04',
     handLogEntries: turnHandLog,
     heroCards: ['Q♣', 'J♣'],
+    heroHandLabel: 'ストレート',
     id: 'dense-history',
     label: '長い名前・全統計',
-    phase: 'RIVER',
+    phase: 'リバー',
     playerPotOdds: [
       { spr: 0.4, potOdds: { call: 2380, isPlayerTurn: true, percentage: 38.5, pot: 3800, ratio: '1.6:1' } },
     ],
     pot: '3,800',
+    raiseAmount: 'オールイン',
     seats: [
-      { action: 'ALL-IN?', isHero: true, name: 'sola', stack: '2,380' },
-      { name: 'player_with_a_very_long_name', stack: '12,400' },
-      { name: 'three_bet_machine', stack: '8,775' },
-      { name: 'quiet-observer', stack: '1,020' },
-      { action: 'BET 2,380', name: 'river_pressure', stack: '14,950' },
-      { name: 'data_collector', stack: '6,660' },
+      { blind: 'BB', isHero: true, name: 'sola', stack: '2,380' },
+      { action: 'フォールド', folded: true, name: 'player_with_a_very_long_name', stack: '12,400' },
+      { action: 'フォールド', folded: true, name: 'three_bet_machine', stack: '8,775' },
+      { action: 'フォールド', folded: true, name: 'quiet-observer', stack: '1,020' },
+      { action: 'ベット', bet: '2,380', blind: 'BTN', highlight: true, name: 'river_pressure', stack: '14,950' },
+      { action: 'フォールド', blind: 'SB', folded: true, name: 'data_collector', stack: '6,660' },
     ],
-    stakes: 'MTT · 200 / 400 / 50',
+    stakes: '200/400',
     stats: [
-      densePlayer(HERO_PLAYER_ID, 'sola', 12_840),
+      densePlayer(1024, 'sola', 12_840),
       densePlayer(7321, 'player_with_a_very_long_name', 987),
       densePlayer(7322, 'three_bet_machine', 2_411),
       densePlayer(7323, 'quiet-observer', 104),
