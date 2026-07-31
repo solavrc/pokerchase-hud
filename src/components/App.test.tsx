@@ -318,7 +318,7 @@ describe('App', () => {
   it('uiConfigにhudDisplayModeが渡された場合、そのままHudへ伝播する', async () => {
     (global.chrome.storage.sync.get as jest.Mock).mockImplementation((_, callback) => {
       callback({
-        uiConfig: { ...DEFAULT_UI_CONFIG, hudDisplayMode: 'full', hudColorCoding: false },
+        uiConfig: { ...DEFAULT_UI_CONFIG, hudDisplayMode: 'full' },
       })
     })
 
