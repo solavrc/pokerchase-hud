@@ -770,6 +770,89 @@ describe('Popup', () => {
     )
   })
 
+  it('旧UIで作れた連続しないtableSizeは起動時に丸めて保存・配信する', async () => {
+    // 旧チェックボックスUIでのみ作れた状態（フルとHUだけ）。表示だけを丸めると
+    // 「ポップアップは全層選択に見えるのに、実際のフィルタは3人/4人を除外した
+    // まま」という不一致が、ユーザーがスライダーを触るまで残ってしまう。
+    syncData = {
+      options: {
+        sendUserData: true,
+        filterOptions: {
+          gameTypes: { sng: true, mtt: true, ring: true },
+          tableSize: { full: true, '4p': false, '3p': false, hu: true },
+          handLimit: 500,
+          statDisplayConfigs: defaultStatDisplayConfigs,
+        },
+      },
+      uiConfig: DEFAULT_UI_CONFIG,
+    }
+
+    render(<Popup />)
+
+    await waitForAsyncOperations()
+
+    const [lower, upper] = screen.getAllByRole('slider').slice(0, 2) as HTMLInputElement[]
+    expect(lower).toHaveValue('1')
+    expect(upper).toHaveValue('4')
+
+    // storageも同じ全層へ揃う（表示だけが広がることはない）
+    await waitFor(() => {
+      expect(syncData.options.filterOptions.tableSize).toEqual({
+        full: true, '4p': true, '3p': true, hu: true,
+      })
+    })
+    // 対象範囲が実際に変わるので、開いているゲームタブへも伝える
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'updateBattleTypeFilter',
+        filterOptions: expect.objectContaining({
+          tableSize: { full: true, '4p': true, '3p': true, hu: true },
+        }),
+      })
+    )
+
+    // 丸めた値がstateにも入っていること。表示だけ丸めてstateに古い値を残すと、
+    // 次に別のフィルタを変えた瞬間に連続しない値がstorageへ書き戻り、
+    // 起動時の移行が取り消される。
+    await userEvent.click(screen.getByRole('checkbox', { name: 'MTT' }))
+
+    await waitFor(() => {
+      expect(syncData.options.filterOptions.gameTypes.mtt).toBe(false)
+    })
+    expect(syncData.options.filterOptions.tableSize).toEqual({
+      full: true, '4p': true, '3p': true, hu: true,
+    })
+  })
+
+  it('連続したtableSizeは起動時に書き換えない', async () => {
+    syncData = {
+      options: {
+        sendUserData: true,
+        filterOptions: {
+          gameTypes: { sng: true, mtt: true, ring: true },
+          tableSize: { full: true, '4p': true, '3p': false, hu: false },
+          handLimit: 500,
+          statDisplayConfigs: defaultStatDisplayConfigs,
+        },
+      },
+      uiConfig: DEFAULT_UI_CONFIG,
+    }
+
+    render(<Popup />)
+
+    await waitForAsyncOperations()
+
+    const [lower, upper] = screen.getAllByRole('slider').slice(0, 2) as HTMLInputElement[]
+    expect(lower).toHaveValue('3')
+    expect(upper).toHaveValue('4')
+    expect(syncData.options.filterOptions.tableSize).toEqual({
+      full: true, '4p': true, '3p': false, hu: false,
+    })
+    expect(mockChromeRuntimeSendMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'updateBattleTypeFilter' })
+    )
+  })
+
   it('旧storageにtableSizeキーが無いユーザーはデフォルト（全層選択）で復元される（グレースフルなマイグレーション）', async () => {
     syncData = {
       options: {
