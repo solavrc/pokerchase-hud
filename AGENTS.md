@@ -497,6 +497,24 @@ rather than by refusing to grow: the default bottom-right position leaves only
 The container is `border-box` so its rendered footprint equals the clamped
 width/height exactly; the log body is that minus `HAND_LOG_BORDER_WIDTH*2`.
 
+**Hand-log row height**: the virtual list positions rows from `getItemSize()`,
+so that estimate has to predict CSS wrapping or rows overlap. It measures the
+real monospace advance width with `canvas.measureText()` at the actual
+font/size (cached per font string; falls back to a conservative 0.6 em ratio
+where canvas is unavailable, e.g. jsdom), derives chars-per-line from the row's
+real text width (the log body width above, minus `EntryRow`'s horizontal
+padding — `EntryRow` pins `boxSizing: border-box` so host-page CSS cannot move
+that boundary), adds the timestamp prefix's width to the first line when
+timestamps are on, and counts lines with the same word-boundary / `break-word`
+rules the CSS uses. Derive it from the *displayed* width, never the stored one:
+a viewport narrower than the stored width shrinks only the render, and that is
+where the wrapping actually happens. Do not reintroduce a fixed chars-per-line
+constant: the panel resizes down to `HAND_LOG_MIN_WIDTH` (200px), where the
+previous 60-chars-per-line assumption under-counted lines and rows overlapped.
+Every input to the wrap calculation must stay in `getItemSize`'s `useCallback`
+deps — react-window rebuilds its row-bounds cache only when the `rowHeight`
+identity changes.
+
 **Popup theming**: `src/components/popup/theme.ts` defines two MUI themes -- `dark-felt` (default look, shares the HUD overlay's dark/gold palette) and `modern-light`. Which one renders is controlled by the `popupTheme` setting (`'auto' | 'dark' | 'light'`, default `'auto'`; テーマ control in `PopupHeader.tsx`, a 自動/ダーク/ライト 3-way `SegmentRadio`). `'auto'` resolves against the live OS `prefers-color-scheme` via `useMediaQuery` in `Popup.tsx` (`resolvePopupThemeVariant()` in `theme.ts` is the pure resolver, unit-tested independent of the DOM). Persisted to its own `chrome.storage.sync` key (`popupTheme`, see `popup-theme-storage.ts`) -- deliberately **not** a field on `UIConfig`, because `UIScaleSection`/`HudDisplaySection` broadcast every `uiConfig` write to all open game tabs (`chrome.tabs.sendMessage(..., 'updateUIConfig')`) to trigger a HUD re-render; the popup's own chrome has nothing to do with the HUD overlay, so nesting it there would fire that broadcast on every theme change for no reason. `popup.ts` pre-fetches the persisted mode before the first `render()` call so the popup never paints with the wrong theme and then swaps.
 
 ## Statistics System

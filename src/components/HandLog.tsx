@@ -34,6 +34,14 @@ const HAND_LOG_BORDER_WIDTH = 1
 const HAND_LOG_DRAG_THRESHOLD = 4
 const HAND_LOG_DEFAULT_RIGHT = 10
 const HAND_LOG_DEFAULT_BOTTOM = 135
+const HAND_LOG_FONT_FAMILY = 'Consolas, Monaco, "Courier New", monospace'
+const HAND_LOG_SEPARATOR_HEIGHT = 10
+const HAND_LOG_ENTRY_PADDING_X = 8
+const HAND_LOG_ENTRY_PADDING_Y = 1
+const HAND_LOG_ENTRY_LINE_HEIGHT = 1.2
+const HAND_LOG_TIMESTAMP_FONT_SIZE_OFFSET = 2
+const HAND_LOG_TIMESTAMP_MARGIN_RIGHT = 8
+const HAND_LOG_TIMESTAMP_TEXT_LENGTH = '[00:00:00]'.length
 
 type HandLogInteractionMode = 'move' | 'resize'
 
@@ -494,6 +502,161 @@ const formatTimestamp = (timestamp: number): string => {
   })
 }
 
+/**
+ * canvas計測が使えない環境（jsdom等）で使う1文字送り幅のem比。
+ * 想定フォントはMonaco / Courier New / 汎用monospaceが約0.6、Consolasが約0.55。
+ * その中で最も広い値を既定にして、行数を過小評価しない側へ倒す
+ * （過大評価は行間が空くだけだが、過小評価は行の重なり＝欠落になる）。
+ */
+export const FALLBACK_MONOSPACE_CHAR_WIDTH_RATIO = 0.6
+const CHAR_WIDTH_MEASUREMENT_SAMPLE = '0'.repeat(32)
+const MIN_PLAUSIBLE_CHAR_WIDTH_RATIO = 0.3
+const MAX_PLAUSIBLE_CHAR_WIDTH_RATIO = 1
+const charWidthCache = new Map<string, number>()
+
+/**
+ * 実フォント・実フォントサイズでの1文字送り幅(px)をcanvasで実測する。
+ *
+ * 折り返し幅の推定はDOMと同じフォント指定で測らないと、等幅フォントでも
+ * フォントごとの文字幅比の違い（Consolas 0.55 / Monaco・Courier New 0.6）が
+ * そのまま行数の誤差になる。measureTextはレイアウトと同じフォント解決を通り、
+ * 小さいフォントサイズ特有のラスタライズ差も込みで測れる。
+ * canvasが無い環境（jsdom等）は保守的な比率へフォールバックする。
+ */
+export const measureMonospaceCharWidth = (
+  fontSize: number,
+  fontFamily: string = HAND_LOG_FONT_FAMILY
+): number => {
+  const font = `${fontSize}px ${fontFamily}`
+  const cached = charWidthCache.get(font)
+  if (cached !== undefined) return cached
+
+  let charWidth = fontSize * FALLBACK_MONOSPACE_CHAR_WIDTH_RATIO
+  try {
+    // jsdomはCanvasRenderingContext2D自体を定義しない。getContextを呼ぶと
+    // "Not implemented"を吐くので、型の有無で先に判定して呼ばない。
+    if (
+      typeof document !== 'undefined' &&
+      typeof CanvasRenderingContext2D !== 'undefined'
+    ) {
+      const context = document.createElement('canvas').getContext('2d')
+      if (context) {
+        context.font = font
+        const measured =
+          context.measureText(CHAR_WIDTH_MEASUREMENT_SAMPLE).width /
+          CHAR_WIDTH_MEASUREMENT_SAMPLE.length
+        const ratio = measured / fontSize
+        if (
+          Number.isFinite(ratio) &&
+          ratio >= MIN_PLAUSIBLE_CHAR_WIDTH_RATIO &&
+          ratio <= MAX_PLAUSIBLE_CHAR_WIDTH_RATIO
+        ) {
+          charWidth = measured
+        }
+      }
+    }
+  } catch {
+    // 計測不能ならフォールバック比率のまま
+  }
+  charWidthCache.set(font, charWidth)
+  return charWidth
+}
+
+/**
+ * EntryRowの`white-space: pre-wrap` + `word-break: break-word`に合わせて
+ * 折り返し後の行数を数える。
+ *
+ * 文字数を1行あたり文字数で割るだけでは、単語境界での折り返しを無視して
+ * 行数を過小評価する（"aaaaaa bbbbbb cccccc"は20文字なので幅10文字では
+ * 単純除算だと2行だが、実際は3行になる）。
+ * - 空白は行末でぶら下がるので、収まらない場合はその行を埋めるだけ
+ * - 単語は現在行に収まらなければ次行へ送る
+ * - 1行にも収まらない長い単語だけをbreak-wordとして分割する
+ *
+ * @param initialUsedChars 先頭に既に置かれている内容（タイムスタンプ）の文字数換算
+ */
+export const countWrappedLines = (
+  text: string,
+  charsPerLine: number,
+  initialUsedChars = 0
+): number => {
+  if (text.length === 0 && initialUsedChars === 0) return 0
+
+  const maxChars = Math.max(1, Math.floor(charsPerLine))
+  let lines = 1
+  let used = Math.max(0, initialUsedChars)
+
+  text.split('\n').forEach((hardLine, hardLineIndex) => {
+    if (hardLineIndex > 0) {
+      lines += 1
+      used = 0
+    }
+    for (const token of hardLine.match(/\s+|\S+/g) ?? []) {
+      const length = token.length
+      if (/^\s/.test(token)) {
+        used = used + length <= maxChars ? used + length : maxChars
+        continue
+      }
+      if (used + length <= maxChars) {
+        used += length
+        continue
+      }
+      if (used > 0) {
+        lines += 1
+        used = 0
+      }
+      if (length <= maxChars) {
+        used = length
+        continue
+      }
+      const chunks = Math.ceil(length / maxChars)
+      lines += chunks - 1
+      used = length - (chunks - 1) * maxChars
+    }
+  })
+
+  return lines
+}
+
+export interface HandLogRowMetrics {
+  /** 折り返しに使える本文幅(px)。= 行の幅 - 左右padding */
+  textWidth: number
+  fontSize: number
+  showTimestamps: boolean
+  /** フォントサイズ→1文字幅(px)。既定はcanvas実測（テストからの差し替え口） */
+  measureCharWidth?: (fontSize: number) => number
+}
+
+/**
+ * 仮想リストの行高を、実際の本文幅で折り返した行数から求める。
+ * `boxSizing: border-box`のEntryRowに与える高さなので、上下paddingを含む。
+ */
+export const estimateEntryRowHeight = (
+  text: string,
+  {
+    textWidth,
+    fontSize,
+    showTimestamps,
+    measureCharWidth = measureMonospaceCharWidth
+  }: HandLogRowMetrics
+): number => {
+  const charWidth = Math.max(measureCharWidth(fontSize), Number.EPSILON)
+  const charsPerLine = Math.max(1, Math.floor(textWidth / charWidth))
+  // タイムスタンプは本文より小さいフォントの別spanなので、幅を本文の文字数へ換算する
+  const timestampChars = showTimestamps
+    ? Math.ceil(
+      (
+        measureCharWidth(
+          Math.max(fontSize - HAND_LOG_TIMESTAMP_FONT_SIZE_OFFSET, 1)
+        ) * HAND_LOG_TIMESTAMP_TEXT_LENGTH +
+        HAND_LOG_TIMESTAMP_MARGIN_RIGHT
+      ) / charWidth
+    )
+    : 0
+  const lines = countWrappedLines(text, charsPerLine, timestampChars)
+  return lines * fontSize * HAND_LOG_ENTRY_LINE_HEIGHT + HAND_LOG_ENTRY_PADDING_Y * 2
+}
+
 interface EntryRowData {
   items: Array<{ entry: HandLogEntry, isSeparator: boolean }>
   showTimestamps: boolean
@@ -519,9 +682,10 @@ const EntryRow = ({ index, style, items, showTimestamps, copiedHandId, onEntryCl
     return (
       <div style={{
         ...style,
+        boxSizing: 'border-box',
         display: 'flex',
         alignItems: 'center',
-        padding: '0 8px'
+        padding: `0 ${HAND_LOG_ENTRY_PADDING_X}px`
       }}>
         <div style={{
           borderTop: '1px solid rgba(255, 255, 255, 0.2)',
@@ -536,8 +700,13 @@ const EntryRow = ({ index, style, items, showTimestamps, copiedHandId, onEntryCl
   const [isHovered, setIsHovered] = useState(false)
 
   const entryStyle: CSSProperties = {
+    // 行高の推定（estimateEntryRowHeight）はテキスト幅を
+    // 「行幅 - 左右padding」として計算する。ホスト側CSSのbox-sizingに
+    // 左右されないよう、ここで明示する。react-windowが与えるheightにも
+    // 上下paddingが含まれるようになるため、垂直方向の勘定とも一致する。
+    boxSizing: 'border-box',
     color: entryTypeColors[entry.type],
-    lineHeight: 1.2,
+    lineHeight: HAND_LOG_ENTRY_LINE_HEIGHT,
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
     opacity: entry.type === HandLogEntryType.SEAT ? 0.8 : 1,
@@ -548,14 +717,14 @@ const EntryRow = ({ index, style, items, showTimestamps, copiedHandId, onEntryCl
       : copiedHandId === entry.handId
         ? 'rgba(0, 200, 0, 0.2)'
         : 'transparent',
-    padding: '1px 8px',
+    padding: `${HAND_LOG_ENTRY_PADDING_Y}px ${HAND_LOG_ENTRY_PADDING_X}px`,
     fontSize
   }
 
   const timestampStyle: CSSProperties = {
     color: '#666666',
-    fontSize: fontSize - 2,
-    marginRight: '8px'
+    fontSize: fontSize - HAND_LOG_TIMESTAMP_FONT_SIZE_OFFSET,
+    marginRight: `${HAND_LOG_TIMESTAMP_MARGIN_RIGHT}px`
   }
 
   return (
@@ -639,16 +808,45 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     return items
   }, [entries])
 
+  // Display-only shrink: the layout kept by the machine remains persistable.
+  const displaySize = getHandLogDisplaySize(
+    layoutMachine.layout,
+    layoutMachine.environment
+  )
+  // border-boxなのでbody部はborderぶん内側になる。
+  const bodyWidth = Math.max(
+    0,
+    displaySize.width - HAND_LOG_BORDER_WIDTH * 2
+  )
+  const bodyHeight = Math.max(
+    0,
+    displaySize.height - HAND_LOG_BORDER_WIDTH * 2
+  )
+
+  // 折り返しに使える本文幅。行はリスト幅いっぱい（width:100%）なので、
+  // 行の包含ブロックはbody幅そのもので、そこからEntryRow自身の左右padding
+  // だけがテキスト幅を狭める。保存幅ではなく表示幅から引くのが要点:
+  // viewportが保存幅より狭いときは表示だけが縮み、折り返しは縮んだ側で起きる。
+  const entryTextWidth = Math.max(
+    0,
+    bodyWidth - HAND_LOG_ENTRY_PADDING_X * 2
+  )
+
   // アイテムの高さを計算
+  // 本文幅・フォントサイズ・タイムスタンプ有無が変わるとこのコールバックの
+  // identityも変わり、react-window側の行境界キャッシュ（rowHeightに対する
+  // useMemo）が破棄されて再計算される。
   const getItemSize = useCallback((index: number) => {
     const item = processedItems[index]
     if (!item) return 0
-    if (item.isSeparator) return 10
+    if (item.isSeparator) return HAND_LOG_SEPARATOR_HEIGHT
 
-    // テキストの長さとフォントサイズに基づいて高さを推定
-    const lines = Math.ceil(item.entry.text.length / 60)
-    return lines * (config.fontSize * 1.2) + 2
-  }, [processedItems, config.fontSize])
+    return estimateEntryRowHeight(item.entry.text, {
+      textWidth: entryTextWidth,
+      fontSize: config.fontSize,
+      showTimestamps: config.showTimestamps
+    })
+  }, [processedItems, entryTextWidth, config.fontSize, config.showTimestamps])
 
   // Prop scale and viewport dimensions are inputs to the same layout machine
   // as pointer interaction. useLayoutEffect updates scale before paint while
@@ -872,11 +1070,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
   if (!config.enabled) return null
 
   const { layout, environment } = layoutMachine
-  // Display-only shrink: the layout kept by the machine remains persistable.
-  const { width, height } = getHandLogDisplaySize(layout, environment)
-  // border-boxなのでbody部はborderぶん内側になる。
-  const bodyWidth = Math.max(0, width - HAND_LOG_BORDER_WIDTH * 2)
-  const bodyHeight = Math.max(0, height - HAND_LOG_BORDER_WIDTH * 2)
+  const { width, height } = displaySize
   const interactionMode =
     layoutMachine.interaction.phase === 'interacting'
       ? layoutMachine.interaction.mode
@@ -901,7 +1095,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     transformOrigin: 'top left',
     overflowY: 'hidden',
     overflowX: 'hidden',
-    fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+    fontFamily: HAND_LOG_FONT_FAMILY,
     fontSize: config.fontSize,
     color: '#ffffff',
     // Keep the move grip and resize corner above player HUD panels (z-index
