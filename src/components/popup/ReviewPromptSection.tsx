@@ -40,6 +40,7 @@ const REVIEW_PROMPT_MESSAGE_TIMEOUT_MS = 5000
 export const ReviewPromptSection = () => {
   const [visible, setVisible] = useState(false)
   const [suppressed, setSuppressed] = useState(true)
+  const [rating, setRating] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -87,12 +88,19 @@ export const ReviewPromptSection = () => {
   const reviewUrl = chrome.runtime.id ? buildChromeWebStoreReviewUrl(chrome.runtime.id) : undefined
 
   const handleRate = useCallback(async () => {
-    setVisible(false)
     // 記録の完了を待ってからタブを開く: 新規タブへ切り替わるとPopupは
     // 破棄されるため、送信しっぱなしだと決着が失われうる。タイムアウト時
     // （応答なし）はストアページを開く方を優先する -- ユーザーの意図を
-    // 妨げないのが優先で、記録漏れは「後日もう一度聞かれる」だけで済む
+    // 妨げないのが優先で、記録漏れは「後日もう一度聞かれる」だけで済む。
+    //
+    // 待っている間はバナーを消さずボタンをdisabledにする（UpdateSectionの
+    // applyingと同じ形）。先に消してしまうと、SWのコールドスタートで
+    // 往復が延びたときに「押したのに何も起きない」無反応の窓ができ、
+    // そこでPopupを閉じられると`rated`だけ記録されてストアは開かれない
+    // -- 二度と聞かない状態になってしまう
+    setRating(true)
     await resolve('rated')
+    setVisible(false)
     if (reviewUrl) chrome.tabs.create({ url: reviewUrl })
   }, [resolve, reviewUrl])
 
@@ -124,13 +132,13 @@ export const ReviewPromptSection = () => {
           Chrome ウェブストアでの評価・レビューが今後の開発の励みになります。
         </Typography>
         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mt: 0.5 }}>
-          <Button size="small" color="inherit" onClick={handleRate}>
-            評価する
+          <Button size="small" color="inherit" onClick={handleRate} disabled={rating}>
+            {rating ? '開いています...' : '評価する'}
           </Button>
-          <Button size="small" color="inherit" onClick={handleLater}>
+          <Button size="small" color="inherit" onClick={handleLater} disabled={rating}>
             後で
           </Button>
-          <Button size="small" color="inherit" onClick={handleDismiss}>
+          <Button size="small" color="inherit" onClick={handleDismiss} disabled={rating}>
             今後表示しない
           </Button>
         </Box>

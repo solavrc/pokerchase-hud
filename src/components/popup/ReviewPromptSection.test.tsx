@@ -111,6 +111,39 @@ describe('ReviewPromptSection', () => {
     // 記録の送信がタブを開くより先（Popupは新規タブで破棄されるため）
     const resolveCallOrder = mockSendMessage.mock.invocationCallOrder.at(-1)!
     expect(resolveCallOrder).toBeLessThan((chrome.tabs.create as jest.Mock).mock.invocationCallOrder[0]!)
+    await waitFor(() => {
+      expect(screen.queryByText(PROMPT_TEXT)).not.toBeInTheDocument()
+    })
+  })
+
+  it('記録の応答待ちの間はバナーを残してボタンを無効化する（無反応の窓を作らない）', async () => {
+    const user = userEvent.setup()
+    let releaseResolve: (() => void) | undefined
+    mockSendMessage.mockImplementation((message: any, callback?: (response: any) => void) => {
+      if (message?.action === 'getReviewPrompt') {
+        callback?.({ success: true, visible: true })
+        return
+      }
+      // SWのコールドスタートで往復が延びた状態を再現する
+      releaseResolve = () => callback?.({ success: true })
+    })
+    render(<ReviewPromptSection />)
+    await findPrompt()
+
+    await user.click(screen.getByText('評価する'))
+
+    // 応答が返るまではバナーもボタンも残っている（消えたまま無反応にしない）
+    expect(screen.getByText(PROMPT_TEXT)).toBeInTheDocument()
+    expect(screen.getByText('開いています...').closest('button')).toBeDisabled()
+    expect(screen.getByText('後で').closest('button')).toBeDisabled()
+    expect(screen.getByText('今後表示しない').closest('button')).toBeDisabled()
+    expect(chrome.tabs.create).not.toHaveBeenCalled()
+
+    releaseResolve!()
+
+    await waitFor(() => {
+      expect(chrome.tabs.create).toHaveBeenCalled()
+    })
     expect(screen.queryByText(PROMPT_TEXT)).not.toBeInTheDocument()
   })
 
