@@ -302,13 +302,16 @@ const startSentry = async (
     if (runtime !== 'content_script' || consentState === false) {
       return 'disabled'
     }
-    // A content script reports `undefined` for two different situations: the
-    // background has not created the session mirror yet, or the mirror reads
-    // `true` but its background re-verification could not be completed. Only
-    // the former is guaranteed to be retried by a later change event.
-    return await readSentryTelemetryConsentMirror() === true
-      ? 'consent_unverified'
-      : 'waiting_for_consent_mirror'
+    // A content script reports `undefined` for three different situations, and
+    // exactly one of them is guaranteed to be retried by a later change event:
+    // the mirror does not exist yet AND the read proving that succeeded, which
+    // means this runtime has access and will be told when it is created. A
+    // refused read (no access, therefore no change event either) and a stored
+    // `true` that could not be verified both leave the transport stuck.
+    const mirror = await readSentryTelemetryConsentMirror()
+    return mirror.readable && mirror.value === undefined
+      ? 'waiting_for_consent_mirror'
+      : 'consent_unverified'
   }
   if (!await hasSentryHostPermission(runtime)) {
     await clearSentryTelemetryConsent()

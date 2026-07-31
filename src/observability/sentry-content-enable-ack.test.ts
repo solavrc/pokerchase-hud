@@ -133,15 +133,21 @@ describe('Sentry content-script enablement acknowledgement', () => {
     expect(chrome.permissions.remove).not.toHaveBeenCalled()
   })
 
-  it('keeps the opt-in while the consent mirror is not readable yet', async () => {
+  // A refused read is not an absent mirror: the same access gate withholds
+  // storage.onChanged, so acknowledging it would report success for a tab that
+  // can never be told the mirror appeared.
+  it('refuses while the consent mirror cannot be read at all', async () => {
     const { optedIn, error } = await optInFromPopupWithLiveGameTab({
       telemetryCompiledIn: true,
       consentMirrorReadable: false
     })
 
-    expect(error).toBeUndefined()
-    expect(optedIn).toBe(true)
-    expect(chrome.permissions.remove).not.toHaveBeenCalled()
+    expect(optedIn).toBeUndefined()
+    expect(error).toEqual(
+      expect.objectContaining({
+        message: 'Content script did not acknowledge telemetry state'
+      })
+    )
   })
 
   it('starts telemetry and keeps the opt-in on the healthy path', async () => {
@@ -207,7 +213,9 @@ describe('Sentry content-script enablement acknowledgement', () => {
  * otherwise consume probes and shift the numbering. Nothing writes to storage
  * during the dispatch, so only the instance under test probes in that window.
  */
-const acknowledgeEnableDirectly = async (failuresDuringDispatch: number) => {
+const acknowledgeEnableDirectly = async (
+  { failuresDuringDispatch = 0, seedMirror = true } = {}
+) => {
   const contentListeners: MessageListener[] = []
   ;(chrome.runtime.onMessage.addListener as jest.Mock).mockImplementation(
     (listener: MessageListener) => { contentListeners.push(listener) }
@@ -222,7 +230,9 @@ const acknowledgeEnableDirectly = async (failuresDuringDispatch: number) => {
     }
     return { sentryTelemetryEnabled: true }
   })
-  await chrome.storage.session.set({ sentryTelemetryConsent: true })
+  if (seedMirror) {
+    await chrome.storage.session.set({ sentryTelemetryConsent: true })
+  }
 
   // Starts unverified: every probe fails while the instance boots.
   let contentSentryInit: jest.Mock | undefined
@@ -253,7 +263,9 @@ describe('Sentry content-script status-probe retry', () => {
   it('retries once past a transient probe failure', async () => {
     // The acknowledgement path's first attempt spends the one failing probe;
     // only the retry can still reach a confirming one.
-    const { response, contentSentryInit } = await acknowledgeEnableDirectly(1)
+    const { response, contentSentryInit } = await acknowledgeEnableDirectly({
+      failuresDuringDispatch: 1
+    })
 
     expect(response).toEqual({
       sentryTelemetryStateApplied: 'pokerchase:sentry-telemetry-enabled'
@@ -262,11 +274,27 @@ describe('Sentry content-script status-probe retry', () => {
   })
 
   it('refuses once the retry is also unconfirmed', async () => {
-    const { response, contentSentryInit } =
-      await acknowledgeEnableDirectly(Infinity)
+    const { response, contentSentryInit } = await acknowledgeEnableDirectly({
+      failuresDuringDispatch: Infinity
+    })
 
     expect(response).toEqual({
       sentryTelemetryStateFailed: 'pokerchase:sentry-telemetry-enabled'
+    })
+    expect(contentSentryInit).not.toHaveBeenCalled()
+  })
+
+  // The one honored not-started outcome. The read succeeding is what makes it
+  // safe: it proves this runtime has session access, so creating the mirror
+  // will deliver a change event here and start the transport.
+  it('acknowledges an absent mirror that was read successfully', async () => {
+    const { response, contentSentryInit } = await acknowledgeEnableDirectly({
+      failuresDuringDispatch: Infinity,
+      seedMirror: false
+    })
+
+    expect(response).toEqual({
+      sentryTelemetryStateApplied: 'pokerchase:sentry-telemetry-enabled'
     })
     expect(contentSentryInit).not.toHaveBeenCalled()
   })
