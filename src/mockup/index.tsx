@@ -152,7 +152,7 @@ const Mockup = () => {
    * The popup writes HUD display settings to the same storage the production
    * App.tsx reads, so read them the same way (including its
    * DEFAULT_UI_CONFIG merge and the device-local scale override). Without
-   * this, changing サイズ / 表示 / コンパクト / 統計カラー in the mocked popup
+   * this, changing サイズ / 表示 / 簡易・詳細 in the mocked popup
    * would look applied while the HUD under review never moved.
    */
   const [uiConfig, setUIConfig] = useState<UIConfig>(DEFAULT_UI_CONFIG)

@@ -6,7 +6,6 @@ import { composeStatTitle } from './statTooltip'
 
 interface CompactStatDisplayProps {
   displayStats: Array<[string, any, StatResult?]>
-  /** Threshold-based value coloring, see statColorRules.ts. */
 }
 
 const styles = {

@@ -7,7 +7,6 @@ import { composeStatTitle } from './statTooltip'
 interface StatDisplayProps {
   displayStats: Array<[string, any, StatResult?]>
   formatValue: (value: number | [number, number]) => string
-  /** Threshold-based value coloring, see statColorRules.ts. Defaults to off. */
 }
 
 const styles = {
