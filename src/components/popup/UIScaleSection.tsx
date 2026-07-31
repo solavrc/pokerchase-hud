@@ -6,6 +6,7 @@ import ToggleButton from '@mui/material/ToggleButton'
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
 import Typography from '@mui/material/Typography'
 import { useCallback, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { DEFAULT_UI_CONFIG, type UIConfig } from '../../types/hand-log'
 import { formatShortcut, shortcutFromKeyboardEvent } from '../../utils/keyboard-shortcut'
 import {
@@ -15,17 +16,34 @@ import {
   saveSyncedUIConfigPatch,
 } from '../../utils/ui-config-storage'
 import { broadcastUIConfig } from './broadcast-ui-config'
+import { popupToggleGroupSx } from './toggleGroupStyles'
 
 interface UIScaleSectionProps {
   uiConfig: UIConfig
   setUIConfig: (config: UIConfig) => void
   scaleControlsDisabled?: boolean
+  /**
+   * 2行目の先頭へ差し込むHUD表示モード（簡易/詳細）。別コンポーネント
+   * （HudDisplaySection）のままにしつつ、行の組み立てはここ1箇所で完結させる
+   * ためのスロット。各セクションが独自に行を持つと、縦に伸びるうえ右端が揃わない。
+   */
+  children?: ReactNode
 }
 
+/**
+ * ポップアップ最上部の設定ブロック。2行だけで構成する（sola指定）。
+ *   1行目: 位置とサイズをリセット ......... サイズ - 100% +
+ *   2行目: 簡易/詳細 ................. Shift+H  非表示/表示
+ *
+ * 指標選択より上はHUDの本質ではないので、見出しラベル（「表示モード:」等）を
+ * 足さず、収まる限り横に並べて縦の専有量を抑える。2行目でショートカットを
+ * 非表示/表示の隣へ寄せているのは、それが切り替える対象だから。
+ */
 export const UIScaleSection = ({
   uiConfig,
   setUIConfig,
   scaleControlsDisabled = false,
+  children,
 }: UIScaleSectionProps) => {
   const [recordingShortcut, setRecordingShortcut] = useState(false)
   const [shortcutError, setShortcutError] = useState(false)
@@ -155,26 +173,8 @@ export const UIScaleSection = ({
   }
 
   return (
-    <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', rowGap: 1 }}>
-      <Box sx={{ display: 'flex', width: '100%', alignItems: 'center', gap: 1 }}>
-        <Typography variant="body2" sx={{ color: 'text.secondary' }}>サイズ:</Typography>
-        <IconButton
-          size="small"
-          onClick={() => requestScaleChange(-0.1)}
-          disabled={scaleControlsDisabled || uiConfig.scale <= 0.5}
-        >
-          -
-        </IconButton>
-        <Typography variant="body2" sx={{ minWidth: 35, textAlign: 'center' }}>
-          {Math.round(uiConfig.scale * 100)}%
-        </Typography>
-        <IconButton
-          size="small"
-          onClick={() => requestScaleChange(0.1)}
-          disabled={scaleControlsDisabled || uiConfig.scale >= 2.0}
-        >
-          +
-        </IconButton>
+    <Box sx={{ display: 'flex', flexDirection: 'column', rowGap: 0.75 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <Button
           size="small"
           variant="text"
@@ -197,7 +197,6 @@ export const UIScaleSection = ({
             })
           }}
           sx={{
-            ml: 'auto',
             px: 0.5,
             minWidth: 0,
             fontSize: '11px',
@@ -206,12 +205,41 @@ export const UIScaleSection = ({
         >
           位置とサイズをリセット
         </Button>
+
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          <Typography variant="body2" sx={{ color: 'text.secondary' }}>サイズ:</Typography>
+          <IconButton
+            size="small"
+            onClick={() => requestScaleChange(-0.1)}
+            disabled={scaleControlsDisabled || uiConfig.scale <= 0.5}
+          >
+            -
+          </IconButton>
+          <Typography variant="body2" sx={{ minWidth: 35, textAlign: 'center' }}>
+            {Math.round(uiConfig.scale * 100)}%
+          </Typography>
+          <IconButton
+            size="small"
+            onClick={() => requestScaleChange(0.1)}
+            disabled={scaleControlsDisabled || uiConfig.scale >= 2.0}
+          >
+            +
+          </IconButton>
+        </Box>
       </Box>
 
-      <Box sx={{ display: 'flex', width: '100%', justifyContent: 'flex-end', alignItems: 'center', gap: 0.75 }}>
-        <TextField
+      {/*
+        ショートカットは「非表示/表示」を切り替えるキーなので、その2つを右側で
+        1グループにまとめ、無関係な 簡易/詳細 は左端へ離す。等間隔に3つ並べると
+        ショートカットがどちらに属するか判断できない（sola指摘）。
+      */}
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        {children}
+
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          <TextField
           inputRef={shortcutInputRef}
-          size="small"
+            size="small"
           value={recordingShortcut
             ? 'キーを入力…'
             : shortcutLabel ?? '未設定'}
@@ -244,9 +272,9 @@ export const UIScaleSection = ({
             },
           }}
           sx={{
-            width: 105,
+            width: 92,
             '& .MuiInputBase-input': {
-              px: 0.75,
+              px: 0.5,
               py: 0.625,
               fontSize: '11px',
               textAlign: 'center',
@@ -255,22 +283,19 @@ export const UIScaleSection = ({
           }}
         />
 
-        <ToggleButtonGroup
-          value={uiConfig.displayEnabled ? 'on' : 'off'}
-          exclusive
-          onChange={(_event, newValue: string | null) => {
+          <ToggleButtonGroup
+            value={uiConfig.displayEnabled ? 'on' : 'off'}
+            exclusive
+            onChange={(_event, newValue: string | null) => {
             if (newValue !== null) {
               updateSyncedUIConfig({ ...uiConfig, displayEnabled: newValue === 'on' })
             }
           }}
-          size="small"
-          sx={(theme) => ({
-            '& .MuiToggleButton-root': {
-              padding: '4px 12px',
-              fontSize: '12px',
-              fontWeight: 'bold',
-              textTransform: 'none',
-              '&.Mui-selected': {
+            size="small"
+          sx={[
+            popupToggleGroupSx,
+            (theme) => ({
+              '& .MuiToggleButton-root.Mui-selected': {
                 '&[value="off"]': {
                   backgroundColor: theme.palette.error.main,
                   color: theme.palette.getContrastText(theme.palette.error.main),
@@ -286,8 +311,8 @@ export const UIScaleSection = ({
                   }
                 }
               }
-            }
-          })}
+            }),
+          ]}
         >
           <ToggleButton value="off">
             非表示
@@ -295,7 +320,8 @@ export const UIScaleSection = ({
           <ToggleButton value="on">
             表示
           </ToggleButton>
-        </ToggleButtonGroup>
+          </ToggleButtonGroup>
+        </Box>
       </Box>
     </Box>
   )

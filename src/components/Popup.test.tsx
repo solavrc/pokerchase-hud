@@ -268,16 +268,14 @@ describe('Popup', () => {
     errorSpy.mockRestore()
   })
 
-  it('HUD表示設定（コンパクト/フル・統計カラー表示）を表示・変更できる', async () => {
+  it('HUD表示設定（簡易/詳細）を表示・変更できる', async () => {
     render(<Popup />)
 
     await waitForAsyncOperations()
 
-    expect(screen.getByText('表示モード:')).toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: 'コンパクト' })).toBeChecked()
-    expect(screen.getByRole('checkbox', { name: '統計カラー表示' })).toBeChecked()
+    expect(screen.getByRole('button', { name: '簡易' })).toHaveAttribute('aria-pressed', 'true')
 
-    await userEvent.click(screen.getByRole('radio', { name: 'フル' }))
+    await userEvent.click(screen.getByRole('button', { name: '詳細' }))
 
     await waitFor(() => {
       expect(syncData.uiConfig).toEqual(
@@ -292,9 +290,10 @@ describe('Popup', () => {
     await waitForAsyncOperations()
 
     // デフォルトは自動 -- popupThemeキーが無い状態からのマイグレーション
-    expect(screen.getByRole('radio', { name: '自動' })).toBeChecked()
+    expect(screen.getByRole('button', { name: 'テーマ: 自動' })).toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('radio', { name: 'ライト' }))
+    // アイコントグルは 自動→ライト→ダーク→自動 の順に送る
+    await userEvent.click(screen.getByRole('button', { name: 'テーマ: 自動' }))
 
     await waitFor(() => {
       expect(syncData.popupTheme).toBe('light')
@@ -312,7 +311,7 @@ describe('Popup', () => {
 
     await waitForAsyncOperations()
 
-    expect(screen.getByRole('radio', { name: 'ダーク' })).toBeChecked()
+    expect(screen.getByRole('button', { name: 'テーマ: ダーク' })).toBeInTheDocument()
   })
 
   it('同期キャッシュのテーマで即時描画し、storage.syncの正本を描画後に反映する', async () => {
@@ -329,7 +328,7 @@ describe('Popup', () => {
     render(<Popup initialPopupThemeMode="light" />)
 
     // The popup is usable before chrome.storage.sync answers.
-    expect(screen.getByRole('radio', { name: 'ライト' })).toBeChecked()
+    expect(screen.getByRole('button', { name: 'テーマ: ライト' })).toBeInTheDocument()
     expect(resolveThemeRead).toBeDefined()
 
     act(() => {
@@ -337,7 +336,7 @@ describe('Popup', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByRole('radio', { name: 'ダーク' })).toBeChecked()
+      expect(screen.getByRole('button', { name: 'テーマ: ダーク' })).toBeInTheDocument()
     })
   })
 
@@ -353,10 +352,10 @@ describe('Popup', () => {
     })
 
     render(<Popup initialPopupThemeMode="light" />)
-    expect(screen.getByRole('radio', { name: 'ライト' })).toBeChecked()
+    expect(screen.getByRole('button', { name: 'テーマ: ライト' })).toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('radio', { name: 'ダーク' }))
-    expect(screen.getByRole('radio', { name: 'ダーク' })).toBeChecked()
+    await userEvent.click(screen.getByRole('button', { name: 'テーマ: ライト' }))
+    expect(screen.getByRole('button', { name: 'テーマ: ダーク' })).toBeInTheDocument()
     expect(window.localStorage.getItem(POPUP_THEME_LOCAL_STORAGE_KEY)).toBe('dark')
 
     await act(async () => {
@@ -364,11 +363,11 @@ describe('Popup', () => {
       await Promise.resolve()
     })
 
-    expect(screen.getByRole('radio', { name: 'ダーク' })).toBeChecked()
+    expect(screen.getByRole('button', { name: 'テーマ: ダーク' })).toBeInTheDocument()
     expect(window.localStorage.getItem(POPUP_THEME_LOCAL_STORAGE_KEY)).toBe('dark')
   })
 
-  it('旧storageのuiConfigにhudDisplayMode/hudColorCodingキーが無いユーザーはコンパクト+カラーONで復元される（グレースフルなマイグレーション, #143）', async () => {
+  it('旧storageのuiConfigにhudDisplayModeキーが無いユーザーは簡易で復元される（グレースフルなマイグレーション, #143）', async () => {
     syncData = {
       options: {
         sendUserData: true,
@@ -386,8 +385,7 @@ describe('Popup', () => {
 
     await waitForAsyncOperations()
 
-    expect(screen.getByRole('radio', { name: 'コンパクト' })).toBeChecked()
-    expect(screen.getByRole('checkbox', { name: '統計カラー表示' })).toBeChecked()
+    expect(screen.getByRole('button', { name: '簡易' })).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('UIスケール設定を表示・変更できる', async () => {
@@ -455,7 +453,6 @@ describe('Popup', () => {
       ...DEFAULT_UI_CONFIG,
       displayEnabled: false,
       hudDisplayMode: 'full',
-      hudColorCoding: false,
     }
     localData[UI_SCALE_STORAGE_KEY] = 1.4
     let resolveUIConfigRead!: (result: Record<string, any>) => void
@@ -504,8 +501,7 @@ describe('Popup', () => {
     await waitFor(() => {
       expect(screen.getByText('160%')).toBeInTheDocument()
       expect(screen.getByRole('button', { name: '非表示' })).toHaveAttribute('aria-pressed', 'true')
-      expect(screen.getByRole('radio', { name: 'フル' })).toBeChecked()
-      expect(screen.getByRole('checkbox', { name: '統計カラー表示' })).not.toBeChecked()
+      expect(screen.getByRole('button', { name: '詳細' })).toHaveAttribute('aria-pressed', 'true')
     })
   })
 
@@ -559,7 +555,7 @@ describe('Popup', () => {
       expect(screen.getByText('160%')).toBeInTheDocument()
       expect(screen.getByRole('button', { name: '非表示' }))
         .toHaveAttribute('aria-pressed', 'true')
-      expect(screen.getByRole('radio', { name: 'フル' })).toBeChecked()
+      expect(screen.getByRole('button', { name: '詳細' })).toHaveAttribute('aria-pressed', 'true')
     })
   })
 
@@ -677,7 +673,7 @@ describe('Popup', () => {
       callback([{ id: 123 }])
     })
     mockChromeTabsSendMessage.mockResolvedValue(undefined)
-    await userEvent.click(screen.getByRole('radio', { name: 'フル' }))
+    await userEvent.click(screen.getByRole('button', { name: '詳細' }))
 
     expect(mockChromeTabsSendMessage).toHaveBeenCalledWith(123, {
       action: 'updateUIConfig',

@@ -6,8 +6,6 @@ import { composeStatTitle } from './statTooltip'
 
 interface CompactStatDisplayProps {
   displayStats: Array<[string, any, StatResult?]>
-  /** Threshold-based value coloring, see statColorRules.ts. */
-  colorCoding?: boolean
 }
 
 const styles = {
@@ -81,7 +79,7 @@ const formatSecondaryValue = (statResult: StatResult): string => {
  * (Hud.tsx), which wraps this component in a click target -- this
  * component has no click handling of its own.
  */
-export const CompactStatDisplay = memo(({ displayStats, colorCoding }: CompactStatDisplayProps) => {
+export const CompactStatDisplay = memo(({ displayStats }: CompactStatDisplayProps) => {
   const vpip = findStat(displayStats, 'vpip')
   const pfr = findStat(displayStats, 'pfr')
   const threeBet = findStat(displayStats, '3bet')
@@ -89,7 +87,7 @@ export const CompactStatDisplay = memo(({ displayStats, colorCoding }: CompactSt
   const handCount = hands && typeof hands.value === 'number' ? hands.value : 0
 
   const colorFor = (statResult: StatResult | undefined): CSSProperties | undefined => {
-    if (!colorCoding || !statResult) return undefined
+    if (!statResult) return undefined
     const color = getStatValueColor(statResult.id, statResult.value)
     return color ? { color } : undefined
   }

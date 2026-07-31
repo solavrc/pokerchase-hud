@@ -91,15 +91,6 @@ export interface UIConfig {
    */
   hudDisplayMode?: 'full' | 'compact'
   /**
-   * Threshold-based value coloring (#143), on by default.
-   * See src/components/hud/statColorRules.ts for the per-stat thresholds.
-   * Applies in both 'full' and 'compact' hudDisplayMode.
-   * Optional so existing persisted configs / literals that predate this
-   * field keep compiling; callers merge with DEFAULT_UI_CONFIG so a missing
-   * key resolves to `true`, not `undefined`.
-   */
-  hudColorCoding?: boolean
-  /**
    * HUD + hand logの表示/非表示を切り替える、ユーザー指定ショートカット。
    * nullはユーザーが明示的に解除した状態（undefinedは旧設定からの移行対象）。
    */
@@ -138,7 +129,6 @@ export const DEFAULT_UI_CONFIG: UIConfig = {
   displayEnabled: true,   // UI is visible by default
   scale: 1.0,             // Normal size
   hudDisplayMode: 'compact', // Compact classic-HUD line by default (#143)
-  hudColorCoding: true,   // Threshold-based value coloring on by default (#143)
   // PokerChase既定（C/B/R/Q/Space/2〜5/矢印）とChrome標準の双方を避ける。
   toggleShortcut: {
     code: 'KeyH',

@@ -88,39 +88,42 @@ describe('StatDisplay', () => {
   })
 
   describe('カラーコーディング', () => {
-    it('colorCoding未指定時は色を適用しない（デフォルトのstatValue色のまま）', () => {
-      render(<StatDisplay displayStats={mockDisplayStats} formatValue={mockFormatValue} />)
+    it('色帯がnullの範囲では既定のstatValue色のまま', () => {
+      const midVpip: Array<[string, any, StatResult?]> = [
+        ['VPIP', [25, 100], { id: 'vpip', name: 'VPIP', value: [25, 100], formatted: '25.0% (25/100)' }],
+      ]
 
-      const vpipValue = screen.getByText('30.0% (30/100)')
-      expect(vpipValue).toHaveStyle({ color: '#dddddd' })
+      render(<StatDisplay displayStats={midVpip} formatValue={mockFormatValue} />)
+
+      expect(screen.getByText('25.0% (25/100)')).toHaveStyle({ color: '#dddddd' })
     })
 
-    it('colorCoding有効時はしきい値に応じた色を適用する（n>=20）', () => {
+    it('しきい値に応じた色を適用する（n>=20）', () => {
       const highVpip: Array<[string, any, StatResult?]> = [
         ['VPIP', [45, 100], { id: 'vpip', name: 'VPIP', value: [45, 100], formatted: '45.0% (45/100)' }],
       ]
 
-      render(<StatDisplay displayStats={highVpip} formatValue={mockFormatValue} colorCoding />)
+      render(<StatDisplay displayStats={highVpip} formatValue={mockFormatValue} />)
 
       expect(screen.getByText('45.0% (45/100)')).toHaveStyle({ color: '#e57373' })
     })
 
-    it('colorCoding有効でもn<20の場合は低信頼度グレーになる', () => {
+    it('n<20の場合は低信頼度グレーになる', () => {
       const lowSample: Array<[string, any, StatResult?]> = [
         ['VPIP', [5, 10], { id: 'vpip', name: 'VPIP', value: [5, 10], formatted: '50.0% (5/10)' }],
       ]
 
-      render(<StatDisplay displayStats={lowSample} formatValue={mockFormatValue} colorCoding />)
+      render(<StatDisplay displayStats={lowSample} formatValue={mockFormatValue} />)
 
       expect(screen.getByText('50.0% (5/10)')).toHaveStyle({ color: '#b8b8b8' })
     })
 
-    it('しきい値ルールのない統計はcolorCoding有効でも既定色のまま', () => {
+    it('しきい値ルールのない統計は既定色のまま', () => {
       const handsOnly: Array<[string, any, StatResult?]> = [
         ['Hands', 100, { id: 'hands', name: 'Hands', value: 100, formatted: '100' }],
       ]
 
-      render(<StatDisplay displayStats={handsOnly} formatValue={mockFormatValue} colorCoding />)
+      render(<StatDisplay displayStats={handsOnly} formatValue={mockFormatValue} />)
 
       expect(screen.getByText('100')).toHaveStyle({ color: '#dddddd' })
     })
