@@ -4,6 +4,7 @@ import useMediaQuery from '@mui/material/useMediaQuery'
 import { ChangeEvent, useEffect, useRef, useState } from 'react'
 import type { FilterOptions, GameTypeFilter, TableSizeFilter } from '../types'
 import { DEFAULT_TABLE_SIZE_FILTER } from '../types'
+import { rangeToTableSizeFilter } from '../utils/table-size-range'
 import { loadOptions, saveOptions, type Options } from '../utils/options-storage'
 import { defaultStatDisplayConfigs, mergeStatDisplayConfigs } from '../stats'
 import type { StatDisplayConfig } from '../types/filters'
@@ -395,11 +396,11 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
     saveAndBroadcastOptions(updatedOptions)
   }
 
-  const handleTableSizeFilterChange = (layer: keyof TableSizeFilter) => (event: ChangeEvent<HTMLInputElement>) => {
-    const newFilter = {
-      ...tableSizeFilter,
-      [layer]: event.target.checked
-    }
+  const handleTableSizeFilterChange = (_event: Event, value: number | number[]) => {
+    // レンジスライダーなので常に [下限, 上限]。単一値で来ることはないが、
+    // MUIの型は number | number[] なので念のため弾く。
+    if (!Array.isArray(value) || value.length !== 2) return
+    const newFilter = rangeToTableSizeFilter([value[0]!, value[1]!])
 
     // Table-size filter changed (C案)
     setTableSizeFilter(newFilter)

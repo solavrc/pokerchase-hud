@@ -732,16 +732,17 @@ describe('Popup', () => {
     // 明示する（ホバーtitleだけに頼らない。codex review, PR #145）
     expect(screen.getByText('「フル」は6maxで5〜6人、4maxで4人(満席)を対象とします')).toBeInTheDocument()
 
-    const fullCheckbox = screen.getByRole('checkbox', { name: 'フル' }) as HTMLInputElement
-    const fourPCheckbox = screen.getByRole('checkbox', { name: '4人 (ショート)' }) as HTMLInputElement
-    const threePCheckbox = screen.getByRole('checkbox', { name: '3人' }) as HTMLInputElement
-    const huCheckbox = screen.getByRole('checkbox', { name: 'HU (2人)' }) as HTMLInputElement
+    // デフォルト（新規ユーザー/tableSizeキー欠落時）は全層 = フィルタなし。
+    // レンジスライダーなので「両端が最小と最大」で表現される。
+    const [lower, upper] = screen.getAllByRole('slider').slice(0, 2) as HTMLInputElement[]
+    expect(lower).toHaveAttribute('aria-label', 'テーブル人数の下限')
+    expect(upper).toHaveAttribute('aria-label', 'テーブル人数の上限')
+    expect(lower).toHaveValue('1')
+    expect(upper).toHaveValue('4')
 
-    // デフォルト（新規ユーザー/tableSizeキー欠落時）は全層選択 = フィルタなし
-    expect(fullCheckbox.checked).toBe(true)
-    expect(fourPCheckbox.checked).toBe(true)
-    expect(threePCheckbox.checked).toBe(true)
-    expect(huCheckbox.checked).toBe(true)
+    // 層ごとのチェックボックスは廃止（連続しない選択を作れてしまうため）
+    expect(screen.queryByRole('checkbox', { name: 'フル' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: 'HU (2人)' })).not.toBeInTheDocument()
   })
 
   it('テーブル人数フィルター変更時はフラットなoptionsキーへ保存しupdateBattleTypeFilterメッセージを送る', async () => {
@@ -749,7 +750,9 @@ describe('Popup', () => {
 
     await waitForAsyncOperations()
 
-    await userEvent.click(screen.getByRole('checkbox', { name: 'HU (2人)' }))
+    // 下限つまみを HU(1) から 3人(2) へ動かす = HUだけ対象外
+    const lower = screen.getAllByRole('slider')[0]!
+    fireEvent.change(lower, { target: { value: '2' } })
 
     await waitFor(() => {
       expect(syncData.options).toEqual(
@@ -785,10 +788,9 @@ describe('Popup', () => {
 
     await waitForAsyncOperations()
 
-    const fullCheckbox = screen.getByRole('checkbox', { name: 'フル' }) as HTMLInputElement
-    const huCheckbox = screen.getByRole('checkbox', { name: 'HU (2人)' }) as HTMLInputElement
-    expect(fullCheckbox.checked).toBe(true)
-    expect(huCheckbox.checked).toBe(true)
+    const [lower, upper] = screen.getAllByRole('slider').slice(0, 2) as HTMLInputElement[]
+    expect(lower).toHaveValue('1')
+    expect(upper).toHaveValue('4')
   })
 
   it('旧@extend-chrome/storage bucketキーのみのユーザーはフラットキーへ移行される', async () => {

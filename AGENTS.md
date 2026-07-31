@@ -769,7 +769,7 @@ v3 added composite indexes for player-specific queries. v6 changes the Raw Lake 
 | `UIConfig` | `src/types/hand-log.ts` | `displayEnabled`; `scale` (0.5–2.0) is runtime state persisted separately as device-local `uiScale` |
 | `HandLogConfig` | `src/types/hand-log.ts` | `enabled`, `maxHands`, `position`, `width`, `height`, `fontSize`, `opacity` |
 | `HandLogLayout` | `src/types/hand-log.ts` | Device-local pixel `left`, `top`, `width`, and `height`, persisted as `handLogLayout` |
-| `FilterOptions` | `src/types/filters.ts` | `gameTypes` (sng/mtt/ring), `tableSize` (full/4p/3p/hu players-dealt layer, `src/utils/table-size.ts`, opt-out multiselect, missing key = all layers/no filter; popup label "テーブル人数"), `handLimit`, `statDisplayConfigs` |
+| `FilterOptions` | `src/types/filters.ts` | `gameTypes` (sng/mtt/ring), `tableSize` (full/4p/3p/hu players-dealt layer, `src/utils/table-size.ts`, missing key = all layers/no filter; popup label "テーブル人数", edited as a **contiguous range** on a two-thumb slider — the layers are ordered by player count and a gap in the middle has no meaning, so per-layer checkboxes could express states no user wants; `src/utils/table-size-range.ts` converts between the range and the stored per-layer booleans and folds a legacy non-contiguous selection into the smallest span covering it), `handLimit`, `statDisplayConfigs` |
 | `PopupThemeMode` | `src/components/popup/theme.ts` | `'auto' \| 'dark' \| 'light'` (default `'auto'`), persisted standalone as `popupTheme` (`popup-theme-storage.ts`) — popup-only, not part of `UIConfig`/its all-tabs broadcast |
 | `HudPosition` | `src/components/Hud.tsx` | `top`, `left` (percentage) |
 
