@@ -121,7 +121,8 @@ input[type="range"] {
 .pc-rail {
   background:
     linear-gradient(180deg, #39415e 0%, #171c2b 12%, #080a12 46%, #0c0f1a 74%, #333a54 100%);
-  border-radius: 29% / 49.5%;
+  /* border-radius comes from RAIL_RADIUS (table-layout.ts) as an inline style,
+     so the measured silhouette has a single source. */
   box-shadow:
     0 calc(var(--u) * 2.6) calc(var(--u) * 7) rgba(0, 0, 0, 0.8),
     0 0 0 calc(var(--u) * 0.6) rgba(2, 3, 8, 0.85),
@@ -142,7 +143,7 @@ input[type="range"] {
   background:
     radial-gradient(ellipse 36% 40% at 50% 45%, rgba(132, 202, 176, 0.45), rgba(132, 202, 176, 0) 76%),
     radial-gradient(ellipse 70% 62% at 50% 45%, #2b6f5b 0%, #1a4634 48%, #0f2a1f 88%);
-  border-radius: 25% / 50%;
+  /* border-radius comes from FELT_RADIUS (table-layout.ts) -- see .pc-rail. */
   box-shadow: inset 0 0 calc(var(--u) * 9) rgba(0, 0, 0, 0.6);
 }
 

@@ -1,3 +1,4 @@
+import type { UIConfig } from '../types/hand-log'
 import {
   POPUP_THEME_LOCAL_STORAGE_KEY,
   POPUP_THEME_STORAGE_KEY,
@@ -5,6 +6,8 @@ import {
 import {
   HAND_LOG_LAYOUT_STORAGE_KEY,
   hudPositionStorageKey,
+  persistSyncedUIConfig,
+  persistSyncedUIConfigPatch,
   resolveLocalUIScale,
   UI_SCALE_STORAGE_KEY,
 } from '../utils/ui-config-storage'
@@ -141,6 +144,8 @@ export const installChromeMock = (): MockChromeController => {
       sendMessage: (
         message: {
           action?: string
+          config?: UIConfig
+          patch?: Pick<UIConfig, 'toggleShortcut'>
           scale?: number
           seatIndex?: number
           position?: unknown
@@ -204,6 +209,18 @@ export const installChromeMock = (): MockChromeController => {
           localStorage.remove(HAND_LOG_LAYOUT_STORAGE_KEY, () => {
             callback?.({ success: true })
           })
+          return
+        }
+
+        // The popup asks the background to persist HUD display settings
+        // rather than writing sync storage itself, so the mock has to do the
+        // storing or nothing the popup changes would ever reach the HUD.
+        // Delegates to the same helpers `message-router.ts` uses.
+        if (message.action === 'setSyncedUIConfig') {
+          const done = (success: boolean) => callback?.({ success })
+          if (message.patch) persistSyncedUIConfigPatch(message.patch, done)
+          else if (message.config) persistSyncedUIConfig(message.config, done)
+          else done(false)
           return
         }
 

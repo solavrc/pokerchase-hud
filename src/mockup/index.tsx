@@ -8,7 +8,13 @@ import {
   resolveBootBackgroundColor,
 } from '../components/popup/popup-boot-theme'
 import { POPUP_THEME_STORAGE_KEY } from '../components/popup/popup-theme-storage'
+import { defaultStatDisplayConfigs } from '../stats'
 import type { StatDisplayConfig } from '../types'
+import { DEFAULT_UI_CONFIG, type UIConfig } from '../types/hand-log'
+import {
+  mergeUIConfigWithLocalScale,
+  UI_SCALE_STORAGE_KEY,
+} from '../utils/ui-config-storage'
 import { installChromeMock } from './mock-chrome'
 import {
   MOCK_SCENARIOS,
@@ -21,11 +27,13 @@ import {
   BOARD_SLOTS,
   CHROME,
   FELT,
+  FELT_RADIUS,
   HERO_CARDS,
   HERO_CARD_STAGGER,
   HERO_HAND_LABEL,
   POT,
   RAIL,
+  RAIL_RADIUS,
   RAIL_STUDS,
   SEATS,
   pointStyle,
@@ -33,7 +41,6 @@ import {
 } from './table-layout'
 
 const chromeMock = installChromeMock()
-const STAT_DISPLAY_CONFIGS: StatDisplayConfig[] = []
 
 /**
  * One seat: a character portrait behind a name plate, with face-down cards
@@ -136,13 +143,41 @@ const ActionBar = () => (
 
 const Mockup = () => {
   const [scenarioId, setScenarioId] = useState<MockScenarioId>('turn-decision')
-  const [scale, setScale] = useState(1)
   const [showHandLog, setShowHandLog] = useState(true)
   const [showPopup, setShowPopup] = useState(false)
   const [dimTable, setDimTable] = useState(false)
   const [panelOpen, setPanelOpen] = useState(false)
   const [hudRevision, setHudRevision] = useState(0)
   const scenario = MOCK_SCENARIOS[scenarioId]
+
+  /*
+   * The popup writes HUD display settings to the same storage the production
+   * App.tsx reads, so read them the same way (including its
+   * DEFAULT_UI_CONFIG merge and the device-local scale override). Without
+   * this, changing サイズ / 表示 / コンパクト / 統計カラー in the mocked popup
+   * would look applied while the HUD under review never moved.
+   */
+  const [uiConfig, setUIConfig] = useState<UIConfig>(DEFAULT_UI_CONFIG)
+  const [statDisplayConfigs, setStatDisplayConfigs] =
+    useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
+
+  useEffect(() => {
+    const readConfig = () => {
+      chrome.storage.sync.get(['uiConfig', 'options'], (synced: Record<string, any>) => {
+        chrome.storage.local.get(UI_SCALE_STORAGE_KEY, (local: Record<string, any>) => {
+          setUIConfig(mergeUIConfigWithLocalScale(synced.uiConfig, local[UI_SCALE_STORAGE_KEY]))
+          const configs = synced.options?.filterOptions?.statDisplayConfigs
+          if (configs) setStatDisplayConfigs(configs)
+        })
+      })
+    }
+    readConfig()
+    // A mock can afford to re-read everything on any change.
+    chrome.storage.onChanged.addListener(readConfig)
+    return () => chrome.storage.onChanged.removeListener(readConfig)
+  }, [])
+
+  const scale = uiConfig.scale
 
   /*
    * The popup frame has to keep supplying the ground colour that the real
@@ -192,11 +227,19 @@ const Mockup = () => {
     <main className={`mockup${dimTable ? ' mockup--dimmed' : ''}`}>
       <section className="pc-scene" aria-label="PokerChase のゲーム画面を模したモック背景">
         <div aria-hidden="true" className="pc-backdrop" />
-        <div aria-hidden="true" className="pc-rail" style={rectStyle(RAIL)} />
+        <div
+          aria-hidden="true"
+          className="pc-rail"
+          style={{ ...rectStyle(RAIL), borderRadius: RAIL_RADIUS }}
+        />
         {RAIL_STUDS.map((stud) => (
           <div aria-hidden="true" className="pc-stud" key={`${stud.l}-${stud.t}`} style={pointStyle(stud)} />
         ))}
-        <div aria-hidden="true" className="pc-felt" style={rectStyle(FELT)}>
+        <div
+          aria-hidden="true"
+          className="pc-felt"
+          style={{ ...rectStyle(FELT), borderRadius: FELT_RADIUS }}
+        >
           <div className="pc-felt__ring" />
         </div>
 
@@ -267,7 +310,10 @@ const Mockup = () => {
             <input
               max="1.4"
               min="0.7"
-              onChange={(event) => setScale(Number(event.target.value))}
+              onChange={(event) => chrome.runtime.sendMessage({
+                action: 'setDeviceUIScale',
+                scale: Number(event.target.value),
+              })}
               step="0.1"
               type="range"
               value={scale}
@@ -316,15 +362,19 @@ const Mockup = () => {
         {scenario.label}
       </div>
 
-      {scenario.stats.map((stat, index) => (
+      {/* `uiConfig.displayEnabled` is the popup's 表示/非表示 switch; production
+          App.tsx renders nothing at all when it is off. */}
+      {uiConfig.displayEnabled && scenario.stats.map((stat, index) => (
         <Hud
           actualSeatIndex={index}
+          hudColorCoding={uiConfig.hudColorCoding}
+          hudDisplayMode={uiConfig.hudDisplayMode}
           key={`${scenario.id}-${hudRevision}-${index}`}
           playerPotOdds={scenario.playerPotOdds[index]}
           realTimeStats={index === 0 ? scenario.realTimeStats : undefined}
           scale={scale}
           stat={stat}
-          statDisplayConfigs={STAT_DISPLAY_CONFIGS}
+          statDisplayConfigs={statDisplayConfigs}
         />
       ))}
 
@@ -345,7 +395,7 @@ const Mockup = () => {
         </aside>
       )}
 
-      {showHandLog && (
+      {uiConfig.displayEnabled && showHandLog && (
         <HandLog
           config={{ enabled: true, opacity: 0.76, position: 'bottom-right' }}
           entries={scenario.handLogEntries}
