@@ -3,8 +3,9 @@ import userEvent from '@testing-library/user-event'
 import HandLog, {
   countWrappedLines,
   estimateEntryRowHeight,
-  measureMonospaceCharWidth,
-  FALLBACK_MONOSPACE_CHAR_WIDTH_RATIO,
+  measureHandLogTextWidth,
+  FALLBACK_NARROW_CHAR_WIDTH_RATIO,
+  FALLBACK_WIDE_CHAR_WIDTH_RATIO,
 } from './HandLog'
 import { HandLogEntry, HandLogEntryType, HandLogConfig, DEFAULT_HAND_LOG_CONFIG } from '../types/hand-log'
 import { DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS } from '../utils/ui-config-storage'
@@ -12,7 +13,12 @@ import { DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS } from '../utils/ui-config-storage'
 // Mock react-window v2 API
 jest.mock('react-window', () => {
   const React = require('react')
+  // jsdomでは実測しようがないので、テストから明示的に切り替える。
+  // 0 = macOSのオーバーレイスクロールバー、15 = Windows/Linuxの実体持ち。
+  const scrollbar = { size: 0 }
   return {
+    getScrollbarSize: (_recalculate?: boolean) => scrollbar.size,
+    __setScrollbarSize: (size: number) => { scrollbar.size = size },
     List: ({ rowComponent: RowComponent, rowCount, rowProps, rowHeight, style, listRef }: any) => {
       // Mock scrollToRow method via listRef
       React.useImperativeHandle(listRef, () => ({
@@ -79,6 +85,18 @@ const savedLayoutCalls = () =>
   mockChromeRuntimeSendMessage.mock.calls.filter(
     ([message]) => message.action === 'setDeviceHandLogLayout'
   )
+const setDevicePixelRatio = (ratio: number) => {
+  Object.defineProperty(window, 'devicePixelRatio', {
+    value: ratio,
+    writable: true,
+    configurable: true,
+  })
+}
+const setScrollbarSize = (size: number) => {
+  (jest.requireMock('react-window') as {
+    __setScrollbarSize: (size: number) => void
+  }).__setScrollbarSize(size)
+}
 
 describe('HandLog', () => {
   const mockEntries: HandLogEntry[] = [
@@ -117,6 +135,8 @@ describe('HandLog', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     setViewport(1024, 768)
+    setScrollbarSize(0)
+    setDevicePixelRatio(1)
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       if (message.action === 'getDeviceHandLogLayout') {
         callback({ success: true })
@@ -1402,6 +1422,86 @@ describe('HandLog', () => {
       expect(rowHeight(0)).toBeCloseTo(59.6)
     })
 
+    it('日本語のプレイヤー名を全角幅で数える', () => {
+      // 日本語は等幅フォントに収録されず約1emの日本語フォントへフォールバック
+      // するので、ASCII基準(0.6em)で数えると行数を最大1.7倍過小評価する
+      const japaneseEntry: HandLogEntry[] = [
+        {
+          id: 'jp',
+          handId: 1,
+          timestamp: Date.now(),
+          text: '日本語'.repeat(15),
+          type: HandLogEntryType.SEAT,
+        },
+      ]
+      render(<HandLog entries={japaneseEntry} />)
+
+      // 幅400: 本文382px = 全角47文字/行 → 45文字は1行
+      updateLayout({ left: 100, top: 100, width: 400, height: 100 })
+      expect(rowHeight(0)).toBeCloseTo(11.6)
+
+      // 幅200: 本文182px = 全角22文字/行 → 45文字は3行
+      // 半角基準だと37文字/行と数えて2行になり、行が重なる
+      updateLayout({ left: 100, top: 100, width: 200, height: 100 })
+      expect(rowHeight(0)).toBeCloseTo(30.8)
+    })
+
+    it('非オーバーレイのスクロールバー幅を本文幅から差し引く', () => {
+      // Windows/Linuxの実体を持つスクロールバーは行の包含幅を狭める
+      const entry: HandLogEntry[] = [
+        {
+          id: 'fit',
+          handId: 1,
+          timestamp: Date.now(),
+          // 78文字 = 374.4px。スクロールバー無し(382px)なら1行、
+          // 15px確保する環境(367px)では2行になる長さ
+          text: 'x'.repeat(78),
+          type: HandLogEntryType.ACTION,
+        },
+      ]
+      const { unmount } = render(<HandLog entries={entry} />)
+      updateLayout({ left: 100, top: 100, width: 400, height: 100 })
+      expect(rowHeight(0)).toBeCloseTo(11.6)
+      unmount()
+
+      setScrollbarSize(15)
+      render(<HandLog entries={entry} />)
+      updateLayout({ left: 100, top: 100, width: 400, height: 100 })
+      expect(rowHeight(0)).toBeCloseTo(21.2)
+    })
+
+    it('ズーム変更時にスクロールバー幅を測り直す', () => {
+      // ページズームでスクロールバーのCSSピクセル幅が変わる。初回計測値を
+      // 使い続けると、ズームアウト後は実際のgutterより狭くしか引かない
+      const entry: HandLogEntry[] = [
+        {
+          id: 'fit',
+          handId: 1,
+          timestamp: Date.now(),
+          text: 'x'.repeat(78),
+          type: HandLogEntryType.ACTION,
+        },
+      ]
+      render(<HandLog entries={entry} />)
+      updateLayout({ left: 100, top: 100, width: 400, height: 100 })
+      expect(rowHeight(0)).toBeCloseTo(11.6)
+
+      setScrollbarSize(15)
+      setDevicePixelRatio(0.5)
+      fireEvent(window, new Event('resize'))
+
+      expect(rowHeight(0)).toBeCloseTo(21.2)
+    })
+
+    it('スクロール有無で行幅が変わらないようgutterを固定する', () => {
+      render(<HandLog entries={mockEntries} />)
+
+      // 推定は常にスクロールバー幅を引くので、実描画側も常に確保させる
+      expect(screen.getByTestId('virtual-list')).toHaveStyle({
+        scrollbarGutter: 'stable',
+      })
+    })
+
     it('セパレーター行は固定高のまま', () => {
       render(<HandLog entries={mockEntries} />)
       updateLayout({ left: 100, top: 100, width: 200, height: 100 })
@@ -1422,53 +1522,161 @@ describe('HandLog', () => {
 })
 
 describe('HandLogの行高推定', () => {
-  // 等幅比を固定した決定的な計測器（実環境ではcanvas実測）
-  const monospace = (ratio: number) => (fontSize: number) => fontSize * ratio
+  // 1文字10px（全角は20px）の決定的な計測器。実環境ではcanvas実測。
+  const isWide = (char: string) => /[\u3000-\u30ff\u3400-\u9fff\uff00-\uff60]/.test(char)
+  const measureToken = (token: string) =>
+    [...token].reduce((width, char) => width + (isWide(char) ? 20 : 10), 0)
+  const measureText = (text: string, fontSize: number) =>
+    [...text].reduce(
+      (width, char) => width + fontSize * (isWide(char) ? 1 : 0.6),
+      0
+    )
 
   describe('countWrappedLines', () => {
     it('空エントリは行を占有しない', () => {
-      expect(countWrappedLines('', 40)).toBe(0)
+      expect(countWrappedLines('', 400, measureToken)).toBe(0)
     })
 
     it('1行に収まるテキストは1行', () => {
-      expect(countWrappedLines('Player1: folds', 40)).toBe(1)
+      expect(countWrappedLines('Player1: folds', 400, measureToken)).toBe(1)
     })
 
     it('単語境界で折り返す', () => {
-      expect(countWrappedLines('aaaa bbbb cccc', 10)).toBe(2)
+      expect(countWrappedLines('aaaa bbbb cccc', 100, measureToken)).toBe(2)
     })
 
-    it('単語境界で折り返すため文字数の単純除算より行数が増えうる', () => {
+    it('単語境界で折り返すため幅の単純除算より行数が増えうる', () => {
       const text = 'aaaaaa bbbbbb cccccc'
-      expect(Math.ceil(text.length / 10)).toBe(2)
-      expect(countWrappedLines(text, 10)).toBe(3)
+      expect(Math.ceil(measureToken(text) / 100)).toBe(2)
+      expect(countWrappedLines(text, 100, measureToken)).toBe(3)
     })
 
     it('1行に収まらない単語だけをbreak-wordとして分割する', () => {
-      expect(countWrappedLines('x'.repeat(25), 10)).toBe(3)
+      expect(countWrappedLines('x'.repeat(25), 100, measureToken)).toBe(3)
     })
 
     it('行頭でない長い単語は次行へ送ってから分割する', () => {
       // "ab " の後に25文字の語 → 2行目から10/10/5に割れる
-      expect(countWrappedLines(`ab ${'x'.repeat(25)}`, 10)).toBe(4)
+      expect(countWrappedLines(`ab ${'x'.repeat(25)}`, 100, measureToken)).toBe(4)
     })
 
     it('行末の空白はぶら下がり、次の単語から改行する', () => {
-      expect(countWrappedLines('aaaaaaaaaa bb', 10)).toBe(2)
+      expect(countWrappedLines('aaaaaaaaaa bb', 100, measureToken)).toBe(2)
     })
 
     it('明示的な改行を行として数える', () => {
-      expect(countWrappedLines('abc\ndef', 10)).toBe(2)
+      expect(countWrappedLines('abc\ndef', 100, measureToken)).toBe(2)
     })
 
-    it('先頭オフセット（タイムスタンプ）を消費済み文字として扱う', () => {
-      expect(countWrappedLines('cccc', 10)).toBe(1)
-      expect(countWrappedLines('cccc', 10, 8)).toBe(2)
+    it('先頭オフセット（タイムスタンプ）を消費済み幅として扱う', () => {
+      expect(countWrappedLines('cccc', 100, measureToken)).toBe(1)
+      expect(countWrappedLines('cccc', 100, measureToken, 80)).toBe(2)
+    })
+
+    it('文字数ではなく実幅で数える（全角は半角の2倍幅）', () => {
+      // 同じ5文字でも、全角は半角の2倍の幅を占める
+      expect(countWrappedLines('abcde', 100, measureToken)).toBe(1)
+      expect(countWrappedLines('あいうえお', 100, measureToken)).toBe(1)
+      expect(countWrappedLines('あいうえおか', 100, measureToken)).toBe(2)
+      // 文字数基準（10文字/行）だと1行と誤判定する長さ
+      expect(countWrappedLines('日本語のプレイヤー名', 100, measureToken)).toBe(2)
+    })
+
+    it('CJKは空白が無くても文字間で折り返す', () => {
+      // 半角の長語はbreak-wordで割られるが、CJKは通常の折り返し機会を持つ。
+      // どちらも1行100pxに5文字ずつ入る
+      expect(countWrappedLines('あいうえおかきくけこ', 100, measureToken)).toBe(2)
+    })
+
+    // 以下の期待値はChromeの既定（line-break: auto）を実測して確定したもの。
+    // 1行=全角2文字ぶん(40px)で、'あいうえ'は2行が基準
+    it('行末禁則: 開き括弧の直後では改行しない', () => {
+      expect(countWrappedLines('あいうえ', 40, measureToken)).toBe(2)
+      // あ / （い / あ の3行になる
+      expect(countWrappedLines('あ（いあ', 40, measureToken)).toBe(3)
+    })
+
+    it('行頭禁則: 句読点・閉じ括弧を行頭に置かない', () => {
+      // あ / い、 / う の3行になる
+      expect(countWrappedLines('あい、う', 40, measureToken)).toBe(3)
+      expect(countWrappedLines('あい）う', 40, measureToken)).toBe(3)
+      expect(countWrappedLines('あい」う', 40, measureToken)).toBe(3)
+      expect(countWrappedLines('あい・う', 40, measureToken)).toBe(3)
+    })
+
+    it('ASCII句読点も行頭禁則として扱う', () => {
+      // '{日本語名}: raises' のように全角の直後へASCII句読点が続く行は
+      // ハンドログの主要な形。あ / い: / う の3行になる
+      expect(countWrappedLines('あい:う', 40, measureToken)).toBe(3)
+      expect(countWrappedLines('あい,う', 40, measureToken)).toBe(3)
+      expect(countWrappedLines('あい)う', 40, measureToken)).toBe(3)
+    })
+
+    it('ASCII開き括弧の直後も行末禁則として扱う', () => {
+      expect(countWrappedLines('あ(いあ', 40, measureToken)).toBe(3)
+    })
+
+    it('Chrome既定で改行できる小書き仮名・長音符は禁則にしない', () => {
+      // 禁則に含めると逆に行数を過大評価して余白が空く
+      expect(countWrappedLines('あいっう', 40, measureToken)).toBe(2)
+      expect(countWrappedLines('あいーう', 40, measureToken)).toBe(2)
+      expect(countWrappedLines('あいぁう', 40, measureToken)).toBe(2)
+    })
+
+    it('半角と全角が混在する行を実幅で数える', () => {
+      // 'Seat 1: '(80px) + 全角3文字(60px) = 140px → 2行
+      expect(countWrappedLines('Seat 1: 日本語', 100, measureToken)).toBe(2)
+    })
+
+    it('半角カナ・絵文字は全角幅でなくても改行機会を持つ', () => {
+      // Chrome実測: 半角カナ(4px)と絵文字(10px)は文字間で改行できるので、
+      // 前置きの残り幅を使い切ってから折り返す。1語として扱うと語ごと次行へ
+      // 送ってから割ることになり、行を1つ余計に確保してしまう
+      const width = (token: string) =>
+        [...token].reduce((total, char) => {
+          if (/\p{Emoji_Presentation}/u.test(char)) return total + 25
+          if (/[\uFF61-\uFF9F]/.test(char)) return total + 10
+          return total + (isWide(char) ? 20 : 10)
+        }, 0)
+      expect(countWrappedLines(`a ${'\uFF71'.repeat(16)}`, 60, width)).toBe(3)
+      expect(countWrappedLines(`a ${'\uD83D\uDC1F'.repeat(7)}`, 60, width)).toBe(4)
+    })
+
+    it('補助平面の漢字も改行機会として扱う', () => {
+      // CJK拡張B（`\u{20BB7}`など）はBMPの範囲指定から漏れる。半角1語として
+      // 扱うと名前ごと次行へ送ってから割るので、行を1つ余計に確保する
+      const width = (token: string) =>
+        [...token].reduce(
+          (total, char) => total + (/\p{Ideographic}/u.test(char) || isWide(char) ? 20 : 10),
+          0
+        )
+      expect(countWrappedLines(`a ${'\u{20BB7}'.repeat(8)}`, 60, width)).toBe(3)
+      expect(countWrappedLines(`a ${'\u{29E3D}'.repeat(8)}`, 60, width)).toBe(3)
+    })
+
+    it('改行禁止の空白（NBSP等）を空白として扱わない', () => {
+      // CSSはNBSPの前後で改行しない。空白扱いすると改行機会を作るうえ、
+      // 行末でぶら下げて幅も落としてしまう
+      // 同じ見た目でも、NBSPは1語として割られ通常の空白は改行機会になる
+      expect(countWrappedLines('aa\u00A0bb', 20, measureToken)).toBe(3)
+      expect(countWrappedLines('aa bb', 20, measureToken)).toBe(2)
+      // 通常の空白は行末でぶら下がるが、NBSPは幅を持ったまま次行へ送られる
+      expect(countWrappedLines('aaa\u00A0aaa', 30, measureToken)).toBe(3)
+      expect(countWrappedLines('aaa aaa', 30, measureToken)).toBe(2)
+    })
+
+    it('トランプのスートや記号は改行機会にしない', () => {
+      // Chrome実測: ♠★→①は改行機会を持たない（半角英字と同じ扱い）。
+      // 改行機会にするとカード表記の行を余計に折り返して詰めてしまう
+      expect(countWrappedLines(`a ${'\u2660'.repeat(13)}`, 60, measureToken)).toBe(4)
+      expect(countWrappedLines(`a ${'x'.repeat(13)}`, 60, measureToken)).toBe(4)
+      expect(countWrappedLines(`a ${'\u2605'.repeat(13)}`, 60, measureToken)).toBe(4)
+      expect(countWrappedLines(`a ${'\u2460'.repeat(13)}`, 60, measureToken)).toBe(4)
     })
 
     it('60文字固定の旧推定が過小評価していた幅を正しく数える', () => {
       // 幅200pxのパネル ≒ 38文字/行。旧推定は ceil(100/60)=2行だった
-      expect(countWrappedLines('x'.repeat(100), 38)).toBe(3)
+      expect(countWrappedLines('x'.repeat(100), 380, measureToken)).toBe(3)
     })
   })
 
@@ -1477,7 +1685,7 @@ describe('HandLogの行高推定', () => {
       textWidth,
       fontSize: 8,
       showTimestamps,
-      measureCharWidth: monospace(0.6),
+      measureText,
     })
 
     it('1行のエントリは1行分の高さ + 上下padding', () => {
@@ -1489,25 +1697,69 @@ describe('HandLogの行高推定', () => {
       expect(estimateEntryRowHeight('x'.repeat(100), metrics(184))).toBeCloseTo(30.8)
     })
 
+    it('日本語は全角幅で数える', () => {
+      // 30文字の全角 = 240px。半角基準(4.8px/文字=144px)だと184pxに収まって
+      // しまい1行と誤判定する
+      expect(estimateEntryRowHeight('日本語'.repeat(10), metrics(184))).toBeCloseTo(21.2)
+      expect(estimateEntryRowHeight('日本語'.repeat(10), metrics(384))).toBeCloseTo(11.6)
+    })
+
     it('タイムスタンプ表示時は先頭行の残り幅が減る', () => {
       expect(estimateEntryRowHeight('x'.repeat(100), metrics(384, true))).toBeCloseTo(30.8)
     })
 
-    it('本文幅が0以下でも1文字/行として破綻しない', () => {
+    it('本文幅が0以下でも1文字ずつ折り返して破綻しない', () => {
       expect(estimateEntryRowHeight('abc', metrics(0))).toBeCloseTo(3 * 9.6 + 2)
+    })
+
+    it('分解形の結合文字を余分な1文字として数えない', () => {
+      // 見た目が同じ合成形と分解形は同じ行高になる。コードポイント単位で
+      // 数えると分解形だけ2倍の幅になり、存在しない行ぶんの余白が空く
+      const composed = '\u3070'.repeat(30)
+      const decomposed = '\u306F\u3099'.repeat(30)
+      const rowMetrics = {
+        textWidth: 184,
+        fontSize: 8,
+        showTimestamps: false,
+      }
+      expect(estimateEntryRowHeight(decomposed, rowMetrics))
+        .toBeCloseTo(estimateEntryRowHeight(composed, rowMetrics))
+      // 全角30文字=240px → 184pxでは2行
+      expect(estimateEntryRowHeight(decomposed, rowMetrics)).toBeCloseTo(21.2)
     })
   })
 
-  describe('measureMonospaceCharWidth', () => {
-    it('canvasが無い環境では保守的な等幅比へフォールバックする', () => {
-      expect(measureMonospaceCharWidth(8)).toBeCloseTo(8 * FALLBACK_MONOSPACE_CHAR_WIDTH_RATIO)
-      expect(measureMonospaceCharWidth(16)).toBeCloseTo(16 * FALLBACK_MONOSPACE_CHAR_WIDTH_RATIO)
+  describe('measureHandLogTextWidth', () => {
+    it('結合文字を含むクラスタを1グリフとして測る', () => {
+      // 合成形'ば'(U+3070)と分解形'は'+結合濁点(U+306F U+3099)は同じ1グリフ
+      expect(measureHandLogTextWidth('\u3070', 8)).toBeCloseTo(8)
+      expect(measureHandLogTextWidth('\u306F\u3099', 8)).toBeCloseTo(8)
+      // 結合文字単体は送り幅0。妥当性の下限で1emへ丸めない
+      expect(measureHandLogTextWidth('\u3099', 8)).toBe(0)
+    })
+
+    it('結合文字を含むクラスタを1グリフとして測る', () => {
+      // 合成形'ば'(U+3070)と分解形'は'+濁点(U+306F U+3099)は同じ1グリフ
+      expect(measureHandLogTextWidth('\u3070', 8)).toBeCloseTo(8)
+      expect(measureHandLogTextWidth('\u306F\u3099', 8)).toBeCloseTo(8)
+      // 結合文字単体は送り幅0（妥当性の下限で1emへ丸めない）
+      expect(measureHandLogTextWidth('\u3099', 8)).toBe(0)
+    })
+
+    it('canvasが無い環境では保守的な半角/全角比へフォールバックする', () => {
+      expect(measureHandLogTextWidth('00000', 8))
+        .toBeCloseTo(5 * 8 * FALLBACK_NARROW_CHAR_WIDTH_RATIO)
+      expect(measureHandLogTextWidth('あいうえお', 8))
+        .toBeCloseTo(5 * 8 * FALLBACK_WIDE_CHAR_WIDTH_RATIO)
+      expect(measureHandLogTextWidth('', 8)).toBe(0)
     })
 
     it('フォールバック比は想定フォント中で最も広いものを採る', () => {
-      // Consolas 0.55 / Monaco・Courier New 0.6。狭い比率を既定にすると
-      // 1行あたり文字数を過大評価して行が重なる
-      expect(FALLBACK_MONOSPACE_CHAR_WIDTH_RATIO).toBeGreaterThanOrEqual(0.6)
+      // 半角: Consolas 0.55 / Monaco・Courier New 0.6
+      // 全角: 日本語フォントは1em（実測: 8pxで`あ`=8px）
+      // 狭い比率を既定にすると1行あたりの文字数を過大評価して行が重なる
+      expect(FALLBACK_NARROW_CHAR_WIDTH_RATIO).toBeGreaterThanOrEqual(0.6)
+      expect(FALLBACK_WIDE_CHAR_WIDTH_RATIO).toBeGreaterThanOrEqual(1)
     })
   })
 })

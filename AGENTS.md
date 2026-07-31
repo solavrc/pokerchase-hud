@@ -499,22 +499,58 @@ The container is `border-box` so its rendered footprint equals the clamped
 width/height exactly; the log body is that minus `HAND_LOG_BORDER_WIDTH*2`.
 
 **Hand-log row height**: the virtual list positions rows from `getItemSize()`,
-so that estimate has to predict CSS wrapping or rows overlap. It measures the
-real monospace advance width with `canvas.measureText()` at the actual
-font/size (cached per font string; falls back to a conservative 0.6 em ratio
-where canvas is unavailable, e.g. jsdom), derives chars-per-line from the row's
-real text width (the log body width above, minus `EntryRow`'s horizontal
-padding — `EntryRow` pins `boxSizing: border-box` so host-page CSS cannot move
-that boundary), adds the timestamp prefix's width to the first line when
-timestamps are on, and counts lines with the same word-boundary / `break-word`
-rules the CSS uses. Derive it from the *displayed* width, never the stored one:
-a viewport narrower than the stored width shrinks only the render, and that is
-where the wrapping actually happens. Do not reintroduce a fixed chars-per-line
-constant: the panel resizes down to `HAND_LOG_MIN_WIDTH` (200px), where the
-previous 60-chars-per-line assumption under-counted lines and rows overlapped.
-Every input to the wrap calculation must stay in `getItemSize`'s `useCallback`
-deps — react-window rebuilds its row-bounds cache only when the `rowHeight`
-identity changes.
+so that estimate has to predict CSS wrapping or rows overlap. The whole
+calculation runs in **pixels, per grapheme cluster** — never in character
+counts, and never per code point. `canvas.measureText()` is called for each
+distinct cluster at the actual font/size (cached per `fontSize|cluster`), which
+is what makes mixed-width text correct in both directions: the monospace stack
+has no Japanese glyphs, so a CJK player name falls back to a ~1 em Japanese font
+while ASCII stays ~0.6 em (measured at 8px: `0` = 4.8px, `あ` = 8px) — an
+ASCII-derived width under-counts such a line by up to ~1.7×, a row overlap; and
+a decomposed cluster (`は` + U+3099) is one rendered glyph, so measuring its
+code points separately over-counts it and leaves phantom blank rows. Where
+canvas is unavailable (jsdom) the fallback is per cluster too: 0.6 em narrow /
+1 em wide / 0 for combining-only clusters, each deliberately the widest
+plausible value. Wrapping follows the same rules the CSS does — word
+boundaries, `break-word` only for tokens that cannot fit a line by themselves,
+hanging trailing spaces, break opportunities between ideographic characters,
+and kinsoku (no break after an opening bracket, none before closing brackets or
+punctuation) — plus the timestamp prefix's width charged to the first line.
+
+Break opportunity is its own class, **not** "is full width": Chrome breaks
+between halfwidth kana (4px) and between emoji (10px), but not around `♠♥♦♣`,
+`★`, `→` or `①`. Emoji are matched with `\p{Emoji_Presentation}` —
+`\p{Extended_Pictographic}` also matches `♠`, which would shred every card
+line — and ideographs with `\p{Ideographic}`, so supplementary-plane kanji
+(`𠮷`, `𩸽`) are covered; a BMP-only range list silently demotes them to
+narrow non-breaking text. Whitespace is likewise its own class: `\s` is wrong
+because it matches NBSP and friends, which CSS never breaks around (`aa<NBSP>bb`
+is one word to the browser, verified). The kinsoku sets likewise include ASCII (`:` `,` `)` `(` …), because
+`{Japanese name}: raises` — the shape of every action line — puts an ASCII
+colon straight after a wide character. All three sets (break opportunities,
+line-start kinsoku, line-end kinsoku) were derived by measuring Chrome's
+default `line-break: auto`, which notably *does* allow breaking before small
+kana and `ー`; adding those would over-count instead. Re-measure against the
+browser before changing any of them — the tests encode the measured
+expectations, not a specification.
+
+The available width is the log body width, minus `getScrollbarSize()`, minus
+`EntryRow`'s horizontal padding. Both subtractions are load-bearing: `EntryRow`
+pins `boxSizing: border-box` so host-page CSS cannot move the padding boundary,
+and the `List` pins `scrollbarGutter: stable` so a non-overlay scrollbar
+(Windows/Linux) narrows the row by the same amount whether or not the log is
+currently scrolling. That width is re-measured with `getScrollbarSize(true)`
+whenever `devicePixelRatio` changes (page zoom, monitor move): the scrollbar's
+physical width is constant, so its CSS-pixel width — the thing being
+subtracted — moves with zoom, and both `getScrollbarSize`'s own module cache
+and a mount-time `useMemo` would otherwise pin the first value forever. Derive the width from the *displayed* size, never the
+stored one: a viewport narrower than the stored width shrinks only the render,
+and that is where the wrapping actually happens. Do not reintroduce a fixed
+chars-per-line constant: the panel resizes down to `HAND_LOG_MIN_WIDTH`
+(200px), where the original 60-chars-per-line assumption under-counted lines
+and rows overlapped. Every input to the wrap calculation must stay in
+`getItemSize`'s `useCallback` deps — react-window rebuilds its row-bounds cache
+only when the `rowHeight` identity changes.
 
 **Popup theming**: `src/components/popup/theme.ts` defines two MUI themes -- `dark-felt` (default look, shares the HUD overlay's dark/gold palette) and `modern-light`. Which one renders is controlled by the `popupTheme` setting (`'auto' | 'dark' | 'light'`, default `'auto'`; テーマ control in `PopupHeader.tsx`, a 自動/ダーク/ライト 3-way `SegmentRadio`). `'auto'` resolves against the live OS `prefers-color-scheme` via `useMediaQuery` in `Popup.tsx` (`resolvePopupThemeVariant()` in `theme.ts` is the pure resolver, unit-tested independent of the DOM). Persisted to its own `chrome.storage.sync` key (`popupTheme`, see `popup-theme-storage.ts`) -- deliberately **not** a field on `UIConfig`, because `UIScaleSection`/`HudDisplaySection` broadcast every `uiConfig` write to all open game tabs (`chrome.tabs.sendMessage(..., 'updateUIConfig')`) to trigger a HUD re-render; the popup's own chrome has nothing to do with the HUD overlay, so nesting it there would fire that broadcast on every theme change for no reason. `popup.ts` pre-fetches the persisted mode before the first `render()` call so the popup never paints with the wrong theme and then swaps.
 
