@@ -636,6 +636,10 @@ describe('message-router device-local UI layout', () => {
   })
 
   it('ショートカットpatchを保存時点の最新同期設定へmergeする', async () => {
+    // hudColorCodingは#320で廃止した旧キー。実ユーザーのstorage.syncには
+    // 残り続けるので、patch mergeが「UIConfigの型に無いキー」を落とさない
+    // ことをここで固定する（落とすと、旧版と設定を共有している端末の
+    // 設定が同期のたびに削られる）。
     await chrome.storage.sync.set({
       uiConfig: {
         ...DEFAULT_UI_CONFIG,

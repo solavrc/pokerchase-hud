@@ -948,7 +948,7 @@ describe('Hud', () => {
       expect(screen.getByText('30')).toBeInTheDocument()
     })
 
-    it('hudColorCoding=trueをcompact/fullどちらのStatDisplayにも伝播する', () => {
+    it('しきい値カラーをcompact/fullどちらのStatDisplayにも適用する', () => {
       const highVpipStats = {
         playerId: 123,
         statResults: [
