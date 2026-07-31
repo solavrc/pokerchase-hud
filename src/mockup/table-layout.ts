@@ -110,7 +110,7 @@ export const SEATS: readonly SeatLayout[] = [
   },
   {
     // プレイヤーA -- bottom left.
-    cards: { h: 8.4, l: 11.5, t: 51, w: 8.5 },
+    cards: { h: 8.4, l: 12.2, t: 51.4, w: 7.5 },
     plate: { h: 8, l: 5.8, t: 57.8, w: 14.4 },
     portrait: { h: 29, l: 2.5, t: 41, w: 10 },
   },
@@ -121,8 +121,10 @@ export const SEATS: readonly SeatLayout[] = [
     portrait: { h: 25, l: 5.5, t: 6, w: 9.5 },
   },
   {
-    // プレイヤーC -- top centre.
-    cards: { h: 8.5, l: 55.5, t: 8.5, w: 7.5 },
+    // プレイヤーC -- top centre. Like every other seat, the cards sit just
+    // inside the plate's right edge (58.35 vs the plate's 58.9); the plate is
+    // painted after them, so their lower half is occluded as in the reference.
+    cards: { h: 8.5, l: 50.9, t: 8.1, w: 7.45 },
     plate: { h: 8, l: 44.5, t: 14.8, w: 14.4 },
     portrait: { h: 22, l: 41, t: 1, w: 9 },
   },
@@ -134,7 +136,7 @@ export const SEATS: readonly SeatLayout[] = [
   },
   {
     // プレイヤーE -- bottom right.
-    cards: { h: 8, l: 88, t: 51, w: 8 },
+    cards: { h: 8.4, l: 89.5, t: 51.4, w: 7.4 },
     plate: { h: 8, l: 82.8, t: 57.8, w: 14.4 },
     portrait: { h: 25, l: 82.5, t: 41, w: 9 },
   },
