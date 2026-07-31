@@ -51,7 +51,18 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 
 ## Working Conventions
 
-- **Language**: respond to the user in Japanese; write repository documentation in English.
+- **Language**: respond to the user in Japanese. For documentation, **match the
+  language the file already uses** — a blanket "docs are English" rule stopped
+  describing this repo once `README.md` was deliberately rewritten in Japanese
+  (#302), and reviewers keep flagging Japanese additions to Japanese files
+  because of it. Currently English: this file (and its nested copies),
+  `CONTRIBUTING.md`, `PRIVACY.md`, `e2e/README.md`, `docs/file-organization.md`,
+  `docs/observability.md`, `docs/api-event-examples.md`. Currently Japanese:
+  `README.md`, `docs/api-events.md`, `docs/architecture.md`,
+  `docs/hand-analysis.md`, `docs/pokerstars-export.md`, `docs/firebase-setup.md`,
+  `docs/battle-type-coverage-audit.md`, `docs/chrome-web-store-release.md`. For a
+  new file: English when it is written for agents/contributors, Japanese when it
+  is written for users. Code comments stay English regardless.
 - **Commits**: Conventional Commits (common scopes: `hud`, `stats`, `ui`, `api`, `build`; breaking changes via `feat!` / `BREAKING CHANGE:`).
 - **Tests**: Jest, co-located with sources (`foo.ts` → `foo.test.ts`); jest roots are `src/` and `e2e/` (live-browser scenarios under `e2e/scenarios/` are separate from Jest/CI). Run `npm run test` and `npm run typecheck` before finishing a change; changes touching entity derivation or statistics additionally run `npm run verify-stats -- <file.ndjson>` (see CONTRIBUTING.md).
 - **Service Worker code** (`src/background/`): no `window`; global timer functions only; assume the SW can die at any await (MV3 lifecycle).

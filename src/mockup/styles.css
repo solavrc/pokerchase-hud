@@ -1,3 +1,17 @@
+/*
+ * Visual mockup styling.
+ *
+ * The `.pc-*` rules recreate the PokerChase client screen from
+ * `e2e/public/assets/table-backdrop.jpg`; all POSITIONS come from
+ * `table-layout.ts` (percent of viewport), this file only supplies the look.
+ * Sizes and type are expressed in the `--u` scene unit (see `.pc-scene`) so
+ * the scene keeps its proportions at any window size and aspect ratio.
+ *
+ * No game artwork is reproduced: character portraits are abstract silhouettes
+ * that only reserve the same footprint, so HUD contrast is judged against a
+ * realistically busy backdrop.
+ */
+
 :root {
   color: #f5f7ff;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -29,362 +43,576 @@ input[type="range"] {
 }
 
 .mockup {
-  background:
-    radial-gradient(circle at 50% 48%, rgba(24, 55, 79, 0.58), transparent 36%),
-    linear-gradient(150deg, #090b16 0%, #11122a 46%, #090b18 100%);
+  background: #06070d;
   height: 100%;
   isolation: isolate;
   overflow: hidden;
   position: relative;
-  transition: filter 180ms ease;
 }
 
-.mockup::after {
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px);
-  background-size: 32px 32px;
-  content: "";
+/* ------------------------------------------------------------------ scene */
+
+.pc-scene {
+  /*
+   * Scene unit: 1% of the scene's height at the reference aspect (1.733:1),
+   * shrinking with the width on narrower windows. Positions are percentages
+   * of each axis (so the scene stretches to fill any window, exactly like the
+   * E2E backdrop's `object-fit: fill` <img>), but type and border widths must
+   * track the SMALLER axis or labels outgrow their boxes on a narrow window.
+   */
+  --u: min(1vh, 0.577vw);
+  font-family: "Hiragino Maru Gothic ProN", "Yu Gothic UI", "Yu Gothic", Meiryo,
+    Inter, system-ui, sans-serif;
+  font-weight: 800;
   inset: 0;
-  pointer-events: none;
+  overflow: hidden;
   position: absolute;
-  z-index: 3;
+  transition: filter 180ms ease;
+  z-index: 1;
 }
 
-.mockup--dimmed .table-stage,
-.mockup--dimmed .game-bar,
-.mockup--dimmed .ambient {
+.mockup--dimmed .pc-scene {
   filter: brightness(0.48) saturate(0.7);
 }
 
-.ambient {
-  border-radius: 999px;
-  filter: blur(70px);
-  opacity: 0.34;
-  pointer-events: none;
+.pc-scene > * {
   position: absolute;
-  transition: filter 180ms ease;
 }
 
-.ambient--one {
-  background: #6c34d8;
-  height: 420px;
-  left: -130px;
-  top: 14%;
-  width: 420px;
+/* Every game label is white with a hard dark outline, like the client's. */
+.pc-pot,
+.pc-plate__stack,
+.pc-info strong,
+.pc-info span,
+.pc-pill,
+.pc-help,
+.pc-handlabel,
+.pc-multiplier {
+  text-shadow:
+    0 calc(var(--u) * 0.2) calc(var(--u) * 0.4) rgba(0, 0, 0, 0.75),
+    0 0 calc(var(--u) * 0.3) rgba(0, 0, 0, 0.9);
 }
 
-.ambient--two {
-  background: #087f8c;
-  bottom: -160px;
-  height: 520px;
-  right: -80px;
-  width: 520px;
+/*
+ * Wallpaper. Tuned against median colours sampled from the reference outside
+ * the table: deep indigo down the left edge, blue overhead, magenta along the
+ * right, everything sinking toward black at the bottom. The client's wallpaper
+ * is far darker than its bright accents suggest -- keep the pools low-alpha.
+ */
+.pc-backdrop {
+  background:
+    /* Pool of shadow the table sinks into. Kept tight to the rail's outer
+       edge (x 13-87%, y 14.5-77.5%) so the rail still reads as a dark ring
+       against the wallpaper instead of dissolving into it. */
+    radial-gradient(ellipse 38% 34% at 50% 46%, rgba(3, 4, 10, 0.92) 0%, rgba(3, 4, 10, 0.72) 74%, rgba(3, 4, 10, 0) 100%),
+    repeating-conic-gradient(from 6deg at 50% 46%, rgba(255, 255, 255, 0.05) 0deg 3.4deg, rgba(255, 255, 255, 0) 3.4deg 11deg),
+    repeating-linear-gradient(118deg, rgba(228, 220, 255, 0.055) 0 0.4%, rgba(228, 220, 255, 0) 0.4% 4.4%),
+    radial-gradient(ellipse 26% 26% at 32% -4%, rgba(2, 22, 88, 0.98), rgba(2, 22, 88, 0) 78%),
+    radial-gradient(ellipse 22% 50% at -3% 16%, rgba(76, 42, 212, 0.85), rgba(76, 42, 212, 0) 76%),
+    radial-gradient(ellipse 28% 34% at 101% 2%, rgba(178, 48, 134, 0.85), rgba(178, 48, 134, 0) 74%),
+    radial-gradient(ellipse 20% 30% at 101% 46%, rgba(98, 34, 94, 0.7), rgba(98, 34, 94, 0) 78%),
+    radial-gradient(ellipse 26% 26% at 1% 84%, rgba(58, 30, 122, 0.45), rgba(58, 30, 122, 0) 78%),
+    linear-gradient(180deg, #2a1740 0%, #221636 48%, #120c1e 100%);
+  inset: 0;
 }
 
-.game-bar {
+/* --------------------------------------------------------------- the table */
+
+.pc-rail {
+  background:
+    linear-gradient(180deg, #39415e 0%, #171c2b 12%, #080a12 46%, #0c0f1a 74%, #333a54 100%);
+  /* border-radius comes from RAIL_RADIUS (table-layout.ts) as an inline style,
+     so the measured silhouette has a single source. */
+  box-shadow:
+    0 calc(var(--u) * 2.6) calc(var(--u) * 7) rgba(0, 0, 0, 0.8),
+    0 0 0 calc(var(--u) * 0.6) rgba(2, 3, 8, 0.85),
+    inset 0 0 0 calc(var(--u) * 0.32) rgba(168, 194, 232, 0.2),
+    inset 0 calc(var(--u) * 1) calc(var(--u) * 3) rgba(0, 0, 0, 0.6);
+}
+
+/* Diamond studs set into the rail. */
+.pc-stud {
+  background: linear-gradient(150deg, #2b3350, #0a0d16);
+  box-shadow: 0 0 0 calc(var(--u) * 0.2) rgba(150, 178, 220, 0.16);
+  height: calc(var(--u) * 2.2);
+  transform: translate(-50%, -50%) rotate(45deg);
+  width: calc(var(--u) * 2.2);
+}
+
+.pc-felt {
+  background:
+    radial-gradient(ellipse 36% 40% at 50% 45%, rgba(132, 202, 176, 0.45), rgba(132, 202, 176, 0) 76%),
+    radial-gradient(ellipse 70% 62% at 50% 45%, #2b6f5b 0%, #1a4634 48%, #0f2a1f 88%);
+  /* border-radius comes from FELT_RADIUS (table-layout.ts) -- see .pc-rail. */
+  box-shadow: inset 0 0 calc(var(--u) * 9) rgba(0, 0, 0, 0.6);
+}
+
+/* The client paints a thin white boundary just inside the felt edge. */
+.pc-felt__ring {
+  border: calc(var(--u) * 0.26) solid rgba(255, 255, 255, 0.34);
+  border-radius: 24% / 49%;
+  inset: 5.5% 2%;
+  position: absolute;
+}
+
+.pc-pot {
   align-items: center;
-  background: linear-gradient(90deg, rgba(10, 13, 28, 0.92), rgba(18, 23, 46, 0.74));
-  border-bottom: 1px solid rgba(179, 204, 255, 0.16);
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  height: 72px;
-  inset: 0 0 auto;
-  padding: 0 28px;
-  position: absolute;
-  transition: filter 180ms ease;
-  z-index: 5;
-}
-
-.game-bar > div:first-child {
-  display: grid;
-  gap: 3px;
-}
-
-.game-bar strong {
-  font-size: 15px;
-  letter-spacing: 0.08em;
-}
-
-.game-bar__caption,
-.game-bar__phase span {
-  color: #7f8aa8;
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.18em;
-}
-
-.game-bar__phase {
-  display: grid;
-  gap: 2px;
-  justify-items: center;
-}
-
-.game-bar__phase strong {
-  color: #75e5ff;
-  font-size: 21px;
-  letter-spacing: 0.14em;
-}
-
-.game-bar__timer {
+  background: rgba(3, 12, 12, 0.62);
+  border-radius: 999px;
+  color: #fff;
   display: flex;
-  gap: 5px;
-  justify-self: end;
+  font-size: calc(var(--u) * 3.7);
+  justify-content: center;
+  letter-spacing: 0.03em;
 }
 
-.game-bar__timer span {
-  background: #55d7ad;
-  border-radius: 8px;
-  box-shadow: 0 0 12px rgba(85, 215, 173, 0.38);
-  height: 6px;
-  width: 22px;
+.pc-board {
+  display: flex;
+  gap: calc(var(--u) * 0.9);
+  transform: translate(-50%, -50%);
 }
 
-.game-bar__timer .is-muted {
-  background: #33394f;
+/* ---------------------------------------------------------------- cards */
+
+.pc-card {
+  background: linear-gradient(160deg, #fff 0%, #f4f6fa 62%, #dde2ea 100%);
+  border-radius: calc(var(--u) * 0.7);
+  box-shadow: 0 calc(var(--u) * 0.8) calc(var(--u) * 1.6) rgba(0, 0, 0, 0.42);
+  font-family: Georgia, "Times New Roman", serif;
+  height: calc(var(--u) * 11);
+  line-height: 0.88;
+  position: relative;
+  width: calc(var(--u) * 7.6);
+}
+
+.pc-card__index {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  left: calc(var(--u) * 0.7);
+  position: absolute;
+  top: calc(var(--u) * 0.5);
+}
+
+.pc-card b {
+  font-size: calc(var(--u) * 4);
+  font-weight: 700;
+}
+
+.pc-card i {
+  font-size: calc(var(--u) * 2.8);
+  font-style: normal;
+}
+
+.pc-card__pip {
+  bottom: calc(var(--u) * 0.2);
+  font-size: calc(var(--u) * 6);
+  line-height: 1;
+  opacity: 0.92;
+  position: absolute;
+  right: calc(var(--u) * 0.4);
+}
+
+/* Undealt board slot: footprint only. */
+.pc-card--slot {
+  background: rgba(6, 20, 16, 0.3);
+  border: calc(var(--u) * 0.24) dashed rgba(198, 240, 224, 0.24);
   box-shadow: none;
 }
 
-.table-stage {
-  inset: 72px 0 0;
-  position: absolute;
-  transition: filter 180ms ease;
-  z-index: 2;
+.card--black { color: #14181f; }
+.card--red { color: #c62a48; }
+
+.pc-herocards {
+  display: flex;
+  gap: calc(var(--u) * 0.4);
 }
 
-.table-rail {
-  background: linear-gradient(145deg, #262e4d, #090c1d 56%, #27324e);
-  border: 2px solid rgba(172, 197, 245, 0.2);
-  border-radius: 50%;
-  box-shadow:
-    0 34px 90px rgba(0, 0, 0, 0.64),
-    inset 0 0 0 14px rgba(6, 8, 18, 0.68),
-    inset 0 0 0 16px rgba(155, 192, 236, 0.12);
-  height: min(58vw, 590px);
-  left: 50%;
-  max-height: calc(100vh - 190px);
-  min-height: 390px;
-  position: absolute;
-  top: 49%;
-  transform: translate(-50%, -50%);
-  width: min(76vw, 1160px);
+.pc-herocards .pc-card {
+  flex: 1;
+  height: calc(var(--u) * 15.8);
+  width: auto;
 }
 
-.table-felt {
-  background:
-    radial-gradient(circle at 50% 44%, rgba(46, 142, 133, 0.42), transparent 48%),
-    linear-gradient(155deg, #0d554f, #073d42 62%, #092b37);
-  border: 1px solid rgba(135, 241, 224, 0.2);
-  border-radius: 50%;
-  box-shadow: inset 0 0 75px rgba(0, 0, 0, 0.64);
-  inset: 22px;
-  overflow: hidden;
-  position: absolute;
-}
+.pc-herocards .pc-card b { font-size: calc(var(--u) * 5.6); }
+.pc-herocards .pc-card i { font-size: calc(var(--u) * 4); }
+.pc-herocards .pc-card__pip { bottom: calc(var(--u) * 0.8); font-size: calc(var(--u) * 7.6); }
 
-.table-felt::after {
-  border: 1px solid rgba(148, 245, 229, 0.11);
-  border-radius: 50%;
-  content: "";
-  inset: 11%;
-  position: absolute;
-}
-
-.felt-mark {
+.pc-handlabel {
   align-items: center;
-  color: rgba(180, 255, 244, 0.14);
+  background: rgba(4, 8, 14, 0.78);
+  border-radius: calc(var(--u) * 0.6);
+  color: #fff;
   display: flex;
-  flex-direction: column;
-  left: 50%;
-  position: absolute;
-  top: 72%;
-  transform: translate(-50%, -50%);
-}
-
-.felt-mark span {
-  font-size: clamp(36px, 5vw, 76px);
-  font-weight: 900;
-  letter-spacing: -0.09em;
-  line-height: 0.8;
-}
-
-.felt-mark small {
-  font-size: 9px;
-  font-weight: 900;
-  letter-spacing: 0.34em;
-  margin-top: 12px;
-}
-
-.board {
-  display: flex;
-  gap: 8px;
-  left: 50%;
-  min-height: 74px;
-  position: absolute;
-  top: 40%;
-  transform: translate(-50%, -50%);
-  z-index: 2;
-}
-
-.playing-card {
-  align-items: center;
-  background: linear-gradient(145deg, #fff, #dfe4ed);
-  border: 1px solid rgba(255, 255, 255, 0.8);
-  border-radius: 7px;
-  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.32);
-  display: flex;
-  font-family: Georgia, serif;
-  font-size: 21px;
-  font-weight: 800;
-  height: 66px;
+  font-size: calc(var(--u) * 2.2);
+  height: calc(var(--u) * 2.9);
   justify-content: center;
-  width: 47px;
-}
-
-.card--black {
-  color: #171b27;
-}
-
-.card--red {
-  color: #d4455c;
-}
-
-.board-empty {
-  align-self: center;
-  border: 1px solid rgba(178, 255, 243, 0.16);
-  border-radius: 999px;
-  color: rgba(194, 255, 246, 0.48);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.2em;
-  padding: 10px 18px;
+  padding: 0 calc(var(--u) * 1.2);
+  transform: translateX(-50%);
   white-space: nowrap;
 }
 
-.pot-display {
-  align-items: baseline;
-  background: rgba(2, 17, 23, 0.62);
-  border: 1px solid rgba(135, 241, 224, 0.18);
-  border-radius: 999px;
-  display: flex;
-  gap: 10px;
-  left: 50%;
-  padding: 6px 18px;
+/* Face-down cards of an opponent still in the hand. */
+.pc-holecards span {
+  background:
+    repeating-linear-gradient(48deg, rgba(226, 190, 118, 0.24) 0 calc(var(--u) * 0.35), rgba(226, 190, 118, 0) calc(var(--u) * 0.35) calc(var(--u) * 1.4)),
+    linear-gradient(155deg, #7d1724 0%, #4a0d16 58%, #6d1420 100%);
+  border: calc(var(--u) * 0.24) solid rgba(226, 194, 126, 0.72);
+  border-radius: calc(var(--u) * 0.6);
+  box-shadow: 0 calc(var(--u) * 0.7) calc(var(--u) * 1.4) rgba(0, 0, 0, 0.5);
+  height: 100%;
   position: absolute;
-  top: 57%;
+  top: 0;
+  width: 62%;
+}
+
+.pc-holecards span:first-child { left: 0; transform: rotate(-3deg); }
+.pc-holecards span:last-child { right: 0; transform: rotate(3deg); }
+
+/* ---------------------------------------------------------------- seats */
+
+/*
+ * Stand-in for the client's character art. The real client paints a licensed
+ * illustration over each seat; the mockup draws a neutral avatar silhouette
+ * (head + shoulders) at the same footprint, so the HUD is still judged against
+ * a seat area that is actually occupied rather than bare felt.
+ */
+.pc-portrait {
+  background:
+    radial-gradient(ellipse 64% 48% at 50% 74%, rgba(122, 104, 180, 0.34), rgba(122, 104, 180, 0) 78%);
+}
+
+.pc-portrait::before,
+.pc-portrait::after {
+  background: linear-gradient(180deg, rgba(236, 230, 255, 0.6), rgba(150, 134, 208, 0.38));
+  box-shadow: 0 0 calc(var(--u) * 1.4) rgba(10, 7, 24, 0.55);
+  content: "";
+  filter: blur(calc(var(--u) * 0.12));
+  left: 50%;
+  position: absolute;
   transform: translateX(-50%);
 }
 
-.pot-display span {
-  color: #72a9a2;
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.14em;
-}
-
-.pot-display strong {
-  color: #dcfff9;
-  font-size: 16px;
-  letter-spacing: 0.04em;
-}
-
-.hero-cards {
-  bottom: 5%;
-  display: flex;
-  gap: 5px;
-  left: 50%;
-  position: absolute;
-  transform: translateX(-50%);
-  z-index: 2;
-}
-
-.hero-cards .playing-card {
-  height: 72px;
-  transform: rotate(-3deg);
-  width: 50px;
-}
-
-.hero-cards .playing-card + .playing-card {
-  transform: rotate(3deg);
-}
-
-.table-seat {
-  align-items: center;
-  display: flex;
-  gap: 9px;
-  position: absolute;
-  transform: translate(-50%, -50%);
-  z-index: 4;
-}
-
-.table-seat--0 { left: 50%; top: 88%; }
-.table-seat--1 { left: 18%; top: 73%; }
-.table-seat--2 { left: 18%; top: 29%; }
-.table-seat--3 { left: 50%; top: 12%; }
-.table-seat--4 { left: 82%; top: 29%; }
-.table-seat--5 { left: 82%; top: 73%; }
-
-.seat-avatar {
-  align-items: center;
-  background: linear-gradient(145deg, #6f7797, #20263f);
-  border: 2px solid #8791b8;
+/* Head. Square in px (`aspect-ratio`) so it stays round whatever the seat's
+   footprint aspect happens to be. */
+.pc-portrait::before {
+  aspect-ratio: 1;
   border-radius: 50%;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.46);
-  color: #edf1ff;
+  top: 5%;
+  width: 44%;
+}
+
+/* Shoulders. */
+.pc-portrait::after {
+  border-radius: 46% 46% 16% 16% / 58% 58% 10% 10%;
+  bottom: 0;
+  height: 58%;
+  width: 86%;
+}
+
+/* The client's plates are bevelled: a brushed-metal frame (painted into the
+   border box) around a dark translucent panel (the padding box). */
+.pc-plate {
+  align-items: center;
+  background:
+    linear-gradient(180deg, rgba(58, 62, 76, 0.94), rgba(14, 16, 24, 0.96)) padding-box,
+    linear-gradient(155deg, #f2f5ff 0%, #7e8aa8 26%, #3d4560 52%, #8b96b4 78%, #e8edfb 100%) border-box;
+  border: calc(var(--u) * 0.32) solid transparent;
+  border-radius: calc(var(--u) * 1.2);
+  box-shadow:
+    0 calc(var(--u) * 0.9) calc(var(--u) * 2.2) rgba(0, 0, 0, 0.6),
+    inset 0 calc(var(--u) * 0.25) 0 rgba(255, 255, 255, 0.14);
   display: flex;
-  font-size: 13px;
-  font-weight: 900;
-  height: 48px;
+  flex-direction: column;
+  gap: calc(var(--u) * 0.2);
   justify-content: center;
-  width: 48px;
+  overflow: hidden;
+  padding: 0 calc(var(--u) * 1);
 }
 
-.table-seat--hero .seat-avatar {
-  background: linear-gradient(145deg, #55d7ad, #14677b);
-  border-color: #b4fff1;
-  box-shadow: 0 0 24px rgba(85, 215, 173, 0.3);
-  color: #06181d;
+.pc-plate__stack {
+  color: #fff;
+  font-size: calc(var(--u) * 2.9);
+  letter-spacing: 0.02em;
 }
 
-.seat-copy {
-  background: linear-gradient(90deg, rgba(9, 12, 27, 0.94), rgba(20, 26, 51, 0.94));
-  border: 1px solid rgba(171, 190, 232, 0.24);
-  border-radius: 7px;
-  display: grid;
-  min-width: 128px;
-  padding: 6px 10px;
-}
-
-.seat-name {
-  color: #c5cbdf;
-  font-size: 10px;
-  max-width: 160px;
+.pc-plate__name {
+  color: #e8d77c;
+  font-size: calc(var(--u) * 2.1);
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.seat-stack {
-  color: #fff;
-  font-size: 15px;
-  font-weight: 800;
+.pc-plate--empty {
+  background: rgba(8, 10, 18, 0.55);
+  border: calc(var(--u) * 0.3) dashed rgba(176, 190, 220, 0.32);
+  box-shadow: none;
 }
 
-.seat-action {
-  background: #ece9ff;
-  border: 2px solid #8065dc;
-  border-radius: 5px;
-  color: #282044;
-  font-size: 9px;
-  font-weight: 900;
-  left: 54px;
-  letter-spacing: 0.05em;
-  padding: 3px 7px;
+.pc-plate__empty {
+  color: rgba(214, 224, 245, 0.55);
+  font-size: calc(var(--u) * 2.1);
+  letter-spacing: 0.2em;
+}
+
+/* --------------------------------------------------------------- chrome */
+
+.pc-menu,
+.pc-emoji {
+  display: grid;
+  place-items: center;
+}
+
+/*
+ * Diamonds (menu button, emoji button, slider handle). These are squares
+ * rotated 45° in the client, so they must be square in PIXELS -- sizing them
+ * from their box's own percentages would mix two different axes and render a
+ * squashed rhombus at every window aspect. Hence `aspect-ratio: 1` plus a side
+ * in `--u`; `table-layout.ts` supplies only the centre.
+ *
+ * Sides are derived from the measured bounding boxes (a square of side s
+ * rotated 45° has an s√2 box): emoji 250x249px, menu ~269px, handle ~138px in
+ * the 2x asset = 125 / 134.5 / 69 logical px across, so s = box / √2.
+ */
+.pc-menu::before,
+.pc-emoji::before {
+  aspect-ratio: 1;
+  border-radius: calc(var(--u) * 0.6);
+  content: "";
+  left: 50%;
   position: absolute;
-  top: -18px;
+  top: 50%;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.pc-menu::before { width: calc(var(--u) * 9.51); }
+.pc-emoji::before { width: calc(var(--u) * 8.84); }
+
+.pc-menu::before {
+  background: linear-gradient(150deg, #454a78, #171b35 58%, #2c3157);
+  border: calc(var(--u) * 0.4) solid #d2d9f0;
+  box-shadow: 0 calc(var(--u) * 0.9) calc(var(--u) * 2.2) rgba(0, 0, 0, 0.55);
+}
+
+.pc-menu span {
+  color: #f2d24f;
+  font-size: calc(var(--u) * 2.6);
+  position: relative;
+  text-shadow: 0 calc(var(--u) * 0.2) calc(var(--u) * 0.3) rgba(0, 0, 0, 0.85);
+}
+
+.pc-emoji::before {
+  background: linear-gradient(150deg, #ffe563, #eeaf22);
+  border: calc(var(--u) * 0.35) solid #fff6cf;
+  box-shadow: 0 calc(var(--u) * 0.9) calc(var(--u) * 2.2) rgba(0, 0, 0, 0.5);
+}
+
+.pc-emoji::after {
+  color: #1d1607;
+  content: "☺";
+  font-size: calc(var(--u) * 6);
+  line-height: 1;
+  position: relative;
+}
+
+.pc-info {
+  align-items: center;
+  background: linear-gradient(180deg, rgba(20, 24, 52, 0.9), rgba(8, 10, 28, 0.9));
+  border-radius: 999px;
+  color: #fff;
+  display: flex;
+  justify-content: space-between;
+  padding: 0 calc(var(--u) * 2.4);
+}
+
+.pc-info span { font-size: calc(var(--u) * 3.1); }
+.pc-info strong { font-size: calc(var(--u) * 3.1); font-weight: 800; padding-left: calc(var(--u) * 1.6); }
+
+.pc-pill {
+  align-items: center;
+  background: linear-gradient(180deg, #2c47b8, #16256e);
+  border-radius: 999px;
+  color: #fff;
+  display: flex;
+  font-size: calc(var(--u) * 3.1);
+  justify-content: center;
+}
+
+.pc-help {
+  align-items: center;
+  background: linear-gradient(180deg, rgba(90, 32, 132, 0.92), rgba(140, 46, 186, 0.92));
+  border: calc(var(--u) * 0.4) solid #ccd3e8;
+  border-radius: calc(var(--u) * 0.8) calc(var(--u) * 0.8) calc(var(--u) * 1.8) calc(var(--u) * 1.8);
+  border-top-color: transparent;
+  color: #fff;
+  display: flex;
+  font-size: calc(var(--u) * 3.4);
+  justify-content: center;
+}
+
+.pc-promo {
+  align-items: center;
+  background: linear-gradient(160deg, rgba(60, 22, 74, 0.9), rgba(26, 10, 38, 0.92));
+  border: calc(var(--u) * 0.25) solid rgba(224, 196, 128, 0.5);
+  border-radius: calc(var(--u) * 0.8);
+  box-shadow: 0 calc(var(--u) * 0.9) calc(var(--u) * 2) rgba(0, 0, 0, 0.5);
+  color: #e6c98a;
+  display: flex;
+  font-size: calc(var(--u) * 2.4);
+  justify-content: center;
+  letter-spacing: 0.08em;
+  line-height: 1.15;
+  text-align: center;
+}
+
+.pc-guide {
+  align-items: center;
+  color: rgba(236, 240, 255, 0.85);
+  display: flex;
+  font-size: calc(var(--u) * 2);
+  gap: calc(var(--u) * 0.8);
+  justify-content: flex-end;
+}
+
+.pc-guide span {
+  background: linear-gradient(180deg, #f2f4fb, #b8bfd4);
+  border-radius: calc(var(--u) * 0.5);
+  color: #1a1e2c;
+  padding: calc(var(--u) * 0.2) calc(var(--u) * 0.8);
+}
+
+/* ----------------------------------------------------------- action bar */
+
+/* Transparent full-scene layer so its children's percentage coordinates
+   resolve against the viewport, exactly like every other scene element. */
+.pc-actionbar {
+  inset: 0;
+}
+
+.pc-actionbar > * {
+  position: absolute;
+}
+
+.pc-actionbar__frame {
+  background: linear-gradient(180deg, rgba(10, 12, 22, 0.9), rgba(4, 5, 10, 0.94));
+  border: calc(var(--u) * 0.3) solid rgba(190, 202, 228, 0.5);
+  border-radius: calc(var(--u) * 1);
+}
+
+.pc-preaction {
+  align-items: center;
+  background: linear-gradient(180deg, #1c2472, #0b0f3c);
+  border: calc(var(--u) * 0.35) solid #cdd4ea;
+  border-radius: calc(var(--u) * 0.8);
+  color: #dfe5ff;
+  display: flex;
+  flex-direction: column;
+  font-size: calc(var(--u) * 2.1);
+  gap: calc(var(--u) * 0.6);
+  justify-content: center;
+  line-height: 1.15;
+  text-align: center;
+}
+
+.pc-preaction span {
+  background: #0b0d18;
+  border: calc(var(--u) * 0.3) solid #6f79a8;
+  border-radius: calc(var(--u) * 1);
+  height: calc(var(--u) * 4.4);
+  width: calc(var(--u) * 4.4);
+}
+
+.pc-action {
+  align-items: center;
+  background: linear-gradient(180deg, #ffe98a 0%, #f7c948 52%, #e8a92c 100%);
+  border: calc(var(--u) * 0.35) solid #fff;
+  border-radius: calc(var(--u) * 0.9);
+  box-shadow: 0 calc(var(--u) * 0.8) calc(var(--u) * 1.8) rgba(0, 0, 0, 0.5);
+  color: #4a3005;
+  display: flex;
+  flex-direction: column;
+  font-size: calc(var(--u) * 2.7);
+  justify-content: center;
+  line-height: 1.1;
+}
+
+.pc-action--pale { background: linear-gradient(180deg, #fff6cb 0%, #fbe092 60%, #eecb6a 100%); }
+
+.pc-stepper {
+  border: calc(var(--u) * 0.35) solid #d8e0f5;
+  border-radius: calc(var(--u) * 1);
+  display: grid;
+  place-items: center;
+}
+
+.pc-stepper--minus { background: linear-gradient(180deg, #2f6bff, #10309e); }
+.pc-stepper--plus { background: linear-gradient(180deg, #ff4d8d, #c4114f); }
+
+.pc-stepper span {
+  background: #fff;
+  border-radius: calc(var(--u) * 0.4);
+  height: calc(var(--u) * 1.2);
+  position: relative;
+  width: 45%;
+}
+
+.pc-stepper--plus span::after {
+  background: #fff;
+  border-radius: calc(var(--u) * 0.4);
+  content: "";
+  height: 400%;
+  left: 50%;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 27%;
+}
+
+.pc-multiplier {
+  align-items: center;
+  background: linear-gradient(180deg, #1b2472, #0a0f3a);
+  border: calc(var(--u) * 0.3) solid #b9c2e0;
+  border-radius: calc(var(--u) * 0.8);
+  color: #fff;
+  display: flex;
+  font-size: calc(var(--u) * 3);
+  justify-content: center;
+  overflow: hidden;
   white-space: nowrap;
 }
 
+/* The preset whose label is a word, not a multiplier: it needs smaller type to
+   fit the same box. Keyed off the layout data rather than `:last-child` --
+   the presets are not the last children of the action bar. */
+.pc-multiplier--word { font-size: calc(var(--u) * 2.4); }
+
+.pc-slider {
+  background: linear-gradient(180deg, #e7ecff, #9aa5c8);
+  border-radius: 999px;
+}
+
+.pc-slider__knob {
+  aspect-ratio: 1;
+  background: linear-gradient(150deg, #fff0a8, #e8b62c);
+  border: calc(var(--u) * 0.25) solid #fff;
+  border-radius: calc(var(--u) * 0.4);
+  box-shadow: 0 0 calc(var(--u) * 1.4) rgba(255, 210, 90, 0.6);
+  transform: translate(-50%, -50%) rotate(45deg);
+  width: calc(var(--u) * 4.88);
+}
+
+/* --------------------------------------------------------- mock controls */
+
+/*
+ * Dev affordances. They sit in the one band of the recreated screen that is
+ * empty in the reference -- x 63-74.4%, y 0-8.5%, between プレイヤーC's cards
+ * (right edge 63%) and the ヘルプ button (left edge 74.4%). Anywhere else in
+ * the top row would permanently cover a piece of chrome we just measured and
+ * rebuilt, which is exactly what these are meant to let you look at. Keep them
+ * in viewport percentages so the band tracks the scene at any window size.
+ */
 .control-trigger,
 .control-panel,
 .mock-badge {
@@ -403,9 +631,9 @@ input[type="range"] {
   font-size: 11px;
   font-weight: 700;
   gap: 7px;
-  left: 16px;
+  left: 63.5%;
   padding: 8px 12px;
-  top: 88px;
+  top: 1%;
 }
 
 .control-trigger span {
@@ -419,9 +647,9 @@ input[type="range"] {
   border: 1px solid rgba(155, 181, 232, 0.24);
   border-radius: 14px;
   box-shadow: 0 22px 70px rgba(0, 0, 0, 0.5);
-  left: 16px;
+  left: 63.5%;
   padding: 18px;
-  top: 132px;
+  top: 9.5%;
   width: 300px;
 }
 
@@ -527,22 +755,48 @@ input[type="range"] {
   margin-top: 10px;
 }
 
+.mock-popup {
+  border-radius: 10px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+  /* Chrome caps the real extension popup near 600px tall -- see the height
+     assertion in e2e/scenarios/smoke.ts. Without this the mock would show
+     sections that only appear after scrolling in production. */
+  max-height: min(600px, calc(100vh - 24px));
+  overflow: auto;
+  position: fixed;
+  right: 12px;
+  top: 12px;
+  width: 380px;
+  z-index: 11020;
+}
+
 .mock-badge {
   align-items: center;
   backdrop-filter: blur(12px);
   background: rgba(7, 10, 21, 0.76);
   border: 1px solid rgba(142, 169, 216, 0.18);
   border-radius: 999px;
-  bottom: 20px;
   color: #77819e;
   display: flex;
   font-size: 8px;
   font-weight: 900;
   gap: 7px;
-  left: 50%;
+  left: 63.5%;
   letter-spacing: 0.13em;
   padding: 7px 11px;
-  transform: translateX(-50%);
+  top: 5.4%;
+}
+
+/*
+ * The popup is 380px of fixed, higher-stacked UI on the right edge, so while
+ * it is open the dev cluster's usual band would sit underneath it. Shift the
+ * cluster to the left edge for as long as the popup is shown -- covering the
+ * recreated chrome matters less than being unable to reach the controls.
+ */
+.control-trigger--shifted,
+.control-panel--shifted,
+.mock-badge--shifted {
+  left: 12px;
 }
 
 .mock-badge span {
@@ -551,30 +805,4 @@ input[type="range"] {
   box-shadow: 0 0 10px rgba(94, 219, 183, 0.74);
   height: 5px;
   width: 5px;
-}
-
-@media (max-width: 1050px), (max-height: 720px) {
-  .table-rail {
-    min-height: 330px;
-    width: 72vw;
-  }
-
-  .seat-avatar {
-    height: 38px;
-    width: 38px;
-  }
-
-  .seat-copy {
-    min-width: 104px;
-  }
-
-  .seat-name {
-    max-width: 110px;
-  }
-
-  .table-seat--1,
-  .table-seat--2 { left: 16%; }
-
-  .table-seat--4,
-  .table-seat--5 { left: 84%; }
 }

@@ -16,26 +16,26 @@ interface PlayerPotOdds {
   }
 }
 
+/**
+ * A seat as the mock table draws it. Occupancy only -- no name, no stack, no
+ * per-hand progress. The table is a shell: it shows WHERE the client puts
+ * things, never WHAT any particular hand contains. See the scope note in
+ * `table-layout.ts`.
+ */
 export interface TableSeat {
-  action?: string
+  /** Seat nobody has taken yet -- the plate renders as an empty slot. */
+  empty?: boolean
   isHero?: boolean
-  name: string
-  stack: string
 }
 
 export interface MockScenario {
-  board: string[]
-  eyebrow: string
   handLogEntries: HandLogEntry[]
-  heroCards: string[]
   id: MockScenarioId
   label: string
-  phase: string
   playerPotOdds: Array<PlayerPotOdds | undefined>
-  pot: string
   realTimeStats?: RealTimeStats
+  /** Seat occupancy only; see {@link TableSeat}. */
   seats: TableSeat[]
-  stakes: string
   stats: PlayerStats[]
 }
 
@@ -45,6 +45,13 @@ export interface MockScenario {
  * （合成IDのままだとバッジが一切出ず、レイアウト崩れに気づけない）。
  */
 const HERO_PLAYER_ID = 561384657
+
+/**
+ * 名前欄の省略表示を確認するための長い名前。匿名なのは他の席と同じだが、
+ * `dense-history` シナリオはこの席で ellipsis を見るために存在するので、
+ * 短い名前に揃えてはいけない。
+ */
+const LONG_NAME = 'プレイヤーA_とても長い名前のテスト用アカウント'
 
 const result = (
   id: string,
@@ -113,14 +120,14 @@ const logTimestamp = Date.UTC(2026, 6, 15, 11, 42, 0)
 
 const turnHandLogLines: Array<[string, string, HandLogEntryType]> = [
   ['header', 'PokerChase Hand #840217 · Ring 25/50', HandLogEntryType.HEADER],
-  ['seat-1', 'Seat 1: sola (6,240 in chips)', HandLogEntryType.SEAT],
-  ['seat-2', 'Seat 2: river_rat (5,850 in chips)', HandLogEntryType.SEAT],
-  ['cards', 'Dealt to sola [A♠ J♠]', HandLogEntryType.CARDS],
-  ['preflop', 'sola: raises 100 to 150', HandLogEntryType.ACTION],
+  ['seat-1', 'Seat 1: Hero (6,240 in chips)', HandLogEntryType.SEAT],
+  ['seat-2', 'Seat 2: プレイヤーD (5,850 in chips)', HandLogEntryType.SEAT],
+  ['cards', 'Dealt to Hero [A♠ J♠]', HandLogEntryType.CARDS],
+  ['preflop', 'Hero: raises 100 to 150', HandLogEntryType.ACTION],
   ['flop', '*** FLOP *** [J♦ 7♠ 2♣]', HandLogEntryType.STREET],
-  ['flop-action', 'river_rat: calls 220', HandLogEntryType.ACTION],
+  ['flop-action', 'プレイヤーD: calls 220', HandLogEntryType.ACTION],
   ['turn', '*** TURN *** [J♦ 7♠ 2♣] [9♠]', HandLogEntryType.STREET],
-  ['turn-action', 'river_rat: bets 640', HandLogEntryType.ACTION],
+  ['turn-action', 'プレイヤーD: bets 640', HandLogEntryType.ACTION],
 ]
 
 const turnHandLog: HandLogEntry[] = turnHandLogLines.map(([id, text, type], index) => ({
@@ -184,13 +191,9 @@ const densePlayer = (
 
 export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
   'turn-decision': {
-    board: ['J♦', '7♠', '2♣', '9♠'],
-    eyebrow: 'LIVE DECISION',
     handLogEntries: turnHandLog,
-    heroCards: ['A♠', 'J♠'],
     id: 'turn-decision',
     label: 'ターンの判断',
-    phase: 'TURN',
     playerPotOdds: [
       { spr: 2.7, potOdds: { call: 640, isPlayerTurn: true, percentage: 26.9, pot: 1740, ratio: '2.7:1' } },
       { spr: 3.1 },
@@ -199,45 +202,41 @@ export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
       { spr: 8.2 },
       { spr: 5.9 },
     ],
-    pot: '1,740',
     realTimeStats,
     seats: [
-      { action: 'TO CALL 640', isHero: true, name: 'sola', stack: '6,240' },
-      { action: 'FOLD', name: 'orbit_99', stack: '4,980' },
-      { name: 'north_star', stack: '9,410' },
-      { action: 'FOLD', name: 'kiwi_tea', stack: '5,220' },
-      { name: 'river_rat', stack: '5,850' },
-      { action: 'BET 640', name: 'maverick', stack: '7,190' },
+      { isHero: true },
+      {},
+      {},
+      {},
+      {},
+      {},
     ],
-    stakes: 'RING · 25 / 50',
     stats: [
-      standardStats(HERO_PLAYER_ID, 'sola', 642, 'balanced'),
-      standardStats(2108, 'orbit_99', 214, 'tight'),
-      standardStats(3440, 'north_star', 168, 'loose'),
-      standardStats(4611, 'kiwi_tea', 192, 'tight'),
-      standardStats(5870, 'river_rat', 987, 'balanced'),
-      standardStats(6032, 'maverick', 301, 'loose'),
+      standardStats(HERO_PLAYER_ID, 'Hero', 642, 'balanced'),
+      standardStats(2108, 'プレイヤーA', 214, 'tight'),
+      standardStats(3440, 'プレイヤーB', 168, 'loose'),
+      standardStats(4611, 'プレイヤーC', 192, 'tight'),
+      standardStats(5870, 'プレイヤーD', 987, 'balanced'),
+      standardStats(6032, 'プレイヤーE', 301, 'loose'),
     ],
   },
   'new-table': {
-    board: [],
-    eyebrow: 'EDGE STATES',
     handLogEntries: [],
-    heroCards: [],
     id: 'new-table',
     label: '新しい卓・データなし',
-    phase: 'WAITING',
     playerPotOdds: [],
-    pot: '—',
+    // Seat occupancy must agree with `stats` below: a seat drawn as taken
+    // needs a real playerId there, and `playerId: -1` (the empty-seat
+    // sentinel, which makes the HUD say "Waiting for Hand...") needs
+    // `empty: true` here. Seats 1/2/4 are the empty ones.
     seats: [
-      { isHero: true, name: 'sola', stack: '5,000' },
-      { name: 'joining…', stack: '—' },
-      { name: 'empty', stack: '—' },
-      { name: 'new_player', stack: '5,000' },
-      { name: 'empty', stack: '—' },
-      { name: 'guest_802', stack: '5,000' },
+      { isHero: true },
+      { empty: true },
+      { empty: true },
+      {},
+      { empty: true },
+      {},
     ],
-    stakes: 'SIT & GO · 50 / 100',
     stats: [
       { playerId: HERO_PLAYER_ID, statResults: [] },
       { playerId: -1 },
@@ -248,33 +247,27 @@ export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
     ],
   },
   'dense-history': {
-    board: ['A♣', 'K♦', 'T♥', '4♣', '4♦'],
-    eyebrow: 'STRESS TEST',
     handLogEntries: turnHandLog,
-    heroCards: ['Q♣', 'J♣'],
     id: 'dense-history',
     label: '長い名前・全統計',
-    phase: 'RIVER',
     playerPotOdds: [
       { spr: 0.4, potOdds: { call: 2380, isPlayerTurn: true, percentage: 38.5, pot: 3800, ratio: '1.6:1' } },
     ],
-    pot: '3,800',
     seats: [
-      { action: 'ALL-IN?', isHero: true, name: 'sola', stack: '2,380' },
-      { name: 'player_with_a_very_long_name', stack: '12,400' },
-      { name: 'three_bet_machine', stack: '8,775' },
-      { name: 'quiet-observer', stack: '1,020' },
-      { action: 'BET 2,380', name: 'river_pressure', stack: '14,950' },
-      { name: 'data_collector', stack: '6,660' },
+      { isHero: true },
+      {},
+      {},
+      {},
+      {},
+      {},
     ],
-    stakes: 'MTT · 200 / 400 / 50',
     stats: [
-      densePlayer(HERO_PLAYER_ID, 'sola', 12_840),
-      densePlayer(7321, 'player_with_a_very_long_name', 987),
-      densePlayer(7322, 'three_bet_machine', 2_411),
-      densePlayer(7323, 'quiet-observer', 104),
-      densePlayer(7324, 'river_pressure', 8_320),
-      densePlayer(7325, 'data_collector', 43_208),
+      densePlayer(HERO_PLAYER_ID, 'Hero', 12_840),
+      densePlayer(7321, LONG_NAME, 987),
+      densePlayer(7322, 'プレイヤーB', 2_411),
+      densePlayer(7323, 'プレイヤーC', 104),
+      densePlayer(7324, 'プレイヤーD', 8_320),
+      densePlayer(7325, 'プレイヤーE', 43_208),
     ],
   },
 }

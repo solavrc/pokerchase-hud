@@ -1,6 +1,14 @@
+import { MESSAGE_ACTIONS } from '../types/messages'
+import type { UIConfig } from '../types/hand-log'
+import {
+  POPUP_THEME_LOCAL_STORAGE_KEY,
+  POPUP_THEME_STORAGE_KEY,
+} from '../components/popup/popup-theme-storage'
 import {
   HAND_LOG_LAYOUT_STORAGE_KEY,
   hudPositionStorageKey,
+  persistSyncedUIConfig,
+  persistSyncedUIConfigPatch,
   resolveLocalUIScale,
   UI_SCALE_STORAGE_KEY,
 } from '../utils/ui-config-storage'
@@ -13,6 +21,23 @@ type StorageChangeListener = (
 export interface MockChromeController {
   clearHudPositions: () => void
 }
+
+/**
+ * Version the mocked `chrome.runtime.getManifest()` reports. Deliberately not
+ * read from package.json: the popup turns this into a GitHub release link, and
+ * a mock should not point at a real release tag.
+ */
+const MOCK_MANIFEST_VERSION = '0.0.0-mock'
+
+/**
+ * Long-running background operations the popup starts optimistically: it flips
+ * to a busy state and only reverts if the reply says `success: false` (see
+ * `ImportExportSection`'s handlers and "Optimistic UI + Server Guard" in
+ * AGENTS.md). There is no background here to send the terminal progress
+ * message, so a bare success would wedge the popup in "エクスポート中" forever.
+ * Rejecting is also what a real background does when it cannot start.
+ */
+const UNSUPPORTED_ACTIONS = new Set(['exportData', 'rebuildData'])
 
 const selectValues = (
   values: Map<string, unknown>,
@@ -42,6 +67,7 @@ export const installChromeMock = (): MockChromeController => {
   const syncedValues = new Map<string, unknown>()
   const localValues = new Map<string, unknown>()
   const listeners = new Set<StorageChangeListener>()
+  const runtimeMessageListeners = new Set<unknown>()
 
   const notify = (
     changes: Record<string, chrome.storage.StorageChange>,
@@ -84,6 +110,16 @@ export const installChromeMock = (): MockChromeController => {
     },
   })
 
+  // `chrome.storage.sync` persists for real users, but this mock's copy starts
+  // empty on every load. Seed the popup's theme from the localStorage mirror
+  // the popup itself keeps, or a reload would show the frame honouring the
+  // saved mode while the popup reconciles to the default and renders the other
+  // theme.
+  // NB: `window.` is required -- the bare name is shadowed below by this
+  // file's own `localStorage` storage-area helper.
+  const savedPopupTheme = window.localStorage.getItem(POPUP_THEME_LOCAL_STORAGE_KEY)
+  if (savedPopupTheme) syncedValues.set(POPUP_THEME_STORAGE_KEY, savedPopupTheme)
+
   const syncStorage = createStorageArea(syncedValues, 'sync')
   const localStorage = createStorageArea(localValues, 'local')
 
@@ -109,6 +145,8 @@ export const installChromeMock = (): MockChromeController => {
       sendMessage: (
         message: {
           action?: string
+          config?: UIConfig
+          patch?: Pick<UIConfig, 'toggleShortcut'>
           scale?: number
           seatIndex?: number
           position?: unknown
@@ -170,13 +208,77 @@ export const installChromeMock = (): MockChromeController => {
 
         if (message.action === 'resetDeviceHandLogLayout') {
           localStorage.remove(HAND_LOG_LAYOUT_STORAGE_KEY, () => {
+            // Clearing storage is not enough: `HandLog` does not watch
+            // storage, it resets on this window event. The real background
+            // sends it to the game tab, where `content_script.ts` re-dispatches
+            // it -- without this the popup's 位置とサイズをリセット button would
+            // do nothing visible.
+            window.dispatchEvent(new CustomEvent(MESSAGE_ACTIONS.RESET_HAND_LOG_LAYOUT))
             callback?.({ success: true })
           })
           return
         }
 
+        // The popup asks the background to persist HUD display settings
+        // rather than writing sync storage itself, so the mock has to do the
+        // storing or nothing the popup changes would ever reach the HUD.
+        // Delegates to the same helpers `message-router.ts` uses.
+        if (message.action === 'setSyncedUIConfig') {
+          const done = (success: boolean) => callback?.({ success })
+          if (message.patch) persistSyncedUIConfigPatch(message.patch, done)
+          else if (message.config) persistSyncedUIConfig(message.config, done)
+          else done(false)
+          return
+        }
+
+        if (message.action && UNSUPPORTED_ACTIONS.has(message.action)) {
+          callback?.({ success: false, error: 'モックでは実行できません' })
+          return
+        }
+
+        // Everything else -- the popup's read actions (`getOperationState`,
+        // `firebaseAuthStatus`, `getSyncState`, `getSyncInfo`,
+        // `getUndecodedEventStats` …) and its write actions alike. Every popup
+        // reader is written to fail open on an unrecognised response
+        // (`if (response?.x)`), so a bare success lands them all on their
+        // idle/empty state, which is what a mock should show. Do NOT fake
+        // richer payloads here: the popup would then render states that no
+        // real background ever produced.
         callback?.({ success: true })
       },
+      onMessage: {
+        addListener: (listener: unknown) => runtimeMessageListeners.add(listener),
+        removeListener: (listener: unknown) => runtimeMessageListeners.delete(listener),
+      },
+      // The popup prints this next to its 更新情報 link.
+      getManifest: () => ({ version: MOCK_MANIFEST_VERSION }),
+      getURL: (path: string) => path,
+      lastError: undefined,
+      reload: () => {},
+    },
+  })
+
+  // `ImportExportSection` focuses an existing import tab through this. The
+  // query above never finds one here, so it is only ever a safety net.
+  Object.defineProperty(chromeHost, 'windows', {
+    configurable: true,
+    value: { update: async () => ({}) },
+  })
+
+  // The popup queries the active tab to decide whether it can talk to a game
+  // page. There is no such tab here, so every query comes back empty and the
+  // popup settles on its "not on the game page" branch.
+  Object.defineProperty(chromeHost, 'tabs', {
+    configurable: true,
+    value: {
+      // Rejecting rather than silently resolving: the popup's import button
+      // awaits this and shows its own failure message if it throws. Resolving
+      // with nothing would leave the click looking accepted while no page
+      // opened. Callers that open the game tab already swallow the error.
+      create: async () => { throw new Error('モックでは新しいタブを開けません') },
+      query: async () => [],
+      sendMessage: async () => undefined,
+      update: async () => ({}),
     },
   })
 
