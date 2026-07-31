@@ -87,7 +87,6 @@ input[type="range"] {
 .pc-pill,
 .pc-help,
 .pc-handlabel,
-.pc-allin,
 .pc-multiplier {
   text-shadow:
     0 calc(var(--u) * 0.2) calc(var(--u) * 0.4) rgba(0, 0, 0, 0.75),
@@ -211,6 +210,13 @@ input[type="range"] {
   opacity: 0.92;
   position: absolute;
   right: calc(var(--u) * 0.4);
+}
+
+/* Undealt board slot: footprint only. */
+.pc-card--slot {
+  background: rgba(6, 20, 16, 0.3);
+  border: calc(var(--u) * 0.24) dashed rgba(198, 240, 224, 0.24);
+  box-shadow: none;
 }
 
 .card--black { color: #14181f; }
@@ -570,7 +576,12 @@ input[type="range"] {
   display: flex;
   font-size: calc(var(--u) * 3);
   justify-content: center;
+  overflow: hidden;
+  white-space: nowrap;
 }
+
+/* オールイン is the one preset with a word instead of a multiplier. */
+.pc-multiplier:last-child { font-size: calc(var(--u) * 2.4); }
 
 .pc-slider {
   background: linear-gradient(180deg, #e7ecff, #9aa5c8);
@@ -582,18 +593,6 @@ input[type="range"] {
   border: calc(var(--u) * 0.25) solid #fff;
   box-shadow: 0 0 calc(var(--u) * 1.4) rgba(255, 210, 90, 0.6);
   transform: rotate(45deg);
-}
-
-.pc-allin {
-  align-items: center;
-  background: linear-gradient(180deg, #1b2472, #0a0f3a);
-  border: calc(var(--u) * 0.3) solid #cdd4ea;
-  border-radius: calc(var(--u) * 0.8);
-  color: #fff;
-  display: flex;
-  font-size: calc(var(--u) * 2.5);
-  justify-content: center;
-  white-space: nowrap;
 }
 
 /* --------------------------------------------------------- mock controls */

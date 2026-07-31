@@ -73,6 +73,12 @@ export const RAIL_STUDS: readonly Point[] = [
 
 /** Where the community cards / pot sit on the felt (the reference hand was preflop). */
 export const BOARD_CENTER: Point = { l: 50, t: 46.3 }
+/**
+ * Board slots always drawn, dealt or not. The reference is a preflop hand so
+ * it shows nothing here -- reserving all five is a deliberate departure, so
+ * that the river's footprint is visible on every scenario.
+ */
+export const BOARD_SLOTS = 5
 export const POT: Rect = { h: 5.4, l: 37.5, t: 30.7, w: 25 }
 
 export interface SeatLayout {
@@ -167,7 +173,6 @@ export const CHROME = {
 
 /** Bottom action bar. Rendered for realism only -- nothing here is clickable. */
 export const ACTION_BAR = {
-  allIn: { h: 4.3, l: 77.2, t: 85.5, w: 7.2 } as Rect,
   buttons: [
     { h: 11.6, l: 11.1, t: 84.7, w: 9.7 },
     { h: 11.6, l: 22.2, t: 84.7, w: 10 },
@@ -175,7 +180,18 @@ export const ACTION_BAR = {
   ] as Rect[],
   frame: { h: 18.5, l: 1, t: 81.5, w: 92 } as Rect,
   minus: { h: 10.7, l: 43.9, t: 85.2, w: 6.1 } as Rect,
-  multiplier: { h: 6.3, l: 50.8, t: 84.3, w: 8.1 } as Rect,
+  /**
+   * Bet-size presets. x2.5 and オールイン are measured off the reference; the
+   * x3 / x4 chips between them were not visible in that frame (the client only
+   * offers the sizes the acting stack can cover), so they are spaced evenly
+   * across the same run and share x2.5's box.
+   */
+  multipliers: [
+    { h: 6.3, l: 50.8, t: 84.3, w: 8.1, label: 'x2.5' },
+    { h: 6.3, l: 59.6, t: 84.3, w: 8.1, label: 'x3' },
+    { h: 6.3, l: 68.4, t: 84.3, w: 8.1, label: 'x4' },
+    { h: 6.3, l: 77.2, t: 84.3, w: 8.1, label: 'オールイン' },
+  ] as Array<Rect & { label: string }>,
   plus: { h: 11.2, l: 85.6, t: 84.7, w: 6.6 } as Rect,
   preAction: { h: 15.5, l: 1.7, t: 83.3, w: 8 } as Rect,
   slider: { h: 1.5, l: 50.3, t: 93.9, w: 43.6 } as Rect,

@@ -13,6 +13,7 @@ import {
 import {
   ACTION_BAR,
   BOARD_CENTER,
+  BOARD_SLOTS,
   CHROME,
   FELT,
   HERO_CARDS,
@@ -134,10 +135,11 @@ const ActionBar = () => (
     <div className="pc-action" style={rectStyle(ACTION_BAR.buttons[2]!)}>レイズ</div>
 
     <div className="pc-stepper pc-stepper--minus" style={rectStyle(ACTION_BAR.minus)}><span /></div>
-    <div className="pc-multiplier" style={rectStyle(ACTION_BAR.multiplier)}>x2.5</div>
+    {ACTION_BAR.multipliers.map(({ label, ...rect }) => (
+      <div className="pc-multiplier" key={label} style={rectStyle(rect)}>{label}</div>
+    ))}
     <div className="pc-slider" style={rectStyle(ACTION_BAR.slider)} />
     <div className="pc-slider__knob" style={rectStyle(ACTION_BAR.sliderKnob)} />
-    <div className="pc-allin" style={rectStyle(ACTION_BAR.allIn)}>オールイン</div>
     <div className="pc-stepper pc-stepper--plus" style={rectStyle(ACTION_BAR.plus)}><span /></div>
   </div>
 )
@@ -175,7 +177,12 @@ const Mockup = () => {
           aria-label={`Board: ${scenario.board.join(' ') || 'none'}`}
           style={{ left: `${BOARD_CENTER.l}%`, top: `${BOARD_CENTER.t}%` }}
         >
-          {scenario.board.map((card) => <Card card={card} key={card} />)}
+          {Array.from({ length: BOARD_SLOTS }, (_, slot) => {
+            const card = scenario.board[slot]
+            return card
+              ? <Card card={card} key={card} />
+              : <span aria-hidden="true" className="pc-card pc-card--slot" key={`slot-${slot}`} />
+          })}
         </div>
 
         {/* Nobody holds cards until the hand is dealt -- hero's own hole cards
