@@ -6,7 +6,7 @@ describe('PopupHeader', () => {
     jest.clearAllMocks()
   })
 
-  test('shows the running manifest version and its exact GitHub Release link', async () => {
+  test('shows the running manifest version and the fixed GitHub Releases link', async () => {
     render(
       <PopupHeader
         popupThemeMode="auto"
@@ -19,10 +19,10 @@ describe('PopupHeader', () => {
     expect(screen.queryByText(/2026-07-23/)).not.toBeInTheDocument()
 
     const link = screen.getByRole('link', { name: '更新情報' })
-    expect(link).toHaveAttribute(
-      'href',
-      `https://github.com/solavrc/pokerchase-hud/releases/tag/pokerchase-hud-v${version}`
-    )
+    // Deliberately version-independent: the link points at the Releases index,
+    // never a per-version tag URL that can 404 on an unreleased build.
+    expect(link).toHaveAttribute('href', 'https://github.com/solavrc/pokerchase-hud/releases')
+    expect(link.getAttribute('href')).not.toContain(version)
     expect(link).toHaveAttribute('target', '_blank')
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
 

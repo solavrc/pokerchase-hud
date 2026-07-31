@@ -12,10 +12,10 @@
  *
  * 状態は`chrome.storage.local`の`whatsNewUnseenVersion`キー
  * （`UPDATE_INFO_UNSEEN_VERSION_STORAGE_KEY`）に文字列
- * （未読の更新情報が対応するバージョン）として保持する。Popupが
- * Popupヘッダーに実行中バージョンと対応するGitHub Releaseリンクが表示
- * された時点で`acknowledgeWhatsNew`メッセージ（`message-router.ts`）を
- * 送り、これを解消する。
+ * （未読の更新情報が対応するバージョン）として保持する。Popupヘッダーに
+ * 実行中バージョンとGitHub Releases一覧へのリンクが表示された時点で
+ * `acknowledgeWhatsNew`メッセージ（`message-router.ts`）を送り、これを
+ * 解消する。
  *
  * **バッジ優先順位（3-way）**: rebuild-advisory > update-manager > whats-new。
  * - `rebuild-advisory.ts`（データ再構築の提要）は無条件・一方的にバッジを

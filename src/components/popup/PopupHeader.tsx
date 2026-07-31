@@ -3,7 +3,7 @@ import Link from '@mui/material/Link'
 import RadioGroup from '@mui/material/RadioGroup'
 import Typography from '@mui/material/Typography'
 import { useEffect } from 'react'
-import { getGitHubReleaseUrl } from '../../constants/release-info'
+import { GITHUB_RELEASES_URL } from '../../constants/release-info'
 import type { AcknowledgeWhatsNewMessage } from '../../types/messages'
 import type { PopupThemeMode } from './theme'
 import { SegmentRadio } from './SegmentRadio'
@@ -28,11 +28,10 @@ interface PopupHeaderProps {
  */
 export const PopupHeader = ({ popupThemeMode, onPopupThemeModeChange }: PopupHeaderProps) => {
   const version = chrome.runtime.getManifest().version
-  const releaseUrl = getGitHubReleaseUrl(version)
 
   useEffect(() => {
     if (!version) return
-    // The running version and its Release link are now visible, so the
+    // The running version and the Releases link are now visible, so the
     // informational N badge has fulfilled its purpose. The message is
     // idempotent and preserves higher-priority rebuild/update badges.
     sendMessageWithTimeout<{ success: boolean }>({
@@ -63,7 +62,7 @@ export const PopupHeader = ({ popupThemeMode, onPopupThemeModeChange }: PopupHea
               v{version}
             </Typography>
             <Link
-              href={releaseUrl}
+              href={GITHUB_RELEASES_URL}
               target="_blank"
               rel="noopener noreferrer"
               variant="caption"
