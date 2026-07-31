@@ -469,11 +469,27 @@ persistence in one component-local state machine. The machine's concrete
 active pointer interaction, rejects layout-load callbacks bound to an older
 request or scale, and emits at most one persistence effect from the common
 interaction exit. Do not add another effect/ref that mutates or saves hand-log
-coordinates outside that transition outlet. The header is the move handle; the
-lower-right corner is resize-only. Normalization keeps the full vertical panel
-and a usable horizontal portion of the header reachable, caps height to the
-scaled viewport, and applies to loaded, default, reset, external, pointer, and
-viewport/scale-driven layouts.
+coordinates outside that transition outlet. There is no header bar: the
+upper-left grip (16px, `hand-log-move-grip`) is the move handle and the
+lower-right corner is resize-only, so the whole panel height belongs to the log
+body. Normalization keeps the entire rendered panel inside the viewport on both
+axes and applies to loaded, default, reset, external, pointer, and
+viewport/scale-driven layouts. Normalization's size clamping is display-only:
+it enforces the minimums but never shrinks the stored width/height to fit the
+viewport, so merely narrowing the window (or moving the panel) leaves the
+user's size intact and restores it when the window grows back. A *resize*
+gesture is the one path that does rewrite the stored size — it deliberately
+starts from the rendered size and is capped at the scaled viewport, so the
+result is WYSIWYG on both axes and can never store a size the user cannot see.
+Position is always clamped (there is no "display-only" position), and a
+viewport dimension that reads as `0` — observed transiently right after a
+navigation — suspends only that axis' *upper* bound, never the `0` lower bound,
+so a panel cannot vanish or latch off-screen while the viewport is unknown.
+Growing past an edge is resolved by the position clamp pulling the panel back
+rather than by refusing to grow: the default bottom-right position leaves only
+10px of slack, so edge-stopping would make the panel effectively non-resizable.
+The container is `border-box` so its rendered footprint equals the clamped
+width/height exactly; the log body is that minus `HAND_LOG_BORDER_WIDTH*2`.
 
 **Popup theming**: `src/components/popup/theme.ts` defines two MUI themes -- `dark-felt` (default look, shares the HUD overlay's dark/gold palette) and `modern-light`. Which one renders is controlled by the `popupTheme` setting (`'auto' | 'dark' | 'light'`, default `'auto'`; テーマ control in `PopupHeader.tsx`, a 自動/ダーク/ライト 3-way `SegmentRadio`). `'auto'` resolves against the live OS `prefers-color-scheme` via `useMediaQuery` in `Popup.tsx` (`resolvePopupThemeVariant()` in `theme.ts` is the pure resolver, unit-tested independent of the DOM). Persisted to its own `chrome.storage.sync` key (`popupTheme`, see `popup-theme-storage.ts`) -- deliberately **not** a field on `UIConfig`, because `UIScaleSection`/`HudDisplaySection` broadcast every `uiConfig` write to all open game tabs (`chrome.tabs.sendMessage(..., 'updateUIConfig')`) to trigger a HUD re-render; the popup's own chrome has nothing to do with the HUD overlay, so nesting it there would fire that broadcast on every theme change for no reason. `popup.ts` pre-fetches the persisted mode before the first `render()` call so the popup never paints with the wrong theme and then swaps.
 

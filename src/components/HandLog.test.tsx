@@ -194,22 +194,32 @@ describe('HandLog', () => {
     expect(logContainer.style.height).toBe(`${DEFAULT_HAND_LOG_CONFIG.height}px`)
   })
 
-  it('HUDと重なってもヘッダーとリサイズ角を掴めるstacking順を維持する', () => {
+  it('HUDと重なっても移動グリップとリサイズ角を掴めるstacking順を維持する', () => {
     const { container } = render(<HandLog entries={mockEntries} />)
     const logContainer = container.firstChild as HTMLElement
 
     expect(Number(logContainer.style.zIndex)).toBeGreaterThan(9999)
-    expect(screen.getByTestId('hand-log-header')).toBeInTheDocument()
     expect(screen.getByTestId('hand-log-resize-corner')).toBeInTheDocument()
-    expect(screen.queryByTestId('hand-log-move-grip')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('hand-log-header')).not.toBeInTheDocument()
+    // グリップはヘッダー帯と違い本文の上に重なるので、被って掴めなくならない
+    // よう本文より前面に置く必要がある。
+    const moveGrip = screen.getByTestId('hand-log-move-grip')
+    expect(moveGrip).toHaveStyle({
+      width: '16px',
+      height: '16px',
+      position: 'absolute',
+    })
+    expect(Number(moveGrip.style.zIndex)).toBeGreaterThan(
+      Number(screen.getByTestId('virtual-list').style.zIndex || 0)
+    )
   })
 
-  it('ヘッダーをドラッグして移動し端末ローカルへ一度だけ保存する', () => {
+  it('移動グリップをドラッグして移動し端末ローカルへ一度だけ保存する', () => {
     const { container } = render(<HandLog entries={mockEntries} />)
     const logContainer = container.firstChild as HTMLElement
     updateLayout({ left: 500, top: 400, width: 400, height: 100 })
 
-    fireEvent.mouseDown(screen.getByTestId('hand-log-header'), {
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
       button: 0,
       clientX: 600,
       clientY: 414,
@@ -248,11 +258,11 @@ describe('HandLog', () => {
     expect(savedLayoutCalls()).toHaveLength(0)
   })
 
-  it('ヘッダーとリサイズ角のdouble-clickでログを誤消去しない', async () => {
+  it('移動グリップとリサイズ角のdouble-clickでログを誤消去しない', async () => {
     const user = userEvent.setup()
     render(<HandLog entries={mockEntries} onClearLog={mockOnClearLog} />)
 
-    await user.dblClick(screen.getByTestId('hand-log-header'))
+    await user.dblClick(screen.getByTestId('hand-log-move-grip'))
     await user.dblClick(screen.getByTestId('hand-log-resize-corner'))
 
     expect(mockOnClearLog).not.toHaveBeenCalled()
@@ -271,7 +281,7 @@ describe('HandLog', () => {
     const { container } = render(<HandLog entries={mockEntries} />)
     const logContainer = container.firstChild as HTMLElement
 
-    fireEvent.mouseDown(screen.getByTestId('hand-log-header'), {
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
       button: 0,
       clientX: 700,
       clientY: 540,
@@ -290,7 +300,7 @@ describe('HandLog', () => {
   })
 
   it.each([
-    { testId: 'hand-log-header', startX: 700, startY: 540 },
+    { testId: 'hand-log-move-grip', startX: 700, startY: 540 },
     { testId: 'hand-log-resize-corner', startX: 1014, startY: 633 },
   ])('操作の微小jitterでは遅れて届いた保存layoutを無効化しない', ({
     testId,
@@ -328,7 +338,7 @@ describe('HandLog', () => {
     expect(savedLayoutCalls()).toHaveLength(0)
   })
 
-  it('旧レイアウトの負値topを読んでもヘッダーを画面内へ復帰させる', () => {
+  it('旧レイアウトの負値topを読んでも移動グリップを画面内へ復帰させる', () => {
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       if (message.action === 'getDeviceHandLogLayout') {
         callback({
@@ -343,10 +353,10 @@ describe('HandLog', () => {
     const logContainer = container.firstChild as HTMLElement
 
     expect(logContainer.style.top).toBe('0px')
-    expect(screen.getByTestId('hand-log-header')).toBeInTheDocument()
+    expect(screen.getByTestId('hand-log-move-grip')).toBeInTheDocument()
   })
 
-  it('画面高を超える保存heightを上限へ戻しリサイズ角を画面内へ復帰させる', () => {
+  it('画面高を超える保存heightは表示だけ上限へ戻しリサイズ角を画面内へ保つ', () => {
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       if (message.action === 'getDeviceHandLogLayout') {
         callback({
@@ -376,7 +386,74 @@ describe('HandLog', () => {
     expect(savedLayoutCalls()).toHaveLength(1)
   })
 
-  it('mount後のviewport縮小でもヘッダーとリサイズ角を画面内へ正規化する', () => {
+  it('viewportの一時的な縮小で指定サイズを恒久的に潰さない', () => {
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceHandLogLayout') {
+        callback({
+          success: true,
+          layout: { left: 100, top: 100, width: 600, height: 300 },
+        })
+      } else {
+        callback?.({ success: true })
+      }
+    })
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+
+    setViewport(320, 240)
+    fireEvent(window, new Event('resize'))
+
+    expect(logContainer.style.left).toBe('0px')
+    expect(logContainer.style.top).toBe('0px')
+    expect(logContainer.style.width).toBe('320px')
+    expect(logContainer.style.height).toBe('240px')
+
+    setViewport(1024, 768)
+    fireEvent(window, new Event('resize'))
+
+    expect(logContainer.style.width).toBe('600px')
+    expect(logContainer.style.height).toBe('300px')
+  })
+
+  it('viewportが0で読めてもパネルを消さず位置も動かさない', () => {
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceHandLogLayout') {
+        callback({
+          success: true,
+          layout: { left: 100, top: 100, width: 600, height: 300 },
+        })
+      } else {
+        callback?.({ success: true })
+      }
+    })
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+
+    // 遷移直後などinnerWidth/innerHeightは一時的に0で読めることがある。
+    setViewport(0, 0)
+    fireEvent(window, new Event('resize'))
+
+    expect(logContainer.style.left).toBe('100px')
+    expect(logContainer.style.top).toBe('100px')
+    expect(logContainer.style.width).toBe('600px')
+    expect(logContainer.style.height).toBe('300px')
+    expect(savedLayoutCalls()).toHaveLength(0)
+  })
+
+  it('viewportが0でも負の既定座標は画面内へ寄せる', () => {
+    // 保存layoutがない状態で0を読むと既定layoutは大きな負値になる。
+    // 上限だけがviewport依存で、下限0は常に効かせる。
+    setViewport(0, 0)
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+
+    expect(logContainer.style.left).toBe('0px')
+    expect(logContainer.style.top).toBe('0px')
+    expect(logContainer.style.width).toBe('400px')
+    expect(logContainer.style.height).toBe('100px')
+  })
+
+  it('mount後のviewport縮小でもパネル全体を画面内へ正規化する', () => {
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       if (message.action === 'getDeviceHandLogLayout') {
         callback({
@@ -402,23 +479,25 @@ describe('HandLog', () => {
     const { container } = render(<HandLog entries={mockEntries} />)
     const logContainer = container.firstChild as HTMLElement
 
-    expect(logContainer.style.left).toBe('-90px')
+    expect(logContainer.style.left).toBe('0px')
     expect(logContainer.style.top).toBe('0px')
-    expect(logContainer.style.width).toBe('400px')
+    expect(logContainer.style.width).toBe('320px')
     expect(logContainer.style.height).toBe('100px')
   })
 
-  it('最小高さより狭いviewportでは表示だけ縮め保存heightを有効値に保つ', () => {
+  it('最小サイズより狭いviewportでは表示だけ縮め保存サイズを潰さない', () => {
     setViewport(320, 120)
     const { container } = render(<HandLog entries={mockEntries} scale={2} />)
     const logContainer = container.firstChild as HTMLElement
 
+    expect(logContainer.style.left).toBe('0px')
     expect(logContainer.style.top).toBe('0px')
+    expect(logContainer.style.width).toBe('160px')
     expect(logContainer.style.height).toBe('60px')
     expect(logContainer.style.transform).toContain('scale(2)')
     expect(screen.getByTestId('hand-log-resize-corner')).toBeInTheDocument()
 
-    fireEvent.mouseDown(screen.getByTestId('hand-log-header'), {
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
       button: 0,
       clientX: 100,
       clientY: 20,
@@ -427,7 +506,14 @@ describe('HandLog', () => {
     fireEvent.mouseUp(document)
 
     expect(savedLayoutCalls()).toHaveLength(1)
-    expect(savedLayoutCalls()[0]![0].layout.height).toBe(80)
+    // 表示は160x60でも、保存されるのは指定サイズのまま。
+    expect(savedLayoutCalls()[0]![0].layout).toEqual({
+      left: 0,
+      top: 0,
+      width: 400,
+      height: 100,
+    })
+    expect(logContainer.style.width).toBe('160px')
     expect(logContainer.style.height).toBe('60px')
   })
 
@@ -523,7 +609,7 @@ describe('HandLog', () => {
         staleResizeListener(new Event('resize'))
         loadCallbacks[1]!({
           success: true,
-          layout: { left: 40, top: 30, width: 500, height: 200 },
+          layout: { left: 40, top: 30, width: 300, height: 200 },
         })
       })
 
@@ -550,7 +636,7 @@ describe('HandLog', () => {
     const logContainer = container.firstChild as HTMLElement
 
     expect(loadCallbacks).toHaveLength(1)
-    fireEvent.mouseDown(screen.getByTestId('hand-log-header'), {
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
       button: 0,
       clientX: 700,
       clientY: 550,
@@ -565,7 +651,7 @@ describe('HandLog', () => {
     act(() => {
       loadCallbacks[1]!({
         success: true,
-        layout: { left: 40, top: 30, width: 500, height: 200 },
+        layout: { left: 40, top: 30, width: 300, height: 200 },
       })
       loadCallbacks[0]!({
         success: true,
@@ -575,7 +661,7 @@ describe('HandLog', () => {
 
     expect(logContainer.style.left).toBe('40px')
     expect(logContainer.style.top).toBe('30px')
-    expect(logContainer.style.width).toBe('500px')
+    expect(logContainer.style.width).toBe('300px')
     expect(logContainer.style.height).toBe('200px')
     expect(logContainer.style.transform).toContain('scale(2)')
   })
@@ -594,7 +680,7 @@ describe('HandLog', () => {
     const { container } = render(<HandLog entries={mockEntries} />)
     const logContainer = container.firstChild as HTMLElement
 
-    fireEvent.mouseDown(screen.getByTestId('hand-log-header'), {
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
       button: 0,
       clientX: 200,
       clientY: 514,
@@ -637,7 +723,7 @@ describe('HandLog', () => {
     )
     const logContainer = container.firstChild as HTMLElement
 
-    fireEvent.mouseDown(screen.getByTestId('hand-log-header'), {
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
       button: 0,
       clientX: 200,
       clientY: 514,
@@ -655,24 +741,105 @@ describe('HandLog', () => {
     expect(savedLayoutCalls()).toHaveLength(0)
   })
 
-  it('移動中もヘッダーの一部と縦方向全体を画面内へ保つ', () => {
+  it('左上へ移動してもパネル全体を画面内へ保つ', () => {
     const { container } = render(<HandLog entries={mockEntries} />)
     const logContainer = container.firstChild as HTMLElement
     updateLayout({ left: 500, top: 400, width: 400, height: 100 })
 
-    fireEvent.mouseDown(screen.getByTestId('hand-log-header'), {
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
       button: 0,
       clientX: 600,
       clientY: 414,
     })
     moveMouseWithPrimaryButton(-2000, -2000)
 
-    expect(logContainer.style.left).toBe('-320px')
+    expect(logContainer.style.left).toBe('0px')
     expect(logContainer.style.top).toBe('0px')
     fireEvent.mouseUp(document)
   })
 
-  it('右下角で縦横をリサイズし最小値と画面高上限を適用する', () => {
+  it('右下へ移動してもパネル全体を画面内へ保つ', () => {
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+    updateLayout({ left: 500, top: 400, width: 400, height: 100 })
+
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
+      button: 0,
+      clientX: 600,
+      clientY: 414,
+    })
+    moveMouseWithPrimaryButton(3000, 3000)
+
+    // 右下端 = viewport - パネル実寸 (1024-400, 768-100)
+    expect(logContainer.style.left).toBe('624px')
+    expect(logContainer.style.top).toBe('668px')
+    fireEvent.mouseUp(document)
+
+    expect(savedLayoutCalls()).toEqual([
+      [
+        {
+          action: 'setDeviceHandLogLayout',
+          layout: { left: 624, top: 668, width: 400, height: 100 },
+        },
+        expect.any(Function),
+      ],
+    ])
+  })
+
+  it('scale込みの実寸で画面内に収める', () => {
+    const { container } = render(<HandLog entries={mockEntries} scale={2} />)
+    const logContainer = container.firstChild as HTMLElement
+    updateLayout({ left: 100, top: 100, width: 400, height: 200 })
+
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
+      button: 0,
+      clientX: 200,
+      clientY: 200,
+    })
+    moveMouseWithPrimaryButton(3000, 3000)
+
+    // 実寸は 800x400。scaleを無視した400x200では画面外へはみ出す。
+    expect(logContainer.style.left).toBe('224px')
+    expect(logContainer.style.top).toBe('368px')
+    fireEvent.mouseUp(document)
+  })
+
+  it('画面幅を超える保存widthは表示だけ上限へ戻して画面内へ収める', () => {
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceHandLogLayout') {
+        callback({
+          success: true,
+          layout: { left: 800, top: 100, width: 1400, height: 200 },
+        })
+      } else {
+        callback?.({ success: true })
+      }
+    })
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+
+    expect(logContainer.style.left).toBe('0px')
+    expect(logContainer.style.width).toBe('1024px')
+    expect(logContainer.style.top).toBe('100px')
+
+    // 表示だけの縮小であること: 移動しても保存widthは1400のまま。
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
+      button: 0,
+      clientX: 8,
+      clientY: 108,
+    })
+    moveMouseWithPrimaryButton(8, 158)
+    fireEvent.mouseUp(document)
+
+    expect(savedLayoutCalls()[0]![0].layout).toEqual({
+      left: 0,
+      top: 150,
+      width: 1400,
+      height: 200,
+    })
+  })
+
+  it('右下角で縦横をリサイズし最小値を適用する', () => {
     const { container } = render(<HandLog entries={mockEntries} />)
     const logContainer = container.firstChild as HTMLElement
     updateLayout({ left: 500, top: 400, width: 400, height: 100 })
@@ -683,22 +850,56 @@ describe('HandLog', () => {
       clientX: 900,
       clientY: 500,
     })
-    moveMouseWithPrimaryButton(1900, 1500)
-
-    expect(logContainer.style.width).toBe('1400px')
-    expect(logContainer.style.height).toBe('768px')
-    expect(logContainer.style.top).toBe('0px')
-    fireEvent.mouseUp(document)
-
-    fireEvent.mouseDown(resizeCorner, {
-      button: 0,
-      clientX: 1900,
-      clientY: 768,
-    })
-    moveMouseWithPrimaryButton(0, 0)
+    moveMouseWithPrimaryButton(700, 450)
 
     expect(logContainer.style.width).toBe('200px')
     expect(logContainer.style.height).toBe('80px')
+    fireEvent.mouseUp(document)
+  })
+
+  it('画面端を越える拡大はviewport実寸で頭打ちし左上を戻して収める', () => {
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+    updateLayout({ left: 500, top: 400, width: 400, height: 100 })
+
+    fireEvent.mouseDown(screen.getByTestId('hand-log-resize-corner'), {
+      button: 0,
+      clientX: 900,
+      clientY: 500,
+    })
+    moveMouseWithPrimaryButton(1900, 1500)
+
+    expect(logContainer.style.width).toBe('1024px')
+    expect(logContainer.style.height).toBe('768px')
+    expect(logContainer.style.left).toBe('0px')
+    expect(logContainer.style.top).toBe('0px')
+    fireEvent.mouseUp(document)
+
+    // 保存されるのも実寸まで。画面に出ない巨大サイズは作らない。
+    expect(savedLayoutCalls()[0]![0].layout).toEqual({
+      left: 0,
+      top: 0,
+      width: 1024,
+      height: 768,
+    })
+  })
+
+  it('既定の右下寄せ位置からでも横幅を広げられる', () => {
+    const { container } = render(<HandLog entries={mockEntries} scale={2} />)
+    const logContainer = container.firstChild as HTMLElement
+
+    // 既定位置は右端から10pxしかない。端で成長を止めるとほぼ拡大できない。
+    expect(logContainer.style.left).toBe('214px')
+
+    fireEvent.mouseDown(screen.getByTestId('hand-log-resize-corner'), {
+      button: 0,
+      clientX: 1014,
+      clientY: 633,
+    })
+    moveMouseWithPrimaryButton(1214, 633)
+
+    expect(logContainer.style.width).toBe('500px')
+    expect(logContainer.style.left).toBe('24px')
     fireEvent.mouseUp(document)
   })
 
@@ -716,7 +917,7 @@ describe('HandLog', () => {
     fireEvent.mouseLeave(document)
     moveMouseWithPrimaryButton(1900, 1500)
 
-    expect(logContainer.style.width).toBe('1400px')
+    expect(logContainer.style.width).toBe('1024px')
     expect(logContainer.style.height).toBe('768px')
     expect(savedLayoutCalls()).toHaveLength(0)
 
@@ -761,7 +962,7 @@ describe('HandLog', () => {
     const logContainer = container.firstChild as HTMLElement
     updateLayout({ left: 500, top: 400, width: 400, height: 100 })
 
-    fireEvent.mouseDown(screen.getByTestId('hand-log-header'), {
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
       button: 0,
       clientX: 600,
       clientY: 414,
@@ -780,7 +981,7 @@ describe('HandLog', () => {
     const { unmount } = render(<HandLog entries={mockEntries} />)
     updateLayout({ left: 500, top: 400, width: 400, height: 100 })
 
-    fireEvent.mouseDown(screen.getByTestId('hand-log-header'), {
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
       button: 0,
       clientX: 600,
       clientY: 414,
@@ -840,7 +1041,7 @@ describe('HandLog', () => {
     )
     const logContainer = container.firstChild as HTMLElement
 
-    fireEvent.mouseDown(screen.getByTestId('hand-log-header'), {
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
       button: 0,
       clientX: 700,
       clientY: 550,
@@ -863,7 +1064,7 @@ describe('HandLog', () => {
     const logContainer = container.firstChild as HTMLElement
     updateLayout({ left: 500, top: 400, width: 400, height: 100 })
 
-    fireEvent.mouseDown(screen.getByTestId('hand-log-header'), {
+    fireEvent.mouseDown(screen.getByTestId('hand-log-move-grip'), {
       button: 0,
       clientX: 600,
       clientY: 414,
@@ -878,7 +1079,7 @@ describe('HandLog', () => {
 
   it.each([
     {
-      testId: 'hand-log-header',
+      testId: 'hand-log-move-grip',
       startX: 220,
       startY: 94,
       movedX: 250,
@@ -958,7 +1159,7 @@ describe('HandLog', () => {
     expect(logContainer.style.top).toBe('483px')
   })
 
-  it('保存済みouter heightを維持してヘッダー分だけ本文を短くする', () => {
+  it('保存済みouter sizeからborderだけ引いて本文へ渡す', () => {
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       if (message.action === 'getDeviceHandLogLayout') {
         callback({
@@ -974,10 +1175,12 @@ describe('HandLog', () => {
 
     expect(logContainer.style.width).toBe('520px')
     expect(logContainer.style.height).toBe('240px')
-    expect(screen.getByTestId('hand-log-header')).toHaveStyle({ height: '28px' })
+    // 画面端の判定と実寸を一致させるためborder-box。本文はそのぶん内側。
+    expect(logContainer).toHaveStyle({ boxSizing: 'border-box' })
+    // ヘッダー帯を廃したので、本文が失うのは1pxのborderだけ。
     expect(screen.getByTestId('virtual-list')).toHaveStyle({
-      width: '520px',
-      height: '212px',
+      width: '518px',
+      height: '238px',
     })
   })
 
