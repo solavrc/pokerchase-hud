@@ -5,6 +5,7 @@
 
 ### Features
 
+* **ui:** 配置リセットをHUDパネル・倍率へ広げ、リセット後にログが消えるのを直す ([#319](https://github.com/solavrc/pokerchase-hud/issues/319)) ([b65ee98](https://github.com/solavrc/pokerchase-hud/commit/b65ee98af8d4089c6b97a9f34732dabde2aa70e6))
 * **ui:** テーブル人数フィルタをレンジスライダーへ ([#321](https://github.com/solavrc/pokerchase-hud/issues/321)) ([c3a7923](https://github.com/solavrc/pokerchase-hud/commit/c3a792395595cfeb817181b9304d7f260f334dfd))
 * **ui:** ポップアップ上部を簡素化する ([#320](https://github.com/solavrc/pokerchase-hud/issues/320)) ([603cd27](https://github.com/solavrc/pokerchase-hud/commit/603cd278baec6578a533c9e6617cacc44a3cc8c7))
 
