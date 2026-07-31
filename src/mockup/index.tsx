@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import HandLog from '../components/HandLog'
 import Hud from '../components/Hud'
@@ -7,6 +7,7 @@ import {
   POPUP_BOOT_LOCAL_STORAGE_KEY,
   resolveBootBackgroundColor,
 } from '../components/popup/popup-boot-theme'
+import { POPUP_THEME_STORAGE_KEY } from '../components/popup/popup-theme-storage'
 import type { StatDisplayConfig } from '../types'
 import { installChromeMock } from './mock-chrome'
 import {
@@ -137,10 +138,44 @@ const Mockup = () => {
   const [hudRevision, setHudRevision] = useState(0)
   const scenario = MOCK_SCENARIOS[scenarioId]
 
-  const popupBackground = resolveBootBackgroundColor(
-    window.localStorage.getItem(POPUP_BOOT_LOCAL_STORAGE_KEY),
-    window.matchMedia('(prefers-color-scheme: dark)').matches,
+  /*
+   * The popup frame has to keep supplying the ground colour that the real
+   * popup page paints on `html`, and both of that colour's inputs can change
+   * while the popup is open: the user picks 自動/ダーク/ライト inside `Popup`
+   * (persisted to `chrome.storage.sync`), or the OS scheme flips under 自動.
+   * Neither re-renders this component on its own, so subscribe to both --
+   * otherwise the frame keeps the colour it had at mount and the popup's own
+   * transparent gaps read as the wrong theme.
+   */
+  const [popupThemeMode, setPopupThemeMode] = useState<string | null>(
+    () => window.localStorage.getItem(POPUP_BOOT_LOCAL_STORAGE_KEY),
   )
+  const [prefersDarkScheme, setPrefersDarkScheme] = useState(
+    () => window.matchMedia('(prefers-color-scheme: dark)').matches,
+  )
+
+  useEffect(() => {
+    const onStorageChange = (
+      changes: Record<string, chrome.storage.StorageChange>,
+      areaName: string,
+    ) => {
+      if (areaName !== 'sync') return
+      const change = changes[POPUP_THEME_STORAGE_KEY]
+      if (change) setPopupThemeMode((change.newValue as string | undefined) ?? null)
+    }
+    chrome.storage.onChanged.addListener(onStorageChange)
+
+    const scheme = window.matchMedia('(prefers-color-scheme: dark)')
+    const onSchemeChange = (event: MediaQueryListEvent) => setPrefersDarkScheme(event.matches)
+    scheme.addEventListener('change', onSchemeChange)
+
+    return () => {
+      chrome.storage.onChanged.removeListener(onStorageChange)
+      scheme.removeEventListener('change', onSchemeChange)
+    }
+  }, [])
+
+  const popupBackground = resolveBootBackgroundColor(popupThemeMode, prefersDarkScheme)
 
   const resetHudPositions = () => {
     chromeMock.clearHudPositions()
