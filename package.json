@@ -1,6 +1,6 @@
 {
   "name": "pokerchase-hud",
-  "version": "5.4.0",
+  "version": "5.5.0",
   "scripts": {
     "build": "tsx scripts/build-extension.ts",
     "pack:crx": "bash scripts/pack-crx.sh",
