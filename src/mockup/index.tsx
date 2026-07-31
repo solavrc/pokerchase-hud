@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import HandLog from '../components/HandLog'
 import Hud from '../components/Hud'
@@ -178,6 +178,31 @@ const Mockup = () => {
   }, [])
 
   const scale = uiConfig.scale
+
+  /*
+   * Production hands the HUD results that were already produced in config
+   * order (`StatsRegistry.calculateWithConfig` sorts enabled configs by
+   * `order` before computing). `Hud`'s own `filterEnabledDisplayStats()` only
+   * filters, so a static fixture keeps its authored order and reordering
+   * stats in the popup would appear to do nothing. Sort the fixture the same
+   * way. Results the popup does not manage (e.g. `playerName`) have no order
+   * and stay in front, keeping the header lookups working.
+   */
+  const orderedStats = useMemo(() => {
+    const orderById = new Map(statDisplayConfigs.map((config) => [config.id, config.order]))
+    return scenario.stats.map((stat) => {
+      if (!('statResults' in stat) || !stat.statResults) return stat
+      const statResults = [...stat.statResults].sort((a, b) => {
+        const left = orderById.get(a.id)
+        const right = orderById.get(b.id)
+        if (left === undefined && right === undefined) return 0
+        if (left === undefined) return -1
+        if (right === undefined) return 1
+        return left - right
+      })
+      return { ...stat, statResults }
+    })
+  }, [scenario, statDisplayConfigs])
 
   /*
    * The popup frame has to keep supplying the ground colour that the real
@@ -364,7 +389,7 @@ const Mockup = () => {
 
       {/* `uiConfig.displayEnabled` is the popup's 表示/非表示 switch; production
           App.tsx renders nothing at all when it is off. */}
-      {uiConfig.displayEnabled && scenario.stats.map((stat, index) => (
+      {uiConfig.displayEnabled && orderedStats.map((stat, index) => (
         <Hud
           actualSeatIndex={index}
           hudColorCoding={uiConfig.hudColorCoding}

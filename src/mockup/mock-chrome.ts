@@ -1,3 +1,4 @@
+import { MESSAGE_ACTIONS } from '../types/messages'
 import type { UIConfig } from '../types/hand-log'
 import {
   POPUP_THEME_LOCAL_STORAGE_KEY,
@@ -207,6 +208,12 @@ export const installChromeMock = (): MockChromeController => {
 
         if (message.action === 'resetDeviceHandLogLayout') {
           localStorage.remove(HAND_LOG_LAYOUT_STORAGE_KEY, () => {
+            // Clearing storage is not enough: `HandLog` does not watch
+            // storage, it resets on this window event. The real background
+            // sends it to the game tab, where `content_script.ts` re-dispatches
+            // it -- without this the popup's 位置とサイズをリセット button would
+            // do nothing visible.
+            window.dispatchEvent(new CustomEvent(MESSAGE_ACTIONS.RESET_HAND_LOG_LAYOUT))
             callback?.({ success: true })
           })
           return
@@ -264,7 +271,11 @@ export const installChromeMock = (): MockChromeController => {
   Object.defineProperty(chromeHost, 'tabs', {
     configurable: true,
     value: {
-      create: async () => ({}),
+      // Rejecting rather than silently resolving: the popup's import button
+      // awaits this and shows its own failure message if it throws. Resolving
+      // with nothing would leave the click looking accepted while no page
+      // opened. Callers that open the game tab already swallow the error.
+      create: async () => { throw new Error('モックでは新しいタブを開けません') },
       query: async () => [],
       sendMessage: async () => undefined,
       update: async () => ({}),
