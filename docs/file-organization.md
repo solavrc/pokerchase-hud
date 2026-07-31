@@ -115,9 +115,9 @@
     │       ├── HandLimitSection.tsx
     │       ├── HudDisplaySection.tsx    # Display mode toggle (簡易/詳細)
     │       ├── ImportExportSection.tsx
-    │       ├── PopupHeader.tsx          # Theme control (自動/ダーク/ライト)
+    │       ├── PopupHeader.tsx          # Theme icon toggle (自動→ライト→ダーク)
     │       ├── SectionCard.tsx / SectionHeading.tsx / ToggleChip.tsx
-    │       ├── toggleGroupStyles.ts    # Shared width for the two top toggles for the two top toggles
+    │       ├── toggleGroupStyles.ts     # Shared width for the two top toggles
     │       ├── StatisticsConfigSection.tsx
     │       ├── SyncStatusSection.tsx
     │       ├── TableSizeFilterSection.tsx # テーブル人数 filter (full/4p/3p/hu)
