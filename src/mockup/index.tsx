@@ -37,12 +37,6 @@ const CARD_COLORS: Record<string, string> = {
   '♠': 'card--black',
 }
 
-const BLIND_LABELS: Record<NonNullable<TableSeat['blind']>, string> = {
-  BB: 'BB',
-  BTN: 'D',
-  SB: 'SB',
-}
-
 const cardClassName = (card: string): string => {
   const suit = card.slice(-1)
   return `pc-card ${CARD_COLORS[suit] ?? 'card--black'}`
@@ -59,18 +53,15 @@ const Card = ({ card, style }: { card: string; style?: React.CSSProperties }) =>
 )
 
 /**
- * One seat, drawn as the real client does: a character portrait behind a name
- * plate (stack over name), face-down cards above the plate, an action bubble
- * over the portrait's head, and the seat's blind marker plus committed chips
- * out on the felt. Every coordinate comes from `table-layout.ts`.
+ * One seat: a character portrait behind a name plate (stack over name), with
+ * face-down cards above the plate once a hand is dealt. Coordinates come from
+ * `table-layout.ts`. Per-hand state is out of scope -- see the note there.
  */
 const Seat = ({ dealt, index, seat }: { dealt: boolean; index: number; seat: TableSeat }) => {
   const layout = SEATS[index]!
   const plateClass = [
     'pc-plate',
     seat.isHero && 'pc-plate--hero',
-    seat.highlight && 'pc-plate--highlight',
-    seat.folded && 'pc-plate--folded',
     seat.empty && 'pc-plate--empty',
   ].filter(Boolean).join(' ')
 
@@ -78,7 +69,7 @@ const Seat = ({ dealt, index, seat }: { dealt: boolean; index: number; seat: Tab
     <>
       {!seat.empty && <div aria-hidden="true" className="pc-portrait" style={rectStyle(layout.portrait)} />}
 
-      {dealt && !seat.empty && !seat.folded && !seat.isHero && (
+      {dealt && !seat.empty && !seat.isHero && (
         <div aria-hidden="true" className="pc-holecards" style={rectStyle(layout.cards)}>
           <span />
           <span />
@@ -95,26 +86,6 @@ const Seat = ({ dealt, index, seat }: { dealt: boolean; index: number; seat: Tab
             </>
           )}
       </div>
-
-      {seat.action && (
-        <span className="pc-bubble" style={pointStyle(layout.bubble)}>{seat.action}</span>
-      )}
-
-      {seat.blind && (
-        <span
-          className={`pc-blind pc-blind--${seat.blind.toLowerCase()}`}
-          style={pointStyle(layout.badge)}
-        >
-          {BLIND_LABELS[seat.blind]}
-        </span>
-      )}
-
-      {seat.bet && (
-        <div className="pc-bet" style={pointStyle(layout.bet)}>
-          <span aria-hidden="true" className="pc-chips" />
-          <span className="pc-bet__amount">{seat.bet}</span>
-        </div>
-      )}
     </>
   )
 }
@@ -145,46 +116,32 @@ const GameChrome = ({ scenario }: { scenario: MockScenario }) => (
   </>
 )
 
-/** Bottom betting bar. Decorative: the mockup never drives real game input. */
-const ActionBar = ({ scenario }: { scenario: MockScenario }) => {
-  const isIdle = !scenario.callAmount
-
-  return (
-    <div className="pc-actionbar">
-      <div className="pc-actionbar__frame" style={rectStyle(ACTION_BAR.frame)} />
-      <div className="pc-preaction" style={rectStyle(ACTION_BAR.preAction)}>
-        <span aria-hidden="true" />
-        チェック<br />フォールド
-      </div>
-
-      <div
-        className={`pc-action pc-action--pale${isIdle ? ' pc-action--idle' : ''}`}
-        style={rectStyle(ACTION_BAR.buttons[0]!)}
-      >
-        フォールド
-      </div>
-      <div
-        className={`pc-action${isIdle ? ' pc-action--idle' : ''}`}
-        style={rectStyle(ACTION_BAR.buttons[1]!)}
-      >
-        コール<b>{scenario.callAmount ?? '—'}</b>
-      </div>
-      <div
-        className={`pc-action${isIdle ? ' pc-action--idle' : ''}`}
-        style={rectStyle(ACTION_BAR.buttons[2]!)}
-      >
-        レイズ<b>{scenario.raiseAmount ?? '—'}</b>
-      </div>
-
-      <div className="pc-stepper pc-stepper--minus" style={rectStyle(ACTION_BAR.minus)}><span /></div>
-      <div className="pc-multiplier" style={rectStyle(ACTION_BAR.multiplier)}>x2.5</div>
-      <div className="pc-slider" style={rectStyle(ACTION_BAR.slider)} />
-      <div className="pc-slider__knob" style={rectStyle(ACTION_BAR.sliderKnob)} />
-      <div className="pc-allin" style={rectStyle(ACTION_BAR.allIn)}>オールイン</div>
-      <div className="pc-stepper pc-stepper--plus" style={rectStyle(ACTION_BAR.plus)}><span /></div>
+/**
+ * Bottom betting bar. Controls only -- the buttons carry their labels but no
+ * amounts, because what matters here is which part of the screen the bar
+ * occupies (it is the largest thing a HUD panel can end up behind), not what
+ * any particular hand costs to call.
+ */
+const ActionBar = () => (
+  <div className="pc-actionbar">
+    <div className="pc-actionbar__frame" style={rectStyle(ACTION_BAR.frame)} />
+    <div className="pc-preaction" style={rectStyle(ACTION_BAR.preAction)}>
+      <span aria-hidden="true" />
+      チェック<br />フォールド
     </div>
-  )
-}
+
+    <div className="pc-action pc-action--pale" style={rectStyle(ACTION_BAR.buttons[0]!)}>フォールド</div>
+    <div className="pc-action" style={rectStyle(ACTION_BAR.buttons[1]!)}>コール</div>
+    <div className="pc-action" style={rectStyle(ACTION_BAR.buttons[2]!)}>レイズ</div>
+
+    <div className="pc-stepper pc-stepper--minus" style={rectStyle(ACTION_BAR.minus)}><span /></div>
+    <div className="pc-multiplier" style={rectStyle(ACTION_BAR.multiplier)}>x2.5</div>
+    <div className="pc-slider" style={rectStyle(ACTION_BAR.slider)} />
+    <div className="pc-slider__knob" style={rectStyle(ACTION_BAR.sliderKnob)} />
+    <div className="pc-allin" style={rectStyle(ACTION_BAR.allIn)}>オールイン</div>
+    <div className="pc-stepper pc-stepper--plus" style={rectStyle(ACTION_BAR.plus)}><span /></div>
+  </div>
+)
 
 const Mockup = () => {
   const [scenarioId, setScenarioId] = useState<MockScenarioId>('turn-decision')
@@ -263,7 +220,7 @@ const Mockup = () => {
         )}
 
         <GameChrome scenario={scenario} />
-        <ActionBar scenario={scenario} />
+        <ActionBar />
       </section>
 
       <button

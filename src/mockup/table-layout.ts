@@ -16,9 +16,15 @@
  *
  * The six plate centers and bottom edges agree with `SEAT_ANCHORS` in
  * e2e/tools/capture-store-imagery.ts, measured independently on the same
- * asset. Values marked "mirrored"/"estimated" could not be read off the
- * reference because that seat had folded (no bet chips) or held no badge in
- * the captured hand; they are derived from the measured seats by symmetry.
+ * asset.
+ *
+ * Scope: only what the table ALWAYS shows -- the seats, the felt, the fixed
+ * chrome and the betting bar's own controls. Per-hand state (bet chips, blind
+ * markers, who folded, who is the aggressor) is deliberately NOT reproduced:
+ * the mockup exists to review the HUD's own rendering (see README), and the
+ * scene is its backdrop, not a second game client. Showing the real game's
+ * hand state is `e2e/public/table-backdrop.js`'s job, which overlays the HUD
+ * on the actual screenshot.
  *
  * Re-measuring: render a percent grid over the asset and read edges off it.
  * The felt outline is NOT an ellipse -- fitting per-row widths gives a rounded
@@ -72,12 +78,6 @@ export const POT: Rect = { h: 5.4, l: 37.5, t: 30.7, w: 25 }
 export interface SeatLayout {
   /** Face-down cards for an opponent still holding a hand. */
   cards: Rect
-  /** Chip-stack anchor on the felt; the amount pill flows to its right. */
-  bet: Point
-  /** Blind/dealer marker anchor on the felt, beside the plate. */
-  badge: Point
-  /** Action bubble ("フォールド" / "レイズ"), floating above the portrait. */
-  bubble: Point
   /** Name plate: stack on top, player name below. */
   plate: Rect
   /**
@@ -98,54 +98,36 @@ export const SEATS: readonly SeatLayout[] = [
     // Hero: larger plate with the active cyan frame. Hero's own hole cards are
     // rendered separately (HERO_CARDS) -- `cards` is the face-down slot the
     // other seats use and is unused for the hero.
-    badge: { l: 52.3, t: 64 },
-    bet: { l: 46.5, t: 58.8 },
-    bubble: { l: 50.6, t: 61 },
     cards: { h: 0, l: 0, t: 0, w: 0 },
     plate: { h: 11.9, l: 53, t: 67.9, w: 19.7 },
     portrait: { h: 29, l: 29.5, t: 56, w: 11 },
   },
   {
     // プレイヤーA -- bottom left.
-    badge: { l: 16.7, t: 58.8 }, // mirrored from seat 5
-    bet: { l: 30.3, t: 49.4 }, // mirrored from seat 5
-    bubble: { l: 3.3, t: 47.3 },
     cards: { h: 8.4, l: 11.5, t: 51, w: 8.5 },
     plate: { h: 8, l: 5.8, t: 57.8, w: 14.4 },
     portrait: { h: 29, l: 2.5, t: 41, w: 10 },
   },
   {
     // プレイヤーB -- top left.
-    badge: { l: 26.8, t: 26.1 }, // mirrored from seat 4
-    bet: { l: 30.3, t: 35.5 }, // estimated: folded in the reference hand
-    bubble: { l: 9.8, t: 11.3 },
     cards: { h: 7.6, l: 18.4, t: 16.5, w: 7.5 },
     plate: { h: 8, l: 12.1, t: 23.6, w: 14.4 },
     portrait: { h: 25, l: 5.5, t: 6, w: 9.5 },
   },
   {
     // プレイヤーC -- top centre.
-    badge: { l: 41.2, t: 25.9 }, // estimated: held no badge in the reference hand
-    bet: { l: 43.5, t: 23.9 },
-    bubble: { l: 42.3, t: 1.3 },
     cards: { h: 8.5, l: 55.5, t: 8.5, w: 7.5 },
     plate: { h: 8, l: 44.5, t: 14.8, w: 14.4 },
     portrait: { h: 22, l: 41, t: 1, w: 9 },
   },
   {
     // プレイヤーD -- top right.
-    badge: { l: 69.8, t: 26.1 },
-    bet: { l: 67.7, t: 35.5 }, // estimated: folded in the reference hand
-    bubble: { l: 74.5, t: 11.3 },
     cards: { h: 7.6, l: 83.1, t: 16.9, w: 7.5 },
     plate: { h: 8, l: 76.9, t: 23.4, w: 14.4 },
     portrait: { h: 25, l: 74, t: 6, w: 9.5 },
   },
   {
     // プレイヤーE -- bottom right.
-    badge: { l: 79.3, t: 58.8 },
-    bet: { l: 67.7, t: 49.4 },
-    bubble: { l: 79.5, t: 47.3 },
     cards: { h: 8, l: 88, t: 51, w: 8 },
     plate: { h: 8, l: 82.8, t: 57.8, w: 14.4 },
     portrait: { h: 25, l: 82.5, t: 41, w: 9 },

@@ -16,19 +16,14 @@ interface PlayerPotOdds {
   }
 }
 
+/**
+ * A seat as the mock table draws it. Deliberately only seat OCCUPANCY, not
+ * per-hand progress: no bets, blind markers, fold state or aggressor
+ * highlight. See the scope note in `table-layout.ts`.
+ */
 export interface TableSeat {
-  /** Bubble above the seat: フォールド / レイズ / ベット … */
-  action?: string
-  /** Chips committed on the felt this street. */
-  bet?: string
-  /** Blind / button marker beside the plate. */
-  blind?: 'BB' | 'BTN' | 'SB'
   /** Seat nobody has taken yet. */
   empty?: boolean
-  /** Out of the hand: plate dims and the face-down cards disappear. */
-  folded?: boolean
-  /** Last aggressor -- the game paints their plate gold. */
-  highlight?: boolean
   isHero?: boolean
   name: string
   stack: string
@@ -38,8 +33,6 @@ export interface MockScenario {
   /** Ante shown in the top-left game panel ("—" when the format has none). */
   ante: string
   board: string[]
-  /** Call amount printed on the action bar. */
-  callAmount?: string
   /** Hand clock shown next to the blind level. */
   clock: string
   handLogEntries: HandLogEntry[]
@@ -52,8 +45,6 @@ export interface MockScenario {
   phase: string
   playerPotOdds: Array<PlayerPotOdds | undefined>
   pot: string
-  /** Raise amount printed on the action bar. */
-  raiseAmount?: string
   realTimeStats?: RealTimeStats
   seats: TableSeat[]
   /** Blind level as the game prints it, e.g. "25/50". */
@@ -198,7 +189,6 @@ export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
   'turn-decision': {
     ante: '—',
     board: ['J♦', '7♠', '2♣', '9♠'],
-    callAmount: '640',
     clock: '00:12',
     handLogEntries: turnHandLog,
     heroCards: ['A♠', 'J♠'],
@@ -215,18 +205,14 @@ export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
       { spr: 5.9 },
     ],
     pot: '1,740',
-    raiseAmount: '1,920',
     realTimeStats,
-    // Seat order is the game's own action order: hero(0) is BB, so the SB sits
-    // at 5 and the button at 4 -- the same arrangement as the hand captured in
-    // the reference screenshot, which is why the badge anchors line up.
     seats: [
-      { blind: 'BB', isHero: true, name: 'sola', stack: '6,240' },
-      { action: 'フォールド', folded: true, name: 'orbit_99', stack: '4,980' },
-      { action: 'チェック', name: 'north_star', stack: '9,410' },
-      { action: 'フォールド', folded: true, name: 'kiwi_tea', stack: '5,220' },
-      { action: 'ベット', bet: '640', blind: 'BTN', highlight: true, name: 'river_rat', stack: '5,850' },
-      { action: 'フォールド', blind: 'SB', folded: true, name: 'maverick', stack: '7,190' },
+      { isHero: true, name: 'sola', stack: '6,240' },
+      { name: 'orbit_99', stack: '4,980' },
+      { name: 'north_star', stack: '9,410' },
+      { name: 'kiwi_tea', stack: '5,220' },
+      { name: 'river_rat', stack: '5,850' },
+      { name: 'maverick', stack: '7,190' },
     ],
     stakes: '25/50',
     stats: [
@@ -270,7 +256,6 @@ export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
   'dense-history': {
     ante: '50',
     board: ['A♣', 'K♦', 'T♥', '4♣', '4♦'],
-    callAmount: '2,380',
     clock: '00:04',
     handLogEntries: turnHandLog,
     heroCards: ['Q♣', 'J♣'],
@@ -282,14 +267,13 @@ export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
       { spr: 0.4, potOdds: { call: 2380, isPlayerTurn: true, percentage: 38.5, pot: 3800, ratio: '1.6:1' } },
     ],
     pot: '3,800',
-    raiseAmount: 'オールイン',
     seats: [
-      { blind: 'BB', isHero: true, name: 'sola', stack: '2,380' },
-      { action: 'フォールド', folded: true, name: 'player_with_a_very_long_name', stack: '12,400' },
-      { action: 'フォールド', folded: true, name: 'three_bet_machine', stack: '8,775' },
-      { action: 'フォールド', folded: true, name: 'quiet-observer', stack: '1,020' },
-      { action: 'ベット', bet: '2,380', blind: 'BTN', highlight: true, name: 'river_pressure', stack: '14,950' },
-      { action: 'フォールド', blind: 'SB', folded: true, name: 'data_collector', stack: '6,660' },
+      { isHero: true, name: 'sola', stack: '2,380' },
+      { name: 'player_with_a_very_long_name', stack: '12,400' },
+      { name: 'three_bet_machine', stack: '8,775' },
+      { name: 'quiet-observer', stack: '1,020' },
+      { name: 'river_pressure', stack: '14,950' },
+      { name: 'data_collector', stack: '6,660' },
     ],
     stakes: '200/400',
     stats: [

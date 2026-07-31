@@ -82,12 +82,10 @@ input[type="range"] {
 /* Every game label is white with a hard dark outline, like the client's. */
 .pc-pot,
 .pc-plate__stack,
-.pc-bet__amount,
 .pc-info strong,
 .pc-info span,
 .pc-pill,
 .pc-help,
-.pc-blind,
 .pc-handlabel,
 .pc-allin,
 .pc-multiplier {
@@ -340,18 +338,6 @@ input[type="range"] {
   white-space: nowrap;
 }
 
-/* Last aggressor: the client paints their plate gold. */
-.pc-plate--highlight {
-  background:
-    linear-gradient(180deg, rgba(140, 124, 46, 0.95), rgba(62, 54, 18, 0.96)) padding-box,
-    linear-gradient(155deg, #fff6cf 0%, #c9a94e 26%, #6b591c 52%, #d3b661 78%, #fffae0 100%) border-box;
-}
-
-.pc-plate--folded {
-  filter: saturate(0.45);
-  opacity: 0.62;
-}
-
 .pc-plate--empty {
   background: rgba(8, 10, 18, 0.55);
   border: calc(var(--u) * 0.3) dashed rgba(176, 190, 220, 0.32);
@@ -377,73 +363,6 @@ input[type="range"] {
 
 .pc-plate--hero .pc-plate__stack { font-size: calc(var(--u) * 4.3); }
 .pc-plate--hero .pc-plate__name { font-size: calc(var(--u) * 2.7); }
-
-.pc-bubble {
-  background: linear-gradient(180deg, #f4f2ff, #ccd0e6);
-  border: calc(var(--u) * 0.3) solid #8d7cd8;
-  border-radius: calc(var(--u) * 0.8);
-  box-shadow: 0 calc(var(--u) * 0.6) calc(var(--u) * 1.4) rgba(0, 0, 0, 0.45);
-  color: #2a2450;
-  font-size: calc(var(--u) * 2.1);
-  padding: calc(var(--u) * 0.4) calc(var(--u) * 1.1);
-  white-space: nowrap;
-}
-
-.pc-blind {
-  align-items: center;
-  color: #fff;
-  display: flex;
-  justify-content: center;
-}
-
-.pc-blind--sb,
-.pc-blind--bb {
-  background: linear-gradient(180deg, #c58fd8, #7b4d99);
-  border: calc(var(--u) * 0.25) solid #f0e4f8;
-  border-radius: 999px;
-  font-size: calc(var(--u) * 2.3);
-  height: 2.9%;
-  width: 4.7%;
-}
-
-.pc-blind--btn {
-  aspect-ratio: 1;
-  background: radial-gradient(circle at 38% 30%, #f2605e, #a51226 62%, #6d0a18);
-  border: calc(var(--u) * 0.35) solid #ffd257;
-  border-radius: 50%;
-  box-shadow: 0 0 calc(var(--u) * 1.6) rgba(255, 190, 80, 0.55);
-  color: #ffeab0;
-  font-family: Georgia, serif;
-  font-size: calc(var(--u) * 2.7);
-  font-style: italic;
-  width: 3.4%;
-}
-
-.pc-bet {
-  align-items: center;
-  display: flex;
-}
-
-.pc-chips {
-  background:
-    repeating-linear-gradient(180deg, #4a63d6 0 14%, #1b2a86 14% 28%);
-  border: calc(var(--u) * 0.2) solid rgba(214, 224, 255, 0.85);
-  border-radius: 18% / 9%;
-  box-shadow: 0 calc(var(--u) * 0.5) calc(var(--u) * 1.1) rgba(0, 0, 0, 0.5);
-  height: calc(var(--u) * 4.6);
-  width: calc(var(--u) * 2.6);
-  z-index: 1;
-}
-
-.pc-bet__amount {
-  background: rgba(3, 12, 12, 0.62);
-  border-radius: 999px;
-  color: #fff;
-  font-size: calc(var(--u) * 3);
-  margin-left: -calc(var(--u) * 1);
-  padding: calc(var(--u) * 0.2) calc(var(--u) * 1.4) calc(var(--u) * 0.2) calc(var(--u) * 2.2);
-  white-space: nowrap;
-}
 
 .pc-herotimer {
   align-items: center;
@@ -641,9 +560,7 @@ input[type="range"] {
   line-height: 1.1;
 }
 
-.pc-action b { font-size: calc(var(--u) * 3.3); font-weight: 800; white-space: nowrap; }
 .pc-action--pale { background: linear-gradient(180deg, #fff6cb 0%, #fbe092 60%, #eecb6a 100%); }
-.pc-action--idle { filter: grayscale(0.7); opacity: 0.5; }
 
 .pc-stepper {
   border: calc(var(--u) * 0.35) solid #d8e0f5;
