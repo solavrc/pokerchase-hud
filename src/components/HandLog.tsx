@@ -528,7 +528,12 @@ const MAX_PLAUSIBLE_CHAR_WIDTH_RATIO = 3
 const WIDE_CHAR_RANGES =
   'ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿' +
   'ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦'
-const WIDE_CHAR_PATTERN = new RegExp(`[${WIDE_CHAR_RANGES}]`)
+// `\p{Ideographic}`で補助平面（CJK拡張B以降。`\u{20BB7}`など人名に出る）も
+// 拾う。BMPの範囲指定だけでは半角扱いになり、幅も改行機会も取りこぼす。
+const WIDE_CHAR_PATTERN = new RegExp(
+  `[${WIDE_CHAR_RANGES}]|\\p{Ideographic}`,
+  'u'
+)
 
 /**
  * 改行機会。CJKは空白が無くても文字間で改行できるが、全角＝改行機会では
@@ -539,7 +544,7 @@ const WIDE_CHAR_PATTERN = new RegExp(`[${WIDE_CHAR_RANGES}]`)
  * `♠`まで含んでしまい、カード表記の行を余計に折り返す。
  */
 const BREAK_OPPORTUNITY_PATTERN = new RegExp(
-  `[${WIDE_CHAR_RANGES}\\uFF61-\\uFF9F]|\\p{Emoji_Presentation}`,
+  `[${WIDE_CHAR_RANGES}\\uFF61-\\uFF9F]|\\p{Ideographic}|\\p{Emoji_Presentation}`,
   'u'
 )
 
@@ -557,6 +562,15 @@ const NO_BREAK_BEFORE_PATTERN =
 /** 行末禁則: 直後で改行できない文字（開き括弧・前置記号） */
 const NO_BREAK_AFTER_PATTERN =
   /[\uFF08\uFF3B\uFF5B\u3008\u300A\u300C\u300E\u3010\u3014\u2018\u201C\uFFE5\uFF04\u00A3\uFF62\u0028\u005B\u007B\u0024\u002B]/
+
+/**
+ * CSSが改行機会として扱う空白。`\s`はNBSP(U+00A0)・NARROW NBSP(U+202F)・
+ * FIGURE SPACE(U+2007)まで真になるが、これらはUAX #14のGL（改行禁止）で、
+ * CSSは前後で改行しない。空白扱いすると存在しない改行機会を作るうえ、
+ * 行末でぶら下げて幅も落としてしまう。
+ */
+const BREAKABLE_SPACE_PATTERN =
+  /^[ \t\n\r\f\v\u1680\u2000-\u2006\u2008-\u200A\u2028\u2029\u205F\u3000]/
 
 const graphemeSegmenter =
   typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
@@ -675,8 +689,8 @@ const tokenizeForWrap = (line: string): string[] => {
 }
 
 const breakAllowedBetween = (previous: string, next: string): boolean => {
-  const previousIsSpace = /^\s/.test(previous)
-  const nextIsSpace = /^\s/.test(next)
+  const previousIsSpace = BREAKABLE_SPACE_PATTERN.test(previous)
+  const nextIsSpace = BREAKABLE_SPACE_PATTERN.test(next)
   // 空白の連なりは1トークン。空白とそれ以外の境目は必ず改行機会
   if (previousIsSpace || nextIsSpace) return previousIsSpace !== nextIsSpace
   if (NO_BREAK_AFTER_PATTERN.test(previous)) return false
@@ -722,7 +736,7 @@ export const countWrappedLines = (
     }
     for (const token of tokenizeForWrap(hardLine)) {
       const width = measureToken(token)
-      if (/^\s/.test(token)) {
+      if (BREAKABLE_SPACE_PATTERN.test(token)) {
         used = used + width <= limit ? used + width : limit
         continue
       }
@@ -894,6 +908,9 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
   const requestedLoadScaleRef = useRef<number | null>(null)
   const latestScaleRef = useRef(scale)
   latestScaleRef.current = scale
+  const measuredScrollbarRatioRef = useRef(
+    typeof window === 'undefined' ? 1 : window.devicePixelRatio
+  )
   const [showCopied, setShowCopied] = useState(false)
   const [showCleared, setShowCleared] = useState(false)
   const lastClickTimeRef = useRef<number>(0)
@@ -964,7 +981,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
   // スクロールバー環境では行の包含ブロックがその幅だけ狭くなる。
   // `scrollbarGutter: 'stable'`でスクロール有無に関わらず同じ幅を確保し、
   // 推定と実描画のどちらの状態でも一致させる（オーバーレイ環境では0）。
-  const scrollbarWidth = useMemo(() => getScrollbarSize(), [])
+  const [scrollbarWidth, setScrollbarWidth] = useState(() => getScrollbarSize())
 
   // 折り返しに使える本文幅。行はリスト幅いっぱい（width:100%）なので、
   // 行の包含ブロックはbody幅からスクロールバー幅を除いた分で、そこから
@@ -1026,6 +1043,15 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
 
   useEffect(() => {
     const handleViewportResize = () => {
+      // ページズーム（やモニタ間移動）はスクロールバーのCSSピクセル幅を変える。
+      // 物理幅は変わらないので、ズームアウトすると実際のgutterは広がる。
+      // getScrollbarSize()は初回値をモジュール内にキャッシュするため、
+      // devicePixelRatioが変わったときだけ強制的に測り直す
+      // （毎resizeでプローブを挿すと余計な強制レイアウトになる）。
+      if (window.devicePixelRatio !== measuredScrollbarRatioRef.current) {
+        measuredScrollbarRatioRef.current = window.devicePixelRatio
+        setScrollbarWidth(getScrollbarSize(true))
+      }
       // A stale passive-effect listener may fire after a new scale render.
       commitLayoutAction({
         type: 'environmentChanged',

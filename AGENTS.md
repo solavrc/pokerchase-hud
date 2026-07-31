@@ -520,7 +520,11 @@ Break opportunity is its own class, **not** "is full width": Chrome breaks
 between halfwidth kana (4px) and between emoji (10px), but not around `♠♥♦♣`,
 `★`, `→` or `①`. Emoji are matched with `\p{Emoji_Presentation}` —
 `\p{Extended_Pictographic}` also matches `♠`, which would shred every card
-line. The kinsoku sets likewise include ASCII (`:` `,` `)` `(` …), because
+line — and ideographs with `\p{Ideographic}`, so supplementary-plane kanji
+(`𠮷`, `𩸽`) are covered; a BMP-only range list silently demotes them to
+narrow non-breaking text. Whitespace is likewise its own class: `\s` is wrong
+because it matches NBSP and friends, which CSS never breaks around (`aa<NBSP>bb`
+is one word to the browser, verified). The kinsoku sets likewise include ASCII (`:` `,` `)` `(` …), because
 `{Japanese name}: raises` — the shape of every action line — puts an ASCII
 colon straight after a wide character. All three sets (break opportunities,
 line-start kinsoku, line-end kinsoku) were derived by measuring Chrome's
@@ -534,7 +538,11 @@ The available width is the log body width, minus `getScrollbarSize()`, minus
 pins `boxSizing: border-box` so host-page CSS cannot move the padding boundary,
 and the `List` pins `scrollbarGutter: stable` so a non-overlay scrollbar
 (Windows/Linux) narrows the row by the same amount whether or not the log is
-currently scrolling. Derive the width from the *displayed* size, never the
+currently scrolling. That width is re-measured with `getScrollbarSize(true)`
+whenever `devicePixelRatio` changes (page zoom, monitor move): the scrollbar's
+physical width is constant, so its CSS-pixel width — the thing being
+subtracted — moves with zoom, and both `getScrollbarSize`'s own module cache
+and a mount-time `useMemo` would otherwise pin the first value forever. Derive the width from the *displayed* size, never the
 stored one: a viewport narrower than the stored width shrinks only the render,
 and that is where the wrapping actually happens. Do not reintroduce a fixed
 chars-per-line constant: the panel resizes down to `HAND_LOG_MIN_WIDTH`

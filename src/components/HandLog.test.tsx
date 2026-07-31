@@ -17,7 +17,7 @@ jest.mock('react-window', () => {
   // 0 = macOSのオーバーレイスクロールバー、15 = Windows/Linuxの実体持ち。
   const scrollbar = { size: 0 }
   return {
-    getScrollbarSize: () => scrollbar.size,
+    getScrollbarSize: (_recalculate?: boolean) => scrollbar.size,
     __setScrollbarSize: (size: number) => { scrollbar.size = size },
     List: ({ rowComponent: RowComponent, rowCount, rowProps, rowHeight, style, listRef }: any) => {
       // Mock scrollToRow method via listRef
@@ -85,6 +85,13 @@ const savedLayoutCalls = () =>
   mockChromeRuntimeSendMessage.mock.calls.filter(
     ([message]) => message.action === 'setDeviceHandLogLayout'
   )
+const setDevicePixelRatio = (ratio: number) => {
+  Object.defineProperty(window, 'devicePixelRatio', {
+    value: ratio,
+    writable: true,
+    configurable: true,
+  })
+}
 const setScrollbarSize = (size: number) => {
   (jest.requireMock('react-window') as {
     __setScrollbarSize: (size: number) => void
@@ -129,6 +136,7 @@ describe('HandLog', () => {
     jest.clearAllMocks()
     setViewport(1024, 768)
     setScrollbarSize(0)
+    setDevicePixelRatio(1)
     mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
       if (message.action === 'getDeviceHandLogLayout') {
         callback({ success: true })
@@ -1462,6 +1470,29 @@ describe('HandLog', () => {
       expect(rowHeight(0)).toBeCloseTo(21.2)
     })
 
+    it('ズーム変更時にスクロールバー幅を測り直す', () => {
+      // ページズームでスクロールバーのCSSピクセル幅が変わる。初回計測値を
+      // 使い続けると、ズームアウト後は実際のgutterより狭くしか引かない
+      const entry: HandLogEntry[] = [
+        {
+          id: 'fit',
+          handId: 1,
+          timestamp: Date.now(),
+          text: 'x'.repeat(78),
+          type: HandLogEntryType.ACTION,
+        },
+      ]
+      render(<HandLog entries={entry} />)
+      updateLayout({ left: 100, top: 100, width: 400, height: 100 })
+      expect(rowHeight(0)).toBeCloseTo(11.6)
+
+      setScrollbarSize(15)
+      setDevicePixelRatio(0.5)
+      fireEvent(window, new Event('resize'))
+
+      expect(rowHeight(0)).toBeCloseTo(21.2)
+    })
+
     it('スクロール有無で行幅が変わらないようgutterを固定する', () => {
       render(<HandLog entries={mockEntries} />)
 
@@ -1609,6 +1640,29 @@ describe('HandLogの行高推定', () => {
         }, 0)
       expect(countWrappedLines(`a ${'\uFF71'.repeat(16)}`, 60, width)).toBe(3)
       expect(countWrappedLines(`a ${'\uD83D\uDC1F'.repeat(7)}`, 60, width)).toBe(4)
+    })
+
+    it('補助平面の漢字も改行機会として扱う', () => {
+      // CJK拡張B（`\u{20BB7}`など）はBMPの範囲指定から漏れる。半角1語として
+      // 扱うと名前ごと次行へ送ってから割るので、行を1つ余計に確保する
+      const width = (token: string) =>
+        [...token].reduce(
+          (total, char) => total + (/\p{Ideographic}/u.test(char) || isWide(char) ? 20 : 10),
+          0
+        )
+      expect(countWrappedLines(`a ${'\u{20BB7}'.repeat(8)}`, 60, width)).toBe(3)
+      expect(countWrappedLines(`a ${'\u{29E3D}'.repeat(8)}`, 60, width)).toBe(3)
+    })
+
+    it('改行禁止の空白（NBSP等）を空白として扱わない', () => {
+      // CSSはNBSPの前後で改行しない。空白扱いすると改行機会を作るうえ、
+      // 行末でぶら下げて幅も落としてしまう
+      // 同じ見た目でも、NBSPは1語として割られ通常の空白は改行機会になる
+      expect(countWrappedLines('aa\u00A0bb', 20, measureToken)).toBe(3)
+      expect(countWrappedLines('aa bb', 20, measureToken)).toBe(2)
+      // 通常の空白は行末でぶら下がるが、NBSPは幅を持ったまま次行へ送られる
+      expect(countWrappedLines('aaa\u00A0aaa', 30, measureToken)).toBe(3)
+      expect(countWrappedLines('aaa aaa', 30, measureToken)).toBe(2)
     })
 
     it('トランプのスートや記号は改行機会にしない', () => {
