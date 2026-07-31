@@ -50,11 +50,9 @@ const chromeMock = installChromeMock()
  */
 const Seat = ({ index, seat }: { index: number; seat: TableSeat }) => {
   const layout = SEATS[index]!
-  const plateClass = [
-    'pc-plate',
-    seat.isHero && 'pc-plate--hero',
-    seat.empty && 'pc-plate--empty',
-  ].filter(Boolean).join(' ')
+  // No hero-specific plate style: nameplate size and decoration are skin
+  // choices in the real client, not seat roles (see `table-layout.ts`).
+  const plateClass = `pc-plate${seat.empty ? ' pc-plate--empty' : ''}`
 
   return (
     <>

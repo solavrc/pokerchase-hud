@@ -101,14 +101,21 @@ export interface SeatLayout {
  */
 export const SEATS: readonly SeatLayout[] = [
   {
-    // Hero. The plate is larger than the others; measured from the reference,
-    // where hero also happened to be the seat to act. The cyan glow that frame
-    // carries there is the TO-ACT marker (per-hand state, not drawn -- see the
-    // scope note above); whether the enlarged box is hero's own or part of the
-    // same to-act treatment is unverified. Hero's hole cards are rendered
-    // separately (HERO_CARDS), so `cards` is unused here.
+    /*
+     * Hero. Same plate box as everyone else, centred on where the reference
+     * draws it (62.9%, 73.8%). The reference's own hero plate is ~1.33x this
+     * size and glows cyan, but neither is structural: nameplates are SKINNABLE
+     * (sola), so size and decoration vary per player -- the reference alone
+     * shows a gold checkered plate on one opponent and an ornate frame on
+     * another. The shell therefore draws one neutral plate at the size the
+     * majority of seats use, and never implies a particular skin. The cyan
+     * glow specifically is the to-act marker, which is per-hand state.
+     *
+     * Hero's hole cards are rendered separately (HERO_CARDS), so `cards` is
+     * unused here.
+     */
     cards: { h: 0, l: 0, t: 0, w: 0 },
-    plate: { h: 11.9, l: 53, t: 67.9, w: 19.7 },
+    plate: { h: 8, l: 55.7, t: 69.8, w: 14.4 },
     portrait: { h: 29, l: 29.5, t: 56, w: 11 },
   },
   {
