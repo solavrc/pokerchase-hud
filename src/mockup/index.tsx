@@ -410,7 +410,6 @@ const Mockup = () => {
       {uiConfig.displayEnabled && orderedStats.map((stat, index) => (
         <Hud
           actualSeatIndex={index}
-          hudColorCoding={uiConfig.hudColorCoding}
           hudDisplayMode={uiConfig.hudDisplayMode}
           key={`${scenario.id}-${hudRevision}-${index}`}
           playerPotOdds={scenario.playerPotOdds[index]}

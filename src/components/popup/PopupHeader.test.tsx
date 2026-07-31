@@ -1,4 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import type { PopupThemeMode } from './theme'
 import { PopupHeader } from './PopupHeader'
 
 describe('PopupHeader', () => {
@@ -31,6 +33,44 @@ describe('PopupHeader', () => {
         { action: 'acknowledgeWhatsNew' },
         expect.any(Function)
       )
+    })
+  })
+
+  describe('テーマのアイコントグル', () => {
+    // 3状態を1ボタンで回すので、順序が崩れると到達できないモードが出る。
+    it.each<[PopupThemeMode, PopupThemeMode]>([
+      ['auto', 'light'],
+      ['light', 'dark'],
+      ['dark', 'auto'],
+    ])('%s をクリックすると %s になる', async (mode, expected) => {
+      const onPopupThemeModeChange = jest.fn()
+      render(
+        <PopupHeader
+          popupThemeMode={mode}
+          onPopupThemeModeChange={onPopupThemeModeChange}
+        />
+      )
+
+      await userEvent.click(screen.getByRole('button', { name: /^テーマ:/ }))
+
+      expect(onPopupThemeModeChange).toHaveBeenCalledWith(expected)
+    })
+
+    it('現在のモードをアクセシブル名に出し、次のモードはtitleで補う', () => {
+      render(
+        <PopupHeader popupThemeMode="dark" onPopupThemeModeChange={jest.fn()} />
+      )
+
+      const toggle = screen.getByRole('button', { name: 'テーマ: ダーク' })
+      expect(toggle).toHaveAttribute('title', 'テーマ: ダーク（クリックで自動へ）')
+    })
+
+    it('自動/ダーク/ライトの3択ラジオは残っていない', () => {
+      render(
+        <PopupHeader popupThemeMode="auto" onPopupThemeModeChange={jest.fn()} />
+      )
+
+      expect(screen.queryAllByRole('radio')).toHaveLength(0)
     })
   })
 })

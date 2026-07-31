@@ -802,7 +802,6 @@ const App = memo(() => {
               onToggleRecentHandsPanel={() => handleToggleRecentHandsPanel(position.stat.playerId)}
               handEpoch={handEpoch}
               hudDisplayMode={uiConfig.hudDisplayMode}
-              hudColorCoding={uiConfig.hudColorCoding}
               isDimmed={dimmedSeatIndices.has(position.actualSeatIndex)}
             />
           )

@@ -46,20 +46,24 @@ describe('CompactStatDisplay', () => {
     expect(screen.getByText('-')).toBeInTheDocument()
   })
 
-  it('colorCoding未指定時は色を適用しない', () => {
-    render(<CompactStatDisplay displayStats={buildDisplayStats()} />)
+  it('色帯がnullの範囲では色を適用しない', () => {
+    render(
+      <CompactStatDisplay
+        displayStats={buildDisplayStats({
+          vpip: { id: 'vpip', name: 'VPIP', value: [25, 100], formatted: '25.0% (25/100)' }, // (20,28] -> 色なし
+        })}
+      />
+    )
 
-    const vpipSegment = screen.getByText('30')
-    expect(vpipSegment).not.toHaveStyle({ color: '#e57373' })
+    expect(screen.getByText('25')).not.toHaveStyle({ color: '#e57373' })
   })
 
-  it('colorCoding有効時はしきい値に応じて色を適用する（n>=20のみ）', () => {
+  it('しきい値に応じて色を適用する（n>=20のみ）', () => {
     render(
       <CompactStatDisplay
         displayStats={buildDisplayStats({
           vpip: { id: 'vpip', name: 'VPIP', value: [45, 100], formatted: '45.0% (45/100)' }, // >40% -> red, n=100>=20
         })}
-        colorCoding
       />
     )
 
@@ -67,13 +71,12 @@ describe('CompactStatDisplay', () => {
     expect(vpipSegment).toHaveStyle({ color: '#e57373' })
   })
 
-  it('colorCoding有効でもn<20の場合は低信頼度グレーになる', () => {
+  it('n<20の場合は低信頼度グレーになる', () => {
     render(
       <CompactStatDisplay
         displayStats={buildDisplayStats({
           vpip: { id: 'vpip', name: 'VPIP', value: [5, 10], formatted: '50.0% (5/10)' }, // n=10 < 20
         })}
-        colorCoding
       />
     )
 

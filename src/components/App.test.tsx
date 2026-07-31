@@ -11,7 +11,7 @@ import { DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS } from '../utils/ui-config-storage'
 // Mock components
 jest.mock('./Hud', () => ({
   __esModule: true,
-  default: ({ actualSeatIndex, stat, scale, statDisplayConfigs, realTimeStats, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, isRecentHandsPanelOpen, onToggleRecentHandsPanel, handEpoch, hudDisplayMode, hudColorCoding, isDimmed }: any) => (
+  default: ({ actualSeatIndex, stat, scale, statDisplayConfigs, realTimeStats, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, isRecentHandsPanelOpen, onToggleRecentHandsPanel, handEpoch, hudDisplayMode, isDimmed }: any) => (
     <div data-testid={`hud-${actualSeatIndex}`}>
       Player: {stat.playerId}
       Scale: {scale}
@@ -22,7 +22,6 @@ jest.mock('./Hud', () => ({
       RecentHandsPanelOpen: {isRecentHandsPanelOpen ? 'yes' : 'no'}
       HandEpoch: {handEpoch ?? 0}
       DisplayMode: {hudDisplayMode ?? 'undefined'}
-      ColorCoding: {hudColorCoding === undefined ? 'undefined' : hudColorCoding ? 'yes' : 'no'}
       Dimmed: {isDimmed ? 'yes' : 'no'}
       {onTogglePositionalPanel && (
         <button onClick={onTogglePositionalPanel}>toggle-{stat.playerId}</button>
@@ -127,7 +126,6 @@ describe('App', () => {
       callback({
         uiConfig: {
           ...DEFAULT_UI_CONFIG,
-          hudColorCoding: false,
         },
       })
     })
@@ -156,8 +154,7 @@ describe('App', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('hud-0')).toHaveTextContent('Scale: 1.8')
-      expect(screen.getByTestId('hud-0')).toHaveTextContent('ColorCoding: no')
-      expect(screen.getByTestId('hand-log')).toHaveTextContent('Scale: 1.8')
+        expect(screen.getByTestId('hand-log')).toHaveTextContent('Scale: 1.8')
     })
   })
 
@@ -213,14 +210,12 @@ describe('App', () => {
           config: {
             ...DEFAULT_UI_CONFIG,
             scale: 1,
-            hudColorCoding: false,
           },
         })
       })
 
       expect(screen.getByTestId('hud-0')).toHaveTextContent('Scale: 1.6')
-      expect(screen.getByTestId('hud-0')).toHaveTextContent('ColorCoding: no')
-      expect(screen.getByTestId('hand-log')).toHaveTextContent('Scale: 1.6')
+        expect(screen.getByTestId('hand-log')).toHaveTextContent('Scale: 1.6')
     } finally {
       jest.useRealTimers()
     }
@@ -320,7 +315,7 @@ describe('App', () => {
     expect(global.chrome.storage.sync.set).not.toHaveBeenCalled()
   })
 
-  it('uiConfigにhudDisplayMode/hudColorCodingが渡された場合、そのままHudへ伝播する', async () => {
+  it('uiConfigにhudDisplayModeが渡された場合、そのままHudへ伝播する', async () => {
     (global.chrome.storage.sync.get as jest.Mock).mockImplementation((_, callback) => {
       callback({
         uiConfig: { ...DEFAULT_UI_CONFIG, hudDisplayMode: 'full', hudColorCoding: false },
@@ -334,10 +329,9 @@ describe('App', () => {
     })
 
     expect(screen.getByTestId('hud-0')).toHaveTextContent('DisplayMode: full')
-    expect(screen.getByTestId('hud-0')).toHaveTextContent('ColorCoding: no')
   })
 
-  it('旧storageのuiConfigにhudDisplayMode/hudColorCodingキーが無い場合、DEFAULT_UI_CONFIGとマージしてcompact+カラーONになる（グレースフルなマイグレーション, #143）', async () => {
+  it('旧storageのuiConfigにhudDisplayModeキーが無い場合、DEFAULT_UI_CONFIGとマージしてcompactになる（グレースフルなマイグレーション, #143）', async () => {
     (global.chrome.storage.sync.get as jest.Mock).mockImplementation((_, callback) => {
       callback({
         // #143以前に保存されたuiConfig相当（新フィールドが無い）
@@ -352,7 +346,6 @@ describe('App', () => {
     })
 
     expect(screen.getByTestId('hud-0')).toHaveTextContent('DisplayMode: compact')
-    expect(screen.getByTestId('hud-0')).toHaveTextContent('ColorCoding: yes')
   })
 
   it('PokerChaseServiceイベントでstatsが更新される', async () => {
@@ -576,15 +569,13 @@ describe('App', () => {
         config: {
           ...DEFAULT_UI_CONFIG,
           scale: 1.5,
-          hudColorCoding: false,
         },
       })
     })
 
     await waitFor(() => {
       expect(screen.getByTestId('hud-0')).toHaveTextContent('Scale: 1')
-      expect(screen.getByTestId('hud-0')).toHaveTextContent('ColorCoding: no')
-    })
+      })
   })
 
   it('ウィンドウイベントでconfigが更新される', async () => {

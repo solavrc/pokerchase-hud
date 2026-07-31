@@ -92,7 +92,6 @@ describe('ui-config-storage', () => {
     expect(toSyncedUIConfig(config)).toEqual({
       displayEnabled: false,
       hudDisplayMode: DEFAULT_UI_CONFIG.hudDisplayMode,
-      hudColorCoding: DEFAULT_UI_CONFIG.hudColorCoding,
       toggleShortcut: DEFAULT_UI_CONFIG.toggleShortcut,
     })
 

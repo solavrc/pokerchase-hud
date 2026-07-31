@@ -278,7 +278,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
 
       // Load synchronized UI preferences and the device-local scale.
       // DEFAULT_UI_CONFIGとマージする: 新フィールド追加前（#143以前）に保存された
-      // uiConfigにはhudDisplayMode/hudColorCodingが存在しないため、マージせず
+      // uiConfigにはhudDisplayModeが存在しないため、マージせず
       // そのまま使うとポップアップのHUD表示設定セクションが未定義値を表示して
       // しまう（App.tsx側の読み込みは既にこのマージを行っている）。
       chrome.storage.sync.get('uiConfig', (result: Record<string, any>) => {
@@ -579,12 +579,12 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
             uiConfig={uiConfig}
             setUIConfig={setUIConfig}
             scaleControlsDisabled={!uiScaleAuthoritative}
-          />
-
-          <HudDisplaySection
-            uiConfig={uiConfig}
-            setUIConfig={setUIConfig}
-          />
+          >
+            <HudDisplaySection
+              uiConfig={uiConfig}
+              setUIConfig={setUIConfig}
+            />
+          </UIScaleSection>
         </>}
       </SectionCard>
 

@@ -964,7 +964,6 @@ describe('Hud', () => {
           scale={1}
           statDisplayConfigs={mockStatDisplayConfigs}
           hudDisplayMode="full"
-          hudColorCoding
         />
       )
 
@@ -977,7 +976,6 @@ describe('Hud', () => {
           scale={1}
           statDisplayConfigs={mockStatDisplayConfigs}
           hudDisplayMode="compact"
-          hudColorCoding
         />
       )
 

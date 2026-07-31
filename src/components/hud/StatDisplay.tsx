@@ -8,7 +8,6 @@ interface StatDisplayProps {
   displayStats: Array<[string, any, StatResult?]>
   formatValue: (value: number | [number, number]) => string
   /** Threshold-based value coloring, see statColorRules.ts. Defaults to off. */
-  colorCoding?: boolean
 }
 
 const styles = {
@@ -48,7 +47,7 @@ const styles = {
   } as CSSProperties,
 }
 
-export const StatDisplay = memo(({ displayStats, formatValue, colorCoding }: StatDisplayProps) => (
+export const StatDisplay = memo(({ displayStats, formatValue }: StatDisplayProps) => (
   <div style={styles.statsContainer}>
     {displayStats
       .filter(([, , statResult]) => statResult?.id !== 'playerName')
@@ -58,7 +57,7 @@ export const StatDisplay = memo(({ displayStats, formatValue, colorCoding }: Sta
         // dynamic tooltip when defined (e.g. vpipF's per-layer breakdown)
         // and its static beginner-friendly helpText -- see statTooltip.ts.
         const tooltipText = composeStatTitle(statResult?.id ?? '', key, displayValue, statResult?.tooltip)
-        const color = colorCoding && statResult ? getStatValueColor(statResult.id, statResult.value) : null
+        const color = statResult ? getStatValueColor(statResult.id, statResult.value) : null
         return (
           <div key={index} style={styles.statItem} data-stat-id={statResult?.id}>
             <span style={styles.statKey} title={tooltipText}>{key}:</span>

@@ -53,8 +53,6 @@ interface HudProps {
   handEpoch?: number
   /** HUD表示密度。'full'（デフォルト、既存の16統計グリッド）または'compact'（クラシックHUDライン）。UIConfig.hudDisplayMode参照 */
   hudDisplayMode?: 'full' | 'compact'
-  /** しきい値ベースの値カラーリング（compact/full両モード共通）。UIConfig.hudColorCoding参照 */
-  hudColorCoding?: boolean
   /**
    * bustした（最新のlineupに不在の）プレイヤーの、直近キャッシュされた統計を
    * ミュート表示中かどうか（App.tsxの座席単位dimCache参照）。trueの場合、
@@ -259,7 +257,6 @@ const Hud = memo((props: HudProps) => {
   const statResultsForHeader = 'statResults' in props.stat ? props.stat.statResults : undefined
   const scale = props.scale || 1
   const hudDisplayMode = props.hudDisplayMode || 'full'
-  const hudColorCoding = props.hudColorCoding || false
 
   // compactモードの統計ボディをクリックすると16統計グリッドをその場で展開する
   // （#128のポジション別ドリルダウン用トリガーと同様、stopPropagationでHUD全体の
@@ -449,11 +446,11 @@ const Hud = memo((props: HudProps) => {
               title={isStatBodyExpanded ? 'クリックで折りたたむ' : 'クリックで全統計を表示'}
             >
               {isStatBodyExpanded
-                ? <StatDisplay displayStats={gridDisplayStats} formatValue={formatStatValue} colorCoding={hudColorCoding} />
-                : <CompactStatDisplay displayStats={displayStats} colorCoding={hudColorCoding} />}
+                ? <StatDisplay displayStats={gridDisplayStats} formatValue={formatStatValue} />
+                : <CompactStatDisplay displayStats={displayStats} />}
             </div>
           ) : (
-            <StatDisplay displayStats={gridDisplayStats} formatValue={formatStatValue} colorCoding={hudColorCoding} />
+            <StatDisplay displayStats={gridDisplayStats} formatValue={formatStatValue} />
           )}
           {props.isPositionalPanelOpen && (
             <PositionalStatsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
@@ -473,7 +470,6 @@ const Hud = memo((props: HudProps) => {
   if (prevProps.isPositionalPanelOpen !== nextProps.isPositionalPanelOpen) return false
   if (prevProps.isRecentHandsPanelOpen !== nextProps.isRecentHandsPanelOpen) return false
   if (prevProps.hudDisplayMode !== nextProps.hudDisplayMode) return false
-  if (prevProps.hudColorCoding !== nextProps.hudColorCoding) return false
   if (prevProps.isDimmed !== nextProps.isDimmed) return false
   if (prevProps.playerPotOdds?.spr !== nextProps.playerPotOdds?.spr) return false
   if (prevProps.playerPotOdds?.potOdds?.pot !== nextProps.playerPotOdds?.potOdds?.pot) return false

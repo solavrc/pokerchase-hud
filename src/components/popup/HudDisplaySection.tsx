@@ -1,12 +1,8 @@
-import Box from '@mui/material/Box'
-import Checkbox from '@mui/material/Checkbox'
-import FormControlLabel from '@mui/material/FormControlLabel'
-import RadioGroup from '@mui/material/RadioGroup'
-import Typography from '@mui/material/Typography'
+import ToggleButton from '@mui/material/ToggleButton'
+import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
 import type { UIConfig } from '../../types/hand-log'
 import { saveSyncedUIConfig } from '../../utils/ui-config-storage'
 import { broadcastUIConfig } from './broadcast-ui-config'
-import { SegmentRadio } from './SegmentRadio'
 
 interface HudDisplaySectionProps {
   uiConfig: UIConfig
@@ -14,10 +10,18 @@ interface HudDisplaySectionProps {
 }
 
 /**
- * HUD表示スタイル設定（#143）: 表示モード（コンパクト/フル）と統計カラー表示の
- * ON/OFF。UIScaleSection と同じ保存パス（setUIConfig → chrome.storage.sync →
- * 開いている全ゲームタブへ updateUIConfig メッセージ送信）に従う。
- * ただし端末固有のscaleは同期payloadから除外する。
+ * HUD表示モード（コンパクト/フル）。UIScaleSection と同じ保存パス
+ * （setUIConfig → chrome.storage.sync → 開いている全ゲームタブへ
+ * updateUIConfig メッセージ送信）に従う。ただし端末固有のscaleは
+ * 同期payloadから除外する。
+ *
+ * 「表示モード:」のラベルと3行目の独立ブロックは廃止し、
+ * 非表示/表示 と同じ ToggleButtonGroup として UIScaleSection の
+ * 右カラムへ積む（sola指定）。どちらも「HUDをどう出すか」の二択であり、
+ * 見た目が違うと別種の設定に見える。
+ *
+ * 統計カラー表示のON/OFFもここにあったが廃止し、常時有効にした。
+ * しきい値カラーはHUDの読み取りやすさそのものであって好みの設定ではない。
  */
 export const HudDisplaySection = ({
   uiConfig,
@@ -30,38 +34,43 @@ export const HudDisplaySection = ({
   }
 
   // DEFAULT_UI_CONFIGとのマージ済みuiConfigが渡ってくる前提だが、念のため
-  // フォールバックしておく（#143のデフォルト = compact + カラーON）。
+  // フォールバックしておく（#143のデフォルト = compact）。
   const hudDisplayMode = uiConfig.hudDisplayMode ?? 'compact'
-  const hudColorCoding = uiConfig.hudColorCoding ?? true
 
   return (
-    <Box sx={{ mt: 1.5 }}>
-      <Typography variant="body2" sx={{ mb: 0.75, color: 'text.secondary' }}>表示モード:</Typography>
-      <RadioGroup
-        row
-        aria-label="HUD表示モード"
-        value={hudDisplayMode}
-        onChange={(_event, newValue) => {
-          updateUIConfig({ ...uiConfig, hudDisplayMode: newValue as 'full' | 'compact' })
-        }}
-        sx={{ mb: 1 }}
-      >
-        <SegmentRadio value="compact" checked={hudDisplayMode === 'compact'} label="コンパクト" />
-        <SegmentRadio value="full" checked={hudDisplayMode === 'full'} label="フル" />
-      </RadioGroup>
-      <FormControlLabel
-        control={
-          <Checkbox
-            size="small"
-            checked={hudColorCoding}
-            onChange={(event) => {
-              updateUIConfig({ ...uiConfig, hudColorCoding: event.target.checked })
-            }}
-          />
-        }
-        label="統計カラー表示"
-        sx={{ '& .MuiFormControlLabel-label': { fontSize: 13, color: 'text.primary' } }}
-      />
-    </Box>
+    <ToggleButtonGroup
+      value={hudDisplayMode}
+      exclusive
+      aria-label="HUD表示モード"
+      onChange={(_event, newValue: string | null) => {
+        // exclusive な ToggleButtonGroup は選択中を再クリックすると null を返す。
+        // 表示モードに「未選択」は無いので現状維持にする。
+        if (newValue === null) return
+        updateUIConfig({ ...uiConfig, hudDisplayMode: newValue as 'full' | 'compact' })
+      }}
+      size="small"
+      sx={{
+        '& .MuiToggleButton-root': {
+          padding: '4px 12px',
+          fontSize: '12px',
+          fontWeight: 'bold',
+          textTransform: 'none',
+          '&.Mui-selected': {
+            backgroundColor: 'primary.main',
+            color: (theme) => theme.palette.getContrastText(theme.palette.primary.main),
+            '&:hover': {
+              backgroundColor: 'primary.dark',
+            },
+          },
+        },
+      }}
+    >
+      <ToggleButton value="compact">
+        コンパクト
+      </ToggleButton>
+      <ToggleButton value="full">
+        フル
+      </ToggleButton>
+    </ToggleButtonGroup>
   )
 }
