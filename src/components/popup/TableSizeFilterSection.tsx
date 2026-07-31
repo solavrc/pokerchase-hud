@@ -38,6 +38,13 @@ const VALUE_LABELS: Record<number, string> = {
  * ただしハンド数（単一つまみ＝上限だけ）と違い、両端を持つレンジにしている。
  * 単一つまみだと「N人以上」しか表現できず、短ハンド戦だけを見る
  * （3人以下に限定する）といった絞り込みができないため。
+ *
+ * `disableSwap` は付けない。つまみの入れ替わりを禁じると、単一層を選んで
+ * 両つまみが重なった状態（例: フルのみ）から小さい側へクリックしたときに、
+ * MUIが同値タイで上側のつまみを掴んでクランプし、最初の1回が無反応になる。
+ * 「下限＞上限」を防ぐためのオプションだが、MUIの `setValueIndex` は
+ * 常に `sort(asc)` した配列を返すので、入れ替えを許しても区間の不変条件は
+ * 保たれる（TableSizeFilterSection.test.tsx で固定）。
  */
 export const TableSizeFilterSection = ({
   tableSizeFilter,
@@ -62,8 +69,6 @@ export const TableSizeFilterSection = ({
           marks={MARKS}
           min={TABLE_SIZE_SLIDER_MIN}
           max={TABLE_SIZE_SLIDER_MAX}
-          // つまみが入れ替わると「下限＞上限」の瞬間ができ、区間の意味が壊れる。
-          disableSwap
         />
       </Box>
       {/*
