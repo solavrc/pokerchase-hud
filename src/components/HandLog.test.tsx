@@ -1,6 +1,11 @@
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import HandLog from './HandLog'
+import HandLog, {
+  countWrappedLines,
+  estimateEntryRowHeight,
+  measureMonospaceCharWidth,
+  FALLBACK_MONOSPACE_CHAR_WIDTH_RATIO,
+} from './HandLog'
 import { HandLogEntry, HandLogEntryType, HandLogConfig, DEFAULT_HAND_LOG_CONFIG } from '../types/hand-log'
 import { DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS } from '../utils/ui-config-storage'
 
@@ -8,17 +13,27 @@ import { DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS } from '../utils/ui-config-storage'
 jest.mock('react-window', () => {
   const React = require('react')
   return {
-    List: ({ rowComponent: RowComponent, rowCount, rowProps, style, listRef }: any) => {
+    List: ({ rowComponent: RowComponent, rowCount, rowProps, rowHeight, style, listRef }: any) => {
       // Mock scrollToRow method via listRef
       React.useImperativeHandle(listRef, () => ({
         scrollToRow: jest.fn(),
         get element() { return null },
       }))
 
+      // 本物のListと同じく、行ラッパーへrowHeightの戻り値をそのまま適用する。
+      // 行高の推定はこのラッパーのstyle.heightから検証する。
       return (
         <div data-testid="virtual-list" style={style}>
           {Array.from({ length: rowCount }).map((_, index) => (
-            <div key={index}>
+            <div
+              key={index}
+              data-testid={`virtual-row-${index}`}
+              style={{
+                height: typeof rowHeight === 'function'
+                  ? rowHeight(index, rowProps)
+                  : rowHeight,
+              }}
+            >
               <RowComponent
                 index={index}
                 style={{}}
@@ -1320,9 +1335,179 @@ describe('HandLog', () => {
 
   it('ハンド間にセパレーターが表示される', () => {
     render(<HandLog entries={mockEntries} />)
-    
+
     // Virtual listの中にセパレーターが含まれている
     const virtualList = screen.getByTestId('virtual-list')
     expect(virtualList.children.length).toBeGreaterThan(mockEntries.length) // セパレーターが追加されている
+  })
+
+  describe('仮想リストの行高', () => {
+    // 既定fontSize=8・等幅比0.6（jsdomにcanvasが無いためフォールバック）で
+    // 1文字4.8px。折り返し幅は「表示幅 - border 1px×2 - EntryRowの左右
+    // padding 8px×2」。
+    const longEntry: HandLogEntry[] = [
+      {
+        id: 'long',
+        handId: 1,
+        timestamp: Date.now(),
+        text: 'x'.repeat(100),
+        type: HandLogEntryType.ACTION,
+      },
+    ]
+    const rowHeight = (index: number) =>
+      parseFloat(screen.getByTestId(`virtual-row-${index}`).style.height)
+
+    it('パネル幅が狭いほど実際の折り返し行数だけ行高が伸びる', () => {
+      render(<HandLog entries={longEntry} />)
+
+      // 幅400: 本文382px ≒ 79文字/行 → 100文字は2行
+      updateLayout({ left: 100, top: 100, width: 400, height: 100 })
+      expect(rowHeight(0)).toBeCloseTo(21.2)
+
+      // 幅200(最小): 本文182px ≒ 37文字/行 → 100文字は3行
+      // 60文字固定の旧推定では幅によらず2行のままで、行が重なっていた
+      updateLayout({ left: 100, top: 100, width: 200, height: 100 })
+      expect(rowHeight(0)).toBeCloseTo(30.8)
+    })
+
+    it('viewportが保存幅より狭いときは表示幅で折り返しを数える', () => {
+      render(<HandLog entries={longEntry} />)
+      updateLayout({ left: 0, top: 0, width: 600, height: 300 })
+
+      // 幅600: 本文582px ≒ 121文字/行 → 100文字は1行
+      expect(rowHeight(0)).toBeCloseTo(11.6)
+
+      setViewport(200, 768)
+      fireEvent(window, new Event('resize'))
+
+      // 保存幅は600pxのまま表示だけ200pxへ縮む。折り返しは縮んだ側で起きる
+      // ので、保存幅で数えると1行のままになり行が重なる
+      expect(rowHeight(0)).toBeCloseTo(30.8)
+    })
+
+    it('タイムスタンプ接頭辞の分だけ先頭行の残り幅を減らす', () => {
+      render(<HandLog entries={longEntry} config={{ showTimestamps: true }} />)
+      updateLayout({ left: 100, top: 100, width: 400, height: 100 })
+
+      // [00:00:00]は6px等幅10文字+margin 8px = 44px ≒ 10文字分。
+      // 先頭行には本文が入らず、80文字+20文字と合わせて3行になる
+      expect(rowHeight(0)).toBeCloseTo(30.8)
+    })
+
+    it('フォントサイズを上げると1行あたり文字数が減り行高が伸びる', () => {
+      render(<HandLog entries={longEntry} config={{ fontSize: 16 }} />)
+      updateLayout({ left: 100, top: 100, width: 400, height: 100 })
+
+      // 1文字9.6px ≒ 39文字/行 → 100文字は3行、1行の高さも倍
+      expect(rowHeight(0)).toBeCloseTo(59.6)
+    })
+
+    it('セパレーター行は固定高のまま', () => {
+      render(<HandLog entries={mockEntries} />)
+      updateLayout({ left: 100, top: 100, width: 200, height: 100 })
+
+      // mockEntriesはhandId=1が3件、その後にhandId=2との区切りが入る
+      expect(rowHeight(3)).toBe(10)
+    })
+
+    it('EntryRowはborder-boxでpadding込みの高さに一致させる', () => {
+      render(<HandLog entries={longEntry} />)
+
+      expect(screen.getByText('x'.repeat(100))).toHaveStyle({
+        boxSizing: 'border-box',
+        padding: '1px 8px',
+      })
+    })
+  })
+})
+
+describe('HandLogの行高推定', () => {
+  // 等幅比を固定した決定的な計測器（実環境ではcanvas実測）
+  const monospace = (ratio: number) => (fontSize: number) => fontSize * ratio
+
+  describe('countWrappedLines', () => {
+    it('空エントリは行を占有しない', () => {
+      expect(countWrappedLines('', 40)).toBe(0)
+    })
+
+    it('1行に収まるテキストは1行', () => {
+      expect(countWrappedLines('Player1: folds', 40)).toBe(1)
+    })
+
+    it('単語境界で折り返す', () => {
+      expect(countWrappedLines('aaaa bbbb cccc', 10)).toBe(2)
+    })
+
+    it('単語境界で折り返すため文字数の単純除算より行数が増えうる', () => {
+      const text = 'aaaaaa bbbbbb cccccc'
+      expect(Math.ceil(text.length / 10)).toBe(2)
+      expect(countWrappedLines(text, 10)).toBe(3)
+    })
+
+    it('1行に収まらない単語だけをbreak-wordとして分割する', () => {
+      expect(countWrappedLines('x'.repeat(25), 10)).toBe(3)
+    })
+
+    it('行頭でない長い単語は次行へ送ってから分割する', () => {
+      // "ab " の後に25文字の語 → 2行目から10/10/5に割れる
+      expect(countWrappedLines(`ab ${'x'.repeat(25)}`, 10)).toBe(4)
+    })
+
+    it('行末の空白はぶら下がり、次の単語から改行する', () => {
+      expect(countWrappedLines('aaaaaaaaaa bb', 10)).toBe(2)
+    })
+
+    it('明示的な改行を行として数える', () => {
+      expect(countWrappedLines('abc\ndef', 10)).toBe(2)
+    })
+
+    it('先頭オフセット（タイムスタンプ）を消費済み文字として扱う', () => {
+      expect(countWrappedLines('cccc', 10)).toBe(1)
+      expect(countWrappedLines('cccc', 10, 8)).toBe(2)
+    })
+
+    it('60文字固定の旧推定が過小評価していた幅を正しく数える', () => {
+      // 幅200pxのパネル ≒ 38文字/行。旧推定は ceil(100/60)=2行だった
+      expect(countWrappedLines('x'.repeat(100), 38)).toBe(3)
+    })
+  })
+
+  describe('estimateEntryRowHeight', () => {
+    const metrics = (textWidth: number, showTimestamps = false) => ({
+      textWidth,
+      fontSize: 8,
+      showTimestamps,
+      measureCharWidth: monospace(0.6),
+    })
+
+    it('1行のエントリは1行分の高さ + 上下padding', () => {
+      expect(estimateEntryRowHeight('Player1: folds', metrics(384))).toBeCloseTo(11.6)
+    })
+
+    it('本文幅が狭いと行数が増える', () => {
+      expect(estimateEntryRowHeight('x'.repeat(100), metrics(384))).toBeCloseTo(21.2)
+      expect(estimateEntryRowHeight('x'.repeat(100), metrics(184))).toBeCloseTo(30.8)
+    })
+
+    it('タイムスタンプ表示時は先頭行の残り幅が減る', () => {
+      expect(estimateEntryRowHeight('x'.repeat(100), metrics(384, true))).toBeCloseTo(30.8)
+    })
+
+    it('本文幅が0以下でも1文字/行として破綻しない', () => {
+      expect(estimateEntryRowHeight('abc', metrics(0))).toBeCloseTo(3 * 9.6 + 2)
+    })
+  })
+
+  describe('measureMonospaceCharWidth', () => {
+    it('canvasが無い環境では保守的な等幅比へフォールバックする', () => {
+      expect(measureMonospaceCharWidth(8)).toBeCloseTo(8 * FALLBACK_MONOSPACE_CHAR_WIDTH_RATIO)
+      expect(measureMonospaceCharWidth(16)).toBeCloseTo(16 * FALLBACK_MONOSPACE_CHAR_WIDTH_RATIO)
+    })
+
+    it('フォールバック比は想定フォント中で最も広いものを採る', () => {
+      // Consolas 0.55 / Monaco・Courier New 0.6。狭い比率を既定にすると
+      // 1行あたり文字数を過大評価して行が重なる
+      expect(FALLBACK_MONOSPACE_CHAR_WIDTH_RATIO).toBeGreaterThanOrEqual(0.6)
+    })
   })
 })
