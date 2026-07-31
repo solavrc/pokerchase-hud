@@ -101,9 +101,12 @@ export interface SeatLayout {
  */
 export const SEATS: readonly SeatLayout[] = [
   {
-    // Hero: larger plate with the active cyan frame. Hero's own hole cards are
-    // rendered separately (HERO_CARDS) -- `cards` is the face-down slot the
-    // other seats use and is unused for the hero.
+    // Hero. The plate is larger than the others; measured from the reference,
+    // where hero also happened to be the seat to act. The cyan glow that frame
+    // carries there is the TO-ACT marker (per-hand state, not drawn -- see the
+    // scope note above); whether the enlarged box is hero's own or part of the
+    // same to-act treatment is unverified. Hero's hole cards are rendered
+    // separately (HERO_CARDS), so `cards` is unused here.
     cards: { h: 0, l: 0, t: 0, w: 0 },
     plate: { h: 11.9, l: 53, t: 67.9, w: 19.7 },
     portrait: { h: 29, l: 29.5, t: 56, w: 11 },

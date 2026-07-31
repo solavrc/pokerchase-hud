@@ -357,15 +357,15 @@ input[type="range"] {
   letter-spacing: 0.2em;
 }
 
-/* Hero: the client frames the seat to act in glowing cyan. */
+/*
+ * Hero's own plate. Larger than the others, but otherwise the same frame:
+ * the glowing cyan border the reference shows here marks the seat TO ACT
+ * (confirmed by sola), which is per-hand state and therefore out of scope --
+ * see the scope note in `table-layout.ts`. Drawing it would make the mock
+ * claim it is always the hero's turn.
+ */
 .pc-plate--hero {
-  background: linear-gradient(180deg, #05070c, #010205) padding-box;
-  border: calc(var(--u) * 0.5) solid #eaf9ff;
   border-radius: calc(var(--u) * 1.4);
-  box-shadow:
-    0 0 calc(var(--u) * 1.6) rgba(110, 240, 255, 0.85),
-    0 0 calc(var(--u) * 4) rgba(80, 220, 255, 0.5),
-    inset 0 0 calc(var(--u) * 1.4) rgba(120, 240, 255, 0.3);
 }
 
 .pc-plate--hero .pc-plate__stack { font-size: calc(var(--u) * 4.3); }
