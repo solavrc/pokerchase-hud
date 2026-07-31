@@ -202,12 +202,14 @@ describe('HandLog', () => {
     expect(screen.getByTestId('hand-log-resize-corner')).toBeInTheDocument()
     expect(screen.queryByTestId('hand-log-header')).not.toBeInTheDocument()
     // グリップはヘッダー帯と違い本文の上に重なるので、被って掴めなくならない
-    // よう本文より前面に置く必要がある。
+    // よう本文より前面に置く必要がある。行頭は必ず文字で埋まるため右上固定。
     const moveGrip = screen.getByTestId('hand-log-move-grip')
     expect(moveGrip).toHaveStyle({
       width: '16px',
       height: '16px',
       position: 'absolute',
+      top: '0px',
+      right: '0px',
     })
     expect(Number(moveGrip.style.zIndex)).toBeGreaterThan(
       Number(screen.getByTestId('virtual-list').style.zIndex || 0)

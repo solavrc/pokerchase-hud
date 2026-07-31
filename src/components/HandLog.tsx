@@ -890,11 +890,12 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     cursor: 'default'
   }
 
-  // 左上は移動専用。ヘッダー帯を廃してログ本文へ高さを明け渡す代わりに、
-  // 右下のリサイズ角と対になる最小限の掴める領域だけを重ねる。
+  // 右上は移動専用。ヘッダー帯を廃してログ本文へ高さを明け渡す代わりに、
+  // 右下のリサイズ角と対になる最小限の掴める領域だけを重ねる。行頭は必ず
+  // 文字で埋まる一方、行末は余白になりやすいので左上ではなく右上に置く。
   const moveGripStyle: CSSProperties = {
     position: 'absolute',
-    left: 0,
+    right: 0,
     top: 0,
     width: HAND_LOG_MOVE_GRIP_SIZE,
     height: HAND_LOG_MOVE_GRIP_SIZE,
@@ -904,9 +905,9 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     cursor: interactionMode === 'move' ? 'grabbing' : 'grab',
     // ログ本文へ重なるので、地の文と混ざらない程度には輪郭を持たせる。
     backgroundColor: 'rgba(255, 255, 255, 0.16)',
-    borderRight: '1px solid rgba(255, 255, 255, 0.2)',
+    borderLeft: '1px solid rgba(255, 255, 255, 0.2)',
     borderBottom: '1px solid rgba(255, 255, 255, 0.2)',
-    borderRadius: '4px 0 4px 0',
+    borderRadius: '0 4px 0 4px',
     color: 'rgba(255, 255, 255, 0.85)',
     fontSize: 11,
     lineHeight: 1,

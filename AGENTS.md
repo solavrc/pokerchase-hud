@@ -470,9 +470,10 @@ active pointer interaction, rejects layout-load callbacks bound to an older
 request or scale, and emits at most one persistence effect from the common
 interaction exit. Do not add another effect/ref that mutates or saves hand-log
 coordinates outside that transition outlet. There is no header bar: the
-upper-left grip (16px, `hand-log-move-grip`) is the move handle and the
+upper-right grip (16px, `hand-log-move-grip`) is the move handle and the
 lower-right corner is resize-only, so the whole panel height belongs to the log
-body. Normalization keeps the entire rendered panel inside the viewport on both
+body. The grip is deliberately upper-*right*: it overlays the log body, and a
+line's start is always occupied by text while its end is usually blank. Normalization keeps the entire rendered panel inside the viewport on both
 axes and applies to loaded, default, reset, external, pointer, and
 viewport/scale-driven layouts. Normalization's size clamping is display-only:
 it enforces the minimums but never shrinks the stored width/height to fit the
