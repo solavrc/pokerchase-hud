@@ -1,5 +1,6 @@
 import { build, BuildOptions, Plugin } from 'esbuild'
 import { sentryEsbuildPlugin } from '@sentry/esbuild-plugin'
+import { execFileSync } from 'child_process'
 import { copyFileSync, mkdirSync } from 'fs'
 import { parse } from 'path'
 import { resolve } from 'path'
@@ -23,17 +24,63 @@ const {
 //                  to the e2e fixture origin in the e2e build only.
 const outdir = process.env.E2E_OUTDIR || 'dist'
 const e2eManifestOverride = process.env.E2E_MANIFEST
+
+// --- Sentry telemetry build identity --------------------------------------
+// Diagnostics are opt-in, so the maintainer's own play sessions are a primary
+// source of signal -- especially schema-validation failures, which is how a
+// PokerChase payload change becomes visible at all (see "Incident Diagnosis
+// Practices" in AGENTS.md). Those events are captureMessage + structured
+// context and need no source maps, so a build without an upload token is still
+// worth reporting from. Telemetry is therefore compiled into every build except
+// E2E; what changes between a release and a working build is only its identity.
+//
+//   SENTRY_ENVIRONMENT=production  - release workflow marker. Claims the plain
+//                                    `pokerchase-hud@<version>` release name,
+//                                    which the uploaded source maps belong to.
+//   (unset)                        - a working build. Reports under
+//                                    environment=development and a distinct
+//                                    `+dev.<sha>` release, so it can never be
+//                                    symbolicated against, or counted toward,
+//                                    the published release.
+//   SENTRY_DISABLED=true           - compile telemetry out entirely.
+//
+// The runtime per-profile opt-in and optional host grant still gate every
+// build: a contributor who never enables 診断情報を送信 reports nothing.
+const isProductionRelease = process.env.SENTRY_ENVIRONMENT === 'production'
 const sentryEnabled =
-  !e2eManifestOverride && process.env.SENTRY_ENABLED === 'true'
+  !e2eManifestOverride && process.env.SENTRY_DISABLED !== 'true'
 const sentryUploadEnabled =
   sentryEnabled && Boolean(process.env.SENTRY_AUTH_TOKEN)
-const sentryRelease = `pokerchase-hud@${manifest.version}`
+const sentryEnvironment = isProductionRelease ? 'production' : 'development'
 
-if (sentryEnabled && !sentryUploadEnabled) {
+/**
+ * Short commit of the working build, with a `-dirty` marker when the tree has
+ * uncommitted changes -- the marker is the point: it says the commit alone does
+ * not identify what is running. Falls back to `unknown` outside a git checkout.
+ */
+const resolveBuildRevision = (): string => {
+  const git = (...args: string[]): string =>
+    execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  try {
+    const revision = git('rev-parse', '--short', 'HEAD')
+    return git('status', '--porcelain') ? `${revision}-dirty` : revision
+  } catch {
+    return 'unknown'
+  }
+}
+
+const sentryRelease = isProductionRelease
+  ? `pokerchase-hud@${manifest.version}`
+  : `pokerchase-hud@${manifest.version}+dev.${resolveBuildRevision()}`
+
+if (isProductionRelease && !sentryUploadEnabled) {
   console.warn(
-    '[Sentry] Telemetry is enabled, but SENTRY_AUTH_TOKEN is missing; ' +
-    'building without source-map upload.'
+    '[Sentry] Building a production release without SENTRY_AUTH_TOKEN; ' +
+    'no source maps will be uploaded.'
   )
+}
+if (sentryEnabled) {
+  console.log(`[Sentry] ${sentryEnvironment} build, release ${sentryRelease}`)
 }
 const e2eManifestPlugin: Plugin | undefined = e2eManifestOverride ? {
   name: 'e2e-manifest-override',
@@ -72,6 +119,8 @@ const options: BuildOptions = {
     'process.env.SENTRY_ENABLED': JSON.stringify(
       sentryEnabled ? 'true' : 'false'
     ),
+    'process.env.SENTRY_ENVIRONMENT': JSON.stringify(sentryEnvironment),
+    'process.env.SENTRY_RELEASE': JSON.stringify(sentryRelease),
     // ReadEntityStreamのキャッシュ無効化フラグ。ブラウザ（Service Worker）実行時には
     // 環境変数を設定する手段がそもそも無いため、ビルド時にfalseへ畳み込むことで
     // `process`オブジェクトへのランタイム依存を無くす（Node上のjestではテスト変換経由の

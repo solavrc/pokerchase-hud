@@ -25,7 +25,13 @@ export interface CaptureErrorOptions {
 
 const SENTRY_DSN =
   'https://7a6e9be8cb1bdaab2ec2b9ba0565ad93@o4507260715794432.ingest.us.sentry.io/4511816450637824'
-const SENTRY_RELEASE = `pokerchase-hud@${manifest.version}`
+// Injected by scripts/build-extension.ts. A working build reports under
+// environment=development and a `+dev.<sha>` release so it can never be
+// symbolicated against, or counted toward, the published release. The
+// fallbacks cover jest, where esbuild's define does not apply.
+const SENTRY_RELEASE =
+  process.env.SENTRY_RELEASE || `pokerchase-hud@${manifest.version}`
+const SENTRY_ENVIRONMENT = process.env.SENTRY_ENVIRONMENT || 'development'
 const SAFE_TAGS = new Set([
   'api_type_id',
   'error_type',
@@ -286,7 +292,7 @@ const startSentry = async (
   Sentry.init({
     dsn: SENTRY_DSN,
     release: SENTRY_RELEASE,
-    environment: 'production',
+    environment: SENTRY_ENVIRONMENT,
     skipBrowserExtensionCheck: true,
     defaultIntegrations: false,
     integrations: [

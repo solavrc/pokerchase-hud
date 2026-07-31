@@ -125,12 +125,44 @@ the traversal cost. Do not attach the exact raw event, player names,
 account IDs, chat text, Firebase document paths, auth objects, or tokens
 directly to Sentry.
 
-## Builds and source maps
+## Build identity
 
-Normal local/CI/E2E builds keep telemetry disabled. The release workflow sets
-`SENTRY_ENABLED=true`, but the runtime still requires the user's per-profile
-opt-in and optional host grant. Its `SENTRY_AUTH_TOKEN` repository secret
-enables the esbuild plugin to:
+Telemetry is compiled into every build except E2E. Diagnostics are opt-in, so
+the maintainer's own play sessions are a primary source of signal — especially
+schema-validation failures, which is how a PokerChase payload change becomes
+visible at all (see "Incident Diagnosis Practices" in AGENTS.md). Those events
+are `captureMessage` plus structured context and need no source maps, so a
+build without an upload token is still worth reporting from. Excluding working
+builds would silence the configuration most likely to opt in and act on the
+result.
+
+What differs between a release and a working build is only its **identity**, so
+a working build can never be symbolicated against, or counted toward, the
+published release:
+
+| Build | `SENTRY_ENVIRONMENT` | Environment | Release |
+|---|---|---|---|
+| Release workflow | `production` | `production` | `pokerchase-hud@<manifest version>` |
+| Working build | unset | `development` | `pokerchase-hud@<manifest version>+dev.<short sha>` |
+| E2E | n/a | — | telemetry compiled out |
+
+`scripts/build-extension.ts` resolves the short commit and appends `-dirty`
+when the tree has uncommitted changes — the marker is the point: it says the
+commit alone does not identify what is running. Outside a git checkout the
+revision resolves to `unknown`. The runtime falls back to `development` and the
+plain versioned release when nothing was injected (jest, where esbuild's define
+does not apply); it never falls back to `production`, because an un-injected
+build is by definition not the release whose source maps are on file.
+
+Set `SENTRY_DISABLED=true` to compile telemetry out of a build entirely. Note
+that this is not required for privacy: the runtime per-profile opt-in and
+optional host grant gate every build, so a contributor who never enables
+**診断情報を送信** reports nothing regardless.
+
+## Source maps
+
+The release workflow's `SENTRY_AUTH_TOKEN` repository secret enables the
+esbuild plugin to:
 
 1. build release `pokerchase-hud@<manifest version>`;
 2. upload minified JavaScript and source maps;
@@ -140,14 +172,10 @@ enables the esbuild plugin to:
 The authentication token is a build secret and must never be committed. The
 public DSN is intentionally bundled into the extension.
 
-To test a telemetry-enabled local build without uploading source maps:
-
-```sh
-SENTRY_ENABLED=true npm run build
-```
-
-To exercise the complete upload path, set a Sentry organization token with
-project release permissions in `SENTRY_AUTH_TOKEN`.
+Setting `SENTRY_AUTH_TOKEN` locally uploads source maps for the `+dev.<sha>`
+release too, so a working build's stack traces resolve as well. Without it,
+schema-validation diagnostics still arrive intact — only stack traces stay
+minified.
 
 ## Operational limits
 

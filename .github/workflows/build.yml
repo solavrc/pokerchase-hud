@@ -65,7 +65,7 @@ jobs:
 
       - name: Build extension
         env:
-          SENTRY_ENABLED: 'true'
+          SENTRY_ENVIRONMENT: production
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: npm run build
 
