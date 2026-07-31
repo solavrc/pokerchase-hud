@@ -474,14 +474,29 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       // する余白（ネームプレートの上など）に収まらない状態が残ってしまう。
       // ハンドログ用のキューに載せるのは、同時に走りうる
       // set/getDeviceHandLogLayoutと順序を保つため。
+      // 倍率だけは remove ではなく既定値を明示的に書く。localのuiScale欠落は
+      // 「端末ローカルへ未移行」を意味していて（getDeviceUILayoutの
+      // needsScaleMigration）、消すと次の読み込みがsyncに残る互換用の旧倍率
+      // から移行し直し、倍率だけリセット前へ復活してしまう。sync側の旧倍率は
+      // 版が混在する端末のために残す必要があり、消して解決はできない。
+      // 世代を上げるのは、この時点で読み込み中の移行（古い世代を掴んでいる）に
+      // 書き戻させないため。
+      deviceScaleWriteGeneration += 1
       enqueueHandLogLayoutWrite(
         callback => chrome.storage.local.remove(
-          [
-            HAND_LOG_LAYOUT_STORAGE_KEY,
-            ...HUD_POSITION_STORAGE_KEYS,
-            UI_SCALE_STORAGE_KEY,
-          ],
-          callback
+          [HAND_LOG_LAYOUT_STORAGE_KEY, ...HUD_POSITION_STORAGE_KEYS],
+          () => {
+            // removeが失敗したらlastErrorが立っている間に抜ける。
+            // 続けてsetを呼ぶとlastErrorが上書きされ、失敗が成功に見える。
+            if (chrome.runtime.lastError) {
+              callback()
+              return
+            }
+            chrome.storage.local.set(
+              { [UI_SCALE_STORAGE_KEY]: DEFAULT_UI_CONFIG.scale },
+              callback
+            )
+          }
         ),
         sendResponse,
         'Failed to reset UI layout',

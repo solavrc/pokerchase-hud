@@ -311,8 +311,10 @@ describe('message-router device-local UI layout', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(resetResponse).toHaveBeenCalledWith({ success: true })
+    // removeではなく既定値を明示的に書く。キー欠落は「端末ローカルへ未移行」を
+    // 意味するので、消すと次の読み込みでsyncの旧倍率から復活してしまう。
     expect(await chrome.storage.local.get(UI_SCALE_STORAGE_KEY)).toEqual({
-      [UI_SCALE_STORAGE_KEY]: undefined,
+      [UI_SCALE_STORAGE_KEY]: DEFAULT_UI_CONFIG.scale,
     })
     // ストレージを消すだけでは開いているタブのHUDは縮まない。倍率の配信経路は
     // 既存のupdateDeviceUIScaleを使う（resetUILayoutへ相乗りさせない）。
@@ -322,6 +324,37 @@ describe('message-router device-local UI layout', () => {
     expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
       action: 'updateDeviceUIScale',
       scale: DEFAULT_UI_CONFIG.scale,
+    })
+  })
+
+  it.each<[string, Record<string, unknown>]>([
+    ['uiConfig.scale', { uiConfig: { ...DEFAULT_UI_CONFIG, scale: 1.6 } }],
+    ['legacyUIScale', { [LEGACY_SYNC_UI_SCALE_KEY]: 1.8 }],
+  ])('リセットした倍率がsyncの旧倍率(%s)で復活しない', async (_label, syncSeed) => {
+    // 5.4.0(#290)より前から使っている端末はsyncに互換用の旧倍率を持ち続ける
+    // （persistSyncedUIConfigが毎回書き戻すので消えない）。localのuiScaleを
+    // removeすると、次のgetDeviceUILayoutが「未移行」と判定してその旧倍率を
+    // 書き戻し、倍率だけリセット前へ戻ってしまう。
+    await chrome.storage.sync.set(syncSeed)
+    await chrome.storage.local.set({ [UI_SCALE_STORAGE_KEY]: 1.6 })
+    const resetResponse = jest.fn()
+    const layoutResponse = jest.fn()
+
+    listener({ action: 'resetDeviceUILayout' }, {}, resetResponse)
+    await getPendingStorageWriteTail()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(resetResponse).toHaveBeenCalledWith({ success: true })
+
+    // リセット後にポップアップを開き直す/ゲームタブを再読み込みする経路
+    listener({ action: 'getDeviceUILayout' }, {}, layoutResponse)
+    await getPendingStorageWriteTail()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(layoutResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ success: true, scale: DEFAULT_UI_CONFIG.scale })
+    )
+    expect(await chrome.storage.local.get(UI_SCALE_STORAGE_KEY)).toEqual({
+      [UI_SCALE_STORAGE_KEY]: DEFAULT_UI_CONFIG.scale,
     })
   })
 
@@ -467,13 +500,19 @@ describe('message-router device-local UI layout', () => {
         finishDelayedReset = () => defaultRemove(key, callback)
       }
     )
-    ;(chrome.storage.local.set as jest.Mock).mockImplementationOnce(
-      (_items, callback) => {
+    // resetも倍率の既定値をsetで書くので、失敗させたいのはlayout保存側だけ。
+    // itemsの中身で見分ける（呼び出し順に依存させない）。
+    const storageSet = chrome.storage.local.set as jest.Mock
+    const defaultSet = storageSet.getMockImplementation()!
+    storageSet.mockImplementation((items, callback) => {
+      if (HAND_LOG_LAYOUT_STORAGE_KEY in items) {
         ;(chrome.runtime as any).lastError = { message: 'quota' }
         callback()
         delete (chrome.runtime as any).lastError
+        return
       }
-    )
+      defaultSet(items, callback)
+    })
     const resetResponse = jest.fn()
     const saveResponse = jest.fn()
 
