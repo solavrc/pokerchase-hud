@@ -1,5 +1,33 @@
 # Changelog
 
+## [5.4.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v5.3.1...pokerchase-hud-v5.4.0) (2026-07-31)
+
+
+### Features
+
+* **hud:** ヘッダーの識別バッジを整理（分類アイコンを名前の左／DEVバッジを右） ([#310](https://github.com/solavrc/pokerchase-hud/issues/310)) ([fe18987](https://github.com/solavrc/pokerchase-hud/commit/fe18987df5f5490bb012baa285a93ddebaa557b6))
+* HUD表示切り替えショートカットを設定可能にする ([#286](https://github.com/solavrc/pokerchase-hud/issues/286)) ([9673d2c](https://github.com/solavrc/pokerchase-hud/commit/9673d2c45cd7ef63ec194a2e8267ace179ff2ccf))
+* **observability:** 作業ビルドからも診断情報を送れるようにする ([#311](https://github.com/solavrc/pokerchase-hud/issues/311)) ([a176684](https://github.com/solavrc/pokerchase-hud/commit/a176684619f1f9d9802055f32b5e31494e9d02a3))
+* privacy-safe Sentry error monitoring ([#289](https://github.com/solavrc/pokerchase-hud/issues/289)) ([0157859](https://github.com/solavrc/pokerchase-hud/commit/0157859c32b86b4fc12b76a55c619bb800423de3))
+* **ui:** モックの卓を実機スクリーンショットの実測座標で再現 ([#312](https://github.com/solavrc/pokerchase-hud/issues/312)) ([5d3558e](https://github.com/solavrc/pokerchase-hud/commit/5d3558e31bc114e620c2d5b47278abe23ddea021))
+* ハンドログを右下グリップで移動・リサイズ ([#284](https://github.com/solavrc/pokerchase-hud/issues/284)) ([ae862bc](https://github.com/solavrc/pokerchase-hud/commit/ae862bcae11e9f20764f3370bc39948f13399957))
+* 更新情報をGitHub Releasesへ集約 ([#303](https://github.com/solavrc/pokerchase-hud/issues/303)) ([622533e](https://github.com/solavrc/pokerchase-hud/commit/622533ef2b3e1d79c37f7035665e33a1195b7610))
+* 更新情報を折り畳み可能にしリリース日を表示 ([#282](https://github.com/solavrc/pokerchase-hud/issues/282)) ([d9d4864](https://github.com/solavrc/pokerchase-hud/commit/d9d48648cf505d88bbad34ea5e2cf0b871f468e2))
+
+
+### Bug Fixes
+
+* **e2e:** restore compositor keepalive before HUD wait ([#291](https://github.com/solavrc/pokerchase-hud/issues/291)) ([4794f61](https://github.com/solavrc/pokerchase-hud/commit/4794f619f475766df5601ddb5d45151039730c5f))
+* HUD配置と倍率を端末内に保存 ([#290](https://github.com/solavrc/pokerchase-hud/issues/290)) ([806aea1](https://github.com/solavrc/pokerchase-hud/commit/806aea16f168084911ccdc2acfc5954e2bbc0332))
+* **import:** keep NDJSON imports alive after popup closes ([#293](https://github.com/solavrc/pokerchase-hud/issues/293)) ([43043b3](https://github.com/solavrc/pokerchase-hud/commit/43043b322d9ab01f01011784ab85c4e39660317c))
+* **observability:** 診断情報トグルの誤ロールバックを修正 ([#308](https://github.com/solavrc/pokerchase-hud/issues/308)) ([71693b5](https://github.com/solavrc/pokerchase-hud/commit/71693b53ebd035f346f48d29c10c7416d6255b6c))
+* recognize observed event schema variants ([#287](https://github.com/solavrc/pokerchase-hud/issues/287)) ([491783a](https://github.com/solavrc/pokerchase-hud/commit/491783a54a623a245f382626d605e46efcda2b9b))
+* **ui:** ハンドログのヘッダーを右上グリップへ置換し画面内へ収める ([#305](https://github.com/solavrc/pokerchase-hud/issues/305)) ([7b4270f](https://github.com/solavrc/pokerchase-hud/commit/7b4270fa07a769a95981a8513d9477ad571e0789))
+* **ui:** ハンドログの行高を実測した折り返しから算出する ([#306](https://github.com/solavrc/pokerchase-hud/issues/306)) ([0de29dc](https://github.com/solavrc/pokerchase-hud/commit/0de29dca667ff7b65612b3749236b0e15345a204))
+* **ui:** ハンドログの行高を実測した折り返し幅から算出する ([#309](https://github.com/solavrc/pokerchase-hud/issues/309)) ([43efa79](https://github.com/solavrc/pokerchase-hud/commit/43efa798125c488b732ed0fcb093699ad87227a4))
+* **ui:** 統計の並べ替えでdefaultStatDisplayConfigsを汚染しない ([#313](https://github.com/solavrc/pokerchase-hud/issues/313)) ([5615e54](https://github.com/solavrc/pokerchase-hud/commit/5615e54faf0ad00a7bbb3355a9a0b152a4a0581d))
+* **ui:** 統計並べ替えの↑↓が1回で動かないデッドクリックを修正 ([#314](https://github.com/solavrc/pokerchase-hud/issues/314)) ([30f91f7](https://github.com/solavrc/pokerchase-hud/commit/30f91f7b0c4e66daff7be950967dfc319e6b2942))
+
 ## [5.3.1](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v5.3.0...pokerchase-hud-v5.3.1) (2026-07-23)
 
 
