@@ -387,7 +387,12 @@ Note: The system uses TypeScript enums for type safety, so new flags must be add
 2. Keep each branch and pull request focused on one change.
 3. Use Conventional Commit-style commit messages and PR titles (for example,
    `feat: add four-bet statistic` or `fix: preserve session state`). Release Please
-   uses these titles when preparing releases and the changelog.
+   uses these titles when preparing releases and the changelog. Release Please
+   parses the **whole** message, body included, so never let a parenthesis pair
+   span a line break — the parser stops at the newline waiting for `)`, fails the
+   whole commit with `commit could not be parsed`, and silently drops it from the
+   changelog and the Release body (this happened to #315 in 5.4.0). Keep each
+   `(…)` on one line, or rewrite without parentheses.
 4. Add or update tests with the implementation. Statistics tests belong beside the
    implementation in `src/stats/core/`.
 5. Before opening a ready-for-review PR, run `npm run typecheck`, `npm test`, and

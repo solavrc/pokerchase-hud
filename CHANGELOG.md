@@ -25,6 +25,7 @@
 * **ui:** ハンドログのヘッダーを右上グリップへ置換し画面内へ収める ([#305](https://github.com/solavrc/pokerchase-hud/issues/305)) ([7b4270f](https://github.com/solavrc/pokerchase-hud/commit/7b4270fa07a769a95981a8513d9477ad571e0789))
 * **ui:** ハンドログの行高を実測した折り返しから算出する ([#306](https://github.com/solavrc/pokerchase-hud/issues/306)) ([0de29dc](https://github.com/solavrc/pokerchase-hud/commit/0de29dca667ff7b65612b3749236b0e15345a204))
 * **ui:** ハンドログの行高を実測した折り返し幅から算出する ([#309](https://github.com/solavrc/pokerchase-hud/issues/309)) ([43efa79](https://github.com/solavrc/pokerchase-hud/commit/43efa798125c488b732ed0fcb093699ad87227a4))
+* **ui:** 更新情報リンクをGitHub Releases一覧に固定する ([#315](https://github.com/solavrc/pokerchase-hud/issues/315)) ([f77bba9](https://github.com/solavrc/pokerchase-hud/commit/f77bba9177c593cefa4ecb29f4d4d3b6193e9fbc))
 * **ui:** 統計の並べ替えでdefaultStatDisplayConfigsを汚染しない ([#313](https://github.com/solavrc/pokerchase-hud/issues/313)) ([5615e54](https://github.com/solavrc/pokerchase-hud/commit/5615e54faf0ad00a7bbb3355a9a0b152a4a0581d))
 * **ui:** 統計並べ替えの↑↓が1回で動かないデッドクリックを修正 ([#314](https://github.com/solavrc/pokerchase-hud/issues/314)) ([30f91f7](https://github.com/solavrc/pokerchase-hud/commit/30f91f7b0c4e66daff7be950967dfc319e6b2942))
 
