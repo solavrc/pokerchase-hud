@@ -32,8 +32,43 @@ interface HandLogProps {
 const HAND_LOG_MOVE_GRIP_SIZE = 16
 const HAND_LOG_BORDER_WIDTH = 1
 const HAND_LOG_DRAG_THRESHOLD = 4
-const HAND_LOG_DEFAULT_RIGHT = 10
-const HAND_LOG_DEFAULT_BOTTOM = 135
+/**
+ * 既定位置は画面左上側。右下基準（viewportWidth - 余白 - 幅*scale）を
+ * やめた理由は2つある:
+ * 1. 右下基準は「viewportを正しく読めている」ことがそのまま位置の正しさに
+ *    なる。environmentが実ウィンドウより大きいと左端が実ウィンドウの外へ
+ *    落ちる ―― 実機で「ウィンドウを画面半分にした状態でリセットしたら
+ *    ログが消え、最大化したら現れた」として観測された。
+ * 2. 右下隅は座標系の最も外側の点でもある。ユーザーが自分でドラッグして
+ *    置く内側の位置と違い、参照フレームが少しでもずれると真っ先に
+ *    画面外へ出る。加えて席のHUDパネル（Hud.tsxのSEAT_POSITIONS、
+ *    下段70%）とアクションボタン帯に挟まれ、400x100が必ず何かに重なる。
+ */
+const HAND_LOG_DEFAULT_LEFT = 10
+/**
+ * 既定位置は画面上部のクライアントUIと左上のネームプレートの間へ差し込む
+ * （sola指定）。プレートにはチップスタックが出るので、一部でも覆うと残り
+ * スタックが読めなくなる ―― これが最優先の制約。メニューへの重なりは許容。
+ *
+ * 幅400pxのパネルを左端に置くと、左列のプレート（上段プレイヤーB / 下段
+ * プレイヤーA）とは横方向で必ず重なるので、縦で外すしかない。上段プレートの
+ * 上端に下端を合わせて上へ積むことで、パネルが高いほど（scaleが大きいほど）
+ * 上のクライアントUI側へ食い込む ―― 譲る順序を「プレート > SB/BB・アンティ >
+ * メニュー」に固定している。
+ *
+ * 実測値は src/mockup/table-layout.ts の SEATS[].plate（実機スクリーンショット
+ * 由来、viewport比）: 上段プレイヤーB = 上端23.6%。プレートもviewport比で動くので、
+ * こちらも比率で追う。
+ */
+const HAND_LOG_SEAT_PLATE_TOP_ROW_TOP_RATIO = 0.236
+/** プレート上端との間に残す余白。実機のプレートは装飾枠込みで個体差がある。 */
+const HAND_LOG_SEAT_PLATE_MARGIN = 6
+/**
+ * 比率が正しいのは「viewportを正しく読めている」前提の上だけなので、上限で
+ * 頭打ちにする。右下基準だった頃はこの天井が無く、大きすぎる読み取りが
+ * そのまま画面外の座標になっていた。
+ */
+const HAND_LOG_DEFAULT_TOP_MAX = 400
 const HAND_LOG_FONT_FAMILY = 'Consolas, Monaco, "Courier New", monospace'
 const HAND_LOG_SEPARATOR_HEIGHT = 10
 const HAND_LOG_ENTRY_PADDING_X = 8
@@ -87,7 +122,7 @@ type HandLogMachineAction =
   | { type: 'loadStarted', load: HandLogLoad }
   | { type: 'loadResolved', load: HandLogLoad, layout: HandLogLayout | undefined }
   | { type: 'externalLayout', layout: HandLogLayout }
-  | { type: 'reset' }
+  | { type: 'reset', environment: HandLogEnvironment }
   | { type: 'interactionStarted', mode: HandLogInteractionMode, x: number, y: number }
   | { type: 'pointerMoved', x: number, y: number }
   | { type: 'interactionFinished', deferPersistenceForLoad?: boolean }
@@ -243,18 +278,31 @@ const resizeHandLogLayout = (
   }
 }
 
+/**
+ * 上段プレートの上端へ下端を合わせ、そこから上へ積む。
+ *
+ * 上段プレートの「下」（Bのプレートと Aのプレートの間）へ入れる案は採らない:
+ * その帯にはプレイヤーBのHUDパネルそのものが載っている
+ * （`Hud.tsx` の SEAT_POSITIONS[2] = top 35%）ので、ログでHUDを潰してしまう。
+ */
+const createDefaultHandLogTop = (environment: HandLogEnvironment): number => {
+  const plateTop =
+    environment.viewportHeight * HAND_LOG_SEAT_PLATE_TOP_ROW_TOP_RATIO
+  const renderedHeight = DEFAULT_HAND_LOG_CONFIG.height * environment.scale
+
+  return clamp(
+    plateTop - renderedHeight - HAND_LOG_SEAT_PLATE_MARGIN,
+    0,
+    HAND_LOG_DEFAULT_TOP_MAX
+  )
+}
+
 const createDefaultHandLogLayout = (
   environment: HandLogEnvironment
 ): HandLogLayout =>
   normalizeHandLogLayout({
-    left:
-      environment.viewportWidth -
-      HAND_LOG_DEFAULT_RIGHT -
-      DEFAULT_HAND_LOG_CONFIG.width * environment.scale,
-    top:
-      environment.viewportHeight -
-      HAND_LOG_DEFAULT_BOTTOM -
-      DEFAULT_HAND_LOG_CONFIG.height * environment.scale,
+    left: HAND_LOG_DEFAULT_LEFT,
+    top: Math.round(createDefaultHandLogTop(environment)),
     width: DEFAULT_HAND_LOG_CONFIG.width,
     height: DEFAULT_HAND_LOG_CONFIG.height,
   }, environment)
@@ -384,7 +432,13 @@ const transitionHandLogLayout = (
     }
 
     case 'reset': {
-      const environment = state.pendingEnvironment ?? state.environment
+      // 保持している environment ではなく、呼び出し側が読み直した実寸を採用する。
+      // resizeイベントの取りこぼしなどで environment が実ウィンドウとずれていると、
+      // 既定位置の算出も画面内クランプも同じ古い値を使うためズレを検出できず、
+      // パネルが画面外に置かれても誰も気付けない（実機で発生した）。
+      // リセットはユーザーが「今の画面で見える状態へ戻す」操作なので、
+      // ここで環境を確定させ直すのが正しい。
+      const environment = action.environment
       return {
         state: {
           ...state,
@@ -1059,7 +1113,10 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       })
     }
     const handleReset = () => {
-      commitLayoutAction({ type: 'reset' })
+      commitLayoutAction({
+        type: 'reset',
+        environment: readHandLogEnvironment(latestScaleRef.current),
+      })
     }
     const handleUpdate = (event: Event) => {
       const nextLayout = (event as CustomEvent<unknown>).detail
