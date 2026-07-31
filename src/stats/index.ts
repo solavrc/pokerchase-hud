@@ -116,8 +116,12 @@ export function mergeStatDisplayConfigs(
         order: existingConfig.order
       }
     }
-    // 新規統計 - デフォルト設定をそのまま使用
-    return defaultConfig
+    // 新規統計 - デフォルト設定をそのまま使用（ただし複製する）。
+    // `defaultConfig`を参照ごと返すと、戻り値の配列に
+    // `defaultStatDisplayConfigs`（モジュールレベル定数）と同一の
+    // オブジェクトが混ざり、呼び出し側がマージ結果を書き換えた際に
+    // 定数まで汚染される。
+    return { ...defaultConfig }
   })
 
   // orderでソートして表示順を安定させる
