@@ -1,6 +1,7 @@
 import { memo } from 'react'
 import type { CSSProperties } from 'react'
 import type { StatResult } from '../../types/stats'
+import { DeveloperBadge } from './DeveloperBadge'
 import { PlayerTypeIcons } from './PlayerTypeIcons'
 import { PositionalPanelTrigger } from './PositionalPanelTrigger'
 import { RecentHandsPanelTrigger } from './RecentHandsPanelTrigger'
@@ -81,10 +82,19 @@ export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPosition
   
   return (
     <div style={styles.header}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '4px' }}>
-        <span style={{ ...styles.playerName, flex: '0 1 auto', minWidth: 0 }} title={playerName || 'Unknown'}>
-          {playerName || `Player ${playerId}`}
-        </span>
+      {/* プレイヤータイプ・アイコンはヘッダー左端（プレイヤー名の左）。名前が長い
+          場合に縮むのは名前側（flex: '0 1 auto' + minWidth: 0）で、アイコンは
+          PlayerTypeIcons側のflexShrink: 0で潰れない。 */}
+      <PlayerTypeIcons statResults={statResults} />
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '4px', minWidth: 0 }}>
+        {/* 名前とDEVバッジは1つの左グループ。space-betweenの直接の子にすると
+            バッジが名前から離れて中央に飛ぶため、ここで束ねる。 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flex: '0 1 auto', minWidth: 0 }}>
+          <span style={{ ...styles.playerName, flex: '0 1 auto', minWidth: 0 }} title={playerName || 'Unknown'}>
+            {playerName || `Player ${playerId}`}
+          </span>
+          <DeveloperBadge playerId={playerId} />
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '9px', flex: '0 0 auto' }}>
           {isDimmed && (
             <span style={styles.dimmedBadge} title="このプレイヤーは現在の卓にいません（bust/離席）。表示は最後の統計のままです">
@@ -131,7 +141,6 @@ export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPosition
           )}
         </div>
       </div>
-      <PlayerTypeIcons statResults={statResults} />
     </div>
   )
 })

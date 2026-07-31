@@ -17,14 +17,18 @@ const styles = {
     position: 'relative',
     zIndex: 1,
     fontSize: '10px',
-    marginLeft: '4px',
+    // ヘッダー左端（プレイヤー名の左）に置くので余白は名前側＝右へ。
+    // 名前が長い時に縮められる対象は名前であってアイコンではない。
+    marginRight: '4px',
     lineHeight: 1,
+    flexShrink: 0,
   } as CSSProperties,
 }
 
 /**
- * HM-style player-type classification icon shown in the HUD header (sola-
- * approved spec, replaces the old decorative 🐟/🦈 placeholder pair).
+ * HM-style player-type classification icon shown at the left edge of the HUD
+ * header, immediately before the player name (sola-approved spec, replaces
+ * the old decorative 🐟/🦈 placeholder pair).
  *
  * Renders a single icon with the classifier's real-numbers explanation as
  * the native `title` tooltip, or nothing at all when the sample is too
