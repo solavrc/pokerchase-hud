@@ -184,9 +184,10 @@ const normalizeHandLogLayout = (
  * ので、画面外へあふれた分を掴んで引き延ばす操作にはならず、画面に映らない
  * 巨大サイズも作らない。
  *
- * viewportが最小サイズすら収容できない軸だけは保存値へ触れない。その状態で
- * clampすると上下限がともに最小値になり、表示は縮んだまま1pxも変わらないの
- * にユーザーの指定サイズだけが最小値へ落ちる（見えない縮小）ため。
+ * ただし表示が1pxも変わらない操作では保存値に触れない。表示が上限へ貼り付い
+ * ている軸（保存サイズがviewportより大きい／viewportが最小値すら収容できな
+ * い）では、掴んでいない軸や外向きのドラッグまで保存値を表示上限へ落として
+ * しまい、画面を広げても戻らない「見えない縮小」になるため。
  */
 const resizeHandLogAxis = (
   startSize: number,
@@ -196,9 +197,12 @@ const resizeHandLogAxis = (
   scale: number,
   viewportSize: number
 ): number => {
-  const limit = getHandLogViewportLimit(viewportSize, scale)
-  if (limit < minimum) return startSize
-  return clamp(startDisplaySize + delta / scale, minimum, limit)
+  const resized = clamp(
+    startDisplaySize + delta / scale,
+    minimum,
+    getHandLogViewportLimit(viewportSize, scale)
+  )
+  return resized === startDisplaySize ? startSize : resized
 }
 
 const resizeHandLogLayout = (

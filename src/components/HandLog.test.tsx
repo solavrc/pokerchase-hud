@@ -519,6 +519,53 @@ describe('HandLog', () => {
     expect(logContainer.style.height).toBe('60px')
   })
 
+  it('表示上限へ貼り付いた軸はリサイズしても保存サイズを縮めない', () => {
+    mockChromeRuntimeSendMessage.mockImplementation((message, callback) => {
+      if (message.action === 'getDeviceHandLogLayout') {
+        callback({
+          success: true,
+          layout: { left: 0, top: 100, width: 1400, height: 200 },
+        })
+      } else {
+        callback?.({ success: true })
+      }
+    })
+    const { container } = render(<HandLog entries={mockEntries} />)
+    const logContainer = container.firstChild as HTMLElement
+    const resizeCorner = screen.getByTestId('hand-log-resize-corner')
+
+    expect(logContainer.style.width).toBe('1024px')
+
+    // 縦だけドラッグ: 横は掴んでいないので保存幅1400を維持する。
+    fireEvent.mouseDown(resizeCorner, {
+      button: 0,
+      clientX: 1024,
+      clientY: 300,
+    })
+    moveMouseWithPrimaryButton(1024, 350)
+    fireEvent.mouseUp(document)
+
+    expect(logContainer.style.height).toBe('250px')
+    expect(savedLayoutCalls()[0]![0].layout).toEqual({
+      left: 0,
+      top: 100,
+      width: 1400,
+      height: 250,
+    })
+
+    // 外向きドラッグ: 既に上限なので表示は変わらない。保存幅も維持する。
+    fireEvent.mouseDown(resizeCorner, {
+      button: 0,
+      clientX: 1024,
+      clientY: 350,
+    })
+    moveMouseWithPrimaryButton(1300, 350)
+    fireEvent.mouseUp(document)
+
+    expect(logContainer.style.width).toBe('1024px')
+    expect(savedLayoutCalls()[1]![0].layout.width).toBe(1400)
+  })
+
   it('最小サイズを収容できないviewportではリサイズしても保存サイズを縮めない', () => {
     // 表示はviewport上限(160x60)に貼り付いていて1pxも動かせない。ここで保存値
     // だけ最小値へ落ちると、見えない縮小になってしまう。
