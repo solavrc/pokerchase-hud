@@ -45,7 +45,7 @@ let configuredRuntime: SentryRuntime | undefined
 let consentListenerRegistered = false
 let contentRevocationListenerRegistered = false
 let backgroundConsentListenerRegistered = false
-let initializationPromise: Promise<void> | undefined
+let initializationPromise: Promise<SentryStartResult> | undefined
 let shutdownPromise: Promise<void> | undefined
 let initializationGeneration = 0
 let directRevocationPending = false
@@ -257,7 +257,23 @@ const discardBootstrapErrors = (): void => {
   bootstrapErrorBuffer = undefined
 }
 
-type SentryStartResult = 'started' | 'disabled' | 'waiting_for_consent_mirror'
+type SentryStartResult =
+  | 'started'
+  | 'build_disabled'
+  | 'disabled'
+  | 'waiting_for_consent_mirror'
+
+/**
+ * Outcomes that honor an opt-in even though no client is running yet.
+ *
+ * 'build_disabled' has no transport to start in any runtime, and
+ * 'waiting_for_consent_mirror' self-heals through the storage.onChanged
+ * listener this runtime already holds. Reporting either as a failed transition
+ * would make requestSentryTelemetry() roll the opt-in back and revoke the
+ * optional host permission the user just granted.
+ */
+const isTelemetryStateHonored = (result: SentryStartResult): boolean =>
+  result !== 'disabled'
 
 const startSentry = async (
   runtime: SentryRuntime,
@@ -266,7 +282,8 @@ const startSentry = async (
   if (shutdownPromise) {
     await shutdownPromise
   }
-  if (!telemetryEnabled() || initialized) return 'disabled'
+  if (!telemetryEnabled()) return 'build_disabled'
+  if (initialized) return 'started'
   const consentState = await readSentryTelemetryConsentState(runtime)
   if (consentState !== true) {
     return runtime === 'content_script' && consentState === undefined
@@ -348,7 +365,9 @@ const startSentry = async (
  * optional Sentry host permission. Adding that host as a required permission
  * would disable existing Web Store installations during the update.
  */
-export const initSentry = (runtime: SentryRuntime): Promise<void> => {
+export const initSentry = (
+  runtime: SentryRuntime
+): Promise<SentryStartResult> => {
   configuredRuntime = runtime
   registerSentryPermissionRevocationSync()
   if (
@@ -402,19 +421,22 @@ export const initSentry = (runtime: SentryRuntime): Promise<void> => {
         return true
       } else if (type === SENTRY_TELEMETRY_ENABLED_MESSAGE) {
         directRevocationPending = false
-        const pendingTransition =
+        const pendingTransition: Promise<unknown> =
           initializationPromise ?? shutdownPromise ?? Promise.resolve()
         void pendingTransition
           .catch(() => undefined)
           .then(async () => {
+            let result: SentryStartResult = initialized
+              ? 'started'
+              : 'disabled'
             if (
               configuredRuntime &&
               !initialized &&
               !directRevocationPending
             ) {
-              await initSentry(configuredRuntime)
+              result = await initSentry(configuredRuntime)
             }
-            sendResponse?.(initialized
+            sendResponse?.(initialized || isTelemetryStateHonored(result)
               ? { sentryTelemetryStateApplied: type }
               : { sentryTelemetryStateFailed: type })
           })
@@ -474,10 +496,11 @@ export const initSentry = (runtime: SentryRuntime): Promise<void> => {
   const generation = initializationGeneration
   initializationPromise = startSentry(runtime, generation)
     .then(result => {
-      if (result === 'waiting_for_consent_mirror') return
+      if (result === 'waiting_for_consent_mirror') return result
       const completedBuffer = bootstrapErrorBuffer
       bootstrapErrorBuffer = undefined
       flushBootstrapErrors(completedBuffer)
+      return result
     })
     .catch(error => {
       discardBootstrapErrors()

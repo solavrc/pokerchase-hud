@@ -19,6 +19,17 @@ scripts.
 It is deliberately **not** initialized in `web_accessible_resource.ts`, which
 runs in the game page's main world and handles raw WebSocket payloads.
 
+Enabling waits for every live game tab to acknowledge the transition and rolls
+the opt-in back — including the optional host grant just given — when a content
+script refuses. Only a genuine refusal may count. A build with telemetry
+compiled out (see "Builds and source maps" below) has no transport to start in
+any runtime, and a content script whose session consent mirror is not readable
+yet self-heals through `storage.onChanged`; both acknowledge the opt-in rather
+than failing it. Reporting either as a failure made **診断情報を送信**
+impossible to turn on while a game tab was open, surfacing only as
+「診断情報の設定を更新できませんでした。」. Revocation stays strictly
+fail-closed.
+
 ## What is reported
 
 - Unhandled exceptions and unhandled promise rejections in the three extension
