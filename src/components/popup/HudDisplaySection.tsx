@@ -3,6 +3,7 @@ import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
 import type { UIConfig } from '../../types/hand-log'
 import { saveSyncedUIConfig } from '../../utils/ui-config-storage'
 import { broadcastUIConfig } from './broadcast-ui-config'
+import { popupToggleGroupSx } from './toggleGroupStyles'
 
 interface HudDisplaySectionProps {
   uiConfig: UIConfig
@@ -18,7 +19,10 @@ interface HudDisplaySectionProps {
  * 「表示モード:」のラベルと3行目の独立ブロックは廃止し、
  * 非表示/表示 と同じ ToggleButtonGroup として UIScaleSection の
  * 右カラムへ積む（sola指定）。どちらも「HUDをどう出すか」の二択であり、
- * 見た目が違うと別種の設定に見える。
+ * 見た目が違うと別種の設定に見える。幅も
+ * `popupToggleGroupSx` で揃える。文言を コンパクト/フル から 簡易/詳細 へ
+ * 短くしたのは、非表示/表示 と同じ2文字ずつにして固定幅へ無理なく収めるため
+ * （`hudDisplayMode` の値 'compact' | 'full' は変えていない）。
  *
  * 統計カラー表示のON/OFFもここにあったが廃止し、常時有効にした。
  * しきい値カラーはHUDの読み取りやすさそのものであって好みの設定ではない。
@@ -49,13 +53,10 @@ export const HudDisplaySection = ({
         updateUIConfig({ ...uiConfig, hudDisplayMode: newValue as 'full' | 'compact' })
       }}
       size="small"
-      sx={{
-        '& .MuiToggleButton-root': {
-          padding: '4px 12px',
-          fontSize: '12px',
-          fontWeight: 'bold',
-          textTransform: 'none',
-          '&.Mui-selected': {
+      sx={[
+        popupToggleGroupSx,
+        {
+          '& .MuiToggleButton-root.Mui-selected': {
             backgroundColor: 'primary.main',
             color: (theme) => theme.palette.getContrastText(theme.palette.primary.main),
             '&:hover': {
@@ -63,13 +64,13 @@ export const HudDisplaySection = ({
             },
           },
         },
-      }}
+      ]}
     >
       <ToggleButton value="compact">
-        コンパクト
+        簡易
       </ToggleButton>
       <ToggleButton value="full">
-        フル
+        詳細
       </ToggleButton>
     </ToggleButtonGroup>
   )

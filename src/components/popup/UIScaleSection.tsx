@@ -16,27 +16,28 @@ import {
   saveSyncedUIConfigPatch,
 } from '../../utils/ui-config-storage'
 import { broadcastUIConfig } from './broadcast-ui-config'
+import { popupToggleGroupSx } from './toggleGroupStyles'
 
 interface UIScaleSectionProps {
   uiConfig: UIConfig
   setUIConfig: (config: UIConfig) => void
   scaleControlsDisabled?: boolean
   /**
-   * 右カラム3行目に積むHUD表示モード（コンパクト/フル）。
-   * 別コンポーネント（HudDisplaySection）のままにしつつ、2カラムの桁揃えは
-   * 1つのgridで完結させるためのスロット。各セクションが独自にレイアウトすると
-   * 右端が揃わない。
+   * 2行目の先頭へ差し込むHUD表示モード（簡易/詳細）。別コンポーネント
+   * （HudDisplaySection）のままにしつつ、行の組み立てはここ1箇所で完結させる
+   * ためのスロット。各セクションが独自に行を持つと、縦に伸びるうえ右端が揃わない。
    */
   children?: ReactNode
 }
 
 /**
- * ポップアップ最上部の設定ブロック。左カラムに操作（配置リセット / 表示切り替え
- * ショートカット）、右カラムに状態（倍率 / 表示・非表示 / 表示モード）を置く
- * 2カラム構成（sola指定のレイアウト）。
+ * ポップアップ最上部の設定ブロック。2行だけで構成する（sola指定）。
+ *   1行目: 位置とサイズをリセット ......... サイズ - 100% +
+ *   2行目: ....... 簡易/詳細  Shift+H  非表示/表示
  *
  * 指標選択より上はHUDの本質ではないので、見出しラベル（「表示モード:」等）を
- * 足さず1つのgridに畳んで縦の専有量を抑える。
+ * 足さず、収まる限り横に並べて縦の専有量を抑える。2行目の3つは右揃えで
+ * 1行目の右端に合わせる。
  */
 export const UIScaleSection = ({
   uiConfig,
@@ -172,166 +173,149 @@ export const UIScaleSection = ({
   }
 
   return (
-    <Box
-      sx={{
-        display: 'grid',
-        // 左は内容の実寸、右は内容ぴったり。右カラムを max-content にすることで
-        // 倍率・表示切替・表示モードの右端が揃う。
-        gridTemplateColumns: 'auto max-content',
-        columnGap: 1,
-        rowGap: 0.75,
-        alignItems: 'center',
-      }}
-    >
-      <Button
-        size="small"
-        variant="text"
-        title="HUDパネルとハンドログの位置・サイズ・倍率を既定へ戻す"
-        onClick={() => {
-          // Persistence and live-tab delivery both run in the background so
-          // closing the action popup cannot interrupt the reset.
-          resetUILayout(() => {
-            // 倍率はbackgroundがstorageから消し、ゲームタブへは
-            // updateDeviceUIScaleで配信される。ポップアップ自身は購読して
-            // いないので、成功応答を受けてここで既定へ戻す。
-            // 進行中のscale書き込みがあれば、その基準もここへ寄せる。
-            latestAppliedScaleRequestIdRef.current = ++nextScaleRequestIdRef.current
-            latestAppliedScaleRef.current = DEFAULT_UI_CONFIG.scale
-            pendingScaleRef.current = DEFAULT_UI_CONFIG.scale
-            setUIConfig({
-              ...latestUIConfigRef.current,
-              scale: DEFAULT_UI_CONFIG.scale,
+    <Box sx={{ display: 'flex', flexDirection: 'column', rowGap: 0.75 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Button
+          size="small"
+          variant="text"
+          title="HUDパネルとハンドログの位置・サイズ・倍率を既定へ戻す"
+          onClick={() => {
+            // Persistence and live-tab delivery both run in the background so
+            // closing the action popup cannot interrupt the reset.
+            resetUILayout(() => {
+              // 倍率はbackgroundがstorageから消し、ゲームタブへは
+              // updateDeviceUIScaleで配信される。ポップアップ自身は購読して
+              // いないので、成功応答を受けてここで既定へ戻す。
+              // 進行中のscale書き込みがあれば、その基準もここへ寄せる。
+              latestAppliedScaleRequestIdRef.current = ++nextScaleRequestIdRef.current
+              latestAppliedScaleRef.current = DEFAULT_UI_CONFIG.scale
+              pendingScaleRef.current = DEFAULT_UI_CONFIG.scale
+              setUIConfig({
+                ...latestUIConfigRef.current,
+                scale: DEFAULT_UI_CONFIG.scale,
+              })
             })
-          })
-        }}
-        sx={{
-          justifySelf: 'start',
-          px: 0.5,
-          minWidth: 0,
-          fontSize: '11px',
-          textTransform: 'none',
-        }}
-      >
-        位置とサイズをリセット
-      </Button>
+          }}
+          sx={{
+            px: 0.5,
+            minWidth: 0,
+            fontSize: '11px',
+            textTransform: 'none',
+          }}
+        >
+          位置とサイズをリセット
+        </Button>
 
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <Typography variant="body2" sx={{ color: 'text.secondary' }}>サイズ:</Typography>
-        <IconButton
-          size="small"
-          onClick={() => requestScaleChange(-0.1)}
-          disabled={scaleControlsDisabled || uiConfig.scale <= 0.5}
-        >
-          -
-        </IconButton>
-        <Typography variant="body2" sx={{ minWidth: 35, textAlign: 'center' }}>
-          {Math.round(uiConfig.scale * 100)}%
-        </Typography>
-        <IconButton
-          size="small"
-          onClick={() => requestScaleChange(0.1)}
-          disabled={scaleControlsDisabled || uiConfig.scale >= 2.0}
-        >
-          +
-        </IconButton>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          <Typography variant="body2" sx={{ color: 'text.secondary' }}>サイズ:</Typography>
+          <IconButton
+            size="small"
+            onClick={() => requestScaleChange(-0.1)}
+            disabled={scaleControlsDisabled || uiConfig.scale <= 0.5}
+          >
+            -
+          </IconButton>
+          <Typography variant="body2" sx={{ minWidth: 35, textAlign: 'center' }}>
+            {Math.round(uiConfig.scale * 100)}%
+          </Typography>
+          <IconButton
+            size="small"
+            onClick={() => requestScaleChange(0.1)}
+            disabled={scaleControlsDisabled || uiConfig.scale >= 2.0}
+          >
+            +
+          </IconButton>
+        </Box>
       </Box>
 
-      <TextField
-        inputRef={shortcutInputRef}
-        size="small"
-        value={recordingShortcut
-          ? 'キーを入力…'
-          : shortcutLabel ?? '未設定'}
-        error={shortcutError}
-        onFocus={() => {
-          setRecordingShortcut(true)
-          setShortcutError(false)
-        }}
-        onBlur={() => {
-          setRecordingShortcut(false)
-          setShortcutError(false)
-        }}
-        onKeyDown={handleShortcutKeyDown}
-        onContextMenu={(event) => {
-          event.preventDefault()
-          saveShortcut(null)
-          setRecordingShortcut(false)
-          setShortcutError(false)
-          shortcutInputRef.current?.blur()
-        }}
-        slotProps={{
-          htmlInput: {
-            readOnly: true,
-            'aria-label': 'HUD表示切り替えショートカット',
-            title: shortcutError
-              ? '利用できません（Shiftと文字キーを同時に押してください）'
-              : shortcutLabel
-                ? `${shortcutLabel}（クリックして変更・右クリックで解除）`
-                : 'クリックして入力・右クリックで解除',
-          },
-        }}
-        sx={{
-          width: 105,
-          justifySelf: 'end',
-          '& .MuiInputBase-input': {
-            px: 0.75,
-            py: 0.625,
-            fontSize: '11px',
-            textAlign: 'center',
-            cursor: 'pointer',
-          },
-        }}
-      />
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 0.75 }}>
+        {children}
 
-      <ToggleButtonGroup
-        value={uiConfig.displayEnabled ? 'on' : 'off'}
-        exclusive
-        onChange={(_event, newValue: string | null) => {
-          if (newValue !== null) {
-            updateSyncedUIConfig({ ...uiConfig, displayEnabled: newValue === 'on' })
-          }
-        }}
-        size="small"
-        sx={(theme) => ({
-          '& .MuiToggleButton-root': {
-            padding: '4px 12px',
-            fontSize: '12px',
-            fontWeight: 'bold',
-            textTransform: 'none',
-            '&.Mui-selected': {
-              '&[value="off"]': {
-                backgroundColor: theme.palette.error.main,
-                color: theme.palette.getContrastText(theme.palette.error.main),
-                '&:hover': {
-                  backgroundColor: theme.palette.error.dark,
-                }
-              },
-              '&[value="on"]': {
-                backgroundColor: theme.palette.secondary.main,
-                color: theme.palette.getContrastText(theme.palette.secondary.main),
-                '&:hover': {
-                  backgroundColor: theme.palette.secondary.dark,
+        <TextField
+          inputRef={shortcutInputRef}
+          size="small"
+          value={recordingShortcut
+            ? 'キーを入力…'
+            : shortcutLabel ?? '未設定'}
+          error={shortcutError}
+          onFocus={() => {
+            setRecordingShortcut(true)
+            setShortcutError(false)
+          }}
+          onBlur={() => {
+            setRecordingShortcut(false)
+            setShortcutError(false)
+          }}
+          onKeyDown={handleShortcutKeyDown}
+          onContextMenu={(event) => {
+            event.preventDefault()
+            saveShortcut(null)
+            setRecordingShortcut(false)
+            setShortcutError(false)
+            shortcutInputRef.current?.blur()
+          }}
+          slotProps={{
+            htmlInput: {
+              readOnly: true,
+              'aria-label': 'HUD表示切り替えショートカット',
+              title: shortcutError
+                ? '利用できません（Shiftと文字キーを同時に押してください）'
+                : shortcutLabel
+                  ? `${shortcutLabel}（クリックして変更・右クリックで解除）`
+                  : 'クリックして入力・右クリックで解除',
+            },
+          }}
+          sx={{
+            width: 92,
+            '& .MuiInputBase-input': {
+              px: 0.5,
+              py: 0.625,
+              fontSize: '11px',
+              textAlign: 'center',
+              cursor: 'pointer',
+            },
+          }}
+        />
+
+        <ToggleButtonGroup
+          value={uiConfig.displayEnabled ? 'on' : 'off'}
+          exclusive
+          onChange={(_event, newValue: string | null) => {
+            if (newValue !== null) {
+              updateSyncedUIConfig({ ...uiConfig, displayEnabled: newValue === 'on' })
+            }
+          }}
+          size="small"
+          sx={[
+            popupToggleGroupSx,
+            (theme) => ({
+              '& .MuiToggleButton-root.Mui-selected': {
+                '&[value="off"]': {
+                  backgroundColor: theme.palette.error.main,
+                  color: theme.palette.getContrastText(theme.palette.error.main),
+                  '&:hover': {
+                    backgroundColor: theme.palette.error.dark,
+                  }
+                },
+                '&[value="on"]': {
+                  backgroundColor: theme.palette.secondary.main,
+                  color: theme.palette.getContrastText(theme.palette.secondary.main),
+                  '&:hover': {
+                    backgroundColor: theme.palette.secondary.dark,
+                  }
                 }
               }
-            }
-          }
-        })}
-      >
-        <ToggleButton value="off">
-          非表示
-        </ToggleButton>
-        <ToggleButton value="on">
-          表示
-        </ToggleButton>
-      </ToggleButtonGroup>
-
-      {/* 3行目は右カラムだけ。左は空セルで桁を保つ。 */}
-      {children !== undefined && (
-        <>
-          <Box />
-          {children}
-        </>
-      )}
+            }),
+          ]}
+        >
+          <ToggleButton value="off">
+            非表示
+          </ToggleButton>
+          <ToggleButton value="on">
+            表示
+          </ToggleButton>
+        </ToggleButtonGroup>
+      </Box>
     </Box>
   )
 }

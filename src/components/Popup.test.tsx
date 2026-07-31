@@ -268,14 +268,14 @@ describe('Popup', () => {
     errorSpy.mockRestore()
   })
 
-  it('HUD表示設定（コンパクト/フル）を表示・変更できる', async () => {
+  it('HUD表示設定（簡易/詳細）を表示・変更できる', async () => {
     render(<Popup />)
 
     await waitForAsyncOperations()
 
-    expect(screen.getByRole('button', { name: 'コンパクト' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: '簡易' })).toHaveAttribute('aria-pressed', 'true')
 
-    await userEvent.click(screen.getByRole('button', { name: 'フル' }))
+    await userEvent.click(screen.getByRole('button', { name: '詳細' }))
 
     await waitFor(() => {
       expect(syncData.uiConfig).toEqual(
@@ -367,7 +367,7 @@ describe('Popup', () => {
     expect(window.localStorage.getItem(POPUP_THEME_LOCAL_STORAGE_KEY)).toBe('dark')
   })
 
-  it('旧storageのuiConfigにhudDisplayModeキーが無いユーザーはコンパクトで復元される（グレースフルなマイグレーション, #143）', async () => {
+  it('旧storageのuiConfigにhudDisplayModeキーが無いユーザーは簡易で復元される（グレースフルなマイグレーション, #143）', async () => {
     syncData = {
       options: {
         sendUserData: true,
@@ -385,7 +385,7 @@ describe('Popup', () => {
 
     await waitForAsyncOperations()
 
-    expect(screen.getByRole('button', { name: 'コンパクト' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: '簡易' })).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('UIスケール設定を表示・変更できる', async () => {
@@ -501,7 +501,7 @@ describe('Popup', () => {
     await waitFor(() => {
       expect(screen.getByText('160%')).toBeInTheDocument()
       expect(screen.getByRole('button', { name: '非表示' })).toHaveAttribute('aria-pressed', 'true')
-      expect(screen.getByRole('button', { name: 'フル' })).toHaveAttribute('aria-pressed', 'true')
+      expect(screen.getByRole('button', { name: '詳細' })).toHaveAttribute('aria-pressed', 'true')
     })
   })
 
@@ -555,7 +555,7 @@ describe('Popup', () => {
       expect(screen.getByText('160%')).toBeInTheDocument()
       expect(screen.getByRole('button', { name: '非表示' }))
         .toHaveAttribute('aria-pressed', 'true')
-      expect(screen.getByRole('button', { name: 'フル' })).toHaveAttribute('aria-pressed', 'true')
+      expect(screen.getByRole('button', { name: '詳細' })).toHaveAttribute('aria-pressed', 'true')
     })
   })
 
@@ -673,7 +673,7 @@ describe('Popup', () => {
       callback([{ id: 123 }])
     })
     mockChromeTabsSendMessage.mockResolvedValue(undefined)
-    await userEvent.click(screen.getByRole('button', { name: 'フル' }))
+    await userEvent.click(screen.getByRole('button', { name: '詳細' }))
 
     expect(mockChromeTabsSendMessage).toHaveBeenCalledWith(123, {
       action: 'updateUIConfig',

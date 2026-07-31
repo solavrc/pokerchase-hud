@@ -42,21 +42,21 @@ describe('HudDisplaySection', () => {
   it('HUD表示モードのUIを表示する', () => {
     render(<HudDisplaySection {...defaultProps} />)
 
-    expect(screen.getByRole('button', { name: 'コンパクト' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'フル' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '簡易' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '詳細' })).toBeInTheDocument()
   })
 
-  it('DEFAULT_UI_CONFIG（新規/既存ユーザーのマイグレーション後）はコンパクトが選択されている', () => {
+  it('DEFAULT_UI_CONFIG（新規/既存ユーザーのマイグレーション後）は簡易が選択されている', () => {
     render(<HudDisplaySection {...defaultProps} />)
 
-    expect(screen.getByRole('button', { name: 'コンパクト' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: 'フル' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: '簡易' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: '詳細' })).toHaveAttribute('aria-pressed', 'false')
   })
 
-  it('フルを選択すると保存され全ゲームタブへ通知される', async () => {
+  it('詳細を選択すると保存され全ゲームタブへ通知される', async () => {
     render(<HudDisplaySection {...defaultProps} />)
 
-    await userEvent.click(screen.getByRole('button', { name: 'フル' }))
+    await userEvent.click(screen.getByRole('button', { name: '詳細' }))
 
     const expectedConfig: UIConfig = {
       ...DEFAULT_UI_CONFIG,
@@ -86,12 +86,12 @@ describe('HudDisplaySection', () => {
     expect(screen.queryByText('統計カラー表示')).not.toBeInTheDocument()
   })
 
-  it('旧フィールド欠落のuiConfig（マイグレーション前提未達のフォールバック）でもcompactで描画される', () => {
+  it('旧フィールド欠落のuiConfig（マイグレーション前提未達のフォールバック）でも簡易で描画される', () => {
     // #143以前に保存されたuiConfig相当（hudDisplayModeが無い）
     const legacyConfig = { displayEnabled: true, scale: 1.0 } as UIConfig
 
     render(<HudDisplaySection uiConfig={legacyConfig} setUIConfig={mockSetUIConfig} />)
 
-    expect(screen.getByRole('button', { name: 'コンパクト' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: '簡易' })).toHaveAttribute('aria-pressed', 'true')
   })
 })
