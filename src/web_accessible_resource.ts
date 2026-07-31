@@ -326,7 +326,17 @@ interface ReplayAuthEnvelope {
   masterVer: string
 }
 
-const OriginalFetch = window.fetch.bind(window)
+/**
+ * ページ側がfetchを差し替える前の実体。モジュール読み込み時に掴むのは、
+ * 後からゲーム側が差し替えても素の実装を使い続けるため。
+ *
+ * ただしfetchが存在しない実行環境（jsdomなど）でも読み込み自体は成功させる。
+ * このファイルの本業はWebSocketの傍受であって、replay取り込みはその上に
+ * 乗った実験機能にすぎない。モジュールスコープで例外を投げると本業ごと
+ * 巻き添えで死ぬ。
+ */
+const OriginalFetch: typeof window.fetch | undefined =
+  typeof window.fetch === 'function' ? window.fetch.bind(window) : undefined
 let replayImportEnabled = false
 let replayConfigReceived = false
 let replayAuth: ReplayAuthEnvelope | undefined
@@ -387,21 +397,23 @@ const refreshSessionFromResponse = async (response: Response): Promise<void> => 
 // Capture the same version/session envelope PokerChase itself supplies. The
 // envelope remains inside the page's main-world closure and is never posted to
 // the extension context or IndexedDB.
-window.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const url = requestUrl(input)
-  if (url?.origin !== REPLAY_API_ORIGIN || (replayConfigReceived && !replayImportEnabled)) {
-    return OriginalFetch(input, init)
-  }
+if (OriginalFetch) {
+  window.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = requestUrl(input)
+    if (url?.origin !== REPLAY_API_ORIGIN || (replayConfigReceived && !replayImportEnabled)) {
+      return OriginalFetch(input, init)
+    }
 
-  try {
-    replayAuth = readAuthEnvelope(await decodeRequestBody(input, init)) ?? replayAuth
-  } catch {
-    // A request without a MessagePack body is unrelated to replay auth.
-  }
-  const response = await OriginalFetch(input, init)
-  refreshSessionFromResponse(response).catch(() => undefined)
-  return response
-}) as typeof window.fetch
+    try {
+      replayAuth = readAuthEnvelope(await decodeRequestBody(input, init)) ?? replayAuth
+    } catch {
+      // A request without a MessagePack body is unrelated to replay auth.
+    }
+    const response = await OriginalFetch(input, init)
+    refreshSessionFromResponse(response).catch(() => undefined)
+    return response
+  }) as typeof window.fetch
+}
 
 // Unity WebGL may use XMLHttpRequest rather than fetch for the same API
 // calls. Mirror the envelope observation there; requests themselves still go
@@ -457,6 +469,7 @@ XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyIn
 }
 
 const fetchReplayDetail = async (handId: number): Promise<ReplayFetchItemResult> => {
+  if (!OriginalFetch) return { handId, ok: false, error: 'fetch-unavailable', retryable: false }
   const auth = replayAuth
   if (!auth) return { handId, ok: false, error: 'auth-envelope-unavailable', retryable: true }
 
