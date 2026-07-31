@@ -29,8 +29,8 @@ interface HandLogProps {
   scrollToLatest?: boolean
 }
 
-const HAND_LOG_HEADER_HEIGHT = 28
-const HAND_LOG_HEADER_REACHABLE_WIDTH = 80
+const HAND_LOG_MOVE_GRIP_SIZE = 16
+const HAND_LOG_BORDER_WIDTH = 1
 const HAND_LOG_DRAG_THRESHOLD = 4
 const HAND_LOG_DEFAULT_RIGHT = 10
 const HAND_LOG_DEFAULT_BOTTOM = 135
@@ -106,48 +106,132 @@ const readHandLogEnvironment = (scale: number): HandLogEnvironment => ({
   viewportHeight: window.innerHeight,
 })
 
-const getHandLogDisplayHeight = (
+/**
+ * 1軸ぶんのviewport上限。0はviewport未確定として上限なしに倒す。
+ * 遷移直後などinnerWidth/innerHeightが一時的に0で読めることがあり、
+ * それをそのまま制約にするとパネルが消えて位置も左上へ吸着してしまう。
+ */
+const getHandLogViewportLimit = (
+  viewportSize: number,
+  scale: number
+): number =>
+  viewportSize > 0 ? viewportSize / scale : Number.POSITIVE_INFINITY
+
+/**
+ * viewportに収まる実サイズ。viewportより大きいlayoutは表示だけを縮め、
+ * 状態と永続化には触れない: 一時的に小さい画面（ウィンドウ縮小、別モニタ）が
+ * ユーザーの指定サイズを恒久的に潰さないようにするため。
+ */
+const getHandLogDisplaySize = (
   layout: HandLogLayout,
   environment: HandLogEnvironment
+): { width: number, height: number } => ({
+  width: Math.min(
+    layout.width,
+    getHandLogViewportLimit(environment.viewportWidth, environment.scale)
+  ),
+  height: Math.min(
+    layout.height,
+    getHandLogViewportLimit(environment.viewportHeight, environment.scale)
+  ),
+})
+
+/**
+ * 表示中のパネル全体をviewport内へ収める。端からのはみ出しは許さない。
+ * 下限0は常に効かせる: 上限だけがviewport依存で、負の座標はviewportが
+ * 未確定でも正しくない（0読み取り時の既定layoutは大きな負値になる）。
+ */
+const clampHandLogPosition = (
+  position: number,
+  renderedSize: number,
+  viewportSize: number
 ): number =>
-  Math.min(layout.height, environment.viewportHeight / environment.scale)
+  viewportSize > 0
+    ? clamp(position, 0, Math.max(0, viewportSize - renderedSize))
+    : Math.max(0, position)
 
 const normalizeHandLogLayout = (
   layout: HandLogLayout,
   environment: HandLogEnvironment
 ): HandLogLayout => {
   const { scale, viewportWidth, viewportHeight } = environment
-  const maximumHeight = viewportHeight / scale
-  // A sub-minimum viewport temporarily shrinks only the rendered panel.
-  // Keep state/persistence at HAND_LOG_MIN_HEIGHT or above; see PR #304.
-  const height = clamp(
-    layout.height,
-    HAND_LOG_MIN_HEIGHT,
-    Math.max(HAND_LOG_MIN_HEIGHT, maximumHeight)
-  )
-  const renderedWidth = layout.width * scale
-  const renderedHeight = getHandLogDisplayHeight(
-    { ...layout, height },
+  const width = Math.max(HAND_LOG_MIN_WIDTH, layout.width)
+  const height = Math.max(HAND_LOG_MIN_HEIGHT, layout.height)
+  const displaySize = getHandLogDisplaySize(
+    { ...layout, width, height },
     environment
-  ) * scale
-  const reachableWidth = Math.min(
-    HAND_LOG_HEADER_REACHABLE_WIDTH * scale,
-    viewportWidth
   )
 
   return {
     ...layout,
-    left: clamp(
+    left: clampHandLogPosition(
       layout.left,
-      reachableWidth - renderedWidth,
-      viewportWidth - reachableWidth
+      displaySize.width * scale,
+      viewportWidth
     ),
-    top: clamp(
+    top: clampHandLogPosition(
       layout.top,
-      0,
-      Math.max(0, viewportHeight - renderedHeight)
+      displaySize.height * scale,
+      viewportHeight
     ),
+    width,
     height,
+  }
+}
+
+/**
+ * リサイズ1軸ぶん。見えているサイズを起点にviewport実寸までで頭打ちにする
+ * ので、画面外へあふれた分を掴んで引き延ばす操作にはならず、画面に映らない
+ * 巨大サイズも作らない。
+ *
+ * ただし表示が1pxも変わらない操作では保存値に触れない。表示が上限へ貼り付い
+ * ている軸（保存サイズがviewportより大きい／viewportが最小値すら収容できな
+ * い）では、掴んでいない軸や外向きのドラッグまで保存値を表示上限へ落として
+ * しまい、画面を広げても戻らない「見えない縮小」になるため。
+ */
+const resizeHandLogAxis = (
+  startSize: number,
+  startDisplaySize: number,
+  delta: number,
+  minimum: number,
+  scale: number,
+  viewportSize: number
+): number => {
+  const resized = clamp(
+    startDisplaySize + delta / scale,
+    minimum,
+    getHandLogViewportLimit(viewportSize, scale)
+  )
+  return resized === startDisplaySize ? startSize : resized
+}
+
+const resizeHandLogLayout = (
+  startLayout: HandLogLayout,
+  startEnvironment: HandLogEnvironment,
+  deltaX: number,
+  deltaY: number
+): HandLogLayout => {
+  const { scale, viewportWidth, viewportHeight } = startEnvironment
+  const startDisplaySize = getHandLogDisplaySize(startLayout, startEnvironment)
+
+  return {
+    ...startLayout,
+    width: resizeHandLogAxis(
+      startLayout.width,
+      startDisplaySize.width,
+      deltaX,
+      HAND_LOG_MIN_WIDTH,
+      scale,
+      viewportWidth
+    ),
+    height: resizeHandLogAxis(
+      startLayout.height,
+      startDisplaySize.height,
+      deltaY,
+      HAND_LOG_MIN_HEIGHT,
+      scale,
+      viewportHeight
+    ),
   }
 }
 
@@ -340,17 +424,12 @@ const transitionHandLogLayout = (
               left: startLayout.left + deltaX,
               top: startLayout.top + deltaY,
             }
-          : {
-              ...startLayout,
-              width: Math.max(
-                HAND_LOG_MIN_WIDTH,
-                startLayout.width + deltaX / startEnvironment.scale
-              ),
-              height: Math.max(
-                HAND_LOG_MIN_HEIGHT,
-                startLayout.height + deltaY / startEnvironment.scale
-              ),
-            }
+          : resizeHandLogLayout(
+              startLayout,
+              startEnvironment,
+              deltaX,
+              deltaY
+            )
       return {
         state: {
           ...state,
@@ -793,18 +872,22 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
   if (!config.enabled) return null
 
   const { layout, environment } = layoutMachine
-  const { width } = layout
   // Display-only shrink: the layout kept by the machine remains persistable.
-  const height = getHandLogDisplayHeight(layout, environment)
+  const { width, height } = getHandLogDisplaySize(layout, environment)
+  // border-boxなのでbody部はborderぶん内側になる。
+  const bodyWidth = Math.max(0, width - HAND_LOG_BORDER_WIDTH * 2)
+  const bodyHeight = Math.max(0, height - HAND_LOG_BORDER_WIDTH * 2)
   const interactionMode =
     layoutMachine.interaction.phase === 'interacting'
       ? layoutMachine.interaction.mode
       : null
-  const bodyHeight = Math.max(0, height - HAND_LOG_HEADER_HEIGHT)
 
   // コンテナスタイル
   const containerStyle: CSSProperties = {
     position: 'fixed',
+    // border込みでwidth/heightちょうどに収める。content-boxのままだと
+    // 実寸がborder分だけ大きく、画面端の判定と2px（scale倍）ずれる。
+    boxSizing: 'border-box',
     left: layout.left,
     top: layout.top,
     width: width,
@@ -821,35 +904,37 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
     fontFamily: 'Consolas, Monaco, "Courier New", monospace',
     fontSize: config.fontSize,
     color: '#ffffff',
-    // Keep the header and resize corner above player HUD panels (z-index
+    // Keep the move grip and resize corner above player HUD panels (z-index
     // 9999) so an overlap cannot make either interaction unreachable.
     zIndex: 10000,
     boxShadow: '0 2px 4px rgba(0, 0, 0, 0.3)',
     cursor: 'default'
   }
 
-  const headerStyle: CSSProperties = {
-    boxSizing: 'border-box',
-    width: '100%',
-    height: HAND_LOG_HEADER_HEIGHT,
-    padding: '0 8px',
-    cursor: interactionMode === 'move' ? 'grabbing' : 'grab',
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
-    borderBottom: '1px solid rgba(255, 255, 255, 0.2)',
-    color: 'rgba(255, 255, 255, 0.9)',
+  // 右上は移動専用。ヘッダー帯を廃してログ本文へ高さを明け渡す代わりに、
+  // 右下のリサイズ角と対になる最小限の掴める領域だけを重ねる。行頭は必ず
+  // 文字で埋まる一方、行末は余白になりやすいので左上ではなく右上に置く。
+  const moveGripStyle: CSSProperties = {
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    width: HAND_LOG_MOVE_GRIP_SIZE,
+    height: HAND_LOG_MOVE_GRIP_SIZE,
     display: 'flex',
     alignItems: 'center',
-    gap: 7,
-    fontSize: Math.max(11, config.fontSize - 1),
-    fontWeight: 600,
+    justifyContent: 'center',
+    cursor: interactionMode === 'move' ? 'grabbing' : 'grab',
+    // ログ本文へ重なるので、地の文と混ざらない程度には輪郭を持たせる。
+    backgroundColor: 'rgba(255, 255, 255, 0.16)',
+    borderLeft: '1px solid rgba(255, 255, 255, 0.2)',
+    borderBottom: '1px solid rgba(255, 255, 255, 0.2)',
+    borderRadius: '0 4px 0 4px',
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontSize: 11,
     lineHeight: 1,
+    letterSpacing: -1,
     userSelect: 'none',
-  }
-
-  const headerGripIconStyle: CSSProperties = {
-    color: 'rgba(255, 255, 255, 0.65)',
-    fontSize: 14,
-    letterSpacing: -2,
+    zIndex: 2,
   }
 
   const resizeCornerStyle: CSSProperties = {
@@ -876,15 +961,15 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
       style={containerStyle}
       onClick={handleContainerClick}
     >
+      {/* 左上は移動専用。右下はリサイズ専用。 */}
       <div
-        data-testid="hand-log-header"
+        data-testid="hand-log-move-grip"
         title="ドラッグしてハンドログを移動"
-        style={headerStyle}
+        style={moveGripStyle}
         onMouseDown={(event) => handleInteractionStart('move', event)}
         onClick={(event) => event.stopPropagation()}
       >
-        <span aria-hidden="true" style={headerGripIconStyle}>⠿</span>
-        <span>ハンドログ</span>
+        <span aria-hidden="true">⠿</span>
       </div>
 
       {processedItems.length > 0 ? (
@@ -894,7 +979,7 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
           rowHeight={getItemSize}
           rowComponent={EntryRow}
           rowProps={rowProps}
-          style={{ height: bodyHeight, width }}
+          style={{ height: bodyHeight, width: bodyWidth }}
         />
       ) : (
         <div style={{
@@ -911,7 +996,6 @@ const HandLog = memo<HandLogProps>(({ entries, config: userConfig, onClearLog, s
         </div>
       )}
 
-      {/* 右下はリサイズ専用。移動は上部ヘッダーだけが開始する。 */}
       <div
         data-testid="hand-log-resize-corner"
         title="ドラッグしてハンドログのサイズを変更"
