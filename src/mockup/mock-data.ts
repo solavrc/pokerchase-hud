@@ -225,9 +225,13 @@ export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
     id: 'new-table',
     label: '新しい卓・データなし',
     playerPotOdds: [],
+    // Seat occupancy must agree with `stats` below: a seat drawn as taken
+    // needs a real playerId there, and `playerId: -1` (the empty-seat
+    // sentinel, which makes the HUD say "Waiting for Hand...") needs
+    // `empty: true` here. Seats 1/2/4 are the empty ones.
     seats: [
       { isHero: true },
-      {},
+      { empty: true },
       { empty: true },
       {},
       { empty: true },

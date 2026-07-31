@@ -312,7 +312,7 @@ const Mockup = () => {
 
       <button
         aria-expanded={panelOpen}
-        className="control-trigger"
+        className={`control-trigger${showPopup ? ' control-trigger--shifted' : ''}`}
         onClick={() => setPanelOpen((isOpen) => !isOpen)}
         type="button"
       >
@@ -321,7 +321,10 @@ const Mockup = () => {
       </button>
 
       {panelOpen && (
-        <aside className="control-panel" aria-label="Mockup controls">
+        <aside
+          className={`control-panel${showPopup ? ' control-panel--shifted' : ''}`}
+          aria-label="Mockup controls"
+        >
           <div className="control-panel__header">
             <div>
               <span>POKERCHASE HUD</span>
@@ -345,9 +348,13 @@ const Mockup = () => {
 
           <label className="control-field">
             <span>HUD 倍率 <output>{scale.toFixed(1)}×</output></span>
+            {/* Same 0.5-2.0 / 0.1 range the popup enforces (`isValidUIScale`,
+                `requestScaleChange`) -- both write the one stored scale, so a
+                narrower range here would snap a popup-set value on first
+                touch. */}
             <input
-              max="1.4"
-              min="0.7"
+              max="2"
+              min="0.5"
               onChange={(event) => chrome.runtime.sendMessage({
                 action: 'setDeviceUIScale',
                 scale: Number(event.target.value),
@@ -395,7 +402,7 @@ const Mockup = () => {
         </aside>
       )}
 
-      <div className="mock-badge">
+      <div className={`mock-badge${showPopup ? ' mock-badge--shifted' : ''}`}>
         <span />
         {scenario.label}
       </div>

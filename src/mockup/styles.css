@@ -801,6 +801,18 @@ input[type="range"] {
   top: 5.4%;
 }
 
+/*
+ * The popup is 380px of fixed, higher-stacked UI on the right edge, so while
+ * it is open the dev cluster's usual band would sit underneath it. Shift the
+ * cluster to the left edge for as long as the popup is shown -- covering the
+ * recreated chrome matters less than being unable to reach the controls.
+ */
+.control-trigger--shifted,
+.control-panel--shifted,
+.mock-badge--shifted {
+  left: 12px;
+}
+
 .mock-badge span {
   background: #5edbb7;
   border-radius: 50%;
