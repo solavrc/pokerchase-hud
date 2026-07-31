@@ -36,17 +36,24 @@ const localSet = (
     })
   })
 
-const sessionGet = (
-  key: string
-): Promise<Record<string, unknown>> =>
+interface SessionRead {
+  /** False when Chrome refused the read, so the caller learns nothing. */
+  readable: boolean
+  items: Record<string, unknown>
+}
+
+const sessionGet = (key: string): Promise<SessionRead> =>
   new Promise(resolve => {
     chrome.storage.session.get(key, items => {
       // A content script can race the background worker's setAccessLevel().
-      // Chrome then reports lastError and may omit the items argument. Treat
-      // that state like a not-yet-created mirror so initSentry retains its
-      // bounded bootstrap buffer until storage.onChanged supplies the value.
+      // Chrome then reports lastError and may omit the items argument. That is
+      // NOT equivalent to an absent mirror: the same access gate withholds
+      // storage.onChanged for this area, so unlike a mirror that simply does
+      // not exist yet, nothing guarantees this runtime is told when it appears.
       const error = chrome.runtime.lastError
-      resolve(error || !items ? {} : items)
+      resolve(error || !items
+        ? { readable: false, items: {} }
+        : { readable: true, items })
     })
   })
 
@@ -69,14 +76,48 @@ export const readSentryTelemetryConsent = async (
 ): Promise<boolean> =>
   await readSentryTelemetryConsentState(runtime) === true
 
+export type SentryConsentMirrorRead =
+  | { readable: true, value: boolean | undefined }
+  | { readable: false }
+
+/**
+ * The content-readable session mirror exactly as stored, before the background
+ * re-verifies it. Distinguishes the three states that
+ * readSentryTelemetryConsentState() collapses into `undefined`:
+ *
+ * - `{readable: true, value: undefined}` — the mirror does not exist yet. The
+ *   read succeeding proves this runtime has access, so it is guaranteed to be
+ *   told when the mirror is created.
+ * - `{readable: false}` — the read was refused. Nothing is known, and the same
+ *   gate withholds the change event that would otherwise retry.
+ * - `{readable: true, value: true}` — stored, but background verification is
+ *   what failed.
+ *
+ * Callers must not treat `true` as authorization on its own.
+ */
+export const readSentryTelemetryConsentMirror = async (
+): Promise<SentryConsentMirrorRead> => {
+  const read = await sessionGet(SENTRY_TELEMETRY_CONSENT_STORAGE_KEY)
+  if (!read.readable) return { readable: false }
+  const value = read.items[SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]
+  return {
+    readable: true,
+    value: typeof value === 'boolean' ? value : undefined
+  }
+}
+
 export const readSentryTelemetryConsentState = async (
   runtime: 'background' | 'content_script' | 'popup' = 'background'
 ): Promise<boolean | undefined> => {
-  const result = runtime === 'content_script'
-    ? await sessionGet(SENTRY_TELEMETRY_CONSENT_STORAGE_KEY)
-    : await localGet(SENTRY_TELEMETRY_CONSENT_STORAGE_KEY)
-  const value = result[SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]
-  const storedState = typeof value === 'boolean' ? value : undefined
+  let storedState: boolean | undefined
+  if (runtime === 'content_script') {
+    const mirror = await readSentryTelemetryConsentMirror()
+    storedState = mirror.readable ? mirror.value : undefined
+  } else {
+    const result = await localGet(SENTRY_TELEMETRY_CONSENT_STORAGE_KEY)
+    const value = result[SENTRY_TELEMETRY_CONSENT_STORAGE_KEY]
+    storedState = typeof value === 'boolean' ? value : undefined
+  }
   if (runtime !== 'content_script' || storedState !== true) {
     return storedState
   }
@@ -191,7 +232,7 @@ const commitSentryTelemetryConsentMirror = async (
     await consentMirrorWriteQueue.catch(() => undefined)
     const mirror = await sessionGet(SENTRY_TELEMETRY_CONSENT_STORAGE_KEY)
     if (
-      mirror[SENTRY_TELEMETRY_CONSENT_STORAGE_KEY] === expectedEnabled
+      mirror.items[SENTRY_TELEMETRY_CONSENT_STORAGE_KEY] === expectedEnabled
     ) {
       return
     }

@@ -12,6 +12,7 @@ import {
   initializeSentryTelemetryConsentBridge,
   readSentryTelemetryEnabled,
   readSentryTelemetryConsent,
+  readSentryTelemetryConsentMirror,
   readSentryTelemetryConsentState,
   registerSentryPermissionRevocationSync
 } from './telemetry-consent'
@@ -51,7 +52,7 @@ let configuredRuntime: SentryRuntime | undefined
 let consentListenerRegistered = false
 let contentRevocationListenerRegistered = false
 let backgroundConsentListenerRegistered = false
-let initializationPromise: Promise<void> | undefined
+let initializationPromise: Promise<SentryStartResult> | undefined
 let shutdownPromise: Promise<void> | undefined
 let initializationGeneration = 0
 let directRevocationPending = false
@@ -263,7 +264,35 @@ const discardBootstrapErrors = (): void => {
   bootstrapErrorBuffer = undefined
 }
 
-type SentryStartResult = 'started' | 'disabled' | 'waiting_for_consent_mirror'
+type SentryStartResult =
+  | 'started'
+  | 'build_disabled'
+  | 'disabled'
+  | 'consent_unverified'
+  | 'waiting_for_consent_mirror'
+
+/**
+ * Outcomes that honor an opt-in even though no client is running yet.
+ *
+ * 'build_disabled' has no transport to start in any runtime, and
+ * 'waiting_for_consent_mirror' self-heals through the storage.onChanged
+ * listener this runtime already holds — the mirror does not exist yet, so
+ * creating it necessarily delivers a change event. Reporting either as a
+ * failed transition would make requestSentryTelemetry() roll the opt-in back
+ * and revoke the optional host permission the user just granted.
+ *
+ * 'consent_unverified' is deliberately excluded: the mirror already reads
+ * `true`, so no further change event is guaranteed, and the background never
+ * confirmed the current local-consent + permission decision. Acknowledging it
+ * would leave a tab whose transport can never start while the popup reports
+ * success.
+ */
+const isTelemetryStateHonored = (result: SentryStartResult): boolean =>
+  result !== 'disabled' && result !== 'consent_unverified'
+
+/** Outcomes that may still start later, so buffered bootstrap errors stand. */
+const isTelemetryStartPending = (result: SentryStartResult): boolean =>
+  result === 'waiting_for_consent_mirror' || result === 'consent_unverified'
 
 const startSentry = async (
   runtime: SentryRuntime,
@@ -272,12 +301,23 @@ const startSentry = async (
   if (shutdownPromise) {
     await shutdownPromise
   }
-  if (!telemetryEnabled() || initialized) return 'disabled'
+  if (!telemetryEnabled()) return 'build_disabled'
+  if (initialized) return 'started'
   const consentState = await readSentryTelemetryConsentState(runtime)
   if (consentState !== true) {
-    return runtime === 'content_script' && consentState === undefined
+    if (runtime !== 'content_script' || consentState === false) {
+      return 'disabled'
+    }
+    // A content script reports `undefined` for three different situations, and
+    // exactly one of them is guaranteed to be retried by a later change event:
+    // the mirror does not exist yet AND the read proving that succeeded, which
+    // means this runtime has access and will be told when it is created. A
+    // refused read (no access, therefore no change event either) and a stored
+    // `true` that could not be verified both leave the transport stuck.
+    const mirror = await readSentryTelemetryConsentMirror()
+    return mirror.readable && mirror.value === undefined
       ? 'waiting_for_consent_mirror'
-      : 'disabled'
+      : 'consent_unverified'
   }
   if (!await hasSentryHostPermission(runtime)) {
     await clearSentryTelemetryConsent()
@@ -354,7 +394,9 @@ const startSentry = async (
  * optional Sentry host permission. Adding that host as a required permission
  * would disable existing Web Store installations during the update.
  */
-export const initSentry = (runtime: SentryRuntime): Promise<void> => {
+export const initSentry = (
+  runtime: SentryRuntime
+): Promise<SentryStartResult> => {
   configuredRuntime = runtime
   registerSentryPermissionRevocationSync()
   if (
@@ -408,19 +450,33 @@ export const initSentry = (runtime: SentryRuntime): Promise<void> => {
         return true
       } else if (type === SENTRY_TELEMETRY_ENABLED_MESSAGE) {
         directRevocationPending = false
-        const pendingTransition =
+        const pendingTransition: Promise<unknown> =
           initializationPromise ?? shutdownPromise ?? Promise.resolve()
         void pendingTransition
           .catch(() => undefined)
           .then(async () => {
+            let result: SentryStartResult = initialized
+              ? 'started'
+              : 'disabled'
             if (
               configuredRuntime &&
               !initialized &&
               !directRevocationPending
             ) {
-              await initSentry(configuredRuntime)
+              result = await initSentry(configuredRuntime)
+              // The background status probe can fail transiently while the
+              // service worker is still waking. Retry once before refusing:
+              // the popup is driving this transition, so the worker is
+              // reachable, and the first probe itself requests the wake.
+              if (
+                result === 'consent_unverified' &&
+                !initialized &&
+                !directRevocationPending
+              ) {
+                result = await initSentry(configuredRuntime)
+              }
             }
-            sendResponse?.(initialized
+            sendResponse?.(initialized || isTelemetryStateHonored(result)
               ? { sentryTelemetryStateApplied: type }
               : { sentryTelemetryStateFailed: type })
           })
@@ -480,10 +536,11 @@ export const initSentry = (runtime: SentryRuntime): Promise<void> => {
   const generation = initializationGeneration
   initializationPromise = startSentry(runtime, generation)
     .then(result => {
-      if (result === 'waiting_for_consent_mirror') return
+      if (isTelemetryStartPending(result)) return result
       const completedBuffer = bootstrapErrorBuffer
       bootstrapErrorBuffer = undefined
       flushBootstrapErrors(completedBuffer)
+      return result
     })
     .catch(error => {
       discardBootstrapErrors()
