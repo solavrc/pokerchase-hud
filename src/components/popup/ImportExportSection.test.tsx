@@ -95,21 +95,31 @@ describe('ImportExportSection - rebuild advisory banner', () => {
     )
   }
 
+  /**
+   * Mounts with a transfer already in flight and lets the test decide what the
+   * background reports on the *next* getOperationState call -- the storage
+   * handler re-asks before releasing, so "did the tracked import really end?"
+   * is answered by this mock rather than by the result write alone.
+   */
   const restoreActiveTransfer = () => {
+    const transfer = {
+      type: 'import',
+      phase: 'transfer',
+      progress: 50,
+      processed: 1,
+      total: 2,
+      message: 'インポートファイル転送中...',
+    }
+    let current: unknown = transfer
     mockSendMessage.mockImplementation((message: { action?: string }, callback?: (response: unknown) => void) => {
       if (typeof callback === 'function') {
-        callback(message.action === 'getOperationState' ? {
-          operationState: {
-            type: 'import',
-            phase: 'transfer',
-            progress: 50,
-            processed: 1,
-            total: 2,
-            message: 'インポートファイル転送中...',
-          },
-        } : {})
+        callback(message.action === 'getOperationState' ? { operationState: current } : {})
       }
     })
+    return {
+      backgroundBecameIdle: () => { current = { type: 'idle' } },
+      backgroundStaysBusy: () => { current = transfer },
+    }
   }
 
   it('does not render the banner when there is no pending advisory', async () => {
@@ -252,13 +262,14 @@ describe('ImportExportSection - rebuild advisory banner', () => {
     // sends only importDataCancel, so storage.onChanged is the popup's only
     // notification -- no importStatus message ever arrives.
     const setImportStatus = jest.fn()
-    restoreActiveTransfer()
+    const background = restoreActiveTransfer()
 
     render(<ImportExportSection {...defaultProps} setImportStatus={setImportStatus} />)
 
     expect(await screen.findByRole('button', { name: 'インポートページを表示' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '生データをエクスポート (NDJSON)' })).toBeDisabled()
 
+    background.backgroundBecameIdle()
     act(() => emitImportResultChange({
       status: 'error',
       message: 'インポート失敗: ファイルを読み込めませんでした',
@@ -270,6 +281,39 @@ describe('ImportExportSection - rebuild advisory banner', () => {
     })
     expect(screen.getByRole('button', { name: '生データをエクスポート (NDJSON)' })).toBeEnabled()
     expect(setImportStatus).toHaveBeenCalledWith('インポート失敗: ファイルを読み込めませんでした')
+  })
+
+  it('keeps a live import active when a rejected duplicate page writes its own result', async () => {
+    // A second import page whose importDataInit is rejected as busy never gets
+    // a session, but its catch still writes lastImportResult. That result says
+    // nothing about the import this popup is tracking, which is still running.
+    const background = restoreActiveTransfer()
+
+    render(<ImportExportSection {...defaultProps} />)
+
+    expect(await screen.findByRole('button', { name: 'インポートページを表示' })).toBeInTheDocument()
+
+    // Count this specific action: mount already issued one, so waiting on
+    // "was it called" alone would resolve before the storage handler's own
+    // round trip and assert against a not-yet-updated tree.
+    const getOperationStateCalls = () =>
+      mockSendMessage.mock.calls.filter(([m]: any[]) => m?.action === 'getOperationState').length
+    await waitFor(() => expect(getOperationStateCalls()).toBe(1))
+
+    background.backgroundStaysBusy()
+    act(() => emitImportResultChange({
+      status: 'error',
+      message: 'インポート失敗: 別の処理が実行中です',
+      completedAt: 789,
+    }))
+
+    await waitFor(() => expect(getOperationStateCalls()).toBe(2))
+    // Flush the .then() that would release, so an unguarded release would have
+    // rendered by the time the assertions below run.
+    await act(async () => {})
+    // Still tracking the live import: buttons stay held, progress not blanked.
+    expect(screen.getByRole('button', { name: 'インポートページを表示' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '生データをエクスポート (NDJSON)' })).toBeDisabled()
   })
 
   it('restores a persisted result after the popup was closed', async () => {

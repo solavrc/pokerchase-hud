@@ -240,19 +240,33 @@ export const ImportExportSection = ({
       }
       if (changes[IMPORT_RESULT_STORAGE_KEY]?.newValue) {
         const importResult = changes[IMPORT_RESULT_STORAGE_KEY].newValue as ImportResultRecord
-        // A result written while the popup is open is terminal: the background
-        // is idle again. Release the same state the importStatus message path
-        // above releases, because that message never arrives when the import
-        // page itself fails mid-transfer -- ImportPage's catch writes this key
-        // directly and only sends importDataCancel, which broadcasts nothing.
-        // Leaving importOperationActive set keeps isAnyOperationInProgress
-        // true, which blanks displayStatus (hiding this very error) and holds
-        // export and rebuild disabled.
-        importOperationActiveRef.current = false
-        setImportOperationActive(false)
-        setRebuildOrigin(null)
         setImportStatus(importResult.message)
-        setOperationStatus('')
+        // Release the same state the importStatus message path above releases:
+        // that message never arrives when the import page itself fails
+        // mid-transfer, because ImportPage's catch writes this key directly and
+        // only sends importDataCancel, which broadcasts nothing. Leaving
+        // importOperationActive set keeps isAnyOperationInProgress true, which
+        // blanks displayStatus (hiding this very error) and holds export and
+        // rebuild disabled.
+        //
+        // The write alone does not prove the tracked operation ended, so ask
+        // the background -- it owns exclusivity and is the authority. A
+        // duplicate import page rejected as busy writes its own error result
+        // here while the FIRST import is still running: its importDataInit
+        // never got a session, so that result says nothing about the operation
+        // this popup is tracking. Releasing on it would blank a live import's
+        // progress and re-enable buttons the background still rejects.
+        // Unknown state (timeout) releases, per sendMessageWithTimeout's
+        // fail-open contract -- a stuck-disabled popup is the bug being fixed.
+        void sendMessageWithTimeout<{ operationState?: OperationState }>(
+          { action: 'getOperationState' }
+        ).then(response => {
+          if (response?.operationState && response.operationState.type !== 'idle') return
+          importOperationActiveRef.current = false
+          setImportOperationActive(false)
+          setRebuildOrigin(null)
+          setOperationStatus('')
+        })
       }
     }
 
