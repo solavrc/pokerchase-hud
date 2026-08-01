@@ -198,6 +198,32 @@ export interface PositionalStatsResult {
  */
 export type PreflopLine = string
 
+/**
+ * Compact per-street notation for the player's OWN postflop actions, in
+ * `Action.index` order, one letter per action:
+ *
+ *   `X` CHECK / `B` BET / `C` CALL / `R` RAISE / `F` FOLD
+ *
+ * A `!` suffix marks an action the pipeline normalized away from
+ * `ActionType.ALL_IN` (the raw event's ALL_IN is rewritten to BET/RAISE/CALL
+ * and the fact is kept in `Action.actionDetails` as `ActionDetail.ALL_IN` --
+ * without the suffix an all-in would be indistinguishable from a normal bet).
+ *
+ * `null` means the player took no action on that street -- which covers both
+ * "the street was never dealt" and "the street was dealt but the player was
+ * already all-in / had folded". The two are told apart by the neighbouring
+ * streets and `sawFlop`, not by this field.
+ *
+ * The street each action belongs to comes from `Action.phase`, which since
+ * #340/#346 is the authoritative `Progress.Phase` carried by the action event
+ * itself (not a locally-counted EVT_DEAL_ROUND cursor).
+ */
+export interface PostflopLines {
+  flop: string | null
+  turn: string | null
+  river: string | null
+}
+
 export interface RecentHandEntry {
   handId: number
   /** `Hand.approxTimestamp`, or `null` if the hand predates that field. */
@@ -229,6 +255,8 @@ export interface RecentHandEntry {
   holeCardsSource: 'results' | 'replay' | null
   /** See `PreflopLine`'s doc comment for the taxonomy. `null` when no preflop data exists for this hand/player. */
   preflopLine: PreflopLine | null
+  /** See `PostflopLines`. Every street is `null` for hands that ended preflop. */
+  postflopLines: PostflopLines
   /** Player reached the flop (BET_ABLE or ALL_IN when FLOP was dealt), or -- when no FLOP phase was even recorded because the hand went all-in preflop and ran out without any `EVT_DEAL_ROUND` -- reached showdown at all (which is only possible once the full board is out). */
   sawFlop: boolean
   /** `isShowdownParticipant(result)` for this player's result row -- true for any real comparison or a showdown muck, false for uncontested wins/folds. */

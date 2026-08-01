@@ -4,6 +4,7 @@ import Hud from './Hud'
 import type { PlayerStats } from '../types/entities'
 import type { StatDisplayConfig } from '../types/filters'
 import type { RealTimeStats } from '../realtime-stats/realtime-stats-service'
+import { DEFAULT_RECENT_HANDS_LIMIT } from '../utils/recent-hands-config'
 
 const mockChromeRuntimeSendMessage = jest.fn()
 global.chrome = {
@@ -594,7 +595,7 @@ describe('Hud', () => {
             recentHands: {
               computedAt: Date.now(),
               hands: [
-                { handId: 1, approxTimestamp: Date.now(), position: 0, holeCards: ['As', 'Ah'], preflopLine: 'Open', sawFlop: true, wentToShowdown: true, won: true, netChips: 1240 },
+                { handId: 1, approxTimestamp: Date.now(), position: 0, holeCards: ['As', 'Ah'], preflopLine: 'Open', postflopLines: { flop: 'XC', turn: null, river: null }, sawFlop: true, wentToShowdown: true, won: true, netChips: 1240 },
               ],
             },
           })
@@ -628,10 +629,12 @@ describe('Hud', () => {
       await waitFor(() => {
         expect(screen.getByTestId('recent-hands-panel')).toBeInTheDocument()
       })
-      expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
-        { action: 'getRecentHands', playerId: mockPlayerStats.playerId },
-        expect.any(Function)
-      )
+      await waitFor(() => {
+        expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+          { action: 'getRecentHands', playerId: mockPlayerStats.playerId, limit: DEFAULT_RECENT_HANDS_LIMIT },
+          expect.any(Function)
+        )
+      })
     })
 
     it('データがない("No Data")プレイヤーにもトリガーとパネルを表示できる', async () => {
@@ -704,12 +707,14 @@ describe('Hud', () => {
         expect(screen.getAllByTestId('recent-hands-panel')).toHaveLength(2)
       })
       expect(screen.getAllByTestId('recent-hands-panel').map(panel => panel.dataset.playerId)).toEqual(['123', '456'])
+      await waitFor(() => {
+        expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+          { action: 'getRecentHands', playerId: 123, limit: DEFAULT_RECENT_HANDS_LIMIT },
+          expect.any(Function)
+        )
+      })
       expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
-        { action: 'getRecentHands', playerId: 123 },
-        expect.any(Function)
-      )
-      expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
-        { action: 'getRecentHands', playerId: 456 },
+        { action: 'getRecentHands', playerId: 456, limit: DEFAULT_RECENT_HANDS_LIMIT },
         expect.any(Function)
       )
 
