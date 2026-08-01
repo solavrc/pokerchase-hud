@@ -14,8 +14,9 @@ import { firebaseAuthService } from './services/firebase-auth-service'
 import { autoSyncService } from './services/auto-sync-service'
 import { content_scripts } from '../manifest.json'
 import { registerStreamSubscriptions } from './background/ports'
-import { registerEventIngestion } from './background/event-ingestion'
+import { createReplayLedgerAuditDeps, registerEventIngestion } from './background/event-ingestion'
 import { exposeReplayFetchForDevtools } from './background/replay-fetch-bridge'
+import { resumePendingReplayLedgerAudits } from './background/replay-ledger-audit'
 import { registerMessageRouter } from './background/message-router'
 import { checkOnUpdate } from './background/rebuild-advisory'
 import { initUpdateManager } from './background/update-manager'
@@ -194,6 +195,12 @@ registerEventIngestion(service)
  * SWのDevToolsコンソールから `await pokerChaseReplayFetch([handId, ...])`。
  */
 exposeReplayFetchForDevtools()
+
+/**
+ * 前回のService Workerが終わらせられなかった台帳の突き合わせを再開する。
+ * 保留が無ければ`meta`を1件読むだけで終わる。
+ */
+void resumePendingReplayLedgerAudits(createReplayLedgerAuditDeps(service))
 
 /**
  * Forced update（sola承認）: 安全な瞬間にダウンロード済み更新を自動適用する。

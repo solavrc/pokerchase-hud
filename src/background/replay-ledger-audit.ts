@@ -44,8 +44,88 @@ import {
 
 export const REPLAY_LEDGER_AUDIT_META_ID = 'replayLedgerAudit'
 
+/**
+ * 実行待ち・実行中の台帳の控え。
+ *
+ * この監査は全走査を含みうるので、Service Workerの非アクティブ期限をまたぐ
+ * ことがある。ポートのハンドラは既に同期的に返っており、キューと走査の進捗は
+ * モジュールスコープにしか無いため、MV3がいずれかのawaitでworkerを終了すると
+ * 受け取った台帳ごと消え、次回起動でも再開できない（欠損検出が無通知で
+ * 終わる）。台帳そのものを`meta`へ控えて、起動時に再開する。
+ *
+ * 走査カーソルは控えない。この監査は読み取りと`meta`への上書きだけで副作用が
+ * 無く冪等なので、途中経過を持ち越すより最初からやり直すほうが単純で、
+ * 「取りこぼさない」という目的には十分足りる。
+ */
+export const REPLAY_LEDGER_AUDIT_PENDING_META_ID = 'replayLedgerAuditPending'
+
+/**
+ * 再開の上限。毎回worker停止で終わる台帳（Lakeが極端に大きい等）を、起動の
+ * たびに走らせ続けないため。上限に達したら破棄する ―― 診断なので、次に
+ * リプレイ一覧を開けばまた積まれる。
+ */
+export const REPLAY_LEDGER_AUDIT_MAX_ATTEMPTS = 3
+
 /** 監査の直列化キュー（受信順を保つ）。 */
 let auditQueue: Promise<void> = Promise.resolve()
+
+/**
+ * 保留リストのread-modify-writeの直列化キュー。受信（キュー投入前）と完了
+ * （キューの中）は別々の時点で走るので、リスト操作自体を直列化しないと
+ * 片方の書き込みがもう片方を巻き戻す。
+ */
+let pendingMetaQueue: Promise<void> = Promise.resolve()
+
+export interface PendingReplayLedgerAudit {
+  ledger: ReplayLedger
+  /** 台帳を受信した時点の`playerId`。再開後もアカウント変更ガードを効かせる。 */
+  playerIdAtReceipt?: number
+  receivedAt: number
+  /** 実行を開始した回数。`REPLAY_LEDGER_AUDIT_MAX_ATTEMPTS`で打ち切る。 */
+  attempts: number
+}
+
+const isPendingEntry = (value: unknown): value is PendingReplayLedgerAudit => {
+  if (typeof value !== 'object' || value === null) return false
+  const record = value as Record<string, unknown>
+  const ledger = record.ledger
+  if (typeof ledger !== 'object' || ledger === null) return false
+  if (!Array.isArray((ledger as { hands?: unknown }).hands)) return false
+  return typeof record.receivedAt === 'number' && typeof record.attempts === 'number'
+}
+
+const readPendingAudits = async (db: PokerChaseDB): Promise<PendingReplayLedgerAudit[]> => {
+  const record = await db.meta.get(REPLAY_LEDGER_AUDIT_PENDING_META_ID)
+  const list = (record?.value as { pending?: unknown } | undefined)?.pending
+  if (!Array.isArray(list)) return []
+  return list.filter(isPendingEntry)
+}
+
+/** 保留リストを直列化して書き換える。 */
+const updatePendingAudits = (
+  db: PokerChaseDB,
+  now: number,
+  update: (current: PendingReplayLedgerAudit[]) => PendingReplayLedgerAudit[]
+): Promise<void> => {
+  const next = pendingMetaQueue.then(async () => {
+    const current = await readPendingAudits(db)
+    const updated = update(current)
+    if (updated.length === 0) {
+      await db.meta.delete(REPLAY_LEDGER_AUDIT_PENDING_META_ID)
+      return
+    }
+    await db.meta.put({
+      id: REPLAY_LEDGER_AUDIT_PENDING_META_ID,
+      value: { pending: updated },
+      updatedAt: now
+    })
+  })
+  pendingMetaQueue = next.catch(() => undefined)
+  return next
+}
+
+const isSamePending = (a: PendingReplayLedgerAudit, b: PendingReplayLedgerAudit): boolean =>
+  a.receivedAt === b.receivedAt && a.ledger.battleType === b.ledger.battleType
 
 export interface ReplayLedgerChipDiffMismatch {
   handId: number
@@ -432,27 +512,98 @@ export const handleReplayLedgerPortMessage = (
   // 受信時が undefined なのはコールドスタートで復元前のときなので、その場合
   // だけは復元後の値を採用する（getter にしてある理由）。
   const playerIdAtReceipt = deps.getPlayerId()
+  enqueueReplayLedgerAudit(deps, {
+    ledger: snapshot,
+    playerIdAtReceipt,
+    receivedAt: deps.now(),
+    attempts: 1
+  }, true)
+  return true
+}
+
+/**
+ * 1件の台帳を保留リストへ控えたうえで、直列化キューへ積む。
+ *
+ * 控えるのは**キュー投入前**（先行監査の最中にworkerが死んでも残るように）。
+ * 控えの書き込みに失敗しても監査自体は続ける ―― 再開できなくなるだけで、
+ * 今この場で走らせないほうが悪い。
+ */
+const enqueueReplayLedgerAudit = (
+  deps: ReplayLedgerAuditDeps,
+  entry: PendingReplayLedgerAudit,
+  persist: boolean
+): void => {
+  const persisted = persist
+    ? updatePendingAudits(deps.db, entry.receivedAt, current => [
+      // 同じカテゴリの古い控えは新しい受信で置き換える。結果は同じ`meta`キーへ
+      // 上書きされるので、古いほうを再開する意味が無い。
+      ...current.filter(item => item.ledger.battleType !== entry.ledger.battleType),
+      entry
+    ]).catch(error => {
+      console.warn('[replay-ledger] 保留中の台帳を控えられませんでした:', error)
+    })
+    : Promise.resolve()
+
   auditQueue = auditQueue
     .then(async () => {
-      await deps.waitUntilConsistent()
-      if (deps.isBusy?.()) {
-        console.info('[replay-ledger] 長時間操作の実行中のため突き合わせを見送りました')
-        return
+      await persisted
+      try {
+        await deps.waitUntilConsistent()
+        if (deps.isBusy?.()) {
+          console.info('[replay-ledger] 長時間操作の実行中のため突き合わせを見送りました')
+          return
+        }
+        const playerId = deps.getPlayerId()
+        if (entry.playerIdAtReceipt !== undefined && entry.playerIdAtReceipt !== playerId) {
+          console.info('[replay-ledger] 待機中にアカウントが変わったため突き合わせを見送りました')
+          return
+        }
+        await auditReplayLedger(deps.db, playerId, entry.ledger, deps.now(), deps.isBusy)
+      } finally {
+        // 見送り・失敗も含めて控えを外す。ここまで到達した＝workerは生きていた
+        // ので、次回起動で再開すべき仕事は残っていない。
+        await updatePendingAudits(deps.db, deps.now(), current =>
+          current.filter(item => !isSamePending(item, entry))
+        ).catch(() => undefined)
       }
-      const playerId = deps.getPlayerId()
-      if (playerIdAtReceipt !== undefined && playerIdAtReceipt !== playerId) {
-        console.info('[replay-ledger] 待機中にアカウントが変わったため突き合わせを見送りました')
-        return
-      }
-      await auditReplayLedger(deps.db, playerId, snapshot, deps.now(), deps.isBusy)
     })
     .catch(error => {
       console.error('[replay-ledger] 台帳の突き合わせに失敗しました:', error)
     })
-  return true
+}
+
+/**
+ * Service Worker起動時に、前回のworkerが終わらせられなかった突き合わせを
+ * 再開する。保留が無ければ1行もDBを読まない（`meta`の1件取得のみ）。
+ */
+export const resumePendingReplayLedgerAudits = async (
+  deps: ReplayLedgerAuditDeps
+): Promise<void> => {
+  let pending: PendingReplayLedgerAudit[]
+  try {
+    pending = await readPendingAudits(deps.db)
+  } catch (error) {
+    console.warn('[replay-ledger] 保留中の台帳を読めませんでした:', error)
+    return
+  }
+  for (const entry of pending) {
+    const attempts = entry.attempts + 1
+    if (attempts > REPLAY_LEDGER_AUDIT_MAX_ATTEMPTS) {
+      console.warn(
+        `[replay-ledger] BattleType=${entry.ledger.battleType}: ` +
+        '再開の上限に達したため保留中の突き合わせを破棄しました'
+      )
+      await updatePendingAudits(deps.db, deps.now(), current =>
+        current.filter(item => !isSamePending(item, entry))
+      ).catch(() => undefined)
+      continue
+    }
+    enqueueReplayLedgerAudit(deps, { ...entry, attempts }, true)
+  }
 }
 
 /** テスト用。直列化キューを初期化する。 */
 export const __resetReplayLedgerQueueForTests = (): void => {
   auditQueue = Promise.resolve()
+  pendingMetaQueue = Promise.resolve()
 }

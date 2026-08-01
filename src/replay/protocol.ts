@@ -94,7 +94,11 @@ const isPlainRecord = (value: unknown): value is Record<string, unknown> => {
   return prototype === Object.prototype || prototype === null
 }
 
-/** Remove transport credentials before a replay response crosses into the extension. */
+/**
+ * リプレイ応答が拡張コンテキストへ渡る前に、輸送用の資格情報を落とす。
+ * `session`（回転するセッショントークン）と`requestKey`は境界を越えては
+ * ならない（MUST NOT）。
+ */
 export const sanitizeReplayDetail = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(sanitizeReplayDetail)
   if (!isPlainRecord(value)) return value

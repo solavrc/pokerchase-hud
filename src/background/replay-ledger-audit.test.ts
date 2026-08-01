@@ -3,10 +3,14 @@ import { PokerChaseDB } from '../db/poker-chase-db'
 import { REPLAY_PORT_LEDGER, type ReplayLedger } from '../replay/protocol'
 import { ApiType } from '../types/api'
 import {
+  REPLAY_LEDGER_AUDIT_MAX_ATTEMPTS,
   REPLAY_LEDGER_AUDIT_META_ID,
+  REPLAY_LEDGER_AUDIT_PENDING_META_ID,
   __resetReplayLedgerQueueForTests,
   auditReplayLedger,
-  handleReplayLedgerPortMessage
+  handleReplayLedgerPortMessage,
+  resumePendingReplayLedgerAudits,
+  type PendingReplayLedgerAudit
 } from './replay-ledger-audit'
 import type { Hand } from '../types/entities'
 
@@ -541,6 +545,103 @@ describe('replay ledger audit', () => {
       }, depsOf(db))).toBe(true)
 
       expect(await waitForAuditResult(db)).toMatchObject({ notCapturedHandIds: [601] })
+    })
+  })
+
+  // Codexレビュー指摘: 全走査を伴う監査はService Workerの非アクティブ期限を
+  // またぎうる。ポートのハンドラは既に同期的に返っているので、モジュール
+  // スコープのキューごと消えると受け取った台帳が失われ、再開もできない。
+  describe('Service Worker再起動をまたぐ再開', () => {
+    const readPending = async (): Promise<PendingReplayLedgerAudit[]> => {
+      const record = await db.meta.get(REPLAY_LEDGER_AUDIT_PENDING_META_ID)
+      return ((record?.value as { pending?: PendingReplayLedgerAudit[] } | undefined)?.pending) ?? []
+    }
+
+    test('監査の実行中は台帳を控え、完了したら控えを外す', async () => {
+      await db.hands.bulkPut([hand(3100, 10)])
+      let released!: () => void
+      const gate = new Promise<void>(resolve => { released = resolve })
+
+      handleReplayLedgerPortMessage({
+        type: REPLAY_PORT_LEDGER,
+        battleType: 0,
+        cardOpenEndDate: 0,
+        isExpiredCardOpen: false,
+        hands: [{ handId: 3100, startTime: 1785500000, chipDiff: 10 }]
+      }, depsOf(db, { waitUntilConsistent: () => gate }))
+
+      // 控えは監査の完了を待たずに書かれている（＝ここでworkerが死んでも残る）
+      for (let attempt = 0; attempt < 100 && (await readPending()).length === 0; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 5))
+      }
+      const pending = await readPending()
+      expect(pending).toHaveLength(1)
+      expect(pending[0]!.ledger.hands).toEqual([{ handId: 3100, startTime: 1785500000, chipDiff: 10 }])
+      expect(pending[0]!.attempts).toBe(1)
+
+      released()
+      await waitForAuditResult(db)
+      for (let attempt = 0; attempt < 100 && (await readPending()).length > 0; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 5))
+      }
+      expect(await readPending()).toEqual([])
+    })
+
+    test('控えが残っていれば起動時に突き合わせを再開する', async () => {
+      await db.hands.bulkPut([hand(3300, 10)])
+      // 前回のworkerが監査の途中で終了した状態を再現する
+      await db.meta.put({
+        id: REPLAY_LEDGER_AUDIT_PENDING_META_ID,
+        value: {
+          pending: [{
+            ledger: ledgerOf([
+              { handId: 3300, startTime: 1785500000, chipDiff: 10 },
+              { handId: 3301, startTime: 1785500060, chipDiff: 20 }
+            ]),
+            playerIdAtReceipt: HERO,
+            receivedAt: NOW - 1000,
+            attempts: 1
+          }]
+        },
+        updatedAt: NOW - 1000
+      })
+
+      await resumePendingReplayLedgerAudits(depsOf(db))
+
+      expect(await waitForAuditResult(db)).toMatchObject({ notCapturedHandIds: [3301] })
+      for (let attempt = 0; attempt < 100 && (await readPending()).length > 0; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 5))
+      }
+      expect(await readPending()).toEqual([])
+    })
+
+    // 毎回worker停止で終わる台帳を、起動のたびに走らせ続けないため。
+    test('再開の上限に達した控えは破棄して実行しない', async () => {
+      await db.hands.bulkPut([hand(3500, 10)])
+      await db.meta.put({
+        id: REPLAY_LEDGER_AUDIT_PENDING_META_ID,
+        value: {
+          pending: [{
+            ledger: ledgerOf([{ handId: 3500, startTime: 1785500000, chipDiff: 10 }]),
+            playerIdAtReceipt: HERO,
+            receivedAt: NOW - 1000,
+            attempts: REPLAY_LEDGER_AUDIT_MAX_ATTEMPTS
+          }]
+        },
+        updatedAt: NOW - 1000
+      })
+
+      await resumePendingReplayLedgerAudits(depsOf(db))
+
+      await new Promise(resolve => setTimeout(resolve, 80))
+      expect(await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)).toBeUndefined()
+      expect(await readPending()).toEqual([])
+    })
+
+    test('控えが無ければ何も実行しない', async () => {
+      await resumePendingReplayLedgerAudits(depsOf(db))
+      await new Promise(resolve => setTimeout(resolve, 40))
+      expect(await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)).toBeUndefined()
     })
   })
 })

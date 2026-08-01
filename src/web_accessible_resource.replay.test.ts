@@ -578,4 +578,136 @@ describe('main-world experimental replay bridge', () => {
     XMLHttpRequest.prototype.open = originalOpen
     XMLHttpRequest.prototype.send = originalSend
   })
+
+  // Codexレビュー指摘: 台帳は拡張側へ渡って永続化され、受信時点の playerId と
+  // 突き合わされる。旧世代（＝別アカウントでありうる）の応答を転送すると、
+  // 偽の未キャプチャ・偽のチップ不一致が監査結果として残る。
+  test('drops a ledger whose response belongs to a superseded auth generation', async () => {
+    class FakeWebSocket {
+      addEventListener = jest.fn()
+    }
+    ;(window as any).WebSocket = FakeWebSocket
+    ;(window as any).fetch = jest.fn()
+
+    const originalOpen = XMLHttpRequest.prototype.open
+    const originalSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.open = jest.fn() as any
+    XMLHttpRequest.prototype.send = jest.fn() as any
+    const postMessageSpy = jest.spyOn(window, 'postMessage')
+    postMessageSpy.mockClear()
+
+    jest.isolateModules(() => {
+      require('./web_accessible_resource')
+    })
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled: true }
+    }))
+
+    // アカウントAの `/replay/list` が応答待ちのまま
+    const stale = new XMLHttpRequest()
+    stale.open('POST', 'https://production.api-poker-chase.com/replay/list')
+    Object.defineProperty(stale, 'response', {
+      value: arrayBufferOf(LIST_ENVELOPE),
+      configurable: true
+    })
+    stale.send(encode({
+      param: { BattleType: 0 }, session: 'sess-A', platform: 2,
+      appVer: '2.06', dataVer: 'ver-A', masterVer: 'm'
+    }))
+    await Promise.resolve(); await Promise.resolve()
+
+    // その間にアカウントBのエンベロープを捕獲する（別リクエスト）
+    const fresh = new XMLHttpRequest()
+    fresh.open('POST', 'https://production.api-poker-chase.com/user/status')
+    fresh.send(encode({
+      param: {}, session: 'sess-B', platform: 2,
+      appVer: '2.06', dataVer: 'ver-B', masterVer: 'm'
+    }))
+    await Promise.resolve(); await Promise.resolve()
+
+    // ここでAの応答が返る
+    stale.dispatchEvent(new Event('loadend'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(postMessageSpy.mock.calls.some(
+      call => (call[0] as { type?: string })?.type === REPLAY_BRIDGE_LEDGER
+    )).toBe(false)
+
+    XMLHttpRequest.prototype.open = originalOpen
+    XMLHttpRequest.prototype.send = originalSend
+  })
+
+  // Codexレビュー指摘: 間隔待ちの最中に無効化されると、待機前のチェックは
+  // 通過済みなので `fetchReplayDetail` が呼ばれる。資格情報は消えているので
+  // 実POSTは起きないが、偽の `auth-envelope-unavailable`（retryable）が
+  // 結果に積まれ、「無効化は次の1件から効く」という返却契約が崩れる。
+  test('does not append a result for a hand disabled during the inter-request delay', async () => {
+    class FakeWebSocket {
+      addEventListener = jest.fn()
+    }
+    ;(window as any).WebSocket = FakeWebSocket
+
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      arrayBuffer: jest.fn().mockResolvedValue(arrayBufferOf(SUCCESS_ENVELOPE))
+    })
+    ;(window as any).fetch = fetchMock
+
+    const originalOpen = XMLHttpRequest.prototype.open
+    const originalSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.open = jest.fn() as any
+    XMLHttpRequest.prototype.send = jest.fn() as any
+    const postMessageSpy = jest.spyOn(window, 'postMessage')
+    postMessageSpy.mockClear()
+
+    jest.isolateModules(() => {
+      require('./web_accessible_resource')
+    })
+
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', 'https://production.api-poker-chase.com/user/status')
+    xhr.send(encode({
+      param: {}, session: 'page-only-secret', platform: 2,
+      appVer: '2.06', dataVer: '2_06_0_test', masterVer: 'master-test'
+    }))
+    await Promise.resolve()
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled: true }
+    }))
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'request-delay', handIds: [11, 12] }
+    }))
+
+    // 1件目が終わり、2件目の間隔待ちに入るまで進める
+    for (let i = 0; i < 30; i++) await Promise.resolve()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    // 待機中に無効化する
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled: false }
+    }))
+    await new Promise(resolve => setTimeout(resolve, REPLAY_FETCH_INTERVAL_MS + 50))
+    for (let i = 0; i < 30; i++) await Promise.resolve()
+
+    // 無効化の後に実POSTは起きない
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // 2件目は結果に一切現れない ―― 偽の `auth-envelope-unavailable` を積まない。
+    // （`jest.isolateModules`で読み直した過去のインスタンスも同じmessageを
+    // 受けて結果を返すので、requestIdごとに1件へ絞らず全件を検査する。）
+    const postedForRequest = postMessageSpy.mock.calls
+      .map(call => call[0] as { type?: string, requestId?: string, results?: Array<{ handId: number }> })
+      .filter(m => m.type === REPLAY_BRIDGE_RESULT && m.requestId === 'request-delay')
+    expect(postedForRequest.length).toBeGreaterThan(0)
+    for (const message of postedForRequest) {
+      expect(message.results?.some(result => result.handId === 12)).toBe(false)
+    }
+
+    XMLHttpRequest.prototype.open = originalOpen
+    XMLHttpRequest.prototype.send = originalSend
+  }, 15_000)
 })

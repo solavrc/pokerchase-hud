@@ -420,17 +420,26 @@ const postReplayLedger = (url: URL, decoded: unknown): void => {
  * 新しい版へ混ぜてしまう（アカウント切替を伴えば別アカウントの資格情報が
  * 混じる）。捕獲のたびに丸ごと差し替えるので、参照の同一性で判定できる。
  * `fetchReplayDetail` 側と同じガードを、受動傍受の経路にも置く。
+ *
+ * 世代が変わっていたら**台帳も破棄する**（MUST）。台帳は拡張側へ渡って
+ * 永続化され、受信時点の `playerId` と突き合わされる。旧アカウントの
+ * HandId/ChipDiff を新アカウントのローカル履歴と比べると、偽の未キャプチャ・
+ * 偽のチップ不一致が `replayLedgerAudit` に残る。
  */
 const observeApiResponse = (
   url: URL,
   decoded: unknown,
   authAtRequest: ReplayAuthEnvelope | undefined
 ): void => {
-  if (replayAuth !== undefined && replayAuth === authAtRequest &&
+  // 回転の書き戻しより先に判定する。書き戻すと `replayAuth` の参照が
+  // 変わるため、後から比べると必ず不一致になる。
+  const sameAuthGeneration = replayAuth === authAtRequest
+  if (sameAuthGeneration && authAtRequest !== undefined &&
     typeof decoded === 'object' && decoded !== null &&
     'session' in decoded && typeof decoded.session === 'string') {
     replayAuth = { ...authAtRequest, session: decoded.session }
   }
+  if (!sameAuthGeneration) return
   postReplayLedger(url, decoded)
 }
 
@@ -641,7 +650,14 @@ const handleReplayFetch = async (message: ReplayFetchRequest): Promise<void> => 
     // 最大99件を撃ち続けてはいけない。
     if (!replayImportEnabled) break
     // 先頭は待たない。1件だけの取得は従来どおり即座に走る。
-    if (results.length > 0) await delay(REPLAY_FETCH_INTERVAL_MS)
+    if (results.length > 0) {
+      await delay(REPLAY_FETCH_INTERVAL_MS)
+      // 待機の**後**にも確認する（MUST）。間隔待ちの最中に無効化されると、
+      // 上のチェックは通過済みなので `fetchReplayDetail` が呼ばれ、
+      // 資格情報が消えている分だけ偽の `auth-envelope-unavailable`
+      // （retryable）が結果に積まれる。
+      if (!replayImportEnabled) break
+    }
     results.push(await fetchReplayDetail(handId))
   }
   window.postMessage({
