@@ -4,6 +4,7 @@ import { REPLAY_PORT_LEDGER, type ReplayLedger } from '../replay/protocol'
 import { ApiType } from '../types/api'
 import {
   REPLAY_LEDGER_AUDIT_META_ID,
+  __resetReplayLedgerQueueForTests,
   auditReplayLedger,
   handleReplayLedgerPortMessage
 } from './replay-ledger-audit'
@@ -73,6 +74,7 @@ describe('replay ledger audit', () => {
     await db.hands.clear()
     await db.meta.clear()
     await db.apiEvents.clear()
+    __resetReplayLedgerQueueForTests()
   })
 
   afterEach(() => db.close())
@@ -162,6 +164,29 @@ describe('replay ledger audit', () => {
 
     expect(result.notCapturedHandIds).toEqual([])
     expect(result.derivationMissingHandIds).toEqual([1001])
+  })
+
+  // Codexレビュー指摘: startTimeはサーバ時刻、approxTimestampはクライアント時計。
+  // 素朴に比べると、端末時計が進んでいれば観測済みのハンドまで対象外になる。
+  test('端末時計が進んでいても、観測済みのハンドを対象外にしない', async () => {
+    const SKEW = 6 * 3600_000 // 端末が6時間進んでいる
+    // ローカルの3ハンドはすべてズレた時刻で記録されている
+    await db.hands.bulkPut([
+      hand(1200, 10, 1785500000_000 + SKEW),
+      hand(1201, 20, 1785500060_000 + SKEW),
+      hand(1202, 30, 1785500120_000 + SKEW)
+    ])
+
+    const result = await auditReplayLedger(db, HERO, ledgerOf([
+      { handId: 1200, startTime: 1785500000, chipDiff: 10 },
+      { handId: 1201, startTime: 1785500060, chipDiff: 20 },
+      { handId: 1202, startTime: 1785500120, chipDiff: 30 }
+    ]), NOW)
+
+    // 補正が無いと floor(=1785500000000+SKEW) を全件が下回り全部対象外になる
+    expect(result.outOfObservationWindowHands).toBe(0)
+    expect(result.listedHands).toBe(3)
+    expect(result.chipDiffMismatches).toEqual([])
   })
 
   test('ChipDiffとnetChipsの食い違いを報告する', async () => {
@@ -281,6 +306,28 @@ describe('replay ledger audit', () => {
 
       expect(await waitForAuditResult(db)).toMatchObject({ notCapturedHandIds: [] })
       expect(playerIdReadyAt).toBe(1)
+    })
+
+    // Codexレビュー指摘: 同じキーへ書くので、重い監査が後発の軽い監査より
+    // 遅く終わると古い結果が新しい結果を上書きする。
+    test('複数の台帳が重なっても受信順に直列化して最後の結果を残す', async () => {
+      await db.hands.bulkPut([hand(1300, 10), hand(1301, 20)])
+      const ledgerMsg = (battleType: number, handId: number) => ({
+        type: REPLAY_PORT_LEDGER,
+        battleType,
+        cardOpenEndDate: 0,
+        isExpiredCardOpen: false,
+        hands: [{ handId, startTime: 1785500000, chipDiff: handId === 1300 ? 10 : 20 }]
+      })
+      // 先に受けたほうを意図的に遅くする
+      handleReplayLedgerPortMessage(ledgerMsg(0, 1300), depsOf(db, {
+        waitUntilConsistent: () => new Promise(resolve => setTimeout(resolve, 60))
+      }))
+      handleReplayLedgerPortMessage(ledgerMsg(4, 1301), depsOf(db))
+
+      await new Promise(resolve => setTimeout(resolve, 300))
+      const stored = await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)
+      expect((stored?.value as { battleType: number }).battleType).toBe(4)
     })
 
     test('台帳を受け取ると突き合わせを実行する', async () => {

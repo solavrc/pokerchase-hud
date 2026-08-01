@@ -38,6 +38,9 @@ import {
 
 export const REPLAY_LEDGER_AUDIT_META_ID = 'replayLedgerAudit'
 
+/** 監査の直列化キュー（受信順を保つ）。 */
+let auditQueue: Promise<void> = Promise.resolve()
+
 export interface ReplayLedgerChipDiffMismatch {
   handId: number
   /** サーバの台帳が言う純増減。 */
@@ -175,12 +178,33 @@ export const auditReplayLedger = async (
 ): Promise<ReplayLedgerAuditResult> => {
   const all = ledger.hands.slice(0, REPLAY_LEDGER_MAX_ENTRIES)
 
-  // 観測開始前のハンドは判定しない（新規インストール・再有効化・全データ削除後）
+  // 観測開始前のハンドは判定しない（新規インストール・再有効化・全データ削除後）。
+  //
+  // 比較する2つの時刻は時計系が違う: `startTime` はサーバ時刻、
+  // `approxTimestamp` はクライアントの `Date.now()`。素朴に比べると、端末時計が
+  // 進んでいれば観測済みのハンドまで対象外になり、遅れていればインストール前の
+  // ハンドを欠損候補に入れてしまう。両方の時刻が分かっているハンド（台帳にも
+  // ローカルにも在るもの）から差を測って補正する。中央値なのは、1件の外れ値
+  //（長考で受信が遅れたハンド等）に引きずられないため。
+  const matched = await db.hands.bulkGet(all.map(entry => entry.handId))
+  const offsets = all
+    .map((entry, index) => {
+      const hand = matched[index]
+      return hand?.approxTimestamp === undefined
+        ? undefined
+        : hand.approxTimestamp - entry.startTime * 1000
+    })
+    .filter((offset): offset is number => offset !== undefined)
+    .sort((a, b) => a - b)
+  const clockOffsetMs = offsets.length > 0 ? offsets[Math.floor(offsets.length / 2)]! : undefined
+
   const oldestLocal = await db.hands.orderBy('approxTimestamp').first()
   const observationFloorMs = oldestLocal?.approxTimestamp
-  const entries = observationFloorMs === undefined
+  // 補正できない＝台帳のどのハンドもローカルに無い。新規インストール直後が
+  // 圧倒的に多いので、全件を対象外にする方へ倒す（偽陽性を出さない）。
+  const entries = observationFloorMs === undefined || clockOffsetMs === undefined
     ? []
-    : all.filter(entry => entry.startTime * 1000 >= observationFloorMs)
+    : all.filter(entry => entry.startTime * 1000 + clockOffsetMs >= observationFloorMs)
   const outOfObservationWindowHands = all.length - entries.length
 
   const localHands = await db.hands.bulkGet(entries.map(entry => entry.handId))
@@ -314,11 +338,22 @@ export const handleReplayLedgerPortMessage = (
     isExpiredCardOpen: ledger.isExpiredCardOpen === true,
     hands: ledger.hands
   }
-  void (async () => {
-    await deps.waitUntilConsistent()
-    await auditReplayLedger(deps.db, deps.getPlayerId(), snapshot, deps.now())
-  })().catch(error => {
-    console.error('[replay-ledger] 台帳の突き合わせに失敗しました:', error)
-  })
+  // 受信順に直列化する。カテゴリを素早く切り替えると複数の応答が重なり、
+  // 全走査を伴う重い監査が後発の軽い監査より遅く終わりうる。同じキーへ書くので、
+  // その場合は古い結果が新しい結果を上書きして「最新スナップショット」が
+  // 受信順と逆になる。
+  auditQueue = auditQueue
+    .then(async () => {
+      await deps.waitUntilConsistent()
+      await auditReplayLedger(deps.db, deps.getPlayerId(), snapshot, deps.now())
+    })
+    .catch(error => {
+      console.error('[replay-ledger] 台帳の突き合わせに失敗しました:', error)
+    })
   return true
+}
+
+/** テスト用。直列化キューを初期化する。 */
+export const __resetReplayLedgerQueueForTests = (): void => {
+  auditQueue = Promise.resolve()
 }

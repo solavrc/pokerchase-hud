@@ -38,6 +38,9 @@ interface PendingRequest {
 
 const pending = new Map<string, PendingRequest>()
 
+/** ページ側のキューに合わせて依頼を直列化する。 */
+let dispatchQueue: Promise<void> = Promise.resolve()
+
 const settle = (requestId: string, results: ReplayFetchItemResult[]): void => {
   const request = pending.get(requestId)
   if (!request) return
@@ -100,23 +103,36 @@ export const requestReplayDetails = async (
   const port = connectedPorts.values().next().value
   if (!port) return { success: false, error: 'no connected game tab' }
 
+  // ページ側は `replayFetchQueue` で依頼を直列化するので、こちらも直列化して
+  // **自分の番が来てから**タイマーを開始する。送信時点で自分の件数だけを見て
+  // 起動すると、先行バッチの間隔待ちで自分がまだ1件も送られていないうちに
+  // 期限切れになり、空結果を返した後で依頼元不在のPOSTが走る。
+  const slot = dispatchQueue
+  let releaseSlot!: () => void
+  dispatchQueue = new Promise<void>(resolve => { releaseSlot = resolve })
+  await slot
+  try {
+
   // 連番ではなくUUID。連番はService Workerの再起動ごとに0へ戻るが、ページ側の
   // 逐次キューと進行中のHTTP取得はページが生きている限り継続する。旧SWの
   // `devtools-1` が処理中にSWが落ち、新SWが同じ番号で依頼を出すと、旧バッチの
   // 応答が再接続後のポート経由で届いて新しい待ちを誤って解決し、別のHandIdの
   // 結果が返る。
-  const requestId = `devtools-${crypto.randomUUID()}`
-  const results = await new Promise<ReplayFetchItemResult[]>(resolve => {
-    const timer = setTimeout(() => settle(requestId, []), replayFetchBatchTimeoutMs(handIds.length))
-    pending.set(requestId, { port, resolve, timer })
-    try {
-      port.postMessage({ type: REPLAY_PORT_FETCH, requestId, handIds })
-    } catch (error) {
-      settle(requestId, [])
-    }
-  })
+    const requestId = `devtools-${crypto.randomUUID()}`
+    const results = await new Promise<ReplayFetchItemResult[]>(resolve => {
+      const timer = setTimeout(() => settle(requestId, []), replayFetchBatchTimeoutMs(handIds.length))
+      pending.set(requestId, { port, resolve, timer })
+      try {
+        port.postMessage({ type: REPLAY_PORT_FETCH, requestId, handIds })
+      } catch (error) {
+        settle(requestId, [])
+      }
+    })
 
-  return { success: true, results }
+    return { success: true, results }
+  } finally {
+    releaseSlot()
+  }
 }
 
 /**
@@ -132,4 +148,5 @@ export const exposeReplayFetchForDevtools = (): void => {
 export const __resetReplayFetchBridgeForTests = (): void => {
   for (const request of pending.values()) clearTimeout(request.timer)
   pending.clear()
+  dispatchQueue = Promise.resolve()
 }
