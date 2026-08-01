@@ -30,12 +30,12 @@ watermark rule).
   await on token acquisition/refresh inside the request funnel. Ordering: the
   SW-startup auth restore (`firebaseAuthService.ready()`) itself bumps the
   generation, so the snapshot is taken *after* awaiting `ready()` and *before*
-  the first token acquisition — a rule-following change must not treat the
+  the first token acquisition — a rule-following change MUST NOT treat the
   initial restore as an account switch.
 - Why it matters here: users switch Google accounts mid-session. A uid-only
   comparison is blind to A→B→A round trips (a stale refresh response from the
   first A session overwrote the fresh session's tokens), and per-account sync
-  bookkeeping must stay correct across switches — cross-account uploads are an
+  bookkeeping MUST stay correct across switches — cross-account uploads are an
   accepted residual risk, corrupted watermarks are not. A hung token endpoint
   once latched the sync-in-flight flag forever, which also blocks forced
   updates.

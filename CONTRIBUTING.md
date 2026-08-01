@@ -20,7 +20,7 @@ npm run build
 `postbuild` lifecycle script to create `extension.zip`. Use `npm run pack:crx` only
 when you have a signing key and need a signed CRX. Generated outputs (`dist/`,
 `extension.zip`, `extension.crx`, `e2e/.build/`, and `e2e/out/`) are gitignored and
-must not be committed.
+MUST NOT be committed.
 
 Jest unit/component tests are co-located with their source files. The real-browser
 E2E harness is separate and is not run by CI; see [e2e/README.md](e2e/README.md) for
@@ -365,7 +365,7 @@ detectActionDetails: (context) => {
 }
 ```
 
-Note: The system uses TypeScript enums for type safety, so new flags must be added to the enum before use.
+Note: The system uses TypeScript enums for type safety, so new flags MUST be added to the enum before use.
 
 ### Need Help?
 
@@ -376,7 +376,13 @@ Note: The system uses TypeScript enums for type safety, so new flags must be add
 ## 📝 Code Style
 
 - Use TypeScript strict mode
-- Add Japanese comments for team members: `// 日本語でのコメント`
+- Write code comments in Japanese: `// 日本語でのコメント`. Existing comments —
+  in either language — need not be retroactively rewritten. A new or edited
+  comment that states an invariant or a requirement (rather than describing
+  behavior) MUST embed the applicable uppercase RFC 2119 keyword
+  (MUST / MUST NOT / SHOULD / SHOULD NOT / MAY — see AGENTS.md
+  "Requirement Keywords"), e.g.
+  `// 全イベントは1回の呼び出しで渡すこと (MUST) — チャンク分割するとハンド境界が失われる`
 - Follow existing naming conventions
 - Keep statistics focused on a single concept
 
@@ -385,10 +391,14 @@ Note: The system uses TypeScript enums for type safety, so new flags must be add
 1. Fork the repository and branch from the latest `main`; do not commit directly to
    `main`.
 2. Keep each branch and pull request focused on one change.
-3. Use Conventional Commit-style commit messages and PR titles (for example,
-   `feat: add four-bet statistic` or `fix: preserve session state`). Release Please
+3. Use Conventional Commit-style commit messages and PR titles, with the
+   subject and body prose written in Japanese (for example,
+   `feat(stats): 4ベット統計を追加する` or `fix(hud): セッション状態を保持する`) —
+   commit messages reach users through the changelog and Release bodies. The
+   machine-parsed tokens (type, scope, `BREAKING CHANGE:`) stay English/ASCII.
+   Release Please
    uses these titles when preparing releases and the changelog. Release Please
-   parses the **whole** message, body included, so never let a parenthesis pair
+   parses the **whole** message, body included, so a parenthesis pair MUST NOT
    span a line break — the parser stops at the newline waiting for `)`, fails the
    whole commit with `commit could not be parsed`, and silently drops it from the
    changelog and the Release body (this happened to #315 in 5.4.0). Keep each
@@ -411,6 +421,8 @@ keep the validation section current after each push.
 - [ ] Unit tests in `src/stats/core/[stat-name].test.ts`
 - [ ] All tests passing (`npm test`)
 - [ ] Manual testing completed
-- [ ] Documentation/comments in Japanese where appropriate
+- [ ] Documentation updated in each file's existing language (see AGENTS.md
+      "Language"); comments in Japanese, invariant comments marked with
+      RFC 2119 keywords (see Code Style above)
 
 Happy coding! 🎉
