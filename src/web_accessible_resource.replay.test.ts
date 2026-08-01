@@ -395,6 +395,67 @@ describe('main-world experimental replay bridge', () => {
     XMLHttpRequest.prototype.send = originalSend
   })
 
+  // Codexレビュー指摘: 受動傍受（通常API通信）の経路にも同じガードが要る。
+  // 旧応答が後から完了した時点で、現在のエンベロープへ旧世代のsessionを
+  // 無条件に合成していた。
+  test('does not merge a stale passive response session into a newer envelope', async () => {
+    class FakeWebSocket {
+      addEventListener = jest.fn()
+    }
+    ;(window as any).WebSocket = FakeWebSocket
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true, status: 200,
+      arrayBuffer: jest.fn().mockResolvedValue(arrayBufferOf(SUCCESS_ENVELOPE))
+    })
+    ;(window as any).fetch = fetchMock
+
+    const originalOpen = XMLHttpRequest.prototype.open
+    const originalSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.open = jest.fn() as any
+    XMLHttpRequest.prototype.send = jest.fn() as any
+
+    jest.isolateModules(() => {
+      require('./web_accessible_resource')
+    })
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled: true }
+    }))
+
+    const send = (session: string, dataVer: string) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', 'https://production.api-poker-chase.com/user/status')
+      xhr.send(encode({ param: {}, session, platform: 2, appVer: '2.06', dataVer, masterVer: 'm' }))
+      return xhr
+    }
+
+    const stale = send('sess-A', 'ver-A')
+    await Promise.resolve(); await Promise.resolve()
+    // 旧リクエストの応答を待つ間に、新しいエンベロープを捕獲する
+    send('sess-B', 'ver-B')
+    await Promise.resolve(); await Promise.resolve()
+
+    // ここで旧リクエストが完了（応答は回転済みsessionを持つ）
+    Object.defineProperty(stale, 'response', {
+      value: arrayBufferOf({ ...SUCCESS_ENVELOPE, session: 'stale-rotated' }),
+      configurable: true
+    })
+    stale.dispatchEvent(new Event('loadend'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'r-p', handIds: [9] }
+    }))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const body = decode(fetchMock.mock.calls[0]![1].body) as Record<string, unknown>
+    expect(body.dataVer).toBe('ver-B')
+    expect(body.session).toBe('sess-B')
+
+    XMLHttpRequest.prototype.open = originalOpen
+    XMLHttpRequest.prototype.send = originalSend
+  })
+
   // Codexレビュー指摘: 「消えていないこと」だけでは足りない。無効化→再有効化で
   // 新しいエンベロープを捕獲した後に旧リクエストが完了すると、旧応答の session を
   // 新しいエンベロープへ混ぜてしまう。

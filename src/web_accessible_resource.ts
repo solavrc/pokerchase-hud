@@ -414,17 +414,33 @@ const postReplayLedger = (url: URL, decoded: unknown): void => {
   window.postMessage({ type: REPLAY_BRIDGE_LEDGER, ...ledger }, POKER_CHASE_ORIGIN)
 }
 
-const observeApiResponse = (url: URL, decoded: unknown): void => {
-  if (typeof decoded === 'object' && decoded !== null &&
-    'session' in decoded && typeof decoded.session === 'string' && replayAuth) {
-    replayAuth = { ...replayAuth, session: decoded.session }
+/**
+ * `authAtRequest` はそのリクエストを出した時点のエンベロープ。応答が返る間に
+ * 無効化→再有効化で新しいエンベロープを捕獲していると、旧応答の `session` を
+ * 新しい版へ混ぜてしまう（アカウント切替を伴えば別アカウントの資格情報が
+ * 混じる）。捕獲のたびに丸ごと差し替えるので、参照の同一性で判定できる。
+ * `fetchReplayDetail` 側と同じガードを、受動傍受の経路にも置く。
+ */
+const observeApiResponse = (
+  url: URL,
+  decoded: unknown,
+  authAtRequest: ReplayAuthEnvelope | undefined
+): void => {
+  if (replayAuth !== undefined && replayAuth === authAtRequest &&
+    typeof decoded === 'object' && decoded !== null &&
+    'session' in decoded && typeof decoded.session === 'string') {
+    replayAuth = { ...authAtRequest, session: decoded.session }
   }
   postReplayLedger(url, decoded)
 }
 
-const readApiResponse = async (url: URL, response: Response): Promise<void> => {
+const readApiResponse = async (
+  url: URL,
+  response: Response,
+  authAtRequest: ReplayAuthEnvelope | undefined
+): Promise<void> => {
   try {
-    observeApiResponse(url, decode(new Uint8Array(await response.clone().arrayBuffer())))
+    observeApiResponse(url, decode(new Uint8Array(await response.clone().arrayBuffer())), authAtRequest)
   } catch {
     // Many API responses are not MessagePack. They are irrelevant here.
   }
@@ -445,8 +461,9 @@ if (OriginalFetch) {
     } catch {
       // A request without a MessagePack body is unrelated to replay auth.
     }
+    const authAtRequest = replayAuth
     const response = await OriginalFetch(input, init)
-    readApiResponse(url, response).catch(() => undefined)
+    readApiResponse(url, response, authAtRequest).catch(() => undefined)
     return response
   }) as typeof window.fetch
 }
@@ -473,7 +490,11 @@ XMLHttpRequest.prototype.open = function (
   OriginalXhrOpen.call(this, method, String(url), async, username ?? null, password ?? null)
 }
 
-const readApiXhrResponse = async (url: URL, xhr: XMLHttpRequest): Promise<void> => {
+const readApiXhrResponse = async (
+  url: URL,
+  xhr: XMLHttpRequest,
+  authAtRequest: ReplayAuthEnvelope | undefined
+): Promise<void> => {
   try {
     const response = xhr.response
     let decoded: unknown
@@ -481,7 +502,7 @@ const readApiXhrResponse = async (url: URL, xhr: XMLHttpRequest): Promise<void> 
     else if (ArrayBuffer.isView(response)) decoded = decode(new Uint8Array(response.buffer, response.byteOffset, response.byteLength))
     else if (response instanceof Blob) decoded = decode(new Uint8Array(await response.arrayBuffer()))
     else return
-    observeApiResponse(url, decoded)
+    observeApiResponse(url, decoded, authAtRequest)
   } catch {
     // Non-MessagePack XHR responses are unrelated to replay auth.
   }
@@ -490,13 +511,23 @@ const readApiXhrResponse = async (url: URL, xhr: XMLHttpRequest): Promise<void> 
 XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyInit | null): void {
   const url = xhrUrls.get(this)
   if (url?.origin === REPLAY_API_ORIGIN && (!replayConfigReceived || replayImportEnabled)) {
-    if (!(body instanceof Document)) {
-      decodeBody(body)
-        .then(decoded => { replayAuth = readAuthEnvelope(decoded) ?? replayAuth })
+    // このリクエスト自身のエンベロープは`send`の**後**に非同期で確定するので、
+    // `send`時点の`replayAuth`（＝前のリクエストの版）を控えると、応答時には
+    // 必ず不一致になってsessionの回転が止まる。捕獲の完了を待って、その時点の
+    // 版を控える。
+    let authAtRequest: ReplayAuthEnvelope | undefined = replayAuth
+    const captured = body instanceof Document
+      ? Promise.resolve()
+      : decodeBody(body)
+        .then(decoded => {
+          replayAuth = readAuthEnvelope(decoded) ?? replayAuth
+          authAtRequest = replayAuth
+        })
         .catch(() => undefined)
-    }
     this.addEventListener('loadend', () => {
-      readApiXhrResponse(url, this).catch(() => undefined)
+      captured
+        .then(() => readApiXhrResponse(url, this, authAtRequest))
+        .catch(() => undefined)
     }, { once: true })
   }
   OriginalXhrSend.call(this, body)

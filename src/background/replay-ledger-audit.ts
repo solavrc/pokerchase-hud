@@ -30,8 +30,8 @@
  * （docs/replay-api.md）、これは遡及監査ではなく**前向きの監視**である。
  * 過去に記録済みの欠損を後から検証することはできない。
  */
-import Dexie from 'dexie'
 import type { PokerChaseDB } from '../db/poker-chase-db'
+import { processInChunks } from '../utils/database-utils'
 import { ApiType } from '../types/api'
 import {
   REPLAY_LEDGER_MAX_ENTRIES,
@@ -106,6 +106,9 @@ export interface ReplayLedgerAuditResult {
  * 前方向はサーバ時刻とクライアント時刻のズレ、後方向は「ハンド開始から
  * `EVT_HAND_RESULTS` が届くまで」の最大想定。
  */
+/** 全走査のページ幅。都度トランザクションを解放するための単位。 */
+const FULL_SCAN_CHUNK_SIZE = 2000
+
 const HAND_RESULTS_LOOKUP_LEAD_MS = 5 * 60_000
 const HAND_RESULTS_LOOKUP_TAIL_MS = 30 * 60_000
 
@@ -127,20 +130,27 @@ const confirmCapturesByFullScan = async (
   const found = new Map<number, number>()
   if (candidates.length === 0) return found
   const wanted = new Set(candidates)
-  await db.apiEvents
-    .where('[ApiTypeId+timestamp]')
-    .between(
-      [ApiType.EVT_HAND_RESULTS, Dexie.minKey],
-      [ApiType.EVT_HAND_RESULTS, Dexie.maxKey],
-      true,
-      true
-    )
-    .until(() => wanted.size === 0, true)
-    .each(row => {
+  // **1トランザクションで走査しない。** IndexedDBでは同じ`apiEvents`ストアへの
+  // 後続readwriteが走査の完了まで待たされるため、大きいLakeでは監査中に届いた
+  // ライブイベントのraw保存がその後ろへ滞留し、その間にService Workerが
+  // 停止すれば未保存のまま失われる。診断が取り込みの耐久性バリアを塞ぐのは
+  // src/background/AGENTS.md が禁じている形。
+  //
+  // ページごとに独立したクエリを出して都度トランザクションを解放する。
+  // カーソルは主キーの3要素を全て保持する（`processInChunks`と同じ理由 ――
+  // 一部を落とすと同一ミリ秒の行を飛ばす/重複させる）。候補が全て見つかれば
+  // 途中で打ち切る。
+  for await (const chunk of processInChunks(db.apiEvents, FULL_SCAN_CHUNK_SIZE)) {
+    for (const row of chunk) {
+      if (row.ApiTypeId !== ApiType.EVT_HAND_RESULTS) continue
       const handId = (row as { HandId?: unknown }).HandId
       const ts = (row as { timestamp?: unknown }).timestamp
-      if (isPositiveHandId(handId) && typeof ts === 'number' && wanted.delete(handId)) found.set(handId, ts)
-    })
+      if (isPositiveHandId(handId) && typeof ts === 'number' && wanted.delete(handId)) {
+        found.set(handId, ts)
+      }
+    }
+    if (wanted.size === 0) break
+  }
   return found
 }
 
@@ -204,21 +214,23 @@ export const auditReplayLedger = async (
   // `hands` がまだ」という途中状態を読んで、正常に処理中のハンドを
   // 派生欠落や不在として保存しうる。同一トランザクションなら一貫した
   // スナップショットになる。
-  const snapshot = await db.transaction('r', db.hands, db.apiEvents, async () => {
-    const rawByWindow = await collectCapturedHandIds(db, all.map(entry => entry.startTime))
-    const rawByScan = await confirmCapturesByFullScan(
-      db,
-      all.filter(entry => !rawByWindow.has(entry.handId)).map(entry => entry.handId)
-    )
-    return {
-      rawTimestamps: new Map([...rawByWindow, ...rawByScan]),
-      localHands: await db.hands.bulkGet(all.map(entry => entry.handId)),
-      oldestOwnHand: playerId === undefined
-        ? undefined
-        : await db.hands.where('seatUserIds').equals(playerId).first()
-    }
-  })
-  const { rawTimestamps, localHands, oldestOwnHand } = snapshot
+  const snapshot = await db.transaction('r', db.hands, db.apiEvents, async () => ({
+    rawByWindow: await collectCapturedHandIds(db, all.map(entry => entry.startTime)),
+    localHands: await db.hands.bulkGet(all.map(entry => entry.handId)),
+    oldestOwnHand: playerId === undefined
+      ? undefined
+      : await db.hands.where('seatUserIds').equals(playerId).first()
+  }))
+  const { rawByWindow, localHands, oldestOwnHand } = snapshot
+  // 全走査だけはスナップショットの外。ページごとにトランザクションを解放
+  // しないとライブ取り込みを塞ぐ（`confirmCapturesByFullScan`のコメント参照）。
+  // 走査中に届いた行が見えるのは構わない ―― 「生行が在る」方向にしか動かず、
+  // 欠損の誤報を増やさない。
+  const rawByScan = await confirmCapturesByFullScan(
+    db,
+    all.filter(entry => !rawByWindow.has(entry.handId)).map(entry => entry.handId)
+  )
+  const rawTimestamps = new Map([...rawByWindow, ...rawByScan])
 
   // --- 2. 時計差を測る ---
   //
