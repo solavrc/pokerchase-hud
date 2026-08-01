@@ -744,9 +744,17 @@ v3 added composite indexes for player-specific queries. v6 changes the Raw Lake 
   not access the restricted local area directly.
 - **Layout reset is one operation over every device-local appearance key**:
   the popup's 「位置とサイズをリセット」 (`UIScaleSection.tsx`) sends a single
-  `resetDeviceUILayout`, and the background removes `handLogLayout`, every
-  `hudPosition_*` key, *and* `uiScale` in one `chrome.storage.local.remove`
-  call so they cannot diverge. Scale is in scope because the button means
+  `resetDeviceUILayout`, and the background removes `handLogLayout` and every
+  `hudPosition_*` key in one `chrome.storage.local.remove` call, then writes
+  `uiScale` back to its default in a `set` — a *missing* local `uiScale` means
+  "not migrated to device-local" (`getDeviceUILayout`'s `needsScaleMigration`),
+  so removing it would re-migrate from the legacy synced value and resurrect
+  the pre-reset scale. There is no atomic remove+set in `chrome.storage`, so
+  the reachable guarantee is not "both or neither" but **whatever persisted is
+  always broadcast**: if the `set` fails after the `remove` succeeded, the
+  layout reset is still delivered to open tabs and the response reports the
+  failure, so storage and open tabs never disagree and the (idempotent)
+  operation can just be retried. Scale is in scope because the button means
   "back to the default look" (sola): leaving a large scale behind returns the
   panels to default positions computed for a size they no longer are, so the
   hand log's default slot above the seat plate stops fitting. Keys come from `HUD_POSITION_STORAGE_KEYS`
