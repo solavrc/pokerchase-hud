@@ -22,6 +22,7 @@ import { createImportExportHandlers } from './background/import-export'
 import { setOperationState } from './background/operation-state'
 import { mergeApiEvents, type RawApiEvent } from './utils/api-event-key'
 import {
+  ActionDetail,
   ActionType,
   ApiType,
   BattleType,
@@ -51,6 +52,8 @@ const FIXTURE_EVENTS = readFixture('session-3hands.ndjson')
 const SAME_MS_BURST_EVENTS = readFixture('hand-samems-street-burst.ndjson')
 /** #339 の再現: Ringのハンド中リバイイン（ハンド内観測）と終了時の自動買い足し。 */
 const RING_REBUY_EVENTS = readFixture('hand-ring-midhand-rebuy.ndjson')
+/** 同一ms群で、新ストリート最初の行が ALL_IN になるケース（codex review round 3）。 */
+const STREET_OPENING_ALLIN_EVENTS = readFixture('hand-street-opening-allin.ndjson')
 
 const entryEvent = FIXTURE_EVENTS.find(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED)!
 const detailsEvent = FIXTURE_EVENTS.find(event => event.ApiTypeId === ApiType.EVT_SESSION_DETAILS)!
@@ -354,6 +357,40 @@ describe('cross-path canonical parity', () => {
     expect(canonical.hands[0]!.playerChipAccounting).toEqual({
       '2001': { grossPayout: 0, totalContribution: 20, netChips: -20 },
       '2002': { grossPayout: 100, totalContribution: 60, netChips: 40 },
+      '2003': { grossPayout: 0, totalContribution: 20, netChips: -20 }
+    })
+  })
+
+  test('a street-opening ALL_IN is normalized as a BET, not against the previous street', async () => {
+    const snapshots = await replayEveryPath(STREET_OPENING_ALLIN_EVENTS)
+    const canonical = snapshots.live
+    expect(snapshots['entity-converter']).toEqual(canonical)
+    expect(snapshots.rebuild).toEqual(canonical)
+    expect(snapshots.import).toEqual(canonical)
+
+    // 同一ms群で 304 が 305 より前に並ぶため、フロップ最初の行（この ALL_IN）を
+    // 処理する時点の progress は「プリフロップ終了時点」のもので
+    // NextActionTypes は空。ここを見て正規化すると CALL になってしまう。
+    // ストリートの開き手が対峙するベットは存在しないので BET が正しい。
+    const flopAllIn = canonical.actions.find(action => action.phase === PhaseType.FLOP)!
+    expect({
+      playerId: flopAllIn.playerId,
+      actionType: flopAllIn.actionType,
+      isAllIn: flopAllIn.actionDetails.includes(ActionDetail.ALL_IN)
+    }).toEqual({ playerId: 2002, actionType: ActionType.BET, isAllIn: true })
+
+    const aggression = Object.fromEntries(
+      canonical.stats.find(player => player.playerId === 2002)!.statResults
+        .filter(stat => ['af', 'afq'].includes(stat.id))
+        .map(stat => [stat.id, stat.value])
+    )
+    expect(aggression).toEqual({ af: [1, 0], afq: [1, 1] })
+
+    // 未コール分の返却は「ポットを勝った」ではないが、この席は争われた60も獲る。
+    expect(canonical.hands[0]!.winningPlayerIds).toEqual([2002])
+    expect(canonical.hands[0]!.playerChipAccounting).toEqual({
+      '2001': { grossPayout: 0, totalContribution: 20, netChips: -20 },
+      '2002': { grossPayout: 4040, totalContribution: 4000, netChips: 40 },
       '2003': { grossPayout: 0, totalContribution: 20, netChips: -20 }
     })
   })

@@ -231,10 +231,6 @@ export class EntityConverter {
           // handIdはEVT_HAND_RESULTSで設定されるため、ここではhandの存在のみチェック
           if (!handState.hand.seatUserIds) break
 
-          const actionDetails: ActionDetail[] = []
-
-          // ALL_INアクションの正規化
-          const actionType = this.normalizeAllInAction(event, progress, actionDetails)
           const playerId = handState.hand.seatUserIds[event.SeatIndex]
 
           // 途中着席（EVT_ENTRY_QUEUED）によるテーブル移動後、直前にバッファされた
@@ -252,8 +248,15 @@ export class EntityConverter {
 
           // ストリートは EVT_DEAL_ROUND 駆動のカウンタではなく EVT_ACTION 自身の
           // Progress.Phase を正とする（#340、WriteEntityStreamと同一ロジック）。
+          // ALL_INの正規化はストリート確定より後で行う（この行自身が新ストリートを
+          // 開いた場合、直前のprogressは前ストリート終了時点のもので使えない）。
           const phase = resolveActionPhase(event, runningPhase)
+          const opensNewStreet = phase !== runningPhase
           runningPhase = phase
+
+          const actionDetails: ActionDetail[] = []
+          const actionType = this.normalizeAllInAction(event, progress, opensNewStreet, actionDetails)
+
           const phaseActions = handState.actions.filter(action => action.phase === phase)
           const phasePrevBetCount = phaseActions.filter(action =>
             [ActionType.BET, ActionType.RAISE].includes(action.actionType)
@@ -493,10 +496,17 @@ export class EntityConverter {
   private normalizeAllInAction(
     event: ApiEvent<ApiType.EVT_ACTION>,
     progress: any,
+    opensNewStreet: boolean,
     actionDetails: ActionDetail[]
   ): Exclude<ActionType, ActionType.ALL_IN> {
     if (event.ActionType === ActionType.ALL_IN) {
       actionDetails.push(ActionDetail.ALL_IN)
+
+      // このアクション自身がストリートを開いた場合（同一msバーストや
+      // EVT_DEAL_ROUND欠落で、新ストリート最初の行がこれになるケース）、
+      // `progress`は前ストリート終了時点のもので NextActionTypes は通常空になる。
+      // ストリートの開き手が対峙するベットは存在しないため BET が正しい。
+      if (opensNewStreet) return ActionType.BET
 
       if (progress?.NextActionTypes.includes(ActionType.BET)) {
         return ActionType.BET

@@ -633,9 +633,22 @@ interface ActionRec {
   actionType: ActionTypeNum
 }
 
-/** Map ALL_IN to the action it functionally represents, using NextActionTypes like the live pipeline does. */
-function normalizeAllIn(actionEvent: RawActionEvent, prevProgress: RawProgress | undefined): ActionTypeNum {
+/**
+ * Map ALL_IN to the action it functionally represents, using NextActionTypes like the live pipeline does.
+ *
+ * `opensNewStreet` marks the case where this very row is the first one on its
+ * street (equal-ms burst / omitted EVT_DEAL_ROUND): `prevProgress` then belongs
+ * to the END of the previous street and its NextActionTypes is normally empty,
+ * so consulting it would classify a street-opening shove as a CALL. Whoever
+ * opens a street faces no bet, so ALL_IN there is a BET.
+ */
+function normalizeAllIn(
+  actionEvent: RawActionEvent,
+  prevProgress: RawProgress | undefined,
+  opensNewStreet: boolean
+): ActionTypeNum {
   if (actionEvent.ActionType !== ActionType.ALL_IN) return actionEvent.ActionType as ActionTypeNum
+  if (opensNewStreet) return ActionType.BET
   const nextTypes: number[] = prevProgress?.NextActionTypes || []
   if (nextTypes.includes(ActionType.BET)) return ActionType.BET
   if (nextTypes.includes(ActionType.CALL)) return ActionType.RAISE
@@ -763,10 +776,11 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
         const actionEvt = event as RawActionEvent
         const seatIndex = actionEvt.SeatIndex
         const playerId = seatUserIds[seatIndex]!
-        const normType = normalizeAllIn(actionEvt, prevProgress)
         // Semantic-sync (a5), #340: this action's own street, not the counter.
         const phase = rawActionPhase(actionEvt, runningPhase)
+        const opensNewStreet = phase !== runningPhase
         runningPhase = phase
+        const normType = normalizeAllIn(actionEvt, prevProgress, opensNewStreet)
         if (!phaseActionsMap.has(phase)) phaseActionsMap.set(phase, [])
 
         const actionsInPhase = phaseActionsMap.get(phase) ?? []
