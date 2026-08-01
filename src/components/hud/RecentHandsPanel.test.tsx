@@ -418,6 +418,28 @@ describe('RecentHandsPanel', () => {
       await chrome.storage.local.remove(RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY)
     })
 
+    // codexレビュー指摘（P3）: 自分の書き込みが起こすstorage通知で、同じ条件の
+    // フェッチが二度走らないこと。
+    it('トグル操作は1回しか再フェッチしない（storage通知の反響で二重に走らない）', async () => {
+      const user = userEvent.setup()
+      render(<RecentHandsPanel playerId={123} />)
+
+      await screen.findAllByTestId('recent-hands-row')
+      expect(mockSendMessage).toHaveBeenCalledTimes(1)
+
+      await user.click(screen.getByRole('button', { name: '参加のみ表示' }))
+
+      await waitFor(() => {
+        expect(mockSendMessage).toHaveBeenLastCalledWith(
+          expect.objectContaining({ participationOnly: false }),
+          expect.any(Function)
+        )
+      })
+      // 1回目（初回）＋2回目（トグル）だけ。storage通知による3回目は起きない。
+      expect(mockSendMessage).toHaveBeenCalledTimes(2)
+      await chrome.storage.local.remove(RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY)
+    })
+
     it('保存済みのOFFがあればそれで最初のフェッチを行う', async () => {
       await chrome.storage.local.set({ [RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY]: false })
       mockSendMessage.mockClear()
@@ -446,6 +468,21 @@ describe('RecentHandsPanel', () => {
       })
       await chrome.storage.local.remove(RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY)
     })
+  })
+
+  // codexレビュー指摘（P2）: 旧backgroundの応答（bigBlind欠損）でHUDを落とさない
+  it('bigBlindが欠けた応答でもクラッシュせず、チップ表記で描画する', async () => {
+    mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
+      const { bigBlind, ...withoutBigBlind } = buildResult().hands[0]!
+      void bigBlind
+      callback({ success: true, recentHands: { computedAt: NOW, hands: [withoutBigBlind] } })
+    })
+
+    render(<RecentHandsPanel playerId={123} />)
+
+    const row = await screen.findByTestId('recent-hands-row')
+    expect(row).toHaveTextContent('+1,240')
+    expect(row.querySelector('td:last-child')).not.toHaveAttribute('title')
   })
 
   // #353: ヒーロー自身の配札カードは source='dealt' で届く
@@ -502,6 +539,15 @@ describe('formatNetBigBlinds', () => {
   test('BBが使えない行はチップ表記へフォールバックする（行を隠さない）', () => {
     expect(formatNetBigBlinds(entry(1240, null))).toBe('+1,240')
     expect(formatNetBigBlinds(entry(-640, 0))).toBe('-640')
+  })
+
+  // codexレビュー指摘（P2）: 更新切替中の旧background応答では新設フィールドが
+  // 丸ごと欠ける。null判定だけではundefinedを取りこぼす。
+  test('bigBlind/netChipsが欠損・非有限でも落ちない', () => {
+    expect(formatNetBigBlinds({ ...entry(1240, 200), bigBlind: undefined } as any)).toBe('+1,240')
+    expect(formatNetBigBlinds({ ...entry(1240, 200), bigBlind: Number.NaN } as any)).toBe('+1,240')
+    expect(formatNetBigBlinds({ ...entry(1240, 200), bigBlind: -200 } as any)).toBe('+1,240')
+    expect(formatNetBigBlinds({ ...entry(1240, 200), netChips: undefined } as any)).toBe('-')
   })
 })
 

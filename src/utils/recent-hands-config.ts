@@ -30,9 +30,25 @@
  */
 export const RECENT_HANDS_LIMIT_OPTIONS: readonly number[] = [10, 25, 50, 100]
 
-/** `RECENT_HANDS_LIMIT_OPTIONS`の最大値。サービス側はこの件数で組み立ててキャッシュする。 */
+/** `RECENT_HANDS_LIMIT_OPTIONS`の最大値＝1画面に出し得る最大行数。 */
 export const MAX_RECENT_HANDS_LIMIT: number =
   RECENT_HANDS_LIMIT_OPTIONS[RECENT_HANDS_LIMIT_OPTIONS.length - 1]!
+
+/**
+ * サービス側が実際に組み立ててキャッシュする件数（#353のレビュー指摘対応）。
+ *
+ * 表示上限（100）ちょうどしか組み立てないと、「参加のみ」ONで100件を選んだ
+ * ときに**必ず**100件に届かない ―― 直近100ハンドの中に即フォールドが1件でも
+ * あれば足りなくなるため。母集合を表示上限の3倍まで広げることで、直近300
+ * ハンドの1/3以上で自発的にチップを入れていれば100件が埋まる（VPIP 33%
+ * 相当。実測レンジでは通常満たす）。
+ *
+ * 3倍で止めるのは、これがライブ対局中のオーバーレイだから: actions/phasesは
+ * どちらもインデックス1回のバッチクエリのまま（往復は増えない）だが、
+ * 走査する行数は母集合に比例する。ここを無制限にすると「直近N件」ではなく
+ * 全履歴走査になる。届かない場合は拾えただけを返す。
+ */
+export const RECENT_HANDS_ASSEMBLY_LIMIT: number = MAX_RECENT_HANDS_LIMIT * 3
 
 /**
  * デフォルトの取得件数。#341で10→25へ引き上げた（10件は傾向を見るには

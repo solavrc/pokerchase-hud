@@ -68,9 +68,9 @@ export function formatPostflopLines(lines: PostflopLines | null | undefined): st
   return streets.slice(0, lastPlayed + 1).map(street => street ?? '-').join('/')
 }
 
-/** Signed chip result with grouping; unknown source accounting stays '-'. */
+/** Signed chip result with grouping; unknown/なし の会計は '-'。 */
 const formatNetChips = (entry: RecentHandEntry): string =>
-  entry.netChips === null
+  typeof entry.netChips !== 'number' || !Number.isFinite(entry.netChips)
     ? '-'
     : entry.netChips > 0
       ? `+${entry.netChips.toLocaleString()}`
@@ -90,20 +90,34 @@ const formatNetChips = (entry: RecentHandEntry): string =>
  * Exported for direct unit testing.
  */
 export function formatNetBigBlinds(entry: RecentHandEntry): string {
-  if (entry.netChips === null) return '-'
-  if (entry.bigBlind === null || !(entry.bigBlind > 0)) return formatNetChips(entry)
-  const bb = entry.netChips / entry.bigBlind
+  if (typeof entry.netChips !== 'number' || !Number.isFinite(entry.netChips)) return '-'
+  const bigBlind = usableBigBlind(entry)
+  if (bigBlind === null) return formatNetChips(entry)
+  const bb = entry.netChips / bigBlind
   // -0.04 が '-0.0' になると損に見えるので、丸めた結果が0なら符号を落とす。
   const rounded = Number(bb.toFixed(1))
   if (rounded === 0) return '0.0'
   return `${rounded > 0 ? '+' : ''}${rounded.toFixed(1)}`
 }
 
+/**
+ * BB換算に使える`bigBlind`か。`null`だけでなく**未設定・非有限・0以下**も
+ * すべて利用不能として弾く（MUST）。このフィールドはchrome.runtimeメッセージ
+ * 越しにbackgroundから来るので、拡張の更新途中など送信側が古い形のまま応答
+ * すれば`undefined`が届き得る。#127と同じ方針で、表示側がHUDを落とさない。
+ */
+const usableBigBlind = (entry: RecentHandEntry): number | null =>
+  typeof entry.bigBlind === 'number' && Number.isFinite(entry.bigBlind) && entry.bigBlind > 0
+    ? entry.bigBlind
+    : null
+
 /** BB表記のセルに出すチップ実額のツールチップ（#353、列は増やさない）。 */
-const netChipsTooltip = (entry: RecentHandEntry): string | undefined =>
-  entry.netChips === null || entry.bigBlind === null
-    ? undefined
-    : `${formatNetChips(entry)} チップ（BB=${entry.bigBlind.toLocaleString()}）`
+const netChipsTooltip = (entry: RecentHandEntry): string | undefined => {
+  const bigBlind = usableBigBlind(entry)
+  if (bigBlind === null) return undefined
+  if (typeof entry.netChips !== 'number' || !Number.isFinite(entry.netChips)) return undefined
+  return `${formatNetChips(entry)} チップ（BB=${bigBlind.toLocaleString()}）`
+}
 
 const styles = {
   panel: {
@@ -268,7 +282,18 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
     })
     const unsubscribe = subscribeRecentHandsPanelConfig(patch => {
       // 未ロード中に通知が来ても、既定値をベースにpatchを当てて追従する。
-      if (!cancelled) setConfig(current => ({ ...(current ?? DEFAULT_RECENT_HANDS_PANEL_CONFIG), ...patch }))
+      // 値が変わらないなら**同一オブジェクト**を返す: このパネル自身の操作が
+      // 起こしたstorage書き込みの通知もここへ戻ってくるため、毎回新しい
+      // オブジェクトを作るとフェッチeffectが二度走り、同じ条件のリクエストと
+      // loading表示が重複する。
+      if (cancelled) return
+      setConfig(current => {
+        const base = current ?? DEFAULT_RECENT_HANDS_PANEL_CONFIG
+        const next = { ...base, ...patch }
+        return next.limit === base.limit && next.participationOnly === base.participationOnly
+          ? current
+          : next
+      })
     })
     return () => {
       cancelled = true
@@ -322,8 +347,11 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
     // handEpoch: 監査指摘11(P2)対応。値が変わるのは生きたハンドが1件完了した
     // ときだけ（App.tsx/ports.ts参照）なので、このパネルを開いたままにしていても
     // 最新のハンドを反映して再フェッチする。
-    // config: 件数スイッチャー（#341）と「参加のみ」（#353）の選択。
-  }, [playerId, handEpoch, config])
+    // 件数スイッチャー（#341）と「参加のみ」（#353）の選択。`config`
+    // オブジェクトそのものではなく**値**へ依存する ―― 同じ設定で新しい
+    // オブジェクトが作られても再フェッチしないようにするための二重の防御
+    // （上のsetConfigでの同一性維持と合わせて）。
+  }, [playerId, handEpoch, config === null, config?.limit, config?.participationOnly])
 
   // コントロール行はローディング／エラー／0件のいずれでも操作できる必要が
   // ある（0件は「その件数で0件」ではなくフィルター起因のこともあるため、

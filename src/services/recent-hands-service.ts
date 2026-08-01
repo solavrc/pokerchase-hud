@@ -51,10 +51,16 @@ import { compareHandsNewestFirst } from '../utils/hand-order'
 import {
   DEFAULT_RECENT_HANDS_LIMIT,
   MAX_RECENT_HANDS_LIMIT,
+  RECENT_HANDS_ASSEMBLY_LIMIT,
   RECENT_HANDS_LIMIT_OPTIONS,
 } from '../utils/recent-hands-config'
 
-export { DEFAULT_RECENT_HANDS_LIMIT, MAX_RECENT_HANDS_LIMIT, RECENT_HANDS_LIMIT_OPTIONS }
+export {
+  DEFAULT_RECENT_HANDS_LIMIT,
+  MAX_RECENT_HANDS_LIMIT,
+  RECENT_HANDS_ASSEMBLY_LIMIT,
+  RECENT_HANDS_LIMIT_OPTIONS,
+}
 
 /** `Position`列挙体の値域（-2..3の連続整数）に収まるかを判定する。legacy sentinel `-3` はfalseになる。 */
 const isValidPosition = (position: number): position is Position =>
@@ -113,14 +119,24 @@ function subscribeToHandCompletion(service: PokerChaseService): void {
  * サービスワーカー再起動直後などヒーローID復元前にパネルを開くと、
  * 含めない実装では「カードなし」の結果が最大30秒残り続ける。
  */
-export const buildRecentHandsCacheKey = (playerId: number, service: PokerChaseService): string =>
-  `${playerId}_${service.battleTypeFilter?.join(',') ?? 'all'}_${service.tableSizeFilter?.join(',') ?? 'all'}_${isHeroPanel(service, playerId) ? 'hero' : 'other'}`
+export const buildRecentHandsCacheKey = (
+  playerId: number,
+  service: PokerChaseService,
+  heroPanel: boolean = isHeroPanel(service, playerId)
+): string =>
+  `${playerId}_${service.battleTypeFilter?.join(',') ?? 'all'}_${service.tableSizeFilter?.join(',') ?? 'all'}_${heroPanel ? 'hero' : 'other'}`
 
 /**
  * そのパネルが観測者本人（ヒーロー）のものか。`EVT_DEAL.Player`は観測クライアント
  * 自身の席の情報なので、配札ホールカードの補完はこの判定が真のときだけ行う。
+ *
+ * MUST: 呼び出し側はこの値をフェッチ開始時に**一度だけ**取り、キー作成とLake
+ * 読み取りの両方で同じスナップショットを使う。`service.playerId`はDB awaitの
+ * 最中に新しいDEALやアカウント／タブ切替で変わり得るため、都度読み直すと
+ * 「`other`キーの下に配札カード入りの結果」あるいはその逆を書き込み、
+ * 最大30秒のあいだ誤った可視性の結果を再利用してしまう。
  */
-const isHeroPanel = (service: PokerChaseService, playerId: number): boolean =>
+export const isHeroPanel = (service: PokerChaseService, playerId: number): boolean =>
   service.playerId !== undefined && service.playerId === playerId
 
 /**
@@ -304,9 +320,23 @@ export function derivePostflopLines(
  *
  * `preflopLine`が`null`（このハンドのプレイヤーデータが欠落＝切断等）は
  * 判定できないので残す（推測して消さない）。
+ *
+ * MUST: ラベルだけで切らず、「そのプレイヤーにとってハンドがそこで終わった」
+ * ことも確かめる。`'Walk'`は「BBのプリフロップ`EVT_ACTION`が無い」ことしか
+ * 意味しておらず、サーバーはBBのcheckを省略することがある（docs/api-events.md
+ * の既知の形: 実ハンドの31.9%でBBの`EVT_ACTION`が無い）ほか、BBが強制投稿で
+ * オールインした場合もアクションを送らない。どちらもボードを見ており、
+ * ラベルだけで消すと**実際にプレイしたハンドが既定ONのフィルターで消える**。
+ * `sawFlop`／`wentToShowdown`のどちらかが立っていれば残す ――
+ * `hand-log-processor.ts`の`getMissingBBCheck`が真の不戦勝（RankType
+ * NO_CALL）と省略checkを分けているのと同じ区別を、このパネルが既に
+ * 導出済みのフィールドで行う。`'Fold'`側はフォールド済みなので両方falseに
+ * なり、この追加条件は実質的にWalkのための救済として働く。
  */
 export function isVoluntaryParticipation(entry: RecentHandEntry): boolean {
-  return entry.preflopLine !== 'Fold' && entry.preflopLine !== 'Walk'
+  const noVoluntaryChips = entry.preflopLine === 'Fold' || entry.preflopLine === 'Walk'
+  if (!noVoluntaryChips) return true
+  return entry.sawFlop || entry.wentToShowdown
 }
 
 /**
@@ -400,23 +430,32 @@ function deriveSawFlop(
  * `SeatUserIds`と`Player.HoleCards`だけを構造的に見て、形が合わない行は
  * 個別に捨てる。
  */
-function readDealHoleCardsShape(event: unknown): { seatUserIds: number[], holeCards: number[] } | null {
+function readDealHoleCardsShape(
+  event: unknown
+): { seatUserIds: number[], holeCards: number[], observerUserId: number } | null {
   if (typeof event !== 'object' || event === null) return null
   const record = event as { SeatUserIds?: unknown, Player?: unknown }
   if (!Array.isArray(record.SeatUserIds)) return null
   if (!record.SeatUserIds.every((userId): userId is number => typeof userId === 'number')) return null
   if (typeof record.Player !== 'object' || record.Player === null) return null
-  const holeCards = (record.Player as { HoleCards?: unknown }).HoleCards
+  const player = record.Player as { HoleCards?: unknown, SeatIndex?: unknown }
+  const holeCards = player.HoleCards
   // テーブル移動直後は`HoleCards: []`（docs/api-events.md「EVT_DEAL: Player
   // フィールドの欠落」）。観戦ハンドはPlayerごと無い。どちらも配札なしとして扱う。
   if (!Array.isArray(holeCards) || holeCards.length !== 2) return null
   if (!holeCards.every((card): card is number => typeof card === 'number' && card >= 0 && card <= 51)) return null
-  return { seatUserIds: record.SeatUserIds, holeCards }
+  // そのイベントを受け取った観測者自身のUserId。`service.playerId`ではなく
+  // **イベント側**から解決する（MUST、下の突き合わせで使う）。
+  if (typeof player.SeatIndex !== 'number') return null
+  const observerUserId = record.SeatUserIds[player.SeatIndex]
+  if (typeof observerUserId !== 'number' || observerUserId === -1) return null
+  return { seatUserIds: record.SeatUserIds, holeCards, observerUserId }
 }
 
 async function readHeroDealtHoleCardsByHandId(
   db: PokerChaseDB,
-  hands: Hand[]
+  hands: Hand[],
+  playerId: number
 ): Promise<Map<number, string[]>> {
   const byTimestamp = new Map<number, Hand[]>()
   for (const hand of hands) {
@@ -437,6 +476,13 @@ async function readHeroDealtHoleCardsByHandId(
   for (const event of dealEvents) {
     const shape = readDealHoleCardsShape(event)
     if (!shape) continue
+    // MUST: そのイベントを実際に受け取った観測者が、いま表示しようとしている
+    // プレイヤー本人であることをイベント自身から確かめる。`service.playerId`が
+    // 一致していることだけでは足りない ―― アカウント切替後や、別アカウントの
+    // Lakeをインポートした環境では、同じラインナップのハンドを**以前は別の
+    // アカウントで観測していた**ことがあり、その場合ここは前の観測者の手札を
+    // 現在のヒーローの手札として表示してしまう。
+    if (shape.observerUserId !== playerId) continue
     const candidates = byTimestamp.get(event.timestamp!) ?? []
     // 同一msに複数テーブルの配札が並び得るので、席の並びが完全一致した
     // ハンドにだけ結び付ける（推測しない）。
@@ -476,7 +522,11 @@ export async function getRecentHands(
   const fetchGeneration = cacheGeneration
 
   const effectiveLimit = limit > 0 ? Math.min(limit, MAX_RECENT_HANDS_LIMIT) : DEFAULT_RECENT_HANDS_LIMIT
-  const cacheKey = buildRecentHandsCacheKey(playerId, service)
+  // ヒーロー判定はここで1回だけ確定させる（MUST、`isHeroPanel`のコメント参照）。
+  // 以降のDB awaitの最中に`service.playerId`が変わっても、キーと読み取りが
+  // 食い違わないようにする。
+  const heroPanel = isHeroPanel(service, playerId)
+  const cacheKey = buildRecentHandsCacheKey(playerId, service, heroPanel)
   const useCache = process.env.NODE_ENV !== 'test' && !process.env.DEBUG_NO_CACHE
   const now = Date.now()
 
@@ -509,11 +559,13 @@ export async function getRecentHands(
 
   // handLimitFilterは意図的に適用しない（このパネル自体の「直近N件」が
   // 独立したlimitのため、仕様通り）。新しいハンドから優先して上位
-  // `MAX_RECENT_HANDS_LIMIT`件を組み立て、呼び出し側のlimitへは返却時に
-  // sliceして合わせる（キャッシュ粒度、#341 -- 上のcacheKeyのコメント参照）。
+  // `RECENT_HANDS_ASSEMBLY_LIMIT`件を組み立て、呼び出し側の条件（件数・
+  // 「参加のみ」）へは返却時に絞ってから合わせる（キャッシュ粒度、#341/#353
+  // -- 上のcacheKeyのコメントと`RECENT_HANDS_ASSEMBLY_LIMIT`の定義参照）。
+  // 表示上限より広く組むのは、絞り込みで表示件数に届かなくなるのを防ぐため。
   const recentHands = [...allPlayerHands]
     .sort(compareHandsNewestFirst)
-    .slice(0, MAX_RECENT_HANDS_LIMIT)
+    .slice(0, RECENT_HANDS_ASSEMBLY_LIMIT)
 
   if (recentHands.length === 0) {
     const result: RecentHandsResult = { hands: [], computedAt: now }
@@ -528,13 +580,12 @@ export async function getRecentHands(
   const handIds = recentHands.map(h => h.id)
 
   // actions/phases: 'handId' 単一フィールドインデックス。対象ハンド集合
-  // （高々MAX_RECENT_HANDS_LIMIT件）に対する1回のバッチクエリで、全プレイヤー分を取得する
+  // （高々RECENT_HANDS_ASSEMBLY_LIMIT件）に対する1回のバッチクエリで、全プレイヤー分を取得する
   // （phasePrevBetCountの再計算・sawFlop判定に他プレイヤーの行が必要なため、
   // playerId絞り込みはしない。N+1は発生しない）。
   // ヒーロー自身のパネルを開いたときだけ、配札カードをLakeから引く（#353）。
   // 他プレイヤーのパネルでは`EVT_DEAL.Player`は自分の情報なので引かない。
-  const heroPanel = isHeroPanel(service, playerId)
-
+  // `heroPanel`はフェッチ開始時のスナップショット（上記参照）。
   const [allActions, allPhases, replayDetails, heroDealtHoleCards] = await Promise.all([
     db.actions.where('handId').anyOf(handIds).toArray(),
     db.phases.where('handId').anyOf(handIds).toArray(),
@@ -545,7 +596,7 @@ export async function getRecentHands(
       .catch(() => []),
     // 失敗しても他の列は出す（フェイルオープン、#127踏襲）。
     heroPanel
-      ? readHeroDealtHoleCardsByHandId(db, recentHands).catch(() => new Map<number, string[]>())
+      ? readHeroDealtHoleCardsByHandId(db, recentHands, playerId).catch(() => new Map<number, string[]>())
       : Promise.resolve(new Map<number, string[]>()),
   ])
 
@@ -637,10 +688,10 @@ export async function getRecentHands(
  *
  * 絞り込みは**limitより先に**掛ける。先にlimit件へ切ってから絞ると、
  * 例えば「25件」を選んでいるのにフォールド行が抜けて数行しか残らない、
- * ということが起きる。キャッシュは常に`MAX_RECENT_HANDS_LIMIT`件ぶん
- * 持っているので、その母集合から条件に合う行を新しい順にlimit件まで拾える。
- * それでも足りない場合（キャッシュ母集合を絞り切っても件数に届かない）は
- * 拾えただけを返す ―― 追加クエリは投げない。
+ * ということが起きる。キャッシュは`RECENT_HANDS_ASSEMBLY_LIMIT`件ぶん
+ * （表示上限の3倍）持っているので、その母集合から条件に合う行を新しい順に
+ * limit件まで拾える。それでも足りない場合は拾えただけを返す ―― 追加クエリは
+ * 投げない（母集合の広さの根拠は`RECENT_HANDS_ASSEMBLY_LIMIT`の定義参照）。
  */
 function sliceToLimit(
   result: RecentHandsResult,

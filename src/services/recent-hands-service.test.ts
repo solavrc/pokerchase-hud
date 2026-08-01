@@ -30,6 +30,7 @@ import {
   isVoluntaryParticipation,
   DEFAULT_RECENT_HANDS_LIMIT,
   MAX_RECENT_HANDS_LIMIT,
+  RECENT_HANDS_ASSEMBLY_LIMIT,
 } from './recent-hands-service'
 import { ActionDetail, ActionType, BattleType, PhaseType, Position, RankType } from '../types/game'
 import { ApiType, validateApiEvent } from '../types'
@@ -283,13 +284,15 @@ describe('RecentHandsService', () => {
     async function addDealEvent(
       timestamp: number,
       seatUserIds: number[],
-      holeCards: number[] | undefined
+      holeCards: number[] | undefined,
+      /** 観測者の席。既定はヒーロー（席0）。 */
+      seatIndex: number = 0
     ): Promise<void> {
       await db.apiEvents.add({
         ApiTypeId: ApiType.EVT_DEAL,
         SeatUserIds: seatUserIds,
         Game: { CurrentBlindLv: 1, NextBlindUnixSeconds: 0, Ante: 0, SmallBlind: 100, BigBlind: 200, ButtonSeat: 0, SmallBlindSeat: 1, BigBlindSeat: 2 },
-        ...(holeCards ? { Player: { SeatIndex: 0, BetStatus: 1, HoleCards: holeCards, Chip: 5000, BetChip: 0 } } : {}),
+        ...(holeCards ? { Player: { SeatIndex: seatIndex, BetStatus: 1, HoleCards: holeCards, Chip: 5000, BetChip: 0 } } : {}),
         OtherPlayers: [],
         Progress: { Phase: 0, NextActionSeat: 0, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 400, Pot: 300, SidePot: [] },
         timestamp,
@@ -334,6 +337,36 @@ describe('RecentHandsService', () => {
       const result = await getRecentHands(db, service, 2)
       expect(result.hands[0]!.holeCards).toBeNull()
       expect(result.hands[0]!.holeCardsSource).toBeNull()
+    })
+
+    // codexレビュー指摘（P2）: アカウント切替後・別アカウントのLakeを
+    // インポートした環境では、履歴上の観測者が現在のヒーローとは限らない。
+    test('配札イベントの観測者が対象プレイヤー本人でなければ採用しない', async () => {
+      await db.hands.add(makeHand({ id: 1, approxTimestamp: 1000, seatUserIds: LINEUP }))
+      // 同じラインナップだが、観測者は席2（=UserId 2）の別アカウント。
+      await addDealEvent(1000, LINEUP, [37, 51], 1)
+
+      const result = await getRecentHands(db, service, HERO_ID)
+      expect(result.hands[0]!.holeCards).toBeNull()
+      expect(result.hands[0]!.holeCardsSource).toBeNull()
+    })
+
+    test('観測者席が解決できない配札（SeatIndexなし/空席）も採用しない', async () => {
+      await db.hands.bulkAdd([
+        makeHand({ id: 1, approxTimestamp: 1000, seatUserIds: LINEUP }),
+        makeHand({ id: 2, approxTimestamp: 2000, seatUserIds: [HERO_ID, 2, -1] }),
+      ])
+      await db.apiEvents.add({
+        ApiTypeId: ApiType.EVT_DEAL,
+        SeatUserIds: LINEUP,
+        Player: { BetStatus: 1, HoleCards: [37, 51], Chip: 5000, BetChip: 0 },
+        timestamp: 1000,
+        sequence: 0,
+      } as any)
+      await addDealEvent(2000, [HERO_ID, 2, -1], [37, 51], 2)
+
+      const result = await getRecentHands(db, service, HERO_ID)
+      expect(result.hands.map(h => h.holeCards)).toEqual([null, null])
     })
 
     test('同一msに別テーブルの配札があっても、席の並びが一致する行にだけ結び付ける', async () => {
@@ -418,6 +451,19 @@ describe('RecentHandsService', () => {
       expect(isVoluntaryParticipation({ ...base, preflopLine: null })).toBe(true)
     })
 
+    // codexレビュー指摘（P2）: 'Walk'は「BBのプリフロップEVT_ACTIONが無い」
+    // 以上のことを意味しない。サーバーはBBのcheckを省略する（実ハンドの31.9%）
+    // ほか、BBが強制投稿でオールインした場合もアクションを送らない。
+    test("ボードを見たBBの'Walk'は除外しない（省略checkと真の不戦勝を分ける）", () => {
+      const base = { handId: 1, approxTimestamp: null, bigBlind: 200, position: null, holeCards: null, holeCardsSource: null, postflopLines: { flop: null, turn: null, river: null }, won: false, netChips: null } as const
+      // 真の不戦勝: ボードを見ていない。
+      expect(isVoluntaryParticipation({ ...base, preflopLine: 'Walk', sawFlop: false, wentToShowdown: false })).toBe(false)
+      // 省略check: フロップを見ている。
+      expect(isVoluntaryParticipation({ ...base, preflopLine: 'Walk', sawFlop: true, wentToShowdown: false })).toBe(true)
+      // 強制投稿オールイン: ショーダウンまで行っている。
+      expect(isVoluntaryParticipation({ ...base, preflopLine: 'Walk', sawFlop: false, wentToShowdown: true })).toBe(true)
+    })
+
     test('ONのときFold/Walk行が消え、OFFなら全部出る', async () => {
       await addHandWithPreflop(1, ActionType.FOLD)                            // Fold
       await addHandWithPreflop(2, null, { bigBlindUserId: PLAYER_ID })        // Walk
@@ -449,6 +495,24 @@ describe('RecentHandsService', () => {
 
       const on = await getRecentHands(db, service, PLAYER_ID, 2, true)
       expect(on.hands.map(h => h.handId)).toEqual([2, 1])
+    })
+
+    // codexレビュー指摘（P2）: 表示上限ちょうどしか組み立てないと、
+    // 「参加のみ」ONで最大件数を選んだとき必ず件数に届かない。
+    test('表示上限を超える母集合から拾うので、フォールドが混ざっていても最大件数を満たせる', async () => {
+      // 新しい順に Fold を100件、その手前に Open を100件。表示上限（100）ぶん
+      // しか組み立てない実装では、100件を要求しても0件しか返らない。
+      for (let id = 1; id <= 100; id++) await addHandWithPreflop(id, ActionType.RAISE)
+      for (let id = 101; id <= 200; id++) await addHandWithPreflop(id, ActionType.FOLD)
+
+      // 母集合は表示上限より広い（この前提が崩れると本テストの意味も消える）。
+      expect(RECENT_HANDS_ASSEMBLY_LIMIT).toBeGreaterThan(MAX_RECENT_HANDS_LIMIT)
+
+      const on = await getRecentHands(db, service, PLAYER_ID, MAX_RECENT_HANDS_LIMIT, true)
+      expect(on.hands).toHaveLength(MAX_RECENT_HANDS_LIMIT)
+      expect(on.hands.every(h => h.preflopLine === 'Open')).toBe(true)
+      // 新しい順は維持される。
+      expect(on.hands[0]!.handId).toBe(100)
     })
 
     test('観戦ハンドはON/OFFに関係なく除外されたまま（#341の除外は別軸）', async () => {
@@ -896,6 +960,11 @@ describe('RecentHandsService', () => {
       const keyHero = buildRecentHandsCacheKey(PLAYER_ID, service)
       expect(key1).not.toBe(keyHero)
       service.playerId = undefined
+
+      // codexレビュー指摘（P2）: フェッチ開始時のスナップショットを明示的に
+      // 渡せる。キー作成とLake読み取りが同じ値を使うための口。
+      expect(buildRecentHandsCacheKey(PLAYER_ID, service, true)).toBe(keyHero)
+      expect(buildRecentHandsCacheKey(PLAYER_ID, service, false)).toBe(key1)
 
       service.battleTypeFilter = [BattleType.RING_GAME]
       const keyBattle = buildRecentHandsCacheKey(PLAYER_ID, service)
