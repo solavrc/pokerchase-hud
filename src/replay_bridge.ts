@@ -42,6 +42,7 @@ import {
   REPLAY_API_ORIGIN,
   REPLAY_BRIDGE_CONFIG,
   REPLAY_BRIDGE_FETCH,
+  REPLAY_BRIDGE_AUTH_READY,
   REPLAY_BRIDGE_LEDGER,
   REPLAY_BRIDGE_RESULT,
   REPLAY_BRIDGE_STARTED,
@@ -93,6 +94,22 @@ let replayAuth: ReplayAuthEnvelope | undefined
  * 応答のときにだけ書き戻す（古い応答のsessionで新しい版を上書きしない）。
  */
 let replayAuthGeneration = 0
+/** その世代で捕獲通知を1回だけ出すための印。 */
+let replayAuthAnnounced = false
+
+/**
+ * 認証エンベロープを初めて捕獲したことだけを知らせる（**値は載せない**）。
+ *
+ * 取り込み層は、対局中に機能を有効化した場合その対局の終了直後には必ず
+ * エンベロープを持っておらず、全件を繰り延べる。捕獲はホーム画面到達時の
+ * 通常通信で起きるが、そのときポートは既に接続済みでセッション終了の
+ * トリガーも消費済みなので、この通知が無いと次の対局まで再開しない。
+ */
+const announceAuthCaptured = (): void => {
+  if (replayAuthAnnounced) return
+  replayAuthAnnounced = true
+  window.postMessage({ type: REPLAY_BRIDGE_AUTH_READY }, POKER_CHASE_ORIGIN)
+}
 let replayFetchQueue: Promise<void> = Promise.resolve()
 
 const requestUrl = (input: RequestInfo | URL): URL | undefined => {
@@ -228,7 +245,10 @@ if (OriginalFetch) {
     const generationAtCapture = replayAuthGeneration
     try {
       const captured = readAuthEnvelope(await decodeRequestBody(input, init))
-      if (captured && generationAtCapture === replayAuthGeneration) replayAuth = captured
+      if (captured && generationAtCapture === replayAuthGeneration) {
+        replayAuth = captured
+        announceAuthCaptured()
+      }
     } catch {
       // MessagePackの本文を持たないリクエストはリプレイの認証と無関係。
     }
@@ -299,7 +319,10 @@ XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyIn
       : decodeBody(body)
         .then(decoded => {
           const envelope = readAuthEnvelope(decoded)
-          if (envelope && generationAtCapture === replayAuthGeneration) replayAuth = envelope
+          if (envelope && generationAtCapture === replayAuthGeneration) {
+            replayAuth = envelope
+            announceAuthCaptured()
+          }
           authAtRequest = replayAuth
         })
         .catch(() => undefined)
@@ -453,6 +476,7 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       // 完了する古い応答（アカウント切替を伴いうる）を確実に切り離す。
       replayAuth = undefined
       replayAuthGeneration += 1
+      replayAuthAnnounced = false
     }
     return
   }

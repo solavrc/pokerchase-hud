@@ -25,12 +25,14 @@ import {
   EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY,
   REPLAY_BRIDGE_CONFIG,
   REPLAY_BRIDGE_FETCH,
+  REPLAY_BRIDGE_AUTH_READY,
   REPLAY_BRIDGE_LEDGER,
   REPLAY_BRIDGE_RESULT,
   REPLAY_BRIDGE_STARTED,
   REPLAY_FETCH_BATCH_LIMIT,
   REPLAY_LEDGER_MAX_ENTRIES,
   REPLAY_PORT_FETCH,
+  REPLAY_PORT_AUTH_READY,
   REPLAY_PORT_LEDGER,
   REPLAY_PORT_RESULT,
   REPLAY_PORT_STARTED,
@@ -258,6 +260,14 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   // ページ側スクリプトが台帳を偽装して送れてしまい、そのまま監査結果として
   // 永続化される。ブリッジ側の同じゲート（`postReplayLedger`）だけでは、
   // ブリッジを経由しない偽装を塞げない。
+  // 認証エンベロープの捕獲通知。値は載っていない（「捕まった」だけ）。
+  // 取り込み層が繰り延べていた取得を再開する契機になる。台帳と同じく、
+  // 有効なときだけ転送する。
+  if ('type' in event.data && event.data.type === REPLAY_BRIDGE_AUTH_READY) {
+    if (replayImportEnabled) portManager.send({ type: REPLAY_PORT_AUTH_READY })
+    return
+  }
+
   if ('type' in event.data && event.data.type === REPLAY_BRIDGE_LEDGER) {
     if (!replayImportEnabled) return
     const ledger = event.data as Partial<ReplayLedgerMessage>

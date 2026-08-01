@@ -17,6 +17,7 @@ import { registerStreamSubscriptions } from './background/ports'
 import { createReplayLedgerAuditDeps, registerEventIngestion } from './background/event-ingestion'
 import { exposeReplayFetchForDevtools } from './background/replay-fetch-bridge'
 import { resumePendingReplayLedgerAudits } from './background/replay-ledger-audit'
+import { backfillReplayDetailsFromLake } from './background/replay-import'
 import { registerMessageRouter } from './background/message-router'
 import { checkOnUpdate } from './background/rebuild-advisory'
 import { initUpdateManager } from './background/update-manager'
@@ -201,6 +202,14 @@ exposeReplayFetchForDevtools()
  * 保留が無ければ`meta`を1件読むだけで終わる。
  */
 void resumePendingReplayLedgerAudits(createReplayLedgerAuditDeps(service))
+
+/**
+ * v7より前に取り込んだ 90001（別端末がクラウド経由で送ったもの）を索引へ
+ * 流し込む。目印が残っていれば1件も読まない。
+ */
+void service.ready
+  .then(() => backfillReplayDetailsFromLake(db))
+  .catch(err => console.error('[background] Replay details backfill failed:', err))
 
 /**
  * Forced update（sola承認）: 安全な瞬間にダウンロード済み更新を自動適用する。

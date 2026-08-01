@@ -9,10 +9,13 @@ export const REPLAY_BRIDGE_FETCH = 'pokerchase-hud:replay-fetch'
 export const REPLAY_BRIDGE_STARTED = 'pokerchase-hud:replay-started'
 export const REPLAY_BRIDGE_RESULT = 'pokerchase-hud:replay-result'
 export const REPLAY_BRIDGE_LEDGER = 'pokerchase-hud:replay-ledger'
+/** 認証エンベロープを初めて捕獲したことの通知（値は載せない）。 */
+export const REPLAY_BRIDGE_AUTH_READY = 'pokerchase-hud:replay-auth-ready'
 export const REPLAY_PORT_FETCH = 'experimental-replay-fetch'
 export const REPLAY_PORT_STARTED = 'experimental-replay-started'
 export const REPLAY_PORT_RESULT = 'experimental-replay-result'
 export const REPLAY_PORT_LEDGER = 'experimental-replay-ledger'
+export const REPLAY_PORT_AUTH_READY = 'experimental-replay-auth-ready'
 
 export const REPLAY_FETCH_BATCH_LIMIT = 100
 

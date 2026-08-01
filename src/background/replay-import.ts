@@ -52,6 +52,7 @@ import { requestReplayDetails } from './replay-fetch-bridge'
 import { startKeepAlive } from './service-worker-keepalive'
 import { enqueuePendingStorageWrite } from './pending-storage-writes'
 import { getSessionActivity } from './update-manager'
+import { allConnectedPortsInactive, findPortForPlayer } from './replay-port-state'
 
 export const REPLAY_IMPORT_QUEUE_META_ID = 'replayImportQueue'
 export const REPLAY_IMPORT_STATUS_META_ID = 'replayImportStatus'
@@ -142,13 +143,17 @@ export interface ReplayImportDeps {
   /** インポート/再構築/エクスポート等の長時間操作の最中かどうか。 */
   isBusy?: () => boolean
   /** 取得の実行体。既定はページ側ブリッジ（テストで差し替える）。 */
-  fetchDetails?: (handIds: number[]) => Promise<ReplayFetchItemResult[]>
+  fetchDetails?: (handIds: number[], port?: chrome.runtime.Port) => Promise<ReplayFetchItemResult[]>
   /** Service Workerを起こしておく仕組み（テストで差し替える）。 */
   startKeepAlive?: () => Promise<() => void>
   /** 逐次取得の間隔（ms）。既定は `REPLAY_FETCH_INTERVAL_MS`。テストで0にする。 */
   intervalMs?: number
   /** 現在のヒーローのUserId。積んだアカウントとの一致判定に使う。 */
   getPlayerId?: () => number | undefined
+  /** 接続中の全ポートがセッション外か（テストで差し替える）。 */
+  allPortsInactive?: () => boolean
+  /** そのアカウントのハンドを依頼してよいポートの解決（テストで差し替える）。 */
+  resolvePort?: (playerId: number | undefined) => chrome.runtime.Port | undefined
 }
 
 const readQueue = async (db: PokerChaseDB): Promise<ReplayQueueEntry[]> => {
@@ -262,7 +267,14 @@ const appendToQueue = (
  * **この不変条件の唯一の判定点**（MUST）。セッションが有効でないと確定して
  * いる場合にだけ取得を許す。`unknown`（Service Worker再起動直後）は不可。
  */
-const canFetchNow = (): boolean => getSessionActivity() === 'inactive'
+const canFetchNow = (deps: ReplayImportDeps): boolean => {
+  // 畳んだ値（forced update と共有）と、接続中の全ポートの論理積。
+  // 畳んだ値は最後に届いたイベントしか表さないので、タブAで対局中でも
+  // タブBの309で `inactive` へ倒れる。取得側だけを厳しくして、
+  // 「接続中の全タブがセッション外」を要求する（状態不明は対局中扱い）。
+  if (getSessionActivity() !== 'inactive') return false
+  return (deps.allPortsInactive ?? allConnectedPortsInactive)()
+}
 
 /** 合成イベント1件を Lake と `replayDetails` へ入れる。 */
 const storeReplayDetail = async (
@@ -447,7 +459,7 @@ const withKeepAlive = async (
 const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
   if (!await deps.isEnabled()) return
   // 不変条件の判定点。ここを通らない限り1本も飛ばない。
-  if (!canFetchNow()) return
+  if (!canFetchNow(deps)) return
   if (deps.isBusy?.()) return
 
   // 積む側（`EVT_HAND_RESULTS`）の書き込みは取り込みキューから切り離された
@@ -483,18 +495,15 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
 
   // 既に取得済みのHandIdは撃たない（先勝ち）。
   const stored = await deps.db.replayDetails.bulkGet(alive.map(entry => entry.handId))
-  const currentPlayerId = deps.getPlayerId?.()
   const targets: ReplayQueueEntry[] = []
   alive.forEach((entry, index) => {
     if (stored[index]) {
       settled.add(entry.handId)
       return
     }
-    // 積んだアカウントと今のアカウントが違うなら撃たない。撃つと `2302` が
-    // 返り、再試行不能として永久に捨ててしまう（元のアカウントへ戻れば
-    // 取得できるので、持ち越すのが正しい）。
-    if (entry.playerId !== undefined && currentPlayerId !== undefined &&
-      entry.playerId !== currentPlayerId) return
+    // アカウントの一致は**依頼の直前にポート単位で**確かめる（下記）。
+    // ここで `service.playerId`（全体で1つ）と比べても、実際の依頼先は
+    // 別タブになりうるので保証にならない。
     targets.push(entry)
   })
 
@@ -521,7 +530,7 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
     // セッション状態を見る ―― 待っている間に次の対局の201/303/308が
     // 取り込みキューで処理されていても、待機前に評価した古い `inactive` の
     // ままリクエストへ進んでしまう。
-    if (!canFetchNow() || deps.isBusy?.() || !await deps.isEnabled() || !canFetchNow()) {
+    if (!canFetchNow(deps) || deps.isBusy?.() || !await deps.isEnabled() || !canFetchNow(deps)) {
       aborted = true
       break
     }
@@ -529,13 +538,19 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
     if (index > 0) {
       await delay(deps.intervalMs ?? REPLAY_FETCH_INTERVAL_MS)
       // 待っている間に状況が変わることがある。待機の後にも確認する（MUST）。
-      if (!canFetchNow() || deps.isBusy?.() || !await deps.isEnabled() || !canFetchNow()) {
+      if (!canFetchNow(deps) || deps.isBusy?.() || !await deps.isEnabled() || !canFetchNow(deps)) {
         aborted = true
         break
       }
     }
 
-    const [result] = await (deps.fetchDetails ?? defaultFetchDetails)([entry.handId])
+    // このHandIdを積んだアカウントを観測しているタブへ依頼する。見つからない
+    // ときは**撃たずに残す**（MUST）―― 別アカウントのタブへ投げると `2302`
+    // が返り、再試行不能として永久に捨てる側へ倒れる。正しいアカウントで
+    // 接続し直せば次の機会に流れる。
+    const port = (deps.resolvePort ?? findPortForPlayer)(entry.playerId)
+    if (!port) continue
+    const [result] = await (deps.fetchDetails ?? defaultFetchDetails)([entry.handId], port)
     // 応答待ちの間に全データ削除やインポートが操作スロットを取ることがある。
     // `deleteAllData()` はこの取得を待たずDBを消すので、遅れて返った応答を
     // 素通しで保存すると、消えたDBを開き直して書きに行く。**保存の直前にも
@@ -617,9 +632,57 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
 const delay = (ms: number): Promise<void> =>
   new Promise(resolve => { setTimeout(resolve, ms) })
 
-const defaultFetchDetails = async (handIds: number[]): Promise<ReplayFetchItemResult[]> => {
-  const outcome = await requestReplayDetails(handIds)
+const defaultFetchDetails = async (
+  handIds: number[],
+  port?: chrome.runtime.Port
+): Promise<ReplayFetchItemResult[]> => {
+  const outcome = await requestReplayDetails(handIds, port)
   return outcome.success ? outcome.results : []
+}
+
+export const REPLAY_DETAILS_BACKFILL_META_ID = 'replayDetailsBackfilled'
+
+/**
+ * Lakeに既に在る 90001 を `replayDetails` へ一度だけ流し込む。
+ *
+ * v7 より前の版でも、別端末が同期した 90001 は Raw Event Lake の方針どおり
+ * `apiEvents` に保存されている。v7 へ上げても、バージョン移行が作るのは空の
+ * ストアだけなので、手動同期か再構築をするまで索引が空のままになる。
+ *
+ * 移行（`version().upgrade()`）の中ではやらない ―― Dexieのアップグレード
+ * トランザクションは壊れやすく、失敗するとDBが開かなくなる。起動時に
+ * `meta` の目印を見て一度だけ走る掃き出しなら、失敗しても次回に再試行できる。
+ *
+ * 走査は `[ApiTypeId+timestamp]` インデックスで 90001 だけに絞るので、
+ * Lakeの大きさに関わらず読むのは対象行だけ。健全なら0行。
+ */
+export const backfillReplayDetailsFromLake = async (db: PokerChaseDB): Promise<number> => {
+  try {
+    if (await db.meta.get(REPLAY_DETAILS_BACKFILL_META_ID)) return 0
+    const rows = await db.apiEvents
+      .where('[ApiTypeId+timestamp]')
+      .between(
+        [ApiType.REPLAY_HAND_DETAIL, Number.MIN_SAFE_INTEGER],
+        [ApiType.REPLAY_HAND_DETAIL, Number.MAX_SAFE_INTEGER],
+        true,
+        true
+      )
+      .toArray() as unknown as Array<Record<string, unknown>>
+    const projected = await projectReplayDetailEvents(db, rows)
+    await db.meta.put({
+      id: REPLAY_DETAILS_BACKFILL_META_ID,
+      value: { at: Date.now(), scanned: rows.length, projected },
+      updatedAt: Date.now()
+    })
+    if (projected > 0) {
+      console.info(`[replay-import] Lakeの既存90001から${projected}件を索引へ流し込みました`)
+    }
+    return projected
+  } catch (error) {
+    // 目印を残さないので次回起動で再試行する。
+    console.warn('[replay-import] 既存90001の索引化に失敗しました:', error)
+    return 0
+  }
 }
 
 /** 実験フラグの読み取り。既定OFF（読めないときもOFF）。 */

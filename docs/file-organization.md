@@ -76,6 +76,7 @@
     ├── background/            # Service worker modules
     │   ├── auto-sync-boot.ts        # Auth-ready auto-sync initialization (init race guard)
     │   ├── AGENTS.md                # Nested review rules (SW concurrency invariants)
+    │   ├── replay-port-state.ts     # Per-port session activity + hero account (multi-tab fetch gate)
     │   ├── replay-import.ts         # Opt-in replay import: HandId queue (meta), session-end
     │   │                            #   drain, expiry accounting, synthetic 90001 Lake rows
     │   ├── event-ingestion.ts       # Raw Event Lake ingestion: serialized queue, durability

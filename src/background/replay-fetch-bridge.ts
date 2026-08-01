@@ -113,7 +113,8 @@ export type ReplayFetchOutcome =
  * 依頼先は最初に見つかった接続で、タブの選択はしない（開発用のため）。
  */
 export const requestReplayDetails = async (
-  handIds: unknown
+  handIds: unknown,
+  targetPort?: chrome.runtime.Port
 ): Promise<ReplayFetchOutcome> => {
   if (!Array.isArray(handIds) || handIds.length === 0) {
     return { success: false, error: 'handIds must be a non-empty array' }
@@ -138,7 +139,16 @@ export const requestReplayDetails = async (
     // 待つ前に掴んだポートは切断済みになる。しかもこの依頼はまだ`pending`に
     // 載っていないので切断時の解放対象にもならず、再接続済みのポートが
     // 在るのに空結果を返してしまう。
-    const port = connectedPorts.values().next().value
+    // 依頼先が指定されていればそれを使う。取り込み層は「キューに積んだ
+    // アカウントを観測したタブ」を渡す ―― 別アカウントのタブへ投げると
+    // `2302` が返り、再試行不能として永久に捨ててしまうため。
+    // 待った後に確認するのは指定なしの場合と同じ理由（待つ間に再読み込みで
+    // 切断されうる）。
+    const port = targetPort && connectedPorts.has(targetPort)
+      ? targetPort
+      : targetPort
+        ? undefined
+        : connectedPorts.values().next().value
     if (!port) return { success: false, error: 'no connected game tab' }
 
   // 連番ではなくUUID。連番はService Workerの再起動ごとに0へ戻るが、ページ側の
