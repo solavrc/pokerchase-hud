@@ -255,8 +255,16 @@ export const auditReplayLedger = async (
   // 区別できない領域だから。
   const inScope = (entry: ReplayLedgerEntry): boolean => {
     if (rawTimestamps.has(entry.handId)) return true
-    if (observationFloorMs === undefined || clockOffsetMs === undefined) return false
-    return entry.startTime * 1000 + clockOffsetMs >= observationFloorMs
+    if (clockOffsetMs !== undefined && observationFloorMs !== undefined) {
+      return entry.startTime * 1000 + clockOffsetMs >= observationFloorMs
+    }
+    // 時計差が測れないのは、台帳のどのハンドも `hands` にも生行にも無いとき。
+    // それはまさに「最近の全面的な非到着」であり、監査が最も報告すべき状態
+    // なのに、ここで全件を観測窓外にすると0件として隠れてしまう。
+    // HandIdは時系列で単調増加する（このファイルが `oldestOwnHand` の選択で
+    // 既に前提にしている）ので、時計を使わずに前後関係を決められる。
+    if (oldestOwnHand !== undefined) return entry.handId >= oldestOwnHand.id
+    return false
   }
   const entries = all.filter(inScope)
   const outOfObservationWindowHands = all.length - entries.length
@@ -395,14 +403,15 @@ export const handleReplayLedgerPortMessage = (
   // 全走査を伴う重い監査が後発の軽い監査より遅く終わりうる。同じキーへ書くので、
   // その場合は古い結果が新しい結果を上書きして「最新スナップショット」が
   // 受信順と逆になる。
+  // 台帳を受信した時点のアカウントを控える。ここは**キュー投入前の同期部分**で
+  // なければならない ―― `.then()` の中で読むと、先行監査の最中にアカウントが
+  // 変わった場合、2件目は「受信時」ではなく「自分の番が来た時」の値を控えて
+  // しまい、変更ガードを素通りする。
+  // 受信時が undefined なのはコールドスタートで復元前のときなので、その場合
+  // だけは復元後の値を採用する（getter にしてある理由）。
+  const playerIdAtReceipt = deps.getPlayerId()
   auditQueue = auditQueue
     .then(async () => {
-      // 台帳を受信した時点のアカウントを控える。待っている間に別アカウントの
-      // EVT_DEAL が処理されると playerId が上書きされ、Aの台帳をBの会計と
-      // 突き合わせて偽の不一致を保存しうる。
-      // 受信時が undefined なのはコールドスタートで復元前のときなので、その
-      // 場合だけは復元後の値を採用する（これが元々 getter にした理由）。
-      const playerIdAtReceipt = deps.getPlayerId()
       await deps.waitUntilConsistent()
       if (deps.isBusy?.()) {
         console.info('[replay-ledger] 長時間操作の実行中のため突き合わせを見送りました')

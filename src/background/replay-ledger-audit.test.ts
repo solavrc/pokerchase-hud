@@ -250,6 +250,25 @@ describe('replay ledger audit', () => {
     expect(result.outOfObservationWindowHands).toBe(0)
   })
 
+  // Codexレビュー指摘: 台帳の全ハンドが hands にも生行にも無いと時計差を
+  // 測れない。それはまさに「最近の全面的な非到着」で、監査が最も報告すべき
+  // 状態なのに、全件を観測窓外にすると0件として隠れる。HandIdの単調増加を
+  // 使えば時計なしで前後関係を決められる。
+  test('時計差が測れなくても、HandIdの境界で最近の全面的な非到着を報告する', async () => {
+    // 自分の古い履歴はある。台帳の新しいハンドは hands にも生行にも無い。
+    await db.hands.bulkPut([hand(2000, 10, 1785400000_000)])
+
+    const result = await auditReplayLedger(db, HERO, ledgerOf([
+      { handId: 1999, startTime: 1785450000, chipDiff: 10 },
+      { handId: 2001, startTime: 1785500000, chipDiff: 20 },
+      { handId: 2002, startTime: 1785500060, chipDiff: 30 }
+    ]), NOW)
+
+    // 自分の最古ハンド(2000)より新しいものは判定対象、古いものは対象外
+    expect(result.notCapturedHandIds).toEqual([2001, 2002])
+    expect(result.outOfObservationWindowHands).toBe(1)
+  })
+
   test('ChipDiffとnetChipsの食い違いを報告する', async () => {
     await db.hands.bulkPut([hand(200, 500), hand(201, 999)])
 
@@ -463,6 +482,32 @@ describe('replay ledger audit', () => {
 
     // Codexレビュー指摘: 待機中に別アカウントの EVT_DEAL が処理されると
     // playerId が上書きされ、Aの台帳をBの会計と突き合わせてしまう。
+    // Codexレビュー指摘: 受信時のアカウントを .then() の中で読むと、先行監査の
+    // 最中に切り替わった場合に2件目が「自分の番が来た時」の値を控えてしまい、
+    // 変更ガードを素通りする。
+    test('先行監査の最中にアカウントが変わっても、2件目は受信時の値で判定する', async () => {
+      await db.hands.bulkPut([hand(2100, 10), hand(2101, 20)])
+      let current: number | undefined = HERO
+      const msg = (handId: number) => ({
+        type: REPLAY_PORT_LEDGER,
+        battleType: 0,
+        cardOpenEndDate: 0,
+        isExpiredCardOpen: false,
+        hands: [{ handId, startTime: 1785500000, chipDiff: handId === 2100 ? 10 : 20 }]
+      })
+      // 1件目の待機中にアカウントが変わる。2件目は「受信時＝HERO」で控えて
+      // いなければならない（.then() の中で読むと B を控えてしまう）。
+      handleReplayLedgerPortMessage(msg(2100), depsOf(db, {
+        waitUntilConsistent: async () => { current = 999999999 },
+        getPlayerId: () => current
+      }))
+      handleReplayLedgerPortMessage(msg(2101), depsOf(db, { getPlayerId: () => current }))
+
+      await new Promise(resolve => setTimeout(resolve, 120))
+      // どちらもアカウント不一致で見送られる
+      expect(await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)).toBeUndefined()
+    })
+
     test('待機中にアカウントが変わったら突き合わせを見送る', async () => {
       await db.hands.bulkPut([hand(1900, 10)])
       let current: number | undefined = HERO
