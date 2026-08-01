@@ -16,7 +16,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 
 - Real-time HUD with 15+ statistics — compact display mode (default) with click-to-expand full grid, threshold color coding, per-stat tooltips
 - Player-type classification icons (🦈💣🪨🐟 quadrant + 🐳 whale override)
-- Per-player drill-downs: positional stats and recent hands (showdown hole cards; mucked showdown hands filled from stored replay details when the opt-in replay import is enabled)
+- Per-player drill-downs: positional stats and recent hands (showdown hole cards; mucked showdown hands filled from stored replay details when the replay import flag is enabled — flag-only, no popup control)
 - Pre-game hero stats (career-to-date panel before the first deal)
 - Busted-player dim display (stats persist muted until seat turnover / session end)
 - All-player SPR/pot odds display

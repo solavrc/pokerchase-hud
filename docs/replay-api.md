@@ -227,7 +227,12 @@ type ReplayAction = {
 ## 取り込み層（既定OFF）
 
 `experimentalReplayImportEnabled` を有効にしたときだけ動く。実装は
-`src/background/replay-import.ts`、UIは popup の「リプレイ取り込み（試験機能）」。
+`src/background/replay-import.ts`。
+
+**この層にユーザー向けのUIは無い。** 取得層（セクション上部）と同じく、
+フラグはService WorkerのDevToolsコンソールから `chrome.storage.sync` を
+直接書いて切り替える。ポップアップに操作を出すのは、開示（プライバシー
+ポリシー・ストア掲載情報）を伴う公開時点まで行わない。
 
 ### いつ取得するか
 

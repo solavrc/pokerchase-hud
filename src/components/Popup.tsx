@@ -46,7 +46,6 @@ import { UpdateSection } from './popup/UpdateSection'
 import { PopupHeader } from './popup/PopupHeader'
 import { SectionCard } from './popup/SectionCard'
 import { TelemetrySection } from './popup/TelemetrySection'
-import { ReplayImportSection } from './popup/ReplayImportSection'
 import type { PopupThemeMode } from './popup/theme'
 import { DEFAULT_POPUP_THEME_MODE, getPopupTheme, resolvePopupThemeVariant } from './popup/theme'
 import {
@@ -689,10 +688,6 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
           setImportSuccess={setImportSuccess}
           setImportStartTime={setImportStartTime}
         />
-      </SectionCard>
-
-      <SectionCard>
-        <ReplayImportSection />
       </SectionCard>
 
       <SectionCard>

@@ -1626,4 +1626,36 @@ describe('Popup', () => {
       expect(defaultStatDisplayConfigs).toEqual(before)
     })
   })
+
+  /**
+   * リプレイ取り込みは**フラグのみで動く非公開機能**として入っている。
+   * ポップアップに操作や説明を出すのは、プライバシーポリシーとストア掲載
+   * 情報の開示を伴う公開時点まで行わない（sola裁定、リリース方針）。
+   *
+   * 「まだ出さない」という決定は、コードを消すのではなくここで固定する ――
+   * セクションを足せばこのテストが落ちるので、開示の手当てを伴わない
+   * 露出が黙って入ることはない。
+   */
+  describe('リプレイ取り込みは非公開（フラグのみ）', () => {
+    it('ポップアップにリプレイ取り込みの操作も説明も出さない', async () => {
+      render(<Popup />)
+      await waitForAsyncOperations()
+
+      const text = document.body.textContent ?? ''
+      expect(text).not.toContain('リプレイ')
+      expect(text).not.toContain('対局が終わったあと')
+      expect(screen.queryByRole('switch', { name: /リプレイ/ })).toBeNull()
+    })
+
+    it('ポップアップは実験フラグを読みにも書きにもいかない', async () => {
+      render(<Popup />)
+      await waitForAsyncOperations()
+
+      const touchedKeys = [
+        ...(chrome.storage.sync.get as jest.Mock).mock.calls,
+        ...(chrome.storage.sync.set as jest.Mock).mock.calls
+      ].map(([arg]) => JSON.stringify(arg ?? ''))
+      expect(touchedKeys.some(key => key.includes('experimentalReplayImportEnabled'))).toBe(false)
+    })
+  })
 })
