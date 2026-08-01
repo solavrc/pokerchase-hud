@@ -256,12 +256,23 @@ export const ImportExportSection = ({
         // never got a session, so that result says nothing about the operation
         // this popup is tracking. Releasing on it would blank a live import's
         // progress and re-enable buttons the background still rejects.
-        // Unknown state (timeout) releases, per sendMessageWithTimeout's
-        // fail-open contract -- a stuck-disabled popup is the bug being fixed.
+        // Hold only for the import this popup is tracking -- NOT for merely
+        // "something is busy". importDataCancel drops the slot to idle, and an
+        // auto-sync already parked in waitForOperationIdle() can claim it as
+        // 'sync' before this result arrives. Nothing would ever release the
+        // import state then: the transfer-error path sends no importStatus, and
+        // the popup has no sync listener and no re-check when an unrelated
+        // operation ends -- the exact stuck state this handler exists to fix.
+        // Unknown state (timeout) also releases, per sendMessageWithTimeout's
+        // fail-open contract.
         void sendMessageWithTimeout<{ operationState?: OperationState }>(
           { action: 'getOperationState' }
         ).then(response => {
-          if (response?.operationState && response.operationState.type !== 'idle') return
+          const state = response?.operationState
+          const trackedImportStillRunning =
+            state?.type === 'import' ||
+            (state?.type === 'rebuild' && state.origin === 'import')
+          if (trackedImportStillRunning) return
           importOperationActiveRef.current = false
           setImportOperationActive(false)
           setRebuildOrigin(null)

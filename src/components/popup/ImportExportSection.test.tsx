@@ -119,8 +119,12 @@ describe('ImportExportSection - rebuild advisory banner', () => {
     return {
       backgroundBecameIdle: () => { current = { type: 'idle' } },
       backgroundStaysBusy: () => { current = transfer },
+      backgroundTookUnrelatedSlot: () => { current = { type: 'sync' } },
     }
   }
+
+  const countOperationStateCalls = () =>
+    mockSendMessage.mock.calls.filter(([m]: any[]) => m?.action === 'getOperationState').length
 
   it('does not render the banner when there is no pending advisory', async () => {
     storageLocalData[REBUILD_ADVISORY_STORAGE_KEY] = undefined
@@ -296,9 +300,7 @@ describe('ImportExportSection - rebuild advisory banner', () => {
     // Count this specific action: mount already issued one, so waiting on
     // "was it called" alone would resolve before the storage handler's own
     // round trip and assert against a not-yet-updated tree.
-    const getOperationStateCalls = () =>
-      mockSendMessage.mock.calls.filter(([m]: any[]) => m?.action === 'getOperationState').length
-    await waitFor(() => expect(getOperationStateCalls()).toBe(1))
+    await waitFor(() => expect(countOperationStateCalls()).toBe(1))
 
     background.backgroundStaysBusy()
     act(() => emitImportResultChange({
@@ -307,13 +309,39 @@ describe('ImportExportSection - rebuild advisory banner', () => {
       completedAt: 789,
     }))
 
-    await waitFor(() => expect(getOperationStateCalls()).toBe(2))
+    await waitFor(() => expect(countOperationStateCalls()).toBe(2))
     // Flush the .then() that would release, so an unguarded release would have
     // rendered by the time the assertions below run.
     await act(async () => {})
     // Still tracking the live import: buttons stay held, progress not blanked.
     expect(screen.getByRole('button', { name: 'インポートページを表示' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '生データをエクスポート (NDJSON)' })).toBeDisabled()
+  })
+
+  it('releases the import state when an unrelated operation took the slot', async () => {
+    // importDataCancel drops the slot to idle, so an auto-sync parked in
+    // waitForOperationIdle() can claim it before the result write lands.
+    // 'sync' is not this popup's import: holding for it would strand
+    // importOperationActive forever, since the transfer-error path sends no
+    // importStatus and nothing re-checks when the sync finishes.
+    const background = restoreActiveTransfer()
+
+    render(<ImportExportSection {...defaultProps} />)
+
+    expect(await screen.findByRole('button', { name: 'インポートページを表示' })).toBeInTheDocument()
+    await waitFor(() => expect(countOperationStateCalls()).toBe(1))
+
+    background.backgroundTookUnrelatedSlot()
+    act(() => emitImportResultChange({
+      status: 'error',
+      message: 'インポート失敗: ファイルを読み込めませんでした',
+      completedAt: 789,
+    }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '生データをインポート (NDJSON)' })).toBeInTheDocument()
+    })
+    expect(screen.getByRole('button', { name: '生データをエクスポート (NDJSON)' })).toBeEnabled()
   })
 
   it('restores a persisted result after the popup was closed', async () => {
