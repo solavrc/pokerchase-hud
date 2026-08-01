@@ -35,6 +35,21 @@ const ledgerOf = (hands: ReplayLedger['hands']): ReplayLedger => ({
   hands
 })
 
+/**
+ * `handleReplayLedgerPortMessage` は監査を投げっぱなしにするので、書き込みは
+ * 数ティック後になる。何ティックかは監査内のDB往復の回数次第で変わるため
+ * （`apiEvents` 参照を足した時点で `setTimeout(0)` 1回では足りなくなった）、
+ * 固定待ちではなく書き込まれるまで待つ。
+ */
+const waitForAuditResult = async (db: PokerChaseDB): Promise<unknown> => {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const stored = await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)
+    if (stored) return stored.value
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  throw new Error('監査結果が書き込まれなかった')
+}
+
 describe('replay ledger audit', () => {
   let db: PokerChaseDB
 
@@ -165,7 +180,9 @@ describe('replay ledger audit', () => {
         { type: REPLAY_PORT_LEDGER, hands: Array.from({ length: 201 }, (_, i) => ({ handId: i + 1, startTime: 0, chipDiff: 0 })) },
         db, HERO, NOW
       )).toBe(true)
-      await new Promise(resolve => setTimeout(resolve, 0))
+      // こちらは同期的な早期リターンの検証なので固定待ちで足りる（監査が
+      // 走ってしまう変異なら、待ち時間に関係なく最終的に書き込まれる）。
+      await new Promise(resolve => setTimeout(resolve, 50))
       expect(await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)).toBeUndefined()
     })
 
@@ -182,9 +199,7 @@ describe('replay ledger audit', () => {
         ]
       }, db, HERO, NOW)).toBe(true)
 
-      await new Promise(resolve => setTimeout(resolve, 0))
-      const stored = await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)
-      expect(stored?.value).toMatchObject({ notCapturedHandIds: [601] })
+      expect(await waitForAuditResult(db)).toMatchObject({ notCapturedHandIds: [601] })
     })
   })
 })
