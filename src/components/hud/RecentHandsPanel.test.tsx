@@ -1,12 +1,15 @@
 import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { RecentHandsPanel, formatRelativeTime, formatPostflopLines } from './RecentHandsPanel'
+import { RecentHandsPanel, formatNetBigBlinds, formatPostflopLines } from './RecentHandsPanel'
 import { Position } from '../../types/game'
+import { SUIT_COLORS } from '../../utils/card-utils'
 import type { RecentHandsResult } from '../../types/stats'
 import {
   DEFAULT_RECENT_HANDS_LIMIT,
+  DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY,
   RECENT_HANDS_LIMIT_OPTIONS,
   RECENT_HANDS_LIMIT_STORAGE_KEY,
+  RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY,
 } from '../../utils/recent-hands-config'
 
 const NOW = 1_700_000_000_000
@@ -14,9 +17,9 @@ const NOW = 1_700_000_000_000
 const buildResult = (overrides: Partial<RecentHandsResult> = {}): RecentHandsResult => ({
   computedAt: NOW,
   hands: [
-    { handId: 3, approxTimestamp: NOW - 3 * 60_000, position: Position.BTN, holeCards: ['As', 'Ah'], holeCardsSource: 'results', preflopLine: 'Open', postflopLines: { flop: 'XC', turn: 'B!', river: null }, sawFlop: true, wentToShowdown: true, won: true, netChips: 1240 },
-    { handId: 2, approxTimestamp: NOW - 2 * 3600_000, position: Position.BB, holeCards: null, holeCardsSource: null, preflopLine: 'Check', postflopLines: { flop: 'X', turn: null, river: 'F' }, sawFlop: true, wentToShowdown: false, won: false, netChips: -640 },
-    { handId: 1, approxTimestamp: NOW - 26 * 3600_000, position: null, holeCards: null, holeCardsSource: null, preflopLine: 'Fold', postflopLines: { flop: null, turn: null, river: null }, sawFlop: false, wentToShowdown: false, won: false, netChips: 0 },
+    { handId: 3, approxTimestamp: NOW - 3 * 60_000, bigBlind: 200, position: Position.BTN, holeCards: ['As', 'Ah'], holeCardsSource: 'results', preflopLine: 'Open', postflopLines: { flop: 'XC', turn: 'B!', river: null }, sawFlop: true, wentToShowdown: true, won: true, netChips: 1240 },
+    { handId: 2, approxTimestamp: NOW - 2 * 3600_000, bigBlind: 200, position: Position.BB, holeCards: null, holeCardsSource: null, preflopLine: 'Check', postflopLines: { flop: 'X', turn: null, river: 'F' }, sawFlop: true, wentToShowdown: false, won: false, netChips: -640 },
+    { handId: 1, approxTimestamp: NOW - 26 * 3600_000, bigBlind: 200, position: null, holeCards: null, holeCardsSource: null, preflopLine: 'Fold', postflopLines: { flop: null, turn: null, river: null }, sawFlop: false, wentToShowdown: false, won: false, netChips: 0 },
   ],
   ...overrides,
 })
@@ -64,7 +67,7 @@ describe('RecentHandsPanel', () => {
 
     await waitFor(() => {
       expect(mockSendMessage).toHaveBeenCalledWith(
-        { action: 'getRecentHands', playerId: 999, limit: DEFAULT_RECENT_HANDS_LIMIT },
+        { action: 'getRecentHands', playerId: 999, limit: DEFAULT_RECENT_HANDS_LIMIT, participationOnly: DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY },
         expect.any(Function)
       )
     })
@@ -91,8 +94,8 @@ describe('RecentHandsPanel', () => {
 
     const rows = await screen.findAllByTestId('recent-hands-row')
     expect(rows).toHaveLength(3)
-    // 1行目はhandId=3（won行）
-    expect(rows[0]).toHaveTextContent('+1,240')
+    // 1行目はhandId=3（won行、+1240チップ = BB200で+6.2BB）
+    expect(rows[0]).toHaveTextContent('+6.2')
   })
 
   it('公開されたホールカードは表示し、非公開のハンドは"—"にする', async () => {
@@ -106,12 +109,16 @@ describe('RecentHandsPanel', () => {
     // handId=3: 公開
     expect(rows[0]!.querySelector('[data-testid="recent-hands-cards"]')).toHaveTextContent('As')
     expect(rows[0]!.querySelector('[data-testid="recent-hands-cards"]')).toHaveTextContent('Ah')
+    // #353: 4色デッキ -- スペードとハートは別色で描かれる。
+    const cardSpans = rows[0]!.querySelectorAll('[data-testid="recent-hands-cards"] span')
+    expect(cardSpans[0]).toHaveStyle({ color: SUIT_COLORS.s })
+    expect(cardSpans[1]).toHaveStyle({ color: SUIT_COLORS.h })
     // handId=2, 1: 非公開
     expect(rows[1]!.querySelector('[data-testid="recent-hands-cards"]')).toHaveTextContent('—')
     expect(rows[2]!.querySelector('[data-testid="recent-hands-cards"]')).toHaveTextContent('—')
   })
 
-  it('signed netを +N / -N / 0 で表示し、正負を色分けする', async () => {
+  it('signed netをBB単位（小数第1位）で表示し、正負を色分けする', async () => {
     mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
       callback({ success: true, recentHands: buildResult() })
     })
@@ -119,13 +126,28 @@ describe('RecentHandsPanel', () => {
     render(<RecentHandsPanel playerId={123} />)
 
     const rows = await screen.findAllByTestId('recent-hands-row')
-    expect(rows[0]).toHaveTextContent('+1,240')
+    // bigBlind=200: +1240 -> +6.2 / -640 -> -3.2 / 0 -> 0.0
+    expect(rows[0]).toHaveTextContent('+6.2')
     expect(rows[0]).toHaveTextContent('●')
     expect(rows[1]).not.toHaveTextContent('●')
-    expect(rows[1]).toHaveTextContent('-640')
+    expect(rows[1]).toHaveTextContent('-3.2')
     expect(rows[1]!.querySelector('td:last-child span')).toHaveStyle({ color: '#ff6b6b' })
-    expect(rows[2]).toHaveTextContent('0')
+    expect(rows[2]).toHaveTextContent('0.0')
     expect(rows[2]!.querySelector('td:last-child span')).toHaveStyle({ color: '#b8b8b8' })
+    // チップ実額は列を増やさずツールチップで残す。
+    expect(rows[0]!.querySelector('td:last-child')).toHaveAttribute('title', expect.stringContaining('+1,240') as any)
+  })
+
+  it('時刻列は表示しない（sola: 時刻は不要）', async () => {
+    mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
+      callback({ success: true, recentHands: buildResult() })
+    })
+
+    render(<RecentHandsPanel playerId={123} />)
+
+    await screen.findAllByTestId('recent-hands-row')
+    expect(screen.queryByText('時刻')).not.toBeInTheDocument()
+    expect(screen.getByText('損益(BB)')).toBeInTheDocument()
   })
 
   it('source accountingが不明なら推測せず"-"を表示する', async () => {
@@ -164,8 +186,9 @@ describe('RecentHandsPanel', () => {
 
     render(<RecentHandsPanel playerId={123} />)
 
+    // 既定は「参加のみ」ONなので、0件の理由がフィルターだと分かる文言になる。
     await waitFor(() => {
-      expect(screen.getByText('No hands yet')).toBeInTheDocument()
+      expect(screen.getByText('参加したハンドなし')).toBeInTheDocument()
     })
   })
 
@@ -232,7 +255,7 @@ describe('RecentHandsPanel', () => {
       expect(mockSendMessage).toHaveBeenCalledTimes(2)
     })
     expect(mockSendMessage).toHaveBeenLastCalledWith(
-      { action: 'getRecentHands', playerId: 2, limit: DEFAULT_RECENT_HANDS_LIMIT },
+      { action: 'getRecentHands', playerId: 2, limit: DEFAULT_RECENT_HANDS_LIMIT, participationOnly: DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY },
       expect.any(Function)
     )
   })
@@ -246,7 +269,7 @@ describe('RecentHandsPanel', () => {
       // 2回目の応答は1回目と区別できるよう新しいハンドを1件追加する
       // （新しいハンドが完了して初めて反映されるべきデータ）
       const result = callCount === 2
-        ? buildResult({ hands: [{ handId: 4, approxTimestamp: NOW, position: Position.CO, holeCards: null, holeCardsSource: null, preflopLine: 'Open', postflopLines: { flop: null, turn: null, river: null }, sawFlop: false, wentToShowdown: false, won: false, netChips: null }, ...buildResult().hands] })
+        ? buildResult({ hands: [{ handId: 4, approxTimestamp: NOW, bigBlind: 200, position: Position.CO, holeCards: null, holeCardsSource: null, preflopLine: 'Open', postflopLines: { flop: null, turn: null, river: null }, sawFlop: false, wentToShowdown: false, won: false, netChips: null }, ...buildResult().hands] })
         : buildResult()
       callback({ success: true, recentHands: result })
     })
@@ -322,7 +345,7 @@ describe('RecentHandsPanel', () => {
 
       await waitFor(() => {
         expect(mockSendMessage).toHaveBeenLastCalledWith(
-          { action: 'getRecentHands', playerId: 123, limit: 100 },
+          { action: 'getRecentHands', playerId: 123, limit: 100, participationOnly: DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY },
           expect.any(Function)
         )
       })
@@ -338,7 +361,7 @@ describe('RecentHandsPanel', () => {
       await screen.findAllByTestId('recent-hands-row')
       expect(mockSendMessage).toHaveBeenCalledTimes(1)
       expect(mockSendMessage).toHaveBeenCalledWith(
-        { action: 'getRecentHands', playerId: 123, limit: 50 },
+        { action: 'getRecentHands', playerId: 123, limit: 50, participationOnly: DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY },
         expect.any(Function)
       )
       await chrome.storage.local.remove(RECENT_HANDS_LIMIT_STORAGE_KEY)
@@ -356,6 +379,129 @@ describe('RecentHandsPanel', () => {
       })
       expect(screen.getByRole('button', { name: '直近10ハンドを表示' })).toBeInTheDocument()
     })
+  })
+
+  // #353「参加のみ」
+  describe('参加のみトグル', () => {
+    beforeEach(() => {
+      mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
+        callback({ success: true, recentHands: buildResult() })
+      })
+    })
+
+    it('既定はONで、初回フェッチにparticipationOnly: trueを渡す', async () => {
+      render(<RecentHandsPanel playerId={123} />)
+
+      await screen.findAllByTestId('recent-hands-row')
+      expect(screen.getByRole('button', { name: '参加のみ表示' })).toHaveAttribute('aria-pressed', 'true')
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ participationOnly: true }),
+        expect.any(Function)
+      )
+    })
+
+    it('OFFにするとparticipationOnly: falseで再フェッチし、選択を端末ローカルへ保存する', async () => {
+      const user = userEvent.setup()
+      render(<RecentHandsPanel playerId={123} />)
+
+      await screen.findAllByTestId('recent-hands-row')
+      await user.click(screen.getByRole('button', { name: '参加のみ表示' }))
+
+      await waitFor(() => {
+        expect(mockSendMessage).toHaveBeenLastCalledWith(
+          expect.objectContaining({ participationOnly: false }),
+          expect.any(Function)
+        )
+      })
+      expect(chrome.storage.local.set).toHaveBeenCalledWith({ [RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY]: false })
+      expect(screen.getByRole('button', { name: '参加のみ表示' })).toHaveAttribute('aria-pressed', 'false')
+      await chrome.storage.local.remove(RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY)
+    })
+
+    it('保存済みのOFFがあればそれで最初のフェッチを行う', async () => {
+      await chrome.storage.local.set({ [RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY]: false })
+      mockSendMessage.mockClear()
+
+      render(<RecentHandsPanel playerId={123} />)
+
+      await screen.findAllByTestId('recent-hands-row')
+      expect(mockSendMessage).toHaveBeenCalledTimes(1)
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ participationOnly: false }),
+        expect.any(Function)
+      )
+      await chrome.storage.local.remove(RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY)
+    })
+
+    it('OFFのときの0件は「参加のみ」由来ではないので従来の文言を出す', async () => {
+      await chrome.storage.local.set({ [RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY]: false })
+      mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
+        callback({ success: true, recentHands: buildResult({ hands: [] }) })
+      })
+
+      render(<RecentHandsPanel playerId={123} />)
+
+      await waitFor(() => {
+        expect(screen.getByText('No hands yet')).toBeInTheDocument()
+      })
+      await chrome.storage.local.remove(RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY)
+    })
+  })
+
+  // #353: ヒーロー自身の配札カードは source='dealt' で届く
+  it("ショーダウン以外でも自分の配札カード（source='dealt'）を表示する", async () => {
+    mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
+      callback({
+        success: true,
+        recentHands: buildResult({
+          hands: [{
+            handId: 9, approxTimestamp: NOW, bigBlind: 200, position: Position.CO,
+            holeCards: ['Jh', 'Ac'], holeCardsSource: 'dealt',
+            preflopLine: 'ColdCall', postflopLines: { flop: 'F', turn: null, river: null },
+            sawFlop: true, wentToShowdown: false, won: false, netChips: -420,
+          }],
+        }),
+      })
+    })
+
+    render(<RecentHandsPanel playerId={123} />)
+
+    const row = await screen.findByTestId('recent-hands-row')
+    const cards = row.querySelector('[data-testid="recent-hands-cards"]')
+    expect(cards).toHaveTextContent('Jh')
+    expect(cards).toHaveTextContent('Ac')
+    expect(cards).not.toHaveTextContent('—')
+  })
+})
+
+describe('formatNetBigBlinds', () => {
+  const entry = (netChips: number | null, bigBlind: number | null) => ({
+    handId: 1, approxTimestamp: null, bigBlind, position: null, holeCards: null,
+    holeCardsSource: null, preflopLine: null,
+    postflopLines: { flop: null, turn: null, river: null },
+    sawFlop: false, wentToShowdown: false, won: false, netChips,
+  })
+
+  test('そのハンド自身のBBで割る（ブラインドが上がっても比較できる）', () => {
+    expect(formatNetBigBlinds(entry(1240, 200))).toBe('+6.2')
+    // 同じ+1240でもレベルが上がっていればBB数は小さくなる。
+    expect(formatNetBigBlinds(entry(1240, 800))).toBe('+1.6')
+    expect(formatNetBigBlinds(entry(-3880, 200))).toBe('-19.4')
+  })
+
+  test('丸めて0になる損益は符号を付けない（-0.0を損に見せない）', () => {
+    expect(formatNetBigBlinds(entry(0, 200))).toBe('0.0')
+    expect(formatNetBigBlinds(entry(-8, 200))).toBe('0.0')
+    expect(formatNetBigBlinds(entry(8, 200))).toBe('0.0')
+  })
+
+  test('会計未確定は従来どおり"-"', () => {
+    expect(formatNetBigBlinds(entry(null, 200))).toBe('-')
+  })
+
+  test('BBが使えない行はチップ表記へフォールバックする（行を隠さない）', () => {
+    expect(formatNetBigBlinds(entry(1240, null))).toBe('+1,240')
+    expect(formatNetBigBlinds(entry(-640, 0))).toBe('-640')
   })
 })
 
@@ -385,31 +531,3 @@ describe('formatPostflopLines', () => {
   })
 })
 
-describe('formatRelativeTime', () => {
-  test('直近1分未満は"now"', () => {
-    expect(formatRelativeTime(NOW - 30_000, NOW)).toBe('now')
-  })
-
-  test('分単位（1分〜59分）', () => {
-    expect(formatRelativeTime(NOW - 3 * 60_000, NOW)).toBe('3m')
-    expect(formatRelativeTime(NOW - 59 * 60_000, NOW)).toBe('59m')
-  })
-
-  test('時間単位（1時間〜23時間）', () => {
-    expect(formatRelativeTime(NOW - 2 * 3600_000, NOW)).toBe('2h')
-    expect(formatRelativeTime(NOW - 23 * 3600_000, NOW)).toBe('23h')
-  })
-
-  test('24〜48時間は"昨日"', () => {
-    expect(formatRelativeTime(NOW - 25 * 3600_000, NOW)).toBe('昨日')
-    expect(formatRelativeTime(NOW - 47 * 3600_000, NOW)).toBe('昨日')
-  })
-
-  test('48時間以降は日数', () => {
-    expect(formatRelativeTime(NOW - 5 * 24 * 3600_000, NOW)).toBe('5d')
-  })
-
-  test('nullは"—"', () => {
-    expect(formatRelativeTime(null, NOW)).toBe('—')
-  })
-})
