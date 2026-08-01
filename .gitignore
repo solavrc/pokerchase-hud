@@ -1,4 +1,8 @@
 node_modules/
+# 末尾スラッシュ無しも要る: git worktree で作業するとき node_modules を
+# メイン checkout への**シンボリックリンク**にすることがあり、それは
+# ディレクトリではないため `node_modules/` にはマッチしない。
+node_modules
 dist/
 mockup-dist/
 output/playwright/

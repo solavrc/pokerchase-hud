@@ -53,10 +53,19 @@ let isGameActive = false
 let keepaliveTimer: ReturnType<typeof setInterval> | null = null
 let replayBridgeReady = false
 let replayImportEnabled = false
+/**
+ * 設定を実際に読めたか。**未読のまま `enabled: false` を送ってはならない**
+ * （MUST NOT）。main world 側は設定の到達をもって「観測ゲートを閉じてよい」と
+ * 判断するので（`replayConfigReceived`）、まだ読めていないだけの初期値 false を
+ * 送ると、保存値が true でも認証エンベロープの捕獲がそこで止まる。ホーム画面の
+ * 通信を取り逃すと、対局中はHTTPが発生しないためページ再読み込みまで
+ * `auth-envelope-unavailable` が続く。
+ */
+let replayConfigLoaded = false
 const pendingReplayRequests: ReplayFetchRequest[] = []
 
 const postReplayConfig = () => {
-  if (!replayBridgeReady) return
+  if (!replayBridgeReady || !replayConfigLoaded) return
   window.postMessage({ type: REPLAY_BRIDGE_CONFIG, enabled: replayImportEnabled }, POKER_CHASE_ORIGIN)
 }
 
@@ -80,6 +89,7 @@ const flushPendingReplayRequests = () => {
 // onChanged も同じゲートで untrusted context には配送されない。
 chrome.storage.sync.get(EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY).then(stored => {
   replayImportEnabled = stored[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY] === true
+  replayConfigLoaded = true
   postReplayConfig()
   flushPendingReplayRequests()
 }).catch(() => undefined)
@@ -88,6 +98,8 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   const change = changes[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY]
   if (areaName !== 'sync' || !change) return
   replayImportEnabled = change.newValue === true
+  // 変更通知が届いた時点で値は確定している（初回読み取りが未完了でも）。
+  replayConfigLoaded = true
   postReplayConfig()
   if (replayImportEnabled) flushPendingReplayRequests()
   else pendingReplayRequests.splice(0)
@@ -179,9 +191,11 @@ portManager.connect()
 
 // window.postMessageはさまざまなソースからのメッセージを受信する可能性がある
 window.addEventListener('message', (event: MessageEvent<unknown>) => {
-  // Page-world bridge and the game share this origin. This is the same trust
-  // boundary as the existing flat numeric-ID event path; the envelope only
-  // distinguishes an intercepted decoded payload whose ApiTypeId is invalid.
+  // ページ側ブリッジとゲーム本体は同一オリジンを共有する。ここは既存の
+  // 素の数値ID経路と**同じ信頼境界**であり、この封筒が区別するのは
+  // 「ApiTypeIdが不正な傍受済みデコード済みペイロード」だけである。
+  // したがって、送信元・オリジン・型のいずれかが合わないメッセージは
+  // 必ず捨てなければならない（MUST）。
   if (
     event.source !== window ||
     event.origin !== POKER_CHASE_ORIGIN ||

@@ -617,7 +617,17 @@ describe('main-world experimental replay bridge', () => {
     }))
     await Promise.resolve(); await Promise.resolve()
 
-    // その間にアカウントBのエンベロープを捕獲する（別リクエスト）
+    // その間に無効化→再有効化（＝資格情報の破棄。アカウント切替を伴いうる）
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled: false }
+    }))
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled: true }
+    }))
+
+    // アカウントBのエンベロープを捕獲する
     const fresh = new XMLHttpRequest()
     fresh.open('POST', 'https://production.api-poker-chase.com/user/status')
     fresh.send(encode({
@@ -633,6 +643,63 @@ describe('main-world experimental replay bridge', () => {
     expect(postMessageSpy.mock.calls.some(
       call => (call[0] as { type?: string })?.type === REPLAY_BRIDGE_LEDGER
     )).toBe(false)
+
+    XMLHttpRequest.prototype.open = originalOpen
+    XMLHttpRequest.prototype.send = originalSend
+  })
+
+  // Codexレビュー指摘（2周目）: 参照の同一性で判定すると、同一アカウントの
+  // 並行リクエストでも最後の1本以外の応答が捨てられる。無効化を挟んだか
+  // どうか（＝世代）と、リクエストごとのエンベロープは別物。
+  test('keeps the ledger when a concurrent same-account request replaced the envelope', async () => {
+    class FakeWebSocket {
+      addEventListener = jest.fn()
+    }
+    ;(window as any).WebSocket = FakeWebSocket
+    ;(window as any).fetch = jest.fn()
+
+    const originalOpen = XMLHttpRequest.prototype.open
+    const originalSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.open = jest.fn() as any
+    XMLHttpRequest.prototype.send = jest.fn() as any
+    const postMessageSpy = jest.spyOn(window, 'postMessage')
+    postMessageSpy.mockClear()
+
+    jest.isolateModules(() => {
+      require('./web_accessible_resource')
+    })
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled: true }
+    }))
+
+    // `/replay/list` が応答待ちの間に、同じアカウントの別APIが飛ぶ
+    const list = new XMLHttpRequest()
+    list.open('POST', 'https://production.api-poker-chase.com/replay/list')
+    Object.defineProperty(list, 'response', {
+      value: arrayBufferOf(LIST_ENVELOPE),
+      configurable: true
+    })
+    list.send(encode({
+      param: { BattleType: 0 }, session: 'sess-1', platform: 2,
+      appVer: '2.06', dataVer: 'ver', masterVer: 'm'
+    }))
+    await Promise.resolve(); await Promise.resolve()
+
+    const other = new XMLHttpRequest()
+    other.open('POST', 'https://production.api-poker-chase.com/user/status')
+    other.send(encode({
+      param: {}, session: 'sess-2', platform: 2,
+      appVer: '2.06', dataVer: 'ver', masterVer: 'm'
+    }))
+    await Promise.resolve(); await Promise.resolve()
+
+    list.dispatchEvent(new Event('loadend'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(postMessageSpy.mock.calls.some(
+      call => (call[0] as { type?: string })?.type === REPLAY_BRIDGE_LEDGER
+    )).toBe(true)
 
     XMLHttpRequest.prototype.open = originalOpen
     XMLHttpRequest.prototype.send = originalSend

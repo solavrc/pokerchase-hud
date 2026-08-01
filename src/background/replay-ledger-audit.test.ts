@@ -643,5 +643,62 @@ describe('replay ledger audit', () => {
       await new Promise(resolve => setTimeout(resolve, 40))
       expect(await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)).toBeUndefined()
     })
+
+    // Codexレビュー指摘（2周目）: 起動直後に同じbattleTypeの新しい台帳が届くと、
+    // 再開側が読んだ古いスナップショットを後から書き戻して新しい控えを巻き戻し、
+    // 監査キューでも古い結果が最後に上書きしうる。
+    test('再開の最中に新しい台帳が届いたら、古い方は再開しない', async () => {
+      await db.hands.bulkPut([hand(3700, 10), hand(3701, 20)])
+      await db.meta.put({
+        id: REPLAY_LEDGER_AUDIT_PENDING_META_ID,
+        value: {
+          pending: [{
+            ledger: ledgerOf([{ handId: 3700, startTime: 1785500000, chipDiff: 10 }]),
+            playerIdAtReceipt: HERO,
+            receivedAt: NOW - 5000,
+            attempts: 1
+          }]
+        },
+        updatedAt: NOW - 5000
+      })
+
+      // 起動時の再開と、同じカテゴリの新規受信がほぼ同時に走る
+      const resumed = resumePendingReplayLedgerAudits(depsOf(db))
+      handleReplayLedgerPortMessage({
+        type: REPLAY_PORT_LEDGER,
+        battleType: 0,
+        cardOpenEndDate: 0,
+        isExpiredCardOpen: false,
+        hands: [{ handId: 3701, startTime: 1785500060, chipDiff: 999 }]
+      }, depsOf(db))
+      await resumed
+
+      await new Promise(resolve => setTimeout(resolve, 200))
+      // 新しい台帳（chipDiff不一致）の結果が残っている ＝ 古い方に上書き
+      // されていない
+      const stored = await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)
+      expect((stored?.value as { chipDiffMismatches: unknown[] }).chipDiffMismatches)
+        .toHaveLength(1)
+      expect(await readPending()).toEqual([])
+    })
+  })
+
+  // Codexレビュー指摘（2周目）: `isBusy`を保存直前に一度読むだけでは、監査中に
+  // 始まって確認前に終わった操作を検出できない。読んだスナップショットは
+  // 操作前後が混ざっている。
+  test('監査の最中に長時間操作が走り切っていたら結果を保存しない', async () => {
+    await db.hands.bulkPut([hand(3900, 10)])
+    let generation = 7
+    const result = await auditReplayLedger(
+      db,
+      HERO,
+      ledgerOf([{ handId: 3900, startTime: 1785500000, chipDiff: 10 }]),
+      NOW,
+      () => false,
+      // 読み始めと書き戻しで世代が変わっている＝間に操作が1回走り切った
+      () => generation++
+    )
+    expect(result.listedHands).toBe(1)
+    expect(await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)).toBeUndefined()
   })
 })

@@ -22,6 +22,20 @@ export interface OperationState {
 let currentOperationState: OperationState = { type: 'idle' }
 
 /**
+ * idleから抜けた回数。「読み取りを始めてから書き戻すまでの間に、長時間操作が
+ * 1つ始まって終わった」を検出するための世代カウンタ。
+ *
+ * `getOperationState()`のスナップショット比較では足りない: 監査のような
+ * 「読む→時間が経つ→書き戻す」処理は、開始時idle・書き戻し時idleでも、
+ * その間にインポートが丸ごと1回走っていれば、操作前後のデータを混ぜた
+ * 結果を最新として永続化してしまう。
+ */
+let operationGeneration = 0
+
+/** 現在の操作世代。idleから抜けるたびに増える。 */
+export const getOperationGeneration = (): number => operationGeneration
+
+/**
  * `type: 'idle'`への遷移（export/import/rebuildの完了・失敗いずれか）を購読する
  * リスナー集合。`src/background/update-manager.ts`が「operation completion」
  * 時点での保留中アップデートの安全性再チェックをフックするために使う
@@ -47,6 +61,7 @@ export const getOperationState = (): OperationState => currentOperationState
 export const setOperationState = (state: OperationState): void => {
   const wasIdle = currentOperationState.type === 'idle'
   currentOperationState = state
+  if (wasIdle && state.type !== 'idle') operationGeneration += 1
   if (!wasIdle && state.type === 'idle') {
     // Listeners such as waitForOperationIdle() unsubscribe themselves while
     // handling this transition. Iterate over a snapshot so splicing the live

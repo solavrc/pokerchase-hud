@@ -31,6 +31,7 @@
  * 過去に記録済みの欠損を後から検証することはできない。
  */
 import type { PokerChaseDB } from '../db/poker-chase-db'
+import { enqueuePendingStorageWrite } from './pending-storage-writes'
 import { processInChunks } from '../utils/database-utils'
 import { ApiType } from '../types/api'
 import {
@@ -101,13 +102,21 @@ const readPendingAudits = async (db: PokerChaseDB): Promise<PendingReplayLedgerA
   return list.filter(isPendingEntry)
 }
 
-/** 保留リストを直列化して書き換える。 */
+/**
+ * 保留リストを直列化して書き換える。
+ *
+ * 実際の書き込みは `enqueuePendingStorageWrite` へ載せる。この控えは
+ * 「Service Workerがreloadで落ちても再開できる」ことが存在理由なので、
+ * 控えがコミットされる前にforced updateのreloadが走ると意味を成さない。
+ * 共通FIFOに載せておけば、reload commit pointがこの書き込みの完了を待つ
+ * （`src/background/AGENTS.md` のreload前ドレイン規約）。
+ */
 const updatePendingAudits = (
   db: PokerChaseDB,
   now: number,
   update: (current: PendingReplayLedgerAudit[]) => PendingReplayLedgerAudit[]
 ): Promise<void> => {
-  const next = pendingMetaQueue.then(async () => {
+  const next = pendingMetaQueue.then(() => enqueuePendingStorageWrite(async () => {
     const current = await readPendingAudits(db)
     const updated = update(current)
     if (updated.length === 0) {
@@ -119,7 +128,7 @@ const updatePendingAudits = (
       value: { pending: updated },
       updatedAt: now
     })
-  })
+  }))
   pendingMetaQueue = next.catch(() => undefined)
   return next
 }
@@ -277,9 +286,14 @@ export const auditReplayLedger = async (
   playerId: number | undefined,
   ledger: ReplayLedger,
   now: number,
-  isBusy?: () => boolean
+  isBusy?: () => boolean,
+  getOperationGeneration?: () => number
 ): Promise<ReplayLedgerAuditResult> => {
   const all = ledger.hands.slice(0, REPLAY_LEDGER_MAX_ENTRIES)
+  // 読み始めた時点の操作世代。`isBusy`のスナップショットだけでは、監査の
+  // 最中に始まって書き戻しの直前に終わったインポート／再構築を検出できない
+  // （開始時idle・書き戻し時idleでも、その間にデータが総入れ替えされている）。
+  const operationGenerationAtStart = getOperationGeneration?.()
 
   // --- 1. まず生イベントの有無を全エントリについて確定させる ---
   //
@@ -428,6 +442,13 @@ export const auditReplayLedger = async (
     console.info('[replay-ledger] 実行中に長時間操作が始まったため結果を破棄しました')
     return result
   }
+  if (operationGenerationAtStart !== undefined &&
+    getOperationGeneration?.() !== operationGenerationAtStart) {
+    // 開始時も今もidleだが、その間に長時間操作が1回走り切っている。読んだ
+    // スナップショットは操作前後が混ざっているので、最新結果として残さない。
+    console.info('[replay-ledger] 実行中に長時間操作が完了したため結果を破棄しました')
+    return result
+  }
 
   await db.meta.put({
     id: REPLAY_LEDGER_AUDIT_META_ID,
@@ -462,6 +483,11 @@ export interface ReplayLedgerAuditDeps {
   waitUntilConsistent: () => Promise<void>
   /** インポート等の長時間操作の最中かどうか。真なら監査を見送る。 */
   isBusy?: () => boolean
+  /**
+   * 長時間操作の世代（`operation-state.ts`）。読み始めと書き戻しで一致して
+   * いなければ、その間に操作が走り切っているので結果を捨てる。
+   */
+  getOperationGeneration?: () => number
   getPlayerId: () => number | undefined
   now: () => number
 }
@@ -534,12 +560,27 @@ const enqueueReplayLedgerAudit = (
   persist: boolean
 ): void => {
   const persisted = persist
-    ? updatePendingAudits(deps.db, entry.receivedAt, current => [
-      // 同じカテゴリの古い控えは新しい受信で置き換える。結果は同じ`meta`キーへ
-      // 上書きされるので、古いほうを再開する意味が無い。
-      ...current.filter(item => item.ledger.battleType !== entry.ledger.battleType),
-      entry
-    ]).catch(error => {
+    ? updatePendingAudits(deps.db, entry.receivedAt, current => {
+      // 同じカテゴリでは**受信が新しいほうだけ**を残す。結果は同じ`meta`
+      // キーへ上書きされるので、古いほうを再開する意味が無い。
+      //
+      // 「無条件に置き換える」ではなく新しさで比較するのは、起動時の再開と
+      // 新規受信が交差しうるため: 再開側が先に読んだ古い控えを後から
+      // 書き戻すと、直前に届いた新しい控えを巻き戻してしまう。
+      const superseded = current.some(item =>
+        item.ledger.battleType === entry.ledger.battleType &&
+        item.receivedAt > entry.receivedAt)
+      const others = current.filter(item => item.ledger.battleType !== entry.ledger.battleType)
+      if (superseded) {
+        return [
+          ...others,
+          ...current.filter(item =>
+            item.ledger.battleType === entry.ledger.battleType &&
+            item.receivedAt > entry.receivedAt)
+        ]
+      }
+      return [...others, entry]
+    }).catch(error => {
       console.warn('[replay-ledger] 保留中の台帳を控えられませんでした:', error)
     })
     : Promise.resolve()
@@ -547,6 +588,16 @@ const enqueueReplayLedgerAudit = (
   auditQueue = auditQueue
     .then(async () => {
       await persisted
+      // 控えを残す約束をした実行だけが、その約束の生死を確認できる。
+      // 新しい受信に追い越されていれば（控えから消えていれば）走らせない ――
+      // 走らせると古い結果が最後に`replayLedgerAudit`を上書きする。
+      if (persist) {
+        const current = await readPendingAudits(deps.db).catch(() => [])
+        if (!current.some(item => isSamePending(item, entry))) {
+          console.info('[replay-ledger] 新しい台帳に追い越されたため再開を見送りました')
+          return
+        }
+      }
       try {
         await deps.waitUntilConsistent()
         if (deps.isBusy?.()) {
@@ -558,7 +609,9 @@ const enqueueReplayLedgerAudit = (
           console.info('[replay-ledger] 待機中にアカウントが変わったため突き合わせを見送りました')
           return
         }
-        await auditReplayLedger(deps.db, playerId, entry.ledger, deps.now(), deps.isBusy)
+        await auditReplayLedger(
+          deps.db, playerId, entry.ledger, deps.now(), deps.isBusy, deps.getOperationGeneration
+        )
       } finally {
         // 見送り・失敗も含めて控えを外す。ここまで到達した＝workerは生きていた
         // ので、次回起動で再開すべき仕事は残っていない。
@@ -575,13 +628,22 @@ const enqueueReplayLedgerAudit = (
 /**
  * Service Worker起動時に、前回のworkerが終わらせられなかった突き合わせを
  * 再開する。保留が無ければ1行もDBを読まない（`meta`の1件取得のみ）。
+ *
+ * 保留リストの読み取り自体を `pendingMetaQueue` に載せる。起動直後に同じ
+ * `battleType` の新しい台帳が届くと、素朴な実装では「再開側が古い
+ * スナップショットを読む→新規の控えが書かれる→再開側が古い控えを書き戻す」
+ * の順で新しい控えが古い控えへ巻き戻り、監査キューでも古い結果が最後に
+ * `replayLedgerAudit` を上書きしうる。読み書きを同じ直列化キューへ通せば
+ * この交差が起きない。
  */
 export const resumePendingReplayLedgerAudits = async (
   deps: ReplayLedgerAuditDeps
 ): Promise<void> => {
   let pending: PendingReplayLedgerAudit[]
   try {
-    pending = await readPendingAudits(deps.db)
+    const read = pendingMetaQueue.then(() => readPendingAudits(deps.db))
+    pendingMetaQueue = read.then(() => undefined, () => undefined)
+    pending = await read
   } catch (error) {
     console.warn('[replay-ledger] 保留中の台帳を読めませんでした:', error)
     return

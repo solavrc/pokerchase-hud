@@ -346,6 +346,20 @@ const OriginalFetch: typeof window.fetch | undefined =
 let replayImportEnabled = false
 let replayConfigReceived = false
 let replayAuth: ReplayAuthEnvelope | undefined
+/**
+ * 認証の**世代**。無効化で捕獲済みエンベロープを破棄するたびに増える。
+ *
+ * リクエストごとのエンベロープ（`replayAuth`の参照）とは別物であることが
+ * 重要: 同一アカウントで通常API通信が並行すると、各リクエスト本文の捕獲で
+ * `replayAuth`は毎回別オブジェクトへ差し替わる。参照の同一性だけで応答を
+ * 判定すると、最後に送ったリクエスト以外の応答（＝正しい台帳を含みうる）を
+ * 全て捨ててしまう。
+ *
+ * 捨てるべきなのは「無効化を挟んだ＝別アカウントでありうる」応答だけなので、
+ * その境界を世代で表す。sessionの回転だけは、いま現役のエンベロープに対する
+ * 応答のときにだけ書き戻す（古い応答のsessionで新しい版を上書きしない）。
+ */
+let replayAuthGeneration = 0
 let replayFetchQueue: Promise<void> = Promise.resolve()
 
 const requestUrl = (input: RequestInfo | URL): URL | undefined => {
@@ -425,31 +439,41 @@ const postReplayLedger = (url: URL, decoded: unknown): void => {
  * 永続化され、受信時点の `playerId` と突き合わされる。旧アカウントの
  * HandId/ChipDiff を新アカウントのローカル履歴と比べると、偽の未キャプチャ・
  * 偽のチップ不一致が `replayLedgerAudit` に残る。
+ *
+ * 判定は**世代**（無効化を挟んだか）で行い、リクエストごとのエンベロープの
+ * 参照同一性は使わない ―― 同一アカウントで通信が並行すると参照は毎回変わる
+ * ので、それで判定すると正常な応答まで捨てる。
  */
 const observeApiResponse = (
   url: URL,
   decoded: unknown,
-  authAtRequest: ReplayAuthEnvelope | undefined
+  authAtRequest: ReplayAuthEnvelope | undefined,
+  generationAtRequest: number
 ): void => {
-  // 回転の書き戻しより先に判定する。書き戻すと `replayAuth` の参照が
-  // 変わるため、後から比べると必ず不一致になる。
-  const sameAuthGeneration = replayAuth === authAtRequest
-  if (sameAuthGeneration && authAtRequest !== undefined &&
+  if (generationAtRequest !== replayAuthGeneration) return
+  // sessionの回転は「いま現役のエンベロープ」に対する応答のときだけ書き戻す。
+  // 並行リクエストの古い応答で新しい版を上書きしないため。
+  if (replayAuth !== undefined && replayAuth === authAtRequest &&
     typeof decoded === 'object' && decoded !== null &&
     'session' in decoded && typeof decoded.session === 'string') {
     replayAuth = { ...authAtRequest, session: decoded.session }
   }
-  if (!sameAuthGeneration) return
   postReplayLedger(url, decoded)
 }
 
 const readApiResponse = async (
   url: URL,
   response: Response,
-  authAtRequest: ReplayAuthEnvelope | undefined
+  authAtRequest: ReplayAuthEnvelope | undefined,
+  generationAtRequest: number
 ): Promise<void> => {
   try {
-    observeApiResponse(url, decode(new Uint8Array(await response.clone().arrayBuffer())), authAtRequest)
+    observeApiResponse(
+      url,
+      decode(new Uint8Array(await response.clone().arrayBuffer())),
+      authAtRequest,
+      generationAtRequest
+    )
   } catch {
     // Many API responses are not MessagePack. They are irrelevant here.
   }
@@ -471,8 +495,9 @@ if (OriginalFetch) {
       // A request without a MessagePack body is unrelated to replay auth.
     }
     const authAtRequest = replayAuth
+    const generationAtRequest = replayAuthGeneration
     const response = await OriginalFetch(input, init)
-    readApiResponse(url, response, authAtRequest).catch(() => undefined)
+    readApiResponse(url, response, authAtRequest, generationAtRequest).catch(() => undefined)
     return response
   }) as typeof window.fetch
 }
@@ -502,7 +527,8 @@ XMLHttpRequest.prototype.open = function (
 const readApiXhrResponse = async (
   url: URL,
   xhr: XMLHttpRequest,
-  authAtRequest: ReplayAuthEnvelope | undefined
+  authAtRequest: ReplayAuthEnvelope | undefined,
+  generationAtRequest: number
 ): Promise<void> => {
   try {
     const response = xhr.response
@@ -511,7 +537,7 @@ const readApiXhrResponse = async (
     else if (ArrayBuffer.isView(response)) decoded = decode(new Uint8Array(response.buffer, response.byteOffset, response.byteLength))
     else if (response instanceof Blob) decoded = decode(new Uint8Array(await response.arrayBuffer()))
     else return
-    observeApiResponse(url, decoded, authAtRequest)
+    observeApiResponse(url, decoded, authAtRequest, generationAtRequest)
   } catch {
     // Non-MessagePack XHR responses are unrelated to replay auth.
   }
@@ -525,6 +551,7 @@ XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyIn
     // 必ず不一致になってsessionの回転が止まる。捕獲の完了を待って、その時点の
     // 版を控える。
     let authAtRequest: ReplayAuthEnvelope | undefined = replayAuth
+    const generationAtRequest = replayAuthGeneration
     const captured = body instanceof Document
       ? Promise.resolve()
       : decodeBody(body)
@@ -535,7 +562,7 @@ XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyIn
         .catch(() => undefined)
     this.addEventListener('loadend', () => {
       captured
-        .then(() => readApiXhrResponse(url, this, authAtRequest))
+        .then(() => readApiXhrResponse(url, this, authAtRequest, generationAtRequest))
         .catch(() => undefined)
     }, { once: true })
   }
@@ -675,7 +702,12 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
     const message = event.data as ReplayBridgeConfigMessage
     replayConfigReceived = true
     replayImportEnabled = message.enabled === true
-    if (!replayImportEnabled) replayAuth = undefined
+    if (!replayImportEnabled) {
+      // 無効化＝資格情報の破棄。ここで世代を進めることで、無効化を挟んで
+      // 完了する古い応答（アカウント切替を伴いうる）を確実に切り離す。
+      replayAuth = undefined
+      replayAuthGeneration += 1
+    }
     return
   }
   if (event.data.type !== REPLAY_BRIDGE_FETCH || !replayImportEnabled) return
