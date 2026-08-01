@@ -134,6 +134,13 @@ procedures and rationale stay in the linked documents:
 - The CRX signing key MUST NOT be stored in the repository or in a Google
   account; handle and back it up per `docs/chrome-web-store-release.md`
   "Signing key".
+- Raw event payloads or query output that may contain identifiers (display
+  names, `UserId`, `SeatUserIds`, observer/session/auth IDs, received
+  timestamps) MUST NOT be pasted into issues, PRs, chat, or shared logs —
+  share only partial excerpts anonymized per `docs/api-event-examples.md`'s
+  掲載・匿名化方針.
+- `SENTRY_AUTH_TOKEN` is a build secret and MUST NOT be committed
+  (`docs/observability.md`).
 
 ### Build & Tool Commands
 
