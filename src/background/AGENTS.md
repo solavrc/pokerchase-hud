@@ -36,6 +36,6 @@ Applies to the MV3 service worker modules in this directory. Root
   exception (runs after the user wiped all data).
 - Safe path: route new reload triggers through the existing funnel; persist
   pending-update state *before* any drain/await so a SW kill leaves a durable
-  trace. Storage writes that must finish before a forced reload belong in
-  `pending-storage-writes.ts`; its tail is drained and synchronously rechecked
-  beside the ingestion tail at the commit point.
+  trace. Storage writes that have to finish before a forced reload MUST be
+  placed in `pending-storage-writes.ts`; its tail is drained and synchronously
+  rechecked beside the ingestion tail at the commit point.

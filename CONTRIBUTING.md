@@ -20,7 +20,7 @@ npm run build
 `postbuild` lifecycle script to create `extension.zip`. Use `npm run pack:crx` only
 when you have a signing key and need a signed CRX. Generated outputs (`dist/`,
 `extension.zip`, `extension.crx`, `e2e/.build/`, and `e2e/out/`) are gitignored and
-must not be committed.
+MUST NOT be committed.
 
 Jest unit/component tests are co-located with their source files. The real-browser
 E2E harness is separate and is not run by CI; see [e2e/README.md](e2e/README.md) for
@@ -365,7 +365,7 @@ detectActionDetails: (context) => {
 }
 ```
 
-Note: The system uses TypeScript enums for type safety, so new flags must be added to the enum before use.
+Note: The system uses TypeScript enums for type safety, so new flags MUST be added to the enum before use.
 
 ### Need Help?
 
@@ -397,7 +397,7 @@ Note: The system uses TypeScript enums for type safety, so new flags must be add
    machine-parsed tokens (type, scope, `BREAKING CHANGE:`) stay English/ASCII.
    Release Please
    uses these titles when preparing releases and the changelog. Release Please
-   parses the **whole** message, body included, so never let a parenthesis pair
+   parses the **whole** message, body included, so a parenthesis pair MUST NOT
    span a line break — the parser stops at the newline waiting for `)`, fails the
    whole commit with `commit could not be parsed`, and silently drops it from the
    changelog and the Release body (this happened to #315 in 5.4.0). Keep each
