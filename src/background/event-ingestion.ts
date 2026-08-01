@@ -18,6 +18,7 @@ import { markSessionActive, markSessionInactive, recheckPendingUpdate, setIngest
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
 import { getOperationState } from './operation-state'
 import { handleReplayPortMessage, releaseReplayRequestsForPort } from './replay-fetch-bridge'
+import { handleReplayLedgerPortMessage } from './replay-ledger-audit'
 import {
   captureHandledException,
   captureSchemaValidationFailure
@@ -134,6 +135,12 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // 実験的リプレイ取得の応答。何も保存しないので取り込みキューには
         // 載せない（載せるとライブイベントを待たせるだけになる）。
         if (handleReplayPortMessage(message, port)) {
+          return Promise.resolve()
+        }
+
+        // 受動取得した台帳（`/replay/list`）の突き合わせ。`apiEvents`へは
+        // 書かないので、同じ理由で取り込みキューには載せない。
+        if (handleReplayLedgerPortMessage(message, service.db, service.playerId, Date.now())) {
           return Promise.resolve()
         }
 

@@ -3,6 +3,7 @@ import { POKER_CHASE_ORIGIN } from './constants/runtime'
 import {
   REPLAY_BRIDGE_CONFIG,
   REPLAY_BRIDGE_FETCH,
+  REPLAY_BRIDGE_LEDGER,
   REPLAY_BRIDGE_RESULT,
   REPLAY_DETAIL_URL
 } from './replay/protocol'
@@ -63,6 +64,31 @@ const REJECTED_ENVELOPE = {
  * ここを素通りさせると中身の無い応答が成功として保存経路へ流れる。
  */
 const MISSING_PARAM_ENVELOPE = { ...REJECTED_ENVELOPE, result: 0, status: 0, message: '' }
+
+/** 実測した `/replay/list` の応答。台帳と課金状態が同じ1本に乗る。 */
+const LIST_ENVELOPE = {
+  ...SUCCESS_ENVELOPE,
+  session: 'list-response-secret',
+  param: {
+    HandList: [{
+      Hand: {
+        HandId: 533933335,
+        BattleType: 0,
+        Name: 'text_rank_room_name_legend',
+        StartTime: 1785500000,
+        HoleCardList: [40, 41],
+        CommunityCardList: [39, 17, 11, 44, 24],
+        ChipDiff: -6436
+      },
+      IsFavorite: false
+    }],
+    CardOpenEndDate: 1786000000,
+    IsExpiredCardOpen: false,
+    Limit: 100,
+    FavoriteCount: 100,
+    BattleType: 0
+  }
+}
 
 describe('main-world experimental replay bridge', () => {
   test('captures a Unity XHR envelope, builds sequential detail requests, and strips credentials', async () => {
@@ -227,6 +253,68 @@ describe('main-world experimental replay bridge', () => {
     }, POKER_CHASE_ORIGIN)
 
     jest.useRealTimers()
+    XMLHttpRequest.prototype.open = originalOpen
+    XMLHttpRequest.prototype.send = originalSend
+  })
+
+  // 受動取得: 拡張はリクエストを出さず、ユーザーがリプレイ画面を開いたときに
+  // ゲーム自身が出した `/replay/list` の応答を読むだけ。
+  test('passively forwards the /replay/list ledger without issuing a request', async () => {
+    class FakeWebSocket {
+      addEventListener = jest.fn()
+    }
+    ;(window as any).WebSocket = FakeWebSocket
+    const fetchMock = jest.fn()
+    ;(window as any).fetch = fetchMock
+
+    const originalOpen = XMLHttpRequest.prototype.open
+    const originalSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.open = jest.fn() as any
+    XMLHttpRequest.prototype.send = jest.fn() as any
+    const postMessageSpy = jest.spyOn(window, 'postMessage')
+
+    jest.isolateModules(() => {
+      require('./web_accessible_resource')
+    })
+
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window,
+      origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled: true }
+    }))
+
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', 'https://production.api-poker-chase.com/replay/list')
+    Object.defineProperty(xhr, 'response', {
+      value: arrayBufferOf(LIST_ENVELOPE),
+      configurable: true
+    })
+    xhr.send(encode({
+      param: { BattleType: 0 },
+      session: 'page-only-secret',
+      platform: 2,
+      appVer: '2.06',
+      dataVer: '2_06_0_test',
+      masterVer: 'master-test',
+      requestKey: 'original-key'
+    }))
+    await Promise.resolve()
+    xhr.dispatchEvent(new Event('loadend'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // 取得は一切していない
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    expect(postMessageSpy).toHaveBeenCalledWith({
+      type: REPLAY_BRIDGE_LEDGER,
+      battleType: 0,
+      cardOpenEndDate: 1786000000,
+      isExpiredCardOpen: false,
+      hands: [{ handId: 533933335, startTime: 1785500000, chipDiff: -6436 }]
+    }, POKER_CHASE_ORIGIN)
+    expect(JSON.stringify(postMessageSpy.mock.calls)).not.toContain('page-only-secret')
+    expect(JSON.stringify(postMessageSpy.mock.calls)).not.toContain('list-response-secret')
+
     XMLHttpRequest.prototype.open = originalOpen
     XMLHttpRequest.prototype.send = originalSend
   })

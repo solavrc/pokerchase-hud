@@ -25,13 +25,17 @@ import {
   EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY,
   REPLAY_BRIDGE_CONFIG,
   REPLAY_BRIDGE_FETCH,
+  REPLAY_BRIDGE_LEDGER,
   REPLAY_BRIDGE_RESULT,
   REPLAY_FETCH_BATCH_LIMIT,
+  REPLAY_LEDGER_MAX_ENTRIES,
   REPLAY_PORT_FETCH,
+  REPLAY_PORT_LEDGER,
   REPLAY_PORT_RESULT,
   isPositiveHandId,
   type ReplayFetchRequest,
-  type ReplayFetchResult
+  type ReplayFetchResult,
+  type ReplayLedgerMessage
 } from './replay/protocol'
 /** !!! BACKGROUND、WEB_ACCESSIBLE_RESOURCES からインポートしないこと !!! */
 
@@ -208,6 +212,16 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
     if (typeof result.requestId === 'string' && Array.isArray(result.results) &&
       result.results.length <= REPLAY_FETCH_BATCH_LIMIT) {
       portManager.send({ ...result, type: REPLAY_PORT_RESULT })
+    }
+    return
+  }
+
+  // 受動取得した台帳（`/replay/list`）。拡張はリクエストを出しておらず、
+  // ゲーム自身の通信を読んだだけ。
+  if ('type' in event.data && event.data.type === REPLAY_BRIDGE_LEDGER) {
+    const ledger = event.data as Partial<ReplayLedgerMessage>
+    if (Array.isArray(ledger.hands) && ledger.hands.length <= REPLAY_LEDGER_MAX_ENTRIES) {
+      portManager.send({ ...ledger, type: REPLAY_PORT_LEDGER })
     }
     return
   }

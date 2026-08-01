@@ -12,11 +12,14 @@ import {
   REPLAY_API_ORIGIN,
   REPLAY_BRIDGE_CONFIG,
   REPLAY_BRIDGE_FETCH,
+  REPLAY_BRIDGE_LEDGER,
   REPLAY_BRIDGE_RESULT,
   REPLAY_DETAIL_URL,
   REPLAY_FETCH_BATCH_LIMIT,
+  REPLAY_LIST_PATH,
   errorMessage,
   isPositiveHandId,
+  readReplayLedger,
   sanitizeReplayDetail,
   type ReplayBridgeConfigMessage,
   type ReplayFetchItemResult,
@@ -382,13 +385,34 @@ const readAuthEnvelope = (value: unknown): ReplayAuthEnvelope | undefined => {
   }
 }
 
-const refreshSessionFromResponse = async (response: Response): Promise<void> => {
+/**
+ * `/replay/list` の応答から台帳を拡張側へ渡す（受動取得）。
+ *
+ * 拡張は自分でリクエストを出さない ―― ユーザーがゲーム内でリプレイ画面を
+ * 開いたときにゲーム自身が出した通信を読むだけなので、追加のHTTPは1本も
+ * 発生しない。台帳はサーバ自身が持つ「ヒーローが打ったハンド」の記録で、
+ * ローカルの`hands`と突き合わせればキャプチャ欠損を直接検出できる。
+ * `CardOpenEndDate`も同じ応答に乗るので、課金状態の確認に別の
+ * リクエストを撃つ必要がない。
+ */
+const postReplayLedger = (url: URL, decoded: unknown): void => {
+  if (url.pathname !== REPLAY_LIST_PATH) return
+  const ledger = readReplayLedger(decoded)
+  if (!ledger) return
+  window.postMessage({ type: REPLAY_BRIDGE_LEDGER, ...ledger }, POKER_CHASE_ORIGIN)
+}
+
+const observeApiResponse = (url: URL, decoded: unknown): void => {
+  if (typeof decoded === 'object' && decoded !== null &&
+    'session' in decoded && typeof decoded.session === 'string' && replayAuth) {
+    replayAuth = { ...replayAuth, session: decoded.session }
+  }
+  postReplayLedger(url, decoded)
+}
+
+const readApiResponse = async (url: URL, response: Response): Promise<void> => {
   try {
-    const decoded = decode(new Uint8Array(await response.clone().arrayBuffer()))
-    if (typeof decoded === 'object' && decoded !== null &&
-      'session' in decoded && typeof decoded.session === 'string' && replayAuth) {
-      replayAuth = { ...replayAuth, session: decoded.session }
-    }
+    observeApiResponse(url, decode(new Uint8Array(await response.clone().arrayBuffer())))
   } catch {
     // Many API responses are not MessagePack. They are irrelevant here.
   }
@@ -410,7 +434,7 @@ if (OriginalFetch) {
       // A request without a MessagePack body is unrelated to replay auth.
     }
     const response = await OriginalFetch(input, init)
-    refreshSessionFromResponse(response).catch(() => undefined)
+    readApiResponse(url, response).catch(() => undefined)
     return response
   }) as typeof window.fetch
 }
@@ -437,17 +461,15 @@ XMLHttpRequest.prototype.open = function (
   OriginalXhrOpen.call(this, method, String(url), async, username ?? null, password ?? null)
 }
 
-const refreshSessionFromXhr = async (xhr: XMLHttpRequest): Promise<void> => {
+const readApiXhrResponse = async (url: URL, xhr: XMLHttpRequest): Promise<void> => {
   try {
     const response = xhr.response
     let decoded: unknown
     if (response instanceof ArrayBuffer) decoded = decode(new Uint8Array(response))
     else if (ArrayBuffer.isView(response)) decoded = decode(new Uint8Array(response.buffer, response.byteOffset, response.byteLength))
     else if (response instanceof Blob) decoded = decode(new Uint8Array(await response.arrayBuffer()))
-    if (typeof decoded === 'object' && decoded !== null &&
-      'session' in decoded && typeof decoded.session === 'string' && replayAuth) {
-      replayAuth = { ...replayAuth, session: decoded.session }
-    }
+    else return
+    observeApiResponse(url, decoded)
   } catch {
     // Non-MessagePack XHR responses are unrelated to replay auth.
   }
@@ -462,7 +484,7 @@ XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyIn
         .catch(() => undefined)
     }
     this.addEventListener('loadend', () => {
-      refreshSessionFromXhr(this).catch(() => undefined)
+      readApiXhrResponse(url, this).catch(() => undefined)
     }, { once: true })
   }
   OriginalXhrSend.call(this, body)
