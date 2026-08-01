@@ -17,6 +17,29 @@ type ApiLikeMessage = Record<string, unknown> & { ApiTypeId?: unknown, timestamp
 
 const ACTIVE_REPLAY_SESSION_META_PREFIX = 'experimentalReplayActiveSession:'
 
+/**
+ * 1行あたりの取得試行上限。
+ *
+ * ページ側は HTTP 401/408/429/5xx・例外送出（オフライン/CORS）・
+ * 認証エンベロープ未取得のすべてを `retryable: true` に分類し、結果が返らない
+ * ケースも `missing-result` として再試行対象になる。上限が無いと、拡張側が
+ * 自力で解消できない条件（アカウントが権限を失った、サーバーが恒久的に
+ * そのHandIdを拒否する）でも最大60秒間隔で永久に再試行し続ける。
+ *
+ * backoffは 1,2,4,8,16,32,60,60 秒なので、8回で約3分あきらめずに粘る。
+ * 上限到達後は `failed` として終端させ、`lastError` に理由を残す。
+ */
+const REPLAY_MAX_ATTEMPTS = 8
+
+/**
+ * 成功と同じApiTypeIdで返る参加申込エラー応答の判定。
+ * `event-ingestion.ts` の同名関数と同じ規則（変更時は両方を揃えること）。
+ */
+const isExplicitEntryFailure = (message: ApiLikeMessage): boolean => {
+  const code = (message as { Code?: unknown }).Code
+  return typeof code === 'number' && code !== 0
+}
+
 interface ActiveReplaySession {
   key: string
   id?: string
@@ -57,7 +80,7 @@ export class ExperimentalReplayImporter {
     this.ready = this.restoreEnabled()
     chrome.storage?.onChanged?.addListener((changes, areaName) => {
       const change = changes[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY]
-      if (areaName !== 'local' || !change) return
+      if (areaName !== 'sync' || !change) return
       this.enabled = change.newValue === true
       if (this.enabled) this.flushReady().catch(this.logError('flush after enable'))
       else {
@@ -127,6 +150,14 @@ export class ExperimentalReplayImporter {
 
       switch (message.ApiTypeId) {
         case ApiType.EVT_ENTRY_QUEUED:
+          // 参加申込のエラー応答は成功と同じApiTypeIdで返る
+          // （docs/api-events.md「成功イベントと同じApiTypeIdを使うエラー応答」）。
+          // これをセッション境界として扱うと、進行中セッションのpending行を
+          // 一括でreadyへ昇格させ、対局中にHTTP取得を解放してしまう。
+          // event-ingestion.ts の isExplicitEntryFailure() と
+          // content_script.ts のキープアライブ判定は同じ201を除外しており、
+          // ここだけが外れていた。
+          if (isExplicitEntryFailure(message)) break
           await this.startSession(message, sourceKey, preferredPort)
           break
         case ApiType.EVT_HAND_RESULTS:
@@ -158,7 +189,9 @@ export class ExperimentalReplayImporter {
 
   private async restoreEnabled(): Promise<void> {
     try {
-      const stored = await chrome.storage.local.get(EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY)
+      // content script と同じ領域を読む必要がある（storage.local は
+      // content script から遮断されている。content_script.ts のコメント参照）。
+      const stored = await chrome.storage.sync.get(EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY)
       this.enabled = stored[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY] === true
     } catch (error) {
       console.warn('[experimental-replay] Failed to read feature flag; keeping disabled:', error)
@@ -385,13 +418,17 @@ export class ExperimentalReplayImporter {
         })
       } else {
         failedHandIds.add(result.handId)
-        if (result.retryable) retryableHandIds.add(result.handId)
+        const exhausted = row.attempts >= REPLAY_MAX_ATTEMPTS
+        const retry = result.retryable && !exhausted
+        if (retry) retryableHandIds.add(result.handId)
         else terminalFailureHandIds.add(result.handId)
         await this.db.experimentalReplayHands.put({
           ...row,
-          status: result.retryable ? 'ready' : 'failed',
+          status: retry ? 'ready' : 'failed',
           updatedAt: now,
-          lastError: result.error
+          lastError: exhausted && result.retryable
+            ? `${result.error} (gave up after ${row.attempts} attempts)`
+            : result.error
         })
       }
     }
@@ -400,12 +437,16 @@ export class ExperimentalReplayImporter {
       const row = await this.db.experimentalReplayHands.get(handId)
       if (!row || row.status === 'complete') continue
       failedHandIds.add(handId)
-      retryableHandIds.add(handId)
+      const exhausted = row.attempts >= REPLAY_MAX_ATTEMPTS
+      if (exhausted) terminalFailureHandIds.add(handId)
+      else retryableHandIds.add(handId)
       await this.db.experimentalReplayHands.put({
         ...row,
-        status: 'ready',
+        status: exhausted ? 'failed' : 'ready',
         updatedAt: now,
-        lastError: 'missing-result'
+        lastError: exhausted
+          ? `missing-result (gave up after ${row.attempts} attempts)`
+          : 'missing-result'
       })
     }
     // Continue draining sessions larger than one batch, but do not create a

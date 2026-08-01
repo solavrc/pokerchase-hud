@@ -210,8 +210,11 @@ await db.actions.where('[playerId+phase]')
 
 ## 6. 試験機能: セッション終了後リプレイ取込
 
-`experimentalReplayImportEnabled` を `chrome.storage.local` で `true` にした
-開発ビルドだけが有効化する、既定OFFの検証機能。ゲーム中の
+`experimentalReplayImportEnabled` を `chrome.storage.sync` で `true` にした
+開発ビルドだけが有効化する、既定OFFの検証機能。`storage.local` ではないのは、
+`firebase-auth-service` が起動時に `setAccessLevel('TRUSTED_CONTEXTS')` で
+その領域を content script から遮断しているため（#274）。localに置くと
+content script 側の読み取りが必ず失敗し、機能が永久にOFFのまま固定される。ゲーム中の
 `EVT_HAND_RESULTS` (306) から HandId をローカルキューへ保存し、
 `EVT_SESSION_RESULTS` (309) の後に同一ゲームタブから `/replay/detail` を
 1件ずつ取得する。309欠落時は次の `EVT_ENTRY_QUEUED` (201) を境界に使うが、
@@ -230,19 +233,24 @@ content scriptへ渡す前にレスポンスから `session` / `requestKey` を�
 新しいhost permissionは追加しない。未課金アカウントではサーバーが返した公開情報だけを
 保存し、フォールド済み相手の `HoleCardList` は空のままである。
 取得前にportが切れた行は再接続時に再送し、認証未取得・一時的HTTP失敗は最大60秒の
-指数backoffで再試行する。セッション終了境界の `pending` → `ready` 更新はイベント取込
+指数backoffで再試行する。1件あたり15秒でタイムアウトし、1行あたり8回で
+`failed` として終端させる（上限が無いと、拡張側が自力で解消できない条件で
+永久に再試行し続ける）。参加申込のエラー応答（`Code≠0` の201）は
+セッション境界として扱わない。リプレイ結果のIndexedDB保存はimporter自身の
+キューで直列化し、イベント取込キューには載せない（載せると1バッチ最大100件の
+書き込み中はライブイベントが `apiEvents.add()` にすら到達できずHUDが固まる）。セッション終了境界の `pending` → `ready` 更新はイベント取込
 キュー内で完了を待ち、更新・Service Worker再起動より先にIndexedDBへ確定させる。
 
 開発時の有効化手順:
 
 ```javascript
-await chrome.storage.local.set({ experimentalReplayImportEnabled: true })
+await chrome.storage.sync.set({ experimentalReplayImportEnabled: true })
 ```
 
 有効化後はゲームタブを再読み込みし、通常API通信から認証エンベロープを取得させる。
 保存結果は拡張機能Service WorkerのDevToolsで
 `await db.experimentalReplayHands.toArray()` として確認できる。無効化は同じキーを
-`false` に戻す。既定OFF、権限追加なし、ユーザー操作中のゲーム通信を起点とする設計は
+`false` に戻す。無効化は同期設定なので他端末にも伝播する。既定OFF、権限追加なし、ユーザー操作中のゲーム通信を起点とする設計は
 Chrome Web Store審査上の説明可能性を高めるが、提出前にはプライバシーポリシーと
 データ利用開示へこの試験機能を明記し、実際の審査結果を別途確認する必要がある。
 

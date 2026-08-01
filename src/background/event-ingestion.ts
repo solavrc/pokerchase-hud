@@ -134,16 +134,18 @@ export const registerEventIngestion = (
           return Promise.resolve()
         }
 
+        // Replay結果の保存はimporter自身のキューで直列化する。ingestionQueue
+        // へは載せない: 1バッチ最大100件のDexie往復とsanitizeを挟むと、その間
+        // ライブイベントが`apiEvents.add()`にすら到達できず（実測で約200ms）
+        // HUDが固まる。このファイル冒頭が禁じている「同期処理でキューを塞ぐ」
+        // そのものになる。
+        //
+        // 削除との競合は既にdeleteAllData()側で閉じている: `type:'delete'`の
+        // 同期クレーム直後・`awaitIngestionDrain()`より前に
+        // `prepareForDataDeletion()`（deletingフラグ+whenIdle）をawaitしており、
+        // クレーム後に届くメッセージは上のガードでここへ到達しない。
         if (experimentalReplayImporter?.handlePortMessage(message, port)) {
-          // Replay results serialize on the importer's own queue. Mirror its
-          // drain into ingestionQueue so Delete All Data's stabilization
-          // barrier also waits for replay Dexie writes accepted before the
-          // synchronous delete claim.
-          const task = ingestionQueue.then(() => experimentalReplayImporter.whenIdle())
-          ingestionQueue = task.catch(err => {
-            console.error('[background] Experimental replay drain failed (fail-safe, queue continues):', err)
-          })
-          return task
+          return Promise.resolve()
         }
 
         // このイベントの処理を、直前のイベントの処理（add()の決着含む）の

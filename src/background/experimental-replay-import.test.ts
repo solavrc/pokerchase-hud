@@ -16,7 +16,7 @@ describe('ExperimentalReplayImporter', () => {
   let observe: (message: Record<string, unknown>) => Promise<void>
 
   beforeEach(async () => {
-    ;(chrome.storage.local.get as jest.Mock).mockResolvedValue({
+    ;(chrome.storage.sync.get as jest.Mock).mockResolvedValue({
       [EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY]: true
     })
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
@@ -395,7 +395,7 @@ describe('ExperimentalReplayImporter', () => {
   })
 
   test('does nothing while the opt-in flag is disabled', async () => {
-    ;(chrome.storage.local.get as jest.Mock).mockResolvedValue({})
+    ;(chrome.storage.sync.get as jest.Mock).mockResolvedValue({})
     const disabled = new ExperimentalReplayImporter(db, service)
     await disabled.ready
 

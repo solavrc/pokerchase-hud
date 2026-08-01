@@ -377,26 +377,33 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(settled).toBe(true)
   })
 
-  test('drains accepted replay results and rejects later results during data deletion', async () => {
+  test('replay結果の保存はライブイベントの取り込みを塞がない', async () => {
+    // 1バッチ最大100件のDexie往復とsanitizeをingestionQueueに載せると、その間
+    // ライブイベントがapiEvents.add()にすら到達できずHUDが固まる。importer自身の
+    // キューで直列化させ、ここでは待たない。
     let releaseReplay!: () => void
     const replayWrite = new Promise<void>(resolve => { releaseReplay = resolve })
     replayImporter.handlePortMessage.mockReturnValueOnce(true)
-    replayImporter.whenIdle.mockReturnValueOnce(replayWrite)
+    replayImporter.whenIdle.mockReturnValue(replayWrite)
 
-    let settled = false
-    const accepted = onMessageHandler({ type: 'experimental-replay-result', requestId: 'before-delete', results: [] })
-      .then(() => { settled = true })
-    await Promise.resolve()
-    setOperationState({ type: 'delete' })
-    await Promise.resolve()
-    expect(settled).toBe(false)
+    await onMessageHandler({ type: 'experimental-replay-result', requestId: 'batch', results: [] })
+
+    // replay書き込みが未完了のままでも、後続のライブイベントは生ログへ入る
+    await onMessageHandler({ ApiTypeId: ApiType.EVT_DEAL, timestamp: 777 })
+    expect(await db.apiEvents.get([777, ApiType.EVT_DEAL, 0])).toBeDefined()
 
     releaseReplay()
-    await accepted
-    expect(settled).toBe(true)
+  })
 
+  test('データ削除の確定後に届いたreplay結果は取り込まない', async () => {
+    // 削除クレーム前に受理済みの書き込みは deleteAllData() 側が
+    // prepareForDataDeletion() → awaitIngestionDrain() の順で待つ。
+    // ここが守るのは「クレーム後の到着を入れない」ことだけ。
+    setOperationState({ type: 'delete' })
     replayImporter.handlePortMessage.mockClear()
+
     await onMessageHandler({ type: 'experimental-replay-result', requestId: 'after-delete', results: [] })
+
     expect(replayImporter.handlePortMessage).not.toHaveBeenCalled()
   })
 })

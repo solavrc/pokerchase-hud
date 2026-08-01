@@ -66,7 +66,12 @@ const flushPendingReplayRequests = () => {
   for (const message of pendingReplayRequests.splice(0)) postReplayRequest(message)
 }
 
-chrome.storage.local.get(EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY).then(stored => {
+// storage.local ではなく storage.sync に置く。localは
+// firebase-auth-service が起動時に setAccessLevel('TRUSTED_CONTEXTS') で
+// content script から遮断しており（#274、e2e/scenarios/auth-storage-access.ts
+// が実ブラウザでassert済み）、ここからの get は必ず reject される。
+// onChanged も同じゲートで untrusted context には配送されない。
+chrome.storage.sync.get(EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY).then(stored => {
   replayImportEnabled = stored[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY] === true
   postReplayConfig()
   flushPendingReplayRequests()
@@ -74,7 +79,7 @@ chrome.storage.local.get(EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY).then(stored => 
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   const change = changes[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY]
-  if (areaName !== 'local' || !change) return
+  if (areaName !== 'sync' || !change) return
   replayImportEnabled = change.newValue === true
   postReplayConfig()
   if (replayImportEnabled) flushPendingReplayRequests()

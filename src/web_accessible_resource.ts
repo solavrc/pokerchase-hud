@@ -468,15 +468,26 @@ XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyIn
   OriginalXhrSend.call(this, body)
 }
 
+/**
+ * 1件あたりの上限。これが無いと、応答が返らない1件で
+ * `replayFetchQueue`（逐次）が止まり、背景側の`inFlight`にも有効期限が無いため
+ * 該当handIdが永久に再ディスパッチされなくなる ―― バッチ全体ではなく
+ * 取り込み機能そのものが恒久停止する。
+ */
+const REPLAY_FETCH_TIMEOUT_MS = 15000
+
 const fetchReplayDetail = async (handId: number): Promise<ReplayFetchItemResult> => {
   if (!OriginalFetch) return { handId, ok: false, error: 'fetch-unavailable', retryable: false }
   const auth = replayAuth
   if (!auth) return { handId, ok: false, error: 'auth-envelope-unavailable', retryable: true }
 
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), REPLAY_FETCH_TIMEOUT_MS)
   try {
     const response = await OriginalFetch(REPLAY_DETAIL_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/msgpack' },
+      signal: controller.signal,
       body: encode({
         param: { HandId: handId },
         ...auth,
@@ -499,7 +510,10 @@ const fetchReplayDetail = async (handId: number): Promise<ReplayFetchItemResult>
     }
     return { handId, ok: true, detail: sanitizeReplayDetail(decoded) }
   } catch (error) {
+    // AbortErrorは上限到達。再試行可能として返し、backoffに委ねる。
     return { handId, ok: false, error: errorMessage(error), retryable: true }
+  } finally {
+    clearTimeout(timer)
   }
 }
 
