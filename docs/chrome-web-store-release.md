@@ -141,9 +141,21 @@ gh release view pokerchase-hud-vX.Y.Z --json tagName,publishedAt,assets
 Developer Dashboard ではアップロード後のバージョン、審査状態、公開状態を確認する。
 GitHub Release が存在することだけをもって、Web Store 公開済みとは記載しない。
 
-ローカルで同じ CRX を作成する場合は、先に通常の build を行い、秘密鍵のパスを渡す。
+ローカルで同じ CRX を作成する場合は、先に build を行い、秘密鍵のパスを渡す。
 
 ```sh
-npm run build
+SENTRY_ENVIRONMENT=production npm run build
 npm run pack:crx -- /path/to/privatekey.pem
 ```
+
+`SENTRY_ENVIRONMENT=production` は省略しないこと。未指定の build は
+`scripts/build-extension.ts` の定義により development 扱いとなり、
+`pokerchase-hud@<version>+dev.<sha>` という別リリースへイベントを送る。ここで作る CRX は
+Web Store へ提出する実際の利用者向けビルドなので、省略すると公開リリースの集計から外れ、
+アップロード済みのソースマップとも対応しなくなる。CI 経由の通常リリースでは
+`.github/workflows/build.yml` がこの変数を設定しているため、明示が必要なのは
+この手動・復旧手順だけである。
+
+ソースマップまでCIと揃える場合は `SENTRY_AUTH_TOKEN` も渡す。未設定でも build は通り、
+`[Sentry] Building a production release without SENTRY_AUTH_TOKEN` と警告してソースマップの
+アップロードだけをスキップする。
