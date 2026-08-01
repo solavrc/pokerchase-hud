@@ -13,6 +13,11 @@
  *
  * 保存は一切しない。結果は呼び出し元へ返すだけで、IndexedDBにも
  * chrome.storageにも触れない。
+ *
+ * 起動口は `chrome.runtime.sendMessage` ではなくService Workerのグローバル。
+ * sendMessageは**送信元自身のonMessageには配送されない**ため、SWのDevTools
+ * コンソールから叩くと "Could not establish connection. Receiving end does
+ * not exist." になる（このファイルの唯一の想定利用者はSWコンソール）。
  */
 import { connectedPorts } from './ports'
 import {
@@ -115,6 +120,15 @@ export const requestReplayDetails = async (
   })
 
   return { success: true, results }
+}
+
+/**
+ * Service Workerのグローバルへ取得関数を生やす。
+ * DevToolsコンソールから `await pokerChaseReplayFetch([258411144])` で叩く。
+ */
+export const exposeReplayFetchForDevtools = (): void => {
+  ;(globalThis as unknown as Record<string, unknown>).pokerChaseReplayFetch =
+    requestReplayDetails
 }
 
 /** テスト用。モジュールスコープの待ち行列を空にする。 */

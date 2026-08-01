@@ -6,6 +6,7 @@ import {
 } from '../replay/protocol'
 import {
   __resetReplayFetchBridgeForTests,
+  exposeReplayFetchForDevtools,
   handleReplayPortMessage,
   releaseReplayRequestsForPort,
   requestReplayDetails
@@ -116,6 +117,18 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
       success: false,
       error: `handIds exceeds ${REPLAY_FETCH_BATCH_LIMIT}`
     })
+  })
+
+  it('SWのグローバルへ取得関数を生やす', () => {
+    // 入口をchrome.runtime.sendMessageにすると、SWのDevToolsコンソールから
+    // 叩いたときに送信元自身のonMessageへは配送されず
+    // "Could not establish connection. Receiving end does not exist." になる。
+    // 唯一の想定利用者がSWコンソールなので、グローバルに生やす。
+    delete (globalThis as unknown as Record<string, unknown>).pokerChaseReplayFetch
+    exposeReplayFetchForDevtools()
+
+    expect((globalThis as unknown as Record<string, unknown>).pokerChaseReplayFetch)
+      .toBe(requestReplayDetails)
   })
 
   it('リプレイ以外のポートメッセージは横取りしない', () => {

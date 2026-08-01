@@ -242,9 +242,12 @@ content script 側の読み取りが必ず失敗し、機能が永久にOFFの�
 取得は1件ずつ逐次で、1件あたり15秒でタイムアウトする。1リクエストの
 HandId は最大100件。
 
-起動口は開発用の `experimentalReplayFetch` メッセージのみ
-（`background/replay-fetch-bridge.ts`）。取り込み層が入ればそちらが
-依頼主体になるので、このモジュールは役目を終える。
+起動口は Service Worker のグローバルに生やした
+`pokerChaseReplayFetch()` のみ（`background/replay-fetch-bridge.ts`）。
+`chrome.runtime.sendMessage` を使わないのは、**送信元自身の `onMessage` には
+配送されない**ため ―― SWのDevToolsコンソールから叩くと
+"Could not establish connection. Receiving end does not exist." になる。
+取り込み層が入ればそちらが依頼主体になるので、このモジュールは役目を終える。
 
 開発時の使い方:
 
@@ -252,11 +255,9 @@ HandId は最大100件。
 // 1. Service WorkerのDevToolsで有効化し、ゲームタブを再読み込みする
 await chrome.storage.sync.set({ experimentalReplayImportEnabled: true })
 
-// 2. ページが通常API通信を1回すればエンベロープが捕まる。その後:
-await chrome.runtime.sendMessage({
-  action: 'experimentalReplayFetch',
-  handIds: [258411144, 258411368]
-})
+// 2. ページが通常API通信を1回すればエンベロープが捕まる。
+//    その後、Service WorkerのDevToolsコンソールで:
+await pokerChaseReplayFetch([258411144, 258411368])
 ```
 
 応答は `{ success: true, results: [...] }`。各要素は

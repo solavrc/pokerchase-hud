@@ -15,6 +15,7 @@ import { autoSyncService } from './services/auto-sync-service'
 import { content_scripts } from '../manifest.json'
 import { registerStreamSubscriptions } from './background/ports'
 import { registerEventIngestion } from './background/event-ingestion'
+import { exposeReplayFetchForDevtools } from './background/replay-fetch-bridge'
 import { registerMessageRouter } from './background/message-router'
 import { checkOnUpdate } from './background/rebuild-advisory'
 import { initUpdateManager } from './background/update-manager'
@@ -187,6 +188,12 @@ registerMessageRouter(service, db, gameUrlPattern)
 registerStreamSubscriptions(service, gameUrlPattern)
 
 registerEventIngestion(service)
+
+/**
+ * 実験的リプレイ取得の開発用入口（既定OFF）。
+ * SWのDevToolsコンソールから `await pokerChaseReplayFetch([handId, ...])`。
+ */
+exposeReplayFetchForDevtools()
 
 /**
  * Forced update（sola承認）: 安全な瞬間にダウンロード済み更新を自動適用する。
