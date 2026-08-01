@@ -93,11 +93,6 @@ const LIST_ENVELOPE = {
 
 describe('main-world experimental replay bridge', () => {
   test('captures a Unity XHR envelope, builds sequential detail requests, and strips credentials', async () => {
-    class FakeWebSocket {
-      addEventListener = jest.fn()
-    }
-    ;(window as any).WebSocket = FakeWebSocket
-
     const fetchMock = jest.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -112,7 +107,7 @@ describe('main-world experimental replay bridge', () => {
     const postMessageSpy = jest.spyOn(window, 'postMessage')
 
     jest.isolateModules(() => {
-      require('./web_accessible_resource')
+      require('./replay_bridge')
     })
 
     // Unity can issue its first API request before the content script's
@@ -176,11 +171,6 @@ describe('main-world experimental replay bridge', () => {
   // 中身の無い応答が`ok: true`として保存経路へ流れる。実測では同一バッチに
   // 拒否と成功が混在したので、拒否1件でバッチが止まらないことも押さえる。
   test('rejects a result!=0 envelope without stopping the rest of the batch', async () => {
-    class FakeWebSocket {
-      addEventListener = jest.fn()
-    }
-    ;(window as any).WebSocket = FakeWebSocket
-
     const responseOf = (envelope: unknown) => ({
       ok: true,
       status: 200,
@@ -202,7 +192,7 @@ describe('main-world experimental replay bridge', () => {
     // マイクロタスクは偽装されないので、フラッシュと時間送りを交互に回す。
     jest.useFakeTimers()
     jest.isolateModules(() => {
-      require('./web_accessible_resource')
+      require('./replay_bridge')
     })
     const flush = async (): Promise<void> => {
       for (let i = 0; i < 20; i++) await Promise.resolve()
@@ -260,10 +250,6 @@ describe('main-world experimental replay bridge', () => {
   // 受動取得: 拡張はリクエストを出さず、ユーザーがリプレイ画面を開いたときに
   // ゲーム自身が出した `/replay/list` の応答を読むだけ。
   test('passively forwards the /replay/list ledger without issuing a request', async () => {
-    class FakeWebSocket {
-      addEventListener = jest.fn()
-    }
-    ;(window as any).WebSocket = FakeWebSocket
     const fetchMock = jest.fn()
     ;(window as any).fetch = fetchMock
 
@@ -274,7 +260,7 @@ describe('main-world experimental replay bridge', () => {
     const postMessageSpy = jest.spyOn(window, 'postMessage')
 
     jest.isolateModules(() => {
-      require('./web_accessible_resource')
+      require('./replay_bridge')
     })
 
     window.dispatchEvent(new MessageEvent('message', {
@@ -322,11 +308,6 @@ describe('main-world experimental replay bridge', () => {
   // Codexレビュー指摘: 応答待ちの最中に無効化されたら、次の1件から止まる
   // 必要がある。バッチ完了まで最大99件を撃ち続けてはいけない。
   test('stops the batch and does not resurrect credentials when disabled mid-flight', async () => {
-    class FakeWebSocket {
-      addEventListener = jest.fn()
-    }
-    ;(window as any).WebSocket = FakeWebSocket
-
     const fetchMock = jest.fn().mockImplementation(async () => {
       // 1件目の応答が返る直前に無効化される
       window.dispatchEvent(new MessageEvent('message', {
@@ -351,7 +332,7 @@ describe('main-world experimental replay bridge', () => {
 
     jest.useFakeTimers()
     jest.isolateModules(() => {
-      require('./web_accessible_resource')
+      require('./replay_bridge')
     })
     const flush = async (): Promise<void> => {
       for (let i = 0; i < 20; i++) await Promise.resolve()
@@ -399,10 +380,6 @@ describe('main-world experimental replay bridge', () => {
   // 旧応答が後から完了した時点で、現在のエンベロープへ旧世代のsessionを
   // 無条件に合成していた。
   test('does not merge a stale passive response session into a newer envelope', async () => {
-    class FakeWebSocket {
-      addEventListener = jest.fn()
-    }
-    ;(window as any).WebSocket = FakeWebSocket
     const fetchMock = jest.fn().mockResolvedValue({
       ok: true, status: 200,
       arrayBuffer: jest.fn().mockResolvedValue(arrayBufferOf(SUCCESS_ENVELOPE))
@@ -415,7 +392,7 @@ describe('main-world experimental replay bridge', () => {
     XMLHttpRequest.prototype.send = jest.fn() as any
 
     jest.isolateModules(() => {
-      require('./web_accessible_resource')
+      require('./replay_bridge')
     })
     window.dispatchEvent(new MessageEvent('message', {
       source: window, origin: POKER_CHASE_ORIGIN,
@@ -460,11 +437,6 @@ describe('main-world experimental replay bridge', () => {
   // 新しいエンベロープを捕獲した後に旧リクエストが完了すると、旧応答の session を
   // 新しいエンベロープへ混ぜてしまう。
   test('does not merge a stale response session into a re-captured envelope', async () => {
-    class FakeWebSocket {
-      addEventListener = jest.fn()
-    }
-    ;(window as any).WebSocket = FakeWebSocket
-
     let resolveFetch!: (value: unknown) => void
     const fetchMock = jest.fn().mockImplementation(() => new Promise(r => { resolveFetch = r }))
     ;(window as any).fetch = fetchMock
@@ -475,7 +447,7 @@ describe('main-world experimental replay bridge', () => {
     XMLHttpRequest.prototype.send = jest.fn() as any
 
     jest.isolateModules(() => {
-      require('./web_accessible_resource')
+      require('./replay_bridge')
     })
 
     const sendEnvelope = (session: string, dataVer: string) => {
@@ -540,10 +512,6 @@ describe('main-world experimental replay bridge', () => {
   // 適用してはいけない。フラグを一度も有効化していないユーザーの監査が
   // 走ってしまう。
   test('does not forward the ledger before the enabled config has arrived', async () => {
-    class FakeWebSocket {
-      addEventListener = jest.fn()
-    }
-    ;(window as any).WebSocket = FakeWebSocket
     ;(window as any).fetch = jest.fn()
 
     const originalOpen = XMLHttpRequest.prototype.open
@@ -556,7 +524,7 @@ describe('main-world experimental replay bridge', () => {
     postMessageSpy.mockClear()
 
     jest.isolateModules(() => {
-      require('./web_accessible_resource')
+      require('./replay_bridge')
     })
 
     // 設定を送らないまま `/replay/list` の応答が返る
@@ -597,7 +565,7 @@ describe('main-world experimental replay bridge', () => {
     postMessageSpy.mockClear()
 
     jest.isolateModules(() => {
-      require('./web_accessible_resource')
+      require('./replay_bridge')
     })
     window.dispatchEvent(new MessageEvent('message', {
       source: window, origin: POKER_CHASE_ORIGIN,
@@ -666,7 +634,7 @@ describe('main-world experimental replay bridge', () => {
     postMessageSpy.mockClear()
 
     jest.isolateModules(() => {
-      require('./web_accessible_resource')
+      require('./replay_bridge')
     })
     window.dispatchEvent(new MessageEvent('message', {
       source: window, origin: POKER_CHASE_ORIGIN,
@@ -730,7 +698,7 @@ describe('main-world experimental replay bridge', () => {
     postMessageSpy.mockClear()
 
     jest.isolateModules(() => {
-      require('./web_accessible_resource')
+      require('./replay_bridge')
     })
 
     const xhr = new XMLHttpRequest()

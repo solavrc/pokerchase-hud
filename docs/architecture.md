@@ -240,6 +240,37 @@ main world のクロージャ内だけに保持し、content script へ渡す前
 レスポンスから `session` / `requestKey` を再帰的に除去する
 （`sanitizeReplayDetail`）。
 
+### 注入モデル: 有効時のみ傍受コードを載せる
+
+fetch / XMLHttpRequest の傍受と認証エンベロープ捕獲は `replay_bridge.ts`
+（main world の WAR スクリプト）に分離してある。中核の WebSocket 傍受
+（`web_accessible_resource.ts`、HUD全機能の土台）は全ユーザーで常時注入
+されるが、`replay_bridge.js` は `content_script.ts` が
+`experimentalReplayImportEnabled` を有効に読んだときにだけ `<script>` として
+注入する。無効ユーザーの実行環境にはリプレイ傍受コードが一切載らず、
+fetch / XHR は素のまま・エンベロープ捕獲も行われない。
+
+- **注入は有効化の遷移より後**: `content_script.ts` は `storage.onChanged` を
+  受けたその場で注入するので、ページ再読み込みは要らない。ただし有効化する前に
+  ページが出していた通信は捕獲できない。捕獲機会は1回きりではなく、ロード後の
+  任意の通常API通信で捕まる（`/replay/list`・`/replay/detail` はユーザー操作・
+  セッション終了後に飛ぶので間に合う）。
+- **`<script>` は取り消せない**: 一度注入したスクリプトは、フラグを無効に戻しても
+  DOM から消せない。`content_script.ts` は `replayBridgeInjected` で注入を1回に
+  冪等化し、無効化は `REPLAY_BRIDGE_CONFIG` の `enabled: false` を送ってブリッジ側
+  でランタイムに no-op 化する（傍受を素通しに戻し、捕獲済みエンベロープを破棄）。
+台帳（`REPLAY_BRIDGE_LEDGER`）の転送は `content_script.ts` 側でも実験フラグを
+確認する。この経路は同一オリジンの `postMessage` なので、ブリッジを一度も注入
+していない無効ユーザーでも、ページ側スクリプトが台帳を偽装して送れてしまう
+（ブリッジ側のゲートだけでは、ブリッジを経由しない偽装を塞げない）。
+
+- **ページ側からの偽装は残存**: main world と content script は同一オリジンの
+  `window.postMessage` を共有するため、ページ側の任意のスクリプトがブリッジへ
+  設定と取得依頼を偽装できる。これは有効化したユーザーにのみ露出する残存リスクで、
+  この分離では解消しない（`window.postMessage` では main world から content
+  script を認証できないため）。この分離が扱うのは「無効時に不要な傍受を
+  行わない」ことに限る。
+
 フラグを `storage.local` ではなく `storage.sync` に置いているのは、
 `firebase-auth-service` が起動時に `setAccessLevel('TRUSTED_CONTEXTS')` で
 local を content script から遮断しているため（#274）。local に置くと
