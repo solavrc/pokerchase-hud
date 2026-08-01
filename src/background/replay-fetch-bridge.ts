@@ -25,16 +25,10 @@ import {
   REPLAY_PORT_FETCH,
   REPLAY_PORT_RESULT,
   isPositiveHandId,
+  replayFetchBatchTimeoutMs,
   type ReplayFetchItemResult,
   type ReplayFetchResult
 } from '../replay/protocol'
-
-/**
- * 1リクエストの上限。ページ側は逐次POSTで1件15秒の上限を持つので、
- * 100件が全て最悪ケースを踏むと25分になる。手で叩く入口なので、
- * 待たされ続けるより打ち切って部分結果を返す方が使える。
- */
-const REPLAY_REQUEST_TIMEOUT_MS = 120_000
 
 interface PendingRequest {
   port: chrome.runtime.Port
@@ -43,8 +37,6 @@ interface PendingRequest {
 }
 
 const pending = new Map<string, PendingRequest>()
-
-let requestSequence = 0
 
 const settle = (requestId: string, results: ReplayFetchItemResult[]): void => {
   const request = pending.get(requestId)
@@ -108,9 +100,14 @@ export const requestReplayDetails = async (
   const port = connectedPorts.values().next().value
   if (!port) return { success: false, error: 'no connected game tab' }
 
-  const requestId = `devtools-${++requestSequence}`
+  // 連番ではなくUUID。連番はService Workerの再起動ごとに0へ戻るが、ページ側の
+  // 逐次キューと進行中のHTTP取得はページが生きている限り継続する。旧SWの
+  // `devtools-1` が処理中にSWが落ち、新SWが同じ番号で依頼を出すと、旧バッチの
+  // 応答が再接続後のポート経由で届いて新しい待ちを誤って解決し、別のHandIdの
+  // 結果が返る。
+  const requestId = `devtools-${crypto.randomUUID()}`
   const results = await new Promise<ReplayFetchItemResult[]>(resolve => {
-    const timer = setTimeout(() => settle(requestId, []), REPLAY_REQUEST_TIMEOUT_MS)
+    const timer = setTimeout(() => settle(requestId, []), replayFetchBatchTimeoutMs(handIds.length))
     pending.set(requestId, { port, resolve, timer })
     try {
       port.postMessage({ type: REPLAY_PORT_FETCH, requestId, handIds })
@@ -135,5 +132,4 @@ export const exposeReplayFetchForDevtools = (): void => {
 export const __resetReplayFetchBridgeForTests = (): void => {
   for (const request of pending.values()) clearTimeout(request.timer)
   pending.clear()
-  requestSequence = 0
 }

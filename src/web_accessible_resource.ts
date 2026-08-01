@@ -16,6 +16,8 @@ import {
   REPLAY_BRIDGE_RESULT,
   REPLAY_DETAIL_URL,
   REPLAY_FETCH_BATCH_LIMIT,
+  REPLAY_FETCH_INTERVAL_MS,
+  REPLAY_FETCH_TIMEOUT_MS,
   REPLAY_LIST_PATH,
   errorMessage,
   isPositiveHandId,
@@ -396,6 +398,15 @@ const readAuthEnvelope = (value: unknown): ReplayAuthEnvelope | undefined => {
  * リクエストを撃つ必要がない。
  */
 const postReplayLedger = (url: URL, decoded: unknown): void => {
+  // 設定未受信を有効扱いする上の観測ゲート（`!replayConfigReceived ||
+  // replayImportEnabled`）には**乗らない**。あちらが緩いのは、認証エンベロープ
+  // の捕獲機会が起動直後の1回しか無く、かつ捕獲した値はページのクロージャに
+  // 留まって拡張側へ渡らない（設定が届いた時点で無効なら破棄される）ため。
+  // 台帳は拡張側へ渡って永続化されるので、同じ緩さを適用すると実験フラグを
+  // 一度も有効化していないユーザーの監査が走ってしまう。
+  // 実害も無い: `/replay/list` はユーザーの手動操作で飛ぶので、起動直後の
+  // 設定未確定の窓に重なることは無い。
+  if (!replayImportEnabled) return
   if (url.pathname !== REPLAY_LIST_PATH) return
   const ledger = readReplayLedger(decoded)
   if (!ledger) return
@@ -491,14 +502,6 @@ XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyIn
 }
 
 /**
- * 1件あたりの上限。これが無いと、応答が返らない1件で
- * `replayFetchQueue`（逐次）が止まり、背景側の`inFlight`にも有効期限が無いため
- * 該当handIdが永久に再ディスパッチされなくなる ―― バッチ全体ではなく
- * 取り込み機能そのものが恒久停止する。
- */
-const REPLAY_FETCH_TIMEOUT_MS = 15000
-
-/**
  * REST応答エンベロープの拒否判定。
  *
  * このAPIは拒否も**HTTP 200**で返し、成否は本文の`result`(0=成功)と
@@ -572,19 +575,13 @@ const fetchReplayDetail = async (handId: number): Promise<ReplayFetchItemResult>
 }
 
 /**
- * 連続取得の間隔（前の応答が返ってから次を出すまで）。
- *
- * ゲーム本体のリプレイ閲覧は1件ずつ人間の操作速度で発生するので、100件を
- * 無間隔で叩くのはサーバから見て明確に異質な流量になる。上限100件でも
- * 実時間は2分半に収まり、取得はセッション終了後なのでユーザーの操作を
- * 妨げない。
- *
- * 流量制限に掛かった応答を「取得不可」と取り違えないための予防でもある。
- * このAPIは拒否をHTTP 200 + status で返すため、HTTP 429として現れる保証が
- * なく、`readEnvelopeRejection` からは 2302 と区別が付かない。
+ * 間隔を空ける理由のもう一つ: 流量制限に掛かった応答を「取得不可」と
+ * 取り違えないための予防。このAPIは拒否をHTTP 200 + status で返すため、
+ * HTTP 429として現れる保証がなく、`readEnvelopeRejection` からは 2302 と
+ * 区別が付かない。間隔そのものは `protocol.ts` が持つ ―― 依頼元
+ * （`replay-fetch-bridge.ts`）のバッチ上限がこの値から導出されるため、
+ * 両者が同じ定数を見ていないと必ず先にタイムアウトする。
  */
-export const REPLAY_FETCH_INTERVAL_MS = 1500
-
 const delay = (ms: number): Promise<void> =>
   new Promise(resolve => { setTimeout(resolve, ms) })
 

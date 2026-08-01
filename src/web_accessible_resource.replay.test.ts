@@ -5,7 +5,8 @@ import {
   REPLAY_BRIDGE_FETCH,
   REPLAY_BRIDGE_LEDGER,
   REPLAY_BRIDGE_RESULT,
-  REPLAY_DETAIL_URL
+  REPLAY_DETAIL_URL,
+  REPLAY_FETCH_INTERVAL_MS
 } from './replay/protocol'
 
 Object.assign(global, { TextEncoder, TextDecoder })
@@ -200,9 +201,8 @@ describe('main-world experimental replay bridge', () => {
     // 取得の間隔待ちを実時間で待つとテストが数秒止まるため、時間だけ偽装する。
     // マイクロタスクは偽装されないので、フラッシュと時間送りを交互に回す。
     jest.useFakeTimers()
-    let bridge: typeof import('./web_accessible_resource')
     jest.isolateModules(() => {
-      bridge = require('./web_accessible_resource')
+      require('./web_accessible_resource')
     })
     const flush = async (): Promise<void> => {
       for (let i = 0; i < 20; i++) await Promise.resolve()
@@ -235,10 +235,10 @@ describe('main-world experimental replay bridge', () => {
     // ここで2件目が出ていたらペーシングが効いていない。
     await flush()
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    jest.advanceTimersByTime(bridge!.REPLAY_FETCH_INTERVAL_MS)
+    jest.advanceTimersByTime(REPLAY_FETCH_INTERVAL_MS)
     await flush()
     expect(fetchMock).toHaveBeenCalledTimes(2)
-    jest.advanceTimersByTime(bridge!.REPLAY_FETCH_INTERVAL_MS)
+    jest.advanceTimersByTime(REPLAY_FETCH_INTERVAL_MS)
     await flush()
 
     expect(fetchMock).toHaveBeenCalledTimes(3)
@@ -314,6 +314,50 @@ describe('main-world experimental replay bridge', () => {
     }, POKER_CHASE_ORIGIN)
     expect(JSON.stringify(postMessageSpy.mock.calls)).not.toContain('page-only-secret')
     expect(JSON.stringify(postMessageSpy.mock.calls)).not.toContain('list-response-secret')
+
+    XMLHttpRequest.prototype.open = originalOpen
+    XMLHttpRequest.prototype.send = originalSend
+  })
+
+  // Codexレビュー指摘: 認証エンベロープの観測は「設定未受信＝有効」で
+  // fail-openにしているが、台帳は拡張側へ渡って永続化されるので同じ緩さを
+  // 適用してはいけない。フラグを一度も有効化していないユーザーの監査が
+  // 走ってしまう。
+  test('does not forward the ledger before the enabled config has arrived', async () => {
+    class FakeWebSocket {
+      addEventListener = jest.fn()
+    }
+    ;(window as any).WebSocket = FakeWebSocket
+    ;(window as any).fetch = jest.fn()
+
+    const originalOpen = XMLHttpRequest.prototype.open
+    const originalSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.open = jest.fn() as any
+    XMLHttpRequest.prototype.send = jest.fn() as any
+    // 不在を検証するテストなので、前のテストが残したスパイ履歴を必ず消す
+    // （`jest.spyOn`は既存スパイがあればそれを返し、`mock.calls`は累積する）。
+    const postMessageSpy = jest.spyOn(window, 'postMessage')
+    postMessageSpy.mockClear()
+
+    jest.isolateModules(() => {
+      require('./web_accessible_resource')
+    })
+
+    // 設定を送らないまま `/replay/list` の応答が返る
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', 'https://production.api-poker-chase.com/replay/list')
+    Object.defineProperty(xhr, 'response', {
+      value: arrayBufferOf(LIST_ENVELOPE),
+      configurable: true
+    })
+    xhr.send(encode({ param: {}, session: 's', platform: 2, appVer: '2.06', dataVer: 'd', masterVer: 'm' }))
+    await Promise.resolve()
+    xhr.dispatchEvent(new Event('loadend'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(postMessageSpy.mock.calls.some(
+      call => (call[0] as { type?: string })?.type === REPLAY_BRIDGE_LEDGER
+    )).toBe(false)
 
     XMLHttpRequest.prototype.open = originalOpen
     XMLHttpRequest.prototype.send = originalSend

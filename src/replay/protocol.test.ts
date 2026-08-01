@@ -1,4 +1,30 @@
-import { readReplayLedger, sanitizeReplayDetail } from './protocol'
+import {
+  REPLAY_FETCH_BATCH_LIMIT,
+  REPLAY_FETCH_INTERVAL_MS,
+  REPLAY_FETCH_TIMEOUT_MS,
+  readReplayLedger,
+  replayFetchBatchTimeoutMs,
+  sanitizeReplayDetail
+} from './protocol'
+
+// Codexレビュー指摘: ページ側は2件目以降の各リクエスト前に必ず間隔を空ける
+// ので、依頼元の上限が固定値だと件数が増えた瞬間に**必ず**先に切れる。
+// しかもページ側はバッチ完了時に一括で返すため、切れた場合に得られるのは
+// 部分結果ではなく空配列になる。
+describe('replayFetchBatchTimeoutMs', () => {
+  test('ページ側が要しうる最長時間より必ず長い', () => {
+    for (const count of [1, 2, 50, REPLAY_FETCH_BATCH_LIMIT]) {
+      // 1件あたり最大 REPLAY_FETCH_TIMEOUT_MS、2件目以降は毎回間隔待ち
+      const worstCasePageTime =
+        count * REPLAY_FETCH_TIMEOUT_MS + Math.max(0, count - 1) * REPLAY_FETCH_INTERVAL_MS
+      expect(replayFetchBatchTimeoutMs(count)).toBeGreaterThan(worstCasePageTime)
+    }
+  })
+
+  test('上限100件でも固定120秒より長い（旧実装は必ず先に切れていた）', () => {
+    expect(replayFetchBatchTimeoutMs(REPLAY_FETCH_BATCH_LIMIT)).toBeGreaterThan(120_000)
+  })
+})
 
 /** 実測した `/replay/list` 応答の形（2026-08-01）。 */
 const LIST_RESPONSE = {

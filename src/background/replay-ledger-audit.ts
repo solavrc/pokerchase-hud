@@ -26,9 +26,11 @@
  * 過去に記録済みの欠損を後から検証することはできない。
  */
 import type { PokerChaseDB } from '../db/poker-chase-db'
+import { ApiType } from '../types/api'
 import {
   REPLAY_LEDGER_MAX_ENTRIES,
   REPLAY_PORT_LEDGER,
+  isPositiveHandId,
   type ReplayLedger,
   type ReplayLedgerMessage
 } from '../replay/protocol'
@@ -51,11 +53,64 @@ export interface ReplayLedgerAuditResult {
   isExpiredCardOpen: boolean
   /** 台帳に載っていたハンド数。 */
   listedHands: number
-  /** 台帳にあってローカルに無いHandId（＝キャプチャ欠損の疑い）。 */
-  missingHandIds: number[]
+  /**
+   * 台帳にあり、`hands`にも`apiEvents`にも無いHandId。
+   * **これだけが本物のキャプチャ欠損**（サーバは送ったがクライアントに
+   * 届いていない、または保存に失敗した）。
+   */
+  notCapturedHandIds: number[]
+  /**
+   * `apiEvents`にはあるが`hands`が無いHandId。イベントは受信・保存できて
+   * いて、派生側で落ちたもの。既知の正常系を含む:
+   * キメラハンドの意図的な棄却（`write-entity-stream.ts`のRejected chimera
+   * hand）、現行スキーマで検証に通らないpayload、そして**直前のハンドの
+   * 派生がまだ書き終わっていない場合**（raw書き込みが先、派生が後という
+   * 順序のため、この監査は取り込みキューを迂回しても欠損とは誤判定しない）。
+   */
+  derivationMissingHandIds: number[]
   /** ローカルにあるが会計が未確定で照合できなかったハンド数。 */
   unverifiableHands: number
   chipDiffMismatches: ReplayLedgerChipDiffMismatch[]
+}
+
+/**
+ * 台帳の`StartTime`（Unix秒、サーバ時刻）から`apiEvents`（クライアント受信
+ * 時刻ms）を引くときの前後余裕。
+ *
+ * 前方向はサーバ時刻とクライアント時刻のズレ、後方向は「ハンド開始から
+ * `EVT_HAND_RESULTS` が届くまで」の最大想定。
+ */
+const HAND_RESULTS_LOOKUP_LEAD_MS = 5 * 60_000
+const HAND_RESULTS_LOOKUP_TAIL_MS = 30 * 60_000
+
+/**
+ * 台帳の時間範囲に入る`EVT_HAND_RESULTS`のHandIdを、Raw Event Lakeから集める。
+ *
+ * 生行をそのまま読むがZod検証はしない。ここで見たいのは「そのHandIdの
+ * イベントが届いて保存されたか」だけで、値を派生パイプラインへ渡さないため
+ * （`EntityConverter`/`HandLogProcessor`へ生行を流してはならない、という
+ * 制約の対象外）。
+ */
+const collectCapturedHandIds = async (
+  db: PokerChaseDB,
+  startTimesSec: number[]
+): Promise<Set<number>> => {
+  const captured = new Set<number>()
+  if (startTimesSec.length === 0) return captured
+
+  const startsMs = startTimesSec.map(seconds => seconds * 1000)
+  const from = Math.min(...startsMs) - HAND_RESULTS_LOOKUP_LEAD_MS
+  const to = Math.max(...startsMs) + HAND_RESULTS_LOOKUP_TAIL_MS
+
+  const rows = await db.apiEvents
+    .where('[ApiTypeId+timestamp]')
+    .between([ApiType.EVT_HAND_RESULTS, from], [ApiType.EVT_HAND_RESULTS, to], true, true)
+    .toArray()
+  for (const row of rows) {
+    const handId = (row as { HandId?: unknown }).HandId
+    if (isPositiveHandId(handId)) captured.add(handId)
+  }
+  return captured
 }
 
 /**
@@ -73,15 +128,20 @@ export const auditReplayLedger = async (
 ): Promise<ReplayLedgerAuditResult> => {
   const entries = ledger.hands.slice(0, REPLAY_LEDGER_MAX_ENTRIES)
   const localHands = await db.hands.bulkGet(entries.map(entry => entry.handId))
+  const capturedHandIds = await collectCapturedHandIds(db, entries.map(entry => entry.startTime))
 
-  const missingHandIds: number[] = []
+  const notCapturedHandIds: number[] = []
+  const derivationMissingHandIds: number[] = []
   const chipDiffMismatches: ReplayLedgerChipDiffMismatch[] = []
   let unverifiableHands = 0
 
   entries.forEach((entry, index) => {
     const hand = localHands[index]
     if (!hand) {
-      missingHandIds.push(entry.handId)
+      // 派生テーブルの不在だけでキャプチャ欠損と断定しない。Raw Event Lake
+      // に生行があれば、イベントは届いていて派生側で落ちただけ。
+      if (capturedHandIds.has(entry.handId)) derivationMissingHandIds.push(entry.handId)
+      else notCapturedHandIds.push(entry.handId)
       return
     }
     if (playerId === undefined) {
@@ -108,7 +168,8 @@ export const auditReplayLedger = async (
     cardOpenEndDate: ledger.cardOpenEndDate,
     isExpiredCardOpen: ledger.isExpiredCardOpen,
     listedHands: entries.length,
-    missingHandIds,
+    notCapturedHandIds,
+    derivationMissingHandIds,
     unverifiableHands,
     chipDiffMismatches
   }
@@ -119,12 +180,14 @@ export const auditReplayLedger = async (
     updatedAt: now
   })
 
-  if (missingHandIds.length > 0 || chipDiffMismatches.length > 0) {
+  if (notCapturedHandIds.length > 0 || derivationMissingHandIds.length > 0 ||
+    chipDiffMismatches.length > 0) {
     console.warn(
       `[replay-ledger] BattleType=${ledger.battleType}: ` +
-      `台帳${entries.length}件中、ローカル欠損${missingHandIds.length}件 / ` +
+      `台帳${entries.length}件中、未キャプチャ${notCapturedHandIds.length}件 / ` +
+      `派生欠落${derivationMissingHandIds.length}件 / ` +
       `チップ不一致${chipDiffMismatches.length}件`,
-      { missingHandIds, chipDiffMismatches }
+      { notCapturedHandIds, derivationMissingHandIds, chipDiffMismatches }
     )
   }
 

@@ -1,6 +1,7 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { REPLAY_PORT_LEDGER, type ReplayLedger } from '../replay/protocol'
+import { ApiType } from '../types/api'
 import {
   REPLAY_LEDGER_AUDIT_META_ID,
   auditReplayLedger,
@@ -42,6 +43,7 @@ describe('replay ledger audit', () => {
     await db.open()
     await db.hands.clear()
     await db.meta.clear()
+    await db.apiEvents.clear()
   })
 
   afterEach(() => db.close())
@@ -56,9 +58,31 @@ describe('replay ledger audit', () => {
     ]), NOW)
 
     expect(result.listedHands).toBe(3)
-    expect(result.missingHandIds).toEqual([101])
+    expect(result.notCapturedHandIds).toEqual([101])
     expect(result.chipDiffMismatches).toEqual([])
     expect(result.unverifiableHands).toBe(0)
+  })
+
+  // Codexレビュー指摘: 派生テーブルの不在だけでキャプチャ欠損と断定しない。
+  // キメラハンドの意図的な棄却など、rawはあるのにhandsが無い正常系がある。
+  test('rawイベントがあってhandsが無い場合は欠損ではなく派生欠落として分類する', async () => {
+    await db.hands.bulkPut([hand(700, 500)])
+    // 701 は EVT_HAND_RESULTS が Lake に在るのに hands が無い（派生側で棄却）
+    await db.apiEvents.add({
+      timestamp: 1785500060_000 + 30_000,
+      ApiTypeId: ApiType.EVT_HAND_RESULTS,
+      sequence: 0,
+      HandId: 701
+    } as never)
+
+    const result = await auditReplayLedger(db, HERO, ledgerOf([
+      { handId: 700, startTime: 1785500000, chipDiff: 500 },
+      { handId: 701, startTime: 1785500060, chipDiff: 300 },
+      { handId: 702, startTime: 1785500120, chipDiff: 100 }
+    ]), NOW)
+
+    expect(result.derivationMissingHandIds).toEqual([701])
+    expect(result.notCapturedHandIds).toEqual([702])
   })
 
   test('ChipDiffとnetChipsの食い違いを報告する', async () => {
@@ -69,7 +93,7 @@ describe('replay ledger audit', () => {
       { handId: 201, startTime: 1785500060, chipDiff: 300 }
     ]), NOW)
 
-    expect(result.missingHandIds).toEqual([])
+    expect(result.notCapturedHandIds).toEqual([])
     expect(result.chipDiffMismatches).toEqual([
       { handId: 201, ledgerChipDiff: 300, localNetChips: 999 }
     ])
@@ -86,7 +110,7 @@ describe('replay ledger audit', () => {
 
     expect(result.chipDiffMismatches).toEqual([])
     expect(result.unverifiableHands).toBe(1)
-    expect(result.missingHandIds).toEqual([])
+    expect(result.notCapturedHandIds).toEqual([])
   })
 
   test('ヒーロー未特定でも欠損検出は成立し、チップ照合だけ見送る', async () => {
@@ -97,7 +121,7 @@ describe('replay ledger audit', () => {
       { handId: 401, startTime: 1785500060, chipDiff: 100 }
     ]), NOW)
 
-    expect(result.missingHandIds).toEqual([401])
+    expect(result.notCapturedHandIds).toEqual([401])
     expect(result.unverifiableHands).toBe(1)
     expect(result.chipDiffMismatches).toEqual([])
   })
@@ -118,7 +142,7 @@ describe('replay ledger audit', () => {
       battleType: 4,
       cardOpenEndDate: 1786000000,
       listedHands: 1,
-      missingHandIds: [],
+      notCapturedHandIds: [],
       chipDiffMismatches: []
     })
     // 全DBバージョンのストア一覧に台帳専用ストアが増えていないこと
@@ -160,7 +184,7 @@ describe('replay ledger audit', () => {
 
       await new Promise(resolve => setTimeout(resolve, 0))
       const stored = await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)
-      expect(stored?.value).toMatchObject({ missingHandIds: [601] })
+      expect(stored?.value).toMatchObject({ notCapturedHandIds: [601] })
     })
   })
 })

@@ -15,6 +15,35 @@ export const REPLAY_PORT_LEDGER = 'experimental-replay-ledger'
 export const REPLAY_FETCH_BATCH_LIMIT = 100
 
 /**
+ * 1件あたりの応答待ちの上限。これが無いと、応答が返らない1件で逐次取得が
+ * 止まり、依頼元にも有効期限が無いため取り込みが恒久停止する。
+ */
+export const REPLAY_FETCH_TIMEOUT_MS = 15_000
+
+/**
+ * 連続取得の間隔（前の応答が返ってから次を出すまで）。
+ *
+ * ゲーム本体のリプレイ閲覧は1件ずつ人間の操作速度で発生するので、上限の
+ * 100件を無間隔で叩くのはサーバから見て明確に異質な流量になる。取得は
+ * セッション終了後なのでユーザーの操作を妨げない。
+ */
+export const REPLAY_FETCH_INTERVAL_MS = 1_500
+
+/**
+ * バッチ全体の待ち時間の上限。
+ *
+ * ページ側は「1件あたり最大 `REPLAY_FETCH_TIMEOUT_MS`」＋「2件目以降は
+ * 毎回 `REPLAY_FETCH_INTERVAL_MS` の待ち」で逐次処理するので、依頼元の
+ * 上限をこの合計より短くすると**必ず**先に切れる。しかもページ側は
+ * バッチ完了時に一括で結果を返す実装なので、切れた場合に得られるのは
+ * 部分結果ではなく空配列で、残りのPOSTだけが依頼元不在のまま走り続ける。
+ * そのため上限は件数から導出する（100件の最悪ケースで約28分。実際は
+ * 応答が即返るので2分半程度）。
+ */
+export const replayFetchBatchTimeoutMs = (handIdCount: number): number =>
+  handIdCount * (REPLAY_FETCH_TIMEOUT_MS + REPLAY_FETCH_INTERVAL_MS) + 5_000
+
+/**
  * 台帳1回あたりの上限。サーバは実測でカテゴリごと最新100件を返すが、
  * 境界側で受け取る配列長は信用せず、余裕を見た値で頭打ちにする。
  */
