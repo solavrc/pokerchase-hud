@@ -74,6 +74,7 @@ export const ImportExportSection = ({
   const [rebuildAdvisoryPending, setRebuildAdvisoryPending] = useState(false)
   const [importOperationActive, setImportOperationActive] = useState(false)
   const importOperationActiveRef = useRef(false)
+  const openImportPageInFlightRef = useRef(false)
   const [rebuildOrigin, setRebuildOrigin] = useState<'import' | 'manual' | null>(null)
 
   const isImporting = importOperationActive && rebuildOrigin !== 'import'
@@ -239,7 +240,19 @@ export const ImportExportSection = ({
       }
       if (changes[IMPORT_RESULT_STORAGE_KEY]?.newValue) {
         const importResult = changes[IMPORT_RESULT_STORAGE_KEY].newValue as ImportResultRecord
+        // A result written while the popup is open is terminal: the background
+        // is idle again. Release the same state the importStatus message path
+        // above releases, because that message never arrives when the import
+        // page itself fails mid-transfer -- ImportPage's catch writes this key
+        // directly and only sends importDataCancel, which broadcasts nothing.
+        // Leaving importOperationActive set keeps isAnyOperationInProgress
+        // true, which blanks displayStatus (hiding this very error) and holds
+        // export and rebuild disabled.
+        importOperationActiveRef.current = false
+        setImportOperationActive(false)
+        setRebuildOrigin(null)
         setImportStatus(importResult.message)
+        setOperationStatus('')
       }
     }
 
@@ -280,10 +293,23 @@ export const ImportExportSection = ({
   }, [])
 
   const handleImportClick = useCallback(async () => {
+    // Single-flight. query + create is a check-then-act pair: a second click
+    // while the first round trip is still open runs its own query, still sees
+    // no import page, and creates a second one. Both pages then race for the
+    // single import operation slot and the loser writes its rejection into
+    // lastImportResult, surfacing as a failure the user never started.
+    if (openImportPageInFlightRef.current) return
+    openImportPageInFlightRef.current = true
     try {
       const importPageUrl = getImportPageUrl()
       const tabs = await chrome.tabs.query({})
-      const existingTab = tabs.find(tab => tab.url === importPageUrl)
+      // A tab whose navigation has not committed yet carries the destination
+      // in pendingUrl only -- url is empty or still the previous page. Matching
+      // on url alone misses the import page opened moments ago and opens
+      // another one.
+      const existingTab = tabs.find(
+        tab => tab.url === importPageUrl || tab.pendingUrl === importPageUrl
+      )
       if (existingTab?.id !== undefined) {
         await chrome.tabs.update(existingTab.id, { active: true })
         if (existingTab.windowId !== undefined) {
@@ -295,6 +321,8 @@ export const ImportExportSection = ({
     } catch (error) {
       console.error('Failed to open the NDJSON import page:', error)
       setImportStatus('インポートページを開けませんでした。もう一度お試しください。')
+    } finally {
+      openImportPageInFlightRef.current = false
     }
   }, [])
 

@@ -89,6 +89,29 @@ describe('ImportExportSection - rebuild advisory banner', () => {
     )
   }
 
+  const emitImportResultChange = (newValue: any) => {
+    storageChangeListeners.forEach(listener =>
+      listener({ [IMPORT_RESULT_STORAGE_KEY]: { newValue } }, 'local')
+    )
+  }
+
+  const restoreActiveTransfer = () => {
+    mockSendMessage.mockImplementation((message: { action?: string }, callback?: (response: unknown) => void) => {
+      if (typeof callback === 'function') {
+        callback(message.action === 'getOperationState' ? {
+          operationState: {
+            type: 'import',
+            phase: 'transfer',
+            progress: 50,
+            processed: 1,
+            total: 2,
+            message: 'インポートファイル転送中...',
+          },
+        } : {})
+      }
+    })
+  }
+
   it('does not render the banner when there is no pending advisory', async () => {
     storageLocalData[REBUILD_ADVISORY_STORAGE_KEY] = undefined
 
@@ -182,6 +205,71 @@ describe('ImportExportSection - rebuild advisory banner', () => {
 
     expect(await screen.findByRole('button', { name: 'インポートページを表示' })).toBeEnabled()
     expect(screen.getByText(/インポートファイル転送中/)).toBeInTheDocument()
+  })
+
+  it('reuses an import page whose navigation has not committed yet', async () => {
+    // Chrome reports the destination in pendingUrl until the navigation
+    // commits; url is empty or still the previous page until then.
+    ;(chrome.tabs.query as jest.Mock).mockResolvedValue([{
+      id: 42,
+      windowId: 7,
+      url: '',
+      pendingUrl: 'chrome-extension://test/dist/index.html?mode=import',
+    }])
+    render(<ImportExportSection {...defaultProps} />)
+
+    await userEvent.click(screen.getByRole('button', { name: '生データをインポート (NDJSON)' }))
+
+    expect(chrome.tabs.update).toHaveBeenCalledWith(42, { active: true })
+    expect(chrome.tabs.create).not.toHaveBeenCalled()
+  })
+
+  it('does not open a second import page while the first open is still in flight', async () => {
+    let releaseQuery: (tabs: unknown[]) => void = () => {}
+    ;(chrome.tabs.query as jest.Mock).mockReturnValue(new Promise(resolve => {
+      releaseQuery = resolve as (tabs: unknown[]) => void
+    }))
+    render(<ImportExportSection {...defaultProps} />)
+
+    const button = screen.getByRole('button', { name: '生データをインポート (NDJSON)' })
+    await userEvent.click(button)
+    await userEvent.click(button)
+
+    // Both clicks landed while the first query was still open. Without the
+    // single-flight guard the second one queries too, also finds nothing, and
+    // creates a duplicate page that races for the import operation slot.
+    expect(chrome.tabs.query).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      releaseQuery([])
+    })
+
+    expect(chrome.tabs.create).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases the operation state when a terminal result arrives via storage', async () => {
+    // ImportPage's own transfer failure writes lastImportResult directly and
+    // sends only importDataCancel, so storage.onChanged is the popup's only
+    // notification -- no importStatus message ever arrives.
+    const setImportStatus = jest.fn()
+    restoreActiveTransfer()
+
+    render(<ImportExportSection {...defaultProps} setImportStatus={setImportStatus} />)
+
+    expect(await screen.findByRole('button', { name: 'インポートページを表示' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '生データをエクスポート (NDJSON)' })).toBeDisabled()
+
+    act(() => emitImportResultChange({
+      status: 'error',
+      message: 'インポート失敗: ファイルを読み込めませんでした',
+      completedAt: 456,
+    }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '生データをインポート (NDJSON)' })).toBeInTheDocument()
+    })
+    expect(screen.getByRole('button', { name: '生データをエクスポート (NDJSON)' })).toBeEnabled()
+    expect(setImportStatus).toHaveBeenCalledWith('インポート失敗: ファイルを読み込めませんでした')
   })
 
   it('restores a persisted result after the popup was closed', async () => {
