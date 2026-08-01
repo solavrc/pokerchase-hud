@@ -14,8 +14,8 @@
  *   「公開ルールの再実装」をしない -- サーバー送信値をそのまま信頼する）。
  * - DBアクセスはテーブルごとに1回のインデックス付きクエリに抑える
  *   （hands: 'seatUserIds'、actions/phases: 'handId'のanyOf、対象ハンドID
- *   集合に対してのみ）。デフォルトlimit=10件なので、actions/phasesの
- *   バッチクエリも小さい。
+ *   集合に対してのみ）。対象ハンドは高々`MAX_RECENT_HANDS_LIMIT`件なので、
+ *   actions/phasesのバッチクエリも小さい。
  * - フィルター（battleTypeFilter/tableSizeFilter）の意味論はcalcStats/
  *   positional-stats-serviceと一致させる。ただしhandLimitFilterは対象外
  *   （アプリ全体の集計範囲とは独立した「直近N件」機能のため、仕様通り）。
@@ -38,17 +38,17 @@ import { readReplayHoleCards } from '../replay/hole-cards'
 import { readReplayImportEnabled } from '../background/replay-import'
 import { EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY } from '../replay/protocol'
 import { compareHandsNewestFirst } from '../utils/hand-order'
-import { DEFAULT_RECENT_HANDS_LIMIT, MAX_RECENT_HANDS_LIMIT } from '../utils/recent-hands-config'
-
 // 件数の選択肢・既定値・上限はrecent-hands-config.tsが持つ（UI側からも
-// 参照するため。同ファイル冒頭のコメント参照）。ここでは再エクスポートして、
+// 参照するため。同ファイル冒頭のコメント参照）。ここから再エクスポートして、
 // 既存の`import { DEFAULT_RECENT_HANDS_LIMIT } from './recent-hands-service'`
 // を壊さない。
-export {
+import {
   DEFAULT_RECENT_HANDS_LIMIT,
   MAX_RECENT_HANDS_LIMIT,
   RECENT_HANDS_LIMIT_OPTIONS,
 } from '../utils/recent-hands-config'
+
+export { DEFAULT_RECENT_HANDS_LIMIT, MAX_RECENT_HANDS_LIMIT, RECENT_HANDS_LIMIT_OPTIONS }
 
 /** `Position`列挙体の値域（-2..3の連続整数）に収まるかを判定する。legacy sentinel `-3` はfalseになる。 */
 const isValidPosition = (position: number): position is Position =>
@@ -218,8 +218,13 @@ export function isDealtIn(hand: Hand, playerId: number): boolean {
   return Array.isArray(hand.seatUserIds) && hand.seatUserIds.includes(playerId)
 }
 
-/** `ActionType`→1文字表記。`PostflopLines`のドキュメントコメント参照。 */
-const ACTION_LETTER: Record<Exclude<ActionType, ActionType.ALL_IN>, string> = {
+/**
+ * `ActionType`→1文字表記。`PostflopLines`のドキュメントコメント参照。
+ * `Partial`にしてあるのは`ActionType.ALL_IN`を意図的に持たないため
+ * （actionSchemaがALL_INのactionType自体を禁じている）。万一その値が
+ * 残っている古い行を読んでも、未定義として空文字に落ちる。
+ */
+const ACTION_LETTER: Partial<Record<ActionType, string>> = {
   [ActionType.CHECK]: 'X',
   [ActionType.BET]: 'B',
   [ActionType.FOLD]: 'F',
@@ -253,7 +258,7 @@ export function derivePostflopLines(
       .filter(a => a.phase === phase)
       .sort((a, b) => a.index - b.index)
       .map(a => {
-        const letter = ACTION_LETTER[a.actionType as Exclude<ActionType, ActionType.ALL_IN>]
+        const letter = ACTION_LETTER[a.actionType]
         if (!letter) return ''
         return a.actionDetails.includes(ActionDetail.ALL_IN) ? `${letter}!` : letter
       })
