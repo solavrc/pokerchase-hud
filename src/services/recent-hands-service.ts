@@ -97,6 +97,10 @@ export const buildRecentHandsCacheKey = (playerId: number, service: PokerChaseSe
 chrome.storage?.onChanged?.addListener((changes, areaName) => {
   if (areaName !== 'sync') return
   if (!(EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY in changes)) return
+  // 世代も進める（MUST）。捨てるだけだと、切り替え前に始まった読み取りが
+  // 後から完了したときに世代比較を通過して**古い結果を書き戻す**ため、
+  // OFFにしてもリプレイ由来のカードが最大30秒返り続ける。
+  cacheGeneration++
   clearRecentHandsCache()
 })
 

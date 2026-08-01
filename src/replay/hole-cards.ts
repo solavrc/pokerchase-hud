@@ -40,11 +40,16 @@ export const readReplayHoleCards = (
 
   for (const candidate of candidates) {
     const cards = readHoleCardList(candidate, playerId)
-    if (!cards || cards.length === 0) continue
-    // 伏せられたままの席は `-1` 埋め、または空配列で返る。
-    if (cards.some(card => card < 0)) continue
+    // **ちょうど2枚・0〜51・重複なし**だけを受ける（MUST）。payloadは未検証の
+    // 運営コンテンツで、サーバ変更・古いインポート・偽装結果で長さや値域が
+    // 崩れうる。`formatCardsArray` は不正値を落とすだけなので、ここを緩めると
+    // 1枚だけ・3枚のホールカードを描画してしまう。伏せられたままの席は
+    // 空配列か `-1` 埋めで返るので、この条件で自然に弾ける。
+    if (!cards || cards.length !== 2) continue
+    if (!cards.every(card => Number.isSafeInteger(card) && card >= 0 && card <= 51)) continue
+    if (cards[0] === cards[1]) continue
     const formatted = formatCardsArray(cards)
-    if (formatted.length > 0) return formatted
+    if (formatted.length === 2) return formatted
   }
   return null
 }

@@ -47,6 +47,42 @@ describe('content_script replay bridge conditional injection', () => {
     document.body.innerHTML = ''
   })
 
+  /**
+   * Codexレビュー指摘: この経路は同一オリジンの `postMessage` なので、
+   * ブリッジを一度も注入していない無効ユーザーでも、ページ側スクリプトが
+   * 台帳を偽装して送れてしまう（ブリッジ側のゲートだけでは塞げない）。
+   */
+  test('does not forward a page-forged ledger while the flag is disabled', async () => {
+    const sent: unknown[] = []
+    ;(chrome.runtime as any).connect = jest.fn(() => ({
+      postMessage: jest.fn((message: unknown) => { sent.push(message) }),
+      disconnect: jest.fn(),
+      onMessage: { addListener: jest.fn(), removeListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn(), removeListener: jest.fn() },
+    }))
+    ;(chrome.storage.sync.get as jest.Mock).mockResolvedValue({})
+
+    jest.isolateModules(() => { require('./content_script') })
+    await flush()
+
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window,
+      origin: 'https://game.poker-chase.com',
+      data: {
+        type: 'pokerchase-hud:replay-ledger',
+        battleType: 0,
+        cardOpenEndDate: 0,
+        isExpiredCardOpen: false,
+        hands: [{ handId: 1, startTime: 1, chipDiff: 1 }]
+      }
+    }))
+    await flush()
+
+    expect(sent.some(message =>
+      (message as { type?: string })?.type === 'experimental-replay-ledger'
+    )).toBe(false)
+  })
+
   test('does not inject the replay bridge when the flag is disabled', async () => {
     // storage は空（KEY未設定）＝無効。
     jest.isolateModules(() => { require('./content_script') })
