@@ -11,10 +11,14 @@ import {
   __resetReplayPortStateForTests,
   allConnectedPortsInactive,
   findPortForPlayer,
+  forgetPort,
   markPortPlayerId,
   markPortSessionActive,
   markPortSessionInactive
 } from './replay-port-state'
+
+/** `replay-port-state.ts` の再接続猶予（60秒）。 */
+const ACTIVE_GRACE = 60_000
 
 const portOf = (name: string): chrome.runtime.Port =>
   ({ name } as unknown as chrome.runtime.Port)
@@ -56,6 +60,37 @@ describe('replay port state', () => {
       expect(allConnectedPortsInactive()).toBe(false)
     })
 
+    // Codexレビュー指摘: RuntimePortManager は切断の500ms後に再接続する。
+    // その隙に対局中のタブが `connectedPorts` から消えると、残った非対局タブ
+    // だけで「全タブがセッション外」が成立してしまう。
+    test('対局中のまま切れたタブは、再接続の猶予の間は対局中として扱う', () => {
+      connectedPorts.add(tabA)
+      connectedPorts.add(tabB)
+      markPortSessionInactive(tabA)
+      markPortSessionActive(tabB)
+
+      // 対局中のタブが切れた（再接続待ち）
+      const disconnectedAt = 1_000_000
+      connectedPorts.delete(tabB)
+      forgetPort(tabB, disconnectedAt)
+
+      expect(allConnectedPortsInactive(disconnectedAt + 500)).toBe(false)
+      expect(allConnectedPortsInactive(disconnectedAt + 59_000)).toBe(false)
+      // 猶予を過ぎれば（＝本当に閉じた）通す
+      expect(allConnectedPortsInactive(disconnectedAt + 61_000)).toBe(true)
+    })
+
+    test('セッション外のタブが切れても猶予は入らない', () => {
+      connectedPorts.add(tabA)
+      connectedPorts.add(tabB)
+      markPortSessionInactive(tabA)
+      markPortSessionInactive(tabB)
+
+      connectedPorts.delete(tabB)
+      forgetPort(tabB, 1_000_000)
+      expect(allConnectedPortsInactive(1_000_500)).toBe(true)
+    })
+
     test('対局中のタブが閉じれば真に戻る', () => {
       connectedPorts.add(tabA)
       connectedPorts.add(tabB)
@@ -64,7 +99,8 @@ describe('replay port state', () => {
       expect(allConnectedPortsInactive()).toBe(false)
 
       connectedPorts.delete(tabB)
-      expect(allConnectedPortsInactive()).toBe(true)
+      forgetPort(tabB, 0)
+      expect(allConnectedPortsInactive(ACTIVE_GRACE + 1)).toBe(true)
     })
   })
 

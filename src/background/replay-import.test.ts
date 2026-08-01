@@ -605,6 +605,31 @@ describe('replay import layer', () => {
 
     // Codexレビュー指摘: 繰り延べ中に別アカウントへログインすると、旧アカウントの
     // HandIdが新しい資格情報で2302になり、再試行不能として永久に捨てられる。
+    // Codexレビュー指摘: 依頼先の無いエントリで間隔を消費すると、先頭に
+    // 未接続アカウントが並んでいるだけで、実際に撃てる1件まで延々待たされる。
+    test('依頼先の無いエントリでは間隔を消費しない', async () => {
+      const reachable = { name: 'reachable' } as unknown as chrome.runtime.Port
+      const deps = depsOf({
+        intervalMs: 5_000,
+        resolvePort: playerId => playerId === 777 ? reachable : undefined
+      })
+      markSessionActive()
+      // 撃てない3件が先に並び、最後の1件だけが撃てる
+      for (const handId of [3001, 3002, 3003]) {
+        await enqueueReplayHandId({ ...deps, getPlayerId: () => 555 }, handId, NOW)
+      }
+      await enqueueReplayHandId({ ...deps, getPlayerId: () => 777 }, 3004, NOW)
+      markSessionInactive()
+
+      const startedAt = Date.now()
+      await drainReplayImportQueue(deps)
+      // 5秒の間隔を1度も挟まずに、撃てる1件へ到達している
+      expect(Date.now() - startedAt).toBeLessThan(2_000)
+      expect(fetchCalls).toEqual([[3004]])
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId))
+        .toEqual([3001, 3002, 3003])
+    })
+
     // Codexレビュー指摘: 実際の依頼先はポートで決まる。積んだアカウントを
     // 観測していないタブへ投げると2302が返り、再試行不能として永久に捨てる。
     test('積んだアカウントのタブが無ければ撃たずに持ち越す', async () => {

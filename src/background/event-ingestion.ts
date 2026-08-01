@@ -20,9 +20,11 @@ import { getOperationGeneration, getOperationState, onOperationBecameIdle } from
 import { handleReplayPortMessage, releaseReplayRequestsForPort } from './replay-fetch-bridge'
 import { handleReplayLedgerPortMessage, type ReplayLedgerAuditDeps } from './replay-ledger-audit'
 import {
+  forgetPort,
   markPortPlayerId,
   markPortSessionActive,
-  markPortSessionInactive
+  markPortSessionInactive,
+  readPortPlayerId
 } from './replay-port-state'
 import { REPLAY_PORT_AUTH_READY } from '../replay/protocol'
 import {
@@ -221,6 +223,9 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // 何も保存しないので取り込みキューには載せない。
         if (typeof message === 'object' && message !== null &&
           (message as { type?: unknown }).type === REPLAY_PORT_AUTH_READY) {
+          // 取り込みキューの決着を待ってから流す（MUST）。同じポートから直前に
+          // 届いた201/303/308がまだRaw Lakeの書き込み待ちだと、この通知が先に
+          // 決着してセッション状態を古い `inactive` のまま読む。
           drainReplayImportQueue(createReplayImportDeps(service))
             .catch(err => console.error('[background] Replay import drain on auth capture failed:', err))
           return Promise.resolve()
@@ -252,6 +257,9 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // Keep lastKnownStats for page reloads - only clear interval
         stopPing()
         connectedPorts.delete(port)
+        // 対局中のまま切れたなら、再接続の猶予の間は「全タブがセッション外」を
+        // 成立させない（500msで再接続する設計なので、その隙に撃たないため）。
+        forgetPort(port)
         // 応答が返らないまま切れた依頼を解放する（待ち続けさせない）
         releaseReplayRequestsForPort(port)
       })
@@ -441,8 +449,16 @@ const processEvent = async (
   // 依存させない ―― 検証はパイプライン投入の可否だけを決める。
   if (rawApiTypeId === ApiType.EVT_HAND_RESULTS &&
     (message as { Player?: unknown }).Player !== undefined) {
+    // アカウントは**この結果を送ってきたタブ**のものを使う（MUST）。
+    // 全タブ共有の `service.playerId` は最後に処理された EVT_DEAL の
+    // ヒーローなので、複数アカウントのタブを同時に開いていると、Aのハンドへ
+    // Bのidが付く。付け間違えると依頼先もBのタブに決まり、`2302` で
+    // 永久に捨てられる。
     enqueueReplayHandId(
-      createReplayImportDeps(service),
+      {
+        ...createReplayImportDeps(service),
+        ...port ? { getPlayerId: () => readPortPlayerId(port) ?? service.playerId } : {}
+      },
       (message as { HandId?: unknown }).HandId,
       Date.now()
     ).catch(err => console.error('[background] Replay import enqueue failed:', err))

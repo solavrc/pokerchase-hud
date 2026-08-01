@@ -51,7 +51,7 @@ import { sanitizeReplayDetail } from '../replay/protocol'
 import { requestReplayDetails } from './replay-fetch-bridge'
 import { startKeepAlive } from './service-worker-keepalive'
 import { enqueuePendingStorageWrite } from './pending-storage-writes'
-import { getSessionActivity } from './update-manager'
+import { awaitIngestionDrain, getSessionActivity } from './update-manager'
 import { allConnectedPortsInactive, findPortForPlayer } from './replay-port-state'
 
 export const REPLAY_IMPORT_QUEUE_META_ID = 'replayImportQueue'
@@ -152,6 +152,8 @@ export interface ReplayImportDeps {
   getPlayerId?: () => number | undefined
   /** 接続中の全ポートがセッション外か（テストで差し替える）。 */
   allPortsInactive?: () => boolean
+  /** 取り込みキューの決着待ち（テストで差し替える）。 */
+  waitForIngestion?: () => Promise<void>
   /** そのアカウントのハンドを依頼してよいポートの解決（テストで差し替える）。 */
   resolvePort?: (playerId: number | undefined) => chrome.runtime.Port | undefined
 }
@@ -458,6 +460,11 @@ const withKeepAlive = async (
 
 const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
   if (!await deps.isEnabled()) return
+  // 取り込みキューの決着を待つ（MUST）。セッション開始イベント（201/303/308）が
+  // まだRaw Lakeの書き込み待ちの間にセッション状態を読むと、古い `inactive` の
+  // まま撃ってしまう。ここは取り込みキューの外から呼ばれる（呼び出し元は
+  // いずれもfire-and-forget）ので、待っても詰まらない。
+  await (deps.waitForIngestion ?? awaitIngestionDrain)().catch(() => undefined)
   // 不変条件の判定点。ここを通らない限り1本も飛ばない。
   if (!canFetchNow(deps)) return
   if (deps.isBusy?.()) return
@@ -524,7 +531,11 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
    * 間隔（1.5秒）もこちら側で空ける。ページ側の間隔はバッチ内でしか効かない
    * ため、1件ずつ渡すと間隔が消えてしまう。
    */
-  for (const [index, entry] of targets.entries()) {
+  // 間隔は**実際に撃った後**にだけ空ける。撃たずに飛ばすエントリ（依頼先の
+  // タブが無い等）でも待つと、先頭に未接続アカウントの999件が並んでいるだけで
+  // 最後の1件まで25分待たされ、その間に次の対局が始まって中断される。
+  let issuedAny = false
+  for (const entry of targets) {
     // 直前の判定と同じ3つを、**毎回**確認する（MUST）。フラグの読み取りは
     // 非同期（`chrome.storage.sync.get`）なので、**その待機の後にもう一度**
     // セッション状態を見る ―― 待っている間に次の対局の201/303/308が
@@ -534,8 +545,15 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
       aborted = true
       break
     }
+    // このHandIdを積んだアカウントを観測しているタブへ依頼する。見つからない
+    // ときは**撃たずに残す**（MUST）―― 別アカウントのタブへ投げると `2302`
+    // が返り、再試行不能として永久に捨てる側へ倒れる。正しいアカウントで
+    // 接続し直せば次の機会に流れる。
+    const port = (deps.resolvePort ?? findPortForPlayer)(entry.playerId)
+    if (!port) continue
+
     // 先頭は待たない。1件だけの取得は即座に走る。
-    if (index > 0) {
+    if (issuedAny) {
       await delay(deps.intervalMs ?? REPLAY_FETCH_INTERVAL_MS)
       // 待っている間に状況が変わることがある。待機の後にも確認する（MUST）。
       if (!canFetchNow(deps) || deps.isBusy?.() || !await deps.isEnabled() || !canFetchNow(deps)) {
@@ -544,12 +562,7 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
       }
     }
 
-    // このHandIdを積んだアカウントを観測しているタブへ依頼する。見つからない
-    // ときは**撃たずに残す**（MUST）―― 別アカウントのタブへ投げると `2302`
-    // が返り、再試行不能として永久に捨てる側へ倒れる。正しいアカウントで
-    // 接続し直せば次の機会に流れる。
-    const port = (deps.resolvePort ?? findPortForPlayer)(entry.playerId)
-    if (!port) continue
+    issuedAny = true
     const [result] = await (deps.fetchDetails ?? defaultFetchDetails)([entry.handId], port)
     // 応答待ちの間に全データ削除やインポートが操作スロットを取ることがある。
     // `deleteAllData()` はこの取得を待たずDBを消すので、遅れて返った応答を

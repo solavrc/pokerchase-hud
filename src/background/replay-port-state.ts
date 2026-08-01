@@ -33,6 +33,22 @@ interface PortState {
  */
 const portStates = new WeakMap<chrome.runtime.Port, PortState>()
 
+/**
+ * 対局中のポートが最後に切断された時刻。
+ *
+ * `RuntimePortManager` は切断の500ms後に再接続する。その隙にポートは
+ * `connectedPorts` から消えるので、残った非対局タブだけで「全タブが
+ * セッション外」が成立してしまう ―― 対局中のタブが一瞬切れただけで
+ * 取得が始まる。再接続の猶予の間は対局中として扱う。
+ *
+ * タブを本当に閉じた場合も猶予のぶんだけ待つが、閉じたタブは打っていない
+ * ので、待ちすぎの害は無い（次の契機で流れる）。
+ */
+let lastActiveDisconnectAt = 0
+
+/** 再接続の猶予。実測500msに対して十分な余裕を取る。 */
+const ACTIVE_DISCONNECT_GRACE_MS = 60_000
+
 const stateOf = (port: chrome.runtime.Port): PortState => {
   const existing = portStates.get(port)
   if (existing) return existing
@@ -49,6 +65,10 @@ export const markPortSessionInactive = (port: chrome.runtime.Port): void => {
   stateOf(port).activity = 'inactive'
 }
 
+/** そのポートで観測したヒーローのUserId を読む。 */
+export const readPortPlayerId = (port: chrome.runtime.Port): number | undefined =>
+  portStates.get(port)?.playerId
+
 /** そのポートで観測したヒーローのUserId を控える。 */
 export const markPortPlayerId = (port: chrome.runtime.Port, playerId: number): void => {
   stateOf(port).playerId = playerId
@@ -60,12 +80,23 @@ export const markPortPlayerId = (port: chrome.runtime.Port, playerId: number): v
  * - 1つでも `active` / `unknown` があれば偽（分からないものは対局中扱い）
  * - 接続が1つも無ければ偽 ―― 取得はページ経由なので、そもそも撃てない
  */
-export const allConnectedPortsInactive = (): boolean => {
+export const allConnectedPortsInactive = (now: number = Date.now()): boolean => {
   if (connectedPorts.size === 0) return false
+  // 対局中のまま切れたタブが再接続しうる間は、まだ対局中として扱う。
+  if (now - lastActiveDisconnectAt < ACTIVE_DISCONNECT_GRACE_MS) return false
   for (const port of connectedPorts) {
     if (stateOf(port).activity !== 'inactive') return false
   }
   return true
+}
+
+/**
+ * ポート切断時に呼ぶ。切れたのが対局中のタブなら、再接続の猶予の間は
+ * 「全タブがセッション外」を成立させない。
+ */
+export const forgetPort = (port: chrome.runtime.Port, now: number = Date.now()): void => {
+  if (portStates.get(port)?.activity === 'active') lastActiveDisconnectAt = now
+  portStates.delete(port)
 }
 
 /**
@@ -96,4 +127,5 @@ export const findPortForPlayer = (
 /** テスト用。ポート状態を捨てる。 */
 export const __resetReplayPortStateForTests = (): void => {
   for (const port of connectedPorts) portStates.delete(port)
+  lastActiveDisconnectAt = 0
 }

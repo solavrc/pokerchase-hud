@@ -18,6 +18,8 @@ import { createReplayLedgerAuditDeps, registerEventIngestion } from './backgroun
 import { exposeReplayFetchForDevtools } from './background/replay-fetch-bridge'
 import { resumePendingReplayLedgerAudits } from './background/replay-ledger-audit'
 import { backfillReplayDetailsFromLake } from './background/replay-import'
+import { enqueuePendingStorageWrite } from './background/pending-storage-writes'
+import { isOperationIdle } from './background/operation-state'
 import { registerMessageRouter } from './background/message-router'
 import { checkOnUpdate } from './background/rebuild-advisory'
 import { initUpdateManager } from './background/update-manager'
@@ -208,7 +210,13 @@ void resumePendingReplayLedgerAudits(createReplayLedgerAuditDeps(service))
  * 流し込む。目印が残っていれば1件も読まない。
  */
 void service.ready
-  .then(() => backfillReplayDetailsFromLake(db))
+  // 全データ削除と直列化する。共通FIFOに載せることで reload commit point が
+  // 待ち、`isOperationIdle()` で「削除の最中に走り出さない」を担保する
+  // （走査の途中で `db.delete()` が完了すると、続く書き込みがDBを作り直す）。
+  .then(() => enqueuePendingStorageWrite(async () => {
+    if (!isOperationIdle()) return 0
+    return backfillReplayDetailsFromLake(db)
+  }))
   .catch(err => console.error('[background] Replay details backfill failed:', err))
 
 /**
