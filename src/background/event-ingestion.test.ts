@@ -12,6 +12,8 @@ import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
 import { ApiType } from '../types'
 import { registerEventIngestion } from './event-ingestion'
+import { REPLAY_PORT_LEDGER } from '../replay/protocol'
+import { REPLAY_LEDGER_AUDIT_META_ID } from './replay-ledger-audit'
 import { connectedPorts } from './ports'
 import {
   getUndecodedEventStats,
@@ -65,6 +67,37 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     connectedPorts.clear()
     db.close()
     await db.delete()
+  })
+
+  // Codexレビュー指摘: awaitIngestionDrain() が待つのは processEvent() までで、
+  // 同関数は handAggregateStream.write() で下流を起動するだけ。WriteEntityStream が
+  // hands を書き終える前に照会すると、生成中のハンドを派生欠落として永続化する。
+  test('台帳監査は派生パイプラインが空になるまで待つ', async () => {
+    let releaseIdle!: () => void
+    const idleGate = new Promise<void>(resolve => { releaseIdle = resolve })
+    const whenIdleSpy = jest.spyOn(service.handAggregateStream, 'whenIdle')
+      .mockReturnValue(idleGate)
+
+    await onMessageHandler({
+      type: REPLAY_PORT_LEDGER,
+      battleType: 0,
+      cardOpenEndDate: 0,
+      isExpiredCardOpen: false,
+      hands: []
+    })
+
+    // 下流が空になるまで監査は走らない
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(whenIdleSpy).toHaveBeenCalled()
+    expect(await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)).toBeUndefined()
+
+    releaseIdle()
+    for (let i = 0; i < 50; i++) {
+      if (await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)) break
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    expect(await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)).toBeDefined()
+    whenIdleSpy.mockRestore()
   })
 
   test('a valid application event is stored AND forwarded to the real-time streams', async () => {

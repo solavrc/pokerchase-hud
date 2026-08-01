@@ -218,3 +218,112 @@ await db.actions.where('[playerId+phase]')
 - [Dexie.js Indexing Best Practices](https://dexie.org/docs/Indexing)
 - [Firebase Firestore Pricing](https://firebase.google.com/pricing)
 - [Chrome Extension Manifest V3](https://developer.chrome.com/docs/extensions/mv3/)
+
+## 6. 試験機能: リプレイ詳細の取得層
+
+`experimentalReplayImportEnabled` を `chrome.storage.sync` で `true` にした
+開発ビルドだけが有効化する、既定OFFの検証機能。目的は「`/replay/*` から
+何がどこまで取得できるか」を、スキーマ変更を伴わずに実データで確かめること。
+
+**リプレイ本体（`/replay/detail`）は保存しない。** セッション境界を見て自動で
+取りに行く取り込み層は別途。ただし後述の台帳監査だけは、その結果を `meta`
+テーブルの1行（`replayLedgerAudit`）へ書く ―― MV3のService Workerは数十秒で
+落ちるので、メモリ上に置くとユーザーが結果を読む前に消えるため。書かれるのは
+台帳と突き合わせた**件数と HandId の一覧、チップ差分、エンベロープの期限値**
+（`CardOpenEndDate`）で、リプレイのハンド内容は含まない。新しいDexieの
+バージョンは消費しない。
+
+ページ自身の通常API通信（fetch / XMLHttpRequest）をmain worldで傍受して
+認証エンベロープ（`session` / `platform` / `appVer` / `dataVer` /
+`masterVer`）を得る。新しいhost permissionは追加しない。エンベロープは
+main world のクロージャ内だけに保持し、content script へ渡す前に
+レスポンスから `session` / `requestKey` を再帰的に除去する
+（`sanitizeReplayDetail`）。
+
+フラグを `storage.local` ではなく `storage.sync` に置いているのは、
+`firebase-auth-service` が起動時に `setAccessLevel('TRUSTED_CONTEXTS')` で
+local を content script から遮断しているため（#274）。local に置くと
+content script 側の読み取りが必ず失敗し、機能が永久にOFFのまま固定される。
+
+取得は1件ずつ逐次で、1件あたり15秒でタイムアウトし、2件目以降は前の応答が
+返ってから1.5秒空ける（ゲーム本体のリプレイ閲覧は人間の操作速度で1件ずつ
+発生するため、無間隔の連続取得はサーバから見て異質な流量になる）。
+1リクエストの HandId は最大100件。依頼元のバッチ上限は件数から導出する
+（`replayFetchBatchTimeoutMs`）―― 固定値にすると、間隔待ちの合計が上限を
+超えた瞬間に**必ず**先に切れる。しかもページ側はバッチ完了時に一括で結果を
+返すので、切れた場合に得られるのは部分結果ではなく空配列になる。
+
+### 台帳の受動取得
+
+ユーザーがゲーム内でリプレイ一覧を開くと、ゲーム自身が `/replay/list` を
+出す。その応答を同じフックで読むだけの経路があり、**拡張は追加の
+リクエストを1本も出さない**。応答から取り出すのは許可リスト方式で、
+HandId・開始時刻・`ChipDiff`・`CardOpenEndDate`・`IsExpiredCardOpen` のみ
+（除外リストでは、応答の全フィールドを列挙できていない以上「`session` と
+`requestKey` さえ落とせば安全」という前提が置けない）。
+
+台帳はサーバ自身が持つ「ヒーローが打ったハンド」の記録なので、WebSocket
+キャプチャに対する独立した観測チャネルになる。ローカルと突き合わせて
+3通りに分類する:
+
+- **ローカル不在**: `hands` にも `apiEvents` にも無い
+- **派生欠落**: `apiEvents` にはあるが `hands` が無い ＝ 受信できていて派生側で
+  落ちたもの（キメラハンドの意図的な棄却、検証に通らないpayload、
+  書き込み途中）
+- **チップ不一致**: `ChipDiff` と `playerChipAccounting[hero].netChips` の食い違い
+
+**確定できることの範囲を取り違えない。** 台帳が証明するのは「このアカウントの
+ハンドとしてサーバに記録がある」ことだけで、該当のWebSocketイベントをサーバが
+この接続へ送ったかどうかは観測していない。したがって「ローカル不在」から確定
+するのは**このクライアントに残っていないことだけ**で、別デバイス／別セッション
+でのプレイ、拡張が動いていなかった、フックの取りこぼし、保存失敗、サーバが
+送らなかった、は区別できない。「サーバは送ったのに取り逃した」と読んではならない。
+一方チップ照合は因果の推定を含まない直接比較なので、外部検証として成立する。
+
+派生テーブルの不在だけで欠損と断定してはならない。Raw Event Lake を必ず
+確認する。加えて次の3点を守る:
+
+- **取り込みキューの決着を待つ**。台帳の突き合わせはキューに載せない（ライブ
+  イベントを待たせるため）が、直前の `EVT_HAND_RESULTS` の書き込みが済む前に
+  照会すると、受信済みのハンドを未キャプチャに分類する。載せないことと待つ
+  ことは両立する ―― 読み手側で解決する
+- **状態復元を待ってから `playerId` を読む**。コールドスタート直後は
+  `undefined` のことがあり、その値で固定すると全ハンドが照合不能に落ちて
+  チップ不一致の検出が丸ごと失われる
+- **時間検索の空振りを非到着の証拠にしない**。`StartTime` はサーバ時刻、
+  `apiEvents.timestamp` はクライアントの `Date.now()` なので、端末時計が
+  ずれていれば生行が実在しても範囲外に落ちる。欠損と断定しかけた HandId
+  だけ、範囲を捨てた全走査で確かめる
+
+**観測開始より前のハンドは判定しない。** 新規インストール直後・実験フラグを
+初めて有効にした直後・全データ削除後は、台帳に過去3日分が載る一方でローカルに
+無いのが正常で、これを欠損に数えると初回だけで最大100件の偽陽性を永続化する。
+下限はローカル最古のハンドの時刻を使う。観測期間の**途中**の空白（拡張を一時的に
+切っていた等）は依然として欠損として報告される ―― そこは本当に区別が付かない。
+
+起動口は Service Worker のグローバルに生やした
+`pokerChaseReplayFetch()` のみ（`background/replay-fetch-bridge.ts`）。
+`chrome.runtime.sendMessage` を使わないのは、**送信元自身の `onMessage` には
+配送されない**ため ―― SWのDevToolsコンソールから叩くと
+"Could not establish connection. Receiving end does not exist." になる。
+取り込み層が入ればそちらが依頼主体になるので、このモジュールは役目を終える。
+
+開発時の使い方:
+
+```javascript
+// 1. Service WorkerのDevToolsで有効化し、ゲームタブを再読み込みする
+await chrome.storage.sync.set({ experimentalReplayImportEnabled: true })
+
+// 2. ページが通常API通信を1回すればエンベロープが捕まる。
+//    その後、Service WorkerのDevToolsコンソールで:
+await pokerChaseReplayFetch([258411144, 258411368])
+```
+
+応答は `{ success: true, results: [...] }`。各要素は
+`{ handId, ok: true, detail }` か `{ handId, ok: false, error, retryable }`。
+`detail` は sanitize 済みで、資格情報は含まれない。無効化は同じキーを
+`false` に戻す（同期設定なので他端末にも伝播する）。
+
+既定OFF、権限追加なし、ユーザー操作中のゲーム通信を起点とする設計とする。
+公開ビルドへ載せる場合は、プライバシーポリシーとデータ利用開示へこの機能を
+明記すること。

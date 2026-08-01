@@ -3,11 +3,31 @@
  * @see https://developer.chrome.com/docs/extensions/reference/manifest/web-accessible-resources?hl=ja
  * @see https://developer.mozilla.org/ja/docs/Mozilla/Add-ons/WebExtensions/manifest.json/web_accessible_resources
  */
-import { decode } from '@msgpack/msgpack'
+import { decode, encode } from '@msgpack/msgpack'
 import {
   POKER_CHASE_INVALID_API_EVENT,
   POKER_CHASE_ORIGIN
 } from './constants/runtime'
+import {
+  REPLAY_API_ORIGIN,
+  REPLAY_BRIDGE_CONFIG,
+  REPLAY_BRIDGE_FETCH,
+  REPLAY_BRIDGE_LEDGER,
+  REPLAY_BRIDGE_RESULT,
+  REPLAY_BRIDGE_STARTED,
+  REPLAY_DETAIL_URL,
+  REPLAY_FETCH_BATCH_LIMIT,
+  REPLAY_FETCH_INTERVAL_MS,
+  REPLAY_FETCH_TIMEOUT_MS,
+  REPLAY_LIST_PATH,
+  errorMessage,
+  isPositiveHandId,
+  readReplayLedger,
+  sanitizeReplayDetail,
+  type ReplayBridgeConfigMessage,
+  type ReplayFetchItemResult,
+  type ReplayFetchRequest
+} from './replay/protocol'
 /** !!! BACKGROUND、CONTENT_SCRIPTSからインポートしないこと !!! */
 
 const OriginalWebSocket = window.WebSocket
@@ -303,3 +323,349 @@ function createWebSocket(...args: ConstructorParameters<typeof WebSocket>): WebS
 }
 
 window.WebSocket = createWebSocket as unknown as typeof WebSocket
+
+interface ReplayAuthEnvelope {
+  session: string
+  platform: number
+  appVer: string
+  dataVer: string
+  masterVer: string
+}
+
+/**
+ * ページ側がfetchを差し替える前の実体。モジュール読み込み時に掴むのは、
+ * 後からゲーム側が差し替えても素の実装を使い続けるため。
+ *
+ * ただしfetchが存在しない実行環境（jsdomなど）でも読み込み自体は成功させる。
+ * このファイルの本業はWebSocketの傍受であって、replay取り込みはその上に
+ * 乗った実験機能にすぎない。モジュールスコープで例外を投げると本業ごと
+ * 巻き添えで死ぬ。
+ */
+const OriginalFetch: typeof window.fetch | undefined =
+  typeof window.fetch === 'function' ? window.fetch.bind(window) : undefined
+let replayImportEnabled = false
+let replayConfigReceived = false
+let replayAuth: ReplayAuthEnvelope | undefined
+let replayFetchQueue: Promise<void> = Promise.resolve()
+
+const requestUrl = (input: RequestInfo | URL): URL | undefined => {
+  try {
+    return new URL(input instanceof Request ? input.url : String(input), window.location.href)
+  } catch {
+    return undefined
+  }
+}
+
+const decodeBody = async (body: BodyInit | null | undefined): Promise<unknown> => {
+  if (body instanceof ArrayBuffer) return decode(new Uint8Array(body))
+  if (ArrayBuffer.isView(body)) return decode(new Uint8Array(body.buffer, body.byteOffset, body.byteLength))
+  if (body instanceof Blob) return decode(new Uint8Array(await body.arrayBuffer()))
+  return undefined
+}
+
+const decodeRequestBody = async (input: RequestInfo | URL, init?: RequestInit): Promise<unknown> => {
+  if (init?.body != null) return decodeBody(init.body)
+  if (input instanceof Request) return decode(new Uint8Array(await input.clone().arrayBuffer()))
+  return undefined
+}
+
+const readAuthEnvelope = (value: unknown): ReplayAuthEnvelope | undefined => {
+  if (typeof value !== 'object' || value === null) return undefined
+  const record = value as Record<string, unknown>
+  if (
+    typeof record.session !== 'string' ||
+    typeof record.platform !== 'number' ||
+    typeof record.appVer !== 'string' ||
+    typeof record.dataVer !== 'string' ||
+    typeof record.masterVer !== 'string'
+  ) return undefined
+  return {
+    session: record.session,
+    platform: record.platform,
+    appVer: record.appVer,
+    dataVer: record.dataVer,
+    masterVer: record.masterVer
+  }
+}
+
+/**
+ * `/replay/list` の応答から台帳を拡張側へ渡す（受動取得）。
+ *
+ * 拡張は自分でリクエストを出さない ―― ユーザーがゲーム内でリプレイ画面を
+ * 開いたときにゲーム自身が出した通信を読むだけなので、追加のHTTPは1本も
+ * 発生しない。台帳はサーバ自身が持つ「ヒーローが打ったハンド」の記録で、
+ * ローカルの`hands`と突き合わせればキャプチャ欠損を直接検出できる。
+ * エンベロープ側のフィールドも同じ応答に乗るので、そのために別の
+ * リクエストを撃つ必要がない。
+ */
+const postReplayLedger = (url: URL, decoded: unknown): void => {
+  // 設定未受信を有効扱いする上の観測ゲート（`!replayConfigReceived ||
+  // replayImportEnabled`）には**乗らない**。あちらが緩いのは、認証エンベロープ
+  // の捕獲機会が起動直後の1回しか無く、かつ捕獲した値はページのクロージャに
+  // 留まって拡張側へ渡らない（設定が届いた時点で無効なら破棄される）ため。
+  // 台帳は拡張側へ渡って永続化されるので、同じ緩さを適用すると実験フラグを
+  // 一度も有効化していないユーザーの監査が走ってしまう。
+  // 実害も無い: `/replay/list` はユーザーの手動操作で飛ぶので、起動直後の
+  // 設定未確定の窓に重なることは無い。
+  if (!replayImportEnabled) return
+  if (url.pathname !== REPLAY_LIST_PATH) return
+  const ledger = readReplayLedger(decoded)
+  if (!ledger) return
+  window.postMessage({ type: REPLAY_BRIDGE_LEDGER, ...ledger }, POKER_CHASE_ORIGIN)
+}
+
+/**
+ * `authAtRequest` はそのリクエストを出した時点のエンベロープ。応答が返る間に
+ * 無効化→再有効化で新しいエンベロープを捕獲していると、旧応答の `session` を
+ * 新しい版へ混ぜてしまう（アカウント切替を伴えば別アカウントの資格情報が
+ * 混じる）。捕獲のたびに丸ごと差し替えるので、参照の同一性で判定できる。
+ * `fetchReplayDetail` 側と同じガードを、受動傍受の経路にも置く。
+ */
+const observeApiResponse = (
+  url: URL,
+  decoded: unknown,
+  authAtRequest: ReplayAuthEnvelope | undefined
+): void => {
+  if (replayAuth !== undefined && replayAuth === authAtRequest &&
+    typeof decoded === 'object' && decoded !== null &&
+    'session' in decoded && typeof decoded.session === 'string') {
+    replayAuth = { ...authAtRequest, session: decoded.session }
+  }
+  postReplayLedger(url, decoded)
+}
+
+const readApiResponse = async (
+  url: URL,
+  response: Response,
+  authAtRequest: ReplayAuthEnvelope | undefined
+): Promise<void> => {
+  try {
+    observeApiResponse(url, decode(new Uint8Array(await response.clone().arrayBuffer())), authAtRequest)
+  } catch {
+    // Many API responses are not MessagePack. They are irrelevant here.
+  }
+}
+
+// Capture the same version/session envelope PokerChase itself supplies. The
+// envelope remains inside the page's main-world closure and is never posted to
+// the extension context or IndexedDB.
+if (OriginalFetch) {
+  window.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = requestUrl(input)
+    if (url?.origin !== REPLAY_API_ORIGIN || (replayConfigReceived && !replayImportEnabled)) {
+      return OriginalFetch(input, init)
+    }
+
+    try {
+      replayAuth = readAuthEnvelope(await decodeRequestBody(input, init)) ?? replayAuth
+    } catch {
+      // A request without a MessagePack body is unrelated to replay auth.
+    }
+    const authAtRequest = replayAuth
+    const response = await OriginalFetch(input, init)
+    readApiResponse(url, response, authAtRequest).catch(() => undefined)
+    return response
+  }) as typeof window.fetch
+}
+
+// Unity WebGL may use XMLHttpRequest rather than fetch for the same API
+// calls. Mirror the envelope observation there; requests themselves still go
+// through the original browser implementation unchanged.
+const xhrUrls = new WeakMap<XMLHttpRequest, URL>()
+const OriginalXhrOpen = XMLHttpRequest.prototype.open
+const OriginalXhrSend = XMLHttpRequest.prototype.send
+
+XMLHttpRequest.prototype.open = function (
+  method: string,
+  url: string | URL,
+  async: boolean = true,
+  username?: string | null,
+  password?: string | null
+): void {
+  try {
+    xhrUrls.set(this, new URL(String(url), window.location.href))
+  } catch {
+    xhrUrls.delete(this)
+  }
+  OriginalXhrOpen.call(this, method, String(url), async, username ?? null, password ?? null)
+}
+
+const readApiXhrResponse = async (
+  url: URL,
+  xhr: XMLHttpRequest,
+  authAtRequest: ReplayAuthEnvelope | undefined
+): Promise<void> => {
+  try {
+    const response = xhr.response
+    let decoded: unknown
+    if (response instanceof ArrayBuffer) decoded = decode(new Uint8Array(response))
+    else if (ArrayBuffer.isView(response)) decoded = decode(new Uint8Array(response.buffer, response.byteOffset, response.byteLength))
+    else if (response instanceof Blob) decoded = decode(new Uint8Array(await response.arrayBuffer()))
+    else return
+    observeApiResponse(url, decoded, authAtRequest)
+  } catch {
+    // Non-MessagePack XHR responses are unrelated to replay auth.
+  }
+}
+
+XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyInit | null): void {
+  const url = xhrUrls.get(this)
+  if (url?.origin === REPLAY_API_ORIGIN && (!replayConfigReceived || replayImportEnabled)) {
+    // このリクエスト自身のエンベロープは`send`の**後**に非同期で確定するので、
+    // `send`時点の`replayAuth`（＝前のリクエストの版）を控えると、応答時には
+    // 必ず不一致になってsessionの回転が止まる。捕獲の完了を待って、その時点の
+    // 版を控える。
+    let authAtRequest: ReplayAuthEnvelope | undefined = replayAuth
+    const captured = body instanceof Document
+      ? Promise.resolve()
+      : decodeBody(body)
+        .then(decoded => {
+          replayAuth = readAuthEnvelope(decoded) ?? replayAuth
+          authAtRequest = replayAuth
+        })
+        .catch(() => undefined)
+    this.addEventListener('loadend', () => {
+      captured
+        .then(() => readApiXhrResponse(url, this, authAtRequest))
+        .catch(() => undefined)
+    }, { once: true })
+  }
+  OriginalXhrSend.call(this, body)
+}
+
+/**
+ * REST応答エンベロープの拒否判定。
+ *
+ * このAPIは拒否も**HTTP 200**で返し、成否は本文の`result`(0=成功)と
+ * `status`(エラーコード)で表す。WebSocket側の`Code`
+ * (docs/api-events.md の 201/202) は**このAPIには存在しない**フィールドで、
+ * それを見ると拒否を常に成功として取り違える。
+ *
+ * 実測(2026-08-01): 取得できないhandIdは
+ * `{ result: 1, status: 2302, message: 'text_error_message_code_2302' }` を返し、
+ * `param`自体を持たない。成功時は`result: 0, status: 0`と`param`が揃う。
+ *
+ * `param`欠落も拒否として扱う。未知のエンベロープ形でも、中身の無い応答を
+ * 成功として保存経路へ流さないため。
+ *
+ * `retryable`は一律false。エラーコード空間が未知であり、同じエンベロープでの
+ * 再送が状況を変える根拠がまだ無い。取り込み層は`error`文字列に載る
+ * `status`を見て、コード別の扱いを後から足せる。
+ */
+const readEnvelopeRejection = (
+  decoded: unknown
+): { error: string, retryable: boolean } | undefined => {
+  if (typeof decoded !== 'object' || decoded === null) {
+    return { error: 'malformed-response', retryable: false }
+  }
+  const record = decoded as Record<string, unknown>
+  if (typeof record.result === 'number' && record.result !== 0) {
+    const status = typeof record.status === 'number' ? record.status : 'unknown'
+    return { error: `API result ${record.result} status ${status}`, retryable: false }
+  }
+  if (record.param === undefined) return { error: 'missing-param', retryable: false }
+  return undefined
+}
+
+const fetchReplayDetail = async (handId: number): Promise<ReplayFetchItemResult> => {
+  if (!OriginalFetch) return { handId, ok: false, error: 'fetch-unavailable', retryable: false }
+  const auth = replayAuth
+  if (!auth) return { handId, ok: false, error: 'auth-envelope-unavailable', retryable: true }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), REPLAY_FETCH_TIMEOUT_MS)
+  try {
+    const response = await OriginalFetch(REPLAY_DETAIL_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/msgpack' },
+      signal: controller.signal,
+      body: encode({
+        param: { HandId: handId },
+        ...auth,
+        requestKey: crypto.randomUUID()
+      })
+    })
+    const responseBytes = new Uint8Array(await response.arrayBuffer())
+    if (!response.ok) {
+      const retryable = response.status === 401 || response.status === 408 || response.status === 429 || response.status >= 500
+      return { handId, ok: false, error: `HTTP ${response.status}`, retryable }
+    }
+    const decoded = decode(responseBytes)
+    // 応答が返る間に設定が変わっていれば書き戻さない。
+    //
+    // 「消えていないこと」だけでは足りない: 無効化→再有効化で新しいエンベロープ
+    // を捕獲した後に旧リクエストが完了すると、旧応答の `session` を新しい
+    // エンベロープへ混ぜてしまう（アカウント切替を伴えば別アカウントの
+    // セッションが混じる）。エンベロープは捕獲のたびに丸ごと差し替えるので、
+    // 参照が同一かどうかで「このリクエストを出したときのまま」を判定できる。
+    if (replayAuth === auth && typeof decoded === 'object' && decoded !== null &&
+      'session' in decoded && typeof decoded.session === 'string') {
+      replayAuth = { ...auth, session: decoded.session }
+    }
+    const rejection = readEnvelopeRejection(decoded)
+    if (rejection) return { handId, ok: false, ...rejection }
+    return { handId, ok: true, detail: sanitizeReplayDetail(decoded) }
+  } catch (error) {
+    // AbortErrorは上限到達。再試行可能として返し、backoffに委ねる。
+    return { handId, ok: false, error: errorMessage(error), retryable: true }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * 間隔を空ける理由のもう一つ: 流量制限に掛かった応答を「取得不可」と
+ * 取り違えないための予防。このAPIは拒否をHTTP 200 + status で返すため、
+ * HTTP 429として現れる保証がなく、`readEnvelopeRejection` からは 2302 と
+ * 区別が付かない。間隔そのものは `protocol.ts` が持つ ―― 依頼元
+ * （`replay-fetch-bridge.ts`）のバッチ上限がこの値から導出されるため、
+ * 両者が同じ定数を見ていないと必ず先にタイムアウトする。
+ */
+const delay = (ms: number): Promise<void> =>
+  new Promise(resolve => { setTimeout(resolve, ms) })
+
+const handleReplayFetch = async (message: ReplayFetchRequest): Promise<void> => {
+  const handIds = message.handIds
+    .filter(isPositiveHandId)
+    .slice(0, REPLAY_FETCH_BATCH_LIMIT)
+  // 依頼元のタイマーを「先行バッチの待ち」から「自分のバッチの所要」へ
+  // 切り替えさせる。逐次キューで待たされていた時間を期限に含めないため。
+  window.postMessage({
+    type: REPLAY_BRIDGE_STARTED,
+    requestId: message.requestId
+  }, POKER_CHASE_ORIGIN)
+
+  const results: ReplayFetchItemResult[] = []
+  for (const handId of handIds) {
+    // 各件の前に再確認する。無効化は次の1件から効く必要があり、バッチ完了まで
+    // 最大99件を撃ち続けてはいけない。
+    if (!replayImportEnabled) break
+    // 先頭は待たない。1件だけの取得は従来どおり即座に走る。
+    if (results.length > 0) await delay(REPLAY_FETCH_INTERVAL_MS)
+    results.push(await fetchReplayDetail(handId))
+  }
+  window.postMessage({
+    type: REPLAY_BRIDGE_RESULT,
+    requestId: message.requestId,
+    results
+  }, POKER_CHASE_ORIGIN)
+}
+
+window.addEventListener('message', (event: MessageEvent<unknown>) => {
+  if (event.source !== window || event.origin !== POKER_CHASE_ORIGIN ||
+    typeof event.data !== 'object' || event.data === null || !('type' in event.data)) return
+
+  if (event.data.type === REPLAY_BRIDGE_CONFIG) {
+    const message = event.data as ReplayBridgeConfigMessage
+    replayConfigReceived = true
+    replayImportEnabled = message.enabled === true
+    if (!replayImportEnabled) replayAuth = undefined
+    return
+  }
+  if (event.data.type !== REPLAY_BRIDGE_FETCH || !replayImportEnabled) return
+  const message = event.data as Partial<ReplayFetchRequest>
+  if (typeof message.requestId !== 'string' || !Array.isArray(message.handIds)) return
+  replayFetchQueue = replayFetchQueue
+    .then(() => handleReplayFetch(message as ReplayFetchRequest))
+    .catch(error => console.warn('[experimental-replay] Replay fetch batch failed:', error))
+})
