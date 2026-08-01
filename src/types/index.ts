@@ -67,6 +67,7 @@ export type {
   Action,
   ImportMeta,
   MetaRecord,
+  ReplayDetailRecord,
   ImportMetaRecord,
   StatisticsCacheRecord,
   SyncStatusRecord,

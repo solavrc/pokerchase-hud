@@ -28,6 +28,27 @@ export enum ApiType {
   EVT_SESSION_RESULTS = 309,
   /** プレイヤー着席: { "ApiTypeId": 313, "ProcessType": 0, "TableUsers": [{ "UserId": 583654032, "UserName": "シュレディンガー", "FavoriteCharaId": "nj_chara0002", "CostumeId": "nj_costume00022", "EmblemId": "emblem0003", "Rank": { "RankId": "legend", "RankName": "レジェンド", "RankLvId": "legend", "RankLvName": "レジェンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0001", "fn_ta_deco0007", "fn_t_deco0005", "b_deco0001", "f_deco0001", "eal_deco0002", "esw_deco0007"] }, { "UserId": 561384657, "UserName": "sola", "FavoriteCharaId": "chara0010", "CostumeId": "costume00101", "EmblemId": "emblem0001", "Rank": { "RankId": "diamond", "RankName": "ダイヤモンド", "RankLvId": "diamond", "RankLvName": "ダイヤモンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0001", "ta_deco0001", "t_deco0009", "b_deco0001", "f_deco0001", "eal_deco0001", "esw_deco0001"] }, { "UserId": 750532695, "UserName": "ちいまう", "FavoriteCharaId": "chara0022", "CostumeId": "costume00221", "EmblemId": "emblem0001", "Rank": { "RankId": "legend", "RankName": "レジェンド", "RankLvId": "legend", "RankLvName": "レジェンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0014", "ta_deco0001", "t_deco0012", "b_deco0001", "f_deco0001", "eal_deco0001", "esw_deco0006"] }, { "UserId": 172432670, "UserName": "ラロムジ", "FavoriteCharaId": "chara0001", "CostumeId": "costume00012", "EmblemId": "emblem0001", "Rank": { "RankId": "legend", "RankName": "レジェンド", "RankLvId": "legend", "RankLvName": "レジェンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0001", "ta_deco0001", "t_deco0001", "b_deco0001", "f_deco0001", "eal_deco0001", "esw_deco0001"] }, { "UserId": 575402650, "UserName": "夜菊0721", "FavoriteCharaId": "chara0021", "CostumeId": "costume00212", "EmblemId": "emblem0001", "Rank": { "RankId": "legend", "RankName": "レジェンド", "RankLvId": "legend", "RankLvName": "レジェンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0069", "ta_deco0055", "t_deco0069", "bg_deco0006", "f_deco0001", "eal_deco0007", "esw_deco0001"] }, { "UserId": 619317634, "UserName": "ぽちこん", "FavoriteCharaId": "chara0009", "CostumeId": "costume00092", "EmblemId": "emblem0001", "Rank": { "RankId": "legend", "RankName": "レジェンド", "RankLvId": "legend", "RankLvName": "レジェンド" }, "IsOfficial": false, "IsCpu": false, "SettingDecoIds": ["k_deco0062", "ta_deco0018", "t_deco0058", "b_deco0001", "f_deco0001", "eal_deco0002", "esw_deco0001"] }], "SeatUserIds": [583654032, 619317634, 561384657, 575402650, 750532695, 172432670] } */
   EVT_PLAYER_SEAT_ASSIGNED = 313,
+  /**
+   * リプレイ詳細（合成イベント、WebSocket由来ではない）:
+   * `{ "ApiTypeId": 90001, "timestamp": 1785555471000, "HandId": 533933335,
+   *    "payload": { ...decoded /replay/detail param... },
+   *    "fetchedAt": 1785555471000,
+   *    "clientMeta": { "appVer": "2.06", "dataVer": "...", "masterVer": "..." } }`
+   *
+   * PokerChase が実際に送ってくる ApiTypeId ではなく、**この拡張が
+   * `/replay/detail` の応答から組み立てる**行。90000番台を使うのは、サーバが
+   * 使う 200/300/1200/1300 番台と衝突しない私用領域だから。
+   *
+   * Raw Event Lake（`apiEvents`）へアプリケーションイベントとして載せることで、
+   * NDJSONのエクスポート／インポート、Firestoreの増分同期、その先のBQ取り込みが
+   * **無改修で**この行を運ぶ。一方で対局イベントではないので、
+   * `EntityConverter` / `WriteEntityStream` / 統計 / `verify-stats` からは
+   * 見えない（いずれも既知の対局ApiTypeIdだけを分岐するため、90001は
+   * どのcaseにも該当せず素通りする）。この不可視性はテストで固定してある。
+   *
+   * `session`（回転する資格情報）と `requestKey` は保存も輸出もしない（MUST NOT）。
+   */
+  REPLAY_HAND_DETAIL = 90001,
 }
 
 // ===============================
@@ -741,6 +762,25 @@ export const apiEventSchemas = {
     ApiTypeId: z.literal(1305),
     FriendId: z.int().nonnegative().describe('通知対象のフレンドID'),
   }).describe('フレンド: メッセージ受信（暫定分類。2026-07実ログ3件はいずれもFriendIdのみ）'),
+
+  [ApiType.REPLAY_HAND_DETAIL]: baseSchema.extend({
+    ApiTypeId: z.literal(ApiType.REPLAY_HAND_DETAIL),
+    HandId: z.int().positive().describe('リプレイ詳細のハンドID。`replayDetails`テーブルの主キーと同じ値で、これが冪等キー'),
+    /**
+     * `/replay/detail` 応答の `param` をそのまま。運営コンテンツにつき
+     * メタルール適用: 中身のキー・件数・値域は一切固定しない（サーバ側の
+     * コンテンツ追加で形が変わっても、行を弾いて保存経路から落とすことは
+     * あってはならない）。
+     */
+    payload: z.record(z.string(), z.unknown()).describe('リプレイ詳細本体（デコード済み生値）。運営コンテンツのためメタルール適用: 内部構造は検証しない'),
+    fetchedAt: z.int().nonnegative().describe('取得時刻（Unix Milliseconds）'),
+    clientMeta: z.object({
+      appVer: z.string(),
+      dataVer: z.string(),
+      masterVer: z.string(),
+    }).partial().passthrough().optional()
+      .describe('取得時のクライアント版数。`session`/`requestKey`（資格情報）はここに含めてはならない（MUST NOT）'),
+  }).describe('リプレイ詳細（合成イベント）。ApiType.REPLAY_HAND_DETAILのコメント参照'),
 }
 
 /** ApiEvent検証用schema: 全ApiTypeを含める */
@@ -786,6 +826,7 @@ export const ApiEventSchema = z.discriminatedUnion("ApiTypeId", [
   apiEventSchemas[1303],
   apiEventSchemas[1304],
   apiEventSchemas[1305],
+  apiEventSchemas[ApiType.REPLAY_HAND_DETAIL],
 ])
 
 // ===============================

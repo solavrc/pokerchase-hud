@@ -76,6 +76,8 @@
     ├── background/            # Service worker modules
     │   ├── auto-sync-boot.ts        # Auth-ready auto-sync initialization (init race guard)
     │   ├── AGENTS.md                # Nested review rules (SW concurrency invariants)
+    │   ├── replay-import.ts         # Opt-in replay import: HandId queue (meta), session-end
+    │   │                            #   drain, expiry accounting, synthetic 90001 Lake rows
     │   ├── event-ingestion.ts       # Raw Event Lake ingestion: serialized queue, durability
     │   │                            #   barrier, content dedup + sequence assignment,
     │   │                            #   session-activity transitions (201/303/308 → 309/203)
@@ -135,7 +137,12 @@
     │   └── release-info.ts    # Fixed GitHub Releases URL + unread storage key
     │
     ├── db/
-    │   └── poker-chase-db.ts  # Dexie database definition (v6 schema: sequence-key Lake)
+    │   └── poker-chase-db.ts  # Dexie database definition (v7 schema: sequence-key Lake + replayDetails)
+    │
+    ├── replay/                # Replay API shared code (page world + service worker)
+    │   ├── protocol.ts        # Message/constant contract, ledger reader, credential stripping
+    │   ├── window.ts          # Calendar-day fetch window (today - 3 days, 00:00 JST)
+    │   └── hole-cards.ts      # Mucked-showdown hole cards read out of a stored replay detail
     │
     ├── services/
     │   ├── AGENTS.md                   # Nested review rules (sync cursor / auth-generation invariants)

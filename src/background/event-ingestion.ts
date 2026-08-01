@@ -20,6 +20,12 @@ import { getOperationGeneration, getOperationState } from './operation-state'
 import { handleReplayPortMessage, releaseReplayRequestsForPort } from './replay-fetch-bridge'
 import { handleReplayLedgerPortMessage, type ReplayLedgerAuditDeps } from './replay-ledger-audit'
 import {
+  drainReplayImportQueue,
+  enqueueReplayHandId,
+  readReplayImportEnabled,
+  type ReplayImportDeps
+} from './replay-import'
+import {
   captureHandledException,
   captureSchemaValidationFailure
 } from '../observability/sentry'
@@ -87,6 +93,20 @@ export const createReplayLedgerAuditDeps = (service: PokerChaseService): ReplayL
 })
 
 /**
+ * リプレイ取り込み層の依存。積む側（`EVT_HAND_RESULTS`）と流す側
+ * （セッション終了・ポート接続）が同じ判定条件で動くよう一箇所にまとめる。
+ */
+export const createReplayImportDeps = (service: PokerChaseService): ReplayImportDeps => ({
+  db: service.db,
+  isEnabled: readReplayImportEnabled,
+  now: () => Date.now(),
+  // インポート/再構築/エクスポートの最中は取得しない。診断ではなく保存を
+  // 伴うので、長時間操作と同じ`apiEvents`へ書き込むのを避ける。
+  isBusy: () => getOperationState().type !== 'idle',
+  getPlayerId: () => service.playerId
+})
+
+/**
  * `chrome.runtime.onConnect`のハンドラーを登録する。
  * content_scriptからのポート接続を受け取り、APIイベントの検証・DB保存・
  * 各ストリームへの書き込み・自動同期トリガーを行う。
@@ -149,6 +169,14 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   chrome.runtime.onConnect.addListener(port => {
     if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
       connectedPorts.add(port)
+      // 持ち越し分の再開点。セッション終了時に認証エンベロープを捕獲できて
+      // いないと取得は繰り延べられる（キューには残る）。エンベロープは
+      // ページ再読み込み後のホーム到達で捕まるので、そのページが繋いできた
+      // この瞬間が次の機会になる。**セッション外であること**の判定は
+      // `drainReplayImportQueue` 側の不変条件が担うので、ここでは
+      // 呼ぶだけでよい（セッション中なら何も起きない）。
+      drainReplayImportQueue(createReplayImportDeps(service))
+        .catch(err => console.error('[background] Replay import drain on connect failed:', err))
       port.onMessage.addListener((message: ApiMessage | { type: string }) => {
         // キープアライブメッセージの処理（キュー直列化の対象外 -- 何も
         // 保存・処理しないため、耐久性バリアの対象になる副作用が無い）
@@ -356,6 +384,23 @@ const processEvent = async (
   // 詳細は`applySessionActivity`のコメント参照。
   applySessionActivity(rawApiTypeId, message)
 
+  // リプレイ取り込み層（既定OFF）。**セッション中は取得しない**（MUST）ので、
+  // ここでやるのは HandId をキューへ積むことだけ。取得はセッション終了の
+  // トリガーから走る（`replay-import.ts`）。
+  //
+  // 生メッセージの数値ApiTypeIdと生の`Player`だけを見る（上のセッション状態
+  // 追跡と同じraw-firstパターン）。`Player`の有無がヒーローの配札有無で、
+  // 観戦モードでは undefined になる（docs/api-events.md）。Zod検証の成否に
+  // 依存させない ―― 検証はパイプライン投入の可否だけを決める。
+  if (rawApiTypeId === ApiType.EVT_HAND_RESULTS &&
+    (message as { Player?: unknown }).Player !== undefined) {
+    enqueueReplayHandId(
+      createReplayImportDeps(service),
+      (message as { HandId?: unknown }).HandId,
+      Date.now()
+    ).catch(err => console.error('[background] Replay import enqueue failed:', err))
+  }
+
   if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
     // #179 round3指摘: セッション終了(EVT_SESSION_RESULTS)によるHUDクリアは
     // App.tsx側のReact stateだけで完結しており、background(ports.ts)の
@@ -459,6 +504,12 @@ const processEvent = async (
           console.error('[background] Pending update recheck on session end failed:', err)
         )
       })
+    // リプレイ取り込み（既定OFF）。**ここが取得の起点**であり、セッション中に
+    // 積んだHandIdをここで初めて取りに行く。`applySessionActivity()`が既に
+    // INACTIVEへ倒した後なので、`drainReplayImportQueue`の不変条件判定を
+    // 通過する。auto-syncと同じくfire-and-forget（取り込みキューを塞がない）。
+    drainReplayImportQueue(createReplayImportDeps(service))
+      .catch(err => console.error('[background] Replay import drain failed:', err))
   } else if (rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID) {
     // 参加取消申込(203)も保留中アップデートの安全性再チェック地点の1つに
     // 加える（P2, codexレビュー指摘 2026-07-21, pass-4, "Recheck updates
@@ -473,6 +524,9 @@ const processEvent = async (
     recheckPendingUpdate().catch(err =>
       console.error('[background] Pending update recheck on entry cancellation failed:', err)
     )
+    // 203もINACTIVE化トリガーなので、持ち越し分があればここでも流す。
+    drainReplayImportQueue(createReplayImportDeps(service))
+      .catch(err => console.error('[background] Replay import drain failed:', err))
   } else if (
     (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED && !isExplicitEntryFailure(message)) ||
     rawApiTypeId === ApiType.EVT_SESSION_DETAILS

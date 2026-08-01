@@ -8,9 +8,9 @@ const NOW = 1_700_000_000_000
 const buildResult = (overrides: Partial<RecentHandsResult> = {}): RecentHandsResult => ({
   computedAt: NOW,
   hands: [
-    { handId: 3, approxTimestamp: NOW - 3 * 60_000, position: Position.BTN, holeCards: ['As', 'Ah'], preflopLine: 'Open', sawFlop: true, wentToShowdown: true, won: true, netChips: 1240 },
-    { handId: 2, approxTimestamp: NOW - 2 * 3600_000, position: Position.BB, holeCards: null, preflopLine: 'Check', sawFlop: true, wentToShowdown: false, won: false, netChips: -640 },
-    { handId: 1, approxTimestamp: NOW - 26 * 3600_000, position: null, holeCards: null, preflopLine: 'Fold', sawFlop: false, wentToShowdown: false, won: false, netChips: 0 },
+    { handId: 3, approxTimestamp: NOW - 3 * 60_000, position: Position.BTN, holeCards: ['As', 'Ah'], holeCardsSource: 'results', preflopLine: 'Open', sawFlop: true, wentToShowdown: true, won: true, netChips: 1240 },
+    { handId: 2, approxTimestamp: NOW - 2 * 3600_000, position: Position.BB, holeCards: null, holeCardsSource: null, preflopLine: 'Check', sawFlop: true, wentToShowdown: false, won: false, netChips: -640 },
+    { handId: 1, approxTimestamp: NOW - 26 * 3600_000, position: null, holeCards: null, holeCardsSource: null, preflopLine: 'Fold', sawFlop: false, wentToShowdown: false, won: false, netChips: 0 },
   ],
   ...overrides,
 })
@@ -232,7 +232,7 @@ describe('RecentHandsPanel', () => {
       // 2回目の応答は1回目と区別できるよう新しいハンドを1件追加する
       // （新しいハンドが完了して初めて反映されるべきデータ）
       const result = callCount === 2
-        ? buildResult({ hands: [{ handId: 4, approxTimestamp: NOW, position: Position.CO, holeCards: null, preflopLine: 'Open', sawFlop: false, wentToShowdown: false, won: false, netChips: null }, ...buildResult().hands] })
+        ? buildResult({ hands: [{ handId: 4, approxTimestamp: NOW, position: Position.CO, holeCards: null, holeCardsSource: null, preflopLine: 'Open', sawFlop: false, wentToShowdown: false, won: false, netChips: null }, ...buildResult().hands] })
         : buildResult()
       callback({ success: true, recentHands: result })
     })

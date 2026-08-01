@@ -28,6 +28,9 @@ import type { PokerChaseDB } from '../db/poker-chase-db'
 import type PokerChaseService from './poker-chase-service'
 import { matchesTableSizeFilter } from '../utils/table-size'
 import { formatCardsArray } from '../utils/card-utils'
+import { readReplayHoleCards } from '../replay/hole-cards'
+import { readReplayImportEnabled } from '../background/replay-import'
+import { EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY } from '../replay/protocol'
 import { compareHandsNewestFirst } from '../utils/hand-order'
 
 /** デフォルトの取得件数（「直近10ハンド」）。 */
@@ -80,6 +83,22 @@ function subscribeToHandCompletion(service: PokerChaseService): void {
  * behaviorally in tests and is instead pinned down against this function directly. */
 export const buildRecentHandsCacheKey = (playerId: number, service: PokerChaseService, limit: number): string =>
   `${playerId}_${service.battleTypeFilter?.join(',') ?? 'all'}_${service.tableSizeFilter?.join(',') ?? 'all'}_${limit}`
+
+/**
+ * リプレイ取り込みのオプトインが切り替わったらキャッシュを捨てる。
+ *
+ * キャッシュキーにフラグを含めない代わりの措置。含めると、キーを組む前に
+ * 非同期のstorage読み取りが要る（キャッシュヒットの経路が遅くなる）。
+ * 切り替えは稀なので、変更通知で丸ごと捨てるほうが素直。
+ *
+ * これが無いと、ONの結果をキャッシュした直後にOFFへ切り替えても最大30秒は
+ * リプレイ由来のカードが返り続け、逆にONへ切り替えても古いnullが残る。
+ */
+chrome.storage?.onChanged?.addListener((changes, areaName) => {
+  if (areaName !== 'sync') return
+  if (!(EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY in changes)) return
+  clearRecentHandsCache()
+})
 
 /**
  * あるアクションの`phasePrevBetCount`をローカルに再計算する。
@@ -276,10 +295,20 @@ export async function getRecentHands(
   // （高々limit件）に対する1回のバッチクエリで、全プレイヤー分を取得する
   // （phasePrevBetCountの再計算・sawFlop判定に他プレイヤーの行が必要なため、
   // playerId絞り込みはしない。N+1は発生しない）。
-  const [allActions, allPhases] = await Promise.all([
+  const [allActions, allPhases, replayDetails] = await Promise.all([
     db.actions.where('handId').anyOf(handIds).toArray(),
     db.phases.where('handId').anyOf(handIds).toArray(),
+    // マック行の穴埋め用（オプトイン時のみ）。主キー1回のbulkGetで、
+    // 対象ハンド分だけを引く（N+1は発生しない）。
+    readReplayImportEnabled()
+      .then(enabled => enabled ? db.replayDetails.bulkGet(handIds) : [])
+      .catch(() => []),
   ])
+
+  const replayPayloadByHandId = new Map<number, Record<string, unknown>>()
+  replayDetails.forEach(record => {
+    if (record) replayPayloadByHandId.set(record.handId, record.payload)
+  })
 
   const actionsByHandId = new Map<number, Action[]>()
   for (const action of allActions) {
@@ -302,11 +331,22 @@ export async function getRecentHands(
     const wentToShowdown = result ? isShowdownParticipant(result) : false
     const { won, netChips } = deriveWonAndNetChips(hand, playerId)
 
+    const holeCardsFromResults = deriveHoleCards(result)
+    // マックしたショーダウン行（RankType 11、HoleCardsが空）だけを埋める。
+    // フォールドした相手の手札は対象外 ―― サーバがリプレイで開示するのは
+    // ショーダウンに到達した手であり、ここで表示するのもそれだけ。
+    const holeCardsFromReplay = holeCardsFromResults === null && wentToShowdown
+      ? readReplayHoleCards(replayPayloadByHandId.get(hand.id), playerId)
+      : null
+
     return {
       handId: hand.id,
       approxTimestamp: hand.approxTimestamp ?? null,
       position: resolvePosition(hand, playerId, actionsByHandId),
-      holeCards: deriveHoleCards(result),
+      holeCards: holeCardsFromResults ?? holeCardsFromReplay,
+      holeCardsSource: holeCardsFromResults !== null
+        ? 'results'
+        : holeCardsFromReplay !== null ? 'replay' : null,
       preflopLine: derivePreflopLine(hand, playerId, actionsByHandId),
       sawFlop: deriveSawFlop(hand.id, playerId, phasesByHandId, wentToShowdown),
       wentToShowdown,
