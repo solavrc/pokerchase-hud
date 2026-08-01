@@ -21,6 +21,25 @@ import type { AllPlayersRealTimeStats } from './realtime-stats/realtime-stats-se
 import { setPendingStats } from './utils/pending-stats-cache'
 import { RuntimePortManager } from './utils/runtime-port-manager'
 import { captureHandledException, initSentry } from './observability/sentry'
+import {
+  EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY,
+  REPLAY_BRIDGE_CONFIG,
+  REPLAY_BRIDGE_FETCH,
+  REPLAY_BRIDGE_LEDGER,
+  REPLAY_BRIDGE_RESULT,
+  REPLAY_BRIDGE_STARTED,
+  REPLAY_FETCH_BATCH_LIMIT,
+  REPLAY_LEDGER_MAX_ENTRIES,
+  REPLAY_PORT_FETCH,
+  REPLAY_PORT_LEDGER,
+  REPLAY_PORT_RESULT,
+  REPLAY_PORT_STARTED,
+  isPositiveHandId,
+  type ReplayFetchRequest,
+  type ReplayFetchResult,
+  type ReplayFetchStarted,
+  type ReplayLedgerMessage
+} from './replay/protocol'
 /** !!! BACKGROUND、WEB_ACCESSIBLE_RESOURCES からインポートしないこと !!! */
 
 initSentry('content_script')
@@ -32,6 +51,59 @@ const KEEPALIVE_INTERVAL_MS = 25000 // 25秒（30秒タイムアウトより少�
 // ゲーム状態の管理
 let isGameActive = false
 let keepaliveTimer: ReturnType<typeof setInterval> | null = null
+let replayBridgeReady = false
+let replayImportEnabled = false
+/**
+ * 設定を実際に読めたか。**未読のまま `enabled: false` を送ってはならない**
+ * （MUST NOT）。main world 側は設定の到達をもって「観測ゲートを閉じてよい」と
+ * 判断するので（`replayConfigReceived`）、まだ読めていないだけの初期値 false を
+ * 送ると、保存値が true でも認証エンベロープの捕獲がそこで止まる。ホーム画面の
+ * 通信を取り逃すと、対局中はHTTPが発生しないためページ再読み込みまで
+ * `auth-envelope-unavailable` が続く。
+ */
+let replayConfigLoaded = false
+const pendingReplayRequests: ReplayFetchRequest[] = []
+
+const postReplayConfig = () => {
+  if (!replayBridgeReady || !replayConfigLoaded) return
+  window.postMessage({ type: REPLAY_BRIDGE_CONFIG, enabled: replayImportEnabled }, POKER_CHASE_ORIGIN)
+}
+
+const postReplayRequest = (message: ReplayFetchRequest) => {
+  if (!replayBridgeReady || !replayImportEnabled) {
+    pendingReplayRequests.push(message)
+    return
+  }
+  window.postMessage({ ...message, type: REPLAY_BRIDGE_FETCH }, POKER_CHASE_ORIGIN)
+}
+
+const flushPendingReplayRequests = () => {
+  if (!replayBridgeReady || !replayImportEnabled) return
+  for (const message of pendingReplayRequests.splice(0)) postReplayRequest(message)
+}
+
+// storage.local ではなく storage.sync に置く。localは
+// firebase-auth-service が起動時に setAccessLevel('TRUSTED_CONTEXTS') で
+// content script から遮断しており（#274、e2e/scenarios/auth-storage-access.ts
+// が実ブラウザでassert済み）、ここからの get は必ず reject される。
+// onChanged も同じゲートで untrusted context には配送されない。
+chrome.storage.sync.get(EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY).then(stored => {
+  replayImportEnabled = stored[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY] === true
+  replayConfigLoaded = true
+  postReplayConfig()
+  flushPendingReplayRequests()
+}).catch(() => undefined)
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  const change = changes[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY]
+  if (areaName !== 'sync' || !change) return
+  replayImportEnabled = change.newValue === true
+  // 変更通知が届いた時点で値は確定している（初回読み取りが未完了でも）。
+  replayConfigLoaded = true
+  postReplayConfig()
+  if (replayImportEnabled) flushPendingReplayRequests()
+  else pendingReplayRequests.splice(0)
+})
 
 export interface StatsData {
   stats: PlayerStats[]
@@ -83,6 +155,15 @@ const portManager = new RuntimePortManager({
   },
   onDisconnected: stopKeepalive,
   onMessage: message => {
+    if (typeof message === 'object' && message !== null &&
+      'type' in message && message.type === REPLAY_PORT_FETCH) {
+      const request = message as Partial<ReplayFetchRequest>
+      if (typeof request.requestId === 'string' && Array.isArray(request.handIds) &&
+        request.handIds.length <= REPLAY_FETCH_BATCH_LIMIT && request.handIds.every(isPositiveHandId)) {
+        postReplayRequest(request as ReplayFetchRequest)
+      }
+      return
+    }
     if (typeof message === 'object' && message !== null && 'stats' in message) {
       const statsMessage = message as {
         stats: PlayerStats[]
@@ -110,9 +191,11 @@ portManager.connect()
 
 // window.postMessageはさまざまなソースからのメッセージを受信する可能性がある
 window.addEventListener('message', (event: MessageEvent<unknown>) => {
-  // Page-world bridge and the game share this origin. This is the same trust
-  // boundary as the existing flat numeric-ID event path; the envelope only
-  // distinguishes an intercepted decoded payload whose ApiTypeId is invalid.
+  // ページ側ブリッジとゲーム本体は同一オリジンを共有する。ここは既存の
+  // 素の数値ID経路と**同じ信頼境界**であり、この封筒が区別するのは
+  // 「ApiTypeIdが不正な傍受済みデコード済みペイロード」だけである。
+  // したがって、送信元・オリジン・型のいずれかが合わないメッセージは
+  // 必ず捨てなければならない（MUST）。
   if (
     event.source !== window ||
     event.origin !== POKER_CHASE_ORIGIN ||
@@ -135,6 +218,36 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   ) {
     if (!portManager.send(event.data.payload)) {
       stopKeepalive()
+    }
+    return
+  }
+
+  // 資格情報（`session` / `requestKey`）は main world 側のブリッジが
+  // `sanitizeReplayDetail` で落としており、この境界を越えてはならない
+  // （MUST NOT）。
+  if ('type' in event.data && event.data.type === REPLAY_BRIDGE_STARTED) {
+    const started = event.data as Partial<ReplayFetchStarted>
+    if (typeof started.requestId === 'string') {
+      portManager.send({ type: REPLAY_PORT_STARTED, requestId: started.requestId })
+    }
+    return
+  }
+
+  if ('type' in event.data && event.data.type === REPLAY_BRIDGE_RESULT) {
+    const result = event.data as Partial<ReplayFetchResult>
+    if (typeof result.requestId === 'string' && Array.isArray(result.results) &&
+      result.results.length <= REPLAY_FETCH_BATCH_LIMIT) {
+      portManager.send({ ...result, type: REPLAY_PORT_RESULT })
+    }
+    return
+  }
+
+  // 受動取得した台帳（`/replay/list`）。拡張はリクエストを出しておらず、
+  // ゲーム自身の通信を読んだだけ。
+  if ('type' in event.data && event.data.type === REPLAY_BRIDGE_LEDGER) {
+    const ledger = event.data as Partial<ReplayLedgerMessage>
+    if (Array.isArray(ledger.hands) && ledger.hands.length <= REPLAY_LEDGER_MAX_ENTRIES) {
+      portManager.send({ ...ledger, type: REPLAY_PORT_LEDGER })
     }
     return
   }
@@ -427,6 +540,11 @@ const injectWebSocketHook = () => {
   const script = document.createElement('script')
   script.type = 'text/javascript'
   script.src = chrome.runtime.getURL(firstResource.resources[0])
+  script.addEventListener('load', () => {
+    replayBridgeReady = true
+    postReplayConfig()
+    flushPendingReplayRequests()
+  })
   document.body?.appendChild(script)
 }
 injectWebSocketHook()

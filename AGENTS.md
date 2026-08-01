@@ -81,7 +81,8 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   `docs/api-event-examples.md` (its bulk is ASCII JSON payloads, but the prose
   is Japanese), `docs/architecture.md`, `docs/hand-analysis.md`,
   `docs/pokerstars-export.md`, `docs/firebase-setup.md`,
-  `docs/battle-type-coverage-audit.md`, `docs/chrome-web-store-release.md`.
+  `docs/battle-type-coverage-audit.md`, `docs/chrome-web-store-release.md`,
+  `docs/replay-api.md`.
   A file whose current language does not match its category above (e.g.
   `PRIVACY.md`: user-facing but English today) keeps its current language until
   it is deliberately rewritten as a whole — do not mix languages within one

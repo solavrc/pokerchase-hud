@@ -14,9 +14,11 @@ import {
   INVALID_API_TYPE_ID_BUCKET,
   recordUndecodedEvent
 } from './undecoded-event-tracker'
-import { markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
+import { awaitIngestionDrain, markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
-import { getOperationState } from './operation-state'
+import { getOperationGeneration, getOperationState } from './operation-state'
+import { handleReplayPortMessage, releaseReplayRequestsForPort } from './replay-fetch-bridge'
+import { handleReplayLedgerPortMessage, type ReplayLedgerAuditDeps } from './replay-ledger-audit'
 import {
   captureHandledException,
   captureSchemaValidationFailure
@@ -49,6 +51,40 @@ const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
  * （`registerEventIngestion()`のコメント参照）。
  */
 let ingestionQueue: Promise<void> = Promise.resolve()
+
+/**
+ * 台帳突き合わせの依存。ポート受信時と、Service Worker起動時の再開
+ * （`resumePendingReplayLedgerAudits`）が**同じ待機条件**で走る必要があるので
+ * 一箇所にまとめる。
+ */
+export const createReplayLedgerAuditDeps = (service: PokerChaseService): ReplayLedgerAuditDeps => ({
+  db: service.db,
+  // 取り込みキューには載せないが、決着は待つ。直前のEVT_HAND_RESULTSの書き込みが
+  // 済む前に照会すると、受信済みのハンドを未キャプチャに分類しうる。
+  // 起動直後は状態復元も待つ（playerIdがundefinedのままだと全ハンドが
+  // 照合不能に落ちる）。
+  waitUntilConsistent: async () => {
+    await service.ready
+    // 取り込みキューの決着だけでは足りない。`processEvent` は
+    // `handAggregateStream.write()` で下流を起動するだけで、
+    // `WriteEntityStream` が `hands` を書き終えるまでは待たない。
+    // rawだけが在る瞬間に照会すると、正常に生成中のハンドを
+    // 「派生欠落」として永続化する。`whenIdle()` は下流へ連鎖する。
+    await awaitIngestionDrain()
+    await service.handAggregateStream.whenIdle()
+  },
+  // インポート/再構築/エクスポートの最中は監査しない。インポートは生行を
+  // 先にコミットして派生を後から作るので、その途中で照会すると正常に
+  // 処理中のハンドが「派生欠落」として永続化される。ライブ取り込みの
+  // ドレインではインポート側を待てない。診断なので延期ではなく見送りで
+  // 足りる（次にリプレイ一覧を開けば走る）。
+  isBusy: () => getOperationState().type !== 'idle',
+  // 読み始めと書き戻しの間に長時間操作が走り切った場合を検出するための世代。
+  // 渡し忘れると比較が常に`undefined`同士になり、この保護が無効化される。
+  getOperationGeneration,
+  getPlayerId: () => service.playerId,
+  now: () => Date.now()
+})
 
 /**
  * `chrome.runtime.onConnect`のハンドラーを登録する。
@@ -130,6 +166,18 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           return Promise.resolve()
         }
 
+        // 実験的リプレイ取得の応答。何も保存しないので取り込みキューには
+        // 載せない（載せるとライブイベントを待たせるだけになる）。
+        if (handleReplayPortMessage(message, port)) {
+          return Promise.resolve()
+        }
+
+        // 受動取得した台帳（`/replay/list`）の突き合わせ。`apiEvents`へは
+        // 書かないので、同じ理由で取り込みキューには載せない。
+        if (handleReplayLedgerPortMessage(message, createReplayLedgerAuditDeps(service))) {
+          return Promise.resolve()
+        }
+
         // このイベントの処理を、直前のイベントの処理（add()の決着含む）の
         // 後ろに連結する。`processEvent`は内部で全エラーを捕捉して素通し
         // させない設計だが、想定外のバグでqueueが壊れて以降のイベントが
@@ -150,6 +198,8 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // Keep lastKnownStats for page reloads - only clear interval
         stopPing()
         connectedPorts.delete(port)
+        // 応答が返らないまま切れた依頼を解放する（待ち続けさせない）
+        releaseReplayRequestsForPort(port)
       })
     }
   })
