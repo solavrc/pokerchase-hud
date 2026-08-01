@@ -118,7 +118,7 @@ export interface ReplayLedgerEntry {
 
 export interface ReplayLedger {
   battleType: number
-  /** 手札公開パスの期限（Unix秒）。`0`は未購入。 */
+  /** サーバが返す期限値（Unix秒）。 */
   cardOpenEndDate: number
   isExpiredCardOpen: boolean
   hands: ReplayLedgerEntry[]
@@ -137,7 +137,7 @@ export interface ReplayLedgerMessage extends ReplayLedger {
  * 未知のフィールドが拡張側へ渡ること自体が構造的に起こらない。
  *
  * 空の`HandList`は正常（窓の中に1ハンドも無いだけ）なので、`hands`が空でも
- * 台帳としては有効に返す。課金状態の観測はハンドの有無に依存しない。
+ * 台帳としては有効に返す。エンベロープ側のフィールドはハンドの有無に依存しない。
  */
 export const readReplayLedger = (decoded: unknown): ReplayLedger | undefined => {
   if (!isPlainRecord(decoded)) return undefined

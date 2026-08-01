@@ -395,7 +395,7 @@ const readAuthEnvelope = (value: unknown): ReplayAuthEnvelope | undefined => {
  * 開いたときにゲーム自身が出した通信を読むだけなので、追加のHTTPは1本も
  * 発生しない。台帳はサーバ自身が持つ「ヒーローが打ったハンド」の記録で、
  * ローカルの`hands`と突き合わせればキャプチャ欠損を直接検出できる。
- * `CardOpenEndDate`も同じ応答に乗るので、課金状態の確認に別の
+ * エンベロープ側のフィールドも同じ応答に乗るので、そのために別の
  * リクエストを撃つ必要がない。
  */
 const postReplayLedger = (url: URL, decoded: unknown): void => {

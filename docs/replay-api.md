@@ -122,13 +122,15 @@ detail の窓は暦日ルールだけ。
 お気に入り登録したハンドは一覧に永続的に残る（登録上限100件）。detail が
 同様に暦日ルールを免除されるかは未検証。
 
-## 未課金アカウントでのフィルタ
+## `HoleCardList` の返却範囲
 
-サーバ側で適切にフィルタされている。ショーダウンに到達したプレイヤーの
-`HoleCardList` だけが返り、途中でフォールドした相手は空配列。
+サーバはショーダウンに到達したプレイヤーの `HoleCardList` だけを返す。
+途中でフォールドした相手は空配列。
 
-これは **HUDがWebSocketから既に得ている情報と同じ**（`Hand.results` の
-`HoleCards`）。未課金では、手札に関するリプレイ取得の増分価値は無い。
+WebSocket 側（`EVT_HAND_RESULTS.Results[].HoleCards`）との差は1点だけで、
+`RankType` が `SHOWDOWN_MUCK`（11）の行に、こちらは値が入る。WebSocket は
+同じ行を空で送る（`docs/api-events.md` の RankType 表を参照）。
+逆に `FOLD_OPEN`（12）の行はリプレイ側に存在しない。
 
 ## `BattleType`
 
@@ -177,7 +179,7 @@ type ReplayPlayer = {
   SeatIndex: number
   UserId: number
   Name: string
-  HoleCardList: number[]        // 未課金では非ショーダウン参加者は空
+  HoleCardList: number[]        // 非ショーダウン参加者は空
   StartChip: number
   BetAnte: number
   CharaId: string

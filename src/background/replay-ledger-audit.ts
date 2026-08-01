@@ -58,7 +58,7 @@ export interface ReplayLedgerChipDiffMismatch {
 export interface ReplayLedgerAuditResult {
   checkedAt: number
   battleType: number
-  /** 手札公開パスの期限（Unix秒）。`0`は未購入。 */
+  /** サーバが返す期限値（Unix秒）。 */
   cardOpenEndDate: number
   isExpiredCardOpen: boolean
   /** 台帳に載っていたハンド数。 */
