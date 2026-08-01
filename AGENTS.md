@@ -89,6 +89,17 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 - **Commits**: Conventional Commits (common scopes: `hud`, `stats`, `ui`, `api`, `build`; breaking changes via `feat!` / `BREAKING CHANGE:`). Write the subject and body prose in Japanese — commit messages reach users through the Release-Please changelog and GitHub Release bodies, and user-facing text is Japanese (see Language above). The machine-parsed tokens stay English/ASCII: type, scope (`feat(ui):` …), and the `BREAKING CHANGE:` footer keyword.
 - **Tests**: Jest, co-located with sources (`foo.ts` → `foo.test.ts`); jest roots are `src/` and `e2e/` (live-browser scenarios under `e2e/scenarios/` are separate from Jest/CI). Run `npm run test` and `npm run typecheck` before finishing a change; changes touching entity derivation or statistics additionally run `npm run verify-stats -- <file.ndjson>` (see CONTRIBUTING.md).
 - **Service Worker code** (`src/background/`): no `window`; global timer functions only; assume the SW can die at any await (MV3 lifecycle).
+- **Code review requests** (2026-08-01): codex-connector's automatic per-push
+  review is disabled for this repository — a review fires only on an explicit
+  `@codex review` mention. A non-trivial PR MUST get such a review before
+  merge. You MUST NOT mention the same head twice: batch all fixes for a
+  review round into one push, then re-mention the new head if another round
+  is needed. Each review consumes the shared Codex weekly quota (measured
+  ≈0.6% per review), so per-push or per-finding fix→push→review loops MUST
+  NOT be run against this repository; automated review-responders (auto-fix
+  style) SHOULD batch a whole round before pushing. While waiting for a
+  review reply (typically 2–11 min), do not busy-poll with model turns — use
+  a single bounded shell wait.
 - **Docs**: prefer updating existing documents; keep this file and docs/ in sync with behavior changes you ship.
 
 ### Requirement Keywords (RFC 2119)
