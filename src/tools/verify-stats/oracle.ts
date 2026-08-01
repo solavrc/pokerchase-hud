@@ -299,6 +299,12 @@ const rawMidHandInflow = (
   const observe = (seatIndex: number, phase: number, chip: number, betChip: number): boolean => {
     const previous = stack.get(seatIndex)
     if (previous === undefined) return true // seat not dealt into this hand
+    // A snapshot from a street already left behind carries no new information.
+    // Equal-millisecond compound groups are stored in ApiTypeId order, so a 305
+    // can land after the 304s of a LATER street (the same ordering that #340 is
+    // about); accounting for it chronologically would refund an already-settled
+    // street bet and read it back as a rebuy.
+    if (phase < street.get(seatIndex)!) return true
     if (!Number.isSafeInteger(chip) || !Number.isSafeInteger(betChip)) return false
     const settled = phase === street.get(seatIndex) ? previous : previous - streetBet.get(seatIndex)!
     const delta = chip + betChip - settled
@@ -322,10 +328,12 @@ const rawMidHandInflow = (
       const seats = roundEvt.Player ? [roundEvt.Player, ...roundEvt.OtherPlayers] : roundEvt.OtherPlayers
       for (const seat of seats) {
         if (seat.Chip === undefined) return null
+        // A street-opening snapshot is stale for a seat already acting on that street.
+        if (phase <= (street.get(seat.SeatIndex) ?? -1)) continue
         if (!observe(seat.SeatIndex, phase, seat.Chip, seat.BetChip ?? 0)) return null
       }
       for (const [seatIndex, seatStreet] of street) {
-        if (seatStreet === phase) continue
+        if (seatStreet >= phase) continue
         stack.set(seatIndex, stack.get(seatIndex)! - streetBet.get(seatIndex)!)
         streetBet.set(seatIndex, 0)
         street.set(seatIndex, phase)
@@ -390,6 +398,8 @@ const resolveContestedWinners = (
 
     const final = rawSeatSnapshot(results, seatIndex)
     if (final?.Chip !== undefined && final.BetChip !== undefined) {
+      // A seat that spends chips it bought mid-hand has a NEGATIVE counterfactual
+      // "without the rebuy" stack; that is an accounting quantity, not corruption.
       finalStacks.set(seatIndex, final.Chip + final.BetChip - (inflow?.get(seatIndex) ?? 0))
     }
   }
@@ -427,7 +437,9 @@ const resolveContestedWinners = (
 
     const payout = resultByUserId.get(userId)?.RewardChip ?? 0
     const contribution = startingStack + payout - finalStack
-    if (!Number.isSafeInteger(contribution) || contribution < 0 || contribution > startingStack) return fallback()
+    // A seat can commit its starting stack plus anything it bought mid-hand.
+    const contributionCeiling = startingStack + (inflow?.get(seatIndex) ?? 0)
+    if (!Number.isSafeInteger(contribution) || contribution < 0 || contribution > contributionCeiling) return fallback()
     contributions.set(userId, contribution)
   }
 

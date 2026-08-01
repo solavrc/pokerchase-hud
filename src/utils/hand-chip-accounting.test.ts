@@ -642,6 +642,28 @@ describe('deriveMidHandChipInflow', () => {
   })
 })
 
+describe('deriveMidHandChipInflow with an out-of-order equal-millisecond group', () => {
+  test('ignores a street-opening snapshot that lands after a later street\u0027s action', () => {
+    // 同一ms群は主キー順（ApiTypeId昇順）で並ぶため、ターンのアクション（304）の
+    // あとにフロップの開始スナップショット（305）が届く。これを時系列として
+    // 会計すると、精算済みのターン投入が買い足しとして戻ってしまう。
+    const lateFlopSnapshot = ringFlop(1990)
+    const events = [
+      ringDeal,
+      ringAction(2, 3, 3980, 20, 0, 3),
+      ringAction(3, 2, 1990, 10, 0, 4),
+      ringAction(4, 0, 3980, 20, 0, -1),
+      // フロップの305より前に届いたターンのベット。
+      ringAction(2, 1, 3880, 100, 2, 4),
+      lateFlopSnapshot,
+      ringResults,
+    ]
+    const inflow = deriveMidHandChipInflow(ringDeal, ringResults, events, BattleType.RING_GAME)
+    // seat2 のターン投入100は流入として戻らない（後退スナップショットを無視する）。
+    expect(inflow?.get(2)).toBe(0)
+  })
+})
+
 describe('deriveHandSettlement with a Ring mid-hand rebuy', () => {
   test('keeps the exact winner and per-seat net chips despite the table total growing', () => {
     const startingTotal = 4000 + 2000 + 4000
@@ -661,6 +683,55 @@ describe('deriveHandSettlement with a Ring mid-hand rebuy', () => {
     const settlement = deriveHandSettlement(ringDeal, ringResults, BattleType.RING_GAME)
     expect(settlement.winningPlayerIds).toEqual([])
     expect(Object.values(settlement.playerChipAccounting).every(entry => entry === null)).toBe(true)
+  })
+
+  test('resolves a seat that commits the chips it bought mid-hand', () => {
+    // 開始100、ハンド中に+1,000買い足し、500を投じて払い戻しなしで600残る席。
+    // 「買い足しが無かったときのスタック」は 600 - 1,000 = -400 になるが、
+    // 正しい会計は拠出500・netChips -500 である（codex review P2）。
+    const deal = {
+      ...ringDeal,
+      SeatUserIds: [-1, -1, 2001, 2002, -1, -1],
+      Game: { ...(ringDeal as any).Game, SmallBlind: 50, BigBlind: 100, SmallBlindSeat: 2, BigBlindSeat: 3, ButtonSeat: 2 },
+      Player: { SeatIndex: 2, BetStatus: BetStatusType.BET_ABLE, Chip: 4400, BetChip: 100, HoleCards: [22, 28] },
+      OtherPlayers: [{ SeatIndex: 3, Status: 0, BetStatus: BetStatusType.BET_ABLE, Chip: 0, BetChip: 100 }],
+      Progress: { ...(ringDeal as any).Progress, Pot: 200 },
+    } as unknown as ApiEvent<ApiType.EVT_DEAL>
+    const flop = {
+      ApiTypeId: ApiType.EVT_DEAL_ROUND,
+      timestamp: 1733147502000,
+      CommunityCards: [35, 4, 23],
+      Player: { SeatIndex: 2, BetStatus: BetStatusType.BET_ABLE, Chip: 4400, BetChip: 0, HoleCards: [22, 28] },
+      // seat3 は 0 から +1,000 買い足している。
+      OtherPlayers: [{ SeatIndex: 3, Status: 0, BetStatus: BetStatusType.BET_ABLE, Chip: 1000, BetChip: 0 }],
+      Progress: { Phase: 1, NextActionSeat: 3, NextActionTypes: [0, 5, 1], NextExtraLimitSeconds: 3, MinRaise: 0, Pot: 200, SidePot: [] },
+    } as unknown as ApiEvent<ApiType.EVT_DEAL_ROUND>
+    const results = {
+      ...ringResults,
+      Pot: 1000,
+      Results: [{ UserId: 2001, RankType: 7, HandRanking: 1, Hands: [], HoleCards: [], Ranking: -2, RewardChip: 1000 }],
+      Player: { SeatIndex: 2, BetStatus: -1, Chip: 4800, BetChip: 0 },
+      OtherPlayers: [{ SeatIndex: 3, Status: 0, BetStatus: -1, Chip: 600, BetChip: 0 }],
+    } as unknown as ApiEvent<ApiType.EVT_HAND_RESULTS>
+    const events = [
+      deal,
+      ringAction(3, 0, 0, 100, 0, -1),
+      flop,
+      ringAction(3, 1, 600, 400, 1, 2),
+      ringAction(2, 3, 4000, 400, 1, -2),
+      results,
+    ]
+
+    const inflow = deriveMidHandChipInflow(deal, results, events, BattleType.RING_GAME)
+    expect(inflow?.get(3)).toBe(1000)
+
+    const settlement = deriveHandSettlement(deal, results, BattleType.RING_GAME, events)
+    expect(settlement.playerChipAccounting['2002']).toEqual({
+      grossPayout: 0,
+      totalContribution: 500,
+      netChips: -500,
+    })
+    expect(settlement.winningPlayerIds).toEqual([2001])
   })
 
   test('still fails closed when the snapshot chain is broken rather than topped up', () => {

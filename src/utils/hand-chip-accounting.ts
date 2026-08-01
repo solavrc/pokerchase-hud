@@ -189,11 +189,21 @@ export const deriveMidHandChipInflow = (
     inflow.set(seatIndex, 0)
   }
 
-  /** 1席分のスナップショットを取り込む。不変条件からの減少を検出したら false。 */
+  /**
+   * 1席分のスナップショットを取り込む。不変条件からの減少を検出したら false。
+   *
+   * MUST: 既に観測したストリートより**手前**のスナップショットは読み飛ばす。
+   * 同一ミリ秒の複合群は主キー順（`ApiTypeId` 昇順）で並ぶため、304が同時刻の
+   * 305より前に来る（#340と同じ現象）。この並びでは、ターンのアクションで席を
+   * 進めた後にフロップの305が届く。これを時系列として会計すると、既に精算した
+   * ストリート投入額が二重に戻り、実際には無い買い足しとして計上されてしまう。
+   * 後退したスナップショットは新しい情報を持たないので無視する。
+   */
   const observe = (seatIndex: number, phase: number, chip: number, betChip: number): boolean => {
     const previousStack = stacks.get(seatIndex)
     // 配札されていない席（ハンド中に着席した別プレイヤー等）は追跡対象外。
     if (previousStack === undefined) return true
+    if (phase < streets.get(seatIndex)!) return true
     if (!Number.isSafeInteger(chip) || !Number.isSafeInteger(betChip)) return false
     const settledStack = phase === streets.get(seatIndex)
       ? previousStack
@@ -219,11 +229,14 @@ export const deriveMidHandChipInflow = (
       const phase = event.Progress.Phase
       const snapshots = event.Player ? [event.Player, ...event.OtherPlayers] : event.OtherPlayers
       for (const snapshot of snapshots) {
+        // ストリート開始スナップショットは、そのストリートで既にアクションを
+        // 観測している席にとっては過去の情報である（上記 observe の doc 参照）。
+        if (phase <= (streets.get(snapshot.SeatIndex) ?? -1)) continue
         if (!observe(snapshot.SeatIndex, phase, snapshot.Chip, snapshot.BetChip)) return null
       }
       // スナップショットに現れなかった配札席も、ストリート境界で投入額を精算する。
       for (const [seatIndex, street] of streets) {
-        if (street === phase) continue
+        if (street >= phase) continue
         stacks.set(seatIndex, stacks.get(seatIndex)! - streetBets.get(seatIndex)!)
         streetBets.set(seatIndex, 0)
         streets.set(seatIndex, phase)
@@ -329,10 +342,13 @@ export const derivePlayerHandChipAccounting = (
 
   const finalStacks = new Map<number, number>()
   for (const snapshot of finalSeats) {
+    const observedFinalStack = snapshot.Chip + snapshot.BetChip
+    if (!Number.isSafeInteger(observedFinalStack) || observedFinalStack < 0) return accounting
     // ハンド中に買い足したチップはこのハンドの結果ではないため終了スタックから除く。
-    const finalStack = snapshot.Chip + snapshot.BetChip - (inflow?.get(snapshot.SeatIndex) ?? 0)
-    if (!Number.isSafeInteger(finalStack) || finalStack < 0) return accounting
-    finalStacks.set(snapshot.SeatIndex, finalStack)
+    // 買い足した席がそのチップを同じハンドで投じると、この「買い足しが無かったと
+    // したときのスタック」は負になり得る（拠出は開始スタックを超えられる）。
+    // 実在しないスタックではなく会計上の量なので、負値そのものは破損ではない。
+    finalStacks.set(snapshot.SeatIndex, observedFinalStack - (inflow?.get(snapshot.SeatIndex) ?? 0))
   }
 
   const occupiedSeatIndexes = deal.SeatUserIds
@@ -385,7 +401,11 @@ export const derivePlayerHandChipAccounting = (
 
     const payout = results.Results.find(result => result.UserId === userId)?.RewardChip ?? 0
     const totalContribution = startingStack + payout - finalStack
-    if (!Number.isSafeInteger(totalContribution) || totalContribution < 0 || totalContribution > startingStack) continue
+    // 拠出できるのは開始スタック + ハンド中に買い足した分まで。
+    const contributionCeiling = startingStack + (inflow?.get(seatIndex) ?? 0)
+    if (!Number.isSafeInteger(totalContribution) ||
+        totalContribution < 0 ||
+        totalContribution > contributionCeiling) continue
 
     const netChips = payout - totalContribution
     if (!Number.isSafeInteger(netChips) || netChips !== finalStack - startingStack) continue

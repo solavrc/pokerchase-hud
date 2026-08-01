@@ -345,6 +345,17 @@ describe('cross-path canonical parity', () => {
     )
     expect(postflopAggression(2001)).toEqual({ af: [0, 0], afq: [0, 1] })
     expect(postflopAggression(2002)).toEqual({ af: [1, 0], afq: [1, 1] })
+
+    // 同一ms群を時系列として会計してはならない（codex review P1）: この群では
+    // ターンのアクションのあとにフロップの305が届く。後退したスナップショットを
+    // 取り込むと、精算済みのターン投入40が買い足しとして戻り、2002の +40 が
+    // 0 になり架空のrake 40が生まれる。
+    expect(canonical.hands[0]!.winningPlayerIds).toEqual([2002])
+    expect(canonical.hands[0]!.playerChipAccounting).toEqual({
+      '2001': { grossPayout: 0, totalContribution: 20, netChips: -20 },
+      '2002': { grossPayout: 100, totalContribution: 60, netChips: 40 },
+      '2003': { grossPayout: 0, totalContribution: 20, netChips: -20 }
+    })
   })
 
   test('a Ring mid-hand rebuy keeps exact winners and net chips (#339)', async () => {

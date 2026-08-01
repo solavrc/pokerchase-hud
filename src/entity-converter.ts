@@ -324,8 +324,8 @@ export class EntityConverter {
             console.log(`[EntityConverter] Rejected fused hand buffer: duplicate EVT_DEAL_ROUND for phase ${newPhase} (mid-hand table move/rebalance)`)
             return null
           }
-          if (newPhase !== null) runningPhase = newPhase
           if (newPhase !== null) {
+            runningPhase = newPhase
             // このストリートに進んだプレイヤー（BET_ABLE=フォールドしていない、
             // または ALL_IN=プリフロップオールイン済み）のみをseatUserIdsに
             // 含める（WriteEntityStreamと同一ロジック）。
