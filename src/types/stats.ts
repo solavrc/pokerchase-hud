@@ -226,8 +226,22 @@ export interface PostflopLines {
 
 export interface RecentHandEntry {
   handId: number
-  /** `Hand.approxTimestamp`, or `null` if the hand predates that field. */
+  /**
+   * `Hand.approxTimestamp`, or `null` if the hand predates that field. The
+   * panel stopped rendering a time column (#353 -- sola: 時刻は不要), but the
+   * value stays in the contract: it is the `EVT_DEAL` timestamp the service
+   * correlates hero's dealt hole cards on, and it is what makes a row
+   * identifiable when this result is inspected outside the panel.
+   */
   approxTimestamp: number | null
+  /**
+   * `Hand.bigBlind` -- the big blind of THIS hand at deal time. SNG/MTT blind
+   * levels escalate, so a chip result is only comparable across hands once
+   * divided by the blind that was live for that hand. `null` only when the
+   * derived hand has no usable (positive, finite) big blind, in which case the
+   * UI falls back to showing raw chips for that row rather than hiding it.
+   */
+  bigBlind: number | null
   /** `null` when the position can't be determined (see positional drill-down's identical fallback rules). */
   position: Position | null
   /**
@@ -250,9 +264,16 @@ export interface RecentHandEntry {
    * filled from a stored replay detail (`replayDetails`, opt-in only) --
    * the server discloses mucked showdown hands through its own replay
    * feature, so this is the same information the game itself renders.
+   * `'dealt'` means the row is HERO's own hand and the cards were read from
+   * the Raw Event Lake's `EVT_DEAL.Player.HoleCards` -- the cards hero was
+   * actually dealt, which the `Hand` entity does not persist. This source is
+   * used only when `service.playerId === playerId`; `EVT_DEAL.Player` is the
+   * observing client's own seat, so it can never expose another player's
+   * hand. No visibility gate applies to it: hero's own cards were hero's
+   * information from the moment they were dealt.
    * `null` when `holeCards` is `null`.
    */
-  holeCardsSource: 'results' | 'replay' | null
+  holeCardsSource: 'results' | 'replay' | 'dealt' | null
   /** See `PreflopLine`'s doc comment for the taxonomy. `null` when no preflop data exists for this hand/player. */
   preflopLine: PreflopLine | null
   /** See `PostflopLines`. Every street is `null` for hands that ended preflop. */

@@ -364,6 +364,13 @@ export interface GetRecentHandsMessage {
    * the user's persisted choice out of `RECENT_HANDS_LIMIT_OPTIONS`.
    */
   limit?: number
+  /**
+   * Restrict the list to hands the player voluntarily put chips into (see
+   * `isVoluntaryParticipation`). Defaults to `false` on the wire so an older
+   * caller keeps the previous behavior; the HUD panel sends its persisted
+   * choice, which defaults to ON.
+   */
+  participationOnly?: boolean
 }
 
 // Undecoded event (drop) visibility messages

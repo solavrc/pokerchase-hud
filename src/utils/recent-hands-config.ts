@@ -1,5 +1,6 @@
 /**
- * 「直近ハンド」パネルの表示件数（#341）: 選択肢の定義と、その永続化。
+ * 「直近ハンド」パネルの表示設定（表示件数 #341 / 「参加のみ」 #353）:
+ * 選択肢の定義と、その永続化。
  *
  * 定数をrecent-hands-service.tsではなくここに置くのは、パネル（content
  * script側）から件数の選択肢を参照する必要があるため。サービス側には
@@ -29,9 +30,25 @@
  */
 export const RECENT_HANDS_LIMIT_OPTIONS: readonly number[] = [10, 25, 50, 100]
 
-/** `RECENT_HANDS_LIMIT_OPTIONS`の最大値。サービス側はこの件数で組み立ててキャッシュする。 */
+/** `RECENT_HANDS_LIMIT_OPTIONS`の最大値＝1画面に出し得る最大行数。 */
 export const MAX_RECENT_HANDS_LIMIT: number =
   RECENT_HANDS_LIMIT_OPTIONS[RECENT_HANDS_LIMIT_OPTIONS.length - 1]!
+
+/**
+ * サービス側が実際に組み立ててキャッシュする件数（#353のレビュー指摘対応）。
+ *
+ * 表示上限（100）ちょうどしか組み立てないと、「参加のみ」ONで100件を選んだ
+ * ときに**必ず**100件に届かない ―― 直近100ハンドの中に即フォールドが1件でも
+ * あれば足りなくなるため。母集合を表示上限の3倍まで広げることで、直近300
+ * ハンドの1/3以上で自発的にチップを入れていれば100件が埋まる（VPIP 33%
+ * 相当。実測レンジでは通常満たす）。
+ *
+ * 3倍で止めるのは、これがライブ対局中のオーバーレイだから: actions/phasesは
+ * どちらもインデックス1回のバッチクエリのまま（往復は増えない）だが、
+ * 走査する行数は母集合に比例する。ここを無制限にすると「直近N件」ではなく
+ * 全履歴走査になる。届かない場合は拾えただけを返す。
+ */
+export const RECENT_HANDS_ASSEMBLY_LIMIT: number = MAX_RECENT_HANDS_LIMIT * 3
 
 /**
  * デフォルトの取得件数。#341で10→25へ引き上げた（10件は傾向を見るには
@@ -78,19 +95,95 @@ export const saveRecentHandsLimit = (limit: number): void => {
   }
 }
 
+export const RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY = 'recentHandsParticipationOnly'
+
+/**
+ * 「参加のみ」の既定値。既定ONにするのは、ブラインド／アンテを取られただけの
+ * ハンド（プリフロップ即フォールド・ウォーク）が一覧の大半を占めると、
+ * 「直近ハンドを振り返る」という本来の用途で目的の行が埋もれるため。
+ * ブラインド流出そのものを見たいときはOFFにすれば全件表示に戻る。
+ */
+export const DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY = true
+
+export const resolveRecentHandsParticipationOnly = (value: unknown): boolean =>
+  typeof value === 'boolean' ? value : DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY
+
+/** 件数と同じくフェイルオープン（読めなければ既定値、rejectしない）。 */
+export const loadRecentHandsParticipationOnly = async (): Promise<boolean> => {
+  try {
+    const stored = await chrome.storage?.local?.get(RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY)
+    return resolveRecentHandsParticipationOnly(stored?.[RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY])
+  } catch {
+    return DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY
+  }
+}
+
+/** 件数と同じく、書き込み失敗は握りつぶす（その場の表示は既に切り替わっている）。 */
+export const saveRecentHandsParticipationOnly = (participationOnly: boolean): void => {
+  if (typeof participationOnly !== 'boolean') return
+  try {
+    const pending: unknown = chrome.storage?.local?.set({
+      [RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY]: participationOnly,
+    })
+    if (pending instanceof Promise) pending.catch(() => { })
+  } catch {
+    // no-op
+  }
+}
+
+/** パネルが読む設定一式。増えたときにパネル側のstateを増やさずに済むよう1つにまとめる。 */
+export interface RecentHandsPanelConfig {
+  limit: number
+  participationOnly: boolean
+}
+
+export const DEFAULT_RECENT_HANDS_PANEL_CONFIG: RecentHandsPanelConfig = {
+  limit: DEFAULT_RECENT_HANDS_LIMIT,
+  participationOnly: DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY,
+}
+
+/** 保存済み設定を1回のstorage読み取りでまとめて読む。 */
+export const loadRecentHandsPanelConfig = async (): Promise<RecentHandsPanelConfig> => {
+  try {
+    const stored = await chrome.storage?.local?.get([
+      RECENT_HANDS_LIMIT_STORAGE_KEY,
+      RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY,
+    ])
+    return {
+      limit: resolveRecentHandsLimit(stored?.[RECENT_HANDS_LIMIT_STORAGE_KEY]),
+      participationOnly: resolveRecentHandsParticipationOnly(
+        stored?.[RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY]
+      ),
+    }
+  } catch {
+    return DEFAULT_RECENT_HANDS_PANEL_CONFIG
+  }
+}
+
 /**
  * 他のパネル（＝他席のHUD）やタブでの変更を購読する。同じ端末で複数の
- * パネルを開いていても件数が食い違わないようにするための購読で、返り値は
- * 解除関数。
+ * パネルを開いていても設定が食い違わないようにするための購読で、返り値は
+ * 解除関数。変更のあったキーだけをpatchとして渡す。
  */
-export const subscribeRecentHandsLimit = (onChange: (limit: number) => void): (() => void) => {
+export const subscribeRecentHandsPanelConfig = (
+  onChange: (patch: Partial<RecentHandsPanelConfig>) => void
+): (() => void) => {
   const listener = (
     changes: { [key: string]: chrome.storage.StorageChange },
     areaName: string
   ): void => {
     if (areaName !== 'local') return
-    if (!(RECENT_HANDS_LIMIT_STORAGE_KEY in changes)) return
-    onChange(resolveRecentHandsLimit(changes[RECENT_HANDS_LIMIT_STORAGE_KEY]?.newValue))
+    const patch: Partial<RecentHandsPanelConfig> = {}
+    if (RECENT_HANDS_LIMIT_STORAGE_KEY in changes) {
+      patch.limit = resolveRecentHandsLimit(changes[RECENT_HANDS_LIMIT_STORAGE_KEY]?.newValue)
+    }
+    if (RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY in changes) {
+      patch.participationOnly = resolveRecentHandsParticipationOnly(
+        changes[RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY]?.newValue
+      )
+    }
+    if (Object.keys(patch).length === 0) return
+    onChange(patch)
   }
   try {
     chrome.storage?.onChanged?.addListener(listener)

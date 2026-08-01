@@ -924,7 +924,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       return true
     } else if (request.action === 'getRecentHands') {
       // 直近ハンド・ドリルダウン
-      getRecentHands(db, service, request.playerId, request.limit)
+      getRecentHands(db, service, request.playerId, request.limit, request.participationOnly)
         .then(recentHands => {
           sendResponse({ success: true, recentHands })
         })

@@ -4,15 +4,17 @@ import { Position } from '../../types/game'
 import type { PostflopLines, RecentHandEntry, RecentHandsResult } from '../../types/stats'
 import type { GetRecentHandsMessage, RecentHandsResponse, ErrorResponse } from '../../types/messages'
 import { sendMessageWithTimeout } from '../popup/send-message'
-import { isRedSuit } from '../../utils/card-utils'
+import { suitColor } from '../../utils/card-utils'
 import { HUD_MUTED_TEXT_COLOR } from './hudColors'
 import {
-  DEFAULT_RECENT_HANDS_LIMIT,
+  DEFAULT_RECENT_HANDS_PANEL_CONFIG,
   RECENT_HANDS_LIMIT_OPTIONS,
-  loadRecentHandsLimit,
+  loadRecentHandsPanelConfig,
   saveRecentHandsLimit,
-  subscribeRecentHandsLimit,
+  saveRecentHandsParticipationOnly,
+  subscribeRecentHandsPanelConfig,
 } from '../../utils/recent-hands-config'
+import type { RecentHandsPanelConfig } from '../../utils/recent-hands-config'
 
 interface RecentHandsPanelProps {
   playerId: number
@@ -38,25 +40,6 @@ const RECENT_HANDS_TIMEOUT_MS = 5000
 /** `Position`列挙体は数値enumなので逆引きで表示名が得られる。`null`は非該当。 */
 const positionLabel = (position: Position | null): string =>
   position === null ? '—' : Position[position]
-
-/**
- * `approxTimestamp`からの相対時刻を短縮表示する（'3m'/'2h'/'昨日'/'5d'）。
- * `null`（approxTimestampがそもそも記録されていない古いデータ）は'—'。
- * Exported for direct unit testing.
- */
-export function formatRelativeTime(timestamp: number | null, now: number = Date.now()): string {
-  if (timestamp === null) return '—'
-  const diffMs = Math.max(0, now - timestamp)
-  const MINUTE = 60_000
-  const HOUR = 60 * MINUTE
-  const DAY = 24 * HOUR
-
-  if (diffMs < MINUTE) return 'now'
-  if (diffMs < HOUR) return `${Math.floor(diffMs / MINUTE)}m`
-  if (diffMs < DAY) return `${Math.floor(diffMs / HOUR)}h`
-  if (diffMs < 2 * DAY) return '昨日'
-  return `${Math.floor(diffMs / DAY)}d`
-}
 
 /**
  * ポストフロップ3ストリートを1セルに畳む（#341）。ストリート区切りは`/`、
@@ -85,13 +68,56 @@ export function formatPostflopLines(lines: PostflopLines | null | undefined): st
   return streets.slice(0, lastPlayed + 1).map(street => street ?? '-').join('/')
 }
 
-/** Signed chip result with grouping; unknown source accounting stays '-'. */
+/** Signed chip result with grouping; unknown/なし の会計は '-'。 */
 const formatNetChips = (entry: RecentHandEntry): string =>
-  entry.netChips === null
+  typeof entry.netChips !== 'number' || !Number.isFinite(entry.netChips)
     ? '-'
     : entry.netChips > 0
       ? `+${entry.netChips.toLocaleString()}`
       : entry.netChips.toLocaleString()
+
+/**
+ * 損益をBB単位（符号付き小数第1位）で表示する（#353）。
+ *
+ * 割る値はそのハンド自身の`bigBlind` ―― SNG/MTTはブラインドが上がるので、
+ * 一覧の中でレベルの違うハンドをチップのまま並べても大小が比較できない。
+ *
+ * `bigBlind`が使えない行（`null`）はBBへ換算せずチップ表記へフォールバック
+ * する（MUST）。行ごと隠したり0扱いにすると、実際には損益のあるハンドが
+ * 無かったことになる。会計そのものが未確定（`netChips === null`）の行は
+ * 従来どおり'-'。
+ *
+ * Exported for direct unit testing.
+ */
+export function formatNetBigBlinds(entry: RecentHandEntry): string {
+  if (typeof entry.netChips !== 'number' || !Number.isFinite(entry.netChips)) return '-'
+  const bigBlind = usableBigBlind(entry)
+  if (bigBlind === null) return formatNetChips(entry)
+  const bb = entry.netChips / bigBlind
+  // -0.04 が '-0.0' になると損に見えるので、丸めた結果が0なら符号を落とす。
+  const rounded = Number(bb.toFixed(1))
+  if (rounded === 0) return '0.0'
+  return `${rounded > 0 ? '+' : ''}${rounded.toFixed(1)}`
+}
+
+/**
+ * BB換算に使える`bigBlind`か。`null`だけでなく**未設定・非有限・0以下**も
+ * すべて利用不能として弾く（MUST）。このフィールドはchrome.runtimeメッセージ
+ * 越しにbackgroundから来るので、拡張の更新途中など送信側が古い形のまま応答
+ * すれば`undefined`が届き得る。#127と同じ方針で、表示側がHUDを落とさない。
+ */
+const usableBigBlind = (entry: RecentHandEntry): number | null =>
+  typeof entry.bigBlind === 'number' && Number.isFinite(entry.bigBlind) && entry.bigBlind > 0
+    ? entry.bigBlind
+    : null
+
+/** BB表記のセルに出すチップ実額のツールチップ（#353、列は増やさない）。 */
+const netChipsTooltip = (entry: RecentHandEntry): string | undefined => {
+  const bigBlind = usableBigBlind(entry)
+  if (bigBlind === null) return undefined
+  if (typeof entry.netChips !== 'number' || !Number.isFinite(entry.netChips)) return undefined
+  return `${formatNetChips(entry)} チップ（BB=${bigBlind.toLocaleString()}）`
+}
 
 const styles = {
   panel: {
@@ -215,14 +241,6 @@ const styles = {
     color: '#ffcc00',
     marginLeft: '2px',
   } as CSSProperties,
-
-  blackCard: {
-    color: '#dddddd',
-  } as CSSProperties,
-
-  redCard: {
-    color: '#e57373',
-  } as CSSProperties,
 }
 
 /**
@@ -243,11 +261,11 @@ const styles = {
 export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelProps) => {
   const [status, setStatus] = useState<FetchStatus>('loading')
   const [data, setData] = useState<RecentHandsResult | undefined>(undefined)
-  // `null` = 保存済み件数をまだ読めていない。この間はフェッチしない
+  // `null` = 保存済み設定をまだ読めていない。この間はフェッチしない
   // （既定値で1回フェッチしてから保存値で即やり直す、という二度手間と
   // 表示のちらつきを避ける）。
-  const [limit, setLimit] = useState<number | null>(null)
-  const activeLimit = limit ?? DEFAULT_RECENT_HANDS_LIMIT
+  const [config, setConfig] = useState<RecentHandsPanelConfig | null>(null)
+  const activeConfig = config ?? DEFAULT_RECENT_HANDS_PANEL_CONFIG
   const panelProps = {
     id: `recent-hands-panel-${playerId}`,
     role: 'region',
@@ -256,14 +274,26 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
     'data-player-id': playerId,
   } as const
 
-  // 保存済みの件数を読み、以後は他パネル／他タブでの変更にも追従する。
+  // 保存済みの設定を読み、以後は他パネル／他タブでの変更にも追従する。
   useEffect(() => {
     let cancelled = false
-    loadRecentHandsLimit().then(stored => {
-      if (!cancelled) setLimit(stored)
+    loadRecentHandsPanelConfig().then(stored => {
+      if (!cancelled) setConfig(stored)
     })
-    const unsubscribe = subscribeRecentHandsLimit(next => {
-      if (!cancelled) setLimit(next)
+    const unsubscribe = subscribeRecentHandsPanelConfig(patch => {
+      // 未ロード中に通知が来ても、既定値をベースにpatchを当てて追従する。
+      // 値が変わらないなら**同一オブジェクト**を返す: このパネル自身の操作が
+      // 起こしたstorage書き込みの通知もここへ戻ってくるため、毎回新しい
+      // オブジェクトを作るとフェッチeffectが二度走り、同じ条件のリクエストと
+      // loading表示が重複する。
+      if (cancelled) return
+      setConfig(current => {
+        const base = current ?? DEFAULT_RECENT_HANDS_PANEL_CONFIG
+        const next = { ...base, ...patch }
+        return next.limit === base.limit && next.participationOnly === base.participationOnly
+          ? current
+          : next
+      })
     })
     return () => {
       cancelled = true
@@ -272,17 +302,31 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
   }, [])
 
   const handleSelectLimit = useCallback((next: number) => {
-    setLimit(next)
+    setConfig(current => ({ ...(current ?? DEFAULT_RECENT_HANDS_PANEL_CONFIG), limit: next }))
     saveRecentHandsLimit(next)
   }, [])
 
+  const handleToggleParticipationOnly = useCallback(() => {
+    setConfig(current => {
+      const base = current ?? DEFAULT_RECENT_HANDS_PANEL_CONFIG
+      const next = !base.participationOnly
+      saveRecentHandsParticipationOnly(next)
+      return { ...base, participationOnly: next }
+    })
+  }, [])
+
   useEffect(() => {
-    if (limit === null) return
+    if (config === null) return
     let cancelled = false
     setStatus('loading')
     setData(undefined)
 
-    const message: GetRecentHandsMessage = { action: 'getRecentHands', playerId, limit }
+    const message: GetRecentHandsMessage = {
+      action: 'getRecentHands',
+      playerId,
+      limit: config.limit,
+      participationOnly: config.participationOnly,
+    }
     sendMessageWithTimeout<RecentHandsResponse | ErrorResponse>(message, RECENT_HANDS_TIMEOUT_MS)
       .then(response => {
         if (cancelled) return
@@ -303,21 +347,40 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
     // handEpoch: 監査指摘11(P2)対応。値が変わるのは生きたハンドが1件完了した
     // ときだけ（App.tsx/ports.ts参照）なので、このパネルを開いたままにしていても
     // 最新のハンドを反映して再フェッチする。
-    // limit: 件数スイッチャーの選択（#341）。
-  }, [playerId, handEpoch, limit])
+    // 件数スイッチャー（#341）と「参加のみ」（#353）の選択。`config`
+    // オブジェクトそのものではなく**値**へ依存する ―― 同じ設定で新しい
+    // オブジェクトが作られても再フェッチしないようにするための二重の防御
+    // （上のsetConfigでの同一性維持と合わせて）。
+  }, [playerId, handEpoch, config === null, config?.limit, config?.participationOnly])
 
-  // 件数スイッチャーはローディング／エラー／0件のいずれでも操作できる必要が
+  // コントロール行はローディング／エラー／0件のいずれでも操作できる必要が
   // ある（0件は「その件数で0件」ではなくフィルター起因のこともあるため、
-  // ここで件数を戻せないと詰む）。
-  const limitSwitcher = (
+  // ここで条件を戻せないと詰む）。
+  const controls = (
     <div style={styles.toolbar} data-testid="recent-hands-limit-switcher">
+      <button
+        type="button"
+        style={activeConfig.participationOnly
+          ? { ...styles.limitButton, ...styles.limitButtonActive }
+          : styles.limitButton}
+        aria-pressed={activeConfig.participationOnly}
+        aria-label="参加のみ表示"
+        title="プリフロップで自分からチップを入れたハンドだけを表示する（即フォールド・ウォークを隠す）"
+        onMouseDown={e => e.stopPropagation()}
+        onClick={e => {
+          e.stopPropagation()
+          handleToggleParticipationOnly()
+        }}
+      >
+        参加のみ
+      </button>
       <span>件数</span>
       {RECENT_HANDS_LIMIT_OPTIONS.map(option => (
         <button
           key={option}
           type="button"
-          style={option === activeLimit ? { ...styles.limitButton, ...styles.limitButtonActive } : styles.limitButton}
-          aria-pressed={option === activeLimit}
+          style={option === activeConfig.limit ? { ...styles.limitButton, ...styles.limitButtonActive } : styles.limitButton}
+          aria-pressed={option === activeConfig.limit}
           aria-label={`直近${option}ハンドを表示`}
           onMouseDown={e => e.stopPropagation()}
           onClick={e => {
@@ -334,7 +397,7 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
   if (status === 'loading') {
     return (
       <div style={styles.panel} {...panelProps}>
-        {limitSwitcher}
+        {controls}
         <div style={styles.placeholder}>Loading hands…</div>
       </div>
     )
@@ -343,7 +406,7 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
   if (status === 'error' || !data) {
     return (
       <div style={styles.panel} {...panelProps}>
-        {limitSwitcher}
+        {controls}
         <div style={styles.placeholder}>—</div>
       </div>
     )
@@ -352,22 +415,23 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
   if (data.hands.length === 0) {
     return (
       <div style={styles.panel} {...panelProps}>
-        {limitSwitcher}
-        <div style={styles.placeholder}>No hands yet</div>
+        {controls}
+        {/* 0件の理由を「参加のみ」で消えたのか元々無いのかで書き分ける
+            ―― 前者はトグルを戻せば見えると分かる必要がある（#353）。 */}
+        <div style={styles.placeholder}>
+          {activeConfig.participationOnly ? '参加したハンドなし' : 'No hands yet'}
+        </div>
       </div>
     )
   }
 
-  const now = Date.now()
-
   return (
     <div style={styles.panel} {...panelProps}>
-      {limitSwitcher}
+      {controls}
       <div style={styles.scroller}>
         <table style={styles.table}>
           <thead>
             <tr>
-              <th style={{ ...styles.headerCell, ...styles.headerCellLeft }}>時刻</th>
               <th style={styles.headerCell}>Pos</th>
               <th style={{ ...styles.headerCell, ...styles.headerCellLeft }}>カード</th>
               <th style={{ ...styles.headerCell, ...styles.headerCellLeft }}>ライン</th>
@@ -375,18 +439,17 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
                 style={{ ...styles.headerCell, ...styles.headerCellLeft }}
                 title="フロップ/ターン/リバーの自分のアクション（X=チェック B=ベット C=コール R=レイズ F=フォールド、!=オールイン）"
               >F/T/R</th>
-              <th style={styles.headerCell}>損益</th>
+              <th style={styles.headerCell} title="損益（そのハンドのBB単位）">損益(BB)</th>
             </tr>
           </thead>
           <tbody>
             {data.hands.map(entry => (
               <tr key={entry.handId} data-testid="recent-hands-row">
-                <td style={{ ...styles.cell, ...styles.cellLeft }}>{formatRelativeTime(entry.approxTimestamp, now)}</td>
                 <td style={styles.cell}>{positionLabel(entry.position)}</td>
                 <td style={{ ...styles.cell, ...styles.cellLeft }} data-testid="recent-hands-cards">
                   {entry.holeCards ? (
                     entry.holeCards.map((card, i) => (
-                      <span key={i} style={isRedSuit(card) ? styles.redCard : styles.blackCard}>
+                      <span key={i} style={{ color: suitColor(card) }}>
                         {card}{i < entry.holeCards!.length - 1 ? ' ' : ''}
                       </span>
                     ))
@@ -398,12 +461,12 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
                 <td style={{ ...styles.cell, ...styles.cellLeft, ...styles.streetCell }} data-testid="recent-hands-streets">
                   {formatPostflopLines(entry.postflopLines) ?? <span style={styles.notWon}>—</span>}
                 </td>
-                <td style={styles.cell}>
+                <td style={styles.cell} title={netChipsTooltip(entry)}>
                   <span style={entry.netChips === null || entry.netChips === 0
                     ? styles.notWon
                     : entry.netChips > 0
                       ? styles.won
-                      : styles.lost}>{formatNetChips(entry)}</span>
+                      : styles.lost}>{formatNetBigBlinds(entry)}</span>
                   {entry.wentToShowdown && <span style={styles.showdownMarker} title="ショーダウン">●</span>}
                 </td>
               </tr>

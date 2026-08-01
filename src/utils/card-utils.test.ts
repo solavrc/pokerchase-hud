@@ -1,4 +1,4 @@
-import { formatCardsArray, isRedSuit } from './card-utils'
+import { SUIT_COLORS, formatCardsArray, suitColor } from './card-utils'
 
 test('カードを文字列に変換できる', () => {
   expect(formatCardsArray([37, 51])).toStrictEqual(['Jh', 'Ac'])
@@ -34,18 +34,30 @@ test('カードを文字列に変換できる', () => {
   ])
 })
 
-describe('isRedSuit', () => {
-  test('数値カード番号でハート/ダイヤをred判定できる', () => {
-    expect(isRedSuit(1)).toBe(true)  // 2h
-    expect(isRedSuit(2)).toBe(true)  // 2d
-    expect(isRedSuit(0)).toBe(false) // 2s
-    expect(isRedSuit(3)).toBe(false) // 2c
+// #353: 4色デッキ（スペード=既定色 / ハート=赤 / ダイヤ=青 / クラブ=緑）
+describe('suitColor', () => {
+  test('カード番号からスート別の色を返す', () => {
+    expect(suitColor(0)).toBe(SUIT_COLORS.s)  // 2s
+    expect(suitColor(1)).toBe(SUIT_COLORS.h)  // 2h
+    expect(suitColor(2)).toBe(SUIT_COLORS.d)  // 2d
+    expect(suitColor(3)).toBe(SUIT_COLORS.c)  // 2c
+    expect(suitColor(51)).toBe(SUIT_COLORS.c) // Ac
   })
 
-  test('フォーマット済みカード文字列でも判定できる', () => {
-    expect(isRedSuit('Ah')).toBe(true)
-    expect(isRedSuit('Kd')).toBe(true)
-    expect(isRedSuit('As')).toBe(false)
-    expect(isRedSuit('Kc')).toBe(false)
+  test('整形済みカード文字列からも同じ色を返す', () => {
+    expect(suitColor('As')).toBe(SUIT_COLORS.s)
+    expect(suitColor('Ah')).toBe(SUIT_COLORS.h)
+    expect(suitColor('Kd')).toBe(SUIT_COLORS.d)
+    expect(suitColor('Kc')).toBe(SUIT_COLORS.c)
+  })
+
+  test('4スートが互いに異なる色である（4色表現の要件）', () => {
+    const colors = Object.values(SUIT_COLORS)
+    expect(new Set(colors).size).toBe(4)
+  })
+
+  test('解釈できないスートは既定色へ倒す（表示でHUDを落とさない）', () => {
+    expect(suitColor('A?')).toBe(SUIT_COLORS.s)
+    expect(suitColor('')).toBe(SUIT_COLORS.s)
   })
 })

@@ -95,12 +95,28 @@ export function formatCardsArray(cards: number[], options: FormatOptions = {}): 
 }
 
 /**
- * Whether a card number's suit is red (h/d) as opposed to black (s/c).
- * Used by suit-colored card displays (e.g. RecentHandsPanel). Accepts both
- * the raw 0-51 card number and a single formatted card string (e.g. "Ah")
- * so callers holding either representation don't need to re-derive it.
+ * Four-color deck palette, tuned for the HUD's translucent-black panel
+ * (#353 -- sola: 4色表現が助かります). Spades keep the panel's default text
+ * color rather than pure white so they don't outshine every other row; the
+ * diamond blue and club green are lightened well past pure #0000ff/#008000,
+ * which go muddy and fail contrast on a dark, semi-transparent background.
+ *
+ * Exported so display code and its tests share one source of truth.
  */
-export function isRedSuit(card: number | string): boolean {
+export const SUIT_COLORS = {
+  s: '#dddddd',
+  h: '#e57373',
+  d: '#4da6ff',
+  c: '#66cc66',
+} as const
+
+/**
+ * Four-color-deck text color for one card. Accepts the raw 0-51 card number
+ * or a single formatted card string (e.g. "Ah"), like `isRedSuit`.
+ * An unrecognized suit falls back to the spade/default color rather than
+ * throwing -- a card display MUST NOT be able to crash the HUD (#127).
+ */
+export function suitColor(card: number | string): string {
   const suitChar = typeof card === 'number' ? SUITS[getCardSuit(card)] : card.slice(-1)
-  return suitChar === 'h' || suitChar === 'd'
+  return SUIT_COLORS[suitChar as keyof typeof SUIT_COLORS] ?? SUIT_COLORS.s
 }

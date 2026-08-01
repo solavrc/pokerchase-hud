@@ -14,12 +14,22 @@ import {
   loadRecentHandsLimit,
   resolveRecentHandsLimit,
   saveRecentHandsLimit,
-  subscribeRecentHandsLimit,
+  DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY,
+  RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY,
+  DEFAULT_RECENT_HANDS_PANEL_CONFIG,
+  loadRecentHandsPanelConfig,
+  loadRecentHandsParticipationOnly,
+  resolveRecentHandsParticipationOnly,
+  saveRecentHandsParticipationOnly,
+  subscribeRecentHandsPanelConfig,
 } from './recent-hands-config'
 
 describe('recent-hands-config', () => {
   afterEach(async () => {
-    await chrome.storage.local.remove(RECENT_HANDS_LIMIT_STORAGE_KEY)
+    await chrome.storage.local.remove([
+      RECENT_HANDS_LIMIT_STORAGE_KEY,
+      RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY,
+    ])
   })
 
   describe('選択肢の整合性', () => {
@@ -94,13 +104,65 @@ describe('recent-hands-config', () => {
     })
   })
 
+  // #353「参加のみ」
+  describe('参加のみ', () => {
+    test('既定はON（sola意図: 参加しなかったハンドは既定で消えていてほしい）', () => {
+      expect(DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY).toBe(true)
+      expect(DEFAULT_RECENT_HANDS_PANEL_CONFIG.participationOnly).toBe(true)
+    })
+
+    test('boolean以外は既定値へ倒す', () => {
+      expect(resolveRecentHandsParticipationOnly(false)).toBe(false)
+      expect(resolveRecentHandsParticipationOnly(true)).toBe(true)
+      expect(resolveRecentHandsParticipationOnly('false')).toBe(DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY)
+      expect(resolveRecentHandsParticipationOnly(undefined)).toBe(DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY)
+      expect(resolveRecentHandsParticipationOnly(0)).toBe(DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY)
+    })
+
+    test('OFFを保存して読み戻せる（既定と違う値が永続化されることの確認）', async () => {
+      saveRecentHandsParticipationOnly(false)
+      await expect(loadRecentHandsParticipationOnly()).resolves.toBe(false)
+    })
+
+    test('未設定なら既定値', async () => {
+      await expect(loadRecentHandsParticipationOnly()).resolves.toBe(DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY)
+    })
+  })
+
+  describe('設定一括読み取り', () => {
+    test('両方の保存値を1回で読む', async () => {
+      saveRecentHandsLimit(50)
+      saveRecentHandsParticipationOnly(false)
+      await expect(loadRecentHandsPanelConfig()).resolves.toEqual({ limit: 50, participationOnly: false })
+    })
+
+    test('未設定・壊れた値は既定値へ倒す', async () => {
+      await chrome.storage.local.set({
+        [RECENT_HANDS_LIMIT_STORAGE_KEY]: 7,
+        [RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY]: 'yes',
+      })
+      await expect(loadRecentHandsPanelConfig()).resolves.toEqual(DEFAULT_RECENT_HANDS_PANEL_CONFIG)
+    })
+
+    test('storage読み取りが失敗しても既定値を返す', async () => {
+      const original = chrome.storage.local.get
+      ;(chrome.storage.local as any).get = jest.fn(() => Promise.reject(new Error('no storage')))
+      await expect(loadRecentHandsPanelConfig()).resolves.toEqual(DEFAULT_RECENT_HANDS_PANEL_CONFIG)
+      ;(chrome.storage.local as any).get = original
+    })
+  })
+
   describe('購読', () => {
-    test('localの当該キー変更だけを通知し、解除できる', async () => {
+    test('localの当該キー変更だけをpatchで通知し、解除できる', async () => {
       const onChange = jest.fn()
-      const unsubscribe = subscribeRecentHandsLimit(onChange)
+      const unsubscribe = subscribeRecentHandsPanelConfig(onChange)
 
       await chrome.storage.local.set({ [RECENT_HANDS_LIMIT_STORAGE_KEY]: 50 })
-      expect(onChange).toHaveBeenCalledWith(50)
+      expect(onChange).toHaveBeenCalledWith({ limit: 50 })
+
+      onChange.mockClear()
+      await chrome.storage.local.set({ [RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY]: false })
+      expect(onChange).toHaveBeenCalledWith({ participationOnly: false })
 
       onChange.mockClear()
       await chrome.storage.local.set({ someOtherKey: 1 })
@@ -118,9 +180,9 @@ describe('recent-hands-config', () => {
 
     test('壊れた新値は既定値として通知する', async () => {
       const onChange = jest.fn()
-      const unsubscribe = subscribeRecentHandsLimit(onChange)
+      const unsubscribe = subscribeRecentHandsPanelConfig(onChange)
       await chrome.storage.local.set({ [RECENT_HANDS_LIMIT_STORAGE_KEY]: 'x' })
-      expect(onChange).toHaveBeenCalledWith(DEFAULT_RECENT_HANDS_LIMIT)
+      expect(onChange).toHaveBeenCalledWith({ limit: DEFAULT_RECENT_HANDS_LIMIT })
       unsubscribe()
     })
   })
