@@ -65,7 +65,8 @@
     ├── app.ts                 # Re-export layer (type guards)
     ├── background.ts          # Service worker entry (wires modules below)
     ├── content_script.ts      # Bridge between page and extension (keepalive, session events)
-    ├── web_accessible_resource.ts  # WebSocket interception
+    ├── web_accessible_resource.ts  # WebSocket interception (always injected)
+    ├── replay_bridge.ts       # Replay fetch/XHR interception + auth-envelope capture (injected only when the experimental flag is enabled)
     ├── entity-converter.ts    # Direct event-to-entity conversion (rebuild/import)
     ├── popup.ts               # Extension popup entry point
     ├── popup-boot.ts          # Synchronous pre-paint popup theme bootstrap
@@ -75,6 +76,8 @@
     ├── background/            # Service worker modules
     │   ├── auto-sync-boot.ts        # Auth-ready auto-sync initialization (init race guard)
     │   ├── AGENTS.md                # Nested review rules (SW concurrency invariants)
+    │   ├── replay-import.ts         # Opt-in replay import: HandId queue (meta), session-end
+    │   │                            #   drain, expiry accounting, synthetic 90001 Lake rows
     │   ├── event-ingestion.ts       # Raw Event Lake ingestion: serialized queue, durability
     │   │                            #   barrier, content dedup + sequence assignment,
     │   │                            #   session-activity transitions (201/303/308 → 309/203)
@@ -134,7 +137,12 @@
     │   └── release-info.ts    # Fixed GitHub Releases URL + unread storage key
     │
     ├── db/
-    │   └── poker-chase-db.ts  # Dexie database definition (v6 schema: sequence-key Lake)
+    │   └── poker-chase-db.ts  # Dexie database definition (v7 schema: sequence-key Lake + replayDetails)
+    │
+    ├── replay/                # Replay API shared code (page world + service worker)
+    │   ├── protocol.ts        # Message/constant contract, ledger reader, credential stripping
+    │   ├── window.ts          # Calendar-day fetch window (today - 3 days, 00:00 JST)
+    │   └── hole-cards.ts      # Mucked-showdown hole cards read out of a stored replay detail
     │
     ├── services/
     │   ├── AGENTS.md                   # Nested review rules (sync cursor / auth-generation invariants)
@@ -218,6 +226,7 @@
         ├── runtime-port-manager.ts
         ├── starting-hand-rankings.ts  # 169 starting hand rankings
         ├── table-size.ts      # classifyTableSizeLayer (full/4p/3p/hu)
+        ├── test-service-teardown.ts   # Test-only: cancels pending PokerChaseService persist timers
         ├── test-utils.tsx     # Shared test helpers
         └── version-compare.ts # Numeric-dotted version comparator
 ```

@@ -12,6 +12,7 @@ import {
 } from '../constants/sync'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
+import { projectReplayDetailEvents } from '../background/replay-import'
 import { ApiType, ApiTypeValues, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent } from '../types'
 import type { ApiEvent } from '../types'
 import { processInReplayChunks, filterValidApplicationEvents } from '../utils/database-utils'
@@ -1505,6 +1506,11 @@ export class AutoSyncService {
         // EVT_DEAL.Game.SmallBlind) without guards, so only hand it validated
         // application events; isApiEventType()/restoreSessionEvent() below
         // already re-validate internally so they're safe on the raw chunk as-is.
+        // クラウド由来の合成イベント（90001）を索引（`replayDetails`）へ写す。
+        // `EntityConverter` はこの種別を無視するので、ここで射影しないと
+        // 別端末・新規プロファイルでは索引が空のままになり、直近ハンド画面に
+        // バックアップ済みの手札が出ない。
+        await projectReplayDetailEvents(this.db, events as Array<Record<string, unknown>>)
         const validEvents = await filterValidApplicationEvents(events)
         const entities = converter.convertEventChunk(validEvents)
         entities.hands.forEach(hand => rebuiltHandIds.add(hand.id))

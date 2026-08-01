@@ -70,8 +70,12 @@ const convert = (events: RawApiEvent[]) => new EntityConverter({
 describe('raw event replay order', () => {
   test('repairs the observed legacy 304/305 collision and keeps the TURN bet on TURN', () => {
     const primaryOrder = makeCollisionHand()
+    // ストリート帰属は保存順に依存しない（#340）。この 304 は 305 より前に
+    // 保存されているが、自身の Progress.Phase がTURNを指しているため、
+    // 並び替え前でもTURNへ帰属する。並び替えはボード（communityCards）と
+    // フェーズレコードの生成順を正すために引き続き必要である。
     const primaryAction = convert(primaryOrder).actions.find(action => action.actionType === ActionType.BET)
-    expect(primaryAction?.phase).toBe(PhaseType.FLOP)
+    expect(primaryAction?.phase).toBe(PhaseType.TURN)
 
     const replayOrder = orderApiEventsForReplay(primaryOrder)
     expect(replayOrder.filter(event => event.timestamp === COLLISION_TIMESTAMP).map(event => event.ApiTypeId))

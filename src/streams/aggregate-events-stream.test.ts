@@ -14,6 +14,7 @@
  * （実データで32,221ハンド中920ハンド=2.9%が消失、933件の不一致中785件がこのケース）。
  */
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import type { ApiEvent } from '../app'
 import { ApiType } from '../types'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
@@ -96,7 +97,7 @@ describe('AggregateEventsStream', () => {
     ]
 
     const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-    const service = new PokerChaseService({ db: dbMock })
+    const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
 
     const emittedHands: ApiEvent[][] = []
     service.handAggregateStream.on('data', (hand: ApiEvent[]) => emittedHands.push(hand))
@@ -151,7 +152,7 @@ describe('AggregateEventsStream', () => {
     ]
 
     const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-    const service = new PokerChaseService({ db: dbMock })
+    const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
 
     const emittedHands: ApiEvent[][] = []
     service.handAggregateStream.on('data', (hand: ApiEvent[]) => emittedHands.push(hand))
@@ -219,7 +220,7 @@ describe('AggregateEventsStream', () => {
     ]
 
     const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-    const service = new PokerChaseService({ db: dbMock })
+    const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
 
     const emittedHands: ApiEvent[][] = []
     service.handAggregateStream.on('data', (hand: ApiEvent[]) => emittedHands.push(hand))

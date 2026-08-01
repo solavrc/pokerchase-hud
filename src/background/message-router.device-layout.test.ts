@@ -1,5 +1,6 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import type { ChromeMessage, MessageResponse } from '../types/messages'
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import {
@@ -32,7 +33,7 @@ describe('message-router device-local UI layout', () => {
     ;(chrome.tabs.sendMessage as jest.Mock).mockResolvedValue(undefined)
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     ;(chrome.runtime.onMessage.addListener as jest.Mock).mockClear()
@@ -290,6 +291,51 @@ describe('message-router device-local UI layout', () => {
       ...Object.fromEntries(
         ALL_HUD_POSITION_KEYS.map(key => [key, undefined])
       ),
+    })
+  })
+
+  it('倍率書き込みが失敗しても、永続化済みの配置リセットは配信する', async () => {
+    // chrome.storageにremove+setの原子的な操作はない。removeが成功した後に
+    // setが失敗したとき配信まで止めると、storageは既定なのに開いているタブは
+    // 古い配置のまま、という食い違いが次のリロードまで残る。永続化できた分は
+    // 必ず配信し、失敗はレスポンスで返して再実行させる（操作は冪等）。
+    ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => {
+      callback([{ id: 42 }])
+    })
+    await chrome.storage.local.set({
+      [hudPositionStorageKey(0)]: { top: '12%', left: '20%' },
+    })
+    const realSet = chrome.storage.local.set
+    ;(chrome.storage.local as any).set = jest.fn((_items: any, callback?: () => void) => {
+      ;(chrome.runtime as any).lastError = { message: 'scale write failed' }
+      callback?.()
+      delete (chrome.runtime as any).lastError
+    })
+    const resetResponse = jest.fn()
+
+    try {
+      listener({ action: 'resetDeviceUILayout' }, {}, resetResponse)
+      await getPendingStorageWriteTail()
+      await new Promise(resolve => setTimeout(resolve, 0))
+    } finally {
+      ;(chrome.storage.local as any).set = realSet
+    }
+
+    // 失敗として返す（ユーザーは再実行できる）。
+    expect(resetResponse).toHaveBeenCalledWith({
+      success: false,
+      error: 'scale write failed',
+    })
+    // 配置のリセットは永続化されているので、タブへも必ず届いている。
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      action: 'resetUILayout',
+    })
+    // 倍率は書けていないので配信もしない（storageとタブが食い違わない）。
+    expect(chrome.tabs.sendMessage).not.toHaveBeenCalledWith(42, expect.objectContaining({
+      action: 'updateDeviceUIScale',
+    }))
+    expect(await chrome.storage.local.get(hudPositionStorageKey(0))).toEqual({
+      [hudPositionStorageKey(0)]: undefined,
     })
   })
 

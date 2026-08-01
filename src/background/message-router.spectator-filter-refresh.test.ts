@@ -39,6 +39,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { ApiType } from '../types'
 import type { ApiEvent } from '../types'
 import { registerMessageRouter } from './message-router'
@@ -77,7 +78,7 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
     service.playerId = HERO_ID
 
@@ -99,11 +100,33 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
   })
 
   afterEach(async () => {
+    // 保留中の500msデバウンスpersistState()タイマーの取り消しは、上の
+    // trackServiceForTeardown()（test-service-teardown.ts）が登録するルート
+    // afterEachが行う。#336はここで直接clearTimeoutしていたが、privateフィールド
+    // 名の変更を型検査が捕まえられないため公開APIへ一本化した（同ファイルの
+    // 規約ガードテスト参照）。取り消さないと、このインスタンスのタイマーが後続
+    // テストのbeforeEach窓で発火し、playerId/latestEvtDealを共有storageモックへ
+    // 書き戻す — 「latestEvtDeal未設定」のcontrolテストが遅いCIで落ちた原因
+    // （CI run 30687009635）。
     jest.restoreAllMocks()
     delete (global as any).chrome.tabs
     setLastKnownStats([])
     db.close()
     await db.delete()
+  })
+
+  // Dispatch updateBattleTypeFilter and await the listener's sendResponse,
+  // which fires once setBattleTypeFilter()'s promise chain settles. The
+  // write() under test happens synchronously inside the listener, but
+  // draining the full handler deterministically (instead of hoping a single
+  // setTimeout(0) macrotask hop covers it) keeps the recalc chain from
+  // racing afterEach's db teardown.
+  const dispatchFilterUpdate = () => new Promise<void>(resolve => {
+    messageListener(
+      { action: 'updateBattleTypeFilter', filterOptions: FILTER_OPTIONS } as unknown as ChromeMessage,
+      {} as chrome.runtime.MessageSender,
+      jest.fn(() => { resolve() })
+    )
   })
 
   test('spectating a different table than the hero\'s last deal: the extra refresh is skipped (lineup mismatch)', async () => {
@@ -118,13 +141,7 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
       { playerId: 40, statResults: [] } as any,
     ])
 
-    const sendResponse = jest.fn()
-    messageListener(
-      { action: 'updateBattleTypeFilter', filterOptions: FILTER_OPTIONS } as unknown as ChromeMessage,
-      {} as chrome.runtime.MessageSender,
-      sendResponse
-    )
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await dispatchFilterUpdate()
 
     // The mismatched spectator refresh must not fire -- it would race
     // service.liveEvtDeal's hero-anchored re-sync from recalculateStats()
@@ -136,13 +153,7 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
     service.latestEvtDeal = HERO_DEAL
     setLastKnownStats(HERO_DEAL.SeatUserIds.map(playerId => ({ playerId, statResults: [] } as any)))
 
-    const sendResponse = jest.fn()
-    messageListener(
-      { action: 'updateBattleTypeFilter', filterOptions: FILTER_OPTIONS } as unknown as ChromeMessage,
-      {} as chrome.runtime.MessageSender,
-      sendResponse
-    )
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await dispatchFilterUpdate()
 
     expect(writeSpy).toHaveBeenCalledWith(HERO_DEAL.SeatUserIds)
   })
@@ -151,13 +162,7 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
     // service.latestEvtDeal deliberately left unset.
     setLastKnownStats([{ playerId: 2, statResults: [] } as any])
 
-    const sendResponse = jest.fn()
-    messageListener(
-      { action: 'updateBattleTypeFilter', filterOptions: FILTER_OPTIONS } as unknown as ChromeMessage,
-      {} as chrome.runtime.MessageSender,
-      sendResponse
-    )
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await dispatchFilterUpdate()
 
     expect(writeSpy).toHaveBeenCalledWith([2])
   })
@@ -177,13 +182,7 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
       { playerId: 20, statResults: [] } as any,
     ])
 
-    const sendResponse = jest.fn()
-    messageListener(
-      { action: 'updateBattleTypeFilter', filterOptions: FILTER_OPTIONS } as unknown as ChromeMessage,
-      {} as chrome.runtime.MessageSender,
-      sendResponse
-    )
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await dispatchFilterUpdate()
 
     expect(writeSpy).toHaveBeenCalledWith([10, 20])
   })

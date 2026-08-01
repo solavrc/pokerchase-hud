@@ -17,6 +17,7 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import PokerChaseService from './poker-chase-service'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import {
   getRecentHands,
   clearRecentHandsCache,
@@ -112,7 +113,7 @@ describe('RecentHandsService', () => {
     clearRecentHandsCache()
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
   })
 
@@ -323,6 +324,96 @@ describe('RecentHandsService', () => {
 
     test('FOLD_OPEN (12) never shows, even though the server sends real revealed cards for it', async () => {
       expect(await holeCardsFor(RankType.FOLD_OPEN, [48, 49])).toBeNull()
+    })
+
+    /**
+     * リプレイ取り込み（既定OFF）で保存済みの詳細があれば、マックした
+     * ショーダウン行だけを埋める。サーバ自身がリプレイ機能で開示している
+     * 情報なので、ゲームのUIが表示するものと同じ範囲に収まる。
+     */
+    describe('マック行のリプレイ穴埋め（オプトイン）', () => {
+      const replayPayloadFor = (playerId: number, cards: number[]) => ({
+        Game: { PlayerNum: 6 },
+        Player: { SeatIndex: 0, UserId: playerId, HoleCardList: cards }
+      })
+
+      afterEach(async () => {
+        await chrome.storage.sync.remove('experimentalReplayImportEnabled')
+        await db.replayDetails.clear()
+      })
+
+      test('オプトインが有効なら、マック行をリプレイの手札で埋める', async () => {
+        await chrome.storage.sync.set({ experimentalReplayImportEnabled: true })
+        const handId = nextHandId++
+        await db.hands.add(makeHand({
+          id: handId,
+          results: [{ UserId: PLAYER_ID, HandRanking: -1, Ranking: -2, RewardChip: 0, RankType: RankType.SHOWDOWN_MUCK, Hands: [], HoleCards: [] }]
+        }))
+        await db.replayDetails.put({
+          handId,
+          payload: replayPayloadFor(PLAYER_ID, [48, 49]),
+          fetchedAt: 1
+        })
+
+        const result = await getRecentHands(db, service, PLAYER_ID, 1)
+        expect(result.hands[0]!.holeCards).toEqual(['As', 'Ah'])
+        expect(result.hands[0]!.holeCardsSource).toBe('replay')
+      })
+
+      test('オプトインが無効なら埋めない（保存済みでも読まない）', async () => {
+        const handId = nextHandId++
+        await db.hands.add(makeHand({
+          id: handId,
+          results: [{ UserId: PLAYER_ID, HandRanking: -1, Ranking: -2, RewardChip: 0, RankType: RankType.SHOWDOWN_MUCK, Hands: [], HoleCards: [] }]
+        }))
+        await db.replayDetails.put({
+          handId,
+          payload: replayPayloadFor(PLAYER_ID, [48, 49]),
+          fetchedAt: 1
+        })
+
+        const result = await getRecentHands(db, service, PLAYER_ID, 1)
+        expect(result.hands[0]!.holeCards).toBeNull()
+        expect(result.hands[0]!.holeCardsSource).toBeNull()
+      })
+
+      // ショーダウンに到達していない行は埋めない。サーバがリプレイで
+      // 開示するのはショーダウンに到達した手であり、降りた相手の手札は
+      // この経路の対象外。
+      test('ショーダウンに到達していない行は埋めない', async () => {
+        await chrome.storage.sync.set({ experimentalReplayImportEnabled: true })
+        const handId = nextHandId++
+        await db.hands.add(makeHand({
+          id: handId,
+          results: [{ UserId: PLAYER_ID, HandRanking: -1, Ranking: -2, RewardChip: 0, RankType: RankType.NO_CALL, Hands: [], HoleCards: [] }]
+        }))
+        await db.replayDetails.put({
+          handId,
+          payload: replayPayloadFor(PLAYER_ID, [48, 49]),
+          fetchedAt: 1
+        })
+
+        const result = await getRecentHands(db, service, PLAYER_ID, 1)
+        expect(result.hands[0]!.holeCards).toBeNull()
+      })
+
+      test('WebSocket側に実手札があればそちらを優先する', async () => {
+        await chrome.storage.sync.set({ experimentalReplayImportEnabled: true })
+        const handId = nextHandId++
+        await db.hands.add(makeHand({
+          id: handId,
+          results: [{ UserId: PLAYER_ID, HandRanking: 1, Ranking: -2, RewardChip: 0, RankType: RankType.ONE_PAIR, Hands: [], HoleCards: [48, 49] }]
+        }))
+        await db.replayDetails.put({
+          handId,
+          payload: replayPayloadFor(PLAYER_ID, [0, 1]),
+          fetchedAt: 1
+        })
+
+        const result = await getRecentHands(db, service, PLAYER_ID, 1)
+        expect(result.hands[0]!.holeCards).toEqual(['As', 'Ah'])
+        expect(result.hands[0]!.holeCardsSource).toBe('results')
+      })
     })
 
     test('player absent from Results (e.g. disconnect) -> hidden, not an error', async () => {

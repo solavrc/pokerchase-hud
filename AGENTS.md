@@ -6,7 +6,7 @@ single source of truth for agent guidance; deep event semantics live in
 [docs/api-events.md](docs/api-events.md) and design rationale in
 [docs/architecture.md](docs/architecture.md).
 
-> 📅 Last Updated: 2026-07-29
+> 📅 Last Updated: 2026-08-01
 
 ## 📦 Project Overview
 
@@ -16,7 +16,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 
 - Real-time HUD with 15+ statistics — compact display mode (default) with click-to-expand full grid, threshold color coding, per-stat tooltips
 - Player-type classification icons (🦈💣🪨🐟 quadrant + 🐳 whale override)
-- Per-player drill-downs: positional stats and recent hands (showdown hole cards)
+- Per-player drill-downs: positional stats and recent hands (showdown hole cards; mucked showdown hands filled from stored replay details when the replay import flag is enabled — flag-only, no popup control)
 - Pre-game hero stats (career-to-date panel before the first deal)
 - Busted-player dim display (stats persist muted until seat turnover / session end)
 - All-player SPR/pot odds display
@@ -51,22 +51,108 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 
 ## Working Conventions
 
-- **Language**: respond to the user in Japanese. For documentation, **match the
-  language the file already uses** — a blanket "docs are English" rule stopped
-  describing this repo once `README.md` was deliberately rewritten in Japanese
-  (#302), and reviewers keep flagging Japanese additions to Japanese files
-  because of it. Currently English: this file (and its nested copies),
-  `CONTRIBUTING.md`, `PRIVACY.md`, `e2e/README.md`, `docs/file-organization.md`,
-  `docs/observability.md`, `docs/api-event-examples.md`. Currently Japanese:
-  `README.md`, `docs/api-events.md`, `docs/architecture.md`,
-  `docs/hand-analysis.md`, `docs/pokerstars-export.md`, `docs/firebase-setup.md`,
-  `docs/battle-type-coverage-audit.md`, `docs/chrome-web-store-release.md`. For a
-  new file: English when it is written for agents/contributors, Japanese when it
-  is written for users. Code comments stay English regardless.
-- **Commits**: Conventional Commits (common scopes: `hud`, `stats`, `ui`, `api`, `build`; breaking changes via `feat!` / `BREAKING CHANGE:`).
-- **Tests**: Jest, co-located with sources (`foo.ts` → `foo.test.ts`); jest roots are `src/` and `e2e/` (live-browser scenarios under `e2e/scenarios/` are separate from Jest/CI). Run `npm run test` and `npm run typecheck` before finishing a change; changes touching entity derivation or statistics additionally run `npm run verify-stats -- <file.ndjson>` (see CONTRIBUTING.md).
+- **Language**: respond to the user in Japanese. Which language text is written
+  in follows from what the text *is* — normativity and description are kept
+  apart deliberately:
+  - **Normative text** (rules on what agents/contributors may or must do):
+    English, using the uppercase requirement keywords defined below. This
+    covers this file, its nested copies under `src/`, and `CONTRIBUTING.md`.
+    Note the rule/fact split: the Code Review Rules tell reviewers to verify
+    against `docs/api-events.md`, but that reference does not make docs/
+    normative — the rule itself lives here (English), while the referenced
+    document records the facts the rule points at (Japanese).
+  - **Factual description** (what the system and the PokerChase server actually
+    do, and why — `README.md`, `docs/` generally): Japanese.
+  - **User-facing text** (UI strings, stat `helpText`, GitHub Release bodies):
+    Japanese. Existing English UI strings (e.g. `Waiting for Hand...`,
+    `No Data`) are exempt until the string itself is next edited — do not
+    batch-translate them as a side effect of unrelated changes.
+  - **Code comments**: Japanese (see CONTRIBUTING.md "Code Style"). Existing
+    comments — in either language — need not be retroactively rewritten. A new
+    or edited comment stating an invariant or requirement embeds the
+    applicable uppercase keyword defined below.
+  For an existing file, **match the language the file already uses** — a
+  blanket "docs are English" rule stopped describing this repo once `README.md`
+  was deliberately rewritten in Japanese (#302), and reviewers keep flagging
+  Japanese additions to Japanese files because of it. Currently English: this
+  file (and its nested copies), `CONTRIBUTING.md`, `PRIVACY.md`,
+  `e2e/README.md`, `docs/file-organization.md`, `docs/observability.md`.
+  Currently Japanese: `README.md`, `docs/api-events.md`,
+  `docs/api-event-examples.md` (its bulk is ASCII JSON payloads, but the prose
+  is Japanese), `docs/architecture.md`, `docs/hand-analysis.md`,
+  `docs/pokerstars-export.md`, `docs/firebase-setup.md`,
+  `docs/battle-type-coverage-audit.md`, `docs/chrome-web-store-release.md`,
+  `docs/replay-api.md`.
+  A file whose current language does not match its category above (e.g.
+  `PRIVACY.md`: user-facing but English today) keeps its current language until
+  it is deliberately rewritten as a whole — do not mix languages within one
+  file. A new file takes the language of its category.
+- **Commits**: Conventional Commits (common scopes: `hud`, `stats`, `ui`, `api`, `build`; breaking changes via `feat!` / `BREAKING CHANGE:`). Write the subject and body prose in Japanese — commit messages reach users through the Release-Please changelog and GitHub Release bodies, and user-facing text is Japanese (see Language above). The machine-parsed tokens stay English/ASCII: type, scope (`feat(ui):` …), and the `BREAKING CHANGE:` footer keyword.
+- **Tests**: Jest, co-located with sources (`foo.ts` → `foo.test.ts`); jest roots are `src/` and `e2e/` (live-browser scenarios under `e2e/scenarios/` are separate from Jest/CI). Run `npm run test` and `npm run typecheck` before finishing a change; changes touching entity derivation or statistics additionally run `npm run verify-stats -- <file.ndjson>` (see CONTRIBUTING.md). A test that constructs a `PokerChaseService` MUST wrap it in `trackServiceForTeardown()` (`src/utils/test-service-teardown.ts`) — an uncancelled 500ms debounced `persistState()` timer leaks the defunct instance's state into a later test through the shared `chrome.storage.local` mock (CONTRIBUTING.md "Test conventions").
 - **Service Worker code** (`src/background/`): no `window`; global timer functions only; assume the SW can die at any await (MV3 lifecycle).
+- **Code review requests** (2026-08-01): codex-connector's automatic per-push
+  review is disabled for this repository — a review fires only on an explicit
+  `@codex review` mention. A non-trivial PR MUST get such a review before
+  merge. You MUST NOT mention the same head twice: batch all fixes for a
+  review round into one push, then re-mention the new head if another round
+  is needed. Each review consumes the shared Codex weekly quota (measured
+  ≈0.6% per review), so per-push or per-finding fix→push→review loops MUST
+  NOT be run against this repository; automated review-responders (auto-fix
+  style) SHOULD batch a whole round before pushing. While waiting for a
+  review reply (typically 2–11 min), do not busy-poll with model turns — use
+  a single bounded shell wait.
 - **Docs**: prefer updating existing documents; keep this file and docs/ in sync with behavior changes you ship.
+
+### Requirement Keywords (RFC 2119)
+
+The normative documents of this repo (this file, its nested copies under
+`src/`, and `CONTRIBUTING.md`) use the key words MUST, MUST NOT, SHOULD,
+SHOULD NOT, and MAY as described in RFC 2119 / RFC 8174: they carry their
+requirement-level meaning **only when written in UPPERCASE**. How to read and
+write rules here:
+
+- **MUST / MUST NOT** mark absolute requirements and prohibitions — the things
+  code review blocks on.
+- **SHOULD / SHOULD NOT** mark strong defaults; a change MAY deviate with a
+  stated reason.
+- **MAY** marks genuinely optional behavior.
+- Lowercase "never" / "always" (and similar) in descriptive prose state how the
+  system in fact behaves ("the resolver never infers lifecycle order"), not a
+  requirement. New prohibitions MUST be written as MUST NOT, not as a lowercase
+  "never".
+- Plain imperative sentences ("Do not add another effect…", "Use
+  `processInChunks()`") remain binding instructions; the keywords exist to make
+  the requirement level explicit wherever "is this a rule or a description?"
+  could otherwise be ambiguous.
+- Japanese documents under `docs/` are descriptive, not normative — rules that
+  gate changes or review live here and in `CONTRIBUTING.md` (see Language
+  above). Japanese code comments stating an invariant embed the uppercase
+  keyword (see CONTRIBUTING.md "Code Style").
+
+Operational prohibitions that were historically stated only in docs/ are
+anchored here so the descriptive status of docs/ does not demote them; the
+procedures and rationale stay in the linked documents:
+
+- Telemetry MUST NOT attach raw API events, player names, account IDs, chat
+  text, Firebase document paths, auth objects, or tokens to Sentry; the
+  schema-validation snapshot MUST be produced by `buildSchemaDiagnostic`
+  (details and verification: `docs/observability.md`).
+- The Sentry ingest origin MUST stay in `optional_host_permissions` — moving
+  it to required `host_permissions` can disable existing installs until users
+  re-approve the permission (`docs/chrome-web-store-release.md`).
+- A telemetry-enabled release MUST complete the disclosure procedure in
+  `docs/chrome-web-store-release.md` before submission (store listing /
+  privacy-policy / release-notes updates).
+- The CRX signing key MUST NOT be stored in the repository or in a Google
+  account; handle and back it up per `docs/chrome-web-store-release.md`
+  "Signing key".
+- Raw event payloads or query output that may contain identifiers (display
+  names, `UserId`, `SeatUserIds`, observer/session/auth IDs, received
+  timestamps) MUST NOT be pasted into issues, PRs, chat, or shared logs —
+  share only partial excerpts anonymized per `docs/api-event-examples.md`'s
+  掲載・匿名化方針.
+- `SENTRY_AUTH_TOKEN` is a build secret and MUST NOT be committed
+  (`docs/observability.md`).
 
 ### Build & Tool Commands
 
@@ -90,7 +176,7 @@ Release management: Release-Please runs from pushes to `main` (`.github/workflow
 
 Learned from the 2026-07 season-3 silent-drop incident (a PokerChase payload change silently broke the `EVT_SESSION_RESULTS`/309 schema and stopped auto-sync for ~2 months — see "Raw Event Lake" below and the `AutoSyncService.onNewSessionStart()` fallback under "Cloud Sync & Firebase Integration") — apply when diagnosing missing/inconsistent data:
 
-- **Declare observability**: any claimed mechanism ("X stopped arriving", "the game changed Y") must state where in the causal chain the evidence sits and which rival hypotheses it CANNOT distinguish. Storage tiers differ: local IndexedDB (`apiEvents`) and its exports are the Raw Event Lake — every event with a numeric `timestamp`+`ApiTypeId` is stored regardless of Zod validation (see "Raw Event Lake" below), so a gap there is real evidence of non-arrival at the client. Only the cloud path (Firestore/BQ) is filtered to validation-passing application events before upload, so a gap in Firestore/BQ alone cannot distinguish "never arrived" from "arrived locally but failed validation/wasn't application-typed" — check the local Lake before drawing conclusions from cloud-only data.
+- **Declare observability**: any claimed mechanism ("X stopped arriving", "the game changed Y") MUST state where in the causal chain the evidence sits and which rival hypotheses it CANNOT distinguish. Storage tiers differ: local IndexedDB (`apiEvents`) and its exports are the Raw Event Lake — every event with a numeric `timestamp`+`ApiTypeId` is stored regardless of Zod validation (see "Raw Event Lake" below), so a gap there is real evidence of non-arrival at the client. Only the cloud path (Firestore/BQ) is filtered to validation-passing application events before upload, so a gap in Firestore/BQ alone cannot distinguish "never arrived" from "arrived locally but failed validation/wasn't application-typed" — check the local Lake before drawing conclusions from cloud-only data.
 - **Prefer direct observation over inference**: before concluding from stored data, check whether the boundary can be observed directly (service-worker console, a single live session capture, packet-level logs). One console log settled in minutes what hours of stored-data inference could not.
 - Write mechanisms as falsifiable predictions and check them; have a second pass with a DIFFERENT observation channel attempt to refute a mechanism before documenting it as fact.
 
@@ -116,8 +202,8 @@ Learned from the 2026-07 season-3 silent-drop incident (a PokerChase payload cha
 - Safe path: handle documented shapes explicitly (see `getMissingBBCheck`, the
   FLOP-phase synthesis for all-in runouts) and cite the relevant
   docs/api-events.md section. A genuinely new payload variant is captured as
-  evidence (`npm run schema-diff`) and the schema widened — never rejected at
-  ingestion.
+  evidence (`npm run schema-diff`) and the schema widened — it MUST NOT be
+  rejected at ingestion.
 
 ### Raw Event Lake: validation gates pipelines, never storage or sync progress
 
@@ -133,9 +219,9 @@ Learned from the 2026-07 season-3 silent-drop incident (a PokerChase payload cha
   sync watermark did not skip it (`syncUnparseableFloor` in
   `auto-sync-service.ts` exists for exactly this).
 - Safe path: store anything with a numeric `timestamp`+`ApiTypeId` first;
-  validate only at pipeline entry (`filterValidApplicationEvents()`); treat
-  unparseable application-typed rows as recoverable (hold the sync floor),
-  never as noise.
+  validate only at pipeline entry (`filterValidApplicationEvents()`);
+  unparseable application-typed rows MUST be treated as recoverable (hold the
+  sync floor), never as noise.
 
 ### Derived data changes need dual-pipeline parity and loss-proof rewrites
 
@@ -144,7 +230,7 @@ Learned from the 2026-07 season-3 silent-drop incident (a PokerChase payload cha
   write-time derivation without a `REBUILD_ADVISORY_VERSION` bump; (c)
   destructive operations on derived tables (clear / delete-then-put) that can
   fail midway and leave *less* derived data than before the operation.
-- Why it matters here: live play and rebuild/import must produce identical
+- Why it matters here: live play and rebuild/import MUST produce identical
   entities (`src/cross-path-parity.test.ts` and `npm run verify-stats` guard
   this; a real regression shipped when only one path was updated). A rebuild
   that cleared tables before conversion could wipe all derived data on an
@@ -153,8 +239,8 @@ Learned from the 2026-07 season-3 silent-drop incident (a PokerChase payload cha
   `npm run verify-stats`; bump the advisory version for already-recorded data;
   commit destructive rewrites atomically (single Dexie rw transaction or
   staging swap) so any failure preserves the prior state, and assert the end
-  state deep-equals a from-scratch rebuild. Raw `apiEvents` rows are never
-  deleted by repair paths.
+  state deep-equals a from-scratch rebuild. Repair paths MUST NOT delete raw
+  `apiEvents` rows.
 
 ## Architecture Decision Records
 
@@ -211,9 +297,10 @@ data storage (Dexie.js), normalized entities, Firestore strategy, and v3 index o
 12. **Operation Exclusivity**: Only one long-running operation (export/import/rebuild) at a time, enforced in background.ts via `currentOperationState`
 13. **Optimistic UI + Server Guard**: Popup sets state immediately on click (responsive UX), background validates and rejects if busy (correctness)
 14. **Cache-First Rendering**: Frequently needed state (Firebase auth) cached in `chrome.storage.local` for instant popup rendering
-15. **Rebuild Advisory Versioning**: Bump `REBUILD_ADVISORY_VERSION` (`src/constants/database.ts`) whenever a change alters write-time entity derivation for already-recorded data, so existing users get prompted (badge/notification/popup banner via `src/background/rebuild-advisory.ts`) to run データ再構築 after updating (version 2, 2026-07: the WTSD/WWSF DEAL_ROUND-omission FLOP-phase synthesis fix described under "Confirmed Statistical Definitions" below)
+15. **Rebuild Advisory Versioning**: Bump `REBUILD_ADVISORY_VERSION` (`src/constants/database.ts`) whenever a change alters write-time entity derivation for already-recorded data, so existing users get prompted (badge/notification/popup banner via `src/background/rebuild-advisory.ts`) to run データ再構築 after updating (version 2, 2026-07: the WTSD/WWSF DEAL_ROUND-omission FLOP-phase synthesis fix described under "Confirmed Statistical Definitions" below; version 7, 2026-08: the street-attribution and Ring mid-hand-rebuy derivation fixes described under "Confirmed Statistical Definitions" and "Recent hands drill-down" below)
 16. **Raw Event Lake**: `apiEvents` is the raw wire log — any event with a numeric `timestamp`+`ApiTypeId` is stored, independent of whether it parses under the current Zod schema or is an application type. Validation gates only the real-time pipeline (streams/stats/entity generation), never storage. This is what makes データ再構築 an actual recovery path after a PokerChase payload change breaks a schema: rebuild re-validates every stored raw row against the *current* schema, so a later schema fix retroactively recovers rows that failed to parse when first received — no separate promotion mechanism needed. See "ApiEvent Architecture" and `docs/architecture.md` for the full rationale and history.
-17. **Forced Update (auto-apply + remote kill switch, sola承認)**: `src/background/update-manager.ts` auto-applies a downloaded extension update (`chrome.runtime.reload()`) as soon as it's SAFE, and `src/services/min-version-gate.ts` can remotely disable cloud sync on old versions. See "Forced Update" under Cloud Sync & Firebase Integration for the full safe-window definition, badge precedence, and fail-open semantics.
+17. **Synthetic Lake events (private ApiTypeId range)**: a record the extension itself produces — not received from PokerChase — is stored in `apiEvents` under an ApiTypeId in the private 90000 range (currently only `ApiType.REPLAY_HAND_DETAIL` = 90001, the opt-in replay-detail import). Such an event MUST be an application event for storage/sync purposes, so that NDJSON export/import, Firestore incremental sync and downstream ingestion carry it with no changes to those paths; and it MUST stay invisible to `EntityConverter` / `WriteEntityStream` / statistics / `verify-stats`, which dispatch on known game ApiTypeIds only. That invisibility is behavior, not an accident of `switch` fall-through — it is pinned by `src/replay/synthetic-event-invisibility.test.ts`, and a new synthetic type MUST extend that test. Credentials (a rotating `session` token, `requestKey`) MUST NOT appear in a synthetic event or in any table it is projected into.
+18. **Forced Update (auto-apply + remote kill switch, sola承認)**: `src/background/update-manager.ts` auto-applies a downloaded extension update (`chrome.runtime.reload()`) as soon as it's SAFE, and `src/services/min-version-gate.ts` can remotely disable cloud sync on old versions. See "Forced Update" under Cloud Sync & Firebase Integration for the full safe-window definition, badge precedence, and fail-open semantics.
 
 ### Data Flow
 
@@ -330,20 +417,20 @@ on large DBs (bounded, local work; import is a rare operation).
 
 > **Data model & event edge cases** are consolidated in [docs/api-events.md](docs/api-events.md) — see "Data Constraints & Edge Cases", "Field Relationships", and "Enum Reference" sections.
 
-- **EntityConverter state**: `convertEventsToEntities()` tracks hand boundaries via internal local variables (`currentHandEvents`). Must NOT be called in chunks — a hand spanning chunk boundaries will be lost. Always pass all events in a single call.
+- **EntityConverter state**: `convertEventsToEntities()` tracks hand boundaries via internal local variables (`currentHandEvents`). It MUST NOT be called in chunks — a hand spanning chunk boundaries will be lost. All events MUST be passed in a single call.
 - **EntityConverter/HandLogProcessor never see raw, unvalidated rows**: both read required fields (e.g. `EVT_DEAL.Game.SmallBlind`) via unguarded `switch (event.ApiTypeId)` dispatch, with no `default:` case protecting against a well-known-ApiTypeId-but-malformed payload. Every call site that reads from `apiEvents` (the raw Lake) preserves complete raw equal-ms groups through replay ordering and only then re-validates: unpaged consumers use `orderAndFilterApplicationEventsForReplay()`; `AutoSyncService.rebuildLocalEntities` receives already-ordered raw chunks from `processInReplayChunks()` before calling `filterValidApplicationEvents()`. This re-validation on every rebuild is also the *entire* recovery mechanism for a PokerChase schema break — a later schema fix makes previously-unparseable rows parse on the next rebuild automatically, no promotion step required.
-- **Dexie Collection reuse**: `.offset(n).limit(m)` on a single, already-built Collection object is NOT safe pagination -- Dexie Collections accumulate query modifiers instead of replacing them, so a second `.offset()/.limit()` call on the SAME Collection stacks on top of the first rather than re-querying (a prior version of `processInChunks()` did exactly this and silently only ever processed the first chunk). `processInChunks()` (`src/utils/database-utils.ts`) now takes a `Dexie.Table` and issues a fresh query per chunk, cursor-pagination style: `where('[timestamp+ApiTypeId+sequence]').above(lastKey).limit(N)`. Any new caller must pass the Table, not a pre-built Collection, and must retain all three cursor components across pages.
-- **Equal-millisecond replay**: primary/cloud identity stays `[timestamp+ApiTypeId+sequence]`. Stateful readers use `processInReplayChunks()` or `orderAndFilterApplicationEventsForReplay()`, holding equal-ms groups across primary-key page boundaries. Only an isolated two-event snapshot/action pair proven by exact phase/actor/stack/Pot deltas may be reversed; compound groups stay entirely canonical. The resolver must see the complete raw group before Zod/application filtering, or noise removal can turn a compound group into a false pair. It deliberately does not infer session/hand lifecycle order without prior state. Never treat primary-key/NDJSON line order as original arrival order.
+- **Dexie Collection reuse**: `.offset(n).limit(m)` on a single, already-built Collection object is NOT safe pagination -- Dexie Collections accumulate query modifiers instead of replacing them, so a second `.offset()/.limit()` call on the SAME Collection stacks on top of the first rather than re-querying (a prior version of `processInChunks()` did exactly this and silently only ever processed the first chunk). `processInChunks()` (`src/utils/database-utils.ts`) now takes a `Dexie.Table` and issues a fresh query per chunk, cursor-pagination style: `where('[timestamp+ApiTypeId+sequence]').above(lastKey).limit(N)`. Any new caller MUST pass the Table, not a pre-built Collection, and MUST retain all three cursor components across pages.
+- **Equal-millisecond replay**: primary/cloud identity stays `[timestamp+ApiTypeId+sequence]`. Stateful readers use `processInReplayChunks()` or `orderAndFilterApplicationEventsForReplay()`, holding equal-ms groups across primary-key page boundaries. Only an isolated two-event snapshot/action pair proven by exact phase/actor/stack/Pot deltas may be reversed; compound groups stay entirely canonical. The resolver MUST see the complete raw group before Zod/application filtering, or noise removal can turn a compound group into a false pair. It deliberately does not infer session/hand lifecycle order without prior state. Primary-key/NDJSON line order MUST NOT be treated as the original arrival order.
 - **Export size limits**: Service Worker → content_script message limit is 64MiB. Data URL limit is ~2MB. Large exports use chunked message passing with Blob-based download in content_script.
 - **PokerStars hand history format**: `calls` shows additional call amount (not total bet). `Dealt to` is hero-only. Summary uses `folded on the Flop/Turn/River`. See [docs/pokerstars-export.md](docs/pokerstars-export.md).
 - **Side pot handling**: `collected X from main pot` / `from side pot` / `from side pot-N` (PS format). Winner determination uses `HandRanking` with `RewardChip` fallback. Main pot winner may not be eligible for side pots (e.g., ante all-in). Relies on invariant `Pot + sum(SidePot) == sum(RewardChip)`.
 - **Ante all-in chip estimation**: When multiple players have `Chip=0, BetChip=0`, `Progress.Pot/SidePot` tier differences are used to reconstruct actual contributions (`buildAnteAllInChipsMap`). `EVT_HAND_RESULTS.RewardChip` resolves correct seat assignment (`fixAnteAllInChips`). Seat index ≠ stack order.
 - **BB action skip**: PokerChase skips BB action when all other players are all-in or folded. Measured on the 393,830-event real-data audit: **31.9% of hands (9,979/31,301)** hit this path (e.g. walks) — a mainline case, not a rare edge case. `getMissingBBCheck` inserts `checks` (excluded for `NO_CALL` wins).
-- **Winner definition (unified, #97)**: Both pipelines (`EntityConverter` and `WriteEntityStream`) define a hand winner as `RewardChip>0` (PT4-style "won any portion of the pot"), not `HandRanking===1` — the latter misses legitimate side-pot winners whose hand wasn't the overall best. See `src/entity-converter.ts` and `src/streams/write-entity-stream.ts`.
+- **Winner definition (unified, #97)**: Both pipelines (`EntityConverter` and `WriteEntityStream`) define a hand winner as **contested chips actually won**, not `HandRanking===1` — the latter misses legitimate side-pot winners whose hand wasn't the overall best. `deriveHandSettlement()` (`src/utils/hand-chip-accounting.ts`) resolves this per contribution tier and sets `Hand.winningPlayerIds` from `contestedAward > 0`, i.e. `RewardChip` **minus the uncalled return**. Raw `RewardChip > 0` is *not* the test: `RewardChip` includes a player's own over-bet coming back when nobody could call it, and getting your own chips returned is not winning a portion of the pot. Cross-checking 2,019 hands against the server's own records found 30 hands where the two differ, and the tier-based resolution was correct in all 30. See also `src/entity-converter.ts` and `src/streams/write-entity-stream.ts`.
 - **Position derivation (#95)**: Positions are derived from explicit `Game.ButtonSeat`/`SmallBlindSeat`/`BigBlindSeat` via `getPositionMap()` (`src/utils/position-utils.ts`), not by rotating `seatUserIds` — the rotation heuristic mislabeled positions whenever a seat was empty (58% of real hands have at least one empty seat).
 - **SHOWDOWN phase gating (#94)**: A SHOWDOWN phase requires **≥2 showdown-participant `RankType`s** (`isShowdownParticipant()` in `src/types/game.ts`: ranks 0-9 or `SHOWDOWN_MUCK`/11), not merely `Results.length > 1` — `NO_CALL`/`FOLD_OPEN` reveals don't count.
 - **HandLogExporter batch optimization**: `exportMultipleHands` prefetches all hands and API events in 2 DB queries, then processes in memory. Avoids N+1 query pattern (previously 100 hands = 300+ DB queries). Single-hand `exportHand` retains per-hand DB queries for simplicity.
-- **Popup ↔ Background state synchronization**: Long-running operations (export/import/rebuild) track state in `currentOperationState` global variable in background.ts. Popup queries via `getOperationState` on mount to restore UI after close/reopen. Progress messages (`processing` state) must also set the active operation state (not just `started`), because popup may miss `started` during close/reopen window.
+- **Popup ↔ Background state synchronization**: Long-running operations (export/import/rebuild) track state in `currentOperationState` global variable in background.ts. Popup queries via `getOperationState` on mount to restore UI after close/reopen. Progress messages (`processing` state) MUST also set the active operation state (not just `started`), because popup may miss `started` during close/reopen window.
 - **Optimistic UI updates**: Button click handlers set local state immediately before sending message to background, then revert if background rejects. Prevents race window where buttons remain clickable between click and first progress message.
 - **Background concurrent operation guard**: Background rejects `exportData`/`rebuildData` when `currentOperationState !== 'idle'`. This is the server-side guarantee against double execution regardless of popup UI state.
 - **Firebase auth cache**: Auth state is cached to `chrome.storage.local` (`firebaseAuthCache` key) on `onAuthStateChange`. Popup reads cache first for instant rendering, then verifies with background. Prevents "not signed in" flash during heavy background operations.
@@ -360,7 +447,7 @@ on large DBs (bounded, local work; import is a rare operation).
 ### Data Processing
 
 - **Scale Assumptions**: System designed to handle tens of thousands of records efficiently
-- **ActionDetail Detection**: Always implement in statistics modules for consistency
+- **ActionDetail Detection**: stat-specific flags derivable from the per-action context MUST be implemented in statistics modules (`detectActionDetails`) for consistency. Structural/outcome-dependent flags are the documented exception — e.g. `ALL_IN` (action normalization) and `RIVER_CALL_WON` (assigned after winner determination) live inside both write pipelines, and such flags MUST stay mirrored across `entity-converter.ts` / `write-entity-stream.ts` (see Code Review Rules)
 - **Batch Operations**: Import data in chunks to prevent browser freezing
 - **Transaction Safety**: Complete READONLY before READWRITE operations
 - **Memory Management**: Process large datasets incrementally
@@ -389,7 +476,7 @@ on large DBs (bounded, local work; import is a rare operation).
 - **Recent hands drill-down** (`getRecentHands`, `src/services/recent-hands-service.ts`, `src/components/hud/RecentHandsPanel.tsx` + `RecentHandsPanelTrigger.tsx`): HM3/PT4 "Last Hands" + Hand2Note "recent showdown hole cards" pattern, cloning the `#128` positional drill-down's architecture (indexed `hands`/`actions`/`phases` queries batched by `handId`, 30s cache keyed on `playerId`+filters+`limit`, chevron trigger next to it in `HudHeader.tsx`, App-level `openPanel: { playerId, kind: 'positional' | 'recentHands' } | null` state making the two drill-downs mutually exclusive). Lists the player's last N hands (default 10, own `limit` param -- independent of `handLimitFilter`, which only bounds the aggregate stats), newest hand-id first. Key design points:
   - **Hole cards without touching `apiEvents`**: `hand.results` (persisted straight from `EVT_HAND_RESULTS.Results` by `write-entity-stream.ts`/`entity-converter.ts`) already carries each result row's `HoleCards`, and the server itself only ever sends valid card indices for cards that were actually shown -- so visibility is derived entirely from the already-persisted `Hand` entity, gated on `isShowdownParticipant(result)` (RankType 0-9 or 11 SHOWDOWN_MUCK) AND the `HoleCards` array actually holding valid values. RankType 10 NO_CALL and 12 FOLD_OPEN never show cards here even though the server does send real values for a voluntary post-fold reveal (12) -- this panel is specifically "recent *showdown* hole cards".
   - **Preflop-line taxonomy** (`derivePreflopLine`, full doc comment on `PreflopLine` in `src/types/stats.ts`): a simplified `Open`/`3Bet`/`NBet`/`Limp`/`ColdCall`/`Call`/`Check`/`Walk`/`Fold` label per hand, derived from the player's own PREFLOP actions plus a locally-recomputed `phasePrevBetCount` (same formula as `write-entity-stream.ts`, replayed over a batched `actions.where('handId').anyOf(handIds)` fetch covering all seats -- own actions alone can't tell you what bet count you faced). The label reflects the *last* action taken; if that's a FOLD and there was a preceding line, it gets a `-F` suffix (e.g. `3Bet-F`).
-  - **netChips**: exact signed per-hand chip result for every seat: `grossPayout - totalContribution`, where `grossPayout` is `RewardChip` (including uncalled returns) and `totalContribution = startingStack + grossPayout - finalStack`. `src/utils/hand-chip-accounting.ts` shares the DEAL ante/blind semantics with `HandLogProcessor`, validates the causal DEAL/RESULTS lineup, payout conservation, stack snapshots, and `BattleType`-specific table conservation, and persists `Hand.playerChipAccounting` through both the live writer and Raw Event Lake rebuild converter. The UI renders `+N`, `-N`, and `0`; ambiguous short-ante tiers, incomplete snapshots, legacy hands awaiting rebuild, or inconsistent accounting stay `null`/`-` rather than being estimated. Tournament types (0/1/2/6) require `ΣstartingStack === ΣfinalStack`; Ring types (4/5) allow rake outflow (`ΣfinalStack <= ΣstartingStack`) but reject chip creation. Derived-data changes require `REBUILD_ADVISORY_VERSION` to be bumped so old hands are rebuilt.
+  - **netChips**: exact signed per-hand chip result for every seat: `grossPayout - totalContribution`, where `grossPayout` is `RewardChip` (including uncalled returns) and `totalContribution = startingStack + grossPayout - finalStack`. `src/utils/hand-chip-accounting.ts` shares the DEAL ante/blind semantics with `HandLogProcessor`, validates the causal DEAL/RESULTS lineup, payout conservation, stack snapshots, and `BattleType`-specific table conservation, and persists `Hand.playerChipAccounting` through both the live writer and Raw Event Lake rebuild converter. The UI renders `+N`, `-N`, and `0`; ambiguous short-ante tiers, incomplete snapshots, legacy hands awaiting rebuild, or inconsistent accounting stay `null`/`-` rather than being estimated. Tournament types (0/1/2/6) require `ΣstartingStack === ΣfinalStack`; Ring types (4/5) allow rake outflow (`ΣfinalStack <= ΣstartingStack`) but reject chip creation. **Ring mid-hand rebuy/add-on** (#339) is the one documented inflow that is not chip creation: `deriveMidHandChipInflow` recovers it per seat from the hand's own snapshots (within a street `Chip + BetChip` is invariant; across a street boundary it drops by exactly that street's last `BetChip`; a final check of the same identity against `EVT_HAND_RESULTS` catches the auto top-up that appears only there), subtracts it from the final stack, and only then applies conservation. Any snapshot DECREASE below that invariant is a fused-buffer/dropped-event signature and makes the whole hand's inflow unknown, keeping conservation strict; the RESULTS pass counts an excess only, never a shortfall. Inflow tolerance is Ring-only — a tournament has no mid-hand top-up, so an increase there stays a corruption signal. Derived-data changes MUST bump `REBUILD_ADVISORY_VERSION` so old hands are rebuilt.
 
 ### Real-time Processing
 
@@ -409,7 +496,7 @@ on large DBs (bounded, local work; import is a rare operation).
 
 - **HUD behavior**: Show "No Data" or cached values when data incomplete. Preserve session state across reconnections.
 - **Batch vs Live**: Use `service.setBatchMode()` to differentiate import from live events
-- **Service Worker Keepalive**: 25s interval during active games. Armed on `EVT_ENTRY_QUEUED`(201) / `EVT_DEAL`(303, only when the raw `Player` field is present — spectator-mode deals must not arm it) / `EVT_SESSION_DETAILS`(308); disarmed on `EVT_SESSION_RESULTS`(309) / `EVT_ENTRY_CANCELLED`(203). The same trigger set drives the Service Worker's session-activity tri-state in `event-ingestion.ts` (see Forced Update). Prevents 30s timeout.
+- **Service Worker Keepalive**: 25s interval during active games. Armed on `EVT_ENTRY_QUEUED`(201) / `EVT_DEAL`(303, only when the raw `Player` field is present — spectator-mode deals MUST NOT arm it) / `EVT_SESSION_DETAILS`(308); disarmed on `EVT_SESSION_RESULTS`(309) / `EVT_ENTRY_CANCELLED`(203). The same trigger set drives the Service Worker's session-activity tri-state in `event-ingestion.ts` (see Forced Update). Prevents 30s timeout.
 
 ## Components & Modules
 
@@ -482,7 +569,7 @@ active pointer interaction, rejects layout-load callbacks bound to an older
 request or scale, and emits at most one persistence effect from the common
 interaction exit. Do not add another effect/ref that mutates or saves hand-log
 coordinates outside that transition outlet. **The `reset` action is the one
-input that must not trust the machine's own `environment`**: it carries a
+input that MUST NOT trust the machine's own `environment`**: it carries a
 freshly read `readHandLogEnvironment()` and adopts it. Reset exists to rescue a
 panel the user cannot find, and a stale cached viewport is one of the ways a
 panel gets lost — computing the default *and* the in-viewport clamp from the
@@ -576,7 +663,7 @@ stored one: a viewport narrower than the stored width shrinks only the render,
 and that is where the wrapping actually happens. Do not reintroduce a fixed
 chars-per-line constant: the panel resizes down to `HAND_LOG_MIN_WIDTH`
 (200px), where the original 60-chars-per-line assumption under-counted lines
-and rows overlapped. Every input to the wrap calculation must stay in
+and rows overlapped. Every input to the wrap calculation MUST stay in
 `getItemSize`'s `useCallback` deps — react-window rebuilds its row-bounds cache
 only when the `rowHeight` identity changes.
 
@@ -614,10 +701,11 @@ For detailed instructions on how to add new statistics to the HUD, see [CONTRIBU
 
 **Tracker-standard primaries, opt-in decision-focused variants**: Primary stats (VPIP, PFR, AF, AFq, WTSD, WWSF, etc.) follow official tracker (PT4/HM3) definitions so values are directly comparable with other trackers and with players' existing intuitions built on those tools. The previous "player decision focus" philosophy — measuring decision-making rather than automatic game outcomes — now lives in the opt-in `*a` variants (`wtsdNoAi`/WTSDa, `wwsfNoAi`/WWSFa): these exclude preflop all-ins (no postflop decision was made) and are disabled by default, enabled per-user from the popup's HUD display settings.
 
-### Confirmed Statistical Definitions (PT4-aligned, audited 2026-03, re-aligned 2026-07 #115, DEAL_ROUND-omission fix 2026-07)
+### Confirmed Statistical Definitions (PT4-aligned, audited 2026-03, re-aligned 2026-07 #115, DEAL_ROUND-omission fix 2026-07, street-attribution fix 2026-08 #340)
 
 These definitions were validated by hand-tracing 22 hands from the integration test suite (2026-03), then cross-checked against PT4/HM3 official documentation and an independent oracle over a 393,830-event real-data capture (2026-07, #115 — see `npm run verify-stats`):
 
+- **Street attribution** (#340, the population every phase-scoped stat below is built on): an action's street comes from that action's own `EVT_ACTION.Progress.Phase`, resolved by the single shared helper `resolveActionPhase` (`src/utils/action-phase.ts`) in both pipelines — never from a counter advanced by `EVT_DEAL_ROUND`. The counter lags whenever 304 rows are stored ahead of the 305 that opens their street (equal-timestamp reconnect bursts order by ApiTypeId, and `orderApiEventsForReplay` only reverses isolated 2-event groups — `docs/api-events.md`), when `EVT_DEAL_ROUND` never arrives, and on fused table-move buffers. **The hand-ending row (`Progress.NextActionSeat === -2`) MUST be excluded from the override**: its `Phase` is pinned to 3 regardless of the real street, so it keeps the running street instead. Real-data measurement (2026-08-01 capture, 40,932 hands / 345,016 actions): 29 hands / 63 actions change street under the fix, while 28,637 hand-ending rows would have been mis-promoted to RIVER without the exclusion.
 - **CBet (CB)**: PFR opens betting on flop (phasePrevBetCount=0, cBetter=playerId). Extended to turn/river while initiative retained.
 - **CBetFold (CBF)**: Fold rate **only when a CBet was actually executed** (`cBetExecuted=true`). If PFR checked (no CBet), subsequent bets by others do NOT create CBetFold opportunities. Scoped to the same street as the CBet (`cBetPhase` tracking).
 - **WTSD** (PT4 built-in definition): Flops seen → showdown, where "flops seen" **includes preflop all-ins** — PT4 staff: "Those stats are based on flops seen, not based on flops seen when not all-in, so all-in spots will count." Phase membership for FLOP is normally `BetStatus === BET_ABLE || BetStatus === ALL_IN` at the FLOP `EVT_DEAL_ROUND`, in both `entity-converter.ts` and `write-entity-stream.ts` (#115); FOLDED players remain excluded (the original #97 fix stays in place — only the all-in carve-out was reversed). `SHOWDOWN_MUCK (RankType=11)` counts as showdown. **DEAL_ROUND-omitted shape** (post-#115 fix): when every remaining player is all-in preflop, PokerChase skips `EVT_DEAL_ROUND` entirely for the rest of the hand and ships the whole remaining board in `EVT_HAND_RESULTS.CommunityCards` instead (`docs/api-events.md`), so no BetStatus snapshot for FLOP ever exists. Both pipelines detect this (no FLOP phase pushed yet, and the accumulated board reaches ≥3 cards once `EVT_HAND_RESULTS` arrives) and synthesize the FLOP phase from `EVT_HAND_RESULTS` instead: membership is every dealt seat that did **not** take a PREFLOP `FOLD` action (the only way to leave before an unconditional preflop-all-in runout), and `communityCards` is the first 3 cards of the merged board. This closes the gap flagged in PR #115's unresolved review thread, where these hands silently kept a zero "flops seen" denominator despite reaching showdown. Real-data measurement (2026-07-04 capture, 393,830 events / 31,392 hands): 3,071 hands (9.8%) hit this path, adding 6,348 player-hand pairs to the WTSD/WWSF population.
@@ -703,7 +791,7 @@ Dynamic statistics for all players, with hero having additional hand improvement
 - **Entity schemas** in `src/types/entities.ts`: `Hand`, `Phase`, `Action`, `User` with parse functions
 - **Type guards** (no type assertions): `isApiEventType()`, `parseApiEvent()`, `isApplicationApiEvent()`, `getValidationError()`
 - **Breaking changes**: Use `ApiEvent` (removed: `ApiEventType`, `ApiEventUnion`, `ApiEventSubset`, `ApiEventMap`)
-- **Validation gates the pipeline, never storage** (Raw Event Lake — see Design Principles #16 and `docs/architecture.md`): the content-deduplicating raw merge in `src/background/event-ingestion.ts` runs before `parseApiEvent`/`isApplicationApiEvent` and stores anything with a numeric `timestamp`+`ApiTypeId` — non-application events (202/205 keepalive/timer), ApiTypeIds unknown to `apiEventSchemas`, and app-type events that currently fail to parse are all persisted. The same event is only forwarded to `eventLogger`/`handLogStream`/`handAggregateStream`/`realTimeStatsStream` when it *does* parse as a known application event. Any code path that reads raw `apiEvents` rows and feeds them into `EntityConverter` or `HandLogProcessor` (which read required fields like `EVT_DEAL.Game.SmallBlind` without guards) must preserve raw group size through replay ordering and re-validate afterward — use `orderAndFilterApplicationEventsForReplay()` for unpaged reads, or `processInReplayChunks()` followed by `filterValidApplicationEvents()` for ordered raw chunks.
+- **Validation gates the pipeline, never storage** (Raw Event Lake — see Design Principles #16 and `docs/architecture.md`): the content-deduplicating raw merge in `src/background/event-ingestion.ts` runs before `parseApiEvent`/`isApplicationApiEvent` and stores anything with a numeric `timestamp`+`ApiTypeId` — non-application events (202/205 keepalive/timer), ApiTypeIds unknown to `apiEventSchemas`, and app-type events that currently fail to parse are all persisted. The same event is only forwarded to `eventLogger`/`handLogStream`/`handAggregateStream`/`realTimeStatsStream` when it *does* parse as a known application event. Any code path that reads raw `apiEvents` rows and feeds them into `EntityConverter` or `HandLogProcessor` (which read required fields like `EVT_DEAL.Game.SmallBlind` without guards) MUST preserve raw group size through replay ordering and re-validate afterward — use `orderAndFilterApplicationEventsForReplay()` for unpaged reads, or `processInReplayChunks()` followed by `filterValidApplicationEvents()` for ordered raw chunks.
 - **Cloud sync is application-type-only** (cost decision): `AutoSyncService.syncToCloud()` filters each raw chunk to `isApplicationApiEvent` before upload — non-application noise (202/205 keepalive/timer, or any ApiTypeId outside `ApiTypeValues`) never leaves the device. The upload cursor still advances on the *raw* chunk boundary (not the filtered subset) for these rows, otherwise a chunk that's 100% noise would never advance and the sync loop would refetch it forever.
 - **Watermark never advances past a recoverable unparseable row** (PR #142 review r3611258695, fixed in `fix/sync-watermark-unparseable`): an application-typed row that currently fails Zod validation (e.g. a 309 broken by a PokerChase payload change; see the season-3 incident under "Incident Diagnosis Practices") is *not* treated like noise for watermark purposes — `isUnparseableApplicationEvent()` (`src/types/api.ts`) tells them apart by ApiTypeId membership in `ApiTypeValues` alone (not full schema success), since `isApplicationApiEvent` collapses both to `false`. Naively advancing the raw-chunk cursor past such a row is a **permanent loss**, not a delay: once a *later* valid event uploads, Firestore's own max timestamp (`getCloudMaxTimestamp()`) moves past the unparseable row, and every future `.where('timestamp').above(cloudMaxTimestamp)` query excludes it forever — even after a future schema fix makes it parseable, since the raw Lake copy is never re-offered to the query. `AutoSyncService` persists the earliest such row's timestamp in `meta` (`syncUnparseableFloor`) and rewinds each sync's scan floor to just before it until it resolves, re-offering it to `isApplicationApiEvent` (and therefore to upload) on every sync. This can't starve the loop (only rows that structurally *should* eventually parse hold the floor back — known noise still advances immediately) and can't silently lose data (the marker persists across Service Worker restarts and is only cleared once a full scan finds nothing pending). See the tradeoff comment at the top of `AutoSyncService.syncToCloud()` for alternatives considered (never-advance-at-all reintroduces the SPOF-era starvation; uploading unparsed rows as opaque blobs pollutes Firestore's document shape; rebuild-triggered-only re-scan misses the ship-then-sync-before-rebuild race).
 
@@ -711,7 +799,7 @@ Dynamic statistics for all players, with hero having additional hand improvement
 
 Defined in `src/db/poker-chase-db.ts` (Dexie/IndexedDB). See [docs/architecture.md](docs/architecture.md) for design rationale.
 
-#### Tables (v6)
+#### Tables (v7)
 
 | Table | Primary Key | Key Indexes | Purpose |
 |---|---|---|---|
@@ -719,9 +807,10 @@ Defined in `src/db/poker-chase-db.ts` (Dexie/IndexedDB). See [docs/architecture.
 | `hands` | `id` (auto) | `*seatUserIds`, `approxTimestamp` | Processed hand data |
 | `phases` | `[handId+phase]` | `handId`, `*seatUserIds` | Per-street state |
 | `actions` | `[handId+index]` | `[playerId+phase]`, `[playerId+actionType]`, `*actionDetails` | Player actions with stat markers |
-| `meta` | `id` | `updatedAt` | Import status, stats cache, sync state |
+| `meta` | `id` | `updatedAt` | Import status, stats cache, sync state, replay-import queue/status |
+| `replayDetails` | `handId` | `fetchedAt` | Replay detail payloads (opt-in replay import; projection of the ApiTypeId 90001 rows in the Lake) |
 
-v3 added composite indexes for player-specific queries. v6 changes the Raw Lake primary key to `[timestamp+ApiTypeId+sequence]`. Since IndexedDB cannot change an object-store primary key in place, v4 copies old rows to a staging store with `sequence: 0`, v5 drops the old store, and v6 recreates/copies it transactionally. Existing rows were already unique under the old key, so this is mechanical and does not change `hands`/`phases`/`actions`; `REBUILD_ADVISORY_VERSION` therefore remains 3.
+v3 added composite indexes for player-specific queries. v6 changes the Raw Lake primary key to `[timestamp+ApiTypeId+sequence]`. v7 adds the `replayDetails` store only — no existing store or write-time derivation changes, so `REBUILD_ADVISORY_VERSION` stays put. Since IndexedDB cannot change an object-store primary key in place, v4 copies old rows to a staging store with `sequence: 0`, v5 drops the old store, and v6 recreates/copies it transactionally. Existing rows were already unique under the old key, so this is mechanical and does not change `hands`/`phases`/`actions`; `REBUILD_ADVISORY_VERSION` therefore remains 3.
 
 **Storage growth**: `apiEvents` now also durably stores non-application noise (202/205 keepalive/timer events at roughly the same volume as application events per session — expect apiEvents row count to grow, not just its "useful" subset). IndexedDB quota is browser-managed and generally GB-scale (much larger than `storage.local`'s ~10MB), so this is not expected to be a practical problem. There is currently **no automatic pruning** of `apiEvents`: the existing quota-exceeded handling in `src/services/poker-chase-service.ts` (`cleanupOldStorageData`) and `src/utils/database-utils.ts` (`withTransaction`'s `QuotaExceededError` branch) targets `chrome.storage.local` service-state persistence and IndexedDB transaction errors respectively — neither actively prunes `apiEvents` rows. Users can reset via the popup's "全データ削除" if this ever becomes a real problem; revisit with active pruning only if it does.
 
@@ -744,9 +833,17 @@ v3 added composite indexes for player-specific queries. v6 changes the Raw Lake 
   not access the restricted local area directly.
 - **Layout reset is one operation over every device-local appearance key**:
   the popup's 「位置とサイズをリセット」 (`UIScaleSection.tsx`) sends a single
-  `resetDeviceUILayout`, and the background removes `handLogLayout`, every
-  `hudPosition_*` key, *and* `uiScale` in one `chrome.storage.local.remove`
-  call so they cannot diverge. Scale is in scope because the button means
+  `resetDeviceUILayout`, and the background removes `handLogLayout` and every
+  `hudPosition_*` key in one `chrome.storage.local.remove` call, then writes
+  `uiScale` back to its default in a `set` — a *missing* local `uiScale` means
+  "not migrated to device-local" (`getDeviceUILayout`'s `needsScaleMigration`),
+  so removing it would re-migrate from the legacy synced value and resurrect
+  the pre-reset scale. There is no atomic remove+set in `chrome.storage`, so
+  the reachable guarantee is not "both or neither" but **whatever persisted is
+  always broadcast**: if the `set` fails after the `remove` succeeded, the
+  layout reset is still delivered to open tabs and the response reports the
+  failure, so storage and open tabs never disagree and the (idempotent)
+  operation can just be retried. Scale is in scope because the button means
   "back to the default look" (sola): leaving a large scale behind returns the
   panels to default positions computed for a size they no longer are, so the
   hand log's default slot above the seat plate stops fitting. Keys come from `HUD_POSITION_STORAGE_KEYS`
@@ -785,7 +882,7 @@ or scoped broadcasts. Device-layout reads/writes go from Popup/content script
 
 Key `pokerChaseServiceState` in `storage.local`. Auto-saved with 500ms debounce on setter calls. Restored on Service Worker startup. Handles quota exceeded with automatic cleanup.
 
-- **Hero `playerId` must survive spectator-mode deals** (field report, sola 2026-07-20): `EVT_DEAL.Player` is `undefined` in "観戦モード" (spectator mode — e.g. after the hero busts out of a tournament but the client keeps receiving deal events for other players' tables; see `docs/api-events.md` "EVT_DEAL: Playerフィールドの欠落"). `AggregateEventsStream`'s `EVT_DEAL` case only assigns `service.playerId`/`service.latestEvtDeal` when `event.Player?.SeatIndex !== undefined` — a spectator-mode deal leaves both untouched rather than clobbering them to `undefined`. Before this fix, any such deal near session end wiped the already-known hero identity and persisted the `undefined` through the 500ms debounce, so a reload (Service Worker restart, restoring from `storage.local`) came back with no hero identity and the pre-game hero stats panel (`#158`) didn't render — a plain cloud-download + `rebuildAllData`/`importData` masked the bug because those paths re-derive `playerId` via `findLatestPlayerDealEvent()` (`src/utils/database-utils.ts`), which explicitly filters for deals where `Player.SeatIndex` is present. A different account logging in still overwrites `playerId` correctly, since that always arrives as a deal *with* `Player` present. `SessionState.reset()` (session/table-scoped: id/battleType/name/players, triggered on `EVT_ENTRY_QUEUED`) intentionally does **not** touch `playerId`/`latestEvtDeal` — those are hero-identity state, not session state, and must outlive any single session/table.
+- **Hero `playerId` must survive spectator-mode deals** (field report, sola 2026-07-20): `EVT_DEAL.Player` is `undefined` in "観戦モード" (spectator mode — e.g. after the hero busts out of a tournament but the client keeps receiving deal events for other players' tables; see `docs/api-events.md` "EVT_DEAL: Playerフィールドの欠落"). `AggregateEventsStream`'s `EVT_DEAL` case only assigns `service.playerId`/`service.latestEvtDeal` when `event.Player?.SeatIndex !== undefined` — a spectator-mode deal leaves both untouched rather than clobbering them to `undefined`. Before this fix, any such deal near session end wiped the already-known hero identity and persisted the `undefined` through the 500ms debounce, so a reload (Service Worker restart, restoring from `storage.local`) came back with no hero identity and the pre-game hero stats panel (`#158`) didn't render — a plain cloud-download + `rebuildAllData`/`importData` masked the bug because those paths re-derive `playerId` via `findLatestPlayerDealEvent()` (`src/utils/database-utils.ts`), which explicitly filters for deals where `Player.SeatIndex` is present. A different account logging in still overwrites `playerId` correctly, since that always arrives as a deal *with* `Player` present. `SessionState.reset()` (session/table-scoped: id/battleType/name/players, triggered on `EVT_ENTRY_QUEUED`) intentionally does **not** touch `playerId`/`latestEvtDeal` — those are hero-identity state, not session state, and MUST outlive any single session/table.
 
 ---
 

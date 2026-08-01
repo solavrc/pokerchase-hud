@@ -16,6 +16,7 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import PokerChaseService from './poker-chase-service'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { getPositionalStats, clearPositionalStatsCache, buildCacheKey } from './positional-stats-service'
 import { ActionDetail, ActionType, BattleType, PhaseType, Position } from '../types/game'
 import { ApiType } from '../types'
@@ -148,7 +149,7 @@ describe('PositionalStatsService', () => {
     clearPositionalStatsCache()
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
     await seedDataset(db)
   })

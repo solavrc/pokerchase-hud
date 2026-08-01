@@ -32,6 +32,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { ApiType } from '../types'
 import { registerEventIngestion } from './event-ingestion'
 import { connectedPorts } from './ports'
@@ -53,7 +54,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
     await resetUndecodedEventStats(db)
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     ;(chrome.runtime as any).onConnect = { addListener: jest.fn() }

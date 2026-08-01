@@ -27,6 +27,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { createImportExportHandlers } from './import-export'
 import { BattleType } from '../types/game'
 import { ApiType } from '../types'
@@ -69,7 +70,7 @@ describe('getLatestSessionStats -- pre-game hero stats fallback', () => {
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     await db.hands.bulkAdd([
@@ -233,7 +234,7 @@ describe('getLatestSessionStats -- DB-inference fallback for unknown in-memory p
 
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     await db.hands.bulkAdd([

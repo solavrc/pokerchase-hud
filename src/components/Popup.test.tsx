@@ -173,21 +173,40 @@ describe('Popup', () => {
     }
     localData = {}
 
-    mockChromeStorageGet.mockImplementation((keys, callback) => {
+    mockChromeStorageGet.mockImplementation((keys, callback?) => {
       // Execute callback immediately - tests will use waitFor
       const keyList = Array.isArray(keys) ? keys : [keys]
-      callback(keyList.reduce((acc: Record<string, any>, key: string) => ({ ...acc, [key]: syncData[key] }), {}))
+      const result = keyList.reduce(
+        (acc: Record<string, any>, key: string) => ({ ...acc, [key]: syncData[key] }),
+        {}
+      )
+      // 実APIと同じく両方の呼び出し形を通す。コールバック前提のままだと、
+      // Promise形で読むコンポーネント（ReplayImportSection等）が
+      // `callback is not a function` で落ちる。
+      if (typeof callback === 'function') {
+        callback(result)
+        return undefined
+      }
+      return Promise.resolve(result)
     })
 
     mockChromeStorageSet.mockImplementation((items, callback?) => {
       Object.assign(syncData, items)
-      if (typeof callback === 'function') callback()
+      if (typeof callback === 'function') {
+        callback()
+        return undefined
+      }
+      return Promise.resolve()
     })
 
     mockChromeStorageRemove.mockImplementation((keys, callback?) => {
       const keyList = Array.isArray(keys) ? keys : [keys]
       keyList.forEach((key: string) => { delete syncData[key] })
-      if (typeof callback === 'function') callback()
+      if (typeof callback === 'function') {
+        callback()
+        return undefined
+      }
+      return Promise.resolve()
     })
 
     mockChromeLocalStorageGet.mockImplementation((keys, callback) => {
@@ -316,13 +335,21 @@ describe('Popup', () => {
 
   it('同期キャッシュのテーマで即時描画し、storage.syncの正本を描画後に反映する', async () => {
     let resolveThemeRead: ((result: Record<string, any>) => void) | undefined
-    mockChromeStorageGet.mockImplementation((keys, callback) => {
+    mockChromeStorageGet.mockImplementation((keys, callback?) => {
       if (keys === 'popupTheme') {
         resolveThemeRead = callback
         return
       }
       const keyList = Array.isArray(keys) ? keys : [keys]
-      callback(keyList.reduce((acc: Record<string, any>, key: string) => ({ ...acc, [key]: syncData[key] }), {}))
+      const result = keyList.reduce(
+        (acc: Record<string, any>, key: string) => ({ ...acc, [key]: syncData[key] }),
+        {}
+      )
+      if (typeof callback === 'function') {
+        callback(result)
+        return undefined
+      }
+      return Promise.resolve(result)
     })
 
     render(<Popup initialPopupThemeMode="light" />)
@@ -342,13 +369,21 @@ describe('Popup', () => {
 
   it('起動時のstorage.sync読込中に選んだテーマを古い応答で巻き戻さない', async () => {
     let resolveThemeRead: ((result: Record<string, any>) => void) | undefined
-    mockChromeStorageGet.mockImplementation((keys, callback) => {
+    mockChromeStorageGet.mockImplementation((keys, callback?) => {
       if (keys === 'popupTheme') {
         resolveThemeRead = callback
         return
       }
       const keyList = Array.isArray(keys) ? keys : [keys]
-      callback(keyList.reduce((acc: Record<string, any>, key: string) => ({ ...acc, [key]: syncData[key] }), {}))
+      const result = keyList.reduce(
+        (acc: Record<string, any>, key: string) => ({ ...acc, [key]: syncData[key] }),
+        {}
+      )
+      if (typeof callback === 'function') {
+        callback(result)
+        return undefined
+      }
+      return Promise.resolve(result)
     })
 
     render(<Popup initialPopupThemeMode="light" />)
@@ -418,16 +453,21 @@ describe('Popup', () => {
     }
     localData[UI_SCALE_STORAGE_KEY] = 1.4
     let resolveUIConfigRead!: (result: Record<string, any>) => void
-    mockChromeStorageGet.mockImplementation((keys, callback) => {
+    mockChromeStorageGet.mockImplementation((keys, callback?) => {
       if (keys === 'uiConfig') {
         resolveUIConfigRead = callback
         return
       }
       const keyList = Array.isArray(keys) ? keys : [keys]
-      callback(keyList.reduce(
+      const result = keyList.reduce(
         (acc: Record<string, any>, key: string) => ({ ...acc, [key]: syncData[key] }),
         {}
-      ))
+      )
+      if (typeof callback === 'function') {
+        callback(result)
+        return undefined
+      }
+      return Promise.resolve(result)
     })
 
     render(<Popup />)
@@ -456,16 +496,21 @@ describe('Popup', () => {
     }
     localData[UI_SCALE_STORAGE_KEY] = 1.4
     let resolveUIConfigRead!: (result: Record<string, any>) => void
-    mockChromeStorageGet.mockImplementation((keys, callback) => {
+    mockChromeStorageGet.mockImplementation((keys, callback?) => {
       if (keys === 'uiConfig') {
         resolveUIConfigRead = callback
         return
       }
       const keyList = Array.isArray(keys) ? keys : [keys]
-      callback(keyList.reduce(
+      const result = keyList.reduce(
         (acc: Record<string, any>, key: string) => ({ ...acc, [key]: syncData[key] }),
         {}
-      ))
+      )
+      if (typeof callback === 'function') {
+        callback(result)
+        return undefined
+      }
+      return Promise.resolve(result)
     })
 
     render(<Popup />)
@@ -1579,6 +1624,38 @@ describe('Popup', () => {
       await userEvent.click(orderButtonsFor('PFR').up)
 
       expect(defaultStatDisplayConfigs).toEqual(before)
+    })
+  })
+
+  /**
+   * リプレイ取り込みは**フラグのみで動く非公開機能**として入っている。
+   * ポップアップに操作や説明を出すのは、プライバシーポリシーとストア掲載
+   * 情報の開示を伴う公開時点まで行わない（sola裁定、リリース方針）。
+   *
+   * 「まだ出さない」という決定は、コードを消すのではなくここで固定する ――
+   * セクションを足せばこのテストが落ちるので、開示の手当てを伴わない
+   * 露出が黙って入ることはない。
+   */
+  describe('リプレイ取り込みは非公開（フラグのみ）', () => {
+    it('ポップアップにリプレイ取り込みの操作も説明も出さない', async () => {
+      render(<Popup />)
+      await waitForAsyncOperations()
+
+      const text = document.body.textContent ?? ''
+      expect(text).not.toContain('リプレイ')
+      expect(text).not.toContain('対局が終わったあと')
+      expect(screen.queryByRole('switch', { name: /リプレイ/ })).toBeNull()
+    })
+
+    it('ポップアップは実験フラグを読みにも書きにもいかない', async () => {
+      render(<Popup />)
+      await waitForAsyncOperations()
+
+      const touchedKeys = [
+        ...(chrome.storage.sync.get as jest.Mock).mock.calls,
+        ...(chrome.storage.sync.set as jest.Mock).mock.calls
+      ].map(([arg]) => JSON.stringify(arg ?? ''))
+      expect(touchedKeys.some(key => key.includes('experimentalReplayImportEnabled'))).toBe(false)
     })
   })
 })

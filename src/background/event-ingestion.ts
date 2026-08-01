@@ -14,9 +14,17 @@ import {
   INVALID_API_TYPE_ID_BUCKET,
   recordUndecodedEvent
 } from './undecoded-event-tracker'
-import { markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
+import { awaitIngestionDrain, markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
-import { getOperationState } from './operation-state'
+import { getOperationGeneration, getOperationState } from './operation-state'
+import { handleReplayPortMessage, releaseReplayRequestsForPort } from './replay-fetch-bridge'
+import { handleReplayLedgerPortMessage, type ReplayLedgerAuditDeps } from './replay-ledger-audit'
+import {
+  drainReplayImportQueue,
+  enqueueReplayHandId,
+  readReplayImportEnabled,
+  type ReplayImportDeps
+} from './replay-import'
 import {
   captureHandledException,
   captureSchemaValidationFailure
@@ -49,6 +57,54 @@ const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
  * （`registerEventIngestion()`のコメント参照）。
  */
 let ingestionQueue: Promise<void> = Promise.resolve()
+
+/**
+ * 台帳突き合わせの依存。ポート受信時と、Service Worker起動時の再開
+ * （`resumePendingReplayLedgerAudits`）が**同じ待機条件**で走る必要があるので
+ * 一箇所にまとめる。
+ */
+export const createReplayLedgerAuditDeps = (service: PokerChaseService): ReplayLedgerAuditDeps => ({
+  db: service.db,
+  // 取り込みキューには載せないが、決着は待つ。直前のEVT_HAND_RESULTSの書き込みが
+  // 済む前に照会すると、受信済みのハンドを未キャプチャに分類しうる。
+  // 起動直後は状態復元も待つ（playerIdがundefinedのままだと全ハンドが
+  // 照合不能に落ちる）。
+  waitUntilConsistent: async () => {
+    await service.ready
+    // 取り込みキューの決着だけでは足りない。`processEvent` は
+    // `handAggregateStream.write()` で下流を起動するだけで、
+    // `WriteEntityStream` が `hands` を書き終えるまでは待たない。
+    // rawだけが在る瞬間に照会すると、正常に生成中のハンドを
+    // 「派生欠落」として永続化する。`whenIdle()` は下流へ連鎖する。
+    await awaitIngestionDrain()
+    await service.handAggregateStream.whenIdle()
+  },
+  // インポート/再構築/エクスポートの最中は監査しない。インポートは生行を
+  // 先にコミットして派生を後から作るので、その途中で照会すると正常に
+  // 処理中のハンドが「派生欠落」として永続化される。ライブ取り込みの
+  // ドレインではインポート側を待てない。診断なので延期ではなく見送りで
+  // 足りる（次にリプレイ一覧を開けば走る）。
+  isBusy: () => getOperationState().type !== 'idle',
+  // 読み始めと書き戻しの間に長時間操作が走り切った場合を検出するための世代。
+  // 渡し忘れると比較が常に`undefined`同士になり、この保護が無効化される。
+  getOperationGeneration,
+  getPlayerId: () => service.playerId,
+  now: () => Date.now()
+})
+
+/**
+ * リプレイ取り込み層の依存。積む側（`EVT_HAND_RESULTS`）と流す側
+ * （セッション終了・ポート接続）が同じ判定条件で動くよう一箇所にまとめる。
+ */
+export const createReplayImportDeps = (service: PokerChaseService): ReplayImportDeps => ({
+  db: service.db,
+  isEnabled: readReplayImportEnabled,
+  now: () => Date.now(),
+  // インポート/再構築/エクスポートの最中は取得しない。診断ではなく保存を
+  // 伴うので、長時間操作と同じ`apiEvents`へ書き込むのを避ける。
+  isBusy: () => getOperationState().type !== 'idle',
+  getPlayerId: () => service.playerId
+})
 
 /**
  * `chrome.runtime.onConnect`のハンドラーを登録する。
@@ -113,6 +169,14 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   chrome.runtime.onConnect.addListener(port => {
     if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
       connectedPorts.add(port)
+      // 持ち越し分の再開点。セッション終了時に認証エンベロープを捕獲できて
+      // いないと取得は繰り延べられる（キューには残る）。エンベロープは
+      // ページ再読み込み後のホーム到達で捕まるので、そのページが繋いできた
+      // この瞬間が次の機会になる。**セッション外であること**の判定は
+      // `drainReplayImportQueue` 側の不変条件が担うので、ここでは
+      // 呼ぶだけでよい（セッション中なら何も起きない）。
+      drainReplayImportQueue(createReplayImportDeps(service))
+        .catch(err => console.error('[background] Replay import drain on connect failed:', err))
       port.onMessage.addListener((message: ApiMessage | { type: string }) => {
         // キープアライブメッセージの処理（キュー直列化の対象外 -- 何も
         // 保存・処理しないため、耐久性バリアの対象になる副作用が無い）
@@ -127,6 +191,18 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // drained by deleteAllData() and then removed with the database.
         if (getOperationState().type === 'delete') {
           console.warn('[background] Dropping event while local data deletion is committing:', message)
+          return Promise.resolve()
+        }
+
+        // 実験的リプレイ取得の応答。何も保存しないので取り込みキューには
+        // 載せない（載せるとライブイベントを待たせるだけになる）。
+        if (handleReplayPortMessage(message, port)) {
+          return Promise.resolve()
+        }
+
+        // 受動取得した台帳（`/replay/list`）の突き合わせ。`apiEvents`へは
+        // 書かないので、同じ理由で取り込みキューには載せない。
+        if (handleReplayLedgerPortMessage(message, createReplayLedgerAuditDeps(service))) {
           return Promise.resolve()
         }
 
@@ -150,6 +226,8 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // Keep lastKnownStats for page reloads - only clear interval
         stopPing()
         connectedPorts.delete(port)
+        // 応答が返らないまま切れた依頼を解放する（待ち続けさせない）
+        releaseReplayRequestsForPort(port)
       })
     }
   })
@@ -306,6 +384,23 @@ const processEvent = async (
   // 詳細は`applySessionActivity`のコメント参照。
   applySessionActivity(rawApiTypeId, message)
 
+  // リプレイ取り込み層（既定OFF）。**セッション中は取得しない**（MUST）ので、
+  // ここでやるのは HandId をキューへ積むことだけ。取得はセッション終了の
+  // トリガーから走る（`replay-import.ts`）。
+  //
+  // 生メッセージの数値ApiTypeIdと生の`Player`だけを見る（上のセッション状態
+  // 追跡と同じraw-firstパターン）。`Player`の有無がヒーローの配札有無で、
+  // 観戦モードでは undefined になる（docs/api-events.md）。Zod検証の成否に
+  // 依存させない ―― 検証はパイプライン投入の可否だけを決める。
+  if (rawApiTypeId === ApiType.EVT_HAND_RESULTS &&
+    (message as { Player?: unknown }).Player !== undefined) {
+    enqueueReplayHandId(
+      createReplayImportDeps(service),
+      (message as { HandId?: unknown }).HandId,
+      Date.now()
+    ).catch(err => console.error('[background] Replay import enqueue failed:', err))
+  }
+
   if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
     // #179 round3指摘: セッション終了(EVT_SESSION_RESULTS)によるHUDクリアは
     // App.tsx側のReact stateだけで完結しており、background(ports.ts)の
@@ -409,6 +504,12 @@ const processEvent = async (
           console.error('[background] Pending update recheck on session end failed:', err)
         )
       })
+    // リプレイ取り込み（既定OFF）。**ここが取得の起点**であり、セッション中に
+    // 積んだHandIdをここで初めて取りに行く。`applySessionActivity()`が既に
+    // INACTIVEへ倒した後なので、`drainReplayImportQueue`の不変条件判定を
+    // 通過する。auto-syncと同じくfire-and-forget（取り込みキューを塞がない）。
+    drainReplayImportQueue(createReplayImportDeps(service))
+      .catch(err => console.error('[background] Replay import drain failed:', err))
   } else if (rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID) {
     // 参加取消申込(203)も保留中アップデートの安全性再チェック地点の1つに
     // 加える（P2, codexレビュー指摘 2026-07-21, pass-4, "Recheck updates
@@ -423,6 +524,9 @@ const processEvent = async (
     recheckPendingUpdate().catch(err =>
       console.error('[background] Pending update recheck on entry cancellation failed:', err)
     )
+    // 203もINACTIVE化トリガーなので、持ち越し分があればここでも流す。
+    drainReplayImportQueue(createReplayImportDeps(service))
+      .catch(err => console.error('[background] Replay import drain failed:', err))
   } else if (
     (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED && !isExplicitEntryFailure(message)) ||
     rawApiTypeId === ApiType.EVT_SESSION_DETAILS

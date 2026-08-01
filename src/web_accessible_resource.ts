@@ -9,6 +9,13 @@ import {
   POKER_CHASE_ORIGIN
 } from './constants/runtime'
 /** !!! BACKGROUND、CONTENT_SCRIPTSからインポートしないこと !!! */
+/**
+ * このファイルはWebSocket傍受のみ（HUD全機能の土台）。全ユーザーで常時注入
+ * される。リプレイ関連の fetch / XMLHttpRequest 傍受と認証エンベロープ捕獲は
+ * `replay_bridge.ts` へ分離し、`content_script.ts` が実験フラグ有効時にだけ
+ * 別の WAR `<script>` として注入する（無効ユーザーにはリプレイ傍受コードを
+ * 一切載せないため）。
+ */
 
 const OriginalWebSocket = window.WebSocket
 const MAX_PENDING_UNCLASSIFIED_PAYLOADS = 5

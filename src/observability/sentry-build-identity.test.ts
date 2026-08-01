@@ -5,7 +5,6 @@
  * scripts/build-extension.ts injects both values; jest exercises the same
  * process.env reads directly.
  */
-import * as Sentry from '@sentry/browser'
 import manifest from '../../manifest.json'
 
 jest.mock('@sentry/browser', () => ({
@@ -19,6 +18,34 @@ jest.mock('@sentry/browser', () => ({
   captureMessage: jest.fn()
 }))
 
+/**
+ * Everything startSentry() checks *after* the compile-out flag: stored consent
+ * and the host permission. Tests that want the flag to be the only variable
+ * must grant these -- test-setup defaults `permissions.contains` to false, so
+ * an ungranted run returns 'disabled' before the flag is ever consulted.
+ */
+const grantRuntimePreconditions = async () => {
+  await chrome.storage.local.set({ sentryTelemetryConsent: true })
+  ;(chrome.permissions.contains as jest.Mock).mockResolvedValue(true)
+}
+
+/**
+ * Loads sentry.ts inside an isolated module registry and returns that
+ * registry's own `init` mock. isolateModulesAsync re-runs the jest.mock
+ * factory, so an `init` captured outside is a different jest.fn() that the
+ * isolated code can never call -- asserting on it proves nothing.
+ */
+const initSentryIsolated = async (): Promise<{ init: jest.Mock, result: unknown }> => {
+  let init: jest.Mock | undefined
+  let result: unknown
+  await jest.isolateModulesAsync(async () => {
+    init = require('@sentry/browser').init
+    const { initSentry } = require('./sentry')
+    result = await initSentry('background')
+  })
+  return { init: init as jest.Mock, result }
+}
+
 const startBackgroundSentry = async (
   build: { release?: string, environment?: string }
 ) => {
@@ -28,16 +55,10 @@ const startBackgroundSentry = async (
   if (build.environment) process.env.SENTRY_ENVIRONMENT = build.environment
   else delete process.env.SENTRY_ENVIRONMENT
 
-  await chrome.storage.local.set({ sentryTelemetryConsent: true })
-  ;(chrome.permissions.contains as jest.Mock).mockResolvedValue(true)
+  await grantRuntimePreconditions()
 
-  let init: jest.Mock | undefined
-  await jest.isolateModulesAsync(async () => {
-    init = require('@sentry/browser').init
-    const { initSentry } = require('./sentry')
-    await initSentry('background')
-  })
-  return init as jest.Mock
+  const { init } = await initSentryIsolated()
+  return init
 }
 
 describe('Sentry build identity', () => {
@@ -88,14 +109,19 @@ describe('Sentry build identity', () => {
   })
 
   it('keeps Sentry unused when telemetry is compiled out', async () => {
+    // Grant consent and the host permission so the compile-out flag is the ONLY
+    // reason init can be skipped. Without them startSentry() returns 'disabled'
+    // at a later gate, and "init was not called" would still hold with the
+    // compile-out gate deleted.
+    await grantRuntimePreconditions()
     delete process.env.SENTRY_ENABLED
-    await chrome.storage.local.set({ sentryTelemetryConsent: true })
 
-    await jest.isolateModulesAsync(async () => {
-      const { initSentry } = require('./sentry')
-      await initSentry('background')
-    })
+    const { init, result } = await initSentryIsolated()
 
-    expect(Sentry.init).not.toHaveBeenCalled()
+    // Pin the reason, not just the effect: 'build_disabled' is returned by the
+    // compile-out gate alone, so removing that gate fails here even before the
+    // call-count assertion below.
+    expect(result).toBe('build_disabled')
+    expect(init).not.toHaveBeenCalled()
   })
 })

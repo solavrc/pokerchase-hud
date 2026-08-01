@@ -16,8 +16,9 @@ only the non-secret, permission-validated consent boolean through
 `chrome.storage.session`; content scripts never read local auth storage. The
 session area is reserved for this mirror while it is visible to content
 scripts.
-It is deliberately **not** initialized in `web_accessible_resource.ts`, which
-runs in the game page's main world and handles raw WebSocket payloads.
+It is deliberately **not** initialized in `web_accessible_resource.ts` or
+`replay_bridge.ts`, which run in the game page's main world and handle raw
+WebSocket / replay-API payloads.
 
 Enabling waits for every live game tab to acknowledge the transition and rolls
 the opt-in back — including the optional host grant just given — when a content
@@ -163,8 +164,16 @@ published release:
 | Build | `SENTRY_ENVIRONMENT` | Environment | Release |
 |---|---|---|---|
 | Release workflow | `production` | `production` | `pokerchase-hud@<manifest version>` |
+| Manual / recovery release | `production` (must be set by hand) | `production` | `pokerchase-hud@<manifest version>` |
 | Working build | unset | `development` | `pokerchase-hud@<manifest version>+dev.<short sha>` |
 | E2E | n/a | — | telemetry compiled out |
+
+The split is release-vs-working, not CI-vs-local. `.github/workflows/build.yml`
+sets `SENTRY_ENVIRONMENT` for the workflow path only, so the manual CRX
+procedure in
+[docs/chrome-web-store-release.md](chrome-web-store-release.md#release-artifact)
+has to set it explicitly — a plain `npm run build` submitted to the Web Store
+would report as a working build under a `+dev.<sha>` release nobody runs.
 
 `scripts/build-extension.ts` resolves the short commit and appends `-dirty`
 when the tree has uncommitted changes — the marker is the point: it says the

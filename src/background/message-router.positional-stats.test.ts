@@ -9,6 +9,7 @@
 import { waitFor } from '@testing-library/dom'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { registerMessageRouter } from './message-router'
 import { clearPositionalStatsCache } from '../services/positional-stats-service'
 import { ActionType, PhaseType, Position } from '../types/game'
@@ -26,7 +27,7 @@ describe('message-router getPositionalStats', () => {
     clearPositionalStatsCache()
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     const hand: Hand = {

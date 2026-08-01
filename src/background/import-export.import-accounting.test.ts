@@ -7,6 +7,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { createImportExportHandlers } from './import-export'
 import { setOperationState } from './operation-state'
 import {
@@ -74,7 +75,7 @@ describe('importData() legacy sequence assignment and content dedup', () => {
     HandLogExporter.clearCache()
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
     setOperationState({ type: 'idle' })
     ;(chrome.runtime.sendMessage as jest.Mock).mockResolvedValue(undefined)

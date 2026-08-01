@@ -8,6 +8,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { registerMessageRouter } from './message-router'
 import { recordUndecodedEvent, resetUndecodedEventStats, UNDECODED_EVENT_STATS_KEY } from './undecoded-event-tracker'
 import { ApiType } from '../types'
@@ -26,7 +27,7 @@ describe('message-router undecoded event stats', () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
     await resetUndecodedEventStats(db)
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     ;(chrome.runtime.onMessage.addListener as jest.Mock).mockClear()

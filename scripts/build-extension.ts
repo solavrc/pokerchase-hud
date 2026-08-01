@@ -9,7 +9,10 @@ import manifest from '../manifest.json'
 const {
   background: { service_worker },
   content_scripts: [{ js: [content_script] }],
-  web_accessible_resources: [{ resources: [web_accessible_resource] }]
+  // web_accessible_resource: WebSocket傍受（HUDの土台、常時注入）。
+  // replay_bridge: リプレイ傍受（実験フラグ有効時のみ content_script が注入）。
+  // どちらも WAR として dist/ へ出す必要があるので両方をエントリポイントにする。
+  web_accessible_resources: [{ resources: [web_accessible_resource, replay_bridge] }]
 } = manifest
 
 // --- E2E QA harness support (see e2e/README.md) ---------------------------
@@ -97,6 +100,7 @@ const options: BuildOptions = {
     'src/' + parse(content_script).name + '.ts',
     'src/' + parse(service_worker).name + '.ts',
     'src/' + parse(web_accessible_resource).name + '.ts',
+    'src/' + parse(replay_bridge).name + '.ts',
     'src/popup.ts',
     // Tiny synchronous, non-module boot script loaded in index.html's
     // <head> before popup.js -- see src/popup-boot.ts for why (eliminates

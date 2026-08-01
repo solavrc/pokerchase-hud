@@ -21,6 +21,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { createImportExportHandlers } from './import-export'
 import { HandLogExporter } from '../utils/hand-log-exporter'
 
@@ -43,7 +44,7 @@ describe('rebuildAllData Raw Event Lake recovery', () => {
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     // rebuildAllData chains .catch() off chrome.runtime.sendMessage(); the

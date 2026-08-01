@@ -11,6 +11,7 @@
  *    implementation still hydrates correctly
  */
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { SessionState } from './poker-chase-service'
 import { ApiType } from '../types'
 import type { ApiEvent, PlayerStats } from '../types'
@@ -40,7 +41,7 @@ async function clearStorage() {
 
 function newService() {
   const db = new PokerChaseDB(indexedDB, IDBKeyRange)
-  return new PokerChaseService({ db })
+  return trackServiceForTeardown(new PokerChaseService({ db }))
 }
 
 describe('PokerChaseService - explicit session persistence', () => {
@@ -155,6 +156,43 @@ describe('PokerChaseService - explicit session persistence', () => {
 
     expect(chrome.storage.local.set).toHaveBeenCalledTimes(1)
     expect(service.session.players.get(7)).toEqual({ name: 'Carol', rank: 'diamond' })
+  })
+
+  test('cancelPendingPersist()は保留中のデバウンス書き込みを破棄する（テストteardown用API）', async () => {
+    const service = newService()
+    await service.ready
+
+    service.playerId = 42
+    service.session.setId('session-1')
+
+    service.cancelPendingPersist()
+    jest.advanceTimersByTime(1000)
+    await Promise.resolve()
+
+    // 保留中の1件は書き込まれない（flushではなくcancel）
+    expect(chrome.storage.local.set).not.toHaveBeenCalled()
+    // インスタンス自体は生きており、以降のミューテーションは通常どおり永続化される
+    service.playerId = 43
+    jest.advanceTimersByTime(500)
+    await Promise.resolve()
+
+    expect(chrome.storage.local.set).toHaveBeenCalledTimes(1)
+    const [payload] = (chrome.storage.local.set as jest.Mock).mock.calls[0]
+    expect(payload[STORAGE_KEY].playerId).toBe(43)
+  })
+
+  test('cancelPendingPersist()は保留中のタイマーが無くても安全（冪等）', async () => {
+    const service = newService()
+    await service.ready
+
+    expect(() => {
+      service.cancelPendingPersist()
+      service.cancelPendingPersist()
+    }).not.toThrow()
+
+    jest.advanceTimersByTime(1000)
+    await Promise.resolve()
+    expect(chrome.storage.local.set).not.toHaveBeenCalled()
   })
 
   test('players の読み取り（get/size/entries）は可能で、setPlayer()経由でのみ更新される', async () => {

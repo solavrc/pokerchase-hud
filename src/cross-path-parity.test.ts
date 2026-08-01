@@ -17,11 +17,14 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from './app'
+import { trackServiceForTeardown } from './utils/test-service-teardown'
 import { EntityConverter } from './entity-converter'
 import { createImportExportHandlers } from './background/import-export'
 import { setOperationState } from './background/operation-state'
 import { mergeApiEvents, type RawApiEvent } from './utils/api-event-key'
 import {
+  ActionDetail,
+  ActionType,
   ApiType,
   BattleType,
   PhaseType,
@@ -38,9 +41,20 @@ type SessionSeed = {
   players: Array<[number, { name: string, rank: string }]>
 }
 
-const FIXTURE_PATH = join(process.cwd(), 'e2e/fixtures/session-3hands.ndjson')
-const FIXTURE_TEXT = readFileSync(FIXTURE_PATH, 'utf8').trim()
-const FIXTURE_EVENTS = FIXTURE_TEXT.split('\n').map(line => JSON.parse(line)) as ApiEvent[]
+const readFixture = (name: string): ApiEvent[] =>
+  readFileSync(join(process.cwd(), 'e2e/fixtures', name), 'utf8')
+    .trim()
+    .split('\n')
+    .map(line => JSON.parse(line)) as ApiEvent[]
+
+const FIXTURE_EVENTS = readFixture('session-3hands.ndjson')
+
+/** #340 の再現: 同一ミリ秒に 304×6 + 305×2 が同居し、主キー順で 304 が先に並ぶ。 */
+const SAME_MS_BURST_EVENTS = readFixture('hand-samems-street-burst.ndjson')
+/** #339 の再現: Ringのハンド中リバイイン（ハンド内観測）と終了時の自動買い足し。 */
+const RING_REBUY_EVENTS = readFixture('hand-ring-midhand-rebuy.ndjson')
+/** 同一ms群で、新ストリート最初の行が ALL_IN になるケース（codex review round 3）。 */
+const STREET_OPENING_ALLIN_EVENTS = readFixture('hand-street-opening-allin.ndjson')
 
 const entryEvent = FIXTURE_EVENTS.find(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED)!
 const detailsEvent = FIXTURE_EVENTS.find(event => event.ApiTypeId === ApiType.EVT_SESSION_DETAILS)!
@@ -125,7 +139,7 @@ const replay = async (path: ReplayPath, events: ApiEvent[], seed?: SessionSeed) 
 
   const db = new PokerChaseDB(indexedDB, IDBKeyRange)
   await db.open()
-  const service = new PokerChaseService({ db })
+  const service = trackServiceForTeardown(new PokerChaseService({ db }))
   await service.ready
   applySessionSeed(service, seed)
 
@@ -164,9 +178,12 @@ const replay = async (path: ReplayPath, events: ApiEvent[], seed?: SessionSeed) 
 
     return await takeCanonicalSnapshot(service, db)
   } finally {
-    clearTimeout((service as unknown as {
-      _persistStateTimer?: ReturnType<typeof setTimeout>
-    })._persistStateTimer)
+    // replay() は1テスト内で4経路ぶん連続で呼ばれる。ルート afterEach
+    // （test-service-teardown.ts）の取り消しはテスト終了時なので、ここで
+    // 明示的に取り消さないと、直前の経路のインスタンスの500msタイマーが
+    // 次の経路の `await service.ready`（restoreState()）より前に発火し、
+    // 前の経路の playerId/session を次の経路へ持ち込んでしまう。
+    service.cancelPendingPersist()
     setOperationState({ type: 'idle' })
     db.close()
     await db.delete()
@@ -281,6 +298,126 @@ describe('cross-path canonical parity', () => {
       vpip: [1, 3],
       wtsd: [0, 1],
       wwsf: [0, 1]
+    })
+  })
+
+  test('a same-millisecond 304/305 burst attributes every action to its own street (#340)', async () => {
+    // Fixture capability check: 8イベントが同一msに同居し、export順（主キー順 =
+    // ApiTypeId昇順）では全ての 304 が 305 より前に並ぶ。ここが崩れると
+    // EVT_DEAL_ROUND 駆動カウンタの遅れを再現できない。
+    const burstTimestamp = SAME_MS_BURST_EVENTS
+      .filter(event => event.ApiTypeId === ApiType.EVT_DEAL_ROUND)
+      .map(event => event.timestamp)[0]
+    const burst = SAME_MS_BURST_EVENTS.filter(event => event.timestamp === burstTimestamp)
+    expect(burst.map(event => event.ApiTypeId)).toEqual([304, 304, 304, 304, 304, 304, 305, 305])
+
+    const snapshots = await replayEveryPath(SAME_MS_BURST_EVENTS)
+    const canonical = snapshots.live
+    expect(snapshots['entity-converter']).toEqual(canonical)
+    expect(snapshots.rebuild).toEqual(canonical)
+    expect(snapshots.import).toEqual(canonical)
+
+    // 3件のプリフロップ + バーストのフロップ3件 + ターン3件。カウンタ駆動だと
+    // バーストの6件すべてがプリフロップに落ちる。
+    expect(canonical.actions.map(action => ({
+      playerId: action.playerId,
+      phase: action.phase,
+      actionType: action.actionType
+    }))).toEqual([
+      { playerId: 2001, phase: PhaseType.PREFLOP, actionType: ActionType.CALL },
+      { playerId: 2002, phase: PhaseType.PREFLOP, actionType: ActionType.CALL },
+      { playerId: 2003, phase: PhaseType.PREFLOP, actionType: ActionType.CHECK },
+      { playerId: 2002, phase: PhaseType.FLOP, actionType: ActionType.CHECK },
+      { playerId: 2003, phase: PhaseType.FLOP, actionType: ActionType.CHECK },
+      { playerId: 2001, phase: PhaseType.FLOP, actionType: ActionType.CHECK },
+      { playerId: 2002, phase: PhaseType.TURN, actionType: ActionType.BET },
+      { playerId: 2003, phase: PhaseType.TURN, actionType: ActionType.FOLD },
+      // ハンド終了行（NextActionSeat=-2）の Progress.Phase は3固定で届く。
+      // これを素朴に採用するとリバー帰属になるため、進行中のストリートを使う。
+      { playerId: 2001, phase: PhaseType.TURN, actionType: ActionType.FOLD }
+    ])
+    const handEndingRows = SAME_MS_BURST_EVENTS
+      .filter((event): event is Extract<ApiEvent, { ApiTypeId: ApiType.EVT_ACTION }> =>
+        event.ApiTypeId === ApiType.EVT_ACTION)
+      .filter(event => event.Progress.NextActionSeat === -2)
+    expect(handEndingRows.map(event => event.Progress.Phase)).toEqual([PhaseType.RIVER])
+
+    // AF/AFq はポストフロップ限定なので、この付け替えは分母ごと動く。
+    // カウンタ駆動だとポストフロップのアクションが全てプリフロップに落ち、
+    // 2001 の AFq は [0,0]（機会ゼロ）、2002 の AF は [0,0] になっていた。
+    const postflopAggression = (playerId: number) => Object.fromEntries(
+      canonical.stats.find(player => player.playerId === playerId)!.statResults
+        .filter(stat => ['af', 'afq'].includes(stat.id))
+        .map(stat => [stat.id, stat.value])
+    )
+    expect(postflopAggression(2001)).toEqual({ af: [0, 0], afq: [0, 1] })
+    expect(postflopAggression(2002)).toEqual({ af: [1, 0], afq: [1, 1] })
+
+    // 同一ms群を時系列として会計してはならない（codex review P1）: この群では
+    // ターンのアクションのあとにフロップの305が届く。後退したスナップショットを
+    // 取り込むと、精算済みのターン投入40が買い足しとして戻り、2002の +40 が
+    // 0 になり架空のrake 40が生まれる。
+    expect(canonical.hands[0]!.winningPlayerIds).toEqual([2002])
+    expect(canonical.hands[0]!.playerChipAccounting).toEqual({
+      '2001': { grossPayout: 0, totalContribution: 20, netChips: -20 },
+      '2002': { grossPayout: 100, totalContribution: 60, netChips: 40 },
+      '2003': { grossPayout: 0, totalContribution: 20, netChips: -20 }
+    })
+  })
+
+  test('a street-opening ALL_IN is normalized as a BET, not against the previous street', async () => {
+    const snapshots = await replayEveryPath(STREET_OPENING_ALLIN_EVENTS)
+    const canonical = snapshots.live
+    expect(snapshots['entity-converter']).toEqual(canonical)
+    expect(snapshots.rebuild).toEqual(canonical)
+    expect(snapshots.import).toEqual(canonical)
+
+    // 同一ms群で 304 が 305 より前に並ぶため、フロップ最初の行（この ALL_IN）を
+    // 処理する時点の progress は「プリフロップ終了時点」のもので
+    // NextActionTypes は空。ここを見て正規化すると CALL になってしまう。
+    // ストリートの開き手が対峙するベットは存在しないので BET が正しい。
+    const flopAllIn = canonical.actions.find(action => action.phase === PhaseType.FLOP)!
+    expect({
+      playerId: flopAllIn.playerId,
+      actionType: flopAllIn.actionType,
+      isAllIn: flopAllIn.actionDetails.includes(ActionDetail.ALL_IN)
+    }).toEqual({ playerId: 2002, actionType: ActionType.BET, isAllIn: true })
+
+    const aggression = Object.fromEntries(
+      canonical.stats.find(player => player.playerId === 2002)!.statResults
+        .filter(stat => ['af', 'afq'].includes(stat.id))
+        .map(stat => [stat.id, stat.value])
+    )
+    expect(aggression).toEqual({ af: [1, 0], afq: [1, 1] })
+
+    // 未コール分の返却は「ポットを勝った」ではないが、この席は争われた60も獲る。
+    expect(canonical.hands[0]!.winningPlayerIds).toEqual([2002])
+    expect(canonical.hands[0]!.playerChipAccounting).toEqual({
+      '2001': { grossPayout: 0, totalContribution: 20, netChips: -20 },
+      '2002': { grossPayout: 4040, totalContribution: 4000, netChips: 40 },
+      '2003': { grossPayout: 0, totalContribution: 20, netChips: -20 }
+    })
+  })
+
+  test('a Ring mid-hand rebuy keeps exact winners and net chips (#339)', async () => {
+    const snapshots = await replayEveryPath(RING_REBUY_EVENTS)
+    const canonical = snapshots.live
+    expect(snapshots['entity-converter']).toEqual(canonical)
+    expect(snapshots.rebuild).toEqual(canonical)
+    expect(snapshots.import).toEqual(canonical)
+
+    // 卓の合計チップはディール(10,000)からリザルト(12,015)へ +2,015 増える。
+    // 従来の「Ringはチップ生成を拒否」ルールでは settlement 全体が
+    // unresolved() へ落ち winningPlayerIds が空になっていた。
+    expect(canonical.hands).toHaveLength(1)
+    expect(canonical.hands[0]!.winningPlayerIds).toEqual([2001])
+    expect(canonical.hands[0]!.playerChipAccounting).toEqual({
+      // ヒーロー: 20(プリフロップコール) + 100(フロップベット) を投じて145回収。
+      '2001': { grossPayout: 145, totalContribution: 120, netChips: 25 },
+      // ハンド中に +2,000 買い足した席。買い足しは「このハンドの結果」ではない。
+      '2002': { grossPayout: 0, totalContribution: 10, netChips: -10 },
+      // 終了スタックにだけ現れる +20 の自動買い足し（バイイン上限への復帰）。
+      '2003': { grossPayout: 0, totalContribution: 20, netChips: -20 }
     })
   })
 

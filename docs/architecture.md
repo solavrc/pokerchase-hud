@@ -218,3 +218,192 @@ await db.actions.where('[playerId+phase]')
 - [Dexie.js Indexing Best Practices](https://dexie.org/docs/Indexing)
 - [Firebase Firestore Pricing](https://firebase.google.com/pricing)
 - [Chrome Extension Manifest V3](https://developer.chrome.com/docs/extensions/mv3/)
+
+## 6. 試験機能: リプレイ詳細の取得層
+
+`experimentalReplayImportEnabled` を `chrome.storage.sync` で `true` にした
+開発ビルドだけが有効化する、既定OFFの検証機能。目的は「`/replay/*` から
+何がどこまで取得できるか」を、スキーマ変更を伴わずに実データで確かめること。
+
+**リプレイ本体（`/replay/detail`）は保存しない。** セッション境界を見て自動で
+取りに行く取り込み層は別途。ただし後述の台帳監査だけは、その結果を `meta`
+テーブルの1行（`replayLedgerAudit`）へ書く ―― MV3のService Workerは数十秒で
+落ちるので、メモリ上に置くとユーザーが結果を読む前に消えるため。書かれるのは
+台帳と突き合わせた**件数と HandId の一覧、チップ差分、エンベロープの期限値**
+（`CardOpenEndDate`）で、リプレイのハンド内容は含まない。新しいDexieの
+バージョンは消費しない。
+
+ページ自身の通常API通信（fetch / XMLHttpRequest）をmain worldで傍受して
+認証エンベロープ（`session` / `platform` / `appVer` / `dataVer` /
+`masterVer`）を得る。新しいhost permissionは追加しない。エンベロープは
+main world のクロージャ内だけに保持し、content script へ渡す前に
+レスポンスから `session` / `requestKey` を再帰的に除去する
+（`sanitizeReplayDetail`）。
+
+### 注入モデル: 有効時のみ傍受コードを載せる
+
+fetch / XMLHttpRequest の傍受と認証エンベロープ捕獲は `replay_bridge.ts`
+（main world の WAR スクリプト）に分離してある。中核の WebSocket 傍受
+（`web_accessible_resource.ts`、HUD全機能の土台）は全ユーザーで常時注入
+されるが、`replay_bridge.js` は `content_script.ts` が
+`experimentalReplayImportEnabled` を有効に読んだときにだけ `<script>` として
+注入する。無効ユーザーの実行環境にはリプレイ傍受コードが一切載らず、
+fetch / XHR は素のまま・エンベロープ捕獲も行われない。
+
+- **注入は有効化の遷移より後**: フラグ有効化後、ページ再読み込みで
+  `replay_bridge.js` がロードされるまでの間に飛んだ通信は捕獲できない。ただし
+  捕獲機会は1回きりではなく、ロード後の任意の通常API通信で捕まる
+  （`/replay/list`・`/replay/detail` はユーザー操作・セッション終了後に飛ぶので
+  間に合う）。
+- **`<script>` は取り消せない**: 一度注入したスクリプトは、フラグを無効に戻しても
+  DOM から消せない。`content_script.ts` は `replayBridgeInjected` で注入を1回に
+  冪等化し、無効化は `REPLAY_BRIDGE_CONFIG` の `enabled: false` を送ってブリッジ側
+  でランタイムに no-op 化する（傍受を素通しに戻し、捕獲済みエンベロープを破棄）。
+- **ページ側からの偽装は残存**: main world と content script は同一オリジンの
+  `window.postMessage` を共有するため、ページ側の任意のスクリプトがブリッジへ
+  設定と取得依頼を偽装できる。これは有効化したユーザーにのみ露出する残存リスクで、
+  この分離では解消しない（`window.postMessage` では main world から content
+  script を認証できないため）。この分離が扱うのは「無効時に不要な傍受を
+  行わない」ことに限る。
+
+フラグを `storage.local` ではなく `storage.sync` に置いているのは、
+`firebase-auth-service` が起動時に `setAccessLevel('TRUSTED_CONTEXTS')` で
+local を content script から遮断しているため（#274）。local に置くと
+content script 側の読み取りが必ず失敗し、機能が永久にOFFのまま固定される。
+
+取得は1件ずつ逐次で、1件あたり15秒でタイムアウトし、2件目以降は前の応答が
+返ってから1.5秒空ける（ゲーム本体のリプレイ閲覧は人間の操作速度で1件ずつ
+発生するため、無間隔の連続取得はサーバから見て異質な流量になる）。
+1リクエストの HandId は最大100件。依頼元のバッチ上限は件数から導出する
+（`replayFetchBatchTimeoutMs`）―― 固定値にすると、間隔待ちの合計が上限を
+超えた瞬間に**必ず**先に切れる。しかもページ側はバッチ完了時に一括で結果を
+返すので、切れた場合に得られるのは部分結果ではなく空配列になる。
+
+### 台帳の受動取得
+
+ユーザーがゲーム内でリプレイ一覧を開くと、ゲーム自身が `/replay/list` を
+出す。その応答を同じフックで読むだけの経路があり、**拡張は追加の
+リクエストを1本も出さない**。応答から取り出すのは許可リスト方式で、
+HandId・開始時刻・`ChipDiff`・`CardOpenEndDate`・`IsExpiredCardOpen` のみ
+（除外リストでは、応答の全フィールドを列挙できていない以上「`session` と
+`requestKey` さえ落とせば安全」という前提が置けない）。
+
+台帳はサーバ自身が持つ「ヒーローが打ったハンド」の記録なので、WebSocket
+キャプチャに対する独立した観測チャネルになる。ローカルと突き合わせて
+3通りに分類する:
+
+- **ローカル不在**: `hands` にも `apiEvents` にも無い
+- **派生欠落**: `apiEvents` にはあるが `hands` が無い ＝ 受信できていて派生側で
+  落ちたもの（キメラハンドの意図的な棄却、検証に通らないpayload、
+  書き込み途中）
+- **チップ不一致**: `ChipDiff` と `playerChipAccounting[hero].netChips` の食い違い
+
+**確定できることの範囲を取り違えない。** 台帳が証明するのは「このアカウントの
+ハンドとしてサーバに記録がある」ことだけで、該当のWebSocketイベントをサーバが
+この接続へ送ったかどうかは観測していない。したがって「ローカル不在」から確定
+するのは**このクライアントに残っていないことだけ**で、別デバイス／別セッション
+でのプレイ、拡張が動いていなかった、フックの取りこぼし、保存失敗、サーバが
+送らなかった、は区別できない。「サーバは送ったのに取り逃した」と読んではならない。
+一方チップ照合は因果の推定を含まない直接比較なので、外部検証として成立する。
+
+派生テーブルの不在だけで欠損と断定してはならない。Raw Event Lake を必ず
+確認する。加えて次の3点を守る:
+
+- **取り込みキューの決着を待つ**。台帳の突き合わせはキューに載せない（ライブ
+  イベントを待たせるため）が、直前の `EVT_HAND_RESULTS` の書き込みが済む前に
+  照会すると、受信済みのハンドを未キャプチャに分類する。載せないことと待つ
+  ことは両立する ―― 読み手側で解決する
+- **状態復元を待ってから `playerId` を読む**。コールドスタート直後は
+  `undefined` のことがあり、その値で固定すると全ハンドが照合不能に落ちて
+  チップ不一致の検出が丸ごと失われる
+- **時間検索の空振りを非到着の証拠にしない**。`StartTime` はサーバ時刻、
+  `apiEvents.timestamp` はクライアントの `Date.now()` なので、端末時計が
+  ずれていれば生行が実在しても範囲外に落ちる。欠損と断定しかけた HandId
+  だけ、範囲を捨てた全走査で確かめる
+
+**Service Worker の停止をまたいでも取りこぼさない。** 全走査を伴う突き合わせは
+MV3の非アクティブ期限をまたぎうるが、ポートのハンドラは既に同期的に返っており、
+直列化キューも走査の進捗もモジュールスコープにしかない。workerが落ちれば受け
+取った台帳ごと消えて再開もできず、欠損検出が無通知で終わる。そこで受け取った
+台帳を `meta` の `replayLedgerAuditPending` へ控えてからキューへ積み、完了
+（見送り・失敗を含む）で控えを外す。次回のSW起動時に控えが残っていればそこから
+再開する。全走査の位置（`apiEvents` 主キーのカーソル・確認済みHandId・
+控えた時点の行数）も一緒に控えるので、1回のworker寿命で走査し切れないLakeでも試行を重ねるだけ
+前へ進む。打ち切りの数え方は「**前進しないまま終わった試行**」で、走査が
+進んだ試行は数えない ―― 総試行数で打ち切ると、進んでいるのに捨てられる。
+上限（3回）に達したら破棄する（次にリプレイ一覧を開けばまた積まれる）。
+停止中にLakeの行数が変わっていたらカーソルは捨てて先頭から走査し直す ――
+インポートやクラウド復元が**過去の主キーを持つ行**を足すと、カーソルより前に
+挿入された行が二度と読まれず、実在するrawを「ローカル不在」と誤分類するため。
+
+**観測開始より前のハンドは判定しない。** 新規インストール直後・実験フラグを
+初めて有効にした直後・全データ削除後は、台帳に過去3日分が載る一方でローカルに
+無いのが正常で、これを欠損に数えると初回だけで最大100件の偽陽性を永続化する。
+下限はローカル最古のハンドの時刻を使う。観測期間の**途中**の空白（拡張を一時的に
+切っていた等）は依然として欠損として報告される ―― そこは本当に区別が付かない。
+
+起動口は Service Worker のグローバルに生やした
+`pokerChaseReplayFetch()` のみ（`background/replay-fetch-bridge.ts`）。
+`chrome.runtime.sendMessage` を使わないのは、**送信元自身の `onMessage` には
+配送されない**ため ―― SWのDevToolsコンソールから叩くと
+"Could not establish connection. Receiving end does not exist." になる。
+取り込み層が入ればそちらが依頼主体になるので、このモジュールは役目を終える。
+
+開発時の使い方:
+
+```javascript
+// 1. Service WorkerのDevToolsで有効化し、ゲームタブを再読み込みする
+await chrome.storage.sync.set({ experimentalReplayImportEnabled: true })
+
+// 2. ページが通常API通信を1回すればエンベロープが捕まる。
+//    その後、Service WorkerのDevToolsコンソールで:
+await pokerChaseReplayFetch([258411144, 258411368])
+```
+
+応答は `{ success: true, results: [...] }`。各要素は
+`{ handId, ok: true, detail }` か `{ handId, ok: false, error, retryable }`。
+`detail` は sanitize 済みで、資格情報は含まれない。無効化は同じキーを
+`false` に戻す（同期設定なので他端末にも伝播する）。
+
+既定OFF、権限追加なし、ユーザー操作中のゲーム通信を起点とする設計とする。
+公開ビルドへ載せる場合は、プライバシーポリシーとデータ利用開示へこの機能を
+明記すること。
+
+## 7. 試験機能: リプレイ詳細の取り込み層
+
+取得層（セクション6）の上に載る依頼主体。既定OFF。詳細は
+[replay-api.md](replay-api.md) の「取り込み層」節、実装は
+`src/background/replay-import.ts`。
+
+**セッション中は `/replay/detail` を1本も発行しない。** セッションの進行中に
+過去ハンドの詳細が取れると、まだ伏せられている情報がセッション内で参照
+可能になる。セッション中にできるのは HandId をキューへ積むことだけで、
+取得はセッション終了後に走る。判定は1箇所（`canFetchNow`）に集約し、
+`update-manager.ts` のセッション三値のうち `inactive` のときだけ許可する ――
+Service Worker はいつでも落ちうるので、再起動直後の `unknown` は
+「セッション中かもしれない」が正しく、そこで撃つと不変条件を破りうる。
+
+キューは `meta` の1行（`replayImportQueue`）。MV3 の Service Worker は
+数十秒で落ちるためメモリには置けない。専用ストアを作らないのは、高々100件
+規模の待ち行列にDexieのバージョンを消費する理由が無いため。
+
+### 保存形式: 合成イベント（私用ApiTypeId）
+
+取得結果は Raw Event Lake へ **ApiTypeId 90001**（`REPLAY_HAND_DETAIL`）の
+合成イベントとして保存し、`replayDetails`（v7、`handId` 主キー）へ射影する。
+Lake に載せることで NDJSON のエクスポート／インポート・Firestore の増分同期・
+その先の取り込みが**無改修で**この行を運ぶ ―― 輸送経路をもう1本作るより、
+既に信頼されている1本に相乗りするほうが壊れる箇所が少ない。
+
+`replayDetails` は Lake からの射影であって正ではない。Lake は生ログなので
+同じ HandId の行を複数持ちうる（別端末のエクスポートを取り込めば重複する）が、
+射影は先勝ちで1件に畳む ―― payload はサーバ側で不変なので、どれを採っても
+同じ。インポートと再構築の双方で射影を走らせるので、索引側だけが欠けた
+状態は次の再構築で埋まる。
+
+90001 は保存・同期の対象だが、`EntityConverter` / `WriteEntityStream` /
+統計 / `verify-stats` からは見えない。いずれも既知の対局 ApiTypeId だけを
+分岐するので、どの case にも該当せず素通りする。**これは実装の偶然ではなく
+仕様**として `src/replay/synthetic-event-invisibility.test.ts` で固定して
+あり、実測でも 492,901 イベントのキャプチャに 561 件の 90001 を混ぜた
+`verify-stats` の出力が、件数以外は1文字も変わらないことを確認している。

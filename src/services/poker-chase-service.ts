@@ -304,6 +304,27 @@ class PokerChaseService {
     }, 500) // 500ms debounce
   }
 
+  /**
+   * 保留中のデバウンスされた persistState() を取り消す（書き込みは行わない）。
+   *
+   * 本番（Service Worker）では呼ばない: SWが落ちればタイマーごと消えるし、
+   * 生存中は最後の書き込みを落とす理由がない。存在意義はテストの teardown で、
+   * 「破棄済みインスタンスの500msタイマーが、後続テストの beforeEach 窓
+   * （test-setup.ts のストレージリセット後・そのテストの restoreState() 前）で
+   * 発火し、共有された chrome.storage.local モックへ書き込む」というテスト間
+   * 汚染を断つこと。呼び出しは `src/utils/test-service-teardown.ts` の
+   * `trackServiceForTeardown()` 経由に統一すること（MUST）。
+   *
+   * 破棄前の状態を保存したい呼び出し元はこれを使ってはならない（MUST NOT）:
+   * 保留中の書き込みは flush されずに捨てられる。
+   */
+  readonly cancelPendingPersist = () => {
+    if (this._persistStateTimer) {
+      clearTimeout(this._persistStateTimer)
+      this._persistStateTimer = undefined
+    }
+  }
+
   /** Actual persistence logic */
   private actualPersistState = () => {
     const state = {
