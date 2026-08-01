@@ -65,7 +65,8 @@
     ├── app.ts                 # Re-export layer (type guards)
     ├── background.ts          # Service worker entry (wires modules below)
     ├── content_script.ts      # Bridge between page and extension (keepalive, session events)
-    ├── web_accessible_resource.ts  # WebSocket interception
+    ├── web_accessible_resource.ts  # WebSocket interception (always injected)
+    ├── replay_bridge.ts       # Replay fetch/XHR interception + auth-envelope capture (injected only when the experimental flag is enabled)
     ├── entity-converter.ts    # Direct event-to-entity conversion (rebuild/import)
     ├── popup.ts               # Extension popup entry point
     ├── popup-boot.ts          # Synchronous pre-paint popup theme bootstrap

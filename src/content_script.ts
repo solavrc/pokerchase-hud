@@ -52,6 +52,7 @@ const KEEPALIVE_INTERVAL_MS = 25000 // 25秒（30秒タイムアウトより少�
 let isGameActive = false
 let keepaliveTimer: ReturnType<typeof setInterval> | null = null
 let replayBridgeReady = false
+let replayBridgeInjected = false
 let replayImportEnabled = false
 /**
  * 設定を実際に読めたか。**未読のまま `enabled: false` を送ってはならない**
@@ -90,6 +91,9 @@ const flushPendingReplayRequests = () => {
 chrome.storage.sync.get(EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY).then(stored => {
   replayImportEnabled = stored[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY] === true
   replayConfigLoaded = true
+  // 無効ユーザーにはリプレイ傍受スクリプトを注入しない。有効なときだけ
+  // WAR `<script>` として注入する（`injectReplayBridge`参照）。
+  if (replayImportEnabled) injectReplayBridge()
   postReplayConfig()
   flushPendingReplayRequests()
 }).catch(() => undefined)
@@ -100,6 +104,10 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   replayImportEnabled = change.newValue === true
   // 変更通知が届いた時点で値は確定している（初回読み取りが未完了でも）。
   replayConfigLoaded = true
+  // 有効化の遷移で初めて注入する。`<script>`は取り消せないので、無効化しても
+  // ここでは何もせず、`postReplayConfig()`が送る`enabled: false`を受けて
+  // ブリッジ側がランタイムでno-op化する（replay_bridge.ts参照）。
+  if (replayImportEnabled) injectReplayBridge()
   postReplayConfig()
   if (replayImportEnabled) flushPendingReplayRequests()
   else pendingReplayRequests.splice(0)
@@ -533,13 +541,35 @@ chrome.runtime.onMessage.addListener((message: ChromeMessage | { action: string,
   }
 })
 
+// WebSocket傍受（HUDの土台）。全ユーザーで常時注入する。resources[0]は
+// web_accessible_resource.js（manifest.jsonの並び順）。
 const injectWebSocketHook = () => {
-  const firstResource = web_accessible_resources[0]
-  if (!firstResource?.resources[0]) return
+  const resource = web_accessible_resources[0]?.resources[0]
+  if (!resource) return
 
   const script = document.createElement('script')
   script.type = 'text/javascript'
-  script.src = chrome.runtime.getURL(firstResource.resources[0])
+  script.src = chrome.runtime.getURL(resource)
+  document.body?.appendChild(script)
+}
+injectWebSocketHook()
+
+// リプレイ傍受（replay_bridge.js）。実験フラグ有効時にだけ注入する。
+// `<script>`はDOMから取り消せないので、一度注入したら再注入しない
+// （`replayBridgeInjected`で冪等化）。無効化はブリッジ側のランタイムno-op化に
+// 委ねる（storage.onChangedが送る`enabled: false`）。
+// 注入対象は並び順ではなくファイル名で解決する（resources配列の順序変更に
+// 影響されないため）。
+const injectReplayBridge = () => {
+  if (replayBridgeInjected) return
+  const resource = web_accessible_resources[0]?.resources
+    .find(name => name.endsWith('replay_bridge.js'))
+  if (!resource) return
+  replayBridgeInjected = true
+
+  const script = document.createElement('script')
+  script.type = 'text/javascript'
+  script.src = chrome.runtime.getURL(resource)
   script.addEventListener('load', () => {
     replayBridgeReady = true
     postReplayConfig()
@@ -547,7 +577,6 @@ const injectWebSocketHook = () => {
   })
   document.body?.appendChild(script)
 }
-injectWebSocketHook()
 
 const mountApp = () => {
   const unityContainer = document.querySelector('#unity-container')

@@ -16,8 +16,9 @@ only the non-secret, permission-validated consent boolean through
 `chrome.storage.session`; content scripts never read local auth storage. The
 session area is reserved for this mirror while it is visible to content
 scripts.
-It is deliberately **not** initialized in `web_accessible_resource.ts`, which
-runs in the game page's main world and handles raw WebSocket payloads.
+It is deliberately **not** initialized in `web_accessible_resource.ts` or
+`replay_bridge.ts`, which run in the game page's main world and handle raw
+WebSocket / replay-API payloads.
 
 Enabling waits for every live game tab to acknowledge the transition and rolls
 the opt-in back — including the optional host grant just given — when a content
