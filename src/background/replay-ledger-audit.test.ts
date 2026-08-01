@@ -615,6 +615,40 @@ describe('replay ledger audit', () => {
       expect(await readPending()).toEqual([])
     })
 
+    // Codexレビュー指摘（3周目）: 走査位置を控えないと、Lakeが大きく1回の
+    // worker寿命で走査し切れない場合にどの試行も同じ辺りで終わり、一度も
+    // 完走しないまま上限に達して台帳だけが捨てられる。
+    test('全走査の途中経過を控え、再開時はその位置から続ける', async () => {
+      // 生行を多めに積み、途中まで走査した控えを用意する
+      await db.apiEvents.bulkAdd(Array.from({ length: 60 }, (_, index) => ({
+        timestamp: OLDEST_LOCAL_MS + index,
+        ApiTypeId: ApiType.EVT_HAND_RESULTS,
+        sequence: 0,
+        HandId: 4000 + index
+      })) as any)
+
+      const progresses: unknown[] = []
+      await auditReplayLedger(
+        db,
+        HERO,
+        ledgerOf([{ handId: 4059, startTime: 1785500000, chipDiff: 10 }]),
+        NOW,
+        undefined,
+        undefined,
+        {
+          // 既に確認済みとして持ち越された分は再走査しない
+          resume: { found: [[4059, OLDEST_LOCAL_MS + 59]] },
+          onProgress: progress => progresses.push(progress)
+        }
+      )
+
+      const stored = await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)
+      // 生行が在ると分かっているので「ローカル不在」にはならない
+      expect((stored?.value as { notCapturedHandIds: number[] }).notCapturedHandIds).toEqual([])
+      // 持ち越しで全て解決したので、走査自体が走らない（1ページも読まない）
+      expect(progresses).toEqual([])
+    })
+
     // 毎回worker停止で終わる台帳を、起動のたびに走らせ続けないため。
     test('再開の上限に達した控えは破棄して実行しない', async () => {
       await db.hands.bulkPut([hand(3500, 10)])

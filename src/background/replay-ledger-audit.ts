@@ -61,9 +61,10 @@ export const REPLAY_LEDGER_AUDIT_META_ID = 'replayLedgerAudit'
 export const REPLAY_LEDGER_AUDIT_PENDING_META_ID = 'replayLedgerAuditPending'
 
 /**
- * 再開の上限。毎回worker停止で終わる台帳（Lakeが極端に大きい等）を、起動の
- * たびに走らせ続けないため。上限に達したら破棄する ―― 診断なので、次に
- * リプレイ一覧を開けばまた積まれる。
+ * **前進しなかった**再開の上限。走査位置が1ページも進まないまま終わる状態
+ * （権限喪失・DB破損など、再開しても解けない類）を、起動のたびに繰り返さない
+ * ため。前進している限り打ち切らない。上限に達したら破棄する ―― 診断なので、
+ * 次にリプレイ一覧を開けばまた積まれる。
  */
 export const REPLAY_LEDGER_AUDIT_MAX_ATTEMPTS = 3
 
@@ -82,8 +83,14 @@ export interface PendingReplayLedgerAudit {
   /** 台帳を受信した時点の`playerId`。再開後もアカウント変更ガードを効かせる。 */
   playerIdAtReceipt?: number
   receivedAt: number
-  /** 実行を開始した回数。`REPLAY_LEDGER_AUDIT_MAX_ATTEMPTS`で打ち切る。 */
+  /**
+   * **前へ進まなかった**試行の回数。`REPLAY_LEDGER_AUDIT_MAX_ATTEMPTS`で
+   * 打ち切る。走査が前進した試行は数えない ―― 数えると、Lakeが大きくて
+   * 1回のworker寿命で走査し切れないケースが、進んでいるのに打ち切られる。
+   */
   attempts: number
+  /** 全走査の再開位置。前回の試行がworker停止で終わったときだけ入る。 */
+  scan?: ReplayLedgerScanProgress
 }
 
 const isPendingEntry = (value: unknown): value is PendingReplayLedgerAudit => {
@@ -198,6 +205,27 @@ export interface ReplayLedgerAuditResult {
 /** 全走査のページ幅。都度トランザクションを解放するための単位。 */
 const FULL_SCAN_CHUNK_SIZE = 2000
 
+/** 走査進捗を控える間隔（ページ数）。`meta`への書き込み回数を抑えるため。 */
+const SCAN_PROGRESS_EVERY_CHUNKS = 10
+
+type RawScanRow = { timestamp?: number, ApiTypeId: number, sequence?: number }
+
+/**
+ * 全走査の再開位置。`afterKey` は `apiEvents` の主キー3要素
+ * （`[timestamp, ApiTypeId, sequence]`）で、`found` はそこまでに確認済みの
+ * HandId→受信時刻。
+ */
+export interface ReplayLedgerScanProgress {
+  afterKey?: [number, number, number]
+  found: Array<[number, number]>
+}
+
+/**
+ * 「そのアカウントの最古のハンド」を求めるときに見る先頭の件数。
+ * HandIdの局所的な逆転（MTTのテーブル移動）を吸収するための幅。
+ */
+const OLDEST_HAND_PROBE_LIMIT = 200
+
 const HAND_RESULTS_LOOKUP_LEAD_MS = 5 * 60_000
 const HAND_RESULTS_LOOKUP_TAIL_MS = 30 * 60_000
 
@@ -214,11 +242,21 @@ const HAND_RESULTS_LOOKUP_TAIL_MS = 30 * 60_000
  */
 const confirmCapturesByFullScan = async (
   db: PokerChaseDB,
-  candidates: number[]
+  candidates: number[],
+  scan?: ReplayLedgerScanProgress,
+  onProgress?: (progress: ReplayLedgerScanProgress) => void
 ): Promise<Map<number, number>> => {
   const found = new Map<number, number>()
   if (candidates.length === 0) return found
   const wanted = new Set(candidates)
+  // 前回の試行が到達した位置から続ける。Lakeが大きく、1回のworker寿命で
+  // 走査し切れない場合、毎回先頭からやり直すと**どの試行も同じ辺りで
+  // 終わって一度も完走しない**。進捗を持ち越せば試行を重ねるだけ前へ進む。
+  for (const [handId, timestamp] of scan?.found ?? []) {
+    if (wanted.delete(handId)) found.set(handId, timestamp)
+  }
+  if (wanted.size === 0) return found
+  let scannedChunks = 0
   // **1トランザクションで走査しない。** IndexedDBでは同じ`apiEvents`ストアへの
   // 後続readwriteが走査の完了まで待たされるため、大きいLakeでは監査中に届いた
   // ライブイベントのraw保存がその後ろへ滞留し、その間にService Workerが
@@ -229,7 +267,9 @@ const confirmCapturesByFullScan = async (
   // カーソルは主キーの3要素を全て保持する（`processInChunks`と同じ理由 ――
   // 一部を落とすと同一ミリ秒の行を飛ばす/重複させる）。候補が全て見つかれば
   // 途中で打ち切る。
-  for await (const chunk of processInChunks(db.apiEvents, FULL_SCAN_CHUNK_SIZE)) {
+  for await (const chunk of processInChunks(db.apiEvents, FULL_SCAN_CHUNK_SIZE, {
+    ...scan?.afterKey ? { afterKey: scan.afterKey } : {}
+  })) {
     for (const row of chunk) {
       if (row.ApiTypeId !== ApiType.EVT_HAND_RESULTS) continue
       const handId = (row as { HandId?: unknown }).HandId
@@ -239,6 +279,15 @@ const confirmCapturesByFullScan = async (
       }
     }
     if (wanted.size === 0) break
+    // 進捗の控えは毎ページではなく間引く（`meta`への書き込み回数を抑える）。
+    scannedChunks += 1
+    const last = chunk[chunk.length - 1] as RawScanRow | undefined
+    if (onProgress && last !== undefined && scannedChunks % SCAN_PROGRESS_EVERY_CHUNKS === 0) {
+      onProgress({
+        afterKey: [last.timestamp ?? 0, last.ApiTypeId, last.sequence ?? 0],
+        found: [...found]
+      })
+    }
   }
   return found
 }
@@ -287,7 +336,11 @@ export const auditReplayLedger = async (
   ledger: ReplayLedger,
   now: number,
   isBusy?: () => boolean,
-  getOperationGeneration?: () => number
+  getOperationGeneration?: () => number,
+  scanState?: {
+    resume?: ReplayLedgerScanProgress
+    onProgress?: (progress: ReplayLedgerScanProgress) => void
+  }
 ): Promise<ReplayLedgerAuditResult> => {
   const all = ledger.hands.slice(0, REPLAY_LEDGER_MAX_ENTRIES)
   // 読み始めた時点の操作世代。`isBusy`のスナップショットだけでは、監査の
@@ -311,18 +364,34 @@ export const auditReplayLedger = async (
   const snapshot = await db.transaction('r', db.hands, db.apiEvents, async () => ({
     rawByWindow: await collectCapturedHandIds(db, all.map(entry => entry.startTime)),
     localHands: await db.hands.bulkGet(all.map(entry => entry.handId)),
-    oldestOwnHand: playerId === undefined
-      ? undefined
-      : await db.hands.where('seatUserIds').equals(playerId).first()
+    oldestOwnHands: playerId === undefined
+      ? []
+      : await db.hands.where('seatUserIds').equals(playerId)
+        .limit(OLDEST_HAND_PROBE_LIMIT).toArray()
   }))
-  const { rawByWindow, localHands, oldestOwnHand } = snapshot
+  const { rawByWindow, localHands, oldestOwnHands } = snapshot
+  // HandIdは主キー順では概ね増加するが、MTTのテーブル移動では受信順で局所的に
+  // 逆転する（docs/api-events.md / `src/types/api.ts` の HandId 注記）。
+  // 主キー最小の1件をそのまま「最古」と読むと下限が数分ずれうるので、
+  // 先頭の一定件数から `approxTimestamp` の最小値を採る。逆転は局所的なので、
+  // この幅で十分に吸収できる。
+  const oldestOwnHand = oldestOwnHands.reduce<typeof oldestOwnHands[number] | undefined>(
+    (oldest, hand) => {
+      if (hand.approxTimestamp === undefined) return oldest
+      if (oldest?.approxTimestamp === undefined) return hand
+      return hand.approxTimestamp < oldest.approxTimestamp ? hand : oldest
+    },
+    undefined
+  ) ?? oldestOwnHands[0]
   // 全走査だけはスナップショットの外。ページごとにトランザクションを解放
   // しないとライブ取り込みを塞ぐ（`confirmCapturesByFullScan`のコメント参照）。
   // 走査中に届いた行が見えるのは構わない ―― 「生行が在る」方向にしか動かず、
   // 欠損の誤報を増やさない。
   const rawByScan = await confirmCapturesByFullScan(
     db,
-    all.filter(entry => !rawByWindow.has(entry.handId)).map(entry => entry.handId)
+    all.filter(entry => !rawByWindow.has(entry.handId)).map(entry => entry.handId),
+    scanState?.resume,
+    scanState?.onProgress
   )
   const rawTimestamps = new Map([...rawByWindow, ...rawByScan])
 
@@ -456,6 +525,17 @@ export const auditReplayLedger = async (
     updatedAt: now
   })
 
+  // 書き込みの**完了後**にもう一度確かめる。比較から`put()`の決着までの間に
+  // インポート/再構築が始まると、操作前のスナップショットが「正常な最新結果」
+  // として残ってしまう。残っていた場合は取り消す（診断なので、無いことより
+  // 誤った内容が残るほうが悪い）。
+  if (operationGenerationAtStart !== undefined &&
+    (isBusy?.() || getOperationGeneration?.() !== operationGenerationAtStart)) {
+    console.info('[replay-ledger] 保存直後に長時間操作が始まったため結果を取り消しました')
+    await db.meta.delete(REPLAY_LEDGER_AUDIT_META_ID)
+    return result
+  }
+
   if (notCapturedHandIds.length > 0 || derivationMissingHandIds.length > 0 ||
     chipDiffMismatches.length > 0) {
     console.warn(
@@ -580,20 +660,26 @@ const enqueueReplayLedgerAudit = (
         ]
       }
       return [...others, entry]
-    }).catch(error => {
+    }).then(() => true).catch(error => {
       console.warn('[replay-ledger] 保留中の台帳を控えられませんでした:', error)
+      return false
     })
-    : Promise.resolve()
+    : Promise.resolve(false)
 
   auditQueue = auditQueue
     .then(async () => {
-      await persisted
-      // 控えを残す約束をした実行だけが、その約束の生死を確認できる。
-      // 新しい受信に追い越されていれば（控えから消えていれば）走らせない ――
-      // 走らせると古い結果が最後に`replayLedgerAudit`を上書きする。
-      if (persist) {
-        const current = await readPendingAudits(deps.db).catch(() => [])
-        if (!current.some(item => isSamePending(item, entry))) {
+      const didPersist = await persisted
+      // 追い越されたときだけ見送る。**控えの書き込みや確認の失敗を
+      // 「追い越された」と誤読してはならない**（MUST NOT）―― 誤読すると、
+      // 控えも結果も残らないまま診断だけが消える。見送りの根拠は
+      // 「同じカテゴリに、より新しい受信の控えが確かに在る」ことに限る。
+      if (didPersist) {
+        const current = await readPendingAudits(deps.db).catch(() => undefined)
+        // 控えの書き込みが成功していて、かつ読み取りにも成功したのに自分の
+        // エントリが無い ＝ 新しい受信に置き換えられた（または既に別経路で
+        // 決着した）。書き込み・読み取りの**失敗**をこの結論に混ぜては
+        // ならない（MUST NOT）―― 混ぜると、控えも結果も残らないまま診断が消える。
+        if (current !== undefined && !current.some(item => isSamePending(item, entry))) {
           console.info('[replay-ledger] 新しい台帳に追い越されたため再開を見送りました')
           return
         }
@@ -610,7 +696,23 @@ const enqueueReplayLedgerAudit = (
           return
         }
         await auditReplayLedger(
-          deps.db, playerId, entry.ledger, deps.now(), deps.isBusy, deps.getOperationGeneration
+          deps.db, playerId, entry.ledger, deps.now(), deps.isBusy, deps.getOperationGeneration,
+          {
+            ...entry.scan ? { resume: entry.scan } : {},
+            // 走査が進むたびに控えを更新する。ここでworkerが落ちても、次の
+            // 再開はこの位置から続く。
+            // 走査が進むたびに控えを更新し、**同時に試行回数を0へ戻す**。
+            // `attempts` は「前進しないまま終わった試行」の数であって、
+            // 総試行数ではない ―― 総数で打ち切ると、Lakeが大きくて1回の
+            // worker寿命で走査し切れないケースが、進んでいるのに捨てられる。
+            onProgress: progress => {
+              void updatePendingAudits(deps.db, deps.now(), current =>
+                current.map(item => isSamePending(item, entry)
+                  ? { ...item, scan: progress, attempts: 0 }
+                  : item)
+              ).catch(() => undefined)
+            }
+          }
         )
       } finally {
         // 見送り・失敗も含めて控えを外す。ここまで到達した＝workerは生きていた

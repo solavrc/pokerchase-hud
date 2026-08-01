@@ -222,8 +222,9 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
     return
   }
 
-  // The main-world bridge removes transport credentials before this message
-  // crosses into the extension's isolated world.
+  // 資格情報（`session` / `requestKey`）は main world 側のブリッジが
+  // `sanitizeReplayDetail` で落としており、この境界を越えてはならない
+  // （MUST NOT）。
   if ('type' in event.data && event.data.type === REPLAY_BRIDGE_STARTED) {
     const started = event.data as Partial<ReplayFetchStarted>
     if (typeof started.requestId === 'string') {

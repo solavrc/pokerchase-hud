@@ -16,7 +16,7 @@ import {
 } from './undecoded-event-tracker'
 import { awaitIngestionDrain, markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
-import { getOperationState } from './operation-state'
+import { getOperationGeneration, getOperationState } from './operation-state'
 import { handleReplayPortMessage, releaseReplayRequestsForPort } from './replay-fetch-bridge'
 import { handleReplayLedgerPortMessage, type ReplayLedgerAuditDeps } from './replay-ledger-audit'
 import {
@@ -79,6 +79,9 @@ export const createReplayLedgerAuditDeps = (service: PokerChaseService): ReplayL
   // ドレインではインポート側を待てない。診断なので延期ではなく見送りで
   // 足りる（次にリプレイ一覧を開けば走る）。
   isBusy: () => getOperationState().type !== 'idle',
+  // 読み始めと書き戻しの間に長時間操作が走り切った場合を検出するための世代。
+  // 渡し忘れると比較が常に`undefined`同士になり、この保護が無効化される。
+  getOperationGeneration,
   getPlayerId: () => service.playerId,
   now: () => Date.now()
 })

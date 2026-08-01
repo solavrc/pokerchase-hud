@@ -475,13 +475,13 @@ const readApiResponse = async (
       generationAtRequest
     )
   } catch {
-    // Many API responses are not MessagePack. They are irrelevant here.
+    // MessagePackでない応答は多い。ここでは無関係なので黙って捨てる。
   }
 }
 
-// Capture the same version/session envelope PokerChase itself supplies. The
-// envelope remains inside the page's main-world closure and is never posted to
-// the extension context or IndexedDB.
+// PokerChase自身が送っている版数・sessionのエンベロープを、同じ通信から
+// 捕獲する。捕獲した値は main world のクロージャに留め、拡張コンテキストへも
+// IndexedDBへも渡してはならない（MUST NOT）。
 if (OriginalFetch) {
   window.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = requestUrl(input)
@@ -502,9 +502,9 @@ if (OriginalFetch) {
   }) as typeof window.fetch
 }
 
-// Unity WebGL may use XMLHttpRequest rather than fetch for the same API
-// calls. Mirror the envelope observation there; requests themselves still go
-// through the original browser implementation unchanged.
+// Unity WebGL は同じAPI呼び出しに fetch ではなく XMLHttpRequest を使うことが
+// ある。エンベロープの観測を同じようにこちらにも置く。リクエスト自体は素の
+// ブラウザ実装をそのまま通す（傍受で書き換えない）。
 const xhrUrls = new WeakMap<XMLHttpRequest, URL>()
 const OriginalXhrOpen = XMLHttpRequest.prototype.open
 const OriginalXhrSend = XMLHttpRequest.prototype.send
@@ -539,7 +539,7 @@ const readApiXhrResponse = async (
     else return
     observeApiResponse(url, decoded, authAtRequest, generationAtRequest)
   } catch {
-    // Non-MessagePack XHR responses are unrelated to replay auth.
+    // MessagePackでないXHR応答はリプレイの認証と無関係。
   }
 }
 
