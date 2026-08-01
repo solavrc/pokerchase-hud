@@ -217,16 +217,25 @@ export const deriveMidHandChipInflow = (
     return true
   }
 
+  // 卓として進行しているストリート。ハンド終了行のフォールバックに使う。
+  // MUST: 席ごとの `streets` ではなく卓単位で持つこと — 同一ms群で304が305より
+  // 先に並ぶと、終了行の席は新ストリートでまだ行動しておらず `streets` が前の
+  // ストリートのままになる。その席固有の値をフォールバックにすると、精算済みの
+  // ブラインド／ベットが「説明できない減少」に見えてハンド全体の流入が不明に
+  // 戻る。先行する別席のアクションが確定させた卓の進行ストリートを使う
+  // （`resolveActionPhase` に渡す `runningPhase` と同じ考え方）。
+  let tableStreet = deal.Progress.Phase
+
   for (const event of handEvents) {
     if (event.ApiTypeId === ApiType.EVT_ACTION) {
       // ハンド終了行の `Phase` は3固定なのでストリート判定に使えない（#340）。
-      // 直前に観測したストリートの続きとして扱う。
-      const phase = event.Progress.NextActionSeat === HAND_ENDING_NEXT_ACTION_SEAT
-        ? streets.get(event.SeatIndex) ?? event.Progress.Phase
-        : event.Progress.Phase
+      const isHandEnding = event.Progress.NextActionSeat === HAND_ENDING_NEXT_ACTION_SEAT
+      if (!isHandEnding) tableStreet = Math.max(tableStreet, event.Progress.Phase)
+      const phase = isHandEnding ? tableStreet : event.Progress.Phase
       if (!observe(event.SeatIndex, phase, event.Chip, event.BetChip)) return null
     } else if (event.ApiTypeId === ApiType.EVT_DEAL_ROUND) {
       const phase = event.Progress.Phase
+      tableStreet = Math.max(tableStreet, phase)
       const snapshots = event.Player ? [event.Player, ...event.OtherPlayers] : event.OtherPlayers
       for (const snapshot of snapshots) {
         // ストリート開始スナップショットは、そのストリートで既にアクションを

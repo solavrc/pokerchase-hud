@@ -664,6 +664,60 @@ describe('deriveMidHandChipInflow with an out-of-order equal-millisecond group',
   })
 })
 
+describe('deriveMidHandChipInflow with a hand-ending row on a street the seat has not acted on', () => {
+  test('uses the table street, not the seat\u0027s own, so a settled blind is not read as a loss', () => {
+    // 同一ms群で304が305より先に並ぶ形。seat4 はプリフロップで20を投じたあと
+    // フロップの最初の行動がハンド終了のフォールドなので、席固有のストリートは
+    // まだPREFLOPのまま。フォールバックを席単位にすると精算済みの20が
+    // 「説明できない減少」に見え、seat3 の本物のリバイインごと不明に戻る。
+    const flop = {
+      ApiTypeId: ApiType.EVT_DEAL_ROUND,
+      timestamp: 1733147502000,
+      CommunityCards: [35, 4, 23],
+      Player: { SeatIndex: 2, BetStatus: BetStatusType.BET_ABLE, Chip: 3980, BetChip: 0, HoleCards: [22, 28] },
+      OtherPlayers: [
+        { SeatIndex: 3, Status: 0, BetStatus: BetStatusType.FOLDED, Chip: 3990, BetChip: 0 },
+        { SeatIndex: 4, Status: 0, BetStatus: BetStatusType.BET_ABLE, Chip: 3980, BetChip: 0 },
+      ],
+      Progress: { Phase: 1, NextActionSeat: 4, NextActionTypes: [0, 5, 1], NextExtraLimitSeconds: 3, MinRaise: 0, Pot: 50, SidePot: [] },
+    } as unknown as ApiEvent<ApiType.EVT_DEAL_ROUND>
+    const results = {
+      ...ringResults,
+      Pot: 50,
+      Results: [{ UserId: 2001, RankType: 10, HandRanking: 1, Hands: [], HoleCards: [], Ranking: -2, RewardChip: 50 }],
+      Player: { SeatIndex: 2, BetStatus: -1, Chip: 4030, BetChip: 0 },
+      OtherPlayers: [
+        { SeatIndex: 3, Status: 0, BetStatus: -1, Chip: 3990, BetChip: 0 },
+        { SeatIndex: 4, Status: 0, BetStatus: -1, Chip: 3980, BetChip: 0 },
+      ],
+    } as unknown as ApiEvent<ApiType.EVT_HAND_RESULTS>
+    const events = [
+      ringDeal,
+      ringAction(2, 3, 3980, 20, 0, 3),
+      ringAction(3, 2, 1990, 10, 0, 4),
+      ringAction(4, 0, 3980, 20, 0, -1),
+      // ここでテーブルはフロップへ進む（先行する別席のアクションが確定させる）。
+      ringAction(2, 0, 3980, 0, 1, 4),
+      // seat4 のフロップ最初の行動 = ハンド終了行。Progress.Phase は3固定。
+      ringAction(4, 2, 3980, 0, 3, -2),
+      // 305 は主キー順で304のあとに届く。
+      flop,
+      results,
+    ]
+
+    const inflow = deriveMidHandChipInflow(ringDeal, results, events, BattleType.RING_GAME)
+    expect(inflow && Object.fromEntries(inflow)).toEqual({ 2: 0, 3: 2000, 4: 0 })
+
+    const settlement = deriveHandSettlement(ringDeal, results, BattleType.RING_GAME, events)
+    expect(settlement.winningPlayerIds).toEqual([2001])
+    expect(settlement.playerChipAccounting).toEqual({
+      '2001': { grossPayout: 50, totalContribution: 20, netChips: 30 },
+      '2002': { grossPayout: 0, totalContribution: 10, netChips: -10 },
+      '2003': { grossPayout: 0, totalContribution: 20, netChips: -20 },
+    })
+  })
+})
+
 describe('deriveHandSettlement with a Ring mid-hand rebuy', () => {
   test('keeps the exact winner and per-seat net chips despite the table total growing', () => {
     const startingTotal = 4000 + 2000 + 4000

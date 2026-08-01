@@ -316,15 +316,25 @@ const rawMidHandInflow = (
     return true
   }
 
+  // Table-level running street. The hand-ending row's fallback MUST come from
+  // here, not from the acting seat's own last-seen street: with 304s stored
+  // ahead of their 305, that seat may not have acted on the new street yet, and
+  // a per-seat fallback would read its already-settled blind/bet as an
+  // unexplained decrease and void the whole hand's inflow.
+  let tableStreet = deal.Progress.Phase ?? 0
+
   for (const event of handEvents) {
     if (event.ApiTypeId === ApiType.EVT_ACTION) {
       const actionEvt = event as RawActionEvent
       if (actionEvt.Chip === undefined) return null
-      const phase = rawActionPhase(actionEvt, street.get(actionEvt.SeatIndex) ?? 0)
+      const isHandEnding = actionEvt.Progress?.NextActionSeat === HAND_ENDING_NEXT_ACTION_SEAT
+      if (!isHandEnding) tableStreet = Math.max(tableStreet, rawActionPhase(actionEvt, tableStreet))
+      const phase = isHandEnding ? tableStreet : rawActionPhase(actionEvt, tableStreet)
       if (!observe(actionEvt.SeatIndex, phase, actionEvt.Chip, actionEvt.BetChip)) return null
     } else if (event.ApiTypeId === ApiType.EVT_DEAL_ROUND) {
       const roundEvt = event as RawDealRoundEvent
       const phase = roundEvt.Progress.Phase
+      tableStreet = Math.max(tableStreet, phase)
       const seats = roundEvt.Player ? [roundEvt.Player, ...roundEvt.OtherPlayers] : roundEvt.OtherPlayers
       for (const seat of seats) {
         if (seat.Chip === undefined) return null
