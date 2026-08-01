@@ -14,16 +14,22 @@
  *   「公開ルールの再実装」をしない -- サーバー送信値をそのまま信頼する）。
  * - DBアクセスはテーブルごとに1回のインデックス付きクエリに抑える
  *   （hands: 'seatUserIds'、actions/phases: 'handId'のanyOf、対象ハンドID
- *   集合に対してのみ）。デフォルトlimit=10件なので、actions/phasesの
- *   バッチクエリも小さい。
+ *   集合に対してのみ）。対象ハンドは高々`MAX_RECENT_HANDS_LIMIT`件なので、
+ *   actions/phasesのバッチクエリも小さい。
  * - フィルター（battleTypeFilter/tableSizeFilter）の意味論はcalcStats/
  *   positional-stats-serviceと一致させる。ただしhandLimitFilterは対象外
  *   （アプリ全体の集計範囲とは独立した「直近N件」機能のため、仕様通り）。
- * - 30秒キャッシュ（#128と同じパターン）、キーにplayerId+フィルター+limitを含める。
+ * - 30秒キャッシュ（#128と同じパターン）。キーはplayerId+フィルターのみで、
+ *   件数（limit）は含めない（#341）。UIの件数スイッチャー（10/25/50/100）は
+ *   同じ母集合の先頭を切り出すだけなので、常に最大件数まで組み立てて
+ *   キャッシュし、返却時にsliceする。件数ごとにキーを分けると、切り替えの
+ *   たびにDB読み取りが1往復増え、キャッシュも同じ内容で4重化する。
+ * - 対象プレイヤーが配られていないハンド（バースト後の観戦ハンド等）は
+ *   除外する（#341）。`isDealtIn`参照。
  */
-import { ActionType, PhaseType, Position, isShowdownParticipant } from '../types/game'
+import { ActionType, PhaseType, Position, ActionDetail, isShowdownParticipant } from '../types/game'
 import type { Hand, Action, Phase, Result } from '../types/entities'
-import type { RecentHandEntry, RecentHandsResult, PreflopLine } from '../types/stats'
+import type { RecentHandEntry, RecentHandsResult, PreflopLine, PostflopLines } from '../types/stats'
 import type { PokerChaseDB } from '../db/poker-chase-db'
 import type PokerChaseService from './poker-chase-service'
 import { matchesTableSizeFilter } from '../utils/table-size'
@@ -32,9 +38,17 @@ import { readReplayHoleCards } from '../replay/hole-cards'
 import { readReplayImportEnabled } from '../background/replay-import'
 import { EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY } from '../replay/protocol'
 import { compareHandsNewestFirst } from '../utils/hand-order'
+// 件数の選択肢・既定値・上限はrecent-hands-config.tsが持つ（UI側からも
+// 参照するため。同ファイル冒頭のコメント参照）。ここから再エクスポートして、
+// 既存の`import { DEFAULT_RECENT_HANDS_LIMIT } from './recent-hands-service'`
+// を壊さない。
+import {
+  DEFAULT_RECENT_HANDS_LIMIT,
+  MAX_RECENT_HANDS_LIMIT,
+  RECENT_HANDS_LIMIT_OPTIONS,
+} from '../utils/recent-hands-config'
 
-/** デフォルトの取得件数（「直近10ハンド」）。 */
-export const DEFAULT_RECENT_HANDS_LIMIT = 10
+export { DEFAULT_RECENT_HANDS_LIMIT, MAX_RECENT_HANDS_LIMIT, RECENT_HANDS_LIMIT_OPTIONS }
 
 /** `Position`列挙体の値域（-2..3の連続整数）に収まるかを判定する。legacy sentinel `-3` はfalseになる。 */
 const isValidPosition = (position: number): position is Position =>
@@ -78,11 +92,18 @@ function subscribeToHandCompletion(service: PokerChaseService): void {
   })
 }
 
-/** Exported for direct unit testing -- caching itself is disabled under NODE_ENV=test
- * (see `useCache` below), so key-differs-when-filter-or-limit-differs can't be observed
- * behaviorally in tests and is instead pinned down against this function directly. */
-export const buildRecentHandsCacheKey = (playerId: number, service: PokerChaseService, limit: number): string =>
-  `${playerId}_${service.battleTypeFilter?.join(',') ?? 'all'}_${service.tableSizeFilter?.join(',') ?? 'all'}_${limit}`
+/**
+ * Exported for direct unit testing -- caching itself is disabled under NODE_ENV=test
+ * (see `useCache` below), so key-differs-when-filter-differs can't be observed
+ * behaviorally in tests and is instead pinned down against this function directly.
+ *
+ * 件数は意図的にキーへ含めない（#341）: エントリは常に
+ * `MAX_RECENT_HANDS_LIMIT`件まで組み立ててキャッシュし、呼び出し側の
+ * `limit`はその先頭からのsliceで満たす。件数スイッチャーの切り替えが
+ * DB読み取りを増やさず、同じ内容のキャッシュが件数分だけ重複しない。
+ */
+export const buildRecentHandsCacheKey = (playerId: number, service: PokerChaseService): string =>
+  `${playerId}_${service.battleTypeFilter?.join(',') ?? 'all'}_${service.tableSizeFilter?.join(',') ?? 'all'}`
 
 /**
  * リプレイ取り込みのオプトインが切り替わったらキャッシュを捨てる。
@@ -171,6 +192,83 @@ export function derivePreflopLine(
 }
 
 /**
+ * そのハンドで対象プレイヤーが実際に配られていたか（#341「参加しなかった
+ * ハンドの除外」）。
+ *
+ * 判定は配札時のラインナップ`hand.seatUserIds`（=`EVT_DEAL.SeatUserIds`）
+ * のみを根拠にする。docs/battle-type-coverage-audit.md「Ringバスト →
+ * 観戦 → 買い直し」が結論づけているとおり、そのハンドを配られたかどうかの
+ * 権威は結果スナップショットではなく配札イベントであり、バースト後の観戦
+ * ハンドではその席が`-1`センチネル（空席）になる。
+ *
+ * `playerId === -1`を弾くのが実質的な防御になる: `-1`は「空席」を表す
+ * センチネルであってプレイヤーIDではないため、そのまま
+ * `where('seatUserIds').equals(-1)`に流すと**空席を1つでも含む全ハンド**が
+ * ヒットする。SNG終盤やバースト直後のテーブルは空席だらけ（同audit
+ * 「SNG終盤の空席は`SeatUserIds`の-1 sentinelで表現される」）なので、
+ * これはまさに観戦ハンドの混入経路になる。
+ *
+ * MUST: 呼び出し側でDexieのマルチエントリインデックス検索を通していても、
+ * この述語は省略しない ―― インデックスの副作用に暗黙に依存するのではなく、
+ * 「配られたハンドだけを出す」という仕様をこの1関数に明示しておく。
+ */
+export function isDealtIn(hand: Hand, playerId: number): boolean {
+  if (playerId === -1) return false
+  // 過去に書かれた行が欠損フィールドを持っていても落ちない（読み取り経路）。
+  return Array.isArray(hand.seatUserIds) && hand.seatUserIds.includes(playerId)
+}
+
+/**
+ * `ActionType`→1文字表記。`PostflopLines`のドキュメントコメント参照。
+ * `Partial`にしてあるのは`ActionType.ALL_IN`を意図的に持たないため
+ * （actionSchemaがALL_INのactionType自体を禁じている）。万一その値が
+ * 残っている古い行を読んでも、未定義として空文字に落ちる。
+ */
+const ACTION_LETTER: Partial<Record<ActionType, string>> = {
+  [ActionType.CHECK]: 'X',
+  [ActionType.BET]: 'B',
+  [ActionType.FOLD]: 'F',
+  [ActionType.CALL]: 'C',
+  [ActionType.RAISE]: 'R',
+}
+
+const POSTFLOP_PHASES = [PhaseType.FLOP, PhaseType.TURN, PhaseType.RIVER] as const
+
+/**
+ * ポストフロップ各ストリートでの、対象プレイヤー自身のアクション列を
+ * 省略記法へ畳む（#341）。表記の定義は`PostflopLines`参照。
+ *
+ * ストリートの帰属は`action.phase`をそのまま使う ―― #340/#346で、これは
+ * アクションイベント自身が運ぶ権威的な`Progress.Phase`になっている
+ * （EVT_DEAL_ROUNDのローカルなカウンタではない）ので、オールイン・ランナウト
+ * のようにEVT_DEAL_ROUNDが省略される形でも正しいストリートに載る。
+ *
+ * パイプラインは生の`ActionType.ALL_IN`をBET/RAISE/CALLへ正規化し、事実は
+ * `actionDetails`の`ALL_IN`に残す（entitiesのactionSchemaがALL_INのactionType
+ * 自体を禁じている）ので、`!`サフィックスで復元する。
+ */
+export function derivePostflopLines(
+  handId: number,
+  playerId: number,
+  actionsByHandId: Map<number, Action[]>
+): PostflopLines {
+  const ownActions = (actionsByHandId.get(handId) ?? []).filter(a => a.playerId === playerId)
+  const [flop, turn, river] = POSTFLOP_PHASES.map(phase => {
+    const notation = ownActions
+      .filter(a => a.phase === phase)
+      .sort((a, b) => a.index - b.index)
+      .map(a => {
+        const letter = ACTION_LETTER[a.actionType]
+        if (!letter) return ''
+        return a.actionDetails.includes(ActionDetail.ALL_IN) ? `${letter}!` : letter
+      })
+      .join('')
+    return notation.length > 0 ? notation : null
+  })
+  return { flop: flop ?? null, turn: turn ?? null, river: river ?? null }
+}
+
+/**
  * ハンドにおけるプレイヤーのポジションを決定する。positional-stats-service.ts
  * の`resolveHandBucket`と同一ロジックだが、'unknown'バケットの代わりに
  * `null`を返す（このパネルはバケット化しない、素の値をそのまま表示するため）。
@@ -235,7 +333,8 @@ function deriveSawFlop(
  * @param db ハンド/アクション/フェーズを取得するDexie DB
  * @param service battleTypeFilter/tableSizeFilterを保持するサービスインスタンス
  * @param playerId 対象プレイヤーID
- * @param limit 取得件数（デフォルト10、handLimitFilterとは無関係）
+ * @param limit 取得件数（デフォルト`DEFAULT_RECENT_HANDS_LIMIT`、上限
+ *   `MAX_RECENT_HANDS_LIMIT`、handLimitFilterとは無関係）
  */
 export async function getRecentHands(
   db: PokerChaseDB,
@@ -248,22 +347,25 @@ export async function getRecentHands(
   // ハンド完了(cacheGeneration++)が割り込んでいないか照合する（上のコメント参照）。
   const fetchGeneration = cacheGeneration
 
-  const effectiveLimit = limit > 0 ? limit : DEFAULT_RECENT_HANDS_LIMIT
-  const cacheKey = buildRecentHandsCacheKey(playerId, service, effectiveLimit)
+  const effectiveLimit = limit > 0 ? Math.min(limit, MAX_RECENT_HANDS_LIMIT) : DEFAULT_RECENT_HANDS_LIMIT
+  const cacheKey = buildRecentHandsCacheKey(playerId, service)
   const useCache = process.env.NODE_ENV !== 'test' && !process.env.DEBUG_NO_CACHE
   const now = Date.now()
 
   if (useCache) {
     const cached = cache.get(cacheKey)
     if (cached && (now - cached.timestamp) < CACHE_DURATION_MS) {
-      return cached.result
+      return sliceToLimit(cached.result, effectiveLimit)
     }
   }
 
   // hands: 'seatUserIds' はマルチエントリインデックス（poker-chase-db.ts）。
-  let allPlayerHands = await db.hands
+  // インデックス検索の結果に対しても`isDealtIn`を明示的に適用する（#341、
+  // 同関数のコメント参照）。
+  let allPlayerHands = (await db.hands
     .where('seatUserIds').equals(playerId)
-    .toArray()
+    .toArray())
+    .filter((hand: Hand) => isDealtIn(hand, playerId))
 
   if (service.battleTypeFilter) {
     allPlayerHands = allPlayerHands.filter((hand: Hand) =>
@@ -278,10 +380,12 @@ export async function getRecentHands(
   }
 
   // handLimitFilterは意図的に適用しない（このパネル自体の「直近N件」が
-  // 独立したlimitのため、仕様通り）。新しいハンドから優先して上位limit件を選ぶ。
+  // 独立したlimitのため、仕様通り）。新しいハンドから優先して上位
+  // `MAX_RECENT_HANDS_LIMIT`件を組み立て、呼び出し側のlimitへは返却時に
+  // sliceして合わせる（キャッシュ粒度、#341 -- 上のcacheKeyのコメント参照）。
   const recentHands = [...allPlayerHands]
     .sort(compareHandsNewestFirst)
-    .slice(0, effectiveLimit)
+    .slice(0, MAX_RECENT_HANDS_LIMIT)
 
   if (recentHands.length === 0) {
     const result: RecentHandsResult = { hands: [], computedAt: now }
@@ -296,7 +400,7 @@ export async function getRecentHands(
   const handIds = recentHands.map(h => h.id)
 
   // actions/phases: 'handId' 単一フィールドインデックス。対象ハンド集合
-  // （高々limit件）に対する1回のバッチクエリで、全プレイヤー分を取得する
+  // （高々MAX_RECENT_HANDS_LIMIT件）に対する1回のバッチクエリで、全プレイヤー分を取得する
   // （phasePrevBetCountの再計算・sawFlop判定に他プレイヤーの行が必要なため、
   // playerId絞り込みはしない。N+1は発生しない）。
   const [allActions, allPhases, replayDetails] = await Promise.all([
@@ -352,6 +456,7 @@ export async function getRecentHands(
         ? 'results'
         : holeCardsFromReplay !== null ? 'replay' : null,
       preflopLine: derivePreflopLine(hand, playerId, actionsByHandId),
+      postflopLines: derivePostflopLines(hand.id, playerId, actionsByHandId),
       sawFlop: deriveSawFlop(hand.id, playerId, phasesByHandId, wentToShowdown),
       wentToShowdown,
       won,
@@ -374,7 +479,17 @@ export async function getRecentHands(
     }
   }
 
-  return result
+  return sliceToLimit(result, effectiveLimit)
+}
+
+/**
+ * キャッシュ済みの「最大件数ぶん」の結果を、呼び出し側が要求した件数へ
+ * 切り出す（#341）。`computedAt`は算出時刻なのでsliceでは変えない。
+ * 件数が足りている場合は同一オブジェクトを返す（不要なコピーを避ける）。
+ */
+function sliceToLimit(result: RecentHandsResult, limit: number): RecentHandsResult {
+  if (result.hands.length <= limit) return result
+  return { hands: result.hands.slice(0, limit), computedAt: result.computedAt }
 }
 
 /** Test/debug helper: clears the module-level cache so tests don't leak state across cases. */

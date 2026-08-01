@@ -358,7 +358,11 @@ export interface GetPositionalStatsMessage {
 export interface GetRecentHandsMessage {
   action: 'getRecentHands'
   playerId: number
-  /** Defaults to DEFAULT_RECENT_HANDS_LIMIT (10) in recent-hands-service.ts when omitted. */
+  /**
+   * Defaults to `DEFAULT_RECENT_HANDS_LIMIT` (recent-hands-config.ts) when
+   * omitted and is clamped to `MAX_RECENT_HANDS_LIMIT`. The HUD panel sends
+   * the user's persisted choice out of `RECENT_HANDS_LIMIT_OPTIONS`.
+   */
   limit?: number
 }
 

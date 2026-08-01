@@ -1,16 +1,22 @@
 import { render, screen, waitFor, act } from '@testing-library/react'
-import { RecentHandsPanel, formatRelativeTime } from './RecentHandsPanel'
+import userEvent from '@testing-library/user-event'
+import { RecentHandsPanel, formatRelativeTime, formatPostflopLines } from './RecentHandsPanel'
 import { Position } from '../../types/game'
 import type { RecentHandsResult } from '../../types/stats'
+import {
+  DEFAULT_RECENT_HANDS_LIMIT,
+  RECENT_HANDS_LIMIT_OPTIONS,
+  RECENT_HANDS_LIMIT_STORAGE_KEY,
+} from '../../utils/recent-hands-config'
 
 const NOW = 1_700_000_000_000
 
 const buildResult = (overrides: Partial<RecentHandsResult> = {}): RecentHandsResult => ({
   computedAt: NOW,
   hands: [
-    { handId: 3, approxTimestamp: NOW - 3 * 60_000, position: Position.BTN, holeCards: ['As', 'Ah'], holeCardsSource: 'results', preflopLine: 'Open', sawFlop: true, wentToShowdown: true, won: true, netChips: 1240 },
-    { handId: 2, approxTimestamp: NOW - 2 * 3600_000, position: Position.BB, holeCards: null, holeCardsSource: null, preflopLine: 'Check', sawFlop: true, wentToShowdown: false, won: false, netChips: -640 },
-    { handId: 1, approxTimestamp: NOW - 26 * 3600_000, position: null, holeCards: null, holeCardsSource: null, preflopLine: 'Fold', sawFlop: false, wentToShowdown: false, won: false, netChips: 0 },
+    { handId: 3, approxTimestamp: NOW - 3 * 60_000, position: Position.BTN, holeCards: ['As', 'Ah'], holeCardsSource: 'results', preflopLine: 'Open', postflopLines: { flop: 'XC', turn: 'B!', river: null }, sawFlop: true, wentToShowdown: true, won: true, netChips: 1240 },
+    { handId: 2, approxTimestamp: NOW - 2 * 3600_000, position: Position.BB, holeCards: null, holeCardsSource: null, preflopLine: 'Check', postflopLines: { flop: 'X', turn: null, river: 'F' }, sawFlop: true, wentToShowdown: false, won: false, netChips: -640 },
+    { handId: 1, approxTimestamp: NOW - 26 * 3600_000, position: null, holeCards: null, holeCardsSource: null, preflopLine: 'Fold', postflopLines: { flop: null, turn: null, river: null }, sawFlop: false, wentToShowdown: false, won: false, netChips: 0 },
   ],
   ...overrides,
 })
@@ -58,13 +64,13 @@ describe('RecentHandsPanel', () => {
 
     await waitFor(() => {
       expect(mockSendMessage).toHaveBeenCalledWith(
-        { action: 'getRecentHands', playerId: 999 },
+        { action: 'getRecentHands', playerId: 999, limit: DEFAULT_RECENT_HANDS_LIMIT },
         expect.any(Function)
       )
     })
   })
 
-  it('triggerから参照できるplayer固有regionとして公開する', () => {
+  it('triggerから参照できるplayer固有regionとして公開する', async () => {
     mockSendMessage.mockImplementation(() => {})
 
     render(<RecentHandsPanel playerId={999} />)
@@ -72,6 +78,8 @@ describe('RecentHandsPanel', () => {
     const panel = screen.getByRole('region', { name: 'Player 999の直近ハンド' })
     expect(panel).toHaveAttribute('id', 'recent-hands-panel-999')
     expect(panel).toHaveAttribute('data-player-id', '999')
+    // 保存済み件数の解決（非同期）が終わってからテストを抜ける。
+    await waitFor(() => expect(mockSendMessage).toHaveBeenCalled())
   })
 
   it('新しい順（ハンドID降順）に表示する', async () => {
@@ -182,6 +190,12 @@ describe('RecentHandsPanel', () => {
 
     expect(screen.getByText('Loading hands…')).toBeInTheDocument()
 
+    // 保存済み件数（chrome.storage.local）の解決を待ってから時計を進める。
+    // 解決前はフェッチ自体が始まらないので、タイムアウトタイマーもまだ無い。
+    await waitFor(() => {
+      expect(mockSendMessage).toHaveBeenCalled()
+    })
+
     await act(async () => {
       await jest.advanceTimersByTimeAsync(6000)
     })
@@ -218,7 +232,7 @@ describe('RecentHandsPanel', () => {
       expect(mockSendMessage).toHaveBeenCalledTimes(2)
     })
     expect(mockSendMessage).toHaveBeenLastCalledWith(
-      { action: 'getRecentHands', playerId: 2 },
+      { action: 'getRecentHands', playerId: 2, limit: DEFAULT_RECENT_HANDS_LIMIT },
       expect.any(Function)
     )
   })
@@ -232,7 +246,7 @@ describe('RecentHandsPanel', () => {
       // 2回目の応答は1回目と区別できるよう新しいハンドを1件追加する
       // （新しいハンドが完了して初めて反映されるべきデータ）
       const result = callCount === 2
-        ? buildResult({ hands: [{ handId: 4, approxTimestamp: NOW, position: Position.CO, holeCards: null, holeCardsSource: null, preflopLine: 'Open', sawFlop: false, wentToShowdown: false, won: false, netChips: null }, ...buildResult().hands] })
+        ? buildResult({ hands: [{ handId: 4, approxTimestamp: NOW, position: Position.CO, holeCards: null, holeCardsSource: null, preflopLine: 'Open', postflopLines: { flop: null, turn: null, river: null }, sawFlop: false, wentToShowdown: false, won: false, netChips: null }, ...buildResult().hands] })
         : buildResult()
       callback({ success: true, recentHands: result })
     })
@@ -257,6 +271,117 @@ describe('RecentHandsPanel', () => {
     await waitFor(() => {
       expect(screen.getAllByTestId('recent-hands-row')).toHaveLength(4)
     })
+  })
+
+  // #341-3「各ストリートでのアクション表示」
+  describe('ストリート別アクション列', () => {
+    it('ポストフロップの省略記法を表示し、アクションが無いハンドは"—"にする', async () => {
+      mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
+        callback({ success: true, recentHands: buildResult() })
+      })
+
+      render(<RecentHandsPanel playerId={123} />)
+
+      const rows = await screen.findAllByTestId('recent-hands-row')
+      // flop='XC', turn='B!', river=null -> 末尾の空ストリートは落とす
+      expect(rows[0]!.querySelector('[data-testid="recent-hands-streets"]')).toHaveTextContent('XC/B!')
+      // flop='X', turn=null, river='F' -> 途中の空ストリートは'-'で残す
+      expect(rows[1]!.querySelector('[data-testid="recent-hands-streets"]')).toHaveTextContent('X/-/F')
+      // 全ストリートnull（プリフロップで終わったハンド）
+      expect(rows[2]!.querySelector('[data-testid="recent-hands-streets"]')).toHaveTextContent('—')
+    })
+  })
+
+  // #341-1「表示ハンド数の拡大」
+  describe('件数スイッチャー', () => {
+    beforeEach(() => {
+      mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
+        callback({ success: true, recentHands: buildResult() })
+      })
+    })
+
+    it('選択肢を全て出し、既定値をアクティブにする', async () => {
+      render(<RecentHandsPanel playerId={123} />)
+
+      await screen.findAllByTestId('recent-hands-row')
+      for (const option of RECENT_HANDS_LIMIT_OPTIONS) {
+        expect(screen.getByRole('button', { name: `直近${option}ハンドを表示` })).toBeInTheDocument()
+      }
+      expect(screen.getByRole('button', { name: `直近${DEFAULT_RECENT_HANDS_LIMIT}ハンドを表示` }))
+        .toHaveAttribute('aria-pressed', 'true')
+    })
+
+    it('件数を変えると新しいlimitで再フェッチし、選択を端末ローカルへ保存する', async () => {
+      const user = userEvent.setup()
+      render(<RecentHandsPanel playerId={123} />)
+
+      await screen.findAllByTestId('recent-hands-row')
+      expect(mockSendMessage).toHaveBeenCalledTimes(1)
+
+      await user.click(screen.getByRole('button', { name: '直近100ハンドを表示' }))
+
+      await waitFor(() => {
+        expect(mockSendMessage).toHaveBeenLastCalledWith(
+          { action: 'getRecentHands', playerId: 123, limit: 100 },
+          expect.any(Function)
+        )
+      })
+      expect(chrome.storage.local.set).toHaveBeenCalledWith({ [RECENT_HANDS_LIMIT_STORAGE_KEY]: 100 })
+    })
+
+    it('保存済みの件数があればそれで最初のフェッチを行う（既定値での二度手間フェッチをしない）', async () => {
+      await chrome.storage.local.set({ [RECENT_HANDS_LIMIT_STORAGE_KEY]: 50 })
+      mockSendMessage.mockClear()
+
+      render(<RecentHandsPanel playerId={123} />)
+
+      await screen.findAllByTestId('recent-hands-row')
+      expect(mockSendMessage).toHaveBeenCalledTimes(1)
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        { action: 'getRecentHands', playerId: 123, limit: 50 },
+        expect.any(Function)
+      )
+      await chrome.storage.local.remove(RECENT_HANDS_LIMIT_STORAGE_KEY)
+    })
+
+    it('ロード中・0件・エラーのいずれでもスイッチャーは操作できる', async () => {
+      mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
+        callback({ success: false, error: 'boom' })
+      })
+
+      render(<RecentHandsPanel playerId={123} />)
+
+      await waitFor(() => {
+        expect(screen.getByTestId('recent-hands-limit-switcher')).toBeInTheDocument()
+      })
+      expect(screen.getByRole('button', { name: '直近10ハンドを表示' })).toBeInTheDocument()
+    })
+  })
+})
+
+describe('formatPostflopLines', () => {
+  test('3ストリート全て動いた場合は"/"で連結する', () => {
+    expect(formatPostflopLines({ flop: 'XC', turn: 'B', river: 'R!' })).toBe('XC/B/R!')
+  })
+
+  test('末尾のアクション無しストリートは落とす', () => {
+    expect(formatPostflopLines({ flop: 'XC', turn: 'B', river: null })).toBe('XC/B')
+    expect(formatPostflopLines({ flop: 'F', turn: null, river: null })).toBe('F')
+  })
+
+  test('途中のアクション無しストリートは"-"で残す（詰めると意味が変わるため）', () => {
+    expect(formatPostflopLines({ flop: 'X', turn: null, river: 'B' })).toBe('X/-/B')
+    expect(formatPostflopLines({ flop: null, turn: null, river: 'B' })).toBe('-/-/B')
+  })
+
+  test('全ストリート空はnull（呼び出し側がem dashへ倒す）', () => {
+    expect(formatPostflopLines({ flop: null, turn: null, river: null })).toBeNull()
+  })
+
+  // #127方針: backgroundが古い形のまま応答してもHUDを落とさない。
+  test('フィールド自体が欠けている応答でもnullへ倒す', () => {
+    expect(formatPostflopLines(undefined)).toBeNull()
+    expect(formatPostflopLines(null)).toBeNull()
   })
 })
 

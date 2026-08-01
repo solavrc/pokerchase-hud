@@ -10,9 +10,11 @@
  *  - hole-card visibility: shown only for showdown RankTypes with actually
  *    valid HoleCards; NO_CALL/FOLD_OPEN never show, SHOWDOWN_MUCK without
  *    valid cards doesn't show either
- *  - newest-first ordering + limit
+ *  - newest-first ordering + limit (default / clamp / non-positive fallback)
  *  - battleType/tableSize filter application (handLimitFilter NOT applied)
- *  - cache key differs by playerId/filters/limit
+ *  - cache key differs by playerId/filters (NOT by limit -- #341)
+ *  - dealt-in exclusion: spectator hands and the -1 empty-seat sentinel (#341)
+ *  - per-street postflop action notation incl. the ALL_IN suffix (#341)
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { PokerChaseDB } from '../db/poker-chase-db'
@@ -23,9 +25,12 @@ import {
   clearRecentHandsCache,
   buildRecentHandsCacheKey,
   derivePreflopLine,
+  derivePostflopLines,
+  isDealtIn,
   DEFAULT_RECENT_HANDS_LIMIT,
+  MAX_RECENT_HANDS_LIMIT,
 } from './recent-hands-service'
-import { ActionType, BattleType, PhaseType, Position, RankType } from '../types/game'
+import { ActionDetail, ActionType, BattleType, PhaseType, Position, RankType } from '../types/game'
 import { ApiType } from '../types'
 import type { ApiHandEvent } from '../types'
 import type { Action, Hand } from '../types/entities'
@@ -187,6 +192,144 @@ describe('RecentHandsService', () => {
     test('brand-new player with zero hands returns an empty list, not an error', async () => {
       const result = await getRecentHands(db, service, 999)
       expect(result.hands).toEqual([])
+    })
+
+    test('clamps a limit above MAX_RECENT_HANDS_LIMIT instead of returning more', async () => {
+      const result = await getRecentHands(db, service, PLAYER_ID, MAX_RECENT_HANDS_LIMIT + 500)
+      // 母集合が5件なので件数自体は5だが、要求値がclampされずに素通りしていない
+      // ことは「エラーにならず既定と同じ集合が返る」ことで確認する。
+      expect(result.hands.map(h => h.handId)).toEqual([5, 4, 3, 2, 1])
+    })
+
+    test('a non-positive limit falls back to the default instead of returning nothing', async () => {
+      const result = await getRecentHands(db, service, PLAYER_ID, 0)
+      expect(result.hands).toHaveLength(5)
+    })
+  })
+
+  // #341「参加しなかったハンドの除外」
+  describe('dealt-in exclusion', () => {
+    test('isDealtIn keys off the EVT_DEAL lineup', () => {
+      const hand = makeHand({ id: 1, seatUserIds: [1, 2, -1] })
+      expect(isDealtIn(hand, 1)).toBe(true)
+      expect(isDealtIn(hand, 2)).toBe(true)
+      expect(isDealtIn(hand, 3)).toBe(false)
+    })
+
+    test('isDealtIn rejects the -1 empty-seat sentinel even though the array contains it', () => {
+      const hand = makeHand({ id: 1, seatUserIds: [1, 2, -1] })
+      expect(hand.seatUserIds).toContain(-1)
+      expect(isDealtIn(hand, -1)).toBe(false)
+    })
+
+    test('getRecentHands returns nothing for the -1 sentinel, not every hand with an empty seat', async () => {
+      // バースト後・SNG終盤のテーブルは空席（-1）だらけになる。-1をそのまま
+      // マルチエントリインデックスに流すと、その全ハンドが「直近ハンド」として
+      // 出てしまう ―― まさに観戦ハンドの混入経路。
+      await db.hands.bulkAdd([
+        makeHand({ id: 11, approxTimestamp: 11_000, seatUserIds: [1, 2, -1] }),
+        makeHand({ id: 12, approxTimestamp: 12_000, seatUserIds: [1, -1, -1] }),
+      ])
+      const sentinel = await getRecentHands(db, service, -1)
+      expect(sentinel.hands).toEqual([])
+
+      // 同じ母集合でも、実在するプレイヤーには通常どおり返る（除外が
+      // 効きすぎていないことの対照）。
+      const real = await getRecentHands(db, service, 1)
+      expect(real.hands.map(h => h.handId)).toEqual([12, 11])
+    })
+
+    test('a hand the player was never dealt into is excluded even if it is the newest one', async () => {
+      await db.hands.bulkAdd([
+        makeHand({ id: 21, approxTimestamp: 21_000, seatUserIds: [1, 2, 3] }),
+        // バースト後の観戦ハンド: ラインナップからPLAYER_IDが消えている。
+        makeHand({ id: 22, approxTimestamp: 22_000, seatUserIds: [2, 3, -1] }),
+      ])
+      const result = await getRecentHands(db, service, PLAYER_ID)
+      expect(result.hands.map(h => h.handId)).not.toContain(22)
+      expect(result.hands.map(h => h.handId)).toContain(21)
+    })
+  })
+
+  // #341「各ストリートでのアクション表示」
+  describe('postflop street actions', () => {
+    const postflopAction = (
+      overrides: Partial<Action> & { handId: number, index: number, phase: PhaseType, actionType: ActionType }
+    ): Action => makeAction({ position: Position.BTN, ...overrides })
+
+    test('groups the player\'s own actions per street, in index order', async () => {
+      await db.hands.add(makeHand({ id: 1, approxTimestamp: 1000 }))
+      await db.actions.bulkAdd([
+        postflopAction({ handId: 1, index: 0, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE }),
+        postflopAction({ handId: 1, index: 1, phase: PhaseType.FLOP, actionType: ActionType.CHECK }),
+        postflopAction({ handId: 1, index: 2, phase: PhaseType.FLOP, actionType: ActionType.CALL }),
+        postflopAction({ handId: 1, index: 3, phase: PhaseType.TURN, actionType: ActionType.BET }),
+        postflopAction({ handId: 1, index: 4, phase: PhaseType.RIVER, actionType: ActionType.FOLD }),
+      ])
+      const result = await getRecentHands(db, service, PLAYER_ID)
+      expect(result.hands[0]!.postflopLines).toEqual({ flop: 'XC', turn: 'B', river: 'F' })
+    })
+
+    test('other players\' actions on the same street are not mixed in', async () => {
+      await db.hands.add(makeHand({ id: 1, approxTimestamp: 1000 }))
+      await db.actions.bulkAdd([
+        postflopAction({ handId: 1, index: 0, phase: PhaseType.FLOP, actionType: ActionType.CHECK }),
+        postflopAction({ handId: 1, index: 1, phase: PhaseType.FLOP, actionType: ActionType.BET, playerId: 2 }),
+        postflopAction({ handId: 1, index: 2, phase: PhaseType.FLOP, actionType: ActionType.CALL }),
+      ])
+      const result = await getRecentHands(db, service, PLAYER_ID)
+      expect(result.hands[0]!.postflopLines).toEqual({ flop: 'XC', turn: null, river: null })
+    })
+
+    test('marks pipeline-normalized ALL_IN with a "!" suffix', async () => {
+      // パイプラインは生のALL_INをBET/RAISE/CALLへ正規化し、事実はactionDetailsに残す。
+      await db.hands.add(makeHand({ id: 1, approxTimestamp: 1000 }))
+      await db.actions.bulkAdd([
+        postflopAction({
+          handId: 1, index: 0, phase: PhaseType.FLOP, actionType: ActionType.RAISE,
+          actionDetails: [ActionDetail.ALL_IN],
+        }),
+      ])
+      const result = await getRecentHands(db, service, PLAYER_ID)
+      expect(result.hands[0]!.postflopLines).toEqual({ flop: 'R!', turn: null, river: null })
+    })
+
+    test('a hand that ended preflop has every street null', async () => {
+      await db.hands.add(makeHand({ id: 1, approxTimestamp: 1000 }))
+      await db.actions.add(
+        postflopAction({ handId: 1, index: 0, phase: PhaseType.PREFLOP, actionType: ActionType.FOLD })
+      )
+      const result = await getRecentHands(db, service, PLAYER_ID)
+      expect(result.hands[0]!.postflopLines).toEqual({ flop: null, turn: null, river: null })
+    })
+
+    test('an all-in runout the player never acted on keeps the streets null (sawFlop carries that instead)', async () => {
+      await db.hands.add(makeHand({
+        id: 1,
+        approxTimestamp: 1000,
+        results: [{ UserId: PLAYER_ID, HandRanking: 1, Ranking: -2, RewardChip: 0, RankType: RankType.ONE_PAIR, Hands: [], HoleCards: [1, 2] }],
+      }))
+      await db.actions.add(postflopAction({
+        handId: 1, index: 0, phase: PhaseType.PREFLOP, actionType: ActionType.CALL,
+        actionDetails: [ActionDetail.ALL_IN],
+      }))
+      const result = await getRecentHands(db, service, PLAYER_ID)
+      expect(result.hands[0]!.postflopLines).toEqual({ flop: null, turn: null, river: null })
+      expect(result.hands[0]!.sawFlop).toBe(true)
+    })
+
+    test('derivePostflopLines works directly on an action map (unit)', () => {
+      const actions: Action[] = [
+        makeAction({ handId: 7, index: 2, phase: PhaseType.RIVER, actionType: ActionType.BET, position: Position.BB }),
+        makeAction({ handId: 7, index: 0, phase: PhaseType.FLOP, actionType: ActionType.CHECK, position: Position.BB }),
+        makeAction({ handId: 7, index: 1, phase: PhaseType.TURN, actionType: ActionType.CHECK, position: Position.BB }),
+      ]
+      expect(derivePostflopLines(7, PLAYER_ID, new Map([[7, actions]]))).toEqual({
+        flop: 'X', turn: 'X', river: 'B',
+      })
+      expect(derivePostflopLines(999, PLAYER_ID, new Map([[7, actions]]))).toEqual({
+        flop: null, turn: null, river: null,
+      })
     })
   })
 
@@ -530,21 +673,18 @@ describe('RecentHandsService', () => {
   })
 
   describe('cache key', () => {
-    test('differs by playerId, battleTypeFilter, tableSizeFilter, and limit', () => {
-      const key1 = buildRecentHandsCacheKey(PLAYER_ID, service, 10)
-      const key2 = buildRecentHandsCacheKey(2, service, 10)
+    test('differs by playerId, battleTypeFilter, and tableSizeFilter', () => {
+      const key1 = buildRecentHandsCacheKey(PLAYER_ID, service)
+      const key2 = buildRecentHandsCacheKey(2, service)
       expect(key1).not.toBe(key2)
 
-      const keyLimit5 = buildRecentHandsCacheKey(PLAYER_ID, service, 5)
-      expect(key1).not.toBe(keyLimit5)
-
       service.battleTypeFilter = [BattleType.RING_GAME]
-      const keyBattle = buildRecentHandsCacheKey(PLAYER_ID, service, 10)
+      const keyBattle = buildRecentHandsCacheKey(PLAYER_ID, service)
       expect(key1).not.toBe(keyBattle)
       service.battleTypeFilter = undefined
 
       service.tableSizeFilter = ['full']
-      const keyTable = buildRecentHandsCacheKey(PLAYER_ID, service, 10)
+      const keyTable = buildRecentHandsCacheKey(PLAYER_ID, service)
       expect(key1).not.toBe(keyTable)
     })
   })
