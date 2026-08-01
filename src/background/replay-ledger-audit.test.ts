@@ -576,6 +576,7 @@ describe('replay ledger audit', () => {
       }
       const pending = await readPending()
       expect(pending).toHaveLength(1)
+      expect(typeof pending[0]!.id).toBe('string')
       expect(pending[0]!.ledger.hands).toEqual([{ handId: 3100, startTime: 1785500000, chipDiff: 10 }])
       expect(pending[0]!.attempts).toBe(1)
 
@@ -594,6 +595,7 @@ describe('replay ledger audit', () => {
         id: REPLAY_LEDGER_AUDIT_PENDING_META_ID,
         value: {
           pending: [{
+            id: 'pending-3300',
             ledger: ledgerOf([
               { handId: 3300, startTime: 1785500000, chipDiff: 10 },
               { handId: 3301, startTime: 1785500060, chipDiff: 20 }
@@ -637,7 +639,7 @@ describe('replay ledger audit', () => {
         undefined,
         {
           // 既に確認済みとして持ち越された分は再走査しない
-          resume: { found: [[4059, OLDEST_LOCAL_MS + 59]] },
+          resume: { found: [[4059, OLDEST_LOCAL_MS + 59]], lakeCount: 60 },
           onProgress: progress => progresses.push(progress)
         }
       )
@@ -649,6 +651,40 @@ describe('replay ledger audit', () => {
       expect(progresses).toEqual([])
     })
 
+    // Codexレビュー指摘（4周目）: 走査カーソルは「そこまで読んだ」ことしか
+    // 意味しない。停止中にインポート等が過去の主キーを持つ行を足すと、
+    // カーソルより前に挿入された行は二度と読まれない。
+    test('停止中にLakeが変化していたらカーソルを捨てて先頭から走査し直す', async () => {
+      // 生行を積む（カーソルの控えは古い行数を指している）
+      await db.apiEvents.bulkAdd(Array.from({ length: 30 }, (_, index) => ({
+        timestamp: OLDEST_LOCAL_MS + index,
+        ApiTypeId: ApiType.EVT_HAND_RESULTS,
+        sequence: 0,
+        HandId: 4100 + index
+      })) as any)
+
+      const result = await auditReplayLedger(
+        db,
+        HERO,
+        ledgerOf([{ handId: 4100, startTime: 1785500000, chipDiff: 10 }]),
+        NOW,
+        undefined,
+        undefined,
+        {
+          // 末尾を指すカーソル + 実際とは違う行数。カーソルを信じると
+          // 4100（先頭付近の行）を読み飛ばして「ローカル不在」になる。
+          resume: {
+            afterKey: [OLDEST_LOCAL_MS + 29, ApiType.EVT_HAND_RESULTS, 0],
+            found: [],
+            lakeCount: 1
+          }
+        }
+      )
+
+      expect(result.notCapturedHandIds).toEqual([])
+      expect(result.derivationMissingHandIds).toEqual([4100])
+    })
+
     // 毎回worker停止で終わる台帳を、起動のたびに走らせ続けないため。
     test('再開の上限に達した控えは破棄して実行しない', async () => {
       await db.hands.bulkPut([hand(3500, 10)])
@@ -656,6 +692,7 @@ describe('replay ledger audit', () => {
         id: REPLAY_LEDGER_AUDIT_PENDING_META_ID,
         value: {
           pending: [{
+            id: 'pending-3500',
             ledger: ledgerOf([{ handId: 3500, startTime: 1785500000, chipDiff: 10 }]),
             playerIdAtReceipt: HERO,
             receivedAt: NOW - 1000,
@@ -687,6 +724,7 @@ describe('replay ledger audit', () => {
         id: REPLAY_LEDGER_AUDIT_PENDING_META_ID,
         value: {
           pending: [{
+            id: 'pending-3700',
             ledger: ledgerOf([{ handId: 3700, startTime: 1785500000, chipDiff: 10 }]),
             playerIdAtReceipt: HERO,
             receivedAt: NOW - 5000,

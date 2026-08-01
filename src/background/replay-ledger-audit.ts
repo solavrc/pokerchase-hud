@@ -79,6 +79,13 @@ let auditQueue: Promise<void> = Promise.resolve()
 let pendingMetaQueue: Promise<void> = Promise.resolve()
 
 export interface PendingReplayLedgerAudit {
+  /**
+   * 受信ごとに衝突しない識別子。`receivedAt`（ミリ秒）だけでは、同じ
+   * `battleType` の応答が同一ミリ秒に2件届くと**両方が同じエントリと判定
+   * される**（先発が後発の控えまで消し、後発は「追い越された」として実行
+   * されず、古い結果が残る）。
+   */
+  id: string
   ledger: ReplayLedger
   /** 台帳を受信した時点の`playerId`。再開後もアカウント変更ガードを効かせる。 */
   playerIdAtReceipt?: number
@@ -99,7 +106,8 @@ const isPendingEntry = (value: unknown): value is PendingReplayLedgerAudit => {
   const ledger = record.ledger
   if (typeof ledger !== 'object' || ledger === null) return false
   if (!Array.isArray((ledger as { hands?: unknown }).hands)) return false
-  return typeof record.receivedAt === 'number' && typeof record.attempts === 'number'
+  return typeof record.receivedAt === 'number' && typeof record.attempts === 'number' &&
+    typeof record.id === 'string'
 }
 
 const readPendingAudits = async (db: PokerChaseDB): Promise<PendingReplayLedgerAudit[]> => {
@@ -141,7 +149,13 @@ const updatePendingAudits = (
 }
 
 const isSamePending = (a: PendingReplayLedgerAudit, b: PendingReplayLedgerAudit): boolean =>
-  a.receivedAt === b.receivedAt && a.ledger.battleType === b.ledger.battleType
+  a.id === b.id
+
+/** 受信ごとの識別子。同一ミリ秒の衝突を避けるため時刻には依存しない。 */
+const nextPendingId = (): string =>
+  typeof crypto?.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`
 
 export interface ReplayLedgerChipDiffMismatch {
   handId: number
@@ -218,6 +232,16 @@ type RawScanRow = { timestamp?: number, ApiTypeId: number, sequence?: number }
 export interface ReplayLedgerScanProgress {
   afterKey?: [number, number, number]
   found: Array<[number, number]>
+  /**
+   * チェックポイント時点の `apiEvents` の行数。
+   *
+   * 走査カーソルは「そこまで読んだ」ことしか意味しない。前回のworkerが停止
+   * している間にインポートやクラウド復元が**過去の主キーを持つ行**を足すと、
+   * `afterKey` より前に挿入された行は二度と読まれず、実在するrawを
+   * 「ローカル不在」と誤分類する。行数が変わっていたらカーソルを捨てて
+   * 先頭からやり直す（MUST）。
+   */
+  lakeCount: number
 }
 
 /**
@@ -249,6 +273,14 @@ const confirmCapturesByFullScan = async (
   const found = new Map<number, number>()
   if (candidates.length === 0) return found
   const wanted = new Set(candidates)
+  const lakeCount = await db.apiEvents.count()
+  // 前回の停止中にLakeが変化していたらカーソルは使えない（過去の主キーを
+  // 持つ行が挿入されていると、その行を永久に飛ばす）。確認済みの`found`は
+  // 「在ることが分かっている」方向にしか効かないのでそのまま活かせる。
+  const usableScan = scan !== undefined && scan.lakeCount === lakeCount ? scan : undefined
+  if (scan !== undefined && usableScan === undefined && scan.afterKey !== undefined) {
+    console.info('[replay-ledger] 走査中にLakeが変化したため、先頭から走査し直します')
+  }
   // 前回の試行が到達した位置から続ける。Lakeが大きく、1回のworker寿命で
   // 走査し切れない場合、毎回先頭からやり直すと**どの試行も同じ辺りで
   // 終わって一度も完走しない**。進捗を持ち越せば試行を重ねるだけ前へ進む。
@@ -268,7 +300,7 @@ const confirmCapturesByFullScan = async (
   // 一部を落とすと同一ミリ秒の行を飛ばす/重複させる）。候補が全て見つかれば
   // 途中で打ち切る。
   for await (const chunk of processInChunks(db.apiEvents, FULL_SCAN_CHUNK_SIZE, {
-    ...scan?.afterKey ? { afterKey: scan.afterKey } : {}
+    ...usableScan?.afterKey ? { afterKey: usableScan.afterKey } : {}
   })) {
     for (const row of chunk) {
       if (row.ApiTypeId !== ApiType.EVT_HAND_RESULTS) continue
@@ -285,7 +317,8 @@ const confirmCapturesByFullScan = async (
     if (onProgress && last !== undefined && scannedChunks % SCAN_PROGRESS_EVERY_CHUNKS === 0) {
       onProgress({
         afterKey: [last.timestamp ?? 0, last.ApiTypeId, last.sequence ?? 0],
-        found: [...found]
+        found: [...found],
+        lakeCount
       })
     }
   }
@@ -619,6 +652,7 @@ export const handleReplayLedgerPortMessage = (
   // だけは復元後の値を採用する（getter にしてある理由）。
   const playerIdAtReceipt = deps.getPlayerId()
   enqueueReplayLedgerAudit(deps, {
+    id: nextPendingId(),
     ledger: snapshot,
     playerIdAtReceipt,
     receivedAt: deps.now(),

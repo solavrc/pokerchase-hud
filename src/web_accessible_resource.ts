@@ -489,13 +489,20 @@ if (OriginalFetch) {
       return OriginalFetch(input, init)
     }
 
+    // 本文のデコードは非同期。待っている間に無効化→再有効化が起きると、
+    // この代入が**旧世代の認証を新しい世代へ復活させてしまう**。デコードを
+    // 始めた時点の世代を控え、一致するときだけ反映する（MUST）。
+    const generationAtCapture = replayAuthGeneration
     try {
-      replayAuth = readAuthEnvelope(await decodeRequestBody(input, init)) ?? replayAuth
+      const captured = readAuthEnvelope(await decodeRequestBody(input, init))
+      if (captured && generationAtCapture === replayAuthGeneration) replayAuth = captured
     } catch {
-      // A request without a MessagePack body is unrelated to replay auth.
+      // MessagePackの本文を持たないリクエストはリプレイの認証と無関係。
     }
     const authAtRequest = replayAuth
-    const generationAtRequest = replayAuthGeneration
+    // 応答の判定にも**リクエストを出した時点**の世代を使う（デコード後に
+    // 読み直すと、無効化を挟んだリクエストの応答を新世代として受理する）。
+    const generationAtRequest = generationAtCapture
     const response = await OriginalFetch(input, init)
     readApiResponse(url, response, authAtRequest, generationAtRequest).catch(() => undefined)
     return response
@@ -552,11 +559,14 @@ XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyIn
     // 版を控える。
     let authAtRequest: ReplayAuthEnvelope | undefined = replayAuth
     const generationAtRequest = replayAuthGeneration
+    // fetch経路と同じ理由で、デコード開始時点の世代を控えて照合する。
+    const generationAtCapture = replayAuthGeneration
     const captured = body instanceof Document
       ? Promise.resolve()
       : decodeBody(body)
         .then(decoded => {
-          replayAuth = readAuthEnvelope(decoded) ?? replayAuth
+          const envelope = readAuthEnvelope(decoded)
+          if (envelope && generationAtCapture === replayAuthGeneration) replayAuth = envelope
           authAtRequest = replayAuth
         })
         .catch(() => undefined)
