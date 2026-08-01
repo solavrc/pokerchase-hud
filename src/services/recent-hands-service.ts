@@ -103,13 +103,25 @@ function subscribeToHandCompletion(service: PokerChaseService): void {
  * (see `useCache` below), so key-differs-when-filter-differs can't be observed
  * behaviorally in tests and is instead pinned down against this function directly.
  *
- * 件数は意図的にキーへ含めない（#341）: エントリは常に
- * `MAX_RECENT_HANDS_LIMIT`件まで組み立ててキャッシュし、呼び出し側の
- * `limit`はその先頭からのsliceで満たす。件数スイッチャーの切り替えが
- * DB読み取りを増やさず、同じ内容のキャッシュが件数分だけ重複しない。
+ * 件数と「参加のみ」は意図的にキーへ含めない（#341/#353）: エントリは常に
+ * `MAX_RECENT_HANDS_LIMIT`件・無フィルターで組み立ててキャッシュし、
+ * 呼び出し側の条件は`sliceToLimit`で満たす。切り替えがDB読み取りを増やさず、
+ * 同じ内容のキャッシュが条件の数だけ重複しない。
+ *
+ * 一方「ヒーロー自身のパネルか」はキーへ含める（MUST、#353）。この値は
+ * 組み立て結果そのものを変える（配札ホールカードを埋めるかどうか）ため。
+ * サービスワーカー再起動直後などヒーローID復元前にパネルを開くと、
+ * 含めない実装では「カードなし」の結果が最大30秒残り続ける。
  */
 export const buildRecentHandsCacheKey = (playerId: number, service: PokerChaseService): string =>
-  `${playerId}_${service.battleTypeFilter?.join(',') ?? 'all'}_${service.tableSizeFilter?.join(',') ?? 'all'}`
+  `${playerId}_${service.battleTypeFilter?.join(',') ?? 'all'}_${service.tableSizeFilter?.join(',') ?? 'all'}_${isHeroPanel(service, playerId) ? 'hero' : 'other'}`
+
+/**
+ * そのパネルが観測者本人（ヒーロー）のものか。`EVT_DEAL.Player`は観測クライアント
+ * 自身の席の情報なので、配札ホールカードの補完はこの判定が真のときだけ行う。
+ */
+const isHeroPanel = (service: PokerChaseService, playerId: number): boolean =>
+  service.playerId !== undefined && service.playerId === playerId
 
 /**
  * リプレイ取り込みのオプトインが切り替わったらキャッシュを捨てる。
@@ -521,7 +533,7 @@ export async function getRecentHands(
   // playerId絞り込みはしない。N+1は発生しない）。
   // ヒーロー自身のパネルを開いたときだけ、配札カードをLakeから引く（#353）。
   // 他プレイヤーのパネルでは`EVT_DEAL.Player`は自分の情報なので引かない。
-  const isHeroPanel = service.playerId !== undefined && service.playerId === playerId
+  const heroPanel = isHeroPanel(service, playerId)
 
   const [allActions, allPhases, replayDetails, heroDealtHoleCards] = await Promise.all([
     db.actions.where('handId').anyOf(handIds).toArray(),
@@ -532,7 +544,7 @@ export async function getRecentHands(
       .then(enabled => enabled ? db.replayDetails.bulkGet(handIds) : [])
       .catch(() => []),
     // 失敗しても他の列は出す（フェイルオープン、#127踏襲）。
-    isHeroPanel
+    heroPanel
       ? readHeroDealtHoleCardsByHandId(db, recentHands).catch(() => new Map<number, string[]>())
       : Promise.resolve(new Map<number, string[]>()),
   ])

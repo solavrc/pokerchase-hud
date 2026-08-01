@@ -1,4 +1,4 @@
-import { SUIT_COLORS, formatCardsArray, isRedSuit, suitColor } from './card-utils'
+import { SUIT_COLORS, formatCardsArray, suitColor } from './card-utils'
 
 test('カードを文字列に変換できる', () => {
   expect(formatCardsArray([37, 51])).toStrictEqual(['Jh', 'Ac'])
@@ -34,21 +34,6 @@ test('カードを文字列に変換できる', () => {
   ])
 })
 
-describe('isRedSuit', () => {
-  test('数値カード番号でハート/ダイヤをred判定できる', () => {
-    expect(isRedSuit(1)).toBe(true)  // 2h
-    expect(isRedSuit(2)).toBe(true)  // 2d
-    expect(isRedSuit(0)).toBe(false) // 2s
-    expect(isRedSuit(3)).toBe(false) // 2c
-  })
-
-  test('フォーマット済みカード文字列でも判定できる', () => {
-    expect(isRedSuit('Ah')).toBe(true)
-    expect(isRedSuit('Kd')).toBe(true)
-    expect(isRedSuit('As')).toBe(false)
-    expect(isRedSuit('Kc')).toBe(false)
-  })
-})
 // #353: 4色デッキ（スペード=既定色 / ハート=赤 / ダイヤ=青 / クラブ=緑）
 describe('suitColor', () => {
   test('カード番号からスート別の色を返す', () => {

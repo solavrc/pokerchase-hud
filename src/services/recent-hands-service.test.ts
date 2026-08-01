@@ -884,10 +884,18 @@ describe('RecentHandsService', () => {
   })
 
   describe('cache key', () => {
-    test('differs by playerId, battleTypeFilter, and tableSizeFilter', () => {
+    test('differs by playerId, battleTypeFilter, tableSizeFilter, and hero-panel-ness', () => {
       const key1 = buildRecentHandsCacheKey(PLAYER_ID, service)
       const key2 = buildRecentHandsCacheKey(2, service)
       expect(key1).not.toBe(key2)
+
+      // #353: ヒーロー本人のパネルは配札ホールカードを埋めるので、組み立て結果が
+      // 変わる。ヒーローID未復元のうちにキャッシュした「カードなし」の結果が、
+      // ID復元後もそのまま返り続けないようにキーへ含める。
+      service.playerId = PLAYER_ID
+      const keyHero = buildRecentHandsCacheKey(PLAYER_ID, service)
+      expect(key1).not.toBe(keyHero)
+      service.playerId = undefined
 
       service.battleTypeFilter = [BattleType.RING_GAME]
       const keyBattle = buildRecentHandsCacheKey(PLAYER_ID, service)
