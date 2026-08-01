@@ -84,6 +84,45 @@ describe('UIScaleSection', () => {
     )
   })
 
+  it('リセット応答が遅れても、その間に押した倍率変更を捨てない', async () => {
+    // リセットの採番はクリック時点で行う。完了時点で採番すると、応答待ちの
+    // 間に押した + の方が小さいIDになり、永続化に成功した後発の倍率が
+    // stale判定で捨てられる。
+    const user = userEvent.setup()
+    let completeReset: (() => void) | undefined
+    mockChromeRuntimeSendMessage.mockImplementation((message: any, callback: any) => {
+      if (message.action === 'resetDeviceUILayout') {
+        completeReset = () => callback({ success: true })
+        return
+      }
+      callback({ success: true })
+    })
+    render(
+      <UIScaleSection
+        {...defaultProps}
+        uiConfig={{ ...DEFAULT_UI_CONFIG, scale: 1.6 }}
+      />
+    )
+
+    await user.click(screen.getByRole('button', { name: '位置とサイズをリセット' }))
+    expect(completeReset).toBeDefined()
+
+    // リセット応答より先に倍率を上げ、その書き込みは成功する。
+    await user.click(screen.getByRole('button', { name: '+' }))
+    expect(mockChromeRuntimeSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'setDeviceUIScale' }),
+      expect.any(Function)
+    )
+    const appliedScale = mockSetUIConfig.mock.calls.at(-1)?.[0]?.scale
+    expect(appliedScale).toBeGreaterThan(1.6)
+
+    // 遅れて届いたリセット応答は、後発の倍率を上書きしない。
+    mockSetUIConfig.mockClear()
+    completeReset?.()
+
+    expect(mockSetUIConfig).not.toHaveBeenCalled()
+  })
+
   it('リセットが失敗した場合は倍率表示を戻さない', async () => {
     const user = userEvent.setup()
     mockChromeRuntimeSendMessage.mockImplementation((_message, callback) => {
