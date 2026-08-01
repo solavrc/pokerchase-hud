@@ -75,7 +75,23 @@ export const ImportExportSection = ({
   const [importOperationActive, setImportOperationActive] = useState(false)
   const importOperationActiveRef = useRef(false)
   const openImportPageInFlightRef = useRef(false)
+  /**
+   * Bumped every time this popup starts tracking an import. The storage-result
+   * handler captures it before its async getOperationState round trip and
+   * re-checks it at the commit point, so a response describing a *finished*
+   * import can never release a *newer* one that started while it was in
+   * flight. Same generation-guard shape UIScaleSection uses for its scale
+   * writes.
+   */
+  const importTrackingGenerationRef = useRef(0)
   const [rebuildOrigin, setRebuildOrigin] = useState<'import' | 'manual' | null>(null)
+
+  /** Single entry point for "an import is now being tracked". */
+  const beginTrackingImport = () => {
+    importTrackingGenerationRef.current += 1
+    importOperationActiveRef.current = true
+    setImportOperationActive(true)
+  }
 
   const isImporting = importOperationActive && rebuildOrigin !== 'import'
   const isAnyOperationInProgress = importOperationActive || exportState !== 'idle' || rebuildState !== 'idle'
@@ -97,8 +113,7 @@ export const ImportExportSection = ({
           setExportTotal(state.total ?? 0)
           setOperationStatus(state.message ?? '')
         } else if (state.type === 'import') {
-          importOperationActiveRef.current = true
-          setImportOperationActive(true)
+          beginTrackingImport()
           setImportStatus('')
           setImportProgress(state.progress ?? 0)
           setImportProcessed(state.processed ?? 0)
@@ -109,8 +124,7 @@ export const ImportExportSection = ({
           setRebuildState('rebuilding')
           setRebuildOrigin(state.origin === 'import' ? 'import' : 'manual')
           if (state.origin === 'import') {
-            importOperationActiveRef.current = true
-            setImportOperationActive(true)
+            beginTrackingImport()
           }
           setRebuildProgress(state.progress ?? 0)
           setOperationStatus(state.message ?? '')
@@ -161,8 +175,7 @@ export const ImportExportSection = ({
             setRebuildState('rebuilding')
             setRebuildOrigin(isImportRebuild ? 'import' : 'manual')
             if (isImportRebuild) {
-              importOperationActiveRef.current = true
-              setImportOperationActive(true)
+              beginTrackingImport()
             }
             setRebuildProgress(0)
             setOperationStatus(msg.message ?? '')
@@ -189,8 +202,7 @@ export const ImportExportSection = ({
       }
 
       if (isImportProgressMessage(message)) {
-        importOperationActiveRef.current = true
-        setImportOperationActive(true)
+        beginTrackingImport()
         setImportStatus('')
         setImportProgress(message.progress)
         setImportProcessed(message.processed)
@@ -265,9 +277,16 @@ export const ImportExportSection = ({
         // operation ends -- the exact stuck state this handler exists to fix.
         // Unknown state (timeout) also releases, per sendMessageWithTimeout's
         // fail-open contract.
+        const generationAtQuery = importTrackingGenerationRef.current
         void sendMessageWithTimeout<{ operationState?: OperationState }>(
           { action: 'getOperationState' }
         ).then(response => {
+          // The answer describes the moment it was taken, not this one. If a
+          // retry in the import page claimed the slot while the round trip was
+          // open, this popup is already tracking that newer import -- releasing
+          // on a stale "idle" would blank a live import's progress and re-enable
+          // buttons the background rejects.
+          if (importTrackingGenerationRef.current !== generationAtQuery) return
           const state = response?.operationState
           const trackedImportStillRunning =
             state?.type === 'import' ||

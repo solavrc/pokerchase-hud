@@ -25,11 +25,13 @@ const defaultProps = {
 
 describe('ImportExportSection - rebuild advisory banner', () => {
   let storageChangeListeners: Array<(changes: Record<string, any>, areaName: string) => void>
+  let messageListeners: Array<(message: unknown) => void>
   let storageLocalData: Record<string, any>
   let mockSendMessage: jest.Mock
 
   beforeEach(() => {
     storageChangeListeners = []
+    messageListeners = []
     storageLocalData = {}
     // Default: respond synchronously with no operationState (mirrors "nothing in
     // progress"), so the sendMessageWithTimeout() call in the mount effect
@@ -46,8 +48,13 @@ describe('ImportExportSection - rebuild advisory banner', () => {
         sendMessage: mockSendMessage,
         getURL: jest.fn(path => `chrome-extension://test/${path}`),
         onMessage: {
-          addListener: jest.fn(),
-          removeListener: jest.fn(),
+          addListener: jest.fn((listener: any) => {
+            messageListeners.push(listener)
+          }),
+          removeListener: jest.fn((listener: any) => {
+            const idx = messageListeners.indexOf(listener)
+            if (idx !== -1) messageListeners.splice(idx, 1)
+          }),
         },
       },
       storage: {
@@ -314,6 +321,51 @@ describe('ImportExportSection - rebuild advisory banner', () => {
     // rendered by the time the assertions below run.
     await act(async () => {})
     // Still tracking the live import: buttons stay held, progress not blanked.
+    expect(screen.getByRole('button', { name: 'インポートページを表示' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '生データをエクスポート (NDJSON)' })).toBeDisabled()
+  })
+
+  it('does not let a stale idle answer release an import that started meanwhile', async () => {
+    // getOperationState is answered "idle" for the import that just failed, but
+    // a retry claims the slot before the response's continuation runs. The
+    // popup is tracking that newer import by then.
+    const background = restoreActiveTransfer()
+    let releaseResponse: () => void = () => {}
+    render(<ImportExportSection {...defaultProps} />)
+
+    expect(await screen.findByRole('button', { name: 'インポートページを表示' })).toBeInTheDocument()
+    await waitFor(() => expect(countOperationStateCalls()).toBe(1))
+
+    // Hold the storage handler's round trip open so the retry lands inside it.
+    background.backgroundBecameIdle()
+    mockSendMessage.mockImplementation((message: { action?: string }, callback?: (response: unknown) => void) => {
+      if (message.action === 'getOperationState') {
+        releaseResponse = () => callback?.({ operationState: { type: 'idle' } })
+        return
+      }
+      callback?.({})
+    })
+    act(() => emitImportResultChange({
+      status: 'error',
+      message: 'インポート失敗: ファイルを読み込めませんでした',
+      completedAt: 111,
+    }))
+    await waitFor(() => expect(countOperationStateCalls()).toBe(2))
+
+    // Retry lands: a fresh transfer is now being tracked.
+    act(() => {
+      messageListeners.forEach(listener => listener({
+        action: 'importProgress',
+        progress: 10,
+        processed: 1,
+        total: 10,
+      }))
+    })
+    expect(screen.getByRole('button', { name: 'インポートページを表示' })).toBeInTheDocument()
+
+    // Now the stale answer arrives.
+    await act(async () => { releaseResponse() })
+
     expect(screen.getByRole('button', { name: 'インポートページを表示' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '生データをエクスポート (NDJSON)' })).toBeDisabled()
   })
