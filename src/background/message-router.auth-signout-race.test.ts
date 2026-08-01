@@ -1,5 +1,6 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import type { AuthUser } from '../services/firebase-auth-service'
 import { firebaseAuthService } from '../services/firebase-auth-service'
 import { autoSyncService } from '../services/auto-sync-service'
@@ -18,7 +19,7 @@ describe('message-router auth ordering', () => {
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     ;(chrome.runtime.onMessage.addListener as jest.Mock).mockClear()

@@ -22,6 +22,7 @@ import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
 import PokerChaseService from '../services/poker-chase-service'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { clearRecentHandsCache, getRecentHands } from '../services/recent-hands-service'
 import {
   ApiType,
@@ -220,7 +221,7 @@ describe('Friend SNG 309 -> next hand lifecycle (audit_ref 6a9017d85260)', () =>
     expect(FIXTURE_EVENTS.some(event => event.ApiTypeId === ApiType.EVT_SESSION_DETAILS)).toBe(false)
     expect(FIXTURE_EVENTS.some(event => event.ApiTypeId === ApiType.EVT_PLAYER_SEAT_ASSIGNED)).toBe(false)
 
-    const service = new PokerChaseService({ db })
+    const service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     const aggregatedHands: ApiEvent[][] = []

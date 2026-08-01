@@ -27,6 +27,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { ApiType } from '../types'
 import type { ApiEvent } from '../app'
 import { registerStreamSubscriptions, connectedPorts, setLastKnownStats } from './ports'
@@ -88,7 +89,7 @@ describe('ports.ts handCompletionEpoch (audit finding 11 follow-up, P2)', () => 
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     fakePort = { postMessage: jest.fn() }

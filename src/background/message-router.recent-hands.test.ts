@@ -8,6 +8,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { registerMessageRouter } from './message-router'
 import { clearRecentHandsCache } from '../services/recent-hands-service'
 import { RankType } from '../types/game'
@@ -39,7 +40,7 @@ describe('message-router getRecentHands', () => {
     clearRecentHandsCache()
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     const hands: Hand[] = [1, 2, 3].map(id => ({

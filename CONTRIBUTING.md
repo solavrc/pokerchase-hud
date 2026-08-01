@@ -415,6 +415,29 @@ CI, mergeability, and review approval are separate gates: a green, conflict-free
 is not necessarily approved. Address findings against the current head commit and
 keep the validation section current after each push.
 
+### Test conventions
+
+- A test that constructs a `PokerChaseService` MUST wrap the instance in
+  `trackServiceForTeardown()` (`src/utils/test-service-teardown.ts`), including
+  in files that call `jest.useFakeTimers()`:
+  `service = trackServiceForTeardown(new PokerChaseService({ db }))`.
+  Mutating `playerId` / `latestEvtDeal` / `session.*` schedules a 500 ms
+  debounced `persistState()` write; an uncancelled timer fires during a *later*
+  test's `beforeEach` window — after `src/test-setup.ts` resets the shared
+  `chrome.storage.local` mock, before that test's own `restoreState()` read —
+  and the later test then restores the defunct instance's state. That is a
+  real CI flake, not a theoretical one. Importing the helper installs the
+  root-scope `afterEach` that does the cancelling; root-scope hooks run after
+  every `describe`-scope `afterEach`, so file-local teardown that itself
+  triggers a persist is still covered.
+- A test that creates and discards several services **within one test** MAY
+  additionally call `service.cancelPendingPersist()` at the point each instance
+  becomes defunct — the shared `afterEach` only runs at test end, too late for
+  the next instance's `restoreState()` in the same test.
+- New code MUST NOT reach into `(service as any)._persistStateTimer`; the
+  public `cancelPendingPersist()` is the only supported way to drop a pending
+  persist, so a field rename stays a type error rather than a silent flake.
+
 ### PR Checklist
 - [ ] Statistic implementation in `src/stats/core/[stat-name].ts`
 - [ ] Export added to `src/stats/core/index.ts`

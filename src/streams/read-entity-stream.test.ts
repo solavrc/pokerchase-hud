@@ -14,6 +14,7 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import PokerChaseService from '../services/poker-chase-service'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { ApiType, BattleType, PhaseType } from '../types'
 import type { ApiHandEvent, Hand } from '../types'
 import type { PlayerStats, StatResult } from '../types'
@@ -58,7 +59,7 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     const hands: Hand[] = [
@@ -205,7 +206,7 @@ describe('ReadEntityStream.calcStats -- CLASSIFIER_REQUIRED_STAT_IDS forcing (pl
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     // statDisplayConfigs is only populated via setBattleTypeFilter (the
@@ -264,7 +265,7 @@ describe('ReadEntityStream.calcStats -- forcing still applies when statDisplayCo
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     // Deliberately do NOT call setBattleTypeFilter (or anything else that
