@@ -66,8 +66,9 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   - **User-facing text** (UI strings, stat `helpText`, GitHub Release bodies):
     Japanese.
   - **Code comments**: Japanese (see CONTRIBUTING.md "Code Style"). Existing
-    English comments need not be rewritten. A comment stating an invariant or
-    requirement embeds the applicable uppercase keyword defined below.
+    comments — in either language — need not be retroactively rewritten. A new
+    or edited comment stating an invariant or requirement embeds the
+    applicable uppercase keyword defined below.
   For an existing file, **match the language the file already uses** — a
   blanket "docs are English" rule stopped describing this repo once `README.md`
   was deliberately rewritten in Japanese (#302), and reviewers keep flagging
@@ -406,7 +407,7 @@ on large DBs (bounded, local work; import is a rare operation).
 ### Data Processing
 
 - **Scale Assumptions**: System designed to handle tens of thousands of records efficiently
-- **ActionDetail Detection**: MUST be implemented in statistics modules for consistency
+- **ActionDetail Detection**: stat-specific flags derivable from the per-action context MUST be implemented in statistics modules (`detectActionDetails`) for consistency. Structural/outcome-dependent flags are the documented exception — e.g. `ALL_IN` (action normalization) and `RIVER_CALL_WON` (assigned after winner determination) live inside both write pipelines, and such flags MUST stay mirrored across `entity-converter.ts` / `write-entity-stream.ts` (see Code Review Rules)
 - **Batch Operations**: Import data in chunks to prevent browser freezing
 - **Transaction Safety**: Complete READONLY before READWRITE operations
 - **Memory Management**: Process large datasets incrementally

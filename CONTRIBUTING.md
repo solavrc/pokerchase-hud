@@ -376,11 +376,12 @@ Note: The system uses TypeScript enums for type safety, so new flags MUST be add
 ## 📝 Code Style
 
 - Use TypeScript strict mode
-- Write code comments in Japanese: `// 日本語でのコメント`. Existing English
-  comments need not be rewritten. A comment that states an invariant or a
-  requirement (rather than describing behavior) MUST embed the applicable
-  uppercase RFC 2119 keyword (MUST / MUST NOT / SHOULD / SHOULD NOT / MAY —
-  see AGENTS.md "Requirement Keywords"), e.g.
+- Write code comments in Japanese: `// 日本語でのコメント`. Existing comments —
+  in either language — need not be retroactively rewritten. A new or edited
+  comment that states an invariant or a requirement (rather than describing
+  behavior) MUST embed the applicable uppercase RFC 2119 keyword
+  (MUST / MUST NOT / SHOULD / SHOULD NOT / MAY — see AGENTS.md
+  "Requirement Keywords"), e.g.
   `// 全イベントは1回の呼び出しで渡すこと (MUST) — チャンク分割するとハンド境界が失われる`
 - Follow existing naming conventions
 - Keep statistics focused on a single concept
