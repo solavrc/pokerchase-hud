@@ -35,7 +35,7 @@
 import { ActionType, PhaseType, Position, ActionDetail, isShowdownParticipant } from '../types/game'
 import { ApiType } from '../types/api'
 import type { Hand, Action, Phase, Result } from '../types/entities'
-import type { RecentHandEntry, RecentHandsResult, PreflopLine, PostflopLines } from '../types/stats'
+import type { RecentHandEntry, RecentHandsResult, PreflopLine, PostflopLines, StreetAction } from '../types/stats'
 import type { PokerChaseDB } from '../db/poker-chase-db'
 import type PokerChaseService from './poker-chase-service'
 import { matchesTableSizeFilter } from '../utils/table-size'
@@ -253,10 +253,10 @@ export function isDealtIn(hand: Hand, playerId: number): boolean {
 }
 
 /**
- * `ActionType`→1文字表記。`PostflopLines`のドキュメントコメント参照。
+ * `ActionType`→1文字表記。`StreetAction.letter`のドキュメントコメント参照。
  * `Partial`にしてあるのは`ActionType.ALL_IN`を意図的に持たないため
  * （actionSchemaがALL_INのactionType自体を禁じている）。万一その値が
- * 残っている古い行を読んでも、未定義として空文字に落ちる。
+ * 残っている古い行を読んでも、未定義として弾かれる。
  */
 const ACTION_LETTER: Partial<Record<ActionType, string>> = {
   [ActionType.CHECK]: 'X',
@@ -266,11 +266,52 @@ const ACTION_LETTER: Partial<Record<ActionType, string>> = {
   [ActionType.RAISE]: 'R',
 }
 
+/** ポット比を出す意味があるアクション（自分から仕掛けて出した額があるもの）。 */
+const isAggressiveAction = (actionType: ActionType): boolean =>
+  actionType === ActionType.BET || actionType === ActionType.RAISE
+
 const POSTFLOP_PHASES = [PhaseType.FLOP, PhaseType.TURN, PhaseType.RIVER] as const
 
+const isUsableNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value)
+
 /**
- * ポストフロップ各ストリートでの、対象プレイヤー自身のアクション列を
- * 省略記法へ畳む（#341）。表記の定義は`PostflopLines`参照。
+ * そのアクションで**新たに**出したチップ額（#354）。`StreetAction.increment`参照。
+ *
+ * `Action.bet`（=`EVT_ACTION.BetChip`）はストリート内累計なので、同じ
+ * プレイヤーの直前のbetとの差が増分になる。ポストフロップはストリート開始時に
+ * 0へ戻る（プリフロップのブラインドのような「アクション前の拠出」が無い）ため、
+ * 先行アクションが無ければ累計＝増分。
+ */
+function computeIncrement(action: Action, sameStreetActions: Action[]): number | null {
+  if (!isUsableNumber(action.bet)) return null
+  const prior = sameStreetActions
+    .filter(a => a.playerId === action.playerId && a.index < action.index)
+    .reduce((max, a) => (isUsableNumber(a.bet) && a.bet > max ? a.bet : max), 0)
+  const increment = action.bet - prior
+  return increment >= 0 ? increment : null
+}
+
+/**
+ * そのアクション直前のポット総額（メイン＋全サイドポット）（#354）。
+ * 検証内容は`StreetAction.potBefore`のドキュメントコメント参照。
+ *
+ * サイドポットを足し込むのは必須（MUST）: オールインでポットがティア分割
+ * されるとチップは`Pot`と`SidePot[]`の間を移動するため、`Pot`単独では
+ * 「場に出ている額」にならない。
+ */
+function computePotBefore(action: Action, increment: number | null): number | null {
+  if (increment === null || !isUsableNumber(action.pot)) return null
+  const sidePot = Array.isArray(action.sidePot)
+    ? action.sidePot.reduce((sum: number, value) => sum + (isUsableNumber(value) ? value : 0), 0)
+    : 0
+  const potBefore = action.pot + sidePot - increment
+  return potBefore > 0 ? potBefore : null
+}
+
+/**
+ * ポストフロップ各ストリートでの、対象プレイヤー自身のアクション列（#341）と
+ * そのサイジング（#354）。
  *
  * ストリートの帰属は`action.phase`をそのまま使う ―― #340/#346で、これは
  * アクションイベント自身が運ぶ権威的な`Progress.Phase`になっている
@@ -279,27 +320,61 @@ const POSTFLOP_PHASES = [PhaseType.FLOP, PhaseType.TURN, PhaseType.RIVER] as con
  *
  * パイプラインは生の`ActionType.ALL_IN`をBET/RAISE/CALLへ正規化し、事実は
  * `actionDetails`の`ALL_IN`に残す（entitiesのactionSchemaがALL_INのactionType
- * 自体を禁じている）ので、`!`サフィックスで復元する。
+ * 自体を禁じている）ので、`allIn`フラグとして復元する。
+ *
+ * 比率の分子に累計betではなく**増分**を使うのは、レイズで「これまでに出した
+ * 総額」を分子にすると、相手のベットへ被せた分まで自分の投入として二重に
+ * 数えてしまうため。
  */
 export function derivePostflopLines(
   handId: number,
   playerId: number,
   actionsByHandId: Map<number, Action[]>
 ): PostflopLines {
-  const ownActions = (actionsByHandId.get(handId) ?? []).filter(a => a.playerId === playerId)
+  const handActions = actionsByHandId.get(handId) ?? []
   const [flop, turn, river] = POSTFLOP_PHASES.map(phase => {
-    const notation = ownActions
-      .filter(a => a.phase === phase)
+    // 増分の算出には**同じストリートの自分の先行アクション**が要るので、
+    // フェーズ単位で切り出してからプレイヤーで絞る。
+    const streetActions = handActions.filter(a => a.phase === phase)
+    return streetActions
+      .filter(a => a.playerId === playerId)
       .sort((a, b) => a.index - b.index)
-      .map(a => {
-        const letter = ACTION_LETTER[a.actionType]
-        if (!letter) return ''
-        return a.actionDetails.includes(ActionDetail.ALL_IN) ? `${letter}!` : letter
+      .flatMap<StreetAction>(action => {
+        const letter = ACTION_LETTER[action.actionType]
+        if (!letter) return []
+        const increment = computeIncrement(action, streetActions)
+        const potBefore = computePotBefore(action, increment)
+        return [{
+          letter,
+          allIn: action.actionDetails.includes(ActionDetail.ALL_IN),
+          increment,
+          potBefore,
+          potPercent: isAggressiveAction(action.actionType) && increment !== null && increment > 0 && potBefore !== null
+            ? Math.round((increment / potBefore) * 100)
+            : null,
+        }]
       })
-      .join('')
-    return notation.length > 0 ? notation : null
   })
-  return { flop: flop ?? null, turn: turn ?? null, river: river ?? null }
+  return { flop: flop ?? [], turn: turn ?? [], river: river ?? [] }
+}
+
+/**
+ * プレイヤーの最後の**アグレッシブな**プリフロップアクションのレイズto額
+ * （#354）。プリフロップの`Action.bet`はストリート内累計なので、その値が
+ * そのまま「いくらまで上げたか」になる（ブラインドは既にその内側）。
+ */
+export function derivePreflopRaiseTo(
+  hand: Hand,
+  playerId: number,
+  actionsByHandId: Map<number, Action[]>
+): { chips: number | null, bb: number | null } {
+  const lastAggro = (actionsByHandId.get(hand.id) ?? [])
+    .filter(a => a.playerId === playerId && a.phase === PhaseType.PREFLOP && isAggressiveAction(a.actionType))
+    .sort((a, b) => a.index - b.index)
+    .at(-1)
+  if (!lastAggro || !isUsableNumber(lastAggro.bet) || lastAggro.bet <= 0) return { chips: null, bb: null }
+  const bb = isUsableNumber(hand.bigBlind) && hand.bigBlind > 0 ? lastAggro.bet / hand.bigBlind : null
+  return { chips: lastAggro.bet, bb }
 }
 
 /**
@@ -638,6 +713,7 @@ export async function getRecentHands(
     const holeCardsFromDeal = holeCardsFromResults === null && holeCardsFromReplay === null
       ? heroDealtHoleCards.get(hand.id) ?? null
       : null
+    const preflopRaiseTo = derivePreflopRaiseTo(hand, playerId, actionsByHandId)
 
     return {
       handId: hand.id,
@@ -656,6 +732,8 @@ export async function getRecentHands(
           : holeCardsFromDeal !== null ? 'dealt' : null,
       preflopLine: derivePreflopLine(hand, playerId, actionsByHandId),
       postflopLines: derivePostflopLines(hand.id, playerId, actionsByHandId),
+      preflopRaiseToBB: preflopRaiseTo.bb,
+      preflopRaiseToChips: preflopRaiseTo.chips,
       sawFlop: deriveSawFlop(hand.id, playerId, phasesByHandId, wentToShowdown),
       wentToShowdown,
       won,

@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Position } from '../../types/game'
-import type { PostflopLines, RecentHandEntry, RecentHandsResult } from '../../types/stats'
+import type { PostflopLines, RecentHandEntry, RecentHandsResult, StreetAction } from '../../types/stats'
 import type { GetRecentHandsMessage, RecentHandsResponse, ErrorResponse } from '../../types/messages'
 import { sendMessageWithTimeout } from '../popup/send-message'
 import { suitColor } from '../../utils/card-utils'
@@ -42,13 +42,25 @@ const positionLabel = (position: Position | null): string =>
   position === null ? '—' : Position[position]
 
 /**
- * ポストフロップ3ストリートを1セルに畳む（#341）。ストリート区切りは`/`、
- * 各ストリートの中身は`PostflopLines`の1文字表記そのまま。
+ * 1アクションの表示トークン（#341の記号 + #354のサイズ）。
+ * 例: `X` / `C` / `B33` / `R120` / `B75!`（`!`＝オールイン）。
  *
- * 末尾側の「アクションが無いストリート」は落とす（`XC/B`はターンで終わった
+ * ポット比は`B`/`R`にだけ付く ―― チェック・コール・フォールドに「ポットの
+ * 何%」は無い。比率が算出できなかったアグレッシブアクション（会計が欠けた
+ * 古い行など）は記号だけに落ちる（数字を捏造しない）。
+ */
+export function formatStreetAction(action: StreetAction): string {
+  const size = action.potPercent === null ? '' : String(action.potPercent)
+  return `${action.letter}${size}${action.allIn ? '!' : ''}`
+}
+
+/**
+ * ポストフロップ3ストリートを1セルに畳む（#341/#354）。ストリート区切りは`/`。
+ *
+ * 末尾側の「アクションが無いストリート」は落とす（`XC/B33`はターンで終わった
  * という意味で、リバー欄の`/-`は情報を持たない）。逆に途中の空ストリートは
- * `-`で残す ―― `XC/-/B`は「ターンでは動かずリバーでベット」であって、
- * 詰めてしまうと`XC/B`（ターンでベット）と区別が付かなくなる。
+ * `-`で残す ―― `XC/-/B50`は「ターンでは動かずリバーでベット」であって、
+ * 詰めてしまうと`XC/B50`（ターンでベット）と区別が付かなくなる。
  * 3ストリートとも空なら`null`（呼び出し側がem dashへ倒す）。
  *
  * 引数が欠けている場合も`null`へ倒す（MUST）: このデータはchrome.runtime
@@ -60,12 +72,59 @@ const positionLabel = (position: Position | null): string =>
 export function formatPostflopLines(lines: PostflopLines | null | undefined): string | null {
   if (!lines) return null
   const streets = [lines.flop, lines.turn, lines.river]
+    .map(street => (Array.isArray(street) ? street : []))
   let lastPlayed = -1
   streets.forEach((street, index) => {
-    if (street) lastPlayed = index
+    if (street.length > 0) lastPlayed = index
   })
   if (lastPlayed < 0) return null
-  return streets.slice(0, lastPlayed + 1).map(street => street ?? '-').join('/')
+  return streets
+    .slice(0, lastPlayed + 1)
+    .map(street => (street.length > 0 ? street.map(formatStreetAction).join('') : '-'))
+    .join('/')
+}
+
+/**
+ * F/T/Rセルのツールチップ（#354）: 記号だけでは読めない実額を出す。
+ * 列を増やさずに「B33が実際に何チップだったのか」へ到達できるようにする
+ * （BB損益セルのツールチップと同じ考え方）。
+ */
+export function formatPostflopTooltip(lines: PostflopLines | null | undefined): string | undefined {
+  if (!lines) return undefined
+  const names = ['フロップ', 'ターン', 'リバー'] as const
+  const parts = [lines.flop, lines.turn, lines.river].flatMap((street, index) => {
+    if (!Array.isArray(street) || street.length === 0) return []
+    const detail = street
+      .filter(action => action.increment !== null && action.increment > 0 && action.potBefore !== null)
+      .map(action => `${formatStreetAction(action)}=${action.increment!.toLocaleString()}（ポット${action.potBefore!.toLocaleString()}）`)
+    return detail.length > 0 ? [`${names[index]}: ${detail.join(' ')}`] : []
+  })
+  return parts.length > 0 ? parts.join('\n') : undefined
+}
+
+/**
+ * ライン（プリフロップ）セルのツールチップ（#354）。
+ *
+ * サイズを`preflopLine`の文字列へ埋め込まずツールチップにしたのは、
+ * (1)`preflopLine`が`'Open-F'`のようにサフィックスを持つ documented な
+ * タクソノミーで、数字を差し込む自然な位置が無いこと、(2)ライン列は既に
+ * `ColdCall`が幅を決めており、そこへ数字を足すと240px幅のテーブルで
+ * 一番広い列がさらに広がること、による。
+ */
+export function formatPreflopTooltip(entry: RecentHandEntry): string | undefined {
+  const bb = entry.preflopRaiseToBB
+  const chips = entry.preflopRaiseToChips
+  if (typeof bb !== 'number' || !Number.isFinite(bb) || bb <= 0) return undefined
+  if (typeof chips !== 'number' || !Number.isFinite(chips)) return undefined
+  return `プリフロップ: ${formatBigBlinds(bb)}BB（${chips.toLocaleString()}チップ）へレイズ`
+}
+
+/**
+ * BB表記を小数第1位で丸め、`.0`は落とす（`2.2` / `9`）。
+ * Exported for direct unit testing.
+ */
+export function formatBigBlinds(value: number): string {
+  return String(Number(value.toFixed(1)))
 }
 
 /** Signed chip result with grouping; unknown/なし の会計は '-'。 */
@@ -98,6 +157,7 @@ export function formatNetBigBlinds(entry: RecentHandEntry): string {
   const rounded = Number(bb.toFixed(1))
   if (rounded === 0) return '0.0'
   return `${rounded > 0 ? '+' : ''}${rounded.toFixed(1)}`
+  
 }
 
 /**
@@ -217,6 +277,11 @@ const styles = {
   streetCell: {
     whiteSpace: 'normal' as const,
     wordBreak: 'break-all' as const,
+    // サイズ表記が入って桁が揃わないと行ごとに列幅が揺れるため、等幅数字にする
+    // （#354）。`tabular-nums`は全数字を同じ送り幅にするOpenType機能で、
+    // フォント自体を等幅にするより字面が既存のUIと揃う。
+    fontVariantNumeric: 'tabular-nums' as const,
+    fontFeatureSettings: '"tnum" 1',
   } as CSSProperties,
 
   cellLeft: {
@@ -437,7 +502,7 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
               <th style={{ ...styles.headerCell, ...styles.headerCellLeft }}>ライン</th>
               <th
                 style={{ ...styles.headerCell, ...styles.headerCellLeft }}
-                title="フロップ/ターン/リバーの自分のアクション（X=チェック B=ベット C=コール R=レイズ F=フォールド、!=オールイン）"
+                title="フロップ/ターン/リバーの自分のアクション（X=チェック B=ベット C=コール R=レイズ F=フォールド、!=オールイン）。B/Rの数字は直前のポットに対する比率(%)"
               >F/T/R</th>
               <th style={styles.headerCell} title="損益（そのハンドのBB単位）">損益(BB)</th>
             </tr>
@@ -457,8 +522,16 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
                     <span style={styles.notWon}>—</span>
                   )}
                 </td>
-                <td style={{ ...styles.cell, ...styles.cellLeft }}>{entry.preflopLine ?? '—'}</td>
-                <td style={{ ...styles.cell, ...styles.cellLeft, ...styles.streetCell }} data-testid="recent-hands-streets">
+                <td
+                  style={{ ...styles.cell, ...styles.cellLeft }}
+                  title={formatPreflopTooltip(entry)}
+                  data-testid="recent-hands-preflop"
+                >{entry.preflopLine ?? '—'}</td>
+                <td
+                  style={{ ...styles.cell, ...styles.cellLeft, ...styles.streetCell }}
+                  title={formatPostflopTooltip(entry.postflopLines)}
+                  data-testid="recent-hands-streets"
+                >
                   {formatPostflopLines(entry.postflopLines) ?? <span style={styles.notWon}>—</span>}
                 </td>
                 <td style={styles.cell} title={netChipsTooltip(entry)}>

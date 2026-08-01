@@ -199,29 +199,67 @@ export interface PositionalStatsResult {
 export type PreflopLine = string
 
 /**
- * Compact per-street notation for the player's OWN postflop actions, in
- * `Action.index` order, one letter per action:
- *
- *   `X` CHECK / `B` BET / `C` CALL / `R` RAISE / `F` FOLD
- *
- * A `!` suffix marks an action the pipeline normalized away from
- * `ActionType.ALL_IN` (the raw event's ALL_IN is rewritten to BET/RAISE/CALL
- * and the fact is kept in `Action.actionDetails` as `ActionDetail.ALL_IN` --
- * without the suffix an all-in would be indistinguishable from a normal bet).
- *
- * `null` means the player took no action on that street -- which covers both
- * "the street was never dealt" and "the street was dealt but the player was
- * already all-in / had folded". The two are told apart by the neighbouring
- * streets and `sawFlop`, not by this field.
+ * One of the player's OWN postflop actions, with the sizing context needed to
+ * render it (#354).
+ */
+export interface StreetAction {
+  /**
+   * Compact letter for the action: `X` CHECK / `B` BET / `C` CALL /
+   * `R` RAISE / `F` FOLD.
+   */
+  letter: string
+  /**
+   * True when the pipeline normalized this action away from
+   * `ActionType.ALL_IN` (the raw event's ALL_IN is rewritten to BET/RAISE/CALL
+   * and the fact kept in `Action.actionDetails`). Rendered as a `!` suffix --
+   * without it an all-in is indistinguishable from a normal bet.
+   */
+  allIn: boolean
+  /**
+   * Chips this action ADDED, not the street-cumulative amount:
+   * `Action.bet` minus the same player's previous `Action.bet` on the same
+   * street. `Action.bet` is `EVT_ACTION.BetChip`, which is cumulative within a
+   * street and resets at each street boundary. `null` when not derivable.
+   */
+  increment: number | null
+  /**
+   * Total pot (main + all side pots) immediately BEFORE this action.
+   *
+   * `Action.pot`/`Action.sidePot` are `EVT_ACTION.Progress.Pot`/`SidePot`,
+   * which are **post-action** snapshots -- they already include this action's
+   * chips. Verified against two independent raw captures (80,758 postflop
+   * aggressive actions, 99.995% / 99.998% agreement with
+   * `potBefore = pot + ΣsidePot - increment`; the residue is the documented
+   * capture-anomaly class, see docs/api-events.md "クロージングコールの欠落").
+   * Side pots must be summed in: chips move between `Pot` and `SidePot[]` as
+   * all-ins tier the pot, so `Pot` alone is not the money on the table.
+   * `null` when not derivable.
+   */
+  potBefore: number | null
+  /**
+   * `increment / potBefore` as a rounded integer percentage -- the pot-relative
+   * sizing shown next to `B`/`R`. `null` for non-aggressive actions (a call,
+   * check or fold has no meaningful pot-relative size) and whenever
+   * `increment`/`potBefore` are not derivable or `potBefore <= 0`.
+   */
+  potPercent: number | null
+}
+
+/**
+ * The player's own postflop actions, per street, in `Action.index` order.
+ * An empty array means the player took no action on that street -- which
+ * covers both "the street was never dealt" and "the street was dealt but the
+ * player was already all-in / had folded". The two are told apart by the
+ * neighbouring streets and `sawFlop`, not by this field.
  *
  * The street each action belongs to comes from `Action.phase`, which since
  * #340/#346 is the authoritative `Progress.Phase` carried by the action event
  * itself (not a locally-counted EVT_DEAL_ROUND cursor).
  */
 export interface PostflopLines {
-  flop: string | null
-  turn: string | null
-  river: string | null
+  flop: StreetAction[]
+  turn: StreetAction[]
+  river: StreetAction[]
 }
 
 export interface RecentHandEntry {
@@ -276,8 +314,22 @@ export interface RecentHandEntry {
   holeCardsSource: 'results' | 'replay' | 'dealt' | null
   /** See `PreflopLine`'s doc comment for the taxonomy. `null` when no preflop data exists for this hand/player. */
   preflopLine: PreflopLine | null
-  /** See `PostflopLines`. Every street is `null` for hands that ended preflop. */
+  /** See `PostflopLines`. Every street is empty for hands that ended preflop. */
   postflopLines: PostflopLines
+  /**
+   * The player's preflop raise-TO amount in big blinds -- `Action.bet` (which
+   * for preflop is the street-cumulative total, i.e. exactly the raise-to)
+   * divided by `bigBlind`, for their LAST aggressive preflop action.
+   * `null` when they made no preflop bet/raise, or `bigBlind` is unusable.
+   *
+   * Kept out of the `preflopLine` string on purpose: that label is a
+   * documented, separately-tested taxonomy (`'Open'`/`'3Bet'`/`'Open-F'` …),
+   * and a `-F` suffix leaves no clean place to splice a number. The panel
+   * renders this in the line cell's tooltip instead of inline.
+   */
+  preflopRaiseToBB: number | null
+  /** Exact chips for `preflopRaiseToBB` (raise-to, not the increment). `null` likewise. */
+  preflopRaiseToChips: number | null
   /** Player reached the flop (BET_ABLE or ALL_IN when FLOP was dealt), or -- when no FLOP phase was even recorded because the hand went all-in preflop and ran out without any `EVT_DEAL_ROUND` -- reached showdown at all (which is only possible once the full board is out). */
   sawFlop: boolean
   /** `isShowdownParticipant(result)` for this player's result row -- true for any real comparison or a showdown muck, false for uncontested wins/folds. */
