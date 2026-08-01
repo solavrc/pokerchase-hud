@@ -171,9 +171,16 @@ describe('main-world experimental replay bridge', () => {
     XMLHttpRequest.prototype.send = jest.fn() as any
     const postMessageSpy = jest.spyOn(window, 'postMessage')
 
+    // 取得の間隔待ちを実時間で待つとテストが数秒止まるため、時間だけ偽装する。
+    // マイクロタスクは偽装されないので、フラッシュと時間送りを交互に回す。
+    jest.useFakeTimers()
+    let bridge: typeof import('./web_accessible_resource')
     jest.isolateModules(() => {
-      require('./web_accessible_resource')
+      bridge = require('./web_accessible_resource')
     })
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 20; i++) await Promise.resolve()
+    }
 
     const xhr = new XMLHttpRequest()
     xhr.open('POST', 'https://production.api-poker-chase.com/user/status')
@@ -198,7 +205,15 @@ describe('main-world experimental replay bridge', () => {
       origin: POKER_CHASE_ORIGIN,
       data: { type: REPLAY_BRIDGE_FETCH, requestId: 'request-2', handIds: [777, 779, 778] }
     }))
-    await new Promise(resolve => setTimeout(resolve, 0))
+    // 間隔を空けずに次を出していないことを、時間を送らずに確かめる。
+    // ここで2件目が出ていたらペーシングが効いていない。
+    await flush()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    jest.advanceTimersByTime(bridge!.REPLAY_FETCH_INTERVAL_MS)
+    await flush()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    jest.advanceTimersByTime(bridge!.REPLAY_FETCH_INTERVAL_MS)
+    await flush()
 
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(postMessageSpy).toHaveBeenCalledWith({
@@ -211,6 +226,7 @@ describe('main-world experimental replay bridge', () => {
       ]
     }, POKER_CHASE_ORIGIN)
 
+    jest.useRealTimers()
     XMLHttpRequest.prototype.open = originalOpen
     XMLHttpRequest.prototype.send = originalSend
   })

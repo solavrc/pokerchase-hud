@@ -549,12 +549,33 @@ const fetchReplayDetail = async (handId: number): Promise<ReplayFetchItemResult>
   }
 }
 
+/**
+ * 連続取得の間隔（前の応答が返ってから次を出すまで）。
+ *
+ * ゲーム本体のリプレイ閲覧は1件ずつ人間の操作速度で発生するので、100件を
+ * 無間隔で叩くのはサーバから見て明確に異質な流量になる。上限100件でも
+ * 実時間は2分半に収まり、取得はセッション終了後なのでユーザーの操作を
+ * 妨げない。
+ *
+ * 流量制限に掛かった応答を「取得不可」と取り違えないための予防でもある。
+ * このAPIは拒否をHTTP 200 + status で返すため、HTTP 429として現れる保証が
+ * なく、`readEnvelopeRejection` からは 2302 と区別が付かない。
+ */
+export const REPLAY_FETCH_INTERVAL_MS = 1500
+
+const delay = (ms: number): Promise<void> =>
+  new Promise(resolve => { setTimeout(resolve, ms) })
+
 const handleReplayFetch = async (message: ReplayFetchRequest): Promise<void> => {
   const handIds = message.handIds
     .filter(isPositiveHandId)
     .slice(0, REPLAY_FETCH_BATCH_LIMIT)
   const results: ReplayFetchItemResult[] = []
-  for (const handId of handIds) results.push(await fetchReplayDetail(handId))
+  for (const handId of handIds) {
+    // 先頭は待たない。1件だけの取得は従来どおり即座に走る。
+    if (results.length > 0) await delay(REPLAY_FETCH_INTERVAL_MS)
+    results.push(await fetchReplayDetail(handId))
+  }
   window.postMessage({
     type: REPLAY_BRIDGE_RESULT,
     requestId: message.requestId,
