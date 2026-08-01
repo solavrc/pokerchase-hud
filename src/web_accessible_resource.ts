@@ -476,6 +476,40 @@ XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyIn
  */
 const REPLAY_FETCH_TIMEOUT_MS = 15000
 
+/**
+ * REST応答エンベロープの拒否判定。
+ *
+ * このAPIは拒否も**HTTP 200**で返し、成否は本文の`result`(0=成功)と
+ * `status`(エラーコード)で表す。WebSocket側の`Code`
+ * (docs/api-events.md の 201/202) は**このAPIには存在しない**フィールドで、
+ * それを見ると拒否を常に成功として取り違える。
+ *
+ * 実測(2026-08-01): 取得できないhandIdは
+ * `{ result: 1, status: 2302, message: 'text_error_message_code_2302' }` を返し、
+ * `param`自体を持たない。成功時は`result: 0, status: 0`と`param`が揃う。
+ *
+ * `param`欠落も拒否として扱う。未知のエンベロープ形でも、中身の無い応答を
+ * 成功として保存経路へ流さないため。
+ *
+ * `retryable`は一律false。エラーコード空間が未知であり、同じエンベロープでの
+ * 再送が状況を変える根拠がまだ無い。取り込み層は`error`文字列に載る
+ * `status`を見て、コード別の扱いを後から足せる。
+ */
+const readEnvelopeRejection = (
+  decoded: unknown
+): { error: string, retryable: boolean } | undefined => {
+  if (typeof decoded !== 'object' || decoded === null) {
+    return { error: 'malformed-response', retryable: false }
+  }
+  const record = decoded as Record<string, unknown>
+  if (typeof record.result === 'number' && record.result !== 0) {
+    const status = typeof record.status === 'number' ? record.status : 'unknown'
+    return { error: `API result ${record.result} status ${status}`, retryable: false }
+  }
+  if (record.param === undefined) return { error: 'missing-param', retryable: false }
+  return undefined
+}
+
 const fetchReplayDetail = async (handId: number): Promise<ReplayFetchItemResult> => {
   if (!OriginalFetch) return { handId, ok: false, error: 'fetch-unavailable', retryable: false }
   const auth = replayAuth
@@ -504,10 +538,8 @@ const fetchReplayDetail = async (handId: number): Promise<ReplayFetchItemResult>
       'session' in decoded && typeof decoded.session === 'string') {
       replayAuth = { ...auth, session: decoded.session }
     }
-    if (typeof decoded === 'object' && decoded !== null &&
-      'Code' in decoded && typeof decoded.Code === 'number' && decoded.Code !== 0) {
-      return { handId, ok: false, error: `API Code ${decoded.Code}`, retryable: false }
-    }
+    const rejection = readEnvelopeRejection(decoded)
+    if (rejection) return { handId, ok: false, ...rejection }
     return { handId, ok: true, detail: sanitizeReplayDetail(decoded) }
   } catch (error) {
     // AbortErrorは上限到達。再試行可能として返し、backoffに委ねる。
