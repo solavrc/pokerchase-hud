@@ -99,11 +99,35 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
   })
 
   afterEach(async () => {
+    // Cancel PokerChaseService's pending 500ms-debounced persistState() timer
+    // -- without this, it can fire during a LATER test in this file (after
+    // the root beforeEach's storage reset but before that test's
+    // restoreState() read) and write this (now-defunct) service's
+    // playerId/latestEvtDeal into the shared chrome.storage.local mock,
+    // which the later test's `await service.ready` then restores. That leak
+    // broke the "latestEvtDeal not yet known" control test on slow CI runs
+    // (CI run 30687009635): the restored latestEvtDeal established the
+    // lineup mismatch and the refresh under test was skipped (0 write calls).
+    clearTimeout((service as unknown as { _persistStateTimer?: ReturnType<typeof setTimeout> })._persistStateTimer)
     jest.restoreAllMocks()
     delete (global as any).chrome.tabs
     setLastKnownStats([])
     db.close()
     await db.delete()
+  })
+
+  // Dispatch updateBattleTypeFilter and await the listener's sendResponse,
+  // which fires once setBattleTypeFilter()'s promise chain settles. The
+  // write() under test happens synchronously inside the listener, but
+  // draining the full handler deterministically (instead of hoping a single
+  // setTimeout(0) macrotask hop covers it) keeps the recalc chain from
+  // racing afterEach's db teardown.
+  const dispatchFilterUpdate = () => new Promise<void>(resolve => {
+    messageListener(
+      { action: 'updateBattleTypeFilter', filterOptions: FILTER_OPTIONS } as unknown as ChromeMessage,
+      {} as chrome.runtime.MessageSender,
+      jest.fn(() => { resolve() })
+    )
   })
 
   test('spectating a different table than the hero\'s last deal: the extra refresh is skipped (lineup mismatch)', async () => {
@@ -118,13 +142,7 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
       { playerId: 40, statResults: [] } as any,
     ])
 
-    const sendResponse = jest.fn()
-    messageListener(
-      { action: 'updateBattleTypeFilter', filterOptions: FILTER_OPTIONS } as unknown as ChromeMessage,
-      {} as chrome.runtime.MessageSender,
-      sendResponse
-    )
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await dispatchFilterUpdate()
 
     // The mismatched spectator refresh must not fire -- it would race
     // service.liveEvtDeal's hero-anchored re-sync from recalculateStats()
@@ -136,13 +154,7 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
     service.latestEvtDeal = HERO_DEAL
     setLastKnownStats(HERO_DEAL.SeatUserIds.map(playerId => ({ playerId, statResults: [] } as any)))
 
-    const sendResponse = jest.fn()
-    messageListener(
-      { action: 'updateBattleTypeFilter', filterOptions: FILTER_OPTIONS } as unknown as ChromeMessage,
-      {} as chrome.runtime.MessageSender,
-      sendResponse
-    )
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await dispatchFilterUpdate()
 
     expect(writeSpy).toHaveBeenCalledWith(HERO_DEAL.SeatUserIds)
   })
@@ -151,13 +163,7 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
     // service.latestEvtDeal deliberately left unset.
     setLastKnownStats([{ playerId: 2, statResults: [] } as any])
 
-    const sendResponse = jest.fn()
-    messageListener(
-      { action: 'updateBattleTypeFilter', filterOptions: FILTER_OPTIONS } as unknown as ChromeMessage,
-      {} as chrome.runtime.MessageSender,
-      sendResponse
-    )
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await dispatchFilterUpdate()
 
     expect(writeSpy).toHaveBeenCalledWith([2])
   })
@@ -177,13 +183,7 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
       { playerId: 20, statResults: [] } as any,
     ])
 
-    const sendResponse = jest.fn()
-    messageListener(
-      { action: 'updateBattleTypeFilter', filterOptions: FILTER_OPTIONS } as unknown as ChromeMessage,
-      {} as chrome.runtime.MessageSender,
-      sendResponse
-    )
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await dispatchFilterUpdate()
 
     expect(writeSpy).toHaveBeenCalledWith([10, 20])
   })
