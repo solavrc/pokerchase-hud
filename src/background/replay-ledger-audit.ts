@@ -229,8 +229,25 @@ export const auditReplayLedger = async (
   // フォールバックとして使う（偏りは分単位で、観測開始の下限判定には十分）。
   const clockOffsetMs = median(handOffsets) ?? median(rawOffsets)
 
+  // 観測開始の下限。`hands` が空でも、生行が在れば観測はしていたので、
+  // Raw Lake の最古の `EVT_HAND_RESULTS` をフォールバックにする。これが無いと、
+  // 派生が全面停止した状態で「生行のあるハンドの間に挟まれた本物の非到着」を
+  // 報告できない（生行のあるものだけが個別の例外で対象になり、その隙間が
+  // 落ちる）。
   const oldestLocal = await db.hands.orderBy('approxTimestamp').first()
-  const observationFloorMs = oldestLocal?.approxTimestamp
+  const oldestRaw = await db.apiEvents
+    .where('[ApiTypeId+timestamp]')
+    .between(
+      [ApiType.EVT_HAND_RESULTS, Dexie.minKey],
+      [ApiType.EVT_HAND_RESULTS, Dexie.maxKey],
+      true,
+      true
+    )
+    .first()
+  const rawFloorMs = typeof (oldestRaw as { timestamp?: unknown } | undefined)?.timestamp === 'number'
+    ? (oldestRaw as { timestamp: number }).timestamp
+    : undefined
+  const observationFloorMs = oldestLocal?.approxTimestamp ?? rawFloorMs
 
   // --- 3. 判定対象を決める ---
   //
@@ -381,12 +398,23 @@ export const handleReplayLedgerPortMessage = (
   // 受信順と逆になる。
   auditQueue = auditQueue
     .then(async () => {
+      // 台帳を受信した時点のアカウントを控える。待っている間に別アカウントの
+      // EVT_DEAL が処理されると playerId が上書きされ、Aの台帳をBの会計と
+      // 突き合わせて偽の不一致を保存しうる。
+      // 受信時が undefined なのはコールドスタートで復元前のときなので、その
+      // 場合だけは復元後の値を採用する（これが元々 getter にした理由）。
+      const playerIdAtReceipt = deps.getPlayerId()
       await deps.waitUntilConsistent()
       if (deps.isBusy?.()) {
         console.info('[replay-ledger] 長時間操作の実行中のため突き合わせを見送りました')
         return
       }
-      await auditReplayLedger(deps.db, deps.getPlayerId(), snapshot, deps.now(), deps.isBusy)
+      const playerId = deps.getPlayerId()
+      if (playerIdAtReceipt !== undefined && playerIdAtReceipt !== playerId) {
+        console.info('[replay-ledger] 待機中にアカウントが変わったため突き合わせを見送りました')
+        return
+      }
+      await auditReplayLedger(deps.db, playerId, snapshot, deps.now(), deps.isBusy)
     })
     .catch(error => {
       console.error('[replay-ledger] 台帳の突き合わせに失敗しました:', error)

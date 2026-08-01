@@ -230,6 +230,26 @@ describe('replay ledger audit', () => {
     expect(result.outOfObservationWindowHands).toBe(0)
   })
 
+  // Codexレビュー指摘: hands が空でも生行が在れば観測はしていた。下限を
+  // hands だけから取ると、生行のあるハンドの間に挟まれた本物の非到着を
+  // 報告できない。
+  test('handsが空でも、生行の時刻を観測開始の下限に使う', async () => {
+    // 1800 は生行あり / 1801 は痕跡なし。hands は空。
+    await db.apiEvents.add({
+      timestamp: 1785500030_000, ApiTypeId: ApiType.EVT_HAND_RESULTS, sequence: 0, HandId: 1800
+    } as never)
+
+    const result = await auditReplayLedger(db, HERO, ledgerOf([
+      { handId: 1800, startTime: 1785500000, chipDiff: 10 },
+      { handId: 1801, startTime: 1785500060, chipDiff: 20 }
+    ]), NOW)
+
+    expect(result.derivationMissingHandIds).toEqual([1800])
+    // 生行の下限より新しいので、痕跡が無いことを「観測前」で流さない
+    expect(result.notCapturedHandIds).toEqual([1801])
+    expect(result.outOfObservationWindowHands).toBe(0)
+  })
+
   test('ChipDiffとnetChipsの食い違いを報告する', async () => {
     await db.hands.bulkPut([hand(200, 500), hand(201, 999)])
 
@@ -322,7 +342,6 @@ describe('replay ledger audit', () => {
     test('取り込みの決着と状態復元を待ってから照合する', async () => {
       let released!: () => void
       const gate = new Promise<void>(resolve => { released = resolve })
-      let playerIdReadyAt = -1
       let reads = 0
 
       expect(handleReplayLedgerPortMessage({
@@ -333,12 +352,13 @@ describe('replay ledger audit', () => {
         hands: [{ handId: 1100, startTime: 1785500000, chipDiff: 500 }]
       }, depsOf(db, {
         waitUntilConsistent: () => gate,
-        getPlayerId: () => { playerIdReadyAt = ++reads; return HERO }
+        getPlayerId: () => { reads++; return HERO }
       }))).toBe(true)
 
-      // 待ちが解けるまで照会も playerId の読み取りも起きていない
+      // 待ちが解けるまで照会は起きていない。playerId は受信時のアカウントを
+      // 控えるために1回だけ読む（待った後にもう一度読んで一致を確かめる）。
       await new Promise(resolve => setTimeout(resolve, 30))
-      expect(playerIdReadyAt).toBe(-1)
+      expect(reads).toBe(1)
       expect(await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)).toBeUndefined()
 
       // 待っている間に書き込みが決着した、という想定
@@ -346,7 +366,7 @@ describe('replay ledger audit', () => {
       released()
 
       expect(await waitForAuditResult(db)).toMatchObject({ notCapturedHandIds: [] })
-      expect(playerIdReadyAt).toBe(1)
+      expect(reads).toBe(2)
     })
 
     // Codexレビュー指摘: 同じキーへ書くので、重い監査が後発の軽い監査より
@@ -407,6 +427,27 @@ describe('replay ledger audit', () => {
       })).toBe(true)
 
       await new Promise(resolve => setTimeout(resolve, 120))
+      expect(await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)).toBeUndefined()
+    })
+
+    // Codexレビュー指摘: 待機中に別アカウントの EVT_DEAL が処理されると
+    // playerId が上書きされ、Aの台帳をBの会計と突き合わせてしまう。
+    test('待機中にアカウントが変わったら突き合わせを見送る', async () => {
+      await db.hands.bulkPut([hand(1900, 10)])
+      let current: number | undefined = HERO
+      expect(handleReplayLedgerPortMessage({
+        type: REPLAY_PORT_LEDGER,
+        battleType: 0,
+        cardOpenEndDate: 0,
+        isExpiredCardOpen: false,
+        hands: [{ handId: 1900, startTime: 1785500000, chipDiff: 10 }]
+      }, depsOf(db, {
+        // 待っている間に別アカウントへ切り替わる
+        waitUntilConsistent: async () => { current = 999999999 },
+        getPlayerId: () => current
+      }))).toBe(true)
+
+      await new Promise(resolve => setTimeout(resolve, 80))
       expect(await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)).toBeUndefined()
     })
 
