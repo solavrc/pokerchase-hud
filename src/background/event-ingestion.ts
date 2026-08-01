@@ -148,7 +148,13 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           // 照合不能に落ちる）。
           waitUntilConsistent: async () => {
             await service.ready
+            // 取り込みキューの決着だけでは足りない。`processEvent` は
+            // `handAggregateStream.write()` で下流を起動するだけで、
+            // `WriteEntityStream` が `hands` を書き終えるまでは待たない。
+            // rawだけが在る瞬間に照会すると、正常に生成中のハンドを
+            // 「派生欠落」として永続化する。`whenIdle()` は下流へ連鎖する。
             await awaitIngestionDrain()
+            await service.handAggregateStream.whenIdle()
           },
           // インポート/再構築/エクスポートの最中は監査しない。インポートは生行を
           // 先にコミットして派生を後から作るので、その途中で照会すると正常に
