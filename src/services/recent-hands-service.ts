@@ -270,6 +270,62 @@ const ACTION_LETTER: Partial<Record<ActionType, string>> = {
 const isAggressiveAction = (actionType: ActionType): boolean =>
   actionType === ActionType.BET || actionType === ActionType.RAISE
 
+/**
+ * そのアクションが対峙していたベット額（同ストリートで、**他プレイヤー**が
+ * それまでに積み上げた累計betの最大値）。
+ *
+ * `fallbackFacingBet`は先行アクションが1件も無いときの下駄。プリフロップは
+ * ブラインドが`EVT_ACTION`として飛んで来ないため、最初の自発アクションが
+ * 対峙しているのはBBであり、ここへ`hand.bigBlind`を渡す。ポストフロップは
+ * ストリート開始時に誰も出していないので0。
+ * （`hand-log-processor.ts`の`getPreviousBet()`と同じ規約 ―― あちらも
+ * ポストフロップは0、プリフロップは`posts big blind`の額へ落ちる。）
+ */
+function facingBetBefore(
+  action: Action,
+  sameStreetActions: Action[],
+  fallbackFacingBet: number
+): number {
+  const maxPrior = sameStreetActions
+    .filter(a => a.index < action.index && a.playerId !== action.playerId)
+    .reduce((max, a) => (isUsableNumber(a.bet) && a.bet > max ? a.bet : max), 0)
+  return maxPrior > 0 ? maxPrior : Math.max(0, fallbackFacingBet)
+}
+
+/**
+ * 表示上のアクション種別（#354のcodexレビュー指摘）。
+ *
+ * 保存パイプラインは生の`ActionType.ALL_IN`を`Progress.NextActionTypes`だけを
+ * 見て正規化する（write-entity-stream.ts / entity-converter.ts）:
+ * `CALL`が選択肢にあれば **額を見ずに** `RAISE` へ倒す。したがって、相手の
+ * ベットをカバーできないショートオールイン（＝実質はオールインコール）まで
+ * `RAISE`として保存される。そのまま出すと、本来`C!`の行に`Rxx!`とポット比が
+ * 付き、プリフロップでは存在しないレイズのツールチップが出る。
+ *
+ * ここでは`ActionDetail.ALL_IN`が付いた行に限り、同ストリートで対峙していた
+ * ベット額と自分の累計betを比べ直し、**上回ったときだけ**BET/RAISEとして扱う。
+ * 同額（ちょうどカバー）も下回りもコール ―― `hand-log-processor.ts`の
+ * `ALL_IN`分岐（`BetChip > prevBet`のみ"raises ... and is all-in"、
+ * `BetChip === prevBet`と`BetChip < prevBet`はどちらも"calls ... and is
+ * all-in"）と同じ境界に揃える。
+ *
+ * MUST: `ActionDetail.ALL_IN`が無い行には触らない。そちらはサーバーが
+ * `RAISE`/`BET`を明示的に送っており、再解釈する理由が無い。
+ */
+export function resolveEffectiveActionType(
+  action: Action,
+  sameStreetActions: Action[],
+  fallbackFacingBet: number = 0
+): ActionType {
+  if (!action.actionDetails.includes(ActionDetail.ALL_IN)) return action.actionType
+  if (!isAggressiveAction(action.actionType)) return action.actionType
+  if (!isUsableNumber(action.bet)) return action.actionType
+  const facing = facingBetBefore(action, sameStreetActions, fallbackFacingBet)
+  // 対峙するベットが無ければ、そのオールインは正真正銘のベット。
+  if (facing <= 0) return action.actionType
+  return action.bet > facing ? action.actionType : ActionType.CALL
+}
+
 const POSTFLOP_PHASES = [PhaseType.FLOP, PhaseType.TURN, PhaseType.RIVER] as const
 
 const isUsableNumber = (value: unknown): value is number =>
@@ -340,7 +396,11 @@ export function derivePostflopLines(
       .filter(a => a.playerId === playerId)
       .sort((a, b) => a.index - b.index)
       .flatMap<StreetAction>(action => {
-        const letter = ACTION_LETTER[action.actionType]
+        // ショートオールインは保存上RAISEでも実質コール（`resolveEffectiveActionType`
+        // 参照）。ポストフロップはストリート開始時点で対峙するベットが無いので
+        // 下駄は0でよい。
+        const effectiveActionType = resolveEffectiveActionType(action, streetActions)
+        const letter = ACTION_LETTER[effectiveActionType]
         if (!letter) return []
         const increment = computeIncrement(action, streetActions)
         const potBefore = computePotBefore(action, increment)
@@ -349,7 +409,7 @@ export function derivePostflopLines(
           allIn: action.actionDetails.includes(ActionDetail.ALL_IN),
           increment,
           potBefore,
-          potPercent: isAggressiveAction(action.actionType) && increment !== null && increment > 0 && potBefore !== null
+          potPercent: isAggressiveAction(effectiveActionType) && increment !== null && increment > 0 && potBefore !== null
             ? Math.round((increment / potBefore) * 100)
             : null,
         }]
@@ -368,8 +428,14 @@ export function derivePreflopRaiseTo(
   playerId: number,
   actionsByHandId: Map<number, Action[]>
 ): { chips: number | null, bb: number | null } {
-  const lastAggro = (actionsByHandId.get(hand.id) ?? [])
-    .filter(a => a.playerId === playerId && a.phase === PhaseType.PREFLOP && isAggressiveAction(a.actionType))
+  const preflopActions = (actionsByHandId.get(hand.id) ?? []).filter(a => a.phase === PhaseType.PREFLOP)
+  // ショートオールイン（実質コール）をレイズとして拾わない ――
+  // `resolveEffectiveActionType`参照。プリフロップはブラインドが
+  // `EVT_ACTION`として来ないため、対峙額の下駄にBBを渡す。
+  const bigBlindFallback = isUsableNumber(hand.bigBlind) && hand.bigBlind > 0 ? hand.bigBlind : 0
+  const lastAggro = preflopActions
+    .filter(a => a.playerId === playerId &&
+      isAggressiveAction(resolveEffectiveActionType(a, preflopActions, bigBlindFallback)))
     .sort((a, b) => a.index - b.index)
     .at(-1)
   if (!lastAggro || !isUsableNumber(lastAggro.bet) || lastAggro.bet <= 0) return { chips: null, bb: null }
