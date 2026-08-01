@@ -20,6 +20,14 @@ import { getOperationGeneration, getOperationState, onOperationBecameIdle } from
 import { handleReplayPortMessage, releaseReplayRequestsForPort } from './replay-fetch-bridge'
 import { handleReplayLedgerPortMessage, type ReplayLedgerAuditDeps } from './replay-ledger-audit'
 import {
+  forgetPort,
+  markPortPlayerId,
+  markPortSessionActive,
+  markPortSessionInactive,
+  readPortPlayerId
+} from './replay-port-state'
+import { REPLAY_PORT_AUTH_READY } from '../replay/protocol'
+import {
   drainReplayImportQueue,
   enqueueReplayHandId,
   readReplayImportEnabled,
@@ -211,6 +219,18 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           return Promise.resolve()
         }
 
+        // 認証エンベロープの捕獲通知。繰り延べていた取得を再開する。
+        // 何も保存しないので取り込みキューには載せない。
+        if (typeof message === 'object' && message !== null &&
+          (message as { type?: unknown }).type === REPLAY_PORT_AUTH_READY) {
+          // 取り込みキューの決着を待ってから流す（MUST）。同じポートから直前に
+          // 届いた201/303/308がまだRaw Lakeの書き込み待ちだと、この通知が先に
+          // 決着してセッション状態を古い `inactive` のまま読む。
+          drainReplayImportQueue(createReplayImportDeps(service))
+            .catch(err => console.error('[background] Replay import drain on auth capture failed:', err))
+          return Promise.resolve()
+        }
+
         // 受動取得した台帳（`/replay/list`）の突き合わせ。`apiEvents`へは
         // 書かないので、同じ理由で取り込みキューには載せない。
         if (handleReplayLedgerPortMessage(message, createReplayLedgerAuditDeps(service))) {
@@ -221,7 +241,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // 後ろに連結する。`processEvent`は内部で全エラーを捕捉して素通し
         // させない設計だが、想定外のバグでqueueが壊れて以降のイベントが
         // 永久に詰まることのないよう、キューの継続用チェーンは別途catchする。
-        const task = ingestionQueue.then(() => processEvent(service, message))
+        const task = ingestionQueue.then(() => processEvent(service, message, port))
         ingestionQueue = task.catch(err => {
           console.error('[background] Unhandled ingestion queue error (fail-safe, queue continues):', err)
           captureHandledException(err, {
@@ -237,6 +257,9 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // Keep lastKnownStats for page reloads - only clear interval
         stopPing()
         connectedPorts.delete(port)
+        // 対局中のまま切れたなら、再接続の猶予の間は「全タブがセッション外」を
+        // 成立させない（500msで再接続する設計なので、その隙に撃たないため）。
+        forgetPort(port)
         // 応答が返らないまま切れた依頼を解放する（待ち続けさせない）
         releaseReplayRequestsForPort(port)
       })
@@ -298,9 +321,17 @@ const isExplicitEntryFailure = (message: ApiMessage | { type: string }): boolean
  * 始まっているのに（201/303/308の生書き込みがたまたま失敗しただけで）
  * reloadが「安全」と誤判定されうる。
  */
-const applySessionActivity = (rawApiTypeId: unknown, message: ApiMessage | { type: string }, activeOnly = false): void => {
+const applySessionActivity = (
+  rawApiTypeId: unknown,
+  message: ApiMessage | { type: string },
+  activeOnly = false,
+  port?: chrome.runtime.Port
+): void => {
+  // 畳んだ値（forced update と共有）と、ポートごとの値の両方を進める。
+  // 前者の意味は変えず、後者はリプレイ取得の判定点だけが読む。
   if (!activeOnly && (rawApiTypeId === ApiType.EVT_SESSION_RESULTS || rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID)) {
     markSessionInactive()
+    if (port) markPortSessionInactive(port)
     return
   }
   if (
@@ -308,12 +339,24 @@ const applySessionActivity = (rawApiTypeId: unknown, message: ApiMessage | { typ
     rawApiTypeId === ApiType.EVT_SESSION_DETAILS
   ) {
     markSessionActive()
+    if (port) markPortSessionActive(port)
     return
   }
   if (rawApiTypeId === ApiType.EVT_DEAL) {
     const rawPlayer = (message as { Player?: unknown }).Player
     if (rawPlayer != null) {
       markSessionActive()
+      if (port) {
+        markPortSessionActive(port)
+        // このタブのヒーローが誰かを控える。キューに積んだアカウントと
+        // 一致するポートへだけ取得を依頼するために使う。
+        const seatIndex = (rawPlayer as { SeatIndex?: unknown }).SeatIndex
+        const seatUserIds = (message as { SeatUserIds?: unknown }).SeatUserIds
+        if (typeof seatIndex === 'number' && Array.isArray(seatUserIds)) {
+          const playerId = seatUserIds[seatIndex]
+          if (typeof playerId === 'number' && playerId > 0) markPortPlayerId(port, playerId)
+        }
+      }
     }
   }
 }
@@ -326,7 +369,8 @@ const applySessionActivity = (rawApiTypeId: unknown, message: ApiMessage | { typ
  */
 const processEvent = async (
   service: PokerChaseService,
-  message: ApiMessage | { type: string }
+  message: ApiMessage | { type: string },
+  port?: chrome.runtime.Port
 ): Promise<void> => {
   // Ensure service is ready before processing messages
   try {
@@ -374,7 +418,7 @@ const processEvent = async (
           console.error('[background] Failed to record dropped-event stats:', recordErr)
         )
       }
-      applySessionActivity(rawApiTypeId, message, true)
+      applySessionActivity(rawApiTypeId, message, true, port)
       return
     }
   } else {
@@ -393,7 +437,7 @@ const processEvent = async (
   // parseApiEvent()がnullを返すようになっても、セッション状態が永久に
   // 誤った値のまま詰まらないようにするため（codexレビュー指摘）。
   // 詳細は`applySessionActivity`のコメント参照。
-  applySessionActivity(rawApiTypeId, message)
+  applySessionActivity(rawApiTypeId, message, false, port)
 
   // リプレイ取り込み層（既定OFF）。**セッション中は取得しない**（MUST）ので、
   // ここでやるのは HandId をキューへ積むことだけ。取得はセッション終了の
@@ -405,8 +449,16 @@ const processEvent = async (
   // 依存させない ―― 検証はパイプライン投入の可否だけを決める。
   if (rawApiTypeId === ApiType.EVT_HAND_RESULTS &&
     (message as { Player?: unknown }).Player !== undefined) {
+    // アカウントは**この結果を送ってきたタブ**のものを使う（MUST）。
+    // 全タブ共有の `service.playerId` は最後に処理された EVT_DEAL の
+    // ヒーローなので、複数アカウントのタブを同時に開いていると、Aのハンドへ
+    // Bのidが付く。付け間違えると依頼先もBのタブに決まり、`2302` で
+    // 永久に捨てられる。
     enqueueReplayHandId(
-      createReplayImportDeps(service),
+      {
+        ...createReplayImportDeps(service),
+        ...port ? { getPlayerId: () => readPortPlayerId(port) ?? service.playerId } : {}
+      },
       (message as { HandId?: unknown }).HandId,
       Date.now()
     ).catch(err => console.error('[background] Replay import enqueue failed:', err))

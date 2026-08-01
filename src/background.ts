@@ -17,6 +17,9 @@ import { registerStreamSubscriptions } from './background/ports'
 import { createReplayLedgerAuditDeps, registerEventIngestion } from './background/event-ingestion'
 import { exposeReplayFetchForDevtools } from './background/replay-fetch-bridge'
 import { resumePendingReplayLedgerAudits } from './background/replay-ledger-audit'
+import { backfillReplayDetailsFromLake } from './background/replay-import'
+import { enqueuePendingStorageWrite } from './background/pending-storage-writes'
+import { isOperationIdle } from './background/operation-state'
 import { registerMessageRouter } from './background/message-router'
 import { checkOnUpdate } from './background/rebuild-advisory'
 import { initUpdateManager } from './background/update-manager'
@@ -201,6 +204,20 @@ exposeReplayFetchForDevtools()
  * 保留が無ければ`meta`を1件読むだけで終わる。
  */
 void resumePendingReplayLedgerAudits(createReplayLedgerAuditDeps(service))
+
+/**
+ * v7より前に取り込んだ 90001（別端末がクラウド経由で送ったもの）を索引へ
+ * 流し込む。目印が残っていれば1件も読まない。
+ */
+void service.ready
+  // 全データ削除と直列化する。共通FIFOに載せることで reload commit point が
+  // 待ち、`isOperationIdle()` で「削除の最中に走り出さない」を担保する
+  // （走査の途中で `db.delete()` が完了すると、続く書き込みがDBを作り直す）。
+  .then(() => enqueuePendingStorageWrite(async () => {
+    if (!isOperationIdle()) return 0
+    return backfillReplayDetailsFromLake(db)
+  }))
+  .catch(err => console.error('[background] Replay details backfill failed:', err))
 
 /**
  * Forced update（sola承認）: 安全な瞬間にダウンロード済み更新を自動適用する。

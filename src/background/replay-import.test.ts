@@ -3,8 +3,10 @@ import { PokerChaseDB } from '../db/poker-chase-db'
 import { ApiType } from '../types/api'
 import type { ReplayFetchItemResult } from '../replay/protocol'
 import {
+  REPLAY_DETAILS_BACKFILL_META_ID,
   REPLAY_IMPORT_QUEUE_META_ID,
   REPLAY_IMPORT_STATUS_META_ID,
+  backfillReplayDetailsFromLake,
   __resetReplayImportForTests,
   drainReplayImportQueue,
   enqueueReplayHandId,
@@ -19,6 +21,9 @@ import {
   markSessionActive,
   markSessionInactive
 } from './update-manager'
+
+/** テスト用のダミーポート（依頼先の同一性だけを見る）。 */
+const FAKE_PORT = { name: 'test-port' } as unknown as chrome.runtime.Port
 
 /** 2026-08-01 12:00 JST 相当。暦日の窓の基準に使う。 */
 const NOW = Date.UTC(2026, 7, 1, 3, 0, 0)
@@ -53,6 +58,10 @@ describe('replay import layer', () => {
       fetchCalls.push(handIds)
       return fetchImpl(handIds)
     },
+    // 既定は「接続中の全タブがセッション外」「依頼先はこの1つ」。
+    // ポート由来の判定はそれ自体を検証するテストで差し替える。
+    allPortsInactive: () => true,
+    resolvePort: () => FAKE_PORT,
     startKeepAlive: async () => {
       keepAliveStarts += 1
       return () => { keepAliveStops += 1 }
@@ -109,6 +118,29 @@ describe('replay import layer', () => {
       expect(fetchCalls).toEqual([[1001], [1002], [1003]])
       expect(await db.replayDetails.count()).toBe(3)
       expect(await readReplayImportQueue(db)).toEqual([])
+    })
+
+    /**
+     * Codexレビュー指摘（P1）: 畳んだ `sessionActivity` は最後に届いた
+     * イベントしか表さないので、タブAで対局中でもタブBの309で `inactive` へ
+     * 倒れる。取得側は**接続中の全タブがセッション外**であることを要求する。
+     */
+    test('別タブが対局中なら、こちらのタブが終了しても撃たない', async () => {
+      let otherTabInactive = false
+      const deps = depsOf({ allPortsInactive: () => otherTabInactive })
+      markSessionActive()
+      await enqueueReplayHandId(deps, 1250, NOW)
+      // このタブは309を受けた（畳んだ値は inactive）が、別タブはまだ対局中
+      markSessionInactive()
+
+      await drainReplayImportQueue(deps)
+      expect(fetchCalls).toEqual([])
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1250])
+
+      // 別タブも終わって初めて流れる
+      otherTabInactive = true
+      await drainReplayImportQueue(deps)
+      expect(fetchCalls).toEqual([[1250]])
     })
 
     // SWはいつでも落ちうるので、再起動直後の`unknown`は「セッション中かも
@@ -484,6 +516,38 @@ describe('replay import layer', () => {
     })
   })
 
+  // Codexレビュー指摘: v7より前に取り込んだ90001（別端末がクラウド経由で
+  // 送ったもの）は、バージョン移行が空のストアを作るだけなので索引に入らない。
+  describe('既存90001の索引化（起動時の掃き出し）', () => {
+    test('Lakeに在る90001を索引へ流し込み、目印を残して二度は走らない', async () => {
+      await db.apiEvents.bulkAdd([
+        { timestamp: NOW, ApiTypeId: ApiType.REPLAY_HAND_DETAIL, sequence: 0, HandId: 3100, payload: { a: 1 }, fetchedAt: NOW },
+        { timestamp: NOW + 1, ApiTypeId: ApiType.EVT_HAND_RESULTS, sequence: 0, HandId: 3101 }
+      ] as any)
+
+      expect(await backfillReplayDetailsFromLake(db)).toBe(1)
+      expect(await db.replayDetails.get(3100)).toMatchObject({ handId: 3100 })
+      expect(await db.meta.get(REPLAY_DETAILS_BACKFILL_META_ID)).toBeDefined()
+
+      // 2回目は目印を見て即座に返る（新しい行を足しても走らない）
+      await db.apiEvents.add({
+        timestamp: NOW + 2, ApiTypeId: ApiType.REPLAY_HAND_DETAIL, sequence: 0, HandId: 3102, payload: { a: 2 }, fetchedAt: NOW
+      } as any)
+      expect(await backfillReplayDetailsFromLake(db)).toBe(0)
+      expect(await db.replayDetails.get(3102)).toBeUndefined()
+    })
+
+    test('資格情報が混じっていても索引には落として入れる', async () => {
+      await db.apiEvents.add({
+        timestamp: NOW, ApiTypeId: ApiType.REPLAY_HAND_DETAIL, sequence: 0,
+        HandId: 3200, payload: { session: 'leaked-in-lake', Player: { UserId: 1 } }, fetchedAt: NOW
+      } as any)
+
+      await backfillReplayDetailsFromLake(db)
+      expect(JSON.stringify(await db.replayDetails.get(3200))).not.toContain('leaked-in-lake')
+    })
+  })
+
   describe('キューの永続化', () => {
     test('キューは meta に載り、Service Worker再起動をまたいで残る', async () => {
       const deps = depsOf()
@@ -541,20 +605,53 @@ describe('replay import layer', () => {
 
     // Codexレビュー指摘: 繰り延べ中に別アカウントへログインすると、旧アカウントの
     // HandIdが新しい資格情報で2302になり、再試行不能として永久に捨てられる。
-    test('積んだアカウントと違うアカウントでは撃たずに持ち越す', async () => {
-      let currentPlayer: number | undefined = 111
-      const deps = depsOf({ getPlayerId: () => currentPlayer })
+    // Codexレビュー指摘: 依頼先の無いエントリで間隔を消費すると、先頭に
+    // 未接続アカウントが並んでいるだけで、実際に撃てる1件まで延々待たされる。
+    test('依頼先の無いエントリでは間隔を消費しない', async () => {
+      const reachable = { name: 'reachable' } as unknown as chrome.runtime.Port
+      const deps = depsOf({
+        intervalMs: 5_000,
+        resolvePort: playerId => playerId === 777 ? reachable : undefined
+      })
+      markSessionActive()
+      // 撃てない3件が先に並び、最後の1件だけが撃てる
+      for (const handId of [3001, 3002, 3003]) {
+        await enqueueReplayHandId({ ...deps, getPlayerId: () => 555 }, handId, NOW)
+      }
+      await enqueueReplayHandId({ ...deps, getPlayerId: () => 777 }, 3004, NOW)
+      markSessionInactive()
+
+      const startedAt = Date.now()
+      await drainReplayImportQueue(deps)
+      // 5秒の間隔を1度も挟まずに、撃てる1件へ到達している
+      expect(Date.now() - startedAt).toBeLessThan(2_000)
+      expect(fetchCalls).toEqual([[3004]])
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId))
+        .toEqual([3001, 3002, 3003])
+    })
+
+    // Codexレビュー指摘: 実際の依頼先はポートで決まる。積んだアカウントを
+    // 観測していないタブへ投げると2302が返り、再試行不能として永久に捨てる。
+    test('積んだアカウントのタブが無ければ撃たずに持ち越す', async () => {
+      const portFor111 = { name: 'tab-111' } as unknown as chrome.runtime.Port
+      let connectedAccount = 111
+      const deps = depsOf({
+        getPlayerId: () => 111,
+        resolvePort: playerId =>
+          playerId === connectedAccount ? portFor111 : undefined
+      })
       markSessionActive()
       await enqueueReplayHandId(deps, 2800, NOW)
       markSessionInactive()
 
-      currentPlayer = 222
+      // 別アカウントのタブしか繋がっていない
+      connectedAccount = 222
       await drainReplayImportQueue(deps)
       expect(fetchCalls).toEqual([])
       expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([2800])
 
-      // 元のアカウントへ戻れば取得する
-      currentPlayer = 111
+      // 元のアカウントで繋ぎ直せば流れる
+      connectedAccount = 111
       await drainReplayImportQueue(deps)
       expect(fetchCalls).toEqual([[2800]])
     })
