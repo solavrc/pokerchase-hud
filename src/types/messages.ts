@@ -76,6 +76,8 @@ export const MESSAGE_ACTIONS = {
   APPLY_PENDING_UPDATE: 'applyPendingUpdate',
   // What's New (per-version release notes)
   ACKNOWLEDGE_WHATS_NEW: 'acknowledgeWhatsNew',
+  // Experimental replay fetch (dev-only entry point)
+  EXPERIMENTAL_REPLAY_FETCH: 'experimentalReplayFetch',
 } as const
 
 // Import/Export related messages
@@ -253,6 +255,15 @@ export interface UpdateHandLogLayoutMessage {
  */
 export interface ResetUILayoutMessage {
   action: 'resetUILayout'
+}
+
+/**
+ * 開発用。接続中のゲームタブへ `/replay/detail` の取得を依頼する。
+ * 既定OFFの実験機能で、取り込み層（別PR）が入るまでの唯一の起動口。
+ */
+export interface ExperimentalReplayFetchMessage {
+  action: 'experimentalReplayFetch'
+  handIds: number[]
 }
 
 export interface SetSyncedUIConfigMessage {
@@ -474,7 +485,22 @@ export interface DeviceHandLogLayoutResponse extends SuccessResponse {
   layout?: HandLogLayout
 }
 
-export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse | RecentHandsResponse | UndecodedEventStatsResponse | ApplyUpdateResponse | DeviceUILayoutResponse | DeviceHandLogLayoutResponse
+/**
+ * 開発用リプレイ取得の応答。既存の判別可能ユニオンを壊さないよう、
+ * `success: false` 側は `ErrorResponse` と同じ形（`error`は必須）にする。
+ * `results` はページ側がsanitize済みの結果配列。
+ */
+export type ExperimentalReplayFetchResponse =
+  | {
+      success: true
+      results: Array<
+        | { handId: number, ok: true, detail: unknown }
+        | { handId: number, ok: false, error: string, retryable: boolean }
+      >
+    }
+  | { success: false, error: string }
+
+export type MessageResponse = ExperimentalReplayFetchResponse | SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse | RecentHandsResponse | UndecodedEventStatsResponse | ApplyUpdateResponse | DeviceUILayoutResponse | DeviceHandLogLayoutResponse
 
 // Union type of all possible messages
 export type ChromeMessage =
@@ -505,6 +531,7 @@ export type ChromeMessage =
   | ResetDeviceUILayoutMessage
   | UpdateHandLogLayoutMessage
   | ResetUILayoutMessage
+  | ExperimentalReplayFetchMessage
   | SetSyncedUIConfigMessage
   | PatchSyncedUIConfigMessage
   | FirebaseAuthStatusMessage

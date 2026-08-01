@@ -17,6 +17,7 @@ import { resolveAdvisory } from './rebuild-advisory'
 import { getUndecodedEventStats, resetUndecodedEventStats } from './undecoded-event-tracker'
 import { applyUpdateNow } from './update-manager'
 import { acknowledgeWhatsNew } from './whats-new-badge'
+import { requestReplayDetails } from './replay-fetch-bridge'
 import {
   HAND_LOG_LAYOUT_STORAGE_KEY,
   HUD_POSITION_STORAGE_KEYS,
@@ -514,6 +515,16 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
           })
         }
       )
+      return true
+    } else if (request.action === 'experimentalReplayFetch') {
+      // 開発用。取り込み層（別PR）が入るまでの唯一の起動口で、保存はしない。
+      // Service WorkerのDevToolsから叩いて取得層を単体検証するためのもの。
+      requestReplayDetails(request.handIds)
+        .then(outcome => sendResponse(outcome))
+        .catch(error => sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : String(error)
+        }))
       return true
     } else if (request.action === 'exportData') {
       // Block concurrent operations

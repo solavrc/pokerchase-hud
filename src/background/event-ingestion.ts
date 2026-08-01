@@ -17,6 +17,7 @@ import {
 import { markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
 import { getOperationState } from './operation-state'
+import { handleReplayPortMessage, releaseReplayRequestsForPort } from './replay-fetch-bridge'
 import {
   captureHandledException,
   captureSchemaValidationFailure
@@ -130,6 +131,12 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           return Promise.resolve()
         }
 
+        // 実験的リプレイ取得の応答。何も保存しないので取り込みキューには
+        // 載せない（載せるとライブイベントを待たせるだけになる）。
+        if (handleReplayPortMessage(message, port)) {
+          return Promise.resolve()
+        }
+
         // このイベントの処理を、直前のイベントの処理（add()の決着含む）の
         // 後ろに連結する。`processEvent`は内部で全エラーを捕捉して素通し
         // させない設計だが、想定外のバグでqueueが壊れて以降のイベントが
@@ -150,6 +157,8 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // Keep lastKnownStats for page reloads - only clear interval
         stopPing()
         connectedPorts.delete(port)
+        // 応答が返らないまま切れた依頼を解放する（待ち続けさせない）
+        releaseReplayRequestsForPort(port)
       })
     }
   })

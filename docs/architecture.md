@@ -218,3 +218,53 @@ await db.actions.where('[playerId+phase]')
 - [Dexie.js Indexing Best Practices](https://dexie.org/docs/Indexing)
 - [Firebase Firestore Pricing](https://firebase.google.com/pricing)
 - [Chrome Extension Manifest V3](https://developer.chrome.com/docs/extensions/mv3/)
+
+## 6. 試験機能: リプレイ詳細の取得層
+
+`experimentalReplayImportEnabled` を `chrome.storage.sync` で `true` にした
+開発ビルドだけが有効化する、既定OFFの検証機能。**この段階では取得のみで、
+保存も自動化も行わない**（セッション境界を見て自動で取りに行く取り込み層は
+別途）。目的は「`/replay/detail` から何がどこまで取得できるか」を、
+スキーマ変更を伴わずに実データで確かめること。
+
+ページ自身の通常API通信（fetch / XMLHttpRequest）をmain worldで傍受して
+認証エンベロープ（`session` / `platform` / `appVer` / `dataVer` /
+`masterVer`）を得る。新しいhost permissionは追加しない。エンベロープは
+main world のクロージャ内だけに保持し、content script へ渡す前に
+レスポンスから `session` / `requestKey` を再帰的に除去する
+（`sanitizeReplayDetail`）。
+
+フラグを `storage.local` ではなく `storage.sync` に置いているのは、
+`firebase-auth-service` が起動時に `setAccessLevel('TRUSTED_CONTEXTS')` で
+local を content script から遮断しているため（#274）。local に置くと
+content script 側の読み取りが必ず失敗し、機能が永久にOFFのまま固定される。
+
+取得は1件ずつ逐次で、1件あたり15秒でタイムアウトする。1リクエストの
+HandId は最大100件。
+
+起動口は開発用の `experimentalReplayFetch` メッセージのみ
+（`background/replay-fetch-bridge.ts`）。取り込み層が入ればそちらが
+依頼主体になるので、このモジュールは役目を終える。
+
+開発時の使い方:
+
+```javascript
+// 1. Service WorkerのDevToolsで有効化し、ゲームタブを再読み込みする
+await chrome.storage.sync.set({ experimentalReplayImportEnabled: true })
+
+// 2. ページが通常API通信を1回すればエンベロープが捕まる。その後:
+await chrome.runtime.sendMessage({
+  action: 'experimentalReplayFetch',
+  handIds: [258411144, 258411368]
+})
+```
+
+応答は `{ success: true, results: [...] }`。各要素は
+`{ handId, ok: true, detail }` か `{ handId, ok: false, error, retryable }`。
+`detail` は sanitize 済みで、資格情報は含まれない。無効化は同じキーを
+`false` に戻す（同期設定なので他端末にも伝播する）。
+
+既定OFF、権限追加なし、ユーザー操作中のゲーム通信を起点とする設計は
+Chrome Web Store審査上の説明可能性を高めるが、提出前にはプライバシー
+ポリシーとデータ利用開示へこの試験機能を明記し、実際の審査結果を別途
+確認する必要がある。

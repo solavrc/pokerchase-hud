@@ -21,6 +21,18 @@ import type { AllPlayersRealTimeStats } from './realtime-stats/realtime-stats-se
 import { setPendingStats } from './utils/pending-stats-cache'
 import { RuntimePortManager } from './utils/runtime-port-manager'
 import { captureHandledException, initSentry } from './observability/sentry'
+import {
+  EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY,
+  REPLAY_BRIDGE_CONFIG,
+  REPLAY_BRIDGE_FETCH,
+  REPLAY_BRIDGE_RESULT,
+  REPLAY_FETCH_BATCH_LIMIT,
+  REPLAY_PORT_FETCH,
+  REPLAY_PORT_RESULT,
+  isPositiveHandId,
+  type ReplayFetchRequest,
+  type ReplayFetchResult
+} from './replay/protocol'
 /** !!! BACKGROUND、WEB_ACCESSIBLE_RESOURCES からインポートしないこと !!! */
 
 initSentry('content_script')
@@ -32,6 +44,47 @@ const KEEPALIVE_INTERVAL_MS = 25000 // 25秒（30秒タイムアウトより少�
 // ゲーム状態の管理
 let isGameActive = false
 let keepaliveTimer: ReturnType<typeof setInterval> | null = null
+let replayBridgeReady = false
+let replayImportEnabled = false
+const pendingReplayRequests: ReplayFetchRequest[] = []
+
+const postReplayConfig = () => {
+  if (!replayBridgeReady) return
+  window.postMessage({ type: REPLAY_BRIDGE_CONFIG, enabled: replayImportEnabled }, POKER_CHASE_ORIGIN)
+}
+
+const postReplayRequest = (message: ReplayFetchRequest) => {
+  if (!replayBridgeReady || !replayImportEnabled) {
+    pendingReplayRequests.push(message)
+    return
+  }
+  window.postMessage({ ...message, type: REPLAY_BRIDGE_FETCH }, POKER_CHASE_ORIGIN)
+}
+
+const flushPendingReplayRequests = () => {
+  if (!replayBridgeReady || !replayImportEnabled) return
+  for (const message of pendingReplayRequests.splice(0)) postReplayRequest(message)
+}
+
+// storage.local ではなく storage.sync に置く。localは
+// firebase-auth-service が起動時に setAccessLevel('TRUSTED_CONTEXTS') で
+// content script から遮断しており（#274、e2e/scenarios/auth-storage-access.ts
+// が実ブラウザでassert済み）、ここからの get は必ず reject される。
+// onChanged も同じゲートで untrusted context には配送されない。
+chrome.storage.sync.get(EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY).then(stored => {
+  replayImportEnabled = stored[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY] === true
+  postReplayConfig()
+  flushPendingReplayRequests()
+}).catch(() => undefined)
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  const change = changes[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY]
+  if (areaName !== 'sync' || !change) return
+  replayImportEnabled = change.newValue === true
+  postReplayConfig()
+  if (replayImportEnabled) flushPendingReplayRequests()
+  else pendingReplayRequests.splice(0)
+})
 
 export interface StatsData {
   stats: PlayerStats[]
@@ -83,6 +136,15 @@ const portManager = new RuntimePortManager({
   },
   onDisconnected: stopKeepalive,
   onMessage: message => {
+    if (typeof message === 'object' && message !== null &&
+      'type' in message && message.type === REPLAY_PORT_FETCH) {
+      const request = message as Partial<ReplayFetchRequest>
+      if (typeof request.requestId === 'string' && Array.isArray(request.handIds) &&
+        request.handIds.length <= REPLAY_FETCH_BATCH_LIMIT && request.handIds.every(isPositiveHandId)) {
+        postReplayRequest(request as ReplayFetchRequest)
+      }
+      return
+    }
     if (typeof message === 'object' && message !== null && 'stats' in message) {
       const statsMessage = message as {
         stats: PlayerStats[]
@@ -135,6 +197,17 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   ) {
     if (!portManager.send(event.data.payload)) {
       stopKeepalive()
+    }
+    return
+  }
+
+  // The main-world bridge removes transport credentials before this message
+  // crosses into the extension's isolated world.
+  if ('type' in event.data && event.data.type === REPLAY_BRIDGE_RESULT) {
+    const result = event.data as Partial<ReplayFetchResult>
+    if (typeof result.requestId === 'string' && Array.isArray(result.results) &&
+      result.results.length <= REPLAY_FETCH_BATCH_LIMIT) {
+      portManager.send({ ...result, type: REPLAY_PORT_RESULT })
     }
     return
   }
@@ -427,6 +500,11 @@ const injectWebSocketHook = () => {
   const script = document.createElement('script')
   script.type = 'text/javascript'
   script.src = chrome.runtime.getURL(firstResource.resources[0])
+  script.addEventListener('load', () => {
+    replayBridgeReady = true
+    postReplayConfig()
+    flushPendingReplayRequests()
+  })
   document.body?.appendChild(script)
 }
 injectWebSocketHook()
