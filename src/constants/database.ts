@@ -97,9 +97,20 @@ export type DbOperationType = 'import' | 'export' | 'sync' | 'rebuild'
  * WWSF/W$SD/RIVER_CALL_WONなど既存handの勝者依存統計を修復するため、
  * Raw Event Lakeからの再構築が必要。
  *
+ * version 7: 書き込み時の導出を2点修正（1回の再構築でまとめて反映）。
+ * (a) アクションのストリート帰属を`EVT_DEAL_ROUND`駆動のカウンタから
+ * `EVT_ACTION.Progress.Phase`（ハンド終了行 `NextActionSeat=-2` は
+ * `Phase`が3固定のため除外）へ変更（#340）。実測40,932ハンド中29ハンド・
+ * 63アクションの`Action.phase`が変わり、AF/AFq・3bet判定・フェーズ別
+ * ドリルダウンに効く。(b) Ringのハンド中リバイイン／アドオンによる
+ * チップ流入を、ハンド内スナップショットから復元して保存則から除外
+ * （#339）。実測160ハンドの`winningPlayerIds`が空から実勝者へ戻り、
+ * WWSF/WWSFa/W$SD/RCAの分子と`playerChipAccounting`が修復される。
+ * いずれも既存handの再導出が必要。
+ *
  * インクリメントすると、拡張機能の更新後に既存ユーザーへ一度だけ
  * 「データ再構築」の実行を促すアドバイソリーが表示される
  * （`src/background/rebuild-advisory.ts`参照）。単なるUI変更やバグ修正でも
  * 書き込み時の導出結果に影響しないものはバンプ不要。
  */
-export const REBUILD_ADVISORY_VERSION = 6
+export const REBUILD_ADVISORY_VERSION = 7
