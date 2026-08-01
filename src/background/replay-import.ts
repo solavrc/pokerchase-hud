@@ -50,6 +50,7 @@ import { isWithinReplayWindow } from '../replay/window'
 import { sanitizeReplayDetail } from '../replay/protocol'
 import { requestReplayDetails } from './replay-fetch-bridge'
 import { startKeepAlive } from './service-worker-keepalive'
+import { enqueuePendingStorageWrite } from './pending-storage-writes'
 import { getSessionActivity } from './update-manager'
 
 export const REPLAY_IMPORT_QUEUE_META_ID = 'replayImportQueue'
@@ -106,8 +107,32 @@ const EMPTY_STATUS: ReplayImportStatus = {
 /** キュー操作の直列化（read-modify-writeが互いを巻き戻さないように）。 */
 let queueMutation: Promise<void> = Promise.resolve()
 
+/**
+ * DBへの書き込みを、reload前のドレイン対象（共通FIFO）に載せたうえで、
+ * **書き込みの直前に**長時間操作の有無を同期的に確かめてから実行する。
+ *
+ * 二重の理由がある:
+ * - `deleteAllData()` はこのドレインを待たずに `db.delete()` する。判定と
+ *   書き込みの間にawaitがあると、その隙に削除が完了して、続く書き込みが
+ *   消えたDBを作り直す。await境界ごとに点検を足すのではなく、**書き込みの
+ *   直前**という1点に寄せる
+ * - forced update の reload commit point はこのFIFOを待つので、書き込みの
+ *   途中で `chrome.runtime.reload()` されない
+ */
+const guardedWrite = <T>(
+  deps: ReplayImportDeps,
+  write: () => Promise<T>
+): Promise<T | undefined> =>
+  enqueuePendingStorageWrite(async () => {
+    if (deps.isBusy?.()) return undefined
+    return write()
+  })
+
 /** 取得の直列化。並行に走らせると間隔制御が壊れる。 */
 let drainInFlight: Promise<void> | undefined
+
+/** 実行中のドレインの後ろに1周だけ予約されているか。 */
+let drainRerunRequested = false
 
 export interface ReplayImportDeps {
   db: PokerChaseDB
@@ -367,7 +392,24 @@ export const projectReplayDetailEvents = async (
  * - 認証エンベロープ不在などの再試行可能: キューへ残し、次の機会に回す
  */
 export const drainReplayImportQueue = async (deps: ReplayImportDeps): Promise<void> => {
-  if (drainInFlight) return drainInFlight
+  // 実行中のドレインに**相乗りさせない**（MUST）。相乗りさせると、既に
+  // 中断へ向かっているドレインをそのまま返すだけになり、その契機
+  // （操作の終了・ポート接続・セッション終了）が消費されて再開しない。
+  // 代わりに「もう1周だけ」を予約する。予約は多重化しない ―― 何周も
+  // 積む必要は無く、最後の1周が最新のキューを見る。
+  if (drainInFlight) {
+    if (!drainRerunRequested) {
+      drainRerunRequested = true
+      drainInFlight = drainInFlight
+        .catch(() => undefined)
+        .then(() => {
+          drainRerunRequested = false
+          return withKeepAlive(deps, () => drainOnce(deps))
+        })
+        .finally(() => { drainInFlight = undefined })
+    }
+    return drainInFlight
+  }
   const run = withKeepAlive(deps, () => drainOnce(deps))
     .finally(() => { drainInFlight = undefined })
   drainInFlight = run
@@ -505,7 +547,14 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
     // 応答が返らなかった（ポート切断・期限切れなど）ものは持ち越す。
     if (!result || result.handId !== entry.handId) continue
     if (result.ok) {
-      if (await storeReplayDetail(deps.db, entry.handId, result.detail, deps.now())) storedCount += 1
+      const wrote = await guardedWrite(deps, () =>
+        storeReplayDetail(deps.db, entry.handId, result.detail, deps.now()))
+      if (wrote === undefined) {
+        // 書き込みの直前に長時間操作が始まった。保存も決着もせず持ち越す。
+        aborted = true
+        break
+      }
+      if (wrote) storedCount += 1
       settled.add(entry.handId)
       continue
     }
@@ -529,11 +578,22 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
     if (!result.retryable) settled.add(entry.handId)
   }
 
+  // **長時間操作で中断したときは `meta` にも書かない**（MUST）。`break` が
+  // 抜けるのは `for` だけなので、そのまま進むと削除の最中に `updateQueue()` /
+  // `updateStatus()` が書き込みへ行く。`deleteAllData()` はこのドレインを
+  // 待たないため、`db.delete()` と競合してDexieがDBを作り直しうる。
+  // 中断時に落とすのは「この周回で分かったこと」だけで、キューの内容は
+  // 触っていないので次の機会にそのまま再開できる。
+  if (aborted && deps.isBusy?.()) {
+    console.info('[replay-import] 長時間操作の開始により中断しました（キューはそのまま）')
+    return
+  }
+
   const deferred = queued.filter(entry => !settled.has(entry.handId)).length
-  await updateQueue(deps.db, deps.now(), current =>
+  await guardedWrite(deps, () => updateQueue(deps.db, deps.now(), current =>
     current.filter(entry => !settled.has(entry.handId))
-  )
-  await updateStatus(deps.db, deps.now(), current => ({
+  ))
+  await guardedWrite(deps, () => updateStatus(deps.db, deps.now(), current => ({
     ...current,
     lastRunAt: deps.now(),
     stored: current.stored + storedCount,
@@ -542,7 +602,7 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
     droppedBeforeRequest: current.droppedBeforeRequest + droppedBeforeRequest,
     deferred,
     ...lastError ? { lastError } : {}
-  }))
+  })))
 
   if (storedCount > 0 || expired > 0 || notFound > 0 || aborted) {
     console.info(
@@ -576,4 +636,5 @@ export const readReplayImportEnabled = async (): Promise<boolean> => {
 export const __resetReplayImportForTests = (): void => {
   queueMutation = Promise.resolve()
   drainInFlight = undefined
+  drainRerunRequested = false
 }
