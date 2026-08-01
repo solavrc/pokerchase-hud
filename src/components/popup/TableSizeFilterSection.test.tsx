@@ -128,4 +128,27 @@ describe('TableSizeFilterSection のポインタ操作', () => {
     expect(first).toBeGreaterThanOrEqual(0)
     expect(selected.slice(first, last + 1).every(Boolean)).toBe(true)
   })
+
+  it('各つまみが人数ではなく層の名称を読み上げる', () => {
+    // aria-valuenow は 1〜4 のスライダー内部値でしかない。層ごとの
+    // チェックボックスだった頃はカテゴリ名を読めていたので、名称を出さないと
+    // アクセシビリティの後退になる。valueLabelFormat は視覚的なツールチップ
+    // だけを整形するため、ここは賄えない。
+    render(<Harness initial={{ hu: true, '3p': true, '4p': false, full: false }} />)
+
+    const lower = screen.getByRole('slider', { name: 'テーブル人数の下限' })
+    const upper = screen.getByRole('slider', { name: 'テーブル人数の上限' })
+
+    expect(lower).toHaveAttribute('aria-valuetext', 'HU (2人)')
+    expect(upper).toHaveAttribute('aria-valuetext', '3人')
+  })
+
+  it('全層を選んだときも両端の層名称を読み上げる', () => {
+    render(<Harness initial={{ hu: true, '3p': true, '4p': true, full: true }} />)
+
+    expect(screen.getByRole('slider', { name: 'テーブル人数の下限' }))
+      .toHaveAttribute('aria-valuetext', 'HU (2人)')
+    expect(screen.getByRole('slider', { name: 'テーブル人数の上限' }))
+      .toHaveAttribute('aria-valuetext', 'フル')
+  })
 })

@@ -63,6 +63,11 @@ export const TableSizeFilterSection = ({
           value={range}
           onChange={handleTableSizeFilterChange}
           getAriaLabel={(index) => (index === 0 ? 'テーブル人数の下限' : 'テーブル人数の上限')}
+          // valueLabelFormat は視覚的なツールチップだけを整形するので、これが
+          // 無いとスクリーンリーダーには aria-valuenow の 1〜4 しか届かず、
+          // どの層を指しているのか判別できない。層ごとのチェックボックス
+          // だった頃はカテゴリ名を読めていたので、無いと後退になる。
+          getAriaValueText={(value) => VALUE_LABELS[value] ?? String(value)}
           valueLabelDisplay="auto"
           valueLabelFormat={(value) => VALUE_LABELS[value] ?? String(value)}
           step={1}
