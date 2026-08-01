@@ -139,8 +139,16 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
     pendingReads.forEach(read => read())
   }
 
+  /**
+   * `operation` signals completion by invoking its callback. It MAY pass an
+   * error explicitly; otherwise `chrome.runtime.lastError` is read at that
+   * moment. The explicit form exists for multi-write operations that must
+   * publish their own state before reporting: any chrome API call in between
+   * (a broadcast, a follow-up write) overwrites `lastError`, so an operation
+   * that does more than one thing has to carry its own error forward.
+   */
   const enqueueHandLogLayoutWrite = (
-    operation: (callback: () => void) => void,
+    operation: (callback: (explicitError?: chrome.runtime.LastError) => void) => void,
     sendResponse: (response: MessageResponse) => void,
     failureMessage: string,
     afterSuccessfulWrite?: (complete: () => void) => void
@@ -151,8 +159,8 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
 
     void enqueuePendingStorageWrite(() =>
       new Promise<chrome.runtime.LastError | undefined>((resolve) => {
-        operation(() => {
-          const error = chrome.runtime.lastError
+        operation((explicitError) => {
+          const error = explicitError ?? chrome.runtime.lastError
           if (error || !afterSuccessfulWrite) {
             resolve(error)
             return
@@ -482,37 +490,53 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       // 世代を上げるのは、この時点で読み込み中の移行（古い世代を掴んでいる）に
       // 書き戻させないため。
       deviceScaleWriteGeneration += 1
+      // chrome.storageにremoveとsetをまとめて行う原子的な操作はない。到達
+      // できるのは「成功したぶんは必ずタブへ配信し、storageと開いているタブが
+      // 食い違わない」状態まで。操作全体は冪等なので、失敗を返せばユーザーの
+      // 再実行で残りが揃う。
+      // 倍率はresetUILayoutとは別経路で反映する。ゲームタブ側の倍率は
+      // App.tsxがuiConfig.scaleとして持っており、既存のscale配信
+      // （updateDeviceUIScale）がその唯一の更新経路だから。
+      // resetUILayoutにscaleを相乗りさせると、HandLog/useDraggableの
+      // リセットとscale更新が1つのメッセージに同居して責務が混ざる。
       enqueueHandLogLayoutWrite(
         callback => chrome.storage.local.remove(
           [HAND_LOG_LAYOUT_STORAGE_KEY, ...HUD_POSITION_STORAGE_KEYS],
           () => {
-            // removeが失敗したらlastErrorが立っている間に抜ける。
-            // 続けてsetを呼ぶとlastErrorが上書きされ、失敗が成功に見える。
-            if (chrome.runtime.lastError) {
-              callback()
+            // removeが失敗したときは何も書けていないので、配信もせずに抜ける。
+            const removeError = chrome.runtime.lastError
+            if (removeError) {
+              callback(removeError)
               return
             }
             chrome.storage.local.set(
               { [UI_SCALE_STORAGE_KEY]: DEFAULT_UI_CONFIG.scale },
-              callback
+              () => {
+                // 以降はchrome APIを呼ぶたびlastErrorが上書きされるので、
+                // ここで捕まえてcallbackへ明示的に渡す。
+                const scaleError = chrome.runtime.lastError
+                // 配置の削除はもう永続化されている。倍率の書き込みが失敗した
+                // 場合でも配置のリセットだけは配信する。配信しないと、storage
+                // は既定なのに開いているタブは古い配置のまま、という食い違いが
+                // 次のリロードまで残るため。
+                broadcastToGameTabs({ action: 'resetUILayout' }, () => {
+                  if (scaleError) {
+                    callback(scaleError)
+                    return
+                  }
+                  broadcastToGameTabs({
+                    action: 'updateDeviceUIScale',
+                    scale: DEFAULT_UI_CONFIG.scale,
+                  }, () => callback())
+                })
+              }
             )
           }
         ),
         sendResponse,
-        'Failed to reset UI layout',
-        complete => {
-          // 倍率はresetUILayoutとは別経路で反映する。ゲームタブ側の倍率は
-          // App.tsxがuiConfig.scaleとして持っており、既存のscale配信
-          // （updateDeviceUIScale）がその唯一の更新経路だから。
-          // resetUILayoutにscaleを相乗りさせると、HandLog/useDraggableの
-          // リセットとscale更新が1つのメッセージに同居して責務が混ざる。
-          broadcastToGameTabs({ action: 'resetUILayout' }, () => {
-            broadcastToGameTabs({
-              action: 'updateDeviceUIScale',
-              scale: DEFAULT_UI_CONFIG.scale,
-            }, complete)
-          })
-        }
+        'Failed to reset UI layout'
+        // afterSuccessfulWriteは使わない。この操作は部分的な成功も配信する
+        // 必要があり、成功時だけ呼ばれるフックでは表現できない。
       )
       return true
     } else if (request.action === 'exportData') {

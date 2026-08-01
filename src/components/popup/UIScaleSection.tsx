@@ -180,6 +180,11 @@ export const UIScaleSection = ({
           variant="text"
           title="HUDパネルとハンドログの位置・サイズ・倍率を既定へ戻す"
           onClick={() => {
+            // Take the id at click time, like updateLocalScale does. Issuing it
+            // on completion instead would stamp the reset as newer than a +/-
+            // clicked while it was still in flight, and that later scale would
+            // be discarded by the stale check even though it persisted.
+            const requestId = ++nextScaleRequestIdRef.current
             // Persistence and live-tab delivery both run in the background so
             // closing the action popup cannot interrupt the reset.
             resetUILayout(() => {
@@ -187,7 +192,8 @@ export const UIScaleSection = ({
               // updateDeviceUIScaleで配信される。ポップアップ自身は購読して
               // いないので、成功応答を受けてここで既定へ戻す。
               // 進行中のscale書き込みがあれば、その基準もここへ寄せる。
-              latestAppliedScaleRequestIdRef.current = ++nextScaleRequestIdRef.current
+              if (requestId < latestAppliedScaleRequestIdRef.current) return
+              latestAppliedScaleRequestIdRef.current = requestId
               latestAppliedScaleRef.current = DEFAULT_UI_CONFIG.scale
               pendingScaleRef.current = DEFAULT_UI_CONFIG.scale
               setUIConfig({

@@ -163,8 +163,16 @@ published release:
 | Build | `SENTRY_ENVIRONMENT` | Environment | Release |
 |---|---|---|---|
 | Release workflow | `production` | `production` | `pokerchase-hud@<manifest version>` |
+| Manual / recovery release | `production` (must be set by hand) | `production` | `pokerchase-hud@<manifest version>` |
 | Working build | unset | `development` | `pokerchase-hud@<manifest version>+dev.<short sha>` |
 | E2E | n/a | — | telemetry compiled out |
+
+The split is release-vs-working, not CI-vs-local. `.github/workflows/build.yml`
+sets `SENTRY_ENVIRONMENT` for the workflow path only, so the manual CRX
+procedure in
+[docs/chrome-web-store-release.md](chrome-web-store-release.md#release-artifact)
+has to set it explicitly — a plain `npm run build` submitted to the Web Store
+would report as a working build under a `+dev.<sha>` release nobody runs.
 
 `scripts/build-extension.ts` resolves the short commit and appends `-dirty`
 when the tree has uncommitted changes — the marker is the point: it says the

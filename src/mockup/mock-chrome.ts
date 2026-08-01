@@ -1,5 +1,5 @@
 import { MESSAGE_ACTIONS } from '../types/messages'
-import type { UIConfig } from '../types/hand-log'
+import { DEFAULT_UI_CONFIG, type UIConfig } from '../types/hand-log'
 import {
   POPUP_THEME_LOCAL_STORAGE_KEY,
   POPUP_THEME_STORAGE_KEY,
@@ -211,15 +211,25 @@ export const installChromeMock = (): MockChromeController => {
           localStorage.remove(
             [HAND_LOG_LAYOUT_STORAGE_KEY, ...HUD_POSITION_STORAGE_KEYS],
             () => {
-              // Clearing storage is not enough: neither `HandLog` nor
-              // `useDraggable` watches storage -- they reset on these window
-              // events. The real background sends one `resetUILayout` message
-              // to the game tab, where `content_script.ts` fans it out into
-              // exactly these two -- without them the popup's
-              // 位置とサイズをリセット button would do nothing visible.
-              window.dispatchEvent(new CustomEvent(MESSAGE_ACTIONS.RESET_HAND_LOG_LAYOUT))
-              window.dispatchEvent(new CustomEvent(MESSAGE_ACTIONS.RESET_HUD_POSITIONS))
-              callback?.({ success: true })
+              // Scale is part of the reset too, and it is written back to the
+              // default rather than removed -- a missing local uiScale means
+              // "not migrated to device-local" and would re-migrate from the
+              // legacy synced value, resurrecting the pre-reset scale. Mirror
+              // the real handler exactly: without this the mock resets only the
+              // positions, the popup snaps back to 100% while the HUD behind it
+              // keeps the old scale, and 位置とサイズをリセット cannot be
+              // verified here at all.
+              localStorage.set({ [UI_SCALE_STORAGE_KEY]: DEFAULT_UI_CONFIG.scale }, () => {
+                // Clearing storage is not enough: neither `HandLog` nor
+                // `useDraggable` watches storage -- they reset on these window
+                // events. The real background sends one `resetUILayout` message
+                // to the game tab, where `content_script.ts` fans it out into
+                // exactly these two -- without them the popup's
+                // 位置とサイズをリセット button would do nothing visible.
+                window.dispatchEvent(new CustomEvent(MESSAGE_ACTIONS.RESET_HAND_LOG_LAYOUT))
+                window.dispatchEvent(new CustomEvent(MESSAGE_ACTIONS.RESET_HUD_POSITIONS))
+                callback?.({ success: true })
+              })
             }
           )
           return
