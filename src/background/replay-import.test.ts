@@ -188,6 +188,33 @@ describe('replay import layer', () => {
       expect(await db.replayDetails.count()).toBe(0)
     })
 
+    // Codexレビュー指摘: 実行中のドレインに相乗りさせると、既に中断へ
+    // 向かっているドレインをそのまま返すだけになり、その契機（操作の終了・
+    // ポート接続）が消費されて再開しない。
+    test('実行中のドレインがあれば、もう1周だけ予約する', async () => {
+      const deps = depsOf()
+      markSessionInactive()
+      await enqueueReplayHandId(deps, 1240, NOW)
+
+      let release!: () => void
+      const gate = new Promise<void>(resolve => { release = resolve })
+      fetchImpl = async handIds => {
+        await gate
+        return handIds.map(handId => ({ handId, ok: true, detail: detailOf(handId) }))
+      }
+
+      const first = drainReplayImportQueue(deps)
+      // 1周目の実行中に、別の契機（操作の終了など）でもう一度呼ばれる
+      await enqueueReplayHandId(deps, 1241, NOW)
+      const second = drainReplayImportQueue(deps)
+      release()
+      await Promise.all([first, second])
+
+      // 予約された2周目が、1周目の後に積まれたHandIdを拾う
+      expect(fetchCalls).toEqual([[1240], [1241]])
+      expect(await readReplayImportQueue(db)).toEqual([])
+    })
+
     /**
      * Codexレビュー指摘（P1）: `break` が抜けるのは `for` だけなので、そのまま
      * 進むと削除の最中に `meta` への書き込みへ行く。`deleteAllData()` は
