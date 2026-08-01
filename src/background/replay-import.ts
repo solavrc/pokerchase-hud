@@ -200,20 +200,37 @@ export const enqueueReplayHandId = async (
   now: number
 ): Promise<boolean> => {
   if (!isPositiveHandId(handId)) return false
-  if (!await deps.isEnabled()) return false
   const playerId = deps.getPlayerId?.()
-  await updateQueue(deps.db, now, current => {
-    if (current.some(entry => entry.handId === handId)) return current
-    const appended = [
-      ...current,
-      { handId, enqueuedAt: now, ...playerId !== undefined ? { playerId } : {} }
-    ]
-    // 溢れたら古い方から落とす（暦日の窓から先に失効するのも古い方）。
-    return appended.length > REPLAY_IMPORT_QUEUE_LIMIT
-      ? appended.slice(appended.length - REPLAY_IMPORT_QUEUE_LIMIT)
-      : appended
+  // **フラグの読み取りごと共有tailへ載せる**（MUST）。読み取りは非同期なので、
+  // これを待ってから `queueMutation` に繋ぐと、直後に来た309のdrainが
+  // 「決着済みの古いtail」を待って空のキューを読み、その後でHandIdだけが
+  // 書き込まれる。終了トリガーは消費済みなので、そのハンドは次の対局まで
+  // 取得されない。
+  const mutation = queueMutation.then(async () => {
+    if (!await deps.isEnabled()) return false
+    await writeQueue(deps.db, appendToQueue(await readQueue(deps.db), handId, now, playerId), now)
+    return true
   })
-  return true
+  queueMutation = mutation.then(() => undefined, () => undefined)
+  return mutation
+}
+
+/** キューへの追加（重複排除と上限の適用）。 */
+const appendToQueue = (
+  current: ReplayQueueEntry[],
+  handId: number,
+  now: number,
+  playerId: number | undefined
+): ReplayQueueEntry[] => {
+  if (current.some(entry => entry.handId === handId)) return current
+  const appended = [
+    ...current,
+    { handId, enqueuedAt: now, ...playerId !== undefined ? { playerId } : {} }
+  ]
+  // 溢れたら古い方から落とす（暦日の窓から先に失効するのも古い方）。
+  return appended.length > REPLAY_IMPORT_QUEUE_LIMIT
+    ? appended.slice(appended.length - REPLAY_IMPORT_QUEUE_LIMIT)
+    : appended
 }
 
 /**
@@ -229,7 +246,13 @@ const storeReplayDetail = async (
   detail: unknown,
   now: number
 ): Promise<boolean> => {
-  const record = detail as { param?: unknown, appVer?: unknown, dataVer?: unknown, masterVer?: unknown } | null
+  // **保存の直前にもサニタイズする**（MUST）。`REPLAY_BRIDGE_RESULT` は
+  // 同一オリジンのページから偽装でき、進行中の `requestId` もページから
+  // 観測できる。ページ側ブリッジの `sanitizeReplayDetail` だけに頼ると、
+  // 偽の成功応答にネストされた `session` / `requestKey` がそのまま Lake と
+  // 索引へ永続化され、エクスポートとクラウド同期にも流れる。
+  const record = sanitizeReplayDetail(detail) as
+    { param?: unknown, appVer?: unknown, dataVer?: unknown, masterVer?: unknown } | null
   const param = record && typeof record === 'object' ? record.param : undefined
   if (typeof param !== 'object' || param === null || Array.isArray(param)) return false
 
@@ -451,8 +474,12 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
    * ため、1件ずつ渡すと間隔が消えてしまう。
    */
   for (const [index, entry] of targets.entries()) {
-    // 直前の判定と同じ3つを、**毎回**確認する（MUST）。
-    if (!canFetchNow() || deps.isBusy?.() || !await deps.isEnabled()) {
+    // 直前の判定と同じ3つを、**毎回**確認する（MUST）。フラグの読み取りは
+    // 非同期（`chrome.storage.sync.get`）なので、**その待機の後にもう一度**
+    // セッション状態を見る ―― 待っている間に次の対局の201/303/308が
+    // 取り込みキューで処理されていても、待機前に評価した古い `inactive` の
+    // ままリクエストへ進んでしまう。
+    if (!canFetchNow() || deps.isBusy?.() || !await deps.isEnabled() || !canFetchNow()) {
       aborted = true
       break
     }
@@ -460,13 +487,21 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
     if (index > 0) {
       await delay(deps.intervalMs ?? REPLAY_FETCH_INTERVAL_MS)
       // 待っている間に状況が変わることがある。待機の後にも確認する（MUST）。
-      if (!canFetchNow() || deps.isBusy?.() || !await deps.isEnabled()) {
+      if (!canFetchNow() || deps.isBusy?.() || !await deps.isEnabled() || !canFetchNow()) {
         aborted = true
         break
       }
     }
 
     const [result] = await (deps.fetchDetails ?? defaultFetchDetails)([entry.handId])
+    // 応答待ちの間に全データ削除やインポートが操作スロットを取ることがある。
+    // `deleteAllData()` はこの取得を待たずDBを消すので、遅れて返った応答を
+    // 素通しで保存すると、消えたDBを開き直して書きに行く。**保存の直前にも
+    // 確認する**（MUST）。
+    if (deps.isBusy?.()) {
+      aborted = true
+      break
+    }
     // 応答が返らなかった（ポート切断・期限切れなど）ものは持ち越す。
     if (!result || result.handId !== entry.handId) continue
     if (result.ok) {

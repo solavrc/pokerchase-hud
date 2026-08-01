@@ -181,7 +181,10 @@ describe('replay import layer', () => {
       await drainReplayImportQueue(deps)
 
       expect(fetchCalls).toEqual([[1220]])
-      expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1221])
+      // 応答待ちの間に操作が始まった1件も保存せずに持ち越す（消えたDBへ
+      // 書きに行かないため）。取りこぼしではなく、次の機会に回るだけ。
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1220, 1221])
+      expect(await db.replayDetails.count()).toBe(0)
     })
 
     test('実験フラグがOFFなら積みも取得もしない', async () => {
@@ -350,6 +353,36 @@ describe('replay import layer', () => {
         expect(row).not.toHaveProperty('session')
         expect(row).not.toHaveProperty('requestKey')
       }
+    })
+
+    /**
+     * Codexレビュー指摘（P1）: `REPLAY_BRIDGE_RESULT` は同一オリジンのページから
+     * 偽装でき、進行中の `requestId` もページから観測できる。ページ側の
+     * サニタイズだけに頼ると、偽の成功応答の資格情報が永続化される。
+     */
+    test('偽装された応答の資格情報も保存境界で落とす', async () => {
+      const deps = depsOf()
+      markSessionInactive()
+      await enqueueReplayHandId(deps, 2050, NOW)
+      fetchImpl = async handIds => handIds.map(handId => ({
+        handId,
+        ok: true,
+        // ページ側のサニタイズを通っていない（＝偽装された）形
+        detail: {
+          result: 0,
+          session: 'forged-session',
+          param: { Player: { UserId: 1, requestKey: 'forged-key' }, session: 'nested-forgery' }
+        }
+      }))
+      await drainReplayImportQueue(deps)
+
+      const record = await db.replayDetails.get(2050)
+      expect(record).toBeDefined()
+      expect(JSON.stringify(record)).not.toContain('forged')
+      expect(JSON.stringify(record)).not.toContain('nested-forgery')
+      const lakeRows = await db.apiEvents
+        .where('ApiTypeId').equals(ApiType.REPLAY_HAND_DETAIL).toArray()
+      expect(JSON.stringify(lakeRows)).not.toContain('forged')
     })
 
     test('同じHandIdは先勝ちで、二度は取得しない', async () => {
