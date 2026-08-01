@@ -219,13 +219,12 @@ await db.actions.where('[playerId+phase]')
 - [Firebase Firestore Pricing](https://firebase.google.com/pricing)
 - [Chrome Extension Manifest V3](https://developer.chrome.com/docs/extensions/mv3/)
 
-## 6. 試験機能: リプレイ詳細の取得層
+## 6. 試験機能: セッション終了後リプレイ取込
 
 `experimentalReplayImportEnabled` を `chrome.storage.sync` で `true` にした
-開発ビルドだけが有効化する、既定OFFの検証機能。**この段階では取得のみで、
-保存も自動化も行わない**（セッション境界を見て自動で取りに行く取り込み層は
-別途）。目的は「`/replay/detail` から何がどこまで取得できるか」を、
-スキーマ変更を伴わずに実データで確かめること。
+開発ビルドだけが有効化する、既定OFFの検証機能。取得層（`/replay/detail` を
+叩いて sanitize 済みの結果を返す）の上に、セッション境界を見て自動で取りに行き
+IndexedDBへ保存する取り込み層を載せている。
 
 ページ自身の通常API通信（fetch / XMLHttpRequest）をmain worldで傍受して
 認証エンベロープ（`session` / `platform` / `appVer` / `dataVer` /
@@ -242,27 +241,39 @@ content script 側の読み取りが必ず失敗し、機能が永久にOFFの�
 取得は1件ずつ逐次で、1件あたり15秒でタイムアウトする。1リクエストの
 HandId は最大100件。
 
-起動口は開発用の `experimentalReplayFetch` メッセージのみ
-（`background/replay-fetch-bridge.ts`）。取り込み層が入ればそちらが
-依頼主体になるので、このモジュールは役目を終える。
+ゲーム中の `EVT_HAND_RESULTS` (306) から HandId をローカルキューへ保存し、
+`EVT_SESSION_RESULTS` (309) の後に同一ゲームタブから1件ずつ取得する。
+309欠落時は次の `EVT_ENTRY_QUEUED` (201) を境界に使うが、同一トーナメントIDの
+MTTテーブル移動は継続セッションとして扱う。201も欠落した非MTTでは2回目の
+`EVT_SESSION_DETAILS` (308) を境界にし、MTTの反復308は吸収する。参加申込の
+エラー応答（`Code≠0` の201）は境界として扱わない。タブIDとframe IDの安定キーで
+キューを分離するため、content scriptのport再接続後も元タブのセッションへ復帰し、
+別タブの認証エンベロープへリプレイを渡さない。
 
-開発時の使い方:
+レスポンスは `experimentalReplayHands` object store (DB v7) に保存する。
+現段階では `hands` / `phases` / `actions` へ変換せず、エクスポート・
+Firestore同期・統計計算の対象にも含めない。これにより、リプレイとWebSocketで
+アクション意味論が一致するかを実データで評価する前に既存統計を汚さない。
+
+取得前にportが切れた行は再接続時に再送し、認証未取得・一時的HTTP失敗は
+最大60秒の指数backoffで再試行する。1行あたり8回で `failed` として終端させる
+（上限が無いと、拡張側が自力で解消できない条件で永久に再試行し続ける）。
+セッション終了境界の `pending` → `ready` 更新はイベント取込キュー内で完了を
+待ち、更新・Service Worker再起動より先にIndexedDBへ確定させる。一方、
+リプレイ結果のIndexedDB保存はimporter自身のキューで直列化し、イベント取込
+キューには載せない（載せると1バッチ最大100件の書き込み中はライブイベントが
+`apiEvents.add()` にすら到達できずHUDが固まる）。
+
+開発時の有効化手順:
 
 ```javascript
-// 1. Service WorkerのDevToolsで有効化し、ゲームタブを再読み込みする
 await chrome.storage.sync.set({ experimentalReplayImportEnabled: true })
-
-// 2. ページが通常API通信を1回すればエンベロープが捕まる。その後:
-await chrome.runtime.sendMessage({
-  action: 'experimentalReplayFetch',
-  handIds: [258411144, 258411368]
-})
 ```
 
-応答は `{ success: true, results: [...] }`。各要素は
-`{ handId, ok: true, detail }` か `{ handId, ok: false, error, retryable }`。
-`detail` は sanitize 済みで、資格情報は含まれない。無効化は同じキーを
-`false` に戻す（同期設定なので他端末にも伝播する）。
+有効化後はゲームタブを再読み込みし、通常API通信から認証エンベロープを
+取得させる。保存結果は拡張機能Service WorkerのDevToolsで
+`await db.experimentalReplayHands.toArray()` として確認できる。無効化は
+同じキーを `false` に戻す（同期設定なので他端末にも伝播する）。
 
 既定OFF、権限追加なし、ユーザー操作中のゲーム通信を起点とする設計は
 Chrome Web Store審査上の説明可能性を高めるが、提出前にはプライバシー

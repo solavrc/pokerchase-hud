@@ -1,3 +1,5 @@
+import type { BattleType } from '../types/game'
+
 export const EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY = 'experimentalReplayImportEnabled'
 export const REPLAY_DETAIL_URL = 'https://production.api-poker-chase.com/replay/detail'
 export const REPLAY_API_ORIGIN = 'https://production.api-poker-chase.com'
@@ -29,6 +31,25 @@ export interface ReplayFetchResult {
   type: typeof REPLAY_BRIDGE_RESULT | typeof REPLAY_PORT_RESULT
   requestId: string
   results: ReplayFetchItemResult[]
+}
+
+export type ExperimentalReplayStatus = 'pending' | 'ready' | 'complete' | 'failed'
+
+export interface ExperimentalReplayRecord {
+  handId: number
+  sourceKey: string
+  sessionKey: string
+  sessionId?: string
+  battleType?: BattleType
+  sessionName?: string
+  status: ExperimentalReplayStatus
+  queuedAt: number
+  updatedAt: number
+  attempts: number
+  lastAttemptAt?: number
+  capturedAt?: number
+  lastError?: string
+  detail?: unknown
 }
 
 export const isPositiveHandId = (value: unknown): value is number =>
