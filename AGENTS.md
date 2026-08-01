@@ -64,7 +64,9 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   - **Factual description** (what the system and the PokerChase server actually
     do, and why — `README.md`, `docs/` generally): Japanese.
   - **User-facing text** (UI strings, stat `helpText`, GitHub Release bodies):
-    Japanese.
+    Japanese. Existing English UI strings (e.g. `Waiting for Hand...`,
+    `No Data`) are exempt until the string itself is next edited — do not
+    batch-translate them as a side effect of unrelated changes.
   - **Code comments**: Japanese (see CONTRIBUTING.md "Code Style"). Existing
     comments — in either language — need not be retroactively rewritten. A new
     or edited comment stating an invariant or requirement embeds the
@@ -114,6 +116,24 @@ write rules here:
   gate changes or review live here and in `CONTRIBUTING.md` (see Language
   above). Japanese code comments stating an invariant embed the uppercase
   keyword (see CONTRIBUTING.md "Code Style").
+
+Operational prohibitions that were historically stated only in docs/ are
+anchored here so the descriptive status of docs/ does not demote them; the
+procedures and rationale stay in the linked documents:
+
+- Telemetry MUST NOT attach raw API events, player names, account IDs, chat
+  text, Firebase document paths, auth objects, or tokens to Sentry; the
+  schema-validation snapshot MUST be produced by `buildSchemaDiagnostic`
+  (details and verification: `docs/observability.md`).
+- The Sentry ingest origin MUST stay in `optional_host_permissions` — moving
+  it to required `host_permissions` can disable existing installs until users
+  re-approve the permission (`docs/chrome-web-store-release.md`).
+- A telemetry-enabled release MUST complete the disclosure procedure in
+  `docs/chrome-web-store-release.md` before submission (store listing /
+  privacy-policy / release-notes updates).
+- The CRX signing key MUST NOT be stored in the repository or in a Google
+  account; handle and back it up per `docs/chrome-web-store-release.md`
+  "Signing key".
 
 ### Build & Tool Commands
 
