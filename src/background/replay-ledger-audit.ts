@@ -198,14 +198,27 @@ export const auditReplayLedger = async (
   // 全面停止した状況（スキーマ破損など）で `hands` が1件も一致せず、
   // 補正不能→全件を対象外、という経路に落ちて、**監査が最も叫ぶべき場面で
   // 沈黙する**。
-  const rawByWindow = await collectCapturedHandIds(db, all.map(entry => entry.startTime))
-  const rawByScan = await confirmCapturesByFullScan(
-    db,
-    all.filter(entry => !rawByWindow.has(entry.handId)).map(entry => entry.handId)
-  )
-  const rawTimestamps = new Map([...rawByWindow, ...rawByScan])
-
-  const localHands = await db.hands.bulkGet(all.map(entry => entry.handId))
+  //
+  // 読み取りは**1つのreadonlyトランザクション**に閉じる。個別の照会に分けると、
+  // 監査の最中に到着したイベントが照会の合間に保存され、「生行はあるが
+  // `hands` がまだ」という途中状態を読んで、正常に処理中のハンドを
+  // 派生欠落や不在として保存しうる。同一トランザクションなら一貫した
+  // スナップショットになる。
+  const snapshot = await db.transaction('r', db.hands, db.apiEvents, async () => {
+    const rawByWindow = await collectCapturedHandIds(db, all.map(entry => entry.startTime))
+    const rawByScan = await confirmCapturesByFullScan(
+      db,
+      all.filter(entry => !rawByWindow.has(entry.handId)).map(entry => entry.handId)
+    )
+    return {
+      rawTimestamps: new Map([...rawByWindow, ...rawByScan]),
+      localHands: await db.hands.bulkGet(all.map(entry => entry.handId)),
+      oldestOwnHand: playerId === undefined
+        ? undefined
+        : await db.hands.where('seatUserIds').equals(playerId).first()
+    }
+  })
+  const { rawTimestamps, localHands, oldestOwnHand } = snapshot
 
   // --- 2. 時計差を測る ---
   //
@@ -239,9 +252,6 @@ export const auditReplayLedger = async (
   //
   // HandIdは時系列で単調増加するので、multiEntryインデックスの`first()`
   // （＝最小の主キー）がそのアカウントの最古ハンドになる。
-  const oldestOwnHand = playerId === undefined
-    ? undefined
-    : await db.hands.where('seatUserIds').equals(playerId).first()
   // 派生が全面停止していて`hands`に1件も無い場合のフォールバック。台帳は
   // 定義上このアカウントのハンドなので、その生行の最古を下限に使えば
   // アカウント帰属を崩さない（全体の最古生行を使うと上と同じ混在が起きる）。

@@ -560,12 +560,16 @@ const fetchReplayDetail = async (handId: number): Promise<ReplayFetchItemResult>
       return { handId, ok: false, error: `HTTP ${response.status}`, retryable }
     }
     const decoded = decode(responseBytes)
-    // 応答が返る間にユーザーが無効化していれば、設定ハンドラーが `replayAuth`
-    // を消している。捕獲時のローカル変数から無条件に書き戻すと、消したはずの
-    // 資格情報が復活する。現在値が生きているときだけ更新する。
-    if (replayAuth && typeof decoded === 'object' && decoded !== null &&
+    // 応答が返る間に設定が変わっていれば書き戻さない。
+    //
+    // 「消えていないこと」だけでは足りない: 無効化→再有効化で新しいエンベロープ
+    // を捕獲した後に旧リクエストが完了すると、旧応答の `session` を新しい
+    // エンベロープへ混ぜてしまう（アカウント切替を伴えば別アカウントの
+    // セッションが混じる）。エンベロープは捕獲のたびに丸ごと差し替えるので、
+    // 参照が同一かどうかで「このリクエストを出したときのまま」を判定できる。
+    if (replayAuth === auth && typeof decoded === 'object' && decoded !== null &&
       'session' in decoded && typeof decoded.session === 'string') {
-      replayAuth = { ...replayAuth, session: decoded.session }
+      replayAuth = { ...auth, session: decoded.session }
     }
     const rejection = readEnvelopeRejection(decoded)
     if (rejection) return { handId, ok: false, ...rejection }

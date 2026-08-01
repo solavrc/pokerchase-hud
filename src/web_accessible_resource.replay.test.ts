@@ -395,6 +395,85 @@ describe('main-world experimental replay bridge', () => {
     XMLHttpRequest.prototype.send = originalSend
   })
 
+  // Codexレビュー指摘: 「消えていないこと」だけでは足りない。無効化→再有効化で
+  // 新しいエンベロープを捕獲した後に旧リクエストが完了すると、旧応答の session を
+  // 新しいエンベロープへ混ぜてしまう。
+  test('does not merge a stale response session into a re-captured envelope', async () => {
+    class FakeWebSocket {
+      addEventListener = jest.fn()
+    }
+    ;(window as any).WebSocket = FakeWebSocket
+
+    let resolveFetch!: (value: unknown) => void
+    const fetchMock = jest.fn().mockImplementation(() => new Promise(r => { resolveFetch = r }))
+    ;(window as any).fetch = fetchMock
+
+    const originalOpen = XMLHttpRequest.prototype.open
+    const originalSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.open = jest.fn() as any
+    XMLHttpRequest.prototype.send = jest.fn() as any
+
+    jest.isolateModules(() => {
+      require('./web_accessible_resource')
+    })
+
+    const sendEnvelope = (session: string, dataVer: string) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', 'https://production.api-poker-chase.com/user/status')
+      xhr.send(encode({
+        param: {}, session, platform: 2, appVer: '2.06', dataVer, masterVer: 'm'
+      }))
+      return xhr
+    }
+    const setEnabled = (enabled: boolean) => window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled }
+    }))
+
+    sendEnvelope('old-secret', 'old-ver')
+    await Promise.resolve()
+    setEnabled(true)
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'r-stale', handIds: [1] }
+    }))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    // 取得中に無効化→再有効化し、新しいエンベロープを捕獲する
+    setEnabled(false)
+    setEnabled(true)
+    sendEnvelope('new-secret', 'new-ver')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // ここで旧リクエストが完了する（応答は回転済みsessionを含む）
+    resolveFetch({
+      ok: true, status: 200,
+      arrayBuffer: jest.fn().mockResolvedValue(arrayBufferOf({
+        ...SUCCESS_ENVELOPE, session: 'stale-rotated'
+      }))
+    })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // 次の取得は、旧応答のsessionを混ぜていないエンベロープで出る
+    fetchMock.mockClear()
+    fetchMock.mockImplementation(async () => ({
+      ok: true, status: 200,
+      arrayBuffer: jest.fn().mockResolvedValue(arrayBufferOf(SUCCESS_ENVELOPE))
+    }))
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'r-next', handIds: [2] }
+    }))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const body = decode(fetchMock.mock.calls[0]![1].body) as Record<string, unknown>
+    expect(body.dataVer).toBe('new-ver')
+    expect(body.session).toBe('new-secret')
+
+    XMLHttpRequest.prototype.open = originalOpen
+    XMLHttpRequest.prototype.send = originalSend
+  })
+
   // Codexレビュー指摘: 認証エンベロープの観測は「設定未受信＝有効」で
   // fail-openにしているが、台帳は拡張側へ渡って永続化されるので同じ緩さを
   // 適用してはいけない。フラグを一度も有効化していないユーザーの監査が
