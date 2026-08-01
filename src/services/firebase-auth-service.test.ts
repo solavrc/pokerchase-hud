@@ -419,6 +419,46 @@ describe('FirebaseAuthService.signInWithGoogle -- durable publication and restor
       restoreFetch()
     }
   })
+
+  // Chrome 実機の getAuthToken はコールバック形式ではトークン文字列を渡す
+  // （オブジェクトを返すのは Promise 形式の GetAuthTokenResult のみ）。
+  // 他のテストは @types/chrome 0.2.4 以前の誤った型宣言に合わせて
+  // オブジェクト形状をモックしているため、実挙動である文字列形状を
+  // ここで押さえる。
+  test('normalizes the string-shaped Chrome identity callback (real Chrome behavior) into the token exchange', async () => {
+    jest.spyOn(chrome.identity, 'getAuthToken').mockImplementation(((
+      _options: unknown,
+      callback: (token?: string, grantedScopes?: string[]) => void
+    ) => {
+      callback('chrome-token-string', ['openid'])
+    }) as typeof chrome.identity.getAuthToken)
+
+    const originalFetch = global.fetch
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        idToken: 'b-token',
+        refreshToken: 'b-refresh-token',
+        expiresIn: '3600',
+        localId: 'user-b',
+        email: 'b@example.com'
+      })
+    })
+    global.fetch = fetchMock as any
+
+    try {
+      const service = new FirebaseAuthService()
+      await service.ready()
+
+      const user = await service.signInWithGoogle()
+
+      expect(user.uid).toBe('user-b')
+      const [, init] = fetchMock.mock.calls[0]
+      expect(JSON.parse(init.body).postBody).toContain('access_token=chrome-token-string')
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
 })
 
 describe('FirebaseAuthService.signOut -- durable state removal', () => {

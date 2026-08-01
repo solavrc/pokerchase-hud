@@ -512,7 +512,13 @@ export class FirebaseAuthService {
 
   private async getChromeAuthToken(interactive: boolean): Promise<string> {
     return await new Promise((resolve, reject) => {
-      chrome.identity.getAuthToken({ interactive }, (result) => {
+      // コールバック引数は Chrome 実機ではトークン文字列（オブジェクトを返すのは
+      // Promise 形式の `GetAuthTokenResult` のみ）。@types/chrome は 0.2.5 で
+      // ようやくこの形に修正され、0.2.4 以前は誤ってオブジェクト型を宣言していた。
+      // 型定義と実挙動のどちらがずれても壊れないよう、両方を受けられる引数型で
+      // 受けてから正規化する。引数位置は反変なので、この広い型は新旧どちらの
+      // 型定義に対しても代入可能。
+      chrome.identity.getAuthToken({ interactive }, (result: string | chrome.identity.GetAuthTokenResult | undefined) => {
         const token = typeof result === 'string' ? result : result?.token
         if (chrome.runtime.lastError || !token) {
           reject(new Error(chrome.runtime.lastError?.message || 'Failed to get auth token'))
