@@ -252,14 +252,7 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
 
   // 受動取得した台帳（`/replay/list`）。拡張はリクエストを出しておらず、
   // ゲーム自身の通信を読んだだけ。
-  //
-  // **実験フラグが有効なときだけ転送する**（MUST）。この経路は同一オリジンの
-  // `postMessage` なので、ブリッジを一度も注入していない無効ユーザーでも
-  // ページ側スクリプトが台帳を偽装して送れてしまい、そのまま監査結果として
-  // 永続化される。ブリッジ側の同じゲート（`postReplayLedger`）だけでは、
-  // ブリッジを経由しない偽装を塞げない。
   if ('type' in event.data && event.data.type === REPLAY_BRIDGE_LEDGER) {
-    if (!replayImportEnabled) return
     const ledger = event.data as Partial<ReplayLedgerMessage>
     if (Array.isArray(ledger.hands) && ledger.hands.length <= REPLAY_LEDGER_MAX_ENTRIES) {
       portManager.send({ ...ledger, type: REPLAY_PORT_LEDGER })

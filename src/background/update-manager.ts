@@ -117,6 +117,16 @@ export const markSessionInactive = (): void => {
 }
 
 /**
+ * 現在のセッション状態。`'unknown'`（SW再起動直後）は**セッション中かも
+ * しれない**という意味であり、安全側の判断が要る呼び出し元は
+ * `'inactive'` だけを「セッション外」として扱うこと。
+ *
+ * リプレイ取り込み層（`replay-import.ts`）が「セッション中は
+ * `/replay/detail` を1本も撃たない」不変条件の判定に使う。
+ */
+export const getSessionActivity = (): SessionActivity => sessionActivity
+
+/**
  * `event-ingestion.ts`の`registerEventIngestion()`が登録する、
  * 「現時点までにキューへ積まれた取り込み処理が全て決着するまで待つ」
  * プロバイダ。未登録（`registerEventIngestion()`が一度も呼ばれていない

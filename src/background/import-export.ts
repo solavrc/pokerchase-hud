@@ -23,6 +23,7 @@ import type {
 } from '../types/messages'
 import { getOperationState, setOperationState } from './operation-state'
 import { resolveAdvisory, markAdvisoryPending } from './rebuild-advisory'
+import { projectReplayDetailEvents, sanitizeReplayDetailEvents } from './replay-import'
 import {
   API_EVENT_PRIMARY_KEY,
   mergeApiEvents,
@@ -185,11 +186,21 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         // assigns one atomically. New-format rows preserve their sequence
         // when free, and a conflicting slot is safely reallocated.
         if (rawEventsToStore.length > 0) {
+          // 合成イベント（90001）の資格情報を、Lakeへ入れる**前に**落とす。
+          // NDJSONは検証前にそのまま保存されるので、ライブ取得境界の
+          // `sanitizeReplayDetail` だけではインポート経路を守れない。落として
+          // おかないと、以後のエクスポートとFirestore同期にも流れる。
+          sanitizeReplayDetailEvents(rawEventsToStore)
           const merge = await mergeApiEvents(db, rawEventsToStore, {
             protectAddedApplicationEventsFromCloudWatermark: true
           })
           successCount += merge.added.length
           duplicateCount += merge.duplicates
+          // リプレイ詳細（合成イベント90001）はLakeに入ったあと、HandId一意の
+          // 索引（`replayDetails`）へ射影する。Lakeは生ログなので同じHandIdの
+          // 行を複数持ちうるが、射影は先勝ちで1件に畳む（payloadはサーバ側で
+          // 不変なのでどれを採っても同じ）。
+          await projectReplayDetailEvents(db, merge.added)
         }
 
         processed += chunkLines.length
@@ -994,6 +1005,12 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         // (EntityConverter tracks hand state internally, so chunked conversion loses cross-chunk hands)
         console.log(`[performFullRebuild] Loading all events...`)
         rawEvents = await db.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).toArray() as unknown as RawApiEvent[]
+
+        // リプレイ詳細の索引もLakeから再構成する。Lakeが正で`replayDetails`は
+        // 射影という関係なので、再構築は索引側の欠損（`replayDetails`だけを
+        // 消した場合、古いバージョンで取り込んだLake行が索引に無い場合）も
+        // ここで埋まる。射影は先勝ちなので既存行は書き換えない。
+        await projectReplayDetailEvents(db, rawEvents)
 
         // apiEvents is the raw Lake: it may contain non-application noise (202/205
         // keepalive/timer events), ApiTypeIds unknown to the current schema, or

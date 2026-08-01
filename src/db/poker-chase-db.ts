@@ -4,7 +4,8 @@ import type {
   Hand,
   Phase,
   Action,
-  MetaRecord
+  MetaRecord,
+  ReplayDetailRecord
 } from '../types'
 import { API_EVENT_PRIMARY_KEY } from '../utils/api-event-key'
 
@@ -37,6 +38,7 @@ export class PokerChaseDB extends Dexie {
   phases!: Table<Phase, number>
   actions!: Table<Action, number>
   meta!: Table<MetaRecord, string>
+  replayDetails!: Table<ReplayDetailRecord, number>
   constructor(indexedDB: IDBFactory, iDBKeyRange: typeof IDBKeyRange) {
     super('PokerChaseDB', { indexedDB, IDBKeyRange: iDBKeyRange })
     this.version(1).stores({
@@ -135,6 +137,27 @@ export class PokerChaseDB extends Dexie {
         const last = stagedRows[stagedRows.length - 1]!
         cursor = [last.timestamp, last.ApiTypeId, last.sequence]
       }
+    })
+
+    // v7: リプレイ詳細（`/replay/detail`）の保管テーブル。
+    //
+    // `apiEvents`（Raw Event Lake）に載る合成イベント（ApiTypeId 90001）が
+    // 輸送・同期・再構築の正であり、この表は **HandId 一意の索引**として
+    // 置く。Lake は同じ HandId の行を複数持ちうる（別端末のエクスポートを
+    // 取り込めば重複しうる。Lakeは生ログなので消さない）が、この表は
+    // 先勝ちで1件に畳む ―― payload はサーバ側で不変なので、どれを採っても
+    // 同じ。
+    //
+    // 新しいストアの追加だけなので、既存の `hands`/`phases`/`actions` の
+    // 派生には一切影響しない。したがって `REBUILD_ADVISORY_VERSION` は
+    // 据え置き（書き込み時の派生ロジックを変えていない）。
+    this.version(7).stores({
+      apiEvents: `${API_EVENT_PRIMARY_KEY},timestamp,ApiTypeId,[timestamp+ApiTypeId],[ApiTypeId+timestamp]`,
+      hands: 'id,*seatUserIds,*winningPlayerIds,approxTimestamp',
+      phases: '[handId+phase],handId,*seatUserIds,phase',
+      actions: '[handId+index],handId,playerId,phase,actionType,*actionDetails,[playerId+phase],[playerId+actionType]',
+      meta: 'id,updatedAt',
+      replayDetails: 'handId,fetchedAt'
     })
 
     // Backward-compatible default for existing internal/test callers that

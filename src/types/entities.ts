@@ -219,6 +219,26 @@ export interface MetaRecord {
   expiresAt?: number
 }
 
+/**
+ * `/replay/detail` 1件分の保管レコード（Dexie v7 `replayDetails`、主キー`handId`）。
+ *
+ * 正は `apiEvents` 上の合成イベント（`ApiType.REPLAY_HAND_DETAIL` = 90001）で、
+ * この表はそこから射影した HandId 一意の索引。エクスポート／同期はLake側の行が
+ * 運ぶので、この表を輸出経路に足す必要はない。
+ *
+ * `session`（回転する資格情報）と`requestKey`は保存してはならない（MUST NOT）。
+ * ページ側の`sanitizeReplayDetail`が境界で落としており、この型にも場所が無い。
+ */
+export interface ReplayDetailRecord {
+  handId: number
+  /** `/replay/detail`応答の`param`（デコード済み生値）。 */
+  payload: Record<string, unknown>
+  /** 取得時刻（Unix Milliseconds）。 */
+  fetchedAt: number
+  /** 取得時のクライアント版数。資格情報は含まない。 */
+  clientMeta?: { appVer?: string, dataVer?: string, masterVer?: string }
+}
+
 // ImportMetaRecord schema
 export const importMetaRecordSchema = metaRecordBaseSchema.extend({
   id: z.literal('importStatus'),

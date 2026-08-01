@@ -165,5 +165,30 @@ export const readReplayLedger = (decoded: unknown): ReplayLedger | undefined => 
   }
 }
 
+/**
+ * 閲覧期限切れ（データはサーバに在るが、暦日の窓から外れた）。
+ * 再取得しても状況は変わらないので、取り込み層は再試行しない。
+ */
+export const REPLAY_STATUS_EXPIRED = 2301
+
+/**
+ * データ無し。参加していないハンド（バースト後の観戦分）も暦日条件を
+ * 満たしてもこれになる。
+ */
+export const REPLAY_STATUS_NOT_FOUND = 2302
+
+/**
+ * `ReplayFetchItemResult.error` に載ったサーバの`status`を読む。
+ *
+ * ページ側は拒否を `API result <result> status <status>` という文字列に
+ * 畳んで返す（構造化フィールドを増やすと、境界を越える形が1つ増える）。
+ * その文字列を組み立てる側と読む側を同じファイルに置いて、書式のずれが
+ * 型ではなく1箇所の変更で済むようにする。
+ */
+export const parseReplayErrorStatus = (error: string): number | undefined => {
+  const matched = /\bstatus (\d+)\b/.exec(error)
+  return matched ? Number(matched[1]) : undefined
+}
+
 export const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)

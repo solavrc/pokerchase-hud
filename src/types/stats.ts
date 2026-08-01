@@ -217,6 +217,16 @@ export interface RecentHandEntry {
    * otherwise. See docs/api-events.md's RankType table.
    */
   holeCards: string[] | null
+  /**
+   * Where `holeCards` came from. `'results'` is the WebSocket
+   * `EVT_HAND_RESULTS.Results` path above. `'replay'` means the row was
+   * mucked at showdown (RankType 11, `HoleCards` empty) and the cards were
+   * filled from a stored replay detail (`replayDetails`, opt-in only) --
+   * the server discloses mucked showdown hands through its own replay
+   * feature, so this is the same information the game itself renders.
+   * `null` when `holeCards` is `null`.
+   */
+  holeCardsSource: 'results' | 'replay' | null
   /** See `PreflopLine`'s doc comment for the taxonomy. `null` when no preflop data exists for this hand/player. */
   preflopLine: PreflopLine | null
   /** Player reached the flop (BET_ABLE or ALL_IN when FLOP was dealt), or -- when no FLOP phase was even recorded because the hand went all-in preflop and ran out without any `EVT_DEAL_ROUND` -- reached showdown at all (which is only possible once the full board is out). */

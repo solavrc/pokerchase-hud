@@ -16,7 +16,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 
 - Real-time HUD with 15+ statistics — compact display mode (default) with click-to-expand full grid, threshold color coding, per-stat tooltips
 - Player-type classification icons (🦈💣🪨🐟 quadrant + 🐳 whale override)
-- Per-player drill-downs: positional stats and recent hands (showdown hole cards)
+- Per-player drill-downs: positional stats and recent hands (showdown hole cards; mucked showdown hands filled from stored replay details when the opt-in replay import is enabled)
 - Pre-game hero stats (career-to-date panel before the first deal)
 - Busted-player dim display (stats persist muted until seat turnover / session end)
 - All-player SPR/pot odds display
@@ -299,7 +299,8 @@ data storage (Dexie.js), normalized entities, Firestore strategy, and v3 index o
 14. **Cache-First Rendering**: Frequently needed state (Firebase auth) cached in `chrome.storage.local` for instant popup rendering
 15. **Rebuild Advisory Versioning**: Bump `REBUILD_ADVISORY_VERSION` (`src/constants/database.ts`) whenever a change alters write-time entity derivation for already-recorded data, so existing users get prompted (badge/notification/popup banner via `src/background/rebuild-advisory.ts`) to run データ再構築 after updating (version 2, 2026-07: the WTSD/WWSF DEAL_ROUND-omission FLOP-phase synthesis fix described under "Confirmed Statistical Definitions" below)
 16. **Raw Event Lake**: `apiEvents` is the raw wire log — any event with a numeric `timestamp`+`ApiTypeId` is stored, independent of whether it parses under the current Zod schema or is an application type. Validation gates only the real-time pipeline (streams/stats/entity generation), never storage. This is what makes データ再構築 an actual recovery path after a PokerChase payload change breaks a schema: rebuild re-validates every stored raw row against the *current* schema, so a later schema fix retroactively recovers rows that failed to parse when first received — no separate promotion mechanism needed. See "ApiEvent Architecture" and `docs/architecture.md` for the full rationale and history.
-17. **Forced Update (auto-apply + remote kill switch, sola承認)**: `src/background/update-manager.ts` auto-applies a downloaded extension update (`chrome.runtime.reload()`) as soon as it's SAFE, and `src/services/min-version-gate.ts` can remotely disable cloud sync on old versions. See "Forced Update" under Cloud Sync & Firebase Integration for the full safe-window definition, badge precedence, and fail-open semantics.
+17. **Synthetic Lake events (private ApiTypeId range)**: a record the extension itself produces — not received from PokerChase — is stored in `apiEvents` under an ApiTypeId in the private 90000 range (currently only `ApiType.REPLAY_HAND_DETAIL` = 90001, the opt-in replay-detail import). Such an event MUST be an application event for storage/sync purposes, so that NDJSON export/import, Firestore incremental sync and downstream ingestion carry it with no changes to those paths; and it MUST stay invisible to `EntityConverter` / `WriteEntityStream` / statistics / `verify-stats`, which dispatch on known game ApiTypeIds only. That invisibility is behavior, not an accident of `switch` fall-through — it is pinned by `src/replay/synthetic-event-invisibility.test.ts`, and a new synthetic type MUST extend that test. Credentials (a rotating `session` token, `requestKey`) MUST NOT appear in a synthetic event or in any table it is projected into.
+18. **Forced Update (auto-apply + remote kill switch, sola承認)**: `src/background/update-manager.ts` auto-applies a downloaded extension update (`chrome.runtime.reload()`) as soon as it's SAFE, and `src/services/min-version-gate.ts` can remotely disable cloud sync on old versions. See "Forced Update" under Cloud Sync & Firebase Integration for the full safe-window definition, badge precedence, and fail-open semantics.
 
 ### Data Flow
 
@@ -797,7 +798,7 @@ Dynamic statistics for all players, with hero having additional hand improvement
 
 Defined in `src/db/poker-chase-db.ts` (Dexie/IndexedDB). See [docs/architecture.md](docs/architecture.md) for design rationale.
 
-#### Tables (v6)
+#### Tables (v7)
 
 | Table | Primary Key | Key Indexes | Purpose |
 |---|---|---|---|
@@ -805,9 +806,10 @@ Defined in `src/db/poker-chase-db.ts` (Dexie/IndexedDB). See [docs/architecture.
 | `hands` | `id` (auto) | `*seatUserIds`, `approxTimestamp` | Processed hand data |
 | `phases` | `[handId+phase]` | `handId`, `*seatUserIds` | Per-street state |
 | `actions` | `[handId+index]` | `[playerId+phase]`, `[playerId+actionType]`, `*actionDetails` | Player actions with stat markers |
-| `meta` | `id` | `updatedAt` | Import status, stats cache, sync state |
+| `meta` | `id` | `updatedAt` | Import status, stats cache, sync state, replay-import queue/status |
+| `replayDetails` | `handId` | `fetchedAt` | Replay detail payloads (opt-in replay import; projection of the ApiTypeId 90001 rows in the Lake) |
 
-v3 added composite indexes for player-specific queries. v6 changes the Raw Lake primary key to `[timestamp+ApiTypeId+sequence]`. Since IndexedDB cannot change an object-store primary key in place, v4 copies old rows to a staging store with `sequence: 0`, v5 drops the old store, and v6 recreates/copies it transactionally. Existing rows were already unique under the old key, so this is mechanical and does not change `hands`/`phases`/`actions`; `REBUILD_ADVISORY_VERSION` therefore remains 3.
+v3 added composite indexes for player-specific queries. v6 changes the Raw Lake primary key to `[timestamp+ApiTypeId+sequence]`. v7 adds the `replayDetails` store only — no existing store or write-time derivation changes, so `REBUILD_ADVISORY_VERSION` stays put. Since IndexedDB cannot change an object-store primary key in place, v4 copies old rows to a staging store with `sequence: 0`, v5 drops the old store, and v6 recreates/copies it transactionally. Existing rows were already unique under the old key, so this is mechanical and does not change `hands`/`phases`/`actions`; `REBUILD_ADVISORY_VERSION` therefore remains 3.
 
 **Storage growth**: `apiEvents` now also durably stores non-application noise (202/205 keepalive/timer events at roughly the same volume as application events per session — expect apiEvents row count to grow, not just its "useful" subset). IndexedDB quota is browser-managed and generally GB-scale (much larger than `storage.local`'s ~10MB), so this is not expected to be a practical problem. There is currently **no automatic pruning** of `apiEvents`: the existing quota-exceeded handling in `src/services/poker-chase-service.ts` (`cleanupOldStorageData`) and `src/utils/database-utils.ts` (`withTransaction`'s `QuotaExceededError` branch) targets `chrome.storage.local` service-state persistence and IndexedDB transaction errors respectively — neither actively prunes `apiEvents` rows. Users can reset via the popup's "全データ削除" if this ever becomes a real problem; revisit with active pruning only if it does.
 
