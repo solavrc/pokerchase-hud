@@ -319,6 +319,82 @@ describe('main-world experimental replay bridge', () => {
     XMLHttpRequest.prototype.send = originalSend
   })
 
+  // Codexレビュー指摘: 応答待ちの最中に無効化されたら、次の1件から止まる
+  // 必要がある。バッチ完了まで最大99件を撃ち続けてはいけない。
+  test('stops the batch and does not resurrect credentials when disabled mid-flight', async () => {
+    class FakeWebSocket {
+      addEventListener = jest.fn()
+    }
+    ;(window as any).WebSocket = FakeWebSocket
+
+    const fetchMock = jest.fn().mockImplementation(async () => {
+      // 1件目の応答が返る直前に無効化される
+      window.dispatchEvent(new MessageEvent('message', {
+        source: window,
+        origin: POKER_CHASE_ORIGIN,
+        data: { type: REPLAY_BRIDGE_CONFIG, enabled: false }
+      }))
+      return {
+        ok: true,
+        status: 200,
+        arrayBuffer: jest.fn().mockResolvedValue(arrayBufferOf(SUCCESS_ENVELOPE))
+      }
+    })
+    ;(window as any).fetch = fetchMock
+
+    const originalOpen = XMLHttpRequest.prototype.open
+    const originalSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.open = jest.fn() as any
+    XMLHttpRequest.prototype.send = jest.fn() as any
+    const postMessageSpy = jest.spyOn(window, 'postMessage')
+    postMessageSpy.mockClear()
+
+    jest.useFakeTimers()
+    jest.isolateModules(() => {
+      require('./web_accessible_resource')
+    })
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 20; i++) await Promise.resolve()
+    }
+
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', 'https://production.api-poker-chase.com/user/status')
+    xhr.send(encode({
+      param: {}, session: 'page-only-secret', platform: 2,
+      appVer: '2.06', dataVer: '2_06_0_test', masterVer: 'master-test'
+    }))
+    await Promise.resolve()
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window,
+      origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled: true }
+    }))
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window,
+      origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'request-3', handIds: [1, 2, 3, 4, 5] }
+    }))
+    for (let step = 0; step < 8; step++) {
+      await flush()
+      jest.advanceTimersByTime(REPLAY_FETCH_INTERVAL_MS)
+    }
+    await flush()
+
+    // 1件目だけが走り、無効化後は追撃しない。
+    // fetchMock の回数は「消した資格情報を復活させない」ガードが守り、
+    // results の件数は「無効化で残りを中断する」break が守る。
+    // 片方だけだと 99 件の無駄な待ちループ、もう片方だけだと実POSTが続く。
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const posted = postMessageSpy.mock.calls
+      .map(call => call[0] as { type?: string, results?: unknown[] })
+      .find(m => m.type === REPLAY_BRIDGE_RESULT)
+    expect(posted?.results).toHaveLength(1)
+
+    jest.useRealTimers()
+    XMLHttpRequest.prototype.open = originalOpen
+    XMLHttpRequest.prototype.send = originalSend
+  })
+
   // Codexレビュー指摘: 認証エンベロープの観測は「設定未受信＝有効」で
   // fail-openにしているが、台帳は拡張側へ渡って永続化されるので同じ緩さを
   // 適用してはいけない。フラグを一度も有効化していないユーザーの監査が

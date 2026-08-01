@@ -120,7 +120,16 @@ export const requestReplayDetails = async (
   // 結果が返る。
     const requestId = `devtools-${crypto.randomUUID()}`
     const results = await new Promise<ReplayFetchItemResult[]>(resolve => {
-      const timer = setTimeout(() => settle(requestId, []), replayFetchBatchTimeoutMs(handIds.length))
+        // 件数ではなく**上限件数**で計る。`dispatchQueue` はSW再起動で空へ戻る
+      // 一方、タブ側の `replayFetchQueue` は旧バッチを処理し続けるので、
+      // 自分の件数で計ると先行バッチの間隔待ちの最中に期限切れになり、
+      // 空結果を返した後で依頼元不在のPOSTが走る。上限で計れば、先行バッチが
+      // 最大構成でも待ち切れる。ページ側は1件15秒で必ず打ち切るので、
+      // これで無限に待つことはない。
+      const timer = setTimeout(
+        () => settle(requestId, []),
+        replayFetchBatchTimeoutMs(REPLAY_FETCH_BATCH_LIMIT)
+      )
       pending.set(requestId, { port, resolve, timer })
       try {
         port.postMessage({ type: REPLAY_PORT_FETCH, requestId, handIds })

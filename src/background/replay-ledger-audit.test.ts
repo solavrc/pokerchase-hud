@@ -79,7 +79,7 @@ describe('replay ledger audit', () => {
 
   afterEach(() => db.close())
 
-  test('サーバの台帳にあってローカルに無いハンドをキャプチャ欠損として報告する', async () => {
+  test('サーバの台帳にあってローカルに無いハンドをローカル不在として報告する', async () => {
     await db.hands.bulkPut([hand(100, 500), hand(102, -200)])
 
     const result = await auditReplayLedger(db, HERO, ledgerOf([

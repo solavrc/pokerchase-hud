@@ -559,9 +559,12 @@ const fetchReplayDetail = async (handId: number): Promise<ReplayFetchItemResult>
       return { handId, ok: false, error: `HTTP ${response.status}`, retryable }
     }
     const decoded = decode(responseBytes)
-    if (typeof decoded === 'object' && decoded !== null &&
+    // 応答が返る間にユーザーが無効化していれば、設定ハンドラーが `replayAuth`
+    // を消している。捕獲時のローカル変数から無条件に書き戻すと、消したはずの
+    // 資格情報が復活する。現在値が生きているときだけ更新する。
+    if (replayAuth && typeof decoded === 'object' && decoded !== null &&
       'session' in decoded && typeof decoded.session === 'string') {
-      replayAuth = { ...auth, session: decoded.session }
+      replayAuth = { ...replayAuth, session: decoded.session }
     }
     const rejection = readEnvelopeRejection(decoded)
     if (rejection) return { handId, ok: false, ...rejection }
@@ -591,6 +594,9 @@ const handleReplayFetch = async (message: ReplayFetchRequest): Promise<void> => 
     .slice(0, REPLAY_FETCH_BATCH_LIMIT)
   const results: ReplayFetchItemResult[] = []
   for (const handId of handIds) {
+    // 各件の前に再確認する。無効化は次の1件から効く必要があり、バッチ完了まで
+    // 最大99件を撃ち続けてはいけない。
+    if (!replayImportEnabled) break
     // 先頭は待たない。1件だけの取得は従来どおり即座に走る。
     if (results.length > 0) await delay(REPLAY_FETCH_INTERVAL_MS)
     results.push(await fetchReplayDetail(handId))

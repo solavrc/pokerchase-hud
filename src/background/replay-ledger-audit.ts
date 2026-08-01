@@ -9,13 +9,18 @@
  * 台帳はサーバ自身が持つ「ヒーローが打ったハンド」の記録なので、
  * WebSocketキャプチャに対する**独立した観測チャネル**になる（AGENTS.mdの
  * Incident Diagnosis Practicesが求める「別の観測チャネルによる反証」）。
- * 分かるのは2つ:
+ * **確定できることの範囲を明示する**（AGENTS.mdの「Declare observability」）:
  *
- * 1. **キャプチャ欠損** — 台帳にあってローカルに無いHandIdは、サーバが送った
- *    のにクライアントが取り逃したハンド。docs/api-events.mdに「原因未特定」
- *    として残っている欠損が、サーバー省略なのか取りこぼしなのかを決着させる
- * 2. **チップ会計の検証** — `ChipDiff`はヒーローのそのハンドの純増減。
- *    ローカルの`playerChipAccounting[hero].netChips`と一致するはず
+ * 1. 台帳が証明するのは「**このアカウントのハンドとしてサーバに記録がある**」
+ *    ことだけで、該当のWebSocketイベントをサーバがこの接続へ送ったかどうかは
+ *    観測していない
+ * 2. したがって、ローカルに派生エンティティも生イベントも無い場合に確定するのは
+ *    「**このクライアントに残っていない**」ことだけ。別デバイス／別セッションでの
+ *    プレイ、拡張が動いていなかった、フックの取りこぼし、保存失敗、サーバが
+ *    この接続へ送らなかった ―― これらは**区別できない**
+ * 3. 一方 `ChipDiff` との突き合わせは因果の推定を含まない直接比較なので、
+ *    ローカルの`playerChipAccounting[hero].netChips`が正しいことの外部検証
+ *    として成立する
  *
  * 結果は`meta`テーブルへ書く。専用ストアを作らないのは、この監査が
  * 診断用の最新スナップショットで足り、Dexieのバージョンを消費する理由が
@@ -59,8 +64,12 @@ export interface ReplayLedgerAuditResult {
   listedHands: number
   /**
    * 台帳にあり、`hands`にも`apiEvents`にも無いHandId。
-   * **これだけが本物のキャプチャ欠損**（サーバは送ったがクライアントに
-   * 届いていない、または保存に失敗した）。
+   *
+   * 確定するのは「このクライアントに残っていない」ことだけで、**原因は
+   * 特定できない**（別デバイス／別セッションでのプレイ、拡張が動いて
+   * いなかった、フックの取りこぼし、保存失敗、サーバがこの接続へ
+   * 送らなかった）。ここを「サーバは送ったのに取り逃した」と読むと
+   * 原因調査を誤る。
    */
   notCapturedHandIds: number[]
   /**
@@ -278,7 +287,7 @@ export const auditReplayLedger = async (
     chipDiffMismatches.length > 0) {
     console.warn(
       `[replay-ledger] BattleType=${ledger.battleType}: ` +
-      `台帳${entries.length}件中、未キャプチャ${notCapturedHandIds.length}件 / ` +
+      `台帳${entries.length}件中、ローカル不在${notCapturedHandIds.length}件（原因未特定）/ ` +
       `派生欠落${derivationMissingHandIds.length}件 / ` +
       `チップ不一致${chipDiffMismatches.length}件`,
       { notCapturedHandIds, derivationMissingHandIds, chipDiffMismatches }
