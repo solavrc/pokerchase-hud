@@ -16,7 +16,7 @@ import {
 } from './undecoded-event-tracker'
 import { awaitIngestionDrain, markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
-import { getOperationGeneration, getOperationState } from './operation-state'
+import { getOperationGeneration, getOperationState, onOperationBecameIdle } from './operation-state'
 import { handleReplayPortMessage, releaseReplayRequestsForPort } from './replay-fetch-bridge'
 import { handleReplayLedgerPortMessage, type ReplayLedgerAuditDeps } from './replay-ledger-audit'
 import {
@@ -112,6 +112,17 @@ export const createReplayImportDeps = (service: PokerChaseService): ReplayImport
  * 各ストリームへの書き込み・自動同期トリガーを行う。
  */
 export const registerEventIngestion = (service: PokerChaseService): void => {
+  // 長時間操作（インポート/再構築/エクスポート/全削除）が終わったら、その間に
+  // 中断・見送りになったリプレイ取得を再開する。これが無いと、再開の契機が
+  // 次の309/203かポート再接続だけになり、ページを開いたまま次の対局をしない
+  // ユーザーのキューが3日の取得期限を越えて捨てられる。
+  // `drainReplayImportQueue` 側の不変条件がセッション状態を見るので、
+  // ここでは無条件に呼んでよい（セッション中なら何も起きない）。
+  onOperationBecameIdle(() => {
+    drainReplayImportQueue(createReplayImportDeps(service))
+      .catch(err => console.error('[background] Replay import drain after operation failed:', err))
+  })
+
   // Raw Event Lakeの耐久性バリア（release-blocker監査 finding A）:
   // `db.apiEvents.add()`を待たずにストリーム書き込みやセッションフックの副作用
   // （自動同期トリガー、`chrome.runtime.reload()`を呼びうる保留アップデート

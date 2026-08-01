@@ -4,6 +4,7 @@ import { ApiType } from '../types/api'
 import type { ReplayFetchItemResult } from '../replay/protocol'
 import {
   REPLAY_IMPORT_QUEUE_META_ID,
+  REPLAY_IMPORT_STATUS_META_ID,
   __resetReplayImportForTests,
   drainReplayImportQueue,
   enqueueReplayHandId,
@@ -185,6 +186,30 @@ describe('replay import layer', () => {
       // 書きに行かないため）。取りこぼしではなく、次の機会に回るだけ。
       expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1220, 1221])
       expect(await db.replayDetails.count()).toBe(0)
+    })
+
+    /**
+     * Codexレビュー指摘（P1）: `break` が抜けるのは `for` だけなので、そのまま
+     * 進むと削除の最中に `meta` への書き込みへ行く。`deleteAllData()` は
+     * このドレインを待たないため、`db.delete()` と競合する。
+     */
+    test('長時間操作で中断したときは meta にも書かない', async () => {
+      let busy = false
+      const deps = depsOf({ isBusy: () => busy })
+      markSessionInactive()
+      await enqueueReplayHandId(deps, 1230, NOW)
+      const queueBefore = await db.meta.get(REPLAY_IMPORT_QUEUE_META_ID)
+
+      fetchImpl = async handIds => {
+        busy = true
+        return handIds.map(handId => ({ handId, ok: true, detail: detailOf(handId) }))
+      }
+      await drainReplayImportQueue(deps)
+
+      // キューのメタ行は触られていない（updatedAt も含めて同一）
+      expect(await db.meta.get(REPLAY_IMPORT_QUEUE_META_ID)).toEqual(queueBefore)
+      // 実行結果のメタ行も作られていない
+      expect(await db.meta.get(REPLAY_IMPORT_STATUS_META_ID)).toBeUndefined()
     })
 
     test('実験フラグがOFFなら積みも取得もしない', async () => {

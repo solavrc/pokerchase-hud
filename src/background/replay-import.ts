@@ -529,6 +529,17 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
     if (!result.retryable) settled.add(entry.handId)
   }
 
+  // **長時間操作で中断したときは `meta` にも書かない**（MUST）。`break` が
+  // 抜けるのは `for` だけなので、そのまま進むと削除の最中に `updateQueue()` /
+  // `updateStatus()` が書き込みへ行く。`deleteAllData()` はこのドレインを
+  // 待たないため、`db.delete()` と競合してDexieがDBを作り直しうる。
+  // 中断時に落とすのは「この周回で分かったこと」だけで、キューの内容は
+  // 触っていないので次の機会にそのまま再開できる。
+  if (aborted && deps.isBusy?.()) {
+    console.info('[replay-import] 長時間操作の開始により中断しました（キューはそのまま）')
+    return
+  }
+
   const deferred = queued.filter(entry => !settled.has(entry.handId)).length
   await updateQueue(deps.db, deps.now(), current =>
     current.filter(entry => !settled.has(entry.handId))
