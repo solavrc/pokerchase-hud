@@ -177,8 +177,20 @@ const styles = {
   cell: {
     color: '#dddddd',
     textAlign: 'right' as const,
-    padding: '1px 3px',
+    // ヘッダーと同じ左右padding。列が1つ増えた分、240px幅の余裕を確保する。
+    padding: '1px 2px',
     whiteSpace: 'nowrap' as const,
+  } as CSSProperties,
+
+  /**
+   * ストリート列だけは折り返しを許す。レイズ応酬で表記が伸びたときに、
+   * `nowrap`のまま最小幅を押し上げてテーブル全体を240pxからはみ出させる
+   * （＝`overflowX: hidden`のscrollerに切られる）より、2行に折り返すほうが
+   * 情報を失わない。
+   */
+  streetCell: {
+    whiteSpace: 'normal' as const,
+    wordBreak: 'break-all' as const,
   } as CSSProperties,
 
   cellLeft: {
@@ -383,7 +395,7 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
                   )}
                 </td>
                 <td style={{ ...styles.cell, ...styles.cellLeft }}>{entry.preflopLine ?? '—'}</td>
-                <td style={{ ...styles.cell, ...styles.cellLeft }} data-testid="recent-hands-streets">
+                <td style={{ ...styles.cell, ...styles.cellLeft, ...styles.streetCell }} data-testid="recent-hands-streets">
                   {formatPostflopLines(entry.postflopLines) ?? <span style={styles.notWon}>—</span>}
                 </td>
                 <td style={styles.cell}>

@@ -214,7 +214,8 @@ export function derivePreflopLine(
  */
 export function isDealtIn(hand: Hand, playerId: number): boolean {
   if (playerId === -1) return false
-  return hand.seatUserIds.includes(playerId)
+  // 過去に書かれた行が欠損フィールドを持っていても落ちない（読み取り経路）。
+  return Array.isArray(hand.seatUserIds) && hand.seatUserIds.includes(playerId)
 }
 
 /** `ActionType`→1文字表記。`PostflopLines`のドキュメントコメント参照。 */
