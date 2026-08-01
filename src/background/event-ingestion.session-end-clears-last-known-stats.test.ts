@@ -65,6 +65,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { ApiType } from '../types'
 import { registerEventIngestion } from './event-ingestion'
 import { registerMessageRouter } from './message-router'
@@ -120,7 +121,7 @@ describe('session end (309) invalidates background lastKnownStats', () => {
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
     service.playerId = HERO_ID
 

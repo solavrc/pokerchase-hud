@@ -19,6 +19,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService from '../services/poker-chase-service'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { clearRecentHandsCache, getRecentHands } from '../services/recent-hands-service'
 import {
@@ -243,7 +244,7 @@ describe('Ring bust -> spectator -> rebuy lifecycle (audit_ref 8f34d5fc1c03)', (
     expect(FIXTURE_EVENTS.filter(event => event.ApiTypeId === ApiType.EVT_SESSION_RESULTS)).toHaveLength(0)
     expect(FIXTURE_EVENTS.some(event => 'IsRebuy' in event)).toBe(false)
 
-    const service = new PokerChaseService({ db })
+    const service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     const aggregatedHands: ApiEvent[][] = []

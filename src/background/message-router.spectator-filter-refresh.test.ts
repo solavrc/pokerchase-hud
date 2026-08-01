@@ -39,6 +39,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { ApiType } from '../types'
 import type { ApiEvent } from '../types'
 import { registerMessageRouter } from './message-router'
@@ -77,7 +78,7 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
     service.playerId = HERO_ID
 
@@ -99,16 +100,14 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
   })
 
   afterEach(async () => {
-    // Cancel PokerChaseService's pending 500ms-debounced persistState() timer
-    // -- without this, it can fire during a LATER test in this file (after
-    // the root beforeEach's storage reset but before that test's
-    // restoreState() read) and write this (now-defunct) service's
-    // playerId/latestEvtDeal into the shared chrome.storage.local mock,
-    // which the later test's `await service.ready` then restores. That leak
-    // broke the "latestEvtDeal not yet known" control test on slow CI runs
-    // (CI run 30687009635): the restored latestEvtDeal established the
-    // lineup mismatch and the refresh under test was skipped (0 write calls).
-    clearTimeout((service as unknown as { _persistStateTimer?: ReturnType<typeof setTimeout> })._persistStateTimer)
+    // 保留中の500msデバウンスpersistState()タイマーの取り消しは、上の
+    // trackServiceForTeardown()（test-service-teardown.ts）が登録するルート
+    // afterEachが行う。#336はここで直接clearTimeoutしていたが、privateフィールド
+    // 名の変更を型検査が捕まえられないため公開APIへ一本化した（同ファイルの
+    // 規約ガードテスト参照）。取り消さないと、このインスタンスのタイマーが後続
+    // テストのbeforeEach窓で発火し、playerId/latestEvtDealを共有storageモックへ
+    // 書き戻す — 「latestEvtDeal未設定」のcontrolテストが遅いCIで落ちた原因
+    // （CI run 30687009635）。
     jest.restoreAllMocks()
     delete (global as any).chrome.tabs
     setLastKnownStats([])

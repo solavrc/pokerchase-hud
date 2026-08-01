@@ -7,6 +7,7 @@ import type { HandLogEvent } from '../types/hand-log'
 import { ApiType } from '../types/api'
 import { BattleType } from '../types/game'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 
 const expected: string = [
@@ -693,7 +694,7 @@ const expected: string = [
 
 test('ApiEventsからPokerStars形式のログを生成できる', async () => {
   const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-  const service = new PokerChaseService({ db: dbMock })
+  const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
 
   const sessionEvent = event_timeline.find(e => e.ApiTypeId === ApiType.EVT_SESSION_DETAILS)!
   service.session.setName(sessionEvent.Name)

@@ -1,4 +1,5 @@
 import PokerChaseService, { PokerChaseDB } from '../src/app'
+import { trackServiceForTeardown } from './utils/test-service-teardown'
 import type { ApiEvent, PlayerStats } from '../src/app'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 
@@ -560,7 +561,7 @@ function withoutFixtureExcludedStats(results: PlayerStats[][]): PlayerStats[][] 
 
 test('ログから各プレイヤーのスタッツを計算できる', async () => {
   const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-  const service = new PokerChaseService({ db: dbMock })
+  const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
 
   const results: PlayerStats[][] = []
   service.statsOutputStream.on('data', (hand: PlayerStats[]) => results.push(hand))
@@ -594,7 +595,7 @@ test('ログから各プレイヤーのスタッツを計算できる', async ()
 
 test('WriteEntityStream derives both same-millisecond same-type actions in arrival order', async () => {
   const db = new PokerChaseDB(indexedDB, IDBKeyRange)
-  const service = new PokerChaseService({ db })
+  const service = trackServiceForTeardown(new PokerChaseService({ db }))
   await service.ready
 
   try {

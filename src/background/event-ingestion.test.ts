@@ -10,6 +10,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { ApiType } from '../types'
 import { registerEventIngestion } from './event-ingestion'
 import { REPLAY_PORT_LEDGER } from '../replay/protocol'
@@ -44,7 +45,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     // worker's lifetime); reset it so tests don't leak counts across the
     // fresh `db` instance each test creates.
     await resetUndecodedEventStats(db)
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     ;(chrome.runtime as any).onConnect = { addListener: jest.fn() }

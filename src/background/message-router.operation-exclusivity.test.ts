@@ -1,5 +1,6 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import type { ChromeMessage, MessageResponse } from '../types/messages'
 import { clearImportSession, getCurrentImportSession } from './import-export'
 import { registerMessageRouter } from './message-router'
@@ -17,7 +18,7 @@ describe('message-router operation exclusivity', () => {
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
     setOperationState({ type: 'idle' })
     clearImportSession()

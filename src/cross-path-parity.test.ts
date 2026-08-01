@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from './app'
+import { trackServiceForTeardown } from './utils/test-service-teardown'
 import { EntityConverter } from './entity-converter'
 import { createImportExportHandlers } from './background/import-export'
 import { setOperationState } from './background/operation-state'
@@ -125,7 +126,7 @@ const replay = async (path: ReplayPath, events: ApiEvent[], seed?: SessionSeed) 
 
   const db = new PokerChaseDB(indexedDB, IDBKeyRange)
   await db.open()
-  const service = new PokerChaseService({ db })
+  const service = trackServiceForTeardown(new PokerChaseService({ db }))
   await service.ready
   applySessionSeed(service, seed)
 
@@ -164,9 +165,12 @@ const replay = async (path: ReplayPath, events: ApiEvent[], seed?: SessionSeed) 
 
     return await takeCanonicalSnapshot(service, db)
   } finally {
-    clearTimeout((service as unknown as {
-      _persistStateTimer?: ReturnType<typeof setTimeout>
-    })._persistStateTimer)
+    // replay() は1テスト内で4経路ぶん連続で呼ばれる。ルート afterEach
+    // （test-service-teardown.ts）の取り消しはテスト終了時なので、ここで
+    // 明示的に取り消さないと、直前の経路のインスタンスの500msタイマーが
+    // 次の経路の `await service.ready`（restoreState()）より前に発火し、
+    // 前の経路の playerId/session を次の経路へ持ち込んでしまう。
+    service.cancelPendingPersist()
     setOperationState({ type: 'idle' })
     db.close()
     await db.delete()

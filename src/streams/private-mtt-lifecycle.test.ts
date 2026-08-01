@@ -2,6 +2,7 @@ import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { EntityConverter } from '../entity-converter'
 import PokerChaseService from '../services/poker-chase-service'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { clearRecentHandsCache, getRecentHands } from '../services/recent-hands-service'
 import { PRIVATE_MTT_LIFECYCLE_FIXTURE } from '../test-fixtures/private-mtt-lifecycle'
 import {
@@ -78,7 +79,7 @@ describe('private MTT rebuy/table-move lifecycle (audit_ref b1feff03635a)', () =
 
   test('continues after rebuy results, re-anchors seats, and preserves one tournament grouping', async () => {
     const fixture = PRIVATE_MTT_LIFECYCLE_FIXTURE
-    const service = new PokerChaseService({ db })
+    const service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     const completedLineups: number[][] = []

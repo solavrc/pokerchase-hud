@@ -1,5 +1,6 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { createImportExportHandlers } from './import-export'
 import { getOperationState, setOperationState } from './operation-state'
 
@@ -10,7 +11,7 @@ describe('importData cleanup', () => {
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
     setOperationState({ type: 'idle' })
   })

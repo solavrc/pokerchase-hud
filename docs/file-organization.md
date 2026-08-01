@@ -219,6 +219,7 @@
         ├── runtime-port-manager.ts
         ├── starting-hand-rankings.ts  # 169 starting hand rankings
         ├── table-size.ts      # classifyTableSizeLayer (full/4p/3p/hu)
+        ├── test-service-teardown.ts   # Test-only: cancels pending PokerChaseService persist timers
         ├── test-utils.tsx     # Shared test helpers
         └── version-compare.ts # Numeric-dotted version comparator
 ```

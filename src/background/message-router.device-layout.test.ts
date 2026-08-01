@@ -1,5 +1,6 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import type { ChromeMessage, MessageResponse } from '../types/messages'
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
 import {
@@ -32,7 +33,7 @@ describe('message-router device-local UI layout', () => {
     ;(chrome.tabs.sendMessage as jest.Mock).mockResolvedValue(undefined)
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     ;(chrome.runtime.onMessage.addListener as jest.Mock).mockClear()

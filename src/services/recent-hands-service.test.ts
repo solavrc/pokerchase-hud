@@ -17,6 +17,7 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import PokerChaseService from './poker-chase-service'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import {
   getRecentHands,
   clearRecentHandsCache,
@@ -112,7 +113,7 @@ describe('RecentHandsService', () => {
     clearRecentHandsCache()
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
   })
 

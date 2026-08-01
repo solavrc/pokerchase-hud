@@ -1,5 +1,6 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { EntityConverter } from '../entity-converter'
 import { MTT_TABLE_MOVE_FIXTURE } from '../test-fixtures/mtt-table-move-lifecycle'
 import { ApiType, type Session } from '../types'
@@ -46,7 +47,7 @@ describe('hand start timestamps', () => {
 
     await db.apiEvents.bulkPut(events.map(event => ({ ...event, sequence: 0 })))
 
-    const service = new PokerChaseService({ db })
+    const service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
     for (const event of events) service.handAggregateStream.write(event)
     await service.handAggregateStream.whenIdle()

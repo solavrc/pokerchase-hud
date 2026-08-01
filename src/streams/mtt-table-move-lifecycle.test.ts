@@ -1,5 +1,6 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { getPositionalStats, clearPositionalStatsCache } from '../services/positional-stats-service'
 import { getRecentHands, clearRecentHandsCache } from '../services/recent-hands-service'
 import { MTT_TABLE_MOVE_FIXTURE } from '../test-fixtures/mtt-table-move-lifecycle'
@@ -17,7 +18,7 @@ describe('sanitized MTT table-move lifecycle fixture', () => {
     clearRecentHandsCache()
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
   })
 

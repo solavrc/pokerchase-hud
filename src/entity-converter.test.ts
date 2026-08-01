@@ -12,6 +12,7 @@ import {
 } from '../src/types'
 import type { ApiEvent, Session } from '../src/types'
 import PokerChaseService, { PokerChaseDB } from '../src/app'
+import { trackServiceForTeardown } from './utils/test-service-teardown'
 import { SessionState } from '../src/services/poker-chase-service'
 import type { Action } from '../src/types'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
@@ -1815,7 +1816,7 @@ describe('EntityConverter', () => {
 
       // --- ライブ記録パイプライン: WriteEntityStream経由 ---
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-      const service = new PokerChaseService({ db: dbMock })
+      const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
       // restoreState()（コンストラクタ内でトリガーされる非同期処理）の完了を待たないと、
       // handAggregateStreamへの書き込みとレースしてIndexedDBの読み取りが空になることがある
       await service.ready
@@ -1986,7 +1987,7 @@ describe('EntityConverter', () => {
 
       // --- ライブ記録パイプライン: WriteEntityStream経由 ---
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-      const service = new PokerChaseService({ db: dbMock })
+      const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
       await service.ready
 
       // --- インポート/リビルドパイプライン: EntityConverter経由 ---
@@ -2154,7 +2155,7 @@ describe('EntityConverter', () => {
 
       // --- ライブ記録パイプライン: WriteEntityStream経由 ---
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-      const service = new PokerChaseService({ db: dbMock })
+      const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
       await service.ready
       const liveActions = await pipeEventsAndWaitForActions(service, dbMock, events, {
         handId: 999020,
@@ -2329,7 +2330,7 @@ describe('EntityConverter', () => {
 
       // --- ライブ記録パイプライン: WriteEntityStream経由 ---
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-      const service = new PokerChaseService({ db: dbMock })
+      const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
       await service.ready
       for (const event of tableAEvents) service.handAggregateStream.write(event)
       await service.handAggregateStream.whenIdle()
@@ -2462,7 +2463,7 @@ describe('EntityConverter', () => {
 
       // --- ライブ記録パイプライン: WriteEntityStream経由 ---
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-      const service = new PokerChaseService({ db: dbMock })
+      const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
       await service.ready
       service.session.setBattleType(BattleType.SIT_AND_GO)
       for (const event of events) service.handAggregateStream.write(event)
@@ -2646,7 +2647,7 @@ describe('EntityConverter', () => {
 
       // --- ライブ記録パイプライン: WriteEntityStream経由 ---
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-      const service = new PokerChaseService({ db: dbMock })
+      const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
       await service.ready
       for (const event of events) service.handAggregateStream.write(event)
       await service.handAggregateStream.whenIdle()
@@ -2867,7 +2868,7 @@ describe('EntityConverter', () => {
 
       // --- ライブ記録パイプライン: WriteEntityStream経由 ---
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-      const service = new PokerChaseService({ db: dbMock })
+      const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
       await service.ready
 
       // --- インポート/リビルドパイプライン: EntityConverter経由 ---
@@ -3012,7 +3013,7 @@ describe('EntityConverter', () => {
 
       // --- ライブ記録パイプライン: WriteEntityStream経由 ---
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-      const service = new PokerChaseService({ db: dbMock })
+      const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
       await service.ready
       service.session.setBattleType(BattleType.SIT_AND_GO)
 
@@ -3217,7 +3218,7 @@ describe('EntityConverter', () => {
       expect(importRiverCall?.actionDetails).not.toContain(ActionDetail.RIVER_CALL_WON)
 
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-      const service = new PokerChaseService({ db: dbMock })
+      const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
       await service.ready
       service.session.setBattleType(BattleType.SIT_AND_GO)
       const liveActions = await pipeEventsAndWaitForActions(service, dbMock, events, {
@@ -3536,7 +3537,7 @@ describe('EntityConverter', () => {
 
       // --- ライブ記録パイプライン: WriteEntityStream経由（既に正しく動作している基準） ---
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-      const service = new PokerChaseService({ db: dbMock })
+      const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
       await service.ready
       service.session.setBattleType(BattleType.SIT_AND_GO)
       const liveHandActions = await pipeEventsAndWaitForActions(service, dbMock, events, {
@@ -3742,7 +3743,7 @@ describe('EntityConverter', () => {
 
       // --- ライブ記録パイプライン: WriteEntityStream経由 ---
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-      const service = new PokerChaseService({ db: dbMock })
+      const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
       await service.ready
       for (const event of events) service.handAggregateStream.write(event)
       const livePhases = await pipeEventsAndWaitForReady(
@@ -3937,7 +3938,7 @@ describe('EntityConverter', () => {
 
       // --- ライブ記録パイプライン: WriteEntityStream経由 ---
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-      const service = new PokerChaseService({ db: dbMock })
+      const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
       await service.ready
       for (const event of events) service.handAggregateStream.write(event)
       const livePhases = await pipeEventsAndWaitForReady(
@@ -4103,7 +4104,7 @@ describe('EntityConverter', () => {
       const importPhasesForHand = importResult.phases.filter(p => p.handId === 34567)
 
       const dbMock = new PokerChaseDB(indexedDB, IDBKeyRange)
-      const service = new PokerChaseService({ db: dbMock })
+      const service = trackServiceForTeardown(new PokerChaseService({ db: dbMock }))
       await service.ready
       for (const event of events) service.handAggregateStream.write(event)
       const livePhases = await pipeEventsAndWaitForReady(

@@ -35,6 +35,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { ApiType } from '../types'
 import type { ApiEvent } from '../types'
 import { AutoSyncService } from './auto-sync-service'
@@ -83,7 +84,7 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     sendMessageMock.mockResolvedValue(undefined)
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
     // rebuildLocalEntities() reads the live singleton off `self.service`
     // (see auto-sync-service.ts) -- in a jsdom jest environment `self` is

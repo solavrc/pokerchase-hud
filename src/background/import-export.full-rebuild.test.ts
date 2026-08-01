@@ -28,6 +28,7 @@
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { createImportExportHandlers } from './import-export'
 import { getOperationState, setOperationState, type OperationState } from './operation-state'
 import { EntityConverter } from '../entity-converter'
@@ -107,7 +108,7 @@ const runWithFreshDb = async <T>(
 ): Promise<T> => {
   const db = new PokerChaseDB(indexedDB, IDBKeyRange)
   await db.open()
-  const service = new PokerChaseService({ db })
+  const service = trackServiceForTeardown(new PokerChaseService({ db }))
   await service.ready
   // These tests assert persisted entities directly; the post-import stats
   // broadcast (statsOutputStream -> ReadEntityStream) is irrelevant here and
@@ -117,12 +118,11 @@ const runWithFreshDb = async <T>(
   try {
     return await fn({ db, service, handlers })
   } finally {
-    // Cancel PokerChaseService's pending 500ms-debounced persistState() timer
-    // -- without this, it can fire during a LATER test in this file and
-    // write this (now-defunct) service's session into the shared
-    // chrome.storage.local mock (test-setup.ts's mock storage is a single
-    // module-scoped object).
-    clearTimeout((service as unknown as { _persistStateTimer?: ReturnType<typeof setTimeout> })._persistStateTimer)
+    // このインスタンスはここで用済み。ルート afterEach
+    // （test-service-teardown.ts）も取り消すが、同一テスト内で withService()
+    // が複数回呼ばれても前のインスタンスのタイマーが残らないよう、ここでも
+    // 明示的に取り消す。
+    service.cancelPendingPersist()
     db.close()
     await db.delete()
   }
