@@ -74,7 +74,24 @@ export const ImportExportSection = ({
   const [rebuildAdvisoryPending, setRebuildAdvisoryPending] = useState(false)
   const [importOperationActive, setImportOperationActive] = useState(false)
   const importOperationActiveRef = useRef(false)
+  const openImportPageInFlightRef = useRef(false)
+  /**
+   * Bumped every time this popup starts tracking an import. The storage-result
+   * handler captures it before its async getOperationState round trip and
+   * re-checks it at the commit point, so a response describing a *finished*
+   * import can never release a *newer* one that started while it was in
+   * flight. Same generation-guard shape UIScaleSection uses for its scale
+   * writes.
+   */
+  const importTrackingGenerationRef = useRef(0)
   const [rebuildOrigin, setRebuildOrigin] = useState<'import' | 'manual' | null>(null)
+
+  /** Single entry point for "an import is now being tracked". */
+  const beginTrackingImport = () => {
+    importTrackingGenerationRef.current += 1
+    importOperationActiveRef.current = true
+    setImportOperationActive(true)
+  }
 
   const isImporting = importOperationActive && rebuildOrigin !== 'import'
   const isAnyOperationInProgress = importOperationActive || exportState !== 'idle' || rebuildState !== 'idle'
@@ -96,8 +113,7 @@ export const ImportExportSection = ({
           setExportTotal(state.total ?? 0)
           setOperationStatus(state.message ?? '')
         } else if (state.type === 'import') {
-          importOperationActiveRef.current = true
-          setImportOperationActive(true)
+          beginTrackingImport()
           setImportStatus('')
           setImportProgress(state.progress ?? 0)
           setImportProcessed(state.processed ?? 0)
@@ -108,8 +124,7 @@ export const ImportExportSection = ({
           setRebuildState('rebuilding')
           setRebuildOrigin(state.origin === 'import' ? 'import' : 'manual')
           if (state.origin === 'import') {
-            importOperationActiveRef.current = true
-            setImportOperationActive(true)
+            beginTrackingImport()
           }
           setRebuildProgress(state.progress ?? 0)
           setOperationStatus(state.message ?? '')
@@ -160,8 +175,7 @@ export const ImportExportSection = ({
             setRebuildState('rebuilding')
             setRebuildOrigin(isImportRebuild ? 'import' : 'manual')
             if (isImportRebuild) {
-              importOperationActiveRef.current = true
-              setImportOperationActive(true)
+              beginTrackingImport()
             }
             setRebuildProgress(0)
             setOperationStatus(msg.message ?? '')
@@ -188,8 +202,7 @@ export const ImportExportSection = ({
       }
 
       if (isImportProgressMessage(message)) {
-        importOperationActiveRef.current = true
-        setImportOperationActive(true)
+        beginTrackingImport()
         setImportStatus('')
         setImportProgress(message.progress)
         setImportProcessed(message.processed)
@@ -240,6 +253,50 @@ export const ImportExportSection = ({
       if (changes[IMPORT_RESULT_STORAGE_KEY]?.newValue) {
         const importResult = changes[IMPORT_RESULT_STORAGE_KEY].newValue as ImportResultRecord
         setImportStatus(importResult.message)
+        // Release the same state the importStatus message path above releases:
+        // that message never arrives when the import page itself fails
+        // mid-transfer, because ImportPage's catch writes this key directly and
+        // only sends importDataCancel, which broadcasts nothing. Leaving
+        // importOperationActive set keeps isAnyOperationInProgress true, which
+        // blanks displayStatus (hiding this very error) and holds export and
+        // rebuild disabled.
+        //
+        // The write alone does not prove the tracked operation ended, so ask
+        // the background -- it owns exclusivity and is the authority. A
+        // duplicate import page rejected as busy writes its own error result
+        // here while the FIRST import is still running: its importDataInit
+        // never got a session, so that result says nothing about the operation
+        // this popup is tracking. Releasing on it would blank a live import's
+        // progress and re-enable buttons the background still rejects.
+        // Hold only for the import this popup is tracking -- NOT for merely
+        // "something is busy". importDataCancel drops the slot to idle, and an
+        // auto-sync already parked in waitForOperationIdle() can claim it as
+        // 'sync' before this result arrives. Nothing would ever release the
+        // import state then: the transfer-error path sends no importStatus, and
+        // the popup has no sync listener and no re-check when an unrelated
+        // operation ends -- the exact stuck state this handler exists to fix.
+        // Unknown state (timeout) also releases, per sendMessageWithTimeout's
+        // fail-open contract.
+        const generationAtQuery = importTrackingGenerationRef.current
+        void sendMessageWithTimeout<{ operationState?: OperationState }>(
+          { action: 'getOperationState' }
+        ).then(response => {
+          // The answer describes the moment it was taken, not this one. If a
+          // retry in the import page claimed the slot while the round trip was
+          // open, this popup is already tracking that newer import -- releasing
+          // on a stale "idle" would blank a live import's progress and re-enable
+          // buttons the background rejects.
+          if (importTrackingGenerationRef.current !== generationAtQuery) return
+          const state = response?.operationState
+          const trackedImportStillRunning =
+            state?.type === 'import' ||
+            (state?.type === 'rebuild' && state.origin === 'import')
+          if (trackedImportStillRunning) return
+          importOperationActiveRef.current = false
+          setImportOperationActive(false)
+          setRebuildOrigin(null)
+          setOperationStatus('')
+        })
       }
     }
 
@@ -280,10 +337,23 @@ export const ImportExportSection = ({
   }, [])
 
   const handleImportClick = useCallback(async () => {
+    // Single-flight. query + create is a check-then-act pair: a second click
+    // while the first round trip is still open runs its own query, still sees
+    // no import page, and creates a second one. Both pages then race for the
+    // single import operation slot and the loser writes its rejection into
+    // lastImportResult, surfacing as a failure the user never started.
+    if (openImportPageInFlightRef.current) return
+    openImportPageInFlightRef.current = true
     try {
       const importPageUrl = getImportPageUrl()
       const tabs = await chrome.tabs.query({})
-      const existingTab = tabs.find(tab => tab.url === importPageUrl)
+      // A tab whose navigation has not committed yet carries the destination
+      // in pendingUrl only -- url is empty or still the previous page. Matching
+      // on url alone misses the import page opened moments ago and opens
+      // another one.
+      const existingTab = tabs.find(
+        tab => tab.url === importPageUrl || tab.pendingUrl === importPageUrl
+      )
       if (existingTab?.id !== undefined) {
         await chrome.tabs.update(existingTab.id, { active: true })
         if (existingTab.windowId !== undefined) {
@@ -295,6 +365,8 @@ export const ImportExportSection = ({
     } catch (error) {
       console.error('Failed to open the NDJSON import page:', error)
       setImportStatus('インポートページを開けませんでした。もう一度お試しください。')
+    } finally {
+      openImportPageInFlightRef.current = false
     }
   }, [])
 
