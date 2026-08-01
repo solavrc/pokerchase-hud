@@ -25,6 +25,7 @@
  * （docs/replay-api.md）、これは遡及監査ではなく**前向きの監視**である。
  * 過去に記録済みの欠損を後から検証することはできない。
  */
+import Dexie from 'dexie'
 import type { PokerChaseDB } from '../db/poker-chase-db'
 import { ApiType } from '../types/api'
 import {
@@ -70,6 +71,18 @@ export interface ReplayLedgerAuditResult {
   derivationMissingHandIds: number[]
   /** ローカルにあるが会計が未確定で照合できなかったハンド数。 */
   unverifiableHands: number
+  /**
+   * ローカルが観測を始める前のハンド数。判定対象から外したもの。
+   *
+   * 新規インストール直後・実験フラグを初めて有効にした直後・全データ削除後に
+   * 一覧を開くと、台帳には過去3日分が載る一方でローカルにそれが無いのは
+   * **正常**。これを欠損に数えると初回だけで最大100件の偽陽性を永続化する。
+   *
+   * 観測開始の下限はローカル最古のハンドの時刻を使う。観測期間の**途中**に
+   * 空白がある場合（拡張を一時的に切っていた等）は依然として欠損として
+   * 報告される ―― そこは本当に区別が付かないため。
+   */
+  outOfObservationWindowHands: number
   chipDiffMismatches: ReplayLedgerChipDiffMismatch[]
 }
 
@@ -82,6 +95,40 @@ export interface ReplayLedgerAuditResult {
  */
 const HAND_RESULTS_LOOKUP_LEAD_MS = 5 * 60_000
 const HAND_RESULTS_LOOKUP_TAIL_MS = 30 * 60_000
+
+/**
+ * 時間範囲で見つからなかったHandIdを、範囲を捨てて全走査で確かめる。
+ *
+ * `StartTime` はサーバ時刻、`apiEvents.timestamp` はクライアントの `Date.now()`
+ * なので、端末時計がずれていたり1ハンドが想定より長引いたりすると、生行が
+ * 実在しても上の時間範囲から外れる。**限定的な時間検索の空振りを
+ * 「イベントが届かなかった証拠」として扱ってはいけない。**
+ *
+ * 走査するのは、時間範囲で見つからず「未キャプチャ」と断定しかけた
+ * HandIdだけ。健全なら候補は空で、この関数は1行も読まない。
+ */
+const confirmCapturesByFullScan = async (
+  db: PokerChaseDB,
+  candidates: number[]
+): Promise<Set<number>> => {
+  const found = new Set<number>()
+  if (candidates.length === 0) return found
+  const wanted = new Set(candidates)
+  await db.apiEvents
+    .where('[ApiTypeId+timestamp]')
+    .between(
+      [ApiType.EVT_HAND_RESULTS, Dexie.minKey],
+      [ApiType.EVT_HAND_RESULTS, Dexie.maxKey],
+      true,
+      true
+    )
+    .until(() => wanted.size === 0, true)
+    .each(row => {
+      const handId = (row as { HandId?: unknown }).HandId
+      if (isPositiveHandId(handId) && wanted.delete(handId)) found.add(handId)
+    })
+  return found
+}
 
 /**
  * 台帳の時間範囲に入る`EVT_HAND_RESULTS`のHandIdを、Raw Event Lakeから集める。
@@ -126,7 +173,16 @@ export const auditReplayLedger = async (
   ledger: ReplayLedger,
   now: number
 ): Promise<ReplayLedgerAuditResult> => {
-  const entries = ledger.hands.slice(0, REPLAY_LEDGER_MAX_ENTRIES)
+  const all = ledger.hands.slice(0, REPLAY_LEDGER_MAX_ENTRIES)
+
+  // 観測開始前のハンドは判定しない（新規インストール・再有効化・全データ削除後）
+  const oldestLocal = await db.hands.orderBy('approxTimestamp').first()
+  const observationFloorMs = oldestLocal?.approxTimestamp
+  const entries = observationFloorMs === undefined
+    ? []
+    : all.filter(entry => entry.startTime * 1000 >= observationFloorMs)
+  const outOfObservationWindowHands = all.length - entries.length
+
   const localHands = await db.hands.bulkGet(entries.map(entry => entry.handId))
   const capturedHandIds = await collectCapturedHandIds(db, entries.map(entry => entry.startTime))
 
@@ -162,12 +218,26 @@ export const auditReplayLedger = async (
     }
   })
 
+  // 時間範囲の空振りを欠損と断定しない。クライアント時計のずれで生行が
+  // 範囲外に落ちうるので、断定しかけたものだけ全走査で確かめる。
+  const lateFound = await confirmCapturesByFullScan(db, notCapturedHandIds)
+  if (lateFound.size > 0) {
+    for (let i = notCapturedHandIds.length - 1; i >= 0; i--) {
+      const handId = notCapturedHandIds[i]!
+      if (!lateFound.has(handId)) continue
+      notCapturedHandIds.splice(i, 1)
+      derivationMissingHandIds.push(handId)
+    }
+    derivationMissingHandIds.sort((a, b) => a - b)
+  }
+
   const result: ReplayLedgerAuditResult = {
     checkedAt: now,
     battleType: ledger.battleType,
     cardOpenEndDate: ledger.cardOpenEndDate,
     isExpiredCardOpen: ledger.isExpiredCardOpen,
     listedHands: entries.length,
+    outOfObservationWindowHands,
     notCapturedHandIds,
     derivationMissingHandIds,
     unverifiableHands,
@@ -195,17 +265,39 @@ export const auditReplayLedger = async (
 }
 
 /**
+ * 監査の実行に必要な依存。値ではなく取得関数で受けるのは、**待ってから読む**
+ * 必要があるため（下記 `handleReplayLedgerPortMessage` の説明を参照）。
+ */
+export interface ReplayLedgerAuditDeps {
+  db: PokerChaseDB
+  /**
+   * 監査を始める前に待つもの。取り込みキューの決着（直前の
+   * `EVT_HAND_RESULTS` のDB書き込み）と、Service Worker起動時の状態復元。
+   */
+  waitUntilConsistent: () => Promise<void>
+  getPlayerId: () => number | undefined
+  now: () => number
+}
+
+/**
  * ポートに届いたメッセージが台帳なら処理して`true`を返す。
  *
- * 取り込みキューには載せない。`apiEvents`へ書かないので耐久性バリアの対象に
- * なる副作用が無く、載せるとライブイベントの処理を待たせるだけになる
- * （`event-ingestion.ts`冒頭の直列化の趣旨を参照）。
+ * 取り込みキューには**載せない**。`apiEvents`へ書かないので耐久性バリアの
+ * 対象になる副作用が無く、載せるとライブイベントの処理を待たせるだけになる
+ * （`event-ingestion.ts`冒頭の直列化の趣旨）。
+ *
+ * ただし**待つ**必要はある。同じポートから直前に届いた`EVT_HAND_RESULTS`の
+ * ハンドラーは書き込みをキューに積むだけなので、待たずに照会すると、
+ * 受信済みのハンドを「未キャプチャ」に分類しうる。キューを迂回することと
+ * キューの決着を待つことは両立する（読み手側で解決する）。
+ *
+ * `playerId`も待ってから読む。コールドスタート直後は`restoreState()`が
+ * 終わっておらず`undefined`のことがあり、その値で固定するとローカルの全ハンドが
+ * 照合不能に落ちてチップ不一致の検出が丸ごと失われる。
  */
 export const handleReplayLedgerPortMessage = (
   message: unknown,
-  db: PokerChaseDB,
-  playerId: number | undefined,
-  now: number
+  deps: ReplayLedgerAuditDeps
 ): boolean => {
   if (typeof message !== 'object' || message === null) return false
   if ((message as { type?: unknown }).type !== REPLAY_PORT_LEDGER) return false
@@ -216,12 +308,16 @@ export const handleReplayLedgerPortMessage = (
   if (!Array.isArray(ledger.hands)) return true
   if (ledger.hands.length > REPLAY_LEDGER_MAX_ENTRIES) return true
 
-  auditReplayLedger(db, playerId, {
+  const snapshot: ReplayLedger = {
     battleType: typeof ledger.battleType === 'number' ? ledger.battleType : -1,
     cardOpenEndDate: typeof ledger.cardOpenEndDate === 'number' ? ledger.cardOpenEndDate : 0,
     isExpiredCardOpen: ledger.isExpiredCardOpen === true,
     hands: ledger.hands
-  }, now).catch(error => {
+  }
+  void (async () => {
+    await deps.waitUntilConsistent()
+    await auditReplayLedger(deps.db, deps.getPlayerId(), snapshot, deps.now())
+  })().catch(error => {
     console.error('[replay-ledger] 台帳の突き合わせに失敗しました:', error)
   })
   return true

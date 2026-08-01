@@ -14,7 +14,7 @@ import {
   INVALID_API_TYPE_ID_BUCKET,
   recordUndecodedEvent
 } from './undecoded-event-tracker'
-import { markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
+import { awaitIngestionDrain, markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
 import { getOperationState } from './operation-state'
 import { handleReplayPortMessage, releaseReplayRequestsForPort } from './replay-fetch-bridge'
@@ -140,7 +140,19 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
 
         // 受動取得した台帳（`/replay/list`）の突き合わせ。`apiEvents`へは
         // 書かないので、同じ理由で取り込みキューには載せない。
-        if (handleReplayLedgerPortMessage(message, service.db, service.playerId, Date.now())) {
+        if (handleReplayLedgerPortMessage(message, {
+          db: service.db,
+          // キューには載せないが、決着は待つ。直前のEVT_HAND_RESULTSの書き込みが
+          // 済む前に照会すると、受信済みのハンドを未キャプチャに分類しうる。
+          // 起動直後は状態復元も待つ（playerIdがundefinedのままだと全ハンドが
+          // 照合不能に落ちる）。
+          waitUntilConsistent: async () => {
+            await service.ready
+            await awaitIngestionDrain()
+          },
+          getPlayerId: () => service.playerId,
+          now: () => Date.now()
+        })) {
           return Promise.resolve()
         }
 

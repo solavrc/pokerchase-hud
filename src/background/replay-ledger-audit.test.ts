@@ -12,9 +12,13 @@ import type { Hand } from '../types/entities'
 const HERO = 561384657
 const NOW = 1785555471000
 
-const hand = (id: number, netChips: number | null): Hand => ({
+// 台帳の startTime(秒) より古い時刻。観測開始フロアがこれになるので、
+// 検体の台帳エントリはすべて判定対象に入る。
+const OLDEST_LOCAL_MS = 1785499000_000
+
+const hand = (id: number, netChips: number | null, atMs = OLDEST_LOCAL_MS): Hand => ({
   id,
-  approxTimestamp: NOW - 3600_000,
+  approxTimestamp: atMs,
   seatUserIds: [HERO, 686412100, -1, -1, -1, -1],
   winningPlayerIds: [],
   smallBlind: 390,
@@ -33,6 +37,16 @@ const ledgerOf = (hands: ReplayLedger['hands']): ReplayLedger => ({
   cardOpenEndDate: 0,
   isExpiredCardOpen: false,
   hands
+})
+
+const depsOf = (db: PokerChaseDB, overrides: Partial<{
+  waitUntilConsistent: () => Promise<void>
+  getPlayerId: () => number | undefined
+}> = {}) => ({
+  db,
+  waitUntilConsistent: overrides.waitUntilConsistent ?? (async () => undefined),
+  getPlayerId: overrides.getPlayerId ?? (() => HERO as number | undefined),
+  now: () => NOW
 })
 
 /**
@@ -98,6 +112,56 @@ describe('replay ledger audit', () => {
 
     expect(result.derivationMissingHandIds).toEqual([701])
     expect(result.notCapturedHandIds).toEqual([702])
+  })
+
+  // Codexレビュー指摘: 新規インストール直後・再有効化直後・全データ削除後は、
+  // 台帳に過去3日分が載る一方でローカルに無いのが正常。これを欠損に数えると
+  // 初回だけで最大100件の偽陽性を永続化する。
+  test('観測開始より前のハンドは欠損に数えず、対象から外す', async () => {
+    // ローカル最古が 1785500100 秒 → それより前の台帳エントリは判定しない
+    await db.hands.bulkPut([hand(800, 500, 1785500100_000)])
+
+    const result = await auditReplayLedger(db, HERO, ledgerOf([
+      { handId: 798, startTime: 1785400000, chipDiff: 10 },
+      { handId: 799, startTime: 1785500000, chipDiff: 20 },
+      { handId: 800, startTime: 1785500100, chipDiff: 500 }
+    ]), NOW)
+
+    expect(result.outOfObservationWindowHands).toBe(2)
+    expect(result.listedHands).toBe(1)
+    expect(result.notCapturedHandIds).toEqual([])
+  })
+
+  test('ローカルが空なら全件を対象外にする（新規インストール直後）', async () => {
+    const result = await auditReplayLedger(db, HERO, ledgerOf([
+      { handId: 900, startTime: 1785500000, chipDiff: 10 },
+      { handId: 901, startTime: 1785500060, chipDiff: 20 }
+    ]), NOW)
+
+    expect(result.outOfObservationWindowHands).toBe(2)
+    expect(result.notCapturedHandIds).toEqual([])
+  })
+
+  // Codexレビュー指摘: StartTimeはサーバ時刻、apiEvents.timestampはクライアントの
+  // Date.now()。端末時計がずれていると生行が実在しても時間範囲から外れる。
+  // 限定的な時間検索の空振りを「イベント非到着の証拠」にしてはいけない。
+  test('端末時計が大きくずれていても、生行があれば欠損と断定しない', async () => {
+    await db.hands.bulkPut([hand(1000, 500)])
+    // 台帳の startTime より 10 日ぶん後ろにずれた受信時刻（時間範囲の外）
+    await db.apiEvents.add({
+      timestamp: 1785500060_000 + 10 * 86_400_000,
+      ApiTypeId: ApiType.EVT_HAND_RESULTS,
+      sequence: 0,
+      HandId: 1001
+    } as never)
+
+    const result = await auditReplayLedger(db, HERO, ledgerOf([
+      { handId: 1000, startTime: 1785500000, chipDiff: 500 },
+      { handId: 1001, startTime: 1785500060, chipDiff: 300 }
+    ]), NOW)
+
+    expect(result.notCapturedHandIds).toEqual([])
+    expect(result.derivationMissingHandIds).toEqual([1001])
   })
 
   test('ChipDiffとnetChipsの食い違いを報告する', async () => {
@@ -166,24 +230,57 @@ describe('replay ledger audit', () => {
 
   describe('handleReplayLedgerPortMessage', () => {
     test('台帳以外のメッセージは自分宛でないと申告する', () => {
-      expect(handleReplayLedgerPortMessage({ ApiTypeId: 303 }, db, HERO, NOW)).toBe(false)
-      expect(handleReplayLedgerPortMessage(null, db, HERO, NOW)).toBe(false)
+      expect(handleReplayLedgerPortMessage({ ApiTypeId: 303 }, depsOf(db))).toBe(false)
+      expect(handleReplayLedgerPortMessage(null, depsOf(db))).toBe(false)
     })
 
     // 形が違ってもイベント処理へ落とさない。不正なAPIイベントとして
     // 扱われるほうが紛らわしい。
     test('自分宛だが形が違う場合も処理済みとして返し、DBを触らない', async () => {
       expect(handleReplayLedgerPortMessage(
-        { type: REPLAY_PORT_LEDGER, hands: 'not-an-array' }, db, HERO, NOW
+        { type: REPLAY_PORT_LEDGER, hands: 'not-an-array' }, depsOf(db)
       )).toBe(true)
       expect(handleReplayLedgerPortMessage(
         { type: REPLAY_PORT_LEDGER, hands: Array.from({ length: 201 }, (_, i) => ({ handId: i + 1, startTime: 0, chipDiff: 0 })) },
-        db, HERO, NOW
+        depsOf(db)
       )).toBe(true)
       // こちらは同期的な早期リターンの検証なので固定待ちで足りる（監査が
       // 走ってしまう変異なら、待ち時間に関係なく最終的に書き込まれる）。
       await new Promise(resolve => setTimeout(resolve, 50))
       expect(await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)).toBeUndefined()
+    })
+
+    // Codexレビュー指摘: 直前のEVT_HAND_RESULTSの書き込みは ingestionQueue に
+    // 積まれるだけなので、待たずに照会すると受信済みのハンドを未キャプチャに
+    // 分類しうる。復元前の playerId を固定する問題も同じ待ちで閉じる。
+    test('取り込みの決着と状態復元を待ってから照合する', async () => {
+      let released!: () => void
+      const gate = new Promise<void>(resolve => { released = resolve })
+      let playerIdReadyAt = -1
+      let reads = 0
+
+      expect(handleReplayLedgerPortMessage({
+        type: REPLAY_PORT_LEDGER,
+        battleType: 0,
+        cardOpenEndDate: 0,
+        isExpiredCardOpen: false,
+        hands: [{ handId: 1100, startTime: 1785500000, chipDiff: 500 }]
+      }, depsOf(db, {
+        waitUntilConsistent: () => gate,
+        getPlayerId: () => { playerIdReadyAt = ++reads; return HERO }
+      }))).toBe(true)
+
+      // 待ちが解けるまで照会も playerId の読み取りも起きていない
+      await new Promise(resolve => setTimeout(resolve, 30))
+      expect(playerIdReadyAt).toBe(-1)
+      expect(await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)).toBeUndefined()
+
+      // 待っている間に書き込みが決着した、という想定
+      await db.hands.bulkPut([hand(1100, 500)])
+      released()
+
+      expect(await waitForAuditResult(db)).toMatchObject({ notCapturedHandIds: [] })
+      expect(playerIdReadyAt).toBe(1)
     })
 
     test('台帳を受け取ると突き合わせを実行する', async () => {
@@ -197,7 +294,7 @@ describe('replay ledger audit', () => {
           { handId: 600, startTime: 1785500000, chipDiff: 500 },
           { handId: 601, startTime: 1785500060, chipDiff: 700 }
         ]
-      }, db, HERO, NOW)).toBe(true)
+      }, depsOf(db))).toBe(true)
 
       expect(await waitForAuditResult(db)).toMatchObject({ notCapturedHandIds: [601] })
     })
