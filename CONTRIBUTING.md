@@ -376,7 +376,12 @@ Note: The system uses TypeScript enums for type safety, so new flags must be add
 ## 📝 Code Style
 
 - Use TypeScript strict mode
-- Add Japanese comments for team members: `// 日本語でのコメント`
+- Write code comments in Japanese: `// 日本語でのコメント`. Existing English
+  comments need not be rewritten. A comment that states an invariant or a
+  requirement (rather than describing behavior) MUST embed the applicable
+  uppercase RFC 2119 keyword (MUST / MUST NOT / SHOULD / SHOULD NOT / MAY —
+  see AGENTS.md "Requirement Keywords"), e.g.
+  `// 全イベントは1回の呼び出しで渡すこと (MUST) — チャンク分割するとハンド境界が失われる`
 - Follow existing naming conventions
 - Keep statistics focused on a single concept
 
@@ -385,8 +390,12 @@ Note: The system uses TypeScript enums for type safety, so new flags must be add
 1. Fork the repository and branch from the latest `main`; do not commit directly to
    `main`.
 2. Keep each branch and pull request focused on one change.
-3. Use Conventional Commit-style commit messages and PR titles (for example,
-   `feat: add four-bet statistic` or `fix: preserve session state`). Release Please
+3. Use Conventional Commit-style commit messages and PR titles, with the
+   subject and body prose written in Japanese (for example,
+   `feat(stats): 4ベット統計を追加する` or `fix(hud): セッション状態を保持する`) —
+   commit messages reach users through the changelog and Release bodies. The
+   machine-parsed tokens (type, scope, `BREAKING CHANGE:`) stay English/ASCII.
+   Release Please
    uses these titles when preparing releases and the changelog. Release Please
    parses the **whole** message, body included, so never let a parenthesis pair
    span a line break — the parser stops at the newline waiting for `)`, fails the
@@ -411,6 +420,8 @@ keep the validation section current after each push.
 - [ ] Unit tests in `src/stats/core/[stat-name].test.ts`
 - [ ] All tests passing (`npm test`)
 - [ ] Manual testing completed
-- [ ] Documentation/comments in Japanese where appropriate
+- [ ] Documentation updated in each file's existing language (see AGENTS.md
+      "Language"); comments in Japanese, invariant comments marked with
+      RFC 2119 keywords (see Code Style above)
 
 Happy coding! 🎉
