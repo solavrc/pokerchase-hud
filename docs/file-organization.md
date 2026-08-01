@@ -223,6 +223,7 @@
         ├── pending-stats-cache.ts
         ├── poker-evaluator.ts # Bit-manipulation hand evaluator
         ├── position-utils.ts  # getPositionMap (explicit button/blind seats)
+        ├── recent-hands-config.ts     # Recent-hands panel row-count options + device-local persistence
         ├── river-probabilities.ts     # River probability tables
         ├── runtime-port-manager.ts
         ├── starting-hand-rankings.ts  # 169 starting hand rankings
