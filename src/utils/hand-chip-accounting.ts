@@ -1,6 +1,7 @@
-import type { ApiEvent } from '../types/api'
+import type { ApiEvent, ApiHandEvent } from '../types/api'
 import { ApiType } from '../types/api'
 import { BattleType, BetStatusType, RankType } from '../types/game'
+import { HAND_ENDING_NEXT_ACTION_SEAT } from './action-phase'
 
 type DealEvent = ApiEvent<ApiType.EVT_DEAL>
 type HandResultsEvent = ApiEvent<ApiType.EVT_HAND_RESULTS>
@@ -122,6 +123,136 @@ export const deriveStartingStack = (event: DealEvent, seatIndex: number): number
   return inferredStack
 }
 
+/** 席インデックス → ハンド中に観測された外部チップ流入額（Ringのリバイイン／アドオン）。 */
+export type MidHandChipInflowMap = ReadonlyMap<number, number>
+
+const isRingBattleType = (battleType: BattleType | undefined): boolean =>
+  battleType === BattleType.RING_GAME || battleType === BattleType.FRIEND_RING_GAME
+
+/**
+ * ハンド中の外部チップ流入（Ringのリバイイン／アドオン）をハンド内スナップショットから復元する。
+ *
+ * DEAL と RESULTS の2点だけでは「買い足しによる正当な流入」と「バッファ融合や
+ * イベント欠落による破損」を区別できない。一方ハンド内のスナップショット
+ * （`EVT_ACTION` の `Chip`/`BetChip`、`EVT_DEAL_ROUND` の per-seat `Chip`）は
+ * 席ごとのスタックを連続的に観測しており、次の不変条件が成り立つ:
+ *
+ * - 同一ストリート内では `Chip + BetChip` は不変（ベットは `Chip` → `BetChip` の移動）
+ * - ストリート境界では `Chip + BetChip` はちょうど直前ストリートの最終 `BetChip` だけ減る
+ *
+ * この不変条件からの**増加**だけがハンド中の外部流入である。**減少**は観測列自体が
+ * 破綻しているシグネチャ（融合バッファ、ストリート境界のポット跳ね
+ * = docs/api-events.md「クロージングコールの欠落」等）なので、1件でも見つけたら
+ * null を返して保存則を厳格なまま維持する。
+ *
+ * 最後に `EVT_HAND_RESULTS` のスナップショットでも同じ恒等式
+ * `終了スタック = 直近スナップショット - 残ストリート投入 + RewardChip` を評価する。
+ * Ringの自動買い足し（バイイン上限への復帰）はハンド内スナップショットに一切現れず、
+ * 終了スタックにだけ現れることがあるため、これを見ないと実測66ハンドが取りこぼされる。
+ * ただしこの段階では**超過分だけを流入として計上し、不足は無視する**（＝従来どおり
+ * 終点スタックを信じる）。不足は「捕捉されなかった冗長アクション」の既知シグネチャで
+ * あり、それを破損として扱うと現在正しく解けているハンドを壊すためである。
+ *
+ * 流入を許容するのは Ring（BattleType 4/5）のみ。トーナメントにハンド中の買い足しは
+ * 存在せず、そこでの増加は破損シグネチャなので MUST NOT 許容する。`battleType` が
+ * 未知のキャプチャも同じ理由で許容しない（fail-closed）。
+ *
+ * 参照するのは `ApiHandEvent`（303/304/305/306）だけである。`EVT_PLAYER_JOIN` 等は
+ * `AggregateEventsStream` のハンドバッファに入らず `EntityConverter` 側にだけ存在する
+ * ため、判定材料にすると live↔batch parity が壊れる。
+ */
+export const deriveMidHandChipInflow = (
+  deal: DealEvent,
+  results: HandResultsEvent,
+  handEvents: readonly ApiHandEvent[] | undefined,
+  battleType: BattleType | undefined
+): MidHandChipInflowMap | null => {
+  if (!isRingBattleType(battleType) || !Array.isArray(handEvents)) return null
+  if (!Array.isArray(deal.SeatUserIds)) return null
+
+  /** 席インデックス → 直近スナップショットの `Chip + BetChip`。 */
+  const stacks = new Map<number, number>()
+  /** 席インデックス → 現ストリートの累計投入額（直近スナップショットの `BetChip`）。 */
+  const streetBets = new Map<number, number>()
+  /** 席インデックス → `streetBets` を記録した時点のフェーズ。 */
+  const streets = new Map<number, number>()
+  const inflow = new Map<number, number>()
+
+  for (let seatIndex = 0; seatIndex < deal.SeatUserIds.length; seatIndex++) {
+    if (deal.SeatUserIds[seatIndex] === -1) continue
+    const snapshot = getDealSnapshot(deal, seatIndex)
+    // 配札席のスナップショットが欠けていると連続観測が成立しない。
+    if (!snapshot || !Number.isSafeInteger(snapshot.Chip) || !Number.isSafeInteger(snapshot.BetChip)) return null
+    stacks.set(seatIndex, snapshot.Chip + snapshot.BetChip)
+    streetBets.set(seatIndex, snapshot.BetChip)
+    streets.set(seatIndex, deal.Progress.Phase)
+    inflow.set(seatIndex, 0)
+  }
+
+  /** 1席分のスナップショットを取り込む。不変条件からの減少を検出したら false。 */
+  const observe = (seatIndex: number, phase: number, chip: number, betChip: number): boolean => {
+    const previousStack = stacks.get(seatIndex)
+    // 配札されていない席（ハンド中に着席した別プレイヤー等）は追跡対象外。
+    if (previousStack === undefined) return true
+    if (!Number.isSafeInteger(chip) || !Number.isSafeInteger(betChip)) return false
+    const settledStack = phase === streets.get(seatIndex)
+      ? previousStack
+      : previousStack - streetBets.get(seatIndex)!
+    const delta = chip + betChip - settledStack
+    if (delta < 0) return false
+    inflow.set(seatIndex, inflow.get(seatIndex)! + delta)
+    stacks.set(seatIndex, chip + betChip)
+    streetBets.set(seatIndex, betChip)
+    streets.set(seatIndex, phase)
+    return true
+  }
+
+  for (const event of handEvents) {
+    if (event.ApiTypeId === ApiType.EVT_ACTION) {
+      // ハンド終了行の `Phase` は3固定なのでストリート判定に使えない（#340）。
+      // 直前に観測したストリートの続きとして扱う。
+      const phase = event.Progress.NextActionSeat === HAND_ENDING_NEXT_ACTION_SEAT
+        ? streets.get(event.SeatIndex) ?? event.Progress.Phase
+        : event.Progress.Phase
+      if (!observe(event.SeatIndex, phase, event.Chip, event.BetChip)) return null
+    } else if (event.ApiTypeId === ApiType.EVT_DEAL_ROUND) {
+      const phase = event.Progress.Phase
+      const snapshots = event.Player ? [event.Player, ...event.OtherPlayers] : event.OtherPlayers
+      for (const snapshot of snapshots) {
+        if (!observe(snapshot.SeatIndex, phase, snapshot.Chip, snapshot.BetChip)) return null
+      }
+      // スナップショットに現れなかった配札席も、ストリート境界で投入額を精算する。
+      for (const [seatIndex, street] of streets) {
+        if (street === phase) continue
+        stacks.set(seatIndex, stacks.get(seatIndex)! - streetBets.get(seatIndex)!)
+        streetBets.set(seatIndex, 0)
+        streets.set(seatIndex, phase)
+      }
+    }
+  }
+
+  // 終了スタックの恒等式で、ハンド内に現れない自動買い足しを拾う（超過のみ計上）。
+  if (!Array.isArray(results.Results) || !Array.isArray(results.OtherPlayers)) return inflow
+  const payoutByUserId = new Map<number, number>()
+  for (const result of results.Results) payoutByUserId.set(result.UserId, result.RewardChip)
+  const resultSeats = [
+    ...(results.Player ? [results.Player] : []),
+    ...results.OtherPlayers,
+  ]
+  for (const snapshot of resultSeats) {
+    const previousStack = stacks.get(snapshot.SeatIndex)
+    if (previousStack === undefined) continue
+    if (!Number.isSafeInteger(snapshot.Chip) || !Number.isSafeInteger(snapshot.BetChip)) return null
+    const userId = deal.SeatUserIds[snapshot.SeatIndex]
+    const payout = userId === undefined ? 0 : payoutByUserId.get(userId) ?? 0
+    const predictedStack = previousStack - streetBets.get(snapshot.SeatIndex)! + payout
+    const excess = snapshot.Chip + snapshot.BetChip - predictedStack
+    if (excess > 0) inflow.set(snapshot.SeatIndex, inflow.get(snapshot.SeatIndex)! + excess)
+  }
+
+  return inflow
+}
+
 const emptyAccounting = (event: DealEvent): PlayerHandChipAccountingMap =>
   Object.fromEntries(event.SeatUserIds.filter(userId => userId !== -1).map(userId => [String(userId), null]))
 
@@ -146,15 +277,21 @@ const emptySettlements = (event: DealEvent): PlayerHandSettlementMap =>
  * them. An unknown BattleType uses the Ring-safe rule (outflow is allowed,
  * chip creation is not) so a capture that starts before session metadata does
  * not erase legitimate raked winners.
+ *
+ * `inflow` は Ringのハンド中リバイイン／アドオンで席へ入ったチップ
+ * （`deriveMidHandChipInflow`）。買い足しは「そのハンドの結果」ではないので、
+ * 終了スタックから差し引いてから拠出額・保存則を評価する。省略時は流入ゼロ
+ * （＝従来どおり厳格）として扱う。
  */
 export const derivePlayerHandChipAccounting = (
   deal: DealEvent,
   results: HandResultsEvent,
-  battleType: BattleType | undefined
+  battleType: BattleType | undefined,
+  inflow?: MidHandChipInflowMap
 ): PlayerHandChipAccountingMap => {
   const accounting = emptyAccounting(deal)
   const dealtUserIds = new Set(deal.SeatUserIds.filter(userId => userId !== -1))
-  const isRing = battleType === BattleType.RING_GAME || battleType === BattleType.FRIEND_RING_GAME
+  const isRing = isRingBattleType(battleType)
   const isTournament = battleType === BattleType.SIT_AND_GO ||
     battleType === BattleType.TOURNAMENT ||
     battleType === BattleType.FRIEND_SIT_AND_GO ||
@@ -192,7 +329,8 @@ export const derivePlayerHandChipAccounting = (
 
   const finalStacks = new Map<number, number>()
   for (const snapshot of finalSeats) {
-    const finalStack = snapshot.Chip + snapshot.BetChip
+    // ハンド中に買い足したチップはこのハンドの結果ではないため終了スタックから除く。
+    const finalStack = snapshot.Chip + snapshot.BetChip - (inflow?.get(snapshot.SeatIndex) ?? 0)
     if (!Number.isSafeInteger(finalStack) || finalStack < 0) return accounting
     finalStacks.set(snapshot.SeatIndex, finalStack)
   }
@@ -277,8 +415,7 @@ export const deriveHandRakeAccounting = (
   results: HandResultsEvent,
   battleType: BattleType | undefined
 ): HandRakeAccounting | null => {
-  const isRing = battleType === BattleType.RING_GAME || battleType === BattleType.FRIEND_RING_GAME
-  if (!isRing) return null
+  if (!isRingBattleType(battleType)) return null
 
   // Imported legacy/test rows can bypass the current API parser. Guard every
   // collection before iterating or spreading so malformed snapshots remain an
@@ -344,13 +481,21 @@ export const deriveHandRakeAccounting = (
  * eligibility check prevents a payout from being attributed to a tier the
  * player could not have won, while still allowing a lower-ranked player to win
  * a side pot after the main-pot winner is no longer eligible.
+ *
+ * `handEvents` はこのハンドの `ApiHandEvent` 列（303〜306）。渡されると Ring の
+ * ハンド中リバイイン／アドオンによるチップ流入を `deriveMidHandChipInflow` で
+ * 復元し、終了スタックから差し引いてから会計する（#339）。省略しても結果は
+ * 「流入ゼロ」で従来どおりであり、保存則ガードは弱まらない — 流入として
+ * 認めるのはハンド内スナップショットが完全に整合している場合だけである。
  */
 export const deriveHandSettlement = (
   deal: DealEvent,
   results: HandResultsEvent,
-  battleType: BattleType | undefined
+  battleType: BattleType | undefined,
+  handEvents?: readonly ApiHandEvent[]
 ): HandSettlement => {
-  const playerChipAccounting = derivePlayerHandChipAccounting(deal, results, battleType)
+  const inflow = deriveMidHandChipInflow(deal, results, handEvents, battleType) ?? undefined
+  const playerChipAccounting = derivePlayerHandChipAccounting(deal, results, battleType, inflow)
   const dealtSeatIndexes = deal.SeatUserIds
     .map((userId, seatIndex) => ({ userId, seatIndex }))
     .filter(({ userId }) => userId !== -1)

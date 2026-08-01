@@ -22,6 +22,7 @@ import { createImportExportHandlers } from './background/import-export'
 import { setOperationState } from './background/operation-state'
 import { mergeApiEvents, type RawApiEvent } from './utils/api-event-key'
 import {
+  ActionType,
   ApiType,
   BattleType,
   PhaseType,
@@ -38,9 +39,18 @@ type SessionSeed = {
   players: Array<[number, { name: string, rank: string }]>
 }
 
-const FIXTURE_PATH = join(process.cwd(), 'e2e/fixtures/session-3hands.ndjson')
-const FIXTURE_TEXT = readFileSync(FIXTURE_PATH, 'utf8').trim()
-const FIXTURE_EVENTS = FIXTURE_TEXT.split('\n').map(line => JSON.parse(line)) as ApiEvent[]
+const readFixture = (name: string): ApiEvent[] =>
+  readFileSync(join(process.cwd(), 'e2e/fixtures', name), 'utf8')
+    .trim()
+    .split('\n')
+    .map(line => JSON.parse(line)) as ApiEvent[]
+
+const FIXTURE_EVENTS = readFixture('session-3hands.ndjson')
+
+/** #340 の再現: 同一ミリ秒に 304×6 + 305×2 が同居し、主キー順で 304 が先に並ぶ。 */
+const SAME_MS_BURST_EVENTS = readFixture('hand-samems-street-burst.ndjson')
+/** #339 の再現: Ringのハンド中リバイイン（ハンド内観測）と終了時の自動買い足し。 */
+const RING_REBUY_EVENTS = readFixture('hand-ring-midhand-rebuy.ndjson')
 
 const entryEvent = FIXTURE_EVENTS.find(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED)!
 const detailsEvent = FIXTURE_EVENTS.find(event => event.ApiTypeId === ApiType.EVT_SESSION_DETAILS)!
@@ -281,6 +291,81 @@ describe('cross-path canonical parity', () => {
       vpip: [1, 3],
       wtsd: [0, 1],
       wwsf: [0, 1]
+    })
+  })
+
+  test('a same-millisecond 304/305 burst attributes every action to its own street (#340)', async () => {
+    // Fixture capability check: 8イベントが同一msに同居し、export順（主キー順 =
+    // ApiTypeId昇順）では全ての 304 が 305 より前に並ぶ。ここが崩れると
+    // EVT_DEAL_ROUND 駆動カウンタの遅れを再現できない。
+    const burstTimestamp = SAME_MS_BURST_EVENTS
+      .filter(event => event.ApiTypeId === ApiType.EVT_DEAL_ROUND)
+      .map(event => event.timestamp)[0]
+    const burst = SAME_MS_BURST_EVENTS.filter(event => event.timestamp === burstTimestamp)
+    expect(burst.map(event => event.ApiTypeId)).toEqual([304, 304, 304, 304, 304, 304, 305, 305])
+
+    const snapshots = await replayEveryPath(SAME_MS_BURST_EVENTS)
+    const canonical = snapshots.live
+    expect(snapshots['entity-converter']).toEqual(canonical)
+    expect(snapshots.rebuild).toEqual(canonical)
+    expect(snapshots.import).toEqual(canonical)
+
+    // 3件のプリフロップ + バーストのフロップ3件 + ターン3件。カウンタ駆動だと
+    // バーストの6件すべてがプリフロップに落ちる。
+    expect(canonical.actions.map(action => ({
+      playerId: action.playerId,
+      phase: action.phase,
+      actionType: action.actionType
+    }))).toEqual([
+      { playerId: 2001, phase: PhaseType.PREFLOP, actionType: ActionType.CALL },
+      { playerId: 2002, phase: PhaseType.PREFLOP, actionType: ActionType.CALL },
+      { playerId: 2003, phase: PhaseType.PREFLOP, actionType: ActionType.CHECK },
+      { playerId: 2002, phase: PhaseType.FLOP, actionType: ActionType.CHECK },
+      { playerId: 2003, phase: PhaseType.FLOP, actionType: ActionType.CHECK },
+      { playerId: 2001, phase: PhaseType.FLOP, actionType: ActionType.CHECK },
+      { playerId: 2002, phase: PhaseType.TURN, actionType: ActionType.BET },
+      { playerId: 2003, phase: PhaseType.TURN, actionType: ActionType.FOLD },
+      // ハンド終了行（NextActionSeat=-2）の Progress.Phase は3固定で届く。
+      // これを素朴に採用するとリバー帰属になるため、進行中のストリートを使う。
+      { playerId: 2001, phase: PhaseType.TURN, actionType: ActionType.FOLD }
+    ])
+    const handEndingRows = SAME_MS_BURST_EVENTS
+      .filter((event): event is Extract<ApiEvent, { ApiTypeId: ApiType.EVT_ACTION }> =>
+        event.ApiTypeId === ApiType.EVT_ACTION)
+      .filter(event => event.Progress.NextActionSeat === -2)
+    expect(handEndingRows.map(event => event.Progress.Phase)).toEqual([PhaseType.RIVER])
+
+    // AF/AFq はポストフロップ限定なので、この付け替えは分母ごと動く。
+    // カウンタ駆動だとポストフロップのアクションが全てプリフロップに落ち、
+    // 2001 の AFq は [0,0]（機会ゼロ）、2002 の AF は [0,0] になっていた。
+    const postflopAggression = (playerId: number) => Object.fromEntries(
+      canonical.stats.find(player => player.playerId === playerId)!.statResults
+        .filter(stat => ['af', 'afq'].includes(stat.id))
+        .map(stat => [stat.id, stat.value])
+    )
+    expect(postflopAggression(2001)).toEqual({ af: [0, 0], afq: [0, 1] })
+    expect(postflopAggression(2002)).toEqual({ af: [1, 0], afq: [1, 1] })
+  })
+
+  test('a Ring mid-hand rebuy keeps exact winners and net chips (#339)', async () => {
+    const snapshots = await replayEveryPath(RING_REBUY_EVENTS)
+    const canonical = snapshots.live
+    expect(snapshots['entity-converter']).toEqual(canonical)
+    expect(snapshots.rebuild).toEqual(canonical)
+    expect(snapshots.import).toEqual(canonical)
+
+    // 卓の合計チップはディール(10,000)からリザルト(12,015)へ +2,015 増える。
+    // 従来の「Ringはチップ生成を拒否」ルールでは settlement 全体が
+    // unresolved() へ落ち winningPlayerIds が空になっていた。
+    expect(canonical.hands).toHaveLength(1)
+    expect(canonical.hands[0]!.winningPlayerIds).toEqual([2001])
+    expect(canonical.hands[0]!.playerChipAccounting).toEqual({
+      // ヒーロー: 20(プリフロップコール) + 100(フロップベット) を投じて145回収。
+      '2001': { grossPayout: 145, totalContribution: 120, netChips: 25 },
+      // ハンド中に +2,000 買い足した席。買い足しは「このハンドの結果」ではない。
+      '2002': { grossPayout: 0, totalContribution: 10, netChips: -10 },
+      // 終了スタックにだけ現れる +20 の自動買い足し（バイイン上限への復帰）。
+      '2003': { grossPayout: 0, totalContribution: 20, netChips: -20 }
     })
   })
 

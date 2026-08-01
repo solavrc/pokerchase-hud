@@ -85,6 +85,31 @@
  *      times a player makes a POSTFLOP aggressive action (bet or raise) to
  *      the times they call"). Preflop actions are excluded from both sides
  *      of both fractions.
+ *  (a5) Street attribution for an action is taken from that action's OWN
+ *      EVT_ACTION.Progress.Phase, not from a counter advanced by
+ *      EVT_DEAL_ROUND (#340). The counter lags whenever 304 rows are stored
+ *      ahead of the 305 that opens their street -- same-millisecond
+ *      reconnect bursts order equal-timestamp rows by ApiTypeId, and
+ *      orderApiEventsForReplay only reverses isolated 2-event groups
+ *      (docs/api-events.md) -- and also when EVT_DEAL_ROUND is never sent.
+ *      The one exception is the hand-ending row (Progress.NextActionSeat ===
+ *      -2), whose Phase is pinned to 3 regardless of the real street; those
+ *      rows keep the running street instead. This is re-derived here from the
+ *      raw payload, not imported from the pipeline's resolveActionPhase.
+ *  (d2) Ring mid-hand rebuy/add-on inflow (#339): a Ring seat can buy chips
+ *      mid-hand, so `start + payout - final` understates its contribution and
+ *      the table total can grow. The inflow is recovered from the hand's own
+ *      snapshots -- within a street `Chip + BetChip` is invariant, and across a
+ *      street boundary it drops by exactly that street's last BetChip -- and
+ *      any increase over that invariant is inflow. A DECREASE means the
+ *      snapshot chain itself is broken (fused buffer / dropped event), so the
+ *      whole hand falls back instead. The same identity is then evaluated once
+ *      more against EVT_HAND_RESULTS (final == last snapshot - remaining street
+ *      bet + RewardChip), because a Ring auto top-up back to the buy-in cap
+ *      shows up only there; only an EXCESS counts as inflow, a shortfall keeps
+ *      the endpoint reading (it is the known "redundant action not captured"
+ *      signature). Independent re-derivation of deriveMidHandChipInflow, per
+ *      this file's independence contract.
  *  (b) Positions are derived purely from Game.ButtonSeat / SmallBlindSeat /
  *      BigBlindSeat (never by rotating/inferring from seat order), which
  *      handles empty seats (busted players) correctly.
@@ -142,6 +167,7 @@ interface RawDealEvent {
 }
 interface RawProgress {
   NextActionTypes: number[]
+  NextActionSeat?: number
   Phase?: number
   Pot?: number
   SidePot?: number[]
@@ -151,6 +177,7 @@ interface RawActionEvent {
   SeatIndex: number
   ActionType: ActionType
   BetChip: number
+  Chip?: number
   Progress: RawProgress
 }
 interface RawDealRoundEvent {
@@ -227,6 +254,101 @@ const rawStartingStack = (deal: RawDealEvent, seatIndex: number): number | null 
     : null
 }
 
+/** EVT_ACTION.Progress.NextActionSeat marker for "hand over"; its Phase is pinned to 3. */
+const HAND_ENDING_NEXT_ACTION_SEAT = -2
+
+/**
+ * Street this action belongs to (semantic-sync (a5), #340). Independent
+ * re-derivation: the action carries the authoritative street in its own
+ * payload, except on the hand-ending row where Phase is pinned to 3.
+ */
+const rawActionPhase = (actionEvent: RawActionEvent, runningPhase: number): number => {
+  if (actionEvent.Progress?.NextActionSeat === HAND_ENDING_NEXT_ACTION_SEAT) return runningPhase
+  const phase = actionEvent.Progress?.Phase
+  return phase === 0 || phase === 1 || phase === 2 || phase === 3 ? phase : runningPhase
+}
+
+/**
+ * Ring mid-hand chip inflow per seat (semantic-sync (d2), #339), or null when
+ * it cannot be established -- in which case the caller keeps the strict
+ * "no inflow" reading. Ring only: a tournament has no mid-hand top-up, so an
+ * increase there is a corruption signature rather than a rebuy.
+ */
+const rawMidHandInflow = (
+  deal: RawDealEvent,
+  results: RawHandResultsEvent,
+  handEvents: RawEvent[],
+  battleType: BattleType | undefined
+): Map<number, number> | null => {
+  if (battleType !== BattleType.RING_GAME && battleType !== BattleType.FRIEND_RING_GAME) return null
+
+  const stack = new Map<number, number>()
+  const streetBet = new Map<number, number>()
+  const street = new Map<number, number>()
+  const inflow = new Map<number, number>()
+  for (let seatIndex = 0; seatIndex < deal.SeatUserIds.length; seatIndex++) {
+    if (deal.SeatUserIds[seatIndex] === -1) continue
+    const snapshot = rawSeatSnapshot(deal, seatIndex)
+    if (snapshot?.Chip === undefined || snapshot.BetChip === undefined) return null
+    stack.set(seatIndex, snapshot.Chip + snapshot.BetChip)
+    streetBet.set(seatIndex, snapshot.BetChip)
+    street.set(seatIndex, deal.Progress.Phase ?? 0)
+    inflow.set(seatIndex, 0)
+  }
+
+  const observe = (seatIndex: number, phase: number, chip: number, betChip: number): boolean => {
+    const previous = stack.get(seatIndex)
+    if (previous === undefined) return true // seat not dealt into this hand
+    if (!Number.isSafeInteger(chip) || !Number.isSafeInteger(betChip)) return false
+    const settled = phase === street.get(seatIndex) ? previous : previous - streetBet.get(seatIndex)!
+    const delta = chip + betChip - settled
+    if (delta < 0) return false
+    inflow.set(seatIndex, inflow.get(seatIndex)! + delta)
+    stack.set(seatIndex, chip + betChip)
+    streetBet.set(seatIndex, betChip)
+    street.set(seatIndex, phase)
+    return true
+  }
+
+  for (const event of handEvents) {
+    if (event.ApiTypeId === ApiType.EVT_ACTION) {
+      const actionEvt = event as RawActionEvent
+      if (actionEvt.Chip === undefined) return null
+      const phase = rawActionPhase(actionEvt, street.get(actionEvt.SeatIndex) ?? 0)
+      if (!observe(actionEvt.SeatIndex, phase, actionEvt.Chip, actionEvt.BetChip)) return null
+    } else if (event.ApiTypeId === ApiType.EVT_DEAL_ROUND) {
+      const roundEvt = event as RawDealRoundEvent
+      const phase = roundEvt.Progress.Phase
+      const seats = roundEvt.Player ? [roundEvt.Player, ...roundEvt.OtherPlayers] : roundEvt.OtherPlayers
+      for (const seat of seats) {
+        if (seat.Chip === undefined) return null
+        if (!observe(seat.SeatIndex, phase, seat.Chip, seat.BetChip ?? 0)) return null
+      }
+      for (const [seatIndex, seatStreet] of street) {
+        if (seatStreet === phase) continue
+        stack.set(seatIndex, stack.get(seatIndex)! - streetBet.get(seatIndex)!)
+        streetBet.set(seatIndex, 0)
+        street.set(seatIndex, phase)
+      }
+    }
+  }
+
+  const payoutByUserId = new Map(results.Results.map(result => [result.UserId, result.RewardChip]))
+  const resultSeats = [
+    ...(results.Player ? [results.Player] : []),
+    ...(results.OtherPlayers ?? []),
+  ]
+  for (const seat of resultSeats) {
+    const previous = stack.get(seat.SeatIndex)
+    if (previous === undefined || seat.Chip === undefined) continue
+    const userId = deal.SeatUserIds[seat.SeatIndex]
+    const payout = userId === undefined ? 0 : payoutByUserId.get(userId) ?? 0
+    const excess = seat.Chip + (seat.BetChip ?? 0) - (previous - streetBet.get(seat.SeatIndex)! + payout)
+    if (excess > 0) inflow.set(seat.SeatIndex, inflow.get(seat.SeatIndex)! + excess)
+  }
+  return inflow
+}
+
 /**
  * Independent winner resolution for the verification oracle.
  *
@@ -239,7 +361,8 @@ const rawStartingStack = (deal: RawDealEvent, seatIndex: number): number | null 
 const resolveContestedWinners = (
   deal: RawDealEvent,
   results: RawHandResultsEvent,
-  battleType: BattleType | undefined
+  battleType: BattleType | undefined,
+  handEvents: RawEvent[]
 ): Set<number> => {
   const fallback = () => new Set(
     results.Results
@@ -253,6 +376,9 @@ const resolveContestedWinners = (
       !Number.isSafeInteger(results.Pot)) return fallback()
 
   const userIds = deal.SeatUserIds.filter(userId => userId !== -1)
+  // Semantic-sync (d2): mid-hand rebuy chips are not this hand's result, so
+  // remove them from the final stack before contributions are derived.
+  const inflow = rawMidHandInflow(deal, results, handEvents, battleType)
   const resultByUserId = new Map(results.Results.map(result => [result.UserId, result]))
   const starts = new Map<number, number>()
   const finalStacks = new Map<number, number>()
@@ -264,7 +390,7 @@ const resolveContestedWinners = (
 
     const final = rawSeatSnapshot(results, seatIndex)
     if (final?.Chip !== undefined && final.BetChip !== undefined) {
-      finalStacks.set(seatIndex, final.Chip + final.BetChip)
+      finalStacks.set(seatIndex, final.Chip + final.BetChip - (inflow?.get(seatIndex) ?? 0))
     }
   }
 
@@ -576,7 +702,10 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
       acc(pid).hands.add(handId)
     }
 
-    let phase = 0 // 0=preflop
+    // Street counter advanced by EVT_DEAL_ROUND. Semantic-sync (a5), #340:
+    // this is only the FALLBACK for a hand-ending action row -- every action's
+    // own Progress.Phase is authoritative for that action's attribution.
+    let runningPhase = 0 // 0=preflop
     let prevProgress: RawProgress | undefined = dealEvt.Progress
     const preflopRaisers: number[] = []
     let cBetter: number | undefined
@@ -603,6 +732,7 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
     const riverCallsThisHand = new Map<number, number>()
 
     const phaseActionsMap = new Map<number, ActionRec[]>([[0, []]])
+
     const perPlayerPhaseActionIdx = new Map<string, number>()
     const traceLines: string[] = []
 
@@ -612,6 +742,10 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
         const seatIndex = actionEvt.SeatIndex
         const playerId = seatUserIds[seatIndex]!
         const normType = normalizeAllIn(actionEvt, prevProgress)
+        // Semantic-sync (a5), #340: this action's own street, not the counter.
+        const phase = rawActionPhase(actionEvt, runningPhase)
+        runningPhase = phase
+        if (!phaseActionsMap.has(phase)) phaseActionsMap.set(phase, [])
 
         const actionsInPhase = phaseActionsMap.get(phase) ?? []
         const betRaiseSoFarInPhase = actionsInPhase.filter(a => a.actionType === ActionType.BET || a.actionType === ActionType.RAISE).length
@@ -723,15 +857,14 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
         }
       } else if (event.ApiTypeId === ApiType.EVT_DEAL_ROUND) {
         const roundEvt = event as RawDealRoundEvent
-        const newPhase = roundEvt.Progress.Phase
-        phase = newPhase
-        if (!phaseActionsMap.has(phase)) phaseActionsMap.set(phase, [])
+        runningPhase = roundEvt.Progress.Phase
+        if (!phaseActionsMap.has(runningPhase)) phaseActionsMap.set(runningPhase, [])
         prevProgress = roundEvt.Progress
         // a4b: accumulate board size as actually dealt via EVT_DEAL_ROUND, to
         // compare against the final board once EVT_HAND_RESULTS arrives.
         dealRoundCommunityCardCount += roundEvt.CommunityCards?.length ?? 0
 
-        if (phase === 1) {
+        if (runningPhase === 1) {
           // Semantic-sync (a): "saw flop" = BetStatus===BET_ABLE || BetStatus===ALL_IN
           // for this seat at the FLOP deal-round, exactly mirroring
           // entity-converter.ts's / write-entity-stream.ts's phase-membership
@@ -748,7 +881,7 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
           cBetter = preflopRaisers.length > 0 ? preflopRaisers[preflopRaisers.length - 1] : undefined
         }
         if (traceHandIds.has(handId)) {
-          traceLines.push(`[DEAL_ROUND phase=${phase}]`)
+          traceLines.push(`[DEAL_ROUND phase=${runningPhase}]`)
         }
       }
     }
@@ -775,7 +908,7 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
     // Showdown / WTSD / WSD / WWSF determination from Results.
     const results = resultsEvt.Results || []
     // Semantic-sync (d): independently remove uncalled-only contribution tiers.
-    const winners = resolveContestedWinners(dealEvt, resultsEvt, battleType)
+    const winners = resolveContestedWinners(dealEvt, resultsEvt, battleType, handEvents)
 
     // Semantic-sync (e): RIVER_CALL_WON is added to every RIVER_CALL action
     // taken by a player who wins a contested award in this hand.

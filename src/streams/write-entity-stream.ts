@@ -18,6 +18,7 @@ import type {
 } from '../types'
 import type { ActionDetailContext } from '../types/stats'
 import { ErrorHandler } from '../utils/error-handler'
+import { resolveActionPhase } from '../utils/action-phase'
 import { getPositionMap, getBigBlindUserId } from '../utils/position-utils'
 import { defaultRegistry } from '../stats'
 import type { ErrorContext } from '../types/errors'
@@ -102,6 +103,12 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
     }
     let progress: Progress | undefined
     let dealEvent: ApiEvent<ApiType.EVT_DEAL> | undefined
+    // 進行中のストリート。EVT_DEAL_ROUND と、各アクションの権威的な
+    // Progress.Phase の両方で進む（#340、EntityConverterと同一ロジック）。
+    // ハンド終了行（Phase=3固定）のフォールバックはここを見る — 直近にpushされた
+    // フェーズを使うと、同一msバーストで305がまだ処理されていないときに
+    // 終了アクションだけプリフロップへ落ちる。
+    let runningPhase: PhaseType = PhaseType.PREFLOP
     // 同一フェーズのEVT_DEAL_ROUND重複検出用（テーブル移動キメラのシグネチャ）。
     // 実データ検証: 同一ハンドバッファ内でフェーズが重複した12件は、12件全てで
     // ハンド内にEVT_ENTRY_QUEUED/EVT_PLAYER_SEAT_ASSIGNEDが割り込んでおり、
@@ -129,6 +136,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           handState.hand.smallBlind = event.Game.SmallBlind
           // VPIP/PFRのウォーク除外（#115）判定用（EntityConverterと同一ロジック）。
           handState.hand.bigBlindUserId = getBigBlindUserId(event.SeatUserIds, event.Game.BigBlindSeat)
+          runningPhase = event.Progress.Phase
           progress = event.Progress
           break
         case ApiType.EVT_DEAL_ROUND:
@@ -137,6 +145,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
             return null
           }
           seenDealRoundPhases.add(event.Progress.Phase)
+          runningPhase = event.Progress.Phase
           handState.phases.push({
             phase: event.Progress.Phase,
             // このストリートに進んだプレイヤー（BET_ABLE=フォールドしていない、
@@ -198,7 +207,10 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
             break
           }
 
-          const phase = handState.phases.at(-1)!.phase
+          // ストリートは EVT_DEAL_ROUND 駆動のカウンタではなく EVT_ACTION 自身の
+          // Progress.Phase を正とする（#340、EntityConverterと同一ロジック）。
+          const phase = resolveActionPhase(event, runningPhase)
+          runningPhase = phase
           const phaseActions = handState.actions.filter(action => action.phase === phase)
           const phasePlayerActionIndex = phaseActions.filter(action => action.playerId === playerId).length
           const phasePrevBetCount = phaseActions.filter(action => [ActionType.BET, ActionType.RAISE].includes(action.actionType)).length + Number(phase === PhaseType.PREFLOP)
@@ -318,7 +330,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           handState.hand.id = event.HandId
           handState.hand.results = event.Results
           const settlement = dealEvent
-            ? deriveHandSettlement(dealEvent, event, handState.hand.session.battleType)
+            ? deriveHandSettlement(dealEvent, event, handState.hand.session.battleType, events)
             : null
           handState.hand.winningPlayerIds = settlement?.winningPlayerIds ?? []
           handState.hand.playerChipAccounting = settlement?.playerChipAccounting ??

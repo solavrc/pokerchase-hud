@@ -4,6 +4,7 @@ import { BattleType, BetStatusType } from '../types/game'
 import {
   deriveHandRakeAccounting,
   deriveHandSettlement,
+  deriveMidHandChipInflow,
   derivePlayerHandChipAccounting,
   deriveStartingStack,
 } from './hand-chip-accounting'
@@ -542,5 +543,128 @@ describe('deriveHandSettlement', () => {
 
     expect(settlement.winningPlayerIds).toEqual([])
     expect(Object.values(settlement.playerSettlements)).toEqual([null, null])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #339: リング戦のハンド中リバイイン／アドオン
+// ---------------------------------------------------------------------------
+
+const RING_SEATS = [-1, -1, 2001, 2002, 2003, -1]
+
+const ringDeal = {
+  ApiTypeId: ApiType.EVT_DEAL,
+  timestamp: 1733147500000,
+  SeatUserIds: RING_SEATS,
+  Game: { CurrentBlindLv: 1, NextBlindUnixSeconds: -1, Ante: 0, SmallBlind: 10, BigBlind: 20, ButtonSeat: 2, SmallBlindSeat: 3, BigBlindSeat: 4 },
+  Player: { SeatIndex: 2, BetStatus: BetStatusType.BET_ABLE, Chip: 4000, BetChip: 0, HoleCards: [22, 28] },
+  OtherPlayers: [
+    { SeatIndex: 3, Status: 0, BetStatus: BetStatusType.BET_ABLE, Chip: 1990, BetChip: 10 },
+    { SeatIndex: 4, Status: 0, BetStatus: BetStatusType.BET_ABLE, Chip: 3980, BetChip: 20 },
+  ],
+  Progress: { Phase: 0, NextActionSeat: 2, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 12, MinRaise: 40, Pot: 30, SidePot: [] },
+} as unknown as ApiEvent<ApiType.EVT_DEAL>
+
+const ringAction = (seatIndex: number, actionType: number, chip: number, betChip: number, phase: number, nextActionSeat: number) => ({
+  ApiTypeId: ApiType.EVT_ACTION,
+  timestamp: 1733147501000,
+  SeatIndex: seatIndex,
+  ActionType: actionType,
+  Chip: chip,
+  BetChip: betChip,
+  Progress: { Phase: phase, NextActionSeat: nextActionSeat, NextActionTypes: [], NextExtraLimitSeconds: 0, MinRaise: 0, Pot: 0, SidePot: [] },
+}) as unknown as ApiEvent<ApiType.EVT_ACTION>
+
+/** seat3 は降りたあとハンド中に +2000 買い足している。 */
+const ringFlop = (seat3Chip: number) => ({
+  ApiTypeId: ApiType.EVT_DEAL_ROUND,
+  timestamp: 1733147502000,
+  CommunityCards: [35, 4, 23],
+  Player: { SeatIndex: 2, BetStatus: BetStatusType.BET_ABLE, Chip: 3980, BetChip: 0, HoleCards: [22, 28] },
+  OtherPlayers: [
+    { SeatIndex: 3, Status: 0, BetStatus: BetStatusType.FOLDED, Chip: seat3Chip, BetChip: 0 },
+    { SeatIndex: 4, Status: 0, BetStatus: BetStatusType.BET_ABLE, Chip: 3980, BetChip: 0 },
+  ],
+  Progress: { Phase: 1, NextActionSeat: 4, NextActionTypes: [0, 5, 1], NextExtraLimitSeconds: 3, MinRaise: 0, Pot: 50, SidePot: [] },
+}) as unknown as ApiEvent<ApiType.EVT_DEAL_ROUND>
+
+/** seat4 はハンド終了時にバイイン上限へ +20 自動買い足し（終了スタックにしか現れない）。 */
+const ringResults = {
+  ApiTypeId: ApiType.EVT_HAND_RESULTS,
+  timestamp: 1733147503000,
+  HandId: 900000002,
+  CommunityCards: [],
+  Pot: 145,
+  SidePot: [],
+  ResultType: 0,
+  DefeatStatus: 0,
+  Results: [
+    { UserId: 2001, RankType: 10, HandRanking: 1, Hands: [], HoleCards: [], Ranking: -2, RewardChip: 145 },
+  ],
+  Player: { SeatIndex: 2, BetStatus: -1, Chip: 4025, BetChip: 0 },
+  OtherPlayers: [
+    { SeatIndex: 3, Status: 0, BetStatus: -1, Chip: 3990, BetChip: 0 },
+    { SeatIndex: 4, Status: 0, BetStatus: -1, Chip: 4000, BetChip: 0 },
+  ],
+} as unknown as ApiEvent<ApiType.EVT_HAND_RESULTS>
+
+const ringHandEvents = (seat3FlopChip = 3990) => [
+  ringDeal,
+  ringAction(2, 3, 3980, 20, 0, 3),
+  ringAction(3, 2, 1990, 10, 0, 4),
+  ringAction(4, 0, 3980, 20, 0, -1),
+  ringFlop(seat3FlopChip),
+  ringAction(4, 0, 3980, 0, 1, 2),
+  ringAction(2, 1, 3880, 100, 1, 4),
+  // ハンド終了行。Progress.Phase は3固定で届くが実際はフロップ。
+  ringAction(4, 2, 3980, 0, 3, -2),
+  ringResults,
+]
+
+describe('deriveMidHandChipInflow', () => {
+  test('recovers both the mid-hand rebuy and the end-of-hand auto top-up', () => {
+    const inflow = deriveMidHandChipInflow(ringDeal, ringResults, ringHandEvents(), BattleType.RING_GAME)
+    expect(inflow && Object.fromEntries(inflow)).toEqual({ 2: 0, 3: 2000, 4: 20 })
+  })
+
+  test('is unknown for a tournament, where a mid-hand top-up cannot happen', () => {
+    expect(deriveMidHandChipInflow(ringDeal, ringResults, ringHandEvents(), BattleType.SIT_AND_GO)).toBeNull()
+    expect(deriveMidHandChipInflow(ringDeal, ringResults, ringHandEvents(), undefined)).toBeNull()
+  })
+
+  test('is unknown when the intra-hand snapshot chain loses chips it cannot account for', () => {
+    // seat3 のスタックが説明できない形で減っている = 融合バッファ等のシグネチャ。
+    expect(deriveMidHandChipInflow(ringDeal, ringResults, ringHandEvents(1500), BattleType.RING_GAME)).toBeNull()
+  })
+
+  test('is unknown without the hand event list, keeping conservation strict', () => {
+    expect(deriveMidHandChipInflow(ringDeal, ringResults, undefined, BattleType.RING_GAME)).toBeNull()
+  })
+})
+
+describe('deriveHandSettlement with a Ring mid-hand rebuy', () => {
+  test('keeps the exact winner and per-seat net chips despite the table total growing', () => {
+    const startingTotal = 4000 + 2000 + 4000
+    const finalTotal = 4025 + 3990 + 4000
+    expect(finalTotal - startingTotal).toBe(2015)
+
+    const settlement = deriveHandSettlement(ringDeal, ringResults, BattleType.RING_GAME, ringHandEvents())
+    expect(settlement.winningPlayerIds).toEqual([2001])
+    expect(settlement.playerChipAccounting).toEqual({
+      '2001': { grossPayout: 145, totalContribution: 120, netChips: 25 },
+      '2002': { grossPayout: 0, totalContribution: 10, netChips: -10 },
+      '2003': { grossPayout: 0, totalContribution: 20, netChips: -20 },
+    })
+  })
+
+  test('still fails closed when the hand events are not available to explain the inflow', () => {
+    const settlement = deriveHandSettlement(ringDeal, ringResults, BattleType.RING_GAME)
+    expect(settlement.winningPlayerIds).toEqual([])
+    expect(Object.values(settlement.playerChipAccounting).every(entry => entry === null)).toBe(true)
+  })
+
+  test('still fails closed when the snapshot chain is broken rather than topped up', () => {
+    const settlement = deriveHandSettlement(ringDeal, ringResults, BattleType.RING_GAME, ringHandEvents(1500))
+    expect(settlement.winningPlayerIds).toEqual([])
   })
 })

@@ -30,6 +30,7 @@ import type {
 } from './types'
 
 import { defaultRegistry } from './stats'
+import { resolveActionPhase } from './utils/action-phase'
 import { getPositionMap, getBigBlindUserId } from './utils/position-utils'
 import { deriveHandSettlement } from './utils/hand-chip-accounting'
 
@@ -181,6 +182,12 @@ export class EntityConverter {
 
     let progress: any = undefined
     let dealEvent: ApiEvent<ApiType.EVT_DEAL> | undefined
+    // 進行中のストリート。EVT_DEAL_ROUND と、各アクションの権威的な
+    // Progress.Phase の両方で進む（#340、WriteEntityStreamと同一ロジック）。
+    // ハンド終了行（Phase=3固定）のフォールバックはここを見る — 直近にpushされた
+    // フェーズを使うと、同一msバーストで305がまだ処理されていないときに
+    // 終了アクションだけプリフロップへ落ちる。
+    let runningPhase: PhaseType = PhaseType.PREFLOP
 
     for (const event of events) {
       switch (event.ApiTypeId) {
@@ -243,7 +250,10 @@ export class EntityConverter {
             break
           }
 
-          const phase = handState.phases.at(-1)!.phase
+          // ストリートは EVT_DEAL_ROUND 駆動のカウンタではなく EVT_ACTION 自身の
+          // Progress.Phase を正とする（#340、WriteEntityStreamと同一ロジック）。
+          const phase = resolveActionPhase(event, runningPhase)
+          runningPhase = phase
           const phaseActions = handState.actions.filter(action => action.phase === phase)
           const phasePrevBetCount = phaseActions.filter(action =>
             [ActionType.BET, ActionType.RAISE].includes(action.actionType)
@@ -314,6 +324,7 @@ export class EntityConverter {
             console.log(`[EntityConverter] Rejected fused hand buffer: duplicate EVT_DEAL_ROUND for phase ${newPhase} (mid-hand table move/rebalance)`)
             return null
           }
+          if (newPhase !== null) runningPhase = newPhase
           if (newPhase !== null) {
             // このストリートに進んだプレイヤー（BET_ABLE=フォールドしていない、
             // または ALL_IN=プリフロップオールイン済み）のみをseatUserIdsに
@@ -446,7 +457,7 @@ export class EntityConverter {
 
           handState.hand.results = event.Results || []
           const settlement = dealEvent
-            ? deriveHandSettlement(dealEvent, event, handState.hand.session.battleType)
+            ? deriveHandSettlement(dealEvent, event, handState.hand.session.battleType, events)
             : null
           handState.hand.winningPlayerIds = settlement?.winningPlayerIds ?? []
           handState.hand.playerChipAccounting = settlement?.playerChipAccounting ??
