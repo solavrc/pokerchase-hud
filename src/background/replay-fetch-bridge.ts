@@ -100,9 +100,6 @@ export const requestReplayDetails = async (
     return { success: false, error: 'handIds must be positive safe integers' }
   }
 
-  const port = connectedPorts.values().next().value
-  if (!port) return { success: false, error: 'no connected game tab' }
-
   // ページ側は `replayFetchQueue` で依頼を直列化するので、こちらも直列化して
   // **自分の番が来てから**タイマーを開始する。送信時点で自分の件数だけを見て
   // 起動すると、先行バッチの間隔待ちで自分がまだ1件も送られていないうちに
@@ -112,6 +109,12 @@ export const requestReplayDetails = async (
   dispatchQueue = new Promise<void>(resolve => { releaseSlot = resolve })
   await slot
   try {
+    // ポートの選択は**待った後**。待っている間にタブが再読み込みされると、
+    // 待つ前に掴んだポートは切断済みになる。しかもこの依頼はまだ`pending`に
+    // 載っていないので切断時の解放対象にもならず、再接続済みのポートが
+    // 在るのに空結果を返してしまう。
+    const port = connectedPorts.values().next().value
+    if (!port) return { success: false, error: 'no connected game tab' }
 
   // 連番ではなくUUID。連番はService Workerの再起動ごとに0へ戻るが、ページ側の
   // 逐次キューと進行中のHTTP取得はページが生きている限り継続する。旧SWの

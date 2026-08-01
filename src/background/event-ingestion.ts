@@ -150,6 +150,12 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
             await service.ready
             await awaitIngestionDrain()
           },
+          // インポート/再構築/エクスポートの最中は監査しない。インポートは生行を
+          // 先にコミットして派生を後から作るので、その途中で照会すると正常に
+          // 処理中のハンドが「派生欠落」として永続化される。ライブ取り込みの
+          // ドレインではインポート側を待てない。診断なので延期ではなく見送りで
+          // 足りる（次にリプレイ一覧を開けば走る）。
+          isBusy: () => getOperationState().type !== 'idle',
           getPlayerId: () => service.playerId,
           now: () => Date.now()
         })) {

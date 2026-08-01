@@ -38,6 +38,7 @@ import {
   REPLAY_PORT_LEDGER,
   isPositiveHandId,
   type ReplayLedger,
+  type ReplayLedgerEntry,
   type ReplayLedgerMessage
 } from '../replay/protocol'
 
@@ -122,8 +123,8 @@ const HAND_RESULTS_LOOKUP_TAIL_MS = 30 * 60_000
 const confirmCapturesByFullScan = async (
   db: PokerChaseDB,
   candidates: number[]
-): Promise<Set<number>> => {
-  const found = new Set<number>()
+): Promise<Map<number, number>> => {
+  const found = new Map<number, number>()
   if (candidates.length === 0) return found
   const wanted = new Set(candidates)
   await db.apiEvents
@@ -137,7 +138,8 @@ const confirmCapturesByFullScan = async (
     .until(() => wanted.size === 0, true)
     .each(row => {
       const handId = (row as { HandId?: unknown }).HandId
-      if (isPositiveHandId(handId) && wanted.delete(handId)) found.add(handId)
+      const ts = (row as { timestamp?: unknown }).timestamp
+      if (isPositiveHandId(handId) && typeof ts === 'number' && wanted.delete(handId)) found.set(handId, ts)
     })
   return found
 }
@@ -153,8 +155,8 @@ const confirmCapturesByFullScan = async (
 const collectCapturedHandIds = async (
   db: PokerChaseDB,
   startTimesSec: number[]
-): Promise<Set<number>> => {
-  const captured = new Set<number>()
+): Promise<Map<number, number>> => {
+  const captured = new Map<number, number>()
   if (startTimesSec.length === 0) return captured
 
   const startsMs = startTimesSec.map(seconds => seconds * 1000)
@@ -167,7 +169,8 @@ const collectCapturedHandIds = async (
     .toArray()
   for (const row of rows) {
     const handId = (row as { HandId?: unknown }).HandId
-    if (isPositiveHandId(handId)) captured.add(handId)
+    const ts = (row as { timestamp?: unknown }).timestamp
+    if (isPositiveHandId(handId) && typeof ts === 'number') captured.set(handId, ts)
   }
   return captured
 }
@@ -187,49 +190,73 @@ export const auditReplayLedger = async (
 ): Promise<ReplayLedgerAuditResult> => {
   const all = ledger.hands.slice(0, REPLAY_LEDGER_MAX_ENTRIES)
 
-  // 観測開始前のハンドは判定しない（新規インストール・再有効化・全データ削除後）。
+  // --- 1. まず生イベントの有無を全エントリについて確定させる ---
   //
-  // 比較する2つの時刻は時計系が違う: `startTime` はサーバ時刻、
-  // `approxTimestamp` はクライアントの `Date.now()`。素朴に比べると、端末時計が
-  // 進んでいれば観測済みのハンドまで対象外になり、遅れていればインストール前の
-  // ハンドを欠損候補に入れてしまう。両方の時刻が分かっているハンド（台帳にも
-  // ローカルにも在るもの）から差を測って補正する。中央値なのは、1件の外れ値
-  //（長考で受信が遅れたハンド等）に引きずられないため。
-  const matched = await db.hands.bulkGet(all.map(entry => entry.handId))
-  const offsets = all
-    .map((entry, index) => {
-      const hand = matched[index]
-      return hand?.approxTimestamp === undefined
-        ? undefined
-        : hand.approxTimestamp - entry.startTime * 1000
-    })
-    .filter((offset): offset is number => offset !== undefined)
-    .sort((a, b) => a - b)
-  const clockOffsetMs = offsets.length > 0 ? offsets[Math.floor(offsets.length / 2)]! : undefined
+  // 生行が在ることは「このクライアントが観測した」ことの**直接証拠**なので、
+  // 後段の観測窓ヒューリスティックより優先する。順序を逆にすると、派生が
+  // 全面停止した状況（スキーマ破損など）で `hands` が1件も一致せず、
+  // 補正不能→全件を対象外、という経路に落ちて、**監査が最も叫ぶべき場面で
+  // 沈黙する**。
+  const rawByWindow = await collectCapturedHandIds(db, all.map(entry => entry.startTime))
+  const rawByScan = await confirmCapturesByFullScan(
+    db,
+    all.filter(entry => !rawByWindow.has(entry.handId)).map(entry => entry.handId)
+  )
+  const rawTimestamps = new Map([...rawByWindow, ...rawByScan])
+
+  const localHands = await db.hands.bulkGet(all.map(entry => entry.handId))
+
+  // --- 2. 時計差を測る ---
+  //
+  // `startTime` はサーバ時刻、ローカルの時刻はクライアントの `Date.now()`。
+  // 素朴に比べると、端末時計が進んでいれば観測済みのハンドまで対象外になり、
+  // 遅れていればインストール前のハンドを欠損候補に入れてしまう。
+  // 中央値なのは、1件の外れ値（長考で受信が遅れたハンド等）に引きずられないため。
+  const handOffsets: number[] = []
+  const rawOffsets: number[] = []
+  all.forEach((entry, index) => {
+    const startMs = entry.startTime * 1000
+    const approx = localHands[index]?.approxTimestamp
+    if (approx !== undefined) handOffsets.push(approx - startMs)
+    const rawTs = rawTimestamps.get(entry.handId)
+    if (rawTs !== undefined) rawOffsets.push(rawTs - startMs)
+  })
+  const median = (xs: number[]): number | undefined =>
+    xs.length === 0 ? undefined : [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]
+  // `hands` 由来を優先する。生行は `EVT_HAND_RESULTS`＝ハンド**終了**時刻なので
+  // ハンド長のぶん偏るが、派生が全面停止していると `hands` からは測れないため
+  // フォールバックとして使う（偏りは分単位で、観測開始の下限判定には十分）。
+  const clockOffsetMs = median(handOffsets) ?? median(rawOffsets)
 
   const oldestLocal = await db.hands.orderBy('approxTimestamp').first()
   const observationFloorMs = oldestLocal?.approxTimestamp
-  // 補正できない＝台帳のどのハンドもローカルに無い。新規インストール直後が
-  // 圧倒的に多いので、全件を対象外にする方へ倒す（偽陽性を出さない）。
-  const entries = observationFloorMs === undefined || clockOffsetMs === undefined
-    ? []
-    : all.filter(entry => entry.startTime * 1000 + clockOffsetMs >= observationFloorMs)
-  const outOfObservationWindowHands = all.length - entries.length
 
-  const localHands = await db.hands.bulkGet(entries.map(entry => entry.handId))
-  const capturedHandIds = await collectCapturedHandIds(db, entries.map(entry => entry.startTime))
+  // --- 3. 判定対象を決める ---
+  //
+  // 生行が在るエントリは無条件に対象。観測窓の判定は「痕跡が一切無い」
+  // エントリにだけ適用する ―― そこだけが「観測前だったのか、失ったのか」を
+  // 区別できない領域だから。
+  const inScope = (entry: ReplayLedgerEntry): boolean => {
+    if (rawTimestamps.has(entry.handId)) return true
+    if (observationFloorMs === undefined || clockOffsetMs === undefined) return false
+    return entry.startTime * 1000 + clockOffsetMs >= observationFloorMs
+  }
+  const entries = all.filter(inScope)
+  const outOfObservationWindowHands = all.length - entries.length
+  const scopedLocalHands = all
+    .map((entry, index) => ({ entry, hand: localHands[index] }))
+    .filter(({ entry }) => inScope(entry))
 
   const notCapturedHandIds: number[] = []
   const derivationMissingHandIds: number[] = []
   const chipDiffMismatches: ReplayLedgerChipDiffMismatch[] = []
   let unverifiableHands = 0
 
-  entries.forEach((entry, index) => {
-    const hand = localHands[index]
+  scopedLocalHands.forEach(({ entry, hand }) => {
     if (!hand) {
-      // 派生テーブルの不在だけでキャプチャ欠損と断定しない。Raw Event Lake
-      // に生行があれば、イベントは届いていて派生側で落ちただけ。
-      if (capturedHandIds.has(entry.handId)) derivationMissingHandIds.push(entry.handId)
+      // 派生テーブルの不在だけで断定しない。生行があれば、イベントは届いて
+      // いて派生側で落ちただけ。
+      if (rawTimestamps.has(entry.handId)) derivationMissingHandIds.push(entry.handId)
       else notCapturedHandIds.push(entry.handId)
       return
     }
@@ -250,19 +277,6 @@ export const auditReplayLedger = async (
       })
     }
   })
-
-  // 時間範囲の空振りを欠損と断定しない。クライアント時計のずれで生行が
-  // 範囲外に落ちうるので、断定しかけたものだけ全走査で確かめる。
-  const lateFound = await confirmCapturesByFullScan(db, notCapturedHandIds)
-  if (lateFound.size > 0) {
-    for (let i = notCapturedHandIds.length - 1; i >= 0; i--) {
-      const handId = notCapturedHandIds[i]!
-      if (!lateFound.has(handId)) continue
-      notCapturedHandIds.splice(i, 1)
-      derivationMissingHandIds.push(handId)
-    }
-    derivationMissingHandIds.sort((a, b) => a - b)
-  }
 
   const result: ReplayLedgerAuditResult = {
     checkedAt: now,
@@ -308,6 +322,8 @@ export interface ReplayLedgerAuditDeps {
    * `EVT_HAND_RESULTS` のDB書き込み）と、Service Worker起動時の状態復元。
    */
   waitUntilConsistent: () => Promise<void>
+  /** インポート等の長時間操作の最中かどうか。真なら監査を見送る。 */
+  isBusy?: () => boolean
   getPlayerId: () => number | undefined
   now: () => number
 }
@@ -354,6 +370,10 @@ export const handleReplayLedgerPortMessage = (
   auditQueue = auditQueue
     .then(async () => {
       await deps.waitUntilConsistent()
+      if (deps.isBusy?.()) {
+        console.info('[replay-ledger] 長時間操作の実行中のため突き合わせを見送りました')
+        return
+      }
       await auditReplayLedger(deps.db, deps.getPlayerId(), snapshot, deps.now())
     })
     .catch(error => {

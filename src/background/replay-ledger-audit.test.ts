@@ -189,6 +189,47 @@ describe('replay ledger audit', () => {
     expect(result.chipDiffMismatches).toEqual([])
   })
 
+  // Codexレビュー指摘: 派生が全面停止すると hands が1件も一致せず、時計差を
+  // 測れないので全件が対象外に落ちる ―― 監査が最も叫ぶべき場面で沈黙する。
+  // 生行の有無は観測の直接証拠なので、観測窓の推定より優先しなければならない。
+  test('派生が全面停止していても、生行があるハンドは派生欠落として報告する', async () => {
+    // hands は空。生行だけが在る（スキーマ破損や派生の回帰を模す）
+    for (const [handId, ts] of [[1400, 1785500030_000], [1401, 1785500090_000]] as const) {
+      await db.apiEvents.add({
+        timestamp: ts, ApiTypeId: ApiType.EVT_HAND_RESULTS, sequence: 0, HandId: handId
+      } as never)
+    }
+
+    const result = await auditReplayLedger(db, HERO, ledgerOf([
+      { handId: 1400, startTime: 1785500000, chipDiff: 10 },
+      { handId: 1401, startTime: 1785500060, chipDiff: 20 }
+    ]), NOW)
+
+    expect(result.derivationMissingHandIds).toEqual([1400, 1401])
+    expect(result.outOfObservationWindowHands).toBe(0)
+    expect(result.notCapturedHandIds).toEqual([])
+  })
+
+  // 台帳のどのハンドも hands に無い（派生が壊れている）が、古いローカルハンドは
+  // 在るので観測開始の下限は取れる ―― この場合、時計差は生行からしか測れない。
+  // フォールバックが無いと補正不能になり、痕跡の無いハンドまで対象外に落ちる。
+  test('handsから時計差を測れないときは生行の時刻で補正する', async () => {
+    await db.hands.bulkPut([hand(999, 0, 1785400000_000)]) // 観測開始の下限のみ提供
+    await db.apiEvents.add({
+      timestamp: 1785500030_000, ApiTypeId: ApiType.EVT_HAND_RESULTS, sequence: 0, HandId: 1600
+    } as never)
+
+    const result = await auditReplayLedger(db, HERO, ledgerOf([
+      { handId: 1600, startTime: 1785500000, chipDiff: 10 },
+      { handId: 1601, startTime: 1785500060, chipDiff: 20 }
+    ]), NOW)
+
+    expect(result.derivationMissingHandIds).toEqual([1600])
+    // 1601 は痕跡が無いが、下限より新しいと判定できるので対象外にはしない
+    expect(result.notCapturedHandIds).toEqual([1601])
+    expect(result.outOfObservationWindowHands).toBe(0)
+  })
+
   test('ChipDiffとnetChipsの食い違いを報告する', async () => {
     await db.hands.bulkPut([hand(200, 500), hand(201, 999)])
 
@@ -328,6 +369,22 @@ describe('replay ledger audit', () => {
       await new Promise(resolve => setTimeout(resolve, 300))
       const stored = await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)
       expect((stored?.value as { battleType: number }).battleType).toBe(4)
+    })
+
+    // Codexレビュー指摘: インポートは生行を先にコミットして派生を後から作るので、
+    // その最中に照会すると正常に処理中のハンドが派生欠落として永続化される。
+    test('長時間操作の実行中は突き合わせを見送る', async () => {
+      await db.hands.bulkPut([hand(1500, 10)])
+      expect(handleReplayLedgerPortMessage({
+        type: REPLAY_PORT_LEDGER,
+        battleType: 0,
+        cardOpenEndDate: 0,
+        isExpiredCardOpen: false,
+        hands: [{ handId: 1500, startTime: 1785500000, chipDiff: 10 }]
+      }, { ...depsOf(db), isBusy: () => true })).toBe(true)
+
+      await new Promise(resolve => setTimeout(resolve, 80))
+      expect(await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)).toBeUndefined()
     })
 
     test('台帳を受け取ると突き合わせを実行する', async () => {
