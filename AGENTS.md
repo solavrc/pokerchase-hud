@@ -60,7 +60,8 @@ Chrome extension providing real-time poker statistics overlay and hand history t
   `docs/observability.md`, `docs/api-event-examples.md`. Currently Japanese:
   `README.md`, `docs/api-events.md`, `docs/architecture.md`,
   `docs/hand-analysis.md`, `docs/pokerstars-export.md`, `docs/firebase-setup.md`,
-  `docs/battle-type-coverage-audit.md`, `docs/chrome-web-store-release.md`. For a
+  `docs/battle-type-coverage-audit.md`, `docs/chrome-web-store-release.md`,
+  `docs/replay-api.md`. For a
   new file: English when it is written for agents/contributors, Japanese when it
   is written for users. Code comments stay English regardless.
 - **Commits**: Conventional Commits (common scopes: `hud`, `stats`, `ui`, `api`, `build`; breaking changes via `feat!` / `BREAKING CHANGE:`).
