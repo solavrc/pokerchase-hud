@@ -229,25 +229,24 @@ export const auditReplayLedger = async (
   // フォールバックとして使う（偏りは分単位で、観測開始の下限判定には十分）。
   const clockOffsetMs = median(handOffsets) ?? median(rawOffsets)
 
-  // 観測開始の下限。`hands` が空でも、生行が在れば観測はしていたので、
-  // Raw Lake の最古の `EVT_HAND_RESULTS` をフォールバックにする。これが無いと、
-  // 派生が全面停止した状態で「生行のあるハンドの間に挟まれた本物の非到着」を
-  // 報告できない（生行のあるものだけが個別の例外で対象になり、その隙間が
-  // 落ちる）。
-  const oldestLocal = await db.hands.orderBy('approxTimestamp').first()
-  const oldestRaw = await db.apiEvents
-    .where('[ApiTypeId+timestamp]')
-    .between(
-      [ApiType.EVT_HAND_RESULTS, Dexie.minKey],
-      [ApiType.EVT_HAND_RESULTS, Dexie.maxKey],
-      true,
-      true
-    )
-    .first()
-  const rawFloorMs = typeof (oldestRaw as { timestamp?: unknown } | undefined)?.timestamp === 'number'
-    ? (oldestRaw as { timestamp: number }).timestamp
-    : undefined
-  const observationFloorMs = oldestLocal?.approxTimestamp ?? rawFloorMs
+  // 観測開始の下限。**現在のアカウントに限定する**。
+  //
+  // 同じプロファイルを複数アカウントで使うと、DBには前のアカウントの履歴が
+  // 残る。全体の最古ハンドを下限にすると、アカウントを切り替えた直後に
+  // 「このアカウントを観測する前のハンド」まで判定対象になり、台帳の全件が
+  // 偽のローカル不在として保存される。待機中のplayerId変更チェックは
+  // 既存履歴の混在を防げない（切り替えは監査の開始より前に済んでいる）。
+  //
+  // HandIdは時系列で単調増加するので、multiEntryインデックスの`first()`
+  // （＝最小の主キー）がそのアカウントの最古ハンドになる。
+  const oldestOwnHand = playerId === undefined
+    ? undefined
+    : await db.hands.where('seatUserIds').equals(playerId).first()
+  // 派生が全面停止していて`hands`に1件も無い場合のフォールバック。台帳は
+  // 定義上このアカウントのハンドなので、その生行の最古を下限に使えば
+  // アカウント帰属を崩さない（全体の最古生行を使うと上と同じ混在が起きる）。
+  const observationFloorMs = oldestOwnHand?.approxTimestamp
+    ?? (rawTimestamps.size > 0 ? Math.min(...rawTimestamps.values()) : undefined)
 
   // --- 3. 判定対象を決める ---
   //

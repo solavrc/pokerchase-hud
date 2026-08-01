@@ -278,8 +278,15 @@ describe('replay ledger audit', () => {
     expect(result.notCapturedHandIds).toEqual([])
   })
 
-  test('ヒーロー未特定でも欠損検出は成立し、チップ照合だけ見送る', async () => {
-    await db.hands.bulkPut([hand(400, 500)])
+  // ヒーローが未特定だと `hands` をアカウントで絞れないので、観測開始の下限は
+  // 台帳自身の生行から取る。それがあれば欠損検出は成立し、チップ照合だけを
+  // 見送る。
+  test('ヒーロー未特定でも、生行があれば欠損検出は成立しチップ照合だけ見送る', async () => {
+    // 台帳の startTime と整合する記録時刻にする（時計差の中央値がここから出る）
+    await db.hands.bulkPut([hand(400, 500, 1785500030_000)])
+    await db.apiEvents.add({
+      timestamp: 1785500030_000, ApiTypeId: ApiType.EVT_HAND_RESULTS, sequence: 0, HandId: 400
+    } as never)
 
     const result = await auditReplayLedger(db, undefined, ledgerOf([
       { handId: 400, startTime: 1785500000, chipDiff: 500 },
@@ -289,6 +296,30 @@ describe('replay ledger audit', () => {
     expect(result.notCapturedHandIds).toEqual([401])
     expect(result.unverifiableHands).toBe(1)
     expect(result.chipDiffMismatches).toEqual([])
+  })
+
+  // Codexレビュー指摘: 同じプロファイルを複数アカウントで使うと、DBに前の
+  // アカウントの履歴が残る。全体の最古ハンドを下限にすると、切り替え直後に
+  // 台帳の全件が偽のローカル不在として保存される。
+  test('別アカウントの履歴があっても、観測開始の下限は現在のアカウントで決める', async () => {
+    const OTHER = 111111111
+    // 別アカウントのずっと古い履歴
+    await db.hands.bulkPut([{
+      ...hand(50, 0, 1785400000_000),
+      seatUserIds: [OTHER, 686412100, -1, -1, -1, -1]
+    } as never])
+    // HERO の履歴はここから（時計差もこのハンドから測れる）
+    await db.hands.bulkPut([hand(62, 30, 1785500120_000)])
+
+    const result = await auditReplayLedger(db, HERO, ledgerOf([
+      // HERO を観測し始める前のハンド。別アカウントの履歴を下限にすると
+      // 「観測済みの期間」に入ってしまい、偽のローカル不在になる。
+      { handId: 59, startTime: 1785450000, chipDiff: 10 },
+      { handId: 62, startTime: 1785500120, chipDiff: 30 }
+    ]), NOW)
+
+    expect(result.outOfObservationWindowHands).toBe(1)
+    expect(result.notCapturedHandIds).toEqual([])
   })
 
   test('結果をmetaへ書く（専用ストアを作らない＝Dexieのバージョンを消費しない）', async () => {
