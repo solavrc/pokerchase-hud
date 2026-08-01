@@ -27,14 +27,17 @@ import {
   REPLAY_BRIDGE_FETCH,
   REPLAY_BRIDGE_LEDGER,
   REPLAY_BRIDGE_RESULT,
+  REPLAY_BRIDGE_STARTED,
   REPLAY_FETCH_BATCH_LIMIT,
   REPLAY_LEDGER_MAX_ENTRIES,
   REPLAY_PORT_FETCH,
   REPLAY_PORT_LEDGER,
   REPLAY_PORT_RESULT,
+  REPLAY_PORT_STARTED,
   isPositiveHandId,
   type ReplayFetchRequest,
   type ReplayFetchResult,
+  type ReplayFetchStarted,
   type ReplayLedgerMessage
 } from './replay/protocol'
 /** !!! BACKGROUND、WEB_ACCESSIBLE_RESOURCES からインポートしないこと !!! */
@@ -207,6 +210,14 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
 
   // The main-world bridge removes transport credentials before this message
   // crosses into the extension's isolated world.
+  if ('type' in event.data && event.data.type === REPLAY_BRIDGE_STARTED) {
+    const started = event.data as Partial<ReplayFetchStarted>
+    if (typeof started.requestId === 'string') {
+      portManager.send({ type: REPLAY_PORT_STARTED, requestId: started.requestId })
+    }
+    return
+  }
+
   if ('type' in event.data && event.data.type === REPLAY_BRIDGE_RESULT) {
     const result = event.data as Partial<ReplayFetchResult>
     if (typeof result.requestId === 'string' && Array.isArray(result.results) &&

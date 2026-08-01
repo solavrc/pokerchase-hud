@@ -14,6 +14,7 @@ import {
   REPLAY_BRIDGE_FETCH,
   REPLAY_BRIDGE_LEDGER,
   REPLAY_BRIDGE_RESULT,
+  REPLAY_BRIDGE_STARTED,
   REPLAY_DETAIL_URL,
   REPLAY_FETCH_BATCH_LIMIT,
   REPLAY_FETCH_INTERVAL_MS,
@@ -592,6 +593,13 @@ const handleReplayFetch = async (message: ReplayFetchRequest): Promise<void> => 
   const handIds = message.handIds
     .filter(isPositiveHandId)
     .slice(0, REPLAY_FETCH_BATCH_LIMIT)
+  // 依頼元のタイマーを「先行バッチの待ち」から「自分のバッチの所要」へ
+  // 切り替えさせる。逐次キューで待たされていた時間を期限に含めないため。
+  window.postMessage({
+    type: REPLAY_BRIDGE_STARTED,
+    requestId: message.requestId
+  }, POKER_CHASE_ORIGIN)
+
   const results: ReplayFetchItemResult[] = []
   for (const handId of handIds) {
     // 各件の前に再確認する。無効化は次の1件から効く必要があり、バッチ完了まで

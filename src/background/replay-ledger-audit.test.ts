@@ -387,6 +387,29 @@ describe('replay ledger audit', () => {
       expect(await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)).toBeUndefined()
     })
 
+    // Codexレビュー指摘: 開始時のチェックと照会の間にインポートが始まりうる。
+    // 監査の間ずっと操作スロットを保持するとユーザー操作を待たせるので、
+    // 読んだ結果を保存直前に捨てる形にした。
+    test('照会の途中で長時間操作が始まったら結果を保存しない', async () => {
+      await db.hands.bulkPut([hand(1700, 10)])
+      let busy = false
+      expect(handleReplayLedgerPortMessage({
+        type: REPLAY_PORT_LEDGER,
+        battleType: 0,
+        cardOpenEndDate: 0,
+        isExpiredCardOpen: false,
+        hands: [{ handId: 1700, startTime: 1785500000, chipDiff: 10 }]
+      }, {
+        ...depsOf(db),
+        // 開始時は idle、監査に入った直後に操作が始まる
+        waitUntilConsistent: async () => { busy = false },
+        isBusy: () => { const v = busy; busy = true; return v }
+      })).toBe(true)
+
+      await new Promise(resolve => setTimeout(resolve, 120))
+      expect(await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)).toBeUndefined()
+    })
+
     test('台帳を受け取ると突き合わせを実行する', async () => {
       await db.hands.bulkPut([hand(600, 500)])
       expect(handleReplayLedgerPortMessage({

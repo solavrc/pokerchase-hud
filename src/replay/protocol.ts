@@ -6,9 +6,11 @@ export const REPLAY_LIST_PATH = '/replay/list'
 
 export const REPLAY_BRIDGE_CONFIG = 'pokerchase-hud:replay-config'
 export const REPLAY_BRIDGE_FETCH = 'pokerchase-hud:replay-fetch'
+export const REPLAY_BRIDGE_STARTED = 'pokerchase-hud:replay-started'
 export const REPLAY_BRIDGE_RESULT = 'pokerchase-hud:replay-result'
 export const REPLAY_BRIDGE_LEDGER = 'pokerchase-hud:replay-ledger'
 export const REPLAY_PORT_FETCH = 'experimental-replay-fetch'
+export const REPLAY_PORT_STARTED = 'experimental-replay-started'
 export const REPLAY_PORT_RESULT = 'experimental-replay-result'
 export const REPLAY_PORT_LEDGER = 'experimental-replay-ledger'
 
@@ -58,6 +60,19 @@ export interface ReplayFetchRequest {
   type: typeof REPLAY_BRIDGE_FETCH | typeof REPLAY_PORT_FETCH
   requestId: string
   handIds: number[]
+}
+
+/**
+ * ページ側がそのバッチの処理を**実際に開始した**ことの通知。
+ *
+ * 依頼元はこれを受け取るまで「先行バッチの待ち」、受け取ってからは「自分の
+ * バッチの所要」で計る。片方だけで計ると必ずどちらかが足りない ―― 自分の
+ * 件数だけでは先行バッチの間隔待ちの最中に切れ、上限件数だけでは先行バッチを
+ * 吸収した後の自分の所要が残らない。
+ */
+export interface ReplayFetchStarted {
+  type: typeof REPLAY_BRIDGE_STARTED | typeof REPLAY_PORT_STARTED
+  requestId: string
 }
 
 export type ReplayFetchItemResult =

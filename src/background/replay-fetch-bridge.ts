@@ -24,16 +24,21 @@ import {
   REPLAY_FETCH_BATCH_LIMIT,
   REPLAY_PORT_FETCH,
   REPLAY_PORT_RESULT,
+  REPLAY_PORT_STARTED,
   isPositiveHandId,
   replayFetchBatchTimeoutMs,
   type ReplayFetchItemResult,
-  type ReplayFetchResult
+  type ReplayFetchResult,
+  type ReplayFetchStarted
 } from '../replay/protocol'
 
 interface PendingRequest {
   port: chrome.runtime.Port
+  handIdCount: number
   resolve: (results: ReplayFetchItemResult[]) => void
   timer: ReturnType<typeof setTimeout>
+  /** ページ側の開始通知を受けてタイマーを張り直したか（多重発火の抑止）。 */
+  started: boolean
 }
 
 const pending = new Map<string, PendingRequest>()
@@ -61,6 +66,26 @@ export const handleReplayPortMessage = (
   port: chrome.runtime.Port
 ): boolean => {
   if (typeof message !== 'object' || message === null) return false
+
+  // ページ側がそのバッチの処理を実際に開始した ―― ここで期限を張り直す。
+  // 開始前は「先行バッチが最大構成でも待ち切れる長さ」、開始後は「自分の
+  // バッチの所要」。片方だけで計ると、自分の件数だけでは先行バッチの
+  // 間隔待ちの最中に切れ、上限件数だけでは先行バッチを吸収した後に自分の
+  // 所要が残らない。
+  if ((message as { type?: unknown }).type === REPLAY_PORT_STARTED) {
+    const started = message as Partial<ReplayFetchStarted>
+    if (typeof started.requestId !== 'string') return true
+    const request = pending.get(started.requestId)
+    if (!request || request.port !== port || request.started) return true
+    request.started = true
+    clearTimeout(request.timer)
+    request.timer = setTimeout(
+      () => settle(started.requestId as string, []),
+      replayFetchBatchTimeoutMs(request.handIdCount)
+    )
+    return true
+  }
+
   if ((message as { type?: unknown }).type !== REPLAY_PORT_RESULT) return false
 
   const result = message as Partial<ReplayFetchResult>
@@ -123,17 +148,15 @@ export const requestReplayDetails = async (
   // 結果が返る。
     const requestId = `devtools-${crypto.randomUUID()}`
     const results = await new Promise<ReplayFetchItemResult[]>(resolve => {
-        // 件数ではなく**上限件数**で計る。`dispatchQueue` はSW再起動で空へ戻る
-      // 一方、タブ側の `replayFetchQueue` は旧バッチを処理し続けるので、
-      // 自分の件数で計ると先行バッチの間隔待ちの最中に期限切れになり、
-      // 空結果を返した後で依頼元不在のPOSTが走る。上限で計れば、先行バッチが
-      // 最大構成でも待ち切れる。ページ側は1件15秒で必ず打ち切るので、
-      // これで無限に待つことはない。
+        // 開始通知が来るまでの期限。`dispatchQueue` はSW再起動で空へ戻る一方、
+      // タブ側の `replayFetchQueue` は旧バッチを処理し続けるので、先行バッチが
+      // 最大構成でも待ち切れる長さを取る。開始通知を受けたら
+      // `handleReplayPortMessage` が自分の件数で張り直す。
       const timer = setTimeout(
         () => settle(requestId, []),
         replayFetchBatchTimeoutMs(REPLAY_FETCH_BATCH_LIMIT)
       )
-      pending.set(requestId, { port, resolve, timer })
+      pending.set(requestId, { port, handIdCount: handIds.length, resolve, timer, started: false })
       try {
         port.postMessage({ type: REPLAY_PORT_FETCH, requestId, handIds })
       } catch (error) {

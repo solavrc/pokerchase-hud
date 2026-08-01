@@ -186,7 +186,8 @@ export const auditReplayLedger = async (
   db: PokerChaseDB,
   playerId: number | undefined,
   ledger: ReplayLedger,
-  now: number
+  now: number,
+  isBusy?: () => boolean
 ): Promise<ReplayLedgerAuditResult> => {
   const all = ledger.hands.slice(0, REPLAY_LEDGER_MAX_ENTRIES)
 
@@ -291,6 +292,17 @@ export const auditReplayLedger = async (
     chipDiffMismatches
   }
 
+  // 保存の直前にもう一度確かめる。開始時のチェックと照会の間にインポートが
+  // 始まると、rawコミット済み・派生未生成の途中経過を読んでしまう。
+  //
+  // 監査の間ずっと操作スロットを保持する案は採らない ―― ユーザーが押した
+  // 再構築やインポートを、バックグラウンドの診断が待たせることになり、
+  // 一時的に不正確な診断より悪い。読んだ結果を捨てるだけで足りる。
+  if (isBusy?.()) {
+    console.info('[replay-ledger] 実行中に長時間操作が始まったため結果を破棄しました')
+    return result
+  }
+
   await db.meta.put({
     id: REPLAY_LEDGER_AUDIT_META_ID,
     value: result,
@@ -374,7 +386,7 @@ export const handleReplayLedgerPortMessage = (
         console.info('[replay-ledger] 長時間操作の実行中のため突き合わせを見送りました')
         return
       }
-      await auditReplayLedger(deps.db, deps.getPlayerId(), snapshot, deps.now())
+      await auditReplayLedger(deps.db, deps.getPlayerId(), snapshot, deps.now(), deps.isBusy)
     })
     .catch(error => {
       console.error('[replay-ledger] 台帳の突き合わせに失敗しました:', error)

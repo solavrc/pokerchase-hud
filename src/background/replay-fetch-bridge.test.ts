@@ -2,7 +2,9 @@ import { connectedPorts } from './ports'
 import {
   REPLAY_PORT_FETCH,
   REPLAY_PORT_RESULT,
-  REPLAY_FETCH_BATCH_LIMIT
+  REPLAY_PORT_STARTED,
+  REPLAY_FETCH_BATCH_LIMIT,
+  replayFetchBatchTimeoutMs
 } from '../replay/protocol'
 import {
   __resetReplayFetchBridgeForTests,
@@ -21,6 +23,39 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
   beforeEach(() => {
     __resetReplayFetchBridgeForTests()
     connectedPorts.clear()
+  })
+
+  // Codexレビュー指摘（3周にわたる同じ論点）: 期限を片方の尺度だけで計ると
+  // 必ずどちらかが足りない。自分の件数だけでは先行バッチの間隔待ちの最中に
+  // 切れ、上限件数だけでは先行バッチを吸収した後に自分の所要が残らない。
+  // 開始通知を境に尺度を切り替える。
+  it('開始通知を受けたら期限を自分のバッチの所要へ張り直す', async () => {
+    jest.useFakeTimers()
+    try {
+      const port = makePort()
+      connectedPorts.add(port)
+
+      let settled = false
+      const pending = requestReplayDetails([1]).then(outcome => { settled = true; return outcome })
+      await Promise.resolve()
+      const requestId = sentRequestId(port)
+
+      // 開始通知の前は「先行バッチが最大構成でも待ち切れる」長さ。
+      // 自分の件数(1件)の期限を大きく超えても、まだ切れてはいけない。
+      jest.advanceTimersByTime(replayFetchBatchTimeoutMs(1) * 2)
+      await Promise.resolve()
+      expect(settled).toBe(false)
+
+      expect(handleReplayPortMessage({ type: REPLAY_PORT_STARTED, requestId }, port)).toBe(true)
+
+      // 張り直された後は自分の件数で切れる
+      jest.advanceTimersByTime(replayFetchBatchTimeoutMs(1) + 1000)
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(await pending).toEqual({ success: true, results: [] })
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   it('接続中のゲームタブへ取得を依頼し、応答で解決する', async () => {
