@@ -1010,6 +1010,37 @@ describe('RecentHandsService', () => {
       expect(line).toBe('4CC')
     })
 
+    // codexレビュー指摘（#356）: カバーしないショートオールインは保存上RAISEでも
+    // 実質コールなので、ベット数として数えてはならない。
+    test('CC: 先行のショートオールイン（実質コール）はベット数に数えない', async () => {
+      const line = await lineFor([
+        // オープン200 → カバーしないショートオールイン150（RAISE+ALL_IN保存）→ ヒーローのコール。
+        // 生種別で数えると「3ベットに直面」となり3CCに化けるが、実質はオープンへのCC。
+        makeAction({ handId: 1, index: 0, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, position: Position.UTG, playerId: 2, bet: 200 }),
+        makeAction({ handId: 1, index: 1, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, position: Position.CO, playerId: 3, bet: 150, actionDetails: [ActionDetail.ALL_IN] }),
+        makeAction({ handId: 1, index: 2, phase: PhaseType.PREFLOP, actionType: ActionType.CALL, position: Position.BTN, playerId: PLAYER_ID, bet: 200 }),
+      ], { bigBlind: 100 })
+      expect(line).toBe('CC')
+    })
+
+    test('3B: 先行のショートオールイン（実質コール）があってもレイズラベルはずれない', async () => {
+      const line = await lineFor([
+        makeAction({ handId: 1, index: 0, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, position: Position.UTG, playerId: 2, bet: 200 }),
+        makeAction({ handId: 1, index: 1, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, position: Position.CO, playerId: 3, bet: 150, actionDetails: [ActionDetail.ALL_IN] }),
+        makeAction({ handId: 1, index: 2, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, position: Position.BTN, playerId: PLAYER_ID, bet: 600 }),
+      ], { bigBlind: 100 })
+      expect(line).toBe('3B')
+    })
+
+    test('3CC: カバーするオールインの3betは従来どおりベット数に数える', async () => {
+      const line = await lineFor([
+        makeAction({ handId: 1, index: 0, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, position: Position.UTG, playerId: 2, bet: 200 }),
+        makeAction({ handId: 1, index: 1, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, position: Position.CO, playerId: 3, bet: 500, actionDetails: [ActionDetail.ALL_IN] }),
+        makeAction({ handId: 1, index: 2, phase: PhaseType.PREFLOP, actionType: ActionType.CALL, position: Position.BTN, playerId: PLAYER_ID, bet: 500 }),
+      ], { bigBlind: 100 })
+      expect(line).toBe('3CC')
+    })
+
     test('CCファミリーの-Fサフィックス（3betへCC後、4betに降りる）', async () => {
       const line = await lineFor([
         makeAction({ handId: 1, index: 0, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, position: Position.UTG, playerId: 2 }),

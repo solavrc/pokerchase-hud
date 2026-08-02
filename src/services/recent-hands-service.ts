@@ -161,16 +161,29 @@ chrome.storage?.onChanged?.addListener((changes, areaName) => {
 
 /**
  * あるアクションの`phasePrevBetCount`をローカルに再計算する。
- * write-entity-stream.ts:193と全く同じ式（同一フェーズ内でこのアクション
+ * 基本形はwrite-entity-stream.ts:193の式（同一フェーズ内でこのアクション
  * より前のBET/RAISEアクション数 + PREFLOPなら1）。`actionsByHandId`は
  * 対象ハンド集合の全プレイヤー分のアクションを含む必要がある（自分の
  * アクションだけでは「何ベット目に直面したか」は分からないため）。
+ *
+ * ただし先行アクションは**実質種別**（`resolveEffectiveActionType`）で数える
+ * （MUST）。保存パイプラインは相手のベットをカバーできないショートオールイン
+ * （＝実質はコール）も`RAISE`として保存するため、生の種別で数えると
+ * `オープン → ショートオールイン → コール`の最後のコールが「3ベットに直面」
+ * と誤判定され、`CC`が`3CC`に、後続レイズの`3B`が`4B`になる。
+ * `bigBlindFallback`はプリフロップの実質種別判定に使う下駄（ブラインドは
+ * `EVT_ACTION`として来ないため。`facingBetBefore`参照）。
  */
-function computePhasePrevBetCount(action: Action, actionsByHandId: Map<number, Action[]>): number {
+function computePhasePrevBetCount(
+  action: Action,
+  actionsByHandId: Map<number, Action[]>,
+  bigBlindFallback: number = 0
+): number {
   if (action.handId === undefined) return action.phase === PhaseType.PREFLOP ? 1 : 0
   const phaseActions = (actionsByHandId.get(action.handId) ?? []).filter(a => a.phase === action.phase)
+  const fallback = action.phase === PhaseType.PREFLOP ? bigBlindFallback : 0
   const priorBetRaiseCount = phaseActions.filter(a =>
-    a.index < action.index && (a.actionType === ActionType.BET || a.actionType === ActionType.RAISE)
+    a.index < action.index && isAggressiveAction(resolveEffectiveActionType(a, phaseActions, fallback))
   ).length
   return priorBetRaiseCount + (action.phase === PhaseType.PREFLOP ? 1 : 0)
 }
@@ -239,6 +252,10 @@ function derivePreflopLabeling(
     }
   }
 
+  // 実質種別判定（ショートオールインの実質コール除外）の下駄。
+  // ブラインドは`EVT_ACTION`として来ないため、プリフロップの対峙額はBBから始まる。
+  const bigBlindFallback = isUsableNumber(hand.bigBlind) && hand.bigBlind > 0 ? hand.bigBlind : 0
+
   let label: string | null = null
   let labelingAction: Action | null = null
   let showsAmount = false
@@ -255,7 +272,7 @@ function derivePreflopLabeling(
       continue
     }
     if (action.actionType === ActionType.CALL) {
-      const phasePrevBetCount = computePhasePrevBetCount(action, actionsByHandId)
+      const phasePrevBetCount = computePhasePrevBetCount(action, actionsByHandId, bigBlindFallback)
       const isColdCall: boolean = phasePrevBetCount > 1 && label === null
       label = phasePrevBetCount <= 1 ? 'L' : (isColdCall ? coldCallLabel(phasePrevBetCount) : 'C')
       labelingAction = action
@@ -266,7 +283,7 @@ function derivePreflopLabeling(
       continue
     }
     if (action.actionType === ActionType.RAISE || action.actionType === ActionType.BET) {
-      label = betLabel(computePhasePrevBetCount(action, actionsByHandId))
+      label = betLabel(computePhasePrevBetCount(action, actionsByHandId, bigBlindFallback))
       labelingAction = action
       showsAmount = true
       continue
