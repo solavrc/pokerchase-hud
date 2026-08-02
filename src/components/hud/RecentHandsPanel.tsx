@@ -399,19 +399,14 @@ const styles = {
   } as CSSProperties,
 
   /**
-   * ボード列（#356）。最大5枚で行内の最長セルになるため、字間を詰めて
-   * 幅を稼ぐ。折り返しも許す ―― 240px幅を超えるくらいなら2行になるほうが
-   * カードを失わない（F/T/R列と同じ方針）。
+   * ボード列（#356）。5枚を区切り無しで詰めて出す。字間も詰めて幅を稼ぎ、
+   * 折り返しも許す ―― 240px幅を超えるくらいなら2行になるほうがカードを
+   * 失わない（F/T/R列と同じ方針）。ストリート境界はツールチップで辿れる。
    */
   boardCell: {
     whiteSpace: 'normal' as const,
     wordBreak: 'break-all' as const,
     letterSpacing: '-0.3px',
-  } as CSSProperties,
-
-  /** ストリート境界の細いスペース。フロップは繋げ、ターン・リバーの前だけ空ける。 */
-  boardStreetGap: {
-    marginLeft: '2px',
   } as CSSProperties,
 
   streetCell: {
@@ -683,13 +678,10 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
                   data-testid="recent-hands-board"
                 >
                   {Array.isArray(entry.board) && entry.board.length > 0 ? (
+                    // ストリート境界の空きは入れず、5枚を詰めて出す（#356、sola指定）。
+                    // 境界を知りたいときはツールチップの`8h 9h 6h | 2s | Ad`で辿れる。
                     entry.board.map((card, i) => (
-                      <span
-                        key={i}
-                        style={i === 3 || i === 4
-                          ? { color: suitColor(card), ...styles.boardStreetGap }
-                          : { color: suitColor(card) }}
-                      >{cardRankLabel(card)}</span>
+                      <span key={i} style={{ color: suitColor(card) }}>{cardRankLabel(card)}</span>
                     ))
                   ) : (
                     <span style={styles.notWon}>—</span>

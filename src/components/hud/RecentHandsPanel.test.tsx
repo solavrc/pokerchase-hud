@@ -644,15 +644,15 @@ describe('board column', () => {
     expect(cell).toHaveAttribute('title', 'ボード: 8h 9h 6h')
   })
 
-  test('フルランナウト: ターン・リバーの前に間隔を空ける', async () => {
+  test('フルランナウト: 区切り無しで5枚を詰めて出す', async () => {
     const cell = await renderBoard(['8h', '9h', '6h', '2s', 'Ad'])
     expect(cell).toHaveTextContent('8962A')
+    // ストリート境界はツールチップ側だけが持つ（表示は詰める、#356）。
     expect(cell).toHaveAttribute('title', 'ボード: 8h 9h 6h | 2s | Ad')
     const spans = cell.querySelectorAll('span')
-    // 4枚目（ターン）と5枚目（リバー）にだけ左マージンが付く。
-    expect(spans[2]).toHaveStyle({ marginLeft: '' })
-    expect(spans[3]).toHaveStyle({ marginLeft: '2px' })
-    expect(spans[4]).toHaveStyle({ marginLeft: '2px' })
+    expect(spans).toHaveLength(5)
+    // どのカードにも間隔用のマージンは付けない。
+    spans.forEach(span => expect(span).toHaveStyle({ marginLeft: '' }))
   })
 
   test('スートは4色で塗り分ける（文字を落とした分の判別手段）', async () => {
