@@ -4,7 +4,7 @@ import { Position } from '../../types/game'
 import type { PostflopLines, RecentHandEntry, RecentHandsResult, StreetAction } from '../../types/stats'
 import type { GetRecentHandsMessage, RecentHandsResponse, ErrorResponse } from '../../types/messages'
 import { sendMessageWithTimeout } from '../popup/send-message'
-import { suitColor } from '../../utils/card-utils'
+import { cardRankLabel, suitColor } from '../../utils/card-utils'
 import { HUD_MUTED_TEXT_COLOR } from './hudColors'
 import {
   DEFAULT_RECENT_HANDS_PANEL_CONFIG,
@@ -57,10 +57,10 @@ export function formatStreetAction(action: StreetAction): string {
 /**
  * ポストフロップ3ストリートを1セルに畳む（#341/#354）。ストリート区切りは`/`。
  *
- * 末尾側の「アクションが無いストリート」は落とす（`XC/B33`はターンで終わった
+ * 末尾側の「アクションが無いストリート」は落とす（`XC / B33`はターンで終わった
  * という意味で、リバー欄の`/-`は情報を持たない）。逆に途中の空ストリートは
- * `-`で残す ―― `XC/-/B50`は「ターンでは動かずリバーでベット」であって、
- * 詰めてしまうと`XC/B50`（ターンでベット）と区別が付かなくなる。
+ * `-`で残す ―― `XC / - / B50`は「ターンでは動かずリバーでベット」であって、
+ * 詰めてしまうと`XC / B50`（ターンでベット）と区別が付かなくなる。
  * 3ストリートとも空なら`null`（呼び出し側がem dashへ倒す）。
  *
  * 引数が欠けている場合も`null`へ倒す（MUST）: このデータはchrome.runtime
@@ -81,7 +81,10 @@ export function formatPostflopLines(lines: PostflopLines | null | undefined): st
   return streets
     .slice(0, lastPlayed + 1)
     .map(street => (street.length > 0 ? street.map(formatStreetAction).join('') : '-'))
-    .join('/')
+    // ストリート区切りの`/`は前後を1スペース空ける（#356）。ストリート内の
+    // トークンは詰めたままなので、`XC / B33 / B66!`のように「どこまでが同じ
+    // ストリートか」が一目で分かる。
+    .join(' / ')
 }
 
 /**
@@ -103,24 +106,50 @@ export function formatPostflopTooltip(lines: PostflopLines | null | undefined): 
 }
 
 /**
- * アグレッシブなプリフロップ・ラインのベース部分（`Open` / `3Bet` / `4Bet`…）。
- * `Limp`/`ColdCall`/`Call`/`Check`/`Fold`/`Walk`にはサイズを付けない ――
- * レイズto額が存在しないため。
+ * ランクのみ表示のセルに添える、スート込みの完全表記（#356）。
+ *
+ * 240px幅では5枚のボードをランク+スートで出せないため、表示はランクだけにし、
+ * スートは4色の色分けが担う。**色だけが頼りになる**ので、正確な表記へ到達する
+ * 手段をここで必ず用意する（MUST）。ボードはストリート境界を`|`で示す
+ * （`/`はF/T/R列のストリート区切りと衝突するため使わない）。
  */
-const PREFLOP_AGGRO_BASE = /^(?:Open|\d+Bet)$/
+export function formatBoardTooltip(board: string[] | null | undefined): string | undefined {
+  if (!Array.isArray(board) || board.length === 0) return undefined
+  const streets = [board.slice(0, 3), board.slice(3, 4), board.slice(4, 5)]
+    .filter(street => street.length > 0)
+    .map(street => street.join(' '))
+  return `ボード: ${streets.join(' | ')}`
+}
+
+/** ホールカード側の同等物（#356）。こちらはストリートが無いので素直に並べる。 */
+export function formatCardsTooltip(cards: string[] | null | undefined): string | undefined {
+  if (!Array.isArray(cards) || cards.length === 0) return undefined
+  return `ホールカード: ${cards.join(' ')}`
+}
 
 /**
- * ライン列の表示（#354）: アグレッシブなラベルにだけレイズto額（BB）を
- * インラインで足す。`Open2.2` / `3Bet9` / `4Bet22`。
+ * 金額を伴うプリフロップ・ラベルのベース部分（#356の短縮表記）:
+ * オープンレイズ`OR` / Nベット`3B`,`4B`… / コールドコール`CC`,`3CC`…。
+ * `L`（リンプ）・`C`（非コールドのコール）・`X`・`F`・`W`には付けない。
+ * サービス側も同じ条件で金額をnullにするので、ここは二重の防御。
+ */
+const PREFLOP_SIZED_BASE = /^(?:OR|\d+B|\d*CC)$/
+
+/**
+ * ライン列の表示（#354のレイズto額を#356でコールドコールへ拡張）:
+ * 金額を伴うラベルにだけ、そのアクションのto額（BB）をインラインで足す。
+ * `OR2.2` / `3B9` / `4B22` / `CC2.2` / `3CC9`。
  *
- * `-F`サフィックス（オープンしてから降りた等）は**数字の後ろ**へ回す:
- * `Open2.2-F`。`-F`はラベル本体ではなくその後の顛末なので、サイズは
- * ラベル本体に付くほうが読み順と一致する。
+ * `-F`サフィックス（仕掛けてから降りた等）は**数字の後ろ**へ回す:
+ * `OR2.2-F` / `3CC9-F`。`-F`はラベル本体ではなくその後の顛末なので、サイズは
+ * ラベル本体に付くほうが読み順と一致する。区切りに`/`を使わないのは、`/`が
+ * F/T/R列のストリート区切りであり、ここで使うとストリート境界に読めてしまう
+ * ため（MUST NOT）。
  *
  * 以下の条件ではサイズを表示してはならない（MUST NOT ―― いずれも数字を
  * 捏造しないため）:
- *  - ベース部分がアグレッシブでない（`ColdCall`等）
- *  - `preflopRaiseToBB`が無い ―― `bigBlind`が使えないハンド、および
+ *  - ベース部分が金額を伴うラベルでない（`L`/`C`/`X`等）
+ *  - `preflopLineAmountBB`が無い ―― `bigBlind`が使えないハンド、および
  *    ショートオールイン（保存上RAISEでも実質コール。サービス側の
  *    `resolveEffectiveActionType`が同じ境界で弾く）
  *
@@ -129,12 +158,35 @@ const PREFLOP_AGGRO_BASE = /^(?:Open|\d+Bet)$/
 export function formatPreflopLine(entry: RecentHandEntry): string {
   const line = entry.preflopLine
   if (!line) return '—'
-  const bb = entry.preflopRaiseToBB
+  const bb = entry.preflopLineAmountBB
   if (typeof bb !== 'number' || !Number.isFinite(bb) || bb <= 0) return line
   const foldedAfter = line.endsWith('-F')
   const base = foldedAfter ? line.slice(0, -2) : line
-  if (!PREFLOP_AGGRO_BASE.test(base)) return line
+  if (!PREFLOP_SIZED_BASE.test(base)) return line
   return `${base}${formatBigBlinds(bb)}${foldedAfter ? '-F' : ''}`
+}
+
+/**
+ * 短縮ラベルの読み下し（#356）。短縮表記が「覚えられる」ようにツールチップで
+ * 長い形を出す。未知のラベルはそのまま返す（表示を落とさない）。
+ */
+export function describePreflopLabel(line: string): string {
+  const foldedAfter = line.endsWith('-F')
+  const base = foldedAfter ? line.slice(0, -2) : line
+  const suffix = foldedAfter ? '後フォールド' : ''
+  const nBet = /^(\d+)B$/.exec(base)
+  const nColdCall = /^(\d*)CC$/.exec(base)
+  const described =
+    base === 'OR' ? 'オープンレイズ'
+      : base === 'L' ? 'リンプ'
+        : base === 'C' ? 'コール'
+          : base === 'X' ? 'チェック'
+            : base === 'F' ? 'フォールド'
+              : base === 'W' ? 'ウォーク（BB不戦勝）'
+                : nBet ? `${nBet[1]}ベット`
+                  : nColdCall ? (nColdCall[1] ? `${nColdCall[1]}ベットへコールドコール` : 'オープンへコールドコール')
+                    : base
+  return `${described}${suffix}`
 }
 
 /**
@@ -145,11 +197,18 @@ export function formatPreflopLine(entry: RecentHandEntry): string {
  * ツールチップと同じ考え方）。
  */
 export function formatPreflopTooltip(entry: RecentHandEntry): string | undefined {
-  const bb = entry.preflopRaiseToBB
-  const chips = entry.preflopRaiseToChips
-  if (typeof bb !== 'number' || !Number.isFinite(bb) || bb <= 0) return undefined
-  if (typeof chips !== 'number' || !Number.isFinite(chips)) return undefined
-  return `プリフロップ: ${formatBigBlinds(bb)}BB（${chips.toLocaleString()}チップ）へレイズ`
+  const line = entry.preflopLine
+  if (!line) return undefined
+  const described = describePreflopLabel(line)
+  const bb = entry.preflopLineAmountBB
+  const chips = entry.preflopLineAmountChips
+  const hasAmount = typeof bb === 'number' && Number.isFinite(bb) && bb > 0 &&
+    typeof chips === 'number' && Number.isFinite(chips)
+  // 金額が無いラベル（`L`/`X`等）でも読み下しだけは出す ―― 短縮表記を
+  // 覚えるための手がかりはどの行にもあるべき。
+  return hasAmount
+    ? `${described} ${formatBigBlinds(bb)}BB（${chips.toLocaleString()}チップ）`
+    : described
 }
 
 /**
@@ -212,6 +271,13 @@ const netChipsTooltip = (entry: RecentHandEntry): string | undefined => {
   return `${formatNetChips(entry)} チップ（BB=${bigBlind.toLocaleString()}）`
 }
 
+/**
+ * 固定列幅（Pos / カード / ライン / ボード / F/T/R / 損益(BB)）。
+ * 240pxのHUD内で、よくある行が1行に収まるよう実測で配分した（#356）。
+ * 極端に長いF/T/Rだけがそのセル内で折り返す。
+ */
+const COLUMN_WIDTHS = ['9%', '11%', '20%', '14%', '30%', '16%'] as const
+
 const styles = {
   panel: {
     borderTop: '1px solid rgba(255, 255, 255, 0.15)',
@@ -266,18 +332,32 @@ const styles = {
     overflowX: 'hidden' as const,
   } as CSSProperties,
 
+  /**
+   * 列幅は固定（#356）。`auto`のままだと、極端に長い1行（`3CC22.5-F` +
+   * 5枚ボード + `B150 / R80 / B66!` のような行）が**テーブル全体の列幅を
+   * 押し広げ**、他の普通の行まで折り返してしまう ―― 実測で1行足すだけで
+   * 折り返しが2行→5行へ増えた。固定幅にすれば、はみ出すのはその行の
+   * 該当セルだけで済み、行ごとの幅の揺れも無くなる。
+   * 各列の割合は`COLUMN_WIDTHS`で明示する。
+   */
   table: {
     width: '100%',
     borderCollapse: 'collapse' as const,
-    fontSize: '9px',
-    tableLayout: 'auto' as const,
+    // 列が7つになったので本文だけ8pxへ（#356）。Chromeで各列の自然幅を実測
+    // すると、9pxでは最悪ケース込みで255px必要（持ち幅228px）に対し、
+    // 8pxなら230pxまで下がり、ほぼ全ての行が1行に収まる。
+    // ツールバーやプレースホルダーは9pxのまま。
+    fontSize: '8px',
+    tableLayout: 'fixed' as const,
   } as CSSProperties,
 
   headerCell: {
     color: '#aaaaaa',
     fontWeight: 'bold',
     textAlign: 'right' as const,
-    padding: '1px 2px',
+    // 列が7つになったぶん左右paddingを1pxまで詰める（#356）。240px幅で
+    // ボード列を足しても最悪ケースが収まるようにするための余白回収。
+    padding: '1px 1px',
     borderBottom: '1px solid rgba(255, 255, 255, 0.15)',
     whiteSpace: 'nowrap' as const,
     // スクロール時もヘッダーを残す（100件表示だと確実にスクロールするため）。
@@ -296,8 +376,8 @@ const styles = {
   cell: {
     color: '#dddddd',
     textAlign: 'right' as const,
-    // ヘッダーと同じ左右padding。列が1つ増えた分、240px幅の余裕を確保する。
-    padding: '1px 2px',
+    // ヘッダーと同じ左右padding（#356で1pxまで圧縮）。
+    padding: '1px 1px',
     whiteSpace: 'nowrap' as const,
   } as CSSProperties,
 
@@ -318,7 +398,22 @@ const styles = {
     fontFeatureSettings: '"tnum" 1',
   } as CSSProperties,
 
+  /**
+   * ボード列（#356）。5枚を区切り無しで詰めて出す。字間も詰めて幅を稼ぎ、
+   * 折り返しも許す ―― 240px幅を超えるくらいなら2行になるほうがカードを
+   * 失わない（F/T/R列と同じ方針）。ストリート境界はツールチップで辿れる。
+   */
+  boardCell: {
+    whiteSpace: 'normal' as const,
+    wordBreak: 'break-all' as const,
+    letterSpacing: '-0.3px',
+  } as CSSProperties,
+
   streetCell: {
+    // 区切りの前後を空けたぶん（#356）字間を詰めて幅を戻す。それでも
+    // 3ストリートすべてが大きなサイズ表記になる極端な行は240pxに収まらないが、
+    // このセルは折り返す（`whiteSpace: normal`）ので**切り捨てにはならない**。
+    letterSpacing: '-0.2px',
     whiteSpace: 'normal' as const,
     wordBreak: 'break-all' as const,
     fontVariantNumeric: 'tabular-nums' as const,
@@ -536,11 +631,18 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
       {controls}
       <div style={styles.scroller}>
         <table style={styles.table}>
+          <colgroup>
+            {COLUMN_WIDTHS.map((width, i) => <col key={i} style={{ width }} />)}
+          </colgroup>
           <thead>
             <tr>
               <th style={styles.headerCell}>Pos</th>
               <th style={{ ...styles.headerCell, ...styles.headerCellLeft }}>カード</th>
               <th style={{ ...styles.headerCell, ...styles.headerCellLeft }}>ライン</th>
+              <th
+                style={{ ...styles.headerCell, ...styles.headerCellLeft }}
+                title="ボード（コミュニティカード）。フロップ3枚・ターン・リバーの順"
+              >ボード</th>
               <th
                 style={{ ...styles.headerCell, ...styles.headerCellLeft }}
                 title="フロップ/ターン/リバーの自分のアクション（X=チェック B=ベット C=コール R=レイズ F=フォールド、!=オールイン）。B/Rの数字は直前のポットに対する比率(%)"
@@ -552,12 +654,14 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
             {data.hands.map(entry => (
               <tr key={entry.handId} data-testid="recent-hands-row">
                 <td style={styles.cell}>{positionLabel(entry.position)}</td>
-                <td style={{ ...styles.cell, ...styles.cellLeft }} data-testid="recent-hands-cards">
+                <td
+                  style={{ ...styles.cell, ...styles.cellLeft }}
+                  title={formatCardsTooltip(entry.holeCards)}
+                  data-testid="recent-hands-cards"
+                >
                   {entry.holeCards ? (
                     entry.holeCards.map((card, i) => (
-                      <span key={i} style={{ color: suitColor(card) }}>
-                        {card}{i < entry.holeCards!.length - 1 ? ' ' : ''}
-                      </span>
+                      <span key={i} style={{ color: suitColor(card) }}>{cardRankLabel(card)}</span>
                     ))
                   ) : (
                     <span style={styles.notWon}>—</span>
@@ -568,6 +672,21 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
                   title={formatPreflopTooltip(entry)}
                   data-testid="recent-hands-preflop"
                 >{formatPreflopLine(entry)}</td>
+                <td
+                  style={{ ...styles.cell, ...styles.cellLeft, ...styles.boardCell }}
+                  title={formatBoardTooltip(entry.board)}
+                  data-testid="recent-hands-board"
+                >
+                  {Array.isArray(entry.board) && entry.board.length > 0 ? (
+                    // ストリート境界の空きは入れず、5枚を詰めて出す（#356、sola指定）。
+                    // 境界を知りたいときはツールチップの`8h 9h 6h | 2s | Ad`で辿れる。
+                    entry.board.map((card, i) => (
+                      <span key={i} style={{ color: suitColor(card) }}>{cardRankLabel(card)}</span>
+                    ))
+                  ) : (
+                    <span style={styles.notWon}>—</span>
+                  )}
+                </td>
                 <td
                   style={{ ...styles.cell, ...styles.cellLeft, ...styles.streetCell }}
                   title={formatPostflopTooltip(entry.postflopLines)}

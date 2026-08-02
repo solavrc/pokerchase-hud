@@ -111,6 +111,21 @@ export const SUIT_COLORS = {
 } as const
 
 /**
+ * Rank portion of an already-formatted card string (`'As'` -> `'A'`,
+ * `'Th'` -> `'T'`). Used by the recent-hands panel, which renders rank-only
+ * cards and carries the suit in the 4-color coding instead of a letter
+ * (#356 -- the 240px HUD cannot fit rank+suit for a 5-card board alongside
+ * every other column). Ten stays `'T'`, matching the rest of the UI.
+ *
+ * MUST be paired with the full `R s` notation somewhere reachable (the cell's
+ * tooltip): rank-only display relies on color alone, which is a real loss for
+ * anyone who cannot separate the four hues.
+ */
+export function cardRankLabel(card: string): string {
+  return card.length > 1 ? card.slice(0, -1) : card
+}
+
+/**
  * Four-color-deck text color for one card. Accepts the raw 0-51 card number
  * or a single formatted card string (e.g. "Ah"), like `isRedSuit`.
  * An unrecognized suit falls back to the spade/default color rather than

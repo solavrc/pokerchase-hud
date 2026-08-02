@@ -168,33 +168,44 @@ export interface PositionalStatsResult {
  */
 
 /**
- * Simplified preflop-line taxonomy. Derived purely from the player's own
- * PREFLOP actions for the hand plus a locally-recomputed `phasePrevBetCount`
- * (same formula as `write-entity-stream.ts`: count of prior BET/RAISE
- * actions in the phase, +1 for PREFLOP to account for the forced blind).
- * The label reflects the LAST action taken (not the "most notable" one):
+ * Simplified preflop-line taxonomy, written in the compact shorthand common to
+ * HUDs/trackers (#356 -- sola: 一般的なHUDの表現に合わせて). Derived purely
+ * from the player's own PREFLOP actions plus a locally-recomputed
+ * `phasePrevBetCount` (same formula as `write-entity-stream.ts`: count of prior
+ * BET/RAISE actions in the phase, +1 for PREFLOP to account for the forced
+ * blind). The label reflects the LAST action taken (not the "most notable"):
  *
- *  - No preflop action at all: `'Walk'` if the player was BB (uncontested,
- *    the server never even recorded a BB action), else `null` (no data --
- *    e.g. the player disconnected before any action was recorded).
- *  - First action is a plain CHECK (BB's option after being limped to, or a
- *    walk-adjacent check): `'Check'`.
- *  - First action is a FOLD: `'Fold'`.
- *  - CALL with `phasePrevBetCount <= 1` (just the blind posted, i.e. a
- *    limp): `'Limp'`.
- *  - CALL with `phasePrevBetCount >= 2` as the player's FIRST preflop
- *    action (calling a raise cold): `'ColdCall'`.
- *  - CALL with `phasePrevBetCount >= 2` after the player already had a
- *    preflop line (e.g. they limped, then called a raise): `'Call'`.
- *  - RAISE/BET with `phasePrevBetCount === 1` (the opening raise):
- *    `'Open'`.
- *  - RAISE/BET with `phasePrevBetCount === 2` (raising over one prior
- *    raise): `'3Bet'`.
- *  - RAISE/BET with `phasePrevBetCount >= 3`: `` `${phasePrevBetCount + 1}Bet` `` (e.g. `'4Bet'`).
- *  - If the LAST action in the sequence is a FOLD and the player had a
- *    preceding label (i.e. this isn't their first preflop action), the
- *    preceding label gets a `'-F'` suffix (e.g. opened, got 3-bet, folded
- *    -> `'Open-F'`; 3-bet, got 4-bet, folded -> `'3Bet-F'`).
+ *  | label | meaning |
+ *  |---|---|
+ *  | `'W'` | walk -- BB uncontested, the server never recorded a BB action |
+ *  | `'X'` | check (BB's option after being limped to) -- same letter as the postflop notation |
+ *  | `'F'` | fold as the player's FIRST preflop action |
+ *  | `'L'` | limp -- CALL with `phasePrevBetCount <= 1` (only the blind posted) |
+ *  | `'OR'` | open raise -- BET/RAISE with `phasePrevBetCount === 1` |
+ *  | `'3B'` | 3bet -- BET/RAISE with `phasePrevBetCount === 2` |
+ *  | `'4B'`, `'5B'`… | `` `${phasePrevBetCount + 1}B` `` for `>= 3` |
+ *  | `'CC'` | cold-call of an OPEN -- CALL with `phasePrevBetCount === 2` as the player's FIRST preflop action |
+ *  | `'3CC'` | cold-call of a 3BET -- same, `phasePrevBetCount === 3` |
+ *  | `'4CC'`, `'5CC'`… | `` `${phasePrevBetCount}CC` `` for `>= 4` |
+ *  | `'C'` | a non-cold call -- CALL with `phasePrevBetCount >= 2` when the player already had a line (e.g. limped, then called a raise) |
+ *  | `null` | no data (e.g. the player disconnected before any action was recorded) |
+ *
+ * Note the cold-call family does NOT add one the way the bet family does:
+ * `phasePrevBetCount` is the number of bets the action FACED, so facing 2 is
+ * facing the open (`'CC'`) while raising over 2 is a 3bet (`'3B'`).
+ * `'CC'` vs `'3CC'` are kept apart deliberately -- flatting an open and
+ * flatting a 3bet are entirely different actions (#356).
+ *
+ * If the LAST action in the sequence is a FOLD and the player had a preceding
+ * label, that label gets a `'-F'` suffix (e.g. opened, got 3-bet, folded ->
+ * `'OR-F'`; 3-bet, got 4-bet, folded -> `'3B-F'`). The suffix stays `-F` and
+ * MUST NOT become `/F`: `/` is the street separator in the postflop column and
+ * would read as a street boundary here.
+ *
+ * These strings are display labels recomputed on every read. They are NOT
+ * persisted anywhere -- not in IndexedDB, not in `chrome.storage`, and not in
+ * any export or cloud upload -- so the vocabulary can change without a
+ * migration.
  */
 export type PreflopLine = string
 
@@ -317,19 +328,39 @@ export interface RecentHandEntry {
   /** See `PostflopLines`. Every street is empty for hands that ended preflop. */
   postflopLines: PostflopLines
   /**
-   * The player's preflop raise-TO amount in big blinds -- `Action.bet` (which
-   * for preflop is the street-cumulative total, i.e. exactly the raise-to)
-   * divided by `bigBlind`, for their LAST aggressive preflop action.
-   * `null` when they made no preflop bet/raise, or `bigBlind` is unusable.
+   * The amount that belongs to `preflopLine`, in big blinds: `Action.bet`
+   * (street-cumulative for preflop, so it is exactly the raise-TO for a
+   * bet/raise and the call-TO for a call) divided by `bigBlind`, taken from
+   * the action that PRODUCED the label.
+   *
+   * `null` when the label carries no amount -- `'L'`/`'C'`/`'X'`/`'F'`/`'W'`
+   * and no-data rows -- when `bigBlind` is unusable, or when the labelling
+   * action is a short all-in that only looks like a raise (see
+   * `resolveEffectiveActionType`).
    *
    * Kept out of the `preflopLine` string on purpose: that label is a
-   * documented, separately-tested taxonomy (`'Open'`/`'3Bet'`/`'Open-F'` …),
-   * and a `-F` suffix leaves no clean place to splice a number. The panel
-   * renders this in the line cell's tooltip instead of inline.
+   * documented, separately-tested taxonomy, and the `-F` suffix leaves no
+   * clean place to splice a number. The panel composes the two at render time
+   * (`formatPreflopLine`), so the number always lands on its own action.
    */
-  preflopRaiseToBB: number | null
-  /** Exact chips for `preflopRaiseToBB` (raise-to, not the increment). `null` likewise. */
-  preflopRaiseToChips: number | null
+  preflopLineAmountBB: number | null
+  /** Exact chips for `preflopLineAmountBB` (the raise-to / call-to total). `null` likewise. */
+  preflopLineAmountChips: number | null
+  /**
+   * The community cards this hand ran out, as `['8h','9h','6h','2s','Ad']`
+   * (#356). Length is 0 (never saw a flop), 3, 4, or 5 -- the UI groups it back
+   * into flop / turn / river by position.
+   *
+   * Read from the already-batched `phases` rows rather than a new query:
+   * `Phase.communityCards` is cumulative per street, so the longest array in
+   * the hand is the final board. That also covers all-in runouts, where
+   * `EVT_DEAL_ROUND` never arrives and the board only exists on the
+   * synthesized FLOP and SHOWDOWN phases.
+   *
+   * This is the hand's board, NOT anyone's hole cards -- it is public
+   * information for every seat, so no visibility gate applies.
+   */
+  board: string[]
   /** Player reached the flop (BET_ABLE or ALL_IN when FLOP was dealt), or -- when no FLOP phase was even recorded because the hand went all-in preflop and ran out without any `EVT_DEAL_ROUND` -- reached showdown at all (which is only possible once the full board is out). */
   sawFlop: boolean
   /** `isShowdownParticipant(result)` for this player's result row -- true for any real comparison or a showdown muck, false for uncontested wins/folds. */
