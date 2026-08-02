@@ -595,7 +595,7 @@ describe('Hud', () => {
             recentHands: {
               computedAt: Date.now(),
               hands: [
-                { handId: 1, approxTimestamp: Date.now(), bigBlind: 200, position: 0, holeCards: ['As', 'Ah'], preflopLine: 'Open', postflopLines: { flop: 'XC', turn: null, river: null }, sawFlop: true, wentToShowdown: true, won: true, netChips: 1240 },
+                { handId: 1, approxTimestamp: Date.now(), bigBlind: 200, position: 0, holeCards: ['As', 'Ah'], preflopLine: 'OR', preflopLineAmountBB: 2.2, preflopLineAmountChips: 440, board: [], postflopLines: { flop: 'XC', turn: null, river: null }, sawFlop: true, wentToShowdown: true, won: true, netChips: 1240 },
               ],
             },
           })

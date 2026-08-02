@@ -175,11 +175,104 @@ function computePhasePrevBetCount(action: Action, actionsByHandId: Map<number, A
   return priorBetRaiseCount + (action.phase === PhaseType.PREFLOP ? 1 : 0)
 }
 
-/** RAISE/BETの`phasePrevBetCount`からベットラベルを決める。1='Open'、2='3Bet'、3+='NBet'。 */
+/**
+ * RAISE/BETの`phasePrevBetCount`からベットラベルを決める。
+ * 1=`'OR'`（オープンレイズ）、2=`'3B'`、3+=`'NB'`。
+ * 表記はHUD/トラッカー系の一般的な短縮形に合わせてある（#356）。
+ */
 function betLabel(phasePrevBetCount: number): string {
-  if (phasePrevBetCount <= 1) return 'Open'
-  if (phasePrevBetCount === 2) return '3Bet'
-  return `${phasePrevBetCount + 1}Bet`
+  if (phasePrevBetCount <= 1) return 'OR'
+  if (phasePrevBetCount === 2) return '3B'
+  return `${phasePrevBetCount + 1}B`
+}
+
+/**
+ * コールドコール（自分は未参加のままレイズにコール）のラベルを、
+ * **何に対して**コールしたかで分ける（#356）。オープンへのコールと3betへの
+ * コールは全く意味合いが異なるため、まとめて1ラベルにしない。
+ *
+ * `phasePrevBetCount`は「このアクションが直面していたベット数」（プリフロップは
+ * 強制投稿ぶんの+1を含む）なので、レイズ側の`betLabel`と違って+1しない:
+ *  - 2 = オープンに直面 → `'CC'`
+ *  - 3 = 3betに直面 → `'3CC'`
+ *  - 4以上 = 4bet以降に直面 → `'4CC'`, `'5CC'`, …
+ */
+function coldCallLabel(phasePrevBetCount: number): string {
+  if (phasePrevBetCount <= 2) return 'CC'
+  return `${phasePrevBetCount}CC`
+}
+
+/**
+ * ラベルと「そのラベルを決めたアクション」の組（#356）。
+ *
+ * 金額のインライン表示（#355）は「ラベル↔数字は同じアクションのもの」という
+ * 不変条件の上に成り立っているので、ラベルを組み立てるループの中で、それを
+ * 決めたアクション自身を一緒に持ち出す。分類ロジックを2箇所へ写経すると
+ * この不変条件が静かに崩れる。
+ */
+interface PreflopLabeling {
+  line: PreflopLine | null
+  /** ラベルを決めたアクション。金額はこのアクションの額から出す。 */
+  labelingAction: Action | null
+  /** そのラベルが金額を伴うか（レイズto額／コールドコールのコールto額）。 */
+  showsAmount: boolean
+}
+
+function derivePreflopLabeling(
+  hand: Hand,
+  playerId: number,
+  actionsByHandId: Map<number, Action[]>
+): PreflopLabeling {
+  const handActions = actionsByHandId.get(hand.id) ?? []
+  const preflopActions = handActions
+    .filter(a => a.playerId === playerId && a.phase === PhaseType.PREFLOP)
+    .sort((a, b) => a.index - b.index)
+
+  if (preflopActions.length === 0) {
+    // プリフロップ・アクションが一切ない: ウォーク（BBが不戦勝、サーバーが
+    // BBのアクションすら送らない）か、そもそもこのハンドのプレイヤーデータが
+    // 欠落している（切断等）かのいずれか。
+    return {
+      line: hand.bigBlindUserId === playerId ? 'W' : null,
+      labelingAction: null,
+      showsAmount: false,
+    }
+  }
+
+  let label: string | null = null
+  let labelingAction: Action | null = null
+  let showsAmount = false
+  for (const action of preflopActions) {
+    if (action.actionType === ActionType.FOLD) {
+      // フォールドはラベルを作らない ―― 直前のラベル（とそれを決めた
+      // アクション）へ`-F`を付けるだけ。数字は`-F`の前へ入る（`CC2.2-F`）。
+      return { line: label ? `${label}-F` : 'F', labelingAction, showsAmount }
+    }
+    if (action.actionType === ActionType.CHECK) {
+      label = 'X'
+      labelingAction = action
+      showsAmount = false
+      continue
+    }
+    if (action.actionType === ActionType.CALL) {
+      const phasePrevBetCount = computePhasePrevBetCount(action, actionsByHandId)
+      const isColdCall: boolean = phasePrevBetCount > 1 && label === null
+      label = phasePrevBetCount <= 1 ? 'L' : (isColdCall ? coldCallLabel(phasePrevBetCount) : 'C')
+      labelingAction = action
+      // 金額を出すのはコールドコールだけ。`Limp`はBB1枚と分かりきっており、
+      // `Call`（既にラインがある状態からのコール）は「いくらまでコールしたか」
+      // より「何をした後のコールか」のほうが情報量が大きい。
+      showsAmount = isColdCall
+      continue
+    }
+    if (action.actionType === ActionType.RAISE || action.actionType === ActionType.BET) {
+      label = betLabel(computePhasePrevBetCount(action, actionsByHandId))
+      labelingAction = action
+      showsAmount = true
+      continue
+    }
+  }
+  return { line: label, labelingAction, showsAmount }
 }
 
 /**
@@ -191,38 +284,7 @@ export function derivePreflopLine(
   playerId: number,
   actionsByHandId: Map<number, Action[]>
 ): PreflopLine | null {
-  const handActions = actionsByHandId.get(hand.id) ?? []
-  const preflopActions = handActions
-    .filter(a => a.playerId === playerId && a.phase === PhaseType.PREFLOP)
-    .sort((a, b) => a.index - b.index)
-
-  if (preflopActions.length === 0) {
-    // プリフロップ・アクションが一切ない: ウォーク（BBが不戦勝、サーバーが
-    // BBのアクションすら送らない）か、そもそもこのハンドのプレイヤーデータが
-    // 欠落している（切断等）かのいずれか。
-    return hand.bigBlindUserId === playerId ? 'Walk' : null
-  }
-
-  let label: string | null = null
-  for (const action of preflopActions) {
-    if (action.actionType === ActionType.FOLD) {
-      return label ? `${label}-F` : 'Fold'
-    }
-    if (action.actionType === ActionType.CHECK) {
-      label = 'Check'
-      continue
-    }
-    if (action.actionType === ActionType.CALL) {
-      const phasePrevBetCount = computePhasePrevBetCount(action, actionsByHandId)
-      label = phasePrevBetCount <= 1 ? 'Limp' : (label === null ? 'ColdCall' : 'Call')
-      continue
-    }
-    if (action.actionType === ActionType.RAISE || action.actionType === ActionType.BET) {
-      label = betLabel(computePhasePrevBetCount(action, actionsByHandId))
-      continue
-    }
-  }
-  return label
+  return derivePreflopLabeling(hand, playerId, actionsByHandId).line
 }
 
 /**
@@ -419,39 +481,40 @@ export function derivePostflopLines(
 }
 
 /**
- * プレイヤーの最後の**アグレッシブな**プリフロップアクションのレイズto額
- * （#354）。プリフロップの`Action.bet`はストリート内累計なので、その値が
- * そのまま「いくらまで上げたか」になる（ブラインドは既にその内側）。
+ * ラベルに添える金額（#354のレイズto額を#356でコールドコールへ拡張）。
+ *
+ * プリフロップの`Action.bet`はストリート内累計なので、レイズなら「いくらまで
+ * 上げたか」、コールなら「いくらまでコールしたか」がそのまま入っている
+ * （ブラインドは既にその内側）。
+ *
+ * MUST: 額は必ず**ラベルを決めたアクション**（`derivePreflopLabeling`の
+ * `labelingAction`）から採る。数字はラベルの直後へインライン表示されるので、
+ * 別のアクションの額を返すと「あるアクションの数字が別のアクションのラベルに
+ * 付く」ことになる（#355で確立した不変条件）。
  */
-export function derivePreflopRaiseTo(
+export function derivePreflopLineAmount(
   hand: Hand,
   playerId: number,
   actionsByHandId: Map<number, Action[]>
 ): { chips: number | null, bb: number | null } {
-  const preflopActions = (actionsByHandId.get(hand.id) ?? []).filter(a => a.phase === PhaseType.PREFLOP)
+  const { labelingAction, showsAmount } = derivePreflopLabeling(hand, playerId, actionsByHandId)
+  if (!labelingAction || !showsAmount) return { chips: null, bb: null }
+
   // ショートオールイン（実質コール）をレイズとして拾わない ――
   // `resolveEffectiveActionType`参照。プリフロップはブラインドが
   // `EVT_ACTION`として来ないため、対峙額の下駄にBBを渡す。
-  const bigBlindFallback = isUsableNumber(hand.bigBlind) && hand.bigBlind > 0 ? hand.bigBlind : 0
-  // MUST: 採るのは「最後の生のBET/RAISE」であって「最後の実質アグレッシブ
-  // アクション」ではない。この額はラベル（`derivePreflopLine`）の直後へ
-  // インライン表示されるが、そのラベルは**最後のアクション**を反映する。
-  // 例えばOpen後にショートオールインした場合、ラベルは（生の種別で）`3Bet`
-  // 等になるため、ここで1つ前のOpenの額を返すと**別のアクションの数字が
-  // そのラベルに付く**ことになる。ラベルを作ったアクション自身を見て、
-  // それが実質コールなら数字は出さない。
-  const lastRawAggro = preflopActions
-    .filter(a => a.playerId === playerId && isAggressiveAction(a.actionType))
-    .sort((a, b) => a.index - b.index)
-    .at(-1)
-  if (!lastRawAggro) return { chips: null, bb: null }
-  if (!isAggressiveAction(resolveEffectiveActionType(lastRawAggro, preflopActions, bigBlindFallback))) {
-    return { chips: null, bb: null }
+  // コールドコールのコールto額はこのゲートの対象外（コールはコール）。
+  if (isAggressiveAction(labelingAction.actionType)) {
+    const preflopActions = (actionsByHandId.get(hand.id) ?? []).filter(a => a.phase === PhaseType.PREFLOP)
+    const bigBlindFallback = isUsableNumber(hand.bigBlind) && hand.bigBlind > 0 ? hand.bigBlind : 0
+    if (!isAggressiveAction(resolveEffectiveActionType(labelingAction, preflopActions, bigBlindFallback))) {
+      return { chips: null, bb: null }
+    }
   }
-  const lastAggro = lastRawAggro
-  if (!isUsableNumber(lastAggro.bet) || lastAggro.bet <= 0) return { chips: null, bb: null }
-  const bb = isUsableNumber(hand.bigBlind) && hand.bigBlind > 0 ? lastAggro.bet / hand.bigBlind : null
-  return { chips: lastAggro.bet, bb }
+
+  if (!isUsableNumber(labelingAction.bet) || labelingAction.bet <= 0) return { chips: null, bb: null }
+  const bb = isUsableNumber(hand.bigBlind) && hand.bigBlind > 0 ? labelingAction.bet / hand.bigBlind : null
+  return { chips: labelingAction.bet, bb }
 }
 
 /**
@@ -486,7 +549,7 @@ export function derivePreflopRaiseTo(
  * なり、この追加条件は実質的にWalkのための救済として働く。
  */
 export function isVoluntaryParticipation(entry: RecentHandEntry): boolean {
-  const noVoluntaryChips = entry.preflopLine === 'Fold' || entry.preflopLine === 'Walk'
+  const noVoluntaryChips = entry.preflopLine === 'F' || entry.preflopLine === 'W'
   if (!noVoluntaryChips) return true
   return entry.sawFlop || entry.wentToShowdown
 }
@@ -650,6 +713,26 @@ async function readHeroDealtHoleCardsByHandId(
 }
 
 /**
+ * そのハンドのボード（コミュニティカード）を、既に取得済みのphases行から拾う
+ * （#356）。追加クエリは投げない ―― `phases`はサービスが既にhandId単位で
+ * バッチ取得している。
+ *
+ * `phase.communityCards`はストリートごとの**累積**（entity-converter.ts /
+ * write-entity-stream.tsが前ストリートの配列へ足していく）なので、最長の
+ * 配列がそのハンドの最終ボードになる。EVT_DEAL_ROUNDが省略される
+ * オールイン・ランナウトでも、合成されたFLOPフェーズとSHOWDOWNフェーズに
+ * ボードが入るため、この「最長を採る」方式なら同じように拾える
+ * （docs/api-events.md「コミュニティカード（オールイン）」参照）。
+ */
+export function deriveBoard(handId: number, phasesByHandId: Map<number, Phase[]>): string[] {
+  const longest = (phasesByHandId.get(handId) ?? []).reduce<number[]>((best, phase) => {
+    const cards = phase.communityCards
+    return Array.isArray(cards) && cards.length > best.length ? cards : best
+  }, [])
+  return longest.length > 0 ? formatCardsArray(longest) : []
+}
+
+/**
  * プレイヤーの直近Nハンドを新しい順に取得する。
  *
  * @param db ハンド/アクション/フェーズを取得するDexie DB
@@ -790,7 +873,7 @@ export async function getRecentHands(
     const holeCardsFromDeal = holeCardsFromResults === null && holeCardsFromReplay === null
       ? heroDealtHoleCards.get(hand.id) ?? null
       : null
-    const preflopRaiseTo = derivePreflopRaiseTo(hand, playerId, actionsByHandId)
+    const preflopAmount = derivePreflopLineAmount(hand, playerId, actionsByHandId)
 
     return {
       handId: hand.id,
@@ -809,8 +892,9 @@ export async function getRecentHands(
           : holeCardsFromDeal !== null ? 'dealt' : null,
       preflopLine: derivePreflopLine(hand, playerId, actionsByHandId),
       postflopLines: derivePostflopLines(hand.id, playerId, actionsByHandId),
-      preflopRaiseToBB: preflopRaiseTo.bb,
-      preflopRaiseToChips: preflopRaiseTo.chips,
+      preflopLineAmountBB: preflopAmount.bb,
+      preflopLineAmountChips: preflopAmount.chips,
+      board: deriveBoard(hand.id, phasesByHandId),
       sawFlop: deriveSawFlop(hand.id, playerId, phasesByHandId, wentToShowdown),
       wentToShowdown,
       won,

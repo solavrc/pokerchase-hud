@@ -2,7 +2,10 @@ import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import {
   RecentHandsPanel,
+  describePreflopLabel,
   formatBigBlinds,
+  formatBoardTooltip,
+  formatCardsTooltip,
   formatPreflopLine,
   formatNetBigBlinds,
   formatPostflopLines,
@@ -30,9 +33,9 @@ const sa = (letter: string, extra: Partial<StreetAction> = {}): StreetAction => 
 const buildResult = (overrides: Partial<RecentHandsResult> = {}): RecentHandsResult => ({
   computedAt: NOW,
   hands: [
-    { handId: 3, approxTimestamp: NOW - 3 * 60_000, bigBlind: 200, position: Position.BTN, holeCards: ['As', 'Ah'], holeCardsSource: 'results', preflopLine: 'Open', preflopRaiseToBB: 2.2, preflopRaiseToChips: 440, postflopLines: { flop: [sa('X'), sa('C')], turn: [sa('B', { potPercent: 75, allIn: true, increment: 900, potBefore: 1200 })], river: [] }, sawFlop: true, wentToShowdown: true, won: true, netChips: 1240 },
-    { handId: 2, approxTimestamp: NOW - 2 * 3600_000, bigBlind: 200, position: Position.BB, holeCards: null, holeCardsSource: null, preflopLine: 'Check', preflopRaiseToBB: null, preflopRaiseToChips: null, postflopLines: { flop: [sa('X')], turn: [], river: [sa('F')] }, sawFlop: true, wentToShowdown: false, won: false, netChips: -640 },
-    { handId: 1, approxTimestamp: NOW - 26 * 3600_000, bigBlind: 200, position: null, holeCards: null, holeCardsSource: null, preflopLine: 'Fold', preflopRaiseToBB: null, preflopRaiseToChips: null, postflopLines: { flop: [], turn: [], river: [] }, sawFlop: false, wentToShowdown: false, won: false, netChips: 0 },
+    { handId: 3, approxTimestamp: NOW - 3 * 60_000, bigBlind: 200, position: Position.BTN, holeCards: ['As', 'Ah'], holeCardsSource: 'results', preflopLine: 'OR', preflopLineAmountBB: 2.2, preflopLineAmountChips: 440, postflopLines: { flop: [sa('X'), sa('C')], turn: [sa('B', { potPercent: 75, allIn: true, increment: 900, potBefore: 1200 })], river: [] }, board: ['8h','9h','6h','2s','Ad'], sawFlop: true, wentToShowdown: true, won: true, netChips: 1240 },
+    { handId: 2, approxTimestamp: NOW - 2 * 3600_000, bigBlind: 200, position: Position.BB, holeCards: null, holeCardsSource: null, preflopLine: 'X', preflopLineAmountBB: null, preflopLineAmountChips: null, postflopLines: { flop: [sa('X')], turn: [], river: [sa('F')] }, board: ['8h','9h','6h'], sawFlop: true, wentToShowdown: false, won: false, netChips: -640 },
+    { handId: 1, approxTimestamp: NOW - 26 * 3600_000, bigBlind: 200, position: null, holeCards: null, holeCardsSource: null, preflopLine: 'F', preflopLineAmountBB: null, preflopLineAmountChips: null, postflopLines: { flop: [], turn: [], river: [] }, board: [], sawFlop: false, wentToShowdown: false, won: false, netChips: 0 },
   ],
   ...overrides,
 })
@@ -119,9 +122,11 @@ describe('RecentHandsPanel', () => {
     render(<RecentHandsPanel playerId={123} />)
 
     const rows = await screen.findAllByTestId('recent-hands-row')
-    // handId=3: 公開
-    expect(rows[0]!.querySelector('[data-testid="recent-hands-cards"]')).toHaveTextContent('As')
-    expect(rows[0]!.querySelector('[data-testid="recent-hands-cards"]')).toHaveTextContent('Ah')
+    // handId=3: 公開。#356でスート文字は落とし、色で判別する。
+    const cardsCell = rows[0]!.querySelector('[data-testid="recent-hands-cards"]')
+    expect(cardsCell).toHaveTextContent('AA')
+    // 正確な表記はツールチップから到達できる（色だけが頼りにならないように）。
+    expect(cardsCell).toHaveAttribute('title', 'ホールカード: As Ah')
     // #353: 4色デッキ -- スペードとハートは別色で描かれる。
     const cardSpans = rows[0]!.querySelectorAll('[data-testid="recent-hands-cards"] span')
     expect(cardSpans[0]).toHaveStyle({ color: SUIT_COLORS.s })
@@ -187,11 +192,11 @@ describe('RecentHandsPanel', () => {
 
     const rows = await screen.findAllByTestId('recent-hands-row')
     // #354: アグレッシブなラインにはBB倍数がインラインで付く。
-    expect(rows[0]!.querySelector('[data-testid="recent-hands-preflop"]')).toHaveTextContent('Open2.2')
+    expect(rows[0]!.querySelector('[data-testid="recent-hands-preflop"]')).toHaveTextContent('OR2.2')
     expect(rows[0]!.querySelector('[data-testid="recent-hands-preflop"]'))
       .toHaveAttribute('title', expect.stringContaining('440') as any)
     expect(rows[0]).toHaveTextContent('BTN')
-    expect(rows[2]).toHaveTextContent('Fold')
+    expect(rows[2]!.querySelector('[data-testid="recent-hands-preflop"]')).toHaveTextContent('F')
     expect(rows[2]).toHaveTextContent('—') // position: null
   })
 
@@ -285,7 +290,7 @@ describe('RecentHandsPanel', () => {
       // 2回目の応答は1回目と区別できるよう新しいハンドを1件追加する
       // （新しいハンドが完了して初めて反映されるべきデータ）
       const result = callCount === 2
-        ? buildResult({ hands: [{ handId: 4, approxTimestamp: NOW, bigBlind: 200, position: Position.CO, holeCards: null, holeCardsSource: null, preflopLine: 'Open', preflopRaiseToBB: 2.2, preflopRaiseToChips: 440, postflopLines: { flop: [], turn: [], river: [] }, sawFlop: false, wentToShowdown: false, won: false, netChips: null }, ...buildResult().hands] })
+        ? buildResult({ hands: [{ handId: 4, approxTimestamp: NOW, bigBlind: 200, position: Position.CO, holeCards: null, holeCardsSource: null, preflopLine: 'OR', preflopLineAmountBB: 2.2, preflopLineAmountChips: 440, postflopLines: { flop: [], turn: [], river: [] }, board: [], sawFlop: false, wentToShowdown: false, won: false, netChips: null }, ...buildResult().hands] })
         : buildResult()
       callback({ success: true, recentHands: result })
     })
@@ -323,12 +328,12 @@ describe('RecentHandsPanel', () => {
 
       const rows = await screen.findAllByTestId('recent-hands-row')
       // flop=XC, turn=B75!(all-in), river=なし -> 末尾の空ストリートは落とす
-      expect(rows[0]!.querySelector('[data-testid="recent-hands-streets"]')).toHaveTextContent('XC/B75!')
+      expect(rows[0]!.querySelector('[data-testid="recent-hands-streets"]')).toHaveTextContent('XC / B75!')
       // 実額は列を増やさずツールチップへ（#354）。
       expect(rows[0]!.querySelector('[data-testid="recent-hands-streets"]'))
         .toHaveAttribute('title', expect.stringContaining('B75!=900（ポット1,200）') as any)
       // flop='X', turn=なし, river='F' -> 途中の空ストリートは'-'で残す
-      expect(rows[1]!.querySelector('[data-testid="recent-hands-streets"]')).toHaveTextContent('X/-/F')
+      expect(rows[1]!.querySelector('[data-testid="recent-hands-streets"]')).toHaveTextContent('X / - / F')
       // 全ストリートnull（プリフロップで終わったハンド）
       expect(rows[2]!.querySelector('[data-testid="recent-hands-streets"]')).toHaveTextContent('—')
     })
@@ -513,8 +518,8 @@ describe('RecentHandsPanel', () => {
           hands: [{
             handId: 9, approxTimestamp: NOW, bigBlind: 200, position: Position.CO,
             holeCards: ['Jh', 'Ac'], holeCardsSource: 'dealt',
-            preflopLine: 'ColdCall', preflopRaiseToBB: null, preflopRaiseToChips: null, postflopLines: { flop: [sa('F')], turn: [], river: [] },
-            sawFlop: true, wentToShowdown: false, won: false, netChips: -420,
+            preflopLine: 'CC', preflopLineAmountBB: null, preflopLineAmountChips: null, postflopLines: { flop: [sa('F')], turn: [], river: [] },
+            board: ['8h','9h','6h'], sawFlop: true, wentToShowdown: false, won: false, netChips: -420,
           }],
         }),
       })
@@ -524,8 +529,9 @@ describe('RecentHandsPanel', () => {
 
     const row = await screen.findByTestId('recent-hands-row')
     const cards = row.querySelector('[data-testid="recent-hands-cards"]')
-    expect(cards).toHaveTextContent('Jh')
-    expect(cards).toHaveTextContent('Ac')
+    // #356: 表示はランクのみ（スートは色）。正確な表記はツールチップ。
+    expect(cards).toHaveTextContent('JA')
+    expect(cards).toHaveAttribute('title', 'ホールカード: Jh Ac')
     expect(cards).not.toHaveTextContent('—')
   })
 })
@@ -534,9 +540,9 @@ describe('formatNetBigBlinds', () => {
   const entry = (netChips: number | null, bigBlind: number | null) => ({
     handId: 1, approxTimestamp: null, bigBlind, position: null, holeCards: null,
     holeCardsSource: null, preflopLine: null,
-    preflopRaiseToBB: null, preflopRaiseToChips: null,
+    preflopLineAmountBB: null, preflopLineAmountChips: null,
     postflopLines: { flop: [], turn: [], river: [] },
-    sawFlop: false, wentToShowdown: false, won: false, netChips,
+    board: [], sawFlop: false, wentToShowdown: false, won: false, netChips,
   })
 
   test('そのハンド自身のBBで割る（ブラインドが上がっても比較できる）', () => {
@@ -572,33 +578,33 @@ describe('formatNetBigBlinds', () => {
 })
 
 describe('formatPreflopLine', () => {
-  const entry = (preflopLine: string | null, preflopRaiseToBB: number | null) => ({
+  const entry = (preflopLine: string | null, preflopLineAmountBB: number | null) => ({
     handId: 1, approxTimestamp: null, bigBlind: 200, position: null, holeCards: null,
-    holeCardsSource: null, preflopLine, preflopRaiseToBB, preflopRaiseToChips: 440,
-    postflopLines: { flop: [], turn: [], river: [] },
+    holeCardsSource: null, preflopLine, preflopLineAmountBB, preflopLineAmountChips: 440,
+    postflopLines: { flop: [], turn: [], river: [] }, board: [],
     sawFlop: false, wentToShowdown: false, won: false, netChips: null,
   })
 
-  test('OpenはBB倍数を小数第1位で付ける', () => {
-    expect(formatPreflopLine(entry('Open', 2.2))).toBe('Open2.2')
+  test('OR（オープンレイズ）はBB倍数を小数第1位で付ける', () => {
+    expect(formatPreflopLine(entry('OR', 2.2))).toBe('OR2.2')
     // 丸めて整数になる場合は`.0`を落とす（表記規則は全ラベル共通）。
-    expect(formatPreflopLine(entry('Open', 3))).toBe('Open3')
+    expect(formatPreflopLine(entry('OR', 3))).toBe('OR3')
   })
 
-  test('3Bet以上はレイズto額をBBで付ける', () => {
-    expect(formatPreflopLine(entry('3Bet', 9))).toBe('3Bet9')
-    expect(formatPreflopLine(entry('4Bet', 22))).toBe('4Bet22')
+  test('3B以上はレイズto額をBBで付ける', () => {
+    expect(formatPreflopLine(entry('3B', 9))).toBe('3B9')
+    expect(formatPreflopLine(entry('4B', 22))).toBe('4B22')
     // 10未満で端数があるときは小数を残す（意味が消えないように）。
-    expect(formatPreflopLine(entry('3Bet', 8.75))).toBe('3Bet8.8')
+    expect(formatPreflopLine(entry('3B', 8.75))).toBe('3B8.8')
   })
 
   test('-Fサフィックスは数字の後ろへ回す', () => {
-    expect(formatPreflopLine(entry('Open-F', 2.2))).toBe('Open2.2-F')
-    expect(formatPreflopLine(entry('3Bet-F', 9))).toBe('3Bet9-F')
+    expect(formatPreflopLine(entry('OR-F', 2.2))).toBe('OR2.2-F')
+    expect(formatPreflopLine(entry('3B-F', 9))).toBe('3B9-F')
   })
 
   test('アグレッシブでないラベルには数字を付けない', () => {
-    for (const line of ['ColdCall', 'Limp', 'Call', 'Check', 'Fold', 'Walk', 'ColdCall-F', 'Check-F']) {
+    for (const line of ['L', 'C', 'X', 'F', 'W', 'L-F', 'X-F']) {
       expect(formatPreflopLine(entry(line, 9))).toBe(line)
     }
   })
@@ -606,15 +612,117 @@ describe('formatPreflopLine', () => {
   test('レイズto額が無ければラベルだけ（ショートオールイン・bigBlind不能）', () => {
     // サービス側がショートオールイン（実質コール）と`bigBlind`不能を
     // どちらもnullにして寄越す。表示側は数字を捏造しない。
-    expect(formatPreflopLine(entry('3Bet', null))).toBe('3Bet')
-    expect(formatPreflopLine(entry('Open-F', null))).toBe('Open-F')
-    expect(formatPreflopLine(entry('Open', 0))).toBe('Open')
-    expect(formatPreflopLine(entry('Open', Number.NaN))).toBe('Open')
-    expect(formatPreflopLine({ ...entry('Open', 2.2), preflopRaiseToBB: undefined } as any)).toBe('Open')
+    expect(formatPreflopLine(entry('3B', null))).toBe('3B')
+    expect(formatPreflopLine(entry('OR-F', null))).toBe('OR-F')
+    expect(formatPreflopLine(entry('OR', 0))).toBe('OR')
+    expect(formatPreflopLine(entry('OR', Number.NaN))).toBe('OR')
+    expect(formatPreflopLine({ ...entry('OR', 2.2), preflopLineAmountBB: undefined } as any)).toBe('OR')
   })
 
   test('ラインそのものが無ければem dash', () => {
     expect(formatPreflopLine(entry(null, 2.2))).toBe('—')
+  })
+})
+
+// #356 ボード列
+describe('board column', () => {
+  let sendMessage: jest.Mock
+  const renderBoard = async (board: string[]) => {
+    sendMessage = jest.fn((_m: unknown, cb: (r: unknown) => void) => cb({
+      success: true,
+      recentHands: { computedAt: NOW, hands: [{ ...buildResult().hands[0]!, board }] },
+    }))
+    global.chrome = { ...global.chrome, runtime: { ...global.chrome.runtime, sendMessage } } as any
+    render(<RecentHandsPanel playerId={7} />)
+    const row = await screen.findByTestId('recent-hands-row')
+    return row.querySelector('[data-testid="recent-hands-board"]')!
+  }
+
+  test('フロップのみ: ランクだけを繋げて出す', async () => {
+    const cell = await renderBoard(['8h', '9h', '6h'])
+    expect(cell).toHaveTextContent('896')
+    expect(cell).toHaveAttribute('title', 'ボード: 8h 9h 6h')
+  })
+
+  test('フルランナウト: ターン・リバーの前に間隔を空ける', async () => {
+    const cell = await renderBoard(['8h', '9h', '6h', '2s', 'Ad'])
+    expect(cell).toHaveTextContent('8962A')
+    expect(cell).toHaveAttribute('title', 'ボード: 8h 9h 6h | 2s | Ad')
+    const spans = cell.querySelectorAll('span')
+    // 4枚目（ターン）と5枚目（リバー）にだけ左マージンが付く。
+    expect(spans[2]).toHaveStyle({ marginLeft: '' })
+    expect(spans[3]).toHaveStyle({ marginLeft: '2px' })
+    expect(spans[4]).toHaveStyle({ marginLeft: '2px' })
+  })
+
+  test('スートは4色で塗り分ける（文字を落とした分の判別手段）', async () => {
+    const cell = await renderBoard(['8h', '2s', '3d', '4c'])
+    const spans = cell.querySelectorAll('span')
+    expect(spans[0]).toHaveStyle({ color: SUIT_COLORS.h })
+    expect(spans[1]).toHaveStyle({ color: SUIT_COLORS.s })
+    expect(spans[2]).toHaveStyle({ color: SUIT_COLORS.d })
+    expect(spans[3]).toHaveStyle({ color: SUIT_COLORS.c })
+  })
+
+  test('フロップを見なかったハンドはem dashでツールチップ無し', async () => {
+    const cell = await renderBoard([])
+    expect(cell).toHaveTextContent('—')
+    expect(cell).not.toHaveAttribute('title')
+  })
+
+  test('boardフィールドが欠けた応答でもクラッシュしない（旧background）', async () => {
+    sendMessage = jest.fn((_m: unknown, cb: (r: unknown) => void) => {
+      const { board, ...withoutBoard } = buildResult().hands[0]!
+      void board
+      cb({ success: true, recentHands: { computedAt: NOW, hands: [withoutBoard] } })
+    })
+    global.chrome = { ...global.chrome, runtime: { ...global.chrome.runtime, sendMessage } } as any
+    render(<RecentHandsPanel playerId={7} />)
+    const row = await screen.findByTestId('recent-hands-row')
+    expect(row.querySelector('[data-testid="recent-hands-board"]')).toHaveTextContent('—')
+  })
+})
+
+describe('formatBoardTooltip / formatCardsTooltip', () => {
+  test('ボードはストリート境界を"|"で示す（"/"はF/T/R列の区切りなので使わない）', () => {
+    expect(formatBoardTooltip(['8h', '9h', '6h'])).toBe('ボード: 8h 9h 6h')
+    expect(formatBoardTooltip(['8h', '9h', '6h', '2s'])).toBe('ボード: 8h 9h 6h | 2s')
+    expect(formatBoardTooltip(['8h', '9h', '6h', '2s', 'Ad'])).toBe('ボード: 8h 9h 6h | 2s | Ad')
+  })
+
+  test('空・欠損はツールチップ無し', () => {
+    expect(formatBoardTooltip([])).toBeUndefined()
+    expect(formatBoardTooltip(undefined)).toBeUndefined()
+    expect(formatCardsTooltip(null)).toBeUndefined()
+  })
+
+  test('ホールカードは素直に並べる', () => {
+    expect(formatCardsTooltip(['As', 'Ah'])).toBe('ホールカード: As Ah')
+  })
+})
+
+// #356 短縮ラベルの読み下し
+describe('describePreflopLabel', () => {
+  test('短縮形を長い形へ読み下す', () => {
+    expect(describePreflopLabel('OR')).toBe('オープンレイズ')
+    expect(describePreflopLabel('3B')).toBe('3ベット')
+    expect(describePreflopLabel('4B')).toBe('4ベット')
+    expect(describePreflopLabel('CC')).toBe('オープンへコールドコール')
+    expect(describePreflopLabel('3CC')).toBe('3ベットへコールドコール')
+    expect(describePreflopLabel('L')).toBe('リンプ')
+    expect(describePreflopLabel('C')).toBe('コール')
+    expect(describePreflopLabel('X')).toBe('チェック')
+    expect(describePreflopLabel('F')).toBe('フォールド')
+    expect(describePreflopLabel('W')).toBe('ウォーク（BB不戦勝）')
+  })
+
+  test('-Fサフィックスは「後フォールド」として読み下す', () => {
+    expect(describePreflopLabel('OR-F')).toBe('オープンレイズ後フォールド')
+    expect(describePreflopLabel('3CC-F')).toBe('3ベットへコールドコール後フォールド')
+  })
+
+  test('未知のラベルはそのまま返す（表示を落とさない）', () => {
+    expect(describePreflopLabel('???')).toBe('???')
   })
 })
 
@@ -652,17 +760,17 @@ describe('formatPostflopLines', () => {
   test('3ストリート全て動いた場合は"/"で連結する', () => {
     expect(formatPostflopLines({
       flop: [sa2('X'), sa2('C')], turn: [sa2('B', 50)], river: [sa2('R', 120)],
-    })).toBe('XC/B50/R120')
+    })).toBe('XC / B50 / R120')
   })
 
   test('末尾のアクション無しストリートは落とす', () => {
-    expect(formatPostflopLines({ flop: [sa2('X'), sa2('C')], turn: [sa2('B', 50)], river: [] })).toBe('XC/B50')
+    expect(formatPostflopLines({ flop: [sa2('X'), sa2('C')], turn: [sa2('B', 50)], river: [] })).toBe('XC / B50')
     expect(formatPostflopLines({ flop: [sa2('F')], turn: [], river: [] })).toBe('F')
   })
 
   test('途中のアクション無しストリートは"-"で残す（詰めると意味が変わるため）', () => {
-    expect(formatPostflopLines({ flop: [sa2('X')], turn: [], river: [sa2('B', 66)] })).toBe('X/-/B66')
-    expect(formatPostflopLines({ flop: [], turn: [], river: [sa2('B', 66)] })).toBe('-/-/B66')
+    expect(formatPostflopLines({ flop: [sa2('X')], turn: [], river: [sa2('B', 66)] })).toBe('X / - / B66')
+    expect(formatPostflopLines({ flop: [], turn: [], river: [sa2('B', 66)] })).toBe('- / - / B66')
   })
 
   test('全ストリート空はnull（呼び出し側がem dashへ倒す）', () => {
