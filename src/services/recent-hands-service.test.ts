@@ -28,6 +28,7 @@ import {
   derivePostflopLines,
   isDealtIn,
   isVoluntaryParticipation,
+  resolveEffectiveActionType,
   DEFAULT_RECENT_HANDS_LIMIT,
   MAX_RECENT_HANDS_LIMIT,
   RECENT_HANDS_ASSEMBLY_LIMIT,
@@ -36,6 +37,7 @@ import { ActionDetail, ActionType, BattleType, PhaseType, Position, RankType } f
 import { ApiType, validateApiEvent } from '../types'
 import type { ApiHandEvent } from '../types'
 import type { Action, Hand } from '../types/entities'
+import type { RecentHandEntry } from '../types/stats'
 import { EntityConverter } from '../entity-converter'
 
 const PLAYER_ID = 1
@@ -437,7 +439,7 @@ describe('RecentHandsService', () => {
     }
 
     test('isVoluntaryParticipation excludes exactly Fold and Walk', () => {
-      const base = { handId: 1, approxTimestamp: null, bigBlind: 200, position: null, holeCards: null, holeCardsSource: null, postflopLines: { flop: null, turn: null, river: null }, sawFlop: false, wentToShowdown: false, won: false, netChips: null } as const
+      const base = { handId: 1, approxTimestamp: null, bigBlind: 200, position: null, holeCards: null, holeCardsSource: null, postflopLines: { flop: [], turn: [], river: [] }, preflopRaiseToBB: null, preflopRaiseToChips: null, sawFlop: false, wentToShowdown: false, won: false, netChips: null } satisfies Omit<RecentHandEntry, 'preflopLine'>
       expect(isVoluntaryParticipation({ ...base, preflopLine: 'Fold' })).toBe(false)
       expect(isVoluntaryParticipation({ ...base, preflopLine: 'Walk' })).toBe(false)
       // 自発的に入れてから降りた行は「参加」。
@@ -455,7 +457,7 @@ describe('RecentHandsService', () => {
     // 以上のことを意味しない。サーバーはBBのcheckを省略する（実ハンドの31.9%）
     // ほか、BBが強制投稿でオールインした場合もアクションを送らない。
     test("ボードを見たBBの'Walk'は除外しない（省略checkと真の不戦勝を分ける）", () => {
-      const base = { handId: 1, approxTimestamp: null, bigBlind: 200, position: null, holeCards: null, holeCardsSource: null, postflopLines: { flop: null, turn: null, river: null }, won: false, netChips: null } as const
+      const base = { handId: 1, approxTimestamp: null, bigBlind: 200, position: null, holeCards: null, holeCardsSource: null, postflopLines: { flop: [], turn: [], river: [] }, preflopRaiseToBB: null, preflopRaiseToChips: null, won: false, netChips: null } satisfies Omit<RecentHandEntry, 'preflopLine' | 'sawFlop' | 'wentToShowdown'>
       // 真の不戦勝: ボードを見ていない。
       expect(isVoluntaryParticipation({ ...base, preflopLine: 'Walk', sawFlop: false, wentToShowdown: false })).toBe(false)
       // 省略check: フロップを見ている。
@@ -532,6 +534,12 @@ describe('RecentHandsService', () => {
       overrides: Partial<Action> & { handId: number, index: number, phase: PhaseType, actionType: ActionType }
     ): Action => makeAction({ position: Position.BTN, ...overrides })
 
+    /** 記号だけを取り出す（サイズ検証は下の describe で行う）。 */
+    const letters = (street: readonly { letter: string, allIn: boolean }[]): string =>
+      street.map(a => `${a.letter}${a.allIn ? '!' : ''}`).join('')
+    const lettersOf = (lines: { flop: any[], turn: any[], river: any[] }) =>
+      ({ flop: letters(lines.flop), turn: letters(lines.turn), river: letters(lines.river) })
+
     test('groups the player\'s own actions per street, in index order', async () => {
       await db.hands.add(makeHand({ id: 1, approxTimestamp: 1000 }))
       await db.actions.bulkAdd([
@@ -542,7 +550,7 @@ describe('RecentHandsService', () => {
         postflopAction({ handId: 1, index: 4, phase: PhaseType.RIVER, actionType: ActionType.FOLD }),
       ])
       const result = await getRecentHands(db, service, PLAYER_ID)
-      expect(result.hands[0]!.postflopLines).toEqual({ flop: 'XC', turn: 'B', river: 'F' })
+      expect(lettersOf(result.hands[0]!.postflopLines)).toEqual({ flop: 'XC', turn: 'B', river: 'F' })
     })
 
     test('other players\' actions on the same street are not mixed in', async () => {
@@ -553,10 +561,10 @@ describe('RecentHandsService', () => {
         postflopAction({ handId: 1, index: 2, phase: PhaseType.FLOP, actionType: ActionType.CALL }),
       ])
       const result = await getRecentHands(db, service, PLAYER_ID)
-      expect(result.hands[0]!.postflopLines).toEqual({ flop: 'XC', turn: null, river: null })
+      expect(lettersOf(result.hands[0]!.postflopLines)).toEqual({ flop: 'XC', turn: '', river: '' })
     })
 
-    test('marks pipeline-normalized ALL_IN with a "!" suffix', async () => {
+    test('marks pipeline-normalized ALL_IN', async () => {
       // パイプラインは生のALL_INをBET/RAISE/CALLへ正規化し、事実はactionDetailsに残す。
       await db.hands.add(makeHand({ id: 1, approxTimestamp: 1000 }))
       await db.actions.bulkAdd([
@@ -566,19 +574,20 @@ describe('RecentHandsService', () => {
         }),
       ])
       const result = await getRecentHands(db, service, PLAYER_ID)
-      expect(result.hands[0]!.postflopLines).toEqual({ flop: 'R!', turn: null, river: null })
+      expect(result.hands[0]!.postflopLines.flop[0]!.allIn).toBe(true)
+      expect(lettersOf(result.hands[0]!.postflopLines).flop).toBe('R!')
     })
 
-    test('a hand that ended preflop has every street null', async () => {
+    test('a hand that ended preflop has every street empty', async () => {
       await db.hands.add(makeHand({ id: 1, approxTimestamp: 1000 }))
       await db.actions.add(
         postflopAction({ handId: 1, index: 0, phase: PhaseType.PREFLOP, actionType: ActionType.FOLD })
       )
       const result = await getRecentHands(db, service, PLAYER_ID)
-      expect(result.hands[0]!.postflopLines).toEqual({ flop: null, turn: null, river: null })
+      expect(result.hands[0]!.postflopLines).toEqual({ flop: [], turn: [], river: [] })
     })
 
-    test('an all-in runout the player never acted on keeps the streets null (sawFlop carries that instead)', async () => {
+    test('an all-in runout the player never acted on keeps the streets empty (sawFlop carries that instead)', async () => {
       await db.hands.add(makeHand({
         id: 1,
         approxTimestamp: 1000,
@@ -589,7 +598,7 @@ describe('RecentHandsService', () => {
         actionDetails: [ActionDetail.ALL_IN],
       }))
       const result = await getRecentHands(db, service, PLAYER_ID)
-      expect(result.hands[0]!.postflopLines).toEqual({ flop: null, turn: null, river: null })
+      expect(result.hands[0]!.postflopLines).toEqual({ flop: [], turn: [], river: [] })
       expect(result.hands[0]!.sawFlop).toBe(true)
     })
 
@@ -599,12 +608,272 @@ describe('RecentHandsService', () => {
         makeAction({ handId: 7, index: 0, phase: PhaseType.FLOP, actionType: ActionType.CHECK, position: Position.BB }),
         makeAction({ handId: 7, index: 1, phase: PhaseType.TURN, actionType: ActionType.CHECK, position: Position.BB }),
       ]
-      expect(derivePostflopLines(7, PLAYER_ID, new Map([[7, actions]]))).toEqual({
+      expect(lettersOf(derivePostflopLines(7, PLAYER_ID, new Map([[7, actions]])))).toEqual({
         flop: 'X', turn: 'X', river: 'B',
       })
       expect(derivePostflopLines(999, PLAYER_ID, new Map([[7, actions]]))).toEqual({
-        flop: null, turn: null, river: null,
+        flop: [], turn: [], river: [],
       })
+    })
+  })
+
+  // #354 ポット比サイジング
+  //
+  // 前提の検証: `EVT_ACTION.Progress.Pot`(+SidePot)はアクション**後**の
+  // スナップショット、`BetChip`はストリート内累計。実キャプチャ2本
+  // （2026-07-04 / 2026-08-01、ポストフロップのアグレッシブアクション計80,758件）
+  // に対し `potBefore = pot + ΣsidePot - increment` が99.995% / 99.998%で
+  // 直前イベントのポット総額と一致することを確認済み（残差は
+  // docs/api-events.md「クロージングコールの欠落」の既知キャプチャ異常）。
+  describe('pot-relative bet sizing', () => {
+    const act = (
+      overrides: Partial<Action> & { handId: number, index: number, phase: PhaseType, actionType: ActionType }
+    ): Action => makeAction({ position: Position.BTN, ...overrides })
+
+    async function sizesFor(actions: Action[], handOverrides: Partial<Hand> = {}) {
+      await db.hands.add(makeHand({ id: 1, approxTimestamp: 1000, ...handOverrides }))
+      await db.actions.bulkAdd(actions)
+      const result = await getRecentHands(db, service, PLAYER_ID)
+      return result.hands[0]!.postflopLines
+    }
+
+    test('ハーフポットのベット: 増分/直前ポット', async () => {
+      // 直前ポット300、ベット150 -> pot(post)=450 -> 150/300 = 50%
+      const lines = await sizesFor([
+        act({ handId: 1, index: 0, phase: PhaseType.FLOP, actionType: ActionType.BET, bet: 150, pot: 450, sidePot: [] }),
+      ])
+      expect(lines.flop[0]).toMatchObject({ letter: 'B', increment: 150, potBefore: 300, potPercent: 50 })
+    })
+
+    test('オーバーベットは100%を超える値になる', async () => {
+      // 直前ポット500、ベット600 -> pot(post)=1100 -> 120%
+      const lines = await sizesFor([
+        act({ handId: 1, index: 0, phase: PhaseType.FLOP, actionType: ActionType.BET, bet: 600, pot: 1100, sidePot: [] }),
+      ])
+      expect(lines.flop[0]!.potPercent).toBe(120)
+    })
+
+    test('レイズは累計betではなく増分を分子にする', async () => {
+      // 自分がフロップで100ベット、相手が300へレイズ、自分が900へリレイズ。
+      // 3手目の増分は 900-100 = 800。pot(post)=2100 -> 直前ポット1300 -> 62%
+      const lines = await sizesFor([
+        act({ handId: 1, index: 0, phase: PhaseType.FLOP, actionType: ActionType.BET, bet: 100, pot: 400, sidePot: [] }),
+        act({ handId: 1, index: 1, phase: PhaseType.FLOP, actionType: ActionType.RAISE, playerId: 2, bet: 300, pot: 700, sidePot: [] }),
+        act({ handId: 1, index: 2, phase: PhaseType.FLOP, actionType: ActionType.RAISE, bet: 900, pot: 2100, sidePot: [] }),
+      ])
+      expect(lines.flop.map(a => a.letter)).toEqual(['B', 'R'])
+      expect(lines.flop[1]).toMatchObject({ increment: 800, potBefore: 1300, potPercent: 62 })
+    })
+
+    test('サイドポットを分母に含める（オールインでポットがティア分割されても壊れない）', async () => {
+      // pot=1000, sidePot=[500,300] -> 場の総額1800。増分600 -> 直前1200 -> 50%
+      const lines = await sizesFor([
+        act({
+          handId: 1, index: 0, phase: PhaseType.FLOP, actionType: ActionType.BET,
+          bet: 600, pot: 1000, sidePot: [500, 300], actionDetails: [ActionDetail.ALL_IN],
+        }),
+      ])
+      expect(lines.flop[0]).toMatchObject({ increment: 600, potBefore: 1200, potPercent: 50, allIn: true })
+    })
+
+    test('チェック/コール/フォールドには比率を付けない', async () => {
+      const lines = await sizesFor([
+        act({ handId: 1, index: 0, phase: PhaseType.FLOP, actionType: ActionType.CHECK, bet: 0, pot: 300, sidePot: [] }),
+        act({ handId: 1, index: 1, phase: PhaseType.TURN, actionType: ActionType.CALL, bet: 200, pot: 700, sidePot: [] }),
+        act({ handId: 1, index: 2, phase: PhaseType.RIVER, actionType: ActionType.FOLD, bet: 0, pot: 700, sidePot: [] }),
+      ])
+      expect(lines.flop[0]!.potPercent).toBeNull()
+      expect(lines.turn[0]!.potPercent).toBeNull()
+      expect(lines.river[0]!.potPercent).toBeNull()
+      // コールの増分自体は出す（ツールチップで実額を見せるため）。
+      expect(lines.turn[0]!.increment).toBe(200)
+    })
+
+    test('チェックスルーのハンドはサイズを一切持たない', async () => {
+      const lines = await sizesFor([
+        act({ handId: 1, index: 0, phase: PhaseType.FLOP, actionType: ActionType.CHECK, bet: 0, pot: 300, sidePot: [] }),
+        act({ handId: 1, index: 1, phase: PhaseType.TURN, actionType: ActionType.CHECK, bet: 0, pot: 300, sidePot: [] }),
+        act({ handId: 1, index: 2, phase: PhaseType.RIVER, actionType: ActionType.CHECK, bet: 0, pot: 300, sidePot: [] }),
+      ])
+      expect([...lines.flop, ...lines.turn, ...lines.river].every(a => a.potPercent === null)).toBe(true)
+    })
+
+    test('ストリートをまたいでも累計はリセットされる（ターンのbetをフロップ分と混ぜない）', async () => {
+      const lines = await sizesFor([
+        act({ handId: 1, index: 0, phase: PhaseType.FLOP, actionType: ActionType.BET, bet: 200, pot: 600, sidePot: [] }),
+        act({ handId: 1, index: 1, phase: PhaseType.TURN, actionType: ActionType.BET, bet: 300, pot: 1200, sidePot: [] }),
+      ])
+      expect(lines.flop[0]).toMatchObject({ increment: 200, potBefore: 400, potPercent: 50 })
+      // ターンは累計がリセットされるので増分＝300（500ではない）。
+      expect(lines.turn[0]).toMatchObject({ increment: 300, potBefore: 900, potPercent: 33 })
+    })
+
+    test('直前ポットが0以下になる壊れた行は比率を出さない（数字を捏造しない）', async () => {
+      const lines = await sizesFor([
+        act({ handId: 1, index: 0, phase: PhaseType.FLOP, actionType: ActionType.BET, bet: 500, pot: 500, sidePot: [] }),
+      ])
+      expect(lines.flop[0]).toMatchObject({ letter: 'B', potBefore: null, potPercent: null })
+    })
+
+    // codexレビュー指摘（P2）: 保存パイプラインは生のALL_INを
+    // `Progress.NextActionTypes`だけで正規化し、`CALL`が選択肢にあれば**額を
+    // 見ずに**RAISEへ倒す（write-entity-stream.ts / entity-converter.ts）。
+    // そのため相手のベットをカバーできないショートオールインもRAISEで保存され、
+    // そのまま出すと`C!`であるべき行に`Rxx!`とポット比が付いてしまう。
+    // 境界は`hand-log-processor.ts`のALL_IN分岐と揃える（`BetChip > prevBet`
+    // だけがレイズ、同額・下回りはどちらもオールインコール）。
+    describe('short all-in normalized to RAISE is really a call', () => {
+      test('ポストフロップ: 相手のベットをカバーできないオールインはC!（比率なし）', async () => {
+        const lines = await sizesFor([
+          act({ handId: 1, index: 0, phase: PhaseType.FLOP, actionType: ActionType.BET, playerId: 2, bet: 1000, pot: 1300, sidePot: [] }),
+          act({
+            handId: 1, index: 1, phase: PhaseType.FLOP, actionType: ActionType.RAISE,
+            bet: 400, pot: 1700, sidePot: [], actionDetails: [ActionDetail.ALL_IN],
+          }),
+        ])
+        expect(lines.flop[0]).toMatchObject({ letter: 'C', allIn: true, potPercent: null })
+        // 実額そのものは残す（ツールチップで見せるため）。
+        expect(lines.flop[0]!.increment).toBe(400)
+      })
+
+      test('ポストフロップ: ちょうどカバーする額（BetChip === 対峙額）もコール', async () => {
+        const lines = await sizesFor([
+          act({ handId: 1, index: 0, phase: PhaseType.FLOP, actionType: ActionType.BET, playerId: 2, bet: 1000, pot: 1300, sidePot: [] }),
+          act({
+            handId: 1, index: 1, phase: PhaseType.FLOP, actionType: ActionType.RAISE,
+            bet: 1000, pot: 2300, sidePot: [], actionDetails: [ActionDetail.ALL_IN],
+          }),
+        ])
+        expect(lines.flop[0]).toMatchObject({ letter: 'C', allIn: true, potPercent: null })
+      })
+
+      test('ポストフロップ: 上回るオールインは従来どおりレイズ（比率つき）', async () => {
+        // 対峙1000、自分1600へ。増分1600、pot(post)=3900 -> 直前2300 -> 70%
+        const lines = await sizesFor([
+          act({ handId: 1, index: 0, phase: PhaseType.FLOP, actionType: ActionType.BET, playerId: 2, bet: 1000, pot: 1300, sidePot: [] }),
+          act({
+            handId: 1, index: 1, phase: PhaseType.FLOP, actionType: ActionType.RAISE,
+            bet: 1600, pot: 3900, sidePot: [], actionDetails: [ActionDetail.ALL_IN],
+          }),
+        ])
+        expect(lines.flop[0]).toMatchObject({ letter: 'R', allIn: true, increment: 1600, potBefore: 2300, potPercent: 70 })
+      })
+
+      test('ポストフロップ: 対峙するベットが無いオールインはベットのまま', async () => {
+        const lines = await sizesFor([
+          act({
+            handId: 1, index: 0, phase: PhaseType.FLOP, actionType: ActionType.BET,
+            bet: 300, pot: 900, sidePot: [], actionDetails: [ActionDetail.ALL_IN],
+          }),
+        ])
+        expect(lines.flop[0]).toMatchObject({ letter: 'B', allIn: true, potPercent: 50 })
+      })
+
+      test('ALL_IN印の無いRAISEには触らない（サーバーが明示的に送った種別）', async () => {
+        const lines = await sizesFor([
+          act({ handId: 1, index: 0, phase: PhaseType.FLOP, actionType: ActionType.BET, playerId: 2, bet: 1000, pot: 1300, sidePot: [] }),
+          act({ handId: 1, index: 1, phase: PhaseType.FLOP, actionType: ActionType.RAISE, bet: 400, pot: 1700, sidePot: [] }),
+        ])
+        expect(lines.flop[0]!.letter).toBe('R')
+      })
+
+      test('プリフロップ: BBをカバーできないショートオールインにレイズto表示を出さない', async () => {
+        // BB=200、自分は150しか無くオールイン。先行するEVT_ACTIONは無いので、
+        // 対峙額の下駄（BB）が効かないとレイズ扱いになってしまう。
+        await db.hands.add(makeHand({ id: 1, approxTimestamp: 1000, bigBlind: 200 }))
+        await db.actions.add(act({
+          handId: 1, index: 0, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE,
+          bet: 150, pot: 500, sidePot: [], actionDetails: [ActionDetail.ALL_IN],
+        }))
+        const result = await getRecentHands(db, service, PLAYER_ID)
+        expect(result.hands[0]!.preflopRaiseToChips).toBeNull()
+        expect(result.hands[0]!.preflopRaiseToBB).toBeNull()
+      })
+
+      test('プリフロップ: BBちょうどのオールインもコール扱い', async () => {
+        await db.hands.add(makeHand({ id: 1, approxTimestamp: 1000, bigBlind: 200 }))
+        await db.actions.add(act({
+          handId: 1, index: 0, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE,
+          bet: 200, pot: 500, sidePot: [], actionDetails: [ActionDetail.ALL_IN],
+        }))
+        const result = await getRecentHands(db, service, PLAYER_ID)
+        expect(result.hands[0]!.preflopRaiseToChips).toBeNull()
+      })
+
+      test('プリフロップ: BBを上回るオールインは従来どおりレイズto', async () => {
+        await db.hands.add(makeHand({ id: 1, approxTimestamp: 1000, bigBlind: 200 }))
+        await db.actions.add(act({
+          handId: 1, index: 0, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE,
+          bet: 3000, pot: 3300, sidePot: [], actionDetails: [ActionDetail.ALL_IN],
+        }))
+        const result = await getRecentHands(db, service, PLAYER_ID)
+        expect(result.hands[0]!.preflopRaiseToChips).toBe(3000)
+        expect(result.hands[0]!.preflopRaiseToBB).toBeCloseTo(15)
+      })
+
+      test('プリフロップ: 相手の3betをカバーできないオールインもコール扱い', async () => {
+        await db.hands.add(makeHand({ id: 1, approxTimestamp: 1000, bigBlind: 200 }))
+        await db.actions.bulkAdd([
+          act({ handId: 1, index: 0, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, bet: 440, pot: 740, sidePot: [] }),
+          act({ handId: 1, index: 1, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, playerId: 2, bet: 1400, pot: 2140, sidePot: [] }),
+          act({
+            handId: 1, index: 2, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE,
+            bet: 900, pot: 2600, sidePot: [], actionDetails: [ActionDetail.ALL_IN],
+          }),
+        ])
+        const result = await getRecentHands(db, service, PLAYER_ID)
+        // 最後のアクションは実質コールなので、レイズto は最初のOpen(440)のまま。
+        expect(result.hands[0]!.preflopRaiseToChips).toBe(440)
+      })
+
+      test('resolveEffectiveActionType (unit)', () => {
+        const facing = makeAction({ handId: 1, index: 0, phase: PhaseType.FLOP, actionType: ActionType.BET, position: Position.BTN, playerId: 2, bet: 1000 })
+        const shortAllIn = makeAction({ handId: 1, index: 1, phase: PhaseType.FLOP, actionType: ActionType.RAISE, position: Position.BTN, bet: 400, actionDetails: [ActionDetail.ALL_IN] })
+        const coverAllIn = makeAction({ handId: 1, index: 1, phase: PhaseType.FLOP, actionType: ActionType.RAISE, position: Position.BTN, bet: 1600, actionDetails: [ActionDetail.ALL_IN] })
+        expect(resolveEffectiveActionType(shortAllIn, [facing, shortAllIn])).toBe(ActionType.CALL)
+        expect(resolveEffectiveActionType(coverAllIn, [facing, coverAllIn])).toBe(ActionType.RAISE)
+        // 対峙額の下駄（プリフロップのBB）だけでもコール判定になる。
+        expect(resolveEffectiveActionType(shortAllIn, [shortAllIn], 1000)).toBe(ActionType.CALL)
+        expect(resolveEffectiveActionType(shortAllIn, [shortAllIn], 0)).toBe(ActionType.RAISE)
+      })
+    })
+
+    test('プリフロップのレイズto額をBBとチップの両方で返す', async () => {
+      await db.hands.add(makeHand({ id: 1, approxTimestamp: 1000, bigBlind: 200 }))
+      await db.actions.bulkAdd([
+        act({ handId: 1, index: 0, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, bet: 440, pot: 740, sidePot: [] }),
+      ])
+      const result = await getRecentHands(db, service, PLAYER_ID)
+      expect(result.hands[0]!.preflopRaiseToChips).toBe(440)
+      expect(result.hands[0]!.preflopRaiseToBB).toBeCloseTo(2.2)
+    })
+
+    test('プリフロップの最後のアグレッシブアクション（4bet等）を採る', async () => {
+      await db.hands.add(makeHand({ id: 1, approxTimestamp: 1000, bigBlind: 200 }))
+      await db.actions.bulkAdd([
+        act({ handId: 1, index: 0, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, bet: 440, pot: 740, sidePot: [] }),
+        act({ handId: 1, index: 1, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, playerId: 2, bet: 1400, pot: 2140, sidePot: [] }),
+        act({ handId: 1, index: 2, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, bet: 4400, pot: 6100, sidePot: [] }),
+      ])
+      const result = await getRecentHands(db, service, PLAYER_ID)
+      expect(result.hands[0]!.preflopRaiseToChips).toBe(4400)
+      expect(result.hands[0]!.preflopRaiseToBB).toBeCloseTo(22)
+    })
+
+    test('プリフロップでアグレッシブでなければサイズは出さない', async () => {
+      await db.hands.add(makeHand({ id: 1, approxTimestamp: 1000, bigBlind: 200 }))
+      await db.actions.add(act({ handId: 1, index: 0, phase: PhaseType.PREFLOP, actionType: ActionType.CALL, bet: 200, pot: 500, sidePot: [] }))
+      const result = await getRecentHands(db, service, PLAYER_ID)
+      expect(result.hands[0]!.preflopRaiseToChips).toBeNull()
+      expect(result.hands[0]!.preflopRaiseToBB).toBeNull()
+    })
+
+    test('bigBlindが使えないハンドはBB換算だけnullになり、チップは残る', async () => {
+      await db.hands.add(makeHand({ id: 1, approxTimestamp: 1000, bigBlind: 0 }))
+      await db.actions.add(act({ handId: 1, index: 0, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, bet: 440, pot: 740, sidePot: [] }))
+      const result = await getRecentHands(db, service, PLAYER_ID)
+      expect(result.hands[0]!.preflopRaiseToChips).toBe(440)
+      expect(result.hands[0]!.preflopRaiseToBB).toBeNull()
     })
   })
 

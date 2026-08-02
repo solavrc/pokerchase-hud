@@ -1,9 +1,16 @@
 import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { RecentHandsPanel, formatNetBigBlinds, formatPostflopLines } from './RecentHandsPanel'
+import {
+  RecentHandsPanel,
+  formatBigBlinds,
+  formatNetBigBlinds,
+  formatPostflopLines,
+  formatPostflopTooltip,
+  formatStreetAction,
+} from './RecentHandsPanel'
 import { Position } from '../../types/game'
 import { SUIT_COLORS } from '../../utils/card-utils'
-import type { RecentHandsResult } from '../../types/stats'
+import type { RecentHandsResult, StreetAction } from '../../types/stats'
 import {
   DEFAULT_RECENT_HANDS_LIMIT,
   DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY,
@@ -14,12 +21,17 @@ import {
 
 const NOW = 1_700_000_000_000
 
+/** StreetAction fixture helper. */
+const sa = (letter: string, extra: Partial<StreetAction> = {}): StreetAction => ({
+  letter, allIn: false, increment: null, potBefore: null, potPercent: null, ...extra,
+})
+
 const buildResult = (overrides: Partial<RecentHandsResult> = {}): RecentHandsResult => ({
   computedAt: NOW,
   hands: [
-    { handId: 3, approxTimestamp: NOW - 3 * 60_000, bigBlind: 200, position: Position.BTN, holeCards: ['As', 'Ah'], holeCardsSource: 'results', preflopLine: 'Open', postflopLines: { flop: 'XC', turn: 'B!', river: null }, sawFlop: true, wentToShowdown: true, won: true, netChips: 1240 },
-    { handId: 2, approxTimestamp: NOW - 2 * 3600_000, bigBlind: 200, position: Position.BB, holeCards: null, holeCardsSource: null, preflopLine: 'Check', postflopLines: { flop: 'X', turn: null, river: 'F' }, sawFlop: true, wentToShowdown: false, won: false, netChips: -640 },
-    { handId: 1, approxTimestamp: NOW - 26 * 3600_000, bigBlind: 200, position: null, holeCards: null, holeCardsSource: null, preflopLine: 'Fold', postflopLines: { flop: null, turn: null, river: null }, sawFlop: false, wentToShowdown: false, won: false, netChips: 0 },
+    { handId: 3, approxTimestamp: NOW - 3 * 60_000, bigBlind: 200, position: Position.BTN, holeCards: ['As', 'Ah'], holeCardsSource: 'results', preflopLine: 'Open', preflopRaiseToBB: 2.2, preflopRaiseToChips: 440, postflopLines: { flop: [sa('X'), sa('C')], turn: [sa('B', { potPercent: 75, allIn: true, increment: 900, potBefore: 1200 })], river: [] }, sawFlop: true, wentToShowdown: true, won: true, netChips: 1240 },
+    { handId: 2, approxTimestamp: NOW - 2 * 3600_000, bigBlind: 200, position: Position.BB, holeCards: null, holeCardsSource: null, preflopLine: 'Check', preflopRaiseToBB: null, preflopRaiseToChips: null, postflopLines: { flop: [sa('X')], turn: [], river: [sa('F')] }, sawFlop: true, wentToShowdown: false, won: false, netChips: -640 },
+    { handId: 1, approxTimestamp: NOW - 26 * 3600_000, bigBlind: 200, position: null, holeCards: null, holeCardsSource: null, preflopLine: 'Fold', preflopRaiseToBB: null, preflopRaiseToChips: null, postflopLines: { flop: [], turn: [], river: [] }, sawFlop: false, wentToShowdown: false, won: false, netChips: 0 },
   ],
   ...overrides,
 })
@@ -269,7 +281,7 @@ describe('RecentHandsPanel', () => {
       // 2回目の応答は1回目と区別できるよう新しいハンドを1件追加する
       // （新しいハンドが完了して初めて反映されるべきデータ）
       const result = callCount === 2
-        ? buildResult({ hands: [{ handId: 4, approxTimestamp: NOW, bigBlind: 200, position: Position.CO, holeCards: null, holeCardsSource: null, preflopLine: 'Open', postflopLines: { flop: null, turn: null, river: null }, sawFlop: false, wentToShowdown: false, won: false, netChips: null }, ...buildResult().hands] })
+        ? buildResult({ hands: [{ handId: 4, approxTimestamp: NOW, bigBlind: 200, position: Position.CO, holeCards: null, holeCardsSource: null, preflopLine: 'Open', preflopRaiseToBB: 2.2, preflopRaiseToChips: 440, postflopLines: { flop: [], turn: [], river: [] }, sawFlop: false, wentToShowdown: false, won: false, netChips: null }, ...buildResult().hands] })
         : buildResult()
       callback({ success: true, recentHands: result })
     })
@@ -306,9 +318,12 @@ describe('RecentHandsPanel', () => {
       render(<RecentHandsPanel playerId={123} />)
 
       const rows = await screen.findAllByTestId('recent-hands-row')
-      // flop='XC', turn='B!', river=null -> 末尾の空ストリートは落とす
-      expect(rows[0]!.querySelector('[data-testid="recent-hands-streets"]')).toHaveTextContent('XC/B!')
-      // flop='X', turn=null, river='F' -> 途中の空ストリートは'-'で残す
+      // flop=XC, turn=B75!(all-in), river=なし -> 末尾の空ストリートは落とす
+      expect(rows[0]!.querySelector('[data-testid="recent-hands-streets"]')).toHaveTextContent('XC/B75!')
+      // 実額は列を増やさずツールチップへ（#354）。
+      expect(rows[0]!.querySelector('[data-testid="recent-hands-streets"]'))
+        .toHaveAttribute('title', expect.stringContaining('B75!=900（ポット1,200）') as any)
+      // flop='X', turn=なし, river='F' -> 途中の空ストリートは'-'で残す
       expect(rows[1]!.querySelector('[data-testid="recent-hands-streets"]')).toHaveTextContent('X/-/F')
       // 全ストリートnull（プリフロップで終わったハンド）
       expect(rows[2]!.querySelector('[data-testid="recent-hands-streets"]')).toHaveTextContent('—')
@@ -494,7 +509,7 @@ describe('RecentHandsPanel', () => {
           hands: [{
             handId: 9, approxTimestamp: NOW, bigBlind: 200, position: Position.CO,
             holeCards: ['Jh', 'Ac'], holeCardsSource: 'dealt',
-            preflopLine: 'ColdCall', postflopLines: { flop: 'F', turn: null, river: null },
+            preflopLine: 'ColdCall', preflopRaiseToBB: null, preflopRaiseToChips: null, postflopLines: { flop: [sa('F')], turn: [], river: [] },
             sawFlop: true, wentToShowdown: false, won: false, netChips: -420,
           }],
         }),
@@ -515,7 +530,8 @@ describe('formatNetBigBlinds', () => {
   const entry = (netChips: number | null, bigBlind: number | null) => ({
     handId: 1, approxTimestamp: null, bigBlind, position: null, holeCards: null,
     holeCardsSource: null, preflopLine: null,
-    postflopLines: { flop: null, turn: null, river: null },
+    preflopRaiseToBB: null, preflopRaiseToChips: null,
+    postflopLines: { flop: [], turn: [], river: [] },
     sawFlop: false, wentToShowdown: false, won: false, netChips,
   })
 
@@ -551,29 +567,94 @@ describe('formatNetBigBlinds', () => {
   })
 })
 
+describe('formatStreetAction', () => {
+  const sa2 = (letter: string, extra: Partial<StreetAction> = {}): StreetAction => ({
+    letter, allIn: false, increment: null, potBefore: null, potPercent: null, ...extra,
+  })
+
+  test('B/Rにはポット比を付ける', () => {
+    expect(formatStreetAction(sa2('B', { potPercent: 33 }))).toBe('B33')
+    expect(formatStreetAction(sa2('R', { potPercent: 120 }))).toBe('R120')
+  })
+
+  test('X/C/Fには比率を付けない', () => {
+    expect(formatStreetAction(sa2('X'))).toBe('X')
+    expect(formatStreetAction(sa2('C'))).toBe('C')
+    expect(formatStreetAction(sa2('F'))).toBe('F')
+  })
+
+  test('オールインは"!"を最後に付ける', () => {
+    expect(formatStreetAction(sa2('B', { potPercent: 75, allIn: true }))).toBe('B75!')
+    expect(formatStreetAction(sa2('C', { allIn: true }))).toBe('C!')
+  })
+
+  test('比率が出せなかったアグレッシブアクションは記号だけ（数字を捏造しない）', () => {
+    expect(formatStreetAction(sa2('B'))).toBe('B')
+  })
+})
+
 describe('formatPostflopLines', () => {
+  const sa2 = (letter: string, potPercent: number | null = null): StreetAction => ({
+    letter, allIn: false, increment: null, potBefore: null, potPercent,
+  })
+
   test('3ストリート全て動いた場合は"/"で連結する', () => {
-    expect(formatPostflopLines({ flop: 'XC', turn: 'B', river: 'R!' })).toBe('XC/B/R!')
+    expect(formatPostflopLines({
+      flop: [sa2('X'), sa2('C')], turn: [sa2('B', 50)], river: [sa2('R', 120)],
+    })).toBe('XC/B50/R120')
   })
 
   test('末尾のアクション無しストリートは落とす', () => {
-    expect(formatPostflopLines({ flop: 'XC', turn: 'B', river: null })).toBe('XC/B')
-    expect(formatPostflopLines({ flop: 'F', turn: null, river: null })).toBe('F')
+    expect(formatPostflopLines({ flop: [sa2('X'), sa2('C')], turn: [sa2('B', 50)], river: [] })).toBe('XC/B50')
+    expect(formatPostflopLines({ flop: [sa2('F')], turn: [], river: [] })).toBe('F')
   })
 
   test('途中のアクション無しストリートは"-"で残す（詰めると意味が変わるため）', () => {
-    expect(formatPostflopLines({ flop: 'X', turn: null, river: 'B' })).toBe('X/-/B')
-    expect(formatPostflopLines({ flop: null, turn: null, river: 'B' })).toBe('-/-/B')
+    expect(formatPostflopLines({ flop: [sa2('X')], turn: [], river: [sa2('B', 66)] })).toBe('X/-/B66')
+    expect(formatPostflopLines({ flop: [], turn: [], river: [sa2('B', 66)] })).toBe('-/-/B66')
   })
 
   test('全ストリート空はnull（呼び出し側がem dashへ倒す）', () => {
-    expect(formatPostflopLines({ flop: null, turn: null, river: null })).toBeNull()
+    expect(formatPostflopLines({ flop: [], turn: [], river: [] })).toBeNull()
   })
 
   // #127方針: backgroundが古い形のまま応答してもHUDを落とさない。
   test('フィールド自体が欠けている応答でもnullへ倒す', () => {
     expect(formatPostflopLines(undefined)).toBeNull()
     expect(formatPostflopLines(null)).toBeNull()
+    // 旧形式（文字列）が届いても配列として扱えないだけで落ちない。
+    expect(formatPostflopLines({ flop: 'XC', turn: null, river: null } as any)).toBeNull()
   })
 })
 
+describe('formatPostflopTooltip', () => {
+  const aggro = (letter: string, potPercent: number, increment: number, potBefore: number): StreetAction => ({
+    letter, allIn: false, increment, potBefore, potPercent,
+  })
+
+  test('ストリートごとに実額と直前ポットを出す', () => {
+    const tooltip = formatPostflopTooltip({
+      flop: [aggro('B', 33, 100, 300)], turn: [], river: [aggro('R', 120, 1200, 1000)],
+    })
+    expect(tooltip).toContain('フロップ: B33=100（ポット300）')
+    expect(tooltip).toContain('リバー: R120=1,200（ポット1,000）')
+    expect(tooltip).not.toContain('ターン')
+  })
+
+  test('実額の無いアクションだけならツールチップを出さない', () => {
+    expect(formatPostflopTooltip({
+      flop: [{ letter: 'X', allIn: false, increment: 0, potBefore: null, potPercent: null }],
+      turn: [], river: [],
+    })).toBeUndefined()
+    expect(formatPostflopTooltip(undefined)).toBeUndefined()
+  })
+})
+
+describe('formatBigBlinds', () => {
+  test('小数第1位で丸め、.0は落とす', () => {
+    expect(formatBigBlinds(2.2)).toBe('2.2')
+    expect(formatBigBlinds(9)).toBe('9')
+    expect(formatBigBlinds(8.75)).toBe('8.8')
+    expect(formatBigBlinds(22.04)).toBe('22')
+  })
+})
