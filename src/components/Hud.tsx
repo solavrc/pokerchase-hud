@@ -13,7 +13,7 @@ import { CompactStatDisplay } from './hud/CompactStatDisplay'
 import { RealTimeStatsDisplay } from './hud/RealTimeStatsDisplay'
 import { PositionalStatsPanel } from './hud/PositionalStatsPanel'
 import { PositionalPanelTrigger } from './hud/PositionalPanelTrigger'
-import { RecentHandsPanel, resolveRecentHandsPanelAnchor } from './hud/RecentHandsPanel'
+import { RecentHandsPanel } from './hud/RecentHandsPanel'
 import { RecentHandsPanelTrigger } from './hud/RecentHandsPanelTrigger'
 import { HUD_MUTED_TEXT_COLOR } from './hud/hudColors'
 import { HudTooltipPortal } from './hud/HudTooltip'
@@ -314,24 +314,11 @@ const Hud = memo((props: HudProps) => {
     cursor: isDragging ? 'move' : 'default',
   }
   
-  // 直近ハンド・パネルはHUD本体（240px）より広い（#357、RecentHandsPanel.tsxの
-  // `RECENT_HANDS_PANEL_WIDTH_PX`）。開いている間だけ`overflow`を解除しないと、
-  // はみ出したぶんがこの要素の`overflow: hidden`に切り落とされて見えなくなる。
-  // 閉じている間は従来どおり`hidden`のまま（角丸の内側で子要素を切る）。
-  // HUD本体の幅・ヘッダー・統計ブロックのレイアウトはどちらの場合も不変。
-  const isRecentHandsPanelOpen = !!props.isRecentHandsPanelOpen
-  // パネルを広げる向きは、HUDが画面のどちら側にあるかで決める。ドラッグ中の
-  // `position`が優先（ドラッグに追従する）、無ければ座席の既定位置。
-  const recentHandsPanelAnchor = resolveRecentHandsPanelAnchor(
-    (position ?? defaultPosition)?.left
-  )
-
   const backgroundStyle: CSSProperties = {
     ...styles.background,
     backgroundColor: isHovering || isDragging ? HOVER_BG_COLOR : NORMAL_BG_COLOR,
     pointerEvents: 'auto',
     position: 'relative',
-    overflow: isRecentHandsPanelOpen ? 'visible' : styles.background.overflow,
     // bustしたプレイヤーのミュート表示。ホバー/ドラッグ中は視認性のため通常の
     // 濃さへ戻す（減光したままだとドリルダウン操作等がしづらいため）。
     opacity: props.isDimmed && !isHovering && !isDragging ? DIMMED_OPACITY : 1,
@@ -412,11 +399,7 @@ const Hud = memo((props: HudProps) => {
             <PositionalStatsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
           )}
           {props.isRecentHandsPanelOpen && (
-            <RecentHandsPanel
-              playerId={props.stat.playerId}
-              handEpoch={props.handEpoch}
-              anchor={recentHandsPanelAnchor}
-            />
+            <RecentHandsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
           )}
         </div>
       </div>
@@ -473,11 +456,7 @@ const Hud = memo((props: HudProps) => {
             <PositionalStatsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
           )}
           {props.isRecentHandsPanelOpen && (
-            <RecentHandsPanel
-              playerId={props.stat.playerId}
-              handEpoch={props.handEpoch}
-              anchor={recentHandsPanelAnchor}
-            />
+            <RecentHandsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
           )}
           <HudTooltipPortal position={copyTooltipPosition}>{COPY_TOOLTIP}</HudTooltipPortal>
         </div>

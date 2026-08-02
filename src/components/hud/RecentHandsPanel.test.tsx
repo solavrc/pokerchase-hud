@@ -11,7 +11,6 @@ import {
   formatPostflopLines,
   formatPostflopTooltip,
   formatStreetAction,
-  resolveRecentHandsPanelAnchor,
 } from './RecentHandsPanel'
 import { Position } from '../../types/game'
 import { SUIT_COLORS } from '../../utils/card-utils'
@@ -168,7 +167,29 @@ describe('RecentHandsPanel', () => {
 
     await screen.findAllByTestId('recent-hands-row')
     expect(screen.queryByText('時刻')).not.toBeInTheDocument()
-    expect(screen.getByText('損益(BB)')).toBeInTheDocument()
+  })
+
+  it('列ヘッダー行は表示しない（#357、sola「見ればわかるし」）', async () => {
+    mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
+      callback({ success: true, recentHands: buildResult() })
+    })
+
+    const { container } = render(<RecentHandsPanel playerId={123} />)
+
+    await screen.findAllByTestId('recent-hands-row')
+    expect(container.querySelector('thead')).toBeNull()
+    expect(container.querySelectorAll('th')).toHaveLength(0)
+    for (const label of ['Pos', 'カード', 'ライン', 'ボード', 'F/T/R', '損益(BB)']) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument()
+    }
+    // ヘッダーが担っていた説明は、各セルのツールチップから辿れること。
+    const rows = await screen.findAllByTestId('recent-hands-row')
+    // F/T/R: 記号の凡例。アグレッシブなアクションが無い行にも必ず付く。
+    expect(rows[1]!.querySelector('[data-testid="recent-hands-streets"]'))
+      .toHaveAttribute('title', expect.stringContaining('X=チェック') as any)
+    // 損益: 単位（BB）を名乗る。
+    expect(rows[0]!.querySelector('td:last-child'))
+      .toHaveAttribute('title', expect.stringContaining('BB') as any)
   })
 
   it('source accountingが不明なら推測せず"-"を表示する', async () => {
@@ -509,7 +530,10 @@ describe('RecentHandsPanel', () => {
 
     const row = await screen.findByTestId('recent-hands-row')
     expect(row).toHaveTextContent('+1,240')
-    expect(row.querySelector('td:last-child')).not.toHaveAttribute('title')
+    // #357: BB換算できずチップ表記へ倒れた行にもツールチップを出す。ヘッダー
+    // （`損益(BB)`）を廃止したので、単位を名乗る場所がここしか無くなった。
+    // BBは名乗れないので、チップであることだけを言う。
+    expect(row.querySelector('td:last-child')).toHaveAttribute('title', '損益 +1,240チップ')
   })
 
   // #353: ヒーロー自身の配札カードは source='dealt' で届く
@@ -800,15 +824,30 @@ describe('formatPostflopTooltip', () => {
     })
     expect(tooltip).toContain('フロップ: B33=100（ポット300）')
     expect(tooltip).toContain('リバー: R120=1,200（ポット1,000）')
-    expect(tooltip).not.toContain('ターン')
+    // アクションの無いストリートの行は出さない。`ターン`単体は#357で足した
+    // 凡例の文中にも現れるので、行頭の`ターン:`で判定する。
+    expect(tooltip).not.toContain('ターン:')
   })
 
-  test('実額の無いアクションだけならツールチップを出さない', () => {
-    expect(formatPostflopTooltip({
+  test('実額が無くても記号の凡例だけは必ず返す（#357、ヘッダー廃止で唯一の説明）', () => {
+    // #356まではこの説明が列ヘッダーの`title`にあった。ヘッダー行を廃止した
+    // ので、実額の無い行でも読み方へ到達できなければならない。
+    const noAmounts = formatPostflopTooltip({
       flop: [{ letter: 'X', allIn: false, increment: 0, potBefore: null, potPercent: null }],
       turn: [], river: [],
-    })).toBeUndefined()
-    expect(formatPostflopTooltip(undefined)).toBeUndefined()
+    })
+    expect(noAmounts).toContain('X=チェック')
+    expect(noAmounts).not.toContain('フロップ:')
+    // ポストフロップそのものが無い行（引数なし）も同じ。
+    expect(formatPostflopTooltip(undefined)).toContain('X=チェック')
+  })
+
+  test('実額があるときは凡例に続けて出す', () => {
+    const tooltip = formatPostflopTooltip({
+      flop: [aggro('B', 33, 100, 300)], turn: [], river: [],
+    })
+    expect(tooltip).toContain('X=チェック')
+    expect(tooltip).toContain('フロップ: B33=100（ポット300）')
   })
 })
 
@@ -818,37 +857,5 @@ describe('formatBigBlinds', () => {
     expect(formatBigBlinds(9)).toBe('9')
     expect(formatBigBlinds(8.75)).toBe('8.8')
     expect(formatBigBlinds(22.04)).toBe('22')
-  })
-})
-
-describe('resolveRecentHandsPanelAnchor', () => {
-  // パネルはHUD本体より広いので、外側の端をHUDの端に揃える向きを選ぶ（#357）。
-  // 画面左側のHUDは右へ、右側のHUDは左へ広げれば、HUDが画面内にある限り
-  // パネルも画面外へ出ない。
-  it('画面左側（left <= 50%）のHUDは右へ広げる', () => {
-    expect(resolveRecentHandsPanelAnchor('10%')).toBe('left')
-    expect(resolveRecentHandsPanelAnchor('0%')).toBe('left')
-    // 境界（ちょうど中央）は右へ広げる側に倒す。
-    expect(resolveRecentHandsPanelAnchor('50%')).toBe('left')
-  })
-
-  it('画面右側（left > 50%）のHUDは左へ広げる', () => {
-    expect(resolveRecentHandsPanelAnchor('65%')).toBe('right')
-    // useDraggableのクランプ上限。
-    expect(resolveRecentHandsPanelAnchor('90%')).toBe('right')
-  })
-
-  it('数値でも同じ判定をする', () => {
-    expect(resolveRecentHandsPanelAnchor(10)).toBe('left')
-    expect(resolveRecentHandsPanelAnchor(90)).toBe('right')
-  })
-
-  it('解釈できない値は右へ広げる側（既定）へ倒す', () => {
-    // 向きが決まらないことを理由にパネルを出さない、という挙動にはしない。
-    expect(resolveRecentHandsPanelAnchor(undefined)).toBe('left')
-    expect(resolveRecentHandsPanelAnchor(null)).toBe('left')
-    expect(resolveRecentHandsPanelAnchor('auto')).toBe('left')
-    expect(resolveRecentHandsPanelAnchor(Number.NaN)).toBe('left')
-    expect(resolveRecentHandsPanelAnchor({})).toBe('left')
   })
 })
