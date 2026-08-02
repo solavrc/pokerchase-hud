@@ -103,13 +103,45 @@ export function formatPostflopTooltip(lines: PostflopLines | null | undefined): 
 }
 
 /**
+ * アグレッシブなプリフロップ・ラインのベース部分（`Open` / `3Bet` / `4Bet`…）。
+ * `Limp`/`ColdCall`/`Call`/`Check`/`Fold`/`Walk`にはサイズを付けない ――
+ * レイズto額が存在しないため。
+ */
+const PREFLOP_AGGRO_BASE = /^(?:Open|\d+Bet)$/
+
+/**
+ * ライン列の表示（#354）: アグレッシブなラベルにだけレイズto額（BB）を
+ * インラインで足す。`Open2.2` / `3Bet9` / `4Bet22`。
+ *
+ * `-F`サフィックス（オープンしてから降りた等）は**数字の後ろ**へ回す:
+ * `Open2.2-F`。`-F`はラベル本体ではなくその後の顛末なので、サイズは
+ * ラベル本体に付くほうが読み順と一致する。
+ *
+ * 数字が出ない条件（いずれも数字を捏造しないため）:
+ *  - ベース部分がアグレッシブでない（`ColdCall`等）
+ *  - `preflopRaiseToBB`が無い ―― `bigBlind`が使えないハンド、および
+ *    ショートオールイン（保存上RAISEでも実質コール。サービス側の
+ *    `resolveEffectiveActionType`が同じ境界で弾く）
+ *
+ * Exported for direct unit testing.
+ */
+export function formatPreflopLine(entry: RecentHandEntry): string {
+  const line = entry.preflopLine
+  if (!line) return '—'
+  const bb = entry.preflopRaiseToBB
+  if (typeof bb !== 'number' || !Number.isFinite(bb) || bb <= 0) return line
+  const foldedAfter = line.endsWith('-F')
+  const base = foldedAfter ? line.slice(0, -2) : line
+  if (!PREFLOP_AGGRO_BASE.test(base)) return line
+  return `${base}${formatBigBlinds(bb)}${foldedAfter ? '-F' : ''}`
+}
+
+/**
  * ライン（プリフロップ）セルのツールチップ（#354）。
  *
- * サイズを`preflopLine`の文字列へ埋め込まずツールチップにしたのは、
- * (1)`preflopLine`が`'Open-F'`のようにサフィックスを持つ documented な
- * タクソノミーで、数字を差し込む自然な位置が無いこと、(2)ライン列は既に
- * `ColdCall`が幅を決めており、そこへ数字を足すと240px幅のテーブルで
- * 一番広い列がさらに広がること、による。
+ * 表示のBB値は`formatPreflopLine`がラベルへインラインで出す。ここでは
+ * 列を増やさずに実額（チップ）へ到達できるようにする（F/T/R列・BB損益列の
+ * ツールチップと同じ考え方）。
  */
 export function formatPreflopTooltip(entry: RecentHandEntry): string | undefined {
   const bb = entry.preflopRaiseToBB
@@ -274,12 +306,20 @@ const styles = {
    * （＝`overflowX: hidden`のscrollerに切られる）より、2行に折り返すほうが
    * 情報を失わない。
    */
+  /**
+   * サイズ表記が入って桁が揃わないと行ごとに列幅が揺れるため、等幅数字にする
+   * （#354）。`tabular-nums`は全数字を同じ送り幅にするOpenType機能で、
+   * フォント自体を等幅にするより字面が既存のUIと揃う。
+   * ライン列とF/T/R列の両方が数字を持つので、共通のスタイルにしてある。
+   */
+  tabularCell: {
+    fontVariantNumeric: 'tabular-nums' as const,
+    fontFeatureSettings: '"tnum" 1',
+  } as CSSProperties,
+
   streetCell: {
     whiteSpace: 'normal' as const,
     wordBreak: 'break-all' as const,
-    // サイズ表記が入って桁が揃わないと行ごとに列幅が揺れるため、等幅数字にする
-    // （#354）。`tabular-nums`は全数字を同じ送り幅にするOpenType機能で、
-    // フォント自体を等幅にするより字面が既存のUIと揃う。
     fontVariantNumeric: 'tabular-nums' as const,
     fontFeatureSettings: '"tnum" 1',
   } as CSSProperties,
@@ -523,10 +563,10 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
                   )}
                 </td>
                 <td
-                  style={{ ...styles.cell, ...styles.cellLeft }}
+                  style={{ ...styles.cell, ...styles.cellLeft, ...styles.tabularCell }}
                   title={formatPreflopTooltip(entry)}
                   data-testid="recent-hands-preflop"
-                >{entry.preflopLine ?? '—'}</td>
+                >{formatPreflopLine(entry)}</td>
                 <td
                   style={{ ...styles.cell, ...styles.cellLeft, ...styles.streetCell }}
                   title={formatPostflopTooltip(entry.postflopLines)}
