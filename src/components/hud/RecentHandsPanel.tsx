@@ -271,6 +271,13 @@ const netChipsTooltip = (entry: RecentHandEntry): string | undefined => {
   return `${formatNetChips(entry)} チップ（BB=${bigBlind.toLocaleString()}）`
 }
 
+/**
+ * 固定列幅（Pos / カード / ライン / ボード / F/T/R / 損益(BB)）。
+ * 240pxのHUD内で、よくある行が1行に収まるよう実測で配分した（#356）。
+ * 極端に長いF/T/Rだけがそのセル内で折り返す。
+ */
+const COLUMN_WIDTHS = ['9%', '11%', '20%', '14%', '30%', '16%'] as const
+
 const styles = {
   panel: {
     borderTop: '1px solid rgba(255, 255, 255, 0.15)',
@@ -325,11 +332,23 @@ const styles = {
     overflowX: 'hidden' as const,
   } as CSSProperties,
 
+  /**
+   * 列幅は固定（#356）。`auto`のままだと、極端に長い1行（`3CC22.5-F` +
+   * 5枚ボード + `B150 / R80 / B66!` のような行）が**テーブル全体の列幅を
+   * 押し広げ**、他の普通の行まで折り返してしまう ―― 実測で1行足すだけで
+   * 折り返しが2行→5行へ増えた。固定幅にすれば、はみ出すのはその行の
+   * 該当セルだけで済み、行ごとの幅の揺れも無くなる。
+   * 各列の割合は`COLUMN_WIDTHS`で明示する。
+   */
   table: {
     width: '100%',
     borderCollapse: 'collapse' as const,
-    fontSize: '9px',
-    tableLayout: 'auto' as const,
+    // 列が7つになったので本文だけ8pxへ（#356）。Chromeで各列の自然幅を実測
+    // すると、9pxでは最悪ケース込みで255px必要（持ち幅228px）に対し、
+    // 8pxなら230pxまで下がり、ほぼ全ての行が1行に収まる。
+    // ツールバーやプレースホルダーは9pxのまま。
+    fontSize: '8px',
+    tableLayout: 'fixed' as const,
   } as CSSProperties,
 
   headerCell: {
@@ -617,6 +636,9 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
       {controls}
       <div style={styles.scroller}>
         <table style={styles.table}>
+          <colgroup>
+            {COLUMN_WIDTHS.map((width, i) => <col key={i} style={{ width }} />)}
+          </colgroup>
           <thead>
             <tr>
               <th style={styles.headerCell}>Pos</th>
