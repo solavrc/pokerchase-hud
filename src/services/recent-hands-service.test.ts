@@ -822,8 +822,11 @@ describe('RecentHandsService', () => {
           }),
         ])
         const result = await getRecentHands(db, service, PLAYER_ID)
-        // 最後のアクションは実質コールなので、レイズto は最初のOpen(440)のまま。
-        expect(result.hands[0]!.preflopRaiseToChips).toBe(440)
+        // 数字はラベルへインライン表示される（ラベルは**最後のアクション**を
+        // 反映する）ので、最後の生RAISEが実質コールなら数字は出さない。
+        // ここで1つ前のOpen(440)を返すと、別アクションの額がそのラベルに付く。
+        expect(result.hands[0]!.preflopRaiseToChips).toBeNull()
+        expect(result.hands[0]!.preflopRaiseToBB).toBeNull()
       })
 
       test('resolveEffectiveActionType (unit)', () => {

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import {
   RecentHandsPanel,
   formatBigBlinds,
+  formatPreflopLine,
   formatNetBigBlinds,
   formatPostflopLines,
   formatPostflopTooltip,
@@ -185,7 +186,10 @@ describe('RecentHandsPanel', () => {
     render(<RecentHandsPanel playerId={123} />)
 
     const rows = await screen.findAllByTestId('recent-hands-row')
-    expect(rows[0]).toHaveTextContent('Open')
+    // #354: アグレッシブなラインにはBB倍数がインラインで付く。
+    expect(rows[0]!.querySelector('[data-testid="recent-hands-preflop"]')).toHaveTextContent('Open2.2')
+    expect(rows[0]!.querySelector('[data-testid="recent-hands-preflop"]'))
+      .toHaveAttribute('title', expect.stringContaining('440') as any)
     expect(rows[0]).toHaveTextContent('BTN')
     expect(rows[2]).toHaveTextContent('Fold')
     expect(rows[2]).toHaveTextContent('—') // position: null
@@ -564,6 +568,53 @@ describe('formatNetBigBlinds', () => {
     expect(formatNetBigBlinds({ ...entry(1240, 200), bigBlind: Number.NaN } as any)).toBe('+1,240')
     expect(formatNetBigBlinds({ ...entry(1240, 200), bigBlind: -200 } as any)).toBe('+1,240')
     expect(formatNetBigBlinds({ ...entry(1240, 200), netChips: undefined } as any)).toBe('-')
+  })
+})
+
+describe('formatPreflopLine', () => {
+  const entry = (preflopLine: string | null, preflopRaiseToBB: number | null) => ({
+    handId: 1, approxTimestamp: null, bigBlind: 200, position: null, holeCards: null,
+    holeCardsSource: null, preflopLine, preflopRaiseToBB, preflopRaiseToChips: 440,
+    postflopLines: { flop: [], turn: [], river: [] },
+    sawFlop: false, wentToShowdown: false, won: false, netChips: null,
+  })
+
+  test('OpenはBB倍数を小数第1位で付ける', () => {
+    expect(formatPreflopLine(entry('Open', 2.2))).toBe('Open2.2')
+    // 丸めて整数になる場合は`.0`を落とす（表記規則は全ラベル共通）。
+    expect(formatPreflopLine(entry('Open', 3))).toBe('Open3')
+  })
+
+  test('3Bet以上はレイズto額をBBで付ける', () => {
+    expect(formatPreflopLine(entry('3Bet', 9))).toBe('3Bet9')
+    expect(formatPreflopLine(entry('4Bet', 22))).toBe('4Bet22')
+    // 10未満で端数があるときは小数を残す（意味が消えないように）。
+    expect(formatPreflopLine(entry('3Bet', 8.75))).toBe('3Bet8.8')
+  })
+
+  test('-Fサフィックスは数字の後ろへ回す', () => {
+    expect(formatPreflopLine(entry('Open-F', 2.2))).toBe('Open2.2-F')
+    expect(formatPreflopLine(entry('3Bet-F', 9))).toBe('3Bet9-F')
+  })
+
+  test('アグレッシブでないラベルには数字を付けない', () => {
+    for (const line of ['ColdCall', 'Limp', 'Call', 'Check', 'Fold', 'Walk', 'ColdCall-F', 'Check-F']) {
+      expect(formatPreflopLine(entry(line, 9))).toBe(line)
+    }
+  })
+
+  test('レイズto額が無ければラベルだけ（ショートオールイン・bigBlind不能）', () => {
+    // サービス側がショートオールイン（実質コール）と`bigBlind`不能を
+    // どちらもnullにして寄越す。表示側は数字を捏造しない。
+    expect(formatPreflopLine(entry('3Bet', null))).toBe('3Bet')
+    expect(formatPreflopLine(entry('Open-F', null))).toBe('Open-F')
+    expect(formatPreflopLine(entry('Open', 0))).toBe('Open')
+    expect(formatPreflopLine(entry('Open', Number.NaN))).toBe('Open')
+    expect(formatPreflopLine({ ...entry('Open', 2.2), preflopRaiseToBB: undefined } as any)).toBe('Open')
+  })
+
+  test('ラインそのものが無ければem dash', () => {
+    expect(formatPreflopLine(entry(null, 2.2))).toBe('—')
   })
 })
 

@@ -433,12 +433,23 @@ export function derivePreflopRaiseTo(
   // `resolveEffectiveActionType`参照。プリフロップはブラインドが
   // `EVT_ACTION`として来ないため、対峙額の下駄にBBを渡す。
   const bigBlindFallback = isUsableNumber(hand.bigBlind) && hand.bigBlind > 0 ? hand.bigBlind : 0
-  const lastAggro = preflopActions
-    .filter(a => a.playerId === playerId &&
-      isAggressiveAction(resolveEffectiveActionType(a, preflopActions, bigBlindFallback)))
+  // MUST: 採るのは「最後の生のBET/RAISE」であって「最後の実質アグレッシブ
+  // アクション」ではない。この額はラベル（`derivePreflopLine`）の直後へ
+  // インライン表示されるが、そのラベルは**最後のアクション**を反映する。
+  // 例えばOpen後にショートオールインした場合、ラベルは（生の種別で）`3Bet`
+  // 等になるため、ここで1つ前のOpenの額を返すと**別のアクションの数字が
+  // そのラベルに付く**ことになる。ラベルを作ったアクション自身を見て、
+  // それが実質コールなら数字は出さない。
+  const lastRawAggro = preflopActions
+    .filter(a => a.playerId === playerId && isAggressiveAction(a.actionType))
     .sort((a, b) => a.index - b.index)
     .at(-1)
-  if (!lastAggro || !isUsableNumber(lastAggro.bet) || lastAggro.bet <= 0) return { chips: null, bb: null }
+  if (!lastRawAggro) return { chips: null, bb: null }
+  if (!isAggressiveAction(resolveEffectiveActionType(lastRawAggro, preflopActions, bigBlindFallback))) {
+    return { chips: null, bb: null }
+  }
+  const lastAggro = lastRawAggro
+  if (!isUsableNumber(lastAggro.bet) || lastAggro.bet <= 0) return { chips: null, bb: null }
   const bb = isUsableNumber(hand.bigBlind) && hand.bigBlind > 0 ? lastAggro.bet / hand.bigBlind : null
   return { chips: lastAggro.bet, bb }
 }
