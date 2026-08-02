@@ -146,7 +146,9 @@ describe('RecentHandsPanel', () => {
     const rows = await screen.findAllByTestId('recent-hands-row')
     // bigBlind=200: +1240 -> +6.2 / -640 -> -3.2 / 0 -> 0.0
     expect(rows[0]).toHaveTextContent('+6.2')
-    expect(rows[0]).toHaveTextContent('●')
+    // #357: ショーダウン到達を示す黄色い`●`は表示しない（sola指定）。
+    // `wentToShowdown`はデータとしては残るが、この列には出さない。
+    expect(rows[0]).not.toHaveTextContent('●')
     expect(rows[1]).not.toHaveTextContent('●')
     expect(rows[1]).toHaveTextContent('-3.2')
     expect(rows[1]!.querySelector('td:last-child span')).toHaveStyle({ color: '#ff6b6b' })
@@ -165,7 +167,29 @@ describe('RecentHandsPanel', () => {
 
     await screen.findAllByTestId('recent-hands-row')
     expect(screen.queryByText('時刻')).not.toBeInTheDocument()
-    expect(screen.getByText('損益(BB)')).toBeInTheDocument()
+  })
+
+  it('列ヘッダー行は表示しない（#357、sola「見ればわかるし」）', async () => {
+    mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
+      callback({ success: true, recentHands: buildResult() })
+    })
+
+    const { container } = render(<RecentHandsPanel playerId={123} />)
+
+    await screen.findAllByTestId('recent-hands-row')
+    expect(container.querySelector('thead')).toBeNull()
+    expect(container.querySelectorAll('th')).toHaveLength(0)
+    for (const label of ['Pos', 'カード', 'ライン', 'ボード', 'F/T/R', '損益(BB)']) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument()
+    }
+    // ヘッダーが担っていた説明は、各セルのツールチップから辿れること。
+    const rows = await screen.findAllByTestId('recent-hands-row')
+    // F/T/R: 記号の凡例。アグレッシブなアクションが無い行にも必ず付く。
+    expect(rows[1]!.querySelector('[data-testid="recent-hands-streets"]'))
+      .toHaveAttribute('title', expect.stringContaining('X=チェック') as any)
+    // 損益: 単位（BB）を名乗る。
+    expect(rows[0]!.querySelector('td:last-child'))
+      .toHaveAttribute('title', expect.stringContaining('BB') as any)
   })
 
   it('source accountingが不明なら推測せず"-"を表示する', async () => {
@@ -506,7 +530,25 @@ describe('RecentHandsPanel', () => {
 
     const row = await screen.findByTestId('recent-hands-row')
     expect(row).toHaveTextContent('+1,240')
-    expect(row.querySelector('td:last-child')).not.toHaveAttribute('title')
+    // #357: BB換算できずチップ表記へ倒れた行にもツールチップを出す。ヘッダー
+    // （`損益(BB)`）を廃止したので、単位を名乗る場所がここしか無くなった。
+    // BBは名乗れないので、チップであることだけを言う。
+    expect(row.querySelector('td:last-child')).toHaveAttribute('title', '損益 +1,240チップ')
+  })
+
+  // #357レビュー指摘（P2）: 会計不明（netChips=null）の`-`行も、ヘッダー廃止後に
+  // セルだけから「損益列・BB単位」へ到達できるようツールチップを持つ。
+  it('会計不明の行にも損益列の意味を示すツールチップを出す', async () => {
+    mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
+      const hand = { ...buildResult().hands[0]!, netChips: null }
+      callback({ success: true, recentHands: { computedAt: NOW, hands: [hand] } })
+    })
+
+    render(<RecentHandsPanel playerId={123} />)
+
+    const row = await screen.findByTestId('recent-hands-row')
+    expect(row.querySelector('td:last-child')).toHaveTextContent('-')
+    expect(row.querySelector('td:last-child')).toHaveAttribute('title', '損益（BB、会計不明）')
   })
 
   // #353: ヒーロー自身の配札カードは source='dealt' で届く
@@ -797,15 +839,30 @@ describe('formatPostflopTooltip', () => {
     })
     expect(tooltip).toContain('フロップ: B33=100（ポット300）')
     expect(tooltip).toContain('リバー: R120=1,200（ポット1,000）')
-    expect(tooltip).not.toContain('ターン')
+    // アクションの無いストリートの行は出さない。`ターン`単体は#357で足した
+    // 凡例の文中にも現れるので、行頭の`ターン:`で判定する。
+    expect(tooltip).not.toContain('ターン:')
   })
 
-  test('実額の無いアクションだけならツールチップを出さない', () => {
-    expect(formatPostflopTooltip({
+  test('実額が無くても記号の凡例だけは必ず返す（#357、ヘッダー廃止で唯一の説明）', () => {
+    // #356まではこの説明が列ヘッダーの`title`にあった。ヘッダー行を廃止した
+    // ので、実額の無い行でも読み方へ到達できなければならない。
+    const noAmounts = formatPostflopTooltip({
       flop: [{ letter: 'X', allIn: false, increment: 0, potBefore: null, potPercent: null }],
       turn: [], river: [],
-    })).toBeUndefined()
-    expect(formatPostflopTooltip(undefined)).toBeUndefined()
+    })
+    expect(noAmounts).toContain('X=チェック')
+    expect(noAmounts).not.toContain('フロップ:')
+    // ポストフロップそのものが無い行（引数なし）も同じ。
+    expect(formatPostflopTooltip(undefined)).toContain('X=チェック')
+  })
+
+  test('実額があるときは凡例に続けて出す', () => {
+    const tooltip = formatPostflopTooltip({
+      flop: [aggro('B', 33, 100, 300)], turn: [], river: [],
+    })
+    expect(tooltip).toContain('X=チェック')
+    expect(tooltip).toContain('フロップ: B33=100（ポット300）')
   })
 })
 

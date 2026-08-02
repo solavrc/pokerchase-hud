@@ -88,12 +88,26 @@ export function formatPostflopLines(lines: PostflopLines | null | undefined): st
 }
 
 /**
- * F/T/Rセルのツールチップ（#354）: 記号だけでは読めない実額を出す。
- * 列を増やさずに「B33が実際に何チップだったのか」へ到達できるようにする
- * （BB損益セルのツールチップと同じ考え方）。
+ * F/T/R列の記号の読み方（#357）。#356まではこの説明が列ヘッダーの`title`に
+ * 付いていたが、ヘッダー行そのものを廃止した（sola「ヘッダー説明文字列
+ * 要らないんじゃないかな。見ればわかるし」）ため、各セルのツールチップが
+ * 短縮記法へ到達する唯一の経路になった。表示は増やさない（MUST）――
+ * 凡例は`title`の中だけに置く。
  */
-export function formatPostflopTooltip(lines: PostflopLines | null | undefined): string | undefined {
-  if (!lines) return undefined
+const POSTFLOP_LEGEND =
+  'フロップ/ターン/リバーの自分のアクション（X=チェック B=ベット C=コール R=レイズ F=フォールド、!=オールイン）。B/Rの数字は直前のポットに対する比率(%)'
+
+/**
+ * F/T/Rセルのツールチップ（#354、#357で凡例を追加）: 記号だけでは読めない
+ * 実額を出す。列を増やさずに「B33が実際に何チップだったのか」へ到達できる
+ * ようにする（BB損益セルのツールチップと同じ考え方）。
+ *
+ * 実額が無い行（チェック/フォールドだけ、ポストフロップ無し）でも**必ず**
+ * 凡例だけは返す（MUST）。ヘッダー廃止後はここが記号の唯一の説明であり、
+ * 「アグレッシブなアクションがある行でしか読み方が分からない」状態にしない。
+ */
+export function formatPostflopTooltip(lines: PostflopLines | null | undefined): string {
+  if (!lines) return POSTFLOP_LEGEND
   const names = ['フロップ', 'ターン', 'リバー'] as const
   const parts = [lines.flop, lines.turn, lines.river].flatMap((street, index) => {
     if (!Array.isArray(street) || street.length === 0) return []
@@ -102,7 +116,7 @@ export function formatPostflopTooltip(lines: PostflopLines | null | undefined): 
       .map(action => `${formatStreetAction(action)}=${action.increment!.toLocaleString()}（ポット${action.potBefore!.toLocaleString()}）`)
     return detail.length > 0 ? [`${names[index]}: ${detail.join(' ')}`] : []
   })
-  return parts.length > 0 ? parts.join('\n') : undefined
+  return parts.length > 0 ? `${POSTFLOP_LEGEND}\n${parts.join('\n')}` : POSTFLOP_LEGEND
 }
 
 /**
@@ -263,20 +277,65 @@ const usableBigBlind = (entry: RecentHandEntry): number | null =>
     ? entry.bigBlind
     : null
 
-/** BB表記のセルに出すチップ実額のツールチップ（#353、列は増やさない）。 */
-const netChipsTooltip = (entry: RecentHandEntry): string | undefined => {
+/**
+ * BB表記のセルに出すチップ実額のツールチップ（#353、列は増やさない）。
+ *
+ * #357でヘッダー行（`損益(BB)`）を廃止したので、**単位を名乗るのはここだけ**に
+ * なった。表示が何のどの単位なのかを文言に含める（MUST）。`bigBlind`が使えず
+ * チップ表記へフォールバックしている行にもツールチップを出す ―― 以前は
+ * `undefined`で、その行だけ単位に到達できなかった。会計が不明（`netChips`が
+ * `null`: 旧データ・再構築待ち・会計不整合）の`-`行も同様に、セルだけから
+ * 列の意味へ到達できるようツールチップを返す（#357レビュー指摘）。
+ */
+const netChipsTooltip = (entry: RecentHandEntry): string => {
+  if (typeof entry.netChips !== 'number' || !Number.isFinite(entry.netChips)) {
+    return '損益（BB、会計不明）'
+  }
+  const chips = `${formatNetChips(entry)}チップ`
   const bigBlind = usableBigBlind(entry)
-  if (bigBlind === null) return undefined
-  if (typeof entry.netChips !== 'number' || !Number.isFinite(entry.netChips)) return undefined
-  return `${formatNetChips(entry)} チップ（BB=${bigBlind.toLocaleString()}）`
+  if (bigBlind === null) return `損益 ${chips}`
+  return `損益 ${formatNetBigBlinds(entry)}BB（${chips}、BB=${bigBlind.toLocaleString()}）`
 }
 
 /**
- * 固定列幅（Pos / カード / ライン / ボード / F/T/R / 損益(BB)）。
- * 240pxのHUD内で、よくある行が1行に収まるよう実測で配分した（#356）。
- * 極端に長いF/T/Rだけがそのセル内で折り返す。
+ * 本文フォントサイズ（#357）。#356で8pxまで落としていたのを9pxへ戻す
+ * （sola「文字サイズ上げられません？」）。列幅の余りを削って捻出しており、
+ * パネルの外形はHUD本体の240pxのまま（下の`COLUMN_WIDTHS`参照）。
  */
-const COLUMN_WIDTHS = ['9%', '11%', '20%', '14%', '30%', '16%'] as const
+const BODY_FONT_SIZE_PX = 9
+
+/**
+ * 固定列幅（Pos / カード / ライン / ボード / F/T/R / 損益）。
+ *
+ * #357で実測し直した。ヘッダー行を廃止した（sola「ヘッダー説明文字列要らない
+ * んじゃないかな」）ことで全列が**値で決まる**ようになったのが効いている ――
+ * #356の配分では Pos・カード・損益 の3列がヘッダーの日本語ラベルのほうが値より
+ * 広く、そこが列幅の下限になっていた。とりわけ`カード`（ヘッダー21.7px に対し
+ * 値は2文字＝9.0px）は12.7pxもの空白を列内に抱えており、sola が指摘した
+ * 「カードとラインの間」の隙間はこれ。
+ *
+ * Chrome 151・9px・`font-family: monospace`での各列の必要幅（最悪ケースの値
+ * ＋左右padding 1pxずつ）:
+ *   Pos 15.5（`BTN`/`UTG`）/ カード 11.0（2ランク、`—`も同幅）/
+ *   ライン 42.5（`3CC22.5-F`）/ ボード 23.0（5枚 `8962A`、字間-0.3px）/
+ *   F/T/R 75.1（`B150 / R80 / B66!`、字間-0.2px）/ 損益 34.8（`+122.5`）
+ *   = 合計 201.9px
+ *
+ * 損益だけは**太字**で測る（MUST）。勝敗のある行は`won`/`lost`が
+ * `fontWeight: bold`を当てるので、同じ`+122.5`でも通常字面の27.0pxではなく
+ * 32.8px を占める。太字を勘定に入れずに組んだ配分は、実際に描画すると
+ * この列だけがはみ出した（実測 34px > 32px の枠）。
+ *
+ * 百分率はこの必要幅の**比率**そのもの。余りは全列へ同じ割合で配られるので、
+ * どの列も必要幅を割らず、かつ余った空白が特定の列（＝特定の列間の隙間）へ
+ * 偏らない。持ち幅はHUD本体240pxから左右padding 12pxを引いた228px、縦
+ * スクロールバーが実幅を取る環境（Windows/Linux。macOSのオーバーレイは0px）
+ * でも213px あり、201.9pxに対して余裕がある。パネルを広げる必要は無い。
+ *
+ * 端数はF/T/R列へ寄せてある（36%）。ここだけが折り返しを許された列なので、
+ * 万一詰まっても2行になるだけで、他列のような「はみ出し」にはならない。
+ */
+const COLUMN_WIDTHS = ['8%', '6%', '21%', '12%', '36%', '17%'] as const
 
 const styles = {
   panel: {
@@ -343,40 +402,16 @@ const styles = {
   table: {
     width: '100%',
     borderCollapse: 'collapse' as const,
-    // 列が7つになったので本文だけ8pxへ（#356）。Chromeで各列の自然幅を実測
-    // すると、9pxでは最悪ケース込みで255px必要（持ち幅228px）に対し、
-    // 8pxなら230pxまで下がり、ほぼ全ての行が1行に収まる。
-    // ツールバーやプレースホルダーは9pxのまま。
-    fontSize: '8px',
+    // 本文サイズは列幅とセットで決まる（#357、BODY_FONT_SIZE_PX参照）。
+    fontSize: `${BODY_FONT_SIZE_PX}px`,
     tableLayout: 'fixed' as const,
-  } as CSSProperties,
-
-  headerCell: {
-    color: '#aaaaaa',
-    fontWeight: 'bold',
-    textAlign: 'right' as const,
-    // 列が7つになったぶん左右paddingを1pxまで詰める（#356）。240px幅で
-    // ボード列を足しても最悪ケースが収まるようにするための余白回収。
-    padding: '1px 1px',
-    borderBottom: '1px solid rgba(255, 255, 255, 0.15)',
-    whiteSpace: 'nowrap' as const,
-    // スクロール時もヘッダーを残す（100件表示だと確実にスクロールするため）。
-    position: 'sticky' as const,
-    top: 0,
-    // ヘッダーの下を行が透けて通らないよう、HUD背景（rgba(0,0,0,0.5)）と
-    // 同系でほぼ不透明の黒を敷く。
-    background: 'rgba(0, 0, 0, 0.92)',
-    zIndex: 1,
-  } as CSSProperties,
-
-  headerCellLeft: {
-    textAlign: 'left' as const,
   } as CSSProperties,
 
   cell: {
     color: '#dddddd',
     textAlign: 'right' as const,
-    // ヘッダーと同じ左右padding（#356で1pxまで圧縮）。
+    // 左右paddingは1pxまで詰める（#356）。隣の列との間隔はこの1px＋隣の1pxの
+    // 計2pxだけで、それ以上の隙間は列幅の余りとしてしか生じない（#357）。
     padding: '1px 1px',
     whiteSpace: 'nowrap' as const,
   } as CSSProperties,
@@ -436,11 +471,6 @@ const styles = {
 
   notWon: {
     color: HUD_MUTED_TEXT_COLOR,
-  } as CSSProperties,
-
-  showdownMarker: {
-    color: '#ffcc00',
-    marginLeft: '2px',
   } as CSSProperties,
 }
 
@@ -634,22 +664,13 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
           <colgroup>
             {COLUMN_WIDTHS.map((width, i) => <col key={i} style={{ width }} />)}
           </colgroup>
-          <thead>
-            <tr>
-              <th style={styles.headerCell}>Pos</th>
-              <th style={{ ...styles.headerCell, ...styles.headerCellLeft }}>カード</th>
-              <th style={{ ...styles.headerCell, ...styles.headerCellLeft }}>ライン</th>
-              <th
-                style={{ ...styles.headerCell, ...styles.headerCellLeft }}
-                title="ボード（コミュニティカード）。フロップ3枚・ターン・リバーの順"
-              >ボード</th>
-              <th
-                style={{ ...styles.headerCell, ...styles.headerCellLeft }}
-                title="フロップ/ターン/リバーの自分のアクション（X=チェック B=ベット C=コール R=レイズ F=フォールド、!=オールイン）。B/Rの数字は直前のポットに対する比率(%)"
-              >F/T/R</th>
-              <th style={styles.headerCell} title="損益（そのハンドのBB単位）">損益(BB)</th>
-            </tr>
-          </thead>
+          {/* ヘッダー行は#357で廃止した（sola「ヘッダー説明文字列要らないんじゃ
+              ないかな。見ればわかるし」）。列の意味は各セルの`title`から辿れる
+              （F/T/Rは`POSTFLOP_LEGEND`、損益は単位を名乗る`netChipsTooltip`、
+              カード／ボードは`R s`表記のツールチップ）。廃止で得られた実利は
+              見た目だけではない: Pos・カード・損益 の3列はヘッダーの日本語
+              ラベルのほうが値より広く、そこが列幅の下限になっていた。
+              スティッキーヘッダーも同時に不要になった（残す対象が無い）。 */}
           <tbody>
             {data.hands.map(entry => (
               <tr key={entry.handId} data-testid="recent-hands-row">
@@ -694,13 +715,17 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
                 >
                   {formatPostflopLines(entry.postflopLines) ?? <span style={styles.notWon}>—</span>}
                 </td>
+                {/* ショーダウン到達を示す黄色い`●`は#357で外した（sola指定）。
+                    ショーダウンまで行ったかはカード欄とF/T/R欄から読めるので
+                    情報の損失は無く、8px時点ではこのマーカーが列からはみ出して
+                    いた唯一のセルでもあった（`+122.5●`が37pxの枠に対し40px）。
+                    `wentToShowdown`自体は「参加のみ」フィルターが使うので残す。 */}
                 <td style={styles.cell} title={netChipsTooltip(entry)}>
                   <span style={entry.netChips === null || entry.netChips === 0
                     ? styles.notWon
                     : entry.netChips > 0
                       ? styles.won
                       : styles.lost}>{formatNetBigBlinds(entry)}</span>
-                  {entry.wentToShowdown && <span style={styles.showdownMarker} title="ショーダウン">●</span>}
                 </td>
               </tr>
             ))}
