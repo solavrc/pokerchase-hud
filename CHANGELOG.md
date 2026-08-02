@@ -1,5 +1,33 @@
 # Changelog
 
+## [5.6.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v5.5.0...pokerchase-hud-v5.6.0) (2026-08-02)
+
+
+### Features
+
+* **hud:** プリフロップのラインにレイズ額をインライン表示する ([#355](https://github.com/solavrc/pokerchase-hud/issues/355)) ([a7a319a](https://github.com/solavrc/pokerchase-hud/commit/a7a319ad2165c75a4f48cc3c520912cc2cd640fc))
+* **hud:** プリフロップ表記の短縮化・CCの対象別分割・ボード列追加 ([#356](https://github.com/solavrc/pokerchase-hud/issues/356)) ([7c09ca5](https://github.com/solavrc/pokerchase-hud/commit/7c09ca5848fbf3a2022f2096d4e2789f697adb75))
+* **hud:** 直近ハンドの「参加のみ」フィルターと表示見直し（自分のカード・BB損益・4色） ([#353](https://github.com/solavrc/pokerchase-hud/issues/353)) ([6bae209](https://github.com/solavrc/pokerchase-hud/commit/6bae2097d147f5dabd80204b6c2213f33fedaabd))
+* **hud:** 直近ハンドのアクションにポット比のサイズを表示する ([#354](https://github.com/solavrc/pokerchase-hud/issues/354)) ([400c9fc](https://github.com/solavrc/pokerchase-hud/commit/400c9fc1444bc5719bbc8e338e250c33b4344675))
+* **hud:** 直近ハンドのヘッダー行を廃止し本文9px・列間を詰める ([#357](https://github.com/solavrc/pokerchase-hud/issues/357)) ([dbfc51d](https://github.com/solavrc/pokerchase-hud/commit/dbfc51de9bfe51d556a86f42d654b040442d4319))
+* **hud:** 直近ハンドパネルの件数切替・観戦ハンド除外・ストリート別アクション ([#352](https://github.com/solavrc/pokerchase-hud/issues/352)) ([43c837d](https://github.com/solavrc/pokerchase-hud/commit/43c837de41fa698f36af8cc2dcaf51e44445e431))
+* **replay:** セッション終了後にリプレイ詳細を取り込む（既定OFF） ([#347](https://github.com/solavrc/pokerchase-hud/issues/347)) ([961537d](https://github.com/solavrc/pokerchase-hud/commit/961537d3f3fd35b289058bc5cc203e4947cafa21))
+* **replay:** リプレイ傍受を無効時に注入しないよう別スクリプトへ切り出す ([#343](https://github.com/solavrc/pokerchase-hud/issues/343)) ([e50132b](https://github.com/solavrc/pokerchase-hud/commit/e50132b26ff3c4e9cdb35c7dd5e056a14d1f94ef))
+* **replay:** リプレイ詳細の取得層を追加する（既定OFF、保存なし） ([#342](https://github.com/solavrc/pokerchase-hud/issues/342)) ([c03e0db](https://github.com/solavrc/pokerchase-hud/commit/c03e0db67bf39cec1723ef37a3de303369234bb9))
+
+
+### Bug Fixes
+
+* **observability:** 空振りテストを直し手動リリースの識別子を明示する ([#332](https://github.com/solavrc/pokerchase-hud/issues/332)) ([ad5e48a](https://github.com/solavrc/pokerchase-hud/commit/ad5e48ac9bdfc3a02449a62432ee629db64b3fd0))
+* **replay:** [#347](https://github.com/solavrc/pokerchase-hud/issues/347) のマージで巻き戻した防御を戻し、保存境界の検証を足す ([#349](https://github.com/solavrc/pokerchase-hud/issues/349)) ([175d305](https://github.com/solavrc/pokerchase-hud/commit/175d305d186ffa64c549afeca53185244a89bd8e))
+* **replay:** 中断時に meta へ書かず、長時間操作の終了で取得を再開する ([#350](https://github.com/solavrc/pokerchase-hud/issues/350)) ([59c09c8](https://github.com/solavrc/pokerchase-hud/commit/59c09c839416333d4b00b6579c85fcb13f827140))
+* **replay:** 取得の判定をタブ単位にし、依頼先をアカウントへ紐付ける ([#351](https://github.com/solavrc/pokerchase-hud/issues/351)) ([327d96d](https://github.com/solavrc/pokerchase-hud/commit/327d96d680efc7e16615605acdaddc2d2cf9eb1b))
+* **stats:** ストリート帰属とリング戦のハンド中リバイインを導出で正す ([#340](https://github.com/solavrc/pokerchase-hud/issues/340), [#339](https://github.com/solavrc/pokerchase-hud/issues/339)) ([#346](https://github.com/solavrc/pokerchase-hud/issues/346)) ([a83d0e8](https://github.com/solavrc/pokerchase-hud/commit/a83d0e89e4cd41296cb9af4d95b76e106f229b8f))
+* **test:** spectator-filter-refreshテストのpersistStateタイマーリークflakeを直す ([#336](https://github.com/solavrc/pokerchase-hud/issues/336)) ([9f2fe4e](https://github.com/solavrc/pokerchase-hud/commit/9f2fe4ef5da97bdbac0c8c2c4b2505bdc85895aa))
+* **ui:** インポートページの重複生成と転送失敗時の状態残りを直す ([#330](https://github.com/solavrc/pokerchase-hud/issues/330)) ([b3c6909](https://github.com/solavrc/pokerchase-hud/commit/b3c6909c508dcc593b265df7b529364350f67ab9))
+* **ui:** テーブル人数スライダーが層の名称を読み上げるようにする ([#335](https://github.com/solavrc/pokerchase-hud/issues/335)) ([75baa0e](https://github.com/solavrc/pokerchase-hud/commit/75baa0e6622afedb475353303da534899942c915))
+* **ui:** 配置リセットの部分適用・採番順・モック不整合を直す ([#334](https://github.com/solavrc/pokerchase-hud/issues/334)) ([90f3f89](https://github.com/solavrc/pokerchase-hud/commit/90f3f89de50307a771e0085bb26c7c6c9e5632ec))
+
 ## [5.5.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v5.4.0...pokerchase-hud-v5.5.0) (2026-07-31)
 
 
