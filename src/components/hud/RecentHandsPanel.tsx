@@ -283,10 +283,14 @@ const usableBigBlind = (entry: RecentHandEntry): number | null =>
  * #357でヘッダー行（`損益(BB)`）を廃止したので、**単位を名乗るのはここだけ**に
  * なった。表示が何のどの単位なのかを文言に含める（MUST）。`bigBlind`が使えず
  * チップ表記へフォールバックしている行にもツールチップを出す ―― 以前は
- * `undefined`で、その行だけ単位に到達できなかった。
+ * `undefined`で、その行だけ単位に到達できなかった。会計が不明（`netChips`が
+ * `null`: 旧データ・再構築待ち・会計不整合）の`-`行も同様に、セルだけから
+ * 列の意味へ到達できるようツールチップを返す（#357レビュー指摘）。
  */
-const netChipsTooltip = (entry: RecentHandEntry): string | undefined => {
-  if (typeof entry.netChips !== 'number' || !Number.isFinite(entry.netChips)) return undefined
+const netChipsTooltip = (entry: RecentHandEntry): string => {
+  if (typeof entry.netChips !== 'number' || !Number.isFinite(entry.netChips)) {
+    return '損益（BB、会計不明）'
+  }
   const chips = `${formatNetChips(entry)}チップ`
   const bigBlind = usableBigBlind(entry)
   if (bigBlind === null) return `損益 ${chips}`

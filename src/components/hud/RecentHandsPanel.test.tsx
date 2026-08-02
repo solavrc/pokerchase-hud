@@ -536,6 +536,21 @@ describe('RecentHandsPanel', () => {
     expect(row.querySelector('td:last-child')).toHaveAttribute('title', '損益 +1,240チップ')
   })
 
+  // #357レビュー指摘（P2）: 会計不明（netChips=null）の`-`行も、ヘッダー廃止後に
+  // セルだけから「損益列・BB単位」へ到達できるようツールチップを持つ。
+  it('会計不明の行にも損益列の意味を示すツールチップを出す', async () => {
+    mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
+      const hand = { ...buildResult().hands[0]!, netChips: null }
+      callback({ success: true, recentHands: { computedAt: NOW, hands: [hand] } })
+    })
+
+    render(<RecentHandsPanel playerId={123} />)
+
+    const row = await screen.findByTestId('recent-hands-row')
+    expect(row.querySelector('td:last-child')).toHaveTextContent('-')
+    expect(row.querySelector('td:last-child')).toHaveAttribute('title', '損益（BB、会計不明）')
+  })
+
   // #353: ヒーロー自身の配札カードは source='dealt' で届く
   it("ショーダウン以外でも自分の配札カード（source='dealt'）を表示する", async () => {
     mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
