@@ -16,8 +16,23 @@ import {
 } from '../../utils/recent-hands-config'
 import type { RecentHandsPanelConfig } from '../../utils/recent-hands-config'
 
+/**
+ * パネルがHUD本体（240px）と揃える辺（#357）。`'left'`ならHUDの左端に揃えて
+ * **右へ**はみ出し、`'right'`なら右端に揃えて**左へ**はみ出す。
+ *
+ * 画面外へ出さないための唯一の判断材料がこれ: どちらの辺を揃えても、パネルの
+ * 外側の端はHUD本体の端と一致するので、HUD自身が画面内にある限りパネルも
+ * 画面内に収まる（両側へ均等に広げるとこの保証が失われる）。
+ */
+export type RecentHandsPanelAnchor = 'left' | 'right'
+
 interface RecentHandsPanelProps {
   playerId: number
+  /**
+   * HUD本体と揃える辺（#357、既定は`'left'`＝右へ広げる）。
+   * `Hud.tsx`がHUDの現在位置から`resolveRecentHandsPanelAnchor`で決める。
+   */
+  anchor?: RecentHandsPanelAnchor
   /**
    * 生きたハンドが1件完了するたびに増える「hand epoch」（App.tsx/Hud.tsx参照、
    * 監査指摘11 P2「開いたドリルダウンパネルが無期限に古くなる」対応）。
@@ -272,16 +287,111 @@ const netChipsTooltip = (entry: RecentHandEntry): string | undefined => {
 }
 
 /**
- * 固定列幅（Pos / カード / ライン / ボード / F/T/R / 損益(BB)）。
- * 240pxのHUD内で、よくある行が1行に収まるよう実測で配分した（#356）。
- * 極端に長いF/T/Rだけがそのセル内で折り返す。
+ * 本文フォントサイズ（#357）。#356では240pxのHUD幅に収めるために8pxまで
+ * 落としていたが、HUD本体の他の文字（プレイヤー名・container既定）は10pxで、
+ * このパネルだけが極端に小さいという状態だった。ドリルダウンは明示的に開く
+ * オーバーレイでHUD本体の幅に従う理由が無いので、本文を10pxまで引き上げ、
+ * 必要な幅はパネル側を広げて確保する（`RECENT_HANDS_PANEL_WIDTH_PX`）。
  */
-const COLUMN_WIDTHS = ['9%', '11%', '20%', '14%', '30%', '16%'] as const
+const BODY_FONT_SIZE_PX = 10
+
+/**
+ * パネルの外形幅（border-box、#357）。HUD本体（240px + 左右border）より広い。
+ *
+ * 実測（Chrome 151、`font-family: monospace`）で各列が必要とする幅は、本文
+ * 10pxで合計245.8px ―― 内訳は Pos 19.0 / カード 26.1 / ライン 47.0 /
+ * ボード 26.5 / F/T/R 83.6 / 損益(BB) 43.6（いずれも左右padding 1pxずつ込み、
+ * ヘッダーラベルと最悪ケースの値の大きい方）。Pos・カード・損益はヘッダーの
+ * 日本語ラベルのほうが値より広く、そこが下限になる。
+ *
+ * ここから外形幅を逆算する: 左右border 2px + 左右padding 12px + **縦スクロール
+ * バー最大15px**（`scroller`は必ずスクロールする）を足して 245.8 + 29 ≒ 275px。
+ * macOSのオーバーレイ・スクロールバーは0pxだが、Windows/Linuxのクラシック
+ * スクロールバーは実幅を取るので、**広いほう**で見積もる（MUST）―― さもないと
+ * 開発機（macOS）では収まって利用者の環境だけ折り返す。余裕を持たせて292px。
+ */
+export const RECENT_HANDS_PANEL_WIDTH_PX = 292
+
+/**
+ * HUDの現在位置から、パネルを広げる向きを決める（#357）。
+ *
+ * `left`はHUDの**中心**のビューポート幅に対する割合（`Hud.tsx`の
+ * `SEAT_POSITIONS`／`useDraggable`が持つ形。ドラッグ時は0〜90%にクランプ
+ * される）。画面の左半分にあるHUDは右へ、右半分にあるHUDは左へ広げる。
+ *
+ * 解釈できない値（未設定・非数値）は`'left'`へ倒す ―― 向きが決まらないことを
+ * 理由にパネルを出さない、という挙動にはしない。
+ *
+ * Exported for direct unit testing.
+ */
+export const resolveRecentHandsPanelAnchor = (left: unknown): RecentHandsPanelAnchor => {
+  const percent = typeof left === 'number' ? left : typeof left === 'string' ? Number.parseFloat(left) : Number.NaN
+  return Number.isFinite(percent) && percent > 50 ? 'right' : 'left'
+}
+
+/**
+ * 固定列幅（Pos / カード / ライン / ボード / F/T/R / 損益(BB)）。
+ *
+ * 上の実測値（10pxで合計245.8px）の**比率**をそのまま百分率にしてある ――
+ * こうしておくと、スクロールバーの有無でテーブルの実幅が278px⇄263pxと動いても
+ * 全列が同じ割合で伸縮し、どの列も必要幅を割らない。余りは最も長くなりやすい
+ * F/T/R列へ回る。
+ * 極端に長いF/T/R・ボードだけがそのセル内で折り返す（#356から不変）。
+ */
+const COLUMN_WIDTHS = ['8%', '11%', '19%', '11%', '33%', '18%'] as const
 
 const styles = {
+  /**
+   * HUD本体（240px）より広いので、はみ出す側の背景・枠・角丸を**パネル自身が
+   * 持つ**（MUST）。親の背景はHUD本体の240pxぶんしか描かれないため、これが
+   * 無いとはみ出した部分だけ背景が抜けてゲーム画面の上に文字が乗る。
+   * 親の`backgroundColor`（rgba(0,0,0,0.5)）に対してほぼ不透明の黒を重ねる
+   * ので、重なる部分と はみ出した部分の見た目の差は無視できる。
+   */
   panel: {
+    boxSizing: 'border-box' as const,
+    width: `${RECENT_HANDS_PANEL_WIDTH_PX}px`,
+    // フレックスアイテムの既定`flex-shrink: 1`のままだと、コンテナ（HUD本体の
+    // 240px）に合わせて縮められ、指定した幅が効かない（実測で241pxまで縮んだ）。
+    flexShrink: 0,
+    background: 'rgba(0, 0, 0, 0.92)',
+    backdropFilter: 'blur(2px)',
     borderTop: '1px solid rgba(255, 255, 255, 0.15)',
+    borderLeft: '1px solid rgba(255, 255, 255, 0.15)',
+    borderRight: '1px solid rgba(255, 255, 255, 0.15)',
+    borderBottom: '1px solid rgba(255, 255, 255, 0.15)',
+    borderRadius: '0 0 6px 6px',
     padding: '4px 6px 6px',
+  } as CSSProperties,
+
+  /**
+   * 広げる向きを作るラッパー（#357）。HUD本体の幅を**この場で知る必要が無い**
+   * 書き方にしてある ―― フレックスコンテナの主軸方向の空きが負（＝子のほうが
+   * 広い）の場合、`flex-start`なら終端側へ、`flex-end`なら始端側へはみ出す、と
+   * 仕様で決まっているため。
+   *
+   * 負のmarginで同じことをやろうとしてはならない（MUST NOT）: 実測したところ、
+   * 片側`auto`＋反対側`-1px`は over-constrained と判定されて`auto`が0に
+   * 潰され、右揃えにならずに右へはみ出した（Chrome 151、CSS 2.1 §10.3.3の
+   * 「auto は0として扱う」条項）。はみ出し量をHUD幅から逆算した定数で持つ手も
+   * あるが、それはHUD本体の幅をこのファイルへ二重に持ち込むことになる。
+   */
+  panelAnchorWrapper: {
+    display: 'flex',
+    justifyContent: 'flex-start',
+  } as CSSProperties,
+
+  panelAnchorWrapperRight: {
+    justifyContent: 'flex-end',
+  } as CSSProperties,
+
+  /** HUD本体のborder 1pxぶん外へ出して、外形の端どうしを揃える。 */
+  panelAnchorLeft: {
+    marginLeft: '-1px',
+  } as CSSProperties,
+
+  panelAnchorRight: {
+    marginRight: '-1px',
   } as CSSProperties,
 
   placeholder: {
@@ -343,11 +453,8 @@ const styles = {
   table: {
     width: '100%',
     borderCollapse: 'collapse' as const,
-    // 列が7つになったので本文だけ8pxへ（#356）。Chromeで各列の自然幅を実測
-    // すると、9pxでは最悪ケース込みで255px必要（持ち幅228px）に対し、
-    // 8pxなら230pxまで下がり、ほぼ全ての行が1行に収まる。
-    // ツールバーやプレースホルダーは9pxのまま。
-    fontSize: '8px',
+    // 本文サイズはパネル幅とセットで決まる（#357、BODY_FONT_SIZE_PX参照）。
+    fontSize: `${BODY_FONT_SIZE_PX}px`,
     tableLayout: 'fixed' as const,
   } as CSSProperties,
 
@@ -437,11 +544,6 @@ const styles = {
   notWon: {
     color: HUD_MUTED_TEXT_COLOR,
   } as CSSProperties,
-
-  showdownMarker: {
-    color: '#ffcc00',
-    marginLeft: '2px',
-  } as CSSProperties,
 }
 
 /**
@@ -459,7 +561,7 @@ const styles = {
  * が、backgroundは常に最大件数で組み立ててキャッシュしているので、DB読み取り
  * は増えない（recent-hands-service.tsの`buildRecentHandsCacheKey`参照）。
  */
-export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelProps) => {
+export const RecentHandsPanel = memo(({ playerId, handEpoch, anchor = 'left' }: RecentHandsPanelProps) => {
   const [status, setStatus] = useState<FetchStatus>('loading')
   const [data, setData] = useState<RecentHandsResult | undefined>(undefined)
   // `null` = 保存済み設定をまだ読めていない。この間はフェッチしない
@@ -467,6 +569,16 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
   // 表示のちらつきを避ける）。
   const [config, setConfig] = useState<RecentHandsPanelConfig | null>(null)
   const activeConfig = config ?? DEFAULT_RECENT_HANDS_PANEL_CONFIG
+  // ローディング／エラー／0件の各状態も同じ外形で出す（幅と向きが状態ごとに
+  // 変わると、データが届いた瞬間にパネルが横へ飛ぶ）。
+  const panelStyle: CSSProperties = {
+    ...styles.panel,
+    ...(anchor === 'right' ? styles.panelAnchorRight : styles.panelAnchorLeft),
+  }
+  const wrapperStyle: CSSProperties = {
+    ...styles.panelAnchorWrapper,
+    ...(anchor === 'right' ? styles.panelAnchorWrapperRight : {}),
+  }
   const panelProps = {
     id: `recent-hands-panel-${playerId}`,
     role: 'region',
@@ -474,6 +586,17 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
     'data-testid': 'recent-hands-panel',
     'data-player-id': playerId,
   } as const
+
+  /**
+   * パネル本体を、広げる向きを決めるフレックスラッパーで包む。ローディング・
+   * エラー・0件・通常の4状態すべてで同じ外形にするため、ここで1箇所に
+   * まとめてある。
+   */
+  const shell = (children: React.ReactNode) => (
+    <div style={wrapperStyle}>
+      <div style={panelStyle} {...panelProps}>{children}</div>
+    </div>
+  )
 
   // 保存済みの設定を読み、以後は他パネル／他タブでの変更にも追従する。
   useEffect(() => {
@@ -596,38 +719,38 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
   )
 
   if (status === 'loading') {
-    return (
-      <div style={styles.panel} {...panelProps}>
+    return shell(
+      <>
         {controls}
         <div style={styles.placeholder}>Loading hands…</div>
-      </div>
+      </>
     )
   }
 
   if (status === 'error' || !data) {
-    return (
-      <div style={styles.panel} {...panelProps}>
+    return shell(
+      <>
         {controls}
         <div style={styles.placeholder}>—</div>
-      </div>
+      </>
     )
   }
 
   if (data.hands.length === 0) {
-    return (
-      <div style={styles.panel} {...panelProps}>
+    return shell(
+      <>
         {controls}
         {/* 0件の理由を「参加のみ」で消えたのか元々無いのかで書き分ける
             ―― 前者はトグルを戻せば見えると分かる必要がある（#353）。 */}
         <div style={styles.placeholder}>
           {activeConfig.participationOnly ? '参加したハンドなし' : 'No hands yet'}
         </div>
-      </div>
+      </>
     )
   }
 
-  return (
-    <div style={styles.panel} {...panelProps}>
+  return shell(
+    <>
       {controls}
       <div style={styles.scroller}>
         <table style={styles.table}>
@@ -694,20 +817,23 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
                 >
                   {formatPostflopLines(entry.postflopLines) ?? <span style={styles.notWon}>—</span>}
                 </td>
+                {/* ショーダウン到達を示す黄色い`●`は#357で外した（sola指定）。
+                    行が「ショーダウンまで行ったか」はカード欄とF/T/R欄から読めるので
+                    情報の損失は無く、損益列の実効幅がマーカーぶん戻る。
+                    `wentToShowdown`自体は「参加のみ」フィルター等が使うので残す。 */}
                 <td style={styles.cell} title={netChipsTooltip(entry)}>
                   <span style={entry.netChips === null || entry.netChips === 0
                     ? styles.notWon
                     : entry.netChips > 0
                       ? styles.won
                       : styles.lost}>{formatNetBigBlinds(entry)}</span>
-                  {entry.wentToShowdown && <span style={styles.showdownMarker} title="ショーダウン">●</span>}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-    </div>
+    </>
   )
 })
 

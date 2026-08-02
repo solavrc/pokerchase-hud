@@ -526,6 +526,80 @@ describe('Hud', () => {
       )
     })
 
+    it('直近ハンドパネルを開いている間だけHUD本体のoverflowを解除する（#357）', async () => {
+      // パネルはHUD本体（240px）より広い（RECENT_HANDS_PANEL_WIDTH_PX）。
+      // 親の`overflow: hidden`のままだと、はみ出したぶんが切り落とされて
+      // 見えなくなる。閉じている間は従来どおり`hidden`へ戻ること。
+      (chrome.runtime.sendMessage as jest.Mock).mockImplementation(
+        (_message: unknown, callback: (response: unknown) => void) => {
+          callback({ success: true, recentHands: { computedAt: Date.now(), hands: [] } })
+        }
+      )
+
+      const { rerender } = render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onToggleRecentHandsPanel={jest.fn()}
+          isRecentHandsPanelOpen={false}
+        />
+      )
+
+      expect(screen.getByTestId('hud-panel')).toHaveStyle({ overflow: 'hidden' })
+
+      rerender(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onToggleRecentHandsPanel={jest.fn()}
+          isRecentHandsPanelOpen={true}
+        />
+      )
+
+      expect(screen.getByTestId('hud-panel')).toHaveStyle({ overflow: 'visible' })
+    })
+
+    it('画面の左右どちら側のHUDかでパネルを広げる向きを変える（#357）', async () => {
+      (chrome.runtime.sendMessage as jest.Mock).mockImplementation(
+        (_message: unknown, callback: (response: unknown) => void) => {
+          callback({ success: true, recentHands: { computedAt: Date.now(), hands: [] } })
+        }
+      )
+
+      // seat 1 は left:10%（画面左側）-> HUDの左端に揃えて右へ広げる
+      const { unmount } = render(
+        <Hud
+          actualSeatIndex={1}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onToggleRecentHandsPanel={jest.fn()}
+          isRecentHandsPanelOpen={true}
+        />
+      )
+      const leftWrapper = (await screen.findByTestId('recent-hands-panel')).parentElement
+      expect(leftWrapper).toHaveStyle({ justifyContent: 'flex-start' })
+      unmount()
+
+      // seat 4 は left:90%（画面右側）-> HUDの右端に揃えて左へ広げる
+      render(
+        <Hud
+          actualSeatIndex={4}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onToggleRecentHandsPanel={jest.fn()}
+          isRecentHandsPanelOpen={true}
+        />
+      )
+      const rightWrapper = (await screen.findByTestId('recent-hands-panel')).parentElement
+      expect(rightWrapper).toHaveStyle({ justifyContent: 'flex-end' })
+    })
+
     it('データがない("No Data")プレイヤーにもトリガーとパネルを表示できる', async () => {
       (chrome.runtime.sendMessage as jest.Mock).mockImplementation(
         (_message: unknown, callback: (response: unknown) => void) => {

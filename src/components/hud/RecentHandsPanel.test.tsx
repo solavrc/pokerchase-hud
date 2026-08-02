@@ -11,6 +11,7 @@ import {
   formatPostflopLines,
   formatPostflopTooltip,
   formatStreetAction,
+  resolveRecentHandsPanelAnchor,
 } from './RecentHandsPanel'
 import { Position } from '../../types/game'
 import { SUIT_COLORS } from '../../utils/card-utils'
@@ -146,7 +147,9 @@ describe('RecentHandsPanel', () => {
     const rows = await screen.findAllByTestId('recent-hands-row')
     // bigBlind=200: +1240 -> +6.2 / -640 -> -3.2 / 0 -> 0.0
     expect(rows[0]).toHaveTextContent('+6.2')
-    expect(rows[0]).toHaveTextContent('●')
+    // #357: ショーダウン到達を示す黄色い`●`は表示しない（sola指定）。
+    // `wentToShowdown`はデータとしては残るが、この列には出さない。
+    expect(rows[0]).not.toHaveTextContent('●')
     expect(rows[1]).not.toHaveTextContent('●')
     expect(rows[1]).toHaveTextContent('-3.2')
     expect(rows[1]!.querySelector('td:last-child span')).toHaveStyle({ color: '#ff6b6b' })
@@ -815,5 +818,37 @@ describe('formatBigBlinds', () => {
     expect(formatBigBlinds(9)).toBe('9')
     expect(formatBigBlinds(8.75)).toBe('8.8')
     expect(formatBigBlinds(22.04)).toBe('22')
+  })
+})
+
+describe('resolveRecentHandsPanelAnchor', () => {
+  // パネルはHUD本体より広いので、外側の端をHUDの端に揃える向きを選ぶ（#357）。
+  // 画面左側のHUDは右へ、右側のHUDは左へ広げれば、HUDが画面内にある限り
+  // パネルも画面外へ出ない。
+  it('画面左側（left <= 50%）のHUDは右へ広げる', () => {
+    expect(resolveRecentHandsPanelAnchor('10%')).toBe('left')
+    expect(resolveRecentHandsPanelAnchor('0%')).toBe('left')
+    // 境界（ちょうど中央）は右へ広げる側に倒す。
+    expect(resolveRecentHandsPanelAnchor('50%')).toBe('left')
+  })
+
+  it('画面右側（left > 50%）のHUDは左へ広げる', () => {
+    expect(resolveRecentHandsPanelAnchor('65%')).toBe('right')
+    // useDraggableのクランプ上限。
+    expect(resolveRecentHandsPanelAnchor('90%')).toBe('right')
+  })
+
+  it('数値でも同じ判定をする', () => {
+    expect(resolveRecentHandsPanelAnchor(10)).toBe('left')
+    expect(resolveRecentHandsPanelAnchor(90)).toBe('right')
+  })
+
+  it('解釈できない値は右へ広げる側（既定）へ倒す', () => {
+    // 向きが決まらないことを理由にパネルを出さない、という挙動にはしない。
+    expect(resolveRecentHandsPanelAnchor(undefined)).toBe('left')
+    expect(resolveRecentHandsPanelAnchor(null)).toBe('left')
+    expect(resolveRecentHandsPanelAnchor('auto')).toBe('left')
+    expect(resolveRecentHandsPanelAnchor(Number.NaN)).toBe('left')
+    expect(resolveRecentHandsPanelAnchor({})).toBe('left')
   })
 })
