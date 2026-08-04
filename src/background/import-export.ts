@@ -380,6 +380,12 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         const playerIds = latestDealEvent.SeatUserIds.filter(id => id !== -1)
         if (playerIds.length > 0) {
           console.log('[importData] Triggering stats recalculation for imported data')
+          // ReadEntityStreamはbatchMode中のwriteを同期的に捨てる。解除後に明示更新を
+          // 発行し、stream実行のmicrotask順序へ依存してはならない（MUST NOT）。
+          if (batchModeEnabled) {
+            service.setBatchMode(false)
+            batchModeEnabled = false
+          }
           writeConnectedStatsUpdate(service, playerIds)
 
           // 現在開いているゲームタブに対しても統計更新を通知

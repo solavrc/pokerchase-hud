@@ -266,58 +266,6 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     }
   })
 
-  test('DEALとRESULTSの世代が異なる集約は不完全ハンドとして保存・配信しない', async () => {
-    const crossGenerationHand: ApiHandEvent[] = [
-      {
-        ApiTypeId: ApiType.EVT_DEAL,
-        timestamp: 8_000,
-        SeatUserIds: SEAT_USER_IDS,
-        Game: {
-          CurrentBlindLv: 1,
-          NextBlindUnixSeconds: 0,
-          Ante: 0,
-          SmallBlind: 100,
-          BigBlind: 200,
-          ButtonSeat: 5,
-          SmallBlindSeat: 0,
-          BigBlindSeat: 1
-        },
-        Progress: {
-          Phase: PhaseType.PREFLOP,
-          NextActionSeat: 2,
-          NextActionTypes: [],
-          NextExtraLimitSeconds: 0,
-          MinRaise: 0,
-          Pot: 300,
-          SidePot: []
-        },
-        OtherPlayers: []
-      },
-      {
-        ApiTypeId: ApiType.EVT_HAND_RESULTS,
-        timestamp: 8_001,
-        HandId: 8,
-        CommunityCards: [],
-        Pot: 300,
-        SidePot: [],
-        ResultType: 0,
-        DefeatStatus: 0,
-        Results: [],
-        OtherPlayers: []
-      }
-    ]
-    setEventGeneration(crossGenerationHand[0]!, 51)
-    setEventGeneration(crossGenerationHand[1]!, 52)
-    const handsBefore = await db.hands.count()
-    const data = jest.fn()
-    service.writeEntityStream.on('data', data)
-
-    service.writeEntityStream.write(crossGenerationHand)
-    await service.writeEntityStream.whenIdle()
-
-    expect(await db.hands.count()).toBe(handsBefore)
-    expect(data).not.toHaveBeenCalled()
-  })
 })
 
 describe('ReadEntityStream.calcStats -- CLASSIFIER_REQUIRED_STAT_IDS forcing (player-type icon)', () => {

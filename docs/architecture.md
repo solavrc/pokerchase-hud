@@ -17,6 +17,10 @@ statsとrealtime更新はACTIVE portだけへ送り、接続中の他port（reli
 `RuntimePortManager`による同一content scriptの一時切断は`tabId`と`documentId`が一致し、
 500ms再接続を包含する2秒窓内に再接続した場合だけ同一世代と判定する。この場合は
 transportの差し替えなので、進行中ハンド、DEAL、activity、accountを引き継ぐ。
+ただしService Worker起動後にtoken世代がまだ一度も確定していない場合、background起点の
+フィルター変更・再構築・インポート・auto-sync復元による集計更新は接続中のgame port
+すべてへfallbackする。これはライブ配信ではなく、token不在を理由にユーザー操作や復元結果を
+無音で捨てないための初期化時例外である。再接続候補の世代が残る切断猶予中は対象外となる。
 
 集計statsへ添える席回転用DEALは、ACTIVE世代でDEALを観測済みの場合だけ
 `liveEvtDeal`から読む。この値はbatch再計算時にも同じstats文脈へ再アンカーされるが、
@@ -25,8 +29,9 @@ Zod検証より前に現在ハンドstream/cacheを消すため、破損payload�
 SPR・ポットオッズが後のfilter再計算で復活しない。集計lineup自体は保持する。
 
 replayのsession判定とaccount attributionにもACTIVE portの状態だけを使い、relicの状態は
-参照しない。10秒未満で別portからeventが届いた場合はaxiom違反の検出として
-`console.warn`を記録するが、複数sessionを扱う分岐は追加しない。
+参照しない。10秒未満で別tabからeventが届いた場合はaxiom違反の検出として
+`console.warn`を記録する。同一tabのF5 reload候補は警告対象外とし、複数sessionを扱う分岐は
+追加しない。
 
 ## 0. Raw Event Lake: `apiEvents` は生ログ、バリデーションは保存を左右しない
 

@@ -49,10 +49,6 @@ let nextGeneration = 0
 let generationByPort = new WeakMap<chrome.runtime.Port, number>()
 let connectedPortByIdentity = new Map<string, chrome.runtime.Port>()
 
-// relicの状態は判定に使ってはならない（MUST NOT）。旧portが後からtokenを
-// 取り戻した瞬間に、そのportで既に観測済みのaccountだけを復元する最小キャッシュ。
-let playerIdByPort = new WeakMap<chrome.runtime.Port, number>()
-
 const readPortIdentity = (port: chrome.runtime.Port): PortIdentity | undefined => {
   const tabId = port.sender?.tab?.id
   if (tabId === undefined) return undefined
@@ -102,9 +98,6 @@ export const registerActivePortConnection = (
     return false
   }
   const candidate = reconnectCandidate
-  if (candidate.playerId !== undefined) {
-    playerIdByPort.set(port, candidate.playerId)
-  }
   generationByPort.set(port, candidate.generation)
   activeToken = {
     port,
@@ -143,7 +136,10 @@ export const claimActivePort = (
 
   const previousLastGameEventAt = activeToken?.lastGameEventAt
     ?? reconnectCandidate?.lastGameEventAt
-  if (previousLastGameEventAt !== undefined) {
+  const incomingIdentity = readPortIdentity(port)
+  const isSameTabReloadCandidate = reconnectCandidate !== undefined
+    && incomingIdentity?.tabId === reconnectCandidate.identity.tabId
+  if (previousLastGameEventAt !== undefined && !isSameTabReloadCandidate) {
     const gapMs = deliveredAt - previousLastGameEventAt
     if (gapMs >= 0 && gapMs < ACTIVE_PORT_VIOLATION_WINDOW_MS) {
       // payload・tab ID・account IDは出さない。これはaxiom違反の検出だけで、
@@ -160,12 +156,10 @@ export const claimActivePort = (
     port: activePort,
     generation: ++nextGeneration,
     activity: 'unknown',
-    playerId: playerIdByPort.get(port) ?? playerIdByPort.get(activePort),
     lastGameEventAt: deliveredAt
   }
   generationByPort.set(port, activeToken.generation)
   generationByPort.set(activePort, activeToken.generation)
-  if (activeToken.playerId !== undefined) playerIdByPort.set(activePort, activeToken.playerId)
   return 'handover'
 }
 
@@ -213,7 +207,6 @@ export const markActivePortPlayerId = (
   const state = findGenerationState(generation)
   if (!state) return
   state.playerId = playerId
-  if ('port' in state) playerIdByPort.set(state.port, playerId)
 }
 
 export const readActivePortPlayerId = (): number | undefined =>
@@ -250,17 +243,14 @@ export const releaseActivePort = (
     connectedPortByIdentity.delete(portIdentityKey(identity))
   }
   if (activeToken?.port !== port) {
-    playerIdByPort.delete(port)
     return 'relic'
   }
-  const playerId = playerIdByPort.get(port) ?? activeToken.playerId
-  playerIdByPort.delete(port)
   if (identity) {
     reconnectCandidate = {
       identity,
       generation: activeToken.generation,
       activity: activeToken.activity,
-      playerId,
+      playerId: activeToken.playerId,
       lastGameEventAt: activeToken.lastGameEventAt,
       disconnectedAt
     }
@@ -271,12 +261,11 @@ export const releaseActivePort = (
   return identity ? 'reconnect-pending' : 'released'
 }
 
-/** テスト用。ACTIVE tokenとaccountキャッシュを捨てる。 */
+/** テスト用。ACTIVE token状態を捨てる。 */
 export const __resetActivePortStateForTests = (): void => {
   activeToken = undefined
   reconnectCandidate = undefined
   nextGeneration = 0
   generationByPort = new WeakMap<chrome.runtime.Port, number>()
   connectedPortByIdentity = new Map<string, chrome.runtime.Port>()
-  playerIdByPort = new WeakMap<chrome.runtime.Port, number>()
 }

@@ -687,8 +687,10 @@ describe('replay import layer', () => {
         { handId: 2811, enqueuedAt: NOW, playerId: 111 }
       ])
 
-      // 旧portが再利用されると、そのportで観測済みのaccountを取り戻す。
+      // 旧portの再利用後、次のDEALでaccountが新世代へ再確定すれば、queueに
+      // 焼き付け済みの旧account attributionと一致して流れる。
       claimActivePort(accountA, NOW + 40_000)
+      markActivePortPlayerId(resolveGeneration(accountA)!, 111)
       markActivePortSessionInactive(resolveGeneration(accountA)!)
       await drainReplayImportQueue(deps)
       expect(fetchCalls).toEqual([[2822], [2811]])

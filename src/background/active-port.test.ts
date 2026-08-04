@@ -49,7 +49,7 @@ describe('active-port token', () => {
     expect(getActivePortActivity()).toBe('active')
   })
 
-  test('旧portが再利用されるとtokenと、そのportで観測済みのaccountを取り戻す', () => {
+  test('旧portが再利用されるとtokenを取り戻し、accountは新世代のDEALで再確定する', () => {
     claimActivePort(tabA, 1_000)
     markActivePortPlayerId(resolveGeneration(tabA)!, 111)
 
@@ -59,7 +59,9 @@ describe('active-port token', () => {
 
     claimActivePort(tabA, 40_000)
     expect(getActivePort()).toBe(tabA)
-    expect(readActivePortPlayerId()).toBe(111)
+    expect(readActivePortPlayerId()).toBeUndefined()
+    expect(findActivePortForPlayer(111)).toBeUndefined()
+    markActivePortPlayerId(resolveGeneration(tabA)!, 111)
     expect(findActivePortForPlayer(111)).toBe(tabA)
     expect(findActivePortForPlayer(222)).toBeUndefined()
   })
@@ -128,7 +130,6 @@ describe('active-port token', () => {
 
   test.each([
     ['別tab', makePort('other-tab', 2, 'document-a'), 2_500],
-    ['別document', makePort('reloaded-tab', 1, 'document-new'), 2_500],
     ['再接続窓超過', makePort('late-tab', 1, 'document-a'), 2_000 + ACTIVE_PORT_RECONNECT_WINDOW_MS + 1]
   ])('%sは同一content script再接続として扱わない', (_label, replacement, connectedAt) => {
     claimActivePort(tabA, 1_000)
@@ -138,6 +139,18 @@ describe('active-port token', () => {
     expect(registerActivePortConnection(replacement, connectedAt)).toBe(false)
     expect(claimActivePort(replacement, 20_000)).toBe('handover')
     expect(getActivePortActivity()).toBe('unknown')
+  })
+
+  test('同一tabのF5 reloadは別document世代へ移るが現実的な短時間gapでもsentinelを発火しない', () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const reloaded = makePort('reloaded-tab', 1, 'document-new')
+    claimActivePort(tabA, 1_000)
+    releaseActivePort(tabA, 2_000)
+
+    expect(registerActivePortConnection(reloaded, 2_500)).toBe(false)
+    expect(claimActivePort(reloaded, 3_000)).toBe('handover')
+    expect(warn).not.toHaveBeenCalled()
+    expect(getActivePort()).toBe(reloaded)
   })
 
   test('synthetic violation fixture: 10秒未満に別portが届けるとsentinelだけが発火する', () => {

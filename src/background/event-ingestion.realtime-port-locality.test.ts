@@ -113,6 +113,30 @@ const makeEntryQueued = (timestamp: number) => ({
   IsRetire: false
 })
 
+const makeHandResults = (timestamp: number, handId: number) => ({
+  ApiTypeId: ApiType.EVT_HAND_RESULTS,
+  timestamp,
+  HandId: handId,
+  CommunityCards: [],
+  Pot: 30,
+  SidePot: [],
+  ResultType: 0,
+  DefeatStatus: 0,
+  Results: [{
+    HandRanking: 1,
+    Hands: [],
+    HoleCards: [],
+    Ranking: -2,
+    RankType: 10,
+    RewardChip: 30,
+    UserId: 101
+  }],
+  OtherPlayers: [
+    { BetChip: 0, BetStatus: -1, Chip: 1_020, SeatIndex: 0, Status: 0 },
+    { BetChip: 0, BetStatus: -1, Chip: 980, SeatIndex: 1, Status: 0 }
+  ]
+})
+
 const sessionResults = {
   ApiTypeId: ApiType.EVT_SESSION_RESULTS,
   timestamp: 200,
@@ -202,6 +226,7 @@ describe('stats delivery follows the active-port token', () => {
     expect(getActivePort()).toBe(tabA.port)
     expect(resetSpy).toHaveBeenCalledTimes(1)
     expect(tabB.port.postMessage).not.toHaveBeenCalled()
+    expect(tabA.port.postMessage.mock.calls[0][0].stats).toBeUndefined()
 
     tabA.port.postMessage.mockClear()
     ;(service.statsOutputStream as any).emit('data', [
@@ -393,6 +418,43 @@ describe('stats delivery follows the active-port token', () => {
     expect(tabB.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({ stats: explicitStats }))
     expect(getLiveBroadcastSequenceForTab(1)).toBeGreaterThan(sequenceA)
     expect(getLiveBroadcastSequenceForTab(2)).toBeGreaterThan(sequenceB)
+  })
+
+  test('token世代が未確定の通常stats出力は接続中の全ゲームportへfallbackする', () => {
+    const recoveredStats = [{ playerId: 778, statResults: [] }]
+    tabA.port.postMessage.mockClear()
+    tabB.port.postMessage.mockClear()
+
+    ;(service.statsOutputStream as any).emit('data', recoveredStats)
+
+    expect(resolveGeneration()).toBeUndefined()
+    expect(tabA.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({ stats: recoveredStats }))
+    expect(tabB.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({ stats: recoveredStats }))
+  })
+
+  test('実イベント経路でDEAL/RESULTS世代不一致を棄却し、reload再送DEAL後の同一世代handは成立する', async () => {
+    await sendA(makeDeal(800, 901))
+    await sendB(makeAction(801))
+    await sendB(makeHandResults(802, 8_001))
+    await service.writeEntityStream.whenIdle()
+
+    expect(await db.hands.get(8_001)).toBeUndefined()
+
+    tabB.disconnectHandlers.forEach(handler => handler())
+    const reloaded = makePort(2, 'document-b-reloaded')
+    extraPorts.push(reloaded)
+    connect(reloaded.port as unknown as chrome.runtime.Port)
+    const sendReloaded = reloaded.port.onMessage.addListener.mock.calls[0][0]
+
+    // web_accessible_resource.tsは受信ごとにDate.now()を付け直すため、reload時の
+    // bulk resend DEALは新timestampでdedupを抜ける（docs/api-events.mdの同一ms
+    // 一括再送）。その実イベントが新世代のbufferを作り直し、続くRESULTSと
+    // 同一世代になることをこのfixtureは前提として固定する。
+    await sendReloaded(makeDeal(803, 101))
+    await sendReloaded(makeHandResults(804, 8_002))
+    await service.writeEntityStream.whenIdle()
+
+    expect(await db.hands.get(8_002)).toBeDefined()
   })
 
   test('同一tab/documentの500ms再接続は進行中ハンドのDEAL・ホールカード・スタックを引き継ぐ', async () => {

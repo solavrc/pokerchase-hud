@@ -8,7 +8,7 @@ import {
 import { ApiType, isApiEventType } from "../types"
 import type { Options } from '../utils/options-storage'
 import type { ExistPlayerStats, PlayerStats } from "../types"
-import type { StatsData } from "../content_script"
+import type { PokerChaseServiceData, StatsData } from "../content_script"
 import { defaultStatDisplayConfigs } from "../stats"
 import type { StatDisplayConfig } from "../types"
 import type {
@@ -182,15 +182,15 @@ const App = memo(() => {
   // 現在lineupにいないplayerIdは再集計できないため、フィルター変更後も最後に
   // 計算できたスナップショットを表示する。
   const handleStatsMessage = useCallback(
-    ({ detail }: CustomEvent<StatsData>) => {
-      let mappedStats = detail.stats
-
+    ({ detail }: CustomEvent<PokerChaseServiceData>) => {
       // SPR・ポットオッズの実況更新はbackgroundでACTIVEポートにだけ配信される。
       // 集計lineupを触らず、現在ハンド専用値だけを更新する。
       if (detail.realTimeOnly) {
         if (detail.realTimeStats) setAllPlayersRealTimeStats(detail.realTimeStats)
         return
       }
+      if (!('stats' in detail) || !detail.stats) return
+      let mappedStats = detail.stats
 
       const isTrustedSeatedDeal = detail.evtDeal !== undefined
         && isApiEventType(detail.evtDeal, ApiType.EVT_DEAL)

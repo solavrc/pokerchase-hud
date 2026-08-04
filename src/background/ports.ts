@@ -27,7 +27,6 @@ let latestRealTimeStats: AllPlayersRealTimeStats | undefined
 // 値自体は引き続き使う。ただし現在ACTIVE世代がDEALを1件も届けていない間は、
 // 前世代から残った値を席回転へ使ってはならない（MUST NOT）。
 let activeDealGeneration: number | undefined
-let pendingSessionBoundary: { generation: number, timestamp: number } | undefined
 
 export const getLastKnownStats = (): PlayerStats[] => lastKnownStats
 
@@ -72,12 +71,12 @@ let handCompletionEpoch = 0
 
 /**
  * `chrome.runtime.onConnect`で接続されたポートの集合。
- * lifecycleと明示的なport-scoped requestに使い、stats配信先の選択には使わない。
+ * lifecycle、明示的なport-scoped request、token未確定時のbackground起点stats更新に使う。
  */
 export const connectedPorts = new Set<chrome.runtime.Port>()
 
 type StatsMessage = {
-  stats: PlayerStats[]
+  stats?: PlayerStats[]
   evtDeal?: ApiEvent<ApiType.EVT_DEAL>
   realTimeStats?: AllPlayersRealTimeStats
   realTimeOnly?: boolean
@@ -127,14 +126,12 @@ export const claimActivePortForGameEvent = (
   const claim = claimActivePort(port, deliveredAt)
   const generation = resolveGeneration(port)!
   if (claim !== 'handover') return generation
-  if (pendingSessionBoundary?.generation !== generation) pendingSessionBoundary = undefined
   service.realTimeStatsStream.reset()
   latestRealTimeStats = undefined
   activeDealGeneration = undefined
   // tokenを取得したtabには、relic時代に凍結していた現在ハンド表示を次の
   // stream出力まで残してはならない（MUST NOT）。aggregate lineupは触らない。
   postMessageToPort(getActivePort() ?? port, {
-    stats: lastKnownStats,
     realTimeStats: { heroStats: {}, playerStats: {} },
     realTimeOnly: true,
     handEpoch: handCompletionEpoch
@@ -149,15 +146,6 @@ export const registerActivePortForService = (
   if (!registerActivePortConnection(port)) return
   const generation = resolveGeneration(port)
   if (generation === undefined) return
-
-  if (pendingSessionBoundary?.generation === generation) {
-    if (postMessageToPort(port, {
-      type: POKER_CHASE_SESSION_START_EVENT,
-      timestamp: pendingSessionBoundary.timestamp
-    })) {
-      pendingSessionBoundary = undefined
-    }
-  }
 
   if (lastKnownStats.length === 0 && latestRealTimeStats === undefined) return
   const delivered = postMessageToPort(port, {
@@ -207,14 +195,10 @@ export const notifySessionStart = (
 ): void => {
   if (resolveGeneration() !== generation) return
   const activePort = getActivePort()
-  if (activePort && postMessageToPort(activePort, {
+  if (activePort) postMessageToPort(activePort, {
     type: POKER_CHASE_SESSION_START_EVENT,
     timestamp
-  })) {
-    pendingSessionBoundary = undefined
-    return
-  }
-  pendingSessionBoundary = { generation, timestamp }
+  })
 }
 
 export const releaseActivePortForService = (
@@ -301,11 +285,15 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
 
     lastKnownStats = hand // Store for later use
 
-    if (context?.delivery === 'connected') {
+    // tokenがまだ一度も確定していないSW起動直後は、background起点の
+    // filter/rebuild/import/auto-sync復元を無音で捨ててはならない（MUST NOT）。
+    // reconnectCandidateの世代が残る切断猶予中はこのfallbackへ入れず、
+    // 後継transportへの同一世代引き渡しを維持する。
+    if (context?.delivery === 'connected' || currentGeneration === undefined) {
       for (const port of connectedPorts) {
         const delivered = postMessageToPort(port, {
           stats: hand,
-          evtDeal: context.evtDeal,
+          evtDeal: context?.evtDeal,
           handEpoch: handCompletionEpoch
         })
         if (delivered) recordLiveDelivery(port)
