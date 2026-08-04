@@ -29,7 +29,6 @@ import {
   REPLAY_PORT_STARTED,
   isPositiveHandId,
   replayFetchBatchTimeoutMs,
-  type ReplayFetchCancel,
   type ReplayFetchItemResult,
   type ReplayFetchResult,
   type ReplayFetchStarted
@@ -63,10 +62,9 @@ const settle = (requestId: string, results: ReplayFetchItemResult[]): void => {
 
 /**
  * ポートに届いたメッセージがこのモジュール宛なら処理して`true`を返す。
- * `event-ingestion.ts` のポート受信から、通常のイベント処理より前に呼ぶ。
- *
- * 取り込みキューには載せない: 保存を行わないので耐久性バリアの対象になる
- * 副作用が無く、載せるとライブイベントの処理を待たせるだけになる。
+ * `event-ingestion.ts`の共通取り込みキュー内で呼ぶ。RESULTのsettleは、それを
+ * 待つ取り込み処理を90001の書き込みへ進めうるため、先行する201/303/308の
+ * activity更新より前へ迂回させてはならない（MUST NOT）。
  */
 export const handleReplayPortMessage = (
   message: unknown,
@@ -115,25 +113,22 @@ export const releaseReplayRequestsForPort = (port: chrome.runtime.Port): void =>
 }
 
 /**
- * dedup済みのセッション開始を観測したら、現在のHTTPも含めて直ちに止める。
- * キューのHandIdはdrain側が未決着のまま保持する。
+ * 保存・dedup後に新規と確定したセッション開始、またはraw保存失敗時の
+ * fail-closed開始を全game pageへ知らせる補助線。
+ * 同一pageの公平性はWARのactivity gateが自律的に守る。この通知はクロスタブや
+ * SW再起動境界の孤児HTTPを短縮し、content側に未送信の依頼も破棄するだけで、
+ * 保存可否の根拠にはしない。
  */
 export const cancelReplayRequestsForSessionStart = (): number => {
-  let cancelled = 0
-  for (const [requestId, request] of [...pending]) {
-    const message: ReplayFetchCancel = {
-      type: REPLAY_PORT_CANCEL,
-      epoch: request.epoch,
-      requestId
-    }
+  for (const port of connectedPorts) {
     try {
-      request.port.postMessage(message)
+      port.postMessage({ type: REPLAY_PORT_CANCEL })
     } catch {
-      // 切断済みでも下のsettleでSW側の待ちは解放する。
+      // 切断済みportは通常のdisconnect処理が回収する。
     }
-    settle(requestId, [])
-    cancelled += 1
   }
+  const cancelled = pending.size
+  for (const requestId of [...pending.keys()]) settle(requestId, [])
   return cancelled
 }
 

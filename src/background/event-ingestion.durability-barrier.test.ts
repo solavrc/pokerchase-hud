@@ -41,6 +41,8 @@ import { autoSyncService } from '../services/auto-sync-service'
 import { getUndecodedEventStats, resetUndecodedEventStats, UNDECODED_EVENT_STATS_KEY } from './undecoded-event-tracker'
 import * as apiEventKey from '../utils/api-event-key'
 import { setOperationState } from './operation-state'
+import { REPLAY_PORT_CANCEL } from '../replay/protocol'
+import { isActivePortOutsideSession } from './active-port'
 
 describe('registerEventIngestion (raw-write durability barrier)', () => {
   let db: PokerChaseDB
@@ -301,6 +303,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     const quotaError = new Error('The quota has been exceeded.')
     quotaError.name = 'QuotaExceededError'
     jest.spyOn(apiEventKey, 'mergeApiEvents').mockRejectedValue(quotaError)
+    mockPort.postMessage.mockClear()
 
     await onMessageHandler(entryQueued(360))
 
@@ -316,6 +319,9 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     // and a Forced Update recheck could judge a mid-game reload "safe".
     expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
     expect(updateManager.isSafeToUpdate()).toBe(false)
+    expect(isActivePortOutsideSession()).toBe(false)
+    // storage故障でも、旧pageのHTTPを止める補助CANCELはfail-closedで送る。
+    expect(mockPort.postMessage).toHaveBeenCalledWith({ type: REPLAY_PORT_CANCEL })
   })
 
   test('control: a non-duplicate raw-write failure on EVT_SESSION_RESULTS (309) does NOT fail open to INACTIVE', async () => {

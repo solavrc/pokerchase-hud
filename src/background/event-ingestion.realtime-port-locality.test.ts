@@ -18,6 +18,7 @@ import {
   resolveGeneration
 } from './active-port'
 import { POKER_CHASE_SESSION_START_EVENT } from '../constants/runtime'
+import { REPLAY_PORT_CANCEL } from '../replay/protocol'
 import * as apiEventKey from '../utils/api-event-key'
 import {
   __resetStatsOutputContextForTests,
@@ -225,10 +226,14 @@ describe('stats delivery follows the active-port token', () => {
     ))
     expect(getActivePort()).toBe(tabA.port)
     expect(resetSpy).toHaveBeenCalledTimes(1)
-    expect(tabB.port.postMessage).not.toHaveBeenCalled()
+    expect(tabB.port.postMessage).toHaveBeenCalledWith({ type: REPLAY_PORT_CANCEL })
+    expect(tabB.port.postMessage.mock.calls.some(([message]) =>
+      'stats' in message || 'realTimeStats' in message
+    )).toBe(false)
     expect(tabA.port.postMessage.mock.calls[0][0].stats).toBeUndefined()
 
     tabA.port.postMessage.mockClear()
+    tabB.port.postMessage.mockClear()
     ;(service.statsOutputStream as any).emit('data', [
       { playerId: 901, statResults: [] }
     ])
@@ -502,7 +507,10 @@ describe('stats delivery follows the active-port token', () => {
       Object.keys(message.realTimeStats?.heroStats ?? {}).length > 0
     ))
     expect(getActivePort()).toBe(tabB.port)
-    expect(tabA.port.postMessage).not.toHaveBeenCalled()
+    expect(tabA.port.postMessage).toHaveBeenCalledWith({ type: REPLAY_PORT_CANCEL })
+    expect(tabA.port.postMessage.mock.calls.some(([message]) =>
+      'stats' in message || 'realTimeStats' in message
+    )).toBe(false)
   })
 
   test("tab A's 309 leaves relic tab B's retained display untouched", async () => {

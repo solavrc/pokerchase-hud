@@ -141,7 +141,7 @@ describe('content_script replay bridge conditional injection', () => {
     expect(countScriptsMatching(REPLAY_BRIDGE_FILE)).toBe(1)
   })
 
-  test('backgroundのsession-start cancelをmain-world bridgeへ転送する', async () => {
+  test('backgroundの補助cancelをmain-world bridgeへ転送する', async () => {
     let receiveBackgroundMessage: ((message: unknown) => void) | undefined
     ;(chrome.runtime as any).connect = jest.fn(() => ({
       postMessage: jest.fn(),
@@ -166,17 +166,66 @@ describe('content_script replay bridge conditional injection', () => {
     replayScript?.dispatchEvent(new Event('load'))
     postMessage.mockClear()
 
-    receiveBackgroundMessage?.({
-      type: REPLAY_PORT_CANCEL,
-      epoch: 'sw-epoch-1',
-      requestId: 'request-201'
-    })
+    receiveBackgroundMessage?.({ type: REPLAY_PORT_CANCEL })
 
     expect(postMessage).toHaveBeenCalledWith({
-      type: REPLAY_BRIDGE_CANCEL,
-      epoch: 'sw-epoch-1',
-      requestId: 'request-201'
+      type: REPLAY_BRIDGE_CANCEL
     }, 'https://game.poker-chase.com')
+  })
+
+  test('SW port切断時はbridge読込前の旧依頼も破棄する', async () => {
+    let receiveBackgroundMessage: ((message: unknown) => void) | undefined
+    let disconnect: (() => void) | undefined
+    ;(chrome.runtime as any).connect = jest.fn(() => ({
+      postMessage: jest.fn(),
+      disconnect: jest.fn(),
+      onMessage: {
+        addListener: jest.fn((listener: (message: unknown) => void) => {
+          receiveBackgroundMessage = listener
+        }),
+        removeListener: jest.fn()
+      },
+      onDisconnect: {
+        addListener: jest.fn((listener: () => void) => { disconnect = listener }),
+        removeListener: jest.fn()
+      },
+    }))
+    ;(chrome.storage.sync.get as jest.Mock).mockResolvedValue({
+      [EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY]: true
+    })
+    const postMessage = jest.spyOn(window, 'postMessage')
+
+    jest.isolateModules(() => { require('./content_script') })
+    await flush()
+    const replayScript = Array.from(document.querySelectorAll('script'))
+      .find(script => script.getAttribute('src')?.includes(REPLAY_BRIDGE_FILE))
+    postMessage.mockClear()
+
+    // bridgeのload前なので、この依頼はcontent script内だけに保留される。
+    receiveBackgroundMessage?.({
+      type: REPLAY_PORT_FETCH,
+      epoch: 'terminated-sw-epoch',
+      requestId: 'pending-before-disconnect',
+      handIds: [122]
+    })
+    expect(postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: REPLAY_BRIDGE_FETCH }),
+      expect.anything()
+    )
+
+    jest.useFakeTimers()
+    try {
+      disconnect?.()
+      // 旧SWの依頼は切断境界で消えており、後からbridgeがloadしてもflushしない。
+      replayScript?.dispatchEvent(new Event('load'))
+      expect(postMessage).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: REPLAY_BRIDGE_FETCH }),
+        expect.anything()
+      )
+      jest.runOnlyPendingTimers()
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   test('backgroundのSW epochをpage-world fetchへ保持して転送する', async () => {

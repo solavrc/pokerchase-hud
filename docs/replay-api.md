@@ -255,16 +255,28 @@ type ReplayAction = {
 再起動後は最初のdedup済みgame eventが世代とactivityを確立するまでHTTPを発行しない。
 接続中の他portはrelicなので、その状態を集合演算へ混ぜない。
 
-逐次取得中にdedup済みの201/303/308を観測した場合は、backgroundが現在の依頼を
-未決着のまま解放し、page側の`AbortController`へ中断を伝える。これに加えてpage
-bridge自身もWebSocket由来の成功201・着席303・308を直接監視して全取得を止める。
-各依頼と応答はService Worker起動ごとのepochを持ち、新しいepochが届いた時点で
-旧SWのHTTPを中断し、その遅延応答を破棄する。したがって応答待ちでSWが終了して
-backgroundのpending mapが失われても、孤児HTTPを次の対局へ持ち越さない。
+第一防衛線はpage側に置く。常時注入されるWebSocket hookが成功201・着席303・
+308で`active`、309（および着席前の参加取消203）で`inactive`をpage worldの
+`window`へ保持する。後から注入されるreplay bridgeは`inactive`のときだけ取得を
+開始し、各await境界でも同じ状態を再確認する。実行中に開始イベントを観測したら
+自身の`AbortController`を止めるため、Service WorkerからCANCELが来なくても安全で
+ある。`active`/`unknown`中の依頼にはHTTPを発行せず、空RESULTだけを返してSWの
+pendingを解放する。
 
-応答と境界処理が競合した場合も、取り込み層は共通storage FIFO内の実書き込み
-直前にactivityと実験フラグを再確認し、90001を書き込まない。先行書き込み待ちの
-間にセッションが始まった場合も同じ経路で未決着キューへ保持する。
+別タブのraw eventはpageだけでは新旧を識別できないため、クロスタブとSW再起動境界には
+保存・dedup後の新規開始（raw保存失敗時はfail-closed開始）を見たService Workerから
+全game portへ送る一括CANCELを補助線として残す。content scriptはCANCEL受信時だけでなく
+SW port切断時にも未送信依頼を全破棄し、page queueはcancel世代でそれ以前の依頼を無効化する。
+requestId別controller mapやCANCELのepoch照合は持たず、保存可否の根拠にも使わない。
+
+第二防衛線として、pageから戻るRESULTも生イベントと同じService Worker取り込み
+キューへ通す。先行する201/303/308のRaw Lake保存とactivity更新が完了するまで
+RESULTは取得待ちを解放しない。その後も取り込み層は共通storage FIFO内、さらに
+Dexie transaction内の最初のread（競合write lock待ちを含む）が終わった後、
+最初のwrite直前に現在activityを再確認し、
+90001を書き込まない。各依頼と応答の
+Service Worker epochは公平性の主ゲートではなく、SW再起動時の所有権分離と旧応答
+破棄を担う補助線として残す。
 
 キューは `meta` テーブルの1行（`replayImportQueue`）に持つ。MV3 の Service
 Worker は数十秒で落ちるため、メモリには置けない。

@@ -176,19 +176,16 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
     expect(await pending).toEqual({ success: true, results: [] })
   })
 
-  it('dedup済みセッション開始はpageへcancelを送り、現在の待ちを即時解放する', async () => {
+  it('dedup済み開始は全game pageへ補助cancelを送り、現在の待ちを解放する', async () => {
     const port = makeInactiveActivePort()
+    const relic = makePort()
+    connectedPorts.add(relic)
     const pending = requestReplayDetails([1])
     await Promise.resolve()
-    const requestId = sentRequestId(port)
-    const epoch = sentRequest(port).epoch
 
     expect(cancelReplayRequestsForSessionStart()).toBe(1)
-    expect(port.postMessage).toHaveBeenCalledWith({
-      type: REPLAY_PORT_CANCEL,
-      epoch,
-      requestId
-    })
+    expect(port.postMessage).toHaveBeenCalledWith({ type: REPLAY_PORT_CANCEL })
+    expect(relic.postMessage).toHaveBeenCalledWith({ type: REPLAY_PORT_CANCEL })
     expect(await pending).toEqual({ success: true, results: [] })
   })
 

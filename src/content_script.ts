@@ -85,11 +85,12 @@ const postReplayRequest = (message: ReplayFetchRequest) => {
   window.postMessage({ ...message, type: REPLAY_BRIDGE_FETCH }, POKER_CHASE_ORIGIN)
 }
 
+/**
+ * SW通知はクロスタブ・SW再起動時の補助線。page自身のWS activity gateが
+ * 公平性の第一防衛線なので、通知が欠けても同一pageでは取得を開始しない。
+ */
 const postReplayCancel = (message: ReplayFetchCancel) => {
-  const pendingIndex = pendingReplayRequests.findIndex(
-    request => request.epoch === message.epoch && request.requestId === message.requestId
-  )
-  if (pendingIndex !== -1) pendingReplayRequests.splice(pendingIndex, 1)
+  pendingReplayRequests.splice(0)
   if (!replayBridgeReady) return
   window.postMessage({ ...message, type: REPLAY_BRIDGE_CANCEL }, POKER_CHASE_ORIGIN)
 }
@@ -187,7 +188,13 @@ const portManager = new RuntimePortManager({
   onConnected: port => {
     if (isGameActive) startKeepalive(port)
   },
-  onDisconnected: stopKeepalive,
+  onDisconnected: () => {
+    stopKeepalive()
+    // SWが消えた境界では、そのSWが所有していた未送信・queued・実行中の取得を
+    // content/page側だけで一括失効させる（MUST）。再接続前に別タブでセッションが
+    // 始まると、切断中のこのportへ補助CANCELを届ける経路が無いため。
+    postReplayCancel({ type: REPLAY_PORT_CANCEL })
+  },
   onMessage: message => {
     if (typeof message === 'object' && message !== null &&
       'type' in message && message.type === POKER_CHASE_SESSION_START_EVENT &&
@@ -198,6 +205,11 @@ const portManager = new RuntimePortManager({
       return
     }
     if (typeof message === 'object' && message !== null &&
+      'type' in message && message.type === REPLAY_PORT_CANCEL) {
+      postReplayCancel(message as ReplayFetchCancel)
+      return
+    }
+    if (typeof message === 'object' && message !== null &&
       'type' in message && message.type === REPLAY_PORT_FETCH) {
       const request = message as Partial<ReplayFetchRequest>
       if (typeof request.epoch === 'string' && typeof request.requestId === 'string' &&
@@ -205,13 +217,6 @@ const portManager = new RuntimePortManager({
         request.handIds.length <= REPLAY_FETCH_BATCH_LIMIT && request.handIds.every(isPositiveHandId)) {
         postReplayRequest(request as ReplayFetchRequest)
       }
-      return
-    }
-    if (typeof message === 'object' && message !== null &&
-      'type' in message && message.type === REPLAY_PORT_CANCEL &&
-      'epoch' in message && typeof message.epoch === 'string' &&
-      'requestId' in message && typeof message.requestId === 'string') {
-      postReplayCancel(message as ReplayFetchCancel)
       return
     }
     if (typeof message === 'object' && message !== null &&

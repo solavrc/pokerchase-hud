@@ -30,8 +30,15 @@ SPR・ポットオッズが後のfilter再計算で復活しない。集計lineu
 
 replayのsession判定とaccount attributionにもACTIVE portの状態だけを使い、relicの状態は
 参照しない。取得を許すのは現在世代が明示的にsession外と確定した場合だけで、Service
-Worker再起動直後のtoken未生成はunknownとして遮断する。dedup済みの201/303/308は進行中の
-取得をpage側のAbortControllerまで中断する。10秒未満で別tabからeventが届いた場合はaxiom違反の検出として
+Worker再起動直後のtoken未生成はunknownとして遮断する。trusted WebSocketの生201/303/308は
+進行中の取得を同一pageの常時注入hookが直接見て自律中断する。クロスタブと
+SW再起動境界だけは、保存・dedup後の新規開始（raw保存失敗時はfail-closed開始）を見たSWが
+request非依存の一括cancelを全game portへ送る補助線を残す。content scriptはSW port切断時にも
+そのSWが所有していた未送信・queued・実行中依頼を一括失効させる。
+replay RESULTは生イベントと同じ取り込みキューへ通し、
+Dexie transaction内の最初のread（競合write lock待ちを含む）が終わった後、最初の
+write直前にも現在activityを再評価する。
+10秒未満で別tabからeventが届いた場合はaxiom違反の検出として
 `console.warn`を記録する。同一tabのF5 reload候補は警告対象外とし、複数sessionを扱う分岐は
 追加しない。
 

@@ -40,7 +40,8 @@ import {
   markActivePortPlayerId,
   markActivePortSessionActive,
   markActivePortSessionInactive,
-  readActivePortPlayerId
+  readActivePortPlayerId,
+  resolveGeneration
 } from './active-port'
 import { REPLAY_PORT_AUTH_READY } from '../replay/protocol'
 import {
@@ -239,12 +240,6 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           return Promise.resolve()
         }
 
-        // 実験的リプレイ取得の応答。何も保存しないので取り込みキューには
-        // 載せない（載せるとライブイベントを待たせるだけになる）。
-        if (handleReplayPortMessage(message, port)) {
-          return Promise.resolve()
-        }
-
         // 認証エンベロープの捕獲通知。繰り延べていた取得を再開する。
         // 何も保存しないので取り込みキューには載せない。
         if (typeof message === 'object' && message !== null &&
@@ -275,7 +270,13 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           queueDepth: ingestionQueueDepth
         })
         const task = ingestionQueue
-          .then(() => processEvent(service, message, port, deliveredAt))
+          .then(() => {
+            // replay RESULTは自身では保存しないが、待っている取り込み処理を
+            // 90001保存へ再開させる。生イベントと同じキューへ通すことで、
+            // 先行する201/303/308のactivity更新後にwrite-time gateを読ませる。
+            if (handleReplayPortMessage(message, port)) return
+            return processEvent(service, message, port, deliveredAt)
+          })
           .finally(() => {
             ingestionQueueDepth = Math.max(0, ingestionQueueDepth - 1)
             logReplayDiagnostic('port-event-processed', {
@@ -401,6 +402,24 @@ const applySessionActivity = (
 }
 
 /**
+ * セッション開始時の補助CANCELを一箇所へ集約する。保存成功時はdedupで新規と
+ * 確定した後、保存失敗時はfail-closed分岐からだけ呼ぶ。
+ */
+const cancelReplayForSessionStart = (
+  rawApiTypeId: unknown,
+  message: ApiMessage | { type: string }
+): void => {
+  if (!isSessionStartSignal(rawApiTypeId, message)) return
+  const cancelled = cancelReplayRequestsForSessionStart()
+  if (cancelled > 0) {
+    logReplayDiagnostic('drain-aborted-by-session-start', {
+      apiTypeId: typeof rawApiTypeId === 'number' ? rawApiTypeId : undefined,
+      cancelledRequests: cancelled
+    })
+  }
+}
+
+/**
  * 1件のAPIイベントを処理する: Raw Event Lakeへの保存・重複排除 → ACTIVE token/
  * 世代/activity更新 → リアルタイムパイプライン投入 → UI配信。
  *
@@ -459,9 +478,16 @@ const processEvent = async (
           console.error('[background] Failed to record dropped-event stats:', recordErr)
         )
       }
-      // forced-update用の全体activityだけはfail-closedでACTIVE化する。
-      // raw mergeを通過していないためACTIVE-port世代/activityは動かさない。
-      applySessionActivity(rawApiTypeId, message, true)
+      // forced-update用の全体activityをfail-closedでACTIVE化する。raw mergeを
+      // 通過していないためtoken/世代は移譲しないが、現在世代の取得判定だけは
+      // ACTIVEへ倒す。
+      // tokenのhandoverはraw成功後に限るが、現在tokenのinactiveは再取得を許すため、
+      // START失敗時だけは既存世代もACTIVEへ倒して再発火を防ぐ。
+      applySessionActivity(rawApiTypeId, message, true, resolveGeneration())
+      // Raw Lakeの故障中でも、開始シグナルを実際に受けた以上は旧pageの取得を
+      // fail-closedで止める（MUST）。これはstorage判定ではなく補助CANCELであり、
+      // raw書き込み後にだけ動かすACTIVE-port tokenの規則は変更しない。
+      cancelReplayForSessionStart(rawApiTypeId, message)
       return
     }
   } else {
@@ -495,15 +521,7 @@ const processEvent = async (
   // 誤った値のまま詰まらないようにするため（codexレビュー指摘）。
   // 詳細は`applySessionActivity`のコメント参照。
   applySessionActivity(rawApiTypeId, message, false, portGeneration)
-  if (isSessionStartSignal(rawApiTypeId, message)) {
-    const cancelled = cancelReplayRequestsForSessionStart()
-    if (cancelled > 0) {
-      logReplayDiagnostic('drain-aborted-by-session-start', {
-        apiTypeId: typeof rawApiTypeId === 'number' ? rawApiTypeId : undefined,
-        cancelledRequests: cancelled
-      })
-    }
-  }
+  cancelReplayForSessionStart(rawApiTypeId, message)
 
   const successfulSessionStartTimestamp =
     rawApiTypeId === ApiType.EVT_ENTRY_QUEUED &&

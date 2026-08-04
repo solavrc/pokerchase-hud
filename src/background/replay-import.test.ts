@@ -1,4 +1,5 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
+import Dexie from 'dexie'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { ApiType } from '../types/api'
 import type { ReplayFetchItemResult } from '../replay/protocol'
@@ -209,6 +210,28 @@ describe('replay import layer', () => {
       expect(fetchCalls).toEqual([[1200]])
     })
 
+    test('page自律abortの空応答も現在activityで止め、次の依頼と書き込みへ進まない', async () => {
+      const deps = depsOf()
+      markSessionActive()
+      await enqueueReplayHandId(deps, 1204, NOW)
+      await enqueueReplayHandId(deps, 1205, NOW)
+      markSessionInactive()
+
+      fetchImpl = async () => {
+        // pageが201を観測してHTTPをabortし、空RESULTを返す競合。
+        markSessionActive()
+        return []
+      }
+      await drainReplayImportQueue(deps)
+
+      expect(fetchCalls).toEqual([[1204]])
+      expect(await db.replayDetails.count()).toBe(0)
+      expect(await db.apiEvents.where('ApiTypeId').equals(ApiType.REPLAY_HAND_DETAIL).count())
+        .toBe(0)
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId))
+        .toEqual([1204, 1205])
+    })
+
     test('共通storage FIFO待ち中にセッションが始まったら保存せず持ち越す', async () => {
       let releaseBlocker!: () => void
       const blocker = enqueuePendingStorageWrite(() => new Promise<void>(resolve => {
@@ -239,6 +262,66 @@ describe('replay import layer', () => {
       expect(await db.apiEvents.where('ApiTypeId').equals(ApiType.REPLAY_HAND_DETAIL).count())
         .toBe(0)
       expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1203])
+    })
+
+    test('保存transactionのwrite lock待ち中にセッションが始まっても90001を書かない', async () => {
+      const deps = depsOf()
+      markSessionActive()
+      await enqueueReplayHandId(deps, 1206, NOW)
+      markSessionInactive()
+
+      let resolveFetch!: () => void
+      fetchImpl = handIds => new Promise(resolve => {
+        resolveFetch = () => resolve(handIds.map(handId => ({
+          handId,
+          ok: true,
+          detail: detailOf(handId)
+        })))
+      })
+      const drain = drainReplayImportQueue(deps)
+      for (let i = 0; i < 50 && !resolveFetch; i++) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+      expect(resolveFetch).toBeDefined()
+
+      let releaseBlocker!: () => void
+      const blockerGate = new Promise<void>(resolve => { releaseBlocker = resolve })
+      let notifyBlockerStarted!: () => void
+      const blockerStarted = new Promise<void>(resolve => { notifyBlockerStarted = resolve })
+      const blocker = db.transaction(
+        'rw',
+        db.apiEvents,
+        db.meta,
+        db.replayDetails,
+        async () => {
+          // 実際のrw transactionを先行させ、対象3 tableのwrite lockを保持する。
+          await db.meta.put({ id: 'test-replay-write-lock', value: true, updatedAt: NOW })
+          notifyBlockerStarted()
+          await Dexie.waitFor(blockerGate)
+        }
+      )
+      await blockerStarted
+
+      const getSpy = jest.spyOn(db.replayDetails, 'get')
+      const storeGetStarted = (): boolean =>
+        (getSpy.mock.calls as unknown[][]).some(([handId]) => handId === 1206)
+      resolveFetch()
+      for (let i = 0; i < 50 && !storeGetStarted(); i++) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+      expect(storeGetStarted()).toBe(true)
+      // 外側のpost-fetch gateとtransaction callback先頭のgateは既にinactiveで
+      // 通過済み。最初のreadが実lockで待つ間にactivityをACTIVEへ進める。
+      markSessionActive()
+      releaseBlocker()
+      await blocker
+      await drain
+
+      expect(fetchCalls).toEqual([[1206]])
+      expect(await db.replayDetails.get(1206)).toBeUndefined()
+      expect(await db.apiEvents.where('ApiTypeId').equals(ApiType.REPLAY_HAND_DETAIL).count())
+        .toBe(0)
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1206])
     })
 
     // Codexレビュー指摘: バッチでまとめて渡すと、ページ側が撃ち切るまでの
@@ -307,6 +390,58 @@ describe('replay import layer', () => {
 
       // 予約された2周目が、1周目の後に積まれたHandIdを拾う
       expect(fetchCalls).toEqual([[1240], [1241]])
+      expect(await readReplayImportQueue(db)).toEqual([])
+    })
+
+    test('rerun中の第3トリガーも直列化し、古いownerがsingle-flightを解除しない', async () => {
+      const deps = depsOf()
+      markSessionInactive()
+      await enqueueReplayHandId(deps, 1240, NOW)
+
+      let releaseFirst!: () => void
+      let releaseSecond!: () => void
+      let announceFirst!: () => void
+      let announceSecond!: () => void
+      const firstGate = new Promise<void>(resolve => { releaseFirst = resolve })
+      const secondGate = new Promise<void>(resolve => { releaseSecond = resolve })
+      const firstStarted = new Promise<void>(resolve => { announceFirst = resolve })
+      const secondStarted = new Promise<void>(resolve => { announceSecond = resolve })
+      let activeFetches = 0
+      let maxActiveFetches = 0
+      fetchImpl = async handIds => {
+        activeFetches += 1
+        maxActiveFetches = Math.max(maxActiveFetches, activeFetches)
+        try {
+          if (handIds[0] === 1240) {
+            announceFirst()
+            await firstGate
+          } else if (handIds[0] === 1241) {
+            announceSecond()
+            await secondGate
+          }
+          return handIds.map(handId => ({ handId, ok: true, detail: detailOf(handId) }))
+        } finally {
+          activeFetches -= 1
+        }
+      }
+
+      const first = drainReplayImportQueue(deps)
+      await firstStarted
+      await enqueueReplayHandId(deps, 1241, NOW)
+      const second = drainReplayImportQueue(deps)
+      releaseFirst()
+      await secondStarted
+
+      await enqueueReplayHandId(deps, 1242, NOW)
+      const third = drainReplayImportQueue(deps)
+      await Promise.resolve()
+      expect(maxActiveFetches).toBe(1)
+
+      releaseSecond()
+      await Promise.all([first, second, third])
+
+      expect(maxActiveFetches).toBe(1)
+      expect(fetchCalls).toEqual([[1240], [1241], [1242]])
       expect(await readReplayImportQueue(db)).toEqual([])
     })
 

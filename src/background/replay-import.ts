@@ -290,8 +290,9 @@ const storeReplayDetail = async (
   db: PokerChaseDB,
   handId: number,
   detail: unknown,
-  now: number
-): Promise<boolean> => {
+  now: number,
+  canWrite: () => boolean
+): Promise<boolean | undefined> => {
   // **保存の直前にもサニタイズする**（MUST）。`REPLAY_BRIDGE_RESULT` は
   // 同一オリジンのページから偽装でき、進行中の `requestId` もページから
   // 観測できる。ページ側ブリッジの `sanitizeReplayDetail` だけに頼ると、
@@ -301,9 +302,6 @@ const storeReplayDetail = async (
     { param?: unknown, appVer?: unknown, dataVer?: unknown, masterVer?: unknown } | null
   const param = record && typeof record === 'object' ? record.param : undefined
   if (typeof param !== 'object' || param === null || Array.isArray(param)) return false
-
-  // 先勝ち。payloadはサーバ側で不変なので、既に在るなら取り直す意味が無い。
-  if (await db.replayDetails.get(handId)) return false
 
   const clientMeta = {
     ...typeof record?.appVer === 'string' ? { appVer: record.appVer } : {},
@@ -327,7 +325,18 @@ const storeReplayDetail = async (
   // 取得時刻の違う別の90001をLakeへ足してしまう ―― 障害時ほど重複が増える。
   // `mergeApiEvents` は自身のトランザクションを開くが、Dexieは同じテーブルを
   // 含む外側のトランザクションがあればそこに参加する。
+  let wrote: boolean | undefined
   await db.transaction('rw', db.apiEvents, db.meta, db.replayDetails, async () => {
+    // Dexieは競合write lockの解放前にもscope callbackを開始し得る。先頭判定は
+    // 早期終了用であり、これだけを実書き込み境界にしてはならない。
+    if (!canWrite()) return
+    // 先勝ちも同じtransaction内で確定する。このgetが競合lock待ちを含むため、
+    // await後かつ最初のwrite直前にactivityをもう一度読む（MUST）。
+    if (await db.replayDetails.get(handId)) {
+      wrote = false
+      return
+    }
+    if (!canWrite()) return
     await mergeApiEvents(db, [syntheticEvent])
     await db.replayDetails.put({
       handId,
@@ -335,8 +344,9 @@ const storeReplayDetail = async (
       fetchedAt: now,
       ...Object.keys(clientMeta).length > 0 ? { clientMeta } : {}
     })
+    wrote = true
   })
-  return true
+  return wrote
 }
 
 /**
@@ -425,20 +435,29 @@ export const drainReplayImportQueue = async (
   if (drainInFlight) {
     if (!drainRerunRequested) {
       drainRerunRequested = true
-      drainInFlight = drainInFlight
+      const current = drainInFlight
+      const rerun = current
         .catch(() => undefined)
         .then(() => {
           drainRerunRequested = false
           return withKeepAlive(deps, reason)
         })
-        .finally(() => { drainInFlight = undefined })
+      let owner: Promise<void>
+      owner = rerun.finally(() => {
+        // 先行runのfinallyが、既に後続へ移った所有権を消してはならない（MUST NOT）。
+        if (drainInFlight === owner) drainInFlight = undefined
+      })
+      drainInFlight = owner
     }
     return drainInFlight
   }
   const run = withKeepAlive(deps, reason)
-    .finally(() => { drainInFlight = undefined })
-  drainInFlight = run
-  return run
+  let owner: Promise<void>
+  owner = run.finally(() => {
+    if (drainInFlight === owner) drainInFlight = undefined
+  })
+  drainInFlight = owner
+  return owner
 }
 
 /**
@@ -590,8 +609,8 @@ const drainOnce = async (
 
     issuedAny = true
     const [result] = await (deps.fetchDetails ?? defaultFetchDetails)([entry.handId], port)
-    // 201/303/308はbackgroundからページのAbortControllerへも中断を伝えるが、
-    // 応答とイベント処理が同時に完了しても保存境界で必ず止める（MUST）。
+    // page側は201/303/308を自律観測してabortする。空応答・成功応答のどちらも、
+    // event-ingestionの共通キューを出た現在activityで必ず止める（MUST）。
     if (!canFetchNow(deps) || !await deps.isEnabled() || !canFetchNow(deps)) {
       aborted = true
       break
@@ -614,7 +633,13 @@ const drainOnce = async (
         // fairness gateを取り直し、非同期フラグ読取後にも再確認する（MUST）。
         if (!canFetchNow(deps) || !await deps.isEnabled() || !canFetchNow(deps) ||
           deps.isBusy?.()) return undefined
-        return storeReplayDetail(deps.db, entry.handId, result.detail, deps.now())
+        return storeReplayDetail(
+          deps.db,
+          entry.handId,
+          result.detail,
+          deps.now(),
+          () => canFetchNow(deps) && !deps.isBusy?.()
+        )
       })
       if (wrote === undefined) {
         // 書き込みの直前にセッション・フラグ・長時間操作の条件が変わった。
