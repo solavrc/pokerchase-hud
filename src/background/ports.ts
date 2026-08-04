@@ -61,6 +61,12 @@ let handCompletionEpoch = 0
 
 export const getLatestRealTimeStats = (): AllPlayersRealTimeStats | undefined => latestRealTimeStats
 
+// セッション終了後の集計HUD再配信へ、終了済みハンドのSPR/ポットオッズを
+// 混ぜてはならない（MUST NOT）。表示のローカルクリアはcontent_script側が担う。
+export const clearLatestRealTimeStats = (): void => {
+  latestRealTimeStats = undefined
+}
+
 /**
  * `chrome.runtime.onConnect`で接続されたポートの集合
  * ストリームイベントをブロードキャストする際の送信先として利用する

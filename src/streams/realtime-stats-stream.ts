@@ -54,7 +54,9 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
 
       if (eventType === ApiType.EVT_SESSION_RESULTS) {
         this.isSessionActive = false
-        this.emitClearStats()
+        // 発生元タブのcontent_scriptがローカル終了イベントで表示を消す。
+        // 共有ストリームから空更新をpushして、別タブのHUDまで消してはならない
+        // （MUST NOT）。内部状態だけinactiveへ遷移させる。
       }
 
       switch (event.ApiTypeId) {

@@ -64,6 +64,19 @@ describe('RealTimeStatsStream', () => {
       expect((stream as unknown as { isSessionActive: boolean }).isSessionActive).toBe(true)
     })
 
+    test('309は共有ストリームから空更新を配信せず、内部状態だけinactiveにする', async () => {
+      const outputs: any[] = []
+      stream.on('data', data => outputs.push(data))
+
+      stream.write({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 100 } as any)
+      stream.end()
+
+      await new Promise<void>(resolve => stream.once('end', resolve))
+
+      expect(outputs).toEqual([])
+      expect((stream as unknown as { isSessionActive: boolean }).isSessionActive).toBe(false)
+    })
+
     test('201/308がともに欠落してもHero在席の303で統計を再開する', async () => {
       const outputs: any[] = []
       stream.on('data', data => outputs.push(data))
@@ -74,11 +87,11 @@ describe('RealTimeStatsStream', () => {
 
       await new Promise<void>(resolve => stream.once('end', resolve))
 
-      // Session end clears the previous live values, then the seated deal
-      // clears/reinitializes before emitting current stats.
-      expect(outputs).toHaveLength(3)
+      // 309の表示更新は発生元タブ内だけ。次の着席dealが内部値を初期化してから
+      // 現在の統計を出力する。
+      expect(outputs).toHaveLength(2)
       expect(outputs[0].stats).toEqual({ heroStats: {}, playerStats: {} })
-      expect(Object.keys(outputs[2].stats.heroStats)).not.toHaveLength(0)
+      expect(Object.keys(outputs[1].stats.heroStats)).not.toHaveLength(0)
     })
   })
 

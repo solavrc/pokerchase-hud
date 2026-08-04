@@ -167,17 +167,7 @@ describe('App - pre-game hero stats takeover', () => {
     expect(screen.getByTestId('hud-0')).toBe(heroNodeBefore)
   })
 
-  // Regression for a post-merge review P2 finding on PR #191 (descope pass1):
-  // "Prefer visible hero stats after batch refreshes". A `latestStats`
-  // batch refresh (post-import round-trip, or any other trusted DB
-  // recompute mid-session) updates the *visible* hero stat but historically
-  // left dimCacheRef's hero entry untouched. If no further live hero-anchored
-  // deal arrived before the session ended, handleSessionEnd's `dimCache.get
-  // (HERO_SEAT_INDEX) ?? stat` preferred the older cached value over the
-  // fresher batch-refreshed one, rolling the hero panel back to stale numbers
-  // right when the user would expect the latest (just-imported) stats to
-  // persist.
-  it('hero panel does not roll back to a stale live-cache value after a latestStats batch refresh, when session ends before another live deal', async () => {
+  it('session end leaves the latest trusted batch value visible when no newer live deal arrives', async () => {
     render(<App />)
     await waitFor(() => {
       expect(screen.getByTestId('hud-0')).toBeInTheDocument()
@@ -237,9 +227,8 @@ describe('App - pre-game hero stats takeover', () => {
       expect(screen.getByTestId('hud-0')).toHaveTextContent('Hands: 99')
     })
 
-    // Session ends with no further live hero-anchored deal in between --
-    // the hero panel must keep showing the fresher batch-refreshed value,
-    // not roll back to the stale live-cache snapshot from before the import.
+    // セッション終了で消すのは現在ハンド専用値だけ。信頼済み一括スナップショットは
+    // 集計値として表示し続ける。
     act(() => {
       window.dispatchEvent(new CustomEvent('PokerChaseSessionEndEvent'))
     })
