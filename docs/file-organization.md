@@ -138,7 +138,7 @@
     │   └── release-info.ts    # Fixed GitHub Releases URL + unread storage key
     │
     ├── db/
-    │   └── poker-chase-db.ts  # Dexie database definition (v7 schema: sequence-key Lake + replayDetails)
+    │   └── poker-chase-db.ts  # Dexie database definition (v8 schema: sequence-key Lake + replayDetails + stats ledger)
     │
     ├── replay/                # Replay API shared code (page world + service worker)
     │   ├── protocol.ts        # Message/constant contract, ledger reader, credential stripping
@@ -160,6 +160,9 @@
     │   ├── index.ts           # Module exports
     │   ├── registry.ts        # Statistics registry (auto-discovery)
     │   ├── compactStats.ts    # Compact-line + classifier required-stat forcing
+    │   ├── stat-ledger.ts     # Persistent incremental stats ledger (v8 stores, pending-derivation fences)
+    │   ├── hand-contribution.ts       # Per-hand counter contributions for the ledger
+    │   ├── counter-stat-results.ts    # Stat results computed from ledger counter aggregates
     │   ├── helpers.ts         # Common helper functions
     │   ├── utils.ts           # Formatting utilities
     │   └── core/              # Statistic definitions
