@@ -42,11 +42,36 @@ enabled.
 Diagnostic events are retained according to the monitoring project's configured
 retention period and are not used for advertising.
 
+## Optional replay import
+
+Replay import is disabled by default. If the user opts in, PokerChase HUD first
+sends one request to PokerChase's replay-list endpoint to verify that the
+account's card-open period is active. The extension reads the expiration flag
+and expiration date from that response. It requests replay details only after
+that verification succeeds, and repeats the verification before each import
+cycle.
+
+Verification and detail requests are issued only outside a game session. If the
+user opts in during a session, or before the page has captured the authentication
+envelope used by PokerChase, verification remains pending. Detail requests are
+then issued one hand at a time. Only hands the user was dealt into are requested;
+hands the user merely observed are not. The server makes a hand available for a
+limited period (the current calendar day and the preceding three days, JST).
+
+The stored response contains the same game information the replay feature shows
+in-app, including the hole cards of opponents who reached showdown. Session
+tokens and request keys used to authenticate the request are stripped at the
+boundary and are never written to storage, exported, or synchronized. If cloud
+backup is also enabled, imported replay records are backed up with the rest of
+the hand history. Disabling replay import or detecting expiration stops new
+requests; it does not delete replay records already stored.
+
 ## Sharing and sale
 
 Data is shared only with Google/Firebase when the user uses cloud backup and
-with Sentry when the user opts in to diagnostic reporting. PokerChase HUD does
-not sell personal data or use it for advertising.
+with Sentry when the user opts in to diagnostic reporting. Replay import sends
+requests to PokerChase's own servers only — no third party is involved.
+PokerChase HUD does not sell personal data or use it for advertising.
 
 ## Access and deletion requests
 

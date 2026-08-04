@@ -224,28 +224,35 @@ type ReplayAction = {
 暦日の条件を満たしていても `2302` を返す。リプレイは自分が参加したハンド
 だけが対象。取り込み層はこれをローカルで除外できる。
 
-## 取り込み層（既定OFF）
+## 取り込み層（既定OFF・公開オプトイン）
 
-`experimentalReplayImportEnabled` を有効にしたときだけ動く。実装は
-`src/background/replay-import.ts`。
+実効判定は `experimentalReplayImportEnabled`（DevTools用の開発者フラグ）
+**または** `replayImportEnabled`（公開トグル）と課金検証済み状態の組み合わせ。
+開発者フラグは検証を無条件にバイパスする。公開トグルは、セッション外で
+`/replay/list`を1回送り、`IsExpiredCardOpen === false`かつ
+`CardOpenEndDate`が未来であることを確認できた場合だけ有効になる。実装は
+`src/background/replay-access.ts`と`src/background/replay-import.ts`。
 
-**この層にユーザー向けのUIは無い。** 取得層（セクション上部）と同じく、
-フラグはService WorkerのDevToolsコンソールから `chrome.storage.sync` を
-直接書いて切り替える。ポップアップに操作を出すのは、開示（プライバシー
-ポリシー・ストア掲載情報）を伴う公開時点まで行わない。
+UIはポップアップの「リプレイ取り込み」。検証中、対局終了待ち、認証
+エンベロープ待ち、検証済み、失効を表示する。
+
+公開にあたっての開示手順は
+[chrome-web-store-release.md](chrome-web-store-release.md#replay-import-disclosurev60-公開時)
+と [PRIVACY.md](../PRIVACY.md) の "Optional replay import" を参照。
 
 ### いつ取得するか
 
 **セッション中は1本も発行しない。** セッションの進行中に過去ハンドの詳細を
 取れてしまうと、まだ伏せられている情報がセッション内で参照可能になる。
-セッション中にできるのは HandId をキューへ積むことだけで、取得は
-セッション終了後（`EVT_SESSION_RESULTS` / `EVT_ENTRY_CANCELLED`）に走る。
+公開トグルの検証にも同じgateを適用する。セッション中のONは通信せず保留し、
+セッション終了後（`EVT_SESSION_RESULTS` / `EVT_ENTRY_CANCELLED`）に検証する。
+認証エンベロープが無ければホーム画面の通常API通信で捕獲するまで保留する。
 
 **依頼は1件ずつ**行い、次の1本を撃つ直前に毎回この判定をやり直す。100件を
 1バッチで渡すと、ページ側が1.5秒間隔で撃ち切るまで数分かかり、その間に次の
 対局が始まっても残りが撃たれ続けて不変条件を破るため。逐次取得の間隔も
 取り込み層が空ける（ページ側の間隔はバッチ内でしか効かない）。同じ理由で、
-実験フラグと長時間操作（インポート/再構築/エクスポート）の有無も毎回確認し、
+実効フラグと長時間操作（インポート/再構築/エクスポート）の有無も毎回確認し、
 いずれかが変わった時点で中断してキューに残す。
 
 判定は、WebSocket由来のgame eventを最後に届けた唯一のACTIVE portの
@@ -277,6 +284,23 @@ Dexie transaction内の最初のread（競合write lock待ちを含む）が終�
 90001を書き込まない。各依頼と応答の
 Service Worker epochは公平性の主ゲートではなく、SW再起動時の所有権分離と旧応答
 破棄を担う補助線として残す。
+
+公開経路の検証（`/replay/list`）にも**この二重の防衛線をそのまま適用する**。
+検証は`/replay/detail`と同じepochを載せ、同じcontent script経路・同じpage側
+逐次キューを通り、同じpage activity gate（`unknown`もfail-closed）で止まる。
+実行中のAbortControllerも詳細取得と同じ枠に載るので、WSが開始イベントを
+観測した瞬間の自律abortが検証にも効く。対局中・状態不明で撃てなかった検証は
+`pending-session`として記録し、次の取得サイクルの先頭で撃ち直す（エラーには
+しない）。Service Worker側でも、`dispatchQueue`を待った後の実際の
+`postMessage`直前にfairness gateを取り直し、依頼先を現在のACTIVE portだけに
+限定する。
+
+公開経路では各取り込みサイクルの先頭でも`/replay/list`を1回送り、期限を
+自然に再検証する。この1本は取り込みサイクルの一部としてドレインの中で走る
+（専用の経路を持たない）ので、取り込みキューのbarrier・長時間操作の判定・
+keepalive・ドレインの直列化がそのまま掛かる。失効を検知したサイクルでは
+`/replay/detail`を1本も送らず、キューと取り込み済みの90001行・
+`replayDetails`索引を保持する。
 
 キューは `meta` テーブルの1行（`replayImportQueue`）に持つ。MV3 の Service
 Worker は数十秒で落ちるため、メモリには置けない。

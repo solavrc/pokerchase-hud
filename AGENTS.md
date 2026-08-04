@@ -16,7 +16,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 
 - Real-time HUD with 15+ statistics — compact display mode (default) with click-to-expand full grid, threshold color coding, per-stat tooltips
 - Player-type classification icons (🦈💣🪨🐟 quadrant + 🐳 whale override)
-- Per-player drill-downs: positional stats and recent hands (switchable 10/25/50/100 rows, dealt-in hands only, a default-on 参加のみ filter, per-street action notation, four-color hole cards in BB-denominated results; hero's own dealt cards always shown, opponents' only at showdown — mucked showdown hands filled from stored replay details when the replay import flag is enabled, flag-only, no popup control)
+- Per-player drill-downs: positional stats and recent hands (switchable 10/25/50/100 rows, dealt-in hands only, a default-on 参加のみ filter, per-street action notation, four-color hole cards in BB-denominated results; hero's own dealt cards always shown, opponents' only at showdown — mucked showdown hands filled from stored replay details when the opt-in replay import is enabled)
 - Pre-game hero stats (career-to-date panel before the first deal)
 - Busted-player dim display (stats and drill-downs remain available through session end, until seat turnover or a trusted table change)
 - All-player SPR/pot odds display
@@ -143,6 +143,17 @@ procedures and rationale stay in the linked documents:
 - A telemetry-enabled release MUST complete the disclosure procedure in
   `docs/chrome-web-store-release.md` before submission (store listing /
   privacy-policy / release-notes updates).
+- A release that exposes replay import in the popup MUST likewise complete the
+  replay-import disclosure procedure in `docs/chrome-web-store-release.md`
+  first. The machinery may ship ahead of the disclosure only while it stays
+  reachable by storage flag alone — surfacing a control without the disclosure
+  is what the rule forbids.
+- Public replay import MUST remain disabled until a session-safe `/replay/list`
+  response proves `IsExpiredCardOpen === false` and a future
+  `CardOpenEndDate`; every import cycle MUST re-check the same fields before
+  requesting details. The DevTools-only `experimentalReplayImportEnabled`
+  flag MUST bypass that public entitlement check, and disabling or losing
+  entitlement MUST NOT delete previously imported Raw Event Lake rows.
 - The CRX signing key MUST NOT be stored in the repository or in a Google
   account; handle and back it up per `docs/chrome-web-store-release.md`
   "Signing key".

@@ -1628,34 +1628,19 @@ describe('Popup', () => {
   })
 
   /**
-   * リプレイ取り込みは**フラグのみで動く非公開機能**として入っている。
-   * ポップアップに操作や説明を出すのは、プライバシーポリシーとストア掲載
-   * 情報の開示を伴う公開時点まで行わない（sola裁定、リリース方針）。
-   *
-   * 「まだ出さない」という決定は、コードを消すのではなくここで固定する ――
-   * セクションを足せばこのテストが落ちるので、開示の手当てを伴わない
-   * 露出が黙って入ることはない。
+   * v6.0で公開する。非公開だった間は「出さない」ことをテストで固定していたが、
+   * 公開後は逆に「出ていること」と「取得のタイミングが読めること」を固定する。
    */
-  describe('リプレイ取り込みは非公開（フラグのみ）', () => {
-    it('ポップアップにリプレイ取り込みの操作も説明も出さない', async () => {
+  describe('リプレイ取り込みの公開（v6.0）', () => {
+    it('ポップアップにオプトインと取得タイミングの説明を出す', async () => {
       render(<Popup />)
       await waitForAsyncOperations()
 
       const text = document.body.textContent ?? ''
-      expect(text).not.toContain('リプレイ')
-      expect(text).not.toContain('対局が終わったあと')
-      expect(screen.queryByRole('switch', { name: /リプレイ/ })).toBeNull()
-    })
-
-    it('ポップアップは実験フラグを読みにも書きにもいかない', async () => {
-      render(<Popup />)
-      await waitForAsyncOperations()
-
-      const touchedKeys = [
-        ...(chrome.storage.sync.get as jest.Mock).mock.calls,
-        ...(chrome.storage.sync.set as jest.Mock).mock.calls
-      ].map(([arg]) => JSON.stringify(arg ?? ''))
-      expect(touchedKeys.some(key => key.includes('experimentalReplayImportEnabled'))).toBe(false)
+      expect(text).toContain('リプレイ取り込み')
+      expect(text).toContain('対局が終わったあと')
+      expect(text).toContain('対局中は通信しません')
+      expect(text).toContain('カード公開の有効期間内')
     })
   })
 })

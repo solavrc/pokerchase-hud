@@ -324,11 +324,11 @@ await db.actions.where('[playerId+phase]')
 - [Firebase Firestore Pricing](https://firebase.google.com/pricing)
 - [Chrome Extension Manifest V3](https://developer.chrome.com/docs/extensions/mv3/)
 
-## 6. 試験機能: リプレイ詳細の取得層
+## 6. リプレイ詳細の取得ブリッジ
 
-`experimentalReplayImportEnabled` を `chrome.storage.sync` で `true` にした
-開発ビルドだけが有効化する、既定OFFの検証機能。目的は「`/replay/*` から
-何がどこまで取得できるか」を、スキーマ変更を伴わずに実データで確かめること。
+`experimentalReplayImportEnabled`（DevTools用）または公開オプトインの
+`replayImportEnabled`を`chrome.storage.sync`で`true`にしたときだけ注入する。
+前者は課金検証を無条件にバイパスし、後者はbackgroundの検証状態機械を通る。
 
 Service Workerのポート受信遅延・取り込みキュー深さ・リプレイドレイン判定を
 調べる診断ログは、別の同期キー `swIngestionDiagnosticsEnabled` で切り替える。
@@ -342,8 +342,7 @@ await chrome.storage.sync.set({ swIngestionDiagnosticsEnabled: true })
 
 無効化は同じキーを `false` に戻す。ログはpayload、HandId、playerIdを含まない。
 
-**リプレイ本体（`/replay/detail`）は保存しない。** セッション境界を見て自動で
-取りに行く取り込み層は別途。ただし後述の台帳監査だけは、その結果を `meta`
+台帳監査は、その結果を `meta`
 テーブルの1行（`replayLedgerAudit`）へ書く ―― MV3のService Workerは数十秒で
 落ちるので、メモリ上に置くとユーザーが結果を読む前に消えるため。書かれるのは
 台帳と突き合わせた**件数と HandId の一覧、チップ差分、エンベロープの期限値**
@@ -363,7 +362,7 @@ fetch / XMLHttpRequest の傍受と認証エンベロープ捕獲は `replay_bri
 （main world の WAR スクリプト）に分離してある。中核の WebSocket 傍受
 （`web_accessible_resource.ts`、HUD全機能の土台）は全ユーザーで常時注入
 されるが、`replay_bridge.js` は `content_script.ts` が
-`experimentalReplayImportEnabled` を有効に読んだときにだけ `<script>` として
+開発者フラグまたは公開オプトインを有効に読んだときにだけ `<script>` として
 注入する。無効ユーザーの実行環境にはリプレイ傍受コードが一切載らず、
 fetch / XHR は素のまま・エンベロープ捕獲も行われない。
 
@@ -376,7 +375,7 @@ fetch / XHR は素のまま・エンベロープ捕獲も行われない。
   DOM から消せない。`content_script.ts` は `replayBridgeInjected` で注入を1回に
   冪等化し、無効化は `REPLAY_BRIDGE_CONFIG` の `enabled: false` を送ってブリッジ側
   でランタイムに no-op 化する（傍受を素通しに戻し、捕獲済みエンベロープを破棄）。
-台帳（`REPLAY_BRIDGE_LEDGER`）の転送は `content_script.ts` 側でも実験フラグを
+台帳（`REPLAY_BRIDGE_LEDGER`）の転送は `content_script.ts` 側でも両フラグのORを
 確認する。この経路は同一オリジンの `postMessage` なので、ブリッジを一度も注入
 していない無効ユーザーでも、ページ側スクリプトが台帳を偽装して送れてしまう
 （ブリッジ側のゲートだけでは、ブリッジを経由しない偽装を塞げない）。
@@ -401,11 +400,13 @@ content script 側の読み取りが必ず失敗し、機能が永久にOFFの�
 超えた瞬間に**必ず**先に切れる。しかもページ側はバッチ完了時に一括で結果を
 返すので、切れた場合に得られるのは部分結果ではなく空配列になる。
 
-### 台帳の受動取得
+### 台帳の受動取得と公開オプトイン検証
 
 ユーザーがゲーム内でリプレイ一覧を開くと、ゲーム自身が `/replay/list` を
-出す。その応答を同じフックで読むだけの経路があり、**拡張は追加の
-リクエストを1本も出さない**。応答から取り出すのは許可リスト方式で、
+出す。その応答を同じフックで読むだけの受動監査経路では、拡張は追加の
+リクエストを出さない。これとは別に、公開トグルの有効化時と各取り込み
+サイクルの先頭では`/replay/list`を1本だけ能動送信し、カード公開の利用状態を
+確認する。どちらの応答も許可リスト方式で、
 HandId・開始時刻・`ChipDiff`・`CardOpenEndDate`・`IsExpiredCardOpen` のみ
 （除外リストでは、応答の全フィールドを列挙できていない以上「`session` と
 `requestKey` さえ落とせば安全」という前提が置けない）。
@@ -464,12 +465,12 @@ MV3の非アクティブ期限をまたぎうるが、ポートのハンドラ�
 下限はローカル最古のハンドの時刻を使う。観測期間の**途中**の空白（拡張を一時的に
 切っていた等）は依然として欠損として報告される ―― そこは本当に区別が付かない。
 
-起動口は Service Worker のグローバルに生やした
+開発者向けの手動取得口は Service Worker のグローバルに生やした
 `pokerChaseReplayFetch()` のみ（`background/replay-fetch-bridge.ts`）。
 `chrome.runtime.sendMessage` を使わないのは、**送信元自身の `onMessage` には
 配送されない**ため ―― SWのDevToolsコンソールから叩くと
 "Could not establish connection. Receiving end does not exist." になる。
-取り込み層が入ればそちらが依頼主体になるので、このモジュールは役目を終える。
+公開取り込み層は同じブリッジを依頼主体として使う。
 
 開発時の使い方:
 
@@ -487,25 +488,32 @@ await pokerChaseReplayFetch([258411144, 258411368])
 `detail` は sanitize 済みで、資格情報は含まれない。無効化は同じキーを
 `false` に戻す（同期設定なので他端末にも伝播する）。
 
-既定OFF、権限追加なし、ユーザー操作中のゲーム通信を起点とする設計とする。
-公開ビルドへ載せる場合は、プライバシーポリシーとデータ利用開示へこの機能を
-明記すること。
+既定OFF、権限追加なし。公開時の開示は
+[chrome-web-store-release.md](chrome-web-store-release.md)に記録する。
 
-## 7. 試験機能: リプレイ詳細の取り込み層
+## 7. リプレイ詳細の取り込み層
 
-取得層（セクション6）の上に載る依頼主体。既定OFF。詳細は
+取得層（セクション6）の上に載る依頼主体。公開トグルは既定OFF。詳細は
 [replay-api.md](replay-api.md) の「取り込み層」節、実装は
 `src/background/replay-import.ts`。
 
 **セッション中は `/replay/detail` を1本も発行しない。** セッションの進行中に
 過去ハンドの詳細が取れると、まだ伏せられている情報がセッション内で参照
 可能になる。セッション中にできるのは HandId をキューへ積むことだけで、
-取得はセッション終了後に走る。判定は1箇所（`canFetchNow`）に集約し、ACTIVE portが
+取得と公開オプトインの検証はセッション終了後に走る。判定は1箇所
+（`canFetchNow`）に集約し、ACTIVE portが
 無いか、ACTIVE portのセッション三値が`inactive`のときだけ許可する。`active`と
 `unknown`は取得を止める。Service Workerはいつでも落ちうるので、再起動直後や
 handover直後の`unknown`は「セッション中かもしれない」が正しく、そこで撃つと
 不変条件を破りうる。実際の依頼先も、キューに保存したaccountと一致する現在の
-ACTIVE portだけである。
+ACTIVE portだけである。同一content scriptの再接続猶予中はtoken世代が残るため、
+ACTIVEなしとして扱わない。
+
+公開経路の状態は`disabled`、`pending-session`、`pending-auth`、`checking`、
+`verified`、`expired`、`error`。`/replay/list`の
+`IsExpiredCardOpen === false`かつ未来の`CardOpenEndDate`だけが`verified`になる。
+各取り込みサイクルの先頭で同じ検証を行い、失効時は詳細取得を止める。
+取り込み済みのRaw Event Lake行と`replayDetails`は削除しない。
 
 キューは `meta` の1行（`replayImportQueue`）。MV3 の Service Worker は
 数十秒で落ちるためメモリには置けない。専用ストアを作らないのは、高々100件

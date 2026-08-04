@@ -77,6 +77,7 @@
     │   ├── auto-sync-boot.ts        # Auth-ready auto-sync initialization (init race guard)
     │   ├── AGENTS.md                # Nested review rules (SW concurrency invariants)
     │   ├── active-port.ts           # Latest-game-event token, session state, replay account binding
+    │   ├── replay-access.ts         # Public opt-in entitlement state and /replay/list verification
     │   ├── replay-import.ts         # Opt-in replay import: HandId queue (meta), session-end
     │   │                            #   drain, expiry accounting, synthetic 90001 Lake rows
     │   ├── event-ingestion.ts       # Raw Event Lake ingestion: serialized queue, durability

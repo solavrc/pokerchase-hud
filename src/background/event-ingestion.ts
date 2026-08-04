@@ -52,6 +52,11 @@ import {
   type ReplayImportDeps
 } from './replay-import'
 import {
+  markReplayAuthReady,
+  releaseReplayAuthPort,
+  verifyReplayImportAccess
+} from './replay-access'
+import {
   captureHandledException,
   captureSchemaValidationFailure
 } from '../observability/sentry'
@@ -185,6 +190,7 @@ export const createReplayLedgerAuditDeps = (service: PokerChaseService): ReplayL
 export const createReplayImportDeps = (service: PokerChaseService): ReplayImportDeps => ({
   db: service.db,
   isEnabled: readReplayImportEnabled,
+  prepareAccess: verifyReplayImportAccess,
   now: () => Date.now(),
   // インポート/再構築/エクスポートの最中は取得しない。診断ではなく保存を
   // 伴うので、長時間操作と同じ`apiEvents`へ書き込むのを避ける。
@@ -300,6 +306,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // 何も保存しないので取り込みキューには載せない。
         if (typeof message === 'object' && message !== null &&
           (message as { type?: unknown }).type === REPLAY_PORT_AUTH_READY) {
+          markReplayAuthReady(port)
           // 取り込みキューの決着を待ってから流す（MUST）。同じポートから直前に
           // 届いた201/303/308がまだRaw Lakeの書き込み待ちだと、この通知が先に
           // 決着してセッション状態を古い `inactive` のまま読む。
@@ -365,6 +372,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         releaseActivePortForService(service, port)
         // 応答が返らないまま切れた依頼を解放する（待ち続けさせない）
         releaseReplayRequestsForPort(port)
+        releaseReplayAuthPort(port)
       })
     }
   })

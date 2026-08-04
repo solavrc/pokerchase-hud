@@ -25,6 +25,7 @@ import { RuntimePortManager } from './utils/runtime-port-manager'
 import { captureHandledException, initSentry } from './observability/sentry'
 import {
   EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY,
+  PUBLIC_REPLAY_IMPORT_STORAGE_KEY,
   REPLAY_BRIDGE_CANCEL,
   REPLAY_BRIDGE_CONFIG,
   REPLAY_BRIDGE_FETCH,
@@ -32,6 +33,8 @@ import {
   REPLAY_BRIDGE_LEDGER,
   REPLAY_BRIDGE_RESULT,
   REPLAY_BRIDGE_STARTED,
+  REPLAY_BRIDGE_VERIFY,
+  REPLAY_BRIDGE_VERIFY_RESULT,
   REPLAY_FETCH_BATCH_LIMIT,
   REPLAY_LEDGER_MAX_ENTRIES,
   REPLAY_PORT_CANCEL,
@@ -40,12 +43,16 @@ import {
   REPLAY_PORT_LEDGER,
   REPLAY_PORT_RESULT,
   REPLAY_PORT_STARTED,
+  REPLAY_PORT_VERIFY,
+  REPLAY_PORT_VERIFY_RESULT,
   isPositiveHandId,
   type ReplayFetchCancel,
   type ReplayFetchRequest,
   type ReplayFetchResult,
   type ReplayFetchStarted,
-  type ReplayLedgerMessage
+  type ReplayLedgerMessage,
+  type ReplayVerificationRequest,
+  type ReplayVerificationResult
 } from './replay/protocol'
 /** !!! BACKGROUND、WEB_ACCESSIBLE_RESOURCES からインポートしないこと !!! */
 
@@ -60,7 +67,10 @@ let isGameActive = false
 let keepaliveTimer: ReturnType<typeof setInterval> | null = null
 let replayBridgeReady = false
 let replayBridgeInjected = false
-let replayImportEnabled = false
+let replayDeveloperEnabled = false
+let replayPublicEnabled = false
+let replayBridgeEnabled = false
+let replayAuthReady = false
 /**
  * 設定を実際に読めたか。**未読のまま `enabled: false` を送ってはならない**
  * （MUST NOT）。main world 側は設定の到達をもって「観測ゲートを閉じてよい」と
@@ -72,13 +82,17 @@ let replayImportEnabled = false
 let replayConfigLoaded = false
 const pendingReplayRequests: ReplayFetchRequest[] = []
 
+const refreshReplayBridgeEnabled = (): void => {
+  replayBridgeEnabled = replayDeveloperEnabled || replayPublicEnabled
+}
+
 const postReplayConfig = () => {
   if (!replayBridgeReady || !replayConfigLoaded) return
-  window.postMessage({ type: REPLAY_BRIDGE_CONFIG, enabled: replayImportEnabled }, POKER_CHASE_ORIGIN)
+  window.postMessage({ type: REPLAY_BRIDGE_CONFIG, enabled: replayBridgeEnabled }, POKER_CHASE_ORIGIN)
 }
 
 const postReplayRequest = (message: ReplayFetchRequest) => {
-  if (!replayBridgeReady || !replayImportEnabled) {
+  if (!replayBridgeReady || !replayBridgeEnabled) {
     pendingReplayRequests.push(message)
     return
   }
@@ -96,7 +110,7 @@ const postReplayCancel = (message: ReplayFetchCancel) => {
 }
 
 const flushPendingReplayRequests = () => {
-  if (!replayBridgeReady || !replayImportEnabled) return
+  if (!replayBridgeReady || !replayBridgeEnabled) return
   for (const message of pendingReplayRequests.splice(0)) postReplayRequest(message)
 }
 
@@ -105,28 +119,37 @@ const flushPendingReplayRequests = () => {
 // content script から遮断しており（#274、e2e/scenarios/auth-storage-access.ts
 // が実ブラウザでassert済み）、ここからの get は必ず reject される。
 // onChanged も同じゲートで untrusted context には配送されない。
-chrome.storage.sync.get(EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY).then(stored => {
-  replayImportEnabled = stored[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY] === true
+chrome.storage.sync.get([
+  EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY,
+  PUBLIC_REPLAY_IMPORT_STORAGE_KEY
+]).then(stored => {
+  replayDeveloperEnabled = stored[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY] === true
+  replayPublicEnabled = stored[PUBLIC_REPLAY_IMPORT_STORAGE_KEY] === true
+  refreshReplayBridgeEnabled()
   replayConfigLoaded = true
   // 無効ユーザーにはリプレイ傍受スクリプトを注入しない。有効なときだけ
   // WAR `<script>` として注入する（`injectReplayBridge`参照）。
-  if (replayImportEnabled) injectReplayBridge()
+  if (replayBridgeEnabled) injectReplayBridge()
   postReplayConfig()
   flushPendingReplayRequests()
 }).catch(() => undefined)
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  const change = changes[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY]
-  if (areaName !== 'sync' || !change) return
-  replayImportEnabled = change.newValue === true
+  const developerChange = changes[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY]
+  const publicChange = changes[PUBLIC_REPLAY_IMPORT_STORAGE_KEY]
+  if (areaName !== 'sync' || (!developerChange && !publicChange)) return
+  if (developerChange) replayDeveloperEnabled = developerChange.newValue === true
+  if (publicChange) replayPublicEnabled = publicChange.newValue === true
+  refreshReplayBridgeEnabled()
+  if (!replayBridgeEnabled) replayAuthReady = false
   // 変更通知が届いた時点で値は確定している（初回読み取りが未完了でも）。
   replayConfigLoaded = true
   // 有効化の遷移で初めて注入する。`<script>`は取り消せないので、無効化しても
   // ここでは何もせず、`postReplayConfig()`が送る`enabled: false`を受けて
   // ブリッジ側がランタイムでno-op化する（replay_bridge.ts参照）。
-  if (replayImportEnabled) injectReplayBridge()
+  if (replayBridgeEnabled) injectReplayBridge()
   postReplayConfig()
-  if (replayImportEnabled) flushPendingReplayRequests()
+  if (replayBridgeEnabled) flushPendingReplayRequests()
   else pendingReplayRequests.splice(0)
 })
 
@@ -187,6 +210,9 @@ const portManager = new RuntimePortManager({
   maxQueueSize: PORT_EVENT_QUEUE_LIMIT,
   onConnected: port => {
     if (isGameActive) startKeepalive(port)
+    if (replayBridgeEnabled && replayAuthReady) {
+      port.postMessage({ type: REPLAY_PORT_AUTH_READY })
+    }
   },
   onDisconnected: () => {
     stopKeepalive()
@@ -217,6 +243,28 @@ const portManager = new RuntimePortManager({
         request.handIds.length <= REPLAY_FETCH_BATCH_LIMIT && request.handIds.every(isPositiveHandId)) {
         postReplayRequest(request as ReplayFetchRequest)
       }
+      return
+    }
+    if (typeof message === 'object' && message !== null &&
+      'type' in message && message.type === REPLAY_PORT_VERIFY) {
+      const request = message as Partial<ReplayVerificationRequest>
+      // 詳細取得と同じく`epoch`を必須にする。世代の無い依頼は転送しない。
+      if (typeof request.epoch !== 'string' || typeof request.requestId !== 'string') return
+      if (!replayBridgeReady || !replayBridgeEnabled) {
+        // 取得依頼と違い**溜めない**。検証は各取得サイクルの先頭で撃ち直される
+        // ので、滞留させると古い世代の依頼が後から流れる。依頼元の20秒待ちを
+        // 空費させないよう、その場で再試行可能として返す。
+        portManager.send({
+          type: REPLAY_PORT_VERIFY_RESULT,
+          epoch: request.epoch,
+          requestId: request.requestId,
+          ok: false,
+          error: 'bridge-unavailable',
+          retryable: true
+        })
+        return
+      }
+      window.postMessage({ ...request, type: REPLAY_BRIDGE_VERIFY }, POKER_CHASE_ORIGIN)
       return
     }
     if (typeof message === 'object' && message !== null &&
@@ -299,10 +347,20 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
     return
   }
 
+  if ('type' in event.data && event.data.type === REPLAY_BRIDGE_VERIFY_RESULT) {
+    const result = event.data as Partial<ReplayVerificationResult>
+    if (typeof result.epoch === 'string' && typeof result.requestId === 'string' &&
+      typeof result.ok === 'boolean') {
+      portManager.send({ ...result, type: REPLAY_PORT_VERIFY_RESULT })
+    }
+    return
+  }
+
   // 受動取得した台帳（`/replay/list`）。拡張はリクエストを出しておらず、
   // ゲーム自身の通信を読んだだけ。
   //
-  // **実験フラグが有効なときだけ転送する**（MUST）。この経路は同一オリジンの
+  // **開発者フラグまたは公開オプトインが有効なときだけ転送する**（MUST）。
+  // この経路は同一オリジンの
   // `postMessage` なので、ブリッジを一度も注入していない無効ユーザーでも
   // ページ側スクリプトが台帳を偽装して送れてしまい、そのまま監査結果として
   // 永続化される。ブリッジ側の同じゲート（`postReplayLedger`）だけでは、
@@ -311,12 +369,13 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   // 取り込み層が繰り延べていた取得を再開する契機になる。台帳と同じく、
   // 有効なときだけ転送する。
   if ('type' in event.data && event.data.type === REPLAY_BRIDGE_AUTH_READY) {
-    if (replayImportEnabled) portManager.send({ type: REPLAY_PORT_AUTH_READY })
+    replayAuthReady = true
+    if (replayBridgeEnabled) portManager.send({ type: REPLAY_PORT_AUTH_READY })
     return
   }
 
   if ('type' in event.data && event.data.type === REPLAY_BRIDGE_LEDGER) {
-    if (!replayImportEnabled) return
+    if (!replayBridgeEnabled) return
     const ledger = event.data as Partial<ReplayLedgerMessage>
     if (Array.isArray(ledger.hands) && ledger.hands.length <= REPLAY_LEDGER_MAX_ENTRIES) {
       portManager.send({ ...ledger, type: REPLAY_PORT_LEDGER })
@@ -622,7 +681,7 @@ const injectWebSocketHook = () => {
 }
 injectWebSocketHook()
 
-// リプレイ傍受（replay_bridge.js）。実験フラグ有効時にだけ注入する。
+// リプレイ傍受（replay_bridge.js）。開発者フラグまたは公開オプトイン時だけ注入する。
 // `<script>`はDOMから取り消せないので、一度注入したら再注入しない
 // （`replayBridgeInjected`で冪等化）。無効化はブリッジ側のランタイムno-op化に
 // 委ねる（storage.onChangedが送る`enabled: false`）。
