@@ -23,7 +23,8 @@ import {
   markActivePortPlayerId,
   markActivePortSessionActive,
   markActivePortSessionInactive,
-  readActivePortPlayerId
+  readActivePortPlayerId,
+  resolveGeneration
 } from './active-port'
 
 /** テスト用のダミーポート（依頼先の同一性だけを見る）。 */
@@ -35,12 +36,12 @@ const NOW = Date.UTC(2026, 7, 1, 3, 0, 0)
 
 const markSessionActive = (port: chrome.runtime.Port = FAKE_PORT): void => {
   claimActivePort(port, NOW)
-  markActivePortSessionActive(port)
+  markActivePortSessionActive(resolveGeneration(port)!)
 }
 
 const markSessionInactive = (port: chrome.runtime.Port = FAKE_PORT): void => {
   claimActivePort(port, NOW)
-  markActivePortSessionInactive(port)
+  markActivePortSessionInactive(resolveGeneration(port)!)
 }
 
 /** `/replay/detail` の成功応答（ページ側で sanitize 済み ＝ `session` は無い）。 */
@@ -147,7 +148,7 @@ describe('replay import layer', () => {
       expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1250])
 
       // 現在のACTIVE portが明示的にinactiveになって初めて流れる。
-      markActivePortSessionInactive(SECOND_FAKE_PORT)
+      markActivePortSessionInactive(resolveGeneration(SECOND_FAKE_PORT)!)
       await drainReplayImportQueue(deps)
       expect(fetchCalls).toEqual([[1250]])
     })
@@ -672,13 +673,13 @@ describe('replay import layer', () => {
       })
 
       claimActivePort(accountA, NOW)
-      markActivePortPlayerId(accountA, 111)
+      markActivePortPlayerId(resolveGeneration(accountA)!, 111)
       await enqueueReplayHandId(deps, 2811, NOW)
 
       claimActivePort(accountB, NOW + 20_000)
-      markActivePortPlayerId(accountB, 222)
+      markActivePortPlayerId(resolveGeneration(accountB)!, 222)
       await enqueueReplayHandId(deps, 2822, NOW + 20_000)
-      markActivePortSessionInactive(accountB)
+      markActivePortSessionInactive(resolveGeneration(accountB)!)
 
       await drainReplayImportQueue(deps)
       expect(fetchCalls).toEqual([[2822]])
@@ -688,7 +689,7 @@ describe('replay import layer', () => {
 
       // 旧portが再利用されると、そのportで観測済みのaccountを取り戻す。
       claimActivePort(accountA, NOW + 40_000)
-      markActivePortSessionInactive(accountA)
+      markActivePortSessionInactive(resolveGeneration(accountA)!)
       await drainReplayImportQueue(deps)
       expect(fetchCalls).toEqual([[2822], [2811]])
       expect(await readReplayImportQueue(db)).toEqual([])

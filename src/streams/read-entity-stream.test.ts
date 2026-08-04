@@ -16,9 +16,14 @@ import { PokerChaseDB } from '../db/poker-chase-db'
 import PokerChaseService from '../services/poker-chase-service'
 import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { ApiType, BattleType, PhaseType } from '../types'
-import type { ApiHandEvent, Hand } from '../types'
+import type { ApiEvent, ApiHandEvent, Hand } from '../types'
 import type { PlayerStats, StatResult } from '../types'
-import { getStatsOutputContext, setEventGeneration } from './stats-output-context'
+import {
+  __resetStatsOutputContextForTests,
+  getStatsOutputContext,
+  setDefaultStatsContextProvider,
+  setEventGeneration
+} from './stats-output-context'
 
 const PLAYER_ID = 1
 const SEAT_USER_IDS = [PLAYER_ID, 2, 3, 4, 5, 6]
@@ -58,6 +63,7 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
   let service: PokerChaseService
 
   beforeEach(async () => {
+    __resetStatsOutputContextForTests()
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
     service = trackServiceForTeardown(new PokerChaseService({ db }))
@@ -75,6 +81,7 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
   })
 
   afterEach(async () => {
+    __resetStatsOutputContextForTests()
     db.close()
     await db.delete()
   })
@@ -133,6 +140,58 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(2)
   })
 
+  test('フィルター再計算の既定deal文脈はヒーローdealへ再アンカーした後に解決する', async () => {
+    const heroDeal = {
+      ApiTypeId: ApiType.EVT_DEAL,
+      timestamp: 6_000,
+      SeatUserIds: SEAT_USER_IDS,
+      Player: { SeatIndex: 0, BetStatus: 1, HoleCards: [], Chip: 1_000, BetChip: 100 },
+      OtherPlayers: [],
+      Game: {
+        CurrentBlindLv: 1,
+        NextBlindUnixSeconds: 0,
+        Ante: 0,
+        SmallBlind: 100,
+        BigBlind: 200,
+        ButtonSeat: 5,
+        SmallBlindSeat: 0,
+        BigBlindSeat: 1
+      },
+      Progress: {
+        Phase: PhaseType.PREFLOP,
+        NextActionSeat: 2,
+        NextActionTypes: [],
+        NextExtraLimitSeconds: 0,
+        MinRaise: 0,
+        Pot: 300,
+        SidePot: []
+      }
+    } as ApiEvent<ApiType.EVT_DEAL>
+    const spectatorDeal = {
+      ...heroDeal,
+      timestamp: 6_001,
+      SeatUserIds: [10, 20, -1, -1, -1, -1],
+      Player: undefined
+    }
+    service.playerId = PLAYER_ID
+    service.latestEvtDeal = heroDeal
+    service.liveEvtDeal = spectatorDeal
+    setDefaultStatsContextProvider(() => ({
+      delivery: 'active',
+      generation: 61,
+      evtDeal: service.liveEvtDeal
+    }))
+    const output = new Promise<PlayerStats[]>(resolve => service.statsOutputStream.once('data', resolve))
+
+    await service.statsOutputStream.recalculateStats()
+
+    expect(getStatsOutputContext(await output)).toEqual({
+      delivery: 'active',
+      generation: 61,
+      evtDeal: heroDeal
+    })
+  })
+
   test('a completed hand invalidates a same-lineup production cache warmed at deal time', async () => {
     const previousNodeEnv = process.env.NODE_ENV
     process.env.NODE_ENV = 'production'
@@ -189,6 +248,7 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
           OtherPlayers: []
         }
       ]
+      setEventGeneration(completedHand[0]!, 41)
       setEventGeneration(completedHand[1]!, 41)
 
       service.writeEntityStream.write(completedHand)
@@ -204,6 +264,59 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     } finally {
       process.env.NODE_ENV = previousNodeEnv
     }
+  })
+
+  test('DEALとRESULTSの世代が異なる集約は不完全ハンドとして保存・配信しない', async () => {
+    const crossGenerationHand: ApiHandEvent[] = [
+      {
+        ApiTypeId: ApiType.EVT_DEAL,
+        timestamp: 8_000,
+        SeatUserIds: SEAT_USER_IDS,
+        Game: {
+          CurrentBlindLv: 1,
+          NextBlindUnixSeconds: 0,
+          Ante: 0,
+          SmallBlind: 100,
+          BigBlind: 200,
+          ButtonSeat: 5,
+          SmallBlindSeat: 0,
+          BigBlindSeat: 1
+        },
+        Progress: {
+          Phase: PhaseType.PREFLOP,
+          NextActionSeat: 2,
+          NextActionTypes: [],
+          NextExtraLimitSeconds: 0,
+          MinRaise: 0,
+          Pot: 300,
+          SidePot: []
+        },
+        OtherPlayers: []
+      },
+      {
+        ApiTypeId: ApiType.EVT_HAND_RESULTS,
+        timestamp: 8_001,
+        HandId: 8,
+        CommunityCards: [],
+        Pot: 300,
+        SidePot: [],
+        ResultType: 0,
+        DefeatStatus: 0,
+        Results: [],
+        OtherPlayers: []
+      }
+    ]
+    setEventGeneration(crossGenerationHand[0]!, 51)
+    setEventGeneration(crossGenerationHand[1]!, 52)
+    const handsBefore = await db.hands.count()
+    const data = jest.fn()
+    service.writeEntityStream.on('data', data)
+
+    service.writeEntityStream.write(crossGenerationHand)
+    await service.writeEntityStream.whenIdle()
+
+    expect(await db.hands.count()).toBe(handsBefore)
+    expect(data).not.toHaveBeenCalled()
   })
 })
 

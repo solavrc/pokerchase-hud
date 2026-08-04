@@ -17,7 +17,8 @@ import {
   __resetActivePortStateForTests,
   claimActivePort,
   markActivePortSessionActive,
-  markActivePortSessionInactive
+  markActivePortSessionInactive,
+  resolveGeneration
 } from './active-port'
 
 const makePort = () => ({ postMessage: jest.fn() }) as unknown as chrome.runtime.Port
@@ -26,7 +27,7 @@ const makeInactiveActivePort = (): chrome.runtime.Port => {
   const port = makePort()
   connectedPorts.add(port)
   claimActivePort(port)
-  markActivePortSessionInactive(port)
+  markActivePortSessionInactive(resolveGeneration(port)!)
   return port
 }
 
@@ -146,7 +147,7 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
 
   it('ACTIVE portがセッション中ならpostMessageしない', async () => {
     const port = makeInactiveActivePort()
-    markActivePortSessionActive(port)
+    markActivePortSessionActive(resolveGeneration(port)!)
 
     expect(await requestReplayDetails([1])).toEqual({
       success: false,

@@ -170,6 +170,14 @@ const portManager = new RuntimePortManager({
   onDisconnected: stopKeepalive,
   onMessage: message => {
     if (typeof message === 'object' && message !== null &&
+      'type' in message && message.type === POKER_CHASE_SESSION_START_EVENT &&
+      'timestamp' in message && typeof message.timestamp === 'number') {
+      window.dispatchEvent(new CustomEvent(POKER_CHASE_SESSION_START_EVENT, {
+        detail: { timestamp: message.timestamp }
+      }))
+      return
+    }
+    if (typeof message === 'object' && message !== null &&
       'type' in message && message.type === REPLAY_PORT_FETCH) {
       const request = message as Partial<ReplayFetchRequest>
       if (typeof request.requestId === 'string' && Array.isArray(request.handIds) &&
@@ -328,16 +336,6 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       // fail-closedで従来通りkeepaliveを開始する。
       const entryCode = (event.data as { Code?: unknown }).Code
       if (typeof entryCode !== 'number' || entryCode === 0) {
-        // 成功した201は、前セッションで保持したlineupを捨てる明示境界。
-        // backgroundのZod結果に依存せず同じcontent script内で通知する。
-        const rawTimestamp = (event.data as { timestamp?: unknown }).timestamp
-        window.dispatchEvent(new CustomEvent(POKER_CHASE_SESSION_START_EVENT, {
-          detail: {
-            timestamp: typeof rawTimestamp === 'number' && Number.isFinite(rawTimestamp)
-              ? rawTimestamp
-              : Date.now()
-          }
-        }))
         armSession()
       }
       break

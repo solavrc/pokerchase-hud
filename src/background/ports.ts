@@ -4,13 +4,14 @@ import type { ApiEvent, ApiType, PlayerStats } from '../app'
 import type { AllPlayersRealTimeStats } from '../realtime-stats/realtime-stats-service'
 import type { HandLogEvent } from '../types/hand-log'
 import type { HandLogEventMessage } from '../types/messages'
+import { POKER_CHASE_SESSION_START_EVENT } from '../constants/runtime'
 import { formatHandLogEntries } from '../utils/hand-log-text'
 import {
   claimActivePort,
   getActivePort,
-  getActivePortGeneration,
   registerActivePortConnection,
-  releaseActivePort
+  releaseActivePort,
+  resolveGeneration
 } from './active-port'
 import {
   getStatsOutputContext,
@@ -25,7 +26,8 @@ let latestRealTimeStats: AllPlayersRealTimeStats | undefined
 // service.liveEvtDealはbatch再計算時にもstatsと同じ文脈へ再アンカーされるため、
 // 値自体は引き続き使う。ただし現在ACTIVE世代がDEALを1件も届けていない間は、
 // 前世代から残った値を席回転へ使ってはならない（MUST NOT）。
-let activeGenerationHasDeal = false
+let activeDealGeneration: number | undefined
+let pendingSessionBoundary: { generation: number, timestamp: number } | undefined
 
 export const getLastKnownStats = (): PlayerStats[] => lastKnownStats
 
@@ -82,7 +84,15 @@ type StatsMessage = {
   handEpoch?: number
 }
 
-const postMessageToPort = (port: chrome.runtime.Port, data: StatsMessage | string): boolean => {
+type SessionBoundaryMessage = {
+  type: typeof POKER_CHASE_SESSION_START_EVENT
+  timestamp: number
+}
+
+const postMessageToPort = (
+  port: chrome.runtime.Port,
+  data: StatsMessage | SessionBoundaryMessage | string
+): boolean => {
   try {
     port.postMessage(data)
     return true
@@ -99,6 +109,12 @@ const postMessageToPort = (port: chrome.runtime.Port, data: StatsMessage | strin
   }
 }
 
+const recordLiveDelivery = (port: chrome.runtime.Port): void => {
+  liveBroadcastSequence++
+  const tabId = port.sender?.tab?.id
+  if (tabId !== undefined) liveBroadcastSequenceByTab.set(tabId, liveBroadcastSequence)
+}
+
 /**
  * game eventの到着元へACTIVE tokenを移し、handover時は現在ハンドの状態を捨てる。
  * relic側へclear通知は送らない（MUST NOT）。
@@ -109,14 +125,15 @@ export const claimActivePortForGameEvent = (
   deliveredAt: number
 ): number => {
   const claim = claimActivePort(port, deliveredAt)
-  const generation = getActivePortGeneration()!
+  const generation = resolveGeneration(port)!
   if (claim !== 'handover') return generation
+  if (pendingSessionBoundary?.generation !== generation) pendingSessionBoundary = undefined
   service.realTimeStatsStream.reset()
   latestRealTimeStats = undefined
-  activeGenerationHasDeal = false
+  activeDealGeneration = undefined
   // tokenを取得したtabには、relic時代に凍結していた現在ハンド表示を次の
   // stream出力まで残してはならない（MUST NOT）。aggregate lineupは触らない。
-  postMessageToPort(port, {
+  postMessageToPort(getActivePort() ?? port, {
     stats: lastKnownStats,
     realTimeStats: { heroStats: {}, playerStats: {} },
     realTimeOnly: true,
@@ -125,8 +142,32 @@ export const claimActivePortForGameEvent = (
   return generation
 }
 
-export const registerActivePortForService = (port: chrome.runtime.Port): void => {
-  registerActivePortConnection(port)
+export const registerActivePortForService = (
+  service: PokerChaseService,
+  port: chrome.runtime.Port
+): void => {
+  if (!registerActivePortConnection(port)) return
+  const generation = resolveGeneration(port)
+  if (generation === undefined) return
+
+  if (pendingSessionBoundary?.generation === generation) {
+    if (postMessageToPort(port, {
+      type: POKER_CHASE_SESSION_START_EVENT,
+      timestamp: pendingSessionBoundary.timestamp
+    })) {
+      pendingSessionBoundary = undefined
+    }
+  }
+
+  if (lastKnownStats.length === 0 && latestRealTimeStats === undefined) return
+  const delivered = postMessageToPort(port, {
+    stats: lastKnownStats,
+    evtDeal: activeDealGeneration === generation ? service.liveEvtDeal : undefined,
+    realTimeStats: latestRealTimeStats,
+    realTimeOnly: lastKnownStats.length === 0,
+    handEpoch: handCompletionEpoch
+  })
+  if (delivered) recordLiveDelivery(port)
 }
 
 /** インポート等の明示一括更新を、ACTIVE有無に関係なく接続tabへ届ける。 */
@@ -142,8 +183,8 @@ export const writeConnectedStatsUpdate = (
 }
 
 /** パース済みDEALを、そのイベントを届けた現在tokenの席文脈として記録する。 */
-export const recordActiveDealContext = (port: chrome.runtime.Port): void => {
-  if (getActivePort() === port) activeGenerationHasDeal = true
+export const recordActiveDealContext = (generation: number): void => {
+  if (resolveGeneration() === generation) activeDealGeneration = generation
 }
 
 /**
@@ -152,11 +193,28 @@ export const recordActiveDealContext = (port: chrome.runtime.Port): void => {
  */
 export const clearActiveRealtimeForSessionEnd = (
   service: PokerChaseService,
-  port: chrome.runtime.Port
+  generation: number
 ): void => {
-  if (getActivePort() !== port) return
+  if (resolveGeneration() !== generation) return
   service.realTimeStatsStream.reset()
   latestRealTimeStats = undefined
+}
+
+/** dedup済みの成功201だけを、そのイベント世代のcontent scriptへ通知する。 */
+export const notifySessionStart = (
+  generation: number,
+  timestamp: number
+): void => {
+  if (resolveGeneration() !== generation) return
+  const activePort = getActivePort()
+  if (activePort && postMessageToPort(activePort, {
+    type: POKER_CHASE_SESSION_START_EVENT,
+    timestamp
+  })) {
+    pendingSessionBoundary = undefined
+    return
+  }
+  pendingSessionBoundary = { generation, timestamp }
 }
 
 export const releaseActivePortForService = (
@@ -167,7 +225,7 @@ export const releaseActivePortForService = (
   if (release === 'relic' || release === 'reconnect-pending') return
   service.realTimeStatsStream.reset()
   latestRealTimeStats = undefined
-  activeGenerationHasDeal = false
+  activeDealGeneration = undefined
 }
 
 /** 完了済みハンドだけをHUDと同じPokerStars形式でService Worker consoleへ出す。 */
@@ -215,8 +273,8 @@ export const startPortPing = (port: chrome.runtime.Port): () => void => {
 export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlPattern: string): void => {
   setDefaultStatsContextProvider(() => ({
     delivery: 'active',
-    generation: getActivePortGeneration(),
-    evtDeal: activeGenerationHasDeal ? service.liveEvtDeal : undefined
+    generation: resolveGeneration(),
+    evtDeal: activeDealGeneration === resolveGeneration() ? service.liveEvtDeal : undefined
   }))
   service.realTimeStatsStream.on('data', data => {
     latestRealTimeStats = data.stats
@@ -233,7 +291,7 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
 
   service.statsOutputStream.on('data', async (hand: PlayerStats[]) => {
     const context = getStatsOutputContext(hand)
-    const currentGeneration = getActivePortGeneration()
+    const currentGeneration = resolveGeneration()
     // 旧ACTIVE世代の非同期計算結果は、現在世代へもlastKnownStatsへも混ぜては
     // ならない（MUST NOT）。後続のrealtime更新による復活も同時に防ぐ。
     if (
@@ -245,11 +303,12 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
 
     if (context?.delivery === 'connected') {
       for (const port of connectedPorts) {
-        postMessageToPort(port, {
+        const delivered = postMessageToPort(port, {
           stats: hand,
           evtDeal: context.evtDeal,
           handEpoch: handCompletionEpoch
         })
+        if (delivered) recordLiveDelivery(port)
       }
       return
     }
@@ -261,7 +320,7 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
     const delivered = postMessageToPort(activePort, {
       stats: hand,
       evtDeal: context?.evtDeal
-        ?? (activeGenerationHasDeal ? service.liveEvtDeal : undefined),
+        ?? (activeDealGeneration === currentGeneration ? service.liveEvtDeal : undefined),
       realTimeStats: latestRealTimeStats,
       // NOT bumped here -- this handler also fires for the hand-start warmup and
       // filter/import/auto-sync rebroadcasts (see handCompletionEpoch's doc comment),
@@ -269,11 +328,7 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
       // completion (the writeEntityStream subscription below) advances it.
       handEpoch: handCompletionEpoch
     })
-    if (delivered) {
-      liveBroadcastSequence++
-      const tabId = activePort.sender?.tab?.id
-      if (tabId !== undefined) liveBroadcastSequenceByTab.set(tabId, liveBroadcastSequence)
-    }
+    if (delivered) recordLiveDelivery(activePort)
   })
   // The one true "hand completed" signal -- see handCompletionEpoch's doc comment
   // above for why this must be writeEntityStream, not statsOutputStream.

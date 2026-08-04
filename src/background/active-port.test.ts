@@ -6,14 +6,14 @@ import {
   findActivePortForPlayer,
   getActivePort,
   getActivePortActivity,
-  getActivePortGeneration,
   isActivePortOutsideSession,
   markActivePortPlayerId,
   markActivePortSessionActive,
   markActivePortSessionInactive,
   readActivePortPlayerId,
   registerActivePortConnection,
-  releaseActivePort
+  releaseActivePort,
+  resolveGeneration
 } from './active-port'
 
 const makePort = (name: string, tabId: number, documentId: string): chrome.runtime.Port =>
@@ -35,7 +35,7 @@ describe('active-port token', () => {
 
   test('最後にgame eventを届けたportがtokenを持ち、handoverはactivityをunknownへ戻す', () => {
     expect(claimActivePort(tabA, 1_000)).toBe('handover')
-    markActivePortSessionInactive(tabA)
+    markActivePortSessionInactive(resolveGeneration(tabA)!)
     expect(getActivePort()).toBe(tabA)
     expect(getActivePortActivity()).toBe('inactive')
 
@@ -44,17 +44,17 @@ describe('active-port token', () => {
     expect(getActivePortActivity()).toBe('unknown')
 
     // 同じportの次イベントはhandoverではなく、既知activityを保つ。
-    markActivePortSessionActive(tabB)
-    expect(claimActivePort(tabB, 21_000)).toBe('same-port')
+    markActivePortSessionActive(resolveGeneration(tabB)!)
+    expect(claimActivePort(tabB, 21_000)).toBe('same-generation')
     expect(getActivePortActivity()).toBe('active')
   })
 
   test('旧portが再利用されるとtokenと、そのportで観測済みのaccountを取り戻す', () => {
     claimActivePort(tabA, 1_000)
-    markActivePortPlayerId(tabA, 111)
+    markActivePortPlayerId(resolveGeneration(tabA)!, 111)
 
     claimActivePort(tabB, 20_000)
-    markActivePortPlayerId(tabB, 222)
+    markActivePortPlayerId(resolveGeneration(tabB)!, 222)
     expect(readActivePortPlayerId()).toBe(222)
 
     claimActivePort(tabA, 40_000)
@@ -73,19 +73,19 @@ describe('active-port token', () => {
     expect(getActivePortActivity()).toBe('unknown')
     expect(isActivePortOutsideSession()).toBe(false)
 
-    markActivePortSessionActive(tabA)
+    markActivePortSessionActive(resolveGeneration(tabA)!)
     expect(isActivePortOutsideSession()).toBe(false)
 
-    markActivePortSessionInactive(tabA)
+    markActivePortSessionInactive(resolveGeneration(tabA)!)
     expect(isActivePortOutsideSession()).toBe(true)
   })
 
   test('account不明またはキューaccount不一致ならACTIVE portへも依頼しない', () => {
     claimActivePort(tabA, 1_000)
-    markActivePortSessionInactive(tabA)
+    markActivePortSessionInactive(resolveGeneration(tabA)!)
     expect(findActivePortForPlayer(undefined)).toBeUndefined()
 
-    markActivePortPlayerId(tabA, 111)
+    markActivePortPlayerId(resolveGeneration(tabA)!, 111)
     expect(findActivePortForPlayer(undefined)).toBe(tabA)
     expect(findActivePortForPlayer(111)).toBe(tabA)
     expect(findActivePortForPlayer(222)).toBeUndefined()
@@ -106,19 +106,24 @@ describe('active-port token', () => {
   test('同一tab/documentのRuntimePortManager再接続はactivityとaccountを引き継ぐ', () => {
     const replacement = makePort('tab-a-reconnected', 1, 'document-a')
     claimActivePort(tabA, 1_000)
-    markActivePortSessionActive(tabA)
-    markActivePortPlayerId(tabA, 111)
-    const generation = getActivePortGeneration()
+    markActivePortSessionActive(resolveGeneration(tabA)!)
+    markActivePortPlayerId(resolveGeneration(tabA)!, 111)
+    const generation = resolveGeneration()
 
     expect(releaseActivePort(tabA, 2_000)).toBe('reconnect-pending')
+    expect(resolveGeneration()).toBe(generation)
+    expect(resolveGeneration(tabA)).toBe(generation)
+    // eventに付与済みの世代で遷移させるため、await中の切断でも失われない。
+    markActivePortSessionInactive(generation!)
     expect(registerActivePortConnection(replacement, 2_500)).toBe(true)
     // 次の数値game eventを待たず、onConnectだけでtoken/accountを復元する。
     expect(getActivePort()).toBe(replacement)
-    expect(getActivePortGeneration()).toBe(generation)
-    expect(getActivePortActivity()).toBe('active')
+    expect(resolveGeneration()).toBe(generation)
+    expect(resolveGeneration(replacement)).toBe(generation)
+    expect(getActivePortActivity()).toBe('inactive')
     expect(readActivePortPlayerId()).toBe(111)
     expect(findActivePortForPlayer(111)).toBe(replacement)
-    expect(claimActivePort(replacement, 12_000)).toBe('same-port')
+    expect(claimActivePort(replacement, 12_000)).toBe('same-generation')
   })
 
   test.each([
@@ -127,7 +132,7 @@ describe('active-port token', () => {
     ['再接続窓超過', makePort('late-tab', 1, 'document-a'), 2_000 + ACTIVE_PORT_RECONNECT_WINDOW_MS + 1]
   ])('%sは同一content script再接続として扱わない', (_label, replacement, connectedAt) => {
     claimActivePort(tabA, 1_000)
-    markActivePortSessionActive(tabA)
+    markActivePortSessionActive(resolveGeneration(tabA)!)
     releaseActivePort(tabA, 2_000)
 
     expect(registerActivePortConnection(replacement, connectedAt)).toBe(false)

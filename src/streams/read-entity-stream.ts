@@ -76,9 +76,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     super.write(queuedSeatUserIds)
   }
 
-  public async recalculateStats(
-    context: StatsOutputContext | undefined = getDefaultStatsContext()
-  ): Promise<void> {
+  public async recalculateStats(context?: StatsOutputContext): Promise<void> {
     // 新しい計算を保証するためキャッシュをクリア
     this.invalidateCache()
 
@@ -103,11 +101,14 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     // filters」）。ここで明示的に同期し、以降のブロードキャストがヒーロー
     // 在籍dealの座席文脈（Player.SeatIndex含む）を使うようにする。
     this.service.liveEvtDeal = this.service.latestEvtDeal
+    // 既定contextは再アンカー後に解決する（MUST）。既定引数で関数進入前に
+    // 評価すると、providerが古い観戦dealを捕まえたままになる。
+    const resolvedContext = context ?? getDefaultStatsContext()
 
     try {
       // すべてのプレイヤーの統計を計算
       const stats = await this.calcStats(seatUserIds)
-      setStatsOutputContext(stats, context)
+      setStatsOutputContext(stats, resolvedContext)
       this.push(stats)
     } catch (error) {
       const context: ErrorContext = {

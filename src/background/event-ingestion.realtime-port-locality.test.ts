@@ -6,6 +6,7 @@ import { registerEventIngestion } from './event-ingestion'
 import {
   connectedPorts,
   getLastKnownStats,
+  getLiveBroadcastSequenceForTab,
   claimActivePortForGameEvent,
   registerStreamSubscriptions,
   setLastKnownStats,
@@ -14,8 +15,10 @@ import {
 import {
   __resetActivePortStateForTests,
   getActivePort,
-  getActivePortGeneration
+  resolveGeneration
 } from './active-port'
+import { POKER_CHASE_SESSION_START_EVENT } from '../constants/runtime'
+import * as apiEventKey from '../utils/api-event-key'
 import {
   __resetStatsOutputContextForTests,
   setStatsRequestContext
@@ -99,6 +102,15 @@ const makeAction = (timestamp: number) => ({
     Pot: 50,
     SidePot: [],
   },
+})
+
+const makeEntryQueued = (timestamp: number) => ({
+  ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+  timestamp,
+  Code: 0,
+  BattleType: 0,
+  Id: 'stage000_003',
+  IsRetire: false
 })
 
 const sessionResults = {
@@ -202,6 +214,24 @@ describe('stats delivery follows the active-port token', () => {
     expect(tabB.port.postMessage).not.toHaveBeenCalled()
   })
 
+  test('relicからの重複再送はtoken・世代・realtime streamを動かさない', async () => {
+    const deal = makeDeal(625, 101)
+    await sendB(deal)
+    await waitUntil(() => getActivePort() === tabB.port as unknown as chrome.runtime.Port)
+    const generation = resolveGeneration()
+    tabA.port.postMessage.mockClear()
+    tabB.port.postMessage.mockClear()
+    const resetSpy = jest.spyOn(service.realTimeStatsStream, 'reset')
+
+    await sendA({ ...deal })
+
+    expect(getActivePort()).toBe(tabB.port)
+    expect(resolveGeneration()).toBe(generation)
+    expect(resetSpy).not.toHaveBeenCalled()
+    expect(tabA.port.postMessage).not.toHaveBeenCalled()
+    expect(tabB.port.postMessage).not.toHaveBeenCalled()
+  })
+
   test('別世代がDEAL前にtokenを取得しても、旧世代のservice.liveEvtDealを集計statsへ混ぜない', async () => {
     await sendB(makeDeal(650, 101))
     await waitUntil(() => getActivePort() === tabB.port as unknown as chrome.runtime.Port)
@@ -228,7 +258,7 @@ describe('stats delivery follows the active-port token', () => {
   test('旧世代で開始した遅延stats出力をhandover後のACTIVEとcacheへ配信しない', async () => {
     await sendB(makeDeal(700, 101))
     await waitUntil(() => getActivePort() === tabB.port as unknown as chrome.runtime.Port)
-    const oldGeneration = getActivePortGeneration()!
+    const oldGeneration = resolveGeneration()!
     const oldDeal = makeDeal(700, 101)
     const request = oldDeal.SeatUserIds
     let releaseCalculation!: (stats: any[]) => void
@@ -260,18 +290,109 @@ describe('stats delivery follows the active-port token', () => {
     expect(getLastKnownStats()).not.toEqual([expect.objectContaining({ playerId: 101 })])
   })
 
+  test('再接続隙間で完了した同一世代statsを後継transportへ引き渡す', async () => {
+    await sendB(makeDeal(725, 101))
+    await waitUntil(() => getActivePort() === tabB.port as unknown as chrome.runtime.Port)
+    const generation = resolveGeneration()!
+    const request = [101, 102]
+    const delayedStats = [{ playerId: 101, statResults: [] }]
+    let releaseCalculation!: () => void
+    const calculation = new Promise<any[]>(resolve => {
+      releaseCalculation = () => resolve(delayedStats)
+    })
+    const started = new Promise<void>(resolve => {
+      jest.spyOn(service.statsOutputStream, 'calcStats').mockImplementation(async () => {
+        resolve()
+        return await calculation
+      })
+    })
+    setStatsRequestContext(request, {
+      delivery: 'active',
+      generation,
+      evtDeal: makeDeal(725, 101)
+    })
+    service.statsOutputStream.write(request)
+    await started
+
+    tabB.disconnectHandlers.forEach(handler => handler())
+    expect(getActivePort()).toBeUndefined()
+    expect(resolveGeneration()).toBe(generation)
+    releaseCalculation()
+    await service.statsOutputStream.whenIdle()
+    expect(getLastKnownStats()).toEqual(delayedStats)
+
+    const replacement = makePort(2, 'document-b')
+    extraPorts.push(replacement)
+    connect(replacement.port as unknown as chrome.runtime.Port)
+
+    expect(resolveGeneration(replacement.port as unknown as chrome.runtime.Port)).toBe(generation)
+    expect(replacement.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      stats: delayedStats
+    }))
+  })
+
+  test('初回イベントのdedup待ち中に再接続しても、確定世代は後継transportへ乗る', async () => {
+    const original = makePort(3, 'document-c')
+    extraPorts.push(original)
+    connect(original.port as unknown as chrome.runtime.Port)
+    const sendOriginal = original.port.onMessage.addListener.mock.calls[0][0]
+    let resolveMerge!: (result: { added: apiEventKey.RawApiEvent[], duplicates: number }) => void
+    jest.spyOn(apiEventKey, 'mergeApiEvents').mockImplementation(
+      async (_db, _events) => await new Promise(resolve => { resolveMerge = resolve })
+    )
+
+    const pending = sendOriginal(makeDeal(740, 301))
+    await waitUntil(() => resolveMerge !== undefined)
+    original.disconnectHandlers.forEach(handler => handler())
+    const replacement = makePort(3, 'document-c')
+    extraPorts.push(replacement)
+    connect(replacement.port as unknown as chrome.runtime.Port)
+
+    resolveMerge({ added: [makeDeal(740, 301) as unknown as apiEventKey.RawApiEvent], duplicates: 0 })
+    await pending
+
+    expect(getActivePort()).toBe(replacement.port)
+    expect(resolveGeneration(original.port as unknown as chrome.runtime.Port)).toBe(
+      resolveGeneration(replacement.port as unknown as chrome.runtime.Port)
+    )
+    expect(replacement.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      realTimeOnly: true,
+      realTimeStats: { heroStats: {}, playerStats: {} }
+    }))
+  })
+
+  test('dedup通過した成功201だけがbackground権威のsession境界を作る', async () => {
+    const entry = makeEntryQueued(750)
+    await sendB(entry)
+    await sendA({ ...entry })
+
+    const boundaryMessages = [
+      ...tabA.port.postMessage.mock.calls,
+      ...tabB.port.postMessage.mock.calls
+    ].map(([message]) => message).filter(message => message.type === POKER_CHASE_SESSION_START_EVENT)
+    expect(boundaryMessages).toEqual([{
+      type: POKER_CHASE_SESSION_START_EVENT,
+      timestamp: 750
+    }])
+    expect(getActivePort()).toBe(tabB.port)
+  })
+
   test('ACTIVE未確定でも明示一括stats更新は接続中の全ゲームportへ届く', async () => {
     const explicitStats = [{ playerId: 777, statResults: [] }]
     jest.spyOn(service.statsOutputStream, 'calcStats').mockResolvedValue(explicitStats as any)
     tabA.port.postMessage.mockClear()
     tabB.port.postMessage.mockClear()
 
+    const sequenceA = getLiveBroadcastSequenceForTab(1)
+    const sequenceB = getLiveBroadcastSequenceForTab(2)
     writeConnectedStatsUpdate(service, [777])
     await service.statsOutputStream.whenIdle()
 
     expect(getActivePort()).toBeUndefined()
     expect(tabA.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({ stats: explicitStats }))
     expect(tabB.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({ stats: explicitStats }))
+    expect(getLiveBroadcastSequenceForTab(1)).toBeGreaterThan(sequenceA)
+    expect(getLiveBroadcastSequenceForTab(2)).toBeGreaterThan(sequenceB)
   })
 
   test('同一tab/documentの500ms再接続は進行中ハンドのDEAL・ホールカード・スタックを引き継ぐ', async () => {

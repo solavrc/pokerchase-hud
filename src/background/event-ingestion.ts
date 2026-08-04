@@ -14,6 +14,7 @@ import {
   claimActivePortForGameEvent,
   clearActiveRealtimeForSessionEnd,
   connectedPorts,
+  notifySessionStart,
   recordActiveDealContext,
   registerActivePortForService,
   releaseActivePortForService,
@@ -201,7 +202,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   chrome.runtime.onConnect.addListener(port => {
     if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
       connectedPorts.add(port)
-      registerActivePortForService(port)
+      registerActivePortForService(service, port)
       // 持ち越し分の再開点。セッション終了時に認証エンベロープを捕獲できて
       // いないと取得は繰り延べられる（キューには残る）。エンベロープは
       // ページ再読み込み後のホーム到達で捕まるので、そのページが繋いできた
@@ -338,13 +339,13 @@ const applySessionActivity = (
   rawApiTypeId: unknown,
   message: ApiMessage | { type: string },
   activeOnly = false,
-  port?: chrome.runtime.Port
+  generation?: number
 ): void => {
   // forced update用の全体値と、現在tokenを持つACTIVEポートの値を進める。
   // 前者の意味は変えず、後者はリプレイ取得の判定点だけが読む。
   if (!activeOnly && (rawApiTypeId === ApiType.EVT_SESSION_RESULTS || rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID)) {
     markSessionInactive()
-    if (port) markActivePortSessionInactive(port)
+    if (generation !== undefined) markActivePortSessionInactive(generation)
     return
   }
   if (
@@ -352,22 +353,22 @@ const applySessionActivity = (
     rawApiTypeId === ApiType.EVT_SESSION_DETAILS
   ) {
     markSessionActive()
-    if (port) markActivePortSessionActive(port)
+    if (generation !== undefined) markActivePortSessionActive(generation)
     return
   }
   if (rawApiTypeId === ApiType.EVT_DEAL) {
     const rawPlayer = (message as { Player?: unknown }).Player
     if (rawPlayer != null) {
       markSessionActive()
-      if (port) {
-        markActivePortSessionActive(port)
+      if (generation !== undefined) {
+        markActivePortSessionActive(generation)
         // このタブのヒーローが誰かを控える。キューに積んだアカウントと
         // 一致するポートへだけ取得を依頼するために使う。
         const seatIndex = (rawPlayer as { SeatIndex?: unknown }).SeatIndex
         const seatUserIds = (message as { SeatUserIds?: unknown }).SeatUserIds
         if (typeof seatIndex === 'number' && Array.isArray(seatUserIds)) {
           const playerId = seatUserIds[seatIndex]
-          if (typeof playerId === 'number' && playerId > 0) markActivePortPlayerId(port, playerId)
+          if (typeof playerId === 'number' && playerId > 0) markActivePortPlayerId(generation, playerId)
         }
       }
     }
@@ -375,9 +376,8 @@ const applySessionActivity = (
 }
 
 /**
- * 1件のAPIイベントを処理する: ACTIVE tokenの移譲 → Raw Event Lakeへの保存（耐久性バリア）→
- * セッション状態追跡・自動同期トリガー（raw書き込み決着後のみ）→
- * リアルタイムパイプラインへの投入。
+ * 1件のAPIイベントを処理する: Raw Event Lakeへの保存・重複排除 → ACTIVE token/
+ * 世代/activity更新 → リアルタイムパイプライン投入 → UI配信。
  *
  */
 const processEvent = async (
@@ -390,13 +390,7 @@ const processEvent = async (
   const rawTimestamp = (message as { timestamp?: unknown }).timestamp
   const hasUsableRawKey = validateMessage(message).success
 
-  // numeric timestamp+ApiTypeIdを持つWebSocket由来イベントだけがtokenを動かす。
-  // queueへ積む直前の到着時刻を使い、handover時は単一realtime streamを
-  // 後続処理より先にresetする（MUST）。真の重複やservice.ready失敗でも
-  // 「このportが最後にgame eventを届けた」というtokenの事実は変わらない。
-  const portGeneration = hasUsableRawKey && port
-    ? claimActivePortForGameEvent(service, port, deliveredAt)
-    : undefined
+  let portGeneration: number | undefined
 
   // Ensure service is ready before processing messages
   try {
@@ -440,7 +434,9 @@ const processEvent = async (
           console.error('[background] Failed to record dropped-event stats:', recordErr)
         )
       }
-      applySessionActivity(rawApiTypeId, message, true, port)
+      // forced-update用の全体activityだけはfail-closedでACTIVE化する。
+      // raw mergeを通過していないためACTIVE-port世代/activityは動かさない。
+      applySessionActivity(rawApiTypeId, message, true)
       return
     }
   } else {
@@ -450,15 +446,21 @@ const processEvent = async (
     console.warn('[background] Event missing numeric timestamp/ApiTypeId, cannot store:', message)
   }
 
-  // ここから先はraw書き込みが成功したか、保存不可能で待つべきI/Oが
-  // 無かった場合のみ到達する。真の重複と書き込み失敗は上でreturn済み。
+  // token・世代・activityを動かすのは、raw mergeの重複判定を通過した
+  // 数値game eventだけ（MUST）。重複再送がrelicから来てもhandover/resetを
+  // 起こさず、保存不能なイベントもACTIVE-port状態へ混ぜない。
+  if (hasUsableRawKey && port) {
+    portGeneration = claimActivePortForGameEvent(service, port, deliveredAt)
+  }
+
+  // ここから先はraw書き込み・重複排除・token世代確定が完了済み。
 
   // 309の現在ハンド状態はZod検証より先に破棄する（MUST）。集計lineupは
   // 保持したまま、後続のfilter再計算が終了済みハンドのSPR/ポットオッズを
   // 再配信できないようにする。真の重複は上でreturn済みなので新ハンドを
   // 過去のreconnect resendで消すこともない。
-  if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS && port) {
-    clearActiveRealtimeForSessionEnd(service, port)
+  if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS && portGeneration !== undefined) {
+    clearActiveRealtimeForSessionEnd(service, portGeneration)
   }
 
   // Forced-update安全性述語（update-manager.ts）のセッション状態追跡。
@@ -467,7 +469,16 @@ const processEvent = async (
   // parseApiEvent()がnullを返すようになっても、セッション状態が永久に
   // 誤った値のまま詰まらないようにするため（codexレビュー指摘）。
   // 詳細は`applySessionActivity`のコメント参照。
-  applySessionActivity(rawApiTypeId, message, false, port)
+  applySessionActivity(rawApiTypeId, message, false, portGeneration)
+
+  const successfulSessionStartTimestamp =
+    rawApiTypeId === ApiType.EVT_ENTRY_QUEUED &&
+    !isExplicitEntryFailure(message) &&
+    portGeneration !== undefined
+      ? (typeof rawTimestamp === 'number' && Number.isFinite(rawTimestamp)
+          ? rawTimestamp
+          : Date.now())
+      : undefined
 
   // リプレイ取り込み層（既定OFF）。**セッション中は取得しない**（MUST）ので、
   // ここでやるのは HandId をキューへ積むことだけ。取得はセッション終了の
@@ -628,6 +639,9 @@ const processEvent = async (
     ).catch(err =>
       console.error('[background] Failed to record undecoded event stats:', err)
     )
+    if (successfulSessionStartTimestamp !== undefined) {
+      notifySessionStart(portGeneration!, successfulSessionStartTimestamp)
+    }
     return
   }
 
@@ -636,6 +650,9 @@ const processEvent = async (
     // アプリケーションで使用しないApiTypeIdのイベントはパイプラインに投入しないが
     // 内容は記録（生ログとしては上で既に保存済み）
     console.info(`[background] Non-application event (${data.ApiTypeId}): ${JSON.stringify(data)}`)
+    if (successfulSessionStartTimestamp !== undefined) {
+      notifySessionStart(portGeneration!, successfulSessionStartTimestamp)
+    }
     return
   }
 
@@ -644,14 +661,17 @@ const processEvent = async (
   // ここでdataはApiEvent型（isApplicationApiEventで保証済み）
   service.eventLogger(data, 'info')
 
-  if (port && isApiEventType(data, ApiType.EVT_DEAL)) {
-    recordActiveDealContext(port)
+  if (portGeneration !== undefined && isApiEventType(data, ApiType.EVT_DEAL)) {
+    recordActiveDealContext(portGeneration)
   }
 
   // ストリーム処理（DB保存は上で完了済み・耐久性確定済み）
   service.handLogStream.write(data)
   service.handAggregateStream.write(data)
   service.realTimeStatsStream.write(data)
+  if (successfulSessionStartTimestamp !== undefined) {
+    notifySessionStart(portGeneration!, successfulSessionStartTimestamp)
+  }
   // Auto-sync起動・pending update再チェック（309/201/308）は上のRaw
   // Event Lake保存直後に生ApiTypeIdベースで既にトリガー済み（本ブロックの
   // パース成功はストリーム投入のみが目的）

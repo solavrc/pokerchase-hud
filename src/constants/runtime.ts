@@ -24,9 +24,10 @@ export const STORAGE_KEY = 'pokerChaseServiceState'
  */
 export const POKER_CHASE_SESSION_END_EVENT = 'PokerChaseSessionEndEvent'
 /**
- * content_script.tsが成功した生EVT_ENTRY_QUEUED（201）を観測した際にdispatch
- * するwindow CustomEvent。終了セッションのretained lineupを新しい着席世代へ
- * 持ち越さないため、App.tsxが明示的な境界として使う。
+ * backgroundがRaw Event Lakeの重複排除を通過した成功EVT_ENTRY_QUEUED（201）を
+ * 発生世代のportへ通知し、content_script.tsがdispatchするwindow CustomEvent。
+ * 終了セッションのretained lineupを新しい着席世代へ持ち越さないため、App.tsxが
+ * 明示的な境界として使う。生201のローカル観測は境界の権威にしない。
  */
 export const POKER_CHASE_SESSION_START_EVENT = 'PokerChaseSessionStartEvent'
 
