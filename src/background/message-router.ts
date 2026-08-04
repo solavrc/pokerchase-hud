@@ -12,7 +12,7 @@ import { getRecentHands } from '../services/recent-hands-service'
 import { firebaseAuthService } from '../services/firebase-auth-service'
 import { autoSyncService } from '../services/auto-sync-service'
 import { getOperationState, isOperationIdle } from './operation-state'
-import { getLastKnownStats, setLastKnownStats, getLiveBroadcastSequence } from './ports'
+import { getLastKnownStats, setLastKnownStats, getLiveBroadcastSequenceForTab } from './ports'
 import { resolveAdvisory } from './rebuild-advisory'
 import { getUndecodedEventStats, resetUndecodedEventStats } from './undecoded-event-tracker'
 import { applyUpdateNow } from './update-manager'
@@ -710,20 +710,22 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       // プリゲーム・ヒーロースタッツのレース対策: getLatestSessionStats()は
       // service.ready/filtersRestoredを待ってからDBを読むため、その待機中に
       // 本物のEVT_DEALがこのタブのportを経由して処理され、ライブの完全な
-      // 席順がbroadcastMessage（ports.ts）で先にこのタブへ届く可能性がある。
+      // 席順がACTIVE-port delivery（ports.ts）で先にこのタブへ届く可能性がある。
       // その場合、後から届くヒーロー単独のフォールバックを送ってしまうと、
       // 届いたばかりのライブ席順を上書きしてしまう。この一手リクエストを
-      // 受け取った時点のliveBroadcastSequenceを控えておき、フォールバック
-      // 計算が終わった時点で値が変わっていれば「待機中に本物のブロード
-      // キャストが発生した」ということなので、送信せず静かに捨てる。
+      // 受け取った時点のこのタブ固有のlive delivery sequenceを控えておき、フォールバック
+      // 計算が終わった時点で値が変わっていれば「待機中にこのタブへ本物の
+      // ACTIVE配信が発生した」ということなので、送信せず静かに捨てる。
       // （`lastKnownStats.length > 0`のような単純な非空チェックでは代用
       // できない -- Service Workerの生存期間中はタブを跨いで残り続けるため、
       // このセッションで最初のハンドが終わった後は常に非空になってしまい、
       // 無関係な別タブのマウントでもフォールバックが永久に抑制されてしまう）
-      const liveBroadcastSequenceAtRequest = getLiveBroadcastSequence()
+      const requestingTabId = sender.tab?.id
+      const liveBroadcastSequenceAtRequest = getLiveBroadcastSequenceForTab(requestingTabId)
       getLatestSessionStats(preGame)
         .then(stats => {
-          if (preGame && getLiveBroadcastSequence() !== liveBroadcastSequenceAtRequest) {
+          if (preGame &&
+            getLiveBroadcastSequenceForTab(requestingTabId) !== liveBroadcastSequenceAtRequest) {
             sendResponse({ success: true })
             return
           }

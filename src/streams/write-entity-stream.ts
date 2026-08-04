@@ -23,6 +23,10 @@ import { getPositionMap, getBigBlindUserId } from '../utils/position-utils'
 import { defaultRegistry } from '../stats'
 import type { ErrorContext } from '../types/errors'
 import { deriveHandSettlement } from '../utils/hand-chip-accounting'
+import {
+  getEventGeneration,
+  setStatsRequestContext
+} from './stats-output-context'
 
 /**
  * エンティティ書き込みStream（パイプライン第2段階）
@@ -46,6 +50,20 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
   }
   protected async transform(events: ApiHandEvent[]): Promise<void> {
     try {
+      const dealEvent = events.find((event): event is ApiEvent<ApiType.EVT_DEAL> =>
+        event.ApiTypeId === ApiType.EVT_DEAL
+      )
+      const resultsEvent = events.find(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)
+      if (
+        dealEvent &&
+        resultsEvent &&
+        getEventGeneration(dealEvent) !== getEventGeneration(resultsEvent)
+      ) {
+        // 世代交代を跨いだDEAL/RESULTSは1ハンドとして成立しない（MUST NOT）。
+        // 既存の不完全・キメラハンドと同様にDB/下流へは出さない。
+        console.log(`[WriteEntityStream] Rejected cross-generation hand (HandId=${resultsEvent.HandId})`)
+        return
+      }
       const handState = this.toHandState(events)
       if (handState === null) {
         // キメラハンド（テーブル移動によるDEAL/RESULTS不整合）。DB書き込み・
@@ -67,6 +85,11 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
       // cache. The completed hand changes every aggregate, so invalidate only
       // after its entity transaction commits and before downstream recalculates.
       this.service.statsOutputStream.invalidateCache()
+      setStatsRequestContext(hand.seatUserIds, {
+        delivery: 'active',
+        generation: resultsEvent ? getEventGeneration(resultsEvent) : undefined,
+        evtDeal: dealEvent
+      })
       this.push(hand.seatUserIds)
     } catch (error: unknown) {
       const context: ErrorContext = {

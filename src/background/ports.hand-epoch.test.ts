@@ -31,6 +31,7 @@ import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { ApiType } from '../types'
 import type { ApiEvent } from '../app'
 import { registerStreamSubscriptions, connectedPorts, setLastKnownStats } from './ports'
+import { __resetActivePortStateForTests, claimActivePort } from './active-port'
 
 const GAME_URL_PATTERN = 'https://example.com/*'
 
@@ -94,18 +95,20 @@ describe('ports.ts handCompletionEpoch (audit finding 11 follow-up, P2)', () => 
 
     fakePort = { postMessage: jest.fn() }
     connectedPorts.add(fakePort as unknown as chrome.runtime.Port)
+    claimActivePort(fakePort as unknown as chrome.runtime.Port)
 
     registerStreamSubscriptions(service, GAME_URL_PATTERN)
   })
 
   afterEach(async () => {
     connectedPorts.clear()
+    __resetActivePortStateForTests()
     setLastKnownStats([])
     db.close()
     await db.delete()
   })
 
-  /** handEpoch stamped on the most recent broadcastMessage() postMessage call (any of
+  /** handEpoch stamped on the most recent ACTIVE-port postMessage call (any of
    * this test's fakePort calls -- both statsOutputStream's and realTimeStatsStream's
    * broadcasts carry the field). */
   function lastBroadcastHandEpoch(): number | undefined {

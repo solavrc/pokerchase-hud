@@ -1,9 +1,14 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { POKER_CHASE_SERVICE_EVENT, POKER_CHASE_SESSION_END_EVENT } from "../constants/runtime"
+import {
+  POKER_CHASE_SERVICE_EVENT,
+  POKER_CHASE_SESSION_END_EVENT,
+  POKER_CHASE_SESSION_START_EVENT,
+  type PokerChaseSessionStartDetail
+} from "../constants/runtime"
 import { ApiType, isApiEventType } from "../types"
 import type { Options } from '../utils/options-storage'
 import type { ExistPlayerStats, PlayerStats } from "../types"
-import type { StatsData } from "../content_script"
+import type { PokerChaseServiceData, StatsData } from "../content_script"
 import { defaultStatDisplayConfigs } from "../stats"
 import type { StatDisplayConfig } from "../types"
 import type {
@@ -31,8 +36,8 @@ import type { AllPlayersRealTimeStats } from "../realtime-stats/realtime-stats-s
 const EMPTY_SEATS: PlayerStats[] = Array.from({ length: 6 }, () => ({ playerId: -1 }))
 
 // 監査指摘11（P2）「開いたドリルダウンパネルが無期限に古くなる」対応:
-// ports.tsのbroadcastMessage()は既にPOKER_CHASE_SERVICE_EVENTの生payloadへ
-// `handEpoch`（`liveBroadcastSequence`をそのまま積んだもの、詳細はports.ts参照）
+// ports.tsのACTIVE-port deliveryは既にPOKER_CHASE_SERVICE_EVENTの生payloadへ
+// `handEpoch`（handCompletionEpochの現在値、詳細はports.ts参照）
 // を積んでいるが、content_script.ts側の`StatsData`型（同ファイル定義）は
 // 別ワークストリームが所有しておりこのフィールドをまだ宣言していない。
 // content_script.tsの転送コード自体は型アサーションを経由するだけで実行時の
@@ -85,12 +90,16 @@ const App = memo(() => {
   const [openPositionalPanelPlayerId, setOpenPositionalPanelPlayerId] = useState<number | null>(null)
   const [openRecentHandsPanelPlayerIds, setOpenRecentHandsPanelPlayerIds] = useState<ReadonlySet<number>>(() => new Set())
   // 監査指摘11（P2）対応: 生きたハンドが1件完了するたびに増える「hand epoch」
-  // （ports.tsの`liveBroadcastSequence`をそのまま反映、上のStatsDataWithHandEpoch
+  // （ports.tsの`handCompletionEpoch`を反映、上のStatsDataWithHandEpoch
   // 参照）。Hud経由でドリルダウンパネルへpropとして渡し、そのフェッチeffectの
   // depsに含めることで、開いたままのパネルがハンド完了ごとに1回だけ再フェッチ
   // するようにする（実況の1アクションごとの更新では変化しないため再フェッチ
   // ストームは起きない）。
   const [handEpoch, setHandEpoch] = useState(0)
+  // 309後、201通知が欠落しても最初の信頼済みヒーロー着席DEALを新境界にする。
+  const awaitingTrustedSessionBoundaryRef = useRef(false)
+  // 成功201の受信時刻より古いDEALを伴う遅延statsは、旧session計算の完了。
+  const trustedSessionBoundaryTimestampRef = useRef<number | undefined>(undefined)
 
   // ユーザー指定キーでHUD + hand logを切り替える。App自体は非表示時も
   // マウントされたままなので、同じキーで必ず再表示できる。
@@ -137,6 +146,15 @@ const App = memo(() => {
     setOpenRecentHandsPanelPlayerIds(new Set())
   }, [])
 
+  const discardRetainedLineup = useCallback(() => {
+    dimCacheRef.current.clear()
+    setDimmedSeatIndices(new Set())
+    setStats(EMPTY_SEATS)
+    setAllPlayersRealTimeStats(undefined)
+    setHeroOriginalSeatIndex(undefined)
+    closeAllDrillDownPanels()
+  }, [closeAllDrillDownPanels])
+
   // 表示中のラインナップからplayerIdが実際に消える境界（席交代、信頼できる
   // 一括更新、テーブル切替）で、その開状態もpruneする。離席とセッション終了は
   // statsを保持するためここでは消えず、直近ハンドへ引き続きアクセスできる。
@@ -164,20 +182,48 @@ const App = memo(() => {
   // 現在lineupにいないplayerIdは再集計できないため、フィルター変更後も最後に
   // 計算できたスナップショットを表示する。
   const handleStatsMessage = useCallback(
-    ({ detail }: CustomEvent<StatsData>) => {
-      let mappedStats = detail.stats
-
-      // SPR・ポットオッズの実況更新はbackgroundで発生元ポートにだけ配信される。
+    ({ detail }: CustomEvent<PokerChaseServiceData>) => {
+      // SPR・ポットオッズの実況更新はbackgroundでACTIVEポートにだけ配信される。
       // 集計lineupを触らず、現在ハンド専用値だけを更新する。
       if (detail.realTimeOnly) {
         if (detail.realTimeStats) setAllPlayersRealTimeStats(detail.realTimeStats)
         return
       }
+      if (!('stats' in detail) || !detail.stats) return
+      let mappedStats = detail.stats
+
+      const isTrustedSeatedDeal = detail.evtDeal !== undefined
+        && isApiEventType(detail.evtDeal, ApiType.EVT_DEAL)
+        && detail.evtDeal.Player?.SeatIndex !== undefined
+      const trustedDealTimestamp = isTrustedSeatedDeal
+        ? detail.evtDeal!.timestamp
+        : undefined
+      const boundaryTimestamp = trustedSessionBoundaryTimestampRef.current
+      if (
+        awaitingTrustedSessionBoundaryRef.current &&
+        boundaryTimestamp !== undefined &&
+        (
+          !isTrustedSeatedDeal ||
+          trustedDealTimestamp === undefined || trustedDealTimestamp < boundaryTimestamp
+        )
+      ) {
+        // 201同期clear後に完了した旧sessionの非同期集計でlineup/dimCacheを
+        // 再構築してはならない（MUST NOT）。次の信頼済み着席DEALまで待つ。
+        return
+      }
+      if (isTrustedSeatedDeal && awaitingTrustedSessionBoundaryRef.current) {
+        // 201が観測できなかった場合も、次のヒーロー着席DEALを新session境界と
+        // して旧lineupを破棄しなければならない（MUST）。このDEALのlineupは
+        // 同じcallback後半で直ちに描画する。
+        awaitingTrustedSessionBoundaryRef.current = false
+        trustedSessionBoundaryTimestampRef.current = undefined
+        discardRetainedLineup()
+      }
 
       // 観戦dealはPlayerが無いためヒーロー基準へ回転できず、別テーブルの席順かも
       // しれない。この未回転lineupでレビュー対象のHUDを上書きしてはならない
-      // （MUST NOT）。現在ハンド専用値は上のポート固有経路で更新済みなので、
-      // 全ポートへ届く集計ブロードキャストでは変更しない。
+      // （MUST NOT）。現在ハンド専用値は上のACTIVE経路で更新済みなので、
+      // ACTIVEポートへ届く集計更新でもlineupは変更しない。
       const isSpectatorDeal = detail.evtDeal !== undefined
         && isApiEventType(detail.evtDeal, ApiType.EVT_DEAL)
         && detail.evtDeal.Player === undefined
@@ -332,7 +378,7 @@ const App = memo(() => {
       setDimmedSeatIndices(nextDimmedSeatIndices)
       setStats(dimmedStats)
     },
-    [closeAllDrillDownPanels]
+    [closeAllDrillDownPanels, discardRetainedLineup]
   )
 
   useEffect(() => {
@@ -364,13 +410,26 @@ const App = memo(() => {
   // セッション終了後も統計・離席表示・ドリルダウンはレビュー用に保持する。
   // SPR/ポットオッズは現在ハンドだけの値なので、終了通知ではそこだけを消す。
   const handleSessionEnd = useCallback(() => {
+    awaitingTrustedSessionBoundaryRef.current = true
+    trustedSessionBoundaryTimestampRef.current = undefined
     setAllPlayersRealTimeStats(undefined)
   }, [])
+
+  const handleSessionStart = useCallback((event: CustomEvent<PokerChaseSessionStartDetail>) => {
+    awaitingTrustedSessionBoundaryRef.current = true
+    trustedSessionBoundaryTimestampRef.current = event.detail.timestamp
+    discardRetainedLineup()
+  }, [discardRetainedLineup])
 
   useEffect(() => {
     window.addEventListener(POKER_CHASE_SESSION_END_EVENT, handleSessionEnd)
     return () => window.removeEventListener(POKER_CHASE_SESSION_END_EVENT, handleSessionEnd)
   }, [handleSessionEnd])
+
+  useEffect(() => {
+    window.addEventListener(POKER_CHASE_SESSION_START_EVENT, handleSessionStart)
+    return () => window.removeEventListener(POKER_CHASE_SESSION_START_EVENT, handleSessionStart)
+  }, [handleSessionStart])
 
   const handleChromeMessage = useCallback((message: ChromeMessage) => {
     if (message.action === "latestStats" && message.stats) {

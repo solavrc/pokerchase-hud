@@ -424,8 +424,8 @@ class PokerChaseService {
   readonly writeEntityStream: WriteEntityStream
   readonly statsOutputStream: ReadEntityStream             // Calculates and outputs stats
   readonly handLogStream: HandLogStream                    // Real-time hand log display
-  // ポート無しの処理・単体テスト用フォールバック。productionのライブ取り込みは
-  // ports.tsが接続ポートごとにRealTimeStatsStreamを生成する。
+  // 現在ハンド専用の単一ストリーム。ACTIVE portのhandover時にports.tsがresetし、
+  // 出力もその時点のACTIVE portだけへ届ける（MUST）。
   readonly realTimeStatsStream: RealTimeStatsStream
   constructor({ db, playerId }: { db: PokerChaseDB, playerId?: number }) {
     this._playerId = playerId

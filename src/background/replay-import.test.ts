@@ -17,16 +17,32 @@ import {
   type ReplayImportDeps
 } from './replay-import'
 import {
-  __resetUpdateManagerStateForTests,
-  markSessionActive,
-  markSessionInactive
-} from './update-manager'
+  __resetActivePortStateForTests,
+  claimActivePort,
+  findActivePortForPlayer,
+  markActivePortPlayerId,
+  markActivePortSessionActive,
+  markActivePortSessionInactive,
+  readActivePortPlayerId,
+  resolveGeneration
+} from './active-port'
 
 /** テスト用のダミーポート（依頼先の同一性だけを見る）。 */
 const FAKE_PORT = { name: 'test-port' } as unknown as chrome.runtime.Port
+const SECOND_FAKE_PORT = { name: 'second-test-port' } as unknown as chrome.runtime.Port
 
 /** 2026-08-01 12:00 JST 相当。暦日の窓の基準に使う。 */
 const NOW = Date.UTC(2026, 7, 1, 3, 0, 0)
+
+const markSessionActive = (port: chrome.runtime.Port = FAKE_PORT): void => {
+  claimActivePort(port, NOW)
+  markActivePortSessionActive(resolveGeneration(port)!)
+}
+
+const markSessionInactive = (port: chrome.runtime.Port = FAKE_PORT): void => {
+  claimActivePort(port, NOW)
+  markActivePortSessionInactive(resolveGeneration(port)!)
+}
 
 /** `/replay/detail` の成功応答（ページ側で sanitize 済み ＝ `session` は無い）。 */
 const detailOf = (handId: number) => ({
@@ -58,9 +74,7 @@ describe('replay import layer', () => {
       fetchCalls.push(handIds)
       return fetchImpl(handIds)
     },
-    // 既定は「接続中の全タブがセッション外」「依頼先はこの1つ」。
-    // ポート由来の判定はそれ自体を検証するテストで差し替える。
-    allPortsInactive: () => true,
+    // 既定のfairness判定はactive-port module、依頼先はテスト用の1port。
     resolvePort: () => FAKE_PORT,
     startKeepAlive: async () => {
       keepAliveStarts += 1
@@ -76,7 +90,7 @@ describe('replay import layer', () => {
     await db.apiEvents.clear()
     await db.replayDetails.clear()
     __resetReplayImportForTests()
-    __resetUpdateManagerStateForTests()
+    __resetActivePortStateForTests()
     fetchCalls = []
     keepAliveStarts = 0
     keepAliveStops = 0
@@ -120,36 +134,30 @@ describe('replay import layer', () => {
       expect(await readReplayImportQueue(db)).toEqual([])
     })
 
-    /**
-     * Codexレビュー指摘（P1）: 畳んだ `sessionActivity` は最後に届いた
-     * イベントしか表さないので、タブAで対局中でもタブBの309で `inactive` へ
-     * 倒れる。取得側は**接続中の全タブがセッション外**であることを要求する。
-     */
-    test('別タブが対局中なら、こちらのタブが終了しても撃たない', async () => {
-      let otherTabInactive = false
-      const deps = depsOf({ allPortsInactive: () => otherTabInactive })
-      markSessionActive()
+    test('handover後のACTIVE portがunknownなら、旧portがinactiveでも撃たない', async () => {
+      const deps = depsOf({ resolvePort: () => SECOND_FAKE_PORT })
+      markSessionActive(FAKE_PORT)
       await enqueueReplayHandId(deps, 1250, NOW)
-      // このタブは309を受けた（畳んだ値は inactive）が、別タブはまだ対局中
-      markSessionInactive()
+      markSessionInactive(FAKE_PORT)
+
+      // 別portのgame eventがtokenを奪ったが、session境界はまだ不明。
+      claimActivePort(SECOND_FAKE_PORT, NOW + 20_000)
 
       await drainReplayImportQueue(deps)
       expect(fetchCalls).toEqual([])
       expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1250])
 
-      // 別タブも終わって初めて流れる
-      otherTabInactive = true
+      // 現在のACTIVE portが明示的にinactiveになって初めて流れる。
+      markActivePortSessionInactive(resolveGeneration(SECOND_FAKE_PORT)!)
       await drainReplayImportQueue(deps)
       expect(fetchCalls).toEqual([[1250]])
     })
 
-    // SWはいつでも落ちうるので、再起動直後の`unknown`は「セッション中かも
-    // しれない」が正しい。分からない間は撃たない。
-    test('Service Worker再起動直後（セッション状態unknown）も取得しない', async () => {
+    test('ACTIVE portのsession状態がunknownなら取得しない', async () => {
       const deps = depsOf()
       await enqueueReplayHandId(deps, 1100, NOW)
 
-      // `__resetUpdateManagerStateForTests()` が 'unknown' に戻している
+      claimActivePort(FAKE_PORT, NOW)
       await drainReplayImportQueue(deps)
 
       expect(fetchCalls).toEqual([])
@@ -654,6 +662,39 @@ describe('replay import layer', () => {
       connectedAccount = 111
       await drainReplayImportQueue(deps)
       expect(fetchCalls).toEqual([[2800]])
+    })
+
+    test('handover中もqueued HandIdは積んだaccountを保持し、ACTIVE一致分だけ流す', async () => {
+      const accountA = { name: 'account-a' } as unknown as chrome.runtime.Port
+      const accountB = { name: 'account-b' } as unknown as chrome.runtime.Port
+      const deps = depsOf({
+        getPlayerId: readActivePortPlayerId,
+        resolvePort: findActivePortForPlayer
+      })
+
+      claimActivePort(accountA, NOW)
+      markActivePortPlayerId(resolveGeneration(accountA)!, 111)
+      await enqueueReplayHandId(deps, 2811, NOW)
+
+      claimActivePort(accountB, NOW + 20_000)
+      markActivePortPlayerId(resolveGeneration(accountB)!, 222)
+      await enqueueReplayHandId(deps, 2822, NOW + 20_000)
+      markActivePortSessionInactive(resolveGeneration(accountB)!)
+
+      await drainReplayImportQueue(deps)
+      expect(fetchCalls).toEqual([[2822]])
+      expect(await readReplayImportQueue(db)).toEqual([
+        { handId: 2811, enqueuedAt: NOW, playerId: 111 }
+      ])
+
+      // 旧portの再利用後、次のDEALでaccountが新世代へ再確定すれば、queueに
+      // 焼き付け済みの旧account attributionと一致して流れる。
+      claimActivePort(accountA, NOW + 40_000)
+      markActivePortPlayerId(resolveGeneration(accountA)!, 111)
+      markActivePortSessionInactive(resolveGeneration(accountA)!)
+      await drainReplayImportQueue(deps)
+      expect(fetchCalls).toEqual([[2822], [2811]])
+      expect(await readReplayImportQueue(db)).toEqual([])
     })
 
     test('長時間操作（インポート/再構築）の最中は取得しない', async () => {

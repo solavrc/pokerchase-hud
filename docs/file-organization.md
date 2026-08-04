@@ -76,7 +76,7 @@
     ├── background/            # Service worker modules
     │   ├── auto-sync-boot.ts        # Auth-ready auto-sync initialization (init race guard)
     │   ├── AGENTS.md                # Nested review rules (SW concurrency invariants)
-    │   ├── replay-port-state.ts     # Per-port session activity + hero account (multi-tab fetch gate)
+    │   ├── active-port.ts           # Latest-game-event token, session state, replay account binding
     │   ├── replay-import.ts         # Opt-in replay import: HandId queue (meta), session-end
     │   │                            #   drain, expiry accounting, synthetic 90001 Lake rows
     │   ├── event-ingestion.ts       # Raw Event Lake ingestion: serialized queue, durability
@@ -86,7 +86,7 @@
     │   ├── import-export.ts         # Import/export/rebuild (performFullRebuild), pre-game hero stats
     │   ├── message-router.ts        # chrome.runtime message dispatch
     │   ├── operation-state.ts       # Long-operation exclusivity + idle-transition listeners
-    │   ├── ports.ts                 # Port lifecycle, stats broadcast, hand-completion epoch
+    │   ├── ports.ts                 # Port lifecycle, ACTIVE-only stats delivery, hand-completion epoch
     │   ├── rebuild-advisory.ts      # データ再構築 advisory (REBUILD_ADVISORY_VERSION, badge)
     │   ├── undecoded-event-tracker.ts # Dropped/undecoded event counters (popup alert)
     │   ├── update-manager.ts        # Forced update: safe-window, drain barrier,

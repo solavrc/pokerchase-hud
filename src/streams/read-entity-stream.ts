@@ -15,6 +15,13 @@ import { COMPACT_REQUIRED_STAT_IDS, CLASSIFIER_REQUIRED_STAT_IDS } from '../stat
 import { matchesTableSizeFilter } from '../utils/table-size'
 import { compareHandsNewestFirst } from '../utils/hand-order'
 import type { ErrorContext } from '../types/errors'
+import {
+  getDefaultStatsContext,
+  setStatsRequestContext,
+  setStatsOutputContext,
+  takeStatsRequestContext,
+  type StatsOutputContext
+} from './stats-output-context'
 
 /**
  * 統計計算Stream（パイプライン第3段階）
@@ -59,7 +66,17 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     this.statsCache.clear()
   }
 
-  public async recalculateStats(): Promise<void> {
+  /** write呼出し時点のACTIVE世代を固定し、queue待ち中のhandoverと分離する。 */
+  public override write(seatUserIds: number[]): void {
+    const context = takeStatsRequestContext(seatUserIds) ?? getDefaultStatsContext()
+    // 同じSeatUserIds配列が後続の再計算でも再利用され得るため、queueごとに
+    // identityを分離してmetadataの上書きを防ぐ。
+    const queuedSeatUserIds = [...seatUserIds]
+    if (context) setStatsRequestContext(queuedSeatUserIds, context)
+    super.write(queuedSeatUserIds)
+  }
+
+  public async recalculateStats(context?: StatsOutputContext): Promise<void> {
     // 新しい計算を保証するためキャッシュをクリア
     this.invalidateCache()
 
@@ -84,10 +101,14 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
     // filters」）。ここで明示的に同期し、以降のブロードキャストがヒーロー
     // 在籍dealの座席文脈（Player.SeatIndex含む）を使うようにする。
     this.service.liveEvtDeal = this.service.latestEvtDeal
+    // 既定contextは再アンカー後に解決する（MUST）。既定引数で関数進入前に
+    // 評価すると、providerが古い観戦dealを捕まえたままになる。
+    const resolvedContext = context ?? getDefaultStatsContext()
 
     try {
       // すべてのプレイヤーの統計を計算
       const stats = await this.calcStats(seatUserIds)
+      setStatsOutputContext(stats, resolvedContext)
       this.push(stats)
     } catch (error) {
       const context: ErrorContext = {
@@ -106,6 +127,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
   }
 
   protected async transform(seatUserIds: number[]): Promise<void> {
+    const context = takeStatsRequestContext(seatUserIds)
     try {
       // バッチモード中は統計計算をスキップ
       if (this.service.batchMode) {
@@ -123,6 +145,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
       if (useCache) {
         const cached = this.statsCache.get(cacheKey)
         if (cached && (now - cached.timestamp) < this.CACHE_DURATION_MS) {
+          setStatsOutputContext(cached.stats, context)
           this.push(cached.stats)
           return
         }
@@ -151,6 +174,7 @@ export class ReadEntityStream extends SimpleTransform<number[], PlayerStats[]> {
         entriesToDelete.forEach(key => this.statsCache.delete(key))
       }
 
+      setStatsOutputContext(stats, context)
       this.push(stats)
     } catch (error: unknown) {
       const context: ErrorContext = {

@@ -4,6 +4,10 @@ import { ApiType } from '../types'
 import type { ApiEvent, ApiHandEvent, Progress } from '../types'
 import { ErrorHandler } from '../utils/error-handler'
 import { setHandImprovementHeroHoleCards } from '../realtime-stats'
+import {
+  getEventGeneration,
+  setStatsRequestContext
+} from './stats-output-context'
 
 /**
  * APIイベント集約処理Stream（パイプライン第1段階）
@@ -102,15 +106,15 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           // （意図的に維持する挙動）。
           //
           // 一方 liveEvtDeal（非永続化・「今まさに配信中の席」の文脈、Player有無に
-          // 関わらず毎回更新）を別に持ち、ports.tsの集計ブロードキャストだけが
-          // こちらを参照する。現在ハンド専用の値は別途ポート単位で管理する。
+          // 関わらず毎回更新）を別に持ち、ports.tsのACTIVE-port集計配信だけが
+          // こちらを参照する。現在ハンド専用値はtoken handover時にresetされる。
           //
           // この2フィールド分離が必要な理由（1段階目の修正でlatestEvtDealをガード
           // なしにしたことで新たに生じた問題 — codex #177 再レビュー指摘）:
           // 下のブロック（151行目付近）は Player の有無を問わず、DBにハンドが1件
           // でもあれば毎 EVT_DEAL で `this.service.statsOutputStream.write(event.
           // SeatUserIds)` を呼び、観戦中の別テーブルの新しい顔ぶれで統計を再計算・
-          // ブロードキャストする。broadcastMessage はその際の座席文脈として
+          // ACTIVEポートへ配信する。ports.ts はその際の座席文脈として
           // evtDeal を同梱し、App.tsx の handleStatsMessage は
           // `evtDeal.Player?.SeatIndex` が存在するときだけヒーロー基準に座席を
           // 回転させる（存在しなければ回転せず生の席順で表示）。
@@ -167,6 +171,12 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
             this.service.db.hands.count().then(count => {
               if (count > 0) {
                 // 全てのSeatUserIds（-1を含む）を渡して席の順序を保持
+                const generation = getEventGeneration(event)
+                setStatsRequestContext(event.SeatUserIds, {
+                  delivery: 'active',
+                  generation,
+                  evtDeal: event
+                })
                 this.service.statsOutputStream.write(event.SeatUserIds)
               }
             }).catch(err => {

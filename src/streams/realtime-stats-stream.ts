@@ -54,9 +54,8 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
 
       if (eventType === ApiType.EVT_SESSION_RESULTS) {
         this.isSessionActive = false
-        // backgroundはストリームを発生元ポートごとに持つ。content_scriptが
-        // ローカル終了イベントで表示を消すため、ここではそのポートの内部状態だけを
-        // inactiveへ遷移させ、空更新はpushしない。
+        // content_scriptがローカル終了イベントでACTIVEタブの表示を消すため、
+        // ここでは内部状態だけをinactiveへ遷移させ、空更新はpushしない。
       }
 
       switch (event.ApiTypeId) {
@@ -416,6 +415,7 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
     this.currentPhase = PhaseType.PREFLOP
     this.isSessionActive = true
     this.currentHandEvents = []
+    this.activePlayerCount = 0
     this.currentProgress = undefined
     this.heroSeatIndex = undefined
     this.seatBetAmounts = []

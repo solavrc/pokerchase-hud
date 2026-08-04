@@ -2,13 +2,44 @@
 
 > データストレージ、データモデル、クラウド同期、インデックス最適化に関する設計判断とその根拠。
 
+## ACTIVEポートtoken: ゲームイベントを最後に届けたタブだけを更新する
+
+PokerChaseは排他的ログインであり、1セッションで実際に使われるゲームタブは常に1つである。
+raw capture 415k handsでは2卓の同時配信は0件で、568件のhand preemptionは全て逐次的、
+最短間隔も12秒だった。このゲーム側制約を前提に、WebSocket由来のgame eventを最後に
+届けたportを唯一のACTIVE portとする。別portから次のeventが届けば即座にtokenを移し、
+以前のportが後でeventを届ければ同じ手順でtokenを取り戻す。
+
+statsとrealtime更新はACTIVE portだけへ送り、接続中の他port（relic）にはclearも更新も
+送らない。したがってrelicのHUDは最後に描画した状態で凍結される。別tabまたは別document
+世代へのhandoverでは、現在ハンドの`RealTimeStatsStream`とDEAL文脈をresetしてから
+新しいeventを投入する。旧portが後でeventを届ければ同じ手順でtokenを取り戻す。一方、
+`RuntimePortManager`による同一content scriptの一時切断は`tabId`と`documentId`が一致し、
+500ms再接続を包含する2秒窓内に再接続した場合だけ同一世代と判定する。この場合は
+transportの差し替えなので、進行中ハンド、DEAL、activity、accountを引き継ぐ。
+ただしService Worker起動後にtoken世代がまだ一度も確定していない場合、background起点の
+フィルター変更・再構築・インポート・auto-sync復元による集計更新は接続中のgame port
+すべてへfallbackする。これはライブ配信ではなく、token不在を理由にユーザー操作や復元結果を
+無音で捨てないための初期化時例外である。再接続候補の世代が残る切断猶予中は対象外となる。
+
+集計statsへ添える席回転用DEALは、ACTIVE世代でDEALを観測済みの場合だけ
+`liveEvtDeal`から読む。この値はbatch再計算時にも同じstats文脈へ再アンカーされるが、
+世代の最初のDEALより前は前世代の残存値を抑止する。309はRaw Event Lakeへの保存と重複排除の後、
+Zod検証より前に現在ハンドstream/cacheを消すため、破損payloadでも終了済みハンドの
+SPR・ポットオッズが後のfilter再計算で復活しない。集計lineup自体は保持する。
+
+replayのsession判定とaccount attributionにもACTIVE portの状態だけを使い、relicの状態は
+参照しない。10秒未満で別tabからeventが届いた場合はaxiom違反の検出として
+`console.warn`を記録する。同一tabのF5 reload候補は警告対象外とし、複数sessionを扱う分岐は
+追加しない。
+
 ## 0. Raw Event Lake: `apiEvents` は生ログ、バリデーションは保存を左右しない
 
 ### 設計原則
 `apiEvents`テーブルは**受信した生イベントの完全なログ**であり、Zodスキーマ検証の
 成否やアプリケーションイベントか否かに関わらず、数値の`timestamp`+`ApiTypeId`を
 持つイベントは全て保存する。バリデーションが左右するのはリアルタイム処理
-パイプライン（`handLogStream`/`handAggregateStream`/接続ポートごとの`realTimeStatsStream`と
+パイプライン（`handLogStream`/`handAggregateStream`/ACTIVE tokenに束縛した単一`realTimeStatsStream`と
 `EntityConverter`/`HandLogProcessor`への投入可否）だけであり、保存そのものを
 左右しない。
 
@@ -383,10 +414,12 @@ await pokerChaseReplayFetch([258411144, 258411368])
 **セッション中は `/replay/detail` を1本も発行しない。** セッションの進行中に
 過去ハンドの詳細が取れると、まだ伏せられている情報がセッション内で参照
 可能になる。セッション中にできるのは HandId をキューへ積むことだけで、
-取得はセッション終了後に走る。判定は1箇所（`canFetchNow`）に集約し、
-`update-manager.ts` のセッション三値のうち `inactive` のときだけ許可する ――
-Service Worker はいつでも落ちうるので、再起動直後の `unknown` は
-「セッション中かもしれない」が正しく、そこで撃つと不変条件を破りうる。
+取得はセッション終了後に走る。判定は1箇所（`canFetchNow`）に集約し、ACTIVE portが
+無いか、ACTIVE portのセッション三値が`inactive`のときだけ許可する。`active`と
+`unknown`は取得を止める。Service Workerはいつでも落ちうるので、再起動直後や
+handover直後の`unknown`は「セッション中かもしれない」が正しく、そこで撃つと
+不変条件を破りうる。実際の依頼先も、キューに保存したaccountと一致する現在の
+ACTIVE portだけである。
 
 キューは `meta` の1行（`replayImportQueue`）。MV3 の Service Worker は
 数十秒で落ちるためメモリには置けない。専用ストアを作らないのは、高々100件

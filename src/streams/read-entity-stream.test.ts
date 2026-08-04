@@ -16,8 +16,14 @@ import { PokerChaseDB } from '../db/poker-chase-db'
 import PokerChaseService from '../services/poker-chase-service'
 import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { ApiType, BattleType, PhaseType } from '../types'
-import type { ApiHandEvent, Hand } from '../types'
+import type { ApiEvent, ApiHandEvent, Hand } from '../types'
 import type { PlayerStats, StatResult } from '../types'
+import {
+  __resetStatsOutputContextForTests,
+  getStatsOutputContext,
+  setDefaultStatsContextProvider,
+  setEventGeneration
+} from './stats-output-context'
 
 const PLAYER_ID = 1
 const SEAT_USER_IDS = [PLAYER_ID, 2, 3, 4, 5, 6]
@@ -57,6 +63,7 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
   let service: PokerChaseService
 
   beforeEach(async () => {
+    __resetStatsOutputContextForTests()
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
     service = trackServiceForTeardown(new PokerChaseService({ db }))
@@ -74,6 +81,7 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
   })
 
   afterEach(async () => {
+    __resetStatsOutputContextForTests()
     db.close()
     await db.delete()
   })
@@ -132,6 +140,58 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(2)
   })
 
+  test('フィルター再計算の既定deal文脈はヒーローdealへ再アンカーした後に解決する', async () => {
+    const heroDeal = {
+      ApiTypeId: ApiType.EVT_DEAL,
+      timestamp: 6_000,
+      SeatUserIds: SEAT_USER_IDS,
+      Player: { SeatIndex: 0, BetStatus: 1, HoleCards: [], Chip: 1_000, BetChip: 100 },
+      OtherPlayers: [],
+      Game: {
+        CurrentBlindLv: 1,
+        NextBlindUnixSeconds: 0,
+        Ante: 0,
+        SmallBlind: 100,
+        BigBlind: 200,
+        ButtonSeat: 5,
+        SmallBlindSeat: 0,
+        BigBlindSeat: 1
+      },
+      Progress: {
+        Phase: PhaseType.PREFLOP,
+        NextActionSeat: 2,
+        NextActionTypes: [],
+        NextExtraLimitSeconds: 0,
+        MinRaise: 0,
+        Pot: 300,
+        SidePot: []
+      }
+    } as ApiEvent<ApiType.EVT_DEAL>
+    const spectatorDeal = {
+      ...heroDeal,
+      timestamp: 6_001,
+      SeatUserIds: [10, 20, -1, -1, -1, -1],
+      Player: undefined
+    }
+    service.playerId = PLAYER_ID
+    service.latestEvtDeal = heroDeal
+    service.liveEvtDeal = spectatorDeal
+    setDefaultStatsContextProvider(() => ({
+      delivery: 'active',
+      generation: 61,
+      evtDeal: service.liveEvtDeal
+    }))
+    const output = new Promise<PlayerStats[]>(resolve => service.statsOutputStream.once('data', resolve))
+
+    await service.statsOutputStream.recalculateStats()
+
+    expect(getStatsOutputContext(await output)).toEqual({
+      delivery: 'active',
+      generation: 61,
+      evtDeal: heroDeal
+    })
+  })
+
   test('a completed hand invalidates a same-lineup production cache warmed at deal time', async () => {
     const previousNodeEnv = process.env.NODE_ENV
     process.env.NODE_ENV = 'production'
@@ -188,15 +248,24 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
           OtherPlayers: []
         }
       ]
+      setEventGeneration(completedHand[0]!, 41)
+      setEventGeneration(completedHand[1]!, 41)
 
       service.writeEntityStream.write(completedHand)
       await service.writeEntityStream.whenIdle()
 
-      expect(handsStatOf(await completedStats, PLAYER_ID)?.value).toBe(7)
+      const output = await completedStats
+      expect(handsStatOf(output, PLAYER_ID)?.value).toBe(7)
+      expect(getStatsOutputContext(output)).toEqual({
+        delivery: 'active',
+        generation: 41,
+        evtDeal: completedHand[0]
+      })
     } finally {
       process.env.NODE_ENV = previousNodeEnv
     }
   })
+
 })
 
 describe('ReadEntityStream.calcStats -- CLASSIFIER_REQUIRED_STAT_IDS forcing (player-type icon)', () => {

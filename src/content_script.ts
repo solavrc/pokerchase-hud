@@ -10,7 +10,9 @@ import {
   POKER_CHASE_INVALID_API_EVENT,
   POKER_CHASE_SERVICE_EVENT,
   POKER_CHASE_ORIGIN,
-  POKER_CHASE_SESSION_END_EVENT
+  POKER_CHASE_SESSION_END_EVENT,
+  POKER_CHASE_SESSION_START_EVENT,
+  type PokerChaseSessionStartDetail
 } from './constants/runtime'
 import { ApiType } from './types'
 import type { ApiEvent, PlayerStats } from './types'
@@ -122,10 +124,19 @@ export interface StatsData {
   realTimeOnly?: boolean  // 発生元ポートの現在ハンド専用更新
 }
 
+export interface RealTimeOnlyStatsData {
+  stats?: PlayerStats[]
+  realTimeStats: AllPlayersRealTimeStats
+  realTimeOnly: true
+}
+
+export type PokerChaseServiceData = StatsData | RealTimeOnlyStatsData
+
 declare global {
   interface WindowEventMap {
-    [POKER_CHASE_SERVICE_EVENT]: CustomEvent<StatsData>
+    [POKER_CHASE_SERVICE_EVENT]: CustomEvent<PokerChaseServiceData>
     [POKER_CHASE_SESSION_END_EVENT]: CustomEvent<undefined>
+    [POKER_CHASE_SESSION_START_EVENT]: CustomEvent<PokerChaseSessionStartDetail>
   }
 }
 
@@ -167,6 +178,14 @@ const portManager = new RuntimePortManager({
   onDisconnected: stopKeepalive,
   onMessage: message => {
     if (typeof message === 'object' && message !== null &&
+      'type' in message && message.type === POKER_CHASE_SESSION_START_EVENT &&
+      'timestamp' in message && typeof message.timestamp === 'number') {
+      window.dispatchEvent(new CustomEvent(POKER_CHASE_SESSION_START_EVENT, {
+        detail: { timestamp: message.timestamp }
+      }))
+      return
+    }
+    if (typeof message === 'object' && message !== null &&
       'type' in message && message.type === REPLAY_PORT_FETCH) {
       const request = message as Partial<ReplayFetchRequest>
       if (typeof request.requestId === 'string' && Array.isArray(request.handIds) &&
@@ -175,13 +194,9 @@ const portManager = new RuntimePortManager({
       }
       return
     }
-    if (typeof message === 'object' && message !== null && 'stats' in message) {
-      const statsMessage = message as {
-        stats: PlayerStats[]
-        evtDeal?: ApiEvent<ApiType.EVT_DEAL>
-        realTimeStats?: AllPlayersRealTimeStats
-        realTimeOnly?: boolean
-      }
+    if (typeof message === 'object' && message !== null &&
+      ('stats' in message || 'realTimeStats' in message)) {
+      const statsMessage = message as PokerChaseServiceData
       console.time('[content_script] Dispatching stats event')
       window.dispatchEvent(new CustomEvent(POKER_CHASE_SERVICE_EVENT, { detail: statsMessage }))
       console.timeEnd('[content_script] Dispatching stats event')

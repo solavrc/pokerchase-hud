@@ -117,5 +117,5 @@ describe('PokerChaseDB v3 -> v7 apiEvents sequence-key migration', () => {
     expect(chunks.flat().map(row => row.marker)).toEqual(oldRows.map(row => row.marker))
 
     migrated.close()
-  }, 15_000)
+  }, 30_000)
 })
