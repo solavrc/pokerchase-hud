@@ -11,7 +11,7 @@
  * fallback is sent to the tab *after* that live broadcast, it clobbers the
  * live lineup back down to one seat until the next real stats push.
  *
- * message-router.ts guards this with `getLiveBroadcastSequence()` (ports.ts):
+ * message-router.ts guards this with the requesting tab's live-delivery sequence (ports.ts):
  * it snapshots the sequence when the preGame request comes in, and compares
  * again once getLatestSessionStats() resolves -- if the live pipeline bumped
  * the sequence in that window, the response is dropped instead of sent.
@@ -20,7 +20,11 @@ import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
 import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { registerMessageRouter } from './message-router'
-import { registerStreamSubscriptions } from './ports'
+import { connectedPorts, registerStreamSubscriptions } from './ports'
+import {
+  __resetActivePortStateForTests,
+  claimActivePort
+} from './active-port'
 import type { ChromeMessage, MessageResponse } from '../types/messages'
 
 const HERO_ID = 1
@@ -63,12 +67,20 @@ describe('message-router requestLatestStats -- pre-game vs. live lineup race gua
     }
 
     ;(chrome.runtime.onMessage.addListener as jest.Mock).mockClear()
+    const activePort = {
+      sender: { tab: { id: TAB_ID } },
+      postMessage: jest.fn()
+    } as unknown as chrome.runtime.Port
+    connectedPorts.add(activePort)
+    claimActivePort(activePort)
     registerMessageRouter(service, db, 'https://example.com/*')
     registerStreamSubscriptions(service, 'https://example.com/*')
     listener = (chrome.runtime.onMessage.addListener as jest.Mock).mock.calls[0][0]
   })
 
   afterEach(async () => {
+    connectedPorts.clear()
+    __resetActivePortStateForTests()
     delete (global as any).chrome.tabs
     db.close()
     await db.delete()
@@ -113,7 +125,7 @@ describe('message-router requestLatestStats -- pre-game vs. live lineup race gua
     expect(sendResponse).toHaveBeenCalledWith({ success: true })
     // The stale hero-only fallback must NOT have been delivered to the tab --
     // it would clobber the live lineup the tab already received via the port
-    // channel (broadcastMessage).
+    // channel (ACTIVE-port delivery).
     expect(sendMessageMock).not.toHaveBeenCalled()
   })
 
@@ -134,6 +146,44 @@ describe('message-router requestLatestStats -- pre-game vs. live lineup race gua
     expect(tabId).toBe(TAB_ID)
     expect(message.action).toBe('latestStats')
     expect(message.stats[0].playerId).toBe(HERO_ID)
+  })
+
+  test('an ACTIVE delivery to another tab does not suppress this relic tab fallback', async () => {
+    let releasePreGameCalc: (() => void) | undefined
+    const originalCalcStats = service.statsOutputStream.calcStats.bind(service.statsOutputStream)
+    jest.spyOn(service.statsOutputStream, 'calcStats').mockImplementationOnce((seatUserIds: number[]) => {
+      return new Promise(resolve => {
+        releasePreGameCalc = () => resolve(originalCalcStats(seatUserIds))
+      })
+    })
+
+    const sendResponse = jest.fn()
+    const handled = listener(
+      { action: 'requestLatestStats', preGame: true } as unknown as ChromeMessage,
+      { tab: { id: TAB_ID } } as chrome.runtime.MessageSender,
+      sendResponse
+    )
+    expect(handled).toBe(true)
+
+    const otherPort = {
+      sender: { tab: { id: 99 } },
+      postMessage: jest.fn()
+    } as unknown as chrome.runtime.Port
+    connectedPorts.add(otherPort)
+    claimActivePort(otherPort)
+    await new Promise<void>(resolve => {
+      service.statsOutputStream.once('data', () => resolve())
+      service.statsOutputStream.write([HERO_ID, 2, 3, 4, 5, 6])
+    })
+    expect(otherPort.postMessage).toHaveBeenCalledTimes(1)
+
+    expect(releasePreGameCalc).toBeDefined()
+    releasePreGameCalc!()
+    await waitUntil(() => sendResponse.mock.calls.length > 0)
+
+    expect(sendResponse).toHaveBeenCalledWith({ success: true })
+    expect(sendMessageMock).toHaveBeenCalledTimes(1)
+    expect(sendMessageMock.mock.calls[0][0]).toBe(TAB_ID)
   })
 
   test('consumes a missing-receiver rejection when the requesting tab navigates away', async () => {

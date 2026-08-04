@@ -10,11 +10,10 @@ import PokerChaseService, {
 } from '../app'
 import { autoSyncService } from '../services/auto-sync-service'
 import {
+  claimActivePortForGameEvent,
   connectedPorts,
-  registerPortRealTimeStats,
-  releasePortRealTimeStats,
+  releaseActivePortForService,
   startPortPing,
-  writePortRealTimeStats
 } from './ports'
 import {
   INVALID_API_TYPE_ID_BUCKET,
@@ -26,12 +25,13 @@ import { getOperationGeneration, getOperationState, onOperationBecameIdle } from
 import { handleReplayPortMessage, releaseReplayRequestsForPort } from './replay-fetch-bridge'
 import { handleReplayLedgerPortMessage, type ReplayLedgerAuditDeps } from './replay-ledger-audit'
 import {
-  forgetPort,
-  markPortPlayerId,
-  markPortSessionActive,
-  markPortSessionInactive,
-  readPortPlayerId
-} from './replay-port-state'
+  findActivePortForPlayer,
+  isActivePortOutsideSession,
+  markActivePortPlayerId,
+  markActivePortSessionActive,
+  markActivePortSessionInactive,
+  readActivePortPlayerId
+} from './active-port'
 import { REPLAY_PORT_AUTH_READY } from '../replay/protocol'
 import {
   drainReplayImportQueue,
@@ -117,7 +117,9 @@ export const createReplayImportDeps = (service: PokerChaseService): ReplayImport
   // インポート/再構築/エクスポートの最中は取得しない。診断ではなく保存を
   // 伴うので、長時間操作と同じ`apiEvents`へ書き込むのを避ける。
   isBusy: () => getOperationState().type !== 'idle',
-  getPlayerId: () => service.playerId
+  getPlayerId: readActivePortPlayerId,
+  isFetchAllowed: isActivePortOutsideSession,
+  resolvePort: findActivePortForPlayer
 })
 
 /**
@@ -194,7 +196,6 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   chrome.runtime.onConnect.addListener(port => {
     if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
       connectedPorts.add(port)
-      registerPortRealTimeStats(port)
       // 持ち越し分の再開点。セッション終了時に認証エンベロープを捕獲できて
       // いないと取得は繰り延べられる（キューには残る）。エンベロープは
       // ページ再読み込み後のホーム到達で捕まるので、そのページが繋いできた
@@ -248,7 +249,8 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // 後ろに連結する。`processEvent`は内部で全エラーを捕捉して素通し
         // させない設計だが、想定外のバグでqueueが壊れて以降のイベントが
         // 永久に詰まることのないよう、キューの継続用チェーンは別途catchする。
-        const task = ingestionQueue.then(() => processEvent(service, message, port))
+        const deliveredAt = Date.now()
+        const task = ingestionQueue.then(() => processEvent(service, message, port, deliveredAt))
         ingestionQueue = task.catch(err => {
           console.error('[background] Unhandled ingestion queue error (fail-safe, queue continues):', err)
           captureHandledException(err, {
@@ -264,10 +266,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // Keep lastKnownStats for page reloads - only clear interval
         stopPing()
         connectedPorts.delete(port)
-        releasePortRealTimeStats(port)
-        // 対局中のまま切れたなら、再接続の猶予の間は「全タブがセッション外」を
-        // 成立させない（500msで再接続する設計なので、その隙に撃たないため）。
-        forgetPort(port)
+        releaseActivePortForService(service, port)
         // 応答が返らないまま切れた依頼を解放する（待ち続けさせない）
         releaseReplayRequestsForPort(port)
       })
@@ -335,11 +334,11 @@ const applySessionActivity = (
   activeOnly = false,
   port?: chrome.runtime.Port
 ): void => {
-  // 畳んだ値（forced update と共有）と、ポートごとの値の両方を進める。
+  // forced update用の全体値と、現在tokenを持つACTIVEポートの値を進める。
   // 前者の意味は変えず、後者はリプレイ取得の判定点だけが読む。
   if (!activeOnly && (rawApiTypeId === ApiType.EVT_SESSION_RESULTS || rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID)) {
     markSessionInactive()
-    if (port) markPortSessionInactive(port)
+    if (port) markActivePortSessionInactive(port)
     return
   }
   if (
@@ -347,7 +346,7 @@ const applySessionActivity = (
     rawApiTypeId === ApiType.EVT_SESSION_DETAILS
   ) {
     markSessionActive()
-    if (port) markPortSessionActive(port)
+    if (port) markActivePortSessionActive(port)
     return
   }
   if (rawApiTypeId === ApiType.EVT_DEAL) {
@@ -355,14 +354,14 @@ const applySessionActivity = (
     if (rawPlayer != null) {
       markSessionActive()
       if (port) {
-        markPortSessionActive(port)
+        markActivePortSessionActive(port)
         // このタブのヒーローが誰かを控える。キューに積んだアカウントと
         // 一致するポートへだけ取得を依頼するために使う。
         const seatIndex = (rawPlayer as { SeatIndex?: unknown }).SeatIndex
         const seatUserIds = (message as { SeatUserIds?: unknown }).SeatUserIds
         if (typeof seatIndex === 'number' && Array.isArray(seatUserIds)) {
           const playerId = seatUserIds[seatIndex]
-          if (typeof playerId === 'number' && playerId > 0) markPortPlayerId(port, playerId)
+          if (typeof playerId === 'number' && playerId > 0) markActivePortPlayerId(port, playerId)
         }
       }
     }
@@ -370,7 +369,7 @@ const applySessionActivity = (
 }
 
 /**
- * 1件のAPIイベントを処理する: Raw Event Lakeへの保存（耐久性バリア）→
+ * 1件のAPIイベントを処理する: ACTIVE tokenの移譲 → Raw Event Lakeへの保存（耐久性バリア）→
  * セッション状態追跡・自動同期トリガー（raw書き込み決着後のみ）→
  * リアルタイムパイプラインへの投入。
  *
@@ -378,8 +377,19 @@ const applySessionActivity = (
 const processEvent = async (
   service: PokerChaseService,
   message: ApiMessage | { type: string },
-  port?: chrome.runtime.Port
+  port?: chrome.runtime.Port,
+  deliveredAt: number = Date.now()
 ): Promise<void> => {
+  const rawApiTypeId = (message as { ApiTypeId?: unknown }).ApiTypeId
+  const rawTimestamp = (message as { timestamp?: unknown }).timestamp
+  const hasUsableRawKey = validateMessage(message).success
+
+  // numeric timestamp+ApiTypeIdを持つWebSocket由来イベントだけがtokenを動かす。
+  // queueへ積む直前の到着時刻を使い、handover時は単一realtime streamを
+  // 後続処理より先にresetする（MUST）。真の重複やservice.ready失敗でも
+  // 「このportが最後にgame eventを届けた」というtokenの事実は変わらない。
+  if (hasUsableRawKey && port) claimActivePortForGameEvent(service, port, deliveredAt)
+
   // Ensure service is ready before processing messages
   try {
     await service.ready
@@ -388,9 +398,6 @@ const processEvent = async (
     return
   }
 
-  const rawApiTypeId = (message as { ApiTypeId?: unknown }).ApiTypeId
-  const rawTimestamp = (message as { timestamp?: unknown }).timestamp
-
   // Raw Event Lake（docs/architecture.md参照）: timestamp/ApiTypeIdが数値である
   // 限り、Zodパースの成否・アプリケーションイベントか否かに関わらず生のまま
   // 保存する。バリデーションは後続のリアルタイム処理パイプライン（ストリーム）
@@ -398,7 +405,6 @@ const processEvent = async (
   // PokerChase側のペイロード変更でスキーマ検証が壊れても、修正後のデータ
   // 再構築で復旧可能になる（2026年シーズン3のEVT_SESSION_RESULTS破壊的変更で
   // 実際にデータが失われた反省による）。
-  const hasUsableRawKey = validateMessage(message).success
   if (hasUsableRawKey) {
     // Content-based dedup runs before sequence allocation. This retains the
     // reconnect-resend contract without making `(timestamp, ApiTypeId)`
@@ -457,15 +463,12 @@ const processEvent = async (
   // 依存させない ―― 検証はパイプライン投入の可否だけを決める。
   if (rawApiTypeId === ApiType.EVT_HAND_RESULTS &&
     (message as { Player?: unknown }).Player !== undefined) {
-    // アカウントは**この結果を送ってきたタブ**のものを使う（MUST）。
-    // 全タブ共有の `service.playerId` は最後に処理された EVT_DEAL の
-    // ヒーローなので、複数アカウントのタブを同時に開いていると、Aのハンドへ
-    // Bのidが付く。付け間違えると依頼先もBのタブに決まり、`2302` で
-    // 永久に捨てられる。
+    // アカウントは、この結果でtokenを持つACTIVEポートが過去のdealで観測した
+    // playerIdだけを使う（MUST）。キュー行へ焼き付けた後はhandoverしても変えない。
     enqueueReplayHandId(
       {
         ...createReplayImportDeps(service),
-        ...port ? { getPlayerId: () => readPortPlayerId(port) ?? service.playerId } : {}
+        getPlayerId: readActivePortPlayerId
       },
       (message as { HandId?: unknown }).HandId,
       Date.now()
@@ -626,8 +629,7 @@ const processEvent = async (
   // ストリーム処理（DB保存は上で完了済み・耐久性確定済み）
   service.handLogStream.write(data)
   service.handAggregateStream.write(data)
-  if (port) writePortRealTimeStats(port, data)
-  else service.realTimeStatsStream.write(data)
+  service.realTimeStatsStream.write(data)
   // Auto-sync起動・pending update再チェック（309/201/308）は上のRaw
   // Event Lake保存直後に生ApiTypeIdベースで既にトリガー済み（本ブロックの
   // パース成功はストリーム投入のみが目的）

@@ -31,8 +31,8 @@ import type { AllPlayersRealTimeStats } from "../realtime-stats/realtime-stats-s
 const EMPTY_SEATS: PlayerStats[] = Array.from({ length: 6 }, () => ({ playerId: -1 }))
 
 // 監査指摘11（P2）「開いたドリルダウンパネルが無期限に古くなる」対応:
-// ports.tsのbroadcastMessage()は既にPOKER_CHASE_SERVICE_EVENTの生payloadへ
-// `handEpoch`（`liveBroadcastSequence`をそのまま積んだもの、詳細はports.ts参照）
+// ports.tsのACTIVE-port deliveryは既にPOKER_CHASE_SERVICE_EVENTの生payloadへ
+// `handEpoch`（handCompletionEpochの現在値、詳細はports.ts参照）
 // を積んでいるが、content_script.ts側の`StatsData`型（同ファイル定義）は
 // 別ワークストリームが所有しておりこのフィールドをまだ宣言していない。
 // content_script.tsの転送コード自体は型アサーションを経由するだけで実行時の
@@ -85,7 +85,7 @@ const App = memo(() => {
   const [openPositionalPanelPlayerId, setOpenPositionalPanelPlayerId] = useState<number | null>(null)
   const [openRecentHandsPanelPlayerIds, setOpenRecentHandsPanelPlayerIds] = useState<ReadonlySet<number>>(() => new Set())
   // 監査指摘11（P2）対応: 生きたハンドが1件完了するたびに増える「hand epoch」
-  // （ports.tsの`liveBroadcastSequence`をそのまま反映、上のStatsDataWithHandEpoch
+  // （ports.tsの`handCompletionEpoch`を反映、上のStatsDataWithHandEpoch
   // 参照）。Hud経由でドリルダウンパネルへpropとして渡し、そのフェッチeffectの
   // depsに含めることで、開いたままのパネルがハンド完了ごとに1回だけ再フェッチ
   // するようにする（実況の1アクションごとの更新では変化しないため再フェッチ
@@ -167,7 +167,7 @@ const App = memo(() => {
     ({ detail }: CustomEvent<StatsData>) => {
       let mappedStats = detail.stats
 
-      // SPR・ポットオッズの実況更新はbackgroundで発生元ポートにだけ配信される。
+      // SPR・ポットオッズの実況更新はbackgroundでACTIVEポートにだけ配信される。
       // 集計lineupを触らず、現在ハンド専用値だけを更新する。
       if (detail.realTimeOnly) {
         if (detail.realTimeStats) setAllPlayersRealTimeStats(detail.realTimeStats)
@@ -176,8 +176,8 @@ const App = memo(() => {
 
       // 観戦dealはPlayerが無いためヒーロー基準へ回転できず、別テーブルの席順かも
       // しれない。この未回転lineupでレビュー対象のHUDを上書きしてはならない
-      // （MUST NOT）。現在ハンド専用値は上のポート固有経路で更新済みなので、
-      // 全ポートへ届く集計ブロードキャストでは変更しない。
+      // （MUST NOT）。現在ハンド専用値は上のACTIVE経路で更新済みなので、
+      // ACTIVEポートへ届く集計更新でもlineupは変更しない。
       const isSpectatorDeal = detail.evtDeal !== undefined
         && isApiEventType(detail.evtDeal, ApiType.EVT_DEAL)
         && detail.evtDeal.Player === undefined

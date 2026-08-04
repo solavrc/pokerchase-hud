@@ -3,7 +3,11 @@ import PokerChaseService, { PokerChaseDB } from '../app'
 import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { ActionType, ApiType, PhaseType } from '../types'
 import { registerEventIngestion } from './event-ingestion'
-import { connectedPorts, setLastKnownStats } from './ports'
+import { connectedPorts, registerStreamSubscriptions, setLastKnownStats } from './ports'
+import {
+  __resetActivePortStateForTests,
+  getActivePort
+} from './active-port'
 
 const waitUntil = async (condition: () => boolean, timeoutMs = 2000): Promise<void> => {
   const startedAt = Date.now()
@@ -61,24 +65,6 @@ const makeDeal = (timestamp: number, playerId: number, spectator = false) => ({
   },
 })
 
-const makeAction = (timestamp: number) => ({
-  ApiTypeId: ApiType.EVT_ACTION,
-  timestamp,
-  SeatIndex: 0,
-  ActionType: ActionType.CALL,
-  Chip: 980,
-  BetChip: 20,
-  Progress: {
-    Phase: PhaseType.PREFLOP,
-    NextActionSeat: 1,
-    NextActionTypes: [ActionType.CHECK, ActionType.BET, ActionType.ALL_IN],
-    NextExtraLimitSeconds: 30,
-    MinRaise: 40,
-    Pot: 40,
-    SidePot: [],
-  },
-})
-
 const sessionResults = {
   ApiTypeId: ApiType.EVT_SESSION_RESULTS,
   timestamp: 200,
@@ -103,7 +89,7 @@ const sessionResults = {
   Emblems: [],
 }
 
-describe('real-time stats are local to their source port', () => {
+describe('stats delivery follows the active-port token', () => {
   let db: PokerChaseDB
   let service: PokerChaseService
   let tabA: ReturnType<typeof makePort>
@@ -122,6 +108,9 @@ describe('real-time stats are local to their source port', () => {
     ])
 
     ;(chrome.runtime as any).onConnect = { addListener: jest.fn() }
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    __resetActivePortStateForTests()
+    registerStreamSubscriptions(service, 'https://example.com/*')
     registerEventIngestion(service)
     const connect = (chrome.runtime as any).onConnect.addListener.mock.calls[0][0]
     tabA = makePort()
@@ -136,56 +125,90 @@ describe('real-time stats are local to their source port', () => {
     tabA.disconnectHandlers.forEach(handler => handler())
     tabB.disconnectHandlers.forEach(handler => handler())
     connectedPorts.clear()
+    __resetActivePortStateForTests()
     setLastKnownStats([])
+    jest.restoreAllMocks()
     db.close()
     await db.delete()
   })
 
-  test('tab A session end does not stop tab B calculations or clear its display', async () => {
+  test('new port claims the token and aggregate/realtime updates stop reaching the relic', async () => {
     await sendB(makeDeal(100, 101))
     await waitUntil(() => tabB.port.postMessage.mock.calls.some(([message]) =>
       Object.keys(message.realTimeStats?.heroStats ?? {}).length > 0
     ))
+    expect(getActivePort()).toBe(tabB.port)
     tabA.port.postMessage.mockClear()
     tabB.port.postMessage.mockClear()
+    const resetSpy = jest.spyOn(service.realTimeStatsStream, 'reset')
 
-    await sendA(sessionResults)
-    await sendB(makeAction(201))
-    await waitUntil(() => tabB.port.postMessage.mock.calls.some(([message]) =>
+    await sendA(makeDeal(200, 901))
+    await waitUntil(() => tabA.port.postMessage.mock.calls.some(([message]) =>
       Object.keys(message.realTimeStats?.heroStats ?? {}).length > 0
     ))
+    expect(getActivePort()).toBe(tabA.port)
+    expect(resetSpy).toHaveBeenCalledTimes(1)
+    expect(tabB.port.postMessage).not.toHaveBeenCalled()
 
-    expect(tabA.port.postMessage).not.toHaveBeenCalled()
-    expect(tabB.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({
-      realTimeStats: expect.objectContaining({ heroStats: expect.any(Object) })
+    tabA.port.postMessage.mockClear()
+    ;(service.statsOutputStream as any).emit('data', [
+      { playerId: 901, statResults: [] }
+    ])
+    expect(tabA.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      stats: [expect.objectContaining({ playerId: 901 })]
     }))
+    expect(tabB.port.postMessage).not.toHaveBeenCalled()
   })
 
-  test('tab A spectator deal neither clears nor stops tab B real-time stats', async () => {
+  test('an old relic port reclaims the token when it delivers a new game event', async () => {
     await sendB(makeDeal(300, 101))
     await waitUntil(() => tabB.port.postMessage.mock.calls.some(([message]) =>
       Object.keys(message.realTimeStats?.heroStats ?? {}).length > 0
     ))
+    await sendA(makeDeal(301, 901))
+    await waitUntil(() => getActivePort() === tabA.port as unknown as chrome.runtime.Port)
     tabA.port.postMessage.mockClear()
     tabB.port.postMessage.mockClear()
 
-    await sendA(makeDeal(301, 901, true))
-    await sendB(makeAction(302))
+    await sendB(makeDeal(302, 101))
     await waitUntil(() => tabB.port.postMessage.mock.calls.some(([message]) =>
       Object.keys(message.realTimeStats?.heroStats ?? {}).length > 0
     ))
+    expect(getActivePort()).toBe(tabB.port)
+    expect(tabA.port.postMessage).not.toHaveBeenCalled()
+  })
+
+  test("tab A's 309 leaves relic tab B's retained display untouched", async () => {
+    await sendB(makeDeal(400, 101))
+    await waitUntil(() => tabB.port.postMessage.mock.calls.some(([message]) =>
+      Object.keys(message.realTimeStats?.heroStats ?? {}).length > 0
+    ))
+    tabA.port.postMessage.mockClear()
+    tabB.port.postMessage.mockClear()
+
+    await sendA({ ...sessionResults, timestamp: 401 })
+
+    expect(getActivePort()).toBe(tabA.port)
+    expect(tabA.port.postMessage).not.toHaveBeenCalled()
+    expect(tabB.port.postMessage).not.toHaveBeenCalled()
+  })
+
+  test("tab A's spectator deal sends nothing to relic tab B", async () => {
+    await sendB(makeDeal(500, 101))
+    await waitUntil(() => tabB.port.postMessage.mock.calls.some(([message]) =>
+      Object.keys(message.realTimeStats?.heroStats ?? {}).length > 0
+    ))
+    tabA.port.postMessage.mockClear()
+    tabB.port.postMessage.mockClear()
+
+    await sendA(makeDeal(501, 901, true))
+    await waitUntil(() => tabA.port.postMessage.mock.calls.length > 0)
 
     const spectatorMessage = tabA.port.postMessage.mock.calls[0][0]
     expect(spectatorMessage.realTimeOnly).toBe(true)
     expect(spectatorMessage.evtDeal).toBeUndefined()
     expect(spectatorMessage.realTimeStats).toEqual({ heroStats: {}, playerStats: {} })
-    expect(
-      tabB.port.postMessage.mock.calls.every(
-        ([message]) => message.evtDeal?.SeatUserIds?.[0] !== 901,
-      ),
-    ).toBe(true)
-    expect(tabB.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({
-      realTimeStats: expect.objectContaining({ heroStats: expect.any(Object) })
-    }))
+    expect(getActivePort()).toBe(tabA.port)
+    expect(tabB.port.postMessage).not.toHaveBeenCalled()
   })
 })

@@ -301,6 +301,7 @@ data storage (Dexie.js), normalized entities, Firestore strategy, and v3 index o
 16. **Raw Event Lake**: `apiEvents` is the raw wire log — any event with a numeric `timestamp`+`ApiTypeId` is stored, independent of whether it parses under the current Zod schema or is an application type. Validation gates only the real-time pipeline (streams/stats/entity generation), never storage. This is what makes データ再構築 an actual recovery path after a PokerChase payload change breaks a schema: rebuild re-validates every stored raw row against the *current* schema, so a later schema fix retroactively recovers rows that failed to parse when first received — no separate promotion mechanism needed. See "ApiEvent Architecture" and `docs/architecture.md` for the full rationale and history.
 17. **Synthetic Lake events (private ApiTypeId range)**: a record the extension itself produces — not received from PokerChase — is stored in `apiEvents` under an ApiTypeId in the private 90000 range (currently only `ApiType.REPLAY_HAND_DETAIL` = 90001, the opt-in replay-detail import). Such an event MUST be an application event for storage/sync purposes, so that NDJSON export/import, Firestore incremental sync and downstream ingestion carry it with no changes to those paths; and it MUST stay invisible to `EntityConverter` / `WriteEntityStream` / statistics / `verify-stats`, which dispatch on known game ApiTypeIds only. That invisibility is behavior, not an accident of `switch` fall-through — it is pinned by `src/replay/synthetic-event-invisibility.test.ts`, and a new synthetic type MUST extend that test. Credentials (a rotating `session` token, `requestKey`) MUST NOT appear in a synthetic event or in any table it is projected into.
 18. **Forced Update (auto-apply + remote kill switch, sola承認)**: `src/background/update-manager.ts` auto-applies a downloaded extension update (`chrome.runtime.reload()`) as soon as it's SAFE, and `src/services/min-version-gate.ts` can remotely disable cloud sync on old versions. See "Forced Update" under Cloud Sync & Firebase Integration for the full safe-window definition, badge precedence, and fail-open semantics.
+19. **Active-port token (game-enforced single session)**: PokerChase enforces exclusive login: one account session has exactly one game tab in use at a time. Across 415k captured hands there was no simultaneous two-table delivery; all 568 observed hand preemptions were sequential, with a minimum 12-second gap. The port that most recently delivered a WebSocket-origin game event MUST be the sole ACTIVE port. Other connected ports are relics: stats/realtime updates MUST NOT be delivered to them, their state MUST NOT be consulted, and their last rendered display MUST NOT be cleared. An event from another port MUST transfer the token immediately; a relic MAY reclaim it the same way. Handover MUST reset the single current-hand `RealTimeStatsStream` before that event enters the pipeline. Replay fetch is allowed only when the ACTIVE port is explicitly out of session or no ACTIVE port exists; an unknown ACTIVE state MUST be treated as in-session, and each queued HandId retains the ACTIVE account observed when it was queued. A different port delivering within 10 seconds of the prior ACTIVE event MUST emit a diagnostic warning only; this sentinel MUST NOT add simultaneous-session behavior.
 
 ### Data Flow
 
@@ -321,7 +322,7 @@ WebSocket Events (from content_script)
     │   (Independent stream)          (via 'data' event)
     │
     ├─► RealTimeStatsStream ───────► Real-time Stats Output
-    │   (one instance per port)        (to that source port only)
+    │   (single token-bound stream)    (to the ACTIVE port only)
     │
     └─► AggregateEventsStream
         (Groups events by hand)
@@ -337,7 +338,7 @@ WebSocket Events (from content_script)
 
 **Key Points:**
 
-- Three independent stream paths receive the same events simultaneously; the current-hand `RealTimeStatsStream` path is instantiated per connected port
+- Three independent stream paths receive the same events simultaneously; one current-hand `RealTimeStatsStream` follows the ACTIVE-port token and resets on handover
 - Only the main statistics pipeline uses `.pipe()` for sequential processing
 - HandLogStream and RealTimeStatsStream operate in parallel, not as branches
 - Each stream emits results via 'data' events to update different UI components
@@ -503,7 +504,7 @@ on large DBs (bounded, local work; import is a rare operation).
 
 - **Parallel Streams**: Three independent streams process same events
   - HandLogStream → Hand history generation
-  - RealTimeStatsStream (one per connected port) → Pot odds, SPR, hand improvement for that source tab only
+  - RealTimeStatsStream (one ACTIVE-token-bound instance) → Pot odds, SPR, and hand improvement for the ACTIVE tab only
   - AggregateEventsStream → Statistics pipeline
 - **Update Timing**:
   - Real-time stats: Update immediately on each action
@@ -544,7 +545,7 @@ For complete directory structure and file descriptions, see [docs/file-organizat
 
 Three independent streams process events in parallel:
 - **AggregateEventsStream** → **WriteEntityStream** → **ReadEntityStream** (main statistics pipeline)
-- **RealTimeStatsStream** - Per-port real-time pot odds, SPR, and hand improvement; session/deal state from one tab MUST NOT mutate another tab's instance
+- **RealTimeStatsStream** - One ACTIVE-token-bound stream for real-time pot odds, SPR, and hand improvement; handover MUST reset its in-hand state before the new event enters it
 - **HandLogStream** - Hand history generation
 
 **Key optimization**: `EntityConverter` for direct event-to-entity conversion during imports.

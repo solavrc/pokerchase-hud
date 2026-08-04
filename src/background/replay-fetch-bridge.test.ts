@@ -13,8 +13,22 @@ import {
   releaseReplayRequestsForPort,
   requestReplayDetails
 } from './replay-fetch-bridge'
+import {
+  __resetActivePortStateForTests,
+  claimActivePort,
+  markActivePortSessionActive,
+  markActivePortSessionInactive
+} from './active-port'
 
 const makePort = () => ({ postMessage: jest.fn() }) as unknown as chrome.runtime.Port
+
+const makeInactiveActivePort = (): chrome.runtime.Port => {
+  const port = makePort()
+  connectedPorts.add(port)
+  claimActivePort(port)
+  markActivePortSessionInactive(port)
+  return port
+}
 
 const sentRequestId = (port: chrome.runtime.Port): string =>
   (port.postMessage as jest.Mock).mock.calls[0]![0].requestId
@@ -22,6 +36,7 @@ const sentRequestId = (port: chrome.runtime.Port): string =>
 describe('replay-fetch-bridge（開発用の取得入口）', () => {
   beforeEach(() => {
     __resetReplayFetchBridgeForTests()
+    __resetActivePortStateForTests()
     connectedPorts.clear()
   })
 
@@ -32,8 +47,7 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
   it('開始通知を受けたら期限を自分のバッチの所要へ張り直す', async () => {
     jest.useFakeTimers()
     try {
-      const port = makePort()
-      connectedPorts.add(port)
+      const port = makeInactiveActivePort()
 
       let settled = false
       const pending = requestReplayDetails([1]).then(outcome => { settled = true; return outcome })
@@ -59,8 +73,7 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
   })
 
   it('接続中のゲームタブへ取得を依頼し、応答で解決する', async () => {
-    const port = makePort()
-    connectedPorts.add(port)
+    const port = makeInactiveActivePort()
 
     const pending = requestReplayDetails([1, 2])
     await Promise.resolve()
@@ -83,9 +96,8 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
   })
 
   it('依頼していないポートからの応答では解決しない', async () => {
-    const port = makePort()
+    const port = makeInactiveActivePort()
     const other = makePort()
-    connectedPorts.add(port)
 
     const pending = requestReplayDetails([1])
     await Promise.resolve()
@@ -116,8 +128,7 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
   })
 
   it('ポート切断で待ちを解放する（応答が来ないまま待ち続けない）', async () => {
-    const port = makePort()
-    connectedPorts.add(port)
+    const port = makeInactiveActivePort()
 
     const pending = requestReplayDetails([1])
     await Promise.resolve()
@@ -129,8 +140,19 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
   it('接続が無ければ即座に失敗を返す', async () => {
     expect(await requestReplayDetails([1])).toEqual({
       success: false,
-      error: 'no connected game tab'
+      error: 'no active game tab'
     })
+  })
+
+  it('ACTIVE portがセッション中ならpostMessageしない', async () => {
+    const port = makeInactiveActivePort()
+    markActivePortSessionActive(port)
+
+    expect(await requestReplayDetails([1])).toEqual({
+      success: false,
+      error: 'active game session'
+    })
+    expect(port.postMessage).not.toHaveBeenCalled()
   })
 
   it.each([

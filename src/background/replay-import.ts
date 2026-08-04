@@ -10,11 +10,9 @@
  * できるのは HandId をキューへ積むことだけで、取得はセッション終了後に走る。
  *
  * この不変条件はこのファイルの1箇所（`canFetchNow`）に集約し、テストで固定する。
- * セッション状態は `update-manager.ts` の三値（unknown/active/inactive）を使い、
- * **`unknown` は取得不可**として扱う ―― Service Worker はいつでも落ちうるので、
- * 再起動直後は「セッション中かどうか分からない」が正しい状態であり、そこで
- * 撃つと不変条件を破りうる。分からない間は積んだまま待ち、次のセッション終了で
- * 取得する。
+ * 判定するのはACTIVEポートの三値（unknown/active/inactive）だけで、
+ * **`unknown` は取得不可**として扱う。ACTIVEポートが無い場合はsessionも無いので
+ * fairness gate自体は通るが、依頼先portが無ければ実際のHTTPは発行されない。
  *
  * ## キューの永続化
  *
@@ -51,8 +49,11 @@ import { sanitizeReplayDetail } from '../replay/protocol'
 import { requestReplayDetails } from './replay-fetch-bridge'
 import { startKeepAlive } from './service-worker-keepalive'
 import { enqueuePendingStorageWrite } from './pending-storage-writes'
-import { awaitIngestionDrain, getSessionActivity } from './update-manager'
-import { allConnectedPortsInactive, findPortForPlayer } from './replay-port-state'
+import { awaitIngestionDrain } from './update-manager'
+import {
+  findActivePortForPlayer,
+  isActivePortOutsideSession
+} from './active-port'
 
 export const REPLAY_IMPORT_QUEUE_META_ID = 'replayImportQueue'
 export const REPLAY_IMPORT_STATUS_META_ID = 'replayImportStatus'
@@ -150,8 +151,8 @@ export interface ReplayImportDeps {
   intervalMs?: number
   /** 現在のヒーローのUserId。積んだアカウントとの一致判定に使う。 */
   getPlayerId?: () => number | undefined
-  /** 接続中の全ポートがセッション外か（テストで差し替える）。 */
-  allPortsInactive?: () => boolean
+  /** ACTIVEポートがセッション外か（テストで差し替える）。 */
+  isFetchAllowed?: () => boolean
   /** 取り込みキューの決着待ち（テストで差し替える）。 */
   waitForIngestion?: () => Promise<void>
   /** そのアカウントのハンドを依頼してよいポートの解決（テストで差し替える）。 */
@@ -270,12 +271,9 @@ const appendToQueue = (
  * いる場合にだけ取得を許す。`unknown`（Service Worker再起動直後）は不可。
  */
 const canFetchNow = (deps: ReplayImportDeps): boolean => {
-  // 畳んだ値（forced update と共有）と、接続中の全ポートの論理積。
-  // 畳んだ値は最後に届いたイベントしか表さないので、タブAで対局中でも
-  // タブBの309で `inactive` へ倒れる。取得側だけを厳しくして、
-  // 「接続中の全タブがセッション外」を要求する（状態不明は対局中扱い）。
-  if (getSessionActivity() !== 'inactive') return false
-  return (deps.allPortsInactive ?? allConnectedPortsInactive)()
+  // 唯一のACTIVEポートだけを判定する（MUST）。unknownは対局中扱い、token無しは
+  // session無しとして許可する。実際の送信先は別途ACTIVE accountへ限定される。
+  return (deps.isFetchAllowed ?? isActivePortOutsideSession)()
 }
 
 /** 合成イベント1件を Lake と `replayDetails` へ入れる。 */
@@ -508,9 +506,7 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
       settled.add(entry.handId)
       return
     }
-    // アカウントの一致は**依頼の直前にポート単位で**確かめる（下記）。
-    // ここで `service.playerId`（全体で1つ）と比べても、実際の依頼先は
-    // 別タブになりうるので保証にならない。
+    // アカウントの一致は**依頼の直前にACTIVE token単位で**確かめる（下記）。
     targets.push(entry)
   })
 
@@ -545,11 +541,9 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
       aborted = true
       break
     }
-    // このHandIdを積んだアカウントを観測しているタブへ依頼する。見つからない
-    // ときは**撃たずに残す**（MUST）―― 別アカウントのタブへ投げると `2302`
-    // が返り、再試行不能として永久に捨てる側へ倒れる。正しいアカウントで
-    // 接続し直せば次の機会に流れる。
-    const port = (deps.resolvePort ?? findPortForPlayer)(entry.playerId)
+    // accountが今のACTIVEポートと合わないentryでは間隔待ちもしない。未接続
+    // accountが先頭に大量に在っても、取得可能なentryを遅らせないため。
+    let port = (deps.resolvePort ?? findActivePortForPlayer)(entry.playerId)
     if (!port) continue
 
     // 先頭は待たない。1件だけの取得は即座に走る。
@@ -560,6 +554,9 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
         aborted = true
         break
       }
+      // 待機中のhandoverを反映し、旧ACTIVEポートへは送らない（MUST NOT）。
+      port = (deps.resolvePort ?? findActivePortForPlayer)(entry.playerId)
+      if (!port) continue
     }
 
     issuedAny = true

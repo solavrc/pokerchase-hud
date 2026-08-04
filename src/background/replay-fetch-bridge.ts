@@ -20,6 +20,7 @@
  * not exist." になる（このファイルの唯一の想定利用者はSWコンソール）。
  */
 import { connectedPorts } from './ports'
+import { getActivePort, isActivePortOutsideSession } from './active-port'
 import {
   REPLAY_FETCH_BATCH_LIMIT,
   REPLAY_PORT_FETCH,
@@ -109,8 +110,7 @@ export type ReplayFetchOutcome =
   | { success: false, error: string }
 
 /**
- * 接続中のゲームタブへ取得を依頼し、結果を返す。
- * 依頼先は最初に見つかった接続で、タブの選択はしない（開発用のため）。
+ * ACTIVEゲームタブへ取得を依頼し、結果を返す。
  */
 export const requestReplayDetails = async (
   handIds: unknown,
@@ -139,17 +139,20 @@ export const requestReplayDetails = async (
     // 待つ前に掴んだポートは切断済みになる。しかもこの依頼はまだ`pending`に
     // 載っていないので切断時の解放対象にもならず、再接続済みのポートが
     // 在るのに空結果を返してしまう。
-    // 依頼先が指定されていればそれを使う。取り込み層は「キューに積んだ
-    // アカウントを観測したタブ」を渡す ―― 別アカウントのタブへ投げると
-    // `2302` が返り、再試行不能として永久に捨ててしまうため。
-    // 待った後に確認するのは指定なしの場合と同じ理由（待つ間に再読み込みで
-    // 切断されうる）。
-    const port = targetPort && connectedPorts.has(targetPort)
-      ? targetPort
-      : targetPort
-        ? undefined
-        : connectedPorts.values().next().value
-    if (!port) return { success: false, error: 'no connected game tab' }
+    // 取り込み層から指定された依頼先も、現在のACTIVEポートと一致するときだけ
+    // 使う（MUST）。queue待ち中のhandover後に旧portへ投げると、account違いの
+    // `2302`で再試行不能として永久に捨ててしまうため。
+    // fairness gateも実際のpostMessage直前に再確認する（MUST）。取り込み層の
+    // canFetchNowを通った後、dispatchQueue待ちの間に次sessionが始まりうる。
+    if (!isActivePortOutsideSession()) {
+      return { success: false, error: 'active game session' }
+    }
+    const activePort = getActivePort()
+    const port = activePort && connectedPorts.has(activePort) &&
+      (!targetPort || targetPort === activePort)
+      ? activePort
+      : undefined
+    if (!port) return { success: false, error: 'no active game tab' }
 
   // 連番ではなくUUID。連番はService Workerの再起動ごとに0へ戻るが、ページ側の
   // 逐次キューと進行中のHTTP取得はページが生きている限り継続する。旧SWの
