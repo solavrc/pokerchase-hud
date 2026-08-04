@@ -1,5 +1,6 @@
 import { connectedPorts } from './ports'
 import {
+  REPLAY_PORT_CANCEL,
   REPLAY_PORT_FETCH,
   REPLAY_PORT_RESULT,
   REPLAY_PORT_STARTED,
@@ -8,6 +9,7 @@ import {
 } from '../replay/protocol'
 import {
   __resetReplayFetchBridgeForTests,
+  cancelReplayRequestsForSessionStart,
   exposeReplayFetchForDevtools,
   handleReplayPortMessage,
   releaseReplayRequestsForPort,
@@ -138,10 +140,24 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
     expect(await pending).toEqual({ success: true, results: [] })
   })
 
-  it('接続が無ければ即座に失敗を返す', async () => {
+  it('dedup済みセッション開始はpageへcancelを送り、現在の待ちを即時解放する', async () => {
+    const port = makeInactiveActivePort()
+    const pending = requestReplayDetails([1])
+    await Promise.resolve()
+    const requestId = sentRequestId(port)
+
+    expect(cancelReplayRequestsForSessionStart()).toBe(1)
+    expect(port.postMessage).toHaveBeenCalledWith({
+      type: REPLAY_PORT_CANCEL,
+      requestId
+    })
+    expect(await pending).toEqual({ success: true, results: [] })
+  })
+
+  it('SW再起動直後のtoken未生成はunknownとして即座に拒否する', async () => {
     expect(await requestReplayDetails([1])).toEqual({
       success: false,
-      error: 'no active game tab'
+      error: 'active game session'
     })
   })
 

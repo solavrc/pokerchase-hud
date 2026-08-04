@@ -6,12 +6,14 @@ export const REPLAY_LIST_PATH = '/replay/list'
 
 export const REPLAY_BRIDGE_CONFIG = 'pokerchase-hud:replay-config'
 export const REPLAY_BRIDGE_FETCH = 'pokerchase-hud:replay-fetch'
+export const REPLAY_BRIDGE_CANCEL = 'pokerchase-hud:replay-cancel'
 export const REPLAY_BRIDGE_STARTED = 'pokerchase-hud:replay-started'
 export const REPLAY_BRIDGE_RESULT = 'pokerchase-hud:replay-result'
 export const REPLAY_BRIDGE_LEDGER = 'pokerchase-hud:replay-ledger'
 /** 認証エンベロープを初めて捕獲したことの通知（値は載せない）。 */
 export const REPLAY_BRIDGE_AUTH_READY = 'pokerchase-hud:replay-auth-ready'
 export const REPLAY_PORT_FETCH = 'experimental-replay-fetch'
+export const REPLAY_PORT_CANCEL = 'experimental-replay-cancel'
 export const REPLAY_PORT_STARTED = 'experimental-replay-started'
 export const REPLAY_PORT_RESULT = 'experimental-replay-result'
 export const REPLAY_PORT_LEDGER = 'experimental-replay-ledger'
@@ -63,6 +65,11 @@ export interface ReplayFetchRequest {
   type: typeof REPLAY_BRIDGE_FETCH | typeof REPLAY_PORT_FETCH
   requestId: string
   handIds: number[]
+}
+
+export interface ReplayFetchCancel {
+  type: typeof REPLAY_BRIDGE_CANCEL | typeof REPLAY_PORT_CANCEL
+  requestId: string
 }
 
 /**

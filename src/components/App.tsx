@@ -207,8 +207,8 @@ const App = memo(() => {
           trustedDealTimestamp === undefined || trustedDealTimestamp < boundaryTimestamp
         )
       ) {
-        // 201同期clear後に完了した旧sessionの非同期集計でlineup/dimCacheを
-        // 再構築してはならない（MUST NOT）。次の信頼済み着席DEALまで待つ。
+        // 201後に完了した旧sessionの非同期集計でlineup/dimCacheを更新しては
+        // ならない（MUST NOT）。保持表示は次の信頼済み着席DEALまで残す。
         return
       }
       if (isTrustedSeatedDeal && awaitingTrustedSessionBoundaryRef.current) {
@@ -416,10 +416,11 @@ const App = memo(() => {
   }, [])
 
   const handleSessionStart = useCallback((event: CustomEvent<PokerChaseSessionStartDetail>) => {
+    // 201は新しい着席lineupを持たないため保持表示を消さない。境界時刻より古い
+    // 非同期statsを拒否し、最初の信頼済み着席DEALで破棄・置換する。
     awaitingTrustedSessionBoundaryRef.current = true
     trustedSessionBoundaryTimestampRef.current = event.detail.timestamp
-    discardRetainedLineup()
-  }, [discardRetainedLineup])
+  }, [])
 
   useEffect(() => {
     window.addEventListener(POKER_CHASE_SESSION_END_EVENT, handleSessionEnd)

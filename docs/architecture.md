@@ -29,7 +29,9 @@ Zod検証より前に現在ハンドstream/cacheを消すため、破損payload�
 SPR・ポットオッズが後のfilter再計算で復活しない。集計lineup自体は保持する。
 
 replayのsession判定とaccount attributionにもACTIVE portの状態だけを使い、relicの状態は
-参照しない。10秒未満で別tabからeventが届いた場合はaxiom違反の検出として
+参照しない。取得を許すのは現在世代が明示的にsession外と確定した場合だけで、Service
+Worker再起動直後のtoken未生成はunknownとして遮断する。dedup済みの201/303/308は進行中の
+取得をpage側のAbortControllerまで中断する。10秒未満で別tabからeventが届いた場合はaxiom違反の検出として
 `console.warn`を記録する。同一tabのF5 reload候補は警告対象外とし、複数sessionを扱う分岐は
 追加しない。
 

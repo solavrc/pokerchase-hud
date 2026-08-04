@@ -105,6 +105,20 @@ describe('replay import layer', () => {
    * `/replay/detail` を1本も撃たない。**
    */
   describe('不変条件: セッション中は取得しない', () => {
+    test('Service Worker再起動直後のtoken未生成ではドレインを発火しない', async () => {
+      const deps = depsOf()
+      await enqueueReplayHandId(deps, 1000, NOW)
+
+      // active-portのモジュール状態はbeforeEachで初期化済み。接続通知やauth-ready
+      // がdrainを起動しても、最初のdedup済みgame eventまではunknownで止まる。
+      await drainReplayImportQueue(deps, 'port-connect')
+
+      expect(fetchCalls).toEqual([])
+      expect(keepAliveStarts).toBe(0)
+      expect(await db.replayDetails.count()).toBe(0)
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1000])
+    })
+
     test('セッション開始→ハンド→キューは伸びるが取得は0本、セッション終了で初めて走る', async () => {
       const deps = depsOf()
 
@@ -179,6 +193,9 @@ describe('replay import layer', () => {
       await drainReplayImportQueue(deps)
       // 1件目の応答中にセッションが始まるので、2件目は撃たれない
       expect(fetchCalls).toEqual([[1200]])
+      // 応答と201/303が競合しても90001へ保存せず、両方を持ち越す。
+      expect(await db.replayDetails.count()).toBe(0)
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1200, 1201])
 
       // 2周目も不変条件で止まる
       await enqueueReplayHandId(deps, 1202, NOW)
@@ -204,8 +221,8 @@ describe('replay import layer', () => {
       await drainReplayImportQueue(deps)
 
       expect(fetchCalls).toEqual([[1210], [1211]])
-      // 撃たなかった2件はキューに残る
-      expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1212, 1213])
+      // 201/303と応答が競合した2件目も保存・決着せず、未発行分と共に残る。
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1211, 1212, 1213])
     })
 
     test('取得の途中で長時間操作が始まったら、その時点で撃つのをやめる', async () => {

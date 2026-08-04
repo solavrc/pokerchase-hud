@@ -25,6 +25,7 @@ import { RuntimePortManager } from './utils/runtime-port-manager'
 import { captureHandledException, initSentry } from './observability/sentry'
 import {
   EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY,
+  REPLAY_BRIDGE_CANCEL,
   REPLAY_BRIDGE_CONFIG,
   REPLAY_BRIDGE_FETCH,
   REPLAY_BRIDGE_AUTH_READY,
@@ -33,12 +34,14 @@ import {
   REPLAY_BRIDGE_STARTED,
   REPLAY_FETCH_BATCH_LIMIT,
   REPLAY_LEDGER_MAX_ENTRIES,
+  REPLAY_PORT_CANCEL,
   REPLAY_PORT_FETCH,
   REPLAY_PORT_AUTH_READY,
   REPLAY_PORT_LEDGER,
   REPLAY_PORT_RESULT,
   REPLAY_PORT_STARTED,
   isPositiveHandId,
+  type ReplayFetchCancel,
   type ReplayFetchRequest,
   type ReplayFetchResult,
   type ReplayFetchStarted,
@@ -80,6 +83,15 @@ const postReplayRequest = (message: ReplayFetchRequest) => {
     return
   }
   window.postMessage({ ...message, type: REPLAY_BRIDGE_FETCH }, POKER_CHASE_ORIGIN)
+}
+
+const postReplayCancel = (message: ReplayFetchCancel) => {
+  const pendingIndex = pendingReplayRequests.findIndex(
+    request => request.requestId === message.requestId
+  )
+  if (pendingIndex !== -1) pendingReplayRequests.splice(pendingIndex, 1)
+  if (!replayBridgeReady) return
+  window.postMessage({ ...message, type: REPLAY_BRIDGE_CANCEL }, POKER_CHASE_ORIGIN)
 }
 
 const flushPendingReplayRequests = () => {
@@ -192,6 +204,12 @@ const portManager = new RuntimePortManager({
         request.handIds.length <= REPLAY_FETCH_BATCH_LIMIT && request.handIds.every(isPositiveHandId)) {
         postReplayRequest(request as ReplayFetchRequest)
       }
+      return
+    }
+    if (typeof message === 'object' && message !== null &&
+      'type' in message && message.type === REPLAY_PORT_CANCEL &&
+      'requestId' in message && typeof message.requestId === 'string') {
+      postReplayCancel(message as ReplayFetchCancel)
       return
     }
     if (typeof message === 'object' && message !== null &&

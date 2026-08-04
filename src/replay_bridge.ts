@@ -40,6 +40,7 @@ import { decode, encode } from '@msgpack/msgpack'
 import { POKER_CHASE_ORIGIN } from './constants/runtime'
 import {
   REPLAY_API_ORIGIN,
+  REPLAY_BRIDGE_CANCEL,
   REPLAY_BRIDGE_CONFIG,
   REPLAY_BRIDGE_FETCH,
   REPLAY_BRIDGE_AUTH_READY,
@@ -369,12 +370,20 @@ const readEnvelopeRejection = (
   return undefined
 }
 
-const fetchReplayDetail = async (handId: number): Promise<ReplayFetchItemResult> => {
+const cancelledReplayRequests = new Set<string>()
+const replayRequestControllers = new Map<string, AbortController>()
+
+const fetchReplayDetail = async (
+  handId: number,
+  requestId: string
+): Promise<ReplayFetchItemResult> => {
   if (!OriginalFetch) return { handId, ok: false, error: 'fetch-unavailable', retryable: false }
   const auth = replayAuth
   if (!auth) return { handId, ok: false, error: 'auth-envelope-unavailable', retryable: true }
 
   const controller = new AbortController()
+  replayRequestControllers.set(requestId, controller)
+  if (cancelledReplayRequests.has(requestId)) controller.abort()
   const timer = setTimeout(() => controller.abort(), REPLAY_FETCH_TIMEOUT_MS)
   try {
     const response = await OriginalFetch(REPLAY_DETAIL_URL, {
@@ -412,6 +421,9 @@ const fetchReplayDetail = async (handId: number): Promise<ReplayFetchItemResult>
     return { handId, ok: false, error: errorMessage(error), retryable: true }
   } finally {
     clearTimeout(timer)
+    if (replayRequestControllers.get(requestId) === controller) {
+      replayRequestControllers.delete(requestId)
+    }
   }
 }
 
@@ -441,7 +453,7 @@ const handleReplayFetch = async (message: ReplayFetchRequest): Promise<void> => 
   for (const handId of handIds) {
     // 各件の前に再確認する。無効化は次の1件から効く必要があり、バッチ完了まで
     // 最大99件を撃ち続けてはいけない。
-    if (!replayImportEnabled) break
+    if (!replayImportEnabled || cancelledReplayRequests.has(message.requestId)) break
     // 先頭は待たない。1件だけの取得は従来どおり即座に走る。
     if (results.length > 0) {
       await delay(REPLAY_FETCH_INTERVAL_MS)
@@ -449,15 +461,18 @@ const handleReplayFetch = async (message: ReplayFetchRequest): Promise<void> => 
       // 上のチェックは通過済みなので `fetchReplayDetail` が呼ばれ、
       // 資格情報が消えている分だけ偽の `auth-envelope-unavailable`
       // （retryable）が結果に積まれる。
-      if (!replayImportEnabled) break
+      if (!replayImportEnabled || cancelledReplayRequests.has(message.requestId)) break
     }
-    results.push(await fetchReplayDetail(handId))
+    const result = await fetchReplayDetail(handId, message.requestId)
+    if (cancelledReplayRequests.has(message.requestId)) break
+    results.push(result)
   }
   window.postMessage({
     type: REPLAY_BRIDGE_RESULT,
     requestId: message.requestId,
     results
   }, POKER_CHASE_ORIGIN)
+  cancelledReplayRequests.delete(message.requestId)
 }
 
 window.addEventListener('message', (event: MessageEvent<unknown>) => {
@@ -478,6 +493,13 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       replayAuthGeneration += 1
       replayAuthAnnounced = false
     }
+    return
+  }
+  if (event.data.type === REPLAY_BRIDGE_CANCEL) {
+    const requestId = (event.data as { requestId?: unknown }).requestId
+    if (typeof requestId !== 'string') return
+    cancelledReplayRequests.add(requestId)
+    replayRequestControllers.get(requestId)?.abort()
     return
   }
   if (event.data.type !== REPLAY_BRIDGE_FETCH || !replayImportEnabled) return

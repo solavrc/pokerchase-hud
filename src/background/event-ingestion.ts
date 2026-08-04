@@ -28,7 +28,11 @@ import {
 import { awaitIngestionDrain, markSessionActive, markSessionInactive, recheckPendingUpdate, setIngestionDrainProvider } from './update-manager'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
 import { getOperationGeneration, getOperationState, onOperationBecameIdle } from './operation-state'
-import { handleReplayPortMessage, releaseReplayRequestsForPort } from './replay-fetch-bridge'
+import {
+  cancelReplayRequestsForSessionStart,
+  handleReplayPortMessage,
+  releaseReplayRequestsForPort
+} from './replay-fetch-bridge'
 import { handleReplayLedgerPortMessage, type ReplayLedgerAuditDeps } from './replay-ledger-audit'
 import {
   findActivePortForPlayer,
@@ -51,6 +55,10 @@ import {
 } from '../observability/sentry'
 import { buildSchemaDiagnostic } from '../observability/schema-diagnostic'
 import { getEventFields, getEventSchema } from '../types/api'
+import {
+  initializeReplayDiagnostics,
+  logReplayDiagnostic
+} from './replay-diagnostics'
 
 /**
  * 参加取消申込（ApiTypeId 203）。`ApiType` enum（アプリケーションで使用する
@@ -77,6 +85,7 @@ const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
  * （`registerEventIngestion()`のコメント参照）。
  */
 let ingestionQueue: Promise<void> = Promise.resolve()
+let ingestionQueueDepth = 0
 
 /**
  * 台帳突き合わせの依存。ポート受信時と、Service Worker起動時の再開
@@ -134,6 +143,7 @@ export const createReplayImportDeps = (service: PokerChaseService): ReplayImport
  * 各ストリームへの書き込み・自動同期トリガーを行う。
  */
 export const registerEventIngestion = (service: PokerChaseService): void => {
+  initializeReplayDiagnostics()
   // 長時間操作（インポート/再構築/エクスポート/全削除）が終わったら、その間に
   // 中断・見送りになったリプレイ取得を再開する。これが無いと、再開の契機が
   // 次の309/203かポート再接続だけになり、ページを開いたまま次の対局をしない
@@ -141,7 +151,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   // `drainReplayImportQueue` 側の不変条件がセッション状態を見るので、
   // ここでは無条件に呼んでよい（セッション中なら何も起きない）。
   onOperationBecameIdle(() => {
-    drainReplayImportQueue(createReplayImportDeps(service))
+    drainReplayImportQueue(createReplayImportDeps(service), 'operation-idle')
       .catch(err => console.error('[background] Replay import drain after operation failed:', err))
   })
 
@@ -197,6 +207,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   // このため呼び出し元固有のactivity generation plumbingは不要であり、
   // operation completion/SW startupと同じ安全性機構へ統一されている。
   ingestionQueue = Promise.resolve()
+  ingestionQueueDepth = 0
   setIngestionDrainProvider(() => ingestionQueue)
 
   chrome.runtime.onConnect.addListener(port => {
@@ -209,7 +220,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
       // この瞬間が次の機会になる。**セッション外であること**の判定は
       // `drainReplayImportQueue` 側の不変条件が担うので、ここでは
       // 呼ぶだけでよい（セッション中なら何も起きない）。
-      drainReplayImportQueue(createReplayImportDeps(service))
+      drainReplayImportQueue(createReplayImportDeps(service), 'port-connect')
         .catch(err => console.error('[background] Replay import drain on connect failed:', err))
       port.onMessage.addListener((message: ApiMessage | { type: string }) => {
         // キープアライブメッセージの処理（キュー直列化の対象外 -- 何も
@@ -241,7 +252,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
           // 取り込みキューの決着を待ってから流す（MUST）。同じポートから直前に
           // 届いた201/303/308がまだRaw Lakeの書き込み待ちだと、この通知が先に
           // 決着してセッション状態を古い `inactive` のまま読む。
-          drainReplayImportQueue(createReplayImportDeps(service))
+          drainReplayImportQueue(createReplayImportDeps(service), 'auth-ready')
             .catch(err => console.error('[background] Replay import drain on auth capture failed:', err))
           return Promise.resolve()
         }
@@ -257,7 +268,22 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // させない設計だが、想定外のバグでqueueが壊れて以降のイベントが
         // 永久に詰まることのないよう、キューの継続用チェーンは別途catchする。
         const deliveredAt = Date.now()
-        const task = ingestionQueue.then(() => processEvent(service, message, port, deliveredAt))
+        const diagnosticApiTypeId = (message as { ApiTypeId?: unknown }).ApiTypeId
+        ingestionQueueDepth += 1
+        logReplayDiagnostic('port-event-received', {
+          apiTypeId: typeof diagnosticApiTypeId === 'number' ? diagnosticApiTypeId : undefined,
+          queueDepth: ingestionQueueDepth
+        })
+        const task = ingestionQueue
+          .then(() => processEvent(service, message, port, deliveredAt))
+          .finally(() => {
+            ingestionQueueDepth = Math.max(0, ingestionQueueDepth - 1)
+            logReplayDiagnostic('port-event-processed', {
+              apiTypeId: typeof diagnosticApiTypeId === 'number' ? diagnosticApiTypeId : undefined,
+              elapsedMs: Date.now() - deliveredAt,
+              queueDepth: ingestionQueueDepth
+            })
+          })
         ingestionQueue = task.catch(err => {
           console.error('[background] Unhandled ingestion queue error (fail-safe, queue continues):', err)
           captureHandledException(err, {
@@ -290,6 +316,14 @@ const isExplicitEntryFailure = (message: ApiMessage | { type: string }): boolean
   const code = (message as { Code?: unknown }).Code
   return typeof code === 'number' && code !== 0
 }
+
+const isSessionStartSignal = (
+  rawApiTypeId: unknown,
+  message: ApiMessage | { type: string }
+): boolean =>
+  (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED && !isExplicitEntryFailure(message)) ||
+  rawApiTypeId === ApiType.EVT_SESSION_DETAILS ||
+  (rawApiTypeId === ApiType.EVT_DEAL && (message as { Player?: unknown }).Player != null)
 
 /**
  * 生メッセージの数値ApiTypeIdだけを見て、セッションのACTIVE/INACTIVE状態を
@@ -348,30 +382,21 @@ const applySessionActivity = (
     if (generation !== undefined) markActivePortSessionInactive(generation)
     return
   }
-  if (
-    (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED && !isExplicitEntryFailure(message)) ||
-    rawApiTypeId === ApiType.EVT_SESSION_DETAILS
-  ) {
+  if (isSessionStartSignal(rawApiTypeId, message)) {
     markSessionActive()
     if (generation !== undefined) markActivePortSessionActive(generation)
-    return
-  }
-  if (rawApiTypeId === ApiType.EVT_DEAL) {
     const rawPlayer = (message as { Player?: unknown }).Player
-    if (rawPlayer != null) {
-      markSessionActive()
-      if (generation !== undefined) {
-        markActivePortSessionActive(generation)
-        // このタブのヒーローが誰かを控える。キューに積んだアカウントと
-        // 一致するポートへだけ取得を依頼するために使う。
-        const seatIndex = (rawPlayer as { SeatIndex?: unknown }).SeatIndex
-        const seatUserIds = (message as { SeatUserIds?: unknown }).SeatUserIds
-        if (typeof seatIndex === 'number' && Array.isArray(seatUserIds)) {
-          const playerId = seatUserIds[seatIndex]
-          if (typeof playerId === 'number' && playerId > 0) markActivePortPlayerId(generation, playerId)
-        }
+    if (rawApiTypeId === ApiType.EVT_DEAL && rawPlayer != null && generation !== undefined) {
+      // このタブのヒーローが誰かを控える。キューに積んだアカウントと
+      // 一致するポートへだけ取得を依頼するために使う。
+      const seatIndex = (rawPlayer as { SeatIndex?: unknown }).SeatIndex
+      const seatUserIds = (message as { SeatUserIds?: unknown }).SeatUserIds
+      if (typeof seatIndex === 'number' && Array.isArray(seatUserIds)) {
+        const playerId = seatUserIds[seatIndex]
+        if (typeof playerId === 'number' && playerId > 0) markActivePortPlayerId(generation, playerId)
       }
     }
+    return
   }
 }
 
@@ -470,6 +495,15 @@ const processEvent = async (
   // 誤った値のまま詰まらないようにするため（codexレビュー指摘）。
   // 詳細は`applySessionActivity`のコメント参照。
   applySessionActivity(rawApiTypeId, message, false, portGeneration)
+  if (isSessionStartSignal(rawApiTypeId, message)) {
+    const cancelled = cancelReplayRequestsForSessionStart()
+    if (cancelled > 0) {
+      logReplayDiagnostic('drain-aborted-by-session-start', {
+        apiTypeId: typeof rawApiTypeId === 'number' ? rawApiTypeId : undefined,
+        cancelledRequests: cancelled
+      })
+    }
+  }
 
   const successfulSessionStartTimestamp =
     rawApiTypeId === ApiType.EVT_ENTRY_QUEUED &&
@@ -553,7 +587,7 @@ const processEvent = async (
     // 積んだHandIdをここで初めて取りに行く。`applySessionActivity()`が既に
     // INACTIVEへ倒した後なので、`drainReplayImportQueue`の不変条件判定を
     // 通過する。auto-syncと同じくfire-and-forget（取り込みキューを塞がない）。
-    drainReplayImportQueue(createReplayImportDeps(service))
+    drainReplayImportQueue(createReplayImportDeps(service), 'session-end')
       .catch(err => console.error('[background] Replay import drain failed:', err))
   } else if (rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID) {
     // 参加取消申込(203)も保留中アップデートの安全性再チェック地点の1つに
@@ -570,7 +604,7 @@ const processEvent = async (
       console.error('[background] Pending update recheck on entry cancellation failed:', err)
     )
     // 203もINACTIVE化トリガーなので、持ち越し分があればここでも流す。
-    drainReplayImportQueue(createReplayImportDeps(service))
+    drainReplayImportQueue(createReplayImportDeps(service), 'entry-cancelled')
       .catch(err => console.error('[background] Replay import drain failed:', err))
   } else if (
     (rawApiTypeId === ApiType.EVT_ENTRY_QUEUED && !isExplicitEntryFailure(message)) ||

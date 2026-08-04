@@ -1055,7 +1055,7 @@ describe('App', () => {
       }
     })
 
-    it('成功した201を新session境界として終了sessionのlineupを破棄する', async () => {
+    it('成功した201では保持lineupを残し、最初の信頼済み着席dealで破棄する', async () => {
       render(<App />)
       await dispatchStats(mockStatsData.stats)
       await act(async () => {
@@ -1070,8 +1070,25 @@ describe('App', () => {
       })
 
       for (let i = 0; i < 6; i++) {
+        expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent(`Player: ${i + 1}`)
+      }
+
+      const nextSessionLineup: StatsData['stats'] = [
+        { playerId: 1, statResults: [] },
+        { playerId: 99, statResults: [] },
+        { playerId: -1 }, { playerId: -1 }, { playerId: -1 }, { playerId: -1 }
+      ]
+      await act(async () => {
+        window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
+          detail: {
+            stats: nextSessionLineup,
+            evtDeal: { ...makeSeatedDeal([1, 99, -1, -1, -1, -1]), timestamp: 2_001 }
+          } as StatsData
+        }))
+      })
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 99')
+      for (let i = 2; i < 6; i++) {
         expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Player: -1')
-        expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Dimmed: no')
       }
     })
 
@@ -1098,7 +1115,7 @@ describe('App', () => {
         }))
       })
       for (let i = 0; i < 6; i++) {
-        expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Player: -1')
+        expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent(`Player: ${i + 1}`)
       }
 
       const newLineup: StatsData['stats'] = [

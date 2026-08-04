@@ -215,11 +215,11 @@ export const readActivePortPlayerId = (): number | undefined =>
 /**
  * リプレイ取得のfairness gate。
  *
- * ACTIVEポートが無ければsessionも無い。tokenが在る場合は明示的なinactiveだけを
- * 許可し、unknownは対局中として扱う。
+ * 明示的なinactiveだけを許可する。Service Worker再起動直後のtoken未生成、
+ * reconnect猶予、activity unknownはいずれも対局中として扱う（MUST）。
  */
 export const isActivePortOutsideSession = (): boolean =>
-  activeToken === undefined || activeToken.activity === 'inactive'
+  activeToken?.activity === 'inactive'
 
 /** キューに記録したaccountと現在のACTIVEポートが一致するときだけ返す。 */
 export const findActivePortForPlayer = (

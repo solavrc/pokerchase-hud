@@ -23,11 +23,13 @@ import { connectedPorts } from './ports'
 import { getActivePort, isActivePortOutsideSession } from './active-port'
 import {
   REPLAY_FETCH_BATCH_LIMIT,
+  REPLAY_PORT_CANCEL,
   REPLAY_PORT_FETCH,
   REPLAY_PORT_RESULT,
   REPLAY_PORT_STARTED,
   isPositiveHandId,
   replayFetchBatchTimeoutMs,
+  type ReplayFetchCancel,
   type ReplayFetchItemResult,
   type ReplayFetchResult,
   type ReplayFetchStarted
@@ -103,6 +105,25 @@ export const releaseReplayRequestsForPort = (port: chrome.runtime.Port): void =>
   for (const [requestId, request] of pending) {
     if (request.port === port) settle(requestId, [])
   }
+}
+
+/**
+ * dedup済みのセッション開始を観測したら、現在のHTTPも含めて直ちに止める。
+ * キューのHandIdはdrain側が未決着のまま保持する。
+ */
+export const cancelReplayRequestsForSessionStart = (): number => {
+  let cancelled = 0
+  for (const [requestId, request] of [...pending]) {
+    const message: ReplayFetchCancel = { type: REPLAY_PORT_CANCEL, requestId }
+    try {
+      request.port.postMessage(message)
+    } catch {
+      // 切断済みでも下のsettleでSW側の待ちは解放する。
+    }
+    settle(requestId, [])
+    cancelled += 1
+  }
+  return cancelled
 }
 
 export type ReplayFetchOutcome =

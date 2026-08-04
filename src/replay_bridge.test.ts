@@ -1,6 +1,7 @@
 import { TextDecoder, TextEncoder } from 'util'
 import { POKER_CHASE_ORIGIN } from './constants/runtime'
 import {
+  REPLAY_BRIDGE_CANCEL,
   REPLAY_BRIDGE_CONFIG,
   REPLAY_BRIDGE_FETCH,
   REPLAY_BRIDGE_LEDGER,
@@ -372,6 +373,60 @@ describe('main-world experimental replay bridge', () => {
     expect(posted?.results).toHaveLength(1)
 
     jest.useRealTimers()
+    XMLHttpRequest.prototype.open = originalOpen
+    XMLHttpRequest.prototype.send = originalSend
+  })
+
+  test('backgroundのsession-start cancelで進行中HTTPのAbortControllerを止める', async () => {
+    let requestSignal: AbortSignal | undefined
+    const fetchMock = jest.fn().mockImplementation((_url, init) =>
+      new Promise((_resolve, reject) => {
+        requestSignal = init.signal
+        requestSignal?.addEventListener('abort', () => {
+          reject(new DOMException('session started', 'AbortError'))
+        })
+      }))
+    ;(window as any).fetch = fetchMock
+
+    const originalOpen = XMLHttpRequest.prototype.open
+    const originalSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.open = jest.fn() as any
+    XMLHttpRequest.prototype.send = jest.fn() as any
+    const postMessageSpy = jest.spyOn(window, 'postMessage')
+    postMessageSpy.mockClear()
+
+    jest.isolateModules(() => {
+      require('./replay_bridge')
+    })
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', 'https://production.api-poker-chase.com/user/status')
+    xhr.send(encode({
+      param: {}, session: 'page-only-secret', platform: 2,
+      appVer: '2.06', dataVer: '2_06_0_test', masterVer: 'master-test'
+    }))
+    await Promise.resolve()
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled: true }
+    }))
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'cancel-on-201', handIds: [77] }
+    }))
+    for (let i = 0; i < 20 && !requestSignal; i++) await Promise.resolve()
+
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CANCEL, requestId: 'cancel-on-201' }
+    }))
+    for (let i = 0; i < 20; i++) await Promise.resolve()
+
+    expect(requestSignal?.aborted).toBe(true)
+    const result = postMessageSpy.mock.calls
+      .map(call => call[0] as { type?: string, requestId?: string, results?: unknown[] })
+      .find(message => message.type === REPLAY_BRIDGE_RESULT && message.requestId === 'cancel-on-201')
+    expect(result?.results).toEqual([])
+
     XMLHttpRequest.prototype.open = originalOpen
     XMLHttpRequest.prototype.send = originalSend
   })

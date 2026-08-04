@@ -249,13 +249,15 @@ type ReplayAction = {
 いずれかが変わった時点で中断してキューに残す。
 
 判定は、WebSocket由来のgame eventを最後に届けた唯一のACTIVE portの
-セッション三値（`unknown` / `active` / `inactive`）だけを見る。ACTIVE portが
-**`inactive`** のとき、またはACTIVE port自体が無いときにgateを許可する。
-`active`と`unknown`は対局中扱いである。tokenが無い状態ではgateを通っても
-実際のHTTP依頼先が無いため、キューはそのまま残る。Service Worker再起動直後や
-handover直後の`unknown`は「セッション中かもしれない」が正しく、そこで撃つと
-不変条件を破りうる。接続中の他portはrelicなので、その状態を集合演算へ混ぜず、
-切断後の再接続猶予も持たない。
+セッション三値（`unknown` / `active` / `inactive`）だけを見る。現在世代が明示的に
+**`inactive`** のときだけgateを許可する。`active`、`unknown`、Service Worker
+再起動直後のtoken未生成、同一content scriptの再接続待ちはいずれも対局中扱いである。
+再起動後は最初のdedup済みgame eventが世代とactivityを確立するまでHTTPを発行しない。
+接続中の他portはrelicなので、その状態を集合演算へ混ぜない。
+
+逐次取得中にdedup済みの201/303/308を観測した場合は、backgroundが現在の依頼を
+未決着のまま解放し、page側の`AbortController`へ中断を伝える。応答と境界処理が
+競合した場合も、取り込み層は保存直前にactivityを再確認し、90001を書き込まない。
 
 キューは `meta` テーブルの1行（`replayImportQueue`）に持つ。MV3 の Service
 Worker は数十秒で落ちるため、メモリには置けない。

@@ -15,6 +15,11 @@ import { registerEventIngestion } from './event-ingestion'
 import { connectedPorts } from './ports'
 import * as updateManager from './update-manager'
 import * as apiEventKey from '../utils/api-event-key'
+import { REPLAY_PORT_CANCEL, REPLAY_PORT_FETCH } from '../replay/protocol'
+import {
+  __resetReplayFetchBridgeForTests,
+  requestReplayDetails
+} from './replay-fetch-bridge'
 
 describe('registerEventIngestion (update-manager triggers)', () => {
   let db: PokerChaseDB
@@ -27,6 +32,7 @@ describe('registerEventIngestion (update-manager triggers)', () => {
   let recheckPendingUpdateSpy: jest.SpyInstance
 
   beforeEach(async () => {
+    __resetReplayFetchBridgeForTests()
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
     service = trackServiceForTeardown(new PokerChaseService({ db }))
@@ -430,5 +436,46 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(recheckPendingUpdateSpy).toHaveBeenCalledTimes(1)
+  })
+
+  test.each([
+    ['201', {
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 12_100,
+      Code: 0,
+      BattleType: 0,
+      Id: 'stage-cancel-replay',
+      IsRetire: false
+    }],
+    ['303', {
+      ApiTypeId: ApiType.EVT_DEAL,
+      timestamp: 12_200,
+      SeatUserIds: [1, 2, 3, 4],
+      Game: { CurrentBlindLv: 1, NextBlindUnixSeconds: 0, Ante: 0, SmallBlind: 100, BigBlind: 200, ButtonSeat: 0, SmallBlindSeat: 1, BigBlindSeat: 2 },
+      Player: { SeatIndex: 0, BetStatus: 1, HoleCards: [0, 1], Chip: 5000, BetChip: 0 },
+      OtherPlayers: [
+        { SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 100 },
+        { SeatIndex: 2, Status: 0, BetStatus: 1, Chip: 5000, BetChip: 200 }
+      ],
+      Progress: { Phase: 0, NextActionSeat: 0, NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 1, MinRaise: 400, Pot: 300, SidePot: [] }
+    }]
+  ])('dedup済み%sで進行中のreplay HTTPへcancelを伝える', async (_label, startEvent) => {
+    await onMessageHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 12_000 })
+    mockPort.postMessage.mockClear()
+
+    const request = requestReplayDetails([1])
+    await Promise.resolve()
+    expect(mockPort.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: REPLAY_PORT_FETCH
+    }))
+    const requestId = mockPort.postMessage.mock.calls[0][0].requestId
+
+    await onMessageHandler(startEvent)
+
+    expect(mockPort.postMessage).toHaveBeenCalledWith({
+      type: REPLAY_PORT_CANCEL,
+      requestId
+    })
+    expect(await request).toEqual({ success: true, results: [] })
   })
 })
