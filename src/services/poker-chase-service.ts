@@ -7,7 +7,7 @@ import { HandLogStream } from '../streams/hand-log-stream'
 import { RealTimeStatsStream } from '../streams/realtime-stats-stream'
 import { setHandImprovementBatchMode } from '../realtime-stats'
 import { defaultStatDisplayConfigs, mergeStatDisplayConfigs } from '../stats'
-import { StatsLedger, normalizeStatsLatestHands } from '../stats/stat-ledger'
+import { StatsLedger } from '../stats/stat-ledger'
 import {
   POKER_CHASE_SERVICE_EVENT,
   POKER_CHASE_ORIGIN,
@@ -18,6 +18,7 @@ import {
   BATTLE_TYPE_FILTERS
 } from '../types'
 import { DEFAULT_TABLE_SIZE_FILTER, selectedTableSizeLayers, type TableSizeLayer } from '../utils/table-size'
+import { normalizeStatsLatestHands } from '../utils/stats-hand-limit'
 import type {
   ApiEvent,
   BattleType,

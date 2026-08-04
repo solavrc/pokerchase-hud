@@ -47,6 +47,36 @@ describe('options-storage', () => {
     expect(chrome.storage.sync.remove).not.toHaveBeenCalled()
   })
 
+  it('保存済みの契約外handLimitをoptions境界で500へ永続正規化する', async () => {
+    const options: Options = {
+      sendUserData: false,
+      filterOptions: { ...sampleFilterOptions, handLimit: 1_000 },
+    }
+    await chrome.storage.sync.set({ [OPTIONS_STORAGE_KEY]: options })
+    jest.clearAllMocks()
+
+    const loaded = await loadOptions()
+
+    expect(loaded?.filterOptions?.handLimit).toBe(500)
+    expect(chrome.storage.sync.set).toHaveBeenCalledTimes(1)
+    const after = await chrome.storage.sync.get(OPTIONS_STORAGE_KEY) as Record<string, any>
+    expect(after[OPTIONS_STORAGE_KEY].filterOptions.handLimit).toBe(500)
+
+    jest.clearAllMocks()
+    await expect(loadOptions()).resolves.toEqual(loaded)
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled()
+  })
+
+  it('saveOptionsも500超handLimitを保存前に正規化する', async () => {
+    await saveOptions({
+      sendUserData: true,
+      filterOptions: { ...sampleFilterOptions, handLimit: 750 },
+    })
+
+    const result = await chrome.storage.sync.get(OPTIONS_STORAGE_KEY) as Record<string, any>
+    expect(result[OPTIONS_STORAGE_KEY].filterOptions.handLimit).toBe(500)
+  })
+
   it('データが無い場合はundefinedを返す', async () => {
     await expect(loadOptions()).resolves.toBeUndefined()
   })
@@ -73,6 +103,21 @@ describe('options-storage', () => {
     expect(after[LEGACY_KEYS_KEY]).toBeUndefined()
     expect(after[legacyKey('sendUserData')]).toBeUndefined()
     expect(after[legacyKey('filterOptions')]).toBeUndefined()
+  })
+
+  it('旧bucket内の契約外handLimitもフラット移行と同時に500へ正規化する', async () => {
+    await chrome.storage.sync.set({
+      [LEGACY_KEYS_KEY]: ['sendUserData', 'filterOptions'],
+      [legacyKey('sendUserData')]: true,
+      [legacyKey('filterOptions')]: { ...sampleFilterOptions, handLimit: 1_000 },
+    })
+
+    const loaded = await loadOptions()
+
+    expect(loaded?.filterOptions?.handLimit).toBe(500)
+    const after = await chrome.storage.sync.get(null as any) as Record<string, any>
+    expect(after[OPTIONS_STORAGE_KEY].filterOptions.handLimit).toBe(500)
+    expect(after[LEGACY_KEYS_KEY]).toBeUndefined()
   })
 
   it('フラットと旧bucketが両方ある場合はフラット優先でマージし旧キーを削除する', async () => {

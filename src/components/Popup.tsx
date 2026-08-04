@@ -5,6 +5,7 @@ import { ChangeEvent, useEffect, useRef, useState } from 'react'
 import type { FilterOptions, GameTypeFilter, TableSizeFilter } from '../types'
 import { ALL_TABLE_SIZE_LAYERS, DEFAULT_TABLE_SIZE_FILTER } from '../types'
 import { rangeToTableSizeFilter, tableSizeFilterToRange } from '../utils/table-size-range'
+import { STATS_LATEST_HAND_OPTIONS } from '../utils/stats-hand-limit'
 import { loadOptions, saveOptions, type Options } from '../utils/options-storage'
 import { defaultStatDisplayConfigs, mergeStatDisplayConfigs } from '../stats'
 import type { StatDisplayConfig } from '../types/filters'
@@ -444,8 +445,9 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   }
 
   const handleHandLimitChange = (_event: Event, value: number | number[]) => {
-    const handCounts = [20, 50, 100, 200, 500]
-    const newHandLimit = value === 6 ? undefined : handCounts[(value as number) - 1]
+    const newHandLimit = value === 6
+      ? undefined
+      : STATS_LATEST_HAND_OPTIONS[(value as number) - 1]
 
     // Hand limit changed
     setHandLimit(newHandLimit)

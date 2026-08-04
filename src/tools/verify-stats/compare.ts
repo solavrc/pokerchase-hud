@@ -21,9 +21,20 @@
 import type { PipelineResult } from './pipeline'
 import type { OracleFraction, OracleResult } from './oracle'
 
-/** Stats compared -- must exist as a [num, denom] tuple on both sides. */
+interface ComparablePlayerResult {
+  playerId: number
+  hands: number
+  stats: object
+}
+
+type ComparableResult = ReadonlyMap<number, ComparablePlayerResult>
+
+/**
+ * Stats compared. `hands` is adapted from each result's scalar hand count to
+ * `[hands, 0]`; every other entry must exist as a fraction on both sides.
+ */
 export const COMPARED_STATS = [
-  'vpip', 'vpipF', 'pfr', '3bet', '3betfold', 'cbet', 'cbetFold', 'af', 'afq',
+  'hands', 'vpip', 'vpipF', 'pfr', '3bet', '3betfold', 'cbet', 'cbetFold', 'af', 'afq',
   'wtsd', 'wsd', 'wwsf', 'wtsdNoAi', 'wwsfNoAi', 'steal', 'foldToSteal', 'riverCallAccuracy',
 ] as const
 export type ComparedStat = typeof COMPARED_STATS[number]
@@ -59,13 +70,26 @@ function isFraction(value: unknown): value is OracleFraction {
   return Array.isArray(value) && value.length === 2 && typeof value[0] === 'number' && typeof value[1] === 'number'
 }
 
+function comparableValue(
+  result: ComparablePlayerResult,
+  stat: ComparedStat
+): unknown {
+  return stat === 'hands'
+    ? [result.hands, 0]
+    : (result.stats as Record<string, unknown>)[stat]
+}
+
 /**
  * Compare pipeline vs oracle results for players eligible (>= minHands hands)
  * on EITHER side. A player present/eligible on only one side counts as a
  * mismatch (missing=true) on every compared stat, since the other side has
  * no fraction to compare against.
  */
-export function compareResults(pipeline: PipelineResult, oracle: OracleResult, minHands = 50): ComparisonReport {
+function compareComparableResults(
+  pipeline: ComparableResult,
+  oracle: ComparableResult,
+  minHands: number
+): ComparisonReport {
   const pipelineEligible = new Set(
     [...pipeline.values()].filter(p => p.hands >= minHands).map(p => p.playerId)
   )
@@ -81,8 +105,10 @@ export function compareResults(pipeline: PipelineResult, oracle: OracleResult, m
     const mismatches: Mismatch[] = []
 
     for (const playerId of eligiblePlayerIds) {
-      const p = pipeline.get(playerId)?.stats[stat]
-      const o = oracle.get(playerId)?.stats[stat]
+      const pipelinePlayer = pipeline.get(playerId)
+      const oraclePlayer = oracle.get(playerId)
+      const p = pipelinePlayer ? comparableValue(pipelinePlayer, stat) : undefined
+      const o = oraclePlayer ? comparableValue(oraclePlayer, stat) : undefined
       const pOk = isFraction(p)
       const oOk = isFraction(o)
       total++
@@ -120,6 +146,22 @@ export function compareResults(pipeline: PipelineResult, oracle: OracleResult, m
   })
 
   return { eligiblePlayers: eligiblePlayerIds.size, minHands, stats }
+}
+
+export function compareResults(
+  pipeline: PipelineResult,
+  oracle: OracleResult,
+  minHands = 50
+): ComparisonReport {
+  return compareComparableResults(pipeline, oracle, minHands)
+}
+
+/** 全player・全18数値指標について旧全計算とv8台帳を厳密比較する。 */
+export function compareProductPaths(
+  legacy: PipelineResult,
+  ledger: PipelineResult
+): ComparisonReport {
+  return compareComparableResults(legacy, ledger, 0)
 }
 
 /** Render a human-readable agreement table, one line per stat. */

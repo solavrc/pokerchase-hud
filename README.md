@@ -71,7 +71,7 @@ npm run build
 | `npm run test` | Jestのユニット／コンポーネントテスト |
 | `npm run validate-schema -- <file.ndjson>` | NDJSONのAPIイベントをスキーマ検証 |
 | `npm run schema-diff -- <file.ndjson>` | APIイベントのフィールド差分を検出 |
-| `npm run verify-stats -- <file.ndjson>` | 統計パイプラインを独立したoracleと照合 |
+| `npm run verify-stats -- <file.ndjson>` | 旧全計算とv8寄与台帳を独立したoracleと照合 |
 
 ### UIモックアップ
 

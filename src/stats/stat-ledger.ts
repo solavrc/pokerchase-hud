@@ -10,6 +10,10 @@ import type { MetaRecord } from '../types/entities'
 import { ApiType } from '../types/api'
 import type { StatValue } from '../types/stats'
 import type { TableSizeLayer } from '../utils/table-size'
+import {
+  MAX_STATS_LATEST_HANDS,
+  normalizeStatsLatestHands,
+} from '../utils/stats-hand-limit'
 import { BattleType } from '../types/game'
 import {
   getApiEventKey,
@@ -50,8 +54,6 @@ const MAX_BASELINE_BUILD_ATTEMPTS = 12
 const BASELINE_WRITE_CHUNK_SIZE = 250
 const BASELINE_CPU_SCAN_CHUNK_SIZE = 2048
 const BASELINE_DERIVE_CHUNK_SIZE = 500
-/** Popupが入力できるlatest windowの上限。cellごとの寄与保持数もこれに合わせる。 */
-export const MAX_STATS_LATEST_HANDS = 500
 const LEDGER_GC_CHUNK_SIZE = 250
 const LEDGER_GC_START_DELAY_MS = 1000
 const KNOWN_BATTLE_TYPES: readonly number[] = [
@@ -490,13 +492,6 @@ function normalizedFilters(filters: StatsLedgerFilters): NormalizedStatsLedgerFi
     ? undefined
     : Math.trunc(boundedLatestHands)
   return { battleTypes, tableSizeLayers, latestHands }
-}
-
-/** Popup/storage/API由来のlatest windowを台帳の保持契約へ正規化する。 */
-export function normalizeStatsLatestHands(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0
-    ? Math.min(MAX_STATS_LATEST_HANDS, value)
-    : undefined
 }
 
 function compareContributionRowsNewestFirst(

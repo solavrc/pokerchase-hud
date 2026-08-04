@@ -2,16 +2,20 @@
  * verify-stats: pipeline-side computation.
  *
  * Converts raw NDJSON events through the repo's own `EntityConverter`
- * (exactly as the import path does) and then replicates
- * `ReadEntityStream.calcStats` in memory (no Dexie) to build a
- * `StatCalculationContext` per player and run every registered
- * `StatDefinition.calculate`.
+ * (exactly as the import path does), then exposes both product calculators:
+ * the legacy `StatDefinition.calculate` full-history path and the v8
+ * contribution-ledger derivation/aggregation path.
  *
  * This is intentionally the *dependent* half of the verification harness —
  * see oracle.ts for the independent re-implementation this is checked against.
  */
 import { EntityConverter } from '../../entity-converter'
+import type { EntityBundle } from '../../entity-converter'
 import { defaultRegistry } from '../../stats'
+import {
+  buildGenerationFromEntityBundle,
+  buildStatSnapshot,
+} from '../../stats/stat-ledger'
 import { PhaseType } from '../../types/game'
 import type { Action, ApiEvent, Hand, Phase, Session } from '../../types'
 
@@ -24,22 +28,30 @@ export interface PipelinePlayerResult {
 
 export type PipelineResult = Map<number, PipelinePlayerResult>
 
-/**
- * Run the real EntityConverter + StatDefinition.calculate over `events` and
- * return per-player results for every player who appeared in at least one hand.
- */
-export async function runPipeline(events: ApiEvent[]): Promise<PipelineResult> {
-  const session: Session = {
+function createStandaloneSession(): Session {
+  return {
     id: undefined,
     battleType: undefined,
     name: undefined,
     players: new Map(),
     reset: () => { /* no-op: standalone tool has no live session to reset */ }
   }
+}
 
+function convertEvents(events: ApiEvent[]): { bundle: EntityBundle, session: Session } {
+  const session = createStandaloneSession()
   const converter = new EntityConverter(session)
-  const bundle = converter.convertEventsToEntities(events)
+  return { bundle: converter.convertEventsToEntities(events), session }
+}
 
+/**
+ * Run the real EntityConverter + StatDefinition.calculate over `events` and
+ * return per-player results for every player who appeared in at least one hand.
+ */
+async function runLegacyPipelineFromBundle(
+  bundle: EntityBundle,
+  session: Session
+): Promise<PipelineResult> {
   // In-memory indices mirroring the Dexie tables/queries used by
   // ReadEntityStream.calcStats (hands.where('seatUserIds').equals(playerId),
   // actions.where({playerId}), phases.where('seatUserIds').equals(playerId)).
@@ -149,4 +161,52 @@ export async function runPipeline(events: ApiEvent[]): Promise<PipelineResult> {
   }
 
   return result
+}
+
+export async function runPipeline(events: ApiEvent[]): Promise<PipelineResult> {
+  const { bundle, session } = convertEvents(events)
+  return await runLegacyPipelineFromBundle(bundle, session)
+}
+
+/**
+ * Run the product's v8 contribution-ledger derivation over `events` and
+ * return its all-history player aggregates in the same comparison shape.
+ * This deliberately calls the shipping ledger code; verify-stats must not
+ * infer ledger correctness from the unchanged legacy calculator alone.
+ */
+function runLedgerPipelineFromBundle(bundle: EntityBundle): PipelineResult {
+  const built = buildGenerationFromEntityBundle(1, bundle)
+  const result: PipelineResult = new Map()
+
+  for (const aggregate of built.aggregates) {
+    const stats = buildStatSnapshot(aggregate.totals)
+    const hands = stats.hands
+    if (typeof hands !== 'number') {
+      throw new TypeError(`Ledger hands counter is not numeric for player ${aggregate.playerId}`)
+    }
+    result.set(aggregate.playerId, {
+      playerId: aggregate.playerId,
+      hands,
+      stats,
+    })
+  }
+
+  return result
+}
+
+export async function runLedgerPipeline(events: ApiEvent[]): Promise<PipelineResult> {
+  return runLedgerPipelineFromBundle(convertEvents(events).bundle)
+}
+
+/** CLI用: 大規模captureを二度EntityConverterへ通さず両製品経路を計算する。 */
+export async function runProductPipelines(events: ApiEvent[]): Promise<{
+  legacy: PipelineResult
+  ledger: PipelineResult
+}> {
+  const { bundle, session } = convertEvents(events)
+  const ledger = runLedgerPipelineFromBundle(bundle)
+  return {
+    legacy: await runLegacyPipelineFromBundle(bundle, session),
+    ledger,
+  }
 }
