@@ -9,6 +9,7 @@
  * loadOptionsは読み取り時マイグレーションを行う。
  */
 import type { FilterOptions, GameTypeFilter } from '../types'
+import { normalizeStatsLatestHands } from './stats-hand-limit'
 
 export interface Options {
   sendUserData: boolean;
@@ -34,8 +35,31 @@ const syncSet = (items: Record<string, any>): Promise<void> =>
 const syncRemove = (keys: string[]): Promise<void> =>
   new Promise(resolve => chrome.storage.sync.remove(keys, resolve))
 
+function normalizeOptions(options: Options): { options: Options, changed: boolean } {
+  const filterOptions = options.filterOptions
+  if (!filterOptions || !Object.prototype.hasOwnProperty.call(filterOptions, 'handLimit')) {
+    return { options, changed: false }
+  }
+
+  const normalizedHandLimit = normalizeStatsLatestHands(filterOptions.handLimit)
+  if (Object.is(filterOptions.handLimit, normalizedHandLimit)) {
+    return { options, changed: false }
+  }
+
+  const normalizedFilterOptions = { ...filterOptions }
+  if (normalizedHandLimit === undefined) {
+    delete normalizedFilterOptions.handLimit
+  } else {
+    normalizedFilterOptions.handLimit = normalizedHandLimit
+  }
+  return {
+    options: { ...options, filterOptions: normalizedFilterOptions },
+    changed: true,
+  }
+}
+
 export const saveOptions = (options: Options): Promise<void> =>
-  syncSet({ [OPTIONS_STORAGE_KEY]: options })
+  syncSet({ [OPTIONS_STORAGE_KEY]: normalizeOptions(options).options })
 
 /**
  * フラットな`options`キーを読む。旧bucketキーが残っている場合は
@@ -45,7 +69,12 @@ export const loadOptions = async (): Promise<Options | undefined> => {
   const result = await syncGet([OPTIONS_STORAGE_KEY, LEGACY_BUCKET_KEYS_KEY])
   const flat = result[OPTIONS_STORAGE_KEY] as Options | undefined
   const legacyFields = (result[LEGACY_BUCKET_KEYS_KEY] as string[] | undefined) ?? []
-  if (legacyFields.length === 0) return flat
+  if (legacyFields.length === 0) {
+    if (!flat) return undefined
+    const normalized = normalizeOptions(flat)
+    if (normalized.changed) await saveOptions(normalized.options)
+    return normalized.options
+  }
 
   // フラット側に既にあるフィールドはフラット側を優先する
   // （HUD・service workerが実際に消費してきたのはフラット側の値）。
@@ -56,7 +85,7 @@ export const loadOptions = async (): Promise<Options | undefined> => {
     const value = legacyResult[legacyFieldKey(field)]
     if (value !== undefined) legacy[field] = value
   }
-  const merged = { ...legacy, ...flat } as Options
+  const merged = normalizeOptions({ ...legacy, ...flat } as Options).options
   await saveOptions(merged)
   await syncRemove([LEGACY_BUCKET_KEYS_KEY, ...legacyFields.map(legacyFieldKey)])
   return merged

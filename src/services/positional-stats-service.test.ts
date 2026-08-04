@@ -1,10 +1,10 @@
 /**
  * PositionalStatsService tests
  *
- * Builds a small synthetic dataset directly in a fake-indexeddb-backed
- * PokerChaseDB (bypassing the write-entity-stream ingestion pipeline) so the
- * expected per-position [numerator, denominator] pairs can be pinned down
- * exactly. Covers:
+ * Builds a small synthetic canonical dataset directly in a fake-indexeddb-backed
+ * PokerChaseDB. The first read exercises StatsLedger's lazy baseline, and later
+ * reads exercise its persistent aggregate/contribution path. Expected per-position
+ * [numerator, denominator] pairs are pinned down exactly. Covers:
  *  - a BB walk hand (excluded from BB vpip/pfr denominators, but counted in handsN)
  *  - a steal-position open (CO) and a fold-to-steal (SB)
  *  - a hand with position derived from the player's own PREFLOP action row
@@ -370,7 +370,7 @@ describe('PositionalStatsService', () => {
       expect(totalHandsN).toBe(10) // all 10 seeded hands accounted for, matching the "emits all 7 buckets" test above
     })
 
-    test('cache key differs when tableSizeFilter differs, and when it matches the same key stays stable', () => {
+    test('legacy cache-key helper remains filter-sensitive and stable', () => {
       const withoutFilter = { ...service, tableSizeFilter: undefined } as PokerChaseService
       const withFull = { ...service, tableSizeFilter: ['full'] } as PokerChaseService
       const withFullAgain = { ...service, tableSizeFilter: ['full'] } as PokerChaseService
@@ -383,124 +383,66 @@ describe('PositionalStatsService', () => {
 
       expect(keyFull).not.toBe(keyNone)
       expect(keyFull).not.toBe(keyHu)
-      expect(keyFull).toBe(keyFullAgain) // same filter state -> same key (stable, cache-hit-able)
+      expect(keyFull).toBe(keyFullAgain) // same filter state -> same compatibility key
     })
   })
 
-  // 監査指摘11（P2）「開いたドリルダウンパネルが無期限に古くなる」対応: 上の全テストは
-  // NODE_ENV=test下でこの関数の30秒キャッシュ自体を無効化してもらっているため
-  // （`useCache`参照）、実際にキャッシュが効いている状態での「新しいハンドが
-  // 終わったら古いキャッシュを返さない」という不変条件はどのテストも検証していない
-  // （監査で指摘された「テストが実キャッシュの陳腐化を一度も検証していない」点）。
-  // ここではNODE_ENVを一時的に上書きしてキャッシュを実際に有効化し、
-  // `service.statsOutputStream`（ports.tsがhandEpochをインクリメントするのと
-  // 同じ、生のハンド完了イベント）が発火した後の呼び出しがキャッシュに
-  // ヒットしないことを直接確認する。
-  describe('real backend cache (audit finding 11, P2): hand completion rotates the 30s cache', () => {
-    const originalNodeEnv = process.env.NODE_ENV
+  describe('persistent stats ledger integration', () => {
+    test('applies latest N globally across position buckets after the battle filter', async () => {
+      service.battleTypeFilter = [BattleType.TOURNAMENT]
+      service.handLimitFilter = 2
 
-    afterEach(() => {
-      process.env.NODE_ENV = originalNodeEnv
+      const result = await getPositionalStats(db, service, PLAYER_ID)
+
+      // Tournament narrows to hands 1..8, then global latest-2 selects {8, 7}.
+      // A per-position limit would incorrectly retain additional older buckets.
+      expect(bucketOf(result, Position.HJ).handsN).toBe(1)
+      expect(bucketOf(result, Position.SB).handsN).toBe(1)
+      for (const position of [Position.BTN, Position.CO, Position.UTG, Position.BB, 'unknown' as const]) {
+        expect(bucketOf(result, position).handsN).toBe(0)
+      }
     })
 
-    test('a same-key call is served from cache until a live hand completes, then recomputes', async () => {
-      process.env.NODE_ENV = 'production' // enable the real 30s cache path (disabled under 'test')
-
+    test('survives a service-worker-style service restart without rereading canonical history', async () => {
       const first = await getPositionalStats(db, service, PLAYER_ID)
-      expect(first.positions.reduce((sum, p) => sum + p.handsN, 0)).toBe(10)
+      expect(first.positions.reduce((sum, bucket) => sum + bucket.handsN, 0)).toBe(10)
+      expect(await db.statHandContributions.count()).toBeGreaterThan(0)
+      expect(await db.statPlayerAggregates.count()).toBeGreaterThan(0)
 
-      // Seed an 11th hand -- with the cache alone (no invalidation), a same-key call
-      // within the 30s window would still return `first` unchanged.
-      await db.hands.add(makeHand({ id: 11, bigBlindUserId: 2, seatUserIds: [1, 2, 3] }))
+      const restartedDb = new PokerChaseDB(indexedDB, IDBKeyRange)
+      await restartedDb.open()
+      try {
+        const restartedService = trackServiceForTeardown(new PokerChaseService({ db: restartedDb }))
+        await restartedService.ready
+        const handsWhere = jest.spyOn(restartedDb.hands, 'where')
+        const actionsWhere = jest.spyOn(restartedDb.actions, 'where')
 
-      const stillCached = await getPositionalStats(db, service, PLAYER_ID)
-      expect(stillCached).toBe(first) // same cached object reference -- proves caching is actually live here
-      expect(stillCached.positions.reduce((sum, p) => sum + p.handsN, 0)).toBe(10) // hand 11 not yet reflected
+        const afterRestart = await getPositionalStats(restartedDb, restartedService, PLAYER_ID)
 
-      // A hand-start-warmup/filter-change/import-shaped rebroadcast (direct
-      // statsOutputStream.write(), the same call aggregate-events-stream.ts's EVT_DEAL
-      // warmup branch and message-router.ts's updateBattleTypeFilter/
-      // recalculateStats() make) must NOT invalidate the cache -- audit finding 11
-      // follow-up (P2, codex review): a first pass subscribed to statsOutputStream,
-      // which also fires for these non-completion broadcasts.
-      await new Promise<void>(resolve => {
-        service.statsOutputStream.once('data', () => resolve())
-        service.statsOutputStream.write([1, 2, 3])
-      })
-      const stillCachedAfterNonCompletionBroadcast = await getPositionalStats(db, service, PLAYER_ID)
-      expect(stillCachedAfterNonCompletionBroadcast).toBe(first) // still the same stale cached object
-
-      // A real live hand completion, through the actual live pipeline
-      // (handAggregateStream isn't needed here -- writeEntityStream is the direct
-      // target of that pipe and the one true completion signal, see its doc comment
-      // and ports.ts's handCompletionEpoch). getPositionalStats() self-subscribes to
-      // this stream (subscribeToHandCompletion, module-level above) the first time
-      // it's called for a given service instance, independent of the front-end
-      // hand-epoch plumbing (App.tsx/Hud.tsx/ports.ts).
-      await new Promise<void>(resolve => {
-        service.writeEntityStream.once('data', () => resolve())
-        service.writeEntityStream.write(makeMinimalHandEvents(12, [1, 2, 3]))
-      })
-
-      const afterHandCompletion = await getPositionalStats(db, service, PLAYER_ID)
-      expect(afterHandCompletion).not.toBe(first) // recomputed, not served from the now-stale cache
-      // hand 11 (seeded directly above) AND hand 12 (persisted by writeEntityStream
-      // itself, from makeMinimalHandEvents) are both now reflected.
-      expect(afterHandCompletion.positions.reduce((sum, p) => sum + p.handsN, 0)).toBe(12)
+        expect(afterRestart.positions.map(bucket => [bucket.position, bucket.handsN]))
+          .toEqual(first.positions.map(bucket => [bucket.position, bucket.handsN]))
+        expect(handsWhere).not.toHaveBeenCalled()
+        expect(actionsWhere).not.toHaveBeenCalled()
+      } finally {
+        restartedDb.close()
+      }
     })
 
-    // 監査finding 11フォローアップ・pass-3（P2、codexレビュー指摘）: 進行中フェッチが
-    // ハンド完了後にキャッシュへ古い結果を書き込んでしまうレース。
-    // `db.hands.where(...).toArray()`をゲート（実データは即座に読むが、Promiseの
-    // 解決だけをテストが手動で制御するまで遅らせる）して、「DB読み取り中に
-    // ハンドが完了する」という進行中フェッチの状態を確定的に再現する。
-    test('an in-flight fetch resolving after a hand completes does NOT fill the cache with a stale result', async () => {
-      process.env.NODE_ENV = 'production' // enable the real 30s cache path (disabled under 'test')
+    test('reflects a live completed hand immediately without a process-memory cache invalidation', async () => {
+      const first = await getPositionalStats(db, service, PLAYER_ID)
+      expect(first.positions.reduce((sum, bucket) => sum + bucket.handsN, 0)).toBe(10)
 
-      let releaseGate!: () => void
-      const gate = new Promise<void>(resolve => { releaseGate = resolve })
-      const realWhere = db.hands.where.bind(db.hands)
-      jest.spyOn(db.hands, 'where').mockImplementationOnce((indexName: any) => {
-        const whereClause: any = realWhere(indexName)
-        const realEquals = whereClause.equals.bind(whereClause)
-        whereClause.equals = (value: any) => {
-          const collection: any = realEquals(value)
-          const realToArray = collection.toArray.bind(collection)
-          collection.toArray = async () => {
-            const data = await realToArray() // captures the real (pre-completion) snapshot immediately
-            await gate // ...but withholds it from the caller until the test releases it
-            return data
-          }
-          return collection
-        }
-        return whereClause
-      })
-
-      // Starts the fetch; its `db.hands...toArray()` call is now blocked on `gate`
-      // (cache miss, since nothing has been cached in this test yet -- fetchGeneration
-      // is captured before this call, per getPositionalStats()'s own doc comment).
-      const inFlightFetch = getPositionalStats(db, service, PLAYER_ID)
-
-      // A genuine hand completes WHILE the fetch above is still blocked mid-read.
       await new Promise<void>(resolve => {
         service.writeEntityStream.once('data', () => resolve())
         service.writeEntityStream.write(makeMinimalHandEvents(11, [1, 2, 3]))
       })
+      // writeEntityStreamのdata通知直後は、pipe先の通常HUD再計算がまだ実行中に
+      // なり得る。テスト終了後に閉じたDBへ触れないよう、下流queueもMUST待つ。
+      await service.statsOutputStream.whenIdle()
 
-      // Now let the blocked fetch resolve -- with the snapshot it captured BEFORE
-      // hand 11 completed (10 hands).
-      releaseGate()
-      const staleResult = await inFlightFetch
-      expect(staleResult.positions.reduce((sum, p) => sum + p.handsN, 0)).toBe(10)
-
-      // The bug this guards against: cache.set(cacheKey, { result: staleResult, ... })
-      // would have run here unconditionally, planting a stale fill that a subsequent
-      // same-key call (the handEpoch-triggered refetch for an open panel) would then
-      // serve for the rest of the 30s window. Assert it recomputes instead and
-      // reflects hand 11.
-      const afterRace = await getPositionalStats(db, service, PLAYER_ID)
-      expect(afterRace).not.toBe(staleResult)
-      expect(afterRace.positions.reduce((sum, p) => sum + p.handsN, 0)).toBe(11)
+      const afterCompletion = await getPositionalStats(db, service, PLAYER_ID)
+      expect(afterCompletion).not.toBe(first)
+      expect(afterCompletion.positions.reduce((sum, bucket) => sum + bucket.handsN, 0)).toBe(11)
     })
   })
 })

@@ -1,10 +1,10 @@
 /**
  * Stats Verification Harness
  *
- * Regression tool that checks the live stats pipeline (EntityConverter +
- * StatDefinition.calculate, see pipeline.ts) against an independently
- * re-implemented "oracle" (oracle.ts, no imports from src/stats or
- * src/entity-converter) computed from the same raw NDJSON.
+ * Regression tool that checks both product stats paths — legacy full-history
+ * `StatDefinition.calculate` and the v8 contribution ledger — against an
+ * independently re-implemented "oracle" (oracle.ts, no imports from
+ * src/stats or src/entity-converter) computed from the same raw NDJSON.
  *
  * Run this after any change to entity-converter.ts, write-entity-stream.ts,
  * or src/stats/**: a real behavioral regression will show up as a drop in
@@ -34,9 +34,9 @@
 import { existsSync, createReadStream } from 'fs'
 import { resolve } from 'path'
 import { createInterface } from 'readline'
-import { runPipeline } from './verify-stats/pipeline'
+import { runProductPipelines } from './verify-stats/pipeline'
 import { runOracle } from './verify-stats/oracle'
-import { compareResults, formatReport } from './verify-stats/compare'
+import { compareProductPaths, compareResults, formatReport } from './verify-stats/compare'
 import { orderAndFilterApplicationEventsForReplay } from '../utils/database-utils'
 import { getApiEventContentIdentity, type RawApiEvent } from '../utils/api-event-key'
 import type { ApiEvent } from '../types'
@@ -119,26 +119,46 @@ async function main() {
   const events = await readNdjson(filePath)
   console.log(`Loaded ${events.length} events`)
 
-  console.log('Running pipeline (EntityConverter + StatDefinition.calculate)...')
-  const pipeline = await runPipeline(events)
-  console.log(`Pipeline: ${pipeline.size} distinct players`)
+  console.log('Running product pipelines (one EntityConverter pass)...')
+  const { legacy: pipeline, ledger } = await runProductPipelines(events)
+  console.log(`Legacy pipeline: ${pipeline.size} distinct players`)
+  console.log(`Contribution ledger: ${ledger.size} distinct players`)
 
   console.log('Running independent oracle...')
   const oracle = runOracle(events)
   console.log(`Oracle: ${oracle.size} distinct players`)
 
-  const report = compareResults(pipeline, oracle, minHands)
+  const legacyReport = compareResults(pipeline, oracle, minHands)
+  const ledgerReport = compareResults(ledger, oracle, minHands)
+  const productParityReport = compareProductPaths(pipeline, ledger)
   console.log('')
-  console.log(formatReport(report))
+  console.log('Legacy full-history calculator vs independent oracle')
+  console.log(formatReport(legacyReport))
+  console.log('')
+  console.log('V8 contribution ledger vs independent oracle')
+  console.log(formatReport(ledgerReport))
+  console.log('')
+  console.log('Legacy full-history calculator vs v8 contribution ledger (exact, all players)')
+  console.log(formatReport(productParityReport))
 
-  const failing = report.stats.filter(s => s.total > 0 && s.pct < threshold)
+  const failing = [
+    ...legacyReport.stats
+      .filter(s => s.total > 0 && s.pct < threshold)
+      .map(s => `legacy:${s.stat} (${s.pct.toFixed(2)}%)`),
+    ...ledgerReport.stats
+      .filter(s => s.total > 0 && s.pct < threshold)
+      .map(s => `ledger:${s.stat} (${s.pct.toFixed(2)}%)`),
+    ...productParityReport.stats
+      .filter(s => s.mismatches.length > 0)
+      .map(s => `legacy-vs-ledger:${s.stat} (${s.mismatches.length} mismatch)`),
+  ]
   console.log('')
   if (failing.length > 0) {
-    console.error(`FAIL: ${failing.length} stat(s) below ${threshold}% agreement threshold: ${failing.map(s => `${s.stat} (${s.pct.toFixed(2)}%)`).join(', ')}`)
+    console.error(`FAIL: ${failing.length} path/stat pair(s) below ${threshold}% agreement threshold: ${failing.join(', ')}`)
     process.exit(1)
   }
 
-  console.log(`PASS: all stats >= ${threshold}% agreement (min-hands=${minHands}).`)
+  console.log(`PASS: legacy and ledger stats all >= ${threshold}% oracle agreement (min-hands=${minHands}), with exact legacy-ledger parity for all players.`)
 }
 
 main().catch(e => {

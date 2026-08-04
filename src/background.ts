@@ -30,6 +30,7 @@ import { loadOptions, saveOptions, type Options } from './utils/options-storage'
 import { DEFAULT_TABLE_SIZE_FILTER, selectedTableSizeLayers } from './utils/table-size'
 import { checkMinVersionGate } from './services/min-version-gate'
 import { captureHandledException, initSentry } from './observability/sentry'
+import type { CanonicalWriteFailureError } from './streams/write-entity-stream'
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
 
 initSentry('background')
@@ -54,6 +55,18 @@ self.statsRegistry = defaultRegistry
 // Wait for service initialization
 service.ready.then(async () => {
   console.log('[background] PokerChaseService is ready')
+
+  // cloud downloadのcanonical再構築中にMV3 workerが停止した場合、
+  // 認証済みからどうかやlastSyncTimeに関係なくRaw Lakeから復旧する。
+  // event listenerの登録自体はこのPromiseをawaitしないため、live ingestionは止めない。
+  try {
+    await autoSyncService.recoverInterruptedCanonicalRebuild()
+  } catch (error) {
+    console.error('[background] Interrupted statistics rebuild recovery failed:', error)
+    // dirty fenceが残ったまま新しいcloud rebuildを重ねない。次のSW起動か
+    // 手動再構築で再試行され、既存のready aggregateはそれまで読める。
+    return
+  }
 
   // Initialize auto sync if user is authenticated.
   //
@@ -190,6 +203,17 @@ loadOptions().then((options) => {
 registerMessageRouter(service, db, gameUrlPattern)
 
 registerStreamSubscriptions(service, gameUrlPattern)
+
+service.writeEntityStream.on('error', error => {
+  // markerのfailed化自体が失敗しても、ログへ出さないインメモリexact IDを根拠に
+  // 取り込みをawaitで止めずRaw Lake復旧を予約する（MUST）。
+  const canonicalError = error as CanonicalWriteFailureError
+  if (canonicalError.canonicalRecoveryRequired !== true) return
+  const pendingFenceId = canonicalError.canonicalRecoveryFenceId
+  void autoSyncService.scheduleCanonicalRebuildRecovery(pendingFenceId).catch(recoveryError => {
+    console.error('[background] Live canonical write recovery failed:', recoveryError)
+  })
+})
 
 registerEventIngestion(service)
 

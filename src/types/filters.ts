@@ -33,6 +33,7 @@ export interface FilterOptions {
    * = フィルタなし、として扱う）。
    */
   tableSize?: TableSizeFilter
-  handLimit?: number  // undefined = all hands, otherwise limit to recent N hands
+  /** undefined = all hands. Positive finite N is capped at 500 at options/message boundaries. */
+  handLimit?: number
   statDisplayConfigs?: StatDisplayConfig[]  // Custom stat display configuration
 }

@@ -1,7 +1,7 @@
 /**
- * Smoke test for the verify-stats harness's plumbing: runs the real
- * pipeline (EntityConverter + StatDefinition.calculate) and the
- * independent oracle over a tiny inline three-player hand fixture (NOT the
+ * Smoke test for the verify-stats harness's plumbing: runs the legacy
+ * calculator and v8 contribution-ledger derivation against the independent
+ * oracle over a tiny inline three-player hand fixture (NOT the
  * 140MB real capture -- that is exercised manually via
  * `npm run verify-stats -- <file.ndjson>`) and checks that:
  *  - both sides produce the same per-stat fractions for a hand-crafted hand
@@ -16,9 +16,15 @@
  * This exercises the same code path `npm run verify-stats` uses, just
  * against a fixture small enough for CI instead of a real ndjson export.
  */
-import { runPipeline } from './verify-stats/pipeline'
+import { runPipeline, runProductPipelines } from './verify-stats/pipeline'
 import { runOracle } from './verify-stats/oracle'
-import { compareResults, formatReport } from './verify-stats/compare'
+import {
+  COMPARED_STATS,
+  compareProductPaths,
+  compareResults,
+  formatReport,
+} from './verify-stats/compare'
+import { NUMERIC_STAT_IDS } from '../stats/hand-contribution'
 import { ApiType, apiEventSchemas } from '../types/api'
 import { ActionType, BattleType, BetStatusType, PhaseType, RankType } from '../types/game'
 import type { ApiEvent } from '../types'
@@ -210,30 +216,51 @@ function buildHandEvents(): ApiEvent[] {
 }
 
 describe('verify-stats harness', () => {
+  it('all 18 numeric HUD stats remain in the verification surface', () => {
+    expect(new Set(COMPARED_STATS)).toEqual(new Set(NUMERIC_STAT_IDS))
+  })
+
   it('pipeline and oracle agree on every stat for a hand-crafted hand', async () => {
     const events = buildHandEvents()
 
-    const pipeline = await runPipeline(events)
+    const { legacy: pipeline, ledger } = await runProductPipelines(events)
     const oracle = runOracle(events)
 
-    // Sanity: both sides saw the same three players.
+    // Sanity: both product paths and the oracle saw the same three players.
     expect([...pipeline.keys()].sort()).toEqual([PLAYER_A, PLAYER_B, PLAYER_C].sort())
+    expect([...ledger.keys()].sort()).toEqual([PLAYER_A, PLAYER_B, PLAYER_C].sort())
     expect([...oracle.keys()].sort()).toEqual([PLAYER_A, PLAYER_B, PLAYER_C].sort())
 
     const report = compareResults(pipeline, oracle, /* minHands */ 1)
+    const ledgerReport = compareResults(ledger, oracle, /* minHands */ 1)
+    const productParityReport = compareProductPaths(pipeline, ledger)
     expect(report.eligiblePlayers).toBe(3)
+    expect(ledgerReport.eligiblePlayers).toBe(3)
 
     const failing = report.stats.filter(s => s.total > 0 && s.mismatches.length > 0)
+    const ledgerFailing = ledgerReport.stats.filter(s => s.total > 0 && s.mismatches.length > 0)
     expect(failing).toEqual([])
+    expect(ledgerFailing).toEqual([])
+    expect(productParityReport.eligiblePlayers).toBe(3)
+    expect(productParityReport.stats).toHaveLength(18)
+    expect(productParityReport.stats.every(stat => stat.mismatches.length === 0)).toBe(true)
+    expect(ledgerReport.stats.find(s => s.stat === 'hands')).toMatchObject({
+      agree: 3,
+      total: 3,
+      pct: 100,
+    })
 
     // Spot-check a couple of concrete values so a broken fixture doesn't
     // silently pass just because both sides are equally wrong.
     expect(pipeline.get(PLAYER_A)?.stats['cbet']).toEqual([1, 1]) // c-bet executed, one chance
+    expect(ledger.get(PLAYER_A)?.stats['cbet']).toEqual([1, 1])
     expect(oracle.get(PLAYER_A)?.stats.cbet).toEqual([1, 1])
     expect(pipeline.get(PLAYER_B)?.stats['cbetFold']).toEqual([1, 1]) // folded to the c-bet
+    expect(ledger.get(PLAYER_B)?.stats['cbetFold']).toEqual([1, 1])
     expect(oracle.get(PLAYER_B)?.stats.cbetFold).toEqual([1, 1])
     // PLAYER_C folded preflop, never reached the flop.
     expect(pipeline.get(PLAYER_C)?.stats['wtsd']).toEqual([0, 0])
+    expect(ledger.get(PLAYER_C)?.stats['wtsd']).toEqual([0, 0])
     expect(oracle.get(PLAYER_C)?.stats.wtsd).toEqual([0, 0])
   })
 
@@ -256,6 +283,125 @@ describe('verify-stats harness', () => {
     const rendered = formatReport(report)
     expect(rendered).toContain('Mismatches for vpip')
     expect(rendered).toContain(`player ${PLAYER_A}`)
+  })
+
+  it('plain hand-count drift is compared as the eighteenth numeric metric', () => {
+    const pipeline = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { hands: 60, vpip: [30, 60] } }],
+    ])
+    const oracle = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 61, stats: { vpip: [30, 60] as [number, number] } }],
+    ])
+
+    const report = compareResults(pipeline as any, oracle as any, 50)
+    const hands = report.stats.find(s => s.stat === 'hands')!
+    expect(hands).toMatchObject({ total: 1, agree: 0, missing: 0 })
+    expect(hands.mismatches[0]).toMatchObject({
+      playerId: PLAYER_A,
+      pipeline: [60, 0],
+      oracle: [61, 0],
+      dNum: -1,
+      dDen: 0,
+    })
+  })
+
+  it('compares the product HAND StatDefinition output instead of its eligibility count', () => {
+    const legacy = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { hands: 999, vpip: [30, 60] } }],
+    ])
+    const ledger = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { hands: 60, vpip: [30, 60] } }],
+    ])
+
+    const report = compareProductPaths(legacy, ledger)
+    const hands = report.stats.find(s => s.stat === 'hands')!
+    expect(hands).toMatchObject({ total: 1, agree: 0, missing: 0 })
+    expect(hands.mismatches[0]).toMatchObject({
+      playerId: PLAYER_A,
+      pipeline: [999, 0],
+      oracle: [60, 0],
+      dNum: 939,
+      dDen: 0,
+    })
+  })
+
+  it('treats a missing product HAND StatDefinition output as a mismatch', () => {
+    const legacy = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { vpip: [30, 60] } }],
+    ])
+    const ledger = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { hands: 60, vpip: [30, 60] } }],
+    ])
+
+    const report = compareProductPaths(legacy, ledger)
+    const hands = report.stats.find(s => s.stat === 'hands')!
+    expect(hands).toMatchObject({ total: 1, agree: 0, missing: 1 })
+    expect(hands.mismatches[0]).toMatchObject({
+      playerId: PLAYER_A,
+      pipeline: undefined,
+      oracle: [60, 0],
+      missing: true,
+    })
+  })
+
+  it('does not accept a fraction-shaped product HAND output as a scalar count', () => {
+    const legacy = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { hands: [60, 0], vpip: [30, 60] } }],
+    ])
+    const ledger = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { hands: 60, vpip: [30, 60] } }],
+    ])
+
+    const report = compareProductPaths(legacy, ledger)
+    expect(report.stats.find(s => s.stat === 'hands')).toMatchObject({
+      total: 1,
+      agree: 0,
+      missing: 1,
+    })
+  })
+
+  it('rejects invalid counters without dropping the player from the exact gate', () => {
+    const legacy = new Map([
+      [PLAYER_A, {
+        playerId: PLAYER_A,
+        hands: Number.NaN,
+        stats: { hands: Number.POSITIVE_INFINITY, vpip: [1.5, 60] },
+      }],
+    ])
+    const ledger = new Map([
+      [PLAYER_A, {
+        playerId: PLAYER_A,
+        hands: -1,
+        stats: { hands: Number.POSITIVE_INFINITY, vpip: [1.5, 60] },
+      }],
+    ])
+
+    const report = compareProductPaths(legacy, ledger)
+    expect(report.eligiblePlayers).toBe(1)
+    expect(report.stats.find(s => s.stat === 'hands')).toMatchObject({
+      total: 1,
+      agree: 0,
+      missing: 1,
+    })
+    expect(report.stats.find(s => s.stat === 'vpip')).toMatchObject({
+      total: 1,
+      agree: 0,
+      missing: 1,
+    })
+  })
+
+  it('legacy-ledger exact gate ignores the oracle threshold and rejects fraction or hand drift', () => {
+    const legacy = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { hands: 60, vpip: [30, 60] } }],
+    ])
+    const ledger = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 59, stats: { hands: 59, vpip: [29, 60] } }],
+    ])
+
+    const report = compareProductPaths(legacy, ledger)
+    expect(report.minHands).toBe(0)
+    expect(report.stats.find(s => s.stat === 'hands')?.mismatches).toHaveLength(1)
+    expect(report.stats.find(s => s.stat === 'vpip')?.mismatches).toHaveLength(1)
   })
 
   it('oracle infers one omitted tournament result snapshot and keeps a net-loss side-pot winner', async () => {

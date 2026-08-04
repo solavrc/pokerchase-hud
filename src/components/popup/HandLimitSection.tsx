@@ -2,6 +2,7 @@ import Box from '@mui/material/Box'
 import Slider from '@mui/material/Slider'
 import Typography from '@mui/material/Typography'
 import { SectionHeading } from './SectionHeading'
+import { STATS_LATEST_HAND_OPTIONS } from '../../utils/stats-hand-limit'
 
 interface HandLimitSectionProps {
   handLimit: number | undefined
@@ -23,15 +24,15 @@ export const HandLimitSection = ({
         <Slider
           value={(() => {
             if (handLimit === undefined) return 6
-            const handCounts = [20, 50, 100, 200, 500]
-            const index = handCounts.indexOf(handLimit)
+            const index = STATS_LATEST_HAND_OPTIONS.indexOf(
+              handLimit as typeof STATS_LATEST_HAND_OPTIONS[number]
+            )
             return index >= 0 ? index + 1 : 6
           })()}
           onChange={handleHandLimitChange}
           valueLabelDisplay="auto"
           valueLabelFormat={(value) => {
-            const handCounts = [20, 50, 100, 200, 500, 'ALL']
-            return value === 6 ? 'ALL' : `${handCounts[value - 1]}ハンド`
+            return value === 6 ? 'ALL' : `${STATS_LATEST_HAND_OPTIONS[value - 1]}ハンド`
           }}
           step={1}
           marks={[

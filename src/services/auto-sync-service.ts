@@ -11,7 +11,7 @@ import {
   SYNC_RESCAN_FLOOR_META_KEY
 } from '../constants/sync'
 import { PokerChaseDB } from '../db/poker-chase-db'
-import { EntityConverter } from '../entity-converter'
+import { EntityConverter, type EntityBundle } from '../entity-converter'
 import { projectReplayDetailEvents } from '../background/replay-import'
 import { ApiType, ApiTypeValues, isApiEventType, isApplicationApiEvent, isUnparseableApplicationEvent } from '../types'
 import type { ApiEvent } from '../types'
@@ -28,6 +28,13 @@ import {
 import { HandLogExporter } from '../utils/hand-log-exporter'
 import { startKeepAlive } from '../background/service-worker-keepalive'
 import { captureHandledException } from '../observability/sentry'
+import {
+  STATS_PENDING_HAND_DERIVATION_META_PREFIX,
+  StatsLedger,
+} from '../stats/stat-ledger'
+import { SessionState } from './poker-chase-service'
+import type PokerChaseService from './poker-chase-service'
+import { getActivePortActivity, resolveGeneration } from '../background/active-port'
 
 /** Shown in the popup and logged when the min-version gate stops cloud sync (#forced-update). */
 export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます'
@@ -40,6 +47,37 @@ export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポ�
  */
 export const REBUILD_AFTER_DOWNLOAD_FAILED_MESSAGE =
   'クラウドデータの保存は完了しましたが、統計データの再構築に失敗しました。ポップアップの「データ再構築」を実行してください'
+
+// raw event page全体を1 write lockへ入れない。StatsLedger側もhand bundleを
+// 一括差分化するため、この上限がcanonical+ledger transactionの手数上限になる。
+const REBUILD_ENTITY_HAND_CHUNK_SIZE = 50
+
+function splitEntityBundleByHands(bundle: EntityBundle): EntityBundle[] {
+  const actionsByHand = new Map<number, EntityBundle['actions']>()
+  const phasesByHand = new Map<number, EntityBundle['phases']>()
+  for (const action of bundle.actions) {
+    if (action.handId === undefined) continue
+    const rows = actionsByHand.get(action.handId) ?? []
+    rows.push(action)
+    actionsByHand.set(action.handId, rows)
+  }
+  for (const phase of bundle.phases) {
+    if (phase.handId === undefined) continue
+    const rows = phasesByHand.get(phase.handId) ?? []
+    rows.push(phase)
+    phasesByHand.set(phase.handId, rows)
+  }
+  const chunks: EntityBundle[] = []
+  for (let offset = 0; offset < bundle.hands.length; offset += REBUILD_ENTITY_HAND_CHUNK_SIZE) {
+    const hands = bundle.hands.slice(offset, offset + REBUILD_ENTITY_HAND_CHUNK_SIZE)
+    chunks.push({
+      hands,
+      actions: hands.flatMap(hand => actionsByHand.get(hand.id) ?? []),
+      phases: hands.flatMap(hand => phasesByHand.get(hand.id) ?? []),
+    })
+  }
+  return chunks
+}
 
 /**
  * Thrown internally whenever a bookkeeping write is about to happen under an
@@ -117,6 +155,17 @@ export interface SyncState {
     total: number
     direction: SyncDirection
   }
+}
+
+interface ServiceContextRestoreGuard {
+  /** ACTIVE/unknown sessionへ履歴状態を上書きしてはならない（MUST NOT）。 */
+  mayRestore: boolean
+  activeGeneration: number | undefined
+  activeActivity: ReturnType<typeof getActivePortActivity>
+  sessionSnapshot: string
+  playerId: number | undefined
+  latestEvtDeal: ApiEvent<ApiType.EVT_DEAL> | undefined
+  liveEvtDeal: ApiEvent<ApiType.EVT_DEAL> | undefined
 }
 
 /**
@@ -258,6 +307,7 @@ export interface SyncState {
  */
 export class AutoSyncService {
   private db: PokerChaseDB
+  private readonly statsLedger: StatsLedger
   private syncState: SyncState = { status: 'idle' }
   private _isSyncing = false
   /**
@@ -272,6 +322,10 @@ export class AutoSyncService {
    * this account.
    */
   private inFlightSyncPromise: Promise<void> | null = null
+  private canonicalRecoveryPromise: Promise<boolean> | null = null
+  private canonicalRecoveryRequestPending = false
+  private canonicalRecoveryDrainPromise: Promise<void> | null = null
+  private readonly forcedCanonicalRecoveryFenceIds = new Set<string>()
   private lastSyncAttempt = 0
   private readonly MIN_SYNC_INTERVAL_MS = 0 // No minimum interval restriction
   private readonly SYNC_STORAGE_KEY = 'autoSyncLastTime'
@@ -299,6 +353,7 @@ export class AutoSyncService {
 
   constructor(db?: PokerChaseDB) {
     this.db = db ?? new PokerChaseDB(self.indexedDB, self.IDBKeyRange)
+    this.statsLedger = new StatsLedger(this.db)
     // codex review r3615952256, P2, "Clear stale sync state when exposing
     // the new user": firebaseAuthService.signInWithGoogle()/signOut() now
     // notify this listener SYNCHRONOUSLY, in the same step as their own
@@ -324,6 +379,138 @@ export class AutoSyncService {
    */
   get isSyncing(): boolean {
     return this._isSyncing
+  }
+
+  /**
+   * 中断されたcloud canonical rebuildを、認証状態に依存せずRaw Lakeから再開する。
+   * backgroundのコールドスタートと、sync失敗後の1回だけの回復予約から使う。
+   */
+  async recoverInterruptedCanonicalRebuild(options: {
+    force?: boolean
+    pendingFenceIds?: readonly string[]
+  } = {}): Promise<boolean> {
+    this.statsLedger.resumeMaintenance()
+    if (this.canonicalRecoveryPromise) {
+      const recovered = await this.canonicalRecoveryPromise
+      // force要求は、先行passへ相乗りしただけではそのsnapshotに入らない。
+      // 先行pass完了後に自分のexact fenceを持って必ずもう1pass行う（MUST）。
+      if (options.force) return await this.recoverInterruptedCanonicalRebuild(options)
+      return recovered
+    }
+
+    const force = options.force === true
+    const pendingFenceIds = [...new Set((options.pendingFenceIds ?? []).filter(id =>
+      id.startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)
+    ))]
+
+    const recovery = (async (): Promise<boolean> => {
+      while (true) {
+        if (!force && !await this.statsLedger.needsCanonicalRebuildRecovery()) return false
+        if (!isOperationIdle()) await waitForOperationIdle()
+        // dirty再確認のawait中に別操作がslotをclaimしたら上書きせず再試行する。
+        if (!force && !await this.statsLedger.needsCanonicalRebuildRecovery()) return false
+        if (!isOperationIdle()) continue
+        setOperationState({
+          type: 'rebuild',
+          progress: 0,
+          message: '中断された統計データを復旧中...',
+        })
+        break
+      }
+      return await this.recoverCanonicalRebuildWithOwnedSlot(
+        'idle',
+        true,
+        pendingFenceIds
+      )
+    })()
+    this.canonicalRecoveryPromise = recovery
+    try {
+      return await recovery
+    } finally {
+      if (this.canonicalRecoveryPromise === recovery) this.canonicalRecoveryPromise = null
+    }
+  }
+
+  /**
+   * live canonical transaction失敗後のRaw Lake復旧を非同期予約する。
+   * 呼出元の取り込みを待たせず、同時要求は1本へ束ねる。復旧中に別の失敗が
+   * markerを追加した場合は、現行pass完了後にもう一度確認して回収する（MUST）。
+   */
+  async scheduleCanonicalRebuildRecovery(pendingFenceId?: string): Promise<void> {
+    if (pendingFenceId?.startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)) {
+      this.forcedCanonicalRecoveryFenceIds.add(pendingFenceId)
+    }
+    this.canonicalRecoveryRequestPending = true
+    if (this.canonicalRecoveryDrainPromise) {
+      return await this.canonicalRecoveryDrainPromise
+    }
+
+    const drain = (async (): Promise<void> => {
+      do {
+        this.canonicalRecoveryRequestPending = false
+        const pendingFenceIds = [...this.forcedCanonicalRecoveryFenceIds]
+        await this.recoverInterruptedCanonicalRebuild({
+          force: true,
+          pendingFenceIds,
+        })
+        pendingFenceIds.forEach(id => this.forcedCanonicalRecoveryFenceIds.delete(id))
+        const requestedDuringPass = this.canonicalRecoveryRequestPending
+        const durableRecoveryStillNeeded =
+          await this.statsLedger.needsCanonicalRebuildRecovery()
+        this.canonicalRecoveryRequestPending = requestedDuringPass ||
+          this.forcedCanonicalRecoveryFenceIds.size > 0 ||
+          durableRecoveryStillNeeded
+      } while (this.canonicalRecoveryRequestPending)
+    })()
+    this.canonicalRecoveryDrainPromise = drain
+
+    try {
+      await drain
+    } finally {
+      if (this.canonicalRecoveryDrainPromise === drain) {
+        this.canonicalRecoveryDrainPromise = null
+        // drainの最終条件判定とPromise解放の隙に届いた要求を失わない（MUST NOT）。
+        if (this.canonicalRecoveryRequestPending) {
+          await this.scheduleCanonicalRebuildRecovery()
+        }
+      }
+    }
+  }
+
+  /**
+   * 呼出元が既に長時間操作slotを所有した状態でdirty canonicalを復旧する。
+   * performSyncは最初のawaitより前にsync slotをclaimする必要があるため、
+   * idleを待つpublic経路へ再入すると自分のsync slotを待ち続けてデッドロックする。
+   */
+  private async recoverCanonicalRebuildWithOwnedSlot(
+    restoreOperationType: 'idle' | 'sync',
+    publishRecoveryError: boolean,
+    pendingFenceIds: readonly string[] = []
+  ): Promise<boolean> {
+    this.statsLedger.resumeMaintenance()
+    setOperationState({
+      type: 'rebuild',
+      progress: 0,
+      message: '中断された統計データを復旧中...',
+    })
+    let stopKeepAlive: (() => void) | undefined
+    try {
+      stopKeepAlive = await startKeepAlive()
+      await this.rebuildLocalEntities(pendingFenceIds)
+      return true
+    } catch (error) {
+      if (publishRecoveryError) {
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        this.updateSyncState({ status: 'error', error: message })
+        captureHandledException(error, { operation: 'stats_ledger.recover_interrupted_rebuild' })
+      }
+      throw error
+    } finally {
+      stopKeepAlive?.()
+      if (getOperationState().type === 'rebuild') {
+        setOperationState({ type: restoreOperationType })
+      }
+    }
   }
 
   /**
@@ -643,6 +830,19 @@ export class AutoSyncService {
         return { success: false, error: MIN_VERSION_SYNC_BLOCKED_MESSAGE }
       }
 
+      // 先行cloud rebuildの中断でcanonicalがdirtyな場合、upload-onlyが
+      // successとerrorを上書きする前にRaw Lake回復を優先する（MUST）。
+      // この確認はsync latch/operation slotのclaim後に行う。awaitを先に
+      // 出すと同時performSyncが両方guardを通過するためMUST NOT。
+      if (await this.statsLedger.needsCanonicalRebuildRecovery()) {
+        try {
+          await this.recoverCanonicalRebuildWithOwnedSlot('sync', true)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unknown error'
+          return { success: false, error: message }
+        }
+      }
+
       this.lastSyncAttempt = now
       this.updateSyncState({ status: 'syncing' })
 
@@ -734,6 +934,20 @@ export class AutoSyncService {
           status: 'error',
           error: errorMessage
         })
+        if (await this.statsLedger.needsCanonicalRebuildRecovery()) {
+          // performSync解決後に未追跡rebuildを残してはならない（MUST NOT）。
+          // 同じslot内で1回だけ回復を待ち、成否にかかわらず返却値と
+          // syncState.errorは元のsync失敗を保持する。失敗markerは次回起動に残る。
+          try {
+            await this.recoverCanonicalRebuildWithOwnedSlot('sync', false)
+          } catch (recoveryError) {
+            console.error('[AutoSync] Canonical rebuild recovery after sync failure failed:', recoveryError)
+          }
+          this.updateSyncState({
+            status: 'error',
+            error: errorMessage
+          })
+        }
         return { success: false, error: errorMessage }
       }
     } finally {
@@ -1404,7 +1618,11 @@ export class AutoSyncService {
           // Content-first merge assigns legacy sequence 0, preserves new
           // sequences when possible, and collapses an old/new document pair
           // that contains the same payload.
-          const merge = await mergeApiEvents(this.db, events as unknown as RawApiEvent[])
+          const merge = await mergeApiEvents(this.db, events as unknown as RawApiEvent[], {
+            // cloud row追加とdirty fenceは同じcommitでなければならない（MUST）。
+            // page間またはrebuild開始前にSWが終了しても、起動時にRaw Lakeから復旧する。
+            atomicMetaMarkerWhenAdded: this.statsLedger.createCanonicalRebuildFenceRecord('cloud-download'),
+          })
           downloadedEvents += events.length
           addedEvents += merge.added.length
         },
@@ -1469,20 +1687,40 @@ export class AutoSyncService {
    * - A failed rebuild is never marked as done: the `importStatus` meta write
    *   below only runs after every chunk (and the final flush) succeeded, so
    *   an error always leaves the previous `importStatus` untouched.
+   * - The HUD keeps reading the previous stats-ledger head while chunks are
+   *   rebuilt. Success publishes a new EMPTY head in O(1), then only visible
+   *   players are lazily hydrated. A failed pass never activates its staging
+   *   generation; normal exceptions also discard it best-effort.
    */
-  private async rebuildLocalEntities(): Promise<void> {
+  private async rebuildLocalEntities(
+    explicitPendingFenceIds: readonly string[] = []
+  ): Promise<void> {
+    let stagingGeneration: number | undefined
     try {
       console.log('[AutoSync] Triggering chunked data rebuild after download...')
 
-      const defaultSession = {
-        id: undefined,
-        battleType: undefined,
-        name: undefined,
-        players: new Map(),
-        reset: () => { }
-      }
-      const converter = new EntityConverter(defaultSession)
-      const service = (self as any).service
+      // 履歴replay中にlive singletonのSessionStateへ書いてはならない（MUST NOT）。
+      // 201/308/313を共有stateへ順に復元すると、並行して完成したlive handが
+      // historical session id/battleTypeで永続化される。replay専用stateへ隔離し、
+      // 最後にruntime文脈が開始時から不変だった場合だけ公開する。
+      const replaySession = new SessionState(() => {})
+      const converter = new EntityConverter(replaySession)
+      const service = (self as typeof self & { service?: PokerChaseService }).service
+      const contextGuard = service ? this.captureServiceContextRestoreGuard(service) : undefined
+      // staging markerを先に公開し、途中のcanonical表からlazy baselineが
+      // 完全値を作らないようdirty fenceを張る（MUST）。ライブ完成ハンドは
+      // canonicalに反映され、成功時の空head切替後に表示lineupだけを再生する。
+      const stagingHead = await this.statsLedger.prepareStagingGeneration()
+      stagingGeneration = stagingHead.generation
+      // このreplayが回収するのは開始時点で既に中断状態だった
+      // exact raw-result fenceだけ。後着のライブ306はそのWESか、次回
+      // recoveryが所有するため、完了時のprefix全削除はMUST NOT。
+      const recoveredPendingFenceIds = [...new Set([
+        ...await this.statsLedger.listInterruptedPendingHandDerivationFenceIds(),
+        ...explicitPendingFenceIds.filter(id =>
+          id.startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)
+        ),
+      ])]
       const totalEventCount = await this.db.apiEvents.count()
       // Keep the pre-rebuild key set so a successful canonical replay can
       // remove hands that were derived from an incomplete local Lake but are
@@ -1493,8 +1731,6 @@ export class AutoSyncService {
       const rebuiltHandIds = new Set<number>()
       let lastProcessedTimestamp = 0
       let latestDealEvent: ApiEvent | undefined
-
-      if (service?.session) service.session.reset()
 
       for await (const events of processInReplayChunks(
         this.db.apiEvents,
@@ -1514,17 +1750,17 @@ export class AutoSyncService {
         const validEvents = await filterValidApplicationEvents(events)
         const entities = converter.convertEventChunk(validEvents)
         entities.hands.forEach(hand => rebuiltHandIds.add(hand.id))
-        await this.saveRebuiltEntities(entities)
+        await this.saveRebuiltEntities(entities, stagingHead.generation)
 
         for (const event of events) {
           lastProcessedTimestamp = Math.max(lastProcessedTimestamp, event.timestamp || 0)
-          this.restoreSessionEvent(service, event)
+          this.restoreSessionEvent(replaySession, event)
           // 席着席時のみ latestDealEvent を更新する（findLatestPlayerDealEvent()
           // ／aggregate-events-stream.tsのEVT_DEALケースと同じ判別: event.Player?.
           // SeatIndex !== undefined）。ダウンロード履歴の末尾が観戦モードのdeal
           // （ヒーロー敗退後もクライアントが他プレイヤーのテーブルを受信し続ける
           // ケース）で終わっていた場合、ここで無条件に最後のEVT_DEALを採用すると、
-          // 下のrestoreLatestDeal()がそれを`service.latestEvtDeal`（ヒーロー在籍の
+          // 下のpublishRebuiltServiceContext()がそれを`service.latestEvtDeal`（ヒーロー在籍の
           // 文脈・setterがliveEvtDealも同期する）に代入してしまい、クラウド復元
           // 直後にヒーローのplayerIdを再導出できないばかりか、#177が塞いだはずの
           // 「観戦テーブルの顔ぶれでヒーロー統計が上書きされる」混在状態を
@@ -1541,7 +1777,7 @@ export class AutoSyncService {
 
       const remainingEntities = converter.flush()
       remainingEntities.hands.forEach(hand => rebuiltHandIds.add(hand.id))
-      await this.saveRebuiltEntities(remainingEntities)
+      await this.saveRebuiltEntities(remainingEntities, stagingHead.generation)
 
       // bulkPut alone cannot remove a formerly-derived hand which canonical
       // replay now rejects (for example, a missing table-move EVT_DEAL arrives
@@ -1550,31 +1786,58 @@ export class AutoSyncService {
       // completed concurrently by live ingestion was not in the snapshot and
       // must remain intact.
       const staleHandIds = previousHandIds.filter(handId => !rebuiltHandIds.has(handId))
-      if (staleHandIds.length > 0) {
-        await this.db.transaction('rw', [this.db.hands, this.db.phases, this.db.actions], async () => {
+      // stale canonical cleanup・ledger head切替・完了markerは同一commitに束ねる。
+      // 途中失敗やSW終了で、部分世代または「完了済み」だけが見えてはならない
+      // （MUST NOT）。このtransaction中はライブWriteEntityStreamも同じstoresで
+      // 直列化され、切替後の書込みは新しいactive世代へ入る。
+      await this.db.transaction('rw', [
+        this.db.hands,
+        this.db.phases,
+        this.db.actions,
+        this.db.meta,
+        this.db.statHandContributions,
+        this.db.statPlayerAggregates
+      ], async () => {
+        if (staleHandIds.length > 0) {
           for (let offset = 0; offset < staleHandIds.length; offset += DATABASE_CONSTANTS.SYNC_CHUNK_SIZE) {
             const handIds = staleHandIds.slice(offset, offset + DATABASE_CONSTANTS.SYNC_CHUNK_SIZE)
             await this.db.phases.where('handId').anyOf(handIds).delete()
             await this.db.actions.where('handId').anyOf(handIds).delete()
             await this.db.hands.bulkDelete(handIds)
           }
+        }
+
+        await this.statsLedger.activateStagingGeneration(
+          stagingHead.generation,
+          recoveredPendingFenceIds
+        )
+        await this.db.meta.put({
+          id: 'importStatus',
+          value: {
+            lastProcessedTimestamp,
+            lastProcessedEventCount: totalEventCount,
+            lastImportDate: new Date().toISOString()
+          },
+          updatedAt: Date.now()
         })
-      }
-
-      await this.db.meta.put({
-        id: 'importStatus',
-        value: {
-          lastProcessedTimestamp,
-          lastProcessedEventCount: totalEventCount,
-          lastImportDate: new Date().toISOString()
-        },
-        updatedAt: Date.now()
       })
+      // ここから先の表示復元失敗で、公開済みactive世代をabandonしてはならない
+      // （MUST NOT）。head切替commitが完了した時点でcleanup対象から外す。
+      stagingGeneration = undefined
 
-      this.restoreLatestDeal(service, latestDealEvent)
+      this.publishRebuiltServiceContext(service, replaySession, latestDealEvent, contextGuard)
       console.log(`[AutoSync] Chunked data rebuild completed (${totalEventCount} events)`)
     } catch (error) {
       console.error('[AutoSync] Data rebuild error:', error)
+      if (stagingGeneration !== undefined) {
+        try {
+          await this.statsLedger.abandonStagingGeneration(stagingGeneration)
+        } catch (cleanupError) {
+          // 元のrebuild失敗を優先して通知する。未公開世代はheadから参照されず、
+          // 次回prepare時にも掃除されるため、cleanup失敗で根本原因を隠さない。
+          console.error('[AutoSync] Failed to abandon inactive stats generation:', cleanupError)
+        }
+      }
       // Surface the failure instead of confirming the sync as successful (see
       // doc comment above). The raw events are already durable; only the
       // derived statistics are stale until a rebuild succeeds.
@@ -1584,77 +1847,140 @@ export class AutoSyncService {
     }
   }
 
-  private async saveRebuiltEntities(entities: ReturnType<EntityConverter['flush']>): Promise<void> {
-    const handIds = [...new Set(entities.hands.map(hand => hand.id))]
-    if (handIds.length === 0) return
+  private async saveRebuiltEntities(
+    entities: ReturnType<EntityConverter['flush']>,
+    stagingGeneration: number
+  ): Promise<void> {
+    if (entities.hands.length === 0) return
 
-    // Replaying a hand can legitimately produce fewer child records after a
-    // cloud gap is filled. Replace each emitted hand's children instead of
-    // merely bulkPutting the new rows, which would leave obsolete higher
-    // action indexes or phases behind.
-    await this.db.transaction('rw', [this.db.hands, this.db.phases, this.db.actions], async () => {
-      await this.db.phases.where('handId').anyOf(handIds).delete()
-      await this.db.actions.where('handId').anyOf(handIds).delete()
-      await this.db.hands.bulkPut(entities.hands)
-      if (entities.phases.length > 0) await this.db.phases.bulkPut(entities.phases)
-      if (entities.actions.length > 0) await this.db.actions.bulkPut(entities.actions)
-    })
+    for (const chunk of splitEntityBundleByHands(entities)) {
+      const handIds = chunk.hands.map(hand => hand.id)
+      // Replaying a hand can legitimately produce fewer child records after a
+      // cloud gap is filled. 50 hand以下のbounded transactionごとにcanonicalと
+      // staging寄与を一緒に置換し、ライブWESを長時間待たせない（MUST）。
+      await this.db.transaction('rw', [
+        this.db.hands,
+        this.db.phases,
+        this.db.actions,
+        this.db.meta,
+        this.db.statHandContributions,
+        this.db.statPlayerAggregates
+      ], async () => {
+        await this.db.phases.where('handId').anyOf(handIds).delete()
+        await this.db.actions.where('handId').anyOf(handIds).delete()
+        await this.db.hands.bulkPut(chunk.hands)
+        if (chunk.phases.length > 0) await this.db.phases.bulkPut(chunk.phases)
+        if (chunk.actions.length > 0) await this.db.actions.bulkPut(chunk.actions)
+        await this.statsLedger.appendStagingEntityBundle(stagingGeneration, chunk)
+      })
+      await new Promise<void>(resolve => setTimeout(resolve, 0))
+    }
 
     console.log(`[AutoSync] Generated entities - Hands: ${entities.hands.length}, Phases: ${entities.phases.length}, Actions: ${entities.actions.length}`)
   }
 
-  private restoreSessionEvent(service: any, event: ApiEvent): void {
-    if (!service?.session) return
-
+  private restoreSessionEvent(session: SessionState, event: ApiEvent): void {
     if (event.ApiTypeId === ApiType.EVT_SESSION_RESULTS) {
-      service.session.reset()
+      session.reset()
     } else if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED) && event.Code === 0) {
-      service.session.setId(event.Id)
-      service.session.setBattleType(event.BattleType)
+      session.setId(event.Id)
+      session.setBattleType(event.BattleType)
     } else if (isApiEventType(event, ApiType.EVT_SESSION_DETAILS)) {
-      service.session.setName(event.Name)
+      session.setName(event.Name)
     } else if (isApiEventType(event, ApiType.EVT_PLAYER_SEAT_ASSIGNED)) {
       event.TableUsers?.forEach(tableUser => {
-        service.session.setPlayer(tableUser.UserId, {
+        session.setPlayer(tableUser.UserId, {
           name: tableUser.UserName,
           rank: tableUser.Rank.RankId
         })
       })
     } else if (isApiEventType(event, ApiType.EVT_PLAYER_JOIN) && event.JoinUser) {
-      service.session.setPlayer(event.JoinUser.UserId, {
+      session.setPlayer(event.JoinUser.UserId, {
         name: event.JoinUser.UserName,
         rank: event.JoinUser.Rank.RankId
       })
     }
   }
 
-  private restoreLatestDeal(service: any, latestDealEvent?: ApiEvent): void {
-    if (!service) return
-
-    if (service.session?.id) {
-      console.log(`[AutoSync] Restored session: ${service.session.id} - ${service.session.name || 'Unknown'}`)
+  private captureServiceContextRestoreGuard(service: PokerChaseService): ServiceContextRestoreGuard {
+    const latestEvtDeal = service.latestEvtDeal
+    const liveEvtDeal = service.liveEvtDeal
+    const activeGeneration = resolveGeneration()
+    const activeActivity = getActivePortActivity()
+    return {
+      // token無し、または明示inactiveだけがhistorical restore可能。
+      // generation在り・activity未確定は対局中としてfail closedする（MUST）。
+      mayRestore: activeGeneration === undefined || activeActivity === 'inactive',
+      activeGeneration,
+      activeActivity,
+      sessionSnapshot: JSON.stringify(service.session.toJSON()),
+      playerId: service.playerId,
+      latestEvtDeal,
+      liveEvtDeal,
     }
+  }
 
-    if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
-      // This setter also syncs service.liveEvtDeal (see poker-chase-service.ts),
-      // so the statsOutputStream.write() below (and any earlier stale
-      // spectator-mode liveEvtDeal from before this cloud-sync restore ran)
-      // broadcasts paired with this restored hero-anchored deal's seat
-      // context, not a leftover one (codex #177 3rd review round P2).
-      // `latestEvtDeal`'s own contract (poker-chase-service.ts) requires
-      // callers to only ever assign a deal with Player.SeatIndex present --
-      // rebuildLocalEntities() above now upholds that (guards latestDealEvent
-      // to seated deals only), so this is never a spectator-mode deal.
-      service.latestEvtDeal = latestDealEvent
-      const playerSeatIndex = latestDealEvent.Player?.SeatIndex
-      if (playerSeatIndex !== undefined && playerSeatIndex >= 0) {
-        const playerId = latestDealEvent.SeatUserIds?.[playerSeatIndex]
-        if (playerId && playerId !== -1) service.playerId = playerId
+  private serviceContextStillMatches(
+    service: PokerChaseService,
+    guard: ServiceContextRestoreGuard
+  ): boolean {
+    return guard.mayRestore &&
+      resolveGeneration() === guard.activeGeneration &&
+      getActivePortActivity() === guard.activeActivity &&
+      JSON.stringify(service.session.toJSON()) === guard.sessionSnapshot &&
+      service.playerId === guard.playerId &&
+      service.latestEvtDeal === guard.latestEvtDeal &&
+      service.liveEvtDeal === guard.liveEvtDeal
+  }
+
+  private publishRebuiltServiceContext(
+    service: PokerChaseService | undefined,
+    replaySession: SessionState,
+    latestDealEvent: ApiEvent | undefined,
+    guard: ServiceContextRestoreGuard | undefined
+  ): void {
+    if (!service || !guard) return
+
+    const mayRestoreHistoricalContext = this.serviceContextStillMatches(service, guard)
+    if (mayRestoreHistoricalContext) {
+      // 比較から適用までawaitを挟んではならない（MUST NOT）。同一task内で
+      // historical snapshotを一括反映し、後着live eventを巻き戻さない。
+      const restored = replaySession.toJSON()
+      // 309後も観戦DEALは届き得る。liveEvtDealがpersisted latestとは別refなら、
+      // historical latest更新後も現在の観戦座席文脈を保持する（MUST）。
+      const liveDealOverride = guard.liveEvtDeal !== undefined &&
+        guard.liveEvtDeal !== guard.latestEvtDeal
+          ? guard.liveEvtDeal
+          : undefined
+      service.session.reset()
+      if (restored.id !== undefined) service.session.setId(restored.id)
+      if (restored.battleType !== undefined) service.session.setBattleType(restored.battleType)
+      if (restored.name !== undefined) service.session.setName(restored.name)
+      for (const [playerId, info] of restored.players) service.session.setPlayer(playerId, info)
+
+      if (latestDealEvent && isApiEventType(latestDealEvent, ApiType.EVT_DEAL)) {
+        // latestEvtDeal setterはliveEvtDealも同じhero在席文脈へ同期する。
+        service.latestEvtDeal = latestDealEvent
+        const playerSeatIndex = latestDealEvent.Player?.SeatIndex
+        if (playerSeatIndex !== undefined && playerSeatIndex >= 0) {
+          const playerId = latestDealEvent.SeatUserIds?.[playerSeatIndex]
+          if (playerId && playerId !== -1) service.playerId = playerId
+        }
       }
+      if (liveDealOverride) service.liveEvtDeal = liveDealOverride
+
+      if (service.session.id) {
+        console.log(`[AutoSync] Restored session: ${service.session.id} - ${service.session.name || 'Unknown'}`)
+      }
+    } else if (guard.mayRestore) {
+      console.info('[AutoSync] Live context changed during rebuild; historical context restore skipped')
     }
 
-    if (service.latestEvtDeal?.SeatUserIds) {
-      const playerIds = service.latestEvtDeal.SeatUserIds.filter((id: number) => id !== -1)
+    // live更新を観測した場合は、その現在文脈へ新headの統計だけを再配信する。
+    // historical dealへ巻き戻してはならない（MUST NOT）。
+    const displayDeal = service.liveEvtDeal
+    if (displayDeal?.SeatUserIds) {
+      const playerIds = displayDeal.SeatUserIds.filter(id => id !== -1)
       if (playerIds.length > 0) service.statsOutputStream.write(playerIds)
     }
   }

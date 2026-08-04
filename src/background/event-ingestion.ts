@@ -1,6 +1,7 @@
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
 import PokerChaseService, {
   ApiType,
+  type ApiEvent,
   ApiMessage,
   validateMessage,
   validateApiEvent,
@@ -77,6 +78,61 @@ import {
  * ミラーする。
  */
 const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
+
+type StatsLedgerPrefetchTrigger = 'seat-assigned' | 'player-join' | 'deal'
+
+/**
+ * 着席情報から、その場でHUDに必要になりうるプレイヤーの永続統計台帳を
+ * 先読みする。313はSNGでも欠落しうるため、301の途中参加と303の実ライン
+ * ナップも同じ先読み経路へ入れる。303の通常読み取りは引き続き
+ * `readPlayerSnapshot()`のlazy baselineを正本とするので、先読みが失敗しても
+ * 統計の正しさには影響しない。
+ *
+ * この関数は取り込み順序やRaw Event Lakeの耐久性バリアを延ばしてはならない。
+ * 返すPromiseは完了観測用であり、呼び出し側はstream投入前には待たず、
+ * `ensurePlayerBaseline()`の同一player in-flight重複排除に委ねること（MUST）。
+ * 診断にはplayer ID・生payload・例外messageを含めてはならない（MUST NOT）。
+ */
+export const prefetchStatsLedgerBaselines = (
+  service: PokerChaseService,
+  event: ApiEvent
+): Promise<void> | undefined => {
+  let playerIds: readonly number[]
+  let trigger: StatsLedgerPrefetchTrigger
+
+  switch (event.ApiTypeId) {
+    case ApiType.EVT_PLAYER_SEAT_ASSIGNED:
+      playerIds = event.SeatUserIds
+      trigger = 'seat-assigned'
+      break
+    case ApiType.EVT_PLAYER_JOIN:
+      playerIds = [event.JoinUser.UserId]
+      trigger = 'player-join'
+      break
+    case ApiType.EVT_DEAL:
+      playerIds = event.SeatUserIds
+      trigger = 'deal'
+      break
+    default:
+      return
+  }
+
+  const uniquePlayerIds = new Set(
+    playerIds.filter(playerId => Number.isSafeInteger(playerId) && playerId > 0)
+  )
+  return service.statsLedger.ensurePlayerBaselines([...uniquePlayerIds]).catch(() => {
+    // player ID・payload・例外messageはログへ出さない（MUST NOT）。
+    console.warn(`[StatsLedger] Baseline prefetch failed (${trigger})`)
+  })
+}
+
+interface EventProcessingCompletion {
+  /**
+   * Raw取り込みキューへは含めないが、このイベントから起動した非同期処理を
+   * テスト・明示的な呼び出し元が破棄前に待てるようにする完了ハンドル。
+   */
+  backgroundTasks: readonly Promise<void>[]
+}
 
 /**
  * Raw Event Lakeの耐久性バリア（release-blocker監査 finding A）を実現する
@@ -285,13 +341,19 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
               queueDepth: ingestionQueueDepth
             })
           })
-        ingestionQueue = task.catch(err => {
+        ingestionQueue = task.then(() => undefined).catch(err => {
           console.error('[background] Unhandled ingestion queue error (fail-safe, queue continues):', err)
           captureHandledException(err, {
             operation: 'event_ingestion.queue'
           })
         })
-        return task
+        // ChromeのPort listenerは返したPromiseを待たない。Raw取り込みの直列化は
+        // 上の`ingestionQueue`だけで完了させ、baseline prefetchでは止めない
+        // （MUST NOT）。一方、直接listenerを呼ぶテスト等にはbackground taskを
+        // 含む完了Promiseを返し、DB破棄後まで処理・ログが残らないようにする。
+        return task.then(async completion => {
+          await Promise.all(completion?.backgroundTasks ?? [])
+        })
       })
       const stopPing = startPortPing(port)
 
@@ -429,12 +491,13 @@ const processEvent = async (
   message: ApiMessage | { type: string },
   port?: chrome.runtime.Port,
   deliveredAt: number = Date.now()
-): Promise<void> => {
+): Promise<EventProcessingCompletion | undefined> => {
   const rawApiTypeId = (message as { ApiTypeId?: unknown }).ApiTypeId
   const rawTimestamp = (message as { timestamp?: unknown }).timestamp
   const hasUsableRawKey = validateMessage(message).success
 
   let portGeneration: number | undefined
+  let storedRawEvent: RawApiEvent | undefined
 
   // Ensure service is ready before processing messages
   try {
@@ -459,11 +522,29 @@ const processEvent = async (
     // duplicate. The indexed lookup + add are one transaction, while the
     // outer ingestionQueue preserves WebSocket arrival order.
     try {
-      const merge = await mergeApiEvents(service.db, [message as unknown as RawApiEvent])
+      const rawHandId = (message as { HandId?: unknown }).HandId
+      const pendingDerivationOptions = rawApiTypeId === ApiType.EVT_HAND_RESULTS &&
+        Number.isSafeInteger(rawHandId) &&
+        ((rawHandId as number) >= 0)
+          ? {
+              // valid 306のraw commitと派生保留の間にMV3 workerが止まっても
+              // 次回起動で復旧できるよう、sequence割当後のexact raw keyを
+              // 同じtransactionで控える（MUST）。306以外のraw writeはmeta storeを
+              // ロックしない。
+              atomicMetaRecordsForAdded: (added: readonly RawApiEvent[]) =>
+                service.statsLedger.createPendingHandDerivationFenceRecords(added),
+            }
+          : undefined
+      const merge = await mergeApiEvents(
+        service.db,
+        [message as unknown as RawApiEvent],
+        pendingDerivationOptions
+      )
       if (merge.duplicates === 1) {
         console.warn('[background] Duplicate event (identical payload already in Raw Event Lake), skipping re-processing:', message)
         return
       }
+      storedRawEvent = merge.added[0]
     } catch (err) {
       // quota/transaction failure = this event is absent from the Lake.
       // Preserve the invariant by dropping it from streams/sync hooks while
@@ -496,6 +577,14 @@ const processEvent = async (
     // 直後のparseApiEvent()もほぼ確実にnullを返し自然に早期returnする。
     console.warn('[background] Event missing numeric timestamp/ApiTypeId, cannot store:', message)
   }
+
+  // valid 306はraw行とexact sequenceの派生保留フェンスを同じtransactionで
+  // commit済み。ここからAggregateEventsStreamへ正常にhandoffするまでの例外は、
+  // 同一SW内でも起動時復旧の対象になるようfailed化する（MUST）。handoff後は
+  // WriteEntityStreamがフェンスの成否を所有するため、他streamの例外で
+  // 誤ってfailedへ戻してはならない（MUST NOT）。
+  let pendingHandDerivationHandedOff = false
+  try {
 
   // token・世代・activityを動かすのは、raw mergeの重複判定を通過した
   // 数値game eventだけ（MUST）。重複再送がrelicから来てもhandover/resetを
@@ -640,7 +729,11 @@ const processEvent = async (
 
   // 通常のAPIメッセージ処理
   // Zodスキーマでパース（passthrough: 未知プロパティは保持）
-  const data = parseApiEvent(message as ApiMessage)
+  // raw writerが割り当てたsequenceをパイプラインへ引き継ぐ。
+  // WriteEntityStreamはこのexact raw keyのフェンスだけをcanonical commitと
+  // 同時に消すため、元のsequence無しmessageを再度parseしてはならない
+  // （MUST NOT）。
+  const data = parseApiEvent((storedRawEvent ?? message) as ApiMessage)
 
   if (!data) {
     // パース失敗 = 必須プロパティ欠損など破壊的変更の可能性。保存キーが
@@ -691,6 +784,11 @@ const processEvent = async (
     ).catch(err =>
       console.error('[background] Failed to record undecoded event stats:', err)
     )
+    if (storedRawEvent?.ApiTypeId === ApiType.EVT_HAND_RESULTS) {
+      // 現行スキーマではパイプライン対象にできない終端判定。
+      // rawはLakeに残るため、後日のスキーマ修正+再構築は失われない。
+      await service.statsLedger.acknowledgePendingHandDerivation(storedRawEvent)
+    }
     if (successfulSessionStartTimestamp !== undefined) {
       notifySessionStart(portGeneration!, successfulSessionStartTimestamp)
     }
@@ -708,6 +806,10 @@ const processEvent = async (
     return
   }
 
+  // 313が来る正常系では着席時点からbaseline構築を先行させ、313欠落・途中参加
+  // は301/303で補う。取り込みキューと既存stream順序を止めないためMUST NOT await。
+  const statsLedgerPrefetch = prefetchStatsLedgerBaselines(service, data)
+
   if (portGeneration !== undefined) setEventGeneration(data, portGeneration)
 
   // ここでdataはApiEvent型（isApplicationApiEventで保証済み）
@@ -720,6 +822,9 @@ const processEvent = async (
   // ストリーム処理（DB保存は上で完了済み・耐久性確定済み）
   service.handLogStream.write(data)
   service.handAggregateStream.write(data)
+  if (storedRawEvent?.ApiTypeId === ApiType.EVT_HAND_RESULTS) {
+    pendingHandDerivationHandedOff = true
+  }
   service.realTimeStatsStream.write(data)
   if (successfulSessionStartTimestamp !== undefined) {
     notifySessionStart(portGeneration!, successfulSessionStartTimestamp)
@@ -727,4 +832,23 @@ const processEvent = async (
   // Auto-sync起動・pending update再チェック（309/201/308）は上のRaw
   // Event Lake保存直後に生ApiTypeIdベースで既にトリガー済み（本ブロックの
   // パース成功はストリーム投入のみが目的）
+  return {
+    backgroundTasks: statsLedgerPrefetch ? [statsLedgerPrefetch] : []
+  }
+  } catch (err) {
+    if (
+      storedRawEvent?.ApiTypeId === ApiType.EVT_HAND_RESULTS &&
+      !pendingHandDerivationHandedOff
+    ) {
+      try {
+        await service.statsLedger.markPendingHandDerivationFailed(storedRawEvent)
+      } catch (markerErr) {
+        console.error('[background] Failed to mark pending hand derivation after pre-handoff error:', markerErr)
+        captureHandledException(markerErr, {
+          operation: 'stats_ledger.mark_pending_hand_derivation_failed'
+        })
+      }
+    }
+    throw err
+  }
 }

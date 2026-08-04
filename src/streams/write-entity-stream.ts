@@ -22,11 +22,20 @@ import { resolveActionPhase } from '../utils/action-phase'
 import { getPositionMap, getBigBlindUserId } from '../utils/position-utils'
 import { defaultRegistry } from '../stats'
 import type { ErrorContext } from '../types/errors'
+import type { AppError } from '../types/errors'
 import { deriveHandSettlement } from '../utils/hand-chip-accounting'
 import {
   getEventGeneration,
   setStatsRequestContext
 } from './stats-output-context'
+
+const SLOW_ENTITY_WRITE_MS = 50
+
+export interface CanonicalWriteFailureError extends AppError {
+  canonicalRecoveryRequired?: true
+  /** ログ・telemetryへ渡さない同一worker内だけのexact recovery token。 */
+  canonicalRecoveryFenceId?: string
+}
 
 /**
  * エンティティ書き込みStream（パイプライン第2段階）
@@ -49,11 +58,12 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
     this.service = service
   }
   protected async transform(events: ApiHandEvent[]): Promise<void> {
+    let canonicalCommitted = false
+    const resultsEvent = events.find(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)
     try {
       const dealEvent = events.find((event): event is ApiEvent<ApiType.EVT_DEAL> =>
         event.ApiTypeId === ApiType.EVT_DEAL
       )
-      const resultsEvent = events.find(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)
       if (
         dealEvent &&
         resultsEvent &&
@@ -62,6 +72,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
         // 世代交代を跨いだDEAL/RESULTSは1ハンドとして成立しない（MUST NOT）。
         // 既存の不完全・キメラハンドと同様にDB/下流へは出さない。
         console.log(`[WriteEntityStream] Rejected cross-generation hand (HandId=${resultsEvent.HandId})`)
+        await this.service.statsLedger.acknowledgePendingHandDerivation(resultsEvent)
         return
       }
       const handState = this.toHandState(events)
@@ -70,20 +81,73 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
         // seatUserIdsのダウンストリーム配信ともにスキップする。
         const handId = events.find(e => e.ApiTypeId === ApiType.EVT_HAND_RESULTS)?.HandId
         console.log(`[WriteEntityStream] Rejected chimera hand (HandId=${handId}): EVT_HAND_RESULTS.Results references a player outside the dealt lineup (mid-hand table move)`)
+        if (resultsEvent) {
+          await this.service.statsLedger.acknowledgePendingHandDerivation(resultsEvent)
+        }
         return
       }
       const { hand, actions, phases } = handState
+      const writeStartedAt = performance.now()
 
-      await this.service.db.transaction('rw', [this.service.db.hands, this.service.db.phases, this.service.db.actions], async () => {
-        return Promise.all([
+      await this.service.db.transaction('rw', [
+        this.service.db.hands,
+        this.service.db.phases,
+        this.service.db.actions,
+        this.service.db.meta,
+        this.service.db.statHandContributions,
+        this.service.db.statPlayerAggregates,
+      ], async () => {
+        // 通常は未知の新HandIdなので1 primary-key readで終わる。
+        // 再接続等で既存handを再書込みする時だけ旧寄与も復元し、
+        // bounded recent ledgerから旧行が既にevict済みでもaggregateを二重加算しない。
+        const previousHand = await this.service.db.hands.get(hand.id)
+        const previousBundle = previousHand
+          ? {
+              hands: [previousHand],
+              actions: await this.service.db.actions.where('handId').equals(hand.id).toArray(),
+              phases: await this.service.db.phases.where('handId').equals(hand.id).toArray(),
+            }
+          : undefined
+        if (previousHand) {
+          // bulkPutだけでは新版で消えたchild rowが残る。既存HandIdの
+          // slow pathでは旧childrenを先に置換し、canonicalと寄与の正本を一致させる。
+          await Promise.all([
+            this.service.db.actions.where('handId').equals(hand.id).delete(),
+            this.service.db.phases.where('handId').equals(hand.id).delete(),
+          ])
+        }
+        await Promise.all([
           this.service.db.hands.put(hand),
           this.service.db.actions.bulkPut(actions),
           this.service.db.phases.bulkPut(phases)
         ])
+        // HUDが読む寄与台帳はcanonical entityと同じcommitで更新する
+        // （MUST）。途中失敗でentityだけ先に見える状態を作らない。
+        await this.service.statsLedger.replaceCompletedHandContributions({
+          hands: [hand],
+          actions,
+          phases,
+        }, previousBundle)
+        if (resultsEvent) {
+          // exact raw-result fenceをcanonical/ledgerと同じcommitでのみ外す
+          // （MUST）。delete失敗なら上の派生書き込みもrollbackする。
+          await this.service.statsLedger.acknowledgePendingHandDerivation(resultsEvent)
+        }
       })
-      // EVT_DEAL may have warmed this exact lineup into the 5-second HUD
-      // cache. The completed hand changes every aggregate, so invalidate only
-      // after its entity transaction commits and before downstream recalculates.
+      canonicalCommitted = true
+      const writeMs = performance.now() - writeStartedAt
+      if (writeMs >= SLOW_ENTITY_WRITE_MS) {
+        // playerId/HandIdやpayloadは出さず、IndexedDB競合と増分更新コストを
+        // 区別するための件数・時間だけを出す。
+        console.warn('[WriteEntityStream] Slow entity and stats-ledger transaction', {
+          writeMs: Math.round(writeMs),
+          seatCount: hand.seatUserIds.filter(playerId => playerId !== -1).length,
+          actionRows: actions.length,
+          phaseRows: phases.length,
+        })
+      }
+      // 旧cache APIとの互換呼出し。台帳移行後はno-opだが、commit後・下流通知前
+      // という既存の無効化境界は維持する。
       this.service.statsOutputStream.invalidateCache()
       setStatsRequestContext(hand.seatUserIds, {
         delivery: 'active',
@@ -92,12 +156,42 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
       })
       this.push(hand.seatUserIds)
     } catch (error: unknown) {
+      if (!canonicalCommitted) {
+        try {
+          // productionの306はraw別fenceがrollback後も残る。同一SWでも
+          // recovery対象にし、fixed global markerでcloud staging ownerを壊さない。
+          const markedPending = resultsEvent
+            ? await this.service.statsLedger.markPendingHandDerivationFailed(resultsEvent)
+            : false
+          if (!markedPending) {
+            // sequence/fenceを持たない内部・旧呼出しだけのfallback。
+            await this.service.statsLedger.markCanonicalRebuildRequired(
+              'live-write-failure',
+              { preserveOwnedStaging: true }
+            )
+          }
+        } catch (markerError) {
+          // 復旧marker失敗で元のwrite errorを隠してはならない（MUST NOT）。
+          console.warn('[WriteEntityStream] Failed to persist canonical rebuild marker', markerError)
+        }
+      }
       const context: ErrorContext = {
         streamName: 'WriteEntityStream',
         handId: events.find(e => e.ApiTypeId === ApiType.EVT_HAND_RESULTS)?.HandId,
         eventsCount: events.length
       }
-      const appError = ErrorHandler.handleStreamError(error, 'WriteEntityStream', context)
+      const appError = ErrorHandler.handleStreamError(
+        error,
+        'WriteEntityStream',
+        context
+      ) as CanonicalWriteFailureError
+      if (!canonicalCommitted) {
+        // ErrorHandlerの記録後に付与し、exact IDをconsole/telemetryへ出さない（MUST NOT）。
+        appError.canonicalRecoveryRequired = true
+        appError.canonicalRecoveryFenceId = resultsEvent
+          ? this.service.statsLedger.getPendingHandDerivationFenceId(resultsEvent)
+          : undefined
+      }
       if (this.listenerCount('error') > 0) {
         this.emit('error', appError)
       }

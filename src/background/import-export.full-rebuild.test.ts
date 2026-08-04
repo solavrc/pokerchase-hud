@@ -35,6 +35,11 @@ import { EntityConverter } from '../entity-converter'
 import * as databaseUtils from '../utils/database-utils'
 import { getRebuildAdvisoryState, REBUILD_ADVISORY_STORAGE_KEY } from './rebuild-advisory'
 import { REBUILD_ADVISORY_VERSION } from '../constants/database'
+import {
+  STATS_CANONICAL_REBUILD_META_ID,
+  STATS_LEDGER_HEAD_META_ID,
+  STATS_PENDING_HAND_DERIVATION_META_PREFIX,
+} from '../stats/stat-ledger'
 
 // A known-good session-start + hand (EVT_ENTRY_QUEUED, then EVT_DEAL -> 3x
 // EVT_ACTION -> EVT_HAND_RESULTS), copied verbatim from src/app.test.ts's
@@ -96,6 +101,16 @@ const snapshotDerived = async (db: PokerChaseDB) => ({
   hands: await db.hands.orderBy('id').toArray(),
   phases: await db.phases.orderBy('[handId+phase]').toArray(),
   actions: await db.actions.orderBy('[handId+index]').toArray(),
+})
+
+const snapshotStatsLedger = async (db: PokerChaseDB) => ({
+  head: await db.meta.get(STATS_LEDGER_HEAD_META_ID),
+  contributions: await db.statHandContributions
+    .orderBy('[generation+playerId+handId]')
+    .toArray(),
+  aggregates: await db.statPlayerAggregates
+    .orderBy('[generation+playerId]')
+    .toArray(),
 })
 
 /**
@@ -206,6 +221,42 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
       expect(await realCount()).toBe(6)
       expect(await db.hands.get(HAND1_ID)).toBeDefined()
       expect(await db.actions.where('handId').equals(HAND1_ID).count()).toBe(3)
+    })
+  })
+
+  test('canonical rebuild atomically publishes an empty head and lazily hydrates only the requested player', async () => {
+    await runWithFreshDb(async ({ db, service, handlers }) => {
+      await db.apiEvents.bulkAdd([ENTRY_QUEUED, ...HAND1_EVENTS] as never[])
+      await db.meta.bulkPut([
+        {
+          id: `${STATS_PENDING_HAND_DERIVATION_META_PREFIX}${HAND1_ID}:${HAND1_RESULTS.timestamp}:0`,
+          value: { version: 1, ownerId: 'interrupted-worker', handId: HAND1_ID },
+          updatedAt: Date.now(),
+        },
+        {
+          id: `${STATS_PENDING_HAND_DERIVATION_META_PREFIX}malformed`,
+          value: null,
+          updatedAt: Date.now(),
+        },
+      ])
+
+      await handlers.rebuildAllData()
+
+      const head = await service.statsLedger.getActiveHead()
+      expect(head).not.toBeNull()
+      expect(await db.statHandContributions.where('generation').equals(head!.generation).count()).toBe(0)
+      expect(await db.statPlayerAggregates.where('generation').equals(head!.generation).count()).toBe(0)
+      expect(await db.meta.get(STATS_CANONICAL_REBUILD_META_ID)).toBeUndefined()
+      expect(await db.meta
+        .where('id')
+        .startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)
+        .count()).toBe(0)
+
+      const snapshot = await service.statsLedger.readPlayerSnapshot(1)
+      expect(snapshot.selectedHands).toBe(1)
+      expect(snapshot.diagnostics.baselineBuilt).toBe(true)
+      expect(await db.statHandContributions.where('generation').equals(head!.generation).count()).toBe(1)
+      expect(await db.statPlayerAggregates.where('generation').equals(head!.generation).count()).toBe(1)
     })
   })
 
@@ -321,6 +372,9 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
       // ACTION rows must still be present.
       const rawCount = await db.apiEvents.count()
       expect(rawCount).toBe(fullExport.length) // 201 + DEAL + 3 ACTIONs + RESULTS, all now stored
+      // raw追加と同じcommitのfenceが残るため、ここでSWが終了しても次回起動が
+      // stale canonicalをRaw Lakeから自動復旧できる。
+      expect(await db.meta.get(STATS_CANONICAL_REBUILD_META_ID)).toBeDefined()
 
       // The invariant this test exists to prove: derived state after a
       // failed rebuild must be byte-identical to derived state before the
@@ -339,21 +393,23 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
     })
   })
 
-  test('a write-phase transaction abort rolls back derived rows and rebuildStatus together', async () => {
+  test('a write-phase transaction abort rolls back derived rows, stats-ledger head, and rebuildStatus together', async () => {
     await runWithFreshDb(async ({ db, handlers }) => {
       await db.apiEvents.bulkAdd([ENTRY_QUEUED, ...HAND1_EVENTS] as never[])
       await handlers.rebuildAllData()
 
       const beforeDerived = await snapshotDerived(db)
       const beforeStatus = await db.meta.get('rebuildStatus')
+      const beforeLedger = await snapshotStatsLedger(db)
       expect(beforeDerived.hands.map(hand => hand.id)).toEqual([HAND1_ID])
       expect(beforeStatus?.value).toMatchObject({ totalHands: 1 })
 
       // A second complete hand makes the next canonical rebuild materially
       // different. Fail only after the transaction has issued every derived
       // write and the new completion marker write: fake-indexeddb must abort
-      // the complete transaction, not expose new rows with an old marker (or
-      // a new marker over partially durable rows).
+      // the complete transaction, not expose new rows with an old marker, a
+      // new stats head over partial rows, or a new marker over partially
+      // durable canonical rows.
       await db.apiEvents.bulkAdd(HAND2_EVENTS as never[])
       const realMetaPut = db.meta.put.bind(db.meta)
       const putSpy = jest.spyOn(db.meta, 'put').mockImplementation(record =>
@@ -372,6 +428,7 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
 
       expect(await snapshotDerived(db)).toEqual(beforeDerived)
       expect(await db.meta.get('rebuildStatus')).toEqual(beforeStatus)
+      expect(await snapshotStatsLedger(db)).toEqual(beforeLedger)
       expect(await db.apiEvents.count()).toBe(1 + HAND1_EVENTS.length + HAND2_EVENTS.length)
 
       const messages = (chrome.runtime.sendMessage as jest.Mock).mock.calls
@@ -379,6 +436,39 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         .filter(message => message.action === 'rebuildProgress')
       expect(messages.some(message => message.state === 'error')).toBe(true)
       expect(messages.at(-1)?.state).toBe('error')
+    })
+  })
+
+  test('an empty canonical rebuild publishes a new complete empty ledger generation', async () => {
+    await runWithFreshDb(async ({ db, service, handlers }) => {
+      await db.apiEvents.bulkAdd([ENTRY_QUEUED, ...HAND1_EVENTS] as never[])
+      await handlers.rebuildAllData()
+
+      const populatedHead = await service.statsLedger.getActiveHead()
+      expect(populatedHead).not.toBeNull()
+      await service.statsLedger.readPlayerSnapshot(1)
+      expect(await db.statHandContributions
+        .where('generation').equals(populatedHead!.generation)
+        .count()).toBeGreaterThan(0)
+
+      // Simulate the authoritative Lake becoming empty. The next rebuild
+      // MUST publish an explicit empty generation; retaining the old head
+      // would keep stale HUD stats even though canonical entities are empty.
+      await db.apiEvents.clear()
+      await handlers.rebuildAllData()
+
+      const emptyHead = await service.statsLedger.getActiveHead()
+      expect(emptyHead).not.toBeNull()
+      expect(emptyHead!.generation).not.toBe(populatedHead!.generation)
+      expect(await db.statHandContributions
+        .where('generation').equals(emptyHead!.generation)
+        .count()).toBe(0)
+      expect(await db.statPlayerAggregates
+        .where('generation').equals(emptyHead!.generation)
+        .count()).toBe(0)
+      expect(await db.hands.count()).toBe(0)
+      expect(await db.phases.count()).toBe(0)
+      expect(await db.actions.count()).toBe(0)
     })
   })
 
@@ -449,7 +539,7 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
       })
       expect(expected.hands).toHaveLength(2)
 
-      await runWithFreshDb(async ({ db, handlers }) => {
+      await runWithFreshDb(async ({ db, service, handlers }) => {
         // Damaged DB, same setup as the parity test: DEAL+RESULTS present
         // for HAND1, ACTIONs missing -- the re-import below stores new raw
         // rows into a non-empty DB, triggering importData()'s rebuild path.
@@ -500,6 +590,19 @@ describe('importData() full rebuild after overlapping imports (audit finding #7,
         const repaired = await snapshotDerived(db)
         expect(repaired).toEqual(expected)
         expect(repaired.hands.map(h => h.id).sort()).toEqual([HAND1_ID, HAND2_ID].sort())
+
+        // 公開直後のheadは空。表示lineupのみをlazy baselineした結果が
+        // fresh canonicalの2handと完全一致することを固定する。
+        const activeHead = await service.statsLedger.getActiveHead()
+        expect(activeHead).not.toBeNull()
+        await service.statsLedger.readLineupSnapshots([1, 2, 3, 4])
+        const activeContributions = await db.statHandContributions
+          .where('generation').equals(activeHead!.generation)
+          .toArray()
+        expect(activeContributions).toHaveLength(8)
+        expect(new Set(activeContributions.map(row => row.handId))).toEqual(
+          new Set([HAND1_ID, HAND2_ID])
+        )
 
         // Raw Lake integrity: both hands' raw events are present regardless.
         const rawCount = await db.apiEvents.count()

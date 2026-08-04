@@ -106,6 +106,10 @@ describe('message-router requestLatestStats -- pre-game vs. live lineup race gua
     )
     expect(handled).toBe(true)
 
+    // requestLatestStats は ready/filter restore 後に calcStats へ進む。
+    // live側が one-shot mock を先に消費しないよう、意図した競合点まで待つ。
+    await waitUntil(() => releasePreGameCalc !== undefined)
+
     // The mocked calcStats call above should already be in flight (consumed the
     // "once" mock) -- confirm nothing has been sent yet.
     expect(sendMessageMock).not.toHaveBeenCalled()
@@ -164,6 +168,9 @@ describe('message-router requestLatestStats -- pre-game vs. live lineup race gua
       sendResponse
     )
     expect(handled).toBe(true)
+
+    // requestLatestStats が停止点へ到達してから別tabのlive配信を発生させる。
+    await waitUntil(() => releasePreGameCalc !== undefined)
 
     const otherPort = {
       sender: { tab: { id: 99 } },

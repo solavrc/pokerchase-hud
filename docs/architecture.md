@@ -174,6 +174,72 @@ Raw Event Lakeに既に生のまま残っている。
 ### 却下: 非正規化単一テーブル
 大規模なデータ重複、個別アクションのクエリ困難、スケールでの性能低下。
 
+### v8: 永続統計台帳
+
+HUD集計は`statHandContributions`に「1プレイヤー・1完成ハンド」の寄与を、
+`statPlayerAggregates`にプレイヤー単位の累積値を保存する。寄与は対戦種別・卓人数層・
+ポジション・時刻と、既存18数値指標の分子／分母を持つ。完成ハンドではcanonicalな
+`hands`/`phases`/`actions`と同じtransactionで寄与と累積値を更新し、通常のHUD更新で
+全履歴を読み直さない。表示時は保存したcounterを既存指標の値・書式へ射影するため、
+統計定義と表示結果は変えない。
+
+全履歴のcounterはaggregateに保持する一方、per-hand行は各プレイヤーの
+「対戦種別×卓人数層」cellごとに最新500件までとする。HUDが入力できる
+latest windowの上限も500件であり、任意のfilter後の最新500件は、対象cellそれぞれの
+最新500件の和集合に必ず含まれる。これによりlatestの厳密性を保ったまま、cold baselineの
+永続化行数とlive中の保持量を全履歴件数から切り離す。
+外部入力などで500を超える契約外`handLimit`が保存されていた場合は、台帳内部でだけ無言に
+丸めず、optionsの保存・読込境界で500へ永続マイグレーションする。これによりPopup表示、
+Service Workerの実フィルター、寄与windowの契約が同じ値になる。
+
+フィルター付きの最新N件は、プレイヤーごとに「対戦種別 → 卓人数層 → 全ポジションを
+横断した最新N件 → ポジション別集計」の順で選ぶ。N件制限がない場合は累積bucketを読み、
+N件制限がある場合だけハンド寄与を複合インデックスから新しい順に読む。したがって
+ポジション別画面も、各ポジションからN件ずつ取るのではなく通常HUDと同じ母集団を使う。
+
+v8へのupgradeは空の台帳storeを追加するだけで、versionchange transaction内では既存履歴を
+計算しない。プレイヤーが初めて必要になった時に、そのプレイヤーのcanonical entityだけから
+baselineを一度作る。`EVT_PLAYER_SEAT_ASSIGNED`（313）はこの処理を非同期に先読みする
+性能上のヒントであり、313が欠落しても`EVT_DEAL`（303）の実lineupとHUD読取り時のlazy
+baselineが正しさを担保する。
+
+HUDは`meta`が指すactive generationだけを読む。クラウドダウンロード後の分割再構築では、
+staging generation自体は空のまま保ち、markerをcanonical表がdirtyであることのフェンスとして
+使う。分割中は旧active headのready値を読めるが、dirty canonicalから新baselineは作らない。
+完了時はcanonicalの最終commitと同じ短いtransactionで空の新headへ切り替え、以後のHUD読みが
+表示lineupのみをlazy baselineする。これにより全プレイヤー分の巨大な二重世代を作らない。
+
+markerにはService Worker起動ごとのownerを記録する。中断markerを次の起動が見つけた場合は、
+認証状態やcloudの`lastSyncTime`に依存せず、ローカルRaw Event Lakeからcanonical再構築を再開する。
+import/cloud downloadが新しいraw rowを追加する場合は、その追加transactionと同じcommitで
+canonical dirty markerも置く。したがってraw保存直後・再構築開始前・cloud page間のどこで
+Service Workerが終了しても、次回起動はstaleな派生表を成功状態として扱わない。
+
+liveの`EVT_HAND_RESULTS`（306）は、Raw Lakeの主キー`[timestamp+ApiTypeId+sequence]`ごとの
+pending derivation fenceをraw rowと同じtransactionで保存する。完了ハンドのcanonical entityと
+統計台帳のcommitが成功した時、またはschema不適合・DEAL欠落・cross-generation/
+chimera判定で意図的に派生しないと確定した時に、対応するexact fenceだけを消す。
+同じ起動ownerの未完了fenceは通常のin-flightとして扱い、別owner・失敗済み・壊れたfenceは
+中断復旧とbaseline構築拒否の対象とする。cloud分割再構築は開始時に回収対象のexact IDを固定し、
+完了commitでそのIDだけを消すため、再構築中に到着したlive fenceを巻き込まない。
+live canonical transactionが失敗した場合は、failed状態の永続化自体が失敗しても、同一worker内の
+error通知がexact fence IDを非同期復旧へ引き継ぐ。この明示IDは通常の「current ownerはin-flight」
+判定を越えてRaw Lake再生の根拠になり、成功時のactivation transactionでだけ消える。
+手動の全再構築は`apiEvents`のRW lock下でLake全体の一致snapshotを再生し、その最終commitで
+pending fence全件を回収する。
+
+cloud履歴のsession eventはreplay専用の`SessionState`へ適用し、live singletonを走査中に
+書き換えない。再構築開始時のACTIVE port generation/activity、session、playerId、DEAL文脈が
+完了時まで不変で、かつACTIVE状態でない場合だけ履歴文脈を公開する。対局中または途中でlive
+eventを観測した場合は現在文脈を保持し、履歴末尾の古いDEALへ巻き戻さない。
+
+非active世代の削除は250行単位の短いtransactionへ分割し、各chunkでactive/stagingを再確認する。
+起動時にもこのGCを再開し、前workerのタイマー発火前に残った旧世代を回収する。
+
+これは既存canonical entityから作る読取り用索引の追加であり、`hands`/`phases`/`actions`の
+導出規則は変わらない。既存DBはlazy baselineで自動的に埋まるため、
+`REBUILD_ADVISORY_VERSION`は更新しない。
+
 ## 3. クラウド同期: Firestore + 生イベントのみ
 
 > ローカルの`apiEvents`（Raw Event Lake、セクション0参照）とは異なり、Firestoreへの
@@ -250,8 +316,7 @@ await db.actions.where('[playerId+phase]')
 
 ## 将来の検討事項
 1. 30-90 日後の古いデータを Cloud Storage にアーカイブ
-2. 頻繁にアクセスされる統計のサマリーテーブル
-3. 長期保存のためのイベント圧縮
+2. 長期保存のためのイベント圧縮
 
 ## 参考文献
 - [Dexie.js Documentation](https://dexie.org/)

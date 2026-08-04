@@ -95,9 +95,14 @@ describe('AutoSyncService cloud-rebuild MV3 keepalive', () => {
       error: `${REBUILD_AFTER_DOWNLOAD_FAILED_MESSAGE} (replay cancelled)`
     })
 
-    expect(clearIntervalSpy).toHaveBeenCalledTimes(1)
+    // The failed download rebuild leaves a durable dirty fence. performSync
+    // owns the operation slot until one tracked recovery attempt also
+    // completes, so both scoped keepalives must already be cleared when the
+    // caller regains control.
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(2)
+    expect(chrome.runtime.getPlatformInfo).toHaveBeenCalledTimes(2)
     await jest.advanceTimersByTimeAsync(50_000)
-    expect(chrome.runtime.getPlatformInfo).toHaveBeenCalledTimes(1)
+    expect(chrome.runtime.getPlatformInfo).toHaveBeenCalledTimes(2)
   })
 
   test('preserves a partial download failure as the primary error and still clears the recovery-rebuild timer', async () => {

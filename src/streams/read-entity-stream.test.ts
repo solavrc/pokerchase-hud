@@ -124,6 +124,14 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(2)
   })
 
+  test('a fractional handLimit that slices to zero keeps the zero-value grid when filters matched', async () => {
+    service.tableSizeFilter = ['hu']
+    service.handLimitFilter = 0.5
+    const stats = await runCalcStats(service, SEAT_USER_IDS)
+
+    expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(0)
+  })
+
   test('handLimit alone (no table-size filter) still behaves as before -- most recent N of all hands', async () => {
     service.handLimitFilter = 2
     const stats = await runCalcStats(service, SEAT_USER_IDS)

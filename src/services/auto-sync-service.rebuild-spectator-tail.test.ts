@@ -40,6 +40,13 @@ import { ApiType } from '../types'
 import type { ApiEvent } from '../types'
 import { AutoSyncService } from './auto-sync-service'
 import { firestoreBackupService } from './firestore-backup-service'
+import {
+  __resetActivePortStateForTests,
+  claimActivePort,
+  markActivePortSessionInactive,
+  markActivePortSessionActive,
+  resolveGeneration,
+} from '../background/active-port'
 
 const HERO_ID = 4
 
@@ -80,12 +87,16 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
   let service: PokerChaseService
 
   beforeEach(async () => {
+    __resetActivePortStateForTests()
     const sendMessageMock = chrome.runtime.sendMessage as jest.Mock
     sendMessageMock.mockResolvedValue(undefined)
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
     service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
+    // このsuiteは復元するseat contextだけを検証する。fire-and-forgetの統計再計算を
+    // teardown後まで残し、閉じたDBへアクセスさせてはならない（MUST NOT）。
+    jest.spyOn(service.statsOutputStream, 'write').mockImplementation(() => {})
     // rebuildLocalEntities() reads the live singleton off `self.service`
     // (see auto-sync-service.ts) -- in a jsdom jest environment `self` is
     // `globalThis`/`window`, so this is the same object the module reads.
@@ -94,6 +105,7 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
 
   afterEach(async () => {
     jest.restoreAllMocks()
+    __resetActivePortStateForTests()
     delete (globalThis as any).service
     db.close()
     await db.delete()
@@ -136,5 +148,83 @@ describe('AutoSyncService.rebuildLocalEntities() -- seated-deal guard on cloud r
     expect(service.playerId).toBe(HERO_ID)
     expect(service.latestEvtDeal).toEqual({ ...laterSeatedDeal, sequence: 0 })
     expect(service.liveEvtDeal).toEqual({ ...laterSeatedDeal, sequence: 0 })
+  })
+
+  test('an ACTIVE live context is never overwritten by historical replay state', async () => {
+    const liveDeal = {
+      ...SEATED_DEAL,
+      timestamp: 4000,
+      SeatUserIds: [8, HERO_ID, 9, 10],
+    } as ApiEvent<ApiType.EVT_DEAL>
+    service.session.setId('live-session')
+    service.latestEvtDeal = liveDeal
+    service.playerId = HERO_ID
+
+    const port = { postMessage: jest.fn() } as unknown as chrome.runtime.Port
+    claimActivePort(port, 4000)
+    markActivePortSessionActive(resolveGeneration(port)!)
+
+    jest.spyOn(firestoreBackupService, 'syncFromCloud').mockImplementation(async options => {
+      await options.onBatch([SEATED_DEAL])
+      return 1
+    })
+
+    const autoSyncService = new AutoSyncService(db)
+    await autoSyncService.performSync('download')
+
+    expect(service.session.id).toBe('live-session')
+    expect(service.playerId).toBe(HERO_ID)
+    expect(service.latestEvtDeal).toBe(liveDeal)
+    expect(service.liveEvtDeal).toBe(liveDeal)
+  })
+
+  test('an unchanged persisted context is refreshed when no ACTIVE port exists', async () => {
+    const staleDeal = { ...SEATED_DEAL, timestamp: 500 } as ApiEvent<ApiType.EVT_DEAL>
+    const newerDeal = {
+      ...SEATED_DEAL,
+      timestamp: 3000,
+      SeatUserIds: [5, HERO_ID, 6, 7],
+    } as ApiEvent<ApiType.EVT_DEAL>
+    service.session.setId('persisted-stale-session')
+    service.latestEvtDeal = staleDeal
+    service.playerId = HERO_ID
+
+    jest.spyOn(firestoreBackupService, 'syncFromCloud').mockImplementation(async options => {
+      await options.onBatch([newerDeal])
+      return 1
+    })
+
+    const autoSyncService = new AutoSyncService(db)
+    await autoSyncService.performSync('download')
+
+    expect(service.latestEvtDeal).toEqual({ ...newerDeal, sequence: 0 })
+    expect(service.liveEvtDeal).toEqual({ ...newerDeal, sequence: 0 })
+  })
+
+  test('inactive spectator context keeps its live DEAL while persisted latest is refreshed', async () => {
+    const historicalLatest = {
+      ...SEATED_DEAL,
+      timestamp: 3000,
+      SeatUserIds: [5, HERO_ID, 6, 7],
+    } as ApiEvent<ApiType.EVT_DEAL>
+    service.latestEvtDeal = SEATED_DEAL as ApiEvent<ApiType.EVT_DEAL>
+    service.liveEvtDeal = SPECTATOR_DEAL as ApiEvent<ApiType.EVT_DEAL>
+    service.playerId = HERO_ID
+
+    const port = { postMessage: jest.fn() } as unknown as chrome.runtime.Port
+    claimActivePort(port, 2000)
+    markActivePortSessionInactive(resolveGeneration(port)!)
+
+    jest.spyOn(firestoreBackupService, 'syncFromCloud').mockImplementation(async options => {
+      await options.onBatch([historicalLatest])
+      return 1
+    })
+
+    const autoSyncService = new AutoSyncService(db)
+    await autoSyncService.performSync('download')
+
+    expect(service.latestEvtDeal).toEqual({ ...historicalLatest, sequence: 0 })
+    expect(service.liveEvtDeal).toBe(SPECTATOR_DEAL)
+    expect(service.statsOutputStream.write).toHaveBeenLastCalledWith(SPECTATOR_DEAL.SeatUserIds)
   })
 })

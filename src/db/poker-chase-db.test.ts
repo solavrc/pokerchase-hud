@@ -28,8 +28,28 @@ describe('PokerChaseDB Raw Event Lake', () => {
     await db.delete()
   })
 
-  it('uses database version 7 (staged primary-key migration + replayDetails)', () => {
-    expect(db.verno).toBe(7)
+  it('uses database version 8 (incremental statistics ledger stores)', () => {
+    expect(db.verno).toBe(8)
+  })
+
+  it('defines the incremental statistics ledger primary keys and indexes', () => {
+    expect(db.statHandContributions.schema.primKey.name).toBe('[generation+playerId+handId]')
+    expect(db.statHandContributions.schema.indexes.map(index => index.name)).toEqual([
+      'generation',
+      '[generation+handId]',
+      '[generation+playerId]',
+      '[generation+playerId+hasTimestamp+sortTimestamp+handId]',
+      '[generation+playerId+hasKnownBattle+hasTimestamp+sortTimestamp+handId]',
+      '[generation+playerId+hasKnownBattle+tableBucket+hasTimestamp+sortTimestamp+handId]',
+      '[generation+playerId+battleBucket+hasTimestamp+sortTimestamp+handId]',
+      '[generation+playerId+tableBucket+hasTimestamp+sortTimestamp+handId]',
+      '[generation+playerId+battleBucket+tableBucket+hasTimestamp+sortTimestamp+handId]'
+    ])
+    expect(db.statPlayerAggregates.schema.primKey.name).toBe('[generation+playerId]')
+    expect(db.statPlayerAggregates.schema.indexes.map(index => index.name)).toEqual([
+      'generation',
+      'playerId'
+    ])
   })
 
   it('stores and reads back a known non-application event (202) unfiltered', async () => {
@@ -77,7 +97,7 @@ describe('PokerChaseDB Raw Event Lake', () => {
   })
 })
 
-describe('PokerChaseDB v3 -> v7 apiEvents sequence-key migration', () => {
+describe('PokerChaseDB v3 -> v8 apiEvents sequence-key migration', () => {
   afterEach(async () => {
     const cleanup = new PokerChaseDB(indexedDB, IDBKeyRange)
     await cleanup.delete()
@@ -107,7 +127,7 @@ describe('PokerChaseDB v3 -> v7 apiEvents sequence-key migration', () => {
     const migrated = new PokerChaseDB(indexedDB, IDBKeyRange)
     await migrated.open()
 
-    expect(migrated.verno).toBe(7)
+    expect(migrated.verno).toBe(8)
     const stored = await migrated.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).toArray() as any[]
     expect(stored).toEqual(oldRows.map(row => ({ ...row, sequence: 0 })))
 
@@ -118,4 +138,62 @@ describe('PokerChaseDB v3 -> v7 apiEvents sequence-key migration', () => {
 
     migrated.close()
   }, 30_000)
+})
+
+describe('PokerChaseDB v7 -> v8 statistics-ledger migration', () => {
+  afterEach(async () => {
+    const cleanup = new PokerChaseDB(indexedDB, IDBKeyRange)
+    await cleanup.delete()
+  })
+
+  test('preserves every v7 store and creates empty ledger stores without backfill', async () => {
+    const legacy = new Dexie('PokerChaseDB', { indexedDB, IDBKeyRange })
+    legacy.version(7).stores({
+      apiEvents: `${API_EVENT_PRIMARY_KEY},timestamp,ApiTypeId,[timestamp+ApiTypeId],[ApiTypeId+timestamp]`,
+      hands: 'id,*seatUserIds,*winningPlayerIds,approxTimestamp',
+      phases: '[handId+phase],handId,*seatUserIds,phase',
+      actions: '[handId+index],handId,playerId,phase,actionType,*actionDetails,[playerId+phase],[playerId+actionType]',
+      meta: 'id,updatedAt',
+      replayDetails: 'handId,fetchedAt'
+    })
+    await legacy.open()
+
+    const rows = {
+      apiEvents: [{ timestamp: 101, ApiTypeId: 202, sequence: 0, Code: 0 }],
+      hands: [{ id: 201, seatUserIds: [11, 22], winningPlayerIds: [11], approxTimestamp: 101 }],
+      phases: [{ handId: 201, phase: 0, seatUserIds: [11, 22] }],
+      actions: [{ handId: 201, index: 0, playerId: 11, phase: 0, actionType: 1, actionDetails: [] }],
+      meta: [{ id: 'v7-marker', updatedAt: 101, value: 'preserve-me' }],
+      replayDetails: [{ handId: 201, fetchedAt: 102, payload: { HandId: 201 } }]
+    }
+    await legacy.transaction(
+      'rw',
+      [
+        legacy.table('apiEvents'),
+        legacy.table('hands'),
+        legacy.table('phases'),
+        legacy.table('actions'),
+        legacy.table('meta'),
+        legacy.table('replayDetails')
+      ],
+      async () => {
+        for (const [tableName, tableRows] of Object.entries(rows)) {
+          await legacy.table(tableName).bulkAdd(tableRows)
+        }
+      }
+    )
+    legacy.close()
+
+    const migrated = new PokerChaseDB(indexedDB, IDBKeyRange)
+    await migrated.open()
+
+    expect(migrated.verno).toBe(8)
+    for (const [tableName, expectedRows] of Object.entries(rows)) {
+      expect(await migrated.table(tableName).toArray()).toEqual(expectedRows)
+    }
+    expect(await migrated.statHandContributions.count()).toBe(0)
+    expect(await migrated.statPlayerAggregates.count()).toBe(0)
+
+    migrated.close()
+  })
 })
