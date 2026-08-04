@@ -23,6 +23,8 @@ import {
   UNDECODED_EVENT_STATS_KEY
 } from './undecoded-event-tracker'
 import { captureSchemaValidationFailure } from '../observability/sentry'
+import { MTT_TABLE_MOVE_FIXTURE } from '../test-fixtures/mtt-table-move-lifecycle'
+import { STATS_PENDING_HAND_DERIVATION_META_PREFIX } from '../stats/stat-ledger'
 
 jest.mock('../observability/sentry', () => ({
   captureHandledException: jest.fn(),
@@ -76,8 +78,13 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
   test('台帳監査は派生パイプラインが空になるまで待つ', async () => {
     let releaseIdle!: () => void
     const idleGate = new Promise<void>(resolve => { releaseIdle = resolve })
+    let observeWhenIdle!: () => void
+    const whenIdleCalled = new Promise<void>(resolve => { observeWhenIdle = resolve })
     const whenIdleSpy = jest.spyOn(service.handAggregateStream, 'whenIdle')
-      .mockReturnValue(idleGate)
+      .mockImplementation(() => {
+        observeWhenIdle()
+        return idleGate
+      })
 
     await onMessageHandler({
       type: REPLAY_PORT_LEDGER,
@@ -87,8 +94,9 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
       hands: []
     })
 
-    // 下流が空になるまで監査は走らない
-    await new Promise(resolve => setTimeout(resolve, 30))
+    // 下流が空になるまで監査は走らない。固定時間ではなく、監査キューが
+    // 実際にwhenIdleへ到達したことを同期点にする（並列test負荷に依存させない）。
+    await whenIdleCalled
     expect(whenIdleSpy).toHaveBeenCalled()
     expect(await db.meta.get(REPLAY_LEDGER_AUDIT_META_ID)).toBeUndefined()
 
@@ -117,6 +125,101 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(handLogSpy).toHaveBeenCalledTimes(1)
     expect(aggregateSpy).toHaveBeenCalledTimes(1)
     expect(realTimeSpy).toHaveBeenCalledTimes(1)
+  })
+
+  test('assigned raw sequence is forwarded to the pipeline and DEAL-less terminal RESULTS clears each exact fence', async () => {
+    const aggregateSpy = jest.spyOn(service.handAggregateStream, 'write')
+    const first = structuredClone(MTT_TABLE_MOVE_FIXTURE.events[5]!) as any
+    first.timestamp = 123_456
+    const second = structuredClone(first)
+    // same timestamp/type/HandIdでも別payloadならsequence=1の独立raw行。
+    second.HandLog = 'distinct-result-payload'
+
+    await onMessageHandler(first)
+    await onMessageHandler(second)
+    await service.handAggregateStream.whenIdle()
+
+    const forwardedResults = aggregateSpy.mock.calls
+      .map(([event]) => event)
+      .filter(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)
+    expect(forwardedResults.map(event => event.sequence)).toEqual([0, 1])
+    expect(await db.apiEvents.get([123_456, ApiType.EVT_HAND_RESULTS, 0])).toBeDefined()
+    expect(await db.apiEvents.get([123_456, ApiType.EVT_HAND_RESULTS, 1])).toBeDefined()
+    expect(await db.meta.where('id')
+      .startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)
+      .count()).toBe(0)
+  })
+
+  test('a logger failure after raw RESULTS commit marks its exact derivation fence failed', async () => {
+    const first = structuredClone(MTT_TABLE_MOVE_FIXTURE.events[5]!) as any
+    first.timestamp = 123_457
+    await onMessageHandler(first)
+    await service.handAggregateStream.whenIdle()
+
+    // 同一timestamp/type/HandIdの別payloadをsequence=1として保存させる。
+    // sequence無しの受信messageでなく、actual-added raw keyをfailed化することを固定する。
+    const result = structuredClone(first)
+    result.HandLog = 'logger-failure-payload'
+    jest.spyOn(service, 'eventLogger').mockImplementation(() => {
+      throw new Error('injected event logger failure')
+    })
+
+    await expect(onMessageHandler(result)).rejects.toThrow('injected event logger failure')
+
+    expect(await db.apiEvents.get([
+      result.timestamp,
+      ApiType.EVT_HAND_RESULTS,
+      1,
+    ])).toBeDefined()
+    const fences = await db.meta.where('id')
+      .startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)
+      .toArray()
+    expect(fences).toHaveLength(1)
+    expect(fences[0]?.value).toEqual(expect.objectContaining({
+      handId: result.HandId,
+      rawKey: [result.timestamp, ApiType.EVT_HAND_RESULTS, 1],
+      failed: true,
+    }))
+  })
+
+  test('an exception after aggregate handoff does not mark the RESULTS fence failed', async () => {
+    const result = structuredClone(MTT_TABLE_MOVE_FIXTURE.events[5]!) as any
+    result.timestamp = 123_458
+    jest.spyOn(service.handAggregateStream, 'write').mockImplementation(() => undefined)
+    jest.spyOn(service.realTimeStatsStream, 'write').mockImplementation(() => {
+      throw new Error('injected downstream stream failure')
+    })
+
+    await expect(onMessageHandler(result)).rejects.toThrow('injected downstream stream failure')
+
+    const fences = await db.meta.where('id')
+      .startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)
+      .toArray()
+    expect(fences).toHaveLength(1)
+    expect(fences[0]?.value).toEqual(expect.objectContaining({
+      handId: result.HandId,
+      rawKey: [result.timestamp, ApiType.EVT_HAND_RESULTS, 0],
+    }))
+    expect(fences[0]?.value).not.toEqual(expect.objectContaining({ failed: true }))
+  })
+
+  test('schema-rejected RESULTS keeps the raw row but terminally clears its derivation fence', async () => {
+    const brokenResult = {
+      ApiTypeId: ApiType.EVT_HAND_RESULTS,
+      timestamp: 234_567,
+      HandId: 765_432,
+      // その他の必須フィールドを意図的に欠落させる。
+    }
+
+    await onMessageHandler(brokenResult)
+
+    expect(await db.apiEvents.get([234_567, ApiType.EVT_HAND_RESULTS, 0])).toEqual({
+      ...brokenResult,
+      sequence: 0,
+    })
+    expect(await db.meta.where('id')
+      .startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)
+      .count()).toBe(0)
   })
 
   test('an application-type event that fails Zod validation is stored raw but NOT forwarded to streams', async () => {

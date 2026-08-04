@@ -159,6 +159,7 @@ describe('RecentHandsService', () => {
       service.writeEntityStream.once('data', () => resolve())
       service.writeEntityStream.write(makeTournamentChipLossEvents(101))
     })
+    await service.writeEntityStream.whenIdle()
 
     const hand = await db.hands.get(101)
     expect(Object.values(hand!.playerChipAccounting!)).toEqual([null, null, null])
@@ -1427,6 +1428,7 @@ describe('RecentHandsService', () => {
         service.statsOutputStream.once('data', () => resolve())
         service.statsOutputStream.write([1, 2, 3])
       })
+      await service.statsOutputStream.whenIdle()
       const stillCachedAfterNonCompletionBroadcast = await getRecentHands(db, service, PLAYER_ID, 10)
       expect(stillCachedAfterNonCompletionBroadcast).toBe(first) // still the same stale cached object
 
@@ -1442,6 +1444,9 @@ describe('RecentHandsService', () => {
         service.writeEntityStream.once('data', () => resolve())
         service.writeEntityStream.write(makeMinimalHandEvents(5, [1, 2, 3]))
       })
+      // `data` は downstream の ReadEntityStream を enqueue した時点で発火する。
+      // DB を破棄する前に pipe 全体を drain し、次テストへ非同期読取りを残さない。
+      await service.writeEntityStream.whenIdle()
 
       const afterHandCompletion = await getRecentHands(db, service, PLAYER_ID, 10)
       expect(afterHandCompletion).not.toBe(first) // recomputed, not served from the now-stale cache
@@ -1495,6 +1500,7 @@ describe('RecentHandsService', () => {
       // hand 4 completed (hands 1-3 only).
       releaseGate()
       const staleResult = await inFlightFetch
+      await service.writeEntityStream.whenIdle()
       expect(staleResult.hands.map(h => h.handId)).toEqual([3, 2, 1])
 
       // The bug this guards against: cache.set(cacheKey, { result: staleResult, ... })

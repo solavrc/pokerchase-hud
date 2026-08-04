@@ -1,4 +1,5 @@
 import type { PokerChaseDB } from '../db/poker-chase-db'
+import type { MetaRecord } from '../types/entities'
 import { ApiType, ApiTypeValues, type ApiEvent } from '../types/api'
 import {
   isScopedSyncMetaKey,
@@ -29,6 +30,18 @@ export interface MergeApiEventsOptions {
    * transaction as the new raw rows so the watermark cannot hide them.
    */
   protectAddedApplicationEventsFromCloudWatermark?: boolean
+  /**
+   * raw row追加後はフル再生までcanonical派生表が古くなり得る。指定時は、
+   * 実際に1行以上追加したtransactionと同じcommitでmarkerを保存する。
+   * 既存markerを後続mergeで弱めてはならない（MUST NOT）。
+   */
+  atomicMetaMarkerWhenAdded?: MetaRecord
+  /**
+   * sequence割当後のactual-added rowから作る追加marker。raw rowと同じ
+   * transactionで保存する。callbackは同期・副作用なしでなければ
+   * ならない（MUST）。既存rowは上書きしない。
+   */
+  atomicMetaRecordsForAdded?: (added: readonly RawApiEvent[]) => readonly MetaRecord[]
 }
 
 export const getApiEventSequence = (event: { sequence?: unknown }): number =>
@@ -161,7 +174,8 @@ export async function mergeApiEvents(
 ): Promise<MergeApiEventsResult> {
   if (inputEvents.length === 0) return { added: [], duplicates: 0 }
 
-  const transactionTables = options.protectAddedApplicationEventsFromCloudWatermark
+  const transactionTables = options.protectAddedApplicationEventsFromCloudWatermark ||
+    options.atomicMetaMarkerWhenAdded || options.atomicMetaRecordsForAdded
     ? [db.apiEvents, db.meta]
     : [db.apiEvents]
 
@@ -213,6 +227,19 @@ export async function mergeApiEvents(
 
     if (added.length > 0) {
       await db.apiEvents.bulkAdd(added as unknown as ApiEvent[])
+
+      if (options.atomicMetaMarkerWhenAdded) {
+        const existingMarker = await db.meta.get(options.atomicMetaMarkerWhenAdded.id)
+        if (!existingMarker) await db.meta.put(options.atomicMetaMarkerWhenAdded)
+      }
+
+      if (options.atomicMetaRecordsForAdded) {
+        const records = options.atomicMetaRecordsForAdded(added)
+        for (const record of records) {
+          const existingMarker = await db.meta.get(record.id)
+          if (!existingMarker) await db.meta.put(record)
+        }
+      }
 
       if (options.protectAddedApplicationEventsFromCloudWatermark) {
         const importedApplicationTimestamps = added

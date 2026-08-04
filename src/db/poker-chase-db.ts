@@ -12,6 +12,44 @@ import { API_EVENT_PRIMARY_KEY } from '../utils/api-event-key'
 const API_EVENT_MIGRATION_TABLE = '_apiEventsSequenceMigration'
 const API_EVENT_MIGRATION_CHUNK_SIZE = 5000
 
+export interface StatHandContributionRecord {
+  generation: number
+  playerId: number
+  handId: number
+  hasKnownBattle: 0 | 1
+  hasTimestamp: 0 | 1
+  sortTimestamp: number
+  battleBucket: string
+  tableBucket: string
+  positionBucket: string
+  version: number
+  approxTimestamp: number | null
+  battleType: number | null
+  tableSizeLayer: 'full' | '4p' | '3p' | 'hu' | null
+  position: number | 'unknown'
+  counters: number[]
+}
+
+export interface StatAggregateBucket {
+  battleBucket: string
+  tableBucket: string
+  positionBucket: string
+  counters: number[]
+  handsN: number
+}
+
+export interface StatPlayerAggregateRecord {
+  generation: number
+  playerId: number
+  version: number
+  ready: boolean
+  /** lazy baselineの分割構築中だけ存在する所有token。ready=trueではMUST存在しない。 */
+  buildId?: string
+  totals: number[]
+  buckets: StatAggregateBucket[]
+  updatedAt: number
+}
+
 /**
  * PokerChase HUD用IndexedDBクラス
  *
@@ -39,6 +77,8 @@ export class PokerChaseDB extends Dexie {
   actions!: Table<Action, number>
   meta!: Table<MetaRecord, string>
   replayDetails!: Table<ReplayDetailRecord, number>
+  statHandContributions!: Table<StatHandContributionRecord, [number, number, number]>
+  statPlayerAggregates!: Table<StatPlayerAggregateRecord, [number, number]>
   constructor(indexedDB: IDBFactory, iDBKeyRange: typeof IDBKeyRange) {
     super('PokerChaseDB', { indexedDB, IDBKeyRange: iDBKeyRange })
     this.version(1).stores({
@@ -158,6 +198,20 @@ export class PokerChaseDB extends Dexie {
       actions: '[handId+index],handId,playerId,phase,actionType,*actionDetails,[playerId+phase],[playerId+actionType]',
       meta: 'id,updatedAt',
       replayDetails: 'handId,fetchedAt'
+    })
+
+    // v8: ハンド単位の統計寄与とプレイヤー単位の累積値を保存する台帳。
+    // versionchange transaction内では既存履歴を再計算せず、空ストアだけを
+    // 追加する。既存データからの構築と公開世代の切替は通常処理側が担う。
+    this.version(8).stores({
+      apiEvents: `${API_EVENT_PRIMARY_KEY},timestamp,ApiTypeId,[timestamp+ApiTypeId],[ApiTypeId+timestamp]`,
+      hands: 'id,*seatUserIds,*winningPlayerIds,approxTimestamp',
+      phases: '[handId+phase],handId,*seatUserIds,phase',
+      actions: '[handId+index],handId,playerId,phase,actionType,*actionDetails,[playerId+phase],[playerId+actionType]',
+      meta: 'id,updatedAt',
+      replayDetails: 'handId,fetchedAt',
+      statHandContributions: '[generation+playerId+handId],generation,[generation+handId],[generation+playerId],[generation+playerId+hasTimestamp+sortTimestamp+handId],[generation+playerId+hasKnownBattle+hasTimestamp+sortTimestamp+handId],[generation+playerId+hasKnownBattle+tableBucket+hasTimestamp+sortTimestamp+handId],[generation+playerId+battleBucket+hasTimestamp+sortTimestamp+handId],[generation+playerId+tableBucket+hasTimestamp+sortTimestamp+handId],[generation+playerId+battleBucket+tableBucket+hasTimestamp+sortTimestamp+handId]',
+      statPlayerAggregates: '[generation+playerId],generation,playerId'
     })
 
     // Backward-compatible default for existing internal/test callers that

@@ -193,7 +193,10 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           // おかないと、以後のエクスポートとFirestore同期にも流れる。
           sanitizeReplayDetailEvents(rawEventsToStore)
           const merge = await mergeApiEvents(db, rawEventsToStore, {
-            protectAddedApplicationEventsFromCloudWatermark: true
+            protectAddedApplicationEventsFromCloudWatermark: true,
+            // raw追加とdirty fenceは同じcommitでなければならない（MUST）。
+            // SWが直後に終了しても、次回起動がLake全体の再生を要求できる。
+            atomicMetaMarkerWhenAdded: service.statsLedger.createCanonicalRebuildFenceRecord('import'),
           })
           successCount += merge.added.length
           duplicateCount += merge.duplicates
@@ -915,7 +918,8 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
    * 単なる古さ（監査finding #7）より明確に悪い結果になっていた。
    * ここでは変換（`convertEventsToEntities`、例外を投げ得る）を先に
    * メモリ上だけで完了させ、実際のテーブル書き込み（クリア＋bulkPut＋
-   * メタ更新）は全て単一の`db.transaction('rw', ...)`にまとめる。
+   * 統計台帳の完全世代切替＋メタ更新）は全て単一の
+   * `db.transaction('rw', ...)`にまとめる。
    * Dexieのトランザクションは、スコープ内のいずれかの操作が例外を
    * 投げると、そのトランザクション開始以降の全書き込み（クリアを含む）
    * をロールバックする ―― これにより「クリアはコミット済みだが保存は
@@ -1049,7 +1053,15 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
       // `apiEvents`もスコープに含めているのは、上のJSDoc「ライブ中に完了した
       // ハンドの保護」の通り、トランザクション内での再確認とIDBの直列化を
       // 成立させるため。
-      const counts = await db.transaction('rw', [db.apiEvents, db.hands, db.phases, db.actions, db.meta], async () => {
+      const counts = await db.transaction('rw', [
+        db.apiEvents,
+        db.hands,
+        db.phases,
+        db.actions,
+        db.meta,
+        db.statHandContributions,
+        db.statPlayerAggregates,
+      ], async () => {
         const currentCount = await db.apiEvents.count()
 
         let finalEntities = entities
@@ -1085,6 +1097,11 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
           await db.actions.bulkPut(finalEntities.actions)
           c.actions = finalEntities.actions.length
         }
+
+        // canonical entity全置換と同じcommitで空の新active headを公開する
+        // （MUST）。全player分の寄与をこの長大transactionで二重生成せず、
+        // 次のHUD読みで表示対象playerだけをcanonicalからlazy baselineする。
+        await service.statsLedger.activateEmptyGenerationAfterCanonicalRebuild()
 
         // Update metadata with rebuild info (同じトランザクション内 -- 派生
         // データとメタデータが不整合な状態でコミットされることがない)

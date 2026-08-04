@@ -7,6 +7,7 @@ import { HandLogStream } from '../streams/hand-log-stream'
 import { RealTimeStatsStream } from '../streams/realtime-stats-stream'
 import { setHandImprovementBatchMode } from '../realtime-stats'
 import { defaultStatDisplayConfigs, mergeStatDisplayConfigs } from '../stats'
+import { StatsLedger, normalizeStatsLatestHands } from '../stats/stat-ledger'
 import {
   POKER_CHASE_SERVICE_EVENT,
   POKER_CHASE_ORIGIN,
@@ -168,7 +169,15 @@ class PokerChaseService {
   // 永続化不要なプロパティ
   battleTypeFilter?: number[] = undefined // undefined = all, array = specific battleTypes
   tableSizeFilter?: TableSizeLayer[] = undefined // undefined = all layers (no filtering), array = selected layers (C案)
-  handLimitFilter?: number = undefined // undefined = all hands, number = limit to recent N hands
+  private _handLimitFilter?: number = undefined
+  /** undefined = all hands, number = limit to recent N hands（UI/台帳契約で500上限） */
+  get handLimitFilter(): number | undefined {
+    return this._handLimitFilter
+  }
+
+  set handLimitFilter(value: number | undefined) {
+    this._handLimitFilter = normalizeStatsLatestHands(value)
+  }
   statDisplayConfigs?: StatDisplayConfig[] = undefined // Custom stat display configuration
   handLogConfig?: HandLogConfig = undefined // Hand log display configuration
   batchMode: boolean = false // Batch mode flag for bulk operations
@@ -410,6 +419,11 @@ class PokerChaseService {
     }
   }
   readonly db
+  /**
+   * 完了ハンド単位の寄与とplayer単位aggregateをIndexedDBに保持する。
+   * Stream間で別instanceを作らず、同じgeneration/baseline in-flightを共有する（MUST）。
+   */
+  readonly statsLedger: StatsLedger
   readonly handAggregateStream: AggregateEventsStream      // Entry point for all events and groups events by hand
   // Persists hand entities to DB; 'data' fires exactly once per genuinely-completed
   // AND successfully-persisted hand (write-entity-stream.ts's `this.push(hand.
@@ -431,6 +445,7 @@ class PokerChaseService {
     this._playerId = playerId
     this._sessionData = new SessionState(this.persistState)
     this.db = db
+    this.statsLedger = new StatsLedger(db)
 
     // Initialize the ready promise
     this.ready = this.restoreState()

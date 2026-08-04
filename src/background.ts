@@ -55,6 +55,18 @@ self.statsRegistry = defaultRegistry
 service.ready.then(async () => {
   console.log('[background] PokerChaseService is ready')
 
+  // cloud downloadのcanonical再構築中にMV3 workerが停止した場合、
+  // 認証済みからどうかやlastSyncTimeに関係なくRaw Lakeから復旧する。
+  // event listenerの登録自体はこのPromiseをawaitしないため、live ingestionは止めない。
+  try {
+    await autoSyncService.recoverInterruptedCanonicalRebuild()
+  } catch (error) {
+    console.error('[background] Interrupted statistics rebuild recovery failed:', error)
+    // dirty fenceが残ったまま新しいcloud rebuildを重ねない。次のSW起動か
+    // 手動再構築で再試行され、既存のready aggregateはそれまで読める。
+    return
+  }
+
   // Initialize auto sync if user is authenticated.
   //
   // codex post-merge audit finding ("cold-start auth-restore race loses the

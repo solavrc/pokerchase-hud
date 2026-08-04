@@ -225,6 +225,11 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           this.events.push(event)
           if (this.events.length > 0 && this.events[0]?.ApiTypeId === ApiType.EVT_DEAL) {
             this.push(this.events)
+          } else {
+            // DEALが無いRESULTSはこのライブ集約では意図的に派生しない。
+            // rawと同時に立てたexact-result fenceを終端化し、次回起動ごとに
+            // 同じ非派生ハンドを全再生し続けないようにする。
+            await this.service.statsLedger.acknowledgePendingHandDerivation(event)
           }
           // ハンド確定後はバッファを必ず空にする。以前はこの明示的なクリアが無く、
           // 直後に本来来るはずのEVT_DEALが（生データの欠落等により）来なかった場合、
