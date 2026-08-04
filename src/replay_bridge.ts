@@ -37,9 +37,14 @@
  *   content script を認証できないため）。
  */
 import { decode, encode } from '@msgpack/msgpack'
-import { POKER_CHASE_ORIGIN } from './constants/runtime'
+import {
+  POKER_CHASE_ORIGIN,
+  REPLAY_PAGE_SESSION_ACTIVITY_EVENT,
+  REPLAY_PAGE_SESSION_ACTIVITY_KEY
+} from './constants/runtime'
 import {
   REPLAY_API_ORIGIN,
+  REPLAY_BRIDGE_CANCEL,
   REPLAY_BRIDGE_CONFIG,
   REPLAY_BRIDGE_FETCH,
   REPLAY_BRIDGE_AUTH_READY,
@@ -369,12 +374,40 @@ const readEnvelopeRejection = (
   return undefined
 }
 
-const fetchReplayDetail = async (handId: number): Promise<ReplayFetchItemResult> => {
+const pageState = window as unknown as Record<PropertyKey, unknown>
+const isPageOutsideSession = (): boolean =>
+  pageState[REPLAY_PAGE_SESSION_ACTIVITY_KEY] === 'inactive'
+
+let activeReplayController: AbortController | undefined
+let currentServiceWorkerEpoch: string | undefined
+let auxiliaryCancelGeneration = 0
+
+/** SWが消えてもpage worldに残るHTTPを、このページ自身で停止する。 */
+const cancelAllReplayRequests = (): void => {
+  activeReplayController?.abort()
+}
+
+/**
+ * 新しいSWの依頼を受けた時点で旧SW世代を失効させる補助ガード。
+ * 公平性の第一防衛線はpage activityであり、epochはSW再起動時の所有権分離と
+ * 孤児HTTPの短縮だけを担う。
+ * 旧世代のHTTPは中断し、遅れて完了しても結果を転送しない（MUST NOT）。
+ */
+const adoptServiceWorkerEpoch = (epoch: string): void => {
+  if (currentServiceWorkerEpoch === epoch) return
+  cancelAllReplayRequests()
+  currentServiceWorkerEpoch = epoch
+}
+
+const fetchReplayDetail = async (
+  handId: number
+): Promise<ReplayFetchItemResult> => {
   if (!OriginalFetch) return { handId, ok: false, error: 'fetch-unavailable', retryable: false }
   const auth = replayAuth
   if (!auth) return { handId, ok: false, error: 'auth-envelope-unavailable', retryable: true }
 
   const controller = new AbortController()
+  activeReplayController = controller
   const timer = setTimeout(() => controller.abort(), REPLAY_FETCH_TIMEOUT_MS)
   try {
     const response = await OriginalFetch(REPLAY_DETAIL_URL, {
@@ -412,6 +445,7 @@ const fetchReplayDetail = async (handId: number): Promise<ReplayFetchItemResult>
     return { handId, ok: false, error: errorMessage(error), retryable: true }
   } finally {
     clearTimeout(timer)
+    if (activeReplayController === controller) activeReplayController = undefined
   }
 }
 
@@ -426,7 +460,37 @@ const fetchReplayDetail = async (handId: number): Promise<ReplayFetchItemResult>
 const delay = (ms: number): Promise<void> =>
   new Promise(resolve => { setTimeout(resolve, ms) })
 
-const handleReplayFetch = async (message: ReplayFetchRequest): Promise<void> => {
+const postEmptyReplayResult = (message: ReplayFetchRequest): void => {
+  window.postMessage({
+    type: REPLAY_BRIDGE_RESULT,
+    epoch: message.epoch,
+    requestId: message.requestId,
+    results: []
+  }, POKER_CHASE_ORIGIN)
+}
+
+const handleReplayFetch = async (
+  message: ReplayFetchRequest,
+  queuedCancelGeneration: number
+): Promise<void> => {
+  const epoch = message.epoch
+  if (currentServiceWorkerEpoch !== epoch) return
+  if (queuedCancelGeneration !== auxiliaryCancelGeneration) {
+    postEmptyReplayResult(message)
+    return
+  }
+
+  // `unknown`もfail-closed。WARがbridge注入前から残した状態を読むので、
+  // content scriptに滞留した旧依頼が対局中にflushされてもHTTPは発行しない。
+  if (!isPageOutsideSession()) {
+    window.postMessage({
+      type: REPLAY_BRIDGE_RESULT,
+      epoch,
+      requestId: message.requestId,
+      results: []
+    }, POKER_CHASE_ORIGIN)
+    return
+  }
   const handIds = message.handIds
     .filter(isPositiveHandId)
     .slice(0, REPLAY_FETCH_BATCH_LIMIT)
@@ -434,6 +498,7 @@ const handleReplayFetch = async (message: ReplayFetchRequest): Promise<void> => 
   // 切り替えさせる。逐次キューで待たされていた時間を期限に含めないため。
   window.postMessage({
     type: REPLAY_BRIDGE_STARTED,
+    epoch,
     requestId: message.requestId
   }, POKER_CHASE_ORIGIN)
 
@@ -441,7 +506,9 @@ const handleReplayFetch = async (message: ReplayFetchRequest): Promise<void> => 
   for (const handId of handIds) {
     // 各件の前に再確認する。無効化は次の1件から効く必要があり、バッチ完了まで
     // 最大99件を撃ち続けてはいけない。
-    if (!replayImportEnabled) break
+    if (!replayImportEnabled || currentServiceWorkerEpoch !== epoch ||
+      queuedCancelGeneration !== auxiliaryCancelGeneration ||
+      !isPageOutsideSession()) break
     // 先頭は待たない。1件だけの取得は従来どおり即座に走る。
     if (results.length > 0) {
       await delay(REPLAY_FETCH_INTERVAL_MS)
@@ -449,20 +516,54 @@ const handleReplayFetch = async (message: ReplayFetchRequest): Promise<void> => 
       // 上のチェックは通過済みなので `fetchReplayDetail` が呼ばれ、
       // 資格情報が消えている分だけ偽の `auth-envelope-unavailable`
       // （retryable）が結果に積まれる。
-      if (!replayImportEnabled) break
+      if (!replayImportEnabled || currentServiceWorkerEpoch !== epoch ||
+        queuedCancelGeneration !== auxiliaryCancelGeneration ||
+        !isPageOutsideSession()) break
     }
-    results.push(await fetchReplayDetail(handId))
+    const result = await fetchReplayDetail(handId)
+    if (currentServiceWorkerEpoch !== epoch ||
+      queuedCancelGeneration !== auxiliaryCancelGeneration ||
+      !isPageOutsideSession()) break
+    results.push(result)
+  }
+  if (currentServiceWorkerEpoch !== epoch) return
+  if (queuedCancelGeneration !== auxiliaryCancelGeneration) {
+    postEmptyReplayResult(message)
+    return
   }
   window.postMessage({
     type: REPLAY_BRIDGE_RESULT,
+    epoch,
     requestId: message.requestId,
-    results
+    // セッション開始がfetch完了と競合してもpage境界を越えてdetailを返さない。
+    results: isPageOutsideSession() ? results : []
   }, POKER_CHASE_ORIGIN)
 }
 
+window.addEventListener(REPLAY_PAGE_SESSION_ACTIVITY_EVENT, () => {
+  // 常時注入WARが同一pageのtrusted WSからactivityを先に更新する。
+  // SWやcontent scriptの補助CANCELへ依存せず、ACTIVE化と同時に自律abortする。
+  if (!isPageOutsideSession()) {
+    // controllerだけでなく既にpage queueへ入った全旧依頼を無効化する。fetchが
+    // AbortSignalを無視して遅延成功しても、次のinactive後に復活させない（MUST）。
+    auxiliaryCancelGeneration += 1
+    cancelAllReplayRequests()
+  }
+})
+
 window.addEventListener('message', (event: MessageEvent<unknown>) => {
   if (event.source !== window || event.origin !== POKER_CHASE_ORIGIN ||
-    typeof event.data !== 'object' || event.data === null || !('type' in event.data)) return
+    typeof event.data !== 'object' || event.data === null) return
+
+  if (!('type' in event.data)) return
+
+  if (event.data.type === REPLAY_BRIDGE_CANCEL) {
+    // SW経由はクロスタブ等の補助線。既にpage queueへ入った全旧依頼を世代で
+    // 無効化し、現在の1本を止める。request mapやepoch照合は持たない。
+    auxiliaryCancelGeneration += 1
+    cancelAllReplayRequests()
+    return
+  }
 
   if (event.data.type === REPLAY_BRIDGE_CONFIG) {
     const message = event.data as ReplayBridgeConfigMessage
@@ -482,8 +583,21 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   }
   if (event.data.type !== REPLAY_BRIDGE_FETCH || !replayImportEnabled) return
   const message = event.data as Partial<ReplayFetchRequest>
-  if (typeof message.requestId !== 'string' || !Array.isArray(message.handIds)) return
+  if (typeof message.epoch !== 'string' || typeof message.requestId !== 'string' ||
+    !Array.isArray(message.handIds)) return
+  // ACTIVE/unknown中の依頼はキューへも入れず即時空応答し、SW側pendingを解放する。
+  // 未送信だった旧epoch依頼が遅れて届いても、現epochの所有権は動かさない。
+  if (!isPageOutsideSession()) {
+    cancelAllReplayRequests()
+    postEmptyReplayResult(message as ReplayFetchRequest)
+    return
+  }
+  adoptServiceWorkerEpoch(message.epoch)
+  const queuedCancelGeneration = auxiliaryCancelGeneration
   replayFetchQueue = replayFetchQueue
-    .then(() => handleReplayFetch(message as ReplayFetchRequest))
+    .then(() => handleReplayFetch(
+      message as ReplayFetchRequest,
+      queuedCancelGeneration
+    ))
     .catch(error => console.warn('[experimental-replay] Replay fetch batch failed:', error))
 })

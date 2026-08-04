@@ -1,4 +1,5 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
+import Dexie from 'dexie'
 import { PokerChaseDB } from '../db/poker-chase-db'
 import { ApiType } from '../types/api'
 import type { ReplayFetchItemResult } from '../replay/protocol'
@@ -26,6 +27,11 @@ import {
   readActivePortPlayerId,
   resolveGeneration
 } from './active-port'
+import {
+  __resetPendingStorageWritesForTests,
+  enqueuePendingStorageWrite,
+  getPendingStorageWriteTail
+} from './pending-storage-writes'
 
 /** テスト用のダミーポート（依頼先の同一性だけを見る）。 */
 const FAKE_PORT = { name: 'test-port' } as unknown as chrome.runtime.Port
@@ -91,6 +97,7 @@ describe('replay import layer', () => {
     await db.replayDetails.clear()
     __resetReplayImportForTests()
     __resetActivePortStateForTests()
+    __resetPendingStorageWritesForTests()
     fetchCalls = []
     keepAliveStarts = 0
     keepAliveStops = 0
@@ -105,6 +112,20 @@ describe('replay import layer', () => {
    * `/replay/detail` を1本も撃たない。**
    */
   describe('不変条件: セッション中は取得しない', () => {
+    test('Service Worker再起動直後のtoken未生成ではドレインを発火しない', async () => {
+      const deps = depsOf()
+      await enqueueReplayHandId(deps, 1000, NOW)
+
+      // active-portのモジュール状態はbeforeEachで初期化済み。接続通知やauth-ready
+      // がdrainを起動しても、最初のdedup済みgame eventまではunknownで止まる。
+      await drainReplayImportQueue(deps, 'port-connect')
+
+      expect(fetchCalls).toEqual([])
+      expect(keepAliveStarts).toBe(0)
+      expect(await db.replayDetails.count()).toBe(0)
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1000])
+    })
+
     test('セッション開始→ハンド→キューは伸びるが取得は0本、セッション終了で初めて走る', async () => {
       const deps = depsOf()
 
@@ -179,11 +200,128 @@ describe('replay import layer', () => {
       await drainReplayImportQueue(deps)
       // 1件目の応答中にセッションが始まるので、2件目は撃たれない
       expect(fetchCalls).toEqual([[1200]])
+      // 応答と201/303が競合しても90001へ保存せず、両方を持ち越す。
+      expect(await db.replayDetails.count()).toBe(0)
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1200, 1201])
 
       // 2周目も不変条件で止まる
       await enqueueReplayHandId(deps, 1202, NOW)
       await drainReplayImportQueue(deps)
       expect(fetchCalls).toEqual([[1200]])
+    })
+
+    test('page自律abortの空応答も現在activityで止め、次の依頼と書き込みへ進まない', async () => {
+      const deps = depsOf()
+      markSessionActive()
+      await enqueueReplayHandId(deps, 1204, NOW)
+      await enqueueReplayHandId(deps, 1205, NOW)
+      markSessionInactive()
+
+      fetchImpl = async () => {
+        // pageが201を観測してHTTPをabortし、空RESULTを返す競合。
+        markSessionActive()
+        return []
+      }
+      await drainReplayImportQueue(deps)
+
+      expect(fetchCalls).toEqual([[1204]])
+      expect(await db.replayDetails.count()).toBe(0)
+      expect(await db.apiEvents.where('ApiTypeId').equals(ApiType.REPLAY_HAND_DETAIL).count())
+        .toBe(0)
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId))
+        .toEqual([1204, 1205])
+    })
+
+    test('共通storage FIFO待ち中にセッションが始まったら保存せず持ち越す', async () => {
+      let releaseBlocker!: () => void
+      const blocker = enqueuePendingStorageWrite(() => new Promise<void>(resolve => {
+        releaseBlocker = resolve
+      }))
+      const blockerTail = getPendingStorageWriteTail()
+      const deps = depsOf()
+      markSessionActive()
+      await enqueueReplayHandId(deps, 1203, NOW)
+      markSessionInactive()
+
+      const drain = drainReplayImportQueue(deps)
+      // 成功応答がguardedWriteとしてblockerの後ろへ積まれるまで待つ。
+      for (let i = 0; i < 50 && getPendingStorageWriteTail() === blockerTail; i++) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+      expect(getPendingStorageWriteTail()).not.toBe(blockerTail)
+
+      // 実書き込みはまだ始まっていない。この間にdedup済み開始イベントが
+      // ACTIVEへ遷移させる競合を再現する。
+      markSessionActive()
+      releaseBlocker()
+      await blocker
+      await drain
+
+      expect(fetchCalls).toEqual([[1203]])
+      expect(await db.replayDetails.get(1203)).toBeUndefined()
+      expect(await db.apiEvents.where('ApiTypeId').equals(ApiType.REPLAY_HAND_DETAIL).count())
+        .toBe(0)
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1203])
+    })
+
+    test('保存transactionのwrite lock待ち中にセッションが始まっても90001を書かない', async () => {
+      const deps = depsOf()
+      markSessionActive()
+      await enqueueReplayHandId(deps, 1206, NOW)
+      markSessionInactive()
+
+      let resolveFetch!: () => void
+      fetchImpl = handIds => new Promise(resolve => {
+        resolveFetch = () => resolve(handIds.map(handId => ({
+          handId,
+          ok: true,
+          detail: detailOf(handId)
+        })))
+      })
+      const drain = drainReplayImportQueue(deps)
+      for (let i = 0; i < 50 && !resolveFetch; i++) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+      expect(resolveFetch).toBeDefined()
+
+      let releaseBlocker!: () => void
+      const blockerGate = new Promise<void>(resolve => { releaseBlocker = resolve })
+      let notifyBlockerStarted!: () => void
+      const blockerStarted = new Promise<void>(resolve => { notifyBlockerStarted = resolve })
+      const blocker = db.transaction(
+        'rw',
+        db.apiEvents,
+        db.meta,
+        db.replayDetails,
+        async () => {
+          // 実際のrw transactionを先行させ、対象3 tableのwrite lockを保持する。
+          await db.meta.put({ id: 'test-replay-write-lock', value: true, updatedAt: NOW })
+          notifyBlockerStarted()
+          await Dexie.waitFor(blockerGate)
+        }
+      )
+      await blockerStarted
+
+      const getSpy = jest.spyOn(db.replayDetails, 'get')
+      const storeGetStarted = (): boolean =>
+        (getSpy.mock.calls as unknown[][]).some(([handId]) => handId === 1206)
+      resolveFetch()
+      for (let i = 0; i < 50 && !storeGetStarted(); i++) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+      expect(storeGetStarted()).toBe(true)
+      // 外側のpost-fetch gateとtransaction callback先頭のgateは既にinactiveで
+      // 通過済み。最初のreadが実lockで待つ間にactivityをACTIVEへ進める。
+      markSessionActive()
+      releaseBlocker()
+      await blocker
+      await drain
+
+      expect(fetchCalls).toEqual([[1206]])
+      expect(await db.replayDetails.get(1206)).toBeUndefined()
+      expect(await db.apiEvents.where('ApiTypeId').equals(ApiType.REPLAY_HAND_DETAIL).count())
+        .toBe(0)
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1206])
     })
 
     // Codexレビュー指摘: バッチでまとめて渡すと、ページ側が撃ち切るまでの
@@ -204,8 +342,8 @@ describe('replay import layer', () => {
       await drainReplayImportQueue(deps)
 
       expect(fetchCalls).toEqual([[1210], [1211]])
-      // 撃たなかった2件はキューに残る
-      expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1212, 1213])
+      // 201/303と応答が競合した2件目も保存・決着せず、未発行分と共に残る。
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1211, 1212, 1213])
     })
 
     test('取得の途中で長時間操作が始まったら、その時点で撃つのをやめる', async () => {
@@ -252,6 +390,58 @@ describe('replay import layer', () => {
 
       // 予約された2周目が、1周目の後に積まれたHandIdを拾う
       expect(fetchCalls).toEqual([[1240], [1241]])
+      expect(await readReplayImportQueue(db)).toEqual([])
+    })
+
+    test('rerun中の第3トリガーも直列化し、古いownerがsingle-flightを解除しない', async () => {
+      const deps = depsOf()
+      markSessionInactive()
+      await enqueueReplayHandId(deps, 1240, NOW)
+
+      let releaseFirst!: () => void
+      let releaseSecond!: () => void
+      let announceFirst!: () => void
+      let announceSecond!: () => void
+      const firstGate = new Promise<void>(resolve => { releaseFirst = resolve })
+      const secondGate = new Promise<void>(resolve => { releaseSecond = resolve })
+      const firstStarted = new Promise<void>(resolve => { announceFirst = resolve })
+      const secondStarted = new Promise<void>(resolve => { announceSecond = resolve })
+      let activeFetches = 0
+      let maxActiveFetches = 0
+      fetchImpl = async handIds => {
+        activeFetches += 1
+        maxActiveFetches = Math.max(maxActiveFetches, activeFetches)
+        try {
+          if (handIds[0] === 1240) {
+            announceFirst()
+            await firstGate
+          } else if (handIds[0] === 1241) {
+            announceSecond()
+            await secondGate
+          }
+          return handIds.map(handId => ({ handId, ok: true, detail: detailOf(handId) }))
+        } finally {
+          activeFetches -= 1
+        }
+      }
+
+      const first = drainReplayImportQueue(deps)
+      await firstStarted
+      await enqueueReplayHandId(deps, 1241, NOW)
+      const second = drainReplayImportQueue(deps)
+      releaseFirst()
+      await secondStarted
+
+      await enqueueReplayHandId(deps, 1242, NOW)
+      const third = drainReplayImportQueue(deps)
+      await Promise.resolve()
+      expect(maxActiveFetches).toBe(1)
+
+      releaseSecond()
+      await Promise.all([first, second, third])
+
+      expect(maxActiveFetches).toBe(1)
+      expect(fetchCalls).toEqual([[1240], [1241], [1242]])
       expect(await readReplayImportQueue(db)).toEqual([])
     })
 

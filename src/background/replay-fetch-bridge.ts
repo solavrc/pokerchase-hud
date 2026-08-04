@@ -23,6 +23,7 @@ import { connectedPorts } from './ports'
 import { getActivePort, isActivePortOutsideSession } from './active-port'
 import {
   REPLAY_FETCH_BATCH_LIMIT,
+  REPLAY_PORT_CANCEL,
   REPLAY_PORT_FETCH,
   REPLAY_PORT_RESULT,
   REPLAY_PORT_STARTED,
@@ -35,6 +36,7 @@ import {
 
 interface PendingRequest {
   port: chrome.runtime.Port
+  epoch: string
   handIdCount: number
   resolve: (results: ReplayFetchItemResult[]) => void
   timer: ReturnType<typeof setTimeout>
@@ -43,6 +45,9 @@ interface PendingRequest {
 }
 
 const pending = new Map<string, PendingRequest>()
+
+/** MV3 Service Workerの起動世代。再起動すると必ず変わる。 */
+const serviceWorkerEpoch = crypto.randomUUID()
 
 /** ページ側のキューに合わせて依頼を直列化する。 */
 let dispatchQueue: Promise<void> = Promise.resolve()
@@ -57,10 +62,9 @@ const settle = (requestId: string, results: ReplayFetchItemResult[]): void => {
 
 /**
  * ポートに届いたメッセージがこのモジュール宛なら処理して`true`を返す。
- * `event-ingestion.ts` のポート受信から、通常のイベント処理より前に呼ぶ。
- *
- * 取り込みキューには載せない: 保存を行わないので耐久性バリアの対象になる
- * 副作用が無く、載せるとライブイベントの処理を待たせるだけになる。
+ * `event-ingestion.ts`の共通取り込みキュー内で呼ぶ。RESULTのsettleは、それを
+ * 待つ取り込み処理を90001の書き込みへ進めうるため、先行する201/303/308の
+ * activity更新より前へ迂回させてはならない（MUST NOT）。
  */
 export const handleReplayPortMessage = (
   message: unknown,
@@ -75,9 +79,10 @@ export const handleReplayPortMessage = (
   // 所要が残らない。
   if ((message as { type?: unknown }).type === REPLAY_PORT_STARTED) {
     const started = message as Partial<ReplayFetchStarted>
-    if (typeof started.requestId !== 'string') return true
+    if (typeof started.requestId !== 'string' || typeof started.epoch !== 'string') return true
     const request = pending.get(started.requestId)
-    if (!request || request.port !== port || request.started) return true
+    if (!request || request.port !== port || request.epoch !== started.epoch ||
+      started.epoch !== serviceWorkerEpoch || request.started) return true
     request.started = true
     clearTimeout(request.timer)
     request.timer = setTimeout(
@@ -90,10 +95,12 @@ export const handleReplayPortMessage = (
   if ((message as { type?: unknown }).type !== REPLAY_PORT_RESULT) return false
 
   const result = message as Partial<ReplayFetchResult>
-  if (typeof result.requestId !== 'string' || !Array.isArray(result.results)) return true
+  if (typeof result.requestId !== 'string' || typeof result.epoch !== 'string' ||
+    !Array.isArray(result.results)) return true
   const request = pending.get(result.requestId)
   // 依頼を出したポートからの応答だけを受け取る（別タブの応答で解決しない）
-  if (!request || request.port !== port) return true
+  if (!request || request.port !== port || request.epoch !== result.epoch ||
+    result.epoch !== serviceWorkerEpoch) return true
   settle(result.requestId, result.results as ReplayFetchItemResult[])
   return true
 }
@@ -103,6 +110,26 @@ export const releaseReplayRequestsForPort = (port: chrome.runtime.Port): void =>
   for (const [requestId, request] of pending) {
     if (request.port === port) settle(requestId, [])
   }
+}
+
+/**
+ * 保存・dedup後に新規と確定したセッション開始、またはraw保存失敗時の
+ * fail-closed開始を全game pageへ知らせる補助線。
+ * 同一pageの公平性はWARのactivity gateが自律的に守る。この通知はクロスタブや
+ * SW再起動境界の孤児HTTPを短縮し、content側に未送信の依頼も破棄するだけで、
+ * 保存可否の根拠にはしない。
+ */
+export const cancelReplayRequestsForSessionStart = (): number => {
+  for (const port of connectedPorts) {
+    try {
+      port.postMessage({ type: REPLAY_PORT_CANCEL })
+    } catch {
+      // 切断済みportは通常のdisconnect処理が回収する。
+    }
+  }
+  const cancelled = pending.size
+  for (const requestId of [...pending.keys()]) settle(requestId, [])
+  return cancelled
 }
 
 export type ReplayFetchOutcome =
@@ -169,9 +196,21 @@ export const requestReplayDetails = async (
         () => settle(requestId, []),
         replayFetchBatchTimeoutMs(REPLAY_FETCH_BATCH_LIMIT)
       )
-      pending.set(requestId, { port, handIdCount: handIds.length, resolve, timer, started: false })
+      pending.set(requestId, {
+        port,
+        epoch: serviceWorkerEpoch,
+        handIdCount: handIds.length,
+        resolve,
+        timer,
+        started: false
+      })
       try {
-        port.postMessage({ type: REPLAY_PORT_FETCH, requestId, handIds })
+        port.postMessage({
+          type: REPLAY_PORT_FETCH,
+          epoch: serviceWorkerEpoch,
+          requestId,
+          handIds
+        })
       } catch (error) {
         settle(requestId, [])
       }

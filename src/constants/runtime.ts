@@ -13,6 +13,17 @@ export const POKER_CHASE_ORIGIN = new URL(content_scripts[0]!.matches[0]!).origi
 export const POKER_CHASE_INVALID_API_EVENT = 'PokerChaseInvalidApiEvent'
 export const STORAGE_KEY = 'pokerChaseServiceState'
 /**
+ * 常時注入されるWebSocket hookと、後から注入されるreplay bridgeがpage worldで
+ * 共有するセッション状態。別々のbundleなので、module変数ではなく同じrealmの
+ * `window`上に置くためのキーを`Symbol.for`で揃える。
+ */
+export const REPLAY_PAGE_SESSION_ACTIVITY_KEY =
+  Symbol.for('pokerchase-hud:replay-session-activity')
+export type ReplayPageSessionActivity = 'unknown' | 'active' | 'inactive'
+/** WARが同一pageのactivity変化をreplay bridgeへ通知する。 */
+export const REPLAY_PAGE_SESSION_ACTIVITY_EVENT =
+  'PokerChaseReplaySessionActivityEvent'
+/**
  * content_script.ts が生の EVT_SESSION_RESULTS（309）をページの window.postMessage
  * から直接観測した際に dispatch する window CustomEvent。App.tsx はこれを購読し、
  * 現在ハンド専用のリアルタイム統計だけをクリアする。集計HUDとドリルダウンは

@@ -15,6 +15,14 @@ import { registerEventIngestion } from './event-ingestion'
 import { connectedPorts } from './ports'
 import * as updateManager from './update-manager'
 import * as apiEventKey from '../utils/api-event-key'
+import {
+  REPLAY_PORT_FETCH,
+  REPLAY_PORT_RESULT
+} from '../replay/protocol'
+import {
+  __resetReplayFetchBridgeForTests,
+  requestReplayDetails
+} from './replay-fetch-bridge'
 
 describe('registerEventIngestion (update-manager triggers)', () => {
   let db: PokerChaseDB
@@ -27,6 +35,7 @@ describe('registerEventIngestion (update-manager triggers)', () => {
   let recheckPendingUpdateSpy: jest.SpyInstance
 
   beforeEach(async () => {
+    __resetReplayFetchBridgeForTests()
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
     service = trackServiceForTeardown(new PokerChaseService({ db }))
@@ -430,5 +439,61 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(recheckPendingUpdateSpy).toHaveBeenCalledTimes(1)
+  })
+
+  test('replay abort応答は先行201のactivity更新後までrequestを解放しない', async () => {
+    await onMessageHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 12_000 })
+    mockPort.postMessage.mockClear()
+
+    const request = requestReplayDetails([1])
+    let requestSettled = false
+    void request.then(() => { requestSettled = true })
+    await Promise.resolve()
+    expect(mockPort.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: REPLAY_PORT_FETCH
+    }))
+    const { epoch, requestId } = mockPort.postMessage.mock.calls[0][0]
+
+    const actualMerge = apiEventKey.mergeApiEvents
+    let releaseStartMerge!: () => void
+    jest.spyOn(apiEventKey, 'mergeApiEvents').mockImplementation(
+      (async (targetDb: PokerChaseDB, events: apiEventKey.RawApiEvent[]) => {
+        if (events[0]?.ApiTypeId !== ApiType.EVT_ENTRY_QUEUED) {
+          return actualMerge(targetDb, events)
+        }
+        return new Promise(resolve => {
+          releaseStartMerge = () => resolve({ added: events, duplicates: 0 })
+        })
+      }) as any
+    )
+
+    const startTask = onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 12_100,
+      Code: 0,
+      BattleType: 0,
+      Id: 'stage-serialize-replay-result',
+      IsRetire: false
+    })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const abortResultTask = onMessageHandler({
+      type: REPLAY_PORT_RESULT,
+      epoch,
+      requestId,
+      results: []
+    })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // RESULTは保存しないが、そのsettleは取り込みを保存へ再開させる能力がある。
+    // 201のRaw Lake write/activityより前にキューを迂回してはならない。
+    expect(requestSettled).toBe(false)
+    expect(markSessionActiveSpy).not.toHaveBeenCalled()
+
+    releaseStartMerge()
+    await startTask
+    await abortResultTask
+    expect(await request).toEqual({ success: true, results: [] })
+    expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
+    expect(updateManager.isSafeToUpdate()).toBe(false)
   })
 })

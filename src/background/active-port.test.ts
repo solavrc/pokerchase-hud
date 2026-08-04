@@ -67,8 +67,8 @@ describe('active-port token', () => {
   })
 
   test('fairness gateはACTIVE sessionだけを見て、unknown/activeを止める', () => {
-    // tokenが無ければsessionも無い。送信先解決は別に失敗する。
-    expect(isActivePortOutsideSession()).toBe(true)
+    // SW再起動直後のtoken未生成はunknownとして止める。
+    expect(isActivePortOutsideSession()).toBe(false)
     expect(findActivePortForPlayer(111)).toBeUndefined()
 
     claimActivePort(tabA, 1_000)
@@ -102,7 +102,7 @@ describe('active-port token', () => {
 
     expect(releaseActivePort(tabB, 21_000)).toBe('reconnect-pending')
     expect(getActivePort()).toBeUndefined()
-    expect(isActivePortOutsideSession()).toBe(true)
+    expect(isActivePortOutsideSession()).toBe(false)
   })
 
   test('同一tab/documentのRuntimePortManager再接続はactivityとaccountを引き継ぐ', () => {

@@ -6,7 +6,10 @@
 import { decode } from '@msgpack/msgpack'
 import {
   POKER_CHASE_INVALID_API_EVENT,
-  POKER_CHASE_ORIGIN
+  POKER_CHASE_ORIGIN,
+  REPLAY_PAGE_SESSION_ACTIVITY_EVENT,
+  REPLAY_PAGE_SESSION_ACTIVITY_KEY,
+  type ReplayPageSessionActivity
 } from './constants/runtime'
 /** !!! BACKGROUND、CONTENT_SCRIPTSからインポートしないこと !!! */
 /**
@@ -20,6 +23,49 @@ import {
 const OriginalWebSocket = window.WebSocket
 const MAX_PENDING_UNCLASSIFIED_PAYLOADS = 5
 const POKER_CHASE_API_DOMAIN = 'api-poker-chase.com'
+const pageState = window as unknown as Record<PropertyKey, unknown>
+
+const isReplayPageSessionActivity = (
+  value: unknown
+): value is ReplayPageSessionActivity =>
+  value === 'unknown' || value === 'active' || value === 'inactive'
+
+if (!isReplayPageSessionActivity(pageState[REPLAY_PAGE_SESSION_ACTIVITY_KEY])) {
+  pageState[REPLAY_PAGE_SESSION_ACTIVITY_KEY] = 'unknown'
+}
+
+const setReplayPageSessionActivity = (
+  activity: ReplayPageSessionActivity
+): void => {
+  pageState[REPLAY_PAGE_SESSION_ACTIVITY_KEY] = activity
+  window.dispatchEvent(new CustomEvent(REPLAY_PAGE_SESSION_ACTIVITY_EVENT, {
+    detail: activity
+  }))
+}
+
+/**
+ * trusted WebSocketを直接見てpage側の第一防衛線を進める。replay bridgeが後から
+ * 注入されても、それ以前に始まったセッションを`unknown`/`inactive`と誤認しない。
+ */
+const updateReplayPageSessionActivity = (
+  payload: Record<string, unknown>
+): void => {
+  const apiTypeId = payload.ApiTypeId
+  if (
+    (apiTypeId === 201 &&
+      (typeof payload.Code !== 'number' || payload.Code === 0)) ||
+    (apiTypeId === 303 && payload.Player != null) ||
+    apiTypeId === 308
+  ) {
+    setReplayPageSessionActivity('active')
+    return
+  }
+  // 203は201後に着席せず参加取消した場合の終了境界。これを戻さないと、
+  // 309が来ない経路でpage gateが永久にactiveへ張り付く。
+  if (apiTypeId === 203 || apiTypeId === 309) {
+    setReplayPageSessionActivity('inactive')
+  }
+}
 
 interface PendingPayload {
   payload: Record<string, unknown>
@@ -250,6 +296,7 @@ function createWebSocket(...args: ConstructorParameters<typeof WebSocket>): WebS
     hasSafeApiTypeId
   }: PendingPayload): void => {
     if (hasSafeApiTypeId) {
+      updateReplayPageSessionActivity(payload)
       window.postMessage(payload, POKER_CHASE_ORIGIN)
     } else {
       forwardInvalidPayload(payload)

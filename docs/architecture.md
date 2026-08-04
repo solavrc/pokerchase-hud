@@ -29,7 +29,16 @@ Zod検証より前に現在ハンドstream/cacheを消すため、破損payload�
 SPR・ポットオッズが後のfilter再計算で復活しない。集計lineup自体は保持する。
 
 replayのsession判定とaccount attributionにもACTIVE portの状態だけを使い、relicの状態は
-参照しない。10秒未満で別tabからeventが届いた場合はaxiom違反の検出として
+参照しない。取得を許すのは現在世代が明示的にsession外と確定した場合だけで、Service
+Worker再起動直後のtoken未生成はunknownとして遮断する。trusted WebSocketの生201/303/308は
+進行中の取得を同一pageの常時注入hookが直接見て自律中断する。クロスタブと
+SW再起動境界だけは、保存・dedup後の新規開始（raw保存失敗時はfail-closed開始）を見たSWが
+request非依存の一括cancelを全game portへ送る補助線を残す。content scriptはSW port切断時にも
+そのSWが所有していた未送信・queued・実行中依頼を一括失効させる。
+replay RESULTは生イベントと同じ取り込みキューへ通し、
+Dexie transaction内の最初のread（競合write lock待ちを含む）が終わった後、最初の
+write直前にも現在activityを再評価する。
+10秒未満で別tabからeventが届いた場合はaxiom違反の検出として
 `console.warn`を記録する。同一tabのF5 reload候補は警告対象外とし、複数sessionを扱う分岐は
 追加しない。
 
@@ -255,6 +264,18 @@ await db.actions.where('[playerId+phase]')
 `experimentalReplayImportEnabled` を `chrome.storage.sync` で `true` にした
 開発ビルドだけが有効化する、既定OFFの検証機能。目的は「`/replay/*` から
 何がどこまで取得できるか」を、スキーマ変更を伴わずに実データで確かめること。
+
+Service Workerのポート受信遅延・取り込みキュー深さ・リプレイドレイン判定を
+調べる診断ログは、別の同期キー `swIngestionDiagnosticsEnabled` で切り替える。
+このキーはリプレイ取得を有効化せず、`experimentalReplayImportEnabled` も診断を
+有効化しない。リプレイ取得を停止したまま計測する場合はService Workerの
+DevToolsコンソールで次を実行する。
+
+```javascript
+await chrome.storage.sync.set({ swIngestionDiagnosticsEnabled: true })
+```
+
+無効化は同じキーを `false` に戻す。ログはpayload、HandId、playerIdを含まない。
 
 **リプレイ本体（`/replay/detail`）は保存しない。** セッション境界を見て自動で
 取りに行く取り込み層は別途。ただし後述の台帳監査だけは、その結果を `meta`

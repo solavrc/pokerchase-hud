@@ -11,8 +11,8 @@
  *
  * この不変条件はこのファイルの1箇所（`canFetchNow`）に集約し、テストで固定する。
  * 判定するのはACTIVEポートの三値（unknown/active/inactive）だけで、
- * **`unknown` は取得不可**として扱う。ACTIVEポートが無い場合はsessionも無いので
- * fairness gate自体は通るが、依頼先portが無ければ実際のHTTPは発行されない。
+ * **`unknown` は取得不可**として扱う。Service Worker再起動直後のtoken未生成も
+ * unknownであり、dedup済みゲームイベントがactivityを確立するまで取得しない。
  *
  * ## キューの永続化
  *
@@ -54,6 +54,7 @@ import {
   findActivePortForPlayer,
   isActivePortOutsideSession
 } from './active-port'
+import { logReplayDiagnostic } from './replay-diagnostics'
 
 export const REPLAY_IMPORT_QUEUE_META_ID = 'replayImportQueue'
 export const REPLAY_IMPORT_STATUS_META_ID = 'replayImportStatus'
@@ -271,18 +272,27 @@ const appendToQueue = (
  * いる場合にだけ取得を許す。`unknown`（Service Worker再起動直後）は不可。
  */
 const canFetchNow = (deps: ReplayImportDeps): boolean => {
-  // 唯一のACTIVEポートだけを判定する（MUST）。unknownは対局中扱い、token無しは
-  // session無しとして許可する。実際の送信先は別途ACTIVE accountへ限定される。
+  // 唯一のACTIVEポートだけを判定する（MUST）。unknownとtoken未生成は対局中
+  // 扱いにし、実際の送信先もACTIVE accountへ限定する。
   return (deps.isFetchAllowed ?? isActivePortOutsideSession)()
 }
+
+export type ReplayDrainReason =
+  | 'session-end'
+  | 'entry-cancelled'
+  | 'port-connect'
+  | 'auth-ready'
+  | 'operation-idle'
+  | 'direct'
 
 /** 合成イベント1件を Lake と `replayDetails` へ入れる。 */
 const storeReplayDetail = async (
   db: PokerChaseDB,
   handId: number,
   detail: unknown,
-  now: number
-): Promise<boolean> => {
+  now: number,
+  canWrite: () => boolean
+): Promise<boolean | undefined> => {
   // **保存の直前にもサニタイズする**（MUST）。`REPLAY_BRIDGE_RESULT` は
   // 同一オリジンのページから偽装でき、進行中の `requestId` もページから
   // 観測できる。ページ側ブリッジの `sanitizeReplayDetail` だけに頼ると、
@@ -292,9 +302,6 @@ const storeReplayDetail = async (
     { param?: unknown, appVer?: unknown, dataVer?: unknown, masterVer?: unknown } | null
   const param = record && typeof record === 'object' ? record.param : undefined
   if (typeof param !== 'object' || param === null || Array.isArray(param)) return false
-
-  // 先勝ち。payloadはサーバ側で不変なので、既に在るなら取り直す意味が無い。
-  if (await db.replayDetails.get(handId)) return false
 
   const clientMeta = {
     ...typeof record?.appVer === 'string' ? { appVer: record.appVer } : {},
@@ -318,7 +325,18 @@ const storeReplayDetail = async (
   // 取得時刻の違う別の90001をLakeへ足してしまう ―― 障害時ほど重複が増える。
   // `mergeApiEvents` は自身のトランザクションを開くが、Dexieは同じテーブルを
   // 含む外側のトランザクションがあればそこに参加する。
+  let wrote: boolean | undefined
   await db.transaction('rw', db.apiEvents, db.meta, db.replayDetails, async () => {
+    // Dexieは競合write lockの解放前にもscope callbackを開始し得る。先頭判定は
+    // 早期終了用であり、これだけを実書き込み境界にしてはならない。
+    if (!canWrite()) return
+    // 先勝ちも同じtransaction内で確定する。このgetが競合lock待ちを含むため、
+    // await後かつ最初のwrite直前にactivityをもう一度読む（MUST）。
+    if (await db.replayDetails.get(handId)) {
+      wrote = false
+      return
+    }
+    if (!canWrite()) return
     await mergeApiEvents(db, [syntheticEvent])
     await db.replayDetails.put({
       handId,
@@ -326,8 +344,9 @@ const storeReplayDetail = async (
       fetchedAt: now,
       ...Object.keys(clientMeta).length > 0 ? { clientMeta } : {}
     })
+    wrote = true
   })
-  return true
+  return wrote
 }
 
 /**
@@ -403,7 +422,11 @@ export const projectReplayDetailEvents = async (
  * - 2301（閲覧期限切れ）/ 2302（データ無し）: 再試行しない。数えて落とす
  * - 認証エンベロープ不在などの再試行可能: キューへ残し、次の機会に回す
  */
-export const drainReplayImportQueue = async (deps: ReplayImportDeps): Promise<void> => {
+export const drainReplayImportQueue = async (
+  deps: ReplayImportDeps,
+  reason: ReplayDrainReason = 'direct'
+): Promise<void> => {
+  logReplayDiagnostic('drain-trigger', { reason })
   // 実行中のドレインに**相乗りさせない**（MUST）。相乗りさせると、既に
   // 中断へ向かっているドレインをそのまま返すだけになり、その契機
   // （操作の終了・ポート接続・セッション終了）が消費されて再開しない。
@@ -412,20 +435,29 @@ export const drainReplayImportQueue = async (deps: ReplayImportDeps): Promise<vo
   if (drainInFlight) {
     if (!drainRerunRequested) {
       drainRerunRequested = true
-      drainInFlight = drainInFlight
+      const current = drainInFlight
+      const rerun = current
         .catch(() => undefined)
         .then(() => {
           drainRerunRequested = false
-          return withKeepAlive(deps, () => drainOnce(deps))
+          return withKeepAlive(deps, reason)
         })
-        .finally(() => { drainInFlight = undefined })
+      let owner: Promise<void>
+      owner = rerun.finally(() => {
+        // 先行runのfinallyが、既に後続へ移った所有権を消してはならない（MUST NOT）。
+        if (drainInFlight === owner) drainInFlight = undefined
+      })
+      drainInFlight = owner
     }
     return drainInFlight
   }
-  const run = withKeepAlive(deps, () => drainOnce(deps))
-    .finally(() => { drainInFlight = undefined })
-  drainInFlight = run
-  return run
+  const run = withKeepAlive(deps, reason)
+  let owner: Promise<void>
+  owner = run.finally(() => {
+    if (drainInFlight === owner) drainInFlight = undefined
+  })
+  drainInFlight = owner
+  return owner
 }
 
 /**
@@ -442,30 +474,45 @@ export const drainReplayImportQueue = async (deps: ReplayImportDeps): Promise<vo
  */
 const withKeepAlive = async (
   deps: ReplayImportDeps,
-  run: () => Promise<void>
+  reason: ReplayDrainReason
 ): Promise<void> => {
   // フラグOFFのユーザーでは keepalive すら起こさない。
   if (!await deps.isEnabled()) return
+  // セッション開始イベントがRaw Lakeの書き込み待ちでも、古いinactiveを読んで
+  // keepaliveやHTTPを始めないよう、実処理の前に取り込みtailを待つ（MUST）。
+  await (deps.waitForIngestion ?? awaitIngestionDrain)().catch(() => undefined)
+  if (!canFetchNow(deps)) {
+    logReplayDiagnostic('drain-blocked', { reason, gate: 'session-unknown-or-active' })
+    return
+  }
+  if (deps.isBusy?.()) {
+    logReplayDiagnostic('drain-blocked', { reason, gate: 'operation-busy' })
+    return
+  }
   const stop = deps.startKeepAlive
     ? await deps.startKeepAlive()
     : await startKeepAlive()
   try {
-    await run()
+    await drainOnce(deps, reason)
   } finally {
     stop()
   }
 }
 
-const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
+const drainOnce = async (
+  deps: ReplayImportDeps,
+  reason: ReplayDrainReason
+): Promise<void> => {
   if (!await deps.isEnabled()) return
-  // 取り込みキューの決着を待つ（MUST）。セッション開始イベント（201/303/308）が
-  // まだRaw Lakeの書き込み待ちの間にセッション状態を読むと、古い `inactive` の
-  // まま撃ってしまう。ここは取り込みキューの外から呼ばれる（呼び出し元は
-  // いずれもfire-and-forget）ので、待っても詰まらない。
-  await (deps.waitForIngestion ?? awaitIngestionDrain)().catch(() => undefined)
-  // 不変条件の判定点。ここを通らない限り1本も飛ばない。
-  if (!canFetchNow(deps)) return
-  if (deps.isBusy?.()) return
+  // `isEnabled`のawait中にも201/303が処理されうるため、HTTP前に再確認する。
+  if (!canFetchNow(deps)) {
+    logReplayDiagnostic('drain-blocked', { reason, gate: 'session-unknown-or-active' })
+    return
+  }
+  if (deps.isBusy?.()) {
+    logReplayDiagnostic('drain-blocked', { reason, gate: 'operation-busy' })
+    return
+  }
 
   // 積む側（`EVT_HAND_RESULTS`）の書き込みは取り込みキューから切り離された
   // fire-and-forget なので、同じイベント列の直後に来る309でここへ入ると、
@@ -476,6 +523,7 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
 
   const now = deps.now()
   const queued = await readQueue(deps.db)
+  logReplayDiagnostic('drain-ready', { reason, pendingHands: queued.length })
   if (queued.length === 0) return
 
   /**
@@ -561,6 +609,12 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
 
     issuedAny = true
     const [result] = await (deps.fetchDetails ?? defaultFetchDetails)([entry.handId], port)
+    // page側は201/303/308を自律観測してabortする。空応答・成功応答のどちらも、
+    // event-ingestionの共通キューを出た現在activityで必ず止める（MUST）。
+    if (!canFetchNow(deps) || !await deps.isEnabled() || !canFetchNow(deps)) {
+      aborted = true
+      break
+    }
     // 応答待ちの間に全データ削除やインポートが操作スロットを取ることがある。
     // `deleteAllData()` はこの取得を待たずDBを消すので、遅れて返った応答を
     // 素通しで保存すると、消えたDBを開き直して書きに行く。**保存の直前にも
@@ -572,10 +626,24 @@ const drainOnce = async (deps: ReplayImportDeps): Promise<void> => {
     // 応答が返らなかった（ポート切断・期限切れなど）ものは持ち越す。
     if (!result || result.handId !== entry.handId) continue
     if (result.ok) {
-      const wrote = await guardedWrite(deps, () =>
-        storeReplayDetail(deps.db, entry.handId, result.detail, deps.now()))
+      const wrote = await guardedWrite(deps, async () => {
+        // 共通storage FIFOの先行書き込み待ちもawait境界である。FIFOへ積む前の
+        // 判定だけでは、待っている間に201/303/308がactivityをACTIVEへ変えた後も
+        // 古いinactive判定で90001を書けてしまう。実書き込み直前にフラグと
+        // fairness gateを取り直し、非同期フラグ読取後にも再確認する（MUST）。
+        if (!canFetchNow(deps) || !await deps.isEnabled() || !canFetchNow(deps) ||
+          deps.isBusy?.()) return undefined
+        return storeReplayDetail(
+          deps.db,
+          entry.handId,
+          result.detail,
+          deps.now(),
+          () => canFetchNow(deps) && !deps.isBusy?.()
+        )
+      })
       if (wrote === undefined) {
-        // 書き込みの直前に長時間操作が始まった。保存も決着もせず持ち越す。
+        // 書き込みの直前にセッション・フラグ・長時間操作の条件が変わった。
+        // 保存も決着もせず持ち越す。
         aborted = true
         break
       }

@@ -249,13 +249,34 @@ type ReplayAction = {
 いずれかが変わった時点で中断してキューに残す。
 
 判定は、WebSocket由来のgame eventを最後に届けた唯一のACTIVE portの
-セッション三値（`unknown` / `active` / `inactive`）だけを見る。ACTIVE portが
-**`inactive`** のとき、またはACTIVE port自体が無いときにgateを許可する。
-`active`と`unknown`は対局中扱いである。tokenが無い状態ではgateを通っても
-実際のHTTP依頼先が無いため、キューはそのまま残る。Service Worker再起動直後や
-handover直後の`unknown`は「セッション中かもしれない」が正しく、そこで撃つと
-不変条件を破りうる。接続中の他portはrelicなので、その状態を集合演算へ混ぜず、
-切断後の再接続猶予も持たない。
+セッション三値（`unknown` / `active` / `inactive`）だけを見る。現在世代が明示的に
+**`inactive`** のときだけgateを許可する。`active`、`unknown`、Service Worker
+再起動直後のtoken未生成、同一content scriptの再接続待ちはいずれも対局中扱いである。
+再起動後は最初のdedup済みgame eventが世代とactivityを確立するまでHTTPを発行しない。
+接続中の他portはrelicなので、その状態を集合演算へ混ぜない。
+
+第一防衛線はpage側に置く。常時注入されるWebSocket hookが成功201・着席303・
+308で`active`、309（および着席前の参加取消203）で`inactive`をpage worldの
+`window`へ保持する。後から注入されるreplay bridgeは`inactive`のときだけ取得を
+開始し、各await境界でも同じ状態を再確認する。実行中に開始イベントを観測したら
+自身の`AbortController`を止めるため、Service WorkerからCANCELが来なくても安全で
+ある。`active`/`unknown`中の依頼にはHTTPを発行せず、空RESULTだけを返してSWの
+pendingを解放する。
+
+別タブのraw eventはpageだけでは新旧を識別できないため、クロスタブとSW再起動境界には
+保存・dedup後の新規開始（raw保存失敗時はfail-closed開始）を見たService Workerから
+全game portへ送る一括CANCELを補助線として残す。content scriptはCANCEL受信時だけでなく
+SW port切断時にも未送信依頼を全破棄し、page queueはcancel世代でそれ以前の依頼を無効化する。
+requestId別controller mapやCANCELのepoch照合は持たず、保存可否の根拠にも使わない。
+
+第二防衛線として、pageから戻るRESULTも生イベントと同じService Worker取り込み
+キューへ通す。先行する201/303/308のRaw Lake保存とactivity更新が完了するまで
+RESULTは取得待ちを解放しない。その後も取り込み層は共通storage FIFO内、さらに
+Dexie transaction内の最初のread（競合write lock待ちを含む）が終わった後、
+最初のwrite直前に現在activityを再確認し、
+90001を書き込まない。各依頼と応答の
+Service Worker epochは公平性の主ゲートではなく、SW再起動時の所有権分離と旧応答
+破棄を担う補助線として残す。
 
 キューは `meta` テーブルの1行（`replayImportQueue`）に持つ。MV3 の Service
 Worker は数十秒で落ちるため、メモリには置けない。

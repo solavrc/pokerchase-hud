@@ -1,7 +1,10 @@
 import { decode } from '@msgpack/msgpack'
 import {
   POKER_CHASE_INVALID_API_EVENT,
-  POKER_CHASE_ORIGIN
+  POKER_CHASE_ORIGIN,
+  REPLAY_PAGE_SESSION_ACTIVITY_EVENT,
+  REPLAY_PAGE_SESSION_ACTIVITY_KEY,
+  type ReplayPageSessionActivity
 } from './constants/runtime'
 
 jest.mock('@msgpack/msgpack', () => ({
@@ -34,6 +37,9 @@ const strongDealAnchor = {
 
 describe('page-world WebSocket classification', () => {
   const originalWebSocket = window.WebSocket
+  const pageState = window as unknown as Record<PropertyKey, unknown>
+  const replayActivity = (): ReplayPageSessionActivity =>
+    pageState[REPLAY_PAGE_SESSION_ACTIVITY_KEY] as ReplayPageSessionActivity
 
   beforeAll(async () => {
     ;(window as unknown as { WebSocket: typeof WebSocket }).WebSocket =
@@ -42,6 +48,7 @@ describe('page-world WebSocket classification', () => {
   })
 
   beforeEach(() => {
+    pageState[REPLAY_PAGE_SESSION_ACTIVITY_KEY] = 'unknown'
     jest.spyOn(window, 'postMessage').mockImplementation(() => undefined)
     ;(window.postMessage as jest.Mock).mockClear()
     jest.spyOn(Date, 'now').mockReturnValue(123)
@@ -104,6 +111,39 @@ describe('page-world WebSocket classification', () => {
         timestamp: 123
       }
     }, POKER_CHASE_ORIGIN)
+  })
+
+  it('trusted WSの201/303/308/309をbridge注入前からpage activityへ保持する', () => {
+    const apiSocket = new window.WebSocket(
+      'wss://production.api-poker-chase.com/sync'
+    )
+    const activityEvent = jest.fn()
+    window.addEventListener(REPLAY_PAGE_SESSION_ACTIVITY_EVENT, activityEvent)
+
+    expect(replayActivity()).toBe('unknown')
+    emitFrame(apiSocket, { ApiTypeId: 201, Code: 1 })
+    expect(replayActivity()).toBe('unknown')
+    emitFrame(apiSocket, { ApiTypeId: 201 })
+    expect(replayActivity()).toBe('active')
+
+    emitFrame(apiSocket, { ApiTypeId: 309 })
+    expect(replayActivity()).toBe('inactive')
+    emitFrame(apiSocket, { ApiTypeId: 303 })
+    expect(replayActivity()).toBe('inactive')
+    emitFrame(apiSocket, { ApiTypeId: 303, Player: { SeatIndex: 0 } })
+    expect(replayActivity()).toBe('active')
+
+    emitFrame(apiSocket, { ApiTypeId: 309 })
+    expect(replayActivity()).toBe('inactive')
+    emitFrame(apiSocket, { ApiTypeId: 308 })
+    expect(replayActivity()).toBe('active')
+    // 201後に着席せず参加取消した経路では309が来ない。
+    emitFrame(apiSocket, { ApiTypeId: 203 })
+    expect(replayActivity()).toBe('inactive')
+    expect(activityEvent.mock.calls.map(([event]) =>
+      (event as CustomEvent<ReplayPageSessionActivity>).detail
+    )).toEqual(['active', 'inactive', 'active', 'inactive', 'active', 'inactive'])
+    window.removeEventListener(REPLAY_PAGE_SESSION_ACTIVITY_EVENT, activityEvent)
   })
 
   it('does not trust a lookalike API hostname', () => {

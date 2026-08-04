@@ -1,6 +1,11 @@
 import { TextDecoder, TextEncoder } from 'util'
-import { POKER_CHASE_ORIGIN } from './constants/runtime'
 import {
+  POKER_CHASE_ORIGIN,
+  REPLAY_PAGE_SESSION_ACTIVITY_EVENT,
+  REPLAY_PAGE_SESSION_ACTIVITY_KEY
+} from './constants/runtime'
+import {
+  REPLAY_BRIDGE_CANCEL,
   REPLAY_BRIDGE_CONFIG,
   REPLAY_BRIDGE_FETCH,
   REPLAY_BRIDGE_LEDGER,
@@ -11,6 +16,7 @@ import {
 
 Object.assign(global, { TextEncoder, TextDecoder })
 const { decode, encode } = require('@msgpack/msgpack') as typeof import('@msgpack/msgpack')
+const SW_EPOCH = 'sw-epoch-1'
 
 const arrayBufferOf = (value: unknown): ArrayBuffer => {
   const bytes = encode(value)
@@ -92,6 +98,12 @@ const LIST_ENVELOPE = {
 }
 
 describe('main-world experimental replay bridge', () => {
+  const pageState = window as unknown as Record<PropertyKey, unknown>
+
+  beforeEach(() => {
+    pageState[REPLAY_PAGE_SESSION_ACTIVITY_KEY] = 'inactive'
+  })
+
   test('captures a Unity XHR envelope, builds sequential detail requests, and strips credentials', async () => {
     const fetchMock = jest.fn().mockResolvedValue({
       ok: true,
@@ -134,7 +146,7 @@ describe('main-world experimental replay bridge', () => {
     window.dispatchEvent(new MessageEvent('message', {
       source: window,
       origin: POKER_CHASE_ORIGIN,
-      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'request-1', handIds: [777] }
+      data: { type: REPLAY_BRIDGE_FETCH, epoch: SW_EPOCH, requestId: 'request-1', handIds: [777] }
     }))
     await new Promise(resolve => setTimeout(resolve, 0))
 
@@ -153,6 +165,7 @@ describe('main-world experimental replay bridge', () => {
 
     expect(postMessageSpy).toHaveBeenCalledWith({
       type: REPLAY_BRIDGE_RESULT,
+      epoch: SW_EPOCH,
       requestId: 'request-1',
       results: [{
         handId: 777,
@@ -219,7 +232,12 @@ describe('main-world experimental replay bridge', () => {
     window.dispatchEvent(new MessageEvent('message', {
       source: window,
       origin: POKER_CHASE_ORIGIN,
-      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'request-2', handIds: [777, 779, 778] }
+      data: {
+        type: REPLAY_BRIDGE_FETCH,
+        epoch: SW_EPOCH,
+        requestId: 'request-2',
+        handIds: [777, 779, 778]
+      }
     }))
     // 間隔を空けずに次を出していないことを、時間を送らずに確かめる。
     // ここで2件目が出ていたらペーシングが効いていない。
@@ -234,6 +252,7 @@ describe('main-world experimental replay bridge', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(postMessageSpy).toHaveBeenCalledWith({
       type: REPLAY_BRIDGE_RESULT,
+      epoch: SW_EPOCH,
       requestId: 'request-2',
       results: [
         { handId: 777, ok: false, error: 'API result 1 status 2302', retryable: false },
@@ -353,7 +372,12 @@ describe('main-world experimental replay bridge', () => {
     window.dispatchEvent(new MessageEvent('message', {
       source: window,
       origin: POKER_CHASE_ORIGIN,
-      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'request-3', handIds: [1, 2, 3, 4, 5] }
+      data: {
+        type: REPLAY_BRIDGE_FETCH,
+        epoch: SW_EPOCH,
+        requestId: 'request-3',
+        handIds: [1, 2, 3, 4, 5]
+      }
     }))
     for (let step = 0; step < 8; step++) {
       await flush()
@@ -372,6 +396,363 @@ describe('main-world experimental replay bridge', () => {
     expect(posted?.results).toHaveLength(1)
 
     jest.useRealTimers()
+    XMLHttpRequest.prototype.open = originalOpen
+    XMLHttpRequest.prototype.send = originalSend
+  })
+
+  test.each(['active', 'unknown'] as const)(
+    'page activityが%sなら依頼を発火せず空RESULTで即時解放する',
+    async activity => {
+      const fetchMock = jest.fn()
+      ;(window as any).fetch = fetchMock
+
+      const originalOpen = XMLHttpRequest.prototype.open
+      const originalSend = XMLHttpRequest.prototype.send
+      XMLHttpRequest.prototype.open = jest.fn() as any
+      XMLHttpRequest.prototype.send = jest.fn() as any
+      const postMessageSpy = jest.spyOn(window, 'postMessage')
+      jest.isolateModules(() => {
+        require('./replay_bridge')
+      })
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', 'https://production.api-poker-chase.com/user/status')
+      xhr.send(encode({
+        param: {}, session: 'page-only-secret', platform: 2,
+        appVer: '2.06', dataVer: '2_06_0_test', masterVer: 'master-test'
+      }))
+      await Promise.resolve()
+      window.dispatchEvent(new MessageEvent('message', {
+        source: window, origin: POKER_CHASE_ORIGIN,
+        data: { type: REPLAY_BRIDGE_CONFIG, enabled: true }
+      }))
+      pageState[REPLAY_PAGE_SESSION_ACTIVITY_KEY] = activity
+      postMessageSpy.mockClear()
+      window.dispatchEvent(new MessageEvent('message', {
+        source: window, origin: POKER_CHASE_ORIGIN,
+        data: {
+          type: REPLAY_BRIDGE_FETCH,
+          epoch: SW_EPOCH,
+          requestId: `blocked-${activity}`,
+          handIds: [77]
+        }
+      }))
+      for (let i = 0; i < 20; i++) await Promise.resolve()
+
+      expect(fetchMock).not.toHaveBeenCalled()
+      const result = postMessageSpy.mock.calls
+        .map(call => call[0] as { type?: string, requestId?: string, results?: unknown[] })
+        .find(message => message.type === REPLAY_BRIDGE_RESULT &&
+          message.requestId === `blocked-${activity}`)
+      expect(result?.results).toEqual([])
+
+      XMLHttpRequest.prototype.open = originalOpen
+      XMLHttpRequest.prototype.send = originalSend
+    }
+  )
+
+  test('実行中の成功201で自律abortし、active中の後続依頼も発火しない', async () => {
+    let requestSignal: AbortSignal | undefined
+    const fetchMock = jest.fn().mockImplementation((_url, init) =>
+      new Promise((_resolve, reject) => {
+        requestSignal = init.signal
+        requestSignal?.addEventListener('abort', () => {
+          reject(new DOMException('session started', 'AbortError'))
+        })
+      }))
+    ;(window as any).fetch = fetchMock
+
+    const originalOpen = XMLHttpRequest.prototype.open
+    const originalSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.open = jest.fn() as any
+    XMLHttpRequest.prototype.send = jest.fn() as any
+    const postMessageSpy = jest.spyOn(window, 'postMessage')
+    postMessageSpy.mockClear()
+
+    jest.isolateModules(() => {
+      require('./replay_bridge')
+    })
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', 'https://production.api-poker-chase.com/user/status')
+    xhr.send(encode({
+      param: {}, session: 'page-only-secret', platform: 2,
+      appVer: '2.06', dataVer: '2_06_0_test', masterVer: 'master-test'
+    }))
+    await Promise.resolve()
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled: true }
+    }))
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: {
+        type: REPLAY_BRIDGE_FETCH,
+        epoch: 'terminated-sw-epoch',
+        requestId: 'orphan-after-sw-restart',
+        handIds: [78]
+      }
+    }))
+    for (let i = 0; i < 20 && !requestSignal; i++) await Promise.resolve()
+
+    // 常時注入WARはwindow状態をactiveへ進めてから、生イベントをbridgeへ渡す。
+    pageState[REPLAY_PAGE_SESSION_ACTIVITY_KEY] = 'active'
+    window.dispatchEvent(new CustomEvent(REPLAY_PAGE_SESSION_ACTIVITY_EVENT, {
+      detail: 'active'
+    }))
+    for (let i = 0; i < 20; i++) await Promise.resolve()
+
+    expect(requestSignal?.aborted).toBe(true)
+    const abortedResult = postMessageSpy.mock.calls
+      .map(call => call[0] as { type?: string, requestId?: string, results?: unknown[] })
+      .find(message => message.type === REPLAY_BRIDGE_RESULT &&
+        message.requestId === 'orphan-after-sw-restart')
+    expect(abortedResult?.results).toEqual([])
+
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: {
+        type: REPLAY_BRIDGE_FETCH,
+        epoch: 'terminated-sw-epoch',
+        requestId: 'still-active',
+        handIds: [79]
+      }
+    }))
+    for (let i = 0; i < 20; i++) await Promise.resolve()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    XMLHttpRequest.prototype.open = originalOpen
+    XMLHttpRequest.prototype.send = originalSend
+  })
+
+  test('local STARTはabort非協力の実行中取得とpage queue済み後続を世代ごと無効化する', async () => {
+    let resolveFirst!: (value: unknown) => void
+    let requestSignal: AbortSignal | undefined
+    const fetchMock = jest.fn()
+      .mockImplementationOnce((_url, init) => {
+        requestSignal = init.signal
+        // AbortSignalを意図的に無視するfetch実装を再現する。
+        return new Promise(resolve => { resolveFirst = resolve })
+      })
+      .mockResolvedValue({
+        ok: true,
+        status: 200,
+        arrayBuffer: jest.fn().mockResolvedValue(arrayBufferOf(SUCCESS_ENVELOPE))
+      })
+    ;(window as any).fetch = fetchMock
+
+    const originalOpen = XMLHttpRequest.prototype.open
+    const originalSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.open = jest.fn() as any
+    XMLHttpRequest.prototype.send = jest.fn() as any
+    const postMessageSpy = jest.spyOn(window, 'postMessage')
+    jest.isolateModules(() => { require('./replay_bridge') })
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', 'https://production.api-poker-chase.com/user/status')
+    xhr.send(encode({
+      param: {}, session: 'page-only-secret', platform: 2,
+      appVer: '2.06', dataVer: '2_06_0_test', masterVer: 'master-test'
+    }))
+    await Promise.resolve()
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled: true }
+    }))
+    for (const requestId of ['queued-before-start-1', 'queued-before-start-2']) {
+      window.dispatchEvent(new MessageEvent('message', {
+        source: window, origin: POKER_CHASE_ORIGIN,
+        data: {
+          type: REPLAY_BRIDGE_FETCH,
+          epoch: SW_EPOCH,
+          requestId,
+          handIds: [requestId.endsWith('1') ? 81 : 82]
+        }
+      }))
+    }
+    for (let i = 0; i < 20 && !requestSignal; i++) await Promise.resolve()
+
+    pageState[REPLAY_PAGE_SESSION_ACTIVITY_KEY] = 'active'
+    window.dispatchEvent(new CustomEvent(REPLAY_PAGE_SESSION_ACTIVITY_EVENT, {
+      detail: 'active'
+    }))
+    expect(requestSignal?.aborted).toBe(true)
+    // fetchがabortを無視したままセッションが終了した場合でも復活させない。
+    pageState[REPLAY_PAGE_SESSION_ACTIVITY_KEY] = 'inactive'
+    window.dispatchEvent(new CustomEvent(REPLAY_PAGE_SESSION_ACTIVITY_EVENT, {
+      detail: 'inactive'
+    }))
+    resolveFirst({
+      ok: true,
+      status: 200,
+      arrayBuffer: jest.fn().mockResolvedValue(arrayBufferOf(SUCCESS_ENVELOPE))
+    })
+    for (let i = 0; i < 30; i++) await Promise.resolve()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const emptyRequestIds = postMessageSpy.mock.calls
+      .map(call => call[0] as { type?: string, requestId?: string, results?: unknown[] })
+      .filter(message => message.type === REPLAY_BRIDGE_RESULT &&
+        Array.isArray(message.results) && message.results.length === 0)
+      .map(message => message.requestId)
+    expect(emptyRequestIds).toEqual(expect.arrayContaining([
+      'queued-before-start-1',
+      'queued-before-start-2'
+    ]))
+
+    XMLHttpRequest.prototype.open = originalOpen
+    XMLHttpRequest.prototype.send = originalSend
+  })
+
+  test('SWの補助cancelはabort非協力の実行中取得とpage queue済み後続を世代ごと無効化する', async () => {
+    let resolveFirst!: (value: unknown) => void
+    let requestSignal: AbortSignal | undefined
+    const fetchMock = jest.fn()
+      .mockImplementationOnce((_url, init) => {
+        requestSignal = init.signal
+        // AbortSignalを意図的に無視し、遅延成功するfetchを再現する。
+        return new Promise(resolve => { resolveFirst = resolve })
+      })
+      .mockResolvedValue({
+        ok: true,
+        status: 200,
+        arrayBuffer: jest.fn().mockResolvedValue(arrayBufferOf(SUCCESS_ENVELOPE))
+      })
+    ;(window as any).fetch = fetchMock
+
+    const originalOpen = XMLHttpRequest.prototype.open
+    const originalSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.open = jest.fn() as any
+    XMLHttpRequest.prototype.send = jest.fn() as any
+    const postMessageSpy = jest.spyOn(window, 'postMessage')
+    jest.isolateModules(() => { require('./replay_bridge') })
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', 'https://production.api-poker-chase.com/user/status')
+    xhr.send(encode({
+      param: {}, session: 'page-only-secret', platform: 2,
+      appVer: '2.06', dataVer: '2_06_0_test', masterVer: 'master-test'
+    }))
+    await Promise.resolve()
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled: true }
+    }))
+    postMessageSpy.mockClear()
+    for (const requestId of ['auxiliary-cancelled-1', 'auxiliary-cancelled-2']) {
+      window.dispatchEvent(new MessageEvent('message', {
+        source: window, origin: POKER_CHASE_ORIGIN,
+        data: {
+          type: REPLAY_BRIDGE_FETCH,
+          epoch: SW_EPOCH,
+          requestId,
+          handIds: [requestId.endsWith('1') ? 80 : 81]
+        }
+      }))
+    }
+    for (let i = 0; i < 20 && !requestSignal; i++) await Promise.resolve()
+
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CANCEL }
+    }))
+    expect(requestSignal?.aborted).toBe(true)
+    resolveFirst({
+      ok: true,
+      status: 200,
+      arrayBuffer: jest.fn().mockResolvedValue(arrayBufferOf(SUCCESS_ENVELOPE))
+    })
+    for (let i = 0; i < 30; i++) await Promise.resolve()
+
+    // cancel後に先頭が成功しても、queue済み2件目を発火させない。
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const emptyRequestIds = postMessageSpy.mock.calls
+      .map(call => call[0] as { type?: string, requestId?: string, results?: unknown[] })
+      .filter(message => message.type === REPLAY_BRIDGE_RESULT &&
+        Array.isArray(message.results) && message.results.length === 0)
+      .map(message => message.requestId)
+    expect(emptyRequestIds).toEqual(expect.arrayContaining([
+      'auxiliary-cancelled-1',
+      'auxiliary-cancelled-2'
+    ]))
+
+    XMLHttpRequest.prototype.open = originalOpen
+    XMLHttpRequest.prototype.send = originalSend
+  })
+
+  test('新SW epochを受けたら旧HTTPを中断し、旧epochの遅延応答を破棄する', async () => {
+    let resolveOld!: (value: unknown) => void
+    let oldSignal: AbortSignal | undefined
+    const fetchMock = jest.fn()
+      .mockImplementationOnce((_url, init) => {
+        oldSignal = init.signal
+        return new Promise(resolve => { resolveOld = resolve })
+      })
+      .mockResolvedValue({
+        ok: true,
+        status: 200,
+        arrayBuffer: jest.fn().mockResolvedValue(arrayBufferOf(SUCCESS_ENVELOPE))
+      })
+    ;(window as any).fetch = fetchMock
+
+    const originalOpen = XMLHttpRequest.prototype.open
+    const originalSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.open = jest.fn() as any
+    XMLHttpRequest.prototype.send = jest.fn() as any
+    const postMessageSpy = jest.spyOn(window, 'postMessage')
+    postMessageSpy.mockClear()
+
+    jest.isolateModules(() => {
+      require('./replay_bridge')
+    })
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', 'https://production.api-poker-chase.com/user/status')
+    xhr.send(encode({
+      param: {}, session: 'page-only-secret', platform: 2,
+      appVer: '2.06', dataVer: '2_06_0_test', masterVer: 'master-test'
+    }))
+    await Promise.resolve()
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled: true }
+    }))
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: {
+        type: REPLAY_BRIDGE_FETCH,
+        epoch: 'old-sw-epoch',
+        requestId: 'old-request',
+        handIds: [79]
+      }
+    }))
+    for (let i = 0; i < 20 && !oldSignal; i++) await Promise.resolve()
+
+    // SW再起動後の最初の依頼。受信時点で旧世代を失効させる。
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: {
+        type: REPLAY_BRIDGE_FETCH,
+        epoch: 'new-sw-epoch',
+        requestId: 'new-request',
+        handIds: [80]
+      }
+    }))
+    expect(oldSignal?.aborted).toBe(true)
+
+    // abortを無視して旧HTTPが完了する最悪ケースでも、旧応答は転送しない。
+    resolveOld({
+      ok: true,
+      status: 200,
+      arrayBuffer: jest.fn().mockResolvedValue(arrayBufferOf(SUCCESS_ENVELOPE))
+    })
+    for (let i = 0; i < 30 && fetchMock.mock.calls.length < 2; i++) await Promise.resolve()
+    for (let i = 0; i < 20; i++) await Promise.resolve()
+
+    const results = postMessageSpy.mock.calls
+      .map(call => call[0] as { type?: string, epoch?: string, requestId?: string })
+      .filter(message => message.type === REPLAY_BRIDGE_RESULT)
+    expect(results.some(message => message.requestId === 'old-request')).toBe(false)
+    expect(results).toContainEqual(expect.objectContaining({
+      epoch: 'new-sw-epoch',
+      requestId: 'new-request'
+    }))
+
     XMLHttpRequest.prototype.open = originalOpen
     XMLHttpRequest.prototype.send = originalSend
   })
@@ -422,7 +803,7 @@ describe('main-world experimental replay bridge', () => {
 
     window.dispatchEvent(new MessageEvent('message', {
       source: window, origin: POKER_CHASE_ORIGIN,
-      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'r-p', handIds: [9] }
+      data: { type: REPLAY_BRIDGE_FETCH, epoch: SW_EPOCH, requestId: 'r-p', handIds: [9] }
     }))
     await new Promise(resolve => setTimeout(resolve, 0))
     const body = decode(fetchMock.mock.calls[0]![1].body) as Record<string, unknown>
@@ -468,7 +849,7 @@ describe('main-world experimental replay bridge', () => {
     setEnabled(true)
     window.dispatchEvent(new MessageEvent('message', {
       source: window, origin: POKER_CHASE_ORIGIN,
-      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'r-stale', handIds: [1] }
+      data: { type: REPLAY_BRIDGE_FETCH, epoch: SW_EPOCH, requestId: 'r-stale', handIds: [1] }
     }))
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -496,7 +877,7 @@ describe('main-world experimental replay bridge', () => {
     }))
     window.dispatchEvent(new MessageEvent('message', {
       source: window, origin: POKER_CHASE_ORIGIN,
-      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'r-next', handIds: [2] }
+      data: { type: REPLAY_BRIDGE_FETCH, epoch: SW_EPOCH, requestId: 'r-next', handIds: [2] }
     }))
     await new Promise(resolve => setTimeout(resolve, 0))
     const body = decode(fetchMock.mock.calls[0]![1].body) as Record<string, unknown>
@@ -714,7 +1095,12 @@ describe('main-world experimental replay bridge', () => {
     }))
     window.dispatchEvent(new MessageEvent('message', {
       source: window, origin: POKER_CHASE_ORIGIN,
-      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'request-delay', handIds: [11, 12] }
+      data: {
+        type: REPLAY_BRIDGE_FETCH,
+        epoch: SW_EPOCH,
+        requestId: 'request-delay',
+        handIds: [11, 12]
+      }
     }))
 
     // 1件目が終わり、2件目の間隔待ちに入るまで進める

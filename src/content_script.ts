@@ -25,6 +25,7 @@ import { RuntimePortManager } from './utils/runtime-port-manager'
 import { captureHandledException, initSentry } from './observability/sentry'
 import {
   EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY,
+  REPLAY_BRIDGE_CANCEL,
   REPLAY_BRIDGE_CONFIG,
   REPLAY_BRIDGE_FETCH,
   REPLAY_BRIDGE_AUTH_READY,
@@ -33,12 +34,14 @@ import {
   REPLAY_BRIDGE_STARTED,
   REPLAY_FETCH_BATCH_LIMIT,
   REPLAY_LEDGER_MAX_ENTRIES,
+  REPLAY_PORT_CANCEL,
   REPLAY_PORT_FETCH,
   REPLAY_PORT_AUTH_READY,
   REPLAY_PORT_LEDGER,
   REPLAY_PORT_RESULT,
   REPLAY_PORT_STARTED,
   isPositiveHandId,
+  type ReplayFetchCancel,
   type ReplayFetchRequest,
   type ReplayFetchResult,
   type ReplayFetchStarted,
@@ -80,6 +83,16 @@ const postReplayRequest = (message: ReplayFetchRequest) => {
     return
   }
   window.postMessage({ ...message, type: REPLAY_BRIDGE_FETCH }, POKER_CHASE_ORIGIN)
+}
+
+/**
+ * SW通知はクロスタブ・SW再起動時の補助線。page自身のWS activity gateが
+ * 公平性の第一防衛線なので、通知が欠けても同一pageでは取得を開始しない。
+ */
+const postReplayCancel = (message: ReplayFetchCancel) => {
+  pendingReplayRequests.splice(0)
+  if (!replayBridgeReady) return
+  window.postMessage({ ...message, type: REPLAY_BRIDGE_CANCEL }, POKER_CHASE_ORIGIN)
 }
 
 const flushPendingReplayRequests = () => {
@@ -175,7 +188,13 @@ const portManager = new RuntimePortManager({
   onConnected: port => {
     if (isGameActive) startKeepalive(port)
   },
-  onDisconnected: stopKeepalive,
+  onDisconnected: () => {
+    stopKeepalive()
+    // SWが消えた境界では、そのSWが所有していた未送信・queued・実行中の取得を
+    // content/page側だけで一括失効させる（MUST）。再接続前に別タブでセッションが
+    // 始まると、切断中のこのportへ補助CANCELを届ける経路が無いため。
+    postReplayCancel({ type: REPLAY_PORT_CANCEL })
+  },
   onMessage: message => {
     if (typeof message === 'object' && message !== null &&
       'type' in message && message.type === POKER_CHASE_SESSION_START_EVENT &&
@@ -186,9 +205,15 @@ const portManager = new RuntimePortManager({
       return
     }
     if (typeof message === 'object' && message !== null &&
+      'type' in message && message.type === REPLAY_PORT_CANCEL) {
+      postReplayCancel(message as ReplayFetchCancel)
+      return
+    }
+    if (typeof message === 'object' && message !== null &&
       'type' in message && message.type === REPLAY_PORT_FETCH) {
       const request = message as Partial<ReplayFetchRequest>
-      if (typeof request.requestId === 'string' && Array.isArray(request.handIds) &&
+      if (typeof request.epoch === 'string' && typeof request.requestId === 'string' &&
+        Array.isArray(request.handIds) &&
         request.handIds.length <= REPLAY_FETCH_BATCH_LIMIT && request.handIds.every(isPositiveHandId)) {
         postReplayRequest(request as ReplayFetchRequest)
       }
@@ -254,15 +279,20 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   // （MUST NOT）。
   if ('type' in event.data && event.data.type === REPLAY_BRIDGE_STARTED) {
     const started = event.data as Partial<ReplayFetchStarted>
-    if (typeof started.requestId === 'string') {
-      portManager.send({ type: REPLAY_PORT_STARTED, requestId: started.requestId })
+    if (typeof started.epoch === 'string' && typeof started.requestId === 'string') {
+      portManager.send({
+        type: REPLAY_PORT_STARTED,
+        epoch: started.epoch,
+        requestId: started.requestId
+      })
     }
     return
   }
 
   if ('type' in event.data && event.data.type === REPLAY_BRIDGE_RESULT) {
     const result = event.data as Partial<ReplayFetchResult>
-    if (typeof result.requestId === 'string' && Array.isArray(result.results) &&
+    if (typeof result.epoch === 'string' && typeof result.requestId === 'string' &&
+      Array.isArray(result.results) &&
       result.results.length <= REPLAY_FETCH_BATCH_LIMIT) {
       portManager.send({ ...result, type: REPLAY_PORT_RESULT })
     }
