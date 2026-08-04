@@ -1,26 +1,28 @@
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
-import { EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY } from '../replay/protocol'
+
+export const SW_INGESTION_DIAGNOSTICS_STORAGE_KEY = 'swIngestionDiagnosticsEnabled'
 
 let enabled = false
 let initialized = false
 
 /**
- * 開発者フラグが有効な環境だけで、リプレイと取り込みキューの時系列を出す。
+ * SW取り込み診断フラグが有効な環境だけで、ポート受信とリプレイキューの時系列を出す。
+ * リプレイ取得フラグとは独立して切り替えられなければならない（MUST）。
  * payload・HandId・playerIdはログへ載せない（MUST NOT）。
  */
 export const initializeReplayDiagnostics = (): void => {
   if (initialized) return
   initialized = true
 
-  chrome.storage.sync.get(EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY)
+  chrome.storage.sync.get(SW_INGESTION_DIAGNOSTICS_STORAGE_KEY)
     .then(stored => {
-      enabled = stored[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY] === true
+      enabled = stored[SW_INGESTION_DIAGNOSTICS_STORAGE_KEY] === true
     })
     .catch(() => undefined)
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'sync') return
-    const change = changes[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY]
+    const change = changes[SW_INGESTION_DIAGNOSTICS_STORAGE_KEY]
     if (change) enabled = change.newValue === true
   })
 }

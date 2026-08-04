@@ -258,6 +258,18 @@ await db.actions.where('[playerId+phase]')
 開発ビルドだけが有効化する、既定OFFの検証機能。目的は「`/replay/*` から
 何がどこまで取得できるか」を、スキーマ変更を伴わずに実データで確かめること。
 
+Service Workerのポート受信遅延・取り込みキュー深さ・リプレイドレイン判定を
+調べる診断ログは、別の同期キー `swIngestionDiagnosticsEnabled` で切り替える。
+このキーはリプレイ取得を有効化せず、`experimentalReplayImportEnabled` も診断を
+有効化しない。リプレイ取得を停止したまま計測する場合はService Workerの
+DevToolsコンソールで次を実行する。
+
+```javascript
+await chrome.storage.sync.set({ swIngestionDiagnosticsEnabled: true })
+```
+
+無効化は同じキーを `false` に戻す。ログはpayload、HandId、playerIdを含まない。
+
 **リプレイ本体（`/replay/detail`）は保存しない。** セッション境界を見て自動で
 取りに行く取り込み層は別途。ただし後述の台帳監査だけは、その結果を `meta`
 テーブルの1行（`replayLedgerAudit`）へ書く ―― MV3のService Workerは数十秒で
