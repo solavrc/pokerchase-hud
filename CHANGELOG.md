@@ -1,5 +1,22 @@
 # Changelog
 
+## [5.7.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v5.6.0...pokerchase-hud-v5.7.0) (2026-08-04)
+
+
+### Features
+
+* セッション終了後も対戦相手のHUDを保持する ([#358](https://github.com/solavrc/pokerchase-hud/issues/358)) ([2f3f418](https://github.com/solavrc/pokerchase-hud/commit/2f3f4188ac9042908f85f6c669b2361755667aeb))
+
+
+### Bug Fixes
+
+* **replay:** SW再起動後の対局中取得を防ぐ ([#361](https://github.com/solavrc/pokerchase-hud/issues/361)) ([5e075d8](https://github.com/solavrc/pokerchase-hud/commit/5e075d83b4db27dd5cf7d88895b0abc53545095a))
+
+
+### Performance Improvements
+
+* **stats:** HUD統計を永続増分台帳へ移行 ([#362](https://github.com/solavrc/pokerchase-hud/issues/362)) ([efd1c6a](https://github.com/solavrc/pokerchase-hud/commit/efd1c6ab42bed1dc54a119a4b6d4df9f97737cda))
+
 ## [5.6.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v5.5.0...pokerchase-hud-v5.6.0) (2026-08-02)
 
 
