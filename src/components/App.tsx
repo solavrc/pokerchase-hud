@@ -167,14 +167,21 @@ const App = memo(() => {
     ({ detail }: CustomEvent<StatsData>) => {
       let mappedStats = detail.stats
 
+      // SPR・ポットオッズの実況更新はbackgroundで発生元ポートにだけ配信される。
+      // 集計lineupを触らず、現在ハンド専用値だけを更新する。
+      if (detail.realTimeOnly) {
+        if (detail.realTimeStats) setAllPlayersRealTimeStats(detail.realTimeStats)
+        return
+      }
+
       // 観戦dealはPlayerが無いためヒーロー基準へ回転できず、別テーブルの席順かも
       // しれない。この未回転lineupでレビュー対象のHUDを上書きしてはならない
-      // （MUST NOT）。現在ハンド専用の値だけを消し、最後の信頼済み表示を残す。
+      // （MUST NOT）。現在ハンド専用値は上のポート固有経路で更新済みなので、
+      // 全ポートへ届く集計ブロードキャストでは変更しない。
       const isSpectatorDeal = detail.evtDeal !== undefined
         && isApiEventType(detail.evtDeal, ApiType.EVT_DEAL)
         && detail.evtDeal.Player === undefined
       if (isSpectatorDeal) {
-        setAllPlayersRealTimeStats(undefined)
         return
       }
 

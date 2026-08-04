@@ -321,7 +321,7 @@ WebSocket Events (from content_script)
     │   (Independent stream)          (via 'data' event)
     │
     ├─► RealTimeStatsStream ───────► Real-time Stats Output
-    │   (Independent stream)          (via 'data' event)
+    │   (one instance per port)        (to that source port only)
     │
     └─► AggregateEventsStream
         (Groups events by hand)
@@ -337,7 +337,7 @@ WebSocket Events (from content_script)
 
 **Key Points:**
 
-- Three independent streams receive the same events simultaneously
+- Three independent stream paths receive the same events simultaneously; the current-hand `RealTimeStatsStream` path is instantiated per connected port
 - Only the main statistics pipeline uses `.pipe()` for sequential processing
 - HandLogStream and RealTimeStatsStream operate in parallel, not as branches
 - Each stream emits results via 'data' events to update different UI components
@@ -503,7 +503,7 @@ on large DBs (bounded, local work; import is a rare operation).
 
 - **Parallel Streams**: Three independent streams process same events
   - HandLogStream → Hand history generation
-  - RealTimeStatsStream → Pot odds, SPR, hand improvement
+  - RealTimeStatsStream (one per connected port) → Pot odds, SPR, hand improvement for that source tab only
   - AggregateEventsStream → Statistics pipeline
 - **Update Timing**:
   - Real-time stats: Update immediately on each action
@@ -544,7 +544,7 @@ For complete directory structure and file descriptions, see [docs/file-organizat
 
 Three independent streams process events in parallel:
 - **AggregateEventsStream** → **WriteEntityStream** → **ReadEntityStream** (main statistics pipeline)
-- **RealTimeStatsStream** - Real-time pot odds, SPR, hand improvement
+- **RealTimeStatsStream** - Per-port real-time pot odds, SPR, and hand improvement; session/deal state from one tab MUST NOT mutate another tab's instance
 - **HandLogStream** - Hand history generation
 
 **Key optimization**: `EntityConverter` for direct event-to-entity conversion during imports.

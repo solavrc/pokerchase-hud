@@ -9,7 +9,13 @@ import PokerChaseService, {
   isApplicationApiEvent
 } from '../app'
 import { autoSyncService } from '../services/auto-sync-service'
-import { clearLatestRealTimeStats, connectedPorts, startPortPing } from './ports'
+import {
+  connectedPorts,
+  registerPortRealTimeStats,
+  releasePortRealTimeStats,
+  startPortPing,
+  writePortRealTimeStats
+} from './ports'
 import {
   INVALID_API_TYPE_ID_BUCKET,
   recordUndecodedEvent
@@ -188,6 +194,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   chrome.runtime.onConnect.addListener(port => {
     if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
       connectedPorts.add(port)
+      registerPortRealTimeStats(port)
       // 持ち越し分の再開点。セッション終了時に認証エンベロープを捕獲できて
       // いないと取得は繰り延べられる（キューには残る）。エンベロープは
       // ページ再読み込み後のホーム到達で捕まるので、そのページが繋いできた
@@ -257,6 +264,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // Keep lastKnownStats for page reloads - only clear interval
         stopPing()
         connectedPorts.delete(port)
+        releasePortRealTimeStats(port)
         // 対局中のまま切れたなら、再接続の猶予の間は「全タブがセッション外」を
         // 成立させない（500msで再接続する設計なので、その隙に撃たないため）。
         forgetPort(port)
@@ -439,12 +447,6 @@ const processEvent = async (
   // 詳細は`applySessionActivity`のコメント参照。
   applySessionActivity(rawApiTypeId, message, false, port)
 
-  if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
-    // 集計lineupはレビュー用に保持する一方、現在ハンド専用の値は終了済み。
-    // パース不能な309でも後続のフィルター再計算へ混入しないようrawで消す。
-    clearLatestRealTimeStats()
-  }
-
   // リプレイ取り込み層（既定OFF）。**セッション中は取得しない**（MUST）ので、
   // ここでやるのは HandId をキューへ積むことだけ。取得はセッション終了の
   // トリガーから走る（`replay-import.ts`）。
@@ -624,7 +626,8 @@ const processEvent = async (
   // ストリーム処理（DB保存は上で完了済み・耐久性確定済み）
   service.handLogStream.write(data)
   service.handAggregateStream.write(data)
-  service.realTimeStatsStream.write(data)
+  if (port) writePortRealTimeStats(port, data)
+  else service.realTimeStatsStream.write(data)
   // Auto-sync起動・pending update再チェック（309/201/308）は上のRaw
   // Event Lake保存直後に生ApiTypeIdベースで既にトリガー済み（本ブロックの
   // パース成功はストリーム投入のみが目的）

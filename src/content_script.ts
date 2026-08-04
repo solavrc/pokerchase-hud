@@ -119,6 +119,7 @@ export interface StatsData {
   stats: PlayerStats[]
   evtDeal?: ApiEvent<ApiType.EVT_DEAL>  // 席のマッピング用のEVT_DEALイベント
   realTimeStats?: AllPlayersRealTimeStats  // リアルタイム統計（全プレイヤー）
+  realTimeOnly?: boolean  // 発生元ポートの現在ハンド専用更新
 }
 
 declare global {
@@ -179,6 +180,7 @@ const portManager = new RuntimePortManager({
         stats: PlayerStats[]
         evtDeal?: ApiEvent<ApiType.EVT_DEAL>
         realTimeStats?: AllPlayersRealTimeStats
+        realTimeOnly?: boolean
       }
       console.time('[content_script] Dispatching stats event')
       window.dispatchEvent(new CustomEvent(POKER_CHASE_SERVICE_EVENT, { detail: statsMessage }))

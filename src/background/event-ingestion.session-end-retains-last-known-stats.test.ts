@@ -16,7 +16,6 @@ import { registerMessageRouter } from './message-router'
 import {
   connectedPorts,
   getLastKnownStats,
-  getLatestRealTimeStats,
   registerStreamSubscriptions,
   setLastKnownStats,
 } from './ports'
@@ -142,32 +141,19 @@ describe('session end (309) retains background lastKnownStats', () => {
   test('raw EVT_SESSION_RESULTS (309) retains lastKnownStats', async () => {
     const retainedLineup = [{ playerId: 2, statResults: [] } as any]
     setLastKnownStats(retainedLineup)
-    ;(service.realTimeStatsStream as any).push({
-      stats: { heroStats: { spr: 10 }, playerStats: {} },
-      timestamp: 999,
-    })
-    expect(getLatestRealTimeStats()).toBeDefined()
-
     await onMessageHandler(sessionResultsEvent)
 
     expect(getLastKnownStats()).toBe(retainedLineup)
-    expect(getLatestRealTimeStats()).toBeUndefined()
   })
 
   test('a malformed EVT_SESSION_RESULTS also retains lastKnownStats when Zod rejects the payload', async () => {
     const retainedLineup = [{ playerId: 2, statResults: [] } as any]
     setLastKnownStats(retainedLineup)
-    ;(service.realTimeStatsStream as any).push({
-      stats: { heroStats: { spr: 10 }, playerStats: {} },
-      timestamp: 999,
-    })
-
     // Missing every required field -- fails Zod validation, same shape as
     // event-ingestion.update-manager-trigger.test.ts's malformed-309 case.
     await onMessageHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 1000 })
 
     expect(getLastKnownStats()).toBe(retainedLineup)
-    expect(getLatestRealTimeStats()).toBeUndefined()
   })
 
   test('filter change after session end can recompute the retained lineup through getLastKnownStats()', async () => {

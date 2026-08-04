@@ -2,6 +2,8 @@
 import type PokerChaseService from '../services/poker-chase-service'
 import type { ApiEvent, ApiType, PlayerStats } from '../app'
 import type { AllPlayersRealTimeStats } from '../realtime-stats/realtime-stats-service'
+import { RealTimeStatsStream } from '../streams/realtime-stats-stream'
+import { ApiType as ApiTypeValue } from '../types'
 import type { HandLogEvent } from '../types/hand-log'
 import type { HandLogEventMessage } from '../types/messages'
 import { formatHandLogEntries } from '../utils/hand-log-text'
@@ -9,9 +11,6 @@ import { formatHandLogEntries } from '../utils/hand-log-text'
 const PING_INTERVAL_MS = 10 * 1000
 
 let lastKnownStats: PlayerStats[] = []
-
-// Store latest real-time stats (module scope: shared across all port connections)
-let latestRealTimeStats: AllPlayersRealTimeStats | undefined
 
 export const getLastKnownStats = (): PlayerStats[] => lastKnownStats
 
@@ -59,19 +58,82 @@ export const getLiveBroadcastSequence = (): number => liveBroadcastSequence
 // none of them touch this counter.
 let handCompletionEpoch = 0
 
-export const getLatestRealTimeStats = (): AllPlayersRealTimeStats | undefined => latestRealTimeStats
-
-// セッション終了後の集計HUD再配信へ、終了済みハンドのSPR/ポットオッズを
-// 混ぜてはならない（MUST NOT）。表示のローカルクリアはcontent_script側が担う。
-export const clearLatestRealTimeStats = (): void => {
-  latestRealTimeStats = undefined
-}
-
 /**
  * `chrome.runtime.onConnect`で接続されたポートの集合
  * ストリームイベントをブロードキャストする際の送信先として利用する
  */
 export const connectedPorts = new Set<chrome.runtime.Port>()
+
+type PortRealTimeState = {
+  stream: RealTimeStatsStream
+  latestStats?: AllPlayersRealTimeStats
+}
+
+// SPR・ポットオッズ・進行中ハンドの状態はタブ固有。集計ストリームと違い、
+// 別ポートの309/dealを混ぜてはならない（MUST NOT）。
+const realTimeStateByPort = new WeakMap<chrome.runtime.Port, PortRealTimeState>()
+
+type StatsMessage = {
+  stats: PlayerStats[]
+  evtDeal?: ApiEvent<ApiType.EVT_DEAL>
+  realTimeStats?: AllPlayersRealTimeStats
+  realTimeOnly?: boolean
+  handEpoch?: number
+}
+
+const postMessageToPort = (port: chrome.runtime.Port, data: StatsMessage | string): void => {
+  try {
+    port.postMessage(data)
+  } catch (error: unknown) {
+    if (error instanceof Error) {
+      if (error.message === 'Attempting to use a disconnected port object') {
+        connectedPorts.delete(port)
+        realTimeStateByPort.delete(port)
+      } else {
+        console.error(error)
+      }
+    }
+  }
+}
+
+/** 現在ハンド専用ストリームを接続元ポートへ束縛する。 */
+export const registerPortRealTimeStats = (port: chrome.runtime.Port): void => {
+  if (realTimeStateByPort.has(port)) return
+
+  const state: PortRealTimeState = { stream: new RealTimeStatsStream() }
+  realTimeStateByPort.set(port, state)
+  state.stream.on('data', data => {
+    state.latestStats = data.stats
+    if (lastKnownStats.length === 0) return
+    postMessageToPort(port, {
+      stats: lastKnownStats,
+      realTimeStats: state.latestStats,
+      realTimeOnly: true,
+      handEpoch: handCompletionEpoch
+    })
+  })
+}
+
+/** APIイベントを発生元ポートの現在ハンド専用ストリームへ投入する。 */
+export const writePortRealTimeStats = (port: chrome.runtime.Port, event: ApiEvent): void => {
+  let state = realTimeStateByPort.get(port)
+  if (!state) {
+    registerPortRealTimeStats(port)
+    state = realTimeStateByPort.get(port)!
+  }
+
+  if (event.ApiTypeId === ApiTypeValue.EVT_SESSION_RESULTS) {
+    // 発生元content scriptが同じ309を直接観測して表示を消す。次の集計再配信で
+    // 終了済み値を復活させないため、ポート固有キャッシュだけを空にする。
+    state.latestStats = undefined
+  }
+  state.stream.write(event)
+}
+
+export const releasePortRealTimeStats = (port: chrome.runtime.Port): void => {
+  realTimeStateByPort.get(port)?.stream.reset()
+  realTimeStateByPort.delete(port)
+}
 
 /** 完了済みハンドだけをHUDと同じPokerStars形式でService Worker consoleへ出す。 */
 export const logCompletedHandToConsole = (event: HandLogEvent): void => {
@@ -84,19 +146,9 @@ export const logCompletedHandToConsole = (event: HandLogEvent): void => {
  * 接続中の全ポートにメッセージをブロードキャストする
  * 切断済みポートを検出した場合は`connectedPorts`から取り除く
  */
-export const broadcastMessage = (data: { stats: PlayerStats[], evtDeal?: ApiEvent<ApiType.EVT_DEAL>, realTimeStats?: AllPlayersRealTimeStats, handEpoch?: number } | string) => {
+export const broadcastMessage = (data: StatsMessage | string) => {
   connectedPorts.forEach(port => {
-    try {
-      port.postMessage(data)
-    } catch (error: unknown) {
-      if (error instanceof Error) {
-        /** when `content_script` is inactive */
-        if (error.message === 'Attempting to use a disconnected port object')
-          connectedPorts.delete(port)
-        else
-          console.error(error)
-      }
-    }
+    postMessageToPort(port, data)
   })
 }
 
@@ -136,51 +188,24 @@ export const startPortPing = (port: chrome.runtime.Port): () => void => {
 // （`onConnect`のたびに登録すると、ページリロード/再接続のたびにリスナーが積み重なり、
 // 特に`handLogStream`のハンドラーはNタブ分`chrome.tabs.sendMessage`を重複送信してしまう）
 export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlPattern: string): void => {
-  // Listen for real-time stats from dedicated stream
-  service.realTimeStatsStream.on('data', (data: { handId?: number, stats: AllPlayersRealTimeStats, timestamp: number }) => {
-    latestRealTimeStats = data.stats
-
-    // Send update with real-time stats only
-    if (lastKnownStats && lastKnownStats.length > 0) {
-      broadcastMessage({
-        stats: lastKnownStats,
-        // liveEvtDeal (not latestEvtDeal): this pairing drives App.tsx's seat
-        // rotation for whatever table is *currently* being broadcast (which
-        // may be a spectator-mode table after the hero busts). latestEvtDeal
-        // stays pinned to the hero's own most recent seated deal (used by
-        // recalculateStats()/recalculateAllStats() to rebuild hero-context
-        // stats on filter changes / batch-mode end). Every code path that
-        // re-anchors to the hero's deal (a fresh live hand, a filter-change
-        // recalc, batch-mode end, import/rebuild/auto-sync restore) keeps
-        // liveEvtDeal in sync with latestEvtDeal at that same moment (either
-        // via the latestEvtDeal setter itself, or an explicit assignment at
-        // the read-only recalc call sites) -- see the getter/setter doc
-        // comments on PokerChaseService and aggregate-events-stream.ts's
-        // EVT_DEAL case for the full rationale (codex #177, all 3 review rounds).
-        evtDeal: service.liveEvtDeal,
-        realTimeStats: latestRealTimeStats,
-        // Same handEpoch as the last hand-completion broadcast (unchanged since this
-        // is a realtime-only, per-action update, and handCompletionEpoch is only
-        // bumped by the writeEntityStream subscription below) -- see
-        // handCompletionEpoch's doc comment above.
-        handEpoch: handCompletionEpoch
-      })
-    }
-  })
   service.statsOutputStream.on('data', async (hand: PlayerStats[]) => {
     lastKnownStats = hand // Store for later use
     liveBroadcastSequence++ // A real live lineup broadcast just went out -- see getLiveBroadcastSequence()'s doc comment
 
-    // Real-time stats are now handled by RealTimeStatsStream
-    broadcastMessage({
-      stats: hand,
-      evtDeal: service.liveEvtDeal,  // Include EVT_DEAL for seat mapping (live context, not the persisted hero-anchored one -- see above)
-      realTimeStats: latestRealTimeStats,  // Include latest real-time stats from stream
-      // NOT bumped here -- this handler also fires for the hand-start warmup and
-      // filter/import/auto-sync rebroadcasts (see handCompletionEpoch's doc comment),
-      // so it just stamps whatever handCompletionEpoch currently holds. Only a real
-      // completion (the writeEntityStream subscription below) advances it.
-      handEpoch: handCompletionEpoch
+    // 集計lineup/deal文脈の既存ブロードキャストは維持する一方、現在ハンド専用値は
+    // 発生元ポートのキャッシュだけを同梱する（MUST）。
+    connectedPorts.forEach(port => {
+      const state = realTimeStateByPort.get(port)
+      postMessageToPort(port, {
+        stats: hand,
+        evtDeal: service.liveEvtDeal,
+        realTimeStats: state?.latestStats,
+        // NOT bumped here -- this handler also fires for the hand-start warmup and
+        // filter/import/auto-sync rebroadcasts (see handCompletionEpoch's doc comment),
+        // so it just stamps whatever handCompletionEpoch currently holds. Only a real
+        // completion (the writeEntityStream subscription below) advances it.
+        handEpoch: handCompletionEpoch
+      })
     })
   })
   // The one true "hand completed" signal -- see handCompletionEpoch's doc comment

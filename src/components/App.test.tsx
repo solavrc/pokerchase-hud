@@ -476,6 +476,34 @@ describe('App', () => {
     })
   })
 
+  it('発生元ポートのリアルタイム専用更新は集計lineupを上書きしない', async () => {
+    render(<App />)
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', { detail: mockStatsData }))
+    })
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
+        detail: {
+          stats: [{ playerId: 999, statResults: [] }],
+          realTimeOnly: true,
+          realTimeStats: {
+            heroStats: {},
+            playerStats: {
+              0: {
+                spr: 10,
+                potOdds: { pot: 300, call: 100, percentage: 25, ratio: '3:1', isPlayerTurn: true }
+              }
+            }
+          }
+        } satisfies StatsData
+      }))
+    })
+
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('Player: 1')
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('PotOdds: yes')
+  })
+
   it('HandLogイベントでエントリが追加される', async () => {
     render(<App />)
     
@@ -1226,7 +1254,19 @@ describe('App', () => {
         const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
         await act(async () => {
           window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
-            detail: { stats: bustedLineup, evtDeal: heroDeal() } as StatsData,
+            detail: {
+              stats: bustedLineup,
+              evtDeal: heroDeal(),
+              realTimeStats: {
+                heroStats: {},
+                playerStats: {
+                  0: {
+                    spr: 10,
+                    potOdds: { pot: 300, call: 100, percentage: 25, ratio: '3:1', isPlayerTurn: true }
+                  }
+                }
+              }
+            } as StatsData,
           }))
         })
         expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
@@ -1259,6 +1299,7 @@ describe('App', () => {
         expect(screen.getByTestId('hud-2')).toHaveTextContent('Dimmed: no')
         expect(screen.getByTestId('hud-3')).toHaveTextContent('Player: 4')
         expect(screen.getByTestId('hud-3')).toHaveTextContent('Dimmed: no')
+        expect(screen.getByTestId('hud-0')).toHaveTextContent('PotOdds: yes')
       })
 
       it('観戦モードdealとセッション終了を連続で受けても、最後のヒーロー着席lineup全体を保持する', async () => {
