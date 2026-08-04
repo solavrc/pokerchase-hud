@@ -28,10 +28,13 @@ interface ComparablePlayerResult {
 }
 
 type ComparableResult = ReadonlyMap<number, ComparablePlayerResult>
+type HandsValueSource = 'productStat' | 'oracleCount'
 
 /**
- * Stats compared. `hands` is adapted from each result's scalar hand count to
- * `[hands, 0]`; every other entry must exist as a fraction on both sides.
+ * Stats compared. Product results expose the HAND StatDefinition output as
+ * `stats.hands`, while the independent oracle exposes only its scalar hand
+ * count; both are adapted to `[hands, 0]`. Every other entry must exist as a
+ * fraction on both sides.
  */
 export const COMPARED_STATS = [
   'hands', 'vpip', 'vpipF', 'pfr', '3bet', '3betfold', 'cbet', 'cbetFold', 'af', 'afq',
@@ -66,17 +69,30 @@ export interface ComparisonReport {
   stats: StatAgreement[]
 }
 
+function isCounter(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
 function isFraction(value: unknown): value is OracleFraction {
-  return Array.isArray(value) && value.length === 2 && typeof value[0] === 'number' && typeof value[1] === 'number'
+  return Array.isArray(value) && value.length === 2 && isCounter(value[0]) && isCounter(value[1])
 }
 
 function comparableValue(
   result: ComparablePlayerResult,
-  stat: ComparedStat
+  stat: ComparedStat,
+  handsValueSource: HandsValueSource
 ): unknown {
-  return stat === 'hands'
-    ? [result.hands, 0]
-    : (result.stats as Record<string, unknown>)[stat]
+  const stats = result.stats as Record<string, unknown>
+  if (stat !== 'hands') return stats[stat]
+
+  if (handsValueSource === 'oracleCount') return [result.hands, 0]
+
+  // 製品経路では実際のHAND StatDefinition出力を比較対象にする。
+  // undefinedを生の件数へfallbackすると、HANDだけの欠落を隠すためMUST NOT。
+  const calculatedHands = stats.hands
+  return isCounter(calculatedHands)
+    ? [calculatedHands, 0]
+    : undefined
 }
 
 /**
@@ -88,14 +104,17 @@ function comparableValue(
 function compareComparableResults(
   pipeline: ComparableResult,
   oracle: ComparableResult,
-  minHands: number
+  minHands: number,
+  pipelineHandsSource: HandsValueSource,
+  oracleHandsSource: HandsValueSource,
+  includeAllPlayers = false
 ): ComparisonReport {
-  const pipelineEligible = new Set(
-    [...pipeline.values()].filter(p => p.hands >= minHands).map(p => p.playerId)
-  )
-  const oracleEligible = new Set(
-    [...oracle.values()].filter(p => p.hands >= minHands).map(p => p.playerId)
-  )
+  const pipelineEligible = new Set(includeAllPlayers
+    ? pipeline.keys()
+    : [...pipeline.values()].filter(p => p.hands >= minHands).map(p => p.playerId))
+  const oracleEligible = new Set(includeAllPlayers
+    ? oracle.keys()
+    : [...oracle.values()].filter(p => p.hands >= minHands).map(p => p.playerId))
   const eligiblePlayerIds = new Set([...pipelineEligible, ...oracleEligible])
 
   const stats: StatAgreement[] = COMPARED_STATS.map(stat => {
@@ -107,8 +126,12 @@ function compareComparableResults(
     for (const playerId of eligiblePlayerIds) {
       const pipelinePlayer = pipeline.get(playerId)
       const oraclePlayer = oracle.get(playerId)
-      const p = pipelinePlayer ? comparableValue(pipelinePlayer, stat) : undefined
-      const o = oraclePlayer ? comparableValue(oraclePlayer, stat) : undefined
+      const p = pipelinePlayer
+        ? comparableValue(pipelinePlayer, stat, pipelineHandsSource)
+        : undefined
+      const o = oraclePlayer
+        ? comparableValue(oraclePlayer, stat, oracleHandsSource)
+        : undefined
       const pOk = isFraction(p)
       const oOk = isFraction(o)
       total++
@@ -153,7 +176,7 @@ export function compareResults(
   oracle: OracleResult,
   minHands = 50
 ): ComparisonReport {
-  return compareComparableResults(pipeline, oracle, minHands)
+  return compareComparableResults(pipeline, oracle, minHands, 'productStat', 'oracleCount')
 }
 
 /** 全player・全18数値指標について旧全計算とv8台帳を厳密比較する。 */
@@ -161,7 +184,7 @@ export function compareProductPaths(
   legacy: PipelineResult,
   ledger: PipelineResult
 ): ComparisonReport {
-  return compareComparableResults(legacy, ledger, 0)
+  return compareComparableResults(legacy, ledger, 0, 'productStat', 'productStat', true)
 }
 
 /** Render a human-readable agreement table, one line per stat. */

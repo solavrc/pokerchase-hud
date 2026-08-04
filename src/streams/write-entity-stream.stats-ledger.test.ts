@@ -22,7 +22,10 @@ import {
 } from '../stats/stat-ledger'
 import { setEventGeneration } from './stats-output-context'
 import { trackServiceForTeardown } from '../utils/test-service-teardown'
-import { WriteEntityStream } from './write-entity-stream'
+import {
+  type CanonicalWriteFailureError,
+  WriteEntityStream,
+} from './write-entity-stream'
 import { AutoSyncService } from '../services/auto-sync-service'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
 
@@ -187,6 +190,27 @@ describe('WriteEntityStream -> StatsLedger integration', () => {
     // cloud staging ownerを保護する。
     expect(await db.meta.get(STATS_CANONICAL_REBUILD_META_ID)).toBeUndefined()
     expect(await service.statsLedger.needsCanonicalRebuildRecovery()).toBe(true)
+  })
+
+  test('marker failed化も失敗した場合はexact fence IDを同一worker回復へ通知する', async () => {
+    const seeded = await seedRawFence()
+    const streamErrors: CanonicalWriteFailureError[] = []
+    writeStream.on('error', error => streamErrors.push(error as CanonicalWriteFailureError))
+    jest.spyOn(console, 'warn').mockImplementation(() => {})
+    jest.spyOn(service.statsLedger, 'acknowledgePendingHandDerivation')
+      .mockRejectedValueOnce(new Error('injected canonical transaction failure'))
+    jest.spyOn(service.statsLedger, 'markPendingHandDerivationFailed')
+      .mockRejectedValueOnce(new Error('injected marker update failure'))
+
+    await writeHand(seeded.events)
+
+    expect(streamErrors).toHaveLength(1)
+    expect(streamErrors[0]?.canonicalRecoveryRequired).toBe(true)
+    expect(streamErrors[0]?.canonicalRecoveryFenceId).toBe(seeded.markerId)
+    expect((await db.meta.get(seeded.markerId))?.value).not.toEqual(
+      expect.objectContaining({ failed: true })
+    )
+    expect(await service.statsLedger.needsCanonicalRebuildRecovery()).toBe(false)
   })
 
   test('同じ完成イベントを再投入しても寄与と累積を二重加算しない', async () => {

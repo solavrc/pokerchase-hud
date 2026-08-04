@@ -22,6 +22,7 @@ import { resolveActionPhase } from '../utils/action-phase'
 import { getPositionMap, getBigBlindUserId } from '../utils/position-utils'
 import { defaultRegistry } from '../stats'
 import type { ErrorContext } from '../types/errors'
+import type { AppError } from '../types/errors'
 import { deriveHandSettlement } from '../utils/hand-chip-accounting'
 import {
   getEventGeneration,
@@ -29,6 +30,12 @@ import {
 } from './stats-output-context'
 
 const SLOW_ENTITY_WRITE_MS = 50
+
+export interface CanonicalWriteFailureError extends AppError {
+  canonicalRecoveryRequired?: true
+  /** ログ・telemetryへ渡さない同一worker内だけのexact recovery token。 */
+  canonicalRecoveryFenceId?: string
+}
 
 /**
  * エンティティ書き込みStream（パイプライン第2段階）
@@ -173,7 +180,18 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
         handId: events.find(e => e.ApiTypeId === ApiType.EVT_HAND_RESULTS)?.HandId,
         eventsCount: events.length
       }
-      const appError = ErrorHandler.handleStreamError(error, 'WriteEntityStream', context)
+      const appError = ErrorHandler.handleStreamError(
+        error,
+        'WriteEntityStream',
+        context
+      ) as CanonicalWriteFailureError
+      if (!canonicalCommitted) {
+        // ErrorHandlerの記録後に付与し、exact IDをconsole/telemetryへ出さない（MUST NOT）。
+        appError.canonicalRecoveryRequired = true
+        appError.canonicalRecoveryFenceId = resultsEvent
+          ? this.service.statsLedger.getPendingHandDerivationFenceId(resultsEvent)
+          : undefined
+      }
       if (this.listenerCount('error') > 0) {
         this.emit('error', appError)
       }

@@ -28,7 +28,10 @@ import {
 import { HandLogExporter } from '../utils/hand-log-exporter'
 import { startKeepAlive } from '../background/service-worker-keepalive'
 import { captureHandledException } from '../observability/sentry'
-import { StatsLedger } from '../stats/stat-ledger'
+import {
+  STATS_PENDING_HAND_DERIVATION_META_PREFIX,
+  StatsLedger,
+} from '../stats/stat-ledger'
 import { SessionState } from './poker-chase-service'
 import type PokerChaseService from './poker-chase-service'
 import { getActivePortActivity, resolveGeneration } from '../background/active-port'
@@ -320,6 +323,9 @@ export class AutoSyncService {
    */
   private inFlightSyncPromise: Promise<void> | null = null
   private canonicalRecoveryPromise: Promise<boolean> | null = null
+  private canonicalRecoveryRequestPending = false
+  private canonicalRecoveryDrainPromise: Promise<void> | null = null
+  private readonly forcedCanonicalRecoveryFenceIds = new Set<string>()
   private lastSyncAttempt = 0
   private readonly MIN_SYNC_INTERVAL_MS = 0 // No minimum interval restriction
   private readonly SYNC_STORAGE_KEY = 'autoSyncLastTime'
@@ -379,16 +385,30 @@ export class AutoSyncService {
    * 中断されたcloud canonical rebuildを、認証状態に依存せずRaw Lakeから再開する。
    * backgroundのコールドスタートと、sync失敗後の1回だけの回復予約から使う。
    */
-  async recoverInterruptedCanonicalRebuild(): Promise<boolean> {
+  async recoverInterruptedCanonicalRebuild(options: {
+    force?: boolean
+    pendingFenceIds?: readonly string[]
+  } = {}): Promise<boolean> {
     this.statsLedger.resumeMaintenance()
-    if (this.canonicalRecoveryPromise) return await this.canonicalRecoveryPromise
+    if (this.canonicalRecoveryPromise) {
+      const recovered = await this.canonicalRecoveryPromise
+      // force要求は、先行passへ相乗りしただけではそのsnapshotに入らない。
+      // 先行pass完了後に自分のexact fenceを持って必ずもう1pass行う（MUST）。
+      if (options.force) return await this.recoverInterruptedCanonicalRebuild(options)
+      return recovered
+    }
+
+    const force = options.force === true
+    const pendingFenceIds = [...new Set((options.pendingFenceIds ?? []).filter(id =>
+      id.startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)
+    ))]
 
     const recovery = (async (): Promise<boolean> => {
       while (true) {
-        if (!await this.statsLedger.needsCanonicalRebuildRecovery()) return false
+        if (!force && !await this.statsLedger.needsCanonicalRebuildRecovery()) return false
         if (!isOperationIdle()) await waitForOperationIdle()
         // dirty再確認のawait中に別操作がslotをclaimしたら上書きせず再試行する。
-        if (!await this.statsLedger.needsCanonicalRebuildRecovery()) return false
+        if (!force && !await this.statsLedger.needsCanonicalRebuildRecovery()) return false
         if (!isOperationIdle()) continue
         setOperationState({
           type: 'rebuild',
@@ -397,7 +417,11 @@ export class AutoSyncService {
         })
         break
       }
-      return await this.recoverCanonicalRebuildWithOwnedSlot('idle', true)
+      return await this.recoverCanonicalRebuildWithOwnedSlot(
+        'idle',
+        true,
+        pendingFenceIds
+      )
     })()
     this.canonicalRecoveryPromise = recovery
     try {
@@ -408,13 +432,60 @@ export class AutoSyncService {
   }
 
   /**
+   * live canonical transaction失敗後のRaw Lake復旧を非同期予約する。
+   * 呼出元の取り込みを待たせず、同時要求は1本へ束ねる。復旧中に別の失敗が
+   * markerを追加した場合は、現行pass完了後にもう一度確認して回収する（MUST）。
+   */
+  async scheduleCanonicalRebuildRecovery(pendingFenceId?: string): Promise<void> {
+    if (pendingFenceId?.startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)) {
+      this.forcedCanonicalRecoveryFenceIds.add(pendingFenceId)
+    }
+    this.canonicalRecoveryRequestPending = true
+    if (this.canonicalRecoveryDrainPromise) {
+      return await this.canonicalRecoveryDrainPromise
+    }
+
+    const drain = (async (): Promise<void> => {
+      do {
+        this.canonicalRecoveryRequestPending = false
+        const pendingFenceIds = [...this.forcedCanonicalRecoveryFenceIds]
+        await this.recoverInterruptedCanonicalRebuild({
+          force: true,
+          pendingFenceIds,
+        })
+        pendingFenceIds.forEach(id => this.forcedCanonicalRecoveryFenceIds.delete(id))
+        const requestedDuringPass = this.canonicalRecoveryRequestPending
+        const durableRecoveryStillNeeded =
+          await this.statsLedger.needsCanonicalRebuildRecovery()
+        this.canonicalRecoveryRequestPending = requestedDuringPass ||
+          this.forcedCanonicalRecoveryFenceIds.size > 0 ||
+          durableRecoveryStillNeeded
+      } while (this.canonicalRecoveryRequestPending)
+    })()
+    this.canonicalRecoveryDrainPromise = drain
+
+    try {
+      await drain
+    } finally {
+      if (this.canonicalRecoveryDrainPromise === drain) {
+        this.canonicalRecoveryDrainPromise = null
+        // drainの最終条件判定とPromise解放の隙に届いた要求を失わない（MUST NOT）。
+        if (this.canonicalRecoveryRequestPending) {
+          await this.scheduleCanonicalRebuildRecovery()
+        }
+      }
+    }
+  }
+
+  /**
    * 呼出元が既に長時間操作slotを所有した状態でdirty canonicalを復旧する。
    * performSyncは最初のawaitより前にsync slotをclaimする必要があるため、
    * idleを待つpublic経路へ再入すると自分のsync slotを待ち続けてデッドロックする。
    */
   private async recoverCanonicalRebuildWithOwnedSlot(
     restoreOperationType: 'idle' | 'sync',
-    publishRecoveryError: boolean
+    publishRecoveryError: boolean,
+    pendingFenceIds: readonly string[] = []
   ): Promise<boolean> {
     this.statsLedger.resumeMaintenance()
     setOperationState({
@@ -425,7 +496,7 @@ export class AutoSyncService {
     let stopKeepAlive: (() => void) | undefined
     try {
       stopKeepAlive = await startKeepAlive()
-      await this.rebuildLocalEntities()
+      await this.rebuildLocalEntities(pendingFenceIds)
       return true
     } catch (error) {
       if (publishRecoveryError) {
@@ -1621,7 +1692,9 @@ export class AutoSyncService {
    *   players are lazily hydrated. A failed pass never activates its staging
    *   generation; normal exceptions also discard it best-effort.
    */
-  private async rebuildLocalEntities(): Promise<void> {
+  private async rebuildLocalEntities(
+    explicitPendingFenceIds: readonly string[] = []
+  ): Promise<void> {
     let stagingGeneration: number | undefined
     try {
       console.log('[AutoSync] Triggering chunked data rebuild after download...')
@@ -1642,8 +1715,12 @@ export class AutoSyncService {
       // このreplayが回収するのは開始時点で既に中断状態だった
       // exact raw-result fenceだけ。後着のライブ306はそのWESか、次回
       // recoveryが所有するため、完了時のprefix全削除はMUST NOT。
-      const recoveredPendingFenceIds =
-        await this.statsLedger.listInterruptedPendingHandDerivationFenceIds()
+      const recoveredPendingFenceIds = [...new Set([
+        ...await this.statsLedger.listInterruptedPendingHandDerivationFenceIds(),
+        ...explicitPendingFenceIds.filter(id =>
+          id.startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)
+        ),
+      ])]
       const totalEventCount = await this.db.apiEvents.count()
       // Keep the pre-rebuild key set so a successful canonical replay can
       // remove hands that were derived from an incomplete local Lake but are

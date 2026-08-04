@@ -387,6 +387,25 @@ describe('AutoSyncService cloud rebuild stats ledger generation', () => {
     expect(await service.statsLedger.needsCanonicalRebuildRecovery()).toBe(false)
   })
 
+  test('forced live recovery consumes an exact current-worker fence without a failed marker', async () => {
+    const replayEvents = handEvents(FIRST_HAND_ID, 1000)
+    const seeded = await mergeApiEvents(db, replayEvents as unknown as RawApiEvent[], {
+      atomicMetaRecordsForAdded: added =>
+        service.statsLedger.createPendingHandDerivationFenceRecords(added),
+    })
+    const replayResult = seeded.added.find(event => event.ApiTypeId === 306)!
+    const pendingFenceId = `${STATS_PENDING_HAND_DERIVATION_META_PREFIX}${replayResult.HandId}:${replayResult.timestamp}:${replayResult.sequence}`
+
+    // current worker所有・未failedなので通常のboot判定からは意図的に除外される。
+    expect(await service.statsLedger.needsCanonicalRebuildRecovery()).toBe(false)
+
+    await autoSyncService.scheduleCanonicalRebuildRecovery(pendingFenceId)
+
+    expect(await db.hands.get(FIRST_HAND_ID)).toBeDefined()
+    expect(await db.meta.get(pendingFenceId)).toBeUndefined()
+    expect((await service.statsLedger.readPlayerSnapshot(HERO_ID)).selectedHands).toBe(1)
+  })
+
   test('a partial cloud page atomically leaves a boot-recovery fence before rebuild starts', async () => {
     const events = handEvents(FIRST_HAND_ID, 1000)
     const cloudSpy = jest.spyOn(firestoreBackupService, 'syncFromCloud').mockImplementation(async options => {
@@ -428,6 +447,45 @@ describe('AutoSyncService cloud rebuild stats ledger generation', () => {
       status: 'error',
       error: 'synthetic recovery failure',
     })
+  })
+
+  test('live recovery scheduling coalesces overlap and drains a marker added mid-pass', async () => {
+    let resolveFirst!: (value: boolean) => void
+    const firstRecovery = new Promise<boolean>(resolve => {
+      resolveFirst = resolve
+    })
+    const recover = jest.spyOn(autoSyncService, 'recoverInterruptedCanonicalRebuild')
+      .mockImplementationOnce(async () => await firstRecovery)
+      .mockResolvedValueOnce(false)
+    const needsRecovery = jest.spyOn(
+      (autoSyncService as unknown as { statsLedger: StatsLedger }).statsLedger,
+      'needsCanonicalRebuildRecovery'
+    ).mockResolvedValueOnce(true).mockResolvedValueOnce(false)
+
+    const first = autoSyncService.scheduleCanonicalRebuildRecovery()
+    const overlapping = autoSyncService.scheduleCanonicalRebuildRecovery()
+    expect(recover).toHaveBeenCalledTimes(1)
+
+    resolveFirst(true)
+    await Promise.all([first, overlapping])
+
+    expect(recover).toHaveBeenCalledTimes(2)
+    expect(needsRecovery).toHaveBeenCalledTimes(2)
+  })
+
+  test('a failed scheduled recovery can be requested again by the next live failure', async () => {
+    const recover = jest.spyOn(autoSyncService, 'recoverInterruptedCanonicalRebuild')
+      .mockRejectedValueOnce(new Error('synthetic live recovery failure'))
+      .mockResolvedValueOnce(false)
+    jest.spyOn(
+      (autoSyncService as unknown as { statsLedger: StatsLedger }).statsLedger,
+      'needsCanonicalRebuildRecovery'
+    ).mockResolvedValue(false)
+
+    await expect(autoSyncService.scheduleCanonicalRebuildRecovery())
+      .rejects.toThrow('synthetic live recovery failure')
+    await expect(autoSyncService.scheduleCanonicalRebuildRecovery()).resolves.toBeUndefined()
+    expect(recover).toHaveBeenCalledTimes(2)
   })
 
   test('upload-only sync does not overwrite a dirty rebuild error before local recovery succeeds', async () => {

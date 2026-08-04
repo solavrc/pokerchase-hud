@@ -222,6 +222,9 @@ chimera判定で意図的に派生しないと確定した時に、対応するe
 同じ起動ownerの未完了fenceは通常のin-flightとして扱い、別owner・失敗済み・壊れたfenceは
 中断復旧とbaseline構築拒否の対象とする。cloud分割再構築は開始時に回収対象のexact IDを固定し、
 完了commitでそのIDだけを消すため、再構築中に到着したlive fenceを巻き込まない。
+live canonical transactionが失敗した場合は、failed状態の永続化自体が失敗しても、同一worker内の
+error通知がexact fence IDを非同期復旧へ引き継ぐ。この明示IDは通常の「current ownerはin-flight」
+判定を越えてRaw Lake再生の根拠になり、成功時のactivation transactionでだけ消える。
 手動の全再構築は`apiEvents`のRW lock下でLake全体の一致snapshotを再生し、その最終commitで
 pending fence全件を回収する。
 

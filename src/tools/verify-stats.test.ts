@@ -287,7 +287,7 @@ describe('verify-stats harness', () => {
 
   it('plain hand-count drift is compared as the eighteenth numeric metric', () => {
     const pipeline = new Map([
-      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { vpip: [30, 60] } }],
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { hands: 60, vpip: [30, 60] } }],
     ])
     const oracle = new Map([
       [PLAYER_A, { playerId: PLAYER_A, hands: 61, stats: { vpip: [30, 60] as [number, number] } }],
@@ -305,12 +305,97 @@ describe('verify-stats harness', () => {
     })
   })
 
-  it('legacy-ledger exact gate ignores the oracle threshold and rejects fraction or hand drift', () => {
+  it('compares the product HAND StatDefinition output instead of its eligibility count', () => {
+    const legacy = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { hands: 999, vpip: [30, 60] } }],
+    ])
+    const ledger = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { hands: 60, vpip: [30, 60] } }],
+    ])
+
+    const report = compareProductPaths(legacy, ledger)
+    const hands = report.stats.find(s => s.stat === 'hands')!
+    expect(hands).toMatchObject({ total: 1, agree: 0, missing: 0 })
+    expect(hands.mismatches[0]).toMatchObject({
+      playerId: PLAYER_A,
+      pipeline: [999, 0],
+      oracle: [60, 0],
+      dNum: 939,
+      dDen: 0,
+    })
+  })
+
+  it('treats a missing product HAND StatDefinition output as a mismatch', () => {
     const legacy = new Map([
       [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { vpip: [30, 60] } }],
     ])
     const ledger = new Map([
-      [PLAYER_A, { playerId: PLAYER_A, hands: 59, stats: { vpip: [29, 60] } }],
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { hands: 60, vpip: [30, 60] } }],
+    ])
+
+    const report = compareProductPaths(legacy, ledger)
+    const hands = report.stats.find(s => s.stat === 'hands')!
+    expect(hands).toMatchObject({ total: 1, agree: 0, missing: 1 })
+    expect(hands.mismatches[0]).toMatchObject({
+      playerId: PLAYER_A,
+      pipeline: undefined,
+      oracle: [60, 0],
+      missing: true,
+    })
+  })
+
+  it('does not accept a fraction-shaped product HAND output as a scalar count', () => {
+    const legacy = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { hands: [60, 0], vpip: [30, 60] } }],
+    ])
+    const ledger = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { hands: 60, vpip: [30, 60] } }],
+    ])
+
+    const report = compareProductPaths(legacy, ledger)
+    expect(report.stats.find(s => s.stat === 'hands')).toMatchObject({
+      total: 1,
+      agree: 0,
+      missing: 1,
+    })
+  })
+
+  it('rejects invalid counters without dropping the player from the exact gate', () => {
+    const legacy = new Map([
+      [PLAYER_A, {
+        playerId: PLAYER_A,
+        hands: Number.NaN,
+        stats: { hands: Number.POSITIVE_INFINITY, vpip: [1.5, 60] },
+      }],
+    ])
+    const ledger = new Map([
+      [PLAYER_A, {
+        playerId: PLAYER_A,
+        hands: -1,
+        stats: { hands: Number.POSITIVE_INFINITY, vpip: [1.5, 60] },
+      }],
+    ])
+
+    const report = compareProductPaths(legacy, ledger)
+    expect(report.eligiblePlayers).toBe(1)
+    expect(report.stats.find(s => s.stat === 'hands')).toMatchObject({
+      total: 1,
+      agree: 0,
+      missing: 1,
+    })
+    expect(report.stats.find(s => s.stat === 'vpip')).toMatchObject({
+      total: 1,
+      agree: 0,
+      missing: 1,
+    })
+  })
+
+  it('legacy-ledger exact gate ignores the oracle threshold and rejects fraction or hand drift', () => {
+    const legacy = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 60, stats: { hands: 60, vpip: [30, 60] } }],
+    ])
+    const ledger = new Map([
+      [PLAYER_A, { playerId: PLAYER_A, hands: 59, stats: { hands: 59, vpip: [29, 60] } }],
     ])
 
     const report = compareProductPaths(legacy, ledger)

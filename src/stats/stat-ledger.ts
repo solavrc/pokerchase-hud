@@ -83,7 +83,7 @@ interface PendingHandDerivationFence {
   failed?: true
 }
 
-type PendingHandDerivationEvent = {
+export type PendingHandDerivationEvent = {
   timestamp?: unknown
   ApiTypeId?: unknown
   sequence?: unknown
@@ -571,6 +571,13 @@ export class StatsLedger {
       })
     }
     return records
+  }
+
+  /** live失敗通知へpayloadを渡さずexact fenceだけを引き継ぐ。 */
+  getPendingHandDerivationFenceId(
+    event: PendingHandDerivationEvent
+  ): string | undefined {
+    return getPendingHandDerivationMetaId(event)
   }
 
   /** canonical成功または意図的棄却が確定したraw-resultだけを消す。 */
