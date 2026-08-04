@@ -16,6 +16,7 @@ import {
   type ReviewPromptState,
 } from '../constants/review-prompt'
 import type { ChromeMessage, MessageResponse } from '../types/messages'
+import { trackServiceForTeardown } from '../utils/test-service-teardown'
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 50))
 
@@ -53,7 +54,7 @@ describe('message-router review prompt', () => {
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = new PokerChaseService({ db })
+    service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
 
     ;(chrome.runtime.onMessage.addListener as jest.Mock).mockClear()
