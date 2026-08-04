@@ -54,7 +54,9 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
 
       if (eventType === ApiType.EVT_SESSION_RESULTS) {
         this.isSessionActive = false
-        this.emitClearStats()
+        // backgroundはストリームを発生元ポートごとに持つ。content_scriptが
+        // ローカル終了イベントで表示を消すため、ここではそのポートの内部状態だけを
+        // inactiveへ遷移させ、空更新はpushしない。
       }
 
       switch (event.ApiTypeId) {

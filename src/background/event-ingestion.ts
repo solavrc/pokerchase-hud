@@ -9,7 +9,13 @@ import PokerChaseService, {
   isApplicationApiEvent
 } from '../app'
 import { autoSyncService } from '../services/auto-sync-service'
-import { connectedPorts, startPortPing, setLastKnownStats } from './ports'
+import {
+  connectedPorts,
+  registerPortRealTimeStats,
+  releasePortRealTimeStats,
+  startPortPing,
+  writePortRealTimeStats
+} from './ports'
 import {
   INVALID_API_TYPE_ID_BUCKET,
   recordUndecodedEvent
@@ -188,6 +194,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   chrome.runtime.onConnect.addListener(port => {
     if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
       connectedPorts.add(port)
+      registerPortRealTimeStats(port)
       // 持ち越し分の再開点。セッション終了時に認証エンベロープを捕獲できて
       // いないと取得は繰り延べられる（キューには残る）。エンベロープは
       // ページ再読み込み後のホーム到達で捕まるので、そのページが繋いできた
@@ -257,6 +264,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
         // Keep lastKnownStats for page reloads - only clear interval
         stopPing()
         connectedPorts.delete(port)
+        releasePortRealTimeStats(port)
         // 対局中のまま切れたなら、再接続の猶予の間は「全タブがセッション外」を
         // 成立させない（500msで再接続する設計なので、その隙に撃たないため）。
         forgetPort(port)
@@ -464,62 +472,6 @@ const processEvent = async (
     ).catch(err => console.error('[background] Replay import enqueue failed:', err))
   }
 
-  if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS) {
-    // #179 round3指摘: セッション終了(EVT_SESSION_RESULTS)によるHUDクリアは
-    // App.tsx側のReact stateだけで完結しており、background(ports.ts)の
-    // `lastKnownStats`はセッションをまたいで残り続ける。この状態で
-    // Popupのバトルタイプフィルターが変更されると、message-router.tsの
-    // `updateBattleTypeFilter`ハンドラーが`getLastKnownStats()`（終了済み
-    // lineupのまま）を使って`service.statsOutputStream.write(...)`を
-    // 再トリガーし、ブロードキャストで終了済みlineupが復活してApp.tsxの
-    // クリア済みパネルへ再度流し込まれてしまう。上と同じ「パース成功後の
-    // data.ApiTypeIdではなく生メッセージの数値ApiTypeIdだけを見る」
-    // raw-firstパターンで（309のペイロード破壊的変更に影響されないよう）
-    // ここでlastKnownStatsを空にしておけば、以降のフィルター変更は
-    // `lastKnownStats.length > 0`のガードに引っかからずセッション開始前と
-    // 同じ「何もブロードキャストしない」挙動になる。プリゲーム・ヒーロー
-    // スタッツの復元（#158, `requestLatestStats`→`getLatestSessionStats`）
-    // はDBを読む別経路でありlastKnownStatsを参照しないため、この変更の
-    // 影響を受けない。
-    //
-    // post-merge reviewでは一時ここにhero単独lineupを合成する修正
-    // （round4/round5）や、App.tsx側にセッション状態・ヒーロー身元の
-    // 検証機構を足す修正（round6の「相互作用マトリクス」設計）を
-    // 積んだが、いずれもオーナー判断で撤回されている（PR #191,
-    // 2026-07-20, sola「それほど重要な機能ではないので、bで十分です」）。
-    // 理由: `service.setBattleTypeFilter()`は内部で無条件に
-    // `ReadEntityStream.recalculateStats()`を呼び、`lastKnownStats`の
-    // 中身に関係なく`service.latestEvtDeal.SeatUserIds`（ヒーローの
-    // 直近の実在席時点のフルの顔ぶれ。セッション終了後もクリアされ
-    // ない）を再計算・再ブロードキャストしてしまう。つまりこのファイル
-    // 側で`lastKnownStats`をどう作っても、その再ブロードキャストは
-    // 止められない別経路であり、追いかけるだけ複雑化する一方だった。
-    //
-    // 採用した方針（保守的な縮小スコープ）: bust後のミュート表示・
-    // hero身元の保持は「連続したライブシーケンス内」でのみ保証する
-    // （#158のセッション終了時hero保持は例外的にApp.tsx側で維持）。
-    // セッション終了後にフィルターを変更すると、`recalculateStats()`
-    // がヒーロー在籍時点の最後の実テーブル（対戦相手を含む）を新
-    // フィルターで再表示することがあるが、これは「不正確なデータ」
-    // ではなく「文脈的に古い可能性のある正確なデータ」であり、この
-    // 機能の重要度に見合わないため許容する。ここは元のround3の
-    // 意図通り単純な`[]`のままにする -- `updateBattleTypeFilter`の
-    // 明示的な`getLastKnownStats()`ベースの再write()を単にno-opに
-    // するだけで、他には何もしない。
-    //
-    // なお#188（read-entity-stream.tsのrecalculateStats()を呼ぶ
-    // message-router.tsのupdateBattleTypeFilterハンドラー自身）で、
-    // このwrite()と`recalculateStats()`の競合（観戦中のlineupが
-    // ヒーロー在籍dealのevtDealとペアリングされてしまうケース）に
-    // 対する`lineup-identity`ガードが別途入っており、この単純な
-    // `[]`のままでも競合は起きない。
-    //
-    // 203(参加取消申込)はここに含めない: 303/308が一度も届いていない
-    // （ハンドが一度も始まっていない）ため、そもそもクリアすべき
-    // ライブlineupが存在しない。
-    setLastKnownStats([])
-  }
-
   // Auto-sync起動・保留中アップデートの安全性再チェックも、上のセッション状態
   // 追跡と同じ理由で生メッセージの数値ApiTypeIdだけを見て判定する（codexレビュー
   // 指摘, P2）。autoSyncService.onGameSessionEnd()/onNewSessionStart()は
@@ -674,7 +626,8 @@ const processEvent = async (
   // ストリーム処理（DB保存は上で完了済み・耐久性確定済み）
   service.handLogStream.write(data)
   service.handAggregateStream.write(data)
-  service.realTimeStatsStream.write(data)
+  if (port) writePortRealTimeStats(port, data)
+  else service.realTimeStatsStream.write(data)
   // Auto-sync起動・pending update再チェック（309/201/308）は上のRaw
   // Event Lake保存直後に生ApiTypeIdベースで既にトリガー済み（本ブロックの
   // パース成功はストリーム投入のみが目的）

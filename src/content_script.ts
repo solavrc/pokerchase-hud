@@ -119,6 +119,7 @@ export interface StatsData {
   stats: PlayerStats[]
   evtDeal?: ApiEvent<ApiType.EVT_DEAL>  // 席のマッピング用のEVT_DEALイベント
   realTimeStats?: AllPlayersRealTimeStats  // リアルタイム統計（全プレイヤー）
+  realTimeOnly?: boolean  // 発生元ポートの現在ハンド専用更新
 }
 
 declare global {
@@ -179,6 +180,7 @@ const portManager = new RuntimePortManager({
         stats: PlayerStats[]
         evtDeal?: ApiEvent<ApiType.EVT_DEAL>
         realTimeStats?: AllPlayersRealTimeStats
+        realTimeOnly?: boolean
       }
       console.time('[content_script] Dispatching stats event')
       window.dispatchEvent(new CustomEvent(POKER_CHASE_SERVICE_EVENT, { detail: statsMessage }))
@@ -353,17 +355,16 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
         isGameActive = false
         stopKeepalive()
       }
-      // App.tsx へセッション終了を通知（bustしたプレイヤーの薄暗い表示を含む、
-      // hero以外の全HUDパネルをクリアするため）。309はここで生イベントとして
+      // App.tsx へセッション終了を通知し、現在ハンド専用のリアルタイム統計を
+      // クリアする。集計HUDはレビュー用に保持する。309はここで生イベントとして
       // 既に観測済みなので、background往復の新チャネルを追加せずその場でdispatchする。
       window.dispatchEvent(new CustomEvent(POKER_CHASE_SESSION_END_EVENT))
       break
 
     case EVT_ENTRY_CANCELLED_API_TYPE_ID:
       // 参加取消: ハンドが一度も始まっていないので、309と違いApp.tsxへの
-      // セッション終了通知（POKER_CHASE_SESSION_END_EVENT）は不要
-      // （そもそもクリアすべきライブHUDが存在しない）。keepaliveの解除
-      // だけ行う。
+      // セッション終了通知（POKER_CHASE_SESSION_END_EVENT）は不要。
+      // keepaliveの解除だけ行う。
       if (isGameActive) {
         isGameActive = false
         stopKeepalive()
@@ -426,13 +427,6 @@ const requestLatestStats = (preGame = false) => {
 }
 
 const messageHandlers: Record<string, (message: ChromeMessage) => void> = {
-  updateBattleTypeFilter: (message) => {
-    if ('filterOptions' in message) {
-      window.dispatchEvent(new CustomEvent(EVENTS.UPDATE_BATTLE_TYPE_FILTER, {
-        detail: message.filterOptions
-      }))
-    }
-  },
   latestStats: (message) => {
     if ('stats' in message) {
       const data: StatsData = { stats: message.stats }

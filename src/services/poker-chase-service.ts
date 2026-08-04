@@ -138,11 +138,9 @@ class PokerChaseService {
   // 使ってヒーロー基準の統計を再構築する。観戦モードdeal（Playerフィールド欠落）
   // でこれを更新してしまうと、ヒーロー敗退後に観戦しながらフィルターを変更した
   // 際、生きているはずのヒーローplayerIdに対して観戦テーブルの（履歴のない）
-  // 顔ぶれで統計が上書きされてしまう。一方 ports.ts のライブブロードキャスト
-  // （registerStreamSubscriptions）は座席回転のためだけに「今何が配信されて
-  // いるか」という一時的な文脈を必要とし、観戦モードdealでも追従してほしい
-  // （さもないと新しい観戦テーブルの統計が古いヒーロー席インデックスで誤回転
-  // される）。この2つの要求は両立しないため、フィールドを分けた。
+  // 顔ぶれで統計が上書きされてしまう。一方ライブ集計は「今何が配信されて
+  // いるか」という一時的な文脈を必要とし、ports.tsの集計ブロードキャストは
+  // このフィールドを参照する。この2つの要求は両立しないため、フィールドを分けた。
   private _liveEvtDeal?: ApiEvent<ApiType.EVT_DEAL>
   private readonly _sessionData: SessionState
   private _isInitialized: boolean = false
@@ -426,7 +424,9 @@ class PokerChaseService {
   readonly writeEntityStream: WriteEntityStream
   readonly statsOutputStream: ReadEntityStream             // Calculates and outputs stats
   readonly handLogStream: HandLogStream                    // Real-time hand log display
-  readonly realTimeStatsStream: RealTimeStatsStream        // Real-time stats for hero only
+  // ポート無しの処理・単体テスト用フォールバック。productionのライブ取り込みは
+  // ports.tsが接続ポートごとにRealTimeStatsStreamを生成する。
+  readonly realTimeStatsStream: RealTimeStatsStream
   constructor({ db, playerId }: { db: PokerChaseDB, playerId?: number }) {
     this._playerId = playerId
     this._sessionData = new SessionState(this.persistState)

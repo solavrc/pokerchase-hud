@@ -101,7 +101,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     whenIdleSpy.mockRestore()
   })
 
-  test('a valid application event is stored AND forwarded to the real-time streams', async () => {
+  test('a valid application event is stored and avoids the shared real-time stream', async () => {
     const handLogSpy = jest.spyOn(service.handLogStream, 'write')
     const aggregateSpy = jest.spyOn(service.handAggregateStream, 'write')
     const realTimeSpy = jest.spyOn(service.realTimeStatsStream, 'write')
@@ -116,7 +116,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
 
     expect(handLogSpy).toHaveBeenCalledTimes(1)
     expect(aggregateSpy).toHaveBeenCalledTimes(1)
-    expect(realTimeSpy).toHaveBeenCalledTimes(1)
+    expect(realTimeSpy).not.toHaveBeenCalled()
   })
 
   test('an application-type event that fails Zod validation is stored raw but NOT forwarded to streams', async () => {

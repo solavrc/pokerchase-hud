@@ -476,6 +476,34 @@ describe('App', () => {
     })
   })
 
+  it('発生元ポートのリアルタイム専用更新は集計lineupを上書きしない', async () => {
+    render(<App />)
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', { detail: mockStatsData }))
+    })
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
+        detail: {
+          stats: [{ playerId: 999, statResults: [] }],
+          realTimeOnly: true,
+          realTimeStats: {
+            heroStats: {},
+            playerStats: {
+              0: {
+                spr: 10,
+                potOdds: { pot: 300, call: 100, percentage: 25, ratio: '3:1', isPlayerTurn: true }
+              }
+            }
+          }
+        } satisfies StatsData
+      }))
+    })
+
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('Player: 1')
+    expect(screen.getByTestId('hud-0')).toHaveTextContent('PotOdds: yes')
+  })
+
   it('HandLogイベントでエントリが追加される', async () => {
     render(<App />)
     
@@ -790,7 +818,7 @@ describe('App', () => {
       expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: yes')
     })
 
-    it('セッション終了でheroを含む全ての開状態をリセットする', async () => {
+    it('セッション終了後もheroと対戦相手の直近ハンドパネルを開いたまま保持する', async () => {
       const user = userEvent.setup()
 
       render(<App />)
@@ -806,10 +834,11 @@ describe('App', () => {
         window.dispatchEvent(new CustomEvent('PokerChaseSessionEndEvent'))
       })
 
-      // heroのstats自体は残るが、パネルの一時UI状態はセッションをまたがない。
+      // 終了直後の振り返りに使えるよう、表示と開状態のどちらも維持する。
       expect(screen.getByTestId('hud-0')).toHaveTextContent('Player: 1')
-      expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: no')
-      expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: no')
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: yes')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: yes')
     })
 
     it('テーブル切替を検出したら、同じhero playerIdのパネルも含めてリセットする', async () => {
@@ -935,7 +964,8 @@ describe('App', () => {
       expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
     })
 
-    it('セッション終了(EVT_SESSION_RESULTS)でhero以外の全パネル（ミュート中含む）がクリアされ、heroパネルはそのまま残る', async () => {
+    it('セッション終了後も全HUDを保持し、離席中の薄暗い表示と直近ハンドへの到達性も保つ', async () => {
+      const user = userEvent.setup()
       render(<App />)
       await act(async () => {
         window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
@@ -966,25 +996,32 @@ describe('App', () => {
       await dispatchStats(bustedLineup)
       expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
       expect(screen.getByTestId('hud-0')).toHaveTextContent('Player: 1')
+      await user.click(screen.getByText('toggle-recent-2'))
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: yes')
 
       await act(async () => {
         window.dispatchEvent(new CustomEvent('PokerChaseSessionEndEvent'))
       })
 
-      // hero(席0)はそのまま残る
+      // 現在ハンド専用の値だけ消え、集計HUDと開状態は変わらない。
       expect(screen.getByTestId('hud-0')).toHaveTextContent('Player: 1')
       expect(screen.getByTestId('hud-0')).toHaveTextContent('PotOdds: no')
-      // hero以外は空席へクリアされ、ミュートも解除される
-      for (let i = 1; i < 6; i++) {
-        expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Player: -1')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: yes')
+      for (let i = 2; i < 6; i++) {
+        expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent(`Player: ${i + 1}`)
         expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Dimmed: no')
       }
 
-      // セッション終了後、同じ席に新しいプレイヤーが着席したlineupが来れば
-      // 通常通り表示される（クリアが以降のライブ更新を壊さない）
-      await dispatchStats(mockStatsData.stats)
-      expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+      // 次の信頼できるdealで同じ席に別人が着席すれば、保持値を自然に置換する。
+      const nextSessionLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (
+        i === 1 ? { playerId: 99, statResults: [] } : s
+      ))
+      await dispatchStats(nextSessionLineup)
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 99')
       expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: no')
     })
 
     it('インポート後のバッチ再計算（latestStatsのchromeメッセージ）はミュート状態を持ち込まない', async () => {
@@ -1183,7 +1220,7 @@ describe('App', () => {
       })
     })
 
-    describe('曖昧な境界での挙動（観戦モードdeal・フィルター変更・リロード。PR #191、オーナー承認の縮小スコープ）', () => {
+    describe('保持境界での挙動（観戦モードdeal・フィルター変更・リロード）', () => {
       // baseSchema/EVT_DEALスキーマ（src/types/api.ts）を満たす最小限のEVT_DEAL。
       // playerOverrideを渡さなければPlayerフィールド自体を省略する（観戦モード
       // ＝Player不在をisApiEventType()のZod検証込みで再現するため）。
@@ -1208,7 +1245,8 @@ describe('App', () => {
 
       const heroDeal = () => makeEvtDeal({ SeatIndex: 0, BetStatus: 1, HoleCards: [], Chip: 1000, BetChip: 0 })
 
-      it('観戦モードdeal（EVT_DEAL.Player不在）ではdimCacheを適用せず、生のlineupをそのまま表示する（旧テーブルの空席ゴーストが蘇らない）', async () => {
+      it('観戦モードdeal（EVT_DEAL.Player不在）は、最後のヒーロー着席lineupを上書きしない', async () => {
+        const user = userEvent.setup()
         render(<App />)
 
         // ヒーロー在籍のhandで席1(プレイヤー2)がbustしてミュート表示になる
@@ -1216,11 +1254,24 @@ describe('App', () => {
         const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
         await act(async () => {
           window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
-            detail: { stats: bustedLineup, evtDeal: heroDeal() } as StatsData,
+            detail: {
+              stats: bustedLineup,
+              evtDeal: heroDeal(),
+              realTimeStats: {
+                heroStats: {},
+                playerStats: {
+                  0: {
+                    spr: 10,
+                    potOdds: { pot: 300, call: 100, percentage: 25, ratio: '3:1', isPlayerTurn: true }
+                  }
+                }
+              }
+            } as StatsData,
           }))
         })
         expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
         expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
+        await user.click(screen.getByText('toggle-recent-2'))
 
         // ヒーロー敗退後、観戦モードdealが届く: Playerがundefinedで、生の
         // （ヒーロー自身のテーブルとすら限らない）別テーブルの席順が来る。
@@ -1239,17 +1290,19 @@ describe('App', () => {
           }))
         })
 
-        // 旧テーブルのプレイヤー(2)がミュート表示のまま蘇ってはいけない --
-        // dimCacheは適用されず観戦テーブルの生の席順がそのまま出る
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: -1')
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
-        expect(screen.getByTestId('hud-2')).toHaveTextContent('Player: 900')
+        // 観戦先はヒーロー基準へ回転できないため表示に採用せず、レビュー対象の
+        // 離席プレイヤーと開いた直近ハンドをそのまま保持する。
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: yes')
+        expect(screen.getByTestId('hud-2')).toHaveTextContent('Player: 3')
         expect(screen.getByTestId('hud-2')).toHaveTextContent('Dimmed: no')
-        expect(screen.getByTestId('hud-3')).toHaveTextContent('Player: 901')
+        expect(screen.getByTestId('hud-3')).toHaveTextContent('Player: 4')
         expect(screen.getByTestId('hud-3')).toHaveTextContent('Dimmed: no')
+        expect(screen.getByTestId('hud-0')).toHaveTextContent('PotOdds: yes')
       })
 
-      it('直前が観戦モードdealでも、セッション終了時に本物のヒーローが保持される（観戦先の生の席0で上書きされない）', async () => {
+      it('観戦モードdealとセッション終了を連続で受けても、最後のヒーロー着席lineup全体を保持する', async () => {
         render(<App />)
         await act(async () => {
           window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
@@ -1269,71 +1322,59 @@ describe('App', () => {
             detail: { stats: spectatorLineup, evtDeal: makeEvtDeal() } as StatsData,
           }))
         })
-        expect(screen.getByTestId('hud-0')).toHaveTextContent('Player: 999')
+        expect(screen.getByTestId('hud-0')).toHaveTextContent('Player: 1')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
 
         await act(async () => {
           window.dispatchEvent(new CustomEvent('PokerChaseSessionEndEvent'))
         })
 
-        // hero(1)が保持される -- 観戦先の生の席0(999)に上書きされてはいけない
+        // 観戦先の生の席0(999)にもセッション終了にも上書きされない。
         expect(screen.getByTestId('hud-0')).toHaveTextContent('Player: 1')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
       })
 
-      it('フィルター変更(updateBattleTypeFilter)で、ミュート表示中の座席のキャッシュが無効化される', async () => {
+      it('フィルター変更でも、離席中のHUDと開いた直近ハンドを保持し、新しい着席者だけが置換する', async () => {
+        const user = userEvent.setup()
         render(<App />)
         await dispatchStats(mockStatsData.stats)
-
-        // 席1(プレイヤー2)がbustしてミュート表示になる
         const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
         await dispatchStats(bustedLineup)
+        await user.click(screen.getByText('toggle-recent-2'))
+
+        await act(async () => {
+          window.dispatchEvent(new CustomEvent('updateBattleTypeFilter'))
+        })
+
         expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
         expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: yes')
 
-        // content_script.tsが'updateBattleTypeFilter'メッセージ受信時に
-        // dispatchする同名のwindowイベント
-        await act(async () => {
-          window.dispatchEvent(new CustomEvent('updateBattleTypeFilter', {
-            detail: { gameTypes: { sng: true, mtt: false, ring: true } },
-          }))
-        })
-
-        // ミュート表示中だった座席は古いフィルターの統計を出し続けず
-        // 「Waiting for Hand...」へクリアされる
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: -1')
+        const takeoverLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (
+          i === 1 ? { playerId: 99, statResults: [] } : s
+        ))
+        await dispatchStats(takeoverLineup)
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 99')
         expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
-        // ライブ在籍中のhero・他の座席は無関係に影響を受けない
-        expect(screen.getByTestId('hud-0')).toHaveTextContent('Player: 1')
-        expect(screen.getByTestId('hud-0')).toHaveTextContent('Dimmed: no')
-
-        // クリア後、席1に同じプレイヤー(2)が戻ってきたら通常通り表示される
-        // （キャッシュのクリアが以降のライブ更新を壊さない）
-        await dispatchStats(mockStatsData.stats)
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: no')
       })
 
-      it('フィルター変更時、ミュート中の座席がなければ何もしない（不要な再レンダリングを避ける）', async () => {
+      it('フィルター変更時、在席中のlineupもそのまま維持する', async () => {
         render(<App />)
         await dispatchStats(mockStatsData.stats)
-        expect(screen.getByTestId('hud-0')).toHaveTextContent('Player: 1')
 
         await act(async () => {
-          window.dispatchEvent(new CustomEvent('updateBattleTypeFilter', {
-            detail: { gameTypes: { sng: true, mtt: false, ring: true } },
-          }))
+          window.dispatchEvent(new CustomEvent('updateBattleTypeFilter'))
         })
 
-        // 全席ライブ在籍中で誰もミュートされていないので、フィルター変更は
-        // 何も変えない
         for (let i = 0; i < 6; i++) {
           expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent(`Player: ${i + 1}`)
           expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Dimmed: no')
         }
       })
 
-      it('観戦モードdealを挟んだ後のフィルター変更も、hero以外のdimCacheを無条件でクリアする（観戦先の生の座席に偶然誰か在席していても関係ない。post-merge review descope pass3でisLiveNowの選択的温存を撤回し単純な無条件クリアに戻した）', async () => {
+      it('観戦モードdealとフィルター変更を挟んでも、離席中のヒーロー着席lineupを保持する', async () => {
         render(<App />)
-        // ヒーロー在籍のhandで席1(プレイヤー2)がbustしてミュート表示になる
         await act(async () => {
           window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
             detail: { stats: mockStatsData.stats, evtDeal: heroDeal() } as StatsData,
@@ -1345,12 +1386,7 @@ describe('App', () => {
             detail: { stats: bustedLineup, evtDeal: heroDeal() } as StatsData,
           }))
         })
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
 
-        // ヒーロー敗退後、観戦モードdealが届く。観戦先の生の座席1には
-        // 偶然別の在席者(777)がいる -- これはhero自身のテーブルの席1とは
-        // 無関係の別空間の座席
         const spectatorLineup: StatsData['stats'] = [
           { playerId: -1 },
           { playerId: 777, statResults: [] },
@@ -1360,84 +1396,46 @@ describe('App', () => {
           window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
             detail: { stats: spectatorLineup, evtDeal: makeEvtDeal() } as StatsData,
           }))
-        })
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 777')
-
-        // この観戦中にフィルターが変わる -- 座席の在籍状況を問わず、
-        // hero以外のdimCacheは無条件でクリアされる
-        await act(async () => {
-          window.dispatchEvent(new CustomEvent('updateBattleTypeFilter', {
-            detail: { gameTypes: { sng: true, mtt: false, ring: true } },
-          }))
+          window.dispatchEvent(new CustomEvent('updateBattleTypeFilter'))
         })
 
-        // ヒーロー在籍dealに戻り、hero自身のテーブルの席1は引き続き空席
-        const stillBustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
-        await act(async () => {
-          window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
-            detail: { stats: stillBustedLineup, evtDeal: heroDeal() } as StatsData,
-          }))
-        })
-
-        // プレイヤー2の古いキャッシュがクリアされているので、席1は
-        // 「Waiting for Hand...」のまま -- 観戦を挟んでも古いプレイヤー2が
-        // ミュート表示のまま蘇ってはいけない
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: -1')
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
+        expect(screen.getByTestId('hud-0')).toHaveTextContent('Player: 1')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
       })
 
-      it('latestStats(バッチ再計算)を挟んだ後のフィルター変更も、hero以外のdimCacheを無条件でクリアする（post-merge review descope pass3、バッチ経路でも同じ無条件クリアが効くことの確認）', async () => {
+      it('latestStats一括更新で一時的に空席になっても、フィルター変更は保持キャッシュを削除しない', async () => {
         render(<App />)
         await dispatchStats(mockStatsData.stats)
+        const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
+        await dispatchStats(bustedLineup)
+
+        const messageHandler = (chrome.runtime.onMessage.addListener as jest.Mock).mock.calls[0][0]
+        await act(async () => {
+          messageHandler({ action: 'latestStats', stats: bustedLineup })
+          window.dispatchEvent(new CustomEvent('updateBattleTypeFilter'))
+        })
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: -1')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
+
+        await dispatchStats(bustedLineup)
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
+      })
+
+      it('フィルター変更直後に離席しても、直前の在席者を最初の空席更新から薄く保持する', async () => {
+        render(<App />)
+        await dispatchStats(mockStatsData.stats)
+
+        await act(async () => {
+          window.dispatchEvent(new CustomEvent('updateBattleTypeFilter'))
+        })
+
         const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
         await dispatchStats(bustedLineup)
         expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
         expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
 
-        // インポート後のrefreshStats往復相当: 'latestStats'が来る
-        const addListenerCalls = (chrome.runtime.onMessage.addListener as jest.Mock).mock.calls
-        const messageHandler = addListenerCalls[0][0]
-        await act(async () => {
-          messageHandler({ action: 'latestStats', stats: bustedLineup })
-        })
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: -1')
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
-
-        await act(async () => {
-          window.dispatchEvent(new CustomEvent('updateBattleTypeFilter', {
-            detail: { gameTypes: { sng: true, mtt: false, ring: true } },
-          }))
-        })
-
-        await dispatchStats(bustedLineup)
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: -1')
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
-      })
-
-      it('許容する既知のギャップ: フィルター変更の直後・次のライブdealが届く前に対戦相手がbustすると、その1回だけdim表示が出ない。ただし次のライブ更新でdimCacheは必ず再構築され、以降のbustは正しくdim表示される（自己修復。post-merge review descope pass3でオーナー承認のギャップとして明記）', async () => {
-        render(<App />)
-        await dispatchStats(mockStatsData.stats)
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
-
-        // 誰もミュートされていない状態でフィルターが変わる -- 無条件クリア
-        // により、席1(まだライブ在籍中のプレイヤー2)のキャッシュも消える
-        await act(async () => {
-          window.dispatchEvent(new CustomEvent('updateBattleTypeFilter', {
-            detail: { gameTypes: { sng: true, mtt: false, ring: true } },
-          }))
-        })
-
-        // フィルター変更の直後、次のライブdealが届く前にプレイヤー2がbust
-        // する -- キャッシュが無いのでdim表示は出ない（許容するギャップ）
-        const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
-        await dispatchStats(bustedLineup)
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: -1')
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
-
-        // 自己修復の確認: 同じ席に新しいプレイヤー(99)が着席する。この
-        // ライブ更新でdimCacheが打ち直され、bust→dimの仕組みが以降の
-        // bustについて正常に機能するようになる
         const newOccupantLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (
           i === 1 ? { playerId: 99, statResults: [] } : s
         ))
@@ -1445,8 +1443,6 @@ describe('App', () => {
         expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 99')
         expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
 
-        // この新しいプレイヤー(99)がbustすると、通常通りdim表示される --
-        // キャッシュ基盤がフィルター変更のギャップから完全に回復している証拠
         const newOccupantBustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (
           i === 1 ? { playerId: -1 } : s
         ))
@@ -1455,44 +1451,22 @@ describe('App', () => {
         expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
       })
 
-      it('latestStats(バッチ再計算)でdimmedSeatIndicesが空にリセットされた後でも、フィルター変更は取り残されたdimCacheエントリを無効化する（post-merge review P2「Clear cached muted seats even after dim state resets」）', async () => {
+      it('セッション終了後のフィルター変更でも、離席HUDと開いた直近ハンドを保持する', async () => {
+        const user = userEvent.setup()
         render(<App />)
         await dispatchStats(mockStatsData.stats)
-
-        // 席1(プレイヤー2)がbustしてミュート表示になる
         const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
         await dispatchStats(bustedLineup)
+        await user.click(screen.getByText('toggle-recent-2'))
+
+        await act(async () => {
+          window.dispatchEvent(new CustomEvent('PokerChaseSessionEndEvent'))
+          window.dispatchEvent(new CustomEvent('updateBattleTypeFilter'))
+        })
+
         expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
         expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
-
-        // インポート後のrefreshStats往復相当: chrome.runtime.onMessageで
-        // 'latestStats'が来る（席1は改めて空席として届く）。この経路は
-        // dimmedSeatIndicesを空にリセットするが、dimCacheRef自体には
-        // 触れない -- 席1の"プレイヤー2"のキャッシュは取り残されたまま
-        const addListenerCalls = (chrome.runtime.onMessage.addListener as jest.Mock).mock.calls
-        const messageHandler = addListenerCalls[0][0]
-        const batchLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
-        await act(async () => {
-          messageHandler({ action: 'latestStats', stats: batchLineup })
-        })
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: -1')
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
-
-        // この時点でdimmedSeatIndicesは空 -- 旧実装(dimmedSeatIndicesRef基準の
-        // クリア)だと、フィルター変更ハンドラーは「クリアすべき座席なし」と
-        // 誤認して早期returnし、取り残されたdimCacheの席1エントリを見逃す
-        await act(async () => {
-          window.dispatchEvent(new CustomEvent('updateBattleTypeFilter', {
-            detail: { gameTypes: { sng: true, mtt: false, ring: true } },
-          }))
-        })
-
-        // 席1が引き続き空席のライブ更新が届いても、取り残された古いフィルター
-        // 統計(プレイヤー2)がdimCacheから復活してミュート表示されてはいけない
-        const stillBustedLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (i === 1 ? { playerId: -1 } : s))
-        await dispatchStats(stillBustedLineup)
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: -1')
-        expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
+        expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: yes')
       })
 
       it('リロード/再マウント境界: 事前状態やセッション開始シグナルを一切必要とせず、新しいマウントは空の状態から通常通りライブ更新を受け付ける（縮小スコープの下では特別なガードを持たない）', async () => {

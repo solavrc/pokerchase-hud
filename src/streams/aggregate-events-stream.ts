@@ -102,9 +102,8 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           // （意図的に維持する挙動）。
           //
           // 一方 liveEvtDeal（非永続化・「今まさに配信中の席」の文脈、Player有無に
-          // 関わらず毎回更新）を別に持ち、ports.ts のライブ統計ブロードキャスト
-          // （registerStreamSubscriptions の statsOutputStream/realTimeStatsStream
-          // 購読）だけがこちらを参照する。
+          // 関わらず毎回更新）を別に持ち、ports.tsの集計ブロードキャストだけが
+          // こちらを参照する。現在ハンド専用の値は別途ポート単位で管理する。
           //
           // この2フィールド分離が必要な理由（1段階目の修正でlatestEvtDealをガード
           // なしにしたことで新たに生じた問題 — codex #177 再レビュー指摘）:

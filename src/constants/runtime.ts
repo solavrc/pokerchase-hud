@@ -15,12 +15,11 @@ export const STORAGE_KEY = 'pokerChaseServiceState'
 /**
  * content_script.ts が生の EVT_SESSION_RESULTS（309）をページの window.postMessage
  * から直接観測した際に dispatch する window CustomEvent。App.tsx はこれを購読し、
- * hero（席0）以外の HUD パネル（bust後の薄暗い表示を含む）をクリアする（sola仕様、
- * 「セッション終了後はhero以外のstatsはクリアしてOK」）。
+ * 現在ハンド専用のリアルタイム統計だけをクリアする。集計HUDとドリルダウンは
+ * セッション終了後のレビュー用に保持する。
  *
  * 新しいchrome runtimeメッセージチャネルは追加しない -- content_script.ts は
  * background へ転送する前に既に309を生イベントとして見ているので、その場で
- * ローカルにdispatchするだけで background 側（poker-chase-service.ts /
- * event-ingestion.ts）に一切手を入れずに済む。
+ * ローカルにdispatchするため、破損した309がZod検証を通らない場合も通知できる。
  */
 export const POKER_CHASE_SESSION_END_EVENT = 'PokerChaseSessionEndEvent'

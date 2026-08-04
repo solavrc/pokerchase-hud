@@ -8,7 +8,7 @@
 `apiEvents`テーブルは**受信した生イベントの完全なログ**であり、Zodスキーマ検証の
 成否やアプリケーションイベントか否かに関わらず、数値の`timestamp`+`ApiTypeId`を
 持つイベントは全て保存する。バリデーションが左右するのはリアルタイム処理
-パイプライン（`handLogStream`/`handAggregateStream`/`realTimeStatsStream`と
+パイプライン（`handLogStream`/`handAggregateStream`/接続ポートごとの`realTimeStatsStream`と
 `EntityConverter`/`HandLogProcessor`への投入可否）だけであり、保存そのものを
 左右しない。
 

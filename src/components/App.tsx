@@ -50,8 +50,7 @@ const isExistPlayerStats = (stat: PlayerStats): stat is ExistPlayerStats =>
 
 // ヒーローは常に配列index 0（rotateArrayFromIndexでヒーローの席をposition 0へ
 // 回転済み。pregameフォールバック[background/import-export.tsのgetLatestSessionStats]
-// も`[heroStat, ...emptySeats]`で同じ規約に従う）。sola仕様: セッション終了後も
-// hero以外だけクリアする（#158でhero単独のキャリア統計はpregameで別途復元される）。
+// も`[heroStat, ...emptySeats]`で同じ規約に従う）。
 const HERO_SEAT_INDEX = 0
 
 const App = memo(() => {
@@ -76,20 +75,6 @@ const App = memo(() => {
   const dimCacheRef = useRef<Map<number, ExistPlayerStats>>(new Map())
   // 現在ミュート表示中の座席index集合。Hudへ`isDimmed`として渡す。
   const [dimmedSeatIndices, setDimmedSeatIndices] = useState<ReadonlySet<number>>(new Set())
-  // dimmedSeatIndicesの同期読み取り用ミラー（#179 P2「Invalidate dimmed stats
-  // on filter recomputes」指摘への対応で追加）。フィルター変更ハンドラー
-  // (handleBattleTypeFilterUpdate)は「今どの座席がミュート表示中か」を
-  // setState外の同期コードから知る必要があるが、React stateのprevは
-  // updater関数の外では読めない（読めても次コミットまで反映保証がない）。
-  // setDimmedSeatIndicesを呼ぶ全箇所をapplyDimmedSeatIndices経由に統一し、
-  // 常にこのrefと状態を同時に更新することで、後続のイベントハンドラーが
-  // 呼ばれた時点では既に最新値になっている（dimCacheRefと同じ理由でuseRefを
-  // 使う）。
-  const dimmedSeatIndicesRef = useRef<ReadonlySet<number>>(new Set())
-  const applyDimmedSeatIndices = useCallback((next: ReadonlySet<number>) => {
-    dimmedSeatIndicesRef.current = next
-    setDimmedSeatIndices(next)
-  }, [])
   // ドリルダウンパネルはHUDツリーにローカルな一時状態（グローバル設定への
   // 永続化は不要）。ポジション別は従来どおり高々1プレイヤー、直近ハンドは
   // playerIdの集合で管理して複数プレイヤーを独立に開閉できる。
@@ -152,11 +137,9 @@ const App = memo(() => {
     setOpenRecentHandsPanelPlayerIds(new Set())
   }, [])
 
-  // 表示中のラインナップからplayerIdが消える境界（席交代、非heroの
-  // セッション終了処理、batch refreshなど）で、その開状態もpruneする。
-  // これにより古いplayerIdが別席・別セッションで再登場しても勝手に
-  // 再オープンしない。bust済みプレイヤーはdimCache経由でstatsに残るため、
-  // 通常のセッション/テーブルリセットまでは開状態を維持する。
+  // 表示中のラインナップからplayerIdが実際に消える境界（席交代、信頼できる
+  // 一括更新、テーブル切替）で、その開状態もpruneする。離席とセッション終了は
+  // statsを保持するためここでは消えず、直近ハンドへ引き続きアクセスできる。
   useEffect(() => {
     const displayedPlayerIds = new Set(
       stats.filter(isExistPlayerStats).map(stat => stat.playerId)
@@ -175,32 +158,32 @@ const App = memo(() => {
     })
   }, [stats])
 
-  // 仕様（PR #191、オーナー承認の縮小スコープ、2026-07-20。sola:
-  // 「それほど重要な機能ではないので、bで十分です」）:
-  //
-  // - bustしたプレイヤーのdim表示・ヒーローの身元保持は「連続したライブ
-  //   シーケンス」の中でのみ保証する: bust→dim（離席バッジ）→同じ席への
-  //   実着席で即座に通常表示へ復帰、そして生の309（セッション終了）で
-  //   hero以外の全パネルをクリアしつつheroパネルだけはdimCache経由で
-  //   保持する（下のhandleSessionEnd）。
-  // - それ以外の曖昧な境界（観戦モードdeal、ページリロード/再マウント、
-  //   フィルター変更による再計算、`latestStats`一括配信）は、個別に
-  //   「今どちらの文脈か」を検証・追跡する仕組みを持たず、単純に
-  //   dimCacheを適用しない/表示中のミュートをクリアするだけにする
-  //   （観戦モードdealはdimCacheの読み書きを丸ごとスキップし生のlineupを
-  //   そのまま表示、フィルター変更・一括配信はミュート表示状態を
-  //   リセットする）。
-  // - 3巡のpost-merge reviewで「観戦中もヒーローの身元を検証付きで
-  //   追跡し続ける」「セッションが今アクティブかを独立に追跡する」という
-  //   方向へ機構を積み増したが（heroPlayerIdRef、sessionActiveRef、
-  //   trustedRotationゲート）、そのたびに新しい境界ケースが見つかり続けた
-  //   （詳細はPR #191のレビュー履歴）。この機能の重要度に見合わないと
-  //   判断し、それらは全て撤回した。テーブル移動検知ヒューリスティック
-  //   （下記conflictSeatCount）はこの縮小スコープの一部として現状維持
-  //   （round1-3で既に磨き込み済み、既知の限界も含めて許容範囲）。
+  // 離席後の統計とドリルダウンはレビュー用の表示なので、セッション終了や
+  // フィルター変更だけでは削除してはならない（MUST NOT）。信頼できるヒーロー
+  // 着席dealで同じ席に実プレイヤーが来た場合は、その新しい在席者で置換する。
+  // 現在lineupにいないplayerIdは再集計できないため、フィルター変更後も最後に
+  // 計算できたスナップショットを表示する。
   const handleStatsMessage = useCallback(
     ({ detail }: CustomEvent<StatsData>) => {
       let mappedStats = detail.stats
+
+      // SPR・ポットオッズの実況更新はbackgroundで発生元ポートにだけ配信される。
+      // 集計lineupを触らず、現在ハンド専用値だけを更新する。
+      if (detail.realTimeOnly) {
+        if (detail.realTimeStats) setAllPlayersRealTimeStats(detail.realTimeStats)
+        return
+      }
+
+      // 観戦dealはPlayerが無いためヒーロー基準へ回転できず、別テーブルの席順かも
+      // しれない。この未回転lineupでレビュー対象のHUDを上書きしてはならない
+      // （MUST NOT）。現在ハンド専用値は上のポート固有経路で更新済みなので、
+      // 全ポートへ届く集計ブロードキャストでは変更しない。
+      const isSpectatorDeal = detail.evtDeal !== undefined
+        && isApiEventType(detail.evtDeal, ApiType.EVT_DEAL)
+        && detail.evtDeal.Player === undefined
+      if (isSpectatorDeal) {
+        return
+      }
 
       // 監査指摘11（P2）対応: ports.tsが積んだhandEpochをそのまま状態へ反映する。
       // 実況の1アクションごとの更新（realTimeStatsのみの配信）ではports.ts側で
@@ -225,42 +208,6 @@ const App = memo(() => {
         setHeroOriginalSeatIndex(heroSeatIndex)
 
         mappedStats = rotateArrayFromIndex(detail.stats, heroSeatIndex)
-      }
-
-      // 観戦モードdeal（#179 post-merge review P2「Avoid applying dim cache to
-      // unrotated spectator deals」指摘）: EVT_DEAL.Playerがundefinedのとき
-      // （docs/api-events.md「観戦モード」-- ヒーロー敗退後もクライアントが
-      // 他プレイヤーのテーブルを受信し続けるケース。CLAUDE.md「Hero playerId
-      // must survive spectator-mode deals」も参照）、上の回転は行われず
-      // mappedStatsは生の（ヒーロー自身のテーブルとすら限らない、別テーブル
-      // かもしれない）席順のまま届く。これはaggregate-events-stream.tsの
-      // liveEvtDealがPlayer有無に関わらず毎回追従する設計（#177）により、
-      // ports.tsのライブブロードキャストが観戦中の別テーブルの新しい顔ぶれを
-      // そのまま流してくることに由来する（docs/api-events.md「テーブル移動
-      // キメラハンド」と同根 -- クライアントは移動/観戦先のイベントを普通に
-      // 受信し続ける）。
-      //
-      // dimCacheは表示座席（回転後、hero=0）空間のキーで運用しているため、
-      // この生の（別空間かもしれない）席順にそのまま適用すると、無関係な
-      // 別テーブルの空席に旧テーブルのミュートプレイヤーが誤って表示されて
-      // しまう（座席インデックスの数値がたまたま一致するだけの偶然の一致）。
-      // evtDeal自体が存在しないケース（テストや初回未初期化など、mappedStats
-      // が既に表示座席空間にある前提で運用してきたケース、下のdimCacheロジック
-      // 一式のテストカバレッジもこの前提）とは区別し、「evtDealがEVT_DEALとして
-      // 存在するのにPlayerがundefined」という観戦確定シグナルがある時だけ
-      // dimCacheの読み書き（テーブル移動検知・ミュート適用の両方）を丸ごと
-      // スキップし、mappedStatsをそのまま表示する。dimCache自体はクリアしない
-      // （観戦は一時的な状態で、ヒーロー在籍dealに戻ればまた正しい空間で
-      // 再開できる -- #179 P2「Preserve the hero by player id at session end」
-      // 対応のためHERO_SEAT_INDEXのエントリを観戦中も保持し続ける必要がある、
-      // 下のhandleSessionEnd参照）。
-      const isSpectatorDeal = detail.evtDeal !== undefined
-        && isApiEventType(detail.evtDeal, ApiType.EVT_DEAL)
-        && detail.evtDeal.Player === undefined
-      if (isSpectatorDeal) {
-        applyDimmedSeatIndices(new Set())
-        setStats(mappedStats)
-        return
       }
 
       // bustしたプレイヤーの薄暗い表示（sola仕様）:「bustしたプレイヤーのstatsは
@@ -324,10 +271,7 @@ const App = memo(() => {
       // 1つの座席自体は上書きロジックで即座に正しい表示になり、残る他の
       // ミュート座席も後続のハンドで(a)本物の在席者到着で個別に上書きされる
       // か、(b)空席のまま次にconflictが2件以上になるタイミングでまとめて
-      // クリアされるか、(c)セッション終了でクリアされる。「わからない時は
-      // 消さない」というsola仕様の優先順位（bustパネルが1テンポ遅れて消える
-      // 程度の実害 < 無関係な旧テーブルのbustパネルを誤って蘇らせる実害）に
-      // 沿っている。
+      // クリアされる。「わからない時は消さない」という優先順位に沿っている。
       //
       // conflictが0件、または1件のみ(continuityの有無を問わず)なら何もしない
       // -- 例: hero以外が同一ハンドで全員同時bustした直後のhero単独lineup
@@ -385,10 +329,10 @@ const App = memo(() => {
         return stat
       })
 
-      applyDimmedSeatIndices(nextDimmedSeatIndices)
+      setDimmedSeatIndices(nextDimmedSeatIndices)
       setStats(dimmedStats)
     },
-    [applyDimmedSeatIndices, closeAllDrillDownPanels]
+    [closeAllDrillDownPanels]
   )
 
   useEffect(() => {
@@ -417,39 +361,11 @@ const App = memo(() => {
     }
   }, [handleStatsMessage])
 
-  // セッション終了(EVT_SESSION_RESULTS)でhero以外のHUDパネルをクリアする(sola仕様:
-  // 「引き続きセッション終了後はhero以外のstatsはクリアしてOK」)。bustミュート表示中
-  // だった座席も対象に含む -- ミュートは「同一セッション内で席が空いている間」の
-  // 表示であり、セッションをまたいで残す理由が無いため。heroパネル(座席0)は#158の
-  // 通りここでは一切触らない(pregameでのキャリア統計復元は別経路)。
+  // セッション終了後も統計・離席表示・ドリルダウンはレビュー用に保持する。
+  // SPR/ポットオッズは現在ハンドだけの値なので、終了通知ではそこだけを消す。
   const handleSessionEnd = useCallback(() => {
-    closeAllDrillDownPanels()
-    // The background clears lastKnownStats before the realtime stream handles
-    // EVT_SESSION_RESULTS, so that stream's empty update is not broadcast.
-    // Clear the local realtime state on the session event itself instead.
     setAllPlayersRealTimeStats(undefined)
-    const dimCache = dimCacheRef.current
-    // #179 post-merge review P2「Preserve the hero by player id at session
-    // end」指摘: 直前の更新が観戦モードdeal（上のisSpectatorDeal分岐）だった
-    // 場合、stats[HERO_SEAT_INDEX]は観戦中の別テーブルの生の席0でしかなく、
-    // ヒーローとは限らない。isSpectatorDeal分岐はdimCacheの読み書き自体を
-    // 丸ごとスキップするため、dimCacheのHERO_SEAT_INDEXエントリには直近の
-    // ヒーロー在籍dealで記録された本物のExistPlayerStatsが（観戦dealを何件
-    // 挟んでも上書きされずに）残り続けている。それを優先的に使い、万一まだ
-    // 一度もヒーロー在籍dealを見ていない（キャッシュが空の）場合だけ
-    // 従来通りstats[HERO_SEAT_INDEX]をフォールバックとして使う。
-    const heroStat = dimCache.get(HERO_SEAT_INDEX)
-    for (const seatIndex of Array.from(dimCache.keys())) {
-      if (seatIndex !== HERO_SEAT_INDEX) dimCache.delete(seatIndex)
-    }
-    const prevDimmed = dimmedSeatIndicesRef.current
-    if (prevDimmed.size !== 0) {
-      applyDimmedSeatIndices(prevDimmed.has(HERO_SEAT_INDEX) ? new Set([HERO_SEAT_INDEX]) : new Set())
-    }
-    setStats(prev => prev.map((stat, seatIndex) => (
-      seatIndex === HERO_SEAT_INDEX ? (heroStat ?? stat) : { playerId: -1 }
-    )))
-  }, [applyDimmedSeatIndices, closeAllDrillDownPanels])
+  }, [])
 
   useEffect(() => {
     window.addEventListener(POKER_CHASE_SESSION_END_EVENT, handleSessionEnd)
@@ -460,27 +376,16 @@ const App = memo(() => {
     if (message.action === "latestStats" && message.stats) {
       // インポート後のrefreshStats往復やマウント直後のpregameヒーロー単独
       // フォールバックは、bustミュートcacheを経由しない別経路（DBからの一括再計算）
-      // なので、その場のstatsをそのまま反映するだけでよい。ただし直前のライブ
+      // なので、その場のstatsをそのまま反映する。ただし直前のライブ
       // ハンドでミュート表示中の座席があった場合、この一括更新後もそのミュート
       // フラグを引きずって別データに重ねて表示してしまわないよう、表示中の
       // ミュート集合はここでリセットする（次のライブEVT_DEALでdimCacheRef自体は
       // 引き続き使われるので、bustの記憶自体は失われない）。
-      applyDimmedSeatIndices(new Set())
+      setDimmedSeatIndices(new Set())
       setStats(message.stats)
 
-      // post-merge review descope pass1「Prefer visible hero stats after
-      // batch refreshes」指摘: この経路（信頼できるDB再計算）が席0のヒーロー
-      // 統計をこの時点の最新値に更新しても、dimCacheのHERO_SEAT_INDEX
-      // エントリ自体はここでは触れていなかった。セッション中に一度でも
-      // ライブのヒーロー在籍dealを見ていれば、dimCacheにはその時点の
-      // （インポート前の、より古い）ヒーロー統計が残ったままになる。この
-      // 状態で、次のライブハンド（dimCacheを打ち直す機会）を挟まずに
-      // セッションが終了(309)すると、handleSessionEndは`dimCache.get(
-      // HERO_SEAT_INDEX)`を優先するため、たった今表示したはずのより新しい
-      // 値ではなく、古いキャッシュ値へロールバックして表示してしまう。
-      // ここでdimCacheのヒーロー枠も同時に最新化しておけば、この経路も
-      // ライブ経路（handleTrustedLineup相当）と同じく「常に最新のヒーロー
-      // 値をdimCacheに保つ」という一貫した不変条件を満たす。
+      // 信頼できるDB再計算がヒーロー統計を更新した場合は、次のライブ更新で
+      // 古い値へ戻らないようヒーロー枠のキャッシュも同時に更新する。
       const heroEntry = message.stats[HERO_SEAT_INDEX]
       if (heroEntry && isExistPlayerStats(heroEntry)) {
         dimCacheRef.current.set(HERO_SEAT_INDEX, heroEntry)
@@ -500,92 +405,12 @@ const App = memo(() => {
         scale: message.scale,
       }))
     }
-  }, [applyDimmedSeatIndices])
+  }, [])
 
   useEffect(() => {
     chrome.runtime.onMessage.addListener(handleChromeMessage)
     return () => chrome.runtime.onMessage.removeListener(handleChromeMessage)
   }, [handleChromeMessage])
-
-  // フィルター変更時にdimCacheを無効化する（#179 post-merge review P2
-  // 「Invalidate dimmed stats on filter recomputes」指摘）: バトルタイプ/
-  // テーブルサイズ/ハンド数フィルターが変わると、message-router.tsの
-  // `updateBattleTypeFilter`ハンドラーがgetLastKnownStats()（現在の生の
-  // 座席、bustした座席は-1のまま）で`service.statsOutputStream.write()`を
-  // 再トリガーする。bustしてミュート表示中の座席はこの再計算対象に含まれない
-  // （-1のプレイヤーIDに対して計算しようがない）ため、その座席のdimCache
-  // エントリは古いフィルターの統計のまま残ってしまい、席が戻るかセッションが
-  // 終わるまで新フィルターが反映されない可視バグになる。
-  //
-  // content_script.tsは`updateBattleTypeFilter`メッセージを受け取るたびに
-  // 同名のwindowイベントを既にdispatchしている（Popup.tsxのフィルター系UI
-  // 全て — gameTypes/tableSize/handLimitいずれの変更もこの1経路を通る — が
-  // 発火元）が、これまでApp.tsxは購読していなかった。ここで購読し、
-  // dimCache自体（非hero座席分すべて）を無条件で無効化する。
-  //
-  // 無条件クリアである理由: dimmedSeatIndicesRef（現在ミュート「表示」中の
-  // 座席集合）に含まれる座席だけをクリアする案も検討したが、post-merge
-  // review P2「Clear cached muted seats even after dim state resets」指摘
-  // の通り、dimmedSeatIndicesを空にリセットしつつdimCacheRef自体は生かした
-  // ままにするパスが他に2つある（`latestStats` chromeメッセージ経路の
-  // バッチ再計算、観戦モードdeal分岐）ため、表示状態だけを見た選択的
-  // クリアは取り残しを生む。
-  //
-  // post-merge review descope pass1-2で「今まさにライブ在籍中の座席だけは
-  // クリアから除外する」精緻化（isLiveNow判定、statsRef/liveDisplaySpaceRef
-  // という2つの追加refを要した）を試みたが、これはオーナー判断で撤回された
-  // （PR #191、2026-07-21、sola承認の縮小スコープの精神に反する
-  // over-engineering — 観戦/バッチ経路の座席空間の食い違いや、4-maxで
-  // 存在しない座席インデックスなど、精緻化するたびに新しい境界ケースが
-  // 見つかり続けた）。この関数は非hero座席分のdimCache・表示中ミュートの
-  // 両方を常に無条件でクリアするだけの単純な形に戻している。
-  //
-  // 許容する既知のギャップ（意図的に直さない）: message-router.tsの
-  // updateBattleTypeFilterハンドラーは`service.setBattleTypeFilter()`
-  // （再計算・再ブロードキャストをトリガー、ポート経由）と、この
-  // windowイベントの転送（`chrome.tabs.query`→`chrome.tabs.sendMessage`、
-  // 2段のchrome APIラウンドトリップ）を並行して開始するため、どちらが
-  // 先に届くかは非決定的。再計算ブロードキャストがこのクリアより先に
-  // 届いていた場合、そのフレッシュな値ごとここで消してしまうため、
-  // フィルター変更の直後・次のライブdealが届く前に対戦相手が1人bustすると
-  // その1回だけdim表示が出ない（キャッシュが空のまま「Waiting for
-  // Hand...」になる）。これは「フィルター変更」という稀なユーザー操作と
-  // 「その直後・数秒以内のbust」という稀なタイミングの掛け合わせでしか
-  // 起きず、1人・1回限りの見た目の欠落に過ぎない。加えて、届く順序に
-  // 関わらず必ず自己修復する: 到着順序がどちらであっても、次に届く
-  // ライブブロードキャスト（この直後の再計算ブロードキャスト自身、または
-  // その次の通常のハンド進行）は必ずhandleStatsMessageの通常経路を通り、
-  // 在席中の全座席についてdimCache.set()を無条件で打ち直す（このファイル
-  // 上部のbust-dimコメント参照）。つまりこのクリアがどちらの順序で発火
-  // しても、次のライブ更新一回でdimCacheは必ず現在のフィルターの下で
-  // 再構築され、以降のbustは正しくdim表示される（レースそのものが
-  // "消えてしまう"のではなく、"実害が高々1回・1人に限定され、次の
-  // ライブ更新で必ず解消する"という順序非依存性がここでのポイント）。
-  // sola「それほど重要な機能ではないので、bで十分です」の縮小スコープの
-  // 精神に沿って、この1回限りのギャップは直さずに受け入れる。
-  const handleBattleTypeFilterUpdate = useCallback(() => {
-    const dimCache = dimCacheRef.current
-    const nonHeroCachedSeats = Array.from(dimCache.keys()).filter(seatIndex => seatIndex !== HERO_SEAT_INDEX)
-    if (nonHeroCachedSeats.length === 0) return
-    for (const seatIndex of nonHeroCachedSeats) dimCache.delete(seatIndex)
-
-    const dimmedNonHeroSeats = Array.from(dimmedSeatIndicesRef.current).filter(
-      seatIndex => seatIndex !== HERO_SEAT_INDEX
-    )
-    if (dimmedNonHeroSeats.length === 0) return
-    const clearedSet = new Set(dimmedNonHeroSeats)
-    applyDimmedSeatIndices(
-      dimmedSeatIndicesRef.current.has(HERO_SEAT_INDEX) ? new Set([HERO_SEAT_INDEX]) : new Set()
-    )
-    setStats(prev => prev.map((stat, seatIndex) => (
-      clearedSet.has(seatIndex) ? { playerId: -1 } : stat
-    )))
-  }, [applyDimmedSeatIndices])
-
-  useEffect(() => {
-    window.addEventListener('updateBattleTypeFilter', handleBattleTypeFilterUpdate as EventListener)
-    return () => window.removeEventListener('updateBattleTypeFilter', handleBattleTypeFilterUpdate as EventListener)
-  }, [handleBattleTypeFilterUpdate])
 
   // ハンドログイベントの処理
   const handleHandLogEvent = useCallback((event: CustomEvent<HandLogEvent>) => {

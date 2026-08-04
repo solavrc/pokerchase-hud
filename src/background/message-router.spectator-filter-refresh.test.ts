@@ -2,12 +2,6 @@
  * message-router.ts - updateBattleTypeFilter's lastKnownStats refresh vs.
  * hero-anchored recalc while spectating
  *
- * Regression test for a P2 finding filed on the already-merged #177 (the
- * two inline review comments posted 2026-07-20T12:39, after #177/#179/#181/
- * #182/#184/#185 had all landed on main -- NOT covered by #179's
- * session-end `lastKnownStats` invalidation, since this is a mid-session
- * spectating state, not a post-309 one).
- *
  * `updateBattleTypeFilter`'s handler calls `service.setBattleTypeFilter()`
  * (which internally awaits `ReadEntityStream.recalculateStats()` --
  * read-entity-stream.ts -- and, as part of that call's synchronous prefix
@@ -32,6 +26,8 @@
  * own last deal). `setBattleTypeFilter()`'s own `recalculateStats()` call
  * already recomputes and (re)broadcasts the hero-anchored stats correctly,
  * so nothing is lost by skipping the redundant, racy refresh in that case.
+ * セッション終了後も振り返り用にこのキャッシュを保持するため、観戦lineupが
+ * 入っている間も不一致ガードが必要になる。
  * When `service.latestEvtDeal` is unset (never yet known -- a state that
  * doesn't actually arise once a hero deal has ever landed, but is a
  * possible synthetic/test state), the mismatch can't be established, so
@@ -43,7 +39,7 @@ import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { ApiType } from '../types'
 import type { ApiEvent } from '../types'
 import { registerMessageRouter } from './message-router'
-import { registerStreamSubscriptions, setLastKnownStats } from './ports'
+import { getLastKnownStats, registerStreamSubscriptions, setLastKnownStats } from './ports'
 import type { ChromeMessage, MessageResponse } from '../types/messages'
 
 const HERO_ID = 1
@@ -134,12 +130,13 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
     service.latestEvtDeal = HERO_DEAL
     // ...but the last LIVE broadcast (ports.ts's lastKnownStats) is a
     // different table's lineup -- the spectator state this bug targets.
-    setLastKnownStats([
+    const spectatorLineup = [
       { playerId: 10, statResults: [] } as any,
       { playerId: 20, statResults: [] } as any,
       { playerId: 30, statResults: [] } as any,
       { playerId: 40, statResults: [] } as any,
-    ])
+    ]
+    setLastKnownStats(spectatorLineup)
 
     await dispatchFilterUpdate()
 
@@ -147,6 +144,9 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
     // service.liveEvtDeal's hero-anchored re-sync from recalculateStats()
     // and risk broadcasting spectator stats paired with the hero's evtDeal.
     expect(writeSpy).not.toHaveBeenCalled()
+    // 信頼済み再計算がヒーロー基準lineupへ更新する。不一致の観戦write経路では
+    // クリアも上書きもされない。
+    expect(getLastKnownStats().map(stat => stat.playerId)).toEqual(HERO_DEAL.SeatUserIds)
   })
 
   test('hero still seated (lineup matches latestEvtDeal): the extra refresh still fires as before', async () => {
@@ -187,27 +187,13 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
     expect(writeSpy).toHaveBeenCalledWith([10, 20])
   })
 
-  test('consumes the expected one-way delivery rejection when forwarding the filter update', async () => {
-    const noResponse = Promise.reject(
-      new Error('The message port closed before a response was received.')
-    )
-    await noResponse.catch(() => {})
-    const catchSpy = jest.spyOn(noResponse, 'catch')
-    const sendMessageMock = jest.fn().mockReturnValue(noResponse)
-    ;(global as any).chrome.tabs = {
-      sendMessage: sendMessageMock,
-      query: jest.fn((_query, callback) => callback([{ id: 42 }])),
-    }
+  test('filter update is recomputed in the background without forwarding a tab-local cache invalidation', async () => {
+    service.latestEvtDeal = HERO_DEAL
+    setLastKnownStats(HERO_DEAL.SeatUserIds.map(playerId => ({ playerId, statResults: [] } as any)))
 
-    messageListener(
-      { action: 'updateBattleTypeFilter', filterOptions: FILTER_OPTIONS } as unknown as ChromeMessage,
-      {} as chrome.runtime.MessageSender,
-      jest.fn()
-    )
+    await dispatchFilterUpdate()
 
-    expect(sendMessageMock).toHaveBeenCalledWith(42, expect.objectContaining({
-      action: 'updateBattleTypeFilter',
-    }))
-    expect(catchSpy).toHaveBeenCalledWith(expect.any(Function))
+    expect(chrome.tabs.query).not.toHaveBeenCalled()
+    expect(writeSpy).toHaveBeenCalledWith(HERO_DEAL.SeatUserIds)
   })
 })
