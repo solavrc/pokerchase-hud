@@ -8,6 +8,7 @@ import { formatHandLogEntries } from '../utils/hand-log-text'
 import {
   claimActivePort,
   getActivePort,
+  registerActivePortConnection,
   releaseActivePort
 } from './active-port'
 
@@ -15,6 +16,10 @@ const PING_INTERVAL_MS = 10 * 1000
 
 let lastKnownStats: PlayerStats[] = []
 let latestRealTimeStats: AllPlayersRealTimeStats | undefined
+// service.liveEvtDealはbatch再計算時にもstatsと同じ文脈へ再アンカーされるため、
+// 値自体は引き続き使う。ただし現在ACTIVE世代がDEALを1件も届けていない間は、
+// 前世代から残った値を席回転へ使ってはならない（MUST NOT）。
+let activeGenerationHasDeal = false
 
 export const getLastKnownStats = (): PlayerStats[] => lastKnownStats
 
@@ -97,7 +102,31 @@ export const claimActivePortForGameEvent = (
   port: chrome.runtime.Port,
   deliveredAt: number
 ): void => {
-  if (!claimActivePort(port, deliveredAt)) return
+  const claim = claimActivePort(port, deliveredAt)
+  if (claim !== 'handover') return
+  service.realTimeStatsStream.reset()
+  latestRealTimeStats = undefined
+  activeGenerationHasDeal = false
+}
+
+export const registerActivePortForService = (port: chrome.runtime.Port): void => {
+  registerActivePortConnection(port)
+}
+
+/** パース済みDEALを、そのイベントを届けた現在tokenの席文脈として記録する。 */
+export const recordActiveDealContext = (port: chrome.runtime.Port): void => {
+  if (getActivePort() === port) activeGenerationHasDeal = true
+}
+
+/**
+ * 309はaggregate lineupを保持し、現在ハンド専用stream/cacheだけを消す。
+ * raw保存・重複排除後に呼ぶため、Zod結果には依存しない。
+ */
+export const clearActiveRealtimeForSessionEnd = (
+  service: PokerChaseService,
+  port: chrome.runtime.Port
+): void => {
+  if (getActivePort() !== port) return
   service.realTimeStatsStream.reset()
   latestRealTimeStats = undefined
 }
@@ -106,9 +135,11 @@ export const releaseActivePortForService = (
   service: PokerChaseService,
   port: chrome.runtime.Port
 ): void => {
-  if (!releaseActivePort(port)) return
+  const release = releaseActivePort(port)
+  if (release === 'relic' || release === 'reconnect-pending') return
   service.realTimeStatsStream.reset()
   latestRealTimeStats = undefined
+  activeGenerationHasDeal = false
 }
 
 /** 完了済みハンドだけをHUDと同じPokerStars形式でService Worker consoleへ出す。 */
@@ -176,7 +207,7 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
     if (!activePort) return
     const delivered = postMessageToPort(activePort, {
       stats: hand,
-      evtDeal: service.liveEvtDeal,
+      evtDeal: activeGenerationHasDeal ? service.liveEvtDeal : undefined,
       realTimeStats: latestRealTimeStats,
       // NOT bumped here -- this handler also fires for the hand-start warmup and
       // filter/import/auto-sync rebroadcasts (see handCompletionEpoch's doc comment),

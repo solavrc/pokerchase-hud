@@ -23,3 +23,9 @@ export const STORAGE_KEY = 'pokerChaseServiceState'
  * ローカルにdispatchするため、破損した309がZod検証を通らない場合も通知できる。
  */
 export const POKER_CHASE_SESSION_END_EVENT = 'PokerChaseSessionEndEvent'
+/**
+ * content_script.tsが成功した生EVT_ENTRY_QUEUED（201）を観測した際にdispatch
+ * するwindow CustomEvent。終了セッションのretained lineupを新しい着席世代へ
+ * 持ち越さないため、App.tsxが明示的な境界として使う。
+ */
+export const POKER_CHASE_SESSION_START_EVENT = 'PokerChaseSessionStartEvent'

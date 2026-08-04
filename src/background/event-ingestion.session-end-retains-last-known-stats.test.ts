@@ -156,6 +156,33 @@ describe('session end (309) retains background lastKnownStats', () => {
     expect(getLastKnownStats()).toBe(retainedLineup)
   })
 
+  test('a malformed EVT_SESSION_RESULTS clears current-hand realtime cache before a later stats rebroadcast', async () => {
+    const retainedLineup = [{ playerId: 2, statResults: [] } as any]
+    setLastKnownStats(retainedLineup)
+    // 同じportを先にACTIVE化する。309での通常handover resetではなく、同一token上の
+    // Zod非依存クリア自体を検証するための非application rawイベント。
+    await onMessageHandler({ ApiTypeId: 202, timestamp: 900 })
+    ;(service.realTimeStatsStream as any).emit('data', {
+      stats: {
+        heroStats: {},
+        playerStats: { 0: { spr: 8, potOdds: { percentage: 25 } } }
+      },
+      timestamp: 901
+    })
+    mockPort.postMessage.mockClear()
+    const resetSpy = jest.spyOn(service.realTimeStatsStream, 'reset')
+
+    await onMessageHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 1001 })
+
+    expect(resetSpy).toHaveBeenCalledTimes(1)
+    mockPort.postMessage.mockClear()
+    ;(service.statsOutputStream as any).emit('data', retainedLineup)
+    expect(mockPort.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      stats: retainedLineup,
+      realTimeStats: undefined
+    }))
+  })
+
   test('filter change after session end can recompute the retained lineup through getLastKnownStats()', async () => {
     const retainedLineup = [
       { playerId: 2, statResults: [] } as any,

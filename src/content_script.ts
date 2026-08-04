@@ -10,7 +10,8 @@ import {
   POKER_CHASE_INVALID_API_EVENT,
   POKER_CHASE_SERVICE_EVENT,
   POKER_CHASE_ORIGIN,
-  POKER_CHASE_SESSION_END_EVENT
+  POKER_CHASE_SESSION_END_EVENT,
+  POKER_CHASE_SESSION_START_EVENT
 } from './constants/runtime'
 import { ApiType } from './types'
 import type { ApiEvent, PlayerStats } from './types'
@@ -126,6 +127,7 @@ declare global {
   interface WindowEventMap {
     [POKER_CHASE_SERVICE_EVENT]: CustomEvent<StatsData>
     [POKER_CHASE_SESSION_END_EVENT]: CustomEvent<undefined>
+    [POKER_CHASE_SESSION_START_EVENT]: CustomEvent<undefined>
   }
 }
 
@@ -325,6 +327,9 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       // fail-closedで従来通りkeepaliveを開始する。
       const entryCode = (event.data as { Code?: unknown }).Code
       if (typeof entryCode !== 'number' || entryCode === 0) {
+        // 成功した201は、前セッションで保持したlineupを捨てる明示境界。
+        // backgroundのZod結果に依存せず同じcontent script内で通知する。
+        window.dispatchEvent(new CustomEvent(POKER_CHASE_SESSION_START_EVENT))
         armSession()
       }
       break

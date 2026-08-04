@@ -30,7 +30,8 @@
 import { ApiType } from './types'
 import {
   POKER_CHASE_INVALID_API_EVENT,
-  POKER_CHASE_ORIGIN
+  POKER_CHASE_ORIGIN,
+  POKER_CHASE_SESSION_START_EVENT
 } from './constants/runtime'
 
 const KEEPALIVE_INTERVAL_MS = 25000
@@ -71,14 +72,20 @@ describe('content_script keepalive (session-activity triggers)', () => {
   })
 
   test('EVT_ENTRY_QUEUED (201) alone starts keepalive without a prior 308', () => {
+    const sessionStart = jest.fn()
+    window.addEventListener(POKER_CHASE_SESSION_START_EVENT, sessionStart)
     dispatchGameMessage({ ApiTypeId: ApiType.EVT_ENTRY_QUEUED, timestamp: 1 })
 
     jest.advanceTimersByTime(KEEPALIVE_INTERVAL_MS)
 
+    expect(sessionStart).toHaveBeenCalledTimes(1)
     expect(mockPort.postMessage).toHaveBeenCalledWith({ type: 'keepalive' })
+    window.removeEventListener(POKER_CHASE_SESSION_START_EVENT, sessionStart)
   })
 
   test('an explicit EVT_ENTRY_QUEUED error response does not start keepalive', () => {
+    const sessionStart = jest.fn()
+    window.addEventListener(POKER_CHASE_SESSION_START_EVENT, sessionStart)
     dispatchGameMessage({
       ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
       timestamp: 1,
@@ -93,7 +100,9 @@ describe('content_script keepalive (session-activity triggers)', () => {
 
     jest.advanceTimersByTime(KEEPALIVE_INTERVAL_MS)
 
+    expect(sessionStart).not.toHaveBeenCalled()
     expect(mockPort.postMessage).not.toHaveBeenCalledWith({ type: 'keepalive' })
+    window.removeEventListener(POKER_CHASE_SESSION_START_EVENT, sessionStart)
   })
 
   test('an intercepted payload with an invalid ApiTypeId reaches background diagnostics', () => {

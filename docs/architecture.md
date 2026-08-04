@@ -11,8 +11,19 @@ raw capture 415k handsでは2卓の同時配信は0件で、568件のhand preemp
 以前のportが後でeventを届ければ同じ手順でtokenを取り戻す。
 
 statsとrealtime更新はACTIVE portだけへ送り、接続中の他port（relic）にはclearも更新も
-送らない。したがってrelicのHUDは最後に描画した状態で凍結される。現在ハンドの
-`RealTimeStatsStream`は1本だけを持ち、handover時にresetしてから新しいeventを投入する。
+送らない。したがってrelicのHUDは最後に描画した状態で凍結される。別tabまたは別document
+世代へのhandoverでは、現在ハンドの`RealTimeStatsStream`とDEAL文脈をresetしてから
+新しいeventを投入する。旧portが後でeventを届ければ同じ手順でtokenを取り戻す。一方、
+`RuntimePortManager`による同一content scriptの一時切断は`tabId`と`documentId`が一致し、
+500ms再接続を包含する2秒窓内に再接続した場合だけ同一世代と判定する。この場合は
+transportの差し替えなので、進行中ハンド、DEAL、activity、accountを引き継ぐ。
+
+集計statsへ添える席回転用DEALは、ACTIVE世代でDEALを観測済みの場合だけ
+`liveEvtDeal`から読む。この値はbatch再計算時にも同じstats文脈へ再アンカーされるが、
+世代の最初のDEALより前は前世代の残存値を抑止する。309はRaw Event Lakeへの保存と重複排除の後、
+Zod検証より前に現在ハンドstream/cacheを消すため、破損payloadでも終了済みハンドの
+SPR・ポットオッズが後のfilter再計算で復活しない。集計lineup自体は保持する。
+
 replayのsession判定とaccount attributionにもACTIVE portの状態だけを使い、relicの状態は
 参照しない。10秒未満で別portからeventが届いた場合はaxiom違反の検出として
 `console.warn`を記録するが、複数sessionを扱う分岐は追加しない。

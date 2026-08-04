@@ -1,5 +1,9 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { POKER_CHASE_SERVICE_EVENT, POKER_CHASE_SESSION_END_EVENT } from "../constants/runtime"
+import {
+  POKER_CHASE_SERVICE_EVENT,
+  POKER_CHASE_SESSION_END_EVENT,
+  POKER_CHASE_SESSION_START_EVENT
+} from "../constants/runtime"
 import { ApiType, isApiEventType } from "../types"
 import type { Options } from '../utils/options-storage'
 import type { ExistPlayerStats, PlayerStats } from "../types"
@@ -91,6 +95,8 @@ const App = memo(() => {
   // するようにする（実況の1アクションごとの更新では変化しないため再フェッチ
   // ストームは起きない）。
   const [handEpoch, setHandEpoch] = useState(0)
+  // 309後、201通知が欠落しても最初の信頼済みヒーロー着席DEALを新境界にする。
+  const awaitingTrustedSessionBoundaryRef = useRef(false)
 
   // ユーザー指定キーでHUD + hand logを切り替える。App自体は非表示時も
   // マウントされたままなので、同じキーで必ず再表示できる。
@@ -137,6 +143,15 @@ const App = memo(() => {
     setOpenRecentHandsPanelPlayerIds(new Set())
   }, [])
 
+  const discardRetainedLineup = useCallback(() => {
+    dimCacheRef.current.clear()
+    setDimmedSeatIndices(new Set())
+    setStats(EMPTY_SEATS)
+    setAllPlayersRealTimeStats(undefined)
+    setHeroOriginalSeatIndex(undefined)
+    closeAllDrillDownPanels()
+  }, [closeAllDrillDownPanels])
+
   // 表示中のラインナップからplayerIdが実際に消える境界（席交代、信頼できる
   // 一括更新、テーブル切替）で、その開状態もpruneする。離席とセッション終了は
   // statsを保持するためここでは消えず、直近ハンドへ引き続きアクセスできる。
@@ -172,6 +187,17 @@ const App = memo(() => {
       if (detail.realTimeOnly) {
         if (detail.realTimeStats) setAllPlayersRealTimeStats(detail.realTimeStats)
         return
+      }
+
+      const isTrustedSeatedDeal = detail.evtDeal !== undefined
+        && isApiEventType(detail.evtDeal, ApiType.EVT_DEAL)
+        && detail.evtDeal.Player?.SeatIndex !== undefined
+      if (isTrustedSeatedDeal && awaitingTrustedSessionBoundaryRef.current) {
+        // 201が観測できなかった場合も、次のヒーロー着席DEALを新session境界と
+        // して旧lineupを破棄しなければならない（MUST）。このDEALのlineupは
+        // 同じcallback後半で直ちに描画する。
+        awaitingTrustedSessionBoundaryRef.current = false
+        discardRetainedLineup()
       }
 
       // 観戦dealはPlayerが無いためヒーロー基準へ回転できず、別テーブルの席順かも
@@ -332,7 +358,7 @@ const App = memo(() => {
       setDimmedSeatIndices(nextDimmedSeatIndices)
       setStats(dimmedStats)
     },
-    [closeAllDrillDownPanels]
+    [closeAllDrillDownPanels, discardRetainedLineup]
   )
 
   useEffect(() => {
@@ -364,13 +390,24 @@ const App = memo(() => {
   // セッション終了後も統計・離席表示・ドリルダウンはレビュー用に保持する。
   // SPR/ポットオッズは現在ハンドだけの値なので、終了通知ではそこだけを消す。
   const handleSessionEnd = useCallback(() => {
+    awaitingTrustedSessionBoundaryRef.current = true
     setAllPlayersRealTimeStats(undefined)
   }, [])
+
+  const handleSessionStart = useCallback(() => {
+    awaitingTrustedSessionBoundaryRef.current = false
+    discardRetainedLineup()
+  }, [discardRetainedLineup])
 
   useEffect(() => {
     window.addEventListener(POKER_CHASE_SESSION_END_EVENT, handleSessionEnd)
     return () => window.removeEventListener(POKER_CHASE_SESSION_END_EVENT, handleSessionEnd)
   }, [handleSessionEnd])
+
+  useEffect(() => {
+    window.addEventListener(POKER_CHASE_SESSION_START_EVENT, handleSessionStart)
+    return () => window.removeEventListener(POKER_CHASE_SESSION_START_EVENT, handleSessionStart)
+  }, [handleSessionStart])
 
   const handleChromeMessage = useCallback((message: ChromeMessage) => {
     if (message.action === "latestStats" && message.stats) {

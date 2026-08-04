@@ -6,12 +6,16 @@ import PokerChaseService, {
   validateApiEvent,
   parseApiEvent,
   getValidationError,
-  isApplicationApiEvent
+  isApplicationApiEvent,
+  isApiEventType
 } from '../app'
 import { autoSyncService } from '../services/auto-sync-service'
 import {
   claimActivePortForGameEvent,
+  clearActiveRealtimeForSessionEnd,
   connectedPorts,
+  recordActiveDealContext,
+  registerActivePortForService,
   releaseActivePortForService,
   startPortPing,
 } from './ports'
@@ -196,6 +200,7 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   chrome.runtime.onConnect.addListener(port => {
     if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {
       connectedPorts.add(port)
+      registerActivePortForService(port)
       // 持ち越し分の再開点。セッション終了時に認証エンベロープを捕獲できて
       // いないと取得は繰り延べられる（キューには残る）。エンベロープは
       // ページ再読み込み後のホーム到達で捕まるので、そのページが繋いできた
@@ -445,6 +450,14 @@ const processEvent = async (
   // ここから先はraw書き込みが成功したか、保存不可能で待つべきI/Oが
   // 無かった場合のみ到達する。真の重複と書き込み失敗は上でreturn済み。
 
+  // 309の現在ハンド状態はZod検証より先に破棄する（MUST）。集計lineupは
+  // 保持したまま、後続のfilter再計算が終了済みハンドのSPR/ポットオッズを
+  // 再配信できないようにする。真の重複は上でreturn済みなので新ハンドを
+  // 過去のreconnect resendで消すこともない。
+  if (rawApiTypeId === ApiType.EVT_SESSION_RESULTS && port) {
+    clearActiveRealtimeForSessionEnd(service, port)
+  }
+
   // Forced-update安全性述語（update-manager.ts）のセッション状態追跡。
   // 意図的にパース成功後のdata.ApiTypeIdではなく、生メッセージの数値
   // ApiTypeIdだけを見て判定する: PokerChase側のペイロード破壊的変更で
@@ -625,6 +638,10 @@ const processEvent = async (
 
   // ここでdataはApiEvent型（isApplicationApiEventで保証済み）
   service.eventLogger(data, 'info')
+
+  if (port && isApiEventType(data, ApiType.EVT_DEAL)) {
+    recordActiveDealContext(port)
+  }
 
   // ストリーム処理（DB保存は上で完了済み・耐久性確定済み）
   service.handLogStream.write(data)

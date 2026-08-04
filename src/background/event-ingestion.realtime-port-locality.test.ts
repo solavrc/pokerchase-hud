@@ -17,13 +17,15 @@ const waitUntil = async (condition: () => boolean, timeoutMs = 2000): Promise<vo
   }
 }
 
-const makePort = () => {
+const makePort = (tabId: number, documentId: string) => {
   const disconnectHandlers: Array<() => void> = []
   const port = {
     name: PokerChaseService.POKER_CHASE_SERVICE_EVENT,
     onMessage: { addListener: jest.fn() },
     onDisconnect: { addListener: jest.fn((handler: () => void) => disconnectHandlers.push(handler)) },
     postMessage: jest.fn(),
+    disconnect: jest.fn(),
+    sender: { tab: { id: tabId }, documentId },
   }
   return { port, disconnectHandlers }
 }
@@ -65,6 +67,24 @@ const makeDeal = (timestamp: number, playerId: number, spectator = false) => ({
   },
 })
 
+const makeAction = (timestamp: number) => ({
+  ApiTypeId: ApiType.EVT_ACTION,
+  timestamp,
+  SeatIndex: 1,
+  ActionType: ActionType.CALL,
+  Chip: 960,
+  BetChip: 40,
+  Progress: {
+    Phase: PhaseType.PREFLOP,
+    NextActionSeat: 0,
+    NextActionTypes: [ActionType.FOLD, ActionType.CALL, ActionType.RAISE, ActionType.ALL_IN],
+    NextExtraLimitSeconds: 30,
+    MinRaise: 40,
+    Pot: 50,
+    SidePot: [],
+  },
+})
+
 const sessionResults = {
   ApiTypeId: ApiType.EVT_SESSION_RESULTS,
   timestamp: 200,
@@ -96,6 +116,8 @@ describe('stats delivery follows the active-port token', () => {
   let tabB: ReturnType<typeof makePort>
   let sendA: (message: any) => Promise<void>
   let sendB: (message: any) => Promise<void>
+  let connect: (port: any) => void
+  const extraPorts: Array<ReturnType<typeof makePort>> = []
 
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
@@ -112,9 +134,9 @@ describe('stats delivery follows the active-port token', () => {
     __resetActivePortStateForTests()
     registerStreamSubscriptions(service, 'https://example.com/*')
     registerEventIngestion(service)
-    const connect = (chrome.runtime as any).onConnect.addListener.mock.calls[0][0]
-    tabA = makePort()
-    tabB = makePort()
+    connect = (chrome.runtime as any).onConnect.addListener.mock.calls[0][0]
+    tabA = makePort(1, 'document-a')
+    tabB = makePort(2, 'document-b')
     connect(tabA.port)
     connect(tabB.port)
     sendA = tabA.port.onMessage.addListener.mock.calls[0][0]
@@ -124,6 +146,7 @@ describe('stats delivery follows the active-port token', () => {
   afterEach(async () => {
     tabA.disconnectHandlers.forEach(handler => handler())
     tabB.disconnectHandlers.forEach(handler => handler())
+    extraPorts.splice(0).forEach(item => item.disconnectHandlers.forEach(handler => handler()))
     connectedPorts.clear()
     __resetActivePortStateForTests()
     setLastKnownStats([])
@@ -155,9 +178,56 @@ describe('stats delivery follows the active-port token', () => {
       { playerId: 901, statResults: [] }
     ])
     expect(tabA.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({
-      stats: [expect.objectContaining({ playerId: 901 })]
+      stats: [expect.objectContaining({ playerId: 901 })],
+      evtDeal: expect.objectContaining({ SeatUserIds: expect.arrayContaining([901]) })
     }))
     expect(tabB.port.postMessage).not.toHaveBeenCalled()
+  })
+
+  test('別世代がDEAL前にtokenを取得しても、旧世代のservice.liveEvtDealを集計statsへ混ぜない', async () => {
+    await sendB(makeDeal(650, 101))
+    await waitUntil(() => getActivePort() === tabB.port as unknown as chrome.runtime.Port)
+    tabA.port.postMessage.mockClear()
+    tabB.port.postMessage.mockClear()
+
+    await sendA(makeAction(651))
+    await waitUntil(() => getActivePort() === tabA.port as unknown as chrome.runtime.Port)
+    tabA.port.postMessage.mockClear()
+    ;(service.statsOutputStream as any).emit('data', [
+      { playerId: 901, statResults: [] }
+    ])
+
+    expect(tabA.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      evtDeal: undefined
+    }))
+    expect(tabB.port.postMessage).not.toHaveBeenCalled()
+  })
+
+  test('同一tab/documentの500ms再接続は進行中ハンドのDEAL・ホールカード・スタックを引き継ぐ', async () => {
+    await sendB(makeDeal(600, 101))
+    await waitUntil(() => tabB.port.postMessage.mock.calls.some(([message]) =>
+      message.realTimeStats?.heroStats?.holeCards?.[0] === 48
+    ))
+
+    const resetSpy = jest.spyOn(service.realTimeStatsStream, 'reset')
+    tabB.disconnectHandlers.forEach(handler => handler())
+    const replacement = makePort(2, 'document-b')
+    extraPorts.push(replacement)
+    connect(replacement.port as unknown as chrome.runtime.Port)
+    const sendReplacement = replacement.port.onMessage.addListener.mock.calls[0][0]
+
+    await sendReplacement(makeAction(601))
+    await waitUntil(() => replacement.port.postMessage.mock.calls.some(([message]) =>
+      message.realTimeStats?.heroStats?.holeCards?.[0] === 48
+    ))
+
+    expect(resetSpy).not.toHaveBeenCalled()
+    expect(getActivePort()).toBe(replacement.port)
+    expect(replacement.port.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      realTimeStats: expect.objectContaining({
+        heroStats: expect.objectContaining({ holeCards: [48, 49] })
+      })
+    }))
   })
 
   test('an old relic port reclaims the token when it delivers a new game event', async () => {

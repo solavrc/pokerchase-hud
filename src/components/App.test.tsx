@@ -57,6 +57,24 @@ describe('App', () => {
     ],
   }
 
+  const makeSeatedDeal = (seatUserIds: number[]): ApiEvent<ApiType.EVT_DEAL> => ({
+    ApiTypeId: ApiType.EVT_DEAL,
+    timestamp: Date.now(),
+    SeatUserIds: seatUserIds,
+    Player: { SeatIndex: 0, BetStatus: 1, HoleCards: [], Chip: 1000, BetChip: 0 },
+    OtherPlayers: seatUserIds.slice(1).flatMap((playerId, index) => playerId > 0 ? [{
+      SeatIndex: index + 1, Status: 0, BetStatus: 1, Chip: 1000, BetChip: 0
+    }] : []),
+    Game: {
+      CurrentBlindLv: 1, NextBlindUnixSeconds: 0, Ante: 0,
+      SmallBlind: 10, BigBlind: 20, ButtonSeat: 0, SmallBlindSeat: 0, BigBlindSeat: 1
+    },
+    Progress: {
+      Phase: 0, NextActionSeat: 0, NextActionTypes: [2, 3, 4, 5],
+      NextExtraLimitSeconds: 30, MinRaise: 40, Pot: 30, SidePot: []
+    }
+  } as ApiEvent<ApiType.EVT_DEAL>)
+
   beforeEach(() => {
     // Mock chrome.storage.sync.get
     (global.chrome.storage.sync.get as jest.Mock).mockImplementation((_, callback) => {
@@ -1014,14 +1032,45 @@ describe('App', () => {
         expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Dimmed: no')
       }
 
-      // 次の信頼できるdealで同じ席に別人が着席すれば、保持値を自然に置換する。
-      const nextSessionLineup: StatsData['stats'] = mockStatsData.stats.map((s, i) => (
-        i === 1 ? { playerId: 99, statResults: [] } : s
-      ))
-      await dispatchStats(nextSessionLineup)
+      // 次sessionの信頼できるHU dealでは旧6人lineupを境界で全破棄する。
+      const nextSessionLineup: StatsData['stats'] = [
+        { playerId: 1, statResults: [] },
+        { playerId: 99, statResults: [] },
+        { playerId: -1 }, { playerId: -1 }, { playerId: -1 }, { playerId: -1 }
+      ]
+      await act(async () => {
+        window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
+          detail: {
+            stats: nextSessionLineup,
+            evtDeal: makeSeatedDeal([1, 99, -1, -1, -1, -1])
+          } as StatsData
+        }))
+      })
       expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 99')
       expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
       expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: no')
+      for (let i = 2; i < 6; i++) {
+        expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Player: -1')
+        expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Dimmed: no')
+      }
+    })
+
+    it('成功した201を新session境界として終了sessionのlineupを破棄する', async () => {
+      render(<App />)
+      await dispatchStats(mockStatsData.stats)
+      await act(async () => {
+        window.dispatchEvent(new CustomEvent('PokerChaseSessionEndEvent'))
+      })
+      expect(screen.getByTestId('hud-5')).toHaveTextContent('Player: 6')
+
+      await act(async () => {
+        window.dispatchEvent(new CustomEvent('PokerChaseSessionStartEvent'))
+      })
+
+      for (let i = 0; i < 6; i++) {
+        expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Player: -1')
+        expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Dimmed: no')
+      }
     })
 
     it('インポート後のバッチ再計算（latestStatsのchromeメッセージ）はミュート状態を持ち込まない', async () => {
