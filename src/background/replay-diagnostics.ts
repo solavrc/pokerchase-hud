@@ -27,20 +27,28 @@ export const initializeReplayDiagnostics = (): Promise<void> => {
   if (initialization) return initialization
 
   initialization = (async () => {
-    try {
-      const stored = await chrome.storage.sync.get(SW_INGESTION_DIAGNOSTICS_STORAGE_KEY)
-      enabled = stored[SW_INGESTION_DIAGNOSTICS_STORAGE_KEY] === true
-    } catch {
-      enabled = false
-    }
-
-    // 初期値の読込が決着してから変更監視を登録する（MUST）。診断ONの保存値を
-    // 読む前に起動イベントをOFFとして確定させない。
+    // 変更監視は初期読込のawaitより前に登録する（MUST）。読込中に届いた変更は
+    // onChanged未登録だと失われ、旧値がSWの残りの生存期間ずっと確定してしまう
+    // （#361レビュー指摘）。リスナーは常にenabledを更新し、初期読込の結果は
+    // 「読込中に変更が届かなかった場合」にだけ適用することで、後着の変更を
+    // 初期値で上書きしない。
+    let sawChange = false
     chrome.storage.onChanged.addListener((changes, areaName) => {
       if (areaName !== 'sync') return
       const change = changes[SW_INGESTION_DIAGNOSTICS_STORAGE_KEY]
-      if (change) enabled = change.newValue === true
+      if (!change) return
+      sawChange = true
+      enabled = change.newValue === true
     })
+
+    let initial = false
+    try {
+      const stored = await chrome.storage.sync.get(SW_INGESTION_DIAGNOSTICS_STORAGE_KEY)
+      initial = stored[SW_INGESTION_DIAGNOSTICS_STORAGE_KEY] === true
+    } catch {
+      initial = false
+    }
+    if (!sawChange) enabled = initial
     for (const pending of pendingLogs.splice(0)) {
       emitReplayDiagnostic(pending.event, pending.fields)
     }

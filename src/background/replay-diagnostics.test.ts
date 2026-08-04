@@ -90,7 +90,7 @@ describe('replay service-worker diagnostics', () => {
     expect(debug).toHaveBeenCalledTimes(1)
   })
 
-  test('保存値の読込後にlistenerを登録し、起動直後の診断を取りこぼさない', async () => {
+  test('listenerはawait前に登録され、起動直後の診断も取りこぼさない', async () => {
     const debug = jest.spyOn(console, 'debug').mockImplementation(() => undefined)
     const addListener = chrome.storage.onChanged.addListener as jest.Mock
     const listenerCallsBefore = addListener.mock.calls.length
@@ -104,7 +104,8 @@ describe('replay service-worker diagnostics', () => {
     diagnostics.logReplayDiagnostic('port-event-processed', { queueDepth: 0 })
 
     expect(chrome.storage.sync.get).toHaveBeenCalledTimes(1)
-    expect(addListener).toHaveBeenCalledTimes(listenerCallsBefore)
+    // #361レビュー指摘: 変更監視は初期読込のawaitより前に登録されていること。
+    expect(addListener).toHaveBeenCalledTimes(listenerCallsBefore + 1)
     expect(debug).not.toHaveBeenCalled()
 
     resolveGet({ [diagnostics.SW_INGESTION_DIAGNOSTICS_STORAGE_KEY]: true })
@@ -120,6 +121,31 @@ describe('replay service-worker diagnostics', () => {
     expect(debug).toHaveBeenNthCalledWith(2, '[replay-dev] port-event-processed', {
       queueDepth: 0
     })
+  })
+
+  // #361レビュー指摘(P2): 初期読込のawait中に届いた設定変更を、後から解決する
+  // 旧保存値で上書きしない。
+  test('初期読込中のフラグ変更が旧保存値に上書きされない', async () => {
+    const debug = jest.spyOn(console, 'debug').mockImplementation(() => undefined)
+    const addListener = chrome.storage.onChanged.addListener as jest.Mock
+    let resolveGet!: (stored: Record<string, unknown>) => void
+    ;(chrome.storage.sync.get as jest.Mock)
+      .mockImplementationOnce(() => new Promise(resolve => { resolveGet = resolve }))
+
+    const init = diagnostics.initializeReplayDiagnostics()
+    const listener = addListener.mock.calls.at(-1)![0] as (
+      changes: Record<string, { newValue?: unknown }>,
+      areaName: string
+    ) => void
+    // 読込がpendingのうちにユーザーがONへ変更する。
+    listener({ [diagnostics.SW_INGESTION_DIAGNOSTICS_STORAGE_KEY]: { newValue: true } }, 'sync')
+
+    // 旧保存値(OFF)が後から解決しても、後着の変更が勝つ。
+    resolveGet({ [diagnostics.SW_INGESTION_DIAGNOSTICS_STORAGE_KEY]: false })
+    await init
+
+    diagnostics.logReplayDiagnostic('port-event-processed', { queueDepth: 0 })
+    expect(debug).toHaveBeenCalledTimes(1)
   })
 
 })
