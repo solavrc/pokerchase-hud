@@ -8,9 +8,15 @@ import { formatHandLogEntries } from '../utils/hand-log-text'
 import {
   claimActivePort,
   getActivePort,
+  getActivePortGeneration,
   registerActivePortConnection,
   releaseActivePort
 } from './active-port'
+import {
+  getStatsOutputContext,
+  setDefaultStatsContextProvider,
+  setStatsRequestContext
+} from '../streams/stats-output-context'
 
 const PING_INTERVAL_MS = 10 * 1000
 
@@ -101,16 +107,38 @@ export const claimActivePortForGameEvent = (
   service: PokerChaseService,
   port: chrome.runtime.Port,
   deliveredAt: number
-): void => {
+): number => {
   const claim = claimActivePort(port, deliveredAt)
-  if (claim !== 'handover') return
+  const generation = getActivePortGeneration()!
+  if (claim !== 'handover') return generation
   service.realTimeStatsStream.reset()
   latestRealTimeStats = undefined
   activeGenerationHasDeal = false
+  // tokenを取得したtabには、relic時代に凍結していた現在ハンド表示を次の
+  // stream出力まで残してはならない（MUST NOT）。aggregate lineupは触らない。
+  postMessageToPort(port, {
+    stats: lastKnownStats,
+    realTimeStats: { heroStats: {}, playerStats: {} },
+    realTimeOnly: true,
+    handEpoch: handCompletionEpoch
+  })
+  return generation
 }
 
 export const registerActivePortForService = (port: chrome.runtime.Port): void => {
   registerActivePortConnection(port)
+}
+
+/** インポート等の明示一括更新を、ACTIVE有無に関係なく接続tabへ届ける。 */
+export const writeConnectedStatsUpdate = (
+  service: PokerChaseService,
+  seatUserIds: number[]
+): void => {
+  setStatsRequestContext(seatUserIds, {
+    delivery: 'connected',
+    evtDeal: service.latestEvtDeal
+  })
+  service.statsOutputStream.write(seatUserIds)
 }
 
 /** パース済みDEALを、そのイベントを届けた現在tokenの席文脈として記録する。 */
@@ -185,6 +213,11 @@ export const startPortPing = (port: chrome.runtime.Port): () => void => {
 // （`onConnect`のたびに登録すると、ページリロード/再接続のたびにリスナーが積み重なり、
 // 特に`handLogStream`のハンドラーはNタブ分`chrome.tabs.sendMessage`を重複送信してしまう）
 export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlPattern: string): void => {
+  setDefaultStatsContextProvider(() => ({
+    delivery: 'active',
+    generation: getActivePortGeneration(),
+    evtDeal: activeGenerationHasDeal ? service.liveEvtDeal : undefined
+  }))
   service.realTimeStatsStream.on('data', data => {
     latestRealTimeStats = data.stats
     if (lastKnownStats.length === 0) return
@@ -199,7 +232,27 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
   })
 
   service.statsOutputStream.on('data', async (hand: PlayerStats[]) => {
+    const context = getStatsOutputContext(hand)
+    const currentGeneration = getActivePortGeneration()
+    // 旧ACTIVE世代の非同期計算結果は、現在世代へもlastKnownStatsへも混ぜては
+    // ならない（MUST NOT）。後続のrealtime更新による復活も同時に防ぐ。
+    if (
+      context?.generation !== undefined &&
+      context.generation !== currentGeneration
+    ) return
+
     lastKnownStats = hand // Store for later use
+
+    if (context?.delivery === 'connected') {
+      for (const port of connectedPorts) {
+        postMessageToPort(port, {
+          stats: hand,
+          evtDeal: context.evtDeal,
+          handEpoch: handCompletionEpoch
+        })
+      }
+      return
+    }
 
     // stats/realtime更新は唯一のACTIVEポートにだけ送る（MUST）。relicは最後に
     // 描画した状態のまま凍結し、clearも新lineupも受け取らない。
@@ -207,7 +260,8 @@ export const registerStreamSubscriptions = (service: PokerChaseService, gameUrlP
     if (!activePort) return
     const delivered = postMessageToPort(activePort, {
       stats: hand,
-      evtDeal: activeGenerationHasDeal ? service.liveEvtDeal : undefined,
+      evtDeal: context?.evtDeal
+        ?? (activeGenerationHasDeal ? service.liveEvtDeal : undefined),
       realTimeStats: latestRealTimeStats,
       // NOT bumped here -- this handler also fires for the hand-start warmup and
       // filter/import/auto-sync rebroadcasts (see handCompletionEpoch's doc comment),

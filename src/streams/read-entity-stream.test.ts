@@ -18,6 +18,7 @@ import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { ApiType, BattleType, PhaseType } from '../types'
 import type { ApiHandEvent, Hand } from '../types'
 import type { PlayerStats, StatResult } from '../types'
+import { getStatsOutputContext, setEventGeneration } from './stats-output-context'
 
 const PLAYER_ID = 1
 const SEAT_USER_IDS = [PLAYER_ID, 2, 3, 4, 5, 6]
@@ -188,11 +189,18 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
           OtherPlayers: []
         }
       ]
+      setEventGeneration(completedHand[1]!, 41)
 
       service.writeEntityStream.write(completedHand)
       await service.writeEntityStream.whenIdle()
 
-      expect(handsStatOf(await completedStats, PLAYER_ID)?.value).toBe(7)
+      const output = await completedStats
+      expect(handsStatOf(output, PLAYER_ID)?.value).toBe(7)
+      expect(getStatsOutputContext(output)).toEqual({
+        delivery: 'active',
+        generation: 41,
+        evtDeal: completedHand[0]
+      })
     } finally {
       process.env.NODE_ENV = previousNodeEnv
     }

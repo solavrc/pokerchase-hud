@@ -19,6 +19,7 @@ import {
   releaseActivePortForService,
   startPortPing,
 } from './ports'
+import { setEventGeneration } from '../streams/stats-output-context'
 import {
   INVALID_API_TYPE_ID_BUCKET,
   recordUndecodedEvent
@@ -393,7 +394,9 @@ const processEvent = async (
   // queueへ積む直前の到着時刻を使い、handover時は単一realtime streamを
   // 後続処理より先にresetする（MUST）。真の重複やservice.ready失敗でも
   // 「このportが最後にgame eventを届けた」というtokenの事実は変わらない。
-  if (hasUsableRawKey && port) claimActivePortForGameEvent(service, port, deliveredAt)
+  const portGeneration = hasUsableRawKey && port
+    ? claimActivePortForGameEvent(service, port, deliveredAt)
+    : undefined
 
   // Ensure service is ready before processing messages
   try {
@@ -635,6 +638,8 @@ const processEvent = async (
     console.info(`[background] Non-application event (${data.ApiTypeId}): ${JSON.stringify(data)}`)
     return
   }
+
+  if (portGeneration !== undefined) setEventGeneration(data, portGeneration)
 
   // ここでdataはApiEvent型（isApplicationApiEventで保証済み）
   service.eventLogger(data, 'info')

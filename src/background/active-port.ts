@@ -13,6 +13,7 @@ type ActivePortActivity = 'unknown' | 'active' | 'inactive'
 
 interface ActivePortToken {
   port: chrome.runtime.Port
+  generation: number
   activity: ActivePortActivity
   playerId?: number
   lastGameEventAt: number
@@ -25,14 +26,14 @@ interface PortIdentity {
 
 interface ReconnectCandidate {
   identity: PortIdentity
+  generation: number
   activity: ActivePortActivity
   playerId?: number
   lastGameEventAt: number
   disconnectedAt: number
-  successor?: chrome.runtime.Port
 }
 
-export type ActivePortClaim = 'same-port' | 'same-tab-reconnect' | 'handover'
+export type ActivePortClaim = 'same-port' | 'handover'
 export type ActivePortRelease = 'relic' | 'reconnect-pending' | 'released'
 
 /** 同時配信の兆候を検出するだけの窓。挙動は常に最新port優先のまま変えない。 */
@@ -42,6 +43,7 @@ export const ACTIVE_PORT_RECONNECT_WINDOW_MS = 2_000
 
 let activeToken: ActivePortToken | undefined
 let reconnectCandidate: ReconnectCandidate | undefined
+let nextGeneration = 0
 
 // relicの状態は判定に使ってはならない（MUST NOT）。旧portが後からtokenを
 // 取り戻した瞬間に、そのportで既に観測済みのaccountだけを復元する最小キャッシュ。
@@ -63,7 +65,10 @@ const isSamePortIdentity = (left: PortIdentity, right: PortIdentity): boolean =>
   return true
 }
 
-/** onConnect時点で、直前に切れた同一content scriptの後継portを控える。 */
+/**
+ * onConnect時点で、直前に切れた同一content scriptへtokenを即時継承する。
+ * 次のgame eventを待つと、309後のホーム画面ではACTIVE不在のままになる。
+ */
 export const registerActivePortConnection = (
   port: chrome.runtime.Port,
   connectedAt: number = Date.now()
@@ -79,10 +84,18 @@ export const registerActivePortConnection = (
   ) {
     return false
   }
-  reconnectCandidate.successor = port
-  if (reconnectCandidate.playerId !== undefined) {
-    playerIdByPort.set(port, reconnectCandidate.playerId)
+  const candidate = reconnectCandidate
+  if (candidate.playerId !== undefined) {
+    playerIdByPort.set(port, candidate.playerId)
   }
+  activeToken = {
+    port,
+    generation: candidate.generation,
+    activity: candidate.activity,
+    playerId: candidate.playerId,
+    lastGameEventAt: candidate.lastGameEventAt
+  }
+  reconnectCandidate = undefined
   return true
 }
 
@@ -101,17 +114,6 @@ export const claimActivePort = (
     return 'same-port'
   }
 
-  if (reconnectCandidate?.successor === port) {
-    activeToken = {
-      port,
-      activity: reconnectCandidate.activity,
-      playerId: reconnectCandidate.playerId,
-      lastGameEventAt: deliveredAt
-    }
-    reconnectCandidate = undefined
-    return 'same-tab-reconnect'
-  }
-
   const previousLastGameEventAt = activeToken?.lastGameEventAt
     ?? reconnectCandidate?.lastGameEventAt
   if (previousLastGameEventAt !== undefined) {
@@ -128,6 +130,7 @@ export const claimActivePort = (
   reconnectCandidate = undefined
   activeToken = {
     port,
+    generation: ++nextGeneration,
     activity: 'unknown',
     playerId: playerIdByPort.get(port),
     lastGameEventAt: deliveredAt
@@ -137,6 +140,10 @@ export const claimActivePort = (
 
 export const getActivePort = (): chrome.runtime.Port | undefined =>
   activeToken?.port
+
+/** 現在のACTIVE token世代。別tab/documentへのhandover時だけ進む。 */
+export const getActivePortGeneration = (): number | undefined =>
+  activeToken?.generation
 
 export const getActivePortActivity = (): ActivePortActivity | undefined =>
   activeToken?.activity
@@ -197,6 +204,7 @@ export const releaseActivePort = (
   if (identity) {
     reconnectCandidate = {
       identity,
+      generation: activeToken.generation,
       activity: activeToken.activity,
       playerId,
       lastGameEventAt: activeToken.lastGameEventAt,
@@ -213,5 +221,6 @@ export const releaseActivePort = (
 export const __resetActivePortStateForTests = (): void => {
   activeToken = undefined
   reconnectCandidate = undefined
+  nextGeneration = 0
   playerIdByPort = new WeakMap<chrome.runtime.Port, number>()
 }

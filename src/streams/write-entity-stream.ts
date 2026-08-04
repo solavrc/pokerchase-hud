@@ -23,6 +23,10 @@ import { getPositionMap, getBigBlindUserId } from '../utils/position-utils'
 import { defaultRegistry } from '../stats'
 import type { ErrorContext } from '../types/errors'
 import { deriveHandSettlement } from '../utils/hand-chip-accounting'
+import {
+  getEventGeneration,
+  setStatsRequestContext
+} from './stats-output-context'
 
 /**
  * エンティティ書き込みStream（パイプライン第2段階）
@@ -67,6 +71,15 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
       // cache. The completed hand changes every aggregate, so invalidate only
       // after its entity transaction commits and before downstream recalculates.
       this.service.statsOutputStream.invalidateCache()
+      const dealEvent = events.find((event): event is ApiEvent<ApiType.EVT_DEAL> =>
+        event.ApiTypeId === ApiType.EVT_DEAL
+      )
+      const resultsEvent = events.find(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)
+      setStatsRequestContext(hand.seatUserIds, {
+        delivery: 'active',
+        generation: resultsEvent ? getEventGeneration(resultsEvent) : undefined,
+        evtDeal: dealEvent
+      })
       this.push(hand.seatUserIds)
     } catch (error: unknown) {
       const context: ErrorContext = {

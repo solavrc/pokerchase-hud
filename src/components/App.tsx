@@ -2,7 +2,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   POKER_CHASE_SERVICE_EVENT,
   POKER_CHASE_SESSION_END_EVENT,
-  POKER_CHASE_SESSION_START_EVENT
+  POKER_CHASE_SESSION_START_EVENT,
+  type PokerChaseSessionStartDetail
 } from "../constants/runtime"
 import { ApiType, isApiEventType } from "../types"
 import type { Options } from '../utils/options-storage'
@@ -97,6 +98,8 @@ const App = memo(() => {
   const [handEpoch, setHandEpoch] = useState(0)
   // 309後、201通知が欠落しても最初の信頼済みヒーロー着席DEALを新境界にする。
   const awaitingTrustedSessionBoundaryRef = useRef(false)
+  // 成功201の受信時刻より古いDEALを伴う遅延statsは、旧session計算の完了。
+  const trustedSessionBoundaryTimestampRef = useRef<number | undefined>(undefined)
 
   // ユーザー指定キーでHUD + hand logを切り替える。App自体は非表示時も
   // マウントされたままなので、同じキーで必ず再表示できる。
@@ -192,11 +195,28 @@ const App = memo(() => {
       const isTrustedSeatedDeal = detail.evtDeal !== undefined
         && isApiEventType(detail.evtDeal, ApiType.EVT_DEAL)
         && detail.evtDeal.Player?.SeatIndex !== undefined
+      const trustedDealTimestamp = isTrustedSeatedDeal
+        ? detail.evtDeal!.timestamp
+        : undefined
+      const boundaryTimestamp = trustedSessionBoundaryTimestampRef.current
+      if (
+        awaitingTrustedSessionBoundaryRef.current &&
+        boundaryTimestamp !== undefined &&
+        (
+          !isTrustedSeatedDeal ||
+          trustedDealTimestamp === undefined || trustedDealTimestamp < boundaryTimestamp
+        )
+      ) {
+        // 201同期clear後に完了した旧sessionの非同期集計でlineup/dimCacheを
+        // 再構築してはならない（MUST NOT）。次の信頼済み着席DEALまで待つ。
+        return
+      }
       if (isTrustedSeatedDeal && awaitingTrustedSessionBoundaryRef.current) {
         // 201が観測できなかった場合も、次のヒーロー着席DEALを新session境界と
         // して旧lineupを破棄しなければならない（MUST）。このDEALのlineupは
         // 同じcallback後半で直ちに描画する。
         awaitingTrustedSessionBoundaryRef.current = false
+        trustedSessionBoundaryTimestampRef.current = undefined
         discardRetainedLineup()
       }
 
@@ -391,11 +411,13 @@ const App = memo(() => {
   // SPR/ポットオッズは現在ハンドだけの値なので、終了通知ではそこだけを消す。
   const handleSessionEnd = useCallback(() => {
     awaitingTrustedSessionBoundaryRef.current = true
+    trustedSessionBoundaryTimestampRef.current = undefined
     setAllPlayersRealTimeStats(undefined)
   }, [])
 
-  const handleSessionStart = useCallback(() => {
-    awaitingTrustedSessionBoundaryRef.current = false
+  const handleSessionStart = useCallback((event: CustomEvent<PokerChaseSessionStartDetail>) => {
+    awaitingTrustedSessionBoundaryRef.current = true
+    trustedSessionBoundaryTimestampRef.current = event.detail.timestamp
     discardRetainedLineup()
   }, [discardRetainedLineup])
 

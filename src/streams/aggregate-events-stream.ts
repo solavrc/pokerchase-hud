@@ -4,6 +4,10 @@ import { ApiType } from '../types'
 import type { ApiEvent, ApiHandEvent, Progress } from '../types'
 import { ErrorHandler } from '../utils/error-handler'
 import { setHandImprovementHeroHoleCards } from '../realtime-stats'
+import {
+  getEventGeneration,
+  setStatsRequestContext
+} from './stats-output-context'
 
 /**
  * APIイベント集約処理Stream（パイプライン第1段階）
@@ -167,6 +171,12 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
             this.service.db.hands.count().then(count => {
               if (count > 0) {
                 // 全てのSeatUserIds（-1を含む）を渡して席の順序を保持
+                const generation = getEventGeneration(event)
+                setStatsRequestContext(event.SeatUserIds, {
+                  delivery: 'active',
+                  generation,
+                  evtDeal: event
+                })
                 this.service.statsOutputStream.write(event.SeatUserIds)
               }
             }).catch(err => {

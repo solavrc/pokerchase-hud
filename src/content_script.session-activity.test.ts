@@ -79,6 +79,7 @@ describe('content_script keepalive (session-activity triggers)', () => {
     jest.advanceTimersByTime(KEEPALIVE_INTERVAL_MS)
 
     expect(sessionStart).toHaveBeenCalledTimes(1)
+    expect((sessionStart.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({ timestamp: 1 })
     expect(mockPort.postMessage).toHaveBeenCalledWith({ type: 'keepalive' })
     window.removeEventListener(POKER_CHASE_SESSION_START_EVENT, sessionStart)
   })

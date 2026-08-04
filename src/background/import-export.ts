@@ -34,6 +34,7 @@ import { HandLogExporter } from '../utils/hand-log-exporter'
 import { awaitIngestionDrain } from './update-manager'
 import { runBestEffortChromeUi } from './best-effort-chrome-api'
 import { startKeepAlive } from './service-worker-keepalive'
+import { writeConnectedStatsUpdate } from './ports'
 
 export { startKeepAlive } from './service-worker-keepalive'
 
@@ -379,7 +380,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         const playerIds = latestDealEvent.SeatUserIds.filter(id => id !== -1)
         if (playerIds.length > 0) {
           console.log('[importData] Triggering stats recalculation for imported data')
-          service.statsOutputStream.write(playerIds)
+          writeConnectedStatsUpdate(service, playerIds)
 
           // 現在開いているゲームタブに対しても統計更新を通知
           chrome.tabs.query({ url: gameUrlPattern }, tabs => {

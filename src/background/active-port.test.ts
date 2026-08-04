@@ -6,6 +6,7 @@ import {
   findActivePortForPlayer,
   getActivePort,
   getActivePortActivity,
+  getActivePortGeneration,
   isActivePortOutsideSession,
   markActivePortPlayerId,
   markActivePortSessionActive,
@@ -107,12 +108,17 @@ describe('active-port token', () => {
     claimActivePort(tabA, 1_000)
     markActivePortSessionActive(tabA)
     markActivePortPlayerId(tabA, 111)
+    const generation = getActivePortGeneration()
 
     expect(releaseActivePort(tabA, 2_000)).toBe('reconnect-pending')
     expect(registerActivePortConnection(replacement, 2_500)).toBe(true)
-    expect(claimActivePort(replacement, 12_000)).toBe('same-tab-reconnect')
+    // 次の数値game eventを待たず、onConnectだけでtoken/accountを復元する。
+    expect(getActivePort()).toBe(replacement)
+    expect(getActivePortGeneration()).toBe(generation)
     expect(getActivePortActivity()).toBe('active')
     expect(readActivePortPlayerId()).toBe(111)
+    expect(findActivePortForPlayer(111)).toBe(replacement)
+    expect(claimActivePort(replacement, 12_000)).toBe('same-port')
   })
 
   test.each([

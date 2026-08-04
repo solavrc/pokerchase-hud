@@ -1064,13 +1064,56 @@ describe('App', () => {
       expect(screen.getByTestId('hud-5')).toHaveTextContent('Player: 6')
 
       await act(async () => {
-        window.dispatchEvent(new CustomEvent('PokerChaseSessionStartEvent'))
+        window.dispatchEvent(new CustomEvent('PokerChaseSessionStartEvent', {
+          detail: { timestamp: 2_000 }
+        }))
       })
 
       for (let i = 0; i < 6; i++) {
         expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Player: -1')
         expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Dimmed: no')
       }
+    })
+
+    it('成功201後に遅延到着した旧session statsを拒否し、次の信頼済みdealだけを採用する', async () => {
+      render(<App />)
+      await dispatchStats(mockStatsData.stats)
+      const bustedLineup: StatsData['stats'] = mockStatsData.stats.map((stat, index) =>
+        index === 1 ? { playerId: -1 } : stat
+      )
+      await dispatchStats(bustedLineup)
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 2')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: yes')
+
+      await act(async () => {
+        window.dispatchEvent(new CustomEvent('PokerChaseSessionStartEvent', {
+          detail: { timestamp: 2_000 }
+        }))
+      })
+
+      const oldDeal = { ...makeSeatedDeal([1, 2, 3, 4, 5, 6]), timestamp: 1_000 }
+      await act(async () => {
+        window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
+          detail: { stats: mockStatsData.stats, evtDeal: oldDeal } as StatsData
+        }))
+      })
+      for (let i = 0; i < 6; i++) {
+        expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent('Player: -1')
+      }
+
+      const newLineup: StatsData['stats'] = [
+        { playerId: 1, statResults: [] },
+        { playerId: 99, statResults: [] },
+        { playerId: -1 }, { playerId: -1 }, { playerId: -1 }, { playerId: -1 }
+      ]
+      const newDeal = { ...makeSeatedDeal([1, 99, -1, -1, -1, -1]), timestamp: 2_001 }
+      await act(async () => {
+        window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
+          detail: { stats: newLineup, evtDeal: newDeal } as StatsData
+        }))
+      })
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('Player: 99')
+      expect(screen.getByTestId('hud-1')).toHaveTextContent('Dimmed: no')
     })
 
     it('インポート後のバッチ再計算（latestStatsのchromeメッセージ）はミュート状態を持ち込まない', async () => {

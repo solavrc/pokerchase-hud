@@ -29,3 +29,7 @@ export const POKER_CHASE_SESSION_END_EVENT = 'PokerChaseSessionEndEvent'
  * 持ち越さないため、App.tsxが明示的な境界として使う。
  */
 export const POKER_CHASE_SESSION_START_EVENT = 'PokerChaseSessionStartEvent'
+
+export interface PokerChaseSessionStartDetail {
+  timestamp: number
+}
