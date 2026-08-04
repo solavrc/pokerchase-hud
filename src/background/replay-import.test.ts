@@ -26,6 +26,11 @@ import {
   readActivePortPlayerId,
   resolveGeneration
 } from './active-port'
+import {
+  __resetPendingStorageWritesForTests,
+  enqueuePendingStorageWrite,
+  getPendingStorageWriteTail
+} from './pending-storage-writes'
 
 /** テスト用のダミーポート（依頼先の同一性だけを見る）。 */
 const FAKE_PORT = { name: 'test-port' } as unknown as chrome.runtime.Port
@@ -91,6 +96,7 @@ describe('replay import layer', () => {
     await db.replayDetails.clear()
     __resetReplayImportForTests()
     __resetActivePortStateForTests()
+    __resetPendingStorageWritesForTests()
     fetchCalls = []
     keepAliveStarts = 0
     keepAliveStops = 0
@@ -201,6 +207,38 @@ describe('replay import layer', () => {
       await enqueueReplayHandId(deps, 1202, NOW)
       await drainReplayImportQueue(deps)
       expect(fetchCalls).toEqual([[1200]])
+    })
+
+    test('共通storage FIFO待ち中にセッションが始まったら保存せず持ち越す', async () => {
+      let releaseBlocker!: () => void
+      const blocker = enqueuePendingStorageWrite(() => new Promise<void>(resolve => {
+        releaseBlocker = resolve
+      }))
+      const blockerTail = getPendingStorageWriteTail()
+      const deps = depsOf()
+      markSessionActive()
+      await enqueueReplayHandId(deps, 1203, NOW)
+      markSessionInactive()
+
+      const drain = drainReplayImportQueue(deps)
+      // 成功応答がguardedWriteとしてblockerの後ろへ積まれるまで待つ。
+      for (let i = 0; i < 50 && getPendingStorageWriteTail() === blockerTail; i++) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+      expect(getPendingStorageWriteTail()).not.toBe(blockerTail)
+
+      // 実書き込みはまだ始まっていない。この間にdedup済み開始イベントが
+      // ACTIVEへ遷移させる競合を再現する。
+      markSessionActive()
+      releaseBlocker()
+      await blocker
+      await drain
+
+      expect(fetchCalls).toEqual([[1203]])
+      expect(await db.replayDetails.get(1203)).toBeUndefined()
+      expect(await db.apiEvents.where('ApiTypeId').equals(ApiType.REPLAY_HAND_DETAIL).count())
+        .toBe(0)
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([1203])
     })
 
     // Codexレビュー指摘: バッチでまとめて渡すと、ページ側が撃ち切るまでの

@@ -57,6 +57,7 @@ import {
   readReplayLedger,
   sanitizeReplayDetail,
   type ReplayBridgeConfigMessage,
+  type ReplayFetchCancel,
   type ReplayFetchItemResult,
   type ReplayFetchRequest
 } from './replay/protocol'
@@ -372,6 +373,38 @@ const readEnvelopeRejection = (
 
 const cancelledReplayRequests = new Set<string>()
 const replayRequestControllers = new Map<string, AbortController>()
+const replayRequestEpochs = new Map<string, string>()
+let currentServiceWorkerEpoch: string | undefined
+
+const cancelReplayRequest = (requestId: string, epoch?: string): void => {
+  if (epoch !== undefined && replayRequestEpochs.get(requestId) !== epoch) return
+  cancelledReplayRequests.add(requestId)
+  replayRequestControllers.get(requestId)?.abort()
+}
+
+/** SWが消えてもpage worldに残るHTTPを、このページ自身で停止する。 */
+const cancelAllReplayRequests = (): void => {
+  for (const requestId of replayRequestEpochs.keys()) cancelReplayRequest(requestId)
+}
+
+/**
+ * 新しいSWの依頼を受けた時点で旧SW世代を失効させる。
+ * 旧世代のHTTPは中断し、遅れて完了しても結果を転送しない（MUST NOT）。
+ */
+const adoptServiceWorkerEpoch = (epoch: string): void => {
+  if (currentServiceWorkerEpoch === epoch) return
+  cancelAllReplayRequests()
+  currentServiceWorkerEpoch = epoch
+}
+
+/** WebSocket由来の生イベントをpage worldで直接見て、SWに依存せず中断する。 */
+const isSessionStartSignal = (message: Record<string, unknown>): boolean => {
+  if (message.ApiTypeId === 201) {
+    return typeof message.Code !== 'number' || message.Code === 0
+  }
+  if (message.ApiTypeId === 303) return message.Player != null
+  return message.ApiTypeId === 308
+}
 
 const fetchReplayDetail = async (
   handId: number,
@@ -439,6 +472,15 @@ const delay = (ms: number): Promise<void> =>
   new Promise(resolve => { setTimeout(resolve, ms) })
 
 const handleReplayFetch = async (message: ReplayFetchRequest): Promise<void> => {
+  const epoch = message.epoch
+  if (currentServiceWorkerEpoch !== epoch ||
+    replayRequestEpochs.get(message.requestId) !== epoch) {
+    if (replayRequestEpochs.get(message.requestId) === epoch) {
+      replayRequestEpochs.delete(message.requestId)
+      cancelledReplayRequests.delete(message.requestId)
+    }
+    return
+  }
   const handIds = message.handIds
     .filter(isPositiveHandId)
     .slice(0, REPLAY_FETCH_BATCH_LIMIT)
@@ -446,38 +488,59 @@ const handleReplayFetch = async (message: ReplayFetchRequest): Promise<void> => 
   // 切り替えさせる。逐次キューで待たされていた時間を期限に含めないため。
   window.postMessage({
     type: REPLAY_BRIDGE_STARTED,
+    epoch,
     requestId: message.requestId
   }, POKER_CHASE_ORIGIN)
 
   const results: ReplayFetchItemResult[] = []
-  for (const handId of handIds) {
-    // 各件の前に再確認する。無効化は次の1件から効く必要があり、バッチ完了まで
-    // 最大99件を撃ち続けてはいけない。
-    if (!replayImportEnabled || cancelledReplayRequests.has(message.requestId)) break
-    // 先頭は待たない。1件だけの取得は従来どおり即座に走る。
-    if (results.length > 0) {
-      await delay(REPLAY_FETCH_INTERVAL_MS)
-      // 待機の**後**にも確認する（MUST）。間隔待ちの最中に無効化されると、
-      // 上のチェックは通過済みなので `fetchReplayDetail` が呼ばれ、
-      // 資格情報が消えている分だけ偽の `auth-envelope-unavailable`
-      // （retryable）が結果に積まれる。
-      if (!replayImportEnabled || cancelledReplayRequests.has(message.requestId)) break
+  try {
+    for (const handId of handIds) {
+      // 各件の前に再確認する。無効化は次の1件から効く必要があり、バッチ完了まで
+      // 最大99件を撃ち続けてはいけない。
+      if (!replayImportEnabled || currentServiceWorkerEpoch !== epoch ||
+        cancelledReplayRequests.has(message.requestId)) break
+      // 先頭は待たない。1件だけの取得は従来どおり即座に走る。
+      if (results.length > 0) {
+        await delay(REPLAY_FETCH_INTERVAL_MS)
+        // 待機の**後**にも確認する（MUST）。間隔待ちの最中に無効化されると、
+        // 上のチェックは通過済みなので `fetchReplayDetail` が呼ばれ、
+        // 資格情報が消えている分だけ偽の `auth-envelope-unavailable`
+        // （retryable）が結果に積まれる。
+        if (!replayImportEnabled || currentServiceWorkerEpoch !== epoch ||
+          cancelledReplayRequests.has(message.requestId)) break
+      }
+      const result = await fetchReplayDetail(handId, message.requestId)
+      if (currentServiceWorkerEpoch !== epoch ||
+        cancelledReplayRequests.has(message.requestId)) break
+      results.push(result)
     }
-    const result = await fetchReplayDetail(handId, message.requestId)
-    if (cancelledReplayRequests.has(message.requestId)) break
-    results.push(result)
+    if (currentServiceWorkerEpoch !== epoch ||
+      replayRequestEpochs.get(message.requestId) !== epoch) return
+    window.postMessage({
+      type: REPLAY_BRIDGE_RESULT,
+      epoch,
+      requestId: message.requestId,
+      results
+    }, POKER_CHASE_ORIGIN)
+  } finally {
+    replayRequestEpochs.delete(message.requestId)
+    cancelledReplayRequests.delete(message.requestId)
   }
-  window.postMessage({
-    type: REPLAY_BRIDGE_RESULT,
-    requestId: message.requestId,
-    results
-  }, POKER_CHASE_ORIGIN)
-  cancelledReplayRequests.delete(message.requestId)
 }
 
 window.addEventListener('message', (event: MessageEvent<unknown>) => {
   if (event.source !== window || event.origin !== POKER_CHASE_ORIGIN ||
-    typeof event.data !== 'object' || event.data === null || !('type' in event.data)) return
+    typeof event.data !== 'object' || event.data === null) return
+
+  if ('ApiTypeId' in event.data &&
+    isSessionStartSignal(event.data as Record<string, unknown>)) {
+    // backgroundのpending mapはSW終了で消える。page側でも生イベントを直接見て
+    // 中断することで、旧SWが残した孤児HTTPを対局へ持ち越さない（MUST NOT）。
+    cancelAllReplayRequests()
+    return
+  }
+
+  if (!('type' in event.data)) return
 
   if (event.data.type === REPLAY_BRIDGE_CONFIG) {
     const message = event.data as ReplayBridgeConfigMessage
@@ -496,15 +559,17 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
     return
   }
   if (event.data.type === REPLAY_BRIDGE_CANCEL) {
-    const requestId = (event.data as { requestId?: unknown }).requestId
-    if (typeof requestId !== 'string') return
-    cancelledReplayRequests.add(requestId)
-    replayRequestControllers.get(requestId)?.abort()
+    const cancel = event.data as Partial<ReplayFetchCancel>
+    if (typeof cancel.epoch !== 'string' || typeof cancel.requestId !== 'string') return
+    cancelReplayRequest(cancel.requestId, cancel.epoch)
     return
   }
   if (event.data.type !== REPLAY_BRIDGE_FETCH || !replayImportEnabled) return
   const message = event.data as Partial<ReplayFetchRequest>
-  if (typeof message.requestId !== 'string' || !Array.isArray(message.handIds)) return
+  if (typeof message.epoch !== 'string' || typeof message.requestId !== 'string' ||
+    !Array.isArray(message.handIds)) return
+  adoptServiceWorkerEpoch(message.epoch)
+  replayRequestEpochs.set(message.requestId, message.epoch)
   replayFetchQueue = replayFetchQueue
     .then(() => handleReplayFetch(message as ReplayFetchRequest))
     .catch(error => console.warn('[experimental-replay] Replay fetch batch failed:', error))

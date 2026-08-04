@@ -63,12 +63,15 @@ export interface ReplayBridgeConfigMessage {
 
 export interface ReplayFetchRequest {
   type: typeof REPLAY_BRIDGE_FETCH | typeof REPLAY_PORT_FETCH
+  /** Service Worker起動ごとに変わる世代。旧SWの応答を新SWへ混ぜない。 */
+  epoch: string
   requestId: string
   handIds: number[]
 }
 
 export interface ReplayFetchCancel {
   type: typeof REPLAY_BRIDGE_CANCEL | typeof REPLAY_PORT_CANCEL
+  epoch: string
   requestId: string
 }
 
@@ -82,6 +85,7 @@ export interface ReplayFetchCancel {
  */
 export interface ReplayFetchStarted {
   type: typeof REPLAY_BRIDGE_STARTED | typeof REPLAY_PORT_STARTED
+  epoch: string
   requestId: string
 }
 
@@ -91,6 +95,7 @@ export type ReplayFetchItemResult =
 
 export interface ReplayFetchResult {
   type: typeof REPLAY_BRIDGE_RESULT | typeof REPLAY_PORT_RESULT
+  epoch: string
   requestId: string
   results: ReplayFetchItemResult[]
 }

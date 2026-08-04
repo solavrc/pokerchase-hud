@@ -87,7 +87,7 @@ const postReplayRequest = (message: ReplayFetchRequest) => {
 
 const postReplayCancel = (message: ReplayFetchCancel) => {
   const pendingIndex = pendingReplayRequests.findIndex(
-    request => request.requestId === message.requestId
+    request => request.epoch === message.epoch && request.requestId === message.requestId
   )
   if (pendingIndex !== -1) pendingReplayRequests.splice(pendingIndex, 1)
   if (!replayBridgeReady) return
@@ -200,7 +200,8 @@ const portManager = new RuntimePortManager({
     if (typeof message === 'object' && message !== null &&
       'type' in message && message.type === REPLAY_PORT_FETCH) {
       const request = message as Partial<ReplayFetchRequest>
-      if (typeof request.requestId === 'string' && Array.isArray(request.handIds) &&
+      if (typeof request.epoch === 'string' && typeof request.requestId === 'string' &&
+        Array.isArray(request.handIds) &&
         request.handIds.length <= REPLAY_FETCH_BATCH_LIMIT && request.handIds.every(isPositiveHandId)) {
         postReplayRequest(request as ReplayFetchRequest)
       }
@@ -208,6 +209,7 @@ const portManager = new RuntimePortManager({
     }
     if (typeof message === 'object' && message !== null &&
       'type' in message && message.type === REPLAY_PORT_CANCEL &&
+      'epoch' in message && typeof message.epoch === 'string' &&
       'requestId' in message && typeof message.requestId === 'string') {
       postReplayCancel(message as ReplayFetchCancel)
       return
@@ -272,15 +274,20 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   // （MUST NOT）。
   if ('type' in event.data && event.data.type === REPLAY_BRIDGE_STARTED) {
     const started = event.data as Partial<ReplayFetchStarted>
-    if (typeof started.requestId === 'string') {
-      portManager.send({ type: REPLAY_PORT_STARTED, requestId: started.requestId })
+    if (typeof started.epoch === 'string' && typeof started.requestId === 'string') {
+      portManager.send({
+        type: REPLAY_PORT_STARTED,
+        epoch: started.epoch,
+        requestId: started.requestId
+      })
     }
     return
   }
 
   if ('type' in event.data && event.data.type === REPLAY_BRIDGE_RESULT) {
     const result = event.data as Partial<ReplayFetchResult>
-    if (typeof result.requestId === 'string' && Array.isArray(result.results) &&
+    if (typeof result.epoch === 'string' && typeof result.requestId === 'string' &&
+      Array.isArray(result.results) &&
       result.results.length <= REPLAY_FETCH_BATCH_LIMIT) {
       portManager.send({ ...result, type: REPLAY_PORT_RESULT })
     }

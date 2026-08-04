@@ -21,7 +21,9 @@
 import {
   EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY,
   REPLAY_BRIDGE_CANCEL,
-  REPLAY_PORT_CANCEL
+  REPLAY_BRIDGE_FETCH,
+  REPLAY_PORT_CANCEL,
+  REPLAY_PORT_FETCH
 } from './replay/protocol'
 
 const WS_HOOK_FILE = 'web_accessible_resource.js'
@@ -164,11 +166,56 @@ describe('content_script replay bridge conditional injection', () => {
     replayScript?.dispatchEvent(new Event('load'))
     postMessage.mockClear()
 
-    receiveBackgroundMessage?.({ type: REPLAY_PORT_CANCEL, requestId: 'request-201' })
+    receiveBackgroundMessage?.({
+      type: REPLAY_PORT_CANCEL,
+      epoch: 'sw-epoch-1',
+      requestId: 'request-201'
+    })
 
     expect(postMessage).toHaveBeenCalledWith({
       type: REPLAY_BRIDGE_CANCEL,
+      epoch: 'sw-epoch-1',
       requestId: 'request-201'
+    }, 'https://game.poker-chase.com')
+  })
+
+  test('backgroundのSW epochをpage-world fetchへ保持して転送する', async () => {
+    let receiveBackgroundMessage: ((message: unknown) => void) | undefined
+    ;(chrome.runtime as any).connect = jest.fn(() => ({
+      postMessage: jest.fn(),
+      disconnect: jest.fn(),
+      onMessage: {
+        addListener: jest.fn((listener: (message: unknown) => void) => {
+          receiveBackgroundMessage = listener
+        }),
+        removeListener: jest.fn()
+      },
+      onDisconnect: { addListener: jest.fn(), removeListener: jest.fn() },
+    }))
+    ;(chrome.storage.sync.get as jest.Mock).mockResolvedValue({
+      [EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY]: true
+    })
+    const postMessage = jest.spyOn(window, 'postMessage')
+
+    jest.isolateModules(() => { require('./content_script') })
+    await flush()
+    const replayScript = Array.from(document.querySelectorAll('script'))
+      .find(script => script.getAttribute('src')?.includes(REPLAY_BRIDGE_FILE))
+    replayScript?.dispatchEvent(new Event('load'))
+    postMessage.mockClear()
+
+    receiveBackgroundMessage?.({
+      type: REPLAY_PORT_FETCH,
+      epoch: 'sw-epoch-2',
+      requestId: 'request-after-restart',
+      handIds: [123]
+    })
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: REPLAY_BRIDGE_FETCH,
+      epoch: 'sw-epoch-2',
+      requestId: 'request-after-restart',
+      handIds: [123]
     }, 'https://game.poker-chase.com')
   })
 })

@@ -417,9 +417,12 @@ const App = memo(() => {
 
   const handleSessionStart = useCallback((event: CustomEvent<PokerChaseSessionStartDetail>) => {
     // 201は新しい着席lineupを持たないため保持表示を消さない。境界時刻より古い
-    // 非同期statsを拒否し、最初の信頼済み着席DEALで破棄・置換する。
+    // 非同期statsを拒否し、最初の信頼済み着席DEALで破棄・置換する。ただし
+    // SPR/ポットオッズは現在ハンド専用なので、309無しのMTTテーブル移動でも
+    // 旧テーブルの値を残さない（MUST NOT）。
     awaitingTrustedSessionBoundaryRef.current = true
     trustedSessionBoundaryTimestampRef.current = event.detail.timestamp
+    setAllPlayersRealTimeStats(undefined)
   }, [])
 
   useEffect(() => {

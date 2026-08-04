@@ -1055,13 +1055,32 @@ describe('App', () => {
       }
     })
 
-    it('成功した201では保持lineupを残し、最初の信頼済み着席dealで破棄する', async () => {
+    it('309無しの成功201では現在ハンド値だけ消し、lineupは信頼済み着席dealまで保持する', async () => {
       render(<App />)
-      await dispatchStats(mockStatsData.stats)
       await act(async () => {
-        window.dispatchEvent(new CustomEvent('PokerChaseSessionEndEvent'))
+        window.dispatchEvent(new CustomEvent('PokerChaseServiceEvent', {
+          detail: {
+            stats: mockStatsData.stats,
+            realTimeStats: {
+              heroStats: {},
+              playerStats: {
+                0: {
+                  spr: 10,
+                  potOdds: {
+                    pot: 300,
+                    call: 100,
+                    percentage: 25,
+                    ratio: '3:1',
+                    isPlayerTurn: true
+                  }
+                }
+              }
+            }
+          }
+        }))
       })
       expect(screen.getByTestId('hud-5')).toHaveTextContent('Player: 6')
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('PotOdds: yes')
 
       await act(async () => {
         window.dispatchEvent(new CustomEvent('PokerChaseSessionStartEvent', {
@@ -1072,6 +1091,7 @@ describe('App', () => {
       for (let i = 0; i < 6; i++) {
         expect(screen.getByTestId(`hud-${i}`)).toHaveTextContent(`Player: ${i + 1}`)
       }
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('PotOdds: no')
 
       const nextSessionLineup: StatsData['stats'] = [
         { playerId: 1, statResults: [] },

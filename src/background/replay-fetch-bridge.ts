@@ -37,6 +37,7 @@ import {
 
 interface PendingRequest {
   port: chrome.runtime.Port
+  epoch: string
   handIdCount: number
   resolve: (results: ReplayFetchItemResult[]) => void
   timer: ReturnType<typeof setTimeout>
@@ -45,6 +46,9 @@ interface PendingRequest {
 }
 
 const pending = new Map<string, PendingRequest>()
+
+/** MV3 Service Workerの起動世代。再起動すると必ず変わる。 */
+const serviceWorkerEpoch = crypto.randomUUID()
 
 /** ページ側のキューに合わせて依頼を直列化する。 */
 let dispatchQueue: Promise<void> = Promise.resolve()
@@ -77,9 +81,10 @@ export const handleReplayPortMessage = (
   // 所要が残らない。
   if ((message as { type?: unknown }).type === REPLAY_PORT_STARTED) {
     const started = message as Partial<ReplayFetchStarted>
-    if (typeof started.requestId !== 'string') return true
+    if (typeof started.requestId !== 'string' || typeof started.epoch !== 'string') return true
     const request = pending.get(started.requestId)
-    if (!request || request.port !== port || request.started) return true
+    if (!request || request.port !== port || request.epoch !== started.epoch ||
+      started.epoch !== serviceWorkerEpoch || request.started) return true
     request.started = true
     clearTimeout(request.timer)
     request.timer = setTimeout(
@@ -92,10 +97,12 @@ export const handleReplayPortMessage = (
   if ((message as { type?: unknown }).type !== REPLAY_PORT_RESULT) return false
 
   const result = message as Partial<ReplayFetchResult>
-  if (typeof result.requestId !== 'string' || !Array.isArray(result.results)) return true
+  if (typeof result.requestId !== 'string' || typeof result.epoch !== 'string' ||
+    !Array.isArray(result.results)) return true
   const request = pending.get(result.requestId)
   // 依頼を出したポートからの応答だけを受け取る（別タブの応答で解決しない）
-  if (!request || request.port !== port) return true
+  if (!request || request.port !== port || request.epoch !== result.epoch ||
+    result.epoch !== serviceWorkerEpoch) return true
   settle(result.requestId, result.results as ReplayFetchItemResult[])
   return true
 }
@@ -114,7 +121,11 @@ export const releaseReplayRequestsForPort = (port: chrome.runtime.Port): void =>
 export const cancelReplayRequestsForSessionStart = (): number => {
   let cancelled = 0
   for (const [requestId, request] of [...pending]) {
-    const message: ReplayFetchCancel = { type: REPLAY_PORT_CANCEL, requestId }
+    const message: ReplayFetchCancel = {
+      type: REPLAY_PORT_CANCEL,
+      epoch: request.epoch,
+      requestId
+    }
     try {
       request.port.postMessage(message)
     } catch {
@@ -190,9 +201,21 @@ export const requestReplayDetails = async (
         () => settle(requestId, []),
         replayFetchBatchTimeoutMs(REPLAY_FETCH_BATCH_LIMIT)
       )
-      pending.set(requestId, { port, handIdCount: handIds.length, resolve, timer, started: false })
+      pending.set(requestId, {
+        port,
+        epoch: serviceWorkerEpoch,
+        handIdCount: handIds.length,
+        resolve,
+        timer,
+        started: false
+      })
       try {
-        port.postMessage({ type: REPLAY_PORT_FETCH, requestId, handIds })
+        port.postMessage({
+          type: REPLAY_PORT_FETCH,
+          epoch: serviceWorkerEpoch,
+          requestId,
+          handIds
+        })
       } catch (error) {
         settle(requestId, [])
       }

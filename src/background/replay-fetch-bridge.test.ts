@@ -33,8 +33,10 @@ const makeInactiveActivePort = (): chrome.runtime.Port => {
   return port
 }
 
-const sentRequestId = (port: chrome.runtime.Port): string =>
-  (port.postMessage as jest.Mock).mock.calls[0]![0].requestId
+const sentRequest = (port: chrome.runtime.Port): { epoch: string, requestId: string } =>
+  (port.postMessage as jest.Mock).mock.calls[0]![0]
+
+const sentRequestId = (port: chrome.runtime.Port): string => sentRequest(port).requestId
 
 describe('replay-fetch-bridge（開発用の取得入口）', () => {
   beforeEach(() => {
@@ -56,6 +58,7 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
       const pending = requestReplayDetails([1]).then(outcome => { settled = true; return outcome })
       await Promise.resolve()
       const requestId = sentRequestId(port)
+      const epoch = sentRequest(port).epoch
 
       // 開始通知の前は「先行バッチが最大構成でも待ち切れる」長さ。
       // 自分の件数(1件)の期限を大きく超えても、まだ切れてはいけない。
@@ -63,7 +66,7 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
       await Promise.resolve()
       expect(settled).toBe(false)
 
-      expect(handleReplayPortMessage({ type: REPLAY_PORT_STARTED, requestId }, port)).toBe(true)
+      expect(handleReplayPortMessage({ type: REPLAY_PORT_STARTED, epoch, requestId }, port)).toBe(true)
 
       // 張り直された後は自分の件数で切れる
       jest.advanceTimersByTime(replayFetchBatchTimeoutMs(1) + 1000)
@@ -87,6 +90,7 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
 
     handleReplayPortMessage({
       type: REPLAY_PORT_RESULT,
+      epoch: sentRequest(port).epoch,
       requestId: sentRequestId(port),
       results: [{ handId: 1, ok: true, detail: { a: 1 } }]
     }, port)
@@ -105,10 +109,12 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
     const pending = requestReplayDetails([1])
     await Promise.resolve()
     const requestId = sentRequestId(port)
+    const epoch = sentRequest(port).epoch
 
     // 別タブが同じrequestIdを騙っても、依頼元のポートでなければ無視する
     handleReplayPortMessage({
       type: REPLAY_PORT_RESULT,
+      epoch,
       requestId,
       results: [{ handId: 1, ok: true, detail: 'from-other-tab' }]
     }, other)
@@ -120,6 +126,7 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
 
     handleReplayPortMessage({
       type: REPLAY_PORT_RESULT,
+      epoch,
       requestId,
       results: [{ handId: 1, ok: true, detail: 'from-origin' }]
     }, port)
@@ -127,6 +134,35 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
     expect(outcome).toEqual({
       success: true,
       results: [{ handId: 1, ok: true, detail: 'from-origin' }]
+    })
+  })
+
+  it('同じrequestIdでも異なるSW epochの応答では解決しない', async () => {
+    const port = makeInactiveActivePort()
+    const pending = requestReplayDetails([1])
+    await Promise.resolve()
+    const { epoch, requestId } = sentRequest(port)
+
+    handleReplayPortMessage({
+      type: REPLAY_PORT_RESULT,
+      epoch: 'terminated-sw-epoch',
+      requestId,
+      results: [{ handId: 1, ok: true, detail: 'stale' }]
+    }, port)
+    let settled = false
+    void pending.then(() => { settled = true })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    handleReplayPortMessage({
+      type: REPLAY_PORT_RESULT,
+      epoch,
+      requestId,
+      results: [{ handId: 1, ok: true, detail: 'current' }]
+    }, port)
+    expect(await pending).toEqual({
+      success: true,
+      results: [{ handId: 1, ok: true, detail: 'current' }]
     })
   })
 
@@ -145,10 +181,12 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
     const pending = requestReplayDetails([1])
     await Promise.resolve()
     const requestId = sentRequestId(port)
+    const epoch = sentRequest(port).epoch
 
     expect(cancelReplayRequestsForSessionStart()).toBe(1)
     expect(port.postMessage).toHaveBeenCalledWith({
       type: REPLAY_PORT_CANCEL,
+      epoch,
       requestId
     })
     expect(await pending).toEqual({ success: true, results: [] })

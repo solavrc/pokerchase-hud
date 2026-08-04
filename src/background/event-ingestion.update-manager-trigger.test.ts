@@ -468,12 +468,13 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     expect(mockPort.postMessage).toHaveBeenCalledWith(expect.objectContaining({
       type: REPLAY_PORT_FETCH
     }))
-    const requestId = mockPort.postMessage.mock.calls[0][0].requestId
+    const { epoch, requestId } = mockPort.postMessage.mock.calls[0][0]
 
     await onMessageHandler(startEvent)
 
     expect(mockPort.postMessage).toHaveBeenCalledWith({
       type: REPLAY_PORT_CANCEL,
+      epoch,
       requestId
     })
     expect(await request).toEqual({ success: true, results: [] })

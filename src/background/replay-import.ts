@@ -607,10 +607,18 @@ const drainOnce = async (
     // 応答が返らなかった（ポート切断・期限切れなど）ものは持ち越す。
     if (!result || result.handId !== entry.handId) continue
     if (result.ok) {
-      const wrote = await guardedWrite(deps, () =>
-        storeReplayDetail(deps.db, entry.handId, result.detail, deps.now()))
+      const wrote = await guardedWrite(deps, async () => {
+        // 共通storage FIFOの先行書き込み待ちもawait境界である。FIFOへ積む前の
+        // 判定だけでは、待っている間に201/303/308がactivityをACTIVEへ変えた後も
+        // 古いinactive判定で90001を書けてしまう。実書き込み直前にフラグと
+        // fairness gateを取り直し、非同期フラグ読取後にも再確認する（MUST）。
+        if (!canFetchNow(deps) || !await deps.isEnabled() || !canFetchNow(deps) ||
+          deps.isBusy?.()) return undefined
+        return storeReplayDetail(deps.db, entry.handId, result.detail, deps.now())
+      })
       if (wrote === undefined) {
-        // 書き込みの直前に長時間操作が始まった。保存も決着もせず持ち越す。
+        // 書き込みの直前にセッション・フラグ・長時間操作の条件が変わった。
+        // 保存も決着もせず持ち越す。
         aborted = true
         break
       }

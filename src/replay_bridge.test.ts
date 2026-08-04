@@ -12,6 +12,7 @@ import {
 
 Object.assign(global, { TextEncoder, TextDecoder })
 const { decode, encode } = require('@msgpack/msgpack') as typeof import('@msgpack/msgpack')
+const SW_EPOCH = 'sw-epoch-1'
 
 const arrayBufferOf = (value: unknown): ArrayBuffer => {
   const bytes = encode(value)
@@ -135,7 +136,7 @@ describe('main-world experimental replay bridge', () => {
     window.dispatchEvent(new MessageEvent('message', {
       source: window,
       origin: POKER_CHASE_ORIGIN,
-      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'request-1', handIds: [777] }
+      data: { type: REPLAY_BRIDGE_FETCH, epoch: SW_EPOCH, requestId: 'request-1', handIds: [777] }
     }))
     await new Promise(resolve => setTimeout(resolve, 0))
 
@@ -154,6 +155,7 @@ describe('main-world experimental replay bridge', () => {
 
     expect(postMessageSpy).toHaveBeenCalledWith({
       type: REPLAY_BRIDGE_RESULT,
+      epoch: SW_EPOCH,
       requestId: 'request-1',
       results: [{
         handId: 777,
@@ -220,7 +222,12 @@ describe('main-world experimental replay bridge', () => {
     window.dispatchEvent(new MessageEvent('message', {
       source: window,
       origin: POKER_CHASE_ORIGIN,
-      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'request-2', handIds: [777, 779, 778] }
+      data: {
+        type: REPLAY_BRIDGE_FETCH,
+        epoch: SW_EPOCH,
+        requestId: 'request-2',
+        handIds: [777, 779, 778]
+      }
     }))
     // 間隔を空けずに次を出していないことを、時間を送らずに確かめる。
     // ここで2件目が出ていたらペーシングが効いていない。
@@ -235,6 +242,7 @@ describe('main-world experimental replay bridge', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(postMessageSpy).toHaveBeenCalledWith({
       type: REPLAY_BRIDGE_RESULT,
+      epoch: SW_EPOCH,
       requestId: 'request-2',
       results: [
         { handId: 777, ok: false, error: 'API result 1 status 2302', retryable: false },
@@ -354,7 +362,12 @@ describe('main-world experimental replay bridge', () => {
     window.dispatchEvent(new MessageEvent('message', {
       source: window,
       origin: POKER_CHASE_ORIGIN,
-      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'request-3', handIds: [1, 2, 3, 4, 5] }
+      data: {
+        type: REPLAY_BRIDGE_FETCH,
+        epoch: SW_EPOCH,
+        requestId: 'request-3',
+        handIds: [1, 2, 3, 4, 5]
+      }
     }))
     for (let step = 0; step < 8; step++) {
       await flush()
@@ -411,13 +424,18 @@ describe('main-world experimental replay bridge', () => {
     }))
     window.dispatchEvent(new MessageEvent('message', {
       source: window, origin: POKER_CHASE_ORIGIN,
-      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'cancel-on-201', handIds: [77] }
+      data: {
+        type: REPLAY_BRIDGE_FETCH,
+        epoch: SW_EPOCH,
+        requestId: 'cancel-on-201',
+        handIds: [77]
+      }
     }))
     for (let i = 0; i < 20 && !requestSignal; i++) await Promise.resolve()
 
     window.dispatchEvent(new MessageEvent('message', {
       source: window, origin: POKER_CHASE_ORIGIN,
-      data: { type: REPLAY_BRIDGE_CANCEL, requestId: 'cancel-on-201' }
+      data: { type: REPLAY_BRIDGE_CANCEL, epoch: SW_EPOCH, requestId: 'cancel-on-201' }
     }))
     for (let i = 0; i < 20; i++) await Promise.resolve()
 
@@ -426,6 +444,142 @@ describe('main-world experimental replay bridge', () => {
       .map(call => call[0] as { type?: string, requestId?: string, results?: unknown[] })
       .find(message => message.type === REPLAY_BRIDGE_RESULT && message.requestId === 'cancel-on-201')
     expect(result?.results).toEqual([])
+
+    XMLHttpRequest.prototype.open = originalOpen
+    XMLHttpRequest.prototype.send = originalSend
+  })
+
+  test('SW再起動でpendingが消えてもpage側の生201で孤児HTTPを自律中断する', async () => {
+    let requestSignal: AbortSignal | undefined
+    const fetchMock = jest.fn().mockImplementation((_url, init) =>
+      new Promise((_resolve, reject) => {
+        requestSignal = init.signal
+        requestSignal?.addEventListener('abort', () => {
+          reject(new DOMException('session started', 'AbortError'))
+        })
+      }))
+    ;(window as any).fetch = fetchMock
+
+    const originalOpen = XMLHttpRequest.prototype.open
+    const originalSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.open = jest.fn() as any
+    XMLHttpRequest.prototype.send = jest.fn() as any
+
+    jest.isolateModules(() => {
+      require('./replay_bridge')
+    })
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', 'https://production.api-poker-chase.com/user/status')
+    xhr.send(encode({
+      param: {}, session: 'page-only-secret', platform: 2,
+      appVer: '2.06', dataVer: '2_06_0_test', masterVer: 'master-test'
+    }))
+    await Promise.resolve()
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled: true }
+    }))
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: {
+        type: REPLAY_BRIDGE_FETCH,
+        epoch: 'terminated-sw-epoch',
+        requestId: 'orphan-after-sw-restart',
+        handIds: [78]
+      }
+    }))
+    for (let i = 0; i < 20 && !requestSignal; i++) await Promise.resolve()
+
+    // 旧SWのpending mapは既に無い想定なので、background cancelは送らない。
+    // WebSocket hookがpageへ出す成功201だけで停止できなければならない。
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { ApiTypeId: 201, Code: 0, timestamp: 2_000 }
+    }))
+    for (let i = 0; i < 20; i++) await Promise.resolve()
+
+    expect(requestSignal?.aborted).toBe(true)
+
+    XMLHttpRequest.prototype.open = originalOpen
+    XMLHttpRequest.prototype.send = originalSend
+  })
+
+  test('新SW epochを受けたら旧HTTPを中断し、旧epochの遅延応答を破棄する', async () => {
+    let resolveOld!: (value: unknown) => void
+    let oldSignal: AbortSignal | undefined
+    const fetchMock = jest.fn()
+      .mockImplementationOnce((_url, init) => {
+        oldSignal = init.signal
+        return new Promise(resolve => { resolveOld = resolve })
+      })
+      .mockResolvedValue({
+        ok: true,
+        status: 200,
+        arrayBuffer: jest.fn().mockResolvedValue(arrayBufferOf(SUCCESS_ENVELOPE))
+      })
+    ;(window as any).fetch = fetchMock
+
+    const originalOpen = XMLHttpRequest.prototype.open
+    const originalSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.open = jest.fn() as any
+    XMLHttpRequest.prototype.send = jest.fn() as any
+    const postMessageSpy = jest.spyOn(window, 'postMessage')
+    postMessageSpy.mockClear()
+
+    jest.isolateModules(() => {
+      require('./replay_bridge')
+    })
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', 'https://production.api-poker-chase.com/user/status')
+    xhr.send(encode({
+      param: {}, session: 'page-only-secret', platform: 2,
+      appVer: '2.06', dataVer: '2_06_0_test', masterVer: 'master-test'
+    }))
+    await Promise.resolve()
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: { type: REPLAY_BRIDGE_CONFIG, enabled: true }
+    }))
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: {
+        type: REPLAY_BRIDGE_FETCH,
+        epoch: 'old-sw-epoch',
+        requestId: 'old-request',
+        handIds: [79]
+      }
+    }))
+    for (let i = 0; i < 20 && !oldSignal; i++) await Promise.resolve()
+
+    // SW再起動後の最初の依頼。受信時点で旧世代を失効させる。
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window, origin: POKER_CHASE_ORIGIN,
+      data: {
+        type: REPLAY_BRIDGE_FETCH,
+        epoch: 'new-sw-epoch',
+        requestId: 'new-request',
+        handIds: [80]
+      }
+    }))
+    expect(oldSignal?.aborted).toBe(true)
+
+    // abortを無視して旧HTTPが完了する最悪ケースでも、旧応答は転送しない。
+    resolveOld({
+      ok: true,
+      status: 200,
+      arrayBuffer: jest.fn().mockResolvedValue(arrayBufferOf(SUCCESS_ENVELOPE))
+    })
+    for (let i = 0; i < 30 && fetchMock.mock.calls.length < 2; i++) await Promise.resolve()
+    for (let i = 0; i < 20; i++) await Promise.resolve()
+
+    const results = postMessageSpy.mock.calls
+      .map(call => call[0] as { type?: string, epoch?: string, requestId?: string })
+      .filter(message => message.type === REPLAY_BRIDGE_RESULT)
+    expect(results.some(message => message.requestId === 'old-request')).toBe(false)
+    expect(results).toContainEqual(expect.objectContaining({
+      epoch: 'new-sw-epoch',
+      requestId: 'new-request'
+    }))
 
     XMLHttpRequest.prototype.open = originalOpen
     XMLHttpRequest.prototype.send = originalSend
@@ -477,7 +631,7 @@ describe('main-world experimental replay bridge', () => {
 
     window.dispatchEvent(new MessageEvent('message', {
       source: window, origin: POKER_CHASE_ORIGIN,
-      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'r-p', handIds: [9] }
+      data: { type: REPLAY_BRIDGE_FETCH, epoch: SW_EPOCH, requestId: 'r-p', handIds: [9] }
     }))
     await new Promise(resolve => setTimeout(resolve, 0))
     const body = decode(fetchMock.mock.calls[0]![1].body) as Record<string, unknown>
@@ -523,7 +677,7 @@ describe('main-world experimental replay bridge', () => {
     setEnabled(true)
     window.dispatchEvent(new MessageEvent('message', {
       source: window, origin: POKER_CHASE_ORIGIN,
-      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'r-stale', handIds: [1] }
+      data: { type: REPLAY_BRIDGE_FETCH, epoch: SW_EPOCH, requestId: 'r-stale', handIds: [1] }
     }))
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -551,7 +705,7 @@ describe('main-world experimental replay bridge', () => {
     }))
     window.dispatchEvent(new MessageEvent('message', {
       source: window, origin: POKER_CHASE_ORIGIN,
-      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'r-next', handIds: [2] }
+      data: { type: REPLAY_BRIDGE_FETCH, epoch: SW_EPOCH, requestId: 'r-next', handIds: [2] }
     }))
     await new Promise(resolve => setTimeout(resolve, 0))
     const body = decode(fetchMock.mock.calls[0]![1].body) as Record<string, unknown>
@@ -769,7 +923,12 @@ describe('main-world experimental replay bridge', () => {
     }))
     window.dispatchEvent(new MessageEvent('message', {
       source: window, origin: POKER_CHASE_ORIGIN,
-      data: { type: REPLAY_BRIDGE_FETCH, requestId: 'request-delay', handIds: [11, 12] }
+      data: {
+        type: REPLAY_BRIDGE_FETCH,
+        epoch: SW_EPOCH,
+        requestId: 'request-delay',
+        handIds: [11, 12]
+      }
     }))
 
     // 1件目が終わり、2件目の間隔待ちに入るまで進める

@@ -256,8 +256,15 @@ type ReplayAction = {
 接続中の他portはrelicなので、その状態を集合演算へ混ぜない。
 
 逐次取得中にdedup済みの201/303/308を観測した場合は、backgroundが現在の依頼を
-未決着のまま解放し、page側の`AbortController`へ中断を伝える。応答と境界処理が
-競合した場合も、取り込み層は保存直前にactivityを再確認し、90001を書き込まない。
+未決着のまま解放し、page側の`AbortController`へ中断を伝える。これに加えてpage
+bridge自身もWebSocket由来の成功201・着席303・308を直接監視して全取得を止める。
+各依頼と応答はService Worker起動ごとのepochを持ち、新しいepochが届いた時点で
+旧SWのHTTPを中断し、その遅延応答を破棄する。したがって応答待ちでSWが終了して
+backgroundのpending mapが失われても、孤児HTTPを次の対局へ持ち越さない。
+
+応答と境界処理が競合した場合も、取り込み層は共通storage FIFO内の実書き込み
+直前にactivityと実験フラグを再確認し、90001を書き込まない。先行書き込み待ちの
+間にセッションが始まった場合も同じ経路で未決着キューへ保持する。
 
 キューは `meta` テーブルの1行（`replayImportQueue`）に持つ。MV3 の Service
 Worker は数十秒で落ちるため、メモリには置けない。
