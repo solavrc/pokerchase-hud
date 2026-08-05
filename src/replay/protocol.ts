@@ -1,8 +1,13 @@
 export const EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY = 'experimentalReplayImportEnabled'
+/** 公開UIのオプトイン。開発者フラグとは独立させる（MUST）。 */
+export const PUBLIC_REPLAY_IMPORT_STORAGE_KEY = 'replayImportEnabled'
+/** backgroundが保持する公開オプトインの検証状態。 */
+export const REPLAY_IMPORT_ACCESS_STORAGE_KEY = 'replayImportAccess'
 export const REPLAY_DETAIL_URL = 'https://production.api-poker-chase.com/replay/detail'
 export const REPLAY_API_ORIGIN = 'https://production.api-poker-chase.com'
 
 export const REPLAY_LIST_PATH = '/replay/list'
+export const REPLAY_LIST_URL = `${REPLAY_API_ORIGIN}${REPLAY_LIST_PATH}`
 
 export const REPLAY_BRIDGE_CONFIG = 'pokerchase-hud:replay-config'
 export const REPLAY_BRIDGE_FETCH = 'pokerchase-hud:replay-fetch'
@@ -13,6 +18,8 @@ export const REPLAY_BRIDGE_RESULT = 'pokerchase-hud:replay-result'
 export const REPLAY_BRIDGE_LEDGER = 'pokerchase-hud:replay-ledger'
 /** 認証エンベロープを初めて捕獲したことの通知（値は載せない）。 */
 export const REPLAY_BRIDGE_AUTH_READY = 'pokerchase-hud:replay-auth-ready'
+export const REPLAY_BRIDGE_VERIFY = 'pokerchase-hud:replay-verify'
+export const REPLAY_BRIDGE_VERIFY_RESULT = 'pokerchase-hud:replay-verify-result'
 export const REPLAY_PORT_FETCH = 'experimental-replay-fetch'
 /** SWからcontent scriptへ渡す補助的な全取得中断通知。 */
 export const REPLAY_PORT_CANCEL = 'experimental-replay-cancel'
@@ -20,8 +27,26 @@ export const REPLAY_PORT_STARTED = 'experimental-replay-started'
 export const REPLAY_PORT_RESULT = 'experimental-replay-result'
 export const REPLAY_PORT_LEDGER = 'experimental-replay-ledger'
 export const REPLAY_PORT_AUTH_READY = 'experimental-replay-auth-ready'
+export const REPLAY_PORT_VERIFY = 'replay-verify'
+export const REPLAY_PORT_VERIFY_RESULT = 'replay-verify-result'
 
 export const REPLAY_FETCH_BATCH_LIMIT = 100
+
+export type ReplayAccessPhase =
+  | 'disabled'
+  | 'pending-session'
+  | 'pending-auth'
+  | 'checking'
+  | 'verified'
+  | 'expired'
+  | 'error'
+
+export interface ReplayAccessRecord {
+  phase: ReplayAccessPhase
+  cardOpenEndDate?: number
+  checkedAt?: number
+  lastError?: string
+}
 
 /**
  * 1件あたりの応答待ちの上限。これが無いと、応答が返らない1件で逐次取得が
@@ -74,6 +99,52 @@ export interface ReplayFetchRequest {
 export interface ReplayFetchCancel {
   type: typeof REPLAY_BRIDGE_CANCEL | typeof REPLAY_PORT_CANCEL
 }
+
+/**
+ * 公開オプトインの資格確認（`/replay/list` を1本だけ撃つ）。
+ *
+ * `epoch` を詳細取得と**同じ形で**載せる（MUST）。この1本も同じページ側
+ * ブリッジが同じ逐次キューで処理し、同じ自律セッションゲートで止まる。
+ * epochを持たない別形にすると、SW再起動をまたいだ旧世代の検証応答が
+ * 新しいSWの状態機械へ入り、`/replay/list` の孤児HTTPも短縮できない。
+ */
+export interface ReplayVerificationRequest {
+  type: typeof REPLAY_BRIDGE_VERIFY | typeof REPLAY_PORT_VERIFY
+  /** Service Worker起動ごとに変わる世代。詳細取得と同一の値を使う。 */
+  epoch: string
+  requestId: string
+}
+
+export interface ReplayEntitlement {
+  cardOpenEndDate: number
+  isExpiredCardOpen: boolean
+}
+
+export type ReplayVerificationResult =
+  | {
+      type: typeof REPLAY_BRIDGE_VERIFY_RESULT | typeof REPLAY_PORT_VERIFY_RESULT
+      epoch: string
+      requestId: string
+      ok: true
+      entitlement: ReplayEntitlement
+    }
+  | {
+      type: typeof REPLAY_BRIDGE_VERIFY_RESULT | typeof REPLAY_PORT_VERIFY_RESULT
+      epoch: string
+      requestId: string
+      ok: false
+      error: string
+      retryable: boolean
+    }
+
+/**
+ * 検証が「まだ撃てない」ことを表す番兵。取り込み層はこの2つだけを
+ * `pending-session` / `pending-auth` へ写し、それ以外を `error` にする。
+ * 文字列を組み立てる側と読む側を同じファイルへ置き、書式のずれが1箇所の
+ * 変更で済むようにする（`parseReplayErrorStatus` と同じ理由）。
+ */
+export const REPLAY_VERIFY_IN_SESSION = 'in-session'
+export const REPLAY_VERIFY_NO_AUTH = 'auth-envelope-unavailable'
 
 /**
  * ページ側がそのバッチの処理を**実際に開始した**ことの通知。

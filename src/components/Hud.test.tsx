@@ -848,6 +848,74 @@ describe('Hud', () => {
     })
   })
 
+  describe('replayEpoch — リプレイ取り込み中の直近ハンドパネル追従', () => {
+    it('statもhandEpochも同一のままreplayEpochが変わると、開いた直近ハンドパネルが再フェッチする', async () => {
+      const { rerender } = render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onToggleRecentHandsPanel={jest.fn()}
+          isRecentHandsPanelOpen={true}
+          handEpoch={1}
+          replayEpoch={0}
+        />
+      )
+
+      await waitFor(() => {
+        expect(getRuntimeActionCallCount('getRecentHands')).toBe(1)
+      })
+
+      // ドレインが1件保存 -> handEpochは動かない（ハンド完了ではない）。
+      rerender(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onToggleRecentHandsPanel={jest.fn()}
+          isRecentHandsPanelOpen={true}
+          handEpoch={1}
+          replayEpoch={1}
+        />
+      )
+
+      await waitFor(() => {
+        expect(getRuntimeActionCallCount('getRecentHands')).toBe(2)
+      })
+    })
+
+    it('直近ハンドパネルが閉じていればreplayEpochの変化でフェッチしない', () => {
+      const { rerender } = render(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onToggleRecentHandsPanel={jest.fn()}
+          isRecentHandsPanelOpen={false}
+          replayEpoch={0}
+        />
+      )
+
+      rerender(
+        <Hud
+          actualSeatIndex={0}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          onToggleRecentHandsPanel={jest.fn()}
+          isRecentHandsPanelOpen={false}
+          replayEpoch={1}
+        />
+      )
+
+      expect(screen.queryByTestId('recent-hands-panel')).not.toBeInTheDocument()
+      expect(getRuntimeActionCallCount('getRecentHands')).toBe(0)
+    })
+  })
+
   describe('コンパクト表示モード（#143）', () => {
     it('hudDisplayModeを渡さない場合はフルの16統計グリッドのまま（ゼロリグレッション）', () => {
       render(

@@ -29,6 +29,19 @@ interface RecentHandsPanelProps {
    * ので、この再フェッチは古いキャッシュ結果を受け取らない。
    */
   handEpoch?: number
+  /**
+   * セッション終了後のリプレイ詳細ドレイン（`background/replay-import.ts`）が
+   * `replayDetails`へ行を書くたびに、**間引かれた刻みで**増える「replay epoch」
+   * （`background/replay-panel-refresh.ts`、ports.tsの`replayDetailEpoch`、
+   * App.tsx参照）。handEpochと同じくフェッチeffectのdepsへ入れる。
+   *
+   * これが無いと、ドレインで埋まっていくホールカードはこのパネルを閉じて
+   * 開き直すまで出てこない（バックエンドの30秒キャッシュはハンド完了でしか
+   * 無効化されず、パネルには再フェッチの契機が無い）。ドレインは1.5秒間隔で
+   * 100件超を書き続けるため、通知は1件ごとではなく間引いた上で、ドレインの
+   * 終わりに必ず1回送られる。
+   */
+  replayEpoch?: number
 }
 
 type FetchStatus = 'loading' | 'ready' | 'error'
@@ -489,7 +502,7 @@ const styles = {
  * が、backgroundは常に最大件数で組み立ててキャッシュしているので、DB読み取り
  * は増えない（recent-hands-service.tsの`buildRecentHandsCacheKey`参照）。
  */
-export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelProps) => {
+export const RecentHandsPanel = memo(({ playerId, handEpoch, replayEpoch }: RecentHandsPanelProps) => {
   const [status, setStatus] = useState<FetchStatus>('loading')
   const [data, setData] = useState<RecentHandsResult | undefined>(undefined)
   // `null` = 保存済み設定をまだ読めていない。この間はフェッチしない
@@ -582,7 +595,10 @@ export const RecentHandsPanel = memo(({ playerId, handEpoch }: RecentHandsPanelP
     // オブジェクトそのものではなく**値**へ依存する ―― 同じ設定で新しい
     // オブジェクトが作られても再フェッチしないようにするための二重の防御
     // （上のsetConfigでの同一性維持と合わせて）。
-  }, [playerId, handEpoch, config === null, config?.limit, config?.participationOnly])
+    // replayEpoch: セッション終了後のリプレイ取り込みが進むたびに（間引かれた
+    // 刻みで）変わる。ドレインの最後には必ず1回届くので、開いたままのパネルは
+    // 取り込み済みのホールカードを取りこぼさない。
+  }, [playerId, handEpoch, replayEpoch, config === null, config?.limit, config?.participationOnly])
 
   // コントロール行はローディング／エラー／0件のいずれでも操作できる必要が
   // ある（0件は「その件数で0件」ではなくフィルター起因のこともあるため、

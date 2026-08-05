@@ -36,7 +36,6 @@ import type { PokerChaseDB } from '../db/poker-chase-db'
 import { ApiType } from '../types/api'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
 import {
-  EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY,
   REPLAY_FETCH_INTERVAL_MS,
   REPLAY_STATUS_EXPIRED,
   REPLAY_STATUS_NOT_FOUND,
@@ -139,8 +138,10 @@ let drainRerunRequested = false
 
 export interface ReplayImportDeps {
   db: PokerChaseDB
-  /** 実験フラグ。既定OFF。 */
+  /** 開発者バイパスを含む最終実効判定。既定OFF。 */
   isEnabled: () => Promise<boolean>
+  /** 公開経路の各取得サイクル先頭で課金状態を再検証する。 */
+  prepareAccess?: () => Promise<boolean>
   now: () => number
   /** インポート/再構築/エクスポート等の長時間操作の最中かどうか。 */
   isBusy?: () => boolean
@@ -158,6 +159,13 @@ export interface ReplayImportDeps {
   waitForIngestion?: () => Promise<void>
   /** そのアカウントのハンドを依頼してよいポートの解決（テストで差し替える）。 */
   resolvePort?: (playerId: number | undefined) => chrome.runtime.Port | undefined
+  /**
+   * 詳細を1件保存した直後に呼ぶ表示側フック（`replay-panel-refresh.ts`）。
+   * 取得の間隔・ゲート・保存の意味論には一切関与しない（MUST NOT）。
+   */
+  onDetailStored?: () => void
+  /** ドレインの終わりに1回呼ぶ表示側フック。未通知の保存を出し切る。 */
+  flushPanelRefresh?: () => void
 }
 
 const readQueue = async (db: PokerChaseDB): Promise<ReplayQueueEntry[]> => {
@@ -283,6 +291,8 @@ export type ReplayDrainReason =
   | 'port-connect'
   | 'auth-ready'
   | 'operation-idle'
+  /** 公開オプトインの切替（`replay-access.ts`のstorage監視）。 */
+  | 'access-toggle'
   | 'direct'
 
 /** 合成イベント1件を Lake と `replayDetails` へ入れる。 */
@@ -476,10 +486,14 @@ const withKeepAlive = async (
   deps: ReplayImportDeps,
   reason: ReplayDrainReason
 ): Promise<void> => {
-  // フラグOFFのユーザーでは keepalive すら起こさない。
-  if (!await deps.isEnabled()) return
-  // セッション開始イベントがRaw Lakeの書き込み待ちでも、古いinactiveを読んで
-  // keepaliveやHTTPを始めないよう、実処理の前に取り込みtailを待つ（MUST）。
+  // ここに `isEnabled` の早期returnは置けない（MUST NOT）。公開オプトインを
+  // 入れた直後の実効値は偽であり、その偽を根拠に返すと `/replay/list` の検証が
+  // 一度も走らず、実効値が永久に偽のまま固定される。フラグを一切入れていない
+  // ユーザーは `prepareAccess` が両フラグを読んだ時点で（HTTPを出さずに）返る。
+  //
+  // 検証も詳細取得と同じfairness barrierの**後**でだけ行う（MUST）。認証通知や
+  // popupのトグルと同時に届いたセッション開始イベントが取り込みキューに残って
+  // いる間に `/replay/list` を先行させない。
   await (deps.waitForIngestion ?? awaitIngestionDrain)().catch(() => undefined)
   if (!canFetchNow(deps)) {
     logReplayDiagnostic('drain-blocked', { reason, gate: 'session-unknown-or-active' })
@@ -489,6 +503,18 @@ const withKeepAlive = async (
     logReplayDiagnostic('drain-blocked', { reason, gate: 'operation-busy' })
     return
   }
+  // 公開経路は各取得サイクルの先頭で `/replay/list` を1回だけ再検証する。
+  // 開発者フラグは `prepareAccess` 側で無条件に通る。
+  if (!await (deps.prepareAccess ?? deps.isEnabled)()) {
+    logReplayDiagnostic('drain-blocked', { reason, gate: 'access-unverified' })
+    return
+  }
+  // 検証はHTTP1本分の待ちを含むawait境界である。待っている間に次の対局が
+  // 始まっていれば、keepaliveも詳細取得も始めない（MUST）。
+  if (!canFetchNow(deps) || deps.isBusy?.()) {
+    logReplayDiagnostic('drain-blocked', { reason, gate: 'session-changed-during-verify' })
+    return
+  }
   const stop = deps.startKeepAlive
     ? await deps.startKeepAlive()
     : await startKeepAlive()
@@ -496,6 +522,11 @@ const withKeepAlive = async (
     await drainOnce(deps, reason)
   } finally {
     stop()
+    // MUST: 間引きの残りをここで必ず出し切る。ドレインの最後の数件はどの
+    // 閾値にも届かないまま終わるので、これが無いと末尾のハンドがパネルに
+    // 出ない。セッション開始・無効化・長時間操作で中断した場合も、そこまでに
+    // 保存できた分は画面へ反映する。1件も保存していなければ何も送らない。
+    deps.flushPanelRefresh?.()
   }
 }
 
@@ -570,7 +601,7 @@ const drainOnce = async (
    * 100件を1バッチで渡すと、ページ側が1.5秒間隔で撃ち切るまで数分かかり、
    * その間に次の対局が始まっても残りが撃たれ続ける ―― 本機能の中心的な
    * 不変条件（セッション中は1本も撃たない）を破る。1件ずつなら、**次の1本の
-   * 直前に**セッション状態・実験フラグ・長時間操作の有無を再確認できる。
+   * 直前に**セッション状態・実効フラグ・長時間操作の有無を再確認できる。
    *
    * 間隔（1.5秒）もこちら側で空ける。ページ側の間隔はバッチ内でしか効かない
    * ため、1件ずつ渡すと間隔が消えてしまう。
@@ -647,7 +678,13 @@ const drainOnce = async (
         aborted = true
         break
       }
-      if (wrote) storedCount += 1
+      if (wrote) {
+        storedCount += 1
+        // 表示配管だけの通知（間引きは`replay-panel-refresh.ts`）。実際に
+        // 行が増えたときにだけ呼ぶ ―― 先勝ちで既に在った（`wrote === false`）
+        // ハンドはパネルの内容を変えないので、通知の理由にならない。
+        deps.onDetailStored?.()
+      }
       settled.add(entry.handId)
       continue
     }
@@ -763,19 +800,11 @@ export const backfillReplayDetailsFromLake = async (db: PokerChaseDB): Promise<n
   }
 }
 
-/** 実験フラグの読み取り。既定OFF（読めないときもOFF）。 */
-export const readReplayImportEnabled = async (): Promise<boolean> => {
-  try {
-    const stored = await chrome.storage.sync.get(EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY)
-    return stored[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY] === true
-  } catch {
-    return false
-  }
-}
-
 /** テスト用。モジュールスコープの直列化状態を初期化する。 */
 export const __resetReplayImportForTests = (): void => {
   queueMutation = Promise.resolve()
   drainInFlight = undefined
   drainRerunRequested = false
 }
+
+export { readReplayImportEnabled } from './replay-access'

@@ -8,9 +8,11 @@
  *  - preflop-line taxonomy (compact shorthand, #356): OR / 3B / CC / 3CC /
  *    4CC / C / L / X / F / W, "-F" suffix, no-data
  *  - board (community cards) assembled from the batched phases rows (#356)
- *  - hole-card visibility: shown only for showdown RankTypes with actually
- *    valid HoleCards; NO_CALL/FOLD_OPEN never show, SHOWDOWN_MUCK without
- *    valid cards doesn't show either
+ *  - hole-card visibility: from `Results[]`, shown only for showdown RankTypes
+ *    with actually valid HoleCards; NO_CALL/FOLD_OPEN never show, SHOWDOWN_MUCK
+ *    without valid cards doesn't show either. The opt-in replay fill is not
+ *    restricted that way -- it fills any seat the payload discloses, folded
+ *    seats (which have no `Results[]` row at all) included.
  *  - newest-first ordering + limit (default / clamp / non-positive fallback)
  *  - battleType/tableSize filter application (handLimitFilter NOT applied)
  *  - cache key differs by playerId/filters (NOT by limit -- #341)
@@ -1157,15 +1159,52 @@ describe('RecentHandsService', () => {
     })
 
     /**
-     * リプレイ取り込み（既定OFF）で保存済みの詳細があれば、マックした
-     * ショーダウン行だけを埋める。サーバ自身がリプレイ機能で開示している
-     * 情報なので、ゲームのUIが表示するものと同じ範囲に収まる。
+     * リプレイ取り込み（既定OFF）で保存済みの詳細があれば、`Results[]`由来で
+     * 埋まらなかった行をリプレイの手札で埋める。埋める対象を席の種別で絞ら
+     * ないのが要点 ―― ゲームの〈手札公開機能〉が有効な期間、payload は
+     * フォールドした席の`HoleCardList`も持つが、その席は`Results[]`に行その
+     * ものが無い（docs/replay-api.md）。公開の可否はサーバの payload が決める。
      */
-    describe('マック行のリプレイ穴埋め（オプトイン）', () => {
+    describe('リプレイ穴埋め（オプトイン）', () => {
       const replayPayloadFor = (playerId: number, cards: number[]) => ({
         Game: { PlayerNum: 6 },
         Player: { SeatIndex: 0, UserId: playerId, HoleCardList: cards }
       })
+
+      /**
+       * 〈手札公開機能〉が有効な期間の`/replay/detail`形（docs/replay-api.md
+       * 「詳細応答の中身」から構成）。実データは未取得（2026-08-05時点）。
+       * 席2はプリフロップで降りた想定で、`Results[]`に行が無いまま
+       * `HoleCardList`だけが入る ―― これが旧実装の取りこぼし。
+       */
+      const premiumPayload = {
+        Game: { PlayerNum: 3, SmallBlind: 100, BigBlind: 200 },
+        Player: { SeatIndex: 0, UserId: 3, HoleCardList: [12, 25] },
+        OtherPlayerList: [
+          { SeatIndex: 1, UserId: 2, HoleCardList: [0, 1] },
+          { SeatIndex: 2, UserId: PLAYER_ID, HoleCardList: [48, 49] }
+        ]
+      }
+
+      /** 未課金アカウントの応答形: 降りた席は空配列で返る（実測済みの形）。 */
+      const unpaidPayload = {
+        Game: { PlayerNum: 3, SmallBlind: 100, BigBlind: 200 },
+        Player: { SeatIndex: 0, UserId: 3, HoleCardList: [12, 25] },
+        OtherPlayerList: [
+          { SeatIndex: 1, UserId: 2, HoleCardList: [0, 1] },
+          { SeatIndex: 2, UserId: PLAYER_ID, HoleCardList: [] }
+        ]
+      }
+
+      /** 対象プレイヤーが降りていて`Results[]`に行が無いハンド。 */
+      const addFoldedHand = async (handId: number) => {
+        await db.hands.add(makeHand({
+          id: handId,
+          results: [
+            { UserId: 3, HandRanking: 1, Ranking: -2, RewardChip: 400, RankType: RankType.NO_CALL, Hands: [], HoleCards: [] }
+          ]
+        }))
+      }
 
       afterEach(async () => {
         await chrome.storage.sync.remove('experimentalReplayImportEnabled')
@@ -1207,15 +1246,41 @@ describe('RecentHandsService', () => {
         expect(result.hands[0]!.holeCardsSource).toBeNull()
       })
 
-      // ショーダウンに到達していない行は埋めない。サーバがリプレイで
-      // 開示するのはショーダウンに到達した手であり、降りた相手の手札は
-      // この経路の対象外。
-      test('ショーダウンに到達していない行は埋めない', async () => {
+      /**
+       * `Results[]`に行が無い＝降りた席。RankTypeを見るゲートでは構造的に
+       * 到達できなかった経路で、この機能の主目的。
+       */
+      test('フォールドした席（Results行なし）も、公開されていれば埋める', async () => {
+        await chrome.storage.sync.set({ experimentalReplayImportEnabled: true })
+        const handId = nextHandId++
+        await addFoldedHand(handId)
+        await db.replayDetails.put({ handId, payload: premiumPayload, fetchedAt: 1 })
+
+        const result = await getRecentHands(db, service, PLAYER_ID, 1)
+        expect(result.hands[0]!.wentToShowdown).toBe(false)
+        expect(result.hands[0]!.holeCards).toEqual(['As', 'Ah'])
+        expect(result.hands[0]!.holeCardsSource).toBe('replay')
+      })
+
+      test('未課金の応答（降りた席が空配列）なら、その席は空のまま', async () => {
+        await chrome.storage.sync.set({ experimentalReplayImportEnabled: true })
+        const handId = nextHandId++
+        await addFoldedHand(handId)
+        await db.replayDetails.put({ handId, payload: unpaidPayload, fetchedAt: 1 })
+
+        const result = await getRecentHands(db, service, PLAYER_ID, 1)
+        expect(result.hands[0]!.holeCards).toBeNull()
+        expect(result.hands[0]!.holeCardsSource).toBeNull()
+      })
+
+      // ショーダウンに到達していない行も、payloadに値があれば埋める。可視性の
+      // 判断はサーバ（〈手札公開機能〉）に委ねており、拡張側では絞らない。
+      test('無競争勝利（NO_CALL）の行も、公開されていれば埋める', async () => {
         await chrome.storage.sync.set({ experimentalReplayImportEnabled: true })
         const handId = nextHandId++
         await db.hands.add(makeHand({
           id: handId,
-          results: [{ UserId: PLAYER_ID, HandRanking: -1, Ranking: -2, RewardChip: 0, RankType: RankType.NO_CALL, Hands: [], HoleCards: [] }]
+          results: [{ UserId: PLAYER_ID, HandRanking: 1, Ranking: -2, RewardChip: 400, RankType: RankType.NO_CALL, Hands: [], HoleCards: [] }]
         }))
         await db.replayDetails.put({
           handId,
@@ -1224,7 +1289,18 @@ describe('RecentHandsService', () => {
         })
 
         const result = await getRecentHands(db, service, PLAYER_ID, 1)
+        expect(result.hands[0]!.holeCards).toEqual(['As', 'Ah'])
+        expect(result.hands[0]!.holeCardsSource).toBe('replay')
+      })
+
+      test('オプトインが無効なら、フォールドした席も埋めない', async () => {
+        const handId = nextHandId++
+        await addFoldedHand(handId)
+        await db.replayDetails.put({ handId, payload: premiumPayload, fetchedAt: 1 })
+
+        const result = await getRecentHands(db, service, PLAYER_ID, 1)
         expect(result.hands[0]!.holeCards).toBeNull()
+        expect(result.hands[0]!.holeCardsSource).toBeNull()
       })
 
       test('WebSocket側に実手札があればそちらを優先する', async () => {

@@ -2,9 +2,8 @@
  * content_script.ts - リプレイ傍受スクリプト（replay_bridge.js）の条件付き注入
  *
  * リプレイの fetch / XMLHttpRequest 傍受は `replay_bridge.ts` に分離され、
- * `experimentalReplayImportEnabled` が有効なときにだけ WAR `<script>` として
- * 注入される。無効ユーザーの実行環境には傍受コードが一切載らない（fetch/XHR は
- * 素のまま）。ここではその注入ゲートを検証する:
+ * 開発者フラグまたは公開オプトインが有効なときにだけ WAR `<script>` として
+ * 注入される。無効ユーザーの実行環境には傍受コードが一切載らない。
  *
  *   - 無効時: WebSocket hook（web_accessible_resource.js）は常時注入されるが、
  *     replay_bridge.js は注入されない
@@ -20,6 +19,7 @@
  */
 import {
   EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY,
+  PUBLIC_REPLAY_IMPORT_STORAGE_KEY,
   REPLAY_BRIDGE_CANCEL,
   REPLAY_BRIDGE_FETCH,
   REPLAY_PORT_CANCEL,
@@ -111,6 +111,17 @@ describe('content_script replay bridge conditional injection', () => {
     await flush()
 
     expect(countScriptsMatching(WS_HOOK_FILE)).toBe(1)
+    expect(countScriptsMatching(REPLAY_BRIDGE_FILE)).toBe(1)
+  })
+
+  test('公開オプトインだけでも課金検証用ブリッジを注入する', async () => {
+    ;(chrome.storage.sync.get as jest.Mock).mockResolvedValue({
+      [PUBLIC_REPLAY_IMPORT_STORAGE_KEY]: true
+    })
+
+    jest.isolateModules(() => { require('./content_script') })
+    await flush()
+
     expect(countScriptsMatching(REPLAY_BRIDGE_FILE)).toBe(1)
   })
 

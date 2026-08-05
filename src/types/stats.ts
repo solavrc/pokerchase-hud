@@ -294,8 +294,11 @@ export interface RecentHandEntry {
   /** `null` when the position can't be determined (see positional drill-down's identical fallback rules). */
   position: Position | null
   /**
-   * Revealed hole cards as `['Ah', 'Kd']`, ONLY when actually shown at
-   * showdown. Gated on BOTH conditions: `isShowdownParticipant(result)`
+   * Revealed hole cards as `['Ah', 'Kd']`. From the WebSocket `Results` path
+   * this is ONLY what was actually shown at showdown; the opt-in replay path
+   * (see `holeCardsSource`) can additionally fill seats the game's own
+   * card-open feature discloses. Gated on BOTH conditions:
+   * `isShowdownParticipant(result)`
    * (RankType is a real comparison 0-9, or 11 SHOWDOWN_MUCK -- i.e.
    * excludes 10 NO_CALL and 12 FOLD_OPEN, so a voluntary post-fold reveal
    * never counts as "revealed" here even though the server does send real
@@ -308,11 +311,13 @@ export interface RecentHandEntry {
   holeCards: string[] | null
   /**
    * Where `holeCards` came from. `'results'` is the WebSocket
-   * `EVT_HAND_RESULTS.Results` path above. `'replay'` means the row was
-   * mucked at showdown (RankType 11, `HoleCards` empty) and the cards were
-   * filled from a stored replay detail (`replayDetails`, opt-in only) --
-   * the server discloses mucked showdown hands through its own replay
-   * feature, so this is the same information the game itself renders.
+   * `EVT_HAND_RESULTS.Results` path above. `'replay'` means the cards were
+   * filled from a stored replay detail (`replayDetails`, opt-in only). That
+   * path is NOT restricted to showdown rows: while the game's card-open
+   * feature is active, `/replay/detail` carries `HoleCardList` for every seat
+   * recorded in the hand replay, folded seats included -- and a folded seat
+   * has no `Results` row at all. What is disclosed is decided by the payload,
+   * not by this code, so this is the same information the game itself renders.
    * `'dealt'` means the row is HERO's own hand and the cards were read from
    * the Raw Event Lake's `EVT_DEAL.Player.HoleCards` -- the cards hero was
    * actually dealt, which the `Hand` entity does not persist. This source is
