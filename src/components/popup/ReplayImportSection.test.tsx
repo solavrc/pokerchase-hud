@@ -46,9 +46,9 @@ describe('ReplayImportSection', () => {
   })
 
   test.each([
-    ['pending-session', '対局終了後にカード公開の利用状態を確認します。'],
+    ['pending-session', '対局終了後にプレミアムパスの利用状態を確認します。'],
     ['pending-auth', 'ゲームのホーム画面を開くと確認されます。'],
-    ['checking', 'カード公開の利用状態を確認中です。'],
+    ['checking', 'プレミアムパスの利用状態を確認中です。'],
     ['expired', 'プレミアムパスの有効期間外のため有効化されませんでした。']
   ] as const)('%sの保留・拒否状態を表示する', async (phase, message) => {
     await chrome.storage.sync.set({ [PUBLIC_REPLAY_IMPORT_STORAGE_KEY]: true })

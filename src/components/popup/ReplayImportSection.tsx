@@ -109,9 +109,9 @@ export const ReplayImportSection = () => {
   const status = developerBypass
     ? <Alert severity="info" sx={{ mt: 1 }}>開発者設定により課金検証を省略して有効です。</Alert>
     : publicEnabled && displayPhase === 'checking'
-      ? <Alert severity="info" sx={{ mt: 1 }}>カード公開の利用状態を確認中です。</Alert>
+      ? <Alert severity="info" sx={{ mt: 1 }}>プレミアムパスの利用状態を確認中です。</Alert>
       : publicEnabled && displayPhase === 'pending-session'
-        ? <Alert severity="info" sx={{ mt: 1 }}>対局終了後にカード公開の利用状態を確認します。</Alert>
+        ? <Alert severity="info" sx={{ mt: 1 }}>対局終了後にプレミアムパスの利用状態を確認します。</Alert>
         : publicEnabled && displayPhase === 'pending-auth'
           ? <Alert severity="info" sx={{ mt: 1 }}>ゲームのホーム画面を開くと確認されます。</Alert>
           : publicEnabled && displayPhase === 'verified'
@@ -119,7 +119,7 @@ export const ReplayImportSection = () => {
             : publicEnabled && displayPhase === 'expired'
               ? <Alert severity="warning" sx={{ mt: 1 }}>プレミアムパスの有効期間外のため有効化されませんでした。</Alert>
               : publicEnabled && displayPhase === 'error'
-                ? <Alert severity="warning" sx={{ mt: 1 }}>カード公開の利用状態を確認できませんでした。</Alert>
+                ? <Alert severity="warning" sx={{ mt: 1 }}>プレミアムパスの利用状態を確認できませんでした。</Alert>
                 : null
 
   return (
