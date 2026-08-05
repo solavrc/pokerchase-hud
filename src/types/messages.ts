@@ -231,6 +231,23 @@ export interface SetDeviceHandLogLayoutMessage {
 }
 
 /**
+ * ゲームタブ→バックグラウンド。「最後の卓の復元」のスナップショット
+ * （last-table-storage.ts）を読む／書く。`storage.local`は
+ * `setAccessLevel('TRUSTED_CONTEXTS')`でcontent scriptから遮断されている
+ * ため、`hudPosition_*`等と同じく信頼できるbackground経由でしか触れない。
+ * `snapshot`の形は`parseLastTableSnapshot`が唯一の正本で、ここでは
+ * `unknown`のまま運ぶ（型定義とZodスキーマの二重管理を作らない）。
+ */
+export interface GetLastTableSnapshotMessage {
+  action: 'getLastTableSnapshot'
+}
+
+export interface SetLastTableSnapshotMessage {
+  action: 'setLastTableSnapshot'
+  snapshot: unknown
+}
+
+/**
  * ポップアップ→バックグラウンド。端末内に保存されたHUDパネル位置と
  * ハンドログのレイアウトを、まとめて既定へ戻す。
  * 個別リセットに分けていないのは、ユーザーから見て「配置を元に戻す」は
@@ -485,7 +502,12 @@ export interface DeviceHandLogLayoutResponse extends SuccessResponse {
   layout?: HandLogLayout
 }
 
-export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse | RecentHandsResponse | UndecodedEventStatsResponse | ApplyUpdateResponse | DeviceUILayoutResponse | DeviceHandLogLayoutResponse
+/** 保存が無い／壊れている場合は`snapshot`を省く（＝復元しない）。 */
+export interface LastTableSnapshotResponse extends SuccessResponse {
+  snapshot?: unknown
+}
+
+export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse | RecentHandsResponse | UndecodedEventStatsResponse | ApplyUpdateResponse | DeviceUILayoutResponse | DeviceHandLogLayoutResponse | LastTableSnapshotResponse
 
 // Union type of all possible messages
 export type ChromeMessage =
@@ -509,6 +531,8 @@ export type ChromeMessage =
   | UpdateUIConfigMessage
   | UpdateDeviceUIScaleMessage
   | GetDeviceUILayoutMessage
+  | GetLastTableSnapshotMessage
+  | SetLastTableSnapshotMessage
   | SetDeviceUIScaleMessage
   | SetDeviceHudPositionMessage
   | GetDeviceHandLogLayoutMessage
@@ -631,6 +655,12 @@ export const isGetOperationStateMessage = (msg: unknown): msg is GetOperationSta
 
 export const isAcknowledgeRebuildAdvisoryMessage = (msg: unknown): msg is AcknowledgeRebuildAdvisoryMessage =>
   isMessageWithAction(msg, 'acknowledgeRebuildAdvisory')
+
+export const isGetLastTableSnapshotMessage = (msg: unknown): msg is GetLastTableSnapshotMessage =>
+  isMessageWithAction(msg, 'getLastTableSnapshot')
+
+export const isSetLastTableSnapshotMessage = (msg: unknown): msg is SetLastTableSnapshotMessage =>
+  isMessageWithAction(msg, 'setLastTableSnapshot')
 
 export const isGetPositionalStatsMessage = (msg: unknown): msg is GetPositionalStatsMessage =>
   isMessageWithAction(msg, 'getPositionalStats')

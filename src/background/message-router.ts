@@ -32,6 +32,10 @@ import {
   UI_SCALE_STORAGE_KEY,
 } from '../utils/ui-config-storage'
 import {
+  LAST_TABLE_SNAPSHOT_STORAGE_KEY,
+  parseLastTableSnapshot,
+} from '../utils/last-table-storage'
+import {
   IMPORT_RESULT_STORAGE_KEY,
   type ImportResultRecord,
 } from '../constants/import-page'
@@ -473,6 +477,47 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
           complete
         )
       )
+      return true
+    } else if (request.action === 'getLastTableSnapshot') {
+      // 「最後の卓の復元」(last-table-storage.ts)。`storage.local`は
+      // `setAccessLevel('TRUSTED_CONTEXTS')`でcontent scriptから遮断されて
+      // いるため、`hudPosition_*`等と同じくここが唯一の読み口。
+      // 壊れた/バージョン違いの記録は`snapshot`を省いて返す（フェイル
+      // クローズ: 復元しない、成功扱いのまま空席で始める）。
+      chrome.storage.local.get(LAST_TABLE_SNAPSHOT_STORAGE_KEY, (result: Record<string, unknown>) => {
+        const error = chrome.runtime.lastError
+        if (error) {
+          sendResponse({ success: false, error: error.message ?? 'Failed to read last table snapshot' })
+          return
+        }
+        const snapshot = parseLastTableSnapshot(result[LAST_TABLE_SNAPSHOT_STORAGE_KEY])
+        sendResponse({ success: true, ...(snapshot ? { snapshot } : {}) })
+      })
+      return true
+    } else if (request.action === 'setLastTableSnapshot') {
+      // 送られてきた形をここで検証する（MUST）。ゲームタブ側でも組み立て時に
+      // 検証しているが、書き込み側の信頼できる境界はここ ―― 検証していない
+      // 値を書くと、次回の読み出しが必ず捨てる記録を残すだけになる。
+      const snapshot = parseLastTableSnapshot(request.snapshot)
+      if (!snapshot) {
+        sendResponse({ success: false, error: 'Invalid last table snapshot' })
+        return true
+      }
+      void enqueuePendingStorageWrite(() =>
+        new Promise<chrome.runtime.LastError | undefined>(resolve => {
+          chrome.storage.local.set({ [LAST_TABLE_SNAPSHOT_STORAGE_KEY]: snapshot }, () =>
+            resolve(chrome.runtime.lastError))
+        })
+      ).then(error => {
+        sendResponse(error
+          ? { success: false, error: error.message ?? 'Failed to save last table snapshot' }
+          : { success: true })
+      }, error => {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to save last table snapshot',
+        })
+      })
       return true
     } else if (request.action === 'resetDeviceUILayout') {
       // ハンドログ・HUDパネル位置・倍率を1回のremoveでまとめて消す。片方だけ

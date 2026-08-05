@@ -23,6 +23,12 @@ import type {
 } from "../types/messages"
 import { rotateArrayFromIndex } from "../utils/array-utils"
 import { consumePendingStats } from "../utils/pending-stats-cache"
+import {
+  cancelPendingLastTableSnapshotSave,
+  loadLastTableSnapshot,
+  restoreSeatStats,
+  scheduleLastTableSnapshotSave,
+} from "../utils/last-table-storage"
 import { isEditableShortcutTarget, matchesShortcut } from "../utils/keyboard-shortcut"
 import {
   loadLocalUIScale,
@@ -96,6 +102,16 @@ const App = memo(() => {
   // するようにする（実況の1アクションごとの更新では変化しないため再フェッチ
   // ストームは起きない）。
   const [handEpoch, setHandEpoch] = useState(0)
+  // 「最後の卓の復元」(last-table-storage.ts): 前回のマウントで表示していた
+  // ヒーロー以外の座席を、`chrome.storage.local`から読み戻したもの。
+  // 表示専用（MUST）―― 統計パイプライン・ACTIVEポート判定・リプレイ取得の
+  // 可否判定へは一切入力しない。ライブのラインナップが1度でも適用されたら
+  // 空にする（ライブが常に権威）。
+  const restoredSeatsRef = useRef<Map<number, ExistPlayerStats>>(new Map())
+  // ライブの集計ラインナップを既に適用したか。非同期のストレージ読み取りが
+  // ライブDEALより後に完了した場合に、古い卓で新しい卓を上書きしないための
+  // ガード。
+  const liveLineupAppliedRef = useRef(false)
   // 309後、201通知が欠落しても最初の信頼済みヒーロー着席DEALを新境界にする。
   const awaitingTrustedSessionBoundaryRef = useRef(false)
   // 成功201の受信時刻より古いDEALを伴う遅延statsは、旧session計算の完了。
@@ -146,14 +162,47 @@ const App = memo(() => {
     setOpenRecentHandsPanelPlayerIds(new Set())
   }, [])
 
+  /**
+   * 空席のヒーロー以外の座席を、復元した「最後の卓」で埋める。
+   *
+   * 埋めるのは`playerId === -1`の座席だけ（MUST）: 実プレイヤーが入って
+   * いる座席はライブか一括再計算が出した現在の値で、復元記録より常に新しい。
+   * ヒーロー席(0)は対象外 ―― pregameキャリア統計が所有している
+   * （last-table-storage.tsの`LAST_TABLE_HERO_SEAT_INDEX`参照）。
+   */
+  const withRestoredSeats = useCallback((base: PlayerStats[]): {
+    stats: PlayerStats[]
+    dimmedSeatIndices: Set<number>
+  } => {
+    const restored = restoredSeatsRef.current
+    const dimmedSeatIndices = new Set<number>()
+    if (restored.size === 0) return { stats: base, dimmedSeatIndices }
+    const stats = base.map((stat, seatIndex) => {
+      if (seatIndex === HERO_SEAT_INDEX || stat.playerId !== -1) return stat
+      const restoredSeat = restored.get(seatIndex)
+      if (!restoredSeat) return stat
+      // 復元された座席は常にミュート表示（「離席」バッジ）にする。卓そのもの
+      // が既に終わっているので、これは離席と同じ「今ここにいる人ではないが、
+      // 統計とドリルダウンは読める」状態そのもの。
+      dimmedSeatIndices.add(seatIndex)
+      return restoredSeat
+    })
+    return { stats, dimmedSeatIndices }
+  }, [])
+
+  const discardRestoredLineup = useCallback(() => {
+    restoredSeatsRef.current = new Map()
+  }, [])
+
   const discardRetainedLineup = useCallback(() => {
     dimCacheRef.current.clear()
+    discardRestoredLineup()
     setDimmedSeatIndices(new Set())
     setStats(EMPTY_SEATS)
     setAllPlayersRealTimeStats(undefined)
     setHeroOriginalSeatIndex(undefined)
     closeAllDrillDownPanels()
-  }, [closeAllDrillDownPanels])
+  }, [closeAllDrillDownPanels, discardRestoredLineup])
 
   // 表示中のラインナップからplayerIdが実際に消える境界（席交代、信頼できる
   // 一括更新、テーブル切替）で、その開状態もpruneする。離席とセッション終了は
@@ -230,6 +279,13 @@ const App = memo(() => {
       if (isSpectatorDeal) {
         return
       }
+
+      // ここから先はライブの集計ラインナップを実際に適用する。復元した
+      // 「最後の卓」は前の卓の記録なので、ここで捨てる（MUST）―― ライブが
+      // 常に権威で、この後の空席は本当の空席（"Waiting for Hand..."）か、
+      // dimCacheが持つ*この*卓の離席者でなければならない。
+      liveLineupAppliedRef.current = true
+      discardRestoredLineup()
 
       // 監査指摘11（P2）対応: ports.tsが積んだhandEpochをそのまま状態へ反映する。
       // 実況の1アクションごとの更新（realTimeStatsのみの配信）ではports.ts側で
@@ -377,8 +433,17 @@ const App = memo(() => {
 
       setDimmedSeatIndices(nextDimmedSeatIndices)
       setStats(dimmedStats)
+
+      // 「最後の卓の復元」: ここが唯一の書き込み点（MUST）。
+      // ライブの1ハンド分パイプラインが出した表示ラインナップだけを保存する
+      // ―― `latestStats`（インポート後のrefresh、マウント直後のpregame
+      // ヒーロー単独フォールバック）は一括再計算の一発物で、特にpregameは
+      // ヒーロー以外が空席の配列なので、そこで保存すると復元したばかりの
+      // 記録を自分で消してしまう。保存はデバウンスされる
+      // （last-table-storage.ts）。
+      scheduleLastTableSnapshotSave(dimmedStats)
     },
-    [closeAllDrillDownPanels, discardRetainedLineup]
+    [closeAllDrillDownPanels, discardRestoredLineup, discardRetainedLineup]
   )
 
   useEffect(() => {
@@ -444,8 +509,13 @@ const App = memo(() => {
       // フラグを引きずって別データに重ねて表示してしまわないよう、表示中の
       // ミュート集合はここでリセットする（次のライブEVT_DEALでdimCacheRef自体は
       // 引き続き使われるので、bustの記憶自体は失われない）。
-      setDimmedSeatIndices(new Set())
-      setStats(message.stats)
+      // 「最後の卓の復元」: この一括更新はヒーロー席（pregame）や再計算後の
+      // ラインナップを運んでくるが、そこで空席のままの座席は復元記録で
+      // 埋め直す。pregameフォールバックはヒーロー以外が全て空席の配列なので、
+      // これが無いと「リロード直後に相手のHUDが消える」元の症状に戻る。
+      const restored = withRestoredSeats(message.stats)
+      setDimmedSeatIndices(restored.dimmedSeatIndices)
+      setStats(restored.stats)
 
       // 信頼できるDB再計算がヒーロー統計を更新した場合は、次のライブ更新で
       // 古い値へ戻らないようヒーロー枠のキャッシュも同時に更新する。
@@ -468,12 +538,49 @@ const App = memo(() => {
         scale: message.scale,
       }))
     }
-  }, [])
+  }, [withRestoredSeats])
 
   useEffect(() => {
     chrome.runtime.onMessage.addListener(handleChromeMessage)
     return () => chrome.runtime.onMessage.removeListener(handleChromeMessage)
   }, [handleChromeMessage])
+
+  /**
+   * 「最後の卓の復元」(#358の保持表示の永続化、sola要望 2026-08):
+   * マウント時に一度だけ、前回表示していたヒーロー以外のラインナップを
+   * `chrome.storage.local`から読み戻し、離席と同じミュート表示で並べる。
+   * これで拡張のリロード・ブラウザ再起動の直後でも、相手の統計と直近ハンド
+   * ドリルダウン（IndexedDBを`playerId`で引く）へ即座に到達できる。
+   *
+   * 読み取りは非同期なので、その間にライブのラインナップが適用されていたら
+   * 何もしない（MUST）―― 現在の卓を前の卓で塗り替えてはならない。
+   * 壊れた/バージョン違い/欠損の記録は`loadLastTableSnapshot`が`null`へ
+   * 倒すので、その場合は従来どおり空席から始まる（フェイルクローズ）。
+   */
+  useEffect(() => {
+    let cancelled = false
+    loadLastTableSnapshot(snapshot => {
+      if (cancelled || !snapshot || liveLineupAppliedRef.current) return
+      const restored = new Map<number, ExistPlayerStats>()
+      for (const seat of snapshot.seats) {
+        restored.set(seat.seatIndex, restoreSeatStats(seat))
+      }
+      restoredSeatsRef.current = restored
+      setStats(previous => withRestoredSeats(previous).stats)
+      setDimmedSeatIndices(previous => {
+        const next = new Set(previous)
+        for (const seatIndex of restored.keys()) next.add(seatIndex)
+        return next
+      })
+    })
+    // アンマウント時に、遅れて届く復元応答と未実行の保存予約を捨てる。
+    // 次のマウントは自分で読み直し・書き直すので、消えたコンポーネントの
+    // 表示を後から反映する意味はない。
+    return () => {
+      cancelled = true
+      cancelPendingLastTableSnapshotSave()
+    }
+  }, [withRestoredSeats])
 
   // ハンドログイベントの処理
   const handleHandLogEvent = useCallback((event: CustomEvent<HandLogEvent>) => {

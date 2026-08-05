@@ -221,6 +221,7 @@
         ├── hand-log-processor.ts      # PokerStars format generation
         ├── hand-log-text.ts           # Shared PokerStars hand-text formatting
         ├── hand-order.ts              # Stable hand ordering helpers
+        ├── last-table-storage.ts      # 「最後の卓の復元」: 表示専用ラインナップのスキーマ・検証・背景経由の永続化
         ├── logger.ts          # Structured logging
         ├── options-storage.ts # chrome.storage helpers
         ├── pending-stats-cache.ts
