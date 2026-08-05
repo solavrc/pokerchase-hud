@@ -511,6 +511,18 @@ const messageHandlers: Record<string, (message: ChromeMessage) => void> = {
       }))
     }
   },
+  // 「直近ハンド」パネル設定のクロスパネル・クロスタブ同期。backgroundが
+  // 保存成功後にbroadcastしたpatchをwindowイベントへ変換し、
+  // subscribeRecentHandsPanelConfig（recent-hands-config.ts）が購読する。
+  // storage.onChangedはTRUSTED_CONTEXTSゲートでここへは届かない（上の
+  // storage.sync採用コメント参照）。
+  updateRecentHandsPanelConfig: (message) => {
+    if ('patch' in message) {
+      window.dispatchEvent(new CustomEvent(EVENTS.UPDATE_RECENT_HANDS_PANEL_CONFIG, {
+        detail: message.patch
+      }))
+    }
+  },
   refreshStats: () => {
     // インポート後の統計更新をリクエスト
     // 最新の統計をバックグラウンドサービスから取得

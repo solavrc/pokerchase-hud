@@ -36,6 +36,13 @@ import {
   parseLastTableSnapshot,
 } from '../utils/last-table-storage'
 import {
+  RECENT_HANDS_LIMIT_STORAGE_KEY,
+  RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY,
+  resolveRecentHandsLimit,
+  resolveRecentHandsParticipationOnly,
+  sanitizeRecentHandsPanelConfigPatch,
+} from '../utils/recent-hands-config'
+import {
   IMPORT_RESULT_STORAGE_KEY,
   type ImportResultRecord,
 } from '../constants/import-page'
@@ -963,6 +970,79 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
           console.error('[getRecentHands] Error:', error)
           sendResponse({ success: false, error: error.message })
         })
+      return true
+    } else if (request.action === 'getRecentHandsPanelConfig') {
+      // 「直近ハンド」パネルの表示設定（#341件数 / #353参加のみ）。
+      // `storage.local`は`setAccessLevel('TRUSTED_CONTEXTS')`でcontent script
+      // から遮断されているため、`hudPosition_*`等と同じくここが唯一の読み口。
+      // 未設定・壊れた値は既定値へresolveして返す（フェイルオープン: この
+      // 読み取りの失敗でパネルが出なくなってはならない）。
+      chrome.storage.local.get(
+        [RECENT_HANDS_LIMIT_STORAGE_KEY, RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY],
+        (result: Record<string, unknown>) => {
+          const error = chrome.runtime.lastError
+          if (error) {
+            sendResponse({
+              success: false,
+              error: error.message ?? 'Failed to read recent hands panel config',
+            })
+            return
+          }
+          sendResponse({
+            success: true,
+            config: {
+              limit: resolveRecentHandsLimit(result[RECENT_HANDS_LIMIT_STORAGE_KEY]),
+              participationOnly: resolveRecentHandsParticipationOnly(
+                result[RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY]
+              ),
+            },
+          })
+        }
+      )
+      return true
+    } else if (request.action === 'setRecentHandsPanelConfig') {
+      // 送られてきたpatchをここで検証する（MUST）。パネル側でも送信前に検証
+      // しているが、書き込み側の信頼できる境界はここ。不正なキーは落とし、
+      // 有効なキーが1つも無ければ何も書かない。
+      const patch = sanitizeRecentHandsPanelConfigPatch(request.patch)
+      if (!patch) {
+        sendResponse({ success: false, error: 'Invalid recent hands panel config' })
+        return true
+      }
+      const items: Record<string, number | boolean> = {}
+      if (patch.limit !== undefined) items[RECENT_HANDS_LIMIT_STORAGE_KEY] = patch.limit
+      if (patch.participationOnly !== undefined) {
+        items[RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY] = patch.participationOnly
+      }
+      void enqueuePendingStorageWrite(() =>
+        new Promise<chrome.runtime.LastError | undefined>(resolve => {
+          chrome.storage.local.set(items, () => {
+            const error = chrome.runtime.lastError
+            if (error) {
+              resolve(error)
+              return
+            }
+            // 永続化に成功した変更だけを全ゲームタブへ配る（updateDeviceUIScale
+            // と同じ流儀）。`storage.onChanged`はTRUSTED_CONTEXTSゲートで
+            // content scriptへは配送されないので、これが唯一のクロスパネル・
+            // クロスタブ同期経路。配信は応答より先に、永続なbackgroundから行う
+            // ―― パネルの破棄でライブ更新が失われないようにするため。
+            broadcastToGameTabs({
+              action: 'updateRecentHandsPanelConfig',
+              patch,
+            }, () => resolve(undefined))
+          })
+        })
+      ).then(error => {
+        sendResponse(error
+          ? { success: false, error: error.message ?? 'Failed to save recent hands panel config' }
+          : { success: true })
+      }, error => {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to save recent hands panel config',
+        })
+      })
       return true
     } else if (request.action === 'getUndecodedEventStats') {
       // drop可視化: 未解釈イベントの集計値を取得
