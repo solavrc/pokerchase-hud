@@ -1,10 +1,20 @@
 /**
  * Regenerates the committed Chrome Web Store imagery derived from the
  * fixture-page table backdrop: `docs/store-assets/store-1-hud.png`,
- * `store-2-drilldown.png`, `store-5-handlog.png` (exactly 1280x800 each --
- * the Web Store requirement). `store-3`/`store-4` are popup-only composites
- * with no table backdrop and are NOT produced here (see
- * e2e/tools/capture-popup-themes.ts).
+ * `store-2-drilldown.png`, `store-5-handlog.png`,
+ * `store-6-recent-hands.png` (exactly 1280x800 each -- the Web Store
+ * requirement). `store-3`/`store-4` are popup-only composites with no table
+ * backdrop and are NOT produced here (see e2e/tools/capture-popup-themes.ts).
+ *
+ * Two browser sessions run, because the shots want different data:
+ *
+ *   1. KEEP_HANDS hands, no replay import -- store-1 / store-5 / store-2.
+ *   2. KEEP_HANDS_RECENT_HANDS hands plus synthesized 90001 replay-detail
+ *      rows, with replay import seeded as verified -- store-6, the
+ *      直近ハンド panel showing hole cards for hands the WebSocket never
+ *      revealed (folds and showdown mucks alike). See
+ *      `buildReplayDetailEvents`, `seedReplayImportAccess` and
+ *      `ShotPlan.afterSeed`.
  *
  *   npx tsx e2e/tools/capture-store-imagery.ts
  *
@@ -90,6 +100,7 @@ import { buildE2E } from './build-e2e.ts'
 
 const SRC_FIXTURE = join(E2E_DIR, 'fixtures', 'session-bust.ndjson')
 const DERIVED_FIXTURE = join(BUILD_DIR, 'store-imagery-fixture.ndjson')
+const DERIVED_FIXTURE_RECENT_HANDS = join(BUILD_DIR, 'store-imagery-recent-hands-fixture.ndjson')
 
 /**
  * Complete hands to keep from the source fixture: through its last hand at
@@ -98,6 +109,26 @@ const DERIVED_FIXTURE = join(BUILD_DIR, 'store-imagery-fixture.ndjson')
  * blind levels along the way -- see the module doc comment above).
  */
 const KEEP_HANDS = 11
+
+/**
+ * Hands kept for the 直近ハンド (recent-hands) shot instead: the donor's whole
+ * full-6-seat stretch (first bust is at hand 30), because that panel's whole
+ * subject is a *per-hand history* -- at KEEP_HANDS=11 with the default
+ * 参加のみ filter on, a tight opponent contributes one or two rows and the
+ * screenshot shows an almost-empty table.
+ *
+ * The blind-level ceiling that pins KEEP_HANDS to 11 does NOT apply to this
+ * variant, because it exists for exactly one visible surface: the hand log's
+ * tail, which prints the previous hand's own "posts small/big blind"/"posts
+ * the ante" lines verbatim and would then contradict the stakes baked onto
+ * the felt. At its DEFAULT size (DEFAULT_HAND_LOG_CONFIG height 100, ~8 lines
+ * at fontSize 8) that tail shows only the appended synthetic hand -- which
+ * carries the backdrop's own 140/280/70 by construction -- so the shots in
+ * this plan MUST NOT hover/expand the hand log (that is what would scroll
+ * hand 29's level-6 blind lines into view). The hovered/expanded hand-log
+ * shot stays in the KEEP_HANDS=11 plan.
+ */
+const KEEP_HANDS_RECENT_HANDS = 29
 
 /**
  * Dummy names baked onto the backdrop's plates, keyed by the player's
@@ -163,15 +194,156 @@ const renameUsers = (value: unknown): void => {
   }
 }
 
-export const buildStoreFixture = (): string => {
+/**
+ * Deterministic PRNG (mulberry32) seeded per hand, so a rerun of this tool
+ * produces byte-identical synthetic hole cards. Nothing here may be random:
+ * the committed store screenshots are regenerated, diffed, and reviewed.
+ */
+const mulberry32 = (seed: number) => (): number => {
+  seed = (seed + 0x6d2b79f5) | 0
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+}
+
+/**
+ * Synthesizes the `ApiType.REPLAY_HAND_DETAIL` (90001) rows that v6's opt-in
+ * replay import would have stored for the kept hands -- the feature the
+ * 直近ハンド panel showcases: with it on, a seat the stored `/replay/detail`
+ * payload discloses is filled in even when the WebSocket never revealed it
+ * (a showdown MUCK, or a seat that folded and therefore has no
+ * `EVT_HAND_RESULTS.Results[]` row at all -- see docs/replay-api.md's
+ * 「`HoleCardList` の返却範囲」).
+ *
+ * Only the shape `src/replay/hole-cards.ts` actually reads is load-bearing
+ * (`Player` / `OtherPlayerList`, each `{ UserId, HoleCardList }`); the rest
+ * mirrors `ReplayDetailParam` closely enough that the stored payload looks
+ * like what the real endpoint returns. No credential-shaped field
+ * (`session`, `requestKey`) is emitted -- those MUST NOT be persisted, and a
+ * fixture is a persistence path like any other.
+ *
+ * The cards themselves are synthetic but never contradict the hand they
+ * belong to: every card already known from that hand (the board, hero's
+ * dealt cards, and every `Results[].HoleCards` the server did reveal) is
+ * removed from the deck first, and each still-unknown seat is dealt from
+ * what remains. Seats the WebSocket already revealed keep their real cards
+ * here too, so the payload is internally consistent with the same hand's
+ * `EVT_HAND_RESULTS`.
+ */
+const buildReplayDetailEvents = (
+  kept: ApiEventRecord[],
+  firstTimestamp: number
+): ApiEventRecord[] => {
+  const out: ApiEventRecord[] = []
+  let deal: any
+  let ts = firstTimestamp
+  // Six calendar days out, in Unix *seconds* -- the shape `CardOpenEndDate`
+  // has on the wire. Only informational here (the entitlement gate reads the
+  // separate `replayImportAccess` record seeded in chrome.storage.local).
+  const cardOpenEndDate = Math.floor(firstTimestamp / 1000) + 6 * 24 * 3600
+
+  for (const event of kept) {
+    if (event.ApiTypeId === 303) { deal = event; continue }
+    if (event.ApiTypeId !== 306 || !deal) continue
+    const results = event as any
+    const handId = results.HandId
+    if (typeof handId !== 'number' || handId <= 0) continue
+
+    const seatUserIds: number[] = deal.SeatUserIds ?? []
+    const heroSeat: number = deal.Player?.SeatIndex ?? -1
+    const board: number[] = Array.isArray(results.CommunityCards) ? results.CommunityCards : []
+
+    // Every card this hand has already committed to, from any source.
+    const used = new Set<number>(board)
+    const known = new Map<number, number[]>() // UserId -> cards
+    const heroCards: number[] = Array.isArray(deal.Player?.HoleCards) ? deal.Player.HoleCards : []
+    const heroUserId = seatUserIds[heroSeat]
+    if (typeof heroUserId === 'number' && heroCards.length === 2) {
+      known.set(heroUserId, heroCards)
+      for (const card of heroCards) used.add(card)
+    }
+    for (const row of (Array.isArray(results.Results) ? results.Results : []) as any[]) {
+      const cards = row?.HoleCards
+      // A SHOWDOWN_MUCK row exists but carries no cards -- exactly the row the
+      // replay payload is able to fill in, so it must stay "unknown" here.
+      if (typeof row?.UserId !== 'number' || !Array.isArray(cards) || cards.length !== 2) continue
+      known.set(row.UserId, cards)
+      for (const card of cards) used.add(card)
+    }
+
+    const deck: number[] = []
+    for (let card = 0; card < 52; card++) if (!used.has(card)) deck.push(card)
+    // Fisher-Yates with a per-hand seed: same input, same output, forever.
+    const random = mulberry32(handId)
+    for (let i = deck.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1))
+      ;[deck[i], deck[j]] = [deck[j]!, deck[i]!]
+    }
+
+    let next = 0
+    const player = (seatIndex: number, userId: number) => ({
+      SeatIndex: seatIndex,
+      UserId: userId,
+      Name: PLAYER_NAMES[userId] ?? `Player ${userId}`,
+      HoleCardList: known.get(userId) ?? [deck[next++]!, deck[next++]!],
+      StartChip: 0,
+      BetAnte: deal.Game?.Ante ?? 0,
+      IsOfficial: false,
+      IsCpu: false,
+    })
+
+    const seats = seatUserIds
+      .map((userId, seatIndex) => ({ userId, seatIndex }))
+      .filter(({ userId }) => typeof userId === 'number' && userId > 0)
+
+    out.push({
+      ApiTypeId: 90001,
+      timestamp: (ts += 1),
+      HandId: handId,
+      fetchedAt: ts,
+      payload: {
+        CardOpenEndDate: cardOpenEndDate,
+        Game: {
+          PlayerNum: seats.length,
+          Ante: deal.Game?.Ante ?? 0,
+          SmallBlind: deal.Game?.SmallBlind ?? 0,
+          BigBlind: deal.Game?.BigBlind ?? 0,
+          ButtonSeat: deal.Game?.ButtonSeat ?? 0,
+          SmallBlindSeat: deal.Game?.SmallBlindSeat ?? 0,
+          BigBlindSeat: deal.Game?.BigBlindSeat ?? 0,
+          CommunityCardList: board,
+        },
+        Player: player(heroSeat, heroUserId as number),
+        OtherPlayerList: seats
+          .filter(({ seatIndex }) => seatIndex !== heroSeat)
+          .map(({ seatIndex, userId }) => player(seatIndex, userId as number)),
+      },
+    })
+    deal = undefined
+  }
+  return out
+}
+
+export interface StoreFixtureOptions {
+  /** Complete hands to keep from the donor (default {@link KEEP_HANDS}). */
+  keepHands?: number
+  /** Append one 90001 replay-detail row per kept hand (see {@link buildReplayDetailEvents}). */
+  withReplayDetails?: boolean
+  /** Where to write the derived NDJSON (default {@link DERIVED_FIXTURE}). */
+  outPath?: string
+}
+
+export const buildStoreFixture = (options: StoreFixtureOptions = {}): string => {
+  const keepHands = options.keepHands ?? KEEP_HANDS
+  const outPath = options.outPath ?? DERIVED_FIXTURE
   const lines = readFileSync(SRC_FIXTURE, 'utf8').trim().split('\n')
   const events: ApiEventRecord[] = lines.map((l) => JSON.parse(l))
 
-  // Truncate right before the (KEEP_HANDS+1)-th EVT_DEAL.
+  // Truncate right before the (keepHands+1)-th EVT_DEAL.
   let deals = 0
   let cut = events.length
   for (let i = 0; i < events.length; i++) {
-    if (events[i]!.ApiTypeId === 303 && ++deals === KEEP_HANDS + 1) { cut = i; break }
+    if (events[i]!.ApiTypeId === 303 && ++deals === keepHands + 1) { cut = i; break }
   }
   const kept = events.slice(0, cut)
   for (const e of kept) renameUsers(e)
@@ -235,7 +407,14 @@ export const buildStoreFixture = (): string => {
   // Pot after プレイヤーC's reopened re-raise to RAISE_TO (defined below,
   // alongside BACKDROP_CHIPS_AFTER_ANTE) -- must land on the backdrop's own
   // baked-in "Pot : 9,800", asserted once RAISE_TO is in scope.
-  let ts = kept[kept.length - 1]!.timestamp as number
+  // Replay-detail rows sit between the last real hand and the synthetic one,
+  // so the whole file stays timestamp-monotonic (`rebuildAllData()` and
+  // `HandLogExporter` both read raw `apiEvents` sorted by timestamp -- see
+  // the ordering note on the `synthetic` array below).
+  const replayDetails = options.withReplayDetails
+    ? buildReplayDetailEvents(kept, kept[kept.length - 1]!.timestamp as number)
+    : []
+  let ts = (replayDetails[replayDetails.length - 1] ?? kept[kept.length - 1]!).timestamp as number
 
   const progress = (over: Record<string, unknown>) => ({
     Phase: 0, SidePot: [], NextActionTypes: [2, 3, 4, 5], NextExtraLimitSeconds: 12, ...over,
@@ -369,13 +548,13 @@ export const buildStoreFixture = (): string => {
     action(4, RAISE, RAISE_TO, BACKDROP_CHIPS_AFTER_ANTE[4]! - RAISE_TO, { Pot: potAfterCRaise, MinRaise: 2 * RAISE_TO - HERO_ALREADY_COMMITTED, NextActionSeat: heroSeat }),
   ]
 
-  const out = [...kept, ...synthetic].map((e) => JSON.stringify(e)).join('\n') + '\n'
+  const out = [...kept, ...replayDetails, ...synthetic].map((e) => JSON.stringify(e)).join('\n') + '\n'
   // e2e/.build/ is gitignored and absent on a fresh checkout -- create it
   // before writing into it so `npx tsx e2e/tools/capture-store-imagery.ts`
   // (the documented invocation) doesn't throw ENOENT as its first act.
   mkdirSync(BUILD_DIR, { recursive: true })
-  writeFileSync(DERIVED_FIXTURE, out)
-  return DERIVED_FIXTURE
+  writeFileSync(outPath, out)
+  return outPath
 }
 
 // ---------------------------------------------------------------------------
@@ -453,9 +632,76 @@ const seedPositions = async (
   const popup = await h.openPopup()
   await popup.evaluate(
     (s: Record<string, unknown>) => new Promise<void>((res) => chrome.storage.local.set(s, () => res())),
-    seed
+    { ...seed, [HAND_LOG_LAYOUT_KEY]: handLogLayout(viewport) }
   )
   await popup.close()
+}
+
+/**
+ * Device-local hand log layout key (`HAND_LOG_LAYOUT_STORAGE_KEY` in
+ * src/utils/ui-config-storage.ts). Written here directly, exactly like the
+ * `hudPosition_*` keys above -- the same chrome.storage.local slot the
+ * background persists a user's own drag into.
+ */
+const HAND_LOG_LAYOUT_KEY = 'handLogLayout'
+
+/**
+ * Where the hand log sits in the imagery. The shipped default is the
+ * top-left corner (`HAND_LOG_DEFAULT_LEFT/TOP` = 10/10 in
+ * src/components/HandLog.tsx), which on this backdrop lands squarely on the
+ * game's own info panel -- covering the "SB/BB 140/280" / "アンティ 70"
+ * plate that every other number in these shots is checked against. Seeded to
+ * the bottom-right corner instead (a drag any user can perform), which is
+ * also where the previously published store screenshots had it.
+ */
+const handLogLayout = (viewport: { width: number; height: number }) => ({
+  width: 400,
+  height: 100,
+  left: viewport.width - 400 - 10,
+  top: viewport.height - 100 - 135,
+})
+
+/**
+ * Turns v6's opt-in replay import on the way a paying user's own popup toggle
+ * plus a verified `/replay/list` check would have left this device: the
+ * public opt-in flag in chrome.storage.sync, and the verification record --
+ * `phase: 'verified'` with a future `CardOpenEndDate` -- in
+ * chrome.storage.local (see src/background/replay-access.ts's
+ * `readReplayImportEnabled`, which is what `recent-hands-service.ts` gates
+ * the `replayDetails` lookup on). The DevTools-only
+ * `experimentalReplayImportEnabled` bypass is deliberately NOT used: it would
+ * exercise a different branch from the one the store listing describes.
+ *
+ * No network is involved either way -- the fixture already carries the
+ * imported 90001 rows, and replay fetching is out-of-session only.
+ */
+const seedReplayImportAccess = async (h: Harness): Promise<void> => {
+  const popup = await h.openPopup()
+  await popup.evaluate((cardOpenEndDate: number) => Promise.all([
+    new Promise<void>((res) => chrome.storage.sync.set({ replayImportEnabled: true }, () => res())),
+    new Promise<void>((res) => chrome.storage.local.set({
+      replayImportAccess: { phase: 'verified', cardOpenEndDate, checkedAt: Date.now() }
+    }, () => res())),
+  ]).then(() => undefined), Math.floor(Date.now() / 1000) + 6 * 24 * 3600)
+  await popup.close()
+}
+
+/**
+ * Runs the popup's own データ再構築 (`rebuildData`) and waits for it to
+ * finish. This is what projects the fixture's 90001 rows out of the Raw
+ * Event Lake into the `replayDetails` index the panel reads
+ * (`projectReplayDetailEvents`, called from `performFullRebuild`) -- the
+ * live WebSocket path stores them in the Lake but only the import / rebuild
+ * / drain paths build the projection, and this tool has no live drain (that
+ * requires a real out-of-session `/replay/detail` fetch).
+ */
+const rebuildData = async (h: Harness): Promise<void> => {
+  const popup = await h.openPopup()
+  const response: { success?: boolean; error?: string } = await popup.evaluate(
+    () => new Promise((res) => chrome.runtime.sendMessage({ action: 'rebuildData' }, res))
+  )
+  await popup.close()
+  if (!response?.success) throw new Error(`rebuildData failed: ${response?.error ?? 'no response'}`)
 }
 
 /** Removes the fixture page's own debug status line so it never appears in imagery. */
@@ -473,8 +719,118 @@ const togglePositional = (h: Harness, displaySeat: number) => h.evaluate((i: num
   ;(panel.querySelector('button[title="ポジション別スタッツ"]') as HTMLElement).click()
 }, displaySeat)
 
+/**
+ * Enlarges the hand log through the background's own
+ * `setDeviceHandLogLayout`, which persists the layout AND broadcasts
+ * `updateHandLogLayout` to open game tabs -- so the panel on screen grows
+ * without a reload, exactly as it does when a user drags its resize corner
+ * (`[data-testid=hand-log-resize-corner]`).
+ *
+ * A previous version of this tool got the tall hand log by hovering the
+ * panel, which used to expand it to half the viewport height. v6 replaced
+ * that hover behaviour with an explicit move grip + resize corner, so the
+ * hover is now a no-op and the shot silently came out identical to store-1.
+ */
+const resizeHandLog = async (
+  h: Harness,
+  layout: { left: number; top: number; width: number; height: number }
+): Promise<void> => {
+  const popup = await h.openPopup()
+  const response: { success?: boolean; error?: string } = await popup.evaluate(
+    (l: unknown) => new Promise((res) => chrome.runtime.sendMessage({ action: 'setDeviceHandLogLayout', layout: l }, res)),
+    layout
+  )
+  await popup.close()
+  if (!response?.success) throw new Error(`setDeviceHandLogLayout failed: ${response?.error ?? 'no response'}`)
+}
+
+/** Toggles the 直近ハンド drill-down panel on the given display seat. */
+const toggleRecentHands = (h: Harness, displaySeat: number) => h.evaluate((i: number) => {
+  const panel = document.querySelectorAll('[data-testid=hud-panel]')[i]!
+  ;(panel.querySelector('button[title="直近ハンド"]') as HTMLElement).click()
+}, displaySeat)
+
+/**
+ * Asserts the 直近ハンド panel really is showing what this shot exists to
+ * show: rows on screen, and among them hole cards the WebSocket never
+ * revealed -- `holeCardsSource: 'replay'`, the seats a fold or a showdown
+ * muck would otherwise leave as an em dash. Without this the shot degrades
+ * silently into "an ordinary recent-hands table" whenever the 90001
+ * projection or the entitlement seeding breaks.
+ *
+ * Row *source* is not observable in the DOM (the panel renders cards
+ * identically whatever revealed them), so the source counts come from the
+ * same `getRecentHands` background query the panel itself issues, for the
+ * player whose panel is open.
+ */
+const assertReplayFilledRows = async (h: Harness, minReplayRows: number): Promise<void> => {
+  const panel: { rows: number; playerId: number } = await h.evaluate(() => {
+    const el = document.querySelector('[data-testid=recent-hands-panel]')
+    return {
+      rows: el ? el.querySelectorAll('[data-testid=recent-hands-row]').length : 0,
+      playerId: el ? Number((el as HTMLElement).dataset.playerId) : 0,
+    }
+  })
+  const popup = await h.openPopup()
+  const summary: { sources: Record<string, number>; unresolved: number } = await popup.evaluate(
+    (playerId: number) => new Promise((res) => {
+      chrome.runtime.sendMessage(
+        { action: 'getRecentHands', playerId, limit: 100, participationOnly: true },
+        (response: any) => {
+          const sources: Record<string, number> = {}
+          let unresolved = 0
+          for (const hand of response?.recentHands?.hands ?? []) {
+            const key = String(hand.holeCardsSource)
+            sources[key] = (sources[key] ?? 0) + 1
+            if (hand.position === null && hand.preflopLine === null) unresolved++
+          }
+          res({ sources, unresolved })
+        }
+      )
+    }),
+    panel.playerId
+  )
+  await popup.close()
+  console.log(
+    `[capture-store-imagery] recent-hands panel: ${panel.rows} rows on screen, ` +
+    `hole-card sources ${JSON.stringify(summary.sources)}`
+  )
+  if ((summary.sources.replay ?? 0) < minReplayRows) {
+    throw new Error(
+      `直近ハンド panel has ${summary.sources.replay ?? 0} replay-sourced row(s), expected >= ${minReplayRows} ` +
+      '-- did the 90001 rows reach replayDetails (rebuild), and is replay import seeded as verified?'
+    )
+  }
+  // A row whose position AND preflop line both came back null has no derived
+  // actions behind it: it renders as a line of em dashes, which is not
+  // something a store screenshot should be showing. It is also the signature
+  // of shooting against rebuild-derived instead of live-derived entities --
+  // see the ordering note on ShotPlan.afterSeed.
+  if (summary.unresolved > 0) {
+    throw new Error(
+      `直近ハンド panel has ${summary.unresolved} row(s) with neither a position nor a preflop line ` +
+      '-- entity derivation is incomplete for those hands (see ShotPlan.afterSeed)'
+    )
+  }
+}
+
 interface ShotPlan {
   viewport: { width: number; height: number }
+  /**
+   * Runs with the first replay already ingested, right after the position
+   * seeding and BEFORE the reload that replays the fixture a second time.
+   *
+   * The ordering is load-bearing for anything that runs `rebuildData`.
+   * Measured on this fixture (29 hands, Chrome for Testing 151): the live
+   * ingestion path derives all 29 hands with their full action sets, and a
+   * `performFullRebuild` over that same complete Lake comes back with 28
+   * (one hand's entities dropped entirely; 4 phases short) -- and 27 when the
+   * fixture also carries the 90001 rows. Rebuilding *here* means the reload's
+   * own replay re-derives every hand through the live path afterwards, so the
+   * shots are taken against live-derived entities while keeping the one thing
+   * only the rebuild produces: the `replayDetails` projection.
+   */
+  afterSeed?: (h: Harness) => Promise<void>
   shots: Array<{ path: string; compose: (h: Harness) => Promise<void> }>
 }
 
@@ -486,7 +842,7 @@ interface ShotPlan {
  */
 const REPLAY_DELAY_MS = 30
 
-const runPlan = async (fixturePath: string, totalEvents: number, plan: ShotPlan): Promise<void> => {
+const runPlan = async (fixturePath: string, totalEvents: number, keepHands: number, plan: ShotPlan): Promise<void> => {
   // The real-gameplay backdrop (table-backdrop.js) is opt-in, off by
   // default, so the normal e2e paths (smoke.ts / run.ts, replaying
   // DEFAULT_FIXTURE) never paint a scene their own replayed hand
@@ -504,6 +860,7 @@ const runPlan = async (fixturePath: string, totalEvents: number, plan: ShotPlan)
     await sleep(1500)
 
     await seedPositions(h, plan.viewport)
+    await plan.afterSeed?.(h)
     await h.gamePage.reload({ waitUntil: 'domcontentloaded' })
     await h.waitForHudMount()
     await waitForReplayEvents(h, totalEvents)
@@ -511,7 +868,7 @@ const runPlan = async (fixturePath: string, totalEvents: number, plan: ShotPlan)
     await hideStatusLine(h)
 
     // Stats sanity + idempotence guard: after the second replay the hero's
-    // HAND count must still be ~KEEP_HANDS (the paced replay is lossless
+    // HAND count must still be ~keepHands (the paced replay is lossless
     // modulo the source's first, partial-info hand; a double count -- e.g.
     // 2x hands -- would mean the replay stopped being idempotent).
     const heroHands: string = await h.evaluate(() => {
@@ -519,8 +876,8 @@ const runPlan = async (fixturePath: string, totalEvents: number, plan: ShotPlan)
       return (hero.querySelector('[data-stat-id="hands"]') as HTMLElement).innerText
     })
     const handCount = Number(heroHands.replace(/[()]/g, ''))
-    if (!(handCount >= KEEP_HANDS - 2 && handCount <= KEEP_HANDS)) {
-      throw new Error(`hero HAND stat is ${heroHands}, expected ~(${KEEP_HANDS}) -- lossy or non-idempotent replay?`)
+    if (!(handCount >= keepHands - 2 && handCount <= keepHands)) {
+      throw new Error(`hero HAND stat is ${heroHands}, expected ~(${keepHands}) -- lossy or non-idempotent replay?`)
     }
 
     for (const shot of plan.shots) {
@@ -550,6 +907,14 @@ const main = async (): Promise<void> => {
   const totalEvents = readFileSync(fixturePath, 'utf8').trim().split('\n').length
   console.log(`[capture-store-imagery] derived fixture: ${fixturePath} (${totalEvents} events)`)
 
+  const recentHandsFixture = buildStoreFixture({
+    keepHands: KEEP_HANDS_RECENT_HANDS,
+    withReplayDetails: true,
+    outPath: DERIVED_FIXTURE_RECENT_HANDS,
+  })
+  const recentHandsEvents = readFileSync(recentHandsFixture, 'utf8').trim().split('\n').length
+  console.log(`[capture-store-imagery] recent-hands fixture: ${recentHandsFixture} (${recentHandsEvents} events)`)
+
   // Chrome Web Store screenshots: exactly 1280x800.
   //
   // Shot order is deliberately MONOTONIC (each shot only ever ADDS DOM
@@ -570,7 +935,7 @@ const main = async (): Promise<void> => {
   // no drill-down, hand log hovered) is captured BEFORE store-2 (same grid
   // state, drill-down additionally opened) so store-2 only ever adds the
   // drill-down on top of already-correctly-rendered content.
-  await runPlan(fixturePath, totalEvents, {
+  await runPlan(fixturePath, totalEvents, KEEP_HANDS, {
     viewport: { width: 1280, height: 800 },
     shots: [
       { path: join(REPO_ROOT, 'docs', 'store-assets', 'store-1-hud.png'), compose: async () => {} },
@@ -578,19 +943,49 @@ const main = async (): Promise<void> => {
         path: join(REPO_ROOT, 'docs', 'store-assets', 'store-5-handlog.png'),
         compose: async (h) => {
           await expandPanelGrid(h, 3)
-          // Hover the hand log (bottom-right, DEFAULT_HAND_LOG_CONFIG:
-          // width 400 / height 100 / bottom 135 / right 10, so at 1280x800
-          // it occupies x:[870,1270] y:[565,665]) so it expands to half
-          // height. A point outside those bounds (as an earlier version of
-          // this tool used) never triggers the panel's onMouseEnter at all.
-          await h.gamePage.mouse.move(1070, 615)
+          // Grow the hand log upward from its seeded bottom-right corner so
+          // a whole hand's PokerStars-format history is legible -- keeping
+          // its bottom edge where store-1 had it (y 665) and taking the
+          // extra 300px off the top.
+          await resizeHandLog(h, { left: 870, top: 265, width: 400, height: 400 })
         },
       },
       {
         path: join(REPO_ROOT, 'docs', 'store-assets', 'store-2-drilldown.png'),
         compose: async (h) => {
-          await h.gamePage.mouse.move(50, 50) // un-hover the hand log from the previous shot
-          await togglePositional(h, 3) // grid stays expanded from the previous shot; only add the drill-down
+          // The enlarged hand log stays as store-5 left it (shrinking it back
+          // is exactly the kind of removal the stale-screenshot bug above
+          // does not repaint); this shot only ADDS the drill-down.
+          await togglePositional(h, 3) // grid stays expanded from the previous shot
+        },
+      },
+    ],
+  })
+
+  // 直近ハンド (recent hands), v6's headline drill-down -- its own session,
+  // because it needs a different fixture (KEEP_HANDS_RECENT_HANDS hands plus
+  // the synthesized 90001 replay-detail rows) and a device state the other
+  // plan deliberately does not have (replay import verified). The panel is
+  // opened on プレイヤーC (display seat 3, top centre): it is the only row of
+  // seats with ~500px of clear felt below it, and #364 pinned drill-down
+  // growth to DOWNWARD only, so a bottom-row seat's panel would run off the
+  // viewport. The hand log is left at its default size and never hovered --
+  // see KEEP_HANDS_RECENT_HANDS for why that is a requirement, not a
+  // preference.
+  await runPlan(recentHandsFixture, recentHandsEvents, KEEP_HANDS_RECENT_HANDS, {
+    viewport: { width: 1280, height: 800 },
+    afterSeed: async (h) => {
+      await seedReplayImportAccess(h)
+      await rebuildData(h)
+      await sleep(1000)
+    },
+    shots: [
+      {
+        path: join(REPO_ROOT, 'docs', 'store-assets', 'store-6-recent-hands.png'),
+        compose: async (h) => {
+          await toggleRecentHands(h, 3)
+          await sleep(1200) // the panel fetches through background before it has rows
+          await assertReplayFilledRows(h, 4)
         },
       },
     ],
