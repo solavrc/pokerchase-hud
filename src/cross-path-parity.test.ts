@@ -421,6 +421,88 @@ describe('cross-path canonical parity', () => {
     })
   })
 
+  /**
+   * ハンド終了行と次のハンドの配札行が同一ミリ秒に着信した場合の経路間パリティ。
+   *
+   * `timestamp` はサーバ由来ではなくフレーム受信時に付与される
+   * （`src/web_accessible_resource.ts`）ため、フレームがバースト配送される
+   * （スロットル/凍結されたタブの再開、圧縮リプレイ）とこの同居が起こる。
+   * ライブ経路は到着順で処理するので無傷だが、Lakeを再生する経路は主キー順
+   * （303 < 306）で読むため、修正前は配札が終了行を追い越して2ハンドが消えていた
+   * （前ハンドは HandId 未設定で破棄、次ハンドは終了行に HandId を奪われ、
+   * 残りの行はバッファ不在で捨てられる）。
+   */
+  test('a hand boundary compressed into one millisecond keeps every path identical', async () => {
+    const deals = FIXTURE_EVENTS.filter(event => event.ApiTypeId === ApiType.EVT_DEAL)
+    const results = FIXTURE_EVENTS.filter(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)
+    expect(deals).toHaveLength(3)
+    expect(results).toHaveLength(3)
+
+    // 2ハンド目の終了行を3ハンド目の配札行と同一ミリ秒へ寄せる（配線順は不変）。
+    const boundaryTimestamp = deals[2]!.timestamp
+    const collidedResultsTimestamp = results[1]!.timestamp
+    const COLLIDED_EVENTS = FIXTURE_EVENTS.map(event =>
+      event.ApiTypeId === ApiType.EVT_HAND_RESULTS && event.timestamp === collidedResultsTimestamp
+        ? { ...event, timestamp: boundaryTimestamp }
+        : event)
+
+    // Fixture capability check: 主キー順では必ず 303 が 306 より前に並ぶ。
+    expect(COLLIDED_EVENTS
+      .filter(event => event.timestamp === boundaryTimestamp)
+      .map(event => event.ApiTypeId)
+      .sort((a, b) => a - b)).toEqual([ApiType.EVT_DEAL, ApiType.EVT_HAND_RESULTS])
+
+    const snapshots = await replayEveryPath(COLLIDED_EVENTS)
+    const canonical = snapshots.live
+    expect(snapshots['entity-converter']).toEqual(canonical)
+    expect(snapshots.rebuild).toEqual(canonical)
+    expect(snapshots.import).toEqual(canonical)
+
+    // 衝突していない元フィクスチャと同じ3ハンド・同じアクション数であること
+    // （approxTimestamp だけは動かした行に引きずられない ―― DEAL由来のため）。
+    const baseline = await replay('live', FIXTURE_EVENTS)
+    expect(canonical.hands.map(hand => hand.id)).toEqual(baseline.hands.map(hand => hand.id))
+    expect(canonical.actions).toEqual(baseline.actions)
+    expect(canonical.phases).toEqual(baseline.phases)
+    expect(canonical.stats).toEqual(baseline.stats)
+  })
+
+  /**
+   * 同じ境界に合成イベント（90001）が同居しても、再構築の結果は変わらない。
+   * 90001 は Lake / 整列フィルタを通過して `EntityConverter` まで届く
+   * （`src/replay/synthetic-event-invisibility.test.ts`）ので、ハンド境界の
+   * 並び替えが 90001 の有無で変わってはならない（MUST NOT）。
+   */
+  test('a replay-detail row sharing the compressed boundary does not change the rebuild', async () => {
+    const deals = FIXTURE_EVENTS.filter(event => event.ApiTypeId === ApiType.EVT_DEAL)
+    const results = FIXTURE_EVENTS.filter(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)
+    const boundaryTimestamp = deals[2]!.timestamp
+    const collidedResultsTimestamp = results[1]!.timestamp
+    const COLLIDED_EVENTS = FIXTURE_EVENTS.map(event =>
+      event.ApiTypeId === ApiType.EVT_HAND_RESULTS && event.timestamp === collidedResultsTimestamp
+        ? { ...event, timestamp: boundaryTimestamp }
+        : event)
+
+    const replayDetail = {
+      ApiTypeId: ApiType.REPLAY_HAND_DETAIL,
+      timestamp: boundaryTimestamp,
+      HandId: results[1]!.HandId,
+      payload: {
+        Game: { PlayerNum: 6, CommunityCardList: [] },
+        Player: { SeatIndex: 0, UserId: 1001, HoleCardList: [37, 51] },
+        OtherPlayerList: []
+      },
+      fetchedAt: boundaryTimestamp
+    } as unknown as ApiEvent
+
+    const withDetail = await replay('rebuild', [...COLLIDED_EVENTS, replayDetail])
+    const withoutDetail = await replay('rebuild', COLLIDED_EVENTS)
+    const canonical = await replay('live', FIXTURE_EVENTS)
+
+    expect(withDetail).toEqual(withoutDetail)
+    expect(withDetail).toEqual(canonical)
+  })
+
   test('EntityConverter preserves the live SessionState seed for a prelude-free incremental window', async () => {
     expect(SEEDED_HAND_WINDOW.some(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED)).toBe(false)
     expect(SEEDED_HAND_WINDOW.some(event => event.ApiTypeId === ApiType.EVT_SESSION_DETAILS)).toBe(false)

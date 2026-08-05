@@ -102,18 +102,59 @@ const resolveStrictSnapshotActionPair = <T extends RawApiEvent>(group: T[]): T[]
 }
 
 /**
+ * 同一ミリ秒群で `EVT_HAND_RESULTS` が `EVT_DEAL` の後ろに並ぶ倒錯を戻す。
+ *
+ * 主キーは `[timestamp+ApiTypeId+sequence]` で、303 < 306 のため、あるハンドの
+ * 終了行と次のハンドの配札行が同じミリ秒に着信すると、保存順では必ず配札が先に
+ * なる。`EntityConverter` / `WriteEntityStream` は EVT_DEAL でハンドバッファを
+ * 確定させるため（`src/entity-converter.ts` の `convertEventChunk`）、この順序では
+ * (a) 終了行を失った前ハンドが HandId 未設定のまま破棄され、(b) その終了行が次の
+ * ハンドのバッファを前ハンドの HandId で確定させ、(c) 次のハンドの残りの行は
+ * 開いているバッファが無いまま捨てられる ―― 1つの倒錯で2ハンドが消える。
+ *
+ * これは同一ミリ秒群からライフサイクル順を推測しているのではなく、1ミリ秒の中で
+ * 配札から決着までが完結することはあり得ない、という事実による確定的な帰結である
+ * （群の中の 306 は必ず、その群より前に始まったハンドの終了行）。したがって群内の
+ * `EVT_HAND_RESULTS` は常に最初の `EVT_DEAL` より前へ移す（MUST）。他の行の相対順は
+ * 変えない。`EVT_DEAL` を含まない群（実キャプチャで多い 306+311 / 306+309 /
+ * 306+313）は一切触らない。
+ *
+ * 残る曖昧性: 同じ群の `EVT_ACTION` が前ハンドの最終アクションなのか次のハンドの
+ * 初手なのかは、この関数の情報だけでは決められない。ここでは主キー順のまま
+ * `EVT_DEAL` の後ろに残す（＝次のハンドに属するものとして扱う）。取りこぼしても
+ * 1アクションであり、修正前のようにハンドごと消えることはない。
+ */
+const hoistHandResultsBeforeDeal = <T extends RawApiEvent>(group: T[]): T[] => {
+  const firstDealIndex = group.findIndex(event => event.ApiTypeId === ApiType.EVT_DEAL)
+  if (firstDealIndex === -1) return group
+  if (!group.slice(firstDealIndex + 1).some(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)) return group
+
+  return [
+    ...group.filter(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS),
+    ...group.filter(event => event.ApiTypeId !== ApiType.EVT_HAND_RESULTS)
+  ]
+}
+
+/**
  * Replay order for stateful consumers.
  *
  * IndexedDB and raw export use `[timestamp+ApiTypeId+sequence]`, so cross-type
  * events sharing a millisecond are stored in ApiTypeId order rather than wire
- * order. Reverse only an isolated two-event snapshot/action pair proven by
- * exact phase, actor, stack and pot deltas. Compound groups and all other events
- * retain primary-key order as a stable, fail-closed representation; this
- * function does not infer lifecycle order from an isolated timestamp group.
+ * order. Two orderings are corrected: an isolated two-event snapshot/action
+ * pair proven by exact phase, actor, stack and pot deltas, and an
+ * `EVT_HAND_RESULTS` that shares a millisecond with an `EVT_DEAL` (see
+ * `hoistHandResultsBeforeDeal`). Compound groups and all other events retain
+ * primary-key order as a stable, fail-closed representation; this function does
+ * not otherwise infer lifecycle order from an isolated timestamp group.
  *
  * The 393,830-event production corpus contained 210 cross-type equal-ms
  * groups. The strict predicate changes only three proven inversions (two
  * 313→304 groups and one 305→304 group), all isolated two-event groups.
+ * Neither that corpus nor the later 561,309-event capture contains a
+ * 303+306 group, so the results hoist is a latent-path fix: it is reachable
+ * whenever WebSocket frames are delivered in a burst (a throttled/frozen tab
+ * resuming, or a compressed replay), because `timestamp` is stamped at frame
+ * dispatch (`src/web_accessible_resource.ts`), not by the server.
  */
 export const orderApiEventsForReplay = <T extends RawApiEvent>(events: T[]): T[] => {
   const primaryOrder = [...events].sort(compareApiEventKeys)
@@ -122,7 +163,7 @@ export const orderApiEventsForReplay = <T extends RawApiEvent>(events: T[]): T[]
   for (let start = 0; start < primaryOrder.length;) {
     let end = start + 1
     while (end < primaryOrder.length && primaryOrder[end]!.timestamp === primaryOrder[start]!.timestamp) end++
-    const group = primaryOrder.slice(start, end)
+    const group = hoistHandResultsBeforeDeal(primaryOrder.slice(start, end))
     ordered.push(...resolveStrictSnapshotActionPair(group))
     start = end
   }
