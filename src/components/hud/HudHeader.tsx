@@ -81,7 +81,7 @@ export const HudHeader = memo(({ playerName, playerId, playerPotOdds, isPosition
   const sprTooltip = 'SPR: このプレイヤーの残りスタックと現在のポット総額の比。式: 残りスタック ÷（メインポット＋全サイドポット）'
   
   return (
-    <div style={styles.header}>
+    <div style={styles.header} data-hud-header="true">
       {/* プレイヤータイプ・アイコンはヘッダー左端（プレイヤー名の左）。名前が長い
           場合に縮むのは名前側（flex: '0 1 auto' + minWidth: 0）で、アイコンは
           PlayerTypeIcons側のflexShrink: 0で潰れない。 */}

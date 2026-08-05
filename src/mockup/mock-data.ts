@@ -1,7 +1,16 @@
 import type { RealTimeStats } from '../realtime-stats/realtime-stats-service'
 import type { PlayerStats } from '../types'
+import { Position } from '../types/game'
 import { HandLogEntryType, type HandLogEntry } from '../types/hand-log'
-import type { StatResult } from '../types/stats'
+import type {
+  PositionalStatId,
+  PositionalStatsBucket,
+  PositionalStatsBucketId,
+  PositionalStatsResult,
+  RecentHandsResult,
+  StatResult,
+  StreetAction,
+} from '../types/stats'
 
 export type MockScenarioId = 'turn-decision' | 'new-table' | 'dense-history'
 
@@ -188,6 +197,104 @@ const densePlayer = (
   ['wsd', 'W$SD', [57, 98], '58.2% (57/98)'],
   ['riverCallAccuracy', 'RCA', [19, 27], '70.4% (19/27)'],
 ])
+
+/**
+ * Drill-down fixtures (ポジション別スタッツ / 直近ハンド).
+ *
+ * Both drill-downs fetch through `chrome.runtime.sendMessage`, so without a
+ * canned response the mockup could render the header triggers but never the
+ * panels themselves -- i.e. the largest layout change a HUD panel can undergo
+ * (a ~260px body appearing under a 52px panel) was the one thing the visual
+ * mockup could not show. The shapes below are the service contracts
+ * (`PositionalStatsResult` / `RecentHandsResult`), not a re-derivation: the
+ * mock does no statistics, it hands back a fixed, authored answer the same way
+ * `standardStats()` above does for the aggregate HUD.
+ *
+ * Deliberately ONE fixture shared by every seat: the panels are reviewed for
+ * layout (column widths, wrapping, panel height, where the body grows), and
+ * six different data sets would only make a screenshot harder to compare.
+ */
+const positionalBucket = (
+  position: PositionalStatsBucketId,
+  handsN: number,
+  stats: Record<PositionalStatId, [number, number]>,
+): PositionalStatsBucket => ({ position, handsN, stats })
+
+export const MOCK_POSITIONAL_STATS: PositionalStatsResult = {
+  computedAt: logTimestamp,
+  positions: [
+    positionalBucket(Position.UTG, 118, {
+      vpip: [17, 118], pfr: [14, 118], '3bet': [4, 96], steal: [0, 0], foldToSteal: [0, 0], cbet: [9, 13],
+    }),
+    positionalBucket(Position.HJ, 121, {
+      vpip: [24, 121], pfr: [20, 121], '3bet': [6, 101], steal: [0, 0], foldToSteal: [0, 0], cbet: [12, 18],
+    }),
+    positionalBucket(Position.CO, 119, {
+      vpip: [31, 119], pfr: [27, 119], '3bet': [7, 94], steal: [22, 51], foldToSteal: [0, 0], cbet: [17, 24],
+    }),
+    positionalBucket(Position.BTN, 120, {
+      vpip: [48, 120], pfr: [42, 120], '3bet': [9, 88], steal: [39, 74], foldToSteal: [0, 0], cbet: [25, 33],
+    }),
+    positionalBucket(Position.SB, 122, {
+      vpip: [29, 122], pfr: [21, 122], '3bet': [8, 97], steal: [14, 31], foldToSteal: [19, 34], cbet: [10, 15],
+    }),
+    positionalBucket(Position.BB, 124, {
+      vpip: [38, 124], pfr: [11, 124], '3bet': [12, 102], steal: [0, 0], foldToSteal: [41, 68], cbet: [8, 12],
+    }),
+  ],
+}
+
+/** One authored row: `[position, holeCards, preflopLine, board, postflop, netChips]`. */
+const recentHandRows: Array<[
+  Position,
+  string[] | null,
+  string,
+  string[],
+  [string[], string[], string[]],
+  number | null,
+]> = [
+  [Position.BTN, ['Ah', 'Kd'], 'OR', ['8h', '9h', '6h', '2s', 'Ad'], [['B33'], ['C'], ['B66!']], 12_400],
+  [Position.BB, ['Qs', 'Qc'], '3B', ['Ts', '7d', '2c'], [['B50'], [], []], -3_200],
+  [Position.CO, null, 'OR-F', [], [[], [], []], -560],
+  [Position.SB, ['Jd', 'Th'], 'CC', ['Jc', '5s', '4h', 'Kd'], [['X', 'C'], ['X', 'F'], []], -1_840],
+  [Position.HJ, null, 'F', [], [[], [], []], -70],
+  [Position.UTG, ['Ac', 'As'], '4B', ['9s', '9d', '3h', 'Qc', '2h'], [['B75!'], [], []], 24_600],
+  [Position.BTN, null, 'L', ['Kh', 'Qd', '7s'], [['X', 'F'], [], []], -280],
+  [Position.BB, ['7h', '7s'], 'X', ['Ah', '7c', '2d', '5s', '8h'], [['X', 'C'], ['X', 'C'], ['R120']], 8_900],
+]
+
+/** `B33` / `R120` / `B66!` → the `StreetAction` the panel actually renders. */
+const streetAction = (token: string): StreetAction => {
+  const allIn = token.endsWith('!')
+  const body = allIn ? token.slice(0, -1) : token
+  const potPercent = body.length > 1 ? Number(body.slice(1)) : null
+  return { letter: body[0]!, allIn, increment: null, potBefore: null, potPercent }
+}
+
+export const MOCK_RECENT_HANDS: RecentHandsResult = {
+  computedAt: logTimestamp,
+  hands: recentHandRows.map(([position, holeCards, preflopLine, board, postflop, netChips], index) => ({
+    handId: 9_100_000 + (recentHandRows.length - index),
+    approxTimestamp: logTimestamp - index * 92_000,
+    bigBlind: 280,
+    position,
+    holeCards,
+    holeCardsSource: holeCards ? 'results' as const : null,
+    preflopLine,
+    preflopLineAmountBB: /^(OR|3B|4B|CC|3CC)/.test(preflopLine) ? 2.2 * (index + 1) : null,
+    preflopLineAmountChips: /^(OR|3B|4B|CC|3CC)/.test(preflopLine) ? 616 * (index + 1) : null,
+    postflopLines: {
+      flop: postflop[0].map(streetAction),
+      turn: postflop[1].map(streetAction),
+      river: postflop[2].map(streetAction),
+    },
+    board,
+    sawFlop: board.length > 0,
+    wentToShowdown: board.length === 5 && holeCards !== null,
+    won: (netChips ?? 0) > 0,
+    netChips,
+  })),
+}
 
 export const MOCK_SCENARIOS: Record<MockScenarioId, MockScenario> = {
   'turn-decision': {
