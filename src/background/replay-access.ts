@@ -1,6 +1,6 @@
 /** !!! CONTENT_SCRIPTS、WEB_ACCESSIBLE_RESOURCESからインポートしないこと !!! */
 /**
- * 公開リプレイ取り込みのオプトインとカード公開期限の検証状態を所有する。
+ * 公開リプレイ取り込みのオプトインとプレミアムパスの期限の検証状態を所有する。
  *
  * 開発者フラグはこの状態機械を無条件にバイパスする。公開経路は、ACTIVEの
  * fairness gateを通り、認証エンベロープを持つゲームタブから`/replay/list`を
@@ -245,11 +245,11 @@ export const initializeReplayAccess = (
     if (!changes[PUBLIC_REPLAY_IMPORT_STORAGE_KEY] &&
       !changes[EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY]) return
     void triggerVerification().catch(error => {
-      console.warn('[replay-import] カード公開の利用状態を確認できませんでした:', error)
+      console.warn('[replay-import] プレミアムパスの利用状態を確認できませんでした:', error)
     })
   })
   void triggerVerification().catch(error => {
-    console.warn('[replay-import] カード公開の利用状態を確認できませんでした:', error)
+    console.warn('[replay-import] プレミアムパスの利用状態を確認できませんでした:', error)
   })
 }
 

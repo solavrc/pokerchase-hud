@@ -1640,7 +1640,7 @@ describe('Popup', () => {
       expect(text).toContain('リプレイ取り込み')
       expect(text).toContain('対局が終わったあと')
       expect(text).toContain('対局中は通信しません')
-      expect(text).toContain('カード公開の有効期間内')
+      expect(text).toContain('プレミアムパスの有効期間内')
     })
   })
 })
