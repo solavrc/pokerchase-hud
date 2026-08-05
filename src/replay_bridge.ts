@@ -471,7 +471,7 @@ const postVerificationResult = (
 
 /**
  * 公開オプトインの資格確認。1回の呼び出しにつき`/replay/list`を1本だけ送る。
- * `BattleType`ごとにHandListは異なるが、カード公開期限は応答エンベロープ共通
+ * `BattleType`ごとにHandListは異なるが、プレミアムパスの期限は応答エンベロープ共通
  * なので、検証ではカテゴリ0を使う。
  *
  * この1本にも `/replay/detail` と**同じ公平性ゲートを掛ける**（MUST）:
