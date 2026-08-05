@@ -148,4 +148,54 @@ describe('raw event replay order', () => {
 
     expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([304, 305, 306])
   })
+
+  test('replays EVT_HAND_RESULTS before an EVT_DEAL that shares its millisecond', () => {
+    const events: RawApiEvent[] = [
+      { timestamp: 500, ApiTypeId: 303, HandStart: true },
+      { timestamp: 500, ApiTypeId: 306, HandId: 1 }
+    ]
+
+    // 主キーは 303 < 306 なので保存順では配札が先に来るが、1ミリ秒で配札から
+    // 決着までが完結することはあり得ないため、この 306 は必ず前のハンドの終了行。
+    expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([306, 303])
+  })
+
+  test('hoists EVT_HAND_RESULTS out of a compound group that also opens the next hand', () => {
+    const events: RawApiEvent[] = [
+      { timestamp: 500, ApiTypeId: 304, SeatIndex: 2 },
+      { timestamp: 500, ApiTypeId: 303, HandStart: true },
+      { timestamp: 500, ApiTypeId: 306, HandId: 1 }
+    ]
+
+    expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([306, 303, 304])
+  })
+
+  test('leaves an EVT_HAND_RESULTS group without an EVT_DEAL in canonical order', () => {
+    // 実キャプチャで最も多い同一ミリ秒群（306+311 / 306+309 / 306+313）は
+    // ハンド境界をまたがないため、一切触らない。
+    const events: RawApiEvent[] = [
+      { timestamp: 600, ApiTypeId: 306, HandId: 1 },
+      { timestamp: 600, ApiTypeId: 311, Ranking: 1 }
+    ]
+
+    expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([306, 311])
+  })
+
+  test('an equal-millisecond hand boundary keeps both hands intact end to end', () => {
+    const first = makeCollisionHand()
+    const boundary = COLLISION_TIMESTAMP + 10 // makeCollisionHand()の EVT_HAND_RESULTS と同一ms
+    const second = makeCollisionHand().map(event => ({
+      ...event,
+      timestamp: event.ApiTypeId === 303 ? boundary : event.timestamp + 100,
+      ...(event.ApiTypeId === 306 ? { HandId: 418_790_444 } : {})
+    }))
+
+    const wireOrder = [...first, ...second]
+    const replayOrder = orderApiEventsForReplay(wireOrder)
+
+    expect(convert(replayOrder).hands.map(hand => hand.id))
+      .toEqual(convert(wireOrder).hands.map(hand => hand.id))
+    expect(convert(replayOrder).hands.map(hand => hand.id)).toEqual([418_790_443, 418_790_444])
+    expect(convert(replayOrder).actions).toHaveLength(convert(wireOrder).actions.length)
+  })
 })
