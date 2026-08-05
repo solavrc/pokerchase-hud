@@ -135,9 +135,11 @@ export const ReplayImportSection = () => {
             onChange={handleChange}
           />
         }
-        label="ショーダウンで伏せられた手札を取り込む"
+        label="リプレイに記録された全員の手札を取り込む"
       />
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+        ゲームの<strong>〈手札公開機能〉</strong>が公開する範囲で、リプレイに記録された
+        全プレイヤーの手札（フォールドした手札を含む）を直近ハンドに表示します。
         カード公開の有効期間内のアカウントでのみ利用できます。取得は
         <strong>対局が終わったあと</strong>に行われ、対局中は通信しません。
         取り込みを停止しても、取り込み済みのハンドは削除されません。既定は無効です。

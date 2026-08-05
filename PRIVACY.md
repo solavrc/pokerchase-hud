@@ -59,9 +59,11 @@ hands the user merely observed are not. The server makes a hand available for a
 limited period (the current calendar day and the preceding three days, JST).
 
 The stored response contains the same game information the replay feature shows
-in-app, including the hole cards of opponents who reached showdown. Session
-tokens and request keys used to authenticate the request are stripped at the
-boundary and are never written to storage, exported, or synchronized. If cloud
+in-app, including every player's hole cards as recorded in the hand replay —
+folded hands included. What the replay discloses is decided by the game's own
+card-open feature, not by the extension. Session tokens and request keys used
+to authenticate the request are stripped at the boundary and are never written
+to storage, exported, or synchronized. If cloud
 backup is also enabled, imported replay records are backed up with the rest of
 the hand history. Disabling replay import or detecting expiration stops new
 requests; it does not delete replay records already stored.
