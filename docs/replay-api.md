@@ -136,11 +136,22 @@ detail の窓は暦日ルールだけ。
 
 ## `HoleCardList` の返却範囲
 
-サーバはショーダウンに到達したプレイヤーの `HoleCardList` だけを返す。
-途中でフォールドした相手は空配列。
+どの席の手札が入るかは、アカウントの〈手札公開機能〉（カード公開、
+`CardOpenEndDate` / `IsExpiredCardOpen` が示す有効期間）で決まる。
 
-WebSocket 側（`EVT_HAND_RESULTS.Results[].HoleCards`）との差は1点だけで、
-`RankType` が `SHOWDOWN_MUCK`（11）の行に、こちらは値が入る。WebSocket は
+- **公開期間内**: リプレイに記録された全席の `HoleCardList` が返る。途中で
+  フォールドして `EVT_HAND_RESULTS.Results[]` に行すら存在しない席も含む。
+  ゲーム自身のリプレイ画面が表示するのと同じ範囲。
+- **公開期間外**: ショーダウンに到達したプレイヤーの `HoleCardList` だけ。
+  途中でフォールドした相手は空配列。
+
+手元の検体は全て〈手札公開機能〉なしのアカウントで取得したもので、後者しか
+実測していない（2026-08-05 時点）。読み出し側（`src/replay/hole-cards.ts`）は
+どちらの形も同じ経路で扱う ―― 席の種別を判断せず、値が2枚入っていれば読み、
+空配列・`-1` 埋めなら `null` を返す。
+
+WebSocket 側（`EVT_HAND_RESULTS.Results[].HoleCards`）との差は、公開期間外でも
+1点ある: `RankType` が `SHOWDOWN_MUCK`（11）の行に、こちらは値が入る。WebSocket は
 同じ行を空で送る（`docs/api-events.md` の RankType 表を参照）。
 逆に `FOLD_OPEN`（12）の行はリプレイ側に存在しない。
 
@@ -191,7 +202,7 @@ type ReplayPlayer = {
   SeatIndex: number
   UserId: number
   Name: string
-  HoleCardList: number[]        // 非ショーダウン参加者は空
+  HoleCardList: number[]        // 公開されていない席は空（上記「返却範囲」参照）
   StartChip: number
   BetAnte: number
   CharaId: string
@@ -388,9 +399,15 @@ Dexie v7 は新ストアの追加だけで既存の派生（`hands`/`phases`/`ac
 
 ### 何に使うか
 
-「直近ハンド」パネルで、ショーダウンでマックした行のホールカードを埋める
-（`src/replay/hole-cards.ts`）。WebSocket の `EVT_HAND_RESULTS` は
-`RankType: 11`（SHOWDOWN_MUCK）の `HoleCards` を空で送るが、リプレイは実際の
-手札を返す。ゲーム自身のリプレイ画面も同じものを表示するので、サーバは
-ショーダウンに到達した手を公開情報として扱っている。ショーダウンに到達して
-いない行（`NO_CALL` / `FOLD_OPEN`）は埋めない。
+「直近ハンド」パネルで、WebSocket 経由では手札が取れない席のホールカードを
+埋める（`src/replay/hole-cards.ts`）。埋める対象を席の種別で絞らないのが要点で、
+リプレイ payload に値が入っている席は全て埋める:
+
+- `RankType: 11`（SHOWDOWN_MUCK）の行 ―― WebSocket の `EVT_HAND_RESULTS` は
+  この行の `HoleCards` を空で送るが、リプレイは実際の手札を返す。
+- 途中でフォールドした席 ―― `Results[]` に**行そのものが無い**ため、RankType を
+  見る実装では構造的に到達できない。〈手札公開機能〉の有効期間内はここに値が入る。
+
+可視性の判断は payload に委ねる（上記「`HoleCardList` の返却範囲」）。公開されて
+いない席は空配列・`-1` 埋めで返るので、読み出し側の2枚チェックで自然に落ちる。
+表示は他の相手カードと同じ（ランクのみ4色表示、正確な表記はツールチップ）。

@@ -841,7 +841,7 @@ export async function getRecentHands(
   const [allActions, allPhases, replayDetails, heroDealtHoleCards] = await Promise.all([
     db.actions.where('handId').anyOf(handIds).toArray(),
     db.phases.where('handId').anyOf(handIds).toArray(),
-    // マック行の穴埋め用（オプトイン時のみ）。主キー1回のbulkGetで、
+    // リプレイ由来の手札の穴埋め用（オプトイン時のみ）。主キー1回のbulkGetで、
     // 対象ハンド分だけを引く（N+1は発生しない）。
     readReplayImportEnabled()
       .then(enabled => enabled ? db.replayDetails.bulkGet(handIds) : [])
@@ -879,10 +879,14 @@ export async function getRecentHands(
     const { won, netChips } = deriveWonAndNetChips(hand, playerId)
 
     const holeCardsFromResults = deriveHoleCards(result)
-    // マックしたショーダウン行（RankType 11、HoleCardsが空）だけを埋める。
-    // フォールドした相手の手札は対象外 ―― サーバがリプレイで開示するのは
-    // ショーダウンに到達した手であり、ここで表示するのもそれだけ。
-    const holeCardsFromReplay = holeCardsFromResults === null && wentToShowdown
+    // リプレイに手札が入っている席は、ショーダウン到達を問わず埋める。
+    // ゲームの〈手札公開機能〉が有効な期間、`/replay/detail` は途中で
+    // フォールドした席の`HoleCardList`も返す（docs/replay-api.md）。それらの
+    // 席は`Results[]`に行そのものが無いため、RankType 11だけを見ていた旧実装は
+    // 構造的に取りこぼしていた。可視性の判断はここではなく、リプレイ payload に
+    // 値が入っているかどうか＝サーバが開示したかどうかに委ねる：公開されて
+    // いない席は空配列/`-1`埋めで返り、`readReplayHoleCards`がnullを返す。
+    const holeCardsFromReplay = holeCardsFromResults === null
       ? readReplayHoleCards(replayPayloadByHandId.get(hand.id), playerId)
       : null
     // ヒーロー自身の配札カード（#353）。公開由来が取れなかった行だけを埋める。
