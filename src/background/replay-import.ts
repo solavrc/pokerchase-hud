@@ -159,6 +159,13 @@ export interface ReplayImportDeps {
   waitForIngestion?: () => Promise<void>
   /** そのアカウントのハンドを依頼してよいポートの解決（テストで差し替える）。 */
   resolvePort?: (playerId: number | undefined) => chrome.runtime.Port | undefined
+  /**
+   * 詳細を1件保存した直後に呼ぶ表示側フック（`replay-panel-refresh.ts`）。
+   * 取得の間隔・ゲート・保存の意味論には一切関与しない（MUST NOT）。
+   */
+  onDetailStored?: () => void
+  /** ドレインの終わりに1回呼ぶ表示側フック。未通知の保存を出し切る。 */
+  flushPanelRefresh?: () => void
 }
 
 const readQueue = async (db: PokerChaseDB): Promise<ReplayQueueEntry[]> => {
@@ -515,6 +522,11 @@ const withKeepAlive = async (
     await drainOnce(deps, reason)
   } finally {
     stop()
+    // MUST: 間引きの残りをここで必ず出し切る。ドレインの最後の数件はどの
+    // 閾値にも届かないまま終わるので、これが無いと末尾のハンドがパネルに
+    // 出ない。セッション開始・無効化・長時間操作で中断した場合も、そこまでに
+    // 保存できた分は画面へ反映する。1件も保存していなければ何も送らない。
+    deps.flushPanelRefresh?.()
   }
 }
 
@@ -666,7 +678,13 @@ const drainOnce = async (
         aborted = true
         break
       }
-      if (wrote) storedCount += 1
+      if (wrote) {
+        storedCount += 1
+        // 表示配管だけの通知（間引きは`replay-panel-refresh.ts`）。実際に
+        // 行が増えたときにだけ呼ぶ ―― 先勝ちで既に在った（`wrote === false`）
+        // ハンドはパネルの内容を変えないので、通知の理由にならない。
+        deps.onDetailStored?.()
+      }
       settled.add(entry.handId)
       continue
     }

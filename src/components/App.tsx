@@ -112,6 +112,12 @@ const App = memo(() => {
   // ライブDEALより後に完了した場合に、古い卓で新しい卓を上書きしないための
   // ガード。
   const liveLineupAppliedRef = useRef(false)
+  // セッション終了後のリプレイ詳細ドレインが`replayDetails`へ書くたびに（間引き
+  // 済みで）増える「replay epoch」（background/replay-panel-refresh.tsと
+  // ports.tsの`replayDetailEpoch`参照）。handEpochと別立てにしているのは、
+  // この書き込みが変えるのが直近ハンドのホールカード列だけで、ポジション別
+  // 統計は変わらないため ―― 開いたままの直近ハンドパネルにだけ渡す。
+  const [replayEpoch, setReplayEpoch] = useState(0)
   // 309後、201通知が欠落しても最初の信頼済みヒーロー着席DEALを新境界にする。
   const awaitingTrustedSessionBoundaryRef = useRef(false)
   // 成功201の受信時刻より古いDEALを伴う遅延statsは、旧session計算の完了。
@@ -232,6 +238,13 @@ const App = memo(() => {
   // 計算できたスナップショットを表示する。
   const handleStatsMessage = useCallback(
     ({ detail }: CustomEvent<PokerChaseServiceData>) => {
+      // セッション終了後のリプレイ詳細ドレインからの通知（ports.tsの
+      // `replayDetailEpoch`）。lineupも現在ハンド専用値も運ばないので、
+      // 他の分岐へ落とさずここで完結させる。
+      if ('replayEpoch' in detail) {
+        if (typeof detail.replayEpoch === 'number') setReplayEpoch(detail.replayEpoch)
+        return
+      }
       // SPR・ポットオッズの実況更新はbackgroundでACTIVEポートにだけ配信される。
       // 集計lineupを触らず、現在ハンド専用値だけを更新する。
       if (detail.realTimeOnly) {
@@ -796,6 +809,7 @@ const App = memo(() => {
               isRecentHandsPanelOpen={openRecentHandsPanelPlayerIds.has(position.stat.playerId)}
               onToggleRecentHandsPanel={() => handleToggleRecentHandsPanel(position.stat.playerId)}
               handEpoch={handEpoch}
+              replayEpoch={replayEpoch}
               hudDisplayMode={uiConfig.hudDisplayMode}
               isDimmed={dimmedSeatIndices.has(position.actualSeatIndex)}
             />

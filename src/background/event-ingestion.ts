@@ -51,6 +51,7 @@ import {
   readReplayImportEnabled,
   type ReplayImportDeps
 } from './replay-import'
+import { createReplayPanelRefresh } from './replay-panel-refresh'
 import {
   markReplayAuthReady,
   releaseReplayAuthPort,
@@ -187,18 +188,25 @@ export const createReplayLedgerAuditDeps = (service: PokerChaseService): ReplayL
  * リプレイ取り込み層の依存。積む側（`EVT_HAND_RESULTS`）と流す側
  * （セッション終了・ポート接続）が同じ判定条件で動くよう一箇所にまとめる。
  */
-export const createReplayImportDeps = (service: PokerChaseService): ReplayImportDeps => ({
-  db: service.db,
-  isEnabled: readReplayImportEnabled,
-  prepareAccess: verifyReplayImportAccess,
-  now: () => Date.now(),
-  // インポート/再構築/エクスポートの最中は取得しない。診断ではなく保存を
-  // 伴うので、長時間操作と同じ`apiEvents`へ書き込むのを避ける。
-  isBusy: () => getOperationState().type !== 'idle',
-  getPlayerId: readActivePortPlayerId,
-  isFetchAllowed: isActivePortOutsideSession,
-  resolvePort: findActivePortForPlayer
-})
+export const createReplayImportDeps = (service: PokerChaseService): ReplayImportDeps => {
+  // ドレイン1周ぶんの通知状態。トリガーごとに新しい依存を組む作りなので、
+  // ここで作れば前回の残骸が今回の初回通知を抑制することがない。
+  const panelRefresh = createReplayPanelRefresh()
+  return {
+    db: service.db,
+    isEnabled: readReplayImportEnabled,
+    prepareAccess: verifyReplayImportAccess,
+    now: () => Date.now(),
+    // インポート/再構築/エクスポートの最中は取得しない。診断ではなく保存を
+    // 伴うので、長時間操作と同じ`apiEvents`へ書き込むのを避ける。
+    isBusy: () => getOperationState().type !== 'idle',
+    getPlayerId: readActivePortPlayerId,
+    isFetchAllowed: isActivePortOutsideSession,
+    resolvePort: findActivePortForPlayer,
+    onDetailStored: panelRefresh.onDetailStored,
+    flushPanelRefresh: panelRefresh.flush
+  }
+}
 
 /**
  * `chrome.runtime.onConnect`のハンドラーを登録する。

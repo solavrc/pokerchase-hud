@@ -51,6 +51,14 @@ interface HudProps {
    * そのまま渡し、開いている間の再フェッチトリガーに使う。
    */
   handEpoch?: number
+  /**
+   * セッション終了後のリプレイ詳細ドレインが行を書くたびに（間引き済みで）
+   * 増える「replay epoch」（App.tsx / background/replay-panel-refresh.ts参照）。
+   * 変わるのは直近ハンドのホールカード列だけなので、`RecentHandsPanel`にだけ
+   * 渡す（PositionalStatsPanelへは渡さない ―― ポジション別統計はリプレイ詳細で
+   * 1ビットも変わらず、渡すと無駄な再フェッチになる）。
+   */
+  replayEpoch?: number
   /** HUD表示密度。'full'（デフォルト、既存の16統計グリッド）または'compact'（クラシックHUDライン）。UIConfig.hudDisplayMode参照 */
   hudDisplayMode?: 'full' | 'compact'
   /**
@@ -446,7 +454,7 @@ const Hud = memo((props: HudProps) => {
             <PositionalStatsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
           )}
           {props.isRecentHandsPanelOpen && (
-            <RecentHandsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
+            <RecentHandsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} replayEpoch={props.replayEpoch} />
           )}
         </div>
       </div>
@@ -504,7 +512,7 @@ const Hud = memo((props: HudProps) => {
             <PositionalStatsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
           )}
           {props.isRecentHandsPanelOpen && (
-            <RecentHandsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} />
+            <RecentHandsPanel playerId={props.stat.playerId} handEpoch={props.handEpoch} replayEpoch={props.replayEpoch} />
           )}
           <HudTooltipPortal position={copyTooltipPosition}>{COPY_TOOLTIP}</HudTooltipPortal>
         </div>
@@ -531,6 +539,11 @@ const Hud = memo((props: HudProps) => {
   // completed hand, but bumping it on every hand would otherwise re-render all 6
   // closed-panel Huds for nothing.
   if ((nextProps.isPositionalPanelOpen || nextProps.isRecentHandsPanelOpen) && prevProps.handEpoch !== nextProps.handEpoch) return false
+  // replayEpoch: same shape as handEpoch above, but gated on the recent-hands
+  // panel alone -- it is the only panel that receives the prop (replay details
+  // change nothing in positional stats), so re-rendering for an open positional
+  // panel would be pure waste.
+  if (nextProps.isRecentHandsPanelOpen && prevProps.replayEpoch !== nextProps.replayEpoch) return false
   // statDisplayConfigs governs which stats reach the full grid
   // (filterEnabledDisplayStats) -- a config change must re-render even if
   // statResults itself is unchanged.

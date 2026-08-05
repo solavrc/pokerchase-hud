@@ -6,7 +6,7 @@ single source of truth for agent guidance; deep event semantics live in
 [docs/api-events.md](docs/api-events.md) and design rationale in
 [docs/architecture.md](docs/architecture.md).
 
-> 📅 Last Updated: 2026-08-04
+> 📅 Last Updated: 2026-08-05
 
 ## 📦 Project Overview
 
@@ -16,7 +16,7 @@ Chrome extension providing real-time poker statistics overlay and hand history t
 
 - Real-time HUD with 15+ statistics — compact display mode (default) with click-to-expand full grid, threshold color coding, per-stat tooltips
 - Player-type classification icons (🦈💣🪨🐟 quadrant + 🐳 whale override)
-- Per-player drill-downs: positional stats and recent hands (switchable 10/25/50/100 rows, dealt-in hands only, a default-on 参加のみ filter, per-street action notation, four-color hole cards in BB-denominated results; hero's own dealt cards always shown, opponents' only at showdown — with the opt-in replay import enabled, any seat the stored replay detail discloses is filled from it, folded seats included)
+- Per-player drill-downs: positional stats and recent hands (switchable 10/25/50/100 rows, dealt-in hands only, a default-on 参加のみ filter, per-street action notation, four-color hole cards in BB-denominated results; hero's own dealt cards always shown, opponents' only at showdown — with the opt-in replay import enabled, any seat the stored replay detail discloses is filled from it, folded seats included; a panel left open during the post-session replay drain fills in progressively, on a throttled signal with a guaranteed final refresh — see `docs/replay-api.md` ドレイン中の画面の追従)
 - Pre-game hero stats (career-to-date panel before the first deal)
 - Busted-player dim display (stats and drill-downs remain available through session end, until seat turnover or a trusted table change)
 - All-player SPR/pot odds display

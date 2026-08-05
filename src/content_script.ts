@@ -166,7 +166,16 @@ export interface RealTimeOnlyStatsData {
   realTimeOnly: true
 }
 
-export type PokerChaseServiceData = StatsData | RealTimeOnlyStatsData
+/**
+ * セッション終了後のリプレイ詳細ドレインが行を書いたことだけを伝える通知
+ * （background/ports.tsの`replayDetailEpoch`参照）。lineupも現在ハンド専用値も
+ * 運ばない ―― 開いたままの「直近ハンド」パネルへ再フェッチを促すためだけの値。
+ */
+export interface ReplayEpochData {
+  replayEpoch: number
+}
+
+export type PokerChaseServiceData = StatsData | RealTimeOnlyStatsData | ReplayEpochData
 
 declare global {
   interface WindowEventMap {
@@ -268,12 +277,12 @@ const portManager = new RuntimePortManager({
       return
     }
     if (typeof message === 'object' && message !== null &&
-      ('stats' in message || 'realTimeStats' in message)) {
+      ('stats' in message || 'realTimeStats' in message || 'replayEpoch' in message)) {
       const statsMessage = message as PokerChaseServiceData
       console.time('[content_script] Dispatching stats event')
       window.dispatchEvent(new CustomEvent(POKER_CHASE_SERVICE_EVENT, { detail: statsMessage }))
       console.timeEnd('[content_script] Dispatching stats event')
-      if (statsMessage.realTimeStats) {
+      if ('realTimeStats' in statsMessage && statsMessage.realTimeStats) {
         console.log('[content_script] Real-time stats received:', Object.keys(statsMessage.realTimeStats))
       }
     }

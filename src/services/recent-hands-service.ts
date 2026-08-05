@@ -99,9 +99,25 @@ function subscribeToHandCompletion(service: PokerChaseService): void {
   if (subscribedServices.has(service)) return
   subscribedServices.add(service)
   service.writeEntityStream.on('data', () => {
-    cacheGeneration++
-    clearRecentHandsCache()
+    invalidateRecentHandsCache()
   })
+}
+
+/**
+ * キャッシュを捨て、進行中のフェッチによる書き戻しも止める。
+ *
+ * MUST: 世代も進める。捨てるだけだと、無効化の前に始まった読み取りが後から
+ * 完了したときに世代比較を通過して**無効化前のDB状態**を書き戻し、最大30秒
+ * そのまま返り続ける（下のstorage監視・`getRecentHands`の`fetchGeneration`
+ * 参照）。
+ *
+ * 呼び出し元は3つとも「このパネルの表示内容を変える書き込みが起きた」瞬間:
+ * ハンド完了（上の購読）、リプレイ取り込みのオプトイン切替（下のstorage監視）、
+ * リプレイ詳細1件の保存（`background/replay-panel-refresh.ts`）。
+ */
+export function invalidateRecentHandsCache(): void {
+  cacheGeneration++
+  clearRecentHandsCache()
 }
 
 /**
@@ -155,8 +171,7 @@ chrome.storage?.onChanged?.addListener((changes, areaName) => {
   // 世代も進める（MUST）。捨てるだけだと、切り替え前に始まった読み取りが
   // 後から完了したときに世代比較を通過して**古い結果を書き戻す**ため、
   // OFFにしてもリプレイ由来のカードが最大30秒返り続ける。
-  cacheGeneration++
-  clearRecentHandsCache()
+  invalidateRecentHandsCache()
 })
 
 /**

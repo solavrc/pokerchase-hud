@@ -383,6 +383,51 @@ describe('RecentHandsPanel', () => {
     })
   })
 
+  // セッション終了後のリプレイ詳細ドレイン（背景で1.5秒間隔・100件超）が
+  // 進むあいだ、開いたままのパネルへホールカードを流し込むための信号。
+  // handEpochと同じ形だが、ハンド完了ではなく`replayDetails`への書き込みで動く。
+  it('handEpochが据え置きでもreplayEpochが変われば再フェッチする（リプレイ取り込み中の追従）', async () => {
+    // 設定読み取り（getRecentHandsPanelConfig）が同じsendMessageを通るため
+    // （#367）、フェッチ回数はrecentHandsCalls()で数える。
+    let fetchCount = 0
+    mockSendMessage.mockImplementation((message: { action?: string }, callback: (response: unknown) => void) => {
+      if (message?.action === 'getRecentHandsPanelConfig') {
+        callback({ success: true, config: DEFAULT_RECENT_HANDS_PANEL_CONFIG })
+        return
+      }
+      fetchCount++
+      // 2回目の応答では、リプレイ取り込みでホールカードが埋まった状態を返す。
+      const base = buildResult()
+      const result = fetchCount === 2
+        ? { ...base, hands: base.hands.map((hand, index) => index === 0
+          ? { ...hand, holeCards: ['A♠', 'K♠'], holeCardsSource: 'replay' as const }
+          : hand) }
+        : base
+      callback({ success: true, recentHands: result })
+    })
+
+    const { rerender } = render(<RecentHandsPanel playerId={1} handEpoch={5} replayEpoch={0} />)
+    await waitFor(() => {
+      expect(screen.getAllByTestId('recent-hands-row')).toHaveLength(3)
+    })
+    expect(recentHandsCalls()).toHaveLength(1)
+
+    // 同じepochでの再レンダーは再フェッチしない（間引きの意味が消えないこと）。
+    rerender(<RecentHandsPanel playerId={1} handEpoch={5} replayEpoch={0} />)
+    expect(recentHandsCalls()).toHaveLength(1)
+
+    // ドレインが詳細を書いた -> handEpochは動かないまま再フェッチする。
+    rerender(<RecentHandsPanel playerId={1} handEpoch={5} replayEpoch={1} />)
+
+    await waitFor(() => {
+      expect(recentHandsCalls()).toHaveLength(2)
+    })
+    await waitFor(() => {
+      expect(screen.getAllByTestId('recent-hands-row')[0])
+        .toHaveTextContent('A')
+    })
+  })
+
   // #341-3「各ストリートでのアクション表示」
   describe('ストリート別アクション列', () => {
     it('ポストフロップの省略記法を表示し、アクションが無いハンドは"—"にする', async () => {
