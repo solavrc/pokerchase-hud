@@ -1,5 +1,24 @@
 # Changelog
 
+## [6.0.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v5.7.0...pokerchase-hud-v6.0.0) (2026-08-05)
+
+
+### Features
+
+* **hud:** 「最後の卓」をリロードをまたいで復元する ([#365](https://github.com/solavrc/pokerchase-hud/issues/365)) ([34a8f3e](https://github.com/solavrc/pokerchase-hud/commit/34a8f3ea0ab2691c5cae889336a8ae74d6e35e43))
+* **replay:** カード公開期間を検証してリプレイを取り込む（v6.0） ([#348](https://github.com/solavrc/pokerchase-hud/issues/348)) ([22b2b0a](https://github.com/solavrc/pokerchase-hud/commit/22b2b0a5500e067bf833bf19e90b6648923beb56))
+
+
+### Bug Fixes
+
+* **hud:** ヘッダー行を座席ごとの定位置に固定する（展開は下方向のみ） ([#364](https://github.com/solavrc/pokerchase-hud/issues/364)) ([26600da](https://github.com/solavrc/pokerchase-hud/commit/26600da6af50ac129406be619dd25218d2f4e78c))
+* **hud:** 直近ハンドパネル設定の読み書きをbackground経由へ移す ([#367](https://github.com/solavrc/pokerchase-hud/issues/367)) ([75fd7d9](https://github.com/solavrc/pokerchase-hud/commit/75fd7d99ee76648337576e59699b2cb95bd4221f))
+
+
+### Miscellaneous Chores
+
+* 次のリリースをv6.0.0に指定する ([#370](https://github.com/solavrc/pokerchase-hud/issues/370)) ([d9c1896](https://github.com/solavrc/pokerchase-hud/commit/d9c189632478faa2f1c163e9784ee92a8dcf43e3))
+
 ## [5.7.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v5.6.0...pokerchase-hud-v5.7.0) (2026-08-04)
 
 
