@@ -1142,4 +1142,102 @@ describe('Hud', () => {
       })
     })
   })
+
+  describe('ヘッダーの定位置固定（sola要望: HUDのヘッダーを定位置に固定できないかな？）', () => {
+    /**
+     * 回帰の中身: コンテナは`translate(-50%, -50%)`で座席アンカー点に**中央**を
+     * 合わせるので、コンテナの高さが内容に依存すると、本体が展開したぶんの半分
+     * だけヘッダーが上へ動く（実測: 簡易→詳細 9.79px、直近ハンド展開 63.96px、
+     * ポジション別展開 47.62px。Chrome 151 / 1726x996 / scale 1）。HUDが重なると
+     * ハンバーガー（≡）を狙って押せなくなる、というのが元の不具合。
+     *
+     * jsdomはレイアウトを計算しないので、ここで固定するのは**スタイル契約**:
+     *   - コンテナの高さは内容ではなく定数（52px）
+     *   - パネルは`position: absolute; top: 0`でその中に吊り下がる
+     * この2つが成り立つ限りヘッダーの画面座標は展開状態に依存しない。実ピクセル
+     * での検証は実ブラウザ側で行う（AGENTS.md「Verify layout changes here by
+     * rendering in a real browser」）。
+     */
+    const anchorGeometry = (): Record<string, string> => {
+      const container = screen.getByTestId('hud-panel').parentElement!
+      const { style } = container as HTMLElement
+      return {
+        width: style.width,
+        height: style.height,
+        top: style.top,
+        left: style.left,
+        transform: style.transform,
+      }
+    }
+
+    const renderHud = (props: Partial<React.ComponentProps<typeof Hud>> = {}) =>
+      render(
+        <Hud
+          actualSeatIndex={1}
+          stat={mockPlayerStats}
+          scale={1}
+          statDisplayConfigs={mockStatDisplayConfigs}
+          {...props}
+        />
+      )
+
+    it('コンテナは内容に依存しない固定サイズのアンカー箱で、パネルはその上端に吊り下がる', () => {
+      renderHud({ hudDisplayMode: 'compact' })
+
+      expect(anchorGeometry()).toMatchObject({ width: '240px', height: '52px' })
+
+      const panel = screen.getByTestId('hud-panel')
+      expect(panel).toHaveStyle({ position: 'absolute', top: '0px', left: '0px' })
+    })
+
+    it('簡易↔詳細（hudDisplayMode）を切り替えてもアンカー箱のジオメトリは不変', () => {
+      const { unmount } = renderHud({ hudDisplayMode: 'compact' })
+      const compactGeometry = anchorGeometry()
+      const compactBody = screen.getByTestId('hud-panel').innerHTML
+      unmount()
+
+      renderHud({ hudDisplayMode: 'full' })
+      expect(anchorGeometry()).toEqual(compactGeometry)
+      // 表示自体は本当に変わっている（トグルが無反応で「不変」に見えるのを防ぐ）
+      expect(screen.getByTestId('hud-panel').innerHTML).not.toBe(compactBody)
+    })
+
+    it('compactボディのインライン展開（全統計グリッド）でもアンカー箱のジオメトリは不変', async () => {
+      renderHud({ hudDisplayMode: 'compact' })
+      const collapsedGeometry = anchorGeometry()
+
+      await userEvent.click(screen.getByTitle('クリックで全統計を表示'))
+
+      expect(screen.getByTitle('クリックで折りたたむ')).toBeInTheDocument()
+      expect(anchorGeometry()).toEqual(collapsedGeometry)
+    })
+
+    it('ドリルダウンパネル（直近ハンド／ポジション別）の開閉でもアンカー箱のジオメトリは不変', () => {
+      let view = renderHud({ onToggleRecentHandsPanel: jest.fn() })
+      const closedGeometry = anchorGeometry()
+      view.unmount()
+
+      view = renderHud({ onToggleRecentHandsPanel: jest.fn(), isRecentHandsPanelOpen: true })
+      expect(screen.getByTestId('recent-hands-panel')).toBeInTheDocument()
+      expect(anchorGeometry()).toEqual(closedGeometry)
+      view.unmount()
+
+      renderHud({ onTogglePositionalPanel: jest.fn(), isPositionalPanelOpen: true })
+      expect(screen.getByTestId('positional-stats-panel')).toBeInTheDocument()
+      expect(anchorGeometry()).toEqual(closedGeometry)
+    })
+
+    it('空席・データなしの席も同じアンカー箱に載る（席ごとにヘッダー行がずれない）', () => {
+      let view = renderHud({ stat: mockPlayerStats, hudDisplayMode: 'compact' })
+      const withStats = anchorGeometry()
+      view.unmount()
+
+      view = renderHud({ stat: mockEmptyStats })
+      expect(anchorGeometry()).toEqual(withStats)
+      view.unmount()
+
+      renderHud({ stat: { playerId: 123, statResults: [] } })
+      expect(anchorGeometry()).toEqual(withStats)
+    })
+  })
 })

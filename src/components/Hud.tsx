@@ -74,6 +74,30 @@ const SEAT_POSITIONS: CSSProperties[] = [
 
 const EMPTY_SEAT_ID = -1
 const HUD_WIDTH = 240
+/**
+ * ヘッダー行（プレイヤー名＋ドリルダウンのトリガー「▸」「≡」）を、本体の
+ * 展開状態と無関係に画面上の定位置へ固定するための「アンカー箱」の高さ
+ * （px、`scale`適用前。sola要望「HUDのヘッダーを定位置に固定できないかな？」）。
+ *
+ * なぜ定数が要るか（MUST）: コンテナは`translate(-50%, -50%)`で座席アンカー点に
+ * **中央**を合わせている。中央合わせは高さHに依存するので、本体が展開して
+ * H→H+ΔH になるとヘッダー上端は ΔH/2 だけ**上へ移動**する（実測、Chrome 151 /
+ * 1726x996 / scale 1: 簡易→詳細 9.79px、ポジション別展開 47.62px、直近ハンド
+ * 展開 63.96px、詳細＋直近ハンドで合計 73.75px）。ヘッダーが動くと、HUDが重なった
+ * ときにハンバーガー（≡）を狙って押せない。そこでコンテナ自身の高さを内容から
+ * 切り離してこの定数に固定し、パネルはその中に`position: absolute; top: 0`で
+ * 吊り下げる。これでヘッダーの画面座標は展開状態に依存せず、展開分はすべて
+ * **下方向**へ伸びる。
+ *
+ * 値の根拠: 既定構成（`hudDisplayMode: 'compact'`、ドリルダウン閉、全パネル
+ * 折りたたみ）のパネル実測高さ。Chrome 151/1726x996/scale 1 で 51.98px
+ * （上下ボーダー1px + ヘッダー行16px + ボーダー1px + compactボディ34px）。
+ * 既定構成のユーザーのHUDが1pxも動かない値を選んでいる ―― この定数を変える
+ * と、保存済み`hudPosition_<seat>`（中心基準）の解釈が変わって既存ユーザーの
+ * パネルが縦にずれる。変えるなら実ブラウザで測り直すこと（推定で決めない、
+ * AGENTS.md「Verify layout changes here by rendering in a real browser」）。
+ */
+const HUD_ANCHOR_HEIGHT = 52
 const HOVER_BG_COLOR = 'rgba(0, 0, 0, 0.7)'
 const NORMAL_BG_COLOR = 'rgba(0, 0, 0, 0.5)'
 const COPY_TOOLTIP = 'Click to copy stats to clipboard'
@@ -94,8 +118,26 @@ const styles = {
     fontFamily: 'monospace',
     color: '#ffffff',
     textShadow: '1px 1px 2px rgba(0, 0, 0, 0.8)',
+    // アンカー箱: 内容ではなくこの固定サイズが`translate(-50%, -50%)`の基準に
+    // なる（HUD_ANCHOR_HEIGHT参照）。パネルは`styles.panel`で中に吊り下げる
+    // ので、この箱からはみ出して下へ伸びる（overflowはvisibleのまま）。
+    width: `${HUD_WIDTH}px`,
+    height: `${HUD_ANCHOR_HEIGHT}px`,
   } as CSSProperties,
-  
+
+  /**
+   * アンカー箱の上端に吊り下げられたパネル本体。`position: absolute`にする
+   * ことで、パネルの高さがアンカー箱の高さへ影響しない＝ヘッダーの画面座標が
+   * 展開状態から独立する（MUST: ここを`relative`（＝通常フロー）へ戻すと
+   * ヘッダー固定が壊れる）。`relative`だった頃から引き続き、DragHandle等の
+   * absolute子要素の包含ブロックも兼ねる。
+   */
+  panel: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+  } as CSSProperties,
+
   background: {
     backgroundColor: NORMAL_BG_COLOR,
     backdropFilter: 'blur(2px)',
@@ -305,6 +347,11 @@ const Hud = memo((props: HudProps) => {
   }, [])
 
   // Container styles
+  // `translate(-50%, -50%)`はアンカー箱（固定サイズ、HUD_ANCHOR_HEIGHT参照）を
+  // 座席アンカー点に中央合わせする。箱のサイズが内容に依存しないので、
+  // パネル上端＝ヘッダー上端は `アンカーY - HUD_ANCHOR_HEIGHT * scale / 2` に
+  // 固定される。保存済み位置(`hudPosition_<seat>`)の意味も従来どおり
+  // 「アンカー箱の中心」のまま変わらない。
   const containerStyle: CSSProperties = {
     ...styles.container,
     ...(position || defaultPosition),
@@ -316,9 +363,9 @@ const Hud = memo((props: HudProps) => {
   
   const backgroundStyle: CSSProperties = {
     ...styles.background,
+    ...styles.panel,
     backgroundColor: isHovering || isDragging ? HOVER_BG_COLOR : NORMAL_BG_COLOR,
     pointerEvents: 'auto',
-    position: 'relative',
     // bustしたプレイヤーのミュート表示。ホバー/ドラッグ中は視認性のため通常の
     // 濃さへ戻す（減光したままだとドリルダウン操作等がしづらいため）。
     opacity: props.isDimmed && !isHovering && !isDragging ? DIMMED_OPACITY : 1,
@@ -336,7 +383,7 @@ const Hud = memo((props: HudProps) => {
           onMouseLeave={() => setIsHovering(false)}
         >
           <DragHandle isHovering={isHovering} onMouseDown={handleMouseDown} />
-          <div style={styles.header}>
+          <div style={styles.header} data-hud-header="true">
             <span style={{ ...styles.playerName, color: HUD_MUTED_TEXT_COLOR, fontStyle: 'italic' }}>
               Waiting for Hand...
             </span>
@@ -358,7 +405,7 @@ const Hud = memo((props: HudProps) => {
           onMouseLeave={() => setIsHovering(false)}
         >
           <DragHandle isHovering={isHovering} onMouseDown={handleMouseDown} />
-          <div style={styles.header}>
+          <div style={styles.header} data-hud-header="true">
             {/* 統計がまだ無い席でもDEVバッジは出す（開発者かどうかはplayerId
                 固有の属性で、統計の有無とは無関係）。HudHeader側と同じく
                 名前と同じ左グループに束ねて名前の直後に置く。 */}
@@ -441,6 +488,7 @@ const Hud = memo((props: HudProps) => {
           />
           {hudDisplayMode === 'compact' ? (
             <div
+              data-hud-statbody="true"
               style={styles.expandableStatBody}
               onClick={toggleStatBodyExpand}
               title={isStatBodyExpanded ? 'クリックで折りたたむ' : 'クリックで全統計を表示'}

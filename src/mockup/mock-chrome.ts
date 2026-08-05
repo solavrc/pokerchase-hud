@@ -1,4 +1,5 @@
 import { MESSAGE_ACTIONS } from '../types/messages'
+import { MOCK_POSITIONAL_STATS, MOCK_RECENT_HANDS } from './mock-data'
 import { DEFAULT_UI_CONFIG, type UIConfig } from '../types/hand-log'
 import {
   POPUP_THEME_LOCAL_STORAGE_KEY,
@@ -244,6 +245,21 @@ export const installChromeMock = (): MockChromeController => {
           if (message.patch) persistSyncedUIConfigPatch(message.patch, done)
           else if (message.config) persistSyncedUIConfig(message.config, done)
           else done(false)
+          return
+        }
+
+        // The two HUD drill-downs (ポジション別スタッツ / 直近ハンド) fetch
+        // through the background. Unlike the popup's readers these do NOT fail
+        // open on a bare `{ success: true }` -- they land on their「データなし」
+        // branch, so the panel bodies the mockup exists to review would never
+        // appear. Hand back the authored fixtures (see mock-data.ts).
+        if (message.action === 'getPositionalStats') {
+          callback?.({ success: true, positionalStats: MOCK_POSITIONAL_STATS })
+          return
+        }
+
+        if (message.action === 'getRecentHands') {
+          callback?.({ success: true, recentHands: MOCK_RECENT_HANDS })
           return
         }
 
