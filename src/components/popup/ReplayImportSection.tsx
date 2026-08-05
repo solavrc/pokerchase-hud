@@ -115,9 +115,9 @@ export const ReplayImportSection = () => {
         : publicEnabled && displayPhase === 'pending-auth'
           ? <Alert severity="info" sx={{ mt: 1 }}>ゲームのホーム画面を開くと確認されます。</Alert>
           : publicEnabled && displayPhase === 'verified'
-            ? <Alert severity="success" sx={{ mt: 1 }}>カード公開の有効期間内のアカウントで利用できます。</Alert>
+            ? <Alert severity="success" sx={{ mt: 1 }}>プレミアムパスの有効期間内のアカウントで利用できます。</Alert>
             : publicEnabled && displayPhase === 'expired'
-              ? <Alert severity="warning" sx={{ mt: 1 }}>カード公開の有効期間外のため有効化されませんでした。</Alert>
+              ? <Alert severity="warning" sx={{ mt: 1 }}>プレミアムパスの有効期間外のため有効化されませんでした。</Alert>
               : publicEnabled && displayPhase === 'error'
                 ? <Alert severity="warning" sx={{ mt: 1 }}>カード公開の利用状態を確認できませんでした。</Alert>
                 : null
@@ -140,7 +140,7 @@ export const ReplayImportSection = () => {
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
         ゲームの<strong>〈手札公開機能〉</strong>が公開する範囲で、リプレイに記録された
         全プレイヤーの手札（フォールドした手札を含む）を直近ハンドに表示します。
-        カード公開の有効期間内のアカウントでのみ利用できます。取得は
+        <strong>プレミアムパス</strong>の有効期間内のアカウントでのみ利用できます。取得は
         <strong>対局が終わったあと</strong>に行われ、対局中は通信しません。
         取り込みを停止しても、取り込み済みのハンドは削除されません。既定は無効です。
       </Typography>
