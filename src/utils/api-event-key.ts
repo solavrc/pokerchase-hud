@@ -1,6 +1,6 @@
 import type { PokerChaseDB } from '../db/poker-chase-db'
 import type { MetaRecord } from '../types/entities'
-import { ApiType, ApiTypeValues, type ApiEvent } from '../types/api'
+import { ApiType, ApiTypeValues, parseApiEvent, type ApiEvent } from '../types/api'
 import {
   isScopedSyncMetaKey,
   SYNC_RESCAN_BACKFILL_DONE_META_KEY,
@@ -44,13 +44,17 @@ export interface MergeApiEventsOptions {
   atomicMetaRecordsForAdded?: (added: readonly RawApiEvent[]) => readonly MetaRecord[]
 }
 
+export type ApiEventReplayHandState = 'closed' | 'open' | 'unknown'
+
 /** chunkを跨いで引き継ぐstateful replayのハンド境界状態。 */
 export interface ApiEventReplayOrderState {
-  hasOpenHand: boolean
+  handState: ApiEventReplayHandState
 }
 
-export const createApiEventReplayOrderState = (): ApiEventReplayOrderState => ({
-  hasOpenHand: false
+export const createApiEventReplayOrderState = (
+  handState: ApiEventReplayHandState = 'closed'
+): ApiEventReplayOrderState => ({
+  handState
 })
 
 export const getApiEventSequence = (event: { sequence?: unknown }): number =>
@@ -110,6 +114,13 @@ const resolveStrictSnapshotActionPair = <T extends RawApiEvent>(group: T[]): T[]
   return isProvenSnapshotBeforeAction(second, first) ? [second, first] : group
 }
 
+const isSchemaValidDeal = (event: RawApiEvent): boolean =>
+  event.ApiTypeId === ApiType.EVT_DEAL &&
+  parseApiEvent(event)?.ApiTypeId === ApiType.EVT_DEAL
+
+const getStructuralReplayEvents = <T extends RawApiEvent>(group: T[]): T[] =>
+  group.filter(event => event.ApiTypeId !== ApiType.REPLAY_HAND_DETAIL)
+
 /**
  * 開いている前ハンドの終了行だけを、同一ミリ秒の次ハンド配札より前へ戻す。
  *
@@ -125,11 +136,11 @@ const resolveStrictSnapshotActionPair = <T extends RawApiEvent>(group: T[]): T[]
  */
 const hoistOpenHandResultsBeforeDeal = <T extends RawApiEvent>(
   group: T[],
-  hasOpenHandBeforeGroup: boolean
+  handStateBeforeGroup: ApiEventReplayHandState
 ): T[] => {
-  if (!hasOpenHandBeforeGroup) return group
+  if (handStateBeforeGroup !== 'open') return group
 
-  const structuralEvents = group.filter(event => event.ApiTypeId !== ApiType.REPLAY_HAND_DETAIL)
+  const structuralEvents = getStructuralReplayEvents(group)
   if (structuralEvents.length !== 2) return group
 
   const dealIndexes = group.flatMap((event, index) =>
@@ -140,6 +151,7 @@ const hoistOpenHandResultsBeforeDeal = <T extends RawApiEvent>(
 
   const dealIndex = dealIndexes[0]!
   const resultIndex = resultIndexes[0]!
+  if (!isSchemaValidDeal(group[dealIndex]!)) return group
   if (resultIndex < dealIndex) return group
 
   const result = group[resultIndex]!
@@ -149,6 +161,53 @@ const hoistOpenHandResultsBeforeDeal = <T extends RawApiEvent>(
     ...group.slice(dealIndex, resultIndex),
     ...group.slice(resultIndex + 1)
   ]
+}
+
+const getHandStateAfterReplayGroup = <T extends RawApiEvent>(
+  group: T[],
+  stateBeforeGroup: ApiEventReplayHandState,
+  wasBoundaryHoisted: boolean
+): ApiEventReplayHandState => {
+  const structuralEvents = getStructuralReplayEvents(group)
+  const deals = structuralEvents.filter(event => event.ApiTypeId === ApiType.EVT_DEAL)
+  const hasHandResults = structuralEvents.some(
+    event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS
+  )
+  const hasSessionResults = structuralEvents.some(
+    event => event.ApiTypeId === ApiType.EVT_SESSION_RESULTS
+  )
+  const hasLifecycleContext = structuralEvents.some(event =>
+    event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED ||
+    event.ApiTypeId === ApiType.EVT_SESSION_DETAILS
+  )
+
+  if (deals.length > 0) {
+    // raw Lake上の不正な303や複数DEALを「開いているハンド」の
+    // 証明にしない。一度unknownに落とし、後続groupを推測で動かさない。
+    if (deals.length !== 1 || !isSchemaValidDeal(deals[0]!)) return 'unknown'
+
+    if (hasHandResults || hasSessionResults) {
+      if (wasBoundaryHoisted) return 'open'
+
+      // DB先頭または明示的にclosedな状態の完結303→306だけは
+      // 同一ハンドとしてclosedになる。所有権不明の状態では、
+      // 旧RESULTS→次DEALの可能性を排除できない。
+      return stateBeforeGroup === 'closed' &&
+        structuralEvents.length === 2 && hasHandResults && !hasSessionResults
+        ? 'closed'
+        : 'unknown'
+    }
+
+    return 'open'
+  }
+
+  // DEALが同居しない終端は、group内の位置に関わらず閉じる。
+  if (hasHandResults || hasSessionResults) return 'closed'
+
+  // 201/308はMTT table moveでハンド中にも現れる。開いた古い
+  // DEALを次sessionへ無条件に持ち越さず、所有権をunknownにする。
+  if (hasLifecycleContext && stateBeforeGroup === 'open') return 'unknown'
+  return stateBeforeGroup
 }
 
 /**
@@ -177,17 +236,16 @@ export const orderApiEventsForReplay = <T extends RawApiEvent>(
     while (end < primaryOrder.length && primaryOrder[end]!.timestamp === primaryOrder[start]!.timestamp) end++
     const group = hoistOpenHandResultsBeforeDeal(
       primaryOrder.slice(start, end),
-      state.hasOpenHand
+      state.handState
     )
+    const wasBoundaryHoisted = group[0] !== primaryOrder[start]
     const resolved = resolveStrictSnapshotActionPair(group)
     ordered.push(...resolved)
-    for (const event of resolved) {
-      if (event.ApiTypeId === ApiType.EVT_DEAL) state.hasOpenHand = true
-      else if (
-        event.ApiTypeId === ApiType.EVT_HAND_RESULTS ||
-        event.ApiTypeId === ApiType.EVT_SESSION_RESULTS
-      ) state.hasOpenHand = false
-    }
+    state.handState = getHandStateAfterReplayGroup(
+      resolved,
+      state.handState,
+      wasBoundaryHoisted
+    )
     start = end
   }
 

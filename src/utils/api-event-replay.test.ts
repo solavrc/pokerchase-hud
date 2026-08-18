@@ -11,9 +11,26 @@ const makeCollisionHand = (): RawApiEvent[] => [
   {
     timestamp: COLLISION_TIMESTAMP - 20,
     ApiTypeId: 303,
-    SeatUserIds: [1, 2],
-    Game: { SmallBlind: 100, BigBlind: 200, ButtonSeat: 1, SmallBlindSeat: 0, BigBlindSeat: 1 },
-    Progress: { Phase: 0, Pot: 300 },
+    SeatUserIds: [1, 2, -1, -1],
+    Game: {
+      CurrentBlindLv: 1,
+      NextBlindUnixSeconds: -1,
+      Ante: 0,
+      SmallBlind: 100,
+      BigBlind: 200,
+      ButtonSeat: 1,
+      SmallBlindSeat: 0,
+      BigBlindSeat: 1
+    },
+    Progress: {
+      Phase: 0,
+      Pot: 300,
+      SidePot: [],
+      NextActionSeat: 0,
+      NextActionTypes: [0],
+      NextExtraLimitSeconds: 1,
+      MinRaise: 400
+    },
     Player: { SeatIndex: 0, BetStatus: 1, HoleCards: [1, 2], Chip: 10_000, BetChip: 100 },
     OtherPlayers: [{ SeatIndex: 1, Status: 0, BetStatus: 1, Chip: 9_800, BetChip: 200 }]
   },
@@ -58,6 +75,30 @@ const makeCollisionHand = (): RawApiEvent[] => [
     OtherPlayers: [{ SeatIndex: 1, Status: 0, BetStatus: -1, Chip: 4_242, BetChip: 0 }]
   }
 ]
+
+const makeBoundaryDeal = (
+  timestamp: number,
+  marker: string,
+  sequence?: number
+): RawApiEvent => ({
+  ...structuredClone(makeCollisionHand()[0]!),
+  timestamp,
+  marker,
+  ...(sequence === undefined ? {} : { sequence })
+})
+
+const makeBoundaryResult = (
+  timestamp: number,
+  marker: string,
+  handId = 1,
+  sequence?: number
+): RawApiEvent => ({
+  ...structuredClone(makeCollisionHand().at(-1)!),
+  timestamp,
+  HandId: handId,
+  marker,
+  ...(sequence === undefined ? {} : { sequence })
+})
 
 const convert = (events: RawApiEvent[]) => new EntityConverter({
   id: undefined,
@@ -151,8 +192,8 @@ describe('raw event replay order', () => {
 
   test('keeps a complete same-millisecond hand canonical when no prior hand is open', () => {
     const events: RawApiEvent[] = [
-      { timestamp: 500, ApiTypeId: 303, HandStart: true },
-      { timestamp: 500, ApiTypeId: 306, HandId: 1 }
+      makeBoundaryDeal(500, 'deal'),
+      makeBoundaryResult(500, 'results')
     ]
 
     // timestampは受信時刻なので、再送では同じハンド全体が同一msになり得る。
@@ -162,9 +203,9 @@ describe('raw event replay order', () => {
 
   test('moves a structurally isolated open-hand result before the next deal', () => {
     const events: RawApiEvent[] = [
-      { timestamp: 490, ApiTypeId: 303, marker: 'previous-deal' },
-      { timestamp: 500, ApiTypeId: 303, marker: 'next-deal' },
-      { timestamp: 500, ApiTypeId: 306, HandId: 1, marker: 'previous-results' }
+      makeBoundaryDeal(490, 'previous-deal'),
+      makeBoundaryDeal(500, 'next-deal'),
+      makeBoundaryResult(500, 'previous-results')
     ]
 
     const boundary = orderApiEventsForReplay(events)
@@ -175,10 +216,10 @@ describe('raw event replay order', () => {
 
   test('keeps an ACTION-bearing hand boundary in canonical order because ownership is ambiguous', () => {
     const events: RawApiEvent[] = [
-      { timestamp: 490, ApiTypeId: 303, marker: 'previous-deal' },
-      { timestamp: 500, ApiTypeId: 303, marker: 'next-deal' },
+      makeBoundaryDeal(490, 'previous-deal'),
+      makeBoundaryDeal(500, 'next-deal'),
       { timestamp: 500, ApiTypeId: 304, SeatIndex: 2, marker: 'ambiguous-action' },
-      { timestamp: 500, ApiTypeId: 306, HandId: 1, marker: 'previous-results' }
+      makeBoundaryResult(500, 'previous-results')
     ]
 
     expect(orderApiEventsForReplay(events)
@@ -192,11 +233,11 @@ describe('raw event replay order', () => {
 
   test('session results clear stale open-hand state before a complete same-ms hand', () => {
     const events: RawApiEvent[] = [
-      { timestamp: 480, ApiTypeId: 303, marker: 'stale-deal' },
+      makeBoundaryDeal(480, 'stale-deal'),
       { timestamp: 490, ApiTypeId: 309, marker: 'session-results' },
       { timestamp: 495, ApiTypeId: 201, marker: 'new-entry' },
-      { timestamp: 500, ApiTypeId: 303, marker: 'new-deal' },
-      { timestamp: 500, ApiTypeId: 306, marker: 'new-results' }
+      makeBoundaryDeal(500, 'new-deal'),
+      makeBoundaryResult(500, 'new-results')
     ]
 
     expect(orderApiEventsForReplay(events)
@@ -206,11 +247,11 @@ describe('raw event replay order', () => {
 
   test('keeps ambiguous multiple DEAL/RESULTS groups in canonical order', () => {
     const events: RawApiEvent[] = [
-      { timestamp: 490, ApiTypeId: 303, marker: 'previous-deal' },
-      { timestamp: 500, ApiTypeId: 303, sequence: 0, marker: 'deal-a' },
-      { timestamp: 500, ApiTypeId: 303, sequence: 1, marker: 'deal-b' },
-      { timestamp: 500, ApiTypeId: 306, sequence: 0, marker: 'result-a' },
-      { timestamp: 500, ApiTypeId: 306, sequence: 1, marker: 'result-b' }
+      makeBoundaryDeal(490, 'previous-deal'),
+      makeBoundaryDeal(500, 'deal-a', 0),
+      makeBoundaryDeal(500, 'deal-b', 1),
+      makeBoundaryResult(500, 'result-a', 1, 0),
+      makeBoundaryResult(500, 'result-b', 2, 1)
     ]
 
     expect(orderApiEventsForReplay(events)
@@ -227,6 +268,47 @@ describe('raw event replay order', () => {
     ]
 
     expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([306, 311])
+  })
+
+  test('an ambiguous DEAL group cannot contaminate the following complete hand', () => {
+    const events: RawApiEvent[] = [
+      makeBoundaryDeal(490, 'deal-a', 0),
+      makeBoundaryDeal(490, 'deal-b', 1),
+      makeBoundaryDeal(500, 'complete-deal'),
+      makeBoundaryResult(500, 'complete-results')
+    ]
+
+    expect(orderApiEventsForReplay(events)
+      .filter(event => event.timestamp === 500)
+      .map(event => event.marker)).toEqual(['complete-deal', 'complete-results'])
+  })
+
+  test('a malformed raw DEAL cannot open state for the following complete hand', () => {
+    const events: RawApiEvent[] = [
+      { timestamp: 490, ApiTypeId: 303, marker: 'malformed-deal' },
+      makeBoundaryDeal(500, 'complete-deal'),
+      makeBoundaryResult(500, 'complete-results')
+    ]
+
+    const replayOrder = orderApiEventsForReplay(events)
+    expect(replayOrder
+      .filter(event => event.timestamp === 500)
+      .map(event => event.marker)).toEqual(['complete-deal', 'complete-results'])
+    expect(convert(replayOrder.filter(event => event.marker !== 'malformed-deal')).hands)
+      .toHaveLength(1)
+  })
+
+  test('a lifecycle row makes stale open ownership unknown before a complete hand', () => {
+    const events: RawApiEvent[] = [
+      makeBoundaryDeal(480, 'old-deal'),
+      { timestamp: 490, ApiTypeId: 201, marker: 'next-session' },
+      makeBoundaryDeal(500, 'complete-deal'),
+      makeBoundaryResult(500, 'complete-results')
+    ]
+
+    expect(orderApiEventsForReplay(events)
+      .filter(event => event.timestamp === 500)
+      .map(event => event.marker)).toEqual(['complete-deal', 'complete-results'])
   })
 
   test('an equal-millisecond hand boundary keeps both hands intact end to end', () => {

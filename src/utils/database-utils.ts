@@ -10,6 +10,7 @@ import type Dexie from 'dexie'
 import {
   API_EVENT_PRIMARY_KEY,
   createApiEventReplayOrderState,
+  type ApiEventReplayOrderState,
   type ApiEventKey,
   getApiEventSequence,
   orderApiEventsForReplay,
@@ -308,9 +309,10 @@ export async function filterValidApplicationEvents(rawEvents: unknown[]): Promis
  * pair and incorrectly make it eligible for strict snapshot/action reversal.
  */
 export async function orderAndFilterApplicationEventsForReplay(
-  rawEvents: RawApiEvent[]
+  rawEvents: RawApiEvent[],
+  replayOrderState: ApiEventReplayOrderState = createApiEventReplayOrderState()
 ): Promise<ApiEvent[]> {
-  return filterValidApplicationEvents(orderApiEventsForReplay(rawEvents))
+  return filterValidApplicationEvents(orderApiEventsForReplay(rawEvents, replayOrderState))
 }
 
 /**

@@ -16,7 +16,11 @@ import {
 } from '../utils/database-utils'
 import {
   API_EVENT_PRIMARY_KEY,
+  createApiEventReplayOrderState,
   getApiEventKey,
+  orderApiEventsForReplay,
+  type ApiEventReplayHandState,
+  type ApiEventReplayOrderState,
   type ApiEventKey,
   type RawApiEvent
 } from './api-event-key'
@@ -29,40 +33,90 @@ export class HandLogExporter {
   
   // Time constants for event retrieval
   private static readonly TIME_BUFFER_MS = 300000 // 5 minutes buffer to catch player seat assignments
+  private static readonly MAX_REPLAY_CONTEXT_GROUPS = 1000
 
   /**
    * 部分範囲の直前にあるhand/session境界を補助contextとして取得する。
    *
    * HandLog exportは対象DEALの5分前からしかraw rowを読まないため、前ハンドの
    * DEALだけが範囲外で、そのRESULTSと対象DEALが同一msになる場合がある。
-   * 303/306/309それぞれの直近行から最大timestampの群だけを先頭へ足し、
-   * stateful replay resolverに開始時点のopen/closed状態を復元させる。
+   * 直前group自身が「旧RESULTS+次DEAL」の圧縮境界である場合は、
+   * その所有権もさらに前の状態に依存する。入力stateに依らず結果が
+   * 確定するanchorまで後方へ辿り、そこから連続して再生する。
    */
   private static async getReplayBoundaryContextBefore(
     db: PokerChaseDB,
     beforeTimestamp: number
-  ): Promise<RawApiEvent[]> {
+  ): Promise<{ events: RawApiEvent[], state: ApiEventReplayOrderState }> {
     const boundaryTypes = [
+      ApiType.EVT_ENTRY_QUEUED,
       ApiType.EVT_DEAL,
       ApiType.EVT_HAND_RESULTS,
+      ApiType.EVT_SESSION_DETAILS,
       ApiType.EVT_SESSION_RESULTS,
     ]
-    const latestByType = await Promise.all(boundaryTypes.map(apiTypeId =>
-      db.apiEvents
-        .where('[ApiTypeId+timestamp]')
-        .between(
-          [apiTypeId, Number.MIN_SAFE_INTEGER],
-          [apiTypeId, beforeTimestamp],
-          true,
-          false
-        )
-        .last()
-    ))
-    const candidates = latestByType.filter((event): event is NonNullable<typeof event> => !!event)
-    if (candidates.length === 0) return []
-    const latestTimestamp = Math.max(...candidates.map(event => event.timestamp!))
-    return candidates
-      .filter(event => event.timestamp === latestTimestamp) as unknown as RawApiEvent[]
+    const contextGroups: RawApiEvent[][] = []
+    let cursor = beforeTimestamp
+
+    for (let inspected = 0; inspected < this.MAX_REPLAY_CONTEXT_GROUPS; inspected++) {
+      const latestByType = await Promise.all(boundaryTypes.map(apiTypeId =>
+        db.apiEvents
+          .where('[ApiTypeId+timestamp]')
+          .between(
+            [apiTypeId, Number.MIN_SAFE_INTEGER],
+            [apiTypeId, cursor],
+            true,
+            false
+          )
+          .last()
+      ))
+      const candidates = latestByType.filter(
+        (event): event is NonNullable<typeof event> => !!event
+      )
+      if (candidates.length === 0) {
+        // これより前に境界が無いならLake先頭のclosedが真の初期状態。
+        return {
+          events: contextGroups.flat(),
+          state: createApiEventReplayOrderState('closed')
+        }
+      }
+
+      const latestTimestamp = Math.max(...candidates.map(event => event.timestamp!))
+      const group = await db.apiEvents
+        .where('timestamp')
+        .equals(latestTimestamp)
+        .toArray() as unknown as RawApiEvent[]
+      contextGroups.unshift(group)
+
+      if (this.isReplayStateAnchor(group)) {
+        // anchorはclosed/open/unknownのどこから入っても同じ並びと
+        // 状態に収束する。unknownから始めれば、それより前を読まずに済む。
+        return {
+          events: contextGroups.flat(),
+          state: createApiEventReplayOrderState('unknown')
+        }
+      }
+      cursor = latestTimestamp
+    }
+
+    // 異常に長い圧縮境界連鎖でexportを無制限scanしない。証明できない
+    // 場合はunknownから開始し、範囲内groupを推測で動かさない。
+    return { events: [], state: createApiEventReplayOrderState('unknown') }
+  }
+
+  private static isReplayStateAnchor(group: RawApiEvent[]): boolean {
+    const initialStates: ApiEventReplayHandState[] = ['closed', 'open', 'unknown']
+    const outcomes = initialStates.map(initialState => {
+      const state = createApiEventReplayOrderState(initialState)
+      const ordered = orderApiEventsForReplay(group, state)
+      return {
+        handState: state.handState,
+        order: ordered.map(event => group.indexOf(event)).join(',')
+      }
+    })
+    return outcomes.every(outcome =>
+      outcome.handState === outcomes[0]!.handState && outcome.order === outcomes[0]!.order
+    )
   }
 
   /**
@@ -280,7 +334,8 @@ export class HandLogExporter {
     // Keep the complete raw equal-ms group through fail-closed ordering before
     // validation removes noise or currently-unparseable rows.
     const allEvents = await orderAndFilterApplicationEventsForReplay(
-      [...boundaryContext, ...rawEvents as unknown as RawApiEvent[]]
+      [...boundaryContext.events, ...rawEvents as unknown as RawApiEvent[]],
+      boundaryContext.state
     )
     const rangedEvents = allEvents.filter(event => event.timestamp! >= minTime)
     console.log(`[HandLogExporter] Prefetched ${rangedEvents.length} events (${rawEvents.length} raw)`)
@@ -467,7 +522,8 @@ export class HandLogExporter {
     // Preserve raw group size for fail-closed ordering, then validate before
     // feeding HandLogProcessor, matching the multi-hand path above.
     const allEvents = await orderAndFilterApplicationEventsForReplay(
-      [...boundaryContext, ...rawEvents as unknown as RawApiEvent[]]
+      [...boundaryContext.events, ...rawEvents as unknown as RawApiEvent[]],
+      boundaryContext.state
     ).then(events => events.filter(event => event.timestamp! >= startTime))
 
     // Time range for hand events

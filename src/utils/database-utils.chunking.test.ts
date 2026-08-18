@@ -274,10 +274,10 @@ describe('processInChunks (cursor-based pagination over a real Dexie table)', ()
 
   test('replay chunks preserve an open hand across pages before repairing the next boundary', async () => {
     await db.apiEvents.bulkAdd([
-      { timestamp: 100, ApiTypeId: 303, marker: 'previous-deal' },
+      { ...structuredClone(VALID_HAND_EVENTS_TEMPLATE[0]), timestamp: 100, marker: 'previous-deal' },
       { timestamp: 150, ApiTypeId: 304, marker: 'previous-action' },
-      { timestamp: 200, ApiTypeId: 303, marker: 'next-deal' },
-      { timestamp: 200, ApiTypeId: 306, marker: 'previous-results' }
+      { ...structuredClone(VALID_HAND_EVENTS_TEMPLATE[0]), timestamp: 200, marker: 'next-deal' },
+      { ...structuredClone(VALID_HAND_EVENTS_TEMPLATE.at(-1)), timestamp: 200, marker: 'previous-results' }
     ] as any)
 
     const chunks: any[][] = []
@@ -293,10 +293,10 @@ describe('processInChunks (cursor-based pagination over a real Dexie table)', ()
 
   test('replay chunks clear an open hand at a session-results boundary', async () => {
     await db.apiEvents.bulkAdd([
-      { timestamp: 100, ApiTypeId: 303, marker: 'stale-deal' },
+      { ...structuredClone(VALID_HAND_EVENTS_TEMPLATE[0]), timestamp: 100, marker: 'stale-deal' },
       { timestamp: 150, ApiTypeId: 309, marker: 'session-results' },
-      { timestamp: 200, ApiTypeId: 303, marker: 'new-deal' },
-      { timestamp: 200, ApiTypeId: 306, marker: 'new-results' }
+      { ...structuredClone(VALID_HAND_EVENTS_TEMPLATE[0]), timestamp: 200, marker: 'new-deal' },
+      { ...structuredClone(VALID_HAND_EVENTS_TEMPLATE.at(-1)), timestamp: 200, marker: 'new-results' }
     ] as any)
 
     const chunks: any[][] = []
