@@ -4,8 +4,10 @@ import { ApiType } from '../types'
 import type { ApiEvent, ApiHandEvent, Progress } from '../types'
 import { ErrorHandler } from '../utils/error-handler'
 import { setHandImprovementHeroHoleCards } from '../realtime-stats'
+import { readRecoverableRawHandForResults } from '../utils/database-utils'
 import {
   getEventGeneration,
+  setEventGeneration,
   setStatsRequestContext
 } from './stats-output-context'
 
@@ -226,10 +228,36 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           if (this.events.length > 0 && this.events[0]?.ApiTypeId === ApiType.EVT_DEAL) {
             this.push(this.events)
           } else {
-            // DEALが無いRESULTSはこのライブ集約では意図的に派生しない。
-            // rawと同時に立てたexact-result fenceを終端化し、次回起動ごとに
-            // 同じ非派生ハンドを全再生し続けないようにする。
-            await this.service.statsLedger.acknowledgePendingHandDerivation(event)
+            // Service Workerの再起動境界では、旧workerがDEALをRaw Lakeへ保存した
+            // 直後に停止し、新workerへRESULTSだけが届くことがある。Raw Lakeの
+            // 最新DEALからこのRESULTSまでの短い区間を検証し、同じlineupで途中の
+            // RESULTSが無い場合だけ、そのハンドを下流へ再生する。raw DEALが無い
+            // ／別ハンドなら意図的棄却としてexact fenceを消す。スキーマ不整合など
+            // 再生不能なraw DEALはfailed fenceを残し、次回起動の既存Raw Lake recovery
+            // へ渡す（MUST）。
+            try {
+              const recovery = await readRecoverableRawHandForResults(this.service.db, event)
+              if (recovery.kind === 'recovered') {
+                const generation = getEventGeneration(event)
+                if (generation !== undefined) {
+                  for (const recoveredEvent of recovery.events) {
+                    // Lakeのraw行にはWeakMapの世代metadataが無いため、現在の
+                    // RESULTSと同じACTIVE世代へ載せ替えてWESのcross-generation
+                    // guardを通す（raw payload自体には混ぜない）。
+                    setEventGeneration(recoveredEvent, generation)
+                  }
+                }
+                this.push(recovery.events)
+              } else if (recovery.kind === 'missing-deal' || recovery.kind === 'terminal-mismatch') {
+                await this.service.statsLedger.acknowledgePendingHandDerivation(event)
+              } else {
+                await this.service.statsLedger.markPendingHandDerivationFailed(event)
+              }
+            } finally {
+              // 再生の書き込みはWriteEntityStreamへキューされる。部分的なRESULTS
+              // バッファを残すと、次のハンドがそれを引き継いでしまう。
+              this.events = []
+            }
           }
           // ハンド確定後はバッファを必ず空にする。以前はこの明示的なクリアが無く、
           // 直後に本来来るはずのEVT_DEALが（生データの欠落等により）来なかった場合、

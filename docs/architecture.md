@@ -228,6 +228,16 @@ error通知がexact fence IDを非同期復旧へ引き継ぐ。この明示ID�
 手動の全再構築は`apiEvents`のRW lock下でLake全体の一致snapshotを再生し、その最終commitで
 pending fence全件を回収する。
 
+新しいService Workerが306だけを受け取って集約を終える場合、AggregateEventsStreamは全履歴の
+再構築を起動せず、対象306のexact keyより前にある最新303から対象行までの短い区間だけをRaw
+Lakeから読む。この区間に途中の306がなく、306の`Results`が303の配札lineup内に収まり、対象区間
+の対局イベントが現行スキーマで検証できる場合だけ、303〜306を現在のACTIVE世代へ載せ替えて
+WriteEntityStreamへ一度だけ再生する。最新303が無い、途中に別の306がある、またはlineupが一致
+しない場合は、その306のexact fenceだけを意図的に終端化する。raw DEALがスキーマ不整合で再生
+できない場合はfailed fenceを残し、既存の起動時Raw Lake recoveryへ渡す。いずれの分岐も
+`apiEvents`のraw行を削除せず、実際に当該ハンドのDEALが欠落した306を無制限な再構築ループへ
+送らない。
+
 cloud履歴のsession eventはreplay専用の`SessionState`へ適用し、live singletonを走査中に
 書き換えない。再構築開始時のACTIVE port generation/activity、session、playerId、DEAL文脈が
 完了時まで不変で、かつACTIVE状態でない場合だけ履歴文脈を公開する。対局中または途中でlive
