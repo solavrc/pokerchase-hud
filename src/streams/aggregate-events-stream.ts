@@ -4,10 +4,9 @@ import { ApiType } from '../types'
 import type { ApiEvent, ApiHandEvent, Progress } from '../types'
 import { ErrorHandler } from '../utils/error-handler'
 import { setHandImprovementHeroHoleCards } from '../realtime-stats'
-import { readRecoverableRawHandForResults } from '../utils/database-utils'
+import type { CanonicalWriteFailureError } from './write-entity-stream'
 import {
   getEventGeneration,
-  setEventGeneration,
   setStatsRequestContext
 } from './stats-output-context'
 
@@ -150,7 +149,21 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           // 起こらないが）Player 不在の latestEvtDeal が万一永続化されていても、
           // playerId 自体は影響を受けない
           // （poker-chase-service.test.ts の観戦モード回帰テストで検証済み）。
-          this.applyDealContext(event)
+          if (event.Player?.SeatIndex !== undefined) {
+            this.service.playerId = event.SeatUserIds[event.Player.SeatIndex]
+            // 席マッピング用に最新のEVT_DEALを保存（ヒーロー在籍時のみ更新・永続化対象）
+            this.service.latestEvtDeal = event
+          }
+          // ライブ配信用の現在の座席文脈（Player有無に関わらず毎回更新・非永続）
+          this.service.liveEvtDeal = event
+
+          // Capture hero's hole cards for hand improvement calculations (only in real-time play)
+          if (!this.service.batchMode && event.Player?.HoleCards && event.Player.HoleCards.length === 2 && this.service.playerId) {
+            // Use timestamp as temporary hand ID until we get the real one from EVT_HAND_RESULTS
+            // This is fine since we only need it for the current hand
+            const tempHandId = `temp_${Date.now()}`
+            setHandImprovementHeroHoleCards(tempHandId, this.service.playerId.toString(), event.Player.HoleCards)
+          }
 
           // 新しいハンド開始時に統計を計算（既存データがあるプレイヤーの統計を表示）
           // ただし、すでにDBにハンドが存在する場合のみ（リングゲーム途中参加など）
@@ -214,47 +227,36 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           if (this.events.length > 0 && this.events[0]?.ApiTypeId === ApiType.EVT_DEAL) {
             this.push(this.events)
           } else {
-            // Service Workerの再起動境界では、旧workerがDEALをRaw Lakeへ保存した
-            // 直後に停止し、新workerへRESULTSだけが届くことがある。Raw Lakeの
-            // 最新DEALからこのRESULTSまでの短い区間を検証し、同じlineupで途中の
-            // RESULTSが無い場合だけ、そのハンドを下流へ再生する。raw DEALが無い
-            // ／別ハンドなら意図的棄却としてexact fenceを消す。スキーマ不整合など
-            // 再生不能なraw DEALはfailed fenceを残し、次回起動の既存Raw Lake recovery
-            // へ渡す（MUST）。
+            // DEALが無いRESULTSはこのライブ集約では派生しない。Raw Lake全体を
+            // canonical replayする既存のsingle-flight recoveryへexact fenceを渡すため、
+            // fenceは成功ackせずfailedとして残す（MUST）。この分岐ではrebuildを
+            // awaitせず、backgroundのerror listenerが非同期に予約する。
             try {
-              const recovery = await readRecoverableRawHandForResults(this.service.db, event)
-              if (recovery.kind === 'recovered') {
-                const generation = getEventGeneration(event)
-                if (generation !== undefined) {
-                  for (const recoveredEvent of recovery.events) {
-                    // Lakeのraw行にはWeakMapの世代metadataが無いため、現在の
-                    // RESULTSと同じACTIVE世代へ載せ替えてWESのcross-generation
-                    // guardを通す（raw payload自体には混ぜない）。
-                    setEventGeneration(recoveredEvent, generation)
-                  }
-                }
-                const recoveredDeal = recovery.events.find((recoveredEvent): recoveredEvent is ApiEvent<ApiType.EVT_DEAL> =>
-                  recoveredEvent.ApiTypeId === ApiType.EVT_DEAL
-                )
-                if (recoveredDeal) this.applyDealContext(recoveredDeal)
-                this.push(recovery.events)
-              } else if (recovery.kind === 'missing-deal' || recovery.kind === 'terminal-mismatch') {
-                await this.service.statsLedger.acknowledgePendingHandDerivation(event)
-              } else {
-                await this.service.statsLedger.markPendingHandDerivationFailed(event)
+              const markedPending = await this.service.statsLedger.markPendingHandDerivationFailed(event)
+              if (markedPending) {
+                const recoveryError = new Error(
+                  'EVT_HAND_RESULTS arrived without an in-memory EVT_DEAL; canonical Raw Lake recovery is required'
+                ) as CanonicalWriteFailureError
+                recoveryError.canonicalRecoveryRequired = true
+                recoveryError.canonicalRecoveryFenceId =
+                  this.service.statsLedger.getPendingHandDerivationFenceId(event)
+                throw recoveryError
               }
             } catch (error: unknown) {
-              // Lake読取り・fence更新の例外でcurrent-owner fenceを取り残さない。
-              // failed化自体が失敗しても元の例外を隠してはならない（MUST NOT）。
-              try {
-                await this.service.statsLedger.markPendingHandDerivationFailed(event)
-              } catch (markerError) {
-                console.warn('[AggregateEventsStream] Failed to mark recovery fence', markerError)
+              // marker書込みが失敗した場合もexact IDをerrorへ残し、backgroundの
+              // forced recoveryが同じraw fenceを再試行できるようにする。
+              if ((error as CanonicalWriteFailureError).canonicalRecoveryRequired === true) {
+                throw error
               }
-              throw error
+              const recoveryError = new Error(
+                'Failed to mark the missing-DEAL result fence for canonical recovery'
+              ) as CanonicalWriteFailureError
+              recoveryError.canonicalRecoveryRequired = true
+              recoveryError.canonicalRecoveryFenceId =
+                this.service.statsLedger.getPendingHandDerivationFenceId(event)
+              throw recoveryError
             } finally {
-              // 再生の書き込みはWriteEntityStreamへキューされる。部分的なRESULTS
-              // バッファを残すと、次のハンドがそれを引き継いでしまう。
+              // 部分的なRESULTSバッファを残すと、次のハンドがそれを引き継いでしまう。
               this.events = []
             }
           }
@@ -273,32 +275,19 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
     }
   }
 
-  /**
-   * 通常のEVT_DEALとRaw Lakeから復元したDEALで、サービスの現在ハンド文脈を
-   * 同じ条件で更新する。raw payloadへ世代metadataは書き込まない（MUST NOT）。
-   */
-  private applyDealContext(event: ApiEvent<ApiType.EVT_DEAL>): void {
-    if (event.Player?.SeatIndex !== undefined) {
-      this.service.playerId = event.SeatUserIds[event.Player.SeatIndex]
-      // 席マッピング用に最新のEVT_DEALを保存（ヒーロー在籍時のみ更新・永続化対象）
-      this.service.latestEvtDeal = event
-    }
-    // ライブ配信用の現在の座席文脈（Player有無に関わらず毎回更新・非永続）
-    this.service.liveEvtDeal = event
-
-    if (!this.service.batchMode && event.Player?.HoleCards && event.Player.HoleCards.length === 2 && this.service.playerId) {
-      // ハンドIDがRESULTSまで確定しないため、現在ハンド専用の一時IDを使う。
-      const tempHandId = `temp_${Date.now()}`
-      setHandImprovementHeroHoleCards(tempHandId, this.service.playerId.toString(), event.Player.HoleCards)
-    }
-  }
-
   protected override handleError(error: unknown): void {
+    const recoveryError = error as CanonicalWriteFailureError
     const appError = ErrorHandler.handleStreamError(
       error,
       'AggregateEventsStream',
       { lastTimestamp: this.lastTimestamp, eventsCount: this.events.length }
-    )
+    ) as CanonicalWriteFailureError
+    if (recoveryError.canonicalRecoveryRequired === true) {
+      // ErrorHandlerでAppErrorへ変換しても、backgroundへ渡すexact fence IDは
+      // 同じworker内の構造化errorとして保持する（MUST）。
+      appError.canonicalRecoveryRequired = true
+      appError.canonicalRecoveryFenceId = recoveryError.canonicalRecoveryFenceId
+    }
     if (this.listenerCount('error') > 0) {
       this.emit('error', appError)
     }

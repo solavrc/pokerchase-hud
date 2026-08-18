@@ -5,13 +5,7 @@
 
 import type { PokerChaseDB } from '../db/poker-chase-db'
 import type { EntityBundle } from '../entity-converter'
-import {
-  ApiType,
-  ApiTypeValues,
-  isUnparseableApplicationEvent,
-  type ApiEvent,
-  type ApiHandEvent,
-} from '../types/api'
+import type { ApiEvent } from '../types/api'
 import type Dexie from 'dexie'
 import {
   API_EVENT_PRIMARY_KEY,
@@ -20,123 +14,6 @@ import {
   orderApiEventsForReplay,
   type RawApiEvent
 } from './api-event-key'
-
-const LIVE_HAND_API_TYPES = new Set<number>([
-  ApiType.EVT_DEAL,
-  ApiType.EVT_ACTION,
-  ApiType.EVT_DEAL_ROUND,
-  ApiType.EVT_HAND_RESULTS,
-])
-// EVT_SESSION_DETAILS（308）は再発行され得るため、単独ではハンド境界とみなさない。
-const HAND_CONTEXT_BOUNDARY_API_TYPES = new Set<number>([
-  ApiType.EVT_ENTRY_QUEUED,
-  ApiType.EVT_SESSION_RESULTS,
-  ApiType.EVT_PLAYER_SEAT_ASSIGNED,
-])
-// 1ハンドの通常配信を十分に含みつつ、DEAL欠落で古いDEALから全セッションを
-// 読み込む事態をboundedにする。上限超過はfailed fenceとして起動時復旧へ渡す。
-const MAX_RAW_HAND_RECOVERY_EVENTS = 512
-
-export type RawHandRecoveryResult =
-  | { kind: 'recovered', events: ApiHandEvent[] }
-  | { kind: 'missing-deal' }
-  | { kind: 'terminal-mismatch' }
-  | { kind: 'unusable' }
-
-const sameApiEventKey = (event: RawApiEvent, key: ApiEventKey): boolean =>
-  event.timestamp === key[0] &&
-  event.ApiTypeId === key[1] &&
-  getApiEventSequence(event) === key[2]
-
-/**
- * raw DEALの永続化後、新workerがそのDEALを受け取る前にService Workerを跨いだ
- * ハンドだけを、Raw Lakeから狭く再構成する。最新DEALが当該ハンドだと証明できる
- * よう、途中のRESULTSが無く、全RESULTS参加者が配札lineupに含まれる場合に限る。
- * DEAL欠落は無制限な全再構築の起点にせず、意図的な終端結果とする。
- */
-export async function readRecoverableRawHandForResults(
-  db: PokerChaseDB,
-  resultsEvent: ApiEvent<ApiType.EVT_HAND_RESULTS>
-): Promise<RawHandRecoveryResult> {
-  const resultTimestamp = resultsEvent.timestamp
-  if (typeof resultTimestamp !== 'number') return { kind: 'unusable' }
-  const targetKey = [
-    resultTimestamp,
-    resultsEvent.ApiTypeId,
-    getApiEventSequence(resultsEvent),
-  ] as ApiEventKey
-
-  const latestDeal = await db.apiEvents
-    .where(API_EVENT_PRIMARY_KEY)
-    .below(targetKey)
-    .reverse()
-    .filter(event =>
-      // 主キーはwire順ではないため、同一timestampの303は後着候補も含めて
-      // predecessorに採用しない。跨いだ区間に残る別303も下で棄却する。
-      typeof event.timestamp === 'number' &&
-      event.timestamp < resultTimestamp &&
-      event.ApiTypeId === ApiType.EVT_DEAL
-    )
-    .first() as RawApiEvent | undefined
-  if (!latestDeal) return { kind: 'missing-deal' }
-
-  const dealKey = [
-    latestDeal.timestamp,
-    latestDeal.ApiTypeId,
-    getApiEventSequence(latestDeal),
-  ] as ApiEventKey
-  const rawSegment = await db.apiEvents
-    .where(API_EVENT_PRIMARY_KEY)
-    .between(dealKey, targetKey, true, true)
-    .limit(MAX_RAW_HAND_RECOVERY_EVENTS + 1)
-    .toArray() as unknown as RawApiEvent[]
-  if (rawSegment.length > MAX_RAW_HAND_RECOVERY_EVENTS) return { kind: 'unusable' }
-
-  const orderedSegment = orderApiEventsForReplay(rawSegment)
-  const dealIndex = orderedSegment.findIndex(event => sameApiEventKey(event, dealKey))
-  const resultIndex = orderedSegment.findIndex(event => sameApiEventKey(event, targetKey))
-  if (dealIndex < 0 || resultIndex <= dealIndex) return { kind: 'unusable' }
-
-  // 当該ハンドのDEALが本当に到着しなかった場合、最新DEALは前のハンドに属し得る。
-  // その場合は途中のraw RESULTSが証拠になる。
-  const betweenDealAndResults = orderedSegment.slice(dealIndex + 1, resultIndex)
-  if (betweenDealAndResults.some(event =>
-    event.ApiTypeId === ApiType.EVT_HAND_RESULTS || event.ApiTypeId === ApiType.EVT_DEAL
-  )) {
-    return { kind: 'missing-deal' }
-  }
-  if (betweenDealAndResults.some(event => HAND_CONTEXT_BOUNDARY_API_TYPES.has(event.ApiTypeId))) {
-    return { kind: 'terminal-mismatch' }
-  }
-
-  const handRawEvents = orderedSegment
-    .slice(dealIndex, resultIndex + 1)
-    .filter(event => LIVE_HAND_API_TYPES.has(event.ApiTypeId))
-  if (handRawEvents.some(event =>
-    ApiTypeValues.includes(event.ApiTypeId as ApiType) && isUnparseableApplicationEvent(event)
-  )) {
-    return { kind: 'unusable' }
-  }
-
-  const handEvents = await orderAndFilterApplicationEventsForReplay(handRawEvents)
-  const recoveredDeal = handEvents.find(event => sameApiEventKey(event as RawApiEvent, dealKey))
-  const recoveredResults = handEvents.find(event => sameApiEventKey(event as RawApiEvent, targetKey))
-  if (!recoveredDeal || !recoveredResults || recoveredDeal.ApiTypeId !== ApiType.EVT_DEAL ||
-    recoveredResults.ApiTypeId !== ApiType.EVT_HAND_RESULTS) {
-    return { kind: 'unusable' }
-  }
-
-  if (recoveredResults.Results.some(({ UserId }) => !recoveredDeal.SeatUserIds.includes(UserId))) {
-    return { kind: 'terminal-mismatch' }
-  }
-
-  // exact RESULTS行は現在streamのイベント（ACTIVE世代metadataを保持）へ差し替え、
-  // それ以外の行は耐久化済みLakeのsnapshotを使う。
-  const recovered = handEvents.map(event =>
-    sameApiEventKey(event as RawApiEvent, targetKey) ? resultsEvent : event
-  ) as ApiHandEvent[]
-  return { kind: 'recovered', events: recovered }
-}
 
 /**
  * Save entities to database in a transaction

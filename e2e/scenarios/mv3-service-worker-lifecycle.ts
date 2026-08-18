@@ -413,6 +413,7 @@ const run = async (): Promise<void> => {
       await stoppedWorkerMonitor.close()
     }
 
+    const persistenceFloor = Date.now()
     await withTimeout(harness.waitForReplayDone(), 20_000, 'fixture replay')
     const completed = await waitForRawCount(
       trustedPage,
@@ -434,20 +435,10 @@ const run = async (): Promise<void> => {
 
     // The injected stop deliberately lands inside a hand, so volatile
     // AggregateEventsStream state is not expected to survive. Raw Event Lake
-    // is the recovery boundary: a canonical rebuild must deterministically
-    // restore every derived hand from the exact raw multiset.
-    const persistenceFloor = Date.now()
-    const rebuildResponse = await withTimeout(
-      trustedPage.evaluate(
-        async () => await chrome.runtime.sendMessage({ action: 'rebuildData' })
-      ) as Promise<{ success?: boolean, error?: string }>,
-      30_000,
-      'canonical rebuild after worker restart'
-    )
-    if (!rebuildResponse.success) {
-      throw new Error(`canonical rebuild failed: ${rebuildResponse.error ?? 'unknown error'}`)
-    }
-    const rebuilt = await waitForHandCount(trustedPage, 3, 5_000)
+    // is the recovery boundary: the failed exact fence must asynchronously
+    // trigger the normal single-flight canonical rebuild without an explicit
+    // rebuildData request from this scenario.
+    const rebuilt = await waitForHandCount(trustedPage, 3, 15_000)
 
     const operationResponse = await trustedPage.evaluate(
       async () => await chrome.runtime.sendMessage({ action: 'getOperationState' })

@@ -1,16 +1,15 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
-import { ApiType, BattleType, type ApiEvent } from '../types'
+import { ApiType, type ApiEvent } from '../types'
 import { MTT_TABLE_MOVE_FIXTURE } from '../test-fixtures/mtt-table-move-lifecycle'
 import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
 import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import {
   STATS_PENDING_HAND_DERIVATION_META_PREFIX,
 } from '../stats/stat-ledger'
-import { getStatCounter } from '../stats/hand-contribution'
-import { setEventGeneration } from './stats-output-context'
+import { AutoSyncService } from '../services/auto-sync-service'
 
-describe('AggregateEventsStream Raw Lake recovery after a Service Worker restart', () => {
+describe('AggregateEventsStream canonical Raw Lake recovery after a Service Worker restart', () => {
   let db: PokerChaseDB
   let service: PokerChaseService
 
@@ -20,11 +19,13 @@ describe('AggregateEventsStream Raw Lake recovery after a Service Worker restart
     service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
     service.session.setId('recovery-test')
-    service.session.setBattleType(BattleType.TOURNAMENT)
-    service.session.setName('recovery-test')
+    ;(globalThis as any).service = service
+    ;(chrome.runtime.sendMessage as jest.Mock).mockResolvedValue(undefined)
   })
 
   afterEach(async () => {
+    await service.statsOutputStream.whenIdle().catch(() => {})
+    delete (globalThis as any).service
     db.close()
     await db.delete()
   })
@@ -38,81 +39,136 @@ describe('AggregateEventsStream Raw Lake recovery after a Service Worker restart
   }
 
   const firstHand = (): ApiEvent[] =>
-    structuredClone(MTT_TABLE_MOVE_FIXTURE.events.slice(3, 6)) as ApiEvent[]
+    structuredClone(MTT_TABLE_MOVE_FIXTURE.events.slice(0, 6)) as ApiEvent[]
 
-  test('raw DEAL済み・RESULTSだけの新streamは短いLake再生でcanonical/ledgerへ一度だけ反映する', async () => {
+  const pendingFenceCount = async (): Promise<number> =>
+    await db.meta.where('id').startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX).count()
+
+  const wireCanonicalRecovery = (autoSync: AutoSyncService): {
+    getPromise: () => Promise<void>
+  } => {
+    let recoveryPromise: Promise<void> | undefined
+    service.handAggregateStream.on('error', error => {
+      const canonicalError = error as {
+        canonicalRecoveryRequired?: true
+        canonicalRecoveryFenceId?: string
+      }
+      if (canonicalError.canonicalRecoveryRequired !== true) return
+      recoveryPromise = autoSync.scheduleCanonicalRebuildRecovery(
+        canonicalError.canonicalRecoveryFenceId
+      )
+    })
+    return {
+      getPromise: async () => {
+        if (!recoveryPromise) throw new Error('canonical recovery was not requested')
+        return await recoveryPromise
+      }
+    }
+  }
+
+  test('Raw DEAL済み・新streamはRESULTSだけでも非同期canonical replayで一度だけ反映する', async () => {
     const result = await seedRaw(firstHand())
-    // 実運用では現在workerのRESULTSだけがACTIVE世代metadataを持つ。
-    setEventGeneration(result, 42)
+    const autoSync = new AutoSyncService(db)
+    const recovery = wireCanonicalRecovery(autoSync)
+    const rebuild = jest.spyOn(autoSync as any, 'rebuildLocalEntities')
 
     service.handAggregateStream.write(result)
     await service.handAggregateStream.whenIdle()
+    await recovery.getPromise()
 
-    const head = await service.statsLedger.getActiveHead()
-    expect(await db.hands.get(result.HandId)).toBeDefined()
-    expect(await db.apiEvents.count()).toBe(3)
-    expect(service.playerId).toBe(MTT_TABLE_MOVE_FIXTURE.heroId)
-    expect(service.latestEvtDeal?.timestamp).toBe(MTT_TABLE_MOVE_FIXTURE.timestamps.oldAcceptedDeal)
-    expect(service.liveEvtDeal?.timestamp).toBe(MTT_TABLE_MOVE_FIXTURE.timestamps.oldAcceptedDeal)
-    expect(await db.statHandContributions
-      .where('[generation+handId]')
-      .equals([head!.generation, result.HandId])
-      .count()).toBe(MTT_TABLE_MOVE_FIXTURE.oldLineup.length)
-    expect(await db.meta
-      .where('id')
-      .startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)
-      .count()).toBe(0)
-  })
-
-  test('duplicate/reconnectのRESULTS再送でもcanonicalと台帳を二重加算しない', async () => {
-    const result = await seedRaw(firstHand())
-    setEventGeneration(result, 42)
-
-    service.handAggregateStream.write(result)
-    service.handAggregateStream.write(result)
-    await service.handAggregateStream.whenIdle()
-
-    const head = await service.statsLedger.getActiveHead()
+    expect(rebuild).toHaveBeenCalledTimes(1)
     expect(await db.hands.count()).toBe(1)
+    expect(await db.hands.get(result.HandId)).toMatchObject({
+      id: result.HandId,
+      seatUserIds: MTT_TABLE_MOVE_FIXTURE.oldLineup,
+      session: { id: 'redacted' }
+    })
+    expect(await db.apiEvents.count()).toBe(6)
+    expect(await pendingFenceCount()).toBe(0)
+
+    const head = await service.statsLedger.getActiveHead()
+    const snapshot = await service.statsLedger.readPlayerSnapshot(MTT_TABLE_MOVE_FIXTURE.heroId)
+    expect(snapshot.selectedHands).toBe(1)
     expect(await db.statHandContributions
       .where('[generation+handId]')
       .equals([head!.generation, result.HandId])
       .count()).toBe(MTT_TABLE_MOVE_FIXTURE.oldLineup.length)
-    const aggregate = await db.statPlayerAggregates.get([head!.generation, MTT_TABLE_MOVE_FIXTURE.heroId])
-    expect(aggregate).toBeDefined()
-    expect(getStatCounter(aggregate!.totals, 'hands')).toEqual([1, 0])
   })
 
-  test('Raw Lakeにも当該ハンドのDEALが無いRESULTSはfenceを終端化し、再構築ループを作らない', async () => {
-    // 前のハンドは既にcanonicalへ反映済みとし、そのfenceだけ先に回収する。
-    const previousResult = await seedRaw(firstHand())
-    await service.statsLedger.acknowledgePendingHandDerivation(previousResult)
-    const currentResult = structuredClone(MTT_TABLE_MOVE_FIXTURE.events[5]!) as ApiEvent<ApiType.EVT_HAND_RESULTS>
-    currentResult.timestamp = currentResult.timestamp! + 100
-    currentResult.HandId += 1
-    // 同一timestampの後着303が主キー順で306より前に見えても、これを
-    // current handのDEALとして採用してはいけない。
-    const laterDeal = structuredClone(MTT_TABLE_MOVE_FIXTURE.events[3]!) as ApiEvent<ApiType.EVT_DEAL>
-    laterDeal.timestamp = currentResult.timestamp
-    const result = await seedRaw([currentResult, laterDeal])
+  test('Raw LakeにもDEALがないRESULTSは1回のfull replayでfenceを終端し、再起動ループを作らない', async () => {
+    const result = structuredClone(MTT_TABLE_MOVE_FIXTURE.events[5]!) as ApiEvent<ApiType.EVT_HAND_RESULTS>
+    result.timestamp = result.timestamp! + 100
+    result.HandId += 1
+    await seedRaw([result])
+
+    const autoSync = new AutoSyncService(db)
+    const recovery = wireCanonicalRecovery(autoSync)
+    const rebuild = jest.spyOn(autoSync as any, 'rebuildLocalEntities')
 
     service.handAggregateStream.write(result)
     await service.handAggregateStream.whenIdle()
+    await recovery.getPromise()
 
+    expect(rebuild).toHaveBeenCalledTimes(1)
     expect(await db.hands.count()).toBe(0)
-    expect(await db.apiEvents.count()).toBe(5)
-    expect(await db.statHandContributions.count()).toBe(0)
-    expect(await db.meta
-      .where('id')
-      .startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)
-      .count()).toBe(0)
+    expect(await pendingFenceCount()).toBe(0)
     expect(await service.statsLedger.needsCanonicalRebuildRecovery()).toBe(false)
 
-    // 後続のreconnect再送も終端扱いとし、全再構築を再開したり古い
-    // AggregateEventsStreamバッファを肥大させたりしない。
+    const restarted = new AutoSyncService(db)
+    await expect(restarted.recoverInterruptedCanonicalRebuild()).resolves.toBe(false)
+    expect(await pendingFenceCount()).toBe(0)
+  })
+
+  test('duplicate/reconnectではRaw dedupが新fenceを作らず、canonicalと台帳を二重加算しない', async () => {
+    const result = await seedRaw(firstHand())
+    const autoSync = new AutoSyncService(db)
+    const recovery = wireCanonicalRecovery(autoSync)
+    const rebuild = jest.spyOn(autoSync as any, 'rebuildLocalEntities')
+
     service.handAggregateStream.write(result)
     await service.handAggregateStream.whenIdle()
-    expect(await db.hands.count()).toBe(0)
-    expect(await service.statsLedger.needsCanonicalRebuildRecovery()).toBe(false)
+    await recovery.getPromise()
+
+    const duplicate = await mergeApiEvents(db, [structuredClone(result) as unknown as RawApiEvent], {
+      atomicMetaRecordsForAdded: added => service.statsLedger.createPendingHandDerivationFenceRecords(added),
+    })
+    expect(duplicate.added).toHaveLength(0)
+    expect(await pendingFenceCount()).toBe(0)
+
+    // transport再送がstreamまで届く場合もexact fenceが無いため再構築を予約しない。
+    service.handAggregateStream.write(result)
+    await service.handAggregateStream.whenIdle()
+    expect(rebuild).toHaveBeenCalledTimes(1)
+    expect(await db.hands.count()).toBe(1)
+    const snapshot = await service.statsLedger.readPlayerSnapshot(MTT_TABLE_MOVE_FIXTURE.heroId)
+    expect(snapshot.selectedHands).toBe(1)
+    const head = await service.statsLedger.getActiveHead()
+    const aggregate = await db.statPlayerAggregates.get([head!.generation, MTT_TABLE_MOVE_FIXTURE.heroId])
+    expect(aggregate?.totals[0]).toBe(1)
+  })
+
+  test('canonical replay失敗時は旧derivedを保ち、対象fenceを次回retryへ残す', async () => {
+    await db.apiEvents.bulkAdd(firstHand())
+    const autoSync = new AutoSyncService(db)
+    await (autoSync as any).rebuildLocalEntities()
+    const oldHand = await db.hands.get(MTT_TABLE_MOVE_FIXTURE.handIds.oldAccepted)
+    expect(oldHand).toBeDefined()
+
+    const result = structuredClone(MTT_TABLE_MOVE_FIXTURE.events[5]!) as ApiEvent<ApiType.EVT_HAND_RESULTS>
+    result.timestamp = result.timestamp! + 100
+    result.HandId += 1
+    await seedRaw([result])
+
+    jest.spyOn(autoSync as any, 'rebuildLocalEntities')
+      .mockRejectedValueOnce(new Error('synthetic canonical replay failure'))
+    const recovery = wireCanonicalRecovery(autoSync)
+
+    service.handAggregateStream.write(result)
+    await service.handAggregateStream.whenIdle()
+    await expect(recovery.getPromise()).rejects.toThrow('synthetic canonical replay failure')
+
+    expect(await db.hands.get(MTT_TABLE_MOVE_FIXTURE.handIds.oldAccepted)).toEqual(oldHand)
+    expect(await pendingFenceCount()).toBe(1)
+    expect(await db.apiEvents.count()).toBe(7)
   })
 })

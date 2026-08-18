@@ -206,8 +206,9 @@ baselineが正しさを担保する。
 HUDは`meta`が指すactive generationだけを読む。クラウドダウンロード後の分割再構築では、
 staging generation自体は空のまま保ち、markerをcanonical表がdirtyであることのフェンスとして
 使う。分割中は旧active headのready値を読めるが、dirty canonicalから新baselineは作らない。
-完了時はcanonicalの最終commitと同じ短いtransactionで空の新headへ切り替え、以後のHUD読みが
-表示lineupのみをlazy baselineする。これにより全プレイヤー分の巨大な二重世代を作らない。
+完了時はcanonical全件のactivation transactionで空の新headへ切り替え、以後のHUD読みが
+表示lineupのみをlazy baselineする。canonical staging中に旧表を変更しないため、全プレイヤー分の
+巨大な二重世代を作らず、失敗時は旧canonicalを保つ。
 
 markerにはService Worker起動ごとのownerを記録する。中断markerを次の起動が見つけた場合は、
 認証状態やcloudの`lastSyncTime`に依存せず、ローカルRaw Event Lakeからcanonical再構築を再開する。
@@ -217,8 +218,9 @@ Service Workerが終了しても、次回起動はstaleな派生表を成功状�
 
 liveの`EVT_HAND_RESULTS`（306）は、Raw Lakeの主キー`[timestamp+ApiTypeId+sequence]`ごとの
 pending derivation fenceをraw rowと同じtransactionで保存する。完了ハンドのcanonical entityと
-統計台帳のcommitが成功した時、またはschema不適合・DEAL欠落・cross-generation/
-chimera判定で意図的に派生しないと確定した時に、対応するexact fenceだけを消す。
+統計台帳のcommitが成功した時、またはschema不適合・cross-generation/chimera判定で意図的に
+派生しないと確定した時に、対応するexact fenceだけを消す。揮発バッファにDEALが無い306は
+意図的棄却として先に消さず、failed fenceを残してRaw Lake全体のcanonical replayへ渡す。
 同じ起動ownerの未完了fenceは通常のin-flightとして扱い、別owner・失敗済み・壊れたfenceは
 中断復旧とbaseline構築拒否の対象とする。cloud分割再構築は開始時に回収対象のexact IDを固定し、
 完了commitでそのIDだけを消すため、再構築中に到着したlive fenceを巻き込まない。
@@ -228,15 +230,16 @@ error通知がexact fence IDを非同期復旧へ引き継ぐ。この明示ID�
 手動の全再構築は`apiEvents`のRW lock下でLake全体の一致snapshotを再生し、その最終commitで
 pending fence全件を回収する。
 
-新しいService Workerが306だけを受け取って集約を終える場合、AggregateEventsStreamは全履歴の
-再構築を起動せず、対象306のexact keyより前にある最新303から対象行までの短い区間だけをRaw
-Lakeから読む。この区間に途中の306がなく、306の`Results`が303の配札lineup内に収まり、対象区間
-の対局イベントが現行スキーマで検証できる場合だけ、303〜306を現在のACTIVE世代へ載せ替えて
-WriteEntityStreamへ一度だけ再生する。最新303が無い、途中に別の306がある、またはlineupが一致
-しない場合は、その306のexact fenceだけを意図的に終端化する。raw DEALがスキーマ不整合で再生
-できない場合はfailed fenceを残し、既存の起動時Raw Lake recoveryへ渡す。いずれの分岐も
-`apiEvents`のraw行を削除せず、実際に当該ハンドのDEALが欠落した306を無制限な再構築ループへ
-送らない。
+新しいService Workerが306だけを受け取って集約を終える場合、AggregateEventsStreamは対象306の
+exact fenceを成功ackせずfailed状態へ遷移させ、同じworker内の構造化errorで既存のsingle-flight
+canonical recoveryへ非同期に渡す。通常の取り込みは全再構築をawaitしない。全Raw Lakeを既存の
+canonical replayで一度だけ再生するため、session・battle・seat・hero・同一timestampの順序は
+この経路だけが決定する。Raw Lakeに当該DEALがあっても無くても、replayのactivation transaction
+でcanonical entity、統計台帳の新head、開始時snapshotの対象exact fenceを同時にcommitする。
+ハンドが生成されない結果もactivation成功としてそのfenceを終端化し、再起動ごとの再構築ループを
+作らない。replayが失敗した場合は旧canonicalとfailed fenceを保ち、次回起動または次の予約で
+再試行する。`apiEvents`のraw行は削除せず、Raw dedup済みのduplicate/reconnectは新しいfenceを
+作らないため、台帳を二重加算しない。
 
 cloud履歴のsession eventはreplay専用の`SessionState`へ適用し、live singletonを走査中に
 書き換えない。再構築開始時のACTIVE port generation/activity、session、playerId、DEAL文脈が

@@ -1675,9 +1675,9 @@ export class StatsLedger {
       ) {
         throw new Error('Canonical rebuild marker is not owned by this worker')
       }
-      // 呼出元は同じtransactionでcanonical chunkを置換済み。
-      // staging台帳は全player分を二重保持せず空のままとし、
-      // 成功時にheadを切り替えた後、表示lineupだけをlazy baselineする。
+      // 呼出元はcanonical entityをactivation transactionまでmemory stagingしている。
+      // staging台帳は全player分を二重保持せず空のままとし、成功時にcanonicalと
+      // headを同じcommitで切り替えた後、表示lineupだけをlazy baselineする（MUST）。
       await this.bumpCanonicalRevision()
     })
   }

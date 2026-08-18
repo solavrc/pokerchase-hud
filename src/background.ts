@@ -209,16 +209,20 @@ registerMessageRouter(service, db, gameUrlPattern)
 
 registerStreamSubscriptions(service, gameUrlPattern)
 
-service.writeEntityStream.on('error', error => {
+const scheduleCanonicalRecoveryFromStreamError = (error: unknown): void => {
   // markerのfailed化自体が失敗しても、ログへ出さないインメモリexact IDを根拠に
-  // 取り込みをawaitで止めずRaw Lake復旧を予約する（MUST）。
+  // 取り込みをawaitで止めずRaw Lake復旧を予約する（MUST）。AggregateとWESは
+  // 同じsingle-flight schedulerへ渡し、ストリームごとの再構築を作らない。
   const canonicalError = error as CanonicalWriteFailureError
   if (canonicalError.canonicalRecoveryRequired !== true) return
   const pendingFenceId = canonicalError.canonicalRecoveryFenceId
   void autoSyncService.scheduleCanonicalRebuildRecovery(pendingFenceId).catch(recoveryError => {
     console.error('[background] Live canonical write recovery failed:', recoveryError)
   })
-})
+}
+
+service.writeEntityStream.on('error', scheduleCanonicalRecoveryFromStreamError)
+service.handAggregateStream.on('error', scheduleCanonicalRecoveryFromStreamError)
 
 registerEventIngestion(service)
 
