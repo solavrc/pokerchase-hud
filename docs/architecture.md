@@ -206,9 +206,8 @@ baselineが正しさを担保する。
 HUDは`meta`が指すactive generationだけを読む。クラウドダウンロード後の分割再構築では、
 staging generation自体は空のまま保ち、markerをcanonical表がdirtyであることのフェンスとして
 使う。分割中は旧active headのready値を読めるが、dirty canonicalから新baselineは作らない。
-完了時はcanonical全件のactivation transactionで空の新headへ切り替え、以後のHUD読みが
-表示lineupのみをlazy baselineする。canonical staging中に旧表を変更しないため、全プレイヤー分の
-巨大な二重世代を作らず、失敗時は旧canonicalを保つ。
+完了時はcanonicalの最終commitと同じ短いtransactionで空の新headへ切り替え、以後のHUD読みが
+表示lineupのみをlazy baselineする。これにより全プレイヤー分の巨大な二重世代を作らない。
 
 markerにはService Worker起動ごとのownerを記録する。中断markerを次の起動が見つけた場合は、
 認証状態やcloudの`lastSyncTime`に依存せず、ローカルRaw Event Lakeからcanonical再構築を再開する。
@@ -232,14 +231,17 @@ pending fence全件を回収する。
 
 新しいService Workerが306だけを受け取って集約を終える場合、AggregateEventsStreamは対象306の
 exact fenceを成功ackせずfailed状態へ遷移させ、同じworker内の構造化errorで既存のsingle-flight
-canonical recoveryへ非同期に渡す。通常の取り込みは全再構築をawaitしない。全Raw Lakeを既存の
-canonical replayで一度だけ再生するため、session・battle・seat・hero・同一timestampの順序は
-この経路だけが決定する。Raw Lakeに当該DEALがあっても無くても、replayのactivation transaction
-でcanonical entity、統計台帳の新head、開始時snapshotの対象exact fenceを同時にcommitする。
-ハンドが生成されない結果もactivation成功としてそのfenceを終端化し、再起動ごとの再構築ループを
-作らない。replayが失敗した場合は旧canonicalとfailed fenceを保ち、次回起動または次の予約で
-再試行する。`apiEvents`のraw行は削除せず、Raw dedup済みのduplicate/reconnectは新しいfenceを
-作らないため、台帳を二重加算しない。
+canonical recoveryへ非同期に渡す。通常の取り込みはrecovery完了をawaitしない。recoveryは既存の
+canonical replay engineを先頭からbounded chunkで走査し、session・battle・seat・hero・同一
+timestampの順序はそのengineだけで決定する。保持するのはconverterの状態、現在chunk、対象handの
+最大1 bundleだけで、全履歴entityは蓄積しない。走査前のRaw Lakeの件数/high-watermarkを、取り込み
+drain後の最終`rw` transactionでapiEvents store・対象terminal row・exact fenceと再確認する。
+scan中にrawが増えた、同timestamp groupの完全性が確定できない、またはtransactionが失敗した場合は
+commitせず、旧canonicalとfailed fenceを残して再試行する。対象handが生成された場合だけ、その
+handのcanonical entityとledger contributionを同じtransactionで冪等置換し、exact fenceを消す。
+stable replayでhandが生成されない場合はcanonical/ledgerを触らずfenceだけを意図的に終端する。
+`apiEvents`のraw行は削除せず、Raw dedup済みのduplicate/reconnectは新しいfenceを作らないため、
+台帳を二重加算しない。
 
 cloud履歴のsession eventはreplay専用の`SessionState`へ適用し、live singletonを走査中に
 書き換えない。再構築開始時のACTIVE port generation/activity、session、playerId、DEAL文脈が

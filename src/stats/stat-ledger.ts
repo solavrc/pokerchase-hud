@@ -71,6 +71,12 @@ export interface StatsLedgerHead {
   version: typeof HAND_STAT_CONTRIBUTION_VERSION
 }
 
+export interface PendingHandDerivationFenceSnapshot {
+  id: string
+  handId: number
+  rawKey: ApiEventKey
+}
+
 interface StatsLedgerStagingMarker extends StatsLedgerHead {
   ownerId: string
 }
@@ -547,6 +553,15 @@ export class StatsLedger {
     return await this.hasCanonicalRebuildMarker()
   }
 
+  /** cloud/manual canonical replay markerの有無。exact hand fenceとは別に判定する。 */
+  async needsFullCanonicalRebuildRecovery(): Promise<boolean> {
+    const [canonical, staging] = await Promise.all([
+      this.db.meta.get(STATS_CANONICAL_REBUILD_META_ID),
+      this.db.meta.get(STATS_LEDGER_STAGING_META_ID),
+    ])
+    return canonical !== undefined || staging !== undefined
+  }
+
   /**
    * actual-added EVT_HAND_RESULTSにraw primary key単位の派生保留を付ける。
    * `mergeApiEvents()`のsequence割当後callbackからのみ呼ぶ（MUST）。
@@ -578,6 +593,18 @@ export class StatsLedger {
     event: PendingHandDerivationEvent
   ): string | undefined {
     return getPendingHandDerivationMetaId(event)
+  }
+
+  /** exact recoveryが対象にするhandとterminal raw keyを読む。 */
+  async getPendingHandDerivationFence(
+    id: string
+  ): Promise<PendingHandDerivationFenceSnapshot | undefined> {
+    if (!id.startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)) return undefined
+    const record = await this.db.meta.get(id)
+    if (!record) return undefined
+    const fence = parsePendingHandDerivationFence(record.value)
+    if (!fence) throw new Error('Malformed pending hand derivation fence')
+    return { id, handId: fence.handId, rawKey: fence.rawKey }
   }
 
   /** canonical成功または意図的棄却が確定したraw-resultだけを消す。 */
@@ -1675,9 +1702,9 @@ export class StatsLedger {
       ) {
         throw new Error('Canonical rebuild marker is not owned by this worker')
       }
-      // 呼出元はcanonical entityをactivation transactionまでmemory stagingしている。
-      // staging台帳は全player分を二重保持せず空のままとし、成功時にcanonicalと
-      // headを同じcommitで切り替えた後、表示lineupだけをlazy baselineする（MUST）。
+      // 呼出元は同じtransactionでcanonical chunkを置換済み。
+      // staging台帳は全player分を二重保持せず空のままとし、
+      // 成功時にheadを切り替えた後、表示lineupだけをlazy baselineする。
       await this.bumpCanonicalRevision()
     })
   }

@@ -280,6 +280,9 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   ingestionQueue = Promise.resolve()
   ingestionQueueDepth = 0
   setIngestionDrainProvider(() => ingestionQueue)
+  // exact hand recoveryのscan→commit間も同じRaw Lake drain checkpointを使う。
+  // recovery自体はbackgroundへ非同期予約され、通常取り込みは待たせない（MUST NOT）。
+  autoSyncService.setCanonicalRecoveryIngestionDrainProvider(awaitIngestionDrain)
 
   chrome.runtime.onConnect.addListener(port => {
     if (port.name === PokerChaseService.POKER_CHASE_SERVICE_EVENT) {

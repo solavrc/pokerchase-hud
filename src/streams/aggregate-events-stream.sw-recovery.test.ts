@@ -70,13 +70,13 @@ describe('AggregateEventsStream canonical Raw Lake recovery after a Service Work
     const result = await seedRaw(firstHand())
     const autoSync = new AutoSyncService(db)
     const recovery = wireCanonicalRecovery(autoSync)
-    const rebuild = jest.spyOn(autoSync as any, 'rebuildLocalEntities')
+    const targetedRecovery = jest.spyOn(autoSync as any, 'recoverPendingHandDerivationFences')
 
     service.handAggregateStream.write(result)
     await service.handAggregateStream.whenIdle()
     await recovery.getPromise()
 
-    expect(rebuild).toHaveBeenCalledTimes(1)
+    expect(targetedRecovery).toHaveBeenCalledTimes(1)
     expect(await db.hands.count()).toBe(1)
     expect(await db.hands.get(result.HandId)).toMatchObject({
       id: result.HandId,
@@ -93,6 +93,24 @@ describe('AggregateEventsStream canonical Raw Lake recovery after a Service Work
       .where('[generation+handId]')
       .equals([head!.generation, result.HandId])
       .count()).toBe(MTT_TABLE_MOVE_FIXTURE.oldLineup.length)
+
+    const recoveredCanonical = {
+      hands: await db.hands.toArray(),
+      phases: await db.phases.toArray(),
+      actions: await db.actions.toArray(),
+    }
+    const recoveredLedger = (await db.statHandContributions.toArray())
+      .map(({ generation: _generation, ...row }) => row)
+    const cleanReplay = new AutoSyncService(db)
+    await (cleanReplay as any).rebuildLocalEntities()
+    expect({
+      hands: await db.hands.toArray(),
+      phases: await db.phases.toArray(),
+      actions: await db.actions.toArray(),
+    }).toEqual(recoveredCanonical)
+    expect((await db.statHandContributions.toArray())
+      .map(({ generation: _generation, ...row }) => row))
+      .toEqual(recoveredLedger)
   })
 
   test('Raw LakeにもDEALがないRESULTSは1回のfull replayでfenceを終端し、再起動ループを作らない', async () => {
@@ -103,13 +121,13 @@ describe('AggregateEventsStream canonical Raw Lake recovery after a Service Work
 
     const autoSync = new AutoSyncService(db)
     const recovery = wireCanonicalRecovery(autoSync)
-    const rebuild = jest.spyOn(autoSync as any, 'rebuildLocalEntities')
+    const targetedRecovery = jest.spyOn(autoSync as any, 'recoverPendingHandDerivationFences')
 
     service.handAggregateStream.write(result)
     await service.handAggregateStream.whenIdle()
     await recovery.getPromise()
 
-    expect(rebuild).toHaveBeenCalledTimes(1)
+    expect(targetedRecovery).toHaveBeenCalledTimes(1)
     expect(await db.hands.count()).toBe(0)
     expect(await pendingFenceCount()).toBe(0)
     expect(await service.statsLedger.needsCanonicalRebuildRecovery()).toBe(false)
@@ -121,9 +139,23 @@ describe('AggregateEventsStream canonical Raw Lake recovery after a Service Work
 
   test('duplicate/reconnectではRaw dedupが新fenceを作らず、canonicalと台帳を二重加算しない', async () => {
     const result = await seedRaw(firstHand())
+    const duplicateBefore = await mergeApiEvents(db, [structuredClone(result) as unknown as RawApiEvent], {
+      atomicMetaRecordsForAdded: added => service.statsLedger.createPendingHandDerivationFenceRecords(added),
+    })
+    expect(duplicateBefore.added).toHaveLength(0)
     const autoSync = new AutoSyncService(db)
     const recovery = wireCanonicalRecovery(autoSync)
-    const rebuild = jest.spyOn(autoSync as any, 'rebuildLocalEntities')
+    const targetedRecovery = jest.spyOn(autoSync as any, 'recoverPendingHandDerivationFences')
+
+    const originalWatermark = (autoSync as any).readRawLakeWatermark.bind(autoSync)
+    jest.spyOn(autoSync as any, 'readRawLakeWatermark').mockImplementation(async () => {
+      const watermark = await originalWatermark()
+      const duplicateDuring = await mergeApiEvents(db, [structuredClone(result) as unknown as RawApiEvent], {
+        atomicMetaRecordsForAdded: added => service.statsLedger.createPendingHandDerivationFenceRecords(added),
+      })
+      expect(duplicateDuring.added).toHaveLength(0)
+      return watermark
+    })
 
     service.handAggregateStream.write(result)
     await service.handAggregateStream.whenIdle()
@@ -138,7 +170,7 @@ describe('AggregateEventsStream canonical Raw Lake recovery after a Service Work
     // transport再送がstreamまで届く場合もexact fenceが無いため再構築を予約しない。
     service.handAggregateStream.write(result)
     await service.handAggregateStream.whenIdle()
-    expect(rebuild).toHaveBeenCalledTimes(1)
+    expect(targetedRecovery).toHaveBeenCalledTimes(1)
     expect(await db.hands.count()).toBe(1)
     const snapshot = await service.statsLedger.readPlayerSnapshot(MTT_TABLE_MOVE_FIXTURE.heroId)
     expect(snapshot.selectedHands).toBe(1)
@@ -159,7 +191,7 @@ describe('AggregateEventsStream canonical Raw Lake recovery after a Service Work
     result.HandId += 1
     await seedRaw([result])
 
-    jest.spyOn(autoSync as any, 'rebuildLocalEntities')
+    jest.spyOn(autoSync as any, 'recoverPendingHandDerivationFences')
       .mockRejectedValueOnce(new Error('synthetic canonical replay failure'))
     const recovery = wireCanonicalRecovery(autoSync)
 
@@ -170,5 +202,53 @@ describe('AggregateEventsStream canonical Raw Lake recovery after a Service Work
     expect(await db.hands.get(MTT_TABLE_MOVE_FIXTURE.handIds.oldAccepted)).toEqual(oldHand)
     expect(await pendingFenceCount()).toBe(1)
     expect(await db.apiEvents.count()).toBe(7)
+  })
+
+  test('scan中のRaw Lake appendと同timestamp driftは部分commitせずfenceをretryへ残す', async () => {
+    const result = await seedRaw(firstHand())
+    const fenceId = service.statsLedger.getPendingHandDerivationFenceId(result)!
+    const autoSync = new AutoSyncService(db)
+    const originalWatermark = (autoSync as any).readRawLakeWatermark.bind(autoSync)
+    let appended = false
+    const watermarkSpy = jest.spyOn(autoSync as any, 'readRawLakeWatermark').mockImplementation(async () => {
+      const watermark = await originalWatermark()
+      if (!appended) {
+        appended = true
+        await mergeApiEvents(db, [{
+          timestamp: result.timestamp!,
+          ApiTypeId: 202,
+          marker: 'same-timestamp-after-watermark',
+        }])
+      }
+      return watermark
+    })
+
+    await expect(autoSync.scheduleCanonicalRebuildRecovery(fenceId))
+      .rejects.toThrow('Raw Event Lake changed during canonical hand recovery')
+    expect(await db.hands.count()).toBe(0)
+    expect(await db.meta.get(fenceId)).toBeDefined()
+
+    watermarkSpy.mockRestore()
+    await autoSync.scheduleCanonicalRebuildRecovery(fenceId)
+    expect(await db.hands.count()).toBe(1)
+    expect(await db.meta.get(fenceId)).toBeUndefined()
+  })
+
+  test('通常ingestionは非同期recovery完了をawaitしない', async () => {
+    const result = await seedRaw(firstHand())
+    const autoSync = new AutoSyncService(db)
+    let release!: () => void
+    const pendingRecovery = new Promise<void>(resolve => { release = resolve })
+    const recovery = wireCanonicalRecovery(autoSync)
+    jest.spyOn(autoSync, 'scheduleCanonicalRebuildRecovery')
+      .mockImplementation(async () => await pendingRecovery)
+
+    service.handAggregateStream.write(result)
+    await service.handAggregateStream.whenIdle()
+    expect(await pendingFenceCount()).toBe(1)
+
+    release()
+    await recovery.getPromise()
+    expect(await pendingFenceCount()).toBe(1)
   })
 })

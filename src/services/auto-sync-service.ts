@@ -21,6 +21,7 @@ import { isCloudSyncBlockedByMinVersionGate } from './min-version-gate'
 import {
   API_EVENT_PRIMARY_KEY,
   compareApiEventKeys,
+  getApiEventKey,
   getApiEventSequence,
   mergeApiEvents,
   type RawApiEvent
@@ -48,8 +49,8 @@ export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポ�
 export const REBUILD_AFTER_DOWNLOAD_FAILED_MESSAGE =
   'クラウドデータの保存は完了しましたが、統計データの再構築に失敗しました。ポップアップの「データ再構築」を実行してください'
 
-// activation transaction内のbulkPut payloadをboundedにする。canonical/ledger/fenceの
-// 公開境界はこの外側transactionひとつであり、chunk間にawaitを挟まない（MUST）。
+// raw event page全体を1 write lockへ入れない。StatsLedger側もhand bundleを
+// 一括差分化するため、この上限がcanonical+ledger transactionの手数上限になる。
 const REBUILD_ENTITY_HAND_CHUNK_SIZE = 50
 
 function splitEntityBundleByHands(bundle: EntityBundle): EntityBundle[] {
@@ -326,8 +327,8 @@ export class AutoSyncService {
   private canonicalRecoveryRequestPending = false
   private canonicalRecoveryDrainPromise: Promise<void> | null = null
   private readonly forcedCanonicalRecoveryFenceIds = new Set<string>()
-  /** canonical activation前に再生結果を保持する。途中失敗時は旧表を変更しない（MUST）。 */
-  private rebuildEntityBuffer: EntityBundle | undefined
+  /** live raw writerの安定checkpoint。通常取り込みはこのrecoveryをawaitしない（MUST NOT）。 */
+  private canonicalRecoveryIngestionDrainProvider: (() => Promise<void>) | undefined
   private lastSyncAttempt = 0
   private readonly MIN_SYNC_INTERVAL_MS = 0 // No minimum interval restriction
   private readonly SYNC_STORAGE_KEY = 'autoSyncLastTime'
@@ -383,6 +384,13 @@ export class AutoSyncService {
     return this._isSyncing
   }
 
+  /** event-ingestionが提供する既存のRaw Lake drain境界をrecoveryへ接続する。 */
+  setCanonicalRecoveryIngestionDrainProvider(
+    provider: (() => Promise<void>) | undefined
+  ): void {
+    this.canonicalRecoveryIngestionDrainProvider = provider
+  }
+
   /**
    * 中断されたcloud canonical rebuildを、認証状態に依存せずRaw Lakeから再開する。
    * backgroundのコールドスタートと、sync失敗後の1回だけの回復予約から使う。
@@ -401,16 +409,26 @@ export class AutoSyncService {
     }
 
     const force = options.force === true
-    const pendingFenceIds = [...new Set((options.pendingFenceIds ?? []).filter(id =>
+    let pendingFenceIds = [...new Set((options.pendingFenceIds ?? []).filter(id =>
       id.startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)
     ))]
 
     const recovery = (async (): Promise<boolean> => {
       while (true) {
-        if (!force && !await this.statsLedger.needsCanonicalRebuildRecovery()) return false
+        const fullRecoveryRequired = await this.statsLedger.needsFullCanonicalRebuildRecovery()
+        if (!force && !fullRecoveryRequired && pendingFenceIds.length === 0) {
+          pendingFenceIds = await this.statsLedger.listInterruptedPendingHandDerivationFenceIds()
+        }
+        if (!force && !fullRecoveryRequired && pendingFenceIds.length === 0) return false
         if (!isOperationIdle()) await waitForOperationIdle()
         // dirty再確認のawait中に別操作がslotをclaimしたら上書きせず再試行する。
-        if (!force && !await this.statsLedger.needsCanonicalRebuildRecovery()) return false
+        const refreshedFullRecoveryRequired = await this.statsLedger.needsFullCanonicalRebuildRecovery()
+        if (!force && !refreshedFullRecoveryRequired) {
+          pendingFenceIds = pendingFenceIds.length > 0
+            ? pendingFenceIds
+            : await this.statsLedger.listInterruptedPendingHandDerivationFenceIds()
+          if (pendingFenceIds.length === 0) return false
+        }
         if (!isOperationIdle()) continue
         setOperationState({
           type: 'rebuild',
@@ -422,7 +440,7 @@ export class AutoSyncService {
       return await this.recoverCanonicalRebuildWithOwnedSlot(
         'idle',
         true,
-        pendingFenceIds
+        pendingFenceIds,
       )
     })()
     this.canonicalRecoveryPromise = recovery
@@ -505,7 +523,15 @@ export class AutoSyncService {
     let stopKeepAlive: (() => void) | undefined
     try {
       stopKeepAlive = await startKeepAlive()
-      await this.rebuildLocalEntities(pendingFenceIds)
+      const useBoundedHandRecovery = pendingFenceIds.length > 0 &&
+        !await this.statsLedger.needsFullCanonicalRebuildRecovery()
+      if (useBoundedHandRecovery) {
+        await this.recoverPendingHandDerivationFences(pendingFenceIds)
+      } else {
+        // cloud/manual full rebuildの既存経路は変更しない。global markerがある
+        // 場合もここだけが全履歴canonical replayを所有する。
+        await this.rebuildLocalEntities(pendingFenceIds)
+      }
       return true
     } catch (error) {
       if (publishRecoveryError) {
@@ -1675,9 +1701,183 @@ export class AutoSyncService {
     }
   }
 
+  private async readRawLakeWatermark(): Promise<{
+    count: number
+    highWatermark: ReturnType<typeof getApiEventKey> | undefined
+  }> {
+    const [count, last] = await Promise.all([
+      this.db.apiEvents.count(),
+      this.db.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).last()
+    ])
+    return {
+      count,
+      highWatermark: last ? getApiEventKey(last as unknown as RawApiEvent) : undefined
+    }
+  }
+
+  private sameRawEventKey(
+    left: ReturnType<typeof getApiEventKey> | undefined,
+    right: ReturnType<typeof getApiEventKey> | undefined
+  ): boolean {
+    if (left === undefined || right === undefined) return left === right
+    return left[0] === right[0] && left[1] === right[1] && left[2] === right[2]
+  }
+
+  private targetHandBundle(
+    entities: EntityBundle,
+    handId: number
+  ): EntityBundle | undefined {
+    const hands = entities.hands.filter(hand => hand.id === handId)
+    if (hands.length === 0) return undefined
+    if (hands.length > 1) {
+      throw new Error('Canonical hand replay produced multiple target bundles')
+    }
+    return {
+      hands,
+      phases: entities.phases.filter(phase => phase.handId === handId),
+      actions: entities.actions.filter(action => action.handId === handId),
+    }
+  }
+
   /**
-   * Rebuild derived tables from the Raw Lake, staging replayed entities in memory
-   * until one atomic canonical activation transaction.
+   * exact fenceごとにcanonical replayを先頭から走査し、対象handだけをboundedに
+   * 置換する。cloud/manual full rebuildの全履歴置換経路とは分離する（MUST）。
+   */
+  private async recoverPendingHandDerivationFences(
+    fenceIds: readonly string[]
+  ): Promise<void> {
+    for (const fenceId of [...new Set(fenceIds)]) {
+      await this.recoverPendingHandDerivationFence(fenceId)
+    }
+  }
+
+  private async recoverPendingHandDerivationFence(
+    fenceId: string
+  ): Promise<boolean> {
+    const fence = await this.statsLedger.getPendingHandDerivationFence(fenceId)
+    if (!fence) return false
+
+    // 現在までのraw writerを安定させてからwatermarkを取得する。ただしこの
+    // recoveryは呼出元のingestionを待たせず、background側のsingle-flightで動く。
+    await this.canonicalRecoveryIngestionDrainProvider?.()
+    const watermark = await this.readRawLakeWatermark()
+    const replaySession = new SessionState(() => {})
+    const converter = new EntityConverter(replaySession)
+    let targetBundle: EntityBundle | undefined
+    let targetTerminalCount = 0
+    let exactTerminalSeen = false
+
+    for await (const events of processInReplayChunks(
+      this.db.apiEvents,
+      DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
+    )) {
+      const validEvents = await filterValidApplicationEvents(events)
+      for (const event of validEvents) {
+        if (
+          event.ApiTypeId === ApiType.EVT_HAND_RESULTS &&
+          event.HandId === fence.handId
+        ) {
+          targetTerminalCount++
+          if (this.sameRawEventKey(getApiEventKey(event as unknown as RawApiEvent), fence.rawKey)) {
+            exactTerminalSeen = true
+          }
+          if (targetTerminalCount > 1) {
+            throw new Error('Canonical hand replay found multiple target terminal rows')
+          }
+        }
+      }
+      const entities = converter.convertEventChunk(validEvents)
+      const completedTarget = this.targetHandBundle(entities, fence.handId)
+      if (completedTarget) {
+        if (targetBundle) {
+          throw new Error('Canonical hand replay completed the target hand twice')
+        }
+        targetBundle = completedTarget
+      }
+      // 非対象handのentitiesはこのchunkの寿命を越えて保持しない（MUST）。
+    }
+
+    const flushedTarget = this.targetHandBundle(converter.flush(), fence.handId)
+    if (flushedTarget) {
+      if (targetBundle) {
+        throw new Error('Canonical hand replay completed the target hand twice')
+      }
+      targetBundle = flushedTarget
+    }
+
+    // scan中に到着したingestionの末尾も確定させてから、apiEventsを含む最終
+    // transactionを開始する。transaction内の再確認と組み合わせてcheck→commit
+    // raceを閉じる（MUST）。
+    await this.canonicalRecoveryIngestionDrainProvider?.()
+    let committed = false
+    await this.db.transaction('rw', [
+      this.db.apiEvents,
+      this.db.hands,
+      this.db.phases,
+      this.db.actions,
+      this.db.meta,
+      this.db.statHandContributions,
+      this.db.statPlayerAggregates,
+    ], async () => {
+      // live WESが先にexact fenceを消した場合はno-opにする。canonicalを
+      // もう一度触らないため、duplicate/reconnectで二重加算しない（MUST）。
+      const fenceRecord = await this.db.meta.get(fence.id)
+      if (!fenceRecord) return
+
+      const [currentCount, currentLast, terminal] = await Promise.all([
+        this.db.apiEvents.count(),
+        this.db.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).last(),
+        this.db.apiEvents.get(fence.rawKey as unknown as any),
+      ])
+      const currentWatermark = currentLast
+        ? getApiEventKey(currentLast as unknown as RawApiEvent)
+        : undefined
+      if (
+        currentCount !== watermark.count ||
+        !this.sameRawEventKey(currentWatermark, watermark.highWatermark)
+      ) {
+        // scan後の追加（同timestamp groupの後着を含む）は、部分replayを
+        // commitせず次のsingle-flightへ残す（MUST）。
+        throw new Error('Raw Event Lake changed during canonical hand recovery')
+      }
+      if (
+        !terminal ||
+        terminal.ApiTypeId !== ApiType.EVT_HAND_RESULTS ||
+        terminal.HandId !== fence.handId
+      ) {
+        throw new Error('Pending hand recovery terminal row is missing or changed')
+      }
+      if (targetBundle && (targetTerminalCount !== 1 || !exactTerminalSeen)) {
+        throw new Error('Canonical hand recovery target terminal is uncertain')
+      }
+
+      if (targetBundle) {
+        const previousHand = await this.db.hands.get(fence.handId)
+        const previousBundle = previousHand
+          ? {
+              hands: [previousHand],
+              actions: await this.db.actions.where('handId').equals(fence.handId).toArray(),
+              phases: await this.db.phases.where('handId').equals(fence.handId).toArray(),
+            }
+          : undefined
+        await this.db.actions.where('handId').equals(fence.handId).delete()
+        await this.db.phases.where('handId').equals(fence.handId).delete()
+        await this.db.hands.put(targetBundle.hands[0]!)
+        if (targetBundle.phases.length > 0) await this.db.phases.bulkPut(targetBundle.phases)
+        if (targetBundle.actions.length > 0) await this.db.actions.bulkPut(targetBundle.actions)
+        await this.statsLedger.replaceCompletedHandContributions(targetBundle, previousBundle)
+      }
+
+      // targetBundleが無い場合も、stable full replayがhandを生成しなかった
+      // 意図的棄却としてexact fenceだけを終端する。Raw rowは残す（MUST NOT）。
+      await this.statsLedger.acknowledgePendingHandDerivation(terminal)
+      committed = true
+    })
+    return committed
+  }
+
+  /**
+   * Rebuild derived tables without loading the entire event history into memory.
    *
    * THROWS on failure (independent release audit 2026-07-21, finding 5,
    * "派生テーブル再構築失敗を同期成功として確定する"): this used to catch and
@@ -1695,19 +1895,16 @@ export class AutoSyncService {
    *   DERIVED tables are stale, and a manual データ再構築 (or the next
    *   successful download's rebuild) re-derives everything from the Lake.
    * - A failed rebuild is never marked as done: the `importStatus` meta write
-   *   below only runs after replay staging and the final activation succeed, so
-   *   an error always leaves the previous `importStatus` and canonical rows
-   *   untouched.
-   * - The HUD keeps reading the previous stats-ledger head while replay entities
-   *   are staged in memory. Success publishes a new EMPTY head in the same
-   *   transaction as canonical activation, then only visible players are lazily
-   *   hydrated. A failed pass never activates its staging generation; normal
-   *   exceptions also discard it best-effort.
+   *   below only runs after every chunk (and the final flush) succeeded, so
+   *   an error always leaves the previous `importStatus` untouched.
+   * - The HUD keeps reading the previous stats-ledger head while chunks are
+   *   rebuilt. Success publishes a new EMPTY head in O(1), then only visible
+   *   players are lazily hydrated. A failed pass never activates its staging
+   *   generation; normal exceptions also discard it best-effort.
    */
   private async rebuildLocalEntities(
     explicitPendingFenceIds: readonly string[] = []
   ): Promise<void> {
-    this.rebuildEntityBuffer = { hands: [], phases: [], actions: [] }
     let stagingGeneration: number | undefined
     try {
       console.log('[AutoSync] Triggering chunked data rebuild after download...')
@@ -1741,6 +1938,7 @@ export class AutoSyncService {
       // this snapshot preserves hands completed by the live pipeline while
       // the chunked rebuild is running.
       const previousHandIds = await this.db.hands.toCollection().primaryKeys() as number[]
+      const rebuiltHandIds = new Set<number>()
       let lastProcessedTimestamp = 0
       let latestDealEvent: ApiEvent | undefined
 
@@ -1761,6 +1959,7 @@ export class AutoSyncService {
         await projectReplayDetailEvents(this.db, events as Array<Record<string, unknown>>)
         const validEvents = await filterValidApplicationEvents(events)
         const entities = converter.convertEventChunk(validEvents)
+        entities.hands.forEach(hand => rebuiltHandIds.add(hand.id))
         await this.saveRebuiltEntities(entities, stagingHead.generation)
 
         for (const event of events) {
@@ -1787,10 +1986,8 @@ export class AutoSyncService {
       }
 
       const remainingEntities = converter.flush()
+      remainingEntities.hands.forEach(hand => rebuiltHandIds.add(hand.id))
       await this.saveRebuiltEntities(remainingEntities, stagingHead.generation)
-
-      const rebuiltEntities = this.rebuildEntityBuffer ?? { hands: [], phases: [], actions: [] }
-      const rebuiltHandIds = new Set(rebuiltEntities.hands.map(hand => hand.id))
 
       // bulkPut alone cannot remove a formerly-derived hand which canonical
       // replay now rejects (for example, a missing table-move EVT_DEAL arrives
@@ -1818,18 +2015,6 @@ export class AutoSyncService {
             await this.db.actions.where('handId').anyOf(handIds).delete()
             await this.db.hands.bulkDelete(handIds)
           }
-        }
-
-        // 再生結果は全件をmemory上で準備してから、このactivation transactionで
-        // canonical表へ公開する。chunk途中のcanonical置換を行わないため、失敗時は
-        // 旧canonical・旧active head・exact fenceがそのまま残る（MUST）。
-        for (const chunk of splitEntityBundleByHands(rebuiltEntities)) {
-          const handIds = chunk.hands.map(hand => hand.id)
-          await this.db.phases.where('handId').anyOf(handIds).delete()
-          await this.db.actions.where('handId').anyOf(handIds).delete()
-          await this.db.hands.bulkPut(chunk.hands)
-          if (chunk.phases.length > 0) await this.db.phases.bulkPut(chunk.phases)
-          if (chunk.actions.length > 0) await this.db.actions.bulkPut(chunk.actions)
         }
 
         await this.statsLedger.activateStagingGeneration(
@@ -1869,8 +2054,6 @@ export class AutoSyncService {
       throw new Error(
         `${REBUILD_AFTER_DOWNLOAD_FAILED_MESSAGE} (${error instanceof Error ? error.message : 'Unknown error'})`
       )
-    } finally {
-      this.rebuildEntityBuffer = undefined
     }
   }
 
@@ -1880,18 +2063,26 @@ export class AutoSyncService {
   ): Promise<void> {
     if (entities.hands.length === 0) return
 
-    const rebuildEntityBuffer = this.rebuildEntityBuffer
-    if (!rebuildEntityBuffer) {
-      throw new Error('Canonical rebuild entity buffer is not initialized')
-    }
-
     for (const chunk of splitEntityBundleByHands(entities)) {
-      // canonical/statsのactivation前はmemoryへ積み、staging markerの所有と
-      // 再生進捗だけを既存APIへ記録する。Raw Lakeは変更しない（MUST NOT）。
-      rebuildEntityBuffer.hands.push(...chunk.hands)
-      rebuildEntityBuffer.phases.push(...chunk.phases)
-      rebuildEntityBuffer.actions.push(...chunk.actions)
-      await this.statsLedger.appendStagingEntityBundle(stagingGeneration, chunk)
+      const handIds = chunk.hands.map(hand => hand.id)
+      // Replaying a hand can legitimately produce fewer child records after a
+      // cloud gap is filled. 50 hand以下のbounded transactionごとにcanonicalと
+      // staging寄与を一緒に置換し、ライブWESを長時間待たせない（MUST）。
+      await this.db.transaction('rw', [
+        this.db.hands,
+        this.db.phases,
+        this.db.actions,
+        this.db.meta,
+        this.db.statHandContributions,
+        this.db.statPlayerAggregates
+      ], async () => {
+        await this.db.phases.where('handId').anyOf(handIds).delete()
+        await this.db.actions.where('handId').anyOf(handIds).delete()
+        await this.db.hands.bulkPut(chunk.hands)
+        if (chunk.phases.length > 0) await this.db.phases.bulkPut(chunk.phases)
+        if (chunk.actions.length > 0) await this.db.actions.bulkPut(chunk.actions)
+        await this.statsLedger.appendStagingEntityBundle(stagingGeneration, chunk)
+      })
       await new Promise<void>(resolve => setTimeout(resolve, 0))
     }
 
