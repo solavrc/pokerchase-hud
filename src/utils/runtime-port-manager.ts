@@ -19,6 +19,24 @@ export class RuntimePortQueueOverflowError extends Error {
 const isExtensionContextInvalidated = (error: unknown): boolean =>
   error instanceof Error && error.message === 'Extension context invalidated.'
 
+export type RuntimePortFatalErrorType =
+  | 'extension_context_invalidated'
+  | 'queue_overflow'
+  | 'unknown'
+
+/** Sentryへ生の例外messageを渡さず、運用可能な有限カテゴリへ分類する。 */
+export const classifyRuntimePortFatalError = (
+  error: unknown
+): RuntimePortFatalErrorType => {
+  if (isExtensionContextInvalidated(error)) {
+    return 'extension_context_invalidated'
+  }
+  if (error instanceof RuntimePortQueueOverflowError) {
+    return 'queue_overflow'
+  }
+  return 'unknown'
+}
+
 /**
  * Owns a runtime Port across service-worker restarts.
  *

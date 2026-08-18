@@ -441,6 +441,41 @@ describe('registerEventIngestion (update-manager triggers)', () => {
     expect(recheckPendingUpdateSpy).toHaveBeenCalledTimes(1)
   })
 
+  test('a failed or malformed EVT_ENTRY_CANCELLED (203) keeps the session active and does not recheck updates', async () => {
+    await onMessageHandler({
+      ApiTypeId: ApiType.EVT_ENTRY_QUEUED,
+      timestamp: 11_200,
+      Code: 0,
+      BattleType: 0,
+      Id: 'stage000_003',
+      IsRetire: false
+    })
+    markSessionActiveSpy.mockClear()
+    recheckPendingUpdateSpy.mockClear()
+
+    await onMessageHandler({
+      ApiTypeId: 203,
+      timestamp: 11_300,
+      Code: 5003,
+      Error: {
+        Status: 0,
+        Message: 'text_sync_error_message_code_5003',
+        AddParam: '',
+        Replaces: []
+      }
+    })
+    await onMessageHandler({
+      ApiTypeId: 203,
+      timestamp: 11_400
+    })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(markSessionActiveSpy).not.toHaveBeenCalled()
+    expect(markSessionInactiveSpy).not.toHaveBeenCalled()
+    expect(updateManager.isSafeToUpdate()).toBe(false)
+    expect(recheckPendingUpdateSpy).not.toHaveBeenCalled()
+  })
+
   test('replay abort応答は先行201のactivity更新後までrequestを解放しない', async () => {
     await onMessageHandler({ ApiTypeId: ApiType.EVT_SESSION_RESULTS, timestamp: 12_000 })
     mockPort.postMessage.mockClear()

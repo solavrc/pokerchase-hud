@@ -21,7 +21,15 @@ import type { ChromeMessage } from './types/messages'
 import { MESSAGE_ACTIONS as EVENTS } from './types/messages'
 import type { AllPlayersRealTimeStats } from './realtime-stats/realtime-stats-service'
 import { setPendingStats } from './utils/pending-stats-cache'
-import { RuntimePortManager } from './utils/runtime-port-manager'
+import {
+  RuntimePortManager,
+  classifyRuntimePortFatalError
+} from './utils/runtime-port-manager'
+import {
+  EVT_ENTRY_CANCELLED_API_TYPE_ID,
+  isConfirmedEntryCancellation,
+  isExplicitEntryFailure
+} from './utils/session-activity-signals'
 import { captureHandledException, initSentry } from './observability/sentry'
 import {
   EXPERIMENTAL_REPLAY_IMPORT_STORAGE_KEY,
@@ -294,9 +302,15 @@ const portManager = new RuntimePortManager({
   },
   onFatalError: error => {
     console.error('[content_script] Runtime Port can no longer preserve event delivery; reloading:', error)
-    captureHandledException(error, {
-      operation: 'runtime_port.delivery_failed'
-    })
+    const errorType = classifyRuntimePortFatalError(error)
+    // 拡張の更新・再読み込みで旧content scriptが無効化されるのは正常な世代交代。
+    // queue overflow等の異常だけを障害signalとして残し、既知のinvalidated contextは送らない。
+    if (errorType !== 'extension_context_invalidated') {
+      captureHandledException(error, {
+        operation: 'runtime_port.delivery_failed',
+        errorType
+      })
+    }
     window.location.reload()
   }
 })
@@ -428,21 +442,12 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
     }
   }
 
-  // 参加取消申込（ApiTypeId 203）。`ApiType` enumには含まれないため生の
-  // 数値リテラルを使う（background/event-ingestion.tsの
-  // `EVT_ENTRY_CANCELLED_API_TYPE_ID`コメント参照）。参加(201)後・着席
-  // (303/308)前にキャンセルするとハンドが一度も始まらず309も来ないため、
-  // これも309と同じくkeepalive解除トリガーとして扱う（P2, codexレビュー
-  // 指摘 2026-07-21, pass-3）。
-  const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
-
   switch (event.data.ApiTypeId) {
     case ApiType.EVT_ENTRY_QUEUED: {
       // 201は参加失敗応答にも再利用される。Codeが明示的に非0なら
       // セッションは始まっていない。Code欠落は未知schema変更として
       // fail-closedで従来通りkeepaliveを開始する。
-      const entryCode = (event.data as { Code?: unknown }).Code
-      if (typeof entryCode !== 'number' || entryCode === 0) {
+      if (!isExplicitEntryFailure(event.data)) {
         armSession()
       }
       break
@@ -480,7 +485,10 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       break
 
     case EVT_ENTRY_CANCELLED_API_TYPE_ID:
-      // 参加取消: ハンドが一度も始まっていないので、309と違いApp.tsxへの
+      // Code=0の参加取消成功だけを境界にする。非0 Codeは取消失敗、Code欠落は
+      // 未知schemaなのでkeepaliveを止めてはならない（MUST NOT）。
+      if (!isConfirmedEntryCancellation(event.data)) break
+      // ハンドが一度も始まっていないので、309と違いApp.tsxへの
       // セッション終了通知（POKER_CHASE_SESSION_END_EVENT）は不要。
       // keepaliveの解除だけ行う。
       if (isGameActive) {

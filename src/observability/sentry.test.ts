@@ -92,4 +92,15 @@ describe('Sentry privacy boundary', () => {
       vars: undefined
     })
   })
+
+  it('preserves a sanitized title for a message-only schema event', () => {
+    const sanitized = sanitizeSentryEvent({
+      type: undefined,
+      message: 'PokerChase API schema validation failed',
+      level: 'error'
+    })
+
+    expect(sanitized.message).toBe('PokerChase API schema validation failed')
+    expect(sanitized.exception).toBeUndefined()
+  })
 })

@@ -45,8 +45,10 @@ fail-closed.
 - Unhandled exceptions and unhandled promise rejections in the three extension
   runtimes
 - ERROR/FATAL failures passing through `ErrorHandler`
-- Auto-sync failures, Raw Event Lake write failures, and fatal runtime-port
-  delivery failures
+- Auto-sync failures, Raw Event Lake write failures, and unexpected fatal
+  runtime-port delivery failures. The expected old-content-script
+  `Extension context invalidated.` transition after an extension reload is
+  excluded; queue overflow and future unknown fatal categories remain visible.
 - Destructive PokerChase API schema mismatches, grouped by `ApiTypeId`
   (`ApiTypeId` itself being invalid uses one dedicated bounded bucket)
 
@@ -152,10 +154,11 @@ Telemetry is compiled into every build except E2E. Diagnostics are opt-in, so
 the maintainer's own play sessions are a primary source of signal — especially
 schema-validation failures, which is how a PokerChase payload change becomes
 visible at all (see "Incident Diagnosis Practices" in AGENTS.md). Those events
-are `captureMessage` plus structured context and need no source maps, so a
-build without an upload token is still worth reporting from. Excluding working
-builds would silence the configuration most likely to opt in and act on the
-result.
+use a fixed-title, message-only `captureEvent` plus structured context and need
+no source maps, so a build without an upload token is still worth reporting
+from. The fixed message keeps the issue title actionable after the exception
+privacy sanitizer removes arbitrary exception text. Excluding working builds
+would silence the configuration most likely to opt in and act on the result.
 
 What differs between a release and a working build is only its **identity**, so
 a working build can never be symbolicated against, or counted toward, the

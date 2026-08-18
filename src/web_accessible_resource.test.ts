@@ -137,8 +137,13 @@ describe('page-world WebSocket classification', () => {
     expect(replayActivity()).toBe('inactive')
     emitFrame(apiSocket, { ApiTypeId: 308 })
     expect(replayActivity()).toBe('active')
-    // 201後に着席せず参加取消した経路では309が来ない。
+    // 201後に着席せず参加取消した経路では309が来ない。成功したCode=0だけを
+    // 終了境界にし、取消失敗または未知schemaでは安全側のactiveを維持する。
+    emitFrame(apiSocket, { ApiTypeId: 203, Code: 5003 })
+    expect(replayActivity()).toBe('active')
     emitFrame(apiSocket, { ApiTypeId: 203 })
+    expect(replayActivity()).toBe('active')
+    emitFrame(apiSocket, { ApiTypeId: 203, Code: 0 })
     expect(replayActivity()).toBe('inactive')
     expect(activityEvent.mock.calls.map(([event]) =>
       (event as CustomEvent<ReplayPageSessionActivity>).detail

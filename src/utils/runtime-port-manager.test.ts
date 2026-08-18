@@ -1,4 +1,8 @@
-import { RuntimePortManager, RuntimePortQueueOverflowError } from './runtime-port-manager'
+import {
+  RuntimePortManager,
+  RuntimePortQueueOverflowError,
+  classifyRuntimePortFatalError
+} from './runtime-port-manager'
 
 const createPort = () => {
   let disconnectListener: (() => void) | undefined
@@ -245,5 +249,17 @@ describe('RuntimePortManager', () => {
       () => current.port,
       { maxQueueSize: 0 }
     ))).toThrow('maxQueueSize must be a positive integer.')
+  })
+
+  test('classifies fatal errors into finite telemetry categories', () => {
+    expect(classifyRuntimePortFatalError(
+      new Error('Extension context invalidated.')
+    )).toBe('extension_context_invalidated')
+    expect(classifyRuntimePortFatalError(
+      new RuntimePortQueueOverflowError(100)
+    )).toBe('queue_overflow')
+    expect(classifyRuntimePortFatalError(
+      new Error('Future fatal runtime-port failure')
+    )).toBe('unknown')
   })
 })
