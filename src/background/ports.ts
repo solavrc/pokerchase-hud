@@ -241,6 +241,15 @@ export const notifyReplayDetailsStored = (): void => {
  */
 export const notifyRecoveredHandCompletion = (): void => {
   handCompletionEpoch++
+  // cold-start復旧ではconnected portが先に再接続していてもACTIVE tokenがまだ
+  // 無い。token未生成の時だけ既存のconnected fallbackへ送り、reconnect候補の
+  // generationを誤って別世代へ配信しない（MUST NOT）。
+  if (resolveGeneration() === undefined) {
+    for (const port of connectedPorts) {
+      postMessageToPort(port, { handEpoch: handCompletionEpoch })
+    }
+    return
+  }
   const activePort = getActivePort()
   if (!activePort) return
   postMessageToPort(activePort, { handEpoch: handCompletionEpoch })

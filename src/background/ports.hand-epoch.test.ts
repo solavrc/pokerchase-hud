@@ -36,7 +36,12 @@ import {
   notifyRecoveredHandCompletion,
   setLastKnownStats
 } from './ports'
-import { __resetActivePortStateForTests, claimActivePort } from './active-port'
+import {
+  __resetActivePortStateForTests,
+  claimActivePort,
+  releaseActivePort,
+  resolveGeneration,
+} from './active-port'
 
 const GAME_URL_PATTERN = 'https://example.com/*'
 
@@ -184,5 +189,36 @@ describe('ports.ts handCompletionEpoch (audit finding 11 follow-up, P2)', () => 
     expect(fakePort.postMessage.mock.calls[0]![0]).not.toHaveProperty('evtDeal')
     expect(fakePort.postMessage.mock.calls[0]![0]).not.toHaveProperty('realTimeStats')
     expect(write).not.toHaveBeenCalled()
+  })
+
+  test('a cold-start recovery sends the epoch-only notification to every connected port', () => {
+    const secondPort = { postMessage: jest.fn() }
+    connectedPorts.add(secondPort as unknown as chrome.runtime.Port)
+    __resetActivePortStateForTests()
+
+    notifyRecoveredHandCompletion()
+
+    expect(fakePort.postMessage).toHaveBeenCalledWith({ handEpoch: expect.any(Number) })
+    expect(secondPort.postMessage).toHaveBeenCalledWith({ handEpoch: expect.any(Number) })
+    expect(fakePort.postMessage.mock.calls[0]![0]).not.toHaveProperty('stats')
+    expect(secondPort.postMessage.mock.calls[0]![0]).not.toHaveProperty('evtDeal')
+  })
+
+  test('a reconnect-pending generation does not use the no-token fallback', () => {
+    const reconnectPort = {
+      postMessage: jest.fn(),
+      sender: { tab: { id: 42 }, documentId: 'document-1' },
+    }
+    connectedPorts.clear()
+    connectedPorts.add(reconnectPort as unknown as chrome.runtime.Port)
+    claimActivePort(reconnectPort as unknown as chrome.runtime.Port)
+    const generation = resolveGeneration()
+    expect(generation).toBeDefined()
+    expect(releaseActivePort(reconnectPort as unknown as chrome.runtime.Port)).toBe('reconnect-pending')
+    expect(resolveGeneration()).toBe(generation)
+
+    notifyRecoveredHandCompletion()
+
+    expect(reconnectPort.postMessage).not.toHaveBeenCalled()
   })
 })
