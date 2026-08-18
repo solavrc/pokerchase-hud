@@ -119,6 +119,41 @@ describe('message-router review prompt', () => {
     expect(await readState()).toEqual({})
   })
 
+  test('SW cold startでready前に受信しても、復元後のplayerIdで判定する', async () => {
+    await chrome.storage.local.set({
+      [PokerChaseService.STORAGE_KEY]: { playerId: PLAYER_ID },
+    })
+    await seedHands(REVIEW_PROMPT_MIN_HANDS)
+
+    const storageGet = chrome.storage.local.get as jest.Mock
+    const defaultGet = storageGet.getMockImplementation()!
+    let releaseRestore!: () => void
+    storageGet.mockImplementation((keys: unknown, callback?: (value: unknown) => void) => {
+      if (keys === PokerChaseService.STORAGE_KEY && callback === undefined) {
+        return new Promise(resolve => {
+          releaseRestore = () => Promise.resolve(defaultGet(keys)).then(resolve)
+        })
+      }
+      return defaultGet(keys, callback)
+    })
+
+    const coldService = trackServiceForTeardown(new PokerChaseService({ db }))
+    registerMessageRouter(coldService, db, 'https://example.com/*')
+    listener = (chrome.runtime.onMessage.addListener as jest.Mock).mock.calls.at(-1)[0]
+
+    let settled = false
+    const response = send({ action: 'getReviewPrompt' } as ChromeMessage).then(value => {
+      settled = true
+      return value
+    })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    releaseRestore()
+    expect(await response).toEqual({ success: true, visible: true })
+    expect(coldService.playerId).toBe(PLAYER_ID)
+  })
+
   test('resolveReviewPrompt persists the pressed button and later prompts stay hidden', async () => {
     await chrome.storage.local.set({ [REVIEW_PROMPT_STORAGE_KEY]: { eligibleSince: 1 } })
 

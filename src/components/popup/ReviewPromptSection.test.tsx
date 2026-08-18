@@ -80,6 +80,21 @@ describe('ReviewPromptSection', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
+  it.each([
+    ['データ再構築アドバイザリ', REBUILD_ADVISORY_STORAGE_KEY, { pendingVersion: 2 }],
+    ['保留中アップデート', PENDING_UPDATE_STORAGE_KEY, { pending: true, version: '5.5.0' }],
+    ['サポート終了ゲート', MIN_VERSION_GATE_STORAGE_KEY, { supported: false, checkedAt: 1 }],
+  ])('表示後に%sが現れたら、レビュー依頼を引っ込める', async (_label, key, value) => {
+    render(<ReviewPromptSection />)
+    await findPrompt()
+
+    await chrome.storage.local.set({ [key]: value })
+
+    await waitFor(() => {
+      expect(screen.queryByText(PROMPT_TEXT)).not.toBeInTheDocument()
+    })
+  })
+
   it('優先度の高いバナーが解消済みなら表示する', async () => {
     await chrome.storage.local.set({
       [REBUILD_ADVISORY_STORAGE_KEY]: { acknowledgedVersion: 2 },

@@ -52,9 +52,14 @@ const setReviewPromptState = async (state: ReviewPromptState): Promise<void> => 
  */
 export const evaluateReviewPromptVisibility = async (
   db: PokerChaseDB,
-  playerId: number | undefined,
-  now: number = Date.now()
+  getPlayerId: () => number | undefined,
+  options: { ready?: Promise<void>, now?: number } = {}
 ): Promise<boolean> => enqueuePendingStorageWrite(async () => {
+  // background cold startではrouter登録がservice復元より先に終わる。readyを
+  // 共有FIFOの内側で待ち、reloadドレインから見える状態のまま復元後の値を読む。
+  await options.ready
+  const playerId = getPlayerId()
+  const now = options.now ?? Date.now()
   const state = await getReviewPromptState()
   // 決着済みなら以後は何も問い合わせない（countも走らせない）
   if (state.resolution) return false

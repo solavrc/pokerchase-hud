@@ -1094,7 +1094,7 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
       return true
     } else if (request.action === 'getReviewPrompt') {
       // Popup起動時: 累計ハンド数・スヌーズ・決着からレビュー依頼の表示可否を判定
-      evaluateReviewPromptVisibility(db, service.playerId)
+      evaluateReviewPromptVisibility(db, () => service.playerId, { ready: service.ready })
         .then(visible => sendResponse({ success: true, visible }))
         .catch(error => {
           console.error('[getReviewPrompt] Error:', error)

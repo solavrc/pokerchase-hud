@@ -33,10 +33,9 @@ const REVIEW_PROMPT_MESSAGE_TIMEOUT_MS = 5000
  * 引っ込める。「サポートが終了しました」の隣で「評価してください」と
  * 出るのは体験として悪い。
  *
- * 抑制キーの購読はマウント時の一度きり（`chrome.storage.onChanged`は
- * 購読しない）。Popupを開いたまま更新が降ってきた場合にバナーが2枚
- * 並ぶだけで実害が無く、短命なPopupのためにもう1つ購読を増やす価値が
- * 無いため。
+ * 抑制キーはマウント時に読み、`chrome.storage.onChanged`にも追従する。
+ * SW起動後の非同期min-version判定やupdate検出で上位バナーが後から現れても、
+ * レビュー依頼が同時表示されないことをMUST維持する。
  */
 export const ReviewPromptSection = () => {
   const [visible, setVisible] = useState(false)
@@ -57,10 +56,17 @@ export const ReviewPromptSection = () => {
       }
     })
 
-    chrome.storage.local.get(
-      [REBUILD_ADVISORY_STORAGE_KEY, PENDING_UPDATE_STORAGE_KEY, MIN_VERSION_GATE_STORAGE_KEY],
-      (result: Record<string, any>) => {
+    const suppressionKeys = [
+      REBUILD_ADVISORY_STORAGE_KEY,
+      PENDING_UPDATE_STORAGE_KEY,
+      MIN_VERSION_GATE_STORAGE_KEY,
+    ]
+    let suppressionReadGeneration = 0
+    const refreshSuppression = () => {
+      const generation = ++suppressionReadGeneration
+      chrome.storage.local.get(suppressionKeys, (result: Record<string, any>) => {
         if (cancelled) return
+        if (generation !== suppressionReadGeneration) return
         // 読めなかった場合は抑制したまま（優先度の高いバナーを隠すより、
         // 依頼を出さない方が安全側）
         if (chrome.runtime.lastError) return
@@ -70,11 +76,22 @@ export const ReviewPromptSection = () => {
         setSuppressed(
           !!advisory?.pendingVersion || !!pendingUpdate?.pending || gate?.supported === false
         )
-      }
-    )
+      })
+    }
+    refreshSuppression()
+
+    const handleStorageChange = (
+      changes: Record<string, chrome.storage.StorageChange>,
+      areaName: string
+    ) => {
+      if (areaName !== 'local') return
+      if (suppressionKeys.some(key => changes[key])) refreshSuppression()
+    }
+    chrome.storage.onChanged.addListener(handleStorageChange)
 
     return () => {
       cancelled = true
+      chrome.storage.onChanged.removeListener(handleStorageChange)
     }
   }, [])
 
