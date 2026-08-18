@@ -11,6 +11,7 @@ import { ActionDetail, ActionType, BattleType, PhaseType, Position } from '../ty
 import type { StatCalculationContext, StatValue } from '../types/stats'
 import { compareHandsNewestFirst } from '../utils/hand-order'
 import { classifyTableSizeLayer } from '../utils/table-size'
+import { normalizeStatsLatestHands } from '../utils/stats-hand-limit'
 import { defaultRegistry } from './index'
 import {
   HAND_STAT_CONTRIBUTION_VERSION,
@@ -41,6 +42,10 @@ const ALL_KNOWN_BATTLE_TYPES = [
   BattleType.FRIEND_RING_GAME,
   BattleType.CLUB_MATCH,
 ] as const
+
+const ledgerFiltersWithUnsafeLatestHands = (latestHands: unknown): StatsLedgerFilters => ({
+  latestHands,
+} as unknown as StatsLedgerFilters)
 
 interface CoreReadProbeEntry {
   table: string
@@ -308,14 +313,11 @@ function selectLegacyHands(
       return layer !== null && filters.tableSizeLayers!.includes(layer)
     })
   }
-  if (
-    typeof filters.latestHands === 'number' &&
-    Number.isFinite(filters.latestHands) &&
-    filters.latestHands > 0
-  ) {
+  const latestHands = normalizeStatsLatestHands(filters.latestHands)
+  if (latestHands !== undefined) {
     hands = [...hands]
       .sort(compareHandsNewestFirst)
-      .slice(0, Math.trunc(filters.latestHands))
+      .slice(0, latestHands)
   }
   return hands
 }
@@ -436,11 +438,11 @@ describe('StatsLedger core invariants', () => {
         battleTypes: [BattleType.SIT_AND_GO, BattleType.RING_GAME],
         tableSizeLayers: ['full', 'hu'],
       },
-      { latestHands: 3 },
+      { latestHands: 20 },
       {
         battleTypes: [BattleType.SIT_AND_GO, BattleType.RING_GAME],
         tableSizeLayers: ['full', '4p', 'hu'],
-        latestHands: 2,
+        latestHands: 20,
       },
       { battleTypes: [] },
     ]
@@ -484,7 +486,7 @@ describe('StatsLedger core invariants', () => {
     const filters: StatsLedgerFilters = {
       battleTypes: [BattleType.SIT_AND_GO, BattleType.RING_GAME],
       tableSizeLayers: ['full', 'hu'],
-      latestHands: 5,
+      latestHands: 20,
     }
     const snapshot = await ledger.readPlayerSnapshot(PLAYER_ID, filters)
     expect(snapshot.selection.kind).toBe('rows')
@@ -497,7 +499,7 @@ describe('StatsLedger core invariants', () => {
     )
   })
 
-  test('非finite timestampは欠損順、0より大きく1未満のlatestは旧slice互換で0件になる', async () => {
+  test('非finite timestampは欠損順、契約外の小数latestはALLへ戻る', async () => {
     disableScheduledGc(ledger)
     const bundle = mergeBundles(
       singleHandBundle(1, { approxTimestamp: 100 }),
@@ -508,16 +510,19 @@ describe('StatsLedger core invariants', () => {
     delete bundle.hands.find(hand => hand.id === 500)!.approxTimestamp
     await ledger.replaceGenerationFromEntityBundle(bundle, { generation: 201 })
 
-    const ordered = await ledger.readPlayerSnapshot(PLAYER_ID, { latestHands: 3 })
+    const ordered = await ledger.readPlayerSnapshot(PLAYER_ID, { latestHands: 20 })
     expect(ordered.selection.kind).toBe('rows')
     if (ordered.selection.kind === 'rows') {
-      expect(ordered.selection.rows.map(row => row.handId)).toEqual([1, 1_000, 999])
+      expect(ordered.selection.rows.map(row => row.handId)).toEqual([1, 1_000, 999, 500])
     }
 
-    const fractional = await ledger.readPlayerSnapshot(PLAYER_ID, { latestHands: 0.5 })
+    const fractional = await ledger.readPlayerSnapshot(
+      PLAYER_ID,
+      ledgerFiltersWithUnsafeLatestHands(0.5)
+    )
     expect(fractional.matchedHandsBeforeLimit).toBe(4)
-    expect(fractional.selectedHands).toBe(0)
-    expect(fractional.selection).toEqual({ kind: 'rows', rows: [] })
+    expect(fractional.selectedHands).toBe(4)
+    expect(fractional.selection.kind).toBe('aggregate')
   })
 
   test('ALL aggregateは寄与行を0件読み、latestは各bucket queryにつき最大N件だけ読む', async () => {
@@ -547,7 +552,7 @@ describe('StatsLedger core invariants', () => {
     )).toHaveLength(0)
 
     probe.reset()
-    const limit = 3
+    const limit = 20
     const latest = await ledger.readPlayerSnapshot(PLAYER_ID, {
       battleTypes: [BattleType.SIT_AND_GO, BattleType.RING_GAME],
       tableSizeLayers: ['full', 'hu'],
@@ -585,12 +590,12 @@ describe('StatsLedger core invariants', () => {
     probe.reset()
     const exactAll = await ledger.readPlayerSnapshot(PLAYER_ID, {
       battleTypes: ALL_KNOWN_BATTLE_TYPES,
-      latestHands: 10,
+      latestHands: 20,
     })
     expect(exactAll.diagnostics.indexQueries).toEqual([
       '[generation+playerId+hasKnownBattle+hasTimestamp+sortTimestamp+handId]',
     ])
-    expect(exactAll.diagnostics.contributionRowsRead).toBeLessThanOrEqual(10)
+    expect(exactAll.diagnostics.contributionRowsRead).toBeLessThanOrEqual(20)
     expect(exactAll.selection.kind).toBe('rows')
     if (exactAll.selection.kind === 'rows') {
       expect(exactAll.selection.rows.map(row => row.handId)).not.toContain(9_999)
@@ -600,18 +605,18 @@ describe('StatsLedger core invariants', () => {
       entry.table === 'statHandContributions' && entry.operation === 'query'
     )
     expect(materialized).toHaveLength(1)
-    expect(materialized[0]?.resultCount).toBeLessThanOrEqual(10)
+    expect(materialized[0]?.resultCount).toBeLessThanOrEqual(20)
 
     const twoTables = await ledger.readPlayerSnapshot(PLAYER_ID, {
       battleTypes: ALL_KNOWN_BATTLE_TYPES,
       tableSizeLayers: ['full', 'hu'],
-      latestHands: 2,
+      latestHands: 20,
     })
     expect(twoTables.diagnostics.indexQueries).toEqual([
       '[generation+playerId+hasKnownBattle+tableBucket+hasTimestamp+sortTimestamp+handId]',
       '[generation+playerId+hasKnownBattle+tableBucket+hasTimestamp+sortTimestamp+handId]',
     ])
-    expect(twoTables.diagnostics.contributionRowsRead).toBeLessThanOrEqual(4)
+    expect(twoTables.diagnostics.contributionRowsRead).toBeLessThanOrEqual(6)
   })
 
   test('既知BattleTypeの部分選択または余分なunknown値は完全選択へcollapseしない', async () => {
@@ -626,14 +631,14 @@ describe('StatsLedger core invariants', () => {
 
     const partial = await ledger.readPlayerSnapshot(PLAYER_ID, {
       battleTypes: ALL_KNOWN_BATTLE_TYPES.slice(0, -1),
-      latestHands: 2,
+      latestHands: 20,
     })
     expect(partial.diagnostics.indexQueries).toHaveLength(ALL_KNOWN_BATTLE_TYPES.length - 1)
     expect(partial.diagnostics.indexQueries.every(index => index.includes('battleBucket'))).toBe(true)
 
     const extraUnknown = await ledger.readPlayerSnapshot(PLAYER_ID, {
       battleTypes: [...ALL_KNOWN_BATTLE_TYPES, 999],
-      latestHands: 2,
+      latestHands: 20,
     })
     expect(extraUnknown.diagnostics.indexQueries).toHaveLength(ALL_KNOWN_BATTLE_TYPES.length + 1)
     expect(extraUnknown.diagnostics.indexQueries.every(index => index.includes('battleBucket'))).toBe(true)
@@ -687,7 +692,7 @@ describe('StatsLedger core invariants', () => {
     const head = await ledger.getActiveHead()
     expect(await db.statHandContributions.where('generation').equals(head!.generation).count()).toBe(500)
     expect((await ledger.readPlayerSnapshot(PLAYER_ID)).totalHands).toBe(501)
-    expect((await ledger.readPlayerSnapshot(PLAYER_ID, { latestHands: 10_000 })).selectedHands).toBe(500)
+    expect((await ledger.readPlayerSnapshot(PLAYER_ID, { latestHands: 500 })).selectedHands).toBe(500)
     expect(aggregatePut.mock.calls[0]?.[0]).toMatchObject({ ready: false })
     expect(aggregatePut.mock.calls[0]?.[0].buildId).toEqual(expect.any(String))
     expect(aggregatePut.mock.calls.at(-1)?.[0]).toMatchObject({ ready: true })
@@ -907,7 +912,7 @@ describe('StatsLedger core invariants', () => {
       counters: [1],
     })
     const contributionRepaired = await ledger.readPlayerSnapshot(PLAYER_ID, {
-      latestHands: bundle.hands.length,
+      latestHands: 20,
     })
     expect(contributionRepaired.counters).toEqual(expected.counters)
     expect(contributionRepaired.diagnostics.baselineBuilt).toBe(true)

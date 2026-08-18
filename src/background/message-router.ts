@@ -42,6 +42,7 @@ import {
   resolveRecentHandsParticipationOnly,
   sanitizeRecentHandsPanelConfigPatch,
 } from '../utils/recent-hands-config'
+import { normalizeStatsLatestHands } from '../utils/stats-hand-limit'
 import {
   IMPORT_RESULT_STORAGE_KEY,
   type ImportResultRecord,
@@ -689,8 +690,16 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         return true
       }
 
+      // メッセージは型検査を経ずに届くため、Popupと同じ公開契約へ
+      // handLimitを正規化してからサービスへ渡す。契約外値をledgerへ
+      // 進めてはならず（MUST NOT）、0.5件のような入力が0件集計になる経路を閉じる。
+      const normalizedFilterOptions = {
+        ...request.filterOptions,
+        handLimit: normalizeStatsLatestHands(request.filterOptions.handLimit),
+      }
+
       // サービス内のフィルターを更新
-      service.setBattleTypeFilter(request.filterOptions)
+      service.setBattleTypeFilter(normalizedFilterOptions)
         .then(() => {
           sendResponse({ success: true })
         })

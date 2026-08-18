@@ -193,7 +193,7 @@ describe('RecentHandsService', () => {
 
     test('battleTypeFilter narrows hands, independent of handLimitFilter (which does not apply here)', async () => {
       service.battleTypeFilter = [BattleType.RING_GAME]
-      service.handLimitFilter = 1 // must be ignored entirely by this feature
+      service.handLimitFilter = 20 // must be ignored entirely by this feature
       const result = await getRecentHands(db, service, PLAYER_ID, 10)
       expect(result.hands.map(h => h.handId)).toEqual([5, 4])
     })

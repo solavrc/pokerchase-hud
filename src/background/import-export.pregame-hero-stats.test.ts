@@ -139,14 +139,17 @@ describe('getLatestSessionStats -- pre-game hero stats fallback', () => {
     expect(stats[0].statResults).toEqual([])
   })
 
-  test('filter application: handLimitFilter narrows the hand population the hero stats are computed over', async () => {
+  test('filter application: the smallest public handLimitFilter narrows the hero population', async () => {
     service.playerId = HERO_ID
-    service.handLimitFilter = 1
+    await db.hands.bulkAdd(Array.from({ length: 20 }, (_, index) =>
+      makeHand({ id: index + 3, seatUserIds: [HERO_ID, 2, 3, 4, 5, -1] })
+    ))
+    service.handLimitFilter = 20
 
     const stats = await getLatestSessionStats(true)
 
     const handsResult = stats[0].statResults.find((r: any) => r.id === 'hands')
-    expect(handsResult?.value).toBe(1) // most recent hand only
+    expect(handsResult?.value).toBe(20) // public minimum window, newest first
   })
 
   test('cold SW start: waits for service.filtersRestored before computing, so a filter restored mid-flight is respected', async () => {
@@ -172,16 +175,19 @@ describe('getLatestSessionStats -- pre-game hero stats fallback', () => {
 
     // Simulate background.ts's loadOptions().then(...) applying the user's saved
     // filter, then resolving the gate.
-    service.handLimitFilter = 1
+    await db.hands.bulkAdd(Array.from({ length: 20 }, (_, index) =>
+      makeHand({ id: index + 3, seatUserIds: [HERO_ID, 2, 3, 4, 5, -1] })
+    ))
+    service.handLimitFilter = 20
     service.markFiltersRestored()
 
     const stats = await statsPromise
     expect(settled).toBe(true)
     // The restored handLimitFilter (applied *during* the wait, not before
     // getLatestSessionStats was called) was respected -- not the pre-restore
-    // default of "all hands" (which would have counted both seeded hands).
+    // default of "all hands" (which would have counted all 22 hands).
     const handsResult = stats[0].statResults.find((r: any) => r.id === 'hands')
-    expect(handsResult?.value).toBe(1)
+    expect(handsResult?.value).toBe(20)
   })
 })
 
