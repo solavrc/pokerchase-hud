@@ -175,7 +175,12 @@ export interface ReplayEpochData {
   replayEpoch: number
 }
 
-export type PokerChaseServiceData = StatsData | RealTimeOnlyStatsData | ReplayEpochData
+/** Raw Lake復旧後のcompleted handを、lineupなしで開いたパネルへ伝える通知。 */
+export interface HandEpochData {
+  handEpoch: number
+}
+
+export type PokerChaseServiceData = StatsData | RealTimeOnlyStatsData | ReplayEpochData | HandEpochData
 
 declare global {
   interface WindowEventMap {
@@ -277,7 +282,7 @@ const portManager = new RuntimePortManager({
       return
     }
     if (typeof message === 'object' && message !== null &&
-      ('stats' in message || 'realTimeStats' in message || 'replayEpoch' in message)) {
+      ('stats' in message || 'realTimeStats' in message || 'replayEpoch' in message || 'handEpoch' in message)) {
       const statsMessage = message as PokerChaseServiceData
       console.time('[content_script] Dispatching stats event')
       window.dispatchEvent(new CustomEvent(POKER_CHASE_SERVICE_EVENT, { detail: statsMessage }))

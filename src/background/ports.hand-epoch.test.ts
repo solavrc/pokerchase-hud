@@ -30,7 +30,12 @@ import PokerChaseService, { PokerChaseDB } from '../app'
 import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { ApiType } from '../types'
 import type { ApiEvent } from '../app'
-import { registerStreamSubscriptions, connectedPorts, setLastKnownStats } from './ports'
+import {
+  registerStreamSubscriptions,
+  connectedPorts,
+  notifyRecoveredHandCompletion,
+  setLastKnownStats
+} from './ports'
 import { __resetActivePortStateForTests, claimActivePort } from './active-port'
 
 const GAME_URL_PATTERN = 'https://example.com/*'
@@ -162,5 +167,22 @@ describe('ports.ts handCompletionEpoch (audit finding 11 follow-up, P2)', () => 
     }
     await service.handAggregateStream.whenIdle()
     expect(lastBroadcastHandEpoch()).toBe(baseline + 2)
+  })
+
+  test('a recovered hand sends only the handEpoch notification and never republishes stats or lineup', async () => {
+    service.statsOutputStream.write([1, 2, 3])
+    await service.statsOutputStream.whenIdle()
+    const baseline = lastBroadcastHandEpoch()!
+    const write = jest.spyOn(service.statsOutputStream, 'write')
+    fakePort.postMessage.mockClear()
+
+    notifyRecoveredHandCompletion()
+
+    expect(fakePort.postMessage).toHaveBeenCalledTimes(1)
+    expect(fakePort.postMessage).toHaveBeenCalledWith({ handEpoch: baseline + 1 })
+    expect(fakePort.postMessage.mock.calls[0]![0]).not.toHaveProperty('stats')
+    expect(fakePort.postMessage.mock.calls[0]![0]).not.toHaveProperty('evtDeal')
+    expect(fakePort.postMessage.mock.calls[0]![0]).not.toHaveProperty('realTimeStats')
+    expect(write).not.toHaveBeenCalled()
   })
 })

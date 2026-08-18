@@ -232,6 +232,20 @@ export const notifyReplayDetailsStored = (): void => {
   postMessageToPort(activePort, { replayEpoch: replayDetailEpoch })
 }
 
+/**
+ * Raw Lake全再構築で復元したcompleted handを、handEpochだけで通知する。
+ *
+ * stats/evtDeal/realTimeStatsを送らないため、現在のACTIVE世代のlineupや席回転を
+ * 変更しない（MUST）。復旧側はactivation成功後にだけ呼び出し、次の通常DEALを
+ * 待つ間も開いた詳細パネルのcacheを再取得できるようにする。
+ */
+export const notifyRecoveredHandCompletion = (): void => {
+  handCompletionEpoch++
+  const activePort = getActivePort()
+  if (!activePort) return
+  postMessageToPort(activePort, { handEpoch: handCompletionEpoch })
+}
+
 /** dedup済みの成功201だけを、そのイベント世代のcontent scriptへ通知する。 */
 export const notifySessionStart = (
   generation: number,

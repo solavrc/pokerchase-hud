@@ -8,7 +8,12 @@ import {
 import { ApiType, isApiEventType } from "../types"
 import type { Options } from '../utils/options-storage'
 import type { ExistPlayerStats, PlayerStats } from "../types"
-import type { PokerChaseServiceData, StatsData } from "../content_script"
+import type {
+  PokerChaseServiceData,
+  ReplayEpochData,
+  RealTimeOnlyStatsData,
+  StatsData,
+} from "../content_script"
 import { defaultStatDisplayConfigs } from "../stats"
 import type { StatDisplayConfig } from "../types"
 import type {
@@ -237,7 +242,21 @@ const App = memo(() => {
   // 現在lineupにいないplayerIdは再集計できないため、フィルター変更後も最後に
   // 計算できたスナップショットを表示する。
   const handleStatsMessage = useCallback(
-    ({ detail }: CustomEvent<PokerChaseServiceData>) => {
+    ({ detail: rawDetail }: CustomEvent<PokerChaseServiceData>) => {
+      // Raw Lake復旧の完了通知はhandEpochだけを運び、stats/lineupを持たない。
+      // ここをstats検証より前に置き、復旧中のACTIVE席順を触らずに開いた
+      // ポジション・直近ハンドパネルだけを再取得させる（MUST）。
+      const incomingHandEpoch = (rawDetail as StatsDataWithHandEpoch).handEpoch
+      if (typeof incomingHandEpoch === 'number') setHandEpoch(incomingHandEpoch)
+      if (
+        'handEpoch' in rawDetail &&
+        !('stats' in rawDetail) &&
+        !('realTimeStats' in rawDetail) &&
+        !('replayEpoch' in rawDetail)
+      ) return
+
+      const detail = rawDetail as StatsData | RealTimeOnlyStatsData | ReplayEpochData
+
       // セッション終了後のリプレイ詳細ドレインからの通知（ports.tsの
       // `replayDetailEpoch`）。lineupも現在ハンド専用値も運ばないので、
       // 他の分岐へ落とさずここで完結させる。
@@ -299,16 +318,6 @@ const App = memo(() => {
       // dimCacheが持つ*この*卓の離席者でなければならない。
       liveLineupAppliedRef.current = true
       discardRestoredLineup()
-
-      // 監査指摘11（P2）対応: ports.tsが積んだhandEpochをそのまま状態へ反映する。
-      // 実況の1アクションごとの更新（realTimeStatsのみの配信）ではports.ts側で
-      // 値が据え置かれるため、setStateはされても値としては変化せず、開いた
-      // パネルの再フェッチeffectは発火しない -- 生きたハンドが1件完了した
-      // ときだけports.tsがこの値をインクリメントする。
-      const incomingHandEpoch = (detail as StatsDataWithHandEpoch).handEpoch
-      if (incomingHandEpoch !== undefined) {
-        setHandEpoch(incomingHandEpoch)
-      }
 
       // Update real-time stats if available
       if (detail.realTimeStats) {

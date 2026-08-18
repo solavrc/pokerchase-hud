@@ -230,6 +230,13 @@ AggregateEventsStreamでDEALなし306を観測した場合も、同じstructured
 渡して既存のsingle-flight full rebuild schedulerを予約する。通常の取り込みはrebuild完了を待たず、
 既存canonical replayが全Raw Lakeを一度だけ再生し、対象handが生成される場合も生成されない場合も
 activationでfenceを終端する。Raw `apiEvents`はこの経路から削除しない。
+対象handが生成された復旧では、activation後に直近ハンドcacheを無効化し、`handEpoch`だけを
+ACTIVEポートへ1回通知する。この通知はstatsやlineupを含まないため、WESのライブ配信や席回転を
+模倣せず、開いたポジション／直近ハンドパネルだけが再取得する。RawにDEALがなく対象handが
+生成されなかった終端や、activationに失敗した試行ではこの通知を発火しない。
+再構築後の集計再配信も、現在のACTIVE generationと同じgenerationで受信した信頼済みDEALを
+確認できる場合に限る。対局中にその証拠がない場合は履歴のDEALでHUDを上書きせず、次の通常DEAL
+を待つ。tokenがない起動直後や明示的に対局外の状態では、従来の接続先への復元配信を維持する。
 手動の全再構築は`apiEvents`のRW lock下でLake全体の一致snapshotを再生し、その最終commitで
 pending fence全件を回収する。
 

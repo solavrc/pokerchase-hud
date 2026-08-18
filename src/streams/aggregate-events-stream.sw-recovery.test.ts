@@ -6,25 +6,40 @@ import { mergeApiEvents, type RawApiEvent } from '../utils/api-event-key'
 import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { STATS_PENDING_HAND_DERIVATION_META_PREFIX } from '../stats/stat-ledger'
 import { AutoSyncService } from '../services/auto-sync-service'
+import { SessionState } from '../services/poker-chase-service'
+import * as portNotifications from '../background/ports'
+import { getRecentHands } from '../services/recent-hands-service'
+import { __resetActivePortStateForTests, claimActivePort, resolveGeneration } from '../background/active-port'
+import {
+  __resetStatsOutputContextForTests,
+  setDefaultStatsContextProvider,
+} from './stats-output-context'
 
 describe('AggregateEventsStreamのRaw Lake全再構築handoff', () => {
   let db: PokerChaseDB
   let service: PokerChaseService
+  let nodeEnvBeforeTest: string | undefined
 
   beforeEach(async () => {
+    nodeEnvBeforeTest = process.env.NODE_ENV
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
     service = trackServiceForTeardown(new PokerChaseService({ db }))
     await service.ready
     service.session.setId('recovery-test')
     jest.spyOn(service.statsOutputStream, 'write').mockImplementation(() => {})
+    jest.spyOn(portNotifications, 'notifyRecoveredHandCompletion')
     ;(globalThis as any).service = service
     ;(chrome.runtime.sendMessage as jest.Mock).mockResolvedValue(undefined)
   })
 
   afterEach(async () => {
+    if (nodeEnvBeforeTest === undefined) delete process.env.NODE_ENV
+    else process.env.NODE_ENV = nodeEnvBeforeTest
     await service.statsOutputStream.whenIdle().catch(() => {})
     jest.restoreAllMocks()
+    __resetActivePortStateForTests()
+    __resetStatsOutputContextForTests()
     delete (globalThis as any).service
     db.close()
     await db.delete()
@@ -89,6 +104,9 @@ describe('AggregateEventsStreamのRaw Lake全再構築handoff', () => {
   }
 
   test('Raw DEALが保存済みでRESULTSだけを受けてもfull replayと同じhand/ledgerを一度だけ反映する', async () => {
+    process.env.NODE_ENV = 'production'
+    service.playerId = MTT_TABLE_MOVE_FIXTURE.heroId
+    const cachedBeforeRecovery = await getRecentHands(db, service, MTT_TABLE_MOVE_FIXTURE.heroId, 10)
     const [result] = await seedRaw(firstHand())
     expect(result).toBeDefined()
     const autoSync = new AutoSyncService(db)
@@ -100,10 +118,14 @@ describe('AggregateEventsStreamのRaw Lake全再構築handoff', () => {
     await recovery.wait()
 
     expect(rebuild).toHaveBeenCalledTimes(1)
+    expect(portNotifications.notifyRecoveredHandCompletion).toHaveBeenCalledTimes(1)
     expect(recovery.fenceId).toContain(String(result!.HandId))
     expect(await db.hands.count()).toBe(1)
     expect(await db.apiEvents.count()).toBe(6)
     expect(await fenceCount()).toBe(0)
+    const refreshedAfterRecovery = await getRecentHands(db, service, MTT_TABLE_MOVE_FIXTURE.heroId, 10)
+    expect(refreshedAfterRecovery).not.toBe(cachedBeforeRecovery)
+    expect(refreshedAfterRecovery.hands.map(hand => hand.handId)).toContain(result!.HandId)
     await hydrateAllPlayers()
     const recoveredCanonical = await canonicalRows()
     const recoveredLedger = await ledgerContributions()
@@ -111,6 +133,7 @@ describe('AggregateEventsStreamのRaw Lake全再構築handoff', () => {
     // 同じ既存full replayをもう一度実行し、復旧結果のcanonical/ledgerと比較する。
     rebuild.mockRestore()
     await (autoSync as any).rebuildLocalEntities()
+    expect(portNotifications.notifyRecoveredHandCompletion).toHaveBeenCalledTimes(1)
     await hydrateAllPlayers()
     expect(await canonicalRows()).toEqual(recoveredCanonical)
     expect(await ledgerContributions()).toEqual(recoveredLedger)
@@ -131,6 +154,7 @@ describe('AggregateEventsStreamのRaw Lake全再構築handoff', () => {
     await recovery.wait()
 
     expect(rebuild).toHaveBeenCalledTimes(1)
+    expect(portNotifications.notifyRecoveredHandCompletion).not.toHaveBeenCalled()
     expect(await db.hands.count()).toBe(0)
     expect(await fenceCount()).toBe(0)
     await expect(autoSync.recoverInterruptedCanonicalRebuild()).resolves.toBe(false)
@@ -240,10 +264,51 @@ describe('AggregateEventsStreamのRaw Lake全再構築handoff', () => {
       service.statsLedger.getPendingHandDerivationFenceId(nextResult!)
     )).rejects.toThrow('synthetic full replay failure')
 
+    expect(portNotifications.notifyRecoveredHandCompletion).not.toHaveBeenCalled()
+
     expect(await db.hands.get(oldResult!.HandId)).toEqual(oldHand)
     expect(await db.hands.get(nextResult!.HandId)).toBeUndefined()
     expect(await db.meta.get(
       service.statsLedger.getPendingHandDerivationFenceId(nextResult!)!
     )).toBeDefined()
+  })
+
+  test('ACTIVE世代に同世代DEALが無い間はfull replayが統計を再配信しない', async () => {
+    const fakePort = { postMessage: jest.fn() } as unknown as chrome.runtime.Port
+    claimActivePort(fakePort)
+    const generation = resolveGeneration()
+    expect(generation).toBeDefined()
+    setDefaultStatsContextProvider(() => ({
+      delivery: 'active',
+      generation,
+      evtDeal: undefined,
+    }))
+    service.liveEvtDeal = firstHand()[3] as ApiEvent<ApiType.EVT_DEAL>
+    const autoSync = new AutoSyncService(db)
+    const write = jest.spyOn(service.statsOutputStream, 'write')
+    const guard = (autoSync as any).captureServiceContextRestoreGuard(service)
+
+    ;(autoSync as any).publishRebuiltServiceContext(
+      service,
+      new SessionState(() => {}),
+      undefined,
+      guard
+    )
+
+    expect(write).not.toHaveBeenCalled()
+
+    const trustedDeal = firstHand()[3] as ApiEvent<ApiType.EVT_DEAL>
+    setDefaultStatsContextProvider(() => ({
+      delivery: 'active',
+      generation,
+      evtDeal: trustedDeal,
+    }))
+    ;(autoSync as any).publishRebuiltServiceContext(
+      service,
+      new SessionState(() => {}),
+      undefined,
+      guard
+    )
+    expect(write).toHaveBeenCalledWith(trustedDeal.SeatUserIds.filter(id => id !== -1))
   })
 })

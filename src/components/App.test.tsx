@@ -809,6 +809,26 @@ describe('App', () => {
       expect(screen.getByTestId('hud-1')).toHaveTextContent('HandEpoch: 7')
     })
 
+    it('handEpochだけの復旧通知はlineupを変更せず開いたパネルへ届く', async () => {
+      render(<App />)
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', { detail: mockStatsData })
+        )
+      })
+      const lineupBefore = screen.getByTestId('hud-0').textContent
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', { detail: { handEpoch: 11 } })
+        )
+      })
+
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('HandEpoch: 11')
+      expect(screen.getByTestId('hud-0').textContent).toBe(lineupBefore?.replace('HandEpoch: 0', 'HandEpoch: 11'))
+    })
+
     // セッション終了後のリプレイ詳細ドレインからの通知（ports.tsの
     // `replayDetailEpoch`）。lineupも現在ハンド専用値も運ばない最小メッセージで、
     // 開いたままの直近ハンドパネルへ再フェッチだけを促す。
