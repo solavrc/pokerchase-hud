@@ -700,26 +700,31 @@ STAGEごとの基準値（着順1〜6位）:
   は content dedup される。
 - uploadは主キー三要素をカーソルとして保持する。再構築とraw/hand-log exportも主キーで
   pageするが、各page末尾の同一timestamp groupを次pageまでholdしてからstrictな
-  snapshot→action遷移だけを補正する。
+  snapshot→action遷移と、下記の構造的に独立したhand境界だけを補正する。
   `timestamp` だけ、または `[timestamp+ApiTypeId]` だけで `above()` を行うと burst の
   途中を飛ばすため禁止。
 - cross-type同一timestampは主キーのApiTypeId順で保存されるため、stateful readerは
   2-event groupが303/305/313のstate snapshotと304だけで構成され、phase、
   NextActionSeat、actor stack、Potの差分が全て一致するときだけsnapshotを先へ戻す。
   3件以上の複合groupは、局所的に証明できる組があっても無関係なeventを跨いで動かさず、
-  group全体を主キー順に維持する。特に201/308や306/309を含むsession/hand lifecycleは、
-  MTTのtable moveやtable間interleaveを同時刻groupだけでは区別できないため推論しない。
+  group全体を主キー順に維持する。例外はstateful consumerから見えないことを専用テストで
+  固定した合成90001だけで、構造判定の件数から除外してもゲームeventの因果関係は変わらない。
+  特に201/308や306/309を含むsession/hand lifecycleは、MTTのtable moveや
+  table間interleaveを同時刻groupだけでは区別できないため推論しない。
 - hand境界の303/306同居は、groupより前のミリ秒でEVT_DEALが開かれ、まだ
-  EVT_HAND_RESULTSで閉じていない場合に限って補正する。303 < 306 のため保存順では
-  次ハンドの配札が前ハンドの終了行を追い越す。stateful readerはEVT_DEALで
-  ハンドバッファを確定させるため、この倒錯を放置すると
+  EVT_HAND_RESULTSまたはEVT_SESSION_RESULTSで閉じておらず、groupのゲーム行が
+  303と306の1件ずつだけの場合に限って補正する。303 < 306 のため保存順では次ハンドの
+  配札が前ハンドの終了行を追い越す。stateful readerはEVT_DEALでハンドバッファを
+  確定させるため、この倒錯を放置すると
   「前ハンドはHandId未設定で破棄」「次ハンドのバッファが前ハンドのHandIdで確定」
   「次ハンドの残り行はバッファ不在で消失」と、1つの倒錯で2ハンドが失われる。
-  補正は306を303の直前へ挿入し、201など303より前のsession境界行を跨がない。
-  同じgroupの304が前ハンドの最終アクションか次ハンドの初手かは決められないため、
-  主キー順のまま303の後ろに残す。複数の303/306を含むgroup、前ハンドが開いて
-  いないgroup、303を含まない306群は一切触らない。同一msに過去ハンド全体が
-  圧縮再送された場合は前ハンドが開いていないため、正常な303→306を維持できる。
+  補正は306と303を入れ替える。同じgroupに304/305があれば、それが前ハンドの末尾か
+  次ハンドの先頭かをraw行だけでは決められないため、group全体を主キー順のままにする。
+  複数の303/306を含むgroup、前ハンドが開いていないgroup、303を含まない306群も
+  一切触らない。同一msに過去ハンド全体が圧縮再送された場合は前ハンドが開いて
+  いないため、正常な303→306を維持できる。hand-log exportのようにLakeの部分範囲だけを
+  再生するconsumerは、範囲直前の最新303/306/309 groupをcontextとして先に読み、
+  範囲外のDEALが示すopen状態を復元してから同じresolverへ渡す。
 - 実raw 393,830 events（210 group）と 561,309 events（21,581 group）のどちらにも
   303+306の同時刻groupは存在しない。`timestamp` はサーバー由来ではなくフレーム
   受信時にクライアントが付ける値なので、この同居はフレームがバースト配送された

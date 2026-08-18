@@ -31,6 +31,41 @@ export class HandLogExporter {
   private static readonly TIME_BUFFER_MS = 300000 // 5 minutes buffer to catch player seat assignments
 
   /**
+   * 部分範囲の直前にあるhand/session境界を補助contextとして取得する。
+   *
+   * HandLog exportは対象DEALの5分前からしかraw rowを読まないため、前ハンドの
+   * DEALだけが範囲外で、そのRESULTSと対象DEALが同一msになる場合がある。
+   * 303/306/309それぞれの直近行から最大timestampの群だけを先頭へ足し、
+   * stateful replay resolverに開始時点のopen/closed状態を復元させる。
+   */
+  private static async getReplayBoundaryContextBefore(
+    db: PokerChaseDB,
+    beforeTimestamp: number
+  ): Promise<RawApiEvent[]> {
+    const boundaryTypes = [
+      ApiType.EVT_DEAL,
+      ApiType.EVT_HAND_RESULTS,
+      ApiType.EVT_SESSION_RESULTS,
+    ]
+    const latestByType = await Promise.all(boundaryTypes.map(apiTypeId =>
+      db.apiEvents
+        .where('[ApiTypeId+timestamp]')
+        .between(
+          [apiTypeId, Number.MIN_SAFE_INTEGER],
+          [apiTypeId, beforeTimestamp],
+          true,
+          false
+        )
+        .last()
+    ))
+    const candidates = latestByType.filter((event): event is NonNullable<typeof event> => !!event)
+    if (candidates.length === 0) return []
+    const latestTimestamp = Math.max(...candidates.map(event => event.timestamp!))
+    return candidates
+      .filter(event => event.timestamp === latestTimestamp) as unknown as RawApiEvent[]
+  }
+
+  /**
    * Build a global player names map from all available events in the database
    */
   private static async buildPlayerNamesMap(db: PokerChaseDB): Promise<Map<number, { name: string, rank: string }>> {
@@ -240,13 +275,15 @@ export class HandLogExporter {
       .where('timestamp')
       .between(minTime, maxTime, true, true)
       .toArray()
+    const boundaryContext = await this.getReplayBoundaryContextBefore(db, minTime)
 
     // Keep the complete raw equal-ms group through fail-closed ordering before
     // validation removes noise or currently-unparseable rows.
     const allEvents = await orderAndFilterApplicationEventsForReplay(
-      rawEvents as unknown as RawApiEvent[]
+      [...boundaryContext, ...rawEvents as unknown as RawApiEvent[]]
     )
-    console.log(`[HandLogExporter] Prefetched ${allEvents.length} events (${rawEvents.length} raw)`)
+    const rangedEvents = allEvents.filter(event => event.timestamp! >= minTime)
+    console.log(`[HandLogExporter] Prefetched ${rangedEvents.length} events (${rawEvents.length} raw)`)
 
     // 5. Process each hand using the prefetched events
     // プリパス: セッションごとの最小ハンドIDを確定（トーナメントID用の
@@ -276,7 +313,7 @@ export class HandLogExporter {
 
       try {
         // Extract events for this specific hand from prefetched set
-        const handEvents = this.extractHandEvents(allEvents, hand)
+        const handEvents = this.extractHandEvents(rangedEvents, hand)
         if (handEvents.length === 0) {
           throw new Error(`No API events found for hand ${handId}`)
         }
@@ -425,12 +462,13 @@ export class HandLogExporter {
       .where('timestamp')
       .between(startTime, endTime, true, true)
       .toArray()
+    const boundaryContext = await this.getReplayBoundaryContextBefore(db, startTime)
 
     // Preserve raw group size for fail-closed ordering, then validate before
     // feeding HandLogProcessor, matching the multi-hand path above.
     const allEvents = await orderAndFilterApplicationEventsForReplay(
-      rawEvents as unknown as RawApiEvent[]
-    )
+      [...boundaryContext, ...rawEvents as unknown as RawApiEvent[]]
+    ).then(events => events.filter(event => event.timestamp! >= startTime))
 
     // Time range for hand events
     // Found total events in time range

@@ -116,16 +116,21 @@ const resolveStrictSnapshotActionPair = <T extends RawApiEvent>(group: T[]): T[]
  * `timestamp` は受信時刻なので、再送された同一ハンドの DEAL→RESULTS 全体が
  * 同じ値になることもある。そのため303/306の同居だけでは順序を推論せず、
  * より前のミリ秒でDEALが開き、まだRESULTSで閉じていない場合にだけ補正する。
- * さらに対応が曖昧な複数303/306群は主キー順のままにする（MUST）。
+ * さらに対応が曖昧な複数303/306群や304/305等のゲーム行を含む複合群は
+ * 主キー順のままにする（MUST）。90001はstateful consumerから見えないことが
+ * 別テストで固定された合成行なので、構造判定からだけ除外する。
  *
- * 補正時も、201などDEALより前にある行はMUST跨がない。RESULTSを最初のDEALの
- * 直前へ挿入し、DEAL以降のACTION等は相対順を保つ。
+ * 補正対象にできるゲーム行はDEALとRESULTSの2件だけで、201やACTION等を
+ * 含むgroupでは何も動かさない（MUST）。
  */
 const hoistOpenHandResultsBeforeDeal = <T extends RawApiEvent>(
   group: T[],
   hasOpenHandBeforeGroup: boolean
 ): T[] => {
   if (!hasOpenHandBeforeGroup) return group
+
+  const structuralEvents = group.filter(event => event.ApiTypeId !== ApiType.REPLAY_HAND_DETAIL)
+  if (structuralEvents.length !== 2) return group
 
   const dealIndexes = group.flatMap((event, index) =>
     event.ApiTypeId === ApiType.EVT_DEAL ? [index] : [])
@@ -151,9 +156,10 @@ const hoistOpenHandResultsBeforeDeal = <T extends RawApiEvent>(
  *
  * IndexedDBとraw exportは`[timestamp+ApiTypeId+sequence]`順なので、同一msの
  * 異なるtypeはwire順ではなくApiTypeId順になる。厳密なpayload差分で証明できる
- * 2行のsnapshot/action倒錯と、前のmsから開いたハンドのRESULTS/次DEAL境界だけを
- * 補正する。複合groupとその他の行は、安定したfail-closed表現として主キー順を
- * 維持し、同一timestampだけからsession lifecycleを推論しない。
+ * 2行のsnapshot/action倒錯と、前のmsから開いたハンドの構造的に独立した
+ * RESULTS/次DEAL境界だけを補正する。複合groupとその他の行は、安定した
+ * fail-closed表現として主キー順を維持し、同一timestampだけからsession
+ * lifecycleを推論しない。309はrawの時点で開いたハンド状態を解除する。
  *
  * 実raw 393,830 eventsのcross-type同時刻210 groupで、snapshot/action条件が
  * 変更するのは独立した3組だけだった。別の561,309-event captureを含め、
@@ -177,7 +183,10 @@ export const orderApiEventsForReplay = <T extends RawApiEvent>(
     ordered.push(...resolved)
     for (const event of resolved) {
       if (event.ApiTypeId === ApiType.EVT_DEAL) state.hasOpenHand = true
-      else if (event.ApiTypeId === ApiType.EVT_HAND_RESULTS) state.hasOpenHand = false
+      else if (
+        event.ApiTypeId === ApiType.EVT_HAND_RESULTS ||
+        event.ApiTypeId === ApiType.EVT_SESSION_RESULTS
+      ) state.hasOpenHand = false
     }
     start = end
   }

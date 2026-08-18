@@ -291,6 +291,25 @@ describe('processInChunks (cursor-based pagination over a real Dexie table)', ()
     ])
   })
 
+  test('replay chunks clear an open hand at a session-results boundary', async () => {
+    await db.apiEvents.bulkAdd([
+      { timestamp: 100, ApiTypeId: 303, marker: 'stale-deal' },
+      { timestamp: 150, ApiTypeId: 309, marker: 'session-results' },
+      { timestamp: 200, ApiTypeId: 303, marker: 'new-deal' },
+      { timestamp: 200, ApiTypeId: 306, marker: 'new-results' }
+    ] as any)
+
+    const chunks: any[][] = []
+    for await (const chunk of processInReplayChunks(db.apiEvents as any, 1)) chunks.push(chunk)
+
+    expect(chunks.flat().map(row => row.marker)).toEqual([
+      'stale-deal',
+      'session-results',
+      'new-deal',
+      'new-results'
+    ])
+  })
+
   test('snapshot replay keeps a causal equal-ms group whole across three pages and excludes rows inserted mid-scan', async () => {
     await db.apiEvents.bulkAdd([
       { timestamp: 100, ApiTypeId: 201, marker: 'before-1' },

@@ -160,24 +160,48 @@ describe('raw event replay order', () => {
     expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([303, 306])
   })
 
-  test('moves an open hand result before the next deal without crossing a session boundary', () => {
+  test('moves a structurally isolated open-hand result before the next deal', () => {
     const events: RawApiEvent[] = [
       { timestamp: 490, ApiTypeId: 303, marker: 'previous-deal' },
-      { timestamp: 500, ApiTypeId: 201, Id: 'moved-table', BattleType: 0 },
-      { timestamp: 500, ApiTypeId: 304, SeatIndex: 2 },
       { timestamp: 500, ApiTypeId: 303, marker: 'next-deal' },
       { timestamp: 500, ApiTypeId: 306, HandId: 1, marker: 'previous-results' }
     ]
 
     const boundary = orderApiEventsForReplay(events)
       .filter(event => event.timestamp === 500)
-    expect(boundary.map(event => event.ApiTypeId)).toEqual([201, 306, 303, 304])
-    expect(boundary.map(event => event.marker ?? event.Id)).toEqual([
-      'moved-table',
-      'previous-results',
-      'next-deal',
-      undefined
-    ])
+    expect(boundary.map(event => event.ApiTypeId)).toEqual([306, 303])
+    expect(boundary.map(event => event.marker)).toEqual(['previous-results', 'next-deal'])
+  })
+
+  test('keeps an ACTION-bearing hand boundary in canonical order because ownership is ambiguous', () => {
+    const events: RawApiEvent[] = [
+      { timestamp: 490, ApiTypeId: 303, marker: 'previous-deal' },
+      { timestamp: 500, ApiTypeId: 303, marker: 'next-deal' },
+      { timestamp: 500, ApiTypeId: 304, SeatIndex: 2, marker: 'ambiguous-action' },
+      { timestamp: 500, ApiTypeId: 306, HandId: 1, marker: 'previous-results' }
+    ]
+
+    expect(orderApiEventsForReplay(events)
+      .filter(event => event.timestamp === 500)
+      .map(event => event.marker)).toEqual([
+        'next-deal',
+        'ambiguous-action',
+        'previous-results'
+      ])
+  })
+
+  test('session results clear stale open-hand state before a complete same-ms hand', () => {
+    const events: RawApiEvent[] = [
+      { timestamp: 480, ApiTypeId: 303, marker: 'stale-deal' },
+      { timestamp: 490, ApiTypeId: 309, marker: 'session-results' },
+      { timestamp: 495, ApiTypeId: 201, marker: 'new-entry' },
+      { timestamp: 500, ApiTypeId: 303, marker: 'new-deal' },
+      { timestamp: 500, ApiTypeId: 306, marker: 'new-results' }
+    ]
+
+    expect(orderApiEventsForReplay(events)
+      .filter(event => event.timestamp === 500)
+      .map(event => event.marker)).toEqual(['new-deal', 'new-results'])
   })
 
   test('keeps ambiguous multiple DEAL/RESULTS groups in canonical order', () => {
