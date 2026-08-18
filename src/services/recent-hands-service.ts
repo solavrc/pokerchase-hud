@@ -99,9 +99,25 @@ function subscribeToHandCompletion(service: PokerChaseService): void {
   if (subscribedServices.has(service)) return
   subscribedServices.add(service)
   service.writeEntityStream.on('data', () => {
-    cacheGeneration++
-    clearRecentHandsCache()
+    invalidateRecentHandsCache()
   })
+}
+
+/**
+ * キャッシュを捨て、進行中のフェッチによる書き戻しも止める。
+ *
+ * MUST: 世代も進める。捨てるだけだと、無効化の前に始まった読み取りが後から
+ * 完了したときに世代比較を通過して**無効化前のDB状態**を書き戻し、最大30秒
+ * そのまま返り続ける（下のstorage監視・`getRecentHands`の`fetchGeneration`
+ * 参照）。
+ *
+ * 呼び出し元は3つとも「このパネルの表示内容を変える書き込みが起きた」瞬間:
+ * ハンド完了（上の購読）、リプレイ取り込みのオプトイン切替（下のstorage監視）、
+ * リプレイ詳細1件の保存（`background/replay-panel-refresh.ts`）。
+ */
+export function invalidateRecentHandsCache(): void {
+  cacheGeneration++
+  clearRecentHandsCache()
 }
 
 /**
@@ -155,8 +171,7 @@ chrome.storage?.onChanged?.addListener((changes, areaName) => {
   // 世代も進める（MUST）。捨てるだけだと、切り替え前に始まった読み取りが
   // 後から完了したときに世代比較を通過して**古い結果を書き戻す**ため、
   // OFFにしてもリプレイ由来のカードが最大30秒返り続ける。
-  cacheGeneration++
-  clearRecentHandsCache()
+  invalidateRecentHandsCache()
 })
 
 /**
@@ -841,7 +856,7 @@ export async function getRecentHands(
   const [allActions, allPhases, replayDetails, heroDealtHoleCards] = await Promise.all([
     db.actions.where('handId').anyOf(handIds).toArray(),
     db.phases.where('handId').anyOf(handIds).toArray(),
-    // マック行の穴埋め用（オプトイン時のみ）。主キー1回のbulkGetで、
+    // リプレイ由来の手札の穴埋め用（オプトイン時のみ）。主キー1回のbulkGetで、
     // 対象ハンド分だけを引く（N+1は発生しない）。
     readReplayImportEnabled()
       .then(enabled => enabled ? db.replayDetails.bulkGet(handIds) : [])
@@ -879,10 +894,14 @@ export async function getRecentHands(
     const { won, netChips } = deriveWonAndNetChips(hand, playerId)
 
     const holeCardsFromResults = deriveHoleCards(result)
-    // マックしたショーダウン行（RankType 11、HoleCardsが空）だけを埋める。
-    // フォールドした相手の手札は対象外 ―― サーバがリプレイで開示するのは
-    // ショーダウンに到達した手であり、ここで表示するのもそれだけ。
-    const holeCardsFromReplay = holeCardsFromResults === null && wentToShowdown
+    // リプレイに手札が入っている席は、ショーダウン到達を問わず埋める。
+    // ゲームの〈手札公開機能〉が有効な期間、`/replay/detail` は途中で
+    // フォールドした席の`HoleCardList`も返す（docs/replay-api.md）。それらの
+    // 席は`Results[]`に行そのものが無いため、RankType 11だけを見ていた旧実装は
+    // 構造的に取りこぼしていた。可視性の判断はここではなく、リプレイ payload に
+    // 値が入っているかどうか＝サーバが開示したかどうかに委ねる：公開されて
+    // いない席は空配列/`-1`埋めで返り、`readReplayHoleCards`がnullを返す。
+    const holeCardsFromReplay = holeCardsFromResults === null
       ? readReplayHoleCards(replayPayloadByHandId.get(hand.id), playerId)
       : null
     // ヒーロー自身の配札カード（#353）。公開由来が取れなかった行だけを埋める。

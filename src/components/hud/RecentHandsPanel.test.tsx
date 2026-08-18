@@ -17,11 +17,12 @@ import { SUIT_COLORS } from '../../utils/card-utils'
 import type { RecentHandsResult, StreetAction } from '../../types/stats'
 import {
   DEFAULT_RECENT_HANDS_LIMIT,
+  DEFAULT_RECENT_HANDS_PANEL_CONFIG,
   DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY,
   RECENT_HANDS_LIMIT_OPTIONS,
-  RECENT_HANDS_LIMIT_STORAGE_KEY,
-  RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY,
+  RECENT_HANDS_PANEL_CONFIG_EVENT,
 } from '../../utils/recent-hands-config'
+import type { RecentHandsPanelConfig } from '../../utils/recent-hands-config'
 
 const NOW = 1_700_000_000_000
 
@@ -58,6 +59,31 @@ describe('RecentHandsPanel', () => {
     jest.useRealTimers()
   })
 
+  // パネルは設定読み取り（getRecentHandsPanelConfig）とハンド取得
+  // （getRecentHands）の両方をchrome.runtime.sendMessageで送る。フェッチ回数の
+  // アサーションはこのフィルタで数える（設定読み取りを混ぜない）。
+  const recentHandsCalls = () =>
+    mockSendMessage.mock.calls.filter(
+      ([message]) => (message as { action?: string } | undefined)?.action === 'getRecentHands'
+    )
+
+  /**
+   * 保存済み設定がある状態を模す: getRecentHandsPanelConfigへは指定configで、
+   * getRecentHandsへはrecentHandsで応答する。
+   */
+  const respondWithConfig = (
+    config: Partial<RecentHandsPanelConfig>,
+    recentHands: RecentHandsResult = buildResult()
+  ) => {
+    mockSendMessage.mockImplementation((message: { action?: string }, callback: (response: unknown) => void) => {
+      if (message?.action === 'getRecentHandsPanelConfig') {
+        callback({ success: true, config: { ...DEFAULT_RECENT_HANDS_PANEL_CONFIG, ...config } })
+        return
+      }
+      callback({ success: true, recentHands })
+    })
+  }
+
   it('ロード中はローディング表示、応答が来るとテーブルに切り替わる', async () => {
     mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
       Promise.resolve().then(() => callback({ success: true, recentHands: buildResult() }))
@@ -90,15 +116,21 @@ describe('RecentHandsPanel', () => {
   })
 
   it('triggerから参照できるplayer固有regionとして公開する', async () => {
-    mockSendMessage.mockImplementation(() => {})
+    // 設定読み取りには応答し、getRecentHandsは未応答のまま（このテストの
+    // 関心はregion属性なので、フェッチ結果は要らない）。
+    mockSendMessage.mockImplementation((message: { action?: string }, callback: (response: unknown) => void) => {
+      if (message?.action === 'getRecentHandsPanelConfig') {
+        callback({ success: true, config: DEFAULT_RECENT_HANDS_PANEL_CONFIG })
+      }
+    })
 
     render(<RecentHandsPanel playerId={999} />)
 
     const panel = screen.getByRole('region', { name: 'Player 999の直近ハンド' })
     expect(panel).toHaveAttribute('id', 'recent-hands-panel-999')
     expect(panel).toHaveAttribute('data-player-id', '999')
-    // 保存済み件数の解決（非同期）が終わってからテストを抜ける。
-    await waitFor(() => expect(mockSendMessage).toHaveBeenCalled())
+    // 保存済み設定の解決（非同期）とフェッチ開始が終わってからテストを抜ける。
+    await waitFor(() => expect(recentHandsCalls().length).toBeGreaterThan(0))
   })
 
   it('新しい順（ハンドID降順）に表示する', async () => {
@@ -252,16 +284,22 @@ describe('RecentHandsPanel', () => {
 
   it('タイムアウト（応答なし）はフェイルオープンでプレースホルダーを表示し、HUDをクラッシュさせない', async () => {
     jest.useFakeTimers()
-    mockSendMessage.mockImplementation(() => {})
+    // 設定読み取りには即応答し、getRecentHandsだけを無応答（タイムアウト）に
+    // する。設定読み取り自体のタイムアウトはrecent-hands-config.test.tsが持つ。
+    mockSendMessage.mockImplementation((message: { action?: string }, callback: (response: unknown) => void) => {
+      if (message?.action === 'getRecentHandsPanelConfig') {
+        callback({ success: true, config: DEFAULT_RECENT_HANDS_PANEL_CONFIG })
+      }
+    })
 
     render(<RecentHandsPanel playerId={123} />)
 
     expect(screen.getByText('Loading hands…')).toBeInTheDocument()
 
-    // 保存済み件数（chrome.storage.local）の解決を待ってから時計を進める。
+    // 保存済み設定（background経由）の解決を待ってから時計を進める。
     // 解決前はフェッチ自体が始まらないので、タイムアウトタイマーもまだ無い。
     await waitFor(() => {
-      expect(mockSendMessage).toHaveBeenCalled()
+      expect(recentHandsCalls().length).toBeGreaterThan(0)
     })
 
     await act(async () => {
@@ -292,12 +330,12 @@ describe('RecentHandsPanel', () => {
 
     const { rerender } = render(<RecentHandsPanel playerId={1} />)
     await screen.findAllByTestId('recent-hands-row')
-    expect(mockSendMessage).toHaveBeenCalledTimes(1)
+    expect(recentHandsCalls()).toHaveLength(1)
 
     rerender(<RecentHandsPanel playerId={2} />)
 
     await waitFor(() => {
-      expect(mockSendMessage).toHaveBeenCalledTimes(2)
+      expect(recentHandsCalls()).toHaveLength(2)
     })
     expect(mockSendMessage).toHaveBeenLastCalledWith(
       { action: 'getRecentHands', playerId: 2, limit: DEFAULT_RECENT_HANDS_LIMIT, participationOnly: DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY },
@@ -308,12 +346,16 @@ describe('RecentHandsPanel', () => {
   // 監査指摘11（P2）「開いたドリルダウンパネルが無期限に古くなる」対応:
   // playerIdが同じままでもhandEpochが変わればフェッチeffectを再発火する。
   it('playerIdが同じでもhandEpochが変わると再フェッチする(監査指摘11)', async () => {
-    let callCount = 0
-    mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
-      callCount++
+    let fetchCount = 0
+    mockSendMessage.mockImplementation((message: { action?: string }, callback: (response: unknown) => void) => {
+      if (message?.action === 'getRecentHandsPanelConfig') {
+        callback({ success: true, config: DEFAULT_RECENT_HANDS_PANEL_CONFIG })
+        return
+      }
+      fetchCount++
       // 2回目の応答は1回目と区別できるよう新しいハンドを1件追加する
       // （新しいハンドが完了して初めて反映されるべきデータ）
-      const result = callCount === 2
+      const result = fetchCount === 2
         ? buildResult({ hands: [{ handId: 4, approxTimestamp: NOW, bigBlind: 200, position: Position.CO, holeCards: null, holeCardsSource: null, preflopLine: 'OR', preflopLineAmountBB: 2.2, preflopLineAmountChips: 440, postflopLines: { flop: [], turn: [], river: [] }, board: [], sawFlop: false, wentToShowdown: false, won: false, netChips: null }, ...buildResult().hands] })
         : buildResult()
       callback({ success: true, recentHands: result })
@@ -323,21 +365,66 @@ describe('RecentHandsPanel', () => {
     await waitFor(() => {
       expect(screen.getAllByTestId('recent-hands-row')).toHaveLength(3)
     })
-    expect(mockSendMessage).toHaveBeenCalledTimes(1)
+    expect(recentHandsCalls()).toHaveLength(1)
 
     // 実況の1アクションごとの更新はhandEpochを変えない想定 -- 同じepochでの
     // 再レンダーは再フェッチを引き起こさない。
     rerender(<RecentHandsPanel playerId={1} handEpoch={1} />)
-    expect(mockSendMessage).toHaveBeenCalledTimes(1)
+    expect(recentHandsCalls()).toHaveLength(1)
 
     // ハンドが1件完了してhandEpochが増える
     rerender(<RecentHandsPanel playerId={1} handEpoch={2} />)
 
     await waitFor(() => {
-      expect(mockSendMessage).toHaveBeenCalledTimes(2)
+      expect(recentHandsCalls()).toHaveLength(2)
     })
     await waitFor(() => {
       expect(screen.getAllByTestId('recent-hands-row')).toHaveLength(4)
+    })
+  })
+
+  // セッション終了後のリプレイ詳細ドレイン（背景で1.5秒間隔・100件超）が
+  // 進むあいだ、開いたままのパネルへホールカードを流し込むための信号。
+  // handEpochと同じ形だが、ハンド完了ではなく`replayDetails`への書き込みで動く。
+  it('handEpochが据え置きでもreplayEpochが変われば再フェッチする（リプレイ取り込み中の追従）', async () => {
+    // 設定読み取り（getRecentHandsPanelConfig）が同じsendMessageを通るため
+    // （#367）、フェッチ回数はrecentHandsCalls()で数える。
+    let fetchCount = 0
+    mockSendMessage.mockImplementation((message: { action?: string }, callback: (response: unknown) => void) => {
+      if (message?.action === 'getRecentHandsPanelConfig') {
+        callback({ success: true, config: DEFAULT_RECENT_HANDS_PANEL_CONFIG })
+        return
+      }
+      fetchCount++
+      // 2回目の応答では、リプレイ取り込みでホールカードが埋まった状態を返す。
+      const base = buildResult()
+      const result = fetchCount === 2
+        ? { ...base, hands: base.hands.map((hand, index) => index === 0
+          ? { ...hand, holeCards: ['A♠', 'K♠'], holeCardsSource: 'replay' as const }
+          : hand) }
+        : base
+      callback({ success: true, recentHands: result })
+    })
+
+    const { rerender } = render(<RecentHandsPanel playerId={1} handEpoch={5} replayEpoch={0} />)
+    await waitFor(() => {
+      expect(screen.getAllByTestId('recent-hands-row')).toHaveLength(3)
+    })
+    expect(recentHandsCalls()).toHaveLength(1)
+
+    // 同じepochでの再レンダーは再フェッチしない（間引きの意味が消えないこと）。
+    rerender(<RecentHandsPanel playerId={1} handEpoch={5} replayEpoch={0} />)
+    expect(recentHandsCalls()).toHaveLength(1)
+
+    // ドレインが詳細を書いた -> handEpochは動かないまま再フェッチする。
+    rerender(<RecentHandsPanel playerId={1} handEpoch={5} replayEpoch={1} />)
+
+    await waitFor(() => {
+      expect(recentHandsCalls()).toHaveLength(2)
+    })
+    await waitFor(() => {
+      expect(screen.getAllByTestId('recent-hands-row')[0])
+        .toHaveTextContent('A')
     })
   })
 
@@ -382,12 +469,12 @@ describe('RecentHandsPanel', () => {
         .toHaveAttribute('aria-pressed', 'true')
     })
 
-    it('件数を変えると新しいlimitで再フェッチし、選択を端末ローカルへ保存する', async () => {
+    it('件数を変えると新しいlimitで再フェッチし、選択の保存をbackgroundへ送る', async () => {
       const user = userEvent.setup()
       render(<RecentHandsPanel playerId={123} />)
 
       await screen.findAllByTestId('recent-hands-row')
-      expect(mockSendMessage).toHaveBeenCalledTimes(1)
+      expect(recentHandsCalls()).toHaveLength(1)
 
       await user.click(screen.getByRole('button', { name: '直近100ハンドを表示' }))
 
@@ -397,22 +484,45 @@ describe('RecentHandsPanel', () => {
           expect.any(Function)
         )
       })
-      expect(chrome.storage.local.set).toHaveBeenCalledWith({ [RECENT_HANDS_LIMIT_STORAGE_KEY]: 100 })
+      // 永続化はbackground経由（storage.localはcontent scriptから遮断されている）。
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        { action: 'setRecentHandsPanelConfig', patch: { limit: 100 } },
+        expect.any(Function)
+      )
     })
 
     it('保存済みの件数があればそれで最初のフェッチを行う（既定値での二度手間フェッチをしない）', async () => {
-      await chrome.storage.local.set({ [RECENT_HANDS_LIMIT_STORAGE_KEY]: 50 })
-      mockSendMessage.mockClear()
+      respondWithConfig({ limit: 50 })
 
       render(<RecentHandsPanel playerId={123} />)
 
       await screen.findAllByTestId('recent-hands-row')
-      expect(mockSendMessage).toHaveBeenCalledTimes(1)
+      expect(recentHandsCalls()).toHaveLength(1)
       expect(mockSendMessage).toHaveBeenCalledWith(
         { action: 'getRecentHands', playerId: 123, limit: 50, participationOnly: DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY },
         expect.any(Function)
       )
-      await chrome.storage.local.remove(RECENT_HANDS_LIMIT_STORAGE_KEY)
+    })
+
+    it('他パネル／他タブの変更broadcastに追従して再フェッチする', async () => {
+      render(<RecentHandsPanel playerId={123} />)
+
+      await screen.findAllByTestId('recent-hands-row')
+      expect(recentHandsCalls()).toHaveLength(1)
+
+      // backgroundのbroadcastをcontent_script.tsがwindowイベントへ変換した
+      // 状態を模す（subscribeRecentHandsPanelConfigの購読経路）。
+      act(() => {
+        window.dispatchEvent(new CustomEvent(RECENT_HANDS_PANEL_CONFIG_EVENT, { detail: { limit: 50 } }))
+      })
+
+      await waitFor(() => {
+        expect(recentHandsCalls()).toHaveLength(2)
+      })
+      expect(mockSendMessage).toHaveBeenLastCalledWith(
+        { action: 'getRecentHands', playerId: 123, limit: 50, participationOnly: DEFAULT_RECENT_HANDS_PARTICIPATION_ONLY },
+        expect.any(Function)
+      )
     })
 
     it('ロード中・0件・エラーのいずれでもスイッチャーは操作できる', async () => {
@@ -448,7 +558,7 @@ describe('RecentHandsPanel', () => {
       )
     })
 
-    it('OFFにするとparticipationOnly: falseで再フェッチし、選択を端末ローカルへ保存する', async () => {
+    it('OFFにするとparticipationOnly: falseで再フェッチし、選択の保存をbackgroundへ送る', async () => {
       const user = userEvent.setup()
       render(<RecentHandsPanel playerId={123} />)
 
@@ -461,19 +571,22 @@ describe('RecentHandsPanel', () => {
           expect.any(Function)
         )
       })
-      expect(chrome.storage.local.set).toHaveBeenCalledWith({ [RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY]: false })
+      // 永続化はbackground経由（storage.localはcontent scriptから遮断されている）。
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        { action: 'setRecentHandsPanelConfig', patch: { participationOnly: false } },
+        expect.any(Function)
+      )
       expect(screen.getByRole('button', { name: '参加のみ表示' })).toHaveAttribute('aria-pressed', 'false')
-      await chrome.storage.local.remove(RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY)
     })
 
-    // codexレビュー指摘（P3）: 自分の書き込みが起こすstorage通知で、同じ条件の
-    // フェッチが二度走らないこと。
-    it('トグル操作は1回しか再フェッチしない（storage通知の反響で二重に走らない）', async () => {
+    // codexレビュー指摘（P3）: 自分の書き込みが起こす変更通知（いまは
+    // backgroundのbroadcast経由）で、同じ条件のフェッチが二度走らないこと。
+    it('トグル操作は1回しか再フェッチしない（broadcastの反響で二重に走らない）', async () => {
       const user = userEvent.setup()
       render(<RecentHandsPanel playerId={123} />)
 
       await screen.findAllByTestId('recent-hands-row')
-      expect(mockSendMessage).toHaveBeenCalledTimes(1)
+      expect(recentHandsCalls()).toHaveLength(1)
 
       await user.click(screen.getByRole('button', { name: '参加のみ表示' }))
 
@@ -483,38 +596,40 @@ describe('RecentHandsPanel', () => {
           expect.any(Function)
         )
       })
-      // 1回目（初回）＋2回目（トグル）だけ。storage通知による3回目は起きない。
-      expect(mockSendMessage).toHaveBeenCalledTimes(2)
-      await chrome.storage.local.remove(RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY)
+      expect(recentHandsCalls()).toHaveLength(2)
+
+      // backgroundのbroadcastが自パネルへ反響しても（値は変わらないので）
+      // 3回目のフェッチは起きない。
+      act(() => {
+        window.dispatchEvent(new CustomEvent(RECENT_HANDS_PANEL_CONFIG_EVENT, {
+          detail: { participationOnly: false },
+        }))
+      })
+      // 1回目（初回）＋2回目（トグル）だけ。反響による3回目は起きない。
+      expect(recentHandsCalls()).toHaveLength(2)
     })
 
     it('保存済みのOFFがあればそれで最初のフェッチを行う', async () => {
-      await chrome.storage.local.set({ [RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY]: false })
-      mockSendMessage.mockClear()
+      respondWithConfig({ participationOnly: false })
 
       render(<RecentHandsPanel playerId={123} />)
 
       await screen.findAllByTestId('recent-hands-row')
-      expect(mockSendMessage).toHaveBeenCalledTimes(1)
+      expect(recentHandsCalls()).toHaveLength(1)
       expect(mockSendMessage).toHaveBeenCalledWith(
         expect.objectContaining({ participationOnly: false }),
         expect.any(Function)
       )
-      await chrome.storage.local.remove(RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY)
     })
 
     it('OFFのときの0件は「参加のみ」由来ではないので従来の文言を出す', async () => {
-      await chrome.storage.local.set({ [RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY]: false })
-      mockSendMessage.mockImplementation((_message: unknown, callback: (response: unknown) => void) => {
-        callback({ success: true, recentHands: buildResult({ hands: [] }) })
-      })
+      respondWithConfig({ participationOnly: false }, buildResult({ hands: [] }))
 
       render(<RecentHandsPanel playerId={123} />)
 
       await waitFor(() => {
         expect(screen.getByText('No hands yet')).toBeInTheDocument()
       })
-      await chrome.storage.local.remove(RECENT_HANDS_PARTICIPATION_ONLY_STORAGE_KEY)
     })
   })
 

@@ -14,10 +14,15 @@ import { firebaseAuthService } from './services/firebase-auth-service'
 import { autoSyncService } from './services/auto-sync-service'
 import { content_scripts } from '../manifest.json'
 import { registerStreamSubscriptions } from './background/ports'
-import { createReplayLedgerAuditDeps, registerEventIngestion } from './background/event-ingestion'
+import {
+  createReplayImportDeps,
+  createReplayLedgerAuditDeps,
+  registerEventIngestion
+} from './background/event-ingestion'
 import { exposeReplayFetchForDevtools } from './background/replay-fetch-bridge'
 import { resumePendingReplayLedgerAudits } from './background/replay-ledger-audit'
-import { backfillReplayDetailsFromLake } from './background/replay-import'
+import { backfillReplayDetailsFromLake, drainReplayImportQueue } from './background/replay-import'
+import { initializeReplayAccess } from './background/replay-access'
 import { enqueuePendingStorageWrite } from './background/pending-storage-writes'
 import { isOperationIdle } from './background/operation-state'
 import { registerMessageRouter } from './background/message-router'
@@ -204,18 +209,29 @@ registerMessageRouter(service, db, gameUrlPattern)
 
 registerStreamSubscriptions(service, gameUrlPattern)
 
-service.writeEntityStream.on('error', error => {
+const scheduleCanonicalRecoveryFromStreamError = (error: unknown): void => {
   // markerのfailed化自体が失敗しても、ログへ出さないインメモリexact IDを根拠に
-  // 取り込みをawaitで止めずRaw Lake復旧を予約する（MUST）。
+  // 取り込みをawaitで止めずRaw Lake復旧を予約する（MUST）。AggregateとWESは
+  // 同じsingle-flight schedulerへ渡し、ストリームごとの再構築を作らない。
   const canonicalError = error as CanonicalWriteFailureError
   if (canonicalError.canonicalRecoveryRequired !== true) return
   const pendingFenceId = canonicalError.canonicalRecoveryFenceId
   void autoSyncService.scheduleCanonicalRebuildRecovery(pendingFenceId).catch(recoveryError => {
     console.error('[background] Live canonical write recovery failed:', recoveryError)
   })
-})
+}
+
+service.writeEntityStream.on('error', scheduleCanonicalRecoveryFromStreamError)
+service.handAggregateStream.on('error', scheduleCanonicalRecoveryFromStreamError)
 
 registerEventIngestion(service)
+
+// 公開オプトインの検証は取得サイクルの一部として走らせる（MUST）。専用の
+// 経路を作らず既存のドレイン（fairness gate・ingestion barrier・keepalive・
+// 直列化）へ相乗りさせることで、`/replay/list`と`/replay/detail`が同じ
+// 順序制御の下に置かれる。
+initializeReplayAccess(() =>
+  drainReplayImportQueue(createReplayImportDeps(service), 'access-toggle'))
 
 /**
  * 実験的リプレイ取得の開発用入口（既定OFF）。

@@ -11,7 +11,7 @@ import { DEVICE_LAYOUT_MESSAGE_TIMEOUT_MS } from '../utils/ui-config-storage'
 // Mock components
 jest.mock('./Hud', () => ({
   __esModule: true,
-  default: ({ actualSeatIndex, stat, scale, statDisplayConfigs, realTimeStats, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, isRecentHandsPanelOpen, onToggleRecentHandsPanel, handEpoch, hudDisplayMode, isDimmed }: any) => (
+  default: ({ actualSeatIndex, stat, scale, statDisplayConfigs, realTimeStats, playerPotOdds, isPositionalPanelOpen, onTogglePositionalPanel, isRecentHandsPanelOpen, onToggleRecentHandsPanel, handEpoch, replayEpoch, hudDisplayMode, isDimmed }: any) => (
     <div data-testid={`hud-${actualSeatIndex}`}>
       Player: {stat.playerId}
       Scale: {scale}
@@ -21,6 +21,7 @@ jest.mock('./Hud', () => ({
       PositionalPanelOpen: {isPositionalPanelOpen ? 'yes' : 'no'}
       RecentHandsPanelOpen: {isRecentHandsPanelOpen ? 'yes' : 'no'}
       HandEpoch: {handEpoch ?? 0}
+      ReplayEpoch: {replayEpoch ?? 0}
       DisplayMode: {hudDisplayMode ?? 'undefined'}
       Dimmed: {isDimmed ? 'yes' : 'no'}
       {onTogglePositionalPanel && (
@@ -806,6 +807,60 @@ describe('App', () => {
       expect(screen.getByTestId('hud-1')).toHaveTextContent('RecentHandsPanelOpen: yes')
       expect(screen.getByTestId('hud-0')).toHaveTextContent('HandEpoch: 7')
       expect(screen.getByTestId('hud-1')).toHaveTextContent('HandEpoch: 7')
+    })
+
+    it('handEpochだけの復旧通知はlineupを変更せず開いたパネルへ届く', async () => {
+      render(<App />)
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', { detail: mockStatsData })
+        )
+      })
+      const lineupBefore = screen.getByTestId('hud-0').textContent
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', { detail: { handEpoch: 11 } })
+        )
+      })
+
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('HandEpoch: 11')
+      expect(screen.getByTestId('hud-0').textContent).toBe(lineupBefore?.replace('HandEpoch: 0', 'HandEpoch: 11'))
+    })
+
+    // セッション終了後のリプレイ詳細ドレインからの通知（ports.tsの
+    // `replayDetailEpoch`）。lineupも現在ハンド専用値も運ばない最小メッセージで、
+    // 開いたままの直近ハンドパネルへ再フェッチだけを促す。
+    it('replayEpoch通知が開いたパネルへ届き、lineup・handEpochは触らない', async () => {
+      const user = userEvent.setup()
+
+      render(<App />)
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', {
+            detail: { ...mockStatsData, handEpoch: 3 },
+          })
+        )
+      })
+
+      await user.click(screen.getByText('toggle-recent-1'))
+      const lineupBefore = screen.getByTestId('hud-0').textContent
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent('PokerChaseServiceEvent', { detail: { replayEpoch: 2 } })
+        )
+      })
+
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('ReplayEpoch: 2')
+      // ハンドは1件も完了していない -> handEpochは据え置き。
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('HandEpoch: 3')
+      // 席・パネルの開閉状態も変わらない（`ReplayEpoch`の桁だけが差分）。
+      expect(screen.getByTestId('hud-0')).toHaveTextContent('RecentHandsPanelOpen: yes')
+      expect(screen.getByTestId('hud-0').textContent)
+        .toBe(lineupBefore!.replace('ReplayEpoch: 0', 'ReplayEpoch: 2'))
     })
 
     it('ポジション別パネルとの従来の種別間排他は維持する', async () => {

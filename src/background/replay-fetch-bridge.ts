@@ -2,16 +2,10 @@
 /**
  * 開発用の取得入口（既定OFFの実験機能）。
  *
- * ページ側（`web_accessible_resource.ts`）は HandId を渡されれば
- * `/replay/detail` を叩いて sanitize 済みの結果を返せるが、それを依頼する
- * 主体がこのPRには無い。セッション境界を見て自動で依頼する取り込み層は
- * 別PRなので、ここでは **DevToolsから手で叩くための最小の入口**だけを置く。
+ * ページ側ブリッジへの`/replay/list`検証と`/replay/detail`取得を仲介する。
+ * 公開取り込み層とDevToolsの手動取得が同じポート・fairness gateを使う。
  *
- * 取り込み層が入ったらこのモジュールは役目を終える（あちらが自前の
- * キューとポート管理で依頼を出す）。それまでの間、取得層を単体で検証・
- * 実験できるようにするのが目的。
- *
- * 保存は一切しない。結果は呼び出し元へ返すだけで、IndexedDBにも
+ * このモジュール自体は保存しない。結果は呼び出し元へ返すだけで、IndexedDBにも
  * chrome.storageにも触れない。
  *
  * 起動口は `chrome.runtime.sendMessage` ではなくService Workerのグローバル。
@@ -27,11 +21,17 @@ import {
   REPLAY_PORT_FETCH,
   REPLAY_PORT_RESULT,
   REPLAY_PORT_STARTED,
+  REPLAY_PORT_VERIFY,
+  REPLAY_PORT_VERIFY_RESULT,
+  REPLAY_FETCH_TIMEOUT_MS,
+  REPLAY_VERIFY_IN_SESSION,
   isPositiveHandId,
   replayFetchBatchTimeoutMs,
   type ReplayFetchItemResult,
   type ReplayFetchResult,
-  type ReplayFetchStarted
+  type ReplayFetchStarted,
+  type ReplayEntitlement,
+  type ReplayVerificationResult
 } from '../replay/protocol'
 
 interface PendingRequest {
@@ -48,6 +48,15 @@ const pending = new Map<string, PendingRequest>()
 
 /** MV3 Service Workerの起動世代。再起動すると必ず変わる。 */
 const serviceWorkerEpoch = crypto.randomUUID()
+
+interface PendingVerification {
+  port: chrome.runtime.Port
+  epoch: string
+  resolve: (outcome: ReplayVerificationOutcome) => void
+  timer: ReturnType<typeof setTimeout>
+}
+
+const pendingVerifications = new Map<string, PendingVerification>()
 
 /** ページ側のキューに合わせて依頼を直列化する。 */
 let dispatchQueue: Promise<void> = Promise.resolve()
@@ -71,6 +80,30 @@ export const handleReplayPortMessage = (
   port: chrome.runtime.Port
 ): boolean => {
   if (typeof message !== 'object' || message === null) return false
+
+  if ((message as { type?: unknown }).type === REPLAY_PORT_VERIFY_RESULT) {
+    const result = message as Partial<ReplayVerificationResult>
+    if (typeof result.requestId !== 'string' || typeof result.epoch !== 'string' ||
+      typeof result.ok !== 'boolean') return true
+    const request = pendingVerifications.get(result.requestId)
+    // 詳細取得のRESULTと同じ世代照合を掛ける（MUST）。旧SW世代の`/replay/list`
+    // 応答が再接続後のポート経由で届いても、新SWの状態機械へは入れない。
+    if (!request || request.port !== port || request.epoch !== result.epoch ||
+      result.epoch !== serviceWorkerEpoch) return true
+    pendingVerifications.delete(result.requestId)
+    clearTimeout(request.timer)
+    if (result.ok && result.entitlement) {
+      request.resolve({ success: true, entitlement: result.entitlement as ReplayEntitlement })
+    } else {
+      request.resolve({
+        success: false,
+        error: 'error' in result && typeof result.error === 'string'
+          ? result.error
+          : 'malformed-response'
+      })
+    }
+    return true
+  }
 
   // ページ側がそのバッチの処理を実際に開始した ―― ここで期限を張り直す。
   // 開始前は「先行バッチが最大構成でも待ち切れる長さ」、開始後は「自分の
@@ -110,6 +143,80 @@ export const releaseReplayRequestsForPort = (port: chrome.runtime.Port): void =>
   for (const [requestId, request] of pending) {
     if (request.port === port) settle(requestId, [])
   }
+  for (const [requestId, request] of pendingVerifications) {
+    if (request.port !== port) continue
+    pendingVerifications.delete(requestId)
+    clearTimeout(request.timer)
+    request.resolve({ success: false, error: 'game tab disconnected' })
+  }
+}
+
+export type ReplayVerificationOutcome =
+  | { success: true, entitlement: ReplayEntitlement }
+  | { success: false, error: string }
+
+/**
+ * 公開オプトインの検証（`/replay/list` 1本）をACTIVEゲームタブへ依頼する。
+ *
+ * 検証も**詳細取得と同じ経路**を通す（MUST）。この1本は課金確認であって
+ * サーバから見れば同じAPIの追加トラフィックであり、対局中に撃てば詳細取得と
+ * 同じ公平性の問題になる。したがって:
+ *
+ * - `isActivePortOutsideSession()` の三値ゲートを、`dispatchQueue` を待った
+ *   **後**（＝実際のpostMessage直前）にも取り直す。token未生成・unknown・
+ *   reconnect猶予はすべて対局中扱いで撃たない
+ * - 依頼先は現在のACTIVEポートだけ。「ACTIVE tokenが無いときは接続中の
+ *   任意のポートを使う」という緩和は置けない ―― token未生成は上のゲートで
+ *   既に不可であり、緩和を書くと到達しないうえに不変条件と矛盾する
+ * - `epoch` を載せ、ページ側の逐次キュー・自律abortに詳細取得と同じ形で乗る
+ * - 依頼の直列化も同じ `dispatchQueue`。並列に撃つと、ページ側の間隔制御を
+ *   跨いで `/replay/list` と `/replay/detail` が同時に飛ぶ
+ */
+export const requestReplayVerification = async (
+  targetPort: chrome.runtime.Port
+): Promise<ReplayVerificationOutcome> => {
+  const slot = dispatchQueue
+  let releaseSlot!: () => void
+  dispatchQueue = new Promise<void>(resolve => { releaseSlot = resolve })
+  await slot
+  try {
+    if (!isActivePortOutsideSession()) {
+      return { success: false, error: REPLAY_VERIFY_IN_SESSION }
+    }
+    const activePort = getActivePort()
+    const port = activePort && connectedPorts.has(activePort) &&
+      activePort === targetPort
+      ? activePort
+      : undefined
+    if (!port) return { success: false, error: 'no active game tab' }
+
+    const requestId = `replay-verify-${crypto.randomUUID()}`
+    return await new Promise<ReplayVerificationOutcome>(resolve => {
+      const timer = setTimeout(() => {
+        pendingVerifications.delete(requestId)
+        resolve({ success: false, error: 'verification timeout' })
+      }, REPLAY_FETCH_TIMEOUT_MS + 5_000)
+      pendingVerifications.set(requestId, {
+        port,
+        epoch: serviceWorkerEpoch,
+        resolve,
+        timer
+      })
+      try {
+        port.postMessage({
+          type: REPLAY_PORT_VERIFY,
+          epoch: serviceWorkerEpoch,
+          requestId
+        })
+      } catch {
+        pendingVerifications.delete(requestId)
+        clearTimeout(timer)
+        resolve({ success: false, error: 'game tab disconnected' })
+      }
+    })
+  } finally {
+    releaseSlot()
+  }
 }
 
 /**
@@ -127,8 +234,16 @@ export const cancelReplayRequestsForSessionStart = (): number => {
       // 切断済みportは通常のdisconnect処理が回収する。
     }
   }
-  const cancelled = pending.size
+  const cancelled = pending.size + pendingVerifications.size
   for (const requestId of [...pending.keys()]) settle(requestId, [])
+  // 進行中の`/replay/list`検証も同じ契機で畳む（MUST）。検証だけ残すと、
+  // 対局が始まった後に返る応答で`verified`を書き、その周回の取得判定が
+  // 対局中のまま真になる。
+  for (const [requestId, request] of [...pendingVerifications]) {
+    pendingVerifications.delete(requestId)
+    clearTimeout(request.timer)
+    request.resolve({ success: false, error: REPLAY_VERIFY_IN_SESSION })
+  }
   return cancelled
 }
 
@@ -235,5 +350,7 @@ export const exposeReplayFetchForDevtools = (): void => {
 export const __resetReplayFetchBridgeForTests = (): void => {
   for (const request of pending.values()) clearTimeout(request.timer)
   pending.clear()
+  for (const request of pendingVerifications.values()) clearTimeout(request.timer)
+  pendingVerifications.clear()
   dispatchQueue = Promise.resolve()
 }

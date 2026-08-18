@@ -117,12 +117,40 @@ describe('message-router updateBattleTypeFilter -- spectator lastKnownStats refr
   // draining the full handler deterministically (instead of hoping a single
   // setTimeout(0) macrotask hop covers it) keeps the recalc chain from
   // racing afterEach's db teardown.
-  const dispatchFilterUpdate = () => new Promise<void>(resolve => {
+  const dispatchFilterUpdate = (handLimit?: unknown) => new Promise<void>(resolve => {
+    const filterOptions = handLimit === undefined
+      ? FILTER_OPTIONS
+      : { ...FILTER_OPTIONS, handLimit }
     messageListener(
-      { action: 'updateBattleTypeFilter', filterOptions: FILTER_OPTIONS } as unknown as ChromeMessage,
+      { action: 'updateBattleTypeFilter', filterOptions } as unknown as ChromeMessage,
       {} as chrome.runtime.MessageSender,
       jest.fn(() => { resolve() })
     )
+  })
+
+  test.each([
+    [0.5, undefined],
+    [10, undefined],
+    [300, undefined],
+    [Number.NaN, undefined],
+    [Number.POSITIVE_INFINITY, undefined],
+    [0, undefined],
+    [-1, undefined],
+    [501, 500],
+    [20, 20],
+    [50, 50],
+    [100, 100],
+    [200, 200],
+    [500, 500],
+    [null, undefined],
+  ])('message router normalizes handLimit=%p before applying the service filter', async (input, expected) => {
+    await dispatchFilterUpdate(input)
+    expect(service.handLimitFilter).toBe(expected)
+  })
+
+  test('message router treats a missing handLimit as ALL', async () => {
+    await dispatchFilterUpdate()
+    expect(service.handLimitFilter).toBeUndefined()
   })
 
   test('spectating a different table than the hero\'s last deal: the extra refresh is skipped (lineup mismatch)', async () => {

@@ -20,7 +20,7 @@ import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { getPositionalStats, clearPositionalStatsCache, buildCacheKey } from './positional-stats-service'
 import { ActionDetail, ActionType, BattleType, PhaseType, Position } from '../types/game'
 import { ApiType } from '../types'
-import type { ApiHandEvent } from '../types'
+import type { ApiHandEvent, FilterOptions } from '../types'
 import type { Action, Hand } from '../types/entities'
 import type { PositionalStatsBucketId } from '../types/stats'
 
@@ -175,6 +175,37 @@ describe('PositionalStatsService', () => {
     expect(typeof result.computedAt).toBe('number')
   })
 
+  test.each([
+    [0.5, undefined],
+    [10, undefined],
+    [300, undefined],
+    [Number.NaN, undefined],
+    [Number.POSITIVE_INFINITY, undefined],
+    [0, undefined],
+    [-1, undefined],
+    [undefined, undefined],
+    [501, 500],
+    [20, 20],
+    [50, 50],
+    [100, 100],
+    [200, 200],
+    [500, 500],
+    [null, undefined],
+  ])('setBattleTypeFilter normalizes handLimit=%p to %p before the service filter is used', async (input, expected) => {
+    const recalculateStats = jest
+      .spyOn(service.statsOutputStream, 'recalculateStats')
+      .mockResolvedValue()
+    const filterOptions = {
+      gameTypes: { sng: true, mtt: true, ring: true },
+      handLimit: input,
+    } as unknown as FilterOptions
+
+    await service.setBattleTypeFilter(filterOptions)
+
+    expect(service.handLimitFilter).toBe(expected)
+    recalculateStats.mockRestore()
+  })
+
   test('BB walk hand is excluded from vpip/pfr denominators but counted in handsN', async () => {
     const result = await getPositionalStats(db, service, PLAYER_ID)
     const bb = bucketOf(result, Position.BB)
@@ -263,12 +294,12 @@ describe('PositionalStatsService', () => {
     }
   })
 
-  test('handLimitFilter keeps the most recent N legacy hands with deterministic HandId fallback', async () => {
-    service.handLimitFilter = 3
+  test('handLimitFilter accepts the smallest public window and keeps legacy ordering', async () => {
+    service.handLimitFilter = 20
     const result = await getPositionalStats(db, service, PLAYER_ID)
 
-    // These legacy fixtures omit approxTimestamp, so the documented fallback
-    // keeps the prior HandId order: 10 (BTN), 9 (BTN), 8 (HJ).
+    // These legacy fixtures omit approxTimestamp. The public minimum is 20,
+    // so all ten fixture hands remain and the HandId fallback still applies.
     const btn = bucketOf(result, Position.BTN)
     expect(btn.handsN).toBe(2)
     expect(btn.stats.vpip).toEqual([2, 2])
@@ -281,10 +312,11 @@ describe('PositionalStatsService', () => {
     expect(hj.stats.vpip).toEqual([0, 1])
     expect(hj.stats.pfr).toEqual([0, 1])
 
-    for (const position of [Position.CO, Position.UTG, Position.SB, Position.BB, 'unknown' as const]) {
-      const bucket = bucketOf(result, position)
-      expect(bucket.handsN).toBe(0)
-    }
+    expect(bucketOf(result, Position.CO).handsN).toBe(1)
+    expect(bucketOf(result, Position.UTG).handsN).toBe(1)
+    expect(bucketOf(result, Position.SB).handsN).toBe(1)
+    expect(bucketOf(result, Position.BB).handsN).toBe(2)
+    expect(bucketOf(result, 'unknown').handsN).toBe(2)
   })
 
   test('battleTypeFilter that matches nothing returns all-empty buckets, not an error', async () => {
@@ -347,18 +379,16 @@ describe('PositionalStatsService', () => {
       }
     })
 
-    test('ordering: table-size filter narrows the population BEFORE handLimit caps it', async () => {
-      // ['full'] narrows to hands {7, 8}. handLimit=1 must then keep only the
-      // more recent of *those two* (hand 8, HJ) -- not the most recent hand
-      // overall (hand 10, BTN, which isn't in the 'full' layer at all).
+    test('table-size filter composes with the smallest public handLimit window', async () => {
+      // ['full'] narrows to hands {7, 8}. The public minimum handLimit=20
+      // keeps both matching hands and cannot introduce a hidden sub-20 cap.
       service.tableSizeFilter = ['full']
-      service.handLimitFilter = 1
+      service.handLimitFilter = 20
       const result = await getPositionalStats(db, service, PLAYER_ID)
 
-      const hj = bucketOf(result, Position.HJ)
-      expect(hj.handsN).toBe(1)
-
-      for (const position of [Position.BTN, Position.CO, Position.UTG, Position.SB, Position.BB, 'unknown' as const]) {
+      expect(bucketOf(result, Position.HJ).handsN).toBe(1)
+      expect(bucketOf(result, Position.SB).handsN).toBe(1)
+      for (const position of [Position.BTN, Position.CO, Position.UTG, Position.BB, 'unknown' as const]) {
         expect(bucketOf(result, position).handsN).toBe(0)
       }
     })
@@ -390,17 +420,19 @@ describe('PositionalStatsService', () => {
   describe('persistent stats ledger integration', () => {
     test('applies latest N globally across position buckets after the battle filter', async () => {
       service.battleTypeFilter = [BattleType.TOURNAMENT]
-      service.handLimitFilter = 2
+      service.handLimitFilter = 20
 
       const result = await getPositionalStats(db, service, PLAYER_ID)
 
-      // Tournament narrows to hands 1..8, then global latest-2 selects {8, 7}.
-      // A per-position limit would incorrectly retain additional older buckets.
+      // Tournament narrows to hands 1..8. The public minimum window keeps all
+      // eight, while the selection remains global across position buckets.
       expect(bucketOf(result, Position.HJ).handsN).toBe(1)
       expect(bucketOf(result, Position.SB).handsN).toBe(1)
-      for (const position of [Position.BTN, Position.CO, Position.UTG, Position.BB, 'unknown' as const]) {
-        expect(bucketOf(result, position).handsN).toBe(0)
-      }
+      expect(bucketOf(result, Position.CO).handsN).toBe(1)
+      expect(bucketOf(result, Position.UTG).handsN).toBe(1)
+      expect(bucketOf(result, Position.BB).handsN).toBe(2)
+      expect(bucketOf(result, 'unknown').handsN).toBe(2)
+      expect(bucketOf(result, Position.BTN).handsN).toBe(0)
     })
 
     test('survives a service-worker-style service restart without rereading canonical history', async () => {

@@ -18,7 +18,7 @@ import {
   BATTLE_TYPE_FILTERS
 } from '../types'
 import { DEFAULT_TABLE_SIZE_FILTER, selectedTableSizeLayers, type TableSizeLayer } from '../utils/table-size'
-import { normalizeStatsLatestHands } from '../utils/stats-hand-limit'
+import { normalizeStatsLatestHands, type StatsLatestHands } from '../utils/stats-hand-limit'
 import type {
   ApiEvent,
   BattleType,
@@ -170,13 +170,13 @@ class PokerChaseService {
   // 永続化不要なプロパティ
   battleTypeFilter?: number[] = undefined // undefined = all, array = specific battleTypes
   tableSizeFilter?: TableSizeLayer[] = undefined // undefined = all layers (no filtering), array = selected layers (C案)
-  private _handLimitFilter?: number = undefined
-  /** undefined = all hands, number = limit to recent N hands（UI/台帳契約で500上限） */
-  get handLimitFilter(): number | undefined {
+  private _handLimitFilter?: StatsLatestHands = undefined
+  /** undefinedは全履歴。それ以外はPopupが公開するlatest-N選択肢のいずれか。 */
+  get handLimitFilter(): StatsLatestHands | undefined {
     return this._handLimitFilter
   }
 
-  set handLimitFilter(value: number | undefined) {
+  set handLimitFilter(value: StatsLatestHands | undefined) {
     this._handLimitFilter = normalizeStatsLatestHands(value)
   }
   statDisplayConfigs?: StatDisplayConfig[] = undefined // Custom stat display configuration
@@ -486,7 +486,7 @@ class PokerChaseService {
     this.tableSizeFilter = selectedTableSizeLayers(filterOptions.tableSize ?? DEFAULT_TABLE_SIZE_FILTER)
 
     // Set hand limit filter
-    this.handLimitFilter = filterOptions.handLimit
+    this.handLimitFilter = normalizeStatsLatestHands(filterOptions.handLimit)
 
     // Set stat display configuration
     // 保存済みのstatDisplayConfigsをデフォルトとマージしてから設定する（background.tsの

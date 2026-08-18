@@ -77,6 +77,7 @@
     │   ├── auto-sync-boot.ts        # Auth-ready auto-sync initialization (init race guard)
     │   ├── AGENTS.md                # Nested review rules (SW concurrency invariants)
     │   ├── active-port.ts           # Latest-game-event token, session state, replay account binding
+    │   ├── replay-access.ts         # Public opt-in entitlement state and /replay/list verification
     │   ├── replay-import.ts         # Opt-in replay import: HandId queue (meta), session-end
     │   │                            #   drain, expiry accounting, synthetic 90001 Lake rows
     │   ├── event-ingestion.ts       # Raw Event Lake ingestion: serialized queue, durability
@@ -141,7 +142,7 @@
     │   └── review-prompt.ts   # Review-prompt state/thresholds + visibility rule (pure)
     │
     ├── db/
-    │   └── poker-chase-db.ts  # Dexie database definition (v7 schema: sequence-key Lake + replayDetails)
+    │   └── poker-chase-db.ts  # Dexie database definition (v8 schema: sequence-key Lake + replayDetails + stats ledger)
     │
     ├── replay/                # Replay API shared code (page world + service worker)
     │   ├── protocol.ts        # Message/constant contract, ledger reader, credential stripping
@@ -163,6 +164,9 @@
     │   ├── index.ts           # Module exports
     │   ├── registry.ts        # Statistics registry (auto-discovery)
     │   ├── compactStats.ts    # Compact-line + classifier required-stat forcing
+    │   ├── stat-ledger.ts     # Persistent incremental stats ledger (v8 stores, pending-derivation fences)
+    │   ├── hand-contribution.ts       # Per-hand counter contributions for the ledger
+    │   ├── counter-stat-results.ts    # Stat results computed from ledger counter aggregates
     │   ├── helpers.ts         # Common helper functions
     │   ├── utils.ts           # Formatting utilities
     │   └── core/              # Statistic definitions
@@ -221,6 +225,7 @@
         ├── hand-log-processor.ts      # PokerStars format generation
         ├── hand-log-text.ts           # Shared PokerStars hand-text formatting
         ├── hand-order.ts              # Stable hand ordering helpers
+        ├── last-table-storage.ts      # 「最後の卓の復元」: 表示専用ラインナップのスキーマ・検証・背景経由の永続化
         ├── logger.ts          # Structured logging
         ├── options-storage.ts # chrome.storage helpers
         ├── pending-stats-cache.ts

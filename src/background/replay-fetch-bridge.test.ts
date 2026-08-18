@@ -4,7 +4,10 @@ import {
   REPLAY_PORT_FETCH,
   REPLAY_PORT_RESULT,
   REPLAY_PORT_STARTED,
+  REPLAY_PORT_VERIFY,
+  REPLAY_PORT_VERIFY_RESULT,
   REPLAY_FETCH_BATCH_LIMIT,
+  REPLAY_VERIFY_IN_SESSION,
   replayFetchBatchTimeoutMs
 } from '../replay/protocol'
 import {
@@ -13,7 +16,8 @@ import {
   exposeReplayFetchForDevtools,
   handleReplayPortMessage,
   releaseReplayRequestsForPort,
-  requestReplayDetails
+  requestReplayDetails,
+  requestReplayVerification
 } from './replay-fetch-bridge'
 import {
   __resetActivePortStateForTests,
@@ -37,6 +41,11 @@ const sentRequest = (port: chrome.runtime.Port): { epoch: string, requestId: str
   (port.postMessage as jest.Mock).mock.calls[0]![0]
 
 const sentRequestId = (port: chrome.runtime.Port): string => sentRequest(port).requestId
+
+/** 依頼は`dispatchQueue`の順番待ちを挟むので、複数回のmicrotaskで送信まで進める。 */
+const flushMicrotasks = async (): Promise<void> => {
+  for (let index = 0; index < 10; index++) await Promise.resolve()
+}
 
 describe('replay-fetch-bridge（開発用の取得入口）', () => {
   beforeEach(() => {
@@ -205,6 +214,86 @@ describe('replay-fetch-bridge（開発用の取得入口）', () => {
       error: 'active game session'
     })
     expect(port.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('セッション外のACTIVEへ/list検証を依頼し、期限フィールドだけで解決する', async () => {
+    const port = makeInactiveActivePort()
+    const pending = requestReplayVerification(port)
+    await flushMicrotasks()
+    // 検証も詳細取得と同じepochを載せる。
+    expect(port.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: REPLAY_PORT_VERIFY,
+      epoch: expect.any(String)
+    }))
+
+    handleReplayPortMessage({
+      type: REPLAY_PORT_VERIFY_RESULT,
+      epoch: sentRequest(port).epoch,
+      requestId: sentRequestId(port),
+      ok: true,
+      entitlement: { cardOpenEndDate: 1_786_000_000, isExpiredCardOpen: false }
+    }, port)
+
+    await expect(pending).resolves.toEqual({
+      success: true,
+      entitlement: { cardOpenEndDate: 1_786_000_000, isExpiredCardOpen: false }
+    })
+  })
+
+  it('epochの違う/list検証応答では解決しない', async () => {
+    const port = makeInactiveActivePort()
+    const pending = requestReplayVerification(port)
+    await flushMicrotasks()
+
+    handleReplayPortMessage({
+      type: REPLAY_PORT_VERIFY_RESULT,
+      epoch: 'other-service-worker-epoch',
+      requestId: sentRequestId(port),
+      ok: true,
+      entitlement: { cardOpenEndDate: 1_786_000_000, isExpiredCardOpen: false }
+    }, port)
+    releaseReplayRequestsForPort(port)
+
+    await expect(pending).resolves.toEqual({ success: false, error: 'game tab disconnected' })
+  })
+
+  // #361のfairness gateは token未生成・unknown・reconnect猶予をすべて対局中と
+  // して扱う。検証だけを「ACTIVE未確定なら接続portで代替してよい」と緩めると、
+  // その不変条件を検証経路の側から破ることになる。
+  it('ACTIVE未確定のホーム画面では/list検証も撃たない', async () => {
+    const port = makePort()
+    connectedPorts.add(port)
+
+    await expect(requestReplayVerification(port)).resolves.toEqual({
+      success: false,
+      error: REPLAY_VERIFY_IN_SESSION
+    })
+    expect(port.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('ACTIVE portがセッション中なら/list検証もpostMessageしない', async () => {
+    const port = makeInactiveActivePort()
+    markActivePortSessionActive(resolveGeneration(port)!)
+
+    await expect(requestReplayVerification(port)).resolves.toEqual({
+      success: false,
+      error: REPLAY_VERIFY_IN_SESSION
+    })
+    expect(port.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('セッション開始の一括CANCELは進行中の/list検証も畳む', async () => {
+    const port = makeInactiveActivePort()
+    const pending = requestReplayVerification(port)
+    await flushMicrotasks()
+    expect(port.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: REPLAY_PORT_VERIFY }))
+
+    cancelReplayRequestsForSessionStart()
+
+    await expect(pending).resolves.toEqual({
+      success: false,
+      error: REPLAY_VERIFY_IN_SESSION
+    })
   })
 
   it.each([

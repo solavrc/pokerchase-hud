@@ -70,6 +70,24 @@ export const getLiveBroadcastSequenceForTab = (tabId: number | undefined): numbe
 let handCompletionEpoch = 0
 
 /**
+ * リプレイ詳細のドレインが `replayDetails` / Lake 90001 を書いたことを表す、
+ * `handCompletionEpoch` とは別立ての単調カウンター。
+ *
+ * `handCompletionEpoch` に相乗りさせてはならない（MUST NOT）。あちらは
+ * 「生きたハンドが1件完了した」ことだけを意味する信号として
+ * `ports.hand-epoch.test.ts` で固定されており、そこにハンド完了以外の理由で
+ * 進む値を混ぜると、その不変条件が「パネルを更新したい何か」まで薄まる。
+ * 影響範囲も違う ―― リプレイ詳細が変えるのは直近ハンドのホールカード列
+ * だけで、ポジション別統計は1ビットも変わらない。別の値にしておけば、
+ * 開いているポジション別パネルは無駄な再フェッチをしない。
+ *
+ * 送り先はACTIVEポートだけ（MUST、Design Principles #19）。ドレインが走るのは
+ * ACTIVE世代が明示的にセッション外のときだけなので、その時のACTIVEポートは
+ * 「直前まで対局していたタブ」＝パネルが開いているタブそのものになる。
+ */
+let replayDetailEpoch = 0
+
+/**
  * `chrome.runtime.onConnect`で接続されたポートの集合。
  * lifecycle、明示的なport-scoped request、token未確定時のbackground起点stats更新に使う。
  */
@@ -88,9 +106,19 @@ type SessionBoundaryMessage = {
   timestamp: number
 }
 
+/**
+ * リプレイ詳細が書かれたことだけを伝える最小メッセージ。`stats`も
+ * `realTimeStats`も載せない ―― lineupやbust減光の状態は一切変わっておらず、
+ * 直近の集計を再送すると、セッション終了後に保持している表示へ余計な
+ * 更新経路を作ってしまう。
+ */
+type ReplayEpochMessage = {
+  replayEpoch: number
+}
+
 const postMessageToPort = (
   port: chrome.runtime.Port,
-  data: StatsMessage | SessionBoundaryMessage | string
+  data: StatsMessage | SessionBoundaryMessage | ReplayEpochMessage | string
 ): boolean => {
   try {
     port.postMessage(data)
@@ -147,7 +175,14 @@ export const registerActivePortForService = (
   const generation = resolveGeneration(port)
   if (generation === undefined) return
 
-  if (lastKnownStats.length === 0 && latestRealTimeStats === undefined) return
+  if (lastKnownStats.length === 0 && latestRealTimeStats === undefined) {
+    // 復旧通知が先に完了した同一世代の後継transportへ、保留stateを追加せず
+    // handEpochだけを接続時に一度届ける。registerActivePortConnection()が
+    // trueを返した場合に限るため、reconnect-pending中のbroadcastにはならない。
+    // stats配信ではないのでlive delivery sequenceも進めない（MUST NOT）。
+    postMessageToPort(port, { handEpoch: handCompletionEpoch })
+    return
+  }
   const delivered = postMessageToPort(port, {
     stats: lastKnownStats,
     evtDeal: activeDealGeneration === generation ? service.liveEvtDeal : undefined,
@@ -186,6 +221,45 @@ export const clearActiveRealtimeForSessionEnd = (
   if (resolveGeneration() !== generation) return
   service.realTimeStatsStream.reset()
   latestRealTimeStats = undefined
+}
+
+/**
+ * リプレイ詳細が保存されたことをACTIVEポートへ通知する（`replayDetailEpoch`の
+ * コメント参照）。呼び出し間引きは`replay-panel-refresh.ts`が持つ。
+ *
+ * ACTIVEポートが無ければ何もしない。relicへ送ってはならない（MUST NOT）し、
+ * token未確定時のconnected fallback（`statsOutputStream`側にはある）も
+ * ここでは行わない ―― ドレイン自体が明示的なinactive tokenを要求するので、
+ * token不在は「送る相手がいない」と同義になる。
+ */
+export const notifyReplayDetailsStored = (): void => {
+  replayDetailEpoch++
+  const activePort = getActivePort()
+  if (!activePort) return
+  postMessageToPort(activePort, { replayEpoch: replayDetailEpoch })
+}
+
+/**
+ * Raw Lake全再構築で復元したcompleted handを、handEpochだけで通知する。
+ *
+ * stats/evtDeal/realTimeStatsを送らないため、現在のACTIVE世代のlineupや席回転を
+ * 変更しない（MUST）。復旧側はactivation成功後にだけ呼び出し、次の通常DEALを
+ * 待つ間も開いた詳細パネルのcacheを再取得できるようにする。
+ */
+export const notifyRecoveredHandCompletion = (): void => {
+  handCompletionEpoch++
+  // cold-start復旧ではconnected portが先に再接続していてもACTIVE tokenがまだ
+  // 無い。token未生成の時だけ既存のconnected fallbackへ送り、reconnect候補の
+  // generationを誤って別世代へ配信しない（MUST NOT）。
+  if (resolveGeneration() === undefined) {
+    for (const port of connectedPorts) {
+      postMessageToPort(port, { handEpoch: handCompletionEpoch })
+    }
+    return
+  }
+  const activePort = getActivePort()
+  if (!activePort) return
+  postMessageToPort(activePort, { handEpoch: handCompletionEpoch })
 }
 
 /** dedup済みの成功201だけを、そのイベント世代のcontent scriptへ通知する。 */

@@ -8,6 +8,7 @@ import { HandLogConfig, HandLogEvent, HandLogLayout, UIConfig } from './hand-log
 import type { SyncState } from '../services/auto-sync-service'
 import type { UndecodedEventStats } from '../background/undecoded-event-tracker'
 import type { ReviewPromptChoice } from '../constants/review-prompt'
+import type { RecentHandsPanelConfig } from '../utils/recent-hands-config'
 
 // Message action constants
 export const MESSAGE_ACTIONS = {
@@ -70,6 +71,9 @@ export const MESSAGE_ACTIONS = {
   GET_POSITIONAL_STATS: 'getPositionalStats',
   // Recent hands drill-down
   GET_RECENT_HANDS: 'getRecentHands',
+  GET_RECENT_HANDS_PANEL_CONFIG: 'getRecentHandsPanelConfig',
+  SET_RECENT_HANDS_PANEL_CONFIG: 'setRecentHandsPanelConfig',
+  UPDATE_RECENT_HANDS_PANEL_CONFIG: 'updateRecentHandsPanelConfig',
   // Undecoded event (drop) visibility
   GET_UNDECODED_EVENT_STATS: 'getUndecodedEventStats',
   ACKNOWLEDGE_UNDECODED_EVENT_STATS: 'acknowledgeUndecodedEventStats',
@@ -235,6 +239,23 @@ export interface SetDeviceHandLogLayoutMessage {
 }
 
 /**
+ * ゲームタブ→バックグラウンド。「最後の卓の復元」のスナップショット
+ * （last-table-storage.ts）を読む／書く。`storage.local`は
+ * `setAccessLevel('TRUSTED_CONTEXTS')`でcontent scriptから遮断されている
+ * ため、`hudPosition_*`等と同じく信頼できるbackground経由でしか触れない。
+ * `snapshot`の形は`parseLastTableSnapshot`が唯一の正本で、ここでは
+ * `unknown`のまま運ぶ（型定義とZodスキーマの二重管理を作らない）。
+ */
+export interface GetLastTableSnapshotMessage {
+  action: 'getLastTableSnapshot'
+}
+
+export interface SetLastTableSnapshotMessage {
+  action: 'setLastTableSnapshot'
+  snapshot: unknown
+}
+
+/**
  * ポップアップ→バックグラウンド。端末内に保存されたHUDパネル位置と
  * ハンドログのレイアウトを、まとめて既定へ戻す。
  * 個別リセットに分けていないのは、ユーザーから見て「配置を元に戻す」は
@@ -377,6 +398,39 @@ export interface GetRecentHandsMessage {
   participationOnly?: boolean
 }
 
+/**
+ * ゲームタブ→バックグラウンド。「直近ハンド」パネルの表示設定
+ * （recent-hands-config.ts、#341の件数と#353の「参加のみ」）を読む／書く。
+ * `storage.local`は`setAccessLevel('TRUSTED_CONTEXTS')`でcontent scriptから
+ * 遮断されているため、`hudPosition_*`等と同じく信頼できるbackground経由で
+ * しか触れない。
+ */
+export interface GetRecentHandsPanelConfigMessage {
+  action: 'getRecentHandsPanelConfig'
+}
+
+export interface SetRecentHandsPanelConfigMessage {
+  action: 'setRecentHandsPanelConfig'
+  /**
+   * 変更するキーだけを持つpatch。形の正本は
+   * `sanitizeRecentHandsPanelConfigPatch`（recent-hands-config.ts）で、
+   * 書き込み側の信頼できる境界であるbackgroundが検証するため、ここでは
+   * `unknown`のまま運ぶ。
+   */
+  patch: unknown
+}
+
+/**
+ * バックグラウンド→ゲームタブ（broadcast）。設定の永続化に成功した後で
+ * 全ゲームタブへ配る。content_script.tsが同名のwindowイベントへ変換し、
+ * `subscribeRecentHandsPanelConfig`がそれを購読する（`storage.onChanged`は
+ * TRUSTED_CONTEXTSゲートでuntrusted contextへは配送されないため使えない）。
+ */
+export interface UpdateRecentHandsPanelConfigMessage {
+  action: 'updateRecentHandsPanelConfig'
+  patch: Partial<RecentHandsPanelConfig>
+}
+
 // Undecoded event (drop) visibility messages
 export interface GetUndecodedEventStatsMessage {
   action: 'getUndecodedEventStats'
@@ -481,6 +535,11 @@ export interface RecentHandsResponse extends SuccessResponse {
   recentHands: RecentHandsResult
 }
 
+/** 保存値は既定値へresolve済みで返す（未設定・壊れた値も既定値になる）。 */
+export interface RecentHandsPanelConfigResponse extends SuccessResponse {
+  config: RecentHandsPanelConfig
+}
+
 export interface UndecodedEventStatsResponse extends SuccessResponse {
   undecodedEventStats: UndecodedEventStats
 }
@@ -504,7 +563,12 @@ export interface DeviceHandLogLayoutResponse extends SuccessResponse {
   layout?: HandLogLayout
 }
 
-export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse | RecentHandsResponse | UndecodedEventStatsResponse | ApplyUpdateResponse | ReviewPromptResponse | DeviceUILayoutResponse | DeviceHandLogLayoutResponse
+/** 保存が無い／壊れている場合は`snapshot`を省く（＝復元しない）。 */
+export interface LastTableSnapshotResponse extends SuccessResponse {
+  snapshot?: unknown
+}
+
+export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse | RecentHandsResponse | RecentHandsPanelConfigResponse | UndecodedEventStatsResponse | ApplyUpdateResponse | ReviewPromptResponse | DeviceUILayoutResponse | DeviceHandLogLayoutResponse | LastTableSnapshotResponse
 
 // Union type of all possible messages
 export type ChromeMessage =
@@ -528,6 +592,8 @@ export type ChromeMessage =
   | UpdateUIConfigMessage
   | UpdateDeviceUIScaleMessage
   | GetDeviceUILayoutMessage
+  | GetLastTableSnapshotMessage
+  | SetLastTableSnapshotMessage
   | SetDeviceUIScaleMessage
   | SetDeviceHudPositionMessage
   | GetDeviceHandLogLayoutMessage
@@ -557,6 +623,9 @@ export type ChromeMessage =
   | AcknowledgeRebuildAdvisoryMessage
   | GetPositionalStatsMessage
   | GetRecentHandsMessage
+  | GetRecentHandsPanelConfigMessage
+  | SetRecentHandsPanelConfigMessage
+  | UpdateRecentHandsPanelConfigMessage
   | GetUndecodedEventStatsMessage
   | AcknowledgeUndecodedEventStatsMessage
   | ApplyPendingUpdateMessage
@@ -653,11 +722,26 @@ export const isGetOperationStateMessage = (msg: unknown): msg is GetOperationSta
 export const isAcknowledgeRebuildAdvisoryMessage = (msg: unknown): msg is AcknowledgeRebuildAdvisoryMessage =>
   isMessageWithAction(msg, 'acknowledgeRebuildAdvisory')
 
+export const isGetLastTableSnapshotMessage = (msg: unknown): msg is GetLastTableSnapshotMessage =>
+  isMessageWithAction(msg, 'getLastTableSnapshot')
+
+export const isSetLastTableSnapshotMessage = (msg: unknown): msg is SetLastTableSnapshotMessage =>
+  isMessageWithAction(msg, 'setLastTableSnapshot')
+
 export const isGetPositionalStatsMessage = (msg: unknown): msg is GetPositionalStatsMessage =>
   isMessageWithAction(msg, 'getPositionalStats')
 
 export const isGetRecentHandsMessage = (msg: unknown): msg is GetRecentHandsMessage =>
   isMessageWithAction(msg, 'getRecentHands')
+
+export const isGetRecentHandsPanelConfigMessage = (msg: unknown): msg is GetRecentHandsPanelConfigMessage =>
+  isMessageWithAction(msg, 'getRecentHandsPanelConfig')
+
+export const isSetRecentHandsPanelConfigMessage = (msg: unknown): msg is SetRecentHandsPanelConfigMessage =>
+  isMessageWithAction(msg, 'setRecentHandsPanelConfig')
+
+export const isUpdateRecentHandsPanelConfigMessage = (msg: unknown): msg is UpdateRecentHandsPanelConfigMessage =>
+  isMessageWithAction(msg, 'updateRecentHandsPanelConfig')
 
 export const isGetUndecodedEventStatsMessage = (msg: unknown): msg is GetUndecodedEventStatsMessage =>
   isMessageWithAction(msg, 'getUndecodedEventStats')

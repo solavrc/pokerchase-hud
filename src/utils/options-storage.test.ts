@@ -3,15 +3,21 @@
  * 旧@extend-chrome/storage bucketキーからのマイグレーションのテスト
  */
 import { loadOptions, saveOptions, OPTIONS_STORAGE_KEY, type Options } from './options-storage'
+import type { FilterOptions } from '../types'
 
 const LEGACY_KEYS_KEY = 'extend-chrome/storage__options_keys'
 const legacyKey = (field: string) => `extend-chrome/storage__options--${field}`
 
-const sampleFilterOptions = {
+const sampleFilterOptions: FilterOptions = {
   gameTypes: { sng: true, mtt: false, ring: true },
   handLimit: 200,
   statDisplayConfigs: [{ id: 'vpip', enabled: true, order: 1 }]
 }
+
+const filterOptionsWithHandLimit = (handLimit: unknown): FilterOptions => ({
+  ...sampleFilterOptions,
+  handLimit,
+} as unknown as FilterOptions)
 
 // test-setup.tsのchromeモックはモジュールスコープで状態を持つため、各テスト前に全キーを消す
 const clearSyncStorage = async () => {
@@ -50,7 +56,7 @@ describe('options-storage', () => {
   it('保存済みの契約外handLimitをoptions境界で500へ永続正規化する', async () => {
     const options: Options = {
       sendUserData: false,
-      filterOptions: { ...sampleFilterOptions, handLimit: 1_000 },
+      filterOptions: filterOptionsWithHandLimit(1_000),
     }
     await chrome.storage.sync.set({ [OPTIONS_STORAGE_KEY]: options })
     jest.clearAllMocks()
@@ -70,11 +76,53 @@ describe('options-storage', () => {
   it('saveOptionsも500超handLimitを保存前に正規化する', async () => {
     await saveOptions({
       sendUserData: true,
-      filterOptions: { ...sampleFilterOptions, handLimit: 750 },
+      filterOptions: filterOptionsWithHandLimit(750),
     })
 
     const result = await chrome.storage.sync.get(OPTIONS_STORAGE_KEY) as Record<string, any>
     expect(result[OPTIONS_STORAGE_KEY].filterOptions.handLimit).toBe(500)
+  })
+
+  it.each([0.5, 10, 300, Number.NaN, Number.POSITIVE_INFINITY, 0, -1, null, undefined])(
+    'saveOptionsは契約外handLimit=%pをALL(undefined)として保存する',
+    async handLimit => {
+      await saveOptions({
+        sendUserData: true,
+        filterOptions: filterOptionsWithHandLimit(handLimit),
+      })
+
+      const result = await chrome.storage.sync.get(OPTIONS_STORAGE_KEY) as Record<string, any>
+      expect(result[OPTIONS_STORAGE_KEY].filterOptions.handLimit).toBeUndefined()
+    }
+  )
+
+  it.each([20, 50, 100, 200, 500])(
+    'saveOptionsは公開選択肢%sをそのまま保存する',
+    async handLimit => {
+      await saveOptions({
+        sendUserData: true,
+        filterOptions: filterOptionsWithHandLimit(handLimit),
+      })
+
+      const result = await chrome.storage.sync.get(OPTIONS_STORAGE_KEY) as Record<string, any>
+      expect(result[OPTIONS_STORAGE_KEY].filterOptions.handLimit).toBe(handLimit)
+    }
+  )
+
+  it('loadOptionsは保存済みの契約外handLimitをALLへ移行し、以後の復元も一致する', async () => {
+    await chrome.storage.sync.set({
+      [OPTIONS_STORAGE_KEY]: {
+        sendUserData: false,
+        filterOptions: filterOptionsWithHandLimit(0.5),
+      },
+    })
+
+    const loaded = await loadOptions()
+
+    expect(loaded?.filterOptions?.handLimit).toBeUndefined()
+    const after = await chrome.storage.sync.get(OPTIONS_STORAGE_KEY) as Record<string, any>
+    expect(after[OPTIONS_STORAGE_KEY].filterOptions.handLimit).toBeUndefined()
+    await expect(loadOptions()).resolves.toEqual(loaded)
   })
 
   it('データが無い場合はundefinedを返す', async () => {
@@ -109,7 +157,7 @@ describe('options-storage', () => {
     await chrome.storage.sync.set({
       [LEGACY_KEYS_KEY]: ['sendUserData', 'filterOptions'],
       [legacyKey('sendUserData')]: true,
-      [legacyKey('filterOptions')]: { ...sampleFilterOptions, handLimit: 1_000 },
+      [legacyKey('filterOptions')]: filterOptionsWithHandLimit(1_000),
     })
 
     const loaded = await loadOptions()

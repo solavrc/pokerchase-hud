@@ -149,6 +149,32 @@ const Mockup = () => {
   const scenario = MOCK_SCENARIOS[scenarioId]
 
   /*
+   * Drill-down open state, mirroring `App.tsx`'s exactly: one positional
+   * panel at a time (single playerId), any number of recent-hands panels (a
+   * playerId set), and opening either kind closes the other. Held here rather
+   * than inside `Hud` because that is where production holds it -- a per-panel
+   * local state would let two positional panels be open at once, which is a
+   * layout the real HUD never produces.
+   */
+  const [openPositionalPlayerId, setOpenPositionalPlayerId] = useState<number | null>(null)
+  const [openRecentHandsPlayerIds, setOpenRecentHandsPlayerIds] = useState<ReadonlySet<number>>(() => new Set())
+
+  const togglePositionalPanel = (playerId: number) => {
+    setOpenPositionalPlayerId((previous) => (previous === playerId ? null : playerId))
+    setOpenRecentHandsPlayerIds(new Set())
+  }
+
+  const toggleRecentHandsPanel = (playerId: number) => {
+    setOpenPositionalPlayerId(null)
+    setOpenRecentHandsPlayerIds((previous) => {
+      const next = new Set(previous)
+      if (next.has(playerId)) next.delete(playerId)
+      else next.add(playerId)
+      return next
+    })
+  }
+
+  /*
    * The popup writes HUD display settings to the same storage the production
    * App.tsx reads, so read them the same way (including its
    * DEFAULT_UI_CONFIG merge and the device-local scale override). Without
@@ -411,7 +437,11 @@ const Mockup = () => {
         <Hud
           actualSeatIndex={index}
           hudDisplayMode={uiConfig.hudDisplayMode}
+          isPositionalPanelOpen={openPositionalPlayerId === stat.playerId}
+          isRecentHandsPanelOpen={openRecentHandsPlayerIds.has(stat.playerId)}
           key={`${scenario.id}-${hudRevision}-${index}`}
+          onTogglePositionalPanel={() => togglePositionalPanel(stat.playerId)}
+          onToggleRecentHandsPanel={() => toggleRecentHandsPanel(stat.playerId)}
           playerPotOdds={scenario.playerPotOdds[index]}
           realTimeStats={index === 0 ? scenario.realTimeStats : undefined}
           scale={scale}

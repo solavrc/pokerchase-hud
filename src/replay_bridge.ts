@@ -8,8 +8,8 @@
  * ## なぜ web_accessible_resource.ts から分離したか（技術事実）
  *
  * WebSocket傍受（HUDの土台、`web_accessible_resource.ts`）は全ユーザーで常時
- * 注入されるが、こちらのリプレイ傍受は `experimentalReplayImportEnabled` を
- * 有効にしたユーザーだけが対象。両者を同居させると、フラグを有効化していない
+ * 注入されるが、こちらのリプレイ傍受は開発者フラグまたは公開オプトインを
+ * 有効にしたユーザーだけが対象。両者を同居させると、どちらも有効でない
  * ユーザーにも fetch / XMLHttpRequest のパッチと、設定到達前の fail-open 窓
  * （下記）でのエンベロープ捕獲が走る。
  *
@@ -51,18 +51,24 @@ import {
   REPLAY_BRIDGE_LEDGER,
   REPLAY_BRIDGE_RESULT,
   REPLAY_BRIDGE_STARTED,
+  REPLAY_BRIDGE_VERIFY,
+  REPLAY_BRIDGE_VERIFY_RESULT,
   REPLAY_DETAIL_URL,
   REPLAY_FETCH_BATCH_LIMIT,
   REPLAY_FETCH_INTERVAL_MS,
   REPLAY_FETCH_TIMEOUT_MS,
   REPLAY_LIST_PATH,
+  REPLAY_LIST_URL,
+  REPLAY_VERIFY_IN_SESSION,
+  REPLAY_VERIFY_NO_AUTH,
   errorMessage,
   isPositiveHandId,
   readReplayLedger,
   sanitizeReplayDetail,
   type ReplayBridgeConfigMessage,
   type ReplayFetchItemResult,
-  type ReplayFetchRequest
+  type ReplayFetchRequest,
+  type ReplayVerificationRequest
 } from './replay/protocol'
 
 interface ReplayAuthEnvelope {
@@ -172,7 +178,7 @@ const postReplayLedger = (url: URL, decoded: unknown): void => {
   // replayImportEnabled`）には**乗らない**。あちらが緩いのは、認証エンベロープ
   // の捕獲機会が起動直後の1回しか無く、かつ捕獲した値はページのクロージャに
   // 留まって拡張側へ渡らない（設定が届いた時点で無効なら破棄される）ため。
-  // 台帳は拡張側へ渡って永続化されるので、同じ緩さを適用すると実験フラグを
+  // 台帳は拡張側へ渡って永続化されるので、同じ緩さを適用すると両フラグを
   // 一度も有効化していないユーザーの監査が走ってしまう。
   // 実害も無い: `/replay/list` はユーザーの手動操作で飛ぶので、起動直後の
   // 設定未確定の窓に重なることは無い。
@@ -449,6 +455,139 @@ const fetchReplayDetail = async (
   }
 }
 
+const postVerificationResult = (
+  request: ReplayVerificationRequest,
+  outcome:
+    | { ok: true, entitlement: { cardOpenEndDate: number, isExpiredCardOpen: boolean } }
+    | { ok: false, error: string, retryable: boolean }
+): void => {
+  window.postMessage({
+    type: REPLAY_BRIDGE_VERIFY_RESULT,
+    epoch: request.epoch,
+    requestId: request.requestId,
+    ...outcome
+  }, POKER_CHASE_ORIGIN)
+}
+
+/**
+ * 公開オプトインの資格確認。1回の呼び出しにつき`/replay/list`を1本だけ送る。
+ * `BattleType`ごとにHandListは異なるが、プレミアムパスの期限は応答エンベロープ共通
+ * なので、検証ではカテゴリ0を使う。
+ *
+ * この1本にも `/replay/detail` と**同じ公平性ゲートを掛ける**（MUST）:
+ * epoch照合・補助CANCEL世代・page activityの三値ゲート（`unknown`もfail-closed）
+ * を、HTTPの前と応答の後の両方で見る。AbortControllerも同じ
+ * `activeReplayController` へ載せ、WSがACTIVEを観測した瞬間の自律abortが
+ * 検証にもそのまま効くようにする。
+ */
+const verifyReplayAccess = async (
+  request: ReplayVerificationRequest,
+  queuedCancelGeneration: number
+): Promise<void> => {
+  const isStale = (): boolean =>
+    currentServiceWorkerEpoch !== request.epoch ||
+    queuedCancelGeneration !== auxiliaryCancelGeneration ||
+    !replayImportEnabled
+  if (isStale()) return
+  // `unknown`もfail-closed。対局中・状態不明では検証も撃たない。依頼元は
+  // これを`pending-session`として記録し、次の取得サイクルで撃ち直す。
+  if (!isPageOutsideSession()) {
+    postVerificationResult(request, {
+      ok: false,
+      error: REPLAY_VERIFY_IN_SESSION,
+      retryable: true
+    })
+    return
+  }
+  const auth = replayAuth
+  const generationAtRequest = replayAuthGeneration
+  if (!OriginalFetch || !auth) {
+    postVerificationResult(request, {
+      ok: false,
+      error: !OriginalFetch ? 'fetch-unavailable' : REPLAY_VERIFY_NO_AUTH,
+      retryable: true
+    })
+    return
+  }
+
+  const controller = new AbortController()
+  activeReplayController = controller
+  const timer = setTimeout(() => controller.abort(), REPLAY_FETCH_TIMEOUT_MS)
+  try {
+    const response = await OriginalFetch(REPLAY_LIST_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/msgpack' },
+      signal: controller.signal,
+      body: encode({
+        param: { BattleType: 0 },
+        ...auth,
+        requestKey: crypto.randomUUID()
+      })
+    })
+    if (!response.ok) {
+      const retryable = response.status === 401 || response.status === 408 ||
+        response.status === 429 || response.status >= 500
+      postVerificationResult(request, {
+        ok: false,
+        error: `HTTP ${response.status}`,
+        retryable
+      })
+      return
+    }
+    const decoded = decode(new Uint8Array(await response.arrayBuffer()))
+    if (generationAtRequest !== replayAuthGeneration) {
+      postVerificationResult(request, {
+        ok: false,
+        error: 'stale-auth-generation',
+        retryable: true
+      })
+      return
+    }
+    if (replayAuth === auth && typeof decoded === 'object' && decoded !== null &&
+      'session' in decoded && typeof decoded.session === 'string') {
+      replayAuth = { ...auth, session: decoded.session }
+    }
+    // 応答が返る間に対局が始まっていたら、資格の判定結果も返さない（MUST）。
+    // 返すと依頼元が`verified`を書き、その周回の取得判定が対局中のまま真になる。
+    if (isStale()) return
+    if (!isPageOutsideSession()) {
+      postVerificationResult(request, {
+        ok: false,
+        error: REPLAY_VERIFY_IN_SESSION,
+        retryable: true
+      })
+      return
+    }
+    const rejection = readEnvelopeRejection(decoded)
+    const ledger = readReplayLedger(decoded)
+    if (rejection || !ledger) {
+      postVerificationResult(request, {
+        ok: false,
+        error: rejection?.error ?? 'malformed-response',
+        retryable: rejection?.retryable ?? false
+      })
+      return
+    }
+    postVerificationResult(request, {
+      ok: true,
+      entitlement: {
+        cardOpenEndDate: ledger.cardOpenEndDate,
+        isExpiredCardOpen: ledger.isExpiredCardOpen
+      }
+    })
+  } catch (error) {
+    if (isStale()) return
+    postVerificationResult(request, {
+      ok: false,
+      error: isPageOutsideSession() ? errorMessage(error) : REPLAY_VERIFY_IN_SESSION,
+      retryable: true
+    })
+  } finally {
+    clearTimeout(timer)
+    if (activeReplayController === controller) activeReplayController = undefined
+  }
+}
+
 /**
  * 間隔を空ける理由のもう一つ: 流量制限に掛かった応答を「取得不可」と
  * 取り違えないための予防。このAPIは拒否をHTTP 200 + status で返すため、
@@ -579,6 +718,32 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       replayAuthGeneration += 1
       replayAuthAnnounced = false
     }
+    return
+  }
+  if (event.data.type === REPLAY_BRIDGE_VERIFY && replayImportEnabled) {
+    const message = event.data as Partial<ReplayVerificationRequest>
+    if (typeof message.epoch !== 'string' || typeof message.requestId !== 'string') return
+    const request = message as ReplayVerificationRequest
+    // 詳細取得と**同じ入口の形**にする。ACTIVE/unknown中の依頼はキューへ入れず
+    // 即答し、SW側の待ちを`pending-session`として解放する。
+    if (!isPageOutsideSession()) {
+      cancelAllReplayRequests()
+      postVerificationResult(request, {
+        ok: false,
+        error: REPLAY_VERIFY_IN_SESSION,
+        retryable: true
+      })
+      return
+    }
+    adoptServiceWorkerEpoch(request.epoch)
+    const queuedVerifyCancelGeneration = auxiliaryCancelGeneration
+    // 検証を**同じ逐次キュー**へ載せる（MUST）。別経路にすると`/replay/list`と
+    // `/replay/detail`が同時に飛び、`REPLAY_FETCH_INTERVAL_MS`の間隔制御が
+    // 効かなくなる。依頼元も同じ`dispatchQueue`で直列化しているので、この
+    // キューで待たされるのは高々1件。
+    replayFetchQueue = replayFetchQueue
+      .then(() => verifyReplayAccess(request, queuedVerifyCancelGeneration))
+      .catch(error => console.warn('[experimental-replay] Replay verification failed:', error))
     return
   }
   if (event.data.type !== REPLAY_BRIDGE_FETCH || !replayImportEnabled) return

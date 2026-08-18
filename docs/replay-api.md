@@ -136,11 +136,22 @@ detail の窓は暦日ルールだけ。
 
 ## `HoleCardList` の返却範囲
 
-サーバはショーダウンに到達したプレイヤーの `HoleCardList` だけを返す。
-途中でフォールドした相手は空配列。
+どの席の手札が入るかは、アカウントの〈手札公開機能〉（プレミアムパス。
+`CardOpenEndDate` / `IsExpiredCardOpen` が示す有効期間）で決まる。
 
-WebSocket 側（`EVT_HAND_RESULTS.Results[].HoleCards`）との差は1点だけで、
-`RankType` が `SHOWDOWN_MUCK`（11）の行に、こちらは値が入る。WebSocket は
+- **公開期間内**: リプレイに記録された全席の `HoleCardList` が返る。途中で
+  フォールドして `EVT_HAND_RESULTS.Results[]` に行すら存在しない席も含む。
+  ゲーム自身のリプレイ画面が表示するのと同じ範囲。
+- **公開期間外**: ショーダウンに到達したプレイヤーの `HoleCardList` だけ。
+  途中でフォールドした相手は空配列。
+
+手元の検体は全て〈手札公開機能〉なしのアカウントで取得したもので、後者しか
+実測していない（2026-08-05 時点）。読み出し側（`src/replay/hole-cards.ts`）は
+どちらの形も同じ経路で扱う ―― 席の種別を判断せず、値が2枚入っていれば読み、
+空配列・`-1` 埋めなら `null` を返す。
+
+WebSocket 側（`EVT_HAND_RESULTS.Results[].HoleCards`）との差は、公開期間外でも
+1点ある: `RankType` が `SHOWDOWN_MUCK`（11）の行に、こちらは値が入る。WebSocket は
 同じ行を空で送る（`docs/api-events.md` の RankType 表を参照）。
 逆に `FOLD_OPEN`（12）の行はリプレイ側に存在しない。
 
@@ -191,7 +202,7 @@ type ReplayPlayer = {
   SeatIndex: number
   UserId: number
   Name: string
-  HoleCardList: number[]        // 非ショーダウン参加者は空
+  HoleCardList: number[]        // 公開されていない席は空（上記「返却範囲」参照）
   StartChip: number
   BetAnte: number
   CharaId: string
@@ -224,28 +235,35 @@ type ReplayAction = {
 暦日の条件を満たしていても `2302` を返す。リプレイは自分が参加したハンド
 だけが対象。取り込み層はこれをローカルで除外できる。
 
-## 取り込み層（既定OFF）
+## 取り込み層（既定OFF・公開オプトイン）
 
-`experimentalReplayImportEnabled` を有効にしたときだけ動く。実装は
-`src/background/replay-import.ts`。
+実効判定は `experimentalReplayImportEnabled`（DevTools用の開発者フラグ）
+**または** `replayImportEnabled`（公開トグル）と課金検証済み状態の組み合わせ。
+開発者フラグは検証を無条件にバイパスする。公開トグルは、セッション外で
+`/replay/list`を1回送り、`IsExpiredCardOpen === false`かつ
+`CardOpenEndDate`が未来であることを確認できた場合だけ有効になる。実装は
+`src/background/replay-access.ts`と`src/background/replay-import.ts`。
 
-**この層にユーザー向けのUIは無い。** 取得層（セクション上部）と同じく、
-フラグはService WorkerのDevToolsコンソールから `chrome.storage.sync` を
-直接書いて切り替える。ポップアップに操作を出すのは、開示（プライバシー
-ポリシー・ストア掲載情報）を伴う公開時点まで行わない。
+UIはポップアップの「リプレイ取り込み」。検証中、対局終了待ち、認証
+エンベロープ待ち、検証済み、失効を表示する。
+
+公開にあたっての開示手順は
+[chrome-web-store-release.md](chrome-web-store-release.md#replay-import-disclosurev60-公開時)
+と [PRIVACY.md](../PRIVACY.md) の "Optional replay import" を参照。
 
 ### いつ取得するか
 
 **セッション中は1本も発行しない。** セッションの進行中に過去ハンドの詳細を
 取れてしまうと、まだ伏せられている情報がセッション内で参照可能になる。
-セッション中にできるのは HandId をキューへ積むことだけで、取得は
-セッション終了後（`EVT_SESSION_RESULTS` / `EVT_ENTRY_CANCELLED`）に走る。
+公開トグルの検証にも同じgateを適用する。セッション中のONは通信せず保留し、
+セッション終了後（`EVT_SESSION_RESULTS` / `EVT_ENTRY_CANCELLED`）に検証する。
+認証エンベロープが無ければホーム画面の通常API通信で捕獲するまで保留する。
 
 **依頼は1件ずつ**行い、次の1本を撃つ直前に毎回この判定をやり直す。100件を
 1バッチで渡すと、ページ側が1.5秒間隔で撃ち切るまで数分かかり、その間に次の
 対局が始まっても残りが撃たれ続けて不変条件を破るため。逐次取得の間隔も
 取り込み層が空ける（ページ側の間隔はバッチ内でしか効かない）。同じ理由で、
-実験フラグと長時間操作（インポート/再構築/エクスポート）の有無も毎回確認し、
+実効フラグと長時間操作（インポート/再構築/エクスポート）の有無も毎回確認し、
 いずれかが変わった時点で中断してキューに残す。
 
 判定は、WebSocket由来のgame eventを最後に届けた唯一のACTIVE portの
@@ -277,6 +295,23 @@ Dexie transaction内の最初のread（競合write lock待ちを含む）が終�
 90001を書き込まない。各依頼と応答の
 Service Worker epochは公平性の主ゲートではなく、SW再起動時の所有権分離と旧応答
 破棄を担う補助線として残す。
+
+公開経路の検証（`/replay/list`）にも**この二重の防衛線をそのまま適用する**。
+検証は`/replay/detail`と同じepochを載せ、同じcontent script経路・同じpage側
+逐次キューを通り、同じpage activity gate（`unknown`もfail-closed）で止まる。
+実行中のAbortControllerも詳細取得と同じ枠に載るので、WSが開始イベントを
+観測した瞬間の自律abortが検証にも効く。対局中・状態不明で撃てなかった検証は
+`pending-session`として記録し、次の取得サイクルの先頭で撃ち直す（エラーには
+しない）。Service Worker側でも、`dispatchQueue`を待った後の実際の
+`postMessage`直前にfairness gateを取り直し、依頼先を現在のACTIVE portだけに
+限定する。
+
+公開経路では各取り込みサイクルの先頭でも`/replay/list`を1回送り、期限を
+自然に再検証する。この1本は取り込みサイクルの一部としてドレインの中で走る
+（専用の経路を持たない）ので、取り込みキューのbarrier・長時間操作の判定・
+keepalive・ドレインの直列化がそのまま掛かる。失効を検知したサイクルでは
+`/replay/detail`を1本も送らず、キューと取り込み済みの90001行・
+`replayDetails`索引を保持する。
 
 キューは `meta` テーブルの1行（`replayImportQueue`）に持つ。MV3 の Service
 Worker は数十秒で落ちるため、メモリには置けない。
@@ -364,9 +399,38 @@ Dexie v7 は新ストアの追加だけで既存の派生（`hands`/`phases`/`ac
 
 ### 何に使うか
 
-「直近ハンド」パネルで、ショーダウンでマックした行のホールカードを埋める
-（`src/replay/hole-cards.ts`）。WebSocket の `EVT_HAND_RESULTS` は
-`RankType: 11`（SHOWDOWN_MUCK）の `HoleCards` を空で送るが、リプレイは実際の
-手札を返す。ゲーム自身のリプレイ画面も同じものを表示するので、サーバは
-ショーダウンに到達した手を公開情報として扱っている。ショーダウンに到達して
-いない行（`NO_CALL` / `FOLD_OPEN`）は埋めない。
+「直近ハンド」パネルで、WebSocket 経由では手札が取れない席のホールカードを
+埋める（`src/replay/hole-cards.ts`）。埋める対象を席の種別で絞らないのが要点で、
+リプレイ payload に値が入っている席は全て埋める:
+
+- `RankType: 11`（SHOWDOWN_MUCK）の行 ―― WebSocket の `EVT_HAND_RESULTS` は
+  この行の `HoleCards` を空で送るが、リプレイは実際の手札を返す。
+- 途中でフォールドした席 ―― `Results[]` に**行そのものが無い**ため、RankType を
+  見る実装では構造的に到達できない。〈手札公開機能〉の有効期間内はここに値が入る。
+
+可視性の判断は payload に委ねる（上記「`HoleCardList` の返却範囲」）。公開されて
+いない席は空配列・`-1` 埋めで返るので、読み出し側の2枚チェックで自然に落ちる。
+表示は他の相手カードと同じ（ランクのみ4色表示、正確な表記はツールチップ）。
+
+### ドレイン中の画面の追従
+
+セッション終了後のドレインは1.5秒間隔で書き足していくので、開いたままの
+「直近ハンド」パネルはその間ずっと古い（30秒キャッシュはハンド完了でしか
+無効化されず、パネル側にも再フェッチの契機が無い）。詳細を1件保存するたびに
+表示側へ2つの信号を出して追従させる（`src/background/replay-panel-refresh.ts`）:
+
+- **キャッシュ無効化は1件ごと**。`Map.clear()`と世代のインクリメントだけで
+  DBもポートも触らないので、間引く理由が無い。間引くと、その隙に手で開いた
+  パネルが1件前のDB状態を最大30秒掴む。
+- **パネルへの通知は間引く**。5件ごと、または前回通知から10秒経過のどちらか
+  早いほう（取得間隔1.5秒なので実質7.5秒に1回）。通知1回につき開いている各
+  パネルがhands/actions/phases/replayDetailsを読み直すため。**ドレインの
+  終わりには必ず1回送る** ―― 最後の数件はどの閾値にも届かないので、これが
+  無いと末尾のハンドが画面に出ない。中断した周回でも、そこまでの保存分は送る。
+
+通知はACTIVE portにだけ届く（他のstats配信と同じ規約）。ドレインが走るのは
+ACTIVE世代が明示的に`inactive`のときだけなので、その時のACTIVE portは
+「直前まで対局していたタブ」＝パネルが開いているタブそのものになる。値は
+ハンド完了の`handEpoch`とは別立てのカウンター（`replayEpoch`）で運ぶ:
+リプレイ詳細が変えるのは直近ハンドのホールカード列だけで、ポジション別統計は
+変わらないため、そちらのパネルは無駄に再フェッチしない。

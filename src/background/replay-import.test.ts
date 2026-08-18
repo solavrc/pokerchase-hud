@@ -789,6 +789,60 @@ describe('replay import layer', () => {
       expect(keepAliveStarts).toBe(0)
     })
 
+    test('継続検証で失効したら詳細取得を止め、既存90001索引とキューを保持する', async () => {
+      const deps = depsOf({ prepareAccess: async () => false })
+      await db.replayDetails.put({ handId: 2599, payload: { retained: true }, fetchedAt: NOW })
+      markSessionInactive()
+      await enqueueReplayHandId(deps, 2601, NOW)
+
+      await drainReplayImportQueue(deps)
+
+      expect(fetchCalls).toEqual([])
+      expect(await db.replayDetails.get(2599)).toMatchObject({ payload: { retained: true } })
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([2601])
+    })
+
+    test('/list検証もingestion barrier後の最新session状態で止める', async () => {
+      let releaseIngestion!: () => void
+      const prepareAccess = jest.fn().mockResolvedValue(true)
+      const deps = depsOf({
+        prepareAccess,
+        waitForIngestion: () => new Promise<void>(resolve => { releaseIngestion = resolve })
+      })
+      markSessionInactive()
+
+      const drain = drainReplayImportQueue(deps)
+      await Promise.resolve()
+      markSessionActive()
+      releaseIngestion()
+      await drain
+
+      expect(prepareAccess).not.toHaveBeenCalled()
+      expect(fetchCalls).toEqual([])
+    })
+
+    // 検証はHTTP1本分のawait境界である。その間に次の対局が始まっていれば、
+    // keepaliveも詳細取得も始めない。
+    test('/list検証の応答待ちの間に対局が始まったら詳細取得へ進まない', async () => {
+      let releaseVerification!: (value: boolean) => void
+      const deps = depsOf({
+        prepareAccess: () => new Promise<boolean>(resolve => { releaseVerification = resolve })
+      })
+      markSessionInactive()
+      await enqueueReplayHandId(deps, 2602, NOW)
+
+      const drain = drainReplayImportQueue(deps)
+      // ingestion barrierとフラグ読み取りを越えてprepareAccessへ到達させる。
+      await new Promise(resolve => setTimeout(resolve, 0))
+      markSessionActive()
+      releaseVerification(true)
+      await drain
+
+      expect(fetchCalls).toEqual([])
+      expect(keepAliveStarts).toBe(0)
+      expect((await readReplayImportQueue(db)).map(entry => entry.handId)).toEqual([2602])
+    })
+
     // Codexレビュー指摘: 積む側はfire-and-forgetなので、直後の309が空の
     // メタ行を読みうる。読み落とすと次のセッション終了まで取得されない。
     test('積む書き込みが決着してから読む（直後のセッション終了で取り逃さない）', async () => {
