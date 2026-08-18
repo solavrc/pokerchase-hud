@@ -227,36 +227,25 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           if (this.events.length > 0 && this.events[0]?.ApiTypeId === ApiType.EVT_DEAL) {
             this.push(this.events)
           } else {
-            // DEALが無いRESULTSはこのライブ集約では派生しない。Raw Lake全体を
-            // canonical replayする既存のsingle-flight recoveryへexact fenceを渡すため、
-            // fenceは成功ackせずfailedとして残す（MUST）。この分岐ではrebuildを
-            // awaitせず、backgroundのerror listenerが非同期に予約する。
+            // DEALが無いRESULTSはライブ集約では派生しない。既存のfull replayへ
+            // exact fenceを渡すため、成功ackせずfailedとして残す（MUST）。
+            const recoveryError = new Error(
+              'EVT_HAND_RESULTS arrived without an in-memory EVT_DEAL; canonical Raw Lake recovery is required'
+            ) as CanonicalWriteFailureError
+            recoveryError.canonicalRecoveryRequired = true
+            recoveryError.canonicalRecoveryFenceId =
+              this.service.statsLedger.getPendingHandDerivationFenceId(event)
             try {
               const markedPending = await this.service.statsLedger.markPendingHandDerivationFailed(event)
-              if (markedPending) {
-                const recoveryError = new Error(
-                  'EVT_HAND_RESULTS arrived without an in-memory EVT_DEAL; canonical Raw Lake recovery is required'
-                ) as CanonicalWriteFailureError
-                recoveryError.canonicalRecoveryRequired = true
-                recoveryError.canonicalRecoveryFenceId =
-                  this.service.statsLedger.getPendingHandDerivationFenceId(event)
-                throw recoveryError
-              }
+              if (markedPending) throw recoveryError
             } catch (error: unknown) {
-              // marker書込みが失敗した場合もexact IDをerrorへ残し、backgroundの
-              // forced recoveryが同じraw fenceを再試行できるようにする。
-              if ((error as CanonicalWriteFailureError).canonicalRecoveryRequired === true) {
-                throw error
-              }
-              const recoveryError = new Error(
-                'Failed to mark the missing-DEAL result fence for canonical recovery'
-              ) as CanonicalWriteFailureError
-              recoveryError.canonicalRecoveryRequired = true
-              recoveryError.canonicalRecoveryFenceId =
-                this.service.statsLedger.getPendingHandDerivationFenceId(event)
+              if (error === recoveryError) throw error
+              // marker書込みが失敗してもexact IDを構造化errorへ残し、既存の
+              // schedulerにfull replayを予約する。
+              recoveryError.message = 'Failed to mark the missing-DEAL result fence for canonical recovery'
               throw recoveryError
             } finally {
-              // 部分的なRESULTSバッファを残すと、次のハンドがそれを引き継いでしまう。
+              // 部分的なRESULTSバッファを次のハンドへ引き継がない。
               this.events = []
             }
           }

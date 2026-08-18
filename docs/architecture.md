@@ -217,31 +217,21 @@ Service Workerが終了しても、次回起動はstaleな派生表を成功状�
 
 liveの`EVT_HAND_RESULTS`（306）は、Raw Lakeの主キー`[timestamp+ApiTypeId+sequence]`ごとの
 pending derivation fenceをraw rowと同じtransactionで保存する。完了ハンドのcanonical entityと
-統計台帳のcommitが成功した時、またはschema不適合・cross-generation/chimera判定で意図的に
-派生しないと確定した時に、対応するexact fenceだけを消す。揮発バッファにDEALが無い306は
-意図的棄却として先に消さず、failed fenceを残してRaw Lake全体のcanonical replayへ渡す。
+統計台帳のcommitが成功した時、またはschema不適合・cross-generation/chimera判定で
+意図的に派生しないと確定した時に、対応するexact fenceだけを消す。揮発バッファ先頭に
+DEALがない306は意図的に派生せず、先にfenceを消さない。
 同じ起動ownerの未完了fenceは通常のin-flightとして扱い、別owner・失敗済み・壊れたfenceは
 中断復旧とbaseline構築拒否の対象とする。cloud分割再構築は開始時に回収対象のexact IDを固定し、
 完了commitでそのIDだけを消すため、再構築中に到着したlive fenceを巻き込まない。
 live canonical transactionが失敗した場合は、failed状態の永続化自体が失敗しても、同一worker内の
 error通知がexact fence IDを非同期復旧へ引き継ぐ。この明示IDは通常の「current ownerはin-flight」
 判定を越えてRaw Lake再生の根拠になり、成功時のactivation transactionでだけ消える。
+AggregateEventsStreamでDEALなし306を観測した場合も、同じstructured errorへexact fence IDを
+渡して既存のsingle-flight full rebuild schedulerを予約する。通常の取り込みはrebuild完了を待たず、
+既存canonical replayが全Raw Lakeを一度だけ再生し、対象handが生成される場合も生成されない場合も
+activationでfenceを終端する。Raw `apiEvents`はこの経路から削除しない。
 手動の全再構築は`apiEvents`のRW lock下でLake全体の一致snapshotを再生し、その最終commitで
 pending fence全件を回収する。
-
-新しいService Workerが306だけを受け取って集約を終える場合、AggregateEventsStreamは対象306の
-exact fenceを成功ackせずfailed状態へ遷移させ、同じworker内の構造化errorで既存のsingle-flight
-canonical recoveryへ非同期に渡す。通常の取り込みはrecovery完了をawaitしない。recoveryは既存の
-canonical replay engineを先頭からbounded chunkで走査し、session・battle・seat・hero・同一
-timestampの順序はそのengineだけで決定する。保持するのはconverterの状態、現在chunk、対象handの
-最大1 bundleだけで、全履歴entityは蓄積しない。走査前のRaw Lakeの件数/high-watermarkを、取り込み
-drain後の最終`rw` transactionでapiEvents store・対象terminal row・exact fenceと再確認する。
-scan中にrawが増えた、同timestamp groupの完全性が確定できない、またはtransactionが失敗した場合は
-commitせず、旧canonicalとfailed fenceを残して再試行する。対象handが生成された場合だけ、その
-handのcanonical entityとledger contributionを同じtransactionで冪等置換し、exact fenceを消す。
-stable replayでhandが生成されない場合はcanonical/ledgerを触らずfenceだけを意図的に終端する。
-`apiEvents`のraw行は削除せず、Raw dedup済みのduplicate/reconnectは新しいfenceを作らないため、
-台帳を二重加算しない。
 
 cloud履歴のsession eventはreplay専用の`SessionState`へ適用し、live singletonを走査中に
 書き換えない。再構築開始時のACTIVE port generation/activity、session、playerId、DEAL文脈が

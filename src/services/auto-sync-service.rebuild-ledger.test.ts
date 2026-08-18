@@ -114,7 +114,6 @@ describe('AutoSyncService cloud rebuild stats ledger generation', () => {
     await service.ready
     jest.spyOn(service.statsOutputStream, 'write').mockImplementation(() => {})
     ;(globalThis as any).service = service
-    ;(chrome.runtime.sendMessage as jest.Mock).mockResolvedValue(undefined)
     autoSyncService = new AutoSyncService(syncDb)
   })
 
@@ -405,62 +404,6 @@ describe('AutoSyncService cloud rebuild stats ledger generation', () => {
     expect(await db.hands.get(FIRST_HAND_ID)).toBeDefined()
     expect(await db.meta.get(pendingFenceId)).toBeUndefined()
     expect((await service.statsLedger.readPlayerSnapshot(HERO_ID)).selectedHands).toBe(1)
-  })
-
-  test('exact hand recovery keeps large replay memory and canonical commit bounded', async () => {
-    const history = Array.from({ length: 120 }, (_, index) =>
-      handEvents(FIRST_HAND_ID + index, 10_000 + index * 2_000)
-    ).flat()
-    await db.apiEvents.bulkAdd(history)
-    const target = await db.apiEvents.get([10_000 + 119 * 2_000 + 1000, 306, 0])
-    expect(target).toBeDefined()
-    const fence = service.statsLedger.createPendingHandDerivationFenceRecords([target! as unknown as RawApiEvent])[0]!
-    await db.meta.put(fence)
-    const fenceId = fence.id
-
-    const handPut = jest.spyOn(syncDb.hands, 'put')
-    await autoSyncService.scheduleCanonicalRebuildRecovery(fenceId)
-
-    // 120-hand history was replayed by the canonical converter, but only the
-    // requested hand crosses the recovery commit boundary.
-    expect(handPut).toHaveBeenCalledTimes(1)
-    expect(await db.hands.count()).toBe(1)
-    expect(await db.hands.get(FIRST_HAND_ID + 119)).toBeDefined()
-    expect(await db.statHandContributions.where('[generation+handId]')
-      .equals([(await service.statsLedger.getActiveHead())!.generation, FIRST_HAND_ID + 119])
-      .count()).toBe(4)
-    expect((autoSyncService as any).rebuildEntityBuffer).toBeUndefined()
-    expect(await db.meta.get(fenceId)).toBeUndefined()
-  })
-
-  test('exact hand commit failure keeps old canonical rows and the fence retryable', async () => {
-    const oldEvents = handEvents(FIRST_HAND_ID, 1000)
-    await db.apiEvents.bulkAdd(oldEvents)
-    await (autoSyncService as any).rebuildLocalEntities()
-    const oldHand = await db.hands.get(FIRST_HAND_ID)
-    expect(oldHand).toBeDefined()
-
-    const newEvents = handEvents(FIRST_HAND_ID + 1, 4000)
-    const merged = await mergeApiEvents(syncDb, newEvents as unknown as RawApiEvent[], {
-      atomicMetaRecordsForAdded: added =>
-        service.statsLedger.createPendingHandDerivationFenceRecords(added),
-    })
-    const result = merged.added.find(event => event.ApiTypeId === 306)!
-    const fenceId = service.statsLedger.getPendingHandDerivationFenceId(result)!
-    const putSpy = jest.spyOn(syncDb.hands, 'put')
-      .mockRejectedValueOnce(new Error('synthetic hand commit failure'))
-
-    await expect(autoSyncService.scheduleCanonicalRebuildRecovery(fenceId))
-      .rejects.toThrow('synthetic hand commit failure')
-    expect(await db.hands.get(FIRST_HAND_ID)).toEqual(oldHand)
-    expect(await db.hands.get(FIRST_HAND_ID + 1)).toBeUndefined()
-    expect(await db.meta.get(fenceId)).toBeDefined()
-
-    putSpy.mockRestore()
-    await autoSyncService.scheduleCanonicalRebuildRecovery(fenceId)
-    expect(await db.hands.get(FIRST_HAND_ID)).toEqual(oldHand)
-    expect(await db.hands.get(FIRST_HAND_ID + 1)).toBeDefined()
-    expect(await db.meta.get(fenceId)).toBeUndefined()
   })
 
   test('a partial cloud page atomically leaves a boot-recovery fence before rebuild starts', async () => {

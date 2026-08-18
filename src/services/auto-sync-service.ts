@@ -21,7 +21,6 @@ import { isCloudSyncBlockedByMinVersionGate } from './min-version-gate'
 import {
   API_EVENT_PRIMARY_KEY,
   compareApiEventKeys,
-  getApiEventKey,
   getApiEventSequence,
   mergeApiEvents,
   type RawApiEvent
@@ -327,8 +326,6 @@ export class AutoSyncService {
   private canonicalRecoveryRequestPending = false
   private canonicalRecoveryDrainPromise: Promise<void> | null = null
   private readonly forcedCanonicalRecoveryFenceIds = new Set<string>()
-  /** live raw writerの安定checkpoint。通常取り込みはこのrecoveryをawaitしない（MUST NOT）。 */
-  private canonicalRecoveryIngestionDrainProvider: (() => Promise<void>) | undefined
   private lastSyncAttempt = 0
   private readonly MIN_SYNC_INTERVAL_MS = 0 // No minimum interval restriction
   private readonly SYNC_STORAGE_KEY = 'autoSyncLastTime'
@@ -384,13 +381,6 @@ export class AutoSyncService {
     return this._isSyncing
   }
 
-  /** event-ingestionが提供する既存のRaw Lake drain境界をrecoveryへ接続する。 */
-  setCanonicalRecoveryIngestionDrainProvider(
-    provider: (() => Promise<void>) | undefined
-  ): void {
-    this.canonicalRecoveryIngestionDrainProvider = provider
-  }
-
   /**
    * 中断されたcloud canonical rebuildを、認証状態に依存せずRaw Lakeから再開する。
    * backgroundのコールドスタートと、sync失敗後の1回だけの回復予約から使う。
@@ -409,26 +399,16 @@ export class AutoSyncService {
     }
 
     const force = options.force === true
-    let pendingFenceIds = [...new Set((options.pendingFenceIds ?? []).filter(id =>
+    const pendingFenceIds = [...new Set((options.pendingFenceIds ?? []).filter(id =>
       id.startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)
     ))]
 
     const recovery = (async (): Promise<boolean> => {
       while (true) {
-        const fullRecoveryRequired = await this.statsLedger.needsFullCanonicalRebuildRecovery()
-        if (!force && !fullRecoveryRequired && pendingFenceIds.length === 0) {
-          pendingFenceIds = await this.statsLedger.listInterruptedPendingHandDerivationFenceIds()
-        }
-        if (!force && !fullRecoveryRequired && pendingFenceIds.length === 0) return false
+        if (!force && !await this.statsLedger.needsCanonicalRebuildRecovery()) return false
         if (!isOperationIdle()) await waitForOperationIdle()
         // dirty再確認のawait中に別操作がslotをclaimしたら上書きせず再試行する。
-        const refreshedFullRecoveryRequired = await this.statsLedger.needsFullCanonicalRebuildRecovery()
-        if (!force && !refreshedFullRecoveryRequired) {
-          pendingFenceIds = pendingFenceIds.length > 0
-            ? pendingFenceIds
-            : await this.statsLedger.listInterruptedPendingHandDerivationFenceIds()
-          if (pendingFenceIds.length === 0) return false
-        }
+        if (!force && !await this.statsLedger.needsCanonicalRebuildRecovery()) return false
         if (!isOperationIdle()) continue
         setOperationState({
           type: 'rebuild',
@@ -440,7 +420,7 @@ export class AutoSyncService {
       return await this.recoverCanonicalRebuildWithOwnedSlot(
         'idle',
         true,
-        pendingFenceIds,
+        pendingFenceIds
       )
     })()
     this.canonicalRecoveryPromise = recovery
@@ -457,17 +437,10 @@ export class AutoSyncService {
    * markerを追加した場合は、現行pass完了後にもう一度確認して回収する（MUST）。
    */
   async scheduleCanonicalRebuildRecovery(pendingFenceId?: string): Promise<void> {
-    const hasActiveDrain = this.canonicalRecoveryDrainPromise !== null
-    const duplicateFenceInActiveDrain = hasActiveDrain &&
-      pendingFenceId?.startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX) === true &&
-      this.forcedCanonicalRecoveryFenceIds.has(pendingFenceId)
     if (pendingFenceId?.startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)) {
       this.forcedCanonicalRecoveryFenceIds.add(pendingFenceId)
     }
-    // 同じexact fenceの再送は現在のpassへ既に含まれているため、同一passを
-    // もう一度起動してはならない（MUST NOT）。別fenceまたは失敗後の再予約は
-    // 通常どおりdrainへ渡す。
-    if (!duplicateFenceInActiveDrain) this.canonicalRecoveryRequestPending = true
+    this.canonicalRecoveryRequestPending = true
     if (this.canonicalRecoveryDrainPromise) {
       return await this.canonicalRecoveryDrainPromise
     }
@@ -523,15 +496,7 @@ export class AutoSyncService {
     let stopKeepAlive: (() => void) | undefined
     try {
       stopKeepAlive = await startKeepAlive()
-      const useBoundedHandRecovery = pendingFenceIds.length > 0 &&
-        !await this.statsLedger.needsFullCanonicalRebuildRecovery()
-      if (useBoundedHandRecovery) {
-        await this.recoverPendingHandDerivationFences(pendingFenceIds)
-      } else {
-        // cloud/manual full rebuildの既存経路は変更しない。global markerがある
-        // 場合もここだけが全履歴canonical replayを所有する。
-        await this.rebuildLocalEntities(pendingFenceIds)
-      }
+      await this.rebuildLocalEntities(pendingFenceIds)
       return true
     } catch (error) {
       if (publishRecoveryError) {
@@ -1699,181 +1664,6 @@ export class AutoSyncService {
       // still makes historical 301/313 rows below the old cursor usable.
       HandLogExporter.clearCache()
     }
-  }
-
-  private async readRawLakeWatermark(): Promise<{
-    count: number
-    highWatermark: ReturnType<typeof getApiEventKey> | undefined
-  }> {
-    const [count, last] = await Promise.all([
-      this.db.apiEvents.count(),
-      this.db.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).last()
-    ])
-    return {
-      count,
-      highWatermark: last ? getApiEventKey(last as unknown as RawApiEvent) : undefined
-    }
-  }
-
-  private sameRawEventKey(
-    left: ReturnType<typeof getApiEventKey> | undefined,
-    right: ReturnType<typeof getApiEventKey> | undefined
-  ): boolean {
-    if (left === undefined || right === undefined) return left === right
-    return left[0] === right[0] && left[1] === right[1] && left[2] === right[2]
-  }
-
-  private targetHandBundle(
-    entities: EntityBundle,
-    handId: number
-  ): EntityBundle | undefined {
-    const hands = entities.hands.filter(hand => hand.id === handId)
-    if (hands.length === 0) return undefined
-    if (hands.length > 1) {
-      throw new Error('Canonical hand replay produced multiple target bundles')
-    }
-    return {
-      hands,
-      phases: entities.phases.filter(phase => phase.handId === handId),
-      actions: entities.actions.filter(action => action.handId === handId),
-    }
-  }
-
-  /**
-   * exact fenceごとにcanonical replayを先頭から走査し、対象handだけをboundedに
-   * 置換する。cloud/manual full rebuildの全履歴置換経路とは分離する（MUST）。
-   */
-  private async recoverPendingHandDerivationFences(
-    fenceIds: readonly string[]
-  ): Promise<void> {
-    for (const fenceId of [...new Set(fenceIds)]) {
-      await this.recoverPendingHandDerivationFence(fenceId)
-    }
-  }
-
-  private async recoverPendingHandDerivationFence(
-    fenceId: string
-  ): Promise<boolean> {
-    const fence = await this.statsLedger.getPendingHandDerivationFence(fenceId)
-    if (!fence) return false
-
-    // 現在までのraw writerを安定させてからwatermarkを取得する。ただしこの
-    // recoveryは呼出元のingestionを待たせず、background側のsingle-flightで動く。
-    await this.canonicalRecoveryIngestionDrainProvider?.()
-    const watermark = await this.readRawLakeWatermark()
-    const replaySession = new SessionState(() => {})
-    const converter = new EntityConverter(replaySession)
-    let targetBundle: EntityBundle | undefined
-    let targetTerminalCount = 0
-    let exactTerminalSeen = false
-
-    for await (const events of processInReplayChunks(
-      this.db.apiEvents,
-      DATABASE_CONSTANTS.SYNC_CHUNK_SIZE
-    )) {
-      const validEvents = await filterValidApplicationEvents(events)
-      for (const event of validEvents) {
-        if (
-          event.ApiTypeId === ApiType.EVT_HAND_RESULTS &&
-          event.HandId === fence.handId
-        ) {
-          targetTerminalCount++
-          if (this.sameRawEventKey(getApiEventKey(event as unknown as RawApiEvent), fence.rawKey)) {
-            exactTerminalSeen = true
-          }
-          if (targetTerminalCount > 1) {
-            throw new Error('Canonical hand replay found multiple target terminal rows')
-          }
-        }
-      }
-      const entities = converter.convertEventChunk(validEvents)
-      const completedTarget = this.targetHandBundle(entities, fence.handId)
-      if (completedTarget) {
-        if (targetBundle) {
-          throw new Error('Canonical hand replay completed the target hand twice')
-        }
-        targetBundle = completedTarget
-      }
-      // 非対象handのentitiesはこのchunkの寿命を越えて保持しない（MUST）。
-    }
-
-    const flushedTarget = this.targetHandBundle(converter.flush(), fence.handId)
-    if (flushedTarget) {
-      if (targetBundle) {
-        throw new Error('Canonical hand replay completed the target hand twice')
-      }
-      targetBundle = flushedTarget
-    }
-
-    // scan中に到着したingestionの末尾も確定させてから、apiEventsを含む最終
-    // transactionを開始する。transaction内の再確認と組み合わせてcheck→commit
-    // raceを閉じる（MUST）。
-    await this.canonicalRecoveryIngestionDrainProvider?.()
-    let committed = false
-    await this.db.transaction('rw', [
-      this.db.apiEvents,
-      this.db.hands,
-      this.db.phases,
-      this.db.actions,
-      this.db.meta,
-      this.db.statHandContributions,
-      this.db.statPlayerAggregates,
-    ], async () => {
-      // live WESが先にexact fenceを消した場合はno-opにする。canonicalを
-      // もう一度触らないため、duplicate/reconnectで二重加算しない（MUST）。
-      const fenceRecord = await this.db.meta.get(fence.id)
-      if (!fenceRecord) return
-
-      const [currentCount, currentLast, terminal] = await Promise.all([
-        this.db.apiEvents.count(),
-        this.db.apiEvents.orderBy(API_EVENT_PRIMARY_KEY).last(),
-        this.db.apiEvents.get(fence.rawKey as unknown as any),
-      ])
-      const currentWatermark = currentLast
-        ? getApiEventKey(currentLast as unknown as RawApiEvent)
-        : undefined
-      if (
-        currentCount !== watermark.count ||
-        !this.sameRawEventKey(currentWatermark, watermark.highWatermark)
-      ) {
-        // scan後の追加（同timestamp groupの後着を含む）は、部分replayを
-        // commitせず次のsingle-flightへ残す（MUST）。
-        throw new Error('Raw Event Lake changed during canonical hand recovery')
-      }
-      if (
-        !terminal ||
-        terminal.ApiTypeId !== ApiType.EVT_HAND_RESULTS ||
-        terminal.HandId !== fence.handId
-      ) {
-        throw new Error('Pending hand recovery terminal row is missing or changed')
-      }
-      if (targetBundle && (targetTerminalCount !== 1 || !exactTerminalSeen)) {
-        throw new Error('Canonical hand recovery target terminal is uncertain')
-      }
-
-      if (targetBundle) {
-        const previousHand = await this.db.hands.get(fence.handId)
-        const previousBundle = previousHand
-          ? {
-              hands: [previousHand],
-              actions: await this.db.actions.where('handId').equals(fence.handId).toArray(),
-              phases: await this.db.phases.where('handId').equals(fence.handId).toArray(),
-            }
-          : undefined
-        await this.db.actions.where('handId').equals(fence.handId).delete()
-        await this.db.phases.where('handId').equals(fence.handId).delete()
-        await this.db.hands.put(targetBundle.hands[0]!)
-        if (targetBundle.phases.length > 0) await this.db.phases.bulkPut(targetBundle.phases)
-        if (targetBundle.actions.length > 0) await this.db.actions.bulkPut(targetBundle.actions)
-        await this.statsLedger.replaceCompletedHandContributions(targetBundle, previousBundle)
-      }
-
-      // targetBundleが無い場合も、stable full replayがhandを生成しなかった
-      // 意図的棄却としてexact fenceだけを終端する。Raw rowは残す（MUST NOT）。
-      await this.statsLedger.acknowledgePendingHandDerivation(terminal)
-      committed = true
-    })
-    return committed
   }
 
   /**
