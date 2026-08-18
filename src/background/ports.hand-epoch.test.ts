@@ -30,8 +30,20 @@ import PokerChaseService, { PokerChaseDB } from '../app'
 import { trackServiceForTeardown } from '../utils/test-service-teardown'
 import { ApiType } from '../types'
 import type { ApiEvent } from '../app'
-import { registerStreamSubscriptions, connectedPorts, setLastKnownStats } from './ports'
-import { __resetActivePortStateForTests, claimActivePort } from './active-port'
+import {
+  registerStreamSubscriptions,
+  connectedPorts,
+  getLiveBroadcastSequenceForTab,
+  notifyRecoveredHandCompletion,
+  registerActivePortForService,
+  setLastKnownStats
+} from './ports'
+import {
+  __resetActivePortStateForTests,
+  claimActivePort,
+  releaseActivePort,
+  resolveGeneration,
+} from './active-port'
 
 const GAME_URL_PATTERN = 'https://example.com/*'
 
@@ -162,5 +174,161 @@ describe('ports.ts handCompletionEpoch (audit finding 11 follow-up, P2)', () => 
     }
     await service.handAggregateStream.whenIdle()
     expect(lastBroadcastHandEpoch()).toBe(baseline + 2)
+  })
+
+  test('a recovered hand sends only the handEpoch notification and never republishes stats or lineup', async () => {
+    service.statsOutputStream.write([1, 2, 3])
+    await service.statsOutputStream.whenIdle()
+    const baseline = lastBroadcastHandEpoch()!
+    const write = jest.spyOn(service.statsOutputStream, 'write')
+    fakePort.postMessage.mockClear()
+
+    notifyRecoveredHandCompletion()
+
+    expect(fakePort.postMessage).toHaveBeenCalledTimes(1)
+    expect(fakePort.postMessage).toHaveBeenCalledWith({ handEpoch: baseline + 1 })
+    expect(fakePort.postMessage.mock.calls[0]![0]).not.toHaveProperty('stats')
+    expect(fakePort.postMessage.mock.calls[0]![0]).not.toHaveProperty('evtDeal')
+    expect(fakePort.postMessage.mock.calls[0]![0]).not.toHaveProperty('realTimeStats')
+    expect(write).not.toHaveBeenCalled()
+  })
+
+  test('a cold-start recovery sends the epoch-only notification to every connected port', () => {
+    const secondPort = { postMessage: jest.fn() }
+    connectedPorts.add(secondPort as unknown as chrome.runtime.Port)
+    __resetActivePortStateForTests()
+
+    notifyRecoveredHandCompletion()
+
+    expect(fakePort.postMessage).toHaveBeenCalledWith({ handEpoch: expect.any(Number) })
+    expect(secondPort.postMessage).toHaveBeenCalledWith({ handEpoch: expect.any(Number) })
+    expect(fakePort.postMessage.mock.calls[0]![0]).not.toHaveProperty('stats')
+    expect(secondPort.postMessage.mock.calls[0]![0]).not.toHaveProperty('evtDeal')
+  })
+
+  test('a reconnect-pending generation does not use the no-token fallback', () => {
+    const reconnectPort = {
+      postMessage: jest.fn(),
+      sender: { tab: { id: 42 }, documentId: 'document-1' },
+    }
+    connectedPorts.clear()
+    connectedPorts.add(reconnectPort as unknown as chrome.runtime.Port)
+    __resetActivePortStateForTests()
+    claimActivePort(reconnectPort as unknown as chrome.runtime.Port)
+    const generation = resolveGeneration()
+    expect(generation).toBeDefined()
+    expect(releaseActivePort(reconnectPort as unknown as chrome.runtime.Port)).toBe('reconnect-pending')
+    expect(resolveGeneration()).toBe(generation)
+
+    notifyRecoveredHandCompletion()
+
+    expect(reconnectPort.postMessage).not.toHaveBeenCalled()
+  })
+
+  test('recovery-before-replacement delivers the pending epoch to the accepted same-generation successor', () => {
+    const originalPort = {
+      postMessage: jest.fn(),
+      sender: { tab: { id: 43 }, documentId: 'document-recovery-before-replacement' }
+    }
+    __resetActivePortStateForTests()
+    connectedPorts.clear()
+    connectedPorts.add(originalPort as unknown as chrome.runtime.Port)
+    claimActivePort(originalPort as unknown as chrome.runtime.Port)
+    const generation = resolveGeneration()
+    expect(generation).toBeDefined()
+    notifyRecoveredHandCompletion()
+    const baseline = originalPort.postMessage.mock.calls.at(-1)?.[0]?.handEpoch as number
+    expect(baseline).toEqual(expect.any(Number))
+    originalPort.postMessage.mockClear()
+    expect(releaseActivePort(originalPort as unknown as chrome.runtime.Port)).toBe('reconnect-pending')
+
+    notifyRecoveredHandCompletion()
+    expect(originalPort.postMessage).not.toHaveBeenCalled()
+
+    const replacementPort = {
+      postMessage: jest.fn(),
+      sender: { tab: { id: 43 }, documentId: 'document-recovery-before-replacement' }
+    }
+    connectedPorts.add(replacementPort as unknown as chrome.runtime.Port)
+    const sequenceBeforeConnect = getLiveBroadcastSequenceForTab(43)
+    registerActivePortForService(
+      service,
+      replacementPort as unknown as chrome.runtime.Port
+    )
+
+    expect(resolveGeneration()).toBe(generation)
+    expect(getLiveBroadcastSequenceForTab(43)).toBe(sequenceBeforeConnect)
+    expect(replacementPort.postMessage).toHaveBeenCalledTimes(1)
+    expect(replacementPort.postMessage).toHaveBeenCalledWith({ handEpoch: baseline + 1 })
+    expect(replacementPort.postMessage.mock.calls[0]![0]).not.toHaveProperty('stats')
+    expect(replacementPort.postMessage.mock.calls[0]![0]).not.toHaveProperty('evtDeal')
+    expect(replacementPort.postMessage.mock.calls[0]![0]).not.toHaveProperty('realTimeStats')
+  })
+
+  test('replacement-before-recovery keeps the same generation and receives the direct active epoch notification', () => {
+    const originalPort = {
+      postMessage: jest.fn(),
+      sender: { tab: { id: 44 }, documentId: 'document-replacement-before-recovery' }
+    }
+    __resetActivePortStateForTests()
+    connectedPorts.clear()
+    connectedPorts.add(originalPort as unknown as chrome.runtime.Port)
+    claimActivePort(originalPort as unknown as chrome.runtime.Port)
+    const generation = resolveGeneration()
+    expect(generation).toBeDefined()
+    expect(releaseActivePort(originalPort as unknown as chrome.runtime.Port)).toBe('reconnect-pending')
+
+    const replacementPort = {
+      postMessage: jest.fn(),
+      sender: { tab: { id: 44 }, documentId: 'document-replacement-before-recovery' }
+    }
+    connectedPorts.add(replacementPort as unknown as chrome.runtime.Port)
+    const sequenceBeforeConnect = getLiveBroadcastSequenceForTab(44)
+    registerActivePortForService(
+      service,
+      replacementPort as unknown as chrome.runtime.Port
+    )
+    expect(resolveGeneration()).toBe(generation)
+    expect(getLiveBroadcastSequenceForTab(44)).toBe(sequenceBeforeConnect)
+    expect(replacementPort.postMessage).toHaveBeenCalledTimes(1)
+    expect(replacementPort.postMessage.mock.calls[0]![0]).toEqual({
+      handEpoch: expect.any(Number)
+    })
+
+    const connectedEpoch = replacementPort.postMessage.mock.calls[0]![0].handEpoch
+    notifyRecoveredHandCompletion()
+
+    expect(replacementPort.postMessage).toHaveBeenCalledTimes(2)
+    expect(replacementPort.postMessage.mock.calls[1]![0]).toEqual({
+      handEpoch: connectedEpoch + 1
+    })
+    expect(replacementPort.postMessage.mock.calls[1]![0]).not.toHaveProperty('stats')
+    expect(replacementPort.postMessage.mock.calls[1]![0]).not.toHaveProperty('evtDeal')
+    expect(replacementPort.postMessage.mock.calls[1]![0]).not.toHaveProperty('realTimeStats')
+  })
+
+  test('a non-matching reconnect does not broadcast the epoch to connected relic ports', () => {
+    const originalPort = {
+      postMessage: jest.fn(),
+      sender: { tab: { id: 45 }, documentId: 'document-reconnect-scope' }
+    }
+    __resetActivePortStateForTests()
+    connectedPorts.clear()
+    connectedPorts.add(originalPort as unknown as chrome.runtime.Port)
+    claimActivePort(originalPort as unknown as chrome.runtime.Port)
+    expect(releaseActivePort(originalPort as unknown as chrome.runtime.Port)).toBe('reconnect-pending')
+
+    const unrelatedPort = {
+      postMessage: jest.fn(),
+      sender: { tab: { id: 46 }, documentId: 'document-other' }
+    }
+    connectedPorts.add(unrelatedPort as unknown as chrome.runtime.Port)
+    registerActivePortForService(
+      service,
+      unrelatedPort as unknown as chrome.runtime.Port
+    )
+
+    expect(unrelatedPort.postMessage).not.toHaveBeenCalled()
+    expect(originalPort.postMessage).not.toHaveBeenCalled()
   })
 })

@@ -127,7 +127,7 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(realTimeSpy).toHaveBeenCalledTimes(1)
   })
 
-  test('assigned raw sequence is forwarded to the pipeline and DEAL-less terminal RESULTS clears each exact fence', async () => {
+  test('assigned raw sequence is forwarded and DEAL-less RESULTS retain failed exact fences for recovery', async () => {
     const aggregateSpy = jest.spyOn(service.handAggregateStream, 'write')
     const first = structuredClone(MTT_TABLE_MOVE_FIXTURE.events[5]!) as any
     first.timestamp = 123_456
@@ -145,9 +145,15 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     expect(forwardedResults.map(event => event.sequence)).toEqual([0, 1])
     expect(await db.apiEvents.get([123_456, ApiType.EVT_HAND_RESULTS, 0])).toBeDefined()
     expect(await db.apiEvents.get([123_456, ApiType.EVT_HAND_RESULTS, 1])).toBeDefined()
-    expect(await db.meta.where('id')
+    const fences = await db.meta.where('id')
       .startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)
-      .count()).toBe(0)
+      .toArray()
+    expect(fences).toHaveLength(2)
+    expect(fences.map(fence => (fence.value as { rawKey: number[] }).rawKey)).toEqual([
+      [123_456, ApiType.EVT_HAND_RESULTS, 0],
+      [123_456, ApiType.EVT_HAND_RESULTS, 1],
+    ])
+    expect(fences.every(fence => (fence.value as { failed?: boolean }).failed === true)).toBe(true)
   })
 
   test('a logger failure after raw RESULTS commit marks its exact derivation fence failed', async () => {
@@ -174,8 +180,10 @@ describe('registerEventIngestion (Raw Event Lake)', () => {
     const fences = await db.meta.where('id')
       .startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)
       .toArray()
-    expect(fences).toHaveLength(1)
-    expect(fences[0]?.value).toEqual(expect.objectContaining({
+    expect(fences).toHaveLength(2)
+    expect(fences.find(fence =>
+      (fence.value as { rawKey?: number[] }).rawKey?.[2] === 1
+    )?.value).toEqual(expect.objectContaining({
       handId: result.HandId,
       rawKey: [result.timestamp, ApiType.EVT_HAND_RESULTS, 1],
       failed: true,
