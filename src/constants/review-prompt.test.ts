@@ -1,9 +1,8 @@
 /**
- * Unit tests for the review-prompt pure logic (src/constants/review-prompt.ts).
+ * review-promptの純粋ロジック（src/constants/review-prompt.ts）の単体テスト。
  *
- * Covers: URL construction, storage-value normalization (corrupted values must
- * neither throw nor silently drop a recorded resolution), and the
- * visibility state machine including the snooze window and clock-skew edges.
+ * URL組み立て、storage値の正規化（壊れた値で例外を投げず、記録済みの決着も
+ * 暗黙に失わない）、スヌーズ期間と時計ずれ境界を含む表示状態機械を検証する。
  */
 import {
   buildChromeWebStoreReviewUrl,

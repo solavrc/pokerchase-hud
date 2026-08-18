@@ -1,11 +1,9 @@
 /**
- * message-router.ts - getReviewPrompt / resolveReviewPrompt plumbing
+ * message-router.tsのgetReviewPrompt / resolveReviewPrompt配線テスト。
  *
- * Verifies the Chrome Web Store review-prompt messages are wired end-to-end:
- * `getReviewPrompt` answers from the `hands` table of the DB the router was
- * registered with (not some other instance), `resolveReviewPrompt` persists
- * the pressed button, and a failing DB surfaces as an error response rather
- * than a fabricated `visible` value.
+ * `getReviewPrompt`がrouterへ登録したDB自身の`hands`テーブルを参照すること、
+ * `resolveReviewPrompt`が押されたボタンを永続化すること、およびDB失敗時に
+ * `visible`を捏造せずエラー応答を返すことをend-to-endで検証する。
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'
@@ -18,8 +16,6 @@ import {
 import type { ChromeMessage, MessageResponse } from '../types/messages'
 import { trackServiceForTeardown } from '../utils/test-service-teardown'
 
-const settle = () => new Promise(resolve => setTimeout(resolve, 50))
-
 const readState = async (): Promise<ReviewPromptState> =>
   (await chrome.storage.local.get(REVIEW_PROMPT_STORAGE_KEY))?.[REVIEW_PROMPT_STORAGE_KEY] ?? {}
 
@@ -29,18 +25,22 @@ describe('message-router review prompt', () => {
   let listener: (request: ChromeMessage, sender: chrome.runtime.MessageSender, sendResponse: (response: MessageResponse) => void) => boolean | void
 
   const send = async (message: ChromeMessage) => {
-    const sendResponse = jest.fn()
+    let resolveResponse!: (response: MessageResponse) => void
+    const response = new Promise<MessageResponse>(resolve => {
+      resolveResponse = resolve
+    })
+    const sendResponse = jest.fn((value: MessageResponse) => resolveResponse(value))
     const handled = listener(message, {}, sendResponse)
     expect(handled).toBe(true)
-    await settle()
+    const value = await response
     expect(sendResponse).toHaveBeenCalledTimes(1)
-    return sendResponse.mock.calls[0]![0] as any
+    return value as any
   }
 
-  /** Minimal rows: only the row count matters to the eligibility gate. */
+  /** 必要最小限の行。表示条件には行数だけが影響する。 */
   const seedHands = (count: number) =>
     db.hands.bulkAdd(Array.from({ length: count }, (_unused, index) => ({
-      // `hands` uses an explicit (non auto-increment) `id` primary key
+      // `hands`はauto-incrementではない明示的な`id`主キーを使う
       id: index + 1,
       approxTimestamp: index,
       seatUserIds: [],

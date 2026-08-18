@@ -1,10 +1,8 @@
 /**
- * Unit tests for the review-prompt background logic
- * (src/background/review-prompt.ts).
+ * review-promptのbackground側ロジック（src/background/review-prompt.ts）の単体テスト。
  *
- * Covers: the hand-count gate and its one-way latch, the snooze/resolution
- * bookkeeping, and the two properties that keep this from becoming a nag —
- * a resolved prompt never queries the DB again and never comes back.
+ * ハンド数ゲートと一方向ラッチ、スヌーズ・決着の記録、および依頼をしつこく
+ * 出さないための性質（決着後はDBへ問い合わせず、再表示もしない）を検証する。
  */
 import {
   evaluateReviewPromptVisibility,
@@ -74,6 +72,31 @@ describe('review-prompt (background)', () => {
       expect(await evaluateReviewPromptVisibility(mockDb, NOW + REVIEW_PROMPT_SNOOZE_MS - 1)).toBe(false)
       expect(await evaluateReviewPromptVisibility(mockDb, NOW + REVIEW_PROMPT_SNOOZE_MS)).toBe(true)
     })
+
+    it('表示判定中に決着しても、古い表示状態で決着を消さない', async () => {
+      let releaseHandCount!: (count: number) => void
+      let markHandCountStarted!: () => void
+      const handCountStarted = new Promise<void>(resolve => {
+        markHandCountStarted = resolve
+      })
+      handCount.mockImplementation(() => new Promise<number>(resolve => {
+        releaseHandCount = resolve
+        markHandCountStarted()
+      }))
+
+      const visibility = evaluateReviewPromptVisibility(mockDb, NOW)
+      await handCountStarted
+      const dismissed = resolveReviewPrompt('dismissed', NOW + 10)
+      releaseHandCount(REVIEW_PROMPT_MIN_HANDS)
+
+      expect(await visibility).toBe(true)
+      await dismissed
+      expect(await getReviewPromptState()).toEqual({
+        eligibleSince: NOW,
+        resolution: 'dismissed',
+        resolvedAt: NOW + 10,
+      })
+    })
   })
 
   describe('resolveReviewPrompt', () => {
@@ -106,6 +129,19 @@ describe('review-prompt (background)', () => {
       expect(await getReviewPromptState()).toEqual({
         eligibleSince: NOW,
         resolution: 'rated',
+        resolvedAt: NOW + 10,
+      })
+    })
+
+    it('並行した決着と「後で」でも先に記録した決着を失わない', async () => {
+      const dismissed = resolveReviewPrompt('dismissed', NOW + 10)
+      const later = resolveReviewPrompt('later', NOW + 20)
+
+      await Promise.all([dismissed, later])
+
+      expect(await getReviewPromptState()).toEqual({
+        eligibleSince: NOW,
+        resolution: 'dismissed',
         resolvedAt: NOW + 10,
       })
     })

@@ -39,6 +39,23 @@ const setReviewPromptState = async (state: ReviewPromptState): Promise<void> => 
 }
 
 /**
+ * 状態のread-modify-writeを直列化するFIFO。
+ *
+ * Popupの多重起動やボタン連打で複数messageが重なっても、後続処理は先行処理が
+ * 保存した決着をMUST読み直す。個々の処理が失敗してもFIFO自体は継続する。
+ */
+let reviewPromptMutationTail: Promise<void> = Promise.resolve()
+
+const enqueueReviewPromptMutation = <T>(mutation: () => Promise<T>): Promise<T> => {
+  const result = reviewPromptMutationTail.then(mutation, mutation)
+  reviewPromptMutationTail = result.then(
+    () => undefined,
+    () => undefined
+  )
+  return result
+}
+
+/**
  * Popupを開いたときに呼ぶ（`getReviewPrompt`メッセージ）。
  *
  * まだ表示条件を満たしていない状態でのみ`hands`件数を数え、閾値に
@@ -48,7 +65,7 @@ const setReviewPromptState = async (state: ReviewPromptState): Promise<void> => 
 export const evaluateReviewPromptVisibility = async (
   db: PokerChaseDB,
   now: number = Date.now()
-): Promise<boolean> => {
+): Promise<boolean> => enqueueReviewPromptMutation(async () => {
   const state = await getReviewPromptState()
   // 決着済みなら以後は何も問い合わせない（countも走らせない）
   if (state.resolution) return false
@@ -62,7 +79,7 @@ export const evaluateReviewPromptVisibility = async (
   }
 
   return isReviewPromptVisible(state, now)
-}
+})
 
 /**
  * Popupのボタン操作を記録する（`resolveReviewPrompt`メッセージ）。
@@ -78,7 +95,7 @@ export const evaluateReviewPromptVisibility = async (
 export const resolveReviewPrompt = async (
   choice: ReviewPromptChoice,
   now: number = Date.now()
-): Promise<void> => {
+): Promise<void> => enqueueReviewPromptMutation(async () => {
   const state = await getReviewPromptState()
   if (state.resolution) return
 
@@ -94,4 +111,4 @@ export const resolveReviewPrompt = async (
     resolution: choice,
     resolvedAt: now,
   })
-}
+})
