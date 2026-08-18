@@ -7,6 +7,7 @@ import type { FilterOptions, PlayerStats, PositionalStatsResult, RecentHandsResu
 import { HandLogConfig, HandLogEvent, HandLogLayout, UIConfig } from './hand-log'
 import type { SyncState } from '../services/auto-sync-service'
 import type { UndecodedEventStats } from '../background/undecoded-event-tracker'
+import type { ReviewPromptChoice } from '../constants/review-prompt'
 import type { RecentHandsPanelConfig } from '../utils/recent-hands-config'
 
 // Message action constants
@@ -80,6 +81,9 @@ export const MESSAGE_ACTIONS = {
   APPLY_PENDING_UPDATE: 'applyPendingUpdate',
   // What's New (per-version release notes)
   ACKNOWLEDGE_WHATS_NEW: 'acknowledgeWhatsNew',
+  // Chrome Web Store review prompt
+  GET_REVIEW_PROMPT: 'getReviewPrompt',
+  RESOLVE_REVIEW_PROMPT: 'resolveReviewPrompt',
 } as const
 
 // Import/Export related messages
@@ -446,6 +450,16 @@ export interface AcknowledgeWhatsNewMessage {
   action: 'acknowledgeWhatsNew'
 }
 
+// Chrome Web Store review prompt messages
+export interface GetReviewPromptMessage {
+  action: 'getReviewPrompt'
+}
+
+export interface ResolveReviewPromptMessage {
+  action: 'resolveReviewPrompt'
+  choice: ReviewPromptChoice
+}
+
 export interface FirebaseBackupProgressMessage {
   action: 'firebaseBackupProgress'
   progress: number
@@ -535,6 +549,11 @@ export interface ApplyUpdateResponse extends SuccessResponse {
   reason?: string
 }
 
+export interface ReviewPromptResponse extends SuccessResponse {
+  /** レビュー依頼バナーを表示してよいか（表示条件・スヌーズ・決着を畳み込んだ結果） */
+  visible: boolean
+}
+
 export interface DeviceUILayoutResponse extends SuccessResponse {
   scale: number
   position?: HudPosition
@@ -549,7 +568,7 @@ export interface LastTableSnapshotResponse extends SuccessResponse {
   snapshot?: unknown
 }
 
-export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse | RecentHandsResponse | RecentHandsPanelConfigResponse | UndecodedEventStatsResponse | ApplyUpdateResponse | DeviceUILayoutResponse | DeviceHandLogLayoutResponse | LastTableSnapshotResponse
+export type MessageResponse = SuccessResponse | ErrorResponse | BackupListResponse | BackupDownloadResponse | AuthStatusResponse | SyncStateResponse | UnsyncedCountResponse | SyncInfoResponse | OperationStateResponse | PositionalStatsResponse | RecentHandsResponse | RecentHandsPanelConfigResponse | UndecodedEventStatsResponse | ApplyUpdateResponse | ReviewPromptResponse | DeviceUILayoutResponse | DeviceHandLogLayoutResponse | LastTableSnapshotResponse
 
 // Union type of all possible messages
 export type ChromeMessage =
@@ -611,6 +630,8 @@ export type ChromeMessage =
   | AcknowledgeUndecodedEventStatsMessage
   | ApplyPendingUpdateMessage
   | AcknowledgeWhatsNewMessage
+  | GetReviewPromptMessage
+  | ResolveReviewPromptMessage
 
 // Helper function for type guard implementation
 const isMessageWithAction = (msg: unknown, action: string): msg is { action: string } =>
@@ -733,3 +754,9 @@ export const isApplyPendingUpdateMessage = (msg: unknown): msg is ApplyPendingUp
 
 export const isAcknowledgeWhatsNewMessage = (msg: unknown): msg is AcknowledgeWhatsNewMessage =>
   isMessageWithAction(msg, 'acknowledgeWhatsNew')
+
+export const isGetReviewPromptMessage = (msg: unknown): msg is GetReviewPromptMessage =>
+  isMessageWithAction(msg, 'getReviewPrompt')
+
+export const isResolveReviewPromptMessage = (msg: unknown): msg is ResolveReviewPromptMessage =>
+  isMessageWithAction(msg, 'resolveReviewPrompt')

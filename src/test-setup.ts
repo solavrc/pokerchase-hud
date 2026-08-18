@@ -43,6 +43,9 @@ const fireStorageChange = (
 
 global.chrome = {
   runtime: {
+    // 実拡張機能では常に存在する固定値（manifestの`key`から決まる）。
+    // getURL()のモックが使っているホスト名と揃えている
+    id: 'mock-extension-id',
     sendMessage: jest.fn(),
     onMessage: {
       addListener: jest.fn(),

@@ -48,6 +48,7 @@ import { StatisticsConfigSection } from './popup/StatisticsConfigSection'
 import { moveStatInDisplayOrder } from './popup/stat-display-order'
 import { UndecodedEventSection } from './popup/UndecodedEventSection'
 import { UpdateSection } from './popup/UpdateSection'
+import { ReviewPromptSection } from './popup/ReviewPromptSection'
 import { PopupHeader } from './popup/PopupHeader'
 import { SectionCard } from './popup/SectionCard'
 import { TelemetrySection } from './popup/TelemetrySection'
@@ -607,6 +608,11 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
         (どちらも該当時のみ描画。他セクションより先に表示し、ユーザーの
         目に触れやすくする) */}
       <UpdateSection />
+
+      {/* Chrome ウェブストアのレビュー依頼（表示条件を満たし、かつ
+        再構築/更新系バナーが出ていないときのみ描画。優先順位の判定は
+        ReviewPromptSection自身が持つ） */}
+      <ReviewPromptSection />
 
       {/* UI Display Controls */}
       <SectionCard>

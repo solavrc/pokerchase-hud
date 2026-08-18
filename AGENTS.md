@@ -882,7 +882,11 @@ Every live raw `EVT_HAND_RESULTS` row MUST atomically create a pending-derivatio
   `setDeviceUIScale`, `setDeviceHudPosition`, `getDeviceHandLogLayout`,
   `setDeviceHandLogLayout`, and `resetDeviceUILayout`, and the last-table
   snapshot via `getLastTableSnapshot` / `setLastTableSnapshot`; content
-  scripts do not access the restricted local area directly.
+  scripts do not access the restricted local area directly. Popup-facing
+  banner state lives here too and is read directly by the popup:
+  `rebuildAdvisory`, `pendingUpdate`, `minVersionGateState`,
+  `whatsNewUnseenVersion`, and `reviewPrompt` (see "Chrome Web Store review
+  prompt" below).
 - **Layout reset is one operation over every device-local appearance key**:
   the popup's 「位置とサイズをリセット」 (`UIScaleSection.tsx`) sends a single
   `resetDeviceUILayout`, and the background removes `handLogLayout` and every
@@ -994,3 +998,15 @@ sola-approved: GitHub Releases are the single source of truth for user-facing up
 - **Badge logic** (`src/background/whats-new-badge.ts`): `chrome.runtime.onInstalled` (`reason === 'update'` only — fresh installs do not get an update badge) records every running version in the legacy-compatible `whatsNewUnseenVersion` storage key, independent of whether a Release can be fetched. `PopupHeader` sends the idempotent `acknowledgeWhatsNew` message after the version and the Releases link are visible.
 - **Badge precedence (3-way): rebuild-advisory > update-manager > whats-new.** `resolveActiveBadge()` remains the single source of truth and is covered by all eight boolean combinations. The informational badge sets `N` only when neither higher-priority badge is active, and it never clears a higher-priority badge.
 - **Service Worker startup reassertion**: `reassertWhatsNewBadgeOnStartup()` runs after `initUpdateManager()` finishes its startup cleanup. A still-unseen informational badge suppressed by rebuild/update state can therefore be promoted on a later startup without extra session/operation hooks.
+
+### Chrome Web Store review prompt
+
+sola-approved request to rate the extension on the Chrome Web Store. Popup-only by design: **no badge, no `chrome.notifications`, no HUD surface** — it must never interrupt play, and it is the one banner that always fails quiet (any uncertainty resolves to "don't ask").
+
+- **Eligibility** (`src/background/review-prompt.ts`): evaluated *only* when the popup mounts (`getReviewPrompt` message), after `service.ready` restores the current hero identity. No `event-ingestion.ts` hook and no per-hand counter exist for this — the `hands.seatUserIds` multi-entry index counts only hands containing that hero and is cheap enough to query on popup open. A missing or invalid hero ID MUST keep the prompt hidden. The hero count must reach `REVIEW_PROMPT_MIN_HANDS` (500, `src/constants/review-prompt.ts`); the first crossing latches `eligibleSince` into `chrome.storage.local`'s `reviewPrompt` and the count never runs again (a later 全データ削除 does not un-latch it). A resolved prompt short-circuits before the count.
+- **State machine** (pure `isReviewPromptVisible()`, unit-tested independent of storage): 「評価する」/「今後表示しない」 (`rated`/`dismissed`) are terminal — never shown again, and a later `later` cannot revive them. 「後で」 snoozes for `REVIEW_PROMPT_SNOOZE_MS` (30 days). A `snoozedAt` in the future (clock skew / hand-edited storage) keeps the banner hidden rather than showing it early. `parseReviewPromptState()` normalizes corrupted values instead of throwing or silently dropping a recorded resolution.
+- **Precedence**: `ReviewPromptSection.tsx` hides itself whenever rebuild-advisory (`pendingVersion`), a pending update, or the min-version gate (`supported === false`) is active — the same rebuild > update > informational ordering as the badge precedence above. Asking for a review next to 「サポートが終了しました」 is exactly what this prevents. It MUST subscribe to those suppression keys after the mount read so an asynchronously discovered higher-priority banner also hides an already-visible review prompt.
+- **Link**: `https://chromewebstore.google.com/detail/${chrome.runtime.id}/reviews`, built at runtime (`buildChromeWebStoreReviewUrl()`). The slug-less form 301-redirects to `/detail/pokerchase-hud/<id>/reviews` (measured 2026-07-31), so the store listing name can change without breaking the link, and a fork (different manifest `key` → different ID) links to its own listing. Same rationale as `GITHUB_RELEASES_URL` above: do not hard-code what the runtime already knows.
+- **Ordering guarantee**: every choice awaits a successful `resolveReviewPrompt` round-trip before hiding the banner, and 「評価する」 additionally waits before `chrome.tabs.create()`, because opening a tab tears the popup down and a fire-and-forget write could be lost. An error or timeout is unknown state: the banner MUST stay visible and retryable, and the store tab MUST NOT open until terminal state was durably acknowledged.
+- **Store imagery is unaffected**: `e2e/tools/capture-store-imagery.ts` captures a fixture of 11 hands, far below the threshold, so the banner can never leak into Web Store screenshots.
+- Ownership: eligibility, snooze, and resolution all live in the background module; the popup component only renders the boolean it is handed and reports which button was pressed. Keep the `reviewPrompt` key single-writer (background) if this is extended.

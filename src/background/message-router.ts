@@ -17,6 +17,7 @@ import { resolveAdvisory } from './rebuild-advisory'
 import { getUndecodedEventStats, resetUndecodedEventStats } from './undecoded-event-tracker'
 import { applyUpdateNow } from './update-manager'
 import { acknowledgeWhatsNew } from './whats-new-badge'
+import { evaluateReviewPromptVisibility, resolveReviewPrompt } from './review-prompt'
 import {
   HAND_LOG_LAYOUT_STORAGE_KEY,
   HUD_POSITION_STORAGE_KEYS,
@@ -1088,6 +1089,24 @@ export const registerMessageRouter = (service: PokerChaseService, db: PokerChase
         .then(() => sendResponse({ success: true }))
         .catch(error => {
           console.error('[acknowledgeWhatsNew] Error:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'getReviewPrompt') {
+      // Popup起動時: 累計ハンド数・スヌーズ・決着からレビュー依頼の表示可否を判定
+      evaluateReviewPromptVisibility(db, () => service.playerId, { ready: service.ready })
+        .then(visible => sendResponse({ success: true, visible }))
+        .catch(error => {
+          console.error('[getReviewPrompt] Error:', error)
+          sendResponse({ success: false, error: error.message })
+        })
+      return true
+    } else if (request.action === 'resolveReviewPrompt') {
+      // Popupの「評価する」「後で」「今後表示しない」操作を記録
+      resolveReviewPrompt(request.choice)
+        .then(() => sendResponse({ success: true }))
+        .catch(error => {
+          console.error('[resolveReviewPrompt] Error:', error)
           sendResponse({ success: false, error: error.message })
         })
       return true

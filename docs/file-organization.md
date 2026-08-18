@@ -89,6 +89,7 @@
     │   ├── operation-state.ts       # Long-operation exclusivity + idle-transition listeners
     │   ├── ports.ts                 # Port lifecycle, ACTIVE-only stats delivery, hand-completion epoch
     │   ├── rebuild-advisory.ts      # データ再構築 advisory (REBUILD_ADVISORY_VERSION, badge)
+    │   ├── review-prompt.ts         # Chrome Web Store review prompt (hand-count gate, snooze)
     │   ├── undecoded-event-tracker.ts # Dropped/undecoded event counters (popup alert)
     │   ├── update-manager.ts        # Forced update: safe-window, drain barrier,
     │   │                            #   commitReloadIfStillSafe(), pending-update persistence
@@ -121,8 +122,8 @@
     │       ├── HudDisplaySection.tsx    # Display mode toggle (簡易/詳細)
     │       ├── ImportExportSection.tsx
     │       ├── PopupHeader.tsx          # Theme icon toggle (自動→ライト→ダーク)
+    │       ├── ReviewPromptSection.tsx  # Chrome Web Store review request banner
     │       ├── SectionCard.tsx / SectionHeading.tsx / ToggleChip.tsx
-    │       ├── toggleGroupStyles.ts     # Shared width for the two top toggles
     │       ├── StatisticsConfigSection.tsx
     │       ├── SyncStatusSection.tsx
     │       ├── TableSizeFilterSection.tsx # テーブル人数 filter (full/4p/3p/hu)
@@ -130,13 +131,15 @@
     │       ├── UndecodedEventSection.tsx  # Dropped-event alert
     │       ├── UpdateSection.tsx          # Forced-update / min-version banners
     │       ├── popup-boot-theme.ts / popup-theme-storage.ts / theme.ts  # Dark/light theming
-    │       └── send-message.ts
+    │       ├── send-message.ts
+    │       └── toggleGroupStyles.ts     # Shared width for the two top toggles
     │
     ├── constants/
     │   ├── database.ts        # DATABASE_CONSTANTS, REBUILD_ADVISORY_VERSION
     │   ├── runtime.ts         # Runtime constants
     │   ├── update.ts          # Forced-update constants (side-effect-free)
-    │   └── release-info.ts    # Fixed GitHub Releases URL + unread storage key
+    │   ├── release-info.ts    # Fixed GitHub Releases URL + unread storage key
+    │   └── review-prompt.ts   # Review-prompt state/thresholds + visibility rule (pure)
     │
     ├── db/
     │   └── poker-chase-db.ts  # Dexie database definition (v8 schema: sequence-key Lake + replayDetails + stats ledger)
