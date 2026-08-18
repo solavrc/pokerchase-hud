@@ -6,13 +6,23 @@ import {
 
 describe('stats hand-limit contract', () => {
   test.each([
-    [0.5, 0.5],
+    [0.5, undefined],
+    [10, undefined],
+    [300, undefined],
+    [20, 20],
+    [50, 50],
+    [100, 100],
+    [200, 200],
     [500, 500],
     [501, 500],
     [1_000, 500],
     [0, undefined],
+    [-1, undefined],
     [Number.NaN, undefined],
     [Number.POSITIVE_INFINITY, undefined],
+    [null, undefined],
+    [undefined, undefined],
+    ['500', undefined],
   ])('normalizeStatsLatestHands(%p) -> %p', (input, expected) => {
     expect(normalizeStatsLatestHands(input)).toBe(expected)
   })

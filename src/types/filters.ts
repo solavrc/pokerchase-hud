@@ -3,6 +3,7 @@
  */
 
 import type { TableSizeFilter } from '../utils/table-size'
+import type { StatsLatestHands } from '../utils/stats-hand-limit'
 
 export type { TableSizeFilter }
 
@@ -33,7 +34,7 @@ export interface FilterOptions {
    * = フィルタなし、として扱う）。
    */
   tableSize?: TableSizeFilter
-  /** undefined = all hands. Positive finite N is capped at 500 at options/message boundaries. */
-  handLimit?: number
+  /** undefined = all hands; public choices are 20/50/100/200/500 only. */
+  handLimit?: StatsLatestHands
   statDisplayConfigs?: StatDisplayConfig[]  // Custom stat display configuration
 }

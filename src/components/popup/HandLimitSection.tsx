@@ -2,10 +2,14 @@ import Box from '@mui/material/Box'
 import Slider from '@mui/material/Slider'
 import Typography from '@mui/material/Typography'
 import { SectionHeading } from './SectionHeading'
-import { STATS_LATEST_HAND_OPTIONS } from '../../utils/stats-hand-limit'
+import {
+  normalizeStatsLatestHands,
+  STATS_LATEST_HAND_OPTIONS,
+  type StatsLatestHands,
+} from '../../utils/stats-hand-limit'
 
 interface HandLimitSectionProps {
-  handLimit: number | undefined
+  handLimit: StatsLatestHands | undefined
   handleHandLimitChange: (event: Event, value: number | number[]) => void
 }
 
@@ -23,9 +27,10 @@ export const HandLimitSection = ({
       <Box sx={{ px: 1, mt: 1, mb: 0.5 }}>
         <Slider
           value={(() => {
-            if (handLimit === undefined) return 6
+            const normalizedHandLimit = normalizeStatsLatestHands(handLimit)
+            if (normalizedHandLimit === undefined) return 6
             const index = STATS_LATEST_HAND_OPTIONS.indexOf(
-              handLimit as typeof STATS_LATEST_HAND_OPTIONS[number]
+              normalizedHandLimit
             )
             return index >= 0 ? index + 1 : 6
           })()}

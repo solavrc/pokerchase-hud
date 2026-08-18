@@ -13,6 +13,7 @@ import type { TableSizeLayer } from '../utils/table-size'
 import {
   MAX_STATS_LATEST_HANDS,
   normalizeStatsLatestHands,
+  type StatsLatestHands,
 } from '../utils/stats-hand-limit'
 import { BattleType } from '../types/game'
 import {
@@ -95,8 +96,8 @@ export interface StatsLedgerFilters {
   battleTypes?: readonly number[]
   /** 未指定はunknownを含む全卓人数層。配列指定時はunknownを除外する。 */
   tableSizeLayers?: readonly TableSizeLayer[]
-  /** 正の有限値だけが有効。0<値<1は旧slice互換で0件、上限は500。0以下は全履歴。 */
-  latestHands?: number
+  /** undefinedは全履歴。公開選択肢20/50/100/200/500だけを受け付ける。 */
+  latestHands?: StatsLatestHands
 }
 
 export interface StatsLedgerDiagnostics {
@@ -155,7 +156,7 @@ interface BaselineDiagnostics {
 interface NormalizedStatsLedgerFilters {
   battleTypes?: number[]
   tableSizeLayers?: TableSizeLayer[]
-  latestHands?: number
+  latestHands?: StatsLatestHands
 }
 
 class BaselineRequiredError extends Error {
@@ -487,10 +488,7 @@ function normalizedFilters(filters: StatsLedgerFilters): NormalizedStatsLedgerFi
   const tableSizeLayers = filters.tableSizeLayers === undefined
     ? undefined
     : [...new Set(filters.tableSizeLayers)]
-  const boundedLatestHands = normalizeStatsLatestHands(filters.latestHands)
-  const latestHands = boundedLatestHands === undefined
-    ? undefined
-    : Math.trunc(boundedLatestHands)
+  const latestHands = normalizeStatsLatestHands(filters.latestHands)
   return { battleTypes, tableSizeLayers, latestHands }
 }
 

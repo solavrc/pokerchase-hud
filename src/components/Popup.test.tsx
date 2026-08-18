@@ -970,6 +970,21 @@ describe('Popup', () => {
     expect(screen.getByText('500')).toBeInTheDocument()
   })
 
+  it('契約外handLimitはHUDと同じALL表示へ正規化される', async () => {
+    syncData.options.filterOptions.handLimit = 0.5
+
+    render(<Popup />)
+
+    await waitForAsyncOperations()
+
+    const sliders = screen.getAllByRole('slider') as HTMLInputElement[]
+    expect(sliders.at(-1)).toHaveValue('6')
+    expect(screen.getAllByText('ALL').length).toBeGreaterThanOrEqual(1)
+    await waitFor(() => {
+      expect(syncData.options.filterOptions.handLimit).toBeUndefined()
+    })
+  })
+
   it('統計設定を表示・変更できる', async () => {
     render(<Popup />)
 

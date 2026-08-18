@@ -5,7 +5,11 @@ import { ChangeEvent, useEffect, useRef, useState } from 'react'
 import type { FilterOptions, GameTypeFilter, TableSizeFilter } from '../types'
 import { ALL_TABLE_SIZE_LAYERS, DEFAULT_TABLE_SIZE_FILTER } from '../types'
 import { rangeToTableSizeFilter, tableSizeFilterToRange } from '../utils/table-size-range'
-import { STATS_LATEST_HAND_OPTIONS } from '../utils/stats-hand-limit'
+import {
+  normalizeStatsLatestHands,
+  STATS_LATEST_HAND_OPTIONS,
+  type StatsLatestHands,
+} from '../utils/stats-hand-limit'
 import { loadOptions, saveOptions, type Options } from '../utils/options-storage'
 import { defaultStatDisplayConfigs, mergeStatDisplayConfigs } from '../stats'
 import type { StatDisplayConfig } from '../types/filters'
@@ -87,7 +91,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
   const [importStartTime, setImportStartTime] = useState<number>(0)
   const [gameTypeFilter, setGameTypeFilter] = useState<GameTypeFilter>({ sng: true, mtt: true, ring: true })
   const [tableSizeFilter, setTableSizeFilter] = useState<TableSizeFilter>(DEFAULT_TABLE_SIZE_FILTER)
-  const [handLimit, setHandLimit] = useState<number | undefined>(500)
+  const [handLimit, setHandLimit] = useState<StatsLatestHands | undefined>(500)
   const [statDisplayConfigs, setStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
   const [pendingStatDisplayConfigs, setPendingStatDisplayConfigs] = useState<StatDisplayConfig[]>(defaultStatDisplayConfigs)
   const [hasUnsavedStatChanges, setHasUnsavedStatChanges] = useState<boolean>(false)
@@ -303,7 +307,7 @@ const Popup = ({ initialPopupThemeMode }: PopupProps = {}) => {
 
           setGameTypeFilter(savedOptions.filterOptions.gameTypes || { sng: true, mtt: true, ring: true })
           setTableSizeFilter(normalizedTableSize)
-          setHandLimit(savedOptions.filterOptions.handLimit)
+          setHandLimit(normalizeStatsLatestHands(savedOptions.filterOptions.handLimit))
         }
       }
 
