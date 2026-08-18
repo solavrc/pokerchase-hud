@@ -13,12 +13,19 @@ jest.mock('@sentry/browser', () => ({
   dedupeIntegration: jest.fn(() => ({ name: 'Dedupe' })),
   withScope: jest.fn(),
   captureException: jest.fn(),
-  captureMessage: jest.fn()
+  captureMessage: jest.fn(),
+  captureEvent: jest.fn()
 }))
 
 describe('Sentry schema capture gating', () => {
   it('constructs a diagnostic only for the first enabled event of an API type', async () => {
     process.env.SENTRY_ENABLED = 'true'
+    ;(Sentry.withScope as jest.Mock).mockImplementation(callback => callback({
+      setLevel: jest.fn(),
+      setFingerprint: jest.fn(),
+      setTags: jest.fn(),
+      setContext: jest.fn()
+    }))
     const buildDiagnostic = jest.fn(() => ({
       issues: [],
       issueCount: 0,
@@ -41,6 +48,10 @@ describe('Sentry schema capture gating', () => {
 
     expect(buildDiagnostic).toHaveBeenCalledTimes(1)
     expect(Sentry.withScope).toHaveBeenCalledTimes(1)
+    expect(Sentry.captureEvent).toHaveBeenCalledWith({
+      message: 'PokerChase API schema validation failed',
+      level: 'error'
+    })
 
     const beforeSend = (Sentry.init as jest.Mock).mock.calls[0]?.[0]
       ?.beforeSend as ((event: object) => object | null)

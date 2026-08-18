@@ -68,7 +68,7 @@ describe('API Validation Functions', () => {
       }
     })
 
-    it('accepts observed 201/202 error responses without treating them as application events', () => {
+    it('accepts observed auxiliary errors and notification codes without treating them as application events', () => {
       const entryError = {
         ApiTypeId: 201,
         Code: 5205,
@@ -97,12 +97,50 @@ describe('API Validation Functions', () => {
         sequence: 0
       }
 
-      expect(validateApiEvent(entryError).success).toBe(true)
-      expect(validateApiEvent(actionError).success).toBe(true)
-      expect(isApplicationApiEvent(entryError)).toBe(false)
-      expect(isApplicationApiEvent(actionError)).toBe(false)
-      expect(isUnparseableApplicationEvent(entryError)).toBe(false)
-      expect(isUnparseableApplicationEvent(actionError)).toBe(false)
+      const entryCancellationError = {
+        ApiTypeId: 203,
+        Code: 5003,
+        Error: {
+          Status: 0,
+          Message: 'text_sync_error_message_code_5003',
+          AddParam: '',
+          Replaces: []
+        },
+        timestamp: 1786435200000,
+        sequence: 0
+      }
+      const timeBankError = {
+        ApiTypeId: 205,
+        Code: 5302,
+        Error: {
+          Status: 0,
+          Message: 'text_sync_error_message_code_5302',
+          AddParam: '',
+          Replaces: []
+        },
+        RestExtraLimitSeconds: 0,
+        RestLimitSeconds: 0,
+        timestamp: 1787040000000,
+        sequence: 0
+      }
+      const handEndNotification = {
+        ApiTypeId: 311,
+        NotifyCode: 601,
+        timestamp: 1785916800000,
+        sequence: 0
+      }
+
+      for (const event of [
+        entryError,
+        actionError,
+        entryCancellationError,
+        timeBankError,
+        handEndNotification
+      ]) {
+        expect(validateApiEvent(event).success).toBe(true)
+        expect(isApplicationApiEvent(event)).toBe(false)
+        expect(isUnparseableApplicationEvent(event)).toBe(false)
+      }
     })
 
     it('retains newly observed nested MTT and error-envelope fields', () => {

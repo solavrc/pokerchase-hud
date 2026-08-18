@@ -67,23 +67,11 @@ import {
   initializeReplayDiagnostics,
   logReplayDiagnostic
 } from './replay-diagnostics'
-
-/**
- * 参加取消申込（ApiTypeId 203）。`ApiType` enum（アプリケーションで使用する
- * イベント種別、`isApplicationApiEvent`の判定基準）には意図的に含めない
- * ——enumに加えると`isApplicationApiEvent`がtrueを返すようになり、
- * ストリーム（handLogStream等）に本来対象外のイベントが投入されてしまう
- * ため。ここではセッション状態追跡専用の生ApiTypeId定数として扱う
- * （201/303/308/309と同じraw-firstパターン）。
- *
- * 参加申込(201)後、着席（303/308）に至る前にユーザーが参加をキャンセル
- * すると、ハンドが一度も始まらないため309も届かない
- * （P2, codexレビュー指摘 2026-07-21, pass-3）。この203を観測したら309と
- * 同様にsessionActivityをINACTIVEへ戻す（詳細は`applySessionActivity()`
- * コメント参照）。content_script.tsのkeepalive解除条件も同じ判定を
- * ミラーする。
- */
-const EVT_ENTRY_CANCELLED_API_TYPE_ID = 203
+import {
+  EVT_ENTRY_CANCELLED_API_TYPE_ID,
+  isConfirmedEntryCancellation,
+  isExplicitEntryFailure
+} from '../utils/session-activity-signals'
 
 type StatsLedgerPrefetchTrigger = 'seat-assigned' | 'player-join' | 'deal'
 
@@ -391,11 +379,6 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
  * 失敗として除外し、Code自体が欠落した未知payloadは従来通りfail-closedで
  * ACTIVE扱いする（schema変更時にゲーム中reloadを許さないため）。
  */
-const isExplicitEntryFailure = (message: ApiMessage | { type: string }): boolean => {
-  const code = (message as { Code?: unknown }).Code
-  return typeof code === 'number' && code !== 0
-}
-
 const isSessionStartSignal = (
   rawApiTypeId: unknown,
   message: ApiMessage | { type: string }
@@ -426,13 +409,13 @@ const isSessionStartSignal = (
  *     欠落」参照）
  *   - EVT_SESSION_DETAILS(308): 従来からのシグナル（来れば最速）
  *
- * INACTIVEへ戻すトリガーはEVT_SESSION_RESULTS(309)と
- * EVT_ENTRY_CANCELLED(203, 本ファイル冒頭の定数コメント参照)の2つ
- * （tri-stateのunknown=unsafeデフォルトは変更しない）。
+ * INACTIVEへ戻すトリガーはEVT_SESSION_RESULTS(309)と、Code=0で成功が
+ * 確認できたEVT_ENTRY_CANCELLED(203)の2つ。203の非0 Codeは取消失敗応答、
+ * Code欠落は未知schemaなので、どちらも安全側のACTIVE/unknownを維持する。
  *
- * 同じトリガー集合をcontent_script.tsのkeepalive起動/解除条件にも
- * ミラーする必要がある（背景・コンテンツスクリプト間でimport不可のため
- * 手動同期。変更時は両ファイルを揃えること）。
+ * 同じ判定をcontent_script.tsのkeepalive起動/解除条件にも適用する。
+ * 201/203のCode判定はsession-activity-signals.tsで共有し、303/308/309の
+ * trigger集合は各runtimeの責務に合わせてミラーする。
  *
  * `activeOnly`（P2, codexレビュー指摘 2026-07-21, pass-4, "Fail closed
  * on dropped ACTIVE writes"）: `true`の場合、INACTIVE化（309/203）を
@@ -456,7 +439,13 @@ const applySessionActivity = (
 ): void => {
   // forced update用の全体値と、現在tokenを持つACTIVEポートの値を進める。
   // 前者の意味は変えず、後者はリプレイ取得の判定点だけが読む。
-  if (!activeOnly && (rawApiTypeId === ApiType.EVT_SESSION_RESULTS || rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID)) {
+  const confirmedEntryCancellation =
+    rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID &&
+    isConfirmedEntryCancellation(message)
+  if (!activeOnly && (
+    rawApiTypeId === ApiType.EVT_SESSION_RESULTS ||
+    confirmedEntryCancellation
+  )) {
     markSessionInactive()
     if (generation !== undefined) markActivePortSessionInactive(generation)
     return
@@ -712,7 +701,10 @@ const processEvent = async (
     // 通過する。auto-syncと同じくfire-and-forget（取り込みキューを塞がない）。
     drainReplayImportQueue(createReplayImportDeps(service), 'session-end')
       .catch(err => console.error('[background] Replay import drain failed:', err))
-  } else if (rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID) {
+  } else if (
+    rawApiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID &&
+    isConfirmedEntryCancellation(message)
+  ) {
     // 参加取消申込(203)も保留中アップデートの安全性再チェック地点の1つに
     // 加える（P2, codexレビュー指摘 2026-07-21, pass-4, "Recheck updates
     // after entry cancellation"）: `applySessionActivity()`は203を309と

@@ -11,6 +11,11 @@ import {
   REPLAY_PAGE_SESSION_ACTIVITY_KEY,
   type ReplayPageSessionActivity
 } from './constants/runtime'
+import {
+  EVT_ENTRY_CANCELLED_API_TYPE_ID,
+  isConfirmedEntryCancellation,
+  isExplicitEntryFailure
+} from './utils/session-activity-signals'
 /** !!! BACKGROUND、CONTENT_SCRIPTSからインポートしないこと !!! */
 /**
  * このファイルはWebSocket傍受のみ（HUD全機能の土台）。全ユーザーで常時注入
@@ -52,17 +57,20 @@ const updateReplayPageSessionActivity = (
 ): void => {
   const apiTypeId = payload.ApiTypeId
   if (
-    (apiTypeId === 201 &&
-      (typeof payload.Code !== 'number' || payload.Code === 0)) ||
+    (apiTypeId === 201 && !isExplicitEntryFailure(payload)) ||
     (apiTypeId === 303 && payload.Player != null) ||
     apiTypeId === 308
   ) {
     setReplayPageSessionActivity('active')
     return
   }
-  // 203は201後に着席せず参加取消した場合の終了境界。これを戻さないと、
-  // 309が来ない経路でpage gateが永久にactiveへ張り付く。
-  if (apiTypeId === 203 || apiTypeId === 309) {
+  // 203はCode=0の成功応答だけが終了境界。非0 CodeまたはCode欠落でpage gateを
+  // INACTIVEへ倒してはならない（MUST NOT）。
+  if (
+    apiTypeId === 309 ||
+    (apiTypeId === EVT_ENTRY_CANCELLED_API_TYPE_ID &&
+      isConfirmedEntryCancellation(payload))
+  ) {
     setReplayPageSessionActivity('inactive')
   }
 }

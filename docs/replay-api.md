@@ -256,7 +256,8 @@ UIはポップアップの「リプレイ取り込み」。検証中、対局終
 **セッション中は1本も発行しない。** セッションの進行中に過去ハンドの詳細を
 取れてしまうと、まだ伏せられている情報がセッション内で参照可能になる。
 公開トグルの検証にも同じgateを適用する。セッション中のONは通信せず保留し、
-セッション終了後（`EVT_SESSION_RESULTS` / `EVT_ENTRY_CANCELLED`）に検証する。
+セッション終了後（`EVT_SESSION_RESULTS` / `Code=0`の
+`EVT_ENTRY_CANCELLED`）に検証する。
 認証エンベロープが無ければホーム画面の通常API通信で捕獲するまで保留する。
 
 **依頼は1件ずつ**行い、次の1本を撃つ直前に毎回この判定をやり直す。100件を
@@ -274,9 +275,10 @@ UIはポップアップの「リプレイ取り込み」。検証中、対局終
 接続中の他portはrelicなので、その状態を集合演算へ混ぜない。
 
 第一防衛線はpage側に置く。常時注入されるWebSocket hookが成功201・着席303・
-308で`active`、309（および着席前の参加取消203）で`inactive`をpage worldの
-`window`へ保持する。後から注入されるreplay bridgeは`inactive`のときだけ取得を
-開始し、各await境界でも同じ状態を再確認する。実行中に開始イベントを観測したら
+308で`active`、309（および着席前に成功した`Code=0`の参加取消203）で
+`inactive`をpage worldの`window`へ保持する。後から注入されるreplay bridgeは
+`inactive`のときだけ取得を開始し、各await境界でも同じ状態を再確認する。実行中に
+開始イベントを観測したら
 自身の`AbortController`を止めるため、Service WorkerからCANCELが来なくても安全で
 ある。`active`/`unknown`中の依頼にはHTTPを発行せず、空RESULTだけを返してSWの
 pendingを解放する。

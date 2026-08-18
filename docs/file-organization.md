@@ -82,7 +82,8 @@
     │   │                            #   drain, expiry accounting, synthetic 90001 Lake rows
     │   ├── event-ingestion.ts       # Raw Event Lake ingestion: serialized queue, durability
     │   │                            #   barrier, content dedup + sequence assignment,
-    │   │                            #   session-activity transitions (201/303/308 → 309/203)
+    │   │                            #   session-activity transitions
+    │   │                            #   (201/303/308 → 309/203 Code=0)
     │   ├── hud-config-sync.ts       # UIConfig broadcast to game tabs
     │   ├── import-export.ts         # Import/export/rebuild (performFullRebuild), pre-game hero stats
     │   ├── message-router.ts        # chrome.runtime message dispatch

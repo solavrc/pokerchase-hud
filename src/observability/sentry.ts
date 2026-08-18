@@ -46,6 +46,8 @@ const MAX_EVENTS_PER_RUNTIME = 20
 const reportedSchemaApiTypes = new Set<number>()
 const reportedErrors = new WeakSet<Error>()
 const MAX_BUFFERED_BOOTSTRAP_ERRORS = 5
+const SCHEMA_VALIDATION_EVENT_TITLE =
+  'PokerChase API schema validation failed'
 
 let initialized = false
 let configuredRuntime: SentryRuntime | undefined
@@ -628,6 +630,12 @@ export const captureSchemaValidationFailure = (
       sanitized_event_json: sanitizedEventJson,
       payload_truncated: diagnostic.payloadTruncated
     })
-    Sentry.captureMessage('PokerChase API schema validation failed')
+    // captureMessage + attachStacktraceはsynthetic exceptionへ変換され、privacy
+    // sanitizerがmessageを落とした結果、minify済み関数名がissue名になっていた。
+    // 既知の固定文言だけをmessage eventとして送り、通知subjectを安定させる。
+    Sentry.captureEvent({
+      message: SCHEMA_VALIDATION_EVENT_TITLE,
+      level: 'error'
+    })
   })
 }

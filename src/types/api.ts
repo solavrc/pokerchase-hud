@@ -149,8 +149,9 @@ export const apiEventSchemas = {
 
   [203]: baseSchema.extend({
     ApiTypeId: z.literal(203),
-    Code: z.literal(0),
-  }).describe('参加取消申込'),
+    Code: z.int().nonnegative().describe('0=参加取消成功、非0=参加取消エラー'),
+    Error: apiErrorSchema.optional().describe('Codeが非0の場合のエラー情報'),
+  }).describe('参加取消申込。2026-08にCode=5003のエラー応答を観測'),
 
   [204]: baseSchema.extend({
     ApiTypeId: z.literal(204),
@@ -159,10 +160,11 @@ export const apiEventSchemas = {
 
   [205]: baseSchema.extend({
     ApiTypeId: z.literal(205),
-    Code: z.literal(0),
-    RestExtraLimitSeconds: z.int().nonnegative(),
-    RestLimitSeconds: z.int().nonnegative(),
-  }).describe('タイムバンク'),
+    Code: z.int().nonnegative().describe('0=成功、非0=タイムバンクエラー'),
+    Error: apiErrorSchema.optional().describe('Codeが非0の場合のエラー情報'),
+    RestExtraLimitSeconds: z.int().nonnegative().optional(),
+    RestLimitSeconds: z.int().nonnegative().optional(),
+  }).describe('タイムバンク。2026-08にCode=5302のエラー応答を観測'),
 
   [206]: baseSchema.extend({
     ApiTypeId: z.literal(206),
@@ -556,8 +558,8 @@ export const apiEventSchemas = {
 
   [311]: baseSchema.extend({
     ApiTypeId: z.literal(311),
-    NotifyCode: z.union([z.literal(1), z.literal(2), z.literal(202)]),
-  }).describe('ハンド終了'),
+    NotifyCode: z.int().nonnegative().describe('通知コード。1/2/202/601を観測。HUDでは分岐に使用しないため将来値も受理'),
+  }).describe('ハンド終了通知'),
 
   [312]: baseSchema.extend({
     ApiTypeId: z.literal(312),
