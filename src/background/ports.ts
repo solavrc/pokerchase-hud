@@ -175,7 +175,14 @@ export const registerActivePortForService = (
   const generation = resolveGeneration(port)
   if (generation === undefined) return
 
-  if (lastKnownStats.length === 0 && latestRealTimeStats === undefined) return
+  if (lastKnownStats.length === 0 && latestRealTimeStats === undefined) {
+    // 復旧通知が先に完了した同一世代の後継transportへ、保留stateを追加せず
+    // handEpochだけを接続時に一度届ける。registerActivePortConnection()が
+    // trueを返した場合に限るため、reconnect-pending中のbroadcastにはならない。
+    // stats配信ではないのでlive delivery sequenceも進めない（MUST NOT）。
+    postMessageToPort(port, { handEpoch: handCompletionEpoch })
+    return
+  }
   const delivered = postMessageToPort(port, {
     stats: lastKnownStats,
     evtDeal: activeDealGeneration === generation ? service.liveEvtDeal : undefined,
