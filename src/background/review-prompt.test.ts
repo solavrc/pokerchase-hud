@@ -15,43 +15,52 @@ import {
   REVIEW_PROMPT_STORAGE_KEY,
 } from '../constants/review-prompt'
 import type { PokerChaseDB } from '../db/poker-chase-db'
+import { __resetPendingStorageWritesForTests } from './pending-storage-writes'
 
 const NOW = 1_800_000_000_000
+const PLAYER_ID = 42
 
 describe('review-prompt (background)', () => {
   let mockDb: jest.Mocked<PokerChaseDB>
   let handCount: jest.Mock
+  let handWhere: jest.Mock
+  let handEquals: jest.Mock
 
   beforeEach(async () => {
+    __resetPendingStorageWritesForTests()
     await chrome.storage.local.set({ [REVIEW_PROMPT_STORAGE_KEY]: undefined })
     jest.clearAllMocks()
 
     handCount = jest.fn()
-    mockDb = { hands: { count: handCount } } as any
+    handEquals = jest.fn(() => ({ count: handCount }))
+    handWhere = jest.fn(() => ({ equals: handEquals }))
+    mockDb = { hands: { where: handWhere } } as any
   })
 
   describe('evaluateReviewPromptVisibility', () => {
     it('累計ハンド数が閾値未満なら表示せず、状態も記録しない', async () => {
       handCount.mockResolvedValue(REVIEW_PROMPT_MIN_HANDS - 1)
 
-      expect(await evaluateReviewPromptVisibility(mockDb, NOW)).toBe(false)
+      expect(await evaluateReviewPromptVisibility(mockDb, PLAYER_ID, NOW)).toBe(false)
       expect(await getReviewPromptState()).toEqual({})
+      expect(handWhere).toHaveBeenCalledWith('seatUserIds')
+      expect(handEquals).toHaveBeenCalledWith(PLAYER_ID)
     })
 
     it('閾値に到達したら表示し、eligibleSinceを記録する', async () => {
       handCount.mockResolvedValue(REVIEW_PROMPT_MIN_HANDS)
 
-      expect(await evaluateReviewPromptVisibility(mockDb, NOW)).toBe(true)
+      expect(await evaluateReviewPromptVisibility(mockDb, PLAYER_ID, NOW)).toBe(true)
       expect(await getReviewPromptState()).toEqual({ eligibleSince: NOW })
     })
 
     it('一度eligibleになったら以降はハンド数を数え直さない（全データ削除後も降りない）', async () => {
       handCount.mockResolvedValue(REVIEW_PROMPT_MIN_HANDS)
-      await evaluateReviewPromptVisibility(mockDb, NOW)
+      await evaluateReviewPromptVisibility(mockDb, PLAYER_ID, NOW)
       handCount.mockClear()
       handCount.mockResolvedValue(0)
 
-      expect(await evaluateReviewPromptVisibility(mockDb, NOW + 1)).toBe(true)
+      expect(await evaluateReviewPromptVisibility(mockDb, PLAYER_ID, NOW + 1)).toBe(true)
       expect(handCount).not.toHaveBeenCalled()
     })
 
@@ -60,8 +69,18 @@ describe('review-prompt (background)', () => {
         [REVIEW_PROMPT_STORAGE_KEY]: { eligibleSince: NOW, resolution: 'rated', resolvedAt: NOW },
       })
 
-      expect(await evaluateReviewPromptVisibility(mockDb, NOW + 1)).toBe(false)
+      expect(await evaluateReviewPromptVisibility(mockDb, PLAYER_ID, NOW + 1)).toBe(false)
       expect(handCount).not.toHaveBeenCalled()
+    })
+
+    it('playerIdが不明または不正なら観戦・他プレイヤーの履歴を数えず非表示にする', async () => {
+      handCount.mockResolvedValue(REVIEW_PROMPT_MIN_HANDS)
+
+      expect(await evaluateReviewPromptVisibility(mockDb, undefined, NOW)).toBe(false)
+      expect(await evaluateReviewPromptVisibility(mockDb, Number.NaN, NOW)).toBe(false)
+      expect(await evaluateReviewPromptVisibility(mockDb, 0, NOW)).toBe(false)
+      expect(handWhere).not.toHaveBeenCalled()
+      expect(await getReviewPromptState()).toEqual({})
     })
 
     it('スヌーズ中は表示せず、期間が明けたら再表示する', async () => {
@@ -69,8 +88,8 @@ describe('review-prompt (background)', () => {
         [REVIEW_PROMPT_STORAGE_KEY]: { eligibleSince: NOW, snoozedAt: NOW },
       })
 
-      expect(await evaluateReviewPromptVisibility(mockDb, NOW + REVIEW_PROMPT_SNOOZE_MS - 1)).toBe(false)
-      expect(await evaluateReviewPromptVisibility(mockDb, NOW + REVIEW_PROMPT_SNOOZE_MS)).toBe(true)
+      expect(await evaluateReviewPromptVisibility(mockDb, PLAYER_ID, NOW + REVIEW_PROMPT_SNOOZE_MS - 1)).toBe(false)
+      expect(await evaluateReviewPromptVisibility(mockDb, PLAYER_ID, NOW + REVIEW_PROMPT_SNOOZE_MS)).toBe(true)
     })
 
     it('表示判定中に決着しても、古い表示状態で決着を消さない', async () => {
@@ -84,7 +103,7 @@ describe('review-prompt (background)', () => {
         markHandCountStarted()
       }))
 
-      const visibility = evaluateReviewPromptVisibility(mockDb, NOW)
+      const visibility = evaluateReviewPromptVisibility(mockDb, PLAYER_ID, NOW)
       await handCountStarted
       const dismissed = resolveReviewPrompt('dismissed', NOW + 10)
       releaseHandCount(REVIEW_PROMPT_MIN_HANDS)
@@ -118,7 +137,7 @@ describe('review-prompt (background)', () => {
         resolution: choice,
         resolvedAt: NOW + 10,
       })
-      expect(await evaluateReviewPromptVisibility(mockDb, NOW + 20)).toBe(false)
+      expect(await evaluateReviewPromptVisibility(mockDb, PLAYER_ID, NOW + 20)).toBe(false)
     })
 
     it('決着済みの状態は上書きしない（「後で」で復活もしない）', async () => {

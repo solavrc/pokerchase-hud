@@ -18,10 +18,13 @@ import { trackServiceForTeardown } from '../utils/test-service-teardown'
 
 const readState = async (): Promise<ReviewPromptState> =>
   (await chrome.storage.local.get(REVIEW_PROMPT_STORAGE_KEY))?.[REVIEW_PROMPT_STORAGE_KEY] ?? {}
+const PLAYER_ID = 42
+const SPECTATOR_PLAYER_ID = 84
 
 describe('message-router review prompt', () => {
   let db: PokerChaseDB
   let service: PokerChaseService
+  let nextHandId: number
   let listener: (request: ChromeMessage, sender: chrome.runtime.MessageSender, sendResponse: (response: MessageResponse) => void) => boolean | void
 
   const send = async (message: ChromeMessage) => {
@@ -37,13 +40,13 @@ describe('message-router review prompt', () => {
     return value as any
   }
 
-  /** 必要最小限の行。表示条件には行数だけが影響する。 */
-  const seedHands = (count: number) =>
+  /** 必要最小限の行。`seatUserIds`に対象playerIdが含まれる行だけを数える。 */
+  const seedHands = (count: number, seatUserIds: number[] = [PLAYER_ID]) =>
     db.hands.bulkAdd(Array.from({ length: count }, (_unused, index) => ({
       // `hands`はauto-incrementではない明示的な`id`主キーを使う
-      id: index + 1,
+      id: nextHandId++,
       approxTimestamp: index,
-      seatUserIds: [],
+      seatUserIds,
       winningPlayerIds: [],
       smallBlind: 0,
       bigBlind: 0,
@@ -54,8 +57,9 @@ describe('message-router review prompt', () => {
   beforeEach(async () => {
     db = new PokerChaseDB(indexedDB, IDBKeyRange)
     await db.open()
-    service = trackServiceForTeardown(new PokerChaseService({ db }))
+    service = trackServiceForTeardown(new PokerChaseService({ db, playerId: PLAYER_ID }))
     await service.ready
+    nextHandId = 1
 
     ;(chrome.runtime.onMessage.addListener as jest.Mock).mockClear()
     registerMessageRouter(service, db, 'https://example.com/*')
@@ -85,6 +89,34 @@ describe('message-router review prompt', () => {
       visible: true,
     })
     expect((await readState()).eligibleSince).toEqual(expect.any(Number))
+  })
+
+  test('観戦ハンドを本人の500ハンドへ混ぜず、本人が閾値へ達した時だけ表示する', async () => {
+    await seedHands(REVIEW_PROMPT_MIN_HANDS - 1)
+    await seedHands(100, [SPECTATOR_PLAYER_ID])
+
+    expect(await send({ action: 'getReviewPrompt' } as ChromeMessage)).toEqual({
+      success: true,
+      visible: false,
+    })
+    expect(await readState()).toEqual({})
+
+    await seedHands(1)
+    expect(await send({ action: 'getReviewPrompt' } as ChromeMessage)).toEqual({
+      success: true,
+      visible: true,
+    })
+  })
+
+  test('playerIdの復元前は履歴が500件あっても表示しない', async () => {
+    service.playerId = undefined
+    await seedHands(REVIEW_PROMPT_MIN_HANDS)
+
+    expect(await send({ action: 'getReviewPrompt' } as ChromeMessage)).toEqual({
+      success: true,
+      visible: false,
+    })
+    expect(await readState()).toEqual({})
   })
 
   test('resolveReviewPrompt persists the pressed button and later prompts stay hidden', async () => {

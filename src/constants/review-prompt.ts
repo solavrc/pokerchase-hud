@@ -38,7 +38,7 @@ export interface ReviewPromptState {
 }
 
 /**
- * 依頼を出し始める累計ハンド数（`hands`テーブルの件数）。
+ * 依頼を出し始める、現在のプレイヤーが参加した累計ハンド数。
  *
  * 数セッション使い込んで価値を実感した頃合いを狙う閾値（sola選択）。
  * インストール直後の押し付けを避けつつ、母数を極端に絞らない妥協点。
@@ -95,6 +95,7 @@ export const parseReviewPromptState = (value: unknown): ReviewPromptState => {
 export const isReviewPromptVisible = (state: ReviewPromptState, now: number): boolean => {
   if (state.resolution) return false
   if (state.eligibleSince === undefined) return false
+  if (state.eligibleSince > now) return false
   if (state.snoozedAt !== undefined) {
     const elapsed = now - state.snoozedAt
     if (elapsed < REVIEW_PROMPT_SNOOZE_MS) return false

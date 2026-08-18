@@ -22,6 +22,7 @@ import {
   UI_SCALE_STORAGE_KEY,
 } from '../utils/ui-config-storage'
 import { DEFAULT_UI_CONFIG } from '../types/hand-log'
+import { REVIEW_PROMPT_STORAGE_KEY } from '../constants/review-prompt'
 
 describe('message-router applyPendingUpdate', () => {
   let db: PokerChaseDB
@@ -43,6 +44,7 @@ describe('message-router applyPendingUpdate', () => {
 
     ;(chrome.runtime.onMessage.addListener as jest.Mock).mockClear()
     ;(chrome.runtime.reload as jest.Mock).mockClear()
+    await chrome.storage.local.set({ [REVIEW_PROMPT_STORAGE_KEY]: undefined })
     registerMessageRouter(service, db, 'https://example.com/*')
     listener = (chrome.runtime.onMessage.addListener as jest.Mock).mock.calls[0][0]
   })
@@ -138,6 +140,58 @@ describe('message-router applyPendingUpdate', () => {
 
     expect(configResponse).toHaveBeenCalledWith({ success: true })
     expect(chrome.runtime.reload).toHaveBeenCalledTimes(1)
+  })
+
+  test('レビュー決着のread-modify-write完了を待ってからreloadする', async () => {
+    await chrome.storage.local.set({
+      [REVIEW_PROMPT_STORAGE_KEY]: { eligibleSince: 1 },
+    })
+    markSessionInactive()
+
+    const originalStorageGet = (chrome.storage.local.get as jest.Mock).getMockImplementation()!
+    let releaseReviewRead!: () => void
+    let signalReviewReadStarted!: () => void
+    const reviewReadStarted = new Promise<void>(resolve => {
+      signalReviewReadStarted = resolve
+    })
+    const storageGetSpy = jest.spyOn(chrome.storage.local, 'get').mockImplementation(
+      (keys: any, callback?: any) => {
+        if (keys === REVIEW_PROMPT_STORAGE_KEY && callback === undefined) {
+          signalReviewReadStarted()
+          return new Promise(resolve => {
+            releaseReviewRead = () => resolve({
+              [REVIEW_PROMPT_STORAGE_KEY]: { eligibleSince: 1 },
+            })
+          })
+        }
+        return originalStorageGet(keys, callback)
+      }
+    )
+
+    const resolveResponse = jest.fn()
+    listener({
+      action: 'resolveReviewPrompt',
+      choice: 'dismissed',
+    } as ChromeMessage, {}, resolveResponse)
+    await reviewReadStarted
+
+    const applyResponse = jest.fn()
+    listener({ action: 'applyPendingUpdate' } as ChromeMessage, {}, applyResponse)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(chrome.runtime.reload).not.toHaveBeenCalled()
+
+    releaseReviewRead()
+    await getPendingStorageWriteTail()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(resolveResponse).toHaveBeenCalledWith({ success: true })
+    expect(applyResponse).toHaveBeenCalledWith({
+      success: true,
+      applied: true,
+      reason: undefined,
+    })
+    expect(chrome.runtime.reload).toHaveBeenCalledTimes(1)
+    storageGetSpy.mockRestore()
   })
 
   test('waits for every queued device-scale write before reloading', async () => {

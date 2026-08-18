@@ -134,7 +134,7 @@ describe('ReviewPromptSection', () => {
 
     // 応答が返るまではバナーもボタンも残っている（消えたまま無反応にしない）
     expect(screen.getByText(PROMPT_TEXT)).toBeInTheDocument()
-    expect(screen.getByText('開いています...').closest('button')).toBeDisabled()
+    expect(screen.getByText('処理しています...').closest('button')).toBeDisabled()
     expect(screen.getByText('後で').closest('button')).toBeDisabled()
     expect(screen.getByText('今後表示しない').closest('button')).toBeDisabled()
     expect(chrome.tabs.create).not.toHaveBeenCalled()
@@ -165,6 +165,43 @@ describe('ReviewPromptSection', () => {
     await waitFor(() => {
       expect(screen.queryByText(PROMPT_TEXT)).not.toBeInTheDocument()
     })
+  })
+
+  it.each([
+    ['評価する', 'rated', '失敗応答', { success: false, error: 'storage unavailable' }],
+    ['後で', 'later', '失敗応答', { success: false, error: 'storage unavailable' }],
+    ['今後表示しない', 'dismissed', '失敗応答', { success: false, error: 'storage unavailable' }],
+    ['評価する', 'rated', '応答なし', undefined],
+    ['後で', 'later', '応答なし', undefined],
+    ['今後表示しない', 'dismissed', '応答なし', undefined],
+  ] as const)('「%s」の保存が%sならバナーを残して再試行できる', async (
+    label,
+    choice,
+    _responseLabel,
+    resolveResponse
+  ) => {
+    const user = userEvent.setup()
+    mockSendMessage.mockImplementation((message: any, callback?: (response: any) => void) => {
+      if (message?.action === 'getReviewPrompt') {
+        callback?.({ success: true, visible: true })
+        return
+      }
+      callback?.(resolveResponse)
+    })
+    render(<ReviewPromptSection />)
+    await findPrompt()
+
+    await user.click(screen.getByText(label))
+
+    await waitFor(() => {
+      expect(screen.getByText(PROMPT_TEXT)).toBeInTheDocument()
+      expect(screen.getByText(label).closest('button')).not.toBeDisabled()
+    })
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      { action: 'resolveReviewPrompt', choice },
+      expect.any(Function)
+    )
+    expect(chrome.tabs.create).not.toHaveBeenCalled()
   })
 
   it('chrome.runtime.idが取得できない異常系では表示しない', async () => {

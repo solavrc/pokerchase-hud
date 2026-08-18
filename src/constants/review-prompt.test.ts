@@ -98,4 +98,8 @@ describe('isReviewPromptVisible', () => {
   it('未来のsnoozedAt（時計の巻き戻し等）は非表示側に倒す', () => {
     expect(isReviewPromptVisible({ ...eligible, snoozedAt: NOW + 60_000 }, NOW)).toBe(false)
   })
+
+  it('未来のeligibleSince（時計の巻き戻し等）は非表示側に倒す', () => {
+    expect(isReviewPromptVisible({ eligibleSince: NOW + 60_000 }, NOW)).toBe(false)
+  })
 })

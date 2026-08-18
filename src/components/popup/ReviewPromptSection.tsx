@@ -10,6 +10,7 @@ import { MIN_VERSION_GATE_STORAGE_KEY, type MinVersionGateState } from '../../se
 import { REBUILD_ADVISORY_STORAGE_KEY, type RebuildAdvisoryState } from '../../background/rebuild-advisory'
 import type {
   GetReviewPromptMessage,
+  MessageResponse,
   ResolveReviewPromptMessage,
   ReviewPromptResponse,
 } from '../../types/messages'
@@ -40,7 +41,7 @@ const REVIEW_PROMPT_MESSAGE_TIMEOUT_MS = 5000
 export const ReviewPromptSection = () => {
   const [visible, setVisible] = useState(false)
   const [suppressed, setSuppressed] = useState(true)
-  const [rating, setRating] = useState(false)
+  const [resolving, setResolving] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -78,7 +79,7 @@ export const ReviewPromptSection = () => {
   }, [])
 
   const resolve = useCallback((choice: ReviewPromptChoice) =>
-    sendMessageWithTimeout(
+    sendMessageWithTimeout<MessageResponse>(
       { action: 'resolveReviewPrompt', choice } as ResolveReviewPromptMessage,
       REVIEW_PROMPT_MESSAGE_TIMEOUT_MS
     ), [])
@@ -87,32 +88,33 @@ export const ReviewPromptSection = () => {
   // 異常系ではレビューページを組み立てられないため、バナー自体を出さない
   const reviewUrl = chrome.runtime.id ? buildChromeWebStoreReviewUrl(chrome.runtime.id) : undefined
 
-  const handleRate = useCallback(async () => {
-    // 記録の完了を待ってからタブを開く: 新規タブへ切り替わるとPopupは
-    // 破棄されるため、送信しっぱなしだと決着が失われうる。タイムアウト時
-    // （応答なし）はストアページを開く方を優先する -- ユーザーの意図を
-    // 妨げないのが優先で、記録漏れは「後日もう一度聞かれる」だけで済む。
-    //
-    // 待っている間はバナーを消さずボタンをdisabledにする（UpdateSectionの
-    // applyingと同じ形）。先に消してしまうと、SWのコールドスタートで
-    // 往復が延びたときに「押したのに何も起きない」無反応の窓ができ、
-    // そこでPopupを閉じられると`rated`だけ記録されてストアは開かれない
-    // -- 二度と聞かない状態になってしまう
-    setRating(true)
-    await resolve('rated')
+  const persistChoice = useCallback(async (choice: ReviewPromptChoice): Promise<boolean> => {
+    // 応答なし・保存失敗はunknown state。成功を確認できるまではバナーを残し、
+    // 再試行できるようボタンを戻す。とくにratedは、Popup破棄より前に決着が
+    // 永続化されたことを確認してからストアを開く必要がある。
+    setResolving(true)
+    const response = await resolve(choice)
+    if (!response?.success) {
+      setResolving(false)
+      return false
+    }
     setVisible(false)
-    if (reviewUrl) chrome.tabs.create({ url: reviewUrl })
-  }, [resolve, reviewUrl])
+    return true
+  }, [resolve])
+
+  const handleRate = useCallback(async () => {
+    if (await persistChoice('rated')) {
+      if (reviewUrl) chrome.tabs.create({ url: reviewUrl })
+    }
+  }, [persistChoice, reviewUrl])
 
   const handleLater = useCallback(() => {
-    setVisible(false)
-    void resolve('later')
-  }, [resolve])
+    void persistChoice('later')
+  }, [persistChoice])
 
   const handleDismiss = useCallback(() => {
-    setVisible(false)
-    void resolve('dismissed')
-  }, [resolve])
+    void persistChoice('dismissed')
+  }, [persistChoice])
 
   if (!visible || suppressed || !reviewUrl) return null
 
@@ -132,13 +134,13 @@ export const ReviewPromptSection = () => {
           Chrome ウェブストアでの評価・レビューが今後の開発の励みになります。
         </Typography>
         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mt: 0.5 }}>
-          <Button size="small" color="inherit" onClick={handleRate} disabled={rating}>
-            {rating ? '開いています...' : '評価する'}
+          <Button size="small" color="inherit" onClick={handleRate} disabled={resolving}>
+            {resolving ? '処理しています...' : '評価する'}
           </Button>
-          <Button size="small" color="inherit" onClick={handleLater} disabled={rating}>
+          <Button size="small" color="inherit" onClick={handleLater} disabled={resolving}>
             後で
           </Button>
-          <Button size="small" color="inherit" onClick={handleDismiss} disabled={rating}>
+          <Button size="small" color="inherit" onClick={handleDismiss} disabled={resolving}>
             今後表示しない
           </Button>
         </Box>
