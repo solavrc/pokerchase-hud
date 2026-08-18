@@ -51,6 +51,9 @@ describe('AggregateEventsStream Raw Lake recovery after a Service Worker restart
     const head = await service.statsLedger.getActiveHead()
     expect(await db.hands.get(result.HandId)).toBeDefined()
     expect(await db.apiEvents.count()).toBe(3)
+    expect(service.playerId).toBe(MTT_TABLE_MOVE_FIXTURE.heroId)
+    expect(service.latestEvtDeal?.timestamp).toBe(MTT_TABLE_MOVE_FIXTURE.timestamps.oldAcceptedDeal)
+    expect(service.liveEvtDeal?.timestamp).toBe(MTT_TABLE_MOVE_FIXTURE.timestamps.oldAcceptedDeal)
     expect(await db.statHandContributions
       .where('[generation+handId]')
       .equals([head!.generation, result.HandId])
@@ -80,20 +83,24 @@ describe('AggregateEventsStream Raw Lake recovery after a Service Worker restart
     expect(getStatCounter(aggregate!.totals, 'hands')).toEqual([1, 0])
   })
 
-  test('Raw LakeにもDEALが無いRESULTSはfenceを終端化し、再構築ループを作らない', async () => {
+  test('Raw Lakeにも当該ハンドのDEALが無いRESULTSはfenceを終端化し、再構築ループを作らない', async () => {
     // 前のハンドは既にcanonicalへ反映済みとし、そのfenceだけ先に回収する。
     const previousResult = await seedRaw(firstHand())
     await service.statsLedger.acknowledgePendingHandDerivation(previousResult)
     const currentResult = structuredClone(MTT_TABLE_MOVE_FIXTURE.events[5]!) as ApiEvent<ApiType.EVT_HAND_RESULTS>
     currentResult.timestamp = currentResult.timestamp! + 100
     currentResult.HandId += 1
-    const result = await seedRaw([currentResult])
+    // 同一timestampの後着303が主キー順で306より前に見えても、これを
+    // current handのDEALとして採用してはいけない。
+    const laterDeal = structuredClone(MTT_TABLE_MOVE_FIXTURE.events[3]!) as ApiEvent<ApiType.EVT_DEAL>
+    laterDeal.timestamp = currentResult.timestamp
+    const result = await seedRaw([currentResult, laterDeal])
 
     service.handAggregateStream.write(result)
     await service.handAggregateStream.whenIdle()
 
     expect(await db.hands.count()).toBe(0)
-    expect(await db.apiEvents.count()).toBe(4)
+    expect(await db.apiEvents.count()).toBe(5)
     expect(await db.statHandContributions.count()).toBe(0)
     expect(await db.meta
       .where('id')

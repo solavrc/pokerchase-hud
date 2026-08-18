@@ -150,21 +150,7 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           // 起こらないが）Player 不在の latestEvtDeal が万一永続化されていても、
           // playerId 自体は影響を受けない
           // （poker-chase-service.test.ts の観戦モード回帰テストで検証済み）。
-          if (event.Player?.SeatIndex !== undefined) {
-            this.service.playerId = event.SeatUserIds[event.Player.SeatIndex]
-            // 席マッピング用に最新のEVT_DEALを保存（ヒーロー在籍時のみ更新・永続化対象）
-            this.service.latestEvtDeal = event
-          }
-          // ライブ配信用の現在の座席文脈（Player有無に関わらず毎回更新・非永続）
-          this.service.liveEvtDeal = event
-
-          // Capture hero's hole cards for hand improvement calculations (only in real-time play)
-          if (!this.service.batchMode && event.Player?.HoleCards && event.Player.HoleCards.length === 2 && this.service.playerId) {
-            // Use timestamp as temporary hand ID until we get the real one from EVT_HAND_RESULTS
-            // This is fine since we only need it for the current hand
-            const tempHandId = `temp_${Date.now()}`
-            setHandImprovementHeroHoleCards(tempHandId, this.service.playerId.toString(), event.Player.HoleCards)
-          }
+          this.applyDealContext(event)
 
           // 新しいハンド開始時に統計を計算（既存データがあるプレイヤーの統計を表示）
           // ただし、すでにDBにハンドが存在する場合のみ（リングゲーム途中参加など）
@@ -247,12 +233,25 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
                     setEventGeneration(recoveredEvent, generation)
                   }
                 }
+                const recoveredDeal = recovery.events.find((recoveredEvent): recoveredEvent is ApiEvent<ApiType.EVT_DEAL> =>
+                  recoveredEvent.ApiTypeId === ApiType.EVT_DEAL
+                )
+                if (recoveredDeal) this.applyDealContext(recoveredDeal)
                 this.push(recovery.events)
               } else if (recovery.kind === 'missing-deal' || recovery.kind === 'terminal-mismatch') {
                 await this.service.statsLedger.acknowledgePendingHandDerivation(event)
               } else {
                 await this.service.statsLedger.markPendingHandDerivationFailed(event)
               }
+            } catch (error: unknown) {
+              // Lake読取り・fence更新の例外でcurrent-owner fenceを取り残さない。
+              // failed化自体が失敗しても元の例外を隠してはならない（MUST NOT）。
+              try {
+                await this.service.statsLedger.markPendingHandDerivationFailed(event)
+              } catch (markerError) {
+                console.warn('[AggregateEventsStream] Failed to mark recovery fence', markerError)
+              }
+              throw error
             } finally {
               // 再生の書き込みはWriteEntityStreamへキューされる。部分的なRESULTS
               // バッファを残すと、次のハンドがそれを引き継いでしまう。
@@ -271,6 +270,26 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
       }
     } catch (error: unknown) {
       this.handleError(error)
+    }
+  }
+
+  /**
+   * 通常のEVT_DEALとRaw Lakeから復元したDEALで、サービスの現在ハンド文脈を
+   * 同じ条件で更新する。raw payloadへ世代metadataは書き込まない（MUST NOT）。
+   */
+  private applyDealContext(event: ApiEvent<ApiType.EVT_DEAL>): void {
+    if (event.Player?.SeatIndex !== undefined) {
+      this.service.playerId = event.SeatUserIds[event.Player.SeatIndex]
+      // 席マッピング用に最新のEVT_DEALを保存（ヒーロー在籍時のみ更新・永続化対象）
+      this.service.latestEvtDeal = event
+    }
+    // ライブ配信用の現在の座席文脈（Player有無に関わらず毎回更新・非永続）
+    this.service.liveEvtDeal = event
+
+    if (!this.service.batchMode && event.Player?.HoleCards && event.Player.HoleCards.length === 2 && this.service.playerId) {
+      // ハンドIDがRESULTSまで確定しないため、現在ハンド専用の一時IDを使う。
+      const tempHandId = `temp_${Date.now()}`
+      setHandImprovementHeroHoleCards(tempHandId, this.service.playerId.toString(), event.Player.HoleCards)
     }
   }
 

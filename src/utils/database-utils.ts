@@ -27,9 +27,9 @@ const LIVE_HAND_API_TYPES = new Set<number>([
   ApiType.EVT_DEAL_ROUND,
   ApiType.EVT_HAND_RESULTS,
 ])
+// EVT_SESSION_DETAILS（308）は再発行され得るため、単独ではハンド境界とみなさない。
 const HAND_CONTEXT_BOUNDARY_API_TYPES = new Set<number>([
   ApiType.EVT_ENTRY_QUEUED,
-  ApiType.EVT_SESSION_DETAILS,
   ApiType.EVT_SESSION_RESULTS,
   ApiType.EVT_PLAYER_SEAT_ASSIGNED,
 ])
@@ -58,9 +58,10 @@ export async function readRecoverableRawHandForResults(
   db: PokerChaseDB,
   resultsEvent: ApiEvent<ApiType.EVT_HAND_RESULTS>
 ): Promise<RawHandRecoveryResult> {
-  if (typeof resultsEvent.timestamp !== 'number') return { kind: 'unusable' }
+  const resultTimestamp = resultsEvent.timestamp
+  if (typeof resultTimestamp !== 'number') return { kind: 'unusable' }
   const targetKey = [
-    resultsEvent.timestamp,
+    resultTimestamp,
     resultsEvent.ApiTypeId,
     getApiEventSequence(resultsEvent),
   ] as ApiEventKey
@@ -69,7 +70,13 @@ export async function readRecoverableRawHandForResults(
     .where(API_EVENT_PRIMARY_KEY)
     .below(targetKey)
     .reverse()
-    .filter(event => event.ApiTypeId === ApiType.EVT_DEAL)
+    .filter(event =>
+      // 主キーはwire順ではないため、同一timestampの303は後着候補も含めて
+      // predecessorに採用しない。跨いだ区間に残る別303も下で棄却する。
+      typeof event.timestamp === 'number' &&
+      event.timestamp < resultTimestamp &&
+      event.ApiTypeId === ApiType.EVT_DEAL
+    )
     .first() as RawApiEvent | undefined
   if (!latestDeal) return { kind: 'missing-deal' }
 
@@ -92,14 +99,13 @@ export async function readRecoverableRawHandForResults(
 
   // 当該ハンドのDEALが本当に到着しなかった場合、最新DEALは前のハンドに属し得る。
   // その場合は途中のraw RESULTSが証拠になる。
-  if (orderedSegment
-    .slice(dealIndex + 1, resultIndex)
-    .some(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)) {
+  const betweenDealAndResults = orderedSegment.slice(dealIndex + 1, resultIndex)
+  if (betweenDealAndResults.some(event =>
+    event.ApiTypeId === ApiType.EVT_HAND_RESULTS || event.ApiTypeId === ApiType.EVT_DEAL
+  )) {
     return { kind: 'missing-deal' }
   }
-  if (orderedSegment
-    .slice(dealIndex + 1, resultIndex)
-    .some(event => HAND_CONTEXT_BOUNDARY_API_TYPES.has(event.ApiTypeId))) {
+  if (betweenDealAndResults.some(event => HAND_CONTEXT_BOUNDARY_API_TYPES.has(event.ApiTypeId))) {
     return { kind: 'terminal-mismatch' }
   }
 
