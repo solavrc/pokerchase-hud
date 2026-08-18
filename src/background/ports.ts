@@ -175,7 +175,14 @@ export const registerActivePortForService = (
   const generation = resolveGeneration(port)
   if (generation === undefined) return
 
-  if (lastKnownStats.length === 0 && latestRealTimeStats === undefined) return
+  if (lastKnownStats.length === 0 && latestRealTimeStats === undefined) {
+    // 復旧通知が先に完了した同一世代の後継transportへ、保留stateを追加せず
+    // handEpochだけを接続時に一度届ける。registerActivePortConnection()が
+    // trueを返した場合に限るため、reconnect-pending中のbroadcastにはならない。
+    // stats配信ではないのでlive delivery sequenceも進めない（MUST NOT）。
+    postMessageToPort(port, { handEpoch: handCompletionEpoch })
+    return
+  }
   const delivered = postMessageToPort(port, {
     stats: lastKnownStats,
     evtDeal: activeDealGeneration === generation ? service.liveEvtDeal : undefined,
@@ -230,6 +237,29 @@ export const notifyReplayDetailsStored = (): void => {
   const activePort = getActivePort()
   if (!activePort) return
   postMessageToPort(activePort, { replayEpoch: replayDetailEpoch })
+}
+
+/**
+ * Raw Lake全再構築で復元したcompleted handを、handEpochだけで通知する。
+ *
+ * stats/evtDeal/realTimeStatsを送らないため、現在のACTIVE世代のlineupや席回転を
+ * 変更しない（MUST）。復旧側はactivation成功後にだけ呼び出し、次の通常DEALを
+ * 待つ間も開いた詳細パネルのcacheを再取得できるようにする。
+ */
+export const notifyRecoveredHandCompletion = (): void => {
+  handCompletionEpoch++
+  // cold-start復旧ではconnected portが先に再接続していてもACTIVE tokenがまだ
+  // 無い。token未生成の時だけ既存のconnected fallbackへ送り、reconnect候補の
+  // generationを誤って別世代へ配信しない（MUST NOT）。
+  if (resolveGeneration() === undefined) {
+    for (const port of connectedPorts) {
+      postMessageToPort(port, { handEpoch: handCompletionEpoch })
+    }
+    return
+  }
+  const activePort = getActivePort()
+  if (!activePort) return
+  postMessageToPort(activePort, { handEpoch: handCompletionEpoch })
 }
 
 /** dedup済みの成功201だけを、そのイベント世代のcontent scriptへ通知する。 */

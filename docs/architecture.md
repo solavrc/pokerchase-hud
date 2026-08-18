@@ -184,13 +184,14 @@ HUD集計は`statHandContributions`に「1プレイヤー・1完成ハンド」�
 統計定義と表示結果は変えない。
 
 全履歴のcounterはaggregateに保持する一方、per-hand行は各プレイヤーの
-「対戦種別×卓人数層」cellごとに最新500件までとする。HUDが入力できる
-latest windowの上限も500件であり、任意のfilter後の最新500件は、対象cellそれぞれの
-最新500件の和集合に必ず含まれる。これによりlatestの厳密性を保ったまま、cold baselineの
-永続化行数とlive中の保持量を全履歴件数から切り離す。
-外部入力などで500を超える契約外`handLimit`が保存されていた場合は、台帳内部でだけ無言に
-丸めず、optionsの保存・読込境界で500へ永続マイグレーションする。これによりPopup表示、
-Service Workerの実フィルター、寄与windowの契約が同じ値になる。
+「対戦種別×卓人数層」cellごとに最新500件までとする。HUDが入力できるlatest windowは
+20/50/100/200/500件またはALL（未指定）だけで、上限も500件である。任意のfilter後の
+最新500件は、対象cellそれぞれの最新500件の和集合に必ず含まれる。これによりlatestの
+厳密性を保ったまま、cold baselineの永続化行数とlive中の保持量を全履歴件数から切り離す。
+外部入力などで500を超える契約外`handLimit`が保存されていた場合は、optionsの保存・読込
+境界で500へ永続マイグレーションする。20/50/100/200/500の
+間にある値、0以下、非有限値はALL（未指定）へ移行する。message/service境界でも同じ
+正規化を行うため、Popup表示、Service Workerの実フィルター、寄与windowの契約が同じ値になる。
 
 フィルター付きの最新N件は、プレイヤーごとに「対戦種別 → 卓人数層 → 全ポジションを
 横断した最新N件 → ポジション別集計」の順で選ぶ。N件制限がない場合は累積bucketを読み、
@@ -217,14 +218,26 @@ Service Workerが終了しても、次回起動はstaleな派生表を成功状�
 
 liveの`EVT_HAND_RESULTS`（306）は、Raw Lakeの主キー`[timestamp+ApiTypeId+sequence]`ごとの
 pending derivation fenceをraw rowと同じtransactionで保存する。完了ハンドのcanonical entityと
-統計台帳のcommitが成功した時、またはschema不適合・DEAL欠落・cross-generation/
-chimera判定で意図的に派生しないと確定した時に、対応するexact fenceだけを消す。
+統計台帳のcommitが成功した時、またはschema不適合・cross-generation/chimera判定で
+意図的に派生しないと確定した時に、対応するexact fenceだけを消す。揮発バッファ先頭に
+DEALがない306は意図的に派生せず、先にfenceを消さない。
 同じ起動ownerの未完了fenceは通常のin-flightとして扱い、別owner・失敗済み・壊れたfenceは
 中断復旧とbaseline構築拒否の対象とする。cloud分割再構築は開始時に回収対象のexact IDを固定し、
 完了commitでそのIDだけを消すため、再構築中に到着したlive fenceを巻き込まない。
 live canonical transactionが失敗した場合は、failed状態の永続化自体が失敗しても、同一worker内の
 error通知がexact fence IDを非同期復旧へ引き継ぐ。この明示IDは通常の「current ownerはin-flight」
 判定を越えてRaw Lake再生の根拠になり、成功時のactivation transactionでだけ消える。
+AggregateEventsStreamでDEALなし306を観測した場合も、同じstructured errorへexact fence IDを
+渡して既存のsingle-flight full rebuild schedulerを予約する。通常の取り込みはrebuild完了を待たず、
+既存canonical replayが全Raw Lakeを一度だけ再生し、対象handが生成される場合も生成されない場合も
+activationでfenceを終端する。Raw `apiEvents`はこの経路から削除しない。
+対象handが生成された復旧では、activation後に直近ハンドcacheを無効化し、`handEpoch`だけを
+ACTIVEポートへ1回通知する。この通知はstatsやlineupを含まないため、WESのライブ配信や席回転を
+模倣せず、開いたポジション／直近ハンドパネルだけが再取得する。RawにDEALがなく対象handが
+生成されなかった終端や、activationに失敗した試行ではこの通知を発火しない。
+再構築後の集計再配信も、現在のACTIVE generationと同じgenerationで受信した信頼済みDEALを
+確認できる場合に限る。対局中にその証拠がない場合は履歴のDEALでHUDを上書きせず、次の通常DEAL
+を待つ。tokenがない起動直後や明示的に対局外の状態では、従来の接続先への復元配信を維持する。
 手動の全再構築は`apiEvents`のRW lock下でLake全体の一致snapshotを再生し、その最終commitで
 pending fence全件を回収する。
 

@@ -4,6 +4,7 @@ import { ApiType } from '../types'
 import type { ApiEvent, ApiHandEvent, Progress } from '../types'
 import { ErrorHandler } from '../utils/error-handler'
 import { setHandImprovementHeroHoleCards } from '../realtime-stats'
+import type { CanonicalWriteFailureError } from './write-entity-stream'
 import {
   getEventGeneration,
   setStatsRequestContext
@@ -226,10 +227,27 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           if (this.events.length > 0 && this.events[0]?.ApiTypeId === ApiType.EVT_DEAL) {
             this.push(this.events)
           } else {
-            // DEALが無いRESULTSはこのライブ集約では意図的に派生しない。
-            // rawと同時に立てたexact-result fenceを終端化し、次回起動ごとに
-            // 同じ非派生ハンドを全再生し続けないようにする。
-            await this.service.statsLedger.acknowledgePendingHandDerivation(event)
+            // DEALが無いRESULTSはライブ集約では派生しない。既存のfull replayへ
+            // exact fenceを渡すため、成功ackせずfailedとして残す（MUST）。
+            const recoveryError = new Error(
+              'EVT_HAND_RESULTS arrived without an in-memory EVT_DEAL; canonical Raw Lake recovery is required'
+            ) as CanonicalWriteFailureError
+            recoveryError.canonicalRecoveryRequired = true
+            recoveryError.canonicalRecoveryFenceId =
+              this.service.statsLedger.getPendingHandDerivationFenceId(event)
+            try {
+              const markedPending = await this.service.statsLedger.markPendingHandDerivationFailed(event)
+              if (markedPending) throw recoveryError
+            } catch (error: unknown) {
+              if (error === recoveryError) throw error
+              // marker書込みが失敗してもexact IDを構造化errorへ残し、既存の
+              // schedulerにfull replayを予約する。
+              recoveryError.message = 'Failed to mark the missing-DEAL result fence for canonical recovery'
+              throw recoveryError
+            } finally {
+              // 部分的なRESULTSバッファを次のハンドへ引き継がない。
+              this.events = []
+            }
           }
           // ハンド確定後はバッファを必ず空にする。以前はこの明示的なクリアが無く、
           // 直後に本来来るはずのEVT_DEALが（生データの欠落等により）来なかった場合、
@@ -247,11 +265,18 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
   }
 
   protected override handleError(error: unknown): void {
+    const recoveryError = error as CanonicalWriteFailureError
     const appError = ErrorHandler.handleStreamError(
       error,
       'AggregateEventsStream',
       { lastTimestamp: this.lastTimestamp, eventsCount: this.events.length }
-    )
+    ) as CanonicalWriteFailureError
+    if (recoveryError.canonicalRecoveryRequired === true) {
+      // ErrorHandlerでAppErrorへ変換しても、backgroundへ渡すexact fence IDは
+      // 同じworker内の構造化errorとして保持する（MUST）。
+      appError.canonicalRecoveryRequired = true
+      appError.canonicalRecoveryFenceId = recoveryError.canonicalRecoveryFenceId
+    }
     if (this.listenerCount('error') > 0) {
       this.emit('error', appError)
     }

@@ -114,28 +114,28 @@ describe('ReadEntityStream.calcStats -- table-size filter (C案)', () => {
     expect(player6 && 'statResults' in player6 ? player6.statResults : undefined).toEqual([])
   })
 
-  test('ordering: table-size filter applies BEFORE handLimit (filter narrows population first, then limit caps it)', async () => {
-    // Only hands 1, 2, 3 match full+4p (3 hands). handLimit=2 should keep the
-    // most recent 2 *within that filtered set* (ids 3, 2), not the most
-    // recent 2 of the unfiltered 6 hands (which would be ids 6, 5 -- both hu).
+  test('table-size filter and the public 20-hand limit keep the filtered population contract', async () => {
+    // Only hands 1, 2, 3 match full+4p. The smallest public hand limit is 20,
+    // so all three matching hands remain; no hidden sub-20 limit is accepted.
     service.tableSizeFilter = ['full', '4p']
-    service.handLimitFilter = 2
+    service.handLimitFilter = 20
     const stats = await runCalcStats(service, SEAT_USER_IDS)
+    expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(3)
+  })
+
+  test('a fractional handLimit is normalized to ALL instead of slicing the ledger to zero', async () => {
+    service.tableSizeFilter = ['hu']
+    ;(service as any).handLimitFilter = 0.5
+    const stats = await runCalcStats(service, SEAT_USER_IDS)
+
+    expect(service.handLimitFilter).toBeUndefined()
     expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(2)
   })
 
-  test('a fractional handLimit that slices to zero keeps the zero-value grid when filters matched', async () => {
-    service.tableSizeFilter = ['hu']
-    service.handLimitFilter = 0.5
+  test('handLimit alone (no table-size filter) accepts the smallest public window', async () => {
+    service.handLimitFilter = 20
     const stats = await runCalcStats(service, SEAT_USER_IDS)
-
-    expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(0)
-  })
-
-  test('handLimit alone (no table-size filter) still behaves as before -- most recent N of all hands', async () => {
-    service.handLimitFilter = 2
-    const stats = await runCalcStats(service, SEAT_USER_IDS)
-    expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(2) // hands 6, 5 (most recent ids)
+    expect(handsStatOf(stats, PLAYER_ID)?.value).toBe(6)
   })
 
   test('table-size filter composes with battleTypeFilter at the same application point', async () => {

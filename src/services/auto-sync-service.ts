@@ -28,6 +28,8 @@ import {
 import { HandLogExporter } from '../utils/hand-log-exporter'
 import { startKeepAlive } from '../background/service-worker-keepalive'
 import { captureHandledException } from '../observability/sentry'
+import { notifyRecoveredHandCompletion } from '../background/ports'
+import { invalidateRecentHandsCache } from './recent-hands-service'
 import {
   STATS_PENDING_HAND_DERIVATION_META_PREFIX,
   StatsLedger,
@@ -35,6 +37,7 @@ import {
 import { SessionState } from './poker-chase-service'
 import type PokerChaseService from './poker-chase-service'
 import { getActivePortActivity, resolveGeneration } from '../background/active-port'
+import { getDefaultStatsContext } from '../streams/stats-output-context'
 
 /** Shown in the popup and logged when the min-version gate stops cloud sync (#forced-update). */
 export const MIN_VERSION_SYNC_BLOCKED_MESSAGE = 'このバージョンはサポートが終了しました。Chromeを再起動すると更新が適用されます'
@@ -77,6 +80,24 @@ function splitEntityBundleByHands(bundle: EntityBundle): EntityBundle[] {
     })
   }
   return chunks
+}
+
+/** exact fence IDから、形式が検証できるHandIdだけを取り出す。 */
+function parsePendingFenceHandId(fenceId: string): number | undefined {
+  if (!fenceId.startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)) return undefined
+  const suffix = fenceId.slice(STATS_PENDING_HAND_DERIVATION_META_PREFIX.length)
+  const parts = suffix.split(':')
+  if (parts.length !== 3) return undefined
+  const [handIdText, timestampText, sequenceText] = parts
+  if (!handIdText || !timestampText || !sequenceText) return undefined
+  const handId = Number(handIdText)
+  const timestamp = Number(timestampText)
+  const sequence = Number(sequenceText)
+  return Number.isSafeInteger(handId) && handId >= 0 &&
+    Number.isSafeInteger(timestamp) &&
+    Number.isSafeInteger(sequence) && sequence >= 0
+    ? handId
+    : undefined
 }
 
 /**
@@ -1786,6 +1807,11 @@ export class AutoSyncService {
       // completed concurrently by live ingestion was not in the snapshot and
       // must remain intact.
       const staleHandIds = previousHandIds.filter(handId => !rebuiltHandIds.has(handId))
+      const recoveredHandIds = new Set(
+        recoveredPendingFenceIds
+          .map(parsePendingFenceHandId)
+          .filter((handId): handId is number => handId !== undefined && rebuiltHandIds.has(handId))
+      )
       // stale canonical cleanup・ledger head切替・完了markerは同一commitに束ねる。
       // 途中失敗やSW終了で、部分世代または「完了済み」だけが見えてはならない
       // （MUST NOT）。このtransaction中はライブWriteEntityStreamも同じstoresで
@@ -1824,6 +1850,14 @@ export class AutoSyncService {
       // ここから先の表示復元失敗で、公開済みactive世代をabandonしてはならない
       // （MUST NOT）。head切替commitが完了した時点でcleanup対象から外す。
       stagingGeneration = undefined
+
+      if (service && recoveredHandIds.size > 0) {
+        // full replayはWESのdataイベントを通らないため、activation後にだけ
+        // handEpochと直近ハンドcacheを一度ずつ更新する。stats/lineupは送らず、
+        // 現在のACTIVE世代の席文脈を再構築しない（MUST NOT）。
+        invalidateRecentHandsCache()
+        notifyRecoveredHandCompletion()
+      }
 
       this.publishRebuiltServiceContext(service, replaySession, latestDealEvent, contextGuard)
       console.log(`[AutoSync] Chunked data rebuild completed (${totalEventCount} events)`)
@@ -1979,6 +2013,22 @@ export class AutoSyncService {
     // live更新を観測した場合は、その現在文脈へ新headの統計だけを再配信する。
     // historical dealへ巻き戻してはならない（MUST NOT）。
     const displayDeal = service.liveEvtDeal
+    const activeGeneration = resolveGeneration()
+    const activeActivity = getActivePortActivity()
+    const defaultStatsContext = getDefaultStatsContext()
+    const hasTrustedActiveDeal = activeGeneration !== undefined &&
+      defaultStatsContext?.generation === activeGeneration &&
+      defaultStatsContext.evtDeal !== undefined
+    if (
+      activeGeneration !== undefined &&
+      activeActivity !== 'inactive' &&
+      !hasTrustedActiveDeal
+    ) {
+      // ACTIVE世代に同世代DEALの証拠がない間は、履歴のlineupでHUDを
+      // 上書きしてはならない。次の信頼済みDEALが通常配信するまで保留する。
+      console.info('[AutoSync] Skipping rebuilt stats publish until the ACTIVE generation has a trusted DEAL')
+      return
+    }
     if (displayDeal?.SeatUserIds) {
       const playerIds = displayDeal.SeatUserIds.filter(id => id !== -1)
       if (playerIds.length > 0) service.statsOutputStream.write(playerIds)

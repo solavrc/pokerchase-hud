@@ -99,20 +99,20 @@ describe('sanitized MTT table-move lifecycle fixture', () => {
       MTT_TABLE_MOVE_FIXTURE.handIds.oldAccepted
     ])
 
-    // The newest two accepted hands were both played from the BB. Numeric
-    // HandId sorting would incorrectly select the old-table CO hand (102)
-    // instead of the later destination-table BB hand (101).
-    service.handLimitFilter = 2
+    // The public minimum hand window is 20, so all three accepted hands are
+    // retained; the chronology assertion above remains independent of this
+    // aggregate filter.
+    service.handLimitFilter = 20
     clearPositionalStatsCache()
     const positional = await getPositionalStats(db, service, MTT_TABLE_MOVE_FIXTURE.heroId)
     expect(positional.positions.find(bucket => bucket.position === Position.BB)?.handsN).toBe(2)
-    expect(positional.positions.find(bucket => bucket.position === Position.CO)?.handsN).toBe(0)
+    expect(positional.positions.find(bucket => bucket.position === Position.CO)?.handsN).toBe(1)
 
     const hudStats = await service.statsOutputStream.calcStats([MTT_TABLE_MOVE_FIXTURE.heroId])
     const heroStats = hudStats.find(stats => stats.playerId === MTT_TABLE_MOVE_FIXTURE.heroId)
     expect(heroStats && 'statResults' in heroStats
       ? heroStats.statResults?.find(stat => stat.id === 'vpip')?.value
-      : undefined).toEqual([0, 2])
+      : undefined).toEqual([1, 3])
 
     const exported = await HandLogExporter.exportRecentHands(db, undefined, 3)
     const newestIndex = exported.indexOf(`PokerStars Hand #${MTT_TABLE_MOVE_FIXTURE.handIds.newAccepted}`)

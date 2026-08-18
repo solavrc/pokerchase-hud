@@ -31,6 +31,7 @@ import { ApiType } from './types'
 import {
   POKER_CHASE_INVALID_API_EVENT,
   POKER_CHASE_ORIGIN,
+  POKER_CHASE_SERVICE_EVENT,
   POKER_CHASE_SESSION_START_EVENT
 } from './constants/runtime'
 
@@ -86,6 +87,17 @@ describe('content_script keepalive (session-activity triggers)', () => {
     expect(sessionStart).toHaveBeenCalledTimes(1)
     expect((sessionStart.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({ timestamp: 1 })
     window.removeEventListener(POKER_CHASE_SESSION_START_EVENT, sessionStart)
+  })
+
+  test('handEpoch-only background notification reaches the App event without stats or lineup', () => {
+    const serviceEvent = jest.fn()
+    window.addEventListener(POKER_CHASE_SERVICE_EVENT, serviceEvent)
+
+    receiveBackgroundMessage({ handEpoch: 12 })
+
+    expect(serviceEvent).toHaveBeenCalledTimes(1)
+    expect((serviceEvent.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({ handEpoch: 12 })
+    window.removeEventListener(POKER_CHASE_SERVICE_EVENT, serviceEvent)
   })
 
   test('an explicit EVT_ENTRY_QUEUED error response does not start keepalive', () => {
