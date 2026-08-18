@@ -9,6 +9,7 @@ import type { ApiEvent } from '../types/api'
 import type Dexie from 'dexie'
 import {
   API_EVENT_PRIMARY_KEY,
+  createApiEventReplayOrderState,
   type ApiEventKey,
   getApiEventSequence,
   orderApiEventsForReplay,
@@ -165,6 +166,7 @@ export async function* processInReplayChunks<T extends { timestamp?: number; Api
   let snapshotOffset = 0
   let carry: T[] = []
   let processed = 0
+  const replayOrderState = createApiEventReplayOrderState()
 
   while (true) {
     let rawChunk: T[]
@@ -189,7 +191,10 @@ export async function* processInReplayChunks<T extends { timestamp?: number; Api
 
     if (rawChunk.length === 0) {
       if (carry.length > 0) {
-        const ordered = orderApiEventsForReplay(carry as unknown as RawApiEvent[]) as unknown as T[]
+        const ordered = orderApiEventsForReplay(
+          carry as unknown as RawApiEvent[],
+          replayOrderState
+        ) as unknown as T[]
         yield ordered
         processed += ordered.length
         options?.onProgress?.(processed, total)
@@ -202,7 +207,10 @@ export async function* processInReplayChunks<T extends { timestamp?: number; Api
     const combined = [...carry, ...rawChunk]
 
     if (reachedEnd) {
-      const ordered = orderApiEventsForReplay(combined as unknown as RawApiEvent[]) as unknown as T[]
+      const ordered = orderApiEventsForReplay(
+        combined as unknown as RawApiEvent[],
+        replayOrderState
+      ) as unknown as T[]
       yield ordered
       processed += ordered.length
       options?.onProgress?.(processed, total)
@@ -216,7 +224,10 @@ export async function* processInReplayChunks<T extends { timestamp?: number; Api
     const ready = combined.slice(0, splitIndex)
     carry = combined.slice(splitIndex)
     if (ready.length > 0) {
-      const ordered = orderApiEventsForReplay(ready as unknown as RawApiEvent[]) as unknown as T[]
+      const ordered = orderApiEventsForReplay(
+        ready as unknown as RawApiEvent[],
+        replayOrderState
+      ) as unknown as T[]
       yield ordered
       processed += ordered.length
       options?.onProgress?.(processed, total)

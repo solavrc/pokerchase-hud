@@ -44,6 +44,15 @@ export interface MergeApiEventsOptions {
   atomicMetaRecordsForAdded?: (added: readonly RawApiEvent[]) => readonly MetaRecord[]
 }
 
+/** chunkを跨いで引き継ぐstateful replayのハンド境界状態。 */
+export interface ApiEventReplayOrderState {
+  hasOpenHand: boolean
+}
+
+export const createApiEventReplayOrderState = (): ApiEventReplayOrderState => ({
+  hasOpenHand: false
+})
+
 export const getApiEventSequence = (event: { sequence?: unknown }): number =>
   typeof event.sequence === 'number' && Number.isSafeInteger(event.sequence) && event.sequence >= 0
     ? event.sequence
@@ -102,69 +111,74 @@ const resolveStrictSnapshotActionPair = <T extends RawApiEvent>(group: T[]): T[]
 }
 
 /**
- * 同一ミリ秒群で `EVT_HAND_RESULTS` が `EVT_DEAL` の後ろに並ぶ倒錯を戻す。
+ * 開いている前ハンドの終了行だけを、同一ミリ秒の次ハンド配札より前へ戻す。
  *
- * 主キーは `[timestamp+ApiTypeId+sequence]` で、303 < 306 のため、あるハンドの
- * 終了行と次のハンドの配札行が同じミリ秒に着信すると、保存順では必ず配札が先に
- * なる。`EntityConverter` / `WriteEntityStream` は EVT_DEAL でハンドバッファを
- * 確定させるため（`src/entity-converter.ts` の `convertEventChunk`）、この順序では
- * (a) 終了行を失った前ハンドが HandId 未設定のまま破棄され、(b) その終了行が次の
- * ハンドのバッファを前ハンドの HandId で確定させ、(c) 次のハンドの残りの行は
- * 開いているバッファが無いまま捨てられる ―― 1つの倒錯で2ハンドが消える。
+ * `timestamp` は受信時刻なので、再送された同一ハンドの DEAL→RESULTS 全体が
+ * 同じ値になることもある。そのため303/306の同居だけでは順序を推論せず、
+ * より前のミリ秒でDEALが開き、まだRESULTSで閉じていない場合にだけ補正する。
+ * さらに対応が曖昧な複数303/306群は主キー順のままにする（MUST）。
  *
- * これは同一ミリ秒群からライフサイクル順を推測しているのではなく、1ミリ秒の中で
- * 配札から決着までが完結することはあり得ない、という事実による確定的な帰結である
- * （群の中の 306 は必ず、その群より前に始まったハンドの終了行）。したがって群内の
- * `EVT_HAND_RESULTS` は常に最初の `EVT_DEAL` より前へ移す（MUST）。他の行の相対順は
- * 変えない。`EVT_DEAL` を含まない群（実キャプチャで多い 306+311 / 306+309 /
- * 306+313）は一切触らない。
- *
- * 残る曖昧性: 同じ群の `EVT_ACTION` が前ハンドの最終アクションなのか次のハンドの
- * 初手なのかは、この関数の情報だけでは決められない。ここでは主キー順のまま
- * `EVT_DEAL` の後ろに残す（＝次のハンドに属するものとして扱う）。取りこぼしても
- * 1アクションであり、修正前のようにハンドごと消えることはない。
+ * 補正時も、201などDEALより前にある行はMUST跨がない。RESULTSを最初のDEALの
+ * 直前へ挿入し、DEAL以降のACTION等は相対順を保つ。
  */
-const hoistHandResultsBeforeDeal = <T extends RawApiEvent>(group: T[]): T[] => {
-  const firstDealIndex = group.findIndex(event => event.ApiTypeId === ApiType.EVT_DEAL)
-  if (firstDealIndex === -1) return group
-  if (!group.slice(firstDealIndex + 1).some(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)) return group
+const hoistOpenHandResultsBeforeDeal = <T extends RawApiEvent>(
+  group: T[],
+  hasOpenHandBeforeGroup: boolean
+): T[] => {
+  if (!hasOpenHandBeforeGroup) return group
 
+  const dealIndexes = group.flatMap((event, index) =>
+    event.ApiTypeId === ApiType.EVT_DEAL ? [index] : [])
+  const resultIndexes = group.flatMap((event, index) =>
+    event.ApiTypeId === ApiType.EVT_HAND_RESULTS ? [index] : [])
+  if (dealIndexes.length !== 1 || resultIndexes.length !== 1) return group
+
+  const dealIndex = dealIndexes[0]!
+  const resultIndex = resultIndexes[0]!
+  if (resultIndex < dealIndex) return group
+
+  const result = group[resultIndex]!
   return [
-    ...group.filter(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS),
-    ...group.filter(event => event.ApiTypeId !== ApiType.EVT_HAND_RESULTS)
+    ...group.slice(0, dealIndex),
+    result,
+    ...group.slice(dealIndex, resultIndex),
+    ...group.slice(resultIndex + 1)
   ]
 }
 
 /**
- * Replay order for stateful consumers.
+ * 状態を持つconsumer向けの再生順。
  *
- * IndexedDB and raw export use `[timestamp+ApiTypeId+sequence]`, so cross-type
- * events sharing a millisecond are stored in ApiTypeId order rather than wire
- * order. Two orderings are corrected: an isolated two-event snapshot/action
- * pair proven by exact phase, actor, stack and pot deltas, and an
- * `EVT_HAND_RESULTS` that shares a millisecond with an `EVT_DEAL` (see
- * `hoistHandResultsBeforeDeal`). Compound groups and all other events retain
- * primary-key order as a stable, fail-closed representation; this function does
- * not otherwise infer lifecycle order from an isolated timestamp group.
+ * IndexedDBとraw exportは`[timestamp+ApiTypeId+sequence]`順なので、同一msの
+ * 異なるtypeはwire順ではなくApiTypeId順になる。厳密なpayload差分で証明できる
+ * 2行のsnapshot/action倒錯と、前のmsから開いたハンドのRESULTS/次DEAL境界だけを
+ * 補正する。複合groupとその他の行は、安定したfail-closed表現として主キー順を
+ * 維持し、同一timestampだけからsession lifecycleを推論しない。
  *
- * The 393,830-event production corpus contained 210 cross-type equal-ms
- * groups. The strict predicate changes only three proven inversions (two
- * 313→304 groups and one 305→304 group), all isolated two-event groups.
- * Neither that corpus nor the later 561,309-event capture contains a
- * 303+306 group, so the results hoist is a latent-path fix: it is reachable
- * whenever WebSocket frames are delivered in a burst (a throttled/frozen tab
- * resuming, or a compressed replay), because `timestamp` is stamped at frame
- * dispatch (`src/web_accessible_resource.ts`), not by the server.
+ * 実raw 393,830 eventsのcross-type同時刻210 groupで、snapshot/action条件が
+ * 変更するのは独立した3組だけだった。別の561,309-event captureを含め、
+ * 303+306群は未観測である。
  */
-export const orderApiEventsForReplay = <T extends RawApiEvent>(events: T[]): T[] => {
+export const orderApiEventsForReplay = <T extends RawApiEvent>(
+  events: T[],
+  state: ApiEventReplayOrderState = createApiEventReplayOrderState()
+): T[] => {
   const primaryOrder = [...events].sort(compareApiEventKeys)
   const ordered: T[] = []
 
   for (let start = 0; start < primaryOrder.length;) {
     let end = start + 1
     while (end < primaryOrder.length && primaryOrder[end]!.timestamp === primaryOrder[start]!.timestamp) end++
-    const group = hoistHandResultsBeforeDeal(primaryOrder.slice(start, end))
-    ordered.push(...resolveStrictSnapshotActionPair(group))
+    const group = hoistOpenHandResultsBeforeDeal(
+      primaryOrder.slice(start, end),
+      state.hasOpenHand
+    )
+    const resolved = resolveStrictSnapshotActionPair(group)
+    ordered.push(...resolved)
+    for (const event of resolved) {
+      if (event.ApiTypeId === ApiType.EVT_DEAL) state.hasOpenHand = true
+      else if (event.ApiTypeId === ApiType.EVT_HAND_RESULTS) state.hasOpenHand = false
+    }
     start = end
   }
 

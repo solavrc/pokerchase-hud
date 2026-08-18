@@ -149,25 +149,49 @@ describe('raw event replay order', () => {
     expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([304, 305, 306])
   })
 
-  test('replays EVT_HAND_RESULTS before an EVT_DEAL that shares its millisecond', () => {
+  test('keeps a complete same-millisecond hand canonical when no prior hand is open', () => {
     const events: RawApiEvent[] = [
       { timestamp: 500, ApiTypeId: 303, HandStart: true },
       { timestamp: 500, ApiTypeId: 306, HandId: 1 }
     ]
 
-    // 主キーは 303 < 306 なので保存順では配札が先に来るが、1ミリ秒で配札から
-    // 決着までが完結することはあり得ないため、この 306 は必ず前のハンドの終了行。
-    expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([306, 303])
+    // timestampは受信時刻なので、再送では同じハンド全体が同一msになり得る。
+    // 開いている前ハンドが無い以上、RESULTSをDEALより前へ動かしてはならない。
+    expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([303, 306])
   })
 
-  test('hoists EVT_HAND_RESULTS out of a compound group that also opens the next hand', () => {
+  test('moves an open hand result before the next deal without crossing a session boundary', () => {
     const events: RawApiEvent[] = [
+      { timestamp: 490, ApiTypeId: 303, marker: 'previous-deal' },
+      { timestamp: 500, ApiTypeId: 201, Id: 'moved-table', BattleType: 0 },
       { timestamp: 500, ApiTypeId: 304, SeatIndex: 2 },
-      { timestamp: 500, ApiTypeId: 303, HandStart: true },
-      { timestamp: 500, ApiTypeId: 306, HandId: 1 }
+      { timestamp: 500, ApiTypeId: 303, marker: 'next-deal' },
+      { timestamp: 500, ApiTypeId: 306, HandId: 1, marker: 'previous-results' }
     ]
 
-    expect(orderApiEventsForReplay(events).map(event => event.ApiTypeId)).toEqual([306, 303, 304])
+    const boundary = orderApiEventsForReplay(events)
+      .filter(event => event.timestamp === 500)
+    expect(boundary.map(event => event.ApiTypeId)).toEqual([201, 306, 303, 304])
+    expect(boundary.map(event => event.marker ?? event.Id)).toEqual([
+      'moved-table',
+      'previous-results',
+      'next-deal',
+      undefined
+    ])
+  })
+
+  test('keeps ambiguous multiple DEAL/RESULTS groups in canonical order', () => {
+    const events: RawApiEvent[] = [
+      { timestamp: 490, ApiTypeId: 303, marker: 'previous-deal' },
+      { timestamp: 500, ApiTypeId: 303, sequence: 0, marker: 'deal-a' },
+      { timestamp: 500, ApiTypeId: 303, sequence: 1, marker: 'deal-b' },
+      { timestamp: 500, ApiTypeId: 306, sequence: 0, marker: 'result-a' },
+      { timestamp: 500, ApiTypeId: 306, sequence: 1, marker: 'result-b' }
+    ]
+
+    expect(orderApiEventsForReplay(events)
+      .filter(event => event.timestamp === 500)
+      .map(event => event.marker)).toEqual(['deal-a', 'deal-b', 'result-a', 'result-b'])
   })
 
   test('leaves an EVT_HAND_RESULTS group without an EVT_DEAL in canonical order', () => {

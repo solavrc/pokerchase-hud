@@ -272,6 +272,25 @@ describe('processInChunks (cursor-based pagination over a real Dexie table)', ()
     expect(chunks.flat().map(row => row.marker)).toEqual(['turn-card', 'turn-action', 'result'])
   })
 
+  test('replay chunks preserve an open hand across pages before repairing the next boundary', async () => {
+    await db.apiEvents.bulkAdd([
+      { timestamp: 100, ApiTypeId: 303, marker: 'previous-deal' },
+      { timestamp: 150, ApiTypeId: 304, marker: 'previous-action' },
+      { timestamp: 200, ApiTypeId: 303, marker: 'next-deal' },
+      { timestamp: 200, ApiTypeId: 306, marker: 'previous-results' }
+    ] as any)
+
+    const chunks: any[][] = []
+    for await (const chunk of processInReplayChunks(db.apiEvents as any, 1)) chunks.push(chunk)
+
+    expect(chunks.flat().map(row => row.marker)).toEqual([
+      'previous-deal',
+      'previous-action',
+      'previous-results',
+      'next-deal'
+    ])
+  })
+
   test('snapshot replay keeps a causal equal-ms group whole across three pages and excludes rows inserted mid-scan', async () => {
     await db.apiEvents.bulkAdd([
       { timestamp: 100, ApiTypeId: 201, marker: 'before-1' },
