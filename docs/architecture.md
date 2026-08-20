@@ -5,7 +5,7 @@
 ## ACTIVEポートtoken: ゲームイベントを最後に届けたタブだけを更新する
 
 PokerChaseは排他的ログインであり、1セッションで実際に使われるゲームタブは常に1つである。
-raw capture 415k handsでは2卓の同時配信は0件で、568件のhand preemptionは全て逐次的、
+raw capture 41.5k handsでは2卓の同時配信は0件で、568件のhand preemptionは全て逐次的、
 最短間隔も12秒だった。このゲーム側制約を前提に、WebSocket由来のgame eventを最後に
 届けたportを唯一のACTIVE portとする。別portから次のeventが届けば即座にtokenを移し、
 以前のportが後でeventを届ければ同じ手順でtokenを取り戻す。
