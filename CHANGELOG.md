@@ -1,5 +1,19 @@
 # Changelog
 
+## [6.1.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v6.0.0...pokerchase-hud-v6.1.0) (2026-09-01)
+
+
+### Features
+
+* **ui:** Chromeウェブストアのレビュー依頼バナーを追加する ([#317](https://github.com/solavrc/pokerchase-hud/issues/317)) ([07eb195](https://github.com/solavrc/pokerchase-hud/commit/07eb195f18df5559315f736606b7bc1d2cac4e7f))
+
+
+### Bug Fixes
+
+* **observability:** Sentry信号と参加取消判定を改善 ([#376](https://github.com/solavrc/pokerchase-hud/issues/376)) ([48b5c9a](https://github.com/solavrc/pokerchase-hud/commit/48b5c9abfe2c02b835fe84d72a7a980a0a451943))
+* **stats:** ハンド数フィルターを公開契約へ統一 ([#374](https://github.com/solavrc/pokerchase-hud/issues/374)) ([bfe689a](https://github.com/solavrc/pokerchase-hud/commit/bfe689aa7a81fc6b3d4b3eb7c20cb7e99289f80b))
+* **stats:** 欠損DEALの自動canonical復旧を安全化 ([#373](https://github.com/solavrc/pokerchase-hud/issues/373)) ([8d5a996](https://github.com/solavrc/pokerchase-hud/commit/8d5a99687edd027b6bc42bb5f72b82d9dae65ddb))
+
 ## [6.0.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v5.7.0...pokerchase-hud-v6.0.0) (2026-08-05)
 
 
