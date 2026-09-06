@@ -50,8 +50,12 @@ stat 固有の一時状態は `handState.statStates[id]`、共有 `actions` は�
 
 - **操作一覧の適用範囲**: 非空の直前 Progress が現在の席・解決済み street に一致し、
   最後の201以後に得られた場合だけ、その action の選択肢として使う。正規化と3bet機会は
-  同じ根拠を使う。201は既存 hand の採否を変えず Progress を失効させ、live bufferにも
-  この境界を保持する。空・欠測・別席・別street・201越境は不明とし、過去の一覧を探索しない。
+  同じ根拠を使う。ここで境界にする201は、schema検証を通り、application eventと判定された
+  数値 `Code === 0` の参加成功だけである。Raw Lakeに保存されても、Code欠落などschemaで
+  rejectされたraw通知や`Code !== 0`の参加失敗は境界にしない。この201は既存 hand の採否を
+  変えず Progress を失効させ、live bufferにも境界を保持する。空・欠測・別席・別street・
+  201越境は不明とし、
+  過去の一覧を探索しない。
 - **ALL_IN 正規化**: 適用可能な一覧に CHECK と ALL_IN があれば CALL にしない。preflop は BB
   option の RAISE、postflop は先制 BET（最小額未満も含む）。`FOLD, ALL_IN` だけなら
   short/equal call を維持する。通常の BET 選択肢ありは BET、CALL と ALL_IN ありは RAISE。

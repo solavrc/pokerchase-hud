@@ -1,16 +1,14 @@
 /**
- * Unit tests for database utility functions
+ * database utility関数のunit test。
  *
- * NOTE: `processInChunks()` cursor-pagination tests live in
- * `database-utils.chunking.test.ts`, not here. That helper now needs a REAL
- * `Dexie.Table` (backed by fake-indexeddb) to exercise genuine cursor
- * behavior -- both `jest.mock('dexie')` and `jest.mock('../types/api')`
- * below are incompatible with that (the former breaks real `PokerChaseDB`
- * construction, the latter strips `filterValidApplicationEvents()`'s
- * dynamic-imported `parseApiEvent`/`isApplicationApiEvent`). Splitting the
- * file avoids re-mixing a mocked Collection (`.offset().limit().mockReturnThis()`)
- * back into the pagination path, which is exactly what previously masked the
- * bug (see src/AGENTS.md「Raw Event Lake と再生」).
+ * 注: `processInChunks()`のcursor pagination testはこのfileではなく
+ * `database-utils.chunking.test.ts`に置く（MUST）。このhelperは実際のcursor挙動を検証するため、
+ * `fake-indexeddb`を使う実`Dexie.Table`を必要とする。下の`jest.mock('dexie')`は実
+ * `PokerChaseDB`の生成を壊し、`jest.mock('../types/api')`は
+ * `filterValidApplicationEvents()`がdynamic importする`parseApiEvent` /
+ * `isApplicationApiEvent`を取り除くため、どちらも両立しない。fileを分けることで、以前の
+ * 不具合を隠したmock Collection（`.offset().limit().mockReturnThis()`）をpagination pathへ
+ * 再び混入させない。src/AGENTS.md「Raw Event Lake と再生」参照。
  */
 
 import { saveEntities, findLatestPlayerDealEvent, withTransaction } from './database-utils'

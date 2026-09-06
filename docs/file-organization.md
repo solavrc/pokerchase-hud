@@ -16,8 +16,8 @@
 ├── .firebaserc                # Firebase project settings
 ├── release-please-config.json # Release automation config
 ├── .release-please-manifest.json # Release version tracking
-├── AGENTS.md                  # 共通入口・全体規約・対象別の参照先
-├── CLAUDE.md                  # 共通入口だけをimport（対象パスの規約は必要時に読む）
+├── AGENTS.md                  # Shared entry point, repository rules, and scoped-guide index
+├── CLAUDE.md                  # Imports only the shared entry point; scoped rules are read as needed
 ├── README.md                  # Project overview
 ├── README.drawio.png          # Architecture diagram
 ├── CONTRIBUTING.md            # Contribution guidelines
@@ -39,7 +39,7 @@
 │   ├── file-organization.md   # This file
 │   ├── firebase-setup.md      # Firebase setup guide
 │   ├── hand-analysis.md       # 22-hand statistics audit trail (pre-#115 definitions)
-│   ├── statistics.md          # 統計定義・分母・派生データの意味論
+│   ├── statistics.md          # Statistic definitions, denominators, and derived-data semantics
 │   ├── pokerstars-export.md   # PokerStars export specification
 │   └── store-assets/          # Chrome Web Store screenshots + promo tiles (440×280 / 1400×560)
 │       └── src/               # Promo tile HTML generators (capture-promo-tiles.ts renders these)
@@ -63,7 +63,7 @@
 │   ├── pack-crx.sh            # Signed CRX packager
 │   └── verify-hands.ts        # Manual hand verification helper
 └── src/                       # Source code
-    ├── AGENTS.md              # Lake・派生・対局・保存境界の共通規約
+    ├── AGENTS.md              # Shared Lake, derivation, gameplay, and storage-boundary rules
     ├── app.ts                 # Re-export layer (type guards)
     ├── background.ts          # Service worker entry (wires modules below)
     ├── content_script.ts      # Bridge between page and extension (keepalive, session events)
@@ -77,7 +77,7 @@
     │
     ├── background/            # Service worker modules
     │   ├── auto-sync-boot.ts        # Auth-ready auto-sync initialization (init race guard)
-    │   ├── AGENTS.md                # SW commit・排他操作・更新の規約
+    │   ├── AGENTS.md                # Service-worker commit-point, operation, and update rules
     │   ├── active-port.ts           # Latest-game-event token, session state, replay account binding
     │   ├── replay-access.ts         # Public opt-in entitlement state and /replay/list verification
     │   ├── replay-import.ts         # Opt-in replay import: HandId queue (meta), session-end
@@ -99,7 +99,7 @@
     │   └── whats-new-badge.ts       # Post-update badge (3-way badge precedence resolver)
     │
     ├── components/            # React UI components
-    │   ├── AGENTS.md          # HUD・HandLog・popupの表示契約
+    │   ├── AGENTS.md          # HUD, HandLog, and popup display contracts
     │   ├── App.tsx            # Root component (state, seat rotation, busted-player dim cache)
     │   ├── Hud.tsx            # Draggable HUD overlay
     │   ├── HandLog.tsx        # Virtualized hand history log
@@ -154,7 +154,7 @@
     │   └── hole-cards.ts      # Mucked-showdown hole cards read out of a stored replay detail
     │
     ├── services/
-    │   ├── AGENTS.md                   # 同期・認証・直近ハンド読取りの規約
+    │   ├── AGENTS.md                   # Sync, authentication, and recent-hand read rules
     │   ├── poker-chase-service.ts      # Central state management + persistence
     │   ├── firebase-auth-service.ts    # Chrome identity → Firebase auth (authGeneration)
     │   ├── firebase-config.ts          # Firebase project config

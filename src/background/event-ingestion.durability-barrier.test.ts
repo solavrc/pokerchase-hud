@@ -1,33 +1,26 @@
 /**
- * event-ingestion.ts - Raw Event Lake durability barrier
+ * event-ingestion.ts - Raw Event Lakeのdurability barrier
  *
- * Verifies the release-blocker audit's finding A fix: the raw Lake write
- * used to be fire-and-forget, so the parse/validation gate, the three live
- * streams, and the session-end side effects (auto-sync trigger, pending
- * Forced Update recheck -> possible `chrome.runtime.reload()`) could all run
- * while the raw write was still in flight or had failed. That could leave
- * derived stats with no raw recovery row (breaking the Raw Event Lake
- * invariant -- see src/AGENTS.md「Raw Event Lake と再生」), double-process a
- * duplicate-key retry, or let a reload race the in-flight write.
+ * release blocker監査のfinding Aに対する修正を検証する。以前のraw Lake書き込みは
+ * fire-and-forgetだったため、raw書き込みが処理中または失敗した状態でも、parse / validation
+ * gate、3本のlive stream、セッション終了時の副作用（auto-sync trigger、保留中のForced
+ * Update再確認からの`chrome.runtime.reload()`）が実行され得た。その結果、raw recovery rowが
+ * ない派生統計が残るRaw Event Lake不変条件違反（src/AGENTS.md「Raw Event Lake と再生」参照）、
+ * duplicate key retryの二重処理、または処理中の書き込みとreloadの競合が起こり得た。
  *
- * The fix serializes each event's processing so nothing downstream
- * (session-activity tracking, the auto-sync trigger, and stream forwarding)
- * runs until that event's content-deduplicating `apiEvents.bulkAdd()` has
- * settled -- successfully, or with a *handled* duplicate result;
- * any other failure -> drop from the pipeline and surface it via the #141
- * drop-visibility counter, never forward without a raw row).
+ * 修正後はイベント処理を直列化し、各イベントについてcontent dedupを行う
+ * `apiEvents.bulkAdd()`が成功または処理済みduplicateとして決着するまで、後段の処理
+ * （session activity tracking、auto-sync trigger、stream forwarding）を実行しない（MUST）。
+ * その他の失敗はpipelineからdropして#141のdrop visibility counterへ反映し、raw rowなしで
+ * forwardしてはならない（MUST NOT）。
  *
- * 2026-07-21 pass-3 consolidation: session-activity tracking
- * (markSessionActive/markSessionInactive) used to be deliberately EXEMPT
- * from this barrier (fired synchronously, before the durability await) to
- * avoid a Forced Update safety recheck reading a stale value. Two more
- * rounds of findings (arrival-order inversion, stacked-duplicate rollback
- * corruption) showed that exemption fighting the barrier was the wrong
- * shape of fix. Session-activity tracking now lives fully INSIDE the
- * barrier like everything else (see event-ingestion.ts's
- * `applySessionActivity` docstring) -- the original latency concern is
- * instead solved on the READ side via update-manager.ts's
- * `awaitIngestionDrain()` (see the dedicated test below).
+ * 2026-07-21 pass-3で統合した。以前はForced Updateの安全性再確認が古い値を読むことを
+ * 避けるため、session activity tracking（markSessionActive / markSessionInactive）だけを
+ * barrierの対象外としてdurability awaitより前に同期実行していた。その後2ラウンドで
+ * arrival order反転とstacked duplicate rollback破損が見つかり、この例外がbarrierと衝突する
+ * 設計だと分かった。現在は他の処理と同様、session activity trackingも完全にbarrier内で
+ * 実行する（event-ingestion.tsの`applySessionActivity` docstring参照）。元のlatency懸念は
+ * read側のupdate-manager.ts `awaitIngestionDrain()`で解決する（下の専用test参照）。
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from '../app'

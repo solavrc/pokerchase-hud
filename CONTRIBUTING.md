@@ -407,8 +407,13 @@ Note: The system uses TypeScript enums for type safety, so new flags MUST be add
    implementation in `src/stats/core/`.
 5. Before opening a ready-for-review PR, run `npm run typecheck`, `npm test`, and
    `npm run build`; run the relevant E2E scenario for browser-visible changes.
-   For documentation/comment-only changes, validate links, instruction scope,
-   and unchanged non-comment code instead.
+   For prose-only documentation and explanatory/reference-only code-comment
+   changes, you MAY use lighter validation of links, instruction scope, and
+   content consistency only when both the non-comment tokens are unchanged and
+   every changed comment block has been inspected to confirm that no compiler,
+   test-runner, bundler, runtime, or other tool-interpreted meaning changed. If
+   either condition cannot be established, run the normal typecheck, test, and
+   build commands.
 6. In the PR body, describe the scope and intent, list the commands actually run,
    and call out manual verification or known limitations. Keep the branch current
    with `main` while it is under review.

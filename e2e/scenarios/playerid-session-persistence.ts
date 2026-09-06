@@ -1,27 +1,25 @@
 /**
- * Regression scenario for the hero-playerId-lost-after-session-end bug
- * (field report, sola 2026-07-20; see src/AGENTS.md「実行環境と表示側への境界」
- * and the fix comment in src/streams/aggregate-events-stream.ts's EVT_DEAL
- * case).
+ * セッション終了後にheroのplayerIdが失われる不具合の回帰シナリオ。
+ * （現地報告: sola, 2026-07-20。src/AGENTS.md「実行環境と表示側への境界」と
+ * src/streams/aggregate-events-stream.tsのEVT_DEAL caseにある修正コメントを参照。）
  *
- * Reproduces the exact real-world sequence end to end, against the real
- * built extension in a real Chromium (no manual state surgery / no directly
- * poking `chrome.storage.local` or `service.playerId` from the test):
+ * 実際にbuildした拡張機能を実Chromiumで動かし、現地で起きた順序をend-to-endに
+ * 再現する。テストから状態を手作業で加工したり、`chrome.storage.local`や
+ * `service.playerId`を直接変更したりしてはならない（MUST NOT）。
  *
- *   1. Replay a fixture that plays out normal hands, then a "spectator mode"
- *      EVT_DEAL (303 with no `Player` field -- the hero has busted out and
- *      the client is now watching a different table) and finally
- *      EVT_SESSION_RESULTS (309, session end).
- *      See e2e/fixtures/session-3hands-spectator-end.ndjson.
- *   2. Navigate the SAME browser tab to no-replay.html (a fresh HUD mount
- *      with zero live events -- the background service worker + its
- *      chrome.storage.local / IndexedDB state must survive the navigation,
- *      exactly like sola's browser reload after the session ended).
- *   3. Assert the hero's own panel (seat 0) renders real career stats
- *      (HAND > 0) with nothing else driving it -- this is the pre-game hero
- *      stats fallback (`#158`, `getLatestSessionStats({ preGame: true })`,
- *      background/import-export.ts), which only works if `service.playerId`
- *      survived steps 1-2.
+ *   1. 通常のハンドを進めた後、「観戦モード」のEVT_DEAL（`Player` fieldがない
+ *      303。heroはbust済みで、clientは別tableを観戦中）、最後にセッション終了の
+ *      EVT_SESSION_RESULTS（309）を含むfixtureをreplayする。
+ *      e2e/fixtures/session-3hands-spectator-end.ndjson参照。
+ *   2. 同じbrowser tabをno-replay.htmlへ遷移させる。live eventが0件の新しいHUD
+ *      mountでも、background service workerとそのchrome.storage.local / IndexedDB
+ *      stateは遷移を越えて残る（MUST）。これはセッション終了後にsolaがbrowserをreloadした
+ *      現地手順と同じである。
+ *   3. 他の入力がない状態でhero自身のpanel（seat 0）に実career stats
+ *      （HAND > 0）が表示されることを確認する。これはpregame hero statsのfallback
+ *      （`#158`、`getLatestSessionStats({ preGame: true })`、
+ *      background/import-export.ts）であり、手順1〜2を通して`service.playerId`が
+ *      保持された場合だけ動作する。
  *
  *   npm run e2e:playerid
  *   tsx e2e/scenarios/playerid-session-persistence.ts [--headed] [--screenshot-dir <dir>]

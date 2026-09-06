@@ -1398,88 +1398,65 @@ export class AutoSyncService {
   }
 
   /**
-   * One-time backfill (see the UNPARSEABLE-ROW SYNC FLOOR invariant spec in
-   * `syncToCloud()`, "BACKFILL GUARANTEE"): seeds `SYNC_UNPARSEABLE_FLOOR_KEY`
-   * for installs that may already have an orphaned row *below* the current
-   * cloud max from before this floor mechanism (or this fix) existed. No-ops
-   * after the first successful run (`SYNC_UNPARSEABLE_BACKFILL_DONE_KEY`).
+   * 1回限りのbackfill（`syncToCloud()`のUNPARSEABLE-ROW SYNC FLOOR不変条件にある
+   * 「BACKFILL GUARANTEE」参照）。floor機構またはこの修正が入る前から、現在のcloud maxより
+   * 下にorphan rowを持つ可能性があるinstallについて、`SYNC_UNPARSEABLE_FLOOR_KEY`を初期化する。
+   * 初回の成功後は`SYNC_UNPARSEABLE_BACKFILL_DONE_KEY`によりno-opになる。
    *
-   * P1 FIX (codex post-merge review r3614469177, "Seed floors for rows that
-   * already parse after upgrade"): the original version of this method
-   * scanned local application-typed rows at/below the cloud max for ones
-   * that are STILL unparseable *right now*, and seeded the floor from the
-   * earliest one found. That misses exactly the season-3 scenario this
-   * mechanism exists to fix: when the schema repair ships in the SAME
-   * release as the floor mechanism (or any later release a user upgrades
-   * directly into, skipping intermediate releases), the old orphan row
-   * already parses successfully by the time this backfill runs --
-   * `isUnparseableApplicationEvent()` returns false for it -- so the old
-   * scan found nothing, marked itself done, and the row (below the cloud
-   * max, never actually uploaded, because it failed to parse at the time the
-   * pass that pushed the cloud max past it ran) stayed permanently orphaned.
+   * P1修正（Codex post-merge review r3614469177「upgrade後にparse可能になったrowにもfloorを設定」）:
+   * 旧版はcloud max以下のlocal application-typed rowをscanし、その時点でもparse不能なrowだけを
+   * 対象に、最も古いrowからfloorを設定していた。これはこの機構が直すべきseason 3の状況を
+   * そのまま見逃す。schema修正がfloor機構と同じreleaseに入る場合、またはuserが中間releaseを
+   * 飛ばして後のreleaseへ直接upgradeする場合、backfill実行時には旧orphan rowがすでにparseに
+   * 成功し、`isUnparseableApplicationEvent()`がfalseを返す。そのため旧scanは何も見つけず完了を
+   * 記録し、cloud maxより下にあるそのrowは永久にorphanのまま残った。このrowはcloud maxを越える
+   * passの実行時にはparseに失敗しており、実際には一度もuploadされていなかった。
    *
-   * There is no historical local record of which specific rows were
-   * confirmed uploaded at any point in the past (only the derived Firestore
-   * max itself, which says nothing about gaps below it), and no cheap way to
-   * ask Firestore "does a document for this exact row exist" per row -- that
-   * is an extra network round trip PER application-typed row below the
-   * watermark, which for a long-lived install is tens of thousands of reads,
-   * a recurring cost risk rather than a bounded one-time migration.
+   * 過去のどの時点でどのrowのuploadが確認されたかを示すlocal履歴はない。あるのは導出した
+   * Firestore maxだけで、maxより下のgapは分からない。またFirestoreへ「このrowのdocumentが
+   * 存在するか」をrow単位で安価に問い合わせる方法もない。watermarkより下のapplication-typed row
+   * 1件ごとに追加のnetwork round tripが必要になり、長期利用installでは数万readとなるため、
+   * boundedな1回限りのmigrationではなく継続的なcost riskになる。
    *
-   * Since we cannot cheaply distinguish "already uploaded, and now happens
-   * to still parse" from "orphaned, and now happens to parse" for any
-   * individual row, the only SOUND conservative approximation is to stop
-   * trying to identify individual suspect rows and instead seed the floor
-   * from the EARLIEST application-typed row anywhere in the local Lake that
-   * sits at or below the cloud max -- regardless of whether it currently
-   * parses. This forces exactly one full reconciliation re-offer of the
-   * entire below-watermark history on the next `syncToCloud()` pass.
-   * `syncToCloudBatch`'s Firestore writes are idempotent upserts keyed by the
-   * stable legacy-ID-plus-sequence scheme, so re-sending already-uploaded
-   * rows is not a correctness bug, only extra write volume.
+   * 個々のrowについて「upload済みで現在もparse可能」と「orphanで現在はparse可能」を安価に
+   * 区別できない。したがって健全で保守的な近似は、疑わしいrowの個別特定をやめ、現在parse
+   * できるかにかかわらず、cloud max以下にあるlocal Lake内で最も古いapplication-typed rowから
+   * floorを設定する方法だけである。これにより次の`syncToCloud()` passで、watermarkより下の
+   * 全履歴をfull reconciliationへちょうど1回再提示する。`syncToCloudBatch`のFirestore writeは
+   * 安定したlegacy ID + sequenceをkeyにするidempotent upsertなので、upload済みrowの再送は
+   * correctness bugではなく、追加write量だけを生む。
    *
-   * COST (reasoned for a 300k-row install, ~50% application-typed per the
-   * Raw Event Lake's documented noise ratio -- docs/architecture.md
-   * 「ストレージ増加とプルーニング」):
-   * - READ side: near-O(1), not O(n). `apiEvents`'s primary key is
-   *   `[timestamp+ApiTypeId+sequence]`, so cursoring in that order and taking the
-   *   FIRST row whose `ApiTypeId` is an application type stops almost
-   *   immediately -- it does not get more expensive as the Lake grows, and
-   *   does not need `processInChunks` pagination (a single row is fetched).
-   * - WRITE side (the actual one-time cost): the next sync pass re-uploads
-   *   on the order of ~150k already-synced documents once. Firestore write
-   *   pricing (~$0.18 per 100k document writes past the free tier) puts that
-   *   well under $1 even for a heavy user, and the write volume is naturally
-   *   paced by this service's existing chunked upload loop
-   *   (`DATABASE_CONSTANTS.SYNC_CHUNK_SIZE` per Firestore batch) -- not a
-   *   cost this backfill can repeat (see PROVEN-STATE REQUIREMENT below).
-   *   Only installs with SOME existing cloud history pay it at all
-   *   (`cloudMaxTimestamp !== null` below) -- a brand-new install has
-   *   nothing below any watermark to reconcile.
+   * COST（300k rowのinstallで、docs/architecture.md「ストレージ増加とプルーニング」に記録された
+   * Raw Event Lakeのnoise比率からapplication-typedを約50%とした推定）:
+   * - READ側: O(n)ではなくほぼO(1)。`apiEvents`のprimary keyは
+   *   `[timestamp+ApiTypeId+sequence]`なので、この順にcursorを進め、`ApiTypeId`がapplication typeの
+   *   最初のrowを取ればほぼ直ちに停止する。Lakeの増加に伴って高価にならず、1 rowだけを取得する
+   *   ため`processInChunks` paginationも不要である。
+   * - WRITE側（実際の1回限りのcost）: 次のsync passで、upload済みdocument約150k件を1回再upload
+   *   する。Firestore write料金をfree tier超過後に100k documentあたり約$0.18とすると、heavy user
+   *   でも$1を大きく下回る。write量はこのserviceの既存chunk upload loop
+   *   （Firestore batchごとに`DATABASE_CONSTANTS.SYNC_CHUNK_SIZE`）で自然にpaceされ、このbackfillが
+   *   繰り返せるcostではない（下のPROVEN-STATE REQUIREMENT参照）。このcostが発生するのは既存の
+   *   cloud履歴があるinstall（下の`cloudMaxTimestamp !== null`）だけで、新規installには照合対象の
+   *   watermark未満の履歴がない。
    *
-   * INVARIANT: once this backfill has completed (successfully), the sync
-   * floor is guaranteed to be <= the timestamp of any local application-
-   * typed row that predates the cloud watermark at the time the backfill
-   * ran -- so no row below the watermark can be silently skipped by trusting
-   * the watermark alone, independent of whether that row happened to already
-   * be uploaded.
+   * INVARIANT: backfillが成功して完了した後、sync floorは、backfill実行時のcloud watermarkより古い
+   * local application-typed rowすべてのtimestamp以下でなければならない（MUST）。そのrowがすでに
+   * upload済みだったかにかかわらず、watermarkだけを信頼してwatermark未満のrowを黙ってskip
+   * できない状態を保証する。
    *
-   * Tracked by `SYNC_UNPARSEABLE_BACKFILL_DONE_KEY`, independently renamed
-   * (see its doc comment) to force exactly one fresh run of this corrected
-   * logic for every existing install, even one whose OLD backfill already
-   * marked the OLD key name done.
+   * `SYNC_UNPARSEABLE_BACKFILL_DONE_KEY`で追跡する。このkeyは独立してrenameされており（doc comment
+   * 参照）、旧backfillが旧key名へ完了を記録済みのinstallも含め、すべての既存installで修正版logicを
+   * ちょうど1回新たに実行させる。
    *
-   * PROVEN-STATE REQUIREMENT (codex review round 4 on PR #182, unchanged by
-   * the P1 fix): this method must only ever mark itself done when
-   * `cloudMaxTimestamp` reflects a proven cloud state -- either a real
-   * watermark, or a confirmed-empty cloud. `getCloudMaxTimestamp()` upholds
-   * this by throwing on auth/network/REST failure instead of returning
-   * `null` for "unknown" (see its doc comment) -- so by the time
-   * `cloudMaxTimestamp` reaches this method (the call in `syncToCloud()`
-   * above is unguarded and lets that throw abort the whole sync attempt
-   * before this method is ever invoked), `null` here can ONLY mean "proven
-   * empty". Do not add a try/catch around that call site that would
-   * reintroduce the ambiguity.
+   * PROVEN-STATE REQUIREMENT（PR #182 Codex review round 4。P1修正でも不変）:
+   * このmethodが完了を記録できるのは、`cloudMaxTimestamp`が実watermarkまたはempty確認済みcloudの
+   * どちらかとして証明済みcloud stateを表す場合だけである（MUST）。`getCloudMaxTimestamp()`は
+   * auth / network / REST failure時に「unknown」を`null`で返さずthrowすることで、この条件を守る
+   * （doc comment参照）。上の`syncToCloud()`はこのcallをguardせず、throw時はこのmethodを呼ぶ前に
+   * sync attempt全体をabortする。そのため`cloudMaxTimestamp`がこのmethodへ届いた時点で、ここでの
+   * `null`は「empty証明済み」だけを意味する。この曖昧さを再導入するtry / catchをcall siteへ
+   * 追加してはならない（MUST NOT）。
    */
   private async backfillUnparseableFloorIfNeeded(cloudMaxTimestamp: number | null, identity: SyncPassIdentity): Promise<void> {
     const doneKey = this.scopedMetaKey(this.SYNC_UNPARSEABLE_BACKFILL_DONE_KEY, identity.uid)

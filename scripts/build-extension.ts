@@ -28,26 +28,23 @@ const {
 const outdir = process.env.E2E_OUTDIR || 'dist'
 const e2eManifestOverride = process.env.E2E_MANIFEST
 
-// --- Sentry telemetry build identity --------------------------------------
-// Diagnostics are opt-in, so the maintainer's own play sessions are a primary
-// source of signal -- especially schema-validation failures, which is how a
-// PokerChase payload change becomes visible at all (AGENTS.md「レビューと障害診断」参照). Those events are captureMessage + structured
-// context and need no source maps, so a build without an upload token is still
-// worth reporting from. Telemetry is therefore compiled into every build except
-// E2E; what changes between a release and a working build is only its identity.
+// --- Sentry telemetryのbuild identity ------------------------------------
+// 診断情報はopt-inなので、maintainer自身のplay sessionが主要なsignalになる。
+// 特にschema validation failureによってPokerChase payloadの変更を初めて観測できる
+// （AGENTS.md「レビューと障害診断」参照）。これらはcaptureMessageとstructured contextで
+// 送られ、source mapを必要としないため、upload tokenがないbuildからの報告にも価値がある。
+// そのためtelemetryはE2E以外の全buildへ組み込む。release buildと作業buildの違いは
+// identityだけである。
 //
-//   SENTRY_ENVIRONMENT=production  - release workflow marker. Claims the plain
-//                                    `pokerchase-hud@<version>` release name,
-//                                    which the uploaded source maps belong to.
-//   (unset)                        - a working build. Reports under
-//                                    environment=development and a distinct
-//                                    `+dev.<sha>` release, so it can never be
-//                                    symbolicated against, or counted toward,
-//                                    the published release.
-//   SENTRY_DISABLED=true           - compile telemetry out entirely.
+//   SENTRY_ENVIRONMENT=production  - release workflowのmarker。uploadしたsource mapが
+//                                    属する通常の`pokerchase-hud@<version>`をrelease名にする。
+//   （未設定）                     - 作業build。environment=developmentと固有の
+//                                    `+dev.<sha>` releaseで報告し、公開releaseのsource mapで
+//                                    symbolicateされたり公開releaseへ集計されたりしない。
+//   SENTRY_DISABLED=true           - telemetryを完全にcompile対象外にする。
 //
-// The runtime per-profile opt-in and optional host grant still gate every
-// build: a contributor who never enables 診断情報を送信 reports nothing.
+// どのbuildでもruntimeのprofile単位opt-inとoptional host grantが最終gateになる。
+// 「診断情報を送信」を有効にしていないcontributorからは何も報告されない。
 const isProductionRelease = process.env.SENTRY_ENVIRONMENT === 'production'
 const sentryEnabled =
   !e2eManifestOverride && process.env.SENTRY_DISABLED !== 'true'

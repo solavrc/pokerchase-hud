@@ -43,8 +43,11 @@ PokerChase の Chrome MV3 拡張。すべての開発・レビューエージェ
   この入口へ追記せず、既存の正本か対象ディレクトリの短い規約を更新する。
 - 検証手順は CONTRIBUTING の「Submitting Your Contribution」と「Verifying Against
   Real Data」。通常は `npm run typecheck`、`npm test`、`npm run build`、ブラウザ表示の
-  変更は該当 E2E を実行する。文書・コメントのみの変更はリンク・適用範囲・内容整合を
-  検証し、実行していないコード検証を実施済みと報告しない。
+  変更は該当 E2E を実行する。文書、および参照・説明だけを変更したコードコメントは、
+  非コメント token が不変であり、かつ変更した全コメント block を読んで compiler・
+  test runner・bundler・runtime などツールが解釈する意味も不変と確認できた場合に限り、
+  リンク・適用範囲・内容整合の軽量検証にできる。どちらかを確認できない場合は通常の
+  typecheck・test・build を行う。実行していないコード検証を実施済みと報告しない。
 - `PokerChaseService` を生成するテストは `trackServiceForTeardown()` で登録する（MUST）。
   詳細と同一テスト内の破棄は CONTRIBUTING の「Test conventions」。
 
