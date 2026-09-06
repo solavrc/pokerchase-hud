@@ -6,6 +6,17 @@ Lake の三要素 cursor・fresh Dexie query・replay 順序は src 共通規約
 
 ## 同期・認証
 
+<a id="cloud-identity"></a>
+
+- 旧 `timestamp_ApiTypeId` / `timestamp_ApiTypeId_sequence` document は読取り互換を維持し、
+  新規保存は sequence を除く canonical content の SHA-256による
+  `timestamp_ApiTypeId_h_sha256` 内容IDを使う（MUST）。
+  upload は同内容を確認するか、`currentDocument.exists=false` で create する。ローカル
+  再採番を根拠に既存の別 payload を上書きしない（MUST NOT）。旧IDと内容IDの同内容行が
+  移行時に残ることはあるが、以後の復元・upload で同内容の複製を増殖させない。
+- 内容IDが保証するのは内容保持と同内容の重複計上防止。失われた元の因果順や端末間の
+  統計一致まで保証したと説明しない（MUST NOT）。同じ cloud 集合でも既存 local slot の
+  違いで相対順と順序依存の統計が変わり得る。詳しくは architecture の順序の観測限界。
 - cloud upload は現在 parse できる application event だけ。noise / unknown は local に
   残して raw chunk cursor を進めるが、application type の parse 失敗は recoverable
   として `syncUnparseableFloor` に保持し、後の schema 修正でも再提示する（MUST）。
@@ -24,6 +35,19 @@ Lake の三要素 cursor・fresh Dexie query・replay 順序は src 共通規約
 - min-version gate は cloud sync の共通入口でだけ enforce し、HUD を止めない（MUST）。
   network / HTTP / missing document / malformed data は supported に倒す。公開 read は
   `config/client` のみに限定し、client write を許さない。
+
+<a id="cloud-rollout"></a>
+
+### 内容IDの公開条件
+
+- 新 writer の公開前に API event の immutable-payload rules を owner が本番へ適用する
+  （MUST）。owner の read/create/delete、同内容またはトップレベル sequence だけの
+  update は維持し、旧 client の別 payload upsert も拒否する。rules の merge / emulator
+  成功を production deploy 済みと扱わない。
+- poker-warehouse の同内容 dedup / 異内容 sequence collision 対応を merge し、`run.yml`
+  で本番反映してから、または同時に content-ID の本番書込みを始める（MUST）。HUD-local
+  の dedup だけでは warehouse の正確さを証明しない。deploy と公開の承認・反映確認は
+  それぞれ既存手順に従う。詳細は [architecture.md](../../docs/architecture.md)。
 
 <a id="recent-hands"></a>
 

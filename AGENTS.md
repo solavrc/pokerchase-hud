@@ -25,6 +25,7 @@ PokerChase の Chrome MV3 拡張。すべての開発・レビューエージェ
 | Firebase の設定・同期診断 | [docs/firebase-setup.md](docs/firebase-setup.md) |
 | telemetry | [docs/observability.md](docs/observability.md) |
 | リリース・署名・ストア開示 | [docs/chrome-web-store-release.md](docs/chrome-web-store-release.md) |
+| cloud writer の公開・本番反映 | [内容IDの公開条件](src/services/AGENTS.md#cloud-rollout) |
 | ファイル探索 | [docs/file-organization.md](docs/file-organization.md) |
 
 ## 作業規約

@@ -29,7 +29,7 @@
 
 - compact は既定、full は詳細 grid。各 HUD の展開状態は独立させ、body click はコピー・
   drill-down click へ伝播させない。既存の保存設定に欠けた key は default と merge する。
-- 色と分類の閾値は `hud/statColorRules.ts` / `playerTypeRules.ts` のデータ定義を使う。
+- 色と分類の閾値は `hud/statColorRules.ts` / `hud/playerTypeRules.ts` のデータ定義を使う。
   色は各 stat の分母、分類は vpip / af / vpipF の個別 n-gate を維持する（MUST）。whale は
   raw VPIP ではなく full-table vpipF で判定し、AF 不足でも独立判定できる。必要統計の
   forcing は計算対象だけを増やし、ユーザーが隠した grid row を表示しない。

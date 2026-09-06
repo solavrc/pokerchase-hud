@@ -52,7 +52,7 @@ ACTIVE port・replay・Lake の横断契約は src 共通規約を正本とし�
   応答では失敗を報告する。storage 全体の prefix 探索で無関係な key を消さない。
 - 評価依頼は popup mount 時に復元済み hero の dealt-in hands で eligibility を判定する。
   不明・不正 hero、clock skew 等の不確実性は非表示へ倒す（MUST）。per-hand counter や
-  ingestion hook は増やさず、閾値と snooze は `constants/review-prompt.ts` を使う。
+  ingestion hook は増やさず、閾値と snooze は [既存の定数](../constants/review-prompt.ts) を使う。
 - `reviewPrompt` は background 単一 writer。rated / dismissed は terminal、後の later
   で復活させない（MUST）。eligibleSince は一度 latch したら全データ削除でも戻さない。
   popup の banner は durable acknowledge 後にだけ閉じ、評価 tab もその後に開く。

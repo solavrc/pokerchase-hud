@@ -17,6 +17,8 @@
   同じ timestamp/type の異なる payload は別行、storage 用 sequence を除いた canonical
   content が同じ再送は重複。`processInChunks()` には Table を渡し、ページごとに fresh
   query を作る。Dexie Collection の `.offset()` / `.limit()` を使い回さない（MUST NOT）。
+  ローカル sequence を cloud identity とみなさない。cloud の内容IDは
+  [同期契約](services/AGENTS.md#cloud-identity) を参照する。
 - stateful replay は完全な raw 等時刻グループを確保して並べ替え、その後に現在の schema
   で検証する（MUST）。unpaged は `orderAndFilterApplicationEventsForReplay()`、paged は
   `processInReplayChunks()` → `filterValidApplicationEvents()`。noise の除去で複合群を
@@ -44,6 +46,8 @@
   raw commit 後の再構築失敗は raw を残したまま失敗として報告する。
 - 座席・勝者・FLOP/SHOWDOWN・chip accounting の変更は statistics 正本の「派生契約」
   を確認する（MUST）。保存用の original seat と hero を0に回転した表示座標を混ぜない。
+  ALL_IN の CHECK 権を CALL にせず、3bet 機会は確定したレイズ不能だけを除外する。
+  menu 不明と実 RAISE の扱い、3betfold への非適用も同じ正本に従う（MUST）。
 
 ## 永続統計台帳
 

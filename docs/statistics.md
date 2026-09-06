@@ -24,7 +24,7 @@ tracker 互換と説明しない。
 | `vpip` / VPIP | 自発的 preflop 投入 hand / 機会 hand。BB で preflop action が0件の hand（walk / BB action skip）は分母から除く。non-BB の fold は機会に含む |
 | `pfr` / PFR | preflop raise hand / VPIP と同じ walk 除外分母 |
 | `vpipF` / VPIP·F | full-table layer 内の VPIP。walk 除外も同じ。既定非表示、tooltip は各 layer の内訳 |
-| `3bet` / 3B | preflop 2-bet に対して raise / 2-bet に直面した機会（`phasePrevBetCount === 2`） |
+| `3bet` / 3B | preflop 2-bet に対して raise / 2-bet に直面し、レイズ不能と判明していない機会（`phasePrevBetCount === 2`）。実際の RAISE は分子・分母に含む |
 | `3betfold` / 3BF | 3-bet に直面して fold / その機会（bet count 3）。original raiser に限定せず cold-facing を含む |
 | `cbet` / CB | PFR が flop の最初の bet を実行 / その機会。集計は `phase === FLOP` に限定 |
 | `cbetFold` / CBF | 実行済み CBet に同じ street で fold / それに直面した機会。PFR が check した後の他者の bet は対象外 |
@@ -48,6 +48,18 @@ stat 固有の一時状態は `handState.statStates[id]`、共有 `actions` は�
 
 次の意味論は `EntityConverter` と `WriteEntityStream` の両方に共通する。
 
+- **ALL_IN 正規化**: 同一 street で CHECK 権があれば CALL にしない。preflop は BB
+  option の RAISE、postflop は先制 BET（最小額未満も含む）。`FOLD, ALL_IN` だけなら
+  short/equal call を維持する。通常の BET 選択肢ありは BET、CALL ありは RAISE、空の
+  メニューは従来の CALL fallback。action 自身の Phase で新 street が確定した場合は、
+  前 street のメニューを使わず既存の street-opening BET を優先する。
+- **3bet 機会**: `canRaise` は現在の席・street に一致する非空の直前メニューだけから
+  判定する。preflop の RAISE、または ALL_IN と CALL/CHECK の併存はレイズ可能。
+  `FOLD, CALL` / `FOLD, ALL_IN` だけなら機会から除外する。空・別席・別street は不明
+  として従来の機会判定を維持し、記録された RAISE はメニューより優先して分子・分母へ
+  入れる。3betfold の機会にこのレイズ可否除外を適用しない。bet 段階の数え方も維持する。
+  この write-time 修正は Raw Lake 再構築で既存 action / ledger へ反映する。counter の
+  構造・ordinal は変えず、再構築で新しい generation の寄与値へ置き換える。
 - **ストリート**: action 自身の `EVT_ACTION.Progress.Phase` を
   [resolveActionPhase](../src/utils/action-phase.ts) で解決する。`DEAL_ROUND` の回数を
   正典にしない。`NextActionSeat === -2` の hand-ending row は wire の Phase が3へ
