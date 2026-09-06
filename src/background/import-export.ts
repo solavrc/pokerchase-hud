@@ -253,7 +253,7 @@ export const createImportExportHandlers = (service: PokerChaseService, db: Poker
         // 今回のインポートで欠けていたACTIONsが到着する）では、新規イベント
         // だけをEntityConverterに渡す増分変換では対応できない
         // ―― EntityConverterは呼び出し単位でハンド境界をローカル変数管理
-        // しており（CLAUDE.md「EntityConverter state」参照）、ハンドの前半が
+        // しており（src/AGENTS.md「Raw Event Lake と再生」参照）、ハンドの前半が
         // 「今回のインポート対象外（重複扱いで除外済み）」だと後半の
         // イベントだけを渡しても正しいエンティティは作れず、派生データ
         // （hands/phases/actions、およびそこから計算される統計）が

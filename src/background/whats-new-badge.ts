@@ -24,7 +24,7 @@
  *   （whats-newの存在を知らない）。
  * - このファイルは`rebuild-advisory`と`update-manager`の**両方**を確認して
  *   から自分のバッジを出す/消す（`resolveActiveBadge()`が3状態の優先順位を
- *   一箇所に集約している。CLAUDE.mdの「Badge Precedence」節も参照）。
+ *   一箇所に集約している。src/background/AGENTS.mdの「Forced update の commit 点」節も参照）。
  *
  * 他の2つと違い、whats-newバッジには「解消をトリガーに再チェックする」
  * 専用フックが無い（rebuild-advisoryの`resolveAdvisory()`やupdate-managerの

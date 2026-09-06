@@ -1223,8 +1223,7 @@ describe('Hud', () => {
      *   - コンテナの高さは内容ではなく定数（52px）
      *   - パネルは`position: absolute; top: 0`でその中に吊り下がる
      * この2つが成り立つ限りヘッダーの画面座標は展開状態に依存しない。実ピクセル
-     * での検証は実ブラウザ側で行う（AGENTS.md「Verify layout changes here by
-     * rendering in a real browser」）。
+     * での検証は実ブラウザ側で行う（src/components/AGENTS.md「統計表示・直近ハンド」）。
      */
     const anchorGeometry = (): Record<string, string> => {
       const container = screen.getByTestId('hud-panel').parentElement!

@@ -7,8 +7,8 @@
  * enums are imported -- `ApiType` from `src/types/api` and `ActionType`/
  * `BetStatusType`/`RankType` from `src/types/game` -- for readability;
  * every detection rule below is written from
- * scratch against the documented event semantics in CLAUDE.md /
- * docs/hand-analysis.md, not against the pipeline's implementation.
+ * scratch against the documented event semantics in docs/statistics.md /
+ * docs/api-events.md, not against the pipeline's implementation.
  *
  * This independence is the whole point of the tool: if a bug is introduced
  * in entity-converter.ts or a stats/core/*.ts module, this file has no way
@@ -76,7 +76,7 @@
  *  (a3) VPIP/PFR denominators exclude "walks": a hand where the player is
  *      the BB (Game.BigBlindSeat) and took ZERO preflop actions (true walk,
  *      or the "BB action skip" path where NextActionSeat=-2 and the BB's
- *      check is never sent as an EVT_ACTION -- CLAUDE.md "BB action skip").
+ *      check is never sent as an EVT_ACTION -- docs/api-events.md「EVT_ACTION: 送信されないケース」).
  *      In both cases the BB had no voluntary preflop decision to make.
  *      Non-BB players who folded preflop still made a decision and remain
  *      counted as an opportunity. This mirrors the PT4/HM3 standard
@@ -522,7 +522,7 @@ interface PlayerAcc {
    * `hands`, which is the plain "hands played" count used elsewhere, e.g.
    * `hands` stat) when the player was the BB in that hand and never took a
    * single preflop action -- a true walk, or the "BB action skip" path
-   * (NextActionSeat=-2 with no BB EVT_ACTION, CLAUDE.md). In both cases the BB
+   * (NextActionSeat=-2 with no BB EVT_ACTION, docs/api-events.md). In both cases the BB
    * had no voluntary preflop decision to make. Non-BB folds still count as an
    * opportunity (the player did make a decision).
    */
@@ -750,7 +750,7 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
     const preflopActionsSoFar: ActionRec[] = []
     // Players who took at least one preflop action this hand (VPIP/PFR
     // walk-exclusion, #115: a BB with zero preflop actions had no voluntary
-    // decision -- true walk or the "BB action skip" path, CLAUDE.md).
+    // decision -- true walk or the "BB action skip" path, docs/api-events.md).
     const playersWithPreflopAction = new Set<number>()
     // Players who FOLDed during PREFLOP this hand -- the only way to leave a
     // hand before an unconditional preflop-all-in runout (a4b below).

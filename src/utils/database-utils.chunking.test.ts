@@ -25,7 +25,7 @@
  * `mockReturnThis()` (as `database-utils.test.ts` used before this fix)
  * cannot distinguish "fresh query per chunk" from "cumulative modifiers on
  * one Collection", which is exactly what let the original bug ship
- * unnoticed. See CLAUDE.md "Dexie Collection reuse".
+ * unnoticed. See src/AGENTS.md「Raw Event Lake と再生」.
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { processInChunks, processInReplayChunks, filterValidApplicationEvents, saveEntities } from './database-utils'

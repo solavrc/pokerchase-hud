@@ -7,9 +7,8 @@
  * Forced Update recheck -> possible `chrome.runtime.reload()`) could all run
  * while the raw write was still in flight or had failed. That could leave
  * derived stats with no raw recovery row (breaking the Raw Event Lake
- * invariant -- see CLAUDE.md "Raw Event Lake" / "Storage happens *before*
- * the validation gate"), double-process a duplicate-key retry, or let a
- * reload race the in-flight write.
+ * invariant -- see src/AGENTS.md「Raw Event Lake と再生」), double-process a
+ * duplicate-key retry, or let a reload race the in-flight write.
  *
  * The fix serializes each event's processing so nothing downstream
  * (session-activity tracking, the auto-sync trigger, and stream forwarding)

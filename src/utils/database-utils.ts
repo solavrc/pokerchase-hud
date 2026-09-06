@@ -59,7 +59,7 @@ export async function saveEntities(
  * Process a Dexie table in chunks using true cursor-based pagination.
  * Generic helper for chunked data processing.
  *
- * IMPORTANT (see CLAUDE.md "Dexie Collection reuse"): `.offset(n).limit(m)`
+ * IMPORTANT (see src/AGENTS.md「Raw Event Lake と再生」): `.offset(n).limit(m)`
  * on a single, already-built `Dexie.Collection` instance is NOT safe
  * pagination. Dexie Collections accumulate query modifiers rather than
  * replacing them, so calling `.offset()`/`.limit()` again on the SAME
@@ -79,7 +79,7 @@ export async function saveEntities(
  * This version takes the `Dexie.Table` itself (not a Collection) and issues
  * a brand-new query for every chunk, cursoring on the table's
  * `[timestamp+ApiTypeId+sequence]` compound primary key -- exactly the pattern
- * CLAUDE.md prescribes: `where('[timestamp+ApiTypeId+sequence]').above(lastKey).limit(N)`.
+ * src/AGENTS.md の cursor 規約: `where('[timestamp+ApiTypeId+sequence]').above(lastKey).limit(N)`.
  * This is currently only used against `db.apiEvents` (whose primary key is
  * that compound index); if a future caller needs this for a table with a
  * different key shape, extend/generalize the cursor extraction rather than

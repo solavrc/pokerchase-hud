@@ -1,6 +1,6 @@
 /**
  * Regression scenario for the hero-playerId-lost-after-session-end bug
- * (field report, sola 2026-07-20; see CLAUDE.md "Service State Persistence"
+ * (field report, sola 2026-07-20; see src/AGENTS.md「実行環境と表示側への境界」
  * and the fix comment in src/streams/aggregate-events-stream.ts's EVT_DEAL
  * case).
  *

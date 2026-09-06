@@ -380,8 +380,8 @@ Note: The system uses TypeScript enums for type safety, so new flags MUST be add
   in either language — need not be retroactively rewritten. A new or edited
   comment that states an invariant or a requirement (rather than describing
   behavior) MUST embed the applicable uppercase RFC 2119 keyword
-  (MUST / MUST NOT / SHOULD / SHOULD NOT / MAY — see AGENTS.md
-  "Requirement Keywords"), e.g.
+  (MUST / MUST NOT / SHOULD / SHOULD NOT / MAY — see
+  [Requirement Keywords](AGENTS.md#requirement-keywords)), e.g.
   `// 全イベントは1回の呼び出しで渡すこと (MUST) — チャンク分割するとハンド境界が失われる`
 - Follow existing naming conventions
 - Keep statistics focused on a single concept
@@ -407,6 +407,8 @@ Note: The system uses TypeScript enums for type safety, so new flags MUST be add
    implementation in `src/stats/core/`.
 5. Before opening a ready-for-review PR, run `npm run typecheck`, `npm test`, and
    `npm run build`; run the relevant E2E scenario for browser-visible changes.
+   For documentation/comment-only changes, validate links, instruction scope,
+   and unchanged non-comment code instead.
 6. In the PR body, describe the scope and intent, list the commands actually run,
    and call out manual verification or known limitations. Keep the branch current
    with `main` while it is under review.
@@ -444,8 +446,8 @@ keep the validation section current after each push.
 - [ ] Unit tests in `src/stats/core/[stat-name].test.ts`
 - [ ] All tests passing (`npm test`)
 - [ ] Manual testing completed
-- [ ] Documentation updated in each file's existing language (see AGENTS.md
-      "Language"); comments in Japanese, invariant comments marked with
+- [ ] Documentation updated in each file's existing language (see
+      [Language](AGENTS.md#language)); comments in Japanese, invariant comments marked with
       RFC 2119 keywords (see Code Style above)
 
 Happy coding! 🎉

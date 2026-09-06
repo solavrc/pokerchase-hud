@@ -219,8 +219,8 @@ export const registerEventIngestion = (service: PokerChaseService): void => {
   // （自動同期トリガー、`chrome.runtime.reload()`を呼びうる保留アップデート
   // 再チェック）を進めると、
   //   (1) quota超過等でadd()が失敗した場合に「派生統計だけ存在してraw行が
-  //       無い」というRaw Event Lakeの不変条件違反（CLAUDE.md「Raw Event
-  //       Lake」/ "Storage happens *before* the validation gate" 参照）が
+  //       無い」というRaw Event Lakeの不変条件違反（src/AGENTS.md「Raw Event
+  //       Lake と再生」参照）が
   //       起こりうる
   //   (2) reconnect再送（同一payloadが既に保存済み）の場合、そのイベントは
   //       初回処理時に既にストリーム/セッションフックを一度通過済みのはず

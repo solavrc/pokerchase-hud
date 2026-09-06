@@ -1439,8 +1439,8 @@ export class AutoSyncService {
    * rows is not a correctness bug, only extra write volume.
    *
    * COST (reasoned for a 300k-row install, ~50% application-typed per the
-   * Raw Event Lake's documented noise ratio -- CLAUDE.md Design Principles
-   * #16 "Storage growth"):
+   * Raw Event Lake's documented noise ratio -- docs/architecture.md
+   * 「ストレージ増加とプルーニング」):
    * - READ side: near-O(1), not O(n). `apiEvents`'s primary key is
    *   `[timestamp+ApiTypeId+sequence]`, so cursoring in that order and taking the
    *   FIRST row whose `ApiTypeId` is an application type stops almost

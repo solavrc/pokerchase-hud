@@ -657,8 +657,8 @@ function deriveSawFlop(
  *
  * なぜ読み取り時か: Hand entityに`heroHoleCards`を足す案は導出変更になり、
  * `REBUILD_ADVISORY_VERSION`のbumpと全履歴のリビルドが要る。Lakeを直接読めば
- * 既存の全ハンドに遡って効き、導出は一切変わらない（AGENTS.md「Raw Event
- * Lake」＝復旧・再解釈の一次資料、という位置づけそのもの）。
+ * 既存の全ハンドに遡って効き、導出は一切変わらない（src/AGENTS.md「Raw Event
+ * Lake と再生」＝復旧・再解釈の一次資料、という位置づけそのもの）。
  *
  * 相関のとり方: `hand.approxTimestamp`はEVT_DEALの`timestamp`そのもの
  * （entity-converter.ts / write-entity-stream.ts双方が配札時に代入する）。
@@ -670,8 +670,8 @@ function deriveSawFlop(
  * 観測者自身の情報なので、他プレイヤーのパネルへ流用してはならない。
  *
  * MUST: ここでイベント全体のZod検証（`isApiEventType`）を条件にしない。
- * これは表示のための読み取りであってパイプライン投入ではなく、AGENTS.md
- * 「Raw Event Lake」の原則どおり検証はパイプライン入口だけの関門である。
+ * これは表示のための読み取りであってパイプライン投入ではなく、src/AGENTS.md
+ * 「Raw Event Lake と再生」の原則どおり検証はパイプライン入口だけの関門である。
  * EVT_DEALのどこか無関係な部分がサーバー仕様変更でスキーマから外れた途端に
  * 自分の手札が全部消える、という壊れ方をしてはならない。必要な
  * `SeatUserIds`と`Player.HoleCards`だけを構造的に見て、形が合わない行は

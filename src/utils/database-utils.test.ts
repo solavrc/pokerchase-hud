@@ -10,7 +10,7 @@
  * dynamic-imported `parseApiEvent`/`isApplicationApiEvent`). Splitting the
  * file avoids re-mixing a mocked Collection (`.offset().limit().mockReturnThis()`)
  * back into the pagination path, which is exactly what previously masked the
- * bug (see CLAUDE.md "Dexie Collection reuse").
+ * bug (see src/AGENTS.md「Raw Event Lake と再生」).
  */
 
 import { saveEntities, findLatestPlayerDealEvent, withTransaction } from './database-utils'

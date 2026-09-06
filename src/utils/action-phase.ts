@@ -38,7 +38,7 @@ const isPhaseType = (value: unknown): value is PhaseType =>
  * 終了行では28,637行が食い違う（＝除外条件が必須であることの実測根拠）。
  *
  * `EntityConverter`（バッチ）と `WriteEntityStream`（ライブ）は同一の帰属でなければ
- * ならない（AGENTS.md "Derived data changes need dual-pipeline parity"）ため、
+ * ならない（src/AGENTS.md「派生データ・統計の変更」）ため、
  * 判定は必ずこの1関数を共有する。
  */
 export const resolveActionPhase = (

@@ -31,8 +31,7 @@ const e2eManifestOverride = process.env.E2E_MANIFEST
 // --- Sentry telemetry build identity --------------------------------------
 // Diagnostics are opt-in, so the maintainer's own play sessions are a primary
 // source of signal -- especially schema-validation failures, which is how a
-// PokerChase payload change becomes visible at all (see "Incident Diagnosis
-// Practices" in AGENTS.md). Those events are captureMessage + structured
+// PokerChase payload change becomes visible at all (AGENTS.md「レビューと障害診断」参照). Those events are captureMessage + structured
 // context and need no source maps, so a build without an upload token is still
 // worth reporting from. Telemetry is therefore compiled into every build except
 // E2E; what changes between a release and a working build is only its identity.

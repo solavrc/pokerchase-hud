@@ -35,7 +35,7 @@ const MOCK_MANIFEST_VERSION = '0.0.0-mock'
  * Long-running background operations the popup starts optimistically: it flips
  * to a busy state and only reverts if the reply says `success: false` (see
  * `ImportExportSection`'s handlers and "Optimistic UI + Server Guard" in
- * AGENTS.md). There is no background here to send the terminal progress
+ * src/background/AGENTS.md). There is no background here to send the terminal progress
  * message, so a bare success would wedge the popup in "エクスポート中" forever.
  * Rejecting is also what a real background does when it cannot start.
  */
