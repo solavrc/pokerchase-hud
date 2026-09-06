@@ -75,7 +75,8 @@ stat 固有の一時状態は `handState.statStates[id]`、共有 `actions` は�
 - **FLOP membership**: FLOP `DEAL_ROUND` の BET_ABLE / ALL_IN を含み、fold 済みを
   除外する。全員 preflop all-in などで `DEAL_ROUND` が省略され、RESULTS で累積 board が
   3枚以上になった場合、未作成の FLOP phase を補う。dealt-in かつ preflop FOLD して
-  いない席を入れ、board は先頭3枚にする。
+  おらず、`EVT_HAND_RESULTS.Results[]` に存在する席だけを入れ、board は先頭3枚にする。
+  明示 FOLD がなく結果にも現れない timeout・切断席は、この合成に含めない。
 - **SHOWDOWN**: `isShowdownParticipant()`（rank 0–9 または SHOWDOWN_MUCK=11）が
   2人以上必要。Results の行数だけで決めず、NO_CALL=10 / FOLD_OPEN=12 は除外する。
 - **勝者**: `deriveHandSettlement()` の `contestedAward > 0` を `winningPlayerIds` に
