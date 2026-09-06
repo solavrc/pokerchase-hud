@@ -55,6 +55,8 @@ const SAME_MS_BURST_EVENTS = readFixture('hand-samems-street-burst.ndjson')
 const RING_REBUY_EVENTS = readFixture('hand-ring-midhand-rebuy.ndjson')
 /** 同一ms群で、新ストリート最初の行が ALL_IN になるケース（codex review round 3）。 */
 const STREET_OPENING_ALLIN_EVENTS = readFixture('hand-street-opening-allin.ndjson')
+/** CHECK権からのBBレイズ・フロップの先制ベットと、CHECK不可のショートコール。 */
+const CHECK_OPTION_ALLIN_EVENTS = readFixture('hand-check-option-allin.ndjson')
 
 const entryEvent = FIXTURE_EVENTS.find(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED)!
 const detailsEvent = FIXTURE_EVENTS.find(event => event.ApiTypeId === ApiType.EVT_SESSION_DETAILS)!
@@ -397,6 +399,53 @@ describe('cross-path canonical parity', () => {
       '2002': { grossPayout: 4040, totalContribution: 4000, netChips: 40 },
       '2003': { grossPayout: 0, totalContribution: 20, netChips: -20 }
     })
+  })
+
+  test('check-option ALL_IN hands preserve raises, bets and counters on every path', async () => {
+    // 架空の4局は独立session。前局の永続化を終えてから次局へ進める。
+    const sessions: ApiEvent[][] = []
+    for (const event of CHECK_OPTION_ALLIN_EVENTS) {
+      if (event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED) sessions.push([])
+      sessions.at(-1)!.push(event)
+    }
+    const cases: Awaited<ReturnType<typeof replay>>[] = []
+    for (const events of sessions) {
+      const snapshots = await replayEveryPath(events)
+      expect(snapshots['entity-converter']).toEqual(snapshots.live)
+      expect(snapshots.rebuild).toEqual(snapshots.live)
+      expect(snapshots.import).toEqual(snapshots.live)
+      cases.push(snapshots.live)
+    }
+    const canonical = {
+      actions: cases.flatMap(snapshot => snapshot.actions),
+      hands: cases.flatMap(snapshot => snapshot.hands),
+      stats: cases.flatMap(snapshot => snapshot.stats),
+    }
+
+    // BB=100に対する1,000と150への増額はどちらもRAISE。フロップで
+    // 対峙額0から20を出すALL_INは、最小ベット100未満でもBETになる。
+    expect(canonical.actions.filter(action => action.actionDetails.includes(ActionDetail.ALL_IN))
+      .map(({ playerId, phase, actionType, bet }) => ({ playerId, phase, actionType, bet })))
+      .toEqual([
+        { playerId: 1102, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, bet: 1000 },
+        { playerId: 1202, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, bet: 150 },
+        { playerId: 1301, phase: PhaseType.FLOP, actionType: ActionType.BET, bet: 20 },
+        { playerId: 1402, phase: PhaseType.PREFLOP, actionType: ActionType.CALL, bet: 150 },
+      ])
+    const statsFor = (playerId: number) => Object.fromEntries(
+      canonical.stats.find(player => player.playerId === playerId)!.statResults
+        .map(stat => [stat.id, stat.value])
+    )
+    expect(statsFor(1102)).toMatchObject({ pfr: [1, 1] })
+    expect(statsFor(1202)).toMatchObject({ pfr: [1, 1] })
+    expect(statsFor(1301)).toMatchObject({ pfr: [1, 1], af: [1, 0], afq: [1, 1], cbet: [1, 1] })
+    expect(statsFor(1302)).toMatchObject({ af: [0, 1], cbetFold: [0, 1] })
+    // 300に150までしか出せないショートコールはPFR/3BETの分子へ入れない。
+    expect(statsFor(1402)).toMatchObject({ pfr: [0, 1], '3bet': [0, 1] })
+    expect(canonical.hands).toHaveLength(4)
+    expect(canonical.hands.every(hand =>
+      Object.values(hand.playerChipAccounting!).every(accounting => accounting !== null)
+    )).toBe(true)
   })
 
   test('a Ring mid-hand rebuy keeps exact winners and net chips (#339)', async () => {

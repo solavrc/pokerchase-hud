@@ -255,7 +255,7 @@ export class EntityConverter {
           runningPhase = phase
 
           const actionDetails: ActionDetail[] = []
-          const actionType = this.normalizeAllInAction(event, progress, opensNewStreet, actionDetails)
+          const actionType = this.normalizeAllInAction(event, progress, phase, opensNewStreet, actionDetails)
 
           const phaseActions = handState.actions.filter(action => action.phase === phase)
           const phasePrevBetCount = phaseActions.filter(action =>
@@ -496,6 +496,7 @@ export class EntityConverter {
   private normalizeAllInAction(
     event: ApiEvent<ApiType.EVT_ACTION>,
     progress: any,
+    phase: PhaseType,
     opensNewStreet: boolean,
     actionDetails: ActionDetail[]
   ): Exclude<ActionType, ActionType.ALL_IN> {
@@ -512,6 +513,10 @@ export class EntityConverter {
         return ActionType.BET
       } else if (progress?.NextActionTypes.includes(ActionType.CALL)) {
         return ActionType.RAISE
+      } else if (progress?.NextActionTypes.includes(ActionType.CHECK)) {
+        // チェック権からのALL_INはCALLではない（MUST NOT）。BBのオプションは
+        // 既存BB額へのRAISE、ポストフロップの最小ベット未満のALL_INはBET。
+        return phase === PhaseType.PREFLOP ? ActionType.RAISE : ActionType.BET
       } else {
         return ActionType.CALL
       }

@@ -312,7 +312,8 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
            * 変換ルール:
            * 1. BETが可能な状況（誰もベットしていない） → BET
            * 2. CALLが可能な状況（相手がベット済み） → RAISE
-           * 3. それ以外（相手がレイズ済み等） → CALL
+           * 3. CHECKが可能な状況 → PREFLOPはRAISE、それ以外はBET
+           * 4. それ以外（FOLD/ALL_INだけのショートコール等） → CALL
            *
            * この変換により、統計計算（VPIP, PFR, AF, AFq等）で
            * ALL_INが適切なアクションとしてカウントされる。
@@ -331,6 +332,10 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
                 return ActionType.BET
               } else if (progress?.NextActionTypes.includes(ActionType.CALL)) {
                 return ActionType.RAISE
+              } else if (progress?.NextActionTypes.includes(ActionType.CHECK)) {
+                // チェック権からのALL_INはCALLではない（MUST NOT）。BBのオプションは
+                // 既存BB額へのRAISE、ポストフロップの最小ベット未満のALL_INはBET。
+                return phase === PhaseType.PREFLOP ? ActionType.RAISE : ActionType.BET
               } else {
                 return ActionType.CALL
               }

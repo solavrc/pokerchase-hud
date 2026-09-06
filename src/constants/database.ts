@@ -108,9 +108,14 @@ export type DbOperationType = 'import' | 'export' | 'sync' | 'rebuild'
  * WWSF/WWSFa/W$SD/RCAの分子と`playerChipAccounting`が修復される。
  * いずれも既存handの再導出が必要。
  *
+ * version 8: CHECK可能な状況のALL_INをCALLとして保存していた誤分類を修正。
+ * BBのオプションはRAISE、ポストフロップの先制オールインはBETへ戻す。
+ * 既存のActionとActionDetail、PFR・AF等の統計台帳を修復するため、
+ * Raw Event Lakeからの再構築が必要。
+ *
  * インクリメントすると、拡張機能の更新後に既存ユーザーへ一度だけ
  * 「データ再構築」の実行を促すアドバイソリーが表示される
  * （`src/background/rebuild-advisory.ts`参照）。単なるUI変更やバグ修正でも
  * 書き込み時の導出結果に影響しないものはバンプ不要。
  */
-export const REBUILD_ADVISORY_VERSION = 7
+export const REBUILD_ADVISORY_VERSION = 8

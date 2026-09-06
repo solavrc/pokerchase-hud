@@ -645,6 +645,7 @@ interface ActionRec {
 function normalizeAllIn(
   actionEvent: RawActionEvent,
   prevProgress: RawProgress | undefined,
+  phase: number,
   opensNewStreet: boolean
 ): ActionTypeNum {
   if (actionEvent.ActionType !== ActionType.ALL_IN) return actionEvent.ActionType as ActionTypeNum
@@ -652,6 +653,12 @@ function normalizeAllIn(
   const nextTypes: number[] = prevProgress?.NextActionTypes || []
   if (nextTypes.includes(ActionType.BET)) return ActionType.BET
   if (nextTypes.includes(ActionType.CALL)) return ActionType.RAISE
+  // CHECK可能ならコールすべき差額は無い。PREFLOPではBBが存在するため
+  // RAISE、他の街では先制BETとして数える（MUST）。最小額に届かない
+  // ALL_INではRAISE/BET自体が選択肢に無くても、この区別は変わらない。
+  if (nextTypes.includes(ActionType.CHECK)) {
+    return phase === PhaseType.PREFLOP ? ActionType.RAISE : ActionType.BET
+  }
   return ActionType.CALL
 }
 
@@ -780,7 +787,7 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
         const phase = rawActionPhase(actionEvt, runningPhase)
         const opensNewStreet = phase !== runningPhase
         runningPhase = phase
-        const normType = normalizeAllIn(actionEvt, prevProgress, opensNewStreet)
+        const normType = normalizeAllIn(actionEvt, prevProgress, phase, opensNewStreet)
         if (!phaseActionsMap.has(phase)) phaseActionsMap.set(phase, [])
 
         const actionsInPhase = phaseActionsMap.get(phase) ?? []
