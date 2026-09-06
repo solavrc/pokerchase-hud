@@ -273,11 +273,14 @@ describe('verify-stats harness', () => {
         return apiEventSchemas[event.ApiTypeId as ApiType]!.parse(event) as ApiEvent
       })
     const { legacy, ledger } = await runProductPipelines(events)
-    const oracle = runOracle(events)
+    const observedActions: unknown[] = []
+    const oracle = runOracle(events, { observeAction: action => observedActions.push(action) })
+    expect(observedActions).toEqual(JSON.parse(readFileSync(
+      join(process.cwd(), 'e2e/fixtures/hand-check-option-allin.expected.json'), 'utf8')))
 
     for (const product of [legacy, ledger]) {
       const report = compareResults(product, oracle, 1)
-      expect(report.eligiblePlayers).toBe(25)
+      expect(report.eligiblePlayers).toBe(43)
       expect(report.stats.every(stat => stat.mismatches.length === 0)).toBe(true)
     }
     // 3経路の一致だけでは同じ誤分類を見逃すため、金額とチェック権から

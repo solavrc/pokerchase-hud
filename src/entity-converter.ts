@@ -26,12 +26,13 @@ import type {
   Phase,
   HandState,
   Session,
-  ActionDetailContext
+  ActionDetailContext,
+  Progress
 } from './types'
 
 import { defaultRegistry } from './stats'
 import { resolveActionPhase } from './utils/action-phase'
-import { getRaiseAvailability } from './utils/action-raise-option'
+import { getApplicableActionMenu, getRaiseAvailability } from './utils/action-raise-option'
 import { getPositionMap, getBigBlindUserId } from './utils/position-utils'
 import { deriveHandSettlement } from './utils/hand-chip-accounting'
 
@@ -181,7 +182,7 @@ export class EntityConverter {
     // インポート/リビルド後もポジション値が一致するようにする）
     let positionMap: Map<number, Position> = new Map()
 
-    let progress: any = undefined
+    let progress: Progress | undefined
     let dealEvent: ApiEvent<ApiType.EVT_DEAL> | undefined
     // 進行中のストリート。EVT_DEAL_ROUND と、各アクションの権威的な
     // Progress.Phase の両方で進む（#340、WriteEntityStreamと同一ロジック）。
@@ -192,6 +193,10 @@ export class EntityConverter {
 
     for (const event of events) {
       switch (event.ApiTypeId) {
+        case ApiType.EVT_ENTRY_QUEUED:
+          // 201で以前の卓のメニューだけを失効させ、ハンドは保持する（MUST）。
+          progress = undefined
+          break
         case ApiType.EVT_DEAL: {
           dealEvent = event
           // ハンドの作成（IDは一時的に0を設定、EVT_HAND_RESULTSで更新）
@@ -255,8 +260,9 @@ export class EntityConverter {
           const opensNewStreet = phase !== runningPhase
           runningPhase = phase
 
+          const actionMenu = getApplicableActionMenu(progress, event.SeatIndex, phase)
           const actionDetails: ActionDetail[] = []
-          const actionType = this.normalizeAllInAction(event, progress, phase, opensNewStreet, actionDetails)
+          const actionType = this.normalizeAllInAction(event, actionMenu, phase, opensNewStreet, actionDetails)
 
           const phaseActions = handState.actions.filter(action => action.phase === phase)
           const phasePrevBetCount = phaseActions.filter(action =>
@@ -279,7 +285,7 @@ export class EntityConverter {
             phase,
             phasePlayerActionIndex,
             phasePrevBetCount,
-            canRaise: getRaiseAvailability(progress, event.SeatIndex, phase),
+            canRaise: getRaiseAvailability(actionMenu, phase),
             position,
             handState
           }
@@ -497,7 +503,7 @@ export class EntityConverter {
    */
   private normalizeAllInAction(
     event: ApiEvent<ApiType.EVT_ACTION>,
-    progress: any,
+    actionMenu: readonly ActionType[] | undefined,
     phase: PhaseType,
     opensNewStreet: boolean,
     actionDetails: ActionDetail[]
@@ -505,17 +511,15 @@ export class EntityConverter {
     if (event.ActionType === ActionType.ALL_IN) {
       actionDetails.push(ActionDetail.ALL_IN)
 
-      // このアクション自身がストリートを開いた場合（同一msバーストや
-      // EVT_DEAL_ROUND欠落で、新ストリート最初の行がこれになるケース）、
-      // `progress`は前ストリート終了時点のもので NextActionTypes は通常空になる。
-      // ストリートの開き手が対峙するベットは存在しないため BET が正しい。
-      if (opensNewStreet) return ActionType.BET
+      // 新しいポストフロップ街を開くアクションは先制BETになる。
+      // 直前メニューが前ストリートでも、この例外を先に適用する（MUST）。
+      if (opensNewStreet && phase > PhaseType.PREFLOP) return ActionType.BET
 
-      if (progress?.NextActionTypes.includes(ActionType.BET)) {
+      if (actionMenu?.includes(ActionType.BET)) {
         return ActionType.BET
-      } else if (progress?.NextActionTypes.includes(ActionType.CALL)) {
+      } else if (actionMenu?.includes(ActionType.ALL_IN) && actionMenu.includes(ActionType.CALL)) {
         return ActionType.RAISE
-      } else if (progress?.NextActionTypes.includes(ActionType.CHECK)) {
+      } else if (actionMenu?.includes(ActionType.ALL_IN) && actionMenu.includes(ActionType.CHECK)) {
         // チェック権からのALL_INはCALLではない（MUST NOT）。BBのオプションは
         // 既存BB額へのRAISE、ポストフロップの最小ベット未満のALL_INはBET。
         return phase === PhaseType.PREFLOP ? ActionType.RAISE : ActionType.BET

@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from './app'
 import { trackServiceForTeardown } from './utils/test-service-teardown'
+import { threeBetStat } from './stats/core/3bet'
 import { EntityConverter } from './entity-converter'
 import { createImportExportHandlers } from './background/import-export'
 import { setOperationState } from './background/operation-state'
@@ -150,6 +151,16 @@ const replay = async (path: ReplayPath, events: ApiEvent[], seed?: SessionSeed) 
   ;(chrome.runtime.sendMessage as jest.Mock).mockReturnValue(Promise.resolve())
   ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => callback([]))
 
+  const actionEvidence: Array<{ playerId: number, phase: PhaseType, actionType: ActionType, canRaise: boolean | null, threeBetChance: boolean }> = []
+  const detectThreeBet = threeBetStat.detectActionDetails!
+  const actionSpy = jest.spyOn(threeBetStat, 'detectActionDetails').mockImplementation(context => {
+    const details = detectThreeBet(context)
+    actionEvidence.push({
+      playerId: context.playerId, phase: context.phase, actionType: context.actionType,
+      canRaise: context.canRaise ?? null, threeBetChance: details.includes(ActionDetail.$3BET_CHANCE),
+    })
+    return details
+  })
   try {
     if (path === 'live') {
       // EVT_DEAL also launches an intentionally unawaited hand-count warmup
@@ -178,13 +189,14 @@ const replay = async (path: ReplayPath, events: ApiEvent[], seed?: SessionSeed) 
       await service.statsOutputStream.whenIdle()
     }
 
-    return await takeCanonicalSnapshot(service, db)
+    return { ...await takeCanonicalSnapshot(service, db), actionEvidence }
   } finally {
     // replay() は1テスト内で4経路ぶん連続で呼ばれる。ルート afterEach
     // （test-service-teardown.ts）の取り消しはテスト終了時なので、ここで
     // 明示的に取り消さないと、直前の経路のインスタンスの500msタイマーが
     // 次の経路の `await service.ready`（restoreState()）より前に発火し、
     // 前の経路の playerId/session を次の経路へ持ち込んでしまう。
+    actionSpy.mockRestore()
     service.cancelPendingPersist()
     setOperationState({ type: 'idle' })
     db.close()
@@ -405,7 +417,8 @@ describe('cross-path canonical parity', () => {
     // 架空の各局は独立session。前局の永続化を終えてから次局へ進める。
     const sessions: ApiEvent[][] = []
     for (const event of CHECK_OPTION_ALLIN_EVENTS) {
-      if (event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED) sessions.push([])
+      if (event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED &&
+          (sessions.length === 0 || sessions.at(-1)!.at(-1)?.ApiTypeId === ApiType.EVT_HAND_RESULTS)) sessions.push([])
       sessions.at(-1)!.push(event)
     }
     const cases: Awaited<ReturnType<typeof replay>>[] = []
@@ -416,6 +429,12 @@ describe('cross-path canonical parity', () => {
       expect(snapshots.import).toEqual(snapshots.live)
       cases.push(snapshots.live)
     }
+    // 金額・席・街ごとの固定表で、経路一致だけでは検出できない共通誤りも止める（MUST）。
+    const expectedActions = JSON.parse(readFileSync(
+      join(process.cwd(), 'e2e/fixtures/hand-check-option-allin.expected.json'), 'utf8'))
+    expect(cases.flatMap(snapshot => snapshot.actionEvidence.map((evidence, actionIndex) => ({
+      handId: snapshot.hands[0]!.id, actionIndex, ...evidence,
+    })))).toEqual(expectedActions)
     const canonical = {
       actions: cases.flatMap(snapshot => snapshot.actions),
       hands: cases.flatMap(snapshot => snapshot.hands),
@@ -435,6 +454,9 @@ describe('cross-path canonical parity', () => {
         { playerId: 1702, phase: PhaseType.PREFLOP, actionType: ActionType.CALL, bet: 150 },
         { playerId: 1802, phase: PhaseType.PREFLOP, actionType: ActionType.CALL, bet: 150 },
         { playerId: 1901, phase: PhaseType.FLOP, actionType: ActionType.BET, bet: 20 },
+        ...[2002, 2102, 2202, 2302, 2402, 2502].map(playerId => ({
+          playerId, phase: PhaseType.PREFLOP, actionType: ActionType.CALL, bet: 150,
+        })),
       ])
     const statsFor = (playerId: number) => Object.fromEntries(
       canonical.stats.find(player => player.playerId === playerId)!.statResults
@@ -457,7 +479,13 @@ describe('cross-path canonical parity', () => {
     expect(statsFor(1702)).toMatchObject({ '3bet': [0, 1] })
     expect(statsFor(1802)).toMatchObject({ '3bet': [0, 1] })
     expect(statsFor(1901)).toMatchObject({ pfr: [0, 1], af: [1, 0], cbet: [0, 0] })
-    expect(canonical.hands).toHaveLength(9)
+    for (const playerId of [2002, 2102, 2202, 2302]) {
+      expect(statsFor(playerId)).toMatchObject({ pfr: [0, 1], '3bet': [0, 1] })
+    }
+    for (const playerId of [2402, 2502]) {
+      expect(statsFor(playerId)).toMatchObject({ pfr: [0, 1], '3bet': [0, 0] })
+    }
+    expect(canonical.hands).toHaveLength(15)
     expect(canonical.hands.every(hand =>
       Object.values(hand.playerChipAccounting!).every(accounting => accounting !== null)
     )).toBe(true)

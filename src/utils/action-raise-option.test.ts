@@ -1,6 +1,6 @@
 import type { Progress } from '../types'
 import { ActionType, PhaseType } from '../types/game'
-import { getRaiseAvailability } from './action-raise-option'
+import { getApplicableActionMenu, getRaiseAvailability } from './action-raise-option'
 
 const progress = (overrides: Partial<Progress> = {}): Progress => ({
   Phase: PhaseType.PREFLOP, NextActionSeat: 1,
@@ -17,7 +17,7 @@ describe('getRaiseAvailability', () => {
     [[ActionType.FOLD, ActionType.CALL, ActionType.RAISE], true],
     [[ActionType.CHECK, ActionType.ALL_IN], true],
   ] as const)('同じ席・ストリートの選択肢 %j からレイズ可否を判定する', (options, expected) => {
-    expect(getRaiseAvailability(progress({ NextActionTypes: [...options] }), 1, PhaseType.PREFLOP))
+    expect(getRaiseAvailability(getApplicableActionMenu(progress({ NextActionTypes: [...options] }), 1, PhaseType.PREFLOP), PhaseType.PREFLOP))
       .toBe(expected)
   })
 
@@ -27,12 +27,14 @@ describe('getRaiseAvailability', () => {
     progress({ NextActionSeat: 2 }),
     progress({ Phase: PhaseType.FLOP }),
   ])('欠落・空・別席・別ストリートのメニューは不明として保持する', previous => {
-    expect(getRaiseAvailability(previous, 1, PhaseType.PREFLOP)).toBeUndefined()
+    const menu = getApplicableActionMenu(previous, 1, PhaseType.PREFLOP)
+    expect(menu).toBeUndefined()
+    expect(getRaiseAvailability(menu, PhaseType.PREFLOP)).toBeUndefined()
   })
 
   it('ポストフロップのCHECK+ALL_INは先制BETなのでレイズ可とはしない', () => {
-    expect(getRaiseAvailability(progress({
+    expect(getRaiseAvailability(getApplicableActionMenu(progress({
       Phase: PhaseType.FLOP, NextActionTypes: [ActionType.CHECK, ActionType.ALL_IN],
-    }), 1, PhaseType.FLOP)).toBe(false)
+    }), 1, PhaseType.FLOP), PhaseType.FLOP)).toBe(false)
   })
 })
