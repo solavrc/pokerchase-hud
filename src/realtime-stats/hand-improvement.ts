@@ -141,7 +141,7 @@ export const handImprovementStat: StatDefinition = {
       RankType.ONE_PAIR,
       RankType.HIGH_CARD
     ]
-    // Display rows combine royal flush with straight flush, as probabilities do.
+    // 表示行では、確率と同様にロイヤルフラッシュをストレートフラッシュへ統合する。
     const currentRowRank = currentRank === RankType.ROYAL_FLUSH
       ? RankType.STRAIGHT_FLUSH
       : currentRank
