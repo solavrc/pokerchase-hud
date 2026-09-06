@@ -290,6 +290,11 @@ HUDのRaw Lakeへのmergeはsequenceを除いた内容で重複排除するた�
 通常の同期を固定数のbatch RPCに保つ方を採用した。`syncedEvents`は新規保存または
 既存内容を確認したイベント数であり、物理write数ではない。
 
+**順序の観測限界**: `sequence`は端末ローカルの保存slotであり、元の受信順を復元する情報ではない。
+同じtimestamp/type/sequenceの異内容を復元すると、既にあるローカルslotを優先するため、
+同じcloud集合でも復元先によって相対順と順序依存の統計値が異なる場合がある。
+内容IDの保証は内容保持と同内容の重複計上防止であり、失われた因果順や端末間の統計一致ではない。
+
 **本番反映の条件**: 内容IDを書き込む拡張機能の公開前に、`firebase/firestore.rules`の
 APIイベントupdate制限をownerが本番へ適用する。ownerのread/create/deleteは維持し、
 updateは同一内容の再送またはトップレベル`sequence`だけの変更に限る。これにより
