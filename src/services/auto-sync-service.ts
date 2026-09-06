@@ -1158,17 +1158,9 @@ export class AutoSyncService {
     // page's lower bound INCLUSIVE of `scanFloor`'s own millisecond instead
     // of strictly-after it (fixes (b)).
     //
-    // COST: the pass-start inclusivity means the first page may re-examine,
-    // and harmlessly re-upload, whatever OTHER row(s) already sit at cloud's
-    // exact watermark millisecond -- Firestore writes are idempotent upserts.
-    // Sequence 0 deliberately keeps the legacy `${timestamp}_${ApiTypeId}`
-    // document ID; later sequences append `_${sequence}`. Therefore migrated
-    // history rewrites the same old docs while burst rows remain distinct.
-    // Rewriting a sequence-0 row is a no-op write, not a correctness or
-    // growing-cost concern: it's
-    // bounded to however many rows tie at that one instant, and the
-    // watermark itself advances past it on the next pass that uploads
-    // anything newer.
+    // 同一millisecondの再提示はFirestore側で内容照合する。旧IDが別payloadを
+    // 指しても上書きせず、未保存分だけをsequence非依存の内容IDへcreateする。
+    // 旧IDとの過渡的な複製と費用の境界はdocs/architecture.mdに記載。
     //
     // `firestoreBackupService.syncToCloudBatch()`'s OWN internal dedup filter
     // is intentionally inclusive (`event.timestamp >= threshold`): it must
@@ -1313,13 +1305,8 @@ export class AutoSyncService {
           // scan floor, not the raw Firestore max: otherwise a just-recovered
           // row whose timestamp sits below the real cloud max would be
           // filtered back out by syncToCloudBatch's own dedup check,
-          // defeating the whole point of rewinding. Firestore writes are
-          // idempotent upserts keyed by the backward-compatible sequence
-          // document-ID scheme, so
-          // redundantly re-sending already-uploaded rows in
-          // [scanFloor, cloudMaxTimestamp] while a marker is pending is safe --
-          // just extra write cost, bounded to however much happened since the
-          // break, and it stops once the row resolves.
+          // defeating the whole point of rewinding. Firestore側は内容照合と
+          // 条件付きcreateで再提示を処理し、既存の別payloadを上書きしない。
           //
           // The inclusive downstream filter re-offers rows exactly at this
           // threshold, matching the compound-key cursor above and closing
@@ -1391,7 +1378,7 @@ export class AutoSyncService {
 
     console.log(
       `[AutoSync] Upload pass complete: scanned raw=${processed}; ` +
-      `valid application=${validApplicationEvents}; acknowledged Firestore writes=${synced}; ` +
+      `valid application=${validApplicationEvents}; confirmed cloud events=${synced}; ` +
       `filtered non-application/unknown=${filteredNonApplicationEvents}; ` +
       `deferred unparseable application=${deferredUnparseableApplicationEvents}`
     )
@@ -1434,9 +1421,8 @@ export class AutoSyncService {
    * sits at or below the cloud max -- regardless of whether it currently
    * parses. This forces exactly one full reconciliation re-offer of the
    * entire below-watermark history on the next `syncToCloud()` pass.
-   * `syncToCloudBatch`'s Firestore writes are idempotent upserts keyed by the
-   * stable legacy-ID-plus-sequence scheme, so re-sending already-uploaded
-   * rows is not a correctness bug, only extra write volume.
+   * `syncToCloudBatch`は旧IDと内容IDを照合し、未保存分だけ条件付きcreateする。
+   * 既存の同一内容は確認済みとして返すため、再提示で上書きは起きない。
    *
    * COST (reasoned for a 300k-row install, ~50% application-typed per the
    * Raw Event Lake's documented noise ratio -- CLAUDE.md Design Principles
@@ -1446,13 +1432,9 @@ export class AutoSyncService {
    *   FIRST row whose `ApiTypeId` is an application type stops almost
    *   immediately -- it does not get more expensive as the Lake grows, and
    *   does not need `processInChunks` pagination (a single row is fetched).
-   * - WRITE side (the actual one-time cost): the next sync pass re-uploads
-   *   on the order of ~150k already-synced documents once. Firestore write
-   *   pricing (~$0.18 per 100k document writes past the free tier) puts that
-   *   well under $1 even for a heavy user, and the write volume is naturally
-   *   paced by this service's existing chunked upload loop
-   *   (`DATABASE_CONSTANTS.SYNC_CHUNK_SIZE` per Firestore batch) -- not a
-   *   cost this backfill can repeat (see PROVEN-STATE REQUIREMENT below).
+   * - クラウド側の費用: 再提示する各イベントで旧ID・内容IDの最大2 documentを
+   *   batchGetで読む。同一内容が在ればwriteを省略し、未確認分だけcreateする。
+   *   このbackfillは一度だけだが、未解析行のfloorが残る間の再提示は別途続く。
    *   Only installs with SOME existing cloud history pay it at all
    *   (`cloudMaxTimestamp !== null` below) -- a brand-new install has
    *   nothing below any watermark to reconcile.

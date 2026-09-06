@@ -1,11 +1,20 @@
-import { FirestoreBackupService, getFirestoreEventDocumentId } from './firestore-backup-service'
+import { webcrypto } from 'crypto'
+import { TextEncoder } from 'util'
+import { FirestoreBackupService, getFirestoreContentDocumentId, getFirestoreEventDocumentId } from './firestore-backup-service'
 import { firebaseAuthService } from './firebase-auth-service'
 import type { ApiEvent } from '../types'
 
 describe('FirestoreBackupService', () => {
   const originalFetch = global.fetch
 
+  beforeAll(() => {
+    Object.assign(global, { TextEncoder })
+    Object.defineProperty(crypto, 'subtle', { value: webcrypto.subtle, configurable: true })
+  })
+
   beforeEach(() => {
+    // このsuiteはtransportの試験。内容照合と競合は別suiteでRESTごと検証する。
+    jest.spyOn(FirestoreBackupService.prototype as any, 'getEventDocuments').mockResolvedValue(new Map())
     jest.spyOn(firebaseAuthService, 'ready').mockResolvedValue()
     jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue({
       uid: 'XK00mmVIZdg8J52OlfyKvN467SK2',
@@ -52,12 +61,12 @@ describe('FirestoreBackupService', () => {
     const body = JSON.parse(String(init?.body))
     expect(body.writes[0].update.name).toBe(
       'projects/pokerchase-hud/databases/(default)/documents/users/' +
-      'XK00mmVIZdg8J52OlfyKvN467SK2/apiEvents/1779859063171_304'
+      `XK00mmVIZdg8J52OlfyKvN467SK2/apiEvents/${await getFirestoreContentDocumentId(event)}`
     )
     expect(body.writes[0].update.name).not.toMatch(/^https?:\/\//)
   })
 
-  test('same-millisecond same-type sequences use distinct deterministic document IDs while sequence 0 keeps the legacy ID', async () => {
+  test('legacy IDs remain readable and distinct payloads use deterministic content IDs', async () => {
     expect(getFirestoreEventDocumentId({ timestamp: 100, ApiTypeId: 304, sequence: 0 } as ApiEvent)).toBe('100_304')
     expect(getFirestoreEventDocumentId({ timestamp: 100, ApiTypeId: 304, sequence: 1 } as ApiEvent)).toBe('100_304_1')
 
@@ -77,10 +86,10 @@ describe('FirestoreBackupService', () => {
 
     const commitCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith(':commit'))
     const body = JSON.parse(String(commitCall?.[1]?.body))
-    expect(body.writes.map((write: any) => write.update.name.split('/').pop())).toEqual([
-      '100_304',
-      '100_304_1'
-    ])
+    expect(body.writes.map((write: any) => write.update.name.split('/').pop())).toEqual(
+      await Promise.all(burst.map(getFirestoreContentDocumentId))
+    )
+    expect(body.writes.every((write: any) => write.currentDocument.exists === false)).toBe(true)
   })
 
   test('commitWrites rejects when Firestore denies the write at the HTTP level (e.g. rules PERMISSION_DENIED)', async () => {
@@ -148,7 +157,9 @@ describe('FirestoreBackupService', () => {
     })) as ApiEvent[]
     const sync = new FirestoreBackupService().syncToCloudBatch(events, null)
 
-    for (let attempt = 0; attempt < 10 && commitCalls === 0; attempt++) await Promise.resolve()
+    for (let attempt = 0; attempt < 100 && commitCalls === 0; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 1))
+    }
     expect(commitCalls).toBe(1)
 
     resolveFirstCommit({
@@ -167,8 +178,8 @@ describe('FirestoreBackupService', () => {
         ApiTypeId: 304,
         sequence: 0
       })),
-      { timestamp: 300, ApiTypeId: 304, sequence: 0 },
-      { timestamp: 300, ApiTypeId: 304, sequence: 1 }
+      { timestamp: 300, ApiTypeId: 304, sequence: 0, SeatIndex: 0 },
+      { timestamp: 300, ApiTypeId: 304, sequence: 1, SeatIndex: 1 }
     ] as ApiEvent[]
 
     let commitCalls = 0
@@ -200,10 +211,9 @@ describe('FirestoreBackupService', () => {
 
     await expect(service.syncToCloudBatch(events, 300)).resolves.toMatchObject({ syncedEvents: 2 })
     expect(retryCommitBodies).toHaveLength(1)
-    expect(retryCommitBodies[0].writes.map((write: any) => write.update.name.split('/').pop())).toEqual([
-      '300_304',
-      '300_304_1'
-    ])
+    expect(retryCommitBodies[0].writes.map((write: any) => write.update.name.split('/').pop())).toEqual(
+      await Promise.all(events.slice(-2).map(getFirestoreContentDocumentId))
+    )
   })
 
   test('syncFromCloud downloads matching events in bounded, cursor-based pages', async () => {
@@ -348,6 +358,7 @@ describe('FirestoreBackupService transport hardening (release audit 2026-07-21: 
   const fastTransport = { requestTimeoutMs: 30, retryBaseDelayMs: 1, maxTransientRetries: 2 }
 
   beforeEach(() => {
+    jest.spyOn(FirestoreBackupService.prototype as any, 'getEventDocuments').mockResolvedValue(new Map())
     jest.spyOn(firebaseAuthService, 'ready').mockResolvedValue()
     jest.spyOn(firebaseAuthService, 'getCurrentUser').mockReturnValue({
       uid: 'XK00mmVIZdg8J52OlfyKvN467SK2',
