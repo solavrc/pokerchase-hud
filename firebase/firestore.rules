@@ -7,7 +7,11 @@ service cloud.firestore {
 
       // APIイベントサブコレクション（直接保存）
       match /apiEvents/{eventId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
+        allow read, create, delete: if request.auth != null && request.auth.uid == userId;
+        // 旧clientの無条件upsertでも別payloadへ上書きさせない（MUST NOT）。
+        // 同一内容の再送とローカル保存metadataのsequenceだけの更新は許容する。
+        allow update: if request.auth != null && request.auth.uid == userId
+          && resource.data.diff(request.resource.data).affectedKeys().hasOnly(['sequence']);
       }
     }
 

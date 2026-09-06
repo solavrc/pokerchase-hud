@@ -268,6 +268,18 @@ describe('Firestore event content preservation', () => {
     expect(cloud.documents.size).toBe(0)
   })
 
+  test('a durable final create with a lost response is confirmed after two earlier conflicts', async () => {
+    cloud.beforeCommit = () => cloud.commits.length <= 2
+      ? response({ error: { status: 'ALREADY_EXISTS' } }, 409)
+      : undefined
+    cloud.afterCommit = () => { throw new TypeError('Network response lost after final durable commit') }
+    const uploader = new FirestoreBackupService({ retryBaseDelayMs: 1 })
+    await expect(uploader.syncToCloudBatch([action(100, 0)], null)).resolves.toMatchObject({ syncedEvents: 1 })
+    // 3 create試行 + 応答喪失に対する既存transportの1 retry。最後の409を再照合する。
+    expect(cloud.commits).toHaveLength(4)
+    expect(cloud.documents.size).toBe(1)
+  })
+
   test('a failed later batch leaves the cloud prefix recoverable by a watermark retry', async () => {
     const uploader = new FirestoreBackupService({ maxTransientRetries: 0 })
     const events = Array.from({ length: 301 }, (_, index) => action(index + 1, 0, 0))
@@ -306,5 +318,14 @@ describe('Firestore event content preservation', () => {
     cloud.onRead = () => { generation++ }
     await expect(new FirestoreBackupService().syncToCloudBatch([action(100, 0)], null)).rejects.toThrow('account changed')
     expect(cloud.commits).toHaveLength(0)
+  })
+
+  test('an account change during a successful create does not report sync success', async () => {
+    let generation = 1
+    jest.spyOn(firebaseAuthService, 'getAuthGeneration').mockImplementation(() => generation)
+    cloud.afterCommit = () => { generation++ }
+    await expect(new FirestoreBackupService().syncToCloudBatch([action(100, 0)], null)).rejects.toThrow('account changed')
+    expect(cloud.documents.size).toBe(1)
+    expect(cloud.fetch.mock.calls.some(([, init]) => init.method === 'PATCH')).toBe(false)
   })
 })

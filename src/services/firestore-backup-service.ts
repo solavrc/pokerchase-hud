@@ -355,10 +355,10 @@ export class FirestoreBackupService {
           update: { name: row.name, fields: row.fields },
           currentDocument: { exists: false },
         })))
+        this.assertAccountUnchanged(generation, 'after event create')
         return
       } catch (error) {
-        if (!(error instanceof FirestoreRequestError) || !error.isDocumentConflict ||
-          attempt + 1 >= maxConflictAttempts) throw error
+        if (!(error instanceof FirestoreRequestError) || !error.isDocumentConflict) throw error
         const current = await this.getEventDocuments([...pending.keys()])
         for (const [name, candidate] of pending) {
           const document = current.get(name)
@@ -366,6 +366,9 @@ export class FirestoreBackupService {
           if (!matches(document, candidate.identity)) throw new Error('Firestore content identity collision')
           pending.delete(name)
         }
+        // 最終createの応答喪失も、保存済みなら最後の読取で成功を確定する。
+        // 未保存分が残るときだけcreate回数の上限で失敗させる（MUST）。
+        if (pending.size > 0 && attempt + 1 >= maxConflictAttempts) throw error
       }
     }
     this.assertAccountUnchanged(generation, 'after event content confirmation')
