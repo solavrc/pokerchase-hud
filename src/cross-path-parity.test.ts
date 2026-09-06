@@ -402,7 +402,7 @@ describe('cross-path canonical parity', () => {
   })
 
   test('check-option ALL_IN hands preserve raises, bets and counters on every path', async () => {
-    // 架空の4局は独立session。前局の永続化を終えてから次局へ進める。
+    // 架空の各局は独立session。前局の永続化を終えてから次局へ進める。
     const sessions: ApiEvent[][] = []
     for (const event of CHECK_OPTION_ALLIN_EVENTS) {
       if (event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED) sessions.push([])
@@ -431,6 +431,10 @@ describe('cross-path canonical parity', () => {
         { playerId: 1202, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, bet: 150 },
         { playerId: 1301, phase: PhaseType.FLOP, actionType: ActionType.BET, bet: 20 },
         { playerId: 1402, phase: PhaseType.PREFLOP, actionType: ActionType.CALL, bet: 150 },
+        { playerId: 1502, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, bet: 400 },
+        { playerId: 1702, phase: PhaseType.PREFLOP, actionType: ActionType.CALL, bet: 150 },
+        { playerId: 1802, phase: PhaseType.PREFLOP, actionType: ActionType.CALL, bet: 150 },
+        { playerId: 1901, phase: PhaseType.FLOP, actionType: ActionType.BET, bet: 20 },
       ])
     const statsFor = (playerId: number) => Object.fromEntries(
       canonical.stats.find(player => player.playerId === playerId)!.statResults
@@ -438,11 +442,22 @@ describe('cross-path canonical parity', () => {
     )
     expect(statsFor(1102)).toMatchObject({ pfr: [1, 1] })
     expect(statsFor(1202)).toMatchObject({ pfr: [1, 1] })
+    expect(statsFor(1103)).toMatchObject({ '3bet': [0, 0] })
+    expect(statsFor(1203)).toMatchObject({ '3bet': [0, 0] })
     expect(statsFor(1301)).toMatchObject({ pfr: [1, 1], af: [1, 0], afq: [1, 1], cbet: [1, 1] })
     expect(statsFor(1302)).toMatchObject({ af: [0, 1], cbetFold: [0, 1] })
-    // 300に150までしか出せないショートコールはPFR/3BETの分子へ入れない。
-    expect(statsFor(1402)).toMatchObject({ pfr: [0, 1], '3bet': [0, 1] })
-    expect(canonical.hands).toHaveLength(4)
+    // ショートコールは機会もなく、CALL+ALL_INでのショートレイズは機会を持つ。
+    expect(statsFor(1402)).toMatchObject({ pfr: [0, 1], '3bet': [0, 0] })
+    expect(statsFor(1502)).toMatchObject({ pfr: [1, 1], '3bet': [1, 1] })
+    // レイズ不能でも、3betに対するフォールド機会は残る（MUST）。
+    expect(statsFor(1503)).toMatchObject({ '3betfold': [1, 1] })
+    expect(statsFor(1501)).toMatchObject({ '3betfold': [0, 1] })
+    // 矛盾するメニューより実RAISEを優先し、空・別席は未知として機会を残す。
+    expect(statsFor(1602)).toMatchObject({ '3bet': [1, 1] })
+    expect(statsFor(1702)).toMatchObject({ '3bet': [0, 1] })
+    expect(statsFor(1802)).toMatchObject({ '3bet': [0, 1] })
+    expect(statsFor(1901)).toMatchObject({ pfr: [0, 1], af: [1, 0], cbet: [0, 0] })
+    expect(canonical.hands).toHaveLength(9)
     expect(canonical.hands.every(hand =>
       Object.values(hand.playerChipAccounting!).every(accounting => accounting !== null)
     )).toBe(true)

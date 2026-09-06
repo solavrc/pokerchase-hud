@@ -277,7 +277,7 @@ describe('verify-stats harness', () => {
 
     for (const product of [legacy, ledger]) {
       const report = compareResults(product, oracle, 1)
-      expect(report.eligiblePlayers).toBe(11)
+      expect(report.eligiblePlayers).toBe(25)
       expect(report.stats.every(stat => stat.mismatches.length === 0)).toBe(true)
     }
     // 3経路の一致だけでは同じ誤分類を見逃すため、金額とチェック権から
@@ -285,12 +285,21 @@ describe('verify-stats harness', () => {
     for (const result of [legacy, ledger, oracle]) {
       expect(result.get(1102)?.stats.pfr).toEqual([1, 1])
       expect(result.get(1202)?.stats.pfr).toEqual([1, 1])
+      expect(result.get(1103)?.stats['3bet']).toEqual([0, 0])
+      expect(result.get(1203)?.stats['3bet']).toEqual([0, 0])
       expect(result.get(1301)?.stats.af).toEqual([1, 0])
       expect(result.get(1301)?.stats.afq).toEqual([1, 1])
       expect(result.get(1301)?.stats.cbet).toEqual([1, 1])
       expect(result.get(1302)?.stats.cbetFold).toEqual([0, 1])
       expect(result.get(1402)?.stats.pfr).toEqual([0, 1])
-      expect(result.get(1402)?.stats['3bet']).toEqual([0, 1])
+      expect(result.get(1402)?.stats['3bet']).toEqual([0, 0])
+      expect(result.get(1502)?.stats['3bet']).toEqual([1, 1])
+      expect(result.get(1503)?.stats['3betfold']).toEqual([1, 1])
+      expect(result.get(1501)?.stats['3betfold']).toEqual([0, 1])
+      expect(result.get(1602)?.stats['3bet']).toEqual([1, 1])
+      expect(result.get(1702)?.stats['3bet']).toEqual([0, 1])
+      expect(result.get(1802)?.stats['3bet']).toEqual([0, 1])
+      expect(result.get(1901)?.stats.cbet).toEqual([0, 0])
     }
   })
 

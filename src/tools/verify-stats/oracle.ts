@@ -818,8 +818,17 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
           acc(playerId).pfrHands.add(handId)
         }
 
-        // 3BET / 3BETFOLD: facing a 2-bet -> 3bet chance; facing a 3-bet -> 3betfold chance.
-        if (phase === 0 && curPrevBetCount === 2) {
+        // 同じ席・ストリートの非空メニューだけがレイズ不能の証拠になる（MUST）。
+        // 実RAISEと未観測メニューは機会を維持し、3BETFOLDには適用しない。
+        const menu = prevProgress?.NextActionTypes ?? []
+        const menuApplies = prevProgress?.Phase === phase &&
+          prevProgress.NextActionSeat === seatIndex && menu.length > 0
+        const menuAllowsRaise = menu.some(type => type === ActionType.RAISE) ||
+          (menu.some(type => type === ActionType.ALL_IN) &&
+            menu.some(type => type === ActionType.CALL ||
+              (phase === 0 && type === ActionType.CHECK)))
+        if (phase === 0 && curPrevBetCount === 2 &&
+            (normType === ActionType.RAISE || !menuApplies || menuAllowsRaise)) {
           acc(playerId).threeBetChance++
           if (normType === ActionType.RAISE) acc(playerId).threeBet++
         }

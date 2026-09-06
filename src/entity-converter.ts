@@ -31,6 +31,7 @@ import type {
 
 import { defaultRegistry } from './stats'
 import { resolveActionPhase } from './utils/action-phase'
+import { getRaiseAvailability } from './utils/action-raise-option'
 import { getPositionMap, getBigBlindUserId } from './utils/position-utils'
 import { deriveHandSettlement } from './utils/hand-chip-accounting'
 
@@ -278,6 +279,7 @@ export class EntityConverter {
             phase,
             phasePlayerActionIndex,
             phasePrevBetCount,
+            canRaise: getRaiseAvailability(progress, event.SeatIndex, phase),
             position,
             handState
           }

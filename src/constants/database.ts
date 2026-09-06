@@ -110,6 +110,8 @@ export type DbOperationType = 'import' | 'export' | 'sync' | 'rebuild'
  *
  * version 8: CHECK可能な状況のALL_INをCALLとして保存していた誤分類を修正。
  * BBのオプションはRAISE、ポストフロップの先制オールインはBETへ戻す。
+ * 併せて、現在の席・ストリートのメニューでレイズ不能と分かるアクションを
+ * 3BET_CHANCEから除外する（実RAISEは機会を維持）。
  * 既存のActionとActionDetail、PFR・AF等の統計台帳を修復するため、
  * Raw Event Lakeからの再構築が必要。
  *

@@ -19,6 +19,7 @@ import type {
 import type { ActionDetailContext } from '../types/stats'
 import { ErrorHandler } from '../utils/error-handler'
 import { resolveActionPhase } from '../utils/action-phase'
+import { getRaiseAvailability } from '../utils/action-raise-option'
 import { getPositionMap, getBigBlindUserId } from '../utils/position-utils'
 import { defaultRegistry } from '../stats'
 import type { ErrorContext } from '../types/errors'
@@ -354,6 +355,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
             phase,
             phasePlayerActionIndex,
             phasePrevBetCount,
+            canRaise: getRaiseAvailability(progress, event.SeatIndex, phase),
             position,
             handState
           }
