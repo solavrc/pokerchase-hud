@@ -48,16 +48,20 @@ stat 固有の一時状態は `handState.statStates[id]`、共有 `actions` は�
 
 次の意味論は `EntityConverter` と `WriteEntityStream` の両方に共通する。
 
-- **ALL_IN 正規化**: 同一 street で CHECK 権があれば CALL にしない。preflop は BB
+- **操作一覧の適用範囲**: 非空の直前 Progress が現在の席・解決済み street に一致し、
+  最後の201以後に得られた場合だけ、その action の選択肢として使う。正規化と3bet機会は
+  同じ根拠を使う。201は既存 hand の採否を変えず Progress を失効させ、live bufferにも
+  この境界を保持する。空・欠測・別席・別street・201越境は不明とし、過去の一覧を探索しない。
+- **ALL_IN 正規化**: 適用可能な一覧に CHECK と ALL_IN があれば CALL にしない。preflop は BB
   option の RAISE、postflop は先制 BET（最小額未満も含む）。`FOLD, ALL_IN` だけなら
-  short/equal call を維持する。通常の BET 選択肢ありは BET、CALL ありは RAISE、空の
-  メニューは従来の CALL fallback。action 自身の Phase で新 street が確定した場合は、
+  short/equal call を維持する。通常の BET 選択肢ありは BET、CALL と ALL_IN ありは RAISE。
+  一覧が不明なら従来の CALL fallback。action 自身が新しい postflop street を開く場合は、
   前 street のメニューを使わず既存の street-opening BET を優先する。
-- **3bet 機会**: `canRaise` は現在の席・street に一致する非空の直前メニューだけから
+- **3bet 機会**: `canRaise` は上記の適用範囲を満たすメニューだけから
   判定する。preflop の RAISE、または ALL_IN と CALL/CHECK の併存はレイズ可能。
   `FOLD, CALL` / `FOLD, ALL_IN` だけなら機会から除外する。空・別席・別street は不明
   として従来の機会判定を維持し、記録された RAISE はメニューより優先して分子・分母へ
-  入れる。3betfold の機会にこのレイズ可否除外を適用しない。bet 段階の数え方も維持する。
+  入れる。3betfold の機会にこのレイズ可否除外を適用しない。bet 段階は正規化後のactionで数える。
   この write-time 修正は Raw Lake 再構築で既存 action / ledger へ反映する。counter の
   構造・ordinal は変えず、再構築で新しい generation の寄与値へ置き換える。
 - **ストリート**: action 自身の `EVT_ACTION.Progress.Phase` を
