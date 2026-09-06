@@ -141,6 +141,10 @@ export const handImprovementStat: StatDefinition = {
       RankType.ONE_PAIR,
       RankType.HIGH_CARD
     ]
+    // Display rows combine royal flush with straight flush, as probabilities do.
+    const currentRowRank = currentRank === RankType.ROYAL_FLUSH
+      ? RankType.STRAIGHT_FLUSH
+      : currentRank
     
     if (latestPhase.phase === PhaseType.RIVER || allCards.length === 7) {
       // River - just show current hand
@@ -148,9 +152,9 @@ export const handImprovementStat: StatDefinition = {
         result.improvements.push({
           rank,
           name: getRankName(rank),
-          probability: rank === currentRank ? 100 : 0,
-          isComplete: rank === currentRank,
-          isCurrent: rank === currentRank
+          probability: rank === currentRowRank ? 100 : 0,
+          isComplete: rank === currentRowRank,
+          isCurrent: rank === currentRowRank
         })
       }
     } else {
@@ -187,8 +191,8 @@ export const handImprovementStat: StatDefinition = {
           rank,
           name: getRankName(rank),
           probability: probability,
-          isComplete: rank === currentRank && probability === 100,
-          isCurrent: rank === currentRank
+          isComplete: rank === currentRowRank && probability === 100,
+          isCurrent: rank === currentRowRank
         })
       }
     }
