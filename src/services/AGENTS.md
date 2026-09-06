@@ -36,6 +36,16 @@ Lake の三要素 cursor・fresh Dexie query・replay 順序は src 共通規約
   network / HTTP / missing document / malformed data は supported に倒す。公開 read は
   `config/client` のみに限定し、client write を許さない。
 
+<a id="production-firebase-authority"></a>
+
+### 本番 Firebase の権限境界
+
+- production project `pokerchase-hud` への `firebase/firestore.rules` deploy と
+  `/config/client` の作成・変更は owner follow-up であり、agent session から実行しない
+  （MUST NOT）。rules の merge / emulator 成功を production deploy 済みと扱わない。
+  document が未作成なら min-version gate は fail-open するため、agent が障害として seed
+  しない。fork / self-host と local emulator の手順・target 確認は Firebase 正本に従う。
+
 <a id="cloud-rollout"></a>
 
 ### 内容IDの公開条件

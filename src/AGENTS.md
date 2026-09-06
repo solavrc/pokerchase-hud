@@ -100,6 +100,11 @@
 
 - `background.ts` と `background/` は MV3 SW。`window` を使わず global timer を使い、
   任意の await で停止し得る前提で durable state と復旧を設計する。
+- `chrome.storage.sync` は端末間 preference（`options`、`scale` を除く `uiConfig`、
+  `handLogConfig`、`popupTheme`）、`chrome.storage.local` は端末固有 layout（`uiScale`、
+  `hudPosition_*`、`handLogLayout`）と service / banner state に使う（MUST）。直近ハンドの
+  件数・参加 filter も端末固有である。旧版互換の同期 scale / position が残っても、現在の
+  layout の正本に戻さない。
 - `chrome.storage.local` の `TRUSTED_CONTEXTS` を維持する（MUST）。content script の
   layout・直近ハンド設定・last-table は固定 runtime message で background を経由する。
   表示側の定数から Dexie / background module を bundle に引き込まない。

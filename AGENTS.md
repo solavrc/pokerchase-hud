@@ -71,6 +71,9 @@ MAY は任意（RFC 2119 / RFC 8174、大文字のみ）。通常の命令文も
   実験実装と、ユーザーに見える操作の公開は区別する。
 - CRX 署名鍵を repository や Google account に保管しない（MUST NOT）。署名・backup は
   ストア runbook に従う。生成物は commit しない（対象は CONTRIBUTING）。
+- 本番 Firebase rules の deploy と `/config/client` の作成・変更は
+  [owner のみが行う外部 gate](src/services/AGENTS.md#production-firebase-authority) であり、
+  agent session から実行しない（MUST NOT）。
 - 公開 GitHub Release は日本語の概要・主な更新から始め、生成された PR/commit 履歴は
   後段の「技術的な変更一覧」に残す（MUST）。作業手順はストア runbook の release-notes。
 
