@@ -16,6 +16,8 @@
  * This exercises the same code path `npm run verify-stats` uses, just
  * against a fixture small enough for CI instead of a real ndjson export.
  */
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { runPipeline, runProductPipelines } from './verify-stats/pipeline'
 import { runOracle } from './verify-stats/oracle'
 import {
@@ -262,6 +264,46 @@ describe('verify-stats harness', () => {
     expect(pipeline.get(PLAYER_C)?.stats['wtsd']).toEqual([0, 0])
     expect(ledger.get(PLAYER_C)?.stats['wtsd']).toEqual([0, 0])
     expect(oracle.get(PLAYER_C)?.stats.wtsd).toEqual([0, 0])
+  })
+
+  it('independently counts check-option all-ins as preflop raises and a flop c-bet', async () => {
+    const events = readFileSync(join(process.cwd(), 'e2e/fixtures/hand-check-option-allin.ndjson'), 'utf8')
+      .trim().split('\n').map(line => {
+        const event = JSON.parse(line)
+        return apiEventSchemas[event.ApiTypeId as ApiType]!.parse(event) as ApiEvent
+      })
+    const { legacy, ledger } = await runProductPipelines(events)
+    const observedActions: unknown[] = []
+    const oracle = runOracle(events, { observeAction: action => observedActions.push(action) })
+    expect(observedActions).toEqual(JSON.parse(readFileSync(
+      join(process.cwd(), 'e2e/fixtures/hand-check-option-allin.expected.json'), 'utf8')))
+
+    for (const product of [legacy, ledger]) {
+      const report = compareResults(product, oracle, 1)
+      expect(report.eligiblePlayers).toBe(43)
+      expect(report.stats.every(stat => stat.mismatches.length === 0)).toBe(true)
+    }
+    // 3経路の一致だけでは同じ誤分類を見逃すため、金額とチェック権から
+    // 決まる分子・分母を直接固定する（MUST）。
+    for (const result of [legacy, ledger, oracle]) {
+      expect(result.get(1102)?.stats.pfr).toEqual([1, 1])
+      expect(result.get(1202)?.stats.pfr).toEqual([1, 1])
+      expect(result.get(1103)?.stats['3bet']).toEqual([0, 0])
+      expect(result.get(1203)?.stats['3bet']).toEqual([0, 0])
+      expect(result.get(1301)?.stats.af).toEqual([1, 0])
+      expect(result.get(1301)?.stats.afq).toEqual([1, 1])
+      expect(result.get(1301)?.stats.cbet).toEqual([1, 1])
+      expect(result.get(1302)?.stats.cbetFold).toEqual([0, 1])
+      expect(result.get(1402)?.stats.pfr).toEqual([0, 1])
+      expect(result.get(1402)?.stats['3bet']).toEqual([0, 0])
+      expect(result.get(1502)?.stats['3bet']).toEqual([1, 1])
+      expect(result.get(1503)?.stats['3betfold']).toEqual([1, 1])
+      expect(result.get(1501)?.stats['3betfold']).toEqual([0, 1])
+      expect(result.get(1602)?.stats['3bet']).toEqual([1, 1])
+      expect(result.get(1702)?.stats['3bet']).toEqual([0, 1])
+      expect(result.get(1802)?.stats['3bet']).toEqual([0, 1])
+      expect(result.get(1901)?.stats.cbet).toEqual([0, 0])
+    }
   })
 
   it('formatReport surfaces a mismatch when one side disagrees', () => {

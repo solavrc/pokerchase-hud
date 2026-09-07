@@ -19,6 +19,7 @@ import type {
 import type { ActionDetailContext } from '../types/stats'
 import { ErrorHandler } from '../utils/error-handler'
 import { resolveActionPhase } from '../utils/action-phase'
+import { getApplicableActionMenu, getRaiseAvailability } from '../utils/action-raise-option'
 import { getPositionMap, getBigBlindUserId } from '../utils/position-utils'
 import { defaultRegistry } from '../stats'
 import type { ErrorContext } from '../types/errors'
@@ -237,6 +238,10 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
     const seenDealRoundPhases = new Set<number>()
     for (const event of events) {
       switch (event.ApiTypeId) {
+        case ApiType.EVT_ENTRY_QUEUED:
+          // 201で以前の卓のメニューだけを失効させ、ハンドは保持する（MUST）。
+          progress = undefined
+          break
         case ApiType.EVT_DEAL:
           dealEvent = event
           handState.hand.seatUserIds = event.SeatUserIds
@@ -302,6 +307,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           const opensNewStreet = phase !== runningPhase
           runningPhase = phase
 
+          const actionMenu = getApplicableActionMenu(progress, event.SeatIndex, phase)
           const actionDetails: ActionDetail[] = []
           /**
            * ALL_IN アクション変換ロジック
@@ -311,8 +317,9 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
            *
            * 変換ルール:
            * 1. BETが可能な状況（誰もベットしていない） → BET
-           * 2. CALLが可能な状況（相手がベット済み） → RAISE
-           * 3. それ以外（相手がレイズ済み等） → CALL
+           * 2. CALLとALL_INが可能な状況（コール額を超える投入） → RAISE
+           * 3. CHECKとALL_INが可能な状況 → PREFLOPはRAISE、それ以外はBET
+           * 4. それ以外（FOLD/ALL_INだけのショートコール等） → CALL
            *
            * この変換により、統計計算（VPIP, PFR, AF, AFq等）で
            * ALL_INが適切なアクションとしてカウントされる。
@@ -321,16 +328,19 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           const actionType: Exclude<ActionType, ActionType.ALL_IN> = (({ ActionType: actionType }: typeof event) => {
             if (actionType === ActionType.ALL_IN) {
               actionDetails.push(ActionDetail.ALL_IN)
-              // このアクション自身がストリートを開いた場合、`progress`は前ストリート
-              // 終了時点のもので NextActionTypes は通常空。開き手が対峙するベットは
-              // 存在しないため BET が正しい（EntityConverterと同一ロジック）。
-              if (opensNewStreet) {
+              // 新しいポストフロップ街を開くアクションは先制BETになる。
+              // 直前メニューが前ストリートでも、この例外を先に適用する（MUST）。
+              if (opensNewStreet && phase > PhaseType.PREFLOP) {
                 return ActionType.BET
               }
-              if (progress?.NextActionTypes.includes(ActionType.BET)) {
+              if (actionMenu?.includes(ActionType.BET)) {
                 return ActionType.BET
-              } else if (progress?.NextActionTypes.includes(ActionType.CALL)) {
+              } else if (actionMenu?.includes(ActionType.ALL_IN) && actionMenu.includes(ActionType.CALL)) {
                 return ActionType.RAISE
+              } else if (actionMenu?.includes(ActionType.ALL_IN) && actionMenu.includes(ActionType.CHECK)) {
+                // チェック権からのALL_INはCALLではない（MUST NOT）。BBのオプションは
+                // 既存BB額へのRAISE、ポストフロップの最小ベット未満のALL_INはBET。
+                return phase === PhaseType.PREFLOP ? ActionType.RAISE : ActionType.BET
               } else {
                 return ActionType.CALL
               }
@@ -349,6 +359,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
             phase,
             phasePlayerActionIndex,
             phasePrevBetCount,
+            canRaise: getRaiseAvailability(actionMenu, phase),
             position,
             handState
           }

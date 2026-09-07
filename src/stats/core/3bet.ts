@@ -28,14 +28,15 @@ export const threeBetStat: StatDefinition = {
   /**
    * 3BET判定ロジック
    * プリフロップでのレイズ判定
-   * phasePrevBetCount === 2 の時に3BETの機会となる
+   * phasePrevBetCount === 2 かつレイズ不能と判明していない時に3BETの機会となる
    * （1: BB, 2: 最初のレイズ（2ベット）後, 3: 2回目のレイズ（3ベット）後）
    */
   detectActionDetails: (context: ActionDetailContext): ActionDetail[] => {
     const details: ActionDetail[] = []
     
-    // Use helper function for better readability
-    if (isFacing2Bet(context)) {
+    // 実際のRAISEはメニューより強い証拠であり、機会から除外しない（MUST NOT）。
+    if (isFacing2Bet(context) &&
+        (context.actionType === ActionType.RAISE || context.canRaise !== false)) {
       details.push(ActionDetail.$3BET_CHANCE)
       if (context.actionType === ActionType.RAISE) {
         details.push(ActionDetail.$3BET)
