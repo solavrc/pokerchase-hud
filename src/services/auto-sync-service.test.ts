@@ -368,7 +368,7 @@ describe('AutoSyncService cloud downloads', () => {
     )
     expect(logSpy).toHaveBeenCalledWith(
       '[AutoSync] Upload pass complete: scanned raw=5; valid application=2; ' +
-      'acknowledged Firestore writes=2; filtered non-application/unknown=2; ' +
+      'confirmed cloud events=2; filtered non-application/unknown=2; ' +
       'deferred unparseable application=1'
     )
     expect(service.getSyncState().progress).toEqual({
@@ -423,7 +423,7 @@ describe('AutoSyncService cloud downloads', () => {
     )
     expect(logSpy).toHaveBeenCalledWith(
       '[AutoSync] Upload pass complete: scanned raw=5; valid application=3; ' +
-      'acknowledged Firestore writes=3; filtered non-application/unknown=2; ' +
+      'confirmed cloud events=3; filtered non-application/unknown=2; ' +
       'deferred unparseable application=0'
     )
   })

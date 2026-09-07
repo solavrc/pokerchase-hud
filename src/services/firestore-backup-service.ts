@@ -9,14 +9,12 @@ import { firebaseConfig } from './firebase-config'
 import { firebaseAuthService } from './firebase-auth-service'
 import type { ApiEvent } from '../types'
 import { DATABASE_CONSTANTS } from '../constants/database'
-import { getApiEventSequence } from '../utils/api-event-key'
+import { getApiEventContentIdentity, getApiEventSequence, type RawApiEvent } from '../utils/api-event-key'
 
 /**
- * Sequence 0 intentionally retains the legacy document ID. This makes every
- * v3 row migrated to sequence 0 map to the document it may already have in
- * Firestore, so a reconciliation pass is an idempotent overwrite rather than
- * a second copy of history. Only additional same-ms/same-type rows append a
- * suffix and therefore need a new document name.
+ * 既存documentを照合するための旧ID。sequenceはローカルDBでの割当なので、
+ * 別端末や旧exportの復元後に同じIDが別payloadを指すことがある。
+ * このIDだけを根拠に既存documentを上書きしてはならない（MUST NOT）。
  */
 export const getFirestoreEventDocumentId = (event: ApiEvent): string => {
   const sequence = getApiEventSequence(event)
@@ -24,8 +22,17 @@ export const getFirestoreEventDocumentId = (event: ApiEvent): string => {
   return sequence === 0 ? legacyId : `${legacyId}_${sequence}`
 }
 
+/** 新規documentはsequenceに依存しない内容IDを使う（MUST）。 */
+export const getFirestoreContentDocumentId = async (event: ApiEvent): Promise<string> => {
+  const identity = getApiEventContentIdentity(event as unknown as RawApiEvent)
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(identity))
+  const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+  return `${event.timestamp}_${event.ApiTypeId}_h_${hash}`
+}
+
 export interface BackupSummary {
   totalEvents: number
+  /** 今回保存または既存の同一内容を確認できたイベント数。物理write数ではない。 */
   syncedEvents: number
   lastSyncTime: Date
 }
@@ -52,6 +59,28 @@ interface FirestoreDocument {
 
 interface RunQueryResult {
   document?: FirestoreDocument
+}
+
+interface BatchGetResult {
+  found?: FirestoreDocument
+  missing?: string
+}
+
+class FirestoreRequestError extends Error {
+  readonly code?: string
+
+  constructor(readonly status: number, body: string) {
+    super(`Firestore REST request failed: ${status} ${body}`)
+    try {
+      const code: unknown = JSON.parse(body)?.error?.status
+      if (typeof code === 'string') this.code = code
+    } catch { /* 非JSONエラーは既存のmessageを維持する。 */ }
+  }
+
+  get isDocumentConflict(): boolean {
+    return (this.status === 409 && this.code === 'ALREADY_EXISTS') ||
+      (this.status === 400 && this.code === 'FAILED_PRECONDITION')
+  }
 }
 
 interface RunAggregationQueryResult {
@@ -197,9 +226,8 @@ export class FirestoreBackupService {
         // Re-offer the whole maximum-timestamp tie group. A 300-write batch
         // boundary can split two events from the same millisecond; if the
         // first commit succeeds and the second fails, a strict `>` retry
-        // would skip the uncommitted tied event forever. Firestore document
-        // IDs are deterministic, so re-upserting the already-acknowledged
-        // members of the tie group is idempotent.
+        // would skip the uncommitted tied event forever. 既存分は内容を照合し、
+        // 未保存分だけを内容IDへ条件付きcreateするため、再試行は安全。
         ? apiEvents.filter(event => (event.timestamp || 0) >= cloudMaxTimestamp)
         : [...apiEvents])
         // This is upload-coverage order, not wire/causal replay order. A
@@ -288,26 +316,83 @@ export class FirestoreBackupService {
   }
 
   private async writeBatch(uid: string, events: ApiEvent[]): Promise<void> {
-    const writes = events.map(event => {
-      const eventId = getFirestoreEventDocumentId(event)
-      return {
-        update: {
-          name: `${this.documentsPath}/${this.docPath(this.USERS_COLLECTION, uid, this.EVENTS_COLLECTION, eventId)}`,
-          fields: encodeFields(event as Record<string, unknown>)
-        }
-      }
-    })
+    await this.boundedAuthAcquisition(() => firebaseAuthService.ready(), 'auth state restore')
+    const generation = firebaseAuthService.getAuthGeneration()
+    const nameForId = (id: string) =>
+      `${this.documentsPath}/${this.docPath(this.USERS_COLLECTION, uid, this.EVENTS_COLLECTION, id)}`
+    const candidates = await Promise.all(events.map(async event => ({
+      legacyName: nameForId(getFirestoreEventDocumentId(event)),
+      name: nameForId(await getFirestoreContentDocumentId(event)),
+      fields: encodeFields(event as Record<string, unknown>),
+      identity: getApiEventContentIdentity(event as unknown as RawApiEvent),
+    })))
+    const known = await this.getEventDocuments(candidates.flatMap(row => [row.legacyName, row.name]))
+    const pending = new Map<string, typeof candidates[number]>()
+    const matches = (document: FirestoreDocument, identity: string) =>
+      getApiEventContentIdentity(decodeFields(document.fields ?? {}) as RawApiEvent) === identity
 
-    // 429/RESOURCE_EXHAUSTED retry ownership lives in `request()`'s
-    // transport-level classification (codex review r3617090429, P2, "Avoid
-    // stacking 429 retries for write batches"): this method used to run its
-    // own 3-attempt rate-limit loop on top, which -- once the transport
-    // gained its own 429 backoff -- multiplied to up to 9 commit attempts
-    // per batch under a persistent rate limit, amplifying the very
-    // throttling being backed off from. Exactly one layer (the transport)
-    // now retries 429; an error surfacing here has already exhausted that
-    // bounded budget and must propagate.
-    await this.commitWrites(writes)
+    for (const candidate of candidates) {
+      const legacy = known.get(candidate.legacyName)
+      if (legacy && matches(legacy, candidate.identity)) continue
+      const content = known.get(candidate.name)
+      if (content) {
+        if (!matches(content, candidate.identity)) throw new Error('Firestore content identity collision')
+        continue
+      }
+      const prior = pending.get(candidate.name)
+      if (prior && prior.identity !== candidate.identity) throw new Error('Firestore content identity collision')
+      pending.set(candidate.name, candidate)
+    }
+
+    // batchGet後の別client書込み/応答喪失も考慮し、create条件はサーバ側で
+    // 原子的に検査する（MUST）。競合時は内容を再読取して既存分だけ除外する。
+    // 429/5xxの再試行はrequest()だけが所有し、ここでは積み重ねない（MUST NOT）。
+    const maxConflictAttempts = 3
+    for (let attempt = 0; pending.size > 0; attempt++) {
+      this.assertAccountUnchanged(generation, 'before event create')
+      try {
+        await this.commitWrites([...pending.values()].map(row => ({
+          update: { name: row.name, fields: row.fields },
+          currentDocument: { exists: false },
+        })))
+        this.assertAccountUnchanged(generation, 'after event create')
+        return
+      } catch (error) {
+        if (!(error instanceof FirestoreRequestError) || !error.isDocumentConflict) throw error
+        const current = await this.getEventDocuments([...pending.keys()])
+        for (const [name, candidate] of pending) {
+          const document = current.get(name)
+          if (!document) continue
+          if (!matches(document, candidate.identity)) throw new Error('Firestore content identity collision')
+          pending.delete(name)
+        }
+        // 最終createの応答喪失も、保存済みなら最後の読取で成功を確定する。
+        // 未保存分が残るときだけcreate回数の上限で失敗させる（MUST）。
+        if (pending.size > 0 && attempt + 1 >= maxConflictAttempts) throw error
+      }
+    }
+    this.assertAccountUnchanged(generation, 'after event content confirmation')
+  }
+
+  private async getEventDocuments(names: string[]): Promise<Map<string, FirestoreDocument>> {
+    const requested = new Set(names)
+    const results = await this.request<BatchGetResult[]>(`${this.baseUrl}:batchGet`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ documents: [...requested] }),
+    })
+    if (!Array.isArray(results)) throw new Error('Firestore batchGet response was incomplete')
+    const found = new Map<string, FirestoreDocument>()
+    for (const result of results) {
+      if (result.found && requested.delete(result.found.name)) {
+        found.set(result.found.name, result.found)
+      } else if (typeof result.missing === 'string') {
+        requested.delete(result.missing)
+      }
+    }
+    // 未返却をmissing扱いにして同期成功を確定してはならない（MUST NOT）。
+    if (requested.size > 0) throw new Error('Firestore batchGet response was incomplete')
+    return found
   }
 
   private async updateLastSyncTimestamp(uid: string, timestamp: number): Promise<void> {
@@ -466,8 +551,9 @@ export class FirestoreBackupService {
    *   retried with exponential backoff (`RETRY_BASE_DELAY_MS * 2^n`), at
    *   most `MAX_TRANSIENT_RETRIES` extra attempts. Retrying is safe for
    *   every call in this service: reads (`:runQuery`/`:runAggregationQuery`)
-   *   are side-effect-free, and writes (`:commit` upserts/deletes keyed by
-   *   document name, metadata `PATCH`) are idempotent.
+   *   are side-effect-free. document名を指定したdelete/metadata PATCHも冪等。
+   *   event createの応答喪失後は再試行が409になり得るため、writeBatchが
+   *   内容を再照合して完了を確定する。
    * - 401 TOKEN REFRESH: a single retry after `getIdToken(true)` (forced
    *   refresh). Gated on the auth generation (`firebaseAuthService.
    *   getAuthGeneration()`) still matching the value snapshotted BEFORE the
@@ -567,7 +653,7 @@ export class FirestoreBackupService {
         continue
       }
 
-      throw new Error(`Firestore REST request failed: ${outcome.status} ${outcome.text}`)
+      throw new FirestoreRequestError(outcome.status, outcome.text)
     }
   }
 
