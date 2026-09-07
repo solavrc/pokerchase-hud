@@ -372,7 +372,7 @@ export const event_timeline: ApiEvent[] = [
  *  - vpip / pfr: 分母をPT4/HM標準の「hands − walks」に変更。プレイヤーがBBを
  *    務め、かつそのハンドで一度もプリフロップアクションを行っていない場合
  *    （真のウォーク、または他家全員オールイン/フォールドによるBBアクション
- *    スキップ、CLAUDE.md「BB action skip」）、そのハンドは機会（分母）から
+ *    スキップ、docs/api-events.md「EVT_ACTION: 送信されないケース」）、そのハンドは機会（分母）から
  *    除外される。例: 凛(playerId 4)はhand 1でBBを務め、SB(id2)がコールし他が
  *    フォールドしてNextActionSeat=-2となる古典的なウォーク/BBスキップに該当し、
  *    vpip/pfrともに[0,0]（旧: [0,1]）になる。
@@ -393,7 +393,7 @@ export const event_timeline: ApiEvent[] = [
  *    上振れする。hand 12（HandId 384371305）はリバーで通常のEVT_DEAL_ROUNDが
  *    一度発行済みのケースで、このバグの対象外（変化なし）。
  * 引用キー: PT4/HM「hands - walks」標準・PT4 "flops seen, not flops seen
- * when not all-in"（CLAUDE.md「Confirmed Statistical Definitions」参照）。
+ * when not all-in"（docs/statistics.md参照）。
  */
 const expected: PlayerStats[][] = [
   [

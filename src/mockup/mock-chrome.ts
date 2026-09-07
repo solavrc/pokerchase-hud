@@ -32,12 +32,11 @@ export interface MockChromeController {
 const MOCK_MANIFEST_VERSION = '0.0.0-mock'
 
 /**
- * Long-running background operations the popup starts optimistically: it flips
- * to a busy state and only reverts if the reply says `success: false` (see
- * `ImportExportSection`'s handlers and "Optimistic UI + Server Guard" in
- * AGENTS.md). There is no background here to send the terminal progress
- * message, so a bare success would wedge the popup in "エクスポート中" forever.
- * Rejecting is also what a real background does when it cannot start.
+ * Popupが楽観的に開始表示へ切り替える長時間background操作。応答が
+ * `success: false` の場合だけ表示を戻す（`ImportExportSection`のhandlerと
+ * src/background/AGENTS.md「Import・export・rebuild」参照）。このmockには完了時の
+ * progress messageを送るbackgroundがないため、単純な成功応答ではPopupが
+ * 「エクスポート中」のままになる。実際のbackgroundも開始できない操作は拒否する。
  */
 const UNSUPPORTED_ACTIONS = new Set(['exportData', 'rebuildData'])
 

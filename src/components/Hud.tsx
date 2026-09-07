@@ -103,7 +103,7 @@ const HUD_WIDTH = 240
  * 既定構成のユーザーのHUDが1pxも動かない値を選んでいる ―― この定数を変える
  * と、保存済み`hudPosition_<seat>`（中心基準）の解釈が変わって既存ユーザーの
  * パネルが縦にずれる。変えるなら実ブラウザで測り直すこと（推定で決めない、
- * AGENTS.md「Verify layout changes here by rendering in a real browser」）。
+ * src/components/AGENTS.md「HUD と席の保持」）。
  */
 const HUD_ANCHOR_HEIGHT = 52
 const HOVER_BG_COLOR = 'rgba(0, 0, 0, 0.7)'

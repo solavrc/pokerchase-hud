@@ -3,7 +3,7 @@
  * Popup ↔ Background の排他制御用の状態管理。
  *
  * `export`/`import`/`rebuild`/`sync` のような長時間実行される操作は同時に1つしか
- * 実行できない（CLAUDE.md「Operation Exclusivity」参照）。Popup側は楽観的に
+ * 実行できない（src/background/AGENTS.md「Import・export・rebuild」参照）。Popup側は楽観的に
  * ボタンを無効化するが、Background側でも`currentOperationState`を見て
  * 二重実行を拒否することでサーバーサイドの保証とする。
  */
@@ -39,7 +39,7 @@ export const getOperationGeneration = (): number => operationGeneration
  * `type: 'idle'`への遷移（export/import/rebuildの完了・失敗いずれか）を購読する
  * リスナー集合。`src/background/update-manager.ts`が「operation completion」
  * 時点での保留中アップデートの安全性再チェックをフックするために使う
- * （CLAUDE.md「Forced Update」参照）。operation-state.tsはupdate-managerに
+ * （src/background/AGENTS.md「Forced update の commit 点」参照）。operation-state.tsはupdate-managerに
  * 依存しない一方向の依存にするため、コールバック登録方式にしている。
  */
 type IdleListener = () => void

@@ -153,7 +153,7 @@ directly to Sentry.
 Telemetry is compiled into every build except E2E. Diagnostics are opt-in, so
 the maintainer's own play sessions are a primary source of signal — especially
 schema-validation failures, which is how a PokerChase payload change becomes
-visible at all (see "Incident Diagnosis Practices" in AGENTS.md). Those events
+visible at all (see [レビューと障害診断](../AGENTS.md#レビューと障害診断)). Those events
 use a fixed-title, message-only `captureEvent` plus structured context and need
 no source maps, so a build without an upload token is still worth reporting
 from. The fixed message keeps the issue title actionable after the exception

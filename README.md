@@ -94,9 +94,10 @@ npm run mockup
 
 ## 関連ドキュメント
 
-- [開発エージェント向け技術リファレンス](AGENTS.md)
+- [開発エージェント向けガイド](AGENTS.md)
 - [アーキテクチャの設計判断](docs/architecture.md)
 - [PokerChase APIイベント仕様](docs/api-events.md)
+- [統計定義と派生データの契約](docs/statistics.md)
 - [PokerStars形式のエクスポート仕様](docs/pokerstars-export.md)
 - [Firebaseのセットアップ](docs/firebase-setup.md)
 - [本番エラー監視とプライバシー境界](docs/observability.md)

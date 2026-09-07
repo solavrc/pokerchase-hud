@@ -63,8 +63,8 @@ export enum RankType {
  * - 10 (NO_CALL) / 12 (FOLD_OPEN): ショーダウンは発生していない（無競争勝利／フォールド後の自発公開）
  *
  * `EVT_HAND_RESULTS.Results`は`RankType`を持つオブジェクトの配列であり、SHOWDOWNフェーズ生成や
- * WTSD/W$SD統計はこの述語で「ショーダウン参加者」を判定する必要がある（詳細はCLAUDE.mdの
- * Confirmed Statistical Definitions参照）。
+ * WTSD/W$SD統計はこの述語で「ショーダウン参加者」を判定する必要がある（詳細はdocs/statistics.mdの
+ * 派生契約参照）。
  */
 export function isShowdownParticipant(result: { RankType: RankType }): boolean {
   return result.RankType !== RankType.NO_CALL && result.RankType !== RankType.FOLD_OPEN

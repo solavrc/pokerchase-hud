@@ -263,7 +263,7 @@ void service.ready
  * Forced update（sola承認）: 安全な瞬間にダウンロード済み更新を自動適用する。
  * onUpdateAvailable購読・加速チェック（起動時1回 + 6時間ごとのalarm）・
  * SW起動時点での保留中アップデート再チェックをまとめて行う。
- * 詳細はsrc/background/update-manager.tsとCLAUDE.mdを参照。
+ * 詳細はsrc/background/update-manager.tsとsrc/background/AGENTS.mdを参照。
  *
  * 更新情報バッジのSW起動時再評価は、この`initUpdateManager()`が
  * 返すSW起動時`recheckPendingUpdate()`のpromiseに続けて実行する（codex
@@ -275,7 +275,7 @@ void service.ready
  * update-managerのバッジが先に使用中だった場合、更新情報バッジは抑制された
  * ままになるため、他の2つが解消済みならここで優先順位を再評価し、
  * 更新情報バッジへ昇格させる（詳細はsrc/background/whats-new-badge.tsと
- * CLAUDE.md参照）。全体としては（`.then()`チェーンをawaitしないので）SW起動を
+ * src/background/AGENTS.md参照）。全体としては（`.then()`チェーンをawaitしないので）SW起動を
  * ブロックしない -- fire-and-forgetのまま、実行順序だけを保証する。
  */
 initUpdateManager()

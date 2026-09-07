@@ -1,143 +1,102 @@
 /**
- * verify-stats: independent oracle.
+ * verify-stats: 独立oracle。
  *
- * Computes VPIP/PFR/3BET/3BETFOLD/CBET/CBETFOLD/AF/AFq/WTSD/WSD/WWSF/
- * WTSDa/WWSFa/STEAL/FOLDTOSTEAL/RCA directly from raw NDJSON events, with NO
- * imports from `src/stats` or `src/entity-converter`. Only wire-protocol
- * enums are imported -- `ApiType` from `src/types/api` and `ActionType`/
- * `BetStatusType`/`RankType` from `src/types/game` -- for readability;
- * every detection rule below is written from
- * scratch against the documented event semantics in CLAUDE.md /
- * docs/hand-analysis.md, not against the pipeline's implementation.
+ * raw NDJSON eventからVPIP / PFR / 3BET / 3BETFOLD / CBET / CBETFOLD / AF / AFq /
+ * WTSD / WSD / WWSF / WTSDa / WWSFa / STEAL / FOLDTOSTEAL / RCAを直接計算する。
+ * `src/stats`と`src/entity-converter`からは何もimportしない。可読性のため、wire protocolの
+ * enumだけをimportする（`src/types/api`の`ApiType`、`src/types/game`の`ActionType` /
+ * `BetStatusType` / `RankType`）。以下の検出規則はpipeline実装を参照せず、
+ * docs/statistics.mdとdocs/api-events.mdに記録されたevent semanticsから書き起こしている。
  *
- * This independence is the whole point of the tool: if a bug is introduced
- * in entity-converter.ts or a stats/core/*.ts module, this file has no way
- * to inherit it, so a genuine behavioral divergence shows up as a disagreement
- * in compare.ts instead of two buggy implementations silently agreeing with
- * each other. Do not import pipeline/stats code into this file.
+ * この独立性がtoolの目的である。entity-converter.tsまたはstats/core/*.tsに不具合が入っても
+ * このfileは継承しないため、2つの誤実装が黙って一致する代わりに、実際の挙動差がcompare.tsの
+ * 不一致として現れる。このfileへpipeline / stats codeをimportしてはならない（MUST NOT）。
  *
- * Semantics deliberately kept in sync with the pipeline (verified against
- * entity-converter.ts / src/stats/core during the 2026-07 real-data audit
- * that produced this harness, PRs #93-#97, and the 2026-07 conformance
- * audit against PT4/HM3 official definitions, #115):
- *  (a) "saw flop" (WTSD/WWSF denominator) is derived from the FLOP
- *      EVT_DEAL_ROUND event's per-seat BetStatus === BET_ABLE ||
- *      BetStatus === ALL_IN (Player + OtherPlayers). PT4 staff describe WTSD/
- *      WWSF as built on "flops seen", explicitly INCLUDING preflop all-in
- *      spots ("Those stats are based on flops seen, not based on flops seen
- *      when not all-in, so all-in spots will count") -- only FOLDED players
- *      are excluded from this population (the #97 fix, which stays in place).
- *  (a2) WTSDa/WWSFa (opt-in decision-focused variants, #115) instead use a
- *      "took a flop action" base: hands where the player has >= 1 EVT_ACTION
- *      with phase===FLOP. A BET_ABLE flop-seer always acts at least once on
- *      the flop; a preflop all-in player never does. This reproduces the
- *      lineage semantics (PT4 custom-stat "WTSD without preflop all-ins" /
- *      Hand2Note "Flop Any Action") without needing a second BetStatus
- *      re-derivation.
- *  (a4b) DEAL_ROUND-omitted preflop all-ins (post-#115 audit): when every
- *      remaining player is all-in preflop, PokerChase skips EVT_DEAL_ROUND
- *      entirely for the rest of the hand and ships the whole remaining
- *      board in EVT_HAND_RESULTS.CommunityCards instead (documented in
- *      docs/api-events.md). No FLOP-phase BetStatus snapshot ever exists in
- *      that case, so (a)'s derivation alone would silently miss these hands
- *      from "flops seen" -- the same gap flagged against the pipeline itself
- *      (PR #115 unresolved review thread). This oracle closes it with its
- *      OWN fallback, independent of how entity-converter.ts/
- *      write-entity-stream.ts do it: if no EVT_DEAL_ROUND for phase FLOP was
- *      ever observed AND the accumulated board (DEAL_ROUND CommunityCards +
- *      EVT_HAND_RESULTS.CommunityCards) reaches >= 3 cards, "saw flop" is
- *      every dealt seat that (i) never took a PREFLOP FOLD action AND
- *      (ii) is present in EVT_HAND_RESULTS.Results[]. (i) alone is NOT
- *      sufficient (PR #184 codex review, P2): on a timeout/disconnect
- *      PokerChase may send no explicit FOLD EVT_ACTION at all for that seat,
- *      AND omit the player from Results[] entirely (docs/api-events.md
- *      "EVT_ACTION: 送信されないケース" / "タイムアウト / 切断"; also
- *      src/types/api.ts EVT_HAND_RESULTS.Results[].UserId doc: "タイムアウト/
- *      切断プレイヤーはResults[]に含まれない場合がある"). Such a player never
- *      folded and never went all-in -- they just silently vanished -- so a
- *      FOLD-action-only check wrongly keeps them in the synthesized FLOP.
- *      Requiring Results[] presence closes this: every genuine preflop
- *      all-in survivor is guaranteed to reach an unconditional showdown (no
- *      further betting decisions remain once all contesting players are
- *      all-in) and therefore IS present in Results[] with a real RankType
- *      (0-9) or SHOWDOWN_MUCK (11) -- confirmed by src/types/api.ts's own
- *      invariant "Pot + sum(SidePot) == sum(Results[].RewardChip)" holding
- *      100% (docs/api-events.md line 285), which requires every chip-bearing
- *      contestant to have a Results[] entry. The (i) FOLD-action check is
- *      still needed alongside (ii): a player who folded preflop but later
- *      chose FOLD_OPEN (self-reveal) DOES appear in Results[] (RankType=12)
- *      despite never seeing the flop, so Results[] presence alone is not a
- *      sufficient condition either -- src/types/api.ts: "フォールド済み
- *      プレイヤーはFOLD_OPENしない限りResults[]に含まれない". Only the AND of
- *      both conditions matches the game's actual semantics. This is
- *      deliberately actions/results-derived (mirroring how folded players
- *      are excluded everywhere else in this file), not a copy of the
- *      pipeline's own fallback.
- *  (a3) VPIP/PFR denominators exclude "walks": a hand where the player is
- *      the BB (Game.BigBlindSeat) and took ZERO preflop actions (true walk,
- *      or the "BB action skip" path where NextActionSeat=-2 and the BB's
- *      check is never sent as an EVT_ACTION -- CLAUDE.md "BB action skip").
- *      In both cases the BB had no voluntary preflop decision to make.
- *      Non-BB players who folded preflop still made a decision and remain
- *      counted as an opportunity. This mirrors the PT4/HM3 standard
- *      denominator of "hands - walks".
- *  (a4) AF/AFq are POSTFLOP-only (PT4 official definition: "Ratio of the
- *      times a player makes a POSTFLOP aggressive action (bet or raise) to
- *      the times they call"). Preflop actions are excluded from both sides
- *      of both fractions.
- *  (a5) Street attribution for an action is taken from that action's OWN
- *      EVT_ACTION.Progress.Phase, not from a counter advanced by
- *      EVT_DEAL_ROUND (#340). The counter lags whenever 304 rows are stored
- *      ahead of the 305 that opens their street -- same-millisecond
- *      reconnect bursts order equal-timestamp rows by ApiTypeId, and
- *      orderApiEventsForReplay only reverses isolated 2-event groups
- *      (docs/api-events.md) -- and also when EVT_DEAL_ROUND is never sent.
- *      The one exception is the hand-ending row (Progress.NextActionSeat ===
- *      -2), whose Phase is pinned to 3 regardless of the real street; those
- *      rows keep the running street instead. This is re-derived here from the
- *      raw payload, not imported from the pipeline's resolveActionPhase.
- *  (d2) Ring mid-hand rebuy/add-on inflow (#339): a Ring seat can buy chips
- *      mid-hand, so `start + payout - final` understates its contribution and
- *      the table total can grow. The inflow is recovered from the hand's own
- *      snapshots -- within a street `Chip + BetChip` is invariant, and across a
- *      street boundary it drops by exactly that street's last BetChip -- and
- *      any increase over that invariant is inflow. A DECREASE means the
- *      snapshot chain itself is broken (fused buffer / dropped event), so the
- *      whole hand falls back instead. The same identity is then evaluated once
- *      more against EVT_HAND_RESULTS (final == last snapshot - remaining street
- *      bet + RewardChip), because a Ring auto top-up back to the buy-in cap
- *      shows up only there; only an EXCESS counts as inflow, a shortfall keeps
- *      the endpoint reading (it is the known "redundant action not captured"
- *      signature). Independent re-derivation of deriveMidHandChipInflow, per
- *      this file's independence contract.
- *  (b) Positions are derived purely from Game.ButtonSeat / SmallBlindSeat /
- *      BigBlindSeat (never by rotating/inferring from seat order), which
- *      handles empty seats (busted players) correctly.
- *  (c) Showdown participation is gated on RankType: NO_CALL and FOLD_OPEN
- *      are excluded, everything else (0-9 real ranks, SHOWDOWN_MUCK)
- *      counts as a showdown.
- *  (d) Winners are players with a positive contested award. RewardChip also
- *      includes uncalled excess returns, so the oracle independently rebuilds
- *      contribution tiers from DEAL/RESULTS stack snapshots and removes every
- *      tier reached by only one contributor.
- *  (e) River Call Accuracy (RCA): numerator is river CALL actions by a player
- *      in hands where that player wins a contested award; denominator is
- *      all river CALL actions by that player -- mirroring
- *      src/stats/core/river-call-accuracy.ts's RIVER_CALL/RIVER_CALL_WON
- *      ActionDetail tagging (RIVER_CALL is set when a CALL action occurs on
- *      the river; RIVER_CALL_WON is added post-hoc, in EVT_HAND_RESULTS, to
- *      any RIVER_CALL action taken by a player who wins a contested award
- *      for that hand -- see entity-converter.ts /
- *      write-entity-stream.ts).
- *  (f) VPIP·F (vpipF, opt-in HUD-original stat, see hand-over
- *      workspace/reports/pokerchase-hud-vpip-f-handover.md): same VPIP
- *      numerator/denominator logic as (a3) above, restricted to "full table
- *      layer" hands -- table-type relative: a 6-max hand (SeatUserIds.length
- *      === 6) qualifies when >= 5 of the 6 seats are dealt (non -1); a 4-max
- *      hand (SeatUserIds.length === 4) qualifies only when all 4 seats are
- *      dealt. This is an independent re-derivation of
- *      src/stats/core/vpip-full.ts's `classifyVpipFLayer` -- deliberately not
- *      imported, per this file's independence contract.
+ * 以下のsemanticsは意図的にpipelineと同期している。根拠は、このharnessを作成した2026-07の
+ * 実data監査（entity-converter.ts / src/stats/coreとの照合、PR #93〜#97）と、PT4 / HM3の
+ * 公式定義に対する2026-07 conformance監査（#115）である。
+ *  (a) 「saw flop」（WTSD / WWSFの分母）はFLOPのEVT_DEAL_ROUNDにある席ごとの
+ *      `BetStatus === BET_ABLE || BetStatus === ALL_IN`（Player + OtherPlayers）から導出する。
+ *      PT4 staffはWTSD / WWSFを「flops seen」に基づくと説明し、preflop all-inも明示的に
+ *      含める（"Those stats are based on flops seen, not based on flops seen when not all-in,
+ *      so all-in spots will count"）。この母集団から除くのはFOLDED playerだけである
+ *      （#97の修正を維持）。
+ *  (a2) opt-inの意思決定重視variant WTSDa / WWSFa（#115）は代わりに「flop actionを行った」
+ *      hand、すなわち`phase === FLOP`のEVT_ACTIONが1件以上あるhandを母集団にする。
+ *      BET_ABLEでflopを見たplayerはflopで必ず1回以上actionし、preflop all-in playerは
+ *      actionしない。2つ目のBetStatus導出を追加せず、lineage semantics（PT4 custom stat
+ *      "WTSD without preflop all-ins" / Hand2Note "Flop Any Action"）を再現する。
+ *  (a4b) DEAL_ROUNDが省略されるpreflop all-in（#115後の監査）: 残った全playerがpreflopで
+ *      all-inになると、PokerChaseはその後のEVT_DEAL_ROUNDをすべて省略し、残りのboard全体を
+ *      EVT_HAND_RESULTS.CommunityCardsで送る（docs/api-events.mdに記録）。この場合FLOP phaseの
+ *      BetStatus snapshotは存在せず、(a)だけではこれらのhandが「flops seen」から黙って欠落する。
+ *      pipeline自身にも指摘された同じgapである（PR #115の未解決review thread）。このoracleは
+ *      entity-converter.ts / write-entity-stream.tsとは独立した独自fallbackで補う。FLOP phaseの
+ *      EVT_DEAL_ROUNDが一度も観測されず、累積board（DEAL_ROUND CommunityCards +
+ *      EVT_HAND_RESULTS.CommunityCards）が3枚以上なら、「saw flop」は、(i) PREFLOP FOLD actionを
+ *      行っておらず、かつ(ii) EVT_HAND_RESULTS.Results[]に存在する全dealt seatとする。
+ *      (i)だけでは不十分である（PR #184 Codex review, P2）。timeout / disconnectでは、その席の
+ *      明示的なFOLD EVT_ACTIONが送られず、player自体もResults[]から省略される場合がある
+ *      （docs/api-events.md「EVT_ACTION: 送信されないケース」/「タイムアウト / 切断」、および
+ *      src/types/api.tsのEVT_HAND_RESULTS.Results[].UserId doc「タイムアウト/切断プレイヤーは
+ *      Results[]に含まれない場合がある」）。そのplayerはfoldもall-inもせず黙って消えるため、
+ *      FOLD actionだけの判定では誤って合成FLOPへ残る。
+ *      Results[]への存在を条件にするとこのgapを閉じられる。実際のpreflop all-in survivorは、
+ *      競争中の全playerがall-inで以後のbetting decisionがないため、無条件にshowdownへ進み、
+ *      実RankType（0〜9）またはSHOWDOWN_MUCK（11）でResults[]に存在する。これは
+ *      src/types/api.ts自身の不変条件`Pot + sum(SidePot) == sum(Results[].RewardChip)`が100%成立する
+ *      こと（docs/api-events.md「サイドポットの仕様」）からも確認でき、chipを持つ全contestantの
+ *      Results[] entryが
+ *      必要である。(ii)に加えて(i)のFOLD action判定も必要になる。preflopでfoldした後に
+ *      FOLD_OPEN（self reveal）を選んだplayerはflopを見ていなくてもResults[]に現れる
+ *      （RankType=12。src/types/api.ts「フォールド済みプレイヤーはFOLD_OPENしない限りResults[]に
+ *      含まれない」）。したがってResults[]への存在だけでも不十分で、両条件のANDだけが実際の
+ *      game semanticsに一致する。この判定はfile内の他のfold除外と同じくactions / resultsから
+ *      意図的に導出し、pipelineのfallbackをcopyしない。
+ *  (a3) VPIP / PFRの分母からwalkを除く。playerがBB（Game.BigBlindSeat）でpreflop actionが0件の
+ *      handを対象とする。真のwalkのほか、`NextActionSeat === -2`となりBBのcheckがEVT_ACTIONで
+ *      送られない「BB action skip」も含む（docs/api-events.md「EVT_ACTION: 送信されないケース」）。
+ *      どちらもBBに自発的なpreflop decisionはない。preflopでfoldしたBB以外のplayerはdecisionを
+ *      行っているため機会に残す。PT4 / HM3標準の分母「hands - walks」と同じである。
+ *  (a4) AF / AFqはPOSTFLOPだけを対象にする。PT4公式定義は"Ratio of the times a player makes a
+ *      POSTFLOP aggressive action (bet or raise) to the times they call"。両方の分数から
+ *      preflop actionを除く。
+ *  (a5) actionのstreet帰属にはEVT_DEAL_ROUNDで進むcounterではなく、そのaction自身の
+ *      EVT_ACTION.Progress.Phaseを使う（#340）。同一millisecondのreconnect burstでは同timestamp行が
+ *      ApiTypeId順になり、streetを開く305より304が先に保存されるうえ、
+ *      orderApiEventsForReplayが反転するのは孤立した2-event groupだけなのでcounterが遅れる
+ *      （docs/api-events.md）。EVT_DEAL_ROUND自体が送られない場合も遅れる。唯一の例外はhand終了行
+ *      （`Progress.NextActionSeat === -2`）で、実streetにかかわらずPhaseが3に固定されるため、
+ *      その行だけrunning streetを維持する。この判定はraw payloadからここで再導出し、pipelineの
+ *      resolveActionPhaseをimportしない。
+ *  (d2) Ringのhand中rebuy / add-on流入（#339）: Ring seatはhand中にchipを購入できるため、
+ *      `start + payout - final`はcontributionを過小評価し、table totalも増え得る。流入はhand自身の
+ *      snapshotから復元する。street内の`Chip + BetChip`は不変で、street境界ではそのstreet最後の
+ *      BetChipだけ減るため、この不変量を越えた増加が流入になる。減少はsnapshot chain自体の破損
+ *      （fused buffer / dropped event）を表すので、hand全体をfallbackさせる。同じ恒等式を
+ *      EVT_HAND_RESULTSに対してもう一度評価する
+ *      （`final == last snapshot - remaining street bet + RewardChip`）。buy-in capへのRing auto top-upは
+ *      ここにだけ現れるためである。excessだけを流入とし、shortfallではendpointの読取りを維持する
+ *      （既知の「redundant action not captured」signature）。このfileの独立性契約に従い、
+ *      deriveMidHandChipInflowを独立に再導出する。
+ *  (b) positionはGame.ButtonSeat / SmallBlindSeat / BigBlindSeatだけから導出し、seat順の回転や推論を
+ *      使わない。これにより空席（bustしたplayer）も正しく扱う。
+ *  (c) showdown参加はRankTypeでgateする。NO_CALLとFOLD_OPENを除外し、その他（0〜9の実役と
+ *      SHOWDOWN_MUCK）をshowdownとして数える。
+ *  (d) winnerはcontested awardが正のplayerである。RewardChipにはuncalled excess returnも含まれる
+ *      ため、oracleはDEAL / RESULTSのstack snapshotからcontribution tierを独立に再構築し、
+ *      contributorが1人だけのtierをすべて除く。
+ *  (e) River Call Accuracy（RCA）: 分子はcontested awardを得たhandでplayerが行ったriver CALL action、
+ *      分母はそのplayerの全river CALL action。src/stats/core/river-call-accuracy.tsの
+ *      RIVER_CALL / RIVER_CALL_WON ActionDetail tagと同じである。riverでCALLした時点でRIVER_CALLを
+ *      付け、EVT_HAND_RESULTSでwinnerが分かった後、そのwinnerが同handで行った全RIVER_CALL actionへ
+ *      RIVER_CALL_WONを追加する（entity-converter.ts / write-entity-stream.ts参照）。
+ *  (f) VPIP·F（vpipF。opt-inのHUD original stat。handoverは
+ *      workspace/reports/pokerchase-hud-vpip-f-handover.md）: (a3)と同じVPIPの分子・分母を
+ *      「full table layer」のhandだけに適用する。table type相対で、6-max hand
+ *      （SeatUserIds.length === 6）は6席中5席以上がdealt（-1以外）、4-max hand
+ *      （SeatUserIds.length === 4）は4席すべてがdealtなら対象になる。このfileの独立性契約に従い、
+ *      src/stats/core/vpip-full.tsの`classifyVpipFLayer`をimportせず独立に再導出する。
  */
 import { ApiType } from '../../types/api'
 import { ActionType, BattleType, BetStatusType, PhaseType, RankType } from '../../types/game'
@@ -517,14 +476,12 @@ interface PlayerAcc {
   vpip: number
   pfrHands: Set<number>
   /**
-   * VPIP/PFR opportunity hands (#115, PT4/HM walk-exclusion standard:
-   * denominator = hands - walks). A hand is excluded from THIS set (not from
-   * `hands`, which is the plain "hands played" count used elsewhere, e.g.
-   * `hands` stat) when the player was the BB in that hand and never took a
-   * single preflop action -- a true walk, or the "BB action skip" path
-   * (NextActionSeat=-2 with no BB EVT_ACTION, CLAUDE.md). In both cases the BB
-   * had no voluntary preflop decision to make. Non-BB folds still count as an
-   * opportunity (the player did make a decision).
+   * VPIP / PFRの機会hand（#115、PT4 / HMのwalk除外標準: 分母 = hands - walks）。
+   * playerがそのhandのBBでpreflop actionを1回も行わなかった場合、真のwalkと
+   * 「BB action skip」（`NextActionSeat === -2`でBBのEVT_ACTIONなし）のどちらでも、
+   * このsetから除外する。通常の「hands played」件数として他の箇所（`hands` statなど）で
+   * 使う`hands`からは除外しない。どちらの場合もBBには自発的なpreflop decisionがない。
+   * BB以外のfoldはdecisionを行っているため、機会として数える。docs/api-events.md参照。
    */
   vpipPfrOpportunityHands: Set<number>
   /**
@@ -752,9 +709,9 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
     let cBetPhase: number | undefined
     let stealRaiser: number | undefined
     const preflopActionsSoFar: ActionRec[] = []
-    // Players who took at least one preflop action this hand (VPIP/PFR
-    // walk-exclusion, #115: a BB with zero preflop actions had no voluntary
-    // decision -- true walk or the "BB action skip" path, CLAUDE.md).
+    // このhandでpreflop actionを1回以上行ったplayer。VPIP / PFRのwalk除外（#115）では、
+    // preflop actionが0件のBBは、真のwalkでも「BB action skip」でも自発的なdecisionが
+    // なかったものとして扱う。docs/api-events.md参照。
     const playersWithPreflopAction = new Set<number>()
     // Players who FOLDed during PREFLOP this hand -- the only way to leave a
     // hand before an unconditional preflop-all-in runout (a4b below).
