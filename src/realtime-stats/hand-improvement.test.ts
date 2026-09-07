@@ -2,13 +2,47 @@
  * Hand Improvement Tests
  */
 
-import { handImprovementStat, setHandImprovementHeroHoleCards } from './hand-improvement'
+import { handImprovementStat, setHandImprovementHeroHoleCards, type HandImprovementResult } from './hand-improvement'
 import { PhaseType, RankType } from '../types'
 
 describe('handImprovementStat', () => {
   beforeEach(() => {
     // キャッシュをクリア
     setHandImprovementHeroHoleCards('test-hand-1', '101', [48, 49])
+  })
+
+  test.each([
+    [PhaseType.FLOP, [40, 36, 32]],
+    [PhaseType.TURN, [40, 36, 32, 1]],
+    [PhaseType.RIVER, [40, 36, 32, 1, 6]],
+    [PhaseType.TURN, [40, 36, 32, 1, 6]]
+  ])('完成したロイヤルフラッシュを統合行に表示する (phase=%s, board=%j)', (phase, communityCards) => {
+    setHandImprovementHeroHoleCards('royal-hand', '201', [48, 44])
+    const result = handImprovementStat.calculate({
+      playerId: 201,
+      actions: [],
+      phases: [{ handId: 201, phase, seatUserIds: [201], communityCards }],
+      hands: [{
+        id: 201, seatUserIds: [201], winningPlayerIds: [], smallBlind: 100,
+        bigBlind: 200, session: { id: undefined, battleType: undefined, name: undefined },
+        results: []
+      }],
+      allPlayerActions: [], allPlayerPhases: [], winningHandIds: new Set<number>(),
+      session: {
+        id: undefined, battleType: undefined, name: undefined,
+        players: new Map(), reset: () => {}
+      }
+    }) as HandImprovementResult
+
+    expect(result.currentHand.rank).toBe(RankType.ROYAL_FLUSH)
+    expect(result.improvements).toHaveLength(9)
+    expect(result.improvements.filter(row => row.isCurrent)).toEqual([{
+      rank: RankType.STRAIGHT_FLUSH, name: 'Straight Flush',
+      probability: 100, isComplete: true, isCurrent: true
+    }])
+    expect(result.improvements.reduce((sum, row) => sum + row.probability, 0)).toBe(100)
+    expect(result.improvements.filter(row => row.rank !== RankType.STRAIGHT_FLUSH)
+      .every(row => row.probability === 0 && !row.isComplete)).toBe(true)
   })
 
   test('プリフロップでポケットペアを正しく認識する', () => {
