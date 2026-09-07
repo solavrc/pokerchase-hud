@@ -55,6 +55,8 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           this.service.session.setId(event.Id)
           this.service.session.setBattleType(event.BattleType)
           this.progress = undefined
+          // 派生経路にもメニューの失効を伝え、ゲームイベントとしては数えない（MUST）。
+          if (this.events.length > 0) this.events.push(event)
           break
         case ApiType.EVT_SESSION_DETAILS:
           this.service.session.setName(event.Name)

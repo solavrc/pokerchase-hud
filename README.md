@@ -69,6 +69,7 @@ npm run build
 | `npm run build` | 本番用の拡張機能を`dist/`へビルドし、`extension.zip`を作成 |
 | `npm run typecheck` | TypeScriptの型検査 |
 | `npm run test` | Jestのユニット／コンポーネントテスト |
+| `npm run test:firestore-rules` | 専用demo projectのFirestore emulatorでSecurity Rulesを検証（Firebase CLI・Java 21以降が必要） |
 | `npm run validate-schema -- <file.ndjson>` | NDJSONのAPIイベントをスキーマ検証 |
 | `npm run schema-diff -- <file.ndjson>` | APIイベントのフィールド差分を検出 |
 | `npm run verify-stats -- <file.ndjson>` | 旧全計算とv8寄与台帳を独立したoracleと照合 |

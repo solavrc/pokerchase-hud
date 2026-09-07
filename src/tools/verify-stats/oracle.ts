@@ -590,25 +590,24 @@ interface ActionRec {
   actionType: ActionTypeNum
 }
 
-/**
- * Map ALL_IN to the action it functionally represents, using NextActionTypes like the live pipeline does.
- *
- * `opensNewStreet` marks the case where this very row is the first one on its
- * street (equal-ms burst / omitted EVT_DEAL_ROUND): `prevProgress` then belongs
- * to the END of the previous street and its NextActionTypes is normally empty,
- * so consulting it would classify a street-opening shove as a CALL. Whoever
- * opens a street faces no bet, so ALL_IN there is a BET.
- */
+/** 対象確認済みメニューで正規化する。新postflop街の先制BET例外は優先する（MUST）。 */
 function normalizeAllIn(
   actionEvent: RawActionEvent,
-  prevProgress: RawProgress | undefined,
+  nextTypes: readonly number[] | undefined,
+  phase: number,
   opensNewStreet: boolean
 ): ActionTypeNum {
   if (actionEvent.ActionType !== ActionType.ALL_IN) return actionEvent.ActionType as ActionTypeNum
-  if (opensNewStreet) return ActionType.BET
-  const nextTypes: number[] = prevProgress?.NextActionTypes || []
+  if (opensNewStreet && phase > PhaseType.PREFLOP) return ActionType.BET
+  if (!nextTypes) return ActionType.CALL
   if (nextTypes.includes(ActionType.BET)) return ActionType.BET
-  if (nextTypes.includes(ActionType.CALL)) return ActionType.RAISE
+  if (nextTypes.includes(ActionType.ALL_IN) && nextTypes.includes(ActionType.CALL)) return ActionType.RAISE
+  // CHECK可能ならコールすべき差額は無い。PREFLOPではBBが存在するため
+  // RAISE、他の街では先制BETとして数える（MUST）。最小額に届かない
+  // ALL_INではRAISE/BET自体が選択肢に無くても、この区別は変わらない。
+  if (nextTypes.includes(ActionType.ALL_IN) && nextTypes.includes(ActionType.CHECK)) {
+    return phase === PhaseType.PREFLOP ? ActionType.RAISE : ActionType.BET
+  }
   return ActionType.CALL
 }
 
@@ -616,6 +615,11 @@ export interface RunOracleOptions {
   /** Emit hand-by-hand trace lines to the given sink for the listed hand IDs (debugging aid). */
   traceHandIds?: Set<number>
   trace?: (line: string) => void
+  /** rawから独立導出したaction単位の判断を検証へ渡す。 */
+  observeAction?: (action: {
+    handId: number, actionIndex: number, playerId: number, phase: number,
+    actionType: number, canRaise: boolean | null, threeBetChance: boolean,
+  }) => void
 }
 
 /**
@@ -727,6 +731,7 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
 
     const perPlayerPhaseActionIdx = new Map<string, number>()
     const traceLines: string[] = []
+    let actionIndex = 0
 
     for (const event of handEvents) {
       if (event.ApiTypeId === ApiType.EVT_ACTION) {
@@ -737,7 +742,10 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
         const phase = rawActionPhase(actionEvt, runningPhase)
         const opensNewStreet = phase !== runningPhase
         runningPhase = phase
-        const normType = normalizeAllIn(actionEvt, prevProgress, opensNewStreet)
+        // oracleは本体helperを使わず、対象席・街・非空の条件を独立に判定する（MUST）。
+        const menu = prevProgress?.Phase === phase && prevProgress.NextActionSeat === seatIndex &&
+          (prevProgress.NextActionTypes?.length ?? 0) > 0 ? prevProgress.NextActionTypes : undefined
+        const normType = normalizeAllIn(actionEvt, menu, phase, opensNewStreet)
         if (!phaseActionsMap.has(phase)) phaseActionsMap.set(phase, [])
 
         const actionsInPhase = phaseActionsMap.get(phase) ?? []
@@ -768,8 +776,19 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
           acc(playerId).pfrHands.add(handId)
         }
 
-        // 3BET / 3BETFOLD: facing a 2-bet -> 3bet chance; facing a 3-bet -> 3betfold chance.
-        if (phase === 0 && curPrevBetCount === 2) {
+        // 同じ席・ストリートの非空メニューだけがレイズ不能の証拠になる（MUST）。
+        // 実RAISEと未観測メニューは機会を維持し、3BETFOLDには適用しない。
+        const menuAllowsRaise = menu?.some(type => type === ActionType.RAISE) ||
+          (menu?.some(type => type === ActionType.ALL_IN) &&
+            menu.some(type => type === ActionType.CALL ||
+              (phase === 0 && type === ActionType.CHECK)))
+        const threeBetChance = phase === 0 && curPrevBetCount === 2 &&
+          (normType === ActionType.RAISE || !menu || Boolean(menuAllowsRaise))
+        options.observeAction?.({
+          handId, actionIndex: actionIndex++, playerId, phase, actionType: normType,
+          canRaise: menu ? Boolean(menuAllowsRaise) : null, threeBetChance,
+        })
+        if (threeBetChance) {
           acc(playerId).threeBetChance++
           if (normType === ActionType.RAISE) acc(playerId).threeBet++
         }
@@ -848,6 +867,9 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
         if (traceHandIds.has(handId)) {
           traceLines.push(`  seat${seatIndex}(P${playerId}) phase=${phase} raw=${actionEvt.ActionType} norm=${normType} prevBet=${curPrevBetCount} bet=${actionEvt.BetChip}`)
         }
+      } else if (event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED) {
+        // 201はハンドを捨てず、直前メニューの根拠だけを失効させる（MUST）。
+        prevProgress = undefined
       } else if (event.ApiTypeId === ApiType.EVT_DEAL_ROUND) {
         const roundEvt = event as RawDealRoundEvent
         runningPhase = roundEvt.Progress.Phase

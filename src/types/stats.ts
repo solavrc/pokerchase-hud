@@ -38,6 +38,8 @@ export interface ActionDetailContext {
   phase: PhaseType
   phasePlayerActionIndex: number
   phasePrevBetCount: number
+  /** 現在の席・ストリートのメニューで観測したレイズ可否。未観測はundefined。 */
+  canRaise?: boolean
   position?: Position
   /**
    * HandState for stateful detection.

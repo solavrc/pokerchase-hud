@@ -1029,6 +1029,7 @@ export function parseApiEventType<T extends ApiType>(
 
 /** ハンド処理に必要なイベントのみを含む型 */
 export type ApiHandEvent = 
+  | ApiEvent<ApiType.EVT_ENTRY_QUEUED>
   | ApiEvent<ApiType.EVT_DEAL>
   | ApiEvent<ApiType.EVT_ACTION>
   | ApiEvent<ApiType.EVT_DEAL_ROUND>

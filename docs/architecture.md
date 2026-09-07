@@ -262,6 +262,7 @@ eventを観測した場合は現在文脈を保持し、履歴末尾の古いDEA
 ```
 /users/{userId}/apiEvents/{timestamp_ApiTypeId}            # sequence 0
 /users/{userId}/apiEvents/{timestamp_ApiTypeId_sequence}   # sequence > 0
+/users/{userId}/apiEvents/{timestamp_ApiTypeId_h_sha256}    # 新規保存の内容ID
 ```
 
 ### 採用理由
@@ -269,10 +270,47 @@ eventを観測した場合は現在文脈を保持し、履歴末尾の古いDEA
 - BigQuery 直接エクスポート対応
 - 処理ロジックをローカルで自由に更新可能
 
-sequence 0が従来のdocument IDを維持するため、既にアップロード済みの履歴を
-別documentとして再送しない。新クライアントは旧ID document（`sequence`なし）を
-`sequence: 0`として取り込み、新ID documentはsuffixと保存フィールドのsequenceで
-別行として取り込む。移行期間中の旧クライアントは新ID document自体のdecodeでは
+既存のtimestamp/type/sequence IDは削除・上書きせず、upload候補の内容と一致するとき
+そのまま確認済みとする。新規保存はトップレベルの`sequence`を除くcanonical JSONの
+SHA-256を使う内容IDへ、`currentDocument.exists=false`の条件付きcreateで行う。
+ローカルで再採番されたsequenceをクラウドの一意性と取り違えないための設計で、
+旧形式の部分exportを復元して同じIDが別payloadを指しても、元の内容を失わない。
+
+1 upload batchにつき旧ID・内容IDをまとめて1回の`batchGet`で照合する（候補あたり
+最大2 document読取）。createと読取の間の競合・commit応答喪失は、同一内容が保存済みか
+再照合して解決し、未保存分だけ再試行する。create競合の再試行は最大3回、429/5xxは
+従来のtransportだけが再試行を担当する。古いIDも新IDもdownloadでは同じ
+timestamp+document nameのcursorでページングし、payloadのsequenceは保存したまま運ぶ。
+
+**冪等性の境界**: 旧IDのsequenceが復元先で変わると、その旧documentを新しいsequence
+から逆引きできず、同じpayloadの内容IDが最大1件追加される場合がある。以後は
+sequenceが再び変わっても同じ内容IDへ収束し、upload/restoreで複製は増殖しない。
+HUDのRaw Lakeへのmergeはsequenceを除いた内容で重複排除するため、ローカルraw行・派生統計は
+増えない。旧timestamp/type群の全探索RPCを追加してこの過渡的複製をゼロにするより、
+通常の同期を固定数のbatch RPCに保つ方を採用した。`syncedEvents`は新規保存または
+既存内容を確認したイベント数であり、物理write数ではない。
+
+**順序の観測限界**: `sequence`は端末ローカルの保存slotであり、元の受信順を復元する情報ではない。
+同じtimestamp/type/sequenceの異内容を復元すると、既にあるローカルslotを優先するため、
+同じcloud集合でも復元先によって相対順と順序依存の統計値が異なる場合がある。
+内容IDの保証は内容保持と同内容の重複計上防止であり、失われた因果順や端末間の統計一致ではない。
+
+**本番反映の条件**: 内容IDを書き込む拡張機能の公開前に、`firebase/firestore.rules`の
+APIイベントupdate制限をownerが本番へ適用する。ownerのread/create/deleteは維持し、
+updateは同一内容の再送またはトップレベル`sequence`だけの変更に限る。これにより
+新clientが確認した旧documentを、旧clientの無条件upsertが別payloadで後から消す経路も
+拒否する。ルールのmerge・emulator試験だけでは本番に反映されない。未適用の環境では
+新clientの条件付きcreateだけで旧writerによる上書きを防げるとは扱わない。
+
+Firestore exportを読むpoker-warehouseにも、document nameをまたぐ同一内容の重複排除と
+異なる内容の同一sequence衝突を扱うcompanion変更が必要。**warehouse変更のmergeと
+`run.yml`による本番反映を、内容IDの本番書込みより先行または同時に完了する**。
+従来stagingはdocument name単位でしか重複排除しないため、HUDローカルの重複排除だけを
+根拠にBQの件数・統計も安全とは扱わない。これらのdeploy・公開は別の承認と確認の対象。
+
+新クライアントは旧ID document（`sequence`なし）を
+`sequence: 0`として取り込み、sequence付きID・内容IDのdocumentも保存フィールドを
+同じRaw Lake mergeへ渡す。異なるpayloadは必要に応じて再採番して保持し、同一payloadは畳む。移行期間中の旧クライアントは新ID document自体のdecodeでは
 例外にならないが、旧ローカル主キーでは同一timestamp/typeの二行を表現できず、
 download時に片方だけが残る。旧クライアントがsequence>0 documentを上書きすることは
 ないものの、そのローカル表示・派生データは欠落し得る。remote min-version gate / Forced

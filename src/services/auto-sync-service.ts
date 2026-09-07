@@ -1158,17 +1158,9 @@ export class AutoSyncService {
     // page's lower bound INCLUSIVE of `scanFloor`'s own millisecond instead
     // of strictly-after it (fixes (b)).
     //
-    // COST: the pass-start inclusivity means the first page may re-examine,
-    // and harmlessly re-upload, whatever OTHER row(s) already sit at cloud's
-    // exact watermark millisecond -- Firestore writes are idempotent upserts.
-    // Sequence 0 deliberately keeps the legacy `${timestamp}_${ApiTypeId}`
-    // document ID; later sequences append `_${sequence}`. Therefore migrated
-    // history rewrites the same old docs while burst rows remain distinct.
-    // Rewriting a sequence-0 row is a no-op write, not a correctness or
-    // growing-cost concern: it's
-    // bounded to however many rows tie at that one instant, and the
-    // watermark itself advances past it on the next pass that uploads
-    // anything newer.
+    // 同一millisecondの再提示はFirestore側で内容照合する。旧IDが別payloadを
+    // 指しても上書きせず、未保存分だけをsequence非依存の内容IDへcreateする。
+    // 旧IDとの過渡的な複製と費用の境界はdocs/architecture.mdに記載。
     //
     // `firestoreBackupService.syncToCloudBatch()`'s OWN internal dedup filter
     // is intentionally inclusive (`event.timestamp >= threshold`): it must
@@ -1313,13 +1305,8 @@ export class AutoSyncService {
           // scan floor, not the raw Firestore max: otherwise a just-recovered
           // row whose timestamp sits below the real cloud max would be
           // filtered back out by syncToCloudBatch's own dedup check,
-          // defeating the whole point of rewinding. Firestore writes are
-          // idempotent upserts keyed by the backward-compatible sequence
-          // document-ID scheme, so
-          // redundantly re-sending already-uploaded rows in
-          // [scanFloor, cloudMaxTimestamp] while a marker is pending is safe --
-          // just extra write cost, bounded to however much happened since the
-          // break, and it stops once the row resolves.
+          // defeating the whole point of rewinding. Firestore側は内容照合と
+          // 条件付きcreateで再提示を処理し、既存の別payloadを上書きしない。
           //
           // The inclusive downstream filter re-offers rows exactly at this
           // threshold, matching the compound-key cursor above and closing
@@ -1391,7 +1378,7 @@ export class AutoSyncService {
 
     console.log(
       `[AutoSync] Upload pass complete: scanned raw=${processed}; ` +
-      `valid application=${validApplicationEvents}; acknowledged Firestore writes=${synced}; ` +
+      `valid application=${validApplicationEvents}; confirmed cloud events=${synced}; ` +
       `filtered non-application/unknown=${filteredNonApplicationEvents}; ` +
       `deferred unparseable application=${deferredUnparseableApplicationEvents}`
     )
@@ -1412,33 +1399,24 @@ export class AutoSyncService {
    * 記録し、cloud maxより下にあるそのrowは永久にorphanのまま残った。このrowはcloud maxを越える
    * passの実行時にはparseに失敗しており、実際には一度もuploadされていなかった。
    *
-   * 過去のどの時点でどのrowのuploadが確認されたかを示すlocal履歴はない。あるのは導出した
-   * Firestore maxだけで、maxより下のgapは分からない。またFirestoreへ「このrowのdocumentが
-   * 存在するか」をrow単位で安価に問い合わせる方法もない。watermarkより下のapplication-typed row
-   * 1件ごとに追加のnetwork round tripが必要になり、長期利用installでは数万readとなるため、
-   * boundedな1回限りのmigrationではなく継続的なcost riskになる。
+   * 個々のrowについて「upload済みで現在もparse可能」と「orphanで現在はparse可能」を示す
+   * local履歴はなく、Firestore maxだけではその下のgapは分からない。
+   * そのため、現在parseできるかにかかわらず、cloud max以下にあるlocal Lakeの
+   * 最も古いapplication-typed rowからfloorを設定し、次の`syncToCloud()` passでwatermark以下の
+   * 全履歴をfull reconciliationへ1回再提示する。
+   * `syncToCloudBatch`は旧IDと内容IDを照合し、未保存分だけ条件付きcreateする。
+   * 既存の同一内容は確認済みとして返すため、再提示で別payloadを上書きしない（MUST NOT）。
    *
-   * 個々のrowについて「upload済みで現在もparse可能」と「orphanで現在はparse可能」を安価に
-   * 区別できない。したがって健全で保守的な近似は、疑わしいrowの個別特定をやめ、現在parse
-   * できるかにかかわらず、cloud max以下にあるlocal Lake内で最も古いapplication-typed rowから
-   * floorを設定する方法だけである。これにより次の`syncToCloud()` passで、watermarkより下の
-   * 全履歴をfull reconciliationへちょうど1回再提示する。`syncToCloudBatch`のFirestore writeは
-   * 安定したlegacy ID + sequenceをkeyにするidempotent upsertなので、upload済みrowの再送は
-   * correctness bugではなく、追加write量だけを生む。
-   *
-   * COST（300k rowのinstallで、docs/architecture.md「ストレージ増加とプルーニング」に記録された
-   * Raw Event Lakeのnoise比率からapplication-typedを約50%とした推定）:
-   * - READ側: O(n)ではなくほぼO(1)。`apiEvents`のprimary keyは
-   *   `[timestamp+ApiTypeId+sequence]`なので、この順にcursorを進め、`ApiTypeId`がapplication typeの
-   *   最初のrowを取ればほぼ直ちに停止する。Lakeの増加に伴って高価にならず、1 rowだけを取得する
-   *   ため`processInChunks` paginationも不要である。
-   * - WRITE側（実際の1回限りのcost）: 次のsync passで、upload済みdocument約150k件を1回再upload
-   *   する。Firestore write料金をfree tier超過後に100k documentあたり約$0.18とすると、heavy user
-   *   でも$1を大きく下回る。write量はこのserviceの既存chunk upload loop
-   *   （Firestore batchごとに`DATABASE_CONSTANTS.SYNC_CHUNK_SIZE`）で自然にpaceされ、このbackfillが
-   *   繰り返せるcostではない（下のPROVEN-STATE REQUIREMENT参照）。このcostが発生するのは既存の
-   *   cloud履歴があるinstall（下の`cloudMaxTimestamp !== null`）だけで、新規installには照合対象の
-   *   watermark未満の履歴がない。
+   * 費用と処理範囲:
+   * - localの探索は`[ApiTypeId+timestamp]` indexを使い、application typeごとにcloud max以下の
+   *   最初のrowを取得する。seek回数はapplication type数で決まり、全Lakeのcursor走査はしない。
+   * - cloudでは、1 upload batchにつき旧ID・内容IDをまとめて1回のbatchGetで照合する
+   *   （候補eventあたり最大2 documentの読取り）。
+   *   同一内容があればwriteを省略し、未確認分だけcreateする。移行時の重複・順序・費用の境界は
+   *   docs/architecture.md「3. クラウド同期: Firestore + 生イベントのみ」を参照する。
+   * - このbackfillは1回だけだが、未解析行のfloorが残る間の再提示は別途続く。
+   *   既存cloud履歴のあるinstall（下の`cloudMaxTimestamp !== null`）だけが対象で、新規installには
+   *   照合するwatermark以下の履歴がない。
    *
    * INVARIANT: backfillが成功して完了した後、sync floorは、backfill実行時のcloud watermarkより古い
    * local application-typed rowすべてのtimestamp以下でなければならない（MUST）。そのrowがすでに

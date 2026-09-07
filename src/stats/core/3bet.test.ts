@@ -34,6 +34,18 @@ describe('threeBetStat', () => {
       expect(details).toContain(ActionDetail.$3BET)
     })
 
+    it('レイズ不能の応答を3bet機会へ数えない', () => {
+      expect(threeBetStat.detectActionDetails!(createContext({
+        phasePrevBetCount: 2, canRaise: false,
+      }))).toEqual([])
+    })
+
+    it('実際のRAISEはレイズ不能メニューより優先する', () => {
+      expect(threeBetStat.detectActionDetails!(createContext({
+        phasePrevBetCount: 2, canRaise: false, actionType: ActionType.RAISE,
+      }))).toEqual([ActionDetail.$3BET_CHANCE, ActionDetail.$3BET])
+    })
+
     it('should not detect 3-bet opportunity when not facing 2-bet', () => {
       const context = createContext({
         phasePrevBetCount: 1  // Only BB posted

@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import PokerChaseService, { PokerChaseDB } from './app'
 import { trackServiceForTeardown } from './utils/test-service-teardown'
+import { threeBetStat } from './stats/core/3bet'
 import { EntityConverter } from './entity-converter'
 import { createImportExportHandlers } from './background/import-export'
 import { setOperationState } from './background/operation-state'
@@ -55,6 +56,8 @@ const SAME_MS_BURST_EVENTS = readFixture('hand-samems-street-burst.ndjson')
 const RING_REBUY_EVENTS = readFixture('hand-ring-midhand-rebuy.ndjson')
 /** 同一ms群で、新ストリート最初の行が ALL_IN になるケース（codex review round 3）。 */
 const STREET_OPENING_ALLIN_EVENTS = readFixture('hand-street-opening-allin.ndjson')
+/** CHECK権からのBBレイズ・フロップの先制ベットと、CHECK不可のショートコール。 */
+const CHECK_OPTION_ALLIN_EVENTS = readFixture('hand-check-option-allin.ndjson')
 
 const entryEvent = FIXTURE_EVENTS.find(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED)!
 const detailsEvent = FIXTURE_EVENTS.find(event => event.ApiTypeId === ApiType.EVT_SESSION_DETAILS)!
@@ -148,6 +151,16 @@ const replay = async (path: ReplayPath, events: ApiEvent[], seed?: SessionSeed) 
   ;(chrome.runtime.sendMessage as jest.Mock).mockReturnValue(Promise.resolve())
   ;(chrome.tabs.query as jest.Mock).mockImplementation((_query, callback) => callback([]))
 
+  const actionEvidence: Array<{ playerId: number, phase: PhaseType, actionType: ActionType, canRaise: boolean | null, threeBetChance: boolean }> = []
+  const detectThreeBet = threeBetStat.detectActionDetails!
+  const actionSpy = jest.spyOn(threeBetStat, 'detectActionDetails').mockImplementation(context => {
+    const details = detectThreeBet(context)
+    actionEvidence.push({
+      playerId: context.playerId, phase: context.phase, actionType: context.actionType,
+      canRaise: context.canRaise ?? null, threeBetChance: details.includes(ActionDetail.$3BET_CHANCE),
+    })
+    return details
+  })
   try {
     if (path === 'live') {
       // EVT_DEAL also launches an intentionally unawaited hand-count warmup
@@ -176,13 +189,14 @@ const replay = async (path: ReplayPath, events: ApiEvent[], seed?: SessionSeed) 
       await service.statsOutputStream.whenIdle()
     }
 
-    return await takeCanonicalSnapshot(service, db)
+    return { ...await takeCanonicalSnapshot(service, db), actionEvidence }
   } finally {
     // replay() は1テスト内で4経路ぶん連続で呼ばれる。ルート afterEach
     // （test-service-teardown.ts）の取り消しはテスト終了時なので、ここで
     // 明示的に取り消さないと、直前の経路のインスタンスの500msタイマーが
     // 次の経路の `await service.ready`（restoreState()）より前に発火し、
     // 前の経路の playerId/session を次の経路へ持ち込んでしまう。
+    actionSpy.mockRestore()
     service.cancelPendingPersist()
     setOperationState({ type: 'idle' })
     db.close()
@@ -397,6 +411,84 @@ describe('cross-path canonical parity', () => {
       '2002': { grossPayout: 4040, totalContribution: 4000, netChips: 40 },
       '2003': { grossPayout: 0, totalContribution: 20, netChips: -20 }
     })
+  })
+
+  test('check-option ALL_IN hands preserve raises, bets and counters on every path', async () => {
+    // 架空の各局は独立session。前局の永続化を終えてから次局へ進める。
+    const sessions: ApiEvent[][] = []
+    for (const event of CHECK_OPTION_ALLIN_EVENTS) {
+      if (event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED &&
+          (sessions.length === 0 || sessions.at(-1)!.at(-1)?.ApiTypeId === ApiType.EVT_HAND_RESULTS)) sessions.push([])
+      sessions.at(-1)!.push(event)
+    }
+    const cases: Awaited<ReturnType<typeof replay>>[] = []
+    for (const events of sessions) {
+      const snapshots = await replayEveryPath(events)
+      expect(snapshots['entity-converter']).toEqual(snapshots.live)
+      expect(snapshots.rebuild).toEqual(snapshots.live)
+      expect(snapshots.import).toEqual(snapshots.live)
+      cases.push(snapshots.live)
+    }
+    // 金額・席・街ごとの固定表で、経路一致だけでは検出できない共通誤りも止める（MUST）。
+    const expectedActions = JSON.parse(readFileSync(
+      join(process.cwd(), 'e2e/fixtures/hand-check-option-allin.expected.json'), 'utf8'))
+    expect(cases.flatMap(snapshot => snapshot.actionEvidence.map((evidence, actionIndex) => ({
+      handId: snapshot.hands[0]!.id, actionIndex, ...evidence,
+    })))).toEqual(expectedActions)
+    const canonical = {
+      actions: cases.flatMap(snapshot => snapshot.actions),
+      hands: cases.flatMap(snapshot => snapshot.hands),
+      stats: cases.flatMap(snapshot => snapshot.stats),
+    }
+
+    // BB=100に対する1,000と150への増額はどちらもRAISE。フロップで
+    // 対峙額0から20を出すALL_INは、最小ベット100未満でもBETになる。
+    expect(canonical.actions.filter(action => action.actionDetails.includes(ActionDetail.ALL_IN))
+      .map(({ playerId, phase, actionType, bet }) => ({ playerId, phase, actionType, bet })))
+      .toEqual([
+        { playerId: 1102, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, bet: 1000 },
+        { playerId: 1202, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, bet: 150 },
+        { playerId: 1301, phase: PhaseType.FLOP, actionType: ActionType.BET, bet: 20 },
+        { playerId: 1402, phase: PhaseType.PREFLOP, actionType: ActionType.CALL, bet: 150 },
+        { playerId: 1502, phase: PhaseType.PREFLOP, actionType: ActionType.RAISE, bet: 400 },
+        { playerId: 1702, phase: PhaseType.PREFLOP, actionType: ActionType.CALL, bet: 150 },
+        { playerId: 1802, phase: PhaseType.PREFLOP, actionType: ActionType.CALL, bet: 150 },
+        { playerId: 1901, phase: PhaseType.FLOP, actionType: ActionType.BET, bet: 20 },
+        ...[2002, 2102, 2202, 2302, 2402, 2502].map(playerId => ({
+          playerId, phase: PhaseType.PREFLOP, actionType: ActionType.CALL, bet: 150,
+        })),
+      ])
+    const statsFor = (playerId: number) => Object.fromEntries(
+      canonical.stats.find(player => player.playerId === playerId)!.statResults
+        .map(stat => [stat.id, stat.value])
+    )
+    expect(statsFor(1102)).toMatchObject({ pfr: [1, 1] })
+    expect(statsFor(1202)).toMatchObject({ pfr: [1, 1] })
+    expect(statsFor(1103)).toMatchObject({ '3bet': [0, 0] })
+    expect(statsFor(1203)).toMatchObject({ '3bet': [0, 0] })
+    expect(statsFor(1301)).toMatchObject({ pfr: [1, 1], af: [1, 0], afq: [1, 1], cbet: [1, 1] })
+    expect(statsFor(1302)).toMatchObject({ af: [0, 1], cbetFold: [0, 1] })
+    // ショートコールは機会もなく、CALL+ALL_INでのショートレイズは機会を持つ。
+    expect(statsFor(1402)).toMatchObject({ pfr: [0, 1], '3bet': [0, 0] })
+    expect(statsFor(1502)).toMatchObject({ pfr: [1, 1], '3bet': [1, 1] })
+    // レイズ不能でも、3betに対するフォールド機会は残る（MUST）。
+    expect(statsFor(1503)).toMatchObject({ '3betfold': [1, 1] })
+    expect(statsFor(1501)).toMatchObject({ '3betfold': [0, 1] })
+    // 矛盾するメニューより実RAISEを優先し、空・別席は未知として機会を残す。
+    expect(statsFor(1602)).toMatchObject({ '3bet': [1, 1] })
+    expect(statsFor(1702)).toMatchObject({ '3bet': [0, 1] })
+    expect(statsFor(1802)).toMatchObject({ '3bet': [0, 1] })
+    expect(statsFor(1901)).toMatchObject({ pfr: [0, 1], af: [1, 0], cbet: [0, 0] })
+    for (const playerId of [2002, 2102, 2202, 2302]) {
+      expect(statsFor(playerId)).toMatchObject({ pfr: [0, 1], '3bet': [0, 1] })
+    }
+    for (const playerId of [2402, 2502]) {
+      expect(statsFor(playerId)).toMatchObject({ pfr: [0, 1], '3bet': [0, 0] })
+    }
+    expect(canonical.hands).toHaveLength(15)
+    expect(canonical.hands.every(hand =>
+      Object.values(hand.playerChipAccounting!).every(accounting => accounting !== null)
+    )).toBe(true)
   })
 
   test('a Ring mid-hand rebuy keeps exact winners and net chips (#339)', async () => {
