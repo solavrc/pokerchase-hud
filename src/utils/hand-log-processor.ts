@@ -986,9 +986,9 @@ export class HandLogProcessor {
           entry.text && (entry.text.includes(': bets ') || entry.text.includes(': raises '))) {
         // Extract player name from action
         const playerName = entry.text.split(':')[0]
-        // Find userId from playerName
-        for (const [userId, info] of this.context.session.players) {
-          if (info.name === playerName) {
+        // 表示時と同じハンド名簿で逆引きする（MUST）。次sessionの名簿を参照しない。
+        for (const [userId, name] of this.currentHand!.playerNames) {
+          if (name === playerName) {
             lastAggressorUserId = userId
             break
           }
@@ -1519,8 +1519,8 @@ export class HandLogProcessor {
 
     const bbName = bbEntry.text.split(':')[0]!
 
-    const bbUserId = Array.from(this.context.session.players.entries())
-      .find(([, info]) => info.name === bbName)?.[0]
+    const bbUserId = Array.from(this.currentHand.playerNames.entries())
+      .find(([, name]) => name === bbName)?.[0]
     if (bbUserId === undefined) return null
 
     const bbResult = event.Results.find(r => r.UserId === bbUserId)
