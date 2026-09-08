@@ -132,12 +132,16 @@ export class HandLogProcessor {
   private renderCompletedHand(events: ApiHandEvent[]): HandLogEntry[] {
     const deal = events.find(event => event.ApiTypeId === ApiType.EVT_DEAL)
     if (!deal) return []
+    const playerNames = this.currentHand?.playerNames
     this.resetHandState()
     this.renderingComplete = true
     this.accountingEvents = events
     this.identityEvidence = getSeatIdentityEvidence(deal, events)
     try {
-      for (const event of events) this.processSingleEvent(event)
+      for (const event of events) {
+        if (event.ApiTypeId === ApiType.EVT_DEAL) this.handleDealEvent(event, playerNames)
+        else this.processSingleEvent(event)
+      }
       this.currentHandEvents = events
       return this.getCurrentHandEntries()
     } finally {
@@ -189,7 +193,7 @@ export class HandLogProcessor {
     return (this.currentDealEvent && getHandSession(this.currentDealEvent)) ?? this.context.session
   }
 
-  private handleDealEvent(event: ApiEvent<ApiType.EVT_DEAL>): HandLogEntry[] {
+  private handleDealEvent(event: ApiEvent<ApiType.EVT_DEAL>, playerNames?: ReadonlyMap<number, string>): HandLogEntry[] {
     // streamはAggregateより先に動く。両方が同じDEALのimmutable contextを共有する。
     captureHandSession(event, this.context.session)
     if (this.currentHand && !this.currentHand.isComplete) {
@@ -209,7 +213,7 @@ export class HandLogProcessor {
       entries: [],
       startTime: Date.now(),
       isComplete: false,
-      playerNames: new Map(Array.from(this.context.session.players.entries()).map(([id, info]) => [id, info.name])),
+      playerNames: new Map(playerNames ?? Array.from(this.context.session.players.entries()).map(([id, info]) => [id, info.name])),
       seatUserIds: event.SeatUserIds
     }
 
@@ -1061,15 +1065,16 @@ export class HandLogProcessor {
   private getPlayerName(userId: number): string {
     if (userId === -1) return 'Empty Seat'
 
-    // まずコンテキストセッションから取得を試みる
-    const playerInfo = this.context.session.players.get(userId)
-    if (playerInfo) {
-      return playerInfo.name
-    }
-
-    // コンテキストセッションにない場合、現在のハンドのプレイヤー名から試みる（利用可能な場合）
+    // 完成ハンドの再描画でも、次sessionの名簿で既知の名前を上書きしない（MUST NOT）。
     if (this.currentHand?.playerNames.has(userId)) {
       return this.currentHand.playerNames.get(userId)!
+    }
+
+    // 配札後に判明した名前もハンドへ保持し、後続のsession resetに備える。
+    const playerInfo = this.context.session.players.get(userId)
+    if (playerInfo) {
+      this.currentHand?.playerNames.set(userId, playerInfo.name)
+      return playerInfo.name
     }
 
     // プレイヤーがまったく利用できない場合のみログを出力（異常なケース）

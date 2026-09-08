@@ -48,13 +48,22 @@ test.each(['normal', 'before-deal', 'after-deal'] as const)(
   })
 
 
-test('liveの完成301再評価でも旧Ringの名称・game typeを保ち、次DEALだけ次sessionになる', async () => {
+test.each(['cleared', 'replaced', 'late-names'] as const)('完成301再評価: 名簿が%sでも旧ハンドの名前を保つ', async rosterState => {
   const events: ApiEvent[] = readFileSync(join(process.cwd(), 'e2e/fixtures/hand-ring-seat-replacement.ndjson'), 'utf8')
     .trim().split('\n').map(line => JSON.parse(line))
   const entry = events.find(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED)!
   const deal = events.find(event => event.ApiTypeId === ApiType.EVT_DEAL)!
   const result = events.find(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)!
   const boundary = events.find(event => event.ApiTypeId === ApiType.EVT_PLAYER_JOIN)!
+  const roster = events.find(event => event.ApiTypeId === ApiType.EVT_PLAYER_SEAT_ASSIGNED)!
+  const nextRoster = structuredClone(roster)
+  nextRoster.timestamp = result.timestamp
+  nextRoster.TableUsers = nextRoster.TableUsers!.map(user => ({ ...user, UserName: `Next${user.UserName}` }))
+  if (rosterState === 'late-names') {
+    events.splice(events.indexOf(roster), 1)
+    roster.timestamp = deal.timestamp
+    events.splice(events.indexOf(deal) + 1, 0, roster)
+  }
   const details = (readFileSync(join(process.cwd(), 'e2e/fixtures/session-3hands.ndjson'), 'utf8')
     .trim().split('\n').map(line => JSON.parse(line)) as ApiEvent[])
     .find(event => event.ApiTypeId === ApiType.EVT_SESSION_DETAILS)!
@@ -65,7 +74,9 @@ test('liveの完成301再評価でも旧Ringの名称・game typeを保ち、次
   events.push(
     { ...entry, Id: 'NEXT_ID', BattleType: BattleType.SIT_AND_GO, timestamp: result.timestamp },
     { ...details, Name: 'NEXT_SESSION', timestamp: result.timestamp },
+    ...(rosterState === 'replaced' ? [nextRoster] : []),
     boundary,
+    ...(rosterState !== 'replaced' ? [nextRoster] : []),
   )
   const nextDeal = structuredClone(deal)
   nextDeal.timestamp! += 10000
@@ -88,15 +99,23 @@ test('liveの完成301再評価でも旧Ringの名称・game typeを保ち、次
     }
     const updates = outputs.filter(event => event.type === 'update' && event.handId === result.HandId)
     expect(updates).toHaveLength(2)
-    for (const update of updates) {
+    expect(updates[0]!.entries!.map(entry => entry.text)).toContain('Player1: folds')
+    for (const update of rosterState === 'late-names' ? updates.slice(1) : updates) {
       const lines = update.entries!.map(entry => entry.text)
       expect(lines[0]).not.toContain('Tournament')
       expect(lines).toContain("Table 'OLD_SESSION' 6-max Seat #3 is the button")
+      expect(lines).toContain('Seat 1: Player1 (3491 in chips)')
+      expect(lines).toContain('Player1: folds')
+      expect(lines).toContain('Player3: posts small blind 25')
+      expect(lines).toContain('Player4 collected 50 from pot')
+      expect(lines).toContain('Seat 1: Player1 folded before Flop (didn\'t bet)')
+      expect(lines.join('\n')).not.toMatch(/Player310[1-4]|NextPlayer/)
     }
     expect(updates.at(-1)!.entries!.map(entry => entry.text)).toContain('Total pot unknown (net payout 50) | Rake unknown')
     const nextHeader = outputs.at(-1)!.entries!.map(entry => entry.text)
     expect(nextHeader[0]).toContain('Tournament')
     expect(nextHeader[0]).toContain('NEXT_SESSION')
+    expect(nextHeader).toContain('Seat 1: NextPlayer1 (3491 in chips)')
     expect((await db.hands.get(result.HandId))!.session).toEqual({ id: 'OLD_ID', battleType: BattleType.RING_GAME, name: 'OLD_SESSION' })
   } finally {
     warmupCount.mockRestore()
