@@ -340,6 +340,33 @@ describe('live hand-boundary authority', () => {
     expect(lines.join('\n')).not.toMatch(/Player310[1-4]/)
   })
 
+  test('names learned from 313 after DEAL rerender every completed line without 301', async () => {
+    const fixture = seatFixture()
+      .map(clone)
+      .filter(event => event.ApiTypeId !== ApiType.EVT_PLAYER_JOIN)
+    const roster = fixture.find(event => event.ApiTypeId === ApiType.EVT_PLAYER_SEAT_ASSIGNED)!
+    const deal = fixture.find(event => event.ApiTypeId === ApiType.EVT_DEAL)!
+    const result = fixture.find(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)! as ApiEvent<ApiType.EVT_HAND_RESULTS>
+    fixture.splice(fixture.indexOf(roster), 1)
+    roster.timestamp = deal.timestamp
+    fixture.splice(fixture.indexOf(deal) + 1, 0, roster)
+
+    for (const event of fixture) await sendA(event)
+    await service.handAggregateStream.whenIdle()
+    await service.handLogStream.whenIdle()
+
+    const completed = logEvents.find(event =>
+      event.type === 'update' && event.handId === result.HandId
+    )
+    const lines = completed?.entries?.map(entry => entry.text) ?? []
+    expect(lines).toContain('Seat 1: Player1 (3491 in chips)')
+    expect(lines).toContain('Player1: folds')
+    expect(lines).toContain('Player3: posts small blind 25')
+    expect(lines).toContain('Player4 collected 50 from pot')
+    expect(lines).toContain('Seat 1: Player1 folded before Flop (didn\'t bet)')
+    expect(lines.join('\n')).not.toMatch(/Player310[1-4]/)
+  })
+
   test('one same-ms 301 corrects every eligible completed HandId while a third hand stays active', async () => {
     const fixture = seatFixture()
     const joinEvent = clone(fixture.find(event => event.ApiTypeId === ApiType.EVT_PLAYER_JOIN)!)

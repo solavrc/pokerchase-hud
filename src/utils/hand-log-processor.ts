@@ -92,7 +92,10 @@ export class HandLogProcessor {
         }
       }
       if (event.ApiTypeId === ApiType.EVT_HAND_RESULTS && this.currentDealEvent &&
-          this.currentHandEvents.some(item => item.ApiTypeId === ApiType.EVT_PLAYER_JOIN)) {
+          this.currentHandEvents.some(item =>
+            item.ApiTypeId === ApiType.EVT_PLAYER_JOIN ||
+            item.ApiTypeId === ApiType.EVT_PLAYER_SEAT_ASSIGNED
+          )) {
         return this.renderCompletedHand([...this.currentHandEvents, event])
       }
     }
