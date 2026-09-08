@@ -848,8 +848,9 @@ const processEvent = async (
     recordActiveDealContext(portGeneration)
   }
 
-  // ストリーム処理（DB保存は上で完了済み・耐久性確定済み）
-  service.handLogStream.write(data)
+  // ストリーム処理（DB保存は上で完了済み・耐久性確定済み）。HandLogは
+  // AggregateEventsStreamがこのイベントのsession/境界判定を適用した後に渡す。
+  // ここから並列投入して時系列authorityを二重化してはならない（MUST NOT）。
   service.handAggregateStream.write(data)
   if (storedRawEvent?.ApiTypeId === ApiType.EVT_HAND_RESULTS) {
     pendingHandDerivationHandedOff = true

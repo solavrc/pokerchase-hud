@@ -104,6 +104,8 @@ export interface HandLogEvent {
   type: 'add' | 'update' | 'clear' | 'removeIncomplete'
   handId?: number
   entries?: HandLogEntry[]
+  /** 完了済みハンドの後着補正では、現在表示中のundefined handを保持する。 */
+  preserveIncomplete?: boolean
   config?: Partial<HandLogConfig>
 }
 

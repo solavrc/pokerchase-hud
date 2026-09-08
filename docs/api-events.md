@@ -317,6 +317,18 @@ BetChip、306より前の313で旧UserIdが続く場合は、旧人物の継続�
 他席304との衝突も含めて対象席の会計はunknownとする。DEAL前・RESULTS後に並ぶ同ms301も
 hand文脈へ保持し、live・再構築・import・ログで同じ境界を評価する。これは同msの303と306
 自体の前hand/次hand対応を復元できるという意味ではない。
+
+liveでは、観測済みの最大timestampだけを同ms境界groupとして開き、その時刻に完了した
+すべての`HandId`を候補として保持する。より新しいtimestampを一度受けたら旧groupは失効し、
+後から届いた古いtimestampで再び開かない。同じACTIVE port世代（または世代を持たない内部入力）の
+301は全候補を個別に再評価する。別世代の301は卓帰属を証明できないためcanonical・統計台帳・
+完了ログへ適用せず、Raw Lakeと同時に作った候補別exact fenceだけを成功終端する。
+
+liveハンドログのsession・名簿・境界判定は`AggregateEventsStream`適用後の順序を正とする。
+DEAL時点のsessionと名簿はworker内のimmutable contextへ固定し、完了後の補正もそこから再描画する。
+補正は完了済みブロックだけを元の表示位置で置換し、同時に進行している次ハンドの未完了行を
+削除・resetしない。
+
 単一・一括ログexportは同じ抽出処理を使い、主キー順でDEALの前に置かれる301も、結果の
 会計前に境界証拠として渡す。曖昧な原ケースを`Total pot 591 | Rake 541`へ戻さずunknownとする。
 交代席の304を旧人物へ付けない場合も、非終了304の`Progress.Phase`は卓の進行として保持する。

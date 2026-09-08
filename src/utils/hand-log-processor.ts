@@ -3,11 +3,11 @@
  * リアルタイムHandLogStreamとバッチエクスポート機能の両方で共有されるロジック
  */
 
-import type { Session } from '../types'
+import type { BattleType, Session } from '../types'
 import type { ApiEvent, ApiHandEvent } from '../types/api'
 import { ApiType } from '../types/api'
 import { getReplacedDealtSeat, getSeatIdentityEvidence } from './seat-occupancy'
-import { captureHandSession, getHandSession } from './hand-session-context'
+import { getHandRuntimeContext, getHandSession } from './hand-session-context'
 import { ActionType, RankType, PhaseType, isShowdownParticipant } from '../types/game'
 import { HandLogConfig, HandLogEntry, HandLogEntryType, HandLogState } from '../types/hand-log'
 import { formatCards } from './card-utils'
@@ -45,6 +45,8 @@ export class HandLogProcessor {
   private identityEvidence: ReturnType<typeof getSeatIdentityEvidence> | undefined
   private communityCards: number[] = []
   private context: HandLogContext
+  private sessionSnapshot: { id?: string, battleType?: BattleType, name?: string }
+  private playerSnapshot: Map<number, { name: string, rank: string }>
   private firstHandId: number | null = null
   private _anteAllInChipsMap: Map<number, number> | null = null
   private _anteAllInContribTiers: number[] | null = null
@@ -59,6 +61,14 @@ export class HandLogProcessor {
 
   constructor(context: HandLogContext) {
     this.context = context
+    this.sessionSnapshot = {
+      id: context.session.id,
+      battleType: context.session.battleType,
+      name: context.session.name,
+    }
+    this.playerSnapshot = new Map(
+      [...context.session.players].map(([userId, info]) => [userId, { ...info }])
+    )
     this.instanceNonce = `${Date.now().toString(36)}_${(handLogProcessorInstanceCounter++).toString(36)}`
     // 外部から firstHandId が渡された場合はそれを使用（エクスポーター用）
     if (context.firstHandId) {
@@ -71,6 +81,7 @@ export class HandLogProcessor {
    */
   processSingleEvent(event: ApiEvent): HandLogEntry[] {
     const newEntries: HandLogEntry[] = []
+    if (!this.renderingComplete) this.applyContextEvent(event)
     if (!this.renderingComplete) {
       this.boundaryJoins = this.boundaryJoins.filter(join => join.timestamp === event.timestamp)
       if (event.ApiTypeId === ApiType.EVT_PLAYER_JOIN) {
@@ -165,6 +176,11 @@ export class HandLogProcessor {
     return this.currentHand?.isComplete || false
   }
 
+  /** Tournament # を補正再描画用processorへ引き継ぐ。 */
+  getFirstHandId(): number | undefined {
+    return this.firstHandId ?? undefined
+  }
+
   /**
    * ハンド固有の状態をリセット（セッションレベルの状態は保持）
    */
@@ -190,12 +206,19 @@ export class HandLogProcessor {
   }
 
   private get handSession() {
-    return (this.currentDealEvent && getHandSession(this.currentDealEvent)) ?? this.context.session
+    return (this.currentDealEvent && getHandSession(this.currentDealEvent)) ?? this.sessionSnapshot
   }
 
   private handleDealEvent(event: ApiEvent<ApiType.EVT_DEAL>, playerNames?: ReadonlyMap<number, string>): HandLogEntry[] {
-    // streamはAggregateより先に動く。両方が同じDEALのimmutable contextを共有する。
-    captureHandSession(event, this.context.session)
+    // live経路ではAggregateが先にDEALへ固定したsession+名簿を読む。
+    // exporter/単体processorは自分のprivate snapshotへフォールバックする。
+    const runtimeContext = getHandRuntimeContext(event)
+    if (runtimeContext) {
+      this.sessionSnapshot = { ...runtimeContext.session }
+      this.playerSnapshot = new Map(
+        [...runtimeContext.players].map(([userId, info]) => [userId, { ...info }])
+      )
+    }
     if (this.currentHand && !this.currentHand.isComplete) {
       console.warn('[HandLogProcessor] Clearing incomplete hand due to new EVT_DEAL')
     }
@@ -213,7 +236,7 @@ export class HandLogProcessor {
       entries: [],
       startTime: Date.now(),
       isComplete: false,
-      playerNames: new Map(playerNames ?? Array.from(this.context.session.players.entries()).map(([id, info]) => [id, info.name])),
+      playerNames: new Map(playerNames ?? [...this.playerSnapshot].map(([id, info]) => [id, info.name])),
       seatUserIds: event.SeatUserIds
     }
 
@@ -1070,20 +1093,56 @@ export class HandLogProcessor {
       return this.currentHand.playerNames.get(userId)!
     }
 
-    // 配札後に判明した名前もハンドへ保持し、後続のsession resetに備える。
-    const playerInfo = this.context.session.players.get(userId)
+    // 配札後にイベントpayloadから判明した名前もprivate snapshotへ保持する。
+    // service.sessionは次sessionへ進みうるため、ここでは参照しない（MUST NOT）。
+    const playerInfo = this.playerSnapshot.get(userId)
     if (playerInfo) {
       this.currentHand?.playerNames.set(userId, playerInfo.name)
       return playerInfo.name
     }
 
     // プレイヤーがまったく利用できない場合のみログを出力（異常なケース）
-    if (this.context.session.players.size === 0) {
+    if (this.playerSnapshot.size === 0) {
       console.warn(`[HandLogProcessor] No player names available in session for userId ${userId}`)
     }
 
     // 汎用名にフォールバック
     return `Player${userId}`
+  }
+
+  /**
+   * HandLogProcessor固有のsession/名簿をイベントpayloadだけで進める。
+   * Aggregateが更新するservice.sessionを後から読むと、完了ハンドの再描画が
+   * 次sessionの同一UserId名へ汚染されるため、共有mutable stateへ戻さない。
+   */
+  private applyContextEvent(event: ApiEvent): void {
+    switch (event.ApiTypeId) {
+      case ApiType.EVT_ENTRY_QUEUED:
+        this.sessionSnapshot = {
+          id: event.Id,
+          battleType: event.BattleType,
+          name: undefined,
+        }
+        this.playerSnapshot.clear()
+        break
+      case ApiType.EVT_SESSION_DETAILS:
+        this.sessionSnapshot.name = event.Name
+        break
+      case ApiType.EVT_PLAYER_SEAT_ASSIGNED:
+        for (const player of event.TableUsers ?? []) {
+          const info = { name: player.UserName, rank: player.Rank.RankId }
+          this.playerSnapshot.set(player.UserId, info)
+          this.currentHand?.playerNames.set(player.UserId, info.name)
+        }
+        break
+      case ApiType.EVT_PLAYER_JOIN: {
+        const player = event.JoinUser
+        const info = { name: player.UserName, rank: player.Rank.RankId }
+        this.playerSnapshot.set(player.UserId, info)
+        this.currentHand?.playerNames.set(player.UserId, info.name)
+        break
+      }
+    }
   }
 
   /**

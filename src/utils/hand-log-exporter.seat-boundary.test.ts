@@ -92,10 +92,9 @@ test.each(['cleared', 'replaced', 'late-names'] as const)('完成301再評価: �
   service.handLogStream.on('data', event => outputs.push(event))
   try {
     for (const event of events) {
-      // 実ingestion同様、HandLogが先・Aggregateが後。完了再評価も実streamを通す。
-      service.handLogStream.write(event)
+      // live ingestion同様、Aggregateのserialized callbackだけからHandLogへ渡す。
       service.handAggregateStream.write(event)
-      await Promise.all([service.handLogStream.whenIdle(), service.handAggregateStream.whenIdle()])
+      await service.handAggregateStream.whenIdle()
     }
     const updates = outputs.filter(event => event.type === 'update' && event.handId === result.HandId)
     expect(updates).toHaveLength(2)
@@ -190,9 +189,8 @@ test.each([
   service.handLogStream.on('data', event => outputs.push(event))
   try {
     for (const event of events) {
-      service.handLogStream.write(event)
       service.handAggregateStream.write(event)
-      await Promise.all([service.handLogStream.whenIdle(), service.handAggregateStream.whenIdle()])
+      await service.handAggregateStream.whenIdle()
     }
     const updates = outputs.filter(event => event.type === 'update' && event.handId === result.HandId)
     expect(updates).toHaveLength(2)
