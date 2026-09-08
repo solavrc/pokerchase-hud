@@ -47,6 +47,95 @@ test.each(['normal', 'before-deal', 'after-deal'] as const)(
     }
   })
 
+test.each([false, true])(
+  '保存済みOLD Ring handのsingle/batch exportは次session通知=%sでも文脈を固定しlate名簿を使う',
+  async withNextSession => {
+    const events: ApiEvent[] = readFileSync(
+      join(process.cwd(), 'e2e/fixtures/hand-ring-seat-replacement.ndjson'),
+      'utf8'
+    ).trim().split('\n').map(line => JSON.parse(line))
+    const entry = events.find(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED)!
+    const roster = events.find(event => event.ApiTypeId === ApiType.EVT_PLAYER_SEAT_ASSIGNED)!
+    const deal = events.find(event => event.ApiTypeId === ApiType.EVT_DEAL)!
+    const result = events.find(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)!
+    const details = (readFileSync(join(process.cwd(), 'e2e/fixtures/session-3hands.ndjson'), 'utf8')
+      .trim().split('\n').map(line => JSON.parse(line)) as ApiEvent[])
+      .find(event => event.ApiTypeId === ApiType.EVT_SESSION_DETAILS)!
+
+    entry.Id = 'OLD_ID'
+    const oldDetails = { ...structuredClone(details), Name: 'OLD_SESSION', timestamp: entry.timestamp! + 1 }
+    events.splice(events.indexOf(entry) + 1, 0, oldDetails)
+
+    // 名前はDEAL後の313だけで補完し、保存handのsession metadataとは分けて検証する。
+    events.splice(events.indexOf(roster), 1)
+    roster.timestamp = deal.timestamp
+    roster.TableUsers = roster.TableUsers!.map(player => ({
+      ...player,
+      UserName: `Late${player.UserName}`,
+    }))
+    events.splice(events.indexOf(deal) + 1, 0, roster)
+
+    for (const event of events) expect(apiEventSchemas[event.ApiTypeId].safeParse(event).success).toBe(true)
+    const hand = new EntityConverter({ players: new Map(), reset() {} })
+      .convertEventsToEntities(structuredClone(events)).hands[0]!
+    expect(hand.session).toEqual({
+      id: 'OLD_ID',
+      battleType: BattleType.RING_GAME,
+      name: 'OLD_SESSION',
+    })
+    expect(hand.playerChipAccounting!['3101']).toEqual({
+      grossPayout: 0,
+      totalContribution: 0,
+      netChips: 0,
+    })
+    expect(hand.playerChipAccounting!['3104']).toEqual({
+      grossPayout: 75,
+      totalContribution: 50,
+      netChips: 25,
+    })
+
+    const rawEvents = structuredClone(events)
+    if (withNextSession) {
+      const resultIndex = rawEvents.findIndex(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)
+      rawEvents.splice(
+        resultIndex,
+        0,
+        { ...structuredClone(entry), Id: 'NEXT_ID', BattleType: BattleType.SIT_AND_GO,
+          timestamp: result.timestamp! - 1 },
+        { ...structuredClone(details), Name: 'NEXT_SESSION', timestamp: result.timestamp! - 1 },
+      )
+    }
+
+    const db = new PokerChaseDB(indexedDB, IDBKeyRange)
+    await db.open()
+    try {
+      await mergeApiEvents(db, rawEvents as RawApiEvent[])
+      await db.hands.put(hand)
+      HandLogExporter.clearCache()
+      const single = await HandLogExporter.exportHand(db, hand.id)
+      HandLogExporter.clearCache()
+      const batch = await HandLogExporter.exportMultipleHands(db, [hand.id])
+      expect(batch).toBe(single)
+
+      for (const exported of [single, batch]) {
+        const lines = exported.split('\n')
+        expect(lines[0]).not.toContain('Tournament')
+        expect(lines).toContain("Table 'OLD_SESSION' 6-max Seat #3 is the button")
+        expect(lines).toContain('Seat 1: LatePlayer1 (3491 in chips)')
+        expect(lines).toContain('LatePlayer1: folds')
+        expect(lines).toContain('LatePlayer3: posts small blind 25')
+        expect(lines).toContain('LatePlayer4 collected 50 from pot')
+        expect(lines).toContain('Total pot 50 | Rake 0')
+        expect(exported).not.toMatch(/NEXT_SESSION|Player310[1-4]/)
+      }
+    } finally {
+      HandLogExporter.clearCache()
+      db.close()
+      await db.delete()
+    }
+  }
+)
+
 
 test.each(['cleared', 'replaced', 'late-names'] as const)('完成301再評価: 名簿が%sでも旧ハンドの名前を保つ', async rosterState => {
   const events: ApiEvent[] = readFileSync(join(process.cwd(), 'e2e/fixtures/hand-ring-seat-replacement.ndjson'), 'utf8')

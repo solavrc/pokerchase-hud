@@ -30,6 +30,7 @@ export interface HandLogContext {
   session: Session
   handLogConfig?: HandLogConfig
   playerId?: number
+  /** 保存済みcompleted handのexportでは、この時刻とsessionを同じhandのauthorityとして扱う。 */
   handTimestamp?: number
   firstHandId?: number  // トーナメントIDとして使用（エクスポーター用）
 }
@@ -209,7 +210,8 @@ export class HandLogProcessor {
   }
 
   private get handSession() {
-    return (this.currentDealEvent && getHandSession(this.currentDealEvent)) ?? this.sessionSnapshot
+    return (this.currentDealEvent && getHandSession(this.currentDealEvent)) ??
+      (this.context.handTimestamp !== undefined ? this.context.session : this.sessionSnapshot)
   }
 
   private handleDealEvent(event: ApiEvent<ApiType.EVT_DEAL>, playerNames?: ReadonlyMap<number, string>): HandLogEntry[] {
