@@ -25,6 +25,8 @@ import { defaultRegistry } from '../stats'
 import type { ErrorContext } from '../types/errors'
 import type { AppError } from '../types/errors'
 import { deriveHandSettlement } from '../utils/hand-chip-accounting'
+import { getSeatIdentityEvidence } from '../utils/seat-occupancy'
+import { getHandSession, snapshotHandSession } from '../utils/hand-session-context'
 import {
   getEventGeneration,
   setStatsRequestContext
@@ -61,6 +63,9 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
   protected async transform(events: ApiHandEvent[]): Promise<void> {
     let canonicalCommitted = false
     const resultsEvent = events.find(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)
+    const derivationEvents = resultsEvent ? [resultsEvent, ...events
+      .filter(event => event.ApiTypeId === ApiType.EVT_PLAYER_JOIN)
+      .map(event => ({ ...event, HandId: resultsEvent.HandId }))] : []
     try {
       const dealEvent = events.find((event): event is ApiEvent<ApiType.EVT_DEAL> =>
         event.ApiTypeId === ApiType.EVT_DEAL
@@ -73,7 +78,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
         // 世代交代を跨いだDEAL/RESULTSは1ハンドとして成立しない（MUST NOT）。
         // 既存の不完全・キメラハンドと同様にDB/下流へは出さない。
         console.log(`[WriteEntityStream] Rejected cross-generation hand (HandId=${resultsEvent.HandId})`)
-        await this.service.statsLedger.acknowledgePendingHandDerivation(resultsEvent)
+        await Promise.all(derivationEvents.map(event => this.service.statsLedger.acknowledgePendingHandDerivation(event)))
         return
       }
       const handState = this.toHandState(events)
@@ -83,7 +88,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
         const handId = events.find(e => e.ApiTypeId === ApiType.EVT_HAND_RESULTS)?.HandId
         console.log(`[WriteEntityStream] Rejected chimera hand (HandId=${handId}): EVT_HAND_RESULTS.Results references a player outside the dealt lineup (mid-hand table move)`)
         if (resultsEvent) {
-          await this.service.statsLedger.acknowledgePendingHandDerivation(resultsEvent)
+          await Promise.all(derivationEvents.map(event => this.service.statsLedger.acknowledgePendingHandDerivation(event)))
         }
         return
       }
@@ -132,7 +137,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
         if (resultsEvent) {
           // exact raw-result fenceをcanonical/ledgerと同じcommitでのみ外す
           // （MUST）。delete失敗なら上の派生書き込みもrollbackする。
-          await this.service.statsLedger.acknowledgePendingHandDerivation(resultsEvent)
+          await Promise.all(derivationEvents.map(event => this.service.statsLedger.acknowledgePendingHandDerivation(event)))
         }
       })
       canonicalCommitted = true
@@ -161,9 +166,10 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
         try {
           // productionの306はraw別fenceがrollback後も残る。同一SWでも
           // recovery対象にし、fixed global markerでcloud staging ownerを壊さない。
-          const markedPending = resultsEvent
-            ? await this.service.statsLedger.markPendingHandDerivationFailed(resultsEvent)
-            : false
+          let markedPending = false
+          for (const event of derivationEvents) {
+            markedPending = await this.service.statsLedger.markPendingHandDerivationFailed(event) || markedPending
+          }
           if (!markedPending) {
             // sequence/fenceを持たない内部・旧呼出しだけのfallback。
             await this.service.statsLedger.markCanonicalRebuildRequired(
@@ -200,13 +206,11 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
   }
   private toHandState = (events: ApiHandEvent[]): HandState | null => {
     let positionMap: Map<number, Position> = new Map()
+    const bufferedDeal = events.find(event => event.ApiTypeId === ApiType.EVT_DEAL)
+    const handSession = (bufferedDeal && getHandSession(bufferedDeal)) ?? snapshotHandSession(this.service.session)
     const handState: HandState = {
       hand: {
-        session: {
-          id: this.service.session.id,
-          battleType: this.service.session.battleType,
-          name: this.service.session.name
-        },
+        session: { ...handSession },
         id: NaN,
         approxTimestamp: NaN,
         seatUserIds: [],
@@ -221,6 +225,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
     }
     let progress: Progress | undefined
     let dealEvent: ApiEvent<ApiType.EVT_DEAL> | undefined
+    const identity = bufferedDeal ? getSeatIdentityEvidence(bufferedDeal, events) : undefined
     // 進行中のストリート。EVT_DEAL_ROUND と、各アクションの権威的な
     // Progress.Phase の両方で進む（#340、EntityConverterと同一ロジック）。
     // ハンド終了行（Phase=3固定）のフォールバックはここを見る — 直近にpushされた
@@ -238,6 +243,8 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
     const seenDealRoundPhases = new Set<number>()
     for (const event of events) {
       switch (event.ApiTypeId) {
+        case ApiType.EVT_PLAYER_JOIN:
+          break
         case ApiType.EVT_ENTRY_QUEUED:
           // 201で以前の卓のメニューだけを失効させ、ハンドは保持する（MUST）。
           progress = undefined
@@ -277,7 +284,8 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
             // 「flops seen」定義（プリフロップオールインを含む）に合わせるため
             // （#115）。
             seatUserIds: (event.Player ? [event.Player, ...event.OtherPlayers] : event.OtherPlayers)
-              .filter(({ BetStatus }) => BetStatus === BetStatusType.BET_ABLE || BetStatus === BetStatusType.ALL_IN)
+              .filter(({ SeatIndex, BetStatus }) => !identity?.atOrAfterBoundary(SeatIndex, event) &&
+                (BetStatus === BetStatusType.BET_ABLE || BetStatus === BetStatusType.ALL_IN))
               .sort((a, b) => a.SeatIndex - b.SeatIndex)
               .map(({ SeatIndex }) => handState.hand.seatUserIds.at(SeatIndex)!),
             communityCards: [...handState.phases.at(-1)!.communityCards, ...event.CommunityCards],
@@ -285,6 +293,15 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           progress = event.Progress
           break
         case ApiType.EVT_ACTION: {
+          // 卓の進行は人物帰属とは独立。交代席が開いたstreetも次の終了行へ伝える。
+          const phase = resolveActionPhase(event, runningPhase)
+          const opensNewStreet = phase !== runningPhase
+          runningPhase = phase
+          // 交代後の行動を配札時の人物へ帰属させない（MUST NOT）。
+          if (identity?.atOrAfterBoundary(event.SeatIndex, event)) {
+            progress = event.Progress
+            break
+          }
           const playerId = handState.hand.seatUserIds[event.SeatIndex]
 
           // 途中着席（EVT_ENTRY_QUEUED）によるテーブル移動後、直前にバッファされた
@@ -303,10 +320,6 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           // Progress.Phase を正とする（#340、EntityConverterと同一ロジック）。
           // ALL_INの正規化はストリート確定より後で行う（この行自身が新ストリートを
           // 開いた場合、直前のprogressは前ストリート終了時点のもので使えない）。
-          const phase = resolveActionPhase(event, runningPhase)
-          const opensNewStreet = phase !== runningPhase
-          runningPhase = phase
-
           const actionMenu = getApplicableActionMenu(progress, event.SeatIndex, phase)
           const actionDetails: ActionDetail[] = []
           /**

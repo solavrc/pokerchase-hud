@@ -52,7 +52,8 @@
 ## 永続統計台帳
 
 - live raw `EVT_HAND_RESULTS` 保存と、exact 三要素主キーによる pending-derivation fence
-  作成を atomic に行う（MUST）。canonical entities と ledger の同時 commit、または
+  作成を atomic に行う（MUST）。同msの306保存後に301を追加するときも、301自身のraw keyと
+  影響先HandIdによる独立fenceをrawとatomicに保存する。古い306のfence IDを再利用しない。canonical entities と ledger の同時 commit、または
   文書化された非導出 terminal 判定まで、その fence を維持する。
 - 現 SW boot 所有の fence は通常の進行中処理。別 owner・failed・不正 fence は lazy
   baseline を止めて Lake 復旧へ進める（MUST）。canonical transaction 失敗後は failed

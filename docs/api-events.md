@@ -275,6 +275,53 @@ rawにはuncalled return専用フィールドがないため、`Pot`、`SidePot[
 
 実イベントと計算過程は[HandId=269804225の実例](api-event-examples.md#rewardchip-uncalled-return-example)を参照。
 
+### EVT_PLAYER_JOIN: ハンド中の人物交代
+
+`SeatIndex`は人物IDではない。Ringでは、配札後にfoldした人物の席へ別人が301で着席し、
+同じhandの305/306 snapshotが既に新しい人物の残高を表すことがある。
+`JoinPlayer.SeatIndex`と`JoinUser.UserId`の組で配札時との相違を観測したら、その席について
+以降のsnapshot・actionを旧人物の履歴へ接続しない。DEALの`SeatUserIds`はそのhandの参加者として
+固定し、301の参加者名・rankは別のUserIdとして保持する。同じUserIdの301は人物交代とはしない。
+いったん別人へ交代した後に旧UserIdが同席へ戻っても、そのhandの観測を再接続しない。
+
+保存caseでは、旧席の配札時`Chip=3491, BetChip=0`、同額の明示FOLD後に別人が
+`Chip=2950, BetChip=0`で着席した。差額541は旧人物のhand投入ではない。
+旧人物の退出後残高は未観測だが、このhandの投入0はFOLD時点で確定する。
+SB25・BB50、BBへのgross payout75は、BBのuncalled return25とcontested award50に分かれる。
+回帰用の[合成fixture](../e2e/fixtures/hand-ring-seat-replacement.ndjson)は座席・金額・イベント順を
+保持し、UserId・名前・HandId・時刻・セッション情報を置換している。
+
+301には卓IDがないため、保存列は同一卓のイベント列という前提を持つ。301は同一性が不確かに
+なる境界であり、別タブの301をその卓の着席だと証明する情報ではない。新残高との数値一致から
+卓への所属を認定しない。交代前に参加が閉じていれば、301が同卓か別卓かにかかわらず旧人物の
+hand投入は変わらない。一方、境界以後の同席304、305の参加状態（BET_ABLE/ALL_IN）や正の
+BetChip、306より前の313で旧UserIdが続く場合は、旧人物の継続と区別できず会計・tier勝者を
+未解決にする。終了と同msの313は次hand前の名簿とも区別できるとは扱わない。
+
+会計では同一人物を追える範囲のRing買い足しを控除し、受取0の人物について次を使う。
+
+- 整合した明示FOLD: `startingStack + FOLDまでのinflow - FOLD.Chip`で投入を確定する。
+  交代のないFOLD済み人物でも、306のsnapshotだけが欠けた場合に同じ証明を使う。
+  本人の開始・チップ観測列が完結していれば、別席の開始欠落でこのFOLD証明を捨てない。
+  他席を必要とするshort-anteの開始額推定は、この人物単位の証明へ広げない。
+- 初期NOT_IN_PLAY/ELIMINATED、BetChip=0: 境界まで行動・参加状態・正のbetがなく、
+  snapshotが一貫して不参加なら投入0を確定する。不参加中の買い足しも投入に混ぜない。
+  この初期不参加証明と卓全体の流入判定には、従来どおり全席の整合を必要とする。
+
+退出後残高を0や推定値で埋める処理ではない。初期snapshot欠落、説明不能なチップ変動、
+旧人物への正のpayoutなどで証明できなければ未解決に残す。全員のhand投入が判明した場合も、
+受取総額が投入総額以下というRingの保存則を確認する。301が未保存なら、残高だけから
+交代と同一人物の変動を識別できない。
+
+301と303/304/305/306が同じmsにある場合、API type順やNDJSON行順から前後を断定しない。
+他席304との衝突も含めて対象席の会計はunknownとする。DEAL前・RESULTS後に並ぶ同ms301も
+hand文脈へ保持し、live・再構築・import・ログで同じ境界を評価する。これは同msの303と306
+自体の前hand/次hand対応を復元できるという意味ではない。
+単一・一括ログexportは同じ抽出処理を使い、主キー順でDEALの前に置かれる301も、結果の
+会計前に境界証拠として渡す。曖昧な原ケースを`Total pot 591 | Rake 541`へ戻さずunknownとする。
+交代席の304を旧人物へ付けない場合も、非終了304の`Progress.Phase`は卓の進行として保持する。
+終了304のPhase=3固定という既存例外は変えない。
+
 ### EVT_DEAL: Player フィールドの欠落
 
 - **観戦モード**: Player フィールド自体が undefined

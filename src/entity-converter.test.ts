@@ -795,7 +795,8 @@ describe('EntityConverter', () => {
       } as any, { skipValidation: true })
 
       expect(converter.convertEventChunk([deal]).hands).toHaveLength(0)
-      expect(converter.convertEventChunk([result]).hands).toEqual([
+      expect(converter.convertEventChunk([result]).hands).toHaveLength(0)
+      expect(converter.flush().hands).toEqual([
         expect.objectContaining({ id: 12345, seatUserIds: [100, 101] })
       ])
       expect(converter.flush().hands).toHaveLength(0)

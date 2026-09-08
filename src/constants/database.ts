@@ -115,9 +115,13 @@ export type DbOperationType = 'import' | 'export' | 'sync' | 'rebuild'
  * 既存のActionとActionDetail、PFR・AF等の統計台帳を修復するため、
  * Raw Event Lakeからの再構築が必要。
  *
+ * version 9: 301で配札席の人物が交代した後の残高・action・phase membershipを
+ * 旧人物へ帰属させない。交代前の明示FOLDから確定したhand投入で会計と勝者を修復する。
+ * 301を含むRaw Event Lakeから既存handと統計台帳を再構築する。
+ *
  * インクリメントすると、拡張機能の更新後に既存ユーザーへ一度だけ
  * 「データ再構築」の実行を促すアドバイソリーが表示される
  * （`src/background/rebuild-advisory.ts`参照）。単なるUI変更やバグ修正でも
  * 書き込み時の導出結果に影響しないものはバンプ不要。
  */
-export const REBUILD_ADVISORY_VERSION = 8
+export const REBUILD_ADVISORY_VERSION = 9

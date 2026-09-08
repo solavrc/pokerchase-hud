@@ -4,8 +4,10 @@
  */
 
 import type { Session } from '../types'
-import type { ApiEvent } from '../types/api'
+import type { ApiEvent, ApiHandEvent } from '../types/api'
 import { ApiType } from '../types/api'
+import { getReplacedDealtSeat, getSeatIdentityEvidence } from './seat-occupancy'
+import { captureHandSession, getHandSession } from './hand-session-context'
 import { ActionType, RankType, PhaseType, isShowdownParticipant } from '../types/game'
 import { HandLogConfig, HandLogEntry, HandLogEntryType, HandLogState } from '../types/hand-log'
 import { formatCards } from './card-utils'
@@ -35,6 +37,12 @@ export interface HandLogContext {
 export class HandLogProcessor {
   private currentHand: HandLogState | null = null
   private currentDealEvent: ApiEvent<ApiType.EVT_DEAL> | null = null
+  private currentHandEvents: ApiHandEvent[] = []
+  private replacedSeats = new Set<number>()
+  private boundaryJoins: ApiEvent<ApiType.EVT_PLAYER_JOIN>[] = []
+  private renderingComplete = false
+  private accountingEvents: ApiHandEvent[] | undefined
+  private identityEvidence: ReturnType<typeof getSeatIdentityEvidence> | undefined
   private communityCards: number[] = []
   private context: HandLogContext
   private firstHandId: number | null = null
@@ -63,18 +71,45 @@ export class HandLogProcessor {
    */
   processSingleEvent(event: ApiEvent): HandLogEntry[] {
     const newEntries: HandLogEntry[] = []
+    if (!this.renderingComplete) {
+      this.boundaryJoins = this.boundaryJoins.filter(join => join.timestamp === event.timestamp)
+      if (event.ApiTypeId === ApiType.EVT_PLAYER_JOIN) {
+        this.boundaryJoins.push(event)
+        const result = this.currentHandEvents.find(item => item.ApiTypeId === ApiType.EVT_HAND_RESULTS)
+        if (this.currentHand?.isComplete && result?.timestamp === event.timestamp) {
+          return this.renderCompletedHand([...this.currentHandEvents, event])
+        }
+      }
+      if (event.ApiTypeId === ApiType.EVT_HAND_RESULTS && this.currentDealEvent &&
+          this.currentHandEvents.some(item => item.ApiTypeId === ApiType.EVT_PLAYER_JOIN)) {
+        return this.renderCompletedHand([...this.currentHandEvents, event])
+      }
+    }
 
     switch (event.ApiTypeId) {
       case ApiType.EVT_DEAL:
         newEntries.push(...this.handleDealEvent(event))
         break
+      case ApiType.EVT_PLAYER_SEAT_ASSIGNED:
+        if (this.currentDealEvent && !this.currentHand?.isComplete) this.currentHandEvents.push(event)
+        break
+      case ApiType.EVT_PLAYER_JOIN: {
+        if (!this.currentDealEvent || this.currentHand?.isComplete) break
+        this.currentHandEvents.push(event)
+        const seat = getReplacedDealtSeat(this.currentDealEvent, event)
+        if (seat !== undefined) this.replacedSeats.add(seat)
+        break
+      }
       case ApiType.EVT_ACTION:
+        if (this.currentDealEvent && !this.currentHand?.isComplete) this.currentHandEvents.push(event)
         newEntries.push(...this.handleActionEvent(event))
         break
       case ApiType.EVT_DEAL_ROUND:
+        if (this.currentDealEvent && !this.currentHand?.isComplete) this.currentHandEvents.push(event)
         newEntries.push(...this.handleDealRoundEvent(event))
         break
       case ApiType.EVT_HAND_RESULTS:
+        if (this.currentDealEvent && !this.currentHand?.isComplete) this.currentHandEvents.push(event)
         newEntries.push(...this.handleHandResultsEvent(event))
         break
     }
@@ -87,13 +122,29 @@ export class HandLogProcessor {
    */
   processEvents(events: ApiEvent[]): HandLogEntry[] {
     const allEntries: HandLogEntry[] = []
-
     for (const event of events) {
-      const newEntries = this.processSingleEvent(event)
-      allEntries.push(...newEntries)
+      if (event.ApiTypeId === ApiType.EVT_DEAL && this.currentHand) allEntries.push(...this.getCurrentHandEntries())
+      this.processSingleEvent(event)
     }
+    return [...allEntries, ...this.getCurrentHandEntries()]
+  }
 
-    return allEntries
+  private renderCompletedHand(events: ApiHandEvent[]): HandLogEntry[] {
+    const deal = events.find(event => event.ApiTypeId === ApiType.EVT_DEAL)
+    if (!deal) return []
+    this.resetHandState()
+    this.renderingComplete = true
+    this.accountingEvents = events
+    this.identityEvidence = getSeatIdentityEvidence(deal, events)
+    try {
+      for (const event of events) this.processSingleEvent(event)
+      this.currentHandEvents = events
+      return this.getCurrentHandEntries()
+    } finally {
+      this.renderingComplete = false
+      this.accountingEvents = undefined
+      this.identityEvidence = undefined
+    }
   }
 
   /**
@@ -116,6 +167,8 @@ export class HandLogProcessor {
   resetHandState(): void {
     this.currentHand = null
     this.currentDealEvent = null
+    this.currentHandEvents = []
+    this.replacedSeats.clear()
     this.communityCards = []
     this._anteAllInChipsMap = null
     this._anteAllInContribTiers = null
@@ -132,13 +185,25 @@ export class HandLogProcessor {
     return romans[level] || `${level + 1}`
   }
 
+  private get handSession() {
+    return (this.currentDealEvent && getHandSession(this.currentDealEvent)) ?? this.context.session
+  }
+
   private handleDealEvent(event: ApiEvent<ApiType.EVT_DEAL>): HandLogEntry[] {
+    // streamはAggregateより先に動く。両方が同じDEALのimmutable contextを共有する。
+    captureHandSession(event, this.context.session)
     if (this.currentHand && !this.currentHand.isComplete) {
       console.warn('[HandLogProcessor] Clearing incomplete hand due to new EVT_DEAL')
     }
 
     this.communityCards = []
     this.currentDealEvent = event
+    this.currentHandEvents = this.renderingComplete ? [event] : [event, ...this.boundaryJoins]
+    this.replacedSeats.clear()
+    for (const join of this.boundaryJoins) {
+      const seat = getReplacedDealtSeat(event, join)
+      if (seat !== undefined) this.replacedSeats.add(seat)
+    }
 
     this.currentHand = {
       entries: [],
@@ -155,13 +220,13 @@ export class HandLogProcessor {
     const jstTimestamp = `${jstDate.getUTCFullYear()}/${String(jstDate.getUTCMonth() + 1).padStart(2, '0')}/${String(jstDate.getUTCDate()).padStart(2, '0')} ${String(jstDate.getUTCHours()).padStart(2, '0')}:${String(jstDate.getUTCMinutes()).padStart(2, '0')}:${String(jstDate.getUTCSeconds()).padStart(2, '0')} JST`
 
     // キャッシュゲームかトーナメントかを判定
-    const isCashGame = this.context.session.battleType !== undefined && [4, 5].includes(this.context.session.battleType)
+    const isCashGame = this.handSession.battleType !== undefined && [4, 5].includes(this.handSession.battleType)
 
     let headerText: string
     if (isCashGame) {
       headerText = `PokerStars Hand #pending: Hold'em No Limit (${event.Game.SmallBlind}/${event.Game.BigBlind}) - ${jstTimestamp}`
     } else {
-      const sessionName = this.context.session.name || 'Unknown'
+      const sessionName = this.handSession.name || 'Unknown'
       // ブラインドレベルをローマ数字に変換
       const blindLevel = this.getBlindLevelRoman(event.Game.CurrentBlindLv)
       headerText = `PokerStars Hand #pending: Tournament #pending, ${sessionName} Hold'em No Limit - Level ${blindLevel} (${event.Game.SmallBlind}/${event.Game.BigBlind}) - ${jstTimestamp}`
@@ -171,7 +236,7 @@ export class HandLogProcessor {
     entries.push(headerEntry)
 
     const tableEntry = this.createEntry(
-      `Table '${this.context.session.name || 'Unknown'}' ${MAX_SEATS}-max Seat #${event.Game.ButtonSeat + 1} is the button`,
+      `Table '${this.handSession.name || 'Unknown'}' ${MAX_SEATS}-max Seat #${event.Game.ButtonSeat + 1} is the button`,
       HandLogEntryType.HEADER
     )
     entries.push(tableEntry)
@@ -282,7 +347,8 @@ export class HandLogProcessor {
   }
 
   private handleActionEvent(event: ApiEvent<ApiType.EVT_ACTION>): HandLogEntry[] {
-    if (!this.currentHand) return []
+    if (!this.currentHand || this.currentHand.isComplete ||
+        (this.identityEvidence ? this.identityEvidence.atOrAfterBoundary(event.SeatIndex, event) : this.replacedSeats.has(event.SeatIndex))) return []
 
     const playerId = this.currentHand.seatUserIds[event.SeatIndex] || -1
     const playerName = this.getPlayerName(playerId)
@@ -295,7 +361,7 @@ export class HandLogProcessor {
   }
 
   private handleDealRoundEvent(event: ApiEvent<ApiType.EVT_DEAL_ROUND>): HandLogEntry[] {
-    if (!this.currentHand) return []
+    if (!this.currentHand || this.currentHand.isComplete) return []
 
     const streetName = this.getStreetName(event.Progress.Phase)
 
@@ -326,7 +392,7 @@ export class HandLogProcessor {
   }
 
   private handleHandResultsEvent(event: ApiEvent<ApiType.EVT_HAND_RESULTS>): HandLogEntry[] {
-    if (!this.currentHand) return []
+    if (!this.currentHand || this.currentHand.isComplete) return []
 
     const entries: HandLogEntry[] = []
 
@@ -343,7 +409,7 @@ export class HandLogProcessor {
       // ヘッダーテキストを特別に更新
       if (entry.type === HandLogEntryType.HEADER && entry.text.includes('#pending')) {
         // For HandLogStream, we need to update the tournament ID as well
-        if (this.context.session.battleType !== undefined && ![4, 5].includes(this.context.session.battleType)) {
+        if (this.handSession.battleType !== undefined && ![4, 5].includes(this.handSession.battleType)) {
           // Store first hand ID for tournament ID
           if (!this.firstHandId) {
             this.firstHandId = event.HandId
@@ -1597,9 +1663,9 @@ export class HandLogProcessor {
       }
     }
     
-    const isCashGame = this.context.session.battleType !== undefined && [4, 5].includes(this.context.session.battleType)
+    const isCashGame = this.handSession.battleType !== undefined && [4, 5].includes(this.handSession.battleType)
     const rakeAccounting = isCashGame && this.currentDealEvent
-      ? deriveHandRakeAccounting(this.currentDealEvent, event, this.context.session.battleType)
+      ? deriveHandRakeAccounting(this.currentDealEvent, event, this.handSession.battleType, this.accountingEvents ?? this.currentHandEvents)
       : null
     const rake = isCashGame ? rakeAccounting?.rake ?? null : 0
 

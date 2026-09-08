@@ -5,6 +5,7 @@ import type { ApiEvent, ApiHandEvent, Progress } from '../types'
 import { ErrorHandler } from '../utils/error-handler'
 import { setHandImprovementHeroHoleCards } from '../realtime-stats'
 import type { CanonicalWriteFailureError } from './write-entity-stream'
+import { captureHandSession } from '../utils/hand-session-context'
 import {
   getEventGeneration,
   setStatsRequestContext
@@ -28,6 +29,8 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
   private events: ApiHandEvent[] = []
   private progress?: Progress
   private lastTimestamp = 0
+  private boundaryJoins: ApiEvent<ApiType.EVT_PLAYER_JOIN>[] = []
+  private completedBoundaryEvents: ApiHandEvent[] = []
 
   constructor(service: PokerChaseService) {
     super()
@@ -35,6 +38,9 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
   }
   protected async transform(event: ApiEvent): Promise<void> {
     try {
+      this.boundaryJoins = this.boundaryJoins.filter(join => join.timestamp === event.timestamp)
+      const completedResult = this.completedBoundaryEvents.find(item => item.ApiTypeId === ApiType.EVT_HAND_RESULTS)
+      if (completedResult?.timestamp !== event.timestamp) this.completedBoundaryEvents = []
       /** 順序整合性チェック */
       if (this.lastTimestamp > event.timestamp!)
         this.events = []
@@ -62,6 +68,7 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           this.service.session.setName(event.Name)
           break
         case ApiType.EVT_PLAYER_SEAT_ASSIGNED:
+          if (this.events.length > 0) this.events.push(event)
           // プレイヤー名とランクをセッションに保存
           if (event.TableUsers) {
             event.TableUsers.forEach(tableUser => {
@@ -73,6 +80,14 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           }
           break
         case ApiType.EVT_PLAYER_JOIN:
+          // 席交代の境界を会計へ渡す。名前更新だけで捨てない（MUST NOT）。
+          this.boundaryJoins.push(event)
+          if (this.events.length > 0) this.events.push(event)
+          if (this.completedBoundaryEvents.length > 0) {
+            // 同一msの後着301は同じHandIdを既存のcanonical+ledger置換で修正する。
+            this.completedBoundaryEvents = [...this.completedBoundaryEvents, event]
+            this.push([...this.completedBoundaryEvents])
+          }
           // 途中参加者のプレイヤー名とランクをセッションに保存
           if (event.JoinUser) {
             this.service.session.setPlayer(event.JoinUser.UserId, {
@@ -82,6 +97,7 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           }
           break
         case ApiType.EVT_DEAL:
+          captureHandSession(event, this.service.session)
           // プレイヤーIDの割り当て。
           //
           // 【根本原因メモ】event.Player は「観戦モード」（ヒーローが着席していない
@@ -189,8 +205,7 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
 
           // ハンドの集約
           this.progress = event.Progress
-          this.events = []
-          this.events.push(event)
+          this.events = [event, ...this.boundaryJoins]
           break
         case ApiType.EVT_DEAL_ROUND:
           this.progress = event.Progress
@@ -227,7 +242,8 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
         case ApiType.EVT_HAND_RESULTS:
           this.events.push(event)
           if (this.events.length > 0 && this.events[0]?.ApiTypeId === ApiType.EVT_DEAL) {
-            this.push(this.events)
+            this.completedBoundaryEvents = [...this.events]
+            this.push([...this.events])
           } else {
             // DEALが無いRESULTSはライブ集約では派生しない。既存のfull replayへ
             // exact fenceを渡すため、成功ackせずfailedとして残す（MUST）。

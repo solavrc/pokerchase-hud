@@ -217,7 +217,13 @@ canonical dirty markerも置く。したがってraw保存直後・再構築開�
 Service Workerが終了しても、次回起動はstaleな派生表を成功状態として扱わない。
 
 liveの`EVT_HAND_RESULTS`（306）は、Raw Lakeの主キー`[timestamp+ApiTypeId+sequence]`ごとの
-pending derivation fenceをraw rowと同じtransactionで保存する。完了ハンドのcanonical entityと
+pending derivation fenceをraw rowと同じtransactionで保存する。
+同msの306が保存済みの状態で301を追加する場合も、301自身のraw keyと影響先HandIdを使った
+独立fenceを同じraw transactionで作る。v1構造は維持し、rawKeyのtypeは306または301。
+既存306のIDは互換のまま、301のIDにはtypeを含める。WESは成功したhand buffer中の301だけを
+そのHandIdで原子的ackする。旧306だけをcapturedしたcloud activationでは新301を消さず、
+worker停止や完了buffer欠落時は同じ全Lake復旧へ渡す。301のraw payloadへHandIdは追加しない。
+完了ハンドのcanonical entityと
 統計台帳のcommitが成功した時、またはschema不適合・cross-generation/chimera判定で
 意図的に派生しないと確定した時に、対応するexact fenceだけを消す。揮発バッファ先頭に
 DEALがない306は意図的に派生せず、先にfenceを消さない。

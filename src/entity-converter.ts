@@ -35,6 +35,8 @@ import { resolveActionPhase } from './utils/action-phase'
 import { getApplicableActionMenu, getRaiseAvailability } from './utils/action-raise-option'
 import { getPositionMap, getBigBlindUserId } from './utils/position-utils'
 import { deriveHandSettlement } from './utils/hand-chip-accounting'
+import { getSeatIdentityEvidence } from './utils/seat-occupancy'
+import { snapshotHandSession } from './utils/hand-session-context'
 
 /**
  * エンティティバンドル（一括保存用）
@@ -54,6 +56,9 @@ type MutableSession = Omit<Session, 'players'> & {
  */
 export class EntityConverter {
   private currentHandEvents: ApiHandEvent[] = []
+  private boundaryJoins: ApiEvent<ApiType.EVT_PLAYER_JOIN>[] = []
+  private completedTimestamp: number | undefined
+  private currentHandSession: Readonly<Hand['session']> | undefined
   private currentSession: MutableSession
 
   constructor(session: Session) {
@@ -92,6 +97,10 @@ export class EntityConverter {
     }
 
     for (const event of events) {
+      // 306で即時確定すると同一msの後着301を失う。次時刻またはflushまで保留する。
+      if (this.completedTimestamp !== undefined && event.timestamp !== this.completedTimestamp) this.appendCurrentHand(entities)
+      this.boundaryJoins = this.boundaryJoins.filter(join => join.timestamp === event.timestamp)
+      if (event.ApiTypeId === ApiType.EVT_PLAYER_JOIN) this.boundaryJoins.push(event)
       // セッション開始イベントの処理
       if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
         const isSameMtt = this.currentSession.battleType === BattleType.TOURNAMENT &&
@@ -131,13 +140,16 @@ export class EntityConverter {
       if (event.ApiTypeId === ApiType.EVT_DEAL) {
         // 前のハンドが完了していない場合も処理
         this.appendCurrentHand(entities)
-        this.currentHandEvents = [event as ApiHandEvent]
-      } else if (this.currentHandEvents.length > 0) {
+        this.currentHandEvents = [event, ...this.boundaryJoins]
+        this.currentHandSession = snapshotHandSession(this.currentSession)
+      } else if (this.currentHandEvents.length > 0 &&
+          (this.completedTimestamp === undefined || event.ApiTypeId === ApiType.EVT_PLAYER_JOIN)) {
+        // 完成後の再評価へ加えるのは同時刻の301だけ。次sessionのlifecycleは混ぜない。
         this.currentHandEvents.push(event as ApiHandEvent)
 
         // EVT_HAND_RESULTSでハンド終了
         if (event.ApiTypeId === ApiType.EVT_HAND_RESULTS) {
-          this.appendCurrentHand(entities)
+          this.completedTimestamp = event.timestamp
         }
       }
     }
@@ -155,19 +167,21 @@ export class EntityConverter {
   private appendCurrentHand(entities: EntityBundle): void {
     if (this.currentHandEvents.length === 0) return
 
-    const handEntities = this.convertHandEvents(this.currentHandEvents, this.currentSession)
+    const handEntities = this.convertHandEvents(this.currentHandEvents, this.currentHandSession ?? this.currentSession)
     if (handEntities) {
       entities.hands.push(handEntities.hand)
       entities.phases.push(...handEntities.phases)
       entities.actions.push(...handEntities.actions)
     }
     this.currentHandEvents = []
+    this.currentHandSession = undefined
+    this.completedTimestamp = undefined
   }
 
   /**
    * 1ハンド分のイベントをエンティティに変換
    */
-  private convertHandEvents(events: ApiHandEvent[], session: Session): { hand: Hand, phases: Phase[], actions: Action[] } | null {
+  private convertHandEvents(events: ApiHandEvent[], session: Readonly<Hand['session']>): { hand: Hand, phases: Phase[], actions: Action[] } | null {
     if (events.length === 0) return null
 
     const handState: HandState = {
@@ -184,6 +198,8 @@ export class EntityConverter {
 
     let progress: Progress | undefined
     let dealEvent: ApiEvent<ApiType.EVT_DEAL> | undefined
+    const bufferedDeal = events.find(event => event.ApiTypeId === ApiType.EVT_DEAL)
+    const identity = bufferedDeal ? getSeatIdentityEvidence(bufferedDeal, events) : undefined
     // 進行中のストリート。EVT_DEAL_ROUND と、各アクションの権威的な
     // Progress.Phase の両方で進む（#340、WriteEntityStreamと同一ロジック）。
     // ハンド終了行（Phase=3固定）のフォールバックはここを見る — 直近にpushされた
@@ -193,6 +209,8 @@ export class EntityConverter {
 
     for (const event of events) {
       switch (event.ApiTypeId) {
+        case ApiType.EVT_PLAYER_JOIN:
+          break
         case ApiType.EVT_ENTRY_QUEUED:
           // 201で以前の卓のメニューだけを失効させ、ハンドは保持する（MUST）。
           progress = undefined
@@ -234,6 +252,15 @@ export class EntityConverter {
         }
 
         case ApiType.EVT_ACTION: {
+          // 卓の進行は人物帰属とは独立。交代席が開いたstreetも次の終了行へ伝える。
+          const phase = resolveActionPhase(event, runningPhase)
+          const opensNewStreet = phase !== runningPhase
+          runningPhase = phase
+          // 交代後の行動を配札時の人物へ帰属させない（MUST NOT）。
+          if (identity?.atOrAfterBoundary(event.SeatIndex, event)) {
+            progress = event.Progress
+            break
+          }
           // handIdはEVT_HAND_RESULTSで設定されるため、ここではhandの存在のみチェック
           if (!handState.hand.seatUserIds) break
 
@@ -256,10 +283,6 @@ export class EntityConverter {
           // Progress.Phase を正とする（#340、WriteEntityStreamと同一ロジック）。
           // ALL_INの正規化はストリート確定より後で行う（この行自身が新ストリートを
           // 開いた場合、直前のprogressは前ストリート終了時点のもので使えない）。
-          const phase = resolveActionPhase(event, runningPhase)
-          const opensNewStreet = phase !== runningPhase
-          runningPhase = phase
-
           const actionMenu = getApplicableActionMenu(progress, event.SeatIndex, phase)
           const actionDetails: ActionDetail[] = []
           const actionType = this.normalizeAllInAction(event, actionMenu, phase, opensNewStreet, actionDetails)
@@ -350,7 +373,8 @@ export class EntityConverter {
             // ALL_INステータスのプレイヤーもこのフェーズの参加者に含める
             // （#115）。FOLDEDのプレイヤーのみが引き続き除外される。
             const seatUserIds = (event.Player ? [event.Player, ...event.OtherPlayers] : event.OtherPlayers)
-              .filter(({ BetStatus }) => BetStatus === BetStatusType.BET_ABLE || BetStatus === BetStatusType.ALL_IN)
+              .filter(({ SeatIndex, BetStatus }) => !identity?.atOrAfterBoundary(SeatIndex, event) &&
+                (BetStatus === BetStatusType.BET_ABLE || BetStatus === BetStatusType.ALL_IN))
               .sort((a, b) => a.SeatIndex - b.SeatIndex)
               .map(({ SeatIndex }) => handState.hand.seatUserIds.at(SeatIndex)!)
             handState.phases.push({

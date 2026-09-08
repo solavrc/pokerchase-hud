@@ -7,7 +7,7 @@
 import { SimpleTransform } from './simple-transform'
 import type PokerChaseService from '../app'
 import type { ApiEvent } from '../types/api'
-import { ApiType, isApiEventType } from '../types/api'
+import { ApiType } from '../types/api'
 import type { ErrorContext } from '../types/errors'
 import {
   HandLogEntry,
@@ -63,17 +63,19 @@ export class HandLogStream extends SimpleTransform<ApiEvent, HandLogEvent> {
               this.emitHandLogEvent('add', newEntries)
             }
             break
+          case ApiType.EVT_PLAYER_JOIN:
           case ApiType.EVT_HAND_RESULTS: {
-            if (this.processor.isHandComplete() && isApiEventType(event, ApiType.EVT_HAND_RESULTS)) {
+            if (this.processor.isHandComplete() && newEntries.length > 0) {
               const allEntries = this.processor.getCurrentHandEntries()
-              this.completedHands.push(allEntries)
+              const handId = allEntries[0]?.handId
+              const previous = this.completedHands.findIndex(entries => entries[0]?.handId === handId)
+              if (previous >= 0) this.completedHands[previous] = allEntries
+              else this.completedHands.push(allEntries)
               const maxHands = this.service.handLogConfig?.maxHands || DEFAULT_HAND_LOG_CONFIG.maxHands
               if (this.completedHands.length > maxHands) {
                 this.completedHands = this.completedHands.slice(-maxHands)
               }
-              this.emitHandLogEvent('update', allEntries, event.HandId)
-              // Reset only hand-specific state, preserving session state
-              this.processor.resetHandState()
+              this.emitHandLogEvent('update', allEntries, handId)
             }
             break
           }
