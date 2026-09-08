@@ -26,6 +26,7 @@ import type { ErrorContext } from '../types/errors'
 import type { AppError } from '../types/errors'
 import { deriveHandSettlement } from '../utils/hand-chip-accounting'
 import { getSeatIdentityEvidence } from '../utils/seat-occupancy'
+import { deriveFlopParticipation } from '../utils/flop-participation'
 import { getHandSession, snapshotHandSession } from '../utils/hand-session-context'
 import { getIdentityStatEligibility, IDENTITY_CONTEXT_STAT_IDS } from '../utils/identity-stat-eligibility'
 import {
@@ -305,6 +306,11 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           runningPhase = phase
           // 交代後の行動を配札時の人物へ帰属させない（MUST NOT）。
           if (identity?.atOrAfterBoundary(event.SeatIndex, event)) {
+            if (phase === PhaseType.PREFLOP) {
+              const userId = bufferedDeal!.SeatUserIds[event.SeatIndex]!
+              const omitted = handState.hand.preflopIdentityUnprovenPlayerIds ??= []
+              if (!omitted.includes(userId)) omitted.push(userId)
+            }
             progress = event.Progress
             progressEvent = event
             break
@@ -432,54 +438,21 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           // を計算すると、EVT_HAND_RESULTSのCommunityCardsを二重に数えてしまう）。
           const fullBoard = [...handState.phases.at(-1)!.communityCards, ...event.CommunityCards]
 
-          // プリフロップ全員オールインでストリートが自動進行した場合、PokerChaseは
-          // 残りのEVT_DEAL_ROUNDを一切送信せず、コミュニティカードは全てこの
-          // EVT_HAND_RESULTS.CommunityCardsにまとめて届く（docs/api-events.md
-          // 「EVT_DEAL_ROUND: CommunityCards」）。この場合FLOPフェーズが一度も
-          // pushされないため、WTSD/WWSFの「flops seen」分母がゼロ扱いになり、
-          // PT4公式定義（プリフロップオールインを含む「flops seen」）と食い違う
-          // （#115で修正した通常のDEAL_ROUND経由のALL_IN救済では、DEAL_ROUND自体が
-          // 送信されないこのケースを救えていなかった。sola監査、#115未解決コメント）。
-          // フェーズ配列にFLOPが一度も現れておらず、かつボードが3枚以上到達して
-          // いる場合のみ、FLOPフェーズを合成する。BetStatusのスナップショットが
-          // 存在しないため、通常経路（BET_ABLE || ALL_IN）の代わりに以下2条件の
-          // AND でメンバーシップを判定する（PR #184 codex review, P2）:
-          //   (i)  PREFLOPフェーズでFOLDアクションを送っていない（#97のフォールド
-          //        除外と同じ結論）
-          //   (ii) EVT_HAND_RESULTS.Results[]に存在する
-          // (i)単独では不十分: タイムアウト/切断したプレイヤーは明示的なFOLDの
-          // EVT_ACTIONが送信されないことがあり、かつこの場合Results[]にも一切
-          // 含まれない（docs/api-events.md「EVT_ACTION: 送信されないケース」
-          // 「タイムアウト / 切断」、src/types/api.ts EVT_HAND_RESULTS.Results[].UserId
-          // のdescribe）。このプレイヤーはフォールドもオールインもしていない
-          // （黙って消えただけ）ため、(i)だけで判定するとFLOP合成メンバーに誤って
-          // 含まれてしまう。
-          // (ii)単独でも不十分: PREFLOPでFOLDしたプレイヤーがFOLD_OPEN（フォールド後
-          // の自発的カード公開）を選んだ場合、そのプレイヤーはResults[]に含まれる
-          // （RankType=12）にもかかわらずFLOPを見ていない（src/types/api.ts
-          // 「フォールド済みプレイヤーはFOLD_OPENしない限りResults[]に含まれない」＝
-          // FOLD_OPENなら含まれる）。
-          // 一方、真にプリフロップオールインでボードが自動進行した生存者は、それ以上
-          // ベット判断の余地がないため必ずショーダウンへ到達しResults[]に実役
-          // （RankType 0-9）またはSHOWDOWN_MUCK（11）で現れる — src/types/api.ts の
-          // 不変条件「Pot + sum(SidePot) == sum(Results[].RewardChip)」が100%成立する
-          // こと（docs/api-events.md該当行）はチップを持つ全参加者がResults[]に
-          // エントリを持つことを要求する。したがって両条件のANDのみがゲームの実際の
-          // 意味論と一致する。
-          if (fullBoard.length >= 3 && !handState.phases.some(p => p.phase === PhaseType.FLOP)) {
-            const preflopFoldedPlayerIds = new Set(
-              handState.actions
-                .filter(a => a.phase === PhaseType.PREFLOP && a.actionType === ActionType.FOLD)
-                .map(a => a.playerId)
-            )
-            const resultUserIds = new Set(event.Results.map(({ UserId }) => UserId))
-            handState.phases.push({
+          // 305省略時も、配信済み305が人物境界で不採用のときも、直接の人物証拠を使う。
+          const flop = handState.phases.find(phase => phase.phase === PhaseType.FLOP)
+          if (flop || fullBoard.length >= 3) {
+            const participation = deriveFlopParticipation(dealEvent!, events, identity!,
+              handState.actions, flop, event, fullBoard.length)
+            if (flop) flop.seatUserIds = participation.seatUserIds
+            else handState.phases.push({
+              handId: event.HandId,
               phase: PhaseType.FLOP,
-              seatUserIds: handState.hand.seatUserIds.filter(uid =>
-                uid !== -1 && !preflopFoldedPlayerIds.has(uid) && resultUserIds.has(uid)
-              ),
+              seatUserIds: participation.seatUserIds,
               communityCards: fullBoard.slice(0, 3),
             })
+            if (participation.unprovenPlayerIds.length > 0) {
+              handState.hand.flopParticipationUnprovenPlayerIds = participation.unprovenPlayerIds
+            }
           }
 
           // ショーダウンフェーズの生成（実際にカードを比較したプレイヤーが2名以上いる場合）

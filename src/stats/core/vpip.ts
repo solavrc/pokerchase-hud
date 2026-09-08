@@ -23,6 +23,7 @@
 import type { StatDefinition, ActionDetailContext } from '../../types/stats'
 import { ActionDetail, ActionType, PhaseType } from '../../types/game'
 import { formatPercentage } from '../utils'
+import { countPreflopStatOpportunities } from '../preflop-trials'
 
 export const vpipStat: StatDefinition = {
   id: 'vpip',
@@ -36,20 +37,8 @@ export const vpipStat: StatDefinition = {
       a.actionDetails.includes(ActionDetail.VPIP)
     ).length
 
-    // このプレイヤーが何らかのプリフロップアクションを行ったハンドIDの集合
-    const handIdsWithPreflopAction = new Set(
-      actions
-        .filter(a => a.phase === PhaseType.PREFLOP && a.handId !== undefined)
-        .map(a => a.handId!)
-    )
-
-    // 機会（分母）: 自分がBBを務め、かつそのハンドで一度もプリフロップ
-    // アクションを行っていないハンド（ウォーク/BBアクションスキップ）を除外
-    const opportunityHands = hands.filter(hand =>
-      !(hand.bigBlindUserId === playerId && !handIdsWithPreflopAction.has(hand.id))
-    )
-
-    return [voluntaryHandsCount, opportunityHands.length]
+    const opportunities = countPreflopStatOpportunities(playerId, actions, hands)
+    return [voluntaryHandsCount, opportunities.vpip]
   },
   format: formatPercentage,
 

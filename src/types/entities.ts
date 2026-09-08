@@ -95,6 +95,10 @@ export const handSchema = z.object({
   id: z.number(),
   /** 人物交代の証拠を含む観測で勝者を証明できないhand。欠落は従来互換。 */
   winnerIdentityUnproven: z.literal(true).optional(),
+  /** 人物境界で除外したpreflop ACTIONの旧UID。保持済みの初回行動・raise・FOLDは別に評価する。 */
+  preflopIdentityUnprovenPlayerIds: z.array(z.number()).optional(),
+  /** FLOPは到達済みだが、人物境界または無305のFOLD_OPENだけでは参加を肯定・否定できないUID。 */
+  flopParticipationUnprovenPlayerIds: z.array(z.number()).optional(),
   approxTimestamp: z.number().optional(),
   seatUserIds: z.array(z.number()),
   winningPlayerIds: z.array(z.number()),

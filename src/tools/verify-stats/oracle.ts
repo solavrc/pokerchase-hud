@@ -26,33 +26,11 @@
  *      BET_ABLEでflopを見たplayerはflopで必ず1回以上actionし、preflop all-in playerは
  *      actionしない。2つ目のBetStatus導出を追加せず、lineage semantics（PT4 custom stat
  *      "WTSD without preflop all-ins" / Hand2Note "Flop Any Action"）を再現する。
- *  (a4b) DEAL_ROUNDが省略されるpreflop all-in（#115後の監査）: 残った全playerがpreflopで
- *      all-inになると、PokerChaseはその後のEVT_DEAL_ROUNDをすべて省略し、残りのboard全体を
- *      EVT_HAND_RESULTS.CommunityCardsで送る（docs/api-events.mdに記録）。この場合FLOP phaseの
- *      BetStatus snapshotは存在せず、(a)だけではこれらのhandが「flops seen」から黙って欠落する。
- *      pipeline自身にも指摘された同じgapである（PR #115の未解決review thread）。このoracleは
- *      entity-converter.ts / write-entity-stream.tsとは独立した独自fallbackで補う。FLOP phaseの
- *      EVT_DEAL_ROUNDが一度も観測されず、累積board（DEAL_ROUND CommunityCards +
- *      EVT_HAND_RESULTS.CommunityCards）が3枚以上なら、「saw flop」は、(i) PREFLOP FOLD actionを
- *      行っておらず、かつ(ii) EVT_HAND_RESULTS.Results[]に存在する全dealt seatとする。
- *      (i)だけでは不十分である（PR #184 Codex review, P2）。timeout / disconnectでは、その席の
- *      明示的なFOLD EVT_ACTIONが送られず、player自体もResults[]から省略される場合がある
- *      （docs/api-events.md「EVT_ACTION: 送信されないケース」/「タイムアウト / 切断」、および
- *      src/types/api.tsのEVT_HAND_RESULTS.Results[].UserId doc「タイムアウト/切断プレイヤーは
- *      Results[]に含まれない場合がある」）。そのplayerはfoldもall-inもせず黙って消えるため、
- *      FOLD actionだけの判定では誤って合成FLOPへ残る。
- *      Results[]への存在を条件にするとこのgapを閉じられる。実際のpreflop all-in survivorは、
- *      競争中の全playerがall-inで以後のbetting decisionがないため、無条件にshowdownへ進み、
- *      実RankType（0〜9）またはSHOWDOWN_MUCK（11）でResults[]に存在する。これは
- *      src/types/api.ts自身の不変条件`Pot + sum(SidePot) == sum(Results[].RewardChip)`が100%成立する
- *      こと（docs/api-events.md「サイドポットの仕様」）からも確認でき、chipを持つ全contestantの
- *      Results[] entryが
- *      必要である。(ii)に加えて(i)のFOLD action判定も必要になる。preflopでfoldした後に
- *      FOLD_OPEN（self reveal）を選んだplayerはflopを見ていなくてもResults[]に現れる
- *      （RankType=12。src/types/api.ts「フォールド済みプレイヤーはFOLD_OPENしない限りResults[]に
- *      含まれない」）。したがってResults[]への存在だけでも不十分で、両条件のANDだけが実際の
- *      game semanticsに一致する。この判定はfile内の他のfold除外と同じくactions / resultsから
- *      意図的に導出し、pipelineのfallbackをcopyしない。
+ *  (a4b) 305省略時も配信済みの場合も、FLOP参加は人物証拠から導出する。
+ *      帰属可能なactive snapshot・postflop行動と、board3枚以上＋2名以上の正当な
+ *      showdownにおける直接UIDを肯定し、既知preflop FOLD・明示不参加snapshotを否定する。
+ *      FOLD_OPENやResultsの存在だけで肯定しない。この有限FLOP再計算は人物境界も独立に
+ *      読むが、oracle全統計へidentity処理を拡張するものではない。
  *  (a3) VPIP / PFRの分母からwalkを除く。playerがBB（Game.BigBlindSeat）でpreflop actionが0件の
  *      handを対象とする。真のwalkのほか、`NextActionSeat === -2`となりBBのcheckがEVT_ACTIONで
  *      送られない「BB action skip」も含む（docs/api-events.md「EVT_ACTION: 送信されないケース」）。
@@ -166,7 +144,12 @@ interface RawSessionStartEvent {
   ApiTypeId: ApiType.EVT_ENTRY_QUEUED
   BattleType: BattleType
 }
-type RawEvent = RawDealEvent | RawActionEvent | RawDealRoundEvent | RawHandResultsEvent | RawSessionStartEvent | { ApiTypeId: number }
+interface RawJoinEvent {
+  ApiTypeId: ApiType.EVT_PLAYER_JOIN
+  JoinUser: { UserId: number }
+  JoinPlayer: { SeatIndex: number }
+}
+type RawEvent = (RawDealEvent | RawActionEvent | RawDealRoundEvent | RawHandResultsEvent | RawSessionStartEvent | RawJoinEvent | { ApiTypeId: number }) & { timestamp?: number }
 
 const rawSeatSnapshot = (
   event: { Player?: RawSeatPlayer, OtherPlayers?: RawSeatPlayer[] },
@@ -611,6 +594,59 @@ function normalizeAllIn(
   return ActionType.CALL
 }
 
+/** FLOPに必要な直接事実だけをrawから再計算する。本体の参加・人物helperは共有しない（MUST NOT）。 */
+function rawFlopParticipants(deal: RawDealEvent, results: RawHandResultsEvent, events: RawEvent[], boardCount: number) {
+  const boundaries = new Map<number, RawEvent>()
+  for (const event of events) {
+    if (event.ApiTypeId !== ApiType.EVT_PLAYER_JOIN) continue
+    const join = event as RawJoinEvent
+    const seat = join.JoinPlayer?.SeatIndex
+    const userId = join.JoinUser?.UserId
+    if (!Number.isSafeInteger(seat) || !Number.isSafeInteger(userId) || userId < 0 ||
+        deal.SeatUserIds[seat] === undefined || deal.SeatUserIds[seat] === -1 || deal.SeatUserIds[seat] === userId) continue
+    const prior = boundaries.get(seat)
+    if (!prior || event.timestamp! < prior.timestamp!) boundaries.set(seat, event)
+  }
+  const supported = (seat: number, event: RawEvent) => {
+    const boundary = boundaries.get(seat)
+    return !boundary || (Number.isFinite(event.timestamp) && Number.isFinite(boundary.timestamp) &&
+      event.timestamp! < boundary.timestamp!)
+  }
+  const active = new Set<number>()
+  const inactive = new Set<number>()
+  const postflop = new Set<number>()
+  let sawRound = false
+  let phase = 0
+  for (const event of events) {
+    if (event.ApiTypeId === ApiType.EVT_ACTION) {
+      const action = event as RawActionEvent
+      phase = rawActionPhase(action, phase)
+      if (!supported(action.SeatIndex, event)) continue
+      const userId = deal.SeatUserIds[action.SeatIndex]!
+      if (phase === 0 && action.ActionType === ActionType.FOLD) inactive.add(userId)
+      if (phase > 0) postflop.add(userId)
+    } else if (event.ApiTypeId === ApiType.EVT_DEAL_ROUND) {
+      const round = event as RawDealRoundEvent
+      phase = round.Progress.Phase
+      if (phase !== 1) continue
+      sawRound = true
+      for (const player of round.Player ? [round.Player, ...round.OtherPlayers] : round.OtherPlayers) {
+        if (!supported(player.SeatIndex, event)) continue
+        const userId = deal.SeatUserIds[player.SeatIndex]!
+        if (player.BetStatus === BetStatusType.BET_ABLE || player.BetStatus === BetStatusType.ALL_IN) active.add(userId)
+        if ([BetStatusType.FOLDED, BetStatusType.NOT_IN_PLAY, BetStatusType.ELIMINATED].includes(player.BetStatus)) inactive.add(userId)
+      }
+    }
+  }
+  if (!sawRound && boardCount < 3) return undefined
+  for (const userId of postflop) if (!inactive.has(userId)) active.add(userId)
+  const showdown = results.Results.filter(result => (result.RankType >= 0 && result.RankType <= 9) || result.RankType === 11)
+  if (boardCount >= 3 && showdown.length >= 2) {
+    for (const result of showdown) if (!inactive.has(result.UserId)) active.add(result.UserId)
+  }
+  return new Set(deal.SeatUserIds.filter(userId => userId !== -1 && active.has(userId)))
+}
+
 export interface RunOracleOptions {
   /** Emit hand-by-hand trace lines to the given sink for the listed hand IDs (debugging aid). */
   traceHandIds?: Set<number>
@@ -623,8 +659,9 @@ export interface RunOracleOptions {
 }
 
 /**
- * Process every complete hand (EVT_DEAL .. EVT_HAND_RESULTS) in `events` and
- * return per-player fractions for every tracked stat.
+ * 完成したhandからplayer別の統計を返す。CLIはorderAndFilterApplicationEventsForReplayで
+ * 現行schemaの検証を済ませて渡す。人物境界を検証する直接呼出しも検証済みrawを使う（MUST）。
+ * ここではwire schemaを独立に複製せず、schemaを通った事実の意味論だけを再計算する。
  */
 export function runOracle(events: unknown[], options: RunOracleOptions = {}): OracleResult {
   const players = new Map<number, PlayerAcc>()
@@ -713,11 +750,6 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
     // preflop actionが0件のBBは、真のwalkでも「BB action skip」でも自発的なdecisionが
     // なかったものとして扱う。docs/api-events.md参照。
     const playersWithPreflopAction = new Set<number>()
-    // Players who FOLDed during PREFLOP this hand -- the only way to leave a
-    // hand before an unconditional preflop-all-in runout (a4b below).
-    const preflopFoldedPlayers = new Set<number>()
-    // Players confirmed to have reached the flop (BetStatus===BET_ABLE at the FLOP deal-round).
-    let flopActivePlayers: Set<number> | undefined
     // Running count of community cards seen via EVT_DEAL_ROUND this hand
     // (a4b below: used to detect a fully-omitted DEAL_ROUND sequence by
     // comparing against the final board size once EVT_HAND_RESULTS arrives).
@@ -757,9 +789,6 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
         const rec: ActionRec = { playerId, actionType: normType }
 
         if (phase === 0) playersWithPreflopAction.add(playerId)
-        // a4b: track PREFLOP folds independent of (a)'s BetStatus-based
-        // derivation, for the DEAL_ROUND-omitted fallback below.
-        if (phase === 0 && normType === ActionType.FOLD) preflopFoldedPlayers.add(playerId)
 
         // WTSDa/WWSFa base (#115): any FLOP-phase action by this player this hand.
         if (phase === PhaseType.FLOP) acc(playerId).flopActionHands.add(handId)
@@ -880,19 +909,6 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
         dealRoundCommunityCardCount += roundEvt.CommunityCards?.length ?? 0
 
         if (runningPhase === 1) {
-          // Semantic-sync (a): "saw flop" = BetStatus===BET_ABLE || BetStatus===ALL_IN
-          // for this seat at the FLOP deal-round, exactly mirroring
-          // entity-converter.ts's / write-entity-stream.ts's phase-membership
-          // filter (#115). PT4's WTSD/WWSF are built on "flops seen" and
-          // explicitly INCLUDE preflop all-in spots; only FOLDED players are
-          // excluded from this population (the #97 fix, which stays in place).
-          const seatPlayers = roundEvt.Player ? [roundEvt.Player, ...roundEvt.OtherPlayers] : roundEvt.OtherPlayers
-          flopActivePlayers = new Set(
-            seatPlayers
-              .filter(p => p.BetStatus === BetStatusType.BET_ABLE || p.BetStatus === BetStatusType.ALL_IN)
-              .map(p => seatUserIds[p.SeatIndex]!)
-              .filter(pid => pid !== -1)
-          )
           cBetter = preflopRaisers.length > 0 ? preflopRaisers[preflopRaisers.length - 1] : undefined
         }
         if (traceHandIds.has(handId)) {
@@ -901,24 +917,8 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
       }
     }
 
-    // a4b: DEAL_ROUND-omitted preflop all-in fallback. If no EVT_DEAL_ROUND
-    // for the FLOP was ever observed (flopActivePlayers still undefined) but
-    // the board nonetheless reached the flop -- the remaining cards arrived
-    // solely via EVT_HAND_RESULTS.CommunityCards -- derive "saw flop"
-    // independently from a BetStatus snapshot that was never sent. A dealt
-    // seat only belongs in the synthesized FLOP if it (i) never took a
-    // PREFLOP FOLD action AND (ii) is present in Results[] -- see this
-    // file's header comment (a4b) for why the AND of both is required: (i)
-    // alone wrongly keeps silent timeout/disconnect seats (no FOLD action
-    // AND absent from Results[]), while (ii) alone wrongly keeps FOLD_OPEN
-    // self-reveals (present in Results[] despite folding preflop).
     const finalBoardCardCount = dealRoundCommunityCardCount + (resultsEvt.CommunityCards?.length ?? 0)
-    if (flopActivePlayers === undefined && finalBoardCardCount >= 3) {
-      const resultUserIds = new Set((resultsEvt.Results || []).map(r => r.UserId))
-      flopActivePlayers = new Set(
-        seatUserIds.filter(pid => pid !== -1 && !preflopFoldedPlayers.has(pid) && resultUserIds.has(pid))
-      )
-    }
+    const flopActivePlayers = rawFlopParticipants(dealEvt, resultsEvt, handEvents, finalBoardCardCount)
 
     // Showdown / WTSD / WSD / WWSF determination from Results.
     const results = resultsEvt.Results || []

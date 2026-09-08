@@ -64,6 +64,9 @@ const RING_REPLACEMENT_EVENTS = readFixture('hand-ring-seat-replacement.ndjson')
 const STREET_OPENING_ALLIN_EVENTS = readFixture('hand-street-opening-allin.ndjson')
 /** CHECK権からのBBレイズ・フロップの先制ベットと、CHECK不可のショートコール。 */
 const CHECK_OPTION_ALLIN_EVENTS = readFixture('hand-check-option-allin.ndjson')
+/** 保存行順をlive到着順にせずtimestampで並べる。同ms内のforward/reverse対照は保持する。 */
+const STAT_EVIDENCE_EVENTS = readFixture('identity-stat-evidence.ndjson')
+  .sort((left, right) => left.timestamp! - right.timestamp!)
 
 const entryEvent = FIXTURE_EVENTS.find(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED)!
 const detailsEvent = FIXTURE_EVENTS.find(event => event.ApiTypeId === ApiType.EVT_SESSION_DETAILS)!
@@ -239,6 +242,24 @@ const replayEveryPath = async (events: ApiEvent[], seed?: SessionSeed) => {
 }
 
 describe('cross-path canonical parity', () => {
+  test('有限18対照の統計根拠をlive・変換・rebuild・importで一致させ、旧projectionも置換する', async () => {
+    const snapshots = await replayEveryPath(STAT_EVIDENCE_EVENTS)
+    const canonical = snapshots.live
+    expect(canonical.hands).toHaveLength(18)
+    expect(snapshots['entity-converter']).toEqual(canonical)
+    expect(snapshots.rebuild).toEqual(canonical)
+    expect(snapshots.import).toEqual(canonical)
+    const stale = structuredClone({ hands: canonical.hands, actions: canonical.actions, phases: canonical.phases })
+    for (const hand of stale.hands) {
+      // 旧版が未知の人物をFLOPへ加えていたprojectionと旧分母を、rawから修復する。
+      const flop = stale.phases.find(phase => phase.handId === hand.id && phase.phase === PhaseType.FLOP)
+      if (flop) flop.seatUserIds.push(...(hand.flopParticipationUnprovenPlayerIds ?? []))
+      delete hand.preflopIdentityUnprovenPlayerIds
+      delete hand.flopParticipationUnprovenPlayerIds
+    }
+    expect(await replay('rebuild', STAT_EVIDENCE_EVENTS, undefined, stale)).toEqual(canonical)
+  })
+
   test.each(['unknown-all-in', 'recovered-all-in', 'unknown-winner'] as const)('identity eligibilityの%sをlive・変換・rebuild・importで一致させる', async variant => {
     const events = variant === 'unknown-winner' ? makeIdentityWinnerFixture(true)
       : makeIdentityActionFixture({ followingType: ActionType.ALL_IN, trustedMenu: variant === 'recovered-all-in' })

@@ -196,8 +196,14 @@ test('live/offline保存と新しいStatsLedgerでの再読込が同じeligibili
 })
 
 
-test('旧version 1の統計台帳を再利用せず、保存済みeligibilityからversion 2へ再計算する', async () => {
-  const bundle = convert(makeIdentityActionFixture({ followingType: ActionType.ALL_IN }))
+test.each([1, 2])('旧version %sの統計台帳を再利用せず、保存済み根拠から現versionへ再計算する', async oldVersion => {
+  const events = makeIdentityActionFixture({ followingType: ActionType.ALL_IN })
+  const playerId = oldVersion === 1 ? 3103 : 3101
+  if (oldVersion === 2) {
+    const first = events.find(event => event.ApiTypeId === ApiType.EVT_ACTION && event.SeatIndex === 0)!
+    events.find(event => event.ApiTypeId === ApiType.EVT_PLAYER_JOIN)!.timestamp = first.timestamp
+  }
+  const bundle = convert(events)
   const db = new PokerChaseDB(indexedDB, IDBKeyRange)
   await db.open()
   try {
@@ -205,20 +211,21 @@ test('旧version 1の統計台帳を再利用せず、保存済みeligibilityか
     await db.actions.bulkPut(bundle.actions)
     await db.phases.bulkPut(bundle.phases)
     const ledger = new StatsLedger(db)
-    const current = await ledger.readPlayerSnapshot(3103)
+    const current = await ledger.readPlayerSnapshot(playerId)
     const head = (await ledger.getActiveHead())!
-    const aggregate = (await db.statPlayerAggregates.get([head.generation, 3103]))!
+    const aggregate = (await db.statPlayerAggregates.get([head.generation, playerId]))!
     const obsolete = structuredClone(bundle)
     delete obsolete.actions.at(-1)!.normalizationUnproven
-    const oldCounters = derivePlayerHandStatContribution(obsolete.hands[0]!, obsolete.actions, obsolete.phases, 3103)!.counters
-    expect(getStatCounter(oldCounters, 'pfr')).toEqual([1, 1])
-    await db.statPlayerAggregates.put({ ...aggregate, version: 1, totals: oldCounters })
-    await db.statHandContributions.where('[generation+playerId]').equals([head.generation, 3103])
-      .modify({ version: 1, counters: oldCounters })
-    await db.meta.put({ id: STATS_LEDGER_HEAD_META_ID, value: { ...head, version: 1 } })
-    const reread = await new StatsLedger(db).readPlayerSnapshot(3103)
+    delete obsolete.hands[0]!.preflopIdentityUnprovenPlayerIds
+    const oldCounters = derivePlayerHandStatContribution(obsolete.hands[0]!, obsolete.actions, obsolete.phases, playerId)!.counters
+    expect(getStatCounter(oldCounters, 'pfr')).toEqual([oldVersion === 1 ? 1 : 0, 1])
+    await db.statPlayerAggregates.put({ ...aggregate, version: oldVersion, totals: oldCounters })
+    await db.statHandContributions.where('[generation+playerId]').equals([head.generation, playerId])
+      .modify({ version: oldVersion, counters: oldCounters })
+    await db.meta.put({ id: STATS_LEDGER_HEAD_META_ID, value: { ...head, version: oldVersion } })
+    const reread = await new StatsLedger(db).readPlayerSnapshot(playerId)
     expect(reread.version).toBe(HAND_STAT_CONTRIBUTION_VERSION)
-    expect(reread.version).toBe(2)
+    expect(reread.version).toBe(3)
     expect(reread.counters).toEqual(current.counters)
     expect(getStatCounter(reread.counters, 'pfr')).toEqual([0, 0])
     expect(reread.diagnostics.baselineBuilt).toBe(true)
