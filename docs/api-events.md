@@ -322,6 +322,26 @@ hand文脈へ保持し、live・再構築・import・ログで同じ境界を評
 交代席の304を旧人物へ付けない場合も、非終了304の`Progress.Phase`は卓の進行として保持する。
 終了304のPhase=3固定という既存例外は変えない。
 
+帰属できない304は、後続の人物が判明していてもベット段階や主導者の履歴に穴を残す。
+最初の該当304と同ms以後、そのhandの3bet・3betfold・CB・CBF・STL・FTSの新しい分子と
+分母を止める。より早いtimestampで確定したflag、帰属できる明示RAISE/CALL/FOLD、street
+到達は維持する。街の変更や後続メニューだけでは、この6指標の履歴は回復しない。
+
+この境界以後のraw ALL_INは、直前のProgress元が303/305または帰属可能な304であり、その元の
+時刻が全先行人物不明304より厳密に後、現在のALL_INより厳密に前で、当該席・street向け非空
+メニューを持つ場合だけ統計用の型を確定する。同ms順、別席、別street、空メニュー、帰属不明の
+Progressからの候補型には`Action.normalizationUnproven=true`を付ける。候補actionTypeは残すが
+確定したBET/RAISE/CALLとしては数えない。既知のpreflop RAISE、raw ALL_INによるVPIP、
+他の確定したpostflop actionをそれぞれ保つ。型が未知のpreflop ALL_INだけでPFRを0/1にせず、
+そのhandに既知RAISEがなければ0/0とする。型未知のpostflop ALL_INだけではPFRを変更しない。
+
+有効な席交代証拠があり精算が未解決なら`Hand.winnerIdentityUnproven=true`とし、
+WWSF/WWSFa/W$SD/RCAの分子・分母へ入れない。到達を測るWTSD/WTSDaや確定CALL、
+独立に閉じた人物会計は保つ。席交代証拠のないlegacy未解決handは従来の意味を維持する。
+これらの有限条件は合成対照とlive・EC・rebuild・importの全経路で検証する。
+`REBUILD_ADVISORY_VERSION=9`の再構築で既存canonicalへ証拠を保存し、統計台帳も更新する。
+台帳の計算規則は`HAND_STAT_CONTRIBUTION_VERSION=2`、counter長・ordinal・Dexie indexは同じ。
+
 ### EVT_DEAL: Player フィールドの欠落
 
 - **観戦モード**: Player フィールド自体が undefined
@@ -405,9 +425,9 @@ fixtureにはショートレイズ可能な`CALL, ALL_IN`と、実RAISEへの矛
 201はライブ集約の進行中ハンドにも保持し、EC/WES/oracleで直前メニューだけを失効する。
 201自体を理由にハンドを棄却せず、ゲームイベント件数やベット段階の数え方は維持する。
 既存の保存済みアクション・統計台帳の修復は
-`REBUILD_ADVISORY_VERSION=8` の案内による「データ再構築」で反映する。
-台帳のcounter構造とordinalは変わらず、再構築が新しい世代へ寄与値を置換するため、
-`HAND_STAT_CONTRIBUTION_VERSION=1`は維持する。
+`REBUILD_ADVISORY_VERSION=8`で導入した「データ再構築」で反映する（現在は9へ包含）。
+counter構造とordinalは変わらない。人物同一性のeligibilityを反映する計算規則の版は2へ更新し、
+旧版の台帳をcanonicalから再計算する。旧canonicalの証拠追加にはRaw Lake再構築が必要になる。
 
 ### Ring: ハンド中のチップ流入（リバイイン／アドオン）
 

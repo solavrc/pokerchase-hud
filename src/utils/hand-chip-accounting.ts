@@ -48,6 +48,8 @@ export interface HandSettlement {
   playerSettlements: PlayerHandSettlementMap
   /** Players who received a positive contested award. */
   winningPlayerIds: number[]
+  /** 人物交代を含む観測で、exactな勝者を証明できない。 */
+  winnerIdentityUnproven?: true
 }
 
 const getDealSnapshot = (event: DealEvent, seatIndex: number): ChipSnapshot | undefined => {
@@ -653,6 +655,7 @@ export const deriveHandSettlement = (
   const unresolved = (): HandSettlement => ({
     playerChipAccounting,
     playerSettlements: emptySettlements(deal),
+    ...(replacedSeats.size > 0 ? { winnerIdentityUnproven: true as const } : {}),
     // Imported legacy rows and intentionally abbreviated tests may omit seat
     // snapshots needed for exact tiers. Preserve only the unambiguous main-pot
     // winner signal in that compatibility case; never fall back to

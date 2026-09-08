@@ -37,6 +37,7 @@ import { getPositionMap, getBigBlindUserId } from './utils/position-utils'
 import { deriveHandSettlement } from './utils/hand-chip-accounting'
 import { getSeatIdentityEvidence } from './utils/seat-occupancy'
 import { snapshotHandSession } from './utils/hand-session-context'
+import { getIdentityStatEligibility, IDENTITY_CONTEXT_STAT_IDS } from './utils/identity-stat-eligibility'
 
 /**
  * エンティティバンドル（一括保存用）
@@ -197,9 +198,11 @@ export class EntityConverter {
     let positionMap: Map<number, Position> = new Map()
 
     let progress: Progress | undefined
+    let progressEvent: ApiHandEvent | undefined
     let dealEvent: ApiEvent<ApiType.EVT_DEAL> | undefined
     const bufferedDeal = events.find(event => event.ApiTypeId === ApiType.EVT_DEAL)
     const identity = bufferedDeal ? getSeatIdentityEvidence(bufferedDeal, events) : undefined
+    const eligibility = bufferedDeal && identity ? getIdentityStatEligibility(bufferedDeal, events, identity) : undefined
     // 進行中のストリート。EVT_DEAL_ROUND と、各アクションの権威的な
     // Progress.Phase の両方で進む（#340、WriteEntityStreamと同一ロジック）。
     // ハンド終了行（Phase=3固定）のフォールバックはここを見る — 直近にpushされた
@@ -214,6 +217,7 @@ export class EntityConverter {
         case ApiType.EVT_ENTRY_QUEUED:
           // 201で以前の卓のメニューだけを失効させ、ハンドは保持する（MUST）。
           progress = undefined
+          progressEvent = undefined
           break
         case ApiType.EVT_DEAL: {
           dealEvent = event
@@ -248,6 +252,7 @@ export class EntityConverter {
           })
 
           progress = event.Progress
+          progressEvent = event
           break
         }
 
@@ -259,6 +264,7 @@ export class EntityConverter {
           // 交代後の行動を配札時の人物へ帰属させない（MUST NOT）。
           if (identity?.atOrAfterBoundary(event.SeatIndex, event)) {
             progress = event.Progress
+            progressEvent = event
             break
           }
           // handIdはEVT_HAND_RESULTSで設定されるため、ここではhandの存在のみチェック
@@ -276,6 +282,7 @@ export class EntityConverter {
           // progressは次のアクションのALL_IN正規化で参照されるため、スキップする場合でも更新する。
           if (playerId === undefined || playerId === -1) {
             progress = event.Progress
+            progressEvent = event
             break
           }
 
@@ -286,6 +293,8 @@ export class EntityConverter {
           const actionMenu = getApplicableActionMenu(progress, event.SeatIndex, phase)
           const actionDetails: ActionDetail[] = []
           const actionType = this.normalizeAllInAction(event, actionMenu, phase, opensNewStreet, actionDetails)
+          const normalizationUnproven = eligibility?.normalizationUnproven(event, progressEvent, phase) ?? false
+          const contextUnproven = eligibility?.contextUnproven(event) ?? false
 
           const phaseActions = handState.actions.filter(action => action.phase === phase)
           const phasePrevBetCount = phaseActions.filter(action =>
@@ -309,12 +318,14 @@ export class EntityConverter {
             phasePlayerActionIndex,
             phasePrevBetCount,
             canRaise: getRaiseAvailability(actionMenu, phase),
+            normalizationUnproven,
             position,
             handState
           }
 
           // 統計モジュールからActionDetailsを収集
           for (const stat of defaultRegistry.getAll()) {
+            if (contextUnproven && IDENTITY_CONTEXT_STAT_IDS.has(stat.id)) continue
             if (stat.detectActionDetails) {
               const detectedDetails = stat.detectActionDetails(detectionContext)
               actionDetails.push(...detectedDetails)
@@ -332,6 +343,7 @@ export class EntityConverter {
             playerId,
             phase,
             actionType,
+            ...(normalizationUnproven ? { normalizationUnproven: true as const } : {}),
             bet: event.BetChip,
             pot: event.Progress.Pot,
             sidePot: event.Progress.SidePot,
@@ -340,6 +352,7 @@ export class EntityConverter {
           })
 
           progress = event.Progress
+          progressEvent = event
           break
         }
 
@@ -392,6 +405,7 @@ export class EntityConverter {
           }
 
           progress = event.Progress
+          progressEvent = event
           break
         }
 
@@ -495,6 +509,7 @@ export class EntityConverter {
             ? deriveHandSettlement(dealEvent, event, handState.hand.session.battleType, events)
             : null
           handState.hand.winningPlayerIds = settlement?.winningPlayerIds ?? []
+          if (settlement?.winnerIdentityUnproven) handState.hand.winnerIdentityUnproven = true
           handState.hand.playerChipAccounting = settlement?.playerChipAccounting ??
             Object.fromEntries(handState.hand.seatUserIds.filter(userId => userId !== -1).map(userId => [String(userId), null]))
           // RIVER_CALLで勝利したアクションにRIVER_CALL_WONを付与する

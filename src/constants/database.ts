@@ -117,7 +117,10 @@ export type DbOperationType = 'import' | 'export' | 'sync' | 'rebuild'
  *
  * version 9: 301で配札席の人物が交代した後の残高・action・phase membershipを
  * 旧人物へ帰属させない。交代前の明示FOLDから確定したhand投入で会計と勝者を修復する。
- * 301を含むRaw Event Lakeから既存handと統計台帳を再構築する。
+ * 帰属不能ACTION後の6統計機会、証明できないALL_IN型、identity由来の未解決勝者を
+ * 分子・分母から分離する。301を含むRaw Event Lakeから既存Hand/Actionの証拠と台帳を
+ * 再構築する。計算規則version 2への台帳再計算だけでは旧canonicalの証拠は復元できない。
+ * version 9は同一の未公開変更にまとめ、Dexieのキー・indexは変更しない。
  *
  * インクリメントすると、拡張機能の更新後に既存ユーザーへ一度だけ
  * 「データ再構築」の実行を促すアドバイソリーが表示される

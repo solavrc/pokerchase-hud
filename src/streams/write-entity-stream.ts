@@ -27,6 +27,7 @@ import type { AppError } from '../types/errors'
 import { deriveHandSettlement } from '../utils/hand-chip-accounting'
 import { getSeatIdentityEvidence } from '../utils/seat-occupancy'
 import { getHandSession, snapshotHandSession } from '../utils/hand-session-context'
+import { getIdentityStatEligibility, IDENTITY_CONTEXT_STAT_IDS } from '../utils/identity-stat-eligibility'
 import {
   getEventGeneration,
   setStatsRequestContext
@@ -224,8 +225,10 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
       statStates: {}
     }
     let progress: Progress | undefined
+    let progressEvent: ApiHandEvent | undefined
     let dealEvent: ApiEvent<ApiType.EVT_DEAL> | undefined
     const identity = bufferedDeal ? getSeatIdentityEvidence(bufferedDeal, events) : undefined
+    const eligibility = bufferedDeal && identity ? getIdentityStatEligibility(bufferedDeal, events, identity) : undefined
     // 進行中のストリート。EVT_DEAL_ROUND と、各アクションの権威的な
     // Progress.Phase の両方で進む（#340、EntityConverterと同一ロジック）。
     // ハンド終了行（Phase=3固定）のフォールバックはここを見る — 直近にpushされた
@@ -248,6 +251,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
         case ApiType.EVT_ENTRY_QUEUED:
           // 201で以前の卓のメニューだけを失効させ、ハンドは保持する（MUST）。
           progress = undefined
+          progressEvent = undefined
           break
         case ApiType.EVT_DEAL:
           dealEvent = event
@@ -267,6 +271,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           handState.hand.bigBlindUserId = getBigBlindUserId(event.SeatUserIds, event.Game.BigBlindSeat)
           runningPhase = event.Progress.Phase
           progress = event.Progress
+          progressEvent = event
           break
         case ApiType.EVT_DEAL_ROUND:
           if (seenDealRoundPhases.has(event.Progress.Phase)) {
@@ -291,6 +296,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
             communityCards: [...handState.phases.at(-1)!.communityCards, ...event.CommunityCards],
           })
           progress = event.Progress
+          progressEvent = event
           break
         case ApiType.EVT_ACTION: {
           // 卓の進行は人物帰属とは独立。交代席が開いたstreetも次の終了行へ伝える。
@@ -300,6 +306,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           // 交代後の行動を配札時の人物へ帰属させない（MUST NOT）。
           if (identity?.atOrAfterBoundary(event.SeatIndex, event)) {
             progress = event.Progress
+            progressEvent = event
             break
           }
           const playerId = handState.hand.seatUserIds[event.SeatIndex]
@@ -313,6 +320,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           // このアクション自体を丸ごとスキップする（ハンドの他のアクションは通常通り処理を続ける）。
           if (playerId === undefined || playerId === -1) {
             progress = event.Progress
+            progressEvent = event
             break
           }
 
@@ -361,6 +369,8 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
               return actionType
             }
           })(event)
+          const normalizationUnproven = eligibility?.normalizationUnproven(event, progressEvent, phase) ?? false
+          const contextUnproven = eligibility?.contextUnproven(event) ?? false
           const phaseActions = handState.actions.filter(action => action.phase === phase)
           const phasePlayerActionIndex = phaseActions.filter(action => action.playerId === playerId).length
           const phasePrevBetCount = phaseActions.filter(action => [ActionType.BET, ActionType.RAISE].includes(action.actionType)).length + Number(phase === PhaseType.PREFLOP)
@@ -373,12 +383,14 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
             phasePlayerActionIndex,
             phasePrevBetCount,
             canRaise: getRaiseAvailability(actionMenu, phase),
+            normalizationUnproven,
             position,
             handState
           }
 
           // 統計モジュールからActionDetailsを収集
           for (const stat of defaultRegistry.getAll()) {
+            if (contextUnproven && IDENTITY_CONTEXT_STAT_IDS.has(stat.id)) continue
             if (stat.detectActionDetails) {
               const detectedDetails = stat.detectActionDetails(detectionContext)
               actionDetails.push(...detectedDetails)
@@ -393,6 +405,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
             phase,
             index: handState.actions.length,
             actionType,
+            ...(normalizationUnproven ? { normalizationUnproven: true as const } : {}),
             bet: event.BetChip,
             pot: event.Progress.Pot,
             sidePot: event.Progress.SidePot,
@@ -400,6 +413,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
             actionDetails,
           })
           progress = event.Progress
+          progressEvent = event
         }
           break
         case ApiType.EVT_HAND_RESULTS: {
@@ -484,6 +498,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
             ? deriveHandSettlement(dealEvent, event, handState.hand.session.battleType, events)
             : null
           handState.hand.winningPlayerIds = settlement?.winningPlayerIds ?? []
+          if (settlement?.winnerIdentityUnproven) handState.hand.winnerIdentityUnproven = true
           handState.hand.playerChipAccounting = settlement?.playerChipAccounting ??
             Object.fromEntries(handState.hand.seatUserIds.filter(userId => userId !== -1).map(userId => [String(userId), null]))
 

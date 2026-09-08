@@ -67,7 +67,7 @@ export const vpipStat: StatDefinition = {
     // プリフロップで、そのプレイヤーの最初のアクションで、CALL/RAISEの場合
     if (phase === PhaseType.PREFLOP &&
         phasePlayerActionIndex === 0 &&
-        [ActionType.RAISE, ActionType.CALL].includes(actionType)) {
+        ([ActionType.RAISE, ActionType.CALL].includes(actionType) || context.normalizationUnproven)) {
       return [ActionDetail.VPIP]
     }
 

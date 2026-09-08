@@ -8,21 +8,23 @@
 import type { StatDefinition, ActionDetailContext } from '../../types/stats'
 import { ActionDetail, ActionType, PhaseType } from '../../types/game'
 import { formatPercentage } from '../utils'
+import { getWinnerIdentityUnprovenHandIds } from '../winner-eligibility'
 
 export const riverCallAccuracyStat: StatDefinition = {
   id: 'riverCallAccuracy',
   name: 'RCA',
   description: 'リバーコール精度',
   helpText: 'リバーでコールした際に勝てた割合(HUD独自指標)',
-  calculate: ({ actions }) => {
+  calculate: ({ actions, hands }) => {
+    const unproven = getWinnerIdentityUnprovenHandIds(hands)
     // リバーでコールしたアクション
     const riverCalls = actions.filter(a => 
-      a.actionDetails.includes(ActionDetail.RIVER_CALL)
+      !a.normalizationUnproven && !unproven.has(a.handId!) && a.actionDetails.includes(ActionDetail.RIVER_CALL)
     )
     
     // リバーでコールして勝利したアクション
     const riverCallWins = actions.filter(a => 
-      a.actionDetails.includes(ActionDetail.RIVER_CALL_WON)
+      !a.normalizationUnproven && !unproven.has(a.handId!) && a.actionDetails.includes(ActionDetail.RIVER_CALL_WON)
     )
     
     return [riverCallWins.length, riverCalls.length]
@@ -38,7 +40,7 @@ export const riverCallAccuracyStat: StatDefinition = {
     const details: ActionDetail[] = []
     
     // リバーでコールアクションの場合
-    if (context.phase === PhaseType.RIVER && context.actionType === ActionType.CALL) {
+    if (context.phase === PhaseType.RIVER && context.actionType === ActionType.CALL && !context.normalizationUnproven) {
       details.push(ActionDetail.RIVER_CALL)
     }
     

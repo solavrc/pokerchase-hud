@@ -29,7 +29,7 @@ export const afqStat: StatDefinition = {
   helpText: 'ポストフロップで(ベット+レイズ)を選んだ頻度。高いほどアグレッシブ',
   calculate: ({ actions }) => {
     // ポストフロップ（フロップ以降）のアクションのみを対象とする（PT4公式定義）
-    const postflopActions = actions.filter(a => a.phase !== PhaseType.PREFLOP)
+    const postflopActions = actions.filter(a => a.phase !== PhaseType.PREFLOP && !a.normalizationUnproven)
 
     const betRaiseCount = postflopActions.filter(a =>
       [ActionType.BET, ActionType.RAISE].includes(a.actionType)

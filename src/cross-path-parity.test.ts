@@ -23,6 +23,7 @@ import { EntityConverter } from './entity-converter'
 import { apiEventSchemas } from './types/api'
 import { getRecentHands } from './services/recent-hands-service'
 import { deriveMidHandChipInflow } from './utils/hand-chip-accounting'
+import { makeIdentityActionFixture, makeIdentityWinnerFixture } from './utils/identity-stat-eligibility.fixtures'
 import { createImportExportHandlers } from './background/import-export'
 import { setOperationState } from './background/operation-state'
 import { mergeApiEvents, type RawApiEvent } from './utils/api-event-key'
@@ -238,6 +239,32 @@ const replayEveryPath = async (events: ApiEvent[], seed?: SessionSeed) => {
 }
 
 describe('cross-path canonical parity', () => {
+  test.each(['unknown-all-in', 'recovered-all-in', 'unknown-winner'] as const)('identity eligibilityの%sをlive・変換・rebuild・importで一致させる', async variant => {
+    const events = variant === 'unknown-winner' ? makeIdentityWinnerFixture(true)
+      : makeIdentityActionFixture({ followingType: ActionType.ALL_IN, trustedMenu: variant === 'recovered-all-in' })
+    const snapshots = await replayEveryPath(events)
+    const canonical = snapshots.live
+    expect(snapshots['entity-converter']).toEqual(canonical)
+    expect(snapshots.rebuild).toEqual(canonical)
+    expect(snapshots.import).toEqual(canonical)
+    const hero = Object.fromEntries(canonical.stats.find(player => player.playerId === 3103)!.statResults
+      .map(stat => [stat.id, stat.value]))
+    if (variant === 'unknown-winner') {
+      expect(hero).toMatchObject({ wwsf: [0, 0], wsd: [0, 0], riverCallAccuracy: [0, 0], wtsd: [1, 1] })
+      expect(canonical.hands[0]).toMatchObject({ winnerIdentityUnproven: true })
+    } else {
+      expect(hero).toMatchObject({ vpip: [1, 1], pfr: variant === 'unknown-all-in' ? [0, 0] : [1, 1], '3bet': [0, 0] })
+      expect(canonical.actions.at(-1)?.normalizationUnproven).toBe(variant === 'unknown-all-in' ? true : undefined)
+    }
+    if (variant !== 'recovered-all-in') {
+      const stale = { hands: structuredClone(canonical.hands), actions: structuredClone(canonical.actions), phases: structuredClone(canonical.phases) }
+      stale.hands.forEach(hand => { delete hand.winnerIdentityUnproven })
+      stale.actions.forEach(action => { delete action.normalizationUnproven })
+      // 旧canonicalとそこから作った統計台帳があっても、raw再構築が両方を置き換える。
+      expect(await replay('rebuild', events, undefined, stale)).toEqual(canonical)
+    }
+  })
+
   test('an anonymized real three-hand capture has identical entities and stats on every path', async () => {
     // Fixture capability checks: this is a real legacy delta-board stream,
     // contains multiple completed hands, and begins with a complete session
