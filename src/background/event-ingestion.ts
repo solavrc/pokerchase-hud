@@ -503,6 +503,7 @@ const processEvent = async (
 
   let portGeneration: number | undefined
   let storedRawEvent: RawApiEvent | undefined
+  let boundaryResults: RawApiEvent[] = []
 
   // Ensure service is ready before processing messages
   try {
@@ -527,17 +528,25 @@ const processEvent = async (
     // duplicate. The indexed lookup + add are one transaction, while the
     // outer ingestionQueue preserves WebSocket arrival order.
     try {
+      if (rawApiTypeId === ApiType.EVT_PLAYER_JOIN) {
+        boundaryResults = await service.db.apiEvents.where('[ApiTypeId+timestamp]')
+          .equals([ApiType.EVT_HAND_RESULTS, rawTimestamp as number]).toArray() as unknown as RawApiEvent[]
+      }
       const rawHandId = (message as { HandId?: unknown }).HandId
-      const pendingDerivationOptions = rawApiTypeId === ApiType.EVT_HAND_RESULTS &&
+      const pendingDerivationOptions = boundaryResults.length > 0 || (rawApiTypeId === ApiType.EVT_HAND_RESULTS &&
         Number.isSafeInteger(rawHandId) &&
-        ((rawHandId as number) >= 0)
+        ((rawHandId as number) >= 0))
           ? {
               // valid 306のraw commitと派生保留の間にMV3 workerが止まっても
               // 次回起動で復旧できるよう、sequence割当後のexact raw keyを
-              // 同じtransactionで控える（MUST）。306以外のraw writeはmeta storeを
-              // ロックしない。
+              // 同じtransactionで控える（MUST）。後着301は自身のraw keyと影響先
+              // HandIdで別fenceを作り、古い306のcommit/activationから保護する。
               atomicMetaRecordsForAdded: (added: readonly RawApiEvent[]) =>
-                service.statsLedger.createPendingHandDerivationFenceRecords(added),
+                service.statsLedger.createPendingHandDerivationFenceRecords([
+                  ...added.filter(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS),
+                  ...added.filter(event => event.ApiTypeId === ApiType.EVT_PLAYER_JOIN).flatMap(event =>
+                    boundaryResults.map(result => ({ ...event, HandId: result.HandId }))),
+                ]),
             }
           : undefined
       const merge = await mergeApiEvents(
@@ -588,6 +597,18 @@ const processEvent = async (
   // 同一SW内でも起動時復旧の対象になるようfailed化する（MUST）。handoff後は
   // WriteEntityStreamがフェンスの成否を所有するため、他streamの例外で
   // 誤ってfailedへ戻してはならない（MUST NOT）。
+  const boundaryDerivations = storedRawEvent ? boundaryResults.map(result => ({ ...storedRawEvent!, HandId: result.HandId })) : []
+  const recoverBoundaryDerivations = async (): Promise<void> => {
+    await service.handAggregateStream.whenIdle()
+    // SW restart / lost completed buffer: full Raw Lake replay owns recovery.
+    for (const event of boundaryDerivations) {
+      const fenceId = service.statsLedger.getPendingHandDerivationFenceId(event)
+      if (fenceId && await service.db.meta.get(fenceId)) {
+        await autoSyncService.scheduleCanonicalRebuildRecovery(fenceId)
+      }
+    }
+  }
+  const boundaryRecoveryTasks = (): Promise<void>[] => boundaryDerivations.length > 0 ? [recoverBoundaryDerivations()] : []
   let pendingHandDerivationHandedOff = false
   try {
 
@@ -800,7 +821,7 @@ const processEvent = async (
     if (successfulSessionStartTimestamp !== undefined) {
       notifySessionStart(portGeneration!, successfulSessionStartTimestamp)
     }
-    return
+    return { backgroundTasks: boundaryRecoveryTasks() }
   }
 
   // アプリケーション用のイベントかチェック
@@ -811,7 +832,7 @@ const processEvent = async (
     if (successfulSessionStartTimestamp !== undefined) {
       notifySessionStart(portGeneration!, successfulSessionStartTimestamp)
     }
-    return
+    return { backgroundTasks: boundaryRecoveryTasks() }
   }
 
   // 313が来る正常系では着席時点からbaseline構築を先行させ、313欠落・途中参加
@@ -827,8 +848,9 @@ const processEvent = async (
     recordActiveDealContext(portGeneration)
   }
 
-  // ストリーム処理（DB保存は上で完了済み・耐久性確定済み）
-  service.handLogStream.write(data)
+  // ストリーム処理（DB保存は上で完了済み・耐久性確定済み）。HandLogは
+  // AggregateEventsStreamがこのイベントのsession/境界判定を適用した後に渡す。
+  // ここから並列投入して時系列authorityを二重化してはならない（MUST NOT）。
   service.handAggregateStream.write(data)
   if (storedRawEvent?.ApiTypeId === ApiType.EVT_HAND_RESULTS) {
     pendingHandDerivationHandedOff = true
@@ -841,7 +863,10 @@ const processEvent = async (
   // Event Lake保存直後に生ApiTypeIdベースで既にトリガー済み（本ブロックの
   // パース成功はストリーム投入のみが目的）
   return {
-    backgroundTasks: statsLedgerPrefetch ? [statsLedgerPrefetch] : []
+    backgroundTasks: [
+      ...(statsLedgerPrefetch ? [statsLedgerPrefetch] : []),
+      ...boundaryRecoveryTasks(),
+    ]
   }
   } catch (err) {
     if (
@@ -856,6 +881,18 @@ const processEvent = async (
           operation: 'stats_ledger.mark_pending_hand_derivation_failed'
         })
       }
+    }
+    for (const result of boundaryDerivations) {
+      const fenceId = service.statsLedger.getPendingHandDerivationFenceId(result)
+      try {
+        await service.statsLedger.markPendingHandDerivationFailed(result)
+      } catch (markerError) {
+        console.warn('[background] Failed to mark same-ms join recovery fence', markerError)
+      }
+      // The recovery waits for ingestion to drain, so do not await it inside this queue.
+      void autoSyncService.scheduleCanonicalRebuildRecovery(fenceId).catch(recoveryError => {
+        console.error('[background] Same-ms join canonical recovery failed', recoveryError)
+      })
     }
     throw err
   }

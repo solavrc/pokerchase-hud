@@ -217,7 +217,18 @@ canonical dirty markerも置く。したがってraw保存直後・再構築開�
 Service Workerが終了しても、次回起動はstaleな派生表を成功状態として扱わない。
 
 liveの`EVT_HAND_RESULTS`（306）は、Raw Lakeの主キー`[timestamp+ApiTypeId+sequence]`ごとの
-pending derivation fenceをraw rowと同じtransactionで保存する。完了ハンドのcanonical entityと
+pending derivation fenceをraw rowと同じtransactionで保存する。
+同msの306が保存済みの状態で301を追加する場合も、301自身のraw keyと影響先HandIdを使った
+独立fenceを同じraw transactionで作る。v1構造は維持し、rawKeyのtypeは306または301。
+既存306のIDは互換のまま、301のIDにはtypeを含める。Aggregateは最大timestampの同ms groupに
+完了した全HandIdを保持し、より新しいtimestampでgroupを失効する。古いtimestampはgroupを
+再開しない。timestampを持たない内部session通知はgroupや数値frontierを変更しない。
+同一ACTIVE port世代の301は候補ごとにWESへ渡し、WESがcanonical entity・統計台帳と
+同じtransactionでそのHandIdのfenceをackする。別世代の301は卓帰属を証明できないため派生へ
+渡さず、Aggregateが候補ごとのexact fenceだけを意図的棄却としてackする。旧306だけをcapturedした
+cloud activationでは新301を消さず、
+worker停止や完了buffer欠落時は同じ全Lake復旧へ渡す。301のraw payloadへHandIdは追加しない。
+完了ハンドのcanonical entityと
 統計台帳のcommitが成功した時、またはschema不適合・cross-generation/chimera判定で
 意図的に派生しないと確定した時に、対応するexact fenceだけを消す。揮発バッファ先頭に
 DEALがない306は意図的に派生せず、先にfenceを消さない。
@@ -231,6 +242,11 @@ AggregateEventsStreamでDEALなし306を観測した場合も、同じstructured
 渡して既存のsingle-flight full rebuild schedulerを予約する。通常の取り込みはrebuild完了を待たず、
 既存canonical replayが全Raw Lakeを一度だけ再生し、対象handが生成される場合も生成されない場合も
 activationでfenceを終端する。Raw `apiEvents`はこの経路から削除しない。
+HandLogも同じserialized Aggregate callbackだけをlive入口にする。AggregateがDEALへ固定した
+session・名簿snapshotと、そのハンド中に到着した313/301を含む完了eventsから独立processorで
+完成ログを描画する。したがって配札後に判明した名前を保持しつつ、次sessionのmutable名簿で
+過去ログを書き換えない。同msの後着301による補正も同じ完了workから再描画し、表示中の
+次ハンドprocessorはresetしない。
 対象handが生成された復旧では、activation後に直近ハンドcacheを無効化し、`handEpoch`だけを
 ACTIVEポートへ1回通知する。この通知はstatsやlineupを含まないため、WESのライブ配信や席回転を
 模倣せず、開いたポジション／直近ハンドパネルだけが再取得する。RawにDEALがなく対象handが

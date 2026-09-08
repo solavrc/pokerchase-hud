@@ -6,9 +6,19 @@ import { ErrorHandler } from '../utils/error-handler'
 import { setHandImprovementHeroHoleCards } from '../realtime-stats'
 import type { CanonicalWriteFailureError } from './write-entity-stream'
 import {
+  captureHandSession,
+  type CompletedHandWork,
+} from '../utils/hand-session-context'
+import {
   getEventGeneration,
   setStatsRequestContext
 } from './stats-output-context'
+
+interface BoundaryGroup {
+  timestamp: number
+  joins: ApiEvent<ApiType.EVT_PLAYER_JOIN>[]
+  completed: Map<number, CompletedHandWork>
+}
 
 /**
  * APIイベント集約処理Stream（パイプライン第1段階）
@@ -28,6 +38,7 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
   private events: ApiHandEvent[] = []
   private progress?: Progress
   private lastTimestamp = 0
+  private boundaryGroup?: BoundaryGroup
 
   constructor(service: PokerChaseService) {
     super()
@@ -35,10 +46,32 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
   }
   protected async transform(event: ApiEvent): Promise<void> {
     try {
-      /** 順序整合性チェック */
-      if (this.lastTimestamp > event.timestamp!)
+      const timestamp = event.timestamp
+      const hasFiniteTimestamp = typeof timestamp === 'number' && Number.isFinite(timestamp)
+      const isOlder = hasFiniteTimestamp && timestamp < this.lastTimestamp
+      if (isOlder) {
+        // 過去イベントで現在ハンドは継続できないが、期限切れの同一ms groupを
+        // 再び開いて後着301の候補にしてはならない（MUST NOT）。frontierは単調。
         this.events = []
-      this.lastTimestamp = event.timestamp!
+        this.progress = undefined
+      } else if (
+        hasFiniteTimestamp &&
+        (!this.boundaryGroup || timestamp > this.boundaryGroup.timestamp)
+      ) {
+        // より新しいtimestampを一度観測した時点で旧groupは永久に失効する。
+        this.boundaryGroup = {
+          timestamp,
+          joins: [],
+          completed: new Map(),
+        }
+      }
+      if (hasFiniteTimestamp) this.lastTimestamp = Math.max(this.lastTimestamp, timestamp)
+      const boundaryGroup = hasFiniteTimestamp && !isOlder &&
+        this.boundaryGroup?.timestamp === timestamp
+        ? this.boundaryGroup
+        : undefined
+      let completedHand: CompletedHandWork | undefined
+      const correctedHands: CompletedHandWork[] = []
 
       switch (event.ApiTypeId) {
         case ApiType.EVT_ENTRY_QUEUED:
@@ -62,6 +95,7 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           this.service.session.setName(event.Name)
           break
         case ApiType.EVT_PLAYER_SEAT_ASSIGNED:
+          if (this.events.length > 0) this.events.push(event)
           // プレイヤー名とランクをセッションに保存
           if (event.TableUsers) {
             event.TableUsers.forEach(tableUser => {
@@ -73,6 +107,45 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           }
           break
         case ApiType.EVT_PLAYER_JOIN:
+          // 席交代の境界を会計へ渡す。名前更新だけで捨てない（MUST NOT）。
+          boundaryGroup?.joins.push(event)
+          if (this.events.length > 0) this.events.push(event)
+          if (boundaryGroup) {
+            // 同一msには複数HandIdが完了しうる。単一の「直前ハンド」ではなく
+            // 全候補を個別に判定し、301 raw commit時に作られたexact fenceを
+            // 各HandIdについて必ず終端化する。
+            for (const [handId, completed] of boundaryGroup.completed) {
+              const result = completed.events.find(item => item.ApiTypeId === ApiType.EVT_HAND_RESULTS)
+              const deal = completed.events.find(item => item.ApiTypeId === ApiType.EVT_DEAL)
+              const completedGeneration = result
+                ? (getEventGeneration(result) ?? (deal ? getEventGeneration(deal) : undefined))
+                : undefined
+              const joinGeneration = getEventGeneration(event)
+              const derivationEvent = { ...event, HandId: handId }
+
+              if (
+                completedGeneration !== undefined &&
+                joinGeneration !== undefined &&
+                completedGeneration !== joinGeneration
+              ) {
+                // 別ACTIVE-port世代の301は過去ハンドへ適用しない。rawと同時に
+                // 作られたこの候補専用fenceだけを成功終端し、canonical/logも
+                // recovery schedulerも動かさない（MUST）。
+                await this.service.statsLedger.acknowledgePendingHandDerivation(derivationEvent)
+                continue
+              }
+
+              // 同一世代（または世代情報の無い内部呼出し）は既存HandIdを
+              // canonical+ledger置換し、表示ログも同じimmutable workから直す。
+              const corrected: CompletedHandWork = {
+                handId,
+                events: [...completed.events, event],
+              }
+              boundaryGroup.completed.set(handId, corrected)
+              correctedHands.push(corrected)
+              this.push([...corrected.events])
+            }
+          }
           // 途中参加者のプレイヤー名とランクをセッションに保存
           if (event.JoinUser) {
             this.service.session.setPlayer(event.JoinUser.UserId, {
@@ -82,6 +155,7 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           }
           break
         case ApiType.EVT_DEAL:
+          captureHandSession(event, this.service.session)
           // プレイヤーIDの割り当て。
           //
           // 【根本原因メモ】event.Player は「観戦モード」（ヒーローが着席していない
@@ -189,8 +263,7 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
 
           // ハンドの集約
           this.progress = event.Progress
-          this.events = []
-          this.events.push(event)
+          this.events = [event, ...(boundaryGroup?.joins ?? [])]
           break
         case ApiType.EVT_DEAL_ROUND:
           this.progress = event.Progress
@@ -227,7 +300,12 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
         case ApiType.EVT_HAND_RESULTS:
           this.events.push(event)
           if (this.events.length > 0 && this.events[0]?.ApiTypeId === ApiType.EVT_DEAL) {
-            this.push(this.events)
+            completedHand = {
+              handId: event.HandId,
+              events: [...this.events],
+            }
+            boundaryGroup?.completed.set(event.HandId, completedHand)
+            this.push([...completedHand.events])
           } else {
             // DEALが無いRESULTSはライブ集約では派生しない。既存のfull replayへ
             // exact fenceを渡すため、成功ackせずfailedとして残す（MUST）。
@@ -261,6 +339,16 @@ export class AggregateEventsStream extends SimpleTransform<ApiEvent, ApiEvent[]>
           this.events = []
           break
       }
+
+      // 表示ログはAggregateがこのイベントのsession/名簿/境界判定を完了した後に
+      // だけ進める。event-ingestionから並列投入すると、前イベントのdurable fence
+      // 待機中に次sessionのログだけが先行するため、このcallbackが唯一のlive入口。
+      this.service.handLogStream.write({
+        kind: 'aggregate-authority',
+        event,
+        ...(completedHand ? { completedHand } : {}),
+        ...(correctedHands.length > 0 ? { correctedHands } : {}),
+      })
     } catch (error: unknown) {
       this.handleError(error)
     }

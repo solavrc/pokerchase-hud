@@ -28,7 +28,7 @@ export const afStat: StatDefinition = {
   helpText: 'ポストフロップの(ベット+レイズ)÷コール。高いほどアグレッシブ',
   calculate: ({ actions }) => {
     // ポストフロップ（フロップ以降）のアクションのみを対象とする（PT4公式定義）
-    const postflopActions = actions.filter(a => a.phase !== PhaseType.PREFLOP)
+    const postflopActions = actions.filter(a => a.phase !== PhaseType.PREFLOP && !a.normalizationUnproven)
 
     // アグレッシブなアクション（BET, RAISE）をカウント
     // ALL_INがBET/RAISEに変換されたものも含まれる

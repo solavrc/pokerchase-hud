@@ -229,10 +229,13 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     // event (different Id -- a different table/room).
     const second = { ...entryQueued(400), Id: 'stage000_099' }
     await onMessageHandler(second)
+    await service.handAggregateStream.whenIdle()
 
     // Both arrivals reach the live derivation pipeline.
     expect(handLogSpy).toHaveBeenCalledTimes(1)
-    expect(handLogSpy).toHaveBeenCalledWith(expect.objectContaining({ Id: 'stage000_099' }))
+    expect(handLogSpy).toHaveBeenCalledWith(expect.objectContaining({
+      event: expect.objectContaining({ Id: 'stage000_099' }),
+    }))
     expect(onNewSessionStartSpy).toHaveBeenCalledTimes(1)
     expect(markSessionActiveSpy).toHaveBeenCalledTimes(1)
 
@@ -332,7 +335,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
   test('a burst of events preserves stream-write order even though each event awaits its own raw add() (serialization invariant)', async () => {
     const writeOrder: number[] = []
     jest.spyOn(service.handLogStream, 'write').mockImplementation((event: any) => {
-      writeOrder.push(event.timestamp)
+      writeOrder.push(event.event.timestamp)
       return true as any
     })
 
@@ -354,6 +357,7 @@ describe('registerEventIngestion (raw-write durability barrier)', () => {
     const pending = events.map(event => onMessageHandler(event))
 
     await Promise.all(pending)
+    await service.handAggregateStream.whenIdle()
 
     expect(writeOrder).toEqual([1000, 1001, 1002, 1003, 1004])
   })

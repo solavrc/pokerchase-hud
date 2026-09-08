@@ -20,6 +20,10 @@ import PokerChaseService, { PokerChaseDB } from './app'
 import { trackServiceForTeardown } from './utils/test-service-teardown'
 import { threeBetStat } from './stats/core/3bet'
 import { EntityConverter } from './entity-converter'
+import { apiEventSchemas } from './types/api'
+import { getRecentHands } from './services/recent-hands-service'
+import { deriveMidHandChipInflow } from './utils/hand-chip-accounting'
+import { makeIdentityActionFixture, makeIdentityWinnerFixture } from './utils/identity-stat-eligibility.fixtures'
 import { createImportExportHandlers } from './background/import-export'
 import { setOperationState } from './background/operation-state'
 import { mergeApiEvents, type RawApiEvent } from './utils/api-event-key'
@@ -54,6 +58,8 @@ const FIXTURE_EVENTS = readFixture('session-3hands.ndjson')
 const SAME_MS_BURST_EVENTS = readFixture('hand-samems-street-burst.ndjson')
 /** #339 の再現: Ringのハンド中リバイイン（ハンド内観測）と終了時の自動買い足し。 */
 const RING_REBUY_EVENTS = readFixture('hand-ring-midhand-rebuy.ndjson')
+/** ハンド中にfold済みの席へ別人が入り、終点snapshotだけが新しい人物になる。 */
+const RING_REPLACEMENT_EVENTS = readFixture('hand-ring-seat-replacement.ndjson')
 /** 同一ms群で、新ストリート最初の行が ALL_IN になるケース（codex review round 3）。 */
 const STREET_OPENING_ALLIN_EVENTS = readFixture('hand-street-opening-allin.ndjson')
 /** CHECK権からのBBレイズ・フロップの先制ベットと、CHECK不可のショートコール。 */
@@ -136,7 +142,12 @@ const saveBundle = async (
   })
 }
 
-const replay = async (path: ReplayPath, events: ApiEvent[], seed?: SessionSeed) => {
+const replay = async (
+  path: ReplayPath,
+  events: ApiEvent[],
+  seed?: SessionSeed,
+  staleBundle?: ReturnType<EntityConverter['convertEventsToEntities']>
+) => {
   setOperationState({ type: 'idle' })
   await chrome.storage.local.remove(PokerChaseService.STORAGE_KEY)
 
@@ -145,6 +156,11 @@ const replay = async (path: ReplayPath, events: ApiEvent[], seed?: SessionSeed) 
   const service = trackServiceForTeardown(new PokerChaseService({ db }))
   await service.ready
   applySessionSeed(service, seed)
+  if (staleBundle) {
+    await saveBundle(db, staleBundle)
+    // 旧canonical由来の台帳も一度作り、再構築が同時に置換することを検証する。
+    await service.statsOutputStream.calcStats(staleBundle.hands[0]!.seatUserIds)
+  }
 
   // Import/rebuild progress delivery and post-import tab refresh are
   // best-effort production side effects, not part of the data invariant.
@@ -172,6 +188,10 @@ const replay = async (path: ReplayPath, events: ApiEvent[], seed?: SessionSeed) 
         for (const event of events) service.handAggregateStream.write(event)
         await service.handAggregateStream.whenIdle()
         expect(warmupCount).toHaveBeenCalled()
+        if (events === RING_REPLACEMENT_EVENTS) {
+          expect(service.session.players.get(3101)?.name).toBe('Player1')
+          expect(service.session.players.get(3105)?.name).toBe('Player5')
+        }
       } finally {
         warmupCount.mockRestore()
       }
@@ -189,7 +209,13 @@ const replay = async (path: ReplayPath, events: ApiEvent[], seed?: SessionSeed) 
       await service.statsOutputStream.whenIdle()
     }
 
-    return { ...await takeCanonicalSnapshot(service, db), actionEvidence }
+    const recent = events === RING_REPLACEMENT_EVENTS
+      ? await Promise.all([3101, 3103, 3104, 3105].map(async playerId => ({
+          playerId,
+          hands: (await getRecentHands(db, service, playerId)).hands.map(hand => ({ netChips: hand.netChips })),
+        })))
+      : undefined
+    return { ...await takeCanonicalSnapshot(service, db), actionEvidence, recent }
   } finally {
     // replay() は1テスト内で4経路ぶん連続で呼ばれる。ルート afterEach
     // （test-service-teardown.ts）の取り消しはテスト終了時なので、ここで
@@ -213,6 +239,32 @@ const replayEveryPath = async (events: ApiEvent[], seed?: SessionSeed) => {
 }
 
 describe('cross-path canonical parity', () => {
+  test.each(['unknown-all-in', 'recovered-all-in', 'unknown-winner'] as const)('identity eligibilityの%sをlive・変換・rebuild・importで一致させる', async variant => {
+    const events = variant === 'unknown-winner' ? makeIdentityWinnerFixture(true)
+      : makeIdentityActionFixture({ followingType: ActionType.ALL_IN, trustedMenu: variant === 'recovered-all-in' })
+    const snapshots = await replayEveryPath(events)
+    const canonical = snapshots.live
+    expect(snapshots['entity-converter']).toEqual(canonical)
+    expect(snapshots.rebuild).toEqual(canonical)
+    expect(snapshots.import).toEqual(canonical)
+    const hero = Object.fromEntries(canonical.stats.find(player => player.playerId === 3103)!.statResults
+      .map(stat => [stat.id, stat.value]))
+    if (variant === 'unknown-winner') {
+      expect(hero).toMatchObject({ wwsf: [0, 0], wsd: [0, 0], riverCallAccuracy: [0, 0], wtsd: [1, 1] })
+      expect(canonical.hands[0]).toMatchObject({ winnerIdentityUnproven: true })
+    } else {
+      expect(hero).toMatchObject({ vpip: [1, 1], pfr: variant === 'unknown-all-in' ? [0, 0] : [1, 1], '3bet': [0, 0] })
+      expect(canonical.actions.at(-1)?.normalizationUnproven).toBe(variant === 'unknown-all-in' ? true : undefined)
+    }
+    if (variant !== 'recovered-all-in') {
+      const stale = { hands: structuredClone(canonical.hands), actions: structuredClone(canonical.actions), phases: structuredClone(canonical.phases) }
+      stale.hands.forEach(hand => { delete hand.winnerIdentityUnproven })
+      stale.actions.forEach(action => { delete action.normalizationUnproven })
+      // 旧canonicalとそこから作った統計台帳があっても、raw再構築が両方を置き換える。
+      expect(await replay('rebuild', events, undefined, stale)).toEqual(canonical)
+    }
+  })
+
   test('an anonymized real three-hand capture has identical entities and stats on every path', async () => {
     // Fixture capability checks: this is a real legacy delta-board stream,
     // contains multiple completed hands, and begins with a complete session
@@ -513,6 +565,147 @@ describe('cross-path canonical parity', () => {
     })
   })
 
+  test('Ringの席交代をlive・EC・Lake再構築・importから直近ハンドまで同じ人物で会計する', async () => {
+    const snapshots = await replayEveryPath(RING_REPLACEMENT_EVENTS)
+    const canonical = snapshots.live
+    expect(snapshots['entity-converter']).toEqual(canonical)
+    expect(snapshots.rebuild).toEqual(canonical)
+    expect(snapshots.import).toEqual(canonical)
+    expect(canonical.hands[0]!.winningPlayerIds).toEqual([3104])
+    expect(canonical.hands[0]!.playerChipAccounting!['3101']).toEqual({ grossPayout: 0, totalContribution: 0, netChips: 0 })
+    expect(canonical.recent).toEqual([
+      { playerId: 3101, hands: [{ netChips: 0 }] },
+      { playerId: 3103, hands: [{ netChips: -25 }] },
+      { playerId: 3104, hands: [{ netChips: 25 }] },
+      { playerId: 3105, hands: [] },
+    ])
+
+    const staleBundle = structuredClone({ hands: canonical.hands, phases: canonical.phases, actions: canonical.actions })
+    staleBundle.hands[0]!.winningPlayerIds = []
+    staleBundle.hands[0]!.playerChipAccounting!['3101'] = { grossPayout: 0, totalContribution: 541, netChips: -541 }
+    expect(await replay('rebuild', RING_REPLACEMENT_EVENTS, undefined, staleBundle)).toEqual(canonical)
+  })
+
+  test('交代後snapshotとactionを旧人へ付けず、次DEALでは新しい人物として記録する', async () => {
+    const events = structuredClone(RING_REPLACEMENT_EVENTS)
+    const deal = events.find(event => event.ApiTypeId === ApiType.EVT_DEAL)!
+    const results = events.find(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)!
+    const fold = events.find(event => event.ApiTypeId === ApiType.EVT_ACTION)!
+    const newSeatAction = structuredClone(fold)
+    Object.assign(newSeatAction, { timestamp: 1733100006100, Chip: 2900, BetChip: 50, ActionType: ActionType.CALL })
+    const flop: ApiEvent<ApiType.EVT_DEAL_ROUND> = {
+      ApiTypeId: ApiType.EVT_DEAL_ROUND, timestamp: 1733100006200,
+      CommunityCards: [0, 1, 2], Progress: { ...deal.Progress, MinRaise: 0, NextActionTypes: [ActionType.CHECK, ActionType.ALL_IN, ActionType.BET], Phase: 1 },
+      Player: { ...deal.Player!, BetChip: 0, BetStatus: 2 },
+      OtherPlayers: deal.OtherPlayers.map(player => ({
+        ...player, Status: 0, BetChip: 0, Chip: player.SeatIndex === 0 ? 2900 : player.Chip,
+        BetStatus: player.SeatIndex === 0 || player.SeatIndex === 5 ? 1 : 2,
+      })),
+    }
+    events.splice(events.indexOf(results), 0, newSeatAction, flop)
+    const nextHand = structuredClone(RING_REPLACEMENT_EVENTS.slice(2).filter(event => event.ApiTypeId !== ApiType.EVT_PLAYER_JOIN))
+    for (const event of nextHand) {
+      event.timestamp = event.timestamp! + 10000
+      if (event.ApiTypeId === ApiType.EVT_DEAL) {
+        event.SeatUserIds[0] = 3105
+        event.OtherPlayers.find(player => player.SeatIndex === 0)!.Chip = 2950
+      } else if (event.ApiTypeId === ApiType.EVT_ACTION && event.SeatIndex === 0) {
+        event.Chip = 2950
+      } else if (event.ApiTypeId === ApiType.EVT_HAND_RESULTS) {
+        event.HandId += 1
+      }
+    }
+    events.push(...nextHand)
+    for (const event of events) expect(apiEventSchemas[event.ApiTypeId].safeParse(event).success).toBe(true)
+    const snapshots = await replayEveryPath(events)
+    const canonical = snapshots.live
+    expect(snapshots['entity-converter']).toEqual(canonical)
+    expect(snapshots.rebuild).toEqual(canonical)
+    expect(snapshots.import).toEqual(canonical)
+    expect(canonical.hands).toHaveLength(2)
+    expect(canonical.actions.filter(action => action.playerId === 3101)).toHaveLength(1)
+    expect(canonical.actions.filter(action => action.playerId === 3105)).toHaveLength(1)
+    expect(canonical.phases.find(phase => phase.phase === PhaseType.FLOP)!.seatUserIds).toEqual([3104])
+    expect(canonical.hands[0]!.playerChipAccounting!['3101']).toBeNull()
+    expect(canonical.hands[0]!.winningPlayerIds).toEqual([])
+    expect(canonical.hands[1]!.seatUserIds[0]).toBe(3105)
+    expect(canonical.hands[1]!.winningPlayerIds).toEqual([3104])
+  })
+
+  test.each([
+    [ApiType.EVT_DEAL, true], [ApiType.EVT_DEAL, false],
+    [ApiType.EVT_ACTION, true], [ApiType.EVT_ACTION, false],
+    [ApiType.EVT_HAND_RESULTS, true], [ApiType.EVT_HAND_RESULTS, false],
+  ])('301と%sが同一msでbefore=%sでも全経路で同じunknownを永続化する', async (kind, before) => {
+    const events = structuredClone(RING_REPLACEMENT_EVENTS)
+    const join = events.find(event => event.ApiTypeId === ApiType.EVT_PLAYER_JOIN)!
+    const target = events.find(event => event.ApiTypeId === kind)!
+    join.timestamp = target.timestamp
+    events.splice(events.indexOf(join), 1)
+    events.splice(events.indexOf(target) + (before ? 0 : 1), 0, join)
+    for (const event of events) expect(apiEventSchemas[event.ApiTypeId].safeParse(event).success).toBe(true)
+    const snapshots = await replayEveryPath(events)
+    const canonical = snapshots.live
+    for (const snapshot of Object.values(snapshots)) {
+      expect(snapshot.hands).toEqual(canonical.hands)
+      expect(snapshot.actions).toEqual(canonical.actions)
+      expect(snapshot.phases).toEqual(canonical.phases)
+      expect(snapshot.stats).toEqual(canonical.stats)
+    }
+    expect(canonical.hands).toHaveLength(1)
+    expect(canonical.hands[0]!.playerChipAccounting!['3101']).toBeNull()
+    expect(canonical.hands[0]!.winningPlayerIds).toEqual([])
+  })
+
+  test.each([true, false])('他席304または305との同一ms301 before=%sを全経路でunknownにする', async before => {
+    for (const kind of [ApiType.EVT_ACTION, ApiType.EVT_DEAL_ROUND]) {
+      const events = structuredClone(RING_REPLACEMENT_EVENTS)
+      const deal = events.find(event => event.ApiTypeId === ApiType.EVT_DEAL)!
+      const join = events.find(event => event.ApiTypeId === ApiType.EVT_PLAYER_JOIN)!
+      const results = events.find(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)!
+      const otherAction = events.find(event => event.ApiTypeId === ApiType.EVT_ACTION && event.SeatIndex === 2)!
+      const round: ApiEvent<ApiType.EVT_DEAL_ROUND> = {
+        ApiTypeId: ApiType.EVT_DEAL_ROUND, timestamp: 1733100006100,
+        CommunityCards: [0, 1, 2], Progress: { ...deal.Progress, MinRaise: 0, Phase: 1, NextActionTypes: [ActionType.CHECK, ActionType.ALL_IN, ActionType.BET] },
+        Player: { ...deal.Player!, BetChip: 0, BetStatus: 2 },
+        OtherPlayers: deal.OtherPlayers.map(player => ({ ...player, Status: 0, BetChip: 0, BetStatus: 2 })),
+      }
+      if (kind === ApiType.EVT_DEAL_ROUND) events.splice(events.indexOf(results), 0, round)
+      const target = kind === ApiType.EVT_ACTION ? otherAction : round
+      join.timestamp = target.timestamp
+      events.splice(events.indexOf(join), 1)
+      events.splice(events.indexOf(target) + (before ? 0 : 1), 0, join)
+      for (const event of events) expect(apiEventSchemas[event.ApiTypeId].safeParse(event).success).toBe(true)
+      const snapshots = await replayEveryPath(events)
+      for (const snapshot of Object.values(snapshots)) {
+        expect(snapshot.hands).toEqual(snapshots.live.hands)
+        expect(snapshot.actions).toEqual(snapshots.live.actions)
+        expect(snapshot.phases).toEqual(snapshots.live.phases)
+        expect(snapshot.stats).toEqual(snapshots.live.stats)
+        expect(snapshot.hands[0]!.playerChipAccounting!['3101']).toBeNull()
+        expect(snapshot.hands[0]!.winningPlayerIds).toEqual([])
+      }
+    }
+  })
+
+  test('ECはchunk終端306を保留し、後着同ms301を次時刻または最終flushで一度だけ確定する', () => {
+    for (const finishByFlush of [true, false]) {
+      const events = structuredClone(RING_REPLACEMENT_EVENTS)
+      const join = events.find(event => event.ApiTypeId === ApiType.EVT_PLAYER_JOIN)!
+      const result = events.find(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)!
+      join.timestamp = result.timestamp
+      const converter = new EntityConverter({ players: new Map(), reset() {} })
+      expect(converter.convertEventChunk(events.filter(event => event !== join)).hands).toHaveLength(0)
+      expect(converter.convertEventChunk([join]).hands).toHaveLength(0)
+      const finished = finishByFlush ? converter.flush() : converter.convertEventChunk([
+        { ApiTypeId: ApiType.EVT_SESSION_DETAILS, timestamp: result.timestamp! + 1, Name: 'next session' } as ApiEvent,
+      ])
+      expect(finished.hands).toHaveLength(1)
+      expect(finished.hands[0]!.playerChipAccounting!['3101']).toBeNull()
+      expect(converter.flush().hands).toHaveLength(0)
+    }
+  })
+
   test('EntityConverter preserves the live SessionState seed for a prelude-free incremental window', async () => {
     expect(SEEDED_HAND_WINDOW.some(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED)).toBe(false)
     expect(SEEDED_HAND_WINDOW.some(event => event.ApiTypeId === ApiType.EVT_SESSION_DETAILS)).toBe(false)
@@ -533,5 +726,89 @@ describe('cross-path canonical parity', () => {
       hand.session.battleType === FIXTURE_SESSION_SEED.battleType &&
       hand.session.name === FIXTURE_SESSION_SEED.name
     )).toBe(true)
+  })
+})
+
+/** 人物の帰属可否と、卓の進行・ハンド所有metadataを別々に検証する。 */
+describe('seat boundary preserves table progression and hand metadata', () => {
+  test.each([false, true])('交代席の304が開いたFLOPを後続FOLDへ伝える（late305=%s）', async lateRound => {
+    const source = structuredClone(RING_REPLACEMENT_EVENTS)
+    const deal = source.find(event => event.ApiTypeId === ApiType.EVT_DEAL)!
+    const old0 = source.find((event): event is ApiEvent<ApiType.EVT_ACTION> => event.ApiTypeId === ApiType.EVT_ACTION && event.SeatIndex === 0)!
+    const old2 = source.find((event): event is ApiEvent<ApiType.EVT_ACTION> => event.ApiTypeId === ApiType.EVT_ACTION && event.SeatIndex === 2)!
+    const boundary = source.find(event => event.ApiTypeId === ApiType.EVT_PLAYER_JOIN)!
+    const ending = source.find((event): event is ApiEvent<ApiType.EVT_ACTION> => event.ApiTypeId === ApiType.EVT_ACTION && event.SeatIndex === 3)!
+    const result = source.find(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)!
+    const timestamp = 1733100006000
+    const opening = structuredClone(old0)
+    Object.assign(opening, { timestamp, sequence: 0, SeatIndex: 0, ActionType: ActionType.BET, Chip: 2850, BetChip: 100,
+      Progress: { ...opening.Progress, Phase: 1, Pot: 175, NextActionSeat: 5, NextActionTypes: [2, 3, 4, 5] } })
+    Object.assign(ending, { timestamp, sequence: 1, SeatIndex: 5, ActionType: ActionType.FOLD, Chip: 4875, BetChip: 0,
+      Progress: { ...ending.Progress, Phase: 3, Pot: 175, NextActionSeat: -2, NextActionTypes: [] } })
+    const round: ApiEvent<ApiType.EVT_DEAL_ROUND> = {
+      ApiTypeId: ApiType.EVT_DEAL_ROUND, timestamp, CommunityCards: [0, 1, 2],
+      Progress: { ...deal.Progress, Phase: 1, Pot: 75, MinRaise: 0, NextActionSeat: 0, NextActionTypes: [0, 1, 5] },
+      Player: { ...deal.Player!, BetChip: 0, BetStatus: 1 },
+      OtherPlayers: deal.OtherPlayers.map(player => ({ ...player, Status: 0, BetChip: 0, BetStatus: player.SeatIndex === 0 || player.SeatIndex === 5 ? 1 : 2 })),
+    }
+    const events = [...source.slice(0, 2), deal, old0, old2, boundary, opening, ending, ...(lateRound ? [round] : []), result]
+    // 交代席のFLOPを見落とすと、BBのblind精算が説明不能な減少になり流入全体がnullへ落ちる。
+    expect(deriveMidHandChipInflow(deal, result, [deal, old0, old2, boundary, opening, ending, ...(lateRound ? [round] : []), result], BattleType.RING_GAME)?.get(5)).toBe(0)
+    for (const event of events) expect(apiEventSchemas[event.ApiTypeId].safeParse(event).success).toBe(true)
+    const snapshots = await replayEveryPath(events)
+    for (const snapshot of Object.values(snapshots)) {
+      expect(snapshot).toEqual(snapshots.live)
+      expect(snapshot.actions.map(({ playerId, phase }) => ({ playerId, phase }))).toEqual([
+        { playerId: 3101, phase: PhaseType.PREFLOP },
+        { playerId: 3102, phase: PhaseType.PREFLOP },
+        { playerId: 3104, phase: PhaseType.FLOP },
+      ])
+      expect(snapshot.hands[0]!.playerChipAccounting!['3101']).toBeNull()
+      expect(snapshot.hands[0]!.playerChipAccounting!['3104']).toEqual({ grossPayout: 75, totalContribution: 50, netChips: 25 })
+      const stats = Object.fromEntries(snapshot.stats.find(player => player.playerId === 3104)!.statResults.map(stat => [stat.id, stat.value]))
+      // BBにpreflop actionはないので、既存walk除外契約ではPFR機会0。FOLDはFLOPのAFq分母。
+      expect(stats).toMatchObject({ af: [0, 0], afq: [0, 1], pfr: [0, 0] })
+      expect(snapshot.phases.map(phase => phase.phase)).toEqual(lateRound ? [PhaseType.PREFLOP, PhaseType.FLOP] : [PhaseType.PREFLOP])
+    }
+  })
+
+  test.each([
+    { offset: 0, before: false }, { offset: 0, before: true }, { offset: 1, before: false },
+  ])('完成ハンドと次DEALのsessionを独立に保つ %j', async ({ offset, before }) => {
+    const events = structuredClone(RING_REPLACEMENT_EVENTS)
+    const entry = events.find(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED)!
+    entry.Id = 'OLD_ID'
+    const deal = events.find(event => event.ApiTypeId === ApiType.EVT_DEAL)!
+    const result = events.find(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)!
+    const oldDetails = { ...structuredClone(detailsEvent), Name: 'OLD_SESSION', timestamp: entry.timestamp! + 1 }
+    events.splice(1, 0, oldDetails)
+    const nextEntry = { ...structuredClone(entry), Id: 'NEXT_ID', timestamp: result.timestamp! + offset }
+    const nextDetails = { ...structuredClone(detailsEvent), Name: 'NEXT_SESSION', timestamp: result.timestamp! + offset }
+    events.splice(events.indexOf(result) + Number(!before), 0, nextEntry, nextDetails)
+    // 完成後301の再評価でも、次のsessionを旧ハンドへ遡及適用しない。
+    if (offset === 0) {
+      const boundary = events.find(event => event.ApiTypeId === ApiType.EVT_PLAYER_JOIN)!
+      events.splice(events.indexOf(boundary), 1)
+      boundary.timestamp = result.timestamp
+      events.push(boundary)
+    }
+    const nextHand = structuredClone(RING_REPLACEMENT_EVENTS.slice(2).filter(event => event.ApiTypeId !== ApiType.EVT_PLAYER_JOIN))
+    for (const event of nextHand) {
+      event.timestamp = event.timestamp! + 10000
+      if (event.ApiTypeId === ApiType.EVT_HAND_RESULTS) event.HandId++
+    }
+    events.push(...nextHand)
+    for (const event of events) expect(apiEventSchemas[event.ApiTypeId].safeParse(event).success).toBe(true)
+    const snapshots = await replayEveryPath(events)
+    for (const snapshot of Object.values(snapshots)) {
+      expect(snapshot.hands.map(hand => hand.session)).toEqual([
+        { id: 'OLD_ID', battleType: BattleType.RING_GAME, name: 'OLD_SESSION' },
+        { id: 'NEXT_ID', battleType: BattleType.RING_GAME, name: 'NEXT_SESSION' },
+      ])
+      expect(snapshot.hands[0]!.approxTimestamp).toBe(deal.timestamp)
+      expect(snapshot.hands).toEqual(snapshots.live.hands)
+      expect(snapshot.actions).toEqual(snapshots.live.actions)
+      expect(snapshot.stats).toEqual(snapshots.live.stats)
+    }
   })
 })

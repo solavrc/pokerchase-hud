@@ -40,6 +40,8 @@ export interface ActionDetailContext {
   phasePrevBetCount: number
   /** 現在の席・ストリートのメニューで観測したレイズ可否。未観測はundefined。 */
   canRaise?: boolean
+  /** 人物不明行の後で、raw ALL_INのCALL/BET/RAISEを証明できない。 */
+  normalizationUnproven?: boolean
   position?: Position
   /**
    * HandState for stateful detection.

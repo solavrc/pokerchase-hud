@@ -32,6 +32,7 @@ export const pfrStat: StatDefinition = {
     const pfrHandsCount = getUniqueHandIds(
       actions.filter(a =>
         a.phase === PhaseType.PREFLOP &&
+        !a.normalizationUnproven &&
         a.actionType === ActionType.RAISE
       )
     )
@@ -42,11 +43,16 @@ export const pfrStat: StatDefinition = {
         .filter(a => a.phase === PhaseType.PREFLOP && a.handId !== undefined)
         .map(a => a.handId!)
     )
+    const knownRaiseHands = new Set(actions.filter(a => a.phase === PhaseType.PREFLOP &&
+      !a.normalizationUnproven && a.actionType === ActionType.RAISE).map(a => a.handId))
+    const unknownRaiseHands = new Set(actions.filter(a => a.phase === PhaseType.PREFLOP &&
+      a.normalizationUnproven).map(a => a.handId))
 
     // 機会（分母）: 自分がBBを務め、かつそのハンドで一度もプリフロップ
     // アクションを行っていないハンド（ウォーク/BBアクションスキップ）を除外
     const opportunityHands = hands.filter(hand =>
-      !(hand.bigBlindUserId === playerId && !handIdsWithPreflopAction.has(hand.id))
+      !(hand.bigBlindUserId === playerId && !handIdsWithPreflopAction.has(hand.id)) &&
+      (knownRaiseHands.has(hand.id) || !unknownRaiseHands.has(hand.id))
     )
 
     return [pfrHandsCount, opportunityHands.length]

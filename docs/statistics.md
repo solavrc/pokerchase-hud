@@ -68,6 +68,17 @@ stat 固有の一時状態は `handState.statStates[id]`、共有 `actions` は�
   入れる。3betfold の機会にこのレイズ可否除外を適用しない。bet 段階は正規化後のactionで数える。
   この write-time 修正は Raw Lake 再構築で既存 action / ledger へ反映する。counter の
   構造・ordinal は変えず、再構築で新しい generation の寄与値へ置き換える。
+- **人物不明ACTION以後の機会**: 有効な席交代境界のため帰属できない最初の304と同ms以後は、
+  3bet・3betfold・CB・CBF・STL・FTSの新しい分子・分母をともに計上しない。
+  境界より前の確定済みflagは保ち、街が変わってもこの6指標の履歴は回復しない。
+  帰属できる明示RAISE/CALL/FOLDとstreet進行は保つ。同ms群の行順は因果順の根拠にしない。
+- **人物不明ACTION以後のALL_IN型**: 直前Progressが303/305、または配札人物へ帰属できる304で、
+  そのtimestampが直前までの全人物不明304より厳密に後、現在のALL_INより厳密に前にあり、
+  非空メニューが当該席・streetに一致するときだけBET/RAISE/CALL型を確定する。
+  不成立なら候補actionTypeを互換性のため残し、`Action.normalizationUnproven=true`を保存する。
+  この行はAF/AFqやriver CALL判定に使わない。PFRはpreflopで型未知のALL_INがあり既知RAISEが
+  無いhandだけ分子・分母から除外し、既知RAISEの1/1やpostflopだけ型未知のhandのPFRは保つ。
+  preflopのraw ALL_INは自発的参加なのでVPIPは保つ。型が回復しても上記6指標は回復しない。
 - **ストリート**: action 自身の `EVT_ACTION.Progress.Phase` を
   [resolveActionPhase](../src/utils/action-phase.ts) で解決する。`DEAL_ROUND` の回数を
   正典にしない。`NextActionSeat === -2` の hand-ending row は wire の Phase が3へ
@@ -82,22 +93,56 @@ stat 固有の一時状態は `handState.statStates[id]`、共有 `actions` は�
 - **勝者**: `deriveHandSettlement()` の `contestedAward > 0` を `winningPlayerIds` に
   する。`RewardChip` には uncalled return が含まれるため raw payout > 0 や
   `HandRanking === 1` では代替できない。side-pot winner と自分の overbet 返却を区別する。
+  有効な席交代証拠があり精算から勝者を解決できないhandは
+  `Hand.winnerIdentityUnproven=true`を保存し、WWSF/WWSFa/W$SD/RCAの分子・分母から除外する。
+  WTSD/WTSDa、確定したCALLや人物単位で閉じたチップ会計は保つ。席交代証拠のないlegacy
+  未解決handへこの除外を広げない。
 - **position**: `getPositionMap()` は明示 `ButtonSeat` / `SmallBlindSeat` / `BigBlindSeat`
   から導出する。空席を含む `seatUserIds` の単純回転で代替しない。DB/export は original
   seat、HUD 表示は hero 起点の回転位置。
 - **netChips**: `grossPayout - totalContribution`。
   `totalContribution = startingStack + grossPayout - finalStack`、grossPayout は
-  uncalled return 込みの RewardChip。lineup・snapshot・支払保存則・table 保存則が
+  uncalled return 込みの RewardChip。このendpoint式は開始・終了が同一人物のときに限る。
+  301の`JoinUser.UserId`が配札時と異なる席は以降のsnapshotを切り離す。
+  Ringで交代前の明示FOLDとチップ観測列が整合し、受取が0なら
+  `totalContribution = startingStack + FOLDまでのinflow - FOLD.Chip`でhand投入だけを確定する。
+  初期NOT_IN_PLAY/ELIMINATED・BetChip0で境界まで無行動・不参加が続けば投入0を証明する。
+  交代しないFOLD済み人物の終了snapshot欠落にもFOLD時点の投入を使う。
+  明示FOLDの証明は本人の開始とチップ観測列で判定し、他席の欠落・不整合とは分ける。
+  卓全体のinflowは従来どおり全席の整合が必要で、初期不参加0の証明もこの条件を維持する。
+  退出後のcash残高は補完しない。同一人物の301は従来の買い足し経路を維持する。
+  lineup・snapshot・支払保存則・table 保存則が
   不成立、short-ante tier が曖昧、legacy 未再構築なら推定せず null にする。
+  席交代で投入が未解決のhandにはlegacy snapshot欠損用の勝者fallbackも使わない。
 - **table 保存則**: tournament (BattleType 0/1/2/6) は開始/終了 stack 総和が等しい。
   Ring (4/5) は rake 流出を許すが chip creation は許さない。Ring の mid-hand rebuy /
   add-on だけは `deriveMidHandChipInflow()` で snapshot から独立に流入を求め、終了
   stack から差し引いて判定する。street 内の `Chip + BetChip`、street 間の直前 BetChip
   差分を使い、減少異常は unknown、RESULTS の最終検査は超過だけを数える。tournament
   へ inflow 許容を広げない。
+  人物が交代したRing卓では現金残高の総和を比較せず、全員のhand投入が確定した場合に
+  `sum(totalContribution) >= sum(RewardChip)`を確認する。新occupantの資金は含めない。
+- **ハンド中の席交代**: DEALのlineupは固定し、301以降の同席actionと305のmembershipを
+  旧人物へ付けない。新しい人物は次のDEALから参加者にする。301の名前・rank更新はUserId別に
+  保持する。liveのAggregate→WriteEntityとimport/rebuildの両方へ301を渡し、保存済みの
+  hand・action・phase・統計台帳はRaw Lakeから再構築する。DBのキーとindexは変わらない。
+  同msの301と303〜306、境界後の同席action/参加snapshot、終了より前の313で旧人が続く
+  場合は会計unknown。301には卓IDがなく、同一卓の入力列という前提と観測限界は
+  [api-events](api-events.md#evt_player_join-ハンド中の人物交代)に記載する。
+  人物へのaction・チップ帰属を止めても、304が示す卓のstreet進行は保持する。305が未受信・
+  後着でも、別席のハンド終了FOLDを前streetへ戻したり、blind精算を流入異常にしない。
+- **hand所有のsession情報**: `id`・`battleType`・`name`はDEAL時に一体で保持する。
+  完成後の同ms301は人物会計だけを再評価し、次の201/308を旧handへ遡及適用しない。
+  次のDEALは更新済みsessionを使う。liveのworker内context、EC、HandLogで同じ境界を使い、
+  このsession境界のためにRaw Lake・永続schemaへmetadataは追加しない。
 - **ante / side pot**: `buildAnteAllInChipsMap()` は Pot / SidePot の tier 差分を使い、
   `fixAnteAllInChips()` は RewardChip で席を照合する。seat 順を stack 順とみなさない。
   settlement の恒等式は `Pot + sum(SidePot) == sum(RewardChip)`。
+
+`HAND_STAT_CONTRIBUTION_VERSION=2`はeligibilityを考慮した計算規則を表す。
+counterの42要素とordinalは維持する。旧versionの台帳は読み出し時にcanonicalから再計算されるが、
+旧canonicalにないeligibilityはこれだけでは復元できない。`REBUILD_ADVISORY_VERSION=9`の
+Raw Event Lake再構築でoptionalなHand/Actionの証拠と台帳を同時に更新する。Dexie schemaは8のまま。
 
 チップ会計の実装は [hand-chip-accounting.ts](../src/utils/hand-chip-accounting.ts)、
 表記の正本は [pokerstars-export.md](pokerstars-export.md)。PokerStars の calls は追加額、

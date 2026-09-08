@@ -93,6 +93,8 @@ const playerHandChipAccountingSchema = z.object({
 export const handSchema = z.object({
   /** `EVT_HAND_RESULTS`まで未確定 */
   id: z.number(),
+  /** 人物交代の証拠を含む観測で勝者を証明できないhand。欠落は従来互換。 */
+  winnerIdentityUnproven: z.literal(true).optional(),
   approxTimestamp: z.number().optional(),
   seatUserIds: z.array(z.number()),
   winningPlayerIds: z.array(z.number()),
@@ -147,7 +149,9 @@ export const actionSchema = z.object({
   pot: z.number(),
   sidePot: z.array(z.number()),
   position: z.enum(Position),
-  actionDetails: z.array(z.enum(ActionDetail))
+  actionDetails: z.array(z.enum(ActionDetail)),
+  /** 席交代後のraw ALL_IN。actionTypeは候補値であり、型依存の統計へ使わない（MUST NOT）。 */
+  normalizationUnproven: z.literal(true).optional()
 })
 
 export type Action = z.infer<typeof actionSchema>

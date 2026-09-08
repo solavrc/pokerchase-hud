@@ -87,8 +87,10 @@ function parsePendingFenceHandId(fenceId: string): number | undefined {
   if (!fenceId.startsWith(STATS_PENDING_HAND_DERIVATION_META_PREFIX)) return undefined
   const suffix = fenceId.slice(STATS_PENDING_HAND_DERIVATION_META_PREFIX.length)
   const parts = suffix.split(':')
-  if (parts.length !== 3) return undefined
-  const [handIdText, timestampText, sequenceText] = parts
+  const [handIdText, timestampText, typeOrSequence, joinSequence] = parts
+  // 従来の306と、raw typeを含む後着301のexact IDだけを受理する。
+  const sequenceText = parts.length === 3 ? typeOrSequence
+    : parts.length === 4 && typeOrSequence === '301' ? joinSequence : undefined
   if (!handIdText || !timestampText || !sequenceText) return undefined
   const handId = Number(handIdText)
   const timestamp = Number(timestampText)
