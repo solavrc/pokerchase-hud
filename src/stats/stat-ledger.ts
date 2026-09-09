@@ -437,13 +437,15 @@ const getPendingHandDerivationMetaId = (
   event: PendingHandDerivationEvent
 ): string | undefined => {
   if (
-    event.ApiTypeId !== ApiType.EVT_HAND_RESULTS ||
+    (event.ApiTypeId !== ApiType.EVT_HAND_RESULTS && event.ApiTypeId !== ApiType.EVT_PLAYER_JOIN) ||
     !Number.isSafeInteger(event.HandId) ||
     (event.HandId as number) < 0 ||
     !Number.isSafeInteger(event.timestamp) ||
     !Number.isSafeInteger(getApiEventSequence(event))
   ) return
-  return `${STATS_PENDING_HAND_DERIVATION_META_PREFIX}${event.HandId}:${event.timestamp}:${getApiEventSequence(event)}`
+  // Preserve existing 306 IDs; a late301 gets its own raw key and affected HandId.
+  const joinType = event.ApiTypeId === ApiType.EVT_PLAYER_JOIN ? '301:' : ''
+  return `${STATS_PENDING_HAND_DERIVATION_META_PREFIX}${event.HandId}:${event.timestamp}:${joinType}${getApiEventSequence(event)}`
 }
 
 const parsePendingHandDerivationFence = (value: unknown): PendingHandDerivationFence | null => {
@@ -457,7 +459,7 @@ const parsePendingHandDerivationFence = (value: unknown): PendingHandDerivationF
     !Array.isArray(candidate.rawKey) ||
     candidate.rawKey.length !== 3 ||
     !candidate.rawKey.every(value => Number.isSafeInteger(value)) ||
-    candidate.rawKey[1] !== ApiType.EVT_HAND_RESULTS ||
+    (candidate.rawKey[1] !== ApiType.EVT_HAND_RESULTS && candidate.rawKey[1] !== ApiType.EVT_PLAYER_JOIN) ||
     (candidate.rawKey[2] ?? -1) < 0
   ) return null
   return {
@@ -546,7 +548,7 @@ export class StatsLedger {
   }
 
   /**
-   * actual-added EVT_HAND_RESULTSにraw primary key単位の派生保留を付ける。
+   * actual-added306、またはactual-added301+影響先HandIdにraw key単位の派生保留を付ける。
    * `mergeApiEvents()`のsequence割当後callbackからのみ呼ぶ（MUST）。
    */
   createPendingHandDerivationFenceRecords(
@@ -578,7 +580,7 @@ export class StatsLedger {
     return getPendingHandDerivationMetaId(event)
   }
 
-  /** canonical成功または意図的棄却が確定したraw-resultだけを消す。 */
+  /** canonical成功または意図的棄却が確定したraw key + HandIdだけを消す。 */
   async acknowledgePendingHandDerivation(
     event: PendingHandDerivationEvent
   ): Promise<boolean> {

@@ -14,7 +14,7 @@
  * PT4/HM3の標準定義では、分母は「hands − walks」。ビッグブラインドを務めた
  * ハンドで、そのハンド中に一度もプリフロップアクションを行っていない場合
  * （＝真のウォーク、または他家が全員オールイン/フォールドしてBBのアクションが
- * スキップされた場合、CLAUDE.md「BB action skip」参照）、BBには自発的な
+ * スキップされた場合、docs/api-events.md「EVT_ACTION: 送信されないケース」参照）、BBには自発的な
  * プリフロップの意思決定機会が一切なかったことになるため、分母から除外する。
  * BB以外のプレイヤーがプリフロップでフォールドした場合は、意思決定を
  * 行った（フォールドを選んだ）ため、引き続き機会としてカウントする。
@@ -23,6 +23,7 @@
 import type { StatDefinition, ActionDetailContext } from '../../types/stats'
 import { ActionDetail, ActionType, PhaseType } from '../../types/game'
 import { formatPercentage } from '../utils'
+import { countPreflopStatOpportunities } from '../preflop-trials'
 
 export const vpipStat: StatDefinition = {
   id: 'vpip',
@@ -36,20 +37,8 @@ export const vpipStat: StatDefinition = {
       a.actionDetails.includes(ActionDetail.VPIP)
     ).length
 
-    // このプレイヤーが何らかのプリフロップアクションを行ったハンドIDの集合
-    const handIdsWithPreflopAction = new Set(
-      actions
-        .filter(a => a.phase === PhaseType.PREFLOP && a.handId !== undefined)
-        .map(a => a.handId!)
-    )
-
-    // 機会（分母）: 自分がBBを務め、かつそのハンドで一度もプリフロップ
-    // アクションを行っていないハンド（ウォーク/BBアクションスキップ）を除外
-    const opportunityHands = hands.filter(hand =>
-      !(hand.bigBlindUserId === playerId && !handIdsWithPreflopAction.has(hand.id))
-    )
-
-    return [voluntaryHandsCount, opportunityHands.length]
+    const opportunities = countPreflopStatOpportunities(playerId, actions, hands)
+    return [voluntaryHandsCount, opportunities.vpip]
   },
   format: formatPercentage,
 
@@ -67,7 +56,7 @@ export const vpipStat: StatDefinition = {
     // プリフロップで、そのプレイヤーの最初のアクションで、CALL/RAISEの場合
     if (phase === PhaseType.PREFLOP &&
         phasePlayerActionIndex === 0 &&
-        [ActionType.RAISE, ActionType.CALL].includes(actionType)) {
+        ([ActionType.RAISE, ActionType.CALL].includes(actionType) || context.normalizationUnproven)) {
       return [ActionDetail.VPIP]
     }
 

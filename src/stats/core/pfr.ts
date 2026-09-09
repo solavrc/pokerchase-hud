@@ -15,11 +15,14 @@
  * VPIPと同じ理由でウォーク（および他家全員オールイン/フォールドによる
  * BBアクションスキップ）を分母から除外する。BBには自発的なプリフロップの
  * 意思決定機会が一切なかったため。詳細はvpip.tsのコメントを参照。
+ * 人物不明行がある場合、VPIPの初回分類と違い、RAISEしなかったという否定には
+ * その人物のpreflop履歴または確定FOLDまでの閉鎖を必要とする。
  */
 
 import type { StatDefinition } from '../../types/stats'
 import { PhaseType, ActionType } from '../../types/game'
 import { getUniqueHandIds, formatPercentage } from '../utils'
+import { countPreflopStatOpportunities } from '../preflop-trials'
 
 export const pfrStat: StatDefinition = {
   id: 'pfr',
@@ -32,24 +35,13 @@ export const pfrStat: StatDefinition = {
     const pfrHandsCount = getUniqueHandIds(
       actions.filter(a =>
         a.phase === PhaseType.PREFLOP &&
+        !a.normalizationUnproven &&
         a.actionType === ActionType.RAISE
       )
     )
 
-    // このプレイヤーが何らかのプリフロップアクションを行ったハンドIDの集合
-    const handIdsWithPreflopAction = new Set(
-      actions
-        .filter(a => a.phase === PhaseType.PREFLOP && a.handId !== undefined)
-        .map(a => a.handId!)
-    )
-
-    // 機会（分母）: 自分がBBを務め、かつそのハンドで一度もプリフロップ
-    // アクションを行っていないハンド（ウォーク/BBアクションスキップ）を除外
-    const opportunityHands = hands.filter(hand =>
-      !(hand.bigBlindUserId === playerId && !handIdsWithPreflopAction.has(hand.id))
-    )
-
-    return [pfrHandsCount, opportunityHands.length]
+    const opportunities = countPreflopStatOpportunities(playerId, actions, hands)
+    return [pfrHandsCount, opportunities.pfr]
   },
   format: formatPercentage
 }

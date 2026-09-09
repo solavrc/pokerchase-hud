@@ -1,0 +1,692 @@
+{
+  "schema_version": 1,
+  "status": "frozen independent expectations; no product helper or product result used",
+  "decision_source": "SEMANTICS.md §8 (supported statistical trials and three-state FLOP participation) and §9 (aggregate numerator/denominator contracts)",
+  "scope": {
+    "hand_count": 18,
+    "raw_event_count": 156,
+    "preflop_asserted_cases": 17,
+    "flop_asserted_cases": 18,
+    "no_general_missing_delivery_detector": true
+  },
+  "source_copies": [
+    {
+      "name": "vpip5",
+      "first_line": 1,
+      "last_line": 43,
+      "event_count": 43,
+      "hand_ids": [
+        991101,
+        991102,
+        991103,
+        991104,
+        991105
+      ],
+      "sha256": "3f398efaec564337ca9f8d17d9d29d7eeb4faf21531f2d230e9dd9683530ba63"
+    },
+    {
+      "name": "synthetic_flop4",
+      "first_line": 44,
+      "last_line": 79,
+      "event_count": 36,
+      "hand_ids": [
+        9990001,
+        9990002,
+        9990003,
+        9990004
+      ],
+      "sha256": "28365a6ed0d20bc6971d9a2e048a2d4103cf3d5ae8f5198612c313194f87ea27",
+      "correction": "9990004 saw_flop is NULL, not false: its 305 is after the boundary and cannot prove old-target nonparticipation."
+    }
+  ],
+  "fixture": {
+    "path": "tools/parity/fixtures/identity-stat-evidence.ndjson",
+    "sha256": "7e2ece3e68b5e8edf0d4dd2a81d030ad51679b4e4bd78f6af1ac18646ab2b6f0"
+  },
+  "rules": [
+    "Known positive facts contribute numerator and denominator; supported closed negatives contribute denominator only; unresolved trials contribute neither.",
+    "VPIP first-action closure and PFR any-raise closure are evaluated separately.",
+    "Identity omission cannot create a negative trial or a walk; proven CALL, RAISE and strict pre-boundary FOLD survive later uncertainty.",
+    "Only unattributed preflop actions affect preflop trials; postflop-only ambiguity cannot erase a closed PFR negative.",
+    "Delivered and synthesized FLOP use person support. FOLD_OPEN or Results presence alone proves neither participation nor nonparticipation.",
+    "A direct UID showdown participant plus at least a flop board proves reach, even if the delivered 305 is after a seat boundary.",
+    "Storage order inside a same-millisecond 301/action tie is not causal evidence."
+  ],
+  "cases": [
+    {
+      "hand_id": 991101,
+      "name": "ambiguous_first_call",
+      "target_user_id": 71001,
+      "source_family": "copied_vpip_diagnostic",
+      "raw_contract": "CALL and foreign 301 share a timestamp; action precedes 301 in file storage.",
+      "expected": {
+        "preflop": {
+          "asserted": true,
+          "is_big_blind": false,
+          "has_unattributed_preflop_action": true,
+          "has_preflop_action": false,
+          "has_preflop_fold": false,
+          "is_walk": false,
+          "vpip": [
+            0,
+            0
+          ],
+          "pfr": [
+            0,
+            0
+          ],
+          "pfr_unproven": true
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": false,
+          "saw_flop": false,
+          "went_to_showdown": false,
+          "wtsd": [
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "hand_id": 991102,
+      "name": "ambiguous_first_raise",
+      "target_user_id": 71011,
+      "source_family": "copied_vpip_diagnostic",
+      "raw_contract": "RAISE and foreign 301 share a timestamp; action precedes 301 in file storage.",
+      "expected": {
+        "preflop": {
+          "asserted": true,
+          "is_big_blind": false,
+          "has_unattributed_preflop_action": true,
+          "has_preflop_action": false,
+          "has_preflop_fold": false,
+          "is_walk": false,
+          "vpip": [
+            0,
+            0
+          ],
+          "pfr": [
+            0,
+            0
+          ],
+          "pfr_unproven": true
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": false,
+          "saw_flop": false,
+          "went_to_showdown": false,
+          "wtsd": [
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "hand_id": 991103,
+      "name": "known_call_then_ambiguous_raise",
+      "target_user_id": 71021,
+      "source_family": "copied_vpip_diagnostic",
+      "raw_contract": "Strict target CALL precedes a RAISE tied with the foreign 301.",
+      "expected": {
+        "preflop": {
+          "asserted": true,
+          "is_big_blind": false,
+          "has_unattributed_preflop_action": true,
+          "has_preflop_action": true,
+          "has_preflop_fold": false,
+          "is_walk": false,
+          "vpip": [
+            1,
+            1
+          ],
+          "pfr": [
+            0,
+            0
+          ],
+          "pfr_unproven": true
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": false,
+          "saw_flop": false,
+          "went_to_showdown": false,
+          "wtsd": [
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "hand_id": 991104,
+      "name": "known_fold_then_ambiguous_raise",
+      "target_user_id": 71031,
+      "source_family": "copied_vpip_diagnostic",
+      "raw_contract": "Strict target FOLD closes preflop before a later RAISE/foreign-301 tie.",
+      "expected": {
+        "preflop": {
+          "asserted": true,
+          "is_big_blind": false,
+          "has_unattributed_preflop_action": true,
+          "has_preflop_action": true,
+          "has_preflop_fold": true,
+          "is_walk": false,
+          "vpip": [
+            0,
+            1
+          ],
+          "pfr": [
+            0,
+            1
+          ],
+          "pfr_unproven": false
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": false,
+          "saw_flop": false,
+          "went_to_showdown": false,
+          "wtsd": [
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "hand_id": 991105,
+      "name": "known_raise_then_ambiguous_call",
+      "target_user_id": 71041,
+      "source_family": "copied_vpip_diagnostic",
+      "raw_contract": "Strict target RAISE proves both positives before a later CALL/foreign-301 tie.",
+      "expected": {
+        "preflop": {
+          "asserted": true,
+          "is_big_blind": false,
+          "has_unattributed_preflop_action": true,
+          "has_preflop_action": true,
+          "has_preflop_fold": false,
+          "is_walk": false,
+          "vpip": [
+            1,
+            1
+          ],
+          "pfr": [
+            1,
+            1
+          ],
+          "pfr_unproven": false
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": false,
+          "saw_flop": false,
+          "went_to_showdown": false,
+          "wtsd": [
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "hand_id": 9990001,
+      "name": "same_ms_fold_join_no305",
+      "target_user_id": 9900010,
+      "source_family": "copied_synthetic_flop_diagnostic",
+      "raw_contract": "FOLD and foreign 301 share a timestamp; no 305; FOLD_OPEN result with full board.",
+      "expected": {
+        "preflop": {
+          "asserted": true,
+          "is_big_blind": false,
+          "has_unattributed_preflop_action": true,
+          "has_preflop_action": false,
+          "has_preflop_fold": false,
+          "is_walk": false,
+          "vpip": [
+            0,
+            0
+          ],
+          "pfr": [
+            0,
+            0
+          ],
+          "pfr_unproven": true
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": true,
+          "saw_flop": null,
+          "went_to_showdown": false,
+          "wtsd": [
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "hand_id": 9990002,
+      "name": "strict_preboundary_fold_no305",
+      "target_user_id": 9900020,
+      "source_family": "copied_synthetic_flop_diagnostic",
+      "raw_contract": "Strict target preflop FOLD precedes boundary; no 305.",
+      "expected": {
+        "preflop": {
+          "asserted": true,
+          "is_big_blind": false,
+          "has_unattributed_preflop_action": false,
+          "has_preflop_action": true,
+          "has_preflop_fold": true,
+          "is_walk": false,
+          "vpip": [
+            0,
+            1
+          ],
+          "pfr": [
+            0,
+            1
+          ],
+          "pfr_unproven": false
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": false,
+          "saw_flop": false,
+          "went_to_showdown": false,
+          "wtsd": [
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "hand_id": 9990003,
+      "name": "known_nonfolder_allin_no305",
+      "target_user_id": 9900030,
+      "source_family": "copied_synthetic_flop_diagnostic",
+      "raw_contract": "Known target preflop ALL_IN plus direct showdown result and full result board; no 305.",
+      "expected": {
+        "preflop": {
+          "asserted": true,
+          "is_big_blind": false,
+          "has_unattributed_preflop_action": false,
+          "has_preflop_action": true,
+          "has_preflop_fold": false,
+          "is_walk": false,
+          "vpip": [
+            1,
+            1
+          ],
+          "pfr": [
+            1,
+            1
+          ],
+          "pfr_unproven": false
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": false,
+          "saw_flop": true,
+          "went_to_showdown": true,
+          "wtsd": [
+            1,
+            1
+          ]
+        }
+      }
+    },
+    {
+      "hand_id": 9990004,
+      "name": "delivered305_after_boundary_control",
+      "target_user_id": 9900040,
+      "source_family": "copied_synthetic_flop_diagnostic",
+      "raw_contract": "FOLD/foreign-301 tie precedes delivered 305; the later seat snapshot belongs to the replacement and FOLD_OPEN does not close target reach.",
+      "expected": {
+        "preflop": {
+          "asserted": true,
+          "is_big_blind": false,
+          "has_unattributed_preflop_action": true,
+          "has_preflop_action": false,
+          "has_preflop_fold": false,
+          "is_walk": false,
+          "vpip": [
+            0,
+            0
+          ],
+          "pfr": [
+            0,
+            0
+          ],
+          "pfr_unproven": true
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": true,
+          "saw_flop": null,
+          "went_to_showdown": false,
+          "wtsd": [
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "hand_id": 9991001,
+      "name": "ambiguous_first_bb_call",
+      "target_user_id": 9910010,
+      "source_family": "added_bounded_control",
+      "raw_contract": "Target is BB; first seat CALL is tied with foreign 301.",
+      "expected": {
+        "preflop": {
+          "asserted": true,
+          "is_big_blind": true,
+          "has_unattributed_preflop_action": true,
+          "has_preflop_action": false,
+          "has_preflop_fold": false,
+          "is_walk": false,
+          "vpip": [
+            0,
+            0
+          ],
+          "pfr": [
+            0,
+            0
+          ],
+          "pfr_unproven": true
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": false,
+          "saw_flop": false,
+          "went_to_showdown": false,
+          "wtsd": [
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "hand_id": 9991002,
+      "name": "known_bb_walk",
+      "target_user_id": 9910020,
+      "source_family": "added_bounded_control",
+      "raw_contract": "Complete no-boundary hand: all other players fold and target BB has no action.",
+      "expected": {
+        "preflop": {
+          "asserted": true,
+          "is_big_blind": true,
+          "has_unattributed_preflop_action": false,
+          "has_preflop_action": false,
+          "has_preflop_fold": false,
+          "is_walk": true,
+          "vpip": [
+            0,
+            0
+          ],
+          "pfr": [
+            0,
+            0
+          ],
+          "pfr_unproven": false
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": false,
+          "saw_flop": false,
+          "went_to_showdown": false,
+          "wtsd": [
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "hand_id": 9991003,
+      "name": "forced_post_only_bb_allin",
+      "target_user_id": 9910030,
+      "source_family": "added_bounded_control",
+      "raw_contract": "Complete no-boundary BB with DEAL Chip=0, BetChip=50, BetStatus=ALL_IN; no action, 305 or board.",
+      "expected": {
+        "preflop": {
+          "asserted": true,
+          "is_big_blind": true,
+          "has_unattributed_preflop_action": false,
+          "has_preflop_action": false,
+          "has_preflop_fold": false,
+          "is_walk": true,
+          "vpip": [
+            0,
+            0
+          ],
+          "pfr": [
+            0,
+            0
+          ],
+          "pfr_unproven": false
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": false,
+          "saw_flop": false,
+          "went_to_showdown": false,
+          "wtsd": [
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "hand_id": 9991004,
+      "name": "known_call_postflop_only_ambiguity",
+      "target_user_id": 9910040,
+      "source_family": "added_bounded_control",
+      "raw_contract": "Known preflop CALL and delivered target FLOP precede a postflop FOLD/foreign-301 tie.",
+      "expected": {
+        "preflop": {
+          "asserted": true,
+          "is_big_blind": false,
+          "has_unattributed_preflop_action": false,
+          "has_preflop_action": true,
+          "has_preflop_fold": false,
+          "is_walk": false,
+          "vpip": [
+            1,
+            1
+          ],
+          "pfr": [
+            0,
+            1
+          ],
+          "pfr_unproven": false
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": false,
+          "saw_flop": true,
+          "went_to_showdown": false,
+          "wtsd": [
+            0,
+            1
+          ]
+        }
+      }
+    },
+    {
+      "hand_id": 9991005,
+      "name": "delivered_flop_then_boundary_fold_open",
+      "target_user_id": 9910050,
+      "source_family": "added_bounded_control",
+      "raw_contract": "Known preflop CALL and delivered target FLOP precede a strict later boundary; result is FOLD_OPEN.",
+      "expected": {
+        "preflop": {
+          "asserted": true,
+          "is_big_blind": false,
+          "has_unattributed_preflop_action": false,
+          "has_preflop_action": true,
+          "has_preflop_fold": false,
+          "is_walk": false,
+          "vpip": [
+            1,
+            1
+          ],
+          "pfr": [
+            0,
+            1
+          ],
+          "pfr_unproven": false
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": false,
+          "saw_flop": true,
+          "went_to_showdown": false,
+          "wtsd": [
+            0,
+            1
+          ]
+        }
+      }
+    },
+    {
+      "hand_id": 9991006,
+      "name": "no_boundary_fold_open_no305",
+      "target_user_id": 9910060,
+      "source_family": "added_bounded_control",
+      "raw_contract": "No boundary, no target action and no 305; FOLD_OPEN plus full result board does not identify fold street.",
+      "expected": {
+        "preflop": {
+          "asserted": false,
+          "reason": "This bounded case tests only FLOP three-state evidence; it does not introduce a general missing-delivery detector for preflop trials."
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": true,
+          "saw_flop": null,
+          "went_to_showdown": false,
+          "wtsd": [
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "hand_id": 9991007,
+      "name": "after_boundary_305_direct_uid_showdown",
+      "target_user_id": 9910070,
+      "source_family": "added_bounded_control",
+      "raw_contract": "Known target preflop RAISE, then boundary and delivered 305; direct target SHOWDOWN result plus board independently proves reach.",
+      "expected": {
+        "preflop": {
+          "asserted": true,
+          "is_big_blind": false,
+          "has_unattributed_preflop_action": false,
+          "has_preflop_action": true,
+          "has_preflop_fold": false,
+          "is_walk": false,
+          "vpip": [
+            1,
+            1
+          ],
+          "pfr": [
+            1,
+            1
+          ],
+          "pfr_unproven": false
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": false,
+          "saw_flop": true,
+          "went_to_showdown": true,
+          "wtsd": [
+            1,
+            1
+          ]
+        }
+      }
+    },
+    {
+      "hand_id": 9991008,
+      "name": "ambiguous_call_storage_reversed",
+      "target_user_id": 9910080,
+      "source_family": "added_storage_order_invariance",
+      "raw_contract": "Same evidence as 991101, but 301 precedes tied CALL in file storage.",
+      "expected": {
+        "preflop": {
+          "asserted": true,
+          "is_big_blind": false,
+          "has_unattributed_preflop_action": true,
+          "has_preflop_action": false,
+          "has_preflop_fold": false,
+          "is_walk": false,
+          "vpip": [
+            0,
+            0
+          ],
+          "pfr": [
+            0,
+            0
+          ],
+          "pfr_unproven": true
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": false,
+          "saw_flop": false,
+          "went_to_showdown": false,
+          "wtsd": [
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "hand_id": 9991009,
+      "name": "ambiguous_fold_storage_reversed",
+      "target_user_id": 9910090,
+      "source_family": "added_storage_order_invariance",
+      "raw_contract": "Same evidence as 9990001, but 301 precedes tied FOLD in file storage.",
+      "expected": {
+        "preflop": {
+          "asserted": true,
+          "is_big_blind": false,
+          "has_unattributed_preflop_action": true,
+          "has_preflop_action": false,
+          "has_preflop_fold": false,
+          "is_walk": false,
+          "vpip": [
+            0,
+            0
+          ],
+          "pfr": [
+            0,
+            0
+          ],
+          "pfr_unproven": true
+        },
+        "flop": {
+          "asserted": true,
+          "flop_participation_unproven": true,
+          "saw_flop": null,
+          "went_to_showdown": false,
+          "wtsd": [
+            0,
+            0
+          ]
+        }
+      }
+    }
+  ]
+}

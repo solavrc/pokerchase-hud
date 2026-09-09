@@ -56,34 +56,27 @@ export async function saveEntities(
 }
 
 /**
- * Process a Dexie table in chunks using true cursor-based pagination.
- * Generic helper for chunked data processing.
+ * Dexie tableを実cursor paginationでchunk単位に処理する汎用helper。
  *
- * IMPORTANT (see CLAUDE.md "Dexie Collection reuse"): `.offset(n).limit(m)`
- * on a single, already-built `Dexie.Collection` instance is NOT safe
- * pagination. Dexie Collections accumulate query modifiers rather than
- * replacing them, so calling `.offset()`/`.limit()` again on the SAME
- * Collection object on the next loop iteration stacks a second offset/limit
- * on top of the first one instead of re-querying from scratch. A prior
- * version of this helper took a single pre-built `Collection<T>` and looped
- * `.offset(offset).limit(chunkSize)` over it -- after the first chunk, the
- * Collection was already permanently limited to `chunkSize` rows, so every
- * subsequent `.offset()` call skipped past that already-exhausted result set
- * and every later chunk silently came back empty (the loop's
- * `chunk.length === 0` check then ended iteration early). For any
- * caller with `total > chunkSize` this meant only the FIRST chunk was ever
- * processed, with no error -- e.g. a cloud restore rebuild would silently
- * stop deriving hands/phases/actions after the first `chunkSize` raw events
- * while still marking the import complete.
+ * 重要（src/AGENTS.md「Raw Event Lake と再生」参照）: 生成済みの同じ
+ * `Dexie.Collection` instanceへ`.offset(n).limit(m)`を繰り返す方法は安全なpaginationではない
+ * （MUST NOT）。Dexie Collectionはquery modifierを置換せず累積するため、次のloopで同じ
+ * Collection objectへ`.offset()` / `.limit()`を再度呼ぶと、最初からqueryし直さず前回の
+ * offset / limitへ重ねて適用する。旧helperは生成済みの1つの`Collection<T>`を受け取り、
+ * `.offset(offset).limit(chunkSize)`をloopしていた。最初のchunk後にはCollectionが
+ * `chunkSize`行へ恒久的に制限されていたため、後続の`.offset()`は消費済みresult setの末尾を
+ * 越え、すべての後続chunkが黙って空になった（`chunk.length === 0`でloopも早期終了した）。
+ * `total > chunkSize`のcallerはerrorなしで最初のchunkしか処理できず、たとえばcloud restoreの
+ * rebuildは最初の`chunkSize` raw event以後のhands / phases / actionsを導出しないままimport完了と
+ * 記録していた。
  *
- * This version takes the `Dexie.Table` itself (not a Collection) and issues
- * a brand-new query for every chunk, cursoring on the table's
- * `[timestamp+ApiTypeId+sequence]` compound primary key -- exactly the pattern
- * CLAUDE.md prescribes: `where('[timestamp+ApiTypeId+sequence]').above(lastKey).limit(N)`.
- * This is currently only used against `db.apiEvents` (whose primary key is
- * that compound index); if a future caller needs this for a table with a
- * different key shape, extend/generalize the cursor extraction rather than
- * reusing this implementation's hardcoded `timestamp`/`ApiTypeId` fields.
+ * 現在の実装はCollectionではなく`Dexie.Table`自体を受け取り、各chunkで新しいqueryを発行する。
+ * tableのcompound primary key `[timestamp+ApiTypeId+sequence]`をcursorに使い、
+ * src/AGENTS.mdの規約どおり
+ * `where('[timestamp+ApiTypeId+sequence]').above(lastKey).limit(N)`を実行する。現在の利用対象は
+ * このcompound indexをprimary keyに持つ`db.apiEvents`だけである。別のkey shapeを持つtableで
+ * 将来必要になった場合は、hardcodeした`timestamp` / `ApiTypeId` fieldを流用せず、cursor抽出を
+ * 拡張または一般化する。
  */
 export async function* processInChunks<T extends { timestamp?: number; ApiTypeId: number; sequence?: number }>(
   table: Dexie.Table<T, any>,

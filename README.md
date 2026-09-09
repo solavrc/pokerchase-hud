@@ -69,6 +69,7 @@ npm run build
 | `npm run build` | 本番用の拡張機能を`dist/`へビルドし、`extension.zip`を作成 |
 | `npm run typecheck` | TypeScriptの型検査 |
 | `npm run test` | Jestのユニット／コンポーネントテスト |
+| `npm run test:firestore-rules` | 専用demo projectのFirestore emulatorでSecurity Rulesを検証（Firebase CLI・Java 21以降が必要） |
 | `npm run validate-schema -- <file.ndjson>` | NDJSONのAPIイベントをスキーマ検証 |
 | `npm run schema-diff -- <file.ndjson>` | APIイベントのフィールド差分を検出 |
 | `npm run verify-stats -- <file.ndjson>` | 旧全計算とv8寄与台帳を独立したoracleと照合 |
@@ -93,9 +94,10 @@ npm run mockup
 
 ## 関連ドキュメント
 
-- [開発エージェント向け技術リファレンス](AGENTS.md)
+- [開発エージェント向けガイド](AGENTS.md)
 - [アーキテクチャの設計判断](docs/architecture.md)
 - [PokerChase APIイベント仕様](docs/api-events.md)
+- [統計定義と派生データの契約](docs/statistics.md)
 - [PokerStars形式のエクスポート仕様](docs/pokerstars-export.md)
 - [Firebaseのセットアップ](docs/firebase-setup.md)
 - [本番エラー監視とプライバシー境界](docs/observability.md)

@@ -1,31 +1,23 @@
 /**
- * Regression tests for `processInChunks()` cursor-based pagination.
+ * `processInChunks()`のcursor paginationに対する回帰test。
  *
- * Audit finding (independent, reproduced in-memory): the previous
- * implementation applied `.offset(n).limit(chunkSize)` to the SAME
- * `Dexie.Collection` object on every loop iteration. Dexie Collections
- * accumulate query modifiers rather than replacing them, so the second
- * iteration's `.offset(chunkSize)` was applied ON TOP OF the first
- * iteration's already-applied `.limit(chunkSize)` -- which had permanently
- * restricted the Collection to its first `chunkSize` rows. Every
- * `.offset()` call from the second iteration onward therefore skipped past
- * an already-exhausted result set and returned an empty array, and the
- * generator's `chunk.length === 0` check ended iteration right there. For
- * any caller with more rows than one `chunkSize`, only the FIRST chunk was
- * ever processed -- silently, with no error.
+ * 監査finding（独立したin-memory再現）: 旧実装はloopごとに同じ`Dexie.Collection`
+ * objectへ`.offset(n).limit(chunkSize)`を適用していた。Dexie Collectionはquery modifierを
+ * 置換せず累積するため、2回目の`.offset(chunkSize)`は、最初の`chunkSize`行へ恒久的に
+ * 制限済みの`.limit(chunkSize)`へ重ねて適用された。したがって2回目以降の`.offset()`は
+ * 消費済みresult setの末尾を越えて空配列を返し、generatorは`chunk.length === 0`で
+ * 直ちに終了した。行数が1 chunkを越えるcallerでは、errorなしで最初のchunkだけが
+ * 処理されていた。
  *
- * Concretely, this meant the cloud-restore rebuild path
- * (`AutoSyncService.rebuildLocalEntities`, `src/services/auto-sync-service.ts`)
- * stopped deriving hands/phases/actions after the first
- * `DATABASE_CONSTANTS.SYNC_CHUNK_SIZE` (5,000) raw events, while still
- * marking the import complete.
+ * 具体的にはcloud restoreのrebuild path（`AutoSyncService.rebuildLocalEntities`、
+ * `src/services/auto-sync-service.ts`）が、最初の
+ * `DATABASE_CONSTANTS.SYNC_CHUNK_SIZE`（5,000）raw event以後のhands / phases / actionsを
+ * 導出しないままimport完了と記録していた。
  *
- * These tests use a REAL `PokerChaseDB` backed by `fake-indexeddb` rather
- * than a mocked Collection -- a `.offset()/.limit()` mock built with
- * `mockReturnThis()` (as `database-utils.test.ts` used before this fix)
- * cannot distinguish "fresh query per chunk" from "cumulative modifiers on
- * one Collection", which is exactly what let the original bug ship
- * unnoticed. See CLAUDE.md "Dexie Collection reuse".
+ * このtestはmock Collectionではなく、`fake-indexeddb`を使う実`PokerChaseDB`を使用する。
+ * 修正前の`database-utils.test.ts`にあった`mockReturnThis()`製の`.offset()/.limit()` mockでは、
+ * 「chunkごとのfresh query」と「1つのCollectionへのmodifier累積」を区別できず、それが旧不具合を
+ * 見逃した原因だった。src/AGENTS.md「Raw Event Lake と再生」参照。
  */
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb'
 import { processInChunks, processInReplayChunks, filterValidApplicationEvents, saveEntities } from './database-utils'

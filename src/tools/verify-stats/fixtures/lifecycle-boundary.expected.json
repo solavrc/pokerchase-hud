@@ -1,0 +1,425 @@
+{
+  "status": "fixed from raw identity/timestamp, call and contested-award facts; no product output copied",
+  "inputs": {
+    "lifecycle": {
+      "path": "lifecycle-boundary-evidence.ndjson",
+      "events": 90,
+      "hands": 7,
+      "sha256": "a7bcc3b597c37bdc351f9008279264026d7b238ba2f942d37916084c1d1ff519"
+    },
+    "lifecycleDirect": {
+      "path": "lifecycle-boundary-candidates.ndjson",
+      "events": 22,
+      "hands": 2,
+      "sha256": "0d90256a2e268cb6d59d27c9a4aed957a8983ea3de4944249b1f81d0f1e5143d"
+    }
+  },
+  "rows": [
+    {
+      "fixture": "lifecycle",
+      "handId": 995201,
+      "playerId": 71001,
+      "hands": 1,
+      "stats": {
+        "vpip": [
+          0,
+          0
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "steal": [
+          0,
+          0
+        ]
+      },
+      "reason": "別人JOINとDEALが同ms。保存順によらず後続の旧席CALLは本人へ帰属できず、VPIP/PFR/STLは未知。",
+      "rawLines": [
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ]
+    },
+    {
+      "fixture": "lifecycle",
+      "handId": 995202,
+      "playerId": 71001,
+      "hands": 1,
+      "stats": {
+        "vpip": [
+          0,
+          0
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "steal": [
+          0,
+          0
+        ]
+      },
+      "reason": "別人JOINとDEALが同ms。保存順によらず後続の旧席CALLは本人へ帰属できず、VPIP/PFR/STLは未知。",
+      "rawLines": [
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ]
+    },
+    {
+      "fixture": "lifecycle",
+      "handId": 995203,
+      "playerId": 3103,
+      "hands": 1,
+      "stats": {
+        "wtsd": [
+          1,
+          1
+        ],
+        "wtsdNoAi": [
+          1,
+          1
+        ],
+        "wsd": [
+          0,
+          0
+        ],
+        "wwsf": [
+          0,
+          0
+        ],
+        "wwsfNoAi": [
+          0,
+          0
+        ],
+        "riverCallAccuracy": [
+          0,
+          0
+        ],
+        "af": [
+          0,
+          2
+        ],
+        "afq": [
+          0,
+          2
+        ]
+      },
+      "reason": "席0は厳密に先行FOLD済みだがJOINとRESULTSが同msなのでtier勝者は不明。席3のFLOP/SHOWDOWNと2件のpostflop CALLは保持。",
+      "rawLines": [
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33
+      ]
+    },
+    {
+      "fixture": "lifecycle",
+      "handId": 995204,
+      "playerId": 3103,
+      "hands": 1,
+      "stats": {
+        "wtsd": [
+          1,
+          1
+        ],
+        "wtsdNoAi": [
+          1,
+          1
+        ],
+        "wsd": [
+          0,
+          0
+        ],
+        "wwsf": [
+          0,
+          0
+        ],
+        "wwsfNoAi": [
+          0,
+          0
+        ],
+        "riverCallAccuracy": [
+          0,
+          0
+        ],
+        "af": [
+          0,
+          2
+        ],
+        "afq": [
+          0,
+          2
+        ]
+      },
+      "reason": "席0は厳密に先行FOLD済みだがJOINとRESULTSが同msなのでtier勝者は不明。席3のFLOP/SHOWDOWNと2件のpostflop CALLは保持。",
+      "rawLines": [
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50
+      ]
+    },
+    {
+      "fixture": "lifecycle",
+      "handId": 995205,
+      "playerId": 3103,
+      "hands": 1,
+      "stats": {
+        "wtsd": [
+          1,
+          1
+        ],
+        "wtsdNoAi": [
+          1,
+          1
+        ],
+        "wsd": [
+          1,
+          1
+        ],
+        "wwsf": [
+          1,
+          1
+        ],
+        "wwsfNoAi": [
+          1,
+          1
+        ],
+        "riverCallAccuracy": [
+          1,
+          1
+        ],
+        "af": [
+          0,
+          2
+        ],
+        "afq": [
+          0,
+          2
+        ]
+      },
+      "reason": "席0のFOLDは時刻3000、JOINは15500で厳密に後かつ他の303〜306と非同時。305残高は3491で整合し、JOIN後306残高2950は旧人へ接続しない。本人投入0、SB/BB各250で500払出。次JOIN/DEALはこのRESULTSより1000ms後。",
+      "rawLines": [
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67
+      ]
+    },
+    {
+      "fixture": "lifecycle",
+      "handId": 995206,
+      "playerId": 3101,
+      "hands": 1,
+      "stats": {
+        "vpip": [
+          0,
+          0
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "steal": [
+          0,
+          0
+        ]
+      },
+      "reason": "前RESULTSは厳密に早い。次DEALと同msの別人JOINを次handへ渡し、旧席CALLからVPIP/PFR/STLを作らない。",
+      "rawLines": [
+        68,
+        69,
+        70,
+        71,
+        72,
+        73
+      ]
+    },
+    {
+      "fixture": "lifecycle",
+      "handId": 995207,
+      "playerId": 3103,
+      "hands": 1,
+      "stats": {
+        "wtsd": [
+          1,
+          1
+        ],
+        "wtsdNoAi": [
+          1,
+          1
+        ],
+        "wsd": [
+          0,
+          0
+        ],
+        "wwsf": [
+          0,
+          0
+        ],
+        "wwsfNoAi": [
+          0,
+          0
+        ],
+        "riverCallAccuracy": [
+          0,
+          0
+        ],
+        "af": [
+          0,
+          2
+        ],
+        "afq": [
+          0,
+          2
+        ]
+      },
+      "reason": "JOINは15500、RESULTSは16000で非同時。ただしJOINより前の305残高2950はFOLD残高3491と矛盾するため旧人の投入を閉じない。995205の整合305対照なら勝者は既知。",
+      "rawLines": [
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90
+      ]
+    },
+    {
+      "fixture": "lifecycleDirect",
+      "handId": 995211,
+      "playerId": 3103,
+      "hands": 1,
+      "stats": {
+        "wtsd": [
+          1,
+          1
+        ],
+        "wtsdNoAi": [
+          1,
+          1
+        ],
+        "wsd": [
+          0,
+          0
+        ],
+        "wwsf": [
+          0,
+          0
+        ],
+        "wwsfNoAi": [
+          0,
+          0
+        ],
+        "riverCallAccuracy": [
+          0,
+          0
+        ],
+        "af": [
+          0,
+          2
+        ],
+        "afq": [
+          0,
+          2
+        ]
+      },
+      "reason": "直接与えた既知候補順の[前RESULTS,JOIN,次DEAL]。JOINは前RESULTSと同msで、先行FOLDがあっても勝者不明。",
+      "rawLines": [
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17
+      ]
+    },
+    {
+      "fixture": "lifecycleDirect",
+      "handId": 995212,
+      "playerId": 3101,
+      "hands": 1,
+      "stats": {
+        "vpip": [
+          0,
+          0
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "steal": [
+          0,
+          0
+        ]
+      },
+      "reason": "同じ301を次DEAL候補にも渡す。旧席CALLは帰属不能。303/306の順をcanonical保存順から推定した期待値ではない。",
+      "rawLines": [
+        17,
+        18,
+        19,
+        20,
+        21,
+        22
+      ]
+    }
+  ]
+}

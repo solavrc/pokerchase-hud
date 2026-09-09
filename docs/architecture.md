@@ -217,7 +217,18 @@ canonical dirty markerも置く。したがってraw保存直後・再構築開�
 Service Workerが終了しても、次回起動はstaleな派生表を成功状態として扱わない。
 
 liveの`EVT_HAND_RESULTS`（306）は、Raw Lakeの主キー`[timestamp+ApiTypeId+sequence]`ごとの
-pending derivation fenceをraw rowと同じtransactionで保存する。完了ハンドのcanonical entityと
+pending derivation fenceをraw rowと同じtransactionで保存する。
+同msの306が保存済みの状態で301を追加する場合も、301自身のraw keyと影響先HandIdを使った
+独立fenceを同じraw transactionで作る。v1構造は維持し、rawKeyのtypeは306または301。
+既存306のIDは互換のまま、301のIDにはtypeを含める。Aggregateは最大timestampの同ms groupに
+完了した全HandIdを保持し、より新しいtimestampでgroupを失効する。古いtimestampはgroupを
+再開しない。timestampを持たない内部session通知はgroupや数値frontierを変更しない。
+同一ACTIVE port世代の301は候補ごとにWESへ渡し、WESがcanonical entity・統計台帳と
+同じtransactionでそのHandIdのfenceをackする。別世代の301は卓帰属を証明できないため派生へ
+渡さず、Aggregateが候補ごとのexact fenceだけを意図的棄却としてackする。旧306だけをcapturedした
+cloud activationでは新301を消さず、
+worker停止や完了buffer欠落時は同じ全Lake復旧へ渡す。301のraw payloadへHandIdは追加しない。
+完了ハンドのcanonical entityと
 統計台帳のcommitが成功した時、またはschema不適合・cross-generation/chimera判定で
 意図的に派生しないと確定した時に、対応するexact fenceだけを消す。揮発バッファ先頭に
 DEALがない306は意図的に派生せず、先にfenceを消さない。
@@ -231,6 +242,11 @@ AggregateEventsStreamでDEALなし306を観測した場合も、同じstructured
 渡して既存のsingle-flight full rebuild schedulerを予約する。通常の取り込みはrebuild完了を待たず、
 既存canonical replayが全Raw Lakeを一度だけ再生し、対象handが生成される場合も生成されない場合も
 activationでfenceを終端する。Raw `apiEvents`はこの経路から削除しない。
+HandLogも同じserialized Aggregate callbackだけをlive入口にする。AggregateがDEALへ固定した
+session・名簿snapshotと、そのハンド中に到着した313/301を含む完了eventsから独立processorで
+完成ログを描画する。したがって配札後に判明した名前を保持しつつ、次sessionのmutable名簿で
+過去ログを書き換えない。同msの後着301による補正も同じ完了workから再描画し、表示中の
+次ハンドprocessorはresetしない。
 対象handが生成された復旧では、activation後に直近ハンドcacheを無効化し、`handEpoch`だけを
 ACTIVEポートへ1回通知する。この通知はstatsやlineupを含まないため、WESのライブ配信や席回転を
 模倣せず、開いたポジション／直近ハンドパネルだけが再取得する。RawにDEALがなく対象handが
@@ -262,6 +278,7 @@ eventを観測した場合は現在文脈を保持し、履歴末尾の古いDEA
 ```
 /users/{userId}/apiEvents/{timestamp_ApiTypeId}            # sequence 0
 /users/{userId}/apiEvents/{timestamp_ApiTypeId_sequence}   # sequence > 0
+/users/{userId}/apiEvents/{timestamp_ApiTypeId_h_sha256}    # 新規保存の内容ID
 ```
 
 ### 採用理由
@@ -269,10 +286,47 @@ eventを観測した場合は現在文脈を保持し、履歴末尾の古いDEA
 - BigQuery 直接エクスポート対応
 - 処理ロジックをローカルで自由に更新可能
 
-sequence 0が従来のdocument IDを維持するため、既にアップロード済みの履歴を
-別documentとして再送しない。新クライアントは旧ID document（`sequence`なし）を
-`sequence: 0`として取り込み、新ID documentはsuffixと保存フィールドのsequenceで
-別行として取り込む。移行期間中の旧クライアントは新ID document自体のdecodeでは
+既存のtimestamp/type/sequence IDは削除・上書きせず、upload候補の内容と一致するとき
+そのまま確認済みとする。新規保存はトップレベルの`sequence`を除くcanonical JSONの
+SHA-256を使う内容IDへ、`currentDocument.exists=false`の条件付きcreateで行う。
+ローカルで再採番されたsequenceをクラウドの一意性と取り違えないための設計で、
+旧形式の部分exportを復元して同じIDが別payloadを指しても、元の内容を失わない。
+
+1 upload batchにつき旧ID・内容IDをまとめて1回の`batchGet`で照合する（候補あたり
+最大2 document読取）。createと読取の間の競合・commit応答喪失は、同一内容が保存済みか
+再照合して解決し、未保存分だけ再試行する。create競合の再試行は最大3回、429/5xxは
+従来のtransportだけが再試行を担当する。古いIDも新IDもdownloadでは同じ
+timestamp+document nameのcursorでページングし、payloadのsequenceは保存したまま運ぶ。
+
+**冪等性の境界**: 旧IDのsequenceが復元先で変わると、その旧documentを新しいsequence
+から逆引きできず、同じpayloadの内容IDが最大1件追加される場合がある。以後は
+sequenceが再び変わっても同じ内容IDへ収束し、upload/restoreで複製は増殖しない。
+HUDのRaw Lakeへのmergeはsequenceを除いた内容で重複排除するため、ローカルraw行・派生統計は
+増えない。旧timestamp/type群の全探索RPCを追加してこの過渡的複製をゼロにするより、
+通常の同期を固定数のbatch RPCに保つ方を採用した。`syncedEvents`は新規保存または
+既存内容を確認したイベント数であり、物理write数ではない。
+
+**順序の観測限界**: `sequence`は端末ローカルの保存slotであり、元の受信順を復元する情報ではない。
+同じtimestamp/type/sequenceの異内容を復元すると、既にあるローカルslotを優先するため、
+同じcloud集合でも復元先によって相対順と順序依存の統計値が異なる場合がある。
+内容IDの保証は内容保持と同内容の重複計上防止であり、失われた因果順や端末間の統計一致ではない。
+
+**本番反映の条件**: 内容IDを書き込む拡張機能の公開前に、`firebase/firestore.rules`の
+APIイベントupdate制限をownerが本番へ適用する。ownerのread/create/deleteは維持し、
+updateは同一内容の再送またはトップレベル`sequence`だけの変更に限る。これにより
+新clientが確認した旧documentを、旧clientの無条件upsertが別payloadで後から消す経路も
+拒否する。ルールのmerge・emulator試験だけでは本番に反映されない。未適用の環境では
+新clientの条件付きcreateだけで旧writerによる上書きを防げるとは扱わない。
+
+Firestore exportを読むpoker-warehouseにも、document nameをまたぐ同一内容の重複排除と
+異なる内容の同一sequence衝突を扱うcompanion変更が必要。**warehouse変更のmergeと
+`run.yml`による本番反映を、内容IDの本番書込みより先行または同時に完了する**。
+従来stagingはdocument name単位でしか重複排除しないため、HUDローカルの重複排除だけを
+根拠にBQの件数・統計も安全とは扱わない。これらのdeploy・公開は別の承認と確認の対象。
+
+新クライアントは旧ID document（`sequence`なし）を
+`sequence: 0`として取り込み、sequence付きID・内容IDのdocumentも保存フィールドを
+同じRaw Lake mergeへ渡す。異なるpayloadは必要に応じて再採番して保持し、同一payloadは畳む。移行期間中の旧クライアントは新ID document自体のdecodeでは
 例外にならないが、旧ローカル主キーでは同一timestamp/typeの二行を表現できず、
 download時に片方だけが残る。旧クライアントがsequence>0 documentを上書きすることは
 ないものの、そのローカル表示・派生データは欠落し得る。remote min-version gate / Forced

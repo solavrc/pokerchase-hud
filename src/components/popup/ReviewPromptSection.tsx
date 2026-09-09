@@ -28,7 +28,7 @@ const REVIEW_PROMPT_MESSAGE_TIMEOUT_MS = 5000
  * 一本化している）。
  *
  * **他バナーとの優先順位**: バッジの優先順位（rebuild > update > 情報系,
- * AGENTS.md「Badge precedence」）と同じ考え方で、データ再構築アドバイザリ・
+ * src/background/AGENTS.md「Forced update の commit 点」）と同じ考え方で、データ再構築アドバイザリ・
  * 保留中アップデート・サポート終了ゲートのいずれかが出ている間は自分を
  * 引っ込める。「サポートが終了しました」の隣で「評価してください」と
  * 出るのは体験として悪い。

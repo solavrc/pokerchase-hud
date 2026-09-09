@@ -14,6 +14,7 @@
 import type { StatDefinition } from '../../types/stats'
 import { PhaseType } from '../../types/game'
 import { formatPercentage } from '../utils'
+import { getWinnerIdentityUnprovenHandIds } from '../winner-eligibility'
 
 export const wwsfNoAiStat: StatDefinition = {
   id: 'wwsfNoAi',
@@ -23,11 +24,12 @@ export const wwsfNoAiStat: StatDefinition = {
   description: 'フロップ以降の勝率（プリフロップオールイン除外）',
   helpText: 'フロップを見た後に勝った割合(プリフロップオールイン除外)',
   enabled: false,
-  calculate: ({ actions, winningHandIds }) => {
+  calculate: ({ actions, winningHandIds, hands }) => {
+    const unproven = getWinnerIdentityUnprovenHandIds(hands)
     // フロップで最低1アクションを行ったハンドID（プリフロップオールイン除外）
     const baseHandIds = new Set(
       actions
-        .filter(a => a.phase === PhaseType.FLOP && a.handId !== undefined)
+        .filter(a => a.phase === PhaseType.FLOP && a.handId !== undefined && !unproven.has(a.handId))
         .map(a => a.handId!)
     )
 

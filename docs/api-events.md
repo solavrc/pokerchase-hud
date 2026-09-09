@@ -275,6 +275,93 @@ rawにはuncalled return専用フィールドがないため、`Pot`、`SidePot[
 
 実イベントと計算過程は[HandId=269804225の実例](api-event-examples.md#rewardchip-uncalled-return-example)を参照。
 
+### EVT_PLAYER_JOIN: ハンド中の人物交代
+
+`SeatIndex`は人物IDではない。Ringでは、配札後にfoldした人物の席へ別人が301で着席し、
+同じhandの305/306 snapshotが既に新しい人物の残高を表すことがある。
+`JoinPlayer.SeatIndex`と`JoinUser.UserId`の組で配札時との相違を観測したら、その席について
+以降のsnapshot・actionを旧人物の履歴へ接続しない。DEALの`SeatUserIds`はそのhandの参加者として
+固定し、301の参加者名・rankは別のUserIdとして保持する。同じUserIdの301は人物交代とはしない。
+いったん別人へ交代した後に旧UserIdが同席へ戻っても、そのhandの観測を再接続しない。
+
+保存caseでは、旧席の配札時`Chip=3491, BetChip=0`、同額の明示FOLD後に別人が
+`Chip=2950, BetChip=0`で着席した。差額541は旧人物のhand投入ではない。
+旧人物の退出後残高は未観測だが、このhandの投入0はFOLD時点で確定する。
+SB25・BB50、BBへのgross payout75は、BBのuncalled return25とcontested award50に分かれる。
+回帰用の[合成fixture](../e2e/fixtures/hand-ring-seat-replacement.ndjson)は座席・金額・イベント順を
+保持し、UserId・名前・HandId・時刻・セッション情報を置換している。
+
+301には卓IDがないため、保存列は同一卓のイベント列という前提を持つ。301は同一性が不確かに
+なる境界であり、別タブの301をその卓の着席だと証明する情報ではない。新残高との数値一致から
+卓への所属を認定しない。交代前に参加が閉じていれば、301が同卓か別卓かにかかわらず旧人物の
+hand投入は変わらない。一方、境界以後の同席304、305の参加状態（BET_ABLE/ALL_IN）や正の
+BetChip、306より前の313で旧UserIdが続く場合は、旧人物の継続と区別できず会計・tier勝者を
+未解決にする。終了と同msの313は次hand前の名簿とも区別できるとは扱わない。
+
+会計では同一人物を追える範囲のRing買い足しを控除し、受取0の人物について次を使う。
+
+- 整合した明示FOLD: `startingStack + FOLDまでのinflow - FOLD.Chip`で投入を確定する。
+  交代のないFOLD済み人物でも、306のsnapshotだけが欠けた場合に同じ証明を使う。
+  本人の開始・チップ観測列が完結していれば、別席の開始欠落でこのFOLD証明を捨てない。
+  他席を必要とするshort-anteの開始額推定は、この人物単位の証明へ広げない。
+- 初期NOT_IN_PLAY/ELIMINATED、BetChip=0: 境界まで行動・参加状態・正のbetがなく、
+  snapshotが一貫して不参加なら投入0を確定する。不参加中の買い足しも投入に混ぜない。
+  この初期不参加証明と卓全体の流入判定には、従来どおり全席の整合を必要とする。
+
+退出後残高を0や推定値で埋める処理ではない。初期snapshot欠落、説明不能なチップ変動、
+旧人物への正のpayoutなどで証明できなければ未解決に残す。全員のhand投入が判明した場合も、
+受取総額が投入総額以下というRingの保存則を確認する。301が未保存なら、残高だけから
+交代と同一人物の変動を識別できない。
+
+301と303/304/305/306が同じmsにある場合、API type順やNDJSON行順から前後を断定しない。
+他席304との衝突も含めて対象席の会計はunknownとする。DEAL前・RESULTS後に並ぶ同ms301も
+hand文脈へ保持し、live・再構築・import・ログで同じ境界を評価する。これは同msの303と306
+自体の前hand/次hand対応を復元できるという意味ではない。
+
+liveでは、観測済みの最大timestampだけを同ms境界groupとして開き、その時刻に完了した
+すべての`HandId`を候補として保持する。より新しいtimestampを一度受けたら旧groupは失効し、
+後から届いた古いtimestampで再び開かない。同じACTIVE port世代（または世代を持たない内部入力）の
+301は全候補を個別に再評価する。別世代の301は卓帰属を証明できないためcanonical・統計台帳・
+完了ログへ適用せず、Raw Lakeと同時に作った候補別exact fenceだけを成功終端する。
+
+liveハンドログのsession・名簿・境界判定は`AggregateEventsStream`適用後の順序を正とする。
+DEAL時点のsessionと名簿はworker内のimmutable contextへ固定し、完了後の補正もそこから再描画する。
+補正は完了済みブロックだけを元の表示位置で置換し、同時に進行している次ハンドの未完了行を
+削除・resetしない。
+
+単一・一括ログexportは同じ抽出処理を使い、主キー順でDEALの前に置かれる301も、結果の
+会計前に境界証拠として渡す。曖昧な原ケースを`Total pot 591 | Rake 541`へ戻さずunknownとする。
+交代席の304を旧人物へ付けない場合も、非終了304の`Progress.Phase`は卓の進行として保持する。
+終了304のPhase=3固定という既存例外は変えない。
+
+帰属できない304は、後続の人物が判明していてもベット段階や主導者の履歴に穴を残す。
+最初の該当304と同ms以後、そのhandの3bet・3betfold・CB・CBF・STL・FTSの新しい分子と
+分母を止める。より早いtimestampで確定したflag、帰属できる明示RAISE/CALL/FOLD、street
+到達は維持する。街の変更や後続メニューだけでは、この6指標の履歴は回復しない。
+
+この境界以後のraw ALL_INは、直前のProgress元が303/305または帰属可能な304であり、その元の
+時刻が全先行人物不明304より厳密に後、現在のALL_INより厳密に前で、当該席・street向け非空
+メニューを持つ場合だけ統計用の型を確定する。同ms順、別席、別street、空メニュー、帰属不明の
+Progressからの候補型には`Action.normalizationUnproven=true`を付ける。候補actionTypeは残すが
+確定したBET/RAISE/CALLとしては数えない。既知のpreflop RAISE、raw ALL_INによるVPIP、
+他の確定したpostflop actionをそれぞれ保つ。型が未知のpreflop ALL_INだけでPFRを0/1にせず、
+そのhandに既知RAISEがなければ0/0とする。型未知のpostflop ALL_INだけではPFRを変更しない。
+
+有効な席交代証拠があり精算が未解決なら`Hand.winnerIdentityUnproven=true`とし、
+WWSF/WWSFa/W$SD/RCAの分子・分母へ入れない。到達を測るWTSD/WTSDaや確定CALL、
+独立に閉じた人物会計は保つ。席交代証拠のないlegacy未解決handは従来の意味を維持する。
+これらの有限条件は合成対照とlive・EC・rebuild・importの全経路で検証する。
+`REBUILD_ADVISORY_VERSION=10`の再構築で既存canonicalへ証拠を保存し、統計台帳も更新する。
+台帳の計算規則は`HAND_STAT_CONTRIBUTION_VERSION=3`、counter長・ordinal・Dexie indexは同じ。
+人物境界で除外したpreflop行は`Hand.preflopIdentityUnprovenPlayerIds`へ保存し、
+終端304の街を厳密に先行するpostflop証拠で確定できない場合も同じ未知候補へ残す。
+VPIPの初回分類とPFRのany-raiseを別々に閉じる。既知CALL・RAISE・strict pre-boundary FOLDを保ち、
+除外actionの不在を否定根拠にしない。FLOP参加も結果の存在やFOLD_OPENだけで肯定せず、
+既知配信・postflop ACTION・直接UIDの正当なshowdownとboardから判定する。
+有限な未知候補は`Hand.flopParticipationUnprovenPlayerIds`へ残す。詳しい分母条件は
+[統計定義](statistics.md#派生契約)を参照する。
+
+
 ### EVT_DEAL: Player フィールドの欠落
 
 - **観戦モード**: Player フィールド自体が undefined
@@ -316,6 +403,51 @@ MTTでハンド途中（EVT_DEAL〜EVT_HAND_RESULTSの間）に `EVT_ENTRY_QUEUE
 | 終了行での `Progress.Phase`（=3固定）とカウンタの不一致 | 28,637行 |
 
 代表例 `533253520`（リプレイ応答でも確認済み）: 同一ミリ秒に8イベントが同居し、5件の 304（フロップ/ターン/リバーのチェック）が3件の 305 より前に並んでいた。導出でカウンタを使うと5件すべてがプリフロップ帰属になるが、各 304 の `Progress.Phase` は 1/1/2/2/3 と正しい値を持っている。
+
+### EVT_ACTION: CHECK権からのALL_IN
+
+`ALL_IN` は投入額を表し、統計用のBET／RAISE／CALLへの正規化には直前の
+`Progress.NextActionTypes` と現在のストリートを使う。メニューが現在の席・確定済みの
+ストリートを指し、非空で、最後の201以後に観測された場合だけ、そのアクションへ適用する。
+この一度の対象判定を正規化と3bet機会判定で共有する。対象メニューに
+`CHECK, ALL_IN` が並ぶ場合はコールすべき差額が無いため、そのオールインはCALLではない。
+
+| 直前の選択肢 | 状況 | 正規化 |
+|---|---|---|
+| `CHECK, RAISE, ALL_IN` | リンプ後のBBオプション | RAISE |
+| `CHECK, ALL_IN` | BBが最小レイズ額まで増額できない | RAISE |
+| `CHECK, ALL_IN` | ポストフロップで最小ベット未満の先制オールイン | BET |
+| `FOLD, ALL_IN` | 対峙する額を全額コールできない、またはコールで全額投入 | CALL |
+
+対象メニューに`BET`があればBET、`CALL, ALL_IN`があればRAISEを優先する。
+欠測・空・別席・別ストリート・201越境は不明として、従来のCALLへのフォールバックを保つ。
+最新Progressが空でも古い非空メニューへ戻らず、毎回最新値へ置換する。
+`CALL`や`CHECK`だけのメニューでは、raw ALL_IN自体を増額可能性の根拠にしない。
+ただし、そのアクション自身の`Progress.Phase`で新しいポストフロップ街の開始が確定する場合は、
+前ストリートの選択肢を使わずBETとする既存の例外が優先される。
+
+合成fixture `e2e/fixtures/hand-check-option-allin.ndjson` は実ログで確認した選択肢を
+小さな架空のハンドへ再構成したもの。BBの1,000／150へのレイズ（BB=100）、
+フロップの20の先制ベット（最小ベット=100）、300に対する150のショートコールを、
+ライブ・変換・再構築・import経路と独立統計oracleで検証する。
+3bet機会は、直前の`Progress`が現在の席・ストリートを指す非空メニューのとき、
+`RAISE`または`ALL_IN`と`CALL`／`CHECK`の併存で判定する。
+`FOLD, CALL`や`FOLD, ALL_IN`しか無い応答は分母から外れる。
+これによりフル額オールイン後に相手が残らない状況や、ショートレイズで
+レイズ権が再開しない状況を、正規化済みのRAISE数だけで機会に数えなくなる。
+欠測・空・別席・別ストリート・201越境のメニューは不明として従来の機会判定を保持し、
+実際に記録されたRAISEはメニューに優先して分子・分母の両方へ数える。
+3betに対するフォールド機会はレイズ可否に依存しないため、この除外を適用しない。
+fixtureにはショートレイズ可能な`CALL, ALL_IN`と、実RAISEへの矛盾メニュー・
+空メニュー・別席メニュー・前ストリートメニュー・同MTT内201・ALL_INを含まない
+メニューの失敗注入も含む。全62アクションの正規化・レイズ可否・3bet機会を
+`hand-check-option-allin.expected.json`の固定表で照合する。
+201はライブ集約の進行中ハンドにも保持し、EC/WES/oracleで直前メニューだけを失効する。
+201自体を理由にハンドを棄却せず、ゲームイベント件数やベット段階の数え方は維持する。
+既存の保存済みアクション・統計台帳の修復は
+`REBUILD_ADVISORY_VERSION=8`で導入した「データ再構築」で反映する（現在は10へ包含）。
+counter構造とordinalは変わらない。人物同一性と統計ごとのeligibilityを反映する計算規則の版は3へ更新し、
+旧版の台帳をcanonicalから再計算する。旧canonicalの証拠追加にはRaw Lake再構築が必要になる。
 
 ### Ring: ハンド中のチップ流入（リバイイン／アドオン）
 

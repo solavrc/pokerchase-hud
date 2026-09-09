@@ -64,6 +64,13 @@ describe('vpipFullStat', () => {
   })
 
   describe('calculate', () => {
+    it('full層でも人物不明の初回行動を分母へ足さず、既知CALL後の曖昧さは保持する', () => {
+      const hands = [1, 2].map(id => makeHand({ id, seatUserIds: [1, 2, 3, 4, 5, 6],
+        bigBlindUserId: 2, preflopIdentityUnprovenPlayerIds: [1] }))
+      const actions = [{ handId: 2, phase: PhaseType.PREFLOP, actionDetails: [ActionDetail.VPIP] }]
+      expect(vpipFullStat.calculate(makeCalcContext({ playerId: 1, actions: actions as any, hands }))).toEqual([1, 1])
+    })
+
     it('restricts numerator/denominator to full-layer hands only (6-max)', () => {
       const hands = [
         makeHand({ id: 1, seatUserIds: [1, 2, 3, 4, 5, 6] }),     // full (6 dealt)

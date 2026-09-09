@@ -372,7 +372,7 @@ export const event_timeline: ApiEvent[] = [
  *  - vpip / pfr: 分母をPT4/HM標準の「hands − walks」に変更。プレイヤーがBBを
  *    務め、かつそのハンドで一度もプリフロップアクションを行っていない場合
  *    （真のウォーク、または他家全員オールイン/フォールドによるBBアクション
- *    スキップ、CLAUDE.md「BB action skip」）、そのハンドは機会（分母）から
+ *    スキップ、docs/api-events.md「EVT_ACTION: 送信されないケース」）、そのハンドは機会（分母）から
  *    除外される。例: 凛(playerId 4)はhand 1でBBを務め、SB(id2)がコールし他が
  *    フォールドしてNextActionSeat=-2となる古典的なウォーク/BBスキップに該当し、
  *    vpip/pfrともに[0,0]（旧: [0,1]）になる。
@@ -393,7 +393,7 @@ export const event_timeline: ApiEvent[] = [
  *    上振れする。hand 12（HandId 384371305）はリバーで通常のEVT_DEAL_ROUNDが
  *    一度発行済みのケースで、このバグの対象外（変化なし）。
  * 引用キー: PT4/HM「hands - walks」標準・PT4 "flops seen, not flops seen
- * when not all-in"（CLAUDE.md「Confirmed Statistical Definitions」参照）。
+ * when not all-in"（docs/statistics.md参照）。
  */
 const expected: PlayerStats[][] = [
   [
@@ -523,7 +523,7 @@ const expected: PlayerStats[][] = [
     {"playerId": -1}
   ],
   [
-    {"playerId": 2, "statResults": [{"id": "hands", "name": "HAND", "value": 22, "formatted": "22"}, {"id": "playerName", "name": "Name", "value": "美遊", "formatted": "美遊"}, {"id": "vpip", "name": "VPIP", "value": [13, 20], "formatted": "65.0% (13/20)"}, {"id": "pfr", "name": "PFR", "value": [5, 20], "formatted": "25.0% (5/20)"}, {"id": "cbet", "name": "CB", "value": [0, 0], "formatted": "-"}, {"id": "cbetFold", "name": "CBF", "value": [0, 2], "formatted": "0.0% (0/2)"}, {"id": "3bet", "name": "3B", "value": [0, 11], "formatted": "0.0% (0/11)"}, {"id": "3betfold", "name": "3BF", "value": [0, 2], "formatted": "0.0% (0/2)"}, {"id": "af", "name": "AF", "value": [0, 3], "formatted": "0.00 (0/3)"}, {"id": "afq", "name": "AFq", "value": [0, 4], "formatted": "0.0% (0/4)"}, {"id": "wtsd", "name": "WTSD", "value": [9, 10], "formatted": "90.0% (9/10)"}, {"id": "wwsf", "name": "WWSF", "value": [7, 10], "formatted": "70.0% (7/10)"}, {"id": "wsd", "name": "W$SD", "value": [7, 9], "formatted": "77.8% (7/9)"}, {"id": "riverCallAccuracy", "name": "RCA", "value": [0, 1], "formatted": "0.0% (0/1)"}]},
+    {"playerId": 2, "statResults": [{"id": "hands", "name": "HAND", "value": 22, "formatted": "22"}, {"id": "playerName", "name": "Name", "value": "美遊", "formatted": "美遊"}, {"id": "vpip", "name": "VPIP", "value": [13, 20], "formatted": "65.0% (13/20)"}, {"id": "pfr", "name": "PFR", "value": [5, 20], "formatted": "25.0% (5/20)"}, {"id": "cbet", "name": "CB", "value": [0, 0], "formatted": "-"}, {"id": "cbetFold", "name": "CBF", "value": [0, 2], "formatted": "0.0% (0/2)"}, {"id": "3bet", "name": "3B", "value": [0, 10], "formatted": "0.0% (0/10)"}, {"id": "3betfold", "name": "3BF", "value": [0, 2], "formatted": "0.0% (0/2)"}, {"id": "af", "name": "AF", "value": [0, 3], "formatted": "0.00 (0/3)"}, {"id": "afq", "name": "AFq", "value": [0, 4], "formatted": "0.0% (0/4)"}, {"id": "wtsd", "name": "WTSD", "value": [9, 10], "formatted": "90.0% (9/10)"}, {"id": "wwsf", "name": "WWSF", "value": [7, 10], "formatted": "70.0% (7/10)"}, {"id": "wsd", "name": "W$SD", "value": [7, 9], "formatted": "77.8% (7/9)"}, {"id": "riverCallAccuracy", "name": "RCA", "value": [0, 1], "formatted": "0.0% (0/1)"}]},
     {"playerId": 4, "statResults": [{"id": "hands", "name": "HAND", "value": 22, "formatted": "22"}, {"id": "playerName", "name": "Name", "value": "凛", "formatted": "凛"}, {"id": "vpip", "name": "VPIP", "value": [6, 19], "formatted": "31.6% (6/19)"}, {"id": "pfr", "name": "PFR", "value": [5, 19], "formatted": "26.3% (5/19)"}, {"id": "cbet", "name": "CB", "value": [2, 3], "formatted": "66.7% (2/3)"}, {"id": "cbetFold", "name": "CBF", "value": [0, 0], "formatted": "-"}, {"id": "3bet", "name": "3B", "value": [0, 9], "formatted": "0.0% (0/9)"}, {"id": "3betfold", "name": "3BF", "value": [0, 0], "formatted": "-"}, {"id": "af", "name": "AF", "value": [4, 0], "formatted": "-"}, {"id": "afq", "name": "AFq", "value": [4, 4], "formatted": "100.0% (4/4)"}, {"id": "wtsd", "name": "WTSD", "value": [4, 5], "formatted": "80.0% (4/5)"}, {"id": "wwsf", "name": "WWSF", "value": [2, 5], "formatted": "40.0% (2/5)"}, {"id": "wsd", "name": "W$SD", "value": [1, 4], "formatted": "25.0% (1/4)"}, {"id": "riverCallAccuracy", "name": "RCA", "value": [0, 0], "formatted": "-"}]},
     {"playerId": -1},
     {"playerId": -1}

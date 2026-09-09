@@ -16,7 +16,7 @@ MV3 bundleにはFirebase JavaScript SDKを含めていない。Chrome Web Store�
 
 - Google OAuth: `chrome.identity.getAuthToken()`
 - Firebase sign-in / token refresh: Identity Toolkit REST / Secure Token REST
-- Firestore read / write: Firestore v1 REST（`:runQuery`, `:runAggregationQuery`, `:commit`）
+- Firestore read / write: Firestore v1 REST（`:runQuery`, `:runAggregationQuery`, `:batchGet`, `:commit`）
 - 認証状態: Firebase ID token / refresh tokenを`chrome.storage.local`へ保存
 - local正本: IndexedDB `PokerChaseDB.apiEvents`（Raw Event Lake）
 
@@ -39,10 +39,15 @@ MV3 bundleにはFirebase JavaScript SDKを含めていない。Chrome Web Store�
   minSupportedVersion: string  # read by min-version-gate.ts
 ```
 
-`eventId`は`sequence=0`ならlegacy互換の`timestamp_ApiTypeId`、1以上なら
-`timestamp_ApiTypeId_sequence`。`/users/{uid}`とsubcollectionは本人だけがread/writeできる。
+旧`eventId`は`sequence=0`なら`timestamp_ApiTypeId`、1以上なら
+`timestamp_ApiTypeId_sequence`。新規保存はsequence非依存の内容ID
+`timestamp_ApiTypeId_h_sha256`を使う。`/users/{uid}`とsubcollectionは本人だけがアクセスできる。
+APIイベントのupdateは同一内容の再送・トップレベル`sequence`だけの変更に限り、
+別payloadへの上書きは旧clientからも拒否する。create/read/deleteは本人に許可する。
 `/config/client`は未認証clientにもread-onlyで、client writeは拒否する。正確なruleは
 [`firebase/firestore.rules`](../firebase/firestore.rules)を正本とする。
+内容IDの公開にはrulesの本番先行適用と、warehouse companion変更の反映が必要。
+詳細は[アーキテクチャ設計判断の本番反映条件](architecture.md)を参照する。
 
 ## Fork / self-host projectの設定
 
@@ -69,6 +74,16 @@ npm run firebase:emulators
 ```
 
 `firebase-tools`はこのrepositoryのdependencyではない。上記scriptは環境にあるFirebase CLIを呼ぶ。
+
+### Security Rulesのローカル試験
+
+Firebase CLIとJava 21以降を用意し、`npm ci`後に`npm run test:firestore-rules`を実行する。
+検証環境ではFirebase CLI 15.28.1 / Java 21を使用した。このcommandは専用の
+`firebase.rules-test.json`を読み、loopbackのFirestore emulatorを起動して
+`demo-pokerchase-hud-rules`だけで試験し、終了時に停止する。Firebase loginや本番deployは不要。
+既存の同一内容upsert、sequenceだけの変更、mixed-versionの異payload上書き拒否、
+owner read/create/delete、別account・未認証アクセスの拒否を検証する。
+テスト用Firebase SDKはdev dependencyのみで、拡張機能bundleには含めない。
 
 ### Extension IDとOAuth client
 
@@ -102,15 +117,16 @@ extension IDが別になる場合、そのID用のOAuth clientを用意する。
 3. 9種のschema-valid application eventだけをupload候補にする。非application / unknown eventは
    localには残るがcloudへ送らない。application typeなのに現schemaでparseできない行は
    `unparseable floor`を永続化して保留し、後のschema修正後に再提示できるようscanを巻き戻す。
-4. 300 writes/batchをtimestamp coverage順に直列でFirestore `:commit`へupsertする。後続batchは
+4. 300候補/batchをtimestamp coverage順に処理し、旧IDと内容IDを`:batchGet`で照合する。
+   同じ内容が在れば確認済みとし、未保存分だけ内容IDへ`exists=false`付き`:commit`でcreateする。後続batchは
    直前batchのacknowledge後だけ開始し、古いbatch失敗時に新しいtimestampだけが先にwatermarkを
    進めない。同一millisecondがbatch境界を跨ぐ場合は、次回その最大timestamp群をまとめて再提示する。
-   document IDが決定的なので、acknowledge済み行の再送は同じdocumentを更新する。
-5. Firestoreが全writeをacknowledgeした後だけfloorと同期完了時刻を進める。
+   create競合時は保存済み内容を再照合し、未保存分だけ最大3回までcreateを試行する。
+5. 全候補の保存または既存の同一内容を確認した後だけfloorと同期完了時刻を進める。
 
 ログの母集団を混同しないこと。`raw events` / `scan snapshot`はlocal Lakeで走査する全行、
-`valid application`はvalidation通過行、`acknowledged Firestore writes`は実際にcommitされた行である。
-例えば「1,023 raw rowsをscanし695 writesをacknowledge」は、それだけで308件の欠損を意味しない。
+`valid application`はvalidation通過行、`confirmed cloud events`は今回保存または既存内容を確認した行で、
+物理write数ではない。例えば「1,023 raw rowsをscanし695 cloud eventsを確認」は、それだけで328件の欠損を意味しない。
 残りには同期対象外noise、unknown、schema修正待ちの保留行、watermark巻き戻しで再確認した既存行が
 含まれ得る。pass終端の分類別summaryを確認する。
 
@@ -203,7 +219,7 @@ quota、rules、network、batch size / retry設定を調査する。permission d
 ### Popupと同期状態が一致しない
 
 1. popupとService Worker consoleで同じpassの`[AutoSync]`、`[Firestore]`ログを追う。
-2. `scanned raw`、`valid application`、`acknowledged Firestore writes`、
+2. `scanned raw`、`valid application`、`confirmed cloud events`、
    `filtered non-application/unknown`、`deferred unparseable application`を分類ごとに確認する。
 3. popupのpending数はraw-row heuristicであり、実upload件数と一致する契約ではない。
 4. partial download / rebuild errorではRaw Event Lakeは残るため、原因解消後にmanual downloadまたは

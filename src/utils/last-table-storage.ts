@@ -62,7 +62,7 @@ export const LAST_TABLE_SNAPSHOT_MESSAGE_TIMEOUT_MS = 1_000
 /**
  * ヒーロー席（表示座席0）は**保存しない**（MUST NOT）。ヒーロー枠は
  * マウント直後のpregameキャリア統計（`getLatestSessionStats({preGame:true})`、
- * AGENTS.md「Pre-game hero stats」）が所有していて、復元がそこへ割り込むと
+ * src/components/AGENTS.md「HUD と席の保持」）が所有していて、復元がそこへ割り込むと
  * 「DBから計算し直した最新のキャリア統計」を「前回表示していた古い値」で
  * 上書きしかねない。復元の目的は*相手*の統計とドリルダウンへ到達すること
  * なので、ヒーロー席は既存の経路に任せる。

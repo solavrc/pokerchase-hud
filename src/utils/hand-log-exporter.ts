@@ -345,6 +345,19 @@ export class HandLogExporter {
       }
     }
 
+    const deal = handEvents.find(event => event.ApiTypeId === ApiType.EVT_DEAL)
+    if (deal) {
+      // primary-key順では301がDEALより前になる。境界証拠は必ず結果計算前に渡す。
+      // 時刻を変更せず、同一msの因果順序も推定しない。identity判定が曖昧性を扱う。
+      for (const event of allEvents) {
+        if (event.ApiTypeId !== ApiType.EVT_PLAYER_JOIN || handEvents.includes(event)) continue
+        if (event.timestamp === deal.timestamp) {
+          handEvents.splice(handEvents.indexOf(deal) + 1, 0, event)
+        } else if (event.timestamp === resultEvent.timestamp) {
+          handEvents.splice(handEvents.indexOf(resultEvent), 0, event)
+        }
+      }
+    }
     return handEvents
   }
 
@@ -432,43 +445,8 @@ export class HandLogExporter {
       rawEvents as unknown as RawApiEvent[]
     )
 
-    // Time range for hand events
-    // Found total events in time range
-
-    // Log event type distribution
-    const eventTypeCounts: Record<number, number> = {}
-    allEvents.forEach(e => {
-      eventTypeCounts[e.ApiTypeId] = (eventTypeCounts[e.ApiTypeId] || 0) + 1
-    })
-    // Event type distribution
-
-    // Get all events from EVT_DEAL to EVT_HAND_RESULTS for this hand
-    const handEvents: ApiEvent[] = []
-    let foundDeal = false
-
-    for (const event of allEvents) {
-      // Start collecting from EVT_DEAL that matches our seat configuration
-      if (isApiEventType(event, ApiType.EVT_DEAL)) {
-        // Check if this deal event matches our hand's seat configuration
-        if (this.arrayEquals(event.SeatUserIds, hand.seatUserIds)) {
-          foundDeal = true
-          handEvents.length = 0 // Clear any previous events
-          handEvents.push(event)
-        }
-      } else if (foundDeal) {
-        handEvents.push(event)
-
-        // Stop when we reach the hand results for our specific hand
-        if (isApiEventType(event, ApiType.EVT_HAND_RESULTS)) {
-          if (event.HandId === hand.id) {
-            break
-          }
-        }
-      }
-    }
-
-    // Collected events for hand
-    return handEvents
+    // single/batchで同一の境界抽出を使う。
+    return this.extractHandEvents(allEvents, hand)
   }
 
   /**

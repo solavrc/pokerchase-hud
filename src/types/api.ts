@@ -240,7 +240,7 @@ export const apiEventSchemas = {
       BetChip: z.int().nonnegative().describe('現在のベット額。参加直後は0'),
       BetStatus: z.enum(BetStatusType).describe('ベット状態。参加直後は通常0(NOT_IN_PLAY)'),
       Chip: z.int().nonnegative().describe('保有チップ量'),
-      SeatIndex: seatIndexSchema.describe('着席した席インデックス。現状HUDでは未使用だが、次のEVT_DEALを待たずに席マッピングを知る手段として有用'),
+      SeatIndex: seatIndexSchema.describe('着席した席インデックス。JoinUser.UserIdと組み合わせ、ハンド中に配札時の人物が交代した境界を識別する'),
       Status: z.literal(0).describe('プレイヤー状態。参加時は常に0'),
       IsSafeLeave: z.boolean().optional().describe('安全退出フラグ（Ringゲーム）'),
     }).describe('参加プレイヤーのゲーム状態'),
@@ -313,7 +313,7 @@ export const apiEventSchemas = {
       BetChip: z.literal(0).describe('新ストリート開始時にリセット。常に0'),
       BetStatus: z.enum(BetStatusType).describe('ベット状態。2=FOLDED（前ストリートでフォールド済み）, 3=ALL_IN（オールイン中）'),
       Chip: z.int().nonnegative().describe('現在の残チップ量'),
-      SeatIndex: seatIndexSchema.describe('席インデックス。EVT_DEAL.SeatUserIds[SeatIndex]でUserId取得'),
+      SeatIndex: seatIndexSchema.describe('その時点の着席者の席。ハンド中301で人物が交代した場合、DEALのUserIdとは異なる人物のsnapshotになる'),
       Status: z.union([z.literal(0), z.literal(1)]).describe('0=通常, 1=離脱予告/切断（EVT_DEALと同じパターン）'),
       IsSafeLeave: z.boolean().optional().describe('安全退出フラグ（Ringゲーム）'),
     })).min(1).max(6).describe('ヒーロー以外の全プレイヤー状態。SeatIndex昇順。フォールド済み(BetStatus=2)・オールイン(BetStatus=3)含む'),
@@ -349,7 +349,7 @@ export const apiEventSchemas = {
       BetChip: z.literal(0).describe('ハンド終了時は常に0（ベットはポットに回収済み）'),
       BetStatus: z.literal(-1).describe('ハンド終了時は常に-1(HAND_ENDED)'),
       Chip: z.int().nonnegative().describe('ハンド終了後の残チップ量（ポット獲得分を含む最終値）'),
-      SeatIndex: seatIndexSchema.describe('席インデックス。EVT_DEAL.SeatUserIds[SeatIndex]でUserId取得'),
+      SeatIndex: seatIndexSchema.describe('その時点の着席者の席。ハンド中301で人物が交代した場合、DEALのUserIdとは異なる人物のsnapshotになる'),
       Status: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6), z.literal(7)]).describe(`プレイヤーの離脱状態:
         0=通常(97.3%)
         1=離脱予告/切断(0.33%): DEAL時Status=0→RESULTS時Status=1に遷移。数ハンドにわたりStatus=1が続き、最終的にStatus=6 or 7で離脱。チップ変動なし（ハンドに不参加）
@@ -1029,6 +1029,9 @@ export function parseApiEventType<T extends ApiType>(
 
 /** ハンド処理に必要なイベントのみを含む型 */
 export type ApiHandEvent = 
+  | ApiEvent<ApiType.EVT_PLAYER_SEAT_ASSIGNED>
+  | ApiEvent<ApiType.EVT_ENTRY_QUEUED>
+  | ApiEvent<ApiType.EVT_PLAYER_JOIN>
   | ApiEvent<ApiType.EVT_DEAL>
   | ApiEvent<ApiType.EVT_ACTION>
   | ApiEvent<ApiType.EVT_DEAL_ROUND>

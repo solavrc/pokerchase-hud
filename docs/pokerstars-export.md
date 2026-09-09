@@ -174,6 +174,16 @@ collected 行の帰属は以下の前提から復元する:
 
 ### Summary 行
 
+Ringのrakeは、同一人物として照合できるsnapshotとhand投入から求める。
+301で人物が交代した席では、新occupantの残高を旧人の損失やrakeへ使わず、
+交代前の明示FOLDまたは継続した初期不参加から投入が確定する場合だけ補う（[人物交代の会計](api-events.md#evt_player_join-ハンド中の人物交代)）。
+全員の投入が確定しない場合は`Total pot unknown (net payout …) | Rake unknown`とし、0を推定しない。
+同msのDEAL前/RESULTS後の301も含めて評価する。liveログは同msの後着301で完了handを更新し、
+single/batch exportはRaw Lakeの両端にある301を同じhand文脈へ渡す。
+完成済みhandの再評価では、そのhandで記録した名前を保持する。表示名から人物を参照する
+BBの省略CHECK補完と最終アグレッサーのショーダウン順序も、同じhandの名簿を使用する。
+次sessionの名簿の更新や消去で、旧handの行動や表示順序は変わらない。
+
 ```
 # サイドポットなし（トーナメント）:
 Total pot 3080

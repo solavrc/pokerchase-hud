@@ -42,8 +42,9 @@
 
 import type { StatDefinition, StatCalculationContext } from '../../types/stats'
 import type { Action, Hand } from '../../types/entities'
-import { ActionDetail, PhaseType } from '../../types/game'
+import { ActionDetail } from '../../types/game'
 import { formatPercentage } from '../utils'
+import { countPreflopStatOpportunities } from '../preflop-trials'
 import { classifyTableSizeLayer, type TableSizeLayer } from '../../utils/table-size'
 
 /** フルテーブル層の区分。'full' が vpipF の主値、他3層はツールチップ内訳用。 */
@@ -73,17 +74,8 @@ function computeVpipForHands(playerId: number, actions: Action[], hands: Hand[])
     handIds.has(a.handId)
   ).length
 
-  const handIdsWithPreflopAction = new Set(
-    actions
-      .filter(a => a.phase === PhaseType.PREFLOP && a.handId !== undefined && handIds.has(a.handId))
-      .map(a => a.handId!)
-  )
-
-  const opportunityHands = hands.filter(hand =>
-    !(hand.bigBlindUserId === playerId && !handIdsWithPreflopAction.has(hand.id))
-  )
-
-  return [voluntaryCount, opportunityHands.length]
+  const opportunities = countPreflopStatOpportunities(playerId, actions, hands)
+  return [voluntaryCount, opportunities.vpip]
 }
 
 const VPIP_F_LAYERS: VpipFLayer[] = ['full', '4p', '3p', 'hu']

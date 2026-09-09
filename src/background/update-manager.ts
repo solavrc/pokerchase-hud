@@ -59,7 +59,7 @@
  * 制御する「勝ち」側。whats-new-badge.ts（更新情報バッジ）はこのファイルより
  * さらに下位で、rebuild-advisoryとこのファイルの**両方**を確認してから
  * 自分のバッジを出す/消す（このファイル自身はwhats-newの存在を知らない）。
- * 詳細はwhats-new-badge.ts冒頭のコメント・CLAUDE.md参照。
+ * 詳細はwhats-new-badge.ts冒頭のコメント・src/background/AGENTS.md参照。
  */
 import { getRebuildAdvisoryState } from './rebuild-advisory'
 import { runBestEffortChromeUi } from './best-effort-chrome-api'

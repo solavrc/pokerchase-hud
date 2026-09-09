@@ -26,13 +26,19 @@ import type {
   Phase,
   HandState,
   Session,
-  ActionDetailContext
+  ActionDetailContext,
+  Progress
 } from './types'
 
 import { defaultRegistry } from './stats'
 import { resolveActionPhase } from './utils/action-phase'
+import { getApplicableActionMenu, getRaiseAvailability } from './utils/action-raise-option'
 import { getPositionMap, getBigBlindUserId } from './utils/position-utils'
 import { deriveHandSettlement } from './utils/hand-chip-accounting'
+import { getSeatIdentityEvidence } from './utils/seat-occupancy'
+import { deriveFlopParticipation } from './utils/flop-participation'
+import { snapshotHandSession } from './utils/hand-session-context'
+import { getIdentityStatEligibility, IDENTITY_CONTEXT_STAT_IDS } from './utils/identity-stat-eligibility'
 
 /**
  * エンティティバンドル（一括保存用）
@@ -52,6 +58,9 @@ type MutableSession = Omit<Session, 'players'> & {
  */
 export class EntityConverter {
   private currentHandEvents: ApiHandEvent[] = []
+  private boundaryJoins: ApiEvent<ApiType.EVT_PLAYER_JOIN>[] = []
+  private completedTimestamp: number | undefined
+  private currentHandSession: Readonly<Hand['session']> | undefined
   private currentSession: MutableSession
 
   constructor(session: Session) {
@@ -90,6 +99,10 @@ export class EntityConverter {
     }
 
     for (const event of events) {
+      // 306で即時確定すると同一msの後着301を失う。次時刻またはflushまで保留する。
+      if (this.completedTimestamp !== undefined && event.timestamp !== this.completedTimestamp) this.appendCurrentHand(entities)
+      this.boundaryJoins = this.boundaryJoins.filter(join => join.timestamp === event.timestamp)
+      if (event.ApiTypeId === ApiType.EVT_PLAYER_JOIN) this.boundaryJoins.push(event)
       // セッション開始イベントの処理
       if (isApiEventType(event, ApiType.EVT_ENTRY_QUEUED)) {
         const isSameMtt = this.currentSession.battleType === BattleType.TOURNAMENT &&
@@ -129,13 +142,16 @@ export class EntityConverter {
       if (event.ApiTypeId === ApiType.EVT_DEAL) {
         // 前のハンドが完了していない場合も処理
         this.appendCurrentHand(entities)
-        this.currentHandEvents = [event as ApiHandEvent]
-      } else if (this.currentHandEvents.length > 0) {
+        this.currentHandEvents = [event, ...this.boundaryJoins]
+        this.currentHandSession = snapshotHandSession(this.currentSession)
+      } else if (this.currentHandEvents.length > 0 &&
+          (this.completedTimestamp === undefined || event.ApiTypeId === ApiType.EVT_PLAYER_JOIN)) {
+        // 完成後の再評価へ加えるのは同時刻の301だけ。次sessionのlifecycleは混ぜない。
         this.currentHandEvents.push(event as ApiHandEvent)
 
         // EVT_HAND_RESULTSでハンド終了
         if (event.ApiTypeId === ApiType.EVT_HAND_RESULTS) {
-          this.appendCurrentHand(entities)
+          this.completedTimestamp = event.timestamp
         }
       }
     }
@@ -153,19 +169,21 @@ export class EntityConverter {
   private appendCurrentHand(entities: EntityBundle): void {
     if (this.currentHandEvents.length === 0) return
 
-    const handEntities = this.convertHandEvents(this.currentHandEvents, this.currentSession)
+    const handEntities = this.convertHandEvents(this.currentHandEvents, this.currentHandSession ?? this.currentSession)
     if (handEntities) {
       entities.hands.push(handEntities.hand)
       entities.phases.push(...handEntities.phases)
       entities.actions.push(...handEntities.actions)
     }
     this.currentHandEvents = []
+    this.currentHandSession = undefined
+    this.completedTimestamp = undefined
   }
 
   /**
    * 1ハンド分のイベントをエンティティに変換
    */
-  private convertHandEvents(events: ApiHandEvent[], session: Session): { hand: Hand, phases: Phase[], actions: Action[] } | null {
+  private convertHandEvents(events: ApiHandEvent[], session: Readonly<Hand['session']>): { hand: Hand, phases: Phase[], actions: Action[] } | null {
     if (events.length === 0) return null
 
     const handState: HandState = {
@@ -180,8 +198,12 @@ export class EntityConverter {
     // インポート/リビルド後もポジション値が一致するようにする）
     let positionMap: Map<number, Position> = new Map()
 
-    let progress: any = undefined
+    let progress: Progress | undefined
+    let progressEvent: ApiHandEvent | undefined
     let dealEvent: ApiEvent<ApiType.EVT_DEAL> | undefined
+    const bufferedDeal = events.find(event => event.ApiTypeId === ApiType.EVT_DEAL)
+    const identity = bufferedDeal ? getSeatIdentityEvidence(bufferedDeal, events) : undefined
+    const eligibility = bufferedDeal && identity ? getIdentityStatEligibility(bufferedDeal, events, identity) : undefined
     // 進行中のストリート。EVT_DEAL_ROUND と、各アクションの権威的な
     // Progress.Phase の両方で進む（#340、WriteEntityStreamと同一ロジック）。
     // ハンド終了行（Phase=3固定）のフォールバックはここを見る — 直近にpushされた
@@ -191,6 +213,13 @@ export class EntityConverter {
 
     for (const event of events) {
       switch (event.ApiTypeId) {
+        case ApiType.EVT_PLAYER_JOIN:
+          break
+        case ApiType.EVT_ENTRY_QUEUED:
+          // 201で以前の卓のメニューだけを失効させ、ハンドは保持する（MUST）。
+          progress = undefined
+          progressEvent = undefined
+          break
         case ApiType.EVT_DEAL: {
           dealEvent = event
           // ハンドの作成（IDは一時的に0を設定、EVT_HAND_RESULTSで更新）
@@ -224,10 +253,26 @@ export class EntityConverter {
           })
 
           progress = event.Progress
+          progressEvent = event
           break
         }
 
         case ApiType.EVT_ACTION: {
+          // 卓の進行は人物帰属とは独立。交代席が開いたstreetも次の終了行へ伝える。
+          const phase = resolveActionPhase(event, runningPhase)
+          const opensNewStreet = phase !== runningPhase
+          runningPhase = phase
+          // 交代後の行動を配札時の人物へ帰属させない（MUST NOT）。
+          if (identity?.atOrAfterBoundary(event.SeatIndex, event)) {
+            if (eligibility!.preflopOmission(event, phase)) {
+              const userId = bufferedDeal!.SeatUserIds[event.SeatIndex]!
+              const omitted = handState.hand.preflopIdentityUnprovenPlayerIds ??= []
+              if (!omitted.includes(userId)) omitted.push(userId)
+            }
+            progress = event.Progress
+            progressEvent = event
+            break
+          }
           // handIdはEVT_HAND_RESULTSで設定されるため、ここではhandの存在のみチェック
           if (!handState.hand.seatUserIds) break
 
@@ -243,6 +288,7 @@ export class EntityConverter {
           // progressは次のアクションのALL_IN正規化で参照されるため、スキップする場合でも更新する。
           if (playerId === undefined || playerId === -1) {
             progress = event.Progress
+            progressEvent = event
             break
           }
 
@@ -250,12 +296,11 @@ export class EntityConverter {
           // Progress.Phase を正とする（#340、WriteEntityStreamと同一ロジック）。
           // ALL_INの正規化はストリート確定より後で行う（この行自身が新ストリートを
           // 開いた場合、直前のprogressは前ストリート終了時点のもので使えない）。
-          const phase = resolveActionPhase(event, runningPhase)
-          const opensNewStreet = phase !== runningPhase
-          runningPhase = phase
-
+          const actionMenu = getApplicableActionMenu(progress, event.SeatIndex, phase)
           const actionDetails: ActionDetail[] = []
-          const actionType = this.normalizeAllInAction(event, progress, opensNewStreet, actionDetails)
+          const actionType = this.normalizeAllInAction(event, actionMenu, phase, opensNewStreet, actionDetails)
+          const normalizationUnproven = eligibility?.normalizationUnproven(event, progressEvent, phase) ?? false
+          const contextUnproven = eligibility?.contextUnproven(event) ?? false
 
           const phaseActions = handState.actions.filter(action => action.phase === phase)
           const phasePrevBetCount = phaseActions.filter(action =>
@@ -278,12 +323,15 @@ export class EntityConverter {
             phase,
             phasePlayerActionIndex,
             phasePrevBetCount,
+            canRaise: getRaiseAvailability(actionMenu, phase),
+            normalizationUnproven,
             position,
             handState
           }
 
           // 統計モジュールからActionDetailsを収集
           for (const stat of defaultRegistry.getAll()) {
+            if (contextUnproven && IDENTITY_CONTEXT_STAT_IDS.has(stat.id)) continue
             if (stat.detectActionDetails) {
               const detectedDetails = stat.detectActionDetails(detectionContext)
               actionDetails.push(...detectedDetails)
@@ -301,6 +349,7 @@ export class EntityConverter {
             playerId,
             phase,
             actionType,
+            ...(normalizationUnproven ? { normalizationUnproven: true as const } : {}),
             bet: event.BetChip,
             pot: event.Progress.Pot,
             sidePot: event.Progress.SidePot,
@@ -309,6 +358,7 @@ export class EntityConverter {
           })
 
           progress = event.Progress
+          progressEvent = event
           break
         }
 
@@ -342,7 +392,8 @@ export class EntityConverter {
             // ALL_INステータスのプレイヤーもこのフェーズの参加者に含める
             // （#115）。FOLDEDのプレイヤーのみが引き続き除外される。
             const seatUserIds = (event.Player ? [event.Player, ...event.OtherPlayers] : event.OtherPlayers)
-              .filter(({ BetStatus }) => BetStatus === BetStatusType.BET_ABLE || BetStatus === BetStatusType.ALL_IN)
+              .filter(({ SeatIndex, BetStatus }) => !identity?.atOrAfterBoundary(SeatIndex, event) &&
+                (BetStatus === BetStatusType.BET_ABLE || BetStatus === BetStatusType.ALL_IN))
               .sort((a, b) => a.SeatIndex - b.SeatIndex)
               .map(({ SeatIndex }) => handState.hand.seatUserIds.at(SeatIndex)!)
             handState.phases.push({
@@ -360,6 +411,7 @@ export class EntityConverter {
           }
 
           progress = event.Progress
+          progressEvent = event
           break
         }
 
@@ -392,56 +444,21 @@ export class EntityConverter {
           // EVT_HAND_RESULTSのCommunityCardsを二重に数えてしまう）。
           const fullBoard = [...(handState.phases.at(-1)?.communityCards || []), ...(event.CommunityCards || [])]
 
-          // プリフロップ全員オールインでストリートが自動進行した場合、PokerChaseは
-          // 残りのEVT_DEAL_ROUNDを一切送信せず、コミュニティカードは全てこの
-          // EVT_HAND_RESULTS.CommunityCardsにまとめて届く（docs/api-events.md
-          // 「EVT_DEAL_ROUND: CommunityCards」）。この場合FLOPフェーズが一度も
-          // pushされないため、WTSD/WWSFの「flops seen」分母がゼロ扱いになり、
-          // PT4公式定義（プリフロップオールインを含む「flops seen」）と食い違う
-          // （#115で修正した通常のDEAL_ROUND経由のALL_IN救済では、DEAL_ROUND自体が
-          // 送信されないこのケースを救えていなかった。sola監査、#115未解決コメント）。
-          // フェーズ配列にFLOPが一度も現れておらず、かつボードが3枚以上到達して
-          // いる場合のみ、FLOPフェーズを合成する（WriteEntityStreamと同一ロジック）。
-          // BetStatusのスナップショットが存在しないため、通常経路（BET_ABLE ||
-          // ALL_IN）の代わりに以下2条件のANDでメンバーシップを判定する（PR #184
-          // codex review, P2）:
-          //   (i)  PREFLOPフェーズでFOLDアクションを送っていない（#97のフォールド
-          //        除外と同じ結論）
-          //   (ii) EVT_HAND_RESULTS.Results[]に存在する
-          // (i)単独では不十分: タイムアウト/切断したプレイヤーは明示的なFOLDの
-          // EVT_ACTIONが送信されないことがあり、かつこの場合Results[]にも一切
-          // 含まれない（docs/api-events.md「EVT_ACTION: 送信されないケース」
-          // 「タイムアウト / 切断」、src/types/api.ts EVT_HAND_RESULTS.Results[].UserId
-          // のdescribe）。このプレイヤーはフォールドもオールインもしていない
-          // （黙って消えただけ）ため、(i)だけで判定するとFLOP合成メンバーに誤って
-          // 含まれてしまう。
-          // (ii)単独でも不十分: PREFLOPでFOLDしたプレイヤーがFOLD_OPEN（フォールド後
-          // の自発的カード公開）を選んだ場合、そのプレイヤーはResults[]に含まれる
-          // （RankType=12）にもかかわらずFLOPを見ていない（src/types/api.ts
-          // 「フォールド済みプレイヤーはFOLD_OPENしない限りResults[]に含まれない」＝
-          // FOLD_OPENなら含まれる）。
-          // 一方、真にプリフロップオールインでボードが自動進行した生存者は、それ以上
-          // ベット判断の余地がないため必ずショーダウンへ到達しResults[]に実役
-          // （RankType 0-9）またはSHOWDOWN_MUCK（11）で現れる — src/types/api.ts の
-          // 不変条件「Pot + sum(SidePot) == sum(Results[].RewardChip)」が100%成立する
-          // こと（docs/api-events.md該当行）はチップを持つ全参加者がResults[]に
-          // エントリを持つことを要求する。したがって両条件のANDのみがゲームの実際の
-          // 意味論と一致する。
-          if (fullBoard.length >= 3 && !handState.phases.some(p => p.phase === PhaseType.FLOP)) {
-            const preflopFoldedPlayerIds = new Set(
-              handState.actions
-                .filter(a => a.phase === PhaseType.PREFLOP && a.actionType === ActionType.FOLD)
-                .map(a => a.playerId)
-            )
-            const resultUserIds = new Set((event.Results || []).map(({ UserId }) => UserId))
-            handState.phases.push({
+          // 305省略時も、配信済み305が人物境界で不採用のときも、直接の人物証拠を使う。
+          const flop = handState.phases.find(phase => phase.phase === PhaseType.FLOP)
+          if (flop || fullBoard.length >= 3) {
+            const participation = deriveFlopParticipation(dealEvent!, events, identity!,
+              handState.actions, flop, event, fullBoard.length)
+            if (flop) flop.seatUserIds = participation.seatUserIds
+            else handState.phases.push({
               handId: event.HandId,
               phase: PhaseType.FLOP,
-              seatUserIds: (handState.hand.seatUserIds || []).filter(uid =>
-                uid !== -1 && !preflopFoldedPlayerIds.has(uid) && resultUserIds.has(uid)
-              ),
+              seatUserIds: participation.seatUserIds,
               communityCards: fullBoard.slice(0, 3),
             })
+            if (participation.unprovenPlayerIds.length > 0) {
+              handState.hand.flopParticipationUnprovenPlayerIds = participation.unprovenPlayerIds
+            }
           }
 
           // ショーダウンフェーズの生成（実際にカードを比較したプレイヤーが2名以上いる場合）
@@ -463,6 +480,7 @@ export class EntityConverter {
             ? deriveHandSettlement(dealEvent, event, handState.hand.session.battleType, events)
             : null
           handState.hand.winningPlayerIds = settlement?.winningPlayerIds ?? []
+          if (settlement?.winnerIdentityUnproven) handState.hand.winnerIdentityUnproven = true
           handState.hand.playerChipAccounting = settlement?.playerChipAccounting ??
             Object.fromEntries(handState.hand.seatUserIds.filter(userId => userId !== -1).map(userId => [String(userId), null]))
           // RIVER_CALLで勝利したアクションにRIVER_CALL_WONを付与する
@@ -495,23 +513,26 @@ export class EntityConverter {
    */
   private normalizeAllInAction(
     event: ApiEvent<ApiType.EVT_ACTION>,
-    progress: any,
+    actionMenu: readonly ActionType[] | undefined,
+    phase: PhaseType,
     opensNewStreet: boolean,
     actionDetails: ActionDetail[]
   ): Exclude<ActionType, ActionType.ALL_IN> {
     if (event.ActionType === ActionType.ALL_IN) {
       actionDetails.push(ActionDetail.ALL_IN)
 
-      // このアクション自身がストリートを開いた場合（同一msバーストや
-      // EVT_DEAL_ROUND欠落で、新ストリート最初の行がこれになるケース）、
-      // `progress`は前ストリート終了時点のもので NextActionTypes は通常空になる。
-      // ストリートの開き手が対峙するベットは存在しないため BET が正しい。
-      if (opensNewStreet) return ActionType.BET
+      // 新しいポストフロップ街を開くアクションは先制BETになる。
+      // 直前メニューが前ストリートでも、この例外を先に適用する（MUST）。
+      if (opensNewStreet && phase > PhaseType.PREFLOP) return ActionType.BET
 
-      if (progress?.NextActionTypes.includes(ActionType.BET)) {
+      if (actionMenu?.includes(ActionType.BET)) {
         return ActionType.BET
-      } else if (progress?.NextActionTypes.includes(ActionType.CALL)) {
+      } else if (actionMenu?.includes(ActionType.ALL_IN) && actionMenu.includes(ActionType.CALL)) {
         return ActionType.RAISE
+      } else if (actionMenu?.includes(ActionType.ALL_IN) && actionMenu.includes(ActionType.CHECK)) {
+        // チェック権からのALL_INはCALLではない（MUST NOT）。BBのオプションは
+        // 既存BB額へのRAISE、ポストフロップの最小ベット未満のALL_INはBET。
+        return phase === PhaseType.PREFLOP ? ActionType.RAISE : ActionType.BET
       } else {
         return ActionType.CALL
       }

@@ -93,6 +93,12 @@ const playerHandChipAccountingSchema = z.object({
 export const handSchema = z.object({
   /** `EVT_HAND_RESULTS`まで未確定 */
   id: z.number(),
+  /** 人物交代の証拠を含む観測で勝者を証明できないhand。欠落は従来互換。 */
+  winnerIdentityUnproven: z.literal(true).optional(),
+  /** 人物境界で除外したpreflop ACTIONの旧UID。保持済みの初回行動・raise・FOLDは別に評価する。 */
+  preflopIdentityUnprovenPlayerIds: z.array(z.number()).optional(),
+  /** FLOPは到達済みだが、人物境界または無305のFOLD_OPENだけでは参加を肯定・否定できないUID。 */
+  flopParticipationUnprovenPlayerIds: z.array(z.number()).optional(),
   approxTimestamp: z.number().optional(),
   seatUserIds: z.array(z.number()),
   winningPlayerIds: z.array(z.number()),
@@ -147,7 +153,9 @@ export const actionSchema = z.object({
   pot: z.number(),
   sidePot: z.array(z.number()),
   position: z.enum(Position),
-  actionDetails: z.array(z.enum(ActionDetail))
+  actionDetails: z.array(z.enum(ActionDetail)),
+  /** 席交代後のraw ALL_IN。actionTypeは候補値であり、型依存の統計へ使わない（MUST NOT）。 */
+  normalizationUnproven: z.literal(true).optional()
 })
 
 export type Action = z.infer<typeof actionSchema>

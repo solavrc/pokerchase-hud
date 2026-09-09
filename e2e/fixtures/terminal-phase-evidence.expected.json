@@ -1,0 +1,101 @@
+[
+  {
+    "name": "same_ms_round_join_terminal",
+    "handId": 992201,
+    "targetPlayerId": 82000,
+    "vpip": [
+      1,
+      1
+    ],
+    "pfr": [
+      0,
+      0
+    ],
+    "preflopIdentityUnproven": true,
+    "sameTimestampTypes": [
+      305,
+      301,
+      304
+    ]
+  },
+  {
+    "name": "reverse_same_ms_round_join_terminal",
+    "handId": 992202,
+    "targetPlayerId": 82100,
+    "vpip": [
+      1,
+      1
+    ],
+    "pfr": [
+      0,
+      0
+    ],
+    "preflopIdentityUnproven": true,
+    "sameTimestampTypes": [
+      304,
+      301,
+      305
+    ]
+  },
+  {
+    "name": "strictly_earlier_round",
+    "handId": 992203,
+    "targetPlayerId": 82200,
+    "vpip": [
+      1,
+      1
+    ],
+    "pfr": [
+      0,
+      1
+    ],
+    "preflopIdentityUnproven": false,
+    "sameTimestampTypes": [
+      304,
+      304,
+      301,
+      304
+    ]
+  },
+  {
+    "name": "same_ms_nonterminal_join_terminal",
+    "handId": 992204,
+    "targetPlayerId": 82300,
+    "vpip": [
+      1,
+      1
+    ],
+    "pfr": [
+      0,
+      0
+    ],
+    "preflopIdentityUnproven": true,
+    "sameTimestampTypes": [
+      305,
+      304,
+      304,
+      301,
+      304
+    ]
+  },
+  {
+    "name": "strictly_earlier_nonterminal",
+    "handId": 992205,
+    "targetPlayerId": 82400,
+    "vpip": [
+      1,
+      1
+    ],
+    "pfr": [
+      0,
+      1
+    ],
+    "preflopIdentityUnproven": false,
+    "sameTimestampTypes": [
+      305,
+      304,
+      301,
+      304
+    ]
+  }
+]

@@ -20,15 +20,17 @@
 import type { StatDefinition } from '../../types/stats'
 import { PhaseType } from '../../types/game'
 import { formatPercentage } from '../utils'
+import { getWinnerIdentityUnprovenHandIds } from '../winner-eligibility'
 
 export const wwsfStat: StatDefinition = {
   id: 'wwsf',
   name: 'WWSF',
   description: 'フロップ以降の勝率（プリフロップオールイン含む）',
   helpText: 'フロップを見た後に勝った割合(プリフロップオールイン含む)',
-  calculate: ({ phases, winningHandIds }) => {
+  calculate: ({ phases, winningHandIds, hands }) => {
+    const unproven = getWinnerIdentityUnprovenHandIds(hands)
     // フロップを見たハンド（プリフロップオールインを含む。#115）
-    const flopPhases = phases.filter(p => p.phase === PhaseType.FLOP)
+    const flopPhases = phases.filter(p => p.phase === PhaseType.FLOP && !unproven.has(p.handId!))
 
     // フロップを見て勝利した回数
     const wonAfterFlopCount = flopPhases.filter(p =>

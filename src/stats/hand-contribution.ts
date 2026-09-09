@@ -1,10 +1,15 @@
 import type { Action, Hand, Phase } from '../types/entities'
+import { getPreflopStatOpportunities } from './preflop-trials'
 import { ActionDetail, ActionType, PhaseType, Position, type BattleType } from '../types/game'
 import type { StatValue } from '../types/stats'
 import { classifyTableSizeLayer, type TableSizeLayer } from '../utils/table-size'
 
-/** 永続化した寄与の計算規則を識別する版。counterの意味・並びを変える変更はMUST更新する。 */
-export const HAND_STAT_CONTRIBUTION_VERSION = 1 as const
+/**
+ * 永続化した寄与の計算規則を識別する版。counterの意味・並びを変える変更はMUST更新する。
+ * v3: 人物不明preflop行を統計ごとの根拠で評価する。旧台帳はcanonicalから再計算する。
+ * 旧canonicalにない証拠の復元には別途Raw Event Lake再構築が必要。
+ */
+export const HAND_STAT_CONTRIBUTION_VERSION = 3 as const
 
 /** HUDが履歴から計算する数値指標。並び順は永続counter vectorのABIでもある。 */
 export const NUMERIC_STAT_IDS = [
@@ -38,7 +43,7 @@ const VPIP_F_EXTRA_COUNTER_KEYS = ['vpipF:4p', 'vpipF:3p', 'vpipF:hu'] as const
 type VpipFExtraCounterKey = typeof VPIP_F_EXTRA_COUNTER_KEYS[number]
 type HandStatCounterKey = NumericStatId | VpipFExtraCounterKey
 
-/** version 1の固定ordinal。永続済みvectorはこの並びで解釈される。 */
+/** version 1から維持する固定ordinal。永続済みvectorはこの並びで解釈される。 */
 export const HAND_STAT_COUNTER_ORDINALS = {
   hands: 0,
   vpip: 1,
@@ -192,17 +197,20 @@ function deriveCounters(
 ): HandStatCounterVector {
   const counters = createEmptyHandStatCounterVector()
   const preflopActions = actions.filter(action => action.phase === PhaseType.PREFLOP)
-  const postflopActions = actions.filter(action => action.phase !== PhaseType.PREFLOP)
+  const postflopActions = actions.filter(action => action.phase !== PhaseType.PREFLOP && !action.normalizationUnproven)
   const flopPhases = phases.filter(phase => phase.phase === PhaseType.FLOP)
   const showdownPhases = phases.filter(phase => phase.phase === PhaseType.SHOWDOWN)
   const won = hand.winningPlayerIds.includes(playerId)
+  const winnerEligible = hand.winnerIdentityUnproven !== true
   // 旧ReadEntityStreamは勝者照合対象をFLOP/SHOWDOWN phaseが存在するhandへ
   // 絞っていた。古い不完全derived DBでもWWSFaの歴史値を変えない。
   const visibleToLegacyWinningLookup = flopPhases.length > 0 || showdownPhases.length > 0
 
   const vpipNumerator = countActionDetail(actions, ActionDetail.VPIP)
-  const preflopOpportunity = hand.bigBlindUserId === playerId && preflopActions.length === 0 ? 0 : 1
-  const pfrNumerator = preflopActions.some(action => action.actionType === ActionType.RAISE) ? 1 : 0
+  const opportunities = getPreflopStatOpportunities(hand, playerId, preflopActions)
+  const preflopOpportunity = Number(opportunities.vpip)
+  const pfrNumerator = preflopActions.some(action => !action.normalizationUnproven && action.actionType === ActionType.RAISE) ? 1 : 0
+  const pfrOpportunity = Number(opportunities.pfr)
   const flopActionBase = actions.some(action => action.phase === PhaseType.FLOP) ? 1 : 0
   const sawFlop = flopPhases.length > 0 ? 1 : 0
   // 既存StatDefinitionの`p.handId &&`判定を、0も有効なHandIdのまま再現する。
@@ -221,7 +229,7 @@ function deriveCounters(
 
   setCounter(counters, 'hands', 1, 0)
   setCounter(counters, 'vpip', vpipNumerator, preflopOpportunity)
-  setCounter(counters, 'pfr', pfrNumerator, preflopOpportunity)
+  setCounter(counters, 'pfr', pfrNumerator, pfrOpportunity)
   setCounter(counters, 'cbet',
     actions.filter(action => action.phase === PhaseType.FLOP && action.actionDetails.includes(ActionDetail.CBET)).length,
     actions.filter(action => action.phase === PhaseType.FLOP && action.actionDetails.includes(ActionDetail.CBET_CHANCE)).length
@@ -249,16 +257,18 @@ function deriveCounters(
   setCounter(counters, 'af', aggressiveActions, calls)
   setCounter(counters, 'afq', aggressiveActions, aggressionDecisions)
   setCounter(counters, 'wtsd', reachedShowdownAfterFlop, sawFlop)
-  setCounter(counters, 'wwsf', won && hasTruthyHandId ? flopPhases.length : 0, flopPhases.length)
+  setCounter(counters, 'wwsf', winnerEligible && won && hasTruthyHandId ? flopPhases.length : 0,
+    winnerEligible ? flopPhases.length : 0)
   setCounter(counters, 'wtsdNoAi', flopActionBase > 0 && hasTruthyHandId ? showdownPhases.length : 0, flopActionBase)
   setCounter(counters, 'wwsfNoAi',
-    won && visibleToLegacyWinningLookup && flopActionBase > 0 ? 1 : 0,
-    flopActionBase
+    winnerEligible && won && visibleToLegacyWinningLookup && flopActionBase > 0 ? 1 : 0,
+    winnerEligible ? flopActionBase : 0
   )
-  setCounter(counters, 'wsd', won && hasTruthyHandId ? showdownPhases.length : 0, showdownPhases.length)
+  setCounter(counters, 'wsd', winnerEligible && won && hasTruthyHandId ? showdownPhases.length : 0,
+    winnerEligible ? showdownPhases.length : 0)
   setCounter(counters, 'riverCallAccuracy',
-    countActionDetail(actions, ActionDetail.RIVER_CALL_WON),
-    countActionDetail(actions, ActionDetail.RIVER_CALL)
+    winnerEligible ? countActionDetail(actions.filter(action => !action.normalizationUnproven), ActionDetail.RIVER_CALL_WON) : 0,
+    winnerEligible ? countActionDetail(actions.filter(action => !action.normalizationUnproven), ActionDetail.RIVER_CALL) : 0
   )
 
   if (tableSizeLayer !== null) {

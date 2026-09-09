@@ -795,7 +795,8 @@ describe('EntityConverter', () => {
       } as any, { skipValidation: true })
 
       expect(converter.convertEventChunk([deal]).hands).toHaveLength(0)
-      expect(converter.convertEventChunk([result]).hands).toEqual([
+      expect(converter.convertEventChunk([result]).hands).toHaveLength(0)
+      expect(converter.flush().hands).toEqual([
         expect.objectContaining({ id: 12345, seatUserIds: [100, 101] })
       ])
       expect(converter.flush().hands).toHaveLength(0)
@@ -3980,7 +3981,7 @@ describe('EntityConverter', () => {
    * カードを比較していない2件の結果でも誤ってSHOWDOWNフェーズが作られていた
    * （実データ393,830件中、複数結果ハンド12,329件のうち692件＝5.6%で発生）。
    * これによりWTSD/W$SDの分母が水増しされる。
-   * CLAUDE.mdのConfirmed Statistical Definitionsに従い、ショーダウン参加者は
+   * docs/statistics.mdの派生契約に従い、ショーダウン参加者は
    * 「実役（RankType 0-9）またはSHOWDOWN_MUCK（11）」のみとし、NO_CALL（10）と
    * FOLD_OPEN（12）は除外する。
    */
@@ -4121,7 +4122,7 @@ describe('EntityConverter', () => {
     })
 
     it('creates a SHOWDOWN phase for a real rank vs SHOWDOWN_MUCK (loser mucked, but showdown occurred)', () => {
-      // ショーダウンが発生し、敗者がマックした（SHOWDOWN_MUCK）ケース。CLAUDE.mdの定義通り、
+      // ショーダウンが発生し、敗者がマックした（SHOWDOWN_MUCK）ケース。docs/statistics.mdの定義通り、
       // SHOWDOWN_MUCKはショーダウンとしてカウントする。
       const events = buildHeadsUpAllInEvents([
         {

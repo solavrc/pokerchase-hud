@@ -19,11 +19,16 @@ import type {
 import type { ActionDetailContext } from '../types/stats'
 import { ErrorHandler } from '../utils/error-handler'
 import { resolveActionPhase } from '../utils/action-phase'
+import { getApplicableActionMenu, getRaiseAvailability } from '../utils/action-raise-option'
 import { getPositionMap, getBigBlindUserId } from '../utils/position-utils'
 import { defaultRegistry } from '../stats'
 import type { ErrorContext } from '../types/errors'
 import type { AppError } from '../types/errors'
 import { deriveHandSettlement } from '../utils/hand-chip-accounting'
+import { getSeatIdentityEvidence } from '../utils/seat-occupancy'
+import { deriveFlopParticipation } from '../utils/flop-participation'
+import { getHandSession, snapshotHandSession } from '../utils/hand-session-context'
+import { getIdentityStatEligibility, IDENTITY_CONTEXT_STAT_IDS } from '../utils/identity-stat-eligibility'
 import {
   getEventGeneration,
   setStatsRequestContext
@@ -60,6 +65,9 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
   protected async transform(events: ApiHandEvent[]): Promise<void> {
     let canonicalCommitted = false
     const resultsEvent = events.find(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)
+    const derivationEvents = resultsEvent ? [resultsEvent, ...events
+      .filter(event => event.ApiTypeId === ApiType.EVT_PLAYER_JOIN)
+      .map(event => ({ ...event, HandId: resultsEvent.HandId }))] : []
     try {
       const dealEvent = events.find((event): event is ApiEvent<ApiType.EVT_DEAL> =>
         event.ApiTypeId === ApiType.EVT_DEAL
@@ -72,7 +80,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
         // 世代交代を跨いだDEAL/RESULTSは1ハンドとして成立しない（MUST NOT）。
         // 既存の不完全・キメラハンドと同様にDB/下流へは出さない。
         console.log(`[WriteEntityStream] Rejected cross-generation hand (HandId=${resultsEvent.HandId})`)
-        await this.service.statsLedger.acknowledgePendingHandDerivation(resultsEvent)
+        await Promise.all(derivationEvents.map(event => this.service.statsLedger.acknowledgePendingHandDerivation(event)))
         return
       }
       const handState = this.toHandState(events)
@@ -82,7 +90,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
         const handId = events.find(e => e.ApiTypeId === ApiType.EVT_HAND_RESULTS)?.HandId
         console.log(`[WriteEntityStream] Rejected chimera hand (HandId=${handId}): EVT_HAND_RESULTS.Results references a player outside the dealt lineup (mid-hand table move)`)
         if (resultsEvent) {
-          await this.service.statsLedger.acknowledgePendingHandDerivation(resultsEvent)
+          await Promise.all(derivationEvents.map(event => this.service.statsLedger.acknowledgePendingHandDerivation(event)))
         }
         return
       }
@@ -131,7 +139,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
         if (resultsEvent) {
           // exact raw-result fenceをcanonical/ledgerと同じcommitでのみ外す
           // （MUST）。delete失敗なら上の派生書き込みもrollbackする。
-          await this.service.statsLedger.acknowledgePendingHandDerivation(resultsEvent)
+          await Promise.all(derivationEvents.map(event => this.service.statsLedger.acknowledgePendingHandDerivation(event)))
         }
       })
       canonicalCommitted = true
@@ -160,9 +168,10 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
         try {
           // productionの306はraw別fenceがrollback後も残る。同一SWでも
           // recovery対象にし、fixed global markerでcloud staging ownerを壊さない。
-          const markedPending = resultsEvent
-            ? await this.service.statsLedger.markPendingHandDerivationFailed(resultsEvent)
-            : false
+          let markedPending = false
+          for (const event of derivationEvents) {
+            markedPending = await this.service.statsLedger.markPendingHandDerivationFailed(event) || markedPending
+          }
           if (!markedPending) {
             // sequence/fenceを持たない内部・旧呼出しだけのfallback。
             await this.service.statsLedger.markCanonicalRebuildRequired(
@@ -199,13 +208,11 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
   }
   private toHandState = (events: ApiHandEvent[]): HandState | null => {
     let positionMap: Map<number, Position> = new Map()
+    const bufferedDeal = events.find(event => event.ApiTypeId === ApiType.EVT_DEAL)
+    const handSession = (bufferedDeal && getHandSession(bufferedDeal)) ?? snapshotHandSession(this.service.session)
     const handState: HandState = {
       hand: {
-        session: {
-          id: this.service.session.id,
-          battleType: this.service.session.battleType,
-          name: this.service.session.name
-        },
+        session: { ...handSession },
         id: NaN,
         approxTimestamp: NaN,
         seatUserIds: [],
@@ -219,7 +226,10 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
       statStates: {}
     }
     let progress: Progress | undefined
+    let progressEvent: ApiHandEvent | undefined
     let dealEvent: ApiEvent<ApiType.EVT_DEAL> | undefined
+    const identity = bufferedDeal ? getSeatIdentityEvidence(bufferedDeal, events) : undefined
+    const eligibility = bufferedDeal && identity ? getIdentityStatEligibility(bufferedDeal, events, identity) : undefined
     // 進行中のストリート。EVT_DEAL_ROUND と、各アクションの権威的な
     // Progress.Phase の両方で進む（#340、EntityConverterと同一ロジック）。
     // ハンド終了行（Phase=3固定）のフォールバックはここを見る — 直近にpushされた
@@ -237,6 +247,13 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
     const seenDealRoundPhases = new Set<number>()
     for (const event of events) {
       switch (event.ApiTypeId) {
+        case ApiType.EVT_PLAYER_JOIN:
+          break
+        case ApiType.EVT_ENTRY_QUEUED:
+          // 201で以前の卓のメニューだけを失効させ、ハンドは保持する（MUST）。
+          progress = undefined
+          progressEvent = undefined
+          break
         case ApiType.EVT_DEAL:
           dealEvent = event
           handState.hand.seatUserIds = event.SeatUserIds
@@ -255,6 +272,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           handState.hand.bigBlindUserId = getBigBlindUserId(event.SeatUserIds, event.Game.BigBlindSeat)
           runningPhase = event.Progress.Phase
           progress = event.Progress
+          progressEvent = event
           break
         case ApiType.EVT_DEAL_ROUND:
           if (seenDealRoundPhases.has(event.Progress.Phase)) {
@@ -272,14 +290,31 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
             // 「flops seen」定義（プリフロップオールインを含む）に合わせるため
             // （#115）。
             seatUserIds: (event.Player ? [event.Player, ...event.OtherPlayers] : event.OtherPlayers)
-              .filter(({ BetStatus }) => BetStatus === BetStatusType.BET_ABLE || BetStatus === BetStatusType.ALL_IN)
+              .filter(({ SeatIndex, BetStatus }) => !identity?.atOrAfterBoundary(SeatIndex, event) &&
+                (BetStatus === BetStatusType.BET_ABLE || BetStatus === BetStatusType.ALL_IN))
               .sort((a, b) => a.SeatIndex - b.SeatIndex)
               .map(({ SeatIndex }) => handState.hand.seatUserIds.at(SeatIndex)!),
             communityCards: [...handState.phases.at(-1)!.communityCards, ...event.CommunityCards],
           })
           progress = event.Progress
+          progressEvent = event
           break
         case ApiType.EVT_ACTION: {
+          // 卓の進行は人物帰属とは独立。交代席が開いたstreetも次の終了行へ伝える。
+          const phase = resolveActionPhase(event, runningPhase)
+          const opensNewStreet = phase !== runningPhase
+          runningPhase = phase
+          // 交代後の行動を配札時の人物へ帰属させない（MUST NOT）。
+          if (identity?.atOrAfterBoundary(event.SeatIndex, event)) {
+            if (eligibility!.preflopOmission(event, phase)) {
+              const userId = bufferedDeal!.SeatUserIds[event.SeatIndex]!
+              const omitted = handState.hand.preflopIdentityUnprovenPlayerIds ??= []
+              if (!omitted.includes(userId)) omitted.push(userId)
+            }
+            progress = event.Progress
+            progressEvent = event
+            break
+          }
           const playerId = handState.hand.seatUserIds[event.SeatIndex]
 
           // 途中着席（EVT_ENTRY_QUEUED）によるテーブル移動後、直前にバッファされた
@@ -291,6 +326,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           // このアクション自体を丸ごとスキップする（ハンドの他のアクションは通常通り処理を続ける）。
           if (playerId === undefined || playerId === -1) {
             progress = event.Progress
+            progressEvent = event
             break
           }
 
@@ -298,10 +334,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           // Progress.Phase を正とする（#340、EntityConverterと同一ロジック）。
           // ALL_INの正規化はストリート確定より後で行う（この行自身が新ストリートを
           // 開いた場合、直前のprogressは前ストリート終了時点のもので使えない）。
-          const phase = resolveActionPhase(event, runningPhase)
-          const opensNewStreet = phase !== runningPhase
-          runningPhase = phase
-
+          const actionMenu = getApplicableActionMenu(progress, event.SeatIndex, phase)
           const actionDetails: ActionDetail[] = []
           /**
            * ALL_IN アクション変換ロジック
@@ -311,8 +344,9 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
            *
            * 変換ルール:
            * 1. BETが可能な状況（誰もベットしていない） → BET
-           * 2. CALLが可能な状況（相手がベット済み） → RAISE
-           * 3. それ以外（相手がレイズ済み等） → CALL
+           * 2. CALLとALL_INが可能な状況（コール額を超える投入） → RAISE
+           * 3. CHECKとALL_INが可能な状況 → PREFLOPはRAISE、それ以外はBET
+           * 4. それ以外（FOLD/ALL_INだけのショートコール等） → CALL
            *
            * この変換により、統計計算（VPIP, PFR, AF, AFq等）で
            * ALL_INが適切なアクションとしてカウントされる。
@@ -321,16 +355,19 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           const actionType: Exclude<ActionType, ActionType.ALL_IN> = (({ ActionType: actionType }: typeof event) => {
             if (actionType === ActionType.ALL_IN) {
               actionDetails.push(ActionDetail.ALL_IN)
-              // このアクション自身がストリートを開いた場合、`progress`は前ストリート
-              // 終了時点のもので NextActionTypes は通常空。開き手が対峙するベットは
-              // 存在しないため BET が正しい（EntityConverterと同一ロジック）。
-              if (opensNewStreet) {
+              // 新しいポストフロップ街を開くアクションは先制BETになる。
+              // 直前メニューが前ストリートでも、この例外を先に適用する（MUST）。
+              if (opensNewStreet && phase > PhaseType.PREFLOP) {
                 return ActionType.BET
               }
-              if (progress?.NextActionTypes.includes(ActionType.BET)) {
+              if (actionMenu?.includes(ActionType.BET)) {
                 return ActionType.BET
-              } else if (progress?.NextActionTypes.includes(ActionType.CALL)) {
+              } else if (actionMenu?.includes(ActionType.ALL_IN) && actionMenu.includes(ActionType.CALL)) {
                 return ActionType.RAISE
+              } else if (actionMenu?.includes(ActionType.ALL_IN) && actionMenu.includes(ActionType.CHECK)) {
+                // チェック権からのALL_INはCALLではない（MUST NOT）。BBのオプションは
+                // 既存BB額へのRAISE、ポストフロップの最小ベット未満のALL_INはBET。
+                return phase === PhaseType.PREFLOP ? ActionType.RAISE : ActionType.BET
               } else {
                 return ActionType.CALL
               }
@@ -338,6 +375,8 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
               return actionType
             }
           })(event)
+          const normalizationUnproven = eligibility?.normalizationUnproven(event, progressEvent, phase) ?? false
+          const contextUnproven = eligibility?.contextUnproven(event) ?? false
           const phaseActions = handState.actions.filter(action => action.phase === phase)
           const phasePlayerActionIndex = phaseActions.filter(action => action.playerId === playerId).length
           const phasePrevBetCount = phaseActions.filter(action => [ActionType.BET, ActionType.RAISE].includes(action.actionType)).length + Number(phase === PhaseType.PREFLOP)
@@ -349,12 +388,15 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
             phase,
             phasePlayerActionIndex,
             phasePrevBetCount,
+            canRaise: getRaiseAvailability(actionMenu, phase),
+            normalizationUnproven,
             position,
             handState
           }
 
           // 統計モジュールからActionDetailsを収集
           for (const stat of defaultRegistry.getAll()) {
+            if (contextUnproven && IDENTITY_CONTEXT_STAT_IDS.has(stat.id)) continue
             if (stat.detectActionDetails) {
               const detectedDetails = stat.detectActionDetails(detectionContext)
               actionDetails.push(...detectedDetails)
@@ -369,6 +411,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
             phase,
             index: handState.actions.length,
             actionType,
+            ...(normalizationUnproven ? { normalizationUnproven: true as const } : {}),
             bet: event.BetChip,
             pot: event.Progress.Pot,
             sidePot: event.Progress.SidePot,
@@ -376,6 +419,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
             actionDetails,
           })
           progress = event.Progress
+          progressEvent = event
         }
           break
         case ApiType.EVT_HAND_RESULTS: {
@@ -394,54 +438,21 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           // を計算すると、EVT_HAND_RESULTSのCommunityCardsを二重に数えてしまう）。
           const fullBoard = [...handState.phases.at(-1)!.communityCards, ...event.CommunityCards]
 
-          // プリフロップ全員オールインでストリートが自動進行した場合、PokerChaseは
-          // 残りのEVT_DEAL_ROUNDを一切送信せず、コミュニティカードは全てこの
-          // EVT_HAND_RESULTS.CommunityCardsにまとめて届く（docs/api-events.md
-          // 「EVT_DEAL_ROUND: CommunityCards」）。この場合FLOPフェーズが一度も
-          // pushされないため、WTSD/WWSFの「flops seen」分母がゼロ扱いになり、
-          // PT4公式定義（プリフロップオールインを含む「flops seen」）と食い違う
-          // （#115で修正した通常のDEAL_ROUND経由のALL_IN救済では、DEAL_ROUND自体が
-          // 送信されないこのケースを救えていなかった。sola監査、#115未解決コメント）。
-          // フェーズ配列にFLOPが一度も現れておらず、かつボードが3枚以上到達して
-          // いる場合のみ、FLOPフェーズを合成する。BetStatusのスナップショットが
-          // 存在しないため、通常経路（BET_ABLE || ALL_IN）の代わりに以下2条件の
-          // AND でメンバーシップを判定する（PR #184 codex review, P2）:
-          //   (i)  PREFLOPフェーズでFOLDアクションを送っていない（#97のフォールド
-          //        除外と同じ結論）
-          //   (ii) EVT_HAND_RESULTS.Results[]に存在する
-          // (i)単独では不十分: タイムアウト/切断したプレイヤーは明示的なFOLDの
-          // EVT_ACTIONが送信されないことがあり、かつこの場合Results[]にも一切
-          // 含まれない（docs/api-events.md「EVT_ACTION: 送信されないケース」
-          // 「タイムアウト / 切断」、src/types/api.ts EVT_HAND_RESULTS.Results[].UserId
-          // のdescribe）。このプレイヤーはフォールドもオールインもしていない
-          // （黙って消えただけ）ため、(i)だけで判定するとFLOP合成メンバーに誤って
-          // 含まれてしまう。
-          // (ii)単独でも不十分: PREFLOPでFOLDしたプレイヤーがFOLD_OPEN（フォールド後
-          // の自発的カード公開）を選んだ場合、そのプレイヤーはResults[]に含まれる
-          // （RankType=12）にもかかわらずFLOPを見ていない（src/types/api.ts
-          // 「フォールド済みプレイヤーはFOLD_OPENしない限りResults[]に含まれない」＝
-          // FOLD_OPENなら含まれる）。
-          // 一方、真にプリフロップオールインでボードが自動進行した生存者は、それ以上
-          // ベット判断の余地がないため必ずショーダウンへ到達しResults[]に実役
-          // （RankType 0-9）またはSHOWDOWN_MUCK（11）で現れる — src/types/api.ts の
-          // 不変条件「Pot + sum(SidePot) == sum(Results[].RewardChip)」が100%成立する
-          // こと（docs/api-events.md該当行）はチップを持つ全参加者がResults[]に
-          // エントリを持つことを要求する。したがって両条件のANDのみがゲームの実際の
-          // 意味論と一致する。
-          if (fullBoard.length >= 3 && !handState.phases.some(p => p.phase === PhaseType.FLOP)) {
-            const preflopFoldedPlayerIds = new Set(
-              handState.actions
-                .filter(a => a.phase === PhaseType.PREFLOP && a.actionType === ActionType.FOLD)
-                .map(a => a.playerId)
-            )
-            const resultUserIds = new Set(event.Results.map(({ UserId }) => UserId))
-            handState.phases.push({
+          // 305省略時も、配信済み305が人物境界で不採用のときも、直接の人物証拠を使う。
+          const flop = handState.phases.find(phase => phase.phase === PhaseType.FLOP)
+          if (flop || fullBoard.length >= 3) {
+            const participation = deriveFlopParticipation(dealEvent!, events, identity!,
+              handState.actions, flop, event, fullBoard.length)
+            if (flop) flop.seatUserIds = participation.seatUserIds
+            else handState.phases.push({
+              handId: event.HandId,
               phase: PhaseType.FLOP,
-              seatUserIds: handState.hand.seatUserIds.filter(uid =>
-                uid !== -1 && !preflopFoldedPlayerIds.has(uid) && resultUserIds.has(uid)
-              ),
+              seatUserIds: participation.seatUserIds,
               communityCards: fullBoard.slice(0, 3),
             })
+            if (participation.unprovenPlayerIds.length > 0) {
+              handState.hand.flopParticipationUnprovenPlayerIds = participation.unprovenPlayerIds
+            }
           }
 
           // ショーダウンフェーズの生成（実際にカードを比較したプレイヤーが2名以上いる場合）
@@ -460,6 +471,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
             ? deriveHandSettlement(dealEvent, event, handState.hand.session.battleType, events)
             : null
           handState.hand.winningPlayerIds = settlement?.winningPlayerIds ?? []
+          if (settlement?.winnerIdentityUnproven) handState.hand.winnerIdentityUnproven = true
           handState.hand.playerChipAccounting = settlement?.playerChipAccounting ??
             Object.fromEntries(handState.hand.seatUserIds.filter(userId => userId !== -1).map(userId => [String(userId), null]))
 

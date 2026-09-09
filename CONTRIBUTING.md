@@ -295,9 +295,17 @@ npm run verify-stats -- <path/to/export.ndjson>
 npm run verify-stats -- <file.ndjson> --min-hands=100 --threshold=99.5
 ```
 
-The command exits non-zero if any stat's agreement drops below `--threshold` (default 99%). One gap is expected and does not indicate a bug:
+The command exits non-zero if either product path's agreement drops below `--threshold` (default 99%). The legacy-versus-ledger comparison is always exact for every player, independent of that threshold. No known discrepancy is exempted from the result.
 
-- **CBet ≈ 99.8%**: at least one real capture contains a duplicated `EVT_ACTION` event for the same seat/street, inflating the oracle's c-bet-fold opportunity count by one for that hand.
+The finite evidence gate runs in `src/tools/verify-stats-evidence.test.ts` as part of the normal Jest/CI command. It validates raw SHA-256 and schemas, compares all players and all 18 statistics across oracle/legacy/ledger, and checks independently specified per-hand fractions directly on all three paths. Its actual CLI cases use `--min-hands=0 --threshold=100` for the 18 identity-evidence hands, 5 terminal-phase hands, 25 action/context/outcome hands and 7 lifecycle-boundary hands. A temporary build that changes only one valid oracle fraction must fail the same CLI while an unmodified control build passes; it changes no source or raw input. The raw oracle independently resolves person attribution, strict timestamp boundaries, action context and outcome eligibility without importing product helpers.
+
+The lifecycle cases keep same-ms JOIN evidence on either side of a candidate DEAL or RESULTS boundary. A JOIN collision with 303–306 makes settlement unknown even after an earlier FOLD; a strictly earlier but inconsistent person snapshot also prevents closing that FOLD's contribution. Coherent, strictly ordered controls retain the known winner. A separate two-candidate fixture tests the explicit `[RESULTS, JOIN, DEAL]` input order and canonical replay order independently. It does not infer the lifecycle correspondence of same-ms 303/306 events from canonical ordering.
+
+For a separate continuous real-data window, retain its input hash and run the same strict command manually:
+
+```bash
+npm run verify-stats -- /absolute/path/to/capture.ndjson --min-hands=0 --threshold=100
+```
 
 If you change **`src/streams/write-entity-stream.ts`** (the live-capture write path), `verify-stats` does **not** cover it — run both:
 1. The EntityConverter↔WriteEntityStream parity tests in `src/entity-converter.test.ts` (part of `npm run test`), which assert the two independent write paths produce equivalent entities for the same events.
@@ -380,8 +388,8 @@ Note: The system uses TypeScript enums for type safety, so new flags MUST be add
   in either language — need not be retroactively rewritten. A new or edited
   comment that states an invariant or a requirement (rather than describing
   behavior) MUST embed the applicable uppercase RFC 2119 keyword
-  (MUST / MUST NOT / SHOULD / SHOULD NOT / MAY — see AGENTS.md
-  "Requirement Keywords"), e.g.
+  (MUST / MUST NOT / SHOULD / SHOULD NOT / MAY — see
+  [Requirement Keywords](AGENTS.md#requirement-keywords)), e.g.
   `// 全イベントは1回の呼び出しで渡すこと (MUST) — チャンク分割するとハンド境界が失われる`
 - Follow existing naming conventions
 - Keep statistics focused on a single concept
@@ -407,6 +415,13 @@ Note: The system uses TypeScript enums for type safety, so new flags MUST be add
    implementation in `src/stats/core/`.
 5. Before opening a ready-for-review PR, run `npm run typecheck`, `npm test`, and
    `npm run build`; run the relevant E2E scenario for browser-visible changes.
+   For prose-only documentation and explanatory/reference-only code-comment
+   changes, you MAY use lighter validation of links, instruction scope, and
+   content consistency only when both the non-comment tokens are unchanged and
+   every changed comment block has been inspected to confirm that no compiler,
+   test-runner, bundler, runtime, or other tool-interpreted meaning changed. If
+   either condition cannot be established, run the normal typecheck, test, and
+   build commands.
 6. In the PR body, describe the scope and intent, list the commands actually run,
    and call out manual verification or known limitations. Keep the branch current
    with `main` while it is under review.
@@ -444,8 +459,8 @@ keep the validation section current after each push.
 - [ ] Unit tests in `src/stats/core/[stat-name].test.ts`
 - [ ] All tests passing (`npm test`)
 - [ ] Manual testing completed
-- [ ] Documentation updated in each file's existing language (see AGENTS.md
-      "Language"); comments in Japanese, invariant comments marked with
+- [ ] Documentation updated in each file's existing language (see
+      [Language](AGENTS.md#language)); comments in Japanese, invariant comments marked with
       RFC 2119 keywords (see Code Style above)
 
 Happy coding! 🎉

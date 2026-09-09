@@ -37,7 +37,7 @@ jest.mock('./Hud', () => ({
 jest.mock('./HandLog', () => ({
   __esModule: true,
   default: ({ entries, config, scale, scrollToLatest }: any) => (
-    <div data-testid="hand-log">
+    <div data-testid="hand-log" data-entry-texts={entries.map((entry: any) => entry.text).join('|')}>
       Entries: {entries.length}
       Enabled: {config.enabled ? 'yes' : 'no'}
       Scale: {scale}
@@ -592,6 +592,48 @@ describe('App', () => {
     await waitFor(() => {
       // update時は、undefined handIdとhandId: 1のエントリが削除され、新しいエントリが追加される
       expect(screen.getByTestId('hand-log')).toHaveTextContent('Entries: 1')
+    })
+  })
+
+  it('完了ハンドの後着補正を元の位置で置換し、進行中ハンドと後続actionを保持する', async () => {
+    render(<App />)
+    await waitFor(() => expect(screen.getByTestId('hand-log')).toBeInTheDocument())
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('handLogEvent', {
+        detail: {
+          type: 'add',
+          entries: [
+            { id: 'old-1', timestamp: 1, handId: 10, text: 'old hand', type: HandLogEntryType.HEADER },
+            { id: 'active-1', timestamp: 2, handId: undefined, text: 'active deal', type: HandLogEntryType.HEADER },
+          ],
+        } satisfies HandLogEvent,
+      }))
+      window.dispatchEvent(new CustomEvent('handLogEvent', {
+        detail: {
+          type: 'update',
+          handId: 10,
+          preserveIncomplete: true,
+          entries: [
+            { id: 'old-2', timestamp: 3, handId: 10, text: 'old corrected', type: HandLogEntryType.HEADER },
+          ],
+        } satisfies HandLogEvent,
+      }))
+      window.dispatchEvent(new CustomEvent('handLogEvent', {
+        detail: {
+          type: 'add',
+          entries: [
+            { id: 'active-2', timestamp: 4, handId: undefined, text: 'active action', type: HandLogEntryType.ACTION },
+          ],
+        } satisfies HandLogEvent,
+      }))
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('hand-log')).toHaveAttribute(
+        'data-entry-texts',
+        'old corrected|active deal|active action'
+      )
     })
   })
 

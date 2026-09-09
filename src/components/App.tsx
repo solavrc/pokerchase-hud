@@ -627,6 +627,26 @@ const App = memo(() => {
       case "update":
         if (handLogEvent.entries && handLogEvent.handId) {
           setHandLogEntries((prev) => {
+            if (handLogEvent.preserveIncomplete) {
+              // 後着境界イベントによる完了済みハンドの補正。対象ブロックを元の
+              // 位置で置換し、別processorが所有する現在ハンド(undefined)の位置と
+              // 行をそのまま保つ。
+              const firstTarget = prev.findIndex(
+                (entry) => entry.handId === handLogEvent.handId
+              )
+              if (firstTarget < 0) return [...prev, ...handLogEvent.entries!]
+              const beforeTarget = prev.slice(0, firstTarget).filter(
+                (entry) => entry.handId !== handLogEvent.handId
+              ).length
+              const withoutTarget = prev.filter(
+                (entry) => entry.handId !== handLogEvent.handId
+              )
+              return [
+                ...withoutTarget.slice(0, beforeTarget),
+                ...handLogEvent.entries!,
+                ...withoutTarget.slice(beforeTarget),
+              ]
+            }
             // undefined handId（現在の未完了ハンド）とこのhandIdに一致するエントリを削除
             const otherEntries = prev.filter(
               (entry) =>
