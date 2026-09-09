@@ -306,6 +306,7 @@ describe('cross-path canonical parity', () => {
     expect(TERMINAL_PHASE_EXPECTED[1]!.sameTimestampTypes).toEqual([304, 301, 305])
   })
 
+  // 18局を4経路＋旧projection再構築で処理するため、CIの並列実行でも完了を待つ。
   test('有限18対照の統計根拠をlive・変換・rebuild・importで一致させ、旧projectionも置換する', async () => {
     const snapshots = await replayEveryPath(STAT_EVIDENCE_EVENTS)
     const canonical = snapshots.live
@@ -322,7 +323,7 @@ describe('cross-path canonical parity', () => {
       delete hand.flopParticipationUnprovenPlayerIds
     }
     expect(await replay('rebuild', STAT_EVIDENCE_EVENTS, undefined, stale)).toEqual(canonical)
-  })
+  }, 30_000)
 
   test.each(['unknown-all-in', 'recovered-all-in', 'unknown-winner'] as const)('identity eligibilityの%sをlive・変換・rebuild・importで一致させる', async variant => {
     const events = variant === 'unknown-winner' ? makeIdentityWinnerFixture(true)
