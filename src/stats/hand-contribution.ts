@@ -1,14 +1,15 @@
 import type { Action, Hand, Phase } from '../types/entities'
+import { getPreflopStatOpportunities } from './preflop-trials'
 import { ActionDetail, ActionType, PhaseType, Position, type BattleType } from '../types/game'
 import type { StatValue } from '../types/stats'
 import { classifyTableSizeLayer, type TableSizeLayer } from '../utils/table-size'
 
 /**
  * 永続化した寄与の計算規則を識別する版。counterの意味・並びを変える変更はMUST更新する。
- * v2: identity由来の型・勝者のeligibilityを分母にも反映。旧台帳はcanonicalから再計算する。
+ * v3: 人物不明preflop行を統計ごとの根拠で評価する。旧台帳はcanonicalから再計算する。
  * 旧canonicalにない証拠の復元には別途Raw Event Lake再構築が必要。
  */
-export const HAND_STAT_CONTRIBUTION_VERSION = 2 as const
+export const HAND_STAT_CONTRIBUTION_VERSION = 3 as const
 
 /** HUDが履歴から計算する数値指標。並び順は永続counter vectorのABIでもある。 */
 export const NUMERIC_STAT_IDS = [
@@ -206,10 +207,10 @@ function deriveCounters(
   const visibleToLegacyWinningLookup = flopPhases.length > 0 || showdownPhases.length > 0
 
   const vpipNumerator = countActionDetail(actions, ActionDetail.VPIP)
-  const preflopOpportunity = hand.bigBlindUserId === playerId && preflopActions.length === 0 ? 0 : 1
+  const opportunities = getPreflopStatOpportunities(hand, playerId, preflopActions)
+  const preflopOpportunity = Number(opportunities.vpip)
   const pfrNumerator = preflopActions.some(action => !action.normalizationUnproven && action.actionType === ActionType.RAISE) ? 1 : 0
-  const pfrOpportunity = pfrNumerator > 0 || !preflopActions.some(action => action.normalizationUnproven)
-    ? preflopOpportunity : 0
+  const pfrOpportunity = Number(opportunities.pfr)
   const flopActionBase = actions.some(action => action.phase === PhaseType.FLOP) ? 1 : 0
   const sawFlop = flopPhases.length > 0 ? 1 : 0
   // 既存StatDefinitionの`p.handId &&`判定を、0も有効なHandIdのまま再現する。

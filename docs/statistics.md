@@ -22,7 +22,7 @@ tracker 互換と説明しない。
 | `hands` / HAND | 対象 player の dealt-in hand 数 |
 | `playerName` / Name | session の player 名。未取得なら `Player {playerId}` |
 | `vpip` / VPIP | 自発的 preflop 投入 hand / 機会 hand。BB で preflop action が0件の hand（walk / BB action skip）は分母から除く。non-BB の fold は機会に含む |
-| `pfr` / PFR | preflop raise hand / VPIP と同じ walk 除外分母 |
+| `pfr` / PFR | preflop raise hand / raise有無を判定できる機会hand。walk除外はVPIPと同じだが、人物不明行のあるhandでは統計ごとに分母を判定する |
 | `vpipF` / VPIP·F | full-table layer 内の VPIP。walk 除外も同じ。既定非表示、tooltip は各 layer の内訳 |
 | `3bet` / 3B | preflop 2-bet に対して raise / 2-bet に直面し、レイズ不能と判明していない機会（`phasePrevBetCount === 2`）。実際の RAISE は分子・分母に含む |
 | `3betfold` / 3BF | 3-bet に直面して fold / その機会（bet count 3）。original raiser に限定せず cold-facing を含む |
@@ -83,11 +83,29 @@ stat 固有の一時状態は `handState.statStates[id]`、共有 `actions` は�
   [resolveActionPhase](../src/utils/action-phase.ts) で解決する。`DEAL_ROUND` の回数を
   正典にしない。`NextActionSeat === -2` の hand-ending row は wire の Phase が3へ
   固定されるため override 対象から除外し、進行中 street を維持する。
-- **FLOP membership**: FLOP `DEAL_ROUND` の BET_ABLE / ALL_IN を含み、fold 済みを
-  除外する。全員 preflop all-in などで `DEAL_ROUND` が省略され、RESULTS で累積 board が
-  3枚以上になった場合、未作成の FLOP phase を補う。dealt-in かつ preflop FOLD して
-  おらず、`EVT_HAND_RESULTS.Results[]` に存在する席だけを入れ、board は先頭3枚にする。
-  明示 FOLD がなく結果にも現れない timeout・切断席は、この合成に含めない。
+- **preflopの試行**: 人物境界のため除外したpreflop ACTIONの旧UIDを
+  `Hand.preflopIdentityUnprovenPlayerIds`へ保存する。VPIP（VPIP·Fを含む）は保持済みの
+  最初のpreflop actionによる分類を保つ。当該人物のpreflop行が全て帰属不明なら0/0とし、
+  除外後の空action列から0/1やwalkを作らない。PFRは既知RAISEがあれば1/1を保つ。
+  RAISEがなく、除外preflop行があり、strict pre-boundaryの確定preflop FOLDもなければ0/0。
+  型未知ALL_INが残る場合も既知RAISEなしでは否定できない。既知CALL後の曖昧さはVPIPの
+  1/1を保つが、PFRの否定を証明しない。postflopだけの曖昧さはpreflopの根拠を消さない。
+  境界のみで除外304がないケースや、席交代のない通常のtimeout・BB skipの扱いは維持する。
+  強制postを自発行動へ変換しない。
+  除外した終端304（`NextActionSeat=-2`）はwireのPhaseから街を特定できないため、
+  厳密に早いtimestampのpostflop 305または有効な非終端304がない場合もpreflopの未知候補に残す。
+  同msの街配信・行動だけでPFRの否定を作らず、既知CALLのVPIPや既知RAISE/FOLDは上記規則で保つ。
+- **FLOP membership**: 既存FLOPまたは累積boardが3枚以上の場合に参加者を補完する。
+  305も当該boardもないpostflop ACTION単独からのFLOP作成は、この変更には含めない。
+  帰属可能なFLOP `DEAL_ROUND` の BET_ABLE / ALL_IN、既知の
+  当該人物のpostflop ACTIONを肯定根拠にする。累積boardが3枚以上かつ直接UID付きの
+  正当なshowdown参加者が2人以上なら、その人物も肯定できる。配信305の有無でこの
+  根拠を変えず、未作成FLOPはboard先頭3枚で補う。既知のpreflop FOLDと、帰属可能な
+  配信FLOPの明示不参加snapshotは否定根拠とする。結果の存在やFOLD_OPENだけでは肯定しない。
+  境界前の既知FLOP参加は後続の人物境界で消さない。FLOPあり／board3枚以上で、
+  人物境界または無305のFOLD_OPENがあり、肯定・否定根拠のない人物は
+  `Hand.flopParticipationUnprovenPlayerIds`に残す。通常の未受信検出へ広げない。
+  統計は肯定したFLOP参加だけを分母に使う。カード公開・payoutは直接UIDの事実として保つ。
 - **SHOWDOWN**: `isShowdownParticipant()`（rank 0–9 または SHOWDOWN_MUCK=11）が
   2人以上必要。Results の行数だけで決めず、NO_CALL=10 / FOLD_OPEN=12 は除外する。
 - **勝者**: `deriveHandSettlement()` の `contestedAward > 0` を `winningPlayerIds` に
@@ -139,9 +157,9 @@ stat 固有の一時状態は `handState.statStates[id]`、共有 `actions` は�
   `fixAnteAllInChips()` は RewardChip で席を照合する。seat 順を stack 順とみなさない。
   settlement の恒等式は `Pot + sum(SidePot) == sum(RewardChip)`。
 
-`HAND_STAT_CONTRIBUTION_VERSION=2`はeligibilityを考慮した計算規則を表す。
+`HAND_STAT_CONTRIBUTION_VERSION=3`は人物・統計ごとの試行根拠を考慮した計算規則を表す。
 counterの42要素とordinalは維持する。旧versionの台帳は読み出し時にcanonicalから再計算されるが、
-旧canonicalにないeligibilityはこれだけでは復元できない。`REBUILD_ADVISORY_VERSION=9`の
+旧canonicalにないeligibilityはこれだけでは復元できない。`REBUILD_ADVISORY_VERSION=10`の
 Raw Event Lake再構築でoptionalなHand/Actionの証拠と台帳を同時に更新する。Dexie schemaは8のまま。
 
 チップ会計の実装は [hand-chip-accounting.ts](../src/utils/hand-chip-accounting.ts)、
@@ -158,3 +176,28 @@ read-time の ALL_IN 実質分類・bet sizing・カードの可視性は
 `verify-stats` は raw からの独立 oracle と import/rebuild path を照合する。
 live path は [cross-path-parity.test.ts](../src/cross-path-parity.test.ts) と
 [entity-converter.test.ts](../src/entity-converter.test.ts) を合わせて検証する。
+
+人物境界とFLOP参加の有限対照は [identity-stat-evidence.ndjson](../e2e/fixtures/identity-stat-evidence.ndjson)
+と [期待値](../e2e/fixtures/identity-stat-evidence.expected.json)に固定する。warehouseの同名fixtureと
+同一入力で、VPIP/PFRの分子・分母、FLOPの真・偽・不明、直接UIDの公開カード・payoutを検証する。
+独立raw oracleは人物境界・街・直前Progressの根拠・統計ごとの試行・勝者の確定可否を
+製品helperから独立に計算する。上記18ハンドに加え、
+[終端5ハンド](../e2e/fixtures/terminal-phase-evidence.ndjson)と
+[人物・行動文脈25ハンド](../e2e/fixtures/identity-action-eligibility.ndjson)を
+`--min-hands=0 --threshold=100`の実CLIで検証する。
+[固定期待値](../src/tools/verify-stats/fixtures/oracle-evidence.expected.json)はrawの行番号と理由を持ち、
+全playerの全18統計の三者一致とは別に、同じhandのoracle・legacy・ledgerへ直接assertする。
+固定入力のSHAとschemaも検査し、正当な整数分数に意図的な差を入れたCLIは非0終了することを
+[検証テスト](../src/tools/verify-stats-evidence.test.ts)で確認する。
+
+[境界7ハンド](../e2e/fixtures/lifecycle-boundary-evidence.ndjson)も同じ実CLIで検証する。
+DEAL/RESULTSと同msのJOINは保存順にかかわらず各hand候補に含め、DEALの人物を書き換えない。
+JOINと303〜306が同msなら、早いFOLDがあっても精算は未知にする。非同時の場合も、JOINより
+前の本人snapshot列がFOLD残高と矛盾すれば投入を閉じない。勝敗依存4指標を除外しても、
+直接UIDのshowdown到達と帰属できるCALLは保持する。整合したsnapshotと厳密な境界の対照では
+既知勝者を保持する。[固定分数](../src/tools/verify-stats/fixtures/lifecycle-boundary.expected.json)を
+三者へ直接assertする。
+
+[前RESULTS・JOIN・次DEALの2候補](../e2e/fixtures/lifecycle-boundary-candidates.ndjson)は
+明示された入力順を保つ直接テストで同じJOINを両候補へ渡す。別テストでは実CLIと同じ
+canonical順の三者一致を確認する。同msの303/306の前後対応をcanonical順から復元した証拠にはしない。

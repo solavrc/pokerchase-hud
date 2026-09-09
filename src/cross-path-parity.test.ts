@@ -64,6 +64,21 @@ const RING_REPLACEMENT_EVENTS = readFixture('hand-ring-seat-replacement.ndjson')
 const STREET_OPENING_ALLIN_EVENTS = readFixture('hand-street-opening-allin.ndjson')
 /** CHECK権からのBBレイズ・フロップの先制ベットと、CHECK不可のショートコール。 */
 const CHECK_OPTION_ALLIN_EVENTS = readFixture('hand-check-option-allin.ndjson')
+/** 保存行順をlive到着順にせずtimestampで並べる。同ms内のforward/reverse対照は保持する。 */
+const STAT_EVIDENCE_EVENTS = readFixture('identity-stat-evidence.ndjson')
+  .sort((left, right) => left.timestamp! - right.timestamp!)
+/** 終端304の固定Phase=3と、厳密に先行するpostflop証拠の有限5対照。 */
+const TERMINAL_PHASE_EVENTS = readFixture('terminal-phase-evidence.ndjson')
+const TERMINAL_PHASE_EXPECTED = JSON.parse(readFileSync(
+  join(process.cwd(), 'e2e/fixtures/terminal-phase-evidence.expected.json'), 'utf8')) as Array<{
+  name: string
+  handId: number
+  targetPlayerId: number
+  vpip: [number, number]
+  pfr: [number, number]
+  preflopIdentityUnproven: boolean
+  sameTimestampTypes: number[]
+}>
 
 const entryEvent = FIXTURE_EVENTS.find(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED)!
 const detailsEvent = FIXTURE_EVENTS.find(event => event.ApiTypeId === ApiType.EVT_SESSION_DETAILS)!
@@ -111,7 +126,7 @@ const canonicalizeStats = (stats: PlayerStats[]) =>
     }))
     .sort((a, b) => a.playerId - b.playerId)
 
-const takeCanonicalSnapshot = async (service: PokerChaseService, db: PokerChaseDB) => {
+const takeCanonicalSnapshot = async (service: PokerChaseService, db: PokerChaseDB, includeLedger = false) => {
   const hands = await db.hands.orderBy('id').toArray()
   const phases = await db.phases.orderBy('[handId+phase]').toArray()
   const actions = await db.actions.orderBy('[handId+index]').toArray()
@@ -119,6 +134,21 @@ const takeCanonicalSnapshot = async (service: PokerChaseService, db: PokerChaseD
     .filter(playerId => playerId !== -1)
     .sort((a, b) => a - b)
   const stats = canonicalizeStats(await service.statsOutputStream.calcStats(playerIds))
+  const head = includeLedger ? await service.statsLedger.getActiveHead() : undefined
+  const ledger = head ? {
+    // 世代番号と作成時刻は経路ごとに異なる。active世代の全寄与・全集計値を比較する。
+    contributions: (await db.statHandContributions.where('generation').equals(head.generation).toArray())
+      .map(({ generation: _generation, ...record }) => record)
+      .sort((left, right) => left.playerId - right.playerId || left.handId - right.handId),
+    aggregates: (await db.statPlayerAggregates.where('generation').equals(head.generation).toArray())
+      .map(({ generation: _generation, updatedAt: _updatedAt, ...record }) => ({
+        ...record,
+        buckets: [...record.buckets].sort((left, right) =>
+          `${left.battleBucket}/${left.tableBucket}/${left.positionBucket}`
+            .localeCompare(`${right.battleBucket}/${right.tableBucket}/${right.positionBucket}`)),
+      }))
+      .sort((left, right) => left.playerId - right.playerId),
+  } : undefined
 
   return {
     // Full entities intentionally remain in the snapshot. Together they cover
@@ -127,7 +157,8 @@ const takeCanonicalSnapshot = async (service: PokerChaseService, db: PokerChaseD
     hands,
     phases,
     actions,
-    stats
+    stats,
+    ledger,
   }
 }
 
@@ -215,7 +246,7 @@ const replay = async (
           hands: (await getRecentHands(db, service, playerId)).hands.map(hand => ({ netChips: hand.netChips })),
         })))
       : undefined
-    return { ...await takeCanonicalSnapshot(service, db), actionEvidence, recent }
+    return { ...await takeCanonicalSnapshot(service, db, events === TERMINAL_PHASE_EVENTS), actionEvidence, recent }
   } finally {
     // replay() は1テスト内で4経路ぶん連続で呼ばれる。ルート afterEach
     // （test-service-teardown.ts）の取り消しはテスト終了時なので、ここで
@@ -239,6 +270,61 @@ const replayEveryPath = async (events: ApiEvent[], seed?: SessionSeed) => {
 }
 
 describe('cross-path canonical parity', () => {
+  test('終端304の同ms305・非終端304・JOINを全4経路で同じ統計根拠と台帳にする', async () => {
+    for (const event of TERMINAL_PHASE_EVENTS) {
+      expect(apiEventSchemas[event.ApiTypeId].safeParse(event).success).toBe(true)
+    }
+    const snapshots = await replayEveryPath(TERMINAL_PHASE_EVENTS)
+    const canonical = snapshots.live
+    expect(canonical.hands.map(hand => hand.id)).toEqual(TERMINAL_PHASE_EXPECTED.map(row => row.handId))
+    for (const snapshot of Object.values(snapshots)) {
+      expect(snapshot).toEqual(canonical)
+      expect(snapshot.ledger?.contributions).toHaveLength(20)
+      expect(snapshot.ledger?.aggregates).toHaveLength(20)
+      for (const expected of TERMINAL_PHASE_EXPECTED) {
+        const hand = snapshot.hands.find(row => row.id === expected.handId)!
+        const target = snapshot.stats.find(row => row.playerId === expected.targetPlayerId)!
+        const stats = Object.fromEntries(target.statResults.map(stat => [stat.id, stat.value]))
+        // 先行CALLのVPIP正例は保存。PFR否定は厳密先行305/非終端304だけで確定する。
+        expect(stats).toMatchObject({ vpip: expected.vpip, pfr: expected.pfr })
+        expect(hand.preflopIdentityUnprovenPlayerIds ?? []).toEqual(
+          expected.preflopIdentityUnproven ? [expected.targetPlayerId] : [])
+        expect(snapshot.actions.filter(action => action.handId === expected.handId &&
+          action.playerId === expected.targetPlayerId).map(action => ({
+          phase: action.phase, actionType: action.actionType,
+        }))).toEqual([{ phase: PhaseType.PREFLOP, actionType: ActionType.CALL }])
+      }
+    }
+    for (const expected of TERMINAL_PHASE_EXPECTED) {
+      const entry = TERMINAL_PHASE_EVENTS.find(event => event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED &&
+        event.Id === expected.name)!
+      expect(TERMINAL_PHASE_EVENTS.filter(event => event.timestamp === entry.timestamp! + 800)
+        .map(event => event.ApiTypeId)).toEqual(expected.sameTimestampTypes)
+    }
+    // 先頭2局は同一ms束の物理順だけを反転した対照（MUST）。raw保存順を証拠にしない。
+    expect(TERMINAL_PHASE_EXPECTED[0]!.sameTimestampTypes).toEqual([305, 301, 304])
+    expect(TERMINAL_PHASE_EXPECTED[1]!.sameTimestampTypes).toEqual([304, 301, 305])
+  })
+
+  // 18局を4経路＋旧projection再構築で処理するため、CIの並列実行でも完了を待つ。
+  test('有限18対照の統計根拠をlive・変換・rebuild・importで一致させ、旧projectionも置換する', async () => {
+    const snapshots = await replayEveryPath(STAT_EVIDENCE_EVENTS)
+    const canonical = snapshots.live
+    expect(canonical.hands).toHaveLength(18)
+    expect(snapshots['entity-converter']).toEqual(canonical)
+    expect(snapshots.rebuild).toEqual(canonical)
+    expect(snapshots.import).toEqual(canonical)
+    const stale = structuredClone({ hands: canonical.hands, actions: canonical.actions, phases: canonical.phases })
+    for (const hand of stale.hands) {
+      // 旧版が未知の人物をFLOPへ加えていたprojectionと旧分母を、rawから修復する。
+      const flop = stale.phases.find(phase => phase.handId === hand.id && phase.phase === PhaseType.FLOP)
+      if (flop) flop.seatUserIds.push(...(hand.flopParticipationUnprovenPlayerIds ?? []))
+      delete hand.preflopIdentityUnprovenPlayerIds
+      delete hand.flopParticipationUnprovenPlayerIds
+    }
+    expect(await replay('rebuild', STAT_EVIDENCE_EVENTS, undefined, stale)).toEqual(canonical)
+  }, 30_000)
+
   test.each(['unknown-all-in', 'recovered-all-in', 'unknown-winner'] as const)('identity eligibilityの%sをlive・変換・rebuild・importで一致させる', async variant => {
     const events = variant === 'unknown-winner' ? makeIdentityWinnerFixture(true)
       : makeIdentityActionFixture({ followingType: ActionType.ALL_IN, trustedMenu: variant === 'recovered-all-in' })

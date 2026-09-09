@@ -1,0 +1,1492 @@
+{
+  "status": "independently derived from frozen raw inputs and published statistics contract; parent implementation not inspected",
+  "scope": "fixed targets cover relevant evidence classes; actual all-player all-18 CLI equality remains a separate required gate",
+  "rows": [
+    {
+      "fixture": "finite18",
+      "handId": 991101,
+      "playerId": 71001,
+      "rawLines": [
+        4,
+        6
+      ],
+      "stats": {
+        "wtsd": [
+          0,
+          0
+        ],
+        "vpip": [
+          0,
+          0
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "vpipF": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "CALL と交代301が同ms。旧人物の行動を証明しない。"
+    },
+    {
+      "fixture": "finite18",
+      "handId": 991102,
+      "playerId": 71011,
+      "rawLines": [
+        12,
+        14
+      ],
+      "stats": {
+        "wtsd": [
+          0,
+          0
+        ],
+        "vpip": [
+          0,
+          0
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "vpipF": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "RAISE と交代301が同ms。旧人物のRAISEにしない。"
+    },
+    {
+      "fixture": "finite18",
+      "handId": 991103,
+      "playerId": 71021,
+      "rawLines": [
+        20,
+        22,
+        23
+      ],
+      "stats": {
+        "wtsd": [
+          0,
+          0
+        ],
+        "vpip": [
+          1,
+          1
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "vpipF": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "厳密に早いCALLはVPIPを閉じるが、未知RAISEでPFR否定は閉じない。"
+    },
+    {
+      "fixture": "finite18",
+      "handId": 991104,
+      "playerId": 71031,
+      "rawLines": [
+        29,
+        31,
+        32
+      ],
+      "stats": {
+        "wtsd": [
+          0,
+          0
+        ],
+        "vpip": [
+          0,
+          1
+        ],
+        "pfr": [
+          0,
+          1
+        ],
+        "vpipF": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "厳密に早いFOLDが両陰性を閉じる。"
+    },
+    {
+      "fixture": "finite18",
+      "handId": 991105,
+      "playerId": 71041,
+      "rawLines": [
+        38,
+        40,
+        41
+      ],
+      "stats": {
+        "wtsd": [
+          0,
+          0
+        ],
+        "vpip": [
+          1,
+          1
+        ],
+        "pfr": [
+          1,
+          1
+        ],
+        "vpipF": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "既知RAISEが両陽性を閉じる。"
+    },
+    {
+      "fixture": "finite18",
+      "handId": 9990001,
+      "playerId": 9900010,
+      "rawLines": [
+        47,
+        48,
+        52
+      ],
+      "stats": {
+        "wtsd": [
+          0,
+          0
+        ],
+        "vpip": [
+          0,
+          0
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "vpipF": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "同ms FOLDは不明。board+FOLD_OPENだけでFLOP参加を作らない。"
+    },
+    {
+      "fixture": "finite18",
+      "handId": 9990002,
+      "playerId": 9900020,
+      "rawLines": [
+        56,
+        57,
+        61
+      ],
+      "stats": {
+        "wtsd": [
+          0,
+          0
+        ],
+        "vpip": [
+          0,
+          1
+        ],
+        "pfr": [
+          0,
+          1
+        ],
+        "vpipF": [
+          0,
+          1
+        ]
+      },
+      "hands": 1,
+      "reason": "厳密に早いpreflop FOLDが参加否定。"
+    },
+    {
+      "fixture": "finite18",
+      "handId": 9990003,
+      "playerId": 9900030,
+      "rawLines": [
+        64,
+        65,
+        69
+      ],
+      "stats": {
+        "wtsd": [
+          1,
+          1
+        ],
+        "vpip": [
+          1,
+          1
+        ],
+        "pfr": [
+          1,
+          1
+        ],
+        "vpipF": [
+          1,
+          1
+        ]
+      },
+      "hands": 1,
+      "reason": "既知ALL_IN、直接UID showdownと5枚boardがFLOPを肯定。"
+    },
+    {
+      "fixture": "finite18",
+      "handId": 9990004,
+      "playerId": 9900040,
+      "rawLines": [
+        73,
+        74,
+        78,
+        79
+      ],
+      "stats": {
+        "wtsd": [
+          0,
+          0
+        ],
+        "vpip": [
+          0,
+          0
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "vpipF": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "境界後305の旧席snapshotは旧人物の参加・不参加を証明しない。"
+    },
+    {
+      "fixture": "finite18",
+      "handId": 9991001,
+      "playerId": 9910010,
+      "rawLines": [
+        82,
+        84,
+        85
+      ],
+      "stats": {
+        "wtsd": [
+          0,
+          0
+        ],
+        "vpip": [
+          0,
+          0
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "vpipF": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "BBの最初のCALLが交代と同ms。空actionをwalkの証拠にしない。"
+    },
+    {
+      "fixture": "finite18",
+      "handId": 9991002,
+      "playerId": 9910020,
+      "rawLines": [
+        90,
+        91,
+        92,
+        93,
+        94
+      ],
+      "stats": {
+        "wtsd": [
+          0,
+          0
+        ],
+        "vpip": [
+          0,
+          0
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "vpipF": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "境界なし、他者全FOLD、BB行動なしのwalk。"
+    },
+    {
+      "fixture": "finite18",
+      "handId": 9991003,
+      "playerId": 9910030,
+      "rawLines": [
+        97,
+        98,
+        99,
+        100,
+        101
+      ],
+      "stats": {
+        "wtsd": [
+          0,
+          0
+        ],
+        "vpip": [
+          0,
+          0
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "vpipF": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "BBのDEALでChip0/BetChip50/ALL_IN、行動なし。強制postをVPIPにしない。"
+    },
+    {
+      "fixture": "finite18",
+      "handId": 9991004,
+      "playerId": 9910040,
+      "rawLines": [
+        105,
+        109,
+        110,
+        111
+      ],
+      "stats": {
+        "wtsd": [
+          0,
+          1
+        ],
+        "vpip": [
+          1,
+          1
+        ],
+        "pfr": [
+          0,
+          1
+        ],
+        "vpipF": [
+          1,
+          1
+        ]
+      },
+      "hands": 1,
+      "reason": "既知CALLと境界前305、未知行はpostflopのみ。"
+    },
+    {
+      "fixture": "finite18",
+      "handId": 9991005,
+      "playerId": 9910050,
+      "rawLines": [
+        116,
+        120,
+        121,
+        122
+      ],
+      "stats": {
+        "wtsd": [
+          0,
+          1
+        ],
+        "vpip": [
+          1,
+          1
+        ],
+        "pfr": [
+          0,
+          1
+        ],
+        "vpipF": [
+          1,
+          1
+        ]
+      },
+      "hands": 1,
+      "reason": "境界前305肯定は後の交代やFOLD_OPENで消さない。"
+    },
+    {
+      "fixture": "finite18",
+      "handId": 9991006,
+      "playerId": 9910060,
+      "rawLines": [
+        125,
+        129
+      ],
+      "stats": {
+        "wtsd": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "境界なし・305なし・FOLD_OPENのFLOP参加だけを不明にする。preflop一般欠落診断へ広げない。"
+    },
+    {
+      "fixture": "finite18",
+      "handId": 9991007,
+      "playerId": 9910070,
+      "rawLines": [
+        133,
+        134,
+        138,
+        139
+      ],
+      "stats": {
+        "wtsd": [
+          1,
+          1
+        ],
+        "vpip": [
+          1,
+          1
+        ],
+        "pfr": [
+          1,
+          1
+        ],
+        "vpipF": [
+          1,
+          1
+        ]
+      },
+      "hands": 1,
+      "reason": "境界後305でも直接UID showdownとboardが旧人物のFLOPを肯定。"
+    },
+    {
+      "fixture": "finite18",
+      "handId": 9991008,
+      "playerId": 9910080,
+      "rawLines": [
+        144,
+        145
+      ],
+      "stats": {
+        "wtsd": [
+          0,
+          0
+        ],
+        "vpip": [
+          0,
+          0
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "vpipF": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "CALL/301同msの保存順反転。991101と同一意味。"
+    },
+    {
+      "fixture": "finite18",
+      "handId": 9991009,
+      "playerId": 9910090,
+      "rawLines": [
+        151,
+        152,
+        156
+      ],
+      "stats": {
+        "wtsd": [
+          0,
+          0
+        ],
+        "vpip": [
+          0,
+          0
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "vpipF": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "FOLD/301同msの保存順反転。9990001と同一意味。"
+    },
+    {
+      "fixture": "terminal5",
+      "handId": 992201,
+      "playerId": 82000,
+      "rawLines": [
+        4,
+        7,
+        8,
+        9
+      ],
+      "stats": {
+        "vpip": [
+          1,
+          1
+        ],
+        "vpipF": [
+          1,
+          1
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "wtsd": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "305・交代・terminal行が同ms。既知CALLを保ちPFR未知。FLOP snapshotは旧人物の証拠にならない。"
+    },
+    {
+      "fixture": "terminal5",
+      "handId": 992202,
+      "playerId": 82100,
+      "rawLines": [
+        14,
+        17,
+        18,
+        19
+      ],
+      "stats": {
+        "vpip": [
+          1,
+          1
+        ],
+        "vpipF": [
+          1,
+          1
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "wtsd": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "前例の同ms保存順反転。"
+    },
+    {
+      "fixture": "terminal5",
+      "handId": 992203,
+      "playerId": 82200,
+      "rawLines": [
+        24,
+        27,
+        30,
+        31
+      ],
+      "stats": {
+        "vpip": [
+          1,
+          1
+        ],
+        "vpipF": [
+          1,
+          1
+        ],
+        "pfr": [
+          0,
+          1
+        ],
+        "wtsd": [
+          0,
+          1
+        ]
+      },
+      "hands": 1,
+      "reason": "305が1ms早く、terminalのpostflopを証明。旧人物のFLOP肯定も保持。"
+    },
+    {
+      "fixture": "terminal5",
+      "handId": 992204,
+      "playerId": 82300,
+      "rawLines": [
+        36,
+        39,
+        40,
+        41,
+        42,
+        43
+      ],
+      "stats": {
+        "vpip": [
+          1,
+          1
+        ],
+        "vpipF": [
+          1,
+          1
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "wtsd": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "305と非終端304が同msだけではterminalのpreflop除外を証明しない。"
+    },
+    {
+      "fixture": "terminal5",
+      "handId": 992205,
+      "playerId": 82400,
+      "rawLines": [
+        48,
+        51,
+        52,
+        54,
+        55
+      ],
+      "stats": {
+        "vpip": [
+          1,
+          1
+        ],
+        "vpipF": [
+          1,
+          1
+        ],
+        "pfr": [
+          0,
+          1
+        ],
+        "wtsd": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "非終端postflop304が1ms早くPFR否定を閉じる。targetの305参加は交代と同msなので肯定しない。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960101,
+      "playerId": 3103,
+      "rawLines": [
+        6,
+        7,
+        8,
+        9
+      ],
+      "stats": {
+        "pfr": [
+          1,
+          1
+        ],
+        "steal": [
+          1,
+          1
+        ],
+        "3bet": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "未知行より前のSTL陽性を保持。後の明示RAISEはPFR陽性を保持し、新しい3B機会は作らない。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960102,
+      "playerId": 3103,
+      "rawLines": [
+        16,
+        17,
+        18
+      ],
+      "stats": {
+        "pfr": [
+          1,
+          1
+        ],
+        "steal": [
+          0,
+          0
+        ],
+        "3bet": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "同msの人物不明RAISEが含まれる群では新STL/3Bは不明。帰属可能な明示RAISEはPFR陽性。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960103,
+      "playerId": 3103,
+      "rawLines": [
+        25,
+        26,
+        27
+      ],
+      "stats": {
+        "pfr": [
+          1,
+          1
+        ],
+        "steal": [
+          0,
+          0
+        ],
+        "3bet": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "960102の保存順反転。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960104,
+      "playerId": 3103,
+      "rawLines": [
+        34,
+        35,
+        36
+      ],
+      "stats": {
+        "vpip": [
+          1,
+          1
+        ],
+        "pfr": [
+          0,
+          0
+        ],
+        "3bet": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "直前Progressは人物不明ACTION由来。ALL_INは自発参加のみ肯定、raise型は不明。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960105,
+      "playerId": 3103,
+      "rawLines": [
+        43,
+        44,
+        45,
+        46
+      ],
+      "stats": {
+        "vpip": [
+          1,
+          1
+        ],
+        "pfr": [
+          1,
+          1
+        ],
+        "steal": [
+          1,
+          1
+        ],
+        "3bet": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "未知ALL_IN前に既知RAISEあり、PFR陽性を保つ。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960106,
+      "playerId": 3103,
+      "rawLines": [
+        53,
+        54,
+        55
+      ],
+      "stats": {
+        "pfr": [
+          0,
+          1
+        ],
+        "af": [
+          0,
+          0
+        ],
+        "afq": [
+          0,
+          0
+        ],
+        "cbet": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "型未知ALL_INはFLOPのみ。AF/AFqへ入れず、PFRの陰性は維持。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960107,
+      "playerId": 3103,
+      "rawLines": [
+        62,
+        63,
+        64
+      ],
+      "stats": {
+        "pfr": [
+          0,
+          1
+        ],
+        "af": [
+          0,
+          0
+        ],
+        "afq": [
+          0,
+          0
+        ],
+        "riverCallAccuracy": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "型未知ALL_INはriverのみ。CALL候補でもRCAへ入れない。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960108,
+      "playerId": 3103,
+      "rawLines": [
+        72,
+        73,
+        74
+      ],
+      "stats": {
+        "vpip": [
+          1,
+          1
+        ],
+        "pfr": [
+          1,
+          1
+        ],
+        "3bet": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "未知行より厳密に後、ALL_INより厳密に前の既知seat5 CALLが正しいseat3/preflop非空menuを返す。RAISE型だけ回復。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960109,
+      "playerId": 3102,
+      "rawLines": [
+        80,
+        81,
+        83,
+        84
+      ],
+      "stats": {
+        "pfr": [
+          1,
+          1
+        ],
+        "3betfold": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "3betへのFOLDは人物不明行の後で新3BF機会にしない。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960109,
+      "playerId": 3103,
+      "rawLines": [
+        80,
+        81,
+        83
+      ],
+      "stats": {
+        "3bet": [
+          1,
+          1
+        ]
+      },
+      "hands": 1,
+      "reason": "人物不明行より前に確定した3B陽性は保つ。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960110,
+      "playerId": 3102,
+      "rawLines": [
+        90,
+        91,
+        92,
+        93
+      ],
+      "stats": {
+        "pfr": [
+          1,
+          1
+        ],
+        "3betfold": [
+          1,
+          1
+        ]
+      },
+      "hands": 1,
+      "reason": "席交代だけではcontextを失効させない。除外ACTIONがなく、既知3betへのFOLDを数える。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960111,
+      "playerId": 3104,
+      "rawLines": [
+        100,
+        101,
+        102,
+        103
+      ],
+      "stats": {
+        "foldToSteal": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "人物不明行より後のBB FOLDからFTS機会を作らない。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960112,
+      "playerId": 3104,
+      "rawLines": [
+        110,
+        111,
+        112
+      ],
+      "stats": {
+        "foldToSteal": [
+          1,
+          1
+        ]
+      },
+      "hands": 1,
+      "reason": "交代だけ・除外ACTIONなし。確定stealへBBがFOLD。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960113,
+      "playerId": 3103,
+      "rawLines": [
+        119,
+        120,
+        121,
+        122
+      ],
+      "stats": {
+        "cbet": [
+          0,
+          0
+        ],
+        "af": [
+          1,
+          0
+        ],
+        "afq": [
+          1,
+          1
+        ]
+      },
+      "hands": 1,
+      "reason": "FLOPの明示BETは保つが、不明履歴からCBet機会を作らない。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960114,
+      "playerId": 3103,
+      "rawLines": [
+        129,
+        130,
+        131
+      ],
+      "stats": {
+        "cbet": [
+          1,
+          1
+        ],
+        "af": [
+          1,
+          0
+        ],
+        "afq": [
+          1,
+          1
+        ]
+      },
+      "hands": 1,
+      "reason": "交代だけ・除外ACTIONなし。PFRがFLOP先制BET。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960115,
+      "playerId": 3103,
+      "rawLines": [
+        138,
+        139,
+        141
+      ],
+      "stats": {
+        "cbet": [
+          1,
+          1
+        ]
+      },
+      "hands": 1,
+      "reason": "不明行前のCBet陽性を保持。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960115,
+      "playerId": 3104,
+      "rawLines": [
+        139,
+        140,
+        141,
+        142
+      ],
+      "stats": {
+        "cbetFold": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "CBet後でも不明行を挟んだ新CBF機会は計上しない。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960116,
+      "playerId": 3104,
+      "rawLines": [
+        150,
+        151,
+        152
+      ],
+      "stats": {
+        "cbetFold": [
+          1,
+          1
+        ]
+      },
+      "hands": 1,
+      "reason": "交代のみの対照。CBetにFOLD。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960117,
+      "playerId": 3103,
+      "rawLines": [
+        160,
+        161,
+        162
+      ],
+      "stats": {
+        "pfr": [
+          0,
+          0
+        ],
+        "3bet": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "候補menuの既知304とALL_INが同msなので型回復不可。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960118,
+      "playerId": 3103,
+      "rawLines": [
+        170,
+        171,
+        172
+      ],
+      "stats": {
+        "pfr": [
+          0,
+          0
+        ],
+        "3bet": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "最新menuが空。古いmenuへ戻らない。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960119,
+      "playerId": 3103,
+      "rawLines": [
+        180,
+        181,
+        182
+      ],
+      "stats": {
+        "pfr": [
+          0,
+          0
+        ],
+        "3bet": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "最新menuのNextActionSeat=2、対象席3と不一致。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960120,
+      "playerId": 3103,
+      "rawLines": [
+        190,
+        191,
+        192
+      ],
+      "stats": {
+        "pfr": [
+          0,
+          0
+        ],
+        "3bet": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "最新menuはFLOP、対象ALL_INは自分の非終端Progressでpreflop。street不一致。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960121,
+      "playerId": 3103,
+      "rawLines": [
+        200,
+        201,
+        202
+      ],
+      "stats": {
+        "pfr": [
+          0,
+          0
+        ],
+        "3bet": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "直前menuのACTIONも交代席で人物不明。非空・時間差だけでは回復しない。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960122,
+      "playerId": 3103,
+      "rawLines": [
+        211,
+        212,
+        213
+      ],
+      "stats": {
+        "pfr": [
+          1,
+          1
+        ],
+        "af": [
+          1,
+          0
+        ],
+        "afq": [
+          1,
+          1
+        ],
+        "cbet": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "既知seat5 CHECKが厳密な時刻差でFLOP/check-option menuを更新。ALL_IN→BETだけ回復。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960123,
+      "playerId": 3103,
+      "rawLines": [
+        218,
+        220,
+        221,
+        222,
+        224,
+        228,
+        230,
+        231
+      ],
+      "stats": {
+        "wtsd": [
+          1,
+          1
+        ],
+        "wtsdNoAi": [
+          1,
+          1
+        ],
+        "wwsf": [
+          1,
+          1
+        ],
+        "wwsfNoAi": [
+          1,
+          1
+        ],
+        "wsd": [
+          1,
+          1
+        ],
+        "riverCallAccuracy": [
+          1,
+          1
+        ],
+        "af": [
+          0,
+          2
+        ],
+        "afq": [
+          0,
+          2
+        ]
+      },
+      "hands": 1,
+      "reason": "旧seat0は交代前FOLDで投入0。両参加者の投入250、総額500=payout500。勝者3103が証明され、2CALLとriver勝利CALLを数える。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960123,
+      "playerId": 3104,
+      "rawLines": [
+        222,
+        223,
+        228,
+        229,
+        231
+      ],
+      "stats": {
+        "wtsd": [
+          1,
+          1
+        ],
+        "wtsdNoAi": [
+          1,
+          1
+        ],
+        "wwsf": [
+          0,
+          1
+        ],
+        "wwsfNoAi": [
+          0,
+          1
+        ],
+        "wsd": [
+          0,
+          1
+        ],
+        "af": [
+          2,
+          0
+        ],
+        "afq": [
+          2,
+          2
+        ]
+      },
+      "hands": 1,
+      "reason": "既知負け側の対照。二つのpostflop BET。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960124,
+      "playerId": 3103,
+      "rawLines": [
+        235,
+        236,
+        239,
+        241,
+        245,
+        247,
+        248
+      ],
+      "stats": {
+        "wtsd": [
+          1,
+          1
+        ],
+        "wtsdNoAi": [
+          1,
+          1
+        ],
+        "wwsf": [
+          0,
+          0
+        ],
+        "wwsfNoAi": [
+          0,
+          0
+        ],
+        "wsd": [
+          0,
+          0
+        ],
+        "riverCallAccuracy": [
+          0,
+          0
+        ],
+        "af": [
+          0,
+          2
+        ],
+        "afq": [
+          0,
+          2
+        ]
+      },
+      "hands": 1,
+      "reason": "旧seat0のFOLDが交代と同msで投入不明。勝者依存4指標の分母を止めても、直接UID showdownと二つの確定CALLは保持。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960124,
+      "playerId": 3104,
+      "rawLines": [
+        239,
+        240,
+        245,
+        246,
+        248
+      ],
+      "stats": {
+        "wtsd": [
+          1,
+          1
+        ],
+        "wtsdNoAi": [
+          1,
+          1
+        ],
+        "wwsf": [
+          0,
+          0
+        ],
+        "wwsfNoAi": [
+          0,
+          0
+        ],
+        "wsd": [
+          0,
+          0
+        ],
+        "af": [
+          2,
+          0
+        ],
+        "afq": [
+          2,
+          2
+        ]
+      },
+      "hands": 1,
+      "reason": "勝者不明は勝ち側だけでなく負け側の勝敗陰性も作らない。2BETは保持。"
+    },
+    {
+      "fixture": "shared25",
+      "handId": 960125,
+      "playerId": 3103,
+      "rawLines": [
+        256,
+        257,
+        258
+      ],
+      "stats": {
+        "pfr": [
+          1,
+          1
+        ],
+        "af": [
+          1,
+          0
+        ],
+        "afq": [
+          1,
+          1
+        ],
+        "cbet": [
+          0,
+          0
+        ]
+      },
+      "hands": 1,
+      "reason": "既知305の正しいFLOP/menuでALL_IN→BET回復。305でも不明となったCBet履歴は回復しない。"
+    }
+  ],
+  "globalInvariants": [
+    "Every dealt player contributes hands=1 per accepted fixture hand. Replacement-only UID is absent from that hand.",
+    "finite18 has 18 hands,72 distinct dealt players; terminal5 has 5 hands,20 distinct dealt players; shared25 has25 hands,4 distinct dealt players each with hands25.",
+    "Use original published raw bytes, no fixture exclusion or line-order rewriting.",
+    "shared25 fixed targets are per hand and require a test-only completed-hand callback or complete per-hand fixture slices retaining all events."
+  ]
+}

@@ -121,10 +121,11 @@ export type DbOperationType = 'import' | 'export' | 'sync' | 'rebuild'
  * 分子・分母から分離する。301を含むRaw Event Lakeから既存Hand/Actionの証拠と台帳を
  * 再構築する。計算規則version 2への台帳再計算だけでは旧canonicalの証拠は復元できない。
  * version 9は同一の未公開変更にまとめ、Dexieのキー・indexは変更しない。
+ * version 10: 人物不明preflop行とFLOP参加の根拠を保存し、統計ごとの分母を再構築する。
  *
  * インクリメントすると、拡張機能の更新後に既存ユーザーへ一度だけ
  * 「データ再構築」の実行を促すアドバイソリーが表示される
  * （`src/background/rebuild-advisory.ts`参照）。単なるUI変更やバグ修正でも
  * 書き込み時の導出結果に影響しないものはバンプ不要。
  */
-export const REBUILD_ADVISORY_VERSION = 9
+export const REBUILD_ADVISORY_VERSION = 10
