@@ -295,9 +295,15 @@ npm run verify-stats -- <path/to/export.ndjson>
 npm run verify-stats -- <file.ndjson> --min-hands=100 --threshold=99.5
 ```
 
-The command exits non-zero if any stat's agreement drops below `--threshold` (default 99%). One gap is expected and does not indicate a bug:
+The command exits non-zero if either product path's agreement drops below `--threshold` (default 99%). The legacy-versus-ledger comparison is always exact for every player, independent of that threshold. No known discrepancy is exempted from the result.
 
-- **CBet ≈ 99.8%**: at least one real capture contains a duplicated `EVT_ACTION` event for the same seat/street, inflating the oracle's c-bet-fold opportunity count by one for that hand.
+The finite evidence gate runs in `src/tools/verify-stats-evidence.test.ts` as part of the normal Jest/CI command. It validates raw SHA-256 and schemas, compares all players and all 18 statistics across oracle/legacy/ledger, and checks independently specified per-hand fractions directly on all three paths. Its actual CLI cases use `--min-hands=0 --threshold=100` for the 18 identity-evidence hands, 5 terminal-phase hands and 25 action/context/outcome hands. A temporary build that changes only one valid oracle fraction must fail the same CLI while an unmodified control build passes; it changes no source or raw input. The raw oracle independently resolves person attribution, strict timestamp boundaries, action context and outcome eligibility without importing product helpers.
+
+For a separate continuous real-data window, retain its input hash and run the same strict command manually:
+
+```bash
+npm run verify-stats -- /absolute/path/to/capture.ndjson --min-hands=0 --threshold=100
+```
 
 If you change **`src/streams/write-entity-stream.ts`** (the live-capture write path), `verify-stats` does **not** cover it — run both:
 1. The EntityConverter↔WriteEntityStream parity tests in `src/entity-converter.test.ts` (part of `npm run test`), which assert the two independent write paths produce equivalent entities for the same events.

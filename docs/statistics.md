@@ -180,4 +180,12 @@ live path は [cross-path-parity.test.ts](../src/cross-path-parity.test.ts) と
 人物境界とFLOP参加の有限対照は [identity-stat-evidence.ndjson](../e2e/fixtures/identity-stat-evidence.ndjson)
 と [期待値](../e2e/fixtures/identity-stat-evidence.expected.json)に固定する。warehouseの同名fixtureと
 同一入力で、VPIP/PFRの分子・分母、FLOPの真・偽・不明、直接UIDの公開カード・payoutを検証する。
-独立raw oracleの今回の追加対象はFLOP参加だけで、他のidentity統計を再実装した検証とは扱わない。
+独立raw oracleは人物境界・街・直前Progressの根拠・統計ごとの試行・勝者の確定可否を
+製品helperから独立に計算する。上記18ハンドに加え、
+[終端5ハンド](../e2e/fixtures/terminal-phase-evidence.ndjson)と
+[人物・行動文脈25ハンド](../e2e/fixtures/identity-action-eligibility.ndjson)を
+`--min-hands=0 --threshold=100`の実CLIで検証する。
+[固定期待値](../src/tools/verify-stats/fixtures/oracle-evidence.expected.json)はrawの行番号と理由を持ち、
+全playerの全18統計の三者一致とは別に、同じhandのoracle・legacy・ledgerへ直接assertする。
+固定入力のSHAとschemaも検査し、正当な整数分数に意図的な差を入れたCLIは非0終了することを
+[検証テスト](../src/tools/verify-stats-evidence.test.ts)で確認する。
