@@ -142,13 +142,25 @@ detail の窓は暦日ルールだけ。
 - **公開期間内**: リプレイに記録された全席の `HoleCardList` が返る。途中で
   フォールドして `EVT_HAND_RESULTS.Results[]` に行すら存在しない席も含む。
   ゲーム自身のリプレイ画面が表示するのと同じ範囲。
-- **公開期間外**: ショーダウンに到達したプレイヤーの `HoleCardList` だけ。
-  途中でフォールドした相手は空配列。
+- **公開期間外**: 自席と、ショーダウンに到達したプレイヤーの `HoleCardList` だけ。
+  途中でフォールドした相手は空配列。自席は自分がフォールドしていても入る。
 
-手元の検体は全て〈手札公開機能〉なしのアカウントで取得したもので、後者しか
-実測していない（2026-08-05 時点）。読み出し側（`src/replay/hole-cards.ts`）は
-どちらの形も同じ経路で扱う ―― 席の種別を判断せず、値が2枚入っていれば読み、
-空配列・`-1` 埋めなら `null` を返す。
+両方とも実測済み。2026-08-20 時点の prod BQ に保存された、同一アカウントでの
+90001 payload 9,005 fetch を
+2026-09-09 に変更履歴から再構成し、再確認した（この標本では `HandId` の重複なし）。
+公開期間は `fetchedAt <= CardOpenEndDate * 1000` で層別した。
+期間内の 7,905 fetch（2026-08-05〜08-20、JST）は全件で全席の `HoleCardList` に
+有効な2枚が入り、うち 7,385 件には `ResultList` に行が無い相手席が計 22,010 席
+あった。この22,010席は全て、リプレイの行動履歴でも FOLD を確認した。
+期間外の 1,100 fetch（2026-08-03〜08-05、JST）では、同様の相手フォールド席
+3,314席は全て空配列だった。自席には全 9,005 fetch で有効な2枚が入り、期間外に
+フォールドした自席772件も含む。これは保存済み取得分の記述であり、未取得ハンドの
+公開範囲は評価していない。母集団の固定条件とSQLは
+[手札公開範囲の再集計](#手札公開範囲の再集計) に保存している。
+
+ここで有効な2枚は、読み出し側（`src/replay/hole-cards.ts`）と同じく、
+**ちょうど2枚・各値が0〜51の整数・重複なし**を指す。読み出し側は席の種別を
+判断せず、この条件を満たせば読み、空配列・`-1` 埋めなどは `null` を返す。
 
 WebSocket 側（`EVT_HAND_RESULTS.Results[].HoleCards`）との差は、公開期間外でも
 1点ある: `RankType` が `SHOWDOWN_MUCK`（11）の行に、こちらは値が入る。WebSocket は
@@ -436,3 +448,123 @@ ACTIVE世代が明示的に`inactive`のときだけなので、その時のACTI
 ハンド完了の`handEpoch`とは別立てのカウンター（`replayEpoch`）で運ぶ:
 リプレイ詳細が変えるのは直近ハンドのホールカード列だけで、ポジション別統計は
 変わらないため、そちらのパネルは無駄に再フェッチしない。
+
+
+## 手札公開範囲の再集計
+
+2026-09-09 に以下の SELECT を実行し、上記の2026-08-20標本を再確認した。
+母集団は `firestore_export.apiEvents_raw_changelog` の変更時刻が
+**2026-08-20 01:56:37 UTC 以下**の行から、documentごとの最新行を選び、削除行を
+除外した後の `ApiTypeId=90001`。この境界は初回訂正commit
+`1c25b9ed34da9c6bf8d48e154670722d57dd9b0d` の時刻である。
+`fetchedAt` だけのカットオフは後日アップロード分を含めてしまうため、母集団の
+固定には使用しない。公開期間の層別には、各payloadの `fetchedAt` と
+`CardOpenEndDate` を使う。
+
+このSQLは集約結果だけを返し、本番データへ書き込まない。同じ固定母集団について、
+全体でも `HandId` は9,005件で一意、`Player.UserId` は1種類であることを別途確認した。
+カードとFOLD・結果席の対応は、識別子と記録時刻を除いた形状を使うPython再計算とも
+一致した。以下を母集団・集計方法の正本とし、採用経緯は
+[PR #377](https://github.com/solavrc/pokerchase-hud/pull/377) を補助参照とする。
+
+<details>
+<summary>固定母集団の層別集計SQL（SELECTのみ）</summary>
+
+```sql
+-- PR #377 の初回commit時点の変更履歴から、当時のlatestを再構成する。
+-- 当時の9,005件が本集計の母集団。
+WITH historical_latest AS (
+  SELECT * FROM `pokerchase-hud.firestore_export.apiEvents_raw_changelog`
+  WHERE timestamp <= TIMESTAMP('2026-08-20 01:56:37 UTC')
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY document_name ORDER BY timestamp DESC) = 1
+), ev AS (
+  SELECT document_name,
+    SAFE_CAST(JSON_VALUE(data, '$.HandId') AS INT64) AS hand_id,
+    SAFE_CAST(JSON_VALUE(data, '$.fetchedAt') AS INT64) AS fetched_at_ms,
+    SAFE_CAST(JSON_VALUE(data, '$.payload.CardOpenEndDate') AS INT64) AS card_open_end_sec,
+    JSON_QUERY(data, '$.payload') AS payload
+  FROM historical_latest
+  WHERE operation != 'DELETE' AND JSON_VALUE(data, '$.ApiTypeId') = '90001'
+), expanded AS (
+  SELECT document_name, hand_id,
+    DATE(TIMESTAMP_MILLIS(fetched_at_ms), 'Asia/Tokyo') AS fetch_date_jst,
+    fetched_at_ms <= card_open_end_sec * 1000 AS in_open_period,
+    payload, player, player_offset = 0 AS is_hero,
+    JSON_VALUE(player, '$.SeatIndex') AS seat,
+    JSON_QUERY_ARRAY(player, '$.HoleCardList') AS cards,
+    JSON_VALUE_ARRAY(player, '$.HoleCardList') AS scalar_cards,
+    ARRAY_CONCAT(
+      IFNULL(JSON_QUERY_ARRAY(payload, '$.PreflopActionList'), []),
+      IFNULL(JSON_QUERY_ARRAY(payload, '$.FlopActionList'), []),
+      IFNULL(JSON_QUERY_ARRAY(payload, '$.TurnActionList'), []),
+      IFNULL(JSON_QUERY_ARRAY(payload, '$.RiverActionList'), [])) AS actions
+  FROM ev,
+    UNNEST(ARRAY_CONCAT([JSON_QUERY(payload, '$.Player')],
+      IFNULL(JSON_QUERY_ARRAY(payload, '$.OtherPlayerList'), []))) AS player WITH OFFSET AS player_offset
+), seats AS (
+  SELECT *,
+    ARRAY_LENGTH(cards) >= 2 AND
+      (SELECT LOGICAL_AND(SAFE_CAST(c AS INT64) >= 0) FROM UNNEST(scalar_cards) c) AS original_valid,
+    ARRAY_LENGTH(cards) = 2 AND
+      (SELECT COUNTIF(JSON_TYPE(SAFE.PARSE_JSON(c)) = 'number'
+        AND SAFE_CAST(JSON_VALUE(c) AS INT64) BETWEEN 0 AND 51) FROM UNNEST(cards) c) = 2 AND
+      (SELECT COUNT(DISTINCT SAFE_CAST(JSON_VALUE(c) AS INT64)) FROM UNNEST(cards) c) = 2 AS strict_valid,
+    EXISTS (SELECT 1 FROM UNNEST(JSON_QUERY_ARRAY(payload, '$.ResultList')) r
+      WHERE JSON_VALUE(r, '$.SeatIndex') = seat) AS in_result,
+    EXISTS (SELECT 1 FROM UNNEST(actions) a
+      WHERE JSON_VALUE(a, '$.SeatIndex') = seat AND JSON_VALUE(a, '$.ActionType') = '2') AS explicit_fold,
+    (SELECT MAX(SAFE_CAST(JSON_VALUE(r, '$.RankType') AS INT64))
+      FROM UNNEST(JSON_QUERY_ARRAY(payload, '$.ResultList')) r
+      WHERE JSON_VALUE(r, '$.SeatIndex') = seat) AS result_rank_type
+  FROM expanded
+), hands AS (
+  SELECT document_name, hand_id, fetch_date_jst, in_open_period,
+    COUNT(*) AS seats_total,
+    COUNTIF(strict_valid) AS valid_seats,
+    COUNTIF(original_valid AND NOT strict_valid) AS original_false_positive_seats,
+    COUNTIF(seat IS NULL) AS missing_seat_index,
+    COUNT(*) - COUNT(DISTINCT seat) AS duplicate_seat_index,
+    COUNTIF(NOT is_hero AND NOT in_result) AS opp_absent_seats,
+    COUNTIF(NOT is_hero AND NOT in_result AND strict_valid) AS opp_absent_valid_seats,
+    COUNTIF(NOT is_hero AND NOT in_result AND explicit_fold) AS opp_absent_explicit_fold_seats,
+    COUNTIF(NOT is_hero AND NOT in_result AND strict_valid AND explicit_fold) AS opp_absent_valid_explicit_fold_seats,
+    COUNTIF(NOT is_hero AND NOT in_result AND ARRAY_LENGTH(cards) = 0) AS opp_absent_empty_seats,
+    COUNTIF(NOT is_hero AND in_result AND explicit_fold) AS opp_in_result_explicit_fold_seats,
+    COUNTIF(NOT is_hero AND in_result AND result_rank_type = 10) AS opp_no_call_seats,
+    COUNTIF(NOT is_hero AND in_result AND result_rank_type = 10 AND strict_valid) AS opp_no_call_valid_seats,
+    COUNTIF(NOT is_hero AND in_result AND result_rank_type != 10 AND strict_valid) AS opp_showdown_valid_seats,
+    COUNTIF(NOT is_hero AND in_result AND result_rank_type != 10 AND NOT strict_valid) AS opp_showdown_invalid_seats,
+    COUNTIF(is_hero AND strict_valid) AS hero_valid,
+    COUNTIF(is_hero AND NOT in_result) AS hero_absent,
+    COUNTIF(is_hero AND NOT in_result AND explicit_fold) AS hero_absent_explicit_fold,
+    COUNTIF(is_hero AND explicit_fold) AS hero_explicit_fold
+  FROM seats
+  GROUP BY document_name, hand_id, fetch_date_jst, in_open_period
+)
+SELECT in_open_period, MIN(fetch_date_jst) AS min_fetch_date_jst, MAX(fetch_date_jst) AS max_fetch_date_jst,
+  COUNT(*) AS fetch_rows, COUNT(DISTINCT hand_id) AS distinct_hand_ids,
+  SUM(seats_total) AS seats_total,
+  COUNTIF(seats_total = valid_seats) AS all_seats_valid,
+  SUM(original_false_positive_seats) AS original_false_positive_seats,
+  SUM(missing_seat_index) AS missing_seat_index,
+  SUM(duplicate_seat_index) AS duplicate_seat_index,
+  COUNTIF(opp_absent_valid_seats > 0) AS hands_opp_absent_valid,
+  SUM(opp_absent_seats) AS opp_absent_seats,
+  SUM(opp_absent_valid_seats) AS opp_absent_valid_seats,
+  SUM(opp_absent_explicit_fold_seats) AS opp_absent_explicit_fold_seats,
+  SUM(opp_absent_valid_explicit_fold_seats) AS opp_absent_valid_explicit_fold_seats,
+  SUM(opp_absent_empty_seats) AS opp_absent_empty_seats,
+  SUM(opp_in_result_explicit_fold_seats) AS opp_in_result_explicit_fold_seats,
+  SUM(opp_no_call_seats) AS opp_no_call_seats,
+  SUM(opp_no_call_valid_seats) AS opp_no_call_valid_seats,
+  SUM(opp_showdown_valid_seats) AS opp_showdown_valid_seats,
+  SUM(opp_showdown_invalid_seats) AS opp_showdown_invalid_seats,
+  SUM(hero_valid) AS hero_valid, SUM(hero_absent) AS hero_absent,
+  SUM(hero_absent_explicit_fold) AS hero_absent_explicit_fold,
+  SUM(hero_explicit_fold) AS hero_explicit_fold,
+  COUNTIF(seats_total = valid_seats AND seats_total = 2) AS all_seats_valid_hu
+FROM hands GROUP BY in_open_period ORDER BY in_open_period
+
+```
+
+</details>
