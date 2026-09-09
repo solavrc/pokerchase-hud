@@ -354,6 +354,7 @@ WWSF/WWSFa/W$SD/RCAの分子・分母へ入れない。到達を測るWTSD/WTSDa
 `REBUILD_ADVISORY_VERSION=10`の再構築で既存canonicalへ証拠を保存し、統計台帳も更新する。
 台帳の計算規則は`HAND_STAT_CONTRIBUTION_VERSION=3`、counter長・ordinal・Dexie indexは同じ。
 人物境界で除外したpreflop行は`Hand.preflopIdentityUnprovenPlayerIds`へ保存し、
+終端304の街を厳密に先行するpostflop証拠で確定できない場合も同じ未知候補へ残す。
 VPIPの初回分類とPFRのany-raiseを別々に閉じる。既知CALL・RAISE・strict pre-boundary FOLDを保ち、
 除外actionの不在を否定根拠にしない。FLOP参加も結果の存在やFOLD_OPENだけで肯定せず、
 既知配信・postflop ACTION・直接UIDの正当なshowdownとboardから判定する。
@@ -445,7 +446,7 @@ fixtureにはショートレイズ可能な`CALL, ALL_IN`と、実RAISEへの矛
 201自体を理由にハンドを棄却せず、ゲームイベント件数やベット段階の数え方は維持する。
 既存の保存済みアクション・統計台帳の修復は
 `REBUILD_ADVISORY_VERSION=8`で導入した「データ再構築」で反映する（現在は10へ包含）。
-counter構造とordinalは変わらない。人物同一性のeligibilityを反映する計算規則の版は2へ更新し、
+counter構造とordinalは変わらない。人物同一性と統計ごとのeligibilityを反映する計算規則の版は3へ更新し、
 旧版の台帳をcanonicalから再計算する。旧canonicalの証拠追加にはRaw Lake再構築が必要になる。
 
 ### Ring: ハンド中のチップ流入（リバイイン／アドオン）

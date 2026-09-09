@@ -92,7 +92,12 @@ stat 固有の一時状態は `handState.statStates[id]`、共有 `actions` は�
   1/1を保つが、PFRの否定を証明しない。postflopだけの曖昧さはpreflopの根拠を消さない。
   境界のみで除外304がないケースや、席交代のない通常のtimeout・BB skipの扱いは維持する。
   強制postを自発行動へ変換しない。
-- **FLOP membership**: 帰属可能なFLOP `DEAL_ROUND` の BET_ABLE / ALL_IN、既知の
+  除外した終端304（`NextActionSeat=-2`）はwireのPhaseから街を特定できないため、
+  厳密に早いtimestampのpostflop 305または有効な非終端304がない場合もpreflopの未知候補に残す。
+  同msの街配信・行動だけでPFRの否定を作らず、既知CALLのVPIPや既知RAISE/FOLDは上記規則で保つ。
+- **FLOP membership**: 既存FLOPまたは累積boardが3枚以上の場合に参加者を補完する。
+  305も当該boardもないpostflop ACTION単独からのFLOP作成は、この変更には含めない。
+  帰属可能なFLOP `DEAL_ROUND` の BET_ABLE / ALL_IN、既知の
   当該人物のpostflop ACTIONを肯定根拠にする。累積boardが3枚以上かつ直接UID付きの
   正当なshowdown参加者が2人以上なら、その人物も肯定できる。配信305の有無でこの
   根拠を変えず、未作成FLOPはboard先頭3枚で補う。既知のpreflop FOLDと、帰属可能な

@@ -306,7 +306,7 @@ export class WriteEntityStream extends SimpleTransform<ApiHandEvent[], number[]>
           runningPhase = phase
           // 交代後の行動を配札時の人物へ帰属させない（MUST NOT）。
           if (identity?.atOrAfterBoundary(event.SeatIndex, event)) {
-            if (phase === PhaseType.PREFLOP) {
+            if (eligibility!.preflopOmission(event, phase)) {
               const userId = bufferedDeal!.SeatUserIds[event.SeatIndex]!
               const omitted = handState.hand.preflopIdentityUnprovenPlayerIds ??= []
               if (!omitted.includes(userId)) omitted.push(userId)
