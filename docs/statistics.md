@@ -189,3 +189,15 @@ live path は [cross-path-parity.test.ts](../src/cross-path-parity.test.ts) と
 全playerの全18統計の三者一致とは別に、同じhandのoracle・legacy・ledgerへ直接assertする。
 固定入力のSHAとschemaも検査し、正当な整数分数に意図的な差を入れたCLIは非0終了することを
 [検証テスト](../src/tools/verify-stats-evidence.test.ts)で確認する。
+
+[境界7ハンド](../e2e/fixtures/lifecycle-boundary-evidence.ndjson)も同じ実CLIで検証する。
+DEAL/RESULTSと同msのJOINは保存順にかかわらず各hand候補に含め、DEALの人物を書き換えない。
+JOINと303〜306が同msなら、早いFOLDがあっても精算は未知にする。非同時の場合も、JOINより
+前の本人snapshot列がFOLD残高と矛盾すれば投入を閉じない。勝敗依存4指標を除外しても、
+直接UIDのshowdown到達と帰属できるCALLは保持する。整合したsnapshotと厳密な境界の対照では
+既知勝者を保持する。[固定分数](../src/tools/verify-stats/fixtures/lifecycle-boundary.expected.json)を
+三者へ直接assertする。
+
+[前RESULTS・JOIN・次DEALの2候補](../e2e/fixtures/lifecycle-boundary-candidates.ndjson)は
+明示された入力順を保つ直接テストで同じJOINを両候補へ渡す。別テストでは実CLIと同じ
+canonical順の三者一致を確認する。同msの303/306の前後対応をcanonical順から復元した証拠にはしない。

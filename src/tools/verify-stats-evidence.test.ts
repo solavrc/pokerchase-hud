@@ -12,17 +12,23 @@ import { runOracle, type OraclePlayerResult } from './verify-stats/oracle'
 import { runProductPipelines } from './verify-stats/pipeline'
 import { COMPARED_STATS, compareProductPaths, compareResults } from './verify-stats/compare'
 import targets from './verify-stats/fixtures/oracle-evidence.expected.json'
+import lifecycleTargets from './verify-stats/fixtures/lifecycle-boundary.expected.json'
 
 const fixtures = {
   finite18: { path: 'e2e/fixtures/identity-stat-evidence.ndjson', sha256: '7e2ece3e68b5e8edf0d4dd2a81d030ad51679b4e4bd78f6af1ac18646ab2b6f0', events: 156, hands: 18, players: 72 },
   terminal5: { path: 'e2e/fixtures/terminal-phase-evidence.ndjson', sha256: '58f39d5eabc7667f604c1106c36b2f67415791d76aa9b9074945a6916931ecea', events: 56, hands: 5, players: 20 },
   shared25: { path: 'e2e/fixtures/identity-action-eligibility.ndjson', sha256: '61bece1e1b59cc346be458a95cfc8922c297682a51424eb985d740c0b62bf511', events: 259, hands: 25, players: 4 },
+  lifecycle: { path: 'e2e/fixtures/lifecycle-boundary-evidence.ndjson', sha256: 'a7bcc3b597c37bdc351f9008279264026d7b238ba2f942d37916084c1d1ff519', events: 90, hands: 7, players: 8 },
+} as const
+const allFixtures = {
+  ...fixtures,
+  lifecycleDirect: { path: 'e2e/fixtures/lifecycle-boundary-candidates.ndjson', sha256: '0d90256a2e268cb6d59d27c9a4aed957a8983ea3de4944249b1f81d0f1e5143d', events: 22, hands: 2, players: 4 },
 } as const
 
 type FixtureEvent = ApiEvent & { timestamp: number }
 
-function loadFixture(name: keyof typeof fixtures): FixtureEvent[] {
-  const fixture = fixtures[name]
+function loadFixture(name: keyof typeof allFixtures): FixtureEvent[] {
+  const fixture = allFixtures[name]
   const bytes = readFileSync(resolve(fixture.path))
   expect(createHash('sha256').update(bytes).digest('hex')).toBe(fixture.sha256)
   const events = bytes.toString('utf8').trim().split('\n').map(line => JSON.parse(line))
@@ -41,8 +47,14 @@ function splitHands(events: FixtureEvent[]): Map<number, FixtureEvent[]> {
   let session: FixtureEvent | undefined
   let handSession: FixtureEvent | undefined
   const finish = () => {
+    const deal = current.find(event => event.ApiTypeId === ApiType.EVT_DEAL)
     const end = current.find(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)
-    if (end?.ApiTypeId === ApiType.EVT_HAND_RESULTS) hands.set(end.HandId, handSession ? [handSession, ...current] : current)
+    if (!deal || end?.ApiTypeId !== ApiType.EVT_HAND_RESULTS) return
+    // 元rawから境界行を選び直す。前候補のRESULTSと次候補のDEALが同msなら両方へ渡す。
+    const body = new Set(current.slice(0, current.indexOf(end) + 1))
+    const scoped = events.filter(event => body.has(event) || (event.ApiTypeId === ApiType.EVT_PLAYER_JOIN &&
+      (event.timestamp === deal.timestamp || event.timestamp === end.timestamp)))
+    hands.set(end.HandId, handSession ? [handSession, ...scoped] : scoped)
   }
   for (const event of events) {
     if (event.ApiTypeId === ApiType.EVT_ENTRY_QUEUED) session = event
@@ -54,6 +66,32 @@ function splitHands(events: FixtureEvent[]): Map<number, FixtureEvent[]> {
   }
   finish()
   return hands
+}
+
+async function assertFixedTargets(name: keyof typeof allFixtures, raw: FixtureEvent[], canonicalOrder = true): Promise<void> {
+  const hands = splitHands(raw)
+  expect(hands.size).toBe(allFixtures[name].hands)
+  const perHand = new Map<number, {
+    oracle: ReturnType<typeof runOracle>,
+    product: Awaited<ReturnType<typeof runProductPipelines>>,
+  }>()
+  for (const target of [...targets.rows, ...lifecycleTargets.rows].filter(row => row.fixture === name)) {
+    const hand = hands.get(target.handId)
+    expect(hand).toBeDefined()
+    if (!perHand.has(target.handId)) {
+      const events = canonicalOrder ? await orderAndFilterApplicationEventsForReplay(hand!) : hand!
+      perHand.set(target.handId, { oracle: runOracle(events), product: await runProductPipelines(events) })
+    }
+    const values = perHand.get(target.handId)!
+    for (const [path, players] of Object.entries({ oracle: values.oracle, legacy: values.product.legacy, ledger: values.product.ledger })) {
+      const actual = players.get(target.playerId)
+      expect(actual?.hands).toBe(target.hands)
+      for (const [stat, fraction] of Object.entries(target.stats)) {
+        expect({ path, handId: target.handId, playerId: target.playerId, stat, value: actual?.stats[stat as keyof OraclePlayerResult['stats']] })
+          .toEqual({ path, handId: target.handId, playerId: target.playerId, stat, value: fraction })
+      }
+    }
+  }
 }
 
 describe('独立raw oracleの有限証拠契約', () => {
@@ -69,30 +107,47 @@ describe('独立raw oracleの有限証拠契約', () => {
       expect(report.eligiblePlayers).toBe(fixtures[name].players)
       for (const stat of report.stats) expect(stat.mismatches).toEqual([])
     }
-    const hands = splitHands(raw)
-    expect(hands.size).toBe(fixtures[name].hands)
-    const perHand = new Map<number, {
-      oracle: ReturnType<typeof runOracle>,
-      product: Awaited<ReturnType<typeof runProductPipelines>>,
-    }>()
-    for (const target of targets.rows.filter(row => row.fixture === name)) {
-      const hand = hands.get(target.handId)
-      expect(hand).toBeDefined()
-      if (!perHand.has(target.handId)) {
-        const ordered = await orderAndFilterApplicationEventsForReplay(hand!)
-        perHand.set(target.handId, { oracle: runOracle(ordered), product: await runProductPipelines(ordered) })
+    await assertFixedTargets(name, raw)
+    if (name === 'lifecycle') {
+      // JOIN/DEAL、JOIN/RESULTSの各2保存順もそのまま渡し、canonical化だけの一致にしない。
+      const directOracle = runOracle(raw)
+      const directProduct = await runProductPipelines(raw)
+      for (const report of [compareResults(directProduct.legacy, directOracle, 0), compareResults(directProduct.ledger, directOracle, 0), compareProductPaths(directProduct.legacy, directProduct.ledger)]) {
+        expect(report.eligiblePlayers).toBe(fixtures.lifecycle.players)
+        for (const stat of report.stats) expect(stat.mismatches).toEqual([])
       }
-      const values = perHand.get(target.handId)!
-      for (const [path, players] of Object.entries({ oracle: values.oracle, legacy: values.product.legacy, ledger: values.product.ledger })) {
-        const actual = players.get(target.playerId)
-        expect(actual?.hands).toBe(target.hands)
-        for (const [stat, fraction] of Object.entries(target.stats)) {
-          expect({ path, handId: target.handId, playerId: target.playerId, stat, value: actual?.stats[stat as keyof OraclePlayerResult['stats']] })
-            .toEqual({ path, handId: target.handId, playerId: target.playerId, stat, value: fraction })
-        }
-      }
+      await assertFixedTargets(name, raw, false)
     }
   }, 30_000)
+
+  test('既知の前RESULTS・JOIN・次DEAL順を保ち、同じJOINを両hand候補へ渡す', async () => {
+    const raw = loadFixture('lifecycleDirect')
+    const boundaryTime = raw.find(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)!.timestamp
+    expect(raw.filter(event => event.timestamp === boundaryTime).map(event => event.ApiTypeId)).toEqual([306, 301, 303])
+    const oracle = runOracle(raw)
+    const { legacy, ledger } = await runProductPipelines(raw)
+    expect(oracle.size).toBe(4)
+    for (const players of [oracle, legacy, ledger]) for (const player of players.values()) expect(player.hands).toBe(2)
+    for (const report of [compareResults(legacy, oracle, 0), compareResults(ledger, oracle, 0), compareProductPaths(legacy, ledger)]) {
+      for (const stat of report.stats) expect(stat.mismatches).toEqual([])
+    }
+    await assertFixedTargets('lifecycleDirect', raw, false)
+  })
+
+  test('canonical順は303と306の前後対応を復元せず、実際に渡すイベント列で三者を比較する', async () => {
+    const raw = loadFixture('lifecycleDirect')
+    const events = await orderAndFilterApplicationEventsForReplay(raw)
+    expect(events).toHaveLength(raw.length)
+    const boundaryTime = raw.find(event => event.ApiTypeId === ApiType.EVT_HAND_RESULTS)!.timestamp
+    expect(events.filter(event => event.timestamp === boundaryTime).map(event => event.ApiTypeId)).toEqual([301, 303, 306])
+    const oracle = runOracle(events)
+    const { legacy, ledger } = await runProductPipelines(events)
+    expect(oracle.size).toBe(allFixtures.lifecycleDirect.players)
+    for (const report of [compareResults(legacy, oracle, 0), compareResults(ledger, oracle, 0), compareProductPaths(legacy, ledger)]) {
+      expect(report.eligiblePlayers).toBe(allFixtures.lifecycleDirect.players)
+      for (const stat of report.stats) expect(stat.mismatches).toEqual([])
+    }
+  })
 
   test.each(Object.keys(fixtures) as Array<keyof typeof fixtures>)('%s: actual CLIが厳密比較で成功する', name => {
     const child = spawnSync(process.execPath, [resolve('node_modules/tsx/dist/cli.mjs'), resolve('src/tools/verify-stats.ts'), resolve(fixtures[name].path), '--min-hands=0', '--threshold=100'], {

@@ -484,6 +484,11 @@ function rawIdentityContributions(
 ): Map<number, number> | undefined {
   if (battleType !== BattleType.RING_GAME && battleType !== BattleType.FRIEND_RING_GAME) return undefined
   const people = rawPersonEvidence(deal, events)
+  // JOINと303〜306が同msなら、その席の精算はFOLD済みでも閉じない。他席304も衝突に含む。
+  // 一人でも投入が未知ならtier勝者は解けないが、行動・到達の独立した証拠は保持する。
+  if ([...people.boundaries.values()].some(join => Number.isFinite(join.timestamp) &&
+      events.some(event => event.timestamp === join.timestamp &&
+        [ApiType.EVT_DEAL, ApiType.EVT_ACTION, ApiType.EVT_DEAL_ROUND, ApiType.EVT_HAND_RESULTS].includes(event.ApiTypeId)))) return undefined
   const contributions = new Map<number, number>()
   for (let seat = 0; seat < deal.SeatUserIds.length; seat++) {
     const userId = deal.SeatUserIds[seat]!
@@ -536,7 +541,7 @@ function rawIdentityContributions(
     let contribution: number | undefined
     const final = rawSeatSnapshot(results, seat)
     if (people.boundaries.has(seat) || !final) {
-      if (fold && payout === 0) contribution = start + fold.inflow - fold.chip
+      if (valid && fold && payout === 0) contribution = start + fold.inflow - fold.chip
       else if (valid && noAction && inactive && payout === 0) contribution = 0
     } else if (valid && final.Chip !== undefined && final.BetChip !== undefined) {
       const finalStack = final.Chip + final.BetChip
@@ -789,6 +794,16 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
   let currentHand: RawEvent[] = []
   let currentBattleType: BattleType | undefined
   let currentHandBattleType: BattleType | undefined
+  // rawの同ms群を索引にし、DEAL前・RESULTS後のどちらに並ぶJOINも候補handへ渡す。
+  // 303/306自体の前hand・次hand対応や、その同ms群の因果順を復元する索引ではない。
+  const joinsByTimestamp = new Map<number, RawEvent[]>()
+  for (const raw of events) {
+    const event = raw as RawEvent
+    if (event.ApiTypeId !== ApiType.EVT_PLAYER_JOIN || !Number.isFinite(event.timestamp)) continue
+    const group = joinsByTimestamp.get(event.timestamp!) ?? []
+    group.push(event)
+    joinsByTimestamp.set(event.timestamp!, group)
+  }
 
   function processHand(handEvents: RawEvent[], battleType: BattleType | undefined): void {
     const dealEvt = handEvents.find((e): e is RawDealEvent => e.ApiTypeId === ApiType.EVT_DEAL)
@@ -800,6 +815,9 @@ export function runOracle(events: unknown[], options: RunOracleOptions = {}): Or
     const resultIndex = handEvents.indexOf(resultsEvt as RawEvent)
     handEvents = handEvents.filter((event, index) => index <= resultIndex ||
       (event.ApiTypeId === ApiType.EVT_PLAYER_JOIN && event.timestamp === (resultsEvt as RawEvent).timestamp))
+    const boundaryJoins = [dealEvt, resultsEvt].flatMap(event =>
+      joinsByTimestamp.get((event as RawEvent).timestamp!) ?? [])
+    handEvents = [...new Set([...handEvents, ...boundaryJoins])]
 
     // Table-move chimera hand rejection, kept in sync with
     // hasResultsOutsideDealtLineup (src/types/game.ts) / entity-converter.ts /
