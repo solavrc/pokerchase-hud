@@ -83,6 +83,9 @@ export class FirebaseAuthService {
   private storageAccessEstablished = false
   private storageAccessPromise: Promise<void>
   private restorePromise: Promise<void>
+  // 資格情報の保存・削除とメモリ公開を同じキューで直列化する（MUST）。
+  // ネットワーク待ちは含めず、失敗したcommitも後続操作を妨げない。
+  private authCommitTail: Promise<void> = Promise.resolve()
   /**
    * Tail of durable sign-in commits currently in flight or queued. A later
    * sign-out waits for this tail (success or failure) before removing auth
@@ -320,13 +323,15 @@ export class FirebaseAuthService {
     if (this.pendingSignInCommit) await this.waitForPendingSignInCommits()
 
     const previousToken = await this.getChromeAuthToken(false).catch(() => null)
-    await chrome.storage.local.remove(FirebaseAuthService.STORAGE_KEY)
+    await this.enqueueAuthCommit(async () => {
+      await chrome.storage.local.remove(FirebaseAuthService.STORAGE_KEY)
 
-    // Publish only after the durable removal commits. Keep currentState intact
-    // on failure so logout cannot reverse after a Service Worker restart.
-    this.currentState = null
-    this.authGeneration++
-    this.notifyAuthStateListeners(null, 'sign-out')
+      // refreshの保存にも追い越されず、削除成功後だけ未認証状態を公開する。
+      // 削除失敗時は、その時点の保存済み資格情報とメモリを維持する（MUST）。
+      this.currentState = null
+      this.authGeneration++
+      this.notifyAuthStateListeners(null, 'sign-out')
+    })
 
     if (previousToken) {
       await new Promise<void>((resolve) => {
@@ -440,30 +445,29 @@ export class FirebaseAuthService {
 
     const result = await response.json() as FirebaseRefreshResponse
 
-    // Discard a stale refresh response: EITHER the account live NOW is not
-    // the one this refresh was requested for (uid mismatch), OR the uid
-    // happens to match again but a DIFFERENT account was live in between
-    // (generation mismatch -- the A->B->A case the uid check alone misses,
-    // see the comment above `refreshingGeneration`). Still return the
-    // freshly-fetched token to THIS caller -- whatever in-flight operation
-    // asked for it (e.g. a Firestore call already under way for the OLD
-    // account) can still complete using a valid, unexpired token for the
-    // account it actually started with -- but do NOT let it become the new
-    // shared `currentState`, and do NOT persist it.
-    if (this.currentState?.uid !== refreshingUid || this.authGeneration !== refreshingGeneration) {
-      console.warn('[FirebaseAuth] Discarding a token refresh for a no-longer-current account/generation (the signed-in account changed while the refresh was in flight)')
-      return result.id_token
-    }
+    return this.enqueueAuthCommit(async () => {
+      // キュー待ち中にも認証が変わり得るため、実行時に再検証する（MUST）。
+      // 古い呼出しへの戻り値はその呼出しが取得したtokenに固定し、現在の
+      // アカウントのtokenを返したり古い状態を再保存したりしない（MUST NOT）。
+      if (this.currentState?.uid !== refreshingUid || this.authGeneration !== refreshingGeneration) {
+        console.warn('[FirebaseAuth] Discarding a token refresh for a no-longer-current account/generation (the signed-in account changed while the refresh was in flight)')
+        return result.id_token
+      }
 
-    this.currentState = {
-      ...this.currentState,
-      uid: result.user_id,
-      idToken: result.id_token,
-      refreshToken: result.refresh_token,
-      expiresAt: Date.now() + Number(result.expires_in) * 1000
-    }
-    await this.persistAuthState()
-    return this.currentState.idToken
+      const nextState: StoredAuthState = {
+        ...this.currentState,
+        uid: result.user_id,
+        idToken: result.id_token,
+        refreshToken: result.refresh_token,
+        expiresAt: Date.now() + Number(result.expires_in) * 1000
+      }
+      await this.persistAuthState(nextState)
+      // 保存と公開は同じcommit内で行い、失敗時は旧状態を残す（MUST）。
+      // 途中でsign-outが予約されても削除はこのcommitの後。削除失敗時にも
+      // 保存済みtokenとの整合性を保つため、成功したrefreshはここで公開する。
+      this.currentState = nextState
+      return result.id_token
+    })
   }
 
   /**
@@ -549,19 +553,23 @@ export class FirebaseAuthService {
 
   private async commitSignIn(nextState: StoredAuthState, precedingCommit?: Promise<void>): Promise<void> {
     if (precedingCommit) await precedingCommit
-    await this.persistAuthState(nextState)
+    await this.enqueueAuthCommit(async () => {
+      await this.persistAuthState(nextState)
 
-    // These publications are deliberately synchronous and adjacent. This
-    // preserves the dependent-state invariant from r3615952256: once any
-    // caller can observe the new account/generation, listeners such as
-    // AutoSyncService are notified before the event loop can advance.
-    this.currentState = nextState
-    this.authGeneration++ // sign-in transition -- see authGeneration's doc comment
-    // A successful durable sign-in is also recovery from a failed startup
-    // storage read. Replace the rejected restore barrier so ready(), token
-    // access, and firebaseAuthStatus reflect the recovered account.
-    this.restorePromise = Promise.resolve()
-    this.notifyAuthStateListeners(this.getCurrentUser(), 'sign-in')
+      // 保存・公開・世代更新・listener通知を同じcommitで完結させる（MUST）。
+      this.currentState = nextState
+      this.authGeneration++
+      // 起動時の読取り失敗からも対話ログインで回復できる。
+      this.restorePromise = Promise.resolve()
+      this.notifyAuthStateListeners(this.getCurrentUser(), 'sign-in')
+    })
+  }
+
+  private enqueueAuthCommit<T>(commit: () => Promise<T>): Promise<T> {
+    const operation = this.authCommitTail.then(commit)
+    // 失敗は呼出し元へ返し、後続の保存・ログアウトは実行可能にする（MUST）。
+    this.authCommitTail = operation.then(() => {}, () => {})
+    return operation
   }
 
   private async waitForPendingSignInCommits(): Promise<void> {
