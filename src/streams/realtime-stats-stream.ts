@@ -11,6 +11,8 @@ import { ActionType, ApiType, BetStatusType, PhaseType } from '../types'
 import { RealTimeStatsService } from '../realtime-stats/realtime-stats-service'
 import type { RealTimeStats, AllPlayersRealTimeStats } from '../realtime-stats/realtime-stats-service'
 import { setHandImprovementHeroHoleCards } from '../realtime-stats'
+import { resolveActionPhase } from '../utils/action-phase'
+import { RealtimeCommunityCards, hasBoardForPhase } from '../utils/realtime-community-cards'
 
 
 /**
@@ -25,6 +27,8 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
   private heroHoleCards?: number[]
   private currentHandId?: number
   private communityCards: number[] = []
+  private readonly board = new RealtimeCommunityCards()
+  private readonly actedSeatsInCurrentPhase = new Set<number>()
   private currentPhase: PhaseType = PhaseType.PREFLOP
   private isSessionActive = true
   private currentHandEvents: ApiHandEvent[] = []  // Store events for current hand
@@ -70,6 +74,8 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
           // Reset for new hand
           this.currentHandId = undefined
           this.communityCards = []
+          this.board.reset()
+          this.actedSeatsInCurrentPhase.clear()
           this.currentPhase = PhaseType.PREFLOP
           this.currentHandEvents = []  // Clear previous hand events
           this.activePlayerCount = 0
@@ -137,97 +143,49 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
           }
           break
 
-        case ApiType.EVT_DEAL_ROUND:
-          // Update community cards and phase
-          if (event.CommunityCards && event.CommunityCards.length > 0) {
-            // A new street resets every seat's cumulative street bet. Folded
-            // players can be omitted from the round snapshot, so reset the
-            // full arrays before applying the seats that are present. A
-            // timeout/disconnect fold can also omit EVT_ACTION, making absence
-            // from this authoritative snapshot the only eligibility signal.
-            this.seatBetAmounts = this.seatBetAmounts.map(() => 0)
-            this.seatBetStatuses = this.seatBetStatuses.map(() => BetStatusType.FOLDED)
+        case ApiType.EVT_DEAL_ROUND: {
+          if (!event.CommunityCards?.length) break
+          const roundPhase = event.Progress.Phase
+          this.communityCards = this.board.apply(roundPhase, event.CommunityCards)
 
-            // EVT_DEAL_ROUND may send only new cards, not all community cards
-            // Append new cards to existing community cards
-            if (this.currentPhase === PhaseType.PREFLOP) {
-              // Flop: should receive 3 cards
-              this.communityCards = event.CommunityCards
-              this.currentPhase = PhaseType.FLOP
-            } else if (this.currentPhase === PhaseType.FLOP) {
-              // Turn: append the new card
-              if (event.CommunityCards.length === 1) {
-                this.communityCards = [...this.communityCards, ...event.CommunityCards]
-              } else {
-                // Sometimes all cards are sent
-                this.communityCards = event.CommunityCards
-              }
-              this.currentPhase = PhaseType.TURN
-            } else if (this.currentPhase === PhaseType.TURN) {
-              // River: append the new card
-              if (event.CommunityCards.length === 1) {
-                this.communityCards = [...this.communityCards, ...event.CommunityCards]
-              } else {
-                // Sometimes all cards are sent
-                this.communityCards = event.CommunityCards
-              }
-              this.currentPhase = PhaseType.RIVER
+          // カードの補完と金融snapshotの採用を分ける。旧streetのROUNDは
+          // 盤面だけを補い、現在のベット・stack・手番を巻き戻さない（MUST NOT）。
+          if (roundPhase >= this.currentPhase) {
+            this.advancePhase(roundPhase)
+            for (let seat = 0; seat < this.seatBetAmounts.length; seat++) {
+              if (this.actedSeatsInCurrentPhase.has(seat)) continue
+              this.seatBetAmounts[seat] = 0
+              this.seatBetStatuses[seat] = BetStatusType.FOLDED
             }
 
-            // Update active player count based on BetStatus
-            // BetStatus: 1 = active, 2 = folded, 3 = all-in
-            if (event.Player && event.OtherPlayers) {
-              let activeCount = 0
-
-              // EVT_DEAL_ROUND is the authoritative snapshot for a new street.
-              // BetChip resets to zero and Chip reflects every action from the
-              // previous street, so keeping the EVT_DEAL values here makes pot
-              // odds and SPR look cached until each seat acts again.
-              this.seatBetAmounts[event.Player.SeatIndex] = event.Player.BetChip ?? 0
-              this.seatChips[event.Player.SeatIndex] = event.Player.Chip ?? 0
-              this.seatBetStatuses[event.Player.SeatIndex] = event.Player.BetStatus
-
-              // Check hero's status
-              if (event.Player.BetStatus === 1 || event.Player.BetStatus === 3) {
-                activeCount++
-              }
-
-              // Check other players' status
-              for (const player of event.OtherPlayers) {
-                this.seatBetAmounts[player.SeatIndex] = player.BetChip ?? 0
-                this.seatChips[player.SeatIndex] = player.Chip ?? 0
-                this.seatBetStatuses[player.SeatIndex] = player.BetStatus
-                if (player.BetStatus === 1 || player.BetStatus === 3) {
-                  activeCount++
-                }
-              }
-
-              this.activePlayerCount = activeCount
+            const players = event.Player
+              ? [event.Player, ...event.OtherPlayers]
+              : event.OtherPlayers
+            for (const player of players) {
+              // 同streetのACTIONを既に適用した席は、開始時snapshotで上書きしない。
+              if (this.actedSeatsInCurrentPhase.has(player.SeatIndex)) continue
+              this.seatBetAmounts[player.SeatIndex] = player.BetChip ?? 0
+              this.seatChips[player.SeatIndex] = player.Chip ?? 0
+              this.seatBetStatuses[player.SeatIndex] = player.BetStatus
             }
-
-
-            // Update Progress data if available
-            if (event.Progress) {
+            if (this.actedSeatsInCurrentPhase.size === 0) {
               this.currentProgress = event.Progress
-              // Update phase from Progress if it changed (important for all-in situations)
-              if (event.Progress.Phase !== undefined && event.Progress.Phase !== this.currentPhase) {
-                this.currentPhase = event.Progress.Phase
-              }
             }
-
-            // Store event and immediately calculate stats when community cards are revealed
-            this.currentHandEvents.push(event)
-            this.calculateAndEmitStats()
+            this.activePlayerCount = this.seatBetStatuses.filter(status =>
+              status === BetStatusType.BET_ABLE || status === BetStatusType.ALL_IN
+            ).length
           }
+
+          this.currentHandEvents.push(event)
+          this.calculateAndEmitStats()
           break
+        }
 
         case ApiType.EVT_HAND_RESULTS:
           // Capture real hand ID
           if (event.HandId) {
             this.currentHandId = event.HandId
           }
-
-
 
           this.currentHandEvents.push(event)
           // Clear for next hand
@@ -237,24 +195,20 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
           this.emitClearStats()
           break
 
-        case ApiType.EVT_ACTION:
-          // Store action
+        case ApiType.EVT_ACTION: {
           this.currentHandEvents.push(event)
+          // 終了行のPhase=3はリバー到達を意味しない。canonical writerと同じ解決を使う。
+          const actionPhase = resolveActionPhase(event, this.currentPhase)
+          if (actionPhase < this.currentPhase) break
+          this.advancePhase(actionPhase)
+          this.actedSeatsInCurrentPhase.add(event.SeatIndex)
 
-          // Update Progress data if available
           if (event.Progress) {
             this.currentProgress = event.Progress
-            // Update phase from Progress if it changed (important for all-in situations)
-            if (event.Progress.Phase !== undefined && event.Progress.Phase !== this.currentPhase) {
-              this.currentPhase = event.Progress.Phase
-            }
           }
-
-          // Update bet amount for this seat
           if (event.BetChip !== undefined) {
             this.seatBetAmounts[event.SeatIndex] = event.BetChip
           }
-
           if (event.Chip !== undefined) {
             this.seatChips[event.SeatIndex] = event.Chip
           }
@@ -266,28 +220,32 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
           } else {
             this.seatBetStatuses[event.SeatIndex] = BetStatusType.BET_ABLE
           }
+          this.activePlayerCount = this.seatBetStatuses.filter(status =>
+            status === BetStatusType.BET_ABLE || status === BetStatusType.ALL_IN
+          ).length
 
-          // Update active player count on fold
-          if (event.ActionType === ActionType.FOLD) {
-            this.activePlayerCount = Math.max(1, this.activePlayerCount - 1)
-          }
-
-          // Recalculate if we have hero hole cards
           if (this.heroPlayerId && this.heroHoleCards) {
             this.calculateAndEmitStats()
           }
           break
+        }
       }
     } catch (error) {
       this.handleError(error)
     }
   }
 
+  private advancePhase(phase: PhaseType): void {
+    if (phase <= this.currentPhase) return
+    this.currentPhase = phase
+    this.seatBetAmounts = this.seatBetAmounts.map(() => 0)
+    this.actedSeatsInCurrentPhase.clear()
+  }
+
   private calculateAndEmitStats() {
     if (!this.shouldCalculateStats()) {
       return
     }
-
 
     // Create minimal data structures for calculation
     const mockHand: any = {
@@ -315,11 +273,12 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
     const lastAction = this.getLastAction()
     const mockActions = lastAction ? [lastAction] : []
 
-    // Calculate stats using the service with activePlayerCount and progress
+    // 盤面待ちでも手札・pot oddsは更新する。役確率だけを未確定として外す。
+    const phases = hasBoardForPhase(this.currentPhase, this.communityCards) ? [mockPhase] : []
     const stats = RealTimeStatsService.calculateStats(
       this.heroPlayerId!,
       mockActions,
-      [mockPhase],
+      phases,
       [mockHand],
       new Set(),
       this.heroHoleCards,
@@ -332,7 +291,6 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
       this.seatChips,
       this.seatBetStatuses
     )
-
 
     // Calculate all players stats if we have necessary data
     if (Object.keys(stats).length > 0 && this.seatUserIds.length > 0) {
@@ -412,6 +370,8 @@ export class RealTimeStatsStream extends SimpleTransform<ApiEvent, { handId?: nu
     this.heroHoleCards = undefined
     this.currentHandId = undefined
     this.communityCards = []
+    this.board.reset()
+    this.actedSeatsInCurrentPhase.clear()
     this.currentPhase = PhaseType.PREFLOP
     this.isSessionActive = true
     this.currentHandEvents = []

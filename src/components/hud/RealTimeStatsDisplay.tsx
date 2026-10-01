@@ -1,6 +1,7 @@
 import { memo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { RealTimeStats } from '../../realtime-stats/realtime-stats-service'
+import type { HandImprovementResult } from '../../realtime-stats/hand-improvement'
 import { getStartingHandRanking } from '../../utils/starting-hand-rankings'
 import { useDraggable } from './hooks/useDraggable'
 import { DragHandle } from './DragHandle'
@@ -32,9 +33,7 @@ export const RealTimeStatsDisplay = memo(({ stats, seatIndex }: RealTimeStatsDis
   
   if (!hasStats || !stats.handImprovement) return null
   
-  const potOddsData = stats.potOdds?.value as { pot: number; call: number; percentage: number; ratio: string; isHeroTurn: boolean; spr?: number } | undefined
-  const potOddsPercentage = potOddsData?.percentage
-  const handImprovement = stats.handImprovement?.value as any
+  const handImprovement = stats.handImprovement.value as unknown as HandImprovementResult
   
   if (!handImprovement || !handImprovement.improvements) return null
   
@@ -109,26 +108,26 @@ export const RealTimeStatsDisplay = memo(({ stats, seatIndex }: RealTimeStatsDis
         
       </div>
       
-      {/* Hand improvement table */}
+      {/* 役の成立確率は対戦相手への勝率ではなく、ポットオッズと比較しない。 */}
       <div style={{ padding: '4px' }}>
-        <table style={{ 
+        <table title="リバー時点の最終役の確率です。相手に勝つ確率ではありません。" style={{ 
           width: '100%', 
           borderCollapse: 'collapse',
           fontSize: '9px'
         }}>
           <tbody>
-            {handImprovement.improvements.map((improvement: any) => {
+            {handImprovement.improvements.map((improvement) => {
               const isCurrentHand = improvement.isCurrent
               const isComplete = improvement.isComplete
               const probability = improvement.probability
-              const hasGoodOdds = potOddsData && potOddsData.call !== undefined && potOddsData.call > 0 && potOddsPercentage !== undefined && probability > potOddsPercentage && probability < 100
-              const isBetterThanCurrent = improvement.rank > handImprovement.currentHand.rank
+              // RankTypeは数値が小さい役ほど強い。
+              const isBetterThanCurrent = improvement.rank < handImprovement.currentHand.rank
               
-              let rowStyle: React.CSSProperties = {
+              const rowStyle: CSSProperties = {
                 opacity: isCurrentHand ? 1 : (isBetterThanCurrent ? 0.9 : 0.5)
               }
               
-              let cellStyle: React.CSSProperties = {
+              const cellStyle: CSSProperties = {
                 padding: '2px 6px',
                 borderBottom: '1px solid rgba(255, 255, 255, 0.05)'
               }
@@ -138,12 +137,8 @@ export const RealTimeStatsDisplay = memo(({ stats, seatIndex }: RealTimeStatsDis
                 rowStyle.fontWeight = 'bold'
               }
               
-              const isWaitingForAction = !potOddsData?.isHeroTurn && potOddsData?.call === 0
-              
-              const probabilityColor = isComplete ? '#00ff00' : 
-                                     isWaitingForAction ? '#cccccc' :  // Neutral color when waiting
-                                     hasGoodOdds ? '#00ff00' : 
-                                     probability > 0 ? '#ff6666' : HUD_MUTED_TEXT_COLOR
+              const probabilityColor = isComplete ? '#00ff00' :
+                probability > 0 ? '#cccccc' : HUD_MUTED_TEXT_COLOR
               
               return (
                 <tr key={improvement.rank} style={rowStyle}>

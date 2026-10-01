@@ -1,14 +1,37 @@
-/**
- * Hand Improvement Tests
- */
-
-import { handImprovementStat, setHandImprovementHeroHoleCards, type HandImprovementResult } from './hand-improvement'
+import {
+  handImprovementStat, setHandImprovementHeroHoleCards,
+  setHandImprovementBatchMode, type HandImprovementResult
+} from './hand-improvement'
 import { PhaseType, RankType } from '../types'
+import type { StatCalculationContext } from '../types/stats'
+
+const contextFor = (phase: PhaseType, communityCards: number[]): StatCalculationContext => ({
+  playerId: 101,
+  actions: [],
+  phases: [{ handId: 1, phase, seatUserIds: [101], communityCards }],
+  hands: [{
+    id: 1, seatUserIds: [101], winningPlayerIds: [], smallBlind: 100, bigBlind: 200,
+    session: { id: undefined, battleType: undefined, name: undefined }, results: []
+  }],
+  allPlayerActions: [], allPlayerPhases: [], winningHandIds: new Set<number>(),
+  session: {
+    id: undefined, battleType: undefined, name: undefined,
+    players: new Map(), reset: () => {}
+  }
+})
+
+const calculate = (holeCards: number[], phase = PhaseType.PREFLOP, board: number[] = []) => {
+  setHandImprovementHeroHoleCards('test-hand', '101', holeCards)
+  return handImprovementStat.calculate(contextFor(phase, board)) as HandImprovementResult
+}
+
+const probability = (result: HandImprovementResult, rank: RankType): number =>
+  result.improvements.find(row => row.rank === rank)!.probability
 
 describe('handImprovementStat', () => {
   beforeEach(() => {
-    // キャッシュをクリア
-    setHandImprovementHeroHoleCards('test-hand-1', '101', [48, 49])
+    setHandImprovementBatchMode(true)
+    setHandImprovementBatchMode(false)
   })
 
   test.each([
@@ -16,24 +39,8 @@ describe('handImprovementStat', () => {
     [PhaseType.TURN, [40, 36, 32, 1]],
     [PhaseType.RIVER, [40, 36, 32, 1, 6]],
     [PhaseType.TURN, [40, 36, 32, 1, 6]]
-  ])('完成したロイヤルフラッシュを統合行に表示する (phase=%s, board=%j)', (phase, communityCards) => {
-    setHandImprovementHeroHoleCards('royal-hand', '201', [48, 44])
-    const result = handImprovementStat.calculate({
-      playerId: 201,
-      actions: [],
-      phases: [{ handId: 201, phase, seatUserIds: [201], communityCards }],
-      hands: [{
-        id: 201, seatUserIds: [201], winningPlayerIds: [], smallBlind: 100,
-        bigBlind: 200, session: { id: undefined, battleType: undefined, name: undefined },
-        results: []
-      }],
-      allPlayerActions: [], allPlayerPhases: [], winningHandIds: new Set<number>(),
-      session: {
-        id: undefined, battleType: undefined, name: undefined,
-        players: new Map(), reset: () => {}
-      }
-    }) as HandImprovementResult
-
+  ])('完成したロイヤルフラッシュを統合行に表示する (phase=%s, board=%j)', (phase, board) => {
+    const result = calculate([48, 44], phase as PhaseType, board as number[])
     expect(result.currentHand.rank).toBe(RankType.ROYAL_FLUSH)
     expect(result.improvements).toHaveLength(9)
     expect(result.improvements.filter(row => row.isCurrent)).toEqual([{
@@ -45,176 +52,53 @@ describe('handImprovementStat', () => {
       .every(row => row.probability === 0 && !row.isComplete)).toBe(true)
   })
 
-  test('プリフロップでポケットペアを正しく認識する', () => {
-    /**
-     * シナリオ: handImprovementStatが直接呼ばれてポケットペアを評価する場合
-     * 検証内容:
-     * - ホールカードのキャッシュが正しく動作する
-     * - A♠A♥がONE_PAIRとして認識される（プリフロップ時点）
-     * - 既に完成している手なので確率100%、isCurrent=true
-     * - バッチモードではない通常の計算で動作
-     */
-    const context = {
-      playerId: 101,
-      actions: [],
-      phases: [{
-        handId: 1,
-        phase: PhaseType.PREFLOP,
-        seatUserIds: [101],
-        communityCards: []
-      }],
-      hands: [{
-        id: 1,
-        seatUserIds: [101],
-        winningPlayerIds: [],
-        smallBlind: 100,
-        bigBlind: 200,
-        session: { id: undefined, battleType: undefined, name: undefined },
-        results: []
-      }],
-      allPlayerActions: [],
-      allPlayerPhases: [],
-      winningHandIds: new Set<number>(),
-      session: {
-        id: undefined,
-        battleType: undefined,
-        name: undefined,
-        players: new Map(),
-        reset: () => { }
-      }
-    }
+  test('プリフロップの現在のペアとリバー時点の最終役分布を区別する', () => {
+    const result = calculate([48, 49])
+    expect(result.currentHand).toEqual({ rank: RankType.ONE_PAIR, name: 'One Pair' })
+    const pair = result.improvements.find(row => row.rank === RankType.ONE_PAIR)!
+    // 50枚から5枚の全列挙で、AAが最終ワンペアとなるボードは762,300通り。
+    expect(pair.probability).toBeCloseTo(762_300 * 100 / 2_118_760, 10)
+    expect(pair.isCurrent).toBe(true)
+    expect(pair.isComplete).toBe(false)
+    expect(result.improvements.reduce((sum, row) => sum + row.probability, 0)).toBeCloseTo(100, 10)
+  })
 
-    const result = handImprovementStat.calculate(context) as any
+  test('同ランクのsuitedハンドはoffsuitよりフラッシュ確率が高い', () => {
+    const suited = calculate([48, 44])
+    const offsuit = calculate([48, 45])
+    expect(probability(suited, RankType.FLUSH)).toBeCloseTo(138_296 * 100 / 2_118_760, 10)
+    expect(probability(suited, RankType.FLUSH)).toBeGreaterThan(probability(offsuit, RankType.FLUSH))
+  })
 
-    expect(result).not.toBe('-')
+  test('ポケットペアのクワッズを独立した組合せ数で検証する', () => {
+    const result = calculate([32, 33])
+    const ownQuads = 48 * 47 * 46 / 6
+    const boardQuads = 12 * 46
+    expect(probability(result, RankType.FOUR_OF_A_KIND))
+      .toBeCloseTo((ownQuads + boardQuads) * 100 / 2_118_760, 10)
+    expect(result.improvements.some(row => row.name === 'Royal Flush')).toBe(false)
+    expect(probability(result, RankType.STRAIGHT_FLUSH)).toBeGreaterThan(0)
+    expect(probability(result, RankType.STRAIGHT)).toBeGreaterThan(0)
+    expect(probability(result, RankType.FLUSH)).toBeGreaterThan(0)
+    expect(probability(result, RankType.THREE_OF_A_KIND)).toBeGreaterThan(0)
+  })
+
+  test.each([
+    { phase: PhaseType.FLOP, board: [] },
+    { phase: PhaseType.FLOP, board: [8] },
+    { phase: PhaseType.TURN, board: [8, 13, 22] },
+    { phase: PhaseType.RIVER, board: [8, 13, 22, 35] }
+  ])('盤面が不足しているphase=$phaseでは古い役を表示しない', ({ phase, board }) => {
+    setHandImprovementHeroHoleCards('test-hand', '101', [48, 49])
+    expect(handImprovementStat.calculate(contextFor(phase, board))).toBe('-')
+  })
+
+  test('盤面が揃ったリバーは確定した最終役だけを100%にする', () => {
+    const result = calculate([48, 49], PhaseType.RIVER, [8, 13, 22, 35, 44])
     expect(result.currentHand.rank).toBe(RankType.ONE_PAIR)
-    expect(result.currentHand.name).toBe('One Pair')
-
-    const onePair = result.improvements.find((h: any) => h.rank === RankType.ONE_PAIR)
-    expect(onePair.probability).toBeCloseTo(62.81, 2)  // プリフロップでの最終的なワンペア確率
-    expect(onePair.isCurrent).toBe(true)
-    
-    // 確率の総和が100%であることを確認
-    const totalProbability = result.improvements.reduce((sum: number, h: any) => sum + h.probability, 0)
-    expect(totalProbability).toBeCloseTo(100, 1)
-  })
-
-  test('スーテッドハンドでフラッシュ確率が高い', () => {
-    /**
-     * シナリオ: A♠K♠のスーテッドハンドでプリフロップ確率を計算する場合
-     * 検証内容:
-     * - スーテッドハンドのフラッシュ確率が約6.52%と計算される
-     * - オフスートの場合（約2.24%）より高い確率
-     * - calculatePreflopProbabilities関数が正しく動作する
-     * - 同じスートの2枚からフラッシュを作る確率が反映される
-     */
-    // A♠ K♠
-    setHandImprovementHeroHoleCards('test-hand-2', '102', [48, 44])
-
-    const context = {
-      playerId: 102,
-      actions: [],
-      phases: [{
-        handId: 2,
-        phase: PhaseType.PREFLOP,
-        seatUserIds: [102],
-        communityCards: []
-      }],
-      hands: [{
-        id: 2,
-        seatUserIds: [102],
-        winningPlayerIds: [],
-        smallBlind: 100,
-        bigBlind: 200,
-        session: { id: undefined, battleType: undefined, name: undefined },
-        results: []
-      }],
-      allPlayerActions: [],
-      allPlayerPhases: [],
-      winningHandIds: new Set<number>(),
-      session: {
-        id: undefined,
-        battleType: undefined,
-        name: undefined,
-        players: new Map(),
-        reset: () => { }
-      }
-    }
-
-    const result = handImprovementStat.calculate(context) as any
-
-    expect(result).not.toBe('-')
-
-    const flush = result.improvements.find((h: any) => h.rank === RankType.FLUSH)
-    expect(flush.probability).toBeGreaterThan(6) // スーテッドは約6.52%
-    expect(flush.probability).toBeLessThan(7)
-  })
-
-  test('ポケットペアでも各種役への改善確率が正しく計算される', () => {
-    /**
-     * シナリオ: 9♠9♥のポケットペアでプリフロップ確率を計算する場合
-     * 検証内容:
-     * - Three of a Kind: 約10.8%（残り2枚の9のどちらかが来る）
-     * - Four of a Kind: 約0.245%（残り2枚の9が両方来る）
-     * - Flush: 約2.19%（同じスートが3枚以上コミュニティに来る）
-     * - Straight: 約4.62%（ストレートが完成する）
-     * - Royal Flushは表示されない（Straight Flushに統合）
-     */
-    // 9♠ 9♥
-    setHandImprovementHeroHoleCards('test-hand-3', '103', [32, 33])
-
-    const context = {
-      playerId: 103,
-      actions: [],
-      phases: [{
-        handId: 3,
-        phase: PhaseType.PREFLOP,
-        seatUserIds: [103],
-        communityCards: []
-      }],
-      hands: [{
-        id: 3,
-        seatUserIds: [103],
-        winningPlayerIds: [],
-        smallBlind: 100,
-        bigBlind: 200,
-        session: { id: undefined, battleType: undefined, name: undefined },
-        results: []
-      }],
-      allPlayerActions: [],
-      allPlayerPhases: [],
-      winningHandIds: new Set<number>(),
-      session: {
-        id: undefined,
-        battleType: undefined,
-        name: undefined,
-        players: new Map(),
-        reset: () => { }
-      }
-    }
-
-    const result = handImprovementStat.calculate(context) as any
-
-    expect(result).not.toBe('-')
-
-    // Royal Flushが含まれていないことを確認
-    const royalFlush = result.improvements.find((h: any) => h.name === 'Royal Flush')
-    expect(royalFlush).toBeUndefined()
-
-    // 各確率を確認
-    const straightFlush = result.improvements.find((h: any) => h.rank === RankType.STRAIGHT_FLUSH)
-    expect(straightFlush.probability).toBeCloseTo(0.05, 1)
-
-    const fourOfAKind = result.improvements.find((h: any) => h.rank === RankType.FOUR_OF_A_KIND)
-    expect(fourOfAKind.probability).toBeCloseTo(0.245, 1)
-
-    const flush = result.improvements.find((h: any) => h.rank === RankType.FLUSH)
-    expect(flush.probability).toBeCloseTo(2.19, 1)
-
-    const straight = result.improvements.find((h: any) => h.rank === RankType.STRAIGHT)
-    expect(straight.probability).toBeCloseTo(4.62, 1)
-
-    const threeOfAKind = result.improvements.find((h: any) => h.rank === RankType.THREE_OF_A_KIND)
-    expect(threeOfAKind.probability).toBeCloseTo(10.8, 1)
+    expect(result.improvements.filter(row => row.probability > 0)).toEqual([{
+      rank: RankType.ONE_PAIR, name: 'One Pair', probability: 100,
+      isComplete: true, isCurrent: true
+    }])
   })
 })
