@@ -36,10 +36,6 @@ export const RealTimeStatsDisplay = memo(({ stats, seatIndex }: RealTimeStatsDis
   const handImprovement = stats.handImprovement.value as unknown as HandImprovementResult
   
   if (!handImprovement || !handImprovement.improvements) return null
-
-  // プリフロップの旧固定表はランク・連続性を反映しないため、数値を表示しない。
-  // 正確な分布が導入されるまでは手札ランクだけを残す。
-  const isPreflop = stats.currentPhase === 'Preflop' || stats.communityCards?.length === 0
   
   const containerStyle: CSSProperties = {
     position: 'fixed',
@@ -114,12 +110,7 @@ export const RealTimeStatsDisplay = memo(({ stats, seatIndex }: RealTimeStatsDis
       
       {/* 役の成立確率は対戦相手への勝率ではなく、ポットオッズと比較しない。 */}
       <div style={{ padding: '4px' }}>
-        {isPreflop ? (
-          <div style={{ padding: '2px 6px', color: HUD_MUTED_TEXT_COLOR }}>
-            役成立確率はフロップ以降に表示
-          </div>
-        ) : (
-        <table title="役の成立確率です。相手に勝つ確率ではありません。" style={{ 
+        <table title="リバー時点の最終役の確率です。相手に勝つ確率ではありません。" style={{ 
           width: '100%', 
           borderCollapse: 'collapse',
           fontSize: '9px'
@@ -166,7 +157,6 @@ export const RealTimeStatsDisplay = memo(({ stats, seatIndex }: RealTimeStatsDis
             })}
           </tbody>
         </table>
-        )}
       </div>
       </div>
     </div>
