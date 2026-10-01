@@ -9,13 +9,14 @@ class FakeWebSocket extends EventTarget {
   static readonly CLOSING = 2
   static readonly CLOSED = 3
   readonly readyState = FakeWebSocket.OPEN
-  readonly constructedWith = new.target
+  readonly constructedWith: Function
 
   constructor(
     readonly url: string,
     readonly protocols?: string | string[]
   ) {
     super()
+    this.constructedWith = new.target
   }
 
   send(_data: string): void {}
