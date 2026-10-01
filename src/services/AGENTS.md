@@ -29,6 +29,11 @@ Lake の三要素 cursor・fresh Dexie query・replay 順序は src 共通規約
   点で一致を再確認する（MUST）。uid 比較だけでは A→B→A を検出できない。不一致では
   commit せず中止する。cross-account upload の既知残存リスクを、watermark の汚染まで
   許す根拠にしない。
+- 資格情報の sign-in / refresh 保存と sign-out 削除は、メモリ公開まで同じ commit
+  キューで直列化する（MUST）。refresh はキュー実行時にも世代を検証し、保存成功前に
+  メモリを更新しない。呼出しへの戻り値は取得した応答の token に固定し、保存待ち後の
+  共有状態から別アカウントの token を返さない（MUST NOT）。ネットワーク待ちはこの
+  キューに含めず、保存失敗で後続操作を停止しない。同一世代の refresh は世代を増やさない。
 - token 取得・refresh を含む auth await は transport timeout で bound する（MUST）。
   retry class ごとの owner は1層に揃え、429 等の retry を複数層へ重ねない。
 - auth の cached-first 表示は background で再確認する。cache を認証の正典にしない。
