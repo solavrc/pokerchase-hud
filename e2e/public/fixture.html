@@ -30,33 +30,16 @@
     -->
     <script src="table-backdrop.js"></script>
     <script>
-      // Mimics the real game client: opens a WebSocket and receives
-      // msgpack-encoded ArrayBuffer frames. The extension's real
-      // web_accessible_resource.ts patches window.WebSocket for ANY socket
-      // (no URL filter), decodes each binary frame, and re-emits it via
-      // window.postMessage -- so this page doesn't need to know anything
-      // about the extension; it just needs to be a normal WebSocket client
-      // with binaryType='arraybuffer' (browsers default to 'blob', which
-      // the interceptor's `data instanceof ArrayBuffer` check would reject).
-      //
-      // Timing: content_script.ts runs at the default "document_idle" --
-      // strictly after this inline script (which runs synchronously while
-      // the HTML is still parsing, before DOMContentLoaded). It appends
-      // web_accessible_resource.js as a real <script src="chrome-extension://...">
-      // tag, which is fetched and executed *asynchronously* -- that's the
-      // script that actually replaces window.WebSocket. If we opened the
-      // WebSocket immediately here, it would very likely still be the
-      // *original*, unpatched WebSocket (this bit us during harness
-      // development: the tag can appear in the DOM before its body has
-      // run). The real game doesn't hit this race because its heavy Unity
-      // WebGL client takes far longer to open its first socket than any of
-      // this takes. We reproduce "connect only once the hook is live" by
-      // polling for the actual effect of the patch (window.WebSocket no
-      // longer being native code), not just the injected tag's presence.
+      // ゲームと同じくWebSocketからmsgpackのArrayBufferを受信する。
+      // protocol判定・デコード・拡張への転送は実際のフックに任せる。
+      // content scriptはdocument_idleで動くため、この同期scriptの時点では
+      // 元のコンストラクターを捕捉できる。注入tagの存在では実行完了を証明できない。
+      // ProxyもtoString()に[native code]を含むため、文字列表現ではなく参照で検出する。
+      const initialWebSocket = window.WebSocket
       const statusEl = document.getElementById('e2e-status')
       window.__e2eReplayEvents = 0
 
-      const isWebSocketPatched = () => !window.WebSocket.toString().includes('[native code]')
+      const isWebSocketPatched = () => window.WebSocket !== initialWebSocket
 
       const waitForWebSocketHook = () => new Promise((resolve, reject) => {
         const deadline = Date.now() + 10000
@@ -75,8 +58,21 @@
       })
 
       waitForWebSocketHook().then(() => {
+        // 標準APIを壊したフックでは実ブラウザのreplay gateを通過させない。
+        for (const key of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) {
+          if (window.WebSocket[key] !== initialWebSocket[key]) {
+            throw new Error(`WebSocket.${key} changed after interception`)
+          }
+        }
+        if (window.WebSocket.prototype !== initialWebSocket.prototype) {
+          throw new Error('WebSocket.prototype changed after interception')
+        }
         const wsUrl = `ws://${location.host}/replay`
         const socket = new WebSocket(wsUrl)
+        if (!(socket instanceof window.WebSocket) || !(socket instanceof initialWebSocket)) {
+          socket.close()
+          throw new Error('WebSocket instanceof changed after interception')
+        }
         socket.binaryType = 'arraybuffer'
         socket.addEventListener('open', () => { statusEl.textContent = 'e2e fixture: connected' })
         socket.addEventListener('message', () => { window.__e2eReplayEvents++ })

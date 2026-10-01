@@ -282,8 +282,7 @@ const isPokerChaseProtocolAnchor = (
   }
 }
 
-function createWebSocket(...args: ConstructorParameters<typeof WebSocket>): WebSocket {
-  const instance: WebSocket = new OriginalWebSocket(...args)
+function observeWebSocket(instance: WebSocket): WebSocket {
   // The production client currently connects through the official
   // *.api-poker-chase.com family. Trusting that endpoint independently of the
   // decoded body is what keeps a global ApiTypeId removal/rename observable
@@ -364,4 +363,10 @@ function createWebSocket(...args: ConstructorParameters<typeof WebSocket>): WebS
   return instance
 }
 
-window.WebSocket = createWebSocket as unknown as typeof WebSocket
+// 静的定数・prototype・サブクラスのnew.targetを維持する。
+// 通常関数への置換ではWebSocket.OPENやinstanceofが壊れる。
+window.WebSocket = new Proxy(OriginalWebSocket, {
+  construct(target, args, newTarget) {
+    return observeWebSocket(Reflect.construct(target, args, newTarget) as WebSocket)
+  }
+})
