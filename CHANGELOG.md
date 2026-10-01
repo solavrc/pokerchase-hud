@@ -1,5 +1,26 @@
 # Changelog
 
+## [6.1.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v6.0.0...pokerchase-hud-v6.1.0) (2026-10-01)
+
+
+### Features
+
+* **ui:** Chromeウェブストアのレビュー依頼バナーを追加する ([#317](https://github.com/solavrc/pokerchase-hud/issues/317)) ([07eb195](https://github.com/solavrc/pokerchase-hud/commit/07eb195f18df5559315f736606b7bc1d2cac4e7f))
+
+
+### Bug Fixes
+
+* **auth:** refresh保存と認証切替のcommit順序を統一する ([#387](https://github.com/solavrc/pokerchase-hud/issues/387)) ([d910db2](https://github.com/solavrc/pokerchase-hud/commit/d910db2960d66976b38b0bdeac5678e75d145998))
+* **hud:** 席交代後の残高を旧プレイヤーへ計上しない ([#384](https://github.com/solavrc/pokerchase-hud/issues/384)) ([227297f](https://github.com/solavrc/pokerchase-hud/commit/227297ff59db9587c18ad7d298f5f3278ac10fbd))
+* **observability:** Sentry信号と参加取消判定を改善 ([#376](https://github.com/solavrc/pokerchase-hud/issues/376)) ([48b5c9a](https://github.com/solavrc/pokerchase-hud/commit/48b5c9abfe2c02b835fe84d72a7a980a0a451943))
+* **realtime:** WebSocket互換性とリアルタイム統計の正確性を改善する ([#386](https://github.com/solavrc/pokerchase-hud/issues/386)) ([782c1e2](https://github.com/solavrc/pokerchase-hud/commit/782c1e2b6d3fb342c0fd71cfc48fa4d795ede348))
+* **stats:** ALL_IN分類と3bet機会を操作一覧に合わせる ([#381](https://github.com/solavrc/pokerchase-hud/issues/381)) ([1f2877d](https://github.com/solavrc/pokerchase-hud/commit/1f2877d93486add99c5eabbe5202d8ab16e57eeb))
+* **stats:** ハンド数フィルターを公開契約へ統一 ([#374](https://github.com/solavrc/pokerchase-hud/issues/374)) ([bfe689a](https://github.com/solavrc/pokerchase-hud/commit/bfe689aa7a81fc6b3d4b3eb7c20cb7e99289f80b))
+* **stats:** 人物帰属の根拠から参加とレイズの試行を判定する ([#385](https://github.com/solavrc/pokerchase-hud/issues/385)) ([b71a581](https://github.com/solavrc/pokerchase-hud/commit/b71a581c0861026932a0d897813c3dd69ea9646b))
+* **stats:** 欠損DEALの自動canonical復旧を安全化 ([#373](https://github.com/solavrc/pokerchase-hud/issues/373)) ([8d5a996](https://github.com/solavrc/pokerchase-hud/commit/8d5a99687edd027b6bc42bb5f72b82d9dae65ddb))
+* **sync:** 復元後のイベントID衝突でクラウド履歴を失わない ([#382](https://github.com/solavrc/pokerchase-hud/issues/382)) ([eb9f1d9](https://github.com/solavrc/pokerchase-hud/commit/eb9f1d97a1c97db8a54b657435d1f09b31d5e569))
+* **ui:** ロイヤルフラッシュの完成行と確率を表示する ([#380](https://github.com/solavrc/pokerchase-hud/issues/380)) ([4a36c5a](https://github.com/solavrc/pokerchase-hud/commit/4a36c5a08d58b4844c9aa00d880ccb8ba77a53c8))
+
 ## [6.0.0](https://github.com/solavrc/pokerchase-hud/compare/pokerchase-hud-v5.7.0...pokerchase-hud-v6.0.0) (2026-08-05)
 
 
