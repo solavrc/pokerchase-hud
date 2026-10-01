@@ -1,6 +1,8 @@
 import { render, screen } from '@testing-library/react'
 import { RealTimeStatsDisplay } from './RealTimeStatsDisplay'
 import { RankType } from '../../types/game'
+import { handImprovementStat, setHandImprovementHeroHoleCards, setHandImprovementBatchMode } from '../../realtime-stats/hand-improvement'
+import { PhaseType } from '../../types/game'
 import type { RealTimeStats } from '../../realtime-stats/realtime-stats-service'
 
 jest.mock('./hooks/useDraggable', () => ({
@@ -60,12 +62,28 @@ describe('リアルタイム役確率の表示回帰', () => {
     expect(screen.getByText('100.0%')).toHaveStyle({ color: '#00ff00' })
   })
 
-  test('プリフロップの旧固定値を隠し、スターティングハンド順位は残す', () => {
-    const stats = { ...makeStats(), currentPhase: 'Preflop', communityCards: [] }
+  test('プリフロップでも正確な最終役分布とスターティングハンド順位を表示する', async () => {
+    setHandImprovementBatchMode(true)
+    setHandImprovementBatchMode(false)
+    setHandImprovementHeroHoleCards('display-test', '101', [48, 49])
+    const value = await handImprovementStat.calculate({
+      playerId: 101, actions: [], allPlayerActions: [], allPlayerPhases: [], winningHandIds: new Set<number>(),
+      hands: [{
+        id: 1, seatUserIds: [101], winningPlayerIds: [], smallBlind: 10, bigBlind: 20,
+        session: { id: undefined, battleType: undefined, name: undefined }, results: []
+      }],
+      phases: [{ handId: 1, phase: PhaseType.PREFLOP, seatUserIds: [101], communityCards: [] }],
+      session: { id: undefined, battleType: undefined, name: undefined, players: new Map(), reset: () => {} }
+    })
+    const stats: RealTimeStats = {
+      ...makeStats(), currentPhase: 'Preflop', communityCards: [],
+      handImprovement: { id: 'handImprovement', name: 'Hand Improvement', formatted: '', value }
+    }
     render(<RealTimeStatsDisplay stats={stats} seatIndex={0} />)
-    expect(screen.queryByRole('table')).not.toBeInTheDocument()
-    expect(screen.queryByText('70.0%')).not.toBeInTheDocument()
-    expect(screen.getByText(/フロップ以降に表示/)).toBeInTheDocument()
+    expect(screen.getByRole('table')).toBeInTheDocument()
+    expect(screen.getByText('0.8%')).toBeInTheDocument()
+    expect(screen.getByText('36.0%')).toBeInTheDocument()
+    expect(screen.queryByText('62.8%')).not.toBeInTheDocument()
     expect(screen.getByText(/AA/)).toBeInTheDocument()
   })
 })
