@@ -4,9 +4,13 @@ import type { ApiEvent } from '../types'
 import type { AllPlayersRealTimeStats } from '../realtime-stats/realtime-stats-service'
 import type { HandImprovementResult } from '../realtime-stats/hand-improvement'
 
-const progress = (phase: PhaseType, pot = 100, nextActionSeat = 0) => ({
+type ActionSeat = ApiEvent<ApiType.EVT_ACTION>['Progress']['NextActionSeat']
+type RoundPhase = ApiEvent<ApiType.EVT_DEAL_ROUND>['Progress']['Phase']
+
+const progress = <P extends PhaseType>(phase: P, pot = 100, nextActionSeat: ActionSeat = 0) => ({
   Phase: phase, Pot: pot, SidePot: [], NextActionSeat: nextActionSeat,
-  NextActionTypes: [0, 1, 2, 3, 4, 5], NextExtraLimitSeconds: 30, MinRaise: 20
+  NextActionTypes: [ActionType.CHECK, ActionType.BET, ActionType.FOLD, ActionType.CALL, ActionType.RAISE, ActionType.ALL_IN],
+  NextExtraLimitSeconds: 30, MinRaise: 20
 })
 
 const deal = (): ApiEvent<ApiType.EVT_DEAL> => ({
@@ -21,17 +25,17 @@ const deal = (): ApiEvent<ApiType.EVT_DEAL> => ({
     CurrentBlindLv: 1, NextBlindUnixSeconds: 0, Ante: 0,
     SmallBlind: 10, BigBlind: 20, ButtonSeat: 2, SmallBlindSeat: 0, BigBlindSeat: 1
   },
-  Progress: progress(PhaseType.PREFLOP, 30)
+  Progress: { ...progress(PhaseType.PREFLOP, 30), NextActionSeat: 0 }
 })
 
-const round = (phase: PhaseType, cards: number[]): ApiEvent<ApiType.EVT_DEAL_ROUND> => ({
+const round = (phase: RoundPhase, cards: number[]): ApiEvent<ApiType.EVT_DEAL_ROUND> => ({
   ApiTypeId: ApiType.EVT_DEAL_ROUND, timestamp: 500, CommunityCards: cards,
   Player: { SeatIndex: 0, BetStatus: BetStatusType.BET_ABLE, HoleCards: [48, 49], Chip: 1000, BetChip: 0 },
   OtherPlayers: [{ SeatIndex: 1, Status: 0, BetStatus: BetStatusType.BET_ABLE, Chip: 1000, BetChip: 0 }],
-  Progress: progress(phase)
+  Progress: { ...progress(phase), MinRaise: 0, NextActionSeat: 0 }
 })
 
-const action = (phase: PhaseType, amount = 100, next = 0): ApiEvent<ApiType.EVT_ACTION> => ({
+const action = (phase: PhaseType, amount = 100, next: ActionSeat = 0): ApiEvent<ApiType.EVT_ACTION> => ({
   ApiTypeId: ApiType.EVT_ACTION, timestamp: 500, SeatIndex: 1,
   ActionType: ActionType.BET, Chip: 1000 - amount, BetChip: amount,
   Progress: progress(phase, 100 + amount, next)
