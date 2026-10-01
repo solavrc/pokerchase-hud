@@ -102,7 +102,7 @@ describe('RealTimeStatsStream', () => {
        * 検証内容:
        * - EVT_DEALイベントを受信した時点で統計計算が開始される
        * - ホールカードとコミュニティカード（空）が正しく設定される
-       * - ポケットペアなのでONE_PAIRが100%で現在の手として認識される
+       * - 現在役はONE_PAIR、リバー時点の分布は独立した全列挙に一致する
        */
       const events: ApiHandEvent[] = [{
         ApiTypeId: ApiType.EVT_DEAL,
@@ -161,7 +161,7 @@ describe('RealTimeStatsStream', () => {
         // ポケットペアなので ONE_PAIR が現在の手
         const improvements = statsData.stats.heroStats.handImprovement.value.improvements
         const onePair = improvements.find((h: any) => h.rank === RankType.ONE_PAIR)
-        expect(onePair.probability).toBeCloseTo(62.81, 2)  // プリフロップでの最終的なワンペア確率
+        expect(onePair.probability).toBeCloseTo(762300 * 100 / 2118760, 10)
         expect(onePair.isCurrent).toBe(true)
 
         done()
@@ -175,9 +175,8 @@ describe('RealTimeStatsStream', () => {
       /**
        * シナリオ: プリフロップでA♠K♥（オフスート）を配られた場合
        * 検証内容:
-       * - オフスートハンドのフラッシュ確率が低い（約2.24%）
-       * - ワンペア確率が約32.43%と計算される
-       * - プリフロップの標準的な確率が正しく計算される
+       * - フラッシュとワンペアの排他的な最終役確率を検証する
+       * - 期待値は全2,118,760ボードを独立した5枚評価で列挙した件数を使う
        */
       const events: ApiHandEvent[] = [{
         ApiTypeId: ApiType.EVT_DEAL,
@@ -186,7 +185,7 @@ describe('RealTimeStatsStream', () => {
         Player: {
           SeatIndex: 0,
           BetStatus: 1,
-          HoleCards: [48, 45], // A♠ K♥ (suited)
+          HoleCards: [48, 45], // A♠ K♥（オフスート）
           Chip: 10000,
           BetChip: 0
         },
@@ -229,13 +228,13 @@ describe('RealTimeStatsStream', () => {
 
         const improvements = statsData.stats.heroStats.handImprovement.value.improvements
 
-        // オフスートなのでフラッシュ確率は低い
+        // オフスートの最終役フラッシュ確率
         const flush = improvements.find((h: any) => h.rank === RankType.FLUSH)
-        expect(flush.probability).toBeLessThan(7) // 約2.24%
+        expect(flush.probability).toBeCloseTo(41562 * 100 / 2118760, 10)
 
         // ワンペア確率
         const onePair = improvements.find((h: any) => h.rank === RankType.ONE_PAIR)
-        expect(onePair.probability).toBeGreaterThan(30) // 約32.43%
+        expect(onePair.probability).toBeCloseTo(965568 * 100 / 2118760, 10)
 
         done()
       })
