@@ -9,6 +9,7 @@ import type { StatDefinition, StatCalculationContext, StatValue } from '../types
 import { PhaseType, RankType } from '../types/game'
 import { evaluateHand } from '../utils/poker-evaluator'
 import { calculateRiverProbabilities } from '../utils/river-probabilities'
+import { calculatePreflopProbabilities } from './preflop-probabilities'
 
 // Cache hero's hole cards per hand
 const holeCardsCache = new Map<string, number[]>()
@@ -98,6 +99,12 @@ export const handImprovementStat: StatDefinition = {
     }
     
     const communityCards = latestPhase.communityCards || []
+    // ACTIONがROUNDより先に届いても、不足した盤面を完成済みとして表示しない。
+    const requiredCards = latestPhase.phase === PhaseType.PREFLOP ? 0 : latestPhase.phase + 2
+    if (communityCards.length < requiredCards ||
+        (communityCards.length > 0 && communityCards.length < 3)) {
+      return '-'
+    }
     const allCards = [...heroCards, ...communityCards]
     
     // Evaluate current hand
@@ -159,7 +166,7 @@ export const handImprovementStat: StatDefinition = {
       }
     } else {
       // Calculate probabilities for improvement
-      let probabilities: Record<string, number>
+      let probabilities: Readonly<Record<string, number>>
       
       if (communityCards.length < 3) {
         // Preflop - calculate for all 5 community cards to come
@@ -222,82 +229,5 @@ function getRankName(rank: RankType): string {
     case RankType.ONE_PAIR: return 'One Pair'
     case RankType.HIGH_CARD: return 'High Card'
     default: return 'Unknown'
-  }
-}
-
-function calculatePreflopProbabilities(holeCards: number[]): Record<string, number> {
-  // Simplified preflop probabilities based on hole cards
-  if (holeCards.length !== 2) {
-    return {
-      royalflush: 0,
-      straightflush: 0,
-      fourofakind: 0,
-      fullhouse: 0,
-      flush: 0,
-      straight: 0,
-      threeofakind: 0,
-      twopair: 0,
-      onepair: 0,
-      highcard: 100
-    }
-  }
-  
-  const card1 = holeCards[0]
-  const card2 = holeCards[1]
-  if (card1 === undefined || card2 === undefined) {
-    return {
-      royalflush: 0,
-      straightflush: 0,
-      fourofakind: 0,
-      fullhouse: 0,
-      flush: 0,
-      straight: 0,
-      threeofakind: 0,
-      twopair: 0,
-      onepair: 0,
-      highcard: 100
-    }
-  }
-  
-  const isPocketPair = Math.floor(card1 / 4) === Math.floor(card2 / 4)
-  const isSuited = card1 % 4 === card2 % 4
-  
-  if (isPocketPair) {
-    return {
-      straightflush: 0.05,  // Includes royal flush
-      fourofakind: 0.245,   // Correct probability for pocket pair
-      fullhouse: 2.6,
-      flush: 2.19,          // Can make flush with 3+ suited community cards
-      straight: 4.62,       // Can make straight with proper board
-      threeofakind: 10.8,
-      twopair: 16.7,
-      onepair: 62.81,       // Remaining probability (100% - sum of others)
-      highcard: 0
-    }
-  } else if (isSuited) {
-    return {
-      straightflush: 0.11,  // Includes royal flush
-      fourofakind: 0.01,
-      fullhouse: 0.73,
-      flush: 6.52,
-      straight: 4.62,
-      threeofakind: 1.35,
-      twopair: 4.75,
-      onepair: 32.43,
-      highcard: 49.48     // Adjusted to make total 100%
-    }
-  } else {
-    // Offsuit
-    return {
-      straightflush: 0.02,  // Includes royal flush
-      fourofakind: 0.01,
-      fullhouse: 0.73,
-      flush: 2.24,
-      straight: 4.62,
-      threeofakind: 1.35,
-      twopair: 4.75,
-      onepair: 32.43,
-      highcard: 53.85     // Adjusted to make total 100%
-    }
   }
 }
