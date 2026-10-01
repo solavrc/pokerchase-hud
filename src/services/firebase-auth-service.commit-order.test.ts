@@ -30,6 +30,7 @@ const refreshed = {
 
 describe('認証refreshと資格情報commitの順序', () => {
   const originalFetch = global.fetch
+  const originalIdentity = chrome.identity
   let stored: State | undefined
   let service: FirebaseAuthService
   let writes: string[]
@@ -52,6 +53,16 @@ describe('認証refreshと資格情報commitの順序', () => {
     nextSignIn = stateFor('user-b', 'synthetic-b-signed-in')
     fetchedSignIn = deferred()
 
+    // 共通setupにはremoveCachedAuthTokenがないため、spyOnの前に必要なAPIを
+    // このスイート専用のオブジェクトで揃える。終了時は元のidentityへ戻す。
+    Object.defineProperty(chrome, 'identity', {
+      configurable: true, writable: true,
+      value: {
+        ...originalIdentity,
+        getAuthToken: () => {},
+        removeCachedAuthToken: () => {}
+      }
+    })
     ;(jest.spyOn(chrome.storage.local, 'get') as jest.SpyInstance)
       .mockImplementation(async () => stored ? { [AUTH_KEY]: copy(stored) } : {})
     ;(jest.spyOn(chrome.storage.local, 'set') as jest.SpyInstance)
@@ -98,6 +109,9 @@ describe('認証refreshと資格情報commitの順序', () => {
   afterEach(() => {
     global.fetch = originalFetch
     jest.restoreAllMocks()
+    Object.defineProperty(chrome, 'identity', {
+      configurable: true, writable: true, value: originalIdentity
+    })
   })
 
   const restored = async () => {
